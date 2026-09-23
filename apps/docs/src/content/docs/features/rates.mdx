@@ -1,0 +1,87 @@
+---
+title: Rates
+description: Set what technicians charge for their time -- one screen of billing profiles and work types that prices every ticket time entry, replacing per-category and per-organization rate fields.
+sidebar:
+  label: "Rates"
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+Rates is where you price the time your technicians log against tickets. Open **Settings → Billing → Rates**.
+
+## The screen
+
+The Rates screen is one grid: **rows are billing profiles, columns are work types**, plus a required **All other work** column that every profile has. Each cell shows how that profile prices that work type -- `$150`, `Included`, `Non-billable`, or `$225 · 1 h min` when a minimum applies. A work-type cell the profile does not name shows the **All other work** outcome, marked *inherits*. Click a cell or the profile's name to open that profile's editor.
+
+- The **column header menu** renames or archives a work type, or adds a new one.
+- The **row menu** clones a profile, sets it as your default for its currency, or archives it. The default profile cannot be archived.
+- **Rounding** and **currency** are set once per profile (per row), not per column.
+
+## Work types
+
+A **work type** is a label for what the work was -- Remote, On-site, Project, After hours -- picked on the time entry. It says nothing about price by itself; a work type is partner-wide, so one list of work types covers every ticket across every customer organization you manage, and one ticket can mix work types across its logged time (an on-site visit followed by remote follow-up, for example).
+
+Work-type names are case-insensitive within your partner, so "On-site" and "ON-SITE" cannot both exist.
+
+A ticket category can name a **default work type**, set in the category editor under **Settings → Ticketing**. When a technician logs time on a ticket without picking one, Breeze stamps the category's default on the entry as it is saved -- on the server, so this applies no matter how the entry was created (quick-add, timer, mobile, the AI tools, or the Outlook add-in). Picking a work type explicitly always wins over the category default. Clearing the work type on an entry that already has one removes it outright; it does not re-apply the category default.
+
+Archiving a work type removes it from pickers for new entries but never changes historical entries -- they keep the label they were stamped with, shown marked *(archived)*. Archiving also clears it as the default on any category that named it, so Breeze never stamps a work type the pickers no longer offer.
+
+## Which profile an organization uses
+
+Every organization is priced by exactly **one** billing profile at a time:
+
+1. The profile **assigned** to the organization on its Billing tab, if it is active and in the organization's currency.
+2. Otherwise, your partner's **default** profile for that organization's currency.
+3. If neither exists, the organization is unpriced (this should not happen in practice -- see below).
+
+There is **no inheritance and no fall-through** between profiles: a card in the wrong currency for the organization is never used, and its rates are never converted to another currency. Every partner always has at least one default profile ("Standard rates"), created automatically for you and back-filled if you are upgrading from an earlier release, so an organization is never left without pricing.
+
+## Coverage: billable, included, or non-billable
+
+Every row on a profile -- the work-type rows and the required "All other work" row -- has one of three outcomes:
+
+- **Billable at $X** -- the entry is billed at that hourly rate. A rate is optional even on a billable row: a row left blank reads *Billable · no rate set*, and its entries reach invoice review flagged as missing a rate instead of being priced automatically.
+- **Included** -- the work is covered by the customer's plan. The entry still appears on the ticket and in the customer portal as contract-covered, but it carries no rate and adds nothing to any invoice total. The billables CSV export reports it in its `included_minutes` column (worked minutes).
+- **Non-billable** -- internal or goodwill work. Never billed, and no rate is stamped.
+
+## Minimums and rounding
+
+A **minimum** is set per row -- for example, "On-site has a one-hour minimum" -- because different kinds of work justify different minimum call-out times. **Rounding** is set once for the whole profile -- for example, "we bill in 15-minute blocks" -- because it reflects how the MSP as a whole bills, not a property of any one work type.
+
+Rounding goes from 1 to 480 minutes and is optional. When it is set, Breeze rounds a finished entry's worked duration *up* to the next multiple of the increment, then applies the row's minimum on top -- the minimum only takes over when it is larger than the rounded figure. On a profile with 30-minute rounding and a 15-minute minimum, a 20-minute call and a 5-minute call both bill 30 minutes. With rounding left blank, only the minimum applies.
+
+Breeze always records the time actually **worked** exactly as it happened. Rounding and the row's minimum are then applied on top to produce the **billed** time, which is stamped when the entry is created and again when a timer stops. When the two differ, the invoice line states both, for example:
+
+> On-site -- 0.50 h worked, 1.00 h billed
+
+Timesheets, utilization reports, and any other worked-time view always show time **worked**, never the billed figure -- only invoices, ticket billing summaries, and other money-facing views show billed time.
+
+## Stamping: pricing is copied, not linked
+
+When a time entry is saved, Breeze looks up the organization's profile, finds the row for the entry's work type (or the "All other work" row), and copies -- **stamps** -- that outcome onto the entry itself: whether it is billable, its rate, and its minimum.
+
+Because the outcome is stamped, not linked:
+
+- **Editing a profile, archiving it, or reassigning an organization to a different profile never re-prices an existing entry.** Only new entries see the change.
+- **Changing the work type on an existing entry does re-price it** -- Breeze looks the new work type up on the profile again and re-stamps the entry.
+
+## Deviating from a profile
+
+A technician can override what a profile would have priced an entry at -- typing a different rate, changing the billable flag, or hand-setting a minimum -- but only with the **`time_entries:manage_billing`** permission. Without it, the rate field on a time entry is read-only. Partner Admins hold this permission by default (via their `*:*` role); grant it to other roles from **Settings → Users & Roles** if your billing clerks or senior technicians need to price entries by hand.
+
+An entry priced this way is flagged as **overridden**, which is how the billing approval queue tells hand-priced entries apart from ones a profile priced automatically.
+
+## What moved from Categories and Org Ticket Settings
+
+The rate fields that used to live on ticket categories and on an organization's ticket settings have moved here:
+
+- **Ticket categories** no longer carry a default-billable flag, a default hourly rate, or a rate currency. A category now only names a **default work type** (see above); pricing itself lives entirely on the Rates screen.
+- **An organization's ticket settings** no longer have a labour-pricing section at all -- that page is SLA configuration only now. To price an organization, assign it a billing profile from its Billing tab instead.
+
+If you are upgrading from a release before Rates existed, your existing category rates and organization rate overrides were converted into billing profiles automatically -- see the upgrade note on the [Ticketing](/features/ticketing/#time-tracking--parts) page for what changed for existing data.
+
+## Related
+
+- [Ticketing](/features/ticketing/) -- where work types are picked and time is logged against tickets
+- [Invoices](/features/invoices/) -- how billed (rounded/minimum) time becomes an invoice line

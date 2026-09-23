@@ -93,7 +93,16 @@ const docsMapping: DocsEntry[] = [
   { pattern: '/settings/profile', docsPath: '/reference/users-and-roles/', label: 'Profile' },
   { pattern: '/settings/ticketing', docsPath: '/features/ticketing/', label: 'Ticketing' },
   { pattern: '/settings/catalog', docsPath: '/features/product-catalog/', label: 'Product Catalog' },
-  { pattern: '/settings/billing', docsPath: '/features/online-payments/', label: 'Online Payments' },
+  {
+    pattern: '/settings/billing',
+    docsPath: '/features/online-payments/',
+    label: 'Online Payments',
+    // PartnerBillingSettingsPage writes its BILLING_TABS id to the hash.
+    // defaults/documents fall back to the page-level Online Payments doc.
+    tabs: {
+      rates: { docsPath: '/features/rates/', label: 'Rates' },
+    },
+  },
   { pattern: '/settings', docsPath: '/reference/users-and-roles/', label: 'Settings' },
 
   // Admin / Partner

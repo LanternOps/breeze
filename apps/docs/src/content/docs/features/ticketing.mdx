@@ -274,7 +274,7 @@ Go to **Settings > Ticketing** to manage ticket categories.
 
 </Steps>
 
-Categories also carry SLA targets (response and resolution times) and billing defaults. When a ticket's resolution target is running out, an **at-risk** chip appears in the queue, turning to **breached** once the target has passed -- and the **Breaching soon** tab collects all of them in one place.
+Categories also carry SLA targets (response and resolution times) and can name a **default work type**, applied to a time entry logged against a ticket in that category when the technician didn't pick one -- pricing itself lives on the [Rates](/features/rates/) screen, not on the category. When a ticket's resolution target is running out, an **at-risk** chip appears in the queue, turning to **breached** once the target has passed -- and the **Breaching soon** tab collects all of them in one place.
 
 <Aside>
   The automated SLA engine is live. Breeze tracks each ticket against its category's response and resolution targets, pauses the clock while a ticket is **On Hold**, monitors for breaches, and notifies the assignee (and escalates to the configured contacts) as a target approaches or is missed.
@@ -296,7 +296,7 @@ Under the **Priorities** tab you can rename each of the four priority levels (Lo
 
 ### Per-organization SLA tiers
 
-In an organization's settings, open the **Ticketing** tab to set per-priority SLA overrides for that customer. Labour pricing is no longer set here -- it lives on the organization's **Billing** tab as a billing profile (see [Rates](#rates-billing-profiles) below).
+In an organization's settings, open the **Ticketing** tab to set per-priority SLA overrides for that customer. Labour pricing is no longer set here -- it lives on the organization's **Billing** tab as a billing profile (see [Rates](/features/rates/)).
 
 <Aside>
   Saving organization-level ticketing settings requires MFA confirmation. SLA precedence: a category's SLA beats an organization override, which beats the partner-wide priority default.
@@ -308,35 +308,15 @@ Breeze lets technicians log time and record parts against any ticket. These reco
 
 ### Work types
 
-A **work type** says *what* the work was -- Remote, On-site, Project, After hours. The technician picks it; Breeze decides what the customer pays for it by looking the work type up on the organization's billing profile (see [Rates](#rates-billing-profiles)). Work types are partner-wide, so one list covers every customer organization you manage.
+A **work type** says *what* the work was -- Remote, On-site, Project, After hours. The technician picks it on the time entry; Breeze decides what the customer pays for it by looking the work type up on the organization's billing profile -- see [Rates](/features/rates/) for how profiles, coverage, minimums and rounding work, and how to manage the work-type list itself. Work types are partner-wide, so one list covers every customer organization you manage, and a ticket category can name a default one for entries logged without a pick.
 
-Manage them under **Settings → Billing → Rates**, in the **Work types** card. Add a work type by typing its name and clicking **Add work type**; rename one in place at any time. Names are case-insensitive within your partner, so "On-site" and "ON-SITE" cannot both exist.
+The work-type picker appears everywhere technicians log time: the ticket's **Log time** quick-add, the **Start timer** form, the row editor on **/timesheet** (which also gains a **Work Type** column), the mobile app's timer, and the Outlook add-in's time widget. Choosing nothing is always allowed -- an entry with no work type is valid, and is priced from the profile's **All other work** row.
 
-Once you have work types, the picker appears in all three places technicians log time: the ticket's **Log time** quick-add, the **Start timer** form, and the row editor on **/timesheet**, which also gains a **Work Type** column. Choosing nothing is always allowed -- an entry with no work type is valid.
+### Rates
 
-**Category defaults.** Each ticket category can name a **Default work type**, set in the category editor on the same page. When time is logged against a ticket in that category and the technician left the picker blank, Breeze stamps the category's default on the entry as it is saved -- on the server, so it applies however the entry was created. Picking a work type explicitly always wins. Clearing the work type on an entry that already has one removes it outright; it does not re-apply the category default.
+Time entries are priced automatically from the organization's assigned (or partner-default) billing profile -- see [Rates](/features/rates/) for the full picture of profiles, coverage, minimums and rounding. While logging time, the quick-add form, the timer stop popover, and the **/timesheet** row editor all show the resolved outcome next to the work-type picker -- for example *Included in Silver* or *$225/h · 1 h minimum*.
 
-**Archiving preserves history.** A work type you no longer use is **archived**, never deleted. It disappears from the pickers for new entries, but every historical entry keeps the label it was stamped with, and archived work types still render (marked *(archived)*) on the entries that carry them. Archived work types stay listed in the **Work types** card with an **Archived** badge, so you can always see what a historical label meant.
-
-### Rates (billing profiles)
-
-Labour pricing lives in exactly one place: **Settings → Billing → Rates**. A **billing profile** is a rate card -- one row per work type plus a required **All other work** row that covers entries with no work type or a work type the card does not name. Each row has one of three outcomes:
-
-- **Billable at a rate** -- the entry is billed at that hourly rate (an optional minimum, in minutes, can also be set).
-- **Included** -- the work is covered by the customer's plan; the entry is billable but carries no rate and adds nothing to any total.
-- **Non-billable** -- internal or goodwill work; never billed.
-
-Every organization uses **one** profile: the one assigned on its **Billing** tab, otherwise your partner's default profile for that organization's currency. Every partner always has a default profile (**Standard rates**), so there is never an organization without pricing. A profile is bound to one currency; the profile assigned to an organization must match the organization's billing currency, or the partner default applies instead and the Billing tab says so.
-
-**Pricing is stamped, not linked.** When a time entry is saved, Breeze looks up the organization's profile, finds the row for the entry's work type (or the *All other work* row) and stamps the outcome -- billable flag, rate and minimum -- on the entry itself. Editing a profile later, or assigning a different profile to the organization, **never re-prices existing entries**; it applies to new entries only. Changing the work type on an entry re-prices that entry against the card.
-
-The quick-add form, the timer stop popover and the timesheet row editor show the resolved outcome (for example *Billable at $150/h* or *Included*) as the technician logs time. Overriding the card on a single entry -- typing a different rate, flipping the billable flag, or hand-setting a minimum -- requires the **`time_entries:manage_billing`** permission; without it the rate field is read-only. Partner Admins (`*:*`) have it implicitly. Overridden entries are marked so reports can tell them from card-priced ones.
-
-**Rounding and the minimum -- worked time vs. billed time.** A billing profile can also set **Rounding (minutes)**, from 1 to 480, near the top of the profile editor. Rounding is one setting for the whole profile, not per work type. When it is set, Breeze rounds a finished entry's worked duration *up* to the next multiple of that increment, then applies the row's minimum on top -- so a 20-minute call on a profile with 30-minute rounding and a 15-minute minimum bills 30 minutes (rounding wins), while a 5-minute call on the same profile also bills 30 minutes (rounding still wins, since 30 is already above the minimum). The minimum only takes over when it is larger than the rounded figure. Leaving Rounding blank skips that step entirely, so only the minimum applies.
-
-This billed figure is stamped on the entry the same way the rate is: once when the timer or manual entry is created, and again when a timer stops, using whatever rounding and minimum were in effect at that moment. Like the rate, it is never recalculated retroactively -- editing the profile afterward does not change minutes already billed on past entries (see *Pricing is stamped, not linked*, above).
-
-Wherever Breeze shows billable time, it now distinguishes **worked** time (what the clock recorded) from **billed** time (what the customer pays for) whenever rounding or a minimum moved the two apart: the ticket's Time & Billing rail, the **/timesheet** row editor, invoice line items (which bill the minimum but name the worked time in the description), and the portal's support-usage buckets. When worked and billed minutes agree, only one figure is shown.
+The rate field is **read-only** there unless you hold the **`time_entries:manage_billing`** permission (Partner Admins have it by default via `*:*`); with it, you can type a different rate, flip the billable flag, or hand-set a minimum for that one entry, which flags it **overridden** for the billing approval queue.
 
 <Aside type="caution">
   **Upgrading from a release before Rates.** Your existing category rates and per-organization rates are converted into billing profiles automatically on upgrade: one *Standard rates* card per currency, one work type per priced category (set as that category's default work type), and a per-organization card for each organization that had its own rate or billable default. Existing time entries are not touched. Two things change for *new* entries: (1) an entry on an **uncategorised** ticket in an organization that had a rate but never set a billable default used to be silently non-billable and is now billable at that rate; (2) non-billable entries no longer carry a rate. Self-hosters should run `pnpm --filter @breeze/api dry-run:labour-pricing` **before** upgrading and read its *WILL START BILLING* section -- it names every organization affected by (1).
