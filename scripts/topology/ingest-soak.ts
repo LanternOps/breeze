@@ -158,6 +158,28 @@ function writeArtifact(output: string, report: unknown): void {
 /** Set once the soak has something to record; called on any abnormal exit. */
 let recordAbort: ((reason: string) => void) | null = null;
 
+/** Fixed-memory millisecond histogram: a 24h I10K run records ~2.9M send-lag
+ * samples, too many to keep, sort each round, or spread into Math.max. */
+class MsHistogram {
+  private readonly counts: Uint32Array;
+  samples = 0;
+  max = 0;
+  constructor(private readonly capMs: number) { this.counts = new Uint32Array(capMs + 1); }
+  record(ms: number) {
+    const value = Math.max(0, Math.round(ms));
+    this.counts[Math.min(value, this.capMs)]! += 1;
+    this.samples += 1;
+    if (value > this.max) this.max = value;
+  }
+  percentile(fraction: number): number {
+    if (!this.samples) return 0;
+    const rank = Math.min(this.samples, Math.max(1, Math.ceil(fraction * this.samples)));
+    let seen = 0;
+    for (let ms = 0; ms <= this.capMs; ms += 1) { seen += this.counts[ms]!; if (seen >= rank) return ms; }
+    return this.capMs;
+  }
+}
+
 function percentile(values: number[], fraction: number): number {
   if (!values.length) return 0;
   const sorted = [...values].sort((a, b) => a - b);
@@ -374,14 +396,15 @@ async function main(): Promise<void> {
 
     let unchangedRunInserts = 0;
     let unchangedObservationInserts = 0;
-    const sendLags: number[] = [];
+    // Values past the cap still count and still set `max` exactly.
+    const sendLags = new MsHistogram(Math.max(maxSendLagMs * 4, 60_000));
     let maxRoundSendMs = 0;
     let round = 0;
     let current = bootstrap;
     let lost: number | null = null;
     const snapshot = (status: 'running' | 'completed' | 'aborted', abortReason?: string) => {
       const p95 = percentile(latencies, 0.95); const p99 = percentile(latencies, 0.99);
-      const maxSendLag = sendLags.length ? Math.max(...sendLags) : 0;
+      const maxSendLag = sendLags.max;
       const invariants = {
         unchangedRunInserts, unchangedObservationInserts,
         // Mid-run: accepted-but-unpublished right now (normally > 0, in flight).
@@ -416,8 +439,8 @@ async function main(): Promise<void> {
         rejectReasons: { ...rejectReasons },
         gate: GATE,
         latencyMs: { samples: latencies.length, p50: percentile(latencies, 0.5), p95, p99,
-          max: latencies.length ? Math.max(...latencies) : 0 },
-        sendLagMs: { samples: sendLags.length, p50: percentile(sendLags, 0.5), p99: percentile(sendLags, 0.99),
+          max: latencies.reduce((max, value) => Math.max(max, value), 0) },
+        sendLagMs: { samples: sendLags.samples, p50: sendLags.percentile(0.5), p99: sendLags.percentile(0.99),
           max: maxSendLag, limit: maxSendLagMs },
         invariants,
       };
@@ -437,7 +460,7 @@ async function main(): Promise<void> {
       await runPool(byJitter, options.concurrency, async (producer) => {
         const due = roundStart + producer.jitterSeconds * 1000 * jitterScale;
         if (due > Date.now()) await sleep(due - Date.now());
-        sendLags.push(Math.max(0, Date.now() - due));
+        sendLags.record(Date.now() - due);
         if (isChangedRound(producer.producerIndex, round)) {
           const report = buildFull(producer, options.cadenceSeconds, round);
           const at = Date.now();
