@@ -42,7 +42,7 @@ vi.mock('../db', () => ({
         innerJoin: vi.fn(() => ({
           where: vi.fn(() => ({
             orderBy: vi.fn(() => ({
-              limit: vi.fn(() => Promise.resolve([])),
+              limit: vi.fn(() => ({ offset: vi.fn(() => Promise.resolve([])) })),
             })),
             limit: vi.fn(() => Promise.resolve([])),
           })),
@@ -54,7 +54,7 @@ vi.mock('../db', () => ({
         innerJoin: vi.fn(() => ({
           where: vi.fn(() => ({
             orderBy: vi.fn(() => ({
-              limit: vi.fn(() => Promise.resolve([])),
+              limit: vi.fn(() => ({ offset: vi.fn(() => Promise.resolve([])) })),
             })),
           })),
         })),

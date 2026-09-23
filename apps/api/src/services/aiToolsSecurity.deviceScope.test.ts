@@ -99,7 +99,10 @@ describe('get_security_posture (fleet branch) — narrowing happens in the query
     await handlerFor('get_security_posture')({ limit: 5 }, auth(['dev-1'], ['site-1']));
     const filter = vi.mocked(listLatestSecurityPosture).mock.calls[0]![0] as any;
     expect(filter.deviceIds).toEqual(['dev-1']);
-    expect(filter.limit).toBe(5);
+    // A-W05: `listLatestSecurityPosture` has no offset parameter, so the
+    // handler over-fetches (offset + limit + 1) and slices client-side —
+    // never a bare `limit`.
+    expect(filter.limit).toBe(6);
   });
 
   it('passes no deviceIds for an unrestricted caller', async () => {

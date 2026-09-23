@@ -18,6 +18,7 @@
  * - registry_operations (Tier 1): Read or modify Windows registry keys/values
  */
 
+import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   devices,
@@ -918,11 +919,15 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
           category: { type: 'string', description: 'Filter by script category' },
           language: { type: 'string', enum: ['powershell', 'bash', 'python', 'cmd'], description: 'Filter by script language' },
           osType: { type: 'string', enum: ['windows', 'macos', 'linux'], description: 'Filter by OS type (scripts targeting this OS)' },
-          limit: { type: 'number', description: 'Max results to return (default 20, max 50)' },
+          ...pageParamSchema(15, 50),
         },
       },
     },
     handler: async (input, auth) => {
+      const page = readPageArgs('list_scripts', input, { defaultLimit: 15, maxLimit: 50 });
+      if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
+      const { limit, offset, fingerprint } = page;
+
       const conditions: SQL[] = [isNull(scripts.deletedAt)];
       const orgCondition = auth.orgCondition(scripts.orgId);
       if (orgCondition) conditions.push(orgCondition);
@@ -934,8 +939,6 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       if (input.category) conditions.push(eq(scripts.category, input.category as string));
       if (input.language) conditions.push(eq(scripts.language, input.language as typeof scripts.language.enumValues[number]));
       if (input.osType) conditions.push(sql`${scripts.osTypes} @> ARRAY[${input.osType}]::text[]`);
-
-      const limit = Math.min(Math.max(1, Number(input.limit) || 20), 50);
 
       const results = await db
         .select({
@@ -950,9 +953,11 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
         .from(scripts)
         .where(conditions.length > 0 ? and(...conditions) : undefined)
         .orderBy(desc(scripts.updatedAt))
-        .limit(limit);
+        .limit(limit + 1)
+        .offset(offset);
 
-      return JSON.stringify({ scripts: results, count: results.length });
+      const envelope = pageEnvelope({ key: 'scripts', items: results, limit, offset, fingerprint });
+      return JSON.stringify({ ...envelope, count: envelope.showing });
     },
   });
 

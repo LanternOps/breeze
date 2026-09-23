@@ -19,6 +19,7 @@ import {
   SYSTEM_CLEANUP_ACTION_IDS,
 } from '@breeze/shared/validators';
 import { aiRunContextInputShape } from './scriptRunRequest';
+import { pageZodShape } from './aiToolPagination';
 import { fleetToolInputSchemas } from './aiToolSchemasFleet';
 import { backupToolSchemas } from './aiToolSchemasBackup';
 import { m365ToolSchemas } from './aiToolSchemasM365';
@@ -139,7 +140,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     siteId: uuid.optional(),
     search: z.string().max(200).optional(),
     tags: z.array(z.string().max(100)).max(20).optional(),
-    limit: z.number().int().min(1).max(100).optional(),
+    ...pageZodShape(25, 100),
   }),
 
   get_device_details: z.object({
@@ -156,6 +157,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   get_device_vulnerabilities: z.object({
     deviceId: uuid,
     status: z.string().trim().transform((v) => v.toLowerCase()).pipe(z.enum(['open', 'patched', 'mitigated', 'accepted', 'all'])).optional(),
+    ...pageZodShape(45, 200),
   }),
 
   // `deviceId` (optional) pins the batch to ONE device: the handler refuses
@@ -298,10 +300,10 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     // here. Keep the two in sync if either changes.
     hostname: z.string().min(1).max(255).optional(),
     serial: z.string().min(1).max(100).optional(),
+    ...pageZodShape(20, 100),
     // draft (P2-4): which ticket_drafts kind this proposal is.
     kind: z.enum(['reply', 'resolution_note']).optional(),
     isPublic: z.boolean().optional(),
-    limit: z.number().int().min(1).max(100).optional(),
     pendingReason: z.string().max(500).optional(),
     startedAt: z.string().datetime().optional(),
     endedAt: z.string().datetime().optional(),
@@ -427,7 +429,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     offset: z.number().int().min(0).optional(),
   }),
 
-  list_ai_agents: z.object({ includeDisabled: z.boolean().optional() }),
+  list_ai_agents: z.object({ includeDisabled: z.boolean().optional(), ...pageZodShape(25, 100) }),
   list_ai_agent_runs: z.object({
     agentId: z.string().guid().optional(), orgId: z.string().guid().optional(),
     status: z.enum(AI_AGENT_RUN_STATUSES).optional(),
@@ -993,7 +995,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     maxScore: z.number().int().min(0).max(100).optional(),
     riskLevel: z.enum(['low', 'medium', 'high', 'critical']).optional(),
     includeRecommendations: z.boolean().optional(),
-    limit: z.number().int().min(1).max(500).optional()
+    ...pageZodShape(5, 500),
   }),
 
   get_sensitive_data_overview: z.object({
@@ -1534,7 +1536,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   list_monitors: z.object({
     kind: monitorKindSchema.optional(),
     enabled: z.boolean().optional(),
-    limit: z.number().int().min(1).max(100).optional(),
+    ...pageZodShape(25, 100),
   }),
 
   get_monitor: z.object({
@@ -1623,7 +1625,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     category: z.string().optional(),
     language: z.enum(['powershell', 'bash', 'python', 'cmd']).optional(),
     osType: z.enum(['windows', 'macos', 'linux']).optional(),
-    limit: z.number().int().min(1).max(50).optional(),
+    ...pageZodShape(15, 50),
   }),
   list_script_templates: z.object({
     search: z.string().max(200).optional(),

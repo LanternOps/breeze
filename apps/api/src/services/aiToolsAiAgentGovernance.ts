@@ -44,6 +44,7 @@
 import { AI_AGENT_KINDS, AI_AGENT_RUN_STATUSES, type AiAgentKind, type AiAgentRunStatus } from '@breeze/shared';
 import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
+import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { db } from '../db';
 import { actionIntents, aiAgentRuns, aiAgents, aiToolExecutions, devices } from '../db/schema';
 import { listAgents } from './aiAgents/agentService';
@@ -111,15 +112,24 @@ export function registerAiAgentGovernanceTools(aiTools: Map<string, AiTool>): vo
       input_schema: {
         type: 'object', properties: {
           includeDisabled: { type: 'boolean', description: 'Include soft-disabled agents (default false)' },
+          ...pageParamSchema(25, 100),
         },
       },
     },
     handler: async (input, auth) => {
-      const rows = await listAgents(auth, { includeDisabled: input.includeDisabled === true });
+      const page = readPageArgs('list_ai_agents', input, { defaultLimit: 25, maxLimit: 100 });
+      if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
+      const { limit, offset, fingerprint } = page;
+
+      const rows = await listAgents(auth, {
+        includeDisabled: input.includeDisabled === true,
+        limit: limit + 1,
+        offset,
+      });
       // AiAgentRow has no profile: profiles belong to individual runs.
       const agents = rows.map(({ id, name, kind, enabled, orgId, partnerId, createdAt }) =>
         ({ id, name, kind, enabled, orgId, partnerId, createdAt }));
-      return JSON.stringify({ agents, showing: agents.length });
+      return JSON.stringify(pageEnvelope({ key: 'agents', items: agents, limit, offset, fingerprint }));
     },
   });
 

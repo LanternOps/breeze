@@ -483,7 +483,7 @@ function accessibleAgentCondition(auth: AuthContext) {
 
 export async function listAgents(
   auth: AuthContext,
-  opts: { includeDisabled?: boolean } = {},
+  opts: { includeDisabled?: boolean; limit?: number; offset?: number } = {},
 ): Promise<AiAgentRow[]> {
   // Defended twice. RLS is the real boundary and it already denies a
   // contextless read: breeze_current_scope() defaults to 'none', NOT 'system'
@@ -501,11 +501,17 @@ export async function listAgents(
   // partner-wide agents out of org-scoped listings and org-triggered runs.
   const ownerScope = accessibleAgentCondition(auth);
 
-  return db
+  // A-W05 (5a): `limit`/`offset` are optional so the route caller (no page
+  // params today) is unaffected; the `list_ai_agents` tool pages here rather
+  // than fetching every row and slicing in the handler.
+  const base = db
     .select()
     .from(aiAgents)
     .where(opts.includeDisabled ? ownerScope : and(ownerScope, isNull(aiAgents.disabledAt)))
     .orderBy(desc(aiAgents.createdAt));
+  const limited = typeof opts.limit === 'number' ? base.limit(opts.limit) : base;
+  const paged = typeof opts.offset === 'number' && opts.offset > 0 ? limited.offset(opts.offset) : limited;
+  return paged;
 }
 
 export async function getAgent(

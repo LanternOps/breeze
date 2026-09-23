@@ -6,6 +6,7 @@
  * All mutations delegate to ticketService — this file is a thin adapter.
  */
 
+import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { and, desc, eq, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { deviceHardware, devices, ticketDrafts, tickets } from '../db/schema';
@@ -549,10 +550,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
             type: 'string',
             description: 'User UUID to assign; omit to unassign'
           },
-          limit: {
-            type: 'number',
-            description: 'Max results for list (default 25, max 100)'
-          },
+          ...pageParamSchema(20, 100),
           pendingReason: {
             type: 'string',
             description: 'Optional reason when setting status to pending (update_status)'
@@ -609,7 +607,9 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         if (input.deviceId) conditions.push(eq(tickets.deviceId, input.deviceId as string));
         if (input.status) conditions.push(eq(tickets.status, input.status as TicketStatus));
 
-        const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
+        const page = readPageArgs('manage_tickets', input, { defaultLimit: 20, maxLimit: 100 });
+        if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
+        const { limit, offset, fingerprint } = page;
 
         const results = await db
           .select({
@@ -626,9 +626,10 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
           .from(tickets)
           .where(conditions.length > 0 ? and(...conditions) : undefined)
           .orderBy(desc(tickets.createdAt))
-          .limit(limit);
+          .limit(limit + 1)
+          .offset(offset);
 
-        return JSON.stringify({ tickets: results, showing: results.length });
+        return JSON.stringify(pageEnvelope({ key: 'tickets', items: results, limit, offset, fingerprint }));
       }
 
       // ── get ───────────────────────────────────────────────────────────────

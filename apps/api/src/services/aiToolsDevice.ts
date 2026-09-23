@@ -11,6 +11,7 @@
  * - query_custom_fields (Tier 1): Get custom field definitions or device values
  */
 
+import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { db } from '../db';
 import {
   devices,
@@ -108,11 +109,15 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
           siteId: { type: 'string', description: 'Filter by site UUID' },
           search: { type: 'string', description: 'Search by hostname or display name (partial match)' },
           tags: { type: 'array', items: { type: 'string' }, description: 'Filter by tags (devices must have all specified tags)' },
-          limit: { type: 'number', description: 'Max results to return (default 25, max 100)' }
+          ...pageParamSchema(25, 100),
         }
       }
     },
     handler: async (input, auth) => {
+      const page = readPageArgs('query_devices', input, { defaultLimit: 25, maxLimit: 100 });
+      if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
+      const { limit, offset, fingerprint } = page;
+
       const conditions: SQL[] = [];
       const orgCondition = auth.orgCondition(devices.orgId);
       if (orgCondition) conditions.push(orgCondition);
@@ -142,7 +147,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
       if (auth.allowedSiteIds && queryOrgId) {
         const allowed = await resolveSiteAllowedDeviceIds(queryOrgId, auth);
         if (!allowed || allowed.length === 0) {
-          return JSON.stringify({ devices: [], total: 0, showing: 0 });
+          return JSON.stringify(pageEnvelope({ key: 'devices', items: [], limit, offset, fingerprint, total: 0 }));
         }
         conditions.push(inArray(devices.id, allowed));
       }
@@ -151,8 +156,6 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
       // org — see `runFrozenDeviceIds`'s docstring.
       const frozenDeviceIds = runFrozenDeviceIds(auth);
       if (frozenDeviceIds) conditions.push(inArray(devices.id, frozenDeviceIds));
-
-      const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
 
       const results = await db
         .select({
@@ -171,7 +174,8 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         .leftJoin(sites, eq(devices.siteId, sites.id))
         .where(conditions.length > 0 ? and(...conditions) : undefined)
         .orderBy(desc(devices.lastSeenAt))
-        .limit(limit);
+        .limit(limit)
+        .offset(offset);
 
       // Get count
       const countResult = await db
@@ -181,11 +185,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
 
       const total = Number(countResult[0]?.count ?? 0);
 
-      return JSON.stringify({
-        devices: results,
-        total,
-        showing: results.length
-      });
+      return JSON.stringify(pageEnvelope({ key: 'devices', items: results, limit, offset, fingerprint, total }));
     }
   });
 

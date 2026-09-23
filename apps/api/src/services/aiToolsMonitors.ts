@@ -21,6 +21,7 @@
  * not behind a shared service function. Keep the two in sync by hand until a
  * follow-up extracts a shared helper.
  */
+import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { configPolicyMonitors, configPolicyFeatureLinks, configurationPolicies } from '../db/schema';
@@ -211,7 +212,7 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
         properties: {
           kind: { type: 'string', enum: [...MONITOR_KINDS], description: 'Filter by monitor kind' },
           enabled: { type: 'boolean', description: 'Filter by enabled state' },
-          limit: { type: 'number', description: 'Max results (default 25, max 100)' },
+          ...pageParamSchema(25, 100),
         },
       },
     },
@@ -220,15 +221,23 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
       if (typeof input.kind === 'string') filters.kind = input.kind as MonitorKind;
       if (typeof input.enabled === 'boolean') filters.enabled = input.enabled;
 
+      const pageArgs = readPageArgs('list_monitors', input, { defaultLimit: 25, maxLimit: 100 });
+      if (!pageArgs.ok) return JSON.stringify({ error: pageArgs.error, code: pageArgs.code });
+      const { limit, offset, fingerprint } = pageArgs;
+
       const rows = await listMonitorDefinitions(auth, filters);
-      if (rows.length === 0) return JSON.stringify({ monitors: [], total: 0, showing: 0 });
+      if (rows.length === 0) {
+        return JSON.stringify(pageEnvelope({ key: 'monitors', items: [], limit, offset, fingerprint, total: 0 }));
+      }
 
-      const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
-      const page = rows.slice(0, limit);
-      const counts = await attachmentCountsFor(page.map((r) => r.id));
+      // `rows` is the caller's whole visible set (no DB-side limit today), so
+      // `total` is the true count and the page is sliced from it.
+      const pageRows = rows.slice(offset, offset + limit);
+      const counts = await attachmentCountsFor(pageRows.map((r) => r.id));
 
-      return JSON.stringify({
-        monitors: page.map((r) => ({
+      return JSON.stringify(pageEnvelope({
+        key: 'monitors',
+        items: pageRows.map((r) => ({
           id: r.id,
           name: r.name,
           kind: r.kind,
@@ -237,9 +246,9 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
           ownerScope: ownerScopeOf(r),
           attachmentCount: counts.get(r.id) ?? 0,
         })),
+        limit, offset, fingerprint,
         total: rows.length,
-        showing: page.length,
-      });
+      }));
     }),
   });
 

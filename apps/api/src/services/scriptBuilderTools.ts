@@ -20,6 +20,7 @@ import type { ToolExecutionContext } from './toolExecutionContext';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { normalizeScriptCode } from './scriptCodeNormalize';
 import { aiRunContextInputShape } from './scriptRunRequest';
+import { pageZodShape } from './aiToolPagination';
 
 const TOOL_EXECUTION_TIMEOUT_MS = 60_000;
 
@@ -295,7 +296,7 @@ export function buildScriptBuilderTools(
         status: z.enum(['online', 'offline', 'maintenance', 'decommissioned']).optional(),
         osType: z.enum(['windows', 'macos', 'linux']).optional(),
         search: z.string().max(200).optional(),
-        limit: z.number().int().min(1).max(50).optional(),
+        ...pageZodShape(25, 100),
       },
       makeExistingHandler('query_devices', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -329,7 +330,7 @@ export function buildScriptBuilderTools(
         category: z.string().optional(),
         language: z.enum(['powershell', 'bash', 'python', 'cmd']).optional(),
         osType: z.enum(['windows', 'macos', 'linux']).optional(),
-        limit: z.number().int().min(1).max(50).optional(),
+        ...pageZodShape(15, 50),
       },
       makeExistingHandler('list_scripts', getAuth, onPreToolUse, onPostToolUse)
     ),

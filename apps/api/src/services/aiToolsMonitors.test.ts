@@ -159,7 +159,10 @@ describe('list_monitors', () => {
   it('returns an empty list without querying attachment counts', async () => {
     mockDb.select.mockReturnValue({ from: () => ({ where: () => ({ orderBy: () => Promise.resolve([]) }) }) });
     const result = await call('list_monitors', { kind: 'cpu' });
-    expect(result).toEqual({ monitors: [], total: 0, showing: 0 });
+    expect(result).toEqual({
+      monitors: [], total: 0, totalMode: 'exact', showing: 0,
+      limit: 25, offset: 0, hasMore: false, nextCursor: null,
+    });
     expect(mockDb.select).toHaveBeenCalledTimes(1);
   });
 });

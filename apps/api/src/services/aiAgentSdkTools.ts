@@ -38,6 +38,7 @@ import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
 import { deliveryToolShape } from './aiToolSchemas';
 import { aiScriptAuthoringEnabled } from '../config/env';
+import { pageZodShape } from './aiToolPagination';
 import { captureMessage } from './sentry';
 import {
   m365LookupUserHandler, m365RecentSigninsHandler, m365ListGroupMembershipsHandler,
@@ -1423,7 +1424,7 @@ export function buildBreezeSdkTools(
         siteId: z.string().guid().optional(),
         search: z.string().max(200).optional(),
         tags: z.array(z.string().max(100)).max(20).optional(),
-        limit: z.number().int().min(1).max(100).optional(),
+        ...pageZodShape(25, 100),
       },
       makeHandler('query_devices', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -1693,7 +1694,7 @@ export function buildBreezeSdkTools(
         maxScore: z.number().int().min(0).max(100).optional(),
         riskLevel: z.enum(['low', 'medium', 'high', 'critical']).optional(),
         includeRecommendations: z.boolean().optional(),
-        limit: z.number().int().min(1).max(500).optional(),
+        ...pageZodShape(5, 500),
       },
       makeHandler('get_security_posture', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -1987,7 +1988,7 @@ export function buildBreezeSdkTools(
         scheduleTime: z.string().optional(),
         rebootPolicy: z.enum(['if_required', 'always', 'never']).optional(),
         sources: z.array(z.enum(['os', 'third_party', 'custom'])).optional(),
-        limit: z.number().int().min(1).max(100).optional(),
+        ...pageZodShape(25, 100),
       },
       makeHandler('manage_patches', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -2015,6 +2016,7 @@ export function buildBreezeSdkTools(
       {
         deviceId: uuid,
         status: z.enum(['open', 'patched', 'mitigated', 'accepted', 'all']).optional(),
+        ...pageZodShape(45, 200),
       },
       makeHandler('get_device_vulnerabilities', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -2709,7 +2711,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'list_ai_agents', registryDescription('list_ai_agents'),
-      { includeDisabled: z.boolean().optional() },
+      { includeDisabled: z.boolean().optional(), ...pageZodShape(25, 100) },
       makeHandler('list_ai_agents', getAuth, onPreToolUse, onPostToolUse)
     ),
     tool(

@@ -8,6 +8,7 @@
  * - remediate_sensitive_data (Tier 3): Queue or apply sensitive-data remediation
  */
 
+import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { db } from '../db';
 import {
   devices,
@@ -181,13 +182,15 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
           maxScore: { type: 'number', description: 'Filter to scores less than or equal to this value (0-100)' },
           riskLevel: { type: 'string', enum: ['low', 'medium', 'high', 'critical'], description: 'Filter by risk level' },
           includeRecommendations: { type: 'boolean', description: 'Include recommendation payloads (default true)' },
-          limit: { type: 'number', description: 'Maximum device results (default 100, max 500)' }
+          ...pageParamSchema(5, 500),
         }
       }
     },
     handler: async (input, auth) => {
       const includeRecommendations = input.includeRecommendations !== false;
-      const limit = Math.min(Math.max(1, Number(input.limit) || 100), 500);
+      const page = readPageArgs('get_security_posture', input, { defaultLimit: 5, maxLimit: 500 });
+      if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
+      const { limit, offset, fingerprint } = page;
 
       if (typeof input.deviceId === 'string' && input.deviceId) {
         const access = await verifyDeviceAccess(input.deviceId, auth);
@@ -242,40 +245,44 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
             mediumRiskDevices: 0, highRiskDevices: 0, criticalRiskDevices: 0
           },
           worstDevices: [],
-          devices: [],
+          ...pageEnvelope({ key: 'devices', items: [], limit, offset, fingerprint }),
           note: SITE_SCOPE_EMPTY_NOTE
         });
       }
 
-      const postures = await listLatestSecurityPosture({
+      // `listLatestSecurityPosture` has no offset parameter, so the page is
+      // sliced client-side out of a bounded over-fetch (offset + limit + 1
+      // rows) — never the whole fleet (D14/Task 5a table).
+      const posturesFetched = await listLatestSecurityPosture({
         orgIds,
         deviceIds: allowedDeviceIds ?? undefined,
         minScore: typeof input.minScore === 'number' ? input.minScore : undefined,
         maxScore: typeof input.maxScore === 'number' ? input.maxScore : undefined,
         riskLevel: input.riskLevel as 'low' | 'medium' | 'high' | 'critical' | undefined,
-        limit
+        limit: offset + limit + 1
       });
+      const postures = posturesFetched.slice(offset, offset + limit + 1);
 
       const rows = includeRecommendations
         ? postures
         : postures.map((item) => ({ ...item, recommendations: [] }));
 
-      const total = rows.length;
+      const pageRows = rows.length > limit ? rows.slice(0, limit) : rows;
       const summary = {
-        totalDevices: total,
-        averageScore: total
-          ? Math.round(rows.reduce((sum, row) => sum + row.overallScore, 0) / total)
+        totalDevices: pageRows.length,
+        averageScore: pageRows.length
+          ? Math.round(pageRows.reduce((sum, row) => sum + row.overallScore, 0) / pageRows.length)
           : 0,
-        lowRiskDevices: rows.filter((row) => row.riskLevel === 'low').length,
-        mediumRiskDevices: rows.filter((row) => row.riskLevel === 'medium').length,
-        highRiskDevices: rows.filter((row) => row.riskLevel === 'high').length,
-        criticalRiskDevices: rows.filter((row) => row.riskLevel === 'critical').length
+        lowRiskDevices: pageRows.filter((row) => row.riskLevel === 'low').length,
+        mediumRiskDevices: pageRows.filter((row) => row.riskLevel === 'medium').length,
+        highRiskDevices: pageRows.filter((row) => row.riskLevel === 'high').length,
+        criticalRiskDevices: pageRows.filter((row) => row.riskLevel === 'critical').length
       };
 
       return JSON.stringify({
         summary,
-        worstDevices: rows.slice(0, Math.min(10, rows.length)),
-        devices: rows
+        worstDevices: pageRows.slice(0, Math.min(10, pageRows.length)),
+        ...pageEnvelope({ key: 'devices', items: rows, limit, offset, fingerprint })
       });
     }
   });

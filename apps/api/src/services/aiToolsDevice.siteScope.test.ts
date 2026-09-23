@@ -59,7 +59,7 @@ describe('query_devices — site narrowing (cross-site enumeration)', () => {
       if (cols && typeof cols === 'object' && 'count' in (cols as object)) {
         return { from: () => ({ where: () => Promise.resolve([{ count: 1 }]) }) };
       }
-      return { from: () => ({ leftJoin: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([{ id: 'd1', hostname: 'h' }]) }) }) }) }) };
+      return { from: () => ({ leftJoin: () => ({ where: () => ({ orderBy: () => ({ limit: () => ({ offset: () => Promise.resolve([{ id: 'd1', hostname: 'h' }]) }) }) }) }) }) };
     });
     const r = await handlerFor('query_devices')({}, makeAuth(undefined));
     const parsed = JSON.parse(r);
