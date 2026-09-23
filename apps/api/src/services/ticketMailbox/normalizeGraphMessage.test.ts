@@ -107,6 +107,26 @@ describe('normalizeGraphMessage', () => {
         .toBe('Hi,\n\nOutlook crashes.');
     });
 
+    const toText = (content: string) =>
+      normalizeGraphMessage({ ...msg, body: { contentType: 'html', content } }, 'p', 'support@a.com').text;
+
+    it('separates table cells and drops script contents', () => {
+      expect(toText('<table><tr><td>Server</td><td>PROD01</td></tr><tr><th>Age</th><td>30</td></tr></table>'))
+        .toBe('Server PROD01\nAge 30');
+      expect(toText('<p>before</p><script>alert("x")</script><p>after</p>')).toBe('before\n\nafter');
+    });
+
+    it('does not treat entity-encoded U+0001/U+0002 in the body as break markers', () => {
+      expect(toText('<p>Hello&#x2;World&#1;!</p><p>after</p>')).toBe('HelloWorld!\n\nafter');
+    });
+
+    it('stays fast on unclosed-tag soup (no regex backtracking across the body)', () => {
+      const start = Date.now();
+      toText('<p '.repeat(80_000));
+      toText(`<div class="x ${'<p '.repeat(80_000)}`);
+      expect(Date.now() - start).toBeLessThan(3_000);
+    });
+
     it('falls back to bodyPreview only when the HTML strips to empty', () => {
       const n = normalizeGraphMessage(
         { ...msg, body: { contentType: 'html', content: '<p> </p><img src="x.png">' }, bodyPreview: 'preview text' },
