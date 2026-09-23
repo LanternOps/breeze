@@ -120,6 +120,24 @@ describe('get_script_execution stdout/stderr window (A-W05 5c)', () => {
     expect(compacted.execution.stdoutNextOffset).toBe(stdoutText.length);
   });
 
+  it('fix 5: stdoutNextOffset counts code points, matching the Postgres substr/length units, not JS UTF-16 .length', async () => {
+    // '😀' is one code point but two UTF-16 units. Postgres substr/length
+    // (which sized this window at the SQL layer) count characters, i.e.
+    // code points — stdoutNextOffset must agree, or a continuation request
+    // built from it lands mid-character.
+    const stdoutText = '😀'.repeat(10);
+    dbMock.setRows([{
+      id: EXEC, sourceKind: 'library', scriptId: 's1', proposalId: null,
+      scriptName: 'cleanup', scriptLanguage: 'bash', language: 'bash', timeoutSeconds: 60,
+      reviewRiskTier: 'low', reviewSummary: null, approvalMethod: 'auto', deviceId: 'd1',
+      deviceHostname: 'host-1', deviceSiteId: 'site-1', status: 'completed', exitCode: 0,
+      stdout: stdoutText, stdoutChars: 100, stderr: '', stderrChars: 0,
+      errorMessage: null, startedAt: null, completedAt: null, createdAt: new Date('2026-09-20T09:59:00Z'),
+    }]);
+    const out = JSON.parse(await tool.handler({ executionId: EXEC }, auth())) as { execution: Record<string, unknown> };
+    expect(out.execution.stdoutNextOffset).toBe(10);
+  });
+
   it('fix 4b: shrinks a control-char-heavy stdout window by JSON-escaped length so it never digests, with stdoutNextOffset matching what was actually delivered', async () => {
     // Every '\u0001' escapes to 6 JSON chars. A raw 5000-char window of these
     // would escape to 30 000 chars, blowing MAX_TOOL_RESULT_CHARS on its own.

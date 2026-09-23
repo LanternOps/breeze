@@ -1326,6 +1326,13 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       // in whole code points, before computing the offset fields below.
       const stdout = shrinkToJsonBudget(result.stdout, STDOUT_JSON_BUDGET_CHARS);
       const stderr = shrinkToJsonBudget(result.stderr, STDERR_JSON_BUDGET_CHARS);
+      // Fix 5: `stdout`/`stderr` were windowed at the SQL layer with Postgres
+      // `substr`/`length`, which count CHARACTERS (Unicode code points) —
+      // never JS's UTF-16 `.length`, which counts 2 for an astral character
+      // like an emoji. Mixing the two units here would compute a
+      // stdoutNextOffset that lands mid-character on the next SQL substr.
+      const stdoutCodePoints = Array.from(stdout).length;
+      const stderrCodePoints = Array.from(stderr).length;
       return JSON.stringify({
         execution: shapeExecutionRow({
           ...result,
@@ -1336,13 +1343,13 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
           // `stdoutNextOffset` is the sibling key `compactToolResultForChat`
           // (A-W05 Q3) keys off of to recognise this as a deliberately-sized
           // window and never re-cut it during generic compaction.
-          stdoutNextOffset: stdoutOffset + stdout.length,
-          stdoutHasMore: stdoutOffset + stdout.length < stdoutChars,
+          stdoutNextOffset: stdoutOffset + stdoutCodePoints,
+          stdoutHasMore: stdoutOffset + stdoutCodePoints < stdoutChars,
           stderrChars,
           // stderr has no offset param (always read from 0); stderrNextOffset
           // exists purely so the compactor's structural check protects it too.
-          stderrNextOffset: stderr.length,
-          stderrTruncated: stderr.length < stderrChars,
+          stderrNextOffset: stderrCodePoints,
+          stderrTruncated: stderrCodePoints < stderrChars,
         }),
       });
     },
