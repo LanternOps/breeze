@@ -500,13 +500,6 @@ const TemplatePreviewImage = ({ template, alt }: { template: ReportTemplate; alt
 };
 
 /** Honest definition list of what the template actually produces. */
-const PERIOD_KIND_LABEL_KEYS: Record<string, string> = {
-  last_full_month: 'reports.reportPeriod.kinds.last_full_month',
-  last_30_days: 'reports.reportPeriod.kinds.last_30_days',
-  last_quarter: 'reports.reportPeriod.kinds.last_quarter',
-  custom: 'reports.reportPeriod.kinds.custom',
-};
-
 /**
  * The Default range tile for a business report type (#3198). Those types have
  * no ad-hoc date range — the server refuses one — but they do have a real
@@ -524,9 +517,13 @@ function businessDefaultRange(template: ReportTemplate, t: (key: string) => stri
       : t('reports.reportTemplates.spec.asOfRunDate');
   }
   if (type === 'ticket_sla_attainment' || type === 'technician_time_billability') {
-    const kind = saved?.period?.kind;
-    const key = typeof kind === 'string' ? PERIOD_KIND_LABEL_KEYS[kind] : undefined;
-    return key ? t(key) : t('reports.reportTemplates.spec.lastFullMonth');
+    switch (saved?.period?.kind) {
+      case 'last_full_month': return t('reports.reportPeriod.kinds.last_full_month');
+      case 'last_30_days': return t('reports.reportPeriod.kinds.last_30_days');
+      case 'last_quarter': return t('reports.reportPeriod.kinds.last_quarter');
+      case 'custom': return t('reports.reportPeriod.kinds.custom');
+      default: return t('reports.reportTemplates.spec.lastFullMonth');
+    }
   }
   return null;
 }
