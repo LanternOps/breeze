@@ -1829,7 +1829,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-          sparse-checkout: .github/scripts
+          sparse-checkout: |
+            .github/scripts
+            .github/release-provenance/sslcom-tls-rsa-root-ca-2022.pem
 
       - name: Download viewer Windows MSI
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -1902,6 +1904,7 @@ jobs:
         env:
           CODESIGNTOOL_URL: https://github.com/SSLcom/CodeSignTool/releases/download/v1.3.0/CodeSignTool-v1.3.0-windows.zip
           CODESIGNTOOL_SHA256: e22094505decbe622afe5b0c27abc618ed2ba179bd94f3450490352399d5ef2a
+          SSLCOM_TLS_ROOT_2022_SHA256: 8FAF7D2E2CB4709BB8E0B33666BF75A5DD45B5DE480F8EA8D4BFE6BEBC17F2ED
         run: |
           $ProgressPreference = 'SilentlyContinue'
           $archive = Join-Path $env:RUNNER_TEMP "CodeSignTool-v1.3.0-windows.zip"
@@ -1922,6 +1925,22 @@ jobs:
               throw "CodeSignTool archive verified but missing expected entry: $required"
             }
           }
+
+          # cs.ssl.com moved its TLS chain to "SSL.com TLS RSA Root CA 2022" on
+          # 2026-09-22. The jdk-11.0.2 bundled in CodeSignTool predates that
+          # root, so every eSigner call failed PKIX path building (v0.116.0
+          # release run 35816104938). Trust exactly that root, from a committed
+          # PEM whose SHA-256 is pinned here, in the bundled JDK's cacerts.
+          $rootPem = Join-Path $env:GITHUB_WORKSPACE ".github/release-provenance/sslcom-tls-rsa-root-ca-2022.pem"
+          $rootCert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($rootPem)
+          $rootSha256 = $rootCert.GetCertHashString([System.Security.Cryptography.HashAlgorithmName]::SHA256)
+          if ($rootSha256 -ne $env:SSLCOM_TLS_ROOT_2022_SHA256) {
+            throw "SSL.com TLS root digest mismatch. Expected $($env:SSLCOM_TLS_ROOT_2022_SHA256); got $rootSha256"
+          }
+          $jdk = Join-Path $target "jdk-11.0.2"
+          & (Join-Path $jdk "bin\keytool.exe") -importcert -noprompt -alias sslcom-tls-rsa-root-ca-2022 `
+            -file $rootPem -keystore (Join-Path $jdk "lib\security\cacerts") -storepass changeit
+          if ($LASTEXITCODE -ne 0) { throw "keytool failed to import the SSL.com TLS root ($LASTEXITCODE)" }
 
           "CODESIGNTOOL_PATH=$target" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "JAVA_VERSION=17" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
