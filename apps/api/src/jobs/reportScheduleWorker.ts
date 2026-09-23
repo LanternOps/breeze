@@ -720,7 +720,17 @@ export async function processRunScheduledReport(
     // The type rides along so a stored config its own type rejects is a deny
     // here, not a failed run after a row exists (ruling T3e).
     assertReportExecutionPreflight(owner, config, executionAuthority, report.type);
-  } catch {
+  } catch (err) {
+    // A deterministic refusal (the stored config selects outside the live
+    // authority, or its type rejects it), so a warning, not an exception
+    // report — but never a silent one: the reason names the offending key.
+    console.warn('[ReportScheduleWorker] Execution preflight refused the stored config', {
+      reportId: report.id,
+      reportType: report.type,
+      ownerOrgId: owner.orgId ?? null,
+      ownerPartnerId: owner.partnerId ?? null,
+      reason: err instanceof Error ? err.message : String(err),
+    });
     await deny('scope_config_outside_authority');
     return;
   }
@@ -811,8 +821,10 @@ export async function processRunScheduledReport(
           partnerId: delivery.partnerId,
         });
       } catch (err) {
-        // Delivery failure must not fail the (already stored) run.
+        // Delivery failure must not fail the (already stored) run — but the
+        // recipients silently got nothing, so it goes to error tracking.
         console.error(`[ReportScheduleWorker] Email delivery failed for report ${report.id}:`, err);
+        captureException(err);
       }
     }
   } catch (err) {

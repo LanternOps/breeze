@@ -165,7 +165,20 @@ export type BuildOpts = {
    * its "since <date>" label. */
   previous?: { generatedAt?: string | null; summary?: unknown };
   branding?: ReportBranding;
+  /** Called when a type with a designed renderer falls through to the generic
+   *  row table (its summary is missing or the wrong shape) — the designed
+   *  body, notes included, is lost. The shared package cannot reach error
+   *  tracking, so server callers pass `captureException` through here. */
+  onRendererFallback?: (info: { reportType: string; reason: 'summary_missing' | 'summary_shape_mismatch' }) => void;
 };
+
+/** Types whose PDF is a designed renderer that must never degrade silently
+ *  (#3198 W02 fix round). */
+const DESIGNED_BUSINESS_TYPES: ReadonlySet<string> = new Set([
+  'ticket_sla_attainment',
+  'technician_time_billability',
+  'ar_aging',
+]);
 
 const PAGE = { w: 297, h: 210, mx: 14, bandH: 19, footY: 199 } as const;
 const TOTAL_TOKEN = '{tpc}'; // jsPDF total-page-count placeholder
@@ -2262,6 +2275,14 @@ function buildReportPdfWithPalette(rows: unknown[], opts: BuildOpts): jsPDF {
       },
     );
   } else {
+    if (DESIGNED_BUSINESS_TYPES.has(opts.reportType)) {
+      const reason = opts.summary ? 'summary_shape_mismatch' : 'summary_missing';
+      console.warn('[reportPdf] Designed renderer skipped; falling back to the generic table', {
+        reportType: opts.reportType,
+        reason,
+      });
+      opts.onRendererFallback?.({ reportType: opts.reportType, reason });
+    }
     renderGenericReport(doc, records, opts);
   }
 

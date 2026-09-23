@@ -1346,6 +1346,33 @@ describe('processRunScheduledReport', () => {
     expect(mail.attachments[0]!.filename).toMatch(/device_inventory-report-.*\.csv/);
   });
 
+  // #3198 W02 fix round (minor): a delivery failure keeps the stored run, but
+  // it must reach error tracking, not only stderr.
+  it('reports an email delivery failure to error tracking without failing the run', async () => {
+    selectMock.mockReturnValueOnce(
+      selectChain([{ ...report, format: 'csv', config: { emailRecipients: ['a@b.co'] } }]),
+    );
+    selectMock.mockReturnValueOnce(selectChain([])); // scheduled contact recipients
+    selectMock.mockReturnValueOnce(
+      selectChain([{ orgSettings: {}, partnerTimezone: 'UTC', partnerSettings: {} }]),
+    );
+    insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
+    const updates = [updateChain(), updateChain()];
+    updateMock.mockReturnValueOnce(updates[0]).mockReturnValueOnce(updates[1]);
+    generateReportMock.mockResolvedValueOnce({ rows: [{ hostname: 'PC-1' }], rowCount: 1 });
+    const smtpDown = new Error('smtp down');
+    sendEmailMock.mockRejectedValueOnce(smtpDown);
+    captureExceptionMock.mockClear();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await processRunScheduledReport({ type: 'run-scheduled-report', reportId: REPORT_ID, occurrenceKey: 202607010900 });
+    } finally {
+      consoleError.mockRestore();
+    }
+    expect(updates[1]!.set).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed' }));
+    expect(captureExceptionMock).toHaveBeenCalledWith(smtpDown);
+  });
+
   it('warns when an attachment exceeds 5MB and sends link-only', async () => {
     const bigHostname = 'x'.repeat(6 * 1024 * 1024);
     selectMock.mockReturnValueOnce(
@@ -1800,7 +1827,22 @@ describe('partner-owned scheduled definitions (#3198 W01/W02)', () => {
     const failedInsert = insertChain([{ id: RUN_ID }]);
     insertMock.mockReturnValueOnce(failedInsert);
 
-    await run();
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await run();
+      // Fix round (minor): the refusal reason is logged with its key context,
+      // not swallowed by a bare catch.
+      expect(consoleWarn).toHaveBeenCalledWith(
+        expect.stringContaining('preflight refused'),
+        expect.objectContaining({
+          reportId: partnerReport.id,
+          reportType: partnerReport.type,
+          reason: 'partner-scope report config is not valid for report type ar_aging',
+        }),
+      );
+    } finally {
+      consoleWarn.mockRestore();
+    }
 
     expect(failedInsert.values).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'failed', errorMessage: 'scope_config_outside_authority' }),

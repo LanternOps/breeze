@@ -87,14 +87,47 @@ describe('buildReportPdf: ar_aging', () => {
     expect(() => buildReportPdf([], opts)).not.toThrow();
   });
 
+  // Fix round (minor): a business type that falls through to the generic
+  // renderer has lost its whole designed body — never silently.
+  it('reports a business-type fallback to the generic renderer through onRendererFallback', () => {
+    const onRendererFallback = vi.fn();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    buildReportPdf([], { ...opts, summary: { ...SUMMARY, asOf: undefined } as never, onRendererFallback });
+    expect(onRendererFallback).toHaveBeenCalledWith({ reportType: 'ar_aging', reason: 'summary_shape_mismatch' });
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('a summary-less business result is reported too; a legacy type never is', () => {
+    const onRendererFallback = vi.fn();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    buildReportPdf([], { ...opts, onRendererFallback });
+    expect(onRendererFallback).toHaveBeenCalledWith({ reportType: 'ar_aging', reason: 'summary_missing' });
+    onRendererFallback.mockClear();
+    buildReportPdf([{ a: 1 }], { ...opts, reportType: 'device_inventory', onRendererFallback });
+    expect(onRendererFallback).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
   it('prints the basis notes verbatim', () => {
     const text = extractText(buildReportPdf([], { ...opts, summary: SUMMARY }));
     expect(text).toContain('no FX conversion is applied');
   });
 
-  it('discloses truncation with both numbers', () => {
-    const s = { ...SUMMARY, detail: { cap: 5000, stored: 5000, available: 9000, truncated: true } };
-    expect(extractText(buildReportPdf([], { ...opts, summary: s }))).toMatch(/5000 of 9000/);
+  it('discloses truncation: drawn count, available count, and both caps', () => {
+    const rows = Array.from({ length: 5000 }, (_, i) => ({ ...SUMMARY.rows[0]!, invoiceId: `i${i}` }));
+    const s = { ...SUMMARY, detail: { cap: 5000, stored: 5000, available: 9000, truncated: true }, rows };
+    const text = extractText(buildReportPdf([], { ...opts, summary: s }));
+    expect(text).toMatch(/showing 500 of 9000/);
+    expect(text).not.toMatch(/5000 of 9000/);
+    expect(text).toMatch(/at most 500 rows/);
+    expect(text).toMatch(/at most 5000/);
+  });
+
+  it('a local-only cut (under the stored cap) still names the drawn and stored counts', () => {
+    const rows = Array.from({ length: 700 }, (_, i) => ({ ...SUMMARY.rows[0]!, invoiceId: `i${i}` }));
+    const s = { ...SUMMARY, detail: { cap: 5000, stored: 700, available: 700, truncated: false }, rows };
+    expect(extractText(buildReportPdf([], { ...opts, summary: s }))).toMatch(/showing 500 of 700/);
   });
 
   it('two currencies produce two rows and no third, combined figure', () => {

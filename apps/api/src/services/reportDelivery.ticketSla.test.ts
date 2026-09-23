@@ -14,6 +14,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 type SentEmail = { attachments?: Array<{ filename: string; content: Buffer }> };
 const sendEmail = vi.fn(async (_payload: SentEmail) => undefined);
+const captureException = vi.fn();
+vi.mock('./sentry', () => ({ captureException: (err: unknown) => captureException(err) }));
 vi.mock('./email', () => ({
   getEmailService: () => ({ sendEmail: (payload: SentEmail) => sendEmail(payload) }),
 }));
@@ -56,7 +58,7 @@ const summary: TicketSlaSummary = {
   ],
   rows: [{
     ticketId: 't1', ticketNumber: 'T-1', internalNumber: null, orgId: 'o1', orgName: 'Acme Co',
-    subject: 'Server down', priority: 'urgent', category: 'infrastructure', assignedToName: 'Jamie Lee',
+    subject: 'Server down', priority: 'urgent', category: 'infrastructure', assignedToId: 'u1', assignedToName: 'Jamie Lee',
     createdAt: '2026-09-05T10:00:00.000Z', firstResponseAt: '2026-09-05T12:00:00.000Z',
     resolvedAt: '2026-09-06T10:00:00.000Z', responseSlaMinutes: 60, resolutionSlaMinutes: 480,
     slaPausedMinutes: 0, responseOutcome: 'missed', resolutionOutcome: 'met',
@@ -100,5 +102,16 @@ describe('emailReportRun: ticket_sla_attainment attachment', () => {
     const sent = await deliver();
     const text = sent!.attachments![0]!.content.toString('latin1');
     expect(text).toContain('lifetime total');
+  });
+
+  // Fix round (minor): a summary the designed arm cannot take degrades the
+  // attachment to the generic table — reported, never silent.
+  it('reports a designed-renderer fallback to error tracking', async () => {
+    captureException.mockClear();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await deliver({ summary: { ...summary, period: null } as unknown as Record<string, unknown> });
+    warn.mockRestore();
+    expect(captureException).toHaveBeenCalledTimes(1);
+    expect(String((captureException.mock.calls[0]![0] as Error).message)).toMatch(/ticket_sla_attainment.*summary_shape_mismatch/);
   });
 });
