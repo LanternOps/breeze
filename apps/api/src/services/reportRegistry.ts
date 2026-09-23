@@ -1,5 +1,5 @@
 import type { z } from 'zod';
-import { PERMISSION_GRANTS, type ReportType } from '@breeze/shared';
+import { BUSINESS_REPORT_REQUIRED_PERMISSIONS, type ReportType } from '@breeze/shared';
 // TYPE-ONLY imports below must stay type-only. `./permissions` and
 // `./reportGenerationService` both import `db`; a value import of either would
 // put the pool in this module's graph (and, for the service, reinstate the
@@ -301,7 +301,7 @@ const generators = {
   ticket_sla_attainment: {
     type: 'ticket_sla_attainment', label: 'Ticket SLA attainment',
     configSchema: ticketSlaConfigSchema, supportedScopes: ORG_OR_PARTNER,
-    execution: 'user', audience: 'msp_staff', requiredPermissions: [PERMISSION_GRANTS.TICKETS_READ],
+    execution: 'user', audience: 'msp_staff', requiredPermissions: BUSINESS_REPORT_REQUIRED_PERMISSIONS.ticket_sla_attainment,
     detailRowCap: BUSINESS_DETAIL_ROW_CAP,
     generate: async (scope, config, authority) => {
       const { generateTicketSlaAttainmentReport } = await import('./businessReports/ticketSlaReport');
@@ -312,7 +312,7 @@ const generators = {
     type: 'technician_time_billability', label: 'Technician time & billability',
     configSchema: technicianTimeConfigSchema, supportedScopes: ORG_OR_PARTNER,
     execution: 'user', audience: 'msp_staff',
-    requiredPermissions: [PERMISSION_GRANTS.TIME_ENTRIES_READ, PERMISSION_GRANTS.TICKETS_READ],
+    requiredPermissions: BUSINESS_REPORT_REQUIRED_PERMISSIONS.technician_time_billability,
     detailRowCap: BUSINESS_DETAIL_ROW_CAP,
     generate: async (scope, config, authority) => {
       const { generateTechnicianTimeBillabilityReport } = await import('./businessReports/technicianTimeReport');
@@ -322,7 +322,7 @@ const generators = {
   ar_aging: {
     type: 'ar_aging', label: 'AR aging',
     configSchema: arAgingConfigSchema, supportedScopes: ORG_OR_PARTNER,
-    execution: 'user', audience: 'msp_staff', requiredPermissions: [PERMISSION_GRANTS.INVOICES_READ],
+    execution: 'user', audience: 'msp_staff', requiredPermissions: BUSINESS_REPORT_REQUIRED_PERMISSIONS.ar_aging,
     detailRowCap: BUSINESS_DETAIL_ROW_CAP,
     generate: async (scope, config, authority) => {
       const { generateArAgingReport } = await import('./businessReports/arAgingReport');

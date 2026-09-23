@@ -11,6 +11,7 @@ vi.mock('../db', () => ({
 }));
 
 import {
+  BUSINESS_REPORT_REQUIRED_PERMISSIONS,
   BUSINESS_REPORT_TYPES,
   MANAGED_EVIDENCE_REPORT_TYPES,
   REPORT_TYPES,
@@ -90,6 +91,12 @@ describe('REPORT_GENERATORS', () => {
       const expected = (BUSINESS_REPORT_TYPES as readonly string[]).includes(def.type)
         ? 5000 : Number.POSITIVE_INFINITY;
       expect(def.detailRowCap).toBe(expected);
+    }
+  });
+
+  it('each business type requires exactly the shared BUSINESS_REPORT_REQUIRED_PERMISSIONS entry (one source for API and web)', () => {
+    for (const type of BUSINESS_REPORT_TYPES) {
+      expect(REPORT_GENERATORS[type].requiredPermissions).toBe(BUSINESS_REPORT_REQUIRED_PERMISSIONS[type]);
     }
   });
 

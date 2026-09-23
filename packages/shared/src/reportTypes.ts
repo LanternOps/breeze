@@ -1,3 +1,5 @@
+import { PERMISSION_GRANTS, type PermissionGrant } from './constants/permissions';
+
 /**
  * THE canonical list of report types (#3198 spec §6). `reportTypeSchema`
  * (apps/api/src/routes/reports/schemas.ts), the API `ReportType` union
@@ -57,6 +59,19 @@ export const BUSINESS_REPORT_TYPES = [
 ] as const satisfies readonly ReportType[];
 
 export type BusinessReportType = (typeof BUSINESS_REPORT_TYPES)[number];
+
+/**
+ * The underlying read grants each business report type requires (#3198 W02,
+ * ruling P8) — THE one source: the API registry's `requiredPermissions`
+ * (apps/api/src/services/reportRegistry.ts) points at these entries, and the
+ * web gallery's card gate (apps/web/src/components/reports/
+ * businessReportAccess.ts) re-exports this object. Both pin identity in tests.
+ */
+export const BUSINESS_REPORT_REQUIRED_PERMISSIONS = {
+  ticket_sla_attainment: [PERMISSION_GRANTS.TICKETS_READ],
+  technician_time_billability: [PERMISSION_GRANTS.TIME_ENTRIES_READ, PERMISSION_GRANTS.TICKETS_READ],
+  ar_aging: [PERMISSION_GRANTS.INVOICES_READ],
+} as const satisfies Record<BusinessReportType, readonly PermissionGrant[]>;
 
 const REPORT_TYPE_SET: ReadonlySet<string> = new Set(REPORT_TYPES);
 

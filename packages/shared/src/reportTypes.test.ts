@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BUSINESS_REPORT_TYPES, REPORT_TYPES, isReportType } from './reportTypes';
+import { BUSINESS_REPORT_REQUIRED_PERMISSIONS, BUSINESS_REPORT_TYPES, REPORT_TYPES, isReportType } from './reportTypes';
 
 describe('REPORT_TYPES', () => {
   it('lists the 14 shipped types first, in report_type enum order, then the three business types', () => {
@@ -27,5 +27,21 @@ describe('REPORT_TYPES', () => {
   it('isReportType narrows only known values', () => {
     expect(isReportType('ar_aging')).toBe(true);
     expect(isReportType('ar_ageing')).toBe(false);
+  });
+});
+
+describe('BUSINESS_REPORT_REQUIRED_PERMISSIONS (#3198)', () => {
+  // The one source for both the API registry's `requiredPermissions` and the
+  // web gallery's card gate (they used to be hand-synced copies).
+  it('names exactly the underlying read grants of each business type', () => {
+    expect(BUSINESS_REPORT_REQUIRED_PERMISSIONS).toEqual({
+      ticket_sla_attainment: [{ resource: 'tickets', action: 'read' }],
+      technician_time_billability: [
+        { resource: 'time_entries', action: 'read' },
+        { resource: 'tickets', action: 'read' },
+      ],
+      ar_aging: [{ resource: 'invoices', action: 'read' }],
+    });
+    expect(Object.keys(BUSINESS_REPORT_REQUIRED_PERMISSIONS).sort()).toEqual([...BUSINESS_REPORT_TYPES].sort());
   });
 });
