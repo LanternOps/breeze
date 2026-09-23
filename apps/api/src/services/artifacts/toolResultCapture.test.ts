@@ -196,7 +196,7 @@ describe('captureLargeToolResult — what is persisted (spec §5.2, A-W05 D13b/Q
   it('names the artifact after the tool, and the envelope carries head/tail previews built from the redacted body', async () => {
     const raw = `HEAD${'m'.repeat(30_000)}TAIL`;
     const out = await captureLargeToolResult(raw, ctx({ toolName: 'search_logs' }));
-    expect((mocks.createArtifact.mock.calls[0]![0] as Record<string, unknown>).name).toBe('search_logs.txt');
+    expect((mocks.createArtifact.mock.calls[0]![0] as Record<string, unknown>).name).toBe('search_logs.redacted.txt');
     const parsed = JSON.parse(out) as { artifact: { head: string; tail: string; bytes: number; contentType: string } };
     expect(parsed.artifact.head.startsWith('HEAD')).toBe(true);
     expect(parsed.artifact.tail.endsWith('TAIL')).toBe(true);

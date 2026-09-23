@@ -1,5 +1,5 @@
 import { isUtf8 } from 'node:buffer';
-import { and, desc, eq, gt, gte, ne, or } from 'drizzle-orm';
+import { and, desc, eq, gt, like, ne, or } from 'drizzle-orm';
 import { z } from 'zod';
 import { isTextArtifactContentType, type AiArtifactKind, type AiRunArtifactDto } from '@breeze/shared';
 import { db } from '../../db';
@@ -328,15 +328,15 @@ export async function readArtifactWindow(
 }
 
 /**
- * A-W05 (D13b/Q5) — deploy-time cutoff. An `input_capture` row created before
- * this instant was written before redact-then-capture shipped and may still
- * hold raw (unredacted) bytes — `findArtifactForCaller` excludes it.
- *
- * TODO(controller): replace with the actual UTC timestamp the
- * redact-then-capture commit deploys at, once that is known. This is a
- * clearly-marked placeholder, not a real cutoff.
+ * A-W05 (D13b/Q5) — the redact-then-capture marker. `captureLargeToolResult`
+ * names every artifact it writes `<tool>.redacted.<ext>` (REDACTED_CAPTURE_NAME_INFIX),
+ * and only a row carrying that marker is readable back through `read_artifact`.
+ * A legacy `input_capture` row written before redact-then-capture shipped is
+ * named `<tool>.<ext>` and may hold raw credential material, so it is excluded
+ * — deterministically, with no deploy-time cutoff date to get wrong.
  */
-export const REDACTED_CAPTURE_SINCE: Date = new Date('2026-10-01T00:00:00Z');
+export const REDACTED_CAPTURE_NAME_INFIX = '.redacted.';
+export const REDACTED_CAPTURE_NAME_PATTERN = `%${REDACTED_CAPTURE_NAME_INFIX}%`;
 
 /**
  * What `executeTool` resolves a call's capture attribution to (the same
@@ -377,11 +377,11 @@ export function findArtifactForCallerQuery(handle: string, anchor: ArtifactCalle
       // meant to be paged back through this tool.
       ne(aiRunArtifacts.createdByTool, 'export_dataset'),
       // Q5: a legacy raw capture (written before redact-then-capture shipped)
-      // may still hold credential material — gate it on the cutoff. Any other
-      // kind is unaffected by the cutoff.
+      // may still hold credential material — only a marked capture is
+      // readable. Any other kind is not gated on the marker.
       or(
         ne(aiRunArtifacts.kind, 'input_capture'),
-        gte(aiRunArtifacts.createdAt, REDACTED_CAPTURE_SINCE),
+        like(aiRunArtifacts.name, REDACTED_CAPTURE_NAME_PATTERN),
       ),
     ))
     .limit(1);
@@ -397,7 +397,7 @@ export function findArtifactForCallerQuery(handle: string, anchor: ArtifactCalle
  *
  * Returns `null` — never a distinguishable "forbidden" — for a missing row,
  * a wrong-scope row, an expired row, an `export_dataset` row, and a
- * pre-cutoff raw `input_capture` row alike: a handle is opaque, so "this
+ * legacy unmarked (raw) `input_capture` row alike: a handle is opaque, so "this
  * exists but is not yours" is itself a disclosure (same posture as
  * `resolveArtifact`/`findArtifactForAuth`).
  */

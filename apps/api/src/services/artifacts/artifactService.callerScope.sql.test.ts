@@ -3,12 +3,12 @@
  * `artifactService.test.ts` mocks `../../db`, so its `findArtifactForCaller`
  * tests can only prove "the code returns whatever the mock hands back" — they
  * cannot prove the real predicate actually excludes a cross-session read, an
- * expired artifact, an `export_dataset` artifact, or a pre-cutoff raw capture
+ * expired artifact, an `export_dataset` artifact, or a legacy unmarked (raw) capture
  * (memory: vacuous Drizzle where-clause assertions). This file deliberately
  * does NOT mock `../../db`, so the real Drizzle builder produces real SQL.
  */
 import { describe, expect, it } from 'vitest';
-import { REDACTED_CAPTURE_SINCE, findArtifactForCallerQuery } from './artifactService';
+import { REDACTED_CAPTURE_NAME_PATTERN, findArtifactForCallerQuery } from './artifactService';
 
 const ORG = '00000000-0000-4000-8000-0000000000a1';
 const ART = '00000000-0000-4000-8000-0000000000a4';
@@ -47,12 +47,13 @@ describe('findArtifactForCallerQuery — compiled SQL (vacuous-Drizzle trap)', (
     expect(params).toContain('export_dataset');
   });
 
-  it('gates a pre-cutoff input_capture row on REDACTED_CAPTURE_SINCE, but never gates a non-input_capture row on it (Q5)', () => {
+  it('admits an input_capture row only when its name carries the redact-then-capture marker; other kinds are not gated on it (Q5)', () => {
     const { sql, params } = findArtifactForCallerQuery(ART, { orgId: ORG, runId: RUN }).toSQL();
     expect(sql).toMatch(/"ai_run_artifacts"\."kind" <> \$\d/);
-    expect(sql).toMatch(/"ai_run_artifacts"\."created_at" >= \$\d/);
+    expect(sql).toMatch(/"ai_run_artifacts"\."name" like \$\d/i);
+    expect(sql).not.toMatch(/"ai_run_artifacts"\."created_at" >=/);
     expect(params).toContain('input_capture');
-    expect(params).toContain(REDACTED_CAPTURE_SINCE.toISOString());
+    expect(params).toContain(REDACTED_CAPTURE_NAME_PATTERN);
   });
 
   it('is capped to one row', () => {

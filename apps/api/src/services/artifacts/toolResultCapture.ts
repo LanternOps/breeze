@@ -2,7 +2,7 @@ import { aiWorkspaceEnabled, breezeRegion } from '../../config/env';
 import type { AuthContext } from '../../middleware/auth';
 import { MAX_TOOL_RESULT_CHARS } from '../aiToolOutput';
 import { captureException } from '../sentry';
-import { ARTIFACT_PREVIEW_BYTES, buildPreviews, createArtifact } from './artifactService';
+import { ARTIFACT_PREVIEW_BYTES, REDACTED_CAPTURE_NAME_INFIX, buildPreviews, createArtifact } from './artifactService';
 import type { BlobRegion } from './blobStorage';
 import { redactForCapture } from './captureRedaction';
 
@@ -152,7 +152,7 @@ export async function captureLargeToolResult(
       runId: ctx.runId,
       sessionId: ctx.sessionId,
       kind: 'input_capture',
-      name: `${ctx.toolName}.${isJson ? 'json' : 'txt'}`,
+      name: `${ctx.toolName}${REDACTED_CAPTURE_NAME_INFIX}${isJson ? 'json' : 'txt'}`,
       contentType,
       body,
       maxBytes: CAPTURE_MAX_BYTES,

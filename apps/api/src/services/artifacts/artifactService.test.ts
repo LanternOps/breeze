@@ -56,7 +56,6 @@ vi.mock('../../db', () => ({
 import {
   ARTIFACT_PREVIEW_BYTES,
   ARTIFACT_READ_MAX_CHARS,
-  REDACTED_CAPTURE_SINCE,
   buildPreviews,
   createArtifact,
   deleteArtifact,
