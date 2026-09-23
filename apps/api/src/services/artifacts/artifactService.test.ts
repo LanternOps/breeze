@@ -55,21 +55,37 @@ vi.mock('../../db', () => ({
 
 import {
   ARTIFACT_PREVIEW_BYTES,
+  ARTIFACT_READ_MAX_CHARS,
   buildPreviews,
   createArtifact,
   deleteArtifact,
+  findArtifactForCaller,
   listArtifactsForAuth,
+  readArtifactWindow,
   resolveArtifact,
   sanitizeArtifactName,
   toArtifactDto,
   type ArtifactRecord,
 } from './artifactService';
-import { createMemoryBlobStorage, setBlobStorageForTests } from './blobStorage';
+import { createMemoryBlobStorage, setBlobStorageForTests, type BlobStorage } from './blobStorage';
+
+/** A BlobStorage double that only implements openRange — readArtifactWindow never calls put/openStream/delete. */
+function fakeRangeStore(body: Buffer): BlobStorage {
+  return {
+    put: () => { throw new Error('not implemented'); },
+    openStream: () => { throw new Error('not implemented'); },
+    delete: () => { throw new Error('not implemented'); },
+    async openRange(_key: string, start: number, endInclusive: number) {
+      return Readable.from([body.subarray(start, endInclusive + 1)]);
+    },
+  } as unknown as BlobStorage;
+}
 
 const ORG = '00000000-0000-4000-8000-0000000000a1';
 const OTHER_ORG = '00000000-0000-4000-8000-0000000000a2';
 const RUN = '00000000-0000-4000-8000-0000000000a3';
 const ART = '00000000-0000-4000-8000-0000000000a4';
+const SESSION = '00000000-0000-4000-8000-0000000000a5';
 
 let blobs: ReturnType<typeof createMemoryBlobStorage>;
 
@@ -320,5 +336,108 @@ describe('listArtifactsForAuth / toArtifactDto', () => {
     expect(Object.keys(dto!)).not.toContain('blobKey');
     expect(dto!.downloadPath).toBe(`/api/v1/ai/artifacts/${ART}`);
     expect(dto!.expiresAt).toBe('2026-11-15T00:00:00.000Z');
+  });
+});
+
+describe('readArtifactWindow (A-W05 D13a)', () => {
+  const record = (bytes: number) => ({
+    id: ART, orgId: ORG, runId: RUN, sessionId: null, kind: 'input_capture',
+    name: 't.json', contentType: 'application/json', bytes, sha256: '',
+    blobKey: 'k', headPreview: '', tailPreview: '', sourceDeviceId: null,
+    createdByTool: 't', expiresAt: new Date(), createdAt: new Date(),
+  }) as ArtifactRecord;
+
+  it('never splits a multi-byte character and reports the byte offset actually consumed', async () => {
+    // 'é' is 2 bytes; a 3-char window must stop before a partial 4th char.
+    const body = Buffer.from('ab' + 'é'.repeat(10), 'utf8'); // 22 bytes
+    setBlobStorageForTests(fakeRangeStore(body));
+    const w = await readArtifactWindow(record(body.length), 0, 3);
+    expect(w.text).toBe('abé');
+    expect(w.nextOffset).toBe(4);
+    expect(w.hasMore).toBe(true);
+    const rest = await readArtifactWindow(record(body.length), w.nextOffset, 6000);
+    expect(rest.text).toBe('é'.repeat(9));
+    expect(rest.hasMore).toBe(false);
+    expect(rest.nextOffset).toBe(22);
+  });
+
+  it('clamps maxChars to ARTIFACT_READ_MAX_CHARS and returns an empty window past the end', async () => {
+    const body = Buffer.from('x'.repeat(10_000));
+    setBlobStorageForTests(fakeRangeStore(body));
+    expect((await readArtifactWindow(record(10_000), 0, 99_999)).text).toHaveLength(ARTIFACT_READ_MAX_CHARS);
+    expect(await readArtifactWindow(record(10_000), 10_000, 10)).toEqual({ text: '', nextOffset: 10_000, hasMore: false });
+  });
+
+  it('reads from a non-zero offset', async () => {
+    const body = Buffer.from('0123456789');
+    setBlobStorageForTests(fakeRangeStore(body));
+    const w = await readArtifactWindow(record(body.length), 4, 3);
+    expect(w.text).toBe('456');
+    expect(w.nextOffset).toBe(7);
+    expect(w.hasMore).toBe(true);
+  });
+
+  it('fix 4a: shrinks the window by JSON-escaped length, not raw char count, for control-char-heavy content', async () => {
+    // Every '\u0001' escapes to 6 JSON chars (\u0001 literal). A raw 6000-char
+    // window of these would escape to 36 000 chars — way past what
+    // compactToolResultForChat can carry without replacing the whole result
+    // with a digest and silently dropping text `nextOffset` promised.
+    const body = Buffer.from('\u0001'.repeat(10_000), 'utf8');
+    setBlobStorageForTests(fakeRangeStore(body));
+    const w = await readArtifactWindow(record(body.length), 0, 6000);
+    expect(JSON.stringify(w.text).length).toBeLessThanOrEqual(7_000);
+    // nextOffset must equal exactly the bytes actually included in `text` —
+    // never the originally-requested (pre-shrink) window size.
+    expect(w.nextOffset).toBe(Buffer.byteLength(w.text, 'utf8'));
+    expect(w.hasMore).toBe(true);
+  });
+
+  it('fix 4a: shrinks for backslash-heavy content too, and the shrunk window survives compactToolResultForChat intact', async () => {
+    const body = Buffer.from('\\'.repeat(10_000), 'utf8');
+    setBlobStorageForTests(fakeRangeStore(body));
+    const w = await readArtifactWindow(record(body.length), 0, 6000);
+    const raw = JSON.stringify({
+      handle: ART, name: 't.json', contentType: 'application/json',
+      bytes: body.length, offset: 0, nextOffset: w.nextOffset, hasMore: w.hasMore, text: w.text,
+    });
+    const { compactToolResultForChat } = await import('../aiToolOutput');
+    const compacted = JSON.parse(compactToolResultForChat('read_artifact', raw)) as {
+      text: string; nextOffset: number; summarized?: boolean;
+    };
+    expect(compacted.summarized).toBeUndefined();
+    expect(compacted.text).toBe(w.text);
+    expect(compacted.nextOffset).toBe(w.nextOffset);
+  });
+});
+
+describe('findArtifactForCaller (A-W05 D13a/Q4) — input validation short-circuits before any query', () => {
+  it('returns null without querying for a non-uuid handle', async () => {
+    expect(await findArtifactForCaller('not-a-uuid', { orgId: ORG, runId: RUN })).toBeNull();
+    expect(mocks.calls).toEqual([]);
+  });
+
+  it('returns null without querying for a non-uuid orgId', async () => {
+    expect(await findArtifactForCaller(ART, { orgId: 'not-a-uuid', runId: RUN })).toBeNull();
+    expect(mocks.calls).toEqual([]);
+  });
+
+  it('returns null without querying when the anchor carries neither a run nor a session — "no anchor" is never "any artifact of this org"', async () => {
+    expect(await findArtifactForCaller(ART, { orgId: ORG })).toBeNull();
+    expect(mocks.calls).toEqual([]);
+  });
+
+  it('returns the record when the anchor matches (run-anchored)', async () => {
+    mocks.selectRows.push([row({ runId: RUN, sessionId: null })]);
+    expect((await findArtifactForCaller(ART, { orgId: ORG, runId: RUN }))?.id).toBe(ART);
+  });
+
+  it('returns the record when the anchor matches (session-anchored, no run)', async () => {
+    mocks.selectRows.push([row({ runId: null, sessionId: SESSION })]);
+    expect((await findArtifactForCaller(ART, { orgId: ORG, sessionId: SESSION }))?.id).toBe(ART);
+  });
+
+  it('conceals a row the predicate excluded (cross-session, cross-run, expired, export_dataset, or pre-cutoff) as a plain null — never a distinguishable "forbidden"', async () => {
+    mocks.selectRows.push([]);
+    expect(await findArtifactForCaller(ART, { orgId: ORG, sessionId: SESSION })).toBeNull();
   });
 });

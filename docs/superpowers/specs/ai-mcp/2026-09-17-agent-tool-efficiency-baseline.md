@@ -147,3 +147,54 @@ Full miss tables for both runs are in the workflow run artifacts (`tool-eval-rep
 | helper-basic | 1 | off | default | 4 | 0 | 111906 | 1476 | mcp__breeze__query_devices | success |
 | agent-full | 1 | off | default | 4 | 157 | 111738 | null | mcp__breeze__query_devices | success |
 | script-builder | 1 | off | default | 3 | 12804 | 0 | 1201 | (none) | success |
+
+## 7. Output efficiency (A-W05)
+
+**Date measured:** 2026-09-22 · **Branch:** `feature/6147-agent-tool-efficiency/wave-6152` · **Plan:** `2026-09-17-agent-tool-efficiency-a05-output-efficiency.md`
+
+### 7.1 The 20-tool before/after table
+
+"Today" is the plan's pre-wave survey (§"The 20 tools" of the A-W05 plan, `9b8189c1df`). "After (measured)" is each tool's own `*.outputShape.test.ts`/`aiToolsPerformance.test.ts`/`aiToolsScripts.getExecution.window.test.ts` fixture, printed by `expectDefaultPageFits`'s `[output-budget]` log line (`aiToolOutputBudget.testkit.ts:37`) via `cd apps/api && npx vitest run outputShape --reporter=verbose | grep '\[output-budget\]'` (console output is silent under the default reporter — `--reporter=verbose` is required to see it) plus a direct run of the two non-`outputShape`-named files. All 20 pass `expectDefaultPageFits` (default page < `MAX_TOOL_RESULT_CHARS` = 8000, uncompacted) against a **realistic** fixture; several tools additionally carry a worst-case fixture proving compaction degrades honestly (`hasMore`/`nextCursor` survive) rather than falling through to a full digest — see 5b's follow-up commit below.
+
+Several defaults were lowered below the plan's provisional table where a realistic fixture page still overflowed 8000 chars; those are called out in the "Default" column as `plan→final`.
+
+| # | Tool | Group | Today (pre-wave) | Mode | Default (plan→final) | Max | Measured default page (chars) |
+|---|---|---|---|---|---|---|---|
+| 1 | `query_devices` | 5a | `{devices, total, showing}`, limit 25/100 | offset | 25 (unchanged) | 100 | 7918 |
+| 2 | `manage_tickets` (list) | 5a | `{tickets, showing}`, 25/100, no total | offset | 25→20 | 100 | 7422 |
+| 3 | `manage_patches` (list) | 5a | `{patches, showing, scope}`, 25/100 | offset | 25 (unchanged) | 100 | 7932 |
+| 4 | `list_scripts` | 5a | `{scripts, count}`, 20/50 | offset | 20→15 | 50 | 7188 |
+| 5 | `get_security_posture` | 5a | `{summary, worstDevices, devices}`, 25/500 (worstDevices duplicates up to 10) | offset | 25→5 | 500 | 7141 (raw 7291) |
+| 6 | `list_monitors` | 5a | fetched ALL then `.slice(0, limit)`; `total = rows.length` (wrong) | offset | 25 (unchanged; `total` now the true row count) | 100 | 5501 |
+| 7 | `list_ai_agents` | 5a | `{agents, showing}`, **no limit** | offset | 25 (new) | 100 | 7043 |
+| 8 | `get_device_vulnerabilities` | 5a | `{deviceId, vulnerabilities, count}`, **no limit** | offset | 50→45 | 200 | 7597 |
+| 9 | `manage_alerts` (list) | 5b | `{alerts, total, showing}`, 25/100, unbounded `message` | keyset | 20→15 (5b follow-up; realistic-fixture worst-case 8 was too pessimistic) | 100 | 7192 |
+| 10 | `search_agent_logs` | 5b | `{logs, count}`, 100/500, unbounded `fields` jsonb | keyset | 50→18 (5b follow-up) | 500 | 7732 |
+| 11 | `query_audit_log` | 5b | `{entries, showing}`, 25/100, unbounded `details` jsonb | keyset | 25 (fits as-is) | 100 | 7932 |
+| 12 | `query_change_log` | 5b | `{changes, total, showing, filters}`, 100/500, unbounded jsonb ×3 | keyset | 50→25 (5b follow-up) | 500 | 7661 |
+| 13 | `list_organizations` | 5c | `{organizations, showing}`, 25/100, unbounded `sites[]`/org | offset | 25 (unchanged; `sites` capped 20/org + `siteCount`) | 100 | 4463 |
+| 14 | `list_configuration_policies` | 5c | whole-row spread incl. `settings` jsonb, 25/100 | offset | 25→20 (plan's 25 measured 9048 raw chars) | 100 | 7253 |
+| 15 | `get_device_details` | 5c | whole `deviceHardware`/`deviceNetwork`/`deviceDisks` rows, unbounded `networkInterfaces`/`disks` | n/a (single-object detail tool) | n/a — `networkInterfaces`/`disks` capped at 16 + counts | n/a | not budget-tested (no `outputShape` fixture; capped by row count, not paged) |
+| 16 | `get_script_execution` | 5c | full `stdout` + `stderr` | char window | `stdoutMaxChars`/`stderrMaxChars` 6000/2000→**5000/1500** (plan's 6000/2000 measured 8656 raw chars) | 16000/8000 | 7156 |
+| 17 | `get_incident_timeline` | 5c | unbounded `actions[]`/`evidence[]`, evidence whole rows + `metadata` jsonb | caps | `actions`/`evidence` capped 50 + count, `timeline` capped 100 + count | n/a | 893 |
+| 18 | `list_playbooks` | 5c | **no limit**; unbounded `steps` jsonb/row | offset | 25 (new) | 100 | 6847 |
+| 19 | `get_active_users` | 5c | `limit` capped session rows 100/200, unbounded `sessions[]`/device | offset (devices) | 50→**12** (plan's 50 measured 8501 raw chars at 15 devices) + `maxSessionsPerDevice` 10/50 | 200 | 6539 (raw 6827) |
+| 20 | `get_cis_compliance` | 5c | 25/500, per-row `summary` jsonb | offset | 25→**12** (plan's 25 measured 12568 raw chars) | 500 | 6132 |
+| — | `query_psa_status` | 5c (survey miss) | **no limit** (not in the plan's 20; flagged by the outputBudget contract test) | offset | new | — | 6162 |
+
+Notes:
+- `list_configuration_policies`, `get_script_execution` stdout/stderr, `get_active_users`, and `get_cis_compliance` defaults are lower than the plan's provisional table because the plan sized against the plan's own guessed row width, not a fixture built from realistic column widths; the actual default was set to whatever fits `MAX_TOOL_RESULT_CHARS` (8000) with a realistic row (commit messages `c5ad070f30`, `c8d579606d`).
+- `manage_alerts`/`search_agent_logs`/`query_change_log` defaults went through **two** passes: an initial worst-case-fixture sizing (commit `002b716656`) that came in too low (5–20), then a follow-up (`c8d579606d`) that resized against realistic rows and let a worst-case page degrade honestly under compaction instead. `query_audit_log` needed no correction — it fits the plan's original 25 once `details` is projected to `detailsKeys`.
+- `get_device_details` has no `outputShape` fixture; its shaping is caps on two per-row arrays (`networkInterfaces`, `disks` ≤ 16 + `*Count`), not a page budget, since it's a single-device detail tool, not a list.
+
+### 7.2 Golden eval delta
+
+`not run: AI_TOOL_EVAL_KEY absent in this environment` (same gate A-W03 Task 7 used). No numbers invented; the controller runs `pnpm ai:tool-eval` against a real key before merge and fills this row.
+
+### 7.3 Tool-capture row (prompt bytes, turn-1/turn-2 tokens)
+
+`not run: ANTHROPIC_API_KEY absent in this environment` (`ai:tool-capture` calls the real Anthropic API, same as `ai:tool-eval`). The controller runs `pnpm ai:tool-capture --surface chat --turns 2` before merge and appends the row here.
+
+As a proxy for prompt growth that doesn't need a live model call: `Buffer.byteLength(AI_SYSTEM_PROMPT_BASE + AI_SYSTEM_PROMPT_TAIL)` grew from 6106 to 6427 bytes (+321 bytes, under the plan's 400-byte budget) adding the "Paged and large results" sentences to the TAIL; `MCP_SERVER_INSTRUCTIONS` is 3502 bytes with the matching sentences added. Both stay under `aiAgentSystemPrompt.test.ts`'s 7 KB `BASE + TAIL` ceiling.
+
+Production output-size report: `not run` — needs `docs/superpowers/specs/ai-mcp/sql/2026-09-17-ai-tool-usage-90d.sql` on EU + US (Todd); the 20-tool list above is provisional until then, per D10/the plan's "The 20 tools" section. Per Q10, `manage_tickets`, `list_monitors`, and `get_incident_timeline` are MCP-only (absent from `TOOL_TIERS`), so `hotForShaping` (which ranks `chat`+`helper` rows only) cannot measure them even once the report runs on production — they were shaped anyway on the survey's likely-traffic ranking, and stay in the 20-tool table with that caveat.

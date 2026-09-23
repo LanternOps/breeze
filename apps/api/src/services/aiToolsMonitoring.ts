@@ -216,7 +216,7 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
           timeout: { type: 'number', description: 'Timeout in seconds (for create/update)' },
           config: { type: 'object', description: 'Monitor-specific configuration (for create/update)' },
           isActive: { type: 'boolean', description: 'Enable or disable the monitor (for create/update)' },
-          limit: { type: 'number', description: 'Max recent check results to return (for get, default 50)' },
+          limit: { type: 'number', description: 'Max recent check results for get (default 50, max 100)' },
         },
         required: ['action'],
       },

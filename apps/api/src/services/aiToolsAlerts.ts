@@ -6,6 +6,7 @@
  * - manage_notification_channels (Tier 1 base): List, test, create, update, or delete notification channels
  */
 
+import { keysetEnvelope, keysetParamSchema, keysetWhereCondition, readKeysetArgs } from './aiToolPagination';
 import { db } from '../db';
 import { canManagePartnerWidePolicies } from './partnerWideAccess';
 import { alerts, devices, notificationChannels } from '../db/schema';
@@ -95,7 +96,7 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
           status: { type: 'string', enum: ['active', 'acknowledged', 'resolved', 'suppressed', 'dismissed'], description: 'Filter by status (for list)' },
           severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low', 'info'], description: 'Filter by severity (for list)' },
           deviceId: { type: 'string', description: 'Filter by device UUID (for list)' },
-          limit: { type: 'number', description: 'Max results (for list, default 25)' },
+          ...keysetParamSchema(15, 100),
           resolutionNote: { type: 'string', description: 'Note when resolving or suppressing an alert' },
           suppressDuration: { type: 'number', description: 'Hours to suppress the alert (default: 24, max: 720). Use 0 to suppress forever (indefinitely).' }
         },
@@ -106,6 +107,18 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
       const action = input.action as string;
 
       if (action === 'list') {
+        const page = readKeysetArgs('manage_alerts', input, { defaultLimit: 15, maxLimit: 100 });
+        if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
+        const { limit, after, fingerprint } = page;
+        const emptyKeysetPage = (extra: Record<string, unknown> = {}) =>
+          JSON.stringify({
+            ...keysetEnvelope<{ triggeredAtText: string; id: string }>({
+              key: 'alerts', items: [], limit, fingerprint, total: 0,
+              keyOf: (r) => ({ t: r.triggeredAtText, i: r.id }),
+            }),
+            ...extra,
+          });
+
         const conditions: SQL[] = [];
         const orgCondition = auth.orgCondition(alerts.orgId);
         if (orgCondition) conditions.push(orgCondition);
@@ -128,17 +141,28 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         if ((auth.allowedSiteIds || auth.allowedDeviceIds) && listOrgId) {
           const allowed = await resolveSiteAllowedDeviceIds(listOrgId, auth);
           if (!allowed || allowed.length === 0) {
-            return JSON.stringify({ alerts: [], total: 0, showing: 0 });
+            return emptyKeysetPage();
           }
           if (input.deviceId && !allowed.includes(input.deviceId as string)) {
-            return JSON.stringify({ alerts: [], total: 0, showing: 0 });
+            return emptyKeysetPage();
           }
           conditions.push(inArray(alerts.deviceId, allowed));
         }
 
-        const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
+        // `total` reflects the whole filtered set, so it must be computed
+        // BEFORE the keyset predicate (which narrows to "rows after the
+        // cursor") is added to `conditions` below.
+        const countResult = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(alerts)
+          .where(conditions.length > 0 ? and(...conditions) : undefined);
+        const total = Number(countResult[0]?.count ?? 0);
 
-        const results = await db
+        if (after) {
+          conditions.push(keysetWhereCondition(alerts.triggeredAt, alerts.id, after)!);
+        }
+
+        const rows = await db
           .select({
             id: alerts.id,
             status: alerts.status,
@@ -147,21 +171,45 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
             message: alerts.message,
             deviceId: alerts.deviceId,
             triggeredAt: alerts.triggeredAt,
+            // Q1: full microsecond-precision text for the keyset cursor —
+            // NEVER derive the cursor key from the Date-typed `triggeredAt`
+            // above (JS Date rounds to milliseconds).
+            triggeredAtText: sql<string>`${alerts.triggeredAt}::text`,
             acknowledgedAt: alerts.acknowledgedAt,
             resolvedAt: alerts.resolvedAt,
             suppressedUntil: alerts.suppressedUntil
           })
           .from(alerts)
           .where(conditions.length > 0 ? and(...conditions) : undefined)
-          .orderBy(desc(alerts.triggeredAt))
-          .limit(limit);
+          .orderBy(desc(alerts.triggeredAt), desc(alerts.id))
+          .limit(limit + 1);
 
-        const countResult = await db
-          .select({ count: sql<number>`count(*)` })
-          .from(alerts)
-          .where(conditions.length > 0 ? and(...conditions) : undefined);
+        const items = rows.map((row) => {
+          const truncated = !!row.message && row.message.length > 500;
+          return {
+            id: row.id,
+            status: row.status,
+            severity: row.severity,
+            title: row.title,
+            message: truncated ? row.message!.slice(0, 500) : row.message,
+            messageTruncated: truncated,
+            deviceId: row.deviceId,
+            triggeredAt: row.triggeredAt instanceof Date ? row.triggeredAt.toISOString() : row.triggeredAt ?? null,
+            triggeredAtText: row.triggeredAtText,
+            acknowledgedAt: row.acknowledgedAt instanceof Date ? row.acknowledgedAt.toISOString() : row.acknowledgedAt ?? null,
+            resolvedAt: row.resolvedAt instanceof Date ? row.resolvedAt.toISOString() : row.resolvedAt ?? null,
+            suppressedUntil: row.suppressedUntil instanceof Date ? row.suppressedUntil.toISOString() : row.suppressedUntil ?? null,
+          };
+        });
 
-        return JSON.stringify({ alerts: results, total: Number(countResult[0]?.count ?? 0), showing: results.length });
+        const envelope = keysetEnvelope({
+          key: 'alerts', items, limit, fingerprint, total,
+          keyOf: (r) => ({ t: r.triggeredAtText, i: r.id }),
+        });
+        const outAlerts = (envelope.alerts as Array<Record<string, unknown>>).map(
+          ({ triggeredAtText: _triggeredAtText, ...rest }) => rest
+        );
+        return JSON.stringify({ ...envelope, alerts: outAlerts });
       }
 
       if (action === 'get') {

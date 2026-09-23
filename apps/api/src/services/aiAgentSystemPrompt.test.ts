@@ -110,3 +110,9 @@ it('carries no hand-typed tool index any more', () => {
 it('BASE + TAIL stay under 7 KB together', () => {
   expect(Buffer.byteLength(AI_SYSTEM_PROMPT_BASE + AI_SYSTEM_PROMPT_TAIL, 'utf8')).toBeLessThan(7 * 1024);
 });
+
+it('tells the model how to continue a paged result and how to read a handle (A-W05)', () => {
+  expect(AI_SYSTEM_PROMPT_TAIL).toContain('hasMore');
+  expect(AI_SYSTEM_PROMPT_TAIL).toContain('nextCursor');
+  expect(AI_SYSTEM_PROMPT_TAIL).toContain('read_artifact');
+});

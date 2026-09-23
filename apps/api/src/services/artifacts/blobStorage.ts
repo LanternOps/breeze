@@ -72,6 +72,12 @@ export interface BlobStorage {
     maxBytes: number;
   }): Promise<BlobPutResult>;
   openStream(key: string): Promise<NodeJS.ReadableStream>;
+  /**
+   * Inclusive byte range, for paged tool reads (A-W05 D13a). A whole-object
+   * `openStream` per 6 000-char page would be O(n²) egress on a 64 MiB
+   * artifact; this reads exactly the window a caller asked for.
+   */
+  openRange(key: string, start: number, endInclusive: number): Promise<NodeJS.ReadableStream>;
   /** Idempotent: deleting an absent key resolves. */
   delete(key: string): Promise<void>;
 }
@@ -345,6 +351,24 @@ export function createS3BlobStorage(
       }
     },
 
+    async openRange(key, start, endInclusive) {
+      const region = regionOfKey(key);
+      try {
+        const resp = await resolveClient(region).send(
+          new GetObjectCommand({ Bucket: bucketFor(region), Key: key, Range: `bytes=${start}-${endInclusive}` }),
+        );
+        const stream = resp.Body as unknown as Readable | undefined;
+        if (!stream) throw new BlobNotFoundError(key);
+        return stream;
+      } catch (err) {
+        if (err instanceof BlobNotFoundError || err instanceof BlobStorageUnavailableError) throw err;
+        // Same posture as openStream: a genuinely absent key is NOT a
+        // transport fault (#1807/#1808 lesson).
+        if (isS3NotFound(err)) throw new BlobNotFoundError(key);
+        throw unavailable('openRange', err);
+      }
+    },
+
     async delete(key) {
       const region = regionOfKey(key);
       try {
@@ -394,6 +418,11 @@ export function createMemoryBlobStorage(): BlobStorage & {
       const found = objects.get(key);
       if (!found) throw new BlobNotFoundError(key);
       return Readable.from([found.body]);
+    },
+    async openRange(key, start, endInclusive) {
+      const found = objects.get(key);
+      if (!found) throw new BlobNotFoundError(key);
+      return Readable.from([found.body.subarray(Math.max(0, start), endInclusive + 1)]);
     },
     async delete(key) {
       objects.delete(key);

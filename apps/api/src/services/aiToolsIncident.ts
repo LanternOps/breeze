@@ -430,12 +430,17 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
             type: 'string',
             description: 'UUID of the incident',
           },
+          includeEvidenceMetadata: {
+            type: 'boolean',
+            description: 'Include the metadata object per evidence row (default false)',
+          },
         },
         required: ['incidentId'],
       },
     },
     handler: async (input, auth) => {
       if (!input.incidentId) return JSON.stringify({ error: 'incidentId is required' });
+      const includeEvidenceMetadata = input.includeEvidenceMetadata === true;
 
       const incident = await findIncidentWithAccess(input.incidentId as string, auth);
       if (!incident) return JSON.stringify({ error: 'Incident not found or access denied' });
@@ -462,6 +467,9 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
         .where(and(...evidenceConditions))
         .orderBy(desc(incidentEvidence.collectedAt));
 
+      // A-W05 (5c): cap actions/evidence/timeline so a long-running incident
+      // can't blow the page budget; each carries the real count.
+      const timeline = incident.timeline ?? [];
       return JSON.stringify({
         incident: {
           id: incident.id,
@@ -477,8 +485,9 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
           resolvedAt: incident.resolvedAt,
           closedAt: incident.closedAt,
         },
-        timeline: incident.timeline,
-        actions: actions.map((a) => ({
+        timeline: timeline.slice(0, 100),
+        timelineCount: timeline.length,
+        actions: actions.slice(0, 50).map((a) => ({
           id: a.id,
           actionType: a.actionType,
           description: a.description,
@@ -489,15 +498,17 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
           reversed: a.reversed,
           executedAt: a.executedAt,
         })),
-        evidence: evidence.map((e) => ({
+        actionCount: actions.length,
+        evidence: evidence.slice(0, 50).map((e) => ({
           id: e.id,
           evidenceType: e.evidenceType,
           description: e.description,
           collectedAt: e.collectedAt,
           collectedBy: e.collectedBy,
           hash: e.hash,
-          metadata: e.metadata,
+          ...(includeEvidenceMetadata ? { metadata: e.metadata } : {}),
         })),
+        evidenceCount: evidence.length,
       });
     },
   });

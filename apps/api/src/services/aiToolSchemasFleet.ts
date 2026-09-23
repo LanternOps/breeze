@@ -5,6 +5,7 @@
  */
 
 import { z } from 'zod';
+import { pageZodShape } from './aiToolPagination';
 
 const uuid = z.string().guid();
 
@@ -52,7 +53,7 @@ export const fleetToolInputSchemas: Record<string, z.ZodType> = {
     scheduleTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
     rebootPolicy: z.enum(['if_required', 'always', 'never']).optional(),
     sources: z.array(z.enum(['os', 'third_party', 'custom'])).optional(),
-    limit: z.number().int().min(1).max(100).optional(),
+    ...pageZodShape(25, 100),
   }).refine(
     (d) => {
       // rollback keeps a hard patchId requirement (it also needs deviceIds, a

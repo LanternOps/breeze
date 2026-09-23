@@ -161,7 +161,7 @@ describe('query_audit_log — details.deviceId site narrowing (R3b residual)', (
 
     const raw = await withDbAccessContext(
       { scope: 'organization', orgId: org.id, accessibleOrgIds: [org.id] },
-      async () => handler({ action: marker, hoursBack: 168, limit: 100 }, auth),
+      async () => handler({ action: marker, hoursBack: 168, limit: 100, includeDetails: true }, auth),
     );
     const parsed = JSON.parse(raw);
     const reasons = (parsed.entries ?? []).map((e: any) => e.details?.reason ?? e.resourceType);
@@ -220,7 +220,7 @@ describe('query_audit_log — details.deviceId site narrowing (R3b residual)', (
 
     const raw = await withDbAccessContext(
       { scope: 'organization', orgId: org.id, accessibleOrgIds: [org.id] },
-      async () => handler({ action: marker, hoursBack: 168, limit: 100 }, auth),
+      async () => handler({ action: marker, hoursBack: 168, limit: 100, includeDetails: true }, auth),
     );
     const parsed = JSON.parse(raw);
     const reasons = (parsed.entries ?? []).map((e: any) => e.details?.reason);
@@ -259,7 +259,7 @@ describe('query_audit_log — details.deviceId site narrowing (R3b residual)', (
 
     const raw = await withDbAccessContext(
       { scope: 'organization', orgId: org.id, accessibleOrgIds: [org.id] },
-      async () => handler({ action: marker, hoursBack: 168, limit: 100 }, auth),
+      async () => handler({ action: marker, hoursBack: 168, limit: 100, includeDetails: true }, auth),
     );
     const parsed = JSON.parse(raw);
     const reasons = (parsed.entries ?? []).map((e: any) => e.details?.reason);
@@ -287,7 +287,7 @@ describe('query_audit_log — details.deviceId site narrowing (R3b residual)', (
 
     const raw = await withDbAccessContext(
       { scope: 'organization', orgId: org.id, accessibleOrgIds: [org.id] },
-      async () => handler({ action: marker, hoursBack: 168, limit: 100 }, auth),
+      async () => handler({ action: marker, hoursBack: 168, limit: 100, includeDetails: true }, auth),
     );
     const parsed = JSON.parse(raw);
     const reasons = (parsed.entries ?? []).map((e: any) => e.details?.reason);

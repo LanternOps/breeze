@@ -8,6 +8,7 @@
  * - remediate_sensitive_data (Tier 3): Queue or apply sensitive-data remediation
  */
 
+import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { db } from '../db';
 import {
   devices,
@@ -21,6 +22,7 @@ import type { AiTool } from './aiTools';
 import { verifyDeviceAccess } from './aiTools';
 import {
   getLatestSecurityPostureForDevice,
+  getSecurityPostureCounts,
   listLatestSecurityPosture,
 } from './securityPosture';
 import { publishEvent } from './eventBus';
@@ -181,13 +183,15 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
           maxScore: { type: 'number', description: 'Filter to scores less than or equal to this value (0-100)' },
           riskLevel: { type: 'string', enum: ['low', 'medium', 'high', 'critical'], description: 'Filter by risk level' },
           includeRecommendations: { type: 'boolean', description: 'Include recommendation payloads (default true)' },
-          limit: { type: 'number', description: 'Maximum device results (default 100, max 500)' }
+          ...pageParamSchema(5, 500),
         }
       }
     },
     handler: async (input, auth) => {
       const includeRecommendations = input.includeRecommendations !== false;
-      const limit = Math.min(Math.max(1, Number(input.limit) || 100), 500);
+      const page = readPageArgs('get_security_posture', input, { defaultLimit: 5, maxLimit: 500 });
+      if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
+      const { limit, offset, fingerprint } = page;
 
       if (typeof input.deviceId === 'string' && input.deviceId) {
         const access = await verifyDeviceAccess(input.deviceId, auth);
@@ -235,6 +239,15 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
       // caller's own devices sorted past the cut.
       const postureOrgId = (typeof input.orgId === 'string' && input.orgId) ? input.orgId : getOrgId(auth);
       const allowedDeviceIds = postureOrgId ? await resolveSiteAllowedDeviceIds(postureOrgId, auth) : null;
+
+      // `listLatestSecurityPosture` internally clamps its own `limit` to
+      // 2000 rows (worst-first), so no offset beyond that ceiling can ever
+      // be honored — cap the offset itself rather than silently returning
+      // an empty page for an in-range-looking request.
+      const POSTURE_OFFSET_CEILING = 2000;
+      const cappedOffset = Math.min(offset, Math.max(0, POSTURE_OFFSET_CEILING - limit));
+      const atOffsetCeiling = cappedOffset + limit >= POSTURE_OFFSET_CEILING;
+
       if (allowedDeviceIds !== null && allowedDeviceIds.length === 0) {
         return JSON.stringify({
           summary: {
@@ -242,40 +255,57 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
             mediumRiskDevices: 0, highRiskDevices: 0, criticalRiskDevices: 0
           },
           worstDevices: [],
-          devices: [],
+          ...pageEnvelope({ key: 'devices', items: [], limit, offset: cappedOffset, fingerprint, total: 0 }),
           note: SITE_SCOPE_EMPTY_NOTE
         });
       }
 
-      const postures = await listLatestSecurityPosture({
+      const postureFilter = {
         orgIds,
         deviceIds: allowedDeviceIds ?? undefined,
         minScore: typeof input.minScore === 'number' ? input.minScore : undefined,
         maxScore: typeof input.maxScore === 'number' ? input.maxScore : undefined,
         riskLevel: input.riskLevel as 'low' | 'medium' | 'high' | 'critical' | undefined,
-        limit
-      });
+      };
+
+      // `listLatestSecurityPosture` has no offset parameter, so the page is
+      // sliced client-side out of a bounded over-fetch (offset + limit + 1
+      // rows) — never the whole fleet (D14/Task 5a table). `counts` runs the
+      // SAME scope/filter conditions as a SQL aggregate with no limit/offset,
+      // so the fleet summary is exact over the whole filtered set instead of
+      // being reduced over just the returned worst-first page (fix 1).
+      const [posturesFetched, counts] = await Promise.all([
+        listLatestSecurityPosture({ ...postureFilter, limit: cappedOffset + limit + 1 }),
+        getSecurityPostureCounts(postureFilter),
+      ]);
+      const postures = posturesFetched.slice(cappedOffset, cappedOffset + limit + 1);
 
       const rows = includeRecommendations
         ? postures
         : postures.map((item) => ({ ...item, recommendations: [] }));
 
-      const total = rows.length;
+      const pageRows = rows.length > limit ? rows.slice(0, limit) : rows;
       const summary = {
-        totalDevices: total,
-        averageScore: total
-          ? Math.round(rows.reduce((sum, row) => sum + row.overallScore, 0) / total)
-          : 0,
-        lowRiskDevices: rows.filter((row) => row.riskLevel === 'low').length,
-        mediumRiskDevices: rows.filter((row) => row.riskLevel === 'medium').length,
-        highRiskDevices: rows.filter((row) => row.riskLevel === 'high').length,
-        criticalRiskDevices: rows.filter((row) => row.riskLevel === 'critical').length
+        totalDevices: counts.total,
+        averageScore: counts.averageScore,
+        lowRiskDevices: counts.lowRiskDevices,
+        mediumRiskDevices: counts.mediumRiskDevices,
+        highRiskDevices: counts.highRiskDevices,
+        criticalRiskDevices: counts.criticalRiskDevices
       };
+
+      const envelope = pageEnvelope({ key: 'devices', items: rows, limit, offset: cappedOffset, fingerprint, total: counts.total });
+      if (atOffsetCeiling) {
+        // Honest at the ceiling: no request can ever move this window
+        // further, regardless of how large `total` is.
+        envelope.hasMore = false;
+        envelope.nextCursor = null;
+      }
 
       return JSON.stringify({
         summary,
-        worstDevices: rows.slice(0, Math.min(10, rows.length)),
-        devices: rows
+        worstDevices: pageRows.slice(0, Math.min(10, pageRows.length)),
+        ...envelope
       });
     }
   });

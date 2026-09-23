@@ -1,5 +1,11 @@
-import { describe, expect, it } from 'vitest';
-import { MAX_TOOL_RESULT_CHARS, compactToolResultForChat, redactSensitiveToolInput } from './aiToolOutput';
+import { afterEach, describe, expect, it } from 'vitest';
+import {
+  MAX_TOOL_RESULT_CHARS,
+  SENTINEL_HINTS,
+  compactToolResultForChat,
+  redactSensitiveToolInput,
+  setToolPaginationHintResolver,
+} from './aiToolOutput';
 
 // #3521: a truncated array carries a trailing in-band sentinel string. When a
 // test cross-checks kept-vs-dropped counts, exclude that synthetic element.
@@ -636,5 +642,144 @@ describe('compactToolResultForChat — capture envelope (execution-plane W01, sp
   it('honours an explicit maxChars', () => {
     const out = compactToolResultForChat('query_devices', JSON.stringify({ rows: Array.from({ length: 400 }, (_, i) => ({ i, pad: 'p'.repeat(40) })) }), 1_000);
     expect(out.length).toBeLessThanOrEqual(1_000);
+  });
+});
+
+describe('registry-aware truncation guidance (A-W05 D12)', () => {
+  afterEach(() => setToolPaginationHintResolver(() => 'none'));
+
+  const bigList = (key: string) => JSON.stringify({ [key]: Array.from({ length: 400 }, (_, i) => ({ id: i, name: `row-${i}`, note: 'x'.repeat(60) })) });
+
+  it('tells a cursor-capable tool to continue with nextCursor, in the sentinel and in _chat.nextStep', () => {
+    setToolPaginationHintResolver((name) => (name === 'paged_tool' ? 'cursor' : 'none'));
+    const out = JSON.parse(compactToolResultForChat('paged_tool', bigList('rows'))) as { rows: unknown[]; _chat: { nextStep: string } };
+    expect(out.rows.at(-1)).toMatch(/^\.\.\.\[truncated: \d+ more items omitted\. Call again with the nextCursor value\]$/);
+    expect(out._chat.nextStep).toBe(SENTINEL_HINTS.cursor);
+  });
+
+  it('tells a limit-only tool to shrink the page, and a tool with neither to narrow with filters', () => {
+    setToolPaginationHintResolver((name) => (name === 'limit_tool' ? 'limit' : 'none'));
+    const limited = JSON.parse(compactToolResultForChat('limit_tool', bigList('rows'))) as { rows: unknown[] };
+    expect(limited.rows.at(-1)).toMatch(/Pass a smaller limit or add filters\]$/);
+    const bare = JSON.parse(compactToolResultForChat('bare_tool', bigList('rows'))) as { rows: unknown[]; _chat: { nextStep: string } };
+    expect(bare.rows.at(-1)).toMatch(/Narrow the query with filters\]$/);
+    expect(bare._chat.nextStep).toBe(SENTINEL_HINTS.none);
+  });
+
+  it('still recognises the legacy sentinel on re-compaction (idempotent, no double count)', () => {
+    const raw = JSON.stringify({ rows: [...Array.from({ length: 10 }, (_, i) => ({ i })), '...[truncated: 77 more items omitted. Use pagination or the REST API]'] });
+    const once = compactToolResultForChat('bare_tool', raw);
+    expect(compactToolResultForChat('bare_tool', once)).toBe(once);
+  });
+
+  it('puts nextStep on the digest too', () => {
+    setToolPaginationHintResolver(() => 'cursor');
+    const huge = JSON.stringify({ blob: 'y'.repeat(40_000).split('').map((c, i) => ({ i, c })) });
+    const out = JSON.parse(compactToolResultForChat('paged_tool', huge, 400)) as { summarized?: boolean; _chat: { nextStep?: string } };
+    expect(out.summarized).toBe(true);
+    expect(out._chat.nextStep).toBe(SENTINEL_HINTS.cursor);
+  });
+
+  it('carries the top-level paging envelope keys through the digest (Task 0 — extreme page, every varchar at schema max)', () => {
+    setToolPaginationHintResolver(() => 'cursor');
+    // Simulate the worst realistic page a keyset-paged tool can emit: every
+    // varchar-ish field at its schema max, still overflowing every compaction
+    // tier, so the digest branch (row-less, `summarized: true`) fires. Without
+    // this fix, the digest drops `hasMore`/`nextCursor` exactly when the model
+    // most needs them to continue paging.
+    const MAX_VARCHAR = 'v'.repeat(255);
+    const raw = JSON.stringify({
+      total: 48213,
+      totalMode: 'exact',
+      showing: 100,
+      limit: 100,
+      offset: 0,
+      hasMore: true,
+      nextCursor: 'eyJ0IjoiMjAyNi0wOS0yMlQwMDowMDowMC4wMDAwMDAiLCJpIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxIn0=',
+      count: 100,
+      rows: Array.from({ length: 100 }, (_, i) => ({
+        id: `row-${i}`,
+        title: MAX_VARCHAR,
+        message: MAX_VARCHAR,
+        hostname: MAX_VARCHAR,
+        note: MAX_VARCHAR,
+      })),
+    });
+
+    const out = JSON.parse(compactToolResultForChat('paged_tool', raw)) as Record<string, unknown> & {
+      summarized?: boolean;
+      _chat: { nextStep?: string };
+    };
+
+    expect(out.summarized).toBe(true);
+    expect(out.total).toBe(48213);
+    expect(out.totalMode).toBe('exact');
+    expect(out.showing).toBe(100);
+    expect(out.limit).toBe(100);
+    expect(out.offset).toBe(0);
+    expect(out.hasMore).toBe(true);
+    expect(out.nextCursor).toBe('eyJ0IjoiMjAyNi0wOS0yMlQwMDowMDowMC4wMDAwMDAiLCJpIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxIn0=');
+    expect(out.count).toBe(100);
+    expect(out._chat.nextStep).toBe(SENTINEL_HINTS.cursor);
+  });
+
+  it('does not fire nextStep on a system_cleanup outputTail cut (Q8 — no array items were dropped)', () => {
+    setToolPaginationHintResolver(() => 'cursor');
+    const out = JSON.parse(compactToolResultForChat('system_cleanup', JSON.stringify({
+      cleanupRunId: 'run-1',
+      freedBytes: 1024,
+      actions: [{ id: 'win_dism_component_cleanup', status: 'completed', outputTail: 'x'.repeat(20_000) }],
+    }))) as { actions: Array<{ outputTailTruncated?: boolean }>; _chat?: { nextStep?: string } };
+    expect(out.actions[0]?.outputTailTruncated).toBe(true);
+    expect(out._chat?.nextStep).toBeUndefined();
+  });
+
+  it('DOES fire nextStep on a system_cleanup catalog truncation (real array items dropped)', () => {
+    setToolPaginationHintResolver(() => 'limit');
+    const actions = Array.from({ length: 80 }, (_, i) => ({ id: `action_${i}`, label: `Action ${i}` }));
+    const out = JSON.parse(compactToolResultForChat('system_cleanup', JSON.stringify({ catalog: { actions } }))) as {
+      catalog: { truncatedActionCount: number };
+      _chat?: { nextStep?: string };
+    };
+    expect(out.catalog.truncatedActionCount).toBeGreaterThan(0);
+    expect(out._chat?.nextStep).toBe(SENTINEL_HINTS.limit);
+  });
+});
+
+describe('character-window fields survive compaction intact (A-W05 Q3)', () => {
+  it('never truncates a `text`/`nextOffset` window even under heavy pressure from a sibling field, and preserves escape-heavy content byte-for-byte', () => {
+    const windowText = 'line one\nline "two" with quotes\\and a backslash\r\nline three\ttabbed';
+    const raw = JSON.stringify({
+      text: windowText,
+      nextOffset: 4096,
+      hasMore: true,
+      // Oversized sibling forces compaction tiers to engage.
+      otherField: 'z'.repeat(30_000),
+    });
+    const out = JSON.parse(compactToolResultForChat('read_artifact', raw)) as { text: string; nextOffset: number; hasMore: boolean };
+    expect(out.text).toBe(windowText);
+    expect(out.nextOffset).toBe(4096);
+    expect(out.hasMore).toBe(true);
+  });
+
+  it('never truncates a `stdout`/`stdoutNextOffset` window inside a command-shaped result, even with escape-heavy content', () => {
+    const stdoutText = 'result: {"nested":"json-looking but not parseable\\n"} tail\r\n\twith\ttabs "quoted"';
+    const raw = JSON.stringify({
+      status: 'success',
+      exitCode: 0,
+      stdout: stdoutText,
+      stdoutNextOffset: 6000,
+      stdoutHasMore: true,
+      stderr: 'z'.repeat(30_000), // oversized sibling forces compaction tiers to engage
+    });
+    const out = JSON.parse(compactToolResultForChat('get_script_execution', raw)) as { stdout: string; stdoutNextOffset: number };
+    expect(out.stdout).toBe(stdoutText);
+    expect(out.stdoutNextOffset).toBe(6000);
+  });
+
+  it('still compacts a plain `text` field that has no nextOffset/hasMore sibling (not a window)', () => {
+    const raw = JSON.stringify({ text: 'w'.repeat(30_000), other: 'z'.repeat(30_000) });
+    const out = JSON.parse(compactToolResultForChat('some_tool', raw)) as { text: string; _chat?: { outputCompacted?: boolean } };
+    expect(out.text.length).toBeLessThan(30_000);
   });
 });

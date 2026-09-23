@@ -6,6 +6,7 @@
  * Each tool wraps existing DB schema and service logic with org-scoped isolation.
  */
 
+import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import type Anthropic from '@anthropic-ai/sdk';
 import { db } from '../db';
 import { pgErrorCode, pgErrorConstraint } from '../utils/pgErrors';
@@ -815,7 +816,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           targetConfig: { type: 'object', description: 'Target configuration (for create)' },
           rolloutConfig: { type: 'object', description: 'Rollout configuration: batch size, failure threshold (for create)' },
           schedule: { type: 'object', description: 'Schedule configuration (for create)' },
-          limit: { type: 'number', description: 'Max results (default 25)' },
+          limit: { type: 'number', description: 'Max results (default 25, max 100)' },
         },
         required: ['action'],
       },
@@ -1105,7 +1106,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           eq(patches.externalId, patchName),
         ),
       ))
-      .orderBy(desc(patches.createdAt))
+      .orderBy(desc(patches.createdAt), desc(patches.id))
       .limit(6);
 
     if (rows.length === 0) {
@@ -1174,7 +1175,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           scheduleTime: { type: 'string', description: 'Time to run scans in HH:MM format (for setup_auto_approval, default: 02:00)' },
           rebootPolicy: { type: 'string', enum: ['if_required', 'always', 'never'], description: 'Reboot policy after patching (for setup_auto_approval, default: if_required)' },
           sources: { type: 'array', items: { type: 'string', enum: ['os', 'third_party', 'custom'] }, description: 'Patch sources to include (for setup_auto_approval, default: ["os"])' },
-          limit: { type: 'number', description: 'Max results (default 25)' },
+          ...pageParamSchema(25, 100),
         },
         required: ['action'],
       },
@@ -1223,7 +1224,9 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (!orgId) return JSON.stringify({ error: 'Organization context required' });
 
         const deviceId = typeof input.deviceId === 'string' ? input.deviceId : undefined;
-        const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
+        const page = readPageArgs('manage_patches', input, { defaultLimit: 25, maxLimit: 100 });
+        if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
+        const { limit, offset, fingerprint } = page;
 
         const catalogConds: SQL[] = [];
         if (typeof input.source === 'string') catalogConds.push(eq(patches.source, input.source as any));
@@ -1245,7 +1248,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         // only its own devices'. `null` = unrestricted (no narrowing, no query).
         const patchListAllowed = await resolveSiteAllowedDeviceIds(orgId, auth);
         if (patchListAllowed && patchListAllowed.length === 0) {
-          return JSON.stringify({ patches: [], showing: 0, note: SITE_SCOPE_EMPTY_NOTE });
+          return JSON.stringify({ ...pageEnvelope({ key: 'patches', items: [], limit, offset, fingerprint }), note: SITE_SCOPE_EMPTY_NOTE });
         }
         const patchListScope: SQL[] = patchListAllowed ? [inArray(devicePatches.deviceId, patchListAllowed)] : [];
 
@@ -1255,9 +1258,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
             .from(devicePatches)
             .innerJoin(patches, eq(devicePatches.patchId, patches.id))
             .where(and(eq(devicePatches.orgId, orgId), eq(devicePatches.deviceId, deviceId), ...patchListScope, ...catalogConds))
-            .orderBy(desc(patches.createdAt))
-            .limit(limit);
-          return JSON.stringify({ patches: rows, showing: rows.length, scope: { deviceId } });
+            .orderBy(desc(patches.createdAt), desc(patches.id))
+            .limit(limit + 1)
+            .offset(offset);
+          return JSON.stringify({ ...pageEnvelope({ key: 'patches', items: rows, limit, offset, fingerprint }), scope: { deviceId } });
         }
 
         // Org-wide: distinct catalog entries present on any of the org's
@@ -1268,10 +1272,11 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           .from(patches)
           .innerJoin(devicePatches, eq(devicePatches.patchId, patches.id))
           .where(and(eq(devicePatches.orgId, orgId), ...patchListScope, ...catalogConds))
-          .orderBy(desc(patches.createdAt))
-          .limit(limit);
+          .orderBy(desc(patches.createdAt), desc(patches.id))
+          .limit(limit + 1)
+          .offset(offset);
 
-        return JSON.stringify({ patches: rows, showing: rows.length, scope: { orgId } });
+        return JSON.stringify({ ...pageEnvelope({ key: 'patches', items: rows, limit, offset, fingerprint }), scope: { orgId } });
       }
 
       if (action === 'compliance') {
@@ -1677,7 +1682,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           siteId: { type: 'string', description: 'Site UUID filter (for list) or scope (for create)' },
           filterConditions: { type: 'object', description: 'Dynamic filter conditions (for create/update/preview)' },
           deviceIds: { type: 'array', items: { type: 'string' }, description: 'Device UUIDs (for add_devices/remove_devices)' },
-          limit: { type: 'number', description: 'Max results (default 25)' },
+          limit: { type: 'number', description: 'Max results (default 25, max 200)' },
         },
         required: ['action'],
       },
@@ -2019,7 +2024,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           suppressAlerts: { type: 'boolean', description: 'Suppress alerts during window' },
           suppressPatching: { type: 'boolean', description: 'Suppress patching during window' },
           suppressAutomations: { type: 'boolean', description: 'Suppress automations during window' },
-          limit: { type: 'number', description: 'Max results (default 25)' },
+          limit: { type: 'number', description: 'Max results (default 25, max 100)' },
         },
         required: ['action'],
       },
@@ -2283,7 +2288,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           onFailure: { type: 'string', enum: ['stop', 'continue', 'notify'], description: 'Failure behavior' },
           enabled: { type: 'boolean', description: 'Enable state' },
           triggerType: { type: 'string', enum: ['schedule', 'event', 'webhook', 'manual'], description: 'Filter by trigger type (for list)' },
-          limit: { type: 'number', description: 'Max results (default 25)' },
+          limit: { type: 'number', description: 'Max results (default 25, max 100)' },
         },
         required: ['action'],
       },
@@ -2620,7 +2625,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           ruleId: { type: 'string', description: 'Alert rule UUID (required for get_rule/test_rule)' },
           category: { type: 'string', description: 'Filter templates by category (for list_templates)' },
           severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low', 'info'], description: 'Filter by severity (for list_templates/alert_summary)' },
-          limit: { type: 'number', description: 'Max results (default 25)' },
+          limit: { type: 'number', description: 'Max results (default 25, max 100)' },
         },
         required: ['action'],
       },
@@ -2851,7 +2856,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           config: { type: 'object', description: 'Report configuration (filters, options)' },
           schedule: { type: 'string', enum: ['one_time', 'daily', 'weekly', 'monthly'], description: 'Schedule (for create/update)' },
           format: { type: 'string', enum: ['csv', 'pdf', 'excel'], description: 'Output format (for create/update)' },
-          limit: { type: 'number', description: 'Max results (default 25)' },
+          limit: { type: 'number', description: 'Max results (default 25, max 100)' },
         },
         required: ['action'],
       },

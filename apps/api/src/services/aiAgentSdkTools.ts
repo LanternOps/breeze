@@ -38,6 +38,7 @@ import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
 import { deliveryToolShape } from './aiToolSchemas';
 import { aiScriptAuthoringEnabled } from '../config/env';
+import { keysetZodShape, pageZodShape } from './aiToolPagination';
 import { captureMessage } from './sentry';
 import {
   m365LookupUserHandler, m365RecentSigninsHandler, m365ListGroupMembershipsHandler,
@@ -254,6 +255,8 @@ export const TOOL_TIERS = {
   // Execution plane (spec §5.7) — reads nothing the caller cannot already read;
   // it just refuses to throw the result away. Tier 1 like its source tools.
   export_dataset: 1,
+  // A-W05 (D13a): reads only the caller's own already-captured artifacts.
+  read_artifact: 1,
   // Execution plane W04 — sandbox workspace tools. Tier 1: they execute
   // nothing on the fleet. NOT read-only (see TIER1_NON_READONLY_TOOLS in
   // aiGuardrails.ts) — the allowlist is what gates them. A tool absent from
@@ -1423,7 +1426,7 @@ export function buildBreezeSdkTools(
         siteId: z.string().guid().optional(),
         search: z.string().max(200).optional(),
         tags: z.array(z.string().max(100)).max(20).optional(),
-        limit: z.number().int().min(1).max(100).optional(),
+        ...pageZodShape(25, 100),
       },
       makeHandler('query_devices', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -1453,6 +1456,7 @@ export function buildBreezeSdkTools(
       {
         deviceId: uuid.optional(),
         limit: z.number().int().min(1).max(200).optional(),
+        maxSessionsPerDevice: z.number().int().min(1).max(50).optional(),
         idleThresholdMinutes: z.number().int().min(1).max(1440).optional(),
       },
       makeHandler('get_active_users', getAuth, onPreToolUse, onPostToolUse)
@@ -1486,7 +1490,7 @@ export function buildBreezeSdkTools(
         status: z.enum(['active', 'acknowledged', 'resolved', 'suppressed']).optional(),
         severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
         deviceId: uuid.optional(),
-        limit: z.number().int().min(1).max(100).optional(),
+        ...keysetZodShape(15, 100),
         resolutionNote: z.string().max(1000).optional(),
       },
       makeHandler('manage_alerts', getAuth, onPreToolUse, onPostToolUse)
@@ -1655,6 +1659,9 @@ export function buildBreezeSdkTools(
       registryDescription('get_script_execution'),
       {
         executionId: uuid,
+        stdoutOffset: z.number().int().min(0).optional(),
+        stdoutMaxChars: z.number().int().min(1).max(5000).optional(),
+        stderrMaxChars: z.number().int().min(1).max(8000).optional(),
       },
       makeHandler('get_script_execution', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -1675,8 +1682,10 @@ export function buildBreezeSdkTools(
       registryDescription('security_scan'),
       {
         deviceId: uuid,
-        action: z.enum(['scan', 'status', 'quarantine', 'remove', 'restore']),
+        action: z.enum(['scan', 'status', 'quarantine', 'remove', 'restore', 'vulnerabilities']),
         threatId: z.string().max(255).optional(),
+        severity: z.enum(['critical', 'high', 'medium', 'low']).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
       },
       makeHandler('security_scan', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -1691,7 +1700,7 @@ export function buildBreezeSdkTools(
         maxScore: z.number().int().min(0).max(100).optional(),
         riskLevel: z.enum(['low', 'medium', 'high', 'critical']).optional(),
         includeRecommendations: z.boolean().optional(),
-        limit: z.number().int().min(1).max(500).optional(),
+        ...pageZodShape(5, 500),
       },
       makeHandler('get_security_posture', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -1706,7 +1715,8 @@ export function buildBreezeSdkTools(
         osType: z.enum(['windows', 'macos', 'linux']).optional(),
         minScore: z.number().int().min(0).max(100).optional(),
         maxScore: z.number().int().min(0).max(100).optional(),
-        limit: z.number().int().min(1).max(500).optional(),
+        includeSummary: z.boolean().optional(),
+        ...pageZodShape(12, 500),
       },
       makeHandler('get_cis_compliance', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -1871,7 +1881,8 @@ export function buildBreezeSdkTools(
         resourceId: uuid.optional(),
         actorType: z.enum(ACTOR_TYPES).optional(),
         hoursBack: z.number().int().min(1).max(168).optional(),
-        limit: z.number().int().min(1).max(100).optional(),
+        ...keysetZodShape(25, 100),
+        includeDetails: z.boolean().optional(),
       },
       makeHandler('query_audit_log', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -1885,7 +1896,8 @@ export function buildBreezeSdkTools(
         endTime: z.string().datetime({ offset: true }).optional(),
         changeType: z.enum(['software', 'service', 'startup', 'network', 'scheduled_task', 'user_account', 'hardware', 'os_version']).optional(),
         changeAction: z.enum(['added', 'removed', 'modified', 'updated']).optional(),
-        limit: z.number().int().min(1).max(500).optional(),
+        ...keysetZodShape(25, 500),
+        includeValues: z.boolean().optional(),
       },
       makeHandler('query_change_log', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -1985,7 +1997,7 @@ export function buildBreezeSdkTools(
         scheduleTime: z.string().optional(),
         rebootPolicy: z.enum(['if_required', 'always', 'never']).optional(),
         sources: z.array(z.enum(['os', 'third_party', 'custom'])).optional(),
-        limit: z.number().int().min(1).max(100).optional(),
+        ...pageZodShape(25, 100),
       },
       makeHandler('manage_patches', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -2013,6 +2025,7 @@ export function buildBreezeSdkTools(
       {
         deviceId: uuid,
         status: z.enum(['open', 'patched', 'mitigated', 'accepted', 'all']).optional(),
+        ...pageZodShape(45, 200),
       },
       makeHandler('get_device_vulnerabilities', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -2216,7 +2229,8 @@ export function buildBreezeSdkTools(
         startTime: z.string().datetime({ offset: true }).optional(),
         endTime: z.string().datetime({ offset: true }).optional(),
         message: z.string().max(500).optional(),
-        limit: z.number().int().min(1).max(500).optional(),
+        ...keysetZodShape(18, 500),
+        includeFields: z.boolean().optional(),
       },
       makeHandler('search_agent_logs', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -2280,6 +2294,17 @@ export function buildBreezeSdkTools(
         maxRows: z.number().optional(),
       },
       makeHandler('export_dataset', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'read_artifact',
+      registryDescription('read_artifact'),
+      {
+        handle: z.string().guid().describe('Artifact handle (UUID) from artifact.handle'),
+        offset: z.number().int().min(0).optional().describe('Byte offset to start from; pass nextOffset to continue (default 0)'),
+        maxChars: z.number().int().min(1).max(6000).optional().describe('Max characters to return (default 4000, max 6000)'),
+      },
+      makeHandler('read_artifact', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -2349,7 +2374,7 @@ export function buildBreezeSdkTools(
       registryDescription('list_configuration_policies'),
       {
         status: z.enum(['active', 'inactive', 'archived']).optional(),
-        limit: z.number().int().min(1).max(100).optional(),
+        ...pageZodShape(20, 100),
       },
       makeHandler('list_configuration_policies', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -2539,6 +2564,8 @@ export function buildBreezeSdkTools(
       registryDescription('list_playbooks'),
       {
         category: z.enum(['disk', 'service', 'memory', 'patch', 'security', 'all']).optional(),
+        includeSteps: z.boolean().optional(),
+        ...pageZodShape(25, 100),
       },
       makeHandler('list_playbooks', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -2707,7 +2734,7 @@ export function buildBreezeSdkTools(
 
     tool(
       'list_ai_agents', registryDescription('list_ai_agents'),
-      { includeDisabled: z.boolean().optional() },
+      { includeDisabled: z.boolean().optional(), ...pageZodShape(25, 100) },
       makeHandler('list_ai_agents', getAuth, onPreToolUse, onPostToolUse)
     ),
     tool(
@@ -2761,7 +2788,7 @@ export function buildBreezeSdkTools(
       registryDescription('list_organizations'),
       {
         search: z.string().max(255).optional(),
-        limit: z.number().int().min(1).max(100).optional(),
+        ...pageZodShape(25, 100),
       },
       makeHandler('list_organizations', getAuth, onPreToolUse, onPostToolUse)
     ),

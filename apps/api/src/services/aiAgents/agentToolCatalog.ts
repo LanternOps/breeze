@@ -366,6 +366,8 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
 
   // ---- workspace ----
   export_dataset: 'workspace',
+  // A-W05 (D13a): reads a stored tool-result artifact back.
+  read_artifact: 'workspace',
   // ---- workspace (execution plane W04) ----
   workspace_stage: 'workspace',
   workspace_run: 'workspace',

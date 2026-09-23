@@ -9,6 +9,8 @@ type CompactStats = {
   objectKeysDropped: number;
   depthLimited: number;
   sensitiveFieldsOmitted: number;
+  /** A-W05 (D12): the guidance text for THIS tool's current paging shape. */
+  sentinelHint: string;
 };
 
 type CompactConfig = {
@@ -56,6 +58,29 @@ const COMPACTION_TIERS: CompactConfig[] = [
  */
 export const MAX_TOOL_RESULT_CHARS = 8_000;
 const RAW_PREVIEW_CHARS = 2_000;
+
+/**
+ * A-W05 (Q3/fix 4): shrinks `text` in whole Unicode CODE POINTS (never
+ * splitting a surrogate pair) until `JSON.stringify(text).length` — what the
+ * window actually costs once escaped and quoted in the tool's response — is
+ * at most `budgetChars`. A window sized purely by raw character count can
+ * still be escape-heavy (control characters, backslashes cost up to 6x their
+ * raw count once escaped) and blow the overall compaction budget, which
+ * replaces the whole result with a digest and silently drops text the
+ * caller was told (via its `nextOffset`/`stdoutNextOffset` sibling) it could
+ * read. Each removed code point drops the escaped length by at least 1, so
+ * this always terminates.
+ */
+export function shrinkToJsonBudget(text: string, budgetChars: number): string {
+  let chars = Array.from(text);
+  let escapedLength = JSON.stringify(chars.join('')).length;
+  while (chars.length > 0 && escapedLength > budgetChars) {
+    const overshoot = escapedLength - budgetChars;
+    chars = chars.slice(0, Math.max(0, chars.length - overshoot));
+    escapedLength = JSON.stringify(chars.join('')).length;
+  }
+  return chars.join('');
+}
 const STDOUT_TEXT_CHARS = 6_000;
 const STDERR_TEXT_CHARS = 1_200;
 const MAX_DISK_CANDIDATES = 60;
@@ -100,15 +125,70 @@ function truncateText(value: string, maxChars: number, stats: CompactStats): str
   return `${base.slice(0, maxChars)}\n...[truncated ${omitted} chars]`;
 }
 
+// A-W05 (D12): the guidance appended to a truncated ARRAY must be something the
+// tool can honour. The hub injects the resolver (setToolPaginationHintResolver)
+// so this module never imports the registry — importing aiToolNames here would
+// pull the extension registry (Hono + Ajv) into every worker that imports this
+// file for MAX_TOOL_RESULT_CHARS (#4086, workerEntrypointClosure contract) and
+// would read an EMPTY map in any process that loads the compactor without the hub.
+export type ToolPaginationHint = 'cursor' | 'limit' | 'none';
+export const SENTINEL_HINTS: Readonly<Record<ToolPaginationHint, string>> = {
+  cursor: 'Call again with the nextCursor value',
+  limit: 'Pass a smaller limit or add filters',
+  none: 'Narrow the query with filters',
+};
+const LEGACY_SENTINEL_HINT = 'Use pagination or the REST API';
+let paginationHintResolver: (toolName: string) => ToolPaginationHint = () => 'none';
+export function setToolPaginationHintResolver(resolver: (toolName: string) => ToolPaginationHint): void {
+  paginationHintResolver = resolver;
+}
+// Q8: the resolver is injected by the tool hub and must never crash the
+// compactor — a hub that has not installed a resolver yet (or one whose
+// resolver throws) degrades to 'none' rather than losing the tool result.
+function resolvePaginationHint(toolName: string): ToolPaginationHint {
+  try {
+    return paginationHintResolver(toolName);
+  } catch {
+    return 'none';
+  }
+}
+function escapeForRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 // #3521: the in-band marker appended to a truncated ARRAY, mirroring the string
 // `[truncated N chars]` marker. The ANCHORED regex matches only our exact
 // canonical marker, so a re-compaction pass recognizes its own marker (staying
 // idempotent) without misclassifying a legitimate trailing string that merely
-// begins similarly.
-const ARRAY_SENTINEL_RE = /^\.\.\.\[truncated: (\d+) more items omitted. Use pagination or the REST API\]$/;
+// begins similarly. Accepts every hint text ever emitted, including the
+// pre-A-W05 legacy one, so already-persisted payloads still round-trip.
+const ARRAY_SENTINEL_RE = new RegExp(
+  `^\\.\\.\\.\\[truncated: (\\d+) more items omitted\\. (?:${[LEGACY_SENTINEL_HINT, ...Object.values(SENTINEL_HINTS)].map(escapeForRegExp).join('|')})\\]$`,
+);
 
-function arrayTruncationSentinel(dropped: number): string {
-  return `...[truncated: ${dropped} more items omitted. Use pagination or the REST API]`;
+function arrayTruncationSentinel(dropped: number, hint: string): string {
+  return `...[truncated: ${dropped} more items omitted. ${hint}]`;
+}
+
+/**
+ * A-W05 (Q3): a character window a tool sized deliberately — `text` paired
+ * with `nextOffset`/`hasMore` (e.g. `read_artifact`), or `stdout`/`stderr`
+ * paired with `stdoutNextOffset`/`stderrNextOffset` (e.g.
+ * `get_script_execution`) — is already a bounded chunk. Generic string/array
+ * compaction must never re-cut it: a mid-window truncation would silently
+ * drop text the tool told the model it could read at `nextOffset`, and the
+ * model would never know to re-request it. Recognised structurally by the
+ * sibling key, not by tool name, so it applies to every current and future
+ * window-shaped tool without a name list here.
+ */
+const WINDOW_SIBLING_KEY: Readonly<Record<string, string>> = {
+  text: 'nextOffset',
+  stdout: 'stdoutNextOffset',
+  stderr: 'stderrNextOffset',
+};
+
+function isCharacterWindowField(key: string, container: Record<string, unknown>): boolean {
+  const sibling = WINDOW_SIBLING_KEY[key];
+  return sibling !== undefined && sibling in container;
 }
 
 // Prior omitted count if `value` is exactly our marker, else null. Used to carry
@@ -211,11 +291,11 @@ function compactValue(
       stats.arrayItemsDropped += droppedThisPass;
       // Marker reports the CUMULATIVE omission from the original input, so a
       // tighter re-compaction of already-marked output doesn't understate it.
-      compacted.push(arrayTruncationSentinel((priorOmitted ?? 0) + droppedThisPass));
+      compacted.push(arrayTruncationSentinel((priorOmitted ?? 0) + droppedThisPass, stats.sentinelHint));
     } else if (priorOmitted !== null) {
       // Already-truncated upstream and still fits — preserve the existing count
       // rather than silently dropping the "more omitted" signal.
-      compacted.push(arrayTruncationSentinel(priorOmitted));
+      compacted.push(arrayTruncationSentinel(priorOmitted, stats.sentinelHint));
     }
     return compacted;
   }
@@ -229,6 +309,12 @@ function compactValue(
 
     const output: Record<string, unknown> = {};
     for (const [key, itemValue] of entries.slice(0, config.maxObjectKeys)) {
+      // Q3: a character window the tool sized deliberately — pass through
+      // untouched rather than re-truncating it against the generic string cap.
+      if (typeof itemValue === 'string' && isCharacterWindowField(key, value)) {
+        output[key] = itemValue;
+        continue;
+      }
       output[key] = compactValue(itemValue, stats, config, depth + 1, key);
     }
     return output;
@@ -376,6 +462,14 @@ const COMMAND_TEXT_TRUNCATION_NOTE =
   'Paging will not recover them; issue a narrower command instead ' +
   '(e.g. file_read a specific file, or event_logs_query filtered by eventId/source).';
 
+// Keys this function already curates explicitly — everything else on a
+// command-shaped payload is passed through by the loop at the bottom (Q3),
+// so a future window tool's `stdoutNextOffset`/`stdoutHasMore`/`stderrTruncated`
+// siblings are never silently dropped just because this allowlist predates them.
+const COMMAND_STYLE_HANDLED_KEYS = new Set([
+  'status', 'exitCode', 'durationMs', 'error', 'stdout', 'stdoutChars', 'stderr', 'stderrChars', 'data',
+]);
+
 function compactCommandStylePayload(
   payload: Record<string, unknown>,
   stats: CompactStats,
@@ -424,6 +518,13 @@ function compactCommandStylePayload(
         };
       }
       mergeStats(stats, stdoutStats);
+    } else if (isCharacterWindowField('stdout', payload)) {
+      // Q3: the tool already sized this window (e.g. get_script_execution's
+      // stdoutOffset/stdoutMaxChars) — never re-truncate it against the
+      // generic stdout budget, or nextOffset would skip text the model
+      // never actually saw.
+      output.stdout = redactAiToolOutputText(payload.stdout);
+      output.stdoutChars = payload.stdout.length;
     } else {
       output.stdout = truncateText(redactAiToolOutputText(payload.stdout), config.maxStdoutChars, stats);
       output.stdoutChars = payload.stdout.length;
@@ -431,11 +532,15 @@ function compactCommandStylePayload(
   }
 
   if (typeof payload.stderr === 'string') {
-    output.stderr = truncateText(
-      redactAiToolOutputText(payload.stderr),
-      Math.min(STDERR_TEXT_CHARS, config.maxStdoutChars),
-      stats,
-    );
+    if (isCharacterWindowField('stderr', payload)) {
+      output.stderr = redactAiToolOutputText(payload.stderr);
+    } else {
+      output.stderr = truncateText(
+        redactAiToolOutputText(payload.stderr),
+        Math.min(STDERR_TEXT_CHARS, config.maxStdoutChars),
+        stats,
+      );
+    }
     output.stderrChars = payload.stderr.length;
   }
 
@@ -446,6 +551,15 @@ function compactCommandStylePayload(
       maxObjectKeys: Math.min(config.maxObjectKeys, 40),
       maxStringChars: Math.min(config.maxStringChars, 1_000),
     });
+  }
+
+  for (const [key, value] of Object.entries(payload)) {
+    if (COMMAND_STYLE_HANDLED_KEYS.has(key)) continue;
+    if (typeof value === 'string' && isCharacterWindowField(key, payload)) {
+      output[key] = redactAiToolOutputText(value);
+      continue;
+    }
+    output[key] = compactValue(value, stats, config, 0, key);
   }
 
   return output;
@@ -460,6 +574,7 @@ function emptyStats(): CompactStats {
     objectKeysDropped: 0,
     depthLimited: 0,
     sensitiveFieldsOmitted: 0,
+    sentinelHint: SENTINEL_HINTS.none,
   };
 }
 
@@ -529,6 +644,13 @@ function sanitizeToolPayloadValue(
       stats.sensitiveFieldsOmitted += 1;
       continue;
     }
+    // Q3: a character window the tool sized deliberately — redact but never
+    // truncate it in this pre-pass (compactCommandStylePayload / compactValue
+    // apply the same rule for the shaping pass that follows).
+    if (typeof entry === 'string' && isCharacterWindowField(key, value)) {
+      output[key] = redactAiToolOutputText(entry);
+      continue;
+    }
     output[key] = sanitizeToolPayloadValue(toolName, entry, stats, depth + 1, key);
   }
   return output;
@@ -568,7 +690,12 @@ function compactSystemCleanupPayload(payload: Record<string, unknown>, stats: Co
       if (!isRecord(entry)) return entry;
       const tail = entry.outputTail;
       if (typeof tail !== 'string' || tail.length <= MAX_SYSTEM_CLEANUP_OUTPUT_TAIL) return entry;
-      stats.arrayItemsDropped += 1;
+      // Q8: this is a per-row STRING tail truncation, not an array-item drop —
+      // no items left the `actions` array. Counting it as arrayItemsDropped
+      // would make the compactor tell the model to page/narrow-filter for a
+      // shortened field paging can never recover, so it is tracked as a
+      // string truncation instead (the same bucket `truncateText` uses).
+      stats.stringsTruncated += 1;
       return {
         ...entry,
         outputTail: tail.slice(-MAX_SYSTEM_CLEANUP_OUTPUT_TAIL),
@@ -660,7 +787,14 @@ function appendChatMeta(result: unknown, stats: CompactStats, originalChars: num
   );
   if (!hasTruncation) return result;
 
-  const meta = {
+  // A-W05 (D12/Q8): nextStep is guidance the model can act on by re-calling the
+  // tool differently, so it only fires when real ARRAY ITEMS were dropped
+  // (arraysTruncated / arrayItemsDropped) — never for a string-tail cut alone
+  // (e.g. system_cleanup's outputTail), which paging or narrower filters
+  // cannot recover.
+  const hasArrayTruncation = stats.arraysTruncated > 0 || stats.arrayItemsDropped > 0;
+
+  const meta: Record<string, unknown> = {
     outputCompacted: true,
     originalChars,
     stringsTruncated: stats.stringsTruncated,
@@ -671,6 +805,9 @@ function appendChatMeta(result: unknown, stats: CompactStats, originalChars: num
     depthLimited: stats.depthLimited,
     sensitiveFieldsOmitted: stats.sensitiveFieldsOmitted,
   };
+  if (hasArrayTruncation) {
+    meta.nextStep = stats.sentinelHint;
+  }
 
   if (isRecord(result)) {
     return { ...result, _chat: meta };
@@ -713,6 +850,33 @@ function safeStringify(value: unknown): string {
  * by the presence of an `artifact` key, so a tool that legitimately returns
  * `{ artifact: … }` is untouched.
  */
+// A-W05 (Task 0): when a payload cannot be made to fit and is replaced by the
+// row-less digest below, the model loses the array it was reading — but it
+// must NOT also lose the paging envelope, or it has no way to continue. These
+// are the top-level SCALAR paging keys every shaped list/keyset tool emits
+// (see aiToolPagination.ts's pageEnvelope/keysetEnvelope). Read from the
+// already-redacted/sanitized payload so a key the redactor wiped stays wiped.
+// Fix 4c: `nextOffset`/`stdoutNextOffset`/`stderrNextOffset`/`stdoutHasMore`
+// are the continuation state for a character-window tool (read_artifact,
+// get_script_execution) — without them, a digest that replaces the payload
+// also strands the model with no way to resume the window it was reading.
+const PAGING_ENVELOPE_KEYS = [
+  'total', 'totalMode', 'showing', 'limit', 'offset', 'hasMore', 'nextCursor', 'count',
+  'nextOffset', 'stdoutNextOffset', 'stderrNextOffset', 'stdoutHasMore',
+] as const;
+function extractPagingEnvelope(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) return {};
+  const out: Record<string, unknown> = {};
+  for (const key of PAGING_ENVELOPE_KEYS) {
+    if (!(key in value)) continue;
+    const v = (value as Record<string, unknown>)[key];
+    if (v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+      out[key] = v;
+    }
+  }
+  return out;
+}
+
 function asCaptureEnvelope(value: unknown): { artifact: Record<string, unknown>; compacted: string } | null {
   if (!isRecord(value)) return null;
   const { artifact, compacted } = value as Record<string, unknown>;
@@ -760,12 +924,16 @@ export function compactToolResultForChat(
         outputCompacted: true,
         nonJsonOutput: true,
         originalChars: rawResult.length,
+        nextStep: SENTINEL_HINTS[resolvePaginationHint(toolName)],
       },
       preview: redactedRaw.slice(0, RAW_PREVIEW_CHARS),
     });
   }
 
   const stats = emptyStats();
+  // A-W05 (D12): resolved once per call — every tier's stats copy carries it
+  // (object spread), so the sentinel and _chat.nextStep always agree.
+  stats.sentinelHint = SENTINEL_HINTS[resolvePaginationHint(toolName)];
 
   // Scrub driver/runtime detail out of error-ish fields BEFORE compaction, so it
   // cannot survive into a truncated `preview` further down (#2603). This is the
@@ -796,11 +964,13 @@ export function compactToolResultForChat(
   }
 
   return JSON.stringify({
+    ...extractPagingEnvelope(sanitized),
     summarized: true,
     _chat: {
       outputCompacted: true,
       originalChars: rawResult.length,
       reason: 'max_output_chars_exceeded',
+      nextStep: SENTINEL_HINTS[resolvePaginationHint(toolName)],
     },
     summary: {
       toolName,

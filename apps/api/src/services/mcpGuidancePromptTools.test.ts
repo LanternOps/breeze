@@ -65,6 +65,12 @@ describe('prompt guidance references only real tools', () => {
   it('the advertised approximate tool count stays within tolerance of the registry', () => {
     expect(Math.abs(registered.size - MCP_TOOL_COUNT_APPROX)).toBeLessThanOrEqual(10);
   });
+
+  it('tells the model how to continue a paged result and how to read a handle (A-W05)', () => {
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('hasMore');
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('nextCursor');
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('read_artifact');
+  });
 });
 
 

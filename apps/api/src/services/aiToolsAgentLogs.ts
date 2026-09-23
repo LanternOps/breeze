@@ -7,9 +7,10 @@
  * - capture_agent_pprof (Tier 2): On-demand Go runtime profiles from the agent
  */
 
+import { keysetEnvelope, keysetParamSchema, keysetWhereCondition, readKeysetArgs } from './aiToolPagination';
 import { db } from '../db';
 import { agentLogs, devices } from '../db/schema';
-import { and, eq, gte, lte, ilike, inArray, desc, type SQL } from 'drizzle-orm';
+import { and, eq, gte, lte, ilike, inArray, desc, sql, type SQL } from 'drizzle-orm';
 import { escapeLike } from '../utils/sql';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
@@ -121,9 +122,10 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
             type: 'string',
             description: 'Text search within log messages (case-insensitive partial match)',
           },
-          limit: {
-            type: 'number',
-            description: 'Maximum results to return (default: 100, max: 500)',
+          ...keysetParamSchema(18, 500),
+          includeFields: {
+            type: 'boolean',
+            description: 'Include the structured fields object per log line (default false)',
           },
         },
         required: [],
@@ -131,6 +133,11 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
     },
     handler: async (input: Record<string, unknown>, auth: AuthContext) => {
       try {
+        const page = readKeysetArgs('search_agent_logs', input, { defaultLimit: 18, maxLimit: 500 });
+        if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
+        const { limit, after, fingerprint } = page;
+        const includeFields = input.includeFields === true;
+
         const orgId = getOrgId(auth);
         if (!orgId) {
           return JSON.stringify({ error: 'No organization context available' });
@@ -145,39 +152,70 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
           message: typeof input.message === 'string' ? input.message : undefined,
         });
         if (conditions === null) {
-          return JSON.stringify({ logs: [], count: 0 });
+          return JSON.stringify({
+            ...keysetEnvelope<{ createdAtText: string; id: string }>({
+              key: 'logs', items: [], limit, fingerprint,
+              keyOf: (r) => ({ t: r.createdAtText, i: r.id }),
+            }),
+            count: 0,
+          });
         }
 
-        const maxLimit = Math.min(Number(input.limit) || 100, 500);
+        if (after) {
+          conditions.push(keysetWhereCondition(agentLogs.createdAt, agentLogs.id, after)!);
+        }
 
         const results = await db
-          .select()
+          .select({
+            id: agentLogs.id,
+            deviceId: agentLogs.deviceId,
+            timestamp: agentLogs.timestamp,
+            createdAt: agentLogs.createdAt,
+            // Q1: full microsecond-precision text for the keyset cursor —
+            // NEVER derive it from the Date-typed `createdAt` above.
+            createdAtText: sql<string>`${agentLogs.createdAt}::text`,
+            level: agentLogs.level,
+            component: agentLogs.component,
+            message: agentLogs.message,
+            fields: agentLogs.fields,
+            agentVersion: agentLogs.agentVersion,
+          })
           .from(agentLogs)
           .where(and(...conditions))
-          // Receipt time dominates. Ingest writes up to 100 rows in one INSERT,
-          // so a whole batch shares created_at to the microsecond and the random
-          // uuid id would shuffle it; agent event time only breaks ties WITHIN a
-          // single receipt instant, which cannot reorder rows across receipts.
-          .orderBy(desc(agentLogs.createdAt), desc(agentLogs.timestamp), desc(agentLogs.id))
-          .limit(maxLimit);
+          // Receipt time is total-ordered with `id` as the tiebreak — matches
+          // the keyset predicate's `(created_at, id)` comparison exactly.
+          .orderBy(desc(agentLogs.createdAt), desc(agentLogs.id))
+          .limit(limit + 1);
 
-        return JSON.stringify({
-          logs: results.map((r) => {
-            const redacted = redactAgentLogRow(r);
-            return {
-              id: r.id,
-              deviceId: r.deviceId,
-              timestamp: r.timestamp.toISOString(),
-              receivedAt: r.createdAt.toISOString(),
-              level: r.level,
-              component: r.component,
-              message: redacted.message,
-              fields: redacted.fields,
-              agentVersion: r.agentVersion,
-            };
-          }),
-          count: results.length,
+        const items = results.map((r) => {
+          const redacted = redactAgentLogRow(r);
+          const rawMessage = typeof redacted.message === 'string' ? redacted.message : '';
+          const truncated = rawMessage.length > 1000;
+          return {
+            id: r.id,
+            deviceId: r.deviceId,
+            timestamp: r.timestamp instanceof Date ? r.timestamp.toISOString() : r.timestamp,
+            receivedAt: r.createdAt instanceof Date ? r.createdAt.toISOString() : r.createdAt,
+            createdAtText: r.createdAtText,
+            level: r.level,
+            component: r.component,
+            message: truncated ? rawMessage.slice(0, 1000) : redacted.message,
+            messageTruncated: truncated,
+            ...(includeFields ? { fields: redacted.fields } : {}),
+            agentVersion: r.agentVersion,
+          };
         });
+
+        const envelope = keysetEnvelope({
+          key: 'logs', items, limit, fingerprint,
+          keyOf: (r) => ({ t: r.createdAtText, i: r.id }),
+        });
+        const outLogs = (envelope.logs as Array<Record<string, unknown>>).map(
+          ({ createdAtText: _createdAtText, ...rest }) => rest
+        );
+        // `count` mirrors legacy semantics: the number of rows on THIS page
+        // (never a real total — no COUNT query has ever backed this field).
+        return JSON.stringify({ ...envelope, logs: outLogs, count: outLogs.length });
       } catch (err) {
         const message = sanitizeThrownToolError('agent-logs', err);
         console.error('[ai:search_agent_logs]', message, err);

@@ -18,6 +18,7 @@
  * - registry_operations (Tier 1): Read or modify Windows registry keys/values
  */
 
+import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   devices,
@@ -42,6 +43,13 @@ import { loadTenantVariableScope } from './tenantVariableResolution';
 import { captureException } from './sentry';
 import { scriptNeedsVariableScope } from './sourcedParameters';
 import { deviceScopeCondition, siteScopeCondition } from './aiToolsSiteScope';
+import { shrinkToJsonBudget } from './aiToolOutput';
+
+// Fix 4b: headroom under MAX_TOOL_RESULT_CHARS (8000) for the rest of the
+// get_script_execution envelope once stdout/stderr are counted at their
+// JSON-escaped cost, not their raw char count.
+const STDOUT_JSON_BUDGET_CHARS = 6_000;
+const STDERR_JSON_BUDGET_CHARS = 2_000;
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -860,7 +868,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
           },
           limit: {
             type: 'number',
-            description: 'Maximum number of processes to return (default: 50, max: 200)'
+            description: 'Max processes to return (default 50, max 200)'
           }
         },
         required: ['action', 'deviceId']
@@ -918,11 +926,15 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
           category: { type: 'string', description: 'Filter by script category' },
           language: { type: 'string', enum: ['powershell', 'bash', 'python', 'cmd'], description: 'Filter by script language' },
           osType: { type: 'string', enum: ['windows', 'macos', 'linux'], description: 'Filter by OS type (scripts targeting this OS)' },
-          limit: { type: 'number', description: 'Max results to return (default 20, max 50)' },
+          ...pageParamSchema(15, 50),
         },
       },
     },
     handler: async (input, auth) => {
+      const page = readPageArgs('list_scripts', input, { defaultLimit: 15, maxLimit: 50 });
+      if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
+      const { limit, offset, fingerprint } = page;
+
       const conditions: SQL[] = [isNull(scripts.deletedAt)];
       const orgCondition = auth.orgCondition(scripts.orgId);
       if (orgCondition) conditions.push(orgCondition);
@@ -934,8 +946,6 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       if (input.category) conditions.push(eq(scripts.category, input.category as string));
       if (input.language) conditions.push(eq(scripts.language, input.language as typeof scripts.language.enumValues[number]));
       if (input.osType) conditions.push(sql`${scripts.osTypes} @> ARRAY[${input.osType}]::text[]`);
-
-      const limit = Math.min(Math.max(1, Number(input.limit) || 20), 50);
 
       const results = await db
         .select({
@@ -949,10 +959,12 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
         })
         .from(scripts)
         .where(conditions.length > 0 ? and(...conditions) : undefined)
-        .orderBy(desc(scripts.updatedAt))
-        .limit(limit);
+        .orderBy(desc(scripts.updatedAt), desc(scripts.id))
+        .limit(limit + 1)
+        .offset(offset);
 
-      return JSON.stringify({ scripts: results, count: results.length });
+      const envelope = pageEnvelope({ key: 'scripts', items: results, limit, offset, fingerprint });
+      return JSON.stringify({ ...envelope, count: envelope.showing });
     },
   });
 
@@ -1228,6 +1240,9 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
         type: 'object' as const,
         properties: {
           executionId: { type: 'string', description: 'UUID of the script execution to fetch' },
+          stdoutOffset: { type: 'number', description: 'Character offset into stdout (default 0)' },
+          stdoutMaxChars: { type: 'number', description: 'Max stdout chars to return (default 5000, max 5000)' },
+          stderrMaxChars: { type: 'number', description: 'Max stderr chars to return (default 1500, max 8000)' },
         },
         required: ['executionId'],
       },
@@ -1241,6 +1256,19 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       // the device-move restamp already maintain and which is NOT NULL for
       // every execution regardless of source.
       const orgCond = auth.orgCondition(scriptExecutions.orgId);
+
+      // A-W05 (5c): stdout/stderr are windowed at the SQL layer so a
+      // megabyte-scale execution log never has to round-trip through Node
+      // before being cut down to size.
+      const stdoutOffset = Math.max(0, Math.trunc(Number(input.stdoutOffset)) || 0);
+      // A-W05 (5c follow-up): the plan's 6000/2000 defaults measured 8 656
+      // raw chars once metadata/JSON overhead was included — over the 8 000
+      // budget. 5000/1500 measured 7 132; lowered accordingly.
+      // Fix 4b: lowered from 16000 to 5000 — the raw-char cap alone doesn't
+      // bound the JSON-escaped cost (control chars/backslashes), so it's
+      // shrunk further below by escaped length before it goes out.
+      const stdoutMax = Math.min(Math.max(1, Math.trunc(Number(input.stdoutMaxChars)) || 5000), 5000);
+      const stderrMax = Math.min(Math.max(1, Math.trunc(Number(input.stderrMaxChars)) || 1500), 8000);
 
       const [execution] = await db
         .select({
@@ -1260,8 +1288,10 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
           deviceSiteId: devices.siteId,
           status: scriptExecutions.status,
           exitCode: scriptExecutions.exitCode,
-          stdout: scriptExecutions.stdout,
-          stderr: scriptExecutions.stderr,
+          stdout: sql<string>`substr(coalesce(${scriptExecutions.stdout}, ''), ${stdoutOffset + 1}, ${stdoutMax})`,
+          stdoutChars: sql<number>`length(coalesce(${scriptExecutions.stdout}, ''))`,
+          stderr: sql<string>`left(coalesce(${scriptExecutions.stderr}, ''), ${stderrMax})`,
+          stderrChars: sql<number>`length(coalesce(${scriptExecutions.stderr}, ''))`,
           errorMessage: scriptExecutions.errorMessage,
           startedAt: scriptExecutions.startedAt,
           completedAt: scriptExecutions.completedAt,
@@ -1285,8 +1315,43 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: 'Execution not found' });
       }
 
-      const { deviceSiteId: _siteId, ...result } = execution;
-      return JSON.stringify({ execution: shapeExecutionRow(result) });
+      const { deviceSiteId: _siteId, stdoutChars: stdoutCharsRaw, stderrChars: stderrCharsRaw, ...result } = execution;
+      const stdoutChars = Number(stdoutCharsRaw);
+      const stderrChars = Number(stderrCharsRaw);
+      // Fix 4b: a raw-char cap alone doesn't bound the JSON-escaped cost
+      // (control chars/backslashes can cost up to 6x their raw count once
+      // escaped), which can blow the overall compaction budget and get the
+      // whole result replaced by a digest — losing stdout the caller was
+      // told via stdoutNextOffset it could read. Shrink by escaped length,
+      // in whole code points, before computing the offset fields below.
+      const stdout = shrinkToJsonBudget(result.stdout, STDOUT_JSON_BUDGET_CHARS);
+      const stderr = shrinkToJsonBudget(result.stderr, STDERR_JSON_BUDGET_CHARS);
+      // Fix 5: `stdout`/`stderr` were windowed at the SQL layer with Postgres
+      // `substr`/`length`, which count CHARACTERS (Unicode code points) —
+      // never JS's UTF-16 `.length`, which counts 2 for an astral character
+      // like an emoji. Mixing the two units here would compute a
+      // stdoutNextOffset that lands mid-character on the next SQL substr.
+      const stdoutCodePoints = Array.from(stdout).length;
+      const stderrCodePoints = Array.from(stderr).length;
+      return JSON.stringify({
+        execution: shapeExecutionRow({
+          ...result,
+          stdout,
+          stderr,
+          stdoutChars,
+          stdoutOffset,
+          // `stdoutNextOffset` is the sibling key `compactToolResultForChat`
+          // (A-W05 Q3) keys off of to recognise this as a deliberately-sized
+          // window and never re-cut it during generic compaction.
+          stdoutNextOffset: stdoutOffset + stdoutCodePoints,
+          stdoutHasMore: stdoutOffset + stdoutCodePoints < stdoutChars,
+          stderrChars,
+          // stderr has no offset param (always read from 0); stderrNextOffset
+          // exists purely so the compactor's structural check protects it too.
+          stderrNextOffset: stderrCodePoints,
+          stderrTruncated: stderrCodePoints < stderrChars,
+        }),
+      });
     },
   });
 

@@ -61,7 +61,7 @@ vi.mock('./permissions', async () => ({
 const { mockLimit, mockWhere, mockSelect } = vi.hoisted(() => {
   const mockLimit = vi.fn<() => Promise<unknown[]>>(() => Promise.resolve([]));
   const mockWhere = vi.fn((..._args: unknown[]) => ({
-    orderBy: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([])) })),
+    orderBy: vi.fn(() => ({ limit: vi.fn(() => ({ offset: vi.fn(() => Promise.resolve([])) })) })),
     limit: mockLimit
   }));
   const mockSelect = vi.fn(() => ({

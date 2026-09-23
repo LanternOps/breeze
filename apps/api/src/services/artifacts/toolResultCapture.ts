@@ -2,21 +2,27 @@ import { aiWorkspaceEnabled, breezeRegion } from '../../config/env';
 import type { AuthContext } from '../../middleware/auth';
 import { MAX_TOOL_RESULT_CHARS } from '../aiToolOutput';
 import { captureException } from '../sentry';
-import { ARTIFACT_PREVIEW_BYTES, buildPreviews, createArtifact } from './artifactService';
+import { ARTIFACT_PREVIEW_BYTES, REDACTED_CAPTURE_NAME_INFIX, buildPreviews, createArtifact } from './artifactService';
 import type { BlobRegion } from './blobStorage';
+import { redactForCapture } from './captureRedaction';
 
 /**
  * Large tool-result capture (execution-plane spec §5.2, §9).
  *
  * Called from INSIDE `executeTool`, after the handler and before any compaction
  * (services/aiTools.ts). When the raw serialized result exceeds the same
- * `MAX_TOOL_RESULT_CHARS` the chat compaction uses, the raw bytes are persisted
+ * `MAX_TOOL_RESULT_CHARS` the chat compaction uses, `redactForCapture(raw)` is
+ * persisted (A-W05 D13b/Q5 — REDACT THEN CAPTURE, never the raw bytes: the
+ * artifact store is org-downloadable and must never hold credential material)
  * as an `input_capture` artifact and the result becomes
  *
- *     { artifact: { handle, bytes, contentType, head, tail }, compacted: <raw> }
+ *     { artifact: { handle, bytes, contentType, head, tail }, compacted: <redacted> }
  *
  * which `compactToolResultForChat` then compacts in place (Task 7). The model
- * keeps exactly the view it has today PLUS a handle it can stage.
+ * keeps exactly the view it has today (redaction was already applied to that
+ * view before this wave) PLUS a handle it can stage. The capture THRESHOLD is
+ * still measured on the raw string's length, so the non-capture path (at or
+ * below the threshold) is byte-identical to before this wave.
  *
  * PASSTHROUGH IS THE DEFAULT. With a null context — no org, no anchor, or a
  * `captureExempt` tool — with the flag off, or at or below the threshold, the
@@ -118,12 +124,21 @@ export async function captureLargeToolResult(
   ctx: CaptureContext | null,
 ): Promise<string> {
   if (ctx === null) return raw;
+  // Threshold stays on the RAW string — measuring after redaction would let a
+  // large-but-redactable payload dodge capture depending on how much of it
+  // happened to be wiped.
   if (raw.length <= MAX_TOOL_RESULT_CHARS) return raw;
   if (!aiWorkspaceEnabled()) return raw;
 
-  const isJson = looksLikeJson(raw);
+  // A-W05 (D13b / Q5): the artifact store receives the REDACTED payload —
+  // never the raw one — so the org-downloadable blob never holds credential
+  // material. The model's own in-context view (`compacted`) is unaffected:
+  // it mirrors `stored`, which is byte-identical to `raw` whenever nothing in
+  // it matched the redaction denylist.
+  const stored = redactForCapture(raw);
+  const isJson = looksLikeJson(stored);
   const contentType = isJson ? 'application/json' : 'text/plain; charset=utf-8';
-  const body = Buffer.from(raw, 'utf8');
+  const body = Buffer.from(stored, 'utf8');
   if (body.length > CAPTURE_MAX_BYTES) {
     return JSON.stringify({
       error: 'artifact_store_unavailable',
@@ -137,13 +152,16 @@ export async function captureLargeToolResult(
       runId: ctx.runId,
       sessionId: ctx.sessionId,
       kind: 'input_capture',
-      name: `${ctx.toolName}.${isJson ? 'json' : 'txt'}`,
+      name: `${ctx.toolName}${REDACTED_CAPTURE_NAME_INFIX}${isJson ? 'json' : 'txt'}`,
       contentType,
       body,
       maxBytes: CAPTURE_MAX_BYTES,
       createdByTool: ctx.toolName,
       region: ctx.region,
     });
+    // Previews are built from the REDACTED body too (Q5) — the whole point of
+    // redact-then-capture is that nothing downstream of this point, including
+    // what a technician sees on the run page, ever holds the raw bytes.
     const { headPreview, tailPreview } = buildPreviews(body);
     return JSON.stringify({
       artifact: {
@@ -153,7 +171,7 @@ export async function captureLargeToolResult(
         head: headPreview.slice(0, ARTIFACT_PREVIEW_BYTES),
         tail: tailPreview.slice(-ARTIFACT_PREVIEW_BYTES),
       },
-      compacted: raw,
+      compacted: stored,
     });
   } catch (err) {
     // §9: typed tool error, raw result NOT returned inline. The message tells
