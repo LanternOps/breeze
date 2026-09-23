@@ -10,12 +10,18 @@
  * and this scan, which checks, PER QUERY SITE (file + innermost named scope):
  *
  *  1. Every read or mutation of `reports`, `reportRuns` or
- *     `reportRunDeliveries` under routes/, services/, jobs/ — `.from`, any
- *     join, `.update`, `.delete`, `db.query.<table>` — sits in a scope that
- *     calls `partnerOwnedReportVisibility` or one of the GUARD_ENTRYPOINTS
- *     (each proven here to reach the helper), or is allowlisted org-only /
- *     system-only for that one scope with a written reason. One guarded
- *     function no longer exempts the rest of its file.
+ *     `reportRunDeliveries` under routes/, services/, jobs/ — `.from`, every
+ *     join incl. `crossJoin` / `*JoinLateral`, `.update`, `.delete`,
+ *     `db.$count`, `db.query.<table>`, `${table}` interpolated into a sql
+ *     template, and raw SQL (`FROM|JOIN|UPDATE|USING|DELETE FROM|INSERT INTO
+ *     report_runs|report_run_deliveries|reports` inside template-literal
+ *     text) — sits in a scope that calls `partnerOwnedReportVisibility` or
+ *     one of the GUARD_ENTRYPOINTS (each proven here to reach the helper), or
+ *     is allowlisted org-only / system-only for that one scope with a written
+ *     reason AND a pinned site count (a new query in a broad allowlisted
+ *     scope goes red). One guarded function no longer exempts its file.
+ *  1b. No file re-binds a table symbol (aliased import/re-export,
+ *     `const t = reportRuns`, destructure): the arms key on the names.
  *  2. The partner-scope tenant predicates each call the helper directly.
  *  3. A raw `reports.partnerId` PREDICATE appears only inside the gated helper
  *     functions listed in PARTNER_ID_PREDICATE_SITES.
@@ -24,6 +30,11 @@
  * an object-property arrow `name: (…) =>`, an AI tool `safeHandler('tool', …)`
  * (`tool:<name>`), or a Hono registration `xRoutes.get('/path', …)`
  * (`GET /path`). Anonymous callbacks belong to their enclosing named scope.
+ *
+ * NOT covered (textual limits): a table passed as a function argument and
+ * queried through the parameter (`reportOwnerScopePredicate(reports, …)`),
+ * SQL built from plain '…' / "…" strings (e.g. sql.raw('…')), and code outside the three
+ * roots. Those rely on review, the route suites and RLS.
  *
  * Textual, not semantic — the route suites (`core.partnerOwned.test.ts`,
  * `helpers.partnerOwned.test.ts`) and reportsPartnerOwned.integration assert
@@ -37,13 +48,35 @@ const ROOTS = ['src/routes', 'src/services', 'src/jobs'].map((p) => join(process
 
 const GUARDED_TABLES = ['reports', 'reportRuns', 'reportRunDeliveries'] as const;
 const TABLE_ALT = GUARDED_TABLES.join('|');
+/** A table symbol, optionally through a namespace import (`schema.reportRuns`). */
+const TABLE_REF = `(?:\\w+\\.)?(?:${TABLE_ALT})\\b`;
 /**
- * A read or mutation of a guarded table. `.insert(t)` is excluded: it targets
+ * A Drizzle read or mutation of a guarded table: `.from`, every join kind
+ * (incl. `crossJoin` and the `*JoinLateral` forms), `.update`, `.delete`,
+ * `db.$count(t…)`, the relational `db.query.<t>`, and a table interpolated
+ * into a sql template (`${reportRuns}`). `.insert(t)` is excluded: it targets
  * no existing row, so it cannot reveal or alter a partner-owned one.
  */
 const QUERY_SITE_SOURCE =
-  `\\.(?:from|innerJoin|leftJoin|rightJoin|fullJoin|update|delete)\\(\\s*(?:${TABLE_ALT})\\b`
-  + `|\\bquery\\.(?:${TABLE_ALT})\\b`;
+  `\\.(?:from|innerJoin|leftJoin|rightJoin|fullJoin|crossJoin|innerJoinLateral|leftJoinLateral|crossJoinLateral|update|delete|\\$count)\\(\\s*${TABLE_REF}`
+  + `|\\bquery\\.(?:${TABLE_ALT})\\b`
+  + `|\\$\\{\\s*${TABLE_REF}\\s*\\}`;
+/**
+ * A raw-SQL reference to a guarded table, counted only inside the literal
+ * text of a template string (so comments and ordinary strings never count).
+ */
+const RAW_SQL_SITE =
+  /\b(?:FROM|JOIN|UPDATE|USING|DELETE\s+FROM|INSERT\s+INTO)\s+(?:ONLY\s+)?(?:public\.)?"?(?:report_runs|report_run_deliveries|reports)"?(?![\w-])/gi;
+/**
+ * Re-binding a table symbol hides every later query from the scan (the site
+ * regexes key on the symbol name), so ANY rename is a hard failure: an
+ * aliased import/re-export, `const t = reportRuns`, or a destructure.
+ */
+const TABLE_REBINDS: ReadonlyArray<RegExp> = [
+  new RegExp(`\\b(?:import|export)\\s+(?:type\\s+)?\\{[^{}]*\\b(?:${TABLE_ALT})\\s+as\\s+\\w+`),
+  new RegExp(`\\b(?:const|let|var)\\s+\\w+(?:\\s*:[^=;]+)?\\s*=\\s*${TABLE_REF}\\s*(?:[;,)\\n]|as\\b)`),
+  new RegExp(`\\b(?:const|let|var)\\s*\\{[^{}]*\\b(?:${TABLE_ALT})\\b[^{}]*\\}\\s*=`),
+];
 const QUERY_SITE = new RegExp(QUERY_SITE_SOURCE);
 const HELPER_CALL = /(?<!function\s)\bpartnerOwnedReportVisibility\(/;
 
@@ -80,78 +113,89 @@ const ORG_PIN = 'a partner-owned row has org_id NULL and cannot match an org_id 
  * per scope. Each entry needs a reason. A new query in an allowlisted file but
  * a different scope is NOT covered.
  */
-const SITE_ALLOWLIST: ReadonlyMap<string, ReadonlyMap<string, string>> = new Map<string, Map<string, string>>([
+/** `sites` = exact count of unguarded query sites in that scope (pinned). */
+const pinned = (sites: number, reason: string): AllowEntry => ({ sites, reason });
+
+const SITE_ALLOWLIST: SiteAllowlist = new Map<string, Map<string, AllowEntry>>([
   ['src/routes/aiAgents.ts', new Map([
-    ['GET /runs/:runId', `AI-agent run artifact reads join reports and pin eq(reports.orgId, run.orgId) AND auth.orgCondition(reports.orgId); ${ORG_PIN}`],
+    ['GET /runs/:runId', pinned(4, `AI-agent run artifact reads join reports and pin eq(reports.orgId, run.orgId) AND auth.orgCondition(reports.orgId); ${ORG_PIN}`)],
   ])],
   ['src/routes/fleetDesign.ts', new Map([
-    ['GET /', 'lists type ai_fleet_design (system-authored, org-owned) under auth.orgCondition(reports.orgId)'],
+    ['GET /', pinned(2, 'lists type ai_fleet_design (system-authored, org-owned) under auth.orgCondition(reports.orgId)')],
   ])],
   ['src/services/aiAgents/fleetDesignReport.ts', new Map([
-    ['persistFleetDesignReport', `Fleet Design is system-authored and org-owned: definition read/update keyed on eq(reports.orgId, run.orgId); the run update targets the artifact row it just inserted; ${ORG_PIN}`],
-    ['loadFleetDesignReport', 'by-id run read joined to reports with type ai_fleet_design AND orgCondition(reports.orgId); a partner-owned row is never that type'],
+    ['persistFleetDesignReport', pinned(3, `Fleet Design is system-authored and org-owned: definition read/update keyed on eq(reports.orgId, run.orgId); the run update targets the artifact row it just inserted; ${ORG_PIN}`)],
+    ['loadFleetDesignReport', pinned(2, 'by-id run read joined to reports with type ai_fleet_design AND orgCondition(reports.orgId); a partner-owned row is never that type')],
   ])],
   ['src/services/aiAgents/narrativeReport.ts', new Map([
-    ['persistNarrativeReport', 'the weekly AI narrative is system-authored and org-owned; keyed on eq(reports.orgId, run.orgId) + source schedule; the run update targets the artifact it just inserted'],
+    ['persistNarrativeReport', pinned(3, 'the weekly AI narrative is system-authored and org-owned; keyed on eq(reports.orgId, run.orgId) + source schedule; the run update targets the artifact it just inserted')],
   ])],
   ['src/services/aiToolsFleet.ts', new Map([
-    ['aiReportDefinitionAccess', 'refuses a partner-owned row via requireOrgOwnedReportRow before returning access (#3198 W01 Task 5b owner guard); predicates are reports.org_id'],
-    ['aiReportRunAccess', 'refuses a partner-owned row via requireOrgOwnedReportRow before returning access (#3198 W01 Task 5b owner guard); predicates are reports.org_id'],
-    ['tool:generate_report', 'AI report tool is org-axis: list filters orgWhere/inArray(reports.orgId); every by-id read, update and delete first passes aiReportDefinitionAccess / aiReportRunAccess and pins eq(reports.orgId, access.metadata.orgId)'],
+    ['aiReportDefinitionAccess', pinned(2, 'refuses a partner-owned row via requireOrgOwnedReportRow before returning access (#3198 W01 Task 5b owner guard); predicates are reports.org_id')],
+    ['aiReportRunAccess', pinned(2, 'refuses a partner-owned row via requireOrgOwnedReportRow before returning access (#3198 W01 Task 5b owner guard); predicates are reports.org_id')],
+    ['tool:generate_report', pinned(8, 'AI report tool, org-axis: the list keys on reports.org_id (eq / inArray / org-axis scope predicates); update and delete pin eq(reports.orgId, existing.orgId) + access.predicate after aiReportDefinitionAccess; run reads pin reports.org_id after aiReportRunAccess. The generate-branch lastGeneratedAt update keys on reports.id ONLY — safe because that id is reportDef.id returned by aiReportDefinitionAccess, which refuses a partner-owned row (requireOrgOwnedReportRow)')],
   ])],
   ['src/services/deliverableAutoEvidence.ts', new Map([
-    ['generateAutoEvidenceForOccurrence', `managed evidence is org-owned by construction (#5784): definition read is id AND org_id = <deliverable org>; ${ORG_PIN}`],
-    ['finishRun', 'generateAutoEvidenceForOccurrence\'s local: updates the run id runGenerator just inserted for the org-owned evidence definition'],
-    ['runGenerator', 'generateAutoEvidenceForOccurrence\'s local: inserts a run for the org-owned evidence definition and updates only that run by id'],
+    ['generateAutoEvidenceForOccurrence', pinned(1, `managed evidence is org-owned by construction (#5784): definition read is id AND org_id = <deliverable org>; ${ORG_PIN}`)],
+    ['finishRun', pinned(1, 'generateAutoEvidenceForOccurrence\'s local: updates the run id runGenerator just inserted for the org-owned evidence definition')],
+    ['runGenerator', pinned(1, 'generateAutoEvidenceForOccurrence\'s local: inserts a run for the org-owned evidence definition and updates only that run by id')],
   ])],
   ['src/services/evidenceBaseline.ts', new Map([
-    ['previousOccurrenceBaselineFor', 'reaches report_runs only through service_deliverable_evidence of one org-owned deliverable (evidence linkage validates reports.org_id = <deliverable org>)'],
+    ['previousOccurrenceBaselineFor', pinned(1, 'reaches report_runs only through service_deliverable_evidence of one org-owned deliverable (evidence linkage validates reports.org_id = <deliverable org>)')],
   ])],
   ['src/services/fleetDesign/drift.ts', new Map([
-    ['loadApprovedDesign', 'reads the run id taken from fleet_design_applied_items pinned to eq(orgId, orgId); applied items only reference org-owned ai_fleet_design runs'],
+    ['loadApprovedDesign', pinned(1, 'reads the run id taken from fleet_design_applied_items pinned to eq(orgId, orgId); applied items only reference org-owned ai_fleet_design runs')],
   ])],
   ['src/services/fleetDesign/ledger.ts', new Map([
-    ['lockReportRun', 'Fleet Design ledger reads type ai_fleet_design under orgCondition(reports.org_id); a partner-owned row is never that type'],
+    ['lockReportRun', pinned(2, 'Fleet Design ledger reads type ai_fleet_design under orgCondition(reports.org_id); a partner-owned row is never that type')],
   ])],
   ['src/services/managedEvidenceDefinitions.ts', new Map([
-    ['loadManagedEvidenceDefinition', `the org's ONE managed evidence definition, keyed on eq(reports.orgId, orgId) + type + portal_self_service; ${ORG_PIN}`],
+    ['loadManagedEvidenceDefinition', pinned(1, `the org's ONE managed evidence definition, keyed on eq(reports.orgId, orgId) + type + portal_self_service; ${ORG_PIN}`)],
   ])],
   ['src/services/portal/reportsSelfService.ts', new Map([
-    ['provisionPortalReportDefinitions', 'portal definitions keyed on eq(reports.orgId, orgId) + portal_self_service; partner-owned rows are never portal-visible (spec §3.5)'],
-    ['hardwareLifecycleConfigWithInheritance', `keyed on eq(reports.orgId, orgId) + type hardware_lifecycle; ${ORG_PIN}`],
-    ['listPortalRuns', 'portalRunListPredicate keys on reports.org_id = <portal org> AND portal_self_service; partner-owned rows are never portal-visible (spec §3.5)'],
-    ['generatePortalReport', 'portalDefinitionPredicate keys on reports.org_id = <portal org> AND portal_self_service'],
-    ['latestPortalHardwareLifecycleRun', `keyed on eq(reports.orgId, orgId) + portal_self_service; ${ORG_PIN}`],
-    ['completedRun', 'portalRunPredicate keys on reports.org_id = <portal org> AND portal_self_service'],
+    ['provisionPortalReportDefinitions', pinned(1, 'portal definitions keyed on eq(reports.orgId, orgId) + portal_self_service; partner-owned rows are never portal-visible (spec §3.5)')],
+    ['hardwareLifecycleConfigWithInheritance', pinned(1, `keyed on eq(reports.orgId, orgId) + type hardware_lifecycle; ${ORG_PIN}`)],
+    ['listPortalRuns', pinned(4, 'portalRunListPredicate keys on reports.org_id = <portal org> AND portal_self_service; partner-owned rows are never portal-visible (spec §3.5)')],
+    ['generatePortalReport', pinned(1, 'portalDefinitionPredicate keys on reports.org_id = <portal org> AND portal_self_service')],
+    ['latestPortalHardwareLifecycleRun', pinned(2, `keyed on eq(reports.orgId, orgId) + portal_self_service; ${ORG_PIN}`)],
+    ['completedRun', pinned(2, 'portalRunPredicate keys on reports.org_id = <portal org> AND portal_self_service')],
   ])],
   ['src/services/portal/serviceReadModel.ts', new Map([
-    ['evidenceQuery', 'portal evidence join is `reports.org_id = service_deliverable_evidence.org_id` for the portal org — a NULL-org row cannot match'],
+    ['evidenceQuery', pinned(1, 'portal evidence join is `reports.org_id = service_deliverable_evidence.org_id` for the portal org — a NULL-org row cannot match')],
   ])],
   ['src/services/reportGenerationService.ts', new Map([
-    ['previousBaselineFor', 'baseline for the definition being generated, keyed on report_id + the run\'s own scope fingerprint; the caller already authorized that definition (preflight)'],
+    ['previousBaselineFor', pinned(1, 'baseline for the definition being generated, keyed on report_id + the run\'s own scope fingerprint; the caller already authorized that definition (preflight)')],
   ])],
   ['src/services/reportNarrativeDelivery.ts', new Map([
-    ['loadArtifact', 'delivers the org-owned AI narrative run by id in system context; report_run_deliveries rows exist only for narrative runs'],
+    ['loadArtifact', pinned(2, 'delivers the org-owned AI narrative run by id in system context; report_run_deliveries rows exist only for narrative runs')],
   ])],
   ['src/services/reportRunDelivery.ts', new Map([
-    ['claimDelivery', 'system-context delivery CAS by delivery id for the narrative delivery pass / reconciler; no caller-supplied visibility'],
-    ['settleDelivery', 'system-context delivery settle by delivery id for the narrative delivery pass / reconciler; no caller-supplied visibility'],
-    ['recordTransientGateFailure', 'system-context delivery update by delivery id for the narrative delivery pass; no caller-supplied visibility'],
-    ['listPendingDeliveriesForRun', 'system-context read for the narrative delivery pass over ONE run it is delivering; nothing is shown to a caller'],
-    ['listUnsettledDeliveries', 'system-context reconciler scan; the reconciler settles partner-owned runs as failed and shows nothing to a caller'],
-    ['query', 'summarizeDeliveries\' count query: keyed on a run id its caller already authorized (aiAgents run detail pins the run to the agent run\'s org; the delivery pass runs in system context)'],
+    ['claimDelivery', pinned(1, 'system-context delivery CAS by delivery id for the narrative delivery pass / reconciler; no caller-supplied visibility')],
+    ['settleDelivery', pinned(1, 'system-context delivery settle by delivery id for the narrative delivery pass / reconciler; no caller-supplied visibility')],
+    ['recordTransientGateFailure', pinned(1, 'system-context delivery update by delivery id for the narrative delivery pass; no caller-supplied visibility')],
+    ['listPendingDeliveriesForRun', pinned(1, 'system-context read for the narrative delivery pass over ONE run it is delivering; nothing is shown to a caller')],
+    ['listUnsettledDeliveries', pinned(1, 'system-context reconciler scan; the reconciler settles partner-owned runs as failed and shows nothing to a caller')],
+    ['query', pinned(1, 'summarizeDeliveries\' count query: keyed on a run id its caller already authorized (aiAgents run detail pins the run to the agent run\'s org; the delivery pass runs in system context)')],
   ])],
   ['src/services/serviceDeliverableService.ts', new Map([
-    ['validateReferences', `evidence linkage validates eq(reports.orgId, <deliverable org>) — ${ORG_PIN}`],
-    ['insertEvidenceRef', `run evidence joins reports and pins eq(reports.orgId, orgId); ${ORG_PIN}`],
+    ['validateReferences', pinned(1, `evidence linkage validates eq(reports.orgId, <deliverable org>) — ${ORG_PIN}`)],
+    ['insertEvidenceRef', pinned(2, `run evidence joins reports and pins eq(reports.orgId, orgId); ${ORG_PIN}`)],
   ])],
   ['src/jobs/reportScheduleWorker.ts', new Map([
-    ['findDueReports', 'system DB context due scan; nothing selected is shown to anyone — every due row is re-authorized per run (#3198 W01 Task 6)'],
-    ['claimReportOccurrence', 'system DB context occurrence CAS by report id on a row findDueReports selected'],
-    ['processRunScheduledReport', 'system DB context, reads by id, re-asserts live partner authority per row before generating (#3198 W01 Task 6); run updates target the run it inserted'],
+    ['findDueReports', pinned(2, 'system DB context due scan; nothing selected is shown to anyone — every due row is re-authorized per run (#3198 W01 Task 6)')],
+    ['claimReportOccurrence', pinned(1, 'system DB context occurrence CAS by report id on a row findDueReports selected')],
+    ['processRunScheduledReport', pinned(4, 'system DB context, reads by id, re-asserts live partner authority per row before generating (#3198 W01 Task 6); run updates target the run it inserted')],
   ])],
   ['src/jobs/reportRunDeliveryReconciler.ts', new Map([
-    ['loadRunOwners', 'system reconciler maps narrative delivery runs to their owner by id; partner-owned runs are settled failed, never delivered (#3198 W01 Task 6)'],
+    ['loadRunOwners', pinned(2, 'system reconciler maps narrative delivery runs to their owner by id; partner-owned runs are settled failed, never delivered (#3198 W01 Task 6)')],
+  ])],
+  // Raw-SQL sites (fix round 1): system-context tenant lifecycle, never a caller read.
+  ['src/services/tenantCascade.ts', new Map([
+    ['clearSql', pinned(2, 'org erasure pre-clear in system context: DELETE FROM report_runs WHERE report_id IN (SELECT id FROM reports WHERE org_id = <erased org>) — a partner-owned definition has org_id NULL and never matches; its runs go with the partner sweep via ON DELETE CASCADE')],
+  ])],
+  ['src/services/orgMergeCustomExecutors.ts', new Map([
+    ['rehomeReportChildrenThenDelete', pinned(8, 'org merge (platform admin, system context): every statement keys on t.org_id = <loser> and s.org_id = <survivor>; a partner-owned definition has org_id NULL and is never re-homed, deduplicated or deleted')],
+    ['reports', pinned(1, 'org merge preview counter: SELECT count(*) FROM reports t WHERE t.org_id = <loser> — a NULL-org partner-owned row never matches, and only a count is returned to the admin')],
   ])],
 ]);
 
@@ -333,25 +377,109 @@ const ENTRYPOINT_CALL = new RegExp(
 );
 
 /**
+ * [start, end) ranges of template-literal TEXT (not the `${…}` expressions).
+ * Runs on comment-stripped source. '…' / "…" strings are skipped and never
+ * span a newline, which bounds the damage a quote inside a regex literal can
+ * do.
+ */
+function templateTextRanges(source: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  // Stack of contexts: 'tpl' = inside template text; a number = inside a
+  // `${…}` expression at that brace depth.
+  const stack: Array<'tpl' | number> = [];
+  let textStart = -1;
+  for (let i = 0; i < source.length; i += 1) {
+    const ch = source[i]!;
+    const top = stack[stack.length - 1];
+    if (top === 'tpl') {
+      if (ch === '\\') { i += 1; continue; }
+      if (ch === '`') { ranges.push([textStart, i]); stack.pop(); continue; }
+      if (ch === '$' && source[i + 1] === '{') {
+        ranges.push([textStart, i]);
+        stack.push(0);
+        i += 1;
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      for (i += 1; i < source.length && source[i] !== ch && source[i] !== '\n'; i += 1) {
+        if (source[i] === '\\') i += 1;
+      }
+      continue;
+    }
+    if (ch === '`') { stack.push('tpl'); textStart = i + 1; continue; }
+    if (typeof top === 'number') {
+      if (ch === '{') stack[stack.length - 1] = top + 1;
+      else if (ch === '}') {
+        if (top === 0) { stack.pop(); textStart = i + 1; } else stack[stack.length - 1] = top - 1;
+      }
+    }
+  }
+  return ranges;
+}
+
+/** Every guarded-table query site in `source`: Drizzle forms + raw SQL in template text. */
+function querySiteMatches(source: string): Array<{ index: number; text: string }> {
+  const hits: Array<{ index: number; text: string }> = [];
+  const re = new RegExp(QUERY_SITE_SOURCE, 'g');
+  for (let m = re.exec(source); m; m = re.exec(source)) hits.push({ index: m.index, text: m[0] });
+  const ranges = templateTextRanges(source);
+  const raw = new RegExp(RAW_SQL_SITE.source, 'gi');
+  for (let m = raw.exec(source); m; m = raw.exec(source)) {
+    const at = m.index;
+    if (ranges.some(([a, b]) => at >= a && at < b)) hits.push({ index: at, text: `sql\`${m[0]}\`` });
+  }
+  return hits.sort((a, b) => a.index - b.index);
+}
+
+/** An allowlisted scope: its written reason and the exact number of unguarded sites it holds. */
+interface AllowEntry { sites: number; reason: string }
+type SiteAllowlist = ReadonlyMap<string, ReadonlyMap<string, AllowEntry>>;
+
+/**
  * Offenders among the query sites of one file: sites whose innermost named
- * scope neither calls a guard nor is allowlisted for that scope.
+ * scope neither calls a guard nor is allowlisted for that scope, plus
+ * allowlisted scopes whose unguarded-site count no longer equals the pinned
+ * `sites` (a new query inside a broad allowlisted scope must be reviewed).
  */
 function siteOffenders(
   relPath: string,
   source: string,
-  allowlist: ReadonlyMap<string, ReadonlyMap<string, string>> = SITE_ALLOWLIST,
+  allowlist: SiteAllowlist = SITE_ALLOWLIST,
 ): string[] {
   const scopes = namedScopes(source);
   const allowed = allowlist.get(relPath);
+  const counts = new Map<string, number>();
   const offenders: string[] = [];
-  const re = new RegExp(QUERY_SITE_SOURCE, 'g');
-  for (let m = re.exec(source); m; m = re.exec(source)) {
-    const scope = innermostScope(scopes, m.index);
+  for (const { index, text } of querySiteMatches(source)) {
+    const scope = innermostScope(scopes, index);
     const body = scope ? source.slice(scope.start, scope.end + 1) : source;
     if (scope && ENTRYPOINT_CALL.test(body)) continue;
-    if (scope && allowed?.has(scope.name)) continue;
-    const line = source.slice(0, m.index).split('\n').length;
-    offenders.push(`${relPath}:${line} (in ${scope?.name ?? 'module scope'}) ${m[0].replace(/\s+/g, '')} is neither guarded by partnerOwnedReportVisibility nor allowlisted for this scope`);
+    if (scope && allowed?.has(scope.name)) {
+      counts.set(scope.name, (counts.get(scope.name) ?? 0) + 1);
+      continue;
+    }
+    const line = source.slice(0, index).split('\n').length;
+    offenders.push(`${relPath}:${line} (in ${scope?.name ?? 'module scope'}) ${text.replace(/\s+/g, ' ')} is neither guarded by partnerOwnedReportVisibility nor allowlisted for this scope`);
+  }
+  for (const [fn, entry] of allowed ?? []) {
+    const found = counts.get(fn) ?? 0;
+    if (found !== entry.sites) {
+      offenders.push(`${relPath} (in ${fn}) has ${found} unguarded guarded-table sites; the allowlist pins ${entry.sites}`);
+    }
+  }
+  return offenders;
+}
+
+/** Table re-bindings (aliased import, `const t = reportRuns`, destructure) in `source`. */
+function rebindOffenders(relPath: string, source: string): string[] {
+  const offenders: string[] = [];
+  for (const re of TABLE_REBINDS) {
+    const g = new RegExp(re.source, 'g');
+    for (let m = g.exec(source); m; m = g.exec(source)) {
+      const line = source.slice(0, m.index).split('\n').length;
+      offenders.push(`${relPath}:${line} re-binds a guarded table symbol: ${m[0].replace(/\s+/g, ' ')}`);
+    }
   }
   return offenders;
 }
@@ -420,12 +548,70 @@ describe('scan analyzer (#3198 W02 B1)', () => {
       '  return db.select().from(reportRuns).where(eq(reportRuns.id, id));',
       '}',
     ].join('\n');
-    const allow = new Map([['src/x.ts', new Map([['listed', 'reason long enough to count as one']])]]);
+    const allow = new Map([['src/x.ts', new Map([['listed', pinned(1, 'reason long enough to count as one')]])]]);
     const offenders = siteOffenders('src/x.ts', src, allow);
     expect(offenders).toHaveLength(1);
     expect(offenders[0]).toContain('(in sibling)');
     // …and the sibling passes once it goes through a guard entrypoint.
     expect(siteOffenders('src/x.ts', src.replace('eq(reportRuns.id, id)', 'tenantAuthorizedRunCondition(auth)'), allow)).toEqual([]);
+  });
+
+  it('flags raw SQL, interpolated tables, $count, crossJoin and lateral joins (fix round 1)', () => {
+    const cases: Record<string, string> = {
+      rawFrom: 'export async function a() { return db.execute(sql`SELECT id FROM report_runs WHERE x = ${y}`); }',
+      rawDelete: 'export async function a() { return db.execute(sql`\n  DELETE FROM reports WHERE id = ${id}`); }',
+      rawQuoted: 'export async function a() { return db.execute(sql`UPDATE "report_run_deliveries" SET state = 1`); }',
+      rawJoin: 'export async function a() { return db.execute(sql`SELECT 1 FROM x JOIN reports r ON r.id = x.id`); }',
+      interpolated: 'export async function a() { return db.execute(sql`SELECT * FROM ${reportRuns} WHERE 1=1`); }',
+      count: 'export async function a() { return db.$count(reportRuns, eq(reportRuns.reportId, id)); }',
+      crossJoin: 'export async function a() { return db.select().from(x).crossJoin(reports); }',
+      lateral: 'export async function a() { return db.select().from(x).leftJoinLateral(reportRunDeliveries, sql`true`); }',
+      namespaced: 'export async function a() { return db.select().from(schema.reportRuns); }',
+    };
+    for (const [name, src] of Object.entries(cases)) {
+      expect(siteOffenders('src/x.ts', src, new Map()), name).toHaveLength(1);
+    }
+    // Prose and non-SQL templates do not count.
+    for (const src of [
+      'export function a() { return `/api/reports/runs/${id}/download`; }',
+      "export function a() { return 'rows from reports are listed'; }",
+      'export function a() { return `${reportRuns.result}`; }',
+    ]) {
+      expect(siteOffenders('src/x.ts', src, new Map()), src).toEqual([]);
+    }
+  });
+
+  it('pins the site count per allowlisted scope: a second query in a broad scope goes red (fix round 1)', () => {
+    const one = 'export async function worker(id) {\n  return db.select().from(reports).where(eq(reports.id, id));\n}';
+    const two = one.replace('return db', 'await db.update(reportRuns).set({});\n  return db');
+    const allow = new Map([['src/x.ts', new Map([['worker', pinned(1, 'reason long enough to count as one')]])]]);
+    expect(siteOffenders('src/x.ts', one, allow)).toEqual([]);
+    expect(siteOffenders('src/x.ts', two, allow)).toEqual([
+      'src/x.ts (in worker) has 2 unguarded guarded-table sites; the allowlist pins 1',
+    ]);
+  });
+
+  it('hard-fails any re-binding of a table symbol (fix round 1)', () => {
+    for (const src of [
+      "import { reportRuns as runs } from '../db/schema';",
+      "import {\n  reports,\n  reportRunDeliveries as deliveries,\n} from '../db/schema';",
+      "export { reports as reportDefinitions } from '../db/schema';",
+      'const t = reportRuns;',
+      'const t: typeof reports = reports;',
+      'const t = schema.reportRunDeliveries;',
+      'const { reportRuns: runs } = schema;',
+      'let { reports } = schema;',
+    ]) {
+      expect(rebindOffenders('src/x.ts', src), src).toHaveLength(1);
+    }
+    for (const src of [
+      "import { reportRuns, reports } from '../db/schema';",
+      'const id = reports.id;',
+      'const rows = await db.select().from(reports);',
+      'const total = reportRuns.length > 0 ? 1 : 0;',
+    ]) {
+      expect(rebindOffenders('src/x.ts', src), src).toEqual([]);
+    }
   });
 
   it('a helper or entrypoint DECLARATION is not a call', () => {
@@ -454,6 +640,15 @@ describe('partner-owned report visibility is mechanical (#3198 W01, per-site sin
   it('every guarded-table query site is in a guarded scope or allowlisted for that scope', () => {
     const offenders = files.flatMap((f) => siteOffenders(rel(f), code(f)));
     expect(offenders).toEqual([]);
+  });
+
+  it('no file re-binds a guarded table symbol (the scan keys on the symbol names)', () => {
+    expect(files.flatMap((f) => rebindOffenders(rel(f), code(f)))).toEqual([]);
+  });
+
+  it('finds raw-SQL sites in template text (guards against a vacuous raw arm)', () => {
+    const raw = files.flatMap((f) => querySiteMatches(code(f)).filter((h) => h.text.startsWith('sql`')).map(() => rel(f)));
+    expect(new Set(raw)).toEqual(new Set(['src/services/tenantCascade.ts', 'src/services/orgMergeCustomExecutors.ts']));
   });
 
   it('every guard entrypoint reaches the helper', () => {
@@ -510,9 +705,10 @@ describe('partner-owned report visibility is mechanical (#3198 W01, per-site sin
     for (const [file, scopes] of SITE_ALLOWLIST) {
       const source = code(join(process.cwd(), file));
       const live = new Set(siteOffenders(file, source, new Map()).map((o) => /\(in (.+?)\) /.exec(o)?.[1]));
-      for (const [fn, reason] of scopes) {
+      for (const [fn, { reason, sites }] of scopes) {
         if (!live.has(fn)) stale.push(`${file}: ${fn}`);
         expect(reason.length, `${file}:${fn}`).toBeGreaterThan(20);
+        expect(sites, `${file}:${fn}`).toBeGreaterThan(0);
       }
     }
     expect(stale).toEqual([]);

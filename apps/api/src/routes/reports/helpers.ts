@@ -86,11 +86,17 @@ export async function ensureOrgAccess(
  * scope; FALSE for everyone else, including org tokens (which DO carry a
  * partnerId) and 'selected' partner users. There is no database backstop for
  * the org_access rule — `breeze_has_partner_access` is flat membership — so
- * partnerOwnedVisibility.scan.test.ts fails any read or mutation of
- * `reports` / `report_runs` / `report_run_deliveries` under routes/,
- * services/, jobs/ whose enclosing function neither reaches this (directly or
- * through a verified guard entrypoint) nor is allowlisted per site with a
- * reason.
+ * partnerOwnedVisibility.scan.test.ts, a TEXTUAL scan of routes/,
+ * services/, jobs/, fails a Drizzle read or mutation of `reports` /
+ * `reportRuns` / `reportRunDeliveries`, a table interpolated into a sql
+ * template, or a raw-SQL FROM/JOIN/UPDATE/USING/DELETE/INSERT on
+ * report_runs / report_run_deliveries / reports inside template text, when
+ * the enclosing function neither reaches this (directly or through a verified
+ * guard entrypoint) nor is allowlisted for that scope with a reason and a
+ * pinned site count; it also fails any re-binding of those table symbols.
+ * It cannot see a table passed as a function argument (`fn(reports)` →
+ * `.from(table)`), SQL assembled from plain strings, or code outside those
+ * three directories — those still rely on review and the route suites.
  */
 export function partnerOwnedReportVisibility(
   auth: Pick<AuthContext, 'scope' | 'partnerId' | 'partnerOrgAccess'>,
