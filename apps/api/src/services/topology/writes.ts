@@ -48,6 +48,12 @@ export async function withTopologyWrite<T>(ctx: TopologyRequestContext, requireR
   assertInTransaction('topology mutation');
   const current = await requireTopologySiteAccess(ctx.auth, ctx.permissions, ctx.scope.siteId, 'write');
   if (current.scope.orgId !== ctx.scope.orgId) throw missingTopologyEntity();
+  // Resolve flags BEFORE the site-state row lock: the partner-axis read inside
+  // escapes to a second pooled connection, and heartbeats lock the same row in
+  // negotiateTopologyContext. Holding the lock while waiting on the pool is the
+  // 2026-09-22 US deadlock shape.
+  const flags = await loadTopologyFlags(ctx);
+  if (requireReady && !flags.materialization) throw new TopologyWriteError('topology_materialization_disabled', 409, 'Topology materialization is disabled');
   try { return await withDbTransaction(async () => {
     if (!requireReady) await db.insert(topologySiteState).values(ctx.scope).onConflictDoNothing();
     const [state] = await db.select().from(topologySiteState).where(scopedWrite(ctx.scope, topologySiteState)).for('update');
@@ -57,8 +63,6 @@ export async function withTopologyWrite<T>(ctx: TopologyRequestContext, requireR
     // This is a per-lock backstop, not a guarantee about deadlock victim choice.
     const priorLockMs = await tightenLockTimeout(db, TOPOLOGY_SOURCE_LOCK_TIMEOUT_MS);
     if (priorLockMs === null) throw new Error('Could not read prior topology lock timeout');
-    const flags = await loadTopologyFlags(ctx);
-    if (requireReady && !flags.materialization) throw new TopologyWriteError('topology_materialization_disabled', 409, 'Topology materialization is disabled');
     const checkpoint = state && readLegacyImportCheckpoint(state.effectiveSettings);
     const ready = flags.materialization && checkpoint?.status === 'complete';
     if (requireReady && !ready) throw new TopologyWriteError('topology_preparing', 409, 'Topology has not been prepared');
