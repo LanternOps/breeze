@@ -14,6 +14,7 @@
     "adminConnectedApps": "Bağlı uygulamalar (yönetici)",
     "adminLlmProviderCatalog": "LLM Sağlayıcı Kataloğu",
     "adminQuarantined": "Karantinaya alınmış cihazlar",
+    "adminSystem": "Sistem",
     "adminThirdPartyCatalog": "Üçüncü Taraf Kataloğu",
     "adminTrustAct": "Ortak güven eylemi",
     "adminTrustQueue": "Ortak güven kuyruğu",
@@ -169,8 +170,7 @@
     "agreementTemplateNew": "Yeni anlaşma şablonu",
     "signedAgreements": "İmzalı anlaşmalar",
     "settingsTicketing": "Bilet Ayarları",
-    "securityScans": "IOC Taramaları",
-    "settingsSystemDeprecations": "Kullanımdan kaldırmalar"
+    "securityScans": "IOC Taramaları"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Uzaktan İzleme ve Yönetim",
