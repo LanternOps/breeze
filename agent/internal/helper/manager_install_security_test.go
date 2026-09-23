@@ -35,6 +35,9 @@ func newInstallTestManager(t *testing.T, tmpDir string) *Manager {
 	mgr.baseDir = tmpDir
 	mgr.binaryPath = filepath.Join(tmpDir, "missing-helper") // isInstalled() == false
 	mgr.sessionEnumerator = &mockEnumerator{}
+	// Default to "platform cannot read the version" so the pre-existing
+	// install tests are host-independent; verification tests override it.
+	mgr.binaryVersionFunc = func(string) (string, error) { return "", errBinaryVersionUnsupported }
 	return mgr
 }
 
@@ -210,10 +213,9 @@ func TestDownloadAndInstallSucceedsWhenOnDiskVersionMatches(t *testing.T) {
 	}
 }
 
-// Where the platform cannot read a binary version (Linux) or the read fails,
-// verification cannot run; the install result stands as before rather than
-// turning every install into a failure.
-func TestDownloadAndInstallSkipsVerificationWhenVersionUnreadable(t *testing.T) {
+// Where the platform cannot read a binary version at all (Linux),
+// verification cannot run and the package manager result stands.
+func TestDownloadAndInstallSkipsVerificationWhenVersionUnsupported(t *testing.T) {
 	tmpDir := t.TempDir()
 	withInstallRecorder(t)
 	mgr := newInstallTestManager(t, tmpDir)
@@ -222,11 +224,79 @@ func TestDownloadAndInstallSkipsVerificationWhenVersionUnreadable(t *testing.T) 
 		t.Fatal(err)
 	}
 	mgr.downloadFunc = func(string) (string, error) { return verifiedPkg, nil }
-	for _, readErr := range []error{errBinaryVersionUnsupported, errors.New("no version resource")} {
-		mgr.binaryVersionFunc = func(string) (string, error) { return "", readErr }
-		if err := mgr.downloadAndInstall("0.114.0"); err != nil {
-			t.Fatalf("downloadAndInstall with unreadable version (%v): %v", readErr, err)
+	mgr.binaryVersionFunc = func(string) (string, error) { return "", errBinaryVersionUnsupported }
+	if err := mgr.downloadAndInstall("0.114.0"); err != nil {
+		t.Fatalf("downloadAndInstall with unsupported version read: %v", err)
+	}
+}
+
+// On a platform that can read the version, an unreadable version right after
+// install is unproven, not success — otherwise the pending update is cleared
+// with no retry, the same blind spot as #6252.
+func TestDownloadAndInstallFailsWhenVersionUnreadableOnSupportedPlatform(t *testing.T) {
+	tmpDir := t.TempDir()
+	withInstallRecorder(t)
+	mgr := newInstallTestManager(t, tmpDir)
+	verifiedPkg := filepath.Join(tmpDir, "verified"+packageExtension())
+	if err := os.WriteFile(verifiedPkg, []byte("VERIFIED"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	mgr.downloadFunc = func(string) (string, error) { return verifiedPkg, nil }
+	mgr.binaryVersionFunc = func(string) (string, error) { return "", errors.New("sharing violation") }
+	err := mgr.downloadAndInstall("0.114.0")
+	if !errors.Is(err, errHelperInstallNotApplied) {
+		t.Fatalf("error = %v, want errHelperInstallNotApplied", err)
+	}
+}
+
+// A transient read failure is retried on a later tick and succeeds once the
+// version becomes readable: the pending update is cleared only then.
+func TestApplyPendingUpdateRetriesAfterTransientUnreadableVersion(t *testing.T) {
+	tmpDir := t.TempDir()
+	withInstallRecorder(t)
+	mgr := newInstallTestManager(t, tmpDir)
+	mgr.binaryPath = filepath.Join(tmpDir, "breeze-helper")
+	if err := os.WriteFile(mgr.binaryPath, []byte("old"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	verifiedPkg := filepath.Join(tmpDir, "verified"+packageExtension())
+	mgr.downloadFunc = func(string) (string, error) {
+		if err := os.WriteFile(verifiedPkg, []byte("VERIFIED"), 0600); err != nil {
+			return "", err
 		}
+		return verifiedPkg, nil
+	}
+	installs := 0
+	orig := installPackageFunc
+	installPackageFunc = func(string, string) error { installs++; return nil }
+	t.Cleanup(func() { installPackageFunc = orig })
+	// Readable-old before any install; unreadable right after the 1st
+	// install; readable-new after the 2nd.
+	mgr.binaryVersionFunc = func(string) (string, error) {
+		switch installs {
+		case 0:
+			return "0.108.0", nil
+		case 1:
+			return "", errors.New("sharing violation")
+		default:
+			return "0.114.0", nil
+		}
+	}
+
+	mgr.CheckUpdate("0.114.0")
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+	mgr.applyPendingUpdate()
+	if mgr.pendingHelperVersion != "0.114.0" || mgr.updateFailures != 1 {
+		t.Fatalf("after unverified install: pending=%q failures=%d, want pending kept and 1 failure",
+			mgr.pendingHelperVersion, mgr.updateFailures)
+	}
+	mgr.applyPendingUpdate()
+	if mgr.pendingHelperVersion != "" {
+		t.Fatalf("after verified install: pending=%q, want cleared", mgr.pendingHelperVersion)
+	}
+	if installs != 2 {
+		t.Fatalf("installs = %d, want 2", installs)
 	}
 }
 

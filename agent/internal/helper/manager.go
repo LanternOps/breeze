@@ -170,7 +170,9 @@ type Manager struct {
 	// helper process is running or has written a status file (#6252). Nil, or
 	// errBinaryVersionUnsupported, means the platform cannot read it.
 	binaryVersionFunc func(path string) (string, error)
-	agentVersion      string
+	// lastBinaryVersionErr dedupes the unreadable-version warning. Guarded by mu.
+	lastBinaryVersionErr string
+	agentVersion         string
 	// manifestKeys and requireManifestSigningKeyID are PROVIDERS, not values:
 	// both underlying config fields are mutable at runtime and the verified
 	// downloader must re-read them on every download. See WithManifestKeys.
@@ -716,13 +718,19 @@ func (m *Manager) downloadAndInstall(version string) error {
 	// six releases). Where the on-disk version is readable, it must now be the
 	// target; a mismatch is a failed install so the caller rolls back, counts
 	// it toward the retry cap, and stops claiming success.
+	//
+	// On a platform that CAN read the version (Windows, macOS), a read failure
+	// right after install is also a failure: accepting it would clear the
+	// pending update with the result unproven, which is the #6252 blind spot
+	// again. A transient failure (AV scanning the fresh binary) is retried by
+	// applyPendingUpdate on a later heartbeat, up to the failure cap.
 	onDisk, err := m.readBinaryVersion()
 	switch {
+	case errors.Is(err, errBinaryVersionUnsupported):
+		// Linux: no version metadata; the package manager result stands.
 	case err != nil:
-		if !errors.Is(err, errBinaryVersionUnsupported) {
-			log.Warn("helper installed but on-disk version could not be read; install result unverified",
-				"path", m.binaryPath, "targetVersion", version, "error", err.Error())
-		}
+		return fmt.Errorf("%w: on-disk version unreadable after install (target %q): %v",
+			errHelperInstallNotApplied, version, err)
 	case !helperVersionsMatch(onDisk, version):
 		return fmt.Errorf("%w: on-disk version %q, target %q (msiexec may have skipped the upgrade or deferred file replacement until reboot)",
 			errHelperInstallNotApplied, onDisk, version)
@@ -781,7 +789,15 @@ func (m *Manager) installedVersionLocked() string {
 	if v, err := m.readBinaryVersion(); err == nil && strings.TrimSpace(v) != "" {
 		return strings.TrimSpace(v)
 	} else if err != nil && !errors.Is(err, errBinaryVersionUnsupported) && m.isInstalled() {
-		log.Debug("helper binary version unreadable, falling back to session status", "path", m.binaryPath, "error", err.Error())
+		// Warn (shipped) but only when the error changes: this runs every
+		// heartbeat and per session, and a persistently unreadable version
+		// must be visible server-side without flooding the log.
+		if msg := err.Error(); msg != m.lastBinaryVersionErr {
+			m.lastBinaryVersionErr = msg
+			log.Warn("helper binary version unreadable, falling back to session status", "path", m.binaryPath, "error", msg)
+		}
+	} else {
+		m.lastBinaryVersionErr = ""
 	}
 	for _, state := range m.sessions {
 		status, err := ReadStatus(state.configPath)

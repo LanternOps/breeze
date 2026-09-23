@@ -37,7 +37,8 @@ func mainAgentUpgradeDecision(target, current string) versionpolicy.Decision {
 // when it is ALSO genuinely absent from disk (installedOnDisk false) — both
 // signals must agree. installedOnDisk and installed come from independent
 // sources (helper.Manager.IsInstalled() stats the binary path; InstalledVersion()
-// reads separate per-session status files), and a partial uninstall can
+// reads the binary's stamped version, falling back to per-session status
+// files where that is unreadable), and a partial uninstall can
 // desync them: e.g. package removal succeeds but clearing the sessions
 // directory fails (locked file, permission error) and only logs a warning,
 // leaving IsInstalled() == false while InstalledVersion() still returns the
