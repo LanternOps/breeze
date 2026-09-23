@@ -18,9 +18,14 @@ const validateSampleSize = 64
 // validate's restored-file checksum sample must skip them for an IdentityNew
 // run — a byte difference there is the whole point of that phase, not a
 // sign of restore corruption.
-// Keyed the same way validate's checksum sample now looks entries up: by
-// backup.RestoreKey (volume and leading separators stripped), not the raw
-// SourcePath — see the failedFiles/identityMutatedPaths lookups below.
+// Keyed by backup.RestoreKey (volume and leading separators stripped), the
+// same key validate's checksum-sample target path is joined under r.staging
+// with — these entries are all plain Linux absolute paths with no
+// OriginalPath (not VSS-rewritten), so RestoreKey here is just SourcePath
+// with its leading "/" stripped. NOT the same key as r.failedFiles below,
+// which is looked up by backup.RestoreSourceKey (unstripped) instead,
+// because that is the format RestoreResult.FailedFiles is actually written
+// in (see restore_tree.go).
 var identityMutatedPaths = map[string]bool{
 	"etc/machine-id":          true,
 	"etc/hostname":            true,
@@ -45,11 +50,14 @@ func validate(ctx context.Context, r *run) error {
 			if !f.HasContent() || f.Checksum == "" {
 				continue
 			}
-			key := backup.RestoreKey(f)
-			if r.opts.Identity == IdentityNew && identityMutatedPaths[key] {
+			if r.opts.Identity == IdentityNew && identityMutatedPaths[backup.RestoreKey(f)] {
 				continue
 			}
-			if r.failedFiles[key] {
+			if r.failedFiles[backup.RestoreSourceKey(f)] {
+				// r.failedFiles is populated unchanged from
+				// RestoreResult.FailedFiles (restore_tree.go), whose entries
+				// are displayPath = restoreSourcePath(file) — i.e. exactly
+				// RestoreSourceKey, NOT RestoreKey (volume not stripped).
 				continue // known partial-restore failure, already a warning
 			}
 			withSum = append(withSum, f)

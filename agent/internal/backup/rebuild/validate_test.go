@@ -93,9 +93,11 @@ func TestValidate_LinuxSampleStillWorks(t *testing.T) {
 // TestValidate_SkipsFailedFileByRestoreKey is the controller-ruling
 // extension: a VSS entry (OriginalPath set, SourcePath a shadow-copy
 // device path) whose restore failed must be looked up in r.failedFiles by
-// its RestoreKey — the same key validate's checksum sample now joins under
-// r.staging — not by f.SourcePath (the raw, unstripped shadow path).
-// Without this, a known-failed VSS file that never landed on disk
+// its RestoreSourceKey — the exact, unstripped key RestoreResult.FailedFiles
+// (and thus r.failedFiles, populated unchanged from it by restore_tree.go)
+// is actually written under — not by f.SourcePath (the raw shadow path), and
+// not by RestoreKey (that's a different, stripped string for any Windows
+// entry). Without this, a known-failed VSS file that never landed on disk
 // surfaces as a checksum mismatch instead of being silently skipped as an
 // already-reported warning.
 func TestValidate_SkipsFailedFileByRestoreKey(t *testing.T) {
@@ -118,9 +120,9 @@ func TestValidate_SkipsFailedFileByRestoreKey(t *testing.T) {
 		manifest:    &backup.Snapshot{Files: []backup.SnapshotFile{f}},
 		opts:        Options{SkipBoot: true},
 		sys:         &fakeSystem{},
-		failedFiles: map[string]bool{backup.RestoreKey(f): true},
+		failedFiles: map[string]bool{backup.RestoreSourceKey(f): true},
 	}
 	if err := validate(context.Background(), r); err != nil {
-		t.Fatalf("validate() = %v, want nil (known-failed VSS file should be skipped by its restore key)", err)
+		t.Fatalf("validate() = %v, want nil (known-failed VSS file should be skipped by its RestoreSourceKey)", err)
 	}
 }

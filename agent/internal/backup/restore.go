@@ -550,6 +550,19 @@ func RestoreKey(f SnapshotFile) string {
 	return stripVolumeAndLeadingSeparators(restoreSourcePath(f))
 }
 
+// RestoreSourceKey is restoreSourcePath exported: the exact string
+// RestoreResult.FailedFiles entries are written under (displayPath in the
+// download loop above — OriginalPath when VSS rewrote SourcePath, else
+// SourcePath itself; volume NOT stripped, separators as recorded). Use this,
+// never RestoreKey, to look an entry up in a FailedFiles-derived set (e.g.
+// the rebuild engine's r.failedFiles, populated unchanged from
+// RestoreResult.FailedFiles) — RestoreKey is the relative-to-target-base
+// path an entry restores under on disk, a different string for any Windows
+// entry (it additionally strips the drive volume and leading separators).
+func RestoreSourceKey(f SnapshotFile) string {
+	return restoreSourcePath(f)
+}
+
 // SetVolumeNameForTest overrides the package-level volumeName hook restore.go
 // uses to strip a leading Windows drive volume, returning a restore func.
 // Exported (test-only by convention, never called from non-test code) so an
