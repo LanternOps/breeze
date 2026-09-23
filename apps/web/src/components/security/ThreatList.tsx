@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
   Filter,
   Loader2,
@@ -51,8 +52,15 @@ function formatDetectedAt(value: string, timezone?: string): string {
 }
 interface ThreatListProps {
   timezone?: string;
+  /**
+   * Selects a threat for the detail view (#MSA-3 — `ThreatDetail` shipped in
+   * #6573 but was never mounted, so a quarantined threat had no UI path to
+   * restore). Rows are clickable AND keyboard-operable (Enter/Space via
+   * `role="button"`) rather than relying on click alone.
+   */
+  onSelectThreat?: (threatId: string) => void;
 }
-export default function ThreatList({ timezone }: ThreatListProps) {
+export default function ThreatList({ timezone, onSelectThreat }: ThreatListProps) {
   const { t } = useTranslation("security");
   const [query, setQuery] = useState("");
   const [severityFilter, setSeverityFilter] = useState<string>("all");
@@ -192,9 +200,33 @@ export default function ThreatList({ timezone }: ThreatListProps) {
       data-testid={`threat-row-select-${threat.id}`}
       checked={selectedIds.has(threat.id)}
       onChange={(event) => handleSelectOne(threat.id, event.target.checked)}
+      onClick={(event) => event.stopPropagation()}
       className="h-4 w-4 rounded border-border"
     />
   );
+  const handleRowActivate = (threat: Threat) => {
+    onSelectThreat?.(threat.id);
+  };
+  const handleRowKeyDown = (
+    event: ReactKeyboardEvent<HTMLTableRowElement | HTMLDivElement>,
+    threat: Threat,
+  ) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    handleRowActivate(threat);
+  };
+  const rowInteractionProps = (threat: Threat) =>
+    onSelectThreat
+      ? {
+          role: "button" as const,
+          tabIndex: 0,
+          "data-testid": `threat-row-${threat.id}`,
+          onClick: () => handleRowActivate(threat),
+          onKeyDown: (
+            event: ReactKeyboardEvent<HTMLTableRowElement | HTMLDivElement>,
+          ) => handleRowKeyDown(event, threat),
+        }
+      : {};
   const renderSeverityBadge = (threat: Threat) => (
     <span
       className={cn(
@@ -405,7 +437,14 @@ export default function ThreatList({ timezone }: ThreatListProps) {
                 </tr>
               ) : (
                 threats.map((threat) => (
-                  <tr key={threat.id} className="text-sm">
+                  <tr
+                    key={threat.id}
+                    className={cn(
+                      "text-sm",
+                      onSelectThreat && "cursor-pointer hover:bg-muted/40 focus:outline-hidden focus:ring-2 focus:ring-ring focus:ring-inset",
+                    )}
+                    {...rowInteractionProps(threat)}
+                  >
                     <td className="px-4 py-3">
                       {renderSelectCheckbox(threat)}
                     </td>
@@ -443,7 +482,10 @@ export default function ThreatList({ timezone }: ThreatListProps) {
             </DataCard>
           ) : (
             threats.map((threat) => (
-              <DataCard key={threat.id}>
+              <DataCard
+                key={threat.id}
+                onClick={onSelectThreat ? () => handleRowActivate(threat) : undefined}
+              >
                 <div className="flex items-start gap-3">
                   <div className="mt-0.5 shrink-0">
                     {renderSelectCheckbox(threat)}

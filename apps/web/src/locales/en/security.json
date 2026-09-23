@@ -2065,6 +2065,7 @@
     "iocScans": "IOC Scans",
     "subtitle": "Signature-based malware and IOC sweeps across your fleet. Not a replacement for full endpoint protection.",
     "scansTab": "Scans",
-    "threatsTab": "Threats"
+    "threatsTab": "Threats",
+    "backToThreats": "Back to threats"
   }
 }

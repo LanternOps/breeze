@@ -245,6 +245,24 @@ export const MONITOR_KIND_FIELDS: Record<MonitorKind, readonly KindField[]> = {
 };
 
 /**
+ * Per-`checkType` default targets for the `network_check` kind (#MSA-1). When
+ * the editor's `checkType` select changes, `MonitorConditionFields` resets
+ * `target` to the NEW type's default if it still holds the PREVIOUS type's
+ * default here (or is empty) — a stale ICMP `8.8.8.8` silently carrying over
+ * onto an HTTP check reads as a plausible default rather than the ping
+ * leftover it is. A target the user actually typed is left alone. Every
+ * value here must satisfy `target: z.string().min(1).max(500)`
+ * (`packages/shared/src/validators/monitors.ts`) — an empty string would be
+ * a valid-looking reset that fails validation on save.
+ */
+export const NETWORK_CHECK_TARGET_DEFAULTS: Record<string, string> = {
+  icmp_ping: '8.8.8.8',
+  tcp_port: '8.8.8.8',
+  http_check: 'https://example.com',
+  dns_check: '8.8.8.8',
+};
+
+/**
  * First valid values for a freshly-chosen kind — every one of these MUST pass
  * `monitorConditionSchemas[kind].safeParse(...)` (asserted in the test). String
  * fields that are required (min length 1) get a short placeholder value rather
