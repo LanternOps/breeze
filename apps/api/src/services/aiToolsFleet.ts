@@ -3285,7 +3285,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'effective service and process monitors per device: list',
     definition: {
       name: 'manage_service_monitors',
-      description: 'List effective service/process monitors per accessible device via the monitor resolver. Optional configPolicyId filters the winning source policy. Use manage_monitor_definitions to author monitors, then attach them with manage_policy_feature_link featureType "monitors".',
+      description: 'Read effective service/process monitors per accessible device via the monitor resolver. Actions: list. Optional configPolicyId filters the winning source policy. Use manage_monitor_definitions to author monitors, then attach them with manage_policy_feature_link featureType "monitors".',
       input_schema: {
         type: 'object' as const,
         properties: {
