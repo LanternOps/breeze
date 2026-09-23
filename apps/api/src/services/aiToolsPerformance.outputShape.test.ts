@@ -112,6 +112,18 @@ describe('analyze_metrics output shape (#6745)', () => {
     expectDefaultPageFits('analyze_metrics', raw);
   });
 
+  it('the device_metrics fallback (no rollups) pages its in-memory buckets too', async () => {
+    selectOnce([DEVICE]);
+    selectOnce([]); // no rollups for the window
+    // 200 raw rows one hour apart -> 200 hourly buckets.
+    selectOnce(Array.from({ length: 200 }, (_, i) => ({ ...fullMetricRow(0), timestamp: new Date(Date.UTC(2026, 8, 20, 10) - i * 3_600_000) })));
+    const out = JSON.parse(await tool.handler({ deviceId: DEVICE_ID, hoursBack: 168, aggregation: 'hourly' }, auth())) as Record<string, any>;
+    expect(out.source).toBe('device_metrics');
+    expect(out.buckets).toHaveLength(40);
+    expect(out.pointsInWindow).toBe(200);
+    expect(out.hasMore).toBe(true);
+  });
+
   it('an explicit large limit that compacts still carries limit/hasMore', async () => {
     selectOnce([DEVICE]);
     selectOnce(Array.from({ length: 500 }, (_, i) => fullMetricRow(i)));

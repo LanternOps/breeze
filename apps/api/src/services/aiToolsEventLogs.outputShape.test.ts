@@ -17,6 +17,11 @@ const logSearchMock = vi.hoisted(() => ({
   resolveSingleOrgId: vi.fn(),
 }));
 vi.mock('./logSearch', () => logSearchMock);
+// Only reached by a site-restricted auth (the zero-device short-circuit test).
+vi.mock('./aiToolsSiteScope', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./aiToolsSiteScope')>()),
+  resolveSiteAllowedDeviceIds: vi.fn(async () => []),
+}));
 
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
@@ -147,5 +152,15 @@ describe('get_log_trends output shape (#6745)', () => {
     const out = JSON.parse(await tool.handler({ groupBy: 'level' }, auth())) as Record<string, any>;
     expect(out.grouped.sampleSeries).toBeUndefined();
     expect(out.grouped.totals).toEqual([{ group: 'error', count: 3 }]);
+  });
+
+  it('the zero-in-scope-device short-circuit returns the same default shape', async () => {
+    const restricted = { ...(auth() as unknown as Record<string, unknown>), allowedSiteIds: ['site-x'], canAccessSite: () => true } as unknown as AuthContext;
+    const out = JSON.parse(await tool.handler({}, restricted)) as Record<string, any>;
+    expect(logSearchMock.getLogTrends).not.toHaveBeenCalled();
+    expect(out.trends).toMatchObject({ topSourcesHasMore: false, topDevicesHasMore: false, errorTimelineBuckets: 0, spikeCount: 0, spikes: [] });
+    expect(out.trends.errorTimeline).toBeUndefined();
+    const withTimeline = JSON.parse(await tool.handler({ includeTimeline: true }, restricted)) as Record<string, any>;
+    expect(withTimeline.trends.errorTimeline).toEqual([]);
   });
 });

@@ -77,6 +77,17 @@ describe('get_effective_configuration output shape (#6745)', () => {
     expectDefaultPageFits('get_effective_configuration', raw);
   });
 
+  it('hasInlineSettings is false for empty or null settings', async () => {
+    const cfg = effective();
+    const [a, b] = CONFIG_FEATURE_TYPES;
+    (cfg.features[a!] as Record<string, unknown>).inlineSettings = {};
+    (cfg.features[b!] as Record<string, unknown>).inlineSettings = null;
+    resolveEffectiveConfigMock.mockResolvedValue(cfg);
+    const out = JSON.parse(await tool().handler({ deviceId: DEVICE_ID }, auth())) as Record<string, any>;
+    expect(out.features[a!].hasInlineSettings).toBe(false);
+    expect(out.features[b!].hasInlineSettings).toBe(false);
+  });
+
   it('includeSettings + featureType returns that one feature with its settings', async () => {
     const ft = CONFIG_FEATURE_TYPES[0];
     const raw = await tool().handler({ deviceId: DEVICE_ID, includeSettings: true, featureType: ft }, auth());
