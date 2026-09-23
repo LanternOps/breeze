@@ -1250,6 +1250,33 @@ describe('WS lifecycle status writes — terminal-status guard (#2230)', () => {
     expect(transitionDeviceOfflineMock).toHaveBeenCalledWith('agent-123', ['online']);
   });
 
+  it('does not publish device.offline itself on disconnect — the offline-event effect owns it (#6566 double publish)', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) } as any);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+    await handlers.onOpen({}, ws as any);
+
+    vi.clearAllMocks();
+    vi.mocked(publishEvent).mockResolvedValue('event-id');
+    transitionDeviceOfflineMock.mockClear();
+    // transitioned:true means transitionDeviceOffline persisted an
+    // 'offline-event' effect, whose worker publishes device.offline. A second
+    // publish here made webhooks and device.offline automations fire twice.
+    transitionDeviceOfflineMock.mockResolvedValue({ transitioned: true });
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([
+      { id: 'device-123', siteId: 'site-1', status: 'online', hostname: 'host-1' },
+    ]) as any);
+
+    await handlers.onClose({}, ws as any);
+
+    expect(transitionDeviceOfflineMock).toHaveBeenCalledWith('agent-123', ['online']);
+    expect(vi.mocked(publishEvent).mock.calls.filter(([type]) => type === 'device.offline')).toEqual([]);
+  });
+
   it('never calls transitionDeviceOffline on disconnect while the device is updating (#6503)', async () => {
     const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
 
