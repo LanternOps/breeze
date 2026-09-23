@@ -210,6 +210,10 @@ export async function loadApprovedDesign(orgId: string): Promise<ApprovedDesignS
 type LivePolicyRow = { id: string; name: string; status: string; org_id: string | null; created_at: Date | string | null };
 type LiveWatchRow = { policy_id: string; name: string; watch_type: string; enabled: boolean };
 type LiveRuleRow = { policy_id: string; name: string; severity: string; cooldown_minutes: number };
+type LiveMonitorRow = {
+  policy_id: string; name: string; kind: string; condition: unknown;
+  severity: string; cooldown_minutes: number; enabled: boolean; item_kind: string | null;
+};
 type LiveAssignmentRow = { policy_id: string; level: string; target_id: string; priority: number; role_filter: string[] | null };
 
 /**
@@ -239,12 +243,47 @@ export async function loadDriftLiveState(orgId: string, approved: ApprovedDesign
     FROM config_policy_monitoring_watches w
     JOIN config_policy_monitoring_settings ms ON ms.id = w.settings_id
     JOIN config_policy_feature_links fl ON fl.id = ms.feature_link_id AND fl.config_policy_id = ANY(${uuidArray(policyIds)})
+    WHERE w.retired_at IS NULL
   `)];
   const rules = policyIds.length === 0 ? [] : [...await db.execute<LiveRuleRow>(sql`
     SELECT fl.config_policy_id AS policy_id, r.name, r.severity::text AS severity, r.cooldown_minutes
     FROM config_policy_alert_rules r
     JOIN config_policy_feature_links fl ON fl.id = r.feature_link_id AND fl.config_policy_id = ANY(${uuidArray(policyIds)})
+    WHERE r.retired_at IS NULL
   `)];
+  // W05c2 (#6371): Fleet Design now applies watches and rules as monitor
+  // attachments. Classify each attached definition by the LEDGER item kind
+  // that created it (a service definition can come from a rule proposal);
+  // attachments no design item created compare as rules, as manually added
+  // legacy rules always did.
+  const monitorRows = policyIds.length === 0 ? [] : [...await db.execute<LiveMonitorRow>(sql`
+    SELECT fl.config_policy_id AS policy_id, md.name, md.kind::text AS kind, md.condition,
+           md.severity::text AS severity, md.cooldown_minutes,
+           (md.enabled AND pm.enabled) AS enabled, origin.item_kind
+      FROM config_policy_monitors pm
+      JOIN config_policy_feature_links fl ON fl.id = pm.feature_link_id AND fl.config_policy_id = ANY(${uuidArray(policyIds)})
+      JOIN monitor_definitions md ON md.id = pm.monitor_id
+      LEFT JOIN LATERAL (
+        SELECT li.item_kind FROM fleet_design_applied_items li
+         WHERE li.org_id = ${orgId} AND li.status = 'applied'
+           AND li.item_kind IN ('watch', 'rule')
+           AND li.created_refs->>'monitorId' = md.id::text
+         ORDER BY li.applied_at DESC LIMIT 1
+      ) origin ON true
+  `)];
+  for (const monitor of monitorRows) {
+    if (monitor.item_kind === 'watch') {
+      const condition = (monitor.condition ?? {}) as Record<string, unknown>;
+      watches.push({
+        policy_id: monitor.policy_id,
+        name: String(condition.serviceName ?? condition.processName ?? monitor.name),
+        watch_type: monitor.kind,
+        enabled: monitor.enabled,
+      });
+    } else {
+      rules.push({ policy_id: monitor.policy_id, name: monitor.name, severity: monitor.severity, cooldown_minutes: monitor.cooldown_minutes });
+    }
+  }
   const assignments = policyIds.length === 0 ? [] : [...await db.execute<LiveAssignmentRow>(sql`
     SELECT a.config_policy_id AS policy_id, a.level::text AS level, a.target_id::text AS target_id, a.priority, a.role_filter
     FROM config_policy_assignments a

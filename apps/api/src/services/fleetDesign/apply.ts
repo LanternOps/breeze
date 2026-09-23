@@ -30,13 +30,14 @@ import type { AuthContext } from '../../middleware/auth';
 import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
 import { requestLikeFromSnapshot, writeAuditEvent, type RequestLike } from '../auditEvents';
 import {
-  addFeatureLink,
   assignPolicy,
   createConfigPolicy,
   listFeatureLinks,
   updateConfigPolicy,
   updateFeatureLink,
 } from '../configurationPolicy';
+import { getMonitorDefinition, updateMonitorDefinition } from '../monitors/monitorService';
+import { attachFleetMonitors, ruleMonitorInput, snapshotFleetMonitors, watchMonitorInput } from './monitorAttachments';
 import { applyDesignFunctions } from '../deviceFunction';
 import { addManualGroupMemberships, validateManualMembershipDevices } from '../groupMembership';
 import { importBundle } from '../scriptBundle';
@@ -349,8 +350,21 @@ async function stepMonitoring(ctx: ApplyCtx, tx: ApplyTransaction): Promise<void
     const newWatchRefs = items.watches.map((n) => `monitoring:${functionKey}:watch:${n}`).filter((r) => !ctx.appliedRefs.has(r));
     const newRuleRefs = items.rules.map((n) => `monitoring:${functionKey}:rule:${n}`).filter((r) => !ctx.appliedRefs.has(r));
     if (newWatchRefs.length === 0 && newRuleRefs.length === 0) continue;
-    const newWatches = items.watches.filter((n) => newWatchRefs.includes(`monitoring:${functionKey}:watch:${n}`)).map((n) => toWatchItem(section.watches[n]!));
-    const newRules = items.rules.filter((n) => newRuleRefs.includes(`monitoring:${functionKey}:rule:${n}`)).map((n) => toRuleItem(section.alertRules[n]!, createdScriptIdFor(ctx, section.alertRules[n]!, functionKey)));
+    // W05c2 (#6371): every approved watch / rule becomes a monitor definition
+    // attached through the policy's `monitors` link — never a legacy
+    // `monitoring` / `alert_rule` link.
+    const proposals = [
+      ...items.watches.filter((n) => newWatchRefs.includes(`monitoring:${functionKey}:watch:${n}`)).map((n) => ({
+        itemRef: `monitoring:${functionKey}:watch:${n}`, definition: watchMonitorInput(section.watches[n]!),
+      })),
+      ...items.rules.filter((n) => newRuleRefs.includes(`monitoring:${functionKey}:rule:${n}`)).map((n) => {
+        const rule = section.alertRules[n]!;
+        return {
+          itemRef: `monitoring:${functionKey}:rule:${n}`,
+          definition: ruleMonitorInput(rule, toRuleItem(rule, createdScriptIdFor(ctx, rule, functionKey)).rationale),
+        };
+      }),
+    ];
 
     const policyRef = `policy:${functionKey}`;
     const existingRow = ctx.policyRowByFunction.get(functionKey);
@@ -359,42 +373,22 @@ async function stepMonitoring(ctx: ApplyCtx, tx: ApplyTransaction): Promise<void
     let createdRefs: FleetDesignCreatedRefs;
 
     if (existingRow?.createdRefs?.policyId) {
-      // Second apply in the same run: union into the same policy's links.
+      // Second apply in the same run: add to the same policy's monitors link.
       policyId = existingRow.createdRefs.policyId;
-      const links = await listFeatureLinks(policyId, tx);
-      const monitoringLink = links.find((l) => l.featureType === 'monitoring' && !l.featurePolicyId);
-      const ruleLink = links.find((l) => l.featureType === 'alert_rule' && !l.featurePolicyId);
-      let monitoringLinkId = monitoringLink?.id;
-      let alertRuleLinkId = ruleLink?.id;
-      if (newWatches.length > 0) {
-        if (monitoringLink) {
-          const cur = (monitoringLink.inlineSettings ?? {}) as WatchSettings;
-          await updateFeatureLink(monitoringLink.id, { inlineSettings: { ...cur, watches: [...(cur.watches ?? []), ...newWatches] } }, policyId, undefined, tx);
-        } else {
-          const link = await addFeatureLink(policyId, 'monitoring', null, { checkIntervalSeconds: FLEET_DESIGN_CHECK_INTERVAL_SECONDS, watches: newWatches }, undefined, tx);
-          monitoringLinkId = link?.id;
-        }
-      }
-      if (newRules.length > 0) {
-        if (ruleLink) {
-          const cur = (ruleLink.inlineSettings ?? {}) as RuleSettings;
-          await updateFeatureLink(ruleLink.id, { inlineSettings: { ...cur, items: [...(cur.items ?? []), ...newRules] } }, policyId, undefined, tx);
-        } else {
-          const link = await addFeatureLink(policyId, 'alert_rule', null, { items: newRules }, undefined, tx);
-          alertRuleLinkId = link?.id;
-        }
-      }
+      const newIds = await attachFleetMonitors(policyId, proposals, ctx.auth, tx);
+      const monitorIdsByItemRef = { ...existingRow.createdRefs.monitorIdsByItemRef, ...newIds };
       const after = await listFeatureLinks(policyId, tx);
       createdRefs = {
         ...existingRow.createdRefs,
-        monitoringLinkId,
-        alertRuleLinkId,
+        monitorIdsByItemRef,
+        monitorLinkId: after.find((link) => link.featureType === 'monitors' && !link.featurePolicyId)?.id,
+        monitorSnapshots: await snapshotFleetMonitors(Object.values(monitorIdsByItemRef), tx),
         linksSnapshot: snapshotLinks(after),
       };
       await updateCreatedRefs(existingRow.id, ctx.orgId, createdRefs, tx);
       // Keep the in-memory row current: step 4 (linkRulesToCreatedScripts)
       // rebuilds created_refs from it, and a stale copy would write back the
-      // link ids this step just added.
+      // monitor ids this step just added.
       existingRow.createdRefs = createdRefs;
     } else {
       const policy = await createConfigPolicy(
@@ -408,12 +402,7 @@ async function stepMonitoring(ctx: ApplyCtx, tx: ApplyTransaction): Promise<void
         tx,
       );
       policyId = policy.id;
-      const monitoringLink = newWatches.length > 0
-        ? await addFeatureLink(policyId, 'monitoring', null, { checkIntervalSeconds: FLEET_DESIGN_CHECK_INTERVAL_SECONDS, watches: newWatches }, undefined, tx)
-        : null;
-      const ruleLink = newRules.length > 0
-        ? await addFeatureLink(policyId, 'alert_rule', null, { items: newRules }, undefined, tx)
-        : null;
+      const monitorIdsByItemRef = await attachFleetMonitors(policyId, proposals, ctx.auth, tx);
       const assignment = await assignPolicy(policyId, 'device_group', resolvedGroupId, FLEET_DESIGN_ASSIGNMENT_PRIORITY, ctx.userId, undefined, undefined, tx);
       const activated = await updateConfigPolicy(policyId, { status: 'active' }, ctx.auth, tx);
       if (!activated) throw new Error(`policy_activation_failed: ${policyId}`);
@@ -421,9 +410,10 @@ async function stepMonitoring(ctx: ApplyCtx, tx: ApplyTransaction): Promise<void
       createdRefs = {
         policyId,
         groupId: resolvedGroupId,
-        monitoringLinkId: monitoringLink?.id,
-        alertRuleLinkId: ruleLink?.id,
         assignmentId: assignment?.id,
+        monitorIdsByItemRef,
+        monitorLinkId: after.find((link) => link.featureType === 'monitors' && !link.featurePolicyId)?.id,
+        monitorSnapshots: await snapshotFleetMonitors(Object.values(monitorIdsByItemRef), tx),
         linksSnapshot: snapshotLinks(after),
       };
       const row = await recordApplied({ orgId: ctx.orgId, reportRunId: ctx.reportRunId, itemRef: policyRef, itemKind: 'policy', step: 3, createdRefs, userId: ctx.userId }, tx);
@@ -435,11 +425,11 @@ async function stepMonitoring(ctx: ApplyCtx, tx: ApplyTransaction): Promise<void
     }
 
     for (const ref of newWatchRefs) {
-      const row = await recordApplied({ orgId: ctx.orgId, reportRunId: ctx.reportRunId, itemRef: ref, itemKind: 'watch', step: 3, createdRefs: { policyId }, userId: ctx.userId }, tx);
+      const row = await recordApplied({ orgId: ctx.orgId, reportRunId: ctx.reportRunId, itemRef: ref, itemKind: 'watch', step: 3, createdRefs: { policyId, monitorId: createdRefs.monitorIdsByItemRef?.[ref] }, userId: ctx.userId }, tx);
       if (row) { ctx.applied.push(ref); ctx.appliedRefs.add(ref); } else warnUnrecordedApply(ctx.reportRunId, ref);
     }
     for (const ref of newRuleRefs) {
-      const row = await recordApplied({ orgId: ctx.orgId, reportRunId: ctx.reportRunId, itemRef: ref, itemKind: 'rule', step: 3, createdRefs: { policyId }, userId: ctx.userId }, tx);
+      const row = await recordApplied({ orgId: ctx.orgId, reportRunId: ctx.reportRunId, itemRef: ref, itemKind: 'rule', step: 3, createdRefs: { policyId, monitorId: createdRefs.monitorIdsByItemRef?.[ref] }, userId: ctx.userId }, tx);
       if (row) { ctx.applied.push(ref); ctx.appliedRefs.add(ref); } else warnUnrecordedApply(ctx.reportRunId, ref);
     }
     writeAuditEvent(ctx.audit, {
@@ -451,10 +441,18 @@ async function stepMonitoring(ctx: ApplyCtx, tx: ApplyTransaction): Promise<void
 }
 
 /** Order-independent, id-free view of a policy's inline links for the rollback comparison. */
-export function snapshotLinks(links: Array<{ featureType: string; featurePolicyId: string | null; inlineSettings: unknown }>): { monitoring: unknown; alertRule: unknown } {
-  const monitoring = links.find((l) => l.featureType === 'monitoring' && !l.featurePolicyId)?.inlineSettings ?? null;
-  const alertRule = links.find((l) => l.featureType === 'alert_rule' && !l.featurePolicyId)?.inlineSettings ?? null;
-  return { monitoring: canonical(monitoring), alertRule: canonical(alertRule) };
+export function snapshotLinks(
+  links: Array<{ featureType: string; featurePolicyId: string | null; inlineSettings: unknown }>,
+): { monitoring: unknown; alertRule: unknown; monitors?: unknown } {
+  const read = (kind: string) => links.find((l) => l.featureType === kind && !l.featurePolicyId);
+  const monitors = read('monitors');
+  // `monitors` is only present when the policy has that link, so a snapshot
+  // taken before W05c2 (no such key) still compares equal on rollback.
+  return {
+    monitoring: canonical(read('monitoring')?.inlineSettings ?? null),
+    alertRule: canonical(read('alert_rule')?.inlineSettings ?? null),
+    ...(monitors ? { monitors: canonical(monitors.inlineSettings) } : {}),
+  };
 }
 
 /** Stable JSON: sorted keys, `undefined` dropped — so two reads of the same rows compare equal. */
@@ -548,7 +546,35 @@ async function linkRulesToCreatedScripts(ctx: ApplyCtx, createdRefs: Set<string>
     const policyId = policyRow.createdRefs?.policyId;
     const section = ctx.outcome.sections.monitoring.find((m) => m.functionKey === functionKey);
     if (!policyId || !section) continue;
-    // Stored rationale (as step 3 wrote it) → the rationale it should now carry.
+    // W05c2: rules applied as monitors carry the rationale in the definition's
+    // description. Only a description still exactly as step 3 wrote it is
+    // rewritten — one a technician has since edited is theirs.
+    const monitorIdsByItemRef = policyRow.createdRefs?.monitorIdsByItemRef;
+    if (monitorIdsByItemRef) {
+      let changed = false;
+      for (const [index, rule] of section.alertRules.entries()) {
+        const proposalRef = proposalRefForRule(ctx.outcome, rule.action, functionKey);
+        const scriptId = proposalRef && createdRefs.has(proposalRef) ? ctx.createdScriptIds.get(proposalRef) : undefined;
+        const monitorId = monitorIdsByItemRef[`monitoring:${functionKey}:rule:${index}`];
+        if (!scriptId || !monitorId) continue;
+        const current = await getMonitorDefinition(monitorId, ctx.auth, tx);
+        const original = toRuleItem(rule).rationale;
+        if (!current || current.description !== original) continue;
+        await updateMonitorDefinition(monitorId, { description: withScriptCreated(original, scriptId) }, ctx.auth, tx);
+        changed = true;
+      }
+      if (changed) {
+        const next: FleetDesignCreatedRefs = {
+          ...policyRow.createdRefs,
+          monitorSnapshots: await snapshotFleetMonitors(Object.values(monitorIdsByItemRef), tx),
+        };
+        await updateCreatedRefs(policyRow.id, ctx.orgId, next, tx);
+        policyRow.createdRefs = next;
+      }
+      continue;
+    }
+    // Legacy ledgers (applied before W05c2): the rule lives in an inline
+    // alert_rule link. Stored rationale (as step 3 wrote it) → the rationale it should now carry.
     const rewrites = new Map<string, { name: string; rationale: string }>();
     for (const rule of section.alertRules) {
       const ref = proposalRefForRule(ctx.outcome, rule.action, functionKey);

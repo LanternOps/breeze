@@ -81,8 +81,8 @@ function outcome(): FleetDesignOutcome {
             { watchType: 'service', name: 'Spooler', alertOnStop: true, autoRestart: false, rationale: 'r' },
           ],
           alertRules: [
-            { name: 'Disk over 90%', severity: 'high', conditions: [], cooldownMinutes: 30, rationale: 'r', action: 'none', paging: 'none' },
-            { name: 'SMB share offline', severity: 'critical', conditions: [], cooldownMinutes: 10, rationale: 'r', action: 'none', paging: 'always' },
+            { name: 'Disk over 90%', severity: 'high', kind: 'disk', condition: { operator: 'gt', value: 90 }, responses: [], deliveryMode: 'inherit', deliveryChannelIds: [], cooldownMinutes: 30, rationale: 'r', action: 'none', paging: 'none' },
+            { name: 'SMB share offline', severity: 'critical', kind: 'disk', condition: { operator: 'gt', value: 90 }, responses: [], deliveryMode: 'inherit', deliveryChannelIds: [], cooldownMinutes: 10, rationale: 'r', action: 'none', paging: 'always' },
           ],
         },
       ],

@@ -142,7 +142,15 @@ export type FleetDesignCreatedRefs = {
   alertRuleLinkId?: string;
   assignmentId?: string;
   linkId?: string;
-  linksSnapshot?: { monitoring: unknown; alertRule: unknown };
+  linksSnapshot?: { monitoring: unknown; alertRule: unknown; monitors?: unknown };
+  /** W05c2: on a watch/rule ledger row, the monitor definition that item created. */
+  monitorId?: string;
+  /** W05c2: the policy's inline `monitors` feature link. */
+  monitorLinkId?: string;
+  /** W05c2: on the policy ledger row, item ref → monitor definition id, cumulative across applies. */
+  monitorIdsByItemRef?: Record<string, string>;
+  /** W05c2: author fields of every created definition at apply time, for rollback's unmodified check. */
+  monitorSnapshots?: Record<string, unknown>;
   membershipSnapshot?: string[];
   scriptId?: string;
   /** W04: the name the script was created under (may carry a rename suffix). */
