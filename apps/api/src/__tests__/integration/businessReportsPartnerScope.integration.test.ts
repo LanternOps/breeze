@@ -159,6 +159,7 @@ type TicketSeed = {
   deletedAt?: string | null;
   slaBreachedAt?: string | null;
   assignedTo?: string | null;
+  pausedMinutes?: number;
 };
 
 /** Seeded as the superuser (no RLS), like every db-utils helper. */
@@ -170,7 +171,7 @@ async function seedTicket(orgId: string, partnerId: string, o: TicketSeed): Prom
       resolution_sla_minutes, sla_paused_minutes, deleted_at, sla_breached_at, assigned_to)
     VALUES (${id}, ${orgId}, ${partnerId}, ${`T-${id.slice(0, 12)}`}, 'seeded', 'open', 'high',
       ${o.workKind ?? 'support'}, ${o.createdAt}, ${o.firstResponseAt ?? null}, ${o.resolvedAt ?? null},
-      ${o.responseSla ?? null}, ${o.resolutionSla ?? null}, 0, ${o.deletedAt ?? null},
+      ${o.responseSla ?? null}, ${o.resolutionSla ?? null}, ${o.pausedMinutes ?? 0}, ${o.deletedAt ?? null},
       ${o.slaBreachedAt ?? null}, ${o.assignedTo ?? null})`);
   return id;
 }
@@ -232,11 +233,12 @@ describe('ticket_sla_attainment — real Postgres (#3198 W02 Task 7)', () => {
     expect(byKey.get(f.orgB.id)).toMatchObject({ groupLabel: 'Globex', ticketsTotal: 2, responseMet: 1, noSlaTickets: 1 });
     expect(s.worstGroupLabel).toBe('Acme');
 
-    // Detail rows: the same four tickets, newest first, none from excluded orgs.
+    // Detail rows: the same four tickets, none from excluded orgs; the one
+    // breach (A2, 08-03) first, then the rest newest first (fix round item 2).
     expect(result.rows).toHaveLength(4);
     expect(s.rows.map((r) => r.orgId).every((id) => id === f.orgA.id || id === f.orgB.id)).toBe(true);
     expect(s.rows.map((r) => r.createdAt)).toEqual([
-      '2026-08-05T00:00:00.000Z', '2026-08-04T00:00:00.000Z', '2026-08-03T00:00:00.000Z', '2026-08-02T00:00:00.000Z',
+      '2026-08-03T00:00:00.000Z', '2026-08-05T00:00:00.000Z', '2026-08-04T00:00:00.000Z', '2026-08-02T00:00:00.000Z',
     ]);
     expect(s.detail).toEqual({ cap: 5000, stored: 4, available: 4, truncated: false });
     expect(s.scope).toEqual({ kind: 'partner', partnerId: f.partner.id, orgCount: 2 });
@@ -264,6 +266,45 @@ describe('ticket_sla_attainment — real Postgres (#3198 W02 Task 7)', () => {
       await livePartnerScope(f, authority), { period: AUGUST, groupBy: 'technician' }, authority));
     const labels = (tech.summary as TicketSlaSummary).groups.map((g) => g.groupLabel).sort();
     expect(labels).toEqual(['Dana Tech (current assignee)', 'Unassigned (current assignee)']);
+  });
+
+  // Fix round item 7: the outcome boundaries, pinned against real Postgres.
+  runDb('SLA boundaries: deadline is inclusive, unresponded-past-deadline is missed, pause extends the deadline, period end is exclusive', async () => {
+    const f = await seedBusinessFixture();
+    const p = f.partner.id;
+    // Met exactly AT the deadline (first_response_at = created_at + target: `<=`).
+    await seedTicket(f.orgA.id, p, { createdAt: '2026-08-10T00:00:00Z', firstResponseAt: '2026-08-10T01:00:00Z', responseSla: 60 });
+    // Never responded, deadline long past -> missed (not pending).
+    await seedTicket(f.orgA.id, p, { createdAt: '2026-08-11T00:00:00Z', responseSla: 60 });
+    // Never responded, deadline years away -> pending (not eligible).
+    await seedTicket(f.orgA.id, p, { createdAt: '2026-08-12T00:00:00Z', responseSla: 60 * 24 * 365 * 5 });
+    // Responded 80m in against a 60m target, but 30m paused -> deadline 90m -> met.
+    await seedTicket(f.orgB.id, p, { createdAt: '2026-08-13T00:00:00Z', firstResponseAt: '2026-08-13T01:20:00Z', responseSla: 60, pausedMinutes: 30 });
+    // Last second of the period: counted (met).
+    await seedTicket(f.orgB.id, p, { createdAt: '2026-08-31T23:59:59Z', firstResponseAt: '2026-09-01T00:10:00Z', responseSla: 60 });
+    // First instant after the period: NOT counted.
+    await seedTicket(f.orgB.id, p, { createdAt: '2026-09-01T00:00:00Z', responseSla: 60 });
+
+    const authority = await livePartnerAuthority(f);
+    const s = (await generateReport('ticket_sla_attainment', await livePartnerScope(f, authority),
+      { period: AUGUST, groupBy: 'organization' }, authority)).summary as TicketSlaSummary;
+
+    expect(s.overall).toMatchObject({
+      ticketsTotal: 5, noSlaTickets: 0,
+      responseEligible: 4, responseMet: 3, resolutionEligible: 0, breaches: 1,
+    });
+    expect(s.overall.responseAttainment).toBeCloseTo(3 / 4, 6);
+    const outcome = new Map(s.rows.map((r) => [r.createdAt, r.responseOutcome]));
+    expect(Object.fromEntries(outcome)).toEqual({
+      '2026-08-10T00:00:00.000Z': 'met',
+      '2026-08-11T00:00:00.000Z': 'missed',
+      '2026-08-12T00:00:00.000Z': 'pending',
+      '2026-08-13T00:00:00.000Z': 'met',
+      '2026-08-31T23:59:59.000Z': 'met',
+    });
+    expect(s.rows.find((r) => r.createdAt === '2026-08-13T00:00:00.000Z')!.slaPausedMinutes).toBe(30);
+    // The breach sorts first.
+    expect(s.rows[0]!.createdAt).toBe('2026-08-11T00:00:00.000Z');
   });
 
   runDb('org scope sees only its own org, under an org-token RLS context', async () => {
@@ -309,19 +350,28 @@ type TimeSeed = {
   billingStatus?: 'not_billed' | 'billed' | 'no_charge' | 'contract';
   isApproved?: boolean;
   workTypeId?: string | null;
+  /** Card rounding increment; billable_minutes is then the rounded-up
+   *  quantity, exactly as time_entries_billable_minutes_chk requires. */
+  roundingIncrement?: number;
 };
 
-/** Seeded as the superuser (no RLS). billable_minutes = duration (no card
- *  minimum/rounding), which satisfies time_entries_billable_minutes_chk. */
+/** Seeded as the superuser (no RLS). billable_minutes = duration, or the
+ *  duration rounded up to `roundingIncrement` — either satisfies
+ *  time_entries_billable_minutes_chk. */
 async function seedTimeEntry(partnerId: string, o: TimeSeed): Promise<string> {
   const id = randomUUID();
   const started = new Date(o.startedAt);
   const ended = o.minutes === null ? null : new Date(started.getTime() + o.minutes * 60_000).toISOString();
+  const increment = o.roundingIncrement ?? null;
+  const billableMinutes = o.minutes === null || increment === null
+    ? o.minutes
+    : Math.ceil(o.minutes / increment) * increment;
   await getTestDb().execute(sql`
     INSERT INTO time_entries (id, partner_id, org_id, user_id, started_at, ended_at, duration_minutes,
-      billable_minutes, is_billable, coverage, hourly_rate, currency_code, billing_status, is_approved, work_type_id)
+      billable_minutes, rounding_increment_minutes, is_billable, coverage, hourly_rate, currency_code,
+      billing_status, is_approved, work_type_id)
     VALUES (${id}, ${partnerId}, ${o.orgId}, ${o.userId}, ${o.startedAt}, ${ended}, ${o.minutes},
-      ${o.minutes}, ${o.isBillable ?? true}, ${o.coverage ?? null}, ${o.hourlyRate ?? null}, 'USD',
+      ${billableMinutes}, ${increment}, ${o.isBillable ?? true}, ${o.coverage ?? null}, ${o.hourlyRate ?? null}, 'USD',
       ${o.billingStatus ?? 'not_billed'}, ${o.isApproved ?? false}, ${o.workTypeId ?? null})`);
   return id;
 }
@@ -373,6 +423,10 @@ async function seedTimeFixture(f: BusinessFixture) {
   await seedTimeEntry(p, { userId: u, orgId: f.orgA.id, startedAt: '2026-08-11T09:00:00Z', minutes: null, coverage: 'billable' });
   await seedTimeEntry(f.otherPartner.id, { userId: otherTech.id, orgId: f.otherOrg.id, startedAt: '2026-08-12T09:00:00Z',
     minutes: 500, coverage: 'billable', hourlyRate: '999.00' });
+  // Fix round item 9: the OTHER partner's org-less (internal) entry — the
+  // org allowlist admits org_id NULL, so only the partner predicate keeps it out.
+  await seedTimeEntry(f.otherPartner.id, { userId: otherTech.id, orgId: null, startedAt: '2026-08-13T09:00:00Z',
+    minutes: 700, coverage: 'billable', hourlyRate: '777.00' });
 
   return { idle, viewer, disabled, otherTech, workTypeId };
 }
@@ -396,6 +450,9 @@ describe('technician_time_billability — real Postgres (#3198 W02 Task 8)', () 
       averageRate: [{ currencyCode: 'USD', amount: '125.00' }],
     });
     expect(s.overall.billingConversion).toBeCloseTo(120 / 180, 6);
+    // Every billable entry in this fixture is priced; the other partner's
+    // org-less 700m entry (item 9) is in neither figure.
+    expect(s.unpricedBillable).toEqual({ minutes: 0, entries: 0 });
 
     // Exactly the two technicians: no viewer, no disabled user, no other partner.
     expect(s.groups.map((g) => g.groupKey).sort()).toEqual([f.user.id, t.idle.id].sort());
@@ -473,6 +530,35 @@ describe('technician_time_billability — real Postgres (#3198 W02 Task 8)', () 
     expect(Object.fromEntries(byOrg.groups.map((g) => [g.groupLabel, g.loggedMinutes]))).toEqual({
       Acme: 160, Globex: 75, 'No organization': 80,
     });
+  });
+
+  // Fix round items 3 + 8: billable value is billed QUANTITY (billable_minutes,
+  // not duration) × rate, rounded per row; unpriced billable time is counted.
+  runDb('billable value: billable_minutes not duration, per-row rounding, odd rate; unpriced billable time disclosed', async () => {
+    const f = await seedBusinessFixture();
+    const p = f.partner.id;
+    // Two 7-minute entries rounded to 15 billable minutes, at $133.37/h:
+    //   per row: ROUND(0.25 h × 133.37, 2) = 33.34 → 66.68 total
+    //   (by duration it would be ROUND(0.12 × 133.37) = 16.00 each → 32.00;
+    //    rounding the SUM instead would give 66.69).
+    for (const day of ['2026-08-04', '2026-08-05']) {
+      await seedTimeEntry(p, { userId: f.user.id, orgId: f.orgA.id, startedAt: `${day}T09:00:00Z`, minutes: 7,
+        roundingIncrement: 15, coverage: 'billable', hourlyRate: '133.37' });
+    }
+    // Billable, but no rate: cannot be valued.
+    await seedTimeEntry(p, { userId: f.user.id, orgId: f.orgB.id, startedAt: '2026-08-06T09:00:00Z', minutes: 30,
+      coverage: 'billable', hourlyRate: null });
+
+    const authority = await livePartnerAuthority(f);
+    const s = (await generateReport('technician_time_billability', await livePartnerScope(f, authority),
+      { period: AUGUST }, authority)).summary as TechnicianTimeSummary;
+
+    expect(s.overall.billableValue).toEqual([{ currencyCode: 'USD', amount: '66.68' }]);
+    expect(s.overall.averageRate).toEqual([{ currencyCode: 'USD', amount: '133.37' }]);
+    // Billable % and minutes use DURATION: 7 + 7 + 30.
+    expect(s.overall.billableMinutes).toBe(44);
+    expect(s.unpricedBillable).toEqual({ minutes: 30, entries: 1 });
+    expect(s.notes.join(' ')).toMatch(/30 billable minutes across 1 entry have no hourly rate or currency/);
   });
 
   runDb('PARITY: a partner-scope RLS request context and the system context produce identical reports', async () => {
