@@ -303,4 +303,45 @@ describe('metric anomaly promotion service', () => {
     expect(updateMock).toHaveBeenCalledWith(expect.anything());
     expect(publishEventMock).toHaveBeenCalled();
   });
+
+  it('writes the anomaly episode id into the new alert context, never the alerts.episode_id column', async () => {
+    selectMock.mockReturnValueOnce(chain([anomaly]));
+    selectMock.mockReturnValueOnce(chain([])); // dedupe siblings
+    selectMock.mockReturnValueOnce(chain([])); // incident agent_run_id lookup
+    insertMock.mockReturnValueOnce(chain([{ id: '44444444-4444-4444-8444-444444444444' }]));
+    updateMock.mockReturnValueOnce(chain([{ ...anomaly, status: 'promoted', linkedAlertId: '44444444-4444-4444-8444-444444444444' }]));
+
+    await promoteMetricAnomalyToAlert({
+      orgId: anomaly.orgId,
+      deviceId: anomaly.deviceId,
+      anomalyId: anomaly.id,
+      actorUserId: 'user-1',
+      requireCreateAlertsFlag: false,
+      episodeId: '55555555-5555-4555-8555-555555555555',
+    });
+
+    const insertedChain = insertMock.mock.results[0]!.value as { values: ReturnType<typeof vi.fn> };
+    const values = insertedChain.values.mock.calls[0]![0] as Record<string, unknown>;
+    expect(values.context).toMatchObject({
+      source: 'metric_anomaly',
+      anomalyId: anomaly.id,
+      episodeId: '55555555-5555-4555-8555-555555555555',
+    });
+    // alerts.episode_id is the MONITOR breach episode (#5290) — never ours.
+    expect(values).not.toHaveProperty('episodeId');
+  });
+
+  it('omits context.episodeId when no episode is given (per-row route unchanged)', async () => {
+    selectMock.mockReturnValueOnce(chain([anomaly]));
+    selectMock.mockReturnValueOnce(chain([]));
+    selectMock.mockReturnValueOnce(chain([]));
+    insertMock.mockReturnValueOnce(chain([{ id: '44444444-4444-4444-8444-444444444444' }]));
+    updateMock.mockReturnValueOnce(chain([{ ...anomaly, status: 'promoted' }]));
+
+    await promoteMetricAnomalyToAlert({ orgId: anomaly.orgId, deviceId: anomaly.deviceId, anomalyId: anomaly.id });
+
+    const insertedChain = insertMock.mock.results[0]!.value as { values: ReturnType<typeof vi.fn> };
+    const values = insertedChain.values.mock.calls[0]![0] as { context: Record<string, unknown> };
+    expect(values.context).not.toHaveProperty('episodeId');
+  });
 });
