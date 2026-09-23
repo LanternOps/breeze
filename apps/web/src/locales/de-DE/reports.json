@@ -461,8 +461,7 @@
       "templates": "Vorlagen",
       "title": "Berichte",
       "tryAgain": "Versuchen Sie es erneut",
-      "unknownReport": "Unbekannter Bericht",
-      "partnerWideHint": "Berichte, die alle Organisationen umfassen, erscheinen in der Ansicht „Alle Organisationen“."
+      "unknownReport": "Unbekannter Bericht"
     },
     "reportBuilder": {
       "actions": {

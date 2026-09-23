@@ -58,7 +58,10 @@ describe('ReportTemplates — Business group (#3198 W03)', () => {
 
     const business = await screen.findByTestId('report-template-group-business');
     for (const id of ['ticket_sla_attainment', 'technician_time_billability', 'ar_aging']) {
-      expect(within(business).getByTestId(`report-template-card-${id}`)).toBeInTheDocument();
+      const card = within(business).getByTestId(`report-template-card-${id}`);
+      // A stable type marker: a saved report that replaces a curated slot keeps
+      // its own card id, so E2E finds a card by its report type instead.
+      expect(within(card).getByTestId(`report-template-type-${id}`)).toBeInTheDocument();
     }
     // …and they are NOT duplicated into the general section.
     const general = screen.getByTestId('report-template-group-general');

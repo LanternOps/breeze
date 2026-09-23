@@ -461,8 +461,7 @@
       "templates": "Template",
       "title": "Report",
       "tryAgain": "Riprova",
-      "unknownReport": "Report sconosciuto",
-      "partnerWideHint": "I report che coprono tutte le organizzazioni compaiono nella vista Tutte le organizzazioni."
+      "unknownReport": "Report sconosciuto"
     },
     "reportBuilder": {
       "actions": {

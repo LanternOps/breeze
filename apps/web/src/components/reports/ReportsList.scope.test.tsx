@@ -69,33 +69,63 @@ describe('ReportsList ownership (#3198 W03)', () => {
     expect(listCall?.[1]).toBeUndefined();
   });
 
-  it('tells a partner-scope user with an org focused where all-organizations reports live', async () => {
+  it('merges partner-owned reports into an org-focused list for a partner-scope user', async () => {
     org.currentOrgId = 'org-1';
-    mockList([orgOwned]);
+    const otherOrgOwned = { ...base, id: 'rep-x', name: 'Other org AR', orgId: 'org-2', partnerId: null };
+    fetchWithAuth.mockImplementation((url: string, opts?: { skipOrgIdInjection?: boolean }) => {
+      if (url === '/reports' && opts?.skipOrgIdInjection) {
+        // The all-organizations listing: partner rows, a duplicate of the focused
+        // org's row, and another org's row — only the partner row may be merged.
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [partnerOwned, orgOwned, otherOrgOwned] }) });
+      }
+      if (url === '/reports') return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [orgOwned] }) });
+      if (url.startsWith('/reports/runs?')) return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [] }) });
+      return Promise.resolve({ ok: false, json: () => Promise.resolve({}) });
+    });
     render(<ReportsList />);
-    await screen.findByTestId('report-row-rep-o');
-    expect(screen.getByTestId('reports-partner-wide-hint')).toHaveTextContent(/All organizations/);
+
+    const partnerRow = await screen.findByTestId('report-row-rep-p');
+    expect(within(partnerRow).getByTestId('report-scope-badge-rep-p')).toBeInTheDocument();
+    // Deduped: the focused org's row renders once; another org's row never leaks in.
+    expect(screen.getAllByTestId('report-row-rep-o')).toHaveLength(1);
+    expect(screen.queryByTestId('report-row-rep-x')).toBeNull();
   });
 
-  it('shows no hint on the All-organizations view', async () => {
+  it('still renders the org list when the partner-wide fetch fails', async () => {
+    org.currentOrgId = 'org-1';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchWithAuth.mockImplementation((url: string, opts?: { skipOrgIdInjection?: boolean }) => {
+      if (url === '/reports' && opts?.skipOrgIdInjection) return Promise.reject(new Error('boom'));
+      if (url === '/reports') return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [orgOwned] }) });
+      if (url.startsWith('/reports/runs?')) return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [] }) });
+      return Promise.resolve({ ok: false, json: () => Promise.resolve({}) });
+    });
+    render(<ReportsList />);
+    expect(await screen.findByTestId('report-row-rep-o')).toBeInTheDocument();
+    await waitFor(() => expect(warn).toHaveBeenCalled());
+    warn.mockRestore();
+  });
+
+  it('makes one list fetch on the All-organizations view', async () => {
     mockList([partnerOwned]);
     render(<ReportsList />);
     await screen.findByTestId('report-row-rep-p');
-    expect(screen.queryByTestId('reports-partner-wide-hint')).toBeNull();
+    expect(fetchWithAuth.mock.calls.filter(([url]) => url === '/reports')).toHaveLength(1);
   });
 
-  it('shows no hint to an organization-scope user or while the token is unresolved', async () => {
+  it('does no partner-wide fetch for an organization-scope user or while the token is unresolved', async () => {
     org.currentOrgId = 'org-1';
     claims.value = { status: 'resolved', claims: { scope: 'organization', orgId: 'org-1', partnerId: 'p-1' } };
     mockList([orgOwned]);
     const { unmount } = render(<ReportsList />);
     await screen.findByTestId('report-row-rep-o');
-    expect(screen.queryByTestId('reports-partner-wide-hint')).toBeNull();
+    expect(fetchWithAuth.mock.calls.filter(([url]) => url === '/reports')).toHaveLength(1);
     unmount();
 
+    fetchWithAuth.mockClear();
     claims.value = { status: 'unresolved' };
     render(<ReportsList />);
     await waitFor(() => expect(screen.getByTestId('report-row-rep-o')).toBeInTheDocument());
-    expect(screen.queryByTestId('reports-partner-wide-hint')).toBeNull();
+    expect(fetchWithAuth.mock.calls.filter(([url]) => url === '/reports')).toHaveLength(1);
   });
 });

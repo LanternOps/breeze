@@ -1,4 +1,3 @@
-import type { APIRequestContext, Page, Request } from '@playwright/test';
 import { test, expect } from '../fixtures';
 import { clearRefreshState } from '../test-helpers';
 import { ReportsPage } from '../pages/ReportsPage';
@@ -6,84 +5,33 @@ import { ReportsPage } from '../pages/ReportsPage';
 /**
  * Business reports (#3198 W03) — a partner-owned AR aging report, end to end:
  * template gallery → shared options modal (partner ownership) → list row with
- * the all-organizations badge → generate (async, BullMQ worker) → the run
- * completes → download.
+ * the all-organizations badge → generate → the run completes → download.
  *
  * The login is E2E_ADMIN_EMAIL: a partner-scope Partner Admin with org_access
  * 'all', which is exactly the authority a partner-owned report requires.
  *
- * Partner-owned reports are listed only on the All organizations view (the
- * list's `GET /reports` carries the focused org's `?orgId=`), and the org
- * switcher offers All organizations only when the partner has more than one
- * org. The spec therefore guarantees a second org exists before it starts.
+ * The spec runs from the default view, where an organization is focused (the
+ * web auto-focuses the first org, and a single-org partner has no All
+ * organizations option at all). A partner-owned report covers that org too,
+ * so the list must show it there — the regression this spec pins.
  */
 test.beforeEach(clearRefreshState);
 
-/** Recover the access token the app itself is using (see organization-record.spec.ts). */
-async function readAccessToken(page: Page): Promise<string> {
-  let token: string | null = null;
-  const onRequest = (req: Request) => {
-    if (token) return;
-    const header = req.headers()['authorization'];
-    if (header?.startsWith('Bearer ') && req.url().includes('/api/v1/')) token = header.slice(7);
-  };
-  page.on('request', onRequest);
-  try {
-    await page.goto('/');
-    await expect.poll(() => token, {
-      message: 'an authenticated /api/v1 request from the app',
-      timeout: 30_000,
-    }).toBeTruthy();
-  } finally {
-    page.off('request', onRequest);
-  }
-  return token!;
-}
-
-async function apiJson<T>(
-  request: APIRequestContext, token: string, method: 'get' | 'post',
-  path: string, data?: unknown,
-): Promise<T> {
-  const res = await request[method](path, {
-    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-    ...(data === undefined ? {} : { data }),
-  });
-  expect(res.ok(), `${method.toUpperCase()} ${path} → ${res.status()} ${await res.text()}`).toBeTruthy();
-  return (await res.json()) as T;
-}
-
-type OrgList = { data?: Array<{ id: string; name: string }> } | Array<{ id: string; name: string }>;
-
-/** The partner's org ids, creating a second org when there is only one. */
-async function ensureTwoOrgs(page: Page, token: string, stamp: string): Promise<string[]> {
-  const list = await apiJson<OrgList>(page.request, token, 'get', '/api/v1/orgs/organizations?limit=100');
-  const orgs = Array.isArray(list) ? list : list.data ?? [];
-  if (orgs.length >= 2) return orgs.map((o) => o.id);
-  const created = await apiJson<{ id: string }>(
-    page.request, token, 'post', '/api/v1/orgs/organizations',
-    { name: `E2E Reports Org ${stamp}`, slug: `e2e-reports-org-${stamp}` },
-  );
-  return [...orgs.map((o) => o.id), created.id];
-}
-
 test.describe('Business reports — partner-owned AR aging', () => {
-  test('create from the Business template, generate, and download the run', async ({ authedPage: page }, testInfo) => {
+  test('create from the Business template, generate, and download the run', async ({ authedPage: page }) => {
     test.setTimeout(180_000);
     const reports = new ReportsPage(page);
-    const token = await readAccessToken(page);
-    await ensureTwoOrgs(page, token, `${Date.now()}-${testInfo.retry}`);
-
-    // Fleet view — the only view that lists partner-owned reports.
+    // An organization is focused — not the All organizations view.
     await reports.gotoList();
-    await reports.selectAllOrganizations();
+    await expect(reports.orgSwitcherTrigger()).toHaveAttribute('data-scope', 'org');
 
     await test.step('create a partner-owned AR aging report from the Business template', async () => {
       await reports.gotoTemplates();
       await expect(reports.businessGroup()).toBeVisible();
-      await expect(reports.templateCard('ar_aging')).toBeVisible();
+      await expect(reports.businessCardOfType('ar_aging')).toBeVisible();
 
       // The shared business options modal opens — not the freeform builder.
-      await reports.useTemplate('ar_aging').click();
+      await reports.useBusinessTemplateOfType('ar_aging').click();
       await expect(reports.optionsModal()).toBeVisible();
       await expect(reports.arAgingCreate()).toBeVisible();
 
@@ -148,18 +96,5 @@ test.describe('Business reports — partner-owned AR aging', () => {
       const download = await downloadEvent;
       expect(download.suggestedFilename()).toMatch(/\.pdf$/);
     });
-  });
-
-  test('with an organization focused, the list points at the All organizations view', async ({ authedPage: page }) => {
-    const reports = new ReportsPage(page);
-    const token = await readAccessToken(page);
-    const list = await apiJson<OrgList>(page.request, token, 'get', '/api/v1/orgs/organizations?limit=100');
-    const orgs = Array.isArray(list) ? list : list.data ?? [];
-    expect(orgs.length).toBeGreaterThan(0);
-
-    await reports.gotoList();
-    // With one org it is auto-focused; with several, focus the first explicitly.
-    if (orgs.length > 1) await reports.selectOrganization(orgs[0].id);
-    await expect(reports.partnerWideHint()).toBeVisible({ timeout: 15_000 });
   });
 });

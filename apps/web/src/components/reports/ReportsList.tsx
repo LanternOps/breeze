@@ -136,28 +136,53 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
   const jwtClaims = useJwtClaims();
   // `GET /reports` carries the ambient `?orgId=` of the focused org (kept on
   // purpose: dropping it would list every org's reports under one org), and
-  // the API lists partner-owned reports only without it. So a partner-scope
-  // user with an org focused is told where the all-organizations reports are
-  // rather than silently not seeing them. Fails closed while unresolved.
-  const showPartnerWideHint =
+  // the API lists partner-owned reports only without it. A partner-owned
+  // report covers the focused org too, so for a partner-scope user with an org
+  // focused the all-organizations listing is fetched as well and ONLY its
+  // partner-owned rows are merged in. This is also the only way a single-org
+  // partner (who never gets an All organizations option) sees them. The server
+  // stays the gate: it returns partner-owned rows only to callers who may
+  // administer partner-wide state. Fails closed while the token is unresolved.
+  const mergePartnerWide =
     jwtClaims.status === 'resolved' && jwtClaims.claims.scope === 'partner' && !!currentOrgId;
+
+  const fetchPartnerWideReports = useCallback(async (): Promise<Report[]> => {
+    try {
+      const response = await fetchWithAuth('/reports', { skipOrgIdInjection: true });
+      if (!response.ok) {
+        console.warn('Failed to fetch partner-wide reports:', response.status);
+        return [];
+      }
+      const data = await response.json();
+      return ((data.data ?? []) as Report[]).filter((r) => !!r.partnerId && !r.orgId);
+    } catch (err) {
+      // The org's own list still renders; partner-wide rows are an addition.
+      console.warn('Failed to fetch partner-wide reports:', err);
+      return [];
+    }
+  }, []);
 
   const fetchReports = useCallback(async () => {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetchWithAuth('/reports');
+      const [response, partnerWide] = await Promise.all([
+        fetchWithAuth('/reports'),
+        mergePartnerWide ? fetchPartnerWideReports() : Promise.resolve([] as Report[]),
+      ]);
       if (!response.ok) {
         throw new Error(t('reports.reportsList.errors.fetchReports'));
       }
       const data = await response.json();
-      setReports(data.data ?? []);
+      const own: Report[] = data.data ?? [];
+      const seen = new Set(own.map((r) => r.id));
+      setReports([...own, ...partnerWide.filter((r) => !seen.has(r.id))]);
     } catch (err) {
       setError(err instanceof Error ? err.message : t('reports.reportsList.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [t, mergePartnerWide, fetchPartnerWideReports]);
 
   const fetchRecentRuns = useCallback(async () => {
     try {
@@ -460,11 +485,6 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
 
       {activeTab === 'reports' && (
         <>
-          {showPartnerWideHint && (
-            <p data-testid="reports-partner-wide-hint" className="text-sm text-muted-foreground">
-              {t('reports.reportsList.partnerWideHint')}
-            </p>
-          )}
           {reports.length === 0 ? (
             <div className="rounded-lg border border-dashed p-12 text-center">
               <FileText className="h-12 w-12 text-muted-foreground mx-auto mb-4" />

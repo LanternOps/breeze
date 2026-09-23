@@ -461,8 +461,7 @@
       "templates": "Plantillas",
       "title": "Informes",
       "tryAgain": "Intentar otra vez",
-      "unknownReport": "Informe desconocido",
-      "partnerWideHint": "Los informes que abarcan todas las organizaciones aparecen en la vista Todas las organizaciones."
+      "unknownReport": "Informe desconocido"
     },
     "reportBuilder": {
       "actions": {

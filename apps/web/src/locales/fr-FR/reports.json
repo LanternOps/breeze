@@ -461,8 +461,7 @@
       "templates": "Modèles",
       "title": "Rapports",
       "tryAgain": "Réessayer",
-      "unknownReport": "Rapport inconnu",
-      "partnerWideHint": "Les rapports couvrant toutes les organisations apparaissent dans la vue Toutes les organisations."
+      "unknownReport": "Rapport inconnu"
     },
     "reportBuilder": {
       "actions": {

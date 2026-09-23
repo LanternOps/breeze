@@ -461,8 +461,7 @@
       "templates": "Modelos",
       "title": "Relatórios",
       "tryAgain": "Tentar novamente",
-      "unknownReport": "Relatório Desconhecido",
-      "partnerWideHint": "Relatórios que abrangem todas as organizações aparecem na visualização Todas as organizações."
+      "unknownReport": "Relatório Desconhecido"
     },
     "reportBuilder": {
       "actions": {

@@ -461,8 +461,7 @@
       "templates": "Şablonlar",
       "title": "Raporlar",
       "tryAgain": "Tekrar deneyin",
-      "unknownReport": "Bilinmeyen Rapor",
-      "partnerWideHint": "Tüm kuruluşları kapsayan raporlar Tüm kuruluşlar görünümünde yer alır."
+      "unknownReport": "Bilinmeyen Rapor"
     },
     "reportBuilder": {
       "actions": {

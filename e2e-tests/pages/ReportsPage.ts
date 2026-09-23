@@ -1,4 +1,4 @@
-import { expect, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
 import { waitForAppReady } from './hydration';
 
 /**
@@ -11,18 +11,24 @@ export class ReportsPage {
 
   constructor(private page: Page) {}
 
-  // Org switcher (layout) — a focused org hides partner-owned reports.
+  // Org switcher (layout) — `data-scope` is 'org' when an organization is focused.
   orgSwitcherTrigger = () => this.page.getByTestId('org-switcher-trigger');
-  orgOptionAll = () => this.page.getByTestId('org-option-all');
-  orgOption = (orgId: string) => this.page.getByTestId(`org-option-${orgId}`);
-
-  toasts = () => this.page.getByTestId('toast');
 
   // Templates gallery
   templatesHeading = () => this.page.getByTestId('reports-templates-heading');
   businessGroup = () => this.page.getByTestId('report-template-group-business');
   templateCard = (type: string) => this.page.getByTestId(`report-template-card-${type}`);
   useTemplate = (type: string) => this.page.getByTestId(`report-template-use-${type}`);
+  /** The first business card of a report type. A saved org report with a
+   *  curated name replaces that curated slot under its OWN id, so a card is
+   *  found by its type marker rather than by `report-template-card-<type>`. */
+  businessCardOfType = (type: string) =>
+    this.businessGroup()
+      .getByTestId(/^report-template-card-/)
+      .filter({ has: this.page.getByTestId(`report-template-type-${type}`) })
+      .first();
+  useBusinessTemplateOfType = (type: string) =>
+    this.businessCardOfType(type).getByTestId(/^report-template-use-/);
 
   // Shared business options modal
   optionsModal = () => this.page.getByTestId('business-report-options-modal');
@@ -34,7 +40,6 @@ export class ReportsPage {
 
   // Reports list — saved reports tab
   savedTab = () => this.page.getByTestId('reports-tab-saved');
-  partnerWideHint = () => this.page.getByTestId('reports-partner-wide-hint');
   reportRow = (id: string) => this.page.getByTestId(`report-row-${id}`);
   scopeBadge = (id: string) => this.page.getByTestId(`report-scope-badge-${id}`);
   generate = (id: string) => this.page.getByTestId(`report-generate-${id}`);
@@ -55,35 +60,5 @@ export class ReportsPage {
   async gotoList() {
     await this.page.goto(this.url);
     await waitForAppReady(this.page, 'reports-tab-saved');
-  }
-
-  /** Switch the layout org switcher to "All organizations" (fleet view). */
-  async selectAllOrganizations() {
-    if ((await this.orgSwitcherTrigger().getAttribute('data-scope')) === 'all') return;
-    await this.orgSwitcherTrigger().click();
-    await this.orgOptionAll().click();
-    await this.page.waitForFunction(
-      () => document.querySelector('[data-testid="org-switcher-trigger"]')?.getAttribute('data-scope') === 'all',
-      undefined,
-      { timeout: 15_000 },
-    );
-    await this.waitForToastsCleared();
-  }
-
-  /** The org-switch toast sits over the gallery's bottom-right cards and
-   *  intercepts clicks until it expires (5 s). */
-  async waitForToastsCleared() {
-    await expect(this.toasts()).toHaveCount(0, { timeout: 15_000 });
-  }
-
-  /** Focus one organization in the layout org switcher. */
-  async selectOrganization(orgId: string) {
-    await this.orgSwitcherTrigger().click();
-    await this.orgOption(orgId).click();
-    await this.page.waitForFunction(
-      () => document.querySelector('[data-testid="org-switcher-trigger"]')?.getAttribute('data-scope') === 'org',
-      undefined,
-      { timeout: 15_000 },
-    );
   }
 }

@@ -829,7 +829,12 @@ export default function ReportTemplates() {
             </div>
             <div>
               <p className="text-sm font-semibold">{displayName}</p>
-              <p className="text-xs text-muted-foreground">{reportTypeLabel}</p>
+              <p
+                data-testid={`report-template-type-${template.defaults.type ?? 'unknown'}`}
+                className="text-xs text-muted-foreground"
+              >
+                {reportTypeLabel}
+              </p>
             </div>
           </div>
         </div>
