@@ -5,7 +5,7 @@ import { isTextArtifactContentType, type AiArtifactKind, type AiRunArtifactDto }
 import { db } from '../../db';
 import { aiRunArtifacts } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
-import { redactAiToolOutputText } from '../aiToolOutput';
+import { redactAiToolOutputText, shrinkToJsonBudget } from '../aiToolOutput';
 import { captureException } from '../sentry';
 import { getBlobStorage, type BlobRegion } from './blobStorage';
 
@@ -277,6 +277,14 @@ export async function resolveArtifact(
 /** A `read_artifact` page never exceeds this many characters, whatever `maxChars` asks for. */
 export const ARTIFACT_READ_MAX_CHARS = 6_000;
 
+/**
+ * Fix 4a: the JSON-escaped/quoted length `text` may cost inside the tool's
+ * response, leaving headroom under MAX_TOOL_RESULT_CHARS for the rest of the
+ * `read_artifact` envelope (handle, name, contentType, bytes, offset,
+ * nextOffset, hasMore).
+ */
+const ARTIFACT_READ_JSON_BUDGET_CHARS = 7_000;
+
 /** Index of the last byte that ends a complete UTF-8 sequence in `buf`, or 0 when none does. */
 function utf8Boundary(buf: Buffer): number {
   const end = buf.length;
@@ -322,6 +330,11 @@ export async function readArtifactWindow(
   let text = buf.toString('utf8', 0, cut);
   const chars = Array.from(text);
   if (chars.length > want) text = chars.slice(0, want).join('');
+  // Fix 4a: shrink further so the JSON-escaped cost fits the budget —
+  // escape-heavy content sized only by raw char count can still overflow
+  // compactToolResultForChat and get replaced by a digest, silently
+  // dropping text `nextOffset` told the caller it could read.
+  text = shrinkToJsonBudget(text, ARTIFACT_READ_JSON_BUDGET_CHARS);
   const used = Buffer.byteLength(text, 'utf8');
   const nextOffset = start + used;
   return { text, nextOffset, hasMore: nextOffset < record.bytes };

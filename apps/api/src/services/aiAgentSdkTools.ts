@@ -1660,7 +1660,7 @@ export function buildBreezeSdkTools(
       {
         executionId: uuid,
         stdoutOffset: z.number().int().min(0).optional(),
-        stdoutMaxChars: z.number().int().min(1).max(16000).optional(),
+        stdoutMaxChars: z.number().int().min(1).max(5000).optional(),
         stderrMaxChars: z.number().int().min(1).max(8000).optional(),
       },
       makeHandler('get_script_execution', getAuth, onPreToolUse, onPostToolUse)

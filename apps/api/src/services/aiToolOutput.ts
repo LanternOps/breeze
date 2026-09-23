@@ -58,6 +58,29 @@ const COMPACTION_TIERS: CompactConfig[] = [
  */
 export const MAX_TOOL_RESULT_CHARS = 8_000;
 const RAW_PREVIEW_CHARS = 2_000;
+
+/**
+ * A-W05 (Q3/fix 4): shrinks `text` in whole Unicode CODE POINTS (never
+ * splitting a surrogate pair) until `JSON.stringify(text).length` — what the
+ * window actually costs once escaped and quoted in the tool's response — is
+ * at most `budgetChars`. A window sized purely by raw character count can
+ * still be escape-heavy (control characters, backslashes cost up to 6x their
+ * raw count once escaped) and blow the overall compaction budget, which
+ * replaces the whole result with a digest and silently drops text the
+ * caller was told (via its `nextOffset`/`stdoutNextOffset` sibling) it could
+ * read. Each removed code point drops the escaped length by at least 1, so
+ * this always terminates.
+ */
+export function shrinkToJsonBudget(text: string, budgetChars: number): string {
+  let chars = Array.from(text);
+  let escapedLength = JSON.stringify(chars.join('')).length;
+  while (chars.length > 0 && escapedLength > budgetChars) {
+    const overshoot = escapedLength - budgetChars;
+    chars = chars.slice(0, Math.max(0, chars.length - overshoot));
+    escapedLength = JSON.stringify(chars.join('')).length;
+  }
+  return chars.join('');
+}
 const STDOUT_TEXT_CHARS = 6_000;
 const STDERR_TEXT_CHARS = 1_200;
 const MAX_DISK_CANDIDATES = 60;
@@ -833,7 +856,14 @@ function safeStringify(value: unknown): string {
 // are the top-level SCALAR paging keys every shaped list/keyset tool emits
 // (see aiToolPagination.ts's pageEnvelope/keysetEnvelope). Read from the
 // already-redacted/sanitized payload so a key the redactor wiped stays wiped.
-const PAGING_ENVELOPE_KEYS = ['total', 'totalMode', 'showing', 'limit', 'offset', 'hasMore', 'nextCursor', 'count'] as const;
+// Fix 4c: `nextOffset`/`stdoutNextOffset`/`stderrNextOffset`/`stdoutHasMore`
+// are the continuation state for a character-window tool (read_artifact,
+// get_script_execution) — without them, a digest that replaces the payload
+// also strands the model with no way to resume the window it was reading.
+const PAGING_ENVELOPE_KEYS = [
+  'total', 'totalMode', 'showing', 'limit', 'offset', 'hasMore', 'nextCursor', 'count',
+  'nextOffset', 'stdoutNextOffset', 'stderrNextOffset', 'stdoutHasMore',
+] as const;
 function extractPagingEnvelope(value: unknown): Record<string, unknown> {
   if (!isRecord(value)) return {};
   const out: Record<string, unknown> = {};

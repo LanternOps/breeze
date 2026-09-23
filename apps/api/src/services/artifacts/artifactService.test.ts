@@ -376,6 +376,38 @@ describe('readArtifactWindow (A-W05 D13a)', () => {
     expect(w.nextOffset).toBe(7);
     expect(w.hasMore).toBe(true);
   });
+
+  it('fix 4a: shrinks the window by JSON-escaped length, not raw char count, for control-char-heavy content', async () => {
+    // Every '\u0001' escapes to 6 JSON chars (\u0001 literal). A raw 6000-char
+    // window of these would escape to 36 000 chars — way past what
+    // compactToolResultForChat can carry without replacing the whole result
+    // with a digest and silently dropping text `nextOffset` promised.
+    const body = Buffer.from('\u0001'.repeat(10_000), 'utf8');
+    setBlobStorageForTests(fakeRangeStore(body));
+    const w = await readArtifactWindow(record(body.length), 0, 6000);
+    expect(JSON.stringify(w.text).length).toBeLessThanOrEqual(7_000);
+    // nextOffset must equal exactly the bytes actually included in `text` —
+    // never the originally-requested (pre-shrink) window size.
+    expect(w.nextOffset).toBe(Buffer.byteLength(w.text, 'utf8'));
+    expect(w.hasMore).toBe(true);
+  });
+
+  it('fix 4a: shrinks for backslash-heavy content too, and the shrunk window survives compactToolResultForChat intact', async () => {
+    const body = Buffer.from('\\'.repeat(10_000), 'utf8');
+    setBlobStorageForTests(fakeRangeStore(body));
+    const w = await readArtifactWindow(record(body.length), 0, 6000);
+    const raw = JSON.stringify({
+      handle: ART, name: 't.json', contentType: 'application/json',
+      bytes: body.length, offset: 0, nextOffset: w.nextOffset, hasMore: w.hasMore, text: w.text,
+    });
+    const { compactToolResultForChat } = await import('../aiToolOutput');
+    const compacted = JSON.parse(compactToolResultForChat('read_artifact', raw)) as {
+      text: string; nextOffset: number; summarized?: boolean;
+    };
+    expect(compacted.summarized).toBeUndefined();
+    expect(compacted.text).toBe(w.text);
+    expect(compacted.nextOffset).toBe(w.nextOffset);
+  });
 });
 
 describe('findArtifactForCaller (A-W05 D13a/Q4) — input validation short-circuits before any query', () => {

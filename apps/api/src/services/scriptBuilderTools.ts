@@ -373,7 +373,7 @@ export function buildScriptBuilderTools(
         // this surface strips them and the model can never page past 6000
         // stdout chars.
         stdoutOffset: z.number().int().min(0).optional().describe('Character offset into stdout (default 0)'),
-        stdoutMaxChars: z.number().int().min(1).max(16000).optional().describe('Max stdout chars to return (default 5000, max 16000)'),
+        stdoutMaxChars: z.number().int().min(1).max(5000).optional().describe('Max stdout chars to return (default 5000, max 5000)'),
         stderrMaxChars: z.number().int().min(1).max(8000).optional().describe('Max stderr chars to return (default 1500, max 8000)'),
       },
       makeExistingHandler('get_script_execution', getAuth, onPreToolUse, onPostToolUse)

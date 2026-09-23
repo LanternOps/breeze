@@ -43,6 +43,13 @@ import { loadTenantVariableScope } from './tenantVariableResolution';
 import { captureException } from './sentry';
 import { scriptNeedsVariableScope } from './sourcedParameters';
 import { deviceScopeCondition, siteScopeCondition } from './aiToolsSiteScope';
+import { shrinkToJsonBudget } from './aiToolOutput';
+
+// Fix 4b: headroom under MAX_TOOL_RESULT_CHARS (8000) for the rest of the
+// get_script_execution envelope once stdout/stderr are counted at their
+// JSON-escaped cost, not their raw char count.
+const STDOUT_JSON_BUDGET_CHARS = 6_000;
+const STDERR_JSON_BUDGET_CHARS = 2_000;
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -1234,7 +1241,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
         properties: {
           executionId: { type: 'string', description: 'UUID of the script execution to fetch' },
           stdoutOffset: { type: 'number', description: 'Character offset into stdout (default 0)' },
-          stdoutMaxChars: { type: 'number', description: 'Max stdout chars to return (default 5000, max 16000)' },
+          stdoutMaxChars: { type: 'number', description: 'Max stdout chars to return (default 5000, max 5000)' },
           stderrMaxChars: { type: 'number', description: 'Max stderr chars to return (default 1500, max 8000)' },
         },
         required: ['executionId'],
@@ -1257,7 +1264,10 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       // A-W05 (5c follow-up): the plan's 6000/2000 defaults measured 8 656
       // raw chars once metadata/JSON overhead was included — over the 8 000
       // budget. 5000/1500 measured 7 132; lowered accordingly.
-      const stdoutMax = Math.min(Math.max(1, Math.trunc(Number(input.stdoutMaxChars)) || 5000), 16000);
+      // Fix 4b: lowered from 16000 to 5000 — the raw-char cap alone doesn't
+      // bound the JSON-escaped cost (control chars/backslashes), so it's
+      // shrunk further below by escaped length before it goes out.
+      const stdoutMax = Math.min(Math.max(1, Math.trunc(Number(input.stdoutMaxChars)) || 5000), 5000);
       const stderrMax = Math.min(Math.max(1, Math.trunc(Number(input.stderrMaxChars)) || 1500), 8000);
 
       const [execution] = await db
@@ -1308,21 +1318,31 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       const { deviceSiteId: _siteId, stdoutChars: stdoutCharsRaw, stderrChars: stderrCharsRaw, ...result } = execution;
       const stdoutChars = Number(stdoutCharsRaw);
       const stderrChars = Number(stderrCharsRaw);
+      // Fix 4b: a raw-char cap alone doesn't bound the JSON-escaped cost
+      // (control chars/backslashes can cost up to 6x their raw count once
+      // escaped), which can blow the overall compaction budget and get the
+      // whole result replaced by a digest — losing stdout the caller was
+      // told via stdoutNextOffset it could read. Shrink by escaped length,
+      // in whole code points, before computing the offset fields below.
+      const stdout = shrinkToJsonBudget(result.stdout, STDOUT_JSON_BUDGET_CHARS);
+      const stderr = shrinkToJsonBudget(result.stderr, STDERR_JSON_BUDGET_CHARS);
       return JSON.stringify({
         execution: shapeExecutionRow({
           ...result,
+          stdout,
+          stderr,
           stdoutChars,
           stdoutOffset,
           // `stdoutNextOffset` is the sibling key `compactToolResultForChat`
           // (A-W05 Q3) keys off of to recognise this as a deliberately-sized
           // window and never re-cut it during generic compaction.
-          stdoutNextOffset: stdoutOffset + result.stdout.length,
-          stdoutHasMore: stdoutOffset + result.stdout.length < stdoutChars,
+          stdoutNextOffset: stdoutOffset + stdout.length,
+          stdoutHasMore: stdoutOffset + stdout.length < stdoutChars,
           stderrChars,
           // stderr has no offset param (always read from 0); stderrNextOffset
           // exists purely so the compactor's structural check protects it too.
-          stderrNextOffset: result.stderr.length,
-          stderrTruncated: result.stderr.length < stderrChars,
+          stderrNextOffset: stderr.length,
+          stderrTruncated: stderr.length < stderrChars,
         }),
       });
     },

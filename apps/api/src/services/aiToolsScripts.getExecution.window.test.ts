@@ -42,6 +42,27 @@ describe('get_script_execution stdout/stderr window (A-W05 5c)', () => {
     expect(props.stderrMaxChars).toBeDefined();
   });
 
+  it('fix 4b: caps stdoutMaxChars at 5000 (not 16000) on the registry description and on all four schema surfaces', async () => {
+    const props = (tool.definition.input_schema as { properties: Record<string, { description: string }> }).properties;
+    expect(props.stdoutMaxChars!.description).toBe('Max stdout chars to return (default 5000, max 5000)');
+
+    const { toolInputSchemas } = await import('./aiToolSchemas');
+    const zodShape = (toolInputSchemas.get_script_execution as { shape: Record<string, unknown> }).shape;
+    expect((zodShape.stdoutMaxChars as { safeParse: (v: number) => { success: boolean } }).safeParse(5001).success).toBe(false);
+    expect((zodShape.stdoutMaxChars as { safeParse: (v: number) => { success: boolean } }).safeParse(5000).success).toBe(true);
+
+    const { buildBreezeSdkTools } = await import('./aiAgentSdkTools');
+    const fakeAuth = () => { throw new Error('must not invoke tool handlers'); };
+    const sdkTool = buildBreezeSdkTools(fakeAuth as never).find((t) => t.name === 'get_script_execution')!;
+    const sdkShape = (sdkTool as { inputSchema: Record<string, { safeParse: (v: number) => { success: boolean } }> }).inputSchema;
+    expect(sdkShape.stdoutMaxChars!.safeParse(5001).success).toBe(false);
+
+    const { buildScriptBuilderTools } = await import('./scriptBuilderTools');
+    const sbTool = buildScriptBuilderTools(fakeAuth as never).find((t) => t.name === 'get_script_execution')!;
+    const sbShape = (sbTool as { inputSchema: Record<string, { safeParse: (v: number) => { success: boolean } }> }).inputSchema;
+    expect(sbShape.stdoutMaxChars!.safeParse(5001).success).toBe(false);
+  });
+
   it('returns a bounded stdout window by default with continuation fields, and caps stderr', async () => {
     dbMock.setRows([{
       id: EXEC, sourceKind: 'library', scriptId: 's1', proposalId: null,
@@ -63,7 +84,7 @@ describe('get_script_execution stdout/stderr window (A-W05 5c)', () => {
     expectDefaultPageFits('get_script_execution', raw);
   });
 
-  it('honours stdoutOffset/stdoutMaxChars and clamps to 16000, and selects with substr', async () => {
+  it('honours stdoutOffset/stdoutMaxChars and clamps to 5000, and selects with substr', async () => {
     dbMock.setRows([{
       id: EXEC, sourceKind: 'library', scriptId: 's1', proposalId: null,
       scriptName: 'cleanup', scriptLanguage: 'bash', language: 'bash', timeoutSeconds: 60,
@@ -97,5 +118,25 @@ describe('get_script_execution stdout/stderr window (A-W05 5c)', () => {
     expect(compacted.summarized).toBeUndefined();
     expect(compacted.execution.stdout).toBe(stdoutText);
     expect(compacted.execution.stdoutNextOffset).toBe(stdoutText.length);
+  });
+
+  it('fix 4b: shrinks a control-char-heavy stdout window by JSON-escaped length so it never digests, with stdoutNextOffset matching what was actually delivered', async () => {
+    // Every '\u0001' escapes to 6 JSON chars. A raw 5000-char window of these
+    // would escape to 30 000 chars, blowing MAX_TOOL_RESULT_CHARS on its own.
+    const stdoutText = '\u0001'.repeat(5000);
+    dbMock.setRows([{
+      id: EXEC, sourceKind: 'library', scriptId: 's1', proposalId: null,
+      scriptName: 'cleanup', scriptLanguage: 'bash', language: 'bash', timeoutSeconds: 60,
+      reviewRiskTier: 'low', reviewSummary: null, approvalMethod: 'auto', deviceId: 'd1',
+      deviceHostname: 'host-1', deviceSiteId: 'site-1', status: 'completed', exitCode: 0,
+      stdout: stdoutText, stdoutChars: 50_000, stderr: '', stderrChars: 0,
+      errorMessage: null, startedAt: null, completedAt: null, createdAt: new Date('2026-09-20T09:59:00Z'),
+    }]);
+    const raw = await tool.handler({ executionId: EXEC }, auth());
+    const out = JSON.parse(raw) as { execution: { stdout: string; stdoutNextOffset: number; stdoutOffset: number } };
+    expect(JSON.stringify(out.execution.stdout).length).toBeLessThan(30_000);
+    expect(out.execution.stdoutNextOffset).toBe(out.execution.stdoutOffset + out.execution.stdout.length);
+    const compacted = JSON.parse(compactToolResultForChat('get_script_execution', raw)) as { summarized?: boolean };
+    expect(compacted.summarized).toBeUndefined();
   });
 });
