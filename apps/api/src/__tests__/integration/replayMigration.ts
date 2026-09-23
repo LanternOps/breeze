@@ -25,10 +25,27 @@
  *
  * `replayMigration` closes this generically: after executing the named file,
  * it finds every function/procedure name that file (re)defines
- * (`extractDefinedFunctionNames`, `../../db/autoMigrate.ts`), then re-applies,
- * in filename order, every LATER shipped migration that also (re)defines any
- * of those names — bringing the database back to the state a fresh migrate
- * would leave it in.
+ * (`extractDefinedFunctionNames`) and every constraint name it rewrites
+ * (`extractTouchedConstraintNames` — ADD/DROP/ALTER/VALIDATE/RENAME
+ * CONSTRAINT), then re-applies, in filename order, every LATER shipped
+ * migration that also writes any of those names (`selectReplayFollowers`, all
+ * in `../../db/autoMigrate.ts`) — bringing the database back to the state a
+ * fresh migrate would leave it in.
+ *
+ * Constraints joined the closure in #6700: `pamActuationLifecycle` replays
+ * `2026-09-16-pam-actuation-lifecycle.sql`, which drops and re-adds
+ * `intent_outbox_event_type_check` with its 09-16 list. Tracking functions
+ * alone left the CHECK narrowed for the rest of the process, so every later
+ * suite inserting a newer event type (widened by
+ * `2026-10-08-100300-intent-cancelled-outbox-event.sql` and
+ * `2026-10-14-100300-ai-operator-intent-terminal-events.sql`) failed.
+ *
+ * Blind spot: a constraint rewritten under a runtime-built name
+ * (`format('... ALTER CONSTRAINT %I ...', r.conname)`, e.g. the deferrable
+ * conversion loop in `2026-09-12-100001-org-lifecycle-foundations.sql`) is
+ * invisible to the text scan. A suite whose replayed file collides with one
+ * must restore that state itself AFTER `replayMigration` returns (see
+ * `partnerApiReconstructionWatermark`, #6701).
  *
  * `-- @no-transaction` files (`CREATE INDEX CONCURRENTLY` and friends) are
  * refused outright: this helper's single `db.execute(sql.raw(...))` call
@@ -38,7 +55,7 @@
  */
 import { readFile } from 'node:fs/promises';
 import { sql } from 'drizzle-orm';
-import { discoverCoreMigrationFilenames, extractDefinedFunctionNames, hasNoTransactionDirective } from '../../db/autoMigrate';
+import { discoverCoreMigrationFilenames, hasNoTransactionDirective, selectReplayFollowers } from '../../db/autoMigrate';
 import { getTestDb } from './setup';
 
 async function readMigrationFile(fileName: string): Promise<string> {
@@ -58,7 +75,8 @@ function assertReplayable(fileName: string, content: string): void {
 /**
  * Replay `fileName` (a bare filename under `apps/api/migrations/`) against
  * the current integration test database, then re-apply every later shipped
- * migration that redefines a function/procedure `fileName` itself defines.
+ * migration that redefines a function/procedure, or rewrites a constraint,
+ * that `fileName` (or an already re-applied follower) itself touches.
  *
  * Must be called from inside a suite that already imports `./setup` (real
  * Postgres connection via `getTestDb()`), same as every other file that
@@ -77,24 +95,21 @@ export async function replayMigration(fileName: string): Promise<void> {
   // Re-applying it rolls the second function back to that file's body, so
   // every later definer of THAT name must be re-applied too — otherwise the
   // 2026-10-16-182100 script_executions AI-pointer detach silently vanished
-  // for the rest of the vitest process. Names only ever enter the set at some
-  // index k, and every later definer of them is still ahead in this single
-  // forward scan, so one pass leaves the same bodies a fresh migrate would.
-  const defined = new Set(extractDefinedFunctionNames(baseContent));
-  if (defined.size === 0) return;
-
+  // for the rest of the vitest process. The same holds for constraint names
+  // (#6700). selectReplayFollowers walks that closure in one forward pass.
   const allFilenames = await discoverCoreMigrationFilenames();
   const baseIndex = allFilenames.indexOf(fileName);
   if (baseIndex === -1) {
     throw new Error(`replayMigration(${fileName}): not found under apps/api/migrations.`);
   }
 
-  for (const laterFile of allFilenames.slice(baseIndex + 1)) {
-    const laterContent = await readMigrationFile(laterFile);
-    const laterDefines = extractDefinedFunctionNames(laterContent);
-    if (!laterDefines.some((name) => defined.has(name))) continue;
+  const laterFiles = await Promise.all(
+    allFilenames.slice(baseIndex + 1).map(async (name) => ({ name, content: await readMigrationFile(name) })),
+  );
+  const contentByName = new Map(laterFiles.map((f) => [f.name, f.content]));
+  for (const laterFile of selectReplayFollowers(baseContent, laterFiles)) {
+    const laterContent = contentByName.get(laterFile)!;
     assertReplayable(laterFile, laterContent);
     await db.execute(sql.raw(laterContent));
-    for (const name of laterDefines) defined.add(name);
   }
 }
