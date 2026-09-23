@@ -255,6 +255,8 @@ export const TOOL_TIERS = {
   // Execution plane (spec §5.7) — reads nothing the caller cannot already read;
   // it just refuses to throw the result away. Tier 1 like its source tools.
   export_dataset: 1,
+  // A-W05 (D13a): reads only the caller's own already-captured artifacts.
+  read_artifact: 1,
   // Execution plane W04 — sandbox workspace tools. Tier 1: they execute
   // nothing on the fleet. NOT read-only (see TIER1_NON_READONLY_TOOLS in
   // aiGuardrails.ts) — the allowlist is what gates them. A tool absent from
@@ -2292,6 +2294,17 @@ export function buildBreezeSdkTools(
         maxRows: z.number().optional(),
       },
       makeHandler('export_dataset', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'read_artifact',
+      registryDescription('read_artifact'),
+      {
+        handle: z.string().guid().describe('Artifact handle (UUID) from artifact.handle'),
+        offset: z.number().int().min(0).optional().describe('Byte offset to start from; pass nextOffset to continue (default 0)'),
+        maxChars: z.number().int().min(1).max(6000).optional().describe('Max characters to return (default 4000, max 6000)'),
+      },
+      makeHandler('read_artifact', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

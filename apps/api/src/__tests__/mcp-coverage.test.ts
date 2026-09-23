@@ -34,7 +34,6 @@ const FROZEN_GAPS: ReadonlySet<string> = new Set([
   'ai.ts',
   'ai/scriptPolicy.ts',
   'aiAgentSchedules.ts',
-  'aiArtifacts.ts',
   'aiOperatorTasks.ts',
   'aiProvider.ts',
   'alertTemplates/correlations.ts',

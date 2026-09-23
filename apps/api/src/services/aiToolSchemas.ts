@@ -1416,6 +1416,17 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     sortOrder: z.enum(['asc', 'desc']).optional(),
   }),
 
+  // A-W05 (D13a): read_artifact pages a stored tool-result artifact by byte
+  // offset. `offset`/`maxChars` mirror ARTIFACT_READ_MAX_CHARS
+  // (services/artifacts/artifactService.ts) — kept as a literal here rather
+  // than imported, matching this file's existing convention of literal
+  // bounds for tool inputs.
+  read_artifact: z.object({
+    handle: uuid,
+    offset: z.number().int().min(0).optional(),
+    maxChars: z.number().int().min(1).max(6000).optional(),
+  }),
+
   export_dataset: z.object({
     dataset: z.enum(['event_logs', 'agent_logs', 'device_inventory', 'software_inventory', 'metrics', 'vulnerabilities', 'custom_fields']),
     format: z.enum(['jsonl', 'csv']).optional(),

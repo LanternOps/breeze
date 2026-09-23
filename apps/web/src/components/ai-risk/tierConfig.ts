@@ -159,6 +159,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'get_timesheet', description: 'Get a timesheet summary', category: 'Ticketing' },
       // AI Governance
       { name: 'list_ai_agents', description: 'List AI agents', category: 'AI Governance' },
+      { name: 'read_artifact', description: 'Read a stored tool-result artifact', category: 'AI Governance' },
       { name: 'list_ai_agent_runs', description: 'List AI agent runs', category: 'AI Governance' },
       { name: 'get_ai_agent_run', description: 'Get AI agent run details', category: 'AI Governance' },
       // Other

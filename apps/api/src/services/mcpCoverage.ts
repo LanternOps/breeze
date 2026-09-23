@@ -116,7 +116,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'ai/scriptProposals.ts': { tools: ['propose_script', 'get_script_proposal'] },
   'aiAgentSchedules.ts': { gap: '#6141' },
   'aiAgents.ts': { tools: ['list_ai_agents', 'list_ai_agent_runs', 'get_ai_agent_run', 'manage_ai_agents'] },
-  'aiArtifacts.ts': { gap: '#6141' },
+  'aiArtifacts.ts': { tools: ['read_artifact'] },
   'aiOperatorTasks.ts': { gap: '#6141' },
   'aiProvider.ts': { gap: '#6141' },
   'alertTemplates/correlations.ts': { gap: '#6141' },

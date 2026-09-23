@@ -136,4 +136,27 @@ export type ToolExecutionContext = {
    * lets the handler keep `source: 'manual'` for a human's own tool call.
    */
   approverRelease?: { approverUserId: string };
+  /**
+   * A-W05 (D13a/Q4) — the SAME capture anchor `captureContextFrom`
+   * (`artifacts/toolResultCapture.ts`) computed for this call, threaded
+   * through so `read_artifact`'s handler can scope `findArtifactForCaller`
+   * to exactly the run or chat session THIS call is running in. Capture
+   * writes and this read must use one anchor or a model could read an
+   * artifact captured from a different session of the same user —
+   * `findArtifactForCaller` deliberately does not accept "any session
+   * belonging to this user" as a match.
+   *
+   * Structurally identical to `ArtifactCallerAnchor`
+   * (`artifacts/artifactService.ts`) — typed independently here rather than
+   * imported, because this file must not depend on the artifact service
+   * layer for an otherwise-unrelated execution-input bag.
+   *
+   * Set by `executeTool` ONLY for `read_artifact` (a name check, not a
+   * blanket computation folded into every call's context) so every other
+   * tool's `context` identity is unaffected — see the comment at the call
+   * site in `aiTools.ts`. Absent for a call with no attributable org/run/
+   * session (an unauthenticated or system-scope caller), which is what makes
+   * "no anchor" a safe, typed refusal rather than an unscoped lookup.
+   */
+  captureAnchor?: { orgId: string; runId?: string | null; sessionId?: string | null };
 };

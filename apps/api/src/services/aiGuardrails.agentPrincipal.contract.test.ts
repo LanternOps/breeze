@@ -266,6 +266,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'query_change_log',
   'query_devices',
   'query_monitors',
+  'read_artifact', // A-W05 (D13a): Tier 1 read, own-run/session scoped
   'search_agent_logs',
   'search_catalog',
   'search_documentation', // A-W02 Task 5 declared it on the chat server (Tier 1 read)

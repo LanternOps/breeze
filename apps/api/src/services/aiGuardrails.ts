@@ -898,6 +898,10 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   list_ai_agents: { resource: 'ai_agents', action: 'read' },
   list_ai_agent_runs: { resource: 'ai_agents', action: 'read' },
   get_ai_agent_run: { resource: 'ai_agents', action: 'read' },
+  // A-W05 (D13a): same permission as the REST download (GET /ai/artifacts/:id,
+  // routes/aiArtifacts.ts) — the tool's scope is stricter (own run/session
+  // only), not its permission.
+  read_artifact: { resource: 'ai_agents', action: 'read' },
   list_sites: { resource: 'sites', action: 'read' },
   get_site: { resource: 'sites', action: 'read' },
   list_org_contacts: { resource: 'organizations', action: 'read' },

@@ -413,6 +413,37 @@ export async function findArtifactForCaller(
   return (row as ArtifactRecord | undefined) ?? null;
 }
 
+/**
+ * The ONLY content types an artifact download (REST or `read_artifact`) may
+ * echo. Everything else — html, svg, xml, any script type, anything
+ * unrecognised — becomes octet-stream. An allowlist, never a denylist: a new
+ * active type must not become renderable by default.
+ *
+ * A-W05 (D13a): lives here rather than in `routes/aiArtifacts.ts` (its
+ * original home) so `aiToolsArtifacts.ts` can import it without dragging that
+ * route module's `new Hono()` + middleware side effects into the `aiTools.ts`
+ * hub — `services/aiToolNames.ts`'s header documents exactly this failure
+ * shape for a different import (`workerEntrypointClosure.contract.test.ts`).
+ * `routes/aiArtifacts.ts` re-exports this symbol so its own callers and test
+ * are unaffected.
+ */
+const SAFE_DOWNLOAD_CONTENT_TYPES = new Set([
+  'application/json',
+  'application/jsonl',
+  'text/plain; charset=utf-8',
+  'text/plain',
+  'text/csv',
+  'text/tab-separated-values',
+  'application/gzip',
+  'application/zip',
+  'application/pdf',
+]);
+
+export function artifactDownloadContentType(stored: string): string {
+  const normalised = stored.trim().toLowerCase();
+  return SAFE_DOWNLOAD_CONTENT_TYPES.has(normalised) ? normalised : 'application/octet-stream';
+}
+
 /** Route-side resolve: scoped by `auth.orgCondition`, which is `undefined` (no filter) for system scope. */
 export async function findArtifactForAuth(handle: string, auth: AuthContext): Promise<ArtifactRecord | null> {
   if (!UUID.safeParse(handle).success) return null;
