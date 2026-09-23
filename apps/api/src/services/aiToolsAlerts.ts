@@ -95,7 +95,7 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
           status: { type: 'string', enum: ['active', 'acknowledged', 'resolved', 'suppressed', 'dismissed'], description: 'Filter by status (for list)' },
           severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low', 'info'], description: 'Filter by severity (for list)' },
           deviceId: { type: 'string', description: 'Filter by device UUID (for list)' },
-          limit: { type: 'number', description: 'Max results (for list, default 25)' },
+          limit: { type: 'number', description: 'Max results for list (default 25, max 100)' },
           resolutionNote: { type: 'string', description: 'Note when resolving or suppressing an alert' },
           suppressDuration: { type: 'number', description: 'Hours to suppress the alert (default: 24, max: 720). Use 0 to suppress forever (indefinitely).' }
         },

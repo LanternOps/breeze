@@ -196,7 +196,7 @@ export function registerSentinelOneTools(aiTools: Map<string, AiTool>): void {
           status: { type: 'string', enum: ['active', 'in_progress', 'quarantined', 'resolved'] },
           deviceId: { type: 'string', description: 'Optional Breeze device UUID' },
           search: { type: 'string', description: 'Search threat name, process name, or file path' },
-          limit: { type: 'number', description: 'Result limit (default 100, max 500)' }
+          limit: { type: 'number', description: 'Max results (default 100, max 500)' }
         }
       }
     },

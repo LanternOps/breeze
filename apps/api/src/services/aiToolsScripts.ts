@@ -860,7 +860,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
           },
           limit: {
             type: 'number',
-            description: 'Maximum number of processes to return (default: 50, max: 200)'
+            description: 'Max processes to return (default 50, max 200)'
           }
         },
         required: ['action', 'deviceId']

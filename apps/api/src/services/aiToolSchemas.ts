@@ -945,8 +945,15 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
 
   security_scan: z.object({
     deviceId: uuid,
-    action: z.enum(['scan', 'status', 'quarantine', 'remove', 'restore']),
+    action: z.enum(['scan', 'status', 'quarantine', 'remove', 'restore', 'vulnerabilities']),
     threatId: z.string().max(255).optional(),
+    // A-W05 (D12b/Q9): the registry has always accepted these for the
+    // `vulnerabilities` action (aiToolsSecurity.ts) — 'vulnerabilities' was
+    // simply missing from this surface's `action` enum, making it unreachable
+    // through the validated path. Adding it here is a schema-parity fix, not
+    // a behavior change.
+    severity: z.enum(['critical', 'high', 'medium', 'low']).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
   }).refine(
     (data) => {
       if (['quarantine', 'remove', 'restore'].includes(data.action) && !data.threatId) {

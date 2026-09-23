@@ -123,7 +123,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
           },
           limit: {
             type: 'number',
-            description: 'Maximum results to return (default: 100, max: 500)',
+            description: 'Max log entries to return (default 100, max 500)',
           },
         },
         required: [],

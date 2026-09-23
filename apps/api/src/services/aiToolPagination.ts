@@ -243,17 +243,17 @@ export function keysetParamSchema(defaultLimit: number, maxLimit: number) {
 const OFFSET_DESCRIPTION = 'Pagination offset (default 0)';
 const CURSOR_DESCRIPTION = 'nextCursor from a previous call with the same filters';
 
-export function pageZodShape(maxLimit: number) {
+export function pageZodShape(defaultLimit: number, maxLimit: number) {
   return {
-    limit: z.number().int().min(1).max(maxLimit).optional().describe(`Max results (max ${maxLimit})`),
+    limit: z.number().int().min(1).max(maxLimit).optional().describe(`Max results (default ${defaultLimit}, max ${maxLimit})`),
     offset: z.number().int().min(0).optional().describe(OFFSET_DESCRIPTION),
     cursor: z.string().max(CURSOR_MAX_CHARS).optional().describe(CURSOR_DESCRIPTION),
   };
 }
 
-export function keysetZodShape(maxLimit: number) {
+export function keysetZodShape(defaultLimit: number, maxLimit: number) {
   return {
-    limit: z.number().int().min(1).max(maxLimit).optional().describe(`Max results (max ${maxLimit})`),
+    limit: z.number().int().min(1).max(maxLimit).optional().describe(`Max results (default ${defaultLimit}, max ${maxLimit})`),
     cursor: z.string().max(CURSOR_MAX_CHARS).optional().describe(CURSOR_DESCRIPTION),
   };
 }

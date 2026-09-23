@@ -276,7 +276,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         type: 'object' as const,
         properties: {
           status: { type: 'string', enum: ['active', 'inactive', 'archived'], description: 'Filter by status' },
-          limit: { type: 'number', description: 'Max results (default 25)' },
+          limit: { type: 'number', description: 'Max results (default 25, max 100)' },
         },
       },
     },
@@ -796,7 +796,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         properties: {
           action: { type: 'string', enum: ['summary', 'status'], description: 'summary = org-wide overview, status = per-policy device compliance' },
           policyId: { type: 'string', description: 'Configuration policy UUID (required for status)' },
-          limit: { type: 'number', description: 'Max results for status (default 50)' },
+          limit: { type: 'number', description: 'Max results for status (default 50, max 100)' },
         },
         required: ['action'],
       },

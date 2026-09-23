@@ -284,7 +284,7 @@ registerTool({
       properties: {
         deviceId: { type: 'string', description: 'Device UUID' },
         baselineId: { type: 'string', description: 'Optional baseline UUID filter' },
-        limit: { type: 'number', description: 'Number of recent reports to return (default 20, max 100)' },
+        limit: { type: 'number', description: 'Max recent reports (default 20, max 100)' },
       },
       required: ['deviceId'],
     },

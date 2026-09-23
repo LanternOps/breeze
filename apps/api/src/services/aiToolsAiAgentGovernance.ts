@@ -134,7 +134,7 @@ export function registerAiAgentGovernanceTools(aiTools: Map<string, AiTool>): vo
           agentId: { type: 'string', description: 'Agent UUID' },
           orgId: { type: 'string', description: 'Organization UUID' },
           status: { type: 'string', enum: [...AI_AGENT_RUN_STATUSES], description: 'Run status: queued, running, awaiting_approval, completed, failed, cancelled, expired, skipped' },
-          limit: { type: 'number', description: 'Maximum rows (default 25, maximum 50)' },
+          limit: { type: 'number', description: 'Max rows (default 25, max 50)' },
         },
       },
     },

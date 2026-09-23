@@ -184,12 +184,12 @@ describe('schema text', () => {
     expect(s.cursor.description).toBe('nextCursor from a previous call with the same filters');
     for (const p of Object.values(s)) expect(p.description.length).toBeLessThanOrEqual(160);
     expect(Object.keys(keysetParamSchema(20, 100))).toEqual(['limit', 'cursor']);
-    expect(pageZodShape(100).limit.safeParse(101).success).toBe(false);
-    expect(pageZodShape(100).cursor.safeParse('x'.repeat(257)).success).toBe(false);
+    expect(pageZodShape(25, 100).limit.safeParse(101).success).toBe(false);
+    expect(pageZodShape(25, 100).cursor.safeParse('x'.repeat(257)).success).toBe(false);
   });
 
   it('Q7: pageZodShape and keysetZodShape carry .describe() text, plain and <=160 chars', () => {
-    const shape = pageZodShape(100);
+    const shape = pageZodShape(25, 100);
     for (const field of Object.values(shape)) {
       const desc = field.description;
       expect(typeof desc).toBe('string');
@@ -198,10 +198,15 @@ describe('schema text', () => {
       // no workflow prose: no sentences telling the model what to do next
       expect(desc).not.toMatch(/\b(then|next|should|please|you (can|must))\b/i);
     }
-    const kShape = keysetZodShape(100);
+    const kShape = keysetZodShape(20, 100);
     expect(Object.keys(kShape)).toEqual(['limit', 'cursor']);
     for (const field of Object.values(kShape)) {
       expect((field.description as string).length).toBeLessThanOrEqual(160);
     }
+  });
+
+  it('states BOTH default and max in the Zod .describe() text, matching the registry wording (D12b/D14)', () => {
+    expect(pageZodShape(25, 100).limit.description).toBe('Max results (default 25, max 100)');
+    expect(keysetZodShape(20, 100).limit.description).toBe('Max results (default 20, max 100)');
   });
 });

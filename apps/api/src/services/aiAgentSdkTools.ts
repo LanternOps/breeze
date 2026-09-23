@@ -1675,8 +1675,10 @@ export function buildBreezeSdkTools(
       registryDescription('security_scan'),
       {
         deviceId: uuid,
-        action: z.enum(['scan', 'status', 'quarantine', 'remove', 'restore']),
+        action: z.enum(['scan', 'status', 'quarantine', 'remove', 'restore', 'vulnerabilities']),
         threatId: z.string().max(255).optional(),
+        severity: z.enum(['critical', 'high', 'medium', 'low']).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
       },
       makeHandler('security_scan', getAuth, onPreToolUse, onPostToolUse)
     ),
