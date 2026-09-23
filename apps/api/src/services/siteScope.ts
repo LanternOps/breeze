@@ -100,6 +100,12 @@ export interface PersistedSiteScopeColumns {
   executionScopePrincipalKind: ReportPrincipalKind | null;
 }
 
+/**
+ * A user-principal report authority, as resolved or decoded: its scope may be
+ * any `SiteScopeV1` kind. Semantically the union of the three variants below
+ * (org-axis | partner_wide | legacy_unscoped); kept as one wide interface so
+ * the resolvers and decoders that build it from a scope union keep compiling.
+ */
 export interface UserReportExecutionAuthority {
   principalKind: 'user';
   scope: SiteScopeV1;
@@ -107,6 +113,23 @@ export interface UserReportExecutionAuthority {
   capturedAt: Date;
   fingerprint: string;
 }
+
+/**
+ * #3198 W02 (addendum B5). A user authority on the ORGANIZATION axis. Every
+ * pre-#3198 org generator takes this (via `OrgReportExecutionAuthority` /
+ * `OrgReportGenerationAuthority`) rather than the wide form: those generators
+ * read `kind === 'restricted' ? scope : null` and treat "not restricted" as
+ * whole-org, so a partner_wide (or legacy_unscoped) scope reaching one would
+ * silently read as an org-wide grant. Typing them to this variant makes that a
+ * compile error; `REPORT_GENERATORS` narrows with a runtime check first.
+ */
+export type OrgAxisUserReportExecutionAuthority =
+  UserReportExecutionAuthority & { scope: OrgAxisLiveSiteScopeV1 };
+
+/** #3198 W02 (addendum B5). A user authority on the PARTNER axis — only ever
+ *  resolved for a partner-owned report, never handed to an org generator. */
+export type PartnerUserReportExecutionAuthority =
+  UserReportExecutionAuthority & { scope: Extract<SiteScopeV1, { kind: 'partner_wide' }> };
 
 export interface PortalUserReportExecutionAuthority {
   principalKind: 'portal_user';
@@ -143,6 +166,19 @@ export interface SystemReportExecutionAuthority {
  */
 export type ReportGenerationAuthority =
   | ReportExecutionAuthority
+  | SystemReportExecutionAuthority;
+
+/** #3198 W02 (addendum B5). The request-path authorities an ORG generator may
+ *  run under: org-axis user or portal user — never partner_wide/legacy. */
+export type OrgReportExecutionAuthority =
+  | OrgAxisUserReportExecutionAuthority
+  | PortalUserReportExecutionAuthority;
+
+/** `OrgReportExecutionAuthority` plus the managed-evidence system authority
+ *  (always org-wide unrestricted). The authority parameter of every #5784
+ *  managed-evidence generator. */
+export type OrgReportGenerationAuthority =
+  | OrgReportExecutionAuthority
   | SystemReportExecutionAuthority;
 
 /**

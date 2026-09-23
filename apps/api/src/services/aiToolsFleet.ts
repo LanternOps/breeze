@@ -110,7 +110,7 @@ import {
   type PersistedSiteScopeColumns,
   type ReportAction,
   type ReportExecutionAuthority,
-  type UserReportExecutionAuthority,
+  type OrgAxisUserReportExecutionAuthority,
 } from './siteScope';
 import { upsertPatchApproval, resolvePartnerIdForOrg, declineAllRingApprovals } from '../routes/patches/helpers';
 import { sanitizeThrownToolError } from './aiToolErrors';
@@ -233,14 +233,16 @@ export async function aiLiveReportAuthority(
   auth: AuthContext,
   orgId: string,
   action: ReportAction,
-): Promise<
-  (Omit<UserReportExecutionAuthority, 'scope'> & { scope: LiveSiteScopeV1 }) | null
-> {
+): Promise<OrgAxisUserReportExecutionAuthority | null> {
   const result = await resolveRequestReportAuthority(auth, orgId, action);
-  if (!result.ok || result.authority.scope.kind === 'legacy_unscoped') return null;
-  return result.authority as Omit<UserReportExecutionAuthority, 'scope'> & {
-    scope: LiveSiteScopeV1;
-  };
+  if (!result.ok) return null;
+  // #3198 W02 (addendum B5): only an ORG-axis scope is usable here — every
+  // caller runs an org generator. legacy_unscoped was always refused; a
+  // partner_wide scope (never produced by the org resolver) is refused too
+  // rather than cast through.
+  const { authority } = result;
+  if (authority.scope.kind !== 'unrestricted' && authority.scope.kind !== 'restricted') return null;
+  return authority as OrgAxisUserReportExecutionAuthority;
 }
 
 /**

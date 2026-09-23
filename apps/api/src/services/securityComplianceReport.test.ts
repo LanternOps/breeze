@@ -11,7 +11,7 @@ import { db } from '../db';
 import {
   generateSecurityCompliancePostureReport as generateSecurityCompliancePostureReportWithAuthority,
 } from './securityComplianceReport';
-import type { ReportExecutionAuthority } from './siteScope';
+import type { OrgReportExecutionAuthority } from './siteScope';
 
 /** Thenable that resolves to `rows` and supports any drizzle chain method. */
 function selectChain(rows: any) {
@@ -26,7 +26,7 @@ const ORG = '00000000-0000-0000-0000-000000000001';
 const USER_ID = '11111111-1111-4111-8111-111111111111';
 const SITE_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 
-function authority(siteIds?: string[]): ReportExecutionAuthority {
+function authority(siteIds?: string[]): OrgReportExecutionAuthority {
   return {
     principalKind: 'user',
     scope: siteIds === undefined
@@ -41,7 +41,7 @@ function authority(siteIds?: string[]): ReportExecutionAuthority {
 function generateSecurityCompliancePostureReport(
   orgId: string,
   config: Record<string, unknown>,
-  executionAuthority: ReportExecutionAuthority = authority(),
+  executionAuthority: OrgReportExecutionAuthority = authority(),
 ) {
   return generateSecurityCompliancePostureReportWithAuthority(
     orgId,

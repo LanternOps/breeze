@@ -10,7 +10,11 @@ import { PERMISSION_GRANTS, type ReportType } from '@breeze/shared';
 // (zod only), the error classes (leaf module) and the permission constants.
 import type { Permission } from './permissions';
 import type { ReportScope } from './reportScope';
-import type { ReportExecutionAuthority, ReportGenerationAuthority } from './siteScope';
+import type {
+  OrgReportExecutionAuthority,
+  OrgReportGenerationAuthority,
+  ReportGenerationAuthority,
+} from './siteScope';
 import type { EvidenceRunContext, ReportResult } from './reportGenerationService';
 import {
   StoredArtifactOnlyReportError,
@@ -69,6 +73,27 @@ function orgOf(scope: ReportScope): string {
 }
 
 /**
+ * #3198 W02 (addendum B5). Every pre-#3198 generator is typed to the org axis
+ * (`OrgReportGenerationAuthority`): it reads `kind === 'restricted' ? scope :
+ * null` and would treat a partner_wide or legacy_unscoped scope as whole-org.
+ * The dispatcher's preflight already refuses both for an org owner, so this is
+ * the belt to that brace — and the runtime proof the compile-time narrowing
+ * rests on. Runs BEFORE the generator's module is imported.
+ */
+function orgAxisAuthority(
+  authority: ReportGenerationAuthority,
+  type: ReportType,
+): OrgReportGenerationAuthority {
+  const { scope } = authority;
+  if (scope.kind === 'unrestricted' || scope.kind === 'restricted') {
+    return authority as OrgReportGenerationAuthority;
+  }
+  throw new UnexecutableReportScopeError(
+    `${type} requires an organization-axis authority, got ${scope.kind}`,
+  );
+}
+
+/**
  * The generators below predate #5784 and take the request-path authority only.
  * A system authority can only reach a `managed_evidence` entry, and every such
  * entry passes `authority` through untouched — so this narrowing is unreachable
@@ -79,13 +104,14 @@ function orgOf(scope: ReportScope): string {
 function requestAuthority(
   authority: ReportGenerationAuthority,
   type: ReportType,
-): ReportExecutionAuthority {
-  if (authority.principalKind === 'system') {
+): OrgReportExecutionAuthority {
+  const orgAuthority = orgAxisAuthority(authority, type);
+  if (orgAuthority.principalKind === 'system') {
     throw new UnexecutableReportScopeError(
       `${type} has no managed evidence generator and cannot run under system authority`,
     );
   }
-  return authority;
+  return orgAuthority;
 }
 
 const ORG_ONLY = ['organization'] as const;
@@ -114,11 +140,14 @@ const generators = {
     type: 'device_inventory', label: 'Device inventory',
     configSchema: legacyReportConfigSchema, supportedScopes: ORG_ONLY,
     execution: 'user', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
-    // Takes `authority` (not requestAuthority()) — exactly as the switch arm
-    // this replaced did.
+    // Takes the authority narrowed to the org axis only — NOT requestAuthority(),
+    // exactly as the switch arm this replaced did (a system authority is
+    // org-axis and still reaches it).
     generate: async (scope, config, authority) => {
+      const orgId = orgOf(scope);
+      const orgAuthority = orgAxisAuthority(authority, 'device_inventory');
       const { generateDeviceInventoryReport } = await import('./reportGenerationService');
-      return generateDeviceInventoryReport(orgOf(scope), config, authority);
+      return generateDeviceInventoryReport(orgId, config, orgAuthority);
     },
   },
   software_inventory: {
@@ -126,9 +155,10 @@ const generators = {
     configSchema: legacyReportConfigSchema, supportedScopes: ORG_ONLY,
     execution: 'user', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
     generate: async (scope, config, authority) => {
+      const orgId = orgOf(scope);
+      const orgAuthority = requestAuthority(authority, 'software_inventory');
       const { generateSoftwareInventoryReport } = await import('./reportGenerationService');
-      return generateSoftwareInventoryReport(
-        orgOf(scope), config, requestAuthority(authority, 'software_inventory'));
+      return generateSoftwareInventoryReport(orgId, config, orgAuthority);
     },
   },
   alert_summary: {
@@ -136,9 +166,10 @@ const generators = {
     configSchema: legacyReportConfigSchema, supportedScopes: ORG_ONLY,
     execution: 'user', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
     generate: async (scope, config, authority) => {
+      const orgId = orgOf(scope);
+      const orgAuthority = requestAuthority(authority, 'alert_summary');
       const { generateAlertSummaryReport } = await import('./reportGenerationService');
-      return generateAlertSummaryReport(
-        orgOf(scope), config, requestAuthority(authority, 'alert_summary'));
+      return generateAlertSummaryReport(orgId, config, orgAuthority);
     },
   },
   compliance: {
@@ -146,9 +177,10 @@ const generators = {
     configSchema: legacyReportConfigSchema, supportedScopes: ORG_ONLY,
     execution: 'user', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
     generate: async (scope, config, authority) => {
+      const orgId = orgOf(scope);
+      const orgAuthority = requestAuthority(authority, 'compliance');
       const { generateComplianceReport } = await import('./reportGenerationService');
-      return generateComplianceReport(
-        orgOf(scope), config, requestAuthority(authority, 'compliance'));
+      return generateComplianceReport(orgId, config, orgAuthority);
     },
   },
   performance: {
@@ -156,9 +188,10 @@ const generators = {
     configSchema: legacyReportConfigSchema, supportedScopes: ORG_ONLY,
     execution: 'user', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
     generate: async (scope, config, authority) => {
+      const orgId = orgOf(scope);
+      const orgAuthority = requestAuthority(authority, 'performance');
       const { generatePerformanceReport } = await import('./reportGenerationService');
-      return generatePerformanceReport(
-        orgOf(scope), config, requestAuthority(authority, 'performance'));
+      return generatePerformanceReport(orgId, config, orgAuthority);
     },
   },
   executive_summary: {
@@ -166,9 +199,10 @@ const generators = {
     configSchema: legacyReportConfigSchema, supportedScopes: ORG_ONLY,
     execution: 'user', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
     generate: async (scope, config, authority) => {
+      const orgId = orgOf(scope);
+      const orgAuthority = requestAuthority(authority, 'executive_summary');
       const { generateExecutiveSummaryReport } = await import('./reportGenerationService');
-      return generateExecutiveSummaryReport(
-        orgOf(scope), config, requestAuthority(authority, 'executive_summary'));
+      return generateExecutiveSummaryReport(orgId, config, orgAuthority);
     },
   },
   security_compliance_posture: {
@@ -176,9 +210,10 @@ const generators = {
     configSchema: securityCompliancePostureConfigSchema, supportedScopes: ORG_ONLY,
     execution: 'user', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
     generate: async (scope, config, authority) => {
+      const orgId = orgOf(scope);
+      const orgAuthority = requestAuthority(authority, 'security_compliance_posture');
       const { generateSecurityCompliancePostureReport } = await import('./securityComplianceReport');
-      return generateSecurityCompliancePostureReport(
-        orgOf(scope), config, requestAuthority(authority, 'security_compliance_posture'));
+      return generateSecurityCompliancePostureReport(orgId, config, orgAuthority);
     },
   },
   // P2-3 (#4190) — stored, never generated. The `report_runs` row is written
@@ -201,13 +236,15 @@ const generators = {
     configSchema: hardwareLifecycleConfigSchema, supportedScopes: ORG_ONLY,
     execution: 'user', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
     generate: async (scope, config, authority) => {
+      const orgId = orgOf(scope);
+      const orgAuthority = requestAuthority(authority, 'hardware_lifecycle');
       const { generateHardwareLifecycleReport } = await import('./hardwareLifecycleReport');
-      return generateHardwareLifecycleReport(
-        orgOf(scope), config, requestAuthority(authority, 'hardware_lifecycle'));
+      return generateHardwareLifecycleReport(orgId, config, orgAuthority);
     },
   },
-  // #5784 W02/W03/W04/W06 — managed evidence. `authority` is passed AS-IS
-  // (never requestAuthority()): a system authority legitimately reaches these.
+  // #5784 W02/W03/W04/W06 — managed evidence. `authority` is narrowed to the
+  // org axis only, never requestAuthority(): a system authority (org-wide
+  // unrestricted) legitimately reaches these.
   // The dynamic imports keep heavy generators off the hot path and avoid the
   // module cycle back to `assertReportExecutionPreflight`.
   threat_detection_review: {
@@ -215,8 +252,10 @@ const generators = {
     configSchema: threatDetectionConfigSchema, supportedScopes: ORG_ONLY,
     execution: 'managed_evidence', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
     generate: async (scope, config, authority, evidence) => {
+      const orgId = orgOf(scope);
+      const orgAuthority = orgAxisAuthority(authority, 'threat_detection_review');
       const { generateThreatDetectionReport } = await import('./threatDetectionReport');
-      return generateThreatDetectionReport(orgOf(scope), config, authority, evidence);
+      return generateThreatDetectionReport(orgId, config, orgAuthority, evidence);
     },
   },
   endpoint_management_review: {
@@ -224,8 +263,10 @@ const generators = {
     configSchema: endpointManagementConfigSchema, supportedScopes: ORG_ONLY,
     execution: 'managed_evidence', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
     generate: async (scope, config, authority, evidence) => {
+      const orgId = orgOf(scope);
+      const orgAuthority = orgAxisAuthority(authority, 'endpoint_management_review');
       const { generateEndpointManagementReport } = await import('./endpointManagementReport');
-      return generateEndpointManagementReport(orgOf(scope), config, authority, evidence);
+      return generateEndpointManagementReport(orgId, config, orgAuthority, evidence);
     },
   },
   vulnerability_management: {
@@ -233,8 +274,10 @@ const generators = {
     configSchema: vulnerabilityManagementConfigSchema, supportedScopes: ORG_ONLY,
     execution: 'managed_evidence', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
     generate: async (scope, config, authority, evidence) => {
+      const orgId = orgOf(scope);
+      const orgAuthority = orgAxisAuthority(authority, 'vulnerability_management');
       const { generateVulnerabilityManagementReport } = await import('./vulnerabilityManagementReport');
-      return generateVulnerabilityManagementReport(orgOf(scope), config, authority, evidence);
+      return generateVulnerabilityManagementReport(orgId, config, orgAuthority, evidence);
     },
   },
   // The generator itself decides what a RESTRICTED authority gets (nothing —
@@ -244,8 +287,10 @@ const generators = {
     configSchema: identityAccessConfigSchema, supportedScopes: ORG_ONLY,
     execution: 'managed_evidence', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
     generate: async (scope, config, authority, evidence) => {
+      const orgId = orgOf(scope);
+      const orgAuthority = orgAxisAuthority(authority, 'identity_access_review');
       const { generateIdentityAccessReport } = await import('./identityAccessReport');
-      return generateIdentityAccessReport(orgOf(scope), config, authority, evidence);
+      return generateIdentityAccessReport(orgId, config, orgAuthority, evidence);
     },
   },
   // #3198 W02 business types. PLACEHOLDERS until tasks 7/8/9 (see

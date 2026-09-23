@@ -21,6 +21,8 @@ import {
 } from '@breeze/shared';
 import {
   systemReportAuthorityFor,
+  type OrgReportExecutionAuthority,
+  type OrgReportGenerationAuthority,
   type ReportExecutionAuthority,
   type ReportGenerationAuthority,
   type ReportOwner,
@@ -243,6 +245,37 @@ function assertRequestedScopeWithinAuthority(
   }
 }
 
+/** #3198 W02 (addendum B5): the config keys that select orgs, sites or
+ *  devices. Absent / null / an empty array all mean "no filter"; anything else
+ *  (including a malformed non-array value) is refused on a partner owner. */
+const PARTNER_SCOPE_REFUSED_TOP_LEVEL_SELECTORS = ['sites', 'orgId', 'orgIds'] as const;
+const PARTNER_SCOPE_REFUSED_FILTER_SELECTORS = ['siteIds', 'deviceIds'] as const;
+
+function selectsSomething(value: unknown): boolean {
+  if (value === undefined || value === null) return false;
+  return !(Array.isArray(value) && value.length === 0);
+}
+
+function assertNoPartnerScopeSelectors(config: Record<string, unknown>): void {
+  const refused: string[] = PARTNER_SCOPE_REFUSED_TOP_LEVEL_SELECTORS
+    .filter((key) => selectsSomething(config?.[key]));
+  const filters = config?.filters;
+  if (filters !== undefined && filters !== null) {
+    if (typeof filters !== 'object' || Array.isArray(filters)) {
+      refused.push('filters');
+    } else {
+      for (const key of PARTNER_SCOPE_REFUSED_FILTER_SELECTORS) {
+        if (selectsSomething((filters as Record<string, unknown>)[key])) refused.push(`filters.${key}`);
+      }
+    }
+  }
+  if (refused.length > 0) {
+    throw new UnexecutableReportScopeError(
+      `partner-scope report config cannot select organizations, sites or devices (${refused.join(', ')})`,
+    );
+  }
+}
+
 /**
  * `owner` is the definition's single tenancy axis (#3198 W01). A bare string
  * still means an ORG owner, so every pre-existing caller keeps its exact
@@ -266,7 +299,12 @@ export function assertReportExecutionPreflight(
     ) {
       throw new UnexecutableReportScopeError('partner authority mismatch');
     }
-    // A partner-wide config carries no site filter to preflight.
+    // #3198 W02 (addendum B5). A partner-scope generator runs in a context
+    // wider than one org, and binds its org set from the LIVE partner
+    // membership (`reportScopeFromAuthority`). A stored org/site selector must
+    // never widen or re-target that, so any non-empty one is refused rather
+    // than silently ignored.
+    assertNoPartnerScopeSelectors(config);
     return;
   }
   assertExecutableAuthority(owner.orgId, authority);
@@ -366,7 +404,7 @@ export async function generateDeviceInventoryReport(
   // end to end on real Postgres before W02 ships the first registry type.
   // Reaching it with a system authority still requires the closed registry to
   // name 'device_inventory', which production never does.
-  authority: ReportGenerationAuthority,
+  authority: OrgReportGenerationAuthority,
 ) {
   assertReportExecutionPreflight(orgId, config, authority, 'device_inventory');
   // `isEphemeral = false` on every device predicate in this file: Quick Support
@@ -479,7 +517,7 @@ export async function readSoftwareInventoryRows(orgId: string, conditions: SQL[]
 export async function generateSoftwareInventoryReport(
   orgId: string,
   config: Record<string, unknown>,
-  authority: ReportExecutionAuthority,
+  authority: OrgReportExecutionAuthority,
 ) {
   assertReportExecutionPreflight(orgId, config, authority, 'software_inventory');
   const conditions: SQL[] = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false)];
@@ -501,7 +539,7 @@ export async function generateSoftwareInventoryReport(
 export async function generateAlertSummaryReport(
   orgId: string,
   config: Record<string, unknown>,
-  authority: ReportExecutionAuthority,
+  authority: OrgReportExecutionAuthority,
 ) {
   assertReportExecutionPreflight(orgId, config, authority, 'alert_summary');
   const conditions: SQL[] = [eq(alerts.orgId, orgId)];
@@ -566,7 +604,7 @@ export async function generateAlertSummaryReport(
 export async function generateComplianceReport(
   orgId: string,
   config: Record<string, unknown>,
-  authority: ReportExecutionAuthority,
+  authority: OrgReportExecutionAuthority,
 ) {
   assertReportExecutionPreflight(orgId, config, authority, 'compliance');
   const conditions: SQL[] = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false)];
@@ -637,7 +675,7 @@ export async function generateComplianceReport(
 export async function generatePerformanceReport(
   orgId: string,
   config: Record<string, unknown>,
-  authority: ReportExecutionAuthority,
+  authority: OrgReportExecutionAuthority,
 ) {
   assertReportExecutionPreflight(orgId, config, authority, 'performance');
   const deviceConditions: SQL[] = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false)];
@@ -702,7 +740,7 @@ export async function generatePerformanceReport(
 export async function generateExecutiveSummaryReport(
   orgId: string,
   config: Record<string, unknown>,
-  authority: ReportExecutionAuthority,
+  authority: OrgReportExecutionAuthority,
 ) {
   assertReportExecutionPreflight(orgId, config, authority, 'executive_summary');
   if (authority.scope.kind === 'restricted' && authority.scope.siteIds.length === 0) {
@@ -833,9 +871,9 @@ export type EvidenceRunContext = {
  * the record is keyed by the closed `ReportType` union — a missing key is a
  * compile error, the same guarantee the switch's `never` default gave.
  * `zeroSafeReport` still ends in a `never` default. A system authority is
- * refused here for any type whose registry entry is not `managed_evidence`
- * (#5784 OD-5 = B; the registry test pins that set equal to
- * MANAGED_EVIDENCE_REGISTRY).
+ * refused here for any type the closed MANAGED_EVIDENCE_REGISTRY does not name
+ * (#5784 OD-5 = B; the registry test pins that set equal to the entries whose
+ * `execution` is 'managed_evidence').
  *
  * GATE ORDER IS LOAD-BEARING. `supportedScopes` is checked immediately after
  * the system-authority refusal and BEFORE `assertReportExecutionPreflight`:
@@ -856,7 +894,11 @@ async function dispatchReportGeneration(
 ): Promise<ReportResult> {
   const def = reportTypeDef(type);
 
-  if (authority?.principalKind === 'system' && def.execution !== 'managed_evidence') {
+  // Gated on the closed MANAGED_EVIDENCE_REGISTRY itself (unchanged from the
+  // switch this replaced), not on `def.execution`: reportRegistry.test.ts pins
+  // the two sets equal, and the registry is what integration suites stand a
+  // type into (managedEvidenceFoundations mocks it with device_inventory).
+  if (authority?.principalKind === 'system' && !isManagedEvidenceType(type)) {
     throw new UnexecutableReportScopeError(
       `${type} is not a managed evidence type and cannot run under system authority`,
     );

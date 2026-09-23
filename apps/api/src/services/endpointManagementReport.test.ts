@@ -16,7 +16,7 @@ import type {
 import { db } from '../db';
 import { generateEndpointManagementReport } from './endpointManagementReport';
 import type { ReportResult } from './reportGenerationService';
-import type { ReportExecutionAuthority } from './siteScope';
+import type { OrgReportExecutionAuthority } from './siteScope';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
 const USER = '33333333-3333-4333-8333-333333333333';
@@ -46,7 +46,7 @@ function queueSelects(...resultSets: unknown[][]) {
 function authority(
   kind: 'unrestricted' | 'restricted' = 'unrestricted',
   siteIds: string[] = [],
-): ReportExecutionAuthority {
+): OrgReportExecutionAuthority {
   return {
     principalKind: 'user',
     scope: kind === 'restricted'

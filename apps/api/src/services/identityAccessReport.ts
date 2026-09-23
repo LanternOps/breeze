@@ -80,7 +80,7 @@ import {
   type EvidenceRunContext,
   type ReportResult,
 } from './reportGenerationService';
-import type { ReportGenerationAuthority } from './siteScope';
+import type { OrgReportGenerationAuthority } from './siteScope';
 
 /** Cap on the admin sign-in detail table. An admin account with a scripted
  *  client can produce thousands of rows in a month; the artifact states the cap
@@ -241,7 +241,7 @@ function toAdminSigninRow(row: SigninEventRow): AdminSigninRow {
 export async function generateIdentityAccessReport(
   orgId: string,
   rawConfig: Record<string, unknown>,
-  authority: ReportGenerationAuthority,
+  authority: OrgReportGenerationAuthority,
   evidence?: EvidenceRunContext,
 ): Promise<ReportResult> {
   const cfg = identityAccessConfigSchema.parse(rawConfig ?? {});

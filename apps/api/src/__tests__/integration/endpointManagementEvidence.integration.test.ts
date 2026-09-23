@@ -45,7 +45,7 @@ import {
 } from '../../services/portal/reportsSelfService';
 import { generateEndpointManagementReport } from '../../services/endpointManagementReport';
 import type { EndpointManagementSummary, IntuneDeviceRow } from '@breeze/shared';
-import type { ReportExecutionAuthority } from '../../services/siteScope';
+import type { OrgReportExecutionAuthority } from '../../services/siteScope';
 import { siteScopeFingerprint } from '../../services/siteScope';
 
 // publishEvent writes to a Redis stream — spy on it (deliverableSweep precedent).
@@ -128,7 +128,7 @@ const actorFor = (t: Tenant): TemplateActor => ({
   accessibleOrgIds: [t.orgId],
 });
 
-function authority(orgId: string, userId: string, siteIds?: string[]): ReportExecutionAuthority {
+function authority(orgId: string, userId: string, siteIds?: string[]): OrgReportExecutionAuthority {
   const scope = siteIds
     ? { version: 1 as const, kind: 'restricted' as const, orgId, siteIds }
     : { version: 1 as const, kind: 'unrestricted' as const, orgId };

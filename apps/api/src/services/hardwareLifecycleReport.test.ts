@@ -10,7 +10,7 @@ vi.mock('../db', () => ({
 }));
 
 import { db } from '../db';
-import type { ReportExecutionAuthority } from './siteScope';
+import type { OrgReportExecutionAuthority } from './siteScope';
 import { generateHardwareLifecycleReport } from './hardwareLifecycleReport';
 import type { HardwareLifecycleSummary } from '@breeze/shared';
 import type { ReportResult } from './reportGenerationService';
@@ -47,7 +47,7 @@ function queueSelects(...resultSets: unknown[][]) {
 function authority(
   kind: 'unrestricted' | 'restricted' = 'unrestricted',
   siteIds: string[] = [],
-): ReportExecutionAuthority {
+): OrgReportExecutionAuthority {
   return {
     principalKind: 'user',
     scope: kind === 'restricted'

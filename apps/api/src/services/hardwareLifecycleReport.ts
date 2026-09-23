@@ -54,7 +54,7 @@ import {
   assertReportExecutionPreflight,
   type ReportResult,
 } from './reportGenerationService';
-import type { ReportExecutionAuthority } from './siteScope';
+import type { OrgReportExecutionAuthority } from './siteScope';
 
 /** Roles that are computers with a replacement timeline. `unknown` is the
  *  enrollment default — an agent device with an OS is a computer until a
@@ -147,7 +147,7 @@ function toOtherRow(s: Subject): HardwareLifecycleOtherRow {
 export async function generateHardwareLifecycleReport(
   orgId: string,
   rawConfig: Record<string, unknown>,
-  authority: ReportExecutionAuthority,
+  authority: OrgReportExecutionAuthority,
 ): Promise<ReportResult> {
   const cfg = hardwareLifecycleConfigSchema.parse(rawConfig ?? {});
   const generatedAt = new Date().toISOString();

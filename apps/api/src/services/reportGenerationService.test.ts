@@ -15,7 +15,7 @@ vi.mock('../db', () => ({
 }));
 
 import { db } from '../db';
-import type { ReportExecutionAuthority } from './siteScope';
+import type { OrgReportExecutionAuthority, ReportExecutionAuthority } from './siteScope';
 import {
   assertReportExecutionPreflight,
   generateDeviceInventoryReport,
@@ -98,7 +98,7 @@ function authority(
   kind: 'unrestricted' | 'restricted',
   siteIds: string[] = [],
   orgId = ORG_ID,
-): ReportExecutionAuthority {
+): OrgReportExecutionAuthority {
   return {
     principalKind: 'user',
     scope: kind === 'restricted'
@@ -110,7 +110,7 @@ function authority(
   };
 }
 
-function portalAuthority(): ReportExecutionAuthority {
+function portalAuthority(): OrgReportExecutionAuthority {
   return {
     principalKind: 'portal_user',
     scope: { version: 1, kind: 'unrestricted', orgId: ORG_ID },
@@ -563,5 +563,55 @@ describe('registry dispatch gate order (#3198 W02 Task 3)', () => {
       {},
       partnerWideAuthority(),
     )).rejects.toThrow(/partner authority mismatch/);
+  });
+});
+
+describe('partner preflight refuses org/site selectors in config (#3198 W02, addendum B5)', () => {
+  function partnerWideAuthority() {
+    return {
+      principalKind: 'user' as const,
+      scope: { version: 1 as const, kind: 'partner_wide' as const, partnerId: PARTNER_ID },
+      principalUserId: USER_ID,
+      capturedAt: new Date('2026-09-21T12:00:00.000Z'),
+      fingerprint: 'e'.repeat(64),
+    };
+  }
+  const owner = { partnerId: PARTNER_ID };
+
+  // A partner-scope generator runs in a context wider than one org; any of
+  // these would either widen past or re-target the partner's own org set.
+  it.each([
+    ['filters.siteIds', { filters: { siteIds: [SITE_A] } }],
+    ['filters.deviceIds', { filters: { deviceIds: ['dddddddd-dddd-4ddd-8ddd-dddddddddddd'] } }],
+    ['sites', { sites: [SITE_A] }],
+    ['orgId', { orgId: OTHER_ORG_ID }],
+    ['orgIds', { orgIds: [OTHER_ORG_ID] }],
+    ['a malformed (non-array) sites value', { sites: SITE_A }],
+    ['a malformed (non-object) filters value', { filters: 'x' }],
+  ])('refuses %s', (_label, config) => {
+    expect(() => assertReportExecutionPreflight(
+      owner, config as Record<string, unknown>, partnerWideAuthority(), 'ar_aging',
+    )).toThrow(/partner-scope report config cannot select/);
+    expect(() => assertReportExecutionPreflight(
+      owner, config as Record<string, unknown>, partnerWideAuthority(), 'ar_aging',
+    )).toThrow(UnexecutableReportScopeError);
+  });
+
+  it('accepts a config with no selectors, or with empty selector arrays (= no filter)', () => {
+    for (const config of [
+      {},
+      { period: 'last_month', filters: {} },
+      { sites: [], filters: { siteIds: [], deviceIds: [] }, orgIds: [] },
+      { filters: { status: ['open'], severity: ['high'] } },
+    ]) {
+      expect(() => assertReportExecutionPreflight(owner, config, partnerWideAuthority(), 'ar_aging'))
+        .not.toThrow();
+    }
+  });
+
+  it('does not change the org-owned path: an in-scope filters.siteIds still passes there', () => {
+    expect(() => assertReportExecutionPreflight(
+      ORG_ID, { filters: { siteIds: [SITE_A] } }, authority('restricted', [SITE_A]), 'device_inventory',
+    )).not.toThrow();
   });
 });

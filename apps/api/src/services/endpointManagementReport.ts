@@ -86,7 +86,7 @@ import {
   type EvidenceRunContext,
   type ReportResult,
 } from './reportGenerationService';
-import type { ReportGenerationAuthority } from './siteScope';
+import type { OrgReportGenerationAuthority } from './siteScope';
 
 const INTUNE_CADENCE_HOURS = M365_SYNC_DOMAIN_DEFAULT_INTERVAL_SECONDS.intune_devices / 3600;
 const SKUS_CADENCE_HOURS = M365_SYNC_DOMAIN_DEFAULT_INTERVAL_SECONDS.skus / 3600;
@@ -137,7 +137,7 @@ function isoDate(value: unknown): string {
 export async function generateEndpointManagementReport(
   orgId: string,
   rawConfig: Record<string, unknown>,
-  authority: ReportGenerationAuthority,
+  authority: OrgReportGenerationAuthority,
   evidence?: EvidenceRunContext,
 ): Promise<ReportResult> {
   const cfg = endpointManagementConfigSchema.parse(rawConfig ?? {});

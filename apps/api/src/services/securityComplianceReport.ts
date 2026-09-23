@@ -28,7 +28,7 @@ import {
   assertReportExecutionPreflight,
   type ReportResult,
 } from './reportGenerationService';
-import type { ReportExecutionAuthority } from './siteScope';
+import type { OrgReportExecutionAuthority } from './siteScope';
 import {
   buildSecurityProductInventory,
   categoryForEndpointProvider,
@@ -159,7 +159,7 @@ function prettyDnsProvider(p: string): string {
 export async function generateSecurityCompliancePostureReport(
   orgId: string,
   rawConfig: Record<string, unknown>,
-  authority: ReportExecutionAuthority,
+  authority: OrgReportExecutionAuthority,
 ): Promise<ReportResult> {
   const cfg = securityCompliancePostureConfigSchema.parse(rawConfig ?? {});
   const generatedAt = new Date().toISOString();

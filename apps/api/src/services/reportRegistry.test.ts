@@ -19,7 +19,24 @@ import { REPORT_GENERATORS, reportTypeDef } from './reportRegistry';
 import { MANAGED_EVIDENCE_REGISTRY } from './managedEvidenceRegistry';
 import { PORTAL_DEFINITIONS_FOR_TEST } from './portal/reportsSelfService';
 import { UnexecutableReportScopeError } from './reportErrors';
-import type { ReportGenerationAuthority } from './siteScope';
+import type {
+  PartnerUserReportExecutionAuthority,
+  ReportGenerationAuthority,
+} from './siteScope';
+import type {
+  generateAlertSummaryReport,
+  generateComplianceReport,
+  generateDeviceInventoryReport,
+  generateExecutiveSummaryReport,
+  generatePerformanceReport,
+  generateSoftwareInventoryReport,
+} from './reportGenerationService';
+import type { generateSecurityCompliancePostureReport } from './securityComplianceReport';
+import type { generateHardwareLifecycleReport } from './hardwareLifecycleReport';
+import type { generateThreatDetectionReport } from './threatDetectionReport';
+import type { generateEndpointManagementReport } from './endpointManagementReport';
+import type { generateVulnerabilityManagementReport } from './vulnerabilityManagementReport';
+import type { generateIdentityAccessReport } from './identityAccessReport';
 
 const PARTNER_ID = '44444444-4444-4444-8444-444444444444';
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
@@ -107,4 +124,67 @@ describe('REPORT_GENERATORS', () => {
       ).rejects.toBeInstanceOf(UnexecutableReportScopeError);
     }
   });
+});
+
+// ── #3198 W02 addendum B5: org generators are typed to the ORG axis ──────────
+// Compile-time only (tsc checks test files): each alias below fails to compile
+// if a partner_wide user authority is assignable to that generator's authority
+// parameter. The org generators read `kind === 'restricted' ? scope : null`,
+// so a partner_wide scope reaching one would read as whole-org.
+type AuthorityParam<F extends (...args: never[]) => unknown> = Parameters<F>[2];
+type RefusesPartnerAxis<F extends (...args: never[]) => unknown> =
+  PartnerUserReportExecutionAuthority extends AuthorityParam<F> ? never : true;
+type OrgAxisOnly = {
+  deviceInventory: RefusesPartnerAxis<typeof generateDeviceInventoryReport>;
+  softwareInventory: RefusesPartnerAxis<typeof generateSoftwareInventoryReport>;
+  alertSummary: RefusesPartnerAxis<typeof generateAlertSummaryReport>;
+  compliance: RefusesPartnerAxis<typeof generateComplianceReport>;
+  performance: RefusesPartnerAxis<typeof generatePerformanceReport>;
+  executiveSummary: RefusesPartnerAxis<typeof generateExecutiveSummaryReport>;
+  securityCompliance: RefusesPartnerAxis<typeof generateSecurityCompliancePostureReport>;
+  hardwareLifecycle: RefusesPartnerAxis<typeof generateHardwareLifecycleReport>;
+  threatDetection: RefusesPartnerAxis<typeof generateThreatDetectionReport>;
+  endpointManagement: RefusesPartnerAxis<typeof generateEndpointManagementReport>;
+  vulnerabilityManagement: RefusesPartnerAxis<typeof generateVulnerabilityManagementReport>;
+  identityAccess: RefusesPartnerAxis<typeof generateIdentityAccessReport>;
+};
+const ORG_AXIS_ONLY: OrgAxisOnly = {
+  deviceInventory: true, softwareInventory: true, alertSummary: true, compliance: true,
+  performance: true, executiveSummary: true, securityCompliance: true, hardwareLifecycle: true,
+  threatDetection: true, endpointManagement: true, vulnerabilityManagement: true, identityAccess: true,
+};
+
+describe('org-axis authority narrowing (#3198 W02 addendum B5)', () => {
+  it('the twelve org generators are typed org-axis only (the compile-time table above)', () => {
+    expect(Object.values(ORG_AXIS_ONLY).every(Boolean)).toBe(true);
+  });
+
+  const partnerWide = {
+    principalKind: 'user',
+    scope: { version: 1, kind: 'partner_wide', partnerId: PARTNER_ID },
+    principalUserId: '33333333-3333-4333-8333-333333333333',
+    capturedAt: new Date(),
+    fingerprint: 'e'.repeat(64),
+  } as ReportGenerationAuthority;
+  const legacy = {
+    principalKind: 'user',
+    scope: { version: 1, kind: 'legacy_unscoped', orgId: ORG_ID },
+    principalUserId: '33333333-3333-4333-8333-333333333333',
+    capturedAt: new Date(),
+    fingerprint: 'e'.repeat(64),
+  } as ReportGenerationAuthority;
+
+  it.each([['partner_wide', partnerWide], ['legacy_unscoped', legacy]])(
+    'every org entry refuses a %s authority at the registry boundary, before its generator',
+    async (_kind, authority) => {
+      for (const def of Object.values(REPORT_GENERATORS)) {
+        if (def.supportedScopes.includes('partner')) continue;
+        if (def.type === 'ai_org_narrative' || def.type === 'ai_fleet_design') continue;
+        await expect(
+          def.generate({ kind: 'organization', orgId: ORG_ID }, {}, authority),
+          def.type,
+        ).rejects.toThrow(/requires an organization-axis authority/);
+      }
+    },
+  );
 });
