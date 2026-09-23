@@ -2373,6 +2373,77 @@ describe('Wave 2 · scheduled execution fails closed before any side effect', ()
     expect(runs[0]!.error_message).toBe('scope_user_inactive');
   });
 
+  // #6699 - abuse containment. The creator row stays 'active' throughout; only
+  // the owning tenant's lifecycle changes, and that alone must stop the run.
+  runDb.each([
+    { name: 'the owning partner is suspended', table: 'partners' as const, status: 'suspended' },
+    { name: 'the owning org is suspended', table: 'organizations' as const, status: 'suspended' },
+    { name: 'the owning org is archived', table: 'organizations' as const, status: 'archived' },
+  ])('refuses a scheduled org-owned run when $name (#6699)', async ({ table, status }) => {
+    const f = await buildFixture();
+    const reportId = await seedReport({
+      orgId: f.orgA,
+      name: `scheduled-tenant-${table}-${status}`,
+      schedule: 'daily',
+      scope: { kind: 'restricted', userId: f.siteAUser.id, siteIds: [f.siteA1] },
+      createdBy: f.siteAUser.id,
+      config: { emailRecipients: ['ops@example.com'] },
+    });
+
+    const targetId = table === 'partners' ? f.partner1 : f.orgA;
+    await getTestDb().execute(
+      sql`UPDATE ${sql.identifier(table)} SET status = ${status} WHERE id = ${targetId}::uuid`,
+    );
+    const userStatus = await scalar<string>(
+      sql`SELECT status FROM users WHERE id = ${f.siteAUser.id}::uuid`,
+    );
+    expect(userStatus).toBe('active');
+
+    await expect(runScheduled(reportId)).resolves.toBeUndefined();
+
+    const runs = await rawRows<{ status: string; error_message: string | null; result: unknown }>(sql`
+      SELECT status, error_message, result FROM report_runs WHERE report_id = ${reportId}::uuid
+    `);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.status).toBe('failed');
+    expect(runs[0]!.error_message).toBe('scope_tenant_inactive');
+    expect(runs[0]!.result).toBeNull();
+    expect(emailProbe.calls).toBe(0);
+  });
+
+  runDb('a trial org under an active partner still runs its schedule (#6699 control)', async () => {
+    const f = await buildFixture();
+    const reportId = await seedReport({
+      orgId: f.orgA,
+      name: 'scheduled-trial',
+      schedule: 'daily',
+      scope: { kind: 'restricted', userId: f.siteAUser.id, siteIds: [f.siteA1] },
+      createdBy: f.siteAUser.id,
+      config: { emailRecipients: ['ops@example.com'] },
+    });
+    await getTestDb().execute(
+      sql`UPDATE organizations SET status = 'trial' WHERE id = ${f.orgA}::uuid`,
+    );
+
+    await runScheduled(reportId);
+
+    const runs = await rawRows<{ status: string }>(sql`
+      SELECT status FROM report_runs WHERE report_id = ${reportId}::uuid
+    `);
+    expect(runs.map((r) => r.status)).toEqual(['completed']);
+    expect(emailProbe.calls).toBe(1);
+  });
+
+  runDb('the live org resolver refuses a suspended partner while the user stays active (#6699)', async () => {
+    const f = await buildFixture();
+    await getTestDb().execute(
+      sql`UPDATE partners SET status = 'suspended' WHERE id = ${f.partner1}::uuid`,
+    );
+
+    await expect(resolveLiveReportAuthority(f.siteAUser.id, f.orgA, 'read'))
+      .resolves.toEqual({ ok: false, reason: 'tenant_inactive' });
+  });
+
   runDb('legacy and old-writer schedules never execute and are never marked due', async () => {
     const f = await buildFixture();
     const legacyId = await seedReport({

@@ -1150,8 +1150,20 @@ describe('live report authority resolution', () => {
     };
   }
 
-  function organization(id = ORG_A, partnerId = PARTNER_A) {
-    return { id, partnerId };
+  function organization(
+    id = ORG_A,
+    partnerId = PARTNER_A,
+    lifecycle: Record<string, unknown> = {},
+  ) {
+    return {
+      id,
+      partnerId,
+      status: 'active',
+      deletedAt: null,
+      partnerStatus: 'active',
+      partnerDeletedAt: null,
+      ...lifecycle,
+    };
   }
 
   function orgMembership(siteIds: string[] | null, roleId: string | null = ROLE_ORG) {
@@ -2090,6 +2102,134 @@ describe('live report authority resolution', () => {
       reason: 'permission_removed',
     });
   });
+
+  // #6699 - abuse containment. Suspending the owning partner (or taking the
+  // org out of service) must stop report authority even while the acting
+  // user row stays 'active'; the scheduled worker re-checks through here.
+  describe('tenant lifecycle gate (#6699)', () => {
+    it.each([
+      { name: 'owning partner suspended', lifecycle: { partnerStatus: 'suspended' } },
+      { name: 'owning partner churned', lifecycle: { partnerStatus: 'churned' } },
+      { name: 'owning partner offboarding', lifecycle: { partnerStatus: 'offboarding' } },
+      { name: 'owning partner pending', lifecycle: { partnerStatus: 'pending' } },
+      { name: 'owning partner soft-deleted', lifecycle: { partnerDeletedAt: new Date() } },
+      { name: 'org suspended', lifecycle: { status: 'suspended' } },
+      { name: 'org churned', lifecycle: { status: 'churned' } },
+      { name: 'org offboarding', lifecycle: { status: 'offboarding' } },
+      { name: 'org merging', lifecycle: { status: 'merging' } },
+      { name: 'org archived', lifecycle: { status: 'archived' } },
+      { name: 'org purging', lifecycle: { status: 'purging' } },
+      { name: 'org soft-deleted', lifecycle: { deletedAt: new Date() } },
+    ])('refuses org authority with tenant_inactive when $name', async ({ lifecycle }) => {
+      queueRows(
+        [activeUser()],
+        [organization(ORG_A, PARTNER_A, lifecycle)],
+        [orgMembership(null)],
+        [permission('read')],
+      );
+
+      await expect(resolveLiveReportAuthority(USER_ID, ORG_A, 'read'))
+        .resolves.toEqual({ ok: false, reason: 'tenant_inactive' });
+      // Refused on the tenant row, before any membership is consulted.
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps a trial org under an active partner authorised', async () => {
+      queueRows(
+        [activeUser()],
+        [organization(ORG_A, PARTNER_A, { status: 'trial' })],
+        [orgMembership(null)],
+        [permission('read')],
+      );
+
+      await expect(resolveLiveReportAuthority(USER_ID, ORG_A, 'read'))
+        .resolves.toMatchObject({ ok: true, authority: { scope: unrestricted() } });
+    });
+
+    it('reads the owning partner status in the same organization query', async () => {
+      queueRows(
+        [activeUser()],
+        [organization()],
+        [orgMembership(null)],
+        [permission('read')],
+      );
+
+      await resolveLiveReportAuthority(USER_ID, ORG_A, 'read');
+
+      expect(Object.keys(liveDbState.projections[1] as object)).toEqual(
+        expect.arrayContaining(['status', 'deletedAt', 'partnerStatus', 'partnerDeletedAt']),
+      );
+    });
+
+    it('refuses a platform admin too - containment is about the tenant, not the caller', async () => {
+      queueRows(
+        [activeUser({ isPlatformAdmin: true })],
+        [organization(ORG_A, PARTNER_A, { partnerStatus: 'suspended' })],
+      );
+
+      await expect(resolveLiveReportAuthority(USER_ID, ORG_A, 'read'))
+        .resolves.toEqual({ ok: false, reason: 'tenant_inactive' });
+    });
+
+    it('refuses the request-path resolver for a suspended org', async () => {
+      queueRows(
+        [activeUser()],
+        [organization(ORG_A, PARTNER_A, { status: 'suspended' })],
+      );
+
+      await expect(resolveRequestReportAuthority(requestAuth(), ORG_A, 'read'))
+        .resolves.toEqual({ ok: false, reason: 'tenant_inactive' });
+    });
+
+    it('refuses only the out-of-service orgs in a batch', async () => {
+      queueRows(
+        [activeUser()],
+        [
+          organization(ORG_A),
+          organization(ORG_B, PARTNER_A, { status: 'archived' }),
+        ],
+        [],
+        [{ partnerId: PARTNER_A, roleId: ROLE_PARTNER, orgAccess: 'all', orgIds: null }],
+        [{
+          roleId: ROLE_PARTNER,
+          resource: 'reports',
+          action: 'read',
+          roleScope: 'partner',
+          roleIsSystem: false,
+          roleOrgId: null,
+          rolePartnerId: PARTNER_A,
+        }],
+      );
+      const auth = requestAuth({
+        scope: 'partner',
+        orgId: null,
+        accessibleOrgIds: [ORG_A, ORG_B],
+        canAccessOrg: () => true,
+      });
+
+      const result = await resolveRequestReportAuthorityMap(auth, [ORG_A, ORG_B], 'read');
+
+      expect(result.get(ORG_A)).toMatchObject({ ok: true, authority: { scope: unrestricted(ORG_A) } });
+      expect(result.get(ORG_B)).toEqual({ ok: false, reason: 'tenant_inactive' });
+    });
+
+    it('refuses every org in a batch for a platform admin when the partner is suspended', async () => {
+      queueRows(
+        [activeUser({ isPlatformAdmin: true })],
+        [organization(ORG_A, PARTNER_A, { partnerStatus: 'suspended' })],
+      );
+      const auth = requestAuth({
+        scope: 'system',
+        orgId: null,
+        accessibleOrgIds: [ORG_A],
+        canAccessOrg: () => true,
+      });
+
+      const result = await resolveRequestReportAuthorityMap(auth, [ORG_A], 'read');
+
+      expect(result.get(ORG_A)).toEqual({ ok: false, reason: 'tenant_inactive' });
+    });
+  });
 });
 
 describe('partner-wide execution scope (#3198 W01)', () => {
@@ -2117,6 +2257,16 @@ describe('partner-wide execution scope (#3198 W01)', () => {
       isPlatformAdmin: false,
       partnerId,
       ...overrides,
+    };
+  }
+
+  function activePartner(
+    overrides: { status?: string; deletedAt?: Date | null } = {},
+  ) {
+    return {
+      id: partnerId,
+      partnerStatus: overrides.status ?? 'active',
+      partnerDeletedAt: overrides.deletedAt ?? null,
     };
   }
 
@@ -2367,6 +2517,7 @@ describe('partner-wide execution scope (#3198 W01)', () => {
   it('grants partner_wide authority to an org_access=all member whose role grants the action', async () => {
     queueRows(
       [partnerUser()],
+      [activePartner()],
       [{ roleId: PARTNER_ROLE, orgAccess: 'all' }],
       [partnerReportsGrant('read')],
     );
@@ -2394,6 +2545,7 @@ describe('partner-wide execution scope (#3198 W01)', () => {
   ])('refuses a partner-wide authority for $name', async ({ orgAccess, reason }) => {
     queueRows(
       [partnerUser()],
+      [activePartner()],
       [{ roleId: PARTNER_ROLE, orgAccess }],
       [partnerReportsGrant('read')],
     );
@@ -2401,11 +2553,11 @@ describe('partner-wide execution scope (#3198 W01)', () => {
     await expect(resolveLivePartnerReportAuthority(userId, partnerId, 'read'))
       .resolves.toEqual({ ok: false, reason });
     // The role lookup is never reached: access is refused on the membership.
-    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(3);
   });
 
   it('refuses a user who belongs to a different partner', async () => {
-    queueRows([partnerUser({ partnerId: orgId })]);
+    queueRows([partnerUser({ partnerId: orgId })], [activePartner()]);
 
     await expect(resolveLivePartnerReportAuthority(userId, partnerId, 'read'))
       .resolves.toEqual({ ok: false, reason: 'partner_inaccessible' });
@@ -2416,12 +2568,13 @@ describe('partner-wide execution scope (#3198 W01)', () => {
     await expect(resolveLivePartnerReportAuthority(userId, partnerId, 'read'))
       .resolves.toEqual({ ok: false, reason: 'user_inactive' });
 
-    queueRows([partnerUser()], []);
+    queueRows([partnerUser()], [activePartner()], []);
     await expect(resolveLivePartnerReportAuthority(userId, partnerId, 'read'))
       .resolves.toEqual({ ok: false, reason: 'membership_removed' });
 
     queueRows(
       [partnerUser()],
+      [activePartner()],
       [
         { roleId: PARTNER_ROLE, orgAccess: 'all' },
         { roleId: PARTNER_ROLE, orgAccess: 'all' },
@@ -2434,6 +2587,7 @@ describe('partner-wide execution scope (#3198 W01)', () => {
   it('refuses when the partner role does not grant the requested action', async () => {
     queueRows(
       [partnerUser()],
+      [activePartner()],
       [{ roleId: PARTNER_ROLE, orgAccess: 'all' }],
       [partnerReportsGrant('read')],
     );
@@ -2443,11 +2597,11 @@ describe('partner-wide execution scope (#3198 W01)', () => {
   });
 
   it('grants a platform admin partner_wide authority without a membership', async () => {
-    queueRows([partnerUser({ isPlatformAdmin: true, partnerId: orgId })]);
+    queueRows([partnerUser({ isPlatformAdmin: true, partnerId: orgId })], [activePartner()]);
 
     await expect(resolveLivePartnerReportAuthority(userId, partnerId, 'delete'))
       .resolves.toMatchObject({ ok: true, authority: { scope: partnerWideScope(partnerId) } });
-    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
   });
 
   it('treats a database failure as unverifiable rather than authority', async () => {
@@ -2460,6 +2614,7 @@ describe('partner-wide execution scope (#3198 W01)', () => {
   it('re-reads the membership on the request path instead of trusting the token', async () => {
     queueRows(
       [partnerUser()],
+      [activePartner()],
       [{ roleId: PARTNER_ROLE, orgAccess: 'selected' }],
     );
 
@@ -2495,7 +2650,7 @@ describe('partner-wide execution scope (#3198 W01)', () => {
   });
 
   it('lets a system-scope request resolve platform authority', async () => {
-    queueRows([partnerUser({ isPlatformAdmin: true })]);
+    queueRows([partnerUser({ isPlatformAdmin: true })], [activePartner()]);
 
     await expect(
       resolveRequestPartnerReportAuthority(
@@ -2504,6 +2659,56 @@ describe('partner-wide execution scope (#3198 W01)', () => {
         'read',
       ),
     ).resolves.toMatchObject({ ok: true, authority: { scope: partnerWideScope(partnerId) } });
+  });
+
+  describe('tenant lifecycle gate (#6699)', () => {
+    it.each([
+      { name: 'suspended', partner: { status: 'suspended' } },
+      { name: 'churned', partner: { status: 'churned' } },
+      { name: 'offboarding', partner: { status: 'offboarding' } },
+      { name: 'pending', partner: { status: 'pending' } },
+      { name: 'soft-deleted', partner: { deletedAt: new Date() } },
+    ])('refuses partner_wide authority with tenant_inactive when the partner is $name', async ({ partner }) => {
+      queueRows(
+        [partnerUser()],
+        [activePartner(partner)],
+        [{ roleId: PARTNER_ROLE, orgAccess: 'all' }],
+        [partnerReportsGrant('read')],
+      );
+
+      await expect(resolveLivePartnerReportAuthority(userId, partnerId, 'read'))
+        .resolves.toEqual({ ok: false, reason: 'tenant_inactive' });
+      // Refused on the partner row, before the membership is consulted.
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
+    });
+
+    it('refuses a partner that no longer exists as partner_inaccessible', async () => {
+      queueRows([partnerUser()], []);
+
+      await expect(resolveLivePartnerReportAuthority(userId, partnerId, 'read'))
+        .resolves.toEqual({ ok: false, reason: 'partner_inaccessible' });
+    });
+
+    it('refuses a platform admin for a suspended partner', async () => {
+      queueRows(
+        [partnerUser({ isPlatformAdmin: true, partnerId: orgId })],
+        [activePartner({ status: 'suspended' })],
+      );
+
+      await expect(resolveLivePartnerReportAuthority(userId, partnerId, 'read'))
+        .resolves.toEqual({ ok: false, reason: 'tenant_inactive' });
+    });
+
+    it('refuses the request-path resolver for a suspended partner', async () => {
+      queueRows(
+        [partnerUser()],
+        [activePartner({ status: 'suspended' })],
+      );
+
+      await expect(
+        resolveRequestPartnerReportAuthority(partnerAuth(), partnerId, 'read'),
+      ).resolves.toEqual({ ok: false, reason: 'tenant_inactive' });
+    });
   });
 });
 

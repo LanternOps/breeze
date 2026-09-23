@@ -30,6 +30,7 @@ vi.mock('../../services/reportGenerationService', async (importOriginal) => {
 
 import { withSystemDbAccessContext } from '../../db';
 import {
+  partners,
   partnerUsers,
   permissions,
   reportRuns,
@@ -942,5 +943,40 @@ describe('business report types are MSP-staff-only (#3198 W02, ruling F1)', () =
     );
     expect(await runsFor(id)).toEqual([expect.objectContaining({ status: 'completed', executionScopeUserId: fixture.admin.id })]);
     expect(generateReportSpy).toHaveBeenCalledTimes(1);
+  });
+
+  // #6699 - abuse containment. Same definition, same still-'active' admin with
+  // org_access='all'; only the owning partner is suspended. The worker must
+  // refuse at the live-authority step (a deny() row: no execution scope) with
+  // a permanent reason, never reaching the generator, and must not rethrow.
+  runDb('processRunScheduledReport refuses a partner-owned definition once its partner is suspended (#6699)', async () => {
+    const fixture = await seedFixture();
+    const app = buildApp();
+    const created = await createPartnerDefinition(app, fixture, 'Suspended partner AR aging');
+
+    await getTestDb()
+      .update(partners)
+      .set({ status: 'suspended' })
+      .where(eq(partners.id, fixture.partner.id));
+
+    await expect(
+      withSystemDbAccessContext(() =>
+        processRunScheduledReport(
+          { type: 'run-scheduled-report', reportId: created.id, occurrenceKey: 1 },
+          { finalAttempt: false },
+        ),
+      ),
+    ).resolves.toBeUndefined();
+    expect(generateReportSpy).not.toHaveBeenCalled();
+
+    const runs = await runsFor(created.id);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      status: 'failed',
+      errorMessage: 'scope_tenant_inactive',
+      requestedByKind: 'user',
+      requestedByUserId: fixture.admin.id,
+      executionScopeKind: null,
+    });
   });
 });

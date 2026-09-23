@@ -1121,6 +1121,26 @@ describe('processRunScheduledReport', () => {
     expect(sendEmailMock).not.toHaveBeenCalled();
   });
 
+  it('records a suspended tenant as a permanent scope_tenant_inactive failure, not a retry (#6699)', async () => {
+    selectMock.mockReturnValueOnce(selectChain([report]));
+    scopeState.liveResult = { ok: false, reason: 'tenant_inactive' };
+    const failedInsert = insertChain([{ id: RUN_ID }]);
+    insertMock.mockReturnValueOnce(failedInsert);
+
+    // Resolves (no throw), so BullMQ never schedules a retry attempt.
+    await expect(processRunScheduledReport({
+      type: 'run-scheduled-report',
+      reportId: REPORT_ID,
+      occurrenceKey: 202607010900,
+    })).resolves.toBeUndefined();
+
+    expect(failedInsert.values).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'failed', errorMessage: 'scope_tenant_inactive' }),
+    );
+    expect(generateReportMock).not.toHaveBeenCalled();
+    expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+
   it('fails closed when live authority cannot be verified', async () => {
     selectMock.mockReturnValueOnce(selectChain([report]));
     resolveLiveReportAuthorityMock.mockRejectedValueOnce(new Error('database unavailable'));
