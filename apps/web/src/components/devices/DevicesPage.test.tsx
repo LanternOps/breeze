@@ -1,6 +1,6 @@
 import '@/lib/i18n';
 
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import DevicesPage from './DevicesPage';
@@ -336,8 +336,16 @@ function jsonResponse(payload: unknown) {
   return { ok: true, json: async () => payload } as unknown as Response;
 }
 
+// The page opens on Agent (#5874). Suites that exercise network rows in the
+// merged list deep-link the All segment, exactly as a shared link would.
+function openOnAllClasses() {
+  history.replaceState(null, '', '/devices#deviceClass=all');
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  // No remembered segment leaks between tests (#5874).
+  window.localStorage.clear();
   // Reset the network arm to ON; the flag-off case opts out explicitly.
   flagState.ENABLE_NETWORK_DEVICES_IN_LIST = true;
 
@@ -711,6 +719,7 @@ describe('DevicesPage — multi-select run script keeps its target devices', () 
 // agent-only bulk actions with a clear message, and (b) per-item try/catch so
 // one failure can't abort the batch.
 describe('DevicesPage — bulk actions exclude network rows + survive per-item failure (#1322)', () => {
+  beforeEach(openOnAllClasses);
   const NET_1 = '44444444-4444-4444-4444-444444444444';
 
   function rawNetworkDevice(id: string, hostname: string) {
@@ -927,8 +936,9 @@ describe('DevicesPage — device class segment filter (#1424)', () => {
   }
 
   beforeEach(() => {
-    // Reset the hash so a prior test's segment choice doesn't seed this mount.
-    history.replaceState(null, '', '/devices');
+    // Reset the hash so a prior test's segment choice doesn't seed this mount;
+    // these cases start from the merged All view.
+    openOnAllClasses();
   });
 
   async function renderMixedFleet() {
@@ -965,6 +975,61 @@ describe('DevicesPage — device class segment filter (#1424)', () => {
     await waitFor(() => expect(list.getAttribute('data-device-count')).toBe('3'));
   });
 
+  // #5874: the page opens on Agent (managed endpoints), not the merged view.
+  async function renderMixedFleetRaw() {
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValue(null);
+    vi.mocked(fetchAllNetworkDevices).mockResolvedValue({
+      data: [rawNetworkDevice(NET_3, 'Lobby Printer')],
+      total: 1,
+      pagesWalked: 1,
+    } as never);
+    render(<DevicesPage />);
+    const list = await screen.findByTestId('device-list');
+    // Wait for the merged fetch to land (All counts every arm).
+    await waitFor(() => expect(screen.getByTestId('device-class-segment-all')).toHaveTextContent('4'));
+    return list;
+  }
+
+  it('opens on the Agent segment when there is no hash and no remembered choice (#5874)', async () => {
+    history.replaceState(null, '', '/devices');
+    const list = await renderMixedFleetRaw();
+    await waitFor(() => expect(list.getAttribute('data-device-count')).toBe('3'));
+    expect(screen.getByTestId('device-class-segment-agent')).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('reopens on the last segment the user chose (#5874)', async () => {
+    history.replaceState(null, '', '/devices');
+    const first = await renderMixedFleetRaw();
+    fireEvent.click(screen.getByTestId('device-class-segment-all'));
+    await waitFor(() => expect(first.getAttribute('data-device-count')).toBe('4'));
+    cleanup();
+    history.replaceState(null, '', '/devices');
+    const list = await renderMixedFleetRaw();
+    await waitFor(() => expect(list.getAttribute('data-device-count')).toBe('4'));
+  });
+
+  it('a deviceClass deep link wins over the remembered choice and does not overwrite it (#5874)', async () => {
+    history.replaceState(null, '', '/devices#deviceClass=network');
+    const list = await renderMixedFleetRaw();
+    await waitFor(() => expect(list.getAttribute('data-device-count')).toBe('1'));
+    cleanup();
+    history.replaceState(null, '', '/devices');
+    const next = await renderMixedFleetRaw();
+    await waitFor(() => expect(next.getAttribute('data-device-count')).toBe('3'));
+  });
+
+  it('ignores a remembered Network choice when the segment is hidden (#5874)', async () => {
+    flagState.ENABLE_NETWORK_DEVICES_IN_LIST = false;
+    window.localStorage.setItem('breeze.devices.deviceClass', 'network');
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValue(null);
+    render(<DevicesPage />);
+    const list = await screen.findByTestId('device-list');
+    await waitFor(() => expect(list.getAttribute('data-device-count')).toBe('3'));
+    expect(screen.queryByTestId('device-class-segment')).toBeNull();
+  });
+
   it('hides the segment entirely when the network arm is disabled', async () => {
     flagState.ENABLE_NETWORK_DEVICES_IN_LIST = false;
     const { decodeFilterFromHash } = await import('./filterUrl');
@@ -979,6 +1044,7 @@ describe('DevicesPage — device class segment filter (#1424)', () => {
 // assets open the new native Devices detail page (/devices/network/:id) instead
 // of bouncing out to Discovery; agent rows keep the /devices/:id route.
 describe('DevicesPage — row selection routes by device class (#1424)', () => {
+  beforeEach(openOnAllClasses);
   const NET_2 = '55555555-5555-5555-5555-555555555555';
 
   function rawNetworkDevice(id: string, hostname: string) {
@@ -1957,6 +2023,7 @@ describe('DevicesPage — decommission from the row/grid kebab is confirm-gated 
 // DeviceCard.networkClass.test.tsx); this pins the handler's backstop, so a
 // future surface that wires `onAction` cannot silently re-open the hole.
 describe('DevicesPage — single-device actions refuse network rows (#4014)', () => {
+  beforeEach(openOnAllClasses);
   const NET_1 = '44444444-4444-4444-4444-444444444444';
 
   beforeEach(async () => {
@@ -2100,6 +2167,7 @@ describe('DevicesPage — single-device actions refuse network rows (#4014)', ()
 // happily wave one through into sendBulkCommand if the network filter stopped
 // running first.
 describe('DevicesPage — network filter + decommissioned gate compose (#1322 × #2465)', () => {
+  beforeEach(openOnAllClasses);
   const NET_1 = '44444444-4444-4444-4444-444444444444';
 
   async function renderFleet(count: string) {
@@ -2243,6 +2311,7 @@ describe('DevicesPage — ungated bulk actions still work on an all-offline flee
 // action string is the contract between DeviceList's bulk menu and
 // DevicesPage.handleBulkAction (same drift risk as 'link-vm-host' above).
 describe('DevicesPage — compare bulk action navigates with selected ids', () => {
+  beforeEach(openOnAllClasses);
   it("handles 'compare': navigates to /devices/compare?ids= without any agent call", async () => {
     render(<DevicesPage />);
     await screen.findByTestId('device-list');
@@ -2960,7 +3029,7 @@ describe('DevicesPage — class segment badges tell the truth under a filter', (
   }
 
   beforeEach(() => {
-    history.replaceState(null, '', '/devices');
+    openOnAllClasses();
     vi.mocked(fetchAllNetworkDevices).mockResolvedValue({
       data: [rawNetworkDevice(NET_ON, 'core-sw', 'online'), rawNetworkDevice(NET_OFF, 'old-cam', 'offline')],
       total: 2,
