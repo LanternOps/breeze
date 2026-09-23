@@ -7,6 +7,10 @@ import {
 
 export interface QuoteEmailParams {
   quoteNumber: string;
+  /** The tech-entered proposal title; blank falls back to number-only copy. */
+  quoteTitle?: string | null;
+  /** Customer (bill-to) name; blank falls back to "you". */
+  customerName?: string | null;
   partnerName: string;
   total: string;        // pre-formatted money
   expiryDate?: string;  // pre-formatted date or empty
@@ -31,6 +35,8 @@ export interface QuoteEmailParams {
  */
 export function buildQuoteTemplate(params: QuoteEmailParams): EmailTemplate {
   const number = params.quoteNumber.trim();
+  const title = params.quoteTitle?.trim() ?? '';
+  const customerName = params.customerName?.trim() ?? '';
   const pdfAttached = params.pdfAttached ?? true;
   const note = params.message?.trim();
   const signature = params.signature?.trim();
@@ -54,6 +60,8 @@ export function buildQuoteTemplate(params: QuoteEmailParams): EmailTemplate {
     },
     vars: {
       quote_number: number,
+      quote_title: title,
+      org_name: customerName,
       partner_name: params.partnerName,
       total: params.total,
       expiry_date: params.expiryDate ?? '',
@@ -63,18 +71,19 @@ export function buildQuoteTemplate(params: QuoteEmailParams): EmailTemplate {
     ctaUrl: params.acceptUrl,
     brandName: params.partnerName,
     footer: supportFooter(params.supportEmail, 'Questions about this proposal? Contact'),
-    preheader: `Proposal ${number} — ${params.total}${params.expiryDate ? `, valid until ${params.expiryDate}` : ''}.`,
+    preheader: `${title || `Proposal ${number}`} — ${params.total}${params.expiryDate ? `, valid until ${params.expiryDate}` : ''}.`,
     bodyBeforeCta: messageBlock,
     bodyAfterCta: signatureBlock,
   });
 
   const support = getSupportEmail(params.supportEmail);
   const text = [
-    'Hi there,',
-    `${params.partnerName} has sent you proposal ${number} for ${params.total}.${pdfAttached ? ' A PDF copy is attached.' : ''}`,
+    'Hello,',
+    `Thank you for the opportunity to work with ${customerName || 'you'}. We've prepared ${title ? `${title} (proposal ${number})` : `proposal ${number}`} for your review, with a total of ${params.total}.${pdfAttached ? ' A PDF copy is attached.' : ''}`,
     note || null,
     `Review & accept: ${params.acceptUrl}`,
-    params.expiryDate ? `Valid until ${params.expiryDate}.` : null,
+    params.expiryDate ? `This proposal is valid until ${params.expiryDate}.` : null,
+    "If you have any questions or would like to adjust anything, we're happy to help. We look forward to working with you.",
     signature || null,
     support ? `Questions? Contact ${support}.` : null,
   ].filter(Boolean).join('\n');

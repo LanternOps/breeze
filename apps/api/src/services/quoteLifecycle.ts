@@ -769,6 +769,8 @@ async function deliverQuoteEmail(
     // ---- Transport. No DB context is open across this call. ----------------
     const template = buildQuoteTemplate({
       quoteNumber, partnerName: partnerName ?? 'your provider',
+      // Frozen send-time values: the same title + "Prepared for" name the PDF shows.
+      quoteTitle: frozenQuote.title, customerName: frozenQuote.billToName,
       total: formatMoney(quote.total, quote.currencyCode, frozenQuote.documentLocale ?? resolvePartnerDocumentLocale(partnerRow)), acceptUrl,
       expiryDate: quote.expiryDate ?? undefined,
       message: opts.message,

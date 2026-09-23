@@ -35,6 +35,9 @@ export function defaultHeading(id: EmailTemplateId, vars: Record<string, string>
   if (id === 'portal_invite' && !vars.org_name?.trim()) {
     return 'Join your support portal';
   }
+  if (id === 'quote_send' && !vars.quote_title?.trim()) {
+    return 'Proposal {{quote_number}}';
+  }
   return emailTemplateFieldDefaults(id).heading;
 }
 
@@ -67,6 +70,12 @@ export function defaultHtml(id: EmailTemplateId, vars: Record<string, string> = 
   if (id === 'invoice_send' && !vars.due_date?.trim()) {
     html = html.replace(' by <strong>{{due_date}}</strong>', '');
   }
+  if (id === 'quote_send' && !vars.quote_title?.trim()) {
+    html = html.replace('<strong>{{quote_title}}</strong> (proposal {{quote_number}})', 'proposal <strong>{{quote_number}}</strong>');
+  }
+  if (id === 'quote_send' && !vars.org_name?.trim()) {
+    html = html.replace('work with {{org_name}}.', 'work with you.');
+  }
   if (id === 'quote_send' && !vars.expiry_date?.trim()) {
     html = html.replace('<p>This proposal is valid until <strong>{{expiry_date}}</strong>.</p>\n', '');
   }
@@ -94,7 +103,10 @@ export function defaultSubject(
   if (!ticketNumber && (id === 'ticket_comment_notification' || id === 'ticket_resolved')) {
     ticketNumber = 'your ticket';
   }
-  return tidyDefaultCopy(renderTemplate(emailTemplateFieldDefaults(id).subject, {
+  const subjectTemplate = id === 'quote_send' && !vars.quote_title?.trim()
+    ? 'Proposal {{quote_number}} from {{partner_name}}'
+    : emailTemplateFieldDefaults(id).subject;
+  return tidyDefaultCopy(renderTemplate(subjectTemplate, {
     ...vars,
     ticket_number: ticketNumber,
     ticket_subject: ticketSubject,

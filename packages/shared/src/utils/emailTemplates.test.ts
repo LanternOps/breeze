@@ -77,7 +77,7 @@ describe('email template catalog', () => {
 
   it('quote_send vars are the closed list', () => {
     expect(varsForEmailTemplate('quote_send')).toEqual([
-      'quote_number', 'partner_name', 'total', 'expiry_date', 'accept_url', 'cta_button',
+      'quote_number', 'quote_title', 'org_name', 'partner_name', 'total', 'expiry_date', 'accept_url', 'cta_button',
     ]);
   });
 
@@ -139,7 +139,8 @@ describe('emailTemplateFieldDefaults', () => {
     expect(resolved.html).toContain('{{cta_button}}');
 
     const quote = emailTemplateFieldDefaults('quote_send');
-    expect(quote.html).toContain('{{partner_name}} has sent you proposal');
+    expect(quote.html).toContain('<strong>{{quote_title}}</strong> (proposal {{quote_number}})');
+    expect(quote.html).toContain('work with {{org_name}}.');
     expect(quote.html).toContain('{{total}}');
     expect(quote.html).toContain('A PDF copy is attached.');
     expect(quote.html).toContain('This proposal is valid until');
