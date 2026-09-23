@@ -659,8 +659,8 @@
       "rejected": "Rejected",
       "none": "None",
       "reasons": {
-        "unknown_field": "No matching field definition",
-        "not_script_writable": "Field is not script-writable",
+        "unknown_field": "No custom field with this key — check the spelling against the field key in Settings → Custom Fields",
+        "not_script_writable": "Field is not script-writable — turn on \"Allow scripts to write this field\" in Settings → Custom Fields",
         "not_applicable_to_device": "Field does not apply to this device type",
         "device_not_found": "Device not found",
         "invalid_type": "Value has the wrong type",

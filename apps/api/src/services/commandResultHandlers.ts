@@ -428,7 +428,24 @@ function terminalExecutionProjection() {
   } as const;
 }
 
-async function handleScriptResult({ agentId, command, result, resolvedDeviceId, stdout }: Parameters<CommandResultHandler>[0]): Promise<void> {
+function isCustomFieldWritesEnvelope(value: unknown): boolean {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    && 'customFieldWrites' in value;
+}
+
+async function handleScriptResult({ agentId, command, result, resolvedDeviceId, stdout: transportStdout }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  // #6537 — both ingest transports fall back to `JSON.stringify(result.result)`
+  // when the agent sent no stdout (generic handlers deliver their structured
+  // output that way). The agent sends no stdout at all when every line a script
+  // printed was a `::breeze:custom-fields::` marker it stripped, so the
+  // transport synthesized the #2698 customFieldWrites envelope as "output".
+  // Persisting that showed the operator `{"customFieldWrites":…}` as what the
+  // script printed — which reads as proof the write landed even when every
+  // field was rejected. Narrowed to exactly that envelope so no other caller's
+  // stdout changes meaning.
+  const stdout = result.stdout === undefined && isCustomFieldWritesEnvelope(result.result)
+    ? undefined
+    : transportStdout;
   // Which write we are on, for the shared catch below. This function now runs a
   // five-step compare-and-swap ladder inside ONE try; without a phase tag every
   // failure reaches Sentry with the same three context fields and the same
