@@ -578,6 +578,10 @@
       "modules": {
         "label": "Modüller",
         "description": "Servis masası, faturalandırma ve topoloji açık/kapalı"
+      },
+      "aiApprovals": {
+        "label": "Yapay Zeka Onay Zaman Aşımı",
+        "description": "Yapay zeka sohbetinin kısıtlı bir eylem onayını ne kadar bekleyeceği"
       }
     },
     "saved": "İş ortağı ayarları kaydedildi",
@@ -5890,5 +5894,26 @@
       "firstSeen": "İlk kez {{date}} tarihinde görüldü",
       "none": "Bu dağıtım için kayıtlı sürüm yok."
     }
+  },
+  "partnerAiApprovals": {
+    "timeoutLabel": "Etkileşimli onay zaman aşımı",
+    "productDefault": "Ürün varsayılanı ({{minutes}} dakika)",
+    "minutesOption": "{{minutes}} dakika",
+    "range": "{{min}}-{{max}} dakika arasında seçin.",
+    "description": "Devam eden bir yapay zeka sohbet turunun, kısıtlı (Katman 2/3) bir eylemi birinin onaylamasını ne kadar bekleyeceği.",
+    "orgOverrideNote": "Kuruluşlar bu değeri kendi yapay zeka ayarlarından geçersiz kılabilir; ayarlandığında kuruluş değeri geçerli olur.",
+    "notForUnattendedNote": "Bu, gece boyu veya gözetimsiz çalışmalar için değildir — uzun süreli çalışmalar kendi son kullanma tarihine sahip Onaylar kuyruğundan geçer."
+  },
+  "orgAiApprovalTimeout": {
+    "title": "Yapay Zeka Onay Zaman Aşımı",
+    "description": "Bir yapay zeka sohbetinin, kısıtlı (Katman 2/3) bir eylemi birinin onaylamasını vazgeçmeden önce ne kadar bekleyeceği. Kuruluşlar burada ortak varsayılanını geçersiz kılabilir; ayarlandığında kuruluş değeri geçerli olur.",
+    "fieldLabel": "Etkileşimli onay zaman aşımı",
+    "inherit": "Devral",
+    "inheritLabel": "Devral ({{minutes}} dakika, {{source}})",
+    "sourcePartner": "iş ortağı varsayılanı",
+    "sourceDefault": "ürün varsayılanı",
+    "minutesOption": "{{minutes}} dakika",
+    "range": "{{min}}-{{max}} dakika arasında seçin.",
+    "save": "Kaydet"
   }
 }

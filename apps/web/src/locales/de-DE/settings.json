@@ -578,6 +578,10 @@
       "modules": {
         "label": "Module",
         "description": "Service Desk, Abrechnung und Topologie ein/aus"
+      },
+      "aiApprovals": {
+        "label": "KI-Genehmigungs-Timeout",
+        "description": "Wie lange der KI-Chat auf die Genehmigung einer gesperrten Aktion wartet"
       }
     },
     "saved": "Partnereinstellungen gespeichert",
@@ -5890,5 +5894,26 @@
       "firstSeen": "Erstmals gesehen am {{date}}",
       "none": "Für diese Bereitstellung sind keine Versionen erfasst."
     }
+  },
+  "partnerAiApprovals": {
+    "timeoutLabel": "Zeitüberschreitung für interaktive Genehmigung",
+    "productDefault": "Produktstandard ({{minutes}} Minuten)",
+    "minutesOption": "{{minutes}} Minuten",
+    "range": "Wählen Sie {{min}}-{{max}} Minuten.",
+    "description": "Wie lange ein laufender KI-Chat-Zug darauf wartet, dass jemand eine gesperrte (Stufe 2/3) Aktion genehmigt, bevor er aufgibt.",
+    "orgOverrideNote": "Organisationen können diesen Wert in ihren eigenen KI-Einstellungen überschreiben; der Organisationswert gewinnt, wenn er gesetzt ist.",
+    "notForUnattendedNote": "Dies ist nicht für nächtliche oder unbeaufsichtigte Arbeiten gedacht — langlaufende Arbeiten durchlaufen die Genehmigungswarteschlange mit eigener Ablaufzeit."
+  },
+  "orgAiApprovalTimeout": {
+    "title": "KI-Genehmigungs-Timeout",
+    "description": "Wie lange ein KI-Chat darauf wartet, dass jemand eine gesperrte (Stufe 2/3) Aktion genehmigt, bevor er aufgibt. Organisationen können hier den Partnerstandard überschreiben; der Organisationswert gewinnt, wenn er gesetzt ist.",
+    "fieldLabel": "Zeitüberschreitung für interaktive Genehmigung",
+    "inherit": "Übernehmen",
+    "inheritLabel": "Übernehmen ({{minutes}} Minuten, {{source}})",
+    "sourcePartner": "Partnerstandard",
+    "sourceDefault": "Produktstandard",
+    "minutesOption": "{{minutes}} Minuten",
+    "range": "Wählen Sie {{min}}-{{max}} Minuten.",
+    "save": "Speichern"
   }
 }

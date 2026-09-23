@@ -578,6 +578,10 @@
       "modules": {
         "label": "Moduli",
         "description": "Service desk, fatturazione e topologia on/off"
+      },
+      "aiApprovals": {
+        "label": "Timeout di approvazione IA",
+        "description": "Per quanto tempo la chat IA attende l'approvazione di un'azione controllata"
       }
     },
     "saved": "Impostazioni partner salvate",
@@ -5890,5 +5894,26 @@
       "firstSeen": "Visto per la prima volta il {{date}}",
       "none": "Nessuna versione registrata per questa distribuzione."
     }
+  },
+  "partnerAiApprovals": {
+    "timeoutLabel": "Timeout di approvazione interattiva",
+    "productDefault": "Predefinito del prodotto ({{minutes}} minuti)",
+    "minutesOption": "{{minutes}} minuti",
+    "range": "Scegli tra {{min}} e {{max}} minuti.",
+    "description": "Per quanto tempo un turno di chat IA in corso attende che qualcuno approvi un'azione controllata (Livello 2/3) prima di rinunciare.",
+    "orgOverrideNote": "Le organizzazioni possono sovrascrivere questo valore dalle proprie impostazioni IA; il valore dell'organizzazione prevale se impostato.",
+    "notForUnattendedNote": "Questo non è per lavoro notturno o incustodito — il lavoro di lunga durata passa attraverso la coda delle approvazioni, che ha una propria scadenza."
+  },
+  "orgAiApprovalTimeout": {
+    "title": "Timeout di approvazione IA",
+    "description": "Per quanto tempo una chat IA attende che qualcuno approvi un'azione controllata (Livello 2/3) prima di rinunciare. Le organizzazioni possono sovrascrivere qui il valore predefinito del partner; il valore dell'organizzazione prevale se impostato.",
+    "fieldLabel": "Timeout di approvazione interattiva",
+    "inherit": "Eredita",
+    "inheritLabel": "Eredita ({{minutes}} minuti, {{source}})",
+    "sourcePartner": "predefinito del partner",
+    "sourceDefault": "predefinito del prodotto",
+    "minutesOption": "{{minutes}} minuti",
+    "range": "Scegli tra {{min}} e {{max}} minuti.",
+    "save": "Salva"
   }
 }

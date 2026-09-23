@@ -48,6 +48,23 @@ vi.mock('./OrgAiBudgetSettings', () => ({
     return <div data-testid="org-ai-budget" />;
   },
 }));
+// #6475: the interactive AI-approval timeout card. Capture its props (the
+// resolved `effective` value it's handed) and expose a button that fires
+// onSave with a fixed payload, mirroring the 'security' stub above.
+const aiApprovalTimeoutProps: Array<Record<string, unknown>> = [];
+vi.mock('./OrgAiApprovalTimeoutCard', () => ({
+  default: (props: { onSave: (value: unknown) => void }) => {
+    aiApprovalTimeoutProps.push(props);
+    return (
+      <button
+        data-testid="ai-approval-timeout"
+        onClick={() => props.onSave({ interactiveTimeoutMinutes: 30 })}
+      >
+        Save AI approval timeout
+      </button>
+    );
+  },
+}));
 // Capture the props the Remote Access tab is mounted with. #3432: the parent
 // used to hand it `onDirty`, which it fired AFTER already persisting a rule —
 // leaving the page permanently "unsaved" and firing a bogus beforeunload
@@ -535,6 +552,90 @@ describe('OrgSettingsPage sidebar nav & save-state honesty', () => {
     await screen.findByTestId('org-name-input');
     const select = screen.getByLabelText('Settings section') as HTMLSelectElement;
     expect(select.value).toBe('general');
+  });
+});
+
+// #6475: the interactive AI-approval timeout card saves through the same
+// wholesale settings PATCH every other 'ai' tab uses — so a save that only
+// touches aiApprovals must preserve whatever else is already in
+// orgDetails.settings, and a failed save must surface an error the same way
+// the security tab's does above.
+describe('OrgSettingsPage — AI approval timeout (#6475)', () => {
+  const orgDetails = {
+    id: 'org-1',
+    name: 'Acme Systems',
+    slug: 'acme',
+    status: 'active',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    settings: {
+      // A pre-existing, unrelated settings key — must survive the PATCH.
+      notifications: { fromAddress: 'alerts@acme.example' },
+    },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    aiApprovalTimeoutProps.length = 0;
+    window.location.hash = '#ai';
+    useOrgStoreMock.mockReturnValue({ currentOrgId: 'org-1', organizations: [] } as never);
+  });
+
+  it('passes the resolved aiApprovalTimeout through to the card', async () => {
+    fetchWithAuthMock.mockImplementation((url: string) => {
+      if (url.endsWith('/effective-settings')) {
+        return Promise.resolve(makeJsonResponse({
+          locked: [],
+          aiApprovalTimeout: { minutes: 30, source: 'partner', inheritedMinutes: 30, inheritedSource: 'partner' },
+        }));
+      }
+      return Promise.resolve(makeJsonResponse(orgDetails));
+    });
+
+    render(<OrgSettingsPage orgId="org-1" />);
+    await screen.findByTestId('ai-approval-timeout');
+
+    expect(aiApprovalTimeoutProps.at(-1)).toMatchObject({
+      effective: { minutes: 30, source: 'partner', inheritedMinutes: 30, inheritedSource: 'partner' },
+      initialData: undefined,
+    });
+  });
+
+  it('saving 30 minutes PATCHes the full settings object with aiApprovals set and notifications preserved', async () => {
+    fetchWithAuthMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.endsWith('/effective-settings')) return Promise.resolve(makeJsonResponse({ locked: [] }));
+      if (init?.method === 'PATCH') return Promise.resolve(makeJsonResponse(orgDetails));
+      return Promise.resolve(makeJsonResponse(orgDetails));
+    });
+
+    render(<OrgSettingsPage orgId="org-1" />);
+    await userEvent.click(await screen.findByTestId('ai-approval-timeout'));
+
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledWith(
+      '/orgs/organizations/org-1',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({
+          settings: {
+            notifications: { fromAddress: 'alerts@acme.example' },
+            aiApprovals: { interactiveTimeoutMinutes: 30 },
+          },
+        }),
+      }),
+    ));
+  });
+
+  it('a failed save surfaces an error toast rather than failing silently', async () => {
+    fetchWithAuthMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.endsWith('/effective-settings')) return Promise.resolve(makeJsonResponse({ locked: [] }));
+      if (init?.method === 'PATCH') return Promise.resolve(makeJsonResponse({ error: 'save failed' }, false, 500));
+      return Promise.resolve(makeJsonResponse(orgDetails));
+    });
+
+    render(<OrgSettingsPage orgId="org-1" />);
+    await userEvent.click(await screen.findByTestId('ai-approval-timeout'));
+
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
   });
 });
 

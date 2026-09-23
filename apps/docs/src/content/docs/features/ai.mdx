@@ -97,7 +97,7 @@ If what the request refers to changes while it waits — the script is edited, t
 A chat turn that is waiting on an approval is held open, so the wait is bounded. The **approval timeout** is how long the chat waits for someone to approve a gated action before it gives up:
 
 - **Default:** 5 minutes. **Range:** 5 to 60 minutes.
-- **Partner default:** **Settings → Partner → AI Approvals**. Applies to every organization that has not set its own value.
+- **Partner default:** **Settings → Partner → AI Approval Timeout**. Applies to every organization that has not set its own value.
 - **Organization override:** **Settings → Organization → AI**. Choose a value to override the partner default, or **Inherit** to follow it. The organization's value always wins. The selector shows the inherited value and where it comes from.
 - A change applies from the next chat message. It does not change a wait that is already in progress.
 
