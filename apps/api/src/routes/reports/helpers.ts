@@ -86,9 +86,11 @@ export async function ensureOrgAccess(
  * scope; FALSE for everyone else, including org tokens (which DO carry a
  * partnerId) and 'selected' partner users. There is no database backstop for
  * the org_access rule — `breeze_has_partner_access` is flat membership — so
- * partnerOwnedVisibility.scan.test.ts fails any `from(reports)` /
- * `innerJoin(reports, …)` under routes/, services/, jobs/ that neither calls
- * this nor is allowlisted as org-only with a reason.
+ * partnerOwnedVisibility.scan.test.ts fails any read or mutation of
+ * `reports` / `report_runs` / `report_run_deliveries` under routes/,
+ * services/, jobs/ whose enclosing function neither reaches this (directly or
+ * through a verified guard entrypoint) nor is allowlisted per site with a
+ * reason.
  */
 export function partnerOwnedReportVisibility(
   auth: Pick<AuthContext, 'scope' | 'partnerId' | 'partnerOrgAccess'>,

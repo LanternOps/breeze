@@ -76,6 +76,7 @@ import { attachWorkerObservability } from './workerObservability';
 import {
   decodeSiteScope,
   intersectSiteScopes,
+  partnerWideScope,
   persistedSiteScopeValues,
   reportOwnerOf,
   resolveLivePartnerReportAuthority,
@@ -491,6 +492,49 @@ export async function processRunScheduledReport(
 
   const config = (report.config ?? {}) as Record<string, unknown>;
 
+  // Set once the owner axis is resolved (below); a deny before that point
+  // cannot know which envelope the row would need.
+  let knownOwner: ReportOwner | undefined;
+
+  /**
+   * #3198 W02 (addendum B3). A PARTNER-owned run is only ever listed / read by
+   * id when it carries a complete partner_wide envelope (partnerWideRowPredicate
+   * and decodeSiteScope reject the all-NULL shape for a partner owner), so a
+   * bare failed row would be invisible to the partner admins who need to see
+   * why the schedule stopped. Stamp the owner's partner_wide scope with the
+   * definition's execution user — the principal the refusal is about. The
+   * report_runs_execution_scope_shape_chk partner_wide arm requires a user id,
+   * so a deny before the owner is known, or for a definition with no execution
+   * user, stays envelope-less (and invisible to partner callers; it is still
+   * in the table for operators). Org-owned denies keep the all-NULL shape the
+   * org-axis predicates already admit.
+   */
+  const partnerDenyEnvelope = (
+    requestedByKind: 'user' | 'system' | 'portal_user' | null,
+  ): PersistedSiteScopeColumns | Record<string, never> => {
+    if (
+      knownOwner?.partnerId === undefined
+      || requestedByKind !== 'user'
+      || !report.executionScopeUserId
+    ) {
+      return {};
+    }
+    try {
+      const scope = partnerWideScope(knownOwner.partnerId);
+      return persistedSiteScopeValues({
+        principalKind: 'user',
+        scope,
+        principalUserId: report.executionScopeUserId,
+        capturedAt: new Date(),
+        fingerprint: siteScopeFingerprint(scope),
+      });
+    } catch (err) {
+      // Never lose the refusal itself over its visibility envelope.
+      reportScopeFailure('deny_envelope', err);
+      return {};
+    }
+  };
+
   const deny = async (
     reason: string,
     requestedByKind:
@@ -514,6 +558,7 @@ export async function processRunScheduledReport(
         requestedByUserId:
           requestedByKind === 'user' ? report.executionScopeUserId : null,
         requestedByPortalUserId: null,
+        ...partnerDenyEnvelope(requestedByKind),
       })
       .returning();
   };
@@ -566,6 +611,7 @@ export async function processRunScheduledReport(
     await deny('scope_unverifiable');
     return;
   }
+  knownOwner = owner;
 
   let persistedScope;
   try {

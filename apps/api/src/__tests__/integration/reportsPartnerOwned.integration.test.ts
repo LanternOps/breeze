@@ -394,6 +394,69 @@ describe('partner-owned report definitions through the real routes (#3198 W01/W0
     expect(await readDefinition(created.id)).toBeUndefined();
   });
 
+  runDb('a selected partner user cannot list, read or download partner-owned RUNS; an all admin can (#3198 W02, addendum B2)', async () => {
+    // RLS admits a 'selected' partner user to every report_runs row of the
+    // partner (breeze_has_partner_access is flat membership); the app-layer
+    // run predicates are the only thing hiding partner-owned runs from them.
+    const fixture = await seedFixture();
+    const app = buildApp();
+    const created = await createPartnerDefinition(app, fixture);
+    const generated = await call(app, fixture.adminToken, 'POST', `/reports/${created.id}/generate`);
+    expect(generated.status).toBe(200);
+    const { runId } = (await generated.json()) as { runId: string };
+
+    // An org-owned run in orgA (the selected user's one org) as the positive
+    // control on the SAME token: the list is not simply empty.
+    const orgDef = await call(app, fixture.adminToken, 'POST', '/reports', {
+      name: 'orgA inventory', type: 'device_inventory', orgId: fixture.orgA.id,
+    });
+    expect(orgDef.status).toBe(201);
+    const orgDefId = ((await orgDef.json()) as { id: string }).id;
+    const orgGen = await call(app, fixture.adminToken, 'POST', `/reports/${orgDefId}/generate`);
+    expect(orgGen.status, await orgGen.clone().text()).toBe(200);
+    const orgRunId = ((await orgGen.json()) as { runId: string }).runId;
+
+    const runIdsOf = async (res: Response) => ((await res.json()) as { data: Array<{ id: string }> }).data.map((r) => r.id);
+
+    // --- 'selected': hidden everywhere, as an ordinary 404 ---
+    const selectedList = await call(app, fixture.selectedToken, 'GET', '/reports/runs?limit=100');
+    expect(selectedList.status).toBe(200);
+    const selectedIds = await runIdsOf(selectedList);
+    expect(selectedIds).not.toContain(runId);
+    expect(selectedIds).toContain(orgRunId);
+
+    const selectedFiltered = await call(app, fixture.selectedToken, 'GET', `/reports/runs?reportId=${created.id}&limit=100`);
+    expect(selectedFiltered.status).toBe(200);
+    expect(await runIdsOf(selectedFiltered)).toEqual([]);
+
+    const selectedGet = await call(app, fixture.selectedToken, 'GET', `/reports/runs/${runId}`);
+    expect(selectedGet.status).toBe(404);
+    expect(await selectedGet.json()).toEqual({ error: 'Report run not found' });
+
+    const selectedDownload = await call(app, fixture.selectedToken, 'GET', `/reports/runs/${runId}/download?format=json`);
+    expect(selectedDownload.status).toBe(404);
+    expect(await selectedDownload.json()).toEqual({ error: 'Report run not found' });
+
+    // ...while their own org's run stays readable through the same routes.
+    const selectedOrgGet = await call(app, fixture.selectedToken, 'GET', `/reports/runs/${orgRunId}`);
+    expect(selectedOrgGet.status).toBe(200);
+
+    // --- 'all' admin: the positive control on the partner-owned run ---
+    const adminList = await call(app, fixture.adminToken, 'GET', `/reports/runs?reportId=${created.id}&limit=100`);
+    expect(adminList.status).toBe(200);
+    expect(await runIdsOf(adminList)).toEqual([runId]);
+
+    const adminGet = await call(app, fixture.adminToken, 'GET', `/reports/runs/${runId}`);
+    expect(adminGet.status).toBe(200);
+    expect(await adminGet.json()).toMatchObject({ id: runId, reportId: created.id, status: 'completed' });
+
+    // JSON snapshot: the partner AR run over empty fixture orgs has no tabular
+    // rows (CSV would be a 409 after authorization), but it has a summary.
+    const adminDownload = await call(app, fixture.adminToken, 'GET', `/reports/runs/${runId}/download?format=json`);
+    expect(adminDownload.status, await adminDownload.clone().text()).toBe(200);
+    expect(await adminDownload.json()).toMatchObject({ type: 'ar_aging', format: 'json' });
+  });
+
   runDb('a platform admin (system token) lists partner-owned definitions and their runs (#3198 W02, addendum B7)', async () => {
     const fixture = await seedFixture();
     const app = buildApp();
@@ -553,11 +616,25 @@ describe('partner-owned report definitions through the real routes (#3198 W01/W0
         ),
       ),
     ).resolves.toBeUndefined();
-    expect(await runsFor(created.id)).toEqual([expect.objectContaining({
+    const denied = await runsFor(created.id);
+    expect(denied).toEqual([expect.objectContaining({
       status: 'failed',
       errorMessage: 'scope_permission_missing',
+      // #3198 W02 (addendum B3): stamped with the owner's partner_wide
+      // envelope, so the refusal is not an invisible row.
+      executionScopeKind: 'partner_wide',
+      executionScopeUserId: fixture.admin.id,
     })]);
     expect(generateReportSpy).not.toHaveBeenCalled();
+
+    // The admin still holds reports:read, so the refusal is listed and
+    // readable by id — the answer to "why did my AR aging stop arriving?".
+    const deniedList = await call(app, fixture.adminToken, 'GET', `/reports/runs?reportId=${created.id}&limit=100`);
+    expect(deniedList.status).toBe(200);
+    expect(((await deniedList.json()) as { data: Array<{ id: string }> }).data.map((r) => r.id)).toEqual([denied[0]!.id]);
+    const deniedGet = await call(app, fixture.adminToken, 'GET', `/reports/runs/${denied[0]!.id}`);
+    expect(deniedGet.status).toBe(200);
+    expect(await deniedGet.json()).toMatchObject({ id: denied[0]!.id, status: 'failed', errorMessage: 'scope_permission_missing' });
   });
 
   runDb('POST /reports/:id/recipients on the partner-owned definition answers 409 partner_owned_report', async () => {
@@ -657,5 +734,36 @@ describe('partner-owned report definitions through the real routes (#3198 W01/W0
     );
     // The demoted run never reached the generator.
     expect(generateReportSpy).toHaveBeenCalledTimes(1);
+
+    // #3198 W02 (addendum B3): the refusal carries the owner's partner_wide
+    // envelope (the demoted creator is still the principal it is about)...
+    const refusal = afterDemotion.find((r) => r.status === 'failed')!;
+    expect(refusal).toMatchObject({
+      requestedByKind: 'user',
+      requestedByUserId: fixture.admin.id,
+      executionScopeKind: 'partner_wide',
+      executionScopeUserId: fixture.admin.id,
+    });
+    // ...so ANOTHER partner admin with org_access='all' sees it in the run list
+    // and by id (it used to be an invisible NULL-envelope row: never listed,
+    // and a 404 by id because decodeSiteScope threw on it).
+    const otherAdmin = await createUser({ partnerId: fixture.partner.id, orgId: null, email: uniqueEmail('admin2') });
+    await assignUserToPartner(otherAdmin.id, fixture.partner.id, fixture.partnerRole.id, 'all');
+    const otherAdminToken = await partnerToken(otherAdmin, fixture.partnerRole.id, fixture.partner.id);
+    const listed = await call(app, otherAdminToken, 'GET', `/reports/runs?reportId=${created.id}&limit=100`);
+    expect(listed.status).toBe(200);
+    expect(((await listed.json()) as { data: Array<{ id: string }> }).data.map((r) => r.id).sort())
+      .toEqual(afterDemotion.map((r) => r.id).sort());
+    const byId = await call(app, otherAdminToken, 'GET', `/reports/runs/${refusal.id}`);
+    expect(byId.status).toBe(200);
+    expect(await byId.json()).toMatchObject({
+      id: refusal.id,
+      status: 'failed',
+      errorMessage: 'scope_partner_access_not_all',
+    });
+    // The demoted ('selected') creator no longer sees either run.
+    const demotedToken = await partnerToken(fixture.admin, fixture.partnerRole.id, fixture.partner.id);
+    const demotedGet = await call(app, demotedToken, 'GET', `/reports/runs/${refusal.id}`);
+    expect(demotedGet.status).toBe(404);
   });
 });
