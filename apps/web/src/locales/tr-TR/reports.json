@@ -325,7 +325,7 @@
         "endpoint_management_review": "Uç Nokta Yönetimi İncelemesi",
         "ticket_sla_attainment": "Bilet SLA Başarımı",
         "technician_time_billability": "Teknisyen Zamanı ve Faturalandırılabilirlik",
-        "ar_aging": "Alacak Yaşlanırması (AR Aging)"
+        "ar_aging": "Alacak Yaşlandırması (AR Aging)"
       },
       "threatDetection": {
         "agents": "Tespit aracısı olan uç noktalar",
@@ -425,7 +425,7 @@
         "endpoint_management_review": "Uç Nokta Yönetimi İncelemesi",
         "ticket_sla_attainment": "Bilet SLA Başarımı",
         "technician_time_billability": "Teknisyen Zamanı ve Faturalandırılabilirlik",
-        "ar_aging": "Alacak Yaşlanırması (AR Aging)"
+        "ar_aging": "Alacak Yaşlandırması (AR Aging)"
       },
       "runsTable": {
         "actions": "Eylemler",
@@ -946,7 +946,7 @@
         "endpoint_management_review": "Uç Nokta Yönetimi İncelemesi",
         "ticket_sla_attainment": "Bilet SLA Başarımı",
         "technician_time_billability": "Teknisyen Zamanı ve Faturalandırılabilirlik",
-        "ar_aging": "Alacak Yaşlanırması (AR Aging)"
+        "ar_aging": "Alacak Yaşlandırması (AR Aging)"
       },
       "schedules": {
         "daily": "Günlük",
@@ -1012,7 +1012,7 @@
           "description": "Varsayılan haftalık kapasiteye karşı kaydedilen zaman, faturalandırılabilir / dahil / faturalandırılamaz ayrımı ve faturalandırılabilir zamanın ne kadarının fiilen onaylandığı ve faturalandırıldığı. Dönemde kaydı olmayan teknisyenler atılmak yerine sıfır olarak listelenir."
         },
         "ar_aging": {
-          "name": "Alacak Yaşlanırması (AR Aging)",
+          "name": "Alacak Yaşlandırması (AR Aging)",
           "description": "Ödenmemiş fatura bakiyeleri güncel / 1–30 / 31–60 / 61–90 / 90+ gün gecikmiş olarak gruplandırılır, para birimi başına dönüşüm yapılmadan tek bir toplam kullanılır. Vade tarihi olmayan faturalar kendi grubunu alır, asla “güncel” sayılmaz."
         }
       },

@@ -957,7 +957,7 @@
       "spec": {
         "cadence": "Berichtsintervall",
         "defaultRange": "Standardbereich",
-        "lastFullMonth": "Letzter vollständiger Monat",
+        "lastFullMonth": "Letzter voller Monat",
         "asOfRunDate": "Zum Zeitpunkt der Ausführung",
         "format": "Formatieren"
       },
