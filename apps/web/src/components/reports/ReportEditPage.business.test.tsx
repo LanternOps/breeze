@@ -44,7 +44,10 @@ const baseReport = {
 
 let loaded: StoredReport | null;
 
-const REFUSED_CONFIG_KEYS = ['dateRange', 'filters', 'sites', 'orgId', 'orgIds', 'siteIds', 'deviceIds'];
+/** The two keys the builder legitimately contributes to a business config:
+ *  the cadence detail the schedule worker reads, and the free-text email
+ *  recipients (the only delivery path for business types). Defaults here. */
+const BUILDER_DELIVERY = { schedule: { time: '09:00', day: 'monday', date: '1' }, emailRecipients: [] };
 
 function putBody(): Record<string, unknown> & { config: Record<string, unknown> } {
   const call = fetchWithAuth.mock.calls.find(
@@ -96,13 +99,18 @@ describe('ReportEditPage — business report save path (#3198 W03)', () => {
     await userEvent.setup().selectOptions(groupBy, 'technician');
     await save();
 
+    // Exact body: an allowlist, not a denylist — any key the builder leaks
+    // (dateRange, legacyFilters, a builder groupBy, …) fails here.
     const body = putBody();
-    expect(body.orgId).toBe('org-1');
-    expect(body.config.groupBy).toBe('technician');
-    expect(body.config.period).toEqual({ kind: 'last_30_days' });
-    expect(body.config.includeNoSla).toBe(false);
-    expect(body.config).not.toHaveProperty('legacyFilters');
-    for (const key of REFUSED_CONFIG_KEYS) expect(body.config, key).not.toHaveProperty(key);
+    expect(body.config).toEqual({ period: { kind: 'last_30_days' }, groupBy: 'technician', includeNoSla: false, ...BUILDER_DELIVERY });
+    expect(body).toEqual({
+      name: 'SLA',
+      type: 'ticket_sla_attainment',
+      schedule: 'monthly',
+      format: 'pdf',
+      orgId: 'org-1',
+      config: { period: { kind: 'last_30_days' }, groupBy: 'technician', includeNoSla: false, ...BUILDER_DELIVERY },
+    });
   });
 
   it('Automatic SLA axis drops a previously stored groupBy instead of letting it survive', async () => {
@@ -119,7 +127,7 @@ describe('ReportEditPage — business report save path (#3198 W03)', () => {
     await userEvent.setup().selectOptions(await screen.findByTestId('ticket-sla-group-by'), '');
     await save();
 
-    expect(putBody().config).not.toHaveProperty('groupBy');
+    expect(putBody().config).toEqual({ period: { kind: 'last_full_month' }, includeNoSla: true, ...BUILDER_DELIVERY });
   });
 
   it('strips a legacy selector stored on a business report so the save does not 400', async () => {
@@ -136,10 +144,16 @@ describe('ReportEditPage — business report save path (#3198 W03)', () => {
     expect(await screen.findByTestId('technician-time-capacity-hours')).toHaveValue(37.5);
     await save();
 
-    const { config } = putBody();
-    expect(config.weeklyCapacityHours).toBe(37.5);
-    expect(config.groupBy).toBe('technician');
-    for (const key of REFUSED_CONFIG_KEYS) expect(config, key).not.toHaveProperty(key);
+    const body = putBody();
+    expect(body.config).toEqual({ period: { kind: 'last_full_month' }, groupBy: 'technician', weeklyCapacityHours: 37.5, ...BUILDER_DELIVERY });
+    expect(body).toEqual({
+      name: 'Tech time',
+      type: 'technician_time_billability',
+      schedule: 'monthly',
+      format: 'pdf',
+      orgId: 'org-1',
+      config: { period: { kind: 'last_full_month' }, groupBy: 'technician', weeklyCapacityHours: 37.5, ...BUILDER_DELIVERY },
+    });
   });
 
   it('partner-owned AR report: the PUT carries NO orgId key at all (any orgId is 400 report_ownership_immutable)', async () => {
@@ -157,9 +171,15 @@ describe('ReportEditPage — business report save path (#3198 W03)', () => {
     await save();
 
     const body = putBody();
-    expect(body).not.toHaveProperty('orgId');
-    expect(body.config).toMatchObject({ asOf: '2026-08-31', groupBy: 'currency', includePaidInPeriod: false });
-    for (const key of REFUSED_CONFIG_KEYS) expect(body.config, key).not.toHaveProperty(key);
+    expect(body.config).toEqual({ asOf: '2026-08-31', groupBy: 'currency', includePaidInPeriod: false, ...BUILDER_DELIVERY });
+    // No orgId key at all.
+    expect(body).toEqual({
+      name: 'AR',
+      type: 'ar_aging',
+      schedule: 'monthly',
+      format: 'pdf',
+      config: { asOf: '2026-08-31', groupBy: 'currency', includePaidInPeriod: false, ...BUILDER_DELIVERY },
+    });
   });
 
   it('blocks the save while a business option is invalid: a half-filled custom period sends no PUT', async () => {

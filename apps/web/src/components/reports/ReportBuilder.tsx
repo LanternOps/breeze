@@ -1429,43 +1429,51 @@ export default function ReportBuilder({
     // their own form via `baseConfig`, and the server REFUSES the builder's
     // selectors on them (dateRange/filters/… → 400) and narrows `groupBy` to an
     // enum (the builder's free-text `''` → 400). So for those types the builder
-    // contributes none of its selectors or its groupBy — baseConfig wins — and
-    // any refused key that reached baseConfig is dropped.
+    // contributes ONLY the delivery keys it genuinely owns — the cadence detail
+    // the schedule worker reads (`schedule`) and the free-text
+    // `emailRecipients` (their only delivery path) — never its presentation
+    // state, selectors or groupBy; baseConfig wins, minus any refused key.
     const isBusiness = isBusinessReportType(defaultValues?.type);
+    const scheduleDetail = {
+      time: scheduleTime,
+      day: scheduleDay,
+      date: scheduleDate
+    };
 
     const payload = {
       name: values.name || 'Untitled Report',
-      type: values.type,
+      // A business type has no builder equivalent (the builder would name a
+      // legacy type like alert_summary); send the report's own type. PUT ignores
+      // `type` today, but the body must not claim a different one.
+      type: isBusiness && defaultValues?.type ? defaultValues.type : values.type,
       schedule: values.schedule,
       format: primaryFormat,
       ...(currentOrgId && !partnerOwned ? { orgId: currentOrgId } : {}),
-      config: {
-        // Keys the builder doesn't own (posture thresholds, executive-summary
-        // settings) come first so live builder state below still wins.
-        ...(isBusiness ? omitConfigKeys(baseConfig, BUSINESS_REFUSED_CONFIG_KEYS) : baseConfig),
-        builderType,
-        dataSource,
-        columns: selectedFields,
-        filterConditions,
-        ...(isBusiness ? {} : { groupBy }),
-        aggregation,
-        chartType,
-        schedule: {
-          time: scheduleTime,
-          day: scheduleDay,
-          date: scheduleDate
-        },
-        exportFormats,
-        emailRecipients,
-        saveTemplate,
-        templateName: saveTemplate ? templateName : undefined,
-        ...(isBusiness
-          ? {}
-          : {
-              legacyFilters: defaultValues?.filters,
-              dateRange: defaultValues?.dateRange
-            })
-      }
+      config: isBusiness
+        ? {
+            ...omitConfigKeys(baseConfig, BUSINESS_REFUSED_CONFIG_KEYS),
+            schedule: scheduleDetail,
+            emailRecipients
+          }
+        : {
+            // Keys the builder doesn't own (posture thresholds, executive-summary
+            // settings) come first so live builder state below still wins.
+            ...baseConfig,
+            builderType,
+            dataSource,
+            columns: selectedFields,
+            filterConditions,
+            groupBy,
+            aggregation,
+            chartType,
+            schedule: scheduleDetail,
+            exportFormats,
+            emailRecipients,
+            saveTemplate,
+            templateName: saveTemplate ? templateName : undefined,
+            legacyFilters: defaultValues?.filters,
+            dateRange: defaultValues?.dateRange
+          }
     };
 
     setSaving(true);

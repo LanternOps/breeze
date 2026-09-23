@@ -223,15 +223,20 @@ describe('ReportBuilder business report save path (#3198 W03)', () => {
 
     fireEvent.click(await screen.findByTestId('report-builder-submit'));
 
-    await waitFor(() => {
-      const { config, orgId } = putBody();
-      expect(orgId).toBe('org-1');
-      expect(config.groupBy).toBe('currency');
-      expect(config.asOf).toBe('2026-08-31');
-      expect(config).not.toHaveProperty('dateRange');
-      expect(config).not.toHaveProperty('legacyFilters');
-      expect(config).not.toHaveProperty('filters');
-    });
+    // Exact: the business options from baseConfig (refused selectors dropped)
+    // plus only the delivery keys the builder owns — none of its presentation
+    // state (builderType, columns, dataSource, …), selectors or groupBy.
+    await waitFor(() => expect(putBody()).toBeDefined());
+    const body = putBody();
+    const config = {
+      groupBy: 'currency',
+      asOf: '2026-08-31',
+      schedule: { time: '09:00', day: 'monday', date: '1' },
+      emailRecipients: [],
+    };
+    expect(body.config).toEqual(config);
+    // schedule: the builder's default cadence when defaultValues carries none.
+    expect(body).toEqual({ name: 'AR', type: 'ar_aging', schedule: 'weekly', format: 'pdf', orgId: 'org-1', config });
   });
 
   it('omits orgId entirely for a partner-owned report', async () => {
@@ -249,7 +254,14 @@ describe('ReportBuilder business report save path (#3198 W03)', () => {
 
     fireEvent.click(await screen.findByTestId('report-builder-submit'));
 
-    await waitFor(() => expect(putBody()).not.toHaveProperty('orgId'));
+    await waitFor(() => expect(putBody()).toBeDefined());
+    expect(putBody()).toEqual({
+      name: 'AR',
+      type: 'ar_aging',
+      schedule: 'weekly',
+      format: 'pdf',
+      config: { groupBy: 'organization', schedule: { time: '09:00', day: 'monday', date: '1' }, emailRecipients: [] },
+    });
   });
 
   it('disables submit and sends nothing while submitBlocked', async () => {
