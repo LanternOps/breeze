@@ -60,8 +60,12 @@ func TestFileSecurityRoundTrip(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Protected (P), auto-inherited (AI), two explicit ACEs: BUILTIN\Administrators
-	// full control, Authenticated Users read.
+	// Protected (P), two explicit ACEs: BUILTIN\Administrators full control,
+	// Authenticated Users read. The seed string also requests AI
+	// (auto-inherited), but SE_DACL_AUTO_INHERITED is a state the OS's
+	// inheritance engine computes, not a bit SetFileSecurityW/
+	// SetKernelObjectSecurity will honor from a caller-supplied SD, so it is
+	// not asserted below — confirmed by native Windows run 2026-09-23.
 	setFileSDDLForTest(t, src, "D:PAI(A;;FA;;;BA)(A;;FR;;;S-1-5-11)")
 
 	sd, err := fileSecurity(src)
@@ -83,7 +87,7 @@ func TestFileSecurityRoundTrip(t *testing.T) {
 	want := sdBytesToSDDLForTest(t, sd)
 	got := sdBytesToSDDLForTest(t, sd2)
 	control := sdBytesToSDDLForTest(t, sd3)
-	if !strings.Contains(want, "D:PAI(A;;FA;;;BA)") {
+	if !strings.Contains(want, "D:P(A;;FA;;;BA)") {
 		t.Fatalf("source seed did not take: captured SDDL %q", want)
 	}
 	if got != want {
@@ -197,13 +201,16 @@ func TestRestore_AppliesSecurityDescriptor(t *testing.T) {
 	if err := os.WriteFile(src, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// See TestFileSecurityRoundTrip: AI is requested in the seed but not
+	// asserted, since SE_DACL_AUTO_INHERITED is OS-computed, not settable
+	// via SetFileSecurityW.
 	setFileSDDLForTest(t, src, "D:PAI(A;;FA;;;BA)(A;;FA;;;SY)(A;;FR;;;S-1-5-11)")
 	sd, err := fileSecurity(src)
 	if err != nil {
 		t.Fatalf("fileSecurity: %v", err)
 	}
 	want := sdBytesToSDDLForTest(t, sd)
-	if !strings.Contains(want, "D:PAI(A;;FA;;;BA)") {
+	if !strings.Contains(want, "D:P(A;;FA;;;BA)") {
 		t.Fatalf("source seed did not take: captured SDDL %q", want)
 	}
 
