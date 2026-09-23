@@ -4115,6 +4115,17 @@ describe('POST /agents/:id/heartbeat — helperVersion persistence (#6751)', () 
     );
   });
 
+  it('reports helperVersion alongside other filterable fields changed in the same heartbeat', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    arrange(setSpy);
+
+    const resp = await post({ agentVersion: '0.66.0', helperVersion: '0.66.0', hostname: 'new-host' });
+
+    expect(resp.status).toBe(200);
+    const request = requestDeviceGroupReevaluationMock.mock.calls[0]?.[0];
+    expect(request?.changedFields).toEqual(expect.arrayContaining(['hostname', 'helperVersion']));
+  });
+
   it('does not rewrite or re-evaluate when the agent re-reports the stored helperVersion (steady state)', async () => {
     const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
     arrange(setSpy);
