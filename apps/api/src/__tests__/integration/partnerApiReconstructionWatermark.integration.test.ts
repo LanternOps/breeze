@@ -54,7 +54,6 @@ describe('partner reconstruction resource watermarks', () => {
     // (migrations/2026-09-12-100001-org-lifecycle-foundations.sql Section 2,
     // which lists devices_site_org_fk among the 16 constraints it converts).
     // Restore it rather than editing the shipped migration.
-    await reapplyOrgIdFkDeferrability(db, ['devices_site_org_fk']);
     // The bare sql.raw replays above prove idempotency but also revert every
     // function the hardening file (re)defines — breeze_partner_export_device_
     // child_insert/update/delete — to its 2026-07-23 body for the rest of this
@@ -65,6 +64,11 @@ describe('partner reconstruction resource watermarks', () => {
     // (PR #5253, Integration shard 1). replayMigration re-applies, in filename
     // order, every later migration that redefines the same functions.
     await replayMigration('2026-07-23-partner-export-material-state-hardening.sql');
+    // AFTER replayMigration: it re-executes the 07-23 file itself, which makes
+    // devices_site_org_fk NOT DEFERRABLE again — restoring before it left the
+    // merge contract (orgLifecycleFoundations) red for any later suite in the
+    // same process.
+    await reapplyOrgIdFkDeferrability(db, ['devices_site_org_fk']);
     const sourceId = '55555555-5555-4555-8555-555555555555';
     const [identity] = await db.execute<{ value: string }>(sql`
       SELECT public.breeze_partner_export_stable_uuid(
