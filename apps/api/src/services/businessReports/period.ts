@@ -1,4 +1,4 @@
-import { canonicalizeTimezone } from '@breeze/shared';
+import { canonicalizeTimezone, isRealCalendarDate } from '@breeze/shared';
 import type { ReportPeriodInput, ReportPeriodKind } from '@breeze/shared';
 import { periodSchema } from '@breeze/shared';
 import { resolveOrgTimezone, resolvePartnerTimezone } from '../portal/timezone';
@@ -18,6 +18,9 @@ export type ResolvedReportPeriod = {
   label: string;
   timeZone: string;
   kind: ReportPeriodKind;
+  /** Set only when the owner's timezone was unusable and the window was
+   *  resolved in UTC instead; the generators print it in the report notes. */
+  timeZoneNote?: string;
 };
 
 const MONTH_NAMES = [
@@ -28,11 +31,24 @@ const MONTH_NAMES = [
 /**
  * Validate a timezone name; unknown zones degrade to UTC rather than throwing
  * mid-generation (a scheduled report must still produce SOMETHING even if a
- * stored org/partner timezone has rotted — spec framing for §3.3 R3).
- * `canonicalizeTimezone` (from `@breeze/shared`) already returns null for an
- * unknown zone; fall back to it directly rather than re-validating with
- * `Intl.DateTimeFormat` ourselves.
+ * stored org/partner timezone has rotted — spec framing for §3.3 R3). The
+ * degradation is never silent: it is logged here and `note` is printed on the
+ * artifact by every business generator (#3198 W02 fix round).
+ *
+ * Practically unreachable today — `resolveEffectiveTimezone` already skips
+ * invalid zones — but the two validators are separate code, so the guard stays.
  */
+export function reportTimezone(timeZone: string): { timeZone: string; note?: string } {
+  const canonical = canonicalizeTimezone(timeZone);
+  if (canonical !== null) return { timeZone: canonical };
+  console.warn('[businessReports] Unusable report owner timezone; resolving in UTC', { timeZone });
+  return {
+    timeZone: 'UTC',
+    note: `The report owner's configured timezone (${String(timeZone)}) is not a recognised IANA timezone, `
+      + 'so dates and period boundaries in this report are in UTC.',
+  };
+}
+
 function safeTimezone(timeZone: string): string {
   return canonicalizeTimezone(timeZone) ?? 'UTC';
 }
@@ -169,11 +185,16 @@ function resolveLastQuarter(timeZone: string, now: Date): ResolvedReportPeriod {
   };
 }
 
-function resolveCustom(input: ReportPeriodInput, timeZone: string, now: Date): ResolvedReportPeriod {
-  const startParts = input.start ? parseDateOnly(input.start) : null;
-  const endParts = input.end ? parseDateOnly(input.end) : null;
+function resolveCustom(input: ReportPeriodInput, timeZone: string): ResolvedReportPeriod {
+  // `periodSchema` refuses every one of these at write time; this is the belt
+  // for a stored config that predates or bypassed it. Never substitute another
+  // window — a report labelled with the wrong month is worse than a failed run.
+  const startParts = input.start && isRealCalendarDate(input.start) ? parseDateOnly(input.start) : null;
+  const endParts = input.end && isRealCalendarDate(input.end) ? parseDateOnly(input.end) : null;
   if (!startParts || !endParts) {
-    return resolveLastFullMonth(timeZone, now);
+    throw new Error(
+      `Invalid custom report period: start and end must both be real YYYY-MM-DD dates (got start=${String(input.start)}, end=${String(input.end)})`,
+    );
   }
   const start = zonedMidnightUtc(startParts.year, startParts.month, startParts.day, timeZone);
   // End is the NEXT midnight after the inclusive end date the user typed, so
@@ -186,7 +207,7 @@ function resolveCustom(input: ReportPeriodInput, timeZone: string, now: Date): R
     timeZone,
   );
   if (end.getTime() <= start.getTime()) {
-    return resolveLastFullMonth(timeZone, now);
+    throw new Error(`Invalid custom report period: start ${input.start} is after end ${input.end}`);
   }
   return {
     start,
@@ -208,7 +229,16 @@ export function resolveReportPeriod(
   timeZone: string,
   now: Date,
 ): ResolvedReportPeriod {
-  const zone = safeTimezone(timeZone);
+  const { timeZone: zone, note } = reportTimezone(timeZone);
+  const resolved = resolveInZone(input, zone, now);
+  return note ? { ...resolved, timeZoneNote: note } : resolved;
+}
+
+function resolveInZone(
+  input: ReportPeriodInput | undefined,
+  zone: string,
+  now: Date,
+): ResolvedReportPeriod {
   const kind = input?.kind ?? 'last_full_month';
   switch (kind) {
     case 'last_30_days':
@@ -216,7 +246,7 @@ export function resolveReportPeriod(
     case 'last_quarter':
       return resolveLastQuarter(zone, now);
     case 'custom':
-      return resolveCustom(input ?? { kind: 'custom' }, zone, now);
+      return resolveCustom(input ?? { kind: 'custom' }, zone);
     case 'last_full_month':
     default:
       return resolveLastFullMonth(zone, now);

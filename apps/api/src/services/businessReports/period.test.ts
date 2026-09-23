@@ -77,18 +77,37 @@ describe('resolveReportPeriod', () => {
     expect(p.label).toBe('2026-03-01 to 2026-03-15');
   });
 
-  it('custom with a missing or inverted range falls back to last_full_month rather than querying everything', () => {
-    expect(resolveReportPeriod({ kind: 'custom' }, 'UTC', NOW).kind).toBe('last_full_month');
-    expect(resolveReportPeriod({ kind: 'custom', start: '2026-03-15', end: '2026-03-01' }, 'UTC', NOW).kind)
-      .toBe('last_full_month');
+  it('custom with a missing, impossible or inverted range THROWS rather than silently reporting a different window', () => {
+    expect(() => resolveReportPeriod({ kind: 'custom' }, 'UTC', NOW)).toThrow(/custom report period/);
+    expect(() => resolveReportPeriod({ kind: 'custom', start: '2026-03-01' }, 'UTC', NOW)).toThrow(/custom report period/);
+    expect(() => resolveReportPeriod({ kind: 'custom', start: '2026-03-15', end: '2026-03-01' }, 'UTC', NOW))
+      .toThrow(/custom report period/);
+    expect(() => resolveReportPeriod({ kind: 'custom', start: '2026-02-31', end: '2026-03-10' }, 'UTC', NOW))
+      .toThrow(/custom report period/);
+  });
+
+  it('custom single-day period (start === end) covers that whole day', () => {
+    const p = resolveReportPeriod({ kind: 'custom', start: '2026-03-15', end: '2026-03-15' }, 'UTC', NOW);
+    expect(p.start.toISOString()).toBe('2026-03-15T00:00:00.000Z');
+    expect(p.end.toISOString()).toBe('2026-03-16T00:00:00.000Z');
   });
 
   it('an absent config period defaults to last_full_month (spec §3.3 R1)', () => {
     expect(resolveReportPeriod(undefined, 'UTC', NOW).kind).toBe('last_full_month');
   });
 
-  it('an unknown timezone degrades to UTC instead of throwing mid-generation', () => {
-    expect(resolveReportPeriod({ kind: 'last_30_days' }, 'Mars/Olympus', NOW).timeZone).toBe('UTC');
+  it('an unknown timezone degrades to UTC instead of throwing mid-generation — logged and disclosed', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const p = resolveReportPeriod({ kind: 'last_30_days' }, 'Mars/Olympus', NOW);
+    expect(p.timeZone).toBe('UTC');
+    expect(p.timeZoneNote).toMatch(/Mars\/Olympus/);
+    expect(p.timeZoneNote).toMatch(/UTC/);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('timezone'), expect.objectContaining({ timeZone: 'Mars/Olympus' }));
+    warn.mockRestore();
+  });
+
+  it('a valid timezone carries no fallback note', () => {
+    expect(resolveReportPeriod({ kind: 'last_30_days' }, 'America/Chicago', NOW).timeZoneNote).toBeUndefined();
   });
 });
 
