@@ -13,6 +13,8 @@
  *   `last_error = 'reconciler: claim went stale; send outcome unknown'`.
  *   **Never resent.** The email service has no idempotency key, so a resend is
  *   a real duplicate risk; making the ambiguity visible is the honest move.
+ *   Exception (#3198 W02): a stale claim under a PARTNER-owned run is settled
+ *   `failed` — nothing can have been sent for it (see the partner arm below).
  * - `unknown` rows → never touched. Replay is a human decision.
  *
  * Every DB touch is a short-lived system context of its own; the send itself
@@ -101,12 +103,10 @@ export async function reconcileReportRunDeliveries(
 
   const pendingRuns = new Set<string>();
   const pendingByRun = new Map<string, string[]>();
+  const staleClaims: { id: string; reportRunId: string }[] = [];
   for (const row of unsettled) {
     if (row.state === 'claimed') {
-      if (row.claimedAt && row.claimedAt < staleClaimCutoff) {
-        await settleDelivery(row.id, { state: 'unknown', error: STALE_CLAIM_ERROR });
-        markedUnknown += 1;
-      }
+      if (row.claimedAt && row.claimedAt < staleClaimCutoff) staleClaims.push(row);
       continue;
     }
     if (row.state === 'pending') {
@@ -115,8 +115,25 @@ export async function reconcileReportRunDeliveries(
     }
   }
 
+  const runOwners = await loadRunOwners([
+    ...new Set([...pendingRuns, ...staleClaims.map((c) => c.reportRunId)]),
+  ]);
+
+  for (const claim of staleClaims) {
+    // #3198 W02: a claim under a PARTNER-owned run was only ever taken by the
+    // partner-owned settle below (narrative delivery is org-only, nothing is
+    // sent), so a stale one is a settle that threw — settle it failed, not
+    // "outcome unknown". Every other stale claim stays unknown (never resent).
+    const claimOwner = runOwners.get(claim.reportRunId);
+    if (claimOwner && 'partnerId' in claimOwner) {
+      await settleDelivery(claim.id, { state: 'failed', error: PARTNER_OWNED_DELIVERY_ERROR });
+      continue;
+    }
+    await settleDelivery(claim.id, { state: 'unknown', error: STALE_CLAIM_ERROR });
+    markedUnknown += 1;
+  }
+
   if (pendingRuns.size > 0) {
-    const runOwners = await loadRunOwners([...pendingRuns]);
     for (const reportRunId of pendingRuns) {
       const owner = runOwners.get(reportRunId);
       if (!owner) {
@@ -149,7 +166,10 @@ export async function reconcileReportRunDeliveries(
             }
           }
         } catch (error) {
-          // Left pending: the next pass retries the settle. Never stops the sweep.
+          // Never stops the sweep. A claim that failed leaves the row pending
+          // (next pass retries); a settle that failed AFTER a successful claim
+          // leaves it claimed, and the stale-claim sweep above settles it
+          // failed (not unknown) once STALE_CLAIM_MS passes.
           console.error('[ReportRunDeliveryReconciler] could not settle partner-owned deliveries', { reportRunId, error });
           captureException(error instanceof Error ? error : new Error(String(error)));
         }

@@ -283,4 +283,37 @@ describe('reconcileReportRunDeliveries (#4248 W03)', () => {
     expect(error).not.toHaveBeenCalled();
     expect(vi.mocked(captureException)).not.toHaveBeenCalled();
   });
+  it('a partner-owned delivery whose settle threw after the claim is settled FAILED next pass, never "outcome unknown" (#3198 W02)', async () => {
+    const RUN_P = '00000000-0000-4000-8000-0000000000b3';
+    const PARTNER = '00000000-0000-4000-8000-0000000000c1';
+    fake.runPartners = new Map([[RUN_P, PARTNER]]);
+    const row = seedDelivery({ state: 'pending', reportRunId: RUN_P });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    settleDelivery.mockRejectedValueOnce(new Error('pg down'));
+
+    await reconcileReportRunDeliveries();
+    // Claimed, settle threw: the row is stuck in 'claimed' — nothing was sent.
+    expect(row.state).toBe('claimed');
+
+    // The claim goes stale before the next pass.
+    row.claimedAt = new Date(Date.now() - STALE_CLAIM_MS - 1);
+    const out = await reconcileReportRunDeliveries();
+
+    expect(out.markedUnknown).toBe(0);
+    expect(row.state).toBe('failed');
+    expect(row.lastError).toBe(PARTNER_OWNED_DELIVERY_ERROR);
+    expect(deliverNarrativeEmails).not.toHaveBeenCalled();
+  });
+
+  it('still marks a stale claim unknown when its run cannot be found (never guesses "nothing was sent")', async () => {
+    const row = seedDelivery({
+      state: 'claimed', reportRunId: '00000000-0000-4000-8000-0000000000ff',
+      claimedAt: new Date(Date.now() - STALE_CLAIM_MS - 1),
+    });
+
+    const out = await reconcileReportRunDeliveries();
+
+    expect(out.markedUnknown).toBe(1);
+    expect(row.state).toBe('unknown');
+  });
 });
