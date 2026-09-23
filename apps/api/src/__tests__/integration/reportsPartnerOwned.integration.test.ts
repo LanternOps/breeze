@@ -578,16 +578,21 @@ describe('partner-owned report definitions through the real routes (#3198 W01/W0
     expect(adhoc.status).toBe(403);
     expect(await adhoc.json()).toEqual({ error: 'Insufficient permissions' });
 
-    // An existing definition (the admin's) is visible to them, but neither
-    // generatable nor editable.
+    // An existing definition (the admin's) is HIDDEN from them (ruling P8b):
+    // absent from the list, 404 by id, and 404 on every by-id write — the
+    // same answer as a row outside their tenancy.
     const created = await createPartnerDefinition(app, fixture);
+    const list = await call(app, fixture.reportsOnlyToken, 'GET', '/reports');
+    expect(list.status).toBe(200);
+    expect(((await list.json()) as { data: Array<{ id: string }> }).data.map((r) => r.id)).not.toContain(created.id);
+    const read = await call(app, fixture.reportsOnlyToken, 'GET', `/reports/${created.id}`);
+    expect(read.status).toBe(404);
     const byId = await call(app, fixture.reportsOnlyToken, 'POST', `/reports/${created.id}/generate`);
-    expect(byId.status).toBe(403);
-    expect(await byId.json()).toEqual({ error: 'Insufficient permissions' });
+    expect(byId.status).toBe(404);
     const put = await call(app, fixture.reportsOnlyToken, 'PUT', `/reports/${created.id}`, {
       config: { emailRecipients: ['me@example.com'] },
     });
-    expect(put.status).toBe(403);
+    expect(put.status).toBe(404);
     expect(await runsFor(created.id)).toEqual([]);
     expect(generateReportSpy).not.toHaveBeenCalled();
 
