@@ -60,7 +60,7 @@ func TestAssess(t *testing.T) {
 			Disks: []Disk{{Name: `\\.\PHYSICALDRIVE0`, TableType: "gpt", IsSystem: true, Partitions: []Partition{
 				{Number: 1, TypeGUID: "c12a7328-f81f-11d2-ba4b-00a0c93ec93b", Filesystem: "fat32", Role: RoleEFI, Encryption: EncryptionNone},
 				{Number: 2, TypeGUID: "e3c9e316-0b5c-4db8-817d-f92df00215ae", Role: RoleMSR, Encryption: EncryptionNone},
-				{Number: 3, TypeGUID: "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7", Filesystem: "ntfs", MountPoint: `C:\`, Role: RoleRoot, Encryption: EncryptionBitLocker},
+				{Number: 3, TypeGUID: "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7", PartUUID: "c0ffee00-0000-4000-8000-000000000003", Filesystem: "ntfs", MountPoint: `C:\`, Role: RoleRoot, Encryption: EncryptionBitLocker},
 			}}},
 		}, want: Restorability{Restorable: true, Reasons: []string{}}},
 		{name: "reasons accumulate in fixed order", m: func() *Manifest {
@@ -93,4 +93,127 @@ func TestSystemDisk(t *testing.T) {
 	if d := m.SystemDisk(); d != nil {
 		t.Fatalf("SystemDisk() = %+v, want nil when nothing is mounted at /", d)
 	}
+}
+
+func TestAssess_WindowsDynamicDiskRefused(t *testing.T) {
+	m := &Manifest{
+		SchemaVersion: SchemaVersion, Platform: "windows", BootMode: BootModeUEFI,
+		Disks: []Disk{{Name: `\\.\PHYSICALDRIVE0`, TableType: "gpt", IsSystem: true, Partitions: []Partition{
+			{Number: 1, TypeGUID: GUIDEFISystem, Filesystem: "fat32", Role: RoleEFI, Encryption: EncryptionNone},
+			{Number: 2, TypeGUID: "5808c8aa-7e8f-42e0-85d2-e1e90434cfb3", PartUUID: "aa", Filesystem: "ntfs", MountPoint: `C:\`, Role: RoleRoot, Encryption: EncryptionNone},
+		}}},
+	}
+	got := Assess(m)
+	if got.Restorable || !containsReason(got.Reasons, ReasonDynamicDisk) {
+		t.Errorf("Assess() = %+v, want ReasonDynamicDisk", got)
+	}
+}
+
+func TestAssess_WindowsLDMDataPartitionRefused(t *testing.T) {
+	m := &Manifest{
+		SchemaVersion: SchemaVersion, Platform: "windows", BootMode: BootModeUEFI,
+		Disks: []Disk{{Name: `\\.\PHYSICALDRIVE0`, TableType: "gpt", IsSystem: true, Partitions: []Partition{
+			{Number: 1, TypeGUID: GUIDEFISystem, Filesystem: "fat32", Role: RoleEFI, Encryption: EncryptionNone},
+			{Number: 2, TypeGUID: "af9b60a0-1431-4f62-bc68-3311714a69ad", PartUUID: "aa", Filesystem: "ntfs", MountPoint: `C:\`, Role: RoleRoot, Encryption: EncryptionNone},
+		}}},
+	}
+	got := Assess(m)
+	if got.Restorable || !containsReason(got.Reasons, ReasonDynamicDisk) {
+		t.Errorf("Assess() = %+v, want ReasonDynamicDisk", got)
+	}
+}
+
+func TestAssess_WindowsStorageSpacesRefused(t *testing.T) {
+	m := &Manifest{
+		SchemaVersion: SchemaVersion, Platform: "windows", BootMode: BootModeUEFI,
+		Disks: []Disk{{Name: `\\.\PHYSICALDRIVE0`, TableType: "gpt", IsSystem: true, Partitions: []Partition{
+			{Number: 1, TypeGUID: GUIDEFISystem, Filesystem: "fat32", Role: RoleEFI, Encryption: EncryptionNone},
+			{Number: 2, TypeGUID: "e75caf8f-f680-4cee-afa3-b001e56efc2d", PartUUID: "aa", Filesystem: "ntfs", MountPoint: `C:\`, Role: RoleRoot, Encryption: EncryptionNone},
+		}}},
+	}
+	got := Assess(m)
+	if got.Restorable || !containsReason(got.Reasons, ReasonStorageSpaces) {
+		t.Errorf("Assess() = %+v, want ReasonStorageSpaces", got)
+	}
+}
+
+func TestAssess_WindowsReFSRootRefused(t *testing.T) {
+	m := &Manifest{
+		SchemaVersion: SchemaVersion, Platform: "windows", BootMode: BootModeUEFI,
+		Disks: []Disk{{Name: `\\.\PHYSICALDRIVE0`, TableType: "gpt", IsSystem: true, Partitions: []Partition{
+			{Number: 1, TypeGUID: GUIDEFISystem, Filesystem: "fat32", Role: RoleEFI, Encryption: EncryptionNone},
+			{Number: 2, TypeGUID: GUIDMicrosoftBasic, PartUUID: "aa", Filesystem: "refs", MountPoint: `C:\`, Role: RoleRoot, Encryption: EncryptionNone},
+		}}},
+	}
+	got := Assess(m)
+	want := ReasonUnsupportedRootFS("refs")
+	if got.Restorable || !containsReason(got.Reasons, want) {
+		t.Errorf("Assess() = %+v, want %q", got, want)
+	}
+}
+
+func TestAssess_WindowsRootWithoutPartUUIDRefused(t *testing.T) {
+	m := &Manifest{
+		SchemaVersion: SchemaVersion, Platform: "windows", BootMode: BootModeUEFI,
+		Disks: []Disk{{Name: `\\.\PHYSICALDRIVE0`, TableType: "gpt", IsSystem: true, Partitions: []Partition{
+			{Number: 1, TypeGUID: GUIDEFISystem, Filesystem: "fat32", Role: RoleEFI, Encryption: EncryptionNone},
+			{Number: 2, TypeGUID: GUIDMicrosoftBasic, PartUUID: "", Filesystem: "ntfs", MountPoint: `C:\`, Role: RoleRoot, Encryption: EncryptionNone},
+		}}},
+	}
+	got := Assess(m)
+	if got.Restorable || !containsReason(got.Reasons, ReasonNoRootPartUUID) {
+		t.Errorf("Assess() = %+v, want ReasonNoRootPartUUID", got)
+	}
+}
+
+func TestAssess_WindowsRootWithPartUUIDIsRestorable(t *testing.T) {
+	m := &Manifest{
+		SchemaVersion: SchemaVersion, Platform: "windows", BootMode: BootModeUEFI,
+		Disks: []Disk{{Name: `\\.\PHYSICALDRIVE0`, TableType: "gpt", IsSystem: true, Partitions: []Partition{
+			{Number: 1, TypeGUID: GUIDEFISystem, Filesystem: "fat32", Role: RoleEFI, Encryption: EncryptionNone},
+			{Number: 2, TypeGUID: GUIDMicrosoftBasic, PartUUID: "aabbccdd", Filesystem: "ntfs", MountPoint: `C:\`, Role: RoleRoot, Encryption: EncryptionNone},
+		}}},
+	}
+	if got := Assess(m); !got.Restorable {
+		t.Errorf("Assess() = %+v, want Restorable", got)
+	}
+}
+
+// TestAssess_WindowsSecondDiskIgnoredNotMultiDisk documents (Part 0 Global
+// Constraints "Assess... treat systemMountPoints as Linux-only") that a
+// Windows source's second data disk (e.g. D:\) is never flagged
+// ReasonMultiDisk the way a Linux /var-on-a-second-disk is: systemMountPoints
+// is a POSIX mount-point set ("/", "/boot", …) that a Windows drive letter
+// like `D:\` can never match, so the multi-disk dependency check silently
+// no-ops for Windows already — this test exists so that invariant can never
+// regress silently if someone "fixes" systemMountPoints to also list drive
+// letters, believing multi-disk detection is Windows-aware today when it is
+// not, and is not meant to be (extra Windows data disks are file-backed up,
+// not disk-rebuilt).
+func TestAssess_WindowsSecondDiskIgnoredNotMultiDisk(t *testing.T) {
+	m := &Manifest{
+		SchemaVersion: SchemaVersion, Platform: "windows", BootMode: BootModeUEFI,
+		Disks: []Disk{
+			{Name: `\\.\PHYSICALDRIVE0`, TableType: "gpt", IsSystem: true, Partitions: []Partition{
+				{Number: 1, TypeGUID: GUIDEFISystem, Filesystem: "fat32", Role: RoleEFI, Encryption: EncryptionNone},
+				{Number: 2, TypeGUID: GUIDMicrosoftBasic, PartUUID: "aa", Filesystem: "ntfs", MountPoint: `C:\`, Role: RoleRoot, Encryption: EncryptionNone},
+			}},
+			{Name: `\\.\PHYSICALDRIVE1`, TableType: "gpt", Partitions: []Partition{
+				{Number: 1, TypeGUID: GUIDMicrosoftBasic, PartUUID: "bb", Filesystem: "ntfs", MountPoint: `D:\`, Role: RoleData, Encryption: EncryptionNone},
+			}},
+		},
+	}
+	got := Assess(m)
+	if !got.Restorable || len(got.Reasons) != 0 {
+		t.Errorf("Assess() = %+v, want Restorable with a second data disk ignored", got)
+	}
+}
+
+func containsReason(reasons []string, want string) bool {
+	for _, r := range reasons {
+		if r == want {
+			return true
+		}
+	}
+	return false
 }

@@ -419,9 +419,13 @@ func initBackupManager(cfg *config.Config) *backup.BackupManager {
 		Retention:          retention,
 		VSSEnabled:         cfg.BackupVSSEnabled,
 		SystemStateEnabled: cfg.BackupSystemStateEnabled,
-		StagingDir:         stagingDir,
-		AgentID:            cfg.AgentID,
-		AgentVersion:       version,
+		// W06: paths are always set here (guard above), so system state ON is
+		// the whole-machine shape — capture NTFS security descriptors exactly
+		// as managerFromBackupRunPayload does for a wholeMachine run.
+		CaptureSecurityDescriptors: cfg.BackupSystemStateEnabled,
+		StagingDir:                 stagingDir,
+		AgentID:                    cfg.AgentID,
+		AgentVersion:               version,
 	})
 
 	return mgr
@@ -997,6 +1001,7 @@ func fail(msg string) backupipc.BackupCommandResult {
 // simply omitted — a marshalling problem must never escalate into losing the
 // failure reason itself.
 func marshalBackupRunResult(job *backup.BackupJob, err error) backupipc.BackupCommandResult {
+	job = withoutSecurityDescriptorTable(job)
 	if err == nil {
 		return marshalResult(job, nil)
 	}

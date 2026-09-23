@@ -303,6 +303,10 @@ func TestManagerFromBackupRunPayload(t *testing.T) {
 		wantExcludes    []string // expected manager excludes (nil unless set)
 		wantSystemImage bool     // expected SystemStateEnabled
 		wantVSS         bool     // expected VSSEnabled
+		// expected CaptureSecurityDescriptors: true ONLY for a wholeMachine
+		// system_image run (systemImage + paths) — never a plain file backup
+		// or a files-less system_image run.
+		wantCaptureSD bool
 
 		wantBaseSnapshotID        *string
 		wantPublishLeaseExpiresAt time.Time
@@ -386,6 +390,7 @@ func TestManagerFromBackupRunPayload(t *testing.T) {
 			wantExcludes:    []string{"/proc/**", "/sys/**"},
 			wantSystemImage: true,
 			wantVSS:         runtime.GOOS == "windows",
+			wantCaptureSD:   true,
 		},
 		{
 			// Without paths, system_image stays exactly as before: Paths nil,
@@ -510,6 +515,10 @@ func TestManagerFromBackupRunPayload(t *testing.T) {
 
 			if got := mgr.GetVSSEnabled(); got != tt.wantVSS {
 				t.Fatalf("VSSEnabled = %v, want %v", got, tt.wantVSS)
+			}
+
+			if got := mgr.GetCaptureSecurityDescriptors(); got != tt.wantCaptureSD {
+				t.Fatalf("CaptureSecurityDescriptors = %v, want %v", got, tt.wantCaptureSD)
 			}
 
 			gotBase := mgr.GetBaseSnapshotID()

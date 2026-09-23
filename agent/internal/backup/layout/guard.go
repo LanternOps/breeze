@@ -20,6 +20,9 @@ const (
 	ReasonRAID           = "software RAID members are not supported"
 	ReasonBtrfs          = "btrfs root filesystem is not supported"
 	ReasonZFS            = "ZFS is not supported"
+	ReasonDynamicDisk    = "dynamic (LDM) disks are not supported"
+	ReasonStorageSpaces  = "Storage Spaces are not supported"
+	ReasonNoRootPartUUID = "root partition has no recorded partition GUID; back up again with a current agent"
 )
 
 // ReasonUnsupportedRootFS formats the root-filesystem reason for fs.
@@ -32,7 +35,15 @@ var supportedRootFS = map[string]bool{"ext4": true, "xfs": true, "ntfs": true}
 // systemMountPoints are the mount points that must live on the system disk
 // for a single-disk rebuild to reproduce the OS tree. Anything else on a
 // second disk is user data the file backup still captures but the rebuild
-// does not have to place.
+// does not have to place. POSIX-only by construction: every key is a
+// forward-slash mount point, which a Windows manifest's drive-letter mount
+// points ("D:\", "E:\") can never match — so a Windows source's extra data
+// disks always read as "not a dependency" here and are never flagged
+// ReasonMultiDisk, regardless of Platform. See
+// TestAssess_WindowsSecondDiskIgnoredNotMultiDisk (guard_test.go) for the
+// pinning test; do not add a Windows drive-letter entry to this map — a
+// second Windows data disk is deliberately out of scope for the single-disk
+// rebuild engine.
 var systemMountPoints = map[string]bool{
 	"/": true, "/boot": true, "/boot/efi": true, "/efi": true,
 	"/usr": true, "/var": true, "/etc": true, "/opt": true, "/home": true,
@@ -63,10 +74,12 @@ func Assess(m *Manifest) Restorability {
 			reasons = append(reasons, ReasonNoRoot)
 		} else if !supportedRootFS[strings.ToLower(root.Filesystem)] {
 			reasons = append(reasons, ReasonUnsupportedRootFS(root.Filesystem))
+		} else if m.Platform == "windows" && root.PartUUID == "" {
+			reasons = append(reasons, ReasonNoRootPartUUID)
 		}
 	}
 
-	var lvm, luks, raid, btrfs, zfs, multi bool
+	var lvm, luks, raid, btrfs, zfs, multi, dynamicDisk, storageSpaces bool
 	for i := range m.Disks {
 		d := &m.Disks[i]
 		if d.Removable {
@@ -95,6 +108,10 @@ func Assess(m *Manifest) Restorability {
 				btrfs = true
 			case fs == "zfs_member":
 				zfs = true
+			case strings.EqualFold(p.TypeGUID, GUIDWindowsLDMMetadata), strings.EqualFold(p.TypeGUID, GUIDWindowsLDMData):
+				dynamicDisk = true
+			case strings.EqualFold(p.TypeGUID, GUIDWindowsStorageSpaces):
+				storageSpaces = true
 			}
 		}
 	}
@@ -115,6 +132,12 @@ func Assess(m *Manifest) Restorability {
 	}
 	if zfs {
 		reasons = append(reasons, ReasonZFS)
+	}
+	if dynamicDisk {
+		reasons = append(reasons, ReasonDynamicDisk)
+	}
+	if storageSpaces {
+		reasons = append(reasons, ReasonStorageSpaces)
 	}
 	return Restorability{Restorable: len(reasons) == 0, Reasons: reasons}
 }

@@ -1872,7 +1872,7 @@ jobs:
         working-directory: agent
         env:
           CGO_ENABLED: "0"
-        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./internal/executor ./internal/securefs ./internal/winsvcinstall ./cmd/breeze-watchdog
+        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./internal/backup/wingpt ./internal/backup/layout ./internal/executor ./internal/securefs ./internal/winsvcinstall ./cmd/breeze-watchdog
 
       # The step above runs without -v, so a t.Skip is indistinguishable from a
       # pass in its output. That matters here more than usual: elevaccount's two
@@ -1921,6 +1921,39 @@ jobs:
           if ($skips -ne 0) { throw "$skips of the secure-staging boundary tests SKIPPED - the SEC-121 Windows reparse-point/DACL boundary has no live coverage here" }
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
           if ($passes -ne 12) { throw "expected exactly 12 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+
+      # sd_windows.go/winpriv_windows.go are the HiveNightmare-class fix
+      # (CVE-2021-36934) this wave depends on: a rebuilt C:\ with no
+      # captured security descriptors gives Authenticated Users Modify on
+      # System32\config (see Part 0 D-ACL). internal/backup as a whole is
+      # excluded from the bare package list above (inherited backlog,
+      # #2523), so these seven tests — the only live proof
+      # GetFileSecurityW/SetFileSecurityW round-trip on a real NTFS volume,
+      # that privilege scopes release cleanly, that restore reapplies a
+      # captured descriptor to a file and to a directory, and that a failed
+      # apply degrades to a warning rather than failing the restore — would
+      # otherwise run on no CI job at all. The three securefs-side
+      # counterparts (InstallFileWithSecurity applying to the pinned
+      # temporary before publish, its apply-error-as-warning path, and
+      # ApplyDirSecurity refusing a junction) already run above as part of
+      # ./internal/securefs in the bare package list, since that package is
+      # not excluded — no separate step needed for those. Same must-not-skip
+      # pattern as the elevaccount/securefs steps above: assert PASS count
+      # and zero skips, not just a zero exit code.
+      - name: Run Windows security-descriptor capture/apply tests (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/backup -run '^Test(FileSecurityReturnsSelfRelativeSD|FileSecurityRoundTrip|ApplySecurityRefusesMalformedDescriptor|SDPrivilegeScopesRelease|Restore_AppliesSecurityDescriptor|Restore_AppliesDirectorySecurityDescriptor|Restore_SecurityDescriptorApplyFailureIsWarningNotFailure)$' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $skips = @($out | Select-String -Pattern '^\s*--- SKIP: Test').Count
+          if ($skips -ne 0) { throw "$skips of the security-descriptor tests SKIPPED - the HiveNightmare-class fix has no live coverage here" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          if ($passes -ne 7) { throw "expected exactly 7 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # The policy-state registry collector decides whether a batch uploads with
       # `replace: true` — which deletes every prior row for the device. That

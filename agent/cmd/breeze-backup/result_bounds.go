@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/breeze-rmm/agent/internal/backup"
 	"github.com/breeze-rmm/agent/internal/backupipc"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
@@ -512,6 +513,25 @@ func boundObjectWarning(obj map[string]json.RawMessage) int {
 	obj["warning"] = mustRawString(composed)
 	_, dropped := truncateText(original, maxResultWarningTextBytes)
 	return dropped
+}
+
+// withoutSecurityDescriptorTable returns the job as the backup_run result
+// should carry it: identical, except the snapshot's NTFS security-descriptor
+// table (Snapshot.SecurityDescriptors, W06a) is dropped. That table lives in
+// snapshots/<id>/manifest.json, which is what restore reads; the server
+// discards it from the result, and on a whole-machine run it is the one
+// snapshot field besides Files that grows with the tree. Shallow copies only —
+// job.Snapshot, the manifest source, is never mutated. SnapshotFile.SDIndex
+// stays: it is a small integer per file and meaningless without the table.
+func withoutSecurityDescriptorTable(job *backup.BackupJob) *backup.BackupJob {
+	if job == nil || job.Snapshot == nil || job.Snapshot.SecurityDescriptors == nil {
+		return job
+	}
+	jobCopy := *job
+	snapCopy := *job.Snapshot
+	snapCopy.SecurityDescriptors = nil
+	jobCopy.Snapshot = &snapCopy
+	return &jobCopy
 }
 
 // emptySnapshotFiles replaces snapshot.files with an empty array and records

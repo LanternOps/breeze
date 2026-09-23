@@ -264,6 +264,11 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 		if len(p.Paths) > 0 {
 			cfg.Paths = p.Paths
 			cfg.Excludes = p.Excludes
+			// W06: a whole-machine snapshot must carry every file's and
+			// directory's NTFS security descriptor, or a bare-metal rebuild
+			// lands the OS with inherited ACLs only. No-op off Windows.
+			// Plain file-mode backups (below) leave it off.
+			cfg.CaptureSecurityDescriptors = true
 		}
 		return backup.NewBackupManager(cfg), nil
 	}
