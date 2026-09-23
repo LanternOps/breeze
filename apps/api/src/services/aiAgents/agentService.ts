@@ -508,7 +508,7 @@ export async function listAgents(
     .select()
     .from(aiAgents)
     .where(opts.includeDisabled ? ownerScope : and(ownerScope, isNull(aiAgents.disabledAt)))
-    .orderBy(desc(aiAgents.createdAt));
+    .orderBy(desc(aiAgents.createdAt), desc(aiAgents.id));
   const limited = typeof opts.limit === 'number' ? base.limit(opts.limit) : base;
   const paged = typeof opts.offset === 'number' && opts.offset > 0 ? limited.offset(opts.offset) : limited;
   return paged;

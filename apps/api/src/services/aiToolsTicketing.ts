@@ -625,7 +625,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
           })
           .from(tickets)
           .where(conditions.length > 0 ? and(...conditions) : undefined)
-          .orderBy(desc(tickets.createdAt))
+          .orderBy(desc(tickets.createdAt), desc(tickets.id))
           .limit(limit + 1)
           .offset(offset);
 

@@ -1025,7 +1025,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           eq(patches.externalId, patchName),
         ),
       ))
-      .orderBy(desc(patches.createdAt))
+      .orderBy(desc(patches.createdAt), desc(patches.id))
       .limit(6);
 
     if (rows.length === 0) {
@@ -1177,7 +1177,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
             .from(devicePatches)
             .innerJoin(patches, eq(devicePatches.patchId, patches.id))
             .where(and(eq(devicePatches.orgId, orgId), eq(devicePatches.deviceId, deviceId), ...patchListScope, ...catalogConds))
-            .orderBy(desc(patches.createdAt))
+            .orderBy(desc(patches.createdAt), desc(patches.id))
             .limit(limit + 1)
             .offset(offset);
           return JSON.stringify({ ...pageEnvelope({ key: 'patches', items: rows, limit, offset, fingerprint }), scope: { deviceId } });
@@ -1191,7 +1191,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           .from(patches)
           .innerJoin(devicePatches, eq(devicePatches.patchId, patches.id))
           .where(and(eq(devicePatches.orgId, orgId), ...patchListScope, ...catalogConds))
-          .orderBy(desc(patches.createdAt))
+          .orderBy(desc(patches.createdAt), desc(patches.id))
           .limit(limit + 1)
           .offset(offset);
 

@@ -959,7 +959,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
         })
         .from(scripts)
         .where(conditions.length > 0 ? and(...conditions) : undefined)
-        .orderBy(desc(scripts.updatedAt))
+        .orderBy(desc(scripts.updatedAt), desc(scripts.id))
         .limit(limit + 1)
         .offset(offset);
 

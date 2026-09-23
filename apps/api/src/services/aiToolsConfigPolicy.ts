@@ -305,7 +305,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         .select()
         .from(configurationPolicies)
         .where(conditions.length > 0 ? and(...conditions) : undefined)
-        .orderBy(desc(configurationPolicies.updatedAt))
+        .orderBy(desc(configurationPolicies.updatedAt), desc(configurationPolicies.id))
         .limit(limit + 1)
         .offset(offset);
 

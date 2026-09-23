@@ -224,7 +224,7 @@ registerTool({
       })
       .from(rankedResults)
       .where(and(...latestConditions))
-      .orderBy(desc(rankedResults.checkedAt))
+      .orderBy(desc(rankedResults.checkedAt), desc(rankedResults.resultId))
       .limit(limit)
       .offset(offset);
 

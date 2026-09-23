@@ -199,7 +199,7 @@ async function handleListOrganizations(
     .select(SAFE_ORG_PROJECTION)
     .from(organizations)
     .where(and(...conditions))
-    .orderBy(organizations.name)
+    .orderBy(organizations.name, organizations.id)
     .limit(limit + 1)
     .offset(offset);
 

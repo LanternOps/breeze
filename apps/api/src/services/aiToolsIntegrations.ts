@@ -229,7 +229,7 @@ export function registerIntegrationTools(aiTools: Map<string, AiTool>): void {
         })
         .from(psaConnections)
         .where(conditions.length > 0 ? and(...conditions) : undefined)
-        .orderBy(desc(psaConnections.createdAt));
+        .orderBy(desc(psaConnections.createdAt), desc(psaConnections.id));
       const rows = connectionId ? await baseQuery : await baseQuery.limit(limit + 1).offset(offset);
 
       // If a specific connection was requested, also count ticket mappings
