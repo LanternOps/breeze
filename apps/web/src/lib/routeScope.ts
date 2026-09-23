@@ -52,7 +52,6 @@ export const ROUTE_SCOPES: Array<{ pattern: RegExp; kind: RouteScopeKind }> = [
   // --- exceptions that must precede broader prefixes ---
   // Execution history is device/org state living under the global /scripts prefix.
   { pattern: /^\/scripts\/[^/]+\/executions(\/.*)?$/, kind: 'org-or-all' },
-  { pattern: /^\/settings\/alert-templates(\/.*)?$/, kind: 'catalog' }, // partner-wide alert-template catalog (#1425)
   // The organizations LIST is the org picker itself (works fleet-wide); the
   // per-org detail pages need one org. The singular /settings/organization is a
   // 301 stub to the LIST, so it takes the LIST's kind (it never renders its own

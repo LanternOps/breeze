@@ -24,11 +24,6 @@ const ALLOWLIST: Record<string, string> = {
   // The settings landing page itself — reached by navigating to /settings,
   // not by a link *inside* Sidebar/index/Header (self-referential).
   'index.astro': 'the settings index/landing page itself, not a link target',
-  // Reached from the Alerts feature (AlertTemplateList.tsx breadcrumb/nav), not
-  // from the Settings nav surfaces this guard scans — pre-existing, out of
-  // scope for the billing/ticketing settings consolidation wave.
-  'alert-templates/index.astro': 'reached via the Alerts feature (AlertTemplateList.tsx), not Settings nav',
-  'alert-templates/[id].astro': 'reached via the Alerts feature (AlertTemplateEditor.tsx), not Settings nav',
 };
 
 function walk(dir: string, base = dir): string[] {

@@ -1,8 +1,3 @@
 ---
-import DashboardLayout from '../../../layouts/DashboardLayout.astro';
-import AlertTemplateList from '../../../components/alerts/AlertTemplateList';
+return Astro.redirect('/alerts/monitors', 301);
 ---
-
-<DashboardLayout titleKey="titles.settingsAlertTemplates">
-  <AlertTemplateList client:load />
-</DashboardLayout>

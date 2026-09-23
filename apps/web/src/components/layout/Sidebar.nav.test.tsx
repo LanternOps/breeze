@@ -378,4 +378,8 @@ describe('sidebar i18n seed', () => {
       unmount();
     }
   });
+
+  it('does not advertise the retired Alert Templates authoring surface', () => {
+    expect(JSON.stringify(navSections)).not.toContain('/settings/alert-templates');
+  });
 });
