@@ -193,3 +193,124 @@ describe('initializeDatabaseForStartup', () => {
     expect(logger.error).toHaveBeenCalledOnce();
   });
 });
+
+// #6605: the upgrade preflight reports retirements before any migration runs,
+// and the running version is recorded only after migrations. Neither may ever
+// block or crash boot — refusing to boot is an explicit non-goal.
+describe('initializeDatabaseForStartup upgrade preflight', () => {
+  function tracked(calls: string[]) {
+    return {
+      upgradePreflight: vi.fn(async () => { calls.push('preflight'); }),
+      migrate: vi.fn(async () => { calls.push('migrate'); }),
+      recordRunningVersion: vi.fn(async () => { calls.push('record'); }),
+      readRequestRole: vi.fn(async () => { calls.push('verify'); return SAFE_ROLE; }),
+    };
+  }
+
+  it('reports before migrating and records the version after migrating', async () => {
+    const calls: string[] = [];
+    await initializeDatabaseForStartup({
+      autoMigrateEnabled: true,
+      production: true,
+      ...tracked(calls),
+      env: {},
+      logger: silentLogger(),
+    });
+    expect(calls).toEqual(['preflight', 'migrate', 'record', 'verify']);
+  });
+
+  it('still reports and records when AUTO_MIGRATE=false', async () => {
+    const calls: string[] = [];
+    await initializeDatabaseForStartup({
+      autoMigrateEnabled: false,
+      production: true,
+      ...tracked(calls),
+      env: {},
+      logger: silentLogger(),
+    });
+    expect(calls).toEqual(['preflight', 'record', 'verify']);
+  });
+
+  it('continues boot when the preflight throws', async () => {
+    const logger = silentLogger();
+    const migrate = vi.fn();
+    await initializeDatabaseForStartup({
+      autoMigrateEnabled: true,
+      production: true,
+      upgradePreflight: vi.fn().mockRejectedValue(new Error('preflight exploded')),
+      migrate,
+      recordRunningVersion: vi.fn(),
+      readRequestRole: vi.fn(async () => SAFE_ROLE),
+      env: {},
+      logger,
+    });
+    expect(migrate).toHaveBeenCalledOnce();
+    expect(String(logger.warn.mock.calls[0]?.[0])).toContain('preflight exploded');
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it('continues boot when recording the version throws', async () => {
+    const logger = silentLogger();
+    const readRequestRole = vi.fn(async () => SAFE_ROLE);
+    await initializeDatabaseForStartup({
+      autoMigrateEnabled: true,
+      production: true,
+      upgradePreflight: vi.fn(),
+      migrate: vi.fn(),
+      recordRunningVersion: vi.fn().mockRejectedValue(new Error('history insert failed')),
+      readRequestRole,
+      env: {},
+      logger,
+    });
+    expect(readRequestRole).toHaveBeenCalledOnce();
+    expect(String(logger.warn.mock.calls[0]?.[0])).toContain('history insert failed');
+  });
+
+  it('does not record the version when migrations fail', async () => {
+    const recordRunningVersion = vi.fn();
+    await expect(
+      initializeDatabaseForStartup({
+        autoMigrateEnabled: true,
+        production: true,
+        upgradePreflight: vi.fn(),
+        migrate: vi.fn().mockRejectedValue(new Error('migration failed')),
+        recordRunningVersion,
+        readRequestRole: vi.fn(async () => SAFE_ROLE),
+        env: {},
+        logger: silentLogger(),
+      }),
+    ).rejects.toThrow('migration failed');
+    expect(recordRunningVersion).not.toHaveBeenCalled();
+  });
+
+  it('skips the default preflight and recording quietly when DATABASE_URL is unset', async () => {
+    const logger = silentLogger();
+    await initializeDatabaseForStartup({
+      autoMigrateEnabled: true,
+      production: true,
+      upgradeChecks: true,
+      migrate: vi.fn(),
+      readRequestRole: vi.fn(async () => SAFE_ROLE),
+      env: {},
+      logger,
+    });
+    expect(logger.log).toHaveBeenCalledWith('[upgrade-preflight] Skipped: DATABASE_URL is not set.');
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('runs no default upgrade checks unless asked (the worker shares this path)', async () => {
+    const logger = silentLogger();
+    await initializeDatabaseForStartup({
+      autoMigrateEnabled: false,
+      production: true,
+      readRequestRole: vi.fn(async () => SAFE_ROLE),
+      // A reachable-looking URL: if the defaults ran, they would log a report.
+      env: { DATABASE_URL: 'postgresql://nobody@127.0.0.1:1/none', APP_VERSION: '0.116.0' },
+      logger,
+    });
+    const logged = logger.log.mock.calls.map((c) => String(c[0]));
+    expect(logged.some((l) => l.includes('[upgrade-preflight]'))).toBe(false);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+});

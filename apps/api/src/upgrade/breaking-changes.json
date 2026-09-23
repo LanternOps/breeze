@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "id": "ticket-labour-pricing-fields",
+      "title": "Labour-pricing fields on ticket settings and ticket categories retired",
+      "kind": "api-request-field",
+      "surfaces": [
+        {
+          "endpoint": "PATCH /api/v1/orgs/organizations/:id/ticket-settings",
+          "fields": ["defaultBillable", "defaultHourlyRate", "rateCurrency"]
+        },
+        {
+          "endpoint": "POST /api/v1/ticket-categories",
+          "fields": ["defaultBillable", "defaultHourlyRate", "rateCurrency"]
+        },
+        {
+          "endpoint": "PATCH /api/v1/ticket-categories/:id",
+          "fields": ["defaultBillable", "defaultHourlyRate", "rateCurrency"]
+        }
+      ],
+      "replacement": "Billing profiles. Labour rates and billability come from the organization's billing profile: assign one with PUT /api/v1/orgs/organizations/:id/billing-profile, or edit rates under Settings -> Billing -> Rates. A ticket category no longer carries pricing: set its defaultWorkTypeId and price that work type on the billing profile.",
+      "deprecatedIn": "0.115.0",
+      "deprecationBehaviour": "Accepted and silently ignored: the request succeeds but the value is not stored, so a caller changing a rate keeps billing at the old one.",
+      "earliestRemovalDate": "2026-09-22",
+      "removedIn": "0.116.0",
+      "removalBehaviour": "A request that includes any of these fields is rejected with HTTP 400 naming the field and its replacement. Nothing else in the request is applied.",
+      "references": ["#4628", "#6472", "#6477", "#6639"]
+    }
+  ]
+}

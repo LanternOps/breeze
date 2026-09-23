@@ -1038,11 +1038,11 @@ const USER_ID_SCOPED_TABLES: ReadonlySet<string> = new Set<string>([
 ]);
 
 // Platform bookkeeping tables that hold no tenant data and are not a tenancy
-// shape. Exactly one entry today. Adding here requires the same justification
-// as INTENTIONAL_UNSCOPED (a plan-doc entry per CLAUDE.md "Intentionally
-// system-scoped").
+// shape. Adding here requires the same justification as INTENTIONAL_UNSCOPED
+// (a plan-doc entry per CLAUDE.md "Intentionally system-scoped").
 const PLATFORM_INFRASTRUCTURE_TABLES: ReadonlySet<string> = new Set<string>([
   'breeze_migrations', // autoMigrate's applied-migration ledger (filename + checksum). No tenant data. See apps/api/src/db/autoMigrate.ts MIGRATION_TABLE.
+  'breeze_version_history', // #6605: API versions this deployment has booted (version, first_seen_at), written at boot over the migration connection; breeze_app is SELECT-only. Plan doc: docs/superpowers/plans/platform-ci/2026-09-22-upgrade-preflight-6605.md.
 ]);
 
 // Tables that carry NO tenancy classification in this catalog (most also

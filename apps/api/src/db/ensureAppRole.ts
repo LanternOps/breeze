@@ -189,6 +189,14 @@ export async function ensureAppRole(): Promise<boolean> {
         IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='llm_egress_events') THEN
           REVOKE UPDATE, TRUNCATE ON TABLE llm_egress_events FROM breeze_app;
         END IF;
+        -- #6605: breeze_version_history is platform bookkeeping written only
+        -- at boot over the migration connection (upgradePreflightRunner.ts).
+        -- The request role may read it (the admin deprecations view) but a
+        -- request-path write could forge or erase what the next upgrade
+        -- preflight believes this deployment ran.
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='breeze_version_history') THEN
+          REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE breeze_version_history FROM breeze_app;
+        END IF;
         -- #4371 — WRITER-PATH MATRIX for the six tables re-revoked below.
         --
         -- The original bug: pam_actuation_results shipped a migration REVOKE

@@ -1331,7 +1331,8 @@ jobs:
         run: |
           test -f apps/api/dist/index.cjs || { echo "missing apps/api/dist/index.cjs"; exit 1; }
           test -f apps/api/dist/scripts/recover-stuck-agents.cjs || { echo "missing apps/api/dist/scripts/recover-stuck-agents.cjs"; exit 1; }
-          echo "Both expected dist artefacts present"
+          test -f apps/api/dist/scripts/upgrade-preflight.cjs || { echo "missing apps/api/dist/scripts/upgrade-preflight.cjs"; exit 1; }
+          echo "All expected dist artefacts present"
 
       - name: Upload API artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

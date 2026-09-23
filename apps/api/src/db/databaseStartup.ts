@@ -17,6 +17,17 @@ export interface DatabaseStartupOptions {
   production: boolean;
   migrate?: () => Promise<void>;
   /**
+   * Run the upgrade preflight (#6605) and record the running version. Only the
+   * API server sets this; the worker shares the image but never migrates, so a
+   * second report from it would be noise. Explicit `upgradePreflight` /
+   * `recordRunningVersion` functions run regardless (tests).
+   */
+  upgradeChecks?: boolean;
+  /** Report retirements this upgrade crosses. Runs BEFORE migrations. */
+  upgradePreflight?: () => Promise<void>;
+  /** Record `(version, first_seen_at)`. Runs AFTER migrations succeed. */
+  recordRunningVersion?: () => Promise<void>;
+  /**
    * Reads the effective role of the pool that will serve requests. Classification
    * stays here so a failure to READ the role can never be mistaken for, or
    * suppressed alongside, a role that is merely known-unsafe.
@@ -24,6 +35,42 @@ export interface DatabaseStartupOptions {
   readRequestRole?: () => Promise<RequestDatabaseRole>;
   env?: NodeJS.ProcessEnv;
   logger?: Pick<Console, 'log' | 'warn' | 'error'>;
+}
+
+function describeError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function resolveUpgradeChecks(
+  options: DatabaseStartupOptions,
+  env: NodeJS.ProcessEnv,
+  logger: Pick<Console, 'log'>,
+): { upgradePreflight?: () => Promise<void>; recordRunningVersion?: () => Promise<void> } {
+  if (!options.upgradeChecks) {
+    return { upgradePreflight: options.upgradePreflight, recordRunningVersion: options.recordRunningVersion };
+  }
+  const databaseUrl = env.DATABASE_URL;
+  if (!databaseUrl && (!options.upgradePreflight || !options.recordRunningVersion)) {
+    logger.log('[upgrade-preflight] Skipped: DATABASE_URL is not set.');
+  }
+  return {
+    upgradePreflight:
+      options.upgradePreflight ??
+      (databaseUrl
+        ? async () => {
+            const { runUpgradePreflight } = await import('../upgrade/upgradePreflightRunner');
+            await runUpgradePreflight({ databaseUrl, currentVersion: env.APP_VERSION, logger: options.logger ?? console });
+          }
+        : undefined),
+    recordRunningVersion:
+      options.recordRunningVersion ??
+      (databaseUrl
+        ? async () => {
+            const { recordRunningVersion } = await import('../upgrade/upgradePreflightRunner');
+            await recordRunningVersion({ databaseUrl, currentVersion: env.APP_VERSION, logger: options.logger ?? console });
+          }
+        : undefined),
+  };
 }
 
 /**
@@ -53,8 +100,34 @@ export async function initializeDatabaseForStartup(
     return getRequestDatabaseRole();
   });
 
+  const { upgradePreflight, recordRunningVersion } = resolveUpgradeChecks(options, env, logger);
+
+  // Upgrade preflight (#6605): report every retirement this upgrade crosses
+  // BEFORE any migration mutates the database. Report-only by contract — a
+  // failure here is logged and boot continues; refusing to boot is a non-goal.
+  if (upgradePreflight) {
+    try {
+      await upgradePreflight();
+    } catch (err) {
+      logger.warn(`[upgrade-preflight] Preflight failed; continuing boot: ${describeError(err)}`);
+    }
+  }
+
   if (options.autoMigrateEnabled) {
     await migrate();
+  }
+
+  // Only after migrations succeeded (a throw above skips this), so a version is
+  // never recorded against a schema it did not finish applying.
+  if (recordRunningVersion) {
+    try {
+      await recordRunningVersion();
+    } catch (err) {
+      logger.warn(
+        `[upgrade-preflight] Could not record the running version; the next upgrade's preflight ` +
+          `will report more broadly: ${describeError(err)}`,
+      );
+    }
   }
 
   const role = await readRequestRole();
