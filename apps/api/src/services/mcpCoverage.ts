@@ -74,6 +74,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'admin/abuse.ts': { exempt: 'platform_admin' },
   'admin/aiKillState.ts': { exempt: 'platform_admin' },
   'admin/aiToolUsage.ts': { exempt: 'platform_admin' },
+  'admin/deprecations.ts': { exempt: 'platform_admin' },
   'admin/desktopFinalization.ts': { exempt: 'platform_admin' },
   'admin/exchangeRates.ts': { exempt: 'platform_admin' },
   'admin/llmProviderCatalog.ts': { exempt: 'platform_admin' },
