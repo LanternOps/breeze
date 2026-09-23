@@ -16,7 +16,11 @@ const { state } = vi.hoisted(() => ({
     updates: [] as { table: string; set: Record<string, unknown> }[],
     locks: [] as { table: string; mode: string }[],
     // id to hand back from comment insert .returning()
-    insertedCommentId: 'c-1' as string
+    insertedCommentId: 'c-1' as string,
+    // #6689: where-conditions of the reopen re-read, and an optional override
+    // of the rows it returns (null = serve selectRows like any other select).
+    reopenRereads: [] as unknown[],
+    reopenRereadRows: null as unknown[] | null
   }
 }));
 
@@ -69,12 +73,29 @@ function whereExcludesDeleted(cond: unknown): boolean {
   return false;
 }
 
+// Flatten a drizzle SQL condition into its leaf tokens: plain-string chunks
+// (the mocked column names and bound literals) and raw operator text.
+function flattenChunks(cond: unknown): string[] {
+  if (typeof cond === 'string') return [cond];
+  const raw = (cond as { value?: unknown })?.value;
+  if (Array.isArray(raw) && raw.every((v) => typeof v === 'string')) return [raw.join('')];
+  const chunks = (cond as { queryChunks?: unknown[] })?.queryChunks;
+  if (!Array.isArray(chunks)) return [];
+  return chunks.flatMap(flattenChunks);
+}
+
 vi.mock('../../db', () => {
   // select(cols).from(table).where().limit() and .innerJoin().where().limit()
-  function makeSelect() {
+  function makeSelect(cols?: Record<string, unknown>) {
     let resolvedTable = 'unknown';
     let statusConstraint: { op: string; value: string } | null = null;
     let excludesDeleted = false;
+    let whereCond: unknown;
+    // #6689: the reopen's `select({ status }).from(tickets)` re-read. Recorded
+    // (so tests can assert its predicate) and overridable (so a test can make
+    // the re-read disagree with the initial match).
+    const isReopenReread = () =>
+      resolvedTable === 'tickets' && cols !== undefined && Object.keys(cols).join(',') === 'status';
     const chain: Record<string, unknown> = {
       from(tbl: unknown) {
         resolvedTable = tableName(tbl);
@@ -84,6 +105,7 @@ vi.mock('../../db', () => {
         return chain;
       },
       where(w: unknown) {
+        whereCond = w;
         statusConstraint = extractStatusConstraint(w);
         excludesDeleted = whereExcludesDeleted(w);
         return chain;
@@ -92,6 +114,10 @@ vi.mock('../../db', () => {
         return Promise.resolve(state.selectRows[resolvedTable + '_participants'] ?? []).then(resolve);
       },
       limit(_n: number) {
+        if (isReopenReread()) {
+          state.reopenRereads.push(whereCond);
+          if (state.reopenRereadRows) return Promise.resolve(state.reopenRereadRows);
+        }
         let rows = state.selectRows[resolvedTable] ?? [];
         // Honor a tickets `status` constraint so the mock can tell the live-match
         // query (ne status closed) from the closed-original lookup (eq status closed).
@@ -151,7 +177,7 @@ vi.mock('../../db', () => {
   }
   return {
     db: {
-      select: vi.fn(() => makeSelect()),
+      select: vi.fn((cols?: Record<string, unknown>) => makeSelect(cols)),
       insert: vi.fn((tbl: unknown) => makeInsert(tbl)),
       update: vi.fn((tbl: unknown) => makeUpdate(tbl))
     },
@@ -291,6 +317,8 @@ beforeEach(() => {
   state.updates = [];
   state.locks = [];
   state.insertedCommentId = 'c-1';
+  state.reopenRereads = [];
+  state.reopenRereadRows = null;
   resolveMock.mockReset();
   createTicketMock.mockReset();
   changeStatusMock.mockReset();
@@ -475,6 +503,60 @@ describe('processInboundEmail', () => {
     expect(log).toHaveLength(1);
     expect(log[0]!.parseStatus).toBe('matched');
     expect(log[0]!.ticketId).toBe('t-1');
+  });
+
+  // #6689: the reopen's row-locked re-read is the real gate. If the ticket is
+  // no longer resolved by then, the reply is still appended but no status
+  // change is attempted.
+  it('does not reopen when the row-locked re-read finds the ticket no longer resolved', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [{
+      id: 't-1', partnerId: 'p-1', orgId: 'o-1', status: 'resolved',
+      emailThreadKey: '<msg-1@tickets.example.com>', internalNumber: 'T-2026-0001'
+    }];
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
+    state.reopenRereadRows = [{ status: 'open' }];
+
+    await processInboundEmail(email({ inReplyTo: '<msg-1@tickets.example.com>' }));
+
+    expect(state.reopenRereads).toHaveLength(1);
+    expect(changeStatusMock).not.toHaveBeenCalled();
+    expect(state.inserts.filter((i) => i.table === 'ticket_comments')).toHaveLength(1);
+    expect(inboundOf()[0]!.parseStatus).toBe('matched');
+  });
+
+  it('does not reopen when the partner-scoped re-read finds no row', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [{
+      id: 't-1', partnerId: 'p-1', orgId: 'o-1', status: 'resolved',
+      emailThreadKey: '<msg-1@tickets.example.com>', internalNumber: 'T-2026-0001'
+    }];
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
+    state.reopenRereadRows = [];
+
+    await processInboundEmail(email({ inReplyTo: '<msg-1@tickets.example.com>' }));
+
+    expect(changeStatusMock).not.toHaveBeenCalled();
+  });
+
+  it('scopes the reopen re-read to the ticket AND the resolved partner', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [{
+      id: 't-1', partnerId: 'p-1', orgId: 'o-1', status: 'resolved',
+      emailThreadKey: '<msg-1@tickets.example.com>', internalNumber: 'T-2026-0001'
+    }];
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
+
+    await processInboundEmail(email({ inReplyTo: '<msg-1@tickets.example.com>' }));
+
+    expect(state.reopenRereads).toHaveLength(1);
+    const tokens = flattenChunks(state.reopenRereads[0]);
+    const pairs = tokens.map((t, i) => `${t}${tokens[i + 1] ?? ''}${tokens[i + 2] ?? ''}`);
+    expect(pairs).toContain('id = t-1');
+    expect(pairs).toContain('partnerId = p-1');
   });
 
   it('matches on a thread key in the MIDDLE of references (not just In-Reply-To / last)', async () => {
