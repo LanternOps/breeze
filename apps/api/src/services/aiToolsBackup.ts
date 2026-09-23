@@ -532,30 +532,30 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
       const configId = input.configId as string;
       if (!deviceId || !configId) return JSON.stringify({ error: 'deviceId and configId are required' });
 
-      const orgId = getOrgId(auth);
-      if (!orgId) return JSON.stringify({ error: 'Organization context required' });
-
       // Verify device access
       const deviceConditions: SQL[] = [eq(devices.id, deviceId)];
       const dc = orgWhere(auth, devices.orgId);
       if (dc) deviceConditions.push(dc);
-      const [device] = await db.select({ id: devices.id, status: devices.status, siteId: devices.siteId }).from(devices)
+      const [device] = await db.select({ id: devices.id, orgId: devices.orgId, status: devices.status, siteId: devices.siteId }).from(devices)
         .where(and(...deviceConditions)).limit(1);
       if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
       if (deviceSiteDenied(auth, device.siteId, device.id)) return JSON.stringify({ error: 'Device not found or access denied' });
       if (device.status !== 'online') {
         return JSON.stringify({ error: `Device is ${device.status}, cannot execute backup` });
       }
+      // The job belongs to the DEVICE's org. `accessibleOrgIds[0]` was an
+      // arbitrary customer org for a multi-org partner caller (#6667).
+      const orgId = device.orgId;
 
-      // Verify config belongs to org
+      // Verify config belongs to the device's org
       const configConditions: SQL[] = [eq(backupConfigs.id, configId)];
       const cc = orgWhere(auth, backupConfigs.orgId);
       if (cc) configConditions.push(cc);
-      const [config] = await db.select({ id: backupConfigs.id, name: backupConfigs.name })
+      const [config] = await db.select({ id: backupConfigs.id, orgId: backupConfigs.orgId, name: backupConfigs.name })
         .from(backupConfigs)
         .where(and(...configConditions))
         .limit(1);
-      if (!config) return JSON.stringify({ error: 'Backup config not found or access denied' });
+      if (!config || config.orgId !== orgId) return JSON.stringify({ error: 'Backup config not found or access denied' });
 
       const result = await createManualBackupJobIfIdle({
         orgId,
@@ -632,17 +632,17 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
       const deviceId = input.deviceId as string;
       if (!snapshotId || !deviceId) return JSON.stringify({ error: 'snapshotId and deviceId are required' });
 
-      const orgId = getOrgId(auth);
-      if (!orgId) return JSON.stringify({ error: 'Organization context required' });
-
       // Verify device access
       const deviceConditions: SQL[] = [eq(devices.id, deviceId)];
       const dc = orgWhere(auth, devices.orgId);
       if (dc) deviceConditions.push(dc);
-      const [device] = await db.select({ id: devices.id, siteId: devices.siteId }).from(devices)
+      const [device] = await db.select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId }).from(devices)
         .where(and(...deviceConditions)).limit(1);
       if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
       if (deviceSiteDenied(auth, device.siteId, device.id)) return JSON.stringify({ error: 'Device not found or access denied' });
+      // The restore job belongs to the target DEVICE's org, not
+      // `accessibleOrgIds[0]` (#6667).
+      const orgId = device.orgId;
 
       // Verify the snapshot under the caller's org AND site scope: the source
       // snapshot's device must be within the caller's site scope, not just the
@@ -650,6 +650,11 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
       const snapshotResult = await loadSnapshotWithSiteAccess(auth, snapshotId);
       if ('error' in snapshotResult) return JSON.stringify({ error: snapshotResult.error });
       const snapshot = snapshotResult.snapshot;
+      // Same-org restore only, as in routes/backup/restore.ts: restoring one
+      // tenant's data onto another tenant's device is a cross-tenant write.
+      if (snapshot.orgId !== orgId) {
+        return JSON.stringify({ error: 'Snapshot and target device must belong to the same organization' });
+      }
 
       // Determine restore type based on selectedPaths
       const selectedPaths = Array.isArray(input.selectedPaths) ? input.selectedPaths as string[] : undefined;

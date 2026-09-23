@@ -14,6 +14,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { createArtifact } from './artifacts/artifactService';
+import { resolveWritableToolOrgId } from './aiToolWriteOrg';
 // W01's region accessor (env BREEZE_REGION). The only region source; this
 // wave writes no local region resolver of its own — reconciliation R1.
 import { breezeRegion } from '../config/env';
@@ -80,8 +81,13 @@ export function registerExportTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'unknown_dataset', dataset: input.dataset });
         }
         dataset = input.dataset;
-        orgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
-        if (!orgId) return JSON.stringify({ error: 'No organization context available' });
+        // The artifact's OWNER org: never `accessibleOrgIds[0]`, an arbitrary
+        // org for a multi-org caller (#6667). A run's auth always carries its org.
+        const resolvedOrg = resolveWritableToolOrgId(auth);
+        if (!resolvedOrg.orgId) {
+          return JSON.stringify({ error: resolvedOrg.error ?? 'No organization context available' });
+        }
+        orgId = resolvedOrg.orgId;
 
         // Run IDENTITY comes from the PRINCIPAL, not from ToolExecutionContext
         // (reconciliation R4): `buildAgentAuthContext` puts the run id on
