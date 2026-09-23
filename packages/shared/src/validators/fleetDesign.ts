@@ -70,6 +70,13 @@ const watch = z.object({
  * (`outcomeTools.ts`), which must stay a plain object; the cross-field checks
  * below run when the full submission is parsed.
  */
+/** Responses a model-written proposal may carry: agent-local service restart, notification, alert. */
+export function isFleetDesignProposalResponseAllowed(response: { type: string; kind?: unknown; command?: unknown }): boolean {
+  if (response.type === 'send_notification' || response.type === 'create_alert') return true;
+  return response.type === 'execute_command' && response.kind === 'restart_service'
+    && (typeof response.command !== 'string' || response.command.trim() === '');
+}
+
 export const fleetDesignRuleFields = {
   name: z.string().trim().min(1).max(200),
   kind: monitorKindSchema,
@@ -91,11 +98,17 @@ export const fleetDesignRuleSchema = z.object(fleetDesignRuleFields).strict().su
   if (value.deliveryMode === 'channels' && value.deliveryChannelIds.length === 0) {
     ctx.addIssue({ code: 'custom', path: ['deliveryChannelIds'], message: 'deliveryChannelIds required when deliveryMode is channels' });
   }
-  // ai_triage needs an aiAgentId, which a proposal has no field for — the
-  // monitor service would refuse it at apply time, after approval.
+  // A proposal is written by a model reading fleet evidence, and the approval
+  // UI shows its name and rationale — not its responses. So a proposal may not
+  // carry a response that runs arbitrary code on devices (a shell command, a
+  // script, a software deploy); a technician adds those to the monitor after
+  // apply. ai_triage needs an aiAgentId a proposal has no field for.
   value.responses.forEach((response, index) => {
-    if (response.type === 'ai_triage') {
-      ctx.addIssue({ code: 'custom', path: ['responses', index, 'type'], message: 'ai_triage responses are not supported in Fleet Design proposals' });
+    if (!isFleetDesignProposalResponseAllowed(response)) {
+      ctx.addIssue({
+        code: 'custom', path: ['responses', index, 'type'],
+        message: `${response.type} responses are not supported in Fleet Design proposals; add them to the monitor after apply`,
+      });
     }
   });
 });

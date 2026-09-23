@@ -167,10 +167,21 @@ describe('fleetDesignRuleSchema (monitor-definition proposals)', () => {
     expect(fleetDesignRuleSchema.safeParse({ ...monitorProposal, kind: 'service' }).success).toBe(false);
     expect(fleetDesignRuleSchema.safeParse({ ...monitorProposal, deliveryMode: 'channels' }).success).toBe(false);
   });
-  it('rejects ai_triage responses, which need an agent a proposal cannot name', () => {
-    expect(fleetDesignRuleSchema.safeParse({
-      ...monitorProposal, responses: [{ type: 'ai_triage' }],
-    }).success).toBe(false);
+  it('rejects responses that would run arbitrary code or need an agent the proposal cannot name', () => {
+    for (const response of [
+      { type: 'ai_triage' },
+      { type: 'execute_command', command: 'rm -rf /' },
+      { type: 'run_script', scriptId: D1 },
+      { type: 'deploy_software', catalogId: D1 },
+    ]) {
+      expect(fleetDesignRuleSchema.safeParse({ ...monitorProposal, responses: [response] }).success, response.type).toBe(false);
+    }
+  });
+  it('accepts agent-local restart and notification responses', () => {
+    expect(fleetDesignRuleSchema.safeParse({ ...monitorProposal, kind: 'service', condition: { serviceName: 'Spooler' },
+      responses: [{ type: 'execute_command', kind: 'restart_service' }] }).success).toBe(true);
+    expect(fleetDesignRuleSchema.safeParse({ ...monitorProposal,
+      responses: [{ type: 'create_alert', alertSeverity: 'high', alertMessage: 'm' }] }).success).toBe(true);
   });
   it('the submission schema rejects a legacy rule-shaped proposal', () => {
     const sub = validSubmission() as any;

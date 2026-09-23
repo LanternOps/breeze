@@ -577,7 +577,7 @@ const FLEET_DESIGN_RULE_SHAPE = z.object({
   severity: fleetDesignRuleFields.severity.describe('How urgent a firing of this monitor is.'),
   cooldownMinutes: fleetDesignRuleFields.cooldownMinutes.describe('Minutes to wait before re-alerting on the same condition.'),
   responses: fleetDesignRuleFields.responses.describe(
-    'Device-bound responses that execute when the monitor fires. Usually []. Only these execute; action is a note.',
+    'Device-bound responses that execute when the monitor fires. Usually []. Allowed: { type: "execute_command", kind: "restart_service" } on service monitors, send_notification, create_alert. Scripts and commands are refused; recommend them via action instead.',
   ),
   deliveryMode: fleetDesignRuleFields.deliveryMode.describe(
     'Notification delivery: "inherit" (routing decides; the default), "channels" (needs deliveryChannelIds) or "none" (inbox only).',
