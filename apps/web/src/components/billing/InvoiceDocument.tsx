@@ -1,4 +1,4 @@
-import { useMemo, type CSSProperties } from 'react';
+import { useMemo, Fragment, type CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
 import { useOrgStore } from '../../stores/orgStore';
@@ -75,6 +75,28 @@ export function InvoiceDocument({ detail, customerName }: DocumentProps) {
     () => lines.filter((l) => l.customerVisible).sort((a, b) => a.sortOrder - b.sortOrder),
     [lines],
   );
+  const groups = useMemo(() => {
+    const list: { key: string; ticketId: string | null; ticketNumber?: string | null; ticketSubject?: string | null; ticketCategory?: string | null; lines: InvoiceLine[] }[] = [];
+    const map = new Map<string, typeof list[0]>();
+    for (const l of visibleLines) {
+      const key = l.ticketId ?? '__none__';
+      let g = map.get(key);
+      if (!g) {
+        g = {
+          key,
+          ticketId: l.ticketId ?? null,
+          ticketNumber: l.ticketNumber ?? null,
+          ticketSubject: l.ticketSubject ?? null,
+          ticketCategory: l.ticketCategory ?? null,
+          lines: [],
+        };
+        map.set(key, g);
+        list.push(g);
+      }
+      g.lines.push(l);
+    }
+    return list;
+  }, [visibleLines]);
   const isEmpty = visibleLines.length === 0;
   const invoiceStatusLabel = invoice.status === 'sent' && !invoice.sentAt
     ? t('invoice.status.issued')
@@ -173,7 +195,32 @@ export function InvoiceDocument({ detail, customerName }: DocumentProps) {
                   </tr>
                 </thead>
                 <tbody>
-                  {visibleLines.map((l) => <LineRow key={l.id} line={l} currency={currency} taxRate={invoice.taxRate} showTax={showTax} />)}
+                  {groups.map((group) => (
+                    <Fragment key={group.key}>
+                      {group.ticketId && (
+                        <tr className="border-b bg-muted/30">
+                          <td colSpan={showTax ? 5 : 4} className="px-4 py-2 sm:px-5">
+                            <div className="flex flex-wrap items-center gap-2 text-xs">
+                              <span className="font-semibold text-foreground">
+                                {group.ticketNumber
+                                  ? t('invoiceDocument.ticketHeader', { number: group.ticketNumber })
+                                  : t('invoiceDocument.ticketWork')}
+                                {group.ticketSubject ? `: ${group.ticketSubject}` : ''}
+                              </span>
+                              {group.ticketCategory && (
+                                <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground font-medium">
+                                  {group.ticketCategory}
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                      {group.lines.map((l) => (
+                        <LineRow key={l.id} line={l} currency={currency} taxRate={invoice.taxRate} showTax={showTax} />
+                      ))}
+                    </Fragment>
+                  ))}
                 </tbody>
               </table>
             </div>

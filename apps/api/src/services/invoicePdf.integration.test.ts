@@ -184,7 +184,7 @@ describe.runIf(RUN)('portal org guard: getCustomerInvoice / markViewed', () => {
     // null, which is exactly the "description only" case #3319 kept working).
     // #6467: workedMinutes joined the DTO (structured worked-vs-billed disclosure,
     // ordinary numeric fact like quantity) — still an exact, pinned key set.
-    expect(lines.every((line) => Object.keys(line).sort().join(',') === 'description,lineTotal,name,quantity,taxable,ticketNumber,unitPrice,workedMinutes')).toBe(true);
+    expect(lines.every((line) => Object.keys(line).sort().join(',') === 'description,lineTotal,name,quantity,taxable,ticketCategory,ticketNumber,unitPrice,workedMinutes')).toBe(true);
     // W08 (#4562): ticketNumber joins the DTO; source_type/source_id must still never appear.
     expect(lines.every((line) => !('sourceType' in line) && !('sourceId' in line))).toBe(true);
     expect(lines.every((line) => 'name' in line)).toBe(true);

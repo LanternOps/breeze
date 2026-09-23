@@ -16,9 +16,9 @@
 
 import { createHash } from 'node:crypto';
 import PDFDocument from 'pdfkit';
-import { and, asc, count, eq, ne, sql } from 'drizzle-orm';
+import { and, asc, count, eq, getTableColumns, isNull, ne, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { invoices, invoiceLineDevices, invoiceLines, invoiceDocuments, organizations, partners, portalBranding } from '../db/schema';
+import { invoices, invoiceLineDevices, invoiceLines, invoiceDocuments, organizations, partners, portalBranding, tickets, ticketCategories } from '../db/schema';
 import { stripeConnectAccounts } from '../db/schema/stripePayments';
 import { getOrMintInvoiceLink, buildPublicInvoiceUrl } from './invoiceLinkToken';
 import { escapeHtml } from './emailLayout';
@@ -37,7 +37,11 @@ import { resolvePartnerDocumentLocale } from './documentLocale';
 import { tApi } from '../i18n';
 
 type InvoiceRow = typeof invoices.$inferSelect;
-type InvoiceLineRow = typeof invoiceLines.$inferSelect;
+type InvoiceLineRow = typeof invoiceLines.$inferSelect & {
+  ticketNumber?: string | null;
+  ticketSubject?: string | null;
+  ticketCategory?: string | null;
+};
 
 export interface InvoiceBranding {
   partnerName: string;
@@ -138,7 +142,16 @@ function addressLines(addr: BillToAddress | null | undefined): string[] {
 
 // Group customer-visible lines by ticket so the customer view reads as
 // "work for ticket X" blocks; null-ticket lines fall into a default group.
-interface RenderGroup { key: string; ticketId: string | null; lines: InvoiceLineRow[]; }
+// Group customer-visible lines by ticket so the customer view reads as
+// "work for ticket X" blocks; null-ticket lines fall into a default group.
+interface RenderGroup {
+  key: string;
+  ticketId: string | null;
+  ticketNumber?: string | null;
+  ticketSubject?: string | null;
+  ticketCategory?: string | null;
+  lines: InvoiceLineRow[];
+}
 
 function groupVisibleLinesByTicket(lines: InvoiceLineRow[]): RenderGroup[] {
   const visible = lines.filter((l) => l.customerVisible);
@@ -147,7 +160,18 @@ function groupVisibleLinesByTicket(lines: InvoiceLineRow[]): RenderGroup[] {
   for (const l of visible) {
     const key = l.ticketId ?? '__none__';
     let g = byKey.get(key);
-    if (!g) { g = { key, ticketId: l.ticketId, lines: [] }; byKey.set(key, g); groups.push(g); }
+    if (!g) {
+      g = {
+        key,
+        ticketId: l.ticketId,
+        ticketNumber: l.ticketNumber ?? null,
+        ticketSubject: l.ticketSubject ?? null,
+        ticketCategory: l.ticketCategory ?? null,
+        lines: []
+      };
+      byKey.set(key, g);
+      groups.push(g);
+    }
     g.lines.push(l);
   }
   return groups;
@@ -177,9 +201,13 @@ export function renderInvoiceHtml(invoice: InvoiceRow, lines: InvoiceLineRow[], 
     : `<div style="font-size:22px;font-weight:700;color:${primary};">${escapeHtml(branding.partnerName)}</div>`;
 
   const rowsHtml = groups.map((g) => {
-    const header = g.ticketId
-      ? `<tr><td colspan="${showTax ? 4 : 3}" style="padding:10px 8px 4px;font-size:12px;font-weight:600;color:#6b7280;border-top:1px solid #e5e7eb;">Ticket work</td></tr>`
-      : '';
+    let header = '';
+    if (g.ticketId) {
+      const ticketNum = g.ticketNumber ? `Ticket #${escapeHtml(g.ticketNumber)}` : 'Ticket work';
+      const subject = g.ticketSubject ? `: ${escapeHtml(g.ticketSubject)}` : '';
+      const catBadge = g.ticketCategory ? ` <span style="font-size:11px;font-weight:normal;color:#6b7280;background:#f3f4f6;padding:1px 6px;border-radius:4px;margin-left:6px;">${escapeHtml(g.ticketCategory)}</span>` : '';
+      header = `<tr><td colspan="${showTax ? 4 : 3}" style="padding:10px 8px 4px;font-size:12px;font-weight:600;color:#374151;border-top:1px solid #e5e7eb;background-color:#f9fafb;">${ticketNum}${subject}${catBadge}</td></tr>`;
+    }
     const lineRows = g.lines.map((l) => {
       const t = showTax ? lineTax(l.lineTotal, l.taxable, taxRate) : null;
       const taxCell = showTax
@@ -413,7 +441,18 @@ export function renderInvoicePdfBuffer(
 
       for (const group of groupVisibleLinesByTicket(lines)) {
         if (group.ticketId) {
-          doc.fillColor('#6b7280').fontSize(9).font('Helvetica-Bold').text('Ticket work', left, y); y += 14;
+          if (y > doc.page.height - 140) { doc.addPage(); y = 50; }
+          const ticketNum = group.ticketNumber ? `Ticket #${group.ticketNumber}` : 'Ticket work';
+          const subject = group.ticketSubject ? `: ${group.ticketSubject}` : '';
+          const fullHeader = `${ticketNum}${subject}`;
+          doc.fillColor('#1f2937').fontSize(9.5).font('Helvetica-Bold').text(fullHeader, left, y, { width: colDescW });
+          const hHead = doc.heightOfString(fullHeader, { width: colDescW });
+          if (group.ticketCategory) {
+            doc.fillColor('#6b7280').fontSize(8.5).font('Helvetica').text(`Category: ${group.ticketCategory}`, left, y + hHead + 1, { width: colDescW });
+            y += hHead + 14;
+          } else {
+            y += hHead + 4;
+          }
         }
         for (const l of group.lines) {
           if (y > doc.page.height - 140) { doc.addPage(); y = 50; }
@@ -666,7 +705,20 @@ async function loadInvoiceForRender(invoiceId: string): Promise<{
 } | null> {
   const [invoice] = await db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
   if (!invoice) return null;
-  const lines = await db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId)).orderBy(invoiceLines.sortOrder);
+  const lines = await db.select({
+    ...getTableColumns(invoiceLines),
+    ticketNumber: sql<string | null>`COALESCE(${tickets.ticketNumber}, ${tickets.internalNumber})`,
+    ticketSubject: tickets.subject,
+    ticketCategory: sql<string | null>`COALESCE(${ticketCategories.name}, ${tickets.category})`,
+  }).from(invoiceLines)
+    .leftJoin(tickets, and(
+      eq(invoiceLines.ticketId, tickets.id),
+      eq(tickets.orgId, invoice.orgId),
+      isNull(tickets.deletedAt),
+    ))
+    .leftJoin(ticketCategories, eq(tickets.categoryId, ticketCategories.id))
+    .where(eq(invoiceLines.invoiceId, invoiceId))
+    .orderBy(invoiceLines.sortOrder);
   const [partner] = await db.select().from(partners).where(eq(partners.id, invoice.partnerId)).limit(1);
   // #3205 W07 decision 14a: the renderer reads the STAMP, never the partner row —
   // a change to the partner default cannot alter what an issued invoice renders.

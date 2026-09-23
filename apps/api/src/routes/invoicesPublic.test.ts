@@ -7,7 +7,7 @@ const { dbResults } = vi.hoisted(() => ({ dbResults: [] as unknown[][] }));
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
-    for (const m of ['select', 'from', 'where', 'limit', 'orderBy']) chain[m] = vi.fn(() => chain);
+    for (const m of ['select', 'from', 'leftJoin', 'where', 'limit', 'orderBy']) chain[m] = vi.fn(() => chain);
     (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) =>
       Promise.resolve(dbResults.shift() ?? []).then(resolve);
     return chain;
@@ -28,14 +28,13 @@ vi.mock('../services/invoiceLinkToken', () => ({
 }));
 
 const { markViewedMock } = vi.hoisted(() => ({ markViewedMock: vi.fn() }));
-vi.mock('../services/invoiceService', () => ({
-  toCustomerInvoiceHeader: (inv: Record<string, unknown>) => ({
-    id: inv.id, invoiceNumber: inv.invoiceNumber, status: inv.status,
-    total: inv.total, balance: inv.balance, depositDue: inv.depositDue,
-  }),
-  toCustomerInvoiceLine: (l: unknown) => l,
-  markViewed: markViewedMock,
-}));
+vi.mock('../services/invoiceService', async (importActual) => {
+  const actual = await importActual<typeof import('../services/invoiceService')>();
+  return {
+    ...actual,
+    markViewed: markViewedMock,
+  };
+});
 
 const { payLinkMock } = vi.hoisted(() => ({ payLinkMock: vi.fn() }));
 vi.mock('../services/invoiceCheckout', () => ({ createInvoicePayLink: payLinkMock }));
@@ -121,6 +120,23 @@ describe('GET /invoices/public/:token', () => {
     expect(data.invoice.invoiceNumber).toBe('INV-2026-0007');
     expect(data.branding.partnerName).toBe('Lantern MSP');
     expect(markViewedMock).toHaveBeenCalledWith(INV_ID, ORG_ID);
+  });
+
+  // #5856: the route selects ticketId/ticketSubject for grouping, but the wire
+  // DTO is the customer projection — ticket number + category only.
+  it('carries ticket number and category but never ticketId or subject', async () => {
+    resolveMock.mockResolvedValue(invoice());
+    dbResults.push(PARTNER_ROW, BRAND_ROW, [{
+      ticketId: 'tk-internal-uuid', ticketNumber: 'T-9', ticketSubject: 'Internal subject', ticketCategory: 'Hardware',
+      name: 'Repair', description: 'Replaced rollers', quantity: '1.00', unitPrice: '90.00',
+      taxable: true, lineTotal: '90.00', workedMinutes: null,
+    }]);
+    const res = await app().request(`/invoices/public/${TOKEN}`);
+    expect(res.status).toBe(200);
+    const { data } = await res.json();
+    expect(data.lines[0]).toMatchObject({ ticketNumber: 'T-9', ticketCategory: 'Hardware', name: 'Repair' });
+    expect(data.lines[0]).not.toHaveProperty('ticketId');
+    expect(data.lines[0]).not.toHaveProperty('ticketSubject');
   });
 
   it('renders the calm no-amounts state for a void invoice', async () => {

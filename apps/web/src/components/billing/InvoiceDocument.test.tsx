@@ -142,3 +142,76 @@ describe('InvoiceDocument — contract overage sibling (#3205 W04)', () => {
     expect(childCell.className).toContain('pl-8');
   });
 });
+
+describe('InvoiceDocument — ticket grouping and labeling (#3319)', () => {
+  it('groups lines under ticket headers with translated label and obeys #3319 title/blurb rules', () => {
+    const line = detail.lines[0]!;
+    render(<InvoiceDocument detail={{
+      ...detail,
+      lines: [
+        {
+          ...line,
+          id: 't-line-1',
+          ticketId: 'tick-1',
+          ticketNumber: '1042',
+          ticketSubject: 'Printer issue',
+          ticketCategory: 'Hardware',
+          name: 'Diagnostic Labor',
+          description: 'Replaced toner sensor',
+        },
+      ],
+    }} customerName="Acme Industries" />);
+
+    expect(screen.getByText(/Ticket #1042/)).toBeInTheDocument();
+    expect(screen.getByText(/: Printer issue/)).toBeInTheDocument();
+    expect(screen.getByText('Hardware')).toBeInTheDocument();
+    // #3319: name is the title, description is the blurb
+    expect(screen.getByText('Diagnostic Labor')).toBeInTheDocument();
+    expect(screen.getByText('Replaced toner sensor')).toBeInTheDocument();
+  });
+
+  it('does not merge two number-less tickets into one group', () => {
+    const line = detail.lines[0]!;
+    render(<InvoiceDocument detail={{
+      ...detail,
+      lines: [
+        {
+          ...line,
+          id: 't-line-1',
+          ticketId: 'tick-1',
+          ticketNumber: null,
+          ticketSubject: 'Email config',
+          ticketCategory: 'Software',
+          name: 'Work 1',
+        },
+        {
+          ...line,
+          id: 't-line-2',
+          ticketId: 'tick-2',
+          ticketNumber: null,
+          ticketSubject: 'Router reboot',
+          ticketCategory: 'Network',
+          name: 'Work 2',
+        },
+      ],
+    }} customerName="Acme Industries" />);
+
+    expect(screen.getByText(/: Email config/)).toBeInTheDocument();
+    expect(screen.getByText(/: Router reboot/)).toBeInTheDocument();
+    expect(screen.getAllByText(/Ticket work/)).toHaveLength(2);
+  });
+
+  it('renders lines without ticketId directly without ticket headers', () => {
+    const line = detail.lines[0]!;
+    render(<InvoiceDocument detail={{
+      ...detail,
+      lines: [
+        { ...line, id: 'plain', ticketId: null, name: 'Cloud Backup', description: 'Daily backup' },
+      ],
+    }} customerName="Acme Industries" />);
+
+    expect(screen.queryByText(/Ticket #/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Ticket work/)).not.toBeInTheDocument();
+    expect(screen.getByText('Cloud Backup')).toBeInTheDocument();
+  });
+});
