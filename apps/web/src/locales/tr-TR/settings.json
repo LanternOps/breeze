@@ -5837,5 +5837,58 @@
   "ticketCategories": {
     "defaultWorkType": "Varsayılan iş türü",
     "defaultWorkTypeHelp": "Bu kategori için iş türü belirtilmeden süre kaydedildiğinde kullanılır."
+  },
+  "systemDeprecations": {
+    "title": "Kullanımdan kaldırmalar",
+    "description": "Bu Breeze sürümünün bildiği API kullanımdan kaldırmaları ve bu dağıtımın her biri karşısındaki durumu. Bu, platform yöneticileri için salt okunur bir rapordur; burada hiçbir şey yapılandırılmaz.",
+    "refresh": "Yenile",
+    "loading": "Kullanımdan kaldırmalar yükleniyor…",
+    "errors": {
+      "load": "Kullanımdan kaldırma raporu yüklenemedi."
+    },
+    "platformAdmin": {
+      "title": "Platform yöneticisi erişimi gerekli",
+      "description": "Bu rapor tüm dağıtımı kapsar, bu nedenle yalnızca platform yöneticileri görüntüleyebilir."
+    },
+    "manifestError": "Bu imajdaki uyumluluğu bozan değişiklik manifestosu okunamadı ({{error}}). Kullanımdan kaldırmalar denetlenemiyor.",
+    "historyMissing": "Bu dağıtımın hangi sürümleri çalıştırdığı belirlenemedi — yürürlükteki tüm kullanımdan kaldırmalar gösteriliyor.",
+    "noReleaseVersion": "Bu imaj bir sürüm numarası taşımıyor, bu nedenle manifestodaki her kullanımdan kaldırma olası şekilde aşılmış olarak gösterilir.",
+    "historyReason": "Neden: {{reason}}",
+    "summary": {
+      "imageVersion": "Çalışan sürüm",
+      "unknownVersion": "Bilinmiyor ({{raw}})",
+      "lastRecorded": "Son kaydedilen sürüm",
+      "noneRecorded": "Hiçbiri kaydedilmedi",
+      "migrations": "Geçişler",
+      "migrationCounts": "{{applied}} uygulandı, {{pending}} bekliyor",
+      "ledgerMissing": "Geçiş kaydı kullanılamıyor ({{reason}})"
+    },
+    "table": {
+      "heading": "Kaldırmalar",
+      "entry": "Girdi",
+      "affected": "Etkilenen uç noktalar ve alanlar",
+      "replacement": "Yerine geçen",
+      "deprecatedIn": "Kullanımdan kaldırıldığı sürüm",
+      "removal": "Kaldırma",
+      "status": "Buradaki durum",
+      "wholeEndpoint": "Tüm uç nokta",
+      "notBefore": "{{date}} tarihinden önce değil",
+      "empty": "Manifestoda listelenen kaldırma yok."
+    },
+    "status": {
+      "crossed": "Aşıldı",
+      "possibly_crossed": "Muhtemelen aşıldı",
+      "in_effect": "Yürürlükte",
+      "upcoming": "Yaklaşan"
+    },
+    "milestone": {
+      "deprecation": "kullanımdan kaldırma",
+      "removal": "kaldırma"
+    },
+    "history": {
+      "heading": "Sürüm geçmişi",
+      "firstSeen": "İlk kez {{date}} tarihinde görüldü",
+      "none": "Bu dağıtım için kayıtlı sürüm yok."
+    }
   }
 }

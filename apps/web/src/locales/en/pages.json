@@ -169,7 +169,8 @@
     "agreementTemplateNew": "New agreement template",
     "signedAgreements": "Signed agreements",
     "settingsTicketing": "Ticketing Settings",
-    "securityScans": "IOC Scans"
+    "securityScans": "IOC Scans",
+    "settingsSystemDeprecations": "Deprecations"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Remote Monitoring and Management",

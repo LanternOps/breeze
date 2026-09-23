@@ -5837,5 +5837,58 @@
   "ticketCategories": {
     "defaultWorkType": "Standard-Arbeitsart",
     "defaultWorkTypeHelp": "Wird verwendet, wenn für diese Kategorie Zeit ohne Arbeitsart erfasst wird."
+  },
+  "systemDeprecations": {
+    "title": "Abkündigungen",
+    "description": "API-Abkündigungen, die dieser Breeze-Version bekannt sind, und der aktuelle Stand dieser Bereitstellung zu jeder einzelnen. Dies ist ein reiner Lesebericht für Plattformadministratoren; hier wird nichts konfiguriert.",
+    "refresh": "Aktualisieren",
+    "loading": "Abkündigungen werden geladen…",
+    "errors": {
+      "load": "Der Abkündigungsbericht konnte nicht geladen werden."
+    },
+    "platformAdmin": {
+      "title": "Plattformadministratorzugriff erforderlich",
+      "description": "Dieser Bericht umfasst die gesamte Bereitstellung, daher können ihn nur Plattformadministratoren einsehen."
+    },
+    "manifestError": "Das Manifest für nicht kompatible Änderungen in diesem Image konnte nicht gelesen werden ({{error}}). Abkündigungen können nicht geprüft werden.",
+    "historyMissing": "Es konnte nicht ermittelt werden, welche Versionen diese Bereitstellung ausgeführt hat – es werden alle aktuell geltenden Abkündigungen angezeigt.",
+    "noReleaseVersion": "Dieses Image trägt keine Release-Version, daher wird jede Abkündigung im Manifest als möglicherweise überschritten angezeigt.",
+    "historyReason": "Grund: {{reason}}",
+    "summary": {
+      "imageVersion": "Laufende Version",
+      "unknownVersion": "Unbekannt ({{raw}})",
+      "lastRecorded": "Zuletzt erfasste Version",
+      "noneRecorded": "Keine erfasst",
+      "migrations": "Migrationen",
+      "migrationCounts": "{{applied}} angewendet, {{pending}} ausstehend",
+      "ledgerMissing": "Migrationsprotokoll nicht verfügbar ({{reason}})"
+    },
+    "table": {
+      "heading": "Stilllegungen",
+      "entry": "Eintrag",
+      "affected": "Betroffene Endpunkte und Felder",
+      "replacement": "Ersatz",
+      "deprecatedIn": "Abgekündigt in",
+      "removal": "Entfernung",
+      "status": "Status hier",
+      "wholeEndpoint": "Gesamter Endpunkt",
+      "notBefore": "Nicht vor {{date}}",
+      "empty": "Das Manifest listet keine Stilllegungen auf."
+    },
+    "status": {
+      "crossed": "Überschritten",
+      "possibly_crossed": "Möglicherweise überschritten",
+      "in_effect": "In Kraft",
+      "upcoming": "Bevorstehend"
+    },
+    "milestone": {
+      "deprecation": "Abkündigung",
+      "removal": "Entfernung"
+    },
+    "history": {
+      "heading": "Versionsverlauf",
+      "firstSeen": "Erstmals gesehen am {{date}}",
+      "none": "Für diese Bereitstellung sind keine Versionen erfasst."
+    }
   }
 }

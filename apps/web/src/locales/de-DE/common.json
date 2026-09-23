@@ -98,7 +98,8 @@
     "serviceManagement": "Service-Management",
     "ticketing": "Ticketing",
     "deliverableTemplates": "Liefervorlagen",
-    "securityScans": "IOC-Scans"
+    "securityScans": "IOC-Scans",
+    "systemDeprecations": "Abkündigungen"
   },
   "documentTitles": {
     "dashboard": "Dashboard",

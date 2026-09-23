@@ -5837,5 +5837,58 @@
   "ticketCategories": {
     "defaultWorkType": "Default work type",
     "defaultWorkTypeHelp": "Used when time is logged for this category without a work type."
+  },
+  "systemDeprecations": {
+    "title": "Deprecations",
+    "description": "API retirements this Breeze version knows about, and where this deployment stands on each. This is a read-only report for platform administrators; nothing here is configured.",
+    "refresh": "Refresh",
+    "loading": "Loading deprecations…",
+    "errors": {
+      "load": "Could not load the deprecations report."
+    },
+    "platformAdmin": {
+      "title": "Platform admin access required",
+      "description": "This report covers the whole deployment, so only platform administrators can view it."
+    },
+    "manifestError": "The breaking-change manifest in this image could not be read ({{error}}). Retirements cannot be checked.",
+    "historyMissing": "Could not determine which versions this deployment ran — showing every retirement in effect.",
+    "noReleaseVersion": "This image does not carry a release version, so every retirement in the manifest is shown as possibly crossed.",
+    "historyReason": "Reason: {{reason}}",
+    "summary": {
+      "imageVersion": "Running version",
+      "unknownVersion": "Unknown ({{raw}})",
+      "lastRecorded": "Last recorded version",
+      "noneRecorded": "None recorded",
+      "migrations": "Migrations",
+      "migrationCounts": "{{applied}} applied, {{pending}} pending",
+      "ledgerMissing": "Migration ledger unavailable ({{reason}})"
+    },
+    "table": {
+      "heading": "Retirements",
+      "entry": "Entry",
+      "affected": "Affected endpoints and fields",
+      "replacement": "Replacement",
+      "deprecatedIn": "Deprecated in",
+      "removal": "Removal",
+      "status": "Status here",
+      "wholeEndpoint": "Whole endpoint",
+      "notBefore": "Not before {{date}}",
+      "empty": "The manifest lists no retirements."
+    },
+    "status": {
+      "crossed": "Crossed",
+      "possibly_crossed": "Possibly crossed",
+      "in_effect": "In effect",
+      "upcoming": "Upcoming"
+    },
+    "milestone": {
+      "deprecation": "deprecation",
+      "removal": "removal"
+    },
+    "history": {
+      "heading": "Version history",
+      "firstSeen": "First seen {{date}}",
+      "none": "No versions recorded for this deployment."
+    }
   }
 }
