@@ -269,4 +269,26 @@ describe('DeviceAnomaliesPanel', () => {
     fireEvent.click(await screen.findByRole('button', { name: /^resolve$/i }));
     await waitFor(() => expect(screen.queryByTestId('anomaly-episode-episode-1')).toBeNull());
   });
+  it('refetches the list when a card action returns 409 (episode already closed elsewhere)', async () => {
+    let listCalls = 0;
+    fetchWithAuthMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url === '/config/ml-feature-flags') return Promise.resolve(flagsResponse);
+      if (url === '/devices/dev-1/anomaly-episodes?status=open&limit=25') {
+        listCalls += 1;
+        // First load shows the episode; after the 409 the server no longer lists it.
+        return Promise.resolve(makeJsonResponse({ data: listCalls === 1 ? [episode('episode-1')] : [], focusedEpisodeId: null }));
+      }
+      if (url === '/devices/dev-1/anomaly-episodes?status=closed&limit=1') return Promise.resolve(makeJsonResponse({ data: [], focusedEpisodeId: null }));
+      if (url === '/devices/dev-1/anomaly-episodes/episode-1' && init?.method === 'PATCH') {
+        return Promise.resolve(makeJsonResponse({ error: 'This anomaly has already closed', reason: 'episode_closed' }, false, 409));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
+    });
+
+    render(<DeviceAnomaliesPanel deviceId="dev-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: /^resolve$/i }));
+    await waitFor(() => expect(screen.queryByTestId('anomaly-episode-episode-1')).toBeNull());
+    expect(listCalls).toBe(2);
+  });
 });

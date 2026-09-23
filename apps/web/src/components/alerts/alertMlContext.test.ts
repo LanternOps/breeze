@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeMetricAnomalyContext } from './alertMlContext';
+import { anomalyDeepLinkHash, normalizeMetricAnomalyContext } from './alertMlContext';
 
 describe('normalizeMetricAnomalyContext', () => {
   it('returns null for a non-metric_anomaly context', () => {
@@ -36,5 +36,21 @@ describe('normalizeMetricAnomalyContext', () => {
   it('rejects a non-string episodeId', () => {
     const result = normalizeMetricAnomalyContext({ source: 'metric_anomaly', episodeId: 42 });
     expect(result?.episodeId).toBeNull();
+  });
+});
+
+describe('anomalyDeepLinkHash', () => {
+  const base = normalizeMetricAnomalyContext({ source: 'metric_anomaly' })!;
+
+  it('prefers the episode id over the legacy anomaly id', () => {
+    expect(anomalyDeepLinkHash({ ...base, episodeId: 'ep-1', anomalyId: 'an-1' })).toBe('anomalies/ep-1');
+  });
+
+  it('falls back to the legacy anomaly id when there is no episode', () => {
+    expect(anomalyDeepLinkHash({ ...base, episodeId: null, anomalyId: 'an-1' })).toBe('anomalies/an-1');
+  });
+
+  it('links to the bare tab when neither id is present', () => {
+    expect(anomalyDeepLinkHash({ ...base, episodeId: null, anomalyId: null })).toBe('anomalies');
   });
 });

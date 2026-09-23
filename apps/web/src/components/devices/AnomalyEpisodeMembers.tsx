@@ -19,13 +19,14 @@ export default function AnomalyEpisodeMembers({ deviceId, episodeId }: AnomalyEp
     (async () => {
       try {
         const response = await fetchWithAuth(`/devices/${deviceId}/anomaly-episodes/${episodeId}`);
-        if (!response.ok) throw new Error('failed');
+        if (!response.ok) throw new Error(`GET episode ${episodeId} ${response.status}`);
         // W02 envelope: { data: MetricAnomalyEpisodeDetailDto } (members ≤ 200, window_start asc).
         const json = (await response.json()) as { data?: Partial<MetricAnomalyEpisodeDetailDto> };
         if (cancelled) return;
         setMembers(Array.isArray(json?.data?.members) ? json.data.members : []);
         setTruncated(json?.data?.membersTruncated === true);
-      } catch {
+      } catch (err) {
+        console.warn('[AnomalyEpisodeMembers] could not load episode members', err);
         if (!cancelled) setError(t('deviceAnomaliesPanel.failedToLoadDetections'));
       }
     })();

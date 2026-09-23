@@ -54,12 +54,14 @@ export default function DeviceAnomaliesPanel({
     try {
       const response = await fetchWithAuth(`/devices/${deviceId}/anomalies?status=all&limit=100`);
       if (!response.ok) {
+        console.warn('[DeviceAnomaliesPanel] legacy anomaly lookup failed', response.status);
         setLegacyRow(null);
         return;
       }
       const json = (await response.json()) as { data?: LegacyAnomalyRow[] };
       setLegacyRow(Array.isArray(json?.data) ? json.data.find((row) => row.id === anomalyId) ?? null : null);
-    } catch {
+    } catch (err) {
+      console.warn('[DeviceAnomaliesPanel] legacy anomaly lookup failed', err);
       setLegacyRow(null); // best-effort; the episode list still renders
     }
   }, [deviceId]);
@@ -86,6 +88,7 @@ export default function DeviceAnomaliesPanel({
         setLegacyRow(null);
       }
     } catch (err) {
+      console.warn('[DeviceAnomaliesPanel] episode list fetch failed', { silent: !!options.silent }, err);
       if (!options.silent) {
         setError(err instanceof Error ? err.message : t('deviceAnomaliesPanel.failedToLoadMetricAnomalies'));
       }
@@ -100,11 +103,15 @@ export default function DeviceAnomaliesPanel({
       // resolved/dismissed within the last 7 days), so the link never leads to
       // an empty list.
       const response = await fetchWithAuth(`/devices/${deviceId}/anomaly-episodes?status=closed&limit=1`);
-      if (!response.ok) return;
+      if (!response.ok) {
+        console.warn('[DeviceAnomaliesPanel] recently-closed check failed', response.status);
+        return;
+      }
       const json = (await response.json()) as Partial<MetricAnomalyEpisodeListResponse>;
       setHasClosed(Array.isArray(json?.data) && json.data.length > 0);
-    } catch {
+    } catch (err) {
       // Best-effort; the "show recently closed" link simply stays hidden.
+      console.warn('[DeviceAnomaliesPanel] recently-closed check failed', err);
     }
   }, [deviceId]);
 
