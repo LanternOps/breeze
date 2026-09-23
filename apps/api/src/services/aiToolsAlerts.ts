@@ -96,7 +96,7 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
           status: { type: 'string', enum: ['active', 'acknowledged', 'resolved', 'suppressed', 'dismissed'], description: 'Filter by status (for list)' },
           severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low', 'info'], description: 'Filter by severity (for list)' },
           deviceId: { type: 'string', description: 'Filter by device UUID (for list)' },
-          ...keysetParamSchema(8, 100),
+          ...keysetParamSchema(15, 100),
           resolutionNote: { type: 'string', description: 'Note when resolving or suppressing an alert' },
           suppressDuration: { type: 'number', description: 'Hours to suppress the alert (default: 24, max: 720). Use 0 to suppress forever (indefinitely).' }
         },
@@ -107,7 +107,7 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
       const action = input.action as string;
 
       if (action === 'list') {
-        const page = readKeysetArgs('manage_alerts', input, { defaultLimit: 8, maxLimit: 100 });
+        const page = readKeysetArgs('manage_alerts', input, { defaultLimit: 15, maxLimit: 100 });
         if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
         const { limit, after, fingerprint } = page;
         const emptyKeysetPage = (extra: Record<string, unknown> = {}) =>

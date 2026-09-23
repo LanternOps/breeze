@@ -86,13 +86,13 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
           resourceId: { type: 'string', description: 'Filter by resource UUID' },
           actorType: { type: 'string', enum: [...ACTOR_TYPES], description: 'Filter by actor type' },
           hoursBack: { type: 'number', description: 'How many hours back to search (default: 24, max: 168)' },
-          ...keysetParamSchema(20, 100),
+          ...keysetParamSchema(25, 100),
           includeDetails: { type: 'boolean', description: 'Include the details object per entry (default false)' }
         }
       }
     },
     handler: async (input, auth) => {
-      const page = readKeysetArgs('query_audit_log', input, { defaultLimit: 20, maxLimit: 100 });
+      const page = readKeysetArgs('query_audit_log', input, { defaultLimit: 25, maxLimit: 100 });
       if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
       const { limit, after, fingerprint } = page;
       const includeDetails = input.includeDetails === true;
@@ -286,13 +286,13 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
             enum: ['added', 'removed', 'modified', 'updated'],
             description: 'Optional change action filter'
           },
-          ...keysetParamSchema(20, 500),
+          ...keysetParamSchema(25, 500),
           includeValues: { type: 'boolean', description: 'Include before/after values and details per change (default false)' }
         }
       }
     },
     handler: async (input, auth) => {
-      const page = readKeysetArgs('query_change_log', input, { defaultLimit: 20, maxLimit: 500 });
+      const page = readKeysetArgs('query_change_log', input, { defaultLimit: 25, maxLimit: 500 });
       if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
       const { limit, after, fingerprint } = page;
       const includeValues = input.includeValues === true;

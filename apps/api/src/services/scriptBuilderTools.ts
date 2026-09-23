@@ -317,7 +317,7 @@ export function buildScriptBuilderTools(
         status: z.enum(['active', 'acknowledged', 'resolved', 'suppressed']).optional(),
         severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
         deviceId: uuid.optional(),
-        ...keysetZodShape(8, 100),
+        ...keysetZodShape(15, 100),
       },
       makeExistingHandler('manage_alerts', getAuth, onPreToolUse, onPostToolUse)
     ),

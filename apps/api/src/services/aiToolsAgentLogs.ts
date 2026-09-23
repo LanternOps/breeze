@@ -122,7 +122,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
             type: 'string',
             description: 'Text search within log messages (case-insensitive partial match)',
           },
-          ...keysetParamSchema(5, 500),
+          ...keysetParamSchema(18, 500),
           includeFields: {
             type: 'boolean',
             description: 'Include the structured fields object per log line (default false)',
@@ -133,7 +133,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
     },
     handler: async (input: Record<string, unknown>, auth: AuthContext) => {
       try {
-        const page = readKeysetArgs('search_agent_logs', input, { defaultLimit: 5, maxLimit: 500 });
+        const page = readKeysetArgs('search_agent_logs', input, { defaultLimit: 18, maxLimit: 500 });
         if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
         const { limit, after, fingerprint } = page;
         const includeFields = input.includeFields === true;
