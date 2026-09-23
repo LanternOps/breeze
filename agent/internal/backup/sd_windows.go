@@ -97,7 +97,8 @@ func alignedSD(sd []byte) *windows.SECURITY_DESCRIPTOR {
 // It never touches the published pathname through a path-based setter
 // (SetFileSecurityW would follow a reparse point swapped in after
 // publication): the target is opened no-follow (openNoFollow) for exactly
-// WRITE_DAC|WRITE_OWNER (+ACCESS_SYSTEM_SECURITY when the SACL is applied)
+// the rights the carried components need (WRITE_DAC for the DACL,
+// WRITE_OWNER for owner/group, ACCESS_SYSTEM_SECURITY for the SACL)
 // and the descriptor is set on that handle with SetKernelObjectSecurity.
 // Setting an arbitrary owner (TrustedInstaller, another user) needs
 // SeRestorePrivilege — the restore holds it for its duration via
@@ -119,7 +120,16 @@ func applySecurity(path string, sd []byte) error {
 	if ok, _, _ := procRtlValidRelativeSecurityDescriptor.Call(uintptr(unsafe.Pointer(desc)), uintptr(len(sd)), uintptr(info)); ok&0xff == 0 {
 		return fmt.Errorf("security descriptor for %q is not a valid self-relative descriptor of %d bytes", path, len(sd))
 	}
-	access := uint32(windows.WRITE_DAC | windows.WRITE_OWNER)
+	// Request only the rights the components being set need: a DACL-only
+	// apply must not fail for lack of WRITE_OWNER (which, absent
+	// SeRestorePrivilege, the target's DACL may not grant).
+	var access uint32
+	if info&daclSecurityInformation != 0 {
+		access |= windows.WRITE_DAC
+	}
+	if info&(ownerSecurityInformation|groupSecurityInformation) != 0 {
+		access |= windows.WRITE_OWNER
+	}
 	if info&saclSecurityInformation != 0 {
 		access |= windows.ACCESS_SYSTEM_SECURITY
 	}

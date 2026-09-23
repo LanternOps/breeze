@@ -121,9 +121,19 @@ func TestApplySecurityRefusesMalformedDescriptor(t *testing.T) {
 }
 
 // TestSDPrivilegeScopesRelease proves the capture/restore privilege scopes
-// are scoped: after release the privileges they enabled are back to their
-// prior state and hasSecurityPrivilege is false again.
+// actually enable what they claim and are scoped: INSIDE the scope every
+// privilege the token holds is enabled (and hasSecurityPrivilege is true
+// when the token holds SeSecurityPrivilege); after release each is back to
+// its prior state and hasSecurityPrivilege is false again. A do-nothing
+// implementation fails the in-scope assertions.
+//
+// Skips — loudly — on a non-elevated token that lacks SeBackupPrivilege: the
+// in-scope assertions would be vacuous there. The Windows CI gate lists this
+// test as must-not-skip, so a non-elevated runner is caught, not passed.
 func TestSDPrivilegeScopesRelease(t *testing.T) {
+	if !privilegeHeldForTest(t, "SeBackupPrivilege") {
+		t.Skip("process token does not hold SeBackupPrivilege (non-elevated runner): privilege-scope assertions would be vacuous — run elevated")
+	}
 	for _, tc := range []struct {
 		name   string
 		enable func() func()
@@ -138,6 +148,17 @@ func TestSDPrivilegeScopesRelease(t *testing.T) {
 				before[p] = privilegeEnabledForTest(t, p)
 			}
 			release := tc.enable()
+			for _, p := range tc.privs {
+				if !privilegeHeldForTest(t, p) {
+					continue
+				}
+				if !privilegeEnabledForTest(t, p) {
+					t.Errorf("%s held by the token but not enabled inside the %s scope", p, tc.name)
+				}
+			}
+			if privilegeHeldForTest(t, securityPrivName) && !hasSecurityPrivilege.Load() {
+				t.Errorf("hasSecurityPrivilege false inside the %s scope although the token holds %s", tc.name, securityPrivName)
+			}
 			release()
 			release() // idempotent
 			if hasSecurityPrivilege.Load() {
@@ -194,6 +215,22 @@ func setFileSDDLForTest(t *testing.T, path, sddl string) {
 // process token (false when the token does not hold it at all).
 func privilegeEnabledForTest(t *testing.T, name string) bool {
 	t.Helper()
+	attrs, held := tokenPrivilegeForTest(t, name)
+	return held && attrs&windows.SE_PRIVILEGE_ENABLED != 0
+}
+
+// privilegeHeldForTest reports whether the process token holds name at all
+// (enabled or not).
+func privilegeHeldForTest(t *testing.T, name string) bool {
+	t.Helper()
+	_, held := tokenPrivilegeForTest(t, name)
+	return held
+}
+
+// tokenPrivilegeForTest returns name's attributes on the process token, via
+// GetTokenInformation(TokenPrivileges), and whether the token holds it.
+func tokenPrivilegeForTest(t *testing.T, name string) (attrs uint32, held bool) {
+	t.Helper()
 	tok := windows.GetCurrentProcessToken()
 	namePtr, err := windows.UTF16PtrFromString(name)
 	if err != nil {
@@ -215,8 +252,8 @@ func privilegeEnabledForTest(t *testing.T, name string) bool {
 	tp := (*windows.Tokenprivileges)(unsafe.Pointer(&buf[0]))
 	for _, la := range unsafe.Slice(&tp.Privileges[0], tp.PrivilegeCount) {
 		if la.Luid == luid {
-			return la.Attributes&windows.SE_PRIVILEGE_ENABLED != 0
+			return la.Attributes, true
 		}
 	}
-	return false
+	return 0, false
 }

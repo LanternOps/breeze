@@ -676,8 +676,25 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	}
 	prevIndex := buildPreviousIndex(prevSnapshot)
 	// sdTbl assigns this run's SDIndex slots; every entry-append site below
-	// stamps from it, and it is attached to the manifest once the loop ends.
+	// stamps from it, and finalizeManifest attaches it to the manifest.
 	sdTbl := newSDTable()
+	// finalizeManifest derives the manifest fields that depend on the full
+	// entry list. It MUST run before EVERY publishSnapshotManifest call —
+	// including abortSourceGone's mid-loop partial publish — or a published
+	// manifest can carry SDIndex values with no securityDescriptors table
+	// (restore would silently fall back to inherited ACLs) and miss the
+	// fidelity format stamp.
+	finalizeManifest := func() {
+		// W02: a manifest carrying any content-less entry (symlink/dir),
+		// ownership or a captured security descriptor is stamped
+		// formatVersion 3 so an older reader knows to check HasContent()
+		// before trusting BackupPath — see manifestFormatFidelity's doc
+		// comment. Overrides the incremental format-2 stamp when both apply.
+		if snapshotNeedsFidelityFormat(snapshot.Files) {
+			snapshot.FormatVersion = manifestFormatFidelity
+		}
+		snapshot.SecurityDescriptors = sdTbl.encoded()
+	}
 
 	prefix := path.Join(snapshotRootDir, snapshot.ID)
 
@@ -933,6 +950,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		// abort point (500 intended, 100 stored, 5 errored would otherwise be
 		// stamped "5 missing" rather than 400).
 		recordIncompleteFilesOfTotal(snapshot, errs, failedSources, filesTotal)
+		finalizeManifest()
 		if pubErr := publishSnapshotManifest(ctx, provider, snapshot, prefix); pubErr != nil {
 			// Deliberately NOT followed by cleanupSnapshotPrefix. Deletion is
 			// irreversible and this is a data-protection product: retained
@@ -1242,15 +1260,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	// were swallowed by the `!force` check above.
 	emitProgress(true)
 
-	// W02: a manifest carrying any content-less entry (symlink/dir) or
-	// ownership is stamped formatVersion 3 so an older reader knows to
-	// check HasContent() before trusting BackupPath — see
-	// manifestFormatFidelity's doc comment. Overrides the incremental
-	// format-2 stamp above when both apply.
-	if snapshotNeedsFidelityFormat(snapshot.Files) {
-		snapshot.FormatVersion = manifestFormatFidelity
-	}
-	snapshot.SecurityDescriptors = sdTbl.encoded()
+	finalizeManifest()
 
 	if len(snapshot.Files) == 0 {
 		return nil, errors.Join(errs...)

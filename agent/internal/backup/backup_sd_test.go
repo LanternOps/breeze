@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -193,5 +194,65 @@ func TestCreateSnapshot_NoSDCaptureLeavesManifestUnchanged(t *testing.T) {
 		if strings.Contains(string(raw), key) {
 			t.Errorf("manifest JSON unexpectedly carries %q: %s", key, raw)
 		}
+	}
+}
+
+// TestCreateSnapshot_SourceGoneWithoutJournal_PartialManifestCarriesSDTable
+// pins that the journal-less abortSourceGone path — which publishes a
+// PARTIAL manifest mid-loop — finalizes the manifest exactly like the normal
+// end-of-run path: every published SDIndex resolves in the published
+// securityDescriptors table, and the fidelity format version is stamped.
+// Without that, a restore would see SDIndex > 0 with no table and silently
+// fall back to inherited ACLs.
+func TestCreateSnapshot_SourceGoneWithoutJournal_PartialManifestCarriesSDTable(t *testing.T) {
+	defer setShortUploadRetryDelayForTest(0)()
+	defer setUploadRetryDelayForTest(0)()
+
+	f := newFakeStat()
+	f.install(t)
+	root, files := filesUnderCommonRoot(t, 5)
+	f.set(root, true)
+	for i := range files {
+		files[i].sd = []byte{byte('A' + i%2)} // two distinct descriptors, deduplicated
+	}
+
+	backing := newMockProvider()
+	provider := &snapshotKillingProvider{
+		backing: backing,
+		target:  files[2].sourcePath,
+		srcRoot: root,
+		onDeath: func() { f.set(root, false) },
+	}
+	liveness := newShadowRootLiveness(map[string]string{`C:`: root})
+	_, err := createSnapshotWithProgress(context.Background(), provider, files, nil, nil, nil, liveness)
+	if !errors.Is(err, errSourceSnapshotGone) {
+		t.Fatalf("want errSourceSnapshotGone, got %v", err)
+	}
+
+	backing.mu.Lock()
+	var raw []byte
+	for key, data := range backing.files {
+		if strings.HasSuffix(key, "/"+snapshotManifestKey) {
+			raw = data
+		}
+	}
+	backing.mu.Unlock()
+	if raw == nil {
+		t.Fatal("no partial manifest was published")
+	}
+	var published Snapshot
+	if err := json.Unmarshal(raw, &published); err != nil {
+		t.Fatalf("decode published manifest: %v", err)
+	}
+	if len(published.Files) == 0 {
+		t.Fatal("published manifest has no entries")
+	}
+	for _, e := range published.Files {
+		if e.SDIndex < 1 || e.SDIndex > len(published.SecurityDescriptors) {
+			t.Errorf("%s: SDIndex %d does not resolve in a table of %d descriptors", e.SourcePath, e.SDIndex, len(published.SecurityDescriptors))
+		}
+	}
+	if published.FormatVersion != manifestFormatFidelity {
+		t.Errorf("partial manifest FormatVersion = %d, want %d", published.FormatVersion, manifestFormatFidelity)
 	}
 }
