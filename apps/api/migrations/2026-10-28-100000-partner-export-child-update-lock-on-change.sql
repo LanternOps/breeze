@@ -26,7 +26,17 @@
 -- * the lock is taken whenever any row changed, even with no device/site id
 --   (manual-subject device_warranty rows), and before `touch_*`, which takes
 --   its own lock via the owner's current org.
--- INSERT/DELETE triggers are deliberately unchanged: row identity is exported.
+-- INSERT/DELETE triggers keep their locking: row identity is exported.
+--
+-- Also: the site triggers' discovered_assets filter now includes approved
+-- 'website' and 'service' assets. The partner export has published them
+-- (url/label/source, routes/partnerApi/inventory.ts networkEquipment) since
+-- 2026-10-14-100100, but the insert/update/delete triggers still listed only
+-- the six scan equipment types, so edits to them never advanced the site
+-- inventory watermark (incremental cursors could miss them). site_child_insert
+-- and site_child_delete are replayed verbatim from
+-- 2026-07-23-partner-export-material-state-hardening.sql with only that list
+-- extended.
 --
 -- Bodies are replayed verbatim from their latest definitions
 -- (device: 2026-10-14-100200-device-warranty-manual-asset-subject.sql,
@@ -101,8 +111,8 @@ BEGIN
     SELECT o.value old_value, n.value new_value FROM old_data o FULL JOIN new_data n USING (row_key)
     WHERE (o.value - excluded) IS DISTINCT FROM (n.value - excluded)
       AND (TG_TABLE_NAME <> 'discovered_assets' OR
-        (o.value->>'approval_status' = 'approved' AND o.value->>'asset_type' IN ('printer', 'router', 'switch', 'firewall', 'access_point', 'nas')) OR
-        (n.value->>'approval_status' = 'approved' AND n.value->>'asset_type' IN ('printer', 'router', 'switch', 'firewall', 'access_point', 'nas')))
+        (o.value->>'approval_status' = 'approved' AND o.value->>'asset_type' IN ('printer', 'router', 'switch', 'firewall', 'access_point', 'nas', 'website', 'service')) OR
+        (n.value->>'approval_status' = 'approved' AND n.value->>'asset_type' IN ('printer', 'router', 'switch', 'firewall', 'access_point', 'nas', 'website', 'service')))
   )
   SELECT
     (SELECT array_agg(DISTINCT owner_org ORDER BY owner_org) FROM changed CROSS JOIN LATERAL (VALUES
@@ -117,6 +127,44 @@ BEGIN
   IF cardinality(COALESCE(org_ids, ARRAY[]::uuid[])) > 0 THEN
     PERFORM public.breeze_partner_export_lock_orgs_exclusive(org_ids);
   END IF;
+  PERFORM public.breeze_partner_export_touch_sites(ids,
+    TG_TABLE_NAME IN ('discovered_assets', 'network_baselines'),
+    TG_TABLE_NAME IN ('discovered_assets', 'network_topology'));
+  RETURN NULL;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.breeze_partner_export_site_child_insert()
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$
+DECLARE ids uuid[];
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM new_rows row
+    WHERE NOT EXISTS (SELECT 1 FROM public.sites s
+      WHERE s.id = (to_jsonb(row)->>'site_id')::uuid
+        AND s.org_id = (to_jsonb(row)->>'org_id')::uuid)
+  ) THEN RAISE EXCEPTION USING ERRCODE = '23503', MESSAGE = 'site child tenant owner does not match site'; END IF;
+  SELECT array_agg(DISTINCT (to_jsonb(row)->>'site_id')::uuid ORDER BY (to_jsonb(row)->>'site_id')::uuid)
+    INTO ids FROM new_rows row
+   WHERE TG_TABLE_NAME <> 'discovered_assets' OR (
+     to_jsonb(row)->>'approval_status' = 'approved'
+     AND to_jsonb(row)->>'asset_type' IN ('printer', 'router', 'switch', 'firewall', 'access_point', 'nas', 'website', 'service'));
+  PERFORM public.breeze_partner_export_touch_sites(ids,
+    TG_TABLE_NAME IN ('discovered_assets', 'network_baselines'),
+    TG_TABLE_NAME IN ('discovered_assets', 'network_topology'));
+  RETURN NULL;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.breeze_partner_export_site_child_delete()
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$
+DECLARE ids uuid[];
+BEGIN
+  SELECT array_agg(DISTINCT (to_jsonb(row)->>'site_id')::uuid ORDER BY (to_jsonb(row)->>'site_id')::uuid)
+    INTO ids FROM old_rows row
+   WHERE TG_TABLE_NAME <> 'discovered_assets' OR (
+     to_jsonb(row)->>'approval_status' = 'approved'
+     AND to_jsonb(row)->>'asset_type' IN ('printer', 'router', 'switch', 'firewall', 'access_point', 'nas', 'website', 'service'));
   PERFORM public.breeze_partner_export_touch_sites(ids,
     TG_TABLE_NAME IN ('discovered_assets', 'network_baselines'),
     TG_TABLE_NAME IN ('discovered_assets', 'network_topology'));

@@ -1,7 +1,7 @@
 import './setup';
 import { eq, sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
-import { deviceDisks, deviceIpHistory, devices, discoveredAssets } from '../../db/schema';
+import { deviceDisks, deviceIpHistory, devices, discoveredAssets, partnerExportSiteMaterialState } from '../../db/schema';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
 
@@ -36,7 +36,13 @@ async function seed() {
     approvalStatus: 'approved', hostname: 'core-sw',
   }).returning();
   if (!ip || !disk || !asset) throw new Error('child insert failed');
-  return { orgId: org.id, ipId: ip.id, diskId: disk.id, assetId: asset.id };
+  return { orgId: org.id, siteId: site.id, ipId: ip.id, diskId: disk.id, assetId: asset.id };
+}
+
+async function siteInventoryWatermark(siteId: string): Promise<number> {
+  const [state] = await getTestDb().select({ inventory: partnerExportSiteMaterialState.inventoryUpdatedAt })
+    .from(partnerExportSiteMaterialState).where(eq(partnerExportSiteMaterialState.siteId, siteId));
+  return state?.inventory?.getTime() ?? 0;
 }
 
 /** Run `write` in its own transaction and return the org locks it recorded. */
@@ -102,5 +108,29 @@ describe('partner-export child UPDATE triggers lock only on material change', ()
       release();
       await reader;
     }
+  });
+
+  // The partner export publishes approved website/service assets (url, label,
+  // source — routes/partnerApi/inventory.ts networkEquipment), so the site
+  // triggers must treat them as material like the other equipment types.
+  runDb('approved website/service assets are material on insert, update and delete', async () => {
+    const f = await seed();
+    const db = getTestDb();
+    const before = await siteInventoryWatermark(f.siteId);
+    const [site] = await db.insert(discoveredAssets).values({
+      orgId: f.orgId, siteId: f.siteId, assetType: 'website', approvalStatus: 'approved', source: 'manual',
+      url: 'https://intranet.example.com', label: 'Intranet',
+    }).returning();
+    if (!site) throw new Error('website insert failed');
+    const afterInsert = await siteInventoryWatermark(f.siteId);
+    expect(afterInsert).toBeGreaterThan(before);
+
+    await expect(orgLocksTakenBy((tx) => tx.update(discoveredAssets)
+      .set({ url: 'https://portal.example.com' }).where(eq(discoveredAssets.id, site.id)))).resolves.toEqual([f.orgId]);
+    const afterUpdate = await siteInventoryWatermark(f.siteId);
+    expect(afterUpdate).toBeGreaterThan(afterInsert);
+
+    await db.delete(discoveredAssets).where(eq(discoveredAssets.id, site.id));
+    expect(await siteInventoryWatermark(f.siteId)).toBeGreaterThan(afterUpdate);
   });
 });
