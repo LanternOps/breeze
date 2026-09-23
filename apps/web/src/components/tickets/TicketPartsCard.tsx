@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
-import { runAction, handleActionError } from '../../lib/runAction';
+import { runAction, ActionError, handleActionError } from '../../lib/runAction';
 import { broadcastBillingChanged } from '../../lib/timerActions';
 import CatalogItemPicker from '../catalog/CatalogItemPicker';
 import { listCatalog, priceFor, type CatalogItem } from '../../lib/api/catalog';
@@ -177,6 +177,13 @@ export default function TicketPartsCard({ ticketId, currencyCode }: Props) {
       broadcastBillingChanged();
     } catch (err) {
       handleActionError(err, editingId ? t('ticketPartsCard.toast.updateFailedSentence') : t('ticketPartsCard.toast.addFailedSentence'));
+      // BQ-7: a 404 on an edit means the part was deleted out from under it
+      // (e.g. by another session) — leaving the form open just edits a ghost
+      // row. Exit edit mode and refetch so it disappears from the list.
+      if (editingId && err instanceof ActionError && err.status === 404) {
+        resetForm();
+        await refresh();
+      }
     } finally {
       setBusy(false);
     }
@@ -195,6 +202,13 @@ export default function TicketPartsCard({ ticketId, currencyCode }: Props) {
       broadcastBillingChanged();
     } catch (err) {
       handleActionError(err, t('ticketPartsCard.toast.deleteFailedSentence'));
+      // BQ-7: a 404 means the part is already gone (e.g. deleted by another
+      // session) — the confirm affordance would otherwise stay stuck on a
+      // ghost row. Exit confirm mode and refetch so it disappears.
+      if (err instanceof ActionError && err.status === 404) {
+        setConfirmingDeleteId(null);
+        await refresh();
+      }
     }
   };
 

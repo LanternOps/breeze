@@ -2065,6 +2065,7 @@
     "iocScans": "Varreduras de IOC",
     "subtitle": "Varreduras de malware e IOC baseadas em assinatura em toda a sua frota. Não substitui a proteção completa de endpoints.",
     "scansTab": "Varreduras",
-    "threatsTab": "Ameaças"
+    "threatsTab": "Ameaças",
+    "backToThreats": "Voltar para ameaças"
   }
 }

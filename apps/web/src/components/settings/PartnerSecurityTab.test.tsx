@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
-import { parseAllowlistInput, currentIpCovered } from './PartnerSecurityTab';
+import { describe, it, expect, vi } from 'vitest';
+import { render, fireEvent } from '@testing-library/react';
+import PartnerSecurityTab, { parseAllowlistInput, currentIpCovered } from './PartnerSecurityTab';
 
 describe('parseAllowlistInput', () => {
   it('splits lines, trims, and drops blanks', () => {
@@ -27,5 +28,21 @@ describe('currentIpCovered', () => {
 
   it('is true (no false lockout warning) when current IP is unknown', () => {
     expect(currentIpCovered(null, ['203.0.113.0/24'])).toBe(true);
+  });
+});
+
+describe('PartnerSecurityTab allowlist textarea', () => {
+  // The API only clears a stored allowlist when `ipAllowlist` is present in the
+  // write (routes/orgs.ts preserves it when the key is omitted), so emptying the
+  // textarea must emit an explicit [] — `undefined` is dropped by JSON and the
+  // old list silently survives the save.
+  it('emits an explicit empty list when the textarea is cleared', () => {
+    const onChange = vi.fn();
+    const { container } = render(
+      <PartnerSecurityTab data={{ ipAllowlist: ['203.0.113.0/24'] }} onChange={onChange} />,
+    );
+    const textarea = container.querySelector('textarea')!;
+    fireEvent.change(textarea, { target: { value: '' } });
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ ipAllowlist: [] }));
   });
 });

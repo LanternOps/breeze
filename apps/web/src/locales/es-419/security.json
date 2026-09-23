@@ -2065,6 +2065,7 @@
     "iocScans": "Escaneos de IOC",
     "subtitle": "Barridos de malware e IOC basados en firmas en toda su flota. No sustituye la protección completa de terminales.",
     "scansTab": "Escaneos",
-    "threatsTab": "Amenazas"
+    "threatsTab": "Amenazas",
+    "backToThreats": "Volver a las amenazas"
   }
 }

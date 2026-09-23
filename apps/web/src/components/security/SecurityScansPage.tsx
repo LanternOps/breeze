@@ -1,10 +1,12 @@
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
+import { ArrowLeft } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
 import { useHashTab } from "@/lib/useHashState";
 import SecurityPageHeader from "./SecurityPageHeader";
 import SecurityScanManager from "./SecurityScanManager";
 import ThreatList from "./ThreatList";
+import ThreatDetail from "./ThreatDetail";
 
 type ScansTab = "scans" | "threats";
 
@@ -13,11 +15,18 @@ const SCANS_TABS: readonly ScansTab[] = ["scans", "threats"];
 export default function SecurityScansPage() {
   const { t } = useTranslation("security");
   const [tab, setTab] = useHashTab<ScansTab>(SCANS_TABS, "scans");
+  // Local, not hash-backed: this page only uses the hash for the top-level
+  // scans/threats tab (see CLAUDE.md "URL State in Components"), and a
+  // selected-threat id isn't a tab.
+  const [selectedThreatId, setSelectedThreatId] = useState<string | null>(
+    null,
+  );
 
   const switchTab = useCallback(
     (next: ScansTab) => {
       window.location.hash = next;
       setTab(next);
+      setSelectedThreatId(null);
     },
     [setTab],
   );
@@ -52,9 +61,22 @@ export default function SecurityScansPage() {
         <div data-testid="security-scan-manager">
           <SecurityScanManager />
         </div>
+      ) : selectedThreatId ? (
+        <div data-testid="security-threat-detail">
+          <button
+            type="button"
+            data-testid="security-threat-detail-close"
+            onClick={() => setSelectedThreatId(null)}
+            className="mb-4 inline-flex items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            {t("securityScansPage.backToThreats")}
+          </button>
+          <ThreatDetail threatId={selectedThreatId} />
+        </div>
       ) : (
         <div data-testid="security-threat-list">
-          <ThreatList />
+          <ThreatList onSelectThreat={setSelectedThreatId} />
         </div>
       )}
     </div>

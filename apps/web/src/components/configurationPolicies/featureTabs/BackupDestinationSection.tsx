@@ -667,7 +667,7 @@ export default function BackupDestinationSection({
                     placeholder={i18n.t(
                       "policies:configurationPolicies.featureTabs.backupTab.secretKey",
                     )}
-                    autoComplete="off"
+                    autoComplete="new-password"
                     className="mt-1 h-10 w-full rounded-md border bg-background px-3 font-mono text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                 </div>

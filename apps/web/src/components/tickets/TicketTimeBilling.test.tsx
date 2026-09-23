@@ -107,6 +107,26 @@ describe('TicketTimeBilling', () => {
     expect(indicator.textContent).toBe('2 entries have no hourly rate — not counted in the amount above');
   });
 
+  // BQ-4: the note names what "the amount above" is — it must actually render
+  // above the amount, not before it in DOM order (which put it above the
+  // Time Amount row it refers to).
+  it('renders the missing-rate note below the Time Amount row it refers to', async () => {
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url.startsWith('/tickets/tk-1/billing-summary')) {
+        return { ok: true, status: 200, json: async () => ({ data: {
+          time: { totalMinutes: 90, billableMinutes: 30, billableAmounts: [], missingRateCount: 1 },
+          parts: { partsCount: 0, billableTotals: [] },
+        } }) } as Response;
+      }
+      return route(url);
+    });
+    render(<TicketTimeBilling ticketId="tk-1" />);
+    const amountRow = await screen.findByTestId('ticket-billing-amount');
+    const note = await screen.findByTestId('ticket-billing-missing-rate');
+    // DOCUMENT_POSITION_FOLLOWING (4) means `note` comes after `amountRow`.
+    expect(amountRow.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it('renders a dash (not $0.00) when a summary carries no money', async () => {
     fetchWithAuth.mockImplementation(async (url: string) => {
       if (url.startsWith('/tickets/tk-1/billing-summary')) {

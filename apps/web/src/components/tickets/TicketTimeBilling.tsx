@@ -249,21 +249,22 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
               {t('ticketTimeBilling.includedMinutes', { hours: ((summary.time.includedMinutes ?? 0) / 60).toFixed(2) })}
             </div>
           )}
-          {/* #6466: billableMinutes above already includes rate-less entries
-              (the minimum/rounding SQL doesn't filter on rate), so the amount
-              row below can be blank for a nonzero billable-hours figure. Name
-              the gap here instead of leaving it unexplained. */}
-          {(summary.time.missingRateCount ?? 0) > 0 && (
-            <div className="flex justify-end text-xs text-muted-foreground" data-testid="ticket-billing-missing-rate">
-              {t('ticketTimeBilling.missingRateCount', { count: summary.time.missingRateCount })}
-            </div>
-          )}
           <div className="flex justify-between text-xs">
             <dt className="text-muted-foreground">{t('ticketTimeBilling.timeAmount')}</dt>
             <dd data-testid="ticket-billing-amount">
               <CurrencyAmounts amounts={summary.time.billableAmounts ?? []} testIdPrefix="ticket-billing-amount" empty={t('ticketTimeBilling.noAmount')} />
             </dd>
           </div>
+          {/* #6466/BQ-4: billableMinutes above already includes rate-less
+              entries (the minimum/rounding SQL doesn't filter on rate), so
+              the amount row above this note can be blank for a nonzero
+              billable-hours figure. Rendered BELOW the amount row it refers
+              to ("not counted in the amount above") — must stay below it. */}
+          {(summary.time.missingRateCount ?? 0) > 0 && (
+            <div className="flex justify-end text-xs text-muted-foreground" data-testid="ticket-billing-missing-rate">
+              {t('ticketTimeBilling.missingRateCount', { count: summary.time.missingRateCount })}
+            </div>
+          )}
           <div className="flex justify-end">
             <ApproximateMoneyLine byCurrency={toReportingGroups(summary.time.billableAmounts ?? [])} testId="ticket-labor-approx" />
           </div>

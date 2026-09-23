@@ -2065,6 +2065,7 @@
     "iocScans": "IOC-Scans",
     "subtitle": "Signaturbasierte Malware- und IOC-Sweeps in Ihrer Flotte. Kein Ersatz für umfassenden Endpunktschutz.",
     "scansTab": "Scans",
-    "threatsTab": "Bedrohungen"
+    "threatsTab": "Bedrohungen",
+    "backToThreats": "Zurück zu den Bedrohungen"
   }
 }

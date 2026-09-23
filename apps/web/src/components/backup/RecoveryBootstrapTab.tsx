@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 import { cn, formatBytes } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
-import { runAction } from '../../lib/runAction';
+import { ActionError, runAction } from '../../lib/runAction';
 import { formatTime } from './backupDashboardHelpers';
 import BareMetalRecoveryPanel from './BareMetalRecoveryPanel';
 import { useTranslation } from 'react-i18next';
@@ -482,6 +482,7 @@ export default function RecoveryBootstrapTab() {
   const [previewingTokenId, setPreviewingTokenId] = useState<string | null>(null);
   const [copyStatusId, setCopyStatusId] = useState<string | null>(null);
   const [error, setError] = useState<string>();
+  const [errorReasons, setErrorReasons] = useState<string[]>([]);
   const [tokenMessage, setTokenMessage] = useState<string>();
   const [loadingMedia, setLoadingMedia] = useState(false);
   const [creatingMedia, setCreatingMedia] = useState(false);
@@ -708,6 +709,7 @@ export default function RecoveryBootstrapTab() {
 
   const handleCreateToken = useCallback(async () => {
     setError(undefined);
+    setErrorReasons([]);
     setTokenMessage(undefined);
 
     if (!createSnapshotId) {
@@ -763,7 +765,19 @@ export default function RecoveryBootstrapTab() {
       setCreateTargetConfig('');
       setCreateExpiresInHours('24');
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('recoveryBootstrapTab.failedToCreateRecoveryToken'));
+      // The API answers 409 with the raw machine token in `error` (e.g.
+      // `snapshot_not_bare_metal_restorable`) plus a `reasons` array —
+      // the actual "why". Map the known refusal to plain copy and surface
+      // the reasons instead of letting the raw code reach the UI verbatim.
+      const body = err instanceof ActionError ? err.body : undefined;
+      if (isRecord(body) && body.error === 'snapshot_not_bare_metal_restorable') {
+        setError("This snapshot can't be used for a bare-metal restore.");
+        setErrorReasons(
+          Array.isArray(body.reasons) ? body.reasons.filter((r): r is string => typeof r === 'string') : []
+        );
+      } else {
+        setError(err instanceof Error ? err.message : t('recoveryBootstrapTab.failedToCreateRecoveryToken'));
+      }
     } finally {
       setCreating(false);
     }
@@ -1041,7 +1055,14 @@ export default function RecoveryBootstrapTab() {
 
       {error && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {error}
+          <p>{error}</p>
+          {errorReasons.length > 0 && (
+            <ul className="mt-1 list-disc space-y-0.5 pl-4">
+              {errorReasons.map((reason) => (
+                <li key={reason}>{reason}</li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
       {tokenMessage && (
