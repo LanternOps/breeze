@@ -107,6 +107,7 @@ function toUnifiedListShape(r: UnifiedListSourceRow) {
     agentId: null,
     agentVersion: null,
     watchdogVersion: null,
+    helperVersion: null,
     osType: null,
     osVersion: null,
     osBuild: null,

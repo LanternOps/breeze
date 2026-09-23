@@ -387,6 +387,50 @@ describe('DeviceInfoTab — watchdog version display', () => {
   });
 });
 
+describe('DeviceInfoTab — helper version display (#6751)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function mockDevice(helperVersion: string | null) {
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === `/devices/${deviceId}` && method === 'GET') {
+        return makeJsonResponse({
+          ...baseDeviceInfoPayload,
+          agentVersion: '0.70.0',
+          watchdogVersion: '0.70.0',
+          helperVersion,
+        });
+      }
+      if (url === '/custom-fields') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+  }
+
+  it('shows the helper version the agent reported', async () => {
+    mockDevice('0.69.4');
+
+    render(<DeviceInfoTab deviceId={deviceId} />);
+
+    const label = await screen.findByText('Helper Version');
+    expect(label.parentElement).toHaveTextContent('0.69.4');
+  });
+
+  it('shows a dash (not "Not Installed") when no helper version has been reported', async () => {
+    // null means "not reported" — an old agent, or the helper is absent — so
+    // the row must not claim the helper is uninstalled.
+    mockDevice(null);
+
+    render(<DeviceInfoTab deviceId={deviceId} />);
+
+    const label = await screen.findByText('Helper Version');
+    expect(label.parentElement).toHaveTextContent('—');
+    expect(label.parentElement).not.toHaveTextContent('Not Installed');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // runAction adoption on the other two mutating handlers in this file.
 // ---------------------------------------------------------------------------

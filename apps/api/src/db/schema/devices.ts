@@ -194,6 +194,9 @@ export const devices = pgTable('devices', {
   // Nullable: old agents and devices without the backup binary installed
   // never report one.
   backupVersion: varchar('backup_version', { length: 50 }),
+  // Installed Breeze Assist (user helper) version from the heartbeat (#6751).
+  // Nullable: old agents and devices without the helper never report one.
+  helperVersion: varchar('helper_version', { length: 50 }),
   // #2288 — the control-plane URL the agent last heartbeated to. Reported by
   // the agent; shows fleet position during a server URL migration.
   agentServerUrl: varchar('agent_server_url', { length: 512 }),

@@ -1120,6 +1120,7 @@
     "agent": "Agente",
     "agentVersion": "Versão do agente",
     "watchdogVersion": "Versão do watchdog",
+    "helperVersion": "Versão do assistente",
     "status": "Status",
     "lastSeen": "Visto por último",
     "enrolled": "Registrado",

@@ -4069,6 +4069,76 @@ describe('POST /agents/:id/heartbeat — backupVersion telemetry', () => {
   });
 });
 
+describe('POST /agents/:id/heartbeat — helperVersion persistence (#6751)', () => {
+  // The agent reports the installed Breeze Assist helper version so the server
+  // can compute helperUpgradeTo. Until #6751 it was used for that and dropped,
+  // so a helper stuck behind the promoted release was invisible in the portal.
+  // Unlike watchdog/backup it is also a filter field, so it is written only on
+  // change: an unconditional write would make every heartbeat look like a
+  // filterable change and enqueue a dynamic-group re-evaluation (#4630).
+  const deviceRow = {
+    id: 'device-1', orgId: 'org-1', siteId: 'site-1', hostname: 'host',
+    osType: 'windows', architecture: 'amd64', agentVersion: '0.66.0',
+    helperVersion: '0.65.0', deviceRoleSource: 'auto',
+    lastSeenAt: new Date(), mainAgentSilentSince: null,
+  };
+
+  function arrange(setSpy: ReturnType<typeof vi.fn>) {
+    vi.clearAllMocks();
+    requestDeviceGroupReevaluationMock.mockResolvedValue('job-1');
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
+    selectMock.mockReturnValue(selectChainResolving([]));
+    updateMock.mockReturnValue({ set: setSpy });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+  }
+
+  async function post(body: Record<string, unknown>) {
+    return buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'agent', metrics: minimalHeartbeatBody.metrics, ...body }),
+    });
+  }
+
+  it('persists a changed helperVersion and enqueues a dynamic-group re-evaluation for it', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    arrange(setSpy);
+
+    const resp = await post({ agentVersion: '0.66.0', helperVersion: '0.66.0' });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.helperVersion).toBe('0.66.0');
+    expect(requestDeviceGroupReevaluationMock).toHaveBeenCalledWith(
+      expect.objectContaining({ deviceId: 'device-1', changedFields: ['helperVersion'] }),
+    );
+  });
+
+  it('does not rewrite or re-evaluate when the agent re-reports the stored helperVersion (steady state)', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    arrange(setSpy);
+
+    const resp = await post({ agentVersion: '0.66.0', helperVersion: '0.65.0' });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg).not.toHaveProperty('helperVersion');
+    expect(requestDeviceGroupReevaluationMock).not.toHaveBeenCalled();
+  });
+
+  it('leaves the stored helperVersion untouched when the agent omits it (old agent, or helper not installed)', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    arrange(setSpy);
+
+    const resp = await post({ agentVersion: '0.66.0' });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg).not.toHaveProperty('helperVersion');
+  });
+});
+
 describe('POST /agents/:id/heartbeat — rollback component inventory', () => {
   const deviceRow = {
     id: 'device-1', orgId: 'org-1', siteId: 'site-1', hostname: 'host',

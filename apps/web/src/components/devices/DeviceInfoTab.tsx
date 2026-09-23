@@ -73,6 +73,7 @@ type DeviceInfo = {
   architecture?: string | null;
   agentVersion?: string | null;
   watchdogVersion?: string | null;
+  helperVersion?: string | null;
   status?: string | null;
   lastSeenAt?: string | null;
   enrolledAt?: string | null;
@@ -1068,6 +1069,10 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
         <InfoRow
           label={t("deviceInfoTab.watchdogVersion")}
           value={formatWatchdogVersion(info?.watchdogVersion)}
+        />
+        <InfoRow
+          label={t("deviceInfoTab.helperVersion")}
+          value={info?.helperVersion?.trim() || "—"}
         />
         <div className="flex justify-between py-2">
           <dt className="text-sm text-muted-foreground">
