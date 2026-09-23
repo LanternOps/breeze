@@ -1019,6 +1019,25 @@ describe('DevicesPage — device class segment filter (#1424)', () => {
     await waitFor(() => expect(next.getAttribute('data-device-count')).toBe('3'));
   });
 
+  it('keeps the chosen segment when a modal overwrites and then clears the hash (#5874 review)', async () => {
+    // Deep-linked Network, nothing remembered — the fallback (Agent) differs
+    // from what the user is looking at.
+    history.replaceState(null, '', '/devices#deviceClass=network');
+    const list = await renderMixedFleetRaw();
+    await waitFor(() => expect(list.getAttribute('data-device-count')).toBe('1'));
+
+    // "Add network asset" replaces the whole hash; closing the modal clears it.
+    fireEvent.click(screen.getByTestId('devices-page-add-menu-trigger'));
+    fireEvent.click(screen.getByTestId('devices-page-add-menu-network-asset'));
+    expect(window.location.hash).toBe('#add-network-asset');
+    await act(async () => { await new Promise(r => setTimeout(r, 20)); });
+    window.location.hash = '';
+    await act(async () => { await new Promise(r => setTimeout(r, 20)); });
+
+    expect(list.getAttribute('data-device-count')).toBe('1');
+    expect(screen.getByTestId('device-class-segment-network')).toHaveAttribute('aria-pressed', 'true');
+  });
+
   it('ignores a remembered Network choice when the segment is hidden (#5874)', async () => {
     flagState.ENABLE_NETWORK_DEVICES_IN_LIST = false;
     window.localStorage.setItem('breeze.devices.deviceClass', 'network');

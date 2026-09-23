@@ -29,12 +29,9 @@ import { DeviceClassSegment } from './DeviceClassSegment';
 import {
   filterDevicesByClass,
   countDevicesByClass,
-  resolveDeviceClass,
-  saveDeviceClassPreference,
-  writeDeviceClassToHash,
-  DEFAULT_DEVICE_CLASS,
   type DeviceClassFilter,
 } from './deviceClassFilter';
+import { useDeviceClassFilter } from './useDeviceClassFilter';
 import { fetchWithAuth, handleSessionExpired } from '../../stores/auth';
 import { runAction } from '../../lib/runAction';
 import { fetchAllDevices, fetchAllNetworkDevices, fetchAllManualAssets } from '../../lib/devicesFetch';
@@ -387,18 +384,12 @@ export default function DevicesPage() {
   // v2 chip bar seeds its filter from the URL hash so a filtered view is
   // shareable; the legacy DeviceFilterBar owns its own state and ignores it.
   const [advancedFilter, setAdvancedFilter] = useHashState<FilterConditionGroup | null>(null, (h) => decodeFilterFromHash(h) ?? undefined);
-  // [ All | Agent | Network ] class segment (#1424). Seeded from the hash so a
-  // chosen class is shareable; a pure client-side narrowing of the merged list.
-  // With no hash key it opens on the user's last choice, else Agent (#5874).
-  // Only a user click records the preference — a deep link never overwrites it.
+  // [ All | Agent | Network ] class segment (#1424). Hash-seeded so a chosen
+  // class is shareable; with no hash key it opens on the user's last choice,
+  // else Agent (#5874). See useDeviceClassFilter for why it isn't useHashState.
   // Only meaningful when the network arm is enabled (otherwise the list is
   // agent-only and the segment is hidden).
-  const [deviceClassFilter, setDeviceClassFilter] = useHashState<DeviceClassFilter>(DEFAULT_DEVICE_CLASS, resolveDeviceClass);
-  const handleDeviceClassChange = useCallback((next: DeviceClassFilter) => {
-    setDeviceClassFilter(next);
-    writeDeviceClassToHash(next);
-    saveDeviceClassPreference(next);
-  }, []);
+  const [deviceClassFilter, handleDeviceClassChange] = useDeviceClassFilter();
   // Inline ("instant") client-side filters — shared between DeviceFilterToolbar
   // (the controls) and DeviceList (the filtering) so each dimension has a single
   // source of truth. This is the hybrid model's client half; the group above is
