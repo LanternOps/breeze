@@ -850,6 +850,17 @@ describe('report definition scope SQL predicates', () => {
     }
   });
 
+  // #3198 W02 (addendum B6). An unknown scope kind is a wiring bug (a new
+  // SiteScopeV1 kind without a predicate arm), never "no rows": the default
+  // arm is an exhaustive assertNever. The compile-time half is the `never`
+  // parameter; this is the runtime half for a value that escaped the types.
+  it('throws on a scope kind it does not know instead of matching nothing', () => {
+    expect(() => reportDefinitionScopeSqlPredicate(
+      reports,
+      { version: 1, kind: 'bogus', orgId: ORG_A } as unknown as LiveSiteScopeV1,
+    )).toThrow(/unsupported site scope kind/);
+  });
+
   it('admits non-user principals in the unrestricted branch only', () => {
     // Without this branch the download/list predicates drop every
     // system-authored row (they require execution_scope_user_id NOT NULL),

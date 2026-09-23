@@ -288,7 +288,7 @@ describe('POST /reports ownerScope=partner (#3198 W01)', () => {
     expect(resolveRequestPartnerReportAuthority).not.toHaveBeenCalled();
   });
 
-  it('400s a type not in PARTNER_SCOPE_REPORT_TYPES', async () => {
+  it('400s a type whose registry entry does not support partner scope', async () => {
     const res = await app().request('/reports', {
       method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ ...body, type: 'device_inventory' }),
     });
@@ -323,13 +323,29 @@ describe('POST /reports ownerScope=partner (#3198 W01)', () => {
   it('ignores a client-supplied partnerId', async () => {
     const res = await app().request('/reports', {
       method: 'POST', headers: JSON_HEADERS,
-      body: JSON.stringify({ ...body, partnerId: OTHER_PARTNER_ID, orgId: ORG_ID }),
+      body: JSON.stringify({ ...body, partnerId: OTHER_PARTNER_ID }),
     });
 
     expect(res.status).toBe(201);
     expect(state.inserts[0]!.values.partnerId).toBe(PARTNER_ID);
     expect(state.inserts[0]!.values.orgId).toBeNull();
     expect(resolveRequestPartnerReportAuthority).toHaveBeenCalledWith(state.auth, PARTNER_ID, 'write');
+  });
+
+  // #3198 W02 (addendum B6): the partner arm of the ownerScope discriminated
+  // union declares `orgId: z.never()`. W01 accepted-and-ignored it; a caller
+  // who believes they aimed a partner report at one org now gets a 400.
+  it('400s a partner-owned create that carries an orgId', async () => {
+    const res = await app().request('/reports', {
+      method: 'POST', headers: JSON_HEADERS,
+      body: JSON.stringify({ ...body, orgId: ORG_ID }),
+    });
+
+    expect(res.status).toBe(400);
+    expect((await res.json() as { details: { fieldErrors: Record<string, unknown> } }).details.fieldErrors)
+      .toHaveProperty('orgId');
+    expect(state.inserts).toHaveLength(0);
+    expect(resolveRequestPartnerReportAuthority).not.toHaveBeenCalled();
   });
 
   it('403s when the live partner authority is refused', async () => {
@@ -414,6 +430,97 @@ describe('PUT /reports/:id on a partner-owned definition', () => {
     const bound = params(state.updates[0]!.where);
     expect(bound).toContain(PARTNER_ID);
     expect(bound).toContain('partner_wide');
+  });
+});
+
+/**
+ * #3198 W02 (ruling P15). The PUT body carries no `type`, so the route
+ * validates `config` against the STORED row's type. The positive control
+ * (a foreign key on device_inventory passes through) proves it is the stored
+ * type selecting the schema, not a blanket union of every type's keys.
+ */
+describe('PUT /reports/:id validates config against the stored row\'s type', () => {
+  function orgDefinition(type: string) {
+    return partnerDefinition({
+      type,
+      orgId: ORG_ID,
+      partnerId: null,
+      executionScopeKind: 'unrestricted',
+      executionScopeFingerprint: siteScopeFingerprint({ version: 1, kind: 'unrestricted', orgId: ORG_ID }),
+    });
+  }
+  beforeEach(() => {
+    state.auth = orgAuth();
+  });
+
+  it('400s a value the stored type rejects, and updates nothing', async () => {
+    state.rows = [orgDefinition('vulnerability_management'), orgDefinition('vulnerability_management')];
+    const res = await app().request(`/reports/${REPORT_ID}`, {
+      method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ config: { topN: 9999 } }),
+    });
+
+    expect(res.status).toBe(400);
+    expect((await res.json() as { details: { fieldErrors: Record<string, unknown> } }).details.fieldErrors)
+      .toHaveProperty(['config.topN']);
+    expect(state.updates).toHaveLength(0);
+  });
+
+  it('stores only the keys the caller sent — no defaults frozen into the row', async () => {
+    state.rows = [orgDefinition('vulnerability_management'), orgDefinition('vulnerability_management')];
+    const res = await app().request(`/reports/${REPORT_ID}`, {
+      method: 'PUT', headers: JSON_HEADERS,
+      body: JSON.stringify({ config: { topN: 10, builderType: 'vulns' } }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(state.updates[0]!.set.config).toEqual({ topN: 10, builderType: 'vulns' });
+  });
+
+  it('positive control: the same key on a device_inventory row passes through unvalidated', async () => {
+    state.rows = [orgDefinition('device_inventory'), orgDefinition('device_inventory')];
+    const res = await app().request(`/reports/${REPORT_ID}`, {
+      method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ config: { topN: 9999 } }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(state.updates[0]!.set.config).toEqual({ topN: 9999 });
+  });
+
+  it('a `type` key inside the body config cannot pick a different schema', async () => {
+    state.rows = [orgDefinition('vulnerability_management'), orgDefinition('vulnerability_management')];
+    const res = await app().request(`/reports/${REPORT_ID}`, {
+      method: 'PUT', headers: JSON_HEADERS,
+      body: JSON.stringify({ config: { type: 'device_inventory', topN: 9999 } }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(state.updates).toHaveLength(0);
+  });
+});
+
+describe('POST /reports validates config against body.type (#3198 W02, ruling P15)', () => {
+  beforeEach(() => {
+    state.auth = orgAuth();
+  });
+
+  it('400s a value the type rejects', async () => {
+    const res = await app().request('/reports', {
+      method: 'POST', headers: JSON_HEADERS,
+      body: JSON.stringify({ name: 'Vulns', type: 'vulnerability_management', config: { topN: 9999 } }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(state.inserts).toHaveLength(0);
+  });
+
+  it('passes a foreign type\'s key through on another type (strip-nothing)', async () => {
+    const res = await app().request('/reports', {
+      method: 'POST', headers: JSON_HEADERS,
+      body: JSON.stringify({ name: 'Inventory', type: 'device_inventory', config: { topN: 9999 } }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(state.inserts[0]!.values.config).toEqual({ topN: 9999 });
   });
 });
 

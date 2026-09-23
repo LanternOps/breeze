@@ -620,6 +620,24 @@ describe('partner preflight refuses org/site selectors in config (#3198 W02, add
     }
   });
 
+  // #3198 W02 (ruling T3e). Loose schemas pass any undeclared key, so the
+  // denylist above stays; in addition the config must parse under the TYPE's
+  // own schema — a stored config the type rejects never reaches a generator
+  // running wider than one org.
+  it('refuses a config the report type\'s own schema rejects', () => {
+    for (const config of [{ groupBy: 42 }, { emailRecipients: ['not-an-email'] }, { schedule: { time: '25:99' } }]) {
+      expect(() => assertReportExecutionPreflight(
+        owner, config as Record<string, unknown>, partnerWideAuthority(), 'ar_aging',
+      )).toThrow(UnexecutableReportScopeError);
+    }
+  });
+
+  it('the schema check needs the type: without one only the denylist applies', () => {
+    expect(() => assertReportExecutionPreflight(
+      owner, { groupBy: 42 } as Record<string, unknown>, partnerWideAuthority(),
+    )).not.toThrow();
+  });
+
   it('does not change the org-owned path: an in-scope filters.siteIds still passes there', () => {
     expect(() => assertReportExecutionPreflight(
       ORG_ID, { filters: { siteIds: [SITE_A] } }, authority('restricted', [SITE_A]), 'device_inventory',

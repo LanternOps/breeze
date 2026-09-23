@@ -50,9 +50,11 @@ import {
 import {
   listReportsSchema,
   createReportSchema,
-  PARTNER_SCOPE_REPORT_TYPES,
+  parseStoredReportConfig,
   updateReportSchema,
 } from './schemas';
+import { reportTypeDef } from '../../services/reportRegistry';
+import { formatZodError, type ValidationErrorBody } from '../../lib/validation';
 
 export const coreRoutes = new Hono();
 
@@ -478,7 +480,9 @@ coreRoutes.post(
       if (!canManagePartnerWidePolicies(auth)) {
         return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
       }
-      if (!PARTNER_SCOPE_REPORT_TYPES.has(data.type)) {
+      // #3198 W02 (ruling P13): the registry is the one list of which types
+      // can run at partner scope; W01's PARTNER_SCOPE_REPORT_TYPES is retired.
+      if (!reportTypeDef(data.type).supportedScopes.includes('partner')) {
         return c.json({ error: 'unsupported_report_scope', type: data.type }, 400);
       }
       const partnerAuthority = await resolveRequestPartnerReportAuthority(
@@ -611,7 +615,6 @@ coreRoutes.put(
 
     const updates: Record<string, unknown> = { updatedAt: new Date() };
     if (data.name !== undefined) updates.name = data.name;
-    if (data.config !== undefined) updates.config = data.config;
     if (data.schedule !== undefined) updates.schedule = data.schedule;
     if (data.format !== undefined) updates.format = data.format;
 
@@ -633,6 +636,21 @@ coreRoutes.put(
       }
       if (await isPortalSelfServiceLocked(tx, locked.locked)) {
         return PORTAL_SELF_SERVICE;
+      }
+      // #3198 W02 (ruling P15). The body carries no `type`, so the schema layer
+      // could only check the shared builder keys; the STORED row's type picks
+      // the schema here. Only after the row is authorized and locked, so a
+      // validation 400 never discloses a definition the caller cannot see.
+      if (data.config !== undefined) {
+        const typed = parseStoredReportConfig(locked.locked.type, data.config);
+        if (!typed.success) {
+          return {
+            invalidConfig: formatZodError({
+              issues: typed.error.issues.map((issue) => ({ ...issue, path: ['config', ...issue.path] })),
+            }),
+          };
+        }
+        updates.config = typed.data;
       }
 
       const effectiveScope = intersectSiteScopes(
@@ -670,6 +688,9 @@ coreRoutes.put(
     }
     if (!mutation) {
       return c.json(REPORT_NOT_FOUND, 404);
+    }
+    if ('invalidConfig' in mutation && mutation.invalidConfig) {
+      return c.json(mutation.invalidConfig satisfies ValidationErrorBody, 400);
     }
     writeRouteAudit(c, {
       orgId: mutation.locked.orgId,

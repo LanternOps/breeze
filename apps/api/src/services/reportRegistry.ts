@@ -32,15 +32,21 @@ import {
   vulnerabilityManagementConfigSchema,
 } from './reportConfigSchemas';
 
-export interface ReportTypeDef<C = unknown> {
+export interface ReportTypeDef {
   /** Identical to the key. The registry has no second naming space. */
   readonly type: ReportType;
   /** English display name. i18n for the web list lives in the locale files
    *  (`reports.reportsList.reportTypes.<type>`); this is for logs and PDFs. */
   readonly label: string;
   /** The type's OWN config schema (spec §6). Replaces the shared loose object
-   *  that used to spread six per-type field sets into one. */
-  readonly configSchema: z.ZodType<C>;
+   *  that used to spread six per-type field sets into one. EVERY entry is a
+   *  `z.looseObject` (or `.extend` of one): the builder round-trips undeclared
+   *  presentation metadata through `config`, and PUT replaces `config`
+   *  wholesale, so a strict schema would silently delete it on the next save
+   *  (pinned per type by routes/reports/schemas.configParity.test.ts). The
+   *  output type is the plain record every generator already takes; the
+   *  `satisfies` below rejects any schema whose output is not an object. */
+  readonly configSchema: z.ZodType<Record<string, unknown>>;
   readonly supportedScopes: readonly ('organization' | 'partner')[];
   /** 'managed_evidence' means MANAGED_EVIDENCE_REGISTRY authorizes a system
    *  principal for this type. The registry test pins the two sets equal. */

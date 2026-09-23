@@ -34,6 +34,7 @@ import {
 } from './siteScope';
 import { isManagedEvidenceType, type ManagedEvidenceType } from './managedEvidenceRegistry';
 import { reportTypeDef } from './reportRegistry';
+import { endpointManagementConfigSchema } from './reportConfigSchemas';
 import { organizationScope, reportOwnerOfScope, type ReportScope } from './reportScope';
 import {
   StoredArtifactOnlyReportError,
@@ -47,9 +48,12 @@ export {
   UnsupportedReportScopeError,
 } from './reportErrors';
 
-/** Mirrors `endpointManagementConfigSchema`'s default. Duplicated rather than
- *  imported because routes/reports/schemas.ts imports back from this module. */
-const ENDPOINT_MANAGEMENT_DEFAULT_STALE_DAYS = 14;
+/** `endpointManagementConfigSchema`'s own default, read from the schema so the
+ *  zero-safe shape can never drift from what the generator applies. (The
+ *  schema lives in the zod-only `reportConfigSchemas` module, so there is no
+ *  cycle to duplicate around any more.) */
+const ENDPOINT_MANAGEMENT_DEFAULT_STALE_DAYS =
+  endpointManagementConfigSchema.parse({}).staleEnrolmentDays;
 
 // `ReportType` is derived from the canonical tuple in `@breeze/shared`
 // (`packages/shared/src/reportTypes.ts` carries the abridged per-type notes:
@@ -319,6 +323,15 @@ export function assertReportExecutionPreflight(
     // never widen or re-target that, so any non-empty one is refused rather
     // than silently ignored.
     assertNoPartnerScopeSelectors(config);
+    // #3198 W02 (ruling T3e). The denylist stays (every schema is loose, so a
+    // parse alone refuses no undeclared key); on top of it the config must be
+    // one the report type itself accepts. A stored config its own type rejects
+    // never reaches a generator running wider than one org.
+    if (reportType !== undefined && !reportTypeDef(reportType).configSchema.safeParse(config).success) {
+      throw new UnexecutableReportScopeError(
+        `partner-scope report config is not valid for report type ${reportType}`,
+      );
+    }
     return;
   }
   assertExecutableAuthority(owner.orgId, authority);

@@ -884,11 +884,14 @@ function definitionScopePredicate(
   columns: ReportScopeColumns,
   currentScope: LiveSiteScopeV1,
 ): SQL<unknown> {
-  switch (currentScope.kind) {
+  // Widened to the full SiteScopeV1 so the switch names every kind and the
+  // default arm is a true `never` (#3198 W02, addendum B6).
+  const scope = currentScope as SiteScopeV1;
+  switch (scope.kind) {
     case 'unrestricted':
       return unrestrictedDefinitionPredicate(columns);
     case 'restricted': {
-      const normalizedSiteIds = normalizeSiteIds(currentScope.siteIds);
+      const normalizedSiteIds = normalizeSiteIds(scope.siteIds);
       return and(
         completeVersionOneBase(columns),
         eq(columns.executionScopeKind, 'restricted'),
@@ -904,8 +907,16 @@ function definitionScopePredicate(
       throw new Error(
         'partner_wide scope requires the partner-axis predicate (reportPartnerWideScopeSqlPredicate)',
       );
-    default:
+    case 'legacy_unscoped':
+      // Excluded from LiveSiteScopeV1, so reachable only through a cast. A
+      // legacy caller scope matches nothing — fail closed (pinned by
+      // siteScope.test.ts "fails closed for a forced legacy live caller value").
       return sqlFalse();
+    default:
+      // A kind with no arm is a wiring bug, not "no rows": a compile error for
+      // a new SiteScopeV1 kind, a throw at runtime for a value that escaped
+      // the types.
+      return assertNever(scope);
   }
 }
 

@@ -4,11 +4,15 @@ import {
   endpointManagementConfigSchema,
   hardwareLifecycleConfigSchema,
   identityAccessConfigSchema,
-  reportScheduleDetailSchema,
+  legacyReportConfigSchema,
   securityCompliancePostureConfigSchema,
   threatDetectionConfigSchema,
   vulnerabilityManagementConfigSchema,
 } from '../../services/reportConfigSchemas';
+// Value import of the registry is safe for the route-schema graph: it
+// value-imports only zod schemas, the error classes and permission constants;
+// every generator is reached through `await import` (see its header).
+import { REPORT_GENERATORS, reportTypeDef, type ReportTypeDef } from '../../services/reportRegistry';
 
 /** #3198 W02: the six per-type config schemas moved to
  *  `services/reportConfigSchemas.ts` (the service layer must not import the
@@ -34,24 +38,6 @@ export {
  */
 export const reportTypeSchema = z.enum(REPORT_TYPES);
 
-/** #3198 W01: types that may be owned by a partner. W02 replaces this set with
- *  REPORT_GENERATORS[type].supportedScopes; until then these three exist as
- *  enum labels only, so a partner-owned definition of them can be created and
- *  scheduled but every generate answers unsupported_report_scope. */
-export const PARTNER_SCOPE_REPORT_TYPES: ReadonlySet<string> = new Set([
-  'ticket_sla_attainment',
-  'technician_time_billability',
-  'ar_aging',
-]);
-
-/**
- * #3198 W01 ownership axis (mirrors routes/security/schemas.ts). 'organization'
- * (default) = classic org report. 'partner' = partner-owned cross-org
- * aggregate; the server derives partner_id from the caller's own token — a
- * client-supplied partner id is NEVER read. Create-only.
- */
-const ownerScopeSchema = z.enum(['organization', 'partner']).default('organization');
-
 /** Report types a human may never create or generate on demand. */
 export const INTERNAL_REPORT_TYPES = new Set(['ai_org_narrative', 'ai_fleet_design']);
 const INTERNAL_REPORT_TYPE_MESSAGE = 'internal report type';
@@ -62,108 +48,127 @@ const INTERNAL_REPORT_TYPE_MESSAGE = 'internal report type';
 const notInternalReportType = (type: string) => !INTERNAL_REPORT_TYPES.has(type);
 
 /**
- * The same posture keys as `securityCompliancePostureConfigSchema` but without
- * its `.default()`s — persistence stores only what the user actually set, and
- * generation applies defaults at read time. The two lists are hand-parallel;
- * `schemas.config.test.ts` holds them in sync, because a key missing here is
- * silently stripped on save and then reappears at generation as its default.
+ * #3198 W01 ownership axis (mirrors routes/security/schemas.ts), made a
+ * discriminated union on `ownerScope` in W02 (addendum B6):
+ *  - 'organization' — a classic org report. `ownerScope` may be omitted; a
+ *    missing discriminator selects no arm in zod, so `withDefaultOwnerScope`
+ *    fills it in before the union sees the body.
+ *  - 'partner' — a partner-owned cross-org aggregate. The server derives
+ *    partner_id from the caller's own token (a client-supplied partner id is
+ *    NEVER read), and `orgId` is refused outright: W01 accepted-and-ignored it,
+ *    which answered 201 to a caller who believed they had aimed the report at
+ *    one org.
+ * Create-only: `updateReportSchema` forbids `ownerScope` entirely.
  */
-export const securityCompliancePostureConfigFields = {
-  sites: z.array(z.string().guid()).optional(),
-  windowDays: z.number().int().min(1).max(365).optional(),
-  minPasswordLength: z.number().int().min(1).max(64).optional(),
-  maxLocalAdmins: z.number().int().min(0).max(50).optional(),
-  maxAvDefinitionsAgeDays: z.number().int().min(1).max(365).optional(),
-  maxSecurityStatusAgeDays: z.number().int().min(1).max(365).optional(),
-  includeCis: z.boolean().optional(),
-  backupRequired: z.boolean().optional()
+function withDefaultOwnerScope(input: unknown): unknown {
+  if (
+    input !== null
+    && typeof input === 'object'
+    && !Array.isArray(input)
+    && (input as Record<string, unknown>).ownerScope === undefined
+  ) {
+    return { ...(input as Record<string, unknown>), ownerScope: 'organization' };
+  }
+  return input;
+}
+
+const organizationOwnerFields = {
+  ownerScope: z.literal('organization'),
+  orgId: z.string().guid().optional(),
+};
+const partnerOwnerFields = {
+  ownerScope: z.literal('partner'),
+  orgId: z.never().optional(),
 };
 
-/** Same keys as `hardwareLifecycleConfigSchema` without `.default()`s — see
- *  `securityCompliancePostureConfigFields` for why the two lists are
- *  hand-parallel and test-pinned. */
-export const hardwareLifecycleConfigFields = {
-  sites: z.array(z.string().guid()).optional(),
-  replaceAgeYears: z.number().int().min(1).max(15).optional(),
-  serverReplaceAgeYears: z.number().int().min(1).max(15).optional(),
-  includeManualAssets: z.boolean().optional(),
-  includeOtherEquipment: z.boolean().optional(),
-};
+/** Shape-only: the per-type parse happens in the enclosing transform, once the
+ *  sibling `type` is known. Loose so nothing is stripped before that parse. */
+const unparsedConfigSchema = z.looseObject({}).optional().default({});
 
-/** Same keys as `threatDetectionConfigSchema` without `.default()`s — see
- *  `securityCompliancePostureConfigFields` for why the two are hand-parallel
- *  and test-pinned (schemas.config.test.ts). */
-export const threatDetectionConfigFields = {
-  sites: z.array(z.string().guid()).optional(),
-  includeCarriedIn: z.boolean().optional(),
-  topIncidents: z.number().int().min(1).max(1000).optional(),
-};
+type ConfigParseResult =
+  | { success: true; data: Record<string, unknown> }
+  | { success: false; error: z.ZodError };
 
-/** Same keys as `endpointManagementConfigSchema` without `.default()`s — see
- *  `securityCompliancePostureConfigFields` for why the two are hand-parallel and
- *  test-pinned (schemas.config.test.ts). */
-export const endpointManagementConfigFields = {
-  sites: z.array(z.string().guid()).optional(),
-  staleEnrolmentDays: z.number().int().min(1).max(180).optional(),
-  trendDays: z.number().int().min(1).max(365).optional(),
-  includeLicences: z.boolean().optional(),
-};
+function configSchemaFor(type: string | undefined): z.ZodType<Record<string, unknown>> {
+  if (type === undefined) return legacyReportConfigSchema;
+  const def = (REPORT_GENERATORS as Readonly<Record<string, ReportTypeDef | undefined>>)[type];
+  return def?.configSchema ?? legacyReportConfigSchema;
+}
 
-/** Same keys as `vulnerabilityManagementConfigSchema` without `.default()`s —
- *  see `securityCompliancePostureConfigFields` for why the two are hand-parallel
- *  and test-pinned (schemas.config.test.ts). */
-export const vulnerabilityManagementConfigFields = {
-  sites: z.array(z.string().guid()).optional(),
-  severityFloor: z.enum(['critical', 'high', 'medium', 'low']).optional(),
-  topN: z.number().int().min(1).max(500).optional(),
-  includeAccepted: z.boolean().optional(),
-};
+/**
+ * Validate a config for PERSISTENCE against `type`'s own schema (the legacy
+ * shared schema when the type is unknown or absent).
+ *
+ * Returns only the keys the caller sent. The per-type schemas carry
+ * `.default()`s for GENERATION; storing them would freeze today's defaults into
+ * the row, so a later default change would never reach a report whose owner
+ * never chose the value. This is what the deleted default-free `*ConfigFields`
+ * twins used to guarantee. Values the caller DID send come back parsed (e.g.
+ * a legacy numeric `schedule.date` coerced to a string). Every per-type schema
+ * is loose, so no key the caller sent is dropped.
+ *
+ * Exported for `PUT /reports/:id`, whose body carries no `type` — the route
+ * validates against the STORED row's type (#3198 W02, ruling P15).
+ */
+export function parseStoredReportConfig(
+  type: string | undefined,
+  config: Record<string, unknown>,
+): ConfigParseResult {
+  const parsed = configSchemaFor(type).safeParse(config);
+  if (!parsed.success) return { success: false, error: parsed.error };
+  const data = Object.fromEntries(
+    Object.entries(parsed.data).filter(([key]) => Object.prototype.hasOwnProperty.call(config, key)),
+  );
+  return { success: true, data };
+}
 
-/** Same keys as `identityAccessConfigSchema` without `.default()`s — see
- *  `securityCompliancePostureConfigFields` for why the two are hand-parallel and
- *  test-pinned (schemas.config.test.ts). */
-export const identityAccessConfigFields = {
-  dormantDays: z.number().int().min(1).max(365).optional(),
-  homeCountries: z.array(z.string().regex(/^[A-Z]{2}$/)).max(50).optional(),
-  adminDetail: z.boolean().optional(),
-};
+function forwardIssues(ctx: z.RefinementCtx, error: z.ZodError, prefix: PropertyKey[]): void {
+  for (const issue of error.issues) {
+    ctx.addIssue({ ...issue, path: [...prefix, ...issue.path] } as Parameters<z.RefinementCtx['addIssue']>[0]);
+  }
+}
 
-const reportConfigFields = {
-  dateRange: z.object({
-    start: z.string().optional(),
-    end: z.string().optional(),
-    preset: z.enum(['last_7_days', 'last_30_days', 'last_90_days', 'custom']).optional()
-  }).optional(),
-  filters: z.object({
-    siteIds: z.array(z.string().guid()).optional(),
-    deviceIds: z.array(z.string().guid()).optional(),
-    osTypes: z.array(z.enum(['windows', 'macos', 'linux'])).optional(),
-    status: z.array(z.string()).optional(),
-    severity: z.array(z.string()).optional()
-  }).optional(),
-  columns: z.array(z.string()).optional(),
-  groupBy: z.string().optional(),
-  sortBy: z.string().optional(),
-  sortOrder: z.enum(['asc', 'desc']).optional(),
-  schedule: reportScheduleDetailSchema.optional(),
-  // Deliberately the SAME loose regex as ReportBuilder's chip-validation
-  // (apps/web/src/components/reports/ReportBuilder.tsx) and the worker's
-  // recipientsOf (apps/api/src/jobs/reportScheduleWorker.ts) — z.string().email()
-  // is stricter than both, so persistence must never reject what the builder
-  // already accepted as a chip.
-  emailRecipients: z.array(z.string().regex(/^[^\s@]+@[^\s@]+\.[^\s@]+$/).max(254)).max(50).optional(),
-  ...securityCompliancePostureConfigFields,
-  ...hardwareLifecycleConfigFields,
-  ...threatDetectionConfigFields,
-  ...endpointManagementConfigFields,
-  ...vulnerabilityManagementConfigFields,
-  ...identityAccessConfigFields
-};
+/**
+ * Per-type config validation for persistence (#3198 spec §6). `type` is a
+ * DISCRIMINATOR read from the config object itself and passed through, not a
+ * config field.
+ *
+ * NOT a z.discriminatedUnion: that would require `type` on every config
+ * object, and a PATCH body or a legacy stored row may not carry one. This is a
+ * manual lookup with the legacy shared schema as the fallback, proven against
+ * the old single loose object for every type by schemas.configParity.test.ts.
+ * The create/update/generate schemas below do not use it — create and generate
+ * discriminate on their sibling `type`, and PUT on the stored row's type — so
+ * a `type` key a client smuggles into `config` never selects a schema there.
+ *
+ * EVERY branch is loose. A strict branch would silently strip the builder's
+ * presentation metadata on the next PUT, which replaces `config` wholesale.
+ * The cost is deliberate: a key declared only by ANOTHER type (e.g.
+ * `windowDays` on device_inventory) passes through unvalidated instead of
+ * being range-checked as it was when every type's keys were spread into one
+ * object.
+ */
+export const reportConfigSchema: z.ZodType<Record<string, unknown>> = z
+  .looseObject({ type: z.string().optional() })
+  .transform((value, ctx) => {
+    const result = parseStoredReportConfig(value.type, value);
+    if (!result.success) {
+      forwardIssues(ctx, result.error, []);
+      return z.NEVER;
+    }
+    return result.data;
+  });
 
-// Loose: the builder round-trips presentation metadata (builderType, dataSource,
-// filterConditions, aggregation, chartType, exportFormats, templateName…)
-// through config; declared keys above are validated, unknown keys pass through.
-export const reportConfigSchema = z.looseObject(reportConfigFields);
+/** The update body has no `type`, so the schema layer checks only the shared
+ *  builder keys; the route re-parses against the stored row's type. */
+const typeAgnosticStoredConfigSchema = z.looseObject({}).transform((value, ctx) => {
+  const result = parseStoredReportConfig(undefined, value);
+  if (!result.success) {
+    forwardIssues(ctx, result.error, []);
+    return z.NEVER;
+  }
+  return result.data;
+});
 
 export const listReportsSchema = z.object({
   page: z.string().optional(),
@@ -173,15 +178,32 @@ export const listReportsSchema = z.object({
   schedule: z.enum(['one_time', 'daily', 'weekly', 'monthly']).optional()
 });
 
-export const createReportSchema = z.object({
-  ownerScope: ownerScopeSchema,
-  orgId: z.string().guid().optional(),
+const createReportFields = {
   name: z.string().min(1).max(255),
   type: reportTypeSchema.refine(notInternalReportType, INTERNAL_REPORT_TYPE_MESSAGE),
-  config: reportConfigSchema.optional().default({}),
+  config: unparsedConfigSchema,
   schedule: z.enum(['one_time', 'daily', 'weekly', 'monthly']).default('one_time'),
   format: z.enum(['csv', 'pdf', 'excel']).default('csv')
-});
+};
+
+export const createReportSchema = z
+  .preprocess(
+    withDefaultOwnerScope,
+    z.discriminatedUnion('ownerScope', [
+      z.object({ ...organizationOwnerFields, ...createReportFields }),
+      z.object({ ...partnerOwnerFields, ...createReportFields }),
+    ]),
+  )
+  .transform((body, ctx) => {
+    // Validated against the body's own `type` (#3198 W02, ruling P15) — never
+    // copied INTO the config, so no `type` key is persisted.
+    const result = parseStoredReportConfig(body.type, body.config);
+    if (!result.success) {
+      forwardIssues(ctx, result.error, ['config']);
+      return z.NEVER;
+    }
+    return { ...body, config: result.data };
+  });
 
 /**
  * Not derived from `createReportSchema` (it never carried `type`), so the
@@ -197,37 +219,42 @@ export const updateReportSchema = z.object({
   ownerScope: z.never().optional(),
   orgId: z.unknown().optional(),
   name: z.string().min(1).max(255).optional(),
-  config: reportConfigSchema.optional(),
+  // Shared builder keys only; `PUT /reports/:id` re-validates against the
+  // stored row's type (#3198 W02, ruling P15).
+  config: typeAgnosticStoredConfigSchema.optional(),
   schedule: z.enum(['one_time', 'daily', 'weekly', 'monthly']).optional(),
   format: z.enum(['csv', 'pdf', 'excel']).optional()
 });
 
-export const generateReportSchema = z.object({
+const generateReportFields = {
   type: reportTypeSchema.refine(notInternalReportType, INTERNAL_REPORT_TYPE_MESSAGE),
-  config: z.object({
-    dateRange: z.object({
-      start: z.string().optional(),
-      end: z.string().optional(),
-      preset: z.enum(['last_7_days', 'last_30_days', 'last_90_days', 'custom']).optional()
-    }).optional(),
-    filters: z.object({
-      siteIds: z.array(z.string().guid()).optional(),
-      deviceIds: z.array(z.string().guid()).optional(),
-      osTypes: z.array(z.enum(['windows', 'macos', 'linux'])).optional(),
-      status: z.array(z.string()).optional(),
-      severity: z.array(z.string()).optional()
-    }).optional(),
-    ...securityCompliancePostureConfigFields,
-    ...hardwareLifecycleConfigFields,
-    ...threatDetectionConfigFields,
-    ...endpointManagementConfigFields,
-    ...vulnerabilityManagementConfigFields,
-    ...identityAccessConfigFields
-  }).optional().default({}),
+  config: unparsedConfigSchema,
   format: z.enum(['csv', 'pdf', 'excel']).default('csv'),
-  ownerScope: ownerScopeSchema,
-  orgId: z.string().guid().optional()
-});
+};
+
+/**
+ * Ad-hoc generation. `config` is parsed with the TYPE's own schema, defaults
+ * included (nothing is persisted here; the generator would apply them anyway).
+ * The discriminator is unambiguous — `type` is required and already narrowed —
+ * so there is no fallback branch. Loose like every per-type schema: the old
+ * strict `z.object` here silently stripped every business option.
+ */
+export const generateReportSchema = z
+  .preprocess(
+    withDefaultOwnerScope,
+    z.discriminatedUnion('ownerScope', [
+      z.object({ ...organizationOwnerFields, ...generateReportFields }),
+      z.object({ ...partnerOwnerFields, ...generateReportFields }),
+    ]),
+  )
+  .transform((body, ctx) => {
+    const parsed = reportTypeDef(body.type).configSchema.safeParse(body.config);
+    if (!parsed.success) {
+      forwardIssues(ctx, parsed.error, ['config']);
+      return z.NEVER;
+    }
+    return { ...body, config: parsed.data };
+  });
 
 export const listRunsSchema = z.object({
   page: z.string().optional(),

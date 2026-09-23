@@ -1,28 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   createReportSchema,
-  endpointManagementConfigFields,
   endpointManagementConfigSchema,
-  hardwareLifecycleConfigFields,
-  hardwareLifecycleConfigSchema,
-  securityCompliancePostureConfigFields,
-  securityCompliancePostureConfigSchema,
-  identityAccessConfigFields,
+  generateReportSchema,
   identityAccessConfigSchema,
-  threatDetectionConfigFields,
   threatDetectionConfigSchema,
   updateReportSchema,
-  vulnerabilityManagementConfigFields,
   vulnerabilityManagementConfigSchema,
 } from './schemas';
-import { legacyReportConfigSchema } from '../../services/reportConfigSchemas';
-
-/** #3198 W02 (ruling P1): the per-type schemas now `.extend()` the legacy
- *  builder keys, so `.shape` carries those too. The persistence field maps pin
- *  only a type's OWN keys. (Task 4 deletes the field maps and these pins.) */
-function ownKeys(schema: { shape: Record<string, unknown> }): string[] {
-  return Object.keys(schema.shape).filter((k) => !(k in legacyReportConfigSchema.shape));
-}
 
 const builderConfig = {
   builderType: 'device_inventory',
@@ -100,27 +85,6 @@ describe('report config schema', () => {
     expect(updated.config?.schedule).toEqual({ date: '1' });
   });
 
-  // The generation schema (with defaults) and the persistence field map are
-  // maintained by hand. Drift is silent and one-directional: a key added to the
-  // former but not the latter is stripped on save, then silently reappears at
-  // generation as its default — the user's setting quietly ignored.
-  it('keeps the posture persistence fields in sync with the generation schema', () => {
-    expect(Object.keys(securityCompliancePostureConfigFields).sort()).toEqual(
-      ownKeys(securityCompliancePostureConfigSchema).sort(),
-    );
-  });
-
-  it('keeps the hardware lifecycle persistence fields in sync with the generation schema', () => {
-    expect(Object.keys(hardwareLifecycleConfigFields).sort()).toEqual(
-      ownKeys(hardwareLifecycleConfigSchema).sort(),
-    );
-  });
-
-  it('keeps the endpoint management persistence fields in sync with the generation schema', () => {
-    expect(Object.keys(endpointManagementConfigFields).sort()).toEqual(
-      ownKeys(endpointManagementConfigSchema).sort(),
-    );
-  });
 
   it('defaults an endpoint management config', () => {
     expect(endpointManagementConfigSchema.parse({})).toEqual({
@@ -140,12 +104,6 @@ describe('report config schema', () => {
     });
     expect(parsed.config.staleEnrolmentDays).toBe(30);
     expect(parsed.config.includeLicences).toBe(false);
-  });
-
-  it('keeps the vulnerability management persistence fields in sync with the generation schema', () => {
-    expect(Object.keys(vulnerabilityManagementConfigFields).sort()).toEqual(
-      ownKeys(vulnerabilityManagementConfigSchema).sort(),
-    );
   });
 
   it('defaults a vulnerability management config to the spec values', () => {
@@ -223,12 +181,6 @@ describe('report config schema', () => {
     expect(updated.config?.backupRequired).toBe(true);
   });
 
-  it('keeps the threat detection persistence fields in sync with the generation schema', () => {
-    expect(Object.keys(threatDetectionConfigFields).sort()).toEqual(
-      ownKeys(threatDetectionConfigSchema).sort(),
-    );
-  });
-
   it('defaults a threat detection config', () => {
     expect(threatDetectionConfigSchema.parse({})).toEqual({
       sites: [], includeCarriedIn: true, topIncidents: 100,
@@ -250,12 +202,6 @@ describe('report config schema', () => {
   });
 
   // #5784 W06 — the identity and access review.
-  it('keeps the identity access persistence fields in sync with the generation schema', () => {
-    expect(Object.keys(identityAccessConfigFields).sort()).toEqual(
-      ownKeys(identityAccessConfigSchema).sort(),
-    );
-  });
-
   it('defaults an identity access config to the spec values', () => {
     expect(identityAccessConfigSchema.parse({})).toEqual({
       dormantDays: 45, homeCountries: [], adminDetail: true,
@@ -279,5 +225,126 @@ describe('report config schema', () => {
     expect(parsed.config.dormantDays).toBe(60);
     expect(parsed.config.homeCountries).toEqual(['US', 'CA']);
     expect(parsed.config.adminDetail).toBe(false);
+  });
+});
+
+/**
+ * #3198 W02 Task 4. The hand-parallel `*ConfigFields` maps are gone; each type's
+ * OWN schema now validates on create. The hazard those pins guarded — a key the
+ * generator reads being stripped on save — is pinned here directly: every
+ * option a user sets survives create, and a default the user never set is NOT
+ * frozen into the stored row (generation applies defaults at read time).
+ */
+describe('create validates config with the TYPE\'s own schema (#3198 W02)', () => {
+  const OWN_OPTIONS: Record<string, Record<string, unknown>> = {
+    security_compliance_posture: {
+      sites: [], windowDays: 60, minPasswordLength: 12, maxLocalAdmins: 1,
+      maxAvDefinitionsAgeDays: 3, maxSecurityStatusAgeDays: 10, includeCis: false, backupRequired: false,
+    },
+    hardware_lifecycle: {
+      sites: [], replaceAgeYears: 6, serverReplaceAgeYears: 7, includeManualAssets: false, includeOtherEquipment: false,
+    },
+    threat_detection_review: { sites: [], includeCarriedIn: false, topIncidents: 10 },
+    endpoint_management_review: { sites: [], staleEnrolmentDays: 30, trendDays: 60, includeLicences: false },
+    vulnerability_management: { sites: [], severityFloor: 'low', topN: 10, includeAccepted: false },
+    identity_access_review: { dormantDays: 90, homeCountries: ['GB'], adminDetail: false },
+  };
+
+  for (const [type, options] of Object.entries(OWN_OPTIONS)) {
+    it(`${type}: every own option survives create`, () => {
+      const parsed = createReportSchema.parse({ name: 'x', type, config: options });
+      expect(parsed.config).toEqual(options);
+    });
+  }
+
+  it('does not persist defaults the user never set', () => {
+    const parsed = createReportSchema.parse({
+      name: 'x', type: 'vulnerability_management', config: { topN: 10 },
+    });
+    expect(parsed.config).toEqual({ topN: 10 });
+  });
+
+  it('rejects an out-of-range value for the OWNING type, with the error under config.*', () => {
+    const result = createReportSchema.safeParse({
+      name: 'x', type: 'vulnerability_management', config: { topN: 9999 },
+    });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(['config', 'topN']);
+  });
+
+  it('passes a foreign type\'s key through unvalidated (strip-nothing, see configParity)', () => {
+    const parsed = createReportSchema.parse({
+      name: 'x', type: 'device_inventory', config: { topN: 9999 },
+    });
+    expect(parsed.config).toMatchObject({ topN: 9999 });
+  });
+
+  it('does not write a `type` key into the stored config', () => {
+    const parsed = createReportSchema.parse({ name: 'x', type: 'compliance', config: { columns: ['a'] } });
+    expect(parsed.config).not.toHaveProperty('type');
+  });
+});
+
+describe('createReportSchema / generateReportSchema: ownerScope discriminated union (#3198 W02, B6)', () => {
+  const PARTNER_ORG = '22222222-2222-4222-8222-222222222222';
+
+  it('a missing ownerScope still selects the organization arm', () => {
+    const created = createReportSchema.parse({ name: 'x', type: 'compliance', orgId: PARTNER_ORG });
+    expect(created.ownerScope).toBe('organization');
+    expect(created.orgId).toBe(PARTNER_ORG);
+    const generated = generateReportSchema.parse({ type: 'compliance', orgId: PARTNER_ORG });
+    expect(generated.ownerScope).toBe('organization');
+    expect(generated.orgId).toBe(PARTNER_ORG);
+  });
+
+  it('the partner arm refuses an orgId', () => {
+    expect(createReportSchema.safeParse({
+      ownerScope: 'partner', name: 'x', type: 'ar_aging', orgId: PARTNER_ORG,
+    }).success).toBe(false);
+    expect(generateReportSchema.safeParse({
+      ownerScope: 'partner', type: 'ar_aging', orgId: PARTNER_ORG,
+    }).success).toBe(false);
+  });
+
+  it('the partner arm parses without an orgId', () => {
+    expect(createReportSchema.parse({ ownerScope: 'partner', name: 'x', type: 'ar_aging' }).ownerScope)
+      .toBe('partner');
+    expect(generateReportSchema.parse({ ownerScope: 'partner', type: 'ar_aging' }).ownerScope)
+      .toBe('partner');
+  });
+
+  it('an unknown ownerScope is refused', () => {
+    expect(createReportSchema.safeParse({ ownerScope: 'site', name: 'x', type: 'compliance' }).success)
+      .toBe(false);
+    expect(generateReportSchema.safeParse({ ownerScope: 'site', type: 'compliance' }).success).toBe(false);
+  });
+
+  it('update keeps ownerScope forbidden', () => {
+    expect(updateReportSchema.safeParse({ ownerScope: 'organization', name: 'x' }).success).toBe(false);
+    expect(updateReportSchema.safeParse({ ownerScope: 'partner', name: 'x' }).success).toBe(false);
+  });
+});
+
+describe('generateReportSchema config (#3198 W02)', () => {
+  it('keeps keys the old strict generate schema stripped (business options, builder metadata)', () => {
+    const parsed = generateReportSchema.parse({
+      type: 'ar_aging', ownerScope: 'partner',
+      config: { groupBy: 'organization', includePaidInPeriod: false, period: { kind: 'last_30_days' } },
+    });
+    expect(parsed.config).toMatchObject({
+      groupBy: 'organization', includePaidInPeriod: false, period: { kind: 'last_30_days' },
+    });
+  });
+
+  it('validates the config with the type\'s own schema', () => {
+    const result = generateReportSchema.safeParse({ type: 'vulnerability_management', config: { topN: 9999 } });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(['config', 'topN']);
+  });
+
+  it('validates the shared builder keys on every type (schedule, emailRecipients)', () => {
+    expect(generateReportSchema.safeParse({
+      type: 'hardware_lifecycle', config: { emailRecipients: ['nope'] },
+    }).success).toBe(false);
   });
 });
