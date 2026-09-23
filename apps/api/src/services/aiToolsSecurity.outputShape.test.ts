@@ -9,7 +9,11 @@ vi.mock('../db', () => ({
   db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn(), execute: vi.fn() },
 }));
 
-const postureMock = vi.hoisted(() => ({ listLatestSecurityPosture: vi.fn(), getLatestSecurityPostureForDevice: vi.fn() }));
+const postureMock = vi.hoisted(() => ({
+  listLatestSecurityPosture: vi.fn(),
+  getLatestSecurityPostureForDevice: vi.fn(),
+  getSecurityPostureCounts: vi.fn(),
+}));
 vi.mock('./securityPosture', () => postureMock);
 
 import { aiTools } from './aiToolNames';
@@ -37,9 +41,18 @@ const auth = () => ({
   canAccessOrg: () => true, user: { id: 'u1' },
 }) as never;
 
+// total > the 5-row default page so `hasMore`/`nextCursor` behave the same
+// as the old over-fetch-based signal in tests that don't care about totals.
+const DEFAULT_COUNTS = {
+  total: 20, averageScore: 91, lowRiskDevices: 0, mediumRiskDevices: 0, highRiskDevices: 0, criticalRiskDevices: 5,
+};
+
 describe('get_security_posture output shape (A-W05)', () => {
   const tool = aiTools.get('get_security_posture')!;
-  beforeEach(() => { vi.clearAllMocks(); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    postureMock.getSecurityPostureCounts.mockResolvedValue(DEFAULT_COUNTS);
+  });
 
   it('declares limit/offset/cursor with the shared text', () => {
     const props = (tool.definition.input_schema as { properties: Record<string, { description: string }> }).properties;
@@ -54,7 +67,7 @@ describe('get_security_posture output shape (A-W05)', () => {
     );
     const raw = await tool.handler({}, auth());
     const out = JSON.parse(raw) as Record<string, unknown>;
-    expect(Object.keys(out)).toEqual(expect.arrayContaining(['summary', 'worstDevices', 'devices', 'showing', 'limit', 'offset', 'hasMore', 'nextCursor']));
+    expect(Object.keys(out)).toEqual(expect.arrayContaining(['summary', 'worstDevices', 'devices', 'showing', 'limit', 'offset', 'hasMore', 'nextCursor', 'total']));
     expect(out.limit).toBe(5);
     expect(out.offset).toBe(0);
     expectDefaultPageFits('get_security_posture', raw);
@@ -67,5 +80,37 @@ describe('get_security_posture output shape (A-W05)', () => {
     const first = JSON.parse(await tool.handler({}, auth())) as { nextCursor: string | null };
     const second = JSON.parse(await tool.handler({ riskLevel: 'high', cursor: first.nextCursor ?? 'x' }, auth())) as { code?: string };
     expect(second.code).toBe('CURSOR_MISMATCH');
+  });
+
+  it('computes summary over the whole filtered set via SQL aggregate, not just the returned page', async () => {
+    // Only 5 worst-first rows come back for the page, but the fleet has 37
+    // devices in scope; the aggregate mock proves the summary and `total`
+    // come from the whole-set query, not a reduce over the 5 page rows.
+    postureMock.listLatestSecurityPosture.mockResolvedValue(
+      Array.from({ length: 5 }, (_, i) => postureFixture(i)),
+    );
+    postureMock.getSecurityPostureCounts.mockResolvedValue({
+      total: 37, averageScore: 74, lowRiskDevices: 10, mediumRiskDevices: 15, highRiskDevices: 8, criticalRiskDevices: 4,
+    });
+    const out = JSON.parse(await tool.handler({}, auth())) as Record<string, unknown>;
+    expect(out.summary).toEqual({
+      totalDevices: 37, averageScore: 74, lowRiskDevices: 10, mediumRiskDevices: 15, highRiskDevices: 8, criticalRiskDevices: 4,
+    });
+    expect(out.total).toBe(37);
+    expect(out.hasMore).toBe(true);
+  });
+
+  it('caps offset so offset+limit never exceeds the 2000-row posture ceiling and reports hasMore honestly there', async () => {
+    postureMock.listLatestSecurityPosture.mockImplementation(async (filter: { limit: number }) =>
+      Array.from({ length: filter.limit }, (_, i) => postureFixture(i)),
+    );
+    postureMock.getSecurityPostureCounts.mockResolvedValue({
+      total: 50000, averageScore: 80, lowRiskDevices: 40000, mediumRiskDevices: 5000, highRiskDevices: 4000, criticalRiskDevices: 1000,
+    });
+    const out = JSON.parse(await tool.handler({ offset: 1998, limit: 5 }, auth())) as Record<string, unknown>;
+    expect(out.offset).toBe(1995);
+    expect(out.limit).toBe(5);
+    expect(out.hasMore).toBe(false);
+    expect(out.nextCursor).toBeNull();
   });
 });

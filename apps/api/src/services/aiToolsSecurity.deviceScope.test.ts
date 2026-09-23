@@ -17,13 +17,14 @@ vi.mock('../db', () => ({
 vi.mock('./securityPosture', () => ({
   getLatestSecurityPostureForDevice: vi.fn(),
   listLatestSecurityPosture: vi.fn(),
+  getSecurityPostureCounts: vi.fn(),
 }));
 vi.mock('./eventBus', () => ({ publishEvent: vi.fn() }));
 vi.mock('./aiDispatch', () => ({ aiExecuteCommand: vi.fn(), aiQueueCommand: vi.fn() }));
 vi.mock('./sensitiveDataKeys', () => ({ resolveSensitiveDataKeySelection: vi.fn() }));
 
 import { db } from '../db';
-import { listLatestSecurityPosture } from './securityPosture';
+import { listLatestSecurityPosture, getSecurityPostureCounts } from './securityPosture';
 import { registerSecurityTools } from './aiToolsSecurity';
 import type { AiTool } from './aiTools';
 import type { AuthContext } from '../middleware/auth';
@@ -63,6 +64,19 @@ beforeEach(() => {
   vi.mocked(listLatestSecurityPosture).mockImplementation(async (filter: any) =>
     (filter?.deviceIds ? POSTURES.filter((p) => filter.deviceIds.includes(p.deviceId)) : POSTURES) as any
   );
+  // Mirror the same deviceIds narrowing so the summary's `totalDevices`
+  // reflects the same scope as the page (A-W05 fix 1).
+  vi.mocked(getSecurityPostureCounts).mockImplementation(async (filter: any) => {
+    const scoped = filter?.deviceIds ? POSTURES.filter((p) => filter.deviceIds.includes(p.deviceId)) : POSTURES;
+    return {
+      total: scoped.length,
+      averageScore: scoped.length ? Math.round(scoped.reduce((s, p) => s + p.overallScore, 0) / scoped.length) : 0,
+      lowRiskDevices: scoped.filter((p) => p.riskLevel === 'low').length,
+      mediumRiskDevices: scoped.filter((p) => p.riskLevel === 'medium').length,
+      highRiskDevices: scoped.filter((p) => p.riskLevel === 'high').length,
+      criticalRiskDevices: scoped.filter((p) => p.riskLevel === 'critical').length,
+    } as any;
+  });
   mockDb.select.mockReturnValue({
     from: () => ({ where: () => Promise.resolve([{ id: 'dev-1', siteId: 'site-1' }, { id: 'dev-2', siteId: 'site-1' }]) }),
   });

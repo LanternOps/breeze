@@ -22,6 +22,7 @@ vi.mock('./commandTypes', () => ({
 vi.mock('./securityPosture', () => ({
   getLatestSecurityPostureForDevice: vi.fn(),
   listLatestSecurityPosture: vi.fn(),
+  getSecurityPostureCounts: vi.fn(),
 }));
 vi.mock('./eventBus', () => ({ publishEvent: vi.fn() }));
 vi.mock('./sensitiveDataKeys', () => ({
