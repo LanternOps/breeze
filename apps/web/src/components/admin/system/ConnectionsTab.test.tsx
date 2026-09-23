@@ -218,6 +218,21 @@ describe('ConnectionsTab', () => {
     expect(screen.queryByTestId('connections-summary')).toBeNull();
   });
 
+  it.each([
+    ['no data envelope', {}],
+    ['null data', { data: null }],
+    ['data without groups', { data: { ...report(), groups: undefined } }],
+    ['data without summary', { data: { ...report(), summary: undefined } }],
+  ])('shows the load error, not a blank tab, for a 200 with %s', async (_label, body) => {
+    fetchWithAuth.mockResolvedValue(jsonRes(body));
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    render(<ConnectionsTab />);
+    const error = await screen.findByTestId('connections-error');
+    expect(error.textContent).toBe('Could not load connection status.');
+    expect(screen.queryByTestId('connections-summary')).toBeNull();
+    spy.mockRestore();
+  });
+
   it('refetches on Refresh', async () => {
     fetchWithAuth.mockResolvedValue(ok());
     render(<ConnectionsTab />);

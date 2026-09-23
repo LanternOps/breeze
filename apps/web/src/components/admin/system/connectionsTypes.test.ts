@@ -78,7 +78,7 @@ describe('safeDocsUrl', () => {
     expect(safeDocsUrl('/deploy/turn-server/')).toBe('https://docs.breezermm.com/deploy/turn-server/');
   });
 
-  it('accepts absolute https URLs', () => {
+  it('accepts absolute https URLs on the docs origin only', () => {
     expect(safeDocsUrl('https://docs.breezermm.com/deploy/environment/')).toBe(
       'https://docs.breezermm.com/deploy/environment/',
     );
@@ -92,6 +92,8 @@ describe('safeDocsUrl', () => {
     expect(safeDocsUrl('/\\evil.example/deploy/')).toBeNull();
     expect(safeDocsUrl('deploy/environment/')).toBeNull();
     expect(safeDocsUrl('http://docs.breezermm.com/')).toBeNull();
+    expect(safeDocsUrl('https://evil.example/phish')).toBeNull();
+    expect(safeDocsUrl('https://docs.breezermm.com.evil.example/deploy/')).toBeNull();
     expect(safeDocsUrl('javascript:alert(1)')).toBeNull();
   });
 });

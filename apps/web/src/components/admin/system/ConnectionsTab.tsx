@@ -8,6 +8,7 @@ import {
   CONNECTION_STATUSES,
   displayableValue,
   filterGroups,
+  isConnectionsReport,
   safeDocsUrl,
   type ConnectionEntryView,
   type ConnectionStatus,
@@ -128,7 +129,12 @@ export default function ConnectionsTab() {
         return;
       }
       if (!response.ok) throw new Error(`GET /admin/system/connections returned ${response.status}`);
-      const body = (await response.json()) as { data: ConnectionsReport };
+      const body = (await response.json()) as { data?: unknown } | null;
+      // A 200 with a missing or malformed report must take the error path,
+      // not render a blank tab that reads as "nothing to show".
+      if (!isConnectionsReport(body?.data)) {
+        throw new Error('GET /admin/system/connections returned a malformed report');
+      }
       setForbidden(false);
       setReport(body.data);
     } catch (err) {

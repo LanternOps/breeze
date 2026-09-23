@@ -85,20 +85,24 @@ export const DOCS_ORIGIN = 'https://docs.breezermm.com';
 
 /**
  * W01 sends docs-site paths (`/deploy/environment/#database`); they resolve
- * against DOCS_ORIGIN and must stay on it. Absolute https URLs are accepted
- * as-is. Anything else (protocol-relative `//host`, `/\host`, un-rooted
- * paths, http, javascript:) is dropped, so no docs link renders.
+ * against DOCS_ORIGIN. Absolute URLs are accepted only when already on
+ * DOCS_ORIGIN. Anything else (other hosts, protocol-relative `//host`,
+ * `/\host`, un-rooted paths, http, javascript:) is dropped, so no docs link
+ * renders.
  */
 export function safeDocsUrl(url: string | null | undefined): string | null {
   if (!url) return null;
   try {
-    if (url.startsWith('/')) {
-      const resolved = new URL(url, DOCS_ORIGIN);
-      return resolved.origin === DOCS_ORIGIN ? resolved.toString() : null;
-    }
-    const parsed = new URL(url);
-    return parsed.protocol === 'https:' ? parsed.toString() : null;
+    const resolved = url.startsWith('/') ? new URL(url, DOCS_ORIGIN) : new URL(url);
+    return resolved.origin === DOCS_ORIGIN ? resolved.toString() : null;
   } catch {
     return null;
   }
+}
+
+/** Minimal runtime shape check before the report is rendered. */
+export function isConnectionsReport(value: unknown): value is ConnectionsReport {
+  if (typeof value !== 'object' || value === null) return false;
+  const r = value as Partial<ConnectionsReport>;
+  return Array.isArray(r.groups) && typeof r.summary === 'object' && r.summary !== null;
 }
