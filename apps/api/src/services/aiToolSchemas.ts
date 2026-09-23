@@ -242,6 +242,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   get_active_users: z.object({
     deviceId: uuid.optional(),
     limit: z.number().int().min(1).max(200).optional(),
+    maxSessionsPerDevice: z.number().int().min(1).max(50).optional(),
     idleThresholdMinutes: z.number().int().min(1).max(1440).optional(),
   }),
 
@@ -454,7 +455,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
 
   list_organizations: z.object({
     search: z.string().max(255).optional(),
-    limit: z.number().int().min(1).max(100).optional(),
+    ...pageZodShape(25, 100),
   }),
 
   // AI agent governance (P2-5, #4192). `orgId` is an ADDRESS, never an
@@ -1296,7 +1297,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     osType: z.enum(['windows', 'macos', 'linux']).optional(),
     minScore: z.number().int().min(0).max(100).optional(),
     maxScore: z.number().int().min(0).max(100).optional(),
-    limit: z.number().int().min(1).max(500).optional(),
+    includeSummary: z.boolean().optional(),
+    ...pageZodShape(12, 500),
   }).refine(
     (data) => data.minScore == null || data.maxScore == null || data.minScore <= data.maxScore,
     { message: 'minScore must be <= maxScore' },
@@ -1468,7 +1470,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   // Configuration policy tools
   list_configuration_policies: z.object({
     status: z.enum(['active', 'inactive', 'archived']).optional(),
-    limit: z.number().int().min(1).max(100).optional(),
+    ...pageZodShape(20, 100),
   }),
 
   get_effective_configuration: z.object({
@@ -1586,6 +1588,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   // Playbook tools
   list_playbooks: z.object({
     category: z.enum(['disk', 'service', 'memory', 'patch', 'security', 'all']).optional(),
+    includeSteps: z.boolean().optional(),
+    ...pageZodShape(25, 100),
   }),
 
   execute_playbook: z.object({
@@ -1641,6 +1645,9 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   }),
   get_script_execution: z.object({
     executionId: uuid,
+    stdoutOffset: z.number().int().min(0).optional(),
+    stdoutMaxChars: z.number().int().min(1).max(16000).optional(),
+    stderrMaxChars: z.number().int().min(1).max(8000).optional(),
   }),
 
   // Monitoring tools
@@ -1705,6 +1712,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
 
   query_psa_status: z.object({
     connectionId: uuid.optional(),
+    ...pageZodShape(25, 100),
   }),
 
   search_documentation: z.object({
@@ -1790,6 +1798,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
 
   get_incident_timeline: z.object({
     incidentId: uuid,
+    includeEvidenceMetadata: z.boolean().optional(),
   }),
 
   generate_incident_report: z.object({

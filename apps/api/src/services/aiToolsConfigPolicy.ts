@@ -1,4 +1,5 @@
 import { db } from '../db';
+import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { CONFIG_FEATURE_TYPES, ORG_SCOPED_ONLY_FEATURE_TYPES, type ConfigFeatureType } from '@breeze/shared/constants';
 import { configurationPolicies, configPolicyFeatureLinks, configPolicyAssignments, automationPolicyCompliance } from '../db/schema';
 import { eq, and, desc, isNull, isNotNull, inArray, SQL } from 'drizzle-orm';
@@ -276,11 +277,18 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         type: 'object' as const,
         properties: {
           status: { type: 'string', enum: ['active', 'inactive', 'archived'], description: 'Filter by status' },
-          limit: { type: 'number', description: 'Max results (default 25, max 100)' },
+          ...pageParamSchema(20, 100),
         },
       },
     },
     handler: safeHandler('list_configuration_policies', async (input, auth) => {
+      // A-W05 (5c follow-up): 25 realistic rows overflowed 8 000 raw chars
+      // (9 048) once every uuid/timestamp column and featureTypes were
+      // spelled out; 20 rows measured 7 253 — default lowered accordingly.
+      const page = readPageArgs('list_configuration_policies', input, { defaultLimit: 20, maxLimit: 100 });
+      if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
+      const { limit, offset, fingerprint } = page;
+
       const conditions: SQL[] = [];
       // Dual-axis visibility (#1724): a partner-scoped caller must also see
       // partner-OWNED policies (org_id NULL), which auth.orgCondition alone
@@ -291,13 +299,15 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         conditions.push(eq(configurationPolicies.status, input.status as 'active' | 'inactive' | 'archived'));
       }
 
-      const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
+      // A-W05 (5c): over-fetch by one to report hasMore/nextCursor without a
+      // separate COUNT.
       const rows = await db
         .select()
         .from(configurationPolicies)
         .where(conditions.length > 0 ? and(...conditions) : undefined)
         .orderBy(desc(configurationPolicies.updatedAt))
-        .limit(limit);
+        .limit(limit + 1)
+        .offset(offset);
 
       // Get feature link counts per policy
       const policyIds = rows.map((r) => r.id);
@@ -323,7 +333,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         featureTypes: linksByPolicy.get(p.id) ?? [],
       }));
 
-      return JSON.stringify({ policies: policiesWithFeatures, showing: rows.length });
+      return JSON.stringify(pageEnvelope({ key: 'policies', items: policiesWithFeatures, limit, offset, fingerprint }));
     }),
   });
 

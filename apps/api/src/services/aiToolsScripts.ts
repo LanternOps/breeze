@@ -1233,6 +1233,9 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
         type: 'object' as const,
         properties: {
           executionId: { type: 'string', description: 'UUID of the script execution to fetch' },
+          stdoutOffset: { type: 'number', description: 'Character offset into stdout (default 0)' },
+          stdoutMaxChars: { type: 'number', description: 'Max stdout chars to return (default 5000, max 16000)' },
+          stderrMaxChars: { type: 'number', description: 'Max stderr chars to return (default 1500, max 8000)' },
         },
         required: ['executionId'],
       },
@@ -1246,6 +1249,16 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       // the device-move restamp already maintain and which is NOT NULL for
       // every execution regardless of source.
       const orgCond = auth.orgCondition(scriptExecutions.orgId);
+
+      // A-W05 (5c): stdout/stderr are windowed at the SQL layer so a
+      // megabyte-scale execution log never has to round-trip through Node
+      // before being cut down to size.
+      const stdoutOffset = Math.max(0, Math.trunc(Number(input.stdoutOffset)) || 0);
+      // A-W05 (5c follow-up): the plan's 6000/2000 defaults measured 8 656
+      // raw chars once metadata/JSON overhead was included — over the 8 000
+      // budget. 5000/1500 measured 7 132; lowered accordingly.
+      const stdoutMax = Math.min(Math.max(1, Math.trunc(Number(input.stdoutMaxChars)) || 5000), 16000);
+      const stderrMax = Math.min(Math.max(1, Math.trunc(Number(input.stderrMaxChars)) || 1500), 8000);
 
       const [execution] = await db
         .select({
@@ -1265,8 +1278,10 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
           deviceSiteId: devices.siteId,
           status: scriptExecutions.status,
           exitCode: scriptExecutions.exitCode,
-          stdout: scriptExecutions.stdout,
-          stderr: scriptExecutions.stderr,
+          stdout: sql<string>`substr(coalesce(${scriptExecutions.stdout}, ''), ${stdoutOffset + 1}, ${stdoutMax})`,
+          stdoutChars: sql<number>`length(coalesce(${scriptExecutions.stdout}, ''))`,
+          stderr: sql<string>`left(coalesce(${scriptExecutions.stderr}, ''), ${stderrMax})`,
+          stderrChars: sql<number>`length(coalesce(${scriptExecutions.stderr}, ''))`,
           errorMessage: scriptExecutions.errorMessage,
           startedAt: scriptExecutions.startedAt,
           completedAt: scriptExecutions.completedAt,
@@ -1290,8 +1305,26 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: 'Execution not found' });
       }
 
-      const { deviceSiteId: _siteId, ...result } = execution;
-      return JSON.stringify({ execution: shapeExecutionRow(result) });
+      const { deviceSiteId: _siteId, stdoutChars: stdoutCharsRaw, stderrChars: stderrCharsRaw, ...result } = execution;
+      const stdoutChars = Number(stdoutCharsRaw);
+      const stderrChars = Number(stderrCharsRaw);
+      return JSON.stringify({
+        execution: shapeExecutionRow({
+          ...result,
+          stdoutChars,
+          stdoutOffset,
+          // `stdoutNextOffset` is the sibling key `compactToolResultForChat`
+          // (A-W05 Q3) keys off of to recognise this as a deliberately-sized
+          // window and never re-cut it during generic compaction.
+          stdoutNextOffset: stdoutOffset + result.stdout.length,
+          stdoutHasMore: stdoutOffset + result.stdout.length < stdoutChars,
+          stderrChars,
+          // stderr has no offset param (always read from 0); stderrNextOffset
+          // exists purely so the compactor's structural check protects it too.
+          stderrNextOffset: result.stderr.length,
+          stderrTruncated: result.stderr.length < stderrChars,
+        }),
+      });
     },
   });
 

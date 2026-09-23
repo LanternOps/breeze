@@ -200,7 +200,12 @@ function mockSelectRows(rows: unknown[]) {
     innerJoin: vi.fn(() => chain),
     where: vi.fn(() => chain),
     orderBy: vi.fn(() => chain),
-    limit: vi.fn().mockResolvedValue(rows),
+    // A-W05 5c: list_configuration_policies now chains .limit().offset();
+    // `.limit()` alone stays awaitable directly (every other caller in this
+    // file) via the thenable below.
+    limit: vi.fn(() => chain),
+    offset: vi.fn().mockResolvedValue(rows),
+    then: (res: (v: unknown) => unknown, rej: (e: unknown) => unknown) => Promise.resolve(rows).then(res, rej),
   };
   vi.mocked(db.select).mockReturnValueOnce(chain);
 }
@@ -680,6 +685,7 @@ describe('configuration policy AI tools', () => {
     expect(policyAccessConditionMock).toHaveBeenCalledWith(partnerAuth);
     expect(parsed.showing).toBe(1);
     expect(parsed.policies[0]).toMatchObject({ id: POLICY_ID, orgId: null, partnerId: PARTNER_ID });
+    expect(parsed).toMatchObject({ limit: 20, offset: 0, hasMore: false, nextCursor: null });
   });
 
   // configuration_policy_compliance summary was changed identically to the list

@@ -7,6 +7,7 @@
  */
 
 import { db } from '../db';
+import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import {
   webhooks,
   webhookDeliveries,
@@ -181,12 +182,18 @@ export function registerIntegrationTools(aiTools: Map<string, AiTool>): void {
             type: 'string',
             description: 'Specific PSA connection UUID (optional — omit to list all)',
           },
+          ...pageParamSchema(25, 100),
         },
         required: [],
       },
     },
     handler: safeHandler('query_psa_status', async (input, auth) => {
       const connectionId = input.connectionId as string | undefined;
+      // A-W05 (5c, the survey-miss follow-up): PSA connections are naturally
+      // few per org/partner, but the tool had no `limit` at all.
+      const page = readPageArgs('query_psa_status', input, { defaultLimit: 25, maxLimit: 100 });
+      if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
+      const { limit, offset, fingerprint } = page;
 
       const conditions: SQL[] = [];
       // Dual-axis (epic #2135): psa_connections is org-owned OR partner-wide.
@@ -205,7 +212,9 @@ export function registerIntegrationTools(aiTools: Map<string, AiTool>): void {
       }
       if (connectionId) conditions.push(eq(psaConnections.id, connectionId));
 
-      const rows = await db
+      // A single-connection lookup needs no page bound at all (there is at
+      // most one row); the list form over-fetches by one for hasMore.
+      const baseQuery = db
         .select({
           id: psaConnections.id,
           provider: psaConnections.provider,
@@ -221,6 +230,7 @@ export function registerIntegrationTools(aiTools: Map<string, AiTool>): void {
         .from(psaConnections)
         .where(conditions.length > 0 ? and(...conditions) : undefined)
         .orderBy(desc(psaConnections.createdAt));
+      const rows = connectionId ? await baseQuery : await baseQuery.limit(limit + 1).offset(offset);
 
       // If a specific connection was requested, also count ticket mappings
       if (connectionId && rows.length > 0) {
@@ -235,7 +245,8 @@ export function registerIntegrationTools(aiTools: Map<string, AiTool>): void {
         });
       }
 
-      return JSON.stringify({ connections: rows, count: rows.length });
+      const envelope = pageEnvelope({ key: 'connections', items: rows, limit, offset, fingerprint });
+      return JSON.stringify({ ...envelope, count: envelope.showing });
     }),
   });
 

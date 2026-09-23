@@ -511,7 +511,8 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
         type: 'object' as const,
         properties: {
           deviceId: { type: 'string', description: 'Optional device UUID. If omitted, returns active sessions across accessible devices.' },
-          limit: { type: 'number', description: 'Max sessions to return (default 100, max 200)' },
+          limit: { type: 'number', description: 'Max devices (default 12, max 200)' },
+          maxSessionsPerDevice: { type: 'number', description: 'Max sessions listed per device (default 10, max 50)' },
           idleThresholdMinutes: { type: 'number', description: 'Threshold used for reboot-safety checks (default 15)' }
         }
       }
@@ -519,7 +520,13 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
     handler: async (input, auth) => {
       const deviceId = input.deviceId as string | undefined;
       const idleThresholdMinutes = Math.min(Math.max(1, Number(input.idleThresholdMinutes) || 15), 1440);
-      const limit = Math.min(Math.max(1, Number(input.limit) || 100), 200);
+      // A-W05 (5c): `limit` now caps DEVICES, not raw session rows — a device
+      // with hundreds of logged-in sessions used to crowd every other device
+      // out of the page. `maxSessionsPerDevice` caps the per-device list.
+      // Default lowered from the plan's 50 to 12: 15 devices at one realistic
+      // session each measured 8 501 raw chars (over budget); 12 measured 6 827.
+      const limit = Math.min(Math.max(1, Number(input.limit) || 12), 200);
+      const maxSessionsPerDevice = Math.min(Math.max(1, Number(input.maxSessionsPerDevice) || 10), 50);
       // Site authority is app-layer only. A defined ceiling constrains even
       // the fleet form (no deviceId); a defined-empty one denies everything.
       const allowedSiteIds = auth.allowedSiteIds;
@@ -528,6 +535,10 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
           idleThresholdMinutes,
           totalActiveSessions: 0,
           totalDevicesWithSessions: 0,
+          deviceCount: 0,
+          showing: 0,
+          limit,
+          hasMore: false,
           devices: [],
           note: SITE_SCOPE_EMPTY_NOTE,
         });
@@ -550,6 +561,11 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
       const deviceScope = deviceScopeCondition(auth, deviceSessions.deviceId);
       if (deviceScope) conditions.push(deviceScope);
 
+      // Rows are grouped into devices in JS, so the SQL row cap has to be
+      // generous enough to see (limit + 1) distinct devices' worth of
+      // sessions, not just `limit` rows. Bounded by a safety ceiling so one
+      // session-heavy fleet can't force an unbounded scan.
+      const sessionRowCap = Math.min((limit + 1) * maxSessionsPerDevice, 5000);
       const rows = await db
         .select({
           sessionId: deviceSessions.id,
@@ -569,7 +585,7 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
         .innerJoin(devices, eq(deviceSessions.deviceId, devices.id))
         .where(and(...conditions))
         .orderBy(desc(deviceSessions.loginAt))
-        .limit(limit);
+        .limit(sessionRowCap);
 
       const byDevice = new Map<string, {
         deviceId: string;
@@ -592,7 +608,14 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
         }
       }
 
-      const devicesWithSessions = Array.from(byDevice.values()).map((entry) => {
+      // Device insertion order follows the loginAt-desc row order above, so
+      // the devices with the most recently active sessions are kept first
+      // when the page is capped.
+      const allDeviceEntries = Array.from(byDevice.values());
+      const hasMore = allDeviceEntries.length > limit;
+      const deviceEntries = hasMore ? allDeviceEntries.slice(0, limit) : allDeviceEntries;
+
+      const devicesWithSessions = deviceEntries.map((entry) => {
         const blockingSessions = entry.sessions.filter((session) => {
           const state = session.activityState ?? 'active';
           if (state === 'locked' || state === 'away' || state === 'disconnected') {
@@ -609,14 +632,19 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
           activeSessionCount: entry.sessions.length,
           blockingSessionCount: blockingSessions.length,
           safeToReboot: blockingSessions.length === 0,
-          sessions: entry.sessions,
+          sessions: entry.sessions.slice(0, maxSessionsPerDevice),
+          sessionCount: entry.sessions.length,
         };
       });
 
       return JSON.stringify({
         idleThresholdMinutes,
         totalActiveSessions: rows.length,
-        totalDevicesWithSessions: devicesWithSessions.length,
+        totalDevicesWithSessions: allDeviceEntries.length,
+        deviceCount: allDeviceEntries.length,
+        showing: devicesWithSessions.length,
+        limit,
+        hasMore,
         devices: devicesWithSessions,
       });
     }

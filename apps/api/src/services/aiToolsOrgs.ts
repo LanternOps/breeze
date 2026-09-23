@@ -56,6 +56,7 @@ import { contactCreateAuditEvent } from './contacts/audit';
 import { CONTACT_ROLES } from './contacts/types';
 import { ensureOrgAccess } from '../routes/systemTools/helpers';
 import { deviceScopeCondition, siteScopeCondition } from './aiToolsSiteScope';
+import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 
 // Mirrors the org PATCH route's status set (schema orgStatusEnum). Kept as a
 // literal array (not orgStatusEnum.enumValues) so schema mocks in tests don't
@@ -164,7 +165,9 @@ async function handleListOrganizations(
   input: Record<string, unknown>,
   auth: AuthContext
 ): Promise<string> {
-  const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
+  const page = readPageArgs('list_organizations', input, { defaultLimit: 25, maxLimit: 100 });
+  if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
+  const { limit, offset, fingerprint } = page;
   const search = typeof input.search === 'string' ? input.search.trim() : '';
   const searchCondition = search
     ? ilike(organizations.name, `%${escapeLike(search)}%`)
@@ -180,23 +183,25 @@ async function handleListOrganizations(
 
   if (auth.scope === 'organization') {
     // Org-scoped callers see ONLY their own org.
-    if (!auth.orgId) return JSON.stringify({ organizations: [], showing: 0 });
+    if (!auth.orgId) return JSON.stringify(pageEnvelope({ key: 'organizations', items: [], limit, offset, fingerprint }));
     conditions.push(eq(organizations.id, auth.orgId));
   } else if (auth.scope === 'partner') {
     const orgIds = auth.accessibleOrgIds ?? [];
-    if (orgIds.length === 0) return JSON.stringify({ organizations: [], showing: 0 });
+    if (orgIds.length === 0) return JSON.stringify(pageEnvelope({ key: 'organizations', items: [], limit, offset, fingerprint }));
     conditions.push(inArray(organizations.id, orgIds));
   }
   // system scope: no extra org filter (mirrors GET /orgs/organizations).
 
   // Safe projection for every scope — an unprojected select would leak
-  // settings/ssoConfig/billingContact into the model context.
+  // settings/ssoConfig/billingContact into the model context. Over-fetch by
+  // one (A-W05 5c) to report hasMore/nextCursor without a separate COUNT.
   const orgs = await db
     .select(SAFE_ORG_PROJECTION)
     .from(organizations)
     .where(and(...conditions))
     .orderBy(organizations.name)
-    .limit(limit);
+    .limit(limit + 1)
+    .offset(offset);
 
   // Attach each org's sites (id + name — enough to feed manage_quotes'
   // siteId). Site-restricted callers only see their allowed sites, mirroring
@@ -223,12 +228,14 @@ async function handleListOrganizations(
     }
   }
 
-  const data = orgs.map((org) => ({
-    ...org,
-    sites: sitesByOrg.get(org.id) ?? [],
-  }));
+  // A-W05 (5c): cap the per-org sites payload at 20 and report the real
+  // count, so one org with hundreds of sites can't blow the page budget.
+  const data = orgs.map((org) => {
+    const orgSites = sitesByOrg.get(org.id) ?? [];
+    return { ...org, sites: orgSites.slice(0, 20), siteCount: orgSites.length };
+  });
 
-  return JSON.stringify({ organizations: data, showing: data.length });
+  return JSON.stringify(pageEnvelope({ key: 'organizations', items: data, limit, offset, fingerprint }));
 }
 
 async function handleCreateOrg(
@@ -751,7 +758,7 @@ export function registerOrgTools(aiTools: Map<string, AiTool>): void {
         type: 'object' as const,
         properties: {
           search: { type: 'string', description: 'Case-insensitive name substring filter' },
-          limit: { type: 'number', description: 'Max results (default 25, max 100)' },
+          ...pageParamSchema(25, 100),
         },
         required: [],
       },

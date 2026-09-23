@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
+import { expectDefaultPageFits } from './aiToolOutputBudget.testkit';
 
 vi.mock('../db', () => ({
   db: {
@@ -531,5 +532,69 @@ describe('fleet user-session AI tools — site narrowing', () => {
 
     const rendered = new PgDialect().sqlToQuery(capturedWhere() as SQL);
     expect(rendered.params).not.toContain('site-A');
+  });
+});
+
+describe('get_active_users — limit caps devices, not sessions (A-W05 5c)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  function sessionRow(deviceId: string, hostname: string, i: number) {
+    return {
+      sessionId: `sess-${deviceId}-${i}`, deviceId, hostname, deviceStatus: 'online',
+      username: `user${i}`, sessionType: 'rdp', osSessionId: String(i), loginAt: new Date(),
+      idleMinutes: 0, activityState: 'active', loginPerformanceSeconds: 1, lastActivityAt: new Date(),
+    };
+  }
+
+  it('caps sessions per device at maxSessionsPerDevice and reports sessionCount', async () => {
+    const rows = Array.from({ length: 20 }, (_, i) => sessionRow(DEVICE_ID, 'host-1', i));
+    mockSelectOnce(rows);
+
+    const out = JSON.parse(await handlerFor('get_active_users')({ maxSessionsPerDevice: 5 }, makeAuth()));
+    expect(out.devices).toHaveLength(1);
+    expect(out.devices[0].sessions).toHaveLength(5);
+    expect(out.devices[0].sessionCount).toBe(20);
+    expect(out.devices[0].activeSessionCount).toBe(20);
+  });
+
+  it('caps devices at `limit` and reports deviceCount/showing/hasMore', async () => {
+    const rows = [
+      ...Array.from({ length: 3 }, (_, i) => sessionRow(DEVICE_ID, 'host-1', i)),
+      ...Array.from({ length: 3 }, (_, i) => sessionRow(SIBLING_DEVICE_ID, 'host-2', i)),
+    ];
+    mockSelectOnce(rows);
+
+    const out = JSON.parse(await handlerFor('get_active_users')({ limit: 1 }, makeAuth()));
+    expect(out.devices).toHaveLength(1);
+    expect(out.showing).toBe(1);
+    expect(out.deviceCount).toBe(2);
+    expect(out.limit).toBe(1);
+    expect(out.hasMore).toBe(true);
+  });
+
+  it('a default page of realistic sessions (one per device) fits the chat budget uncompacted', async () => {
+    const deviceIds = Array.from({ length: 12 }, (_, d) => `44444444-4444-4444-4444-${String(d).padStart(12, '0')}`);
+    const rows = deviceIds.map((id, d) => sessionRow(id, `host-${d}`, 0));
+    mockSelectOnce(rows);
+
+    const raw = await handlerFor('get_active_users')({}, makeAuth());
+    const out = JSON.parse(raw) as Record<string, unknown>;
+    expect(out.limit).toBe(12);
+    expect(out.deviceCount).toBe(12);
+    expectDefaultPageFits('get_active_users', raw);
+  });
+
+  it('a worst-case fleet (more devices than the default page) degrades honestly: hasMore/limit survive compaction or digest', async () => {
+    const deviceIds = Array.from({ length: 200 }, (_, d) => `55555555-5555-5555-5555-${String(d).padStart(12, '0')}`);
+    const rows = deviceIds.flatMap((id, d) => Array.from({ length: 3 }, (_, i) => sessionRow(id, `host-${d}`, i)));
+    mockSelectOnce(rows);
+
+    const raw = await handlerFor('get_active_users')({ limit: 200 }, makeAuth());
+    const { compactToolResultForChat } = await import('./aiToolOutput');
+    const compacted = JSON.parse(compactToolResultForChat('get_active_users', raw)) as { hasMore?: boolean; limit?: number; summarized?: boolean };
+    // Whether it lands as a compacted-but-intact payload or a digest, the
+    // paging envelope must still tell the model how to keep going.
+    expect(compacted.limit).toBe(200);
+    expect(typeof compacted.hasMore).toBe('boolean');
   });
 });

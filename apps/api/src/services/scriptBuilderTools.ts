@@ -368,6 +368,13 @@ export function buildScriptBuilderTools(
       'Fetch one script execution by ID with status, exit code, stdout, and stderr. Use for runs started outside the current tool call (the editor Test Run button, or an execution id from get_script_execution_history) — not to re-check an execute_script_on_device call that already returned.',
       {
         executionId: uuid.describe('The execution ID to fetch'),
+        // A-W05 (Q7): this file declares its own Zod shape independent of
+        // aiAgentSdkTools.ts — the window params must be added here too, or
+        // this surface strips them and the model can never page past 6000
+        // stdout chars.
+        stdoutOffset: z.number().int().min(0).optional().describe('Character offset into stdout (default 0)'),
+        stdoutMaxChars: z.number().int().min(1).max(16000).optional().describe('Max stdout chars to return (default 5000, max 16000)'),
+        stderrMaxChars: z.number().int().min(1).max(8000).optional().describe('Max stderr chars to return (default 1500, max 8000)'),
       },
       makeExistingHandler('get_script_execution', getAuth, onPreToolUse, onPostToolUse)
     ),

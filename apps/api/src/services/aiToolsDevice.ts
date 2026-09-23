@@ -234,14 +234,19 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         .where(eq(sites.id, device.siteId))
         .limit(1);
 
+      // A-W05 (5c): cap the sub-arrays so a NIC-heavy or disk-heavy device
+      // can't blow the page budget; every column here is already a scalar
+      // (no jsonb on device_hardware/device_network/device_disks).
       return JSON.stringify({
         device: {
           ...projectPublicDevice(device),
           siteName: site?.name
         },
         hardware: hardware[0] ?? null,
-        networkInterfaces: network,
-        disks,
+        networkInterfaces: network.slice(0, 16),
+        networkInterfaceCount: network.length,
+        disks: disks.slice(0, 16),
+        diskCount: disks.length,
         recentMetrics
       }, (_, v) => typeof v === 'bigint' ? Number(v) : v);
     }

@@ -1454,6 +1454,7 @@ export function buildBreezeSdkTools(
       {
         deviceId: uuid.optional(),
         limit: z.number().int().min(1).max(200).optional(),
+        maxSessionsPerDevice: z.number().int().min(1).max(50).optional(),
         idleThresholdMinutes: z.number().int().min(1).max(1440).optional(),
       },
       makeHandler('get_active_users', getAuth, onPreToolUse, onPostToolUse)
@@ -1656,6 +1657,9 @@ export function buildBreezeSdkTools(
       registryDescription('get_script_execution'),
       {
         executionId: uuid,
+        stdoutOffset: z.number().int().min(0).optional(),
+        stdoutMaxChars: z.number().int().min(1).max(16000).optional(),
+        stderrMaxChars: z.number().int().min(1).max(8000).optional(),
       },
       makeHandler('get_script_execution', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -1709,7 +1713,8 @@ export function buildBreezeSdkTools(
         osType: z.enum(['windows', 'macos', 'linux']).optional(),
         minScore: z.number().int().min(0).max(100).optional(),
         maxScore: z.number().int().min(0).max(100).optional(),
-        limit: z.number().int().min(1).max(500).optional(),
+        includeSummary: z.boolean().optional(),
+        ...pageZodShape(12, 500),
       },
       makeHandler('get_cis_compliance', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -2356,7 +2361,7 @@ export function buildBreezeSdkTools(
       registryDescription('list_configuration_policies'),
       {
         status: z.enum(['active', 'inactive', 'archived']).optional(),
-        limit: z.number().int().min(1).max(100).optional(),
+        ...pageZodShape(20, 100),
       },
       makeHandler('list_configuration_policies', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -2546,6 +2551,8 @@ export function buildBreezeSdkTools(
       registryDescription('list_playbooks'),
       {
         category: z.enum(['disk', 'service', 'memory', 'patch', 'security', 'all']).optional(),
+        includeSteps: z.boolean().optional(),
+        ...pageZodShape(25, 100),
       },
       makeHandler('list_playbooks', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -2768,7 +2775,7 @@ export function buildBreezeSdkTools(
       registryDescription('list_organizations'),
       {
         search: z.string().max(255).optional(),
-        limit: z.number().int().min(1).max(100).optional(),
+        ...pageZodShape(25, 100),
       },
       makeHandler('list_organizations', getAuth, onPreToolUse, onPostToolUse)
     ),
