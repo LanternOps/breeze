@@ -167,6 +167,15 @@ describe('inboundEmailWorker', () => {
       expect(discardMock).toHaveBeenCalledWith(email);
     });
 
+    it('a failed attachment prep propagates (BullMQ retries) and never creates the ticket without its files', async () => {
+      prepareMock.mockRejectedValueOnce(new Error('Graph 503'));
+      await expect(workerModule.handleInboundEmail({
+        data: { email: m365(true), mailboxGeneration }, attemptsMade: 0, opts: { attempts: 3 },
+      } as any)).rejects.toThrow('Graph 503');
+      expect(withSystemDbAccessContextMock).not.toHaveBeenCalled();
+      expect(processInboundEmailMock).not.toHaveBeenCalled();
+    });
+
     it('makes no attachment call when hasAttachments is false', async () => {
       await workerModule.handleInboundEmail({ data: { email: m365(false), mailboxGeneration } } as any);
       expect(prepareMock).not.toHaveBeenCalled();

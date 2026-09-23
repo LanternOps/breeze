@@ -91,6 +91,13 @@ export async function prepareM365Attachments(
         buf = await getFileAttachmentBytes(token, email.to, email.providerMessageId, a.id);
       } catch (err) {
         if (!ctx.finalAttempt) throw err;
+        // The ticket note tells the technician; this tells operators.
+        console.warn('[inboundEmail] M365 attachment download failed on the final attempt', {
+          providerMessageId: email.providerMessageId,
+          attachmentId: a.id,
+          err: err instanceof Error ? err.message : err,
+        });
+        captureException(err instanceof Error ? err : new Error(String(err)));
         out.push(metaOnly(a, 'fetch_failed'));
         continue;
       }

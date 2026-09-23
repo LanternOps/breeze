@@ -99,6 +99,15 @@ describe('inboundAttachmentNote', () => {
     expect(note).not.toContain('r.pdf');
   });
 
+  it('names at most 10 files and summarises the rest', () => {
+    const note = inboundAttachmentNote(withAttachments(Array.from({ length: 12 }, (_, i) => ({
+      filename: `f${i}.eml`, contentType: 'message/rfc822', size: 1, skipReason: 'unsupported_type' as const,
+    }))));
+    expect(note).toContain('f9.eml');
+    expect(note).not.toContain('f10.eml');
+    expect(note).toMatch(/; and 2 more\]$/);
+  });
+
   it('describes a whole-message retrieval failure without inventing filenames', () => {
     const note = inboundAttachmentNote(withAttachments([
       { filename: '', contentType: '', size: 0, skipReason: 'fetch_failed' },

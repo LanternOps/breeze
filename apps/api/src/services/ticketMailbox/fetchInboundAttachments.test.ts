@@ -180,6 +180,22 @@ describe('prepareM365Attachments', () => {
     expect(email.attachments).toEqual([expect.objectContaining({ skipReason: 'fetch_failed' })]);
   });
 
+  it('a per-file download failure on the FINAL attempt is recorded as fetch_failed AND reported to Sentry', async () => {
+    const { captureException } = await import('../sentry');
+    listMock.mockResolvedValue([
+      { id: 'a1', name: 'r.pdf', contentType: 'application/pdf', size: PDF.length, isInline: false, '@odata.type': FILE },
+    ]);
+    getBytesMock.mockRejectedValueOnce(new Error('Graph 502'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const email = m365Email();
+
+    await prepareM365Attachments(email, { ...ctx, finalAttempt: true });
+
+    expect(email.attachments[0]).toMatchObject({ filename: 'r.pdf', skipReason: 'fetch_failed' });
+    expect(captureException).toHaveBeenCalledWith(expect.objectContaining({ message: 'Graph 502' }));
+    warn.mockRestore();
+  });
+
   it('is a no-op (no token, no Graph call) when hasAttachments is false', async () => {
     const email = m365Email({ hasAttachments: false });
 
