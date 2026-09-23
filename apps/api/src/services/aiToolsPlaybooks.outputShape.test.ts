@@ -4,18 +4,22 @@ import { expectDefaultPageFits, fixtureRow } from './aiToolOutputBudget.testkit'
 
 const dbMock = vi.hoisted(() => {
   let rows: unknown[] = [];
+  let lastOrderByArgs: unknown[] = [];
   const select = vi.fn(() => ({
     from: () => ({
       where: () => ({
-        orderBy: () => ({
-          limit: (n: number) => ({
-            offset: (o: number) => Promise.resolve(rows.slice(o, o + n)),
-          }),
-        }),
+        orderBy: (...args: unknown[]) => {
+          lastOrderByArgs = args;
+          return {
+            limit: (n: number) => ({
+              offset: (o: number) => Promise.resolve(rows.slice(o, o + n)),
+            }),
+          };
+        },
       }),
     }),
   }));
-  return { select, setRows: (r: unknown[]) => { rows = r; } };
+  return { select, setRows: (r: unknown[]) => { rows = r; }, getLastOrderByArgs: () => lastOrderByArgs };
 });
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
@@ -69,5 +73,14 @@ describe('list_playbooks output shape (A-W05 5c)', () => {
     dbMock.setRows([playbookRow(0, 15)]);
     const withSteps = JSON.parse(await tool.handler({ includeSteps: true }, auth())) as { playbooks: Array<{ steps: unknown[] }> };
     expect(withSteps.playbooks[0]!.steps).toHaveLength(15);
+  });
+
+  it('fix 6: orders by (category, name, id) so offset pagination has a unique tiebreaker', async () => {
+    dbMock.setRows([]);
+    await tool.handler({}, auth());
+    // category/name alone are not guaranteed unique — two playbooks with the
+    // same category and name would let offset pagination skip or duplicate
+    // a row. `id` is the final tiebreaker.
+    expect(dbMock.getLastOrderByArgs().length).toBe(3);
   });
 });

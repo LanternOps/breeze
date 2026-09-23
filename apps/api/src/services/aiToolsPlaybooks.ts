@@ -113,7 +113,10 @@ registerTool({
         })
         .from(playbookDefinitions)
         .where(and(...conditions))
-        .orderBy(playbookDefinitions.category, playbookDefinitions.name)
+        // Fix 6: category/name are not guaranteed unique together, so a tied
+        // pair could be skipped or duplicated across an offset page under
+        // concurrent inserts. `id` is the final, unique tiebreaker.
+        .orderBy(playbookDefinitions.category, playbookDefinitions.name, playbookDefinitions.id)
         .limit(limit + 1)
         .offset(offset);
 
