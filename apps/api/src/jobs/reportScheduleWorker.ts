@@ -51,6 +51,7 @@ import {
   UnsupportedReportScopeError,
   type ReportResult,
 } from '../services/reportGenerationService';
+import { organizationScope } from '../services/reportScope';
 import { emailReportFailure, emailReportRun } from '../services/reportDelivery';
 import { getBullMQConnection, isRedisAvailable } from '../services/redis';
 import {
@@ -665,7 +666,7 @@ export async function processRunScheduledReport(
     );
     const result = await generateReport(
       report.type,
-      owner.orgId,
+      organizationScope(owner.orgId),
       config,
       executionAuthority,
     );

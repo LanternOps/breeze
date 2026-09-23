@@ -25,6 +25,7 @@ import {
   UnsupportedReportScopeError,
   type ReportType,
 } from './reportGenerationService';
+import { organizationScope } from './reportScope';
 import { reportTypeEnum } from '../db/schema/reports';
 import { organizations } from '../db/schema';
 import { REPORT_TYPES as SHARED_REPORT_TYPES } from '@breeze/shared';
@@ -136,7 +137,7 @@ describe('generateReport mandatory execution authority', () => {
     await expect(
       generateReport(
         'device_inventory',
-        ORG_ID,
+        organizationScope(ORG_ID),
         {},
         undefined as never,
       ),
@@ -148,7 +149,7 @@ describe('generateReport mandatory execution authority', () => {
     await expect(
       generateReport(
         'device_inventory',
-        ORG_ID,
+        organizationScope(ORG_ID),
         {},
         authority('unrestricted', [], OTHER_ORG_ID),
       ),
@@ -161,7 +162,7 @@ describe('generateReport mandatory execution authority', () => {
     async (type) => {
       const result = await generateReport(
         type,
-        ORG_ID,
+        organizationScope(ORG_ID),
         {},
         authority('restricted', []),
       );
@@ -188,7 +189,7 @@ describe('generateReport mandatory execution authority', () => {
   it('vulnerability_management returns a shaped, unmeasured summary for restricted-empty, not a bare empty result', async () => {
     const result = await generateReport(
       'vulnerability_management',
-      ORG_ID,
+      organizationScope(ORG_ID),
       {},
       authority('restricted', []),
     );
@@ -209,7 +210,7 @@ describe('generateReport mandatory execution authority', () => {
   it.each(['executive_summary', 'security_compliance_posture', 'hardware_lifecycle'] as const)(
     'allows portal-user authority for %s',
     async (type) => {
-      await expect(generateReport(type, ORG_ID, {}, portalAuthority()))
+      await expect(generateReport(type, organizationScope(ORG_ID), {}, portalAuthority()))
         .resolves.toBeDefined();
     },
   );
@@ -222,7 +223,7 @@ describe('generateReport mandatory execution authority', () => {
     'performance',
     'ai_org_narrative',
   ] as const)('rejects portal-user authority for %s before querying', async (type) => {
-    await expect(generateReport(type, ORG_ID, {}, portalAuthority()))
+    await expect(generateReport(type, organizationScope(ORG_ID), {}, portalAuthority()))
       .rejects.toThrow(/portal|authority|report type/i);
     expect(db.select).not.toHaveBeenCalled();
   });
@@ -249,7 +250,7 @@ describe('generateReport mandatory execution authority', () => {
   it('identity_access_review refuses a restricted authority instead of binding a site scope', async () => {
     const result = await generateReport(
       'identity_access_review',
-      ORG_ID,
+      organizationScope(ORG_ID),
       {},
       authority('restricted', [SITE_A]),
     );
@@ -275,7 +276,7 @@ describe('generateReport mandatory execution authority', () => {
     async (type) => {
       await generateReport(
         type,
-        ORG_ID,
+        organizationScope(ORG_ID),
         {},
         authority('restricted', [SITE_A]),
       );
@@ -294,7 +295,7 @@ describe('generateReport mandatory execution authority', () => {
   it('endpoint_management_review returns a SHAPED zero-safe summary, not a bare empty result', async () => {
     const result = await generateReport(
       'endpoint_management_review',
-      ORG_ID,
+      organizationScope(ORG_ID),
       {},
       authority('restricted', []),
     );
@@ -318,7 +319,7 @@ describe('generateReport mandatory execution authority', () => {
     async (type) => {
       await generateReport(
         type,
-        ORG_ID,
+        organizationScope(ORG_ID),
         {},
         authority('unrestricted'),
       );
@@ -348,7 +349,7 @@ describe('stored-artifact-only report types (P2-3)', () => {
     '%s is refused by the dispatch switch before any query runs',
     async (type) => {
       await expect(
-        generateReport(type, ORG_ID, {}, authority('unrestricted')),
+        generateReport(type, organizationScope(ORG_ID), {}, authority('unrestricted')),
       ).rejects.toBeInstanceOf(StoredArtifactOnlyReportError);
       expect(db.select).not.toHaveBeenCalled();
     },
@@ -362,14 +363,14 @@ describe('stored-artifact-only report types (P2-3)', () => {
       // that would otherwise hand back a plausible-looking empty report for a
       // document that exists.
       await expect(
-        generateReport(type, ORG_ID, {}, authority('restricted', [])),
+        generateReport(type, organizationScope(ORG_ID), {}, authority('restricted', [])),
       ).rejects.toBeInstanceOf(StoredArtifactOnlyReportError);
       expect(db.select).not.toHaveBeenCalled();
     },
   );
 
   it('carries the stable code routes map to 409', async () => {
-    const error = await generateReport('ai_org_narrative', ORG_ID, {}, authority('unrestricted'))
+    const error = await generateReport('ai_org_narrative', organizationScope(ORG_ID), {}, authority('unrestricted'))
       .catch((e: unknown) => e as StoredArtifactOnlyReportError);
 
     expect(error).toBeInstanceOf(StoredArtifactOnlyReportError);
@@ -428,7 +429,7 @@ describe('managed evidence system execution path (#5784 OD-5 = B)', () => {
   });
 
   it('leaves the ordinary user path unchanged: a user authority with an empty restricted scope still reaches the zero-safe shape', async () => {
-    const result = await generateReport('device_inventory', ORG_ID, {}, authority('restricted', []));
+    const result = await generateReport('device_inventory', organizationScope(ORG_ID), {}, authority('restricted', []));
     expect(result.rowCount).toBe(0);
     expect(db.select).not.toHaveBeenCalled();
   });
@@ -444,7 +445,7 @@ describe('generator-less business report types (#3198 W01)', () => {
   it.each(GENERATOR_LESS_BUSINESS_TYPES)(
     '%s is refused by the dispatch switch with UnsupportedReportScopeError before any query',
     async (type) => {
-      const error = await generateReport(type, ORG_ID, {}, authority('unrestricted'))
+      const error = await generateReport(type, organizationScope(ORG_ID), {}, authority('unrestricted'))
         .catch((e: unknown) => e);
       expect(error).toBeInstanceOf(UnsupportedReportScopeError);
       expect((error as Error).message).toBe(`${type} cannot run at organization scope`);
@@ -456,7 +457,7 @@ describe('generator-less business report types (#3198 W01)', () => {
     '%s is refused by the zero-safe branch too',
     async (type) => {
       await expect(
-        generateReport(type, ORG_ID, {}, authority('restricted', [])),
+        generateReport(type, organizationScope(ORG_ID), {}, authority('restricted', [])),
       ).rejects.toBeInstanceOf(UnsupportedReportScopeError);
       expect(db.select).not.toHaveBeenCalled();
     },
@@ -510,5 +511,57 @@ describe('assertReportExecutionPreflight owner axis (#3198 W01)', () => {
   it('keeps the portal-user report-type gate (4th parameter)', () => {
     expect(() => assertReportExecutionPreflight({ orgId: ORG_ID }, {}, portalAuthority(), 'device_inventory'))
       .toThrow(/Portal-user authority cannot generate report type device_inventory/);
+  });
+});
+
+describe('registry dispatch gate order (#3198 W02 Task 3)', () => {
+  const PARTNER_SCOPE = { kind: 'partner' as const, partnerId: PARTNER_ID, orgIds: [ORG_ID] };
+  function partnerWideAuthority(): ReportExecutionAuthority {
+    return {
+      principalKind: 'user',
+      scope: { version: 1, kind: 'partner_wide', partnerId: PARTNER_ID },
+      principalUserId: USER_ID,
+      capturedAt: new Date('2026-09-21T12:00:00.000Z'),
+      fingerprint: 'e'.repeat(64),
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReturnValue(selectChain([]));
+  });
+
+  it.each(REPORT_TYPES)(
+    'org-only %s under a partner scope is UnsupportedReportScopeError(partner), checked BEFORE the preflight',
+    async (type) => {
+      // An org authority against a partner owner would fail the preflight with
+      // "partner authority mismatch" (403 shape) if the preflight ran first.
+      const error = await generateReport(type, PARTNER_SCOPE, {}, authority('unrestricted'))
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(UnsupportedReportScopeError);
+      expect((error as UnsupportedReportScopeError).scope).toBe('partner');
+      expect((error as Error).message).toBe(`${type} cannot run at partner scope`);
+      expect(db.select).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(GENERATOR_LESS_BUSINESS_TYPES)(
+    '%s passes the partner-scope gate and the partner preflight, then its placeholder refuses',
+    async (type) => {
+      const error = await generateReport(type, PARTNER_SCOPE, {}, partnerWideAuthority())
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(UnsupportedReportScopeError);
+      expect((error as UnsupportedReportScopeError).scope).toBe('partner');
+      expect(db.select).not.toHaveBeenCalled();
+    },
+  );
+
+  it('a business type under a partner scope still runs the partner preflight (wrong partner → 403 shape)', async () => {
+    await expect(generateReport(
+      'ar_aging',
+      { kind: 'partner', partnerId: '55555555-5555-4555-8555-555555555555', orgIds: [] },
+      {},
+      partnerWideAuthority(),
+    )).rejects.toThrow(/partner authority mismatch/);
   });
 });

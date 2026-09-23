@@ -776,7 +776,7 @@ describe('generateReport dispatch — security_compliance_posture', () => {
     };
     await generateReport(
       'security_compliance_posture',
-      'org-1',
+      { kind: 'organization', orgId: 'org-1' },
       {},
       executionAuthority,
     );
@@ -2801,7 +2801,7 @@ describe('report run immutable scope enforcement', () => {
     ]);
     expect(generateReport).toHaveBeenCalledWith(
       'device_inventory',
-      ORG_A,
+      { kind: 'organization', orgId: ORG_A },
       {},
       expect.objectContaining({
         scope: narrowedScope,

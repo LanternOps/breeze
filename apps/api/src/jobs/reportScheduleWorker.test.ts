@@ -769,7 +769,7 @@ describe('processRunScheduledReport', () => {
     );
     expect(generateReportMock).toHaveBeenCalledWith(
       'device_inventory',
-      ORG_ID,
+      { kind: 'organization', orgId: ORG_ID },
       report.config,
       expect.objectContaining({
         principalKind: 'user',
@@ -1136,7 +1136,7 @@ describe('processRunScheduledReport', () => {
     expect(previousBaselineForMock).toHaveBeenCalledWith(REPORT_ID, 'a'.repeat(64));
     expect(generateReportMock).toHaveBeenCalledWith(
       'device_inventory',
-      ORG_ID,
+      { kind: 'organization', orgId: ORG_ID },
       {},
       expect.objectContaining({ scope: restricted, fingerprint: 'a'.repeat(64) }),
     );
@@ -1659,7 +1659,7 @@ describe('partner-owned scheduled definitions (#3198 W01)', () => {
 
     await expect(run()).resolves.toBeUndefined();
 
-    expect(generateReportMock).toHaveBeenCalledWith('ar_aging', ORG_ID, expect.any(Object), expect.any(Object));
+    expect(generateReportMock).toHaveBeenCalledWith('ar_aging', { kind: 'organization', orgId: ORG_ID }, expect.any(Object), expect.any(Object));
     expect(updates[1]!.set).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'failed', errorMessage: 'unsupported_report_scope' }),
     );

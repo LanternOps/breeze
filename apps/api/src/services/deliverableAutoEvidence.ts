@@ -52,6 +52,7 @@ import {
   type EvidenceRunContext,
   type ReportResult,
 } from './reportGenerationService';
+import { organizationScope } from './reportScope';
 import { previousOccurrenceBaselineFor } from './evidenceBaseline';
 import { isManagedEvidenceType, type ManagedEvidenceType } from './managedEvidenceRegistry';
 import { captureException } from './sentry';
@@ -329,6 +330,6 @@ export async function generateAutoEvidenceForOccurrence(args: AutoEvidenceOccurr
 
   return runGenerator(
     persistedSiteScopeValues(authority),
-    () => generateReport(definition.type, args.orgId, config, authority),
+    () => generateReport(definition.type, organizationScope(args.orgId), config, authority),
   );
 }

@@ -18,6 +18,7 @@ import {
   UnsupportedReportScopeError,
   type ReportResult,
 } from '../../services/reportGenerationService';
+import { organizationScope } from '../../services/reportScope';
 import { rowsToCsv, rowsToTsv } from '@breeze/shared';
 import {
   getPagination, getReportWithOrgCheck, getReportRunWithOrgCheck, isPortalSelfServiceLocked,
@@ -207,7 +208,7 @@ runsRoutes.post(
     try {
       const result = await generateReport(
         report.type,
-        orgId,
+        organizationScope(orgId),
         config,
         executionAuthority,
       );

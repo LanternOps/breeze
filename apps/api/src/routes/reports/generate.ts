@@ -9,6 +9,7 @@ import {
   UnsupportedReportScopeError,
   type ReportResult,
 } from '../../services/reportGenerationService';
+import { organizationScope } from '../../services/reportScope';
 import { PERMISSIONS } from '../../services/permissions';
 import {
   canManagePartnerWidePolicies,
@@ -85,7 +86,7 @@ generateRoutes.post(
     try {
       reportData = await generateReport(
         data.type,
-        orgId!,
+        organizationScope(orgId!),
         config,
         authorityResult.authority,
       );

@@ -26,6 +26,8 @@ import {
   type ReportOwner,
 } from './siteScope';
 import { isManagedEvidenceType, type ManagedEvidenceType } from './managedEvidenceRegistry';
+import { reportTypeDef } from './reportRegistry';
+import { organizationScope, reportOwnerOfScope, type ReportScope } from './reportScope';
 import {
   StoredArtifactOnlyReportError,
   UnexecutableReportScopeError,
@@ -826,29 +828,46 @@ export type EvidenceRunContext = {
 };
 
 /**
- * ONE dispatcher for both execution paths. The switch below and
- * `zeroSafeReport` end in a `never` default, which is the only thing stopping a
- * new type from silently falling through; duplicating the switch for the
- * system path would let the copies drift. A system authority is refused here
- * for any type the closed registry does not name (#5784 OD-5 = B).
+ * ONE dispatcher for both execution paths. The 14-arm switch this replaced is
+ * now `REPORT_GENERATORS` (#3198 spec §6); exhaustiveness is preserved because
+ * the record is keyed by the closed `ReportType` union — a missing key is a
+ * compile error, the same guarantee the switch's `never` default gave.
+ * `zeroSafeReport` still ends in a `never` default. A system authority is
+ * refused here for any type whose registry entry is not `managed_evidence`
+ * (#5784 OD-5 = B; the registry test pins that set equal to
+ * MANAGED_EVIDENCE_REGISTRY).
  *
- * `evidence` is threaded to generators that accept it (the #5784 types, added
- * by W02/W03/W04/W06); the existing generators do not take it and their call
- * sites are unchanged.
+ * GATE ORDER IS LOAD-BEARING. `supportedScopes` is checked immediately after
+ * the system-authority refusal and BEFORE `assertReportExecutionPreflight`:
+ * the preflight compares the authority's owner axis against the report's, so
+ * a partner scope against an org-only type would die there as an authority
+ * mismatch — a 403 shape — instead of the 400 `unsupported_report_scope` the
+ * routes translate.
+ *
+ * `evidence` is threaded to generators that accept it (the #5784 types); the
+ * existing generators do not take it.
  */
 async function dispatchReportGeneration(
   type: ReportType,
-  orgId: string,
+  scope: ReportScope,
   config: Record<string, unknown>,
   authority: ReportGenerationAuthority,
   evidence?: EvidenceRunContext,
 ): Promise<ReportResult> {
-  if (authority?.principalKind === 'system' && !isManagedEvidenceType(type)) {
+  const def = reportTypeDef(type);
+
+  if (authority?.principalKind === 'system' && def.execution !== 'managed_evidence') {
     throw new UnexecutableReportScopeError(
       `${type} is not a managed evidence type and cannot run under system authority`,
     );
   }
-  assertReportExecutionPreflight(orgId, config, authority, type);
+
+  // BEFORE the preflight — see the gate-order note above.
+  if (!def.supportedScopes.includes(scope.kind)) {
+    throw new UnsupportedReportScopeError(type, scope.kind);
+  }
+
+  assertReportExecutionPreflight(reportOwnerOfScope(scope), config, authority, type);
   if (
     authority.principalKind === 'portal_user'
     && type !== 'executive_summary'
@@ -860,98 +879,25 @@ async function dispatchReportGeneration(
     );
   }
   if (authority.scope.kind === 'restricted' && authority.scope.siteIds.length === 0) {
-    return zeroSafeReport(type, orgId);
+    return zeroSafeReport(type, authority.scope.orgId);
   }
 
-  // The generators below predate #5784 and take the request-path authority
-  // only. A system authority can only reach this switch for a registry type,
-  // and every registry type gets its own arm that accepts `authority` as-is —
-  // so this narrowing is unreachable in practice and a loud refusal if a later
-  // wave adds a registry entry without adding its arm.
-  const requestAuthority = (): ReportExecutionAuthority => {
-    if (authority.principalKind === 'system') {
-      throw new UnexecutableReportScopeError(
-        `${type} has no managed evidence generator and cannot run under system authority`,
-      );
-    }
-    return authority;
-  };
-
-  switch (type) {
-    case 'device_inventory':
-      return generateDeviceInventoryReport(orgId, config, authority);
-    case 'software_inventory':
-      return generateSoftwareInventoryReport(orgId, config, requestAuthority());
-    case 'alert_summary':
-      return generateAlertSummaryReport(orgId, config, requestAuthority());
-    case 'compliance':
-      return generateComplianceReport(orgId, config, requestAuthority());
-    case 'performance':
-      return generatePerformanceReport(orgId, config, requestAuthority());
-    case 'executive_summary':
-      return generateExecutiveSummaryReport(orgId, config, requestAuthority());
-    case 'security_compliance_posture': {
-      const { generateSecurityCompliancePostureReport } = await import('./securityComplianceReport');
-      return generateSecurityCompliancePostureReport(orgId, config, requestAuthority());
-    }
-    // P2-3 (#4190) — stored, never generated. See `StoredArtifactOnlyReportError`.
-    case 'ai_org_narrative':
-      throw new StoredArtifactOnlyReportError(type);
-    // Fleet Designer W01 (#5651) — stored, never generated, same as above.
-    case 'ai_fleet_design':
-      throw new StoredArtifactOnlyReportError(type);
-    case 'hardware_lifecycle': {
-      const { generateHardwareLifecycleReport } = await import('./hardwareLifecycleReport');
-      return generateHardwareLifecycleReport(orgId, config, requestAuthority());
-    }
-    // #5784 W02. Accepts `authority` as-is: it is a managed evidence type, so a
-    // system authority legitimately reaches this arm. The dynamic import keeps
-    // the generator off the hot path and avoids the module cycle back to
-    // `assertReportExecutionPreflight`.
-    case 'threat_detection_review': {
-      const { generateThreatDetectionReport } = await import('./threatDetectionReport');
-      return generateThreatDetectionReport(orgId, config, authority, evidence);
-    }
-    case 'endpoint_management_review': {
-      // `await import` keeps a heavy generator off the hot path and avoids the
-      // module cycle back to `assertReportExecutionPreflight`.
-      const { generateEndpointManagementReport } = await import('./endpointManagementReport');
-      return generateEndpointManagementReport(orgId, config, authority, evidence);
-    }
-    // #5784 W04. The dynamic import keeps a heavy generator out of the hot path
-    // and avoids the module cycle back to `assertReportExecutionPreflight`.
-    case 'vulnerability_management': {
-      const { generateVulnerabilityManagementReport } = await import('./vulnerabilityManagementReport');
-      return generateVulnerabilityManagementReport(orgId, config, authority, evidence);
-    }
-    // #5784 W06. Same managed-evidence shape as W02 above: `authority` is passed
-    // as-is because a system authority legitimately reaches this arm, and the
-    // generator itself decides what a RESTRICTED authority gets (nothing —
-    // M365 identity has no site dimension, OD-8 = A).
-    case 'identity_access_review': {
-      const { generateIdentityAccessReport } = await import('./identityAccessReport');
-      return generateIdentityAccessReport(orgId, config, authority, evidence);
-    }
-    // #3198 W01 — enum labels only; W02 registers the generators.
-    case 'ticket_sla_attainment':
-    case 'technician_time_billability':
-    case 'ar_aging':
-      throw new UnsupportedReportScopeError(type, 'organization');
-    default: {
-      const exhaustive: never = type;
-      throw new Error(`Invalid report type: ${String(exhaustive)}`);
-    }
-  }
+  return def.generate(scope, config, authority, evidence);
 }
 
-/** Dispatch to the matching report generator by type (request path). */
+/** Dispatch to the matching report generator by type (request path).
+ *
+ *  #3198 W02 (spec §3.2, ruling P10): the second parameter is a `ReportScope`,
+ *  not an org id. Org-scope call sites read
+ *  `generateReport(type, organizationScope(orgId), config, authority)`; a
+ *  partner scope comes only from `reportScopeFromAuthority`. */
 export async function generateReport(
   type: ReportType,
-  orgId: string,
+  scope: ReportScope,
   config: Record<string, unknown>,
   authority: ReportExecutionAuthority,
 ): Promise<ReportResult> {
-  return dispatchReportGeneration(type, orgId, config, authority);
+  return dispatchReportGeneration(type, scope, config, authority);
 }
 
 /**
@@ -960,6 +906,10 @@ export async function generateReport(
  * type the closed `MANAGED_EVIDENCE_REGISTRY` names. An org-owned recurring
  * obligation must not stop producing evidence because one technician changed
  * jobs, which is what the user-principal path did.
+ *
+ * Signature UNCHANGED by #3198: managed evidence is org-owned by construction
+ * (a service deliverable belongs to one customer), so it keeps taking an org id
+ * and builds the scope itself.
  */
 export async function generateManagedEvidenceReport(
   type: ManagedEvidenceType,
@@ -970,7 +920,9 @@ export async function generateManagedEvidenceReport(
   if (!isManagedEvidenceType(type)) {
     throw new UnexecutableReportScopeError(`${type} is not a managed evidence type`);
   }
-  return dispatchReportGeneration(type, orgId, config, systemReportAuthorityFor(orgId), evidence);
+  return dispatchReportGeneration(
+    type, organizationScope(orgId), config, systemReportAuthorityFor(orgId), evidence,
+  );
 }
 
 function zeroSafeReport(type: ReportType, orgId: string): ReportResult {
