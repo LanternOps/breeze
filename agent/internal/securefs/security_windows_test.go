@@ -151,3 +151,135 @@ func TestApplyDirSecurityRefusesJunction(t *testing.T) {
 		t.Error("ApplyDirSecurity created a missing directory")
 	}
 }
+
+// TestInstallFileWithSecurityCreateRefusalFallsBackToBaseAccess (Windows,
+// R39): when the exclusive create is refused BECAUSE of the extra security
+// access (ACCESS_SYSTEM_SECURITY without SeSecurityPrivilege answers
+// STATUS_PRIVILEGE_NOT_HELD; a filter/volume policy can answer
+// STATUS_ACCESS_DENIED), the install retries once with the base mask, skips
+// Apply, and returns a warning — the file is restored, not failed.
+func TestInstallFileWithSecurityCreateRefusalFallsBackToBaseAccess(t *testing.T) {
+	const secAccess = windows.WRITE_DAC | windows.WRITE_OWNER | windows.ACCESS_SYSTEM_SECURITY
+	for _, tc := range []struct {
+		name    string
+		refusal error
+	}{
+		{"STATUS_PRIVILEGE_NOT_HELD", windows.STATUS_PRIVILEGE_NOT_HELD},
+		{"STATUS_ACCESS_DENIED", windows.STATUS_ACCESS_DENIED},
+		{"ERROR_PRIVILEGE_NOT_HELD", windows.ERROR_PRIVILEGE_NOT_HELD},
+		{"ERROR_ACCESS_DENIED", windows.ERROR_ACCESS_DENIED},
+	} {
+		refusal := tc.refusal
+		t.Run(tc.name, func(t *testing.T) {
+			base := t.TempDir()
+			orig := createTemporary
+			t.Cleanup(func() { createTemporary = orig })
+			var accesses []uint32
+			createTemporary = func(parent windows.Handle, name string, access uint32) (windows.Handle, error) {
+				accesses = append(accesses, access)
+				if access&secAccess != 0 {
+					return windows.InvalidHandle, refusal
+				}
+				return orig(parent, name, access)
+			}
+			applied := false
+			sec := &SecurityApplier{Access: secAccess, Apply: func(uintptr) error { applied = true; return nil }}
+			warnings, err := InstallFileWithSecurity(base, "f.txt", writeSource(t, "data"), 0o644, time.Time{}, nil, 0, sec)
+			if err != nil {
+				t.Fatalf("install failed on a security-access refusal: %v", err)
+			}
+			if b, rerr := os.ReadFile(filepath.Join(base, "f.txt")); rerr != nil || string(b) != "data" {
+				t.Fatalf("file not published: %q, %v", b, rerr)
+			}
+			if applied {
+				t.Error("Apply ran on a handle that was opened without the security access")
+			}
+			if len(accesses) != 2 || accesses[1]&secAccess != 0 {
+				t.Fatalf("create attempts = %#x, want exactly one retry without the security access", accesses)
+			}
+			if len(warnings) != 1 || !strings.Contains(warnings[0].Error(), "could not reapply security descriptor:") {
+				t.Fatalf("warnings = %v, want one 'could not reapply security descriptor: ...'", warnings)
+			}
+		})
+	}
+
+	t.Run("other create errors still fail without a retry", func(t *testing.T) {
+		base := t.TempDir()
+		orig := createTemporary
+		t.Cleanup(func() { createTemporary = orig })
+		calls := 0
+		createTemporary = func(windows.Handle, string, uint32) (windows.Handle, error) {
+			calls++
+			return windows.InvalidHandle, windows.STATUS_DISK_FULL
+		}
+		sec := &SecurityApplier{Access: secAccess, Apply: func(uintptr) error { return nil }}
+		if _, err := InstallFileWithSecurity(base, "f.txt", writeSource(t, "data"), 0o644, time.Time{}, nil, 0, sec); err == nil {
+			t.Fatal("install succeeded on a non-security create failure")
+		}
+		if calls != 1 {
+			t.Fatalf("create attempts = %d, want 1", calls)
+		}
+	})
+}
+
+// TestInstallFileWithSecurityPublishFailureLeavesNoTemporary (Windows): the
+// applier has already written a DACL that denies everyone (the owner keeps
+// only its implicit READ_CONTROL/WRITE_DAC) onto a READ-ONLY temporary, and
+// the publish fails. A by-name reopen cannot get FILE_WRITE_ATTRIBUTES to
+// clear read-only, so the delete by name refuses; cleanup must go through
+// the still-open pinned handle, or a .breeze-restore-* file is orphaned.
+func TestInstallFileWithSecurityPublishFailureLeavesNoTemporary(t *testing.T) {
+	base := t.TempDir()
+	t.Cleanup(func() { forceRemoveOrphans(t, base) })
+	orig := publishTemporary
+	t.Cleanup(func() { publishTemporary = orig })
+	publishTemporary = func(windows.Handle, windows.Handle, string) error {
+		return errors.New("injected publish failure")
+	}
+	sd, err := windows.SecurityDescriptorFromString("D:P")
+	if err != nil {
+		t.Fatal(err)
+	}
+	denyAll, _, err := sd.DACL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	applied := false
+	sec := &SecurityApplier{Access: windows.WRITE_DAC, Apply: func(h uintptr) error {
+		applied = true
+		return windows.SetSecurityInfo(windows.Handle(h), windows.SE_FILE_OBJECT,
+			windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, denyAll, nil)
+	}}
+	if _, err := InstallFileWithSecurity(base, "f.txt", writeSource(t, "data"), 0o444, time.Time{}, nil, 0, sec); err == nil {
+		t.Fatal("install succeeded despite the injected publish failure")
+	}
+	if !applied {
+		t.Fatal("precondition: Apply never ran")
+	}
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".breeze-restore-") {
+			t.Errorf("orphaned temporary %s left behind after a failed publish", e.Name())
+		}
+	}
+}
+
+// forceRemoveOrphans lets t.TempDir's cleanup succeed even when the code
+// under test orphaned a deny-all read-only temporary: the owner can always
+// rewrite the DACL (implicit WRITE_DAC), after which it is an ordinary file.
+func forceRemoveOrphans(t *testing.T, dir string) {
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), ".breeze-restore-") {
+			continue
+		}
+		p := filepath.Join(dir, e.Name())
+		_ = windows.SetNamedSecurityInfo(p, windows.SE_FILE_OBJECT,
+			windows.DACL_SECURITY_INFORMATION|windows.UNPROTECTED_DACL_SECURITY_INFORMATION, nil, nil, protectedDACLForTest(t), nil)
+		_ = os.Chmod(p, 0o666)
+		_ = os.Remove(p)
+	}
+}
