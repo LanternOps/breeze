@@ -4909,12 +4909,14 @@
     "description": "Importa organizzazioni e sedi da un CSV esportato dal tuo RMM precedente.",
     "dropzone": "Trascina qui un file CSV o fai clic per sfogliare",
     "dropzoneHint": "Colonne: organizzazione (obbligatoria), sede, ID esterno, sistema esterno, fuso orario",
+    "docsLink": "Guida all’importazione",
     "actions": {
       "close": "Chiudi",
       "preview": "Anteprima di {{count}} righe",
       "previewing": "Anteprima in corso…",
       "import": "Importa {{count}} selezionate",
-      "importing": "Importazione…"
+      "importing": "Importazione…",
+      "downloadSample": "Scarica CSV di esempio"
     },
     "mapping": {
       "title": "Mappatura colonne",

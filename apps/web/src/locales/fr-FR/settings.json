@@ -4861,12 +4861,14 @@
     "description": "Importez des organisations et des sites depuis un CSV exporté de votre ancien RMM.",
     "dropzone": "Déposez un fichier CSV ici ou cliquez pour parcourir",
     "dropzoneHint": "Colonnes : organisation (obligatoire), site, ID externe, système externe, fuseau horaire",
+    "docsLink": "Guide d’importation",
     "actions": {
       "close": "Fermer",
       "preview": "Prévisualiser {{count}} lignes",
       "previewing": "Prévisualisation…",
       "import": "Importer {{count}} sélectionnées",
-      "importing": "Import en cours…"
+      "importing": "Import en cours…",
+      "downloadSample": "Télécharger un exemple de CSV"
     },
     "mapping": {
       "title": "Correspondance des colonnes",
