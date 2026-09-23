@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { ERROR_CODES } from '@breeze/shared';
 import { Hono } from 'hono';
 import { sql } from 'drizzle-orm';
 import { remoteRoutes } from './remote';
@@ -562,7 +563,7 @@ describe('remote routes', () => {
       vi.mocked(db.select).mockReturnValueOnce(mockSelectInnerJoinChain([{ session, device }]));
       const denial = await request();
       expect(denial.status).toBe(403);
-      expect(await denial.json()).toEqual({ error: 'Access to this site denied' });
+      expect(await denial.json()).toEqual({ error: 'Access to this site denied', code: ERROR_CODES.ACCESS_DENIED });
       expect(createWsTicket).not.toHaveBeenCalled();
       expect(createDesktopConnectCode).not.toHaveBeenCalled();
       expect(checkRemoteAccess).not.toHaveBeenCalled();
