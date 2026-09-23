@@ -4238,6 +4238,61 @@
       "docs": [
         "features/monitors.mdx"
       ]
+    },
+    {
+      "pattern": "apps/api/src/services/businessReports/**",
+      "docs": [
+        "features/reports.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/reportRegistry.ts",
+      "docs": [
+        "features/reports.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/reportConfigSchemas.ts",
+      "docs": [
+        "features/reports.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/reportTypePermissions.ts",
+      "docs": [
+        "features/reports.mdx"
+      ]
+    },
+    {
+      "pattern": "packages/shared/src/reportTypes.ts",
+      "docs": [
+        "features/reports.mdx"
+      ]
+    },
+    {
+      "pattern": "packages/shared/src/types/businessReports.ts",
+      "docs": [
+        "features/reports.mdx"
+      ]
+    },
+    {
+      "pattern": "packages/shared/src/validators/businessReports.ts",
+      "docs": [
+        "features/reports.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/analytics.ts",
+      "docs": [
+        "features/reports.mdx",
+        "features/ml-insights.mdx"
+      ]
+    },
+    {
+      "pattern": "docs/runbooks/ml-operations.md",
+      "docs": [
+        "features/ml-insights.mdx"
+      ]
     }
   ]
 }
