@@ -3,6 +3,7 @@ package layout
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -217,4 +218,21 @@ func parseWindowsLayout(data []byte) (*Manifest, error) {
 		disk.Partitions = append(disk.Partitions, part)
 	}
 	return m, nil
+}
+
+// diskNumberFromName recovers the disk number Collect (collect_windows.go)
+// needs to call wingpt.ReadLayout, from the \\.\PHYSICALDRIVE<n> name this
+// file's own Disk.Name assignment produces above. Deliberately untagged
+// (lives here, not in collect_windows.go) so it is exercised by the
+// ordinary cross-platform test suite rather than only under GOOS=windows.
+func diskNumberFromName(name string) (int, bool) {
+	const prefix = `\\.\PHYSICALDRIVE`
+	if !strings.HasPrefix(name, prefix) {
+		return 0, false
+	}
+	n, err := strconv.Atoi(strings.TrimPrefix(name, prefix))
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }

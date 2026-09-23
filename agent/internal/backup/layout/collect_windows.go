@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os/exec"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/backup/wingpt"
 )
 
 var runCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -35,7 +37,10 @@ try { $bl = @(Get-BitLockerVolume | Select-Object MountPoint,ProtectionStatus) }
   disks = $disks; partitions = $parts; volumes = $vols; bitlocker = $bl
 } | ConvertTo-Json -Depth 6 -Compress`
 
-// Collect captures the Windows disk layout through one PowerShell invocation.
+// Collect captures the Windows disk layout through one PowerShell invocation,
+// then a second, best-effort pass (fillGPTDetails) to add the disk GUID and
+// per-partition GPT attributes Get-Disk/Get-Partition don't expose. A
+// failure in the second pass never fails Collect — see fillGPTDetails.
 func Collect(ctx context.Context) (*Manifest, error) {
 	ctx, cancel := context.WithTimeout(ctx, collectTimeout)
 	defer cancel()
@@ -48,5 +53,44 @@ func Collect(ctx context.Context) (*Manifest, error) {
 		return nil, err
 	}
 	m.CollectedAt = time.Now().UTC()
+	fillGPTDetails(m)
 	return m, nil
+}
+
+// fillGPTDetails adds Disk.GUID and Partition.Attributes via
+// wingpt.ReadLayout — data Get-Disk/Get-Partition never expose (see
+// windowsLayoutScript's comment: no -Guid on Get-Disk, no GPT attribute
+// property on Get-Partition at all). Best-effort: a disk this process can't
+// open (permissions, a disk that vanished between collection steps) leaves
+// GUID/Attributes at their zero value and records ONE "gpt_attributes"
+// Incomplete entry for the whole manifest, not one per failing disk —
+// Assess never consults Incomplete, so this is diagnostic only; it does not
+// change restorability. layout.Assess's own PartUUID check (guard.go) is
+// what actually gates on missing per-partition identity.
+func fillGPTDetails(m *Manifest) {
+	failed := false
+	for i := range m.Disks {
+		num, ok := diskNumberFromName(m.Disks[i].Name)
+		if !ok {
+			continue
+		}
+		gpt, err := wingpt.ReadLayout(num)
+		if err != nil {
+			failed = true
+			continue
+		}
+		m.Disks[i].GUID = gpt.DiskGUID
+		byNumber := make(map[int]uint64, len(gpt.Partitions))
+		for _, p := range gpt.Partitions {
+			byNumber[p.Number] = p.Attributes
+		}
+		for j := range m.Disks[i].Partitions {
+			if attrs, ok := byNumber[m.Disks[i].Partitions[j].Number]; ok {
+				m.Disks[i].Partitions[j].Attributes = attrs
+			}
+		}
+	}
+	if failed {
+		m.Incomplete = append(m.Incomplete, "gpt_attributes")
+	}
 }

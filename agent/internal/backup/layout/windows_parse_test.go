@@ -65,3 +65,26 @@ func TestParseWindowsLayoutLegacyFirmwareAndNoBitLockerModule(t *testing.T) {
 		t.Errorf("m = %+v", m)
 	}
 }
+
+func TestDiskNumberFromName(t *testing.T) {
+	tests := []struct {
+		name   string
+		in     string
+		want   int
+		wantOK bool
+	}{
+		{"disk 0", `\\.\PHYSICALDRIVE0`, 0, true},
+		{"disk 12", `\\.\PHYSICALDRIVE12`, 12, true},
+		{"not a physical drive name", `\\.\Volume{abc}`, 0, false},
+		{"trailing garbage", `\\.\PHYSICALDRIVE1x`, 0, false},
+		{"empty", "", 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := diskNumberFromName(tt.in)
+			if ok != tt.wantOK || (ok && got != tt.want) {
+				t.Errorf("diskNumberFromName(%q) = (%d, %v), want (%d, %v)", tt.in, got, ok, tt.want, tt.wantOK)
+			}
+		})
+	}
+}
