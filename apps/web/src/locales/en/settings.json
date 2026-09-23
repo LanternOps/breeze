@@ -333,7 +333,8 @@
     "to": "To",
     "allOrganizations": "All organizations",
     "exporting": "Exporting…",
-    "downloadCsv": "Download CSV"
+    "downloadCsv": "Download CSV",
+    "seeBusinessReports": "See business reports"
   },
   "partnerSettingsCard": {
     "title": "Partner Settings",

@@ -366,6 +366,23 @@ describe('ReportRunList', () => {
     // Downloadable, though: delivery already gated visibility server-side.
     expect(screen.getByTestId('portal-report-run-pdf-run-ia')).toBeInTheDocument();
   });
+
+  // #3198 W03. These three types are internal by construction: they are absent
+  // from PORTAL_REPORT_TYPES, never portal_self_service, and their definitions
+  // are org- or partner-owned MSP reports. If a row of one ever reaches this
+  // component, something upstream has leaked — so the component must not be the
+  // thing that renders it, and must certainly never offer to generate one.
+  it('renders no row and no generate button for a business report type', () => {
+    const leaked = {
+      ...run, id: 'run-ar', name: 'AR aging', type: 'ar_aging',
+    } as unknown as PortalRunDto;
+
+    render(<ReportRunList initialRuns={[leaked]} timezone="America/Denver" />);
+
+    expect(screen.queryByTestId('portal-report-run-row-run-ar')).toBeNull();
+    expect(screen.queryByTestId('portal-reports-generate-ar-aging')).toBeNull();
+    expect(screen.queryByText(/AR aging/i)).toBeNull();
+  });
 });
 
 describe('ReportRunList — hardware lifecycle link', () => {
