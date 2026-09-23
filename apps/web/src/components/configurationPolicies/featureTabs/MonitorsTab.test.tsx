@@ -140,7 +140,7 @@ describe('MonitorsTab', () => {
     // Still removable via the existing detach control.
     fireEvent.click(screen.getByTestId(`monitors-tab-item-detach-${deletedMonitorId}`));
     clickSave();
-    await waitFor(() => expect(removeMock).toHaveBeenCalledWith('link-1'));
+    await waitFor(() => expect(removeMock).toHaveBeenCalledWith('link-1', { successMessage: expect.any(String) }));
   });
 
   it('detaching the only attached monitor and saving removes the feature link', async () => {
@@ -157,7 +157,7 @@ describe('MonitorsTab', () => {
 
     clickSave();
 
-    await waitFor(() => expect(removeMock).toHaveBeenCalledWith('link-1'));
+    await waitFor(() => expect(removeMock).toHaveBeenCalledWith('link-1', { successMessage: expect.any(String) }));
     expect(saveMock).not.toHaveBeenCalled();
   });
 

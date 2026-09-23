@@ -242,7 +242,7 @@ export default function MonitorsTab({
   const saveAttachments = async (): Promise<boolean> => {
     if (items.length === 0 && inheritance === "cumulative") {
       if (existingLink) {
-        const ok = await remove(existingLink.id);
+        const ok = await remove(existingLink.id, { successMessage: i18n.t("common:states.saved") });
         if (!ok) return false;
         onLinkChanged(null, "monitors");
       }
@@ -284,7 +284,7 @@ export default function MonitorsTab({
 
   const handleRemove = async () => {
     if (!existingLink) return;
-    const ok = await remove(existingLink.id);
+    const ok = await remove(existingLink.id, { successMessage: i18n.t("common:states.saved") });
     if (ok) {
       onLinkChanged(null, "monitors");
       setItems([]);
@@ -308,7 +308,7 @@ export default function MonitorsTab({
 
   const handleRevert = async () => {
     if (!existingLink) return;
-    const ok = await remove(existingLink.id);
+    const ok = await remove(existingLink.id, { successMessage: i18n.t("common:states.saved") });
     if (ok) onLinkChanged(null, "monitors");
   };
 

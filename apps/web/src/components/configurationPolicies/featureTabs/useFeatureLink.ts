@@ -39,13 +39,13 @@ export function useFeatureLink(policyId: string) {
         return await runAction<FeatureLink>({
           request: () => fetchWithAuth(url, { method, body: JSON.stringify(body) }),
           parseSuccess: (value) => (value as { data: FeatureLink }).data ?? value as FeatureLink,
-          errorFallback: i18n.t('monitoring:editor.errors.save'),
+          errorFallback: i18n.t('common:states.error'),
           successMessage: i18n.t('common:states.saved'),
           onUnauthorized: () => void navigateTo('/login', { replace: true }),
         });
       } catch (err) {
         if (err instanceof ActionError && err.status === 401) return null;
-        if (!(err instanceof ActionError)) showToast({ type: 'error', message: i18n.t('monitoring:editor.errors.save') });
+        if (!(err instanceof ActionError)) showToast({ type: 'error', message: i18n.t('common:states.error') });
         setError(err instanceof Error ? err.message : i18n.t('common:states.error'));
         return null;
       } finally {
@@ -55,22 +55,26 @@ export function useFeatureLink(policyId: string) {
     [policyId]
   );
 
+  /**
+   * Success feedback on remove is opt-in: several tabs (PatchTab's remove and
+   * revert) already toast their own outcome, and a default here doubled it.
+   */
   const remove = useCallback(
-    async (linkId: string): Promise<boolean> => {
+    async (linkId: string, opts: { successMessage?: string } = {}): Promise<boolean> => {
       setSaving(true);
       setError(undefined);
       try {
         await runAction({
           request: () => fetchWithAuth(`/configuration-policies/${policyId}/features/${linkId}`, { method: 'DELETE' }),
-          successMessage: i18n.t('common:states.saved'),
-          errorFallback: i18n.t('monitoring:editor.errors.save'),
+          ...(opts.successMessage ? { successMessage: opts.successMessage } : {}),
+          errorFallback: i18n.t('common:states.error'),
           onUnauthorized: () => void navigateTo('/login', { replace: true }),
         });
         return true;
       } catch (err) {
         if (err instanceof ActionError && err.status === 401) return false;
-        if (!(err instanceof ActionError)) showToast({ type: 'error', message: i18n.t('monitoring:editor.errors.save') });
-        setError(err instanceof Error ? err.message : 'An error occurred');
+        if (!(err instanceof ActionError)) showToast({ type: 'error', message: i18n.t('common:states.error') });
+        setError(err instanceof Error ? err.message : i18n.t('common:states.error'));
         return false;
       } finally {
         setSaving(false);
