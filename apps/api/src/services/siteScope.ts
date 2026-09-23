@@ -1551,6 +1551,12 @@ async function resolveExactPartnerReportAuthorityInSystemContext(
   if (!user || user.status !== 'active') {
     return denied('user_inactive');
   }
+  const platformAuthority = allowPlatformAuthority && user.isPlatformAdmin;
+  // Refuse a foreign partner before reading its lifecycle, so the refusal
+  // reason never reveals another partner's status.
+  if (!platformAuthority && user.partnerId !== partnerId) {
+    return denied('partner_inaccessible');
+  }
 
   const [partner] = await db
     .select({
@@ -1568,11 +1574,8 @@ async function resolveExactPartnerReportAuthorityInSystemContext(
     return denied('tenant_inactive');
   }
 
-  if (allowPlatformAuthority && user.isPlatformAdmin) {
+  if (platformAuthority) {
     return liveAuthority(partnerWideScope(partnerId), user.id);
-  }
-  if (user.partnerId !== partnerId) {
-    return denied('partner_inaccessible');
   }
 
   const memberships = await db

@@ -2557,10 +2557,13 @@ describe('partner-wide execution scope (#3198 W01)', () => {
   });
 
   it('refuses a user who belongs to a different partner', async () => {
-    queueRows([partnerUser({ partnerId: orgId })], [activePartner()]);
+    queueRows([partnerUser({ partnerId: orgId })], [activePartner({ status: 'suspended' })]);
 
+    // Refused before the foreign partner's row is read, so its lifecycle
+    // (suspended here) never leaks through the reason.
     await expect(resolveLivePartnerReportAuthority(userId, partnerId, 'read'))
       .resolves.toEqual({ ok: false, reason: 'partner_inaccessible' });
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
   });
 
   it('refuses an inactive user, a missing membership, and a duplicate membership', async () => {

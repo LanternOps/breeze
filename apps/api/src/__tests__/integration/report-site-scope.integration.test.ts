@@ -1091,6 +1091,41 @@ describe('Wave 2 · exact live report authority comes only from current state', 
       reason: 'organization_inaccessible',
     });
   });
+
+  // #6699 - the batch map builds its own organizations JOIN partners read, so
+  // it needs its own real-DB proof (the unit suite's builder is canned).
+  runDb('resolveRequestReportAuthorityMap refuses out-of-service tenants on both branches (#6699)', async () => {
+    const f = await buildFixture();
+    await getTestDb().execute(
+      sql`UPDATE organizations SET status = 'archived' WHERE id = ${f.orgB}::uuid`,
+    );
+
+    // Normal-membership branch: only the archived org is refused.
+    const partnerAuth = fakeAuth({
+      userId: f.partnerUser.id,
+      scope: 'partner',
+      accessibleOrgIds: [f.orgA, f.orgB],
+    });
+    const mixed = await resolveRequestReportAuthorityMap(partnerAuth, [f.orgA, f.orgB], 'read');
+    expect(mixed.get(f.orgA)).toMatchObject({ ok: true });
+    expect(mixed.get(f.orgB)).toEqual({ ok: false, reason: 'tenant_inactive' });
+
+    // Suspending the partner refuses every org, on both branches.
+    await getTestDb().execute(
+      sql`UPDATE partners SET status = 'suspended' WHERE id = ${f.partner1}::uuid`,
+    );
+    const suspended = await resolveRequestReportAuthorityMap(partnerAuth, [f.orgA, f.orgB], 'read');
+    expect(suspended.get(f.orgA)).toEqual({ ok: false, reason: 'tenant_inactive' });
+    expect(suspended.get(f.orgB)).toEqual({ ok: false, reason: 'tenant_inactive' });
+
+    const systemAuth = fakeAuth({
+      userId: f.systemUser.id,
+      scope: 'system',
+      accessibleOrgIds: null,
+    });
+    const platform = await resolveRequestReportAuthorityMap(systemAuth, [f.orgA], 'read');
+    expect(platform.get(f.orgA)).toEqual({ ok: false, reason: 'tenant_inactive' });
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
