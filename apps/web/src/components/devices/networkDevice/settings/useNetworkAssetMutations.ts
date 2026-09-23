@@ -64,8 +64,23 @@ export type SnmpSaveResult = {
   templateSuggestion?: TemplateSuggestion | null;
 };
 
+/** What `PATCH /discovery/assets/:id { siteId }` reports about the move. */
+export type SiteMoveSummary = {
+  unlinkedDevice: boolean;
+  monitorsReattached: number;
+  topologyPoliciesDisabled: number;
+};
+
+export type ChangeSiteResult = {
+  siteMove: SiteMoveSummary | null;
+  /** The success toast text, for the caller's live-region announcement. */
+  summary: string;
+};
+
 export type NetworkAssetMutations = {
   patchIdentity(assetId: string, patch: IdentityPatch): Promise<void>;
+  /** `siteName` is only used for the toast copy. */
+  changeSite(assetId: string, siteId: string, siteName: string): Promise<ChangeSiteResult>;
   approve(assetId: string): Promise<void>;
   dismiss(assetId: string): Promise<void>;
   deleteAsset(assetId: string): Promise<void>;
@@ -98,6 +113,34 @@ export function useNetworkAssetMutations(): NetworkAssetMutations {
             ? t('networkDeviceDetailPage.toasts.typeResetFailed')
             : t('networkDeviceDetailPage.settings.toasts.identitySaveFailed'),
         })),
+
+      changeSite: async (assetId, siteId, siteName) => {
+        // The server undoes two things a site move cannot keep — a link to a
+        // device in another site, and topology policies that derived their
+        // authority from the asset — so the toast says so rather than just
+        // "Moved".
+        const describe = (data: { siteMove?: SiteMoveSummary | null }) => {
+          const parts = [t('networkDeviceDetailPage.settings.toasts.siteChanged', { site: siteName })];
+          if (data.siteMove?.unlinkedDevice) {
+            parts.push(t('networkDeviceDetailPage.settings.toasts.siteChangedUnlinked'));
+          }
+          if (data.siteMove && data.siteMove.topologyPoliciesDisabled > 0) {
+            parts.push(t('networkDeviceDetailPage.settings.toasts.siteChangedPolicies', {
+              count: data.siteMove.topologyPoliciesDisabled,
+            }));
+          }
+          return parts.join(' ');
+        };
+        const data = await runAction<{ siteMove?: SiteMoveSummary | null }>({
+          request: () => fetchWithAuth(`/discovery/assets/${assetId}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ siteId }),
+          }),
+          successMessage: describe,
+          errorFallback: t('networkDeviceDetailPage.settings.toasts.siteChangeFailed'),
+        });
+        return { siteMove: data.siteMove ?? null, summary: describe(data) };
+      },
 
       approve: (assetId) =>
         toVoid(runAction({

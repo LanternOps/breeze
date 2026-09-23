@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { X, Loader2, MapPin } from "lucide-react";
 import type { Device } from "./DeviceList";
 import { Dialog } from "../shared/Dialog";
@@ -14,22 +14,76 @@ type Site = {
   orgId?: string;
 };
 
+/**
+ * What the dialog needs to know about the thing being moved. Agent devices
+ * pass a `Device` and get this derived; network assets (discovered_assets)
+ * build it from the asset page's extras.
+ */
+export type ChangeSiteSubject = {
+  id: string;
+  /** Shown in the dialog copy ("Move <name> to a different site…"). */
+  name: string;
+  orgId: string;
+  orgName?: string | null;
+  siteId: string;
+  siteName?: string | null;
+};
+
+/**
+ * Performs the write. Rejections are shown inline and keep the dialog open.
+ * `siteName` is the chosen site's display name, for the caller's toast.
+ */
+export type ChangeSiteSubmit = (siteId: string, siteName: string) => Promise<unknown>;
+
 type ChangeSiteModalProps = {
-  device: Device;
   isOpen: boolean;
   onClose: () => void;
   onSaved: () => void;
-};
+} & (
+  | { device: Device; subject?: undefined; submit?: undefined }
+  | { device?: undefined; subject: ChangeSiteSubject; submit: ChangeSiteSubmit }
+);
 
-export default function ChangeSiteModal({
-  device,
-  isOpen,
-  onClose,
-  onSaved,
-}: ChangeSiteModalProps) {
+function subjectFromDevice(device: Device): ChangeSiteSubject {
+  return {
+    id: device.id,
+    name: device.displayName || device.hostname,
+    orgId: device.orgId,
+    orgName: device.orgName,
+    siteId: device.siteId,
+    siteName: device.siteName,
+  };
+}
+
+// The agent-device write. Kept here (not in a writer hook) so the existing
+// device callers are unchanged; network assets pass their own `submit` from
+// useNetworkAssetMutations, which is the single writer for that endpoint.
+function deviceSubmit(deviceId: string): ChangeSiteSubmit {
+  return async (siteId) => {
+    const res = await fetchWithAuth(`/devices/${deviceId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ siteId }),
+    });
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(extractApiError(data, "Failed to change site"));
+    }
+    return res;
+  };
+}
+
+export default function ChangeSiteModal(props: ChangeSiteModalProps) {
+  const { isOpen, onClose, onSaved } = props;
   const { t } = useTranslation("devices");
+  const subject = useMemo(
+    () => props.subject ?? subjectFromDevice(props.device as Device),
+    [props.subject, props.device],
+  );
+  const submit = props.submit ?? deviceSubmit(subject.id);
   const [sites, setSites] = useState<Site[]>([]);
-  const [siteId, setSiteId] = useState(device.siteId);
+  const [siteId, setSiteId] = useState(subject.siteId);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
@@ -37,13 +91,13 @@ export default function ChangeSiteModal({
   useEffect(() => {
     if (!isOpen) return;
 
-    setSiteId(device.siteId);
+    setSiteId(subject.siteId);
     setError(undefined);
     setLoading(true);
 
-    // Fetch only sites in the device's org — the API rejects cross-org moves,
+    // Fetch only sites in the subject's org — the API rejects cross-org moves,
     // so listing other orgs' sites would just create a dead-end choice.
-    fetchAllSites<Site>(`/orgs/sites?organizationId=${device.orgId}`)
+    fetchAllSites<Site>(`/orgs/sites?organizationId=${subject.orgId}`)
       .then((list) => {
         setSites(list);
       })
@@ -56,10 +110,10 @@ export default function ChangeSiteModal({
         );
       })
       .finally(() => setLoading(false));
-  }, [isOpen, device.orgId, device.siteId]);
+  }, [isOpen, subject.orgId, subject.siteId]);
 
   const handleSave = async () => {
-    if (siteId === device.siteId) {
+    if (siteId === subject.siteId) {
       onClose();
       return;
     }
@@ -68,17 +122,7 @@ export default function ChangeSiteModal({
     setError(undefined);
 
     try {
-      const res = await fetchWithAuth(`/devices/${device.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ siteId }),
-      });
-
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(extractApiError(data, "Failed to change site"));
-      }
-
+      await submit(siteId, sites.find((s) => s.id === siteId)?.name ?? "");
       onSaved();
       onClose();
     } catch (err) {
@@ -93,9 +137,9 @@ export default function ChangeSiteModal({
   };
 
   const currentSiteName =
-    sites.find((s) => s.id === device.siteId)?.name ?? device.siteName;
-  const selectionChanged = siteId !== device.siteId;
-  const onlyOneSite = sites.length === 1 && sites[0]?.id === device.siteId;
+    sites.find((s) => s.id === subject.siteId)?.name ?? subject.siteName;
+  const selectionChanged = siteId !== subject.siteId;
+  const onlyOneSite = sites.length === 1 && sites[0]?.id === subject.siteId;
 
   return (
     <Dialog
@@ -126,11 +170,18 @@ export default function ChangeSiteModal({
 
       <p className="text-sm text-muted-foreground">
         {t("changeSiteModal.move")}{" "}
-        <span className="font-medium text-foreground">
-          {device.displayName || device.hostname}
-        </span>{" "}
-        {t("changeSiteModal.toADifferentSiteWithin")}{" "}
-        <span className="font-medium text-foreground">{device.orgName}</span>.
+        <span className="font-medium text-foreground">{subject.name}</span>{" "}
+        {subject.orgName ? (
+          <>
+            {t("changeSiteModal.toADifferentSiteWithin")}{" "}
+            <span className="font-medium text-foreground">
+              {subject.orgName}
+            </span>
+            .
+          </>
+        ) : (
+          t("changeSiteModal.toADifferentSite")
+        )}
       </p>
 
       <div className="mt-5 space-y-4">
@@ -168,7 +219,7 @@ export default function ChangeSiteModal({
               {sites.map((site) => (
                 <option key={site.id} value={site.id}>
                   {site.name}
-                  {site.id === device.siteId
+                  {site.id === subject.siteId
                     ? t("changeSiteModal.current")
                     : ""}
                 </option>

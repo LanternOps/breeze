@@ -45,6 +45,35 @@ describe('useNetworkAssetMutations — request shapes', () => {
     expect(lastBody()).toEqual({ label: 'Main Switch', notes: null, tags: ['core'] });
   });
 
+  it('changeSite PATCHes siteId and folds the siteMove summary into the success toast', async () => {
+    fetchMock.mockResolvedValueOnce(ok({
+      id: ASSET, siteId: 'site-b',
+      siteMove: { unlinkedDevice: true, monitorsReattached: 3, topologyPoliciesDisabled: 1 },
+    }));
+
+    const result = await mutations().changeSite(ASSET, 'site-b', 'Branch');
+
+    expect(lastCall()[0]).toBe(`/discovery/assets/${ASSET}`);
+    expect(lastInit().method).toBe('PATCH');
+    expect(lastBody()).toEqual({ siteId: 'site-b' });
+    expect(result.siteMove).toEqual({ unlinkedDevice: true, monitorsReattached: 3, topologyPoliciesDisabled: 1 });
+    expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'success',
+      message: 'Moved to Branch. The link to its agent device was removed because that device is in a different site. 1 topology monitoring policy was disabled.',
+    }));
+  });
+
+  it('changeSite keeps the toast short when the move undid nothing', async () => {
+    fetchMock.mockResolvedValueOnce(ok({
+      id: ASSET, siteId: 'site-b',
+      siteMove: { unlinkedDevice: false, monitorsReattached: 0, topologyPoliciesDisabled: 0 },
+    }));
+
+    await mutations().changeSite(ASSET, 'site-b', 'Branch');
+
+    expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Moved to Branch.' }));
+  });
+
   it('patchIdentity carries resetTypeToAuto on its own', async () => {
     await mutations().patchIdentity(ASSET, { resetTypeToAuto: true });
     expect(lastBody()).toEqual({ resetTypeToAuto: true });

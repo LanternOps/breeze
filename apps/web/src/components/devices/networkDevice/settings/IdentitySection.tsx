@@ -2,8 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { typeConfig, type DiscoveredAsset, type DiscoveredAssetType } from '@/components/discovery/DiscoveredAssetList';
+import ChangeSiteModal from '@/components/devices/ChangeSiteModal';
 import { showToast } from '@/components/shared/Toast';
 import { ActionError } from '@/lib/runAction';
+import type { NetworkAssetExtras } from '../types';
 import { SettingsSectionShell } from './SettingsSectionShell';
 import { ASSET_TYPE_GROUPS, isPatchableAssetType } from './assetTypeGroups';
 import { useNetworkAssetMutations, type IdentityPatch } from './useNetworkAssetMutations';
@@ -11,15 +13,40 @@ import { useNetworkAssetMutations, type IdentityPatch } from './useNetworkAssetM
 type IdentitySectionProps = {
   asset: DiscoveredAsset;
   assetId: string;
+  /** Org/site context for the Change-site dialog; absent on older callers. */
+  extras?: NetworkAssetExtras;
   onSaved: () => void | boolean | Promise<void | boolean>;
   onAnnounce: (message: string) => void;
 };
 
 const fieldClass = 'w-full rounded-md border bg-background px-3 py-2 text-sm focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50';
 
-export function IdentitySection({ asset, assetId, onSaved, onAnnounce }: IdentitySectionProps) {
+export function IdentitySection({ asset, assetId, extras, onSaved, onAnnounce }: IdentitySectionProps) {
   const { t } = useTranslation('devices');
-  const { patchIdentity } = useNetworkAssetMutations();
+  const { patchIdentity, changeSite } = useNetworkAssetMutations();
+
+  // Site moves are their own dialog rather than a field in this form: the
+  // server may also drop a cross-site device link and disable topology
+  // policies, which the operator must be told about (spec: site-move summary).
+  const [changeSiteOpen, setChangeSiteOpen] = useState(false);
+  const siteMoveSummary = useRef<string | null>(null);
+  const changeSiteSubject = extras?.orgId && extras.siteId
+    ? {
+      id: assetId,
+      name: asset.label || asset.hostname || asset.ip,
+      orgId: extras.orgId,
+      siteId: extras.siteId,
+      siteName: extras.siteName ?? null,
+    }
+    : null;
+
+  const handleSiteMoved = async () => {
+    if (await onSaved() === false) {
+      showToast({ type: 'error', message: t('networkDeviceDetailPage.settings.refreshFailed') });
+    }
+    onAnnounce(siteMoveSummary.current ?? t('networkDeviceDetailPage.settings.toasts.siteChanged', { site: '' }));
+    siteMoveSummary.current = null;
+  };
 
   const tags = (asset.tags ?? []).join(', ');
   const baseline = useMemo(() => ({
@@ -161,6 +188,31 @@ export function IdentitySection({ asset, assetId, onSaved, onAnnounce }: Identit
         </div>
         {conflict && <p role="alert" data-testid="network-settings-identity-conflict" className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm">{t('networkDeviceDetailPage.settings.identity.conflict')}</p>}
       </fieldset>
+      <div className="mt-4 space-y-1 border-t pt-4">
+        <span className="text-sm font-medium">{t('networkDeviceDetailPage.settings.identity.site')}</span>
+        <div className="flex flex-wrap items-center gap-3 text-sm">
+          <span data-testid="network-settings-identity-site">{extras?.siteName || '—'}</span>
+          {changeSiteSubject && (
+            <button type="button" data-testid="network-settings-identity-change-site" disabled={saving}
+              onClick={() => setChangeSiteOpen(true)}
+              className="rounded-md border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50">
+              {t('networkDeviceDetailPage.settings.identity.changeSite')}
+            </button>
+          )}
+        </div>
+      </div>
+      {changeSiteSubject && (
+        <ChangeSiteModal
+          subject={changeSiteSubject}
+          submit={async (siteId, siteName) => {
+            const result = await changeSite(assetId, siteId, siteName);
+            siteMoveSummary.current = result.summary;
+          }}
+          isOpen={changeSiteOpen}
+          onClose={() => setChangeSiteOpen(false)}
+          onSaved={() => void handleSiteMoved()}
+        />
+      )}
     </SettingsSectionShell>
   );
 }

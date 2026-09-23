@@ -133,7 +133,8 @@
     "thisOrganizationOnlyHasOneSite": "Bu kuruluşun yalnızca bir sitesi var. Taşımayı etkinleştirmek için Ayarlar → Kuruluşlar'dan daha fazla site ekleyin.",
     "current": "(güncel)",
     "cancel": "İptal",
-    "moving": "Taşınıyor..."
+    "moving": "Taşınıyor...",
+    "toADifferentSite": "farklı bir siteye taşı."
   },
   "createGroupModal": {
     "failedToCreateGroup": "Grup oluşturulamadı",
@@ -2702,7 +2703,9 @@
           "networkGear": "Ağ cihazları",
           "peripherals": "Çevre birimleri",
           "other": "Diğer"
-        }
+        },
+        "site": "Site",
+        "changeSite": "Siteyi değiştir…"
       },
       "monitoring": {
         "description": "SNMP veri toplamayı ve ağ kontrollerini yapılandırın.",
@@ -2814,7 +2817,12 @@
         "checkCreated": "Ağ kontrolü eklendi",
         "checkCreateFailed": "Ağ kontrolü eklenemedi",
         "checkRemoved": "Ağ kontrolü kaldırıldı",
-        "checkRemoveFailed": "Ağ kontrolü kaldırılamadı"
+        "checkRemoveFailed": "Ağ kontrolü kaldırılamadı",
+        "siteChanged": "{{site}} sitesine taşındı.",
+        "siteChangeFailed": "Varlık yeni siteye taşınamadı",
+        "siteChangedUnlinked": "Aracı cihazıyla olan bağlantı kaldırıldı çünkü o cihaz farklı bir sitede.",
+        "siteChangedPolicies_one": "{{count}} topoloji izleme ilkesi devre dışı bırakıldı.",
+        "siteChangedPolicies_other": "{{count}} topoloji izleme ilkesi devre dışı bırakıldı."
       }
     },
     "header": {

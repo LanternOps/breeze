@@ -133,7 +133,8 @@
     "thisOrganizationOnlyHasOneSite": "This organization only has one site. Add more sites from Settings → Organizations to enable moves.",
     "current": "(current)",
     "cancel": "Cancel",
-    "moving": "Moving..."
+    "moving": "Moving...",
+    "toADifferentSite": "to a different site."
   },
   "createGroupModal": {
     "failedToCreateGroup": "Failed to create group",
@@ -2609,7 +2610,12 @@
         "checkCreated": "Network check added",
         "checkCreateFailed": "Couldn't add the network check",
         "checkRemoved": "Network check removed",
-        "checkRemoveFailed": "Couldn't remove the network check"
+        "checkRemoveFailed": "Couldn't remove the network check",
+        "siteChanged": "Moved to {{site}}.",
+        "siteChangeFailed": "Couldn't move the asset to the new site",
+        "siteChangedUnlinked": "The link to its agent device was removed because that device is in a different site.",
+        "siteChangedPolicies_one": "{{count}} topology monitoring policy was disabled.",
+        "siteChangedPolicies_other": "{{count}} topology monitoring policies were disabled."
       },
       "title": "{{name}} settings",
       "subtitle": "Manage each section independently.",
@@ -2639,7 +2645,9 @@
           "networkGear": "Network gear",
           "peripherals": "Peripherals",
           "other": "Other"
-        }
+        },
+        "site": "Site",
+        "changeSite": "Change site…"
       },
       "monitoring": {
         "description": "Configure SNMP collection and network checks.",

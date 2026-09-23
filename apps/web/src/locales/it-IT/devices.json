@@ -133,7 +133,8 @@
     "thisOrganizationOnlyHasOneSite": "Questa organizzazione ha un solo sito. Aggiungi altri siti da Impostazioni → Organizzazioni per abilitare gli spostamenti.",
     "current": "(corrente)",
     "cancel": "Annulla",
-    "moving": "Spostamento..."
+    "moving": "Spostamento...",
+    "toADifferentSite": "in un sito diverso."
   },
   "createGroupModal": {
     "failedToCreateGroup": "Impossibile creare il gruppo",
@@ -2702,7 +2703,9 @@
           "networkGear": "Apparati di rete",
           "peripherals": "Periferiche",
           "other": "Altro"
-        }
+        },
+        "site": "Sito",
+        "changeSite": "Cambia sito…"
       },
       "monitoring": {
         "description": "Configura la raccolta SNMP e i controlli di rete.",
@@ -2814,7 +2817,12 @@
         "checkCreated": "Controllo di rete aggiunto",
         "checkCreateFailed": "Impossibile aggiungere il controllo di rete",
         "checkRemoved": "Controllo di rete rimosso",
-        "checkRemoveFailed": "Impossibile rimuovere il controllo di rete"
+        "checkRemoveFailed": "Impossibile rimuovere il controllo di rete",
+        "siteChanged": "Spostato in {{site}}.",
+        "siteChangeFailed": "Impossibile spostare l'asset nel nuovo sito",
+        "siteChangedUnlinked": "Il collegamento al dispositivo con agente è stato rimosso perché quel dispositivo si trova in un altro sito.",
+        "siteChangedPolicies_one": "{{count}} criterio di monitoraggio della topologia è stato disattivato.",
+        "siteChangedPolicies_other": "{{count}} criteri di monitoraggio della topologia sono stati disattivati."
       }
     },
     "header": {

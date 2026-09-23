@@ -29,6 +29,7 @@ import { TopologyError } from '../services/topology/access';
 import { limitTopologyMutationBody } from './topology/mutations';
 import { isCronDue } from '../services/automationRuntime';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
+import { DiscoveredAssetSiteMoveError, moveDiscoveredAssetsToSite } from '../services/discoveredAssetSiteMove';
 import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
 import { maskOidShapedModel, nicVendorFromMac } from '../services/assetIdentity';
 import { reachabilityToListStatus } from '../services/assetReachability';
@@ -452,7 +453,10 @@ const updateAssetSchema = z.object({
     'workstation', 'server', 'printer', 'router', 'switch', 'firewall',
     'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown'
   ]).optional(),
-  resetTypeToAuto: z.boolean().optional()
+  resetTypeToAuto: z.boolean().optional(),
+  // Move the asset to another site of the same org. Runs through
+  // services/discoveredAssetSiteMove.ts (device link + monitors + topology).
+  siteId: z.string().guid().optional()
 }).refine(
   (v) => !(v.assetType !== undefined && v.resetTypeToAuto === true),
   { message: 'assetType and resetTypeToAuto are mutually exclusive' }
@@ -1406,13 +1410,37 @@ discoveryRoutes.patch(
     const orgResult = await resolveOrgIdForAsset(auth, assetId);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
-    if (permissions?.allowedSiteIds) {
+    // A site move needs the current row (org + site) for its gate; a
+    // site-restricted caller needs it for the source-site check.
+    let current: { id: string; orgId: string; siteId: string | null } | null = null;
+    if (permissions?.allowedSiteIds || updates.siteId !== undefined) {
       const authorization = await loadAuthorizedAsset(assetId, orgResult.orgId, permissions);
       if (!authorization.ok) return c.json({ error: authorization.error }, authorization.status);
+      current = authorization.asset;
     }
 
     if (Object.keys(updates).length === 0) {
       return c.json({ error: 'No updates provided' }, 400);
+    }
+
+    // Mirrors the device PATCH gate (routes/devices/core.ts): the target site
+    // must exist in the asset's org, and a site-restricted caller must also be
+    // allowed to place the asset INTO the target site — the source-site check
+    // above does not cover the destination.
+    let siteMoveTarget: { fromSiteId: string | null; toSiteId: string } | null = null;
+    if (current && updates.siteId !== undefined && updates.siteId !== current.siteId) {
+      const [targetSite] = await db
+        .select({ id: sites.id })
+        .from(sites)
+        .where(and(eq(sites.id, updates.siteId), eq(sites.orgId, current.orgId)))
+        .limit(1);
+      if (!targetSite) {
+        return c.json({ error: 'Target site not found or belongs to a different organization' }, 400);
+      }
+      if (permissions?.allowedSiteIds && !canAccessSite(permissions, updates.siteId)) {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
+      siteMoveTarget = { fromSiteId: current.siteId, toSiteId: updates.siteId };
     }
 
     const conditions: SQL[] = [eq(discoveredAssets.id, assetId)];
@@ -1433,14 +1461,49 @@ discoveryRoutes.patch(
       setValues.typeSource = 'auto';
     }
 
-    if (Object.keys(setValues).length === 1) {
+    if (Object.keys(setValues).length === 1 && !siteMoveTarget) {
       return c.json({ error: 'No updates provided' }, 400);
     }
 
-    const [updated] = await db.update(discoveredAssets)
+    const applyFieldUpdate = (executor: Pick<typeof db, 'update'>) => executor
+      .update(discoveredAssets)
       .set(setValues)
       .where(and(...conditions))
       .returning();
+
+    let updated: typeof discoveredAssets.$inferSelect | undefined;
+    let siteMove: { unlinkedDevice: boolean; monitorsReattached: number; topologyPoliciesDisabled: number } | null = null;
+    if (siteMoveTarget && current) {
+      // One transaction: the site move (asset + device link + monitors +
+      // topology triggers) and the remaining field edits stand or fall together.
+      const moveOrgId = current.orgId;
+      const moveTarget = siteMoveTarget;
+      try {
+        ({ updated, siteMove } = await db.transaction(async (tx) => {
+          const [moved] = await moveDiscoveredAssetsToSite({
+            tx, orgId: moveOrgId, assetIds: [assetId], targetSiteId: moveTarget.toSiteId,
+          });
+          const [row] = await applyFieldUpdate(tx);
+          return {
+            updated: row,
+            siteMove: {
+              unlinkedDevice: moved?.unlinkedDeviceId !== null && moved?.unlinkedDeviceId !== undefined,
+              monitorsReattached: moved?.monitorsReattached ?? 0,
+              topologyPoliciesDisabled: moved?.topologyPoliciesDisabled ?? 0,
+            },
+          };
+        }));
+      } catch (err) {
+        if (err instanceof DiscoveredAssetSiteMoveError) {
+          if (err.code === 'site_not_found') return c.json({ error: err.message }, 400);
+          if (err.code === 'asset_not_found') return c.json({ error: 'Asset not found' }, 404);
+          return c.json({ error: 'Failed to move asset to the new site' }, 500);
+        }
+        throw err;
+      }
+    } else {
+      [updated] = await applyFieldUpdate(db);
+    }
 
     if (!updated) return c.json({ error: 'Asset not found' }, 404);
 
@@ -1450,7 +1513,10 @@ discoveryRoutes.patch(
       resourceType: 'discovered_asset',
       resourceId: updated.id,
       resourceName: updated.label ?? updated.hostname ?? updated.ipAddress ?? undefined,
-      details: { changedFields: Object.keys(updates) }
+      details: {
+        changedFields: Object.keys(updates),
+        ...(siteMoveTarget && siteMove ? { siteMove: { ...siteMoveTarget, ...siteMove } } : {}),
+      }
     });
 
     let verifiedLinkedDeviceId: string | null = null;
@@ -1467,7 +1533,10 @@ discoveryRoutes.patch(
       verifiedLinkedDeviceId = linkedDevice?.id ?? null;
     }
 
-    return c.json(withVerifiedAssetLink(updated, verifiedLinkedDeviceId));
+    return c.json({
+      ...withVerifiedAssetLink(updated, verifiedLinkedDeviceId),
+      ...(siteMove ? { siteMove } : {}),
+    });
   }
 );
 
