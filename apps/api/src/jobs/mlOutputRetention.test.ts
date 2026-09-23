@@ -110,7 +110,7 @@ describe('ML output retention worker', () => {
     });
 
     expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(1);
-    expect(dbExecuteMock).toHaveBeenCalledTimes(4);
+    expect(dbExecuteMock).toHaveBeenCalledTimes(5);
     expect(JSON.stringify(dbExecuteMock.mock.calls)).toContain('DELETE FROM remediation_suggestions');
     expect(JSON.stringify(dbExecuteMock.mock.calls)).toContain('DELETE FROM metric_anomalies');
     expect(JSON.stringify(dbExecuteMock.mock.calls)).toContain('DELETE FROM metric_anomaly_candidates');
@@ -127,6 +127,7 @@ describe('ML output retention worker', () => {
       tables: [
         { table: 'remediation_suggestions', deleted: 5, batches: 2, hasMore: false },
         { table: 'metric_anomalies', deleted: 0, batches: 1, hasMore: false },
+        { table: 'metric_anomaly_episodes', deleted: 0, batches: 1, hasMore: false },
         { table: 'metric_anomaly_candidates', deleted: 0, batches: 1, hasMore: false },
       ],
     });
@@ -144,13 +145,14 @@ describe('ML output retention worker', () => {
       data: { retentionDays: 30, batchSize: 4, maxBatches: 2 },
     });
 
-    expect(dbExecuteMock).toHaveBeenCalledTimes(4);
+    expect(dbExecuteMock).toHaveBeenCalledTimes(5);
     expect(result).toMatchObject({
       deleted: 9,
       hasMore: true,
       tables: [
         { table: 'remediation_suggestions', deleted: 8, batches: 2, hasMore: true },
         { table: 'metric_anomalies', deleted: 1, batches: 1, hasMore: false },
+        { table: 'metric_anomaly_episodes', deleted: 0, batches: 1, hasMore: false },
         { table: 'metric_anomaly_candidates', deleted: 0, batches: 1, hasMore: false },
       ],
     });
@@ -175,5 +177,25 @@ describe('ML output retention worker', () => {
     expect(warn).toHaveBeenCalledTimes(1);
     expect(String(warn.mock.calls[0]?.[0])).toContain('remediation_suggestions');
     warn.mockRestore();
+  });
+
+  it('prunes metric_anomaly_episodes by last_seen_at, right after the metric_anomalies pass', async () => {
+    createMlOutputRetentionWorker();
+
+    const result = (await capturedWorkerProcessor.current!({
+      data: { retentionDays: 30, batchSize: 4, maxBatches: 3 },
+    })) as { tables: Array<{ table: string }> };
+
+    const statements = dbExecuteMock.mock.calls.map((call) => JSON.stringify(call));
+    const anomaliesIdx = statements.findIndex((text) => text.includes('DELETE FROM metric_anomalies'));
+    const episodesIdx = statements.findIndex((text) => text.includes('DELETE FROM metric_anomaly_episodes'));
+    expect(episodesIdx).toBeGreaterThan(anomaliesIdx);
+    expect(statements[episodesIdx]).toContain('last_seen_at <');
+    expect(result.tables.map((table) => table.table)).toEqual([
+      'remediation_suggestions',
+      'metric_anomalies',
+      'metric_anomaly_episodes',
+      'metric_anomaly_candidates',
+    ]);
   });
 });
