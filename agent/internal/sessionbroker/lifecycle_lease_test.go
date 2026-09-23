@@ -251,3 +251,51 @@ func TestDropLeases(t *testing.T) {
 		t.Fatalf("dropped leases must leave nothing desired: %v", desired)
 	}
 }
+
+// #6812: an on-demand connect to a logged-off console must be able to learn,
+// before it waits, that no user-role helper can exist there. The Winlogon
+// console reports WTSConnected with no username; a signed-in (even locked)
+// session reports WTSActive with one.
+func TestHelperRoleAvailable(t *testing.T) {
+	det := &stubLeaseDetector{sessions: []DetectedSession{
+		activeRDP("3", "bob"),
+		{Session: "2", Username: "", State: "connected", Type: "console"},     // logged-off console (Winlogon)
+		{Session: "4", Username: "", State: "active", Type: "console"},        // active but no user token source
+		{Session: "5", Username: "carol", State: "disconnected", Type: "rdp"}, // user present, not at the screen
+	}}
+	m := newHelperLifecycleManager(nil, det, nil, nil)
+
+	tests := []struct {
+		name    string
+		key     HelperKey
+		want    bool
+		wantErr error
+	}{
+		{"signed-in session hosts a user helper", HelperKey{3, ipc.HelperRoleUser}, true, nil},
+		{"signed-in session hosts a system helper", HelperKey{3, ipc.HelperRoleSystem}, true, nil},
+		{"logged-off console cannot host a user helper", HelperKey{2, ipc.HelperRoleUser}, false, nil},
+		{"logged-off console still hosts a system helper", HelperKey{2, ipc.HelperRoleSystem}, true, nil},
+		{"active session with no username cannot host a user helper", HelperKey{4, ipc.HelperRoleUser}, false, nil},
+		{"disconnected session cannot host a user helper", HelperKey{5, ipc.HelperRoleUser}, false, nil},
+		{"missing session reports not found", HelperKey{99, ipc.HelperRoleUser}, false, ErrLeaseSessionNotFound},
+		{"non-lifecycle role is refused", HelperKey{3, ipc.HelperRoleAssist}, false, ErrLeaseRoleNotSpawnable},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := m.HelperRoleAvailable(tt.key)
+			if err != tt.wantErr {
+				t.Fatalf("err = %v, want %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Fatalf("available = %v, want %v", got, tt.want)
+			}
+		})
+	}
+
+	t.Run("no detector reports not found", func(t *testing.T) {
+		bare := newHelperLifecycleManager(nil, nil, nil, nil)
+		if _, err := bare.HelperRoleAvailable(HelperKey{3, ipc.HelperRoleUser}); err != ErrLeaseSessionNotFound {
+			t.Fatalf("err = %v, want ErrLeaseSessionNotFound", err)
+		}
+	})
+}
