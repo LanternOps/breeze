@@ -145,3 +145,22 @@ describe('AutomationForm — whenOffline (#5128 W4)', () => {
     expect(onSubmit.mock.calls[0][0].actions[0].whenOffline).toBe('skip');
   });
 });
+
+describe('AutomationForm — typed alert workflow filters (#6367 W05c2)', () => {
+  it('submits typed alert filters without erasing a ruleId restriction', async () => {
+    const onSubmit = vi.fn();
+    render(<AutomationForm onSubmit={onSubmit} defaultValues={{
+      name: 'Critical CPU', triggerType: 'event', eventType: 'alert.triggered',
+      eventFilter: { ruleId: 'r1', severity: ['critical'] },
+      actions: [{ type: 'execute_command', command: 'echo triage' }],
+    }} />);
+
+    fireEvent.click(screen.getByTestId('workflow-kind-cpu'));
+    fireEvent.click(screen.getByRole('button', { name: /Save automation/i }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    expect(onSubmit.mock.calls[0]![0].eventFilter).toEqual({
+      ruleId: 'r1', severity: ['critical'], kind: ['cpu'],
+    });
+  });
+});

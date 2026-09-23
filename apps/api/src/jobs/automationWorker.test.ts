@@ -94,6 +94,28 @@ describe('automationWorker trigger helpers', () => {
     expect(shouldTriggerEventAutomation(trigger, 'device.offline', { device: { siteId: 'site-2' } })).toBe(false);
   });
 
+  it('matches alert dimensions conjunctively, choices disjunctively, and preserves ruleId', () => {
+    const trigger = {
+      type: 'event' as const,
+      eventType: 'alert.triggered',
+      filter: { severity: ['critical', 'high'], kind: ['cpu', 'memory'], ruleId: 'r1' },
+    };
+
+    for (const severity of ['critical', 'high']) {
+      expect(shouldTriggerEventAutomation(trigger, 'alert.triggered', { severity, kind: 'cpu', ruleId: 'r1' })).toBe(true);
+    }
+
+    for (const payload of [
+      { severity: 'low', kind: 'cpu', ruleId: 'r1' },
+      { severity: 'high', ruleId: 'r1' },
+      { severity: 'high', kind: 'cpu', ruleId: 'r2' },
+    ]) {
+      expect(shouldTriggerEventAutomation(trigger, 'alert.triggered', payload)).toBe(false);
+    }
+
+    expect(shouldTriggerEventAutomation({ ...trigger, filter: {} }, 'alert.triggered', {})).toBe(true);
+  });
+
   it('deduplicates due config-policy schedule dispatches by automation per slot', () => {
     const scanDate = new Date('2026-01-01T10:00:00Z');
     const baseAutomation = {

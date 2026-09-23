@@ -404,6 +404,11 @@ const TARGET_GLOBS = [
   'src/components/security/SecurityScanManager.tsx',
   'src/components/security/ThreatList.tsx',
   'src/components/security/ThreatDetail.tsx',
+  // Alert workflows typed filter (#6367 W05c2 Task 9): the save handler now
+  // wraps its create/update POST/PUT in runAction — a silent failure here is
+  // a tech believing a workflow's severity/kind restriction is live when the
+  // save never landed.
+  'src/components/automations/AutomationEditPage.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -769,7 +774,8 @@ describe('no silent mutations in targeted set', () => {
     // W05c2 adds NeedsConversionPanel, ConversionPendingBanner, MonitorConversionAdmin: 166 → 169.
     // Persistent conversion history adds ConversionLedger (Undo): 169 → 170.
     // LegacyRulesTable (per-rule convert) joins the guard: 170 → 171.
-    expect(absoluteFiles.length).toBe(171);
+    // Alert workflows typed filter (W05c2 Task 9) adds automations/AutomationEditPage.tsx: 171 → 172.
+    expect(absoluteFiles.length).toBe(172);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

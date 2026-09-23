@@ -52,6 +52,11 @@
         "weeklySunday": "Chaque dimanche"
       }
     },
+    "alertWorkflow": {
+      "severity": "Gravités",
+      "kind": "Types de moniteur",
+      "hint": "Laissez un groupe vide pour accepter toute valeur. Les filtres avancés existants sont conservés."
+    },
     "validation": {
       "valueRequired": "La valeur est obligatoire",
       "nameRequired": "Le nom de l’automatisation est obligatoire",
@@ -361,7 +366,7 @@
       "scheduled": "Planifiées",
       "on-demand": "Sur demande",
       "webhooks": "Webhooks",
-      "event-rules": "Règles d'événement"
+      "event-rules": "Flux d'alertes"
     }
   },
   "complianceDashboard": {
