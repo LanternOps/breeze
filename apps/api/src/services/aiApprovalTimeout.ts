@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm';
 import {
   AI_APPROVAL_TIMEOUT_DEFAULT_MINUTES,
+  aiApprovalSettingsSchema,
   resolveAiApprovalTimeout,
   type ResolvedAiApprovalTimeout,
 } from '@breeze/shared';
@@ -44,7 +45,27 @@ export async function getAiApprovalTimeout(orgId: string): Promise<ResolvedAiApp
       .limit(1)
   );
 
+  warnIfInvalidStoredTimeout('organization', orgId, org.settings);
+  warnIfInvalidStoredTimeout('partner', org.partnerId, partner?.settings);
   return resolveAiApprovalTimeout(partner?.settings, org.settings);
+}
+
+/**
+ * The shared resolver ignores an invalid stored value (it can only arrive via
+ * the system-scope wholesale settings PATCH, which skips the schema) and falls
+ * through to the next level. Log it here so "my 30-minute timeout isn't
+ * applied" has an explanation in the API logs.
+ */
+function warnIfInvalidStoredTimeout(level: 'organization' | 'partner', id: string, settings: unknown): void {
+  const block = (settings as { aiApprovals?: unknown } | null | undefined)?.aiApprovals;
+  if (block === undefined || block === null) return;
+  const raw = (block as { interactiveTimeoutMinutes?: unknown }).interactiveTimeoutMinutes;
+  if (raw === undefined) return;
+  if (!aiApprovalSettingsSchema.shape.interactiveTimeoutMinutes.safeParse(raw).success) {
+    console.warn(
+      `[aiApprovalTimeout] Ignoring invalid ${level} aiApprovals.interactiveTimeoutMinutes for ${id}; falling back to the inherited value`,
+    );
+  }
 }
 
 export const DEFAULT_APPROVAL_WAIT_BUDGET_MS = AI_APPROVAL_TIMEOUT_DEFAULT_MINUTES * 60_000;
@@ -62,7 +83,7 @@ export async function loadApprovalWaitBudgetMs(orgId: string): Promise<number> {
     return resolved ? resolved.minutes * 60_000 : DEFAULT_APPROVAL_WAIT_BUDGET_MS;
   } catch (err) {
     captureException(err);
-    console.error('[aiApprovalTimeout] Failed to resolve approval timeout, using default:', err);
+    console.error(`[aiApprovalTimeout] Failed to resolve approval timeout for org ${orgId}, using default:`, err);
     return DEFAULT_APPROVAL_WAIT_BUDGET_MS;
   }
 }

@@ -54,6 +54,14 @@ describe('getAiApprovalTimeout', () => {
     expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
   });
 
+  it('warns (and falls through to the partner value) on an invalid stored org value', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockRows(minutes(1440), minutes(40));
+    await expect(getAiApprovalTimeout('org-1')).resolves.toMatchObject({ minutes: 40, source: 'partner' });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('invalid organization'));
+    warn.mockRestore();
+  });
+
   it('returns null when the org is not visible', async () => {
     dbSelect.mockReturnValueOnce(selectReturning([]));
     await expect(getAiApprovalTimeout('org-x')).resolves.toBeNull();
