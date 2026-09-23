@@ -104,7 +104,9 @@
       "save": "Impossibile salvare il monitor",
       "delete": "Impossibile eliminare il monitor",
       "test": "Prova fallita",
-      "generic": "Qualcosa è andato storto"
+      "generic": "Qualcosa è andato storto",
+      "invalidCondition": "Alcuni valori della condizione mancano o sono fuori intervallo. Non è stato salvato nulla.",
+      "invalidResponses": "Alcune impostazioni di risposta mancano o sono fuori intervallo. Non è stato salvato nulla."
     },
     "saved": "Monitor salvato",
     "deleted": "Monitor eliminato",
@@ -302,7 +304,8 @@
     "detachConfirm": "Scollegare da {{policy}}?",
     "errors": {
       "attach": "Impossibile collegare il monitor",
-      "detach": "Impossibile scollegare il monitor"
+      "detach": "Impossibile scollegare il monitor",
+      "linkedFeature": "I monitor di questa policy provengono da una policy di funzionalità condivisa. Modifica quella policy o scegline un'altra."
     }
   },
   "policyTab": {

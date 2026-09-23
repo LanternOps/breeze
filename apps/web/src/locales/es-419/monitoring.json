@@ -104,7 +104,9 @@
       "save": "No se pudo guardar el monitor",
       "delete": "No se pudo eliminar el monitor",
       "test": "Prueba fallida",
-      "generic": "Algo salió mal"
+      "generic": "Algo salió mal",
+      "invalidCondition": "Faltan valores de la condición o están fuera de rango. No se guardó nada.",
+      "invalidResponses": "Faltan ajustes de respuesta o están fuera de rango. No se guardó nada."
     },
     "saved": "Monitor guardado",
     "deleted": "Monitor eliminado",
@@ -302,7 +304,8 @@
     "detachConfirm": "¿Separar de {{policy}}?",
     "errors": {
       "attach": "No se pudo adjuntar el monitor",
-      "detach": "No se pudo separar el monitor"
+      "detach": "No se pudo separar el monitor",
+      "linkedFeature": "Los monitores de esta política provienen de una política de función compartida. Edite esa política o elija otra."
     }
   },
   "policyTab": {

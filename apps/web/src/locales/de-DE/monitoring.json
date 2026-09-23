@@ -104,7 +104,9 @@
       "save": "Monitor konnte nicht gespeichert werden",
       "delete": "Monitor konnte nicht gelöscht werden",
       "test": "Test fehlgeschlagen",
-      "generic": "Ein Fehler ist aufgetreten"
+      "generic": "Ein Fehler ist aufgetreten",
+      "invalidCondition": "Einige Bedingungswerte fehlen oder liegen außerhalb des zulässigen Bereichs. Es wurde nichts gespeichert.",
+      "invalidResponses": "Einige Reaktionseinstellungen fehlen oder liegen außerhalb des zulässigen Bereichs. Es wurde nichts gespeichert."
     },
     "saved": "Monitor gespeichert",
     "deleted": "Monitor gelöscht",
@@ -302,7 +304,8 @@
     "detachConfirm": "Von {{policy}} lösen?",
     "errors": {
       "attach": "Monitor konnte nicht angehängt werden",
-      "detach": "Monitor konnte nicht gelöst werden"
+      "detach": "Monitor konnte nicht gelöst werden",
+      "linkedFeature": "Die Monitore dieser Richtlinie stammen aus einer gemeinsamen Funktionsrichtlinie. Bearbeiten Sie diese oder wählen Sie eine andere Richtlinie."
     }
   },
   "policyTab": {

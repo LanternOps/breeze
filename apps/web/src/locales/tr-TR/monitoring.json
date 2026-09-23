@@ -104,7 +104,9 @@
       "save": "Monitör kaydedilemedi",
       "delete": "Monitör silinemedi",
       "test": "Test başarısız oldu",
-      "generic": "Bir şeyler ters gitti"
+      "generic": "Bir şeyler ters gitti",
+      "invalidCondition": "Bazı koşul değerleri eksik veya aralık dışında. Hiçbir şey kaydedilmedi.",
+      "invalidResponses": "Bazı yanıt ayarları eksik veya aralık dışında. Hiçbir şey kaydedilmedi."
     },
     "saved": "Monitör kaydedildi",
     "deleted": "Monitör silindi",
@@ -302,7 +304,8 @@
     "detachConfirm": "{{policy}} politikasından kaldırılsın mı?",
     "errors": {
       "attach": "Monitör eklenemedi",
-      "detach": "Monitör kaldırılamadı"
+      "detach": "Monitör kaldırılamadı",
+      "linkedFeature": "Bu ilkenin monitörleri paylaşılan bir özellik ilkesinden geliyor. O ilkeyi düzenleyin veya başka bir ilke seçin."
     }
   },
   "policyTab": {

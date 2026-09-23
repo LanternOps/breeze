@@ -90,8 +90,12 @@ export default function RecommendedMonitors({
       if (!response.ok) throw new Error('feature_read_failed');
       const body = (await response.json()) as { data?: MonitorsLink[] };
       const link = (body.data ?? []).find((value) => value.featureType === 'monitors');
-      // A link pointing at a shared feature policy is not edited from here.
-      if (link?.featurePolicyId) throw new Error('linked_feature_not_editable');
+      // A link pointing at a shared feature policy is not edited from here —
+      // tell the user why, since retrying the same policy can never succeed.
+      if (link?.featurePolicyId) {
+        showToast({ type: 'error', message: t('monitoring:deploy.errors.linkedFeature') });
+        return;
+      }
       const settings = link?.inlineSettings ?? {};
       const items = [...(settings.items ?? [])];
       for (const row of candidates) {

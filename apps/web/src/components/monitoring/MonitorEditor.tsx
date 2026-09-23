@@ -752,7 +752,11 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
               </select>
             </div>
             <MonitorConditionFields kind={watchKind} name="condition" />
-            {errors.condition && <p role="alert">{t('monitoring:editor.errors.save')}</p>}
+            {errors.condition && (
+              <p role="alert" data-testid="monitor-editor-condition-error" className="text-sm text-destructive">
+                {t('monitoring:editor.errors.invalidCondition')}
+              </p>
+            )}
           </section>
 
           <section className="space-y-3">
@@ -826,7 +830,11 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
               softwareCatalog={softwareCatalog}
             />
             <RestartResponseFields />
-            {errors.responses && <p role="alert">{t('monitoring:editor.errors.save')}</p>}
+            {errors.responses && (
+              <p role="alert" data-testid="monitor-editor-responses-error" className="text-sm text-destructive">
+                {t('monitoring:editor.errors.invalidResponses')}
+              </p>
+            )}
           </section>
 
           <section className="space-y-3">

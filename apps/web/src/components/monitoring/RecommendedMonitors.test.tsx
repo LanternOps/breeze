@@ -117,6 +117,27 @@ it('keeps attachment disabled on a failed policy read', async () => {
   expect(screen.getByTestId('recommended-attach')).toBeDisabled();
 });
 
+it('refuses a monitors link backed by a shared feature policy before any write, with a specific message', async () => {
+  fetchMock
+    .mockResolvedValueOnce(json({ data: [{ id: policyId, name: 'Servers' }], pagination: { total: 1 } }))
+    .mockResolvedValueOnce(
+      json({ data: [{ id: 'link', featureType: 'monitors', featurePolicyId: 'shared-1', inlineSettings: null }] }),
+    );
+  const onAttached = vi.fn();
+  render(<RecommendedMonitors rows={[monitor]} onAttached={onAttached} />);
+  fireEvent.click(screen.getByTestId('recommended-open'));
+  await screen.findByText('Servers');
+  fireEvent.change(screen.getByTestId('recommended-policy'), { target: { value: policyId } });
+  fireEvent.click(screen.getByTestId('recommended-attach'));
+  await waitFor(() =>
+    expect(showToast).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'error', message: expect.stringContaining('shared feature policy') }),
+    ),
+  );
+  expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'PATCH' || init?.method === 'POST')).toBe(false);
+  expect(onAttached).not.toHaveBeenCalled();
+});
+
 it('surfaces a refused attach without calling onAttached', async () => {
   fetchMock
     .mockResolvedValueOnce(json({ data: [{ id: policyId, name: 'Servers' }], pagination: { total: 1 } }))

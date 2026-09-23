@@ -100,7 +100,8 @@ describe('GET /devices/:id/monitors — real PostgreSQL under request RLS', () =
       .returning();
     await testDb
       .insert(configPolicyMonitors)
-      .values({ featureLinkId: partnerLink!.id, monitorId: partnerMonitor!.id });
+      // A disabled winning attachment must stay visible, as disabled.
+      .values({ featureLinkId: partnerLink!.id, monitorId: partnerMonitor!.id, enabled: false });
     await testDb.insert(configPolicyAssignments).values({
       configPolicyId: partnerPolicy!.id,
       level: 'partner',
@@ -152,6 +153,7 @@ describe('GET /devices/:id/monitors — real PostgreSQL under request RLS', () =
     expect(byId.get(partnerMonitor!.id)).toEqual(
       expect.objectContaining({
         name: 'Memory partner-wide',
+        enabled: false,
         sourcePolicyId: partnerPolicy!.id,
         sourcePolicyName: 'Partner policy',
         lastState: 'unknown',

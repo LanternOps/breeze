@@ -104,7 +104,9 @@
       "save": "Failed to save monitor",
       "delete": "Failed to delete monitor",
       "test": "Test failed",
-      "generic": "Something went wrong"
+      "generic": "Something went wrong",
+      "invalidCondition": "Some condition values are missing or out of range. Nothing was saved.",
+      "invalidResponses": "Some response settings are missing or out of range. Nothing was saved."
     },
     "saved": "Monitor saved",
     "deleted": "Monitor deleted",
@@ -302,7 +304,8 @@
     "detachConfirm": "Detach from {{policy}}?",
     "errors": {
       "attach": "Failed to attach monitor",
-      "detach": "Failed to detach monitor"
+      "detach": "Failed to detach monitor",
+      "linkedFeature": "This policy's monitors come from a shared feature policy. Edit that policy or choose another one."
     }
   },
   "policyTab": {

@@ -104,7 +104,9 @@
       "save": "Falha ao salvar o monitor",
       "delete": "Falha ao excluir o monitor",
       "test": "Teste falhou",
-      "generic": "Algo deu errado"
+      "generic": "Algo deu errado",
+      "invalidCondition": "Alguns valores da condição estão ausentes ou fora do intervalo. Nada foi salvo.",
+      "invalidResponses": "Algumas configurações de resposta estão ausentes ou fora do intervalo. Nada foi salvo."
     },
     "saved": "Monitor salvo",
     "deleted": "Monitor excluído",
@@ -302,7 +304,8 @@
     "detachConfirm": "Desanexar de {{policy}}?",
     "errors": {
       "attach": "Falha ao anexar o monitor",
-      "detach": "Falha ao desanexar o monitor"
+      "detach": "Falha ao desanexar o monitor",
+      "linkedFeature": "Os monitores desta política vêm de uma política de recurso compartilhada. Edite essa política ou escolha outra."
     }
   },
   "policyTab": {

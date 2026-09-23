@@ -104,7 +104,9 @@
       "save": "Impossible d’enregistrer le moniteur",
       "delete": "Impossible de supprimer le moniteur",
       "test": "Test échoué",
-      "generic": "Quelque chose a mal tourné"
+      "generic": "Quelque chose a mal tourné",
+      "invalidCondition": "Certaines valeurs de la condition sont manquantes ou hors limites. Rien n'a été enregistré.",
+      "invalidResponses": "Certains paramètres de réponse sont manquants ou hors limites. Rien n'a été enregistré."
     },
     "saved": "Moniteur enregistré",
     "deleted": "Moniteur supprimé",
@@ -302,7 +304,8 @@
     "detachConfirm": "Détacher de {{policy}}?",
     "errors": {
       "attach": "Impossible de joindre le moniteur",
-      "detach": "Impossible de détacher le moniteur"
+      "detach": "Impossible de détacher le moniteur",
+      "linkedFeature": "Les moniteurs de cette politique proviennent d'une politique de fonctionnalité partagée. Modifiez cette politique ou choisissez-en une autre."
     }
   },
   "policyTab": {
