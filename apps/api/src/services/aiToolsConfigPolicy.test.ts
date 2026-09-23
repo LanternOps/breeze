@@ -1211,6 +1211,49 @@ describe('configuration policy AI tools', () => {
     expect(JSON.parse(output).error).toContain('full partner org access');
     expect(createConfigPolicyMock).not.toHaveBeenCalled();
   });
+
+  // W05c2 Task 14: legacy alert_rule / monitoring writes still succeed during
+  // W05c, but every successful write points the model at monitors (W05d
+  // replaces the warning with a refusal).
+  it.each(['alert_rule', 'monitoring'])('warns while preserving authorized %s writes', async (featureType) => {
+    vi.mocked(getConfigPolicy).mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Policy' } as any);
+    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1' } as any);
+    const registry = new Map<string, any>();
+    registerConfigPolicyTools(registry);
+    const body = JSON.parse(await registry.get('manage_policy_feature_link').handler({
+      action: 'add', configPolicyId: POLICY_ID, featureType,
+    }, makeAuth()));
+    expect(body).toMatchObject({ success: true, useTool: 'manage_monitor_definitions' });
+    expect(body.warning).toContain(featureType);
+    expect(addFeatureLink).toHaveBeenCalled();
+  });
+
+  it('warns from the stored link type on update, not a caller-supplied replacement', async () => {
+    vi.mocked(getConfigPolicy).mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Policy' } as any);
+    mockSelectRows([{ featureType: 'monitoring' }]);
+    vi.mocked(updateFeatureLink).mockResolvedValue({ id: 'link-1' } as any);
+    const registry = new Map<string, any>();
+    registerConfigPolicyTools(registry);
+    const body = JSON.parse(await registry.get('manage_policy_feature_link').handler({
+      action: 'update', configPolicyId: POLICY_ID, featureLinkId: 'link-1', featureType: 'patch',
+    }, makeAuth()));
+    expect(body.success).toBe(true);
+    expect(body.warning).toContain('monitoring');
+    expect(body.useTool).toBe('manage_monitor_definitions');
+  });
+
+  it('adds no legacy warning to a monitors write', async () => {
+    vi.mocked(getConfigPolicy).mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Policy' } as any);
+    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1' } as any);
+    const registry = new Map<string, any>();
+    registerConfigPolicyTools(registry);
+    const body = JSON.parse(await registry.get('manage_policy_feature_link').handler({
+      action: 'add', configPolicyId: POLICY_ID, featureType: 'monitors', inlineSettings: { items: [] },
+    }, makeAuth()));
+    expect(body.success).toBe(true);
+    expect(body).not.toHaveProperty('warning');
+    expect(body).not.toHaveProperty('useTool');
+  });
 });
 
 // ─── RMM-QA-176 D9.3 ────────────────────────────────────────────────────────

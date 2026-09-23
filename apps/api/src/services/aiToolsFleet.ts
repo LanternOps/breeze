@@ -46,11 +46,12 @@ import {
 } from '../db/schema/alerts';
 import {
   configurationPolicies,
-  configPolicyAssignments,
   configPolicyFeatureLinks,
-  configPolicyMonitoringSettings,
-  configPolicyMonitoringWatches,
 } from '../db/schema/configurationPolicies';
+import {
+  listEffectiveServiceMonitors,
+  SERVICE_MONITOR_LIST_DEVICE_CAP,
+} from './monitors/listServiceMonitors';
 import {
   addFeatureLink,
   updateFeatureLink,
@@ -604,102 +605,6 @@ async function alertRuleTargetDenied(
       // 'all' / org-wide / unknown target → exceeds a site-restricted caller.
       return true;
   }
-}
-
-/**
- * Narrow a list of rows carrying a `policyId` to the configuration policies
- * that actually reach this caller. No-op for a caller restricted on neither
- * app-layer axis (and no query is issued for one).
- *
- * Lookups are lazy and batched: the device/group SITE maps are only read when
- * the caller has no exact-device allowlist (with one, membership in it settles
- * the question and the device's site is the run's own by construction), and
- * group MEMBERSHIPS are only read when it does.
- */
-async function narrowMonitorsToCallerReach<T extends { policyId: string | null }>(
-  auth: AuthContext,
-  rows: T[],
-): Promise<T[]> {
-  if (!auth.allowedSiteIds && !auth.allowedDeviceIds) return rows;
-  const policyIds = [...new Set(rows.map((r) => r.policyId).filter((id): id is string => !!id))];
-  if (policyIds.length === 0) return [];
-
-  const assignments = await db
-    .select({
-      configPolicyId: configPolicyAssignments.configPolicyId,
-      level: configPolicyAssignments.level,
-      targetId: configPolicyAssignments.targetId,
-    })
-    .from(configPolicyAssignments)
-    .where(inArray(configPolicyAssignments.configPolicyId, policyIds));
-
-  const exactDevices = auth.allowedDeviceIds ? new Set(auth.allowedDeviceIds) : null;
-  const targetsAt = (level: string) =>
-    [...new Set(assignments.filter((a) => a.level === level).map((a) => a.targetId))];
-
-  const deviceSite = new Map<string, string | null>();
-  const groupSite = new Map<string, string | null>();
-  const groupMembers = new Map<string, string[]>();
-
-  if (!exactDevices) {
-    const deviceTargets = targetsAt('device');
-    if (deviceTargets.length > 0) {
-      for (const row of await db.select({ id: devices.id, siteId: devices.siteId })
-        .from(devices).where(inArray(devices.id, deviceTargets))) {
-        deviceSite.set(row.id, row.siteId);
-      }
-    }
-    const groupTargets = targetsAt('device_group');
-    if (groupTargets.length > 0) {
-      for (const row of await db.select({ id: deviceGroups.id, siteId: deviceGroups.siteId })
-        .from(deviceGroups).where(inArray(deviceGroups.id, groupTargets))) {
-        groupSite.set(row.id, row.siteId);
-      }
-    }
-  } else {
-    const groupTargets = targetsAt('device_group');
-    if (groupTargets.length > 0) {
-      for (const row of await db.select({
-        groupId: deviceGroupMemberships.groupId,
-        deviceId: deviceGroupMemberships.deviceId,
-      }).from(deviceGroupMemberships).where(inArray(deviceGroupMemberships.groupId, groupTargets))) {
-        groupMembers.set(row.groupId, [...(groupMembers.get(row.groupId) ?? []), row.deviceId]);
-      }
-    }
-  }
-
-  // Site-shaped assignment targets — a `site` assignment, or a device group's
-  // own site — have no device to name, so only the site axis applies. Funnelled
-  // through ONE call so the exact-device contract test
-  // (aiToolsDeviceGuard.contract.test.ts) has a single site-only entry to carry.
-  const assignmentSiteDenied = (siteId: string | null): boolean => deviceSiteDenied(auth, siteId);
-
-  const reaches = (a: { level: string; targetId: string }): boolean => {
-    switch (a.level) {
-      // Partner/org-wide policies apply to the caller's own device as well, so
-      // they are not a disclosure of anyone else's configuration.
-      case 'partner':
-      case 'organization':
-        return true;
-      case 'site':
-        return !assignmentSiteDenied(a.targetId);
-      case 'device':
-        return exactDevices
-          ? exactDevices.has(a.targetId)
-          : !deviceSiteDenied(auth, deviceSite.get(a.targetId) ?? null, a.targetId);
-      case 'device_group':
-        return exactDevices
-          ? (groupMembers.get(a.targetId) ?? []).some((id) => exactDevices.has(id))
-          : !assignmentSiteDenied(groupSite.get(a.targetId) ?? null);
-      default:
-        return false;
-    }
-  };
-
-  const reachable = new Set(
-    assignments.filter(reaches).map((a) => a.configPolicyId),
-  );
-  return rows.filter((r) => !!r.policyId && reachable.has(r.policyId));
 }
 
 /** Wrap handler in try-catch so DB/runtime errors return JSON instead of crashing.
@@ -3377,78 +3282,41 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
   registerTool({
     tier: 1,
     domain: 'monitoring',
-    searchHint: 'service and process monitoring watches: list',
+    searchHint: 'effective service and process monitors per device: list',
     definition: {
       name: 'manage_service_monitors',
-      description: 'Query service and process monitoring watches. Actions: list, add (disabled), remove (disabled). For writes, use manage_policy_feature_link with featureType "monitoring" and action "update".',
+      description: 'List effective service/process monitors per accessible device via the monitor resolver. Optional configPolicyId filters the winning source policy. Use manage_monitor_definitions to author monitors, then attach them with manage_policy_feature_link featureType "monitors".',
       input_schema: {
         type: 'object' as const,
         properties: {
-          action: { type: 'string', enum: ['list'], description: 'The action to perform. To add/remove monitors, use manage_policy_feature_link with featureType "monitoring".' },
-          configPolicyId: { type: 'string', description: 'Configuration policy UUID. For list, shows all monitors across policies if omitted.' },
+          action: { type: 'string', enum: ['list'], description: 'The action to perform. Read-only: author monitors with manage_monitor_definitions.' },
+          configPolicyId: { type: 'string', description: 'Configuration policy UUID. Keeps only monitors whose winning attachment comes from this policy.' },
         },
         required: ['action'],
       },
     },
     handler: safeHandler('manage_service_monitors', async (input, auth) => {
       const action = input.action as string;
-      const orgId = getOrgId(auth);
 
       if (action === 'list') {
-        // List all monitoring watches, optionally filtered by policy.
-        //
-        // `policyAccessCondition`, not a bare `orgWhere` on
-        // configurationPolicies.orgId (#3493): a partner-wide policy stores
-        // `org_id NULL`, so the org-equality form silently omits every
-        // partner-owned monitoring policy — including from the partner-scoped
-        // techs who authored them. The helper adds the dual-axis branch and is
-        // gated on partner scope so the app layer never claims more than RLS
-        // grants.
-        const conditions: SQL[] = [];
-        const oc = policyAccessCondition(auth);
-        if (oc) conditions.push(oc);
-        if (typeof input.configPolicyId === 'string') {
-          conditions.push(eq(configPolicyFeatureLinks.configPolicyId, input.configPolicyId as string));
-        }
-        conditions.push(eq(configPolicyFeatureLinks.featureType, 'monitoring'));
-
-        const rows = await db.select({
-          watchId: configPolicyMonitoringWatches.id,
-          watchType: configPolicyMonitoringWatches.watchType,
-          name: configPolicyMonitoringWatches.name,
-          displayName: configPolicyMonitoringWatches.displayName,
-          enabled: configPolicyMonitoringWatches.enabled,
-          alertOnStop: configPolicyMonitoringWatches.alertOnStop,
-          alertSeverity: configPolicyMonitoringWatches.alertSeverity,
-          cpuThresholdPercent: configPolicyMonitoringWatches.cpuThresholdPercent,
-          memoryThresholdMb: configPolicyMonitoringWatches.memoryThresholdMb,
-          autoRestart: configPolicyMonitoringWatches.autoRestart,
-          policyId: configurationPolicies.id,
-          policyName: configurationPolicies.name,
-          checkIntervalSeconds: configPolicyMonitoringSettings.checkIntervalSeconds,
-        }).from(configPolicyMonitoringWatches)
-          .innerJoin(configPolicyMonitoringSettings, eq(configPolicyMonitoringWatches.settingsId, configPolicyMonitoringSettings.id))
-          .innerJoin(configPolicyFeatureLinks, eq(configPolicyMonitoringSettings.featureLinkId, configPolicyFeatureLinks.id))
-          .innerJoin(configurationPolicies, eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id))
-          .where(conditions.length > 0 ? and(...conditions) : undefined)
-          .orderBy(configurationPolicies.name, configPolicyMonitoringWatches.sortOrder);
-
-        // Site + exact-device axes (#6096). `policyAccessCondition` is org/
-        // partner only, so this listing is otherwise ORG-WIDE config: a run
-        // pinned to one device could enumerate the monitoring watches of
-        // policies that only ever reach OTHER sites and OTHER devices.
-        //
-        // A policy is visible when at least one of its assignments REACHES the
-        // caller. Partner/organization assignments reach every device under
-        // them — including the run's own — so they stay visible; site, device
-        // and group assignments must name something the caller can see. A
-        // policy with no assignment at all reaches nothing and drops out.
-        const visibleMonitors = await narrowMonitorsToCallerReach(auth, rows);
-
-        return JSON.stringify({ monitors: visibleMonitors, showing: visibleMonitors.length });
+        // W05c2 (#6371): effective per-device monitors from the resolver, not
+        // the legacy watch rows. Device reach (org, site, exact-device axes) is
+        // enforced per device inside listEffectiveServiceMonitors.
+        const { monitors, truncated } = await listEffectiveServiceMonitors(
+          auth,
+          typeof input.configPolicyId === 'string' ? input.configPolicyId : undefined,
+        );
+        return JSON.stringify({
+          monitors,
+          showing: monitors.length,
+          ...(truncated ? {
+            truncated: true,
+            note: `Resolved the first ${SERVICE_MONITOR_LIST_DEVICE_CAP} accessible devices only; results for other devices are not included.`,
+          } : {}),
+        });
       }
 
-      return JSON.stringify({ error: `Unknown action: ${action}. Only "list" is supported. Use manage_policy_feature_link to add/update/remove monitors.` });
+      return JSON.stringify({ error: `Unknown action: ${action}. Only "list" is supported. Use manage_monitor_definitions to author monitors.` });
     }),
   });
 
