@@ -46,6 +46,18 @@ describe('localTimer', () => {
     await expect(readLocalTimer()).resolves.toBeNull();
   });
 
+  it('round-trips a chosen work type, including an explicit null (#4628 W04)', async () => {
+    await writeLocalTimer({ ...timer, workTypeId: 'wt-2' });
+    await expect(readLocalTimer()).resolves.toEqual({ ...timer, workTypeId: 'wt-2' });
+    await writeLocalTimer({ ...timer, workTypeId: null });
+    await expect(readLocalTimer()).resolves.toEqual({ ...timer, workTypeId: null });
+  });
+
+  it('a timer persisted by an older build (no workTypeId) reads back WITHOUT the field', async () => {
+    await writeLocalTimer(timer);
+    expect(await readLocalTimer()).not.toHaveProperty('workTypeId');
+  });
+
   it('treats a persisted row with no startConfirmed as UNconfirmed', async () => {
     // The safe direction: an extra getRunningTimer() call costs one request,
     // where assuming "confirmed" leaves a real server timer running forever.

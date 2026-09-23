@@ -49,7 +49,7 @@ export interface Stamp {
 }
 
 export interface StartDeps {
-  startTimer: (input: { ticketId?: string }) => Promise<TimeEntry>;
+  startTimer: (input: { ticketId?: string; workTypeId?: string | null }) => Promise<TimeEntry>;
   writeLocalTimer: (timer: LocalTimer) => Promise<void>;
   clearLocalTimer: () => Promise<void>;
   isConnected: () => boolean;
@@ -110,8 +110,14 @@ function stopStop(stamp: Stamp): SpanStop {
 
 export async function startForTicket(
   ticketId: string,
-  deps: StartDeps
+  deps: StartDeps,
+  // #4628 W04. `workTypeId` absent = "Default": the server applies the ticket
+  // category's default work type. `null` = the technician chose none. The
+  // choice rides on the local timer so an offline start still carries it into
+  // the `create` its stop queues.
+  options: { workTypeId?: string | null } = {}
 ): Promise<StartOutcome> {
+  const workType = options.workTypeId !== undefined ? { workTypeId: options.workTypeId } : {};
   const stamp = deps.stamp();
   const timer: LocalTimer = {
     localId: stamp.localId,
@@ -123,6 +129,7 @@ export async function startForTicket(
     // Nothing has been asked of the server yet, so a start MAY be about to land.
     startConfirmed: false,
     description: null,
+    ...workType,
   };
 
   // Persisted BEFORE any network call. If the app is killed between the tap and
@@ -146,7 +153,7 @@ export async function startForTicket(
   }
 
   try {
-    const entry = await deps.startTimer({ ticketId });
+    const entry = await deps.startTimer({ ticketId, ...workType });
     // The server's stamp is authoritative from here on.
     const owned: LocalTimer = {
       ...timer,
@@ -246,6 +253,9 @@ async function closeLocalTimer(
 
   const ticketId = local?.ticketId ?? input.running?.ticketId ?? null;
   const description = input.description ?? local?.description ?? undefined;
+  // Tri-state carried from the start (see LocalTimer.workTypeId).
+  const workType =
+    local !== null && local.workTypeId !== undefined ? { workTypeId: local.workTypeId } : {};
 
   if ('unusable' in span) {
     // Inventing a duration would be inventing a bill. Park the record so the
@@ -259,6 +269,7 @@ async function closeLocalTimer(
             startedAtWall,
             ...(ticketId === null ? {} : { ticketId }),
             ...(description === undefined ? {} : { description }),
+            ...workType,
           },
           queuedAt: new Date(stamp.wallMs).toISOString(),
           attempts: 0,
@@ -286,6 +297,7 @@ async function closeLocalTimer(
         ...(ticketId === null ? {} : { ticketId }),
         ...(description === undefined ? {} : { description }),
         ...(input.isBillable === undefined ? {} : { isBillable: input.isBillable }),
+        ...workType,
         // The reconciler needs to know a start request may have landed before
         // it posts what could be a second entry for the same work.
         ...(local !== null && !local.startConfirmed ? { unconfirmedStart: true } : {}),

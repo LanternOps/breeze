@@ -273,6 +273,67 @@ describe('stopRunningTimer — a timer the server does not have', () => {
   });
 });
 
+describe('work type through the timer (#4628 W04)', () => {
+  it('an online start sends the chosen work type — timers are priced at START (§3.7)', async () => {
+    const deps = startDeps();
+    await startForTicket('k1', deps, { workTypeId: 'wt-2' });
+    expect(deps.startTimer).toHaveBeenCalledWith({ ticketId: 'k1', workTypeId: 'wt-2' });
+  });
+
+  it('an explicit null ("none") is sent as null', async () => {
+    const deps = startDeps();
+    await startForTicket('k1', deps, { workTypeId: null });
+    expect(deps.startTimer).toHaveBeenCalledWith({ ticketId: 'k1', workTypeId: null });
+  });
+
+  it('leaving it on Default omits the field entirely, so the server applies the category default (§3.1)', async () => {
+    const deps = startDeps();
+    await startForTicket('k1', deps);
+    expect(deps.startTimer.mock.calls[0][0]).not.toHaveProperty('workTypeId');
+    expect(deps.writeLocalTimer.mock.calls[0][0]).not.toHaveProperty('workTypeId');
+  });
+
+  it('an OFFLINE start records the work type on the local timer', async () => {
+    const deps = startDeps({ isConnected: () => false, startTimer: vi.fn() });
+    const outcome = await startForTicket('k1', deps, { workTypeId: 'wt-2' });
+    expect((outcome as { timer: LocalTimer }).timer.workTypeId).toBe('wt-2');
+  });
+
+  it('stopping a device-only timer queues a create carrying its work type', async () => {
+    const deps = stopDeps({
+      readLocalTimer: vi.fn().mockResolvedValue(localTimer({ workTypeId: 'wt-2' })),
+    });
+    await stopRunningTimer({ running: null }, deps);
+    expect(deps.enqueue.mock.calls[0][0].payload).toMatchObject({ workTypeId: 'wt-2' });
+  });
+
+  it('a device-only timer with an explicit null queues null', async () => {
+    const deps = stopDeps({
+      readLocalTimer: vi.fn().mockResolvedValue(localTimer({ workTypeId: null })),
+    });
+    await stopRunningTimer({ running: null }, deps);
+    expect(deps.enqueue.mock.calls[0][0].payload).toHaveProperty('workTypeId', null);
+  });
+
+  it('a device-only timer with no work type queues a create WITHOUT the field', async () => {
+    const deps = stopDeps({ readLocalTimer: vi.fn().mockResolvedValue(localTimer()) });
+    await stopRunningTimer({ running: null }, deps);
+    expect(deps.enqueue.mock.calls[0][0].payload).not.toHaveProperty('workTypeId');
+  });
+
+  it('a clock-parked device-only timer keeps its work type on the parked row', async () => {
+    const deps = stopDeps({
+      readLocalTimer: vi.fn().mockResolvedValue(
+        localTimer({ workTypeId: 'wt-2', startedAtMono: null, monoEpochId: null })
+      ),
+      stamp: stampAt(Date.parse('2026-08-30T08:00:00.000Z'), null),
+    });
+    const outcome = await stopRunningTimer({ running: null }, deps);
+    expect(outcome).toMatchObject({ ok: false, reason: 'unusable-clock' });
+    expect(deps.parkNeedsAttention.mock.calls[0][0].write.payload).toMatchObject({ workTypeId: 'wt-2' });
+  });
+});
+
 describe('stopRunningTimer — a timer the server owns', () => {
   it('stops through the API when connected, so the server stamps the tap moment', async () => {
     const deps = stopDeps();
