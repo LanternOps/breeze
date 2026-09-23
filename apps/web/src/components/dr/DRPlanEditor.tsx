@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
-import { useScrollToError } from '../../lib/scrollToError';
+import { scrollErrorIntoView, useScrollToError } from '../../lib/scrollToError';
 import { runAction } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import DRPlanGroupCard, {
@@ -237,26 +237,38 @@ export default function DRPlanEditor({
   };
 
   const handleSave = useCallback(async () => {
+    // #6494 repeat-submit: a validation failure clears then re-sets `error`
+    // to the SAME string within this one handler invocation — React batches
+    // those into a single commit, so useScrollToError's error-changed check
+    // never observes the transition and skips the re-scroll on the second
+    // (and every later) submit. Scrolling explicitly here, right where the
+    // error is set, sidesteps that diffing entirely (matches the pattern in
+    // BackupProfilesTab.validate()).
+    const fail = (message: string) => {
+      setError(message);
+      scrollErrorIntoView(errorRef.current);
+    };
+
     setError(undefined);
 
     if (!name.trim()) {
-      setError('Plan name is required.');
+      fail('Plan name is required.');
       return;
     }
     if (groups.length === 0) {
-      setError('Add at least one recovery group.');
+      fail('Add at least one recovery group.');
       return;
     }
     if (groups.some((group) => !group.name.trim())) {
-      setError('Each recovery group needs a name.');
+      fail('Each recovery group needs a name.');
       return;
     }
     if (groups.some((group) => group.deviceIds.length === 0)) {
-      setError('Each recovery group must include at least one device.');
+      fail('Each recovery group must include at least one device.');
       return;
     }
     if (groups.some((group) => !group.stepType)) {
-      setError(t('dRPlanEditor.chooseAStepTypeForEachGroup'));
+      fail(t('dRPlanEditor.chooseAStepTypeForEachGroup'));
       return;
     }
     if (
@@ -271,7 +283,7 @@ export default function DRPlanEditor({
         );
       })
     ) {
-      setError(
+      fail(
         t('dRPlanEditor.rebuildWaitTimeoutOutOfRange', {
           min: REBUILD_WAIT_TIMEOUT_MIN,
           max: REBUILD_WAIT_TIMEOUT_MAX,
@@ -292,13 +304,13 @@ export default function DRPlanEditor({
         return !outputDir.startsWith('/') || outputDir.length > REBUILD_OUTPUT_DIR_MAX_LENGTH;
       })
     ) {
-      setError(
+      fail(
         t('dRPlanEditor.rebuildOutputDirMustBeAbsolute', { max: REBUILD_OUTPUT_DIR_MAX_LENGTH })
       );
       return;
     }
     if (groups.some((group) => groupReadiness[group.localId] !== true)) {
-      setError('Device choices are not ready. Retry or finish loading devices before saving.');
+      fail('Device choices are not ready. Retry or finish loading devices before saving.');
       return;
     }
 
@@ -423,10 +435,10 @@ export default function DRPlanEditor({
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to save plan';
       if (wroteSomething) {
-        setError(t('dRPlanEditor.partialSaveFailure', { message }));
+        fail(t('dRPlanEditor.partialSaveFailure', { message }));
         onPartialSave?.();
       } else {
-        setError(message);
+        fail(message);
       }
     } finally {
       setSaving(false);

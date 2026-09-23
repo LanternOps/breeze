@@ -300,6 +300,52 @@ describe('RecoveryBootstrapTab', () => {
     expect(screen.getByText('breeze-recovery-linux-amd64.iso')).toBeTruthy();
   });
 
+  // DBT-7: the API refuses `POST /backup/bmr/tokens` with 409
+  // `{"error":"snapshot_not_bare_metal_restorable","reasons":[...]}` when the
+  // snapshot wasn't assessed as bare-metal restorable. The raw machine code
+  // must not leak into the UI verbatim, and the `reasons` the API bothered to
+  // send must actually be shown — not silently dropped.
+  it('shows plain copy and the reasons list for a snapshot_not_bare_metal_restorable refusal', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+
+      if (url === '/backup/snapshots') {
+        return makeJsonResponse({
+          data: [{ id: 'snapshot-1', label: 'Nightly Snapshot', timestamp: '2026-03-28T10:00:00Z', size: 2147483648 }],
+        });
+      }
+      if (url === '/backup/bmr/tokens?limit=100' && method === 'GET') return makeJsonResponse({ data: [] });
+      if (url === '/backup/bmr/media?limit=100' && method === 'GET') return makeJsonResponse({ data: [] });
+      if (url === '/backup/bmr/boot-media?limit=100' && method === 'GET') return makeJsonResponse({ data: [] });
+      if (url === '/backup/bmr/tokens' && method === 'POST') {
+        return makeJsonResponse(
+          {
+            error: 'snapshot_not_bare_metal_restorable',
+            reasons: ['missing EFI system partition', 'BitLocker volume not captured'],
+          },
+          false,
+          409
+        );
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<RecoveryBootstrapTab />);
+    await screen.findByText('Nightly Snapshot');
+
+    fireEvent.click(screen.getByRole('button', { name: /Create token/i }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/backup/bmr/tokens', expect.objectContaining({ method: 'POST' }));
+    });
+
+    expect(await screen.findByText(/can.t be used for a bare-metal restore/i)).toBeInTheDocument();
+    expect(screen.getByText('missing EFI system partition')).toBeInTheDocument();
+    expect(screen.getByText('BitLocker volume not captured')).toBeInTheDocument();
+    expect(screen.queryByText('snapshot_not_bare_metal_restorable')).toBeNull();
+  });
+
   it('filters the browser-local token catalog and revokes a token', async () => {
     window.localStorage.setItem(
       'breeze-backup-recovery-bootstrap-catalog',
