@@ -86,12 +86,14 @@ function claimedRow(overrides: Partial<{
   org_id: string;
   device_id: string;
   dispatch_attempts: number;
+  suppressed_by_episode: boolean;
 }> = {}) {
   return {
     id: 'incident-1',
     org_id: 'org-1',
     device_id: 'device-1',
     dispatch_attempts: 1,
+    suppressed_by_episode: false,
     ...overrides,
   };
 }
@@ -112,7 +114,7 @@ describe('metricAnomalyIncidentPublisher.publishPendingIncidents', () => {
 
     const result = await publishPendingIncidents();
 
-    expect(result).toEqual({ published: 1, skipped: 0 });
+    expect(result).toEqual({ published: 1, skipped: 0, suppressed: 0 });
     expect(publishEventMock).toHaveBeenCalledTimes(1);
     expect(publishEventMock).toHaveBeenCalledWith(
       'anomaly.incident_opened',
@@ -148,7 +150,7 @@ describe('metricAnomalyIncidentPublisher.publishPendingIncidents', () => {
 
     const result = await publishPendingIncidents();
 
-    expect(result).toEqual({ published: 0, skipped: 1 });
+    expect(result).toEqual({ published: 0, skipped: 1, suppressed: 0 });
     expect(publishEventMock).not.toHaveBeenCalled();
     expect(updateMock).not.toHaveBeenCalled();
     expect(captureException).toHaveBeenCalledTimes(1);
@@ -182,7 +184,7 @@ describe('metricAnomalyIncidentPublisher.publishPendingIncidents', () => {
     executeMock.mockResolvedValueOnce({ rows: [] });
 
     const second = await publishPendingIncidents();
-    expect(second).toEqual({ published: 0, skipped: 0 });
+    expect(second).toEqual({ published: 0, skipped: 0, suppressed: 0 });
     expect(publishEventMock).toHaveBeenCalledTimes(1);
     expect(updateMock).toHaveBeenCalledTimes(1); // only from the first pass
   });
@@ -194,7 +196,7 @@ describe('metricAnomalyIncidentPublisher.publishPendingIncidents', () => {
 
     const result = await publishPendingIncidents();
 
-    expect(result).toEqual({ published: 0, skipped: 0 });
+    expect(result).toEqual({ published: 0, skipped: 0, suppressed: 0 });
     expect(updateMock).not.toHaveBeenCalled();
     expect(captureException).toHaveBeenCalledTimes(1);
   });
@@ -215,10 +217,66 @@ describe('metricAnomalyIncidentPublisher.publishPendingIncidents', () => {
 
     const result = await publishPendingIncidents();
 
-    expect(result).toEqual({ published: 1, skipped: 0 });
+    expect(result).toEqual({ published: 1, skipped: 0, suppressed: 0 });
     expect(publishEventMock).toHaveBeenCalledTimes(1);
     expect(sawContextDuringPublish).toBe(false);
     expect(dbModule.hasDbAccessContext()).toBe(false);
+  });
+
+  it('never publishes a row the claim marked suppressed_by_episode, and counts it', async () => {
+    executeMock.mockResolvedValueOnce({ rows: [] }); // stuck scan
+    executeMock.mockResolvedValueOnce({
+      rows: [
+        claimedRow({ id: 'incident-a' }),
+        claimedRow({ id: 'incident-b', suppressed_by_episode: true }),
+        claimedRow({ id: 'incident-c', suppressed_by_episode: true }),
+      ],
+    });
+    const chain = makeUpdateChain();
+    updateMock.mockReturnValue({ set: chain.set });
+
+    const result = await publishPendingIncidents();
+
+    expect(result).toEqual({ published: 1, skipped: 0, suppressed: 2 });
+    expect(publishEventMock).toHaveBeenCalledTimes(1);
+    expect(publishEventMock).toHaveBeenCalledWith(
+      'anomaly.incident_opened', 'org-1', { incidentId: 'incident-a', deviceId: 'device-1' }, 'metric-anomaly-incident-publisher',
+    );
+    expect(updateMock).toHaveBeenCalledTimes(1); // mark-dispatched for incident-a only
+  });
+
+  it('a claim of only suppressed rows publishes nothing and marks nothing', async () => {
+    executeMock.mockResolvedValueOnce({ rows: [] });
+    executeMock.mockResolvedValueOnce({ rows: [claimedRow({ id: 'incident-z', suppressed_by_episode: true })] });
+
+    const result = await publishPendingIncidents();
+
+    expect(result).toEqual({ published: 0, skipped: 0, suppressed: 1 });
+    expect(publishEventMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('metricAnomalyIncidentPublisher — one dispatch per episode (W02, source-level)', () => {
+  const src = () => fs.readFileSync(path.join(__dirname, 'metricAnomalyIncidentPublisher.ts'), 'utf8');
+
+  it('suppresses all but the earliest incident of an episode within one claim batch', () => {
+    expect(src()).toContain('PARTITION BY d.episode_id ORDER BY d.window_start, d.id');
+  });
+
+  it('suppresses when a sibling was already published or already has an agent run', () => {
+    expect(src()).toContain('s.agent_run_id IS NOT NULL');
+    expect(src()).toContain('s.dispatched_at IS NOT NULL AND s.suppressed_by_episode = false');
+  });
+
+  it('marks suppressed rows dispatched in the claim itself so they are never re-claimed', () => {
+    expect(src()).toContain('dispatched_at = CASE WHEN decided.suppress THEN now() ELSE i.dispatched_at END');
+    expect(src()).toContain('suppressed_by_episode = decided.suppress');
+  });
+
+  it('holds nothing back: an unlinked incident is claimable at once (D-2 withdrawn, A6)', () => {
+    expect(src()).not.toContain('make_interval(mins =>');
+    expect(src()).not.toContain('created_at < now()');
   });
 });
 
