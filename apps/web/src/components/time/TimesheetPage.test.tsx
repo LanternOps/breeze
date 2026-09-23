@@ -186,6 +186,36 @@ describe('TimesheetPage', () => {
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'warning' })));
   });
 
+  // BQ-6: a PATCH 404 means the row was deleted underneath the tech (e.g. by
+  // another session). Editing must not leave a ghost row stuck in edit mode —
+  // exit edit mode and refetch so the row disappears from the list.
+  it('exits edit mode and refetches the sheet when saving a 404d (deleted) entry', async () => {
+    // Keyed on the exact requested weekStart, not a raw call count — the
+    // component's "seed" mount fires an extra timesheet request for today's
+    // Monday before the hash-adopted week=2026-06-08 request lands (#2421),
+    // and a call-count-based counter would miscount which response is which.
+    let weekCalls = 0;
+    fetchWithAuth.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/time-entries/te-1' && init?.method === 'PATCH') {
+        return { ok: false, status: 404, json: async () => ({ error: 'not found' }) } as Response;
+      }
+      if (url.startsWith('/time-entries/timesheet?weekStart=2026-06-08')) {
+        weekCalls += 1;
+        // Second load of THIS week (post-404 refetch): the entry is gone.
+        return jsonRes(weekCalls === 1 ? week : { ...week, days: [{ ...week.days[0], entries: [] }, ...week.days.slice(1)] });
+      }
+      if (url.startsWith('/time-entries/timesheet')) return jsonRes(week); // discarded seed-mount response
+      if (url.startsWith('/users')) return jsonRes([]);
+      return jsonRes({});
+    });
+    render(<TimesheetPage />);
+    fireEvent.click(await screen.findByTestId('timesheet-edit-te-1'));
+    fireEvent.click(screen.getByTestId('timesheet-edit-save-te-1'));
+    await waitFor(() => expect(screen.queryByTestId('timesheet-edit-description-te-1')).toBeNull());
+    await waitFor(() => expect(weekCalls).toBeGreaterThanOrEqual(2));
+    await waitFor(() => expect(screen.queryByTestId('timesheet-entry-te-1')).toBeNull());
+  });
+
   it('falls back to own timesheet with a notice when another tech 403s', async () => {
     window.location.hash = '#week=2026-06-08&tech=u-2';
     fetchWithAuth.mockImplementation(async (url: string) => {
