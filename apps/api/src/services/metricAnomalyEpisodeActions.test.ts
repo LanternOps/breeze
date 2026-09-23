@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { calls, dbMock, promoteMock, emitMemberFeedbackMock } = vi.hoisted(() => ({
+const { calls, dbMock, promoteMock, emitMemberFeedbackMock, emitEpisodeFeedbackMock } = vi.hoisted(() => ({
   calls: [] as string[],
   dbMock: {} as Record<string, unknown>,
   promoteMock: vi.fn(),
   emitMemberFeedbackMock: vi.fn(),
+  emitEpisodeFeedbackMock: vi.fn(),
 }));
 
 vi.mock('../db', () => ({ db: dbMock }));
@@ -15,7 +16,11 @@ vi.mock('../db/schema', () => ({
 }));
 vi.mock('./alertService', () => ({ resolveAlert: vi.fn() }));
 vi.mock('./metricAnomalyPromotion', () => ({ promoteMetricAnomalyToAlert: promoteMock }));
-vi.mock('./mlFeedbackEmitters', () => ({ emitAlertStateFeedback: vi.fn(), emitAnomalyEpisodeMemberFeedback: emitMemberFeedbackMock }));
+vi.mock('./mlFeedbackEmitters', () => ({
+  emitAlertStateFeedback: vi.fn(),
+  emitAnomalyEpisodeMemberFeedback: emitMemberFeedbackMock,
+  emitAnomalyEpisodeFeedback: emitEpisodeFeedbackMock,
+}));
 vi.mock('./metricAnomalyEpisodes', () => ({ EPISODE_SNOOZE_DAYS: 7 }));
 
 import { applyEpisodeAction, decideEpisodeAction, EPISODE_ACTION_CONFLICT_MESSAGES } from './metricAnomalyEpisodeActions';
@@ -111,6 +116,7 @@ describe('applyEpisodeAction lock order', () => {
       return { status: 'promoted', alertId: 'alert-1', created: true };
     });
     emitMemberFeedbackMock.mockReset().mockResolvedValue(1);
+    emitEpisodeFeedbackMock.mockReset().mockResolvedValue(1);
   });
 
   it.each(['resolve', 'dismiss', 'promote'] as const)('%s locks the episode FOR UPDATE before touching any member row', async (action) => {
@@ -120,5 +126,87 @@ describe('applyEpisodeAction lock order', () => {
     expect(calls[0]).toBe('select:episodes:for-update');
     const firstMemberWrite = calls.findIndex((c) => c === 'update:members' || c === 'promote:member-write');
     expect(firstMemberWrite).toBeGreaterThan(0);
+  });
+});
+
+// W03 wiring: resolve/dismiss emit exactly one anomaly_episode row beside the
+// per-member rows; promote/unsnooze never close an episode and emit none.
+describe('applyEpisodeAction episode-level feedback (spec §8.3)', () => {
+  const MEMBER = { id: 'm-1', metricName: 'cpu_percent', anomalyType: 'spike' };
+  const EPISODE = {
+    id: 'ep-1', orgId: 'org-1', deviceId: 'dev-1', episodeKey: 'k', status: 'open',
+    linkedAlertId: null, snoozedUntil: null, note: null,
+  };
+
+  function tableOf(t: unknown): string {
+    return (t as { __table?: string } | undefined)?.__table ?? 'other';
+  }
+
+  function chain(label: string, rows: unknown[]) {
+    const c: Record<string, unknown> = {};
+    for (const m of ['where', 'limit', 'orderBy', 'set', 'innerJoin']) c[m] = () => c;
+    c.from = (t: unknown) => {
+      label = `${label}:${tableOf(t)}`;
+      return c;
+    };
+    c.for = () => Promise.resolve(rows);
+    c.returning = () => Promise.resolve(label === 'update:members' ? [MEMBER] : []);
+    c.then = (res: (v: unknown) => unknown, rej: (e: unknown) => unknown) => Promise.resolve(rows).then(res, rej);
+    return c;
+  }
+
+  beforeEach(() => {
+    let selects = 0;
+    dbMock.select = () => {
+      selects += 1;
+      return chain('select', selects === 1 ? [EPISODE] : [MEMBER]);
+    };
+    dbMock.update = (t: unknown) => chain(`update:${tableOf(t)}`, []);
+    promoteMock.mockReset().mockResolvedValue({ status: 'promoted', alertId: 'alert-1', created: true });
+    emitMemberFeedbackMock.mockReset().mockResolvedValue(1);
+    emitEpisodeFeedbackMock.mockReset().mockResolvedValue(1);
+  });
+
+  it('resolve emits exactly one anomaly_episode.resolved row with memberCount', async () => {
+    await applyEpisodeAction({ orgId: 'org-1', deviceId: 'dev-1', episodeId: 'ep-1', action: 'resolve', actorUserId: 'u-1', now: NOW });
+
+    expect(emitEpisodeFeedbackMock).toHaveBeenCalledTimes(1);
+    expect(emitEpisodeFeedbackMock).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: 'org-1',
+      episodeId: 'ep-1',
+      eventType: 'anomaly_episode.resolved',
+      outcome: 'resolved',
+      actorUserId: 'u-1',
+      metadata: expect.objectContaining({ memberCount: 1 }),
+    }));
+  });
+
+  it('dismiss emits exactly one anomaly_episode.dismissed row with memberCount', async () => {
+    await applyEpisodeAction({ orgId: 'org-1', deviceId: 'dev-1', episodeId: 'ep-1', action: 'dismiss', actorUserId: 'u-1', now: NOW });
+
+    expect(emitEpisodeFeedbackMock).toHaveBeenCalledTimes(1);
+    expect(emitEpisodeFeedbackMock).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: 'org-1',
+      episodeId: 'ep-1',
+      eventType: 'anomaly_episode.dismissed',
+      outcome: 'dismissed',
+      actorUserId: 'u-1',
+      metadata: expect.objectContaining({ memberCount: 1 }),
+    }));
+  });
+
+  it('promote never emits an episode-level row', async () => {
+    await applyEpisodeAction({ orgId: 'org-1', deviceId: 'dev-1', episodeId: 'ep-1', action: 'promote', actorUserId: 'u-1', now: NOW });
+
+    expect(emitEpisodeFeedbackMock).not.toHaveBeenCalled();
+  });
+
+  it('unsnooze never emits an episode-level row', async () => {
+    const SNOOZED_EPISODE = { ...EPISODE, status: 'dismissed', snoozedUntil: new Date(NOW.getTime() + 60_000) };
+    dbMock.select = () => chain('select', [SNOOZED_EPISODE]);
+
+    await applyEpisodeAction({ orgId: 'org-1', deviceId: 'dev-1', episodeId: 'ep-1', action: 'unsnooze', actorUserId: 'u-1', now: NOW });
+
+    expect(emitEpisodeFeedbackMock).not.toHaveBeenCalled();
   });
 });

@@ -88,16 +88,16 @@ export async function emitAnomalyFeedback(options: {
  * W03 (spec §8.3): the ONE episode-level label row per human resolve/dismiss,
  * beside the per-member `anomaly` rows emitted by `emitAnomalyFeedback`. Not
  * best-effort: the label is written from inside the episode action's request
- * transaction (wired by a later wave), so a lost label must roll the action
- * back rather than fail silently. Only resolve/dismiss emit it — promote and
- * unsnooze never close an episode.
+ * transaction (`resolveEpisode` / `dismissEpisode` in
+ * `metricAnomalyEpisodeActions.ts`, called right after `labelMembers`), so a
+ * lost label must roll the action back rather than fail silently. Only
+ * resolve/dismiss emit it — promote and unsnooze never close an episode.
  *
  * Deviation from the original plan: the plan called for the batch throwing
  * writer `emitMlFeedbackEvents` from a parallel, not-yet-merged wave. This
  * uses the existing singular throwing writer `emitMlFeedbackEvent` instead
  * (same non-best-effort semantics as `emitDeviceReliabilityFeedback` /
- * `emitUserRiskFeedback` below). No caller wires this in yet — see the PR
- * description.
+ * `emitUserRiskFeedback` below).
  */
 export async function emitAnomalyEpisodeFeedback(options: {
   orgId: string;

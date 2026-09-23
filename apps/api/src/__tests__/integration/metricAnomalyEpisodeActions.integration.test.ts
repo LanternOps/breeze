@@ -10,6 +10,13 @@ vi.mock('../../services/eventBus', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/eventBus')>();
   return { ...actual, publishEvent: publishEventMock };
 });
+// Partial mock: real emitter behavior by default, so most tests hit the real
+// DB write path; the rollback-proof test below overrides it with
+// mockRejectedValueOnce to force one write failure without oversized metadata.
+vi.mock('../../services/mlFeedbackEmitters', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/mlFeedbackEmitters')>();
+  return { ...actual, emitAnomalyEpisodeFeedback: vi.fn(actual.emitAnomalyEpisodeFeedback) };
+});
 
 import { withSystemDbAccessContext } from '../../db';
 import { alerts, metricAnomalies, metricAnomalyEpisodes, mlFeedbackEvents } from '../../db/schema';
@@ -244,5 +251,66 @@ describe('applyEpisodeAction (W02, spec §8)', () => {
     expect(await episodeFeedback(ep.episodeId)).toHaveLength(6);
     const winner = (ok[0] as { action: string }).action;
     expect((await episodeRow(ep.episodeId)).status).toBe(winner === 'resolve' ? 'resolved' : 'dismissed');
+  });
+});
+
+describe('episode-level feedback row (W03, spec §8.3)', () => {
+  async function episodeLevelFeedback(episodeId: string) {
+    return getTestDb().select().from(mlFeedbackEvents).where(and(
+      eq(mlFeedbackEvents.sourceType, 'anomaly_episode'),
+      eq(mlFeedbackEvents.sourceId, episodeId),
+    ));
+  }
+
+  it.each([
+    ['dismiss', 'anomaly_episode.dismissed', 'dismissed'],
+    ['resolve', 'anomaly_episode.resolved', 'resolved'],
+  ] as const)('%s writes exactly one %s row beside the per-member rows', async (action, eventType, outcome) => {
+    const { org, site, user } = await seedTenant();
+    const deviceId = await insertEpisodeDevice(org.id, site.id);
+    const ep = await seedEpisode({ orgId: org.id, deviceId, memberCount: 3, start: new Date(Date.now() - 2 * HOUR) });
+
+    const result = await act({ orgId: org.id, deviceId, episodeId: ep.episodeId, action, actorUserId: user.id });
+
+    expect(result).toMatchObject({ status: 'ok', feedbackInserted: 3 });
+    const rows = await episodeLevelFeedback(ep.episodeId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ eventType, outcome, actorUserId: user.id, dedupeKey: `episode:${ep.episodeId}` });
+    expect((rows[0]!.metadata as Record<string, unknown>).memberCount).toBe(3);
+    expect(await episodeFeedback(ep.episodeId)).toHaveLength(3); // per-member `anomaly` rows unchanged
+  });
+
+  it('promote and unsnooze write no episode-level row', async () => {
+    const { org, site, user } = await seedTenant();
+    const deviceId = await insertEpisodeDevice(org.id, site.id);
+    const open = await seedEpisode({ orgId: org.id, deviceId, memberCount: 2, start: new Date(Date.now() - HOUR) });
+    const snoozed = await seedEpisode({
+      orgId: org.id, deviceId, memberCount: 1, start: new Date(Date.now() - 6 * HOUR), status: 'dismissed',
+      closeReason: 'user', snoozedUntil: new Date(Date.now() + DAY), memberStatus: 'dismissed',
+      metricName: 'cpu_percent', metricFamily: 'cpu',
+    });
+
+    await act({ orgId: org.id, deviceId, episodeId: open.episodeId, action: 'promote', actorUserId: user.id });
+    await act({ orgId: org.id, deviceId, episodeId: snoozed.episodeId, action: 'unsnooze', actorUserId: user.id });
+
+    expect(await episodeLevelFeedback(open.episodeId)).toHaveLength(0);
+    expect(await episodeLevelFeedback(snoozed.episodeId)).toHaveLength(0);
+  });
+
+  it('a failed episode-level write rolls back the whole action: episode stays open, members unchanged, zero feedback rows', async () => {
+    const { emitAnomalyEpisodeFeedback } = await import('../../services/mlFeedbackEmitters');
+    vi.mocked(emitAnomalyEpisodeFeedback).mockRejectedValueOnce(new Error('forced'));
+
+    const { org, site, user } = await seedTenant();
+    const deviceId = await insertEpisodeDevice(org.id, site.id);
+    const ep = await seedEpisode({ orgId: org.id, deviceId, memberCount: 4, start: new Date(Date.now() - 2 * HOUR) });
+
+    await expect(act({ orgId: org.id, deviceId, episodeId: ep.episodeId, action: 'dismiss', actorUserId: user.id }))
+      .rejects.toThrow('forced');
+
+    expect((await episodeRow(ep.episodeId)).status).toBe('open');
+    expect((await membersOf(ep.episodeId)).every((m) => m.status === 'open')).toBe(true);
+    expect(await episodeFeedback(ep.episodeId)).toHaveLength(0);
+    expect(await episodeLevelFeedback(ep.episodeId)).toHaveLength(0);
   });
 });
