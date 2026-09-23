@@ -1986,16 +1986,24 @@ export function buildBreezeSdkTools(
       'manage_patches',
       registryDescription('manage_patches'),
       {
-        action: z.enum(['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback']),
+        action: z.enum(['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback', 'device_history']),
         patchId: uuid.optional(),
         patchName: z.string().min(1).max(300).optional(),
         patchIds: z.array(uuid).max(50).optional(),
         deviceIds: z.array(uuid).max(50).optional(),
+        // #6665: also scopes `list` to one device (pre-existing gap — the
+        // handler has read `input.deviceId` for `list` since #2112, but this
+        // SDK-chat schema never declared the field, so the chat path silently
+        // stripped it before device_history needed it too).
+        deviceId: uuid.optional(),
         ringId: uuid.optional(),
         allRings: z.boolean().optional(),
         source: z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom']).optional(),
         severity: z.enum(['critical', 'important', 'moderate', 'low', 'unknown']).optional(),
         status: z.enum(['pending', 'approved', 'rejected', 'deferred']).optional(),
+        resultStatus: z.enum(['pending', 'running', 'queued', 'completed', 'failed', 'skipped']).optional(),
+        since: z.string().optional(),
+        until: z.string().optional(),
         deferUntil: z.string().optional(),
         notes: z.string().max(1000).optional(),
         configPolicyId: uuid.optional(),

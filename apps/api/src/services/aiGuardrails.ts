@@ -994,6 +994,9 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   manage_patches: {
     list: { resource: 'devices', action: 'read' },
     compliance: { resource: 'devices', action: 'read' },
+    // #6665: read-only per-device patch job history (scheduled + user
+    // initiated) — same DEVICES_READ tier as list/compliance above.
+    device_history: { resource: 'devices', action: 'read' },
     scan: { resource: 'devices', action: 'execute' },
     approve: { resource: 'devices', action: 'execute' },
     decline: { resource: 'devices', action: 'execute' },

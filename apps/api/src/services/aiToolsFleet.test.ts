@@ -1325,19 +1325,21 @@ describe('manage_patches:device_history (#6665)', () => {
   }
 
   function mockHistoryQuery(rows: Array<Record<string, unknown>>) {
+    const limitSpy = vi.fn().mockResolvedValue(rows);
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn().mockReturnValue({
         innerJoin: vi.fn().mockReturnValue({
           leftJoin: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
               orderBy: vi.fn().mockReturnValue({
-                limit: vi.fn().mockResolvedValue(rows),
+                limit: limitSpy,
               }),
             }),
           }),
         }),
       }),
     } as never);
+    return { limitSpy };
   }
 
   it('requires a deviceId', async () => {
@@ -1345,9 +1347,28 @@ describe('manage_patches:device_history (#6665)', () => {
     expect(result.error).toMatch(/deviceId is required/i);
   });
 
+  it('requires org context', async () => {
+    const noOrgAuth = { ...otherOrgAuth, orgId: null, accessibleOrgIds: null };
+    const result = JSON.parse(await tool.handler({ action: 'device_history', deviceId }, noOrgAuth));
+    expect(result.error).toMatch(/Organization context required/i);
+  });
+
   it('denies a device the caller cannot access (cross-org)', async () => {
     mockDeviceLookup([]); // no device row found scoped to this org
     const result = JSON.parse(await tool.handler({ action: 'device_history', deviceId }, otherOrgAuth));
+    expect(result.error).toMatch(/not found or access denied/i);
+  });
+
+  // Site is an app-layer-only axis (RLS does not enforce it) — the device row
+  // itself resolves, but a site-restricted caller must still be denied.
+  it('denies a device outside the caller\'s allowed sites', async () => {
+    const siteRestrictedAuth = {
+      ...otherOrgAuth,
+      allowedSiteIds: ['site-allowed'],
+      canAccessSite: (id: string | null) => id === 'site-allowed',
+    };
+    mockDeviceLookup([{ id: deviceId, siteId: 'site-other' }]);
+    const result = JSON.parse(await tool.handler({ action: 'device_history', deviceId }, siteRestrictedAuth));
     expect(result.error).toMatch(/not found or access denied/i);
   });
 
@@ -1367,6 +1388,10 @@ describe('manage_patches:device_history (#6665)', () => {
         resultStatus: 'failed',
         exitCode: 1,
         errorMessage: 'winget install failed (exit 1)',
+        // The handler's SELECT never asks for `output` in the first place, but
+        // if a row happened to carry one (e.g. a future column-list change),
+        // it must not be echoed back — assert on a fixture that actually has one.
+        output: '{"stdout":"...huge batch json...","stderr":""}',
         resultStartedAt: new Date('2026-09-22T02:01:00.000Z'),
         resultCompletedAt: new Date('2026-09-22T02:02:00.000Z'),
       },
@@ -1426,6 +1451,55 @@ describe('manage_patches:device_history (#6665)', () => {
 
     expect(result.history[0].errorMessage.length).toBeLessThan(longMessage.length);
     expect(result.history[0].errorMessage).toMatch(/truncated/);
+  });
+
+  it.each([
+    [undefined, 25],   // default
+    // 0 is falsy, so `Number(input.limit) || 25` falls through to the
+    // default — same quirk as every other `limit` in this file (e.g. the
+    // `list` action a few hundred lines up). Documented here, not "fixed",
+    // to keep device_history's clamping consistent with its siblings.
+    [0, 25],
+    [-5, 1],           // negative clamped up to the floor
+    [101, 100],        // clamped down to the ceiling
+    [40, 40],          // in-range value passed through unchanged
+  ])('clamps limit=%s to %i', async (inputLimit, expected) => {
+    mockDeviceLookup([{ id: deviceId, siteId: null }]);
+    const { limitSpy } = mockHistoryQuery([]);
+
+    const input: Record<string, unknown> = { action: 'device_history', deviceId };
+    if (inputLimit !== undefined) input.limit = inputLimit;
+    await tool.handler(input, otherOrgAuth);
+
+    expect(limitSpy).toHaveBeenCalledWith(expected);
+  });
+
+  it('defaults the window to the last 14 days when since/until are omitted', async () => {
+    mockDeviceLookup([{ id: deviceId, siteId: null }]);
+    mockHistoryQuery([]);
+
+    const before = Date.now();
+    const result = JSON.parse(await tool.handler({ action: 'device_history', deviceId }, otherOrgAuth));
+    const after = Date.now();
+
+    const since = Date.parse(result.since);
+    const until = Date.parse(result.until);
+    expect(until).toBeGreaterThanOrEqual(before);
+    expect(until).toBeLessThanOrEqual(after);
+    const FOURTEEN_DAYS_MS = 14 * 24 * 60 * 60 * 1000;
+    expect(until - since).toBeCloseTo(FOURTEEN_DAYS_MS, -3);
+  });
+
+  it('honors an explicit since/until window in the response', async () => {
+    mockDeviceLookup([{ id: deviceId, siteId: null }]);
+    mockHistoryQuery([]);
+
+    const since = '2026-09-01T00:00:00.000Z';
+    const until = '2026-09-10T00:00:00.000Z';
+    const result = JSON.parse(await tool.handler({ action: 'device_history', deviceId, since, until }, otherOrgAuth));
+
+    expect(result.since).toBe(since);
+    expect(result.until).toBe(until);
   });
 });
 
