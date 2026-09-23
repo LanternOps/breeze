@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   FileText,
   Calendar,
@@ -117,6 +117,11 @@ function scheduleConfigOf(config: Record<string, unknown> | undefined): Schedule
   return raw && typeof raw === 'object' ? (raw as ScheduleConfig) : {};
 }
 
+// GET /reports caps `limit` at 100 (apps/api/src/utils/pagination.ts). The
+// page cap bounds the all-organizations merge at 2,000 rows.
+const PARTNER_WIDE_PAGE_LIMIT = 100;
+const PARTNER_WIDE_PAGE_CAP = 20;
+
 function recipientCountOf(config: Record<string, unknown> | undefined): number {
   const raw = config?.emailRecipients;
   return Array.isArray(raw) ? raw.filter((r) => typeof r === 'string' && r.trim() !== '').length : 0;
@@ -147,22 +152,45 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
     jwtClaims.status === 'resolved' && jwtClaims.claims.scope === 'partner' && !!currentOrgId;
 
   const fetchPartnerWideReports = useCallback(async (): Promise<Report[]> => {
+    // The listing is paginated (updatedAt desc), so page through it: a
+    // partner-owned row past page 1 would otherwise vanish from the org view.
+    const rows: Report[] = [];
     try {
-      const response = await fetchWithAuth('/reports', { skipOrgIdInjection: true });
-      if (!response.ok) {
-        console.warn('Failed to fetch partner-wide reports:', response.status);
-        return [];
+      for (let page = 1; page <= PARTNER_WIDE_PAGE_CAP; page++) {
+        const response = await fetchWithAuth(
+          `/reports?limit=${PARTNER_WIDE_PAGE_LIMIT}&page=${page}`,
+          { skipOrgIdInjection: true },
+        );
+        if (!response.ok) {
+          console.warn('Failed to fetch partner-wide reports:', response.status);
+          break;
+        }
+        const data = await response.json();
+        const pageRows = (data.data ?? []) as Report[];
+        rows.push(...pageRows);
+        const total = Number(data.pagination?.total ?? 0);
+        if (pageRows.length === 0 || rows.length >= total) break;
+        if (page === PARTNER_WIDE_PAGE_CAP) {
+          console.warn('Partner-wide reports listing hit the page cap; later rows are not shown:', {
+            pages: PARTNER_WIDE_PAGE_CAP,
+            fetched: rows.length,
+            total,
+          });
+        }
       }
-      const data = await response.json();
-      return ((data.data ?? []) as Report[]).filter((r) => !!r.partnerId && !r.orgId);
     } catch (err) {
       // The org's own list still renders; partner-wide rows are an addition.
       console.warn('Failed to fetch partner-wide reports:', err);
-      return [];
     }
+    return rows.filter((r) => !!r.partnerId && !r.orgId);
   }, []);
 
+  // Each list fetch takes a sequence number; only the newest may write state,
+  // so an older (e.g. pre-merge) response landing late cannot clobber it.
+  const fetchSeq = useRef(0);
   const fetchReports = useCallback(async () => {
+    const seq = ++fetchSeq.current;
+    const isCurrent = () => seq === fetchSeq.current;
     try {
       setLoading(true);
       setError(undefined);
@@ -174,13 +202,15 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
         throw new Error(t('reports.reportsList.errors.fetchReports'));
       }
       const data = await response.json();
+      if (!isCurrent()) return;
       const own: Report[] = data.data ?? [];
       const seen = new Set(own.map((r) => r.id));
       setReports([...own, ...partnerWide.filter((r) => !seen.has(r.id))]);
     } catch (err) {
+      if (!isCurrent()) return;
       setError(err instanceof Error ? err.message : t('reports.reportsList.errors.generic'));
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   }, [t, mergePartnerWide, fetchPartnerWideReports]);
 
@@ -200,8 +230,13 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
 
   useEffect(() => {
     fetchReports();
+  }, [fetchReports]);
+
+  // Separate effect: the runs list does not depend on the partner-wide merge
+  // flag, so resolving the token must not refetch it.
+  useEffect(() => {
     fetchRecentRuns();
-  }, [fetchReports, fetchRecentRuns]);
+  }, [fetchRecentRuns]);
 
   const handleGenerate = async (report: Report) => {
     setGeneratingIds(prev => new Set([...prev, report.id]));

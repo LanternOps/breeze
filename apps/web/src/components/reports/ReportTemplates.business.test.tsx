@@ -361,4 +361,42 @@ describe('ReportTemplates — Business group (#3198 W03)', () => {
     const general = screen.getByTestId('report-template-group-general');
     expect(within(general).queryByTestId('report-template-card-saved-ar-1')).toBeNull();
   });
+
+  it('derives the Default range tile of a saved business report from its stored period / asOf', async () => {
+    fetchWithAuth.mockImplementation((url: string) => {
+      if (url === '/reports/templates') {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              data: [
+                { id: 'saved-sla-q', name: 'SLA quarterly', type: 'ticket_sla_attainment', config: { period: { kind: 'last_quarter' } } },
+                { id: 'saved-sla-30', name: 'SLA rolling', type: 'ticket_sla_attainment', config: { period: { kind: 'last_30_days' } } },
+                {
+                  id: 'saved-tt-c',
+                  name: 'Time custom',
+                  type: 'technician_time_billability',
+                  config: { period: { kind: 'custom', start: '2026-07-01', end: '2026-07-31' } },
+                },
+                { id: 'saved-tt-none', name: 'Time default', type: 'technician_time_billability', config: {} },
+                { id: 'saved-ar-asof', name: 'AR fixed', type: 'ar_aging', config: { asOf: '2026-08-31' } },
+                { id: 'saved-ar-run', name: 'AR running', type: 'ar_aging', config: {} },
+              ],
+            }),
+        });
+      }
+      return Promise.resolve({ ok: false, json: () => Promise.resolve({}) });
+    });
+    render(<ReportTemplates />);
+
+    const card = async (id: string) => screen.findByTestId(`report-template-card-${id}`);
+    expect(within(await card('saved-sla-q')).getByText('Last full quarter')).toBeInTheDocument();
+    expect(within(await card('saved-sla-30')).getByText('Last 30 days')).toBeInTheDocument();
+    expect(within(await card('saved-tt-c')).getByText('Custom dates')).toBeInTheDocument();
+    expect(within(await card('saved-tt-none')).getByText('Last full month')).toBeInTheDocument();
+    expect(within(await card('saved-ar-asof')).getByText('2026-08-31')).toBeInTheDocument();
+    expect(within(await card('saved-ar-run')).getByText('As of run date')).toBeInTheDocument();
+    // A curated (unsaved) business card keeps the schema defaults.
+    expect(within(await card('ticket_sla_attainment')).getByText('Last full month')).toBeInTheDocument();
+  });
 });

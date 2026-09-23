@@ -99,6 +99,9 @@ type ReportTemplate = {
   tone: TemplateTone;
   group: TemplateGroup;
   previewImage?: string;
+  /** A saved report's stored business config (#3198): the period / as-of it
+   *  will actually run with, which the Default range tile reports. */
+  savedBusinessConfig?: { period?: { kind?: unknown }; asOf?: unknown };
 };
 
 type TemplateApiItem = Partial<ReportTemplate> & {
@@ -108,6 +111,8 @@ type TemplateApiItem = Partial<ReportTemplate> & {
   config?: {
     dateRange?: ReportBuilderFormValues['dateRange'];
     filters?: ReportBuilderFormValues['filters'];
+    period?: { kind?: unknown };
+    asOf?: unknown;
   };
   schedule?: ReportSchedule;
   format?: ReportFormat;
@@ -438,7 +443,10 @@ const normalizeTemplate = (item: TemplateApiItem, fallback?: ReportTemplate): Re
     // and must not drift into General. Otherwise a saved report that matched a
     // curated card sits in that card's section; an unmatched one is General.
     group: isBusinessReportType(resolvedType) ? 'business' : (fallback?.group ?? 'general'),
-    previewImage
+    previewImage,
+    ...(isBusinessReportType(resolvedType) && item.config
+      ? { savedBusinessConfig: { period: item.config.period, asOf: item.config.asOf } }
+      : {})
   };
 };
 
@@ -492,6 +500,37 @@ const TemplatePreviewImage = ({ template, alt }: { template: ReportTemplate; alt
 };
 
 /** Honest definition list of what the template actually produces. */
+const PERIOD_KIND_LABEL_KEYS: Record<string, string> = {
+  last_full_month: 'reports.reportPeriod.kinds.last_full_month',
+  last_30_days: 'reports.reportPeriod.kinds.last_30_days',
+  last_quarter: 'reports.reportPeriod.kinds.last_quarter',
+  custom: 'reports.reportPeriod.kinds.custom',
+};
+
+/**
+ * The Default range tile for a business report type (#3198). Those types have
+ * no ad-hoc date range — the server refuses one — but they do have a real
+ * period: the one a saved report stored, else the config schema's own default
+ * (a full calendar month for ticket_sla_attainment / technician_time_billability).
+ * ar_aging has no period at all — it is a running balance as of the run date,
+ * or as of the fixed date a saved report pinned.
+ */
+function businessDefaultRange(template: ReportTemplate, t: (key: string) => string): string | null {
+  const type = template.defaults.type;
+  const saved = template.savedBusinessConfig;
+  if (type === 'ar_aging') {
+    return typeof saved?.asOf === 'string' && saved.asOf
+      ? saved.asOf
+      : t('reports.reportTemplates.spec.asOfRunDate');
+  }
+  if (type === 'ticket_sla_attainment' || type === 'technician_time_billability') {
+    const kind = saved?.period?.kind;
+    const key = typeof kind === 'string' ? PERIOD_KIND_LABEL_KEYS[kind] : undefined;
+    return key ? t(key) : t('reports.reportTemplates.spec.lastFullMonth');
+  }
+  return null;
+}
+
 const TemplateSpec = ({ items }: { items: { label: string; value: string }[] }) => (
   <dl className="mt-4 grid grid-cols-3 divide-x divide-border rounded-md border bg-muted/30">
     {items.map(item => (
@@ -852,22 +891,13 @@ export default function ReportTemplates() {
             { label: t('reports.reportTemplates.spec.format'), value: formatLabel },
             {
               label: t('reports.reportTemplates.spec.defaultRange'),
-              // Business report types (#3198) have no ad-hoc date range at
-              // all — the server refuses one — but they DO have a real
-              // default period (the config schema's own default, applied
-              // when the field is omitted), so "Custom" misdescribes them.
-              // ticket_sla_attainment / technician_time_billability default
-              // to a full calendar month; ar_aging has no period at all —
-              // it is a running balance as of a date.
+              // Business types derive it from their period / asOf, never the
+              // dateRange they cannot carry (see businessDefaultRange).
               value:
-                template.defaults.type === 'ar_aging'
-                  ? t('reports.reportTemplates.spec.asOfRunDate')
-                  : template.defaults.type === 'ticket_sla_attainment'
-                    || template.defaults.type === 'technician_time_billability'
-                    ? t('reports.reportTemplates.spec.lastFullMonth')
-                    : template.defaults.dateRange?.preset
+                businessDefaultRange(template, t)
+                  ?? (template.defaults.dateRange?.preset
                       ? template.defaults.dateRange.preset.replace(/_/g, ' ')
-                      : t('reports.reportTemplates.custom'),
+                      : t('reports.reportTemplates.custom')),
             },
           ]}
         />
