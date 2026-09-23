@@ -14,6 +14,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 const testState = vi.hoisted(() => ({
   scopes: ['ai:read', 'ai:write', 'ai:execute'] as string[],
+  redis: null as unknown,
 }));
 
 const mocks = vi.hoisted(() => ({
@@ -96,7 +97,7 @@ vi.mock('../services/aiTools', () => ({
   getToolTier: (...args: any[]) => mocks.getToolTier(...args),
 }));
 
-vi.mock('../services/redis', () => ({ getRedis: () => null }));
+vi.mock('../services/redis', () => ({ getRedis: () => testState.redis }));
 vi.mock('../services/rate-limit', () => ({
   rateLimiter: vi.fn(async () => ({ allowed: true, resetAt: new Date(Date.now() + 60000) })),
 }));
@@ -698,6 +699,37 @@ describe('MCP_ALLOW_UNATTENDED_TIER3 operator opt-in', () => {
       });
       expect(mocks.executeTool).toHaveBeenCalledTimes(1);
       expect(mocks.ledgerBegin).toHaveBeenCalledTimes(1);
+    });
+
+    it('production: a Tier 3 tool missing from MCP_EXECUTE_TOOL_ALLOWLIST is neither listed nor callable', async () => {
+      // MCP_EXECUTE_TOOL_ALLOWLIST is parsed at module load and is empty in
+      // this suite, so every Tier 3 tool is outside the production allowlist.
+      vi.stubEnv('NODE_ENV', 'production');
+      // Isolate the allowlist predicate from the execute_admin lever.
+      vi.stubEnv('MCP_REQUIRE_EXECUTE_ADMIN', 'false');
+      testState.redis = {};
+      try {
+        const names = (await (await listTools()).json()).result.tools.map((t: any) => t.name);
+        expect(names).not.toContain('execute_command');
+        expect(names).not.toContain('collect_evidence');
+        const body = await (await callTool('execute_command', { deviceId: 'dev-1', commandType: 'list_processes' })).json();
+        expect(body.error.message).toContain('MCP_EXECUTE_TOOL_ALLOWLIST');
+        expect(mocks.executeTool).not.toHaveBeenCalled();
+      } finally {
+        testState.redis = null;
+      }
+    });
+
+    it('production: ai:execute_admin is still required for Tier 3', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      testState.redis = {};
+      try {
+        const body = await (await callTool('execute_command', { deviceId: 'dev-1', commandType: 'list_processes' })).json();
+        expect(body.error.message).toContain('ai:execute_admin');
+        expect(mocks.executeTool).not.toHaveBeenCalled();
+      } finally {
+        testState.redis = null;
+      }
     });
 
     it('still requires ai:execute for Tier 3 — the scope gate is not bypassed', async () => {

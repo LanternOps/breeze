@@ -1701,6 +1701,42 @@ describe('MCP transport integration', () => {
       expect(routeMocks.executeTenantToolDetailed).not.toHaveBeenCalled();
     });
 
+    // MCP_ALLOW_UNATTENDED_TIER3 deliberately does not reach tenant tools:
+    // they execute outside the fail-closed Tier 3 ledger lifecycle.
+    it('keeps a tier-3 tenant tool approval-only (unlisted + MCP_APPROVAL_REQUIRED) even with MCP_ALLOW_UNATTENDED_TIER3', async () => {
+      delete process.env.IS_HOSTED;
+      process.env.MCP_ALLOW_UNATTENDED_TIER3 = 'true';
+      try {
+        setTestApiKey({ scopes: ['ai:read', 'ai:write', 'ai:execute'] });
+        const descriptor = makeTenantToolDescriptor({ qualifiedName: 'hudu__create_asset', tier: 3 });
+        routeMocks.resolveTenantTools.mockResolvedValue([descriptor]);
+        routeMocks.resolveTenantToolByName.mockResolvedValue(descriptor);
+
+        const listRes = await mcpServerRoutes.request('/message', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+        });
+        const listBody = await listRes.json();
+        expect(listBody.result.tools.map((t: { name: string }) => t.name)).not.toContain('hudu__create_asset');
+
+        const res = await mcpServerRoutes.request('/message', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+          body: JSON.stringify({
+            jsonrpc: '2.0', id: 2, method: 'tools/call',
+            params: { name: 'hudu__create_asset', arguments: {} },
+          }),
+        });
+        const body = await res.json();
+        expect(JSON.parse(body.result.content[0].text).code).toBe('MCP_APPROVAL_REQUIRED');
+        expect(routeMocks.executeTenantTool).not.toHaveBeenCalled();
+        expect(routeMocks.executeTenantToolDetailed).not.toHaveBeenCalled();
+      } finally {
+        delete process.env.MCP_ALLOW_UNATTENDED_TIER3;
+      }
+    });
+
     it('surfaces a failed tenant tool call as isError and audits it as a failure, not a success', async () => {
       delete process.env.IS_HOSTED;
       setTestApiKey({ scopes: ['ai:read'] });
