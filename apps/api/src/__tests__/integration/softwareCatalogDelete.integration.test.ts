@@ -209,6 +209,26 @@ describe('DELETE /software/catalog/:id vs deployment FK (#1407)', () => {
       headers: { Authorization: 'Bearer token' },
     });
     expect(again.status).toBe(404);
+
+    // And it takes no new deployments, by version or by catalog item.
+    for (const target of [{ softwareVersionId: version.id }, { catalogId: catalog.id }]) {
+      const deploy = await app.request(`/software/deployments?orgId=${org.id}`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Deploy archived',
+          ...target,
+          deploymentType: 'install',
+          targetType: 'devices',
+          targetIds: [crypto.randomUUID()],
+          scheduleType: 'immediate',
+        }),
+      });
+      expect(deploy.status).toBe(404);
+    }
+    expect(await getTestDb().select({ id: softwareDeployments.id })
+      .from(softwareDeployments).where(eq(softwareDeployments.orgId, org.id)))
+      .toHaveLength(1);
   });
 
   it('archives without storage deletion when an install-method deployment references the catalog', async () => {
