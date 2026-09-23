@@ -16,6 +16,12 @@ import { renderEndpointManagementReport } from './endpointManagementPdf';
 import type { VulnerabilityManagementSummary } from '../types/vulnerabilityManagementReport';
 import { renderVulnerabilityManagementReport } from './vulnerabilityManagementPdf';
 import * as identityAccessPdf from './identityAccessPdf';
+// Namespace imports for the three business report types (#3198 W02), same
+// no-cycle / spy-visibility reason as threatDetectionPdf/identityAccessPdf.
+import * as ticketSlaPdf from './ticketSlaPdf';
+import * as technicianTimePdf from './technicianTimePdf';
+import * as arAgingPdf from './arAgingPdf';
+import type { TicketSlaSummary, TechnicianTimeSummary, ArAgingSummary } from '../types/businessReports';
 import {
   NARRATIVE_BULLET_MAX_CHARS,
   NARRATIVE_HEADLINE_MAX_CHARS,
@@ -152,7 +158,8 @@ export type BuildOpts = {
   generatedAt: string;
   /** IANA timezone for formatting ISO date cells in generic tables. */
   timezone: string;
-  summary?: PostureSummary | ExecutiveSummary | OrgNarrativeReportSummary | FleetDesignReportSummary | HardwareLifecycleSummary | ThreatDetectionSummary | EndpointManagementSummary | VulnerabilityManagementSummary | IdentityAccessSummary;
+  summary?: PostureSummary | ExecutiveSummary | OrgNarrativeReportSummary | FleetDesignReportSummary | HardwareLifecycleSummary | ThreatDetectionSummary | EndpointManagementSummary | VulnerabilityManagementSummary | IdentityAccessSummary
+    | TicketSlaSummary | TechnicianTimeSummary | ArAgingSummary;
   /** Slim baseline from the previous completed run, when the caller supplied
    * one (report_runs.result.previous) — drives the scorecard trend chip and
    * its "since <date>" label. */
@@ -184,6 +191,9 @@ const REPORT_TYPE_LABELS: Record<string, string> = {
   threat_detection_review: 'Threat Detection Review',
   endpoint_management_review: 'Endpoint Management Review',
   vulnerability_management: 'Vulnerability Management',
+  ticket_sla_attainment: 'Ticket SLA Attainment',
+  technician_time_billability: 'Technician Time & Billability',
+  ar_aging: 'AR Aging',
 };
 
 const reportTypeLabel = (t: string): string => REPORT_TYPE_LABELS[t] ?? titleCase(t);
@@ -2146,6 +2156,95 @@ function buildReportPdfWithPalette(rows: unknown[], opts: BuildOpts): jsPDF {
     identityAccessPdf.renderIdentityAccessReport(
       doc,
       opts.summary as IdentityAccessSummary,
+      {
+        generatedAt: opts.generatedAt,
+        partnerName: opts.branding?.name ?? null,
+        contactEmail: opts.branding?.contactEmail ?? null,
+        contactName: opts.branding?.contactName ?? null,
+        previous: opts.previous,
+      },
+      {
+        C,
+        PAGE,
+        drawHeaderBand: (d) => drawHeaderBand(d, opts),
+        drawFooter: (d) => drawFooter(d, opts),
+        drawTitleBlock,
+        drawSectionHeading,
+      },
+    );
+  } else if (
+    opts.reportType === 'ticket_sla_attainment'
+    && opts.summary
+    // `!= null` FIRST: typeof null === 'object', so a summary carrying an
+    // explicit `period: null` must not enter the arm and render a period label
+    // it does not have. Same guard shape as the identity_access_review arm above.
+    && (opts.summary as TicketSlaSummary).period != null
+    && typeof (opts.summary as TicketSlaSummary).period === 'object'
+  ) {
+    // Self-contained chrome: the group and detail tables paginate on their own.
+    // A type with NO arm here silently falls through to renderGenericReport,
+    // which prints the rows as a flat table and DROPS the whole designed
+    // summary — including the approximation notes that keep this report honest.
+    drawHeaderBand(doc, opts);
+    drawFooter(doc, opts);
+    ticketSlaPdf.renderTicketSlaReport(
+      doc,
+      opts.summary as TicketSlaSummary,
+      {
+        generatedAt: opts.generatedAt,
+        partnerName: opts.branding?.name ?? null,
+        contactEmail: opts.branding?.contactEmail ?? null,
+        contactName: opts.branding?.contactName ?? null,
+        previous: opts.previous,
+      },
+      {
+        C,
+        PAGE,
+        drawHeaderBand: (d) => drawHeaderBand(d, opts),
+        drawFooter: (d) => drawFooter(d, opts),
+        drawTitleBlock,
+        drawSectionHeading,
+      },
+    );
+  } else if (
+    opts.reportType === 'technician_time_billability'
+    && opts.summary
+    && (opts.summary as TechnicianTimeSummary).period != null
+    && typeof (opts.summary as TechnicianTimeSummary).period === 'object'
+  ) {
+    drawHeaderBand(doc, opts);
+    drawFooter(doc, opts);
+    technicianTimePdf.renderTechnicianTimeReport(
+      doc,
+      opts.summary as TechnicianTimeSummary,
+      {
+        generatedAt: opts.generatedAt,
+        partnerName: opts.branding?.name ?? null,
+        contactEmail: opts.branding?.contactEmail ?? null,
+        contactName: opts.branding?.contactName ?? null,
+        previous: opts.previous,
+      },
+      {
+        C,
+        PAGE,
+        drawHeaderBand: (d) => drawHeaderBand(d, opts),
+        drawFooter: (d) => drawFooter(d, opts),
+        drawTitleBlock,
+        drawSectionHeading,
+      },
+    );
+  } else if (
+    opts.reportType === 'ar_aging'
+    && opts.summary
+    // AR has no period object — it has an as-of date — so the guard checks
+    // that shape instead.
+    && typeof (opts.summary as ArAgingSummary).asOf === 'string'
+  ) {
+    drawHeaderBand(doc, opts);
+    drawFooter(doc, opts);
+    arAgingPdf.renderArAgingReport(
+      doc,
+      opts.summary as ArAgingSummary,
       {
         generatedAt: opts.generatedAt,
         partnerName: opts.branding?.name ?? null,
