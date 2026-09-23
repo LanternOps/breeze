@@ -449,9 +449,20 @@ describe('processInboundEmail', () => {
     expect(comments[0]!.portalUserId).toBe('pu-1');
     expect(comments[0]!.content).toBe('It is broken.');
 
-    // reopen resolved -> open (direct partner-scoped tickets UPDATE — FK-safe)
+    // #6689: reopen resolved -> open goes through the ticket service's
+    // status-change path (outbox event, SLA ledger, feed row) with the system
+    // actor — never a raw tickets UPDATE of status.
+    expect(changeStatusMock).toHaveBeenCalledTimes(1);
+    expect(changeStatusMock).toHaveBeenCalledWith(
+      't-1',
+      { status: 'open' },
+      {},
+      expect.objectContaining({ principalKind: 'system', name: 'Inbound Email' })
+    );
     const ticketUpdates = state.updates.filter((u) => u.table === 'tickets');
-    expect(ticketUpdates.some((u) => u.set.status === 'open')).toBe(true);
+    expect(ticketUpdates.some((u) => 'status' in u.set || 'resolvedAt' in u.set)).toBe(false);
+    // The re-read that gates the reopen is partner-scoped and row-locked.
+    expect(state.locks.some((l) => l.table === 'tickets' && l.mode === 'update')).toBe(true);
 
     // event emitted with inbound:true (no echo to sender)
     expect(emitMock).toHaveBeenCalledTimes(1);
@@ -486,6 +497,8 @@ describe('processInboundEmail', () => {
     const comments = state.inserts.filter((i) => i.table === 'ticket_comments').map((i) => i.values);
     expect(comments).toHaveLength(1);
     expect(comments[0]!.isPublic).toBe(true);
+    // #6689: an open ticket gets no status change at all.
+    expect(changeStatusMock).not.toHaveBeenCalled();
 
     const log = inboundOf();
     expect(log).toHaveLength(1);
@@ -542,7 +555,7 @@ describe('processInboundEmail', () => {
 
     // NO comment appended, NO reopen
     expect(state.inserts.filter((i) => i.table === 'ticket_comments')).toHaveLength(0);
-    expect(state.updates.filter((u) => u.table === 'tickets' && u.set.status === 'open')).toHaveLength(0);
+    expect(changeStatusMock).not.toHaveBeenCalled();
     expect(createTicketMock).not.toHaveBeenCalled();
 
     // logged failed, under the RESOLVED partner (A), never matched against B
@@ -808,7 +821,7 @@ describe('processInboundEmail', () => {
 
     // The soft-deleted ticket must NOT be appended to or reopened.
     expect(state.inserts.filter((i) => i.table === 'ticket_comments')).toHaveLength(0);
-    expect(state.updates.filter((u) => u.table === 'tickets' && u.set.status === 'open')).toHaveLength(0);
+    expect(changeStatusMock).not.toHaveBeenCalled();
     // Instead, a brand-new ticket is created for the reply.
     expect(createTicketMock).toHaveBeenCalledTimes(1);
 
@@ -1061,7 +1074,7 @@ describe('processInboundEmail', () => {
 
     // NO public comment appended, NO reopen.
     expect(state.inserts.filter((i) => i.table === 'ticket_comments')).toHaveLength(0);
-    expect(state.updates.filter((u) => u.table === 'tickets' && u.set.status === 'open')).toHaveLength(0);
+    expect(changeStatusMock).not.toHaveBeenCalled();
     expect(createTicketMock).not.toHaveBeenCalled();
 
     // Routed to quarantine for human review.
@@ -1151,7 +1164,8 @@ describe('processInboundEmail', () => {
     expect(comments[0]!.authorName).toBe('Jane Stored-Name');
 
     const ticketUpdates = state.updates.filter((u) => u.table === 'tickets');
-    expect(ticketUpdates.some((u) => u.set.status === 'open')).toBe(true);
+    expect(changeStatusMock).toHaveBeenCalledWith('t-1', { status: 'open' }, {}, expect.objectContaining({ principalKind: 'system' }));
+    expect(ticketUpdates.some((u) => 'status' in u.set)).toBe(false);
 
     const log = inboundOf();
     expect(log[0]!.parseStatus).toBe('matched');
@@ -1538,7 +1552,8 @@ describe('subject-token matches are bound to the sender (§1.3)', () => {
   }
 
   function reopened() {
-    return state.updates.filter((u) => u.table === 'tickets' && u.set.status === 'open');
+    // #6689: the reopen goes through changeTicketStatus, never a raw UPDATE.
+    return changeStatusMock.mock.calls.filter((c) => (c[1] as { status?: string } | undefined)?.status === 'open');
   }
 
   beforeEach(() => {
