@@ -1707,6 +1707,18 @@ interface BillableRowBase {
   missingRate: boolean;
   currencyCode: string | null;
   billingStatus: BillingStatus;
+  /** #4628 W04 — the labour label as stamped; null for a part or an entry with none. */
+  workTypeName: string | null;
+  /** #4628 §3.4 — the card row's coverage as stamped; null for a part or a pre-feature entry. */
+  coverage: 'billable' | 'included' | 'non_billable' | null;
+  /**
+   * #4628 W04 — contract-covered time in ACTUAL minutes worked; 0 for every
+   * row that is not `included`, and for parts, so the column sums cleanly.
+   * Deliberately not the billed quantity: an included row can still carry the
+   * card's rounding, and getTicketBillingSummary / the portal's
+   * coveredByContract bucket report included time as worked time (§3.5).
+   */
+  includedMinutes: number;
 }
 
 export type BillableRow =
@@ -1760,7 +1772,15 @@ export async function listBillables(
       rate: timeEntries.hourlyRate,
       currencyCode: timeEntries.currencyCode,
       billingStatus: timeEntries.billingStatus,
-      isApproved: timeEntries.isApproved
+      isApproved: timeEntries.isApproved,
+      coverage: timeEntries.coverage,
+      // Correlated read, keyed on the entry's partner like entrySelection():
+      // keeps one row per entry and keeps archived labels on history.
+      workTypeName: sql<string | null>`(
+        SELECT ${workTypes.name} FROM ${workTypes}
+        WHERE ${workTypes.id} = ${timeEntries.workTypeId}
+          AND ${workTypes.partnerId} = ${timeEntries.partnerId}
+      )`
     })
     .from(timeEntries)
     .leftJoin(tickets, eq(timeEntries.ticketId, tickets.id))
@@ -1833,7 +1853,10 @@ export async function listBillables(
       missingRate,
       currencyCode: r.currencyCode,
       billingStatus: r.billingStatus,
-      isApproved: r.isApproved
+      isApproved: r.isApproved,
+      workTypeName: r.workTypeName ?? null,
+      coverage: r.coverage ?? null,
+      includedMinutes: r.coverage === 'included' ? (r.minutes ?? 0) : 0
     });
   }
   for (const r of partRows) {
@@ -1857,7 +1880,11 @@ export async function listBillables(
       missingRate: false,
       currencyCode: r.currencyCode,
       billingStatus: r.billingStatus,
-      isApproved: null
+      isApproved: null,
+      // A part has no labour dimension.
+      workTypeName: null,
+      coverage: null,
+      includedMinutes: 0
     });
   }
   rows.sort((a, b) => a.date.getTime() - b.date.getTime());

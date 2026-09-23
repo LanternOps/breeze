@@ -37,6 +37,13 @@ describe('BillablesExportCard', () => {
     expect(URL.revokeObjectURL).toHaveBeenCalled();
   });
 
+  it('tells the reader the CSV carries the work type and included minutes (#4628 W04)', async () => {
+    render(<BillablesExportCard />);
+    expect((await screen.findByTestId('billables-export-columns-note')).textContent).toBe(
+      'Includes the work type and the contract-included minutes for each time entry.'
+    );
+  });
+
   it('shows an error toast when the export fails', async () => {
     render(<BillablesExportCard />);
     await screen.findByTestId('billables-export-org');

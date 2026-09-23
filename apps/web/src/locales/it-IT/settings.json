@@ -329,6 +329,7 @@
     "exportFailed": "Esportazione non riuscita",
     "title": "Esportazione fatturabili",
     "description": "Voci di tempo e parti fatturabili in CSV (fino a 366 giorni). Include lo stato di approvazione.",
+    "columnsNote": "Include il tipo di lavoro e i minuti inclusi nel contratto per ogni voce di tempo.",
     "from": "Da",
     "to": "A",
     "allOrganizations": "Tutte le organizzazioni",

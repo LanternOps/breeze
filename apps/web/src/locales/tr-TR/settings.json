@@ -329,6 +329,7 @@
     "exportFailed": "Dışa aktarma başarısız oldu",
     "title": "Faturalandırılabilir öğeleri dışa aktarma",
     "description": "CSV olarak faturalandırılabilir zaman girişleri ve bölümleri (366 güne kadar). Onay durumunu içerir.",
+    "columnsNote": "Her zaman kaydı için çalışma türünü ve sözleşmeye dahil dakikaları içerir.",
     "from": "Gönderen",
     "to": "Kime",
     "allOrganizations": "Tüm kuruluşlar",

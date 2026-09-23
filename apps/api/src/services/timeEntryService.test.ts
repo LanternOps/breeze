@@ -1216,6 +1216,69 @@ describe('query helpers', () => {
     ]);
   });
 
+  describe('listBillables work-type and included-minutes dimensions (#4628 W04)', () => {
+    const TIME_ROW = {
+      date: new Date('2026-06-10T09:00:00Z'), orgName: 'Acme', ticketNumber: 'T-1',
+      description: 'On-site', technician: 'Pat', minutes: 60, billableMinutes: 60,
+      rate: '225.00', currencyCode: 'USD', billingStatus: 'not_billed', isApproved: true,
+    };
+    const PART_ROW = {
+      date: new Date('2026-06-10T12:00:00Z'), orgName: 'Acme', ticketNumber: 'T-1',
+      description: 'SSD', technician: 'Pat', quantity: '1.00', unitPrice: '200.00',
+      currencyCode: 'USD', billingStatus: 'not_billed',
+    };
+    const FROM = new Date('2026-06-01T00:00:00Z');
+    const TO = new Date('2026-06-30T00:00:00Z');
+
+    it('projects the work type name (partner-scoped) and coverage onto time rows', async () => {
+      dbMocks.selectResults.push([{ ...TIME_ROW, workTypeName: 'On-site', coverage: 'billable' }]);
+      dbMocks.selectResults.push([]);
+      const { rows } = await listBillables(FROM, TO);
+      expect(rows[0]).toMatchObject({ workTypeName: 'On-site', coverage: 'billable', includedMinutes: 0 });
+      // The name lookup must be keyed on the entry's partner too, like
+      // entrySelection(): work_types is partner-owned.
+      // Render the correlated read's chunks: real work_types columns carry a
+      // `name`, the mocked time_entries columns arrive as plain strings.
+      const chunks = ((dbMocks.selectArgs[0] as { workTypeName: { queryChunks: unknown[] } })
+        .workTypeName.queryChunks);
+      const rendered = chunks.map((c: any) =>
+        typeof c === 'string' ? `te.${c}`
+          : Array.isArray(c?.value) ? c.value.join('')
+            : typeof c?.name === 'string' ? `wt.${c.name}` : '').join('').replace(/\s+/g, ' ');
+      expect(rendered).toContain('wt.id = te.workTypeId');
+      expect(rendered).toContain('wt.partner_id = te.partnerId');
+    });
+
+    it('an entry with no work type reports null, not an empty string', async () => {
+      dbMocks.selectResults.push([{ ...TIME_ROW, workTypeName: null, coverage: null }]);
+      dbMocks.selectResults.push([]);
+      const { rows } = await listBillables(FROM, TO);
+      expect(rows[0]).toMatchObject({ workTypeName: null, coverage: null, includedMinutes: 0 });
+    });
+
+    it('an INCLUDED entry reports its ACTUAL minutes as includedMinutes, never the rounded quantity, and adds no money', async () => {
+      // An included row can still carry the card's rounding (billable_minutes
+      // 60 for 45 worked); included minutes stay on worked time, matching
+      // getTicketBillingSummary and the portal's coveredByContract bucket.
+      dbMocks.selectResults.push([{
+        ...TIME_ROW, minutes: 45, billableMinutes: 60, rate: null,
+        billingStatus: 'contract', workTypeName: 'Remote', coverage: 'included',
+      }]);
+      dbMocks.selectResults.push([]);
+      const { rows, totalsByCurrency } = await listBillables(FROM, TO);
+      expect(rows[0]).toMatchObject({ coverage: 'included', includedMinutes: 45, amount: '0.00', missingRate: false });
+      // Contributes a zero, exactly as every contract row always has.
+      expect(totalsByCurrency).toEqual([{ currencyCode: 'USD', amount: '0.00' }]);
+    });
+
+    it('part rows carry no work type, no coverage and no included minutes', async () => {
+      dbMocks.selectResults.push([]);
+      dbMocks.selectResults.push([PART_ROW]);
+      const { rows } = await listBillables(FROM, TO);
+      expect(rows[0]).toMatchObject({ kind: 'part', workTypeName: null, coverage: null, includedMinutes: 0 });
+    });
+  });
+
   it('listBillables rounds hours to two decimals before currency-aware labor amounts', async () => {
     dbMocks.selectResults.push([
       {

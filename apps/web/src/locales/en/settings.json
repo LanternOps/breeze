@@ -329,6 +329,7 @@
     "exportFailed": "Export failed",
     "title": "Billables export",
     "description": "Billable time entries and parts as CSV (up to 366 days). Includes approval status.",
+    "columnsNote": "Includes the work type and the contract-included minutes for each time entry.",
     "from": "From",
     "to": "To",
     "allOrganizations": "All organizations",
