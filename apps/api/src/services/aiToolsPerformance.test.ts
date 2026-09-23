@@ -597,4 +597,28 @@ describe('get_active_users — limit caps devices, not sessions (A-W05 5c)', () 
     expect(compacted.limit).toBe(200);
     expect(typeof compacted.hasMore).toBe('boolean');
   });
+
+  it('when the SQL row cap is hit (a terminal-server-heavy device), flags hasMore/rowsTruncated and nulls safeToReboot for the possibly-partial device', async () => {
+    // limit=1, maxSessionsPerDevice=2 => sessionRowCap = (1+1)*2 = 4.
+    // Fill the cap exactly with ONE terminal-server device's sessions, so the
+    // handler cannot tell whether that device has more sessions beyond the
+    // cap — it must not claim safeToReboot for it.
+    const rows = Array.from({ length: 4 }, (_, i) => sessionRow(DEVICE_ID, 'ts-host', i));
+    mockSelectOnce(rows);
+
+    const out = JSON.parse(await handlerFor('get_active_users')({ limit: 1, maxSessionsPerDevice: 2 }, makeAuth()));
+    expect(out.hasMore).toBe(true);
+    expect(out.rowsTruncated).toBe(true);
+    expect(out.devices).toHaveLength(1);
+    expect(out.devices[0].safeToReboot).toBeNull();
+  });
+
+  it('does not truncate or null safeToReboot when the SQL row cap is not hit', async () => {
+    const rows = Array.from({ length: 3 }, (_, i) => sessionRow(DEVICE_ID, 'host-1', i));
+    mockSelectOnce(rows);
+
+    const out = JSON.parse(await handlerFor('get_active_users')({ limit: 1, maxSessionsPerDevice: 2 }, makeAuth()));
+    expect(out.rowsTruncated).toBeUndefined();
+    expect(out.devices[0].safeToReboot).toBe(false);
+  });
 });

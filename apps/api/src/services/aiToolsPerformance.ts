@@ -612,8 +612,20 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
       // the devices with the most recently active sessions are kept first
       // when the page is capped.
       const allDeviceEntries = Array.from(byDevice.values());
-      const hasMore = allDeviceEntries.length > limit;
-      const deviceEntries = hasMore ? allDeviceEntries.slice(0, limit) : allDeviceEntries;
+      const hasMoreDevices = allDeviceEntries.length > limit;
+      const deviceEntries = hasMoreDevices ? allDeviceEntries.slice(0, limit) : allDeviceEntries;
+
+      // The SQL row cap (`sessionRowCap`) can be hit before we've seen every
+      // session of the LAST device the query returned rows for — its
+      // session list (and therefore its blocking-session count) may be
+      // partial, so `safeToReboot` must not report a false positive/negative
+      // for it. `hasMore`/`rowsTruncated` must say so too, even when the
+      // device count itself didn't exceed `limit`.
+      const rowsTruncated = rows.length === sessionRowCap;
+      const partiallyCapturedDeviceId = rowsTruncated
+        ? allDeviceEntries[allDeviceEntries.length - 1]?.deviceId
+        : undefined;
+      const hasMore = hasMoreDevices || rowsTruncated;
 
       const devicesWithSessions = deviceEntries.map((entry) => {
         const blockingSessions = entry.sessions.filter((session) => {
@@ -624,6 +636,7 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
           const idle = session.idleMinutes ?? 0;
           return idle < idleThresholdMinutes;
         });
+        const isPossiblyPartial = entry.deviceId === partiallyCapturedDeviceId;
 
         return {
           deviceId: entry.deviceId,
@@ -631,7 +644,7 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
           deviceStatus: entry.deviceStatus,
           activeSessionCount: entry.sessions.length,
           blockingSessionCount: blockingSessions.length,
-          safeToReboot: blockingSessions.length === 0,
+          safeToReboot: isPossiblyPartial ? null : blockingSessions.length === 0,
           sessions: entry.sessions.slice(0, maxSessionsPerDevice),
           sessionCount: entry.sessions.length,
         };
@@ -645,6 +658,7 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
         showing: devicesWithSessions.length,
         limit,
         hasMore,
+        ...(rowsTruncated ? { rowsTruncated: true } : {}),
         devices: devicesWithSessions,
       });
     }
