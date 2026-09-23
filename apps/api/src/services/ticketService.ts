@@ -1236,6 +1236,46 @@ export async function changeTicketStatus(
     details: { from: fromStatus, to: toStatus },
     result: 'success'
   });
+
+  // #6697: ML triage feedback — resolution outcomes were declared on
+  // emitTicketTriageFeedback but no caller ever emitted them. `wasResolved`/
+  // `willBeResolved` treat 'resolved' and 'closed' as the same closed-ish
+  // state so a resolved -> closed relabel (already resolved, resolvedAt
+  // preserved above) does not double-count as a fresh resolution, and the FSM
+  // transition table only ever allows leaving {resolved, closed} for 'open',
+  // so willBeResolved=false here always means toStatus === 'open'.
+  const wasResolved = fromStatus === 'resolved' || fromStatus === 'closed';
+  const willBeResolved = toStatus === 'resolved' || toStatus === 'closed';
+  if (!wasResolved && willBeResolved) {
+    await emitTicketTriageFeedback({
+      orgId: ticket.orgId,
+      ticketId,
+      eventType: 'ticket.resolved',
+      dedupeKey: ticketTriageDedupeKey('status', fromStatus, toStatus),
+      outcome: 'resolved',
+      actorUserId: actor.userId,
+      metadata: ticketTriageFeedbackMetadata(actor, {
+        fromStatus,
+        toStatus,
+        minutesOpen: Math.max(0, Math.floor((now.getTime() - new Date(ticket.createdAt).getTime()) / 60_000)),
+      }),
+    });
+  } else if (wasResolved && !willBeResolved) {
+    await emitTicketTriageFeedback({
+      orgId: ticket.orgId,
+      ticketId,
+      eventType: 'ticket.reopened',
+      dedupeKey: ticketTriageDedupeKey('status', fromStatus, toStatus),
+      outcome: 'reopened',
+      actorUserId: actor.userId,
+      metadata: ticketTriageFeedbackMetadata(actor, {
+        fromStatus,
+        toStatus,
+        minutesOpen: Math.max(0, Math.floor((now.getTime() - new Date(ticket.createdAt).getTime()) / 60_000)),
+      }),
+    });
+  }
+
   return updated[0];
 }
 
