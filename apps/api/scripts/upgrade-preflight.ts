@@ -20,29 +20,20 @@
  *      a removal is crossed, or may be because this deployment has no version
  *      history, or the bundled manifest is unreadable.
  */
+import { crashExitCode, strictRequested } from '../src/upgrade/preflightCli';
 import { runUpgradePreflight } from '../src/upgrade/upgradePreflightRunner';
 
-function strictRequested(argv: string[], env: NodeJS.ProcessEnv): boolean {
-  if (argv.includes('--strict')) return true;
-  const value = (env.BREEZE_UPGRADE_PREFLIGHT_STRICT ?? '').trim().toLowerCase();
-  return value === 'true' || value === '1';
-}
+const strict = strictRequested(process.argv.slice(2), process.env);
 
-async function main(): Promise<number> {
-  const { exitCode } = await runUpgradePreflight({
-    databaseUrl: process.env.DATABASE_URL,
-    currentVersion: process.env.APP_VERSION,
-    strict: strictRequested(process.argv.slice(2), process.env),
-  });
-  return exitCode;
-}
-
-main()
-  .then((code) => process.exit(code))
+runUpgradePreflight({
+  databaseUrl: process.env.DATABASE_URL,
+  currentVersion: process.env.APP_VERSION,
+  strict,
+})
+  .then(({ exitCode }) => process.exit(exitCode))
   .catch((err) => {
     // runUpgradePreflight turns database failures into a broad report, so
-    // reaching here is a bug in the preflight itself. Say so, and only fail
-    // the run when the operator asked for a gate.
+    // reaching here is a bug in the preflight itself.
     console.error('[upgrade-preflight] Preflight crashed:', err);
-    process.exit(strictRequested(process.argv.slice(2), process.env) ? 1 : 0);
+    process.exit(crashExitCode(strict));
   });

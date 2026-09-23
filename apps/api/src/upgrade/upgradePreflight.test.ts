@@ -196,6 +196,17 @@ describe('formatPreflightReport', () => {
     expect(text).toContain('Rejected with HTTP 400.');
   });
 
+  it('never claims a clean upgrade when the manifest could not be read', () => {
+    const report = buildPreflightReport({ schemaVersion: 1, entries: [] }, state({ history: seen('0.116.0') }), {
+      manifestError: 'breaking-changes.json failed validation: entries.0.id: must be kebab-case',
+    });
+    const text = formatPreflightReport(report).join('\n');
+    expect(text).toContain('failed validation');
+    expect(text).not.toMatch(/crosses no retirement/i);
+    expect(preflightExitCode(report, { strict: true })).toBe(1);
+    expect(preflightExitCode(report, { strict: false })).toBe(0);
+  });
+
   it('reports pending migrations and says when nothing is crossed', () => {
     const report = buildPreflightReport(
       MANIFEST,

@@ -2,6 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { initializeDatabaseForStartup } from './databaseStartup';
 import { UNSAFE_DB_ROLE_OPT_OUT_ENV } from './requestDatabaseRoleSafety';
 
+const runner = vi.hoisted(() => ({
+  runUpgradePreflight: vi.fn(async () => ({ report: {}, exitCode: 0 })),
+  recordRunningVersion: vi.fn(async () => {}),
+}));
+vi.mock('../upgrade/upgradePreflightRunner', () => runner);
+
 const SAFE_ROLE = {
   currentUser: 'breeze_app',
   isSuperuser: false,
@@ -299,7 +305,30 @@ describe('initializeDatabaseForStartup upgrade preflight', () => {
     expect(logger.warn).not.toHaveBeenCalled();
   });
 
+  it('wires the default checks to the runner with DATABASE_URL and APP_VERSION', async () => {
+    runner.runUpgradePreflight.mockClear();
+    runner.recordRunningVersion.mockClear();
+    const logger = silentLogger();
+    await initializeDatabaseForStartup({
+      autoMigrateEnabled: true,
+      production: true,
+      upgradeChecks: true,
+      migrate: vi.fn(),
+      readRequestRole: vi.fn(async () => SAFE_ROLE),
+      env: { DATABASE_URL: 'postgresql://owner@db/breeze', APP_VERSION: '0.116.0' },
+      logger,
+    });
+    const expected = { databaseUrl: 'postgresql://owner@db/breeze', currentVersion: '0.116.0', logger };
+    expect(runner.runUpgradePreflight).toHaveBeenCalledOnce();
+    expect(runner.runUpgradePreflight).toHaveBeenCalledWith(expected);
+    expect(runner.recordRunningVersion).toHaveBeenCalledOnce();
+    expect(runner.recordRunningVersion).toHaveBeenCalledWith(expected);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
   it('runs no default upgrade checks unless asked (the worker shares this path)', async () => {
+    runner.runUpgradePreflight.mockClear();
+    runner.recordRunningVersion.mockClear();
     const logger = silentLogger();
     await initializeDatabaseForStartup({
       autoMigrateEnabled: false,
@@ -312,5 +341,7 @@ describe('initializeDatabaseForStartup upgrade preflight', () => {
     const logged = logger.log.mock.calls.map((c) => String(c[0]));
     expect(logged.some((l) => l.includes('[upgrade-preflight]'))).toBe(false);
     expect(logger.warn).not.toHaveBeenCalled();
+    expect(runner.runUpgradePreflight).not.toHaveBeenCalled();
+    expect(runner.recordRunningVersion).not.toHaveBeenCalled();
   });
 });

@@ -212,7 +212,10 @@ export function formatPreflightReport(report: PreflightReport): string[] {
     );
   }
 
-  if (report.crossing.length === 0) {
+  if (report.crossing.length === 0 && report.manifestError) {
+    // An unreadable manifest is an empty one: "crosses no retirement" would be false.
+    lines.push('[upgrade-preflight] Retirements crossed by this upgrade: unknown (see the warning above).');
+  } else if (report.crossing.length === 0) {
     lines.push(
       `[upgrade-preflight] This upgrade crosses no retirement (${report.inEffect.length} already in effect, ${report.upcoming.length} upcoming).`,
     );

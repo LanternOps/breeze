@@ -38,6 +38,15 @@ function describeError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** Best-effort close of the one-connection pool; a failure is logged, never thrown. */
+async function closeQuietly(sql: postgres.Sql, logger: Logger): Promise<void> {
+  try {
+    await sql.end({ timeout: 1 });
+  } catch (err) {
+    logger.warn(`[upgrade-preflight] Could not close the preflight connection cleanly: ${describeError(err)}`);
+  }
+}
+
 async function tableExists(sql: postgres.Sql, table: string): Promise<boolean> {
   const rows = await sql<{ present: boolean }[]>`
     SELECT to_regclass(${`public.${table}`}) IS NOT NULL AS present
@@ -101,6 +110,43 @@ function unreadableState(currentVersion: string | null | undefined, reason: stri
   };
 }
 
+/** Every failure mode — no URL, bad URL, unreachable, slow — becomes a "missing" state. */
+async function readStateWithinDeadline(
+  databaseUrl: string | undefined,
+  currentVersion: string | null | undefined,
+  timeoutMs: number,
+  logger: Logger,
+): Promise<DeploymentState> {
+  if (!databaseUrl) return unreadableState(currentVersion, 'DATABASE_URL is not set');
+
+  let sql: postgres.Sql;
+  try {
+    // postgres() throws synchronously on an unparseable URL (an operator typo).
+    sql = openConnection(databaseUrl);
+  } catch (err) {
+    return unreadableState(currentVersion, `could not open a database connection: ${describeError(err)}`);
+  }
+
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      readDeploymentState(sql, currentVersion),
+      new Promise<DeploymentState>((resolve) => {
+        timer = setTimeout(
+          () => resolve(unreadableState(currentVersion, `the database did not answer within ${timeoutMs}ms`)),
+          timeoutMs,
+        );
+        timer.unref?.();
+      }),
+    ]);
+  } catch (err) {
+    return unreadableState(currentVersion, `could not reach the database: ${describeError(err)}`);
+  } finally {
+    if (timer) clearTimeout(timer);
+    await closeQuietly(sql, logger);
+  }
+}
+
 export interface RunUpgradePreflightOptions {
   databaseUrl: string | undefined;
   currentVersion: string | null | undefined;
@@ -118,31 +164,7 @@ export async function runUpgradePreflight(
 ): Promise<{ report: PreflightReport; exitCode: number }> {
   const logger = options.logger ?? console;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  let state: DeploymentState;
-
-  if (!options.databaseUrl) {
-    state = unreadableState(options.currentVersion, 'DATABASE_URL is not set');
-  } else {
-    const sql = openConnection(options.databaseUrl);
-    let timer: NodeJS.Timeout | undefined;
-    try {
-      state = await Promise.race([
-        readDeploymentState(sql, options.currentVersion),
-        new Promise<DeploymentState>((resolve) => {
-          timer = setTimeout(
-            () => resolve(unreadableState(options.currentVersion, `the database did not answer within ${timeoutMs}ms`)),
-            timeoutMs,
-          );
-          timer.unref?.();
-        }),
-      ]);
-    } catch (err) {
-      state = unreadableState(options.currentVersion, `could not reach the database: ${describeError(err)}`);
-    } finally {
-      if (timer) clearTimeout(timer);
-      await sql.end({ timeout: 1 }).catch(() => {});
-    }
-  }
+  const state = await readStateWithinDeadline(options.databaseUrl, options.currentVersion, timeoutMs, logger);
 
   const report = buildPreflightReport(BREAKING_CHANGES_MANIFEST, state, {
     manifestError: BREAKING_CHANGES_MANIFEST_ERROR,
@@ -187,6 +209,6 @@ export async function recordRunningVersion(options: {
       logger.log(`[upgrade-preflight] Recorded first boot of version ${raw}.`);
     }
   } finally {
-    await sql.end({ timeout: 1 }).catch(() => {});
+    await closeQuietly(sql, logger);
   }
 }
