@@ -322,7 +322,10 @@
         "security_compliance_posture": "Postura de Seguranca e Conformidade",
         "software_inventory": "Inventario de Software",
         "threat_detection_review": "Revisão de detecção de ameaças",
-        "endpoint_management_review": "Revisão de gerenciamento de endpoints"
+        "endpoint_management_review": "Revisão de gerenciamento de endpoints",
+        "ticket_sla_attainment": "Cumprimento de SLA de chamados",
+        "technician_time_billability": "Tempo e faturabilidade do técnico",
+        "ar_aging": "Envelhecimento de contas a receber"
       },
       "threatDetection": {
         "agents": "Endpoints com agente de detecção",
@@ -419,7 +422,10 @@
         "security_compliance_posture": "Postura de Seguranca e Conformidade",
         "software_inventory": "Inventario de Software",
         "threat_detection_review": "Revisão de detecção de ameaças",
-        "endpoint_management_review": "Revisão de gerenciamento de endpoints"
+        "endpoint_management_review": "Revisão de gerenciamento de endpoints",
+        "ticket_sla_attainment": "Cumprimento de SLA de chamados",
+        "technician_time_billability": "Tempo e faturabilidade do técnico",
+        "ar_aging": "Envelhecimento de contas a receber"
       },
       "runsTable": {
         "actions": "Acoes",
@@ -455,7 +461,8 @@
       "templates": "Modelos",
       "title": "Relatórios",
       "tryAgain": "Tentar novamente",
-      "unknownReport": "Relatório Desconhecido"
+      "unknownReport": "Relatório Desconhecido",
+      "partnerWideIncomplete": "Não foi possível carregar alguns relatórios que abrangem todas as organizações, então esta lista pode estar incompleta. Mude para Todas as organizações para ver todos os relatórios."
     },
     "reportBuilder": {
       "actions": {
@@ -800,7 +807,10 @@
         "updateFailed": "Não foi possível atualizar os destinatários do relatório",
         "convertFailed": "Não foi possível converter este endereço de e-mail",
         "mfaRequired": "A conversão de um destinatário exige autenticação multifator. Ative o MFA no seu perfil e tente novamente.",
-        "loadFailed": "Não foi possível carregar os destinatários do relatório"
+        "loadFailed": "Não foi possível carregar os destinatários do relatório",
+        "businessEmailOnly": "Relatórios de negócios são enviados somente para os endereços de e-mail abaixo. Não é possível adicionar contatos da organização.",
+        "partnerOwnedEmailOnly": "Este relatório abrange todas as organizações, por isso é enviado somente para os endereços de e-mail abaixo. Não é possível adicionar contatos da organização.",
+        "emailAddresses": "Endereços de e-mail"
       },
       "previewTable": {
         "selectFields": "Selecione campos para preencher a tabela de pre-visualização."
@@ -934,7 +944,10 @@
         "security_compliance_posture": "Postura de Seguranca e Conformidade",
         "software_inventory": "Inventario de Software",
         "threat_detection_review": "Revisão de detecção de ameaças",
-        "endpoint_management_review": "Revisão de gerenciamento de endpoints"
+        "endpoint_management_review": "Revisão de gerenciamento de endpoints",
+        "ticket_sla_attainment": "Cumprimento de SLA de chamados",
+        "technician_time_billability": "Tempo e faturabilidade do técnico",
+        "ar_aging": "Envelhecimento de contas a receber"
       },
       "schedules": {
         "daily": "Diario",
@@ -945,6 +958,8 @@
       "spec": {
         "cadence": "Cadencia",
         "defaultRange": "Intervalo padrão",
+        "lastFullMonth": "Último mês completo",
+        "asOfRunDate": "Na data de execução",
         "format": "Formato"
       },
       "success": {
@@ -988,11 +1003,28 @@
         "endpoint_management_review": {
           "description": "Evidência do Microsoft Intune: cobertura de inscrição, detalhamento de conformidade com tendência de 30 dias, inscrições desatualizadas e licenças, informando a atualidade de cada sincronização.",
           "name": "Revisão de gerenciamento de endpoints do Intune"
+        },
+        "ticket_sla_attainment": {
+          "name": "Cumprimento de SLA de chamados",
+          "description": "Cumprimento de resposta e resolução do período, recalculado a partir dos registros de horário do chamado em vez de lido nos marcadores de violação — assim, um chamado respondido com atraso, mas eventualmente respondido, ainda conta como não cumprido. Agrupado por organização, prioridade, técnico ou categoria."
+        },
+        "technician_time_billability": {
+          "name": "Tempo e faturabilidade do técnico",
+          "description": "Tempo registrado em relação a uma capacidade semanal presumida, a divisão entre faturável / incluído / não faturável, e quanto do tempo faturável foi de fato aprovado e faturado. Técnicos sem tempo registrado no período aparecem com zero em vez de serem omitidos."
+        },
+        "ar_aging": {
+          "name": "Envelhecimento de contas a receber",
+          "description": "Saldos de faturas em aberto agrupados em corrente / 1–30 / 31–60 / 61–90 / mais de 90 dias vencidos, um conjunto de totais por moeda sem conversão. Faturas sem data de vencimento recebem seu próprio grupo, nunca \"corrente\"."
         }
       },
       "title": "Modelos de Relatório",
       "useTemplate": "Usar modelo",
-      "useTemplateTitle": "Usar {{name}}"
+      "useTemplateTitle": "Usar {{name}}",
+      "groups": {
+        "business": "Negócio",
+        "general": "Geral",
+        "businessDescription": "Números internos do MSP — cumprimento de SLA, faturabilidade dos técnicos e contas a receber — apenas para a equipe."
+      }
     },
     "threatDetectionOptions": {
       "cancel": "Cancelar",
@@ -1024,6 +1056,76 @@
       "adminDetail": "Incluir o detalhamento de logins de administradores",
       "adminDetailHelp": "Lista cada login interativo de uma conta com papel de administrador, incluindo o endereço de origem. É a seção que um auditor lê primeiro.",
       "coverageNote": "O relatório cobre apenas logins interativos e imprime a janela que realmente cobre. A Microsoft mantém os registros de login por cerca de 30 dias e exige uma licença Entra ID P1 ou P2 para liberá-los, de modo que o primeiro relatório após ativar a coleta é parcial e diz isso."
+    },
+    "reportPeriod": {
+      "label": "Período do relatório",
+      "kinds": {
+        "last_full_month": "Último mês completo",
+        "last_30_days": "Últimos 30 dias",
+        "last_quarter": "Último trimestre completo",
+        "custom": "Datas personalizadas"
+      },
+      "start": "Data de início",
+      "end": "Data de término (inclusiva)",
+      "help": "Os períodos predefinidos são recalculados a cada execução do relatório, então um agendamento mensal sempre cobre o mês que acabou de terminar.",
+      "errors": {
+        "missing": "Escolha uma data de início e uma data de término.",
+        "invalid": "As duas datas precisam ser datas reais do calendário.",
+        "order": "A data de início não pode ser posterior à data de término."
+      }
+    },
+    "ticketSlaOptions": {
+      "approximationNote": "O cumprimento é recalculado a partir dos registros de data e hora do ticket, e não lido das marcações de violação, então um ticket respondido com atraso continua contando como falha. O tempo em pausa é armazenado como um total acumulado, então pausas após a primeira resposta melhoram levemente o cumprimento de resposta.",
+      "groupBy": "Agrupar por",
+      "groupByAutomatic": "Automático: por organização para todas as organizações, por prioridade para uma única organização",
+      "groupByValues": {
+        "organization": "Organização",
+        "priority": "Prioridade",
+        "technician": "Técnico (responsável atual)",
+        "category": "Categoria"
+      },
+      "technicianNote": "Os tickets são agrupados pelo responsável atual. O histórico de reatribuições não é registrado, então não é necessariamente o técnico que respondeu.",
+      "includeNoSla": "Listar tickets sem meta de SLA",
+      "includeNoSlaHelp": "Tickets sem meta de SLA são sempre contados à parte e nunca afetam o cumprimento. Esta opção só controla se eles aparecem nas linhas de detalhe.",
+      "cancel": "Cancelar",
+      "createReport": "Criar relatório"
+    },
+    "technicianTimeOptions": {
+      "groupBy": "Agrupar por",
+      "groupByValues": {
+        "technician": "Técnico",
+        "organization": "Organização",
+        "work_type": "Tipo de trabalho"
+      },
+      "orgAxisNote": "Lançamentos de horas sem organização aparecem em uma linha própria \"Sem organização\". Um relatório de uma única organização só vê as horas lançadas nos tickets dela.",
+      "capacityHours": "Capacidade semanal por técnico (horas)",
+      "capacityHoursHelp": "A utilização considera a mesma capacidade para todos os técnicos, proporcional aos dias úteis. Férias e meio período não são considerados.",
+      "cancel": "Cancelar",
+      "createReport": "Criar relatório"
+    },
+    "arAgingOptions": {
+      "asOf": "Idade dos saldos em",
+      "asOfHelp": "Deixe em branco para calcular a idade no dia em que o relatório é executado. Uma data move apenas a data de referência: os saldos são os atuais, então ela não reconstrói saldos passados nem desfaz pagamentos registrados depois dessa data.",
+      "asOfInvalid": "Informe uma data real do calendário ou deixe o campo em branco.",
+      "groupBy": "Agrupar por",
+      "groupByValues": {
+        "organization": "Organização",
+        "currency": "Moeda"
+      },
+      "currencyNote": "Cada moeda tem seus próprios totais. Os valores não são convertidos entre moedas.",
+      "includePaidInPeriod": "Listar faturas pagas no mês até a data",
+      "includePaidInPeriodHelp": "Adiciona uma nota com as faturas pagas integralmente do primeiro dia do mês de referência até a data de referência. Nunca altera as faixas de idade.",
+      "cancel": "Cancelar",
+      "createReport": "Criar relatório"
+    },
+    "ownerScope": {
+      "legend": "O relatório abrange",
+      "allOrganizations": "Todas as organizações",
+      "allOrganizationsHint": "Abrange todas as organizações ativas e em avaliação, determinadas a cada execução. As organizações excluídas são listadas nas notas do relatório. Requer acesso a todas as organizações.",
+      "singleOrganization": "Uma organização",
+      "singleOrganizationHint": "A organização selecionada no seletor de organizações.",
+      "singleOrganizationDisabledHint": "Selecione uma organização no seletor de organizações para criar um relatório com escopo de organização.",
+      "needsOrganizationHint": "Selecione uma organização no seletor de organizações para criar este relatório. Relatórios de todas as organizações exigem acesso a todas as organizações."
     }
   }
 }

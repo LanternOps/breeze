@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   FileText,
   Calendar,
@@ -16,7 +16,10 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { runAction, ActionError } from '@/lib/runAction';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
+import { useJwtClaims } from '@/lib/authScope';
+import { ScopeBadge } from '../shared/ScopeBadge';
 import { exportReport, downloadBlob, getBrowserTimezone, type PostureSummary } from './reportExport';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import {
@@ -29,6 +32,10 @@ import {
   type FleetDesignReportSummary,
   type EndpointManagementSummary,
   type VulnerabilityManagementSummary,
+  type IdentityAccessSummary,
+  type TicketSlaSummary,
+  type TechnicianTimeSummary,
+  type ArAgingSummary,
   type ReportType as SharedReportType
 } from '@breeze/shared';
 import { useTranslation } from 'react-i18next';
@@ -67,6 +74,11 @@ export type Report = {
   schedule: ReportSchedule;
   format: ReportFormat;
   config: Record<string, unknown>;
+  /** Owner. A partner-owned report (#3198: covers all of the partner's
+   *  organizations) has `orgId: null` and `partnerId` set; an org-owned one has
+   *  `orgId` set. Ownership is immutable after create. */
+  orgId: string | null;
+  partnerId: string | null;
   portalSelfService: boolean;
   lastGeneratedAt: string | null;
   createdAt: string;
@@ -105,6 +117,14 @@ function scheduleConfigOf(config: Record<string, unknown> | undefined): Schedule
   return raw && typeof raw === 'object' ? (raw as ScheduleConfig) : {};
 }
 
+// GET /reports caps `limit` at 100 (apps/api/src/utils/pagination.ts). The
+// page cap bounds the partner-owned merge at 2,000 partner-owned reports;
+// past it the page says the list is incomplete.
+const PARTNER_WIDE_PAGE_LIMIT = 100;
+const PARTNER_WIDE_PAGE_CAP = 20;
+
+type PartnerWideFetch = { rows: Report[]; complete: boolean };
+
 function recipientCountOf(config: Record<string, unknown> | undefined): number {
   const raw = config?.emailRecipients;
   return Array.isArray(raw) ? raw.filter((r) => typeof r === 'string' && r.trim() !== '').length : 0;
@@ -120,23 +140,99 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
   const [generatingIds, setGeneratingIds] = useState<Set<string>>(new Set());
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'reports' | 'runs'>('reports');
+  const { currentOrgId } = useOrgStore();
+  const jwtClaims = useJwtClaims();
+  // Absent = a session persisted before the field existed; treated as capable
+  // like every other partner-wide surface (the server gates regardless).
+  const canManagePartnerWide = useAuthStore((s) => s.user?.canManagePartnerWide) !== false;
+  // `GET /reports` carries the ambient `?orgId=` of the focused org (kept on
+  // purpose: dropping it would list every org's reports under one org), and
+  // the API lists partner-owned reports only without it. A partner-owned
+  // report covers the focused org too, so for a partner-scope user with an org
+  // focused the partner-owned reports are fetched as well
+  // (`?ownerScope=partner`, a server-side filter) and merged in. This is also
+  // the only way a single-org partner (who never gets an All organizations
+  // option) sees them. Only users who may administer partner-wide state can
+  // see partner-owned rows at all (the server answers an empty list to anyone
+  // else), so nobody else fetches. Fails closed while the token is unresolved.
+  const mergePartnerWide =
+    jwtClaims.status === 'resolved' &&
+    jwtClaims.claims.scope === 'partner' &&
+    canManagePartnerWide &&
+    !!currentOrgId;
+  const [partnerWideIncomplete, setPartnerWideIncomplete] = useState(false);
 
+  const fetchPartnerWideReports = useCallback(async (): Promise<PartnerWideFetch> => {
+    // Paginated (updatedAt desc), so page through it. Rows can shift between
+    // pages while paging, so dedupe by id. A page without `pagination.total`
+    // keeps paging while pages come back full.
+    const byId = new Map<string, Report>();
+    try {
+      for (let page = 1; page <= PARTNER_WIDE_PAGE_CAP; page++) {
+        const response = await fetchWithAuth(
+          `/reports?ownerScope=partner&limit=${PARTNER_WIDE_PAGE_LIMIT}&page=${page}`,
+          { skipOrgIdInjection: true },
+        );
+        if (!response.ok) {
+          console.warn('Failed to fetch partner-wide reports:', response.status);
+          return { rows: [...byId.values()], complete: false };
+        }
+        const data = await response.json();
+        const pageRows: Report[] = Array.isArray(data?.data) ? data.data : [];
+        // The server filters to partner-owned rows; re-check so an org-owned
+        // row can never be merged into another org's view.
+        for (const row of pageRows) {
+          if (row.partnerId && !row.orgId && !byId.has(row.id)) byId.set(row.id, row);
+        }
+        const total = typeof data?.pagination?.total === 'number' ? data.pagination.total : undefined;
+        if (pageRows.length < PARTNER_WIDE_PAGE_LIMIT) return { rows: [...byId.values()], complete: true };
+        if (total !== undefined && page * PARTNER_WIDE_PAGE_LIMIT >= total) {
+          return { rows: [...byId.values()], complete: true };
+        }
+      }
+      console.warn('Partner-wide reports listing hit the page cap; later rows are not shown:', {
+        pages: PARTNER_WIDE_PAGE_CAP,
+        fetched: byId.size,
+      });
+      return { rows: [...byId.values()], complete: false };
+    } catch (err) {
+      // The org's own list still renders; partner-wide rows are an addition.
+      console.warn('Failed to fetch partner-wide reports:', err);
+      return { rows: [...byId.values()], complete: false };
+    }
+  }, []);
+
+  // Each list fetch takes a sequence number; only the newest may write state,
+  // so an older (e.g. pre-merge) response landing late cannot clobber it.
+  const fetchSeq = useRef(0);
   const fetchReports = useCallback(async () => {
+    const seq = ++fetchSeq.current;
+    const isCurrent = () => seq === fetchSeq.current;
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetchWithAuth('/reports');
+      const [response, partnerWide] = await Promise.all([
+        fetchWithAuth('/reports'),
+        mergePartnerWide
+          ? fetchPartnerWideReports()
+          : Promise.resolve<PartnerWideFetch>({ rows: [], complete: true }),
+      ]);
       if (!response.ok) {
         throw new Error(t('reports.reportsList.errors.fetchReports'));
       }
       const data = await response.json();
-      setReports(data.data ?? []);
+      if (!isCurrent()) return;
+      const own: Report[] = data.data ?? [];
+      const seen = new Set(own.map((r) => r.id));
+      setReports([...own, ...partnerWide.rows.filter((r) => !seen.has(r.id))]);
+      setPartnerWideIncomplete(!partnerWide.complete);
     } catch (err) {
+      if (!isCurrent()) return;
       setError(err instanceof Error ? err.message : t('reports.reportsList.errors.generic'));
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
-  }, [t]);
+  }, [t, mergePartnerWide, fetchPartnerWideReports]);
 
   const fetchRecentRuns = useCallback(async () => {
     try {
@@ -154,8 +250,13 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
 
   useEffect(() => {
     fetchReports();
+  }, [fetchReports]);
+
+  // Separate effect: the runs list does not depend on the partner-wide merge
+  // flag, so resolving the token must not refetch it.
+  useEffect(() => {
     fetchRecentRuns();
-  }, [fetchReports, fetchRecentRuns]);
+  }, [fetchRecentRuns]);
 
   const handleGenerate = async (report: Report) => {
     setGeneratingIds(prev => new Set([...prev, report.id]));
@@ -278,6 +379,13 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
             // designed vulnerability summary as an unrelated type and the
             // compiler stops guarding buildReportPdf's arm for it.
             | VulnerabilityManagementSummary
+            // #5784 W06 — same reasoning, for the identity access review cover.
+            | IdentityAccessSummary
+            // #3198 W03 — the three business report types (ticket SLA
+            // attainment, technician time & billability, AR aging).
+            | TicketSlaSummary
+            | TechnicianTimeSummary
+            | ArAgingSummary
             | undefined,
           // Drives the scorecard trend chip ("79, up from 74 last month")
           // when the stored run snapshot captured a prior baseline.
@@ -403,6 +511,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
         <div className="flex gap-4">
           <button
             type="button"
+            data-testid="reports-tab-saved"
             onClick={() => setActiveTab('reports')}
             className={cn(
               'pb-3 text-sm font-medium transition-colors',
@@ -415,6 +524,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
           </button>
           <button
             type="button"
+            data-testid="reports-tab-runs"
             onClick={() => setActiveTab('runs')}
             className={cn(
               'pb-3 text-sm font-medium transition-colors',
@@ -430,6 +540,15 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
 
       {activeTab === 'reports' && (
         <>
+          {partnerWideIncomplete && (
+            <p
+              data-testid="reports-partner-wide-incomplete"
+              role="status"
+              className="rounded-md border border-warning/40 bg-warning/10 px-4 py-2 text-sm"
+            >
+              {t('reports.reportsList.partnerWideIncomplete')}
+            </p>
+          )}
           {reports.length === 0 ? (
             <div className="rounded-lg border border-dashed p-12 text-center">
               <FileText className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
@@ -472,7 +591,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                 </thead>
                 <tbody className="divide-y">
                   {reports.map(report => (
-                    <tr key={report.id} className="hover:bg-muted/30">
+                    <tr key={report.id} data-testid={`report-row-${report.id}`} className="hover:bg-muted/30">
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
                           <FileText className="h-4 w-4 text-muted-foreground" />
@@ -483,6 +602,14 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                               className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
                             >
                               {t('reports.reportsList.visibleInPortal')}
+                            </span>
+                          )}
+                          {report.partnerId && !report.orgId && (
+                            // Partner-owned: covers all of the partner's
+                            // organizations (#3198). ScopeBadge keeps its own
+                            // fixed testid, so the per-row one lives here.
+                            <span data-testid={`report-scope-badge-${report.id}`} className="shrink-0">
+                              <ScopeBadge orgId={null} partnerId={report.partnerId} isSystem={false} />
                             </span>
                           )}
                         </div>
@@ -648,7 +775,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                 </thead>
                 <tbody className="divide-y">
                   {recentRuns.map(run => (
-                    <tr key={run.id} className="hover:bg-muted/30">
+                    <tr key={run.id} data-testid={`report-run-row-${run.id}`} className="hover:bg-muted/30">
                       <td className="px-4 py-3">
                         <div>
                           <span className="font-medium">{run.reportName || t('reports.reportsList.unknownReport')}</span>
@@ -663,6 +790,8 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                         <div className="flex items-center gap-2">
                           {getStatusIcon(run.status)}
                           <span
+                            data-testid={`report-run-status-${run.id}`}
+                            data-status={run.status}
                             className={cn(
                               'text-sm capitalize',
                               run.status === 'completed' && 'text-success',
@@ -688,6 +817,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                           {run.status === 'completed' && (
                             <button
                               type="button"
+                              data-testid={`report-run-download-${run.id}`}
                               onClick={() => handleDownload(run)}
                               disabled={downloadingRunId === run.id}
                               className="flex h-8 items-center gap-1 rounded-md border px-3 text-sm hover:bg-muted disabled:opacity-50"

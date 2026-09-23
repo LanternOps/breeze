@@ -1,21 +1,25 @@
-import { useCallback, useEffect, useMemo, useState, type ElementType } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ElementType, type ReactNode } from 'react';
 import {
   Activity,
+  Banknote,
   BarChart3,
   Bell,
   CalendarClock,
   FileText,
+  Gauge,
   KeyRound,
   Laptop,
   Loader2,
   Plus,
   ShieldAlert,
   ShieldCheck,
+  Timer,
   X
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import ReportBuilder, { reportTypeSurvivesBuilder, type ReportBuilderFormValues } from './ReportBuilder';
 import { PostureReportOptionsForm } from './PostureReportOptionsForm';
+import { ReportOwnerScopeField, useDefaultReportOwnerScope, type ReportOwnerScope } from './ReportOwnerScopeField';
 import {
   DEFAULT_HARDWARE_LIFECYCLE_OPTIONS,
   HardwareLifecycleOptionsForm,
@@ -41,6 +45,27 @@ import {
   IdentityAccessOptionsForm,
   type IdentityAccessOptions,
 } from './IdentityAccessOptionsForm';
+import {
+  DEFAULT_TICKET_SLA_OPTIONS,
+  TicketSlaOptionsForm,
+  ticketSlaConfigFromOptions,
+  ticketSlaOptionsFromConfig,
+  type TicketSlaOptions,
+} from './TicketSlaOptionsForm';
+import {
+  DEFAULT_TECHNICIAN_TIME_OPTIONS,
+  TechnicianTimeOptionsForm,
+  technicianTimeConfigFromOptions,
+  technicianTimeOptionsFromConfig,
+  type TechnicianTimeOptions,
+} from './TechnicianTimeOptionsForm';
+import {
+  DEFAULT_AR_AGING_OPTIONS,
+  ArAgingOptionsForm,
+  arAgingConfigFromOptions,
+  arAgingOptionsFromConfig,
+  type ArAgingOptions,
+} from './ArAgingOptionsForm';
 import type { ReportFormat, ReportSchedule } from './ReportsList';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
@@ -48,6 +73,8 @@ import { runAction } from '@/lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { asList } from '@/lib/asList';
 import { useTranslation } from 'react-i18next';
+import { useJwtClaims } from '@/lib/authScope';
+import { isBusinessReportType, useCanUseBusinessReportType } from './businessReportAccess';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
@@ -58,6 +85,14 @@ type TemplateTone = {
   iconColor: string;
 };
 
+/** Which labelled section of the gallery a card sits in. Curated business
+ *  reports (#3198) are the MSP's own numbers — SLA, utilisation, money — and
+ *  read differently from the customer-facing evidence artifacts, so they get
+ *  their own section rather than a fourteenth card in one flat grid. A saved
+ *  report inherits its curated fallback's group; an unmatched saved report is
+ *  'general'. */
+type TemplateGroup = 'business' | 'general';
+
 type ReportTemplate = {
   id: string;
   name: string;
@@ -65,7 +100,12 @@ type ReportTemplate = {
   defaults: Partial<ReportBuilderFormValues>;
   icon: ElementType;
   tone: TemplateTone;
+  group: TemplateGroup;
   previewImage?: string;
+  /** A saved report's stored business config (#3198): the options it will
+   *  actually run with. The Default range tile reports its period / as-of, and
+   *  the options modal opens seeded with it. */
+  savedBusinessConfig?: Record<string, unknown>;
 };
 
 type TemplateApiItem = Partial<ReportTemplate> & {
@@ -75,6 +115,8 @@ type TemplateApiItem = Partial<ReportTemplate> & {
   config?: {
     dateRange?: ReportBuilderFormValues['dateRange'];
     filters?: ReportBuilderFormValues['filters'];
+    period?: { kind?: unknown };
+    asOf?: unknown;
   };
   schedule?: ReportSchedule;
   format?: ReportFormat;
@@ -95,6 +137,9 @@ const reportTypeValues: TemplateReportType[] = [
   'endpoint_management_review',
   'vulnerability_management',
   'identity_access_review',
+  'ticket_sla_attainment',
+  'technician_time_billability',
+  'ar_aging',
   'devices',
   'alerts',
   'patches',
@@ -105,6 +150,51 @@ const scheduleValues: ReportSchedule[] = ['one_time', 'daily', 'weekly', 'monthl
 const formatValues: ReportFormat[] = ['csv', 'pdf', 'excel'];
 
 const defaultTemplates: ReportTemplate[] = [
+  {
+    id: 'ticket_sla_attainment',
+    name: 'Ticket SLA attainment',
+    description:
+      'Response and resolution attainment for the period, recomputed from the ticket timestamps rather than read off the breach stamps — so a ticket answered late but eventually answered still counts as a miss. Grouped by organization, priority, technician or category.',
+    defaults: {
+      name: 'Ticket SLA attainment',
+      type: 'ticket_sla_attainment',
+      schedule: 'monthly',
+      format: 'pdf'
+    },
+    icon: Gauge,
+    tone: { iconBg: 'bg-indigo-500/15', iconColor: 'text-indigo-600' },
+    group: 'business'
+  },
+  {
+    id: 'technician_time_billability',
+    name: 'Technician time & billability',
+    description:
+      'Logged time against an assumed weekly capacity, the billable / included / non-billable split, and how much of the billable time has actually been approved and billed. Technicians with no time in the period are listed at zero rather than dropped.',
+    defaults: {
+      name: 'Technician time & billability',
+      type: 'technician_time_billability',
+      schedule: 'monthly',
+      format: 'pdf'
+    },
+    icon: Timer,
+    tone: { iconBg: 'bg-emerald-500/15', iconColor: 'text-emerald-600' },
+    group: 'business'
+  },
+  {
+    id: 'ar_aging',
+    name: 'AR aging',
+    description:
+      'Unpaid invoice balances bucketed current / 1–30 / 31–60 / 61–90 / 90+ days past due, one set of totals per currency with no conversion. Invoices with no due date get their own bucket, never "current".',
+    defaults: {
+      name: 'AR aging',
+      type: 'ar_aging',
+      schedule: 'monthly',
+      format: 'pdf'
+    },
+    icon: Banknote,
+    tone: { iconBg: 'bg-cyan-500/15', iconColor: 'text-cyan-600' },
+    group: 'business'
+  },
   {
     id: 'security_compliance_posture',
     name: 'Security & Compliance Posture (Insurance)',
@@ -121,7 +211,8 @@ const defaultTemplates: ReportTemplate[] = [
     tone: {
       iconBg: 'bg-indigo-500/15',
       iconColor: 'text-indigo-600'
-    }
+    },
+    group: 'general'
   },
   {
     id: 'hardware_lifecycle',
@@ -139,7 +230,8 @@ const defaultTemplates: ReportTemplate[] = [
     tone: {
       iconBg: 'bg-emerald-500/15',
       iconColor: 'text-emerald-600'
-    }
+    },
+    group: 'general'
   },
   {
     id: 'threat_detection_review',
@@ -157,7 +249,8 @@ const defaultTemplates: ReportTemplate[] = [
     tone: {
       iconBg: 'bg-rose-500/15',
       iconColor: 'text-rose-600'
-    }
+    },
+    group: 'general'
   },
   {
     id: 'endpoint_management_review',
@@ -175,7 +268,8 @@ const defaultTemplates: ReportTemplate[] = [
     tone: {
       iconBg: 'bg-cyan-500/15',
       iconColor: 'text-cyan-600'
-    }
+    },
+    group: 'general'
   },
   {
     id: 'vulnerability_management',
@@ -193,7 +287,8 @@ const defaultTemplates: ReportTemplate[] = [
     tone: {
       iconBg: 'bg-rose-500/15',
       iconColor: 'text-rose-600'
-    }
+    },
+    group: 'general'
   },
   {
     id: 'identity_access_review',
@@ -211,7 +306,8 @@ const defaultTemplates: ReportTemplate[] = [
     tone: {
       iconBg: 'bg-sky-500/15',
       iconColor: 'text-sky-600'
-    }
+    },
+    group: 'general'
   },
   {
     id: 'executive_summary',
@@ -228,7 +324,8 @@ const defaultTemplates: ReportTemplate[] = [
     tone: {
       iconBg: 'bg-sky-500/15',
       iconColor: 'text-sky-600'
-    }
+    },
+    group: 'general'
   },
   {
     id: 'device_health',
@@ -245,7 +342,8 @@ const defaultTemplates: ReportTemplate[] = [
     tone: {
       iconBg: 'bg-emerald-500/15',
       iconColor: 'text-emerald-600'
-    }
+    },
+    group: 'general'
   },
   {
     id: 'alert_summary',
@@ -263,7 +361,8 @@ const defaultTemplates: ReportTemplate[] = [
     tone: {
       iconBg: 'bg-rose-500/15',
       iconColor: 'text-rose-600'
-    }
+    },
+    group: 'general'
   },
 ];
 
@@ -343,7 +442,15 @@ const normalizeTemplate = (item: TemplateApiItem, fallback?: ReportTemplate): Re
       iconBg: 'bg-slate-500/15',
       iconColor: 'text-slate-600'
     },
-    previewImage
+    // The section follows the report TYPE: a business report the user renamed
+    // (so it matches no curated card by id or name) is still a business report
+    // and must not drift into General. Otherwise a saved report that matched a
+    // curated card sits in that card's section; an unmatched one is General.
+    group: isBusinessReportType(resolvedType) ? 'business' : (fallback?.group ?? 'general'),
+    previewImage,
+    ...(isBusinessReportType(resolvedType) && item.config
+      ? { savedBusinessConfig: { ...item.config } }
+      : {})
   };
 };
 
@@ -397,6 +504,35 @@ const TemplatePreviewImage = ({ template, alt }: { template: ReportTemplate; alt
 };
 
 /** Honest definition list of what the template actually produces. */
+/**
+ * The Default range tile for a business report type (#3198). Those types have
+ * no ad-hoc date range — the server refuses one — but they do have a real
+ * period: the one a saved report stored, else the config schema's own default
+ * (a full calendar month for ticket_sla_attainment / technician_time_billability).
+ * ar_aging has no period at all — it is a running balance as of the run date,
+ * or as of the fixed date a saved report pinned.
+ */
+function businessDefaultRange(template: ReportTemplate, t: (key: string) => string): string | null {
+  const type = template.defaults.type;
+  const saved = template.savedBusinessConfig;
+  const periodKind = (saved?.period as { kind?: unknown } | undefined)?.kind;
+  if (type === 'ar_aging') {
+    return typeof saved?.asOf === 'string' && saved.asOf
+      ? saved.asOf
+      : t('reports.reportTemplates.spec.asOfRunDate');
+  }
+  if (type === 'ticket_sla_attainment' || type === 'technician_time_billability') {
+    switch (periodKind) {
+      case 'last_full_month': return t('reports.reportPeriod.kinds.last_full_month');
+      case 'last_30_days': return t('reports.reportPeriod.kinds.last_30_days');
+      case 'last_quarter': return t('reports.reportPeriod.kinds.last_quarter');
+      case 'custom': return t('reports.reportPeriod.kinds.custom');
+      default: return t('reports.reportTemplates.spec.lastFullMonth');
+    }
+  }
+  return null;
+}
+
 const TemplateSpec = ({ items }: { items: { label: string; value: string }[] }) => (
   <dl className="mt-4 grid grid-cols-3 divide-x divide-border rounded-md border bg-muted/30">
     {items.map(item => (
@@ -408,9 +544,33 @@ const TemplateSpec = ({ items }: { items: { label: string; value: string }[] }) 
   </dl>
 );
 
+/** One labelled section of the gallery. The grid classes are lifted verbatim
+ *  from the previous flat grid so card layout is unchanged. */
+const TemplateSection = ({
+  group,
+  title,
+  description,
+  children,
+}: {
+  group: TemplateGroup;
+  title: string;
+  description?: string;
+  children: ReactNode;
+}) => (
+  <section data-testid={`report-template-group-${group}`} className="space-y-4">
+    <div>
+      <h2 className="text-sm font-semibold tracking-tight">{title}</h2>
+      {description && <p className="text-xs text-muted-foreground">{description}</p>}
+    </div>
+    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{children}</div>
+  </section>
+);
+
 export default function ReportTemplates() {
   const { t } = useTranslation('reports');
   const { currentOrgId } = useOrgStore();
+  const jwtClaims = useJwtClaims();
+  const canUseBusinessReportType = useCanUseBusinessReportType();
   const [templates, setTemplates] = useState<ReportTemplate[]>(defaultTemplates);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
@@ -427,6 +587,26 @@ export default function ReportTemplates() {
   const [vulnerabilityOptions, setVulnerabilityOptions] = useState<VulnerabilityManagementOptions>(DEFAULT_VULNERABILITY_MANAGEMENT_OPTIONS);
   const [identityTemplate, setIdentityTemplate] = useState<ReportTemplate | null>(null);
   const [identityOptions, setIdentityOptions] = useState<IdentityAccessOptions>(DEFAULT_IDENTITY_ACCESS_OPTIONS);
+  // One options modal for the three business report types (#3198 W03); the
+  // template's type picks which form it renders.
+  const [businessTemplate, setBusinessTemplate] = useState<ReportTemplate | null>(null);
+  const [ticketSlaOptions, setTicketSlaOptions] = useState<TicketSlaOptions>(DEFAULT_TICKET_SLA_OPTIONS);
+  const [technicianTimeOptions, setTechnicianTimeOptions] = useState<TechnicianTimeOptions>(DEFAULT_TECHNICIAN_TIME_OPTIONS);
+  const [arAgingOptions, setArAgingOptions] = useState<ArAgingOptions>(DEFAULT_AR_AGING_OPTIONS);
+  // Create-only ownership for the business modal. The selector renders only
+  // for a resolved partner-scope token; everyone else creates org-owned.
+  const {
+    canChoose: canChooseOwnerScope,
+    defaultScope: defaultOwnerScope,
+    needsOrganization: ownerNeedsOrganization,
+  } = useDefaultReportOwnerScope();
+  const [ownerScope, setOwnerScope] = useState<ReportOwnerScope>('organization');
+  // A token can go from partner-scope to org-scope mid-session (e.g. a
+  // refresh while the modal is open) without the `ownerScope` state — set
+  // when the modal opened, or by the now-hidden radio — ever changing. Never
+  // trust that state once canChoose has gone false; a de-privileged token
+  // can no longer legally submit 'partner'.
+  const effectiveOwnerScope: ReportOwnerScope = canChooseOwnerScope ? ownerScope : 'organization';
   const [builderOpen, setBuilderOpen] = useState(false);
   const [creatingId, setCreatingId] = useState<string | null>(null);
 
@@ -462,8 +642,13 @@ export default function ReportTemplates() {
   // Reports whose type the freeform builder would downgrade are saved directly
   // with their true type instead of being routed through it.
   const handleCreateDirect = useCallback(
-    async (template: ReportTemplate, postureConfig: Record<string, unknown> = {}) => {
+    async (
+      template: ReportTemplate,
+      postureConfig: Record<string, unknown> = {},
+      owner: ReportOwnerScope = 'organization',
+    ) => {
       setCreatingId(template.id);
+      const isBusiness = isBusinessReportType(template.defaults.type);
       try {
         await runAction({
           request: () =>
@@ -474,11 +659,30 @@ export default function ReportTemplates() {
                 type: template.defaults.type,
                 schedule: template.defaults.schedule ?? 'one_time',
                 format: template.defaults.format ?? 'pdf',
-                ...(currentOrgId ? { orgId: currentOrgId } : {}),
-                config: {
-                  dateRange: template.defaults.dateRange ?? { preset: 'last_30_days' },
-                  ...postureConfig
-                }
+                // Ownership. A business create states it explicitly: `ownerScope`
+                // is the only ownership input — the partner id is derived
+                // server-side from auth.partnerId, and a partner-owned report
+                // has no orgId by construction (the API's partner arm is
+                // `orgId: z.never()`, so an orgId beside it is a 400). Every
+                // other type keeps its original org-owned body.
+                ...(isBusiness && owner === 'partner'
+                  ? { ownerScope: 'partner' as const }
+                  : {
+                      ...(isBusiness ? { ownerScope: 'organization' as const } : {}),
+                      ...(currentOrgId ? { orgId: currentOrgId } : {})
+                    }),
+                // Business report config schemas (#3198) REFUSE a dateRange
+                // (and filters/sites/orgId/orgIds/siteIds/deviceIds) that
+                // "selects something" — the server 400s. Those types have no
+                // ad-hoc selection at all, so the config is exactly what the
+                // type's options form mapped (`*ConfigFromOptions`), never a
+                // dateRange.
+                config: isBusiness
+                  ? { ...postureConfig }
+                  : {
+                      dateRange: template.defaults.dateRange ?? { preset: 'last_30_days' },
+                      ...postureConfig
+                    }
               })
           }),
           errorFallback: t('reports.reportTemplates.errors.createReport'),
@@ -533,14 +737,73 @@ export default function ReportTemplates() {
         setIdentityTemplate(template);
         return;
       }
+      if (isBusinessReportType(type)) {
+        // Seeded on every open — never the last submission's values: a saved
+        // report opens with the options it stored (the ones its card's Default
+        // range tile describes), a curated card with the form defaults.
+        const saved = template.savedBusinessConfig;
+        setTicketSlaOptions(saved ? ticketSlaOptionsFromConfig(saved) : DEFAULT_TICKET_SLA_OPTIONS);
+        setTechnicianTimeOptions(saved ? technicianTimeOptionsFromConfig(saved) : DEFAULT_TECHNICIAN_TIME_OPTIONS);
+        setArAgingOptions(saved ? arAgingOptionsFromConfig(saved) : DEFAULT_AR_AGING_OPTIONS);
+        setOwnerScope(defaultOwnerScope);
+        setBusinessTemplate(template);
+        return;
+      }
       if (type && !reportTypeSurvivesBuilder(type)) {
         void handleCreateDirect(template);
         return;
       }
       handleOpenBuilder(template);
     },
-    [handleCreateDirect, handleOpenBuilder]
+    [defaultOwnerScope, handleCreateDirect, handleOpenBuilder]
   );
+
+  const renderBusinessOptionsForm = (template: ReportTemplate) => {
+    const shared = {
+      busy: creatingId === template.id,
+      onCancel: () => setBusinessTemplate(null),
+    };
+    switch (template.defaults.type) {
+      case 'ticket_sla_attainment':
+        return (
+          <TicketSlaOptionsForm
+            {...shared}
+            value={ticketSlaOptions}
+            onChange={setTicketSlaOptions}
+            submitLabel={t('reports.ticketSlaOptions.createReport')}
+            onSubmit={() => {
+              void handleCreateDirect(template, ticketSlaConfigFromOptions(ticketSlaOptions), effectiveOwnerScope);
+            }}
+          />
+        );
+      case 'technician_time_billability':
+        return (
+          <TechnicianTimeOptionsForm
+            {...shared}
+            value={technicianTimeOptions}
+            onChange={setTechnicianTimeOptions}
+            submitLabel={t('reports.technicianTimeOptions.createReport')}
+            onSubmit={() => {
+              void handleCreateDirect(template, technicianTimeConfigFromOptions(technicianTimeOptions), effectiveOwnerScope);
+            }}
+          />
+        );
+      case 'ar_aging':
+        return (
+          <ArAgingOptionsForm
+            {...shared}
+            value={arAgingOptions}
+            onChange={setArAgingOptions}
+            submitLabel={t('reports.arAgingOptions.createReport')}
+            onSubmit={() => {
+              void handleCreateDirect(template, arAgingConfigFromOptions(arAgingOptions), effectiveOwnerScope);
+            }}
+          />
+        );
+      default:
+        return null;
+    }
+  };
 
   const handleCloseBuilder = useCallback(() => {
     setBuilderOpen(false);
@@ -576,11 +839,99 @@ export default function ReportTemplates() {
   const getTemplateDescription = (template: ReportTemplate) =>
     t(/* i18n-dynamic */ `reports.reportTemplates.templates.${template.id}.description`, { defaultValue: template.description });
 
+  // The Business group is MSP-internal (audience: msp_staff) and every type in
+  // it 403s for an org-scope caller — so hide the section entirely unless the
+  // JWT claims are resolved to partner scope (never on 'unresolved', which is
+  // "unknown", not "denied"), and hide any card the user individually lacks
+  // the required permission for.
+  const isPartnerScope = jwtClaims.status === 'resolved' && jwtClaims.claims.scope === 'partner';
+  const businessTemplates = useMemo(
+    () =>
+      !isPartnerScope
+        ? []
+        : templates.filter(t => t.group === 'business' && canUseBusinessReportType(t.defaults.type)),
+    [templates, isPartnerScope, canUseBusinessReportType]
+  );
+  const generalTemplates = useMemo(() => templates.filter(t => t.group !== 'business'), [templates]);
+
+  const renderCard = (template: ReportTemplate) => {
+    const Icon = template.icon;
+    const scheduleLabel = template.defaults.schedule
+      ? getScheduleLabel(template.defaults.schedule)
+      : t('reports.reportTemplates.custom');
+    const formatLabel = template.defaults.format ? getFormatLabel(template.defaults.format) : t('reports.reportTemplates.custom');
+    const reportTypeLabel = template.defaults.type ? getReportTypeLabel(template.defaults.type) : t('reports.reportTemplates.template');
+    const displayName = getTemplateDisplayName(template);
+    const description = getTemplateDescription(template);
+
+    return (
+      <div
+        key={template.id}
+        data-testid={`report-template-card-${template.id}`}
+        className="group flex h-full flex-col rounded-lg border bg-card p-5 shadow-xs transition hover:-translate-y-1 hover:shadow-md"
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className={cn('flex h-10 w-10 items-center justify-center rounded-md', template.tone.iconBg)}>
+              <Icon className={cn('h-5 w-5', template.tone.iconColor)} />
+            </div>
+            <div>
+              <p className="text-sm font-semibold">{displayName}</p>
+              <p
+                data-testid={`report-template-type-${template.defaults.type ?? 'unknown'}`}
+                className="text-xs text-muted-foreground"
+              >
+                {reportTypeLabel}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <p className="mt-3 text-sm text-muted-foreground">{description}</p>
+
+        <TemplatePreviewImage
+          template={template}
+          alt={t('reports.reportTemplates.previewAlt', { name: displayName })}
+        />
+
+        <TemplateSpec
+          items={[
+            { label: t('reports.reportTemplates.spec.cadence'), value: scheduleLabel },
+            { label: t('reports.reportTemplates.spec.format'), value: formatLabel },
+            {
+              label: t('reports.reportTemplates.spec.defaultRange'),
+              // Business types derive it from their period / asOf, never the
+              // dateRange they cannot carry (see businessDefaultRange).
+              value:
+                businessDefaultRange(template, t)
+                  ?? (template.defaults.dateRange?.preset
+                      ? template.defaults.dateRange.preset.replace(/_/g, ' ')
+                      : t('reports.reportTemplates.custom')),
+            },
+          ]}
+        />
+
+        <div className="mt-auto pt-4">
+          <button
+            type="button"
+            data-testid={`report-template-use-${template.id}`}
+            onClick={() => handleUseTemplate(template)}
+            disabled={creatingId === template.id}
+            className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-md bg-primary px-4 text-xs font-semibold text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {creatingId === template.id && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+            {t('reports.reportTemplates.useTemplate')}
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">{t('reports.reportTemplates.title')}</h1>
+          <h1 data-testid="reports-templates-heading" className="text-xl font-semibold tracking-tight">{t('reports.reportTemplates.title')}</h1>
           <p className="text-sm text-muted-foreground">
             {t('reports.reportTemplates.description')}
           </p>
@@ -609,66 +960,19 @@ export default function ReportTemplates() {
         </div>
       )}
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        {templates.map(template => {
-          const Icon = template.icon;
-          const scheduleLabel = template.defaults.schedule
-            ? getScheduleLabel(template.defaults.schedule)
-            : t('reports.reportTemplates.custom');
-          const formatLabel = template.defaults.format ? getFormatLabel(template.defaults.format) : t('reports.reportTemplates.custom');
-          const reportTypeLabel = template.defaults.type ? getReportTypeLabel(template.defaults.type) : t('reports.reportTemplates.template');
-          const displayName = getTemplateDisplayName(template);
-          const description = getTemplateDescription(template);
-
-          return (
-            <div
-              key={template.id}
-              className="group flex h-full flex-col rounded-lg border bg-card p-5 shadow-xs transition hover:-translate-y-1 hover:shadow-md"
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex items-center gap-3">
-                  <div className={cn('flex h-10 w-10 items-center justify-center rounded-md', template.tone.iconBg)}>
-                    <Icon className={cn('h-5 w-5', template.tone.iconColor)} />
-                  </div>
-                  <div>
-                    <p className="text-sm font-semibold">{displayName}</p>
-                    <p className="text-xs text-muted-foreground">{reportTypeLabel}</p>
-                  </div>
-                </div>
-              </div>
-
-              <p className="mt-3 text-sm text-muted-foreground">{description}</p>
-
-              <TemplatePreviewImage
-                template={template}
-                alt={t('reports.reportTemplates.previewAlt', { name: displayName })}
-              />
-
-              <TemplateSpec
-                items={[
-                  { label: t('reports.reportTemplates.spec.cadence'), value: scheduleLabel },
-                  { label: t('reports.reportTemplates.spec.format'), value: formatLabel },
-                  {
-                    label: t('reports.reportTemplates.spec.defaultRange'),
-                    value: template.defaults.dateRange?.preset?.replace(/_/g, ' ') ?? t('reports.reportTemplates.last30Days'),
-                  },
-                ]}
-              />
-
-              <div className="mt-auto pt-4">
-                <button
-                  type="button"
-                  onClick={() => handleUseTemplate(template)}
-                  disabled={creatingId === template.id}
-                  className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-md bg-primary px-4 text-xs font-semibold text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {creatingId === template.id && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                  {t('reports.reportTemplates.useTemplate')}
-                </button>
-              </div>
-            </div>
-          );
-        })}
+      <div className="space-y-8">
+        {businessTemplates.length > 0 && (
+          <TemplateSection
+            group="business"
+            title={t('reports.reportTemplates.groups.business')}
+            description={t('reports.reportTemplates.groups.businessDescription')}
+          >
+            {businessTemplates.map(renderCard)}
+          </TemplateSection>
+        )}
+        <TemplateSection group="general" title={t('reports.reportTemplates.groups.general')}>
+          {generalTemplates.map(renderCard)}
+        </TemplateSection>
       </div>
 
       {builderOpen && (
@@ -824,6 +1128,45 @@ export default function ReportTemplates() {
                   void handleCreateDirect(identityTemplate, { ...identityOptions });
                 }}
               />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {businessTemplate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div
+            data-testid="business-report-options-modal"
+            className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-lg border bg-card p-6 shadow-lg"
+          >
+            <h2 className="text-lg font-semibold">
+              {t('reports.reportTemplates.useTemplateTitle', {
+                name: getTemplateDisplayName(businessTemplate),
+              })}
+            </h2>
+            {/* Ownership (the create-only ownerScope selector) is common to all
+                three business types, so it belongs here in the shared shell,
+                above the type-specific form, and its value joins the POST
+                body in handleCreateDirect beside `config`. */}
+            <div className="mt-5 space-y-4">
+              <ReportOwnerScopeField value={ownerScope} onChange={setOwnerScope} />
+              {/* A user who may only create single-organization reports, with
+                  no organization focused: nothing could own the report, so the
+                  field shows a pick-an-organization hint and there is no form
+                  to submit — only a way out. */}
+              {ownerNeedsOrganization ? (
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    className="rounded-md border px-4 py-2 text-sm"
+                    onClick={() => setBusinessTemplate(null)}
+                  >
+                    {t('common:actions.cancel')}
+                  </button>
+                </div>
+              ) : (
+                renderBusinessOptionsForm(businessTemplate)
+              )}
             </div>
           </div>
         </div>

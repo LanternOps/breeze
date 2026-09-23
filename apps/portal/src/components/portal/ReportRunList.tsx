@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { PortalRunDto } from '@breeze/shared';
 import { Download, FileText } from 'lucide-react';
 import { portalApi } from '@/lib/api';
@@ -42,6 +42,21 @@ type ReportType =
   | 'threat_detection_review'
   | 'vulnerability_management'
   | 'identity_access_review';
+
+/**
+ * Types that must never render in a customer's portal even if a row for one
+ * reaches this component (#3198 W03). `portalRunListPredicate` filters on org,
+ * portal_self_service and status — it has NO type filter — so "it cannot
+ * happen" is a property of the data, not of this code. These three carry the
+ * MSP's own service performance, per-technician time and receivables; a single
+ * mis-provisioned definition would put all three in front of the customer.
+ * Fail closed here as well as upstream.
+ */
+const NEVER_PORTAL_VISIBLE = new Set<string>([
+  'ticket_sla_attainment',
+  'technician_time_billability',
+  'ar_aging',
+]);
 
 /** What the reader is told is happening, in their own language. The MSP-side
  *  report definition names are technical; these are not. Total over
@@ -108,6 +123,13 @@ export function ReportRunList({
   lifecycleHref?: string | null;
 }) {
   const [runs, setRuns] = useState(initialRuns);
+  // Derived on every render (not just on init) so a later `setRuns` refresh
+  // (e.g. after generating a report) is filtered exactly like the initial
+  // props — the fail-closed guarantee must survive a re-fetch, not just mount.
+  const visibleRuns = useMemo(
+    () => runs.filter((r) => !NEVER_PORTAL_VISIBLE.has(r.type as string)),
+    [runs],
+  );
   const [busyType, setBusyType] = useState<GeneratableReportType | null>(null);
   const [message, setMessage] = useState(error ?? null);
   // Announced by the polite live region below the actions: a report that takes
@@ -232,7 +254,7 @@ export function ReportRunList({
 
       {message && <ErrorNotice>{message}</ErrorNotice>}
 
-      {runs.length === 0 ? (
+      {visibleRuns.length === 0 ? (
         <EmptyState
           icon={<FileText className="h-10 w-10" strokeWidth={1.5} />}
           title="No reports yet"
@@ -255,7 +277,7 @@ export function ReportRunList({
               </tr>
             </thead>
             <tbody className="block divide-y divide-border/70 sm:table-row-group">
-              {runs.map((run) => {
+              {visibleRuns.map((run) => {
                 const name = reportDisplayName(run.name);
                 return (
                   <tr
@@ -332,7 +354,7 @@ export function ReportRunList({
             className="border-t border-border px-4 pt-3.5 text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground"
             data-testid="report-ledger-foot"
           >
-            {runs.length === 1 ? '1 report available' : `${runs.length} reports available`}
+            {visibleRuns.length === 1 ? '1 report available' : `${visibleRuns.length} reports available`}
           </div>
         </div>
       )}

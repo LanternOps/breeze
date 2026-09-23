@@ -366,6 +366,48 @@ describe('ReportRunList', () => {
     // Downloadable, though: delivery already gated visibility server-side.
     expect(screen.getByTestId('portal-report-run-pdf-run-ia')).toBeInTheDocument();
   });
+
+  // #3198 W03. These three types are internal by construction: they are absent
+  // from PORTAL_REPORT_TYPES, never portal_self_service, and their definitions
+  // are org- or partner-owned MSP reports. If a row of one ever reaches this
+  // component, something upstream has leaked — so the component must not be the
+  // thing that renders it, and must certainly never offer to generate one.
+  const BUSINESS_TYPES = [
+    { type: 'ticket_sla_attainment', name: 'Ticket SLA attainment' },
+    { type: 'technician_time_billability', name: 'Technician time & billability' },
+    { type: 'ar_aging', name: 'AR aging' },
+  ] as const;
+  const leakedRun = (type: string, name: string) =>
+    ({ ...run, id: `run-${type}`, name, type }) as unknown as PortalRunDto;
+
+  it.each(BUSINESS_TYPES)('renders no row and no generate button for $type', ({ type, name }) => {
+    render(<ReportRunList initialRuns={[leakedRun(type, name), run]} timezone="America/Denver" />);
+
+    expect(screen.queryByTestId(`portal-report-run-row-run-${type}`)).toBeNull();
+    expect(screen.queryByText(name)).toBeNull();
+    // Positive control: the legitimate row beside it still renders.
+    expect(screen.getByTestId('portal-report-run-row-run-1')).toBeTruthy();
+    expect(screen.queryByTestId(`portal-reports-generate-${type.replace(/_/g, '-')}`)).toBeNull();
+  });
+
+  it('keeps all three business types out after the post-generate re-fetch', async () => {
+    const fresh: PortalRunDto = { ...run, id: 'run-new' };
+    generateMock.mockResolvedValue({ data: fresh });
+    listMock.mockResolvedValue({
+      data: [fresh, ...BUSINESS_TYPES.map(({ type, name }) => leakedRun(type, name)), run],
+    });
+
+    render(<ReportRunList initialRuns={[run]} timezone="America/Denver" />);
+    fireEvent.click(screen.getByTestId('portal-reports-generate-executive'));
+
+    expect(await screen.findByTestId('portal-report-run-row-run-new')).toBeTruthy();
+    expect(listMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('portal-report-run-row-run-1')).toBeTruthy();
+    for (const { type, name } of BUSINESS_TYPES) {
+      expect(screen.queryByTestId(`portal-report-run-row-run-${type}`)).toBeNull();
+      expect(screen.queryByText(name)).toBeNull();
+    }
+  });
 });
 
 describe('ReportRunList — hardware lifecycle link', () => {

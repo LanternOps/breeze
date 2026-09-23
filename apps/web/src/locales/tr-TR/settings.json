@@ -333,7 +333,8 @@
     "to": "Kime",
     "allOrganizations": "Tüm kuruluşlar",
     "exporting": "Dışa aktarılıyor…",
-    "downloadCsv": "CSV'yi indir"
+    "downloadCsv": "CSV'yi indir",
+    "seeBusinessReports": "İşletme raporlarını görüntüle"
   },
   "partnerSettingsCard": {
     "title": "İş Ortağı Ayarları",

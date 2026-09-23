@@ -3,7 +3,15 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 const fetchWithAuth = vi.fn();
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
+// No JWT/user in this fixture (equivalent to a not-yet-resolved session), so
+// the #3198 Business group (partner-scope gated) stays hidden and every
+// existing assertion here is about the General section only.
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a),
+  useAuthStore: Object.assign((selector: (s: { tokens?: unknown; user?: unknown }) => unknown) => selector({}), {
+    getState: () => ({}),
+  }),
+}));
 
 // Mutable so individual tests can exercise the no-org (partner-wide) path.
 let currentOrgId: string | null = 'org-1';

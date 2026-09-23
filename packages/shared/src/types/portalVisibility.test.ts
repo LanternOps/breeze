@@ -62,4 +62,17 @@ describe('portal visibility DTOs', () => {
     >().toEqualTypeOf<null>();
   });
 
+  it('excludes the #3198 business report types from the portal run union', () => {
+    // A portal run row's type comes from the database, so this union is the
+    // only place the compiler can be told what may appear. SLA attainment,
+    // technician time and AR aging are the MSP's OWN numbers — technician
+    // utilisation and money owed are not a customer's business — so they must
+    // never become assignable here (spec §2, §3.5).
+    expectTypeOf<PortalRunDto['type']>().not.toEqualTypeOf<'ticket_sla_attainment'>();
+    type Listable = PortalRunDto['type'];
+    type BusinessTypes = 'ticket_sla_attainment' | 'technician_time_billability' | 'ar_aging';
+    type Leak = Extract<Listable, BusinessTypes>;
+    expectTypeOf<Leak>().toEqualTypeOf<never>();
+  });
+
 });

@@ -6,6 +6,16 @@ vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchW
 const showToast = vi.fn();
 vi.mock('../shared/Toast', () => ({ showToast: (...a: unknown[]) => showToast(...a) }));
 
+type Scope = 'system' | 'partner' | 'organization' | null;
+const authScopeState = vi.hoisted(() => ({
+  claims: { status: 'resolved', claims: { scope: 'partner' as Scope, orgId: null, partnerId: 'p1' } } as
+    | { status: 'unresolved' }
+    | { status: 'resolved'; claims: { scope: Scope; orgId: string | null; partnerId: string | null } },
+}));
+vi.mock('@/lib/authScope', () => ({
+  useJwtClaims: () => authScopeState.claims,
+}));
+
 // jsdom doesn't support anchor .click() navigation — stub it so the download
 // path doesn't throw.
 vi.stubGlobal('HTMLAnchorElement', class extends HTMLAnchorElement {
@@ -17,6 +27,7 @@ import BillablesExportCard from './BillablesExportCard';
 beforeEach(() => {
   fetchWithAuth.mockReset();
   showToast.mockReset();
+  authScopeState.claims = { status: 'resolved', claims: { scope: 'partner', orgId: null, partnerId: 'p1' } };
   fetchWithAuth.mockImplementation(async (url: string) =>
     url.startsWith('/orgs/organizations')
       ? ({ ok: true, status: 200, json: async () => ({ data: [{ id: 'o-1', name: 'Acme' }] }) } as Response)
@@ -43,5 +54,20 @@ describe('BillablesExportCard', () => {
     fetchWithAuth.mockResolvedValueOnce({ ok: false, status: 400, json: async () => ({ error: 'window too large' }) } as Response);
     fireEvent.click(screen.getByTestId('billables-export-download'));
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+  });
+
+  it('links to the business reports without removing the CSV export', () => {
+    render(<BillablesExportCard />);
+    // The raw-lines export stays: it answers "give me the billable lines",
+    // which no report replaces (spec §7).
+    expect(screen.getByTestId('billables-export-download')).toBeInTheDocument();
+    const link = screen.getByTestId('billables-see-business-reports');
+    expect(link).toHaveAttribute('href', '/reports/templates');
+  });
+
+  it('hides the business reports link for an organization-scope user', () => {
+    authScopeState.claims = { status: 'resolved', claims: { scope: 'organization', orgId: 'o-1', partnerId: null } };
+    render(<BillablesExportCard />);
+    expect(screen.queryByTestId('billables-see-business-reports')).toBeNull();
   });
 });

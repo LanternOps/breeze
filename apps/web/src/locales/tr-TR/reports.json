@@ -322,7 +322,10 @@
         "security_compliance_posture": "Güvenlik ve Uyumluluk Duruşu",
         "software_inventory": "Yazılım Envanteri",
         "threat_detection_review": "Tehdit Tespiti İncelemesi",
-        "endpoint_management_review": "Uç Nokta Yönetimi İncelemesi"
+        "endpoint_management_review": "Uç Nokta Yönetimi İncelemesi",
+        "ticket_sla_attainment": "Bilet SLA Başarımı",
+        "technician_time_billability": "Teknisyen Zamanı ve Faturalandırılabilirlik",
+        "ar_aging": "Alacak Yaşlandırması (AR Aging)"
       },
       "threatDetection": {
         "agents": "Tespit aracısı olan uç noktalar",
@@ -419,7 +422,10 @@
         "security_compliance_posture": "Güvenlik ve Uyumluluk Duruşu",
         "software_inventory": "Yazılım Envanteri",
         "threat_detection_review": "Tehdit Tespiti İncelemesi",
-        "endpoint_management_review": "Uç Nokta Yönetimi İncelemesi"
+        "endpoint_management_review": "Uç Nokta Yönetimi İncelemesi",
+        "ticket_sla_attainment": "Bilet SLA Başarımı",
+        "technician_time_billability": "Teknisyen Zamanı ve Faturalandırılabilirlik",
+        "ar_aging": "Alacak Yaşlandırması (AR Aging)"
       },
       "runsTable": {
         "actions": "Eylemler",
@@ -455,7 +461,8 @@
       "templates": "Şablonlar",
       "title": "Raporlar",
       "tryAgain": "Tekrar deneyin",
-      "unknownReport": "Bilinmeyen Rapor"
+      "unknownReport": "Bilinmeyen Rapor",
+      "partnerWideIncomplete": "Tüm kuruluşları kapsayan bazı raporlar yüklenemedi, bu nedenle bu liste eksik olabilir. Tüm raporları görmek için Tüm kuruluşlar görünümüne geçin."
     },
     "reportBuilder": {
       "actions": {
@@ -800,7 +807,10 @@
         "updateFailed": "Rapor alıcıları güncellenemedi",
         "convertFailed": "Bu e-posta adresi dönüştürülemedi",
         "mfaRequired": "Bir alıcıyı dönüştürmek için çok faktörlü kimlik doğrulama gerekir. Profilinizde MFA'yı etkinleştirin ve tekrar deneyin.",
-        "loadFailed": "Rapor alıcıları yüklenemedi"
+        "loadFailed": "Rapor alıcıları yüklenemedi",
+        "businessEmailOnly": "İş raporları yalnızca aşağıdaki e-posta adreslerine gönderilir. Kuruluş kişileri eklenemez.",
+        "partnerOwnedEmailOnly": "Bu rapor tüm kuruluşları kapsadığından yalnızca aşağıdaki e-posta adreslerine gönderilir. Kuruluş kişileri eklenemez.",
+        "emailAddresses": "E-posta adresleri"
       },
       "previewTable": {
         "selectFields": "Önizleme tablosunun doldurulacağı alanları seçin."
@@ -934,7 +944,10 @@
         "security_compliance_posture": "Güvenlik ve Uyumluluk Duruşu",
         "software_inventory": "Yazılım Envanteri",
         "threat_detection_review": "Tehdit Tespiti İncelemesi",
-        "endpoint_management_review": "Uç Nokta Yönetimi İncelemesi"
+        "endpoint_management_review": "Uç Nokta Yönetimi İncelemesi",
+        "ticket_sla_attainment": "Bilet SLA Başarımı",
+        "technician_time_billability": "Teknisyen Zamanı ve Faturalandırılabilirlik",
+        "ar_aging": "Alacak Yaşlandırması (AR Aging)"
       },
       "schedules": {
         "daily": "Günlük",
@@ -945,6 +958,8 @@
       "spec": {
         "cadence": "Ritim",
         "defaultRange": "Varsayılan aralık",
+        "lastFullMonth": "Son tam ay",
+        "asOfRunDate": "Çalıştırma tarihi itibarıyla",
         "format": "Biçimi"
       },
       "success": {
@@ -988,11 +1003,28 @@
         "endpoint_management_review": {
           "description": "Microsoft Intune kanıtı: kayıt kapsamı, 30 günlük eğilimle uyumluluk dağılımı, eskimiş kayıtlar ve lisans koltukları; her eşitlemenin güncelliği belirtilir.",
           "name": "Intune Uç Nokta Yönetimi İncelemesi"
+        },
+        "ticket_sla_attainment": {
+          "name": "Bilet SLA Başarımı",
+          "description": "Dönem için yanıt ve çözüm başarımı, ihlal damgalarından okunmak yerine bilet zaman damgalarından yeniden hesaplanır — böylece geç ama sonunda yanıtlanan bir bilet yine de kaçırılmış sayılır. Kuruma, önceliğe, teknisyene veya kategoriye göre gruplandırılır."
+        },
+        "technician_time_billability": {
+          "name": "Teknisyen Zamanı ve Faturalandırılabilirlik",
+          "description": "Varsayılan haftalık kapasiteye karşı kaydedilen zaman, faturalandırılabilir / dahil / faturalandırılamaz ayrımı ve faturalandırılabilir zamanın ne kadarının fiilen onaylandığı ve faturalandırıldığı. Dönemde kaydı olmayan teknisyenler atılmak yerine sıfır olarak listelenir."
+        },
+        "ar_aging": {
+          "name": "Alacak Yaşlandırması (AR Aging)",
+          "description": "Ödenmemiş fatura bakiyeleri güncel / 1–30 / 31–60 / 61–90 / 90+ gün gecikmiş olarak gruplandırılır, para birimi başına dönüşüm yapılmadan tek bir toplam kullanılır. Vade tarihi olmayan faturalar kendi grubunu alır, asla “güncel” sayılmaz."
         }
       },
       "title": "Rapor Şablonları",
       "useTemplate": "Şablonu kullan",
-      "useTemplateTitle": "{{name}} kullanın"
+      "useTemplateTitle": "{{name}} kullanın",
+      "groups": {
+        "business": "İş",
+        "general": "Genel",
+        "businessDescription": "Yalnızca personel için MSP içi rakamlar — SLA başarımı, teknisyen faturalandırılabilirliği ve alacak yaşlanırması."
+      }
     },
     "threatDetectionOptions": {
       "cancel": "İptal",
@@ -1024,6 +1056,76 @@
       "adminDetail": "Yönetici oturum açma ayrıntısını dahil et",
       "adminDetailHelp": "Yönetici rolü taşıyan bir hesabın her etkileşimli oturum açmasını, geldiği adres dahil listeler. Denetçinin ilk okuduğu bölüm budur.",
       "coverageNote": "Rapor yalnızca etkileşimli oturum açmaları kapsar ve gerçekte kapsadığı aralığı yazar. Microsoft oturum açma günlüklerini yaklaşık 30 gün saklar ve bunları vermek için Entra ID P1 veya P2 lisansı ister; bu nedenle toplama açıldıktan sonraki ilk rapor eksiktir ve bunu açıkça belirtir."
+    },
+    "reportPeriod": {
+      "label": "Rapor dönemi",
+      "kinds": {
+        "last_full_month": "Son tam ay",
+        "last_30_days": "Son 30 gün",
+        "last_quarter": "Son tam çeyrek",
+        "custom": "Özel tarihler"
+      },
+      "start": "Başlangıç tarihi",
+      "end": "Bitiş tarihi (dahil)",
+      "help": "Hazır dönemler rapor her çalıştığında yeniden hesaplanır; bu nedenle aylık bir zamanlama her zaman yeni biten ayı kapsar.",
+      "errors": {
+        "missing": "Hem başlangıç hem de bitiş tarihi seçin.",
+        "invalid": "Her iki tarih de gerçek takvim tarihleri olmalıdır.",
+        "order": "Başlangıç tarihi bitiş tarihinden sonra olamaz."
+      }
+    },
+    "ticketSlaOptions": {
+      "approximationNote": "Uyum, ihlal işaretlerinden okunmak yerine talep zaman damgalarından yeniden hesaplanır; bu nedenle geç yanıtlanan bir talep yine ihlal sayılır. Duraklatma süresi toplam olarak saklanır, bu yüzden ilk yanıttan sonraki duraklamalar yanıt uyumunu biraz olduğundan iyi gösterir.",
+      "groupBy": "Gruplama ölçütü",
+      "groupByAutomatic": "Otomatik: tüm kuruluşlar için kuruluşa, tek bir kuruluş için önceliğe göre",
+      "groupByValues": {
+        "organization": "Kuruluş",
+        "priority": "Öncelik",
+        "technician": "Teknisyen (mevcut atanan)",
+        "category": "Kategori"
+      },
+      "technicianNote": "Talepler mevcut atanan kişiye göre gruplanır. Yeniden atama geçmişi tutulmaz; bu nedenle yanıt veren teknisyen olmayabilir.",
+      "includeNoSla": "SLA hedefi olmayan talepleri listele",
+      "includeNoSlaHelp": "SLA hedefi olmayan talepler her zaman ayrı sayılır ve uyumu asla etkilemez. Bu seçenek yalnızca ayrıntı satırlarında görünüp görünmeyeceklerini belirler.",
+      "cancel": "İptal",
+      "createReport": "Rapor oluştur"
+    },
+    "technicianTimeOptions": {
+      "groupBy": "Gruplama ölçütü",
+      "groupByValues": {
+        "technician": "Teknisyen",
+        "organization": "Kuruluş",
+        "work_type": "İş türü"
+      },
+      "orgAxisNote": "Bir kuruluşa bağlı olmayan zaman kayıtları kendi \"Kuruluş yok\" satırında görünür. Tek bir kuruluşa ait rapor yalnızca o kuruluşun taleplerine girilen süreyi görür.",
+      "capacityHours": "Teknisyen başına haftalık kapasite (saat)",
+      "capacityHoursHelp": "Kullanım oranı her teknisyen için aynı kapasiteyi varsayar ve iş günlerine orantılar. İzinler ve yarı zamanlı çalışma hesaba katılmaz.",
+      "cancel": "İptal",
+      "createReport": "Rapor oluştur"
+    },
+    "arAgingOptions": {
+      "asOf": "Bakiyelerin yaşlandırma tarihi",
+      "asOfHelp": "Raporun çalıştığı güne göre yaşlandırmak için boş bırakın. Bir tarih yalnızca yaşlandırma referans tarihini değiştirir: bakiyeler güncel bakiyelerdir, bu nedenle geçmiş bakiyeleri yeniden oluşturmaz ve o tarihten sonra kaydedilen ödemeleri geri almaz.",
+      "asOfInvalid": "Gerçek bir takvim tarihi girin veya alanı boş bırakın.",
+      "groupBy": "Gruplama ölçütü",
+      "groupByValues": {
+        "organization": "Kuruluş",
+        "currency": "Para birimi"
+      },
+      "currencyNote": "Her para biriminin kendi toplamları vardır. Tutarlar para birimleri arasında dönüştürülmez.",
+      "includePaidInPeriod": "Ay başından bu yana ödenen faturaları listele",
+      "includePaidInPeriodHelp": "Referans ayının ilk gününden referans tarihine kadar tamamen ödenen faturaları listeleyen bir not ekler. Yaşlandırma dilimlerini asla değiştirmez.",
+      "cancel": "İptal",
+      "createReport": "Rapor oluştur"
+    },
+    "ownerScope": {
+      "legend": "Raporun kapsamı",
+      "allOrganizations": "Tüm kuruluşlar",
+      "allOrganizationsHint": "Her çalıştırmada belirlenen tüm aktif ve deneme sürümündeki kuruluşları kapsar. Hariç tutulan kuruluşlar raporun notlarında listelenir. Tüm kuruluşlara erişim gerektirir.",
+      "singleOrganization": "Tek bir kuruluş",
+      "singleOrganizationHint": "Kuruluş seçicide seçili olan kuruluş.",
+      "singleOrganizationDisabledHint": "Kuruluş kapsamlı bir rapor oluşturmak için kuruluş seçicide bir kuruluş seçin.",
+      "needsOrganizationHint": "Bu raporu oluşturmak için kuruluş seçicide bir kuruluş seçin. Tüm kuruluşları kapsayan raporlar, tüm kuruluşlara erişim gerektirir."
     }
   }
 }

@@ -322,7 +322,10 @@
         "security_compliance_posture": "Sicherheits- und Compliance-Status",
         "software_inventory": "Software-Inventar",
         "threat_detection_review": "Überprüfung der Bedrohungserkennung",
-        "endpoint_management_review": "Endpunktverwaltungs-Bericht"
+        "endpoint_management_review": "Endpunktverwaltungs-Bericht",
+        "ticket_sla_attainment": "Ticket-SLA-Erfüllung",
+        "technician_time_billability": "Techniker-Zeit & Abrechenbarkeit",
+        "ar_aging": "Offene Forderungen (Fälligkeitsanalyse)"
       },
       "threatDetection": {
         "agents": "Endgeräte mit Erkennungsagent",
@@ -419,7 +422,10 @@
         "security_compliance_posture": "Sicherheits- und Compliance-Status",
         "software_inventory": "Software-Inventar",
         "threat_detection_review": "Überprüfung der Bedrohungserkennung",
-        "endpoint_management_review": "Endpunktverwaltungs-Bericht"
+        "endpoint_management_review": "Endpunktverwaltungs-Bericht",
+        "ticket_sla_attainment": "Ticket-SLA-Erfüllung",
+        "technician_time_billability": "Techniker-Zeit & Abrechenbarkeit",
+        "ar_aging": "Offene Forderungen (Fälligkeitsanalyse)"
       },
       "runsTable": {
         "actions": "Aktionen",
@@ -455,7 +461,8 @@
       "templates": "Vorlagen",
       "title": "Berichte",
       "tryAgain": "Versuchen Sie es erneut",
-      "unknownReport": "Unbekannter Bericht"
+      "unknownReport": "Unbekannter Bericht",
+      "partnerWideIncomplete": "Einige Berichte, die alle Organisationen umfassen, konnten nicht geladen werden. Diese Liste ist daher möglicherweise unvollständig. Wechseln Sie zu „Alle Organisationen“, um alle Berichte zu sehen."
     },
     "reportBuilder": {
       "actions": {
@@ -800,7 +807,10 @@
         "updateFailed": "Die Berichtsempfänger konnten nicht aktualisiert werden",
         "convertFailed": "Diese E-Mail-Adresse konnte nicht umgewandelt werden",
         "mfaRequired": "Das Umwandeln eines Empfängers erfordert Multi-Faktor-Authentifizierung. Aktivieren Sie MFA in Ihrem Profil und versuchen Sie es erneut.",
-        "loadFailed": "Die Berichtsempfänger konnten nicht geladen werden"
+        "loadFailed": "Die Berichtsempfänger konnten nicht geladen werden",
+        "businessEmailOnly": "Geschäftsberichte werden nur an die unten stehenden E-Mail-Adressen zugestellt. Organisationskontakte können nicht hinzugefügt werden.",
+        "partnerOwnedEmailOnly": "Dieser Bericht umfasst alle Organisationen und wird daher nur an die unten stehenden E-Mail-Adressen zugestellt. Organisationskontakte können nicht hinzugefügt werden.",
+        "emailAddresses": "E-Mail-Adressen"
       },
       "previewTable": {
         "selectFields": "Wählen Sie Felder aus, um die Vorschautabelle zu füllen."
@@ -934,7 +944,10 @@
         "security_compliance_posture": "Sicherheits- und Compliance-Status",
         "software_inventory": "Software-Inventar",
         "threat_detection_review": "Überprüfung der Bedrohungserkennung",
-        "endpoint_management_review": "Endpunktverwaltungs-Bericht"
+        "endpoint_management_review": "Endpunktverwaltungs-Bericht",
+        "ticket_sla_attainment": "Ticket-SLA-Erfüllung",
+        "technician_time_billability": "Techniker-Zeit & Abrechenbarkeit",
+        "ar_aging": "Offene Forderungen (Fälligkeitsanalyse)"
       },
       "schedules": {
         "daily": "Täglich",
@@ -945,6 +958,8 @@
       "spec": {
         "cadence": "Berichtsintervall",
         "defaultRange": "Standardbereich",
+        "lastFullMonth": "Letzter voller Monat",
+        "asOfRunDate": "Zum Zeitpunkt der Ausführung",
         "format": "Formatieren"
       },
       "success": {
@@ -988,11 +1003,28 @@
         "endpoint_management_review": {
           "description": "Nachweis aus Microsoft Intune: Registrierungsabdeckung, Compliance-Aufschlüsselung mit 30-Tage-Verlauf, veraltete Registrierungen und Lizenzplätze — jeweils mit Angabe der Aktualität der Synchronisierung.",
           "name": "Intune-Endpunktverwaltungs-Bericht"
+        },
+        "ticket_sla_attainment": {
+          "name": "Ticket-SLA-Erfüllung",
+          "description": "Antwort- und Lösungserfüllung für den Zeitraum, neu berechnet aus den Ticket-Zeitstempeln statt aus den Verletzungsmarkierungen abgelesen — ein spät, aber letztlich beantwortetes Ticket zählt also weiterhin als verfehlt. Gruppiert nach Organisation, Priorität, Techniker oder Kategorie."
+        },
+        "technician_time_billability": {
+          "name": "Techniker-Zeit & Abrechenbarkeit",
+          "description": "Erfasste Zeit gegen eine angenommene wöchentliche Kapazität, die Aufteilung abrechenbar / inklusive / nicht abrechenbar sowie der Anteil der abrechenbaren Zeit, der tatsächlich freigegeben und abgerechnet wurde. Techniker ohne Zeiterfassung im Zeitraum werden mit null aufgeführt statt weggelassen."
+        },
+        "ar_aging": {
+          "name": "Offene Forderungen (Fälligkeitsanalyse)",
+          "description": "Unbezahlte Rechnungssalden gruppiert nach aktuell / 1–30 / 31–60 / 61–90 / über 90 Tage überfällig, jeweils eine Summe pro Währung ohne Umrechnung. Rechnungen ohne Fälligkeitsdatum erhalten eine eigene Gruppe, niemals „aktuell“."
         }
       },
       "title": "Berichtsvorlagen",
       "useTemplate": "Vorlage verwenden",
-      "useTemplateTitle": "Vorlage {{name}} verwenden"
+      "useTemplateTitle": "Vorlage {{name}} verwenden",
+      "groups": {
+        "business": "Geschäftlich",
+        "general": "Allgemein",
+        "businessDescription": "Interne MSP-Kennzahlen — SLA-Erfüllung, Techniker-Abrechenbarkeit und offene Forderungen — nur für Mitarbeitende."
+      }
     },
     "threatDetectionOptions": {
       "cancel": "Abbrechen",
@@ -1024,6 +1056,76 @@
       "adminDetail": "Detaillierte Administrator-Anmeldungen einbeziehen",
       "adminDetailHelp": "Listet jede interaktive Anmeldung eines Kontos mit Administratorrolle auf, einschließlich der Herkunftsadresse. Diesen Abschnitt liest eine Prüferin zuerst.",
       "coverageNote": "Der Bericht erfasst ausschließlich interaktive Anmeldungen und nennt das tatsächlich abgedeckte Zeitfenster. Microsoft bewahrt Anmeldeprotokolle rund 30 Tage auf und gibt sie nur mit einer Lizenz vom Typ Entra ID P1 oder P2 heraus; der erste Bericht nach Aktivierung der Erfassung ist daher unvollständig und weist das aus."
+    },
+    "reportPeriod": {
+      "label": "Berichtszeitraum",
+      "kinds": {
+        "last_full_month": "Letzter voller Monat",
+        "last_30_days": "Letzte 30 Tage",
+        "last_quarter": "Letztes volles Quartal",
+        "custom": "Benutzerdefinierte Daten"
+      },
+      "start": "Startdatum",
+      "end": "Enddatum (einschließlich)",
+      "help": "Vordefinierte Zeiträume werden bei jeder Ausführung neu berechnet, sodass ein monatlicher Zeitplan immer den gerade abgeschlossenen Monat abdeckt.",
+      "errors": {
+        "missing": "Wählen Sie sowohl ein Start- als auch ein Enddatum.",
+        "invalid": "Beide Daten müssen gültige Kalenderdaten sein.",
+        "order": "Das Startdatum darf nicht nach dem Enddatum liegen."
+      }
+    },
+    "ticketSlaOptions": {
+      "approximationNote": "Die Einhaltung wird aus den Ticket-Zeitstempeln neu berechnet statt aus den Verletzungsmarkierungen gelesen, daher zählt ein verspätet beantwortetes Ticket weiterhin als Verfehlung. Pausenzeiten werden als Gesamtsumme gespeichert, daher schönen Pausen nach der ersten Antwort die Antwortquote leicht.",
+      "groupBy": "Gruppieren nach",
+      "groupByAutomatic": "Automatisch: nach Organisation für alle Organisationen, nach Priorität für eine Organisation",
+      "groupByValues": {
+        "organization": "Organisation",
+        "priority": "Priorität",
+        "technician": "Techniker (aktuell zugewiesen)",
+        "category": "Kategorie"
+      },
+      "technicianNote": "Tickets werden nach der aktuell zugewiesenen Person gruppiert. Neuzuweisungen werden nicht protokolliert, daher ist dies nicht unbedingt der Techniker, der geantwortet hat.",
+      "includeNoSla": "Tickets ohne SLA-Ziel auflisten",
+      "includeNoSlaHelp": "Tickets ohne SLA-Ziel werden immer separat gezählt und beeinflussen die Einhaltung nie. Diese Option steuert nur, ob sie in den Detailzeilen erscheinen.",
+      "cancel": "Abbrechen",
+      "createReport": "Bericht erstellen"
+    },
+    "technicianTimeOptions": {
+      "groupBy": "Gruppieren nach",
+      "groupByValues": {
+        "technician": "Techniker",
+        "organization": "Organisation",
+        "work_type": "Arbeitsart"
+      },
+      "orgAxisNote": "Zeiteinträge ohne Organisation erscheinen in einer eigenen Zeile „Keine Organisation“. Ein Bericht, der einer einzelnen Organisation gehört, sieht nur Zeit, die auf deren Tickets erfasst wurde.",
+      "capacityHours": "Wöchentliche Kapazität pro Techniker (Stunden)",
+      "capacityHoursHelp": "Die Auslastung setzt für alle Techniker dieselbe Kapazität voraus, anteilig auf Arbeitstage verteilt. Urlaub und Teilzeit werden nicht berücksichtigt.",
+      "cancel": "Abbrechen",
+      "createReport": "Bericht erstellen"
+    },
+    "arAgingOptions": {
+      "asOf": "Salden altern zum Stichtag",
+      "asOfHelp": "Leer lassen, um zum Ausführungstag des Berichts zu altern. Ein Datum verschiebt nur den Stichtag der Altersberechnung: Die Salden sind die aktuellen, frühere Salden werden nicht rekonstruiert und danach erfasste Zahlungen nicht rückgängig gemacht.",
+      "asOfInvalid": "Geben Sie ein gültiges Kalenderdatum ein oder lassen Sie das Feld leer.",
+      "groupBy": "Gruppieren nach",
+      "groupByValues": {
+        "organization": "Organisation",
+        "currency": "Währung"
+      },
+      "currencyNote": "Jede Währung erhält eigene Summen. Beträge werden nicht zwischen Währungen umgerechnet.",
+      "includePaidInPeriod": "Im laufenden Monat bezahlte Rechnungen auflisten",
+      "includePaidInPeriodHelp": "Fügt einen Hinweis mit den Rechnungen hinzu, die vom Monatsersten bis zum Stichtag vollständig bezahlt wurden. Die Altersklassen ändern sich dadurch nie.",
+      "cancel": "Abbrechen",
+      "createReport": "Bericht erstellen"
+    },
+    "ownerScope": {
+      "legend": "Bericht umfasst",
+      "allOrganizations": "Alle Organisationen",
+      "allOrganizationsHint": "Umfasst alle aktiven Organisationen und Organisationen in der Testphase, bei jedem Lauf neu ermittelt. Ausgeschlossene Organisationen werden in den Hinweisen des Berichts aufgeführt. Erfordert Zugriff auf alle Organisationen.",
+      "singleOrganization": "Eine Organisation",
+      "singleOrganizationHint": "Die im Organisationswechsler ausgewählte Organisation.",
+      "singleOrganizationDisabledHint": "Wählen Sie eine Organisation im Organisationswechsler aus, um einen organisationsbezogenen Bericht zu erstellen.",
+      "needsOrganizationHint": "Wählen Sie im Organisationswechsler eine Organisation aus, um diesen Bericht zu erstellen. Berichte für alle Organisationen erfordern Zugriff auf alle Organisationen."
     }
   }
 }
