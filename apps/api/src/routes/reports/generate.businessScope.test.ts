@@ -267,6 +267,15 @@ describe('POST /reports/generate — business report scope (#3198 W02)', () => {
     expect(generateReport).not.toHaveBeenCalled();
   });
 
+  it('7b. an out-of-service partner (#6699) → 403 with the shared tenant_inactive body, nothing generated', async () => {
+    state.partnerAuthority = { ok: false, reason: 'tenant_inactive' };
+    const res = await post({ ownerScope: 'partner', type: 'ar_aging' });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Report owner is not active', reason: 'tenant_inactive' });
+    expect(generateReport).not.toHaveBeenCalled();
+  });
+
   it('8. an ambient context that cannot see the partner → 403 (ReportScopeMismatchError), not a zero-row report', async () => {
     state.ambient = { scope: 'partner', orgId: null, accessibleOrgIds: [], accessiblePartnerIds: [] };
     const res = await post({ ownerScope: 'partner', type: 'ar_aging' });

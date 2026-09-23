@@ -90,8 +90,12 @@ async function loadOrgOwnedDefinition(
   auth: Parameters<typeof getReportWithOrgCheck>[1],
   // Ruling P8b: a type whose read permissions the caller lacks is hidden (404).
   permissions: Parameters<typeof getReportWithOrgCheck>[2],
+  // #6699 decision B: only the read route passes 'read_history'; every
+  // recipient mutation keeps the default, which refuses an out-of-service
+  // owner (404, like any definition the caller cannot act on).
+  action: Parameters<typeof getReportWithOrgCheck>[3] = 'read',
 ) {
-  const report = await getReportWithOrgCheck(reportId, auth, permissions);
+  const report = await getReportWithOrgCheck(reportId, auth, permissions, action);
   if (!report) return { report: null, orgId: null, partnerOwned: false } as const;
   if (report.partnerId || !report.orgId) {
     return { report, orgId: null, partnerOwned: true } as const;
@@ -119,6 +123,7 @@ recipientsRoutes.get(
       c.req.param('id')!,
       c.get('auth'),
       c.get('permissions') as UserPermissions | undefined,
+      'read_history',
     );
     if (!report) return c.json({ error: 'Report not found' }, 404);
     if (!orgId) return c.json({ data: [] });

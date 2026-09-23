@@ -30,6 +30,7 @@ vi.mock('../../services/reportGenerationService', async (importOriginal) => {
 
 import { withSystemDbAccessContext } from '../../db';
 import {
+  partners,
   partnerUsers,
   permissions,
   reportRuns,
@@ -43,7 +44,7 @@ import { reportRoutes } from '../../routes/reports';
 import { authMiddleware } from '../../middleware/auth';
 import { createAccessToken } from '../../services/jwt';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../services/partnerWideAccess';
-import { siteScopeFingerprint } from '../../services/siteScope';
+import { resolveLivePartnerReportAuthority, siteScopeFingerprint } from '../../services/siteScope';
 import { generateReport } from '../../services/reportGenerationService';
 import {
   assignUserToOrganization,
@@ -942,5 +943,61 @@ describe('business report types are MSP-staff-only (#3198 W02, ruling F1)', () =
     );
     expect(await runsFor(id)).toEqual([expect.objectContaining({ status: 'completed', executionScopeUserId: fixture.admin.id })]);
     expect(generateReportSpy).toHaveBeenCalledTimes(1);
+  });
+
+  // #6699 - abuse containment. Same definition, same still-'active' admin with
+  // org_access='all'; only the owning partner is suspended. The worker must
+  // refuse at the live-authority step with a permanent reason, never reaching
+  // the generator, and must not rethrow. The deny row carries W02's
+  // partner_wide visibility envelope (partnerDenyEnvelope), so the refusal
+  // stays readable in the partner's run history.
+  runDb('processRunScheduledReport refuses a partner-owned definition once its partner is suspended (#6699)', async () => {
+    const fixture = await seedFixture();
+    const app = buildApp();
+    const created = await createPartnerDefinition(app, fixture, 'Suspended partner AR aging');
+
+    await getTestDb()
+      .update(partners)
+      .set({ status: 'suspended' })
+      .where(eq(partners.id, fixture.partner.id));
+
+    await expect(
+      withSystemDbAccessContext(() =>
+        processRunScheduledReport(
+          { type: 'run-scheduled-report', reportId: created.id, occurrenceKey: 1 },
+          { finalAttempt: false },
+        ),
+      ),
+    ).resolves.toBeUndefined();
+    expect(generateReportSpy).not.toHaveBeenCalled();
+
+    const runs = await runsFor(created.id);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      status: 'failed',
+      errorMessage: 'scope_tenant_inactive',
+      requestedByKind: 'user',
+      requestedByUserId: fixture.admin.id,
+      executionScopeKind: 'partner_wide',
+    });
+  });
+
+  // #6699 decision B: the suspended partner's definitions and run history stay
+  // readable ('read_history'); every producing action is refused.
+  runDb('a suspended partner keeps read_history but loses read/write/export/delete (#6699 decision B)', async () => {
+    const fixture = await seedFixture();
+    await getTestDb()
+      .update(partners)
+      .set({ status: 'suspended' })
+      .where(eq(partners.id, fixture.partner.id));
+
+    await expect(
+      resolveLivePartnerReportAuthority(fixture.admin.id, fixture.partner.id, 'read_history'),
+    ).resolves.toMatchObject({ ok: true, authority: { scope: { kind: 'partner_wide' } } });
+    for (const action of ['read', 'write', 'export', 'delete'] as const) {
+      await expect(
+        resolveLivePartnerReportAuthority(fixture.admin.id, fixture.partner.id, action),
+      ).resolves.toEqual({ ok: false, reason: 'tenant_inactive' });
+    }
   });
 });

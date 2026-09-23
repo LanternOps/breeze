@@ -1091,6 +1091,41 @@ describe('Wave 2 · exact live report authority comes only from current state', 
       reason: 'organization_inaccessible',
     });
   });
+
+  // #6699 - the batch map builds its own organizations JOIN partners read, so
+  // it needs its own real-DB proof (the unit suite's builder is canned).
+  runDb('resolveRequestReportAuthorityMap refuses out-of-service tenants on both branches (#6699)', async () => {
+    const f = await buildFixture();
+    await getTestDb().execute(
+      sql`UPDATE organizations SET status = 'archived' WHERE id = ${f.orgB}::uuid`,
+    );
+
+    // Normal-membership branch: only the archived org is refused.
+    const partnerAuth = fakeAuth({
+      userId: f.partnerUser.id,
+      scope: 'partner',
+      accessibleOrgIds: [f.orgA, f.orgB],
+    });
+    const mixed = await resolveRequestReportAuthorityMap(partnerAuth, [f.orgA, f.orgB], 'read');
+    expect(mixed.get(f.orgA)).toMatchObject({ ok: true });
+    expect(mixed.get(f.orgB)).toEqual({ ok: false, reason: 'tenant_inactive' });
+
+    // Suspending the partner refuses every org, on both branches.
+    await getTestDb().execute(
+      sql`UPDATE partners SET status = 'suspended' WHERE id = ${f.partner1}::uuid`,
+    );
+    const suspended = await resolveRequestReportAuthorityMap(partnerAuth, [f.orgA, f.orgB], 'read');
+    expect(suspended.get(f.orgA)).toEqual({ ok: false, reason: 'tenant_inactive' });
+    expect(suspended.get(f.orgB)).toEqual({ ok: false, reason: 'tenant_inactive' });
+
+    const systemAuth = fakeAuth({
+      userId: f.systemUser.id,
+      scope: 'system',
+      accessibleOrgIds: null,
+    });
+    const platform = await resolveRequestReportAuthorityMap(systemAuth, [f.orgA], 'read');
+    expect(platform.get(f.orgA)).toEqual({ ok: false, reason: 'tenant_inactive' });
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2373,6 +2408,77 @@ describe('Wave 2 · scheduled execution fails closed before any side effect', ()
     expect(runs[0]!.error_message).toBe('scope_user_inactive');
   });
 
+  // #6699 - abuse containment. The creator row stays 'active' throughout; only
+  // the owning tenant's lifecycle changes, and that alone must stop the run.
+  runDb.each([
+    { name: 'the owning partner is suspended', table: 'partners' as const, status: 'suspended' },
+    { name: 'the owning org is suspended', table: 'organizations' as const, status: 'suspended' },
+    { name: 'the owning org is archived', table: 'organizations' as const, status: 'archived' },
+  ])('refuses a scheduled org-owned run when $name (#6699)', async ({ table, status }) => {
+    const f = await buildFixture();
+    const reportId = await seedReport({
+      orgId: f.orgA,
+      name: `scheduled-tenant-${table}-${status}`,
+      schedule: 'daily',
+      scope: { kind: 'restricted', userId: f.siteAUser.id, siteIds: [f.siteA1] },
+      createdBy: f.siteAUser.id,
+      config: { emailRecipients: ['ops@example.com'] },
+    });
+
+    const targetId = table === 'partners' ? f.partner1 : f.orgA;
+    await getTestDb().execute(
+      sql`UPDATE ${sql.identifier(table)} SET status = ${status} WHERE id = ${targetId}::uuid`,
+    );
+    const userStatus = await scalar<string>(
+      sql`SELECT status FROM users WHERE id = ${f.siteAUser.id}::uuid`,
+    );
+    expect(userStatus).toBe('active');
+
+    await expect(runScheduled(reportId)).resolves.toBeUndefined();
+
+    const runs = await rawRows<{ status: string; error_message: string | null; result: unknown }>(sql`
+      SELECT status, error_message, result FROM report_runs WHERE report_id = ${reportId}::uuid
+    `);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.status).toBe('failed');
+    expect(runs[0]!.error_message).toBe('scope_tenant_inactive');
+    expect(runs[0]!.result).toBeNull();
+    expect(emailProbe.calls).toBe(0);
+  });
+
+  runDb('a trial org under an active partner still runs its schedule (#6699 control)', async () => {
+    const f = await buildFixture();
+    const reportId = await seedReport({
+      orgId: f.orgA,
+      name: 'scheduled-trial',
+      schedule: 'daily',
+      scope: { kind: 'restricted', userId: f.siteAUser.id, siteIds: [f.siteA1] },
+      createdBy: f.siteAUser.id,
+      config: { emailRecipients: ['ops@example.com'] },
+    });
+    await getTestDb().execute(
+      sql`UPDATE organizations SET status = 'trial' WHERE id = ${f.orgA}::uuid`,
+    );
+
+    await runScheduled(reportId);
+
+    const runs = await rawRows<{ status: string }>(sql`
+      SELECT status FROM report_runs WHERE report_id = ${reportId}::uuid
+    `);
+    expect(runs.map((r) => r.status)).toEqual(['completed']);
+    expect(emailProbe.calls).toBe(1);
+  });
+
+  runDb('the live org resolver refuses a suspended partner while the user stays active (#6699)', async () => {
+    const f = await buildFixture();
+    await getTestDb().execute(
+      sql`UPDATE partners SET status = 'suspended' WHERE id = ${f.partner1}::uuid`,
+    );
+
+    await expect(resolveLiveReportAuthority(f.siteAUser.id, f.orgA, 'read'))
+      .resolves.toEqual({ ok: false, reason: 'tenant_inactive' });
+  });
+
   runDb('legacy and old-writer schedules never execute and are never marked due', async () => {
     const f = await buildFixture();
     const legacyId = await seedReport({
@@ -2987,5 +3093,201 @@ describe('Wave P2-3 · a system-authored report carries no acting user', () => {
     expect(runs[0]!.error_message).toBe('system_principal_definition');
     expect(runs[0]!.result).toBeNull();
     expect(emailProbe.calls).toBe(0);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// #6699 decision B - an out-of-service tenant keeps read-only history, but
+// every action that produces, delivers, exports or mutates is refused.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('#6699 decision B · out-of-service org: history readable, everything else refused', () => {
+  // On the request path only a platform admin (system scope) reaches an
+  // out-of-service tenant at all: authMiddleware's assertActiveTenantContext
+  // 403s an org token of a suspended org, and a partner token's
+  // accessibleOrgIds carry only active/trial orgs. The first test pins that,
+  // so the report routes below are exercised through the system token.
+  async function seedHistory(f: Fixture) {
+    const reportId = await seedReport({
+      orgId: f.orgA,
+      name: 'decision-b-history',
+      scope: { kind: 'unrestricted', userId: f.unrestrictedUser.id },
+      createdBy: f.unrestrictedUser.id,
+    });
+    const runId = await seedRun({
+      reportId,
+      orgId: f.orgA,
+      scope: { kind: 'unrestricted', userId: f.unrestrictedUser.id },
+      result: { rows: [{ hostname: 'host-a1' }], rowCount: 1 },
+    });
+    return { reportId, runId };
+  }
+
+  async function runCount(reportId: string): Promise<number> {
+    return scalar<number>(
+      sql`SELECT count(*)::int FROM report_runs WHERE report_id = ${reportId}::uuid`,
+    );
+  }
+
+  runDb('an org token of a suspended org is stopped at authMiddleware (pre-existing gate)', async () => {
+    const f = await buildFixture();
+    const { reportId } = await seedHistory(f);
+    await getTestDb().execute(
+      sql`UPDATE organizations SET status = 'suspended' WHERE id = ${f.orgA}::uuid`,
+    );
+    const res = await buildApp().request(`/reports/${reportId}`, authed(f.unrestrictedUser.token));
+    expect(res.status).toBe(403);
+  });
+
+  runDb('a suspended org keeps its definitions and run history readable', async () => {
+    const f = await buildFixture();
+    const { reportId, runId } = await seedHistory(f);
+    await getTestDb().execute(
+      sql`UPDATE organizations SET status = 'suspended' WHERE id = ${f.orgA}::uuid`,
+    );
+    const app = buildApp();
+    const token = f.systemUser.token;
+
+    const list = await app.request(`/reports?orgId=${f.orgA}&limit=100`, authed(token));
+    expect(list.status).toBe(200);
+    const listBody = (await list.json()) as { data: Array<{ id: string }> };
+    expect(listBody.data.map((r) => r.id)).toContain(reportId);
+
+    const detail = await app.request(`/reports/${reportId}`, authed(token));
+    expect(detail.status).toBe(200);
+
+    const runs = await app.request('/reports/runs?limit=100', authed(token));
+    expect(runs.status).toBe(200);
+    const runsBody = (await runs.json()) as { data: Array<{ id: string }> };
+    expect(runsBody.data.map((r) => r.id)).toContain(runId);
+
+    const run = await app.request(`/reports/runs/${runId}`, authed(token));
+    expect(run.status).toBe(200);
+
+    const recipients = await app.request(`/reports/${reportId}/recipients`, authed(token));
+    expect(recipients.status).toBe(200);
+  });
+
+  runDb('a suspended org refuses generate, download/export, create, update, reauthorize and delete', async () => {
+    const f = await buildFixture();
+    const { reportId, runId } = await seedHistory(f);
+    await getTestDb().execute(
+      sql`UPDATE organizations SET status = 'suspended' WHERE id = ${f.orgA}::uuid`,
+    );
+    const app = buildApp();
+    const token = f.systemUser.token;
+
+    const generateById = await app.request(
+      `/reports/${reportId}/generate`,
+      authed(token, { method: 'POST' }),
+    );
+    expect(generateById.status).toBe(403);
+    expect(await generateById.json()).toMatchObject({ reason: 'tenant_inactive' });
+    expect(await runCount(reportId)).toBe(1);
+
+    const adHoc = await app.request(
+      '/reports/generate',
+      authed(token, { method: 'POST', body: JSON.stringify({ type: 'device_inventory', format: 'csv', orgId: f.orgA }) }),
+    );
+    expect(adHoc.status).toBe(403);
+    expect(await adHoc.json()).toMatchObject({ reason: 'tenant_inactive' });
+
+    // Download of a stored artifact is an export: refused like any hidden run.
+    const download = await app.request(`/reports/runs/${runId}/download`, authed(token));
+    expect(download.status).toBe(404);
+
+    const exportData = await app.request(`/reports/data/alerts-summary?orgId=${f.orgA}`, authed(token));
+    expect(exportData.status).not.toBe(200);
+
+    const created = await app.request(
+      '/reports',
+      authed(token, { method: 'POST', body: JSON.stringify({ name: 'new while suspended', type: 'device_inventory', orgId: f.orgA }) }),
+    );
+    expect(created.status).toBe(403);
+    expect(await created.json()).toMatchObject({ reason: 'tenant_inactive' });
+
+    const updated = await app.request(
+      `/reports/${reportId}`,
+      authed(token, { method: 'PUT', body: JSON.stringify({ name: 'renamed while suspended' }) }),
+    );
+    expect(updated.status).toBe(404);
+
+    const reauthorized = await app.request(
+      `/reports/${reportId}/reauthorize`,
+      authed(token, { method: 'POST' }),
+    );
+    expect(reauthorized.status).toBe(404);
+
+    const deleted = await app.request(`/reports/${reportId}`, authed(token, { method: 'DELETE' }));
+    expect(deleted.status).toBe(404);
+
+    const rows = await rawRows<{ name: string }>(
+      sql`SELECT name FROM reports WHERE id = ${reportId}::uuid`,
+    );
+    expect(rows).toEqual([{ name: 'decision-b-history' }]);
+    expect(await runCount(reportId)).toBe(1);
+    const newDefinitions = await scalar<number>(
+      sql`SELECT count(*)::int FROM reports WHERE name = 'new while suspended'`,
+    );
+    expect(newDefinitions).toBe(0);
+  });
+
+  runDb('a trial org (control) generates and downloads normally', async () => {
+    const f = await buildFixture();
+    const { reportId, runId } = await seedHistory(f);
+    await getTestDb().execute(
+      sql`UPDATE organizations SET status = 'trial' WHERE id = ${f.orgA}::uuid`,
+    );
+    const app = buildApp();
+    const token = f.systemUser.token;
+
+    const download = await app.request(`/reports/runs/${runId}/download`, authed(token));
+    expect(download.status).toBe(200);
+    const generated = await app.request(
+      `/reports/${reportId}/generate`,
+      authed(token, { method: 'POST' }),
+    );
+    expect(generated.status).toBe(200);
+    expect(await runCount(reportId)).toBe(2);
+  });
+
+  runDb('a platform admin reads a suspended partner\'s org history but cannot generate', async () => {
+    const f = await buildFixture();
+    const { reportId, runId } = await seedHistory(f);
+    await getTestDb().execute(
+      sql`UPDATE partners SET status = 'suspended' WHERE id = ${f.partner1}::uuid`,
+    );
+    const systemAuth = fakeAuth({
+      userId: f.systemUser.id,
+      scope: 'system',
+      accessibleOrgIds: null,
+    });
+
+    await expect(resolveRequestReportAuthority(systemAuth, f.orgA, 'read_history'))
+      .resolves.toMatchObject({ ok: true });
+    const map = await resolveRequestReportAuthorityMap(systemAuth, [f.orgA], 'read_history');
+    expect(map.get(f.orgA)).toMatchObject({ ok: true });
+    for (const action of ['read', 'write', 'export', 'delete'] as const) {
+      await expect(resolveRequestReportAuthority(systemAuth, f.orgA, action))
+        .resolves.toEqual({ ok: false, reason: 'tenant_inactive' });
+    }
+    // The run and definition are untouched by the refusals above.
+    expect(await runCount(reportId)).toBe(1);
+    expect(runId).toBeTruthy();
+  });
+
+  runDb('read_history grants from the real reports:read row, never a reports:read_history one', async () => {
+    const f = await buildFixture();
+    await getTestDb().execute(
+      sql`UPDATE organizations SET status = 'suspended' WHERE id = ${f.orgA}::uuid`,
+    );
+    // Org D's role carries NO reports permission: history is still refused.
+    await getTestDb().execute(
+      sql`UPDATE organizations SET status = 'suspended' WHERE id = ${f.orgD}::uuid`,
+    );
+    await expect(resolveLiveReportAuthority(f.unrestrictedUser.id, f.orgA, 'read_history'))
+      .resolves.toMatchObject({ ok: true });
+    await expect(resolveLiveReportAuthority(f.partnerUser.id, f.orgD, 'read_history'))
+      .resolves.toEqual({ ok: false, reason: 'permission_removed' });
   });
 });

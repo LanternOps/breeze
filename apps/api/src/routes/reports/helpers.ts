@@ -24,7 +24,7 @@ import {
   type LiveSiteScopeV1,
   type PartnerWideScopeSqlTarget,
   type PersistedSiteScopeColumns,
-  type ReportAction,
+  type ReportAuthorityAction,
   type ReportExecutionAuthority,
   type ReportOwner,
 } from '../../services/siteScope';
@@ -157,6 +157,16 @@ export function systemPartnerWideListArm(
  */
 export const PARTNER_OWNED_REPORT = { error: 'partner_owned_report' } as const;
 
+/**
+ * #6699 decision B. The 403 for generate/create when the report's owner
+ * (partner or org) is out of service. Only returned to a caller that already
+ * passed the tenancy gates, so naming the reason discloses nothing new.
+ */
+export const REPORT_TENANT_INACTIVE = {
+  error: 'Report owner is not active',
+  reason: 'tenant_inactive',
+} as const;
+
 export function partnerOwnedRefusal(row: { partnerId?: string | null }) {
   return row.partnerId ? PARTNER_OWNED_REPORT : null;
 }
@@ -170,7 +180,7 @@ export function partnerOwnedRefusal(row: { partnerId?: string | null }) {
 export async function resolveReportOwnerAuthority(
   auth: AuthContext,
   owner: ReportOwner,
-  action: ReportAction,
+  action: ReportAuthorityAction,
 ): Promise<LiveReportAuthorityResult> {
   if (owner.partnerId !== undefined) {
     if (!canManagePartnerWidePolicies(auth)) {
@@ -242,11 +252,17 @@ export function reportOwnerScopePredicate(
  * caller's resolved permission set (the route's `permissions` context value, set by requirePermission), so a row whose
  * type needs a read permission the caller lacks answers null (→ 404), exactly
  * like a row outside the caller's tenancy.
+ *
+ * `action` (#6699 decision B) defaults to 'read', which refuses an
+ * out-of-service owner. A caller that only SHOWS the definition passes
+ * 'read_history'; a caller that goes on to generate re-resolves its own
+ * authority after loading and must not rely on this loader for containment.
  */
 export async function getReportWithOwnerCheck(
   reportId: string,
   auth: AuthContext,
   permissions: GrantedReportPermissions,
+  action: 'read' | 'read_history' = 'read',
 ) {
   const metadataCondition = tenantAuthorizedReportCondition(reportId, auth, permissions);
   const [metadata] = await db
@@ -268,7 +284,7 @@ export async function getReportWithOwnerCheck(
   const owner = reportOwnerOfRow(metadata);
   if (!owner) return null;
 
-  const authorityResult = await resolveReportOwnerAuthority(auth, owner, 'read');
+  const authorityResult = await resolveReportOwnerAuthority(auth, owner, action);
   if (!authorityResult.ok || authorityResult.authority.scope.kind === 'legacy_unscoped') {
     return null;
   }
@@ -440,7 +456,9 @@ export function tenantAuthorizedRunCondition(
 export async function getReportRunWithOwnerCheck(
   runId: string,
   auth: AuthContext,
-  action: ReportAction,
+  // #6699 decision B: 'read_history' only for the run-detail view; download
+  // ('export') and attach ('write') refuse an out-of-service owner.
+  action: ReportAuthorityAction,
   permissions: GrantedReportPermissions,
 ) {
   const tenantConditions: SQL<unknown>[] = [eq(reportRuns.id, runId)];

@@ -30,7 +30,7 @@ import {
   resolveRequestReportAuthority,
   type ReportExecutionAuthority,
 } from '../../services/siteScope';
-import { ensureOrgAccess } from './helpers';
+import { ensureOrgAccess, REPORT_TENANT_INACTIVE } from './helpers';
 import { generateReportSchema } from './schemas';
 
 export const generateRoutes = new Hono();
@@ -82,6 +82,9 @@ generateRoutes.post(
       );
       // Condition 1: the caller's LIVE partner authority refuses (demoted,
       // selected org access, ...) — core.ts create's body (ruling T11a).
+      if (!partnerResult.ok && partnerResult.reason === 'tenant_inactive') {
+        return c.json(REPORT_TENANT_INACTIVE, 403);
+      }
       if (!partnerResult.ok) {
         return c.json(
           { error: 'Report scope is not authorized', reason: partnerResult.reason },
@@ -143,7 +146,9 @@ generateRoutes.post(
         'read',
       );
       if (!authorityResult.ok) {
-        return c.json({ error: 'Device not found or access denied' }, 403);
+        return authorityResult.reason === 'tenant_inactive'
+          ? c.json(REPORT_TENANT_INACTIVE, 403)
+          : c.json({ error: 'Device not found or access denied' }, 403);
       }
       authority = authorityResult.authority;
       scope = organizationScope(orgId!);
