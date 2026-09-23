@@ -3,10 +3,12 @@ import { useTranslation } from 'react-i18next';
 import { AlertTriangle, History, Lock, RefreshCw } from 'lucide-react';
 import { fetchWithAuth } from '@/stores/auth';
 // Initializes the shared i18next singleton before any island renders translated text.
-import '../../lib/i18n';
+import '../../../lib/i18n';
 
 /**
- * Settings → System → Deprecations (#6605 wave 2).
+ * System → Deprecations tab (#6605 wave 2; moved from Settings by the
+ * system page W02, 2026-09-23-system-connections-page-design.md §4).
+ * Strings stay in the `settings` namespace (`systemDeprecations.*`).
  *
  * A read-only report, not a setting: every API retirement the image's
  * breaking-change manifest describes, with its status for this deployment,
@@ -51,7 +53,7 @@ const STATUS_CLASSES: Record<EntryStatus, string> = {
   upcoming: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200',
 };
 
-export default function SystemDeprecationsPage() {
+export default function DeprecationsTab() {
   const { t } = useTranslation('settings');
   const [report, setReport] = useState<DeprecationsReport | null>(null);
   const [loading, setLoading] = useState(true);
@@ -91,10 +93,10 @@ export default function SystemDeprecationsPage() {
   };
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="space-y-6">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold">{t('systemDeprecations.title')}</h1>
+          <h2 className="text-xl font-semibold">{t('systemDeprecations.title')}</h2>
           <p className="text-sm text-muted-foreground mt-1 max-w-3xl">{t('systemDeprecations.description')}</p>
         </div>
         {!forbidden && (

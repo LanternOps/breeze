@@ -2,9 +2,9 @@ import { render, screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const fetchWithAuth = vi.fn();
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
+vi.mock('../../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
 
-import SystemDeprecationsPage from './SystemDeprecationsPage';
+import DeprecationsTab from './DeprecationsTab';
 
 function jsonRes(body: unknown, status = 200) {
   return { ok: status >= 200 && status < 300, status, json: async () => body } as unknown as Response;
@@ -66,17 +66,17 @@ beforeEach(() => {
   fetchWithAuth.mockReset();
 });
 
-describe('SystemDeprecationsPage', () => {
+describe('DeprecationsTab', () => {
   it('reads the report from the platform-admin route', async () => {
     fetchWithAuth.mockResolvedValue(jsonRes({ data: report() }));
-    render(<SystemDeprecationsPage />);
+    render(<DeprecationsTab />);
     await screen.findByTestId('deprecations-table');
     expect(fetchWithAuth).toHaveBeenCalledWith('/admin/deprecations');
   });
 
   it('renders one row per retirement with surfaces, replacement, versions and status', async () => {
     fetchWithAuth.mockResolvedValue(jsonRes({ data: report() }));
-    render(<SystemDeprecationsPage />);
+    render(<DeprecationsTab />);
     const row = await screen.findByTestId('deprecation-row-ticket-labour-pricing-fields');
     expect(row.textContent).toContain('Labour-pricing fields retired');
     expect(row.textContent).toContain('PATCH /api/v1/ticket-categories/:id');
@@ -95,7 +95,7 @@ describe('SystemDeprecationsPage', () => {
 
   it('lists the recorded version history and migration counts', async () => {
     fetchWithAuth.mockResolvedValue(jsonRes({ data: report() }));
-    render(<SystemDeprecationsPage />);
+    render(<DeprecationsTab />);
     const history = await screen.findByTestId('deprecations-version-history');
     const items = within(history).getAllByRole('listitem');
     expect(items.map((i) => i.textContent)).toEqual([expect.stringContaining('0.116.0'), expect.stringContaining('0.115.0')]);
@@ -115,7 +115,7 @@ describe('SystemDeprecationsPage', () => {
         }),
       }),
     );
-    render(<SystemDeprecationsPage />);
+    render(<DeprecationsTab />);
     const banner = await screen.findByTestId('deprecations-history-missing');
     expect(banner.textContent).toMatch(/could not determine which versions this deployment ran/i);
     expect(banner.textContent).toMatch(/showing every retirement in effect/i);
@@ -135,7 +135,7 @@ describe('SystemDeprecationsPage', () => {
         }),
       }),
     );
-    render(<SystemDeprecationsPage />);
+    render(<DeprecationsTab />);
     await screen.findByTestId('deprecations-history-missing');
   });
 
@@ -143,31 +143,39 @@ describe('SystemDeprecationsPage', () => {
     fetchWithAuth.mockResolvedValue(
       jsonRes({ data: report({ manifestError: 'breaking-changes.json failed validation: entries.0.id', entries: [] }) }),
     );
-    render(<SystemDeprecationsPage />);
+    render(<DeprecationsTab />);
     const alert = await screen.findByTestId('deprecations-manifest-error');
     expect(alert.textContent).toContain('failed validation');
   });
 
   it('shows a platform-admin-required panel on a 403', async () => {
     fetchWithAuth.mockResolvedValue(jsonRes({ error: 'platform admin access required' }, 403));
-    render(<SystemDeprecationsPage />);
+    render(<DeprecationsTab />);
     await screen.findByTestId('deprecations-requires-platform-admin');
     expect(screen.queryByTestId('deprecations-table')).toBeNull();
   });
 
   it('shows an error, not an empty "no issues" table, when the request fails', async () => {
     fetchWithAuth.mockResolvedValue(jsonRes({ error: 'boom' }, 500));
-    render(<SystemDeprecationsPage />);
+    render(<DeprecationsTab />);
     await screen.findByTestId('deprecations-error');
     expect(screen.queryByTestId('deprecations-table')).toBeNull();
   });
 
   it('offers no edit controls: it is a report, not a setting', async () => {
     fetchWithAuth.mockResolvedValue(jsonRes({ data: report() }));
-    render(<SystemDeprecationsPage />);
+    render(<DeprecationsTab />);
     await screen.findByTestId('deprecations-table');
     expect(screen.queryAllByRole('textbox')).toHaveLength(0);
     expect(screen.queryAllByRole('checkbox')).toHaveLength(0);
     expect(screen.queryByRole('button', { name: /save/i })).toBeNull();
+  });
+
+  it('renders as a tab: an h2 title and no page-level h1 (SystemPage owns the h1)', async () => {
+    fetchWithAuth.mockResolvedValue(jsonRes({ data: report() }));
+    render(<DeprecationsTab />);
+    await screen.findByTestId('deprecations-table');
+    expect(screen.queryByRole('heading', { level: 1 })).toBeNull();
+    expect(screen.getByRole('heading', { level: 2, name: 'Deprecations' })).toBeTruthy();
   });
 });
