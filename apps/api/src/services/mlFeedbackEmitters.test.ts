@@ -12,6 +12,7 @@ import {
   emitAlertStateFeedback,
   emitCorrelationFeedback,
   emitAnomalyFeedback,
+  emitAnomalyEpisodeFeedback,
   emitRcaFeedback,
   emitRemediationSuggestionFeedback,
   emitDeviceReliabilityFeedback,
@@ -107,6 +108,62 @@ describe('mlFeedbackEmitters', () => {
         eventType: 'user_risk.true_positive', outcome: 'true_positive',
       });
       expect(lastPayload()).toMatchObject({ sourceType: 'user_risk', sourceId: 'usr-1', eventType: 'user_risk.true_positive' });
+    });
+  });
+
+  describe('emitAnomalyEpisodeFeedback (W03)', () => {
+    const EPISODE = '99999999-9999-4999-8999-999999999999';
+
+    it('writes one anomaly_episode row keyed by the episode, with the episode dedupeKey', async () => {
+      emitMlFeedbackEvent.mockResolvedValueOnce({ id: 'evt-99', inserted: true });
+
+      const inserted = await emitAnomalyEpisodeFeedback({
+        orgId: 'org-1',
+        episodeId: EPISODE,
+        eventType: 'anomaly_episode.dismissed',
+        outcome: 'dismissed',
+        actorUserId: VALID_UUID,
+        occurredAt: new Date('2026-09-22T00:00:00.000Z'),
+        metadata: { memberCount: 17 },
+      });
+
+      expect(inserted).toBe(1);
+      expect(lastPayload()).toMatchObject({
+        orgId: 'org-1',
+        sourceType: 'anomaly_episode',
+        sourceId: EPISODE,
+        eventType: 'anomaly_episode.dismissed',
+        dedupeKey: `episode:${EPISODE}`,
+        outcome: 'dismissed',
+        actorUserId: VALID_UUID,
+        metadata: { memberCount: 17, episodeId: EPISODE },
+      });
+    });
+
+    it('normalizes a non-uuid actor to null', async () => {
+      emitMlFeedbackEvent.mockResolvedValueOnce({ id: 'evt-100', inserted: true });
+      await emitAnomalyEpisodeFeedback({
+        orgId: 'org-1', episodeId: EPISODE, eventType: 'anomaly_episode.resolved', outcome: 'resolved',
+        actorUserId: 'system', occurredAt: new Date(),
+      });
+      expect(lastPayload().actorUserId).toBeNull();
+    });
+
+    it('returns 0 on a dedupe replay (no row inserted)', async () => {
+      emitMlFeedbackEvent.mockResolvedValueOnce({ id: null, inserted: false });
+      const inserted = await emitAnomalyEpisodeFeedback({
+        orgId: 'org-1', episodeId: EPISODE, eventType: 'anomaly_episode.resolved', outcome: 'resolved',
+        occurredAt: new Date(),
+      });
+      expect(inserted).toBe(0);
+    });
+
+    it('propagates a write failure (W02 D-7: labels are never best-effort)', async () => {
+      emitMlFeedbackEvent.mockRejectedValueOnce(new Error('db down'));
+      await expect(emitAnomalyEpisodeFeedback({
+        orgId: 'org-1', episodeId: EPISODE, eventType: 'anomaly_episode.resolved', outcome: 'resolved',
+        occurredAt: new Date(),
+      })).rejects.toThrow('db down');
     });
   });
 
