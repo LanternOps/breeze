@@ -72,7 +72,7 @@ describe('ExecutionDetails custom-field write summary', () => {
 
     expect(screen.getByTestId('exec-custom-fields-applied')).toBeInTheDocument();
     expect(screen.getByTestId('exec-custom-fields-rejected')).toHaveTextContent('asset_tag');
-    expect(screen.getByTestId('exec-custom-fields-rejected')).toHaveTextContent('No matching field definition');
+    expect(screen.getByTestId('exec-custom-fields-rejected')).toHaveTextContent('No custom field with this key');
   });
 
   it('falls back to the raw reason code for a reason with no translation', () => {
