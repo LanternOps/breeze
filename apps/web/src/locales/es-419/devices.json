@@ -392,7 +392,8 @@
     },
     "membersTruncated": "Se muestran las primeras {{count}} detecciones.",
     "failedToLoadDetections": "No se pudieron cargar las detecciones",
-    "legacyDetectionNote": "Esta detección es anterior a la agrupación por episodios."
+    "legacyDetectionNote": "Esta detección es anterior a la agrupación por episodios.",
+    "v1ShadowPerEpisodeNote": "Este episodio también está siendo evaluado por el modelo de sombra v1 para comparación."
   },
   "deviceBillingCard": {
     "title": "Facturación",

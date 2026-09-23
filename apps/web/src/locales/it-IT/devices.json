@@ -392,7 +392,8 @@
     },
     "membersTruncated": "Visualizzazione dei primi {{count}} rilevamenti.",
     "failedToLoadDetections": "Impossibile caricare i rilevamenti",
-    "legacyDetectionNote": "Questo rilevamento è precedente al raggruppamento per episodi."
+    "legacyDetectionNote": "Questo rilevamento è precedente al raggruppamento per episodi.",
+    "v1ShadowPerEpisodeNote": "Questo episodio viene valutato anche dal modello ombra v1 per il confronto."
   },
   "deviceBillingCard": {
     "title": "Fatturazione",

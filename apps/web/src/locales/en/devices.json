@@ -392,7 +392,8 @@
     },
     "membersTruncated": "Showing the first {{count}} detections.",
     "failedToLoadDetections": "Failed to load detections",
-    "legacyDetectionNote": "This detection predates episode grouping."
+    "legacyDetectionNote": "This detection predates episode grouping.",
+    "v1ShadowPerEpisodeNote": "This episode is also being scored by the v1 shadow model for comparison."
   },
   "deviceBillingCard": {
     "title": "Billing",

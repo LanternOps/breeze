@@ -392,7 +392,8 @@
     },
     "membersTruncated": "İlk {{count}} tespit gösteriliyor.",
     "failedToLoadDetections": "Tespitler yüklenemedi",
-    "legacyDetectionNote": "Bu tespit, olay gruplamasından öncesine ait."
+    "legacyDetectionNote": "Bu tespit, olay gruplamasından öncesine ait.",
+    "v1ShadowPerEpisodeNote": "Bu bölüm karşılaştırma için v1 gölge modeli tarafından da puanlanıyor."
   },
   "deviceBillingCard": {
     "title": "Faturalama",

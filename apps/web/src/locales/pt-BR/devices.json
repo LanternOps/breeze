@@ -392,7 +392,8 @@
     },
     "membersTruncated": "Exibindo as primeiras {{count}} detecções.",
     "failedToLoadDetections": "Não foi possível carregar as detecções",
-    "legacyDetectionNote": "Esta detecção é anterior ao agrupamento por episódios."
+    "legacyDetectionNote": "Esta detecção é anterior ao agrupamento por episódios.",
+    "v1ShadowPerEpisodeNote": "Este episódio também está sendo avaliado pelo modelo sombra v1 para comparação."
   },
   "deviceBillingCard": {
     "title": "Faturamento",

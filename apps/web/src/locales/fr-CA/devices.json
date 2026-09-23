@@ -392,7 +392,8 @@
     },
     "membersTruncated": "Affichage des {{count}} premières détections.",
     "failedToLoadDetections": "Impossible de charger les détections",
-    "legacyDetectionNote": "Cette détection est antérieure au regroupement par épisodes."
+    "legacyDetectionNote": "Cette détection est antérieure au regroupement par épisodes.",
+    "v1ShadowPerEpisodeNote": "Cet épisode est également évalué par le modèle fantôme v1 à des fins de comparaison."
   },
   "deviceBillingCard": {
     "title": "Facturation",

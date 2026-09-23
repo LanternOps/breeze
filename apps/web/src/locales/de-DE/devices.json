@@ -392,7 +392,8 @@
     },
     "membersTruncated": "Die ersten {{count}} Erkennungen werden angezeigt.",
     "failedToLoadDetections": "Erkennungen konnten nicht geladen werden",
-    "legacyDetectionNote": "Diese Erkennung stammt aus der Zeit vor der Episodengruppierung."
+    "legacyDetectionNote": "Diese Erkennung stammt aus der Zeit vor der Episodengruppierung.",
+    "v1ShadowPerEpisodeNote": "Diese Episode wird zum Vergleich auch vom v1-Schattenmodell bewertet."
   },
   "deviceBillingCard": {
     "title": "Abrechnung",
