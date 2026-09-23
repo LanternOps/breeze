@@ -24,7 +24,7 @@ import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 
-import type { TicketSlaSummary } from '@breeze/shared';
+import type { TechnicianTimeSummary, TicketSlaSummary } from '@breeze/shared';
 import { withDbAccessContext, type DbAccessContext } from '../../db';
 import { buildDbAccessContext, computeAccessibleOrgIds } from '../../middleware/auth';
 import { generateReport, type ReportResult } from '../../services/reportGenerationService';
@@ -291,5 +291,195 @@ describe('ticket_sla_attainment — real Postgres (#3198 W02 Task 7)', () => {
       () => generateReport('ticket_sla_attainment', organizationScope(f.orgA.id),
         { period: AUGUST }, orgAuthority(f.orgA.id, f.user.id)),
     )).rejects.toBeInstanceOf(ReportScopeMismatchError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 8 — technician_time_billability
+// ---------------------------------------------------------------------------
+
+type TimeSeed = {
+  userId: string;
+  orgId: string | null;
+  startedAt: string;
+  minutes: number | null; // null = running timer (ended_at NULL)
+  coverage?: 'billable' | 'included' | 'non_billable' | null;
+  isBillable?: boolean;
+  hourlyRate?: string | null;
+  billingStatus?: 'not_billed' | 'billed' | 'no_charge' | 'contract';
+  isApproved?: boolean;
+  workTypeId?: string | null;
+};
+
+/** Seeded as the superuser (no RLS). billable_minutes = duration (no card
+ *  minimum/rounding), which satisfies time_entries_billable_minutes_chk. */
+async function seedTimeEntry(partnerId: string, o: TimeSeed): Promise<string> {
+  const id = randomUUID();
+  const started = new Date(o.startedAt);
+  const ended = o.minutes === null ? null : new Date(started.getTime() + o.minutes * 60_000).toISOString();
+  await getTestDb().execute(sql`
+    INSERT INTO time_entries (id, partner_id, org_id, user_id, started_at, ended_at, duration_minutes,
+      billable_minutes, is_billable, coverage, hourly_rate, currency_code, billing_status, is_approved, work_type_id)
+    VALUES (${id}, ${partnerId}, ${o.orgId}, ${o.userId}, ${o.startedAt}, ${ended}, ${o.minutes},
+      ${o.minutes}, ${o.isBillable ?? true}, ${o.coverage ?? null}, ${o.hourlyRate ?? null}, 'USD',
+      ${o.billingStatus ?? 'not_billed'}, ${o.isApproved ?? false}, ${o.workTypeId ?? null})`);
+  return id;
+}
+
+/**
+ * Partner P technicians: Dana (fixture user, time_entries:read) and Idle Tech
+ * (time_entries:read, logs nothing). NOT technicians: a P user whose role
+ * grants only reports:read, and a DISABLED P user holding time_entries:read.
+ *
+ * August 2026 entries by Dana, counted at partner scope:
+ *   A1 org A, 120m, coverage billable, $150 USD, billed + approved, work type "Onsite"
+ *   N1 NO ORG, 60m, coverage NULL + is_billable → billable (fallback), $100 USD
+ *   B1 org B, 30m, coverage included
+ *   B2 org B, 45m, coverage NULL + NOT is_billable → non_billable (fallback)
+ * Not counted: the suspended org's entry, a July entry, a running timer, and
+ * the other partner's entry.
+ */
+async function seedTimeFixture(f: BusinessFixture) {
+  const p = f.partner.id;
+  const idle = await createUser({ partnerId: p, name: 'Idle Tech', email: `idle-${randomUUID()}@example.com` });
+  const idleRole = await createRole({ scope: 'partner', partnerId: p });
+  await grantRolePermissions(idleRole.id, [{ resource: 'time_entries', action: 'read' }]);
+  await assignUserToPartner(idle.id, p, idleRole.id, 'all');
+
+  const viewer = await createUser({ partnerId: p, name: 'Report Viewer', email: `viewer-${randomUUID()}@example.com` });
+  const viewerRole = await createRole({ scope: 'partner', partnerId: p });
+  await grantRolePermissions(viewerRole.id, [{ resource: 'reports', action: 'read' }]);
+  await assignUserToPartner(viewer.id, p, viewerRole.id, 'all');
+
+  const disabled = await createUser({ partnerId: p, name: 'Gone Tech', email: `gone-${randomUUID()}@example.com`, status: 'disabled' });
+  await assignUserToPartner(disabled.id, p, idleRole.id, 'all');
+
+  const otherTech = await createUser({ partnerId: f.otherPartner.id, name: 'Other Partner Tech', email: `other-${randomUUID()}@example.com` });
+
+  const workTypeId = randomUUID();
+  await getTestDb().execute(sql`INSERT INTO work_types (id, partner_id, name) VALUES (${workTypeId}, ${p}, 'Onsite')`);
+
+  const u = f.user.id;
+  await seedTimeEntry(p, { userId: u, orgId: f.orgA.id, startedAt: '2026-08-04T09:00:00Z', minutes: 120,
+    coverage: 'billable', hourlyRate: '150.00', billingStatus: 'billed', isApproved: true, workTypeId });
+  await seedTimeEntry(p, { userId: u, orgId: null, startedAt: '2026-08-05T09:00:00Z', minutes: 60,
+    coverage: null, isBillable: true, hourlyRate: '100.00' });
+  await seedTimeEntry(p, { userId: u, orgId: f.orgB.id, startedAt: '2026-08-06T09:00:00Z', minutes: 30, coverage: 'included' });
+  await seedTimeEntry(p, { userId: u, orgId: f.orgB.id, startedAt: '2026-08-07T09:00:00Z', minutes: 45,
+    coverage: null, isBillable: false });
+  // Must NOT be counted:
+  await seedTimeEntry(p, { userId: u, orgId: f.suspendedOrg.id, startedAt: '2026-08-10T09:00:00Z', minutes: 90, coverage: 'billable' });
+  await seedTimeEntry(p, { userId: u, orgId: f.orgA.id, startedAt: '2026-07-31T09:00:00Z', minutes: 90, coverage: 'billable' });
+  await seedTimeEntry(p, { userId: u, orgId: f.orgA.id, startedAt: '2026-08-11T09:00:00Z', minutes: null, coverage: 'billable' });
+  await seedTimeEntry(f.otherPartner.id, { userId: otherTech.id, orgId: f.otherOrg.id, startedAt: '2026-08-12T09:00:00Z',
+    minutes: 500, coverage: 'billable', hourlyRate: '999.00' });
+
+  return { idle, viewer, disabled, otherTech, workTypeId };
+}
+
+describe('technician_time_billability — real Postgres (#3198 W02 Task 8)', () => {
+  runDb('partner scope: org-less time counted, idle tech at 0%, other partners / suspended orgs / non-techs absent', async () => {
+    const f = await seedBusinessFixture();
+    const t = await seedTimeFixture(f);
+    const authority = await livePartnerAuthority(f);
+    const scope = await livePartnerScope(f, authority);
+
+    const result = await generateReport('technician_time_billability', scope, { period: AUGUST }, authority);
+    const s = result.summary as TechnicianTimeSummary;
+
+    expect(s.groupBy).toBe('technician');
+    expect(s.workingDays).toBe(21);
+    expect(s.overall).toMatchObject({
+      loggedMinutes: 255, billableMinutes: 180, includedMinutes: 30, nonBillableMinutes: 45, billedMinutes: 120,
+      capacityMinutes: 2 * 21 * 8 * 60,
+      billableValue: [{ currencyCode: 'USD', amount: '400.00' }],
+      averageRate: [{ currencyCode: 'USD', amount: '125.00' }],
+    });
+    expect(s.overall.billingConversion).toBeCloseTo(120 / 180, 6);
+
+    // Exactly the two technicians: no viewer, no disabled user, no other partner.
+    expect(s.groups.map((g) => g.groupKey).sort()).toEqual([f.user.id, t.idle.id].sort());
+    const dana = s.groups.find((g) => g.groupKey === f.user.id)!;
+    const idle = s.groups.find((g) => g.groupKey === t.idle.id)!;
+    expect(dana).toMatchObject({ groupLabel: 'Dana Tech', loggedMinutes: 255, capacityMinutes: 10_080 });
+    expect(dana.utilization).toBeCloseTo(255 / 10_080, 6);
+    expect(idle).toMatchObject({ groupLabel: 'Idle Tech', loggedMinutes: 0, utilization: 0,
+      billablePercent: null, billingConversion: null, billableValue: [] });
+    expect(s.zeroTimeTechnicians).toBe(1);
+
+    // The org-less entry is in the detail too — the whole reason for partner scope.
+    expect(s.rows).toHaveLength(4);
+    expect(s.rows.filter((r) => r.orgId === null)).toHaveLength(1);
+    expect(s.rows.map((r) => r.coverage).sort()).toEqual(['billable', 'billable', 'included', 'non_billable']);
+    expect(s.detail).toEqual({ cap: 5000, stored: 4, available: 4, truncated: false });
+    expect(s.scope).toEqual({ kind: 'partner', partnerId: f.partner.id, orgCount: 2 });
+  });
+
+  runDb('groupBy organization and work_type: org-less → "No organization", untyped → "Unassigned", no idle-tech phantom rows', async () => {
+    const f = await seedBusinessFixture();
+    await seedTimeFixture(f);
+    const authority = await livePartnerAuthority(f);
+    const scope = await livePartnerScope(f, authority);
+
+    const byOrg = (await generateReport('technician_time_billability', scope,
+      { period: AUGUST, groupBy: 'organization' }, authority)).summary as TechnicianTimeSummary;
+    expect(Object.fromEntries(byOrg.groups.map((g) => [g.groupLabel, g.loggedMinutes]))).toEqual({
+      Acme: 120, Globex: 75, 'No organization': 60,
+    });
+    expect(byOrg.groups.every((g) => g.capacityMinutes === null && g.utilization === null)).toBe(true);
+    expect(byOrg.zeroTimeTechnicians).toBe(1);
+
+    const byType = (await generateReport('technician_time_billability', scope,
+      { period: AUGUST, groupBy: 'work_type' }, authority)).summary as TechnicianTimeSummary;
+    expect(Object.fromEntries(byType.groups.map((g) => [g.groupLabel, g.loggedMinutes]))).toEqual({
+      Onsite: 120, Unassigned: 135,
+    });
+  });
+
+  runDb('PARITY: a partner-scope RLS request context and the system context produce identical reports', async () => {
+    const f = await seedBusinessFixture();
+    await seedTimeFixture(f);
+    const authority = await livePartnerAuthority(f);
+
+    for (const groupBy of ['technician', 'organization', 'work_type'] as const) {
+      const config = { period: AUGUST, groupBy };
+      const viaRequest = await asPartnerRequest(f, async () =>
+        generateReport('technician_time_billability', await livePartnerScope(f, authority), config, authority));
+      const viaSystem = await generateReport('technician_time_billability', await livePartnerScope(f, authority), config, authority);
+
+      expect(withoutGeneratedAt(viaRequest), groupBy).toEqual(withoutGeneratedAt(viaSystem));
+      expect((viaSystem.summary as TechnicianTimeSummary).overall.loggedMinutes, groupBy).toBe(255);
+    }
+  });
+
+  runDb('org scope under a PARTNER context: only that org\'s time, no org-less entries, no idle techs', async () => {
+    const f = await seedBusinessFixture();
+    await seedTimeFixture(f);
+
+    const s = await asPartnerRequest(f, async () => (await generateReport('technician_time_billability',
+      organizationScope(f.orgA.id), { period: AUGUST }, orgAuthority(f.orgA.id, f.user.id))).summary as TechnicianTimeSummary);
+
+    expect(s.overall.loggedMinutes).toBe(120);
+    expect(s.groups.map((g) => g.groupKey)).toEqual([f.user.id]);
+    expect(s.rows.every((r) => r.orgId === f.orgA.id)).toBe(true);
+    expect(s.zeroTimeTechnicians).toBe(0);
+    expect(s.scope).toEqual({ kind: 'organization', orgId: f.orgA.id, orgName: 'Acme' });
+    expect(s.notes.join(' ')).toMatch(/ticket-linked time only/);
+  });
+
+  runDb('org scope under an ORG-token context: time entries are partner-internal → empty, disclosed, no error (P7)', async () => {
+    const f = await seedBusinessFixture();
+    await seedTimeFixture(f);
+
+    const s = await withDbAccessContext(
+      buildDbAccessContext({ scope: 'organization', orgId: f.orgA.id, accessibleOrgIds: [f.orgA.id], partnerId: f.partner.id, userId: f.user.id }),
+      async () => (await generateReport('technician_time_billability', organizationScope(f.orgA.id),
+        { period: AUGUST }, orgAuthority(f.orgA.id, f.user.id))).summary as TechnicianTimeSummary,
+    );
+
+    expect(s.overall.loggedMinutes).toBe(0);
+    expect(s.groups).toEqual([]);
+    expect(s.rows).toEqual([]);
+    expect(s.notes.join(' ')).toMatch(/partner-internal/);
   });
 });

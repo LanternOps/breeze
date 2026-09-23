@@ -175,3 +175,21 @@ export const ticketSlaConfigSchema = legacyReportConfigSchema.extend({
   includeNoSla: z.boolean().optional(),
 });
 export type TicketSlaConfig = z.infer<typeof ticketSlaConfigSchema>;
+
+/**
+ * #3198 W02 R2 — Technician time & billability (spec §3.3 R2).
+ *
+ * - `groupBy` (default `technician`, applied in the generator) narrows the
+ *   legacy free-text `groupBy`.
+ * - `weeklyCapacityHours` (default 40, applied in the generator) is the
+ *   uniform per-technician capacity, prorated over working days. No per-tech
+ *   capacity table exists in Phase 1 (Open Decision 3).
+ * - No `.default()` anywhere (parseStoredReportConfig filters defaults
+ *   top-level only) and no org/site/device selector keys (ruling T3e).
+ */
+export const technicianTimeConfigSchema = legacyReportConfigSchema.extend({
+  period: periodSchema.optional(),
+  groupBy: z.enum(['technician', 'organization', 'work_type']).optional(),
+  weeklyCapacityHours: z.number().min(1).max(80).optional(),
+});
+export type TechnicianTimeConfig = z.infer<typeof technicianTimeConfigSchema>;

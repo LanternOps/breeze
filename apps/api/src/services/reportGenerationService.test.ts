@@ -21,9 +21,13 @@ vi.mock('../db', () => ({
 vi.mock('./businessReports/ticketSlaReport', () => ({
   generateTicketSlaAttainmentReport: vi.fn(async () => ({ rows: [], rowCount: 0, summary: { generator: 'ticket_sla' } })),
 }));
+vi.mock('./businessReports/technicianTimeReport', () => ({
+  generateTechnicianTimeBillabilityReport: vi.fn(async () => ({ rows: [], rowCount: 0, summary: { generator: 'technician_time' } })),
+}));
 
 import { db } from '../db';
 import { generateTicketSlaAttainmentReport } from './businessReports/ticketSlaReport';
+import { generateTechnicianTimeBillabilityReport } from './businessReports/technicianTimeReport';
 import type { OrgReportExecutionAuthority, ReportExecutionAuthority } from './siteScope';
 import {
   assertReportExecutionPreflight,
@@ -77,12 +81,18 @@ const STORED_ARTIFACT_ONLY_TYPES: readonly ReportType[] = ['ai_org_narrative', '
  *  (ruling P2). */
 const BUSINESS_TYPES: readonly ReportType[] = [
   'ticket_sla_attainment',
+  'technician_time_billability',
 ];
+/** The mocked generator each BUSINESS_TYPES entry must reach, and the marker
+ *  summary it returns. */
+const BUSINESS_GENERATORS: Record<string, { fn: () => unknown; marker: string }> = {
+  ticket_sla_attainment: { fn: generateTicketSlaAttainmentReport as never, marker: 'ticket_sla' },
+  technician_time_billability: { fn: generateTechnicianTimeBillabilityReport as never, marker: 'technician_time' },
+};
 /** #3198 W01. Business report types that exist as enum labels only: W02
  *  registers their generators. Until then every generation entry point
  *  refuses them with `UnsupportedReportScopeError`. */
 const GENERATOR_LESS_BUSINESS_TYPES: readonly ReportType[] = [
-  'technician_time_billability',
   'ar_aging',
 ];
 const PARTNER_ID = '44444444-4444-4444-8444-444444444444';
@@ -585,17 +595,37 @@ describe('registry dispatch gate order (#3198 W02 Task 3)', () => {
     '%s reaches its generator with the partner scope and authority untouched (no placeholder)',
     async (type) => {
       const auth = partnerWideAuthority();
+      const generator = BUSINESS_GENERATORS[type]!;
       const result = await generateReport(type, PARTNER_SCOPE, { groupBy: 'organization' }, auth);
-      expect(result.summary).toEqual({ generator: 'ticket_sla' });
-      expect(generateTicketSlaAttainmentReport).toHaveBeenCalledWith(PARTNER_SCOPE, { groupBy: 'organization' }, auth);
+      expect(result.summary).toEqual({ generator: generator.marker });
+      expect(generator.fn).toHaveBeenCalledWith(PARTNER_SCOPE, { groupBy: 'organization' }, auth);
     },
   );
 
   it.each(BUSINESS_TYPES)('%s reaches its generator at organization scope', async (type) => {
     const auth = authority('unrestricted');
     await generateReport(type, organizationScope(ORG_ID), {}, auth);
-    expect(generateTicketSlaAttainmentReport).toHaveBeenCalledWith(organizationScope(ORG_ID), {}, auth);
+    expect(BUSINESS_GENERATORS[type]!.fn).toHaveBeenCalledWith(organizationScope(ORG_ID), {}, auth);
   });
+
+  it.each([...BUSINESS_TYPES, ...GENERATOR_LESS_BUSINESS_TYPES])(
+    // Ruling T7a: tickets, time entries and invoices have no site axis, so a
+    // site-restricted authority WITH sites must never reach a business
+    // generator either — the dispatcher answers zero-safe for any restricted
+    // authority, not only the zero-sites one.
+    '%s under a restricted authority WITH sites gets the zero-safe summary; the generator is never called',
+    async (type) => {
+      const result = await generateReport(type, organizationScope(ORG_ID), {}, authority('restricted', [SITE_A]));
+      expect(result.rowCount).toBe(0);
+      expect((result.summary as { notes: string[] }).notes).toEqual([
+        'This report ran under a site-restricted authority. Tickets, time entries and '
+        + 'invoices have no site dimension, so nothing was queried — the figures below '
+        + 'are not measured, and they are not zero.',
+      ]);
+      for (const generator of Object.values(BUSINESS_GENERATORS)) expect(generator.fn).not.toHaveBeenCalled();
+      expect(db.select).not.toHaveBeenCalled();
+    },
+  );
 
   it('a business type under a partner scope still runs the partner preflight (wrong partner → 403 shape)', async () => {
     await expect(generateReport(

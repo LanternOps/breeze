@@ -28,6 +28,7 @@ import {
   legacyReportConfigSchema,
   securityCompliancePostureConfigSchema,
   storedArtifactConfigSchema,
+  technicianTimeConfigSchema,
   threatDetectionConfigSchema,
   ticketSlaConfigSchema,
   vulnerabilityManagementConfigSchema,
@@ -129,7 +130,7 @@ const UNCAPPED = Number.POSITIVE_INFINITY;
 const BUSINESS_DETAIL_ROW_CAP = 5000;
 
 /**
- * PLACEHOLDER — not implemented until #3198 W02 task 8/9 (each replaces its
+ * PLACEHOLDER — not implemented until #3198 W02 task 9 (it replaces its
  * own entry's `generate` and `configSchema`). It throws W01's
  * `UnsupportedReportScopeError` rather than a bare Error so every caller keeps
  * W01's observable behaviour in the meantime: routes answer 400
@@ -302,8 +303,8 @@ const generators = {
   },
   // #3198 W02 business types. They take the ReportScope itself (org OR
   // partner) and the authority untouched: the generator runs its own
-  // `runInReportScope`. technician_time_billability and ar_aging are
-  // PLACEHOLDERS until tasks 8/9 (see `businessPlaceholder`); scopes,
+  // `runInReportScope`. ar_aging is a PLACEHOLDER until task 9 (see
+  // `businessPlaceholder`); scopes,
   // execution, cap and permissions are final.
   ticket_sla_attainment: {
     type: 'ticket_sla_attainment', label: 'Ticket SLA attainment',
@@ -317,11 +318,14 @@ const generators = {
   },
   technician_time_billability: {
     type: 'technician_time_billability', label: 'Technician time & billability',
-    configSchema: legacyReportConfigSchema, supportedScopes: ORG_OR_PARTNER,
+    configSchema: technicianTimeConfigSchema, supportedScopes: ORG_OR_PARTNER,
     execution: 'user',
     requiredPermissions: [PERMISSION_GRANTS.TIME_ENTRIES_READ, PERMISSION_GRANTS.TICKETS_READ],
     detailRowCap: BUSINESS_DETAIL_ROW_CAP,
-    generate: businessPlaceholder('technician_time_billability'),
+    generate: async (scope, config, authority) => {
+      const { generateTechnicianTimeBillabilityReport } = await import('./businessReports/technicianTimeReport');
+      return generateTechnicianTimeBillabilityReport(scope, config, authority);
+    },
   },
   ar_aging: {
     type: 'ar_aging', label: 'AR aging',

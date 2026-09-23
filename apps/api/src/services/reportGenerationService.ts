@@ -20,6 +20,7 @@ import {
   emptyEndpointManagementSummary,
 } from '@breeze/shared';
 import {
+  BUSINESS_REPORT_TYPES,
   emptyArAgingSummary,
   emptyTechnicianTimeSummary,
   emptyTicketSlaSummary,
@@ -946,6 +947,13 @@ async function dispatchReportGeneration(
   if (authority.scope.kind === 'restricted' && authority.scope.siteIds.length === 0) {
     return zeroSafeReport(type, authority.scope.orgId);
   }
+  // #3198 W02 ruling T7a: tickets, time entries and invoices have no site
+  // axis, so a site-restricted authority with ANY number of sites would read
+  // the whole org through a business generator. Zero-safe it here for every
+  // business type; each generator also refuses it (defense in depth).
+  if (authority.scope.kind === 'restricted' && isBusinessReportType(type)) {
+    return zeroSafeReport(type, authority.scope.orgId);
+  }
 
   return def.generate(scope, config, authority, evidence);
 }
@@ -988,6 +996,11 @@ export async function generateManagedEvidenceReport(
   return dispatchReportGeneration(
     type, organizationScope(orgId), config, systemReportAuthorityFor(orgId), evidence,
   );
+}
+
+const BUSINESS_REPORT_TYPE_SET: ReadonlySet<string> = new Set(BUSINESS_REPORT_TYPES);
+function isBusinessReportType(type: ReportType): boolean {
+  return BUSINESS_REPORT_TYPE_SET.has(type);
 }
 
 function zeroSafeReport(type: ReportType, orgId: string): ReportResult {
