@@ -24,7 +24,7 @@ import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 
-import type { TechnicianTimeSummary, TicketSlaSummary } from '@breeze/shared';
+import type { ArAgingSummary, TechnicianTimeSummary, TicketSlaSummary } from '@breeze/shared';
 import { withDbAccessContext, type DbAccessContext } from '../../db';
 import { buildDbAccessContext, computeAccessibleOrgIds } from '../../middleware/auth';
 import { generateReport, type ReportResult } from '../../services/reportGenerationService';
@@ -481,5 +481,168 @@ describe('technician_time_billability — real Postgres (#3198 W02 Task 8)', () 
     expect(s.groups).toEqual([]);
     expect(s.rows).toEqual([]);
     expect(s.notes.join(' ')).toMatch(/partner-internal/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 9 — ar_aging
+// ---------------------------------------------------------------------------
+
+const AS_OF = '2026-09-21';
+
+type InvoiceSeed = {
+  status: 'draft' | 'sent' | 'partially_paid' | 'overdue' | 'paid' | 'void';
+  currency: string;
+  dueDate: string | null;
+  total: string;
+  amountPaid?: string;
+  balance: string;
+  paidAt?: string | null;
+  payments?: string[]; // received_at dates
+};
+
+/** Seeded as the superuser (no RLS). */
+async function seedInvoice(orgId: string, partnerId: string, o: InvoiceSeed): Promise<string> {
+  const id = randomUUID();
+  await getTestDb().execute(sql`
+    INSERT INTO invoices (id, partner_id, org_id, invoice_number, status, currency_code, issue_date, due_date,
+      subtotal, total, amount_paid, balance, paid_at)
+    VALUES (${id}, ${partnerId}, ${orgId}, ${`INV-${id.slice(0, 12)}`}, ${o.status}, ${o.currency}, '2026-06-01',
+      ${o.dueDate}, ${o.total}, ${o.total}, ${o.amountPaid ?? '0.00'}, ${o.balance}, ${o.paidAt ?? null})`);
+  for (const receivedAt of o.payments ?? []) {
+    await getTestDb().execute(sql`
+      INSERT INTO invoice_payments (invoice_id, org_id, amount, method, received_at)
+      VALUES (${id}, ${orgId}, '25.00', 'bank_transfer', ${receivedAt})`);
+  }
+  return id;
+}
+
+/**
+ * As of 2026-09-21. Org A (Acme) bills USD, org B (Globex) bills EUR.
+ *   A: OVERDUE due 08-21 (31d) 100 → d31_60   — the §1 trap: status 'overdue' MUST count
+ *      partially_paid due 09-20 (1d) 150 → d1_30, two payments (last 09-10)
+ *      sent due 09-21 (0d) 75 → current
+ *      sent, NO due date, 20 → no_due_date (never current)
+ *      overdue due 06-22 (91d) 300 → d90_plus
+ *      DRAFT with a residual 40 → otherOpenBalance, in no bucket
+ *      paid 500 on 09-05, balance 0 → only in the includePaidInPeriod note
+ *   B: overdue due 07-23 (60d) 60 → d31_60 ; overdue due 07-22 (61d) 61 → d61_90
+ *      sent due 08-22 (30d) 30 → d1_30     ; overdue due 06-23 (90d) 90 → d61_90
+ * Not counted: the suspended org's overdue invoice, the other partner's.
+ */
+async function seedArFixture(f: BusinessFixture) {
+  const p = f.partner.id;
+  const a = f.orgA.id;
+  const b = f.orgB.id;
+  const overdueA = await seedInvoice(a, p, { status: 'overdue', currency: 'USD', dueDate: '2026-08-21', total: '100.00', balance: '100.00' });
+  const partialA = await seedInvoice(a, p, { status: 'partially_paid', currency: 'USD', dueDate: '2026-09-20',
+    total: '200.00', amountPaid: '50.00', balance: '150.00', payments: ['2026-09-02', '2026-09-10'] });
+  await seedInvoice(a, p, { status: 'sent', currency: 'USD', dueDate: '2026-09-21', total: '75.00', balance: '75.00' });
+  const noDueA = await seedInvoice(a, p, { status: 'sent', currency: 'USD', dueDate: null, total: '20.00', balance: '20.00' });
+  await seedInvoice(a, p, { status: 'overdue', currency: 'USD', dueDate: '2026-06-22', total: '300.00', balance: '300.00' });
+  const draftA = await seedInvoice(a, p, { status: 'draft', currency: 'USD', dueDate: '2026-08-01', total: '40.00', balance: '40.00' });
+  await seedInvoice(a, p, { status: 'paid', currency: 'USD', dueDate: '2026-09-01', total: '500.00', amountPaid: '500.00',
+    balance: '0.00', paidAt: '2026-09-05T15:00:00Z' });
+  await seedInvoice(b, p, { status: 'overdue', currency: 'EUR', dueDate: '2026-07-23', total: '60.00', balance: '60.00' });
+  await seedInvoice(b, p, { status: 'overdue', currency: 'EUR', dueDate: '2026-07-22', total: '61.00', balance: '61.00' });
+  await seedInvoice(b, p, { status: 'sent', currency: 'EUR', dueDate: '2026-08-22', total: '30.00', balance: '30.00' });
+  await seedInvoice(b, p, { status: 'overdue', currency: 'EUR', dueDate: '2026-06-23', total: '90.00', balance: '90.00' });
+  // Must NOT be counted:
+  await seedInvoice(f.suspendedOrg.id, p, { status: 'overdue', currency: 'USD', dueDate: '2026-08-01', total: '999.00', balance: '999.00' });
+  await seedInvoice(f.otherOrg.id, f.otherPartner.id, { status: 'overdue', currency: 'USD', dueDate: '2026-08-01', total: '888.00', balance: '888.00' });
+  return { overdueA, partialA, noDueA, draftA };
+}
+
+const ZERO = '0.00';
+const USD_BUCKETS = { current: '75.00', d1_30: '150.00', d31_60: '100.00', d61_90: ZERO, d90_plus: '300.00', no_due_date: '20.00' };
+const EUR_BUCKETS = { current: ZERO, d1_30: '30.00', d31_60: '60.00', d61_90: '151.00', d90_plus: ZERO, no_due_date: ZERO };
+
+describe('ar_aging — real Postgres (#3198 W02 Task 9)', () => {
+  runDb('partner scope: overdue-status invoices counted, exact bucket boundaries, per currency, reconciling', async () => {
+    const f = await seedBusinessFixture();
+    const ids = await seedArFixture(f);
+    const authority = await livePartnerAuthority(f);
+    const scope = await livePartnerScope(f, authority);
+
+    const result = await generateReport('ar_aging', scope, { asOf: AS_OF }, authority);
+    const s = result.summary as ArAgingSummary;
+
+    expect(s.asOf).toBe(AS_OF);
+    expect(s.groupBy).toBe('organization');
+    expect(s.byCurrency.map((r) => ({ c: r.currencyCode, b: r.buckets, t: r.openTotal, n: r.invoiceCount }))).toEqual([
+      { c: 'EUR', b: EUR_BUCKETS, t: '241.00', n: 4 },
+      { c: 'USD', b: USD_BUCKETS, t: '645.00', n: 5 },
+    ]);
+    // Reconciliation: buckets + other open = total open AR (USD 645 + 40 draft).
+    expect(s.otherOpenBalance).toEqual([{ currencyCode: 'USD', amount: '40.00' }]);
+    expect(s.notes.join(' ')).toMatch(/outside the AR-open set/);
+
+    // Both orgs of the partner, one row each (single-currency orgs); nothing else.
+    expect(s.groups.map((g) => [g.groupKey, g.groupLabel, g.currencyCode, g.openTotal])).toEqual([
+      [f.orgA.id, 'Acme', 'USD', '645.00'],
+      [f.orgB.id, 'Globex', 'EUR', '241.00'],
+    ]);
+
+    // Detail: the 9 AR-open invoices, no-due-date first then oldest debt first.
+    expect(s.rows.map((r) => r.daysOverdue)).toEqual([null, 91, 90, 61, 60, 31, 30, 1, 0]);
+    expect(s.rows.map((r) => r.bucket)).toEqual(
+      ['no_due_date', 'd90_plus', 'd61_90', 'd61_90', 'd31_60', 'd31_60', 'd1_30', 'd1_30', 'current']);
+    expect(s.rows.every((r) => r.orgId === f.orgA.id || r.orgId === f.orgB.id)).toBe(true);
+    expect(s.rows.map((r) => r.invoiceId)).not.toContain(ids.draftA);
+    const overdue = s.rows.find((r) => r.invoiceId === ids.overdueA)!;
+    expect(overdue).toMatchObject({ status: 'overdue', bucket: 'd31_60', balance: '100.00', lastPaymentAt: null });
+    const partial = s.rows.find((r) => r.invoiceId === ids.partialA)!;
+    expect(partial).toMatchObject({ amountPaid: '50.00', balance: '150.00', dueDate: '2026-09-20', lastPaymentAt: '2026-09-10' });
+    expect(s.rows.find((r) => r.invoiceId === ids.noDueA)).toMatchObject({ dueDate: null, bucket: 'no_due_date' });
+    expect(s.detail).toEqual({ cap: 5000, stored: 9, available: 9, truncated: false });
+    expect(s.scope).toEqual({ kind: 'partner', partnerId: f.partner.id, orgCount: 2 });
+    expect(s.notes.join(' ')).toMatch(/suspended.*excluded/i);
+  });
+
+  runDb('groupBy currency and includePaidInPeriod (month-to-date note, buckets unchanged)', async () => {
+    const f = await seedBusinessFixture();
+    await seedArFixture(f);
+    const authority = await livePartnerAuthority(f);
+    const scope = await livePartnerScope(f, authority);
+
+    const s = (await generateReport('ar_aging', scope,
+      { asOf: AS_OF, groupBy: 'currency', includePaidInPeriod: true }, authority)).summary as ArAgingSummary;
+    expect(s.groups.map((g) => [g.groupKey, g.openTotal])).toEqual([['EUR', '241.00'], ['USD', '645.00']]);
+    expect(s.byCurrency.map((r) => r.openTotal)).toEqual(['241.00', '645.00']);
+    expect(s.notes.join(' ')).toMatch(/Collected 2026-09-01 to 2026-09-21: 1 invoice reached paid, totalling 500\.00 USD/);
+  });
+
+  runDb('PARITY: a partner-scope RLS request context and the system context produce identical reports', async () => {
+    const f = await seedBusinessFixture();
+    await seedArFixture(f);
+    const authority = await livePartnerAuthority(f);
+
+    for (const groupBy of ['organization', 'currency'] as const) {
+      const config = { asOf: AS_OF, groupBy, includePaidInPeriod: true };
+      const viaRequest = await asPartnerRequest(f, async () =>
+        generateReport('ar_aging', await livePartnerScope(f, authority), config, authority));
+      const viaSystem = await generateReport('ar_aging', await livePartnerScope(f, authority), config, authority);
+
+      expect(withoutGeneratedAt(viaRequest), groupBy).toEqual(withoutGeneratedAt(viaSystem));
+      expect((viaSystem.summary as ArAgingSummary).rows, groupBy).toHaveLength(9);
+      // last payment is read through invoice_payments RLS on the request path too
+      expect((viaRequest.summary as ArAgingSummary).rows.some((r) => r.lastPaymentAt === '2026-09-10'), groupBy).toBe(true);
+    }
+  });
+
+  runDb('org scope under an org-token context sees only its own invoices', async () => {
+    const f = await seedBusinessFixture();
+    await seedArFixture(f);
+
+    const s = await withDbAccessContext(
+      buildDbAccessContext({ scope: 'organization', orgId: f.orgB.id, accessibleOrgIds: [f.orgB.id], partnerId: f.partner.id, userId: f.user.id }),
+      async () => (await generateReport('ar_aging', organizationScope(f.orgB.id),
+        { asOf: AS_OF }, orgAuthority(f.orgB.id, f.user.id))).summary as ArAgingSummary,
+    );
+
+    expect(s.byCurrency.map((r) => [r.currencyCode, r.openTotal])).toEqual([['EUR', '241.00']]);
+    expect(s.otherOpenBalance).toEqual([]);
+    expect(s.rows.every((r) => r.orgId === f.orgB.id)).toBe(true);
+    expect(s.scope).toEqual({ kind: 'organization', orgId: f.orgB.id, orgName: 'Globex' });
   });
 });

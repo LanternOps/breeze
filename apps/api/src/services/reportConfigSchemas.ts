@@ -193,3 +193,31 @@ export const technicianTimeConfigSchema = legacyReportConfigSchema.extend({
   weeklyCapacityHours: z.number().min(1).max(80).optional(),
 });
 export type TechnicianTimeConfig = z.infer<typeof technicianTimeConfigSchema>;
+
+/**
+ * #3198 W02 R3 — AR aging (spec §3.3 R3).
+ *
+ * - `asOf` is a calendar DATE (`YYYY-MM-DD`), not a timestamp: `invoices.
+ *   due_date` is a PG `date`, so days overdue is `date - date` with no timezone
+ *   left in it. Absent = "today" in the report owner's resolved timezone,
+ *   applied in the generator.
+ * - `groupBy` (default `organization`, applied in the generator) narrows the
+ *   legacy free-text `groupBy`.
+ * - `includePaidInPeriod` (default false) adds an informational "collected
+ *   month-to-date" note; it never moves a bucket.
+ * - No `.default()` anywhere (parseStoredReportConfig filters defaults
+ *   top-level only) and no org/site/device selector keys (ruling T3e).
+ */
+export const arAgingConfigSchema = legacyReportConfigSchema.extend({
+  asOf: z.string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'asOf must be a YYYY-MM-DD date')
+    .refine((value) => {
+      const [y, m, d] = value.split('-').map(Number) as [number, number, number];
+      const date = new Date(Date.UTC(y, m - 1, d));
+      return date.getUTCFullYear() === y && date.getUTCMonth() === m - 1 && date.getUTCDate() === d;
+    }, 'asOf must be a real calendar date')
+    .optional(),
+  groupBy: z.enum(['organization', 'currency']).optional(),
+  includePaidInPeriod: z.boolean().optional(),
+});
+export type ArAgingConfig = z.infer<typeof arAgingConfigSchema>;

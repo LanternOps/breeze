@@ -19,9 +19,9 @@ import type { EvidenceRunContext, ReportResult } from './reportGenerationService
 import {
   StoredArtifactOnlyReportError,
   UnexecutableReportScopeError,
-  UnsupportedReportScopeError,
 } from './reportErrors';
 import {
+  arAgingConfigSchema,
   endpointManagementConfigSchema,
   hardwareLifecycleConfigSchema,
   identityAccessConfigSchema,
@@ -128,20 +128,6 @@ const NO_EXTRA_PERMISSIONS: readonly Permission[] = [];
 const UNCAPPED = Number.POSITIVE_INFINITY;
 /** #3198 spec §4: business reports store at most this many DETAIL rows. */
 const BUSINESS_DETAIL_ROW_CAP = 5000;
-
-/**
- * PLACEHOLDER — not implemented until #3198 W02 task 9 (it replaces its
- * own entry's `generate` and `configSchema`). It throws W01's
- * `UnsupportedReportScopeError` rather than a bare Error so every caller keeps
- * W01's observable behaviour in the meantime: routes answer 400
- * `unsupported_report_scope`, the worker records that reason, and
- * reportGenerationService.test.ts's generator-less suite stays green.
- */
-function businessPlaceholder(type: ReportType) {
-  return async (scope: ReportScope): Promise<ReportResult> => {
-    throw new UnsupportedReportScopeError(type, scope.kind);
-  };
-}
 
 const generators = {
   device_inventory: {
@@ -303,9 +289,7 @@ const generators = {
   },
   // #3198 W02 business types. They take the ReportScope itself (org OR
   // partner) and the authority untouched: the generator runs its own
-  // `runInReportScope`. ar_aging is a PLACEHOLDER until task 9 (see
-  // `businessPlaceholder`); scopes,
-  // execution, cap and permissions are final.
+  // `runInReportScope`.
   ticket_sla_attainment: {
     type: 'ticket_sla_attainment', label: 'Ticket SLA attainment',
     configSchema: ticketSlaConfigSchema, supportedScopes: ORG_OR_PARTNER,
@@ -329,10 +313,13 @@ const generators = {
   },
   ar_aging: {
     type: 'ar_aging', label: 'AR aging',
-    configSchema: legacyReportConfigSchema, supportedScopes: ORG_OR_PARTNER,
+    configSchema: arAgingConfigSchema, supportedScopes: ORG_OR_PARTNER,
     execution: 'user', requiredPermissions: [PERMISSION_GRANTS.INVOICES_READ],
     detailRowCap: BUSINESS_DETAIL_ROW_CAP,
-    generate: businessPlaceholder('ar_aging'),
+    generate: async (scope, config, authority) => {
+      const { generateArAgingReport } = await import('./businessReports/arAgingReport');
+      return generateArAgingReport(scope, config, authority);
+    },
   },
 } satisfies { readonly [K in ReportType]: ReportTypeDef & { type: K } };
 
