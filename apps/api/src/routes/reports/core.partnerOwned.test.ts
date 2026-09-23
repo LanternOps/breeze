@@ -1197,3 +1197,102 @@ describe('audit records for partner-owned rows carry the partner id (#3198 W01)'
     });
   });
 });
+
+/**
+ * #3198 W02 fix round, item 6. A business type selects by its own `period`
+ * and its owner scope (ruling T3e) — the legacy builder selector keys would be
+ * stored and silently ignored by the generator. They are refused with a 400
+ * naming the key, on BOTH ownership arms, on create and on PUT. A selector
+ * that selects nothing (`sites: []`, `filters: {}`) and the non-selector
+ * legacy keys (schedule, emailRecipients, columns, sort*) stay valid.
+ */
+describe('business types refuse legacy selector keys in config (#3198 W02 item 6)', () => {
+  const SELECTORS: Array<[string, unknown]> = [
+    ['dateRange', { preset: 'last_30_days' }],
+    ['sites', [ORG_ID]],
+    ['filters', { siteIds: [ORG_ID] }],
+    ['orgId', ORG_ID],
+    ['orgIds', [ORG_ID]],
+    ['siteIds', [ORG_ID]],
+    ['deviceIds', [ORG_ID]],
+  ];
+  function fieldErrors(body: unknown): Record<string, string[]> {
+    return (body as { details: { fieldErrors: Record<string, string[]> } }).details.fieldErrors;
+  }
+  function orgBusinessRow() {
+    return partnerDefinition({
+      orgId: ORG_ID, partnerId: null, executionScopeKind: 'unrestricted',
+      executionScopeFingerprint: siteScopeFingerprint({ version: 1, kind: 'unrestricted', orgId: ORG_ID }),
+    });
+  }
+
+  it.each(SELECTORS)('POST partner arm: config.%s → 400 naming the key, no insert', async (key, value) => {
+    const res = await app().request('/reports', {
+      method: 'POST', headers: JSON_HEADERS,
+      body: JSON.stringify({ ownerScope: 'partner', name: 'AR', type: 'ar_aging', config: { [key]: value } }),
+    });
+    expect(res.status).toBe(400);
+    const errors = fieldErrors(await res.json());
+    expect(errors).toHaveProperty([`config.${key}`]);
+    expect(errors[`config.${key}`]!.join(' ')).toContain(key);
+    expect(state.inserts).toHaveLength(0);
+  });
+
+  it.each(['dateRange', 'sites'])('POST organization arm: config.%s → 400, no insert', async (key) => {
+    const value = SELECTORS.find(([k]) => k === key)![1];
+    const res = await app().request('/reports', {
+      method: 'POST', headers: JSON_HEADERS,
+      body: JSON.stringify({ name: 'AR', type: 'ar_aging', orgId: ORG_ID, config: { [key]: value } }),
+    });
+    expect(res.status).toBe(400);
+    expect(fieldErrors(await res.json())).toHaveProperty([`config.${key}`]);
+    expect(state.inserts).toHaveLength(0);
+  });
+
+  it.each([
+    ['partner-owned', () => partnerDefinition()],
+    ['org-owned', () => orgBusinessRow()],
+  ])('PUT on a %s ar_aging row: config.dateRange / config.sites → 400, no update', async (_label, row) => {
+    for (const key of ['dateRange', 'sites']) {
+      state.rows = [row(), row()];
+      state.updates = [];
+      const value = SELECTORS.find(([k]) => k === key)![1];
+      const res = await app().request(`/reports/${REPORT_ID}`, {
+        method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ config: { [key]: value } }),
+      });
+      expect(res.status, key).toBe(400);
+      expect(fieldErrors(await res.json())).toHaveProperty([`config.${key}`]);
+      expect(state.updates).toHaveLength(0);
+    }
+  });
+
+  it.each(['ticket_sla_attainment', 'technician_time_billability'])('%s refuses config.dateRange too', async (type) => {
+    const res = await app().request('/reports', {
+      method: 'POST', headers: JSON_HEADERS,
+      body: JSON.stringify({ ownerScope: 'partner', name: 'x', type, config: { dateRange: { preset: 'last_7_days' } } }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('positive control: a business body without selectors — and with empty ones — is created', async () => {
+    const config = {
+      groupBy: 'organization', schedule: { time: '07:00' }, emailRecipients: ['ops@example.com'],
+      columns: ['a'], sortBy: 'a', sortOrder: 'asc', sites: [], filters: {},
+    };
+    const res = await app().request('/reports', {
+      method: 'POST', headers: JSON_HEADERS,
+      body: JSON.stringify({ ownerScope: 'partner', name: 'AR', type: 'ar_aging', config }),
+    });
+    expect(res.status).toBe(201);
+    expect(state.inserts).toHaveLength(1);
+  });
+
+  it('positive control: a legacy type keeps accepting dateRange and filters', async () => {
+    state.rows = [orgBusinessRow(), orgBusinessRow()].map((r) => ({ ...r, type: 'device_inventory' }));
+    const res = await app().request(`/reports/${REPORT_ID}`, {
+      method: 'PUT', headers: JSON_HEADERS,
+      body: JSON.stringify({ config: { dateRange: { preset: 'last_30_days' }, filters: { siteIds: [ORG_ID] } } }),
+    });
+    expect(res.status).toBe(200);
+  });
+});

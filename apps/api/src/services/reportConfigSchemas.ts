@@ -158,6 +158,46 @@ export const identityAccessConfigSchema = legacyReportConfigSchema.extend({
   adminDetail: z.boolean().optional().default(true),
 });
 
+/** Does a stored selector value actually select something? An empty array or
+ *  an object whose every value selects nothing (`filters: {}`,
+ *  `filters: { siteIds: [] }`) does not; any other present value does. */
+function selectsSomething(value: unknown): boolean {
+  if (value === undefined || value === null) return false;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === 'object') return Object.values(value).some(selectsSomething);
+  return true;
+}
+
+/**
+ * #3198 W02 fix round (item 6). A business type selects by its own `period`
+ * and its owner scope (ruling T3e) — never by the legacy builder selectors.
+ * Declared (overriding the legacy shape) so a selector that selects something
+ * is a 400 naming the key on create, PUT and ad-hoc generate, on both
+ * ownership arms, instead of being stored and silently ignored by the
+ * generator. Overriding keys via `.extend` keeps the schema a plain object:
+ * `.shape` and further `.extend` keep working (no object-level refinement).
+ */
+function refusedBusinessSelector(key: string) {
+  return z.unknown().superRefine((value, ctx) => {
+    if (selectsSomething(value)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: `${key} is not supported for business reports; they select by period and owner scope`,
+      });
+    }
+  }).optional();
+}
+
+const BUSINESS_SELECTOR_REFUSALS = {
+  dateRange: refusedBusinessSelector('dateRange'),
+  filters: refusedBusinessSelector('filters'),
+  sites: refusedBusinessSelector('sites'),
+  orgId: refusedBusinessSelector('orgId'),
+  orgIds: refusedBusinessSelector('orgIds'),
+  siteIds: refusedBusinessSelector('siteIds'),
+  deviceIds: refusedBusinessSelector('deviceIds'),
+};
+
 /**
  * #3198 W02 R1 — Ticket SLA attainment (spec §3.3 R1).
  *
@@ -170,6 +210,7 @@ export const identityAccessConfigSchema = legacyReportConfigSchema.extend({
  *   the org set comes from the live org list, never from config.
  */
 export const ticketSlaConfigSchema = legacyReportConfigSchema.extend({
+  ...BUSINESS_SELECTOR_REFUSALS,
   period: periodSchema.optional(),
   groupBy: z.enum(['organization', 'priority', 'technician', 'category']).optional(),
   includeNoSla: z.boolean().optional(),
@@ -188,6 +229,7 @@ export type TicketSlaConfig = z.infer<typeof ticketSlaConfigSchema>;
  *   top-level only) and no org/site/device selector keys (ruling T3e).
  */
 export const technicianTimeConfigSchema = legacyReportConfigSchema.extend({
+  ...BUSINESS_SELECTOR_REFUSALS,
   period: periodSchema.optional(),
   groupBy: z.enum(['technician', 'organization', 'work_type']).optional(),
   weeklyCapacityHours: z.number().min(1).max(80).optional(),
@@ -209,6 +251,7 @@ export type TechnicianTimeConfig = z.infer<typeof technicianTimeConfigSchema>;
  *   top-level only) and no org/site/device selector keys (ruling T3e).
  */
 export const arAgingConfigSchema = legacyReportConfigSchema.extend({
+  ...BUSINESS_SELECTOR_REFUSALS,
   asOf: z.string()
     .regex(/^\d{4}-\d{2}-\d{2}$/, 'asOf must be a YYYY-MM-DD date')
     .refine((value) => {
