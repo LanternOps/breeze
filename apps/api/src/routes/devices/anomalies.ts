@@ -1,12 +1,19 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
-import { METRIC_ANOMALY_STATUSES } from '@breeze/shared';
+import { EPISODE_ACTIONS, EPISODE_LIST_STATUSES, METRIC_ANOMALY_STATUSES } from '@breeze/shared';
 import { and, desc, eq, ne } from 'drizzle-orm';
 
 import { db } from '../../db';
 import { metricAnomalies } from '../../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
+import { writeRouteAudit } from '../../services/auditEvents';
+import { applyEpisodeAction } from '../../services/metricAnomalyEpisodeActions';
+import {
+  getDeviceEpisodeDetail,
+  getDeviceEpisodeDto,
+  listDeviceEpisodes,
+} from '../../services/metricAnomalyEpisodeQueries';
 import { promoteMetricAnomalyToAlert } from '../../services/metricAnomalyPromotion';
 import { emitAnomalyFeedback } from '../../services/mlFeedbackEmitters';
 import { PERMISSIONS } from '../../services/permissions';
@@ -200,5 +207,147 @@ anomaliesRoutes.patch(
     });
 
     return c.json({ data: serializeAnomaly(updated) });
+  }
+);
+
+// ── Metric anomaly EPISODES (spec §8, §12 — W02) ─────────────────────────
+// Registered here, not in a new module: the per-row anomaly routes and these
+// share one resource family and one MCP_COVERAGE gap (#6141) — see the W02
+// plan's spec deviation D-3.
+
+const episodeListQuerySchema = z.object({
+  status: z.enum(EPISODE_LIST_STATUSES).optional().default('open'),
+  limit: z.coerce.number().int().min(1).max(100).optional().default(25),
+  ref: z.string().guid().optional(),
+});
+
+const episodeParamSchema = z.object({
+  id: z.string(),
+  episodeId: z.string().guid(),
+});
+
+const episodeActionSchema = z.object({
+  action: z.enum(EPISODE_ACTIONS),
+  note: z.string().trim().max(500).optional(),
+  resolveAlert: z.boolean().optional().default(true),
+});
+
+anomaliesRoutes.get(
+  '/:id/anomaly-episodes',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
+  zValidator('query', episodeListQuerySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const deviceId = c.req.param('id');
+    const query = c.req.valid('query');
+
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+    if (!device) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
+
+    const result = await listDeviceEpisodes({
+      orgId: device.orgId,
+      deviceId,
+      status: query.status,
+      limit: query.limit,
+      ref: query.ref,
+    });
+    return c.json(result);
+  }
+);
+
+anomaliesRoutes.get(
+  '/:id/anomaly-episodes/:episodeId',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
+  zValidator('param', episodeParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id: deviceId, episodeId } = c.req.valid('param');
+
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+    if (!device) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
+
+    const detail = await getDeviceEpisodeDetail({ orgId: device.orgId, deviceId, episodeId });
+    if (!detail) {
+      return c.json({ error: 'Anomaly episode not found' }, 404);
+    }
+    return c.json({ data: detail });
+  }
+);
+
+anomaliesRoutes.patch(
+  '/:id/anomaly-episodes/:episodeId',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ALERTS_WRITE.resource, PERMISSIONS.ALERTS_WRITE.action),
+  zValidator('param', episodeParamSchema),
+  zValidator('json', episodeActionSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id: deviceId, episodeId } = c.req.valid('param');
+    const input = c.req.valid('json');
+
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+    if (!device) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
+
+    const result = await applyEpisodeAction({
+      orgId: device.orgId,
+      deviceId,
+      episodeId,
+      action: input.action,
+      // A whitespace-only note trims to "" — treat it as no note, never overwrite one with "".
+      note: input.note || undefined,
+      resolveAlert: input.resolveAlert,
+      actorUserId: auth.user.id,
+    });
+
+    if (result.status === 'not_found') {
+      return c.json({ error: 'Anomaly episode not found' }, 404);
+    }
+    if (result.status === 'conflict') {
+      return c.json({ error: result.message, reason: result.reason }, 409);
+    }
+
+    writeRouteAudit(c, {
+      orgId: device.orgId,
+      action: `device.anomaly_episode.${input.action}`,
+      resourceType: 'metric_anomaly_episode',
+      resourceId: episodeId,
+      details: {
+        deviceId,
+        labelledMembers: result.labelledMemberIds.length,
+        alertId: result.alertId,
+        alertResolved: result.alertResolved,
+        resolveAlert: input.resolveAlert,
+      },
+    });
+
+    const data = await getDeviceEpisodeDto({ orgId: device.orgId, deviceId, episodeId });
+    if (!data) {
+      return c.json({ error: 'Anomaly episode not found' }, 404);
+    }
+    return c.json({
+      data,
+      meta: {
+        alertId: result.alertId,
+        alertResolved: result.alertResolved,
+        labelledMembers: result.labelledMemberIds.length,
+      },
+    });
   }
 );
