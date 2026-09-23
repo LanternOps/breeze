@@ -36,6 +36,7 @@ const CLOSE_REASON_LABEL_KEY: Record<string, string> = {
   expired_no_data: 'deviceAnomaliesPanel.closeReason.expiredNoData',
   detection_off: 'deviceAnomaliesPanel.closeReason.detectionOff',
   user: 'deviceAnomaliesPanel.closeReason.user',
+  userDismissed: 'deviceAnomaliesPanel.closeReason.userDismissed',
   snoozed: 'deviceAnomaliesPanel.closeReason.snoozed',
 };
 
@@ -55,7 +56,9 @@ function closedChipLabel(episode: MetricAnomalyEpisodeDto, t: TFunction): string
     // — every value in that map is a real, present key (checked above).
     return t(/* i18n-dynamic */ CLOSE_REASON_LABEL_KEY[episode.closeReason]!);
   }
-  return `${formatWhen(episode.firstSeenAt)} – ${formatWhen(episode.lastSeenAt)} · ${t(/* i18n-dynamic */ CLOSE_REASON_LABEL_KEY[episode.closeReason ?? 'user']!)}`;
+  // Resolve and dismiss both close with closeReason 'user'; status tells them apart.
+  const reason = (episode.closeReason ?? 'user') === 'user' && episode.status === 'dismissed' ? 'userDismissed' : episode.closeReason ?? 'user';
+  return `${formatWhen(episode.firstSeenAt)} – ${formatWhen(episode.lastSeenAt)} · ${t(/* i18n-dynamic */ CLOSE_REASON_LABEL_KEY[reason]!)}`;
 }
 
 export default function AnomalyEpisodeCard({

@@ -374,6 +374,7 @@
       "expiredOfflineSince": "süresi doldu: cihaz {{when}} tarihinden beri görülmedi",
       "detectionOff": "kapatıldı: algılama kapatıldı",
       "user": "çözüldü",
+      "userDismissed": "yoksayıldı",
       "snoozed": "ertelendi"
     },
     "processDetailNotAvailable": "Bu metrik için işlem ayrıntısı yok.",

@@ -374,6 +374,7 @@
       "expiredOfflineSince": "expirée : appareil non vu depuis {{when}}",
       "detectionOff": "fermée : détection désactivée",
       "user": "résolue",
+      "userDismissed": "ignorée",
       "snoozed": "en sourdine"
     },
     "processDetailNotAvailable": "Détails du processus indisponibles pour cette métrique.",

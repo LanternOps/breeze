@@ -374,6 +374,7 @@
       "expiredOfflineSince": "scaduta: dispositivo non rilevato dal {{when}}",
       "detectionOff": "chiusa: rilevamento disattivato",
       "user": "risolta",
+      "userDismissed": "ignorata",
       "snoozed": "silenziata"
     },
     "processDetailNotAvailable": "Dettagli del processo non disponibili per questa metrica.",

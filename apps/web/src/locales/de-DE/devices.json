@@ -374,6 +374,7 @@
       "expiredOfflineSince": "abgelaufen: Gerät nicht gesehen seit {{when}}",
       "detectionOff": "geschlossen: Erkennung deaktiviert",
       "user": "aufgelöst",
+      "userDismissed": "verworfen",
       "snoozed": "stummgeschaltet"
     },
     "processDetailNotAvailable": "Prozessdetails für diese Metrik nicht verfügbar.",

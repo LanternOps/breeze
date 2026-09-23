@@ -125,6 +125,14 @@ describe('AnomalyEpisodeCard', () => {
     expect((await screen.findByTestId('anomaly-episode-chip-closed')).textContent).toBe('closed: detection turned off');
   });
 
+  it('a user close reads "dismissed" for a dismissed episode once its snooze has lapsed, "resolved" for a resolved one', async () => {
+    const { unmount } = render(<AnomalyEpisodeCard deviceId="dev-1" episode={baseEpisode({ status: 'dismissed', closeReason: 'user', ongoing: false, snoozed: false })} onChanged={vi.fn()} />);
+    expect((await screen.findByTestId('anomaly-episode-chip-closed')).textContent).toMatch(/· dismissed$/);
+    unmount();
+    render(<AnomalyEpisodeCard deviceId="dev-1" episode={baseEpisode({ status: 'resolved', closeReason: 'user', ongoing: false })} onChanged={vi.fn()} />);
+    expect((await screen.findByTestId('anomaly-episode-chip-closed')).textContent).toMatch(/· resolved$/);
+  });
+
   it('shows Stop snoozing for a dismissed-and-snoozed episode instead of Dismiss/Resolve', async () => {
     render(
       <AnomalyEpisodeCard

@@ -374,6 +374,7 @@
       "expiredOfflineSince": "vencida: dispositivo no visto desde {{when}}",
       "detectionOff": "cerrada: detección desactivada",
       "user": "resuelta",
+      "userDismissed": "descartada",
       "snoozed": "silenciada"
     },
     "processDetailNotAvailable": "Detalle de proceso no disponible para esta métrica.",
