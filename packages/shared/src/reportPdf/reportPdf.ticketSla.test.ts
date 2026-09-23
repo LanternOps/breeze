@@ -70,7 +70,7 @@ const SUMMARY: TicketSlaSummary = {
   rows: [
     {
       ticketId: 't1', ticketNumber: 'T-1', internalNumber: null, orgId: 'o1', orgName: 'Acme Co',
-      subject: 'Server down', priority: 'urgent', category: 'infrastructure', assignedToName: 'Jamie Lee',
+      subject: 'Server down', priority: 'urgent', category: 'infrastructure', assignedToId: 'u1', assignedToName: 'Jamie Lee',
       createdAt: '2026-09-05T10:00:00.000Z', firstResponseAt: '2026-09-05T12:00:00.000Z',
       resolvedAt: '2026-09-06T10:00:00.000Z', responseSlaMinutes: 60, resolutionSlaMinutes: 480,
       slaPausedMinutes: 0, responseOutcome: 'missed', resolutionOutcome: 'met',
@@ -78,7 +78,7 @@ const SUMMARY: TicketSlaSummary = {
     },
     {
       ticketId: 't2', ticketNumber: 'T-2', internalNumber: null, orgId: 'o1', orgName: 'Acme Co',
-      subject: 'Password reset', priority: 'normal', category: null, assignedToName: null,
+      subject: 'Password reset', priority: 'normal', category: null, assignedToId: null, assignedToName: null,
       createdAt: '2026-09-10T10:00:00.000Z', firstResponseAt: '2026-09-10T10:30:00.000Z',
       resolvedAt: '2026-09-10T11:00:00.000Z', responseSlaMinutes: 120, resolutionSlaMinutes: 240,
       slaPausedMinutes: 0, responseOutcome: 'met', resolutionOutcome: 'met',
@@ -90,7 +90,7 @@ const SUMMARY: TicketSlaSummary = {
 function makeRow(i: number, breached: boolean): TicketSlaSummary['rows'][number] {
   return {
     ticketId: `t${i}`, ticketNumber: `T-${i}`, internalNumber: null, orgId: 'o1', orgName: 'Acme Co',
-    subject: `Ticket ${i}`, priority: 'normal', category: null, assignedToName: null,
+    subject: `Ticket ${i}`, priority: 'normal', category: null, assignedToId: null, assignedToName: null,
     createdAt: '2026-09-10T10:00:00.000Z', firstResponseAt: '2026-09-10T10:30:00.000Z',
     resolvedAt: '2026-09-10T11:00:00.000Z', responseSlaMinutes: 120, resolutionSlaMinutes: 240,
     slaPausedMinutes: 0,
@@ -125,7 +125,54 @@ describe('buildReportPdf: ticket_sla_attainment', () => {
 
   it('discloses truncation with both numbers', () => {
     const s = { ...SUMMARY, detail: { cap: 5000, stored: 5000, available: 9000, truncated: true } };
-    expect(extractText(buildReportPdf([], { ...opts, summary: s }))).toMatch(/5000 of 9000/);
+    expect(extractText(buildReportPdf([], { ...opts, summary: s }))).toMatch(/of 15 breaches/);
+  });
+
+  // Fix round item 1: the heading states what is DRAWN, never the stored count.
+  it('generator truncation + PDF cap: states the drawn count, the breach total, and both caps', () => {
+    const rows = Array.from({ length: 5000 }, (_, i) => makeRow(i, true));
+    const s = {
+      ...SUMMARY,
+      overall: { ...SUMMARY.overall, breaches: 9000 },
+      detail: { cap: 5000, stored: 5000, available: 12000, truncated: true },
+      rows,
+    };
+    const text = extractText(buildReportPdf([], { ...opts, summary: s }));
+    expect(text).toMatch(/showing 500 of 9000 breaches/);
+    expect(text).not.toMatch(/5000 of 12000/);
+    expect(text).toMatch(/at most 500 rows/);
+    expect(text).toMatch(/at most 5000/);
+  });
+
+  // Fix round item 2: the count is BREACHES (overall.breaches), not tickets.
+  it('counts breaches, not tickets, when stored breaches are fewer than the breach total', () => {
+    const rows = [makeRow(1, true), makeRow(2, true), makeRow(3, false)];
+    const s = {
+      ...SUMMARY,
+      overall: { ...SUMMARY.overall, breaches: 7 },
+      detail: { cap: 5000, stored: 3, available: 40, truncated: true },
+      rows,
+    };
+    const text = extractText(buildReportPdf([], { ...opts, summary: s }));
+    expect(text).toMatch(/showing 2 of 7 breaches/);
+    expect(text).not.toMatch(/of 40/);
+  });
+
+  it('no truncation claim when every breach is drawn', () => {
+    const rows = [makeRow(1, true), makeRow(2, true), makeRow(3, false)];
+    const s = { ...SUMMARY, overall: { ...SUMMARY.overall, breaches: 2 }, detail: { cap: 5000, stored: 3, available: 3, truncated: false }, rows };
+    expect(extractText(buildReportPdf([], { ...opts, summary: s }))).not.toMatch(/showing/);
+  });
+
+  it('distinguishes an unassigned ticket from an assignee whose name could not be read', () => {
+    const rows = [
+      { ...makeRow(1, true), assignedToId: null, assignedToName: null },
+      { ...makeRow(2, true), assignedToId: 'u-hidden', assignedToName: null },
+    ];
+    const s = { ...SUMMARY, overall: { ...SUMMARY.overall, breaches: 2 }, rows };
+    const text = extractText(buildReportPdf([], { ...opts, summary: s }));
+    expect(text).toContain('Unassigned');
+    expect(text).toContain('Unknown technician');
   });
 
   it('does not falsely disclose truncation when the total ticket set exceeds the local cap but the breached subset does not', () => {
@@ -136,7 +183,7 @@ describe('buildReportPdf: ticket_sla_attainment', () => {
       makeRow(998, true),
       makeRow(999, true),
     ];
-    const s = { ...SUMMARY, detail: { cap: 5000, stored: 600, available: 600, truncated: false }, rows };
+    const s = { ...SUMMARY, overall: { ...SUMMARY.overall, breaches: 2 }, detail: { cap: 5000, stored: 600, available: 600, truncated: false }, rows };
     const text = extractText(buildReportPdf([], { ...opts, summary: s }));
     // jsPDF escapes literal parens in its content stream, so match the digits,
     // not the punctuation — same convention as the "5000 of 9000" case above.
@@ -145,7 +192,7 @@ describe('buildReportPdf: ticket_sla_attainment', () => {
 
   it('discloses truncation, with the breached count, when the breached subset itself exceeds the local cap', () => {
     const rows = Array.from({ length: 600 }, (_, i) => makeRow(i, true));
-    const s = { ...SUMMARY, detail: { cap: 5000, stored: 600, available: 600, truncated: false }, rows };
+    const s = { ...SUMMARY, overall: { ...SUMMARY.overall, breaches: 600 }, detail: { cap: 5000, stored: 600, available: 600, truncated: false }, rows };
     const text = extractText(buildReportPdf([], { ...opts, summary: s }));
     expect(text).toMatch(/showing 500 of 600/);
   });

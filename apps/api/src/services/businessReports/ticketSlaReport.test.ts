@@ -100,6 +100,8 @@ function detailRow(i: number) {
 
 const summaryOf = (r: { summary?: unknown }) => r.summary as TicketSlaSummary;
 
+const USER_DANA = '88888888-8888-4888-8888-888888888888';
+
 describe('generateTicketSlaAttainmentReport', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -262,14 +264,14 @@ describe('generateTicketSlaAttainmentReport', () => {
 
   it('maps detail rows to the shared TicketSlaDetailRow field names', async () => {
     queueExecute([], [{ ...OVERALL[0], tickets_total: 1 }], [{
-      ...detailRow(7), assigned_to_name: 'Dana', first_response_at: '2026-08-02T00:30:00.000Z',
+      ...detailRow(7), assigned_to: USER_DANA, assigned_to_name: 'Dana', first_response_at: '2026-08-02T00:30:00.000Z',
       response_outcome: 'met', resolution_outcome: 'pending', paused: 5,
       sla_breached_at: '2026-08-02T04:00:00.000Z', sla_breach_reason: 'resolution',
     }]);
     const s = summaryOf(await generateTicketSlaAttainmentReport(orgScope, {}, orgAuthority));
     expect(s.rows[0]).toEqual({
       ticketId: 't7', ticketNumber: 'T-7', internalNumber: null, orgId: ORG_A, orgName: 'Acme',
-      subject: 's', priority: 'high', category: null, assignedToName: 'Dana',
+      subject: 's', priority: 'high', category: null, assignedToId: USER_DANA, assignedToName: 'Dana',
       createdAt: '2026-08-02T00:00:00.000Z', firstResponseAt: '2026-08-02T00:30:00.000Z', resolvedAt: null,
       responseSlaMinutes: 60, resolutionSlaMinutes: 240, slaPausedMinutes: 5,
       responseOutcome: 'met', resolutionOutcome: 'pending',
@@ -347,5 +349,22 @@ describe('generateTicketSlaAttainmentReport', () => {
     queueExecute([], EMPTY_OVERALL, []);
     await expect(generateTicketSlaAttainmentReport(orgScope, { groupBy: 'site' }, orgAuthority)).rejects.toThrow();
     expect(db.execute).not.toHaveBeenCalled();
+  });
+
+  // #3198 W02 fix round (item 2): breaches are what the report exists to show,
+  // so the capped detail set must never drop an OLDER breach to keep a newer
+  // met ticket. Breached tickets sort first, newest first within each band.
+  it('orders detail rows breaches-first so the cap never displaces a breach', async () => {
+    queueExecute([], EMPTY_OVERALL, []);
+    await generateTicketSlaAttainmentReport(orgScope, {}, orgAuthority);
+    expect(calls[2]!.sql).toMatch(
+      /ORDER BY \(o\.response_outcome = 'missed' OR o\.resolution_outcome = 'missed'\) DESC, o\.created_at DESC, o\.id/,
+    );
+  });
+
+  it('discloses the breaches-first detail ordering in the notes', async () => {
+    queueExecute([], EMPTY_OVERALL, []);
+    const s = summaryOf(await generateTicketSlaAttainmentReport(orgScope, {}, orgAuthority));
+    expect(s.notes.join(' ')).toMatch(/breached tickets first/i);
   });
 });

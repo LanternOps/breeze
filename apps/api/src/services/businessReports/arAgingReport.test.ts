@@ -195,6 +195,17 @@ describe('generateArAgingReport', () => {
     expect(hi.notes).toContain('As of 2026-09-21 in Pacific/Honolulu.');
   });
 
+  it('an unusable owner timezone ages in UTC and says so (logged, noted)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    ctx.timeZone = 'Mars/Olympus';
+    respond();
+    const s = summaryOf(await generateArAgingReport(orgScope, {}, orgAuthority));
+    expect(s.timeZone).toBe('UTC');
+    expect(s.notes.join(' ')).toMatch(/Mars\/Olympus.*UTC/);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
   it('an explicit asOf wins over the clock and is disclosed as current-balance aging', async () => {
     respond();
     const s = summaryOf(await generateArAgingReport(orgScope, { asOf: '2026-08-31' }, orgAuthority));

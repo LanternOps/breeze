@@ -18,13 +18,13 @@
 import type { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import type {
-  DetailRowMeta,
   ReportScopeMeta,
   SlaOutcome,
   TicketSlaDetailRow,
   TicketSlaGroupRow,
   TicketSlaSummary,
 } from '../types/businessReports';
+import { detailDisclosure } from './detailDisclosure';
 import { formatPercent } from './moneyFormat';
 
 type RGB = [number, number, number];
@@ -127,16 +127,6 @@ function dateOnly(value: string | null | undefined): string {
   return value ? value.slice(0, 10) : NA;
 }
 
-/** Discloses truncation with BOTH numbers, in one sentence, whichever cap bit:
- *  the generator's stored/available cap (`detail.truncated`) takes priority
- *  since it already accounts for this module's own MAX; otherwise, when only
- *  the module-local slice below MAX kicks in, that pair is reported instead. */
-function detailHeading(base: string, totalRows: number, detail: DetailRowMeta): string {
-  if (detail.truncated) return `${base} (showing ${detail.stored} of ${detail.available})`;
-  if (totalRows > DETAIL_TABLE_MAX) return `${base} (showing ${DETAIL_TABLE_MAX} of ${totalRows})`;
-  return base;
-}
-
 function finalY(doc: jsPDF, fallback: number): number {
   return ((doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? fallback) + 6;
 }
@@ -214,14 +204,26 @@ export function renderTicketSlaReport(
 
   // --- Breached tickets --------------------------------------------------------
   const breachedRows = summary.rows.filter((r: TicketSlaDetailRow) => r.responseOutcome === 'missed' || r.resolutionOutcome === 'missed');
-  // The local-slice fallback must be sized against the FILTERED set the table
-  // actually renders (breachedRows), not the general detail set (summary.rows)
-  // — otherwise a large ticket set with few breaches falsely claims a cut that
-  // never happened. The generator-truncation branch (detail.truncated) is
-  // unaffected: it already reports the generator's own stored/available pair.
-  y = chrome.drawSectionHeading(doc, detailHeading('Breached tickets', breachedRows.length, summary.detail), y + 2);
+  // Fix round items 1+2: the generator stores breached tickets FIRST, so the
+  // stored set holds every breach up to its cap; the true total is the
+  // aggregate breach count (same predicate), never the ticket count. The
+  // heading states what this table draws against that total.
+  const disclosure = detailDisclosure({
+    base: 'Breached tickets',
+    inHand: breachedRows.length,
+    total: summary.overall.breaches,
+    pdfMax: DETAIL_TABLE_MAX,
+    storedCap: summary.detail.cap,
+    noun: 'breaches',
+  });
+  y = chrome.drawSectionHeading(doc, disclosure.heading, y + 2);
+  if (disclosure.note) y = drawProse(doc, chrome, disclosure.note, y + 1, 8.6, C.muted);
   if (breachedRows.length === 0) {
-    y = drawProse(doc, chrome, 'No breached tickets in the covered window.', y + 1, 9, C.muted);
+    // With breaches counted but none in hand, the heading and note above
+    // already say so; "no breached tickets" would contradict them.
+    if (summary.overall.breaches === 0) {
+      y = drawProse(doc, chrome, 'No breached tickets in the covered window.', y + 1, 9, C.muted);
+    }
   } else {
     autoTable(doc, {
       startY: y + 1,
@@ -231,7 +233,7 @@ export function renderTicketSlaReport(
         r.ticketNumber ?? r.internalNumber ?? r.ticketId,
         r.orgName ?? NA,
         r.priority,
-        r.assignedToName ?? 'Unassigned',
+        r.assignedToName ?? (r.assignedToId ? 'Unknown technician' : 'Unassigned'),
         dateOnly(r.createdAt),
         OUTCOME_LABEL[r.responseOutcome],
         OUTCOME_LABEL[r.resolutionOutcome],

@@ -26,9 +26,9 @@ import type {
   ArAgingGroupRow,
   ArAgingSummary,
   CurrencyAmountRow,
-  DetailRowMeta,
   ReportScopeMeta,
 } from '../types/businessReports';
+import { detailDisclosure } from './detailDisclosure';
 import { formatMoney } from './moneyFormat';
 
 type RGB = [number, number, number];
@@ -101,12 +101,6 @@ function scopeLabel(scope: ReportScopeMeta): string {
 
 function dateOnly(value: string | null | undefined): string {
   return value ? value.slice(0, 10) : NA;
-}
-
-function detailHeading(base: string, totalRows: number, detail: DetailRowMeta): string {
-  if (detail.truncated) return `${base} (showing ${detail.stored} of ${detail.available})`;
-  if (totalRows > DETAIL_TABLE_MAX) return `${base} (showing ${DETAIL_TABLE_MAX} of ${totalRows})`;
-  return base;
 }
 
 function finalY(doc: jsPDF, fallback: number): number {
@@ -203,7 +197,15 @@ export function renderArAgingReport(
   }
 
   // --- Open invoices ----------------------------------------------------------
-  y = chrome.drawSectionHeading(doc, detailHeading('Open invoices', summary.rows.length, summary.detail), y + 2);
+  const disclosure = detailDisclosure({
+    base: 'Open invoices',
+    inHand: summary.rows.length,
+    total: summary.detail.truncated ? summary.detail.available : summary.rows.length,
+    pdfMax: DETAIL_TABLE_MAX,
+    storedCap: summary.detail.cap,
+  });
+  y = chrome.drawSectionHeading(doc, disclosure.heading, y + 2);
+  if (disclosure.note) y = drawProse(doc, chrome, disclosure.note, y + 1, 8.6, C.muted);
   if (summary.rows.length === 0) {
     y = drawProse(doc, chrome, 'No open invoices in the covered scope.', y + 1, 9, C.muted);
   } else {

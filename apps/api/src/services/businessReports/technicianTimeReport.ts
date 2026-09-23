@@ -35,11 +35,13 @@ import {
  *   stamped before the billing-profiles cut-over (`coverage IS NULL`);
  * - money is per currency, never summed across currencies (OD-4 = A).
  *
- * Tenancy (rulings P6/P7): every statement runs inside ONE `runInReportScope`
- * and carries the predicate built by `entryScopePredicate` — the only place it
- * is built. `time_entries` RLS is partner-axis only, so under an org-token
- * context the org-scope report is empty; that is disclosed, never escalated
- * (escalating would hand a customer token MSP-internal rates).
+ * Tenancy (rulings P6/P7/F1): every statement runs inside ONE
+ * `runInReportScope` and carries the predicate built by `entryScopePredicate`
+ * — the only place it is built. This type is `audience: 'msp_staff'` (ruling
+ * F1), so an organization-scope caller (customer user, org API/MCP key) can
+ * never create, generate or read it; an org-SCOPED report here is an
+ * MSP-staff report about one customer, run under a partner or system context.
+ * Nothing on this path escalates an org-token context.
  */
 
 const DETAIL_ROW_CAP = reportTypeDef('technician_time_billability').detailRowCap;
@@ -63,6 +65,12 @@ const ORG_SCOPE_NOTE =
  *  technician's WHOLE capacity, so the figure is a share, not utilization. */
 const ORG_SCOPE_UTILIZATION_NOTE =
   'Utilization at organization scope is the share of each technician\'s capacity spent on this organization, not their overall utilization.';
+
+/** Item 3 (#3198 W02 fix round): billable time that cannot be valued. */
+function unpricedNote(minutes: number, entries: number): string {
+  return `${minutes} billable minutes across ${entries} entr${entries === 1 ? 'y' : 'ies'} have no hourly rate or currency, `
+    + 'so they are counted in billable minutes but excluded from billable value and average rate.';
+}
 
 function capacityNote(weeklyCapacityHours: number, workingDays: number): string {
   return `Utilization assumes a uniform ${weeklyCapacityHours}h week prorated over ${workingDays} working days; PTO, part-time schedules and public holidays are not modelled.`;
@@ -182,6 +190,14 @@ const MINUTES = sql`
     AND e.is_approved AND e.billing_status IN ('billed', 'contract')), 0)::int AS billed_minutes,
   COUNT(e.id)::int AS entry_count`;
 
+/** Billable time `MONEY_ROWS` cannot value (overall statement only). Same
+ *  billed-quantity minutes as the money it is missing from. */
+const UNPRICED = sql`
+  COALESCE(SUM(${BILLED_QUANTITY}) FILTER (WHERE e.eff_coverage = 'billable'
+    AND (e.hourly_rate IS NULL OR e.currency_code IS NULL)), 0)::int AS unpriced_billable_minutes,
+  COUNT(e.id) FILTER (WHERE e.eff_coverage = 'billable'
+    AND (e.hourly_rate IS NULL OR e.currency_code IS NULL))::int AS unpriced_billable_entries`;
+
 /**
  * Per-row money, rounded exactly like `getTicketBillingSummary`
  * (timeEntryService.ts): hours to 2 dp, one ROUND per row at the currency's
@@ -219,6 +235,7 @@ function overallQuery(cte: SQL, scope: ReportScope): SQL {
     : sql`NULL::text`;
   return sql`${cte}
     SELECT ${MINUTES},
+      ${UNPRICED},
       (SELECT COUNT(*) FROM roster)::int AS technician_count,
       (SELECT COUNT(*) FROM techs t
         WHERE NOT EXISTS (SELECT 1 FROM entries x WHERE x.user_id = t.user_id))::int AS zero_time_technicians,
@@ -263,6 +280,7 @@ type MinutesRow = {
 };
 type GroupRow = MinutesRow & { group_key: string; group_label: string };
 type OverallRow = MinutesRow & {
+  unpriced_billable_minutes: number; unpriced_billable_entries: number;
   technician_count: number; zero_time_technicians: number; scope_org_name: string | null;
 };
 type MoneyRow = { currency_code: string; billable_value: string; average_rate: string | null };
@@ -407,6 +425,14 @@ export async function generateTechnicianTimeBillabilityReport(
     }));
 
     const overallMinutes = overallRow ?? ({} as OverallRow);
+    const unpricedBillable = {
+      minutes: n(overallMinutes.unpriced_billable_minutes),
+      entries: n(overallMinutes.unpriced_billable_entries),
+    };
+    if (unpricedBillable.minutes > 0 || unpricedBillable.entries > 0) {
+      notes.push(unpricedNote(unpricedBillable.minutes, unpricedBillable.entries));
+    }
+    if (period.timeZoneNote) notes.push(period.timeZoneNote);
     const overall = figures(
       overallMinutes,
       capacityPerTechnician * n(overallMinutes.technician_count),
@@ -431,6 +457,7 @@ export async function generateTechnicianTimeBillabilityReport(
       overall,
       groups,
       zeroTimeTechnicians: n(overallMinutes.zero_time_technicians),
+      unpricedBillable,
       detail: {
         cap: DETAIL_ROW_CAP,
         stored: rows.length,

@@ -43,6 +43,7 @@ const NOTES = [
   'Tickets with no SLA target are excluded from the attainment denominators and counted separately.',
   'Planned work (work_kind other than support) carries a due date, not an SLA, and is excluded.',
   'The technician axis uses the ticket\'s CURRENT assignee; reassignment history is not tracked.',
+  'Ticket detail lists breached tickets first (newest first), then the rest, so the detail cap never drops a breach in favour of a newer on-time ticket.',
 ];
 
 const TECHNICIAN_LABEL_SUFFIX = ' (current assignee)';
@@ -187,7 +188,7 @@ function detailQuery(cte: SQL, includeNoSla: boolean): SQL {
       o.id::text AS id, o.ticket_number, o.internal_number,
       o.org_id::text AS org_id, org.name AS org_name,
       o.subject, o.priority::text AS priority, o.category,
-      u.name AS assigned_to_name,
+      o.assigned_to::text AS assigned_to, u.name AS assigned_to_name,
       ${iso(sql`o.created_at`)} AS created_at,
       ${iso(sql`o.first_response_at`)} AS first_response_at,
       ${iso(sql`o.resolved_at`)} AS resolved_at,
@@ -198,7 +199,9 @@ function detailQuery(cte: SQL, includeNoSla: boolean): SQL {
     LEFT JOIN organizations org ON org.id = o.org_id
     LEFT JOIN users u ON u.id = o.assigned_to
     ${noSlaFilter}
-    ORDER BY o.created_at DESC, o.id
+    -- Breaches first (fix round item 2): the cap must never drop an older
+    -- breach to keep a newer on-time ticket; same predicate as COUNTERS.breaches.
+    ORDER BY (o.response_outcome = 'missed' OR o.resolution_outcome = 'missed') DESC, o.created_at DESC, o.id
     LIMIT ${DETAIL_ROW_CAP + 1}`;
 }
 
@@ -217,7 +220,7 @@ type OverallRow = CounterRow & {
 type DetailRow = {
   id: string; ticket_number: string | null; internal_number: string | null;
   org_id: string; org_name: string | null; subject: string; priority: string;
-  category: string | null; assigned_to_name: string | null;
+  category: string | null; assigned_to: string | null; assigned_to_name: string | null;
   created_at: string; first_response_at: string | null; resolved_at: string | null;
   response_sla_minutes: number | null; resolution_sla_minutes: number | null; paused: number;
   response_outcome: SlaOutcome; resolution_outcome: SlaOutcome;
@@ -253,6 +256,7 @@ function toDetailRow(r: DetailRow): TicketSlaDetailRow {
     subject: r.subject,
     priority: r.priority,
     category: r.category,
+    assignedToId: r.assigned_to ?? null,
     assignedToName: r.assigned_to_name,
     createdAt: r.created_at,
     firstResponseAt: r.first_response_at,
@@ -327,6 +331,7 @@ export async function generateTicketSlaAttainmentReport(
       timeZone: period.timeZone,
     };
     const notes = scope.kind === 'partner' ? [...NOTES, PARTNER_ORG_LIST_NOTE] : [...NOTES];
+    if (period.timeZoneNote) notes.push(period.timeZoneNote);
 
     if (scope.kind === 'partner' && scope.orgIds.length === 0) {
       const empty = emptyTicketSlaSummary(NO_ORGS_NOTE);

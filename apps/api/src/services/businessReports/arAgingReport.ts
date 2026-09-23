@@ -1,6 +1,5 @@
 import { sql, type SQL } from 'drizzle-orm';
 import {
-  canonicalizeTimezone,
   emptyArAgingSummary,
   type ArAgingBucket,
   type ArAgingDetailRow,
@@ -17,7 +16,7 @@ import { reportTypeDef } from '../reportRegistry';
 import { reportOwnerOfScope, runInReportScope, type ReportScope } from '../reportScope';
 import type { ReportGenerationAuthority } from '../siteScope';
 import { NO_ORGS_NOTE, PARTNER_ORG_LIST_NOTE, rowsOf, SITE_RESTRICTED_NOTE } from './common';
-import { resolveReportOwnerTimezone, resolveReportPeriod } from './period';
+import { reportTimezone, resolveReportOwnerTimezone, resolveReportPeriod } from './period';
 
 /**
  * R3 — AR aging (`ar_aging`, #3198 spec §3.3 R3).
@@ -297,10 +296,13 @@ export async function generateArAgingReport(
 
   // ONE scoped block for the whole report (ruling P6).
   return runInReportScope(scope, async () => {
-    const timeZone = canonicalizeTimezone(await resolveReportOwnerTimezone(reportOwnerOfScope(scope))) ?? 'UTC';
+    const { timeZone, note: timeZoneNote } = reportTimezone(
+      await resolveReportOwnerTimezone(reportOwnerOfScope(scope)),
+    );
     const asOf = config.asOf ?? dateInZone(generatedAt, timeZone);
 
     const notes = [`As of ${asOf} in ${timeZone}.`, NO_DUE_DATE_NOTE, PER_CURRENCY_NOTE];
+    if (timeZoneNote) notes.push(timeZoneNote);
     if (config.asOf !== undefined) notes.push(CURRENT_BALANCE_NOTE);
     if (scope.kind === 'partner') notes.push(PARTNER_ORG_LIST_NOTE);
 

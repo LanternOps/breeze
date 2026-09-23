@@ -48,6 +48,10 @@ export type TicketSlaDetailRow = {
   subject: string;
   priority: string;
   category: string | null;
+  /** The CURRENT assignee's id; null only when the ticket is unassigned.
+   *  A non-null id with a null name is an assignee whose `users` row the
+   *  generating context could not read — not "unassigned". */
+  assignedToId: string | null;
   assignedToName: string | null;
   createdAt: string;
   firstResponseAt: string | null;
@@ -119,6 +123,10 @@ export type TechnicianTimeSummary = {
   overall: Omit<TechnicianTimeGroupRow, 'groupKey' | 'groupLabel'>;
   groups: TechnicianTimeGroupRow[];
   zeroTimeTechnicians: number;
+  /** Billable-coverage time with no hourly rate or no currency: it cannot be
+   *  valued, so it is absent from every `billableValue` row. Counted here (in
+   *  billed-quantity minutes) so the gap is disclosed, never silent. */
+  unpricedBillable: { minutes: number; entries: number };
   detail: DetailRowMeta;
   notes: string[];
   rows: TechnicianTimeDetailRow[];
@@ -219,6 +227,7 @@ export function emptyTechnicianTimeSummary(note: string): TechnicianTimeSummary 
     },
     groups: [],
     zeroTimeTechnicians: 0,
+    unpricedBillable: { minutes: 0, entries: 0 },
     detail: { ...EMPTY_DETAIL },
     notes: [note],
     rows: [],

@@ -22,12 +22,12 @@ import type { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import type {
   CurrencyAmountRow,
-  DetailRowMeta,
   ReportScopeMeta,
   TechnicianTimeDetailRow,
   TechnicianTimeGroupRow,
   TechnicianTimeSummary,
 } from '../types/businessReports';
+import { detailDisclosure } from './detailDisclosure';
 import { formatMinutes, formatMoney, formatPercent } from './moneyFormat';
 
 type RGB = [number, number, number];
@@ -120,12 +120,6 @@ function dateTime(value: string | null | undefined): string {
   return `${value.slice(0, 10)} ${value.slice(11, 16)}`;
 }
 
-function detailHeading(base: string, totalRows: number, detail: DetailRowMeta): string {
-  if (detail.truncated) return `${base} (showing ${detail.stored} of ${detail.available})`;
-  if (totalRows > DETAIL_TABLE_MAX) return `${base} (showing ${DETAIL_TABLE_MAX} of ${totalRows})`;
-  return base;
-}
-
 function finalY(doc: jsPDF, fallback: number): number {
   return ((doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? fallback) + 6;
 }
@@ -201,8 +195,26 @@ export function renderTechnicianTimeReport(
 
   // --- Billable value, one row per currency -------------------------------------
   y = chrome.drawSectionHeading(doc, 'Billable value', y + 2);
+  // Fix round item 3: unpriced billable time is excluded from every value row,
+  // so an empty value table is NOT "no billable value" when such time exists.
+  const unpriced = summary.unpricedBillable ?? { minutes: 0, entries: 0 };
+  if (unpriced.minutes > 0 || unpriced.entries > 0) {
+    y = drawProse(
+      doc,
+      chrome,
+      `${unpriced.minutes} billable minutes (${unpriced.entries} entr${unpriced.entries === 1 ? 'y' : 'ies'}) have no hourly rate or currency and are not valued below.`,
+      y + 1, 9, C.warning,
+    );
+  }
   if (summary.overall.billableValue.length === 0) {
-    y = drawProse(doc, chrome, 'No billable value recorded in the covered window.', y + 1, 9, C.muted);
+    y = drawProse(
+      doc,
+      chrome,
+      unpriced.minutes > 0 || unpriced.entries > 0
+        ? 'No priced billable time in the covered window.'
+        : 'No billable value recorded in the covered window.',
+      y + 1, 9, C.muted,
+    );
   } else {
     autoTable(doc, {
       startY: y + 1,
@@ -228,7 +240,15 @@ export function renderTechnicianTimeReport(
   }
 
   // --- Entries -------------------------------------------------------------------
-  y = chrome.drawSectionHeading(doc, detailHeading('Entries', summary.rows.length, summary.detail), y + 2);
+  const disclosure = detailDisclosure({
+    base: 'Entries',
+    inHand: summary.rows.length,
+    total: summary.detail.truncated ? summary.detail.available : summary.rows.length,
+    pdfMax: DETAIL_TABLE_MAX,
+    storedCap: summary.detail.cap,
+  });
+  y = chrome.drawSectionHeading(doc, disclosure.heading, y + 2);
+  if (disclosure.note) y = drawProse(doc, chrome, disclosure.note, y + 1, 8.6, C.muted);
   if (summary.rows.length === 0) {
     y = drawProse(doc, chrome, 'No time entries in the covered window.', y + 1, 9, C.muted);
   } else {
@@ -239,7 +259,7 @@ export function renderTechnicianTimeReport(
       body: summary.rows.slice(0, DETAIL_TABLE_MAX).map((r: TechnicianTimeDetailRow) => [
         dateTime(r.startedAt),
         r.userName ?? NA,
-        r.orgName ?? 'No organization',
+        r.orgName ?? (r.orgId ? 'Unknown organization' : 'No organization'),
         r.workTypeName ?? NA,
         formatMinutes(r.durationMinutes),
         formatMinutes(r.billableMinutes),

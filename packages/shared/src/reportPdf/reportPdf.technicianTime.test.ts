@@ -67,6 +67,7 @@ const SUMMARY: TechnicianTimeSummary = {
     },
   ],
   zeroTimeTechnicians: 1,
+  unpricedBillable: { minutes: 0, entries: 0 },
   detail: { cap: 5000, stored: 2, available: 2, truncated: false },
   notes: NOTES,
   rows: [
@@ -107,8 +108,41 @@ describe('buildReportPdf: technician_time_billability', () => {
     expect(text).toContain('N/A');
   });
 
-  it('discloses truncation with both numbers', () => {
-    const s = { ...SUMMARY, detail: { cap: 5000, stored: 5000, available: 9000, truncated: true } };
-    expect(extractText(buildReportPdf([], { ...opts, summary: s }))).toMatch(/5000 of 9000/);
+  it('discloses truncation: drawn count, available count, and both caps', () => {
+    const rows = Array.from({ length: 5000 }, (_, i) => ({ ...SUMMARY.rows[0]!, entryId: `e${i}` }));
+    const s = { ...SUMMARY, detail: { cap: 5000, stored: 5000, available: 9000, truncated: true }, rows };
+    const text = extractText(buildReportPdf([], { ...opts, summary: s }));
+    expect(text).toMatch(/showing 500 of 9000/);
+    expect(text).not.toMatch(/5000 of 9000/);
+    expect(text).toMatch(/at most 500 rows/);
+    expect(text).toMatch(/at most 5000/);
+  });
+
+  // Fix round item 3.
+  it('never says "no billable value" when billable minutes exist but are unpriced', () => {
+    const s = {
+      ...SUMMARY,
+      overall: { ...SUMMARY.overall, billableValue: [], averageRate: [] },
+      unpricedBillable: { minutes: 95, entries: 3 },
+    };
+    const text = extractText(buildReportPdf([], { ...opts, summary: s }));
+    expect(text).not.toMatch(/No billable value recorded/);
+    expect(text).toMatch(/95 billable minutes/);
+  });
+
+  it('still says "no billable value" when there is genuinely none', () => {
+    const s = {
+      ...SUMMARY,
+      overall: { ...SUMMARY.overall, billableValue: [], averageRate: [] },
+      unpricedBillable: { minutes: 0, entries: 0 },
+    };
+    expect(extractText(buildReportPdf([], { ...opts, summary: s }))).toMatch(/No billable value recorded/);
+  });
+
+  it('labels an entry whose organization name could not be read as unknown, not "No organization"', () => {
+    const s = { ...SUMMARY, rows: [{ ...SUMMARY.rows[0]!, orgId: 'o-hidden', orgName: null }] };
+    const text = extractText(buildReportPdf([], { ...opts, summary: s }));
+    expect(text).toContain('Unknown organization');
+    expect(text).not.toContain('No organization');
   });
 });

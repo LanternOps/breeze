@@ -381,4 +381,34 @@ describe('generateTechnicianTimeBillabilityReport', () => {
     await expect(generateTechnicianTimeBillabilityReport(partnerScope(), config, partnerAuthority)).rejects.toThrow();
     expect(db.execute).not.toHaveBeenCalled();
   });
+
+  // #3198 W02 fix round (item 3): billable time with no rate or currency is
+  // excluded from billable value by construction; it must be counted and
+  // disclosed, never silently dropped.
+  it('counts unpriced billable minutes and discloses them in a note', async () => {
+    queueExecute(TECH_ROWS, [], [{ ...OVERALL[0]!, unpriced_billable_minutes: 95, unpriced_billable_entries: 3 }], [], []);
+    const s = summaryOf(await generateTechnicianTimeBillabilityReport(partnerScope(), { period: AUGUST }, partnerAuthority));
+    expect(calls[2]!.sql).toMatch(/unpriced_billable_minutes/);
+    expect(calls[2]!.sql).toMatch(/hourly_rate IS NULL OR e\.currency_code IS NULL/);
+    expect(s.unpricedBillable).toEqual({ minutes: 95, entries: 3 });
+    expect(s.notes.join(' ')).toMatch(/95 billable minutes across 3 entries have no hourly rate or currency/);
+  });
+
+  it('no unpriced note when every billable entry is priced', async () => {
+    queueExecute(TECH_ROWS, [], [{ ...OVERALL[0]!, unpriced_billable_minutes: 0, unpriced_billable_entries: 0 }], [], []);
+    const s = summaryOf(await generateTechnicianTimeBillabilityReport(partnerScope(), { period: AUGUST }, partnerAuthority));
+    expect(s.unpricedBillable).toEqual({ minutes: 0, entries: 0 });
+    expect(s.notes.join(' ')).not.toMatch(/no hourly rate/);
+  });
+
+  it('an unusable owner timezone is disclosed in the notes', async () => {
+    const { resolvePartnerTimezone } = await import('../portal/timezone');
+    vi.mocked(resolvePartnerTimezone).mockResolvedValueOnce('Mars/Olympus');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    queueExecute(TECH_ROWS, [], OVERALL, [], []);
+    const s = summaryOf(await generateTechnicianTimeBillabilityReport(partnerScope(), { period: AUGUST }, partnerAuthority));
+    expect(s.period.timeZone).toBe('UTC');
+    expect(s.notes.join(' ')).toMatch(/Mars\/Olympus.*UTC/);
+    warn.mockRestore();
+  });
 });
