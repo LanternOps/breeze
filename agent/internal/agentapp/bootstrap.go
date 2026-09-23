@@ -219,7 +219,19 @@ func runBootstrap() {
 	res, err := redeemBootstrapToken(server, token)
 	if err != nil {
 		bsLog.Error("bootstrap token redemption failed", "error", err.Error())
-		fmt.Fprintf(os.Stderr, "Bootstrap failed: %v\n", err)
+		// The MSI's BootstrapEnroll is a plain EXE custom action: Windows
+		// Installer shows only "a program run as part of the setup did not
+		// finish as expected" and never captures this process's stderr. Record
+		// the failure where an admin can find it (enroll-last-error.txt, the
+		// Windows Event Log) and, for an untrusted server certificate, name
+		// the actual fix instead of the raw x509 error (#4979).
+		line := fmt.Sprintf("Bootstrap failed: %v", err)
+		if hint, ok := certVerificationHint(err, server); ok {
+			line = fmt.Sprintf("Bootstrap failed: %s (%v)", hint, err)
+		}
+		fmt.Fprintln(os.Stderr, line)
+		writeLastErrorFile(line)
+		eventLogError("BreezeAgent", line)
 		osExit(1) // hard — roll back the install (osExit: test seam, enroll_error.go)
 		return    // under a noop osExit test seam, don't fall through to a nil res
 	}

@@ -78,6 +78,26 @@ describe('buildInstallCommands', () => {
       expect(windows.indexOf('SecurityProtocol')).toBeLessThan(windows.indexOf('Invoke-WebRequest'));
     });
 
+    it('names the certificate fix when the download fails TLS verification, and rethrows anything else (#4979)', () => {
+      // A self-hosted server on a self-signed / private-CA certificate made the
+      // download die with PowerShell's raw "underlying connection was closed"
+      // error. The catch must translate ONLY a certificate failure (never skip
+      // verification) and rethrow every other error untouched.
+      const { windows } = buildInstallCommands(base);
+      const tryIdx = windows.indexOf('try{Invoke-WebRequest');
+      expect(tryIdx).toBeGreaterThan(-1);
+      const catchBlock = windows.slice(windows.indexOf('catch{', tryIdx));
+      expect(catchBlock.startsWith(`catch{if("$($_.Exception)" -match 'certificate|trust relationship'){throw "Breeze: `)).toBe(true);
+      expect(catchBlock).toContain('Cert:\\LocalMachine\\Root');
+      expect(catchBlock).toContain('https://rmm.example.com');
+      expect(catchBlock).toContain('https://docs.breezermm.com/deploy/tls/#trusting-the-internal-ca-on-agents');
+      // Bare rethrow for non-certificate failures, before the MZ check runs.
+      expect(catchBlock.indexOf('"}; throw}')).toBeGreaterThan(-1);
+      expect(catchBlock.indexOf('"}; throw}')).toBeLessThan(catchBlock.indexOf('ReadAllBytes'));
+      // Never weaken verification.
+      expect(windows).not.toMatch(/ServerCertificateValidationCallback|SkipCertificateCheck/);
+    });
+
     it('downloads the agent from the server, not GitHub (#4441)', () => {
       // The server's download route is what serves BYO / self-hosted signed
       // binaries (BINARY_SOURCE=local, or a custom BINARY_GITHUB_REPOSITORY).

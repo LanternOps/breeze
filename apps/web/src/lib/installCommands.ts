@@ -90,12 +90,25 @@ export function buildInstallCommands(opts: InstallCommandOptions): InstallComman
   const winTlsCheck =
     `[Net.ServicePointManager]::SecurityProtocol = ` +
     `[Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12`;
+  // A self-hosted server on a self-signed or private-CA certificate the
+  // machine does not trust fails the download with PowerShell's raw
+  // "underlying connection was closed" error (#4979). Translate only a
+  // certificate failure into the actual fix -- trust the CA; verification is
+  // never skipped -- and rethrow every other error untouched. Matching the
+  // full exception text covers PS 5.1 (WebException, "Could not establish
+  // trust relationship") and PS 7 (inner AuthenticationException, "remote
+  // certificate is invalid").
+  const winDownload =
+    `try{Invoke-WebRequest -Uri "${apiUrl}/api/v1/agents/download/windows/amd64" -OutFile $exe}` +
+    `catch{if("$($_.Exception)" -match 'certificate|trust relationship')` +
+    `{throw "Breeze: this machine rejected the TLS certificate of ${apiUrl}. If the server uses a self-signed or private-CA certificate, ` +
+    `import its root CA into Cert:\\LocalMachine\\Root and retry - see https://docs.breezermm.com/deploy/tls/#trusting-the-internal-ca-on-agents"}; throw}`;
   const windows =
     `$ErrorActionPreference='Stop'; ` +
     `${winOsFloorCheck}; ` +
     `${winTlsCheck}; ` +
     `${winStageDir}; ` +
-    `Invoke-WebRequest -Uri "${apiUrl}/api/v1/agents/download/windows/amd64" -OutFile $exe; ` +
+    `${winDownload}; ` +
     `${winMzCheck}; ` +
     `& $exe service install; ${winThrow('service install')}; ` +
     `& $exe enroll "${token}" --server "${apiUrl}"${winSecretFlag}; ${winThrow('enrollment')}; ` +
