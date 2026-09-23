@@ -26,26 +26,46 @@ async function insertDevice(orgId: string, siteId: string): Promise<string> {
   return row!.id;
 }
 
-async function insertRollups(orgId: string, deviceId: string, metricName: string, metricType: string, starts: Date[], value: (i: number) => number) {
+type SourceTable = 'device_metrics' | 'device_process_samples';
+
+async function insertRollups(orgId: string, deviceId: string, metricName: string, metricType: string, starts: Date[], value: (i: number) => number, sourceTable: SourceTable = 'device_metrics') {
   await getTestDb().insert(metricRollups).values(starts.map((bucketStart, i) => ({
-    orgId, sourceTable: 'device_metrics', deviceId, metricType, metricName, bucketStart, bucketSeconds: 300,
+    orgId, sourceTable, deviceId, metricType, metricName, bucketStart, bucketSeconds: 300,
     avgValue: value(i), minValue: value(i), maxValue: value(i), p95Value: value(i), sumValue: value(i),
     sampleCount: 1, gapSeconds: 0, metadata: { rollupVersion: 'metric-rollups-v1', source: 'raw' },
   })));
 }
 
-async function insertOpenEpisode(orgId: string, deviceId: string, metricName: string, family: string, firstSeenAt: Date, lastSeenAt: Date): Promise<string> {
+interface EpisodeShape {
+  sourceTable?: SourceTable;
+  anomalyType?: string;
+  /** Default open. A closed episode's buckets must rejoin the baseline. */
+  closed?: boolean;
+}
+
+async function insertOpenEpisode(orgId: string, deviceId: string, metricName: string, family: string, firstSeenAt: Date, lastSeenAt: Date, shape: EpisodeShape = {}): Promise<string> {
+  const sourceTable = shape.sourceTable ?? 'device_metrics';
+  const anomalyType = shape.anomalyType ?? 'spike';
   const [row] = await getTestDb().insert(metricAnomalyEpisodes).values({
-    orgId, deviceId, episodeKey: `device_metrics:spike:${family}`, sourceTable: 'device_metrics', anomalyType: 'spike',
+    orgId, deviceId, episodeKey: `${sourceTable}:${anomalyType}:${family}`, sourceTable, anomalyType,
     metricFamily: family, metricNames: [metricName], firstSeenAt, lastSeenAt, bucketCount: 1, peakValue: 1,
     peakMetricName: metricName, peakScore: 1, peakAt: firstSeenAt,
+    ...(shape.closed ? { status: 'resolved', closeReason: 'cleared', resolvedAt: lastSeenAt } : {}),
   }).returning({ id: metricAnomalyEpisodes.id });
   return row!.id;
 }
 
-async function insertMember(orgId: string, deviceId: string, episodeId: string, windowStart: Date) {
+interface MemberShape {
+  sourceTable?: SourceTable;
+  metricType?: string;
+  metricName?: string;
+  anomalyType?: string;
+}
+
+async function insertMember(orgId: string, deviceId: string, episodeId: string, windowStart: Date, shape: MemberShape = {}) {
   await getTestDb().insert(metricAnomalies).values({
-    orgId, deviceId, sourceTable: 'device_metrics', metricType: 'cpu', metricName: 'cpu_percent', anomalyType: 'spike',
+    orgId, deviceId, sourceTable: shape.sourceTable ?? 'device_metrics', metricType: shape.metricType ?? 'cpu',
+    metricName: shape.metricName ?? 'cpu_percent', anomalyType: shape.anomalyType ?? 'spike',
     status: 'open', windowStart, windowEnd: at(windowStart, 5), bucketSeconds: 300, observedValue: 95, baselineValue: 40,
     score: 5, confidence: 0.9, sampleCount: 1, baselineSummary: {}, evidence: {}, episodeId,
   });
@@ -128,5 +148,79 @@ describe('baseline anti-contamination (spec §10)', () => {
       baselineExcludedBuckets: 10,
     });
     expect(await readFallbackCount('baseline')).toBe(before + 1);
+  });
+
+  /**
+   * 14 cpu_percent baseline buckets at 10 before `anchor`, a 99 at `anchor`,
+   * and `members` of those buckets attached to one episode of the given shape.
+   * Returns the spike's baseline_summary and the fallback-counter delta.
+   */
+  async function runCpuScenario(members: number, episode: EpisodeShape, memberShape: MemberShape = {}) {
+    const device = await insertDevice(orgId, siteId);
+    const anchor = new Date('2026-06-18T18:00:00.000Z');
+    const baselineStarts = Array.from({ length: 14 }, (_, i) => at(anchor, -(6 + i) * 5));
+    await insertRollups(orgId, device, 'cpu_percent', 'cpu', baselineStarts, () => 10);
+    await insertRollups(orgId, device, 'cpu_percent', 'cpu', [anchor], () => 99);
+    const episodeId = await insertOpenEpisode(orgId, device, 'cpu_percent', 'cpu', at(anchor, -100), at(anchor, -25), episode);
+    for (const windowStart of baselineStarts.slice(0, members)) await insertMember(orgId, device, episodeId, windowStart, memberShape);
+
+    const before = await readFallbackCount('baseline');
+    await detectMetricAnomaliesRange({ orgId, from: anchor, to: at(anchor, 5) });
+    const [spike] = await getTestDb()
+      .select()
+      .from(metricAnomalies)
+      .where(and(eq(metricAnomalies.deviceId, device), eq(metricAnomalies.windowStart, anchor), eq(metricAnomalies.anomalyType, 'spike')));
+    expect(spike).toBeDefined();
+    return { summary: spike!.baselineSummary as Record<string, unknown>, counterDelta: (await readFallbackCount('baseline')) - before };
+  }
+
+  it('uses the filtered baseline (no fallback) when exactly MIN_BASELINE_BUCKETS clean buckets remain', async () => {
+    const { summary, counterDelta } = await runCpuScenario(2, {});
+    expect(summary).toMatchObject({ baselineFallback: false, baselineBuckets: 12, baselineExcludedBuckets: 2 });
+    expect(counterDelta).toBe(0);
+  });
+
+  it('does not exclude buckets of a CLOSED episode', async () => {
+    const { summary, counterDelta } = await runCpuScenario(10, { closed: true });
+    expect(summary).toMatchObject({ baselineFallback: false, baselineBuckets: 14, baselineExcludedBuckets: 0 });
+    expect(counterDelta).toBe(0);
+  });
+
+  it('does not exclude buckets whose open-episode member is a growth row (plan deviation 6)', async () => {
+    const { summary } = await runCpuScenario(10, { anomalyType: 'memory_growth' }, { anomalyType: 'memory_growth' });
+    expect(summary).toMatchObject({ baselineFallback: false, baselineBuckets: 14, baselineExcludedBuckets: 0 });
+  });
+
+  it('applies the same exclusion and fallback to the process-sample runaway detector', async () => {
+    const device = await insertDevice(orgId, siteId);
+    const anchor = new Date('2026-06-18T18:00:00.000Z');
+    const metricName = 'top_process_cpu_percent_sum';
+    const baselineStarts = Array.from({ length: 14 }, (_, i) => at(anchor, -(6 + i) * 5));
+    await insertRollups(orgId, device, metricName, 'process', baselineStarts, () => 10, 'device_process_samples');
+    await insertRollups(orgId, device, metricName, 'process', [anchor], () => 99, 'device_process_samples');
+    const episodeId = await insertOpenEpisode(orgId, device, metricName, 'process_cpu', at(anchor, -100), at(anchor, -25), {
+      sourceTable: 'device_process_samples', anomalyType: 'process_runaway',
+    });
+    for (const windowStart of baselineStarts.slice(0, 10)) {
+      await insertMember(orgId, device, episodeId, windowStart, {
+        sourceTable: 'device_process_samples', metricType: 'process', metricName, anomalyType: 'process_runaway',
+      });
+    }
+
+    const before = await readFallbackCount('process-runaway');
+    await detectMetricAnomaliesRange({ orgId, from: anchor, to: at(anchor, 5) });
+
+    const [runaway] = await getTestDb()
+      .select()
+      .from(metricAnomalies)
+      .where(and(eq(metricAnomalies.deviceId, device), eq(metricAnomalies.windowStart, anchor), eq(metricAnomalies.anomalyType, 'process_runaway')));
+    expect(runaway).toBeDefined();
+    expect(runaway!.baselineSummary as Record<string, unknown>).toMatchObject({
+      baselineFallback: true,
+      baselineBuckets: 14,
+      baselineExcludedBuckets: 10,
+      sourceTable: 'device_process_samples',
+    });
+    expect(await readFallbackCount('process-runaway')).toBe(before + 1);
   });
 });
