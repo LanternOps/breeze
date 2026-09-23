@@ -18,11 +18,14 @@ const validateSampleSize = 64
 // validate's restored-file checksum sample must skip them for an IdentityNew
 // run — a byte difference there is the whole point of that phase, not a
 // sign of restore corruption.
+// Keyed the same way validate's checksum sample now looks entries up: by
+// backup.RestoreKey (volume and leading separators stripped), not the raw
+// SourcePath — see the failedFiles/identityMutatedPaths lookups below.
 var identityMutatedPaths = map[string]bool{
-	"/etc/machine-id":          true,
-	"/etc/hostname":            true,
-	"/etc/breeze/agent.yaml":   true,
-	"/etc/breeze/secrets.yaml": true,
+	"etc/machine-id":          true,
+	"etc/hostname":            true,
+	"etc/breeze/agent.yaml":   true,
+	"etc/breeze/secrets.yaml": true,
 }
 
 // validate proves the rebuild before declaring success: a sample of
@@ -42,10 +45,11 @@ func validate(ctx context.Context, r *run) error {
 			if !f.HasContent() || f.Checksum == "" {
 				continue
 			}
-			if r.opts.Identity == IdentityNew && identityMutatedPaths[f.SourcePath] {
+			key := backup.RestoreKey(f)
+			if r.opts.Identity == IdentityNew && identityMutatedPaths[key] {
 				continue
 			}
-			if r.failedFiles[f.SourcePath] {
+			if r.failedFiles[key] {
 				continue // known partial-restore failure, already a warning
 			}
 			withSum = append(withSum, f)
@@ -58,7 +62,7 @@ func validate(ctx context.Context, r *run) error {
 	checked, mismatched := 0, []string{}
 	for i := 0; i < len(withSum); i += step {
 		f := withSum[i]
-		target := filepath.Join(r.staging, filepath.FromSlash(strings.TrimPrefix(f.SourcePath, "/")))
+		target := filepath.Join(r.staging, backup.RestoreKey(f))
 		sum, err := backup.SHA256File(target)
 		if err != nil || sum != f.Checksum {
 			mismatched = append(mismatched, f.SourcePath)

@@ -538,6 +538,31 @@ func restoreSourcePath(f SnapshotFile) string {
 	return journalEntryKey(f)
 }
 
+// RestoreKey returns the path an entry restores under, relative to the
+// restore target: restoreSourcePath (OriginalPath when VSS rewrote
+// SourcePath) with the volume and leading separators stripped — exactly
+// what resolveTargetPath joins under the target base. Separators are left
+// as recorded (a Windows manifest's `\` stays `\`), so
+// filepath.Join(root, RestoreKey(f)) is the file the restore wrote on the
+// host that ran the restore. Callers outside this package (the rebuild
+// engine's validate/winValidate) must use this, never f.SourcePath.
+func RestoreKey(f SnapshotFile) string {
+	return stripVolumeAndLeadingSeparators(restoreSourcePath(f))
+}
+
+// SetVolumeNameForTest overrides the package-level volumeName hook restore.go
+// uses to strip a leading Windows drive volume, returning a restore func.
+// Exported (test-only by convention, never called from non-test code) so an
+// external package's test — rebuild/validate_test.go's
+// TestValidate_UsesRestoreKey — can exercise RestoreKey's Windows-path
+// branch on a non-Windows CI runner, exactly like restore_volume_test.go's
+// unexported withWindowsVolumeName does for this package's own tests.
+func SetVolumeNameForTest(f func(string) string) (restore func()) {
+	orig := volumeName
+	volumeName = f
+	return func() { volumeName = orig }
+}
+
 // stripVolumeAndLeadingSeparators removes the volume/drive (e.g. "C:") and any
 // leading separators so an ABSOLUTE source path maps UNDER a target base.
 // Otherwise filepath.Join("C:\\restore", "C:\\Users\\x") yields an invalid
