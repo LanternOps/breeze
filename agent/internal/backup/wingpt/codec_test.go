@@ -375,3 +375,33 @@ func bytesEqual(a, b []byte) bool {
 	}
 	return true
 }
+
+// TestNextLayoutBufferSize: the DRIVE_LAYOUT_INFORMATION_EX read buffer grows
+// by doubling from the initial 16-entry size, is clamped to the 128-entry
+// GPT maximum, and then refuses to grow again — so a device that keeps
+// answering ERROR_MORE_DATA ends in an error, not an unbounded loop.
+func TestNextLayoutBufferSize(t *testing.T) {
+	max := uint32(driveLayoutHeaderSize + maxLayoutPartitions*partitionEntrySize)
+	size := initialLayoutBufferSize
+	var steps []uint32
+	for {
+		next, ok := nextLayoutBufferSize(size)
+		if !ok {
+			break
+		}
+		if next <= size {
+			t.Fatalf("next size %d does not grow past %d", next, size)
+		}
+		steps = append(steps, next)
+		size = next
+		if len(steps) > 16 {
+			t.Fatalf("buffer growth did not terminate: %v", steps)
+		}
+	}
+	if size != max {
+		t.Fatalf("growth stopped at %d, want the 128-entry cap %d (steps %v)", size, max, steps)
+	}
+	if len(steps) == 0 || len(steps) > 4 {
+		t.Errorf("growth steps = %v, want 1..4 doublings from 16 entries to the cap", steps)
+	}
+}

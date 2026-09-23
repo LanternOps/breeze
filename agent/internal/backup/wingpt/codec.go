@@ -177,6 +177,32 @@ const (
 	partitionStyleGPT     = 1 // PARTITION_STYLE_GPT
 )
 
+// maxLayoutPartitions is the largest partition count a Windows GPT disk
+// carries (the default GPT entry array: 128 entries). readRawLayout never
+// grows its IOCTL buffer past room for this many entries.
+const maxLayoutPartitions = 128
+
+// initialLayoutBufferSize is readRawLayout's first IOCTL_DISK_GET_DRIVE_LAYOUT_EX
+// output buffer: header plus 16 entries, enough for any ordinary disk.
+const initialLayoutBufferSize = uint32(driveLayoutHeaderSize + 16*partitionEntrySize)
+
+// nextLayoutBufferSize is readRawLayout's growth step after
+// ERROR_INSUFFICIENT_BUFFER/ERROR_MORE_DATA: double, clamped to the
+// 128-entry cap. ok is false once cur is already at the cap, so a device
+// that keeps asking for more ends in an error instead of an unbounded
+// allocation loop.
+func nextLayoutBufferSize(cur uint32) (next uint32, ok bool) {
+	const limit = uint32(driveLayoutHeaderSize + maxLayoutPartitions*partitionEntrySize)
+	if cur >= limit {
+		return cur, false
+	}
+	next = cur * 2
+	if next > limit {
+		next = limit
+	}
+	return next, true
+}
+
 // EncodeDriveLayoutEx builds the byte buffer IOCTL_DISK_SET_DRIVE_LAYOUT_EX
 // expects for a GPT-style disk: a 48-byte header (PartitionStyle=GPT,
 // PartitionCount, DiskId; StartingUsableOffset/UsableLength/

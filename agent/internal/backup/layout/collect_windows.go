@@ -9,7 +9,10 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup/wingpt"
+	"github.com/breeze-rmm/agent/internal/logging"
 )
+
+var log = logging.L("layout")
 
 var runCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
 	return exec.CommandContext(ctx, name, args...).Output()
@@ -60,37 +63,12 @@ func Collect(ctx context.Context) (*Manifest, error) {
 // fillGPTDetails adds Disk.GUID and Partition.Attributes via
 // wingpt.ReadLayout — data Get-Disk/Get-Partition never expose (see
 // windowsLayoutScript's comment: no -Guid on Get-Disk, no GPT attribute
-// property on Get-Partition at all). Best-effort: a disk this process can't
-// open (permissions, a disk that vanished between collection steps) leaves
-// GUID/Attributes at their zero value and records ONE "gpt_attributes"
-// Incomplete entry for the whole manifest, not one per failing disk —
-// Assess never consults Incomplete, so this is diagnostic only; it does not
-// change restorability. layout.Assess's own PartUUID check (guard.go) is
-// what actually gates on missing per-partition identity.
+// property on Get-Partition at all). Best-effort, GPT disks only — see
+// fillGPTDetailsWith for the skip and Incomplete rules. Assess never consults
+// Incomplete, so a failure here is diagnostic only; layout.Assess's own
+// PartUUID check (guard.go) is what gates on missing per-partition identity.
 func fillGPTDetails(m *Manifest) {
-	failed := false
-	for i := range m.Disks {
-		num, ok := diskNumberFromName(m.Disks[i].Name)
-		if !ok {
-			continue
-		}
-		gpt, err := wingpt.ReadLayout(num)
-		if err != nil {
-			failed = true
-			continue
-		}
-		m.Disks[i].GUID = gpt.DiskGUID
-		byNumber := make(map[int]uint64, len(gpt.Partitions))
-		for _, p := range gpt.Partitions {
-			byNumber[p.Number] = p.Attributes
-		}
-		for j := range m.Disks[i].Partitions {
-			if attrs, ok := byNumber[m.Disks[i].Partitions[j].Number]; ok {
-				m.Disks[i].Partitions[j].Attributes = attrs
-			}
-		}
-	}
-	if failed {
-		m.Incomplete = append(m.Incomplete, "gpt_attributes")
+	if err := fillGPTDetailsWith(m, wingpt.ReadLayout); err != nil {
+		log.Warn("GPT disk GUID/partition attributes not captured for at least one disk", "error", err.Error())
 	}
 }

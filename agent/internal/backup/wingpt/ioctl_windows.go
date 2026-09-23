@@ -25,7 +25,8 @@ func openPhysicalDrive(diskNumber int, access uint32) (windows.Handle, error) {
 // IOCTL_DISK_GET_DRIVE_LAYOUT_EX. The output buffer has no fixed maximum
 // size (one 144-byte entry per partition), so this grows the buffer and
 // retries on ERROR_INSUFFICIENT_BUFFER/ERROR_MORE_DATA exactly like the
-// two-call GetFileSecurityW pattern Task 4 uses for the same reason.
+// two-call GetFileSecurityW pattern Task 4 uses for the same reason — bounded
+// by nextLayoutBufferSize's 128-partition cap.
 func ReadLayout(diskNumber int) (Layout, error) {
 	h, err := openPhysicalDrive(diskNumber, windows.GENERIC_READ)
 	if err != nil {
@@ -40,7 +41,7 @@ func ReadLayout(diskNumber int) (Layout, error) {
 }
 
 func readRawLayout(h windows.Handle, diskNumber int) ([]byte, error) {
-	bufLen := uint32(driveLayoutHeaderSize + 16*partitionEntrySize)
+	bufLen := initialLayoutBufferSize
 	for {
 		buf := make([]byte, bufLen)
 		var returned uint32
@@ -49,7 +50,11 @@ func readRawLayout(h windows.Handle, diskNumber int) ([]byte, error) {
 			return buf[:returned], nil
 		}
 		if ioErr == windows.ERROR_INSUFFICIENT_BUFFER || ioErr == windows.ERROR_MORE_DATA {
-			bufLen *= 2
+			next, ok := nextLayoutBufferSize(bufLen)
+			if !ok {
+				return nil, fmt.Errorf("wingpt: IOCTL_DISK_GET_DRIVE_LAYOUT_EX on disk %d: layout does not fit a %d-byte buffer (%d partitions): %w", diskNumber, bufLen, maxLayoutPartitions, ioErr)
+			}
+			bufLen = next
 			continue
 		}
 		return nil, fmt.Errorf("wingpt: IOCTL_DISK_GET_DRIVE_LAYOUT_EX on disk %d: %w", diskNumber, ioErr)
