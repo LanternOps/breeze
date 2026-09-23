@@ -4,7 +4,7 @@
 
 **Goal:** Expose metric anomaly episodes over HTTP (list / detail / PATCH actions with snooze), keep evaluation labels intact with one feedback row per cascaded member, promote an episode to one alert that carries `context.episodeId`, close that alert when the episode clears or expires, and dispatch the AI-agent pilot once per episode instead of once per bucket.
 
-**Architecture:** Three new API services sit on top of W01's schema and stages: `metricAnomalyEpisodeQueries.ts` (read + serialize), `metricAnomalyEpisodeActions.ts` (locked, transactional human actions), `metricAnomalyEpisodeAlerts.ts` (the close-handler W01 exposes, wired at worker boot). The routes are registered on the existing `anomaliesRoutes` router in `routes/devices/anomalies.ts` and delegate to those services. Dispatch-per-episode is two changes: a link statement that runs inside W01's `episodes` stage transaction, and an amended claim CTE in the incident publisher.
+**Architecture:** Three new API services sit on top of W01's schema and stages: `metricAnomalyEpisodeQueries.ts` (read + serialize), `metricAnomalyEpisodeActions.ts` (locked, transactional human actions), `metricAnomalyEpisodeAlerts.ts` (the close-handler W01 exposes, wired at worker boot). The routes are registered on the existing `anomaliesRoutes` router in `routes/devices/anomalies.ts` and delegate to those services. Dispatch-per-episode is one change here: an amended claim CTE in the incident publisher. W01 already creates every incident with its `episode_id` (stage order `episodes` → `incidents`, second quorum A6), so W02 has no link statement and no grace window.
 
 **Tech Stack:** Hono, Drizzle ORM (PostgreSQL), Zod, Vitest (unit + `vitest.integration.config.ts`), BullMQ publisher job, `@breeze/shared` types.
 
@@ -17,28 +17,28 @@
 | # | Spec says | Code fact (file:line) | This plan does |
 |---|---|---|---|
 | D-1 | §11: the publisher skips an incident "when another incident with the same `episode_id` already has `agent_run_id IS NOT NULL`" | `agent_run_id` is stamped **after** publish by the subscriber, on the event bus, and only when admission succeeds (`apps/api/src/services/aiAgents/metricAnomalySubscriber.ts:50`, `:132-140`, `:196-212`). One claim pass takes up to 200 rows (`apps/api/src/jobs/metricAnomalyIncidentPublisher.ts:47`), so three incidents of one episode claimed together would all publish. | Suppress when a sibling with the same `episode_id` has `agent_run_id IS NOT NULL` **or** was already published (`dispatched_at IS NOT NULL AND suppressed_by_episode = false`), **and** allow only the earliest-`window_start` incident per episode inside one claim batch (`row_number() OVER (PARTITION BY episode_id …) > 1`). |
-| D-2 | §11: "Incidents with `episode_id IS NULL` … dispatch as today" | The `incidents` stage commits in its own transaction before the `episodes` stage starts (`apps/api/src/services/metricAnomalies.ts:1205-1222`, one `runDetectionStage` transaction per stage at `:196-214`), and the publisher polls every 5 s (`metricAnomalyIncidentPublisher.ts:46`). A new incident is visible, unlinked, for the whole time between those two commits, so most new incidents would be published before assembly links them. | The claim CTE skips an unlinked incident until it is `EPISODE_INCIDENT_LINK_GRACE_MINUTES` (15) old. Assembly links incidents seconds after they are created, so this only delays incidents that genuinely never get an episode (lookback misses, a timed-out `episodes` stage). |
+| D-2 | *(withdrawn by the second quorum, A6)* | The race it worked around — the `incidents` stage committing before assembly could link its rows — no longer exists: W01 runs `episodes` before `incidents` and writes `episode_id` at insert. | Nothing. Unlinked incidents (a timed-out `episodes` stage, rows outside the lookback) dispatch immediately, as §11 says. The earlier link statement, its wrapper and the 15-minute grace constant were deleted from this plan. |
 | D-3 | §12 / index contract: routes live in a new module `routes/devices/anomalyEpisodes.ts` exported as `anomalyEpisodesRoutes` | Every route module needs an `MCP_COVERAGE` entry (`apps/api/src/__tests__/mcp-coverage.test.ts:195-197`). New `gap` entries are refused because the gap list only shrinks (`:1-6`, `FROZEN_GAPS`), and none of the `McpExemptReason` values (`apps/api/src/services/mcpCoverage.ts:12-40`) describes an operator-facing device read/write surface. The per-row anomaly routes already hold the `devices/anomalies.ts` gap (`mcp-coverage.test.ts:67`, frozen under #6141). | Register the three episode endpoints on the existing `anomaliesRoutes` in `routes/devices/anomalies.ts`. They are part of the same resource family and the same #6141 gap. The handlers are thin; all logic lives in the new services. The index row `anomalyEpisodesRoutes` was replaced at plan reconciliation. |
 | D-4 | §8.1: `unsnooze` sets `snoozed_until = NULL` "on this episode" | §6 (W01): a new episode is snoozed when **the most recent dismissed episode** for the key has `snoozed_until > now()`, and snoozed successors copy `snoozed_until`. So clearing only an older episode would leave the snooze in force on its successor. | `unsnooze` clears `snoozed_until` on every `dismissed` episode for the same `(device_id, episode_key)` whose `snoozed_until > now()`. |
 | D-5 | §8.1: `promote` runs `promoteMetricAnomalyToAlert` "on the peak member" | `promoteMetricAnomalyToAlert` sets `status = 'promoted'` on the row it is given whatever its current status (`apps/api/src/services/metricAnomalyPromotion.ts:258-266`). It also promotes same-window siblings before our cascade runs (`:284-299`), so those siblings would not be in the cascade's `RETURNING`. | Peak = highest-`score` member whose status is `open` or `promoted`; a member a human already dismissed or resolved through the per-row route is never overwritten. Feedback goes to `open-before ∪ cascaded`, filtered to rows that are `promoted` afterwards. |
 | D-6 | §12 / index: `rangeMin`/`rangeMax` = min/max member `observedValue` | The ram and cpu families hold both `_sum` and `_max` members (§4.2). One range over both would mix "one process" values with "all top processes" values in one sentence. | Range is taken over members whose `metric_name = peak_metric_name`. The index row says so. |
 | D-7 | §8.3 is silent on write semantics | `emitAnomalyFeedback` is best-effort: it swallows and logs errors (`apps/api/src/services/mlFeedbackEmitters.ts:10-16`, `:64-83`). §18 lists "evaluation labels silently vanish" as a risk. | Episode actions write their member feedback rows through a new batch writer that **throws**, inside the request transaction. If the labels cannot be written, the action rolls back with a 500. |
-| D-8 | Spec §7 puts the alert resolve inside auto-resolve | `resolveAlert` publishes on the event bus and reads rule/cooldown tables (`apps/api/src/services/alertService.ts:715-830`). Running it inside the `episode-resolve` stage transaction keeps the org advisory lock and a pooled connection held during Redis round trips. A SQL error inside that transaction would also poison it and roll back the episode closes. | The handler runs **after** the stage transactions commit, outside any DB context. W01 already guarantees this: `detectMetricAnomaliesRange` collects the closes of every completed `episodes` and `episode-resolve` stage and calls `notifyEpisodesClosed(orgId, closed)` once after the stage loop (W01 Task 9); `processDetectOrgRange` holds no DB context. Task 7 Step 1 only verifies it. The handler is crash-safe either way: it re-derives its work from the database (auto-closed episodes in the last 24 h whose linked alert is still `active`) instead of trusting the in-memory list. |
-| D-9 | §12 serialization lists `durationSeconds`, `ongoing`, `promoted`, `snoozed` (+ `rangeMin`/`rangeMax` in the index) | Remediation suggestions are keyed `sourceType: 'anomaly'` + `metric_anomalies.id` (`apps/web/src/components/remediation/RemediationSuggestionsPanel.tsx:33-34`, `:133`); an episode id finds nothing and `generate` would reference a non-anomaly id. | The DTO adds `peakAnomalyId` (highest-score member, W01's peak rule) so W04's card can mount the remediation block on a real anomaly id. Added at plan reconciliation. |
+| D-8 | Spec §7 puts the alert resolve inside auto-resolve | `resolveAlert` publishes on the event bus and reads rule/cooldown tables (`apps/api/src/services/alertService.ts:715-830`). Running it inside the `episode-resolve` stage transaction keeps the org advisory lock and a pooled connection held during Redis round trips. A SQL error inside that transaction would also poison it and roll back the episode closes. | The handler runs **after** the stage transactions commit, outside any DB context. W01 already guarantees this: `detectMetricAnomaliesRange` collects the closes of every completed `episodes` and `episode-resolve` stage (assembly's supersedes come straight from `assembleMetricAnomalyEpisodes`; W02 wraps nothing) and calls `notifyEpisodesClosed(orgId, closed)` once after the stage loop (W01 Task 9); `processDetectOrgRange` holds no DB context. Task 7 Step 1 only verifies it. The handler is crash-safe either way: it re-derives its work from the database (auto-closed episodes in the last 24 h whose linked alert is still `active`) instead of trusting the in-memory list. |
+| D-9 | §12 serialization lists `durationSeconds`, `ongoing`, `promoted`, `snoozed` (+ `rangeMin`/`rangeMax` in the index) | Remediation suggestions are keyed `sourceType: 'anomaly'` + `metric_anomalies.id` (`apps/web/src/components/remediation/RemediationSuggestionsPanel.tsx:33-34`, `:133`); an episode id finds nothing and `generate` would reference a non-anomaly id. | The DTO adds `peakAnomalyId` (highest-score member, W01's peak rule) so W04's card can mount the remediation block on a real anomaly id. Added at plan reconciliation. The second quorum (A9) also adds `deviceLastSeenAt: string \| null` (joined from `devices.last_seen_at`) so W04 can render "expired: device not seen since …"; the spec §12 now lists both. |
 
 ---
 
 ## Global Constraints
 
-- W01 must be merged to `main` first; this wave branches from `origin/main` after that. Branch: `feature/<parent#>-metric-anomaly-episodes/wave-<W02 sub-issue#>`; PR body carries `Closes #<W02 sub-issue#>`.
-- Use the index's cross-wave names exactly: `metricAnomalyEpisodes`, `MetricAnomalyEpisodeRow` (W01, `db/schema/metricAnomalyEpisodes.ts`), `metricAnomalies.episodeId`, `metricAnomalyIncidents.episodeId`, `metricAnomalyIncidents.suppressedByEpisode`, `EPISODE_SNOOZE_DAYS`, `assembleMetricAnomalyEpisodes(range) → Promise<EpisodeCloseResult[]>`, `resolveMetricAnomalyEpisodes(orgId, now?)`, `EpisodeCloseResult`, `EpisodeCloseHandler`, `setEpisodeCloseHandler(fn | null)`, `notifyEpisodesClosed`, `MetricAnomalyStatus` / `METRIC_ANOMALY_STATUSES`, `MetricAnomalyEpisodeStatus`, `EpisodeCloseReason`, `EpisodeAttribution`, `MetricAnomalyEpisodeDto`, `EpisodeAction`, `applyEpisodeAction`.
+- W01a and W01b must be merged to `main` first (W01c is independent of this wave); this wave branches from `origin/main` after that. Branch: `feature/<parent#>-metric-anomaly-episodes/wave-<W02 sub-issue#>`; PR body carries `Closes #<W02 sub-issue#>`.
+- Use the index's cross-wave names exactly: `metricAnomalyEpisodes`, `MetricAnomalyEpisodeRow` (W01, `db/schema/metricAnomalyEpisodes.ts`), `metricAnomalies.episodeId`, `metricAnomalyIncidents.episodeId` (written by W01 at insert), `metricAnomalyIncidents.suppressedByEpisode`, `EPISODE_SNOOZE_DAYS`, `assembleMetricAnomalyEpisodes(range) → Promise<EpisodeCloseResult[]>`, `resolveMetricAnomalyEpisodes(orgId, rangeTo, now?)`, `closeEpisodesForDisabledDetection(orgId, now?)`, `EpisodeCloseResult`, `EpisodeCloseHandler`, `setEpisodeCloseHandler(fn | null)`, `notifyEpisodesClosed`, `MetricAnomalyStatus` / `METRIC_ANOMALY_STATUSES`, `MetricAnomalyEpisodeStatus`, `EpisodeCloseReason`, `EpisodeAttribution`, `MetricAnomalyEpisodeDto`, `EpisodeAction`, `applyEpisodeAction`.
 - **Do not redefine W01's shared types.** `packages/shared/src/types/metricAnomalyEpisodes.ts` (and its test file) exist after W01; W02 appends to both and re-declares nothing W01 exports.
 - **No migration, no new table, no new column.** W01 owns all schema, registrations and export-policy entries. If a step here seems to need DDL, stop: it is a W01 gap.
 - **`alerts.episode_id` is not ours.** That column is the *monitor breach* episode (#5290; `apps/api/src/db/schema/alerts.ts:144-146`, written by `createAlert`/`createSourcedAlert` in `alertService.ts:170,250,380`). The anomaly episode id goes **only** into `alerts.context.episodeId` (JSON). Never set the column.
 - Cascades touch member rows **only `WHERE status = 'open'`** (spec §8.2).
 - Feedback: one `ml_feedback_events` row per labelled member, `sourceType: 'anomaly'`, `sourceId = member.id`, `eventType = 'anomaly.<dismissed|resolved|promoted>'`, `dedupeKey = 'episode:<episodeId>'`, `metadata.episodeId`. Automatic closes (`cleared`, `expired_*`) and snoozed successors emit **no** feedback. `sourceType: 'anomaly_episode'` is W03's job; do not add it.
-- Actions: `resolve` / `dismiss` / `promote` need `status = 'open'` (else 409). `promote` also needs no linked alert (else 409). `unsnooze` needs `status = 'dismissed' AND snoozed_until > now()` (else 409). `resolveAlert` defaults to `true`.
-- Alert auto-resolve on automatic close: only when the alert is `active` and `requires_human = false`. Note text is exactly `Auto-resolved: anomaly episode cleared` (close_reason `cleared`) or `Auto-resolved: anomaly episode expired` (`expired_offline` / `expired_no_data`).
+- Actions: `resolve` / `dismiss` / `promote` need `status = 'open'` (else 409). `promote` also needs no linked alert (else 409). `unsnooze` needs `status = 'dismissed' AND snoozed_until > now()` (else 409). `resolveAlert` defaults to `true` and applies to **both** `resolve` and `dismiss` on a promoted episode (second quorum A7): either one resolves the linked alert unless the caller passes `resolveAlert: false`.
+- Alert auto-resolve on automatic close: only when the alert is `active` and `requires_human = false`, and only for `cleared` / `expired_*`. Note text is exactly `Auto-resolved: anomaly episode cleared` (close_reason `cleared`) or `Auto-resolved: anomaly episode expired` (`expired_offline` / `expired_no_data`). A `detection_off` close (W01, flag turned off) **never** resolves the linked alert: nothing observed the device recover, so the alert stays for the alert workflow.
 - Authorization mirrors the per-row routes exactly: `requireScope('organization', 'partner', 'system')`; `DEVICES_READ` for GETs, `ALERTS_WRITE` for PATCH; `getDeviceWithOrgAndSiteCheck` → 403 on `SITE_ACCESS_DENIED`, 404 when null (cross-org is 404, never 403).
 - DB context: route code runs inside the request's `withDbAccessContext` transaction. Services use the ambient `db` and **never** call `runOutsideDbContext` or open a second context. `resolveAlert` and `promoteMetricAnomalyToAlert` join the ambient transaction, because `withDbAccessContext` returns `fn()` directly when a context is held (`apps/api/src/db/index.ts:673-675`).
 - List: `status=open|closed|all` (default `open`), `limit` 1..100 (default 25), `ref` = episode id **or** member anomaly id. A `ref` forces `status=all` and puts the referenced episode first. `closed` = `resolved|dismissed` with `resolved_at ≥ now − 7 d`. Detail returns at most 200 members, ordered by `window_start` ascending.
@@ -67,15 +67,12 @@
 | `apps/api/src/services/metricAnomalyEpisodeAlerts.ts` | create | close handler + registration |
 | `apps/api/src/services/metricAnomalyEpisodeAlerts.test.ts` | create | handler unit tests |
 | `apps/api/src/jobs/metricAnomalies.ts` | modify | register the handler at worker init |
-| `apps/api/src/services/metricAnomalyEpisodeIncidents.ts` | create | `linkMetricAnomalyIncidentsToEpisodes`, `assembleEpisodesAndLinkIncidents` (returns W01's supersede closes) |
-| `apps/api/src/services/metricAnomalyEpisodeIncidents.test.ts` | create | wrapper-order unit test |
-| `apps/api/src/services/metricAnomalies.ts` | modify | `episodes` stage calls the wrapper |
-| `apps/api/src/jobs/metricAnomalyIncidentPublisher.ts` | modify | amended claim CTE, grace constant, `suppressed` count |
+| `apps/api/src/jobs/metricAnomalyIncidentPublisher.ts` | modify | amended claim CTE, `suppressed` count |
 | `apps/api/src/__tests__/integration/metricAnomalyEpisodeFixtures.ts` | create | shared seed helpers (non-test module, precedent `agentRunLineageFixtures.ts`) |
 | `apps/api/src/__tests__/integration/metricAnomalyEpisodeQueries.integration.test.ts` | create | list / detail / ref |
 | `apps/api/src/__tests__/integration/metricAnomalyEpisodeActions.integration.test.ts` | create | actions, cascade, feedback, alert |
 | `apps/api/src/__tests__/integration/metricAnomalyEpisodeAlerts.integration.test.ts` | create | auto-close resolves alert |
-| `apps/api/src/__tests__/integration/metricAnomalyEpisodeIncidents.integration.test.ts` | create | incident link + publisher gate |
+| `apps/api/src/__tests__/integration/metricAnomalyEpisodeIncidents.integration.test.ts` | create | publisher gate (one dispatch per episode) |
 | `apps/api/src/__tests__/integration/metricAnomalyEpisodeRoutes.integration.test.ts` | create | HTTP: evaluation `feedback.total`, cross-org 404, ref |
 | `docs/superpowers/plans/monitoring/2026-09-21-metric-anomaly-episodes.md` | modify | contract rows (Task 11) |
 
@@ -102,7 +99,7 @@ git fetch origin main
 git checkout -b feature/<parent#>-metric-anomaly-episodes/wave-<W02#> origin/main
 rg -n "export const metricAnomalyEpisodes" apps/api/src/db/schema/metricAnomalyEpisodes.ts
 rg -n "episodeId|suppressedByEpisode" apps/api/src/db/schema/metricAnomalyIncidents.ts apps/api/src/db/schema/analytics.ts
-rg -n "export (const|function|async function|type|interface) (assembleMetricAnomalyEpisodes|resolveMetricAnomalyEpisodes|setEpisodeCloseHandler|notifyEpisodesClosed|EpisodeCloseResult|EpisodeCloseHandler)" apps/api/src/services/metricAnomalyEpisodes.ts
+rg -n "export (const|function|async function|type|interface) (assembleMetricAnomalyEpisodes|resolveMetricAnomalyEpisodes|closeEpisodesForDisabledDetection|setEpisodeCloseHandler|notifyEpisodesClosed|EpisodeCloseResult|EpisodeCloseHandler)" apps/api/src/services/metricAnomalyEpisodes.ts
 rg -n "export const EPISODE_SNOOZE_DAYS" apps/api/src/services/metricAnomalyEpisodeKeys.ts
 rg -n "Promise<EpisodeCloseResult\[\]>" apps/api/src/services/metricAnomalyEpisodes.ts
 rg -n "METRIC_ANOMALY_STATUSES|MetricAnomalyEpisodeStatus|EpisodeCloseReason|EpisodeAttribution" packages/shared/src/types/metricAnomalyEpisodes.ts
@@ -111,7 +108,7 @@ rg -n "notifyEpisodesClosed" apps/api/src/services/metricAnomalies.ts
 rg -n "METRIC_ANOMALY_STATUSES" apps/api/src/routes/devices/anomalies.ts
 ```
 
-Expected: every `rg` prints at least one hit (`EPISODE_SNOOZE_DAYS` lives in the leaf `metricAnomalyEpisodeKeys.ts` and is re-exported from `metricAnomalyEpisodes.ts` by `export *`). If any of the first seven prints nothing, stop: W01 has not merged, or it merged under different names. Reconcile against the index before continuing. The last command confirms W01 Task 1 already put `cleared` in the legacy list enum (`z.enum([...METRIC_ANOMALY_STATUSES, 'all'])`); only if it prints nothing does Task 6 Step 3b apply.
+Expected: every `rg` prints at least one hit (W01a **and** W01b must both be merged; W01c is not needed) (`EPISODE_SNOOZE_DAYS` lives in the leaf `metricAnomalyEpisodeKeys.ts` and is re-exported from `metricAnomalyEpisodes.ts` by `export *`). If any of the first seven prints nothing, stop: W01 has not merged, or it merged under different names. Reconcile against the index before continuing. The last command confirms W01 Task 1 already put `cleared` in the legacy list enum (`z.enum([...METRIC_ANOMALY_STATUSES, 'all'])`); only if it prints nothing does Task 6 Step 3b apply.
 
 Also run `get_feature_status` for the parent issue, then `start_wave` for the W02 sub-issue (feature-lifecycle skill).
 
@@ -154,6 +151,7 @@ describe('metric anomaly episode API contract (W02)', () => {
     expectTypeOf<MetricAnomalyEpisodeDto['rangeMax']>().toEqualTypeOf<number | null>();
     expectTypeOf<MetricAnomalyEpisodeDto['firstSeenAt']>().toEqualTypeOf<string>();
     expectTypeOf<MetricAnomalyEpisodeDto['peakAnomalyId']>().toEqualTypeOf<string | null>();
+    expectTypeOf<MetricAnomalyEpisodeDto['deviceLastSeenAt']>().toEqualTypeOf<string | null>();
     expectTypeOf<MetricAnomalyEpisodeDetailDto['membersTruncated']>().toEqualTypeOf<boolean>();
     expectTypeOf<MetricAnomalyEpisodeListResponse['focusedEpisodeId']>().toEqualTypeOf<string | null>();
   });
@@ -227,6 +225,12 @@ export interface MetricAnomalyEpisodeDto {
    * which is keyed by metric_anomalies.id, never an episode id).
    */
   peakAnomalyId: string | null;
+  /**
+   * `devices.last_seen_at` of the episode's device (ISO), for the web card's
+   * "expired: device not seen since …" chip (second quorum A9). NULL when the
+   * device never checked in.
+   */
+  deviceLastSeenAt: string | null;
 }
 
 export interface MetricAnomalyEpisodeMemberDto {
@@ -286,12 +290,12 @@ git commit -m "feat(shared): metric anomaly episode API DTOs and action constant
 - Produces:
   - re-export of W01's `type MetricAnomalyEpisodeRow` (from `db/schema`; not redefined)
   - `EPISODE_CLOSED_WINDOW_DAYS = 7`
-  - `serializeMetricAnomalyEpisode(row: MetricAnomalyEpisodeRow, range: { min: number; max: number; peakAnomalyId?: string | null } | null | undefined, now: Date): MetricAnomalyEpisodeDto`
+  - `serializeMetricAnomalyEpisode(row: MetricAnomalyEpisodeRow, range: { min: number; max: number; peakAnomalyId?: string | null } | null | undefined, now: Date, deviceLastSeenAt?: Date | null): MetricAnomalyEpisodeDto` — the list/detail readers pass the device's `last_seen_at` (one lookup per call; every episode on a page belongs to the same device)
   - `serializeMetricAnomalyEpisodeMember(row: typeof metricAnomalies.$inferSelect): MetricAnomalyEpisodeMemberDto`
   - `listDeviceEpisodes(input: { orgId: string; deviceId: string; status: EpisodeListStatus; limit: number; ref?: string; now?: Date }): Promise<MetricAnomalyEpisodeListResponse>`
   - `getDeviceEpisodeDto(input: { orgId: string; deviceId: string; episodeId: string; now?: Date }): Promise<MetricAnomalyEpisodeDto | null>`
   - `getDeviceEpisodeDetail(input: { orgId: string; deviceId: string; episodeId: string; now?: Date }): Promise<MetricAnomalyEpisodeDetailDto | null>`
-  - Fixtures (integration): `seedTenant()`, `insertEpisodeDevice(orgId, siteId, lastSeenAt?)`, `seedEpisode(opts)`, `seedAlert(opts)`, `seedIncident(opts)`, `insertCleanRollups(opts)`
+  - Fixtures (integration): `seedTenant()`, `enableAnomalyDetection(orgId)`, `insertEpisodeDevice(orgId, siteId, lastSeenAt?)`, `seedEpisode(opts)`, `seedAlert(opts)`, `seedIncident(opts)`, `insertCleanRollups(opts)`
 
 - [ ] **Step 1: Write the failing serializer unit test**
 
@@ -407,6 +411,12 @@ describe('serializeMetricAnomalyEpisode', () => {
     expect(dto.ongoing).toBe(true);
   });
 
+  it('carries the device last-seen time for the expired_offline chip (A9)', () => {
+    const lastSeen = new Date('2026-09-20T08:00:00.000Z');
+    expect(serializeMetricAnomalyEpisode(row(), null, NOW, lastSeen).deviceLastSeenAt).toBe('2026-09-20T08:00:00.000Z');
+    expect(serializeMetricAnomalyEpisode(row(), null, NOW).deviceLastSeenAt).toBeNull();
+  });
+
   it('never reports a negative duration', () => {
     const t = new Date('2026-09-21T22:35:00.000Z');
     expect(serializeMetricAnomalyEpisode(row({ firstSeenAt: t, lastSeenAt: t }), null, NOW).durationSeconds).toBe(0);
@@ -452,11 +462,25 @@ describe('serializeMetricAnomalyEpisodeMember', () => {
 `apps/api/src/__tests__/integration/metricAnomalyEpisodeFixtures.ts` (a helper module, not a test; the precedent is `agentRunLineageFixtures.ts`):
 
 ```ts
-import { alerts, devices, metricAnomalies, metricAnomalyEpisodes, metricAnomalyIncidents, metricRollups } from '../../db/schema';
+import { eq } from 'drizzle-orm';
+
+import { alerts, devices, metricAnomalies, metricAnomalyEpisodes, metricAnomalyIncidents, metricRollups, organizations } from '../../db/schema';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { getTestDb } from './setup';
 
 export const BUCKET_MS = 300_000;
+
+/**
+ * Turns ml.anomalies.enabled on for the org. Needed whenever a test runs the
+ * detector and expects a `cleared` close: with the flag off W01 closes every
+ * open episode as `detection_off` instead (second quorum A5).
+ */
+export async function enableAnomalyDetection(orgId: string): Promise<void> {
+  await getTestDb()
+    .update(organizations)
+    .set({ settings: { 'ml.anomalies.enabled': true } })
+    .where(eq(organizations.id, orgId));
+}
 
 export async function seedTenant() {
   const partner = await createPartner();
@@ -501,7 +525,7 @@ export interface SeedEpisodeOptions {
   anomalyType?: string;
   sourceTable?: 'device_metrics' | 'device_process_samples';
   status?: 'open' | 'resolved' | 'dismissed';
-  closeReason?: 'cleared' | 'expired_offline' | 'expired_no_data' | 'user' | 'snoozed' | null;
+  closeReason?: 'cleared' | 'expired_offline' | 'expired_no_data' | 'detection_off' | 'user' | 'snoozed' | null;
   resolvedAt?: Date | null;
   snoozedUntil?: Date | null;
   linkedAlertId?: string | null;
@@ -677,7 +701,8 @@ const DAY = 24 * HOUR;
 describe('metric anomaly episode queries (W02)', () => {
   it('open filter returns only open episodes, newest last_seen_at first', async () => {
     const { org, site } = await seedTenant();
-    const deviceId = await insertEpisodeDevice(org.id, site.id);
+    const deviceLastSeen = new Date(Math.floor(Date.now() / 1000) * 1000 - 3 * HOUR);
+    const deviceId = await insertEpisodeDevice(org.id, site.id, deviceLastSeen);
     const now = new Date();
     const older = await seedEpisode({ orgId: org.id, deviceId, memberCount: 2, start: new Date(now.getTime() - 5 * HOUR), metricName: 'cpu_percent', metricFamily: 'cpu' });
     const newer = await seedEpisode({ orgId: org.id, deviceId, memberCount: 2, start: new Date(now.getTime() - 1 * HOUR) });
@@ -688,6 +713,8 @@ describe('metric anomaly episode queries (W02)', () => {
     expect(result.focusedEpisodeId).toBeNull();
     expect(result.data.map((e) => e.id)).toEqual([newer.episodeId, older.episodeId]);
     expect(result.data[0]).toMatchObject({ ongoing: true, bucketCount: 2, rangeMin: 84, rangeMax: 88, peakAnomalyId: newer.peakMemberId });
+    // A9: every DTO carries its device's last_seen_at (the expired_offline chip reads it).
+    expect(result.data.every((e) => e.deviceLastSeenAt === deviceLastSeen.toISOString())).toBe(true);
   });
 
   it('closed filter returns resolved/dismissed episodes closed in the last 7 days only', async () => {
@@ -797,7 +824,7 @@ import {
 } from '@breeze/shared';
 
 import { db } from '../db';
-import { metricAnomalies, metricAnomalyEpisodes, type MetricAnomalyEpisodeRow } from '../db/schema';
+import { devices, metricAnomalies, metricAnomalyEpisodes, type MetricAnomalyEpisodeRow } from '../db/schema';
 
 /**
  * Read side of the episode API (spec §12). Runs on the ambient request
@@ -823,6 +850,7 @@ export function serializeMetricAnomalyEpisode(
   row: MetricAnomalyEpisodeRow,
   range: PeakRange | null | undefined,
   now: Date,
+  deviceLastSeenAt: Date | null = null,
 ): MetricAnomalyEpisodeDto {
   return {
     id: row.id,
@@ -859,6 +887,7 @@ export function serializeMetricAnomalyEpisode(
     rangeMin: range ? range.min : null,
     rangeMax: range ? range.max : null,
     peakAnomalyId: range?.peakAnomalyId ?? null,
+    deviceLastSeenAt: iso(deviceLastSeenAt),
   };
 }
 
@@ -877,6 +906,16 @@ export function serializeMetricAnomalyEpisodeMember(row: MetricAnomalyRow): Metr
     confidence: row.confidence,
     linkedAlertId: row.linkedAlertId ?? null,
   };
+}
+
+/** A9: one read per request — every episode on a page belongs to this device. */
+async function loadDeviceLastSeenAt(orgId: string, deviceId: string): Promise<Date | null> {
+  const [row] = await db
+    .select({ lastSeenAt: devices.lastSeenAt })
+    .from(devices)
+    .where(and(eq(devices.orgId, orgId), eq(devices.id, deviceId)))
+    .limit(1);
+  return row?.lastSeenAt ?? null;
 }
 
 function deviceScope(orgId: string, deviceId: string) {
@@ -995,8 +1034,9 @@ export async function listDeviceEpisodes(input: {
 
   const rows = focused ? [focused, ...rest] : rest;
   const ranges = await loadPeakMetricRanges(input.orgId, rows);
+  const deviceLastSeenAt = await loadDeviceLastSeenAt(input.orgId, input.deviceId);
   return {
-    data: rows.map((r) => serializeMetricAnomalyEpisode(r, ranges.get(r.id), now)),
+    data: rows.map((r) => serializeMetricAnomalyEpisode(r, ranges.get(r.id), now, deviceLastSeenAt)),
     focusedEpisodeId: focused?.id ?? null,
   };
 }
@@ -1019,7 +1059,8 @@ export async function getDeviceEpisodeDto(input: {
   const row = await loadEpisodeRow(input.orgId, input.deviceId, input.episodeId);
   if (!row) return null;
   const ranges = await loadPeakMetricRanges(input.orgId, [row]);
-  return serializeMetricAnomalyEpisode(row, ranges.get(row.id), input.now ?? new Date());
+  const deviceLastSeenAt = await loadDeviceLastSeenAt(input.orgId, input.deviceId);
+  return serializeMetricAnomalyEpisode(row, ranges.get(row.id), input.now ?? new Date(), deviceLastSeenAt);
 }
 
 export async function getDeviceEpisodeDetail(input: {
@@ -1037,8 +1078,9 @@ export async function getDeviceEpisodeDetail(input: {
     .orderBy(asc(metricAnomalies.windowStart), asc(metricAnomalies.id))
     .limit(EPISODE_DETAIL_MEMBER_LIMIT + 1);
   const ranges = await loadPeakMetricRanges(input.orgId, [row]);
+  const deviceLastSeenAt = await loadDeviceLastSeenAt(input.orgId, input.deviceId);
   return {
-    ...serializeMetricAnomalyEpisode(row, ranges.get(row.id), input.now ?? new Date()),
+    ...serializeMetricAnomalyEpisode(row, ranges.get(row.id), input.now ?? new Date(), deviceLastSeenAt),
     members: members.slice(0, EPISODE_DETAIL_MEMBER_LIMIT).map(serializeMetricAnomalyEpisodeMember),
     membersTruncated: members.length > EPISODE_DETAIL_MEMBER_LIMIT,
   };
@@ -1051,7 +1093,7 @@ export async function getDeviceEpisodeDetail(input: {
 cd apps/api && npx vitest run src/services/metricAnomalyEpisodeQueries.test.ts
 pnpm --filter @breeze/api test:integration src/__tests__/integration/metricAnomalyEpisodeQueries.integration.test.ts
 ```
-Expected: PASS (8 unit tests, 7 integration tests).
+Expected: PASS (9 unit tests, 7 integration tests).
 
 - [ ] **Step 7: Commit**
 
@@ -1432,7 +1474,7 @@ git commit -m "feat(api): anomaly promotion stamps context.episodeId (W02)"
 - Produces:
   - `type EpisodeActionConflict = 'episode_closed' | 'already_promoted' | 'not_snoozed' | 'no_promotable_member' | 'promotion_disabled'`
   - `EPISODE_ACTION_CONFLICT_MESSAGES: Record<EpisodeActionConflict, string>`
-  - `DEFAULT_EPISODE_RESOLVE_NOTE = 'Resolved with its anomaly episode'`
+  - `DEFAULT_EPISODE_RESOLVE_NOTE = 'Resolved with its anomaly episode'`, `DEFAULT_EPISODE_DISMISS_NOTE = 'Resolved: anomaly episode dismissed'` (second quorum A7: a dismiss of a promoted episode resolves its alert too, unless `resolveAlert: false`)
   - `decideEpisodeAction(episode: { status: string; linkedAlertId: string | null; snoozedUntil: Date | null }, action: EpisodeAction, now: Date): { ok: true } | { ok: false; reason: 'episode_closed' | 'already_promoted' | 'not_snoozed' }`
   - `interface ApplyEpisodeActionInput { orgId: string; deviceId: string; episodeId: string; action: EpisodeAction; note?: string; resolveAlert?: boolean; actorUserId: string; now?: Date }`
   - `type ApplyEpisodeActionResult = { status: 'not_found' } | { status: 'conflict'; reason: EpisodeActionConflict; message: string } | { status: 'ok'; episodeId: string; action: EpisodeAction; alertId: string | null; alertResolved: boolean; labelledMemberIds: string[]; feedbackInserted: number }`
@@ -1589,6 +1631,33 @@ describe('applyEpisodeAction (W02, spec §8)', () => {
     expect(result).toMatchObject({ status: 'ok', alertId, alertResolved: true });
     const [alert] = await getTestDb().select().from(alerts).where(eq(alerts.id, alertId));
     expect(alert).toMatchObject({ status: 'resolved', resolvedBy: user.id, resolutionNote: 'disk replaced' });
+  });
+
+  it('dismiss on a promoted episode resolves the linked alert by default, like resolve (A7)', async () => {
+    const { org, site, user } = await seedTenant();
+    const deviceId = await insertEpisodeDevice(org.id, site.id);
+    const alertId = await seedAlert({ orgId: org.id, deviceId });
+    const ep = await seedEpisode({ orgId: org.id, deviceId, memberCount: 2, start: new Date(Date.now() - HOUR), linkedAlertId: alertId });
+
+    const result = await act({ orgId: org.id, deviceId, episodeId: ep.episodeId, action: 'dismiss', actorUserId: user.id });
+
+    expect(result).toMatchObject({ status: 'ok', action: 'dismiss', alertId, alertResolved: true });
+    const [alert] = await getTestDb().select().from(alerts).where(eq(alerts.id, alertId));
+    expect(alert).toMatchObject({ status: 'resolved', resolvedBy: user.id, resolutionNote: 'Resolved: anomaly episode dismissed' });
+    expect(await episodeRow(ep.episodeId)).toMatchObject({ status: 'dismissed', closeReason: 'user' });
+  });
+
+  it('dismiss with resolveAlert: false leaves the linked alert active (A7)', async () => {
+    const { org, site, user } = await seedTenant();
+    const deviceId = await insertEpisodeDevice(org.id, site.id);
+    const alertId = await seedAlert({ orgId: org.id, deviceId });
+    const ep = await seedEpisode({ orgId: org.id, deviceId, memberCount: 2, start: new Date(Date.now() - HOUR), linkedAlertId: alertId });
+
+    const result = await act({ orgId: org.id, deviceId, episodeId: ep.episodeId, action: 'dismiss', actorUserId: user.id, resolveAlert: false });
+
+    expect(result).toMatchObject({ status: 'ok', alertResolved: false });
+    const [alert] = await getTestDb().select().from(alerts).where(eq(alerts.id, alertId));
+    expect(alert!.status).toBe('active');
   });
 
   it('resolve with resolveAlert: false leaves the linked alert for the alert workflow', async () => {
@@ -1759,6 +1828,7 @@ export const EPISODE_ACTION_CONFLICT_MESSAGES: Record<EpisodeActionConflict, str
 };
 
 export const DEFAULT_EPISODE_RESOLVE_NOTE = 'Resolved with its anomaly episode';
+export const DEFAULT_EPISODE_DISMISS_NOTE = 'Resolved: anomaly episode dismissed';
 const DAY_MS = 86_400_000;
 
 export function decideEpisodeAction(
@@ -1784,7 +1854,7 @@ export interface ApplyEpisodeActionInput {
   episodeId: string;
   action: EpisodeAction;
   note?: string;
-  /** Only meaningful for `resolve` on a promoted episode. Default true (§8.2). */
+  /** Only meaningful for `resolve` or `dismiss` on a promoted episode. Default true (§8.2, A7). */
   resolveAlert?: boolean;
   actorUserId: string;
   now?: Date;
@@ -1897,23 +1967,36 @@ async function resolveEpisode(episode: EpisodeRow, input: ApplyEpisodeActionInpu
     .where(episodeWhere(episode));
   const members = await cascadeOpenMembers(episode, 'resolved', now);
   const feedbackInserted = await labelMembers(episode, 'resolved', members, input, now);
-
-  let alertResolved = false;
-  if (input.resolveAlert !== false && episode.linkedAlertId) {
-    alertResolved = await resolveAlert(episode.linkedAlertId, input.note ?? DEFAULT_EPISODE_RESOLVE_NOTE, input.actorUserId);
-    if (alertResolved) {
-      await emitAlertStateFeedback({
-        orgId: episode.orgId,
-        alertId: episode.linkedAlertId,
-        eventType: 'alert.resolved',
-        outcome: 'resolved',
-        actorUserId: input.actorUserId,
-        occurredAt: now,
-        metadata: { source: 'devices.anomalyEpisodes', episodeId: episode.id },
-      });
-    }
-  }
+  const alertResolved = await resolveLinkedAlert(episode, input, now, DEFAULT_EPISODE_RESOLVE_NOTE);
   return ok(episode, input, { alertId: episode.linkedAlertId ?? null, alertResolved, members, feedbackInserted });
+}
+
+/**
+ * Resolve / dismiss of a PROMOTED episode also resolves its linked alert,
+ * unless the caller passed resolveAlert: false (§8.2; A7 extended it to
+ * dismiss). Joins the ambient request transaction; resolveAlert is a CAS, so
+ * an alert a human already resolved returns false and nothing else happens.
+ */
+async function resolveLinkedAlert(
+  episode: EpisodeRow,
+  input: ApplyEpisodeActionInput,
+  now: Date,
+  defaultNote: string,
+): Promise<boolean> {
+  if (input.resolveAlert === false || !episode.linkedAlertId) return false;
+  const resolved = await resolveAlert(episode.linkedAlertId, input.note ?? defaultNote, input.actorUserId);
+  if (resolved) {
+    await emitAlertStateFeedback({
+      orgId: episode.orgId,
+      alertId: episode.linkedAlertId,
+      eventType: 'alert.resolved',
+      outcome: 'resolved',
+      actorUserId: input.actorUserId,
+      occurredAt: now,
+      metadata: { source: 'devices.anomalyEpisodes', episodeId: episode.id, action: input.action },
+    });
+  }
+  return resolved;
 }
 
 async function dismissEpisode(episode: EpisodeRow, input: ApplyEpisodeActionInput, now: Date): Promise<ApplyEpisodeActionResult> {
@@ -1931,9 +2014,11 @@ async function dismissEpisode(episode: EpisodeRow, input: ApplyEpisodeActionInpu
     .where(episodeWhere(episode));
   const members = await cascadeOpenMembers(episode, 'dismissed', now);
   const feedbackInserted = await labelMembers(episode, 'dismissed', members, input, now);
-  // A linked alert is deliberately left alone: dismissing the signal is not a
-  // verdict on an alert a tech may already be working.
-  return ok(episode, input, { alertId: episode.linkedAlertId ?? null, alertResolved: false, members, feedbackInserted });
+  // A7: dismissing a promoted episode resolves its alert by default, exactly
+  // like resolve — a tech who silences the signal is done with it; pass
+  // resolveAlert: false to keep the alert for the alert workflow.
+  const alertResolved = await resolveLinkedAlert(episode, input, now, DEFAULT_EPISODE_DISMISS_NOTE);
+  return ok(episode, input, { alertId: episode.linkedAlertId ?? null, alertResolved, members, feedbackInserted });
 }
 
 async function stampEpisodeOnAlertContext(alertId: string, episode: EpisodeRow): Promise<void> {
@@ -2038,7 +2123,7 @@ export async function applyEpisodeAction(input: ApplyEpisodeActionInput): Promis
 cd apps/api && npx vitest run src/services/metricAnomalyEpisodeActions.test.ts
 pnpm --filter @breeze/api test:integration src/__tests__/integration/metricAnomalyEpisodeActions.integration.test.ts
 ```
-Expected: PASS (14 unit cases from `it.each`, 11 integration tests).
+Expected: PASS (14 unit cases from `it.each`, 13 integration tests). The two A7 dismiss cases are red against a `dismissEpisode` that leaves the alert alone.
 
 - [ ] **Step 6: Commit**
 
@@ -2468,7 +2553,7 @@ git commit -m "feat(api): device anomaly episode routes — list/detail/PATCH ac
 **Interfaces:**
 - Consumes: W01 `setEpisodeCloseHandler(fn: EpisodeCloseHandler | null)` where `EpisodeCloseHandler = (orgId: string, closed: EpisodeCloseResult[]) => Promise<void>`, invoked by W01's `notifyEpisodesClosed` (which already catches, logs and Sentry-captures a handler error); `EpisodeCloseResult`; `resolveAlert` (`alertService.ts:715`).
 - Produces:
-  - `AUTO_CLOSE_REASONS = ['cleared', 'expired_offline', 'expired_no_data'] as const`
+  - `AUTO_CLOSE_REASONS = ['cleared', 'expired_offline', 'expired_no_data'] as const` — the automatic closes that resolve a linked alert; `detection_off` (W01, A5) is deliberately absent
   - `EPISODE_ALERT_CATCHUP_HOURS = 24`
   - `autoResolveNoteFor(closeReason: string | null): string`
   - `resolveAlertsForAutoClosedEpisodes(orgId: string, now?: Date): Promise<number>`. Returns the number of alerts resolved.
@@ -2499,7 +2584,7 @@ Read every hit. W01 Task 9 ships this shape in `detectMetricAnomaliesRange`, and
   await notifyEpisodesClosed(options.orgId, closed);
 ```
 
-Check three things: (1) `closed` collects from BOTH the `episodes` stage (supersedes — Task 8 keeps that value flowing through the wrapper) and the `episode-resolve` stage; (2) only `completed` stages contribute (a timed-out or locked stage rolled back); (3) `notifyEpisodesClosed` is called once, after the loop, not inside a stage closure, and `processDetectOrgRange` (`jobs/metricAnomalies.ts`) holds no DB context. If W01 merged a different shape, restore this one inside W01's function and re-run `cd apps/api && npx vitest run src/services/metricAnomalies.test.ts` (W01's `hands every auto-closed episode to the close handler once, after the stages` test pins it).
+Check three things: (1) `closed` collects from BOTH the `episodes` stage (supersedes, returned by `assembleMetricAnomalyEpisodes` itself — W02 wraps nothing) and the `episode-resolve` stage (which, with the flag off, returns `detection_off` closes that the handler ignores); (2) only `completed` stages contribute (a timed-out or locked stage rolled back); (3) `notifyEpisodesClosed` is called once, after the loop, not inside a stage closure, and `processDetectOrgRange` (`jobs/metricAnomalies.ts`) holds no DB context. If W01 merged a different shape, restore this one inside W01's function and re-run `cd apps/api && npx vitest run src/services/metricAnomalies.test.ts` (W01's `hands every auto-closed episode to the close handler once, after the stages` test pins it).
 
 - [ ] **Step 2: Write the failing unit test**
 
@@ -2521,6 +2606,7 @@ vi.mock('./metricAnomalyEpisodes', () => ({ setEpisodeCloseHandler: setEpisodeCl
 vi.mock('./sentry', () => ({ captureException: captureExceptionMock }));
 
 import {
+  AUTO_CLOSE_REASONS,
   autoResolveNoteFor,
   handleEpisodesClosed,
   registerEpisodeCloseAlertHandler,
@@ -2533,6 +2619,11 @@ describe('metricAnomalyEpisodeAlerts', () => {
     expect(autoResolveNoteFor('cleared')).toBe('Auto-resolved: anomaly episode cleared');
     expect(autoResolveNoteFor('expired_offline')).toBe('Auto-resolved: anomaly episode expired');
     expect(autoResolveNoteFor('expired_no_data')).toBe('Auto-resolved: anomaly episode expired');
+  });
+
+  it('never auto-resolves on a detection_off close (A5)', () => {
+    expect(AUTO_CLOSE_REASONS).toEqual(['cleared', 'expired_offline', 'expired_no_data']);
+    expect(AUTO_CLOSE_REASONS).not.toContain('detection_off');
   });
 
   it('registers handleEpisodesClosed as the W01 close hook', () => {
@@ -2594,7 +2685,14 @@ import {
   resolveAlertsForAutoClosedEpisodes,
 } from '../../services/metricAnomalyEpisodeAlerts';
 import { getTestDb } from './setup';
-import { insertCleanRollups, insertEpisodeDevice, seedAlert, seedEpisode, seedTenant } from './metricAnomalyEpisodeFixtures';
+import {
+  enableAnomalyDetection,
+  insertCleanRollups,
+  insertEpisodeDevice,
+  seedAlert,
+  seedEpisode,
+  seedTenant,
+} from './metricAnomalyEpisodeFixtures';
 
 const HOUR = 3_600_000;
 
@@ -2610,6 +2708,7 @@ describe('episode close → linked alert auto-resolve (W02, spec §7)', () => {
 
   it('a promoted episode that clears through the resolve stage resolves its active alert', async () => {
     const { org, site } = await seedTenant();
+    await enableAnomalyDetection(org.id); // flag off would close it as detection_off (A5)
     const deviceId = await insertEpisodeDevice(org.id, site.id);
     const alertId = await seedAlert({ orgId: org.id, deviceId });
     const start = new Date(Date.now() - 3 * HOUR);
@@ -2617,7 +2716,6 @@ describe('episode close → linked alert auto-resolve (W02, spec §7)', () => {
     const lastSeen = new Date(start.getTime() + 3 * 300_000);
     await insertCleanRollups({ orgId: org.id, deviceId, metricName: 'disk_write_bps', from: lastSeen, count: 6 });
 
-    // ml.anomalies.enabled is OFF for this org — the resolve stage runs anyway (spec D4).
     await detectMetricAnomaliesRange({ orgId: org.id, from: new Date(Date.now() - HOUR), to: new Date() });
 
     const [episode] = await getTestDb().select().from(metricAnomalyEpisodes).where(eq(metricAnomalyEpisodes.id, ep.episodeId));
@@ -2625,8 +2723,24 @@ describe('episode close → linked alert auto-resolve (W02, spec §7)', () => {
     expect(await alertRow(alertId)).toMatchObject({ status: 'resolved', resolutionNote: 'Auto-resolved: anomaly episode cleared', resolvedBy: null });
   });
 
+  it('with detection turned off the episode closes as detection_off and its alert stays active (A5)', async () => {
+    const { org, site } = await seedTenant(); // ml.anomalies.enabled defaults off
+    const deviceId = await insertEpisodeDevice(org.id, site.id);
+    const alertId = await seedAlert({ orgId: org.id, deviceId });
+    const start = new Date(Date.now() - 3 * HOUR);
+    const ep = await seedEpisode({ orgId: org.id, deviceId, memberCount: 3, start, linkedAlertId: alertId, memberStatus: 'promoted' });
+    await insertCleanRollups({ orgId: org.id, deviceId, metricName: 'disk_write_bps', from: new Date(start.getTime() + 3 * 300_000), count: 6 });
+
+    await detectMetricAnomaliesRange({ orgId: org.id, from: new Date(Date.now() - HOUR), to: new Date() });
+
+    const [episode] = await getTestDb().select().from(metricAnomalyEpisodes).where(eq(metricAnomalyEpisodes.id, ep.episodeId));
+    expect(episode).toMatchObject({ status: 'resolved', closeReason: 'detection_off' });
+    expect((await alertRow(alertId)).status).toBe('active');
+  });
+
   it('a requires-human alert is never auto-resolved', async () => {
     const { org, site } = await seedTenant();
+    await enableAnomalyDetection(org.id); // so the episode really clears
     const deviceId = await insertEpisodeDevice(org.id, site.id);
     const alertId = await seedAlert({ orgId: org.id, deviceId, requiresHuman: true });
     const start = new Date(Date.now() - 3 * HOUR);
@@ -2685,8 +2799,10 @@ import { captureException } from './sentry';
  * Spec §7 alert half: when an episode closes automatically (cleared /
  * expired_*), resolve its linked alert if that alert is still `active` and
  * not `requires_human`. Promoted anomaly alerts have ruleId NULL, so
- * checkAutoResolve never closes them (alertService.ts:436-458); this is their
- * only automatic path.
+ * checkAutoResolve never closes them (alertService.ts:455-457); this is their
+ * only automatic path. A `detection_off` close (flag turned off, W01 A5) is
+ * NOT in AUTO_CLOSE_REASONS: nothing observed the device recover, so its
+ * alert stays for the alert workflow.
  *
  * Crash-safe by construction: the work set is re-derived from the database
  * (auto-closed within EPISODE_ALERT_CATCHUP_HOURS, alert still active), not
@@ -2781,284 +2897,34 @@ git commit -m "feat(api): auto-resolve a promoted anomaly alert when its episode
 
 ---
 
-### Task 8: Link incidents to episodes inside the `episodes` stage
+### Task 8: Pre-flight — incidents already carry `episode_id` (verification only)
 
-**Decision (spec §11):** the link statement is a **W02 addition that runs inside W01's `episodes` stage transaction**, directly after assembly, through the wrapper `assembleEpisodesAndLinkIncidents`. It lives in its own W02 file so that W01's assembly body stays untouched. Running in the same transaction means incidents are linked in the same commit that creates their episodes. With D-2's grace window, the publisher never sees a freshly linked incident half-done.
+The second quorum (A6) moved the incident link into W01: the `episodes` stage runs **before** `incidents`, and `upsertMetricAnomalyIncidents` writes each incident's `episode_id` at insert (the episode of its highest-score member, `COALESCE` on conflict). This wave therefore writes **no** link statement, no `episodes`-stage wrapper and no grace window — Task 9 only amends the publisher claim. This task checks that W01 delivered it; it changes no code.
 
-**Files:**
-- Create: `apps/api/src/services/metricAnomalyEpisodeIncidents.ts`
-- Create: `apps/api/src/services/metricAnomalyEpisodeIncidents.test.ts`
-- Modify: `apps/api/src/services/metricAnomalies.ts` (the `['episodes', …]` entry W01 added to `orderedStages`)
-- Modify: `apps/api/src/services/metricAnomalies.test.ts`
-- Create: `apps/api/src/__tests__/integration/metricAnomalyEpisodeIncidents.integration.test.ts` (Task 9 appends to it)
+**Files:** none.
 
 **Interfaces:**
-- Consumes: W01 `assembleMetricAnomalyEpisodes(range: MetricAnomalyRange): Promise<EpisodeCloseResult[]>` (the open episodes it superseded and closed, W01 deviation 8), `EpisodeCloseResult`.
-- Produces:
-  - `linkMetricAnomalyIncidentsToEpisodes(orgId: string): Promise<number>`. Sets `metric_anomaly_incidents.episode_id` for incidents still `dispatched_at IS NULL`, choosing the episode of the member with the highest `score`, and returns the number of rows changed.
-  - `assembleEpisodesAndLinkIncidents(range: MetricAnomalyRange): Promise<EpisodeCloseResult[]>`. Runs assembly, then the link, and **returns assembly's supersede closes unchanged** so W01's stage loop still hands them to `notifyEpisodesClosed` — a promoted episode that is superseded must reach the Task 7 alert handler exactly like one that auto-resolves.
+- Consumes (W01): `METRIC_ANOMALY_STAGES` order `baseline, growth-trend, process-runaway, episodes, incidents, episode-resolve, v1-shadow`; `metric_anomaly_incidents.episode_id` written by `upsertMetricAnomalyIncidents`; the `episodes` stage calling `assembleMetricAnomalyEpisodes(range)` directly and forwarding its `EpisodeCloseResult[]`.
+- Produces: nothing.
 
-- [ ] **Step 1: Write the failing unit tests**
-
-`apps/api/src/services/metricAnomalyEpisodeIncidents.test.ts`:
-
-```ts
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-
-const { executeMock, assembleMock } = vi.hoisted(() => ({ executeMock: vi.fn(), assembleMock: vi.fn() }));
-
-vi.mock('../db', () => ({ db: { execute: executeMock } }));
-vi.mock('./metricAnomalyEpisodes', () => ({ assembleMetricAnomalyEpisodes: assembleMock }));
-
-import { assembleEpisodesAndLinkIncidents } from './metricAnomalyEpisodeIncidents';
-
-const range = { orgId: '11111111-1111-4111-8111-111111111111', from: new Date('2026-09-21T00:00:00Z'), to: new Date('2026-09-21T01:00:00Z') };
-const superseded = [{ episodeId: 'ep-1', deviceId: 'dev-1', linkedAlertId: 'alert-1', closeReason: 'cleared' as const }];
-
-describe('assembleEpisodesAndLinkIncidents', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    executeMock.mockResolvedValue([]);
-    assembleMock.mockResolvedValue([]);
-  });
-
-  it('assembles first, then links incidents for the same org, and returns the supersede closes', async () => {
-    const order: string[] = [];
-    assembleMock.mockImplementation(async () => { order.push('assemble'); return superseded; });
-    executeMock.mockImplementation(async () => { order.push('link'); return []; });
-
-    const closed = await assembleEpisodesAndLinkIncidents(range);
-
-    expect(closed).toEqual(superseded);
-    expect(order).toEqual(['assemble', 'link']);
-    expect(assembleMock).toHaveBeenCalledWith(range);
-    const linkSql = JSON.stringify(executeMock.mock.calls[0]);
-    expect(linkSql).toContain('UPDATE metric_anomaly_incidents');
-    expect(linkSql).toContain('dispatched_at IS NULL');
-    expect(linkSql).toContain('ma.score DESC');
-    expect(linkSql).toContain(range.orgId);
-  });
-
-  it('does not link when assembly fails (the stage rolls back as one unit)', async () => {
-    assembleMock.mockRejectedValue(Object.assign(new Error('timeout'), { code: '57014' }));
-    await expect(assembleEpisodesAndLinkIncidents(range)).rejects.toThrow('timeout');
-    expect(executeMock).not.toHaveBeenCalled();
-  });
-});
-```
-
-In `apps/api/src/services/metricAnomalies.test.ts`, W01 already hoists `assembleMock` and mocks `./metricAnomalyEpisodes` with `assembleMetricAnomalyEpisodes: assembleMock` (W01 Task 9 Step 1). The stage now calls the wrapper instead, so point the wrapper's mock at **the same `assembleMock`** — every W01 episode-stage assertion (`runs assembly after incidents, with the normalised range`, the backfill cases, `hands every auto-closed episode to the close handler once, after the stages` with `assembleMock.mockResolvedValue([superseded])`, the timeout counter) then keeps testing "the `episodes` stage entry" without edits:
-
-```ts
-vi.mock('./metricAnomalyEpisodeIncidents', () => ({
-  // The `episodes` stage entry (W02 §11). Reuses W01's assembleMock so W01's
-  // stage-loop assertions keep meaning "what the episodes stage ran/returned".
-  assembleEpisodesAndLinkIncidents: assembleMock,
-}));
-```
-
-and, in W01's existing `vi.mock('./metricAnomalyEpisodes', …)` factory, replace `assembleMetricAnomalyEpisodes: assembleMock,` with
-
-```ts
-  // The stage must go through the W02 wrapper; calling assembly directly
-  // would skip the incident link.
-  assembleMetricAnomalyEpisodes: vi.fn(async () => {
-    throw new Error('episodes stage must call assembleEpisodesAndLinkIncidents (W02)');
-  }),
-```
-
-That makes the red real: until the stage entry changes, every `episodes` stage in this file throws instead of reaching `assembleMock`.
-
-Then add inside `describe('episode stages (metric anomaly episodes W01)', …)`:
-
-```ts
-  it('the episodes stage runs the assemble+link wrapper once and forwards its closes (W02 §11)', async () => {
-    const superseded = { episodeId: 'ep-9', deviceId: 'dev-9', linkedAlertId: 'alert-9', closeReason: 'expired_no_data' as const };
-    assembleMock.mockResolvedValue([superseded]);
-    const result = await detectMetricAnomaliesRange({ orgId, ...range });
-    expect(assembleMock).toHaveBeenCalledTimes(1);
-    expect(assembleMock).toHaveBeenCalledWith(expect.objectContaining({ orgId }));
-    expect(result.stages.find((s) => s.stage === 'episodes')?.outcome).toBe('completed');
-    expect(notifyMock).toHaveBeenCalledWith(orgId, [superseded]);
-  });
-```
-
-- [ ] **Step 2: Write the failing integration test (link semantics)**
-
-`apps/api/src/__tests__/integration/metricAnomalyEpisodeIncidents.integration.test.ts`:
-
-```ts
-import './setup';
-
-import { describe, expect, it, vi } from 'vitest';
-import { eq } from 'drizzle-orm';
-
-const { publishEventMock } = vi.hoisted(() => ({
-  publishEventMock: vi.fn<(...args: unknown[]) => Promise<string>>(async () => 'test-event-id'),
-}));
-vi.mock('../../services/eventBus', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../services/eventBus')>();
-  return { ...actual, publishEvent: publishEventMock };
-});
-
-import { withSystemDbAccessContext } from '../../db';
-import { metricAnomalies, metricAnomalyIncidents } from '../../db/schema';
-import { linkMetricAnomalyIncidentsToEpisodes } from '../../services/metricAnomalyEpisodeIncidents';
-import { getTestDb } from './setup';
-import { insertEpisodeDevice, seedEpisode, seedIncident, seedTenant } from './metricAnomalyEpisodeFixtures';
-
-const HOUR = 3_600_000;
-
-async function incidentRow(id: string) {
-  const [row] = await getTestDb().select().from(metricAnomalyIncidents).where(eq(metricAnomalyIncidents.id, id));
-  return row!;
-}
-
-describe('incident → episode link (W02 §11)', () => {
-  it('links an undispatched incident to the episode of its highest-score member', async () => {
-    const { org, site } = await seedTenant();
-    const deviceId = await insertEpisodeDevice(org.id, site.id);
-    const start = new Date(Math.floor((Date.now() - 2 * HOUR) / 300_000) * 300_000);
-    // Two episodes (different families) with a member in the SAME bucket; the ram one scores higher.
-    const cpu = await seedEpisode({ orgId: org.id, deviceId, memberCount: 1, start, metricName: 'cpu_percent', metricFamily: 'cpu' });
-    const ram = await seedEpisode({ orgId: org.id, deviceId, memberCount: 1, start, metricName: 'ram_percent', metricFamily: 'ram' });
-    await getTestDb().update(metricAnomalies).set({ score: 3 }).where(eq(metricAnomalies.id, cpu.memberIds[0]!));
-    await getTestDb().update(metricAnomalies).set({ score: 9 }).where(eq(metricAnomalies.id, ram.memberIds[0]!));
-    const incidentId = await seedIncident({ orgId: org.id, deviceId, episodeId: null, windowStart: start });
-
-    const changed = await withSystemDbAccessContext(() => linkMetricAnomalyIncidentsToEpisodes(org.id));
-
-    expect(changed).toBe(1);
-    expect((await incidentRow(incidentId)).episodeId).toBe(ram.episodeId);
-    // Re-running is a no-op.
-    expect(await withSystemDbAccessContext(() => linkMetricAnomalyIncidentsToEpisodes(org.id))).toBe(0);
-  });
-
-  it('never touches an already-dispatched incident, and leaves an incident whose members are unassembled NULL', async () => {
-    const { org, site } = await seedTenant();
-    const deviceId = await insertEpisodeDevice(org.id, site.id);
-    const start = new Date(Math.floor((Date.now() - 2 * HOUR) / 300_000) * 300_000);
-    const ep = await seedEpisode({ orgId: org.id, deviceId, memberCount: 2, start });
-    const dispatched = await seedIncident({ orgId: org.id, deviceId, episodeId: null, windowStart: start });
-    await getTestDb().update(metricAnomalyIncidents).set({ dispatchedAt: new Date() }).where(eq(metricAnomalyIncidents.id, dispatched));
-    await getTestDb().update(metricAnomalies).set({ episodeId: null }).where(eq(metricAnomalies.id, ep.memberIds[1]!));
-    const orphan = await seedIncident({ orgId: org.id, deviceId, episodeId: null, windowStart: new Date(start.getTime() + 300_000) });
-
-    await withSystemDbAccessContext(() => linkMetricAnomalyIncidentsToEpisodes(org.id));
-
-    expect((await incidentRow(dispatched)).episodeId).toBeNull();
-    expect((await incidentRow(orphan)).episodeId).toBeNull();
-  });
-});
-```
-
-- [ ] **Step 3: Run and watch them fail**
+- [ ] **Step 1: Check the stage order, the incident insert and the stage entry**
 
 ```bash
-cd apps/api && npx vitest run src/services/metricAnomalyEpisodeIncidents.test.ts src/services/metricAnomalies.test.ts
-pnpm --filter @breeze/api test:integration src/__tests__/integration/metricAnomalyEpisodeIncidents.integration.test.ts
-```
-Expected: FAIL. The module is missing, and the stage never calls the wrapper.
-
-- [ ] **Step 4: Implement**
-
-`apps/api/src/services/metricAnomalyEpisodeIncidents.ts`:
-
-```ts
-import { sql } from 'drizzle-orm';
-
-import { db } from '../db';
-import { assembleMetricAnomalyEpisodes, type EpisodeCloseResult } from './metricAnomalyEpisodes';
-import type { MetricAnomalyRange } from './metricAnomalies';
-
-/**
- * Spec §11 (W02): metric_anomaly_incidents keeps its per-bucket grain but is
- * pointed at an episode so the publisher can dispatch once per episode. Runs
- * INSIDE the `episodes` stage transaction, right after assembly, so an
- * incident and its episode become visible in the same commit.
- *
- * Choice among members of one incident (same device, anomaly_type,
- * bucket_seconds, window_start): the episode of the highest-score member;
- * ties break on member id for determinism. Incident window_start is
- * timestamptz, metric_anomalies.window_start is timestamp — the join uses the
- * same `AT TIME ZONE 'UTC'` conversion as upsertMetricAnomalyIncidents.
- */
-function extractRows<T>(result: unknown): T[] {
-  const rows = (result as { rows?: T[] }).rows ?? (result as T[]);
-  return Array.isArray(rows) ? rows : [];
-}
-
-export async function linkMetricAnomalyIncidentsToEpisodes(orgId: string): Promise<number> {
-  const result = await db.execute<{ id: string }>(sql`
-    UPDATE metric_anomaly_incidents AS i
-    SET episode_id = pick.episode_id
-    FROM (
-      SELECT DISTINCT ON (inc.id) inc.id AS incident_id, ma.episode_id
-      FROM metric_anomaly_incidents inc
-      JOIN metric_anomalies ma
-        ON ma.org_id = inc.org_id
-       AND ma.device_id = inc.device_id
-       AND ma.anomaly_type = inc.anomaly_type
-       AND ma.bucket_seconds = inc.bucket_seconds
-       AND (ma.window_start AT TIME ZONE 'UTC') = inc.window_start
-      WHERE inc.org_id = ${orgId}
-        AND inc.dispatched_at IS NULL
-        AND ma.episode_id IS NOT NULL
-      ORDER BY inc.id, ma.score DESC, ma.id
-    ) AS pick
-    WHERE i.id = pick.incident_id
-      AND i.episode_id IS DISTINCT FROM pick.episode_id
-    RETURNING i.id
-  `);
-  return extractRows<{ id: string }>(result).length;
-}
-
-/**
- * The `episodes` stage entry. Returns assembly's supersede closes unchanged:
- * W01's stage loop hands them to notifyEpisodesClosed after commit, so a
- * superseded PROMOTED episode reaches the alert handler (Task 7).
- */
-export async function assembleEpisodesAndLinkIncidents(range: MetricAnomalyRange): Promise<EpisodeCloseResult[]> {
-  const superseded = await assembleMetricAnomalyEpisodes(range);
-  await linkMetricAnomalyIncidentsToEpisodes(range.orgId);
-  return superseded;
-}
+rg -n "'episodes',|'incidents'," apps/api/src/services/metricAnomalies.ts
+rg -n "array_agg\(ma.episode_id ORDER BY ma.score DESC NULLS LAST\)|COALESCE\(EXCLUDED.episode_id" apps/api/src/services/metricAnomalies.ts
+rg -n "pending.closed = await assembleMetricAnomalyEpisodes\(range\)" apps/api/src/services/metricAnomalies.ts
 ```
 
-In `apps/api/src/services/metricAnomalies.ts`, import `assembleEpisodesAndLinkIncidents` from `./metricAnomalyEpisodeIncidents` and change W01's stage entry from
+Expected: `'episodes'` precedes `'incidents'` in both `METRIC_ANOMALY_STAGES` and `orderedStages`; both incident-SQL fragments print; the stage entry calls assembly directly. If any is missing, W01b has not merged or merged differently — stop and reconcile against the index; do not add a link statement here.
 
-```ts
-      ['episodes', async () => {
-        pending.closed = await assembleMetricAnomalyEpisodes(range);
-      }],
-```
-
-to
-
-```ts
-      // W02 §11: link incidents to their episodes in the SAME stage
-      // transaction; the supersede closes still flow to notifyEpisodesClosed.
-      ['episodes', async () => {
-        pending.closed = await assembleEpisodesAndLinkIncidents(range);
-      }],
-```
-
-Remove `assembleMetricAnomalyEpisodes` from that file's `./metricAnomalyEpisodes` import (keep `notifyEpisodesClosed`, `resolveMetricAnomalyEpisodes`, `type EpisodeCloseResult`). There is no import cycle: `metricAnomalyEpisodeIncidents.ts` imports only a type from `./metricAnomalies`.
-
-- [ ] **Step 5: Run and watch them pass**
+- [ ] **Step 2: Run W01's proofs of it**
 
 ```bash
-cd apps/api && npx vitest run src/services/metricAnomalyEpisodeIncidents.test.ts src/services/metricAnomalies.test.ts
-pnpm --filter @breeze/api test:integration src/__tests__/integration/metricAnomalyEpisodeIncidents.integration.test.ts src/__tests__/integration/metricAnomalies.integration.test.ts
+cd apps/api && npx vitest run src/services/metricAnomalies.test.ts -t "A6"
+pnpm --filter @breeze/api test:integration src/__tests__/integration/metricAnomalyEpisodes.integration.test.ts -t "created already linked"
 ```
-Expected: PASS. The existing detector integration suite still passes.
 
-- [ ] **Step 6: Commit**
-
-```bash
-git add apps/api/src/services/metricAnomalyEpisodeIncidents.ts apps/api/src/services/metricAnomalyEpisodeIncidents.test.ts apps/api/src/services/metricAnomalies.ts apps/api/src/services/metricAnomalies.test.ts apps/api/src/__tests__/integration/metricAnomalyEpisodeIncidents.integration.test.ts
-git commit -m "feat(api): link anomaly incidents to episodes in the episodes stage (W02)"
-```
+Expected: PASS (W01's `runs assembly before incidents`, `each incident carries the episode of its highest-score member`, and the integration `an incident is created already linked to its episode`). Record the output in the PR body.
 
 ---
 
@@ -3067,13 +2933,13 @@ git commit -m "feat(api): link anomaly incidents to episodes in the episodes sta
 **Files:**
 - Modify: `apps/api/src/jobs/metricAnomalyIncidentPublisher.ts` (constants block ~line 46, `ClaimedIncidentRow`, `PublishIncidentsResult`, `scanAndClaimIncidentRows` claim statement ~lines 140-157, `publishPendingIncidents`, worker log line)
 - Modify: `apps/api/src/jobs/metricAnomalyIncidentPublisher.test.ts`
-- Modify: `apps/api/src/__tests__/integration/metricAnomalyEpisodeIncidents.integration.test.ts` (append)
+- Create: `apps/api/src/__tests__/integration/metricAnomalyEpisodeIncidents.integration.test.ts`
 
 **Interfaces:**
+- Consumes (W01): `metric_anomaly_incidents.episode_id`, already written at insert (Task 8 verified it).
 - Produces:
-  - `EPISODE_INCIDENT_LINK_GRACE_MINUTES = 15` (exported from the publisher)
   - `PublishIncidentsResult = { published: number; skipped: number; suppressed: number }`
-  - Claim semantics (spec §11 + deviations D-1/D-2): an incident is claimable when `dispatched_at IS NULL`, `dispatch_attempts <= 5`, and (`episode_id IS NOT NULL` or `created_at < now() - 15 min`). A claimed incident is **suppressed**, meaning `dispatched_at = now()` and `suppressed_by_episode = true` and it is never published, when it has an `episode_id` **and** either (a) it is not the earliest-`window_start` incident of that episode in this batch, or (b) another incident of the same episode already has `agent_run_id IS NOT NULL` or was already published (`dispatched_at IS NOT NULL AND suppressed_by_episode = false`).
+  - Claim semantics (spec §11 + deviation D-1): an incident is claimable when `dispatched_at IS NULL` and `dispatch_attempts <= 5` — unchanged, no grace window (D-2 withdrawn). A claimed incident is **suppressed**, meaning `dispatched_at = now()` and `suppressed_by_episode = true` and it is never published, when it has an `episode_id` **and** either (a) it is not the earliest-`window_start` incident of that episode in this batch, or (b) another incident of the same episode already has `agent_run_id IS NOT NULL` or was already published (`dispatched_at IS NOT NULL AND suppressed_by_episode = false`).
 
 - [ ] **Step 1: Write the failing unit tests**
 
@@ -3138,8 +3004,9 @@ describe('metricAnomalyIncidentPublisher — one dispatch per episode (W02, sour
     expect(src()).toContain('suppressed_by_episode = decided.suppress');
   });
 
-  it('defers unlinked incidents for the grace window instead of racing assembly', () => {
-    expect(src()).toContain('make_interval(mins => ${EPISODE_INCIDENT_LINK_GRACE_MINUTES}::int)');
+  it('holds nothing back: an unlinked incident is claimable at once (D-2 withdrawn, A6)', () => {
+    expect(src()).not.toContain('make_interval(mins =>');
+    expect(src()).not.toContain('created_at < now()');
   });
 });
 ```
@@ -3148,9 +3015,29 @@ The existing guards still hold: exactly two `WHERE ${metricAnomalyIncidents.disp
 
 - [ ] **Step 2: Append the failing integration tests**
 
-Add to `metricAnomalyEpisodeIncidents.integration.test.ts`. First extend the import from `drizzle-orm` to `{ and, eq, sql }`. Add `import { publishPendingIncidents } from '../../jobs/metricAnomalyIncidentPublisher';`, then:
+Create `apps/api/src/__tests__/integration/metricAnomalyEpisodeIncidents.integration.test.ts`:
 
 ```ts
+import './setup';
+
+import { describe, expect, it, vi } from 'vitest';
+import { eq } from 'drizzle-orm';
+
+const { publishEventMock } = vi.hoisted(() => ({
+  publishEventMock: vi.fn<(...args: unknown[]) => Promise<string>>(async () => 'test-event-id'),
+}));
+vi.mock('../../services/eventBus', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/eventBus')>();
+  return { ...actual, publishEvent: publishEventMock };
+});
+
+import { metricAnomalyIncidents } from '../../db/schema';
+import { publishPendingIncidents } from '../../jobs/metricAnomalyIncidentPublisher';
+import { getTestDb } from './setup';
+import { insertEpisodeDevice, seedEpisode, seedIncident, seedTenant } from './metricAnomalyEpisodeFixtures';
+
+const HOUR = 3_600_000;
+
 describe('publisher: one dispatch per episode (W02 §11)', () => {
   async function incidentsOf(episodeId: string) {
     return getTestDb().select().from(metricAnomalyIncidents).where(eq(metricAnomalyIncidents.episodeId, episodeId)).orderBy(metricAnomalyIncidents.windowStart);
@@ -3205,17 +3092,16 @@ describe('publisher: one dispatch per episode (W02 §11)', () => {
     expect(await publishPendingIncidents()).toEqual({ published: 2, skipped: 0, suppressed: 0 });
   });
 
-  it('an unlinked incident waits out the 15-minute grace window, then dispatches as before', async () => {
+  it('an unlinked incident (no episode) dispatches at once, as before (D-2 withdrawn)', async () => {
     publishEventMock.mockClear();
     const { org, site } = await seedTenant();
     const deviceId = await insertEpisodeDevice(org.id, site.id);
     const incidentId = await seedIncident({ orgId: org.id, deviceId, episodeId: null, windowStart: new Date(Date.now() - HOUR) });
 
-    expect(await publishPendingIncidents()).toEqual({ published: 0, skipped: 0, suppressed: 0 });
-    expect((await getTestDb().select().from(metricAnomalyIncidents).where(eq(metricAnomalyIncidents.id, incidentId)))[0]!.dispatchAttempts).toBe(0);
-
-    await getTestDb().update(metricAnomalyIncidents).set({ createdAt: sql`now() - interval '16 minutes'` }).where(eq(metricAnomalyIncidents.id, incidentId));
     expect(await publishPendingIncidents()).toEqual({ published: 1, skipped: 0, suppressed: 0 });
+    const [row] = await getTestDb().select().from(metricAnomalyIncidents).where(eq(metricAnomalyIncidents.id, incidentId));
+    expect(row).toMatchObject({ suppressedByEpisode: false, dispatchAttempts: 1 });
+    expect(row!.dispatchedAt).not.toBeNull();
   });
 });
 ```
@@ -3226,23 +3112,13 @@ describe('publisher: one dispatch per episode (W02 §11)', () => {
 cd apps/api && npx vitest run src/jobs/metricAnomalyIncidentPublisher.test.ts
 pnpm --filter @breeze/api test:integration src/__tests__/integration/metricAnomalyEpisodeIncidents.integration.test.ts
 ```
-Expected: FAIL. The result has no `suppressed`, the source strings are absent, and in integration all three incidents publish.
+Expected: FAIL. The result has no `suppressed`, the per-episode source strings are absent, and in integration all three incidents of one episode publish. (The unlinked-incident case and the `holds nothing back` source check already pass — they pin that no grace window sneaks in.)
 
 - [ ] **Step 4: Implement**
 
 In `metricAnomalyIncidentPublisher.ts`:
 
-After `export const MAX_PUBLISH_ATTEMPTS = 5;`:
-
-```ts
-/**
- * W02 (spec deviation D-2): an incident with no episode yet is held back this
- * long so the `episodes` stage — which commits after the `incidents` stage —
- * can link it first. Only incidents that never get an episode (lookback miss,
- * timed-out stage) pay this delay.
- */
-export const EPISODE_INCIDENT_LINK_GRACE_MINUTES = 15;
-```
+No new constant: W01 creates every incident already linked (A6), so there is nothing to wait for.
 
 `ClaimedIncidentRow` gains `suppressed_by_episode: boolean;`. `PublishIncidentsResult` gains `suppressed: number;`.
 
@@ -3250,19 +3126,16 @@ Replace the claim statement in `scanAndClaimIncidentRows` with:
 
 ```ts
   // Atomically claim live rows, bump dispatch_attempts, and decide one
-  // dispatch per episode (spec §11 + W02 deviations D-1/D-2). A suppressed row
-  // is marked dispatched here, in the claim, so it is never claimed again and
-  // never published.
+  // dispatch per episode (spec §11 + W02 deviation D-1). episode_id was
+  // written at insert by W01 (stage order episodes -> incidents), so there is
+  // no grace window. A suppressed row is marked dispatched here, in the
+  // claim, so it is never claimed again and never published.
   const claimed = await db.execute<ClaimedIncidentRow>(sql`
     WITH due AS (
       SELECT id, episode_id, window_start
       FROM ${metricAnomalyIncidents}
       WHERE ${metricAnomalyIncidents.dispatchedAt} IS NULL
         AND ${metricAnomalyIncidents.dispatchAttempts} <= ${MAX_PUBLISH_ATTEMPTS}
-        AND (
-          episode_id IS NOT NULL
-          OR created_at < now() - make_interval(mins => ${EPISODE_INCIDENT_LINK_GRACE_MINUTES}::int)
-        )
       ORDER BY ${metricAnomalyIncidents.orgId}, ${metricAnomalyIncidents.id}
       LIMIT ${MAX_PUBLISH_PER_RUN}
       FOR UPDATE SKIP LOCKED
@@ -3497,7 +3370,7 @@ git commit -m "test(api): HTTP proofs for anomaly episodes — evaluation labels
 **Files:**
 - Modify: `docs/superpowers/plans/monitoring/2026-09-21-metric-anomaly-episodes.md` (contract table)
 
-- [ ] **Step 1: Check the cross-wave contract table** in the index. The W02 rows (episode routes on `anomaliesRoutes`, the four DTOs incl. `peakAnomalyId`, `EPISODE_ACTIONS` / `EPISODE_LIST_STATUSES` / `EPISODE_DETAIL_MEMBER_LIMIT`, `applyEpisodeAction`, the read service, the feedback writers, the alert handler, `assembleEpisodesAndLinkIncidents`, the publisher constants, `PromoteMetricAnomalyToAlertOptions.episodeId`) were written into the index during plan reconciliation (2026-09-22). Compare each row with what this branch actually exports; if the code had to diverge, edit that row in this PR and say so in the PR body. W03 and W04 build against those rows.
+- [ ] **Step 1: Check the cross-wave contract table** in the index. The W02 rows (episode routes on `anomaliesRoutes`, the four DTOs incl. `peakAnomalyId` and `deviceLastSeenAt`, `EPISODE_ACTIONS` / `EPISODE_LIST_STATUSES` / `EPISODE_DETAIL_MEMBER_LIMIT`, `applyEpisodeAction`, the read service, the feedback writers, the alert handler, the publisher result fields, `PromoteMetricAnomalyToAlertOptions.episodeId`) were written into the index during plan reconciliation (2026-09-22). Compare each row with what this branch actually exports; if the code had to diverge, edit that row in this PR and say so in the PR body. W03 and W04 build against those rows.
 
 - [ ] **Step 2: Typecheck**
 
@@ -3514,7 +3387,6 @@ cd apps/api && npx vitest run \
   src/services/metricAnomalyEpisodeQueries.test.ts \
   src/services/metricAnomalyEpisodeActions.test.ts \
   src/services/metricAnomalyEpisodeAlerts.test.ts \
-  src/services/metricAnomalyEpisodeIncidents.test.ts \
   src/services/metricAnomalies.test.ts \
   src/services/metricAnomalyPromotion.test.ts \
   src/services/mlFeedback.test.ts \
@@ -3528,7 +3400,7 @@ cd packages/shared && npx vitest run src/types/metricAnomalyEpisodes.test.ts
 pnpm --filter @breeze/api test:site-scope-coverage
 pnpm --filter @breeze/api test:integration-suite-coverage
 ```
-Expected: all green. Check that the reported file count equals the number of files listed (13 for the first command).
+Expected: all green. Check that the reported file count equals the number of files listed (12 for the first command).
 
 - [ ] **Step 4: Integration suites for the touched areas**
 
@@ -3561,10 +3433,11 @@ PR body (`body.md`) must contain:
 - **No schema change.** No migration, no new table or column, no cascade or export-policy change (all W01).
 - **`alerts.episode_id` untouched.** The anomaly episode id lives only in `alerts.context.episodeId`, because the column is the monitor breach episode (#5290).
 - **Label integrity.** The member feedback writer throws inside the request transaction, so an action whose labels cannot be written returns 500 and rolls back. The Task 10 negative control run is recorded.
-- **Dispatch behaviour change for the AI pilot.** At most one `anomaly.incident_opened` per episode. Unlinked incidents wait up to 15 min. The counter reads `suppressed` in the publisher log.
+- **Dispatch behaviour change for the AI pilot.** At most one `anomaly.incident_opened` per episode. Incidents arrive already linked (W01 runs `episodes` before `incidents`), so there is no grace window; an unlinked incident dispatches as before. The counter reads `suppressed` in the publisher log. Task 8's verification output.
 - **Still W03's job.** The `anomaly_episode` feedback source type, and excluding `cleared` from the evaluation rates. Until W03, `cleared` members show only in the evaluation's raw status bucket.
 - **Still W04's job.** The panel rewrite and the `alertMlContext` deep link to `#anomalies/<episodeId>`.
-- **Dismiss leaves a linked alert alone** (spec silent). Flagged for the owner.
+- **Dismiss of a promoted episode resolves its linked alert by default** (spec §8.1/§8.2, second quorum A7), with note `Resolved: anomaly episode dismissed` unless the tech wrote one; `resolveAlert: false` keeps the alert.
+- **A `detection_off` close never resolves a linked alert** — nothing observed the device recover.
 - Review round: one independent review (Sonnet). The PR touches alert state and the AI dispatch path, but no tenancy or schema.
 
 Then `complete_wave` only after the PR merges (feature-lifecycle).
@@ -3578,12 +3451,13 @@ Then `complete_wave` only after the PR merges (feature-lifecycle).
 - §8.2 cascade `WHERE status='open'`: the Task 5 `cascadeOpenMembers` step, plus its integration test.
 - §8.3 per-member feedback with `dedupeKey`/`metadata.episodeId`, and none for automatic closes: Tasks 3 and 5. Task 7 writes no feedback, and Task 10 proves the +17.
 - §8.4 `cleared` in legacy enums: W01's, with a guarded fallback in Task 6 Step 3b.
-- §7 alert half: Task 7.
-- §11 link and publisher gate: Tasks 8 and 9, where the link lives in the W02 wrapper inside W01's stage transaction.
+- §7 alert half: Task 7 (never on `detection_off`, A5).
+- Second quorum: A7 dismiss resolves the linked alert (Task 5), A9 `deviceLastSeenAt` (Tasks 1–2), A6 no link/grace here (Tasks 8–9).
+- §11 link and publisher gate: the link is W01's (incident `episode_id` at insert, A6; Task 8 verifies it), the publisher gate is Task 9.
 - §12 list/detail/ref/serialization/`context.episodeId`: Tasks 1, 2, 4 and 6.
 - §15 promote `disabled`/`not_found` → 409/404: Tasks 5 and 6.
 - §16's W02 tests: all present. That covers the 17-member dismiss and the evaluation +17, promote giving `context.episodeId` with the episode open and members promoted, resolve with a default alert resolve, auto-close resolving the alert, publisher 3→1+2, `ref` by anomaly id, cross-org 404, and 409 on a closed episode.
 
 **Placeholder scan.** The branch name and issue numbers are angle-bracketed tokens that `register_feature`/`start_wave` supply at execution time. Task 7 Step 1 names W01's invoker generically because W01 chooses it. The step says exactly what to check and what shape to produce. No TBD/TODO.
 
-**Type consistency.** These names match across Tasks 1–11: `ApplyEpisodeActionResult.labelledMemberIds`, the route's `meta.labelledMembers` (a count), `EpisodeActionConflict`, `EPISODE_ACTION_CONFLICT_MESSAGES`, `serializeMetricAnomalyEpisode(row, range, now)`, `PublishIncidentsResult.suppressed`, `ClaimedIncidentRow.suppressed_by_episode`, `assembleEpisodesAndLinkIncidents(range)` and `resolveAlertsForAutoClosedEpisodes(orgId, now?)`.
+**Type consistency.** These names match across Tasks 1–11: `ApplyEpisodeActionResult.labelledMemberIds`, the route's `meta.labelledMembers` (a count), `EpisodeActionConflict`, `EPISODE_ACTION_CONFLICT_MESSAGES`, `serializeMetricAnomalyEpisode(row, range, now, deviceLastSeenAt?)`, `DEFAULT_EPISODE_DISMISS_NOTE`, `PublishIncidentsResult.suppressed`, `ClaimedIncidentRow.suppressed_by_episode` and `resolveAlertsForAutoClosedEpisodes(orgId, now?)`.

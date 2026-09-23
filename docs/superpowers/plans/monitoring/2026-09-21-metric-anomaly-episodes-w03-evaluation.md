@@ -37,13 +37,16 @@ verdict").
 2. **"Episodes block" fields are defined here, not in the spec.** §8.3/§16/§18 name the requirement
    ("episode-level block", "median duration", "recurrence share", "human-labelled share") but not
    the exact shape. Defined below (Task 5) as: `total`, `byStatus` (open/resolved/dismissed, the
-   three values of the `status` CHECK, §4.1), `byCloseReason` (the five `close_reason` CHECK values),
-   `medianDurationSeconds` (median `resolved_at − first_seen_at` over closed episodes, seconds,
-   `null` when no episode has closed in-window), `recurrenceShare` (episodes with
-   `recurrence_count >= 1` ÷ all episodes in-window), `humanLabelledShare` (episodes with
-   `close_reason = 'user'` ÷ **closed** episodes in-window — `cleared`/`expired_*`/`snoozed` closes
-   are automatic, not a human label; an open, merely-promoted episode is neither closed nor a
-   dismiss/resolve label, so it counts in neither numerator nor denominator here).
+   three values of the `status` CHECK, §4.1), `byCloseReason` (the six `close_reason` CHECK values,
+   incl. `detection_off`), `medianDurationSeconds` (median `resolved_at − first_seen_at` over closed
+   episodes, seconds, `null` when no episode has closed in-window), `recurrenceShare` (episodes with
+   `recurrence_count >= 1` ÷ all episodes in-window), `humanLabelledShare` (second quorum A8:
+   **numerator** = closed episodes a human labelled — `close_reason = 'user'` **or** promoted
+   (`linked_alert_id IS NOT NULL`, whatever closed it afterwards); **denominator** = closed episodes
+   except `close_reason = 'snoozed'` — a snoozed successor is the echo of an earlier human dismiss,
+   not a new episode awaiting a verdict. `cleared`/`expired_*`/`detection_off` closes stay in the
+   denominator: they are episodes no human looked at. An open episode, promoted or not, is not
+   closed and counts in neither).
 3. **Route file line numbers.** The task description cited `apps/api/src/routes/analytics.ts:1150-1300`;
    the evaluation handler in the current tree is `analytics.ts:1090-1334` (route registration at
    1090, handler body 1095-1333). Tasks below cite the current, verified line numbers.
@@ -57,9 +60,9 @@ verdict").
 
 - Migration must sort after the newest file on `origin/main` (`git ls-tree --name-only origin/main
   apps/api/migrations/ | sort | tail -1`) — verified at doc-write time (2026-09-22) as
-  `2026-10-26-170300-caller-verification-ticket-comment-rls.sql`; `2026-10-27-110000-…` (this plan's
+  `2026-10-27-120000-partner-notify-on-behalf-acceptance.sql`; `2026-10-28-110000-…` (this plan's
   placeholder, matching the spec §14/§17 W03 slot) sorts after it and after W01's placeholder
-  `2026-10-27-100000-metric-anomaly-episodes.sql`. **Re-verify against `origin/main` at execution
+  `2026-10-28-100000-metric-anomaly-episodes.sql`. **Re-verify against `origin/main` at execution
   time** (`git fetch origin main && git ls-tree --name-only origin/main apps/api/migrations/ | grep
   '\.sql$' | sort | tail -1`): W01 may have been renamed past its placeholder and other work lands
   daily — rename this file to sort after whatever is newest then, per `CLAUDE.md` → Schema Migration
@@ -99,7 +102,7 @@ verdict").
 ### Task 1: Migration — add `anomaly_episode` to the feedback source-type CHECK
 
 **Files:**
-- Create: `apps/api/migrations/2026-10-27-110000-ml-feedback-anomaly-episode-source.sql`
+- Create: `apps/api/migrations/2026-10-28-110000-ml-feedback-anomaly-episode-source.sql`
 - Test: none new (covered by `apps/api/src/db/autoMigrate.test.ts`, existing, auto-discovers new
   migration files)
 
@@ -118,7 +121,7 @@ Run:
 git fetch origin main --quiet
 git ls-tree --name-only origin/main apps/api/migrations/ | sort | tail -3
 ```
-Expected: `2026-10-27-110000-ml-feedback-anomaly-episode-source.sql` sorts after every listed name. If
+Expected: `2026-10-28-110000-ml-feedback-anomaly-episode-source.sql` sorts after every listed name. If
 W01/W02 have landed migrations dated later, rename this file's prefix to sort after the new newest
 entry before continuing (same rule, `CLAUDE.md` → Schema Migration Workflow).
 
@@ -167,7 +170,7 @@ only a CHECK constraint not represented in the schema file).
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/api/migrations/2026-10-27-110000-ml-feedback-anomaly-episode-source.sql
+git add apps/api/migrations/2026-10-28-110000-ml-feedback-anomaly-episode-source.sql
 git commit -m "$(cat <<'EOF'
 feat(ml-feedback): allow anomaly_episode source type
 
@@ -657,7 +660,7 @@ update the existing evaluation tests. Replace the body of the first test (lines 
         { status: 'dismissed', closeReason: 'user', count: 1 },
       ]);
       mockSelectOnce([
-        { total: 6, recurring: 2, closedTotal: 3, humanClosed: 1, medianDurationSeconds: 900 },
+        { total: 6, recurring: 2, labelEligibleClosed: 3, humanLabelled: 1, medianDurationSeconds: 900 },
       ]);
 
       const res = await app.request('/analytics/anomalies/evaluation?range=30d', {
@@ -678,11 +681,45 @@ update the existing evaluation tests. Replace the body of the first test (lines 
       expect(body.episodes).toEqual({
         total: 6,
         byStatus: { open: 3, resolved: 2, dismissed: 1 },
-        byCloseReason: { cleared: 2, expired_offline: 0, expired_no_data: 0, user: 1, snoozed: 0 },
+        byCloseReason: { cleared: 2, expired_offline: 0, expired_no_data: 0, detection_off: 0, user: 1, snoozed: 0 },
         medianDurationSeconds: 900,
         recurrenceShare: 2 / 6,
         humanLabelledShare: 1 / 3,
       });
+    });
+```
+
+Add, in the same describe block, a test that pins the A8 definition in the aggregate's SQL (the
+mocked rows above cannot discriminate it). Put the helper at the top of the describe block:
+
+```ts
+    // Flattens a drizzle `sql` fragment: string chunks verbatim, columns by DB name.
+    function sqlText(fragment: unknown): string {
+      const chunks = (fragment as { queryChunks?: unknown[] } | undefined)?.queryChunks ?? [];
+      return chunks
+        .map((chunk) => {
+          const value = (chunk as { value?: unknown }).value;
+          if (Array.isArray(value)) return value.join('');
+          return (chunk as { name?: string }).name ?? '';
+        })
+        .join('');
+    }
+
+    it('humanLabelledShare counts promoted episodes and excludes snoozed successors (second quorum A8)', async () => {
+      mockSelectOnce([]);
+      mockSelectOnce([]);
+      mockSelectOnce([]);
+      mockSelectOnce([{ total: 0, recurring: 0, labelEligibleClosed: 0, humanLabelled: 0, medianDurationSeconds: null }]);
+
+      await app.request('/analytics/anomalies/evaluation?range=7d', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      const agg = vi.mocked(db.select).mock.calls[3]![0] as Record<string, unknown>;
+      expect(sqlText(agg.labelEligibleClosed)).toContain("status <> 'open' and close_reason is distinct from 'snoozed'");
+      expect(sqlText(agg.humanLabelled)).toContain("(close_reason = 'user' or linked_alert_id is not null)");
+      expect(sqlText(agg.humanLabelled)).toContain("close_reason is distinct from 'snoozed'");
     });
 ```
 
@@ -693,7 +730,7 @@ Update the "returns zero rates when no anomalies match" test (lines 533-547):
       mockSelectOnce([]);
       mockSelectOnce([]);
       mockSelectOnce([]);
-      mockSelectOnce([{ total: 0, recurring: 0, closedTotal: 0, humanClosed: 0, medianDurationSeconds: null }]);
+      mockSelectOnce([{ total: 0, recurring: 0, labelEligibleClosed: 0, humanLabelled: 0, medianDurationSeconds: null }]);
 
       const res = await app.request('/analytics/anomalies/evaluation?range=7d', {
         method: 'GET',
@@ -708,7 +745,7 @@ Update the "returns zero rates when no anomalies match" test (lines 533-547):
       expect(body.episodes).toEqual({
         total: 0,
         byStatus: { open: 0, resolved: 0, dismissed: 0 },
-        byCloseReason: { cleared: 0, expired_offline: 0, expired_no_data: 0, user: 0, snoozed: 0 },
+        byCloseReason: { cleared: 0, expired_offline: 0, expired_no_data: 0, detection_off: 0, user: 0, snoozed: 0 },
         medianDurationSeconds: null,
         recurrenceShare: 0,
         humanLabelledShare: 0,
@@ -728,7 +765,7 @@ the existing 2 base mocks and before the 3 v1-candidate mocks, and bump the call
         { eventType: 'anomaly.dismissed', count: 1 },
       ]);
       mockSelectOnce([]); // episode group rows
-      mockSelectOnce([{ total: 0, recurring: 0, closedTotal: 0, humanClosed: 0, medianDurationSeconds: null }]); // episode agg
+      mockSelectOnce([{ total: 0, recurring: 0, labelEligibleClosed: 0, humanLabelled: 0, medianDurationSeconds: null }]); // episode agg
       mockSelectOnce([{ totalCandidates: 6 }]);
       mockSelectOnce([{ overlapWithV0: 3 }]);
       mockSelectOnce([
@@ -759,7 +796,7 @@ mocks after the existing "feedback counts" mock:
           { eventType: 'anomaly.dismissed', count: 1 },
         ]); // feedback counts
         mockSelectOnce([]); // episode group rows
-        mockSelectOnce([{ total: 0, recurring: 0, closedTotal: 0, humanClosed: 0, medianDurationSeconds: null }]); // episode agg
+        mockSelectOnce([{ total: 0, recurring: 0, labelEligibleClosed: 0, humanLabelled: 0, medianDurationSeconds: null }]); // episode agg
 ```
 ...and change `toHaveBeenCalledTimes(3)` to `toHaveBeenCalledTimes(5)`.
 
@@ -773,7 +810,7 @@ needs the new keys:
         expect(body.episodes).toEqual({
           total: 0,
           byStatus: { open: 0, resolved: 0, dismissed: 0 },
-          byCloseReason: { cleared: 0, expired_offline: 0, expired_no_data: 0, user: 0, snoozed: 0 },
+          byCloseReason: { cleared: 0, expired_offline: 0, expired_no_data: 0, detection_off: 0, user: 0, snoozed: 0 },
           medianDurationSeconds: null,
           recurrenceShare: 0,
           humanLabelledShare: 0,
@@ -843,7 +880,7 @@ function zeroEpisodeEvaluation() {
   return {
     total: 0,
     byStatus: { open: 0, resolved: 0, dismissed: 0 },
-    byCloseReason: { cleared: 0, expired_offline: 0, expired_no_data: 0, user: 0, snoozed: 0 },
+    byCloseReason: { cleared: 0, expired_offline: 0, expired_no_data: 0, detection_off: 0, user: 0, snoozed: 0 },
     medianDurationSeconds: null as number | null,
     recurrenceShare: 0,
     humanLabelledShare: 0,
@@ -904,15 +941,18 @@ computed (not gated by `includeV1`):
       .select({
         total: sql<number>`count(*)`,
         recurring: sql<number>`count(*) filter (where ${metricAnomalyEpisodes.recurrenceCount} >= 1)`,
-        closedTotal: sql<number>`count(*) filter (where ${metricAnomalyEpisodes.resolvedAt} is not null)`,
-        humanClosed: sql<number>`count(*) filter (where ${metricAnomalyEpisodes.closeReason} = 'user')`,
+        // A8: denominator = closed episodes except snoozed successors (the echo
+        // of an earlier human dismiss); numerator = the ones a human labelled,
+        // by closing them or by promoting them (linked alert), however they closed.
+        labelEligibleClosed: sql<number>`count(*) filter (where ${metricAnomalyEpisodes.status} <> 'open' and ${metricAnomalyEpisodes.closeReason} is distinct from 'snoozed')`,
+        humanLabelled: sql<number>`count(*) filter (where ${metricAnomalyEpisodes.status} <> 'open' and ${metricAnomalyEpisodes.closeReason} is distinct from 'snoozed' and (${metricAnomalyEpisodes.closeReason} = 'user' or ${metricAnomalyEpisodes.linkedAlertId} is not null))`,
         medianDurationSeconds: sql<number | null>`percentile_cont(0.5) within group (order by extract(epoch from (${metricAnomalyEpisodes.resolvedAt} - ${metricAnomalyEpisodes.firstSeenAt}))) filter (where ${metricAnomalyEpisodes.resolvedAt} is not null)`,
       })
       .from(metricAnomalyEpisodes)
       .where(and(...episodeConditions));
 
     const episodeByStatus = { open: 0, resolved: 0, dismissed: 0 };
-    const episodeByCloseReason = { cleared: 0, expired_offline: 0, expired_no_data: 0, user: 0, snoozed: 0 };
+    const episodeByCloseReason = { cleared: 0, expired_offline: 0, expired_no_data: 0, detection_off: 0, user: 0, snoozed: 0 };
     for (const row of episodeGroupRows) {
       const statusKey = String(row.status);
       if (statusKey === 'open' || statusKey === 'resolved' || statusKey === 'dismissed') {
@@ -926,8 +966,8 @@ computed (not gated by `includeV1`):
 
     const episodeTotal = Number(episodeAggRow?.total) || 0;
     const episodeRecurring = Number(episodeAggRow?.recurring) || 0;
-    const episodeClosedTotal = Number(episodeAggRow?.closedTotal) || 0;
-    const episodeHumanClosed = Number(episodeAggRow?.humanClosed) || 0;
+    const episodeLabelEligibleClosed = Number(episodeAggRow?.labelEligibleClosed) || 0;
+    const episodeHumanLabelled = Number(episodeAggRow?.humanLabelled) || 0;
     const episodeMedianDurationSeconds =
       episodeAggRow?.medianDurationSeconds == null ? null : Math.round(Number(episodeAggRow.medianDurationSeconds));
 
@@ -937,7 +977,7 @@ computed (not gated by `includeV1`):
       byCloseReason: episodeByCloseReason,
       medianDurationSeconds: episodeMedianDurationSeconds,
       recurrenceShare: episodeTotal > 0 ? episodeRecurring / episodeTotal : 0,
-      humanLabelledShare: episodeClosedTotal > 0 ? episodeHumanClosed / episodeClosedTotal : 0,
+      humanLabelledShare: episodeLabelEligibleClosed > 0 ? episodeHumanLabelled / episodeLabelEligibleClosed : 0,
     };
 ```
 
@@ -1000,9 +1040,9 @@ EOF
 - [ ] **Step 1: Write the section**
 
 Insert into `docs/runbooks/ml-operations.md` immediately before the `## V1 Promotion Baselines`
-heading:
+heading (the outer fence is four backticks because the section contains a fenced block):
 
-```markdown
+````markdown
 ## Anomaly Episodes
 
 The anomaly pipeline has three grouping grains — don't confuse them:
@@ -1010,15 +1050,16 @@ The anomaly pipeline has three grouping grains — don't confuse them:
 | Grain | Table | Purpose |
 | --- | --- | --- |
 | Per-bucket row | `metric_anomalies` | one row per device × metric × anomaly type × 5-min bucket; the raw evidence |
-| Dispatch outbox | `metric_anomaly_incidents` | AI-pilot dispatch queue, same per-bucket grain, gains `episode_id` + `suppressed_by_episode` so only one incident per episode is actually published |
+| Dispatch outbox | `metric_anomaly_incidents` | AI-pilot dispatch queue, same per-bucket grain, gains `episode_id` (set when the incident is created — assembly runs first) + `suppressed_by_episode` so only one incident per episode is actually published |
 | Lifecycle | `metric_anomaly_episodes` | one row per contiguous run of anomalous buckets for a (device, episode key); what the tech-facing panel shows |
 
 ### Lifecycle
 
-`open → resolved` (human, or automatic `cleared`/`expired_offline`/`expired_no_data`) or
-`open → dismissed` (human, or an already-snoozed successor). Closed episodes are never reopened; new
-activity after a close starts a new episode with `recurrence_count` = episodes with the same
-(device, episode key) closed in the prior 7 days.
+`open → resolved` (human, or automatic `cleared`/`expired_offline`/`expired_no_data`/`detection_off`)
+or `open → dismissed` (human, or an already-snoozed successor). Closed episodes are never reopened;
+new activity after a close starts a new episode with `recurrence_count` = episodes with the same
+(device, episode key) that closed in the 7 days **before this episode's first bucket** — relative to
+the episode, not to "now", so a backfill replay gets the count it would have had live.
 
 Member `metric_anomalies` rows cascade to the episode's new status **only while still `open`** — a
 promoted member keeps its `promoted` status regardless of what the episode does next. Auto-resolve
@@ -1028,10 +1069,10 @@ promoted member keeps its `promoted` status regardless of what the episode does 
 
 | Constant | Default | Meaning |
 | --- | --- | --- |
-| `EPISODE_GAP_MINUTES` | 30 | max gap between anomalous buckets before the episode closes |
+| `EPISODE_GAP_MINUTES` | 30 | max gap between anomalous buckets inside one episode; auto-resolve only looks at an episode once a detection run has covered the bucket `last_seen_at + gap` |
 | `EPISODE_CLEAN_BUCKETS` | 6 | clean 5-min rollup buckets required (per member metric) to auto-resolve |
 | `EPISODE_EXPIRE_HOURS` | 24 | no clean data for this long → expired instead of resolved |
-| `EPISODE_RECURRENCE_DAYS` | 7 | lookback window for `recurrence_count` |
+| `EPISODE_RECURRENCE_DAYS` | 7 | window before an episode's first bucket for `recurrence_count` |
 | `EPISODE_SNOOZE_DAYS` | 7 | how long a user dismiss silences the episode key on that device |
 | `EPISODE_ASSEMBLY_LOOKBACK_HOURS` | 24 | how far back the assembly scan looks for unassigned `metric_anomalies` rows |
 
@@ -1042,6 +1083,7 @@ promoted member keeps its `promoted` status regardless of what the episode does 
 | `cleared` | auto-resolved — 6+ clean rollup buckets after the last anomalous bucket | no |
 | `expired_offline` | auto-resolved after 24h with no clean data because the device itself is offline | no |
 | `expired_no_data` | auto-resolved after 24h with no clean data while the device is still checking in (series stopped: sampling disabled, agent downgrade, metric removed) | no |
+| `detection_off` | `ml.anomalies.enabled` was turned off for the org: every open episode closes on the next scan, because rollups no detector evaluated cannot prove the device recovered. Members become `cleared`; a linked alert is **not** auto-resolved | no |
 | `user` | a human clicked Resolve or Dismiss | yes |
 | `snoozed` | a new episode opened for a key a human dismissed within the last `EPISODE_SNOOZE_DAYS`; created already-dismissed | no (the label was on the *original* dismiss, not this successor) |
 
@@ -1051,9 +1093,10 @@ if every member metric had ≥ `EPISODE_CLEAN_BUCKETS` clean buckets in between,
 `expired_no_data`. Backfill history older than the current episode is created already closed with
 the same rule. Both flow to the same close handler as auto-resolve (linked alert auto-resolved).
 
-Auto-resolve runs **even when `ml.anomalies.enabled` is off** — turning off detection must not
-freeze open episodes forever. The 10-minute `scan-orgs` job also picks up orgs that have no live
-device left but still own an open episode, so those close too.
+The resolve stage runs **even when `ml.anomalies.enabled` is off** — turning off detection must not
+freeze open episodes forever — but then it closes them as `detection_off`, never `cleared`. The
+10-minute `scan-orgs` job also picks up orgs that have no live device left but still own an open
+episode, so those close too.
 
 ### Snooze
 
@@ -1061,7 +1104,14 @@ Dismiss = dismiss-and-snooze: `snoozed_until = now() + EPISODE_SNOOZE_DAYS` on t
 key). A new episode opened for a still-snoozed key is created already-dismissed
 (`close_reason: 'snoozed'`) — auditable, silent, no feedback row. `unsnooze` (`PATCH
 /devices/:id/anomaly-episodes/:id { action: 'unsnooze' }`) clears `snoozed_until` without changing
-status.
+status. Dismissing (or resolving) a promoted episode also resolves its linked alert unless the
+request says `resolveAlert: false`.
+
+**Dismissing an episode lets the baseline absorb the behaviour:** snoozed successors are dismissed,
+so their buckets are not excluded from the baseline, and the key usually stops firing even after the
+snooze ends. There is no permanent suppression yet: a recurring scheduled task (the hourly `:30`
+process spike) that still fires after the snooze needs another dismiss. "Mute until changed" is a
+tracked follow-up (spec §19).
 
 ### Reading the evaluation endpoint
 
@@ -1081,13 +1131,17 @@ curl -H "Authorization: Bearer <token>" \
 - `episodes.recurrenceShare` = episodes with `recurrence_count >= 1` ÷ all episodes in the window — a
   high share on one device/key points at a scheduled task or a real unfixed problem re-triggering
   detection, not detector noise.
-- `episodes.humanLabelledShare` = episodes closed with `close_reason: 'user'` ÷ all *closed* episodes
-  in the window. Low + a high `episodes.byCloseReason.cleared` share means the fleet is mostly
-  self-resolving and techs are rarely need to look — that's the target steady state, not a problem.
+- `episodes.humanLabelledShare` = closed episodes a human labelled — closed with `close_reason: 'user'`
+  **or** promoted to an alert (`linked_alert_id` set), however they closed afterwards — ÷ closed
+  episodes **except** `snoozed` successors (those echo an earlier dismiss; they are not new episodes
+  awaiting a verdict). `cleared` / `expired_*` / `detection_off` closes stay in the denominator — they
+  are episodes nobody looked at. Low + a high `episodes.byCloseReason.cleared` share means the fleet is
+  mostly self-resolving and techs rarely need to look — that's the target steady state, not a problem.
+  Member-level `total` and `rates` still count `open` rows (only `cleared` is excluded there).
 - The v1-shadow block (`includeV1=true`) is unaffected by episodes — it still compares
   `metric_anomaly_candidates` to `metric_anomalies` at the per-bucket grain, per-member feedback rows
   still join to it exactly as before.
-```
+````
 
 - [ ] **Step 2: Verify it renders / lints clean**
 
@@ -1128,7 +1182,8 @@ EOF
   endpoints (`routes/devices/anomalies.ts`), `analyticsRoutes` (`routes/analytics.ts`),
   `createIntegrationTestClient` (`__tests__/integration/db-utils.ts`, the same harness W02's
   `metricAnomalyEpisodeRoutes.integration.test.ts` uses), W01's
-  `resolveMetricAnomalyEpisodes(orgId, now?)` (runs inside a system DB context).
+  `resolveMetricAnomalyEpisodes(orgId, rangeTo, now?)` (runs inside a system DB context; `rangeTo`
+  is the detection run's range end, second quorum A4), W02's `seedAlert` fixture.
 - Produces: nothing further downstream.
 
 - [ ] **Step 1: Write the failing integration test**
@@ -1160,7 +1215,7 @@ import { analyticsRoutes } from '../../routes/analytics';
 import { anomaliesRoutes } from '../../routes/devices/anomalies';
 import { resolveMetricAnomalyEpisodes } from '../../services/metricAnomalyEpisodes';
 import { createIntegrationTestClient } from './db-utils';
-import { insertCleanRollups, insertEpisodeDevice, seedEpisode } from './metricAnomalyEpisodeFixtures';
+import { insertCleanRollups, insertEpisodeDevice, seedAlert, seedEpisode } from './metricAnomalyEpisodeFixtures';
 import { getTestDb } from './setup';
 
 const HOUR = 3_600_000;
@@ -1222,7 +1277,8 @@ describe('anomaly episode evaluation (W03)', () => {
     expect(before.total).toBe(6);
     expect(before.status.open).toBe(6);
 
-    const closed = await withSystemDbAccessContext(() => resolveMetricAnomalyEpisodes(orgId));
+    // rangeTo = now: the whole burst and its 6 clean buckets lie inside a finished detection range (A4).
+    const closed = await withSystemDbAccessContext(() => resolveMetricAnomalyEpisodes(orgId, new Date()));
     expect(closed.map((c) => c.episodeId)).toEqual([ep.episodeId]);
 
     const after = await evaluation(client);
@@ -1232,6 +1288,29 @@ describe('anomaly episode evaluation (W03)', () => {
     expect(after.episodes.byCloseReason.cleared).toBe(1);
     expect(after.episodes.humanLabelledShare).toBe(0);
   });
+
+  it('humanLabelledShare counts promoted episodes as labelled and leaves snoozed successors out of the denominator (A8)', async () => {
+    const client = await createIntegrationTestClient(buildApp());
+    const orgId = client.env.organization.id;
+    const deviceId = await insertEpisodeDevice(orgId, client.env.site.id);
+    const alertId = await seedAlert({ orgId, deviceId });
+    const start = new Date(Date.now() - 6 * HOUR);
+    // Promoted, then auto-cleared: a human looked at it -> labelled.
+    await seedEpisode({ orgId, deviceId, memberCount: 2, start, status: 'resolved', closeReason: 'cleared', linkedAlertId: alertId, memberStatus: 'promoted' });
+    // Auto-cleared, nobody looked: in the denominator only.
+    await seedEpisode({ orgId, deviceId, memberCount: 2, start, status: 'resolved', closeReason: 'cleared', metricName: 'cpu_percent', metricFamily: 'cpu' });
+    // Snoozed successor: neither.
+    await seedEpisode({
+      orgId, deviceId, memberCount: 1, start, status: 'dismissed', closeReason: 'snoozed',
+      snoozedUntil: new Date(Date.now() + 24 * HOUR), memberStatus: 'dismissed', metricName: 'ram_percent', metricFamily: 'ram',
+    });
+
+    const body = await evaluation(client);
+
+    // 1 labelled / 2 eligible. The pre-A8 formula (close_reason 'user' / all closed) gave 0 / 3.
+    expect(body.episodes.humanLabelledShare).toBe(0.5);
+    expect(body.episodes.byCloseReason).toMatchObject({ cleared: 2, snoozed: 1, user: 0 });
+  });
 });
 ```
 
@@ -1240,8 +1319,9 @@ describe('anomaly episode evaluation (W03)', () => {
 ```bash
 pnpm --filter @breeze/api test:integration src/__tests__/integration/metricAnomalyEpisodeEvaluation.integration.test.ts
 ```
-Expected: PASS (2 tests). Tasks 4-5 already implemented the behaviour, so this is an end-to-end
-proof, not red-first (same as W02 Task 10). Run this control and record it in the PR: temporarily
+Expected: PASS (3 tests). Tasks 4-5 already implemented the behaviour, so this is an end-to-end
+proof, not red-first (same as W02 Task 10); the A8 definition's red step is Task 5's SQL-pinning
+unit test, and this case proves it end to end (the pre-A8 formula gives 0 here, not 0.5). Run this control and record it in the PR: temporarily
 delete the `emitAnomalyEpisodeFeedback` call in `dismissEpisode`, re-run, and watch the first test
 fail on `episodeRows` length 0; restore it and confirm green.
 
