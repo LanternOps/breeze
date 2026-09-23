@@ -47,7 +47,7 @@ import {
   huntressIntegrations,
   organizations,
 } from '../db/schema';
-import { threatDetectionConfigSchema } from '../routes/reports/schemas';
+import { threatDetectionConfigSchema } from './reportConfigSchemas';
 import type {
   ThreatCoverage,
   ThreatDetectionSummary,

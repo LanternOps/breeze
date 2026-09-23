@@ -73,7 +73,7 @@ import {
   m365Users,
   organizations,
 } from '../db/schema';
-import { identityAccessConfigSchema } from '../routes/reports/schemas';
+import { identityAccessConfigSchema } from './reportConfigSchemas';
 import { loadDomainFreshness } from './m365Sync/summary';
 import {
   assertReportExecutionPreflight,

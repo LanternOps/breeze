@@ -28,7 +28,7 @@ import {
   organizations,
   sites,
 } from '../db/schema';
-import { hardwareLifecycleConfigSchema } from '../routes/reports/schemas';
+import { hardwareLifecycleConfigSchema } from './reportConfigSchemas';
 import type {
   HardwareLifecycleDeviceRow,
   HardwareLifecycleOtherRow,

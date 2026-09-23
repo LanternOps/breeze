@@ -15,6 +15,14 @@ import {
   vulnerabilityManagementConfigFields,
   vulnerabilityManagementConfigSchema,
 } from './schemas';
+import { legacyReportConfigSchema } from '../../services/reportConfigSchemas';
+
+/** #3198 W02 (ruling P1): the per-type schemas now `.extend()` the legacy
+ *  builder keys, so `.shape` carries those too. The persistence field maps pin
+ *  only a type's OWN keys. (Task 4 deletes the field maps and these pins.) */
+function ownKeys(schema: { shape: Record<string, unknown> }): string[] {
+  return Object.keys(schema.shape).filter((k) => !(k in legacyReportConfigSchema.shape));
+}
 
 const builderConfig = {
   builderType: 'device_inventory',
@@ -98,19 +106,19 @@ describe('report config schema', () => {
   // generation as its default — the user's setting quietly ignored.
   it('keeps the posture persistence fields in sync with the generation schema', () => {
     expect(Object.keys(securityCompliancePostureConfigFields).sort()).toEqual(
-      Object.keys(securityCompliancePostureConfigSchema.shape).sort(),
+      ownKeys(securityCompliancePostureConfigSchema).sort(),
     );
   });
 
   it('keeps the hardware lifecycle persistence fields in sync with the generation schema', () => {
     expect(Object.keys(hardwareLifecycleConfigFields).sort()).toEqual(
-      Object.keys(hardwareLifecycleConfigSchema.shape).sort(),
+      ownKeys(hardwareLifecycleConfigSchema).sort(),
     );
   });
 
   it('keeps the endpoint management persistence fields in sync with the generation schema', () => {
     expect(Object.keys(endpointManagementConfigFields).sort()).toEqual(
-      Object.keys(endpointManagementConfigSchema.shape).sort(),
+      ownKeys(endpointManagementConfigSchema).sort(),
     );
   });
 
@@ -136,7 +144,7 @@ describe('report config schema', () => {
 
   it('keeps the vulnerability management persistence fields in sync with the generation schema', () => {
     expect(Object.keys(vulnerabilityManagementConfigFields).sort()).toEqual(
-      Object.keys(vulnerabilityManagementConfigSchema.shape).sort(),
+      ownKeys(vulnerabilityManagementConfigSchema).sort(),
     );
   });
 
@@ -217,7 +225,7 @@ describe('report config schema', () => {
 
   it('keeps the threat detection persistence fields in sync with the generation schema', () => {
     expect(Object.keys(threatDetectionConfigFields).sort()).toEqual(
-      Object.keys(threatDetectionConfigSchema.shape).sort(),
+      ownKeys(threatDetectionConfigSchema).sort(),
     );
   });
 
@@ -244,7 +252,7 @@ describe('report config schema', () => {
   // #5784 W06 — the identity and access review.
   it('keeps the identity access persistence fields in sync with the generation schema', () => {
     expect(Object.keys(identityAccessConfigFields).sort()).toEqual(
-      Object.keys(identityAccessConfigSchema.shape).sort(),
+      ownKeys(identityAccessConfigSchema).sort(),
     );
   });
 

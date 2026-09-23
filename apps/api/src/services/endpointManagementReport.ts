@@ -79,7 +79,7 @@ import {
   m365PostureRollups,
   organizations,
 } from '../db/schema';
-import { endpointManagementConfigSchema } from '../routes/reports/schemas';
+import { endpointManagementConfigSchema } from './reportConfigSchemas';
 import { loadDomainFreshness } from './m365Sync/summary';
 import {
   assertReportExecutionPreflight,

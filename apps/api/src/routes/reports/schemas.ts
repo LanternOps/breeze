@@ -1,5 +1,26 @@
 import { z } from 'zod';
 import { REPORT_TYPES } from '@breeze/shared';
+import {
+  endpointManagementConfigSchema,
+  hardwareLifecycleConfigSchema,
+  identityAccessConfigSchema,
+  reportScheduleDetailSchema,
+  securityCompliancePostureConfigSchema,
+  threatDetectionConfigSchema,
+  vulnerabilityManagementConfigSchema,
+} from '../../services/reportConfigSchemas';
+
+/** #3198 W02: the six per-type config schemas moved to
+ *  `services/reportConfigSchemas.ts` (the service layer must not import the
+ *  route layer). Re-exported here so existing importers keep working. */
+export {
+  endpointManagementConfigSchema,
+  hardwareLifecycleConfigSchema,
+  identityAccessConfigSchema,
+  securityCompliancePostureConfigSchema,
+  threatDetectionConfigSchema,
+  vulnerabilityManagementConfigSchema,
+};
 
 /**
  * Every value of the `report_type` pgEnum, INCLUDING the internal ones. Reads
@@ -40,28 +61,6 @@ const INTERNAL_REPORT_TYPE_MESSAGE = 'internal report type';
  *  human-owned "narrative" definition the agent scheduler would then ignore. */
 const notInternalReportType = (type: string) => !INTERNAL_REPORT_TYPES.has(type);
 
-/** Config for the Security & Compliance Posture report. Thresholds drive the
- * pass/fail percentages; all optional with insurance-sensible defaults. */
-export const securityCompliancePostureConfigSchema = z.object({
-  sites: z.array(z.string().guid()).optional().default([]),
-  // window for elevation activity + (future) trend; days back from now.
-  windowDays: z.number().int().min(1).max(365).optional().default(30),
-  // password-complexity floor: a device passes if minLength >= this AND lockout is set.
-  minPasswordLength: z.number().int().min(1).max(64).optional().default(8),
-  // local-admin exposure: a device is flagged if it has MORE than this many local admins.
-  maxLocalAdmins: z.number().int().min(0).max(50).optional().default(2),
-  // AV definitions older than this many days count as stale.
-  maxAvDefinitionsAgeDays: z.number().int().min(1).max(365).optional().default(7),
-  // A device's security_status row (firewall/encryption) older than this many
-  // days is treated as "unknown", not scored as a current pass or fail — an
-  // offline device's stale last-known posture shouldn't count either way.
-  maxSecurityStatusAgeDays: z.number().int().min(1).max(365).optional().default(30),
-  // Include the CIS hardening section. Defaults on; renders "Not yet assessed"
-  // until baseline scans exist, or is omitted entirely when set false.
-  includeCis: z.boolean().optional().default(true),
-  backupRequired: z.boolean().optional().default(true)
-});
-
 /**
  * The same posture keys as `securityCompliancePostureConfigSchema` but without
  * its `.default()`s — persistence stores only what the user actually set, and
@@ -80,20 +79,6 @@ export const securityCompliancePostureConfigFields = {
   backupRequired: z.boolean().optional()
 };
 
-/**
- * Config for the Hardware Lifecycle report. `replaceAgeYears` is the planning
- * horizon after purchase (the warranty end wins when active coverage runs
- * longer); the two include flags decide whether hand-entered assets and
- * non-computer hardware appear at all.
- */
-export const hardwareLifecycleConfigSchema = z.object({
-  sites: z.array(z.string().guid()).optional().default([]),
-  replaceAgeYears: z.number().int().min(1).max(15).optional().default(4),
-  serverReplaceAgeYears: z.number().int().min(1).max(15).optional().default(5),
-  includeManualAssets: z.boolean().optional().default(true),
-  includeOtherEquipment: z.boolean().optional().default(true),
-});
-
 /** Same keys as `hardwareLifecycleConfigSchema` without `.default()`s — see
  *  `securityCompliancePostureConfigFields` for why the two lists are
  *  hand-parallel and test-pinned. */
@@ -105,19 +90,6 @@ export const hardwareLifecycleConfigFields = {
   includeOtherEquipment: z.boolean().optional(),
 };
 
-/**
- * Config for the Threat Detection Review report (#5784 W02). `topIncidents`
- * caps the incident table so one noisy month cannot produce a 400-page PDF; the
- * artifact states the cap and the number withheld rather than truncating
- * silently. `includeCarriedIn` controls the "opened before the period and still
- * unresolved" section.
- */
-export const threatDetectionConfigSchema = z.object({
-  sites: z.array(z.string().guid()).optional().default([]),
-  includeCarriedIn: z.boolean().optional().default(true),
-  topIncidents: z.number().int().min(1).max(1000).optional().default(100),
-});
-
 /** Same keys as `threatDetectionConfigSchema` without `.default()`s — see
  *  `securityCompliancePostureConfigFields` for why the two are hand-parallel
  *  and test-pinned (schemas.config.test.ts). */
@@ -126,20 +98,6 @@ export const threatDetectionConfigFields = {
   includeCarriedIn: z.boolean().optional(),
   topIncidents: z.number().int().min(1).max(1000).optional(),
 };
-
-/**
- * Config for the Endpoint Management Review report (#5784 W03).
- * `staleEnrolmentDays` is judged against the 6 h Intune sync cadence, NOT
- * against the reporting period: a 29-day-old enrolment inside a monthly period
- * is stale. `trendDays` reads m365_posture_rollups, the only genuine time series
- * available — entity rows cannot supply history (see endpointManagementReport.ts).
- */
-export const endpointManagementConfigSchema = z.object({
-  sites: z.array(z.string().guid()).optional().default([]),
-  staleEnrolmentDays: z.number().int().min(1).max(180).optional().default(14),
-  trendDays: z.number().int().min(1).max(365).optional().default(30),
-  includeLicences: z.boolean().optional().default(true),
-});
 
 /** Same keys as `endpointManagementConfigSchema` without `.default()`s — see
  *  `securityCompliancePostureConfigFields` for why the two are hand-parallel and
@@ -151,21 +109,6 @@ export const endpointManagementConfigFields = {
   includeLicences: z.boolean().optional(),
 };
 
-/**
- * Config for the Vulnerability Management report (#5784 W04, spec §3.4).
- * `severityFloor` filters the findings sections but NEVER the KEV / high-EPSS
- * callouts: an actively exploited medium is a different argument from a
- * theoretical critical, and hiding it behind a severity floor is how it gets
- * missed. `topN` caps the remediable table; the artifact discloses the number
- * withheld rather than truncating silently.
- */
-export const vulnerabilityManagementConfigSchema = z.object({
-  sites: z.array(z.string().guid()).optional().default([]),
-  severityFloor: z.enum(['critical', 'high', 'medium', 'low']).optional().default('high'),
-  topN: z.number().int().min(1).max(500).optional().default(25),
-  includeAccepted: z.boolean().optional().default(true),
-});
-
 /** Same keys as `vulnerabilityManagementConfigSchema` without `.default()`s —
  *  see `securityCompliancePostureConfigFields` for why the two are hand-parallel
  *  and test-pinned (schemas.config.test.ts). */
@@ -176,21 +119,6 @@ export const vulnerabilityManagementConfigFields = {
   includeAccepted: z.boolean().optional(),
 };
 
-/**
- * Config for the Identity & Access Review report (#5784 W06, spec §3.5.3).
- * NO `sites` key on purpose: M365 identity data has no site dimension, and a
- * site selector would promise a filter the data cannot deliver. A restricted
- * authority gets the zero-safe shape instead (OD-8 = A).
- * `homeCountries` are ISO-3166 alpha-2 codes; sign-ins from outside the set are
- * called out. An empty set means the section renders as "not configured", NOT as
- * "no foreign sign-ins".
- */
-export const identityAccessConfigSchema = z.object({
-  dormantDays: z.number().int().min(1).max(365).optional().default(45),
-  homeCountries: z.array(z.string().regex(/^[A-Z]{2}$/)).max(50).optional().default([]),
-  adminDetail: z.boolean().optional().default(true),
-});
-
 /** Same keys as `identityAccessConfigSchema` without `.default()`s — see
  *  `securityCompliancePostureConfigFields` for why the two are hand-parallel and
  *  test-pinned (schemas.config.test.ts). */
@@ -199,24 +127,6 @@ export const identityAccessConfigFields = {
   homeCountries: z.array(z.string().regex(/^[A-Z]{2}$/)).max(50).optional(),
   adminDetail: z.boolean().optional(),
 };
-
-/**
- * Cadence detail + delivery config persisted inside `config`. The builder
- * writes these and reportScheduleWorker reads them; they must be declared here
- * because zod strips unknown object keys — before this schema existed, creates
- * silently dropped schedule times and email recipients (edits survived only
- * because update used z.any()).
- */
-const reportScheduleDetailSchema = z.object({
-  // 24h "HH:MM"
-  time: z.string().regex(/^([01]?\d|2[0-3]):[0-5]\d$/).optional(),
-  // weekday name; the worker lowercases, so accept any case
-  day: z.string().max(16).optional(),
-  // day-of-month "1".."31" as string (builder sends strings). z.coerce
-  // tolerates legacy rows written while update used z.any() — some were
-  // persisted with a numeric `date` — so editing them doesn't 400.
-  date: z.coerce.string().regex(/^([1-9]|[12]\d|3[01])$/).optional()
-});
 
 const reportConfigFields = {
   dateRange: z.object({

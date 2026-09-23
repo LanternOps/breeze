@@ -22,7 +22,7 @@ import {
   securityStatus,
   sites
 } from '../db/schema';
-import { securityCompliancePostureConfigSchema } from '../routes/reports/schemas';
+import { securityCompliancePostureConfigSchema } from './reportConfigSchemas';
 import type { PostureSummary } from '@breeze/shared';
 import {
   assertReportExecutionPreflight,
