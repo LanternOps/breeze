@@ -11,6 +11,7 @@ import {
 } from '../services/metricAnomalies';
 import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
+import { registerEpisodeCloseAlertHandler } from '../services/metricAnomalyEpisodeAlerts';
 
 const METRIC_ANOMALIES_QUEUE = 'metric-anomalies';
 const SCAN_CRON_PATTERN = '*/10 * * * *';
@@ -272,6 +273,9 @@ async function scheduleMetricAnomaliesScan(): Promise<void> {
 }
 
 export async function initializeMetricAnomaliesWorker(): Promise<void> {
+  // W02: the resolve stage runs in this worker; wire its close hook before
+  // the first job can run.
+  registerEpisodeCloseAlertHandler();
   metricAnomaliesWorker = createMetricAnomaliesWorker();
   attachWorkerObservability(metricAnomaliesWorker, 'metricAnomaliesWorker');
   metricAnomaliesWorker.on('error', (error) => {

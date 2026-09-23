@@ -15,6 +15,7 @@ const {
   workerProcessorMock,
   runOutsideDbContextMock,
   withSystemDbAccessContextMock,
+  registerEpisodeCloseAlertHandlerMock,
 } = vi.hoisted(() => ({
   getJobMock: vi.fn(),
   addMock: vi.fn(),
@@ -30,6 +31,7 @@ const {
   workerProcessorMock: vi.fn(),
   runOutsideDbContextMock: vi.fn(<T>(fn: () => T) => fn()),
   withSystemDbAccessContextMock: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  registerEpisodeCloseAlertHandlerMock: vi.fn(),
 }));
 
 vi.mock('bullmq', () => ({
@@ -73,6 +75,10 @@ vi.mock('../db/schema', () => ({
 
 vi.mock('../services/metricAnomalies', () => ({
   detectMetricAnomaliesRange: vi.fn(),
+}));
+
+vi.mock('../services/metricAnomalyEpisodeAlerts', () => ({
+  registerEpisodeCloseAlertHandler: registerEpisodeCloseAlertHandlerMock,
 }));
 
 vi.mock('./workerObservability', () => ({
@@ -164,6 +170,12 @@ describe('metric anomalies queue helpers', () => {
 
     expect(jobId).toBe('existing-anomaly-job');
     expect(addMock).not.toHaveBeenCalled();
+  });
+
+  it('wires the episode close → alert auto-resolve handler at worker init', async () => {
+    registerEpisodeCloseAlertHandlerMock.mockClear();
+    await initializeMetricAnomaliesWorker();
+    expect(registerEpisodeCloseAlertHandlerMock).toHaveBeenCalledTimes(1);
   });
 
   it('attaches worker observability during initialization', async () => {
