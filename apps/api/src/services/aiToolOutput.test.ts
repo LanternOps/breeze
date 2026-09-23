@@ -687,7 +687,7 @@ describe('registry-aware truncation guidance (A-W05 D12)', () => {
       freedBytes: 1024,
       actions: [{ id: 'win_dism_component_cleanup', status: 'completed', outputTail: 'x'.repeat(20_000) }],
     }))) as { actions: Array<{ outputTailTruncated?: boolean }>; _chat?: { nextStep?: string } };
-    expect(out.actions[0].outputTailTruncated).toBe(true);
+    expect(out.actions[0]?.outputTailTruncated).toBe(true);
     expect(out._chat?.nextStep).toBeUndefined();
   });
 
