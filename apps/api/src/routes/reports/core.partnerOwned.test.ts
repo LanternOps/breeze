@@ -286,6 +286,20 @@ function params(where: unknown): unknown[] {
   return dialect.sqlToQuery(where as SQL).params;
 }
 
+/**
+ * Params bound to the `reports.org_id IN (…)` org arm specifically. A bare
+ * `params(where)` contains ORG_ID through the run-scope predicate too
+ * (`reports.org_id = $n AND <envelope>`), so it cannot tell whether the org
+ * arm survived (#3198 W02 B2 — proven by dropping the arm: bare toContain
+ * stayed green).
+ */
+function orgArmParams(where: unknown): unknown[] {
+  const { sql: text, params: bound } = dialect.sqlToQuery(where as SQL);
+  const arm = /"reports"\."org_id" in \(([^)]*)\)/.exec(text);
+  if (!arm) return [];
+  return arm[1]!.split(',').map((p) => bound[Number(p.trim().slice(1)) - 1]);
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   state.auth = partnerAuth('all');
@@ -1057,12 +1071,19 @@ describe('runs of a partner-owned definition', () => {
     state.rows = [{ count: 0 }, null];
     await app().request('/reports/runs');
     expect(params(state.wheres[0])).toContain(PARTNER_ID);
+    // Positive control (#3198 W02 B2): the org arm is still there, so the
+    // partner arm is ORed onto it rather than replacing it.
+    expect(params(state.wheres[0])).toContain(ORG_ID);
+    expect(orgArmParams(state.wheres[0])).toEqual([ORG_ID]);
 
     state.auth = partnerAuth('selected');
     state.wheres = [];
     state.rows = [{ count: 0 }, null];
     await app().request('/reports/runs');
     expect(params(state.wheres[0])).not.toContain(PARTNER_ID);
+    // …and the 'selected' caller still lists its own orgs' runs.
+    expect(params(state.wheres[0])).toContain(ORG_ID);
+    expect(orgArmParams(state.wheres[0])).toEqual([ORG_ID]);
   });
 
   it('GET /runs never adds a partner_id predicate for org scope', async () => {
