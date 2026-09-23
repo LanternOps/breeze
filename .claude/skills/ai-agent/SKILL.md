@@ -143,6 +143,17 @@ Use the registry in `apps/api/src/services/aiTools.ts` (`getToolDefinitions()`) 
 | `getToolTier(toolName)` | Returns numeric tier for guardrails |
 | `executeTool(toolName, input, auth)` | Main dispatch — throws for unknown tools |
 
+### Result envelopes (A-W05)
+
+Every shaped list/search tool adds one additive envelope on top of its existing keys, built by the shared helper in `apps/api/src/services/aiToolPagination.ts` — never a bespoke per-tool shape.
+
+- **Offset mode** (`readPageArgs`/`pageEnvelope`) — stable lists (devices, tickets, patches, scripts, policies, …): `limit`, `offset`, optional `cursor`; result adds `showing`, `hasMore`, `nextCursor` (and `total`/`totalMode` where the query already counts).
+- **Keyset mode** (`readKeysetArgs`/`keysetEnvelope`) — churn tables where an insert between pages would shift offsets (alerts, agent logs, audit log, change log): `limit`, `cursor` (no `offset`); sorted `(col DESC, id DESC)` on a microsecond-precision `timestamp` column carried as text in the cursor, never round-tripped through JS `Date`. A cursor minted for different filters is refused with `CURSOR_MISMATCH`, not silently reset to page 1.
+- Both are additive: no top-level key is ever removed, and a tool is never renamed. Heavy per-row fields (jsonb `settings`/`details`, script bodies, nested sub-arrays) are dropped from the default page behind an opt-in flag (e.g. `includeDetails`) or left to the matching `get_*` detail tool, with a `<key>Count` in their place.
+- `compactToolResultForChat` (`aiToolOutput.ts`) learns whether a tool can page through an **injected resolver** (`setToolPaginationHintResolver`, installed by `aiTools.ts` after registration) — never by importing the tool registry directly. Its `_chat.nextStep` hint and the array-truncation sentinel only ever suggest pagination to a tool that actually supports it.
+- A new list tool: add paging with `pageParamSchema()`/`pageZodShape()` (or the keyset equivalents) on **all three** input-schema surfaces — the registry `definition.input_schema`, `aiToolSchemas.ts` (or `aiToolSchemasFleet.ts`), and the `tool()` Zod shape in `aiAgentSdkTools.ts` (plus `scriptBuilderTools.ts` if the tool has its own SDK shape there) — or the model gets a parameter the schema strips and pages nowhere.
+- `read_artifact` (`aiToolsArtifacts.ts`) pages a stored oversized result back by byte offset via `artifact.handle` in an earlier tool result. It only reads an artifact captured by the caller's own chat session or agent run (never any session of the same user), and only works on hosted deployments with the AI workspace enabled — capture stores the **redacted** payload, never raw. MCP `tools/call` has no session anchor today, so `read_artifact` called over MCP typically refuses with `no_capture_anchor`.
+
 ## Guardrails (4-Tier System)
 
 Defined in `aiGuardrails.ts`:

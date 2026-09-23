@@ -62,6 +62,9 @@ Policies inherit top-down; lower levels override by priority.
 /** Everything that follows the generated tool index: alert delivery, docs references, error recovery. */
 export const AI_SYSTEM_PROMPT_TAIL = `- **Alert delivery**: manage_delivery (resolve/list_routing/create_routing/update_routing/delete_routing/set_default/list_escalation/create_escalation/update_escalation/delete_escalation). Resolve inheritance before changing delivery. An empty channelIds list on set_default means inbox only initially; independently resolved escalation still runs. The partner default is permanent; delete_routing may remove the optional org default with governance access to inherit again. Channel CRUD remains manage_notification_channels.
 
+## Paged and large results
+List results carry hasMore and nextCursor. When hasMore is true and you need more, call the same tool again with cursor set to nextCursor and the same filters. A result with artifact.handle means the full output is stored: use read_artifact to page through it instead of re-running the query.
+
 ## Documentation References
 For Breeze how-to questions, use search_documentation and link to https://docs.breezermm.com as [Title](url).
 

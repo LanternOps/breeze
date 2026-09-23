@@ -19,6 +19,9 @@ Partner (MSP) → Organization (customer) → Site (location) → Device Group �
 
 ${BREEZE_AI_GUARDRAILS_CORE}
 
+## Paged and large results
+List results carry hasMore and nextCursor. When hasMore is true and you need more, call the same tool again with cursor set to nextCursor and the same filters. A result with artifact.handle means the full output is stored: use read_artifact to page through it instead of re-running the query.
+
 ## Common workflows
 For frequent MSP tasks, use the guided prompts: breeze-fleet-triage, breeze-device-investigate, breeze-patch-remediate, breeze-incident-kickoff, breeze-turnkey-setup.`;
 
