@@ -1,5 +1,5 @@
 import { isUtf8 } from 'node:buffer';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, gt, gte, ne, or } from 'drizzle-orm';
 import { z } from 'zod';
 import { isTextArtifactContentType, type AiArtifactKind, type AiRunArtifactDto } from '@breeze/shared';
 import { db } from '../../db';
@@ -266,6 +266,150 @@ export async function resolveArtifact(
       ...(scope.runId ? [eq(aiRunArtifacts.runId, scope.runId)] : []),
     ))
     .limit(1);
+  return (row as ArtifactRecord | undefined) ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// A-W05 (D13a/D13b) — `read_artifact` tool support: ranged reads, and a
+// scope stricter than the REST download below.
+// ---------------------------------------------------------------------------
+
+/** A `read_artifact` page never exceeds this many characters, whatever `maxChars` asks for. */
+export const ARTIFACT_READ_MAX_CHARS = 6_000;
+
+/** Index of the last byte that ends a complete UTF-8 sequence in `buf`, or 0 when none does. */
+function utf8Boundary(buf: Buffer): number {
+  const end = buf.length;
+  let i = end - 1;
+  while (i >= 0 && i >= end - 4 && (buf[i]! & 0xc0) === 0x80) i--;
+  if (i < 0) return 0;
+  const lead = buf[i]!;
+  const need = lead >= 0xf0 ? 4 : lead >= 0xe0 ? 3 : lead >= 0xc0 ? 2 : 1;
+  return end - i >= need ? end : i;
+}
+
+async function collect(stream: NodeJS.ReadableStream, cap: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const raw of stream) {
+    const chunk = Buffer.isBuffer(raw) ? raw : Buffer.from(raw as string);
+    chunks.push(chunk);
+    total += chunk.length;
+    if (total >= cap) break;
+  }
+  return Buffer.concat(chunks, Math.min(total, cap));
+}
+
+/**
+ * A-W05 (D13a): a character window read through a byte Range. Never splits a
+ * UTF-8 sequence; `nextOffset` is the byte offset of the first byte NOT
+ * returned, so passing it straight back in continues exactly where this left
+ * off. `maxChars` is clamped to `ARTIFACT_READ_MAX_CHARS` regardless of what
+ * the caller asked for.
+ */
+export async function readArtifactWindow(
+  record: ArtifactRecord,
+  offset: number,
+  maxChars: number,
+): Promise<{ text: string; nextOffset: number; hasMore: boolean }> {
+  const start = Math.max(0, Math.trunc(offset));
+  const want = Math.min(Math.max(1, Math.trunc(maxChars) || ARTIFACT_READ_MAX_CHARS), ARTIFACT_READ_MAX_CHARS);
+  if (start >= record.bytes) return { text: '', nextOffset: record.bytes, hasMore: false };
+  const end = Math.min(record.bytes - 1, start + want * 4 - 1); // 4 bytes/char is the UTF-8 worst case
+  const buf = await collect(await getBlobStorage().openRange(record.blobKey, start, end), end - start + 1);
+  let cut = utf8Boundary(buf);
+  if (cut === 0 && buf.length > 0) cut = buf.length; // undecodable tail at EOF: emit lossy rather than loop forever
+  let text = buf.toString('utf8', 0, cut);
+  const chars = Array.from(text);
+  if (chars.length > want) text = chars.slice(0, want).join('');
+  const used = Buffer.byteLength(text, 'utf8');
+  const nextOffset = start + used;
+  return { text, nextOffset, hasMore: nextOffset < record.bytes };
+}
+
+/**
+ * A-W05 (D13b/Q5) — deploy-time cutoff. An `input_capture` row created before
+ * this instant was written before redact-then-capture shipped and may still
+ * hold raw (unredacted) bytes — `findArtifactForCaller` excludes it.
+ *
+ * TODO(controller): replace with the actual UTC timestamp the
+ * redact-then-capture commit deploys at, once that is known. This is a
+ * clearly-marked placeholder, not a real cutoff.
+ */
+export const REDACTED_CAPTURE_SINCE: Date = new Date('2026-10-01T00:00:00Z');
+
+/**
+ * What `executeTool` resolves a call's capture attribution to (the same
+ * anchor `captureContextFrom`/`CaptureContext` in toolResultCapture.ts
+ * produces on the write side) — threaded through by the tool registration
+ * layer, not derived here.
+ */
+export interface ArtifactCallerAnchor {
+  orgId: string;
+  /** Set when the caller is inside an agent run. Wins over `sessionId` when both are present — one anchor per artifact, same rule the write side uses. */
+  runId?: string | null;
+  /** The CALLER'S CURRENT chat session only — never "any session belonging to this user" (Q4). */
+  sessionId?: string | null;
+}
+
+/**
+ * The real query, exported UNAWAITED so a dedicated SQL-compiled test can
+ * prove the predicate without a vacuous mocked-`where` assertion (see
+ * artifactService.callerScope.sql.test.ts) — same pattern as
+ * `ticketPush.ts`'s `anySlaSubscribersQuery`. `findArtifactForCaller` below
+ * is the only real caller.
+ */
+export function findArtifactForCallerQuery(handle: string, anchor: ArtifactCallerAnchor) {
+  const runId = anchor.runId ?? null;
+  const sessionId = runId ? null : (anchor.sessionId ?? null);
+  const ownership = runId
+    ? eq(aiRunArtifacts.runId, runId)
+    : eq(aiRunArtifacts.sessionId, sessionId as string);
+  return db
+    .select(ARTIFACT_COLUMNS)
+    .from(aiRunArtifacts)
+    .where(and(
+      eq(aiRunArtifacts.id, handle),
+      eq(aiRunArtifacts.orgId, anchor.orgId),
+      ownership,
+      gt(aiRunArtifacts.expiresAt, new Date()),
+      // Q5: an export is an intentional bulk write, never redacted, and never
+      // meant to be paged back through this tool.
+      ne(aiRunArtifacts.createdByTool, 'export_dataset'),
+      // Q5: a legacy raw capture (written before redact-then-capture shipped)
+      // may still hold credential material — gate it on the cutoff. Any other
+      // kind is unaffected by the cutoff.
+      or(
+        ne(aiRunArtifacts.kind, 'input_capture'),
+        gte(aiRunArtifacts.createdAt, REDACTED_CAPTURE_SINCE),
+      ),
+    ))
+    .limit(1);
+}
+
+/**
+ * Tool-side resolve for `read_artifact` (A-W05 D13a/Q4): STRONGER than the
+ * REST download (`findArtifactForAuth` below, org-wide) — an artifact is
+ * visible only to the run or chat session it was captured under, matched
+ * EXACTLY. "Any session of this user" is deliberately NOT an ownership test:
+ * a prompt-injected agent running in session B must not be able to read what
+ * the same user captured in session A.
+ *
+ * Returns `null` — never a distinguishable "forbidden" — for a missing row,
+ * a wrong-scope row, an expired row, an `export_dataset` row, and a
+ * pre-cutoff raw `input_capture` row alike: a handle is opaque, so "this
+ * exists but is not yours" is itself a disclosure (same posture as
+ * `resolveArtifact`/`findArtifactForAuth`).
+ */
+export async function findArtifactForCaller(
+  handle: string,
+  anchor: ArtifactCallerAnchor,
+): Promise<ArtifactRecord | null> {
+  // A non-uuid must never reach the query (22P02 poisons the transaction —
+  // the `uuidParam` trap `resolveArtifact` above already documents).
+  if (!UUID.safeParse(handle).success || !UUID.safeParse(anchor.orgId).success) return null;
+  if (!anchor.runId && !anchor.sessionId) return null;
+  const [row] = await findArtifactForCallerQuery(handle, anchor);
   return (row as ArtifactRecord | undefined) ?? null;
 }
 
