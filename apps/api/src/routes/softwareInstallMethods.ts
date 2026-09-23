@@ -10,7 +10,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { db } from '../db';
 import { softwareCatalog, softwareInstallMethods } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
@@ -67,7 +67,8 @@ const requireInstallMethodRead = requirePermission(PERMISSIONS.DEVICES_READ.reso
 const requireInstallMethodWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action);
 
 async function loadOwnedCatalogItem(catalogId: string, orgId: string) {
-  const [item] = await db.select().from(softwareCatalog).where(eq(softwareCatalog.id, catalogId)).limit(1);
+  const [item] = await db.select().from(softwareCatalog)
+    .where(and(eq(softwareCatalog.id, catalogId), isNull(softwareCatalog.deletedAt))).limit(1);
   // RLS restricts visibility; extra guard mirrors software.ts deploy handlers.
   if (!item || (item.orgId !== null && item.orgId !== orgId)) return null;
   return item;

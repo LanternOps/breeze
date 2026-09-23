@@ -641,7 +641,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // enterprise OID prefixes the template claims. Not a capability list and not
   // an open container (text[]), so `included`. `oids` stays excludedOpen.
   "snmp_templates": tablePolicy("org_id", {"included":["id","org_id","name","description","vendor","device_type","sys_object_id_prefixes","is_built_in","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["oids"]}),
-  "software_catalog": tablePolicy("org_id", {"included":["id","org_id","partner_id","integration_provider","name","vendor","description","category","icon_url","website_url","is_managed","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  "software_catalog": tablePolicy("org_id", {"included":["id","org_id","partner_id","integration_provider","name","vendor","description","category","icon_url","website_url","is_managed","created_at","deleted_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // dependency_fingerprint binds a deployment to the non-secret executable
   // metadata approved at creation. It is tenant-owned integrity provenance,
   // not an authentication verifier, despite the security-adjacent name.
