@@ -49,6 +49,19 @@ describe('ReportsList download', () => {
     vi.clearAllMocks();
   });
 
+  it('exposes stable testids on the tabs and each recent-run row, status and download button', async () => {
+    mountWith(() => undefined);
+
+    render(<ReportsList />);
+    expect(await screen.findByTestId('reports-tab-saved')).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId('reports-tab-runs'));
+
+    const row = await screen.findByTestId('report-run-row-run-1');
+    expect(row).toContainElement(screen.getByTestId('report-run-status-run-1'));
+    expect(screen.getByTestId('report-run-status-run-1')).toHaveAttribute('data-status', 'completed');
+    expect(row).toContainElement(screen.getByTestId('report-run-download-run-1'));
+  });
+
   it('saves the returned CSV blob without regenerating', async () => {
     const blob = new Blob(['hostname\n"pc-1"'], { type: 'text/csv' });
     mountWith((url) => {

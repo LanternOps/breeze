@@ -431,6 +431,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
         <div className="flex gap-4">
           <button
             type="button"
+            data-testid="reports-tab-saved"
             onClick={() => setActiveTab('reports')}
             className={cn(
               'pb-3 text-sm font-medium transition-colors',
@@ -443,6 +444,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
           </button>
           <button
             type="button"
+            data-testid="reports-tab-runs"
             onClick={() => setActiveTab('runs')}
             className={cn(
               'pb-3 text-sm font-medium transition-colors',
@@ -689,7 +691,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                 </thead>
                 <tbody className="divide-y">
                   {recentRuns.map(run => (
-                    <tr key={run.id} className="hover:bg-muted/30">
+                    <tr key={run.id} data-testid={`report-run-row-${run.id}`} className="hover:bg-muted/30">
                       <td className="px-4 py-3">
                         <div>
                           <span className="font-medium">{run.reportName || t('reports.reportsList.unknownReport')}</span>
@@ -704,6 +706,8 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                         <div className="flex items-center gap-2">
                           {getStatusIcon(run.status)}
                           <span
+                            data-testid={`report-run-status-${run.id}`}
+                            data-status={run.status}
                             className={cn(
                               'text-sm capitalize',
                               run.status === 'completed' && 'text-success',
@@ -729,6 +733,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                           {run.status === 'completed' && (
                             <button
                               type="button"
+                              data-testid={`report-run-download-${run.id}`}
                               onClick={() => handleDownload(run)}
                               disabled={downloadingRunId === run.id}
                               className="flex h-8 items-center gap-1 rounded-md border px-3 text-sm hover:bg-muted disabled:opacity-50"
