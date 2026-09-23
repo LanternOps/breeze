@@ -24,10 +24,12 @@ import {
   runOutsideDbContext,
   withSystemDbAccessContext,
 } from '../db';
+import { sqlUuidArray } from '../db/sqlValues';
 import type { AuthContext } from '../middleware/auth';
 import { canManagePartnerWidePolicies } from './partnerWideAccess';
 import type { UserPermissions } from './permissions';
 import { permissionGrantMatches } from './permissionMatching';
+import { captureException } from './sentry';
 
 export type SiteScopeV1 =
   | { version: 1; kind: 'unrestricted'; orgId: string }
@@ -100,6 +102,12 @@ export interface PersistedSiteScopeColumns {
   executionScopePrincipalKind: ReportPrincipalKind | null;
 }
 
+/**
+ * A user-principal report authority, as resolved or decoded: its scope may be
+ * any `SiteScopeV1` kind. Semantically the union of the three variants below
+ * (org-axis | partner_wide | legacy_unscoped); kept as one wide interface so
+ * the resolvers and decoders that build it from a scope union keep compiling.
+ */
 export interface UserReportExecutionAuthority {
   principalKind: 'user';
   scope: SiteScopeV1;
@@ -107,6 +115,23 @@ export interface UserReportExecutionAuthority {
   capturedAt: Date;
   fingerprint: string;
 }
+
+/**
+ * #3198 W02 (addendum B5). A user authority on the ORGANIZATION axis. Every
+ * pre-#3198 org generator takes this (via `OrgReportExecutionAuthority` /
+ * `OrgReportGenerationAuthority`) rather than the wide form: those generators
+ * read `kind === 'restricted' ? scope : null` and treat "not restricted" as
+ * whole-org, so a partner_wide (or legacy_unscoped) scope reaching one would
+ * silently read as an org-wide grant. Typing them to this variant makes that a
+ * compile error; `REPORT_GENERATORS` narrows with a runtime check first.
+ */
+export type OrgAxisUserReportExecutionAuthority =
+  UserReportExecutionAuthority & { scope: OrgAxisLiveSiteScopeV1 };
+
+/** #3198 W02 (addendum B5). A user authority on the PARTNER axis — only ever
+ *  resolved for a partner-owned report, never handed to an org generator. */
+export type PartnerUserReportExecutionAuthority =
+  UserReportExecutionAuthority & { scope: Extract<SiteScopeV1, { kind: 'partner_wide' }> };
 
 export interface PortalUserReportExecutionAuthority {
   principalKind: 'portal_user';
@@ -143,6 +168,19 @@ export interface SystemReportExecutionAuthority {
  */
 export type ReportGenerationAuthority =
   | ReportExecutionAuthority
+  | SystemReportExecutionAuthority;
+
+/** #3198 W02 (addendum B5). The request-path authorities an ORG generator may
+ *  run under: org-axis user or portal user — never partner_wide/legacy. */
+export type OrgReportExecutionAuthority =
+  | OrgAxisUserReportExecutionAuthority
+  | PortalUserReportExecutionAuthority;
+
+/** `OrgReportExecutionAuthority` plus the managed-evidence system authority
+ *  (always org-wide unrestricted). The authority parameter of every #5784
+ *  managed-evidence generator. */
+export type OrgReportGenerationAuthority =
+  | OrgReportExecutionAuthority
   | SystemReportExecutionAuthority;
 
 /**
@@ -739,15 +777,6 @@ function sqlFalse(): SQL<unknown> {
   return sql<unknown>`FALSE`;
 }
 
-function uuidArraySql(siteIds: readonly string[]): SQL<unknown> {
-  return siteIds.length === 0
-    ? sql<unknown>`ARRAY[]::uuid[]`
-    : sql<unknown>`ARRAY[${sql.join(
-        siteIds.map((siteId) => sql`${siteId}::uuid`),
-        sql`, `,
-      )}]`;
-}
-
 function completeVersionOneBase(
   columns: ReportScopeColumns,
 ): SQL<unknown> {
@@ -848,16 +877,19 @@ function definitionScopePredicate(
   columns: ReportScopeColumns,
   currentScope: LiveSiteScopeV1,
 ): SQL<unknown> {
-  switch (currentScope.kind) {
+  // Widened to the full SiteScopeV1 so the switch names every kind and the
+  // default arm is a true `never` (#3198 W02, addendum B6).
+  const scope = currentScope as SiteScopeV1;
+  switch (scope.kind) {
     case 'unrestricted':
       return unrestrictedDefinitionPredicate(columns);
     case 'restricted': {
-      const normalizedSiteIds = normalizeSiteIds(currentScope.siteIds);
+      const normalizedSiteIds = normalizeSiteIds(scope.siteIds);
       return and(
         completeVersionOneBase(columns),
         eq(columns.executionScopeKind, 'restricted'),
         isNotNull(columns.executionScopeSiteIds),
-        sql`${columns.executionScopeSiteIds} <@ ${uuidArraySql(normalizedSiteIds)}`,
+        sql`${columns.executionScopeSiteIds} <@ ${sqlUuidArray(normalizedSiteIds)}`,
       )!;
     }
     case 'partner_wide':
@@ -868,8 +900,16 @@ function definitionScopePredicate(
       throw new Error(
         'partner_wide scope requires the partner-axis predicate (reportPartnerWideScopeSqlPredicate)',
       );
-    default:
+    case 'legacy_unscoped':
+      // Excluded from LiveSiteScopeV1, so reachable only through a cast. A
+      // legacy caller scope matches nothing — fail closed (pinned by
+      // siteScope.test.ts "fails closed for a forced legacy live caller value").
       return sqlFalse();
+    default:
+      // A kind with no arm is a wiring bug, not "no rows": a compile error for
+      // a new SiteScopeV1 kind, a throw at runtime for a value that escaped
+      // the types.
+      return assertNever(scope);
   }
 }
 
@@ -936,6 +976,28 @@ export function reportPartnerWideScopeSqlPredicate(
   partnerWide: PartnerWideScopeSqlTarget,
 ): SQL<unknown> {
   return partnerWideRowPredicate(columns, partnerWide);
+}
+
+/**
+ * #3198 W02 (addendum B7, ruling P9). The SYSTEM-scope list arm for
+ * partner-owned rows: a row owned by ANY partner (`partner_id IS NOT NULL`)
+ * whose envelope is a complete v1 partner_wide capture by a real user. Only
+ * the platform-admin list call sites (routes/reports core.ts GET / and runs.ts
+ * GET /runs) OR this onto `unrestricted*ScopeSqlPredicate`; it is deliberately
+ * NOT part of `unrestrictedDefinitionPredicate`, which is also the org
+ * single-scope 'unrestricted' arm and must never match partner-owned rows.
+ */
+export function reportAnyPartnerWideScopeSqlPredicate(
+  columns: ReportScopeColumns,
+  rowPartnerId: typeof reports.partnerId,
+): SQL<unknown> {
+  return and(
+    isNotNull(rowPartnerId),
+    completeVersionOneBase(columns),
+    eq(columns.executionScopeKind, 'partner_wide'),
+    isNull(columns.executionScopeSiteIds),
+    eq(columns.executionScopePrincipalKind, 'user'),
+  )!;
 }
 
 export function reportDefinitionMultiOrgScopeSqlPredicate(
@@ -1268,6 +1330,17 @@ async function resolveExactReportAuthorityInSystemContext(
   );
 }
 
+// #3198 W02 (B4): a DB failure during the live authority read still fails
+// closed as 'unverifiable_scope', but must not be silent - an outage would
+// otherwise read as a wave of ordinary permission refusals.
+function reportAuthorityLookupFailed(
+  context: Record<string, unknown>,
+  err: unknown,
+): void {
+  console.error('[siteScope] live report authority lookup failed', { ...context, err });
+  captureException(err);
+}
+
 async function resolveExactReportAuthority(
   userId: string,
   orgId: string,
@@ -1285,7 +1358,8 @@ async function resolveExactReportAuthority(
         ),
       ),
     );
-  } catch {
+  } catch (err) {
+    reportAuthorityLookupFailed({ userId, orgId }, err);
     return denied('unverifiable_scope');
   }
 }
@@ -1394,7 +1468,8 @@ async function resolveExactPartnerReportAuthority(
         ),
       ),
     );
-  } catch {
+  } catch (err) {
+    reportAuthorityLookupFailed({ userId, partnerId }, err);
     return denied('unverifiable_scope');
   }
 }
@@ -1460,6 +1535,186 @@ async function resolveExactPartnerReportAuthorityInSystemContext(
   }
 
   return liveAuthority(partnerWideScope(partnerId), user.id);
+}
+
+/**
+ * True when `roleId` grants EVERY permission in `required` (wildcards honoured
+ * through `permissionGrantMatches`, #2874), restricted to a role of the
+ * expected scope that is either a system role or owned by the expected tenant —
+ * the same role-ownership rule as `roleGrantsReportAction`.
+ */
+async function roleGrantsAllPermissions(
+  roleId: string,
+  required: readonly { resource: string; action: string }[],
+  expectedRole:
+    | { scope: 'organization'; orgId: string }
+    | { scope: 'partner'; partnerId: string },
+): Promise<boolean> {
+  const rows = await db
+    .select({
+      resource: permissions.resource,
+      action: permissions.action,
+      roleScope: roles.scope,
+      roleIsSystem: roles.isSystem,
+      roleOrgId: roles.orgId,
+      rolePartnerId: roles.partnerId,
+    })
+    .from(rolePermissions)
+    .innerJoin(roles, eq(rolePermissions.roleId, roles.id))
+    .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
+    .where(
+      and(
+        eq(rolePermissions.roleId, roleId),
+        eq(roles.scope, expectedRole.scope),
+        or(
+          eq(roles.isSystem, true),
+          expectedRole.scope === 'organization'
+            ? eq(roles.orgId, expectedRole.orgId)
+            : eq(roles.partnerId, expectedRole.partnerId),
+        ),
+      ),
+    );
+
+  const eligible = rows.filter(
+    (row) =>
+      row.roleScope === expectedRole.scope
+      && (row.roleIsSystem
+        || (expectedRole.scope === 'organization'
+          ? row.roleOrgId === expectedRole.orgId
+          : row.rolePartnerId === expectedRole.partnerId)),
+  );
+  return required.every((perm) =>
+    eligible.some((row) => permissionGrantMatches(row, perm.resource, perm.action)),
+  );
+}
+
+async function resolveLiveReportTypePermissionsInSystemContext(
+  userId: string,
+  owner: ReportOwner,
+  required: readonly { resource: string; action: string }[],
+  partnerAxisOnly: boolean,
+): Promise<boolean> {
+  const [user] = await db
+    .select({
+      id: users.id,
+      status: users.status,
+      isPlatformAdmin: users.isPlatformAdmin,
+      partnerId: users.partnerId,
+    })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  if (!user || user.status !== 'active') return false;
+  // Mirrors `allowPlatformAuthority` on the live (worker) resolvers.
+  if (user.isPlatformAdmin) return true;
+
+  const partnerRoleGrants = async (partnerId: string): Promise<boolean> => {
+    if (user.partnerId !== partnerId) return false;
+    const memberships = await db
+      .select({ roleId: partnerUsers.roleId })
+      .from(partnerUsers)
+      .where(and(eq(partnerUsers.userId, user.id), eq(partnerUsers.partnerId, partnerId)))
+      .limit(2);
+    if (memberships.length !== 1 || !memberships[0]!.roleId) return false;
+    return roleGrantsAllPermissions(memberships[0]!.roleId, required, {
+      scope: 'partner',
+      partnerId,
+    });
+  };
+
+  if (owner.partnerId !== undefined) {
+    return partnerRoleGrants(owner.partnerId);
+  }
+
+  const [organization] = await db
+    .select({ id: organizations.id, partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, owner.orgId))
+    .limit(1);
+  if (!organization) return false;
+
+  // #3198 W02 ruling F1: an msp_staff type on an org owner is re-checked on
+  // the PARTNER axis only. The org membership is never consulted — an org role
+  // (a customer user) cannot satisfy it however it is configured — and the
+  // partner membership must itself cover this org (the live authority above
+  // may have authorized through an org membership, which proves nothing
+  // about partner coverage).
+  if (partnerAxisOnly) {
+    if (user.partnerId !== organization.partnerId) return false;
+    const memberships = await db
+      .select({
+        roleId: partnerUsers.roleId,
+        orgAccess: partnerUsers.orgAccess,
+        orgIds: partnerUsers.orgIds,
+      })
+      .from(partnerUsers)
+      .where(and(eq(partnerUsers.userId, user.id), eq(partnerUsers.partnerId, organization.partnerId)))
+      .limit(2);
+    const membership = memberships.length === 1 ? memberships[0]! : null;
+    if (!membership?.roleId || !partnerMembershipAdmitsOrg(membership, owner.orgId)) return false;
+    return roleGrantsAllPermissions(membership.roleId, required, {
+      scope: 'partner',
+      partnerId: organization.partnerId,
+    });
+  }
+
+  // Org membership takes precedence over the partner membership — the same
+  // axis `resolveExactReportAuthorityInSystemContext` authorizes through.
+  const orgMemberships = await db
+    .select({ roleId: organizationUsers.roleId })
+    .from(organizationUsers)
+    .where(and(eq(organizationUsers.userId, user.id), eq(organizationUsers.orgId, owner.orgId)))
+    .limit(2);
+  if (orgMemberships.length > 1) return false;
+  const orgMembership = orgMemberships[0];
+  if (orgMembership) {
+    return !!orgMembership.roleId
+      && roleGrantsAllPermissions(orgMembership.roleId, required, {
+        scope: 'organization',
+        orgId: owner.orgId,
+      });
+  }
+  return partnerRoleGrants(organization.partnerId);
+}
+
+/**
+ * #3198 W02 (spec §2, ruling P8). Whether the report's EXECUTION user still
+ * holds a report type's underlying read permissions (`requiredPermissions` in
+ * the registry, e.g. invoices:read for ar_aging) through the same membership
+ * axis the live authority resolvers use: the partner membership for a
+ * partner owner; the org membership, else the partner membership of the org's
+ * partner, for an org owner. The request routes check the caller's resolved
+ * permission set instead; the schedule worker has no request, so this is its
+ * re-check — without it, a creator demoted off invoices:read would keep
+ * receiving AR aging by email.
+ *
+ * `false` means "not granted". A database failure REJECTS instead: "could
+ * not check" is not a permission loss, so the caller (the schedule worker)
+ * reports it and records 'scope_unverifiable' rather than
+ * 'scope_permission_missing'.
+ *
+ * `partnerAxisOnly` (ruling F1, set for registry audience 'msp_staff'): an
+ * org owner resolves ONLY a partner membership of the org's partner that
+ * covers the org (org_access 'all', or 'selected' listing it); an org
+ * membership never grants. A partner owner is partner-axis already.
+ */
+export async function resolveLiveReportTypePermissions(
+  userId: string,
+  owner: ReportOwner,
+  required: readonly { resource: string; action: string }[],
+  options: { partnerAxisOnly?: boolean } = {},
+): Promise<boolean> {
+  if (required.length === 0) return true;
+  return runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      resolveLiveReportTypePermissionsInSystemContext(
+        userId,
+        owner,
+        required,
+        options.partnerAxisOnly === true,
+      ),
+    ),
+  );
 }
 
 type BatchOrganization = {
@@ -1830,7 +2085,11 @@ export async function resolveRequestReportAuthorityMap(
         ),
       ),
     );
-  } catch {
+  } catch (err) {
+    reportAuthorityLookupFailed(
+      { userId: auth.user.id, orgIds: accessibleOrgIds },
+      err,
+    );
     for (const orgId of accessibleOrgIds) {
       result.set(orgId, denied('unverifiable_scope'));
     }

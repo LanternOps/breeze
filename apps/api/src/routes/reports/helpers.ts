@@ -5,9 +5,17 @@ import { portalBranding, reports, reportRuns } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import { canManagePartnerWidePolicies } from '../../services/partnerWideAccess';
 import {
+  reportAudienceCondition,
+  reportTypeHiddenByPermission,
+  reportTypeHiddenFromCaller,
+  reportTypePermissionCondition,
+  type GrantedReportPermissions,
+} from '../../services/reportTypePermissions';
+import {
   decodeSiteScope,
   isSiteScopeSubset,
   reportDefinitionScopeSqlPredicate,
+  reportAnyPartnerWideScopeSqlPredicate,
   reportPartnerWideScopeSqlPredicate,
   reportRunScopeSqlPredicate,
   resolveRequestPartnerReportAuthority,
@@ -85,9 +93,21 @@ export async function ensureOrgAccess(
  * scope; FALSE for everyone else, including org tokens (which DO carry a
  * partnerId) and 'selected' partner users. There is no database backstop for
  * the org_access rule — `breeze_has_partner_access` is flat membership — so
- * partnerOwnedVisibility.scan.test.ts fails any `from(reports)` /
- * `innerJoin(reports, …)` under routes/, services/, jobs/ that neither calls
- * this nor is allowlisted as org-only with a reason.
+ * partnerOwnedVisibility.scan.test.ts, a TEXTUAL scan of routes/,
+ * services/, jobs/, fails a Drizzle read or mutation of `reports` /
+ * `reportRuns` / `reportRunDeliveries`, a table interpolated into a sql
+ * template, a raw-SQL FROM/JOIN/UPDATE/USING/DELETE/INSERT/MERGE/TRUNCATE
+ * (incl. `"public".`-qualified, quoted and comma-joined forms) on
+ * report_runs / report_run_deliveries / reports inside template text, or a
+ * `sql.identifier('<table>')` / `sql.raw('…<table>…')` literal, when the
+ * enclosing function neither reaches this (directly or through a verified
+ * guard entrypoint) nor is allowlisted for that scope with a reason, an
+ * audience posture (ruling F1) and a pinned site count; it also fails any
+ * re-binding of those table symbols. It cannot see a table passed as a
+ * function argument (`fn(reports)` → `.from(table)`), SQL assembled from
+ * concatenated strings or variables, comma joins after a subselect or an
+ * ON clause, or code outside those three directories — those still rely on
+ * review and the route suites (full list in the scan's header).
  */
 export function partnerOwnedReportVisibility(
   auth: Pick<AuthContext, 'scope' | 'partnerId' | 'partnerOrgAccess'>,
@@ -110,6 +130,23 @@ export function partnerWideListTarget(
 ): PartnerWideScopeSqlTarget | undefined {
   return canManagePartnerWidePolicies(auth) && auth.partnerId
     ? { rowPartnerId: reports.partnerId, partnerId: auth.partnerId }
+    : undefined;
+}
+
+/**
+ * #3198 W02 (addendum B7, ruling P9). The SYSTEM-scope (platform admin) list
+ * arm for partner-owned rows: any partner's row with a well-formed
+ * partner_wide envelope on `columns` (`reports` for the definition list,
+ * `reportRuns` for the run list; the owner is always `reports.partner_id`).
+ * Undefined for every non-system caller. Lives here so the raw
+ * `reports.partnerId` predicate stays out of route files (scan test).
+ */
+export function systemPartnerWideListArm(
+  auth: Pick<AuthContext, 'scope'>,
+  columns: typeof reports | typeof reportRuns,
+): SQL<unknown> | undefined {
+  return auth.scope === 'system'
+    ? reportAnyPartnerWideScopeSqlPredicate(columns, reports.partnerId)
     : undefined;
 }
 
@@ -200,11 +237,18 @@ export function reportOwnerScopePredicate(
     : reportRunScopeSqlPredicate(reportRuns, scope);
 }
 
+/**
+ * The by-id definition loader. `permissions` is REQUIRED (ruling P8b): the
+ * caller's resolved permission set (the route's `permissions` context value, set by requirePermission), so a row whose
+ * type needs a read permission the caller lacks answers null (→ 404), exactly
+ * like a row outside the caller's tenancy.
+ */
 export async function getReportWithOwnerCheck(
   reportId: string,
   auth: AuthContext,
+  permissions: GrantedReportPermissions,
 ) {
-  const metadataCondition = tenantAuthorizedReportCondition(reportId, auth);
+  const metadataCondition = tenantAuthorizedReportCondition(reportId, auth, permissions);
   const [metadata] = await db
     .select(reportDefinitionMetadataProjection)
     .from(reports)
@@ -214,6 +258,12 @@ export async function getReportWithOwnerCheck(
   if (!metadata) {
     return null;
   }
+  // Ruling F1, defense in depth: the tenant condition above already excludes
+  // msp_staff types for an org-scope caller.
+  if (reportTypeHiddenFromCaller(metadata.type, auth)) return null;
+  // Ruling P8b, defense in depth: likewise for a type whose underlying read
+  // permissions the caller lacks.
+  if (reportTypeHiddenByPermission(metadata.type, permissions)) return null;
 
   const owner = reportOwnerOfRow(metadata);
   if (!owner) return null;
@@ -314,17 +364,27 @@ export function isSystemManagedReportDefinition(
     || (row.type !== null && isManagedEvidenceType(row.type) && row.portalSelfService === true);
 }
 
+/**
+ * The by-id `reports` tenant condition. Ruling P8b: on EVERY scope it also
+ * excludes the types whose underlying read permissions `permissions` lacks
+ * (`reportTypePermissionCondition`; no predicate when it holds them all).
+ */
 export function tenantAuthorizedReportCondition(
   reportId: string,
   auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'partnerId' | 'partnerOrgAccess'>,
+  permissions: GrantedReportPermissions,
 ): SQL<unknown> {
-  const idCondition = eq(reports.id, reportId);
+  const idCondition = and(
+    eq(reports.id, reportId),
+    reportTypePermissionCondition(permissions, reports.type),
+  )!;
 
   // Organization scope never gains a partner_id predicate (#3198 W01): its
   // `org_id = auth.orgId` filter is one no partner-owned row can satisfy.
+  // Ruling F1: nor does it ever see an msp_staff (business) type.
   if (auth.scope === 'organization') {
     return auth.orgId
-      ? and(idCondition, eq(reports.orgId, auth.orgId))!
+      ? and(idCondition, eq(reports.orgId, auth.orgId), reportAudienceCondition(auth, reports.type))!
       : sql<unknown>`FALSE`;
   }
 
@@ -350,30 +410,41 @@ export function tenantAuthorizedReportCondition(
  */
 export function tenantAuthorizedRunCondition(
   auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'partnerId' | 'partnerOrgAccess'>,
+  permissions: GrantedReportPermissions,
 ): SQL<unknown> | undefined | null {
+  // Ruling P8b: every scope loses the types whose read permissions it lacks.
+  const typePermission = reportTypePermissionCondition(permissions, reports.type);
   if (auth.scope === 'organization') {
-    return auth.orgId ? eq(reports.orgId, auth.orgId) : null;
+    // Ruling F1: an org-scope caller never sees a run of an msp_staff type.
+    return auth.orgId
+      ? and(eq(reports.orgId, auth.orgId), reportAudienceCondition(auth, reports.type), typePermission)!
+      : null;
   }
   if (auth.scope === 'partner') {
     const orgIds = auth.accessibleOrgIds ?? [];
     if (!canManagePartnerWidePolicies(auth)) {
-      return orgIds.length > 0 ? inArray(reports.orgId, orgIds) : null;
+      return orgIds.length > 0 ? and(inArray(reports.orgId, orgIds), typePermission)! : null;
     }
     const orgCondition = orgIds.length > 0
       ? inArray(reports.orgId, orgIds)
       : sql<unknown>`FALSE`;
-    return or(orgCondition, partnerOwnedReportVisibility(auth))!;
+    return and(or(orgCondition, partnerOwnedReportVisibility(auth)), typePermission)!;
   }
-  return undefined;
+  return typePermission;
 }
 
+/**
+ * The by-id run loader. `permissions` is REQUIRED (ruling P8b) — see
+ * `getReportWithOwnerCheck`.
+ */
 export async function getReportRunWithOwnerCheck(
   runId: string,
   auth: AuthContext,
   action: ReportAction,
+  permissions: GrantedReportPermissions,
 ) {
   const tenantConditions: SQL<unknown>[] = [eq(reportRuns.id, runId)];
-  const tenantCondition = tenantAuthorizedRunCondition(auth);
+  const tenantCondition = tenantAuthorizedRunCondition(auth, permissions);
   if (tenantCondition === null) return null;
   if (tenantCondition) tenantConditions.push(tenantCondition);
 
@@ -385,6 +456,9 @@ export async function getReportRunWithOwnerCheck(
     .limit(1);
 
   if (!metadata) return null;
+  // Ruling F1 / P8b, defense in depth (see getReportWithOwnerCheck).
+  if (reportTypeHiddenFromCaller(metadata.type, auth)) return null;
+  if (reportTypeHiddenByPermission(metadata.type, permissions)) return null;
 
   const owner = reportOwnerOfRow(metadata);
   if (!owner) return null;
@@ -427,6 +501,8 @@ export const reportRunMetadataProjection = {
   reportId: reportRuns.reportId,
   orgId: reports.orgId,
   partnerId: reports.partnerId,
+  // Ruling F1: the loader's audience belt reads the definition's type.
+  type: reports.type,
   executionScopeVersion: reportRuns.executionScopeVersion,
   executionScopeKind: reportRuns.executionScopeKind,
   executionScopeSiteIds: reportRuns.executionScopeSiteIds,

@@ -511,7 +511,7 @@ describe('hardware_lifecycle MSP config inheritance (decision B2)', () => {
 
     expect(state.generateReport).toHaveBeenCalledWith(
       'hardware_lifecycle',
-      ORG_ID,
+      { kind: 'organization', orgId: ORG_ID },
       {
         sites: [],
         replaceAgeYears: 6,
@@ -538,7 +538,7 @@ describe('hardware_lifecycle MSP config inheritance (decision B2)', () => {
 
     expect(state.generateReport).toHaveBeenCalledWith(
       'hardware_lifecycle',
-      ORG_ID,
+      { kind: 'organization', orgId: ORG_ID },
       {
         sites: [],
         replaceAgeYears: 4,
@@ -621,7 +621,7 @@ describe('hardware_lifecycle MSP config inheritance (decision B2)', () => {
 
     expect(state.generateReport).toHaveBeenCalledWith(
       'hardware_lifecycle',
-      ORG_ID,
+      { kind: 'organization', orgId: ORG_ID },
       {
         sites: [],
         replaceAgeYears: 7,

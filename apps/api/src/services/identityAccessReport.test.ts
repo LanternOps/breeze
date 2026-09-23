@@ -22,7 +22,7 @@ import type { IdentityAccessSummary } from '@breeze/shared';
 import { db } from '../db';
 import { generateIdentityAccessReport } from './identityAccessReport';
 import type { EvidenceRunContext, ReportResult } from './reportGenerationService';
-import type { ReportGenerationAuthority } from './siteScope';
+import type { OrgReportGenerationAuthority } from './siteScope';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const USER_ID = '33333333-3333-4333-8333-333333333333';
@@ -56,7 +56,7 @@ function queueSelects(...resultSets: unknown[][]) {
 function authority(
   kind: 'unrestricted' | 'restricted' = 'unrestricted',
   siteIds: string[] = [],
-): ReportGenerationAuthority {
+): OrgReportGenerationAuthority {
   return {
     principalKind: 'user',
     scope: kind === 'restricted'

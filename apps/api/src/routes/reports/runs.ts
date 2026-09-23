@@ -10,7 +10,6 @@ import { PERMISSIONS } from '../../services/permissions';
 import { canManagePartnerWidePolicies } from '../../services/partnerWideAccess';
 import {
   assertReportExecutionPreflight,
-  assertReportOwnerScopeSupported,
   generateReport,
   previousBaselineFor,
   StoredArtifactOnlyReportError,
@@ -18,11 +17,21 @@ import {
   UnsupportedReportScopeError,
   type ReportResult,
 } from '../../services/reportGenerationService';
+import { reportScopeFromAuthority } from '../../services/reportScope';
+import {
+  missingReportTypePermission,
+  reportAudienceCondition,
+  reportTypeHiddenFromCaller,
+  reportTypePermissionCondition,
+  REPORT_TYPE_PERMISSION_DENIED,
+} from '../../services/reportTypePermissions';
+import type { UserPermissions } from '../../services/permissions';
 import { rowsToCsv, rowsToTsv } from '@breeze/shared';
 import {
   getPagination, getReportWithOrgCheck, getReportRunWithOrgCheck, isPortalSelfServiceLocked,
   isSystemManagedReportDefinition, PARTNER_OWNED_REPORT, partnerOwnedReportVisibility,
   partnerWideListTarget,
+  systemPartnerWideListArm,
   PORTAL_SELF_SERVICE_REPORT,
 } from './helpers';
 import { downloadQuerySchema, listRunsSchema } from './schemas';
@@ -35,6 +44,7 @@ import {
   persistedSiteScopeValues,
   reportRunMultiOrgScopeSqlPredicate,
   reportRunScopeSqlPredicate,
+  resolveRequestPartnerReportAuthority,
   resolveRequestReportAuthority,
   resolveRequestReportAuthorityMap,
   siteScopeFingerprint,
@@ -76,8 +86,11 @@ runsRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const reportId = c.req.param('id')!;
+    const permissions = c.get('permissions') as UserPermissions | undefined;
 
-    const report = await getReportWithOrgCheck(reportId, auth);
+    // Ruling P8b: a type whose read permissions the caller lacks is hidden by
+    // the loader, so generate-by-id on it answers 404 (not the 403 below).
+    const report = await getReportWithOrgCheck(reportId, auth, permissions);
     if (!report) {
       return c.json({ error: 'Report not found' }, 404);
     }
@@ -92,44 +105,41 @@ runsRoutes.post(
       return c.json({ error: 'system_managed_report' }, 409);
     }
 
-    // #3198 W01 — a partner-owned definition reached here only through
-    // getReportWithOrgCheck's partner-wide gate + live partner authority.
-    // No type has a partner-scope generator this wave, so it is refused
-    // before any run row is created.
-    if (report.owner.partnerId !== undefined) {
+    // #3198 W02 (spec §2, ruling P8): a business type also needs the
+    // underlying read permissions its registry entry lists — before any
+    // authority lookup or run row. Defense in depth since ruling P8b (the
+    // loader above already hid the row).
+    if (missingReportTypePermission(report.type, permissions)) {
+      return c.json(REPORT_TYPE_PERMISSION_DENIED, 403);
+    }
+    // Ruling F1, defense in depth: getReportWithOrgCheck already hides an
+    // msp_staff type from an org-scope caller (404 above).
+    if (reportTypeHiddenFromCaller(report.type, auth)) {
+      return c.json(REPORT_TYPE_PERMISSION_DENIED, 403);
+    }
+
+    // #3198 — the owner axis decides the live resolver, the scope decode,
+    // the preflight and the generator's scope below.
+    const owner: ReportOwner = report.owner;
+    if (owner.partnerId !== undefined) {
       // Defense in depth: getReportWithOrgCheck already returns null for a
       // partner-owned row unless the caller may administer partner-wide state.
       if (!canManagePartnerWidePolicies(auth)) {
         return c.json({ error: 'Report not found' }, 404);
       }
-      try {
-        assertReportOwnerScopeSupported(report.type, report.owner);
-      } catch (error) {
-        if (error instanceof UnsupportedReportScopeError) {
-          return c.json({ error: 'unsupported_report_scope', type: report.type }, 400);
-        }
-        throw error;
-      }
-      // W02 lands partner-owned generation here; until then the guard above
-      // always throws, and this refusal only keeps the org path below typed.
-      return c.json({ error: 'unsupported_report_scope', type: report.type }, 400);
-    }
-    const orgId = report.owner.orgId;
-
-    // #4562 W10 — the canonical customer-portal definition is generated only
-    // by the customer, under a `portal_user` authority that is always
-    // org-unrestricted. A run created HERE would carry this caller's (possibly
-    // site-restricted) scope and still be listed by the portal as the
-    // customer's own report. Refused while the portal exposes reports.
-    if (await isPortalSelfServiceLocked(db, report)) {
+    } else if (await isPortalSelfServiceLocked(db, report)) {
+      // #4562 W10 — the canonical customer-portal definition is generated only
+      // by the customer, under a `portal_user` authority that is always
+      // org-unrestricted. A run created HERE would carry this caller's
+      // (possibly site-restricted) scope and still be listed by the portal as
+      // the customer's own report. Refused while the portal exposes reports.
+      // (A partner-owned row is never the portal's definition.)
       return c.json(PORTAL_SELF_SERVICE_REPORT, 409);
     }
 
-    const liveResult = await resolveRequestReportAuthority(
-      auth,
-      orgId,
-      'read',
-    );
+    const liveResult = owner.partnerId !== undefined
+      ? await resolveRequestPartnerReportAuthority(auth, owner.partnerId, 'read')
+      : await resolveRequestReportAuthority(auth, owner.orgId, 'read');
     if (!liveResult.ok || liveResult.authority.scope.kind === 'legacy_unscoped') {
       return c.json({ error: 'Access to report scope denied' }, 403);
     }
@@ -138,7 +148,9 @@ runsRoutes.post(
     try {
       const persistedScope = decodeSiteScope(
         report as unknown as PersistedSiteScopeColumns,
-        orgId,
+        // An org owner decodes under its bare org id (the pre-W01 call); only
+        // the ReportOwner form can decode a partner_wide envelope.
+        owner.partnerId !== undefined ? owner : owner.orgId,
       );
       const effectiveScope = intersectSiteScopes(
         persistedScope,
@@ -164,7 +176,9 @@ runsRoutes.post(
 
     const config = (report.config ?? {}) as Record<string, unknown>;
     try {
-      assertReportExecutionPreflight({ orgId }, config, executionAuthority);
+      // The type rides along so a stored partner-scope config its own type
+      // rejects is refused here (ruling T3e), before a run row exists.
+      assertReportExecutionPreflight(owner, config, executionAuthority, report.type);
     } catch (error) {
       if (error instanceof UnexecutableReportScopeError) {
         return c.json({ error: 'Access to report scope denied' }, 403);
@@ -190,13 +204,17 @@ runsRoutes.post(
       return c.json({ error: 'Failed to create report run' }, 500);
     }
 
+    // A partner-owned run has no org to attribute and must not borrow one
+    // (core.ts create precedent): orgId null + details.partnerId.
     writeRouteAudit(c, {
-      orgId,
+      orgId: owner.orgId ?? null,
       action: 'report.generate',
       resourceType: 'report_run',
       resourceId: run.id,
       resourceName: report.name,
-      details: { reportId: report.id }
+      details: owner.partnerId !== undefined
+        ? { reportId: report.id, partnerId: owner.partnerId }
+        : { reportId: report.id }
     });
 
     await db
@@ -205,9 +223,14 @@ runsRoutes.post(
       .where(eq(reports.id, reportId));
 
     try {
+      // Partner owner: the org list is resolved LIVE, in this request's DB
+      // context (runInReportScope, ruling P6). A mismatch between the owner
+      // axis and the authority throws ReportScopeMismatchError — recorded on
+      // the run below like any other failure.
+      const scope = await reportScopeFromAuthority(owner, executionAuthority);
       const result = await generateReport(
         report.type,
-        orgId,
+        scope,
         config,
         executionAuthority,
       );
@@ -234,7 +257,7 @@ runsRoutes.post(
         .set({
           status: 'failed',
           completedAt: new Date(),
-          // #3198 W01 — same stable reason the schedule worker records.
+          // #3198 — same stable reason the schedule worker records.
           errorMessage: err instanceof UnsupportedReportScopeError
             ? 'unsupported_report_scope'
             : err instanceof Error ? err.message : 'Failed to generate report'
@@ -249,10 +272,16 @@ runsRoutes.post(
       if (err instanceof StoredArtifactOnlyReportError) {
         return c.json({ error: 'stored_artifact_only' }, 409);
       }
-      // #3198 W01 — an org-owned business-type definition before W02 ships
-      // its generator. The run row records the failure; the caller gets 400.
+      // #3198 — a definition whose type cannot run under its owner axis (an
+      // org-only type stored under the partner axis). The run row records the
+      // stable code; the caller gets 400.
       if (err instanceof UnsupportedReportScopeError) {
         return c.json({ error: 'unsupported_report_scope', type: report.type, runId: run.id }, 400);
+      }
+      // The ambient DB context or the authority cannot see the owner's scope
+      // (ReportScopeMismatchError is a subclass, ruling P11): an access outcome.
+      if (err instanceof UnexecutableReportScopeError) {
+        return c.json({ error: 'Access to report scope denied', runId: run.id }, 403);
       }
       return c.json({ message: 'Report generation failed', runId: run.id, status: 'failed' }, 500);
     }
@@ -272,6 +301,13 @@ runsRoutes.get(
 
     const conditions: SQL<unknown>[] = [];
     let runScopePredicate: SQL<unknown>;
+    // Ruling P8b: every scope loses the types whose underlying read
+    // permissions the caller lacks.
+    const typePermission = reportTypePermissionCondition(
+      c.get('permissions') as UserPermissions | undefined,
+      reports.type,
+    );
+    if (typePermission) conditions.push(typePermission);
 
     if (auth.scope === 'organization') {
       if (!auth.orgId) {
@@ -282,6 +318,9 @@ runsRoutes.get(
         return c.json({ data: [], pagination: { page, limit, total: 0 } });
       }
       conditions.push(eq(reports.orgId, auth.orgId));
+      // Ruling F1: an org-scope caller never lists a run of an msp_staff type.
+      const audience = reportAudienceCondition(auth, reports.type);
+      if (audience) conditions.push(audience);
       runScopePredicate = reportRunScopeSqlPredicate(
         reportRuns,
         result.authority.scope,
@@ -319,7 +358,13 @@ runsRoutes.get(
         ...(partnerWide ? [partnerWide] : []),
       );
     } else {
-      runScopePredicate = unrestrictedReportRunScopeSqlPredicate(reportRuns);
+      // System scope. #3198 W02 (addendum B7, ruling P9): partner-owned runs
+      // with a well-formed partner_wide envelope list too (the run carries its
+      // own envelope; the owner is the joined report's partner_id).
+      const systemPartnerArm = systemPartnerWideListArm(auth, reportRuns);
+      runScopePredicate = systemPartnerArm
+        ? or(unrestrictedReportRunScopeSqlPredicate(reportRuns), systemPartnerArm)!
+        : unrestrictedReportRunScopeSqlPredicate(reportRuns);
     }
 
     conditions.push(runScopePredicate);
@@ -383,7 +428,12 @@ runsRoutes.get(
     const runId = c.req.param('id')!;
     const { format: requestedFormat } = c.req.valid('query');
 
-    const access = await getReportRunWithOrgCheck(runId, auth, 'export');
+    const access = await getReportRunWithOrgCheck(
+      runId,
+      auth,
+      'export',
+      c.get('permissions') as UserPermissions | undefined,
+    );
     if (!access) {
       return c.json({ error: 'Report run not found' }, 404);
     }
@@ -497,7 +547,12 @@ runsRoutes.get(
     const auth = c.get('auth');
     const runId = c.req.param('id')!;
 
-    const access = await getReportRunWithOrgCheck(runId, auth, 'read');
+    const access = await getReportRunWithOrgCheck(
+      runId,
+      auth,
+      'read',
+      c.get('permissions') as UserPermissions | undefined,
+    );
     if (!access) {
       return c.json({ error: 'Report run not found' }, 404);
     }
@@ -580,7 +635,12 @@ runsRoutes.post(
     const runId = c.req.param('id')!;
     const { handle } = c.req.valid('json');
 
-    const access = await getReportRunWithOrgCheck(runId, auth, 'write');
+    const access = await getReportRunWithOrgCheck(
+      runId,
+      auth,
+      'write',
+      c.get('permissions') as UserPermissions | undefined,
+    );
     if (!access) {
       return c.json({ error: 'Report run not found' }, 404);
     }

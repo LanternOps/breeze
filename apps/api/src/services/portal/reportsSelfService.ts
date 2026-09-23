@@ -17,6 +17,7 @@ import {
   previousBaselineFor,
   type ReportResult,
 } from '../reportGenerationService';
+import { organizationScope } from '../reportScope';
 import { getReportBranding } from '../reportBranding';
 import {
   persistedSiteScopeValues,
@@ -588,7 +589,7 @@ export async function generatePortalReport(args: {
     try {
       const result = await generateReport(
         definition.type,
-        args.orgId,
+        organizationScope(args.orgId),
         effectiveConfig,
         authority,
       );

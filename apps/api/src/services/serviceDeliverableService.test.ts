@@ -165,6 +165,15 @@ describe('serviceDeliverableService', () => {
         .rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
     });
 
+    // #3198 W02 ruling F1: business report types are internal to the MSP;
+    // deliverable evidence can be customer-visible.
+    it('400s INTERNAL_REPORT_TYPE for an ar_aging auto-evidence report, without inserting', async () => {
+      queueResult([{ id: '55555555-5555-4555-8555-555555555555', type: 'ar_aging' }]); // report lookup
+      await expect(createDeliverable('org1', { ...base, autoEvidenceReportId: '55555555-5555-4555-8555-555555555555' }, actor))
+        .rejects.toMatchObject({ status: 400, code: 'INTERNAL_REPORT_TYPE' });
+      expect(chain.insert.mock.calls).toHaveLength(0);
+    });
+
     it('409s a duplicate (org, contract, name) from the pre-check without inserting', async () => {
       queueResult([{ one: 1 }]); // name pre-check finds a row
       await expect(createDeliverable('org1', base, actor)).rejects.toMatchObject({ status: 409, code: 'DUPLICATE_NAME' });
@@ -550,6 +559,17 @@ describe('serviceDeliverableService', () => {
       await expect(addEvidence('org1', 'o1', { kind: 'report_run', reportRunId: RUN_ID }, actor)).rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
       expect(chain.insert.mock.calls).toHaveLength(0);
     });
+
+    it.each(['ar_aging', 'technician_time_billability', 'ticket_sla_attainment'])(
+      'refuses a run of a %s (msp_staff) report with 400 INTERNAL_REPORT_TYPE, inserting nothing (ruling F1)',
+      async (type) => {
+        queueResult([occ({ status: 'open' })]);
+        queueResult([{ id: RUN_ID, reportId: 'r1', type }]);
+        await expect(addEvidence('org1', 'o1', { kind: 'report_run', reportRunId: RUN_ID }, actor))
+          .rejects.toMatchObject({ status: 400, code: 'INTERNAL_REPORT_TYPE' });
+        expect(chain.insert.mock.calls).toHaveLength(0);
+      },
+    );
 
     it('on awaiting_evidence completes the ticket-driven delivery', async () => {
       queueResult([occ({ status: 'awaiting_evidence' })]);

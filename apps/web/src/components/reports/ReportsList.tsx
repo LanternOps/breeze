@@ -28,35 +28,18 @@ import {
   type OrgNarrativeReportSummary,
   type FleetDesignReportSummary,
   type EndpointManagementSummary,
-  type VulnerabilityManagementSummary
+  type VulnerabilityManagementSummary,
+  type ReportType as SharedReportType
 } from '@breeze/shared';
 import { useTranslation } from 'react-i18next';
 
-export type ReportType =
-  | 'device_inventory'
-  | 'software_inventory'
-  | 'alert_summary'
-  | 'compliance'
-  | 'performance'
-  | 'executive_summary'
-  | 'security_compliance_posture'
-  | 'ai_org_narrative'
-  | 'ai_fleet_design'
-  | 'hardware_lifecycle'
-  // #5784 W02. Curated service-plan evidence; its label comes from the dynamic
-  // i18n lookup in getReportTypeLabel, so there is no map to extend here.
-  | 'threat_detection_review'
-  // #5784 W03. No hardcoded label: getReportTypeLabel does a dynamic i18n
-  // lookup on reports.reportsList.reportTypes.<type>.
-  | 'endpoint_management_review'
-  // #5784 W04: the vulnerability detail artifact. Curated (its own options
-  // form), never representable by the freeform builder. The list label comes
-  // from `reports.reportsList.reportTypes.vulnerability_management`, resolved
-  // dynamically by getReportTypeLabel — no hardcoded map to update.
-  | 'vulnerability_management'
-  // #5784 W06. No hardcoded label map: getReportTypeLabel resolves
-  // reports.reportsList.reportTypes.<type> from the locale files.
-  | 'identity_access_review';
+// Derived from the canonical tuple in `@breeze/shared`
+// (`packages/shared/src/reportTypes.ts`) rather than hand-listed. The
+// per-type comments that used to live here were about LABELS
+// (`getReportTypeLabel` does a dynamic i18n lookup), not about the values, so
+// nothing is lost — W03 adds the three business-report labels to the locale
+// files.
+export type ReportType = SharedReportType;
 
 /**
  * Report types the API owns end to end: the AI schedule creates the definition,

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, or, sql, type AnyColumn, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, or, sql, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { timeEntries, ticketParts, tickets, ticketCategories, organizations, partners, users, ticketComments } from '../db/schema';
 import { workTypes } from '../db/schema/workTypes';
@@ -10,8 +10,9 @@ import { computeBillableMinutes, billableMinutesSql, BILLABLE_MINUTES_CHECK_NAME
 import { pgErrorCode, pgErrorConstraint } from '../utils/pgErrors';
 import { captureException } from './sentry';
 import { readOrgStampingDefaults } from './orgCurrencyCore';
+import { minorUnitScaleSql } from './currencySql';
 import { isMissingRateGap } from './invoiceAssembly';
-import { CURRENCY_CODES, isZeroDecimal, isRepresentableInCurrency, minorUnitExponent, roundToCurrency, multiplyToCurrency, toMinorUnits, fromMinorUnits } from '@breeze/shared';
+import { isRepresentableInCurrency, minorUnitExponent, roundToCurrency, multiplyToCurrency, toMinorUnits, fromMinorUnits } from '@breeze/shared';
 import type { CreateTimeEntryInput, UpdateTimeEntryInput, TicketPartInput, BillingStatus, TimeEntrySource } from '@breeze/shared';
 
 export type TimeEntryServiceErrorCode =
@@ -541,20 +542,6 @@ async function resolveAndLockTicketLink(ticketId: string, actor: TimeEntryActor,
   // stamp AND the match-or-skip default rate come from the new currency.
   if (org.currencyCode !== link.currencyCode) link = await resolveTicketLink(ticketId, actor, workTypeId);
   return link;
-}
-
-/** Supported zero-decimal codes (JPY, KRW, …) — every other supported currency has 2 minor-unit digits (spec §12). */
-const ZERO_DECIMAL_CODES: string[] = CURRENCY_CODES.filter((code) => isZeroDecimal(code));
-
-/**
- * SQL scale for a per-row ROUND at the row's own currency minor unit — the
- * SQL twin of `roundToCurrency` (PG `ROUND(numeric, int)` is half away from
- * zero, which is half-up for the non-negative amounts these rows carry).
- */
-function minorUnitScaleSql(currencyColumn: AnyColumn): SQL<number> {
-  return ZERO_DECIMAL_CODES.length > 0
-    ? sql<number>`CASE WHEN ${currencyColumn} IN (${sql.join(ZERO_DECIMAL_CODES.map((code) => sql`${code}`), sql`, `)}) THEN 0 ELSE 2 END`
-    : sql<number>`2`;
 }
 
 /** Standalone entries: money still needs a currency (CHECK time_entries_currency_required_when_rate_chk). */

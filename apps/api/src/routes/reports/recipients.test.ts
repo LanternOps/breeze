@@ -576,4 +576,68 @@ describe('report recipient routes', () => {
       expect(response.status).toBe(201);
     });
   });
+
+  // #3198 W02 (spec §3.5, ruling P14) — the three business types deliver only
+  // to `config.emailRecipients`: they are MSP-internal (never portal-visible),
+  // and a contact recipient is an org-axis row a partner-owned definition
+  // cannot hold. The refusal is by TYPE, so it fires on an ORG-owned row too.
+  describe('business report types refuse contact recipients', () => {
+    function businessReport(type: string) {
+      state.getReport.mockResolvedValue({ id: REPORT_ID, orgId: ORG_ID, partnerId: null, type, config: {} });
+    }
+
+    it('refuses a contact recipient on an org-owned ar_aging definition', async () => {
+      businessReport('ar_aging');
+      state.results.push([{ id: CONTACT_ID }]);
+
+      const response = await app().request(`/${REPORT_ID}/recipients`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ contactId: CONTACT_ID }),
+      });
+
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({ error: 'report_type_partner_only_delivery', type: 'ar_aging' });
+      expect(state.inserted).toHaveLength(0);
+    });
+
+    it('refuses the CONVERT writer for every business type', async () => {
+      for (const type of ['ticket_sla_attainment', 'technician_time_billability', 'ar_aging']) {
+        businessReport(type);
+        const response = await app().request(`/${REPORT_ID}/recipients/convert`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-test-mfa': 'satisfied' },
+          body: JSON.stringify({ email: 'alex@example.test' }),
+        });
+
+        expect(response.status).toBe(409);
+        expect(await response.json()).toEqual({ error: 'report_type_partner_only_delivery', type });
+      }
+      expect(state.inserted).toHaveLength(0);
+      expect(state.createContact).not.toHaveBeenCalled();
+    });
+
+    it('DELETE stays permissive — removing a stray contact is harmless', async () => {
+      businessReport('ar_aging');
+
+      const response = await app().request(`/${REPORT_ID}/recipients/${CONTACT_ID}`, { method: 'DELETE' });
+
+      expect(response.status).toBe(200);
+      expect(state.deleted).toHaveLength(1);
+    });
+
+    it('positive control: executive_summary still accepts a contact recipient', async () => {
+      businessReport('executive_summary');
+      state.results.push([{ id: CONTACT_ID }]);
+
+      const response = await app().request(`/${REPORT_ID}/recipients`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ contactId: CONTACT_ID }),
+      });
+
+      expect(response.status).toBe(201);
+      expect(state.inserted).toHaveLength(1);
+    });
+  });
 });

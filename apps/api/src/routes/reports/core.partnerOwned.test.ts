@@ -14,7 +14,9 @@
  *  - `partner_id` always comes from the caller's token, never from the body.
  *  - Org-scope tokens never get a `partner_id` predicate, even though they
  *    carry a partnerId.
- *  - Generating one answers 400 unsupported_report_scope this wave.
+ *  - #3198 W02: generating one runs the partner-scope generator (the W01
+ *    refusal is gone); a business type also requires its underlying read
+ *    permissions (ruling P8) on create, PUT and generate.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
@@ -29,8 +31,17 @@ const RUN_ID = '66666666-6666-4666-8666-666666666666';
 const USER_ID = '11111111-1111-4111-8111-111111111111';
 const CAPTURED_AT = new Date('2026-09-21T12:00:00.000Z');
 
+const ALL_PERMISSIONS = [{ resource: '*', action: '*' }];
+/** reports:* plus everything a business type needs EXCEPT invoices:read. */
+const NO_INVOICES_PERMISSIONS = [
+  { resource: 'reports', action: '*' },
+  { resource: 'tickets', action: 'read' },
+  { resource: 'time_entries', action: 'read' },
+];
+
 const state = vi.hoisted(() => ({
   auth: null as unknown,
+  permissions: null as unknown,
   orgAuthority: null as unknown,
   partnerAuthority: null as unknown,
   authorityMap: new Map<string, unknown>(),
@@ -47,7 +58,11 @@ vi.mock('../../middleware/auth', () => ({
     await next();
   },
   requireScope: () => async (_c: unknown, next: () => Promise<void>) => next(),
-  requirePermission: () => async (_c: unknown, next: () => Promise<void>) => next(),
+  // The real requirePermission is what populates `permissions` (auth.ts:919).
+  requirePermission: () => async (c: any, next: () => Promise<void>) => {
+    c.set('permissions', state.permissions);
+    await next();
+  },
   requireMfa: () => async (_c: unknown, next: () => Promise<void>) => next(),
 }));
 
@@ -133,6 +148,20 @@ vi.mock('../../services/reportGenerationService', async (importOriginal) => {
   };
 });
 
+// The partner org list is resolved by reportScope.ts against the DB; this
+// suite's row queue is positional, so the scope is stubbed here and the real
+// resolver is covered by reportScope.test.ts + generate.businessScope.test.ts.
+vi.mock('../../services/reportScope', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/reportScope')>();
+  return {
+    ...actual,
+    reportScopeFromAuthority: vi.fn(async (owner: { orgId?: string; partnerId?: string }) =>
+      owner.partnerId !== undefined
+        ? { kind: 'partner', partnerId: owner.partnerId, orgIds: [ORG_ID] }
+        : { kind: 'organization', orgId: owner.orgId }),
+  };
+});
+
 vi.mock('../../services/sensitiveReadAudit', () => ({ auditSensitiveRead: vi.fn() }));
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 
@@ -155,7 +184,12 @@ import {
   resolveRequestPartnerReportAuthority,
   siteScopeFingerprint,
 } from '../../services/siteScope';
-import { generateReport, UnsupportedReportScopeError } from '../../services/reportGenerationService';
+import {
+  generateReport,
+  UnexecutableReportScopeError,
+  UnsupportedReportScopeError,
+} from '../../services/reportGenerationService';
+import { ReportScopeMismatchError, reportScopeFromAuthority } from '../../services/reportScope';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../services/partnerWideAccess';
 import { writeRouteAudit } from '../../services/auditEvents';
 
@@ -252,9 +286,24 @@ function params(where: unknown): unknown[] {
   return dialect.sqlToQuery(where as SQL).params;
 }
 
+/**
+ * Params bound to the `reports.org_id IN (…)` org arm specifically. A bare
+ * `params(where)` contains ORG_ID through the run-scope predicate too
+ * (`reports.org_id = $n AND <envelope>`), so it cannot tell whether the org
+ * arm survived (#3198 W02 B2 — proven by dropping the arm: bare toContain
+ * stayed green).
+ */
+function orgArmParams(where: unknown): unknown[] {
+  const { sql: text, params: bound } = dialect.sqlToQuery(where as SQL);
+  const arm = /"reports"\."org_id" in \(([^)]*)\)/.exec(text);
+  if (!arm) return [];
+  return arm[1]!.split(',').map((p) => bound[Number(p.trim().slice(1)) - 1]);
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   state.auth = partnerAuth('all');
+  state.permissions = { permissions: ALL_PERMISSIONS };
   state.orgAuthority = orgAuthorityResult();
   state.partnerAuthority = partnerAuthorityResult();
   state.authorityMap = new Map([[ORG_ID, orgAuthorityResult()]]);
@@ -288,7 +337,7 @@ describe('POST /reports ownerScope=partner (#3198 W01)', () => {
     expect(resolveRequestPartnerReportAuthority).not.toHaveBeenCalled();
   });
 
-  it('400s a type not in PARTNER_SCOPE_REPORT_TYPES', async () => {
+  it('400s a type whose registry entry does not support partner scope', async () => {
     const res = await app().request('/reports', {
       method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ ...body, type: 'device_inventory' }),
     });
@@ -323,13 +372,29 @@ describe('POST /reports ownerScope=partner (#3198 W01)', () => {
   it('ignores a client-supplied partnerId', async () => {
     const res = await app().request('/reports', {
       method: 'POST', headers: JSON_HEADERS,
-      body: JSON.stringify({ ...body, partnerId: OTHER_PARTNER_ID, orgId: ORG_ID }),
+      body: JSON.stringify({ ...body, partnerId: OTHER_PARTNER_ID }),
     });
 
     expect(res.status).toBe(201);
     expect(state.inserts[0]!.values.partnerId).toBe(PARTNER_ID);
     expect(state.inserts[0]!.values.orgId).toBeNull();
     expect(resolveRequestPartnerReportAuthority).toHaveBeenCalledWith(state.auth, PARTNER_ID, 'write');
+  });
+
+  // #3198 W02 (addendum B6): the partner arm of the ownerScope discriminated
+  // union declares `orgId: z.never()`. W01 accepted-and-ignored it; a caller
+  // who believes they aimed a partner report at one org now gets a 400.
+  it('400s a partner-owned create that carries an orgId', async () => {
+    const res = await app().request('/reports', {
+      method: 'POST', headers: JSON_HEADERS,
+      body: JSON.stringify({ ...body, orgId: ORG_ID }),
+    });
+
+    expect(res.status).toBe(400);
+    expect((await res.json() as { details: { fieldErrors: Record<string, unknown> } }).details.fieldErrors)
+      .toHaveProperty('orgId');
+    expect(state.inserts).toHaveLength(0);
+    expect(resolveRequestPartnerReportAuthority).not.toHaveBeenCalled();
   });
 
   it('403s when the live partner authority is refused', async () => {
@@ -339,6 +404,33 @@ describe('POST /reports ownerScope=partner (#3198 W01)', () => {
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ error: 'Report scope is not authorized', reason: 'partner_access_not_all' });
     expect(state.inserts).toHaveLength(0);
+  });
+
+  // #3198 W02 (ruling P8): reports:write is not enough to schedule AR by email.
+  it('403s Insufficient permissions for ar_aging without invoices:read — both owner arms, no insert', async () => {
+    state.permissions = { permissions: NO_INVOICES_PERMISSIONS };
+    const partnerRes = await app().request('/reports', {
+      method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(body),
+    });
+    expect(partnerRes.status).toBe(403);
+    expect(await partnerRes.json()).toEqual({ error: 'Insufficient permissions' });
+
+    const orgRes = await app().request('/reports', {
+      method: 'POST', headers: JSON_HEADERS,
+      body: JSON.stringify({ name: 'AR', type: 'ar_aging', orgId: ORG_ID }),
+    });
+    expect(orgRes.status).toBe(403);
+    expect(await orgRes.json()).toEqual({ error: 'Insufficient permissions' });
+
+    expect(state.inserts).toHaveLength(0);
+    expect(resolveRequestPartnerReportAuthority).not.toHaveBeenCalled();
+
+    // Positive control: the same caller may still create a legacy type.
+    const legacy = await app().request('/reports', {
+      method: 'POST', headers: JSON_HEADERS,
+      body: JSON.stringify({ name: 'Inventory', type: 'device_inventory', orgId: ORG_ID }),
+    });
+    expect(legacy.status).toBe(201);
   });
 
   it('an ownerScope-less create still inserts an org-owned row (unchanged default)', async () => {
@@ -401,6 +493,39 @@ describe('PUT /reports/:id on a partner-owned definition', () => {
     expect(state.updates).toHaveLength(0);
   });
 
+  // #3198 W02 (ruling P8): a PUT can redirect `config.emailRecipients`, so a
+  // caller who could not create the report cannot edit it either.
+  // Ruling P8b: the type is HIDDEN from a caller without invoices:read, so the
+  // by-id write answers 404 (was P8's 403 before reads were gated too).
+  it('404s an ar_aging row without invoices:read (hidden, ruling P8b), before any write', async () => {
+    state.permissions = { permissions: NO_INVOICES_PERMISSIONS };
+    state.rows = [partnerDefinition(), partnerDefinition()];
+    const res = await app().request(`/reports/${REPORT_ID}`, {
+      method: 'PUT', headers: JSON_HEADERS,
+      body: JSON.stringify({ config: { emailRecipients: ['me@example.com'] } }),
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Report not found' });
+    expect(state.updates).toHaveLength(0);
+  });
+
+  it('positive control: the same caller may still edit a device_inventory row', async () => {
+    state.permissions = { permissions: NO_INVOICES_PERMISSIONS };
+    const orgRow = partnerDefinition({
+      type: 'device_inventory', orgId: ORG_ID, partnerId: null, executionScopeKind: 'unrestricted',
+      executionScopeFingerprint: siteScopeFingerprint({ version: 1, kind: 'unrestricted', orgId: ORG_ID }),
+    });
+    state.auth = orgAuth();
+    state.rows = [orgRow, orgRow];
+    const res = await app().request(`/reports/${REPORT_ID}`, {
+      method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ name: 'Renamed' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(state.updates).toHaveLength(1);
+  });
+
   it('updates through the partner axis for a full-access partner admin', async () => {
     state.rows = [partnerDefinition(), partnerDefinition()];
     const res = await app().request(`/reports/${REPORT_ID}`, {
@@ -414,6 +539,161 @@ describe('PUT /reports/:id on a partner-owned definition', () => {
     const bound = params(state.updates[0]!.where);
     expect(bound).toContain(PARTNER_ID);
     expect(bound).toContain('partner_wide');
+  });
+});
+
+/**
+ * #3198 W02 (ruling P15). The PUT body carries no `type`, so the route
+ * validates `config` against the STORED row's type. The positive control
+ * (a foreign key on device_inventory passes through) proves it is the stored
+ * type selecting the schema, not a blanket union of every type's keys.
+ */
+describe('PUT /reports/:id validates config against the stored row\'s type', () => {
+  function orgDefinition(type: string) {
+    return partnerDefinition({
+      type,
+      orgId: ORG_ID,
+      partnerId: null,
+      executionScopeKind: 'unrestricted',
+      executionScopeFingerprint: siteScopeFingerprint({ version: 1, kind: 'unrestricted', orgId: ORG_ID }),
+    });
+  }
+  beforeEach(() => {
+    state.auth = orgAuth();
+  });
+
+  it('400s a value the stored type rejects, and updates nothing', async () => {
+    state.rows = [orgDefinition('vulnerability_management'), orgDefinition('vulnerability_management')];
+    const res = await app().request(`/reports/${REPORT_ID}`, {
+      method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ config: { topN: 9999 } }),
+    });
+
+    expect(res.status).toBe(400);
+    expect((await res.json() as { details: { fieldErrors: Record<string, unknown> } }).details.fieldErrors)
+      .toHaveProperty(['config.topN']);
+    expect(state.updates).toHaveLength(0);
+  });
+
+  it('stores only the keys the caller sent — no defaults frozen into the row', async () => {
+    state.rows = [orgDefinition('vulnerability_management'), orgDefinition('vulnerability_management')];
+    const res = await app().request(`/reports/${REPORT_ID}`, {
+      method: 'PUT', headers: JSON_HEADERS,
+      body: JSON.stringify({ config: { topN: 10, builderType: 'vulns' } }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(state.updates[0]!.set.config).toEqual({ topN: 10, builderType: 'vulns' });
+  });
+
+  it('positive control: the same key on a device_inventory row passes through unvalidated', async () => {
+    state.rows = [orgDefinition('device_inventory'), orgDefinition('device_inventory')];
+    const res = await app().request(`/reports/${REPORT_ID}`, {
+      method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ config: { topN: 9999 } }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(state.updates[0]!.set.config).toEqual({ topN: 9999 });
+  });
+
+  it('a `type` key inside the body config cannot pick a different schema', async () => {
+    state.rows = [orgDefinition('vulnerability_management'), orgDefinition('vulnerability_management')];
+    const res = await app().request(`/reports/${REPORT_ID}`, {
+      method: 'PUT', headers: JSON_HEADERS,
+      body: JSON.stringify({ config: { type: 'device_inventory', topN: 9999 } }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(state.updates).toHaveLength(0);
+  });
+});
+
+// #3198 W02 (ruling T11b). Reauthorize re-stamps the caller as the execution
+// user, so it needs the type's underlying read permissions exactly as PUT does
+// (P8); otherwise a reports:write-only user could take over an AR schedule.
+describe('POST /reports/:id/reauthorize applies the per-type permission gate', () => {
+  it('404s an ar_aging row without invoices:read (hidden, ruling P8b), updating nothing', async () => {
+    state.permissions = { permissions: NO_INVOICES_PERMISSIONS };
+    state.rows = [partnerDefinition(), partnerDefinition()];
+    const res = await app().request(`/reports/${REPORT_ID}/reauthorize`, { method: 'POST' });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Report not found' });
+    expect(state.updates).toHaveLength(0);
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  it('positive control: the same caller may reauthorize a device_inventory row', async () => {
+    state.permissions = { permissions: NO_INVOICES_PERMISSIONS };
+    state.rows = [partnerDefinition({ type: 'device_inventory' }), partnerDefinition({ type: 'device_inventory' })];
+    const res = await app().request(`/reports/${REPORT_ID}/reauthorize`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    expect(state.updates).toHaveLength(1);
+  });
+});
+
+describe('POST /reports validates config against body.type (#3198 W02, ruling P15)', () => {
+  beforeEach(() => {
+    state.auth = orgAuth();
+  });
+
+  it('400s a value the type rejects', async () => {
+    const res = await app().request('/reports', {
+      method: 'POST', headers: JSON_HEADERS,
+      body: JSON.stringify({ name: 'Vulns', type: 'vulnerability_management', config: { topN: 9999 } }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(state.inserts).toHaveLength(0);
+  });
+
+  it('passes a foreign type\'s key through on another type (strip-nothing)', async () => {
+    const res = await app().request('/reports', {
+      method: 'POST', headers: JSON_HEADERS,
+      body: JSON.stringify({ name: 'Inventory', type: 'device_inventory', config: { topN: 9999 } }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(state.inserts[0]!.values.config).toEqual({ topN: 9999 });
+  });
+
+  it('never persists a client-sent `config.type` (the row\'s own `type` column is the only type)', async () => {
+    const res = await app().request('/reports', {
+      method: 'POST', headers: JSON_HEADERS,
+      body: JSON.stringify({ name: 'Inventory', type: 'device_inventory', config: { type: 'ar_aging', columns: ['hostname'] } }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(state.inserts[0]!.values.config).toEqual({ columns: ['hostname'] });
+    expect(state.inserts[0]!.values.type).toBe('device_inventory');
+  });
+});
+
+describe('PUT /reports/:id config hygiene (#3198 W02 Task 13)', () => {
+  it('never persists a client-sent `config.type` on PUT', async () => {
+    state.rows = [partnerDefinition(), partnerDefinition()];
+    const res = await app().request(`/reports/${REPORT_ID}`, {
+      method: 'PUT', headers: JSON_HEADERS,
+      body: JSON.stringify({ config: { type: 'device_inventory', groupBy: 'currency' } }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(state.updates[0]!.set.config).toEqual({ groupBy: 'currency' });
+  });
+
+  it('400s a PUT on a partner-owned ar_aging row whose config the stored type rejects, updating nothing', async () => {
+    state.rows = [partnerDefinition(), partnerDefinition()];
+    const res = await app().request(`/reports/${REPORT_ID}`, {
+      method: 'PUT', headers: JSON_HEADERS,
+      body: JSON.stringify({ config: { groupBy: 'technician', asOf: '2026-02-30' } }),
+    });
+
+    expect(res.status).toBe(400);
+    const fieldErrors = (await res.json() as { details: { fieldErrors: Record<string, unknown> } }).details.fieldErrors;
+    expect(fieldErrors).toHaveProperty(['config.groupBy']);
+    expect(fieldErrors).toHaveProperty(['config.asOf']);
+    expect(resolveRequestPartnerReportAuthority).toHaveBeenCalledWith(state.auth, PARTNER_ID, 'write');
+    expect(state.updates).toHaveLength(0);
   });
 });
 
@@ -477,6 +757,57 @@ describe('GET /reports list for partner scope', () => {
   });
 });
 
+// #3198 W02 (addendum B7, ruling P9): a system-scope (platform admin) list
+// also sees partner-owned rows, but only with a well-formed partner_wide
+// envelope on a row that actually has a partner owner.
+function systemAuth() {
+  return {
+    user: { id: USER_ID, email: 'admin@example.com' },
+    scope: 'system',
+    orgId: null,
+    partnerId: null,
+    accessibleOrgIds: null,
+    canAccessOrg: () => true,
+  };
+}
+
+function sqlText(where: unknown): string {
+  return dialect.sqlToQuery(where as SQL).sql;
+}
+
+describe('system-scope lists include partner-owned rows (B7)', () => {
+  it('GET /reports adds a partner_wide arm bound to a non-null partner_id', async () => {
+    state.auth = systemAuth();
+    state.rows = [{ count: 0 }, null];
+    const res = await app().request('/reports');
+
+    expect(res.status).toBe(200);
+    expect(params(state.wheres[0])).toContain('partner_wide');
+    expect(params(state.wheres[0])).toContain('unrestricted');
+    expect(sqlText(state.wheres[0])).toContain('"reports"."partner_id" is not null');
+  });
+
+  it('GET /reports/templates stays org-owned only for a system caller', async () => {
+    state.auth = systemAuth();
+    state.rows = [{ count: 0 }, null];
+    const res = await app().request('/reports/templates');
+
+    expect(res.status).toBe(200);
+    expect(params(state.wheres[0])).not.toContain('partner_wide');
+  });
+
+  it('GET /reports/runs adds the partner_wide arm on the run envelope', async () => {
+    state.auth = systemAuth();
+    state.rows = [{ count: 0 }, null];
+    const res = await app().request('/reports/runs');
+
+    expect(res.status).toBe(200);
+    expect(params(state.wheres[0])).toContain('partner_wide');
+    expect(sqlText(state.wheres[0])).toContain('"reports"."partner_id" is not null');
+    expect(sqlText(state.wheres[0])).toContain('"report_runs"."execution_scope_kind"');
+  });
+});
+
 describe('GET /reports/:id on a partner-owned definition', () => {
   it('404s a selected-access partner user', async () => {
     state.auth = partnerAuth('selected');
@@ -501,14 +832,118 @@ describe('GET /reports/:id on a partner-owned definition', () => {
 });
 
 describe('POST /reports/:id/generate on a partner-owned definition', () => {
-  it('400s unsupported_report_scope and creates no run', async () => {
+  it('generates under a partner scope, stamping a partner_wide run (#3198 W02)', async () => {
     state.rows = [partnerDefinition(), partnerDefinition()];
     const res = await app().request(`/reports/${REPORT_ID}/generate`, { method: 'POST' });
 
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'unsupported_report_scope', type: 'ar_aging' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ status: 'completed' });
+    expect(resolveRequestPartnerReportAuthority).toHaveBeenCalledWith(state.auth, PARTNER_ID, 'read');
+    expect(state.inserts).toHaveLength(1);
+    const run = state.inserts[0]!.values;
+    expect(run.executionScopeKind).toBe('partner_wide');
+    expect(run.executionScopeSiteIds).toBeNull();
+    expect(run.executionScopeUserId).toBe(USER_ID);
+    expect(run.executionScopeFingerprint).toBe(siteScopeFingerprint(partnerWideScope(PARTNER_ID)));
+    const [type, scope, , authority] = vi.mocked(generateReport).mock.calls[0]!;
+    expect(type).toBe('ar_aging');
+    expect(scope).toEqual({ kind: 'partner', partnerId: PARTNER_ID, orgIds: [ORG_ID] });
+    expect((authority as { scope: { kind: string } }).scope.kind).toBe('partner_wide');
+    // A partner-owned run has no org to attribute and must not borrow one.
+    expect(vi.mocked(writeRouteAudit).mock.calls[0]?.[1]).toMatchObject({
+      orgId: null,
+      action: 'report.generate',
+      details: { reportId: REPORT_ID, partnerId: PARTNER_ID },
+    });
+    expect(state.updates.at(-1)?.set).toEqual(expect.objectContaining({ status: 'completed' }));
+  });
+
+  it('a platform admin (system token) generates it through the platform partner authority', async () => {
+    state.auth = {
+      user: { id: USER_ID, email: 'admin@example.com' },
+      scope: 'system',
+      orgId: null,
+      partnerId: null,
+      accessibleOrgIds: null,
+      canAccessOrg: () => true,
+    };
+    state.rows = [partnerDefinition(), partnerDefinition()];
+    const res = await app().request(`/reports/${REPORT_ID}/generate`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    expect(resolveRequestPartnerReportAuthority).toHaveBeenCalledWith(state.auth, PARTNER_ID, 'read');
+    expect(vi.mocked(generateReport).mock.calls[0]?.[1]).toMatchObject({ kind: 'partner', partnerId: PARTNER_ID });
+  });
+
+  it('404s without invoices:read (hidden, ruling P8b), before any run row', async () => {
+    state.permissions = { permissions: NO_INVOICES_PERMISSIONS };
+    state.rows = [partnerDefinition(), partnerDefinition()];
+    const res = await app().request(`/reports/${REPORT_ID}/generate`, { method: 'POST' });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Report not found' });
     expect(state.inserts).toHaveLength(0);
     expect(generateReport).not.toHaveBeenCalled();
+  });
+
+  it('403s when the stored envelope does not intersect the live partner authority', async () => {
+    state.rows = [partnerDefinition(), partnerDefinition()];
+    state.partnerAuthority = { ok: false, reason: 'permission_removed' };
+    const res = await app().request(`/reports/${REPORT_ID}/generate`, { method: 'POST' });
+
+    // getReportWithOwnerCheck resolves the same authority first, so a demoted
+    // caller cannot even see the definition.
+    expect(res.status).toBe(404);
+    expect(state.inserts).toHaveLength(0);
+  });
+
+  it('refuses a stored partner-scope config carrying an org selector (preflight), before any run row', async () => {
+    const withSelector = partnerDefinition({ config: { orgIds: [ORG_ID] } });
+    state.rows = [withSelector, withSelector];
+    const res = await app().request(`/reports/${REPORT_ID}/generate`, { method: 'POST' });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Access to report scope denied' });
+    expect(state.inserts).toHaveLength(0);
+    expect(generateReport).not.toHaveBeenCalled();
+  });
+
+  it('403s with the runId when generation throws UnexecutableReportScopeError after the run row exists', async () => {
+    state.rows = [partnerDefinition(), partnerDefinition()];
+    vi.mocked(generateReport).mockRejectedValueOnce(new UnexecutableReportScopeError());
+    const res = await app().request(`/reports/${REPORT_ID}/generate`, { method: 'POST' });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Access to report scope denied', runId: REPORT_ID });
+    expect(state.inserts).toHaveLength(1);
+    expect(state.updates.at(-1)?.set).toEqual(expect.objectContaining({ status: 'failed' }));
+  });
+
+  it('maps a ReportScopeMismatchError (subclass, ruling P11) from the live org-list resolve to the same 403', async () => {
+    state.rows = [partnerDefinition(), partnerDefinition()];
+    vi.mocked(reportScopeFromAuthority).mockRejectedValueOnce(
+      new ReportScopeMismatchError('ambient context cannot see partner'),
+    );
+    const res = await app().request(`/reports/${REPORT_ID}/generate`, { method: 'POST' });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Access to report scope denied', runId: REPORT_ID });
+    expect(generateReport).not.toHaveBeenCalled();
+    expect(state.updates.at(-1)?.set).toEqual(expect.objectContaining({ status: 'failed' }));
+  });
+
+  it('an org-only type stored under the partner axis still records the stable unsupported_report_scope code', async () => {
+    const orgOnly = partnerDefinition({ type: 'device_inventory' });
+    state.rows = [orgOnly, orgOnly];
+    vi.mocked(generateReport).mockRejectedValueOnce(new UnsupportedReportScopeError('device_inventory', 'partner'));
+    const res = await app().request(`/reports/${REPORT_ID}/generate`, { method: 'POST' });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: 'unsupported_report_scope', type: 'device_inventory' });
+    expect(state.updates.at(-1)?.set).toEqual(expect.objectContaining({
+      status: 'failed',
+      errorMessage: 'unsupported_report_scope',
+    }));
   });
 
   it('404s a selected-access partner user', async () => {
@@ -522,8 +957,9 @@ describe('POST /reports/:id/generate on a partner-owned definition', () => {
 });
 
 describe('POST /reports/:id/generate on an org-owned business-type definition', () => {
+  // A partner caller: since ruling F1 an org-scope token never reaches an
+  // org-owned business definition (mspStaffAudience.test.ts).
   it('400s unsupported_report_scope and records the stable code (not err.message) on the failed run', async () => {
-    state.auth = orgAuth();
     const orgDefinition = partnerDefinition({
       orgId: ORG_ID,
       partnerId: null,
@@ -563,12 +999,22 @@ describe('POST /reports/generate (ad-hoc) ownerScope=partner', () => {
     expect(await res.json()).toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
   });
 
-  it('400s unsupported_report_scope for a full-access partner admin', async () => {
+  it('generates a partner-scope report for a full-access partner admin (#3198 W02)', async () => {
     const res = await app().request('/reports/generate', {
       method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ ownerScope: 'partner', type: 'ar_aging' }),
     });
+    expect(res.status).toBe(200);
+    expect(resolveRequestPartnerReportAuthority).toHaveBeenCalledWith(state.auth, PARTNER_ID, 'read');
+    expect(vi.mocked(generateReport).mock.calls[0]?.[1])
+      .toEqual({ kind: 'partner', partnerId: PARTNER_ID, orgIds: [ORG_ID] });
+  });
+
+  it('still 400s unsupported_report_scope for a type with no partner-scope generator', async () => {
+    const res = await app().request('/reports/generate', {
+      method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ ownerScope: 'partner', type: 'device_inventory' }),
+    });
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'unsupported_report_scope', type: 'ar_aging' });
+    expect(await res.json()).toEqual({ error: 'unsupported_report_scope', type: 'device_inventory' });
     expect(generateReport).not.toHaveBeenCalled();
   });
 });
@@ -628,12 +1074,19 @@ describe('runs of a partner-owned definition', () => {
     state.rows = [{ count: 0 }, null];
     await app().request('/reports/runs');
     expect(params(state.wheres[0])).toContain(PARTNER_ID);
+    // Positive control (#3198 W02 B2): the org arm is still there, so the
+    // partner arm is ORed onto it rather than replacing it.
+    expect(params(state.wheres[0])).toContain(ORG_ID);
+    expect(orgArmParams(state.wheres[0])).toEqual([ORG_ID]);
 
     state.auth = partnerAuth('selected');
     state.wheres = [];
     state.rows = [{ count: 0 }, null];
     await app().request('/reports/runs');
     expect(params(state.wheres[0])).not.toContain(PARTNER_ID);
+    // …and the 'selected' caller still lists its own orgs' runs.
+    expect(params(state.wheres[0])).toContain(ORG_ID);
+    expect(orgArmParams(state.wheres[0])).toEqual([ORG_ID]);
   });
 
   it('GET /runs never adds a partner_id predicate for org scope', async () => {
@@ -742,5 +1195,104 @@ describe('audit records for partner-owned rows carry the partner id (#3198 W01)'
       action: 'report.reauthorize',
       details: { partnerId: PARTNER_ID },
     });
+  });
+});
+
+/**
+ * #3198 W02 fix round, item 6. A business type selects by its own `period`
+ * and its owner scope (ruling T3e) — the legacy builder selector keys would be
+ * stored and silently ignored by the generator. They are refused with a 400
+ * naming the key, on BOTH ownership arms, on create and on PUT. A selector
+ * that selects nothing (`sites: []`, `filters: {}`) and the non-selector
+ * legacy keys (schedule, emailRecipients, columns, sort*) stay valid.
+ */
+describe('business types refuse legacy selector keys in config (#3198 W02 item 6)', () => {
+  const SELECTORS: Array<[string, unknown]> = [
+    ['dateRange', { preset: 'last_30_days' }],
+    ['sites', [ORG_ID]],
+    ['filters', { siteIds: [ORG_ID] }],
+    ['orgId', ORG_ID],
+    ['orgIds', [ORG_ID]],
+    ['siteIds', [ORG_ID]],
+    ['deviceIds', [ORG_ID]],
+  ];
+  function fieldErrors(body: unknown): Record<string, string[]> {
+    return (body as { details: { fieldErrors: Record<string, string[]> } }).details.fieldErrors;
+  }
+  function orgBusinessRow() {
+    return partnerDefinition({
+      orgId: ORG_ID, partnerId: null, executionScopeKind: 'unrestricted',
+      executionScopeFingerprint: siteScopeFingerprint({ version: 1, kind: 'unrestricted', orgId: ORG_ID }),
+    });
+  }
+
+  it.each(SELECTORS)('POST partner arm: config.%s → 400 naming the key, no insert', async (key, value) => {
+    const res = await app().request('/reports', {
+      method: 'POST', headers: JSON_HEADERS,
+      body: JSON.stringify({ ownerScope: 'partner', name: 'AR', type: 'ar_aging', config: { [key]: value } }),
+    });
+    expect(res.status).toBe(400);
+    const errors = fieldErrors(await res.json());
+    expect(errors).toHaveProperty([`config.${key}`]);
+    expect(errors[`config.${key}`]!.join(' ')).toContain(key);
+    expect(state.inserts).toHaveLength(0);
+  });
+
+  it.each(['dateRange', 'sites'])('POST organization arm: config.%s → 400, no insert', async (key) => {
+    const value = SELECTORS.find(([k]) => k === key)![1];
+    const res = await app().request('/reports', {
+      method: 'POST', headers: JSON_HEADERS,
+      body: JSON.stringify({ name: 'AR', type: 'ar_aging', orgId: ORG_ID, config: { [key]: value } }),
+    });
+    expect(res.status).toBe(400);
+    expect(fieldErrors(await res.json())).toHaveProperty([`config.${key}`]);
+    expect(state.inserts).toHaveLength(0);
+  });
+
+  it.each([
+    ['partner-owned', () => partnerDefinition()],
+    ['org-owned', () => orgBusinessRow()],
+  ])('PUT on a %s ar_aging row: config.dateRange / config.sites → 400, no update', async (_label, row) => {
+    for (const key of ['dateRange', 'sites']) {
+      state.rows = [row(), row()];
+      state.updates = [];
+      const value = SELECTORS.find(([k]) => k === key)![1];
+      const res = await app().request(`/reports/${REPORT_ID}`, {
+        method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ config: { [key]: value } }),
+      });
+      expect(res.status, key).toBe(400);
+      expect(fieldErrors(await res.json())).toHaveProperty([`config.${key}`]);
+      expect(state.updates).toHaveLength(0);
+    }
+  });
+
+  it.each(['ticket_sla_attainment', 'technician_time_billability'])('%s refuses config.dateRange too', async (type) => {
+    const res = await app().request('/reports', {
+      method: 'POST', headers: JSON_HEADERS,
+      body: JSON.stringify({ ownerScope: 'partner', name: 'x', type, config: { dateRange: { preset: 'last_7_days' } } }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('positive control: a business body without selectors — and with empty ones — is created', async () => {
+    const config = {
+      groupBy: 'organization', schedule: { time: '07:00' }, emailRecipients: ['ops@example.com'],
+      columns: ['a'], sortBy: 'a', sortOrder: 'asc', sites: [], filters: {},
+    };
+    const res = await app().request('/reports', {
+      method: 'POST', headers: JSON_HEADERS,
+      body: JSON.stringify({ ownerScope: 'partner', name: 'AR', type: 'ar_aging', config }),
+    });
+    expect(res.status).toBe(201);
+    expect(state.inserts).toHaveLength(1);
+  });
+
+  it('positive control: a legacy type keeps accepting dateRange and filters', async () => {
+    state.rows = [orgBusinessRow(), orgBusinessRow()].map((r) => ({ ...r, type: 'device_inventory' }));
+    const res = await app().request(`/reports/${REPORT_ID}`, {
+      method: 'PUT', headers: JSON_HEADERS,
+      body: JSON.stringify({ config: { dateRange: { preset: 'last_30_days' }, filters: { siteIds: [ORG_ID] } } }),
+    });
+    expect(res.status).toBe(200);
   });
 });

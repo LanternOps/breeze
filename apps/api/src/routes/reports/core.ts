@@ -10,7 +10,16 @@ import {
   type AuthContext,
 } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { PERMISSIONS } from '../../services/permissions';
+import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import {
+  missingReportTypePermission,
+  reportAudienceCondition,
+  reportTypeHiddenByPermission,
+  reportTypeHiddenFromCaller,
+  reportTypePermissionCondition,
+  REPORT_TYPE_PERMISSION_DENIED,
+  type GrantedReportPermissions,
+} from '../../services/reportTypePermissions';
 import {
   canManagePartnerWidePolicies,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
@@ -24,6 +33,7 @@ import {
   isSystemManagedReportDefinition,
   partnerOwnedReportVisibility,
   partnerWideListTarget,
+  systemPartnerWideListArm,
   PORTAL_SELF_SERVICE_REPORT,
   reportDefinitionMetadataProjection,
   reportOwnerCondition,
@@ -50,9 +60,11 @@ import {
 import {
   listReportsSchema,
   createReportSchema,
-  PARTNER_SCOPE_REPORT_TYPES,
+  parseStoredReportConfig,
   updateReportSchema,
 } from './schemas';
+import { reportTypeDef } from '../../services/reportRegistry';
+import { formatZodError, type ValidationErrorBody } from '../../lib/validation';
 
 export const coreRoutes = new Hono();
 
@@ -75,6 +87,9 @@ const SYSTEM_MANAGED = 'system_managed' as const;
  * it needs the locked row's org and a second table; callers answer 409.
  */
 const PORTAL_SELF_SERVICE = 'portal_self_service' as const;
+/** #3198 W02 (ruling P8) — PUT's outcome when the caller lacks the stored
+ *  type's underlying read permissions. */
+const TYPE_PERMISSION_DENIED = 'type_permission_denied' as const;
 /**
  * #3198 W01 — `loadLockedDefinition`'s partner-wide refusal, DEFENSE IN DEPTH.
  * Unreachable in production today: `tenantAuthorizedReportCondition` already
@@ -85,6 +100,13 @@ const PORTAL_SELF_SERVICE = 'portal_self_service' as const;
  * letting the mutation reach the partner authority resolver.
  */
 const PARTNER_WIDE_DENIED = 'partner_wide_denied' as const;
+/**
+ * #3198 W02 ruling F1 — `loadLockedDefinition`'s audience refusal, DEFENSE IN
+ * DEPTH like PARTNER_WIDE_DENIED: `tenantAuthorizedReportCondition` already
+ * hides msp_staff types from an org-scope caller (404). Fires only if that
+ * predicate regresses; callers answer 403 `REPORT_TYPE_PERMISSION_DENIED`.
+ */
+const AUDIENCE_DENIED = 'audience_denied' as const;
 /** #3198 W01 — PUT's refusal to re-home a partner-owned definition. */
 const OWNERSHIP_IMMUTABLE = 'ownership_immutable' as const;
 
@@ -110,7 +132,11 @@ async function resolveDefinitionListScope(
   // the partner branch no NULL-org row can match `inArray(reports.org_id, …)`
   // or any org-axis scope branch.
   options: { includePartnerOwned: boolean },
+  // Ruling P8b: the caller's resolved permissions — a type whose underlying
+  // read permissions it lacks is excluded from every listing, on every scope.
+  permissions: GrantedReportPermissions,
 ): Promise<DefinitionListScopeResult> {
+  const typePermission = reportTypePermissionCondition(permissions, reports.type);
   const exactOrgId = auth.scope === 'organization'
     ? auth.orgId
     : explicitOrgId;
@@ -127,7 +153,13 @@ async function resolveDefinitionListScope(
     }
     return {
       ok: true,
-      tenantCondition: eq(reports.orgId, exactOrgId),
+      // Ruling F1: an org-scope caller never lists an msp_staff type (a
+      // partner caller's explicit orgId gets no audience predicate).
+      tenantCondition: and(
+        eq(reports.orgId, exactOrgId),
+        reportAudienceCondition(auth, reports.type),
+        typePermission,
+      )!,
       definitionScopePredicate: reportDefinitionScopeSqlPredicate(reports, scope),
     };
   }
@@ -155,9 +187,12 @@ async function resolveDefinitionListScope(
       : undefined;
     return {
       ok: true,
-      tenantCondition: partnerWide
-        ? or(orgCondition, partnerOwnedReportVisibility(auth))!
-        : orgCondition,
+      tenantCondition: and(
+        partnerWide
+          ? or(orgCondition, partnerOwnedReportVisibility(auth))!
+          : orgCondition,
+        typePermission,
+      )!,
       definitionScopePredicate: reportDefinitionMultiOrgScopeSqlPredicate(
         reports.orgId,
         reports,
@@ -169,10 +204,19 @@ async function resolveDefinitionListScope(
     };
   }
 
+  // System scope (platform admin). #3198 W02 (addendum B7, ruling P9): the
+  // all-orgs listing also carries partner-owned rows with a well-formed
+  // partner_wide envelope; /templates (includePartnerOwned false) stays
+  // org-owned only.
+  const systemPartnerArm = options.includePartnerOwned
+    ? systemPartnerWideListArm(auth, reports)
+    : undefined;
   return {
     ok: true,
-    definitionScopePredicate:
-      unrestrictedReportDefinitionScopeSqlPredicate(reports),
+    tenantCondition: typePermission,
+    definitionScopePredicate: systemPartnerArm
+      ? or(unrestrictedReportDefinitionScopeSqlPredicate(reports), systemPartnerArm)!
+      : unrestrictedReportDefinitionScopeSqlPredicate(reports),
   };
 }
 
@@ -211,13 +255,21 @@ async function loadLockedDefinition(
   reportId: string,
   auth: AuthContext,
   action: Exclude<ReportAction, 'read' | 'export'>,
+  // Ruling P8b: a type whose read permissions the caller lacks is HIDDEN here
+  // (null → 404), as it is from every read — so PUT/reauthorize/DELETE on
+  // such a row answer 404, not 403 (same posture as F1's hidden rows).
+  permissions: GrantedReportPermissions,
 ) {
   const [metadata] = await tx
     .select(reportDefinitionMetadataProjection)
     .from(reports)
-    .where(tenantAuthorizedReportCondition(reportId, auth))
+    .where(tenantAuthorizedReportCondition(reportId, auth, permissions))
     .limit(1);
   if (!metadata) return null;
+  // Ruling P8b, defense in depth: the tenant condition above already
+  // excludes the type.
+  if (reportTypeHiddenByPermission(metadata.type, permissions)) return null;
+  if (reportTypeHiddenFromCaller(metadata.type, auth)) return AUDIENCE_DENIED;
   if (isSystemManagedReportDefinition(metadata)) return SYSTEM_MANAGED;
 
   const owner = reportOwnerOfRow(metadata);
@@ -285,7 +337,7 @@ coreRoutes.get(
     const { page, limit, offset } = getPagination(query);
     const scopeResult = await resolveDefinitionListScope(auth, query.orgId, {
       includePartnerOwned: true,
-    });
+    }, c.get('permissions') as UserPermissions | undefined);
     if (!scopeResult.ok) {
       return c.json({ error: scopeResult.error }, 403);
     }
@@ -346,7 +398,7 @@ coreRoutes.get(
     const { page, limit, offset } = getPagination(query);
     const scopeResult = await resolveDefinitionListScope(auth, query.orgId, {
       includePartnerOwned: false,
-    });
+    }, c.get('permissions') as UserPermissions | undefined);
     if (!scopeResult.ok) {
       return c.json({ error: scopeResult.error }, 403);
     }
@@ -395,7 +447,11 @@ coreRoutes.get(
       return c.notFound();
     }
 
-    const report = await getReportWithOrgCheck(reportId, auth);
+    const report = await getReportWithOrgCheck(
+      reportId,
+      auth,
+      c.get('permissions') as UserPermissions | undefined,
+    );
     if (!report) {
       return c.json({ error: 'Report not found' }, 404);
     }
@@ -467,6 +523,7 @@ coreRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const data = c.req.valid('json');
+    const permissions = c.get('permissions') as UserPermissions | undefined;
 
     // #3198 W01 — a partner-owned definition. partner_id is ALWAYS the
     // caller's own token partner; `data.orgId` and any client-supplied partner
@@ -478,8 +535,17 @@ coreRoutes.post(
       if (!canManagePartnerWidePolicies(auth)) {
         return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
       }
-      if (!PARTNER_SCOPE_REPORT_TYPES.has(data.type)) {
+      // #3198 W02 (ruling P13): the registry is the one list of which types
+      // can run at partner scope; W01's PARTNER_SCOPE_REPORT_TYPES is retired.
+      if (!reportTypeDef(data.type).supportedScopes.includes('partner')) {
         return c.json({ error: 'unsupported_report_scope', type: data.type }, 400);
+      }
+      // #3198 W02 (spec §2, ruling P8): a business type also needs the
+      // underlying read permissions its registry entry lists — the route's
+      // reports:* grant is necessary but not sufficient. After W01's pinned
+      // token gates (ruling P12), before any authority lookup or write.
+      if (missingReportTypePermission(data.type, permissions)) {
+        return c.json(REPORT_TYPE_PERMISSION_DENIED, 403);
       }
       const partnerAuthority = await resolveRequestPartnerReportAuthority(
         auth,
@@ -525,6 +591,14 @@ coreRoutes.post(
       return c.json(partnerReport, 201);
     }
 
+    // #3198 W02 (ruling P8): same per-type permission gate on the org arm.
+    // Ruling F1: an org-scope caller may never create an msp_staff type.
+    if (
+      reportTypeHiddenFromCaller(data.type, auth)
+      || missingReportTypePermission(data.type, permissions)
+    ) {
+      return c.json(REPORT_TYPE_PERMISSION_DENIED, 403);
+    }
     // Determine orgId
     let orgId = data.orgId;
 
@@ -604,6 +678,7 @@ coreRoutes.put(
     // sends it on every save) and refused on a partner-owned one below; it is
     // never an update. `ownerScope` never reaches here (schema: z.never()).
     const { orgId: bodyOrgId, ownerScope: _ownerScope, ...data } = c.req.valid('json');
+    const permissions = c.get('permissions') as UserPermissions | undefined;
 
     if (Object.keys(data).length === 0) {
       return c.json({ error: 'No updates provided' }, 400);
@@ -611,7 +686,6 @@ coreRoutes.put(
 
     const updates: Record<string, unknown> = { updatedAt: new Date() };
     if (data.name !== undefined) updates.name = data.name;
-    if (data.config !== undefined) updates.config = data.config;
     if (data.schedule !== undefined) updates.schedule = data.schedule;
     if (data.format !== undefined) updates.format = data.format;
 
@@ -621,9 +695,11 @@ coreRoutes.put(
         reportId,
         auth,
         'write',
+        permissions,
       );
       if (locked === SYSTEM_MANAGED) return SYSTEM_MANAGED;
       if (locked === PARTNER_WIDE_DENIED) return PARTNER_WIDE_DENIED;
+      if (locked === AUDIENCE_DENIED) return TYPE_PERMISSION_DENIED;
       if (!locked) return null;
       // #3198 W01: ownership is immutable. The report_schedule_recipients /
       // service_deliverables composite FKs are ON UPDATE NO ACTION, so flipping
@@ -631,8 +707,32 @@ coreRoutes.put(
       if (locked.owner.partnerId !== undefined && bodyOrgId !== undefined) {
         return OWNERSHIP_IMMUTABLE;
       }
+      // #3198 W02 (ruling P8). Any edit — a config edit can redirect
+      // `emailRecipients` — needs the STORED type's underlying read
+      // permissions, exactly as creating it did. After the row is authorized,
+      // so the 403 never discloses a definition the caller cannot see.
+      // Defense in depth since ruling P8b: loadLockedDefinition already HIDES
+      // such a row (404).
+      if (missingReportTypePermission(locked.locked.type, permissions)) {
+        return TYPE_PERMISSION_DENIED;
+      }
       if (await isPortalSelfServiceLocked(tx, locked.locked)) {
         return PORTAL_SELF_SERVICE;
+      }
+      // #3198 W02 (ruling P15). The body carries no `type`, so the schema layer
+      // could only check the shared builder keys; the STORED row's type picks
+      // the schema here. Only after the row is authorized and locked, so a
+      // validation 400 never discloses a definition the caller cannot see.
+      if (data.config !== undefined) {
+        const typed = parseStoredReportConfig(locked.locked.type, data.config);
+        if (!typed.success) {
+          return {
+            invalidConfig: formatZodError({
+              issues: typed.error.issues.map((issue) => ({ ...issue, path: ['config', ...issue.path] })),
+            }),
+          };
+        }
+        updates.config = typed.data;
       }
 
       const effectiveScope = intersectSiteScopes(
@@ -665,11 +765,17 @@ coreRoutes.put(
     if (mutation === OWNERSHIP_IMMUTABLE) {
       return c.json({ error: 'report_ownership_immutable' }, 400);
     }
+    if (mutation === TYPE_PERMISSION_DENIED) {
+      return c.json(REPORT_TYPE_PERMISSION_DENIED, 403);
+    }
     if (mutation === PORTAL_SELF_SERVICE) {
       return c.json(PORTAL_SELF_SERVICE_REPORT, 409);
     }
     if (!mutation) {
       return c.json(REPORT_NOT_FOUND, 404);
+    }
+    if ('invalidConfig' in mutation && mutation.invalidConfig) {
+      return c.json(mutation.invalidConfig satisfies ValidationErrorBody, 400);
     }
     writeRouteAudit(c, {
       orgId: mutation.locked.orgId,
@@ -694,6 +800,7 @@ coreRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const reportId = c.req.param('id')!;
+    const permissions = c.get('permissions') as UserPermissions | undefined;
 
     const result = await db.transaction(async (tx) => {
       const locked = await loadLockedDefinition(
@@ -701,10 +808,20 @@ coreRoutes.post(
         reportId,
         auth,
         'write',
+        permissions,
       );
       if (locked === SYSTEM_MANAGED) return { kind: 'system_managed' as const };
       if (locked === PARTNER_WIDE_DENIED) return { kind: 'partner_wide_denied' as const };
+      if (locked === AUDIENCE_DENIED) return { kind: 'type_permission_denied' as const };
       if (!locked) return { kind: 'not_found' as const };
+      // #3198 W02 (rulings P8, T11b). Reauthorize re-stamps the CALLER as the
+      // execution user, so it needs the stored type's underlying read
+      // permissions exactly as PUT does. After the row is authorized, so the
+      // 403 never discloses a definition the caller cannot see. Defense in
+      // depth since ruling P8b: loadLockedDefinition already hides it (404).
+      if (missingReportTypePermission(locked.locked.type, permissions)) {
+        return { kind: 'type_permission_denied' as const };
+      }
 
       if (
         locked.storedScope.kind === 'legacy_unscoped' &&
@@ -754,6 +871,9 @@ coreRoutes.post(
     if (result.kind === 'partner_wide_denied') {
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
+    if (result.kind === 'type_permission_denied') {
+      return c.json(REPORT_TYPE_PERMISSION_DENIED, 403);
+    }
     if (result.kind === 'not_found') {
       return c.json(REPORT_NOT_FOUND, 404);
     }
@@ -788,9 +908,11 @@ coreRoutes.delete(
         reportId,
         auth,
         'delete',
+        c.get('permissions') as UserPermissions | undefined,
       );
       if (locked === SYSTEM_MANAGED) return SYSTEM_MANAGED;
       if (locked === PARTNER_WIDE_DENIED) return PARTNER_WIDE_DENIED;
+      if (locked === AUDIENCE_DENIED) return AUDIENCE_DENIED;
       if (!locked) return null;
 
       if (await isPortalSelfServiceLocked(tx, locked.locked)) {
@@ -830,6 +952,9 @@ coreRoutes.delete(
     }
     if (deleted === PARTNER_WIDE_DENIED) {
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
+    if (deleted === AUDIENCE_DENIED) {
+      return c.json(REPORT_TYPE_PERMISSION_DENIED, 403);
     }
     if (deleted?.kind === PORTAL_SELF_SERVICE) {
       return c.json(PORTAL_SELF_SERVICE_REPORT, 409);

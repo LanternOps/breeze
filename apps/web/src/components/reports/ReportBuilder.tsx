@@ -201,7 +201,16 @@ const legacyToBuilderType: Record<LegacyReportType, BuilderReportType> = {
   // the freeform builder (it has no site dimension and no device rows). Mapped
   // so the Record stays exhaustive, with
   // `reportTypeSurvivesBuilder('identity_access_review')` false.
-  identity_access_review: 'devices'
+  identity_access_review: 'devices',
+  // #3198 Phase 1 business reports (W02 registers their generators). Curated,
+  // with their own options forms, never portal-visible, and the only types
+  // whose supportedScopes include 'partner' — none of which the freeform
+  // builder (org-scoped device/alert/patch/compliance sources) can represent.
+  // Mapped to the closest data source purely to keep this Record exhaustive;
+  // `reportTypeSurvivesBuilder` is false for all three.
+  ticket_sla_attainment: 'alerts',
+  technician_time_billability: 'activity',
+  ar_aging: 'compliance'
 };
 
 const scheduleOptions: { value: ReportSchedule; label: string; description: string }[] = [

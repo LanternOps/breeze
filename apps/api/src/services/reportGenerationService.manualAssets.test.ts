@@ -16,7 +16,7 @@ vi.mock('../db', () => ({
 }));
 
 import { db } from '../db';
-import type { ReportExecutionAuthority } from './siteScope';
+import type { OrgReportExecutionAuthority } from './siteScope';
 import { generateDeviceInventoryReport } from './reportGenerationService';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
@@ -55,7 +55,7 @@ function paramsOf(conditions: SQL[]): unknown[] {
 function authority(
   kind: 'unrestricted' | 'restricted',
   siteIds: string[] = [],
-): ReportExecutionAuthority {
+): OrgReportExecutionAuthority {
   return {
     principalKind: 'user',
     scope: kind === 'restricted'

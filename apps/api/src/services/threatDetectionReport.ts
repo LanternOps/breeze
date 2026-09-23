@@ -47,7 +47,7 @@ import {
   huntressIntegrations,
   organizations,
 } from '../db/schema';
-import { threatDetectionConfigSchema } from '../routes/reports/schemas';
+import { threatDetectionConfigSchema } from './reportConfigSchemas';
 import type {
   ThreatCoverage,
   ThreatDetectionSummary,
@@ -61,7 +61,7 @@ import {
   type EvidenceRunContext,
   type ReportResult,
 } from './reportGenerationService';
-import type { ReportGenerationAuthority } from './siteScope';
+import type { OrgReportGenerationAuthority } from './siteScope';
 
 /** A sync older than this makes the source `stale`: the artifact still prints
  *  what it holds, but says plainly that anything after the last sync is not in
@@ -209,7 +209,7 @@ function toIncidentRow(row: DetailIncident, carriedIn = false): ThreatIncidentRo
 export async function generateThreatDetectionReport(
   orgId: string,
   rawConfig: Record<string, unknown>,
-  authority: ReportGenerationAuthority,
+  authority: OrgReportGenerationAuthority,
   evidence?: EvidenceRunContext,
 ): Promise<ReportResult> {
   const cfg = threatDetectionConfigSchema.parse(rawConfig ?? {});

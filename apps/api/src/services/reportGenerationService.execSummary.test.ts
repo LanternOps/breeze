@@ -4,7 +4,7 @@ vi.mock('../db', () => ({ db: { select: vi.fn() } }));
 
 import { db } from '../db';
 import { generateExecutiveSummaryReport } from './reportGenerationService';
-import type { ReportExecutionAuthority } from './siteScope';
+import type { OrgReportExecutionAuthority } from './siteScope';
 
 /** Thenable that resolves to `rows` and supports any drizzle chain method. */
 function selectChain(rows: unknown[]) {
@@ -16,7 +16,7 @@ function selectChain(rows: unknown[]) {
 }
 
 const ORG = '00000000-0000-0000-0000-000000000001';
-const AUTHORITY: ReportExecutionAuthority = {
+const AUTHORITY: OrgReportExecutionAuthority = {
   principalKind: 'user',
   scope: { version: 1, kind: 'unrestricted', orgId: ORG },
   principalUserId: '11111111-1111-4111-8111-111111111111',
