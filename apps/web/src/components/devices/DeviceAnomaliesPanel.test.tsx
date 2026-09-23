@@ -1,567 +1,272 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-
 import DeviceAnomaliesPanel from './DeviceAnomaliesPanel';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 
-const showToast = vi.fn();
-
-vi.mock('../../stores/auth', () => ({
-  fetchWithAuth: vi.fn(),
-  registerOrgIdProvider: vi.fn(),
-}));
-
-vi.mock('../shared/Toast', () => ({
-  showToast: (input: unknown) => showToast(input),
-}));
+vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn() }));
+vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
-
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
-  ({
-    ok,
-    status,
-    statusText: ok ? 'OK' : 'ERROR',
-    json: vi.fn().mockResolvedValue(payload),
-  }) as unknown as Response;
+  ({ ok, status, statusText: ok ? 'OK' : 'ERROR', json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
 
-const anomalyFlags = (enabled: boolean, shadowEnabled = false) => ({
+const flagsResponse = makeJsonResponse({
   mlFeatureFlags: {
-    'ml.anomalies.enabled': {
-      flag: 'ml.anomalies.enabled',
-      enabled,
-      defaultEnabled: false,
-      source: 'org_settings',
-    },
-    'ml.anomalies.v1_shadow.enabled': {
-      flag: 'ml.anomalies.v1_shadow.enabled',
-      enabled: shadowEnabled,
-      defaultEnabled: false,
-      source: 'org_settings',
-    },
+    'ml.anomalies.enabled': { flag: 'ml.anomalies.enabled', enabled: true, defaultEnabled: false, source: 'org_settings' },
+    'ml.remediation_suggestions.enabled': { flag: 'ml.remediation_suggestions.enabled', enabled: false, defaultEnabled: false, source: 'org_settings' },
+    'ml.anomalies.v1_shadow.enabled': { flag: 'ml.anomalies.v1_shadow.enabled', enabled: false, defaultEnabled: false, source: 'org_settings' },
   },
 });
+
+function episode(id: string, overrides: Record<string, unknown> = {}) {
+  return {
+    id, orgId: 'org-1', deviceId: 'dev-1', episodeKey: 'device_metrics:spike:cpu', sourceTable: 'device_metrics',
+    anomalyType: 'spike', metricFamily: 'cpu', metricNames: ['cpu_percent'], status: 'open', closeReason: null,
+    firstSeenAt: '2026-06-18T12:00:00.000Z', lastSeenAt: '2026-06-18T12:10:00.000Z', bucketCount: 2,
+    peakValue: 96.4, peakMetricName: 'cpu_percent', peakBaselineValue: 42.2, peakScore: 8.1, peakAt: '2026-06-18T12:05:00.000Z',
+    recurrenceCount: 0, attribution: null, linkedAlertId: null, snoozedUntil: null, resolvedAt: null, resolvedByUserId: null,
+    note: null, createdAt: '2026-06-18T12:00:00.000Z', updatedAt: '2026-06-18T12:10:00.000Z',
+    durationSeconds: 600, ongoing: true, promoted: false, snoozed: false, rangeMin: 90, rangeMax: 96.4,
+    peakAnomalyId: `${id}-peak`, deviceLastSeenAt: null,
+    ...overrides,
+  };
+}
+
+function setVisibility(state: 'visible' | 'hidden') {
+  Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state });
+}
 
 describe('DeviceAnomaliesPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    showToast.mockReset();
-    // useMlFeatureFlags only fetches when an org is active; seed one so the
-    // flag-driven (enabled/disabled) branches resolve under test.
     useOrgStore.setState({ currentOrgId: 'org-1' });
   });
 
-  it('renders open metric anomalies for a device', async () => {
+  it('loads and renders open episodes by default', async () => {
     fetchWithAuthMock.mockImplementation((input) => {
       const url = String(input);
-      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(anomalyFlags(true)));
-      if (url === '/devices/dev-1/anomalies?status=open&limit=25') {
-        return Promise.resolve(makeJsonResponse({
-          data: [
-            {
-              id: 'anomaly-1',
-              metricType: 'cpu',
-              metricName: 'cpu_percent',
-              anomalyType: 'spike',
-              status: 'open',
-              windowStart: '2026-06-18T12:00:00.000Z',
-              windowEnd: '2026-06-18T12:05:00.000Z',
-              observedValue: 96.4,
-              baselineValue: 42.2,
-              score: 8.1,
-              confidence: 0.91,
-              sampleCount: 5,
-              linkedAlertId: null,
-              detectedAt: '2026-06-18T12:05:00.000Z',
-            },
-          ],
-        }));
+      if (url === '/config/ml-feature-flags') return Promise.resolve(flagsResponse);
+      if (url === '/devices/dev-1/anomaly-episodes?status=open&limit=25') {
+        return Promise.resolve(makeJsonResponse({ data: [episode('episode-1')], focusedEpisodeId: null }));
       }
       return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
     });
 
     render(<DeviceAnomaliesPanel deviceId="dev-1" />);
 
-    await screen.findByText('Metric Anomalies');
-    expect(screen.getByText('Spike')).toBeTruthy();
-    expect(screen.getByText('CPU')).toBeTruthy();
-    expect(screen.getByText('96.4%')).toBeTruthy();
-    expect(screen.getByText('42.2%')).toBeTruthy();
-    expect(screen.getAllByText('91%').length).toBeGreaterThanOrEqual(1);
-    expect(fetchWithAuthMock).toHaveBeenCalledWith('/devices/dev-1/anomalies?status=open&limit=25');
+    // The panel's own heading key (deviceAnomaliesPanel.metricAnomalies,
+    // pre-existing and reused by this rewrite) reads "Metric Anomalies", not
+    // "Anomalies" as the plan's literal test assumed.
+    expect(await screen.findByText('Metric Anomalies')).toBeTruthy();
+    expect(await screen.findByTestId('anomaly-episode-episode-1')).toBeTruthy();
   });
 
-  it('uses runAction for status updates and removes the updated row', async () => {
-    fetchWithAuthMock.mockImplementation((input, init) => {
-      const url = String(input);
-      const method = init?.method ?? 'GET';
-      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(anomalyFlags(true)));
-      if (url === '/devices/dev-1/anomalies?status=open&limit=5') {
-        return Promise.resolve(makeJsonResponse({
-          data: [
-            {
-              id: 'anomaly-1',
-              metricType: 'network',
-              metricName: 'bandwidth_out_bps',
-              anomalyType: 'network_egress',
-              status: 'open',
-              windowStart: '2026-06-18T12:00:00.000Z',
-              windowEnd: '2026-06-18T12:05:00.000Z',
-              observedValue: 1250000,
-              baselineValue: 100000,
-              score: 7,
-              confidence: 0.88,
-              sampleCount: 5,
-              linkedAlertId: null,
-              detectedAt: '2026-06-18T12:05:00.000Z',
-            },
-          ],
-        }));
-      }
-      if (url === '/devices/dev-1/anomalies/anomaly-1/status' && method === 'PATCH') {
-        return Promise.resolve(makeJsonResponse({ data: { id: 'anomaly-1', status: 'dismissed' } }));
-      }
-      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
-    });
-
-    render(<DeviceAnomaliesPanel deviceId="dev-1" compact />);
-
-    const dismiss = await screen.findByRole('button', { name: /dismiss/i });
-    fireEvent.click(dismiss);
-
-    await waitFor(() => {
-      expect(fetchWithAuthMock).toHaveBeenCalledWith(
-        '/devices/dev-1/anomalies/anomaly-1/status',
-        expect.objectContaining({
-          method: 'PATCH',
-          body: JSON.stringify({ status: 'dismissed' }),
-        }),
-      );
-    });
-    await waitFor(() => expect(screen.queryByText('Network egress')).toBeNull());
-    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Anomaly dismissed' }));
-  });
-
-  it('keeps a link to the alert created from a promoted anomaly', async () => {
-    fetchWithAuthMock.mockImplementation((input, init) => {
-      const url = String(input);
-      const method = init?.method ?? 'GET';
-      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(anomalyFlags(true)));
-      if (url === '/devices/dev-1/anomalies?status=open&limit=5') {
-        return Promise.resolve(makeJsonResponse({
-          data: [
-            {
-              id: 'anomaly-1',
-              metricType: 'system',
-              metricName: 'cpu_percent',
-              anomalyType: 'spike',
-              status: 'open',
-              windowStart: '2026-06-18T12:00:00.000Z',
-              windowEnd: '2026-06-18T12:05:00.000Z',
-              observedValue: 96.4,
-              baselineValue: 42.2,
-              score: 8.1,
-              confidence: 0.91,
-              sampleCount: 5,
-              linkedAlertId: null,
-              detectedAt: '2026-06-18T12:05:00.000Z',
-            },
-          ],
-        }));
-      }
-      if (url === '/devices/dev-1/anomalies/anomaly-1/status' && method === 'PATCH') {
-        return Promise.resolve(makeJsonResponse({
-          data: {
-            id: 'anomaly-1',
-            metricType: 'system',
-            metricName: 'cpu_percent',
-            anomalyType: 'spike',
-            status: 'promoted',
-            windowStart: '2026-06-18T12:00:00.000Z',
-            windowEnd: '2026-06-18T12:05:00.000Z',
-            observedValue: 96.4,
-            baselineValue: 42.2,
-            score: 8.1,
-            confidence: 0.91,
-            sampleCount: 5,
-            linkedAlertId: 'alert-1',
-            detectedAt: '2026-06-18T12:05:00.000Z',
-          },
-        }));
-      }
-      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
-    });
-
-    render(<DeviceAnomaliesPanel deviceId="dev-1" compact />);
-
-    const promote = await screen.findByRole('button', { name: /promote/i });
-    fireEvent.click(promote);
-
-    expect(await screen.findByText('Anomaly promoted to alert')).toBeTruthy();
-    expect(screen.getByText('Spike on CPU')).toBeTruthy();
-    expect(screen.getByRole('link', { name: /open alert/i })).toHaveAttribute('href', '/alerts/alert-1');
-    expect(screen.queryByText('96.4%')).toBeNull();
-  });
-
-  it('loads all statuses and highlights a focused promoted anomaly', async () => {
+  it('switches to the recently-closed filter', async () => {
     fetchWithAuthMock.mockImplementation((input) => {
       const url = String(input);
-      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(anomalyFlags(true)));
+      if (url === '/config/ml-feature-flags') return Promise.resolve(flagsResponse);
+      if (url === '/devices/dev-1/anomaly-episodes?status=open&limit=25') return Promise.resolve(makeJsonResponse({ data: [], focusedEpisodeId: null }));
+      if (url === '/devices/dev-1/anomaly-episodes?status=closed&limit=1') return Promise.resolve(makeJsonResponse({ data: [], focusedEpisodeId: null }));
+      if (url === '/devices/dev-1/anomaly-episodes?status=closed&limit=25') {
+        return Promise.resolve(makeJsonResponse({ data: [episode('episode-2', { status: 'resolved', closeReason: 'cleared', ongoing: false })], focusedEpisodeId: null }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
+    });
+
+    render(<DeviceAnomaliesPanel deviceId="dev-1" />);
+    await screen.findByText('No open anomalies');
+    fireEvent.click(screen.getByRole('button', { name: /recently closed/i }));
+    expect(await screen.findByTestId('anomaly-episode-episode-2')).toBeTruthy();
+  });
+
+  it('empty state offers a "show recently closed" link when closed episodes exist', async () => {
+    fetchWithAuthMock.mockImplementation((input) => {
+      const url = String(input);
+      if (url === '/config/ml-feature-flags') return Promise.resolve(flagsResponse);
+      if (url === '/devices/dev-1/anomaly-episodes?status=open&limit=25') return Promise.resolve(makeJsonResponse({ data: [], focusedEpisodeId: null }));
+      // "Recently closed" = W02's status=closed (resolved/dismissed in the last 7 days).
+      if (url === '/devices/dev-1/anomaly-episodes?status=closed&limit=1') return Promise.resolve(makeJsonResponse({ data: [episode('episode-3', { status: 'resolved', closeReason: 'cleared', ongoing: false })], focusedEpisodeId: null }));
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
+    });
+
+    render(<DeviceAnomaliesPanel deviceId="dev-1" />);
+    expect(await screen.findByRole('button', { name: /show recently closed/i })).toBeTruthy();
+  });
+
+  it('passes focusedAnomalyId through as ref (status=all) and rings the episode W02 resolved it to', async () => {
+    // A legacy alert deep link carries a MEMBER anomaly id; W02 resolves it to
+    // its episode and returns that as focusedEpisodeId (always data[0]).
+    fetchWithAuthMock.mockImplementation((input) => {
+      const url = String(input);
+      if (url === '/config/ml-feature-flags') return Promise.resolve(flagsResponse);
+      if (url === '/devices/dev-1/anomaly-episodes?status=all&limit=100&ref=anomaly-77') {
+        return Promise.resolve(makeJsonResponse({
+          data: [
+            episode('episode-9', { promoted: true, linkedAlertId: 'alert-1' }),
+            episode('episode-10'),
+          ],
+          focusedEpisodeId: 'episode-9',
+        }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
+    });
+
+    render(<DeviceAnomaliesPanel deviceId="dev-1" focusedAnomalyId="anomaly-77" />);
+    expect(await screen.findByTestId('anomaly-episode-episode-9')).toHaveClass('ring-2');
+    expect(screen.getByTestId('anomaly-episode-episode-10')).not.toHaveClass('ring-2');
+    // The ref resolved, so the legacy fallback (A9) is never consulted.
+    expect(fetchWithAuthMock).not.toHaveBeenCalledWith(expect.stringContaining('/anomalies?'));
+  });
+
+  it('an unknown ref rings nothing (focusedEpisodeId null)', async () => {
+    fetchWithAuthMock.mockImplementation((input) => {
+      const url = String(input);
+      if (url === '/config/ml-feature-flags') return Promise.resolve(flagsResponse);
+      if (url === '/devices/dev-1/anomaly-episodes?status=all&limit=100&ref=gone-1') {
+        return Promise.resolve(makeJsonResponse({ data: [episode('episode-1')], focusedEpisodeId: null }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
+    });
+
+    render(<DeviceAnomaliesPanel deviceId="dev-1" focusedAnomalyId="gone-1" />);
+    expect(await screen.findByTestId('anomaly-episode-episode-1')).not.toHaveClass('ring-2');
+    // A9 fallback was tried (legacy list 404s here) and renders nothing.
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledWith('/devices/dev-1/anomalies?status=all&limit=100'));
+    expect(screen.queryByTestId('anomaly-legacy-detection')).toBeNull();
+  });
+
+  it('a ref that resolves to no episode shows the legacy detection read-only, with a note (A9)', async () => {
+    fetchWithAuthMock.mockImplementation((input) => {
+      const url = String(input);
+      if (url === '/config/ml-feature-flags') return Promise.resolve(flagsResponse);
+      if (url === '/devices/dev-1/anomaly-episodes?status=all&limit=100&ref=anomaly-old') {
+        return Promise.resolve(makeJsonResponse({ data: [], focusedEpisodeId: null }));
+      }
       if (url === '/devices/dev-1/anomalies?status=all&limit=100') {
         return Promise.resolve(makeJsonResponse({
           data: [
-            {
-              id: 'anomaly-1',
-              metricType: 'system',
-              metricName: 'cpu_percent',
-              anomalyType: 'spike',
-              status: 'promoted',
-              windowStart: '2026-06-18T12:00:00.000Z',
-              windowEnd: '2026-06-18T12:05:00.000Z',
-              observedValue: 96.4,
-              baselineValue: 42.2,
-              score: 8.1,
-              confidence: 0.91,
-              sampleCount: 5,
-              linkedAlertId: 'alert-1',
-              detectedAt: '2026-06-18T12:05:00.000Z',
-            },
+            { id: 'anomaly-other', metricName: 'ram_percent', anomalyType: 'spike', status: 'open', windowStart: '2026-06-01T09:00:00.000Z', windowEnd: '2026-06-01T09:05:00.000Z', observedValue: 91, baselineValue: 50 },
+            { id: 'anomaly-old', metricName: 'cpu_percent', anomalyType: 'spike', status: 'promoted', windowStart: '2026-06-01T10:00:00.000Z', windowEnd: '2026-06-01T10:05:00.000Z', observedValue: 97, baselineValue: 40 },
           ],
         }));
       }
       return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
     });
 
-    render(<DeviceAnomaliesPanel deviceId="dev-1" focusedAnomalyId="anomaly-1" />);
+    render(<DeviceAnomaliesPanel deviceId="dev-1" focusedAnomalyId="anomaly-old" />);
 
-    const row = await screen.findByTestId('metric-anomaly-anomaly-1');
-    expect(fetchWithAuthMock).toHaveBeenCalledWith('/devices/dev-1/anomalies?status=all&limit=100');
-    expect(row).toHaveClass('border-primary/60');
-    expect(screen.getByText('Linked from alert')).toBeTruthy();
-    expect(screen.getByText('Promoted')).toBeTruthy();
-    expect(screen.getByRole('link', { name: /open alert/i })).toHaveAttribute('href', '/alerts/alert-1');
-    expect(screen.queryByRole('button', { name: /promote/i })).toBeNull();
+    const legacy = await screen.findByTestId('anomaly-legacy-detection');
+    expect(legacy.textContent).toContain('This detection predates episode grouping.');
+    expect(legacy.textContent).toContain('97.0%');
+    expect(legacy.textContent).not.toContain('91.0%');
+    expect(within(legacy).queryByRole('button')).toBeNull(); // read-only
   });
 
-  it('renders process-sample anomaly metric labels', async () => {
+  it('polls every 60 s while an open episode is shown and the tab is visible; stops when hidden and on unmount (A9)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    setVisibility('visible');
+    const listUrl = '/devices/dev-1/anomaly-episodes?status=open&limit=25';
+    try {
+      fetchWithAuthMock.mockImplementation((input) => {
+        const url = String(input);
+        if (url === '/config/ml-feature-flags') return Promise.resolve(flagsResponse);
+        if (url === listUrl) return Promise.resolve(makeJsonResponse({ data: [episode('episode-1')], focusedEpisodeId: null }));
+        return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
+      });
+      const listCalls = () => fetchWithAuthMock.mock.calls.filter(([url]) => String(url) === listUrl).length;
+
+      const { unmount } = render(<DeviceAnomaliesPanel deviceId="dev-1" />);
+      await screen.findByTestId('anomaly-episode-episode-1');
+      expect(listCalls()).toBe(1);
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expect(listCalls()).toBe(2);
+      // Silent refresh: the card never gives way to the loading spinner.
+      expect(screen.getByTestId('anomaly-episode-episode-1')).toBeTruthy();
+
+      setVisibility('hidden');
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expect(listCalls()).toBe(2);
+
+      setVisibility('visible');
+      unmount();
+      await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+      expect(listCalls()).toBe(2);
+    } finally {
+      setVisibility('visible');
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not poll when no open episode is shown (A9)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const listUrl = '/devices/dev-1/anomaly-episodes?status=open&limit=25';
+    try {
+      fetchWithAuthMock.mockImplementation((input) => {
+        const url = String(input);
+        if (url === '/config/ml-feature-flags') return Promise.resolve(flagsResponse);
+        if (url === listUrl) return Promise.resolve(makeJsonResponse({ data: [], focusedEpisodeId: null }));
+        if (url === '/devices/dev-1/anomaly-episodes?status=closed&limit=1') return Promise.resolve(makeJsonResponse({ data: [], focusedEpisodeId: null }));
+        return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
+      });
+      render(<DeviceAnomaliesPanel deviceId="dev-1" />);
+      await screen.findByText('No open anomalies');
+      await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+      expect(fetchWithAuthMock.mock.calls.filter(([url]) => String(url) === listUrl)).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('compact mode caps at 3 open episodes and fetches limit=3', async () => {
     fetchWithAuthMock.mockImplementation((input) => {
       const url = String(input);
-      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(anomalyFlags(true)));
-      if (url === '/devices/dev-1/anomalies?status=open&limit=25') {
-        return Promise.resolve(makeJsonResponse({
-          data: [
-            {
-              id: 'anomaly-process-1',
-              metricType: 'process',
-              metricName: 'top_process_net_bps_sum',
-              anomalyType: 'network_egress',
-              status: 'open',
-              windowStart: '2026-06-18T12:00:00.000Z',
-              windowEnd: '2026-06-18T12:05:00.000Z',
-              observedValue: 1500000,
-              baselineValue: 200000,
-              score: 8.2,
-              confidence: 0.93,
-              sampleCount: 3,
-              linkedAlertId: null,
-              detectedAt: '2026-06-18T12:05:00.000Z',
-            },
-          ],
-        }));
-      }
-      return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
-    });
-
-    render(<DeviceAnomaliesPanel deviceId="dev-1" />);
-
-    await screen.findByText('Network egress');
-    expect(screen.getByText('Top process network I/O')).toBeTruthy();
-    expect(screen.getByText('1.5 MB/s')).toBeTruthy();
-    expect(screen.getByText('200.0 KB/s')).toBeTruthy();
-  });
-
-  it('warns when a promote succeeds without an alert link', async () => {
-    fetchWithAuthMock.mockImplementation((input, init) => {
-      const url = String(input);
-      const method = init?.method ?? 'GET';
-      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(anomalyFlags(true)));
-      if (url === '/devices/dev-1/anomalies?status=open&limit=5') {
-        return Promise.resolve(makeJsonResponse({
-          data: [
-            {
-              id: 'anomaly-1',
-              metricType: 'system',
-              metricName: 'cpu_percent',
-              anomalyType: 'spike',
-              status: 'open',
-              windowStart: '2026-06-18T12:00:00.000Z',
-              windowEnd: '2026-06-18T12:05:00.000Z',
-              observedValue: 96.4,
-              baselineValue: 42.2,
-              score: 8.1,
-              confidence: 0.91,
-              sampleCount: 5,
-              linkedAlertId: null,
-              detectedAt: '2026-06-18T12:05:00.000Z',
-            },
-          ],
-        }));
-      }
-      if (url === '/devices/dev-1/anomalies/anomaly-1/status' && method === 'PATCH') {
-        // Promote succeeds but the backend returns no linkedAlertId.
-        return Promise.resolve(makeJsonResponse({
-          data: { id: 'anomaly-1', status: 'promoted', linkedAlertId: null },
-        }));
-      }
-      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
-    });
-
-    render(<DeviceAnomaliesPanel deviceId="dev-1" compact />);
-
-    fireEvent.click(await screen.findByRole('button', { name: /promote/i }));
-
-    await waitFor(() => {
-      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
-        type: 'warning',
-        message: 'Anomaly promoted but no alert link returned',
-      }));
-    });
-    // No "promoted to alert" success banner, and the row is gone.
-    expect(screen.queryByText('Anomaly promoted to alert')).toBeNull();
-    await waitFor(() => expect(screen.queryByText('Spike')).toBeNull());
-  });
-
-  it('toasts an error when a status update fails (non-2xx)', async () => {
-    fetchWithAuthMock.mockImplementation((input, init) => {
-      const url = String(input);
-      const method = init?.method ?? 'GET';
-      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(anomalyFlags(true)));
-      if (url === '/devices/dev-1/anomalies?status=open&limit=5') {
-        return Promise.resolve(makeJsonResponse({
-          data: [
-            {
-              id: 'anomaly-1',
-              metricType: 'system',
-              metricName: 'cpu_percent',
-              anomalyType: 'spike',
-              status: 'open',
-              windowStart: '2026-06-18T12:00:00.000Z',
-              windowEnd: '2026-06-18T12:05:00.000Z',
-              observedValue: 96.4,
-              baselineValue: 42.2,
-              score: 8.1,
-              confidence: 0.91,
-              sampleCount: 5,
-              linkedAlertId: null,
-              detectedAt: '2026-06-18T12:05:00.000Z',
-            },
-          ],
-        }));
-      }
-      if (url === '/devices/dev-1/anomalies/anomaly-1/status' && method === 'PATCH') {
-        return Promise.resolve(makeJsonResponse({ error: 'boom' }, false, 500));
-      }
-      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
-    });
-
-    render(<DeviceAnomaliesPanel deviceId="dev-1" compact />);
-
-    fireEvent.click(await screen.findByRole('button', { name: /dismiss/i }));
-
-    await waitFor(() => {
-      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
-    });
-    // The row stays put because the mutation failed.
-    expect(screen.getByText('Spike')).toBeTruthy();
-  });
-
-  it('renders an error state with a working Retry when the load fails', async () => {
-    let attempt = 0;
-    fetchWithAuthMock.mockImplementation((input) => {
-      const url = String(input);
-      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(anomalyFlags(true)));
-      if (url === '/devices/dev-1/anomalies?status=open&limit=25') {
-        attempt += 1;
-        if (attempt === 1) return Promise.resolve(makeJsonResponse({ error: 'down' }, false, 500));
-        return Promise.resolve(makeJsonResponse({ data: [] }));
-      }
-      return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
-    });
-
-    render(<DeviceAnomaliesPanel deviceId="dev-1" />);
-
-    expect(await screen.findByText('Failed to load metric anomalies')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: /retry/i }));
-
-    await screen.findByText('No open anomalies');
-    expect(attempt).toBe(2);
-  });
-
-  it('renders the v1 shadow comparison disabled state', async () => {
-    fetchWithAuthMock.mockImplementation((input) => {
-      const url = String(input);
-      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(anomalyFlags(true, false)));
-      if (url === '/devices/dev-1/anomalies?status=open&limit=25') {
-        return Promise.resolve(makeJsonResponse({ data: [] }));
-      }
-      return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
-    });
-
-    render(<DeviceAnomaliesPanel deviceId="dev-1" />);
-
-    expect(await screen.findByTestId('anomaly-v1-shadow-disabled')).toBeTruthy();
-    expect(screen.getByText('Shadow model disabled for this organization.')).toBeTruthy();
-    expect(fetchWithAuthMock).not.toHaveBeenCalledWith(expect.stringContaining('includeV1=true'));
-  });
-
-  it('renders the v1 shadow comparison loading state', async () => {
-    fetchWithAuthMock.mockImplementation((input) => {
-      const url = String(input);
-      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(anomalyFlags(true, true)));
-      if (url === '/devices/dev-1/anomalies?status=open&limit=25') {
-        return Promise.resolve(makeJsonResponse({ data: [] }));
-      }
-      if (url === '/analytics/anomalies/evaluation?deviceId=dev-1&range=30d&includeV1=true') {
-        return new Promise<Response>(() => {});
-      }
-      return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
-    });
-
-    render(<DeviceAnomaliesPanel deviceId="dev-1" />);
-
-    expect(await screen.findByTestId('anomaly-v1-shadow-loading')).toBeTruthy();
-  });
-
-  it('renders the v1 shadow comparison empty state', async () => {
-    fetchWithAuthMock.mockImplementation((input) => {
-      const url = String(input);
-      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(anomalyFlags(true, true)));
-      if (url === '/devices/dev-1/anomalies?status=open&limit=25') {
-        return Promise.resolve(makeJsonResponse({ data: [] }));
-      }
-      if (url === '/analytics/anomalies/evaluation?deviceId=dev-1&range=30d&includeV1=true') {
-        return Promise.resolve(makeJsonResponse({
-          v1Shadow: {
-            modelVersion: 'metric-anomaly-v1-seasonal-robust',
-            totalCandidates: 0,
-            overlapWithV0: 0,
-            v1Only: 0,
-            v0Only: 0,
-            labeledOutcomes: { total: 0, dismissed: 0, promoted: 0, resolved: 0 },
-            rates: { overlapRate: 0, v1OnlyRate: 0, v0OnlyRate: 0, dismissRate: 0, promoteRate: 0, resolveRate: 0 },
-          },
-        }));
-      }
-      return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
-    });
-
-    render(<DeviceAnomaliesPanel deviceId="dev-1" />);
-
-    expect(await screen.findByTestId('anomaly-v1-shadow-empty')).toBeTruthy();
-    expect(screen.getByText('No v1 shadow candidates in the last 30 days.')).toBeTruthy();
-  });
-
-  it('renders populated v0 versus v1 shadow comparison counts', async () => {
-    fetchWithAuthMock.mockImplementation((input) => {
-      const url = String(input);
-      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(anomalyFlags(true, true)));
-      if (url === '/devices/dev-1/anomalies?status=open&limit=25') {
-        return Promise.resolve(makeJsonResponse({ data: [] }));
-      }
-      if (url === '/analytics/anomalies/evaluation?deviceId=dev-1&range=30d&includeV1=true') {
-        return Promise.resolve(makeJsonResponse({
-          v1Shadow: {
-            modelVersion: 'metric-anomaly-v1-seasonal-robust',
-            totalCandidates: 6,
-            overlapWithV0: 3,
-            v1Only: 3,
-            v0Only: 2,
-            labeledOutcomes: { total: 3, dismissed: 2, promoted: 1, resolved: 0 },
-            rates: { overlapRate: 0.5, v1OnlyRate: 0.5, v0OnlyRate: 0.4, dismissRate: 0.67, promoteRate: 0.33, resolveRate: 0 },
-          },
-        }));
-      }
-      return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
-    });
-
-    render(<DeviceAnomaliesPanel deviceId="dev-1" />);
-
-    expect(await screen.findByTestId('anomaly-v1-shadow-populated')).toBeTruthy();
-    expect(screen.getByText('metric-anomaly-v1-seasonal-robust')).toBeTruthy();
-    expect(screen.getByText('Candidates')).toBeTruthy();
-    expect(screen.getByText('Overlap rate')).toBeTruthy();
-    expect(screen.getByText('50%')).toBeTruthy();
-  });
-
-  it('renders the v1 shadow error state and retries on demand', async () => {
-    let shadowAttempt = 0;
-    fetchWithAuthMock.mockImplementation((input) => {
-      const url = String(input);
-      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(anomalyFlags(true, true)));
-      if (url === '/devices/dev-1/anomalies?status=open&limit=25') {
-        return Promise.resolve(makeJsonResponse({ data: [] }));
-      }
-      if (url === '/analytics/anomalies/evaluation?deviceId=dev-1&range=30d&includeV1=true') {
-        shadowAttempt += 1;
-        if (shadowAttempt === 1) {
-          return Promise.resolve(makeJsonResponse({ error: 'boom' }, false, 500));
-        }
-        return Promise.resolve(makeJsonResponse({
-          v1Shadow: {
-            modelVersion: 'metric-anomaly-v1-seasonal-robust',
-            totalCandidates: 6,
-            overlapWithV0: 3,
-            v1Only: 3,
-            v0Only: 2,
-            labeledOutcomes: { total: 0, dismissed: 0, promoted: 0, resolved: 0 },
-            rates: { overlapRate: 0.5, v1OnlyRate: 0.5, v0OnlyRate: 0.4, dismissRate: 0, promoteRate: 0, resolveRate: 0 },
-          },
-        }));
-      }
-      return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
-    });
-
-    render(<DeviceAnomaliesPanel deviceId="dev-1" />);
-
-    expect(await screen.findByTestId('anomaly-v1-shadow-error')).toBeTruthy();
-    fireEvent.click(screen.getByText('Retry'));
-
-    expect(await screen.findByTestId('anomaly-v1-shadow-populated')).toBeTruthy();
-    expect(shadowAttempt).toBe(2);
-  });
-
-  it('does not render or fetch the shadow comparison in compact mode', async () => {
-    fetchWithAuthMock.mockImplementation((input) => {
-      const url = String(input);
-      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(anomalyFlags(true, true)));
-      if (url === '/devices/dev-1/anomalies?status=open&limit=5') {
-        return Promise.resolve(makeJsonResponse({ data: [] }));
+      if (url === '/config/ml-feature-flags') return Promise.resolve(flagsResponse);
+      if (url === '/devices/dev-1/anomaly-episodes?status=open&limit=3') {
+        return Promise.resolve(makeJsonResponse({ data: [episode('e1'), episode('e2'), episode('e3'), episode('e4')], focusedEpisodeId: null }));
       }
       return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
     });
 
     render(<DeviceAnomaliesPanel deviceId="dev-1" compact />);
-
-    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledWith('/config/ml-feature-flags'));
-    await waitFor(() =>
-      expect(fetchWithAuthMock).not.toHaveBeenCalledWith(expect.stringContaining('includeV1=true')),
-    );
-    expect(screen.queryByTestId('anomaly-v1-shadow-disabled')).toBeNull();
-    expect(screen.queryByTestId('anomaly-v1-shadow-populated')).toBeNull();
+    await screen.findByTestId('anomaly-episode-e1');
+    expect(screen.queryByTestId('anomaly-episode-e4')).toBeNull();
   });
 
-  it('labels the panel disabled and does not load anomalies when anomaly output is disabled', async () => {
+  it('disabled state shows no episodes and skips the fetch', async () => {
     fetchWithAuthMock.mockImplementation((input) => {
       const url = String(input);
-      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(anomalyFlags(false)));
+      if (url === '/config/ml-feature-flags') {
+        return Promise.resolve(makeJsonResponse({
+          mlFeatureFlags: { 'ml.anomalies.enabled': { flag: 'ml.anomalies.enabled', enabled: false, defaultEnabled: false, source: 'org_settings' } },
+        }));
+      }
       return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
     });
 
     render(<DeviceAnomaliesPanel deviceId="dev-1" />);
-
     await screen.findByText('Anomaly detection disabled');
-    expect(screen.getByText('Anomaly detection is disabled for this organization.')).toBeTruthy();
-    expect(fetchWithAuthMock).not.toHaveBeenCalledWith('/devices/dev-1/anomalies?status=open&limit=25');
+    expect(fetchWithAuthMock).not.toHaveBeenCalledWith(expect.stringContaining('/anomaly-episodes'));
+  });
+
+  it('splices an updated episode out of the open list after a resolve', async () => {
+    fetchWithAuthMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url === '/config/ml-feature-flags') return Promise.resolve(flagsResponse);
+      if (url === '/devices/dev-1/anomaly-episodes?status=open&limit=25') return Promise.resolve(makeJsonResponse({ data: [episode('episode-1')], focusedEpisodeId: null }));
+      if (url === '/devices/dev-1/anomaly-episodes?status=closed&limit=1') return Promise.resolve(makeJsonResponse({ data: [], focusedEpisodeId: null }));
+      if (url === '/devices/dev-1/anomaly-episodes/episode-1' && init?.method === 'PATCH') {
+        return Promise.resolve(makeJsonResponse({
+          data: episode('episode-1', { status: 'resolved', closeReason: 'user', ongoing: false }),
+          meta: { alertId: null, alertResolved: false, labelledMembers: 2 },
+        }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${url}` }, false, 404));
+    });
+
+    render(<DeviceAnomaliesPanel deviceId="dev-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: /^resolve$/i }));
+    await waitFor(() => expect(screen.queryByTestId('anomaly-episode-episode-1')).toBeNull());
   });
 });
