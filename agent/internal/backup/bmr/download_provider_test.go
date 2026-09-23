@@ -1105,3 +1105,78 @@ func TestRecoveryDownloadProvider_AdmitsOwnPrefixKey(t *testing.T) {
 		t.Fatal("Admits() = true for an external key with no membership negotiated, want false")
 	}
 }
+
+func TestPathClean(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+		// skipBackslashCountCheck is set for cases where an entire
+		// backslash-containing segment is legitimately removed by a `..`
+		// resolution (path.Clean's normal segment-cancellation behavior),
+		// so the input/output backslash counts are expected to differ.
+		skipBackslashCountCheck bool
+	}{
+		{
+			name: "ordinary object key round-trips",
+			in:   "snapshots/a/files/path_0/x.gz",
+			want: "snapshots/a/files/path_0/x.gz",
+		},
+		{
+			name: "double slash and dot segment collapse",
+			in:   "snapshots/a//files/./x.gz",
+			want: "snapshots/a/files/x.gz",
+		},
+		{
+			name: "dot-dot segment resolves within the key",
+			in:   "snapshots/a/files/../b/x.gz",
+			want: "snapshots/a/b/x.gz",
+		},
+		{
+			name: "empty and dot-only input clean to empty",
+			in:   ".",
+			want: "",
+		},
+		{
+			name: "trailing slash is dropped like path.Clean",
+			in:   "snapshots/a/files/",
+			want: "snapshots/a/files",
+		},
+		{
+			// The #6631 case: a `\` inside an object key is a literal byte,
+			// not a separator. The old filepath.Clean+ToSlash rewrote it to
+			// `/` on a Windows host (red on the Windows CI job, which runs
+			// ./internal/backup/bmr from W06b on); path.Clean never does.
+			name: "backslash inside a key is preserved",
+			in:   `snapshots/a/files/path_0/C:\Users\x.gz`,
+			want: `snapshots/a/files/path_0/C:\Users\x.gz`,
+		},
+		{
+			// A backslash-containing key is ONE segment under path.Clean
+			// semantics (POSIX-only separator is `/`): the `..` here
+			// resolves against the whole `a\b` segment, not against `b`
+			// alone. filepath.Clean on Windows would instead treat `\` as
+			// a separator and produce `a/c`.
+			name:                    "backslash makes the segment atomic for dot-dot resolution",
+			in:                      `a\b/../c`,
+			want:                    `c`,
+			skipBackslashCountCheck: true,
+		},
+		{
+			name: "backslash preserved verbatim alongside forward slashes",
+			in:   `snapshots\x/y`,
+			want: `snapshots\x/y`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := pathClean(tt.in)
+			if got != tt.want {
+				t.Errorf("pathClean(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+			if !tt.skipBackslashCountCheck && strings.Count(got, `\`) != strings.Count(tt.in, `\`) {
+				t.Errorf("pathClean(%q) = %q changed the key's backslashes; they are literal key bytes on every GOOS", tt.in, got)
+			}
+		})
+	}
+}
