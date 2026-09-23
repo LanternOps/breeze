@@ -252,7 +252,7 @@ describe('anomaly episode evaluation (W03)', () => {
     const start = new Date(Date.now() - 6 * HOUR);
     const mid = new Date(Date.now() - 5 * HOUR);
 
-    // Promoted, then auto-cleared: a human looked at it -> labelled.
+    // Promoted, then auto-cleared: a human looked at it -> labelled (via linkedAlertId).
     await insertEpisode({
       orgId, deviceId, status: 'resolved', closeReason: 'cleared',
       firstSeenAt: start, lastSeenAt: mid, resolvedAt: new Date(Date.now() - 4 * HOUR),
@@ -264,19 +264,38 @@ describe('anomaly episode evaluation (W03)', () => {
       firstSeenAt: start, lastSeenAt: mid, resolvedAt: new Date(Date.now() - 4 * HOUR),
       metricFamily: 'ram',
     });
-    // Snoozed successor: neither.
+    // A human clicked Dismiss directly -> labelled (via close_reason 'user', no
+    // linked alert). Proves the OTHER half of the humanLabelled OR-condition —
+    // the linkedAlertId episode above only proves the first half.
+    // recurrenceCount 1 also feeds the recurrenceShare assertion below.
+    await insertEpisode({
+      orgId, deviceId, status: 'dismissed', closeReason: 'user',
+      firstSeenAt: start, lastSeenAt: mid, resolvedAt: new Date(Date.now() - 5 * HOUR),
+      recurrenceCount: 1, metricFamily: 'disk',
+    });
+    // Snoozed successor: neither, and has no resolvedAt (never a new episode
+    // "closing" in the human sense) so it must not skew medianDurationSeconds.
     await insertEpisode({
       orgId, deviceId, status: 'dismissed', closeReason: 'snoozed',
       firstSeenAt: start, lastSeenAt: mid,
-      metricFamily: 'disk',
+      metricFamily: 'network',
     });
 
     const res = await client.get('/api/v1/analytics/anomalies/evaluation?range=7d');
     expect(res.status).toBe(200);
     const body = await res.json();
 
-    // 1 labelled / 2 eligible. The pre-A8 formula (close_reason 'user' / all closed) gave 0 / 3.
-    expect(body.episodes.humanLabelledShare).toBe(0.5);
-    expect(body.episodes.byCloseReason).toMatchObject({ cleared: 2, snoozed: 1, user: 0 });
+    // 2 labelled (promoted-via-alert + human-dismissed) / 3 eligible (both
+    // clears + the human dismiss; snoozed excluded). The pre-A8 formula
+    // (close_reason 'user' / all closed) would have given 1 / 4.
+    expect(body.episodes.humanLabelledShare).toBe(2 / 3);
+    expect(body.episodes.byCloseReason).toMatchObject({ cleared: 2, snoozed: 1, user: 1 });
+    expect(body.episodes.byStatus).toMatchObject({ resolved: 2, dismissed: 2 });
+    // 1 of 4 episodes recurred.
+    expect(body.episodes.recurrenceShare).toBe(0.25);
+    // Three episodes closed with a resolvedAt: two at 2h (7200s), one at 1h
+    // (3600s) after firstSeenAt — sorted [3600, 7200, 7200], median 7200. The
+    // snoozed successor (no resolvedAt) must not be counted or shift this.
+    expect(body.episodes.medianDurationSeconds).toBe(7200);
   });
 });
