@@ -2065,6 +2065,7 @@
     "iocScans": "Analyses IOC",
     "subtitle": "Analyses de logiciels malveillants et d'IOC basées sur des signatures sur votre parc. Ne remplace pas une protection complète des postes.",
     "scansTab": "Analyses",
-    "threatsTab": "Menaces"
+    "threatsTab": "Menaces",
+    "backToThreats": "Retour aux menaces"
   }
 }

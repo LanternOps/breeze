@@ -48,16 +48,31 @@ function getQueue(): Queue<ReconcilerJobData> {
   return reconcilerQueue;
 }
 
-async function loadRunOrgs(reportRunIds: string[]): Promise<Map<string, string>> {
+/**
+ * Each run's owning report axis. #3198 W01 made `reports.org_id` nullable
+ * (org XOR partner), so the owner is carried as a discriminated value rather
+ * than a bare org id: narrative delivery is org-keyed, and a partner-owned
+ * run must be handled explicitly, never coerced into an org slot.
+ */
+type RunOwner = { orgId: string } | { partnerId: string };
+
+async function loadRunOwners(reportRunIds: string[]): Promise<Map<string, RunOwner>> {
   if (reportRunIds.length === 0) return new Map();
   const rows = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
     db
-      .select({ reportRunId: reportRuns.id, orgId: reports.orgId })
+      .select({ reportRunId: reportRuns.id, orgId: reports.orgId, partnerId: reports.partnerId })
       .from(reportRuns)
       .innerJoin(reports, eq(reports.id, reportRuns.reportId))
       .where(inArray(reportRuns.id, reportRunIds)),
   ));
-  return new Map(rows.map((row) => [row.reportRunId, row.orgId]));
+  const owners = new Map<string, RunOwner>();
+  for (const row of rows) {
+    if (row.orgId) owners.set(row.reportRunId, { orgId: row.orgId });
+    else if (row.partnerId) owners.set(row.reportRunId, { partnerId: row.partnerId });
+    // Neither axis violates reports_one_owner_chk; left out, it takes the
+    // logged "vanished" path below rather than being guessed at.
+  }
+  return owners;
 }
 
 export async function reconcileReportRunDeliveries(
@@ -89,10 +104,10 @@ export async function reconcileReportRunDeliveries(
   }
 
   if (pendingRuns.size > 0) {
-    const runOrgs = await loadRunOrgs([...pendingRuns]);
+    const runOwners = await loadRunOwners([...pendingRuns]);
     for (const reportRunId of pendingRuns) {
-      const orgId = runOrgs.get(reportRunId);
-      if (!orgId) {
+      const owner = runOwners.get(reportRunId);
+      if (!owner) {
         // Normally benign: the run (and, by cascade, its rows) went away
         // between the two reads. Logged anyway — if the join ever diverges
         // for any OTHER reason, these rows are dropped from every future
@@ -102,6 +117,19 @@ export async function reconcileReportRunDeliveries(
         });
         continue;
       }
+      if ('partnerId' in owner) {
+        // Narrative deliveries exist only for the org-owned weekly narrative;
+        // a pending row under a partner-owned run has no org-keyed authority
+        // gate to go through. Left pending (never sent, never settled) and
+        // reported, so the invariant break is visible rather than swept.
+        const unsupported = new Error(
+          '[ReportRunDeliveryReconciler] pending delivery on a partner-owned run; narrative delivery is org-only, leaving it pending',
+        );
+        console.error(unsupported.message, { reportRunId, partnerId: owner.partnerId });
+        captureException(unsupported);
+        continue;
+      }
+      const { orgId } = owner;
       try {
         const result = await deliverNarrativeEmails(reportRunId, { orgId });
         resent += result.sentNow;

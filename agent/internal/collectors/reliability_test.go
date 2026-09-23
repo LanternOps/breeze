@@ -761,3 +761,66 @@ func TestCrashReportKind(t *testing.T) {
 		}
 	}
 }
+
+// TestClassifyHardwareTypeMessageSignals pins the message-only hardware
+// signals (#6696). The bare words "memory" and "disk" used to classify any
+// event that mentioned them in passing as a hardware failure; only
+// hardware-phrased matches may do so now. Source "Application Error" and ID 0
+// keep the source/ID gate out of the way so the message is the sole signal.
+func TestClassifyHardwareTypeMessageSignals(t *testing.T) {
+	tests := []struct {
+		name    string
+		message string
+		want    string
+	}{
+		// False positives from the issue: passing mentions are NOT hardware.
+		{"insufficient memory is not hardware", "Insufficient memory to complete the operation.", "unknown"},
+		{"disk quota is not hardware", "EXT4-fs warning: disk quota exceeded for uid 1000", "unknown"},
+		{"disk cleanup is not hardware", "Disk Cleanup completed successfully.", "unknown"},
+		{"low memory warning is not hardware", "Windows successfully diagnosed a low virtual memory condition.", "unknown"},
+		{"disk space is not hardware", "The disk space on volume C: is low.", "unknown"},
+		{"bare i/o mention is not hardware", "The I/O operation has been aborted because of either a thread exit or an application request.", "unknown"},
+		// Short tokens are word-anchored so they don't fire inside other words.
+		{"smart card is not hardware", "The Smart Card Resource Manager failed to start.", "unknown"},
+		{"smartscreen is not hardware", "SmartScreen blocked an unrecognized app.", "unknown"},
+		{"display dimming is not hardware", "Display dimming policy applied.", "unknown"},
+		{"eccentric is not ecc", "Eccentric configuration value ignored.", "unknown"},
+		{"non-ascii letter glued to token is not a boundary", "Paramètre àecc invalide", "unknown"},
+
+		// Matcher edges: embedded first occurrence must not stop the scan,
+		// phrase at string start/end, plural on a disk phrase.
+		{"embedded then standalone occurrence", "predimm value cached, then DIMM failure reported", "memory"},
+		{"phrase is the whole message", "disk error", "disk"},
+		{"phrase at end of message", "device fault reported on dimm", "memory"},
+		{"disk phrase plural", "2 bad sectors remapped", "disk"},
+
+		// True positives: hardware-phrased memory signals.
+		{"memory error", "A memory error was detected by the hardware.", "memory"},
+		{"memory errors plural", "3 memory errors logged on CPU 0", "memory"},
+		{"ecc", "ECC error detected in bank 2", "memory"},
+		{"corrected error", "Hardware error: corrected error on memory controller", "memory"},
+		{"uncorrectable", "Uncorrectable error in DIMM_A1", "memory"},
+		{"bad ram", "bad RAM pattern detected at 0x7f000000", "memory"},
+		{"dimm", "DIMM B2 reported a fault", "memory"},
+		{"edac", "EDAC MC0: 1 CE memory read error", "memory"},
+		{"edac driver prefix", "sb_edac: 1 UE on DIMM0", "memory"},
+
+		// True positives: hardware-phrased disk signals.
+		{"disk error", "Disk error on \\Device\\Harddisk1", "disk"},
+		{"i/o error", "disk0s2: I/O error", "disk"},
+		{"buffer i/o error", "Buffer I/O error on dev sdb1, logical block 0", "disk"},
+		{"blk_update_request", "blk_update_request: critical medium error, dev sda, sector 1234", "disk"},
+		{"bad sector", "Bad sector found at LBA 88213", "disk"},
+		{"smart failure", "Device: /dev/sda [SAT], SMART Failure: DATA CHANNEL IMPENDING FAILURE", "disk"},
+		{"reset to device", "Reset to device, \\Device\\RaidPort0, was issued.", "disk"},
+		{"hard error", "The device, \\Device\\Harddisk0\\DR0, has a bad block. A hard error occurred.", "disk"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyHardwareType(tc.message, "Application Error", 0); got != tc.want {
+				t.Errorf("classifyHardwareType(%q) = %q, want %q", tc.message, got, tc.want)
+			}
+		})
+	}
+}

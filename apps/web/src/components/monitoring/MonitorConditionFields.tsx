@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useFormContext, type FieldValues } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
 import type { MonitorKind } from '@breeze/shared';
 import { fetchAllScripts } from '@/lib/scriptsFetch';
-import { MONITOR_KIND_FIELDS, type KindField } from './monitorKindFields';
+import { MONITOR_KIND_FIELDS, NETWORK_CHECK_TARGET_DEFAULTS, type KindField } from './monitorKindFields';
 
 /**
  * Which translated-option namespace a select field's values live under.
@@ -43,7 +43,7 @@ export interface MonitorConditionFieldsProps {
  */
 export default function MonitorConditionFields({ kind, name }: MonitorConditionFieldsProps) {
   const { t } = useTranslation('monitoring');
-  const { register, watch, formState: { errors } } = useFormContext<FieldValues>();
+  const { register, watch, setValue, formState: { errors } } = useFormContext<FieldValues>();
   const fields = MONITOR_KIND_FIELDS[kind];
 
   const conditionErrors = (errors[name] as Record<string, { message?: string } | undefined> | undefined) ?? {};
@@ -55,6 +55,30 @@ export default function MonitorConditionFields({ kind, name }: MonitorConditionF
   const conditionValues = (watch(name) as Record<string, unknown> | undefined) ?? {};
   const isVisible = (field: KindField): boolean =>
     !field.showWhen || String(conditionValues[field.showWhen.key] ?? '') === field.showWhen.equals;
+
+  // network_check only (#MSA-1): switching checkType (e.g. ping → HTTP check)
+  // must not silently carry over the PREVIOUS type's default target — a
+  // stale `8.8.8.8` on an HTTP check reads as a plausible value rather than
+  // the ping leftover it is. Only reset when the field still holds a known
+  // default (or is empty); a target the user actually typed is left alone.
+  const checkType = kind === 'network_check' ? String(conditionValues.checkType ?? '') : undefined;
+  const prevCheckTypeRef = useRef(checkType);
+  useEffect(() => {
+    if (kind !== 'network_check') return;
+    const prevCheckType = prevCheckTypeRef.current;
+    prevCheckTypeRef.current = checkType;
+    if (!checkType || checkType === prevCheckType) return;
+    const currentTarget = String(conditionValues.target ?? '');
+    const prevDefault = prevCheckType ? NETWORK_CHECK_TARGET_DEFAULTS[prevCheckType] : undefined;
+    if (currentTarget === '' || currentTarget === prevDefault) {
+      const nextDefault = NETWORK_CHECK_TARGET_DEFAULTS[checkType];
+      if (nextDefault !== undefined && nextDefault !== currentTarget) {
+        setValue(`${name}.target`, nextDefault, { shouldDirty: true });
+      }
+    }
+    // Only `checkType` should re-trigger this — watching `conditionValues`
+    // wholesale (or `name`) would fire on every keystroke in any field.
+  }, [checkType]);
 
   const needsScripts = fields.some((field) => field.kind === 'script');
   const [scripts, setScripts] = useState<FetchedScript[]>([]);

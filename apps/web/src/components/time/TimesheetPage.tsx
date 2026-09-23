@@ -360,6 +360,13 @@ export default function TimesheetPage() {
       void loadSheet(week, tech);
     } catch (err) {
       handleActionError(err, t('longTail.time.TimesheetPage.errors.saveEntryFailed'));
+      // BQ-6: a 404 means the entry was deleted out from under the edit (e.g.
+      // by another session) — leaving the form open just edits a ghost row.
+      // Exit edit mode and refetch so it disappears from the list.
+      if (err instanceof ActionError && err.status === 404) {
+        setEditingId(null);
+        void loadSheet(week, tech);
+      }
     }
   }, [editForm, week, tech, loadSheet, canManageBilling]);
 

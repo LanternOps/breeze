@@ -781,3 +781,46 @@ describe('episode stages (metric anomaly episodes W01)', () => {
     expect(result.episodesClosed).toBe(0);
   });
 });
+
+describe('baseline anti-contamination (spec §10)', () => {
+  const orgId = '11111111-1111-1111-1111-111111111111';
+  const range = { from: new Date('2026-06-18T12:00:00.000Z'), to: new Date('2026-06-18T12:15:00.000Z') };
+
+  beforeEach(() => {
+    resetDbMocks();
+    shouldProduceMlOutputMock.mockReset();
+    shouldProduceMlOutputMock.mockImplementation(async (_orgId: string, flag: string) => flag === 'ml.anomalies.enabled');
+  });
+
+  it('excludes open-episode buckets from both baseline detectors, with an unfiltered fallback', async () => {
+    await detectMetricAnomaliesRange({ orgId, ...range });
+
+    const [baselineSql, growthSql, processSql] = detectorStatements();
+    for (const text of [baselineSql ?? '', processSql ?? '']) {
+      expect(text).toContain('open_episode_buckets');
+      expect(text).toContain("e.status = 'open'");
+      expect(text).toContain("ma.anomaly_type NOT IN ('memory_growth', 'disk_growth')");
+      expect(text).toContain('FILTER (WHERE oeb.device_id IS NULL)');
+      expect(text).toContain('used_fallback');
+      expect(text).toContain('baselineFallback');
+      expect(text).toContain('fallbackPairs');
+    }
+    // Growth trends compare a window with itself — no baseline to protect.
+    expect(growthSql).not.toContain('open_episode_buckets');
+  });
+
+  it('counts fallback pairs per detector from the statement result', async () => {
+    executeMock.mockImplementation(async (query: unknown) => {
+      const text = JSON.stringify(query);
+      if (text.includes('INSERT INTO metric_anomalies (') && text.includes('open_episode_buckets')) {
+        return [{ fallbackPairs: text.includes("mr.source_table = 'device_process_samples'") ? 1 : 2 }];
+      }
+      return [{ acquired: true }];
+    });
+
+    await detectMetricAnomaliesRange({ orgId, ...range });
+
+    expect(recordFallbackMock).toHaveBeenCalledWith('baseline', 2);
+    expect(recordFallbackMock).toHaveBeenCalledWith('process-runaway', 1);
+  });
+});

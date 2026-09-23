@@ -6,6 +6,15 @@ const { deleteSpy, reportScopeMocks, reportPreflightMock } = vi.hoisted(() => ({
   deleteSpy: vi.fn(),
   reportPreflightMock: vi.fn(),
   reportScopeMocks: {
+    // #3198 W01 — mirrors siteScope.reportOwnerOf: exactly one owner axis, or
+    // throw. A plain function (not vi.fn) so a mock reset cannot blank it and
+    // turn aiToolsFleet's owner guard into a no-op.
+    reportOwnerOf: (row: { orgId: string | null; partnerId: string | null }) => {
+      const hasOrg = typeof row.orgId === 'string' && row.orgId.length > 0;
+      const hasPartner = typeof row.partnerId === 'string' && row.partnerId.length > 0;
+      if (hasOrg === hasPartner) throw new Error('report row must have exactly one owner axis');
+      return hasOrg ? { orgId: row.orgId as string } : { partnerId: row.partnerId as string };
+    },
     resolveRequestReportAuthority: vi.fn(),
     resolveRequestReportAuthorityMap: vi.fn(),
     decodeSiteScope: vi.fn(),

@@ -51,6 +51,36 @@ describe('DRPlanEditor step type', () => {
     expect(fetchMock.mock.calls.some(([url, init]) => String(url) === '/dr/plans' && (init as RequestInit | undefined)?.method === 'POST')).toBe(false);
   });
 
+  it('scrolls to the error banner on every repeat submit, even when the same validation error recurs', async () => {
+    fetchMock.mockResolvedValue(makeJsonResponse(deviceOptionsPayload));
+    // jsdom has no scrollIntoView implementation; stub it inline, and undo the
+    // stub afterward — a global HTMLElement.prototype mutation left in place
+    // leaks into every later test in this file (order-dependent pollution).
+    HTMLElement.prototype.scrollIntoView = vi.fn();
+    try {
+      render(<DRPlanEditor open planId={null} onClose={vi.fn()} onSaved={vi.fn()} />);
+      const save = screen.getByText('Save plan').closest('button')!;
+      await waitFor(() => expect(save).not.toBeDisabled());
+
+      // First submit with an empty plan name: handleSave sets the error from
+      // undefined -> 'Plan name is required.', a genuine transition, so this
+      // scroll has always worked.
+      fireEvent.click(save);
+      expect(await screen.findByText('Plan name is required.')).toBeInTheDocument();
+      await waitFor(() => expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalledTimes(1));
+
+      // Second submit still has an empty name: handleSave calls setError(undefined)
+      // then setError('Plan name is required.') in the same handler — React
+      // batches those into one commit, so useScrollToError never observes the
+      // transition through `undefined` and must not skip the re-scroll.
+      fireEvent.click(save);
+      await waitFor(() => expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalledTimes(2));
+    } finally {
+      // @ts-expect-error restoring jsdom's actual lack of scrollIntoView
+      delete HTMLElement.prototype.scrollIntoView;
+    }
+  });
+
   it('serialises BARE_METAL_REBUILD options into restoreConfig on save', async () => {
     const onSaved = vi.fn();
     fetchMock.mockImplementation(async (input, init) => {

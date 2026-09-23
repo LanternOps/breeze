@@ -55,6 +55,30 @@ export async function loadReportBrandingForOrg(orgId: string): Promise<ReportBra
       .where(eq(partners.id, org.partnerId!))
       .limit(1)
   );
+  return brandingFromPartnerRow(row, { orgId });
+}
+
+/** #3198 W01: branding for a PARTNER-owned report. The caller has already
+ *  proven partner authority (partner_wide scope), so the partner-axis read is
+ *  pinned to that id, never to caller input. */
+export async function loadReportBrandingForPartner(partnerId: string): Promise<ReportBranding> {
+  const [row] = await readWithPartnerAxisVisibility(() =>
+    db
+      .select({ partnerName: partners.name, partnerSettings: partners.settings })
+      .from(partners)
+      .where(eq(partners.id, partnerId))
+      .limit(1)
+  );
+  return brandingFromPartnerRow(row, { partnerId });
+}
+
+/** The partner-row → ReportBranding mapping shared by the org and partner
+ *  loaders. `logContext` only labels the non-embeddable-logo warning. */
+function brandingFromPartnerRow(
+  row: { partnerName: string | null; partnerSettings: unknown } | undefined,
+  logContext: { orgId: string } | { partnerId: string },
+): ReportBranding {
+  const empty: ReportBranding = { name: null, logoDataUrl: null, logoAspect: null };
   if (!row?.partnerName) return empty;
   const settings = (row.partnerSettings ?? {}) as { branding?: { logoUrl?: string; primaryColor?: string; secondaryColor?: string }; contact?: { name?: string; email?: string } };
   const logoUrl = settings.branding?.logoUrl ?? null;
@@ -64,7 +88,7 @@ export async function loadReportBrandingForOrg(orgId: string): Promise<ReportBra
   const accentColor = parseHexColor(settings.branding?.secondaryColor) ? settings.branding!.secondaryColor! : null;
   const aspect = logoUrl ? pngAspectFromDataUrl(logoUrl) : null;
   if (logoUrl && aspect == null) {
-    console.warn('[reportBranding] Partner logo is not an embeddable PNG data URL; sending name-only branding', { orgId });
+    console.warn('[reportBranding] Partner logo is not an embeddable PNG data URL; sending name-only branding', logContext);
   }
   return {
     name: row.partnerName,

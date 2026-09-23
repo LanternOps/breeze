@@ -15,7 +15,7 @@ import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services
 import {
   resolveRequestReportAuthority,
   resolveRequestReportAuthorityMap,
-  type LiveSiteScopeV1,
+  type OrgAxisLiveSiteScopeV1,
 } from '../../services/siteScope';
 import { ensureOrgAccess, getOrgIdsForAuth } from './helpers';
 import { dataQuerySchema } from './schemas';
@@ -40,7 +40,7 @@ function normalizeSiteIdList(siteIds: readonly string[]): string[] {
  * Device-level site condition for one exact-organization live scope.
  * `unrestricted` adds no predicate; `restricted` binds its normalized UUIDs.
  */
-function alertsDeviceSiteCondition(scope: LiveSiteScopeV1): SQL | undefined {
+function alertsDeviceSiteCondition(scope: OrgAxisLiveSiteScopeV1): SQL | undefined {
   return scope.kind === 'restricted'
     ? inArray(devices.siteId, normalizeSiteIdList(scope.siteIds))
     : undefined;
@@ -54,9 +54,9 @@ function alertsDeviceSiteCondition(scope: LiveSiteScopeV1): SQL | undefined {
  * querying. One organization's site set is never applied to another's rows.
  */
 function alertsMultiOrgDeviceCondition(
-  scopes: readonly LiveSiteScopeV1[]
+  scopes: readonly OrgAxisLiveSiteScopeV1[]
 ): SQL | null {
-  const scopesByOrgId = new Map<string, LiveSiteScopeV1>();
+  const scopesByOrgId = new Map<string, OrgAxisLiveSiteScopeV1>();
   for (const scope of scopes) {
     if (scope.kind === 'restricted' && scope.siteIds.length === 0) continue;
     if (!scopesByOrgId.has(scope.orgId)) scopesByOrgId.set(scope.orgId, scope);
@@ -74,7 +74,7 @@ function alertsMultiOrgDeviceCondition(
   return branches.length === 1 ? branches[0]! : or(...branches)!;
 }
 
-function scopeAdmitsSite(scope: LiveSiteScopeV1, siteId: string): boolean {
+function scopeAdmitsSite(scope: OrgAxisLiveSiteScopeV1, siteId: string): boolean {
   return scope.kind === 'unrestricted' || scope.siteIds.includes(siteId);
 }
 
@@ -315,7 +315,9 @@ dataRoutes.get(
           : c.json({ error: 'Access to this organization denied' }, 403);
       }
       const scope = authorityResult.authority.scope;
-      if (scope.kind === 'legacy_unscoped') {
+      // An org resolver never mints partner_wide (#3198 W01); refusing it here
+      // narrows the scope to the org axis these device predicates bind.
+      if (scope.kind === 'legacy_unscoped' || scope.kind === 'partner_wide') {
         return c.json({ error: 'Access to this organization denied' }, 403);
       }
       if (query.siteId && !scopeAdmitsSite(scope, query.siteId)) {
@@ -327,11 +329,11 @@ dataRoutes.get(
       return c.json(emptyAlertsSummary());
     } else if (auth.scope === 'partner') {
       const authorityMap = await resolveRequestReportAuthorityMap(auth, orgIds ?? [], 'export');
-      const authorizedScopes: LiveSiteScopeV1[] = [];
+      const authorizedScopes: OrgAxisLiveSiteScopeV1[] = [];
       for (const result of authorityMap.values()) {
         if (!result.ok) continue;
         const scope = result.authority.scope;
-        if (scope.kind === 'legacy_unscoped') continue;
+        if (scope.kind === 'legacy_unscoped' || scope.kind === 'partner_wide') continue;
         authorizedScopes.push(scope);
       }
       const compositeCondition = alertsMultiOrgDeviceCondition(authorizedScopes);

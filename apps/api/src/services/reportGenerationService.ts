@@ -23,6 +23,7 @@ import {
   systemReportAuthorityFor,
   type ReportExecutionAuthority,
   type ReportGenerationAuthority,
+  type ReportOwner,
 } from './siteScope';
 import { isManagedEvidenceType, type ManagedEvidenceType } from './managedEvidenceRegistry';
 
@@ -76,7 +77,14 @@ export type ReportType =
   // Org-wide by construction — M365 identity has no site dimension — so a
   // restricted authority gets the zero-safe shape, never a silently org-wide
   // view. See services/identityAccessReport.ts.
-  | 'identity_access_review';
+  | 'identity_access_review'
+  // #3198 W01. PSA business reports. Enum labels only this wave: W02 registers
+  // their generators (and which owner axes each supports). Until then every
+  // generation entry point refuses them with `UnsupportedReportScopeError`, so
+  // a partner-owned definition can be created and scheduled but never runs.
+  | 'ticket_sla_attainment'
+  | 'technician_time_billability'
+  | 'ar_aging';
 
 /**
  * Thrown by every generation entry point for a `ReportType` whose artifact is
@@ -94,6 +102,29 @@ export class StoredArtifactOnlyReportError extends Error {
   constructor(type: string) {
     super(`Report type ${type} is a stored artifact and cannot be generated`);
     this.name = 'StoredArtifactOnlyReportError';
+  }
+}
+
+/** #3198 W01: the definition's owner axis is one this type cannot run under.
+ *  Every partner-owned report throws this until W02 registers partner-capable
+ *  generators, and so does org-scoped generation of a business type whose
+ *  generator does not exist yet. Routes answer 400 unsupported_report_scope;
+ *  the worker records a failed run with that reason. */
+export class UnsupportedReportScopeError extends Error {
+  readonly code = 'unsupported_report_scope';
+
+  constructor(readonly reportType: string, readonly scope: 'organization' | 'partner') {
+    super(`${reportType} cannot run at ${scope} scope`);
+    this.name = 'UnsupportedReportScopeError';
+  }
+}
+
+/** #3198 W01. The generation guard for a definition's owner axis. No report
+ *  type has a partner-scope generator this wave, so every partner owner is
+ *  refused; W02 replaces this with the registry's `supportedScopes`. */
+export function assertReportOwnerScopeSupported(type: string, owner: ReportOwner): void {
+  if (owner.partnerId !== undefined) {
+    throw new UnsupportedReportScopeError(type, 'partner');
   }
 }
 
@@ -217,7 +248,9 @@ function assertExecutableAuthority(
   if (!authority || !authority.scope) {
     throw new UnexecutableReportScopeError('Report execution authority is required');
   }
-  if (authority.scope.orgId !== orgId) {
+  // #3198 W01: a partner_wide scope has no org, so it never matches an org
+  // owner. Partner-owned execution is asserted in assertReportExecutionPreflight.
+  if (authority.scope.kind === 'partner_wide' || authority.scope.orgId !== orgId) {
     throw new UnexecutableReportScopeError('Report execution authority organization mismatch');
   }
   if (authority.scope.kind === 'legacy_unscoped') {
@@ -281,13 +314,33 @@ function assertRequestedScopeWithinAuthority(
   }
 }
 
+/**
+ * `owner` is the definition's single tenancy axis (#3198 W01). A bare string
+ * still means an ORG owner, so every pre-existing caller keeps its exact
+ * behaviour (same convention as `decodeSiteScope`).
+ */
 export function assertReportExecutionPreflight(
-  orgId: string,
+  ownerOrOrgId: string | ReportOwner,
   config: Record<string, unknown>,
   authority: ReportGenerationAuthority | null | undefined,
   reportType?: ReportType,
 ): asserts authority is ReportGenerationAuthority {
-  assertExecutableAuthority(orgId, authority);
+  const owner: ReportOwner =
+    typeof ownerOrOrgId === 'string' ? { orgId: ownerOrOrgId } : ownerOrOrgId;
+  if (owner.partnerId !== undefined) {
+    if (
+      !authority
+      || authority.principalKind !== 'user'
+      || !authority.principalUserId
+      || authority.scope?.kind !== 'partner_wide'
+      || authority.scope.partnerId !== owner.partnerId
+    ) {
+      throw new UnexecutableReportScopeError('partner authority mismatch');
+    }
+    // A partner-wide config carries no site filter to preflight.
+    return;
+  }
+  assertExecutableAuthority(owner.orgId, authority);
   if (
     reportType
     && authority.principalKind === 'portal_user'
@@ -952,6 +1005,11 @@ async function dispatchReportGeneration(
       const { generateIdentityAccessReport } = await import('./identityAccessReport');
       return generateIdentityAccessReport(orgId, config, authority, evidence);
     }
+    // #3198 W01 — enum labels only; W02 registers the generators.
+    case 'ticket_sla_attainment':
+    case 'technician_time_billability':
+    case 'ar_aging':
+      throw new UnsupportedReportScopeError(type, 'organization');
     default: {
       const exhaustive: never = type;
       throw new Error(`Invalid report type: ${String(exhaustive)}`);
@@ -1077,6 +1135,12 @@ function zeroSafeReport(type: ReportType, orgId: string): ReportResult {
     // Fleet Designer W01 (#5651) — refused HERE too, same reason as above.
     case 'ai_fleet_design':
       throw new StoredArtifactOnlyReportError(type);
+    // #3198 W01 — refused here too: an empty shape would read as "nothing to
+    // report" for a type that has no generator at all.
+    case 'ticket_sla_attainment':
+    case 'technician_time_billability':
+    case 'ar_aging':
+      throw new UnsupportedReportScopeError(type, 'organization');
     default: {
       const exhaustive: never = type;
       throw new Error(`Invalid report type: ${String(exhaustive)}`);

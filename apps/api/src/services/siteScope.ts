@@ -25,22 +25,61 @@ import {
   withSystemDbAccessContext,
 } from '../db';
 import type { AuthContext } from '../middleware/auth';
+import { canManagePartnerWidePolicies } from './partnerWideAccess';
 import type { UserPermissions } from './permissions';
 import { permissionGrantMatches } from './permissionMatching';
 
 export type SiteScopeV1 =
   | { version: 1; kind: 'unrestricted'; orgId: string }
   | { version: 1; kind: 'restricted'; orgId: string; siteIds: string[] }
-  | { version: 1; kind: 'legacy_unscoped'; orgId: string };
+  | { version: 1; kind: 'legacy_unscoped'; orgId: string }
+  // #3198 W01 (spec 3.1a): every organization of `partnerId`, resolved live
+  // at execution time. Carries no org list on purpose - persisting one would
+  // freeze the report at creation-time membership.
+  | { version: 1; kind: 'partner_wide'; partnerId: string };
 
 export type LiveSiteScopeV1 = Exclude<SiteScopeV1, { kind: 'legacy_unscoped' }>;
+
+/**
+ * #3198 W01. A report row owns exactly ONE tenancy axis: an organization or a
+ * partner (`reports_one_owner_chk`). Decoding an execution scope needs that
+ * axis, so every decode site must state which one it holds rather than
+ * defaulting to an org id that may be NULL.
+ */
+export type ReportOwner =
+  | { orgId: string; partnerId?: undefined }
+  | { partnerId: string; orgId?: undefined };
+
+export function reportOwnerOf(row: {
+  orgId: string | null;
+  partnerId: string | null;
+}): ReportOwner {
+  const hasOrg = typeof row.orgId === 'string' && row.orgId.length > 0;
+  const hasPartner = typeof row.partnerId === 'string' && row.partnerId.length > 0;
+  if (hasOrg === hasPartner) {
+    throw new Error('report row must have exactly one owner axis');
+  }
+  return hasOrg ? { orgId: row.orgId as string } : { partnerId: row.partnerId as string };
+}
+
+export function partnerWideScope(
+  partnerId: string,
+): Extract<SiteScopeV1, { kind: 'partner_wide' }> {
+  assertNonEmptyString(partnerId, 'partner ID');
+  return { version: 1, kind: 'partner_wide', partnerId };
+}
 export type ReportAction = 'read' | 'write' | 'export' | 'delete';
 
 export type ReportPrincipalKind = 'user' | 'system' | 'portal_user';
 
 export interface PersistedSiteScopeColumns {
   executionScopeVersion: number | null;
-  executionScopeKind: 'unrestricted' | 'restricted' | 'legacy_unscoped' | null;
+  executionScopeKind:
+    | 'unrestricted'
+    | 'restricted'
+    | 'legacy_unscoped'
+    | 'partner_wide'
+    | null;
   executionScopeSiteIds: string[] | null;
   executionScopeUserId: string | null;
   executionScopeFingerprint: string | null;
@@ -127,7 +166,10 @@ export type LiveReportAuthorityResult =
         | 'permission_removed'
         | 'organization_inaccessible'
         | 'empty_scope'
-        | 'unverifiable_scope';
+        | 'unverifiable_scope'
+        // #3198 W01 - partner-axis refusals, never emitted by an org resolver.
+        | 'partner_inaccessible'
+        | 'partner_access_not_all';
     };
 
 function assertNever(value: never): never {
@@ -161,12 +203,12 @@ export function normalizeSiteIds(siteIds: readonly string[]): string[] {
 }
 
 function normalizeScope(scope: SiteScopeV1): SiteScopeV1 {
-  assertNonEmptyString(scope.orgId, 'organization ID');
-
   switch (scope.kind) {
     case 'unrestricted':
+      assertNonEmptyString(scope.orgId, 'organization ID');
       return { version: 1, kind: 'unrestricted', orgId: scope.orgId };
     case 'restricted':
+      assertNonEmptyString(scope.orgId, 'organization ID');
       return {
         version: 1,
         kind: 'restricted',
@@ -174,7 +216,11 @@ function normalizeScope(scope: SiteScopeV1): SiteScopeV1 {
         siteIds: normalizeSiteIds(scope.siteIds),
       };
     case 'legacy_unscoped':
+      assertNonEmptyString(scope.orgId, 'organization ID');
       return { version: 1, kind: 'legacy_unscoped', orgId: scope.orgId };
+    case 'partner_wide':
+      assertNonEmptyString(scope.partnerId, 'partner ID');
+      return { version: 1, kind: 'partner_wide', partnerId: scope.partnerId };
     default:
       return assertNever(scope);
   }
@@ -234,6 +280,13 @@ export function siteScopeFingerprint(scope: SiteScopeV1): string {
         orgId: normalized.orgId,
       };
       break;
+    case 'partner_wide':
+      stableValue = {
+        version: normalized.version,
+        kind: normalized.kind,
+        partnerId: normalized.partnerId,
+      };
+      break;
     default:
       return assertNever(normalized);
   }
@@ -247,6 +300,19 @@ export function intersectSiteScopes(
 ): SiteScopeV1 | null {
   const normalizedPersisted = normalizeScope(persisted);
   const normalizedCurrent = normalizeScope(current);
+
+  // Partner-wide lives on a different axis than every org kind: it intersects
+  // only with itself, same partner. Mixing axes can never narrow safely.
+  if (
+    normalizedPersisted.kind === 'partner_wide'
+    || normalizedCurrent.kind === 'partner_wide'
+  ) {
+    return normalizedPersisted.kind === 'partner_wide'
+      && normalizedCurrent.kind === 'partner_wide'
+      && normalizedPersisted.partnerId === normalizedCurrent.partnerId
+      ? normalizedPersisted
+      : null;
+  }
 
   if (normalizedPersisted.orgId !== normalizedCurrent.orgId) {
     return null;
@@ -299,6 +365,20 @@ export function isSiteScopeSubset(
 ): boolean {
   const normalizedCandidate = normalizeScope(candidate);
   const normalizedCurrent = normalizeScope(current);
+
+  // Same axis rule as intersectSiteScopes: partner-wide is a subset only of
+  // the identical partner-wide scope, and never of (or a superset of) an org
+  // scope.
+  if (
+    normalizedCandidate.kind === 'partner_wide'
+    || normalizedCurrent.kind === 'partner_wide'
+  ) {
+    return (
+      normalizedCandidate.kind === 'partner_wide'
+      && normalizedCurrent.kind === 'partner_wide'
+      && normalizedCandidate.partnerId === normalizedCurrent.partnerId
+    );
+  }
 
   if (normalizedCandidate.orgId !== normalizedCurrent.orgId) {
     return false;
@@ -405,20 +485,68 @@ function validateDecodedScopeFingerprint(
   return scope;
 }
 
+/**
+ * `owner` is the report row's single tenancy axis (#3198 W01). A bare string
+ * is still accepted and means an ORG owner, so every pre-existing call site
+ * keeps its exact behaviour. The owner axis and the persisted kind must agree:
+ * a partner_wide envelope on an org-owned row (or an org kind on a
+ * partner-owned row) is a corrupted row, not a decodable one.
+ */
 export function decodeSiteScope(
   row: PersistedSiteScopeColumns,
-  orgId: string,
+  ownerOrOrgId: string | ReportOwner,
 ): SiteScopeV1 {
-  assertNonEmptyString(orgId, 'organization ID');
+  const owner: ReportOwner =
+    typeof ownerOrOrgId === 'string' ? { orgId: ownerOrOrgId } : ownerOrOrgId;
+  if (owner.orgId !== undefined) {
+    assertNonEmptyString(owner.orgId, 'organization ID');
+  } else {
+    assertNonEmptyString(owner.partnerId, 'partner ID');
+  }
 
   if (allPersistedValuesAreNull(row)) {
-    return { version: 1, kind: 'legacy_unscoped', orgId };
+    if (owner.orgId === undefined) {
+      // There is no legacy partner-owned report: the axis shipped with the
+      // execution-scope columns, so an empty envelope here is corruption.
+      throw new Error('partner-owned report has no persisted execution scope');
+    }
+    return { version: 1, kind: 'legacy_unscoped', orgId: owner.orgId };
   }
 
   assertCompletePersistedBase(row);
   const principalKind = persistedPrincipalKind(row);
   const hasNoStaffPrincipal =
     principalKind === 'system' || principalKind === 'portal_user';
+
+  if (row.executionScopeKind === 'partner_wide') {
+    if (owner.partnerId === undefined) {
+      throw new Error(
+        'partner_wide execution scope on an org-owned report (owner mismatch)',
+      );
+    }
+    if (hasNoStaffPrincipal) {
+      throw new Error('invalid persisted non-user site scope kind');
+    }
+    if (
+      row.executionScopeSiteIds !== null
+      || row.executionScopeUserId === null
+    ) {
+      throw new Error('partial or invalid persisted partner_wide site scope');
+    }
+    assertNonEmptyString(row.executionScopeUserId, 'execution scope user ID');
+    return validateDecodedScopeFingerprint(row, {
+      version: 1,
+      kind: 'partner_wide',
+      partnerId: owner.partnerId,
+    });
+  }
+
+  if (owner.orgId === undefined) {
+    throw new Error(
+      'org-kind execution scope on a partner-owned report (owner mismatch)',
+    );
+  }
+  const orgId = owner.orgId;
 
   switch (row.executionScopeKind) {
     case 'unrestricted':
@@ -512,6 +640,12 @@ export function persistedSiteScopeValues(
       };
     case 'user':
       assertNonEmptyString(authority.principalUserId, 'principal user ID');
+      if (scope.kind === 'partner_wide') {
+        // A partner-wide envelope persists exactly like an unrestricted one
+        // (no site ids); the partner itself is carried by the OWNING row, so
+        // guard the value that would otherwise never be validated here.
+        assertNonEmptyString(scope.partnerId, 'partner ID');
+      }
       return {
         executionScopeVersion: 1,
         executionScopeKind: scope.kind,
@@ -726,6 +860,14 @@ function definitionScopePredicate(
         sql`${columns.executionScopeSiteIds} <@ ${uuidArraySql(normalizedSiteIds)}`,
       )!;
     }
+    case 'partner_wide':
+      // #3198 W01. A partner_wide scope has no org to bind, and these
+      // single-scope predicates cannot see the row's partner_id. Falling to
+      // sqlFalse would disguise a wiring bug as "no rows"; callers holding a
+      // partner_wide authority use reportPartnerWideScopeSqlPredicate.
+      throw new Error(
+        'partner_wide scope requires the partner-axis predicate (reportPartnerWideScopeSqlPredicate)',
+      );
     default:
       return sqlFalse();
   }
@@ -744,14 +886,70 @@ export function unrestrictedReportDefinitionScopeSqlPredicate(
   return unrestrictedDefinitionPredicate(columns);
 }
 
+/**
+ * #3198 W01. The org axis of the multi-org predicates. Partner-wide is not an
+ * organization-axis scope and is delivered through the explicit `partnerWide`
+ * argument instead, so it is rejected here rather than silently dropped.
+ */
+export type OrgAxisLiveSiteScopeV1 = Exclude<LiveSiteScopeV1, { kind: 'partner_wide' }>;
+
+/**
+ * #3198 W01 (spec 3.1a). Matches a PARTNER-OWNED row whose execution-scope
+ * envelope is a complete v1 partner_wide capture by a real user. The partner
+ * itself is matched on the row's own `partner_id`; the envelope never stores
+ * it, so the two must be asserted together or a row from another partner with
+ * the same kind would match.
+ */
+function partnerWideRowPredicate(
+  columns: ReportScopeColumns,
+  partnerWide: PartnerWideScopeSqlTarget,
+): SQL<unknown> {
+  assertNonEmptyString(partnerWide.partnerId, 'partner ID');
+  return and(
+    eq(partnerWide.rowPartnerId, partnerWide.partnerId),
+    completeVersionOneBase(columns),
+    eq(columns.executionScopeKind, 'partner_wide'),
+    isNull(columns.executionScopeSiteIds),
+    eq(columns.executionScopePrincipalKind, 'user'),
+  )!;
+}
+
+/**
+ * The partner axis of a multi-org predicate: the row's `partner_id` column and
+ * the partner the caller holds live partner-wide authority for. Omitted by
+ * every org-axis caller, which therefore gets exactly today's SQL.
+ */
+export type PartnerWideScopeSqlTarget = {
+  rowPartnerId: typeof reports.partnerId;
+  partnerId: string;
+};
+
+/**
+ * #3198 W01. The single-row predicate for a PARTNER-OWNED definition or run
+ * read under a live partner_wide authority: the joined/owning report row's
+ * `partner_id` is the caller's partner AND the row's envelope is a complete v1
+ * partner_wide capture by a real user. `columns` is `reports` for a definition
+ * read and `reportRuns` for a run read (the run carries its own envelope).
+ */
+export function reportPartnerWideScopeSqlPredicate(
+  columns: ReportScopeColumns,
+  partnerWide: PartnerWideScopeSqlTarget,
+): SQL<unknown> {
+  return partnerWideRowPredicate(columns, partnerWide);
+}
+
 export function reportDefinitionMultiOrgScopeSqlPredicate(
   rowOrgId: typeof reports.orgId,
   columns: ReportScopeColumns,
   authorizedScopes: readonly LiveSiteScopeV1[],
+  partnerWide?: PartnerWideScopeSqlTarget,
 ): SQL<unknown> {
-  const scopesByOrgId = new Map<string, LiveSiteScopeV1>();
+  const scopesByOrgId = new Map<string, OrgAxisLiveSiteScopeV1>();
 
   for (const scope of authorizedScopes) {
+    if (scope.kind === 'partner_wide') {
+      throw new Error('partner-wide scope is not an organization-axis scope');
+    }
     assertNonEmptyString(scope.orgId, 'organization ID');
     if (scope.kind === 'restricted' && scope.siteIds.length === 0) {
       continue;
@@ -774,6 +972,10 @@ export function reportDefinitionMultiOrgScopeSqlPredicate(
         definitionScopePredicate(columns, scope),
       )!,
     );
+
+  if (partnerWide) {
+    branches.push(partnerWideRowPredicate(columns, partnerWide));
+  }
 
   return branches.length === 0 ? sqlFalse() : or(...branches)!;
 }
@@ -795,10 +997,14 @@ export function reportRunMultiOrgScopeSqlPredicate(
   rowOrgId: typeof reports.orgId,
   columns: ReportScopeColumns,
   authorizedScopes: readonly LiveSiteScopeV1[],
+  partnerWide?: PartnerWideScopeSqlTarget,
 ): SQL<unknown> {
-  const scopesByOrgId = new Map<string, LiveSiteScopeV1>();
+  const scopesByOrgId = new Map<string, OrgAxisLiveSiteScopeV1>();
 
   for (const scope of authorizedScopes) {
+    if (scope.kind === 'partner_wide') {
+      throw new Error('partner-wide scope is not an organization-axis scope');
+    }
     assertNonEmptyString(scope.orgId, 'organization ID');
     if (scope.kind === 'restricted' && scope.siteIds.length === 0) {
       continue;
@@ -821,6 +1027,10 @@ export function reportRunMultiOrgScopeSqlPredicate(
         definitionScopePredicate(columns, scope),
       )!,
     );
+
+  if (partnerWide) {
+    branches.push(partnerWideRowPredicate(columns, partnerWide));
+  }
 
   return branches.length === 0 ? sqlFalse() : or(...branches)!;
 }
@@ -1115,6 +1325,141 @@ export async function resolveRequestReportAuthority(
     action,
     auth.scope === 'system',
   );
+}
+
+/**
+ * #3198 W01 (spec 3.1a). Live authority for a PARTNER-OWNED report: the user
+ * must be active, hold exactly one partner_users membership for `partnerId`
+ * with org_access = 'all', and that membership's role must grant the report
+ * action. 'selected' / 'none' access is refused - a user who cannot open every
+ * org individually must not read an aggregate over all of them. Platform
+ * admins pass under `allowPlatformAuthority` exactly as for org authorities.
+ */
+export async function resolveLivePartnerReportAuthority(
+  userId: string,
+  partnerId: string,
+  action: ReportAction,
+): Promise<LiveReportAuthorityResult> {
+  return resolveExactPartnerReportAuthority(userId, partnerId, action, true);
+}
+
+/**
+ * The request-path twin. The token is a pre-filter only: it can refuse early,
+ * but it never grants - the membership and its org_access are re-read from the
+ * database below, because a token outlives a demotion from 'all' to 'selected'.
+ */
+export async function resolveRequestPartnerReportAuthority(
+  auth: AuthContext,
+  partnerId: string,
+  action: ReportAction,
+): Promise<LiveReportAuthorityResult> {
+  if (auth.scope === 'system') {
+    return resolveExactPartnerReportAuthority(
+      auth.user.id,
+      partnerId,
+      action,
+      true,
+    );
+  }
+  if (auth.scope !== 'partner' || auth.partnerId !== partnerId) {
+    return denied('partner_inaccessible');
+  }
+  // Same capability as every other partner-wide surface (epic #2135); the live
+  // re-read below is the authority, this is the cheap token-side refusal.
+  if (!canManagePartnerWidePolicies(auth)) {
+    return denied('partner_access_not_all');
+  }
+  return resolveExactPartnerReportAuthority(
+    auth.user.id,
+    partnerId,
+    action,
+    false,
+  );
+}
+
+async function resolveExactPartnerReportAuthority(
+  userId: string,
+  partnerId: string,
+  action: ReportAction,
+  allowPlatformAuthority: boolean,
+): Promise<LiveReportAuthorityResult> {
+  try {
+    return await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() =>
+        resolveExactPartnerReportAuthorityInSystemContext(
+          userId,
+          partnerId,
+          action,
+          allowPlatformAuthority,
+        ),
+      ),
+    );
+  } catch {
+    return denied('unverifiable_scope');
+  }
+}
+
+async function resolveExactPartnerReportAuthorityInSystemContext(
+  userId: string,
+  partnerId: string,
+  action: ReportAction,
+  allowPlatformAuthority: boolean,
+): Promise<LiveReportAuthorityResult> {
+  const [user] = await db
+    .select({
+      id: users.id,
+      status: users.status,
+      isPlatformAdmin: users.isPlatformAdmin,
+      partnerId: users.partnerId,
+    })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  if (!user || user.status !== 'active') {
+    return denied('user_inactive');
+  }
+
+  if (allowPlatformAuthority && user.isPlatformAdmin) {
+    return liveAuthority(partnerWideScope(partnerId), user.id);
+  }
+  if (user.partnerId !== partnerId) {
+    return denied('partner_inaccessible');
+  }
+
+  const memberships = await db
+    .select({
+      roleId: partnerUsers.roleId,
+      orgAccess: partnerUsers.orgAccess,
+    })
+    .from(partnerUsers)
+    .where(
+      and(
+        eq(partnerUsers.userId, user.id),
+        eq(partnerUsers.partnerId, partnerId),
+      ),
+    )
+    .limit(2);
+  if (memberships.length > 1) {
+    return denied('unverifiable_scope');
+  }
+  const membership = memberships[0];
+  if (!membership) {
+    return denied('membership_removed');
+  }
+  if (membership.orgAccess !== 'all') {
+    return denied('partner_access_not_all');
+  }
+  if (
+    !membership.roleId
+    || !(await roleGrantsReportAction(membership.roleId, action, {
+      scope: 'partner',
+      partnerId,
+    }))
+  ) {
+    return denied('permission_removed');
+  }
+
+  return liveAuthority(partnerWideScope(partnerId), user.id);
 }
 
 type BatchOrganization = {

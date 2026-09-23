@@ -2065,6 +2065,7 @@
     "iocScans": "Balayages IOC",
     "subtitle": "Balayages de logiciels malveillants et d'IOC basés sur des signatures sur votre parc. Ne remplace pas une protection complète des points de terminaison.",
     "scansTab": "Balayages",
-    "threatsTab": "Menaces"
+    "threatsTab": "Menaces",
+    "backToThreats": "Retour aux menaces"
   }
 }

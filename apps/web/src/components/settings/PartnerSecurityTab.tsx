@@ -146,7 +146,9 @@ export default function PartnerSecurityTab({ data, onChange, status, statusUnava
           value={list.join('\n')}
           onChange={e => {
             const lines = parseAllowlistInput(e.target.value);
-            set({ ipAllowlist: lines.length > 0 ? lines : undefined });
+            // Explicit [] (not undefined): the API keeps the stored list when
+            // the key is omitted, so clearing must send the empty array.
+            set({ ipAllowlist: lines });
           }}
           rows={4}
           className="w-full rounded-md border bg-background px-3 py-2 text-sm"

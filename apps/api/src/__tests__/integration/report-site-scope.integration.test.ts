@@ -42,7 +42,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { and, eq, sql } from 'drizzle-orm';
-import { AI_AGENT_RUN_PROFILES } from '@breeze/shared';
+import { AI_AGENT_RUN_PROFILES, AI_AGENT_SCHEDULE_KINDS } from '@breeze/shared';
 
 import { getAppDb, getTestDb } from './setup';
 import {
@@ -121,7 +121,22 @@ const MIGRATION_FILE = '2026-08-06-a-report-site-scope.sql';
 // happens to run after this one sees the pre-P2-3 shape. Every successor that
 // redefines a constraint owned by MIGRATION_FILE belongs in this list, newest
 // last; each is idempotent, so re-applying is a no-op beyond the restore.
-const SUCCESSOR_MIGRATION_FILES = ['2026-09-24-b-ai-agents-org-narrative.sql'] as const;
+// 2026-10-27-130100 (#3198 W01) redefines both shape CHECKs again, adding the
+// partner_wide arm; without it here, every partner-owned report insert later
+// in the shard dies 23514 (reportsPartnerRls, reportsPartnerOwned,
+// tenantCascadePartner).
+// 2026-09-24-b also re-adds ai_agent_schedules_kind_chk / _kind_kinds_chk as
+// ('sweep','narrative'), dropping the 'design' and 'patch' kinds; the newest
+// owner of both is 2026-10-16-182700, whose only other statement
+// (ai_agent_runs_profile_chk) LEAKED_CONSTRAINT_RESTORES re-asserts anyway.
+// Without it every later design/patch-schedule suite in the shard died 23514
+// (aiAgentSchedulesPartnerRls, aiAgentFleetDesign, aiAgentPatchLane,
+// fleetDesignDrift).
+const SUCCESSOR_MIGRATION_FILES = [
+  '2026-09-24-b-ai-agents-org-narrative.sql',
+  '2026-10-16-182700-ai-agents-patch-profile.sql',
+  '2026-10-27-130100-reports-partner-ownership.sql',
+] as const;
 
 // Second-order hazard, and the reason `restoreSuccessorMigrations` does more
 // than replay the list above: a successor also redefines constraints it does
@@ -146,6 +161,16 @@ const LEAKED_CONSTRAINT_RESTORES = [
   `ALTER TABLE ai_agent_runs ADD CONSTRAINT ai_agent_runs_profile_chk CHECK (profile IN (${AI_AGENT_RUN_PROFILES.map(
     (profile) => `'${profile}'`,
   ).join(', ')}))`,
+  // 2026-09-24-b also re-adds both `*_execution_scope_principal_chk` as
+  // ('user','system'), reverting the 'portal_user' widening from
+  // 2026-10-08-100100-portal-report-self-service.sql. Replaying that file here
+  // would drag in everything else it owns, so the two leaked CHECKs are
+  // re-asserted at their current body instead (#3198 W01: a partner_wide
+  // portal_user row then fails the shape CHECK it is meant to, not this one).
+  ...(['reports', 'report_runs'] as const).flatMap((table) => [
+    `ALTER TABLE ${table} DROP CONSTRAINT IF EXISTS ${table}_execution_scope_principal_chk`,
+    `ALTER TABLE ${table} ADD CONSTRAINT ${table}_execution_scope_principal_chk CHECK (execution_scope_principal_kind IS NULL OR execution_scope_principal_kind IN ('user', 'system', 'portal_user'))`,
+  ]),
 ] as const;
 
 function buildApp(): Hono {
@@ -2625,6 +2650,50 @@ describe('Wave P2-3 · a system-authored report carries no acting user', () => {
       [...(rows[0]!.definition.matchAll(/'([^']+)'::text/g))].map((m) => m[1]!),
     );
     expect([...allowed].sort()).toEqual([...AI_AGENT_RUN_PROFILES].sort());
+  });
+
+  // #3198 W01: the newest shape-CHECK owner must win the replay, or the
+  // partner_wide arm silently disappears for the rest of the shard.
+  runDb('the successor replay leaves both shape CHECKs admitting partner_wide', async () => {
+    const rows = await rawRows<{ conname: string; definition: string }>(sql`
+      SELECT conname, pg_get_constraintdef(oid) AS definition
+        FROM pg_constraint
+       WHERE conname IN ('reports_execution_scope_shape_chk', 'report_runs_execution_scope_shape_chk')
+       ORDER BY conname
+    `);
+    expect(rows.map((r) => r.conname)).toEqual([
+      'report_runs_execution_scope_shape_chk',
+      'reports_execution_scope_shape_chk',
+    ]);
+    for (const row of rows) {
+      expect(row.definition, row.conname).toContain("'partner_wide'");
+    }
+  });
+
+  runDb('the successor replay leaves ai_agent_schedules_kind_chk on the CURRENT kind set', async () => {
+    const rows = await rawRows<{ definition: string }>(sql`
+      SELECT pg_get_constraintdef(oid) AS definition
+        FROM pg_constraint
+       WHERE conrelid = 'ai_agent_schedules'::regclass
+         AND conname = 'ai_agent_schedules_kind_chk'
+    `);
+    expect(rows).toHaveLength(1);
+    const allowed = [...rows[0]!.definition.matchAll(/'([^']+)'::text/g)].map((m) => m[1]!);
+    expect([...new Set(allowed)].sort()).toEqual([...AI_AGENT_SCHEDULE_KINDS].sort());
+  });
+
+  runDb('the successor replay leaves both principal CHECKs admitting portal_user', async () => {
+    const rows = await rawRows<{ conname: string; definition: string }>(sql`
+      SELECT conname, pg_get_constraintdef(oid) AS definition
+        FROM pg_constraint
+       WHERE conname IN ('reports_execution_scope_principal_chk', 'report_runs_execution_scope_principal_chk')
+       ORDER BY conname
+    `);
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      const allowed = [...row.definition.matchAll(/'([^']+)'::text/g)].map((m) => m[1]!).sort();
+      expect(allowed, row.conname).toEqual(['portal_user', 'system', 'user']);
+    }
   });
 
   runDb('the shape CHECK rejects every forged system-principal combination', async () => {
