@@ -1820,7 +1820,6 @@ const activePreview = useRef<AbortController | null>(null);
   import { zValidator } from '../../lib/validation';
   import { requireMfa } from '../../middleware/auth';
   import type { AuthContext } from '../../middleware/auth';
-  import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
   import { writeRouteAudit } from '../../services/auditEvents';
   import { createSystemAuthContext } from '../../services/featureConfigResolver';
   import { convertPartnerLegacy, previewPartnerConversion } from '../../services/monitors/conversion';
@@ -1859,17 +1858,18 @@ const activePreview = useRef<AbortController | null>(null);
 
   adminMonitorConversionRoutes.post('/partners/:partnerId/preview', requireMfa(), zValidator('param', partnerParam), async (c) => {
     const { partnerId } = c.req.valid('param');
-    const data = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-      previewPartnerConversion(partnerId, adminAuthForPartner(c.get('auth') as AuthContext, partnerId))));
+    // Self-managed route (D30): the converter opens its own serializable,
+    // system-scoped transaction. Call it BARE — wrapping it in
+    // withSystemDbAccessContext trips assertIsolationNotNested on every call
+    // (#6644 review finding 1).
+    const data = await previewPartnerConversion(partnerId, adminAuthForPartner(c.get('auth') as AuthContext, partnerId));
     return c.json({ data });
   });
 
   adminMonitorConversionRoutes.post('/partners/:partnerId/convert', requireMfa(), zValidator('param', partnerParam), zValidator('json', z.object({ previewHash: z.string().min(1) })), async (c) => {
     const auth = c.get('auth') as AuthContext;
     const { partnerId } = c.req.valid('param');
-    const result = await runOutsideDbContext(() =>
-      withSystemDbAccessContext(() => convertPartnerLegacy(partnerId, c.req.valid('json').previewHash, adminAuthForPartner(auth, partnerId))),
-    );
+    const result = await convertPartnerLegacy(partnerId, c.req.valid('json').previewHash, adminAuthForPartner(auth, partnerId));
     writeRouteAudit(c as never, {
       orgId: null,
       action: 'monitor_conversion.admin_partner_convert',

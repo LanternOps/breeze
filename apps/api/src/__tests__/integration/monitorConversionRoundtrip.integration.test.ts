@@ -111,3 +111,47 @@ it('writes nullable system actors for an administrator-triggered conversion', as
     expect(ledger!.convertedBy).toBeNull();
   });
 });
+
+/**
+ * #6644 review finding 1: the platform-admin sweep routes are SELF-MANAGED, and
+ * the partner converter opens its own serializable transaction. A handler that
+ * wraps the converter in any ambient context (withSystemDbAccessContext) trips
+ * assertIsolationNotNested on every call. Drive the mounted routes, not the
+ * converter, so the handler's own wrapping is what gets exercised.
+ */
+it('runs the platform-admin partner preview and convert routes end to end', async () => {
+  const { Hono } = await import('hono');
+  const { adminMonitorConversionRoutes } = await import('../../routes/admin/monitorConversion');
+  const f = await inheritedScopeFixture();
+  const user = await createUser({ partnerId: f.partnerId, orgId: f.orgId });
+  const sourceId = await withDbAccessContext(f.context, async () => {
+    const [link] = await db.select().from(configPolicyFeatureLinks)
+      .where(eq(configPolicyFeatureLinks.configPolicyId, f.policyId));
+    const [source] = await db.insert(configPolicyAlertRules).values({
+      featureLinkId: link!.id, name: 'High CPU', severity: 'high',
+      conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 80 }],
+    }).returning();
+    return source!.id;
+  });
+  const adminAuth = { ...createSystemAuthContext(), token: { mfa: true }, user: {
+    id: user.id, email: user.email, name: user.name, isPlatformAdmin: true,
+  } };
+  const app = new Hono();
+  app.use('*', async (c, next) => { c.set('auth' as never, adminAuth as never); await next(); });
+  app.route('/admin/monitor-conversion', adminMonitorConversionRoutes);
+
+  const previewRes = await app.request(`/admin/monitor-conversion/partners/${f.partnerId}/preview`, { method: 'POST' });
+  expect(previewRes.status).toBe(200);
+  const { data: preview } = await previewRes.json() as { data: { previewHash: string } };
+  expect(preview.previewHash).toEqual(expect.any(String));
+
+  const convertRes = await app.request(`/admin/monitor-conversion/partners/${f.partnerId}/convert`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ previewHash: preview.previewHash }),
+  });
+  expect(convertRes.status).toBe(200);
+  await withDbAccessContext(f.context, async () => {
+    const [source] = await db.select().from(configPolicyAlertRules).where(eq(configPolicyAlertRules.id, sourceId));
+    expect(source!.retiredAt).not.toBeNull();
+  });
+});
