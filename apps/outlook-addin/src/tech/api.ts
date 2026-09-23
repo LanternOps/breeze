@@ -227,9 +227,30 @@ export async function fetchRunningTimer(fetchImpl?: FetchLike): Promise<RunningT
   )) as RunningTimerResponse;
 }
 
+export interface AddinWorkType {
+  id: string;
+  name: string;
+}
+
+export interface WorkTypesResponse {
+  workTypes: AddinWorkType[];
+}
+
+/**
+ * GET /office-addin/time/work-types — labels for the TimeWidget picker
+ * (#4628 W04). Active types of the technician's partner, id + name only.
+ */
+export async function fetchWorkTypes(fetchImpl?: FetchLike): Promise<WorkTypesResponse> {
+  return (await expectOk(
+    await apiFetch('/office-addin/time/work-types', {}, fetchImpl),
+  )) as WorkTypesResponse;
+}
+
 export interface StartTimerRequest {
   ticketId: string;
   description?: string;
+  /** #4628 W04 — OMIT for the ticket category's default work type (§3.1). */
+  workTypeId?: string;
 }
 
 export interface StartTimerResponse {
@@ -269,6 +290,8 @@ export interface LogTimeRequest {
   endedAt: string;
   description: string;
   isBillable?: boolean;
+  /** #4628 W04 — OMIT for the ticket category's default work type (§3.1). */
+  workTypeId?: string;
 }
 
 export interface LogTimeResponse {

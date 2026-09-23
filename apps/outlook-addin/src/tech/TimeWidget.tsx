@@ -10,6 +10,12 @@
  * `startTimer` on confirm. Starting with nothing running, or a timer already
  * running on this same ticket, proceeds directly.
  *
+ * Work type (#4628 W04): one "Work type" select, shared by Start and the
+ * manual log. Its blank "Default" option OMITS `workTypeId` from the request,
+ * so the server applies the ticket category's default work type at stamp time
+ * (§3.1). The select is hidden when the partner has no work types or the list
+ * failed to load — logging time never depends on it.
+ *
  * `isBillable` is a tri-state checkbox: the field is omitted from the
  * `logTime` request entirely unless the technician actually clicks it, so the
  * server's own default applies untouched (schema: `isBillable?: boolean`).
@@ -28,12 +34,15 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   fetchRunningTimer,
+  fetchWorkTypes,
   startTimer,
   stopTimer,
   logTime,
   TechApiError,
+  type AddinWorkType,
   type LogTimeRequest,
   type RunningTimerEntry,
+  type StartTimerRequest,
 } from './api';
 import type { LinkableTicket } from './LinkEmailAction';
 
@@ -70,6 +79,30 @@ export function TimeWidget({ linkedTicket, suggestedDurationMinutes, onBanner }:
   const [isBillable, setIsBillable] = useState(false);
   const [isBillableTouched, setIsBillableTouched] = useState(false);
   const [logSubmitting, setLogSubmitting] = useState(false);
+  const [workTypes, setWorkTypes] = useState<AddinWorkType[]>([]);
+  // '' = Default: the field is omitted and the server applies the category default.
+  const [workTypeId, setWorkTypeId] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchWorkTypes()
+      .then((res) => {
+        if (!cancelled) setWorkTypes(res.workTypes);
+      })
+      .catch((err: unknown) => {
+        // Fail soft and quietly: the picker disappears and time is still
+        // logged at the category default. A 403 (no billing_profiles:read) is
+        // an expected role shape; anything else is logged for support.
+        if (cancelled) return;
+        setWorkTypes([]);
+        if (!(err instanceof TechApiError && err.status === 403)) {
+          console.error('[TimeWidget] work type list failed to load', err);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -107,7 +140,9 @@ export function TimeWidget({ linkedTicket, suggestedDurationMinutes, onBanner }:
     setStarting(true);
     onBanner(null);
     try {
-      const res = await startTimer({ ticketId: linkedTicket.id });
+      const body: StartTimerRequest = { ticketId: linkedTicket.id };
+      if (workTypeId) body.workTypeId = workTypeId;
+      const res = await startTimer(body);
       setRunning({
         id: res.entry.id,
         ticketId: res.entry.ticketId,
@@ -175,6 +210,7 @@ export function TimeWidget({ linkedTicket, suggestedDurationMinutes, onBanner }:
         description: description.trim(),
       };
       if (isBillableTouched) body.isBillable = isBillable;
+      if (workTypeId) body.workTypeId = workTypeId;
       await logTime(body);
       setDescription('');
       setDurationMinutes('');
@@ -217,6 +253,25 @@ export function TimeWidget({ linkedTicket, suggestedDurationMinutes, onBanner }:
         <div data-testid="time-idle" className="text-xs text-gray-400">
           No timer running.
         </div>
+      )}
+
+      {workTypes.length > 0 && (
+        <label className="flex items-center gap-2 text-xs text-gray-600">
+          Work type
+          <select
+            data-testid="time-work-type"
+            value={workTypeId}
+            onChange={(e) => setWorkTypeId(e.target.value)}
+            className="rounded-md border border-gray-300 px-2 py-1 text-xs"
+          >
+            <option value="">Default</option>
+            {workTypes.map((w) => (
+              <option key={w.id} value={w.id}>
+                {w.name}
+              </option>
+            ))}
+          </select>
+        </label>
       )}
 
       {!pendingStart && (
