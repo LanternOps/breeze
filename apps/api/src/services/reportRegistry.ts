@@ -344,6 +344,12 @@ export const MSP_STAFF_REPORT_TYPES: readonly ReportType[] = Object.freeze(
   Object.values(REPORT_GENERATORS).filter((d) => d.audience === 'msp_staff').map((d) => d.type),
 );
 
+/** Ruling F1: is this stored type one organization-scope callers never see?
+ *  Takes a plain string (a `reports.type` value); unknown → false. */
+export function isMspStaffReportType(type: string): boolean {
+  return (MSP_STAFF_REPORT_TYPES as readonly string[]).includes(type);
+}
+
 export function reportTypeDef(type: ReportType): ReportTypeDef {
   const def = (REPORT_GENERATORS as Readonly<Record<string, ReportTypeDef | undefined>>)[type];
   if (!def) throw new Error(`${String(type)} is not a known report type`);

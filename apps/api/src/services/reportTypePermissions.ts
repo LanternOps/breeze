@@ -1,7 +1,7 @@
 import { notInArray, type AnyColumn, type SQL } from 'drizzle-orm';
 import type { ReportType } from '@breeze/shared';
 import { permissionGrantMatches } from './permissionMatching';
-import { MSP_STAFF_REPORT_TYPES, REPORT_GENERATORS, reportTypeDef } from './reportRegistry';
+import { isMspStaffReportType, MSP_STAFF_REPORT_TYPES, reportTypeDef } from './reportRegistry';
 // Type-only: `./permissions` imports `db`; this module stays pool-free so the
 // report route suites that stub the permissions module wholesale still load it.
 import type { Permission } from './permissions';
@@ -52,9 +52,7 @@ export function reportTypeHiddenFromCaller(
   type: string,
   auth: { scope: string } | null | undefined,
 ): boolean {
-  if (auth?.scope !== 'organization') return false;
-  const def = (REPORT_GENERATORS as Readonly<Record<string, { audience: string } | undefined>>)[type];
-  return def?.audience === 'msp_staff';
+  return auth?.scope === 'organization' && isMspStaffReportType(type);
 }
 
 /**

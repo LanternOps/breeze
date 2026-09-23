@@ -93,6 +93,22 @@ describe('generateAutoEvidenceForOccurrence (spec D12)', () => {
     expect(resolveLiveMock).not.toHaveBeenCalled();
   });
 
+  // #3198 W02 ruling F1: business report types are internal to the MSP and
+  // deliverable evidence can be customer-visible (portal), so the sweep never
+  // runs one — no run row, no authority lookup, one internal note.
+  it.each(['ar_aging', 'technician_time_billability', 'ticket_sla_attainment'])(
+    'refuses a %s (msp_staff) definition before any run or authority lookup',
+    async (type) => {
+      rows.push([], [{ ...DEF, type }]);
+      expect(await generateAutoEvidenceForOccurrence(ARGS)).toEqual({ ok: false, reason: 'internal_report_type' });
+      expect(generateReportMock).not.toHaveBeenCalled();
+      expect(resolveLiveMock).not.toHaveBeenCalled();
+      expect(nonCommentInserts()).toHaveLength(0);
+      expect(internalComments()).toHaveLength(1);
+      expect(updated.at(-1)).toMatchObject({ autoEvidenceRefusal: 'internal_report_type' });
+    },
+  );
+
   it('refuses a portal-user-principal definition', async () => {
     rows.push([], [{ ...DEF, executionScopePrincipalKind: 'portal_user' }]);
     expect(await generateAutoEvidenceForOccurrence(ARGS)).toEqual({ ok: false, reason: 'portal_user_principal_definition' });
