@@ -1501,6 +1501,155 @@ async function resolveExactPartnerReportAuthorityInSystemContext(
   return liveAuthority(partnerWideScope(partnerId), user.id);
 }
 
+/**
+ * True when `roleId` grants EVERY permission in `required` (wildcards honoured
+ * through `permissionGrantMatches`, #2874), restricted to a role of the
+ * expected scope that is either a system role or owned by the expected tenant —
+ * the same role-ownership rule as `roleGrantsReportAction`.
+ */
+async function roleGrantsAllPermissions(
+  roleId: string,
+  required: readonly { resource: string; action: string }[],
+  expectedRole:
+    | { scope: 'organization'; orgId: string }
+    | { scope: 'partner'; partnerId: string },
+): Promise<boolean> {
+  const rows = await db
+    .select({
+      resource: permissions.resource,
+      action: permissions.action,
+      roleScope: roles.scope,
+      roleIsSystem: roles.isSystem,
+      roleOrgId: roles.orgId,
+      rolePartnerId: roles.partnerId,
+    })
+    .from(rolePermissions)
+    .innerJoin(roles, eq(rolePermissions.roleId, roles.id))
+    .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
+    .where(
+      and(
+        eq(rolePermissions.roleId, roleId),
+        eq(roles.scope, expectedRole.scope),
+        or(
+          eq(roles.isSystem, true),
+          expectedRole.scope === 'organization'
+            ? eq(roles.orgId, expectedRole.orgId)
+            : eq(roles.partnerId, expectedRole.partnerId),
+        ),
+      ),
+    );
+
+  const eligible = rows.filter(
+    (row) =>
+      row.roleScope === expectedRole.scope
+      && (row.roleIsSystem
+        || (expectedRole.scope === 'organization'
+          ? row.roleOrgId === expectedRole.orgId
+          : row.rolePartnerId === expectedRole.partnerId)),
+  );
+  return required.every((perm) =>
+    eligible.some((row) => permissionGrantMatches(row, perm.resource, perm.action)),
+  );
+}
+
+async function resolveLiveReportTypePermissionsInSystemContext(
+  userId: string,
+  owner: ReportOwner,
+  required: readonly { resource: string; action: string }[],
+): Promise<boolean> {
+  const [user] = await db
+    .select({
+      id: users.id,
+      status: users.status,
+      isPlatformAdmin: users.isPlatformAdmin,
+      partnerId: users.partnerId,
+    })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  if (!user || user.status !== 'active') return false;
+  // Mirrors `allowPlatformAuthority` on the live (worker) resolvers.
+  if (user.isPlatformAdmin) return true;
+
+  const partnerRoleGrants = async (partnerId: string): Promise<boolean> => {
+    if (user.partnerId !== partnerId) return false;
+    const memberships = await db
+      .select({ roleId: partnerUsers.roleId })
+      .from(partnerUsers)
+      .where(and(eq(partnerUsers.userId, user.id), eq(partnerUsers.partnerId, partnerId)))
+      .limit(2);
+    if (memberships.length !== 1 || !memberships[0]!.roleId) return false;
+    return roleGrantsAllPermissions(memberships[0]!.roleId, required, {
+      scope: 'partner',
+      partnerId,
+    });
+  };
+
+  if (owner.partnerId !== undefined) {
+    return partnerRoleGrants(owner.partnerId);
+  }
+
+  const [organization] = await db
+    .select({ id: organizations.id, partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, owner.orgId))
+    .limit(1);
+  if (!organization) return false;
+
+  // Org membership takes precedence over the partner membership — the same
+  // axis `resolveExactReportAuthorityInSystemContext` authorizes through.
+  const orgMemberships = await db
+    .select({ roleId: organizationUsers.roleId })
+    .from(organizationUsers)
+    .where(and(eq(organizationUsers.userId, user.id), eq(organizationUsers.orgId, owner.orgId)))
+    .limit(2);
+  if (orgMemberships.length > 1) return false;
+  const orgMembership = orgMemberships[0];
+  if (orgMembership) {
+    return !!orgMembership.roleId
+      && roleGrantsAllPermissions(orgMembership.roleId, required, {
+        scope: 'organization',
+        orgId: owner.orgId,
+      });
+  }
+  return partnerRoleGrants(organization.partnerId);
+}
+
+/**
+ * #3198 W02 (spec §2, ruling P8). Whether the report's EXECUTION user still
+ * holds a report type's underlying read permissions (`requiredPermissions` in
+ * the registry, e.g. invoices:read for ar_aging) through the same membership
+ * axis the live authority resolvers use: the partner membership for a
+ * partner owner; the org membership, else the partner membership of the org's
+ * partner, for an org owner. The request routes check the caller's resolved
+ * permission set instead; the schedule worker has no request, so this is its
+ * re-check — without it, a creator demoted off invoices:read would keep
+ * receiving AR aging by email.
+ *
+ * Fails closed: a database failure answers false (the worker records a deny).
+ */
+export async function resolveLiveReportTypePermissions(
+  userId: string,
+  owner: ReportOwner,
+  required: readonly { resource: string; action: string }[],
+): Promise<boolean> {
+  if (required.length === 0) return true;
+  try {
+    return await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() =>
+        resolveLiveReportTypePermissionsInSystemContext(userId, owner, required),
+      ),
+    );
+  } catch (error) {
+    console.error('[siteScope] report type permission re-check failed', {
+      userId,
+      owner,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
+}
+
 type BatchOrganization = {
   id: string;
   partnerId: string;

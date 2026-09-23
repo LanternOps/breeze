@@ -45,14 +45,7 @@ generateRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const data = c.req.valid('json');
-
-    // #3198 W02 (spec §2, ruling P8): a business type also needs the
-    // underlying read permissions its registry entry lists. The route
-    // middleware's reports:export grant is necessary but not sufficient.
-    // Checked first: no DB work, and it applies to both owner axes.
-    if (missingReportTypePermission(data.type, c.get('permissions') as UserPermissions | undefined)) {
-      return c.json(REPORT_TYPE_PERMISSION_DENIED, 403);
-    }
+    const permissions = c.get('permissions') as UserPermissions | undefined;
 
     let scope: ReportScope;
     let authority: ReportExecutionAuthority;
@@ -73,6 +66,13 @@ generateRoutes.post(
       // not an access question.
       if (!reportTypeDef(data.type).supportedScopes.includes('partner')) {
         return c.json({ error: 'unsupported_report_scope', type: data.type }, 400);
+      }
+      // #3198 W02 (spec §2, ruling P8): a business type also needs the
+      // underlying read permissions its registry entry lists — the route's
+      // reports:* grant is necessary but not sufficient. After W01's pinned
+      // token gates (ruling P12), before any authority lookup or write.
+      if (missingReportTypePermission(data.type, permissions)) {
+        return c.json(REPORT_TYPE_PERMISSION_DENIED, 403);
       }
       const partnerResult = await resolveRequestPartnerReportAuthority(
         auth,
@@ -98,6 +98,10 @@ generateRoutes.post(
       }
       auditOrgId = null;
     } else {
+      // #3198 W02 (ruling P8): same per-type permission gate on the org arm.
+      if (missingReportTypePermission(data.type, permissions)) {
+        return c.json(REPORT_TYPE_PERMISSION_DENIED, 403);
+      }
       // Determine orgId
       let orgId = data.orgId;
 

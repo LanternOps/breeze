@@ -96,6 +96,26 @@ describe('reportScopeFromAuthority', () => {
     expect(outsideSpy).not.toHaveBeenCalled();
   });
 
+  it('a platform admin (system-scope token) generating a partner-owned report resolves in the request\'s ambient SYSTEM context', async () => {
+    // The exact DbAccessContext authMiddleware builds for a system token
+    // (buildDbAccessContext: accessibleOrgIds null, accessiblePartnerIds null).
+    // runs.ts POST /:id/generate reaches reportScopeFromAuthority with it and
+    // the platform partner_wide authority resolveRequestPartnerReportAuthority
+    // grants a platform admin (#3198 W02 Task 11, Task 2 concern).
+    ambient.current = {
+      scope: 'system', orgId: null, accessibleOrgIds: null, accessiblePartnerIds: null,
+      userId: USER, currentPartnerId: null,
+    };
+    queueOrgRows([{ id: ORG_A }, { id: ORG_B }]);
+    await expect(reportScopeFromAuthority({ partnerId: PARTNER }, partnerAuthority))
+      .resolves.toEqual({ kind: 'partner', partnerId: PARTNER, orgIds: [ORG_A, ORG_B] });
+    // Ran IN the request transaction: no nested system context, no escape.
+    expect(systemCtxSpy).not.toHaveBeenCalled();
+    expect(outsideSpy).not.toHaveBeenCalled();
+    // The org list is still bound to the partner, never "every org".
+    expect(new PgDialect().sqlToQuery(capturedWhere!).params).toContain(PARTNER);
+  });
+
   it('a partner with zero organizations yields an empty, NOT a null, org list', async () => {
     queueOrgRows([]);
     await expect(reportScopeFromAuthority({ partnerId: PARTNER }, partnerAuthority))

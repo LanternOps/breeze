@@ -10,8 +10,10 @@
  * `processRunScheduledReport` under the system context the worker runs in.
  *
  * `generateReport` is wrapped in a spy (the real implementation still runs) so
- * the generate route and the worker can be shown to refuse a partner-owned
- * definition BEFORE reaching the org-only generator.
+ * the generate routes and the worker can be shown to reach the partner-scope
+ * generator with the live partner org list (#3198 W02 removed W01's refusals),
+ * and to be refused BEFORE it when the caller or the execution user lacks the
+ * type's underlying read permission (ruling P8).
  */
 import './setup';
 
@@ -27,7 +29,14 @@ vi.mock('../../services/reportGenerationService', async (importOriginal) => {
 });
 
 import { withSystemDbAccessContext } from '../../db';
-import { partnerUsers, reportRuns, reportScheduleRecipients, reports } from '../../db/schema';
+import {
+  partnerUsers,
+  permissions,
+  reportRuns,
+  reportScheduleRecipients,
+  reports,
+  rolePermissions,
+} from '../../db/schema';
 import { findDueReports, processRunScheduledReport } from '../../jobs/reportScheduleWorker';
 import { reportRoutes } from '../../routes/reports';
 import { authMiddleware } from '../../middleware/auth';
@@ -53,6 +62,8 @@ const REPORT_PERMISSIONS = [
   { resource: 'reports', action: 'delete' },
   { resource: 'reports', action: 'export' },
 ];
+/** ar_aging's registry requiredPermissions (#3198 W02, ruling P8). */
+const AR_PERMISSIONS = [{ resource: 'invoices', action: 'read' }];
 
 const generateReportSpy = vi.mocked(generateReport);
 
@@ -96,7 +107,14 @@ async function seedFixture() {
   const orgB = await createOrganization({ partnerId: partner.id });
 
   const partnerRole = await createRole({ scope: 'partner', partnerId: partner.id });
-  await grantRolePermissions(partnerRole.id, REPORT_PERMISSIONS);
+  await grantRolePermissions(partnerRole.id, [...REPORT_PERMISSIONS, ...AR_PERMISSIONS]);
+
+  // A full-access (org_access='all') partner user whose role holds every
+  // reports:* grant but NOT invoices:read (ruling P8).
+  const reportsOnlyRole = await createRole({ scope: 'partner', partnerId: partner.id });
+  await grantRolePermissions(reportsOnlyRole.id, REPORT_PERMISSIONS);
+  const reportsOnly = await createUser({ partnerId: partner.id, orgId: null, email: uniqueEmail('reports-only') });
+  await assignUserToPartner(reportsOnly.id, partner.id, reportsOnlyRole.id, 'all');
 
   const admin = await createUser({ partnerId: partner.id, orgId: null, email: uniqueEmail('admin') });
   await assignUserToPartner(admin.id, partner.id, partnerRole.id, 'all');
@@ -128,11 +146,13 @@ async function seedFixture() {
 
   return {
     partner,
+    partnerRole,
     orgA,
     orgB,
     admin,
     selected,
     orgUser,
+    reportsOnlyToken: await partnerToken(reportsOnly, reportsOnlyRole.id, partner.id),
     adminToken: await partnerToken(admin, partnerRole.id, partner.id),
     selectedToken: await partnerToken(selected, partnerRole.id, partner.id),
     orgToken,
@@ -203,7 +223,7 @@ async function runsFor(reportId: string) {
     .where(eq(reportRuns.reportId, reportId));
 }
 
-describe('partner-owned report definitions through the real routes (#3198 W01)', () => {
+describe('partner-owned report definitions through the real routes (#3198 W01/W02)', () => {
   beforeEach(() => {
     generateReportSpy.mockClear();
   });
@@ -241,10 +261,18 @@ describe('partner-owned report definitions through the real routes (#3198 W01)',
       lastGeneratedAt: null,
     });
 
-    // A client-supplied orgId on the partner branch is ignored, never an owner.
-    const withOrg = await call(app, fixture.adminToken, 'POST', '/reports', {
+    // #3198 W02 (ruling T4c): a client-supplied orgId on the partner branch is
+    // a 400 (the partner arm declares `orgId: z.never()`), never an owner...
+    const rejectedOrg = await call(app, fixture.adminToken, 'POST', '/reports', {
       ownerScope: 'partner',
       orgId: fixture.orgA.id,
+      name: 'Still partner-owned',
+      type: 'ar_aging',
+    });
+    expect(rejectedOrg.status).toBe(400);
+    // ...and the same body without it is an ordinary partner-owned create.
+    const withOrg = await call(app, fixture.adminToken, 'POST', '/reports', {
+      ownerScope: 'partner',
       name: 'Still partner-owned',
       type: 'ar_aging',
     });
@@ -365,33 +393,134 @@ describe('partner-owned report definitions through the real routes (#3198 W01)',
     expect(await readDefinition(created.id)).toBeUndefined();
   });
 
-  runDb('POST /reports/:id/generate on the partner-owned definition answers 400 unsupported_report_scope (W02 turns this green)', async () => {
+  runDb('POST /reports/:id/generate on the partner-owned definition generates over the live partner org list (#3198 W02)', async () => {
     const fixture = await seedFixture();
     const app = buildApp();
     const created = await createPartnerDefinition(app, fixture);
+    const partnerOrgIds = [fixture.orgA.id, fixture.orgB.id].sort();
 
     const res = await call(app, fixture.adminToken, 'POST', `/reports/${created.id}/generate`);
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'unsupported_report_scope', type: 'ar_aging' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { runId: string; status: string };
+    expect(body.status).toBe('completed');
 
-    // Refused before any run row is created, and before the org-only generator.
-    expect(await runsFor(created.id)).toEqual([]);
-    expect(generateReportSpy).not.toHaveBeenCalled();
-    expect((await readDefinition(created.id))?.lastGeneratedAt).toBeNull();
+    // The partner-scope generator ran under the request's own (partner) RLS
+    // context, over every active org of the partner — resolved live.
+    expect(generateReportSpy).toHaveBeenCalledTimes(1);
+    const [type, scope, , authority] = generateReportSpy.mock.calls[0]!;
+    expect(type).toBe('ar_aging');
+    expect(scope).toEqual({ kind: 'partner', partnerId: fixture.partner.id, orgIds: partnerOrgIds });
+    expect(authority.scope).toMatchObject({ kind: 'partner_wide', partnerId: fixture.partner.id });
+
+    // One completed run, stamped with the admin's partner_wide envelope.
+    const runs = await runsFor(created.id);
+    expect(runs).toEqual([expect.objectContaining({
+      id: body.runId,
+      status: 'completed',
+      errorMessage: null,
+      requestedByKind: 'user',
+      requestedByUserId: fixture.admin.id,
+      executionScopeKind: 'partner_wide',
+      executionScopeUserId: fixture.admin.id,
+    })]);
+    expect((await readDefinition(created.id))?.lastGeneratedAt).toBeInstanceOf(Date);
 
     // A 'selected' partner user does not learn the definition exists.
     const selected = await call(app, fixture.selectedToken, 'POST', `/reports/${created.id}/generate`);
     expect(selected.status).toBe(404);
     expect(await selected.json()).toEqual({ error: 'Report not found' });
 
-    // Ad-hoc partner-wide generation is refused the same way.
+    // Ad-hoc partner-wide generation runs the same generator.
+    generateReportSpy.mockClear();
     const adhoc = await call(app, fixture.adminToken, 'POST', '/reports/generate', {
       ownerScope: 'partner',
       type: 'ar_aging',
       format: 'csv',
     });
-    expect(adhoc.status).toBe(400);
-    expect(await adhoc.json()).toEqual({ error: 'unsupported_report_scope', type: 'ar_aging' });
+    expect(adhoc.status).toBe(200);
+    expect(await adhoc.json()).toMatchObject({ type: 'ar_aging', data: expect.any(Object) });
+    expect(generateReportSpy.mock.calls[0]?.[1])
+      .toEqual({ kind: 'partner', partnerId: fixture.partner.id, orgIds: partnerOrgIds });
+
+    // ...and still refuses an org-only type at partner scope.
+    const orgOnly = await call(app, fixture.adminToken, 'POST', '/reports/generate', {
+      ownerScope: 'partner',
+      type: 'device_inventory',
+    });
+    expect(orgOnly.status).toBe(400);
+    expect(await orgOnly.json()).toEqual({ error: 'unsupported_report_scope', type: 'device_inventory' });
+  });
+
+  runDb('a full-access partner user with reports:* but WITHOUT invoices:read cannot create, generate or schedule-run ar_aging (ruling P8)', async () => {
+    const fixture = await seedFixture();
+    const app = buildApp();
+
+    const create = await call(app, fixture.reportsOnlyToken, 'POST', '/reports', {
+      ownerScope: 'partner',
+      name: 'AR by email',
+      type: 'ar_aging',
+      schedule: 'monthly',
+      config: { emailRecipients: ['me@example.com'] },
+    });
+    expect(create.status).toBe(403);
+    expect(await create.json()).toEqual({ error: 'Insufficient permissions' });
+    const owned = await getTestDb()
+      .select({ id: reports.id })
+      .from(reports)
+      .where(eq(reports.partnerId, fixture.partner.id));
+    expect(owned).toEqual([]);
+
+    const adhoc = await call(app, fixture.reportsOnlyToken, 'POST', '/reports/generate', {
+      ownerScope: 'partner',
+      type: 'ar_aging',
+    });
+    expect(adhoc.status).toBe(403);
+    expect(await adhoc.json()).toEqual({ error: 'Insufficient permissions' });
+
+    // An existing definition (the admin's) is visible to them, but neither
+    // generatable nor editable.
+    const created = await createPartnerDefinition(app, fixture);
+    const byId = await call(app, fixture.reportsOnlyToken, 'POST', `/reports/${created.id}/generate`);
+    expect(byId.status).toBe(403);
+    expect(await byId.json()).toEqual({ error: 'Insufficient permissions' });
+    const put = await call(app, fixture.reportsOnlyToken, 'PUT', `/reports/${created.id}`, {
+      config: { emailRecipients: ['me@example.com'] },
+    });
+    expect(put.status).toBe(403);
+    expect(await runsFor(created.id)).toEqual([]);
+    expect(generateReportSpy).not.toHaveBeenCalled();
+
+    // Positive control: the reports-only user may still run a legacy type.
+    const legacy = await call(app, fixture.reportsOnlyToken, 'POST', '/reports', {
+      name: 'Inventory', type: 'device_inventory', orgId: fixture.orgA.id,
+    });
+    expect(legacy.status).toBe(201);
+
+    // Worker: the ADMIN (execution user) loses invoices:read → the scheduled
+    // run is a deny, not a generation. The worker re-reads role grants live
+    // (no permission cache on this path).
+    const [invoicesRead] = await getTestDb()
+      .select({ id: permissions.id })
+      .from(permissions)
+      .where(and(eq(permissions.resource, 'invoices'), eq(permissions.action, 'read')));
+    await getTestDb()
+      .delete(rolePermissions)
+      .where(and(
+        eq(rolePermissions.roleId, fixture.partnerRole.id),
+        eq(rolePermissions.permissionId, invoicesRead!.id),
+      ));
+    await expect(
+      withSystemDbAccessContext(() =>
+        processRunScheduledReport(
+          { type: 'run-scheduled-report', reportId: created.id, occurrenceKey: 202609010900 },
+          { finalAttempt: true },
+        ),
+      ),
+    ).resolves.toBeUndefined();
+    expect(await runsFor(created.id)).toEqual([expect.objectContaining({
+      status: 'failed',
+      errorMessage: 'scope_permission_missing',
+    })]);
     expect(generateReportSpy).not.toHaveBeenCalled();
   });
 
@@ -425,7 +554,7 @@ describe('partner-owned report definitions through the real routes (#3198 W01)',
     expect(await selected.json()).toEqual({ error: 'Report not found' });
   });
 
-  runDb('findDueReports returns the partner-owned monthly definition and processRunScheduledReport records a failed run with unsupported_report_scope', async () => {
+  runDb('findDueReports returns the partner-owned monthly definition and processRunScheduledReport completes it under a partner scope (#3198 W02)', async () => {
     const fixture = await seedFixture();
     const app = buildApp();
     const created = await createPartnerDefinition(app, fixture);
@@ -437,7 +566,6 @@ describe('partner-owned report definitions through the real routes (#3198 W01)',
     expect(entry).toMatchObject({ id: created.id, lastGeneratedAt: null });
     expect(typeof entry!.occurrenceKey).toBe('number');
 
-    // Resolves (no rethrow → no BullMQ retry) and never calls the generator.
     await expect(
       withSystemDbAccessContext(() =>
         processRunScheduledReport(
@@ -446,16 +574,22 @@ describe('partner-owned report definitions through the real routes (#3198 W01)',
         ),
       ),
     ).resolves.toBeUndefined();
-    expect(generateReportSpy).not.toHaveBeenCalled();
+    // The worker's system context resolves the same live org list the
+    // request path does (ruling P6: one shared org-list query).
+    expect(generateReportSpy).toHaveBeenCalledTimes(1);
+    expect(generateReportSpy.mock.calls[0]?.[1]).toEqual({
+      kind: 'partner',
+      partnerId: fixture.partner.id,
+      orgIds: [fixture.orgA.id, fixture.orgB.id].sort(),
+    });
 
-    // Exactly one run row: failed with the stable reason, executed under the
-    // admin's live partner_wide authority (not a deny() row, which carries no
-    // execution scope).
+    // Exactly one run row: completed, executed under the admin's live
+    // partner_wide authority.
     const runs = await runsFor(created.id);
     expect(runs).toHaveLength(1);
     expect(runs[0]).toMatchObject({
-      status: 'failed',
-      errorMessage: 'unsupported_report_scope',
+      status: 'completed',
+      errorMessage: null,
       requestedByKind: 'user',
       requestedByUserId: fixture.admin.id,
       executionScopeKind: 'partner_wide',
@@ -482,9 +616,10 @@ describe('partner-owned report definitions through the real routes (#3198 W01)',
     );
     const afterDemotion = await runsFor(created.id);
     expect(afterDemotion).toHaveLength(2);
-    expect(afterDemotion.map((r) => r.errorMessage).sort()).toEqual(
-      ['scope_partner_access_not_all', 'unsupported_report_scope'].sort(),
+    expect(afterDemotion.map((r) => `${r.status}:${r.errorMessage}`).sort()).toEqual(
+      ['completed:null', 'failed:scope_partner_access_not_all'].sort(),
     );
-    expect(generateReportSpy).not.toHaveBeenCalled();
+    // The demoted run never reached the generator.
+    expect(generateReportSpy).toHaveBeenCalledTimes(1);
   });
 });

@@ -58,6 +58,7 @@ import {
   reportRunScopeSqlPredicate,
   resolveLivePartnerReportAuthority,
   resolveLiveReportAuthority,
+  resolveLiveReportTypePermissions,
   resolveRequestPartnerReportAuthority,
   resolveRequestReportAuthority,
   resolveRequestReportAuthorityMap,
@@ -2500,5 +2501,127 @@ describe('partner-wide execution scope (#3198 W01)', () => {
         'read',
       ),
     ).resolves.toMatchObject({ ok: true, authority: { scope: partnerWideScope(partnerId) } });
+  });
+});
+
+/**
+ * #3198 W02 (ruling P8) — the schedule worker's re-check of a business type's
+ * underlying read permissions against the EXECUTION user's live role grants.
+ * The request routes check `c.get('permissions')`; the worker has no request,
+ * so it re-reads the same membership axis the authority resolvers use.
+ */
+describe('resolveLiveReportTypePermissions', () => {
+  const partnerId = '11111111-1111-4111-8111-111111111111';
+  const orgId = '22222222-2222-4222-8222-222222222222';
+  const userId = '33333333-3333-4333-8333-333333333333';
+  const PARTNER_ROLE = '88888888-8888-4888-8888-888888888888';
+  const ORG_ROLE = '99999999-9999-4999-8999-999999999999';
+  const INVOICES_READ = [{ resource: 'invoices', action: 'read' }];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    liveDbState.rows.length = 0;
+    liveDbState.projections.length = 0;
+    liveDbState.fromTables.length = 0;
+    liveDbState.whereConditions.length = 0;
+  });
+
+  function queueRows(...rows: Array<unknown[] | Error>) {
+    liveDbState.rows.push(...rows);
+  }
+
+  const user = (overrides: Record<string, unknown> = {}) => ({
+    id: userId, status: 'active', isPlatformAdmin: false, partnerId, ...overrides,
+  });
+  const grant = (resource: string, action: string, role: 'partner' | 'organization' = 'partner') => ({
+    resource,
+    action,
+    roleScope: role,
+    roleIsSystem: false,
+    roleOrgId: role === 'organization' ? orgId : null,
+    rolePartnerId: role === 'partner' ? partnerId : null,
+  });
+
+  it('a type with no extra permissions is granted without touching the database', async () => {
+    await expect(resolveLiveReportTypePermissions(userId, { partnerId }, [])).resolves.toBe(true);
+    expect(vi.mocked(db.select)).not.toHaveBeenCalled();
+  });
+
+  it('partner owner: grants when the partner role holds every required permission', async () => {
+    queueRows([user()], [{ roleId: PARTNER_ROLE }], [grant('reports', '*'), grant('invoices', 'read')]);
+    await expect(resolveLiveReportTypePermissions(userId, { partnerId }, INVOICES_READ)).resolves.toBe(true);
+    expect(runOutsideDbContext).toHaveBeenCalled();
+    expect(withSystemDbAccessContext).toHaveBeenCalled();
+  });
+
+  it('partner owner: refuses a reports:* role that lacks invoices:read', async () => {
+    queueRows([user()], [{ roleId: PARTNER_ROLE }], [grant('reports', '*'), grant('tickets', 'read')]);
+    await expect(resolveLiveReportTypePermissions(userId, { partnerId }, INVOICES_READ)).resolves.toBe(false);
+  });
+
+  it('honours a wildcard super-role (#2874)', async () => {
+    queueRows([user()], [{ roleId: PARTNER_ROLE }], [grant('*', '*')]);
+    await expect(resolveLiveReportTypePermissions(
+      userId, { partnerId }, [...INVOICES_READ, { resource: 'time_entries', action: 'read' }],
+    )).resolves.toBe(true);
+  });
+
+  it('ignores a grant row from a role of the wrong scope', async () => {
+    queueRows([user()], [{ roleId: PARTNER_ROLE }], [grant('invoices', 'read', 'organization')]);
+    await expect(resolveLiveReportTypePermissions(userId, { partnerId }, INVOICES_READ)).resolves.toBe(false);
+  });
+
+  it('grants a platform admin exactly as the live authority resolvers do', async () => {
+    queueRows([user({ isPlatformAdmin: true, partnerId: null })]);
+    await expect(resolveLiveReportTypePermissions(userId, { partnerId }, INVOICES_READ)).resolves.toBe(true);
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses an inactive user, a foreign partner, a missing or duplicate membership', async () => {
+    queueRows([user({ status: 'disabled' })]);
+    await expect(resolveLiveReportTypePermissions(userId, { partnerId }, INVOICES_READ)).resolves.toBe(false);
+
+    queueRows([user({ partnerId: orgId })]);
+    await expect(resolveLiveReportTypePermissions(userId, { partnerId }, INVOICES_READ)).resolves.toBe(false);
+
+    queueRows([user()], []);
+    await expect(resolveLiveReportTypePermissions(userId, { partnerId }, INVOICES_READ)).resolves.toBe(false);
+
+    queueRows([user()], [{ roleId: PARTNER_ROLE }, { roleId: PARTNER_ROLE }]);
+    await expect(resolveLiveReportTypePermissions(userId, { partnerId }, INVOICES_READ)).resolves.toBe(false);
+  });
+
+  it('org owner: the ORG membership role decides when there is one', async () => {
+    queueRows(
+      [user()],
+      [{ id: orgId, partnerId }],
+      [{ roleId: ORG_ROLE }],
+      [grant('reports', 'read', 'organization')],
+    );
+    await expect(resolveLiveReportTypePermissions(userId, { orgId }, INVOICES_READ)).resolves.toBe(false);
+
+    queueRows(
+      [user()],
+      [{ id: orgId, partnerId }],
+      [{ roleId: ORG_ROLE }],
+      [grant('invoices', 'read', 'organization')],
+    );
+    await expect(resolveLiveReportTypePermissions(userId, { orgId }, INVOICES_READ)).resolves.toBe(true);
+  });
+
+  it('org owner: falls back to the partner membership of the org\'s partner', async () => {
+    queueRows(
+      [user()],
+      [{ id: orgId, partnerId }],
+      [],
+      [{ roleId: PARTNER_ROLE }],
+      [grant('invoices', 'read')],
+    );
+    await expect(resolveLiveReportTypePermissions(userId, { orgId }, INVOICES_READ)).resolves.toBe(true);
+  });
+
+  it('treats a database failure as NOT granted', async () => {
+    queueRows(new Error('connection reset'));
+    await expect(resolveLiveReportTypePermissions(userId, { partnerId }, INVOICES_READ)).resolves.toBe(false);
   });
 });

@@ -128,10 +128,29 @@ const intersectSiteScopesMock = vi.fn(
 const resolveLivePartnerReportAuthorityMock = vi.fn(
   async (_userId: string, _partnerId: string, _action: 'read') => scopeState.partnerLiveResult,
 );
+// #3198 W02 (ruling P8) — the business-type permission re-check.
+const resolveLiveReportTypePermissionsMock = vi.fn(
+  async (_userId: string, _owner: unknown, _required: unknown) => true,
+);
+// #3198 W02 — the generator's scope. The partner org list is a DB read in
+// reportScope.ts (covered by reportScope.test.ts); stubbed here.
+const reportScopeFromAuthorityMock = vi.fn(
+  async (owner: { orgId?: string; partnerId?: string }, _authority: unknown) =>
+    owner.partnerId !== undefined
+      ? { kind: 'partner', partnerId: owner.partnerId, orgIds: ['77777777-7777-4777-8777-777777777777'] }
+      : { kind: 'organization', orgId: owner.orgId },
+);
+vi.mock('../services/reportScope', () => ({
+  organizationScope: (orgId: string) => ({ kind: 'organization', orgId }),
+  reportScopeFromAuthority: (...args: unknown[]) =>
+    reportScopeFromAuthorityMock(...(args as [{ orgId?: string; partnerId?: string }, unknown])),
+}));
 vi.mock('../services/siteScope', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/siteScope')>();
   realSiteScope.intersectSiteScopes = actual.intersectSiteScopes;
   return {
+  resolveLiveReportTypePermissions: (...args: unknown[]) =>
+    resolveLiveReportTypePermissionsMock(...(args as [string, unknown, unknown])),
   // The REAL owner-axis decision: the worker's branch is only as good as it.
   reportOwnerOf: actual.reportOwnerOf,
   resolveLivePartnerReportAuthority: (...args: unknown[]) =>
@@ -280,6 +299,8 @@ beforeEach(() => {
   updateMock.mockReset();
   generateReportMock.mockReset();
   reportExecutionPreflightMock.mockReset();
+  resolveLiveReportTypePermissionsMock.mockReset();
+  resolveLiveReportTypePermissionsMock.mockResolvedValue(true);
   previousBaselineForMock.mockReset();
   sendEmailMock.mockReset();
   loadReportBrandingForOrgMock.mockReset();
@@ -766,7 +787,10 @@ describe('processRunScheduledReport', () => {
       { orgId: ORG_ID },
       report.config,
       expect.anything(),
+      'device_inventory',
     );
+    // A legacy type declares no extra permissions: no re-check query.
+    expect(resolveLiveReportTypePermissionsMock).not.toHaveBeenCalled();
     expect(generateReportMock).toHaveBeenCalledWith(
       'device_inventory',
       { kind: 'organization', orgId: ORG_ID },
@@ -1541,7 +1565,7 @@ describe('system-managed narrative definitions are outside this worker (P2-3)', 
 
 // ─── #3198 W01: partner-owned definitions (spec §3.1a) ──────────────────────
 
-describe('partner-owned scheduled definitions (#3198 W01)', () => {
+describe('partner-owned scheduled definitions (#3198 W01/W02)', () => {
   const PARTNER_ID = '55555555-5555-4555-8555-555555555555';
   const OTHER_PARTNER_ID = '66666666-6666-4666-8666-666666666666';
   const USER_ID = '44444444-4444-4444-8444-444444444444';
@@ -1597,6 +1621,7 @@ describe('partner-owned scheduled definitions (#3198 W01)', () => {
     const runInsert = insertChain([{ id: RUN_ID }]);
     insertMock.mockReturnValueOnce(runInsert);
     updateMock.mockReturnValueOnce(updateChain()).mockReturnValueOnce(updateChain());
+    generateReportMock.mockResolvedValueOnce({ rows: [] });
 
     await run();
 
@@ -1607,6 +1632,7 @@ describe('partner-owned scheduled definitions (#3198 W01)', () => {
       { partnerId: PARTNER_ID },
       partnerReport.config,
       expect.objectContaining({ principalKind: 'user', scope: partnerScope, principalUserId: USER_ID }),
+      'ar_aging',
     );
     expect(insertMock).toHaveBeenCalledTimes(1);
     expect(runInsert.values).toHaveBeenCalledWith(
@@ -1622,15 +1648,41 @@ describe('partner-owned scheduled definitions (#3198 W01)', () => {
     );
   });
 
-  it('records unsupported_report_scope for a partner-owned definition WITHOUT calling generateReport', async () => {
-    selectMock.mockReturnValueOnce(selectChain([partnerReport]));
+  it('generates a partner-owned definition under a partner scope and completes the run (#3198 W02)', async () => {
+    selectMock.mockReturnValueOnce(selectChain([{ ...partnerReport, config: { schedule: { time: '09:00', date: '1' } } }]));
     insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
     const updates = [updateChain(), updateChain()];
     updateMock.mockReturnValueOnce(updates[0]).mockReturnValueOnce(updates[1]);
+    generateReportMock.mockResolvedValueOnce({ rows: [], summary: { kind: 'ar_aging' } });
+
+    await expect(run()).resolves.toBeUndefined();
+
+    expect(resolveLiveReportTypePermissionsMock).toHaveBeenCalledWith(
+      USER_ID, { partnerId: PARTNER_ID }, [{ resource: 'invoices', action: 'read' }],
+    );
+    expect(reportScopeFromAuthorityMock).toHaveBeenCalledWith(
+      { partnerId: PARTNER_ID },
+      expect.objectContaining({ scope: partnerScope }),
+    );
+    expect(generateReportMock).toHaveBeenCalledWith(
+      'ar_aging',
+      { kind: 'partner', partnerId: PARTNER_ID, orgIds: ['77777777-7777-4777-8777-777777777777'] },
+      expect.any(Object),
+      expect.objectContaining({ principalKind: 'user', scope: partnerScope, principalUserId: USER_ID }),
+    );
+    expect(updates[1]!.set).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed' }));
+  });
+
+  it('still records the stable unsupported_report_scope code when a partner-owned type cannot run at partner scope', async () => {
+    selectMock.mockReturnValueOnce(selectChain([{ ...partnerReport, type: 'device_inventory' }]));
+    insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
+    const updates = [updateChain(), updateChain()];
+    updateMock.mockReturnValueOnce(updates[0]).mockReturnValueOnce(updates[1]);
+    generateReportMock.mockRejectedValueOnce(new UnsupportedReportScopeErrorMock('device_inventory', 'partner'));
 
     // Deterministic refusal: resolves (no BullMQ retry, no second failed row)
     // even on the final attempt, and never tells recipients a report "failed"
-    // that this wave cannot produce at all.
+    // that cannot be produced at all.
     await expect(
       processRunScheduledReport(
         { type: 'run-scheduled-report', reportId: REPORT_ID, occurrenceKey: 202607010900 },
@@ -1638,14 +1690,49 @@ describe('partner-owned scheduled definitions (#3198 W01)', () => {
       ),
     ).resolves.toBeUndefined();
 
-    // The public org-only entry point is never reached with a partner owner.
-    expect(generateReportMock).not.toHaveBeenCalled();
-    expect(previousBaselineForMock).not.toHaveBeenCalled();
     expect(updates[0]!.set).toHaveBeenCalledWith(expect.objectContaining({ lastGeneratedAt: expect.any(Date) }));
     expect(updates[1]!.set).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'failed', errorMessage: 'unsupported_report_scope' }),
     );
     expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+
+  it('denies scope_permission_missing when the execution user lost invoices:read (ruling P8)', async () => {
+    selectMock.mockReturnValueOnce(selectChain([partnerReport]));
+    resolveLiveReportTypePermissionsMock.mockResolvedValueOnce(false);
+    const failedInsert = insertChain([{ id: RUN_ID }]);
+    insertMock.mockReturnValueOnce(failedInsert);
+
+    await expect(run()).resolves.toBeUndefined();
+
+    expect(insertMock).toHaveBeenCalledTimes(1);
+    expect(failedInsert.values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'failed',
+        errorMessage: 'scope_permission_missing',
+        requestedByKind: 'user',
+        requestedByUserId: USER_ID,
+      }),
+    );
+    expect(generateReportMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+
+  it('denies scope_config_outside_authority (not a failed run) when the preflight refuses the config', async () => {
+    selectMock.mockReturnValueOnce(selectChain([partnerReport]));
+    reportExecutionPreflightMock.mockImplementationOnce(() => {
+      throw new Error('partner-scope report config is not valid for report type ar_aging');
+    });
+    const failedInsert = insertChain([{ id: RUN_ID }]);
+    insertMock.mockReturnValueOnce(failedInsert);
+
+    await run();
+
+    expect(failedInsert.values).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'failed', errorMessage: 'scope_config_outside_authority' }),
+    );
+    expect(generateReportMock).not.toHaveBeenCalled();
   });
 
   it('maps an org-owned UnsupportedReportScopeError from generateReport to the same stable reason', async () => {
@@ -1660,6 +1747,10 @@ describe('partner-owned scheduled definitions (#3198 W01)', () => {
     await expect(run()).resolves.toBeUndefined();
 
     expect(generateReportMock).toHaveBeenCalledWith('ar_aging', { kind: 'organization', orgId: ORG_ID }, expect.any(Object), expect.any(Object));
+    // An org owner re-checks through the org axis.
+    expect(resolveLiveReportTypePermissionsMock).toHaveBeenCalledWith(
+      USER_ID, { orgId: ORG_ID }, [{ resource: 'invoices', action: 'read' }],
+    );
     expect(updates[1]!.set).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'failed', errorMessage: 'unsupported_report_scope' }),
     );

@@ -71,15 +71,6 @@ const ENDPOINT_MANAGEMENT_DEFAULT_STALE_DAYS =
 // against `reportTypeEnum` so the two can never drift.
 export type ReportType = SharedReportType;
 
-/** #3198 W01. The generation guard for a definition's owner axis. No report
- *  type has a partner-scope generator this wave, so every partner owner is
- *  refused; W02 replaces this with the registry's `supportedScopes`. */
-export function assertReportOwnerScopeSupported(type: string, owner: ReportOwner): void {
-  if (owner.partnerId !== undefined) {
-    throw new UnsupportedReportScopeError(type, 'partner');
-  }
-}
-
 export type ReportResult = {
   rows?: unknown[];
   rowCount?: number;

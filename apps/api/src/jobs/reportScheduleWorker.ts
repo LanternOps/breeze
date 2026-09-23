@@ -51,7 +51,8 @@ import {
   UnsupportedReportScopeError,
   type ReportResult,
 } from '../services/reportGenerationService';
-import { organizationScope } from '../services/reportScope';
+import { reportScopeFromAuthority } from '../services/reportScope';
+import { reportTypeDef } from '../services/reportRegistry';
 import { emailReportFailure, emailReportRun } from '../services/reportDelivery';
 import { getBullMQConnection, isRedisAvailable } from '../services/redis';
 import {
@@ -79,6 +80,7 @@ import {
   reportOwnerOf,
   resolveLivePartnerReportAuthority,
   resolveLiveReportAuthority,
+  resolveLiveReportTypePermissions,
   siteScopeFingerprint,
   type LiveReportAuthorityResult,
   type PersistedSiteScopeColumns,
@@ -594,6 +596,26 @@ export async function processRunScheduledReport(
     return;
   }
 
+  // #3198 W02 (spec §2, ruling P8). A business type also needs its underlying
+  // read permissions (e.g. invoices:read for ar_aging), re-checked here
+  // against the execution user's LIVE role grants on the same axis the
+  // resolver above used. The routes gate create/PUT/generate on the caller's
+  // permission set; without this re-check a creator demoted off invoices:read
+  // would keep receiving AR aging by email. Skipped (no query) for every
+  // pre-#3198 type, which lists no extra permissions.
+  const requiredPermissions = reportTypeDef(report.type).requiredPermissions;
+  if (
+    requiredPermissions.length > 0
+    && !(await resolveLiveReportTypePermissions(
+      liveResult.authority.principalUserId,
+      owner,
+      requiredPermissions,
+    ))
+  ) {
+    await deny('scope_permission_missing');
+    return;
+  }
+
   const effectiveScope = intersectSiteScopes(
     persistedScope,
     liveResult.authority.scope,
@@ -620,7 +642,9 @@ export async function processRunScheduledReport(
   };
 
   try {
-    assertReportExecutionPreflight(owner, config, executionAuthority);
+    // The type rides along so a stored config its own type rejects is a deny
+    // here, not a failed run after a row exists (ruling T3e).
+    assertReportExecutionPreflight(owner, config, executionAuthority, report.type);
   } catch {
     await deny('scope_config_outside_authority');
     return;
@@ -653,20 +677,20 @@ export async function processRunScheduledReport(
   }
 
   try {
-    // #3198 W01: no report type has a partner-scope generator yet, and the
-    // public `generateReport` is org-only — a partner-owned definition is
-    // refused here, before it could reach it (W02 replaces this with a
-    // registry-driven ReportScope dispatch).
-    if (owner.partnerId !== undefined) {
-      throw new UnsupportedReportScopeError(report.type, 'partner');
-    }
+    // #3198 W02: the generator's scope comes from the owner axis and the
+    // authority just resolved for it. A partner owner's org list is resolved
+    // LIVE here (never stored on the definition), in this worker's system
+    // context via runInReportScope. A type that cannot run under its owner
+    // axis throws UnsupportedReportScopeError from the dispatcher, mapped to
+    // a stable reason below.
+    const scope = await reportScopeFromAuthority(owner, executionAuthority);
     const previous = await previousBaselineFor(
       report.id,
       executionAuthority.fingerprint,
     );
     const result = await generateReport(
       report.type,
-      organizationScope(owner.orgId),
+      scope,
       config,
       executionAuthority,
     );
@@ -717,7 +741,7 @@ export async function processRunScheduledReport(
       }
     }
   } catch (err) {
-    // #3198 W01: a definition whose owner axis its type cannot run under is a
+    // #3198: a definition whose owner axis its type cannot run under is a
     // deterministic refusal, not a transient failure. It records the stable
     // reason and RESOLVES: a retry could only write the same failed row again,
     // and recipients are not told a report "failed" that cannot be produced.

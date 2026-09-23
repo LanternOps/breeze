@@ -476,14 +476,7 @@ coreRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const data = c.req.valid('json');
-
-    // #3198 W02 (spec §2, ruling P8): a business type also needs the
-    // underlying read permissions its registry entry lists. Without this a
-    // reports:write-only user could schedule AR aging to their own inbox.
-    // Both owner arms, before any authority lookup or write.
-    if (missingReportTypePermission(data.type, c.get('permissions') as UserPermissions | undefined)) {
-      return c.json(REPORT_TYPE_PERMISSION_DENIED, 403);
-    }
+    const permissions = c.get('permissions') as UserPermissions | undefined;
 
     // #3198 W01 — a partner-owned definition. partner_id is ALWAYS the
     // caller's own token partner; `data.orgId` and any client-supplied partner
@@ -499,6 +492,13 @@ coreRoutes.post(
       // can run at partner scope; W01's PARTNER_SCOPE_REPORT_TYPES is retired.
       if (!reportTypeDef(data.type).supportedScopes.includes('partner')) {
         return c.json({ error: 'unsupported_report_scope', type: data.type }, 400);
+      }
+      // #3198 W02 (spec §2, ruling P8): a business type also needs the
+      // underlying read permissions its registry entry lists — the route's
+      // reports:* grant is necessary but not sufficient. After W01's pinned
+      // token gates (ruling P12), before any authority lookup or write.
+      if (missingReportTypePermission(data.type, permissions)) {
+        return c.json(REPORT_TYPE_PERMISSION_DENIED, 403);
       }
       const partnerAuthority = await resolveRequestPartnerReportAuthority(
         auth,
@@ -544,6 +544,10 @@ coreRoutes.post(
       return c.json(partnerReport, 201);
     }
 
+    // #3198 W02 (ruling P8): same per-type permission gate on the org arm.
+    if (missingReportTypePermission(data.type, permissions)) {
+      return c.json(REPORT_TYPE_PERMISSION_DENIED, 403);
+    }
     // Determine orgId
     let orgId = data.orgId;
 
