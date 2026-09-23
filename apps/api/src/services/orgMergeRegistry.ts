@@ -857,6 +857,10 @@ const REPOINT_TABLES: readonly string[] = [
   "manual_assets",
   "metric_anomalies",
   "metric_anomaly_candidates",
+  // Episodes W01 — plain repoint. The only unique key is the partial
+  // (device_id, episode_key) WHERE status = 'open'; it is keyed on the device,
+  // not the org, so merging two orgs can never make two rows collide.
+  "metric_anomaly_episodes",
   "metric_anomaly_incidents",
   "metric_rollups",
   "metric_rollups_default",

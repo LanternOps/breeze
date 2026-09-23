@@ -581,6 +581,10 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'manual_assets',
   'metric_anomalies',
   'metric_anomaly_candidates',
+  // Episodes W01. FK children first is computed by topologicalCascadeOrder():
+  // metric_anomalies.episode_id -> this table is ON DELETE SET NULL, and this
+  // table -> alerts/users is ON DELETE SET NULL. No cycle.
+  'metric_anomaly_episodes',
   'metric_anomaly_incidents',
   'metric_rollups',
   'metric_rollups_default',

@@ -310,7 +310,10 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'fleet_finding_devices',
   'group_membership_log',
   'huntress_agents', 'huntress_incidents', 'hyperv_vms', 'local_vaults',
-  'metric_anomaly_candidates', 'metric_anomalies', 'metric_anomaly_incidents', 'metric_rollups',
+  // metric_anomaly_episodes: device_id + denormalized org_id (episodes W01). Its
+  // only inbound FK is metric_anomalies.episode_id ON DELETE SET NULL, so the
+  // position relative to metric_anomalies is not load-bearing.
+  'metric_anomaly_candidates', 'metric_anomalies', 'metric_anomaly_episodes', 'metric_anomaly_incidents', 'metric_rollups',
   // #5290 — both denormalise org_id from the device.
   'monitor_device_state', 'monitor_episodes',
   // #5291 W04 - carries device_id AND a denormalized org_id.
@@ -599,7 +602,10 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'device_reliability_history', 'device_reliability',
   'playbook_executions', 'time_series_metrics', 'capacity_predictions',
   'device_process_samples', 'remediation_suggestions',
-  'metric_anomaly_candidates', 'metric_anomalies', 'metric_anomaly_incidents', 'metric_rollups',
+  // metric_anomaly_episodes: device_id + denormalized org_id (episodes W01). Its
+  // only inbound FK is metric_anomalies.episode_id ON DELETE SET NULL, so the
+  // position relative to metric_anomalies is not load-bearing.
+  'metric_anomaly_candidates', 'metric_anomalies', 'metric_anomaly_episodes', 'metric_anomaly_incidents', 'metric_rollups',
   // Portal & integrations (tickets are detached, not deleted —
   // see DEVICE_DETACH_DEVICE_ID_TABLES)
   'psa_ticket_mappings', 'asset_checkouts',
