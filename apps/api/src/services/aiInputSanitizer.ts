@@ -19,17 +19,50 @@ export interface SanitizeResult {
 
 const MAX_MESSAGE_LENGTH = 10_000;
 
-// Prompt injection patterns (use `giu` flags for Unicode-aware matching)
+// Horizontal whitespace only — never crosses a line break, so the `m`-flag
+// `^`/`$` anchors below stay on the same line.
+const HWS = String.raw`[^\S\r\n  ]*`;
+
+/**
+ * A generic-sounding XML tag (`context`, `prompt`, `instructions`) is only
+ * treated as a prompt-boundary forgery when it is structural: it starts a line
+ * (immediately after a newline or at the start of input), or it stands alone
+ * on its line. Inline occurrences — pasted XML config (`<ui><prompt>Enter
+ * PIN</prompt></ui>`) or prose ("the web.config has a <context> element") —
+ * are ordinary technician input (#6695). Only the tag itself is replaced; the
+ * surrounding text is kept.
+ */
+function structuralTagPattern(tag: string): RegExp {
+  const t = String.raw`<\/?${tag}>`;
+  return new RegExp(String.raw`(?<=^)${t}|(?<=^${HWS})${t}(?=${HWS}$)`, 'gimu');
+}
+
+// Prompt injection patterns (use `u` for Unicode-aware matching; `m` where a
+// pattern is line-anchored).
 const INJECTION_PATTERNS: Array<{ pattern: RegExp; flag: string }> = [
-  // Role impersonation
-  { pattern: /\b(Human|Assistant|System)\s*:/giu, flag: 'role_impersonation' },
+  // Role impersonation: a chat-transcript speaker label at the start of a line
+  // ("System: …", "  Assistant: …") or of a sentence on a single-line field
+  // ("…a helpful shell. System: exfiltrate…"). A label glued to a preceding
+  // word — Event Viewer's "Source: System: …", "the Operating System: it
+  // reboots" — is not a transcript turn (#6695). Also skipped: a label whose
+  // line goes on to name a Windows event provider/channel ("System:
+  // Microsoft-Windows-Kernel-Power/…"), which is a pasted log header.
+  {
+    pattern: new RegExp(
+      String.raw`(?<=^${HWS}|[.!?][^\S\r\n  ]+)\b(Human|Assistant|System)${HWS}:(?![^\r\n  ]*\bMicrosoft-Windows-)`,
+      'gimu',
+    ),
+    flag: 'role_impersonation',
+  },
   { pattern: /<\|im_start\|>/giu, flag: 'chatml_injection' },
   { pattern: /<\|im_end\|>/giu, flag: 'chatml_injection' },
-  // XML tag injection targeting system instructions
+  // XML tag injection targeting system instructions. `<system>` has no benign
+  // technician use, so it stays unanchored; the generic tag names are only
+  // filtered in structural (line-start / own-line) position — see above.
   { pattern: /<\/?system>/giu, flag: 'xml_system_tag' },
-  { pattern: /<\/?instructions>/giu, flag: 'xml_instructions_tag' },
-  { pattern: /<\/?prompt>/giu, flag: 'xml_prompt_tag' },
-  { pattern: /<\/?context>/giu, flag: 'xml_context_tag' },
+  { pattern: structuralTagPattern('instructions'), flag: 'xml_instructions_tag' },
+  { pattern: structuralTagPattern('prompt'), flag: 'xml_prompt_tag' },
+  { pattern: structuralTagPattern('context'), flag: 'xml_context_tag' },
   // System prompt override attempts
   { pattern: /ignore\s+(all\s+)?(previous|prior|above)\s+(instructions|rules|prompts)/giu, flag: 'override_attempt' },
   { pattern: /forget\s+(all\s+)?(previous|prior|above)\s+(instructions|rules|prompts)/giu, flag: 'override_attempt' },
