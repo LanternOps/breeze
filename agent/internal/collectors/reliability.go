@@ -137,15 +137,93 @@ func classifyHardwareType(message, source string, numericID int) string {
 		// the API's genuine-hardware gate recognises it by type, not by hoping the
 		// substring "thermal" appears in the source.
 		return "thermal"
-	case strings.Contains(msg, "memory"), strings.Contains(msg, "edac"),
+	case containsAnyPhrase(msg, memoryHardwarePhrases),
 		hwSrc && (numericID == 13 || numericID == 50 || numericID == 51):
 		return "memory"
-	case strings.Contains(msg, "disk"), strings.Contains(msg, "i/o"), strings.Contains(msg, "blk_update_request"),
+	case containsAnyPhrase(msg, diskHardwarePhrases),
 		hwSrc && (numericID == 7 || numericID == 11 || numericID == 15):
 		return "disk"
 	default:
 		return "unknown"
 	}
+}
+
+// memoryHardwarePhrases and diskHardwarePhrases are the message-only signals
+// for the memory and disk hardware types. They are hardware-phrased on purpose:
+// the bare words "memory" and "disk" matched ordinary application errors
+// ("insufficient memory to complete the operation", "disk quota exceeded",
+// "Disk Cleanup completed") and counted them against the device's hardware
+// reliability factor (#6696). Matching is word-anchored (see containsPhrase),
+// so short tokens like "ecc" and "dimm" don't fire inside longer words.
+// Specific kernel tokens (edac, blk_update_request) stay as-is.
+var memoryHardwarePhrases = []string{
+	"memory error",
+	"ecc",
+	"corrected error",
+	"uncorrected error",
+	"uncorrectable",
+	"bad ram",
+	"dimm",
+	"edac",
+}
+
+var diskHardwarePhrases = []string{
+	"disk error",
+	"i/o error",
+	"blk_update_request",
+	"bad sector",
+	"bad block",
+	"s.m.a.r.t",
+	"smart error",
+	"smart failure",
+	"reset to device",
+	"hard error",
+}
+
+// containsAnyPhrase reports whether msgLower contains any of phrases as a
+// word-anchored match (see containsPhrase).
+func containsAnyPhrase(msgLower string, phrases []string) bool {
+	for _, p := range phrases {
+		if containsPhrase(msgLower, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsPhrase reports whether phrase occurs in msgLower with no letter or
+// digit immediately before it, and none immediately after it other than a
+// single plural "s" ("memory errors", "dimms"). Underscores and punctuation
+// count as boundaries, so kernel prefixes like "sb_edac:" still match.
+func containsPhrase(msgLower, phrase string) bool {
+	for start := 0; start <= len(msgLower)-len(phrase); {
+		idx := strings.Index(msgLower[start:], phrase)
+		if idx < 0 {
+			return false
+		}
+		idx += start
+		end := idx + len(phrase)
+		if !isWordByte(msgLower, idx-1) {
+			if end < len(msgLower) && msgLower[end] == 's' {
+				end++
+			}
+			if !isWordByte(msgLower, end) {
+				return true
+			}
+		}
+		start = idx + 1
+	}
+	return false
+}
+
+// isWordByte reports whether s[i] is an ASCII letter or digit. Out-of-range
+// positions (string start/end) are boundaries.
+func isWordByte(s string, i int) bool {
+	if i < 0 || i >= len(s) {
+		return false
+	}
+	c := s[i]
+	return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
 }
 
 // numericEventID extracts the numeric event ID from an EventLogEntry.
