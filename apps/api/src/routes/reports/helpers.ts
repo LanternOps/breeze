@@ -93,14 +93,18 @@ export async function ensureOrgAccess(
  * partnerOwnedVisibility.scan.test.ts, a TEXTUAL scan of routes/,
  * services/, jobs/, fails a Drizzle read or mutation of `reports` /
  * `reportRuns` / `reportRunDeliveries`, a table interpolated into a sql
- * template, or a raw-SQL FROM/JOIN/UPDATE/USING/DELETE/INSERT on
- * report_runs / report_run_deliveries / reports inside template text, when
- * the enclosing function neither reaches this (directly or through a verified
- * guard entrypoint) nor is allowlisted for that scope with a reason and a
- * pinned site count; it also fails any re-binding of those table symbols.
- * It cannot see a table passed as a function argument (`fn(reports)` →
- * `.from(table)`), SQL assembled from plain strings, or code outside those
- * three directories — those still rely on review and the route suites.
+ * template, a raw-SQL FROM/JOIN/UPDATE/USING/DELETE/INSERT/MERGE/TRUNCATE
+ * (incl. `"public".`-qualified, quoted and comma-joined forms) on
+ * report_runs / report_run_deliveries / reports inside template text, or a
+ * `sql.identifier('<table>')` / `sql.raw('…<table>…')` literal, when the
+ * enclosing function neither reaches this (directly or through a verified
+ * guard entrypoint) nor is allowlisted for that scope with a reason, an
+ * audience posture (ruling F1) and a pinned site count; it also fails any
+ * re-binding of those table symbols. It cannot see a table passed as a
+ * function argument (`fn(reports)` → `.from(table)`), SQL assembled from
+ * concatenated strings or variables, comma joins after a subselect or an
+ * ON clause, or code outside those three directories — those still rely on
+ * review and the route suites (full list in the scan's header).
  */
 export function partnerOwnedReportVisibility(
   auth: Pick<AuthContext, 'scope' | 'partnerId' | 'partnerOrgAccess'>,

@@ -13,9 +13,12 @@
  *     `reportRunDeliveries` under routes/, services/, jobs/ — `.from`, every
  *     join incl. `crossJoin` / `*JoinLateral`, `.update`, `.delete`,
  *     `db.$count`, `db.query.<table>`, `${table}` interpolated into a sql
- *     template, and raw SQL (`FROM|JOIN|UPDATE|USING|DELETE FROM|INSERT INTO
- *     report_runs|report_run_deliveries|reports` inside template-literal
- *     text) — sits in a scope that calls `partnerOwnedReportVisibility` or
+ *     template, raw SQL inside template-literal text (`FROM|JOIN|UPDATE|
+ *     USING|DELETE FROM|INSERT INTO|MERGE INTO|TRUNCATE [TABLE]` + the table,
+ *     optionally `"public".`-qualified and/or quoted, plus comma joins
+ *     `FROM a x, report_runs`), and `sql.identifier('<table>')` /
+ *     `sql.raw('… FROM <table> …')` with a quoted-string argument — sits in a
+ *     scope that calls `partnerOwnedReportVisibility` or
  *     one of the GUARD_ENTRYPOINTS (each proven here to reach the helper), or
  *     is allowlisted org-only / system-only for that one scope with a written
  *     reason AND a pinned site count (a new query in a broad allowlisted
@@ -31,10 +34,18 @@
  * (`tool:<name>`), or a Hono registration `xRoutes.get('/path', …)`
  * (`GET /path`). Anonymous callbacks belong to their enclosing named scope.
  *
+ * The template scanner skips regex literals (a backtick or quote inside
+ * /…/ used to flip its state for the rest of the file) and the tree test
+ * asserts every scanned file ends with a balanced template stack.
+ *
  * NOT covered (textual limits): a table passed as a function argument and
- * queried through the parameter (`reportOwnerScopePredicate(reports, …)`),
- * SQL built from plain '…' / "…" strings (e.g. sql.raw('…')), and code outside the three
- * roots. Those rely on review, the route suites and RLS.
+ * queried through the parameter (`reportOwnerScopePredicate(reports, …)`);
+ * SQL assembled from string concatenation, a table name held in a variable,
+ * or `sql.raw(<non-literal>)`; a comma join whose earlier list item is not a
+ * bare name/alias (`FROM (SELECT …) x, report_runs`, `… JOIN b ON …, reports`);
+ * a regex literal the heuristic misreads as division (after `)`, e.g.
+ * `if (x) /re/.test(y)`); and code outside the three roots. Those rely on
+ * review, the route suites and RLS.
  *
  * Textual, not semantic — the route suites (`core.partnerOwned.test.ts`,
  * `helpers.partnerOwned.test.ts`) and reportsPartnerOwned.integration assert
@@ -65,8 +76,26 @@ const QUERY_SITE_SOURCE =
  * A raw-SQL reference to a guarded table, counted only inside the literal
  * text of a template string (so comments and ordinary strings never count).
  */
-const RAW_SQL_SITE =
-  /\b(?:FROM|JOIN|UPDATE|USING|DELETE\s+FROM|INSERT\s+INTO)\s+(?:ONLY\s+)?(?:public\.)?"?(?:report_runs|report_run_deliveries|reports)"?(?![\w-])/gi;
+/** A guarded table name in SQL text: optional (quoted) `public.` schema, optional quotes. */
+const RAW_TABLE = String.raw`(?:"?public"?\.)?"?(?:report_runs|report_run_deliveries|reports)"?(?![\w-])`;
+/** The statement keywords that read or change rows of the table they precede. */
+const RAW_KEYWORD = String.raw`(?:FROM|JOIN|UPDATE|USING|DELETE\s+FROM|INSERT\s+INTO|MERGE\s+INTO|TRUNCATE(?:\s+TABLE)?)`;
+const RAW_SQL_SITE = new RegExp(
+  String.raw`\b${RAW_KEYWORD}\s+(?:ONLY\s+)?${RAW_TABLE}`
+  // A comma join: `FROM devices d, report_runs rr` (each earlier list item is
+  // a name, an optional alias, then a comma).
+  + String.raw`|\bFROM\s+(?:[\w."]+(?:\s+(?:AS\s+)?\w+)?\s*,\s*)+${RAW_TABLE}`,
+  'gi',
+);
+/**
+ * Guarded-table SQL built OUTSIDE template text: `sql.identifier('report_runs')`
+ * and `sql.raw('… FROM report_runs …')` with a quoted-string argument.
+ */
+const CODE_SQL_SITE = new RegExp(
+  String.raw`\bsql\.identifier\(\s*['"](?:report_runs|report_run_deliveries|reports)['"]`
+  + String.raw`|\bsql\.raw\(\s*(['"])[^'"\n]*?\b${RAW_KEYWORD}\s+(?:ONLY\s+)?${RAW_TABLE}`,
+  'gi',
+);
 /**
  * Re-binding a table symbol hides every later query from the scan (the site
  * regexes key on the symbol name), so ANY rename is a hard failure: an
@@ -423,6 +452,49 @@ const ENTRYPOINT_CALL = new RegExp(
  * do.
  */
 function templateTextRanges(source: string): Array<[number, number]> {
+  return templateScan(source).ranges;
+}
+
+/**
+ * If a regex literal starts at `start` (code context), the index of its last
+ * character (closing `/` plus flags); else -1. A `/` opens a regex only where
+ * an expression may begin — after an operator/punctuator or a keyword such as
+ * `return` — never after an identifier, number or `)` / `]` (division). The
+ * literal must close on the same line; `[...]` classes and `\` escapes are
+ * honoured. Without this, a backtick or quote inside a regex (/[`$'"]/,
+ * /`+/g, /"/g) flips the scanner's string/template state for the rest of the
+ * file.
+ */
+function regexLiteralEnd(source: string, start: number): number {
+  const next = source[start + 1];
+  if (next === '/' || next === '*') return -1;
+  let j = start - 1;
+  while (j >= 0 && /\s/.test(source[j]!)) j -= 1;
+  const prev = j >= 0 ? source[j]! : '';
+  if (/[\w$)\]]/.test(prev)) {
+    const word = /(\w+)$/.exec(source.slice(Math.max(0, j - 10), j + 1))?.[1];
+    if (!word || !['return', 'typeof', 'case', 'in', 'of', 'void', 'delete', 'throw', 'yield', 'await', 'else'].includes(word)) {
+      return -1;
+    }
+  }
+  let inClass = false;
+  for (let k = start + 1; k < source.length; k += 1) {
+    const c = source[k]!;
+    if (c === '\n') return -1;
+    if (c === '\\') { k += 1; continue; }
+    if (inClass) { if (c === ']') inClass = false; continue; }
+    if (c === '[') { inClass = true; continue; }
+    if (c === '/') {
+      let f = k + 1;
+      while (f < source.length && /[a-z]/i.test(source[f]!)) f += 1;
+      return f - 1;
+    }
+  }
+  return -1;
+}
+
+/** `templateTextRanges` plus whether the context stack is empty at EOF. */
+function templateScan(source: string): { ranges: Array<[number, number]>; balanced: boolean } {
   const ranges: Array<[number, number]> = [];
   // Stack of contexts: 'tpl' = inside template text; a number = inside a
   // `${…}` expression at that brace depth.
@@ -447,6 +519,10 @@ function templateTextRanges(source: string): Array<[number, number]> {
       }
       continue;
     }
+    if (ch === '/') {
+      const end = regexLiteralEnd(source, i);
+      if (end !== -1) { i = end; continue; }
+    }
     if (ch === '`') { stack.push('tpl'); textStart = i + 1; continue; }
     if (typeof top === 'number') {
       if (ch === '{') stack[stack.length - 1] = top + 1;
@@ -455,7 +531,7 @@ function templateTextRanges(source: string): Array<[number, number]> {
       }
     }
   }
-  return ranges;
+  return { ranges, balanced: stack.length === 0 };
 }
 
 /** Every guarded-table query site in `source`: Drizzle forms + raw SQL in template text. */
@@ -468,6 +544,10 @@ function querySiteMatches(source: string): Array<{ index: number; text: string }
   for (let m = raw.exec(source); m; m = raw.exec(source)) {
     const at = m.index;
     if (ranges.some(([a, b]) => at >= a && at < b)) hits.push({ index: at, text: `sql\`${m[0]}\`` });
+  }
+  const codeSql = new RegExp(CODE_SQL_SITE.source, 'gi');
+  for (let m = codeSql.exec(source); m; m = codeSql.exec(source)) {
+    if (!ranges.some(([a, b]) => m!.index >= a && m!.index < b)) hits.push({ index: m.index, text: m[0] });
   }
   return hits.sort((a, b) => a.index - b.index);
 }
@@ -636,6 +716,44 @@ describe('scan analyzer (#3198 W02 B1)', () => {
     ]);
   });
 
+  it('flags schema-quoted, comma-joined, TRUNCATE/MERGE and sql.identifier / sql.raw forms (Task 15)', () => {
+    const cases: Record<string, string> = {
+      quotedSchema: 'export async function a() { return db.execute(sql`SELECT 1 FROM "public"."report_runs" r`); }',
+      quotedSchemaJoin: 'export async function a() { return db.execute(sql`SELECT 1 FROM x JOIN "public".reports r ON true`); }',
+      commaJoin: 'export async function a() { return db.execute(sql`SELECT 1 FROM devices d, report_runs rr WHERE d.id = rr.id`); }',
+      commaJoinAliased: 'export async function a() { return db.execute(sql`SELECT 1 FROM devices AS d, public.reports r`); }',
+      truncate: 'export async function a() { return db.execute(sql`TRUNCATE TABLE report_run_deliveries`); }',
+      truncateBare: 'export async function a() { return db.execute(sql`TRUNCATE reports CASCADE`); }',
+      merge: 'export async function a() { return db.execute(sql`MERGE INTO report_runs t USING x ON true`); }',
+      identifier: "export async function a() { return db.execute(sql`SELECT 1 FROM ${sql.identifier('report_runs')}`); }",
+      raw: "export async function a() { return db.execute(sql.raw('DELETE FROM report_run_deliveries WHERE true')); }",
+    };
+    for (const [name, src] of Object.entries(cases)) {
+      expect(siteOffenders('src/x.ts', src, new Map()), name).toHaveLength(1);
+    }
+    for (const src of [
+      'export function a() { return `Loaded devices, reports and alerts`; }',
+      "export function a() { return 'reports, runs'; }",
+      'export function a() { return `Choose from: runs, reports`; }',
+    ]) {
+      expect(siteOffenders('src/x.ts', src, new Map()), src).toEqual([]);
+    }
+  });
+
+  it('template scanning survives regex literals holding backticks or quotes, and reports an unbalanced EOF (Task 15)', () => {
+    const withRegex = [
+      'const SHELL_META = /[;&|><`$\'"]/;',
+      "const strip = (s) => s.replace(/`+/g, '').replace(/\"/g, '\\\"');",
+      'const q = `${x.replace(/"/g, "")}`;',
+      'export async function a() { return db.execute(sql`DELETE FROM reports WHERE id = ${id}`); }',
+    ].join('\n');
+    expect(templateScan(withRegex).balanced).toBe(true);
+    expect(siteOffenders('src/x.ts', withRegex, new Map())).toHaveLength(1);
+    // Division is not a regex.
+    expect(templateScan('const r = a / b / c; const t = `x`;').balanced).toBe(true);
+    expect(templateScan('const t = `never closed;').balanced).toBe(false);
+  });
+
   it('hard-fails any re-binding of a table symbol (fix round 1)', () => {
     for (const src of [
       "import { reportRuns as runs } from '../db/schema';",
@@ -689,6 +807,19 @@ describe('partner-owned report visibility is mechanical (#3198 W01, per-site sin
 
   it('no file re-binds a guarded table symbol (the scan keys on the symbol names)', () => {
     expect(files.flatMap((f) => rebindOffenders(rel(f), code(f)))).toEqual([]);
+  });
+
+  // An unbalanced stack at EOF means the scanner lost track of which text is
+  // template SQL — raw-SQL sites after that point are misread. Asserted for
+  // EVERY scanned file (stronger than only those naming a guarded table): a
+  // file that gains a report query later must not inherit a broken state.
+  // Before Task 15 the regex-literal gap left softwareActions.ts, docs.ts and
+  // aiAgents/runFindings.ts unbalanced.
+  it('template scanning ends balanced in every scanned file (Task 15)', () => {
+    const unbalanced = files
+      .filter((f) => !templateScan(code(f)).balanced)
+      .map(rel);
+    expect(unbalanced).toEqual([]);
   });
 
   it('finds raw-SQL sites in template text (guards against a vacuous raw arm)', () => {
