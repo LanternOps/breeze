@@ -1175,6 +1175,197 @@ describe('changeTicketStatus', () => {
   });
 });
 
+describe('changeTicketStatus — ML triage feedback on resolve/reopen (#6697)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    valuesMock.mockClear();
+    setMock.mockClear();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-22T12:00:00.000Z'));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('emits ticket.resolved exactly once when core status enters resolved', async () => {
+    const createdAt = new Date('2026-09-22T10:00:00.000Z'); // 120 minutes before "now"
+    dbMocks.selectResult.mockResolvedValue([
+      { id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', resolvedAt: null, createdAt }
+    ]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', status: 'resolved' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await changeTicketStatus('t-1', { status: 'resolved' }, { resolutionNote: 'Replaced toner' }, actor);
+
+    const resolvedCalls = emitTriageFeedbackMock.mock.calls.filter(
+      (c) => (c[0] as { eventType?: string }).eventType === 'ticket.resolved'
+    );
+    expect(resolvedCalls).toHaveLength(1);
+    expect(resolvedCalls[0]![0]).toMatchObject({
+      orgId: 'o-1',
+      ticketId: 't-1',
+      eventType: 'ticket.resolved',
+      outcome: 'resolved',
+      actorUserId: 'u-1',
+      metadata: expect.objectContaining({
+        fromStatus: 'open',
+        toStatus: 'resolved',
+        minutesOpen: 120,
+      }),
+    });
+    expect(emitTriageFeedbackMock.mock.calls.filter(
+      (c) => (c[0] as { eventType?: string }).eventType === 'ticket.reopened'
+    )).toHaveLength(0);
+  });
+
+  it('emits ticket.reopened exactly once when a resolved ticket returns to open', async () => {
+    const createdAt = new Date('2026-09-22T09:00:00.000Z');
+    dbMocks.selectResult.mockResolvedValue([
+      { id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'resolved', resolvedAt: new Date('2026-09-22T11:00:00.000Z'), createdAt }
+    ]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', status: 'open' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await changeTicketStatus('t-1', { status: 'open' }, {}, actor);
+
+    const reopenedCalls = emitTriageFeedbackMock.mock.calls.filter(
+      (c) => (c[0] as { eventType?: string }).eventType === 'ticket.reopened'
+    );
+    expect(reopenedCalls).toHaveLength(1);
+    expect(reopenedCalls[0]![0]).toMatchObject({
+      orgId: 'o-1',
+      ticketId: 't-1',
+      eventType: 'ticket.reopened',
+      outcome: 'reopened',
+      actorUserId: 'u-1',
+      metadata: expect.objectContaining({
+        fromStatus: 'resolved',
+        toStatus: 'open',
+      }),
+    });
+    expect(emitTriageFeedbackMock.mock.calls.filter(
+      (c) => (c[0] as { eventType?: string }).eventType === 'ticket.resolved'
+    )).toHaveLength(0);
+  });
+
+  it('emits neither ticket.resolved nor ticket.reopened for an open -> pending transition', async () => {
+    dbMocks.selectResult.mockResolvedValue([
+      { id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', resolvedAt: null, createdAt: new Date('2026-09-22T10:00:00.000Z') }
+    ]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', status: 'pending' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await changeTicketStatus('t-1', { status: 'pending' }, {}, actor);
+
+    expect(emitTriageFeedbackMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT re-emit ticket.resolved when relabeling an already-resolved ticket to closed', async () => {
+    dbMocks.selectResult.mockResolvedValue([
+      { id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'resolved', resolvedAt: new Date('2026-09-22T11:00:00.000Z'), createdAt: new Date('2026-09-22T10:00:00.000Z') }
+    ]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', status: 'closed' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await changeTicketStatus('t-1', { status: 'closed' }, {}, actor);
+
+    expect(emitTriageFeedbackMock).not.toHaveBeenCalled();
+  });
+
+  it('emits ticket.reopened exactly once when a closed ticket returns to open', async () => {
+    dbMocks.selectResult.mockResolvedValue([
+      { id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'closed', resolvedAt: new Date('2026-09-22T10:30:00.000Z'), createdAt: new Date('2026-09-22T09:00:00.000Z') }
+    ]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', status: 'open' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await changeTicketStatus('t-1', { status: 'open' }, {}, actor);
+
+    const reopenedCalls = emitTriageFeedbackMock.mock.calls.filter(
+      (c) => (c[0] as { eventType?: string }).eventType === 'ticket.reopened'
+    );
+    expect(reopenedCalls).toHaveLength(1);
+    expect(reopenedCalls[0]![0]).toMatchObject({
+      eventType: 'ticket.reopened',
+      outcome: 'reopened',
+      metadata: expect.objectContaining({ fromStatus: 'closed', toStatus: 'open' }),
+    });
+  });
+
+  it('emits ticket.resolved exactly once when resolving directly from pending', async () => {
+    dbMocks.selectResult.mockResolvedValue([
+      { id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'pending', resolvedAt: null, createdAt: new Date('2026-09-22T08:00:00.000Z') }
+    ]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', status: 'resolved' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await changeTicketStatus('t-1', { status: 'resolved' }, { resolutionNote: 'Fixed' }, actor);
+
+    const resolvedCalls = emitTriageFeedbackMock.mock.calls.filter(
+      (c) => (c[0] as { eventType?: string }).eventType === 'ticket.resolved'
+    );
+    expect(resolvedCalls).toHaveLength(1);
+    expect(resolvedCalls[0]![0]).toMatchObject({
+      eventType: 'ticket.resolved',
+      outcome: 'resolved',
+      metadata: expect.objectContaining({ fromStatus: 'pending', toStatus: 'resolved' }),
+    });
+  });
+
+  it('gives two resolutions of the same ticket (resolve -> reopen -> resolve) distinct dedupeKeys', async () => {
+    // A same-shape ticketTriageDedupeKey('status', fromStatus, toStatus) would
+    // collide across both resolutions (identical from/to each time), and the
+    // ON CONFLICT (orgId, sourceType, sourceId, eventType, dedupeKey) target
+    // would silently drop the second, genuine resolution signal via
+    // onConflictDoNothing. The fix folds `now` into the key.
+    dbMocks.selectResult.mockResolvedValue([
+      { id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', resolvedAt: null, createdAt: new Date('2026-09-22T08:00:00.000Z') }
+    ]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', status: 'resolved' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await changeTicketStatus('t-1', { status: 'resolved' }, { resolutionNote: 'First fix' }, actor);
+    vi.setSystemTime(new Date('2026-09-22T13:00:00.000Z'));
+    dbMocks.selectResult.mockResolvedValue([
+      { id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', resolvedAt: null, createdAt: new Date('2026-09-22T08:00:00.000Z') }
+    ]);
+    await changeTicketStatus('t-1', { status: 'resolved' }, { resolutionNote: 'Second fix' }, actor);
+
+    const resolvedCalls = emitTriageFeedbackMock.mock.calls.filter(
+      (c) => (c[0] as { eventType?: string }).eventType === 'ticket.resolved'
+    );
+    expect(resolvedCalls).toHaveLength(2);
+    const dedupeKeys = resolvedCalls.map((c) => (c[0] as { dedupeKey?: string }).dedupeKey);
+    expect(dedupeKeys[0]).not.toEqual(dedupeKeys[1]);
+  });
+
+  // #6697 follow-up review: verifies (without changing production code) that
+  // a system-actor sentinel never reaches ml_feedback_events.actor_user_id,
+  // whose FK references users(id). emitTicketTriageFeedback's own
+  // actorUserIdOrNull already rejects this because the nil UUID's version
+  // nibble ('0') fails the RFC 4122 v1-5 check the regex requires — this
+  // test documents that existing safety net against regression.
+  it('never passes the inbound-email system-actor sentinel through as actorUserId', async () => {
+    const systemActor = { userId: '00000000-0000-0000-0000-000000000000', name: 'Inbound Email', principalKind: 'system' as const };
+    dbMocks.selectResult.mockResolvedValue([
+      { id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'resolved', resolvedAt: new Date('2026-09-22T11:00:00.000Z'), createdAt: new Date('2026-09-22T10:00:00.000Z') }
+    ]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', status: 'open' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await changeTicketStatus('t-1', { status: 'open' }, {}, systemActor);
+
+    const reopenedCalls = emitTriageFeedbackMock.mock.calls.filter(
+      (c) => (c[0] as { eventType?: string }).eventType === 'ticket.reopened'
+    );
+    expect(reopenedCalls).toHaveLength(1);
+    // The service passes the raw sentinel through as its `options.actorUserId`
+    // argument (not null) — emitTicketTriageFeedback itself is the safety net.
+    expect(reopenedCalls[0]![0]).toMatchObject({ actorUserId: '00000000-0000-0000-0000-000000000000' });
+  });
+});
+
 describe('changeTicketStatus — aiDraftId (P2-4, #4191, Task A10)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
