@@ -13,6 +13,9 @@ export default defineConfig({
     // dist/worker.cjs (the compose `worker` service's `command`).
     worker: 'src/worker.ts',
     'scripts/recover-stuck-agents': 'scripts/recover-stuck-agents.ts',
+    // #6605: `node dist/scripts/upgrade-preflight.cjs [--strict]` — run the new
+    // image against the current database before upgrading.
+    'scripts/upgrade-preflight': 'scripts/upgrade-preflight.ts',
   },
   format: ['cjs'],
   // @breeze/api is a deployed application, not a consumed library: package.json

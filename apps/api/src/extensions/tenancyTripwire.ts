@@ -76,6 +76,7 @@ const RLS_INCAPABLE_RELKINDS: Record<string, string> = {
 const CORE_NON_DRIZZLE_TABLES: ReadonlySet<string> = new Set([
   'backup_profiles',
   'breeze_migrations',
+  'breeze_version_history',
   's1_site_mappings',
   'td_synnex_price_availability',
   'td_synnex_sftp_integrations',

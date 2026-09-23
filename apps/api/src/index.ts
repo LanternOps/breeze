@@ -1688,6 +1688,9 @@ async function bootstrap(): Promise<void> {
   await initializeDatabaseForStartup({
     autoMigrateEnabled: process.env.AUTO_MIGRATE !== 'false',
     production: config.NODE_ENV === 'production',
+    // #6605: report retirements this upgrade crosses before migrating, and
+    // record the running version after. Report-only; never blocks boot.
+    upgradeChecks: true,
   });
   // Migrations may have changed role_permissions (W02 seeded agreements:* and
   // back-filled it onto every role holding the equivalent contracts grant), and

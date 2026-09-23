@@ -64,6 +64,26 @@ import { Steps, Aside } from '@astrojs/starlight/components';
   The `binaries-init` container uses `pull_policy: always`, so `docker compose up -d` automatically pulls the latest binaries image and refreshes the volume — no manual steps needed.
 </Aside>
 
+## Check what an upgrade retires
+
+Every API image carries a list of the API fields and endpoints Breeze has retired, with the version each one was deprecated and removed in and what replaces it. The list is cumulative, so an image knows every retirement you cross even when you skip versions. The API also records each version your deployment boots, so it can tell which retirements are new to you.
+
+**At every boot**, before migrations run, the API logs a report headed `[upgrade-preflight]`. It lists each retirement the upgrade crosses, the endpoints and fields affected, and the replacement. Read it after upgrading:
+
+```bash
+docker compose logs api | grep upgrade-preflight
+```
+
+**Before upgrading**, you can run the same check with the new image against your current database, after `docker compose pull` and before `docker compose up -d`:
+
+```bash
+docker compose run --rm --no-deps api node dist/scripts/upgrade-preflight.cjs
+```
+
+This only reads. It does not run migrations or record a version. It exits 0. Add `--strict` (or set `BREEZE_UPGRADE_PREFLIGHT_STRICT=true`) to exit 1 when a removal is crossed, for use in an upgrade script.
+
+The report never blocks the API from starting. If the deployment has no recorded version history (the first upgrade to a version with this check, or a database the check could not read), the report lists every retirement in effect for the new image and marks it as possibly crossed. It does not report "no issues" in that case.
+
 ## Compose file changes
 
 `docker compose pull` updates images; it does **not** download a new `docker-compose.yml`, override file, or `.env.example`. Current images can therefore run with old network settings or missing environment mappings. Review the configuration shipped with **every target release**, including when skipping versions; the entries below highlight changes that need operator action, not a complete Compose changelog.
