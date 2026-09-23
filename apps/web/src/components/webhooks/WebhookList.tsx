@@ -4,7 +4,18 @@ import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { useTranslation } from 'react-i18next';
 
-export type WebhookStatus = 'active' | 'disabled';
+// The API's status vocabulary (routes/webhooks.ts). PATCH takes the same
+// values, so the toggle and the edit form's switch write `status`, never an
+// `enabled` flag the API would strip (#6767).
+export type WebhookStatus = 'active' | 'paused' | 'failed';
+
+type DisplayStatus = 'active' | 'disabled';
+
+/** Only an `active` webhook delivers; `paused` and `failed` both read as off. */
+export const isWebhookActive = (webhook: Pick<Webhook, 'status' | 'enabled'>): boolean => {
+  if (webhook.status) return webhook.status === 'active';
+  return webhook.enabled !== false;
+};
 
 export type WebhookAuthType = 'hmac' | 'bearer';
 
@@ -51,15 +62,12 @@ type WebhookListProps = {
   timezone?: string;
 };
 
-const statusStyles: Record<WebhookStatus, string> = {
+const statusStyles: Record<DisplayStatus, string> = {
   active: 'bg-emerald-500/10 text-emerald-700',
   disabled: 'bg-muted text-muted-foreground'
 };
 
-const getStatus = (webhook: Webhook): WebhookStatus => {
-  if (webhook.status) return webhook.status;
-  return webhook.enabled === false ? 'disabled' : 'active';
-};
+const getStatus = (webhook: Webhook): DisplayStatus => (isWebhookActive(webhook) ? 'active' : 'disabled');
 
 const formatTimestamp = (value: string | null | undefined, timezone: string | undefined, t: (key: string) => string) => {
   if (!value) return t('longTail.webhooks.WebhookList.notAvailable');
@@ -80,7 +88,7 @@ export default function WebhookList({
 }: WebhookListProps) {
   const { t } = useTranslation('common');
   const [query, setQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<WebhookStatus | 'all'>('all');
+  const [statusFilter, setStatusFilter] = useState<DisplayStatus | 'all'>('all');
   const [testingId, setTestingId] = useState<string | null>(null);
   const [togglingId, setTogglingId] = useState<string | null>(null);
 
@@ -140,7 +148,7 @@ export default function WebhookList({
           />
           <select
             value={statusFilter}
-            onChange={event => setStatusFilter(event.target.value as WebhookStatus | 'all')}
+            onChange={event => setStatusFilter(event.target.value as DisplayStatus | 'all')}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-36"
           >
             <option value="all">{t('longTail.webhooks.WebhookList.filters.allStatuses')}</option>
