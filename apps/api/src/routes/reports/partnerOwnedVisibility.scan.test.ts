@@ -44,7 +44,10 @@
  * or `sql.raw(<non-literal>)`; a comma join whose earlier list item is not a
  * bare name/alias (`FROM (SELECT …) x, report_runs`, `… JOIN b ON …, reports`);
  * a regex literal the heuristic misreads as division (after `)`, e.g.
- * `if (x) /re/.test(y)`); and code outside the three roots. Those rely on
+ * `if (x) /re/.test(y)`) — or any regex misdetection confined to one line
+ * that swallows an EVEN number of backticks: the stack ends balanced, so the
+ * EOF balance guard does not catch it, though the template ranges in between
+ * are wrong; and code outside the three roots. Those rely on
  * review, the route suites and RLS.
  *
  * Textual, not semantic — the route suites (`core.partnerOwned.test.ts`,
@@ -865,6 +868,29 @@ describe('partner-owned report visibility is mechanical (#3198 W01, per-site sin
       else if (!AUDIENCE_CALL.test(body)) offenders.push(`${file}: ${fn} does not call reportAudienceCondition`);
     }
     expect(offenders).toEqual([]);
+  });
+
+  // Fix round 1: MUST_CALL_AUDIENCE is mechanical, not a hand-kept list. A
+  // direct partnerOwnedReportVisibility caller is, by construction, a tenant
+  // predicate that also builds an org branch; if it is not listed (and so not
+  // required to call reportAudienceCondition) a new one could hand org-scope
+  // callers msp_staff rows without going red.
+  it('every direct partnerOwnedReportVisibility caller is listed in MUST_CALL_AUDIENCE (ruling F1)', () => {
+    const listed = new Set(MUST_CALL_AUDIENCE.map(({ file, fn }) => `${file}#${fn}`));
+    const unlisted: string[] = [];
+    let callers = 0;
+    for (const file of files) {
+      const source = code(file);
+      const scopes = namedScopes(source);
+      const re = new RegExp(HELPER_CALL.source, 'g');
+      for (let m = re.exec(source); m; m = re.exec(source)) {
+        callers += 1;
+        const key = `${rel(file)}#${innermostScope(scopes, m.index)?.name ?? 'module scope'}`;
+        if (!listed.has(key)) unlisted.push(key);
+      }
+    }
+    expect(callers).toBeGreaterThanOrEqual(4);
+    expect(unlisted).toEqual([]);
   });
 
   it('a raw reports.partnerId predicate appears only inside the gated helper functions', () => {
