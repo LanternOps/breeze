@@ -117,6 +117,12 @@ type ReportBuilderProps = {
    * partner-owned row, `null` included, and ownership never changes on edit.
    */
   partnerOwned?: boolean;
+  /**
+   * The caller's own options (rendered outside the builder, e.g. a business
+   * report's options panel on the edit page) are invalid: submit is disabled
+   * and a submission is ignored, so a value the API would 400 on never leaves.
+   */
+  submitBlocked?: boolean;
   onSubmit?: (values: ReportBuilderFormValues) => void | Promise<void>;
   onPreview?: (values: ReportBuilderFormValues) => void | Promise<void>;
   onCancel?: () => void;
@@ -752,6 +758,7 @@ export default function ReportBuilder({
   reportId,
   baseConfig,
   partnerOwned = false,
+  submitBlocked = false,
   onSubmit,
   onPreview,
   onCancel
@@ -1389,6 +1396,7 @@ export default function ReportBuilder({
 
   const handleFormSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (submitBlocked) return;
     setError(undefined);
     setEmailError(undefined);
 
@@ -2338,7 +2346,7 @@ export default function ReportBuilder({
           <button
             data-testid="report-builder-submit"
             type="submit"
-            disabled={saving}
+            disabled={saving || submitBlocked}
             className="flex h-11 w-full items-center justify-center gap-2 rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-60 sm:w-auto sm:px-6"
           >
             {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}

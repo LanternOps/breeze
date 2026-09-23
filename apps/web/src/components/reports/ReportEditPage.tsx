@@ -39,6 +39,7 @@ import {
 import {
   DEFAULT_TICKET_SLA_OPTIONS,
   TicketSlaOptionsFields,
+  isTicketSlaOptionsValid,
   ticketSlaConfigFromOptions,
   ticketSlaOptionsFromConfig,
   type TicketSlaOptions,
@@ -46,6 +47,7 @@ import {
 import {
   DEFAULT_TECHNICIAN_TIME_OPTIONS,
   TechnicianTimeOptionsFields,
+  isTechnicianTimeOptionsValid,
   technicianTimeConfigFromOptions,
   technicianTimeOptionsFromConfig,
   type TechnicianTimeOptions,
@@ -55,6 +57,7 @@ import {
   ArAgingOptionsFields,
   arAgingConfigFromOptions,
   arAgingOptionsFromConfig,
+  isArAgingOptionsValid,
   type ArAgingOptions,
 } from './ArAgingOptionsForm';
 import { isBusinessReportType } from './businessReportAccess';
@@ -240,6 +243,13 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
     ar_aging: () => businessConfig(arAgingConfigFromOptions(arAgingOptions)),
   };
   const baseConfig = curatedConfig[report.type]?.() ?? config;
+  // The options panels render outside the builder, so their validity (custom
+  // period both dates, real days, start <= end; AR as-of a real day) must gate
+  // the builder's own submit — otherwise an invalid option PUTs and 400s.
+  const businessOptionsInvalid =
+    (isTicketSla && !isTicketSlaOptionsValid(ticketSlaOptions))
+    || (isTechnicianTime && !isTechnicianTimeOptionsValid(technicianTimeOptions))
+    || (isArAging && !isArAgingOptionsValid(arAgingOptions));
 
   return (
     <div className="space-y-6">
@@ -328,6 +338,7 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
         defaultValues={defaultValues}
         baseConfig={baseConfig}
         partnerOwned={partnerOwned}
+        submitBlocked={businessOptionsInvalid}
         onSubmit={handleSubmit}
         onCancel={handleCancel}
       />

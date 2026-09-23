@@ -188,6 +188,93 @@ describe('ReportBuilder config preservation', () => {
   });
 });
 
+describe('ReportBuilder business report save path (#3198 W03)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useOrgStore.setState({ currentOrgId: 'org-1' });
+  });
+
+  const putBody = () => {
+    const call = fetchWithAuthMock.mock.calls.find(
+      ([url, init]) => url === '/reports/report-1' && (init as RequestInit | undefined)?.method === 'PUT'
+    );
+    expect(call).toBeDefined();
+    return JSON.parse(String((call![1] as RequestInit).body)) as Record<string, unknown> & {
+      config: Record<string, unknown>;
+    };
+  };
+
+  it('sends no dateRange/legacyFilters/refused selectors and keeps the baseConfig groupBy', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: {} }));
+
+    render(
+      <ReportBuilder
+        mode="edit"
+        reportId="report-1"
+        baseConfig={{ groupBy: 'currency', asOf: '2026-08-31', filters: { siteIds: ['s-1'] } }}
+        defaultValues={{
+          name: 'AR',
+          type: 'ar_aging',
+          dateRange: { preset: 'last_30_days' },
+          filters: { siteIds: ['s-1'] }
+        }}
+      />
+    );
+
+    fireEvent.click(await screen.findByTestId('report-builder-submit'));
+
+    await waitFor(() => {
+      const { config, orgId } = putBody();
+      expect(orgId).toBe('org-1');
+      expect(config.groupBy).toBe('currency');
+      expect(config.asOf).toBe('2026-08-31');
+      expect(config).not.toHaveProperty('dateRange');
+      expect(config).not.toHaveProperty('legacyFilters');
+      expect(config).not.toHaveProperty('filters');
+    });
+  });
+
+  it('omits orgId entirely for a partner-owned report', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: {} }));
+
+    render(
+      <ReportBuilder
+        mode="edit"
+        reportId="report-1"
+        partnerOwned
+        baseConfig={{ groupBy: 'organization' }}
+        defaultValues={{ name: 'AR', type: 'ar_aging' }}
+      />
+    );
+
+    fireEvent.click(await screen.findByTestId('report-builder-submit'));
+
+    await waitFor(() => expect(putBody()).not.toHaveProperty('orgId'));
+  });
+
+  it('disables submit and sends nothing while submitBlocked', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: {} }));
+
+    render(
+      <ReportBuilder
+        mode="edit"
+        reportId="report-1"
+        submitBlocked
+        baseConfig={{}}
+        defaultValues={{ name: 'SLA', type: 'ticket_sla_attainment' }}
+      />
+    );
+
+    const submit = await screen.findByTestId('report-builder-submit');
+    expect(submit).toBeDisabled();
+    fireEvent.submit(submit.closest('form')!);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(
+      fetchWithAuthMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')
+    ).toBe(false);
+  });
+});
+
 describe('ReportBuilder save feedback', () => {
   beforeEach(() => {
     vi.clearAllMocks();

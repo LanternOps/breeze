@@ -162,6 +162,33 @@ describe('ReportEditPage — business report save path (#3198 W03)', () => {
     for (const key of REFUSED_CONFIG_KEYS) expect(body.config, key).not.toHaveProperty(key);
   });
 
+  it('blocks the save while a business option is invalid: a half-filled custom period sends no PUT', async () => {
+    loaded = {
+      ...baseReport,
+      name: 'SLA',
+      type: 'ticket_sla_attainment',
+      orgId: 'org-1',
+      partnerId: null,
+      config: {},
+    };
+    render(<ReportEditPage reportId="rep-1" />);
+
+    await userEvent.setup().selectOptions(await screen.findByTestId('report-period-kind'), 'custom');
+    fireEvent.change(screen.getByTestId('report-period-start'), { target: { value: '2026-08-01' } });
+
+    const submit = await screen.findByTestId('report-builder-submit');
+    expect(submit).toBeDisabled();
+    // Even a forced form submission must not reach the API.
+    fireEvent.submit(submit.closest('form')!);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(
+      fetchWithAuth.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'PUT'),
+    ).toBe(false);
+
+    fireEvent.change(screen.getByTestId('report-period-end'), { target: { value: '2026-08-31' } });
+    expect(screen.getByTestId('report-builder-submit')).toBeEnabled();
+  });
+
   it('renders a not-found state when GET /reports/:id is a 404 (hidden type or missing permission)', async () => {
     loaded = null;
     render(<ReportEditPage reportId="rep-1" />);
