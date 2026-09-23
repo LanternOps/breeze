@@ -99,7 +99,7 @@
     "ticketing": "Ticketing",
     "deliverableTemplates": "Liefervorlagen",
     "securityScans": "IOC-Scans",
-    "systemDeprecations": "Abkündigungen"
+    "system": "System"
   },
   "documentTitles": {
     "dashboard": "Dashboard",
