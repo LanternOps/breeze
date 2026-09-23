@@ -18,6 +18,7 @@ import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '.
 import { deviceScopeCondition } from './aiToolsSiteScope';
 import { describeFirstZodIssue } from '../lib/zodIssues';
 import { INLINE_SETTINGS_EXAMPLES } from './aiToolsConfigPolicyExamples';
+import { resolveWritableToolOrgId } from './aiToolWriteOrg';
 import {
   resolveEffectiveConfig,
   previewEffectiveConfig,
@@ -47,10 +48,6 @@ import {
   getConfigPolicyComplianceStats,
   buildComplianceSummary,
 } from '../routes/policyManagement/helpers';
-
-function getOrgId(auth: AuthContext): string | null {
-  return auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
-}
 
 const MFA_REQUIRED_ERROR = JSON.stringify({ error: 'MFA required' });
 
@@ -728,8 +725,8 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           name: { type: 'string', description: 'Policy name (required for create)' },
           description: { type: 'string', description: 'Policy description' },
           status: { type: 'string', enum: ['active', 'inactive', 'archived'], description: 'Policy status (for create/update)' },
-          ownerScope: { type: 'string', enum: ['organization', 'partner'], description: 'Create ownership: organization (default, one org) or partner (unassigned library policy; requires full partner org access).' },
-          orgId: { type: 'string', description: 'Organization UUID (for org-scoped create; defaults to current org). Ignored when ownerScope is "partner".' },
+          ownerScope: { type: 'string', enum: ['organization', 'partner'], description: 'Create only. Ownership: organization (default, one org) or partner (unassigned library policy; requires full partner org access). Not accepted on update.' },
+          orgId: { type: 'string', description: 'Create only. UUID of the organization that will own the policy. Required unless you can access exactly one organization; nothing is inferred from the page or device being viewed. Ignored when ownerScope is "partner". Not accepted on update: a policy owner cannot be changed.' },
         },
         required: ['action'],
       },
@@ -790,11 +787,16 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ success: true, policy });
         }
 
-        const orgId = (input.orgId as string) || getOrgId(auth);
-        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
-        if (input.orgId && !auth.canAccessOrg(input.orgId as string)) {
-          return JSON.stringify({ error: 'Access denied to this organization' });
+        // Never `accessibleOrgIds[0]` (#6667): for a multi-org caller that is an
+        // arbitrary customer org. The resolver refuses rather than guesses.
+        const resolvedOrg = resolveWritableToolOrgId(
+          auth,
+          typeof input.orgId === 'string' && input.orgId ? input.orgId : undefined,
+        );
+        if (!resolvedOrg.orgId) {
+          return JSON.stringify({ error: resolvedOrg.error ?? 'Organization context required' });
         }
+        const orgId = resolvedOrg.orgId;
 
         // Check for duplicate name in same org
         const [existing] = await db.select({ id: configurationPolicies.id, status: configurationPolicies.status })
@@ -821,10 +823,20 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
 
       if (action === 'update') {
         if (!input.policyId) return JSON.stringify({ error: 'policyId is required for update' });
+        // Owner fields are create-only. Dropping them and reporting success told
+        // the model a move had happened when nothing changed (#6668).
+        if (input.orgId !== undefined || input.ownerScope !== undefined) {
+          return JSON.stringify({
+            error: 'A policy owner cannot be changed; create a new policy in the target organization instead.',
+          });
+        }
         const updates: { name?: string; description?: string; status?: 'active' | 'inactive' | 'archived' } = {};
         if (typeof input.name === 'string') updates.name = input.name;
         if (typeof input.description === 'string') updates.description = input.description;
         if (typeof input.status === 'string') updates.status = input.status as 'active' | 'inactive' | 'archived';
+        if (Object.keys(updates).length === 0) {
+          return JSON.stringify({ error: 'Nothing to update: supply at least one of name, description, status.' });
+        }
 
         const updated = await updateConfigPolicy(input.policyId as string, updates, auth);
         if (!updated) return JSON.stringify({ error: 'Configuration policy not found or access denied' });
