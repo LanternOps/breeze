@@ -291,3 +291,50 @@ describe('handleDnsThreatBlockedEvent (durable registry contract)', () => {
     expect(contextCallOrder).toBeLessThan(firstInsertCallOrder);
   });
 });
+
+// #6692 — only threat categories raise a severity=high "DNS threat" alert. The
+// sync job no longer publishes content-policy / unknown blocks, but events
+// queued before that fix must still be ignored here rather than paging
+// on-call for a blocked YouTube query.
+describe('handleDnsThreatBlocked — threat-category gate (#6692)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function payload(category: string) {
+    return {
+      deviceId: 'dev-1',
+      domain: 'example.com',
+      category,
+      integrationId: 'int-1',
+      timestamp: '2026-09-22T12:00:00.000Z',
+    };
+  }
+
+  it.each(['phishing', 'malware', 'botnet', 'ransomware', 'cryptomining', 'spam', 'adware'])(
+    'raises a severity=high alert for a blocked %s query',
+    async (category) => {
+      mockCooldownSelect(false);
+      mockDeviceSelect({ hostname: 'host-1', displayName: null });
+      mockInsertReturning(`alert-${category}`);
+
+      const result = await handleDnsThreatBlocked('org-1', payload(category));
+
+      expect(result).toEqual({ alertId: `alert-${category}`, reason: 'created' });
+      const values = (vi.mocked(db.insert).mock.results[0]!.value as any).values.mock.calls[0][0];
+      expect(values.severity).toBe('high');
+      expect(values.configItemName).toBe(`dns_threat_${category}`);
+    },
+  );
+
+  it.each(['social_media', 'streaming', 'gambling', 'adult_content', 'unknown', 'not-a-category'])(
+    'ignores a %s payload without touching the database',
+    async (category) => {
+      const result = await handleDnsThreatBlocked('org-1', payload(category));
+
+      expect(result).toEqual({ alertId: null, reason: 'not_threat_category' });
+      expect(vi.mocked(db.select)).not.toHaveBeenCalled();
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    },
+  );
+});
