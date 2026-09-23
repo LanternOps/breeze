@@ -680,6 +680,49 @@ describe('registry-aware truncation guidance (A-W05 D12)', () => {
     expect(out._chat.nextStep).toBe(SENTINEL_HINTS.cursor);
   });
 
+  it('carries the top-level paging envelope keys through the digest (Task 0 — extreme page, every varchar at schema max)', () => {
+    setToolPaginationHintResolver(() => 'cursor');
+    // Simulate the worst realistic page a keyset-paged tool can emit: every
+    // varchar-ish field at its schema max, still overflowing every compaction
+    // tier, so the digest branch (row-less, `summarized: true`) fires. Without
+    // this fix, the digest drops `hasMore`/`nextCursor` exactly when the model
+    // most needs them to continue paging.
+    const MAX_VARCHAR = 'v'.repeat(255);
+    const raw = JSON.stringify({
+      total: 48213,
+      totalMode: 'exact',
+      showing: 100,
+      limit: 100,
+      offset: 0,
+      hasMore: true,
+      nextCursor: 'eyJ0IjoiMjAyNi0wOS0yMlQwMDowMDowMC4wMDAwMDAiLCJpIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxIn0=',
+      count: 100,
+      rows: Array.from({ length: 100 }, (_, i) => ({
+        id: `row-${i}`,
+        title: MAX_VARCHAR,
+        message: MAX_VARCHAR,
+        hostname: MAX_VARCHAR,
+        note: MAX_VARCHAR,
+      })),
+    });
+
+    const out = JSON.parse(compactToolResultForChat('paged_tool', raw)) as Record<string, unknown> & {
+      summarized?: boolean;
+      _chat: { nextStep?: string };
+    };
+
+    expect(out.summarized).toBe(true);
+    expect(out.total).toBe(48213);
+    expect(out.totalMode).toBe('exact');
+    expect(out.showing).toBe(100);
+    expect(out.limit).toBe(100);
+    expect(out.offset).toBe(0);
+    expect(out.hasMore).toBe(true);
+    expect(out.nextCursor).toBe('eyJ0IjoiMjAyNi0wOS0yMlQwMDowMDowMC4wMDAwMDAiLCJpIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxIn0=');
+    expect(out.count).toBe(100);
+    expect(out._chat.nextStep).toBe(SENTINEL_HINTS.cursor);
+  });
+
   it('does not fire nextStep on a system_cleanup outputTail cut (Q8 — no array items were dropped)', () => {
     setToolPaginationHintResolver(() => 'cursor');
     const out = JSON.parse(compactToolResultForChat('system_cleanup', JSON.stringify({

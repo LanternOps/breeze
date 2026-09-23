@@ -827,6 +827,26 @@ function safeStringify(value: unknown): string {
  * by the presence of an `artifact` key, so a tool that legitimately returns
  * `{ artifact: … }` is untouched.
  */
+// A-W05 (Task 0): when a payload cannot be made to fit and is replaced by the
+// row-less digest below, the model loses the array it was reading — but it
+// must NOT also lose the paging envelope, or it has no way to continue. These
+// are the top-level SCALAR paging keys every shaped list/keyset tool emits
+// (see aiToolPagination.ts's pageEnvelope/keysetEnvelope). Read from the
+// already-redacted/sanitized payload so a key the redactor wiped stays wiped.
+const PAGING_ENVELOPE_KEYS = ['total', 'totalMode', 'showing', 'limit', 'offset', 'hasMore', 'nextCursor', 'count'] as const;
+function extractPagingEnvelope(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) return {};
+  const out: Record<string, unknown> = {};
+  for (const key of PAGING_ENVELOPE_KEYS) {
+    if (!(key in value)) continue;
+    const v = (value as Record<string, unknown>)[key];
+    if (v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+      out[key] = v;
+    }
+  }
+  return out;
+}
+
 function asCaptureEnvelope(value: unknown): { artifact: Record<string, unknown>; compacted: string } | null {
   if (!isRecord(value)) return null;
   const { artifact, compacted } = value as Record<string, unknown>;
@@ -914,6 +934,7 @@ export function compactToolResultForChat(
   }
 
   return JSON.stringify({
+    ...extractPagingEnvelope(sanitized),
     summarized: true,
     _chat: {
       outputCompacted: true,
