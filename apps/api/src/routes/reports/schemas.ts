@@ -165,8 +165,8 @@ export const listReportsSchema = z.object({
   schedule: z.enum(['one_time', 'daily', 'weekly', 'monthly']).optional(),
   // #3198 W03: `GET /reports` owner filter — 'partner' lists only
   // partner-owned (all-organizations) reports, 'organization' only org-owned
-  // ones. It narrows the caller's listing; it never widens it. Ignored by
-  // `GET /reports/templates`, which is org-owned only already.
+  // ones. It narrows the caller's listing; it never widens it (also applied
+  // by `GET /reports/templates`, which is org-owned only already).
   ownerScope: z.enum(['organization', 'partner']).optional()
 });
 

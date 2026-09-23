@@ -424,6 +424,11 @@ coreRoutes.get(
     if (scopeResult.tenantCondition) {
       conditions.push(scopeResult.tenantCondition);
     }
+    // #3198 W03: the same owner filter as GET /reports. Narrowing only; the
+    // listing is org-owned already, so 'partner' is empty by construction.
+    if (query.ownerScope) {
+      conditions.push(reportOwnerScopeListFilter(query.ownerScope));
+    }
     const whereCondition = and(...conditions);
 
     const countResult = await db

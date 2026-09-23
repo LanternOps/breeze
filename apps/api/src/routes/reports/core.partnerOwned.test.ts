@@ -845,6 +845,14 @@ describe('GET /reports ?ownerScope= owner filter', () => {
     expect(state.wheres).toEqual([]);
   });
 
+  it('/templates honours it too (narrowing only): partner is empty-by-construction', async () => {
+    state.rows = [{ count: 0 }, null];
+    const res = await app().request('/reports/templates?ownerScope=partner');
+
+    expect(res.status).toBe(200);
+    expect(whereText()).toContain('"reports"."org_id" is null');
+  });
+
   it('system scope: partner narrows to partner-owned rows of any partner', async () => {
     state.auth = systemAuth();
     state.rows = [{ count: 0 }, null];
