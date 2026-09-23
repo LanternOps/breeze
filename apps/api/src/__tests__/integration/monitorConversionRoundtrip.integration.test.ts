@@ -155,3 +155,33 @@ it('runs the platform-admin partner preview and convert routes end to end', asyn
     expect(source!.retiredAt).not.toBeNull();
   });
 });
+
+/**
+ * #6644 review finding 2: the platform-admin backlog must count only what the
+ * converter will take — rows on ACTIVE policies (convert.ts, and
+ * countPendingConversions in loadSources.ts). A row on an inactive policy is
+ * never converted, so counting it strands the partner above zero forever.
+ */
+it('counts only active-policy rows in the partner backlog', async () => {
+  const { listPartnerConversionBacklog } = await import('../../services/monitors/conversion/partnerBacklog');
+  const f = await inheritedScopeFixture();
+  await withDbAccessContext(f.context, async () => {
+    const [link] = await db.select().from(configPolicyFeatureLinks)
+      .where(eq(configPolicyFeatureLinks.configPolicyId, f.policyId));
+    await db.insert(configPolicyAlertRules).values({
+      featureLinkId: link!.id, name: 'Active CPU', severity: 'high',
+      conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 80 }],
+    });
+    const [inactive] = await db.insert(configurationPolicies).values({
+      orgId: f.orgId, partnerId: null, name: 'Inactive legacy', status: 'inactive', createdBy: null,
+    }).returning();
+    const [inactiveLink] = await db.insert(configPolicyFeatureLinks)
+      .values({ configPolicyId: inactive!.id, featureType: 'alert_rule' }).returning();
+    await db.insert(configPolicyAlertRules).values({
+      featureLinkId: inactiveLink!.id, name: 'Inactive CPU', severity: 'high',
+      conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 90 }],
+    });
+  });
+  const row = (await listPartnerConversionBacklog()).find((r) => r.partnerId === f.partnerId);
+  expect(row).toMatchObject({ pendingRows: 1, pendingPolicies: 1 });
+});

@@ -24,6 +24,9 @@ export async function listPartnerConversionBacklog(): Promise<PartnerConversionB
       SELECT cp.id AS policy_id, COALESCE(cp.partner_id, o.partner_id) AS partner_id
       FROM configuration_policies cp
       LEFT JOIN organizations o ON o.id = cp.org_id
+      -- Same predicate as the converter (convert.ts) and countPendingConversions
+      -- (loadSources.ts): rows on inactive policies are never converted.
+      WHERE cp.status = 'active'
     ),
     pending AS (
       SELECT pp.partner_id, fl.config_policy_id AS policy_id
