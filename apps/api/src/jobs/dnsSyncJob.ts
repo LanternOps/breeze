@@ -11,6 +11,7 @@ import {
   dnsPolicies,
   dnsSecurityEvents,
   dnsThreatCategoryEnum,
+  isDnsThreatCategory,
   type DnsAction,
   type DnsIntegrationConfig,
   type DnsPolicyDomain,
@@ -558,13 +559,15 @@ async function persistDnsEventSync(params: {
 
       // #829 — emit dns.threat.blocked so the existing event-bus
       // subscribers (webhookDelivery, automationWorker, alert rules) can
-      // consume the signal. Only fire for actually-blocked threat events
-      // (action=blocked AND category present) so an "allowed" DNS query
-      // doesn't pollute the bus. Best-effort: failure to publish here
+      // consume the signal. Only fire for actually-blocked THREAT events
+      // (#6692): content-policy blocks (social_media, streaming, gambling,
+      // adult_content) and `unknown` are the filter enforcing policy, not a
+      // security incident, and publish nothing. An "allowed" query never
+      // publishes. Best-effort: failure to publish here
       // must not abort sync — the event-bus internals already swallow
       // local-handler errors with structured logging (#820), but we
       // still wrap the call to suppress a hypothetical xadd reject.
-      if (row.action === 'blocked' && category) {
+      if (row.action === 'blocked' && isDnsThreatCategory(category)) {
         publishEvent(
           EVENT_TYPES.DNS_THREAT_BLOCKED,
           row.orgId,

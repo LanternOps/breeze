@@ -53,6 +53,39 @@ export const dnsPolicySyncStatusEnum = pgEnum('dns_policy_sync_status', ['pendin
 export type DnsProvider = typeof dnsProviderEnum.enumValues[number];
 export type DnsAction = typeof dnsActionEnum.enumValues[number];
 export type DnsThreatCategory = typeof dnsThreatCategoryEnum.enumValues[number];
+
+// #6692 — the `dns_threat_category` enum mixes real security threats with
+// content-policy categories. Only threat categories are security incidents
+// (they raise `dns.threat.blocked` / a severity=high alert); a content-policy
+// block is the filter doing its job. `unknown` is in neither group. Type-level
+// only — the DB enum is unchanged. dnsSecurity.test.ts asserts this partitions
+// the enum, so a new enum value must be placed in one group.
+export const DNS_THREAT_CATEGORIES = [
+  'phishing',
+  'malware',
+  'botnet',
+  'ransomware',
+  'cryptomining',
+  'spam',
+  'adware'
+] as const satisfies readonly DnsThreatCategory[];
+
+export const DNS_CONTENT_CATEGORIES = [
+  'social_media',
+  'streaming',
+  'gambling',
+  'adult_content'
+] as const satisfies readonly DnsThreatCategory[];
+
+export type DnsSecurityThreatCategory = typeof DNS_THREAT_CATEGORIES[number];
+export type DnsContentCategory = typeof DNS_CONTENT_CATEGORIES[number];
+
+const DNS_THREAT_CATEGORY_SET: ReadonlySet<string> = new Set(DNS_THREAT_CATEGORIES);
+
+export function isDnsThreatCategory(value: unknown): value is DnsSecurityThreatCategory {
+  return typeof value === 'string' && DNS_THREAT_CATEGORY_SET.has(value);
+}
+
 export type DnsPolicyType = typeof dnsPolicyTypeEnum.enumValues[number];
 export type DnsPolicySyncStatus = typeof dnsPolicySyncStatusEnum.enumValues[number];
 
