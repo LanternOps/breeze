@@ -145,12 +145,22 @@ export async function moveDiscoveredAssetsToSite(
   // Count the policies the trigger is about to disable, mirroring its own
   // match (subject node bound to the asset, or a policy bound to one of the
   // asset's monitors) restricted to policies that are enabled right now.
+  //
+  // The ids are bound one parameter per element inside an ARRAY[...]::uuid[]
+  // constructor, NOT as `${moveIds}::uuid[]`: Drizzle's `sql` template spreads
+  // a JS array into a `($1, $2)` tuple, which Postgres rejects with "cannot
+  // cast type record to uuid[]" (42846), and a one-element list degrades to a
+  // bare uuid text that fails as a "malformed array literal" (22P02). Mocked
+  // unit tests never serialise a parameter, so only a real-Postgres run sees
+  // it (discoveredAssetSiteMove.integration.test.ts). Same trap as
+  // services/timeSuggestionService.ts `uuidArray` and routes/orgs.listQuery.ts.
+  const moveIdArray = sql`ARRAY[${sql.join(moveIds.map((id) => sql`${id}`), sql`, `)}]::uuid[]`;
   const policyRows = await tx.execute<{ asset_id: string; disabled: number | string }>(sql`
     SELECT a.id AS asset_id, count(DISTINCT p.id)::int AS disabled
     FROM discovered_assets a
     JOIN topology_monitoring_policies p
       ON p.org_id = a.org_id AND p.site_id = a.site_id AND p.enabled = true
-    WHERE a.id = ANY(${moveIds}::uuid[]) AND a.org_id = ${orgId}::uuid
+    WHERE a.id = ANY(${moveIdArray}) AND a.org_id = ${orgId}::uuid
       AND (
         p.subject_node_id IN (
           SELECT b.node_id FROM topology_node_bindings b

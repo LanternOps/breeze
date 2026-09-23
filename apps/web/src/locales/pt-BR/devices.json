@@ -2704,8 +2704,8 @@
           "peripherals": "Periféricos",
           "other": "Outros"
         },
-        "site": "Site",
-        "changeSite": "Alterar site…"
+        "site": "Local",
+        "changeSite": "Alterar local…"
       },
       "monitoring": {
         "description": "Configure a coleta SNMP e as verificações de rede.",

@@ -39,6 +39,9 @@ export default defineConfig({
       // Real-DB backup queue lifecycle proof (#4923); runs under the
       // integration config's setup (truncating), never the unit runner.
       'src/services/backupProgress.integration.test.ts',
+      // Discovered-asset site move real-DB proof: imports `__tests__/integration/setup`
+      // (real postgres pool); belongs to vitest.integration.config.ts.
+      'src/services/discoveredAssetSiteMove.integration.test.ts',
       'src/services/cpeMap.integration.test.ts',
       'src/services/cpeResolution.integration.test.ts',
       'src/services/exploitFeeds.integration.test.ts',
