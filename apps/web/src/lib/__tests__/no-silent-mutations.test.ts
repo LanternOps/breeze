@@ -119,6 +119,9 @@ const TARGET_GLOBS = [
   // drawer needs its own entry or its mutations are invisible to it.
   'src/components/aiAgents/ImpactWeightsDrawer.tsx',
   'src/components/devices/DeviceInfoTab.tsx',
+  // Metric anomaly episodes W04: card actions (dismiss/resolve/promote/unsnooze)
+  // are the only mutation surface for the rewritten panel.
+  'src/components/devices/AnomalyEpisodeCard.tsx',
   // Fleet Designer W02 (#5652): the Function field's PUT is its own file.
   'src/components/devices/DeviceFunctionField.tsx',
   'src/components/devices/DevicePatchStatusTab.tsx',
@@ -748,7 +751,8 @@ describe('no silent mutations in targeted set', () => {
     // Accept on behalf adds quotes/AcceptOnBehalfDialog.tsx: 160 → 161.
     // Decline on behalf (#6634) adds quotes/DeclineOnBehalfDialog.tsx: 161 → 162.
     // Accept-on-behalf evidence (#6633) adds quotes/AcceptanceEvidenceControl.tsx: 162 → 163.
-    expect(absoluteFiles.length).toBe(163);
+    // Metric anomaly episodes W04 adds devices/AnomalyEpisodeCard.tsx: 163 → 164.
+    expect(absoluteFiles.length).toBe(164);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

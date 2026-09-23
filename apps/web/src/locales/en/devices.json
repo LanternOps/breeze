@@ -350,7 +350,51 @@
     "confidence": "Confidence",
     "dismiss": "Dismiss",
     "resolve": "Resolve",
-    "promote": "Promote"
+    "promote": "Promote",
+    "filterOpen": "Open",
+    "filterRecentlyClosed": "Recently closed",
+    "filterAll": "All",
+    "showRecentlyClosed": "Show recently closed",
+    "couldNotUpdateEpisode": "Could not update anomaly",
+    "episodeDismissed": "Dismissed for 7 days",
+    "episodeResolved": "Anomaly resolved",
+    "episodePromoted": "Anomaly promoted to alert",
+    "snoozeStopped": "Snoozing stopped",
+    "dismissFor7Days": "Dismiss for 7 days",
+    "promoteToAlert": "Promote to alert",
+    "stopSnoozing": "Stop snoozing",
+    "ongoingSince": "Ongoing since {{when}}",
+    "recurrenceNth": "{{nth}} time in 7 days",
+    "dismissedSnoozedUntil": "Dismissed · snoozed until {{when}}",
+    "detectionsCount": "{{count}} detections",
+    "closeReason": {
+      "cleared": "cleared",
+      "expiredOffline": "expired: device not seen",
+      "expiredNoData": "expired: no data for this metric",
+      "expiredOfflineSince": "expired: device not seen since {{when}}",
+      "detectionOff": "closed: detection turned off",
+      "user": "resolved",
+      "userDismissed": "dismissed",
+      "snoozed": "snoozed"
+    },
+    "processDetailNotAvailable": "Process detail not available for this metric.",
+    "topByAtPeak": "Top by {{dimension}} at peak: {{list}}",
+    "sentence": {
+      "spike": "{{metric}} has been {{range}} for {{duration}}, normally {{baseline}}.",
+      "processMax": "One process reached {{value}}, normally {{baseline}}.",
+      "processSum": "Top processes together used {{value}}, normally {{baseline}}.",
+      "drop": "{{metric}} dropped to {{value}} for {{duration}}, normally {{baseline}}.",
+      "growth": "{{metric}} grew from {{from}} to {{to}} over {{duration}}."
+    },
+    "membersColumns": {
+      "window": "Window",
+      "metric": "Metric",
+      "score": "Score"
+    },
+    "membersTruncated": "Showing the first {{count}} detections.",
+    "failedToLoadDetections": "Failed to load detections",
+    "legacyDetectionNote": "This detection predates episode grouping.",
+    "v1ShadowPerEpisodeNote": "This episode is also being scored by the v1 shadow model for comparison."
   },
   "deviceBillingCard": {
     "title": "Billing",

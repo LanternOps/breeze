@@ -350,7 +350,51 @@
     "confidence": "Güven",
     "dismiss": "Kapat",
     "resolve": "Çöz",
-    "promote": "Tanıt"
+    "promote": "Tanıt",
+    "filterOpen": "Açık",
+    "filterRecentlyClosed": "Son kapatılanlar",
+    "filterAll": "Tümü",
+    "showRecentlyClosed": "Son kapatılanları göster",
+    "couldNotUpdateEpisode": "Anomali güncellenemedi",
+    "episodeDismissed": "7 gün boyunca yoksayıldı",
+    "episodeResolved": "Anomali çözüldü",
+    "episodePromoted": "Anomali uyarıya yükseltildi",
+    "snoozeStopped": "Erteleme durduruldu",
+    "dismissFor7Days": "7 gün yoksay",
+    "promoteToAlert": "Uyarıya yükselt",
+    "stopSnoozing": "Ertelemeyi durdur",
+    "ongoingSince": "{{when}} tarihinden beri sürüyor",
+    "recurrenceNth": "7 günde {{nth}} kez",
+    "dismissedSnoozedUntil": "Yoksayıldı · {{when}} tarihine kadar ertelendi",
+    "detectionsCount": "{{count}} tespit",
+    "closeReason": {
+      "cleared": "temizlendi",
+      "expiredOffline": "süresi doldu: cihaz görülmedi",
+      "expiredNoData": "süresi doldu: bu metrik için veri yok",
+      "expiredOfflineSince": "süresi doldu: cihaz {{when}} tarihinden beri görülmedi",
+      "detectionOff": "kapatıldı: algılama kapatıldı",
+      "user": "çözüldü",
+      "userDismissed": "yoksayıldı",
+      "snoozed": "ertelendi"
+    },
+    "processDetailNotAvailable": "Bu metrik için işlem ayrıntısı yok.",
+    "topByAtPeak": "Zirvede {{dimension}} bazında en yüksek: {{list}}",
+    "sentence": {
+      "spike": "{{metric}}, {{duration}} boyunca {{range}} seviyesindeydi, normalde {{baseline}}.",
+      "processMax": "Bir işlem {{value}} değerine ulaştı, normalde {{baseline}}.",
+      "processSum": "En üst işlemler birlikte {{value}} kullandı, normalde {{baseline}}.",
+      "drop": "{{metric}}, {{duration}} boyunca {{value}} değerine düştü, normalde {{baseline}}.",
+      "growth": "{{metric}}, {{duration}} içinde {{from}} değerinden {{to}} değerine yükseldi."
+    },
+    "membersColumns": {
+      "window": "Pencere",
+      "metric": "Metrik",
+      "score": "Skor"
+    },
+    "membersTruncated": "İlk {{count}} tespit gösteriliyor.",
+    "failedToLoadDetections": "Tespitler yüklenemedi",
+    "legacyDetectionNote": "Bu tespit, olay gruplamasından öncesine ait.",
+    "v1ShadowPerEpisodeNote": "Bu bölüm karşılaştırma için v1 gölge modeli tarafından da puanlanıyor."
   },
   "deviceBillingCard": {
     "title": "Faturalama",

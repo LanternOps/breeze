@@ -350,7 +350,51 @@
     "confidence": "Affidabilità",
     "dismiss": "Ignora",
     "resolve": "Risolvi",
-    "promote": "Promuovi"
+    "promote": "Promuovi",
+    "filterOpen": "Aperte",
+    "filterRecentlyClosed": "Chiuse di recente",
+    "filterAll": "Tutte",
+    "showRecentlyClosed": "Mostra chiuse di recente",
+    "couldNotUpdateEpisode": "Impossibile aggiornare l'anomalia",
+    "episodeDismissed": "Ignorata per 7 giorni",
+    "episodeResolved": "Anomalia risolta",
+    "episodePromoted": "Anomalia promossa ad avviso",
+    "snoozeStopped": "Silenziamento interrotto",
+    "dismissFor7Days": "Ignora per 7 giorni",
+    "promoteToAlert": "Promuovi ad avviso",
+    "stopSnoozing": "Interrompi silenziamento",
+    "ongoingSince": "In corso dalle {{when}}",
+    "recurrenceNth": "{{nth}} volta in 7 giorni",
+    "dismissedSnoozedUntil": "Ignorata · silenziata fino al {{when}}",
+    "detectionsCount": "{{count}} rilevamenti",
+    "closeReason": {
+      "cleared": "risolta",
+      "expiredOffline": "scaduta: dispositivo non rilevato",
+      "expiredNoData": "scaduta: nessun dato per questa metrica",
+      "expiredOfflineSince": "scaduta: dispositivo non rilevato dal {{when}}",
+      "detectionOff": "chiusa: rilevamento disattivato",
+      "user": "risolta",
+      "userDismissed": "ignorata",
+      "snoozed": "silenziata"
+    },
+    "processDetailNotAvailable": "Dettagli del processo non disponibili per questa metrica.",
+    "topByAtPeak": "Principali per {{dimension}} al picco: {{list}}",
+    "sentence": {
+      "spike": "{{metric}} è rimasto a {{range}} per {{duration}}, normalmente {{baseline}}.",
+      "processMax": "Un processo ha raggiunto {{value}}, normalmente {{baseline}}.",
+      "processSum": "I processi principali insieme hanno usato {{value}}, normalmente {{baseline}}.",
+      "drop": "{{metric}} è sceso a {{value}} per {{duration}}, normalmente {{baseline}}.",
+      "growth": "{{metric}} è cresciuto da {{from}} a {{to}} in {{duration}}."
+    },
+    "membersColumns": {
+      "window": "Finestra",
+      "metric": "Metrica",
+      "score": "Punteggio"
+    },
+    "membersTruncated": "Visualizzazione dei primi {{count}} rilevamenti.",
+    "failedToLoadDetections": "Impossibile caricare i rilevamenti",
+    "legacyDetectionNote": "Questo rilevamento è precedente al raggruppamento per episodi.",
+    "v1ShadowPerEpisodeNote": "Questo episodio viene valutato anche dal modello ombra v1 per il confronto."
   },
   "deviceBillingCard": {
     "title": "Fatturazione",

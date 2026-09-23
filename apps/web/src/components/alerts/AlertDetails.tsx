@@ -30,7 +30,7 @@ import type { Alert } from './AlertList';
 import AlertVerdictBadge, { submitVerdictFeedback } from './AlertVerdictBadge';
 import RemediationSuggestionsPanel from '../remediation/RemediationSuggestionsPanel';
 import AlertDeviceInfo from './AlertDeviceInfo';
-import { formatAnomalyConfidence, formatAnomalyType, formatAnomalyValue } from './alertMlContext';
+import { anomalyDeepLinkHash, formatAnomalyConfidence, formatAnomalyType, formatAnomalyValue } from './alertMlContext';
 
 export type NotificationHistory = {
   id: string;
@@ -233,7 +233,7 @@ export default function AlertDetails({
                 )}
               </div>
               <a
-                href={`/devices/${alert.deviceId}#anomalies${alert.anomalyContext.anomalyId ? `/${alert.anomalyContext.anomalyId}` : ''}`}
+                href={`/devices/${alert.deviceId}#${anomalyDeepLinkHash(alert.anomalyContext)}`}
                 className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-sky-700 hover:underline"
               >
                 {t('alertDetails.openDeviceAnomalies')}
