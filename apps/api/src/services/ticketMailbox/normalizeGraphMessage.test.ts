@@ -84,4 +84,88 @@ describe('normalizeGraphMessage', () => {
     const n = normalizeGraphMessage(both, 'partner-9', 'support@a.com');
     expect(n.senderAuth?.verified).toBe(true);
   });
+
+  describe('body text (#6687)', () => {
+    const longPara = 'The printer on the second floor has been jamming since Monday morning. '.repeat(6).trim();
+
+    it('derives the FULL text from an HTML body, not the 255-char bodyPreview, keeping line breaks', () => {
+      const html = `<html><head><title>ignored title</title><style>p { color: red; }</style></head><body>`
+        + `<p>Hi   team,</p>\n<p>${longPara}</p><div>Line one<br>Line two<br/>Line&nbsp;three</div>`
+        + `<ul><li>first &amp; foremost</li><li>a &lt;b&gt; tag</li></ul><p>Thanks</p></body></html>`;
+      const n = normalizeGraphMessage(
+        { ...msg, body: { contentType: 'html', content: html }, bodyPreview: longPara.slice(0, 255) },
+        'partner-9', 'support@a.com',
+      );
+      expect(n.text).toBe(
+        `Hi team,\n\n${longPara}\n\nLine one\nLine two\nLine three\n\nfirst & foremost\na <b> tag\n\nThanks`,
+      );
+      expect(n.text.length).toBeGreaterThan(255);
+      // html is carried through untouched.
+      expect(n.html).toBe(html);
+    });
+
+    it('renders Gmail-style div-per-line and Outlook MsoNormal paragraphs readably', () => {
+      const gmail = '<div dir="ltr"><div>Hello</div><div>The VPN is down.</div><div><br></div><div>Bob</div></div>';
+      expect(normalizeGraphMessage({ ...msg, body: { contentType: 'html', content: gmail } }, 'p', 'support@a.com').text)
+        .toBe('Hello\nThe VPN is down.\nBob');
+      const outlook = '<div class="WordSection1"><p class="MsoNormal">Hi,<o:p></o:p></p>'
+        + '<p class="MsoNormal"><o:p>&nbsp;</o:p></p><p class="MsoNormal">Outlook crashes.<o:p></o:p></p></div>';
+      expect(normalizeGraphMessage({ ...msg, body: { contentType: 'html', content: outlook } }, 'p', 'support@a.com').text)
+        .toBe('Hi,\n\nOutlook crashes.');
+    });
+
+    const toText = (content: string) =>
+      normalizeGraphMessage({ ...msg, body: { contentType: 'html', content } }, 'p', 'support@a.com').text;
+
+    it('separates table cells and drops script contents', () => {
+      expect(toText('<table><tr><td>Server</td><td>PROD01</td></tr><tr><th>Age</th><td>30</td></tr></table>'))
+        .toBe('Server PROD01\nAge 30');
+      expect(toText('<p>before</p><script>alert("x")</script><p>after</p>')).toBe('before\n\nafter');
+    });
+
+    it('does not treat entity-encoded U+0001/U+0002 in the body as break markers', () => {
+      expect(toText('<p>Hello&#x2;World&#1;!</p><p>after</p>')).toBe('HelloWorld!\n\nafter');
+    });
+
+    it('stays fast on unclosed-tag soup (no regex backtracking across the body)', () => {
+      const start = Date.now();
+      toText('<p '.repeat(80_000));
+      toText(`<div class="x ${'<p '.repeat(80_000)}`);
+      expect(Date.now() - start).toBeLessThan(3_000);
+    });
+
+    it('falls back to bodyPreview only when the HTML strips to empty', () => {
+      const n = normalizeGraphMessage(
+        { ...msg, body: { contentType: 'html', content: '<p> </p><img src="x.png">' }, bodyPreview: 'preview text' },
+        'partner-9', 'support@a.com',
+      );
+      expect(n.text).toBe('preview text');
+    });
+
+    it('does not use bodyPreview when the HTML has real text', () => {
+      const n = normalizeGraphMessage(
+        { ...msg, body: { contentType: 'html', content: '<p>full body</p>' }, bodyPreview: 'preview' },
+        'partner-9', 'support@a.com',
+      );
+      expect(n.text).toBe('full body');
+    });
+
+    it('leaves a text/plain body unchanged', () => {
+      const content = '  Line one\n\n\n<not a tag>  &amp; raw\n';
+      const n = normalizeGraphMessage(
+        { ...msg, body: { contentType: 'text', content }, bodyPreview: 'preview' },
+        'partner-9', 'support@a.com',
+      );
+      expect(n.text).toBe(content);
+      expect(n.html).toBeUndefined();
+    });
+
+    it('clamps pathologically large HTML-derived text to the ticket description limit', () => {
+      const html = `<p>${'x'.repeat(60_000)}</p>`;
+      const n = normalizeGraphMessage(
+        { ...msg, body: { contentType: 'html', content: html } }, 'partner-9', 'support@a.com',
+      );
+      expect(n.text.length).toBe(50_000);
+    });
+  });
 });
