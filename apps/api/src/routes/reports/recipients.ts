@@ -24,6 +24,7 @@ import {
   addReportRecipientSchema,
   convertReportRecipientSchema,
   INTERNAL_REPORT_TYPES,
+  PARTNER_ONLY_DELIVERY_REPORT_TYPES,
 } from './schemas';
 
 export const recipientsRoutes = new Hono();
@@ -53,7 +54,22 @@ function systemManagedRefusal(report: { type?: string | null }) {
  * readable and answers an empty list.
  */
 function writeRefusal(report: { type?: string | null; partnerId?: string | null }) {
-  return systemManagedRefusal(report) ?? partnerOwnedRefusal(report);
+  return systemManagedRefusal(report)
+    ?? partnerOwnedRefusal(report)
+    ?? partnerOnlyDeliveryRefusal(report);
+}
+
+/**
+ * #3198 W02 (spec §3.5, ruling P14) — a business report delivers only to
+ * `config.emailRecipients`. By TYPE, so an org-owned business definition is
+ * refused too (a partner-owned one already stopped at `partner_owned_report`).
+ * DELETE deliberately does not call this: removing a stray contact is harmless.
+ */
+function partnerOnlyDeliveryRefusal(report: { type?: string | null }) {
+  const type = report.type ?? '';
+  return PARTNER_ONLY_DELIVERY_REPORT_TYPES.has(type)
+    ? { error: 'report_type_partner_only_delivery' as const, type }
+    : null;
 }
 
 /** Same body as helpers' PARTNER_OWNED_REPORT; kept local so this module's

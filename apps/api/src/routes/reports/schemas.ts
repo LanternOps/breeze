@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { REPORT_TYPES } from '@breeze/shared';
+import { BUSINESS_REPORT_TYPES, REPORT_TYPES } from '@breeze/shared';
 import {
   endpointManagementConfigSchema,
   hardwareLifecycleConfigSchema,
@@ -40,6 +40,19 @@ export const reportTypeSchema = z.enum(REPORT_TYPES);
 
 /** Report types a human may never create or generate on demand. */
 export const INTERNAL_REPORT_TYPES = new Set(['ai_org_narrative', 'ai_fleet_design']);
+/**
+ * #3198 W02 (spec §3.5). Types whose scheduled delivery goes only to
+ * `config.emailRecipients`, never to a `report_schedule_recipients` contact
+ * row. Two structural reasons: these reports are internal to the MSP and never
+ * portal-visible, and a PARTNER-owned definition cannot hold a contact
+ * recipient at all (`report_schedule_recipients (report_id, org_id) →
+ * reports(id, org_id)` is an org-only composite FK). The refusal is by TYPE, so
+ * it applies to an org-owned business report too.
+ *
+ * A SECOND set beside INTERNAL_REPORT_TYPES on purpose: an internal type is one
+ * a human may not create; these are creatable, they just cannot carry a contact.
+ */
+export const PARTNER_ONLY_DELIVERY_REPORT_TYPES: ReadonlySet<string> = new Set(BUSINESS_REPORT_TYPES);
 const INTERNAL_REPORT_TYPE_MESSAGE = 'internal report type';
 
 /** Applied to the CREATE and AD-HOC GENERATE schemas only — never to the read

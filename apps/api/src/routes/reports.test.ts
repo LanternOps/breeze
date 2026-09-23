@@ -816,6 +816,9 @@ describe('report definition scope enforcement', () => {
     return {
       id: REPORT_ID,
       orgId: ORG_ID,
+      // The metadata projection always carries `type` (NOT NULL enum); PUT
+      // reads it for the per-type permission gate (#3198 W02, ruling P8).
+      type: 'device_inventory',
       executionScopeVersion: 1,
       executionScopeKind: 'unrestricted',
       executionScopeSiteIds: null,
@@ -2036,6 +2039,7 @@ describe('reports routes', () => {
     const metadata = {
       id: 'report-1',
       orgId: ORG_ID,
+      type: 'executive_summary',
       executionScopeVersion: 1,
       executionScopeKind: 'unrestricted',
       executionScopeSiteIds: null,

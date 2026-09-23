@@ -10,7 +10,11 @@ import {
   type AuthContext,
 } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { PERMISSIONS } from '../../services/permissions';
+import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import {
+  missingReportTypePermission,
+  REPORT_TYPE_PERMISSION_DENIED,
+} from '../../services/reportTypePermissions';
 import {
   canManagePartnerWidePolicies,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
@@ -77,6 +81,9 @@ const SYSTEM_MANAGED = 'system_managed' as const;
  * it needs the locked row's org and a second table; callers answer 409.
  */
 const PORTAL_SELF_SERVICE = 'portal_self_service' as const;
+/** #3198 W02 (ruling P8) — PUT's outcome when the caller lacks the stored
+ *  type's underlying read permissions. */
+const TYPE_PERMISSION_DENIED = 'type_permission_denied' as const;
 /**
  * #3198 W01 — `loadLockedDefinition`'s partner-wide refusal, DEFENSE IN DEPTH.
  * Unreachable in production today: `tenantAuthorizedReportCondition` already
@@ -470,6 +477,14 @@ coreRoutes.post(
     const auth = c.get('auth');
     const data = c.req.valid('json');
 
+    // #3198 W02 (spec §2, ruling P8): a business type also needs the
+    // underlying read permissions its registry entry lists. Without this a
+    // reports:write-only user could schedule AR aging to their own inbox.
+    // Both owner arms, before any authority lookup or write.
+    if (missingReportTypePermission(data.type, c.get('permissions') as UserPermissions | undefined)) {
+      return c.json(REPORT_TYPE_PERMISSION_DENIED, 403);
+    }
+
     // #3198 W01 — a partner-owned definition. partner_id is ALWAYS the
     // caller's own token partner; `data.orgId` and any client-supplied partner
     // id are never read on this branch.
@@ -608,6 +623,7 @@ coreRoutes.put(
     // sends it on every save) and refused on a partner-owned one below; it is
     // never an update. `ownerScope` never reaches here (schema: z.never()).
     const { orgId: bodyOrgId, ownerScope: _ownerScope, ...data } = c.req.valid('json');
+    const permissions = c.get('permissions') as UserPermissions | undefined;
 
     if (Object.keys(data).length === 0) {
       return c.json({ error: 'No updates provided' }, 400);
@@ -633,6 +649,13 @@ coreRoutes.put(
       // the axis would 23503 anyway — refuse it as what it is.
       if (locked.owner.partnerId !== undefined && bodyOrgId !== undefined) {
         return OWNERSHIP_IMMUTABLE;
+      }
+      // #3198 W02 (ruling P8). Any edit — a config edit can redirect
+      // `emailRecipients` — needs the STORED type's underlying read
+      // permissions, exactly as creating it did. After the row is authorized,
+      // so the 403 never discloses a definition the caller cannot see.
+      if (missingReportTypePermission(locked.locked.type, permissions)) {
+        return TYPE_PERMISSION_DENIED;
       }
       if (await isPortalSelfServiceLocked(tx, locked.locked)) {
         return PORTAL_SELF_SERVICE;
@@ -682,6 +705,9 @@ coreRoutes.put(
     }
     if (mutation === OWNERSHIP_IMMUTABLE) {
       return c.json({ error: 'report_ownership_immutable' }, 400);
+    }
+    if (mutation === TYPE_PERMISSION_DENIED) {
+      return c.json(REPORT_TYPE_PERMISSION_DENIED, 403);
     }
     if (mutation === PORTAL_SELF_SERVICE) {
       return c.json(PORTAL_SELF_SERVICE_REPORT, 409);
