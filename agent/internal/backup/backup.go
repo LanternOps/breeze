@@ -80,9 +80,15 @@ type BackupConfig struct {
 	Paths              []string
 	Excludes           []string // Glob exclusion patterns for file-mode backups (see excludeMatcher)
 	Retention          int
-	VSSEnabled         bool   // Windows only: create VSS shadow copy before backup
-	SystemStateEnabled bool   // Collect system state alongside file backup
-	StagingDir         string // Base directory for temporary staging (empty = OS temp dir)
+	VSSEnabled         bool // Windows only: create VSS shadow copy before backup
+	SystemStateEnabled bool // Collect system state alongside file backup
+	// CaptureSecurityDescriptors captures the NTFS owner/group/DACL (and
+	// SACL when SeSecurityPrivilege is available) for every file AND every
+	// directory on a Windows run — see sdtable.go. No-op on Linux/macOS
+	// (fileSecurity there always returns nil, nil). Off by default; the
+	// whole-machine Windows preset turns it on — see D-ACL in Part 0 §4.
+	CaptureSecurityDescriptors bool
+	StagingDir                 string // Base directory for temporary staging (empty = OS temp dir)
 
 	// AgentID identifies the DEVICE this manager is running on, for
 	// incremental-dedupe base-snapshot selection (see runBackupIdentity /
@@ -1513,6 +1519,14 @@ type backupFile struct {
 	// entry the walker force-recorded because the directory matched an
 	// exclude pattern (#5493).
 	placeholder bool
+	// sd is this entry's captured NTFS security descriptor (self-relative
+	// bytes, via fileSecurity), nil when CaptureSecurityDescriptors is off,
+	// the platform is not Windows, the entry is a symlink (out of scope —
+	// see Part 0 Global Constraints), or capture failed for this one entry
+	// (logged, never fails the backup — see captureSD). Deduplicated into an
+	// sdTable and reduced to SnapshotFile.SDIndex only at manifest-assembly
+	// time (snapshot.go), because the table is per run.
+	sd []byte
 }
 
 // fullModeBits keeps perm + setuid/setgid/sticky; everything else (type bits)
@@ -1521,15 +1535,37 @@ func fullModeBits(mode os.FileMode) uint32 {
 	return uint32(mode & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky))
 }
 
+// captureSD returns path's security descriptor when
+// m.config.CaptureSecurityDescriptors is set, else nil. A capture error is
+// logged and treated as "no SD for this entry" — never a backup failure; the
+// file/directory's CONTENT (or, for a directory, its presence) is still
+// backed up normally. The capture privileges are held for the walk by
+// collectBackupFilesFromPaths, not here.
+func (m *BackupManager) captureSD(path string) []byte {
+	if !m.config.CaptureSecurityDescriptors {
+		return nil
+	}
+	sd, err := fileSecurity(path)
+	if err != nil {
+		log.Warn("failed to capture security descriptor", "path", path, "error", err.Error())
+		return nil
+	}
+	return sd
+}
+
 // dirNeedsEntry decides whether a directory gets its own manifest entry:
 // empty directories always (nothing else recreates them); otherwise only
 // when mode/owner differ from the MkdirAll default the restore would apply.
-func dirNeedsEntry(info os.FileInfo, owner *FileOwner, empty bool) bool {
+// On Windows with security-descriptor capture on (sdCapture), EVERY
+// directory gets one, so its descriptor has an entry to attach SDIndex to.
+func dirNeedsEntry(info os.FileInfo, owner *FileOwner, empty, sdCapture bool) bool {
 	if empty {
 		return true
 	}
 	if runtime.GOOS == "windows" {
-		return false
+		// Without SD capture, Windows directories keep today's behavior:
+		// only empty ones get an entry.
+		return sdCapture
 	}
 	if fullModeBits(info.Mode()) != 0o755 {
 		return true
@@ -1609,6 +1645,12 @@ func isWithinAnyDir(path string, dirs []string) bool {
 // for callers with no journal context (the collectBackupFiles() test/legacy
 // helper above).
 func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths []string, excl *excludeMatcher, journalDirs []string) ([]backupFile, error) {
+	if m.config.CaptureSecurityDescriptors {
+		// Scoped to this walk: SeBackupPrivilege/SeSecurityPrivilege are
+		// disabled again on return, never left enabled process-wide.
+		release := enableCaptureSDPrivileges()
+		defer release()
+	}
 	var files []backupFile
 	var errs []error
 	seen := make(map[string]struct{})
@@ -1652,6 +1694,7 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				modeBits:     fullModeBits(info.Mode()),
 				owner:        fileOwner(info),
 				winAttrs:     winFileAttrs(info),
+				sd:           m.captureSD(cleanRoot),
 			})
 			continue
 		}
@@ -1785,6 +1828,7 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				modeBits:     fullModeBits(info.Mode()),
 				owner:        fileOwner(info),
 				winAttrs:     winFileAttrs(info),
+				sd:           m.captureSD(path),
 			})
 			return nil
 		})
@@ -1812,7 +1856,7 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 			// apply its mode/owner when creating it fresh, never re-apply
 			// them over a directory a customer may have deliberately
 			// reconfigured since the backup — see SnapshotFile.Placeholder.
-			if !d.forced && !dirNeedsEntry(info, owner, childCount[d.path] == 0) {
+			if !d.forced && !dirNeedsEntry(info, owner, childCount[d.path] == 0, m.config.CaptureSecurityDescriptors) {
 				continue
 			}
 			snapshotPath := filepath.ToSlash(filepath.Join(rootLabel, d.rel))
@@ -1823,7 +1867,7 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 			files = append(files, backupFile{
 				sourcePath: d.path, snapshotPath: snapshotPath, modTime: info.ModTime(), mode: info.Mode(),
 				kind: KindDir, modeBits: fullModeBits(info.Mode()), owner: owner, placeholder: d.forced,
-				winAttrs: winFileAttrs(info),
+				winAttrs: winFileAttrs(info), sd: m.captureSD(d.path),
 			})
 		}
 	}
