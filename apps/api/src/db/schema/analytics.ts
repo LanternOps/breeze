@@ -11,6 +11,8 @@ import {
   index,
   uniqueIndex
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { metricAnomalyEpisodes } from './metricAnomalyEpisodes';
 import { organizations } from './orgs';
 import { devices } from './devices';
 import { users } from './users';
@@ -85,6 +87,8 @@ export const metricAnomalies = pgTable('metric_anomalies', {
   evidence: jsonb('evidence').notNull().default({}),
   linkedAlertId: uuid('linked_alert_id').references(() => alerts.id, { onDelete: 'set null' }),
   linkedCorrelationGroupId: uuid('linked_correlation_group_id').references(() => alertCorrelationGroups.id, { onDelete: 'set null' }),
+  /** Episode this bucket belongs to (metric anomaly episodes W01). NULL until the `episodes` stage assembles it. */
+  episodeId: uuid('episode_id').references(() => metricAnomalyEpisodes.id, { onDelete: 'set null' }),
   detectedAt: timestamp('detected_at').defaultNow().notNull(),
   resolvedAt: timestamp('resolved_at'),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
@@ -100,7 +104,16 @@ export const metricAnomalies = pgTable('metric_anomalies', {
   orgStatusDetectedIdx: index('metric_anomalies_org_status_detected_idx').on(table.orgId, table.status, table.detectedAt),
   deviceStatusDetectedIdx: index('metric_anomalies_device_status_detected_idx').on(table.deviceId, table.status, table.detectedAt),
   linkedAlertIdx: index('metric_anomalies_linked_alert_idx').on(table.linkedAlertId),
-  linkedCorrelationIdx: index('metric_anomalies_linked_correlation_idx').on(table.linkedCorrelationGroupId)
+  linkedCorrelationIdx: index('metric_anomalies_linked_correlation_idx').on(table.linkedCorrelationGroupId),
+  episodeIdx: index('metric_anomalies_episode_id_idx').on(table.episodeId),
+  // Assembly scan: unassigned open rows of one org (services/metricAnomalyEpisodes.ts).
+  unassignedOpenIdx: index('metric_anomalies_unassigned_open_idx')
+    .on(table.orgId, table.deviceId, table.windowStart)
+    .where(sql`${table.episodeId} IS NULL AND ${table.status} = 'open'`),
+  // Baseline anti-contamination anti-join (spec §10).
+  deviceMetricWindowIdx: index('metric_anomalies_device_metric_window_idx')
+    .on(table.deviceId, table.metricName, table.windowStart)
+    .where(sql`${table.episodeId} IS NOT NULL`),
 }));
 
 export const metricAnomalyCandidates = pgTable('metric_anomaly_candidates', {
