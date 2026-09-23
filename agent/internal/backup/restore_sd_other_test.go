@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/breeze-rmm/agent/internal/securefs"
 )
 
 // TestRestore_ManifestWithSecurityDescriptorsIgnoredOnLinux is R37: a
@@ -23,10 +25,10 @@ func TestRestore_ManifestWithSecurityDescriptorsIgnoredOnLinux(t *testing.T) {
 		[]string{"AQIDBA==", "not-valid-base64!!"},
 	)
 	target := t.TempDir()
-	origApply := restoreApplySecurity
-	t.Cleanup(func() { restoreApplySecurity = origApply })
+	origApplier := restoreSecurityApplier
+	t.Cleanup(func() { restoreSecurityApplier = origApplier })
 	calls := 0
-	restoreApplySecurity = func(string, []byte) error { calls++; return nil }
+	restoreSecurityApplier = func([]byte) (*securefs.SecurityApplier, error) { calls++; return nil, nil }
 
 	result, err := RestoreFromSnapshot(provider, RestoreConfig{SnapshotID: snapshotID, TargetPath: target}, nil)
 	if err != nil {
@@ -36,7 +38,7 @@ func TestRestore_ManifestWithSecurityDescriptorsIgnoredOnLinux(t *testing.T) {
 		t.Fatalf("result = %+v, want 3 restored, 0 failed", result)
 	}
 	if calls != 0 {
-		t.Errorf("applySecurity reached %d times on a non-Windows restore", calls)
+		t.Errorf("the security applier was built %d times on a non-Windows restore", calls)
 	}
 	if w := sdWarnings(result.Warnings); len(w) != 0 {
 		t.Errorf("unexpected security-descriptor warnings on a non-Windows restore: %q", w)

@@ -374,7 +374,7 @@ func ensureDir(path string, mode os.FileMode, private bool) error {
 	return verifyPrivateDirDACLProtected(chain.leaf())
 }
 
-func installFile(base, relative, source string, mode os.FileMode, modTime time.Time, owner *Owner, winAttrs uint32) ([]error, error) {
+func installFile(base, relative, source string, mode os.FileMode, modTime time.Time, owner *Owner, winAttrs uint32, sec *SecurityApplier) ([]error, error) {
 	parent := base
 	if dir := filepath.Dir(relative); dir != "." {
 		parent = filepath.Join(base, dir)
@@ -393,8 +393,15 @@ func installFile(base, relative, source string, mode os.FileMode, modTime time.T
 		return nil, fmt.Errorf("generate temporary name: %w", err)
 	}
 	tempName := ".breeze-restore-" + hex.EncodeToString(random[:])
-	tempHandle, err := openRelativeComponent(parentHandle, tempName,
-		windows.GENERIC_WRITE|windows.DELETE|windows.FILE_WRITE_ATTRIBUTES|windows.FILE_READ_ATTRIBUTES,
+	tempAccess := uint32(windows.GENERIC_WRITE | windows.DELETE | windows.FILE_WRITE_ATTRIBUTES | windows.FILE_READ_ATTRIBUTES)
+	if sec != nil {
+		// The creator of a new file is granted the access it asks for, so the
+		// security rights the applier needs (WRITE_DAC/WRITE_OWNER, and
+		// ACCESS_SYSTEM_SECURITY only when the caller holds
+		// SeSecurityPrivilege) are requested on the exclusive create itself.
+		tempAccess |= sec.Access
+	}
+	tempHandle, err := openRelativeComponent(parentHandle, tempName, tempAccess,
 		shareFile, windows.FILE_CREATE, ntFileOptions, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create target temporary file: %w", err)
@@ -469,6 +476,14 @@ func installFile(base, relative, source string, mode os.FileMode, modTime time.T
 	}
 	if err := setBasicInfo(tempHandle, &basic); err != nil {
 		warnings = append(warnings, fmt.Errorf("apply file attributes: %w", err))
+	}
+	// The captured security descriptor (W06a) goes on the pinned temporary's
+	// handle before publication, so it can never be redirected onto another
+	// file by a reparse point swapped into the path afterwards.
+	if sec != nil && sec.Apply != nil {
+		if err := sec.Apply(uintptr(tempHandle)); err != nil {
+			warnings = append(warnings, fmt.Errorf("apply security descriptor: %w", err))
+		}
 	}
 	if err := temp.Sync(); err != nil {
 		return nil, fmt.Errorf("sync target temporary file: %w", err)
@@ -1090,4 +1105,15 @@ func maybeSetSparse(handle windows.Handle, winAttrs uint32) error {
 		return fmt.Errorf("mark restored file sparse: %w", err)
 	}
 	return nil
+}
+
+func applyDirSecurity(base, relative string, sec SecurityApplier) error {
+	// The same pinned, reparse-refusing walk installDir uses, opening only
+	// (never creating), with the applier's access on the final component.
+	chain, err := openVerifiedDir(filepath.Join(base, relative), false, nil, sec.Access)
+	if err != nil {
+		return fmt.Errorf("open target directory: %w", err)
+	}
+	defer chain.close()
+	return sec.Apply(uintptr(chain.leaf()))
 }

@@ -7,6 +7,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/breeze-rmm/agent/internal/securefs"
 )
 
 var (
@@ -30,9 +32,9 @@ var (
 // base+relative pair rather than taking an absolute path.
 //
 // Residual risk: only the FINAL component is opened no-follow. A junction
-// or symlink swapped into an INTERMEDIATE component between publication and
-// this open would still redirect it. Restore targets live under a tree the
-// restore itself just created and owns, so that window is accepted here.
+// or symlink swapped into an INTERMEDIATE component would still redirect
+// it. That is why the restore never applies a descriptor through this: it
+// uses securefs's pinned handles instead (securityApplier).
 func openNoFollow(path string, access uint32) (windows.Handle, error) {
 	p, err := windows.UTF16PtrFromString(path)
 	if err != nil {
@@ -89,40 +91,34 @@ func alignedSD(sd []byte) *windows.SECURITY_DESCRIPTOR {
 	return (*windows.SECURITY_DESCRIPTOR)(unsafe.Pointer(&buf[0]))
 }
 
-// applySecurity reapplies a captured self-relative security descriptor to
-// path. A nil/empty sd is a no-op success (nothing to apply — matches the
-// SDIndex==0 "unknown" convention). The SECURITY_INFORMATION mask comes
-// from the descriptor itself (securityInfoForSD, sdtable.go).
+// preparedSD is a validated descriptor ready to set on a handle: the
+// SECURITY_INFORMATION mask its components need, the handle access that
+// mask requires, and a pointer-aligned copy of the bytes.
+type preparedSD struct {
+	info   uint32
+	access uint32
+	desc   *windows.SECURITY_DESCRIPTOR
+}
+
+// prepareSecurity validates a captured self-relative descriptor. The
+// SECURITY_INFORMATION mask comes from the descriptor itself
+// (securityInfoForSD, sdtable.go); the bytes are then checked with
+// RtlValidRelativeSecurityDescriptor against their real length — a manifest
+// is stored remotely, and a descriptor whose internal offsets point past its
+// buffer must be refused rather than handed to the kernel.
 //
-// It never touches the published pathname through a path-based setter
-// (SetFileSecurityW would follow a reparse point swapped in after
-// publication): the target is opened no-follow (openNoFollow) for exactly
-// the rights the carried components need (WRITE_DAC for the DACL,
-// WRITE_OWNER for owner/group, ACCESS_SYSTEM_SECURITY for the SACL)
-// and the descriptor is set on that handle with SetKernelObjectSecurity.
-// Setting an arbitrary owner (TrustedInstaller, another user) needs
-// SeRestorePrivilege — the restore holds it for its duration via
-// enableRestoreSDPrivileges.
-//
-// The bytes are validated with RtlValidRelativeSecurityDescriptor against
-// their real length first: a manifest is stored remotely, and a descriptor
-// whose internal offsets point past its buffer must be refused rather than
-// handed to the kernel.
-func applySecurity(path string, sd []byte) error {
-	if len(sd) == 0 {
-		return nil
-	}
+// access is only the rights the carried components need (WRITE_DAC for the
+// DACL, WRITE_OWNER for owner/group, ACCESS_SYSTEM_SECURITY for the SACL): a
+// DACL-only apply must not fail for lack of WRITE_OWNER.
+func prepareSecurity(sd []byte) (preparedSD, error) {
 	info, err := securityInfoForSD(sd, hasSecurityPrivilege.Load())
 	if err != nil {
-		return err
+		return preparedSD{}, err
 	}
 	desc := alignedSD(sd)
 	if ok, _, _ := procRtlValidRelativeSecurityDescriptor.Call(uintptr(unsafe.Pointer(desc)), uintptr(len(sd)), uintptr(info)); ok&0xff == 0 {
-		return fmt.Errorf("security descriptor for %q is not a valid self-relative descriptor of %d bytes", path, len(sd))
+		return preparedSD{}, fmt.Errorf("security descriptor is not a valid self-relative descriptor of %d bytes", len(sd))
 	}
-	// Request only the rights the components being set need: a DACL-only
-	// apply must not fail for lack of WRITE_OWNER (which, absent
-	// SeRestorePrivilege, the target's DACL may not grant).
 	var access uint32
 	if info&daclSecurityInformation != 0 {
 		access |= windows.WRITE_DAC
@@ -133,13 +129,60 @@ func applySecurity(path string, sd []byte) error {
 	if info&saclSecurityInformation != 0 {
 		access |= windows.ACCESS_SYSTEM_SECURITY
 	}
-	h, err := openNoFollow(path, access)
+	return preparedSD{info: info, access: access, desc: desc}, nil
+}
+
+// applyToHandle sets the descriptor on an already-open handle carrying
+// p.access. This is the one place a descriptor reaches the kernel; both
+// applySecurity and the restore's securefs applier go through it. Setting an
+// arbitrary owner (TrustedInstaller, another user) needs SeRestorePrivilege —
+// the restore holds it for its duration via enableRestoreSDPrivileges.
+func (p preparedSD) applyToHandle(h windows.Handle) error {
+	if err := windows.SetKernelObjectSecurity(h, windows.SECURITY_INFORMATION(p.info), p.desc); err != nil {
+		return fmt.Errorf("SetKernelObjectSecurity: %w", err)
+	}
+	return nil
+}
+
+// securityApplier returns the securefs hook that sets sd on the handle
+// securefs has pinned: the restore's temporary before publication, or a
+// directory reached by the no-follow walk (SEC-121 — the restore never
+// reopens a published entry by pathname). nil, nil for an empty sd.
+func securityApplier(sd []byte) (*securefs.SecurityApplier, error) {
+	if len(sd) == 0 {
+		return nil, nil
+	}
+	p, err := prepareSecurity(sd)
+	if err != nil {
+		return nil, err
+	}
+	return &securefs.SecurityApplier{
+		Access: p.access,
+		Apply:  func(h uintptr) error { return p.applyToHandle(windows.Handle(h)) },
+	}, nil
+}
+
+// applySecurity reapplies a captured self-relative security descriptor to
+// path through a no-follow handle (openNoFollow). A nil/empty sd is a no-op
+// success. The restore does NOT use this — it applies through securefs's
+// pinned handles (securityApplier); this path-based form serves callers that
+// hold no pinned handle, and carries openNoFollow's final-component-only
+// residual risk.
+func applySecurity(path string, sd []byte) error {
+	if len(sd) == 0 {
+		return nil
+	}
+	p, err := prepareSecurity(sd)
+	if err != nil {
+		return fmt.Errorf("%q: %w", path, err)
+	}
+	h, err := openNoFollow(path, p.access)
 	if err != nil {
 		return fmt.Errorf("open %q to apply security: %w", path, err)
 	}
 	defer func() { _ = windows.CloseHandle(h) }()
-	if err := windows.SetKernelObjectSecurity(h, windows.SECURITY_INFORMATION(info), desc); err != nil {
-		return fmt.Errorf("SetKernelObjectSecurity on %q: %w", path, err)
+	if err := p.applyToHandle(h); err != nil {
+		return fmt.Errorf("%q: %w", path, err)
 	}
 	return nil
 }

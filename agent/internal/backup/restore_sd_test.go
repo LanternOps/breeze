@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup/providers"
+	"github.com/breeze-rmm/agent/internal/securefs"
 )
 
 // sdTestFile is one file this helper uploads, with the SD-relevant fields a
@@ -112,6 +113,18 @@ func TestDecodeSecurityDescriptors_CorruptEntryWarnsAndDegradesGracefully(t *tes
 	}
 	if len(warnings) != 1 {
 		t.Fatalf("warnings = %v, want exactly 1", warnings)
+	}
+}
+
+// TestDecodeSecurityDescriptors_ZeroLengthIsCorrupt: a slot that decodes to
+// zero bytes is a corrupt slot (warned), not a silent no-op.
+func TestDecodeSecurityDescriptors_ZeroLengthIsCorrupt(t *testing.T) {
+	table, warnings := decodeSecurityDescriptors([]string{"", "AQ=="})
+	if len(table) != 2 || table[0] != nil || string(table[1]) != "\x01" {
+		t.Fatalf("table = %v, want [nil [1]]", table)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "entry 1 is corrupt") {
+		t.Fatalf("warnings = %v, want exactly one for entry 1", warnings)
 	}
 }
 
@@ -221,138 +234,171 @@ func TestRestoreSecurity_MissingAndTruncated(t *testing.T) {
 	if len(fin) != 1 {
 		t.Fatalf("finish() = %v, want exactly one aggregate warning", fin)
 	}
-	if !strings.HasPrefix(fin[0], "4 entries had no security descriptor recorded; they were restored with inherited ACLs") {
+	if !strings.HasPrefix(fin[0], "4 entries had no security descriptor recorded; they were restored with ACLs inherited from the restore target") {
 		t.Errorf("aggregate warning = %q, want 4 entries (2 zero + 2 truncated; symlinks excluded)", fin[0])
 	}
 }
 
 type sdApplyCall struct {
-	path string
-	sd   string
-	// filesPresent is how many of the test's content files existed (with
-	// their final content) at the moment of this call.
+	sd string
+	// filesPresent is how many of the test's content files were published
+	// under their final names (with their final content) at this apply.
 	filesPresent int
 	// dirsPresent is how many of the test's directory entries existed.
 	dirsPresent int
+	// tempPresent is how many .breeze-restore-* temporaries existed anywhere
+	// under the target — the pinned temporary a file's descriptor must be
+	// applied to before publication.
+	tempPresent int
+}
+
+// recordingSecurityApplier swaps restoreSecurityApplier for one whose hook
+// records each apply (and the tree's state at that moment) instead of
+// touching the handle. Descriptors named "sd-INVALID" are refused at build
+// time; "sd-FAIL" fail at apply time.
+func recordingSecurityApplier(t *testing.T, snapshot func() sdApplyCall) *[]sdApplyCall {
+	t.Helper()
+	var calls []sdApplyCall
+	orig := restoreSecurityApplier
+	t.Cleanup(func() { restoreSecurityApplier = orig })
+	restoreSecurityApplier = func(sd []byte) (*securefs.SecurityApplier, error) {
+		if string(sd) == "sd-INVALID" {
+			return nil, errors.New("injected invalid descriptor")
+		}
+		return &securefs.SecurityApplier{Apply: func(uintptr) error {
+			c := snapshot()
+			c.sd = string(sd)
+			calls = append(calls, c)
+			if string(sd) == "sd-FAIL" {
+				return errors.New("injected apply failure")
+			}
+			return nil
+		}}, nil
+	}
+	return &calls
 }
 
 // TestRestore_SDWiring drives the real RestoreFromSnapshotContext with the
-// Windows gate forced on and applySecurity swapped for a recorder, so the
-// wiring is proven on every host (the Windows-tagged tests prove the real
-// apply). Asserts: each file's own slot is applied after its content is
-// installed; directories are applied in a post-pass after EVERY file is in
-// place, deepest first; SDIndex-0 entries collapse into one aggregate
-// warning; an apply failure is a warning and the file still counts restored
-// (R39); symlinks get nothing.
+// Windows gate forced on and the securefs hook swapped for a recorder, so
+// the wiring is proven on every host (the Windows-tagged tests prove the
+// real apply). Asserts: each file's own slot is applied to the pinned
+// temporary BEFORE publication (its final name does not exist yet);
+// directories are applied through securefs's pinned walk in a post-pass
+// after EVERY entry is in place, deepest first; SDIndex-0 entries collapse
+// into one aggregate warning; an apply failure and an invalid descriptor are
+// warnings and the file still counts restored (R39); symlinks get nothing.
 func TestRestore_SDWiring(t *testing.T) {
-	sdA := base64.StdEncoding.EncodeToString([]byte("sd-A"))
-	sdB := base64.StdEncoding.EncodeToString([]byte("sd-B"))
-	sdBad := base64.StdEncoding.EncodeToString([]byte("sd-FAIL"))
+	enc := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
 	files := []sdTestFile{
 		{name: "f1.txt", content: "one", sourcePath: "/original/top/f1.txt", sdIndex: 1},
 		{name: "f2.txt", content: "two", sourcePath: "/original/top/sub/f2.txt", sdIndex: 2},
 		{name: "f3.txt", content: "three", sourcePath: "/original/top/sub/f3.txt"}, // SDIndex 0
 		{name: "f4.txt", content: "four", sourcePath: "/original/top/f4.txt", sdIndex: 3},
+		{name: "f5.txt", content: "five", sourcePath: "/original/top/f5.txt", sdIndex: 6},
 	}
 	extra := []SnapshotFile{
-		{SourcePath: "/original/top", Kind: KindDir, ModeBits: uint32(os.ModeDir | 0o755), SDIndex: 1},
-		{SourcePath: "/original/top/sub", Kind: KindDir, ModeBits: uint32(os.ModeDir | 0o755), SDIndex: 2},
+		{SourcePath: "/original/top", Kind: KindDir, ModeBits: uint32(os.ModeDir | 0o755), SDIndex: 4},
+		{SourcePath: "/original/top/sub", Kind: KindDir, ModeBits: uint32(os.ModeDir | 0o755), SDIndex: 5},
 		{SourcePath: "/original/top/empty", Kind: KindDir, ModeBits: uint32(os.ModeDir | 0o755)}, // SDIndex 0
 	}
-	provider, snapshotID := setupRestoreTestSnapshotWithSDEntries(t, files, extra, []string{sdA, sdB, sdBad})
+	provider, snapshotID := setupRestoreTestSnapshotWithSDEntries(t, files, extra,
+		[]string{enc("sd-f1"), enc("sd-f2"), enc("sd-FAIL"), enc("sd-top"), enc("sd-sub"), enc("sd-INVALID")})
 	target := t.TempDir()
 
-	var calls []sdApplyCall
-	restoreFiles := func() int {
-		n := 0
+	finalPath := func(p string) string {
+		r, err := restoreRelativePath(p)
+		if err != nil {
+			t.Fatalf("restoreRelativePath(%q): %v", p, err)
+		}
+		return filepath.Join(target, r)
+	}
+	calls := recordingSecurityApplier(t, func() sdApplyCall {
+		var c sdApplyCall
 		for _, f := range files {
-			rel, _ := restoreRelativePath(f.sourcePath)
-			if b, err := os.ReadFile(filepath.Join(target, rel)); err == nil && string(b) == f.content {
-				n++
+			if b, err := os.ReadFile(finalPath(f.sourcePath)); err == nil && string(b) == f.content {
+				c.filesPresent++
 			}
 		}
-		return n
-	}
-	restoredDirs := func() int {
-		n := 0
 		for _, d := range extra {
-			rel, _ := restoreRelativePath(d.SourcePath)
-			if info, err := os.Stat(filepath.Join(target, rel)); err == nil && info.IsDir() {
-				n++
+			if info, err := os.Stat(finalPath(d.SourcePath)); err == nil && info.IsDir() {
+				c.dirsPresent++
 			}
 		}
-		return n
-	}
-	origEnabled, origApply := restoreAppliesSecurityDescriptors, restoreApplySecurity
-	t.Cleanup(func() { restoreAppliesSecurityDescriptors, restoreApplySecurity = origEnabled, origApply })
+		_ = filepath.WalkDir(target, func(_ string, d os.DirEntry, err error) error {
+			if err == nil && strings.HasPrefix(d.Name(), ".breeze-restore-") {
+				c.tempPresent++
+			}
+			return nil
+		})
+		return c
+	})
+	origEnabled := restoreAppliesSecurityDescriptors
+	t.Cleanup(func() { restoreAppliesSecurityDescriptors = origEnabled })
 	restoreAppliesSecurityDescriptors = true
-	restoreApplySecurity = func(path string, sd []byte) error {
-		calls = append(calls, sdApplyCall{path: path, sd: string(sd), filesPresent: restoreFiles(), dirsPresent: restoredDirs()})
-		if string(sd) == "sd-FAIL" {
-			return errors.New("injected apply failure")
-		}
-		return nil
-	}
 
 	result, err := RestoreFromSnapshot(provider, RestoreConfig{SnapshotID: snapshotID, TargetPath: target}, nil)
 	if err != nil {
 		t.Fatalf("RestoreFromSnapshot: %v", err)
 	}
 	if result.FilesRestored != len(files)+len(extra) || result.FilesFailed != 0 {
-		t.Fatalf("result = %+v, want %d restored, 0 failed (SD failure is a warning)", result, len(files)+len(extra))
+		t.Fatalf("result = %+v, want %d restored, 0 failed (SD failures are warnings)", result, len(files)+len(extra))
 	}
 
-	rel := func(p string) string {
-		r, _ := restoreRelativePath(p)
-		return filepath.Join(target, r)
-	}
+	// Files in manifest order, each BEFORE its own publication: the i-th
+	// file's apply sees exactly the i files published before it, plus its
+	// own pinned temporary. Then directories, deepest first, with every
+	// entry in place and no temporary left.
 	want := []struct {
-		path, sd string
-		isDir    bool
+		sd           string
+		filesPresent int
+		isDir        bool
 	}{
-		{rel("/original/top/f1.txt"), "sd-A", false},
-		{rel("/original/top/sub/f2.txt"), "sd-B", false},
-		{rel("/original/top/f4.txt"), "sd-FAIL", false},
-		{rel("/original/top/sub"), "sd-B", true}, // deepest first
-		{rel("/original/top"), "sd-A", true},
+		{"sd-f1", 0, false},
+		{"sd-f2", 1, false},
+		{"sd-FAIL", 3, false}, // f3 (SDIndex 0) published in between
+		{"sd-sub", len(files), true},
+		{"sd-top", len(files), true},
 	}
-	if len(calls) != len(want) {
-		t.Fatalf("applySecurity calls = %+v, want %d", calls, len(want))
+	if len(*calls) != len(want) {
+		t.Fatalf("applies = %+v, want %d", *calls, len(want))
 	}
 	for i, w := range want {
-		c := calls[i]
-		if c.path != w.path || c.sd != w.sd {
-			t.Errorf("call %d = (%s, %q), want (%s, %q)", i, c.path, c.sd, w.path, w.sd)
+		c := (*calls)[i]
+		if c.sd != w.sd {
+			t.Errorf("apply %d = %q, want %q", i, c.sd, w.sd)
 		}
-		if w.isDir && (c.filesPresent != len(files) || c.dirsPresent != len(extra)) {
-			t.Errorf("dir %s applied with only %d/%d files and %d/%d dirs in place — the directory post-pass must run after every entry is placed", c.path, c.filesPresent, len(files), c.dirsPresent, len(extra))
+		if c.filesPresent != w.filesPresent {
+			t.Errorf("apply %d (%s) saw %d files published, want %d", i, c.sd, c.filesPresent, w.filesPresent)
 		}
-		if !w.isDir {
-			if b, err := os.ReadFile(c.path); err != nil || len(b) == 0 {
-				t.Errorf("file %s not installed at its SD apply: %v", c.path, err)
+		if w.isDir {
+			if c.dirsPresent != len(extra) || c.tempPresent != 0 {
+				t.Errorf("dir apply %s ran with %d/%d dirs and %d temporaries — the post-pass must run after every entry is placed", c.sd, c.dirsPresent, len(extra), c.tempPresent)
 			}
+		} else if c.tempPresent != 1 {
+			t.Errorf("file apply %s saw %d pinned temporaries, want 1 — the descriptor must go on the temporary before publication", c.sd, c.tempPresent)
 		}
-	}
-	// File SDs go on right after each file's own install, not in a batch at
-	// the end: the first file's call sees only itself in place.
-	if calls[0].filesPresent != 1 {
-		t.Errorf("first file SD applied with %d files present, want 1 (apply right after install)", calls[0].filesPresent)
 	}
 
-	sdw := sdWarnings(result.Warnings)
-	var failWarn, aggWarn int
-	for _, w := range sdw {
+	var failWarn, invalidWarn, aggWarn int
+	for _, w := range sdWarnings(result.Warnings) {
 		switch {
-		case strings.Contains(w, "could not reapply security descriptor") && strings.Contains(w, "f4.txt"):
+		case strings.Contains(w, "f4.txt") && strings.Contains(w, "apply security descriptor: injected apply failure"):
 			failWarn++
-		case strings.HasPrefix(w, "2 entries had no security descriptor recorded"):
+		case strings.Contains(w, "f5.txt") && strings.Contains(w, "could not reapply security descriptor: injected invalid descriptor"):
+			invalidWarn++
+		case strings.HasPrefix(w, "2 entries had no security descriptor recorded; they were restored with ACLs inherited from the restore target"):
 			aggWarn++
 		default:
 			t.Errorf("unexpected security-descriptor warning %q", w)
 		}
 	}
-	if failWarn != 1 || aggWarn != 1 {
-		t.Errorf("SD warnings = %v, want exactly one apply-failure (f4) and one aggregate (2 entries)", sdw)
+	if failWarn != 1 || invalidWarn != 1 || aggWarn != 1 {
+		t.Errorf("SD warnings = %v, want one apply failure (f4), one invalid descriptor (f5), one aggregate (2 entries)", sdWarnings(result.Warnings))
+	}
+	for _, f := range files {
+		if b, err := os.ReadFile(finalPath(f.sourcePath)); err != nil || string(b) != f.content {
+			t.Errorf("%s not restored: %q, %v", f.sourcePath, b, err)
+		}
 	}
 }
 
@@ -361,11 +407,11 @@ func TestRestore_SDWiring(t *testing.T) {
 func TestRestore_SDWiring_NoTableNoApply(t *testing.T) {
 	provider, snapshotID := setupRestoreTestSnapshotWithSD(t,
 		[]sdTestFile{{name: "a.txt", content: "a"}, {name: "b.txt", content: "b"}}, nil)
-	origEnabled, origApply := restoreAppliesSecurityDescriptors, restoreApplySecurity
-	t.Cleanup(func() { restoreAppliesSecurityDescriptors, restoreApplySecurity = origEnabled, origApply })
+	origEnabled, origApplier := restoreAppliesSecurityDescriptors, restoreSecurityApplier
+	t.Cleanup(func() { restoreAppliesSecurityDescriptors, restoreSecurityApplier = origEnabled, origApplier })
 	restoreAppliesSecurityDescriptors = true
 	calls := 0
-	restoreApplySecurity = func(string, []byte) error { calls++; return nil }
+	restoreSecurityApplier = func([]byte) (*securefs.SecurityApplier, error) { calls++; return nil, nil }
 
 	result, err := RestoreFromSnapshot(provider, RestoreConfig{SnapshotID: snapshotID, TargetPath: t.TempDir()}, nil)
 	if err != nil {

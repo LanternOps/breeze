@@ -290,16 +290,26 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		// Publish only verified bytes. Linux, macOS and Windows pin the
 		// target hierarchy with directory descriptors/handles and never follow
 		// a destination symlink/reparse point. Mode (full ModeBits when the
-		// manifest carries them, else the perm-only Mode), owner and mtime are
-		// applied to the pinned temporary BEFORE the atomic replace, so #5520's
-		// fidelity is preserved without any post-publication pathname
-		// chmod/chown/chtimes — the exact operations this boundary exists to
-		// remove.
+		// manifest carries them, else the perm-only Mode), owner, mtime,
+		// Windows attributes and the captured NTFS security descriptor (W06a)
+		// are all applied to the pinned temporary's handle BEFORE the atomic
+		// replace, so #5520's fidelity is preserved without any
+		// post-publication pathname chmod/chown/chtimes/SetSecurity — the
+		// exact operations this boundary (SEC-121) exists to remove.
 		mode := os.FileMode(file.Mode).Perm()
 		if file.ModeBits != 0 {
 			mode = os.FileMode(file.ModeBits)
 		}
-		installWarnings, err := securefs.InstallFileWithAttrs(targetBase, relativeTarget, stagingFile, mode, file.ModTime, entryOwner(file, applyOwnership), file.WinAttrs)
+		var secApplier *securefs.SecurityApplier
+		if sd := secDescs.forEntry(file); sd != nil {
+			var secErr error
+			if secApplier, secErr = restoreSecurityApplier(sd); secErr != nil {
+				// An invalid descriptor is a fidelity warning; the content
+				// still installs (R39).
+				result.Warnings = append(result.Warnings, fmt.Sprintf("restored %s with reduced fidelity: could not reapply security descriptor: %v", displayPath, secErr))
+			}
+		}
+		installWarnings, err := securefs.InstallFileWithSecurity(targetBase, relativeTarget, stagingFile, mode, file.ModTime, entryOwner(file, applyOwnership), file.WinAttrs, secApplier)
 		if err != nil {
 			result.FilesFailed++
 			result.FailedFiles = append(result.FailedFiles, displayPath)
@@ -310,13 +320,6 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		}
 		for _, warning := range installWarnings {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("restored %s with reduced fidelity: %v", displayPath, warning))
-		}
-		// Security descriptor right after the content is in place. A failed
-		// apply is a fidelity warning, never a failed file (R39).
-		if sd := secDescs.forEntry(file); sd != nil {
-			if secErr := restoreApplySecurity(targetPath, sd); secErr != nil {
-				result.Warnings = append(result.Warnings, fmt.Sprintf("restored %s with reduced fidelity: could not reapply security descriptor: %v", displayPath, secErr))
-			}
 		}
 		if !applyOwnership && (file.Owner != nil || file.ModeBits&uint32(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0) {
 			warnOwnership()
@@ -347,8 +350,8 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 	// directory is created could deny the restore the access it still needs
 	// for later entries beneath it. Symlinks/junctions never take one.
 	type dirSD struct {
-		path, display string
-		sd            []byte
+		relative, display string
+		sd                []byte
 	}
 	var dirSecurity []dirSD
 	for _, entry := range append(links, dirs...) {
@@ -418,7 +421,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 							fmt.Sprintf("recreated %s with reduced fidelity: could not reapply windows attributes: %v", displayPath, attrErr))
 					}
 					if sd := secDescs.forEntry(entry); sd != nil {
-						dirSecurity = append(dirSecurity, dirSD{path: filepath.Join(targetBase, relativeEntry), display: displayPath, sd: sd})
+						dirSecurity = append(dirSecurity, dirSD{relative: relativeEntry, display: displayPath, sd: sd})
 					}
 				}
 			}
@@ -439,12 +442,19 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 
 	// Directory security descriptors, now that every file, symlink and
 	// directory is in place. Deepest first, so a parent's DACL can never
-	// stand between the restore and a child it has yet to update.
+	// stand between the restore and a child it has yet to update. Each
+	// directory is reached by securefs's pinned, reparse-refusing walk from
+	// the volume root and the descriptor is set on THAT handle — never on a
+	// joined pathname a swapped-in junction could redirect (SEC-121).
 	sort.SliceStable(dirSecurity, func(i, j int) bool {
-		return strings.Count(dirSecurity[i].path, string(filepath.Separator)) > strings.Count(dirSecurity[j].path, string(filepath.Separator))
+		return strings.Count(dirSecurity[i].relative, string(filepath.Separator)) > strings.Count(dirSecurity[j].relative, string(filepath.Separator))
 	})
 	for _, ds := range dirSecurity {
-		if secErr := restoreApplySecurity(ds.path, ds.sd); secErr != nil {
+		applier, secErr := restoreSecurityApplier(ds.sd)
+		if secErr == nil && applier != nil {
+			secErr = securefs.ApplyDirSecurity(targetBase, ds.relative, *applier)
+		}
+		if secErr != nil {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("recreated %s with reduced fidelity: could not reapply security descriptor: %v", ds.display, secErr))
 		}
 	}

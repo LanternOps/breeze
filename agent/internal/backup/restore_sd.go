@@ -13,15 +13,18 @@ import (
 // host.
 var restoreAppliesSecurityDescriptors = runtime.GOOS == "windows"
 
-// restoreApplySecurity is applySecurity; a var only so untagged tests can
-// record the calls RestoreFromSnapshotContext makes.
-var restoreApplySecurity = applySecurity
+// restoreSecurityApplier is securityApplier (sd_windows.go/sd_other.go): it
+// turns a descriptor into the securefs hook that sets it on a pinned handle.
+// A var only so untagged tests can record the applies
+// RestoreFromSnapshotContext makes, and when.
+var restoreSecurityApplier = securityApplier
 
 // decodeSecurityDescriptors turns Snapshot.SecurityDescriptors (base64,
 // 1-based via SnapshotFile.SDIndex — see sdtable.go) into the raw-bytes
-// table applySecurity consumes. A single corrupt entry degrades to "no SD
-// for that slot" with one warning, rather than failing the whole restore —
-// the affected file's CONTENT restore is entirely unaffected either way.
+// table the restore applies. A single corrupt entry — undecodable, or
+// decoding to zero bytes — degrades to "no SD for that slot" with one
+// warning, rather than failing the whole restore; the affected file's
+// CONTENT restore is entirely unaffected either way.
 func decodeSecurityDescriptors(encoded []string) (table [][]byte, warnings []string) {
 	if len(encoded) == 0 {
 		return nil, nil
@@ -29,6 +32,9 @@ func decodeSecurityDescriptors(encoded []string) (table [][]byte, warnings []str
 	table = make([][]byte, len(encoded))
 	for i, s := range encoded {
 		b, err := base64.StdEncoding.DecodeString(s)
+		if err == nil && len(b) == 0 {
+			err = fmt.Errorf("decodes to zero bytes")
+		}
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("security descriptor table entry %d is corrupt: %v", i+1, err))
 			continue
@@ -80,7 +86,7 @@ func newRestoreSecurity(encoded []string, entries []SnapshotFile, enabled bool) 
 	}
 	if truncated > 0 {
 		warnings = append(warnings, fmt.Sprintf(
-			"security descriptor table is truncated: %d entries reference slots up to %d but the table has %d; they were restored with inherited ACLs",
+			"security descriptor table is truncated: %d entries reference slots up to %d but the table has %d; they were restored with ACLs inherited from the restore target",
 			truncated, maxIndex, len(table)))
 	}
 	return rs, warnings
@@ -113,5 +119,5 @@ func (rs *restoreSecurity) finish() []string {
 	if rs.missing == 0 {
 		return nil
 	}
-	return []string{fmt.Sprintf("%d entries had no security descriptor recorded; they were restored with inherited ACLs", rs.missing)}
+	return []string{fmt.Sprintf("%d entries had no security descriptor recorded; they were restored with ACLs inherited from the restore target", rs.missing)}
 }

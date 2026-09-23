@@ -251,7 +251,7 @@ func ensureDir(path string, mode os.FileMode, private bool) error {
 // winAttrs is accepted and ignored here: Windows file attributes have no
 // Unix equivalent, so a Windows manifest restored onto Linux/macOS simply
 // drops them (the same way Owner is dropped in the other direction).
-func installFile(base, relative, source string, mode os.FileMode, modTime time.Time, owner *Owner, _ uint32) ([]error, error) {
+func installFile(base, relative, source string, mode os.FileMode, modTime time.Time, owner *Owner, _ uint32, sec *SecurityApplier) ([]error, error) {
 	baseFD, err := openAbsoluteDir(base, true, 0o755)
 	if err != nil {
 		return nil, fmt.Errorf("open target base: %w", err)
@@ -326,6 +326,13 @@ func installFile(base, relative, source string, mode os.FileMode, modTime time.T
 		times := []unix.Timeval{unix.NsecToTimeval(modTime.UnixNano()), unix.NsecToTimeval(modTime.UnixNano())}
 		if err := unix.Futimes(tempFD, times); err != nil {
 			warnings = append(warnings, fmt.Errorf("apply modification time: %w", err))
+		}
+	}
+	// Caller security metadata goes on the pinned descriptor, before
+	// publication, like everything above.
+	if sec != nil && sec.Apply != nil {
+		if err := sec.Apply(uintptr(tempFD)); err != nil {
+			warnings = append(warnings, fmt.Errorf("apply security descriptor: %w", err))
 		}
 	}
 	if err := temp.Sync(); err != nil {
@@ -457,4 +464,18 @@ func installDir(base, relative string, mode os.FileMode, applyMode bool, owner *
 		}
 	}
 	return nil
+}
+
+func applyDirSecurity(base, relative string, sec SecurityApplier) error {
+	baseFD, err := openAbsoluteDir(base, false, 0)
+	if err != nil {
+		return fmt.Errorf("open target base: %w", err)
+	}
+	defer func() { _ = unix.Close(baseFD) }()
+	dirFD, err := openRelativeDir(baseFD, relative, false, 0)
+	if err != nil {
+		return fmt.Errorf("open target directory: %w", err)
+	}
+	defer func() { _ = unix.Close(dirFD) }()
+	return sec.Apply(uintptr(dirFD))
 }
