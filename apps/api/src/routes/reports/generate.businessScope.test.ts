@@ -263,6 +263,8 @@ describe('POST /reports/generate — business report scope (#3198 W02)', () => {
     const res = await post({ ownerScope: 'partner', type: 'ar_aging' });
 
     expect(res.status).toBe(403);
+    // Distinct from test 7: authority granted, execution context refused.
+    expect(await res.json()).toEqual({ error: 'Access to report scope denied' });
     expect(generateReport).not.toHaveBeenCalled();
   });
 });

@@ -79,6 +79,8 @@ generateRoutes.post(
         auth.partnerId,
         'read',
       );
+      // Condition 1: the caller's LIVE partner authority refuses (demoted,
+      // selected org access, ...) — core.ts create's body (ruling T11a).
       if (!partnerResult.ok) {
         return c.json(
           { error: 'Report scope is not authorized', reason: partnerResult.reason },
@@ -91,6 +93,9 @@ generateRoutes.post(
         // (runInReportScope, ruling P6) — never a nested system context.
         scope = await reportScopeFromAuthority({ partnerId: auth.partnerId }, authority);
       } catch (error) {
+        // Condition 2 (distinct): authority granted, but THIS request's DB
+        // context cannot execute it (ReportScopeMismatchError) — the body
+        // runs.ts POST /:id/generate uses for the same execution failure.
         if (error instanceof UnexecutableReportScopeError) {
           return c.json({ error: 'Access to report scope denied' }, 403);
         }
