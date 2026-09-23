@@ -559,6 +559,63 @@
         "flip": "Aktualisieren des Notausschalters fehlgeschlagen",
         "mfaRequired": "Das Umschalten des KI-Notausschalters erfordert Multi-Faktor-Authentifizierung. Aktivieren Sie MFA in Ihren Profil-Sicherheitseinstellungen und versuchen Sie es erneut."
       }
+    },
+    "systemPage": {
+      "title": "System",
+      "description": "Bereitstellungsweiter Status für Plattformadministratoren. Diese Seite ist schreibgeschützt.",
+      "tabs": {
+        "label": "Systembereiche",
+        "connections": "Verbindungen",
+        "deprecations": "Abkündigungen"
+      },
+      "connections": {
+        "enabledMeaning": "Aktiviert bedeutet konfiguriert. Breeze kontaktiert den Dienst nicht, um zu prüfen, ob er antwortet.",
+        "footnote": "Zeigt nur die Umgebung des API-Containers. Die Container für Web, Portal und Worker sind nicht enthalten.",
+        "meta": "Laufende Version {{version}} · {{mode}}",
+        "deployMode": {
+          "hosted": "Gehostet",
+          "self_host": "Selbst gehostet"
+        },
+        "refresh": "Aktualisieren",
+        "loading": "Verbindungsstatus wird geladen…",
+        "errors": {
+          "load": "Der Verbindungsstatus konnte nicht geladen werden."
+        },
+        "platformAdmin": {
+          "title": "Plattform-Administratorzugriff erforderlich",
+          "description": "Der Verbindungsstatus betrifft die gesamte Bereitstellung, daher können ihn nur Plattformadministratoren einsehen."
+        },
+        "summaryLabel": "Verbindungsübersicht",
+        "problemsOnly": "Nur Probleme anzeigen",
+        "noProblems": "Keine Probleme gefunden. Jede Verbindung ist aktiviert oder deaktiviert.",
+        "empty": "Keine Verbindungen registriert.",
+        "status": {
+          "enabled": "Aktiviert",
+          "disabled": "Deaktiviert",
+          "misconfigured": "Fehlkonfiguriert",
+          "required_missing": "Erforderlich, fehlt"
+        },
+        "var": {
+          "set": "gesetzt",
+          "notSet": "nicht gesetzt",
+          "secret": "Geheimer Wert, wird nie angezeigt"
+        },
+        "docs": "Dokumentation lesen",
+        "groups": {
+          "core": "Kerndienste",
+          "email": "E-Mail",
+          "storage-backups": "Speicher und Sicherungen",
+          "ai": "KI",
+          "billing": "Abrechnung",
+          "microsoft-365": "Microsoft 365",
+          "identity-sso": "Identität und SSO",
+          "remote-access": "Fernzugriff",
+          "agent-releases": "Agent-Versionen",
+          "observability": "Beobachtbarkeit",
+          "security-abuse": "Sicherheit und Missbrauch",
+          "integrations": "Integrationen"
+        }
+      }
     }
   },
   "audit": {

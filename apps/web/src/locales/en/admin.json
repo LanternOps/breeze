@@ -559,6 +559,63 @@
         "flip": "Failed to update the kill switch",
         "mfaRequired": "Flipping the AI kill switch requires multi-factor authentication. Enable MFA in your profile security settings, then try again."
       }
+    },
+    "systemPage": {
+      "title": "System",
+      "description": "Deployment-wide status for platform administrators. This page is read-only.",
+      "tabs": {
+        "label": "System sections",
+        "connections": "Connections",
+        "deprecations": "Deprecations"
+      },
+      "connections": {
+        "enabledMeaning": "Enabled means configured. Breeze does not contact the service to check that it responds.",
+        "footnote": "Shows the API container's environment only. The web, portal and worker containers are not included.",
+        "meta": "Running version {{version}} · {{mode}}",
+        "deployMode": {
+          "hosted": "Hosted",
+          "self_host": "Self-hosted"
+        },
+        "refresh": "Refresh",
+        "loading": "Loading connection status…",
+        "errors": {
+          "load": "Could not load connection status."
+        },
+        "platformAdmin": {
+          "title": "Platform admin access required",
+          "description": "Connection status covers the whole deployment, so only platform administrators can view it."
+        },
+        "summaryLabel": "Connection summary",
+        "problemsOnly": "Show problems only",
+        "noProblems": "No problems found. Every connection is enabled or disabled.",
+        "empty": "No connections are registered.",
+        "status": {
+          "enabled": "Enabled",
+          "disabled": "Disabled",
+          "misconfigured": "Misconfigured",
+          "required_missing": "Required, missing"
+        },
+        "var": {
+          "set": "set",
+          "notSet": "not set",
+          "secret": "Secret value, never shown"
+        },
+        "docs": "Read the docs",
+        "groups": {
+          "core": "Core services",
+          "email": "Email",
+          "storage-backups": "Storage and backups",
+          "ai": "AI",
+          "billing": "Billing",
+          "microsoft-365": "Microsoft 365",
+          "identity-sso": "Identity and SSO",
+          "remote-access": "Remote access",
+          "agent-releases": "Agent releases",
+          "observability": "Observability",
+          "security-abuse": "Security and abuse",
+          "integrations": "Integrations"
+        }
+      }
     }
   },
   "audit": {
