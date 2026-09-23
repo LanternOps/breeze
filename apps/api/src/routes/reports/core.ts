@@ -754,6 +754,7 @@ coreRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const reportId = c.req.param('id')!;
+    const permissions = c.get('permissions') as UserPermissions | undefined;
 
     const result = await db.transaction(async (tx) => {
       const locked = await loadLockedDefinition(
@@ -765,6 +766,13 @@ coreRoutes.post(
       if (locked === SYSTEM_MANAGED) return { kind: 'system_managed' as const };
       if (locked === PARTNER_WIDE_DENIED) return { kind: 'partner_wide_denied' as const };
       if (!locked) return { kind: 'not_found' as const };
+      // #3198 W02 (rulings P8, T11b). Reauthorize re-stamps the CALLER as the
+      // execution user, so it needs the stored type's underlying read
+      // permissions exactly as PUT does. After the row is authorized, so the
+      // 403 never discloses a definition the caller cannot see.
+      if (missingReportTypePermission(locked.locked.type, permissions)) {
+        return { kind: 'type_permission_denied' as const };
+      }
 
       if (
         locked.storedScope.kind === 'legacy_unscoped' &&
@@ -813,6 +821,9 @@ coreRoutes.post(
     }
     if (result.kind === 'partner_wide_denied') {
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
+    if (result.kind === 'type_permission_denied') {
+      return c.json(REPORT_TYPE_PERMISSION_DENIED, 403);
     }
     if (result.kind === 'not_found') {
       return c.json(REPORT_NOT_FOUND, 404);

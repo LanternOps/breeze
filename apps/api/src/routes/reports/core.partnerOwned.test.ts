@@ -586,6 +586,31 @@ describe('PUT /reports/:id validates config against the stored row\'s type', () 
   });
 });
 
+// #3198 W02 (ruling T11b). Reauthorize re-stamps the caller as the execution
+// user, so it needs the type's underlying read permissions exactly as PUT does
+// (P8); otherwise a reports:write-only user could take over an AR schedule.
+describe('POST /reports/:id/reauthorize applies the per-type permission gate', () => {
+  it('403s Insufficient permissions on an ar_aging row without invoices:read, updating nothing', async () => {
+    state.permissions = { permissions: NO_INVOICES_PERMISSIONS };
+    state.rows = [partnerDefinition(), partnerDefinition()];
+    const res = await app().request(`/reports/${REPORT_ID}/reauthorize`, { method: 'POST' });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Insufficient permissions' });
+    expect(state.updates).toHaveLength(0);
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  it('positive control: the same caller may reauthorize a device_inventory row', async () => {
+    state.permissions = { permissions: NO_INVOICES_PERMISSIONS };
+    state.rows = [partnerDefinition({ type: 'device_inventory' }), partnerDefinition({ type: 'device_inventory' })];
+    const res = await app().request(`/reports/${REPORT_ID}/reauthorize`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    expect(state.updates).toHaveLength(1);
+  });
+});
+
 describe('POST /reports validates config against body.type (#3198 W02, ruling P15)', () => {
   beforeEach(() => {
     state.auth = orgAuth();
