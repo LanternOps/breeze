@@ -38,7 +38,7 @@ export type PartnerConversionPreview = {
 };
 export const readPartnerPreview = (body: unknown): PartnerConversionPreview => unwrap(body);
 export const readRetireResult = (body: unknown): { conversionId: string } => unwrap(body);
-export type PendingCounts = { policies: number; rows: number };
+export type PendingCounts = { policies: number; rows: number; pendingPolicies?: Array<{ id: string; name: string }> };
 export type ConvertResult = { conversionIds: string[]; retired: number; monitorsCreated: number };
 export type PartnerConvertResult = { policies: number; converted: number; unconvertible: number };
 

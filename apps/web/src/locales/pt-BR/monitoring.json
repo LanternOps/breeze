@@ -407,7 +407,8 @@
     "pendingPolicies": {
       "title": "Políticas com regras legadas",
       "loading": "Carregando políticas…",
-      "empty": "Nenhuma política tem regras de alerta embutidas, monitoramentos ou automações acionadas por alerta."
+      "empty": "Nenhuma política tem regras de alerta embutidas, monitoramentos ou automações acionadas por alerta.",
+      "error": "Não foi possível carregar as políticas com regras legadas. Atualize para tentar novamente."
     },
     "title": "Precisa de conversão",
     "description": "Regras de alerta embutidas, monitoramentos de serviços/processos e automações acionadas por alerta desta política ainda não foram convertidos em monitores. A conversão aposenta a linha de origem no lugar; nada é excluído.",

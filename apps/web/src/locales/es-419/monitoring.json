@@ -407,7 +407,8 @@
     "pendingPolicies": {
       "title": "Políticas con reglas heredadas",
       "loading": "Cargando políticas…",
-      "empty": "Ninguna política tiene reglas de alerta en línea, vigilancias ni automatizaciones activadas por alertas."
+      "empty": "Ninguna política tiene reglas de alerta en línea, vigilancias ni automatizaciones activadas por alertas.",
+      "error": "No se pudieron cargar las políticas con reglas heredadas. Actualiza para volver a intentarlo."
     },
     "title": "Requiere conversión",
     "description": "Las reglas de alerta en línea, las vigilancias de servicios/procesos y las automatizaciones activadas por alertas de esta política aún no se convirtieron en monitores. Convertir retira la fila de origen en su lugar; no se elimina nada.",

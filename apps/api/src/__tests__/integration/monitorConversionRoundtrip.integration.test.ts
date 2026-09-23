@@ -184,4 +184,11 @@ it('counts only active-policy rows in the partner backlog', async () => {
   });
   const row = (await listPartnerConversionBacklog()).find((r) => r.partnerId === f.partnerId);
   expect(row).toMatchObject({ pendingRows: 1, pendingPolicies: 1 });
+
+  // The tenant banner's count and its pending-policy list share one predicate
+  // (#6644 review finding 5): the inactive policy is in neither.
+  const { countPendingConversions } = await import('../../services/monitors/conversion');
+  const pending = await withDbAccessContext(f.context, () =>
+    countPendingConversions({ orgId: f.orgId, partnerId: f.partnerId, includePartnerWide: false }));
+  expect(pending).toMatchObject({ policies: 1, rows: 1, pendingPolicies: [{ id: f.policyId, name: 'Legacy parent' }] });
 });

@@ -407,7 +407,8 @@
     "pendingPolicies": {
       "title": "Policy con regole legacy",
       "loading": "Caricamento delle policy…",
-      "empty": "Nessuna policy contiene regole di avviso inline, controlli o automazioni attivate da avvisi."
+      "empty": "Nessuna policy contiene regole di avviso inline, controlli o automazioni attivate da avvisi.",
+      "error": "Impossibile caricare i criteri con regole legacy. Aggiorna per riprovare."
     },
     "title": "Conversione necessaria",
     "description": "Le regole di avviso inline, i controlli di servizi/processi e le automazioni attivate da avvisi di questa policy non sono ancora stati convertiti in monitor. La conversione ritira la riga di origine sul posto; nulla viene eliminato.",

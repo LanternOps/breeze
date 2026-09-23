@@ -407,7 +407,8 @@
     "pendingPolicies": {
       "title": "Policies with legacy rules",
       "loading": "Loading policies…",
-      "empty": "No policy carries inline alert rules, watches or alert-triggered automations."
+      "empty": "No policy carries inline alert rules, watches or alert-triggered automations.",
+      "error": "Couldn't load the policies with legacy rules. Refresh to try again."
     },
     "title": "Needs conversion",
     "description": "Inline alert rules, service/process watches and alert-triggered automations on this policy have not been converted to monitors yet. Converting retires the source row in place; nothing is deleted.",

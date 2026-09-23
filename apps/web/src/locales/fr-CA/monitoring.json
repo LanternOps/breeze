@@ -407,7 +407,8 @@
     "pendingPolicies": {
       "title": "Politiques avec règles héritées",
       "loading": "Chargement des politiques…",
-      "empty": "Aucune politique ne porte de règles d'alerte intégrées, de surveillances ou d'automatisations déclenchées par alerte."
+      "empty": "Aucune politique ne porte de règles d'alerte intégrées, de surveillances ou d'automatisations déclenchées par alerte.",
+      "error": "Impossible de charger les politiques avec des règles héritées. Actualisez pour réessayer."
     },
     "title": "Conversion requise",
     "description": "Les règles d'alerte intégrées, les surveillances de services/processus et les automatisations déclenchées par alerte de cette politique n'ont pas encore été converties en moniteurs. La conversion retire la ligne source sur place ; rien n'est supprimé.",

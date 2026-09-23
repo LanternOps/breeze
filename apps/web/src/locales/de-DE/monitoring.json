@@ -407,7 +407,8 @@
     "pendingPolicies": {
       "title": "Richtlinien mit Altregeln",
       "loading": "Richtlinien werden geladen…",
-      "empty": "Keine Richtlinie enthält Inline-Alarmregeln, Überwachungen oder alarmausgelöste Automatisierungen."
+      "empty": "Keine Richtlinie enthält Inline-Alarmregeln, Überwachungen oder alarmausgelöste Automatisierungen.",
+      "error": "Die Richtlinien mit Legacy-Regeln konnten nicht geladen werden. Zum erneuten Versuch aktualisieren."
     },
     "title": "Konvertierung erforderlich",
     "description": "Inline-Alarmregeln, Dienst-/Prozessüberwachungen und alarmausgelöste Automatisierungen dieser Richtlinie wurden noch nicht in Monitore konvertiert. Beim Konvertieren wird die Quellzeile an Ort und Stelle stillgelegt; nichts wird gelöscht.",

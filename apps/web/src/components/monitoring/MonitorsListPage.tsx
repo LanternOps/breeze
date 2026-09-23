@@ -181,7 +181,7 @@ export default function MonitorsListPage() {
       </div>
       {view === 'needs-conversion' ? (
         <div className="space-y-6" data-testid="monitors-list-needs-conversion">
-          <PendingPoliciesList />
+          <PendingPoliciesList orgId={currentOrgId} />
           <LegacyRulesTable onConverted={() => void fetchMonitors()} />
         </div>
       ) : (

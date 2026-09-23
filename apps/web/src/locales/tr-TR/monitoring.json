@@ -407,7 +407,8 @@
     "pendingPolicies": {
       "title": "Eski kuralları olan ilkeler",
       "loading": "İlkeler yükleniyor…",
-      "empty": "Hiçbir ilke satır içi uyarı kuralı, izleme veya uyarıyla tetiklenen otomasyon taşımıyor."
+      "empty": "Hiçbir ilke satır içi uyarı kuralı, izleme veya uyarıyla tetiklenen otomasyon taşımıyor.",
+      "error": "Eski kurallara sahip ilkeler yüklenemedi. Yeniden denemek için yenileyin."
     },
     "title": "Dönüştürme gerekiyor",
     "description": "Bu ilkedeki satır içi uyarı kuralları, hizmet/süreç izlemeleri ve uyarıyla tetiklenen otomasyonlar henüz monitöre dönüştürülmedi. Dönüştürme, kaynak satırı yerinde emekliye ayırır; hiçbir şey silinmez.",
