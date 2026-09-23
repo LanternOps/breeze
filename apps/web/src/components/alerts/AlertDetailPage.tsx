@@ -23,6 +23,7 @@ import AlertDeviceInfo from './AlertDeviceInfo';
 import { DelegateToOperatorButton } from '../aiOperator/DelegateToOperatorButton';
 import { extractServiceNameFromAlert } from '../aiOperator/alertServiceName';
 import {
+  anomalyDeepLinkHash,
   formatAnomalyConfidence,
   formatAnomalyType,
   formatAnomalyValue,
@@ -433,7 +434,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
             )}
           </div>
           <a
-            href={`/devices/${alert.deviceId}#anomalies${alert.anomalyContext.anomalyId ? `/${alert.anomalyContext.anomalyId}` : ''}`}
+            href={`/devices/${alert.deviceId}#${anomalyDeepLinkHash(alert.anomalyContext)}`}
             className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-sky-700 hover:underline"
           >
             {t('alertDetailPage.openDeviceAnomalies')}

@@ -1,6 +1,7 @@
 export type MetricAnomalyAlertContext = {
   source: 'metric_anomaly';
   anomalyId: string | null;
+  episodeId: string | null;
   metricName: string | null;
   metricType: string | null;
   anomalyType: string | null;
@@ -30,6 +31,10 @@ export function normalizeMetricAnomalyContext(value: unknown): MetricAnomalyAler
   return {
     source: 'metric_anomaly',
     anomalyId: stringOrNull(context.anomalyId),
+    // W02 stamps promoted alerts' context with episodeId (spec §12); alerts
+    // promoted before that ships (or through the legacy per-row route) have
+    // none, so this stays null rather than throwing on old data.
+    episodeId: stringOrNull(context.episodeId),
     metricName: stringOrNull(context.metricName),
     metricType: stringOrNull(context.metricType),
     anomalyType: stringOrNull(context.anomalyType),
@@ -53,5 +58,13 @@ export function formatAnomalyValue(value: number | null): string {
 export function formatAnomalyConfidence(value: number | null): string {
   if (value === null) return 'n/a';
   return formatPercent(value, { maximumFractionDigits: 0 });
+}
+
+/** `#anomalies/<episodeId>` when the alert was promoted under the episode
+ *  system (W02+); falls back to the legacy `#anomalies/<anomalyId>` bucket
+ *  deep link, then to the bare tab with no focus target. */
+export function anomalyDeepLinkHash(context: MetricAnomalyAlertContext): string {
+  const id = context.episodeId ?? context.anomalyId;
+  return id ? `anomalies/${id}` : 'anomalies';
 }
 import { formatNumber, formatPercent } from '@/lib/i18n/format';
