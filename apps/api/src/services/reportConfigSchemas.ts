@@ -203,8 +203,8 @@ export type TechnicianTimeConfig = z.infer<typeof technicianTimeConfigSchema>;
  *   applied in the generator.
  * - `groupBy` (default `organization`, applied in the generator) narrows the
  *   legacy free-text `groupBy`.
- * - `includePaidInPeriod` (default false) adds an informational "collected
- *   month-to-date" note; it never moves a bucket.
+ * - `includePaidInPeriod` (default false) adds an informational "invoices
+ *   fully paid month-to-date" note; it never moves a bucket.
  * - No `.default()` anywhere (parseStoredReportConfig filters defaults
  *   top-level only) and no org/site/device selector keys (ruling T3e).
  */

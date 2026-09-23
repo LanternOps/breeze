@@ -648,7 +648,7 @@ describe('ar_aging — real Postgres (#3198 W02 Task 9)', () => {
       { asOf: AS_OF, groupBy: 'currency', includePaidInPeriod: true }, authority)).summary as ArAgingSummary;
     expect(s.groups.map((g) => [g.groupKey, g.openTotal])).toEqual([['EUR', '241.00'], ['USD', '645.00']]);
     expect(s.byCurrency.map((r) => r.openTotal)).toEqual(['241.00', '645.00']);
-    expect(s.notes.join(' ')).toMatch(/Collected 2026-09-01 to 2026-09-21: 1 invoice reached paid, totalling 500\.00 USD/);
+    expect(s.notes.join(' ')).toMatch(/Invoices fully paid month-to-date \(2026-09-01 to 2026-09-21\): 1 invoice, invoice totals 500\.00 USD/);
   });
 
   runDb('PARITY: a partner-scope RLS request context and the system context produce identical reports', async () => {

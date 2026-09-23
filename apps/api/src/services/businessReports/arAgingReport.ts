@@ -241,13 +241,19 @@ function dateInZone(now: Date, timeZone: string): string {
   return `${get('year')}-${get('month')}-${get('day')}`;
 }
 
+/**
+ * Sums the TOTALS of invoices that reached `paid` with `paid_at` in the window
+ * — not cash received (a partial payment on a still-open invoice is absent),
+ * hence "fully paid", never "collected".
+ */
 function paidInPeriodNote(label: string, rows: PaidRow[]): string {
-  if (rows.length === 0) return `Collected ${label}: no invoices reached paid (informational; not part of the buckets).`;
+  const head = `Invoices fully paid month-to-date (${label})`;
+  if (rows.length === 0) return `${head}: none (informational; not part of the buckets).`;
   const parts = rows.map((r) => {
     const count = Number(r.invoice_count);
-    return `${count} ${count === 1 ? 'invoice' : 'invoices'} reached paid, totalling ${r.amount} ${r.currency_code}`;
+    return `${count} ${count === 1 ? 'invoice' : 'invoices'}, invoice totals ${r.amount} ${r.currency_code}`;
   });
-  return `Collected ${label}: ${parts.join('; ')} (informational; not part of the buckets).`;
+  return `${head}: ${parts.join('; ')} (informational; not part of the buckets).`;
 }
 
 function toResult(summary: ArAgingSummary): ReportResult {
@@ -284,6 +290,8 @@ export async function generateArAgingReport(
       asOf: config.asOf ?? dateInZone(generatedAt, 'UTC'),
       scope: scopeMeta(scope, null),
       groupBy,
+      // The registry cap, as on the P5 branch and a real run.
+      detail: { cap: DETAIL_ROW_CAP, stored: 0, available: 0, truncated: false },
     });
   }
 

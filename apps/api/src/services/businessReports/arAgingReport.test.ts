@@ -38,6 +38,7 @@ import type { ArAgingSummary } from '@breeze/shared';
 import { db } from '../../db';
 import { ReportScopeMismatchError } from '../reportScope';
 import type { ReportGenerationAuthority } from '../siteScope';
+import { reportTypeDef } from '../reportRegistry';
 import { SITE_RESTRICTED_NOTE } from './common';
 import { generateArAgingReport } from './arAgingReport';
 
@@ -282,6 +283,10 @@ describe('generateArAgingReport', () => {
     expect(paid.sql).toMatch(/i\.paid_at >= \$\d+ AND i\.paid_at < \$\d+/);
     expect(paid.params).toEqual(expect.arrayContaining(['2026-09-01T00:00:00.000Z', '2026-09-22T00:00:00.000Z']));
     expect(s.notes.join(' ')).toMatch(/2026-09-01 to 2026-09-21.*3 invoices.*900\.00 USD/);
+    const paidNote = s.notes.find((n) => n.includes('900.00 USD'))!;
+    expect(paidNote.startsWith('Invoices fully paid month-to-date')).toBe(true);
+    expect(paidNote).toMatch(/invoice totals/);
+    expect(paidNote).not.toMatch(/Collected/);
 
     calls.length = 0;
     respond();
@@ -352,6 +357,9 @@ describe('generateArAgingReport', () => {
     expect(result.rows).toEqual([]);
     expect(s.byCurrency).toEqual([]);
     expect(s.notes).toEqual([SITE_RESTRICTED_NOTE]);
+    // Same cap as the P5 no-orgs branch and a real run: the registry's.
+    expect(s.detail).toEqual({ cap: reportTypeDef('ar_aging').detailRowCap, stored: 0, available: 0, truncated: false });
+    expect(s.asOf).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 
   it.each([

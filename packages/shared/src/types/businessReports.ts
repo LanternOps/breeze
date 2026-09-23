@@ -228,7 +228,9 @@ export function emptyTechnicianTimeSummary(note: string): TechnicianTimeSummary 
 export function emptyArAgingSummary(note: string): ArAgingSummary {
   return {
     generatedAt: new Date().toISOString(),
-    asOf: new Date().toISOString(),
+    // A calendar date like every real run's asOf (UTC: an empty summary has
+    // no owner timezone), never a full timestamp.
+    asOf: new Date().toISOString().slice(0, 10),
     timeZone: 'UTC',
     scope: { kind: 'organization', orgId: '', orgName: null },
     groupBy: 'organization',

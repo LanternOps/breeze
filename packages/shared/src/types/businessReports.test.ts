@@ -27,4 +27,8 @@ describe('empty business summaries', () => {
       expect(s.rows).toEqual([]);
     }
   });
+
+  it('the AR empty summary asOf is a YYYY-MM-DD date, never a full timestamp', () => {
+    expect(emptyArAgingSummary(NOTE).asOf).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
 });
