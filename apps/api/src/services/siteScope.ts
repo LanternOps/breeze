@@ -29,6 +29,7 @@ import type { AuthContext } from '../middleware/auth';
 import { canManagePartnerWidePolicies } from './partnerWideAccess';
 import type { UserPermissions } from './permissions';
 import { permissionGrantMatches } from './permissionMatching';
+import { captureException } from './sentry';
 
 export type SiteScopeV1 =
   | { version: 1; kind: 'unrestricted'; orgId: string }
@@ -1307,6 +1308,17 @@ async function resolveExactReportAuthorityInSystemContext(
   );
 }
 
+// #3198 W02 (B4): a DB failure during the live authority read still fails
+// closed as 'unverifiable_scope', but must not be silent - an outage would
+// otherwise read as a wave of ordinary permission refusals.
+function reportAuthorityLookupFailed(
+  context: Record<string, unknown>,
+  err: unknown,
+): void {
+  console.error('[siteScope] live report authority lookup failed', { ...context, err });
+  captureException(err);
+}
+
 async function resolveExactReportAuthority(
   userId: string,
   orgId: string,
@@ -1324,7 +1336,8 @@ async function resolveExactReportAuthority(
         ),
       ),
     );
-  } catch {
+  } catch (err) {
+    reportAuthorityLookupFailed({ userId, orgId }, err);
     return denied('unverifiable_scope');
   }
 }
@@ -1433,7 +1446,8 @@ async function resolveExactPartnerReportAuthority(
         ),
       ),
     );
-  } catch {
+  } catch (err) {
+    reportAuthorityLookupFailed({ userId, partnerId }, err);
     return denied('unverifiable_scope');
   }
 }
@@ -2018,7 +2032,11 @@ export async function resolveRequestReportAuthorityMap(
         ),
       ),
     );
-  } catch {
+  } catch (err) {
+    reportAuthorityLookupFailed(
+      { userId: auth.user.id, orgIds: accessibleOrgIds },
+      err,
+    );
     for (const orgId of accessibleOrgIds) {
       result.set(orgId, denied('unverifiable_scope'));
     }

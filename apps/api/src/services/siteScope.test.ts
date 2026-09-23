@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { reportRuns, reports } from '../db/schema';
@@ -40,6 +40,8 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn((callback: () => unknown) => callback()),
 }));
 
+vi.mock('./sentry', () => ({ captureException: vi.fn() }));
+
 import {
   decodeSiteScope,
   intersectSiteScopes,
@@ -73,6 +75,7 @@ import {
   type SystemReportExecutionAuthority,
 } from './siteScope';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { captureException } from './sentry';
 
 const ORG_A = '11111111-1111-1111-1111-111111111111';
 const ORG_B = '22222222-2222-2222-2222-222222222222';
@@ -2623,5 +2626,81 @@ describe('resolveLiveReportTypePermissions', () => {
   it('treats a database failure as NOT granted', async () => {
     queueRows(new Error('connection reset'));
     await expect(resolveLiveReportTypePermissions(userId, { partnerId }, INVOICES_READ)).resolves.toBe(false);
+  });
+});
+
+describe('resolver DB failures are logged, not swallowed (#3198 W02 B4)', () => {
+  const partnerId = '11111111-1111-4111-8111-111111111111';
+  const orgId = '22222222-2222-4222-8222-222222222222';
+  const userId = '33333333-3333-4333-8333-333333333333';
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    liveDbState.rows.length = 0;
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    errorSpy.mockRestore();
+  });
+
+  function expectLogged(context: Record<string, unknown>, err: Error) {
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(errorSpy.mock.calls[0]?.[1]).toMatchObject({ ...context, err });
+    expect(vi.mocked(captureException)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(captureException)).toHaveBeenCalledWith(err);
+  }
+
+  it('org resolver logs userId/orgId + captures, denial unchanged', async () => {
+    const err = new Error('connection reset');
+    liveDbState.rows.push(err);
+
+    await expect(resolveLiveReportAuthority(userId, orgId, 'read'))
+      .resolves.toEqual({ ok: false, reason: 'unverifiable_scope' });
+    expectLogged({ userId, orgId }, err);
+  });
+
+  it('partner resolver logs userId/partnerId + captures, denial unchanged', async () => {
+    const err = new Error('connection reset');
+    liveDbState.rows.push(err);
+
+    await expect(resolveLivePartnerReportAuthority(userId, partnerId, 'read'))
+      .resolves.toEqual({ ok: false, reason: 'unverifiable_scope' });
+    expectLogged({ userId, partnerId }, err);
+  });
+
+  it('map resolver logs userId/orgIds + captures, every org denied unchanged', async () => {
+    const err = new Error('connection reset');
+    liveDbState.rows.push(err);
+    const auth = {
+      user: { id: userId, email: 'a@example.com', name: 'A', isPlatformAdmin: false },
+      token: {},
+      partnerId,
+      orgId: null,
+      scope: 'partner',
+      accessibleOrgIds: [orgId],
+      orgCondition: vi.fn(),
+      canAccessOrg: () => true,
+    } as any;
+
+    const result = await resolveRequestReportAuthorityMap(auth, [orgId], 'read');
+    expect(result.get(orgId)).toEqual({ ok: false, reason: 'unverifiable_scope' });
+    expectLogged({ userId, orgIds: [orgId] }, err);
+  });
+
+  it('a non-error unverifiable denial (duplicate memberships) is not reported', async () => {
+    liveDbState.rows.push(
+      [{ id: userId, status: 'active', isPlatformAdmin: false, partnerId }],
+      [
+        { roleId: '88888888-8888-4888-8888-888888888888', orgAccess: 'all' },
+        { roleId: '88888888-8888-4888-8888-888888888888', orgAccess: 'all' },
+      ],
+    );
+
+    await expect(resolveLivePartnerReportAuthority(userId, partnerId, 'read'))
+      .resolves.toEqual({ ok: false, reason: 'unverifiable_scope' });
+    expect(errorSpy).not.toHaveBeenCalled();
+    expect(vi.mocked(captureException)).not.toHaveBeenCalled();
   });
 });

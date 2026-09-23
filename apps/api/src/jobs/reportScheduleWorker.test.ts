@@ -1808,6 +1808,80 @@ describe('partner-owned scheduled definitions (#3198 W01/W02)', () => {
     expect(resolveLiveReportAuthorityMock).not.toHaveBeenCalled();
   });
 
+  // #3198 W02 (B4): each fail-closed catch still denies with the same reason,
+  // but reports the underlying error instead of swallowing it.
+  describe('scope_unverifiable catches log + capture (B4)', () => {
+    let errorSpy: ReturnType<typeof vi.spyOn>;
+    beforeEach(() => {
+      captureExceptionMock.mockClear();
+      errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    });
+    afterEach(() => errorSpy.mockRestore());
+
+    function expectReported(stage: string, err?: unknown) {
+      expect(errorSpy).toHaveBeenCalledWith(
+        '[ReportScheduleWorker] Execution scope could not be verified',
+        expect.objectContaining({ reportId: REPORT_ID, stage, err: err ?? expect.anything() }),
+      );
+      expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+      if (err) expect(captureExceptionMock).toHaveBeenCalledWith(err);
+    }
+
+    it('corrupt owner axes', async () => {
+      selectMock.mockReturnValueOnce(selectChain([{ ...partnerReport, orgId: ORG_ID }]));
+      const failedInsert = insertChain([{ id: RUN_ID }]);
+      insertMock.mockReturnValueOnce(failedInsert);
+
+      await run();
+
+      expect(failedInsert.values).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'failed', errorMessage: 'scope_unverifiable' }),
+      );
+      expectReported('owner');
+    });
+
+    it('persisted scope decode failure', async () => {
+      const err = new Error('partial scope');
+      scopeState.decodeError = err;
+      selectMock.mockReturnValueOnce(selectChain([partnerReport]));
+      const failedInsert = insertChain([{ id: RUN_ID }]);
+      insertMock.mockReturnValueOnce(failedInsert);
+
+      await run();
+
+      expect(failedInsert.values).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'failed', errorMessage: 'scope_unverifiable' }),
+      );
+      expectReported('decode', err);
+    });
+
+    it('live authority resolver throw', async () => {
+      const err = new Error('database unavailable');
+      resolveLivePartnerReportAuthorityMock.mockRejectedValueOnce(err);
+      selectMock.mockReturnValueOnce(selectChain([partnerReport]));
+      const failedInsert = insertChain([{ id: RUN_ID }]);
+      insertMock.mockReturnValueOnce(failedInsert);
+
+      await run();
+
+      expect(failedInsert.values).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'failed', errorMessage: 'scope_unverifiable' }),
+      );
+      expectReported('live_authority', err);
+      expect(generateReportMock).not.toHaveBeenCalled();
+    });
+
+    it('a missing execution user is an ordinary denial, not reported', async () => {
+      selectMock.mockReturnValueOnce(selectChain([{ ...partnerReport, executionScopeUserId: null }]));
+      insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
+
+      await run();
+
+      expect(errorSpy).not.toHaveBeenCalled();
+      expect(captureExceptionMock).not.toHaveBeenCalled();
+    });
+  });
+
   it('delivers a partner-owned report on the owner partner lane: partner timezone + partner branding, no org reads', async () => {
     selectMock.mockReturnValueOnce(selectChain([{ partnerTimezone: 'Europe/Berlin', partnerSettings: {} }]));
 

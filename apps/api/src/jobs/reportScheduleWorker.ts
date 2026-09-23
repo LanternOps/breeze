@@ -518,6 +518,18 @@ export async function processRunScheduledReport(
       .returning();
   };
 
+  // #3198 W02 (B4): the owner/decode/live-resolve catches below fail closed as
+  // 'scope_unverifiable', but the cause (a corrupt row, a DB outage) must be
+  // visible - otherwise it reads as an ordinary permission refusal.
+  const reportScopeFailure = (stage: string, err: unknown): void => {
+    console.error('[ReportScheduleWorker] Execution scope could not be verified', {
+      reportId: report.id,
+      stage,
+      err,
+    });
+    captureException(err);
+  };
+
   // P2-3 (#4190) — defence in depth. A system-authored definition (the weekly
   // AI org narrative) has no acting user, so there is nobody for this worker to
   // reauthorize against; it is owned by the agent scheduler, not the report
@@ -549,7 +561,8 @@ export async function processRunScheduledReport(
   let owner: ReportOwner;
   try {
     owner = reportOwnerOf(report);
-  } catch {
+  } catch (err) {
+    reportScopeFailure('owner', err);
     await deny('scope_unverifiable');
     return;
   }
@@ -560,7 +573,8 @@ export async function processRunScheduledReport(
       report as unknown as PersistedSiteScopeColumns,
       owner,
     );
-  } catch {
+  } catch (err) {
+    reportScopeFailure('decode', err);
     await deny('scope_unverifiable');
     return;
   }
@@ -587,7 +601,8 @@ export async function processRunScheduledReport(
           owner.orgId,
           'read',
         );
-  } catch {
+  } catch (err) {
+    reportScopeFailure('live_authority', err);
     await deny('scope_unverifiable');
     return;
   }
