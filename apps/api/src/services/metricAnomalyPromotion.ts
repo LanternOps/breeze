@@ -63,6 +63,12 @@ export type PromoteMetricAnomalyToAlertOptions = {
   anomalyId: string;
   actorUserId?: string | null;
   requireCreateAlertsFlag?: boolean;
+  /**
+   * Metric anomaly EPISODE (spec §12, W02) this promotion is for. Written to
+   * the new alert's `context.episodeId` only. Never to `alerts.episode_id`:
+   * that column is the monitor breach episode (#5290).
+   */
+  episodeId?: string | null;
 };
 
 function titleForAnomaly(anomaly: MetricAnomalyRow): string {
@@ -269,6 +275,7 @@ export async function promoteMetricAnomalyToAlert(
         // Wave 6 PR 4 (#3828 Task 3) — informational only; see
         // findIncidentAgentRunId's docstring.
         agentRunId: incidentAgentRunId,
+        ...(options.episodeId ? { episodeId: options.episodeId } : {}),
       },
       triggeredAt: now,
     })

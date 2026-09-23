@@ -67,6 +67,13 @@ vi.mock('../../services/permissions', () => ({
   },
 }));
 
+vi.mock('../../services/metricAnomalyEpisodeQueries', () => ({
+  listDeviceEpisodes: vi.fn(),
+  getDeviceEpisodeDetail: vi.fn(),
+  getDeviceEpisodeDto: vi.fn(),
+}));
+vi.mock('../../services/metricAnomalyEpisodeActions', () => ({ applyEpisodeAction: vi.fn() }));
+vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 vi.mock('./helpers', () => ({
   SITE_ACCESS_DENIED: Symbol.for('site-access-denied'),
   getDeviceWithOrgAndSiteCheck: getDeviceWithOrgAndSiteCheckMock,

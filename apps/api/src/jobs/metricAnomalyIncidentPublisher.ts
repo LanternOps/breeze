@@ -99,6 +99,8 @@ type ClaimedIncidentRow = {
   org_id: string;
   device_id: string;
   dispatch_attempts: number;
+  /** Decided by the claim: a sibling of the same episode dispatches instead (W02, spec §11). */
+  suppressed_by_episode: boolean;
 };
 
 function extractRows<T>(result: unknown): T[] {
@@ -109,6 +111,8 @@ function extractRows<T>(result: unknown): T[] {
 export interface PublishIncidentsResult {
   published: number;
   skipped: number;
+  /** Claimed rows not published because another incident of the same episode dispatches (W02). */
+  suppressed: number;
 }
 
 interface ClaimResult {
@@ -140,22 +144,49 @@ async function scanAndClaimIncidentRows(): Promise<ClaimResult> {
     captureException(new Error(message));
   }
 
-  // Atomically claim live rows and bump dispatch_attempts.
+  // Atomically claim live rows, bump dispatch_attempts, and decide one
+  // dispatch per episode (spec §11 + W02 deviation D-1). episode_id was
+  // written at insert by W01 (stage order episodes -> incidents), so there is
+  // no grace window. A suppressed row is marked dispatched here, in the
+  // claim, so it is never claimed again and never published.
   const claimed = await db.execute<ClaimedIncidentRow>(sql`
     WITH due AS (
-      SELECT id
+      SELECT id, episode_id, window_start
       FROM ${metricAnomalyIncidents}
       WHERE ${metricAnomalyIncidents.dispatchedAt} IS NULL
         AND ${metricAnomalyIncidents.dispatchAttempts} <= ${MAX_PUBLISH_ATTEMPTS}
       ORDER BY ${metricAnomalyIncidents.orgId}, ${metricAnomalyIncidents.id}
       LIMIT ${MAX_PUBLISH_PER_RUN}
       FOR UPDATE SKIP LOCKED
+    ),
+    decided AS (
+      SELECT
+        d.id,
+        (
+          d.episode_id IS NOT NULL
+          AND (
+            row_number() OVER (PARTITION BY d.episode_id ORDER BY d.window_start, d.id) > 1
+            OR EXISTS (
+              SELECT 1
+              FROM metric_anomaly_incidents s
+              WHERE s.episode_id = d.episode_id
+                AND s.id <> d.id
+                AND (
+                  s.agent_run_id IS NOT NULL
+                  OR (s.dispatched_at IS NOT NULL AND s.suppressed_by_episode = false)
+                )
+            )
+          )
+        ) AS suppress
+      FROM due d
     )
     UPDATE ${metricAnomalyIncidents} AS i
-    SET dispatch_attempts = i.dispatch_attempts + 1
-    FROM due
-    WHERE i.id = due.id
-    RETURNING i.id, i.org_id, i.device_id, i.dispatch_attempts;
+    SET dispatch_attempts = i.dispatch_attempts + 1,
+        dispatched_at = CASE WHEN decided.suppress THEN now() ELSE i.dispatched_at END,
+        suppressed_by_episode = decided.suppress
+    FROM decided
+    WHERE i.id = decided.id
+    RETURNING i.id, i.org_id, i.device_id, i.dispatch_attempts, i.suppressed_by_episode;
   `);
   const claimedRows = extractRows<ClaimedIncidentRow>(claimed);
 
@@ -217,14 +248,21 @@ export async function publishPendingIncidents(): Promise<PublishIncidentsResult>
   const { stuckRows, claimedRows } = await runWithSystemDbAccess(scanAndClaimIncidentRows);
 
   if (claimedRows.length === 0) {
-    return { published: 0, skipped: stuckRows.length };
+    return { published: 0, skipped: stuckRows.length, suppressed: 0 };
   }
 
   // Phase 2: publish, explicitly outside any DB context — the claiming
   // transaction from phase 1 has already committed, but we exit defensively
   // in case a future caller nests `publishPendingIncidents` inside its own
-  // context.
-  const publishedIds = await runOutsideDbContext(() => publishClaimedRows(claimedRows));
+  // context. Rows the claim suppressed (another incident of the same episode
+  // dispatches) were already marked dispatched by the claim itself.
+  const toPublish = claimedRows.filter((row) => !row.suppressed_by_episode);
+  const suppressed = claimedRows.length - toPublish.length;
+  if (toPublish.length === 0) {
+    return { published: 0, skipped: stuckRows.length, suppressed };
+  }
+
+  const publishedIds = await runOutsideDbContext(() => publishClaimedRows(toPublish));
 
   // Phase 3: mark successfully-published rows dispatched, in a second short
   // DB context that never overlaps the publish loop above.
@@ -238,7 +276,7 @@ export async function publishPendingIncidents(): Promise<PublishIncidentsResult>
     );
   }
 
-  return { published: publishedIds.length, skipped: stuckRows.length };
+  return { published: publishedIds.length, skipped: stuckRows.length, suppressed };
 }
 
 function createWorker(): Worker<PublisherJobData> {
@@ -250,13 +288,13 @@ function createWorker(): Worker<PublisherJobData> {
         // internally (claim → publish → mark-dispatched) — it must NOT be
         // wrapped in an outer withSystemDbAccessContext here, or the publish
         // loop would run inside a held transaction (#1105).
-        const { published, skipped } = await publishPendingIncidents();
-        if (published > 0 || skipped > 0) {
+        const { published, skipped, suppressed } = await publishPendingIncidents();
+        if (published > 0 || skipped > 0 || suppressed > 0) {
           console.log(
-            `[MetricAnomalyIncidentPublisher] Published ${published} incident(s), ${skipped} stuck`,
+            `[MetricAnomalyIncidentPublisher] Published ${published} incident(s), ${suppressed} suppressed by episode, ${skipped} stuck`,
           );
         }
-        return { published, skipped };
+        return { published, skipped, suppressed };
       } catch (err) {
         console.error('[MetricAnomalyIncidentPublisher] Run failed:', err);
         captureException(err instanceof Error ? err : new Error(String(err)));
