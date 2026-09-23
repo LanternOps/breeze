@@ -8,7 +8,7 @@ import {
   partners,
   ticketMailboxConnections,
 } from '../../db/schema';
-import { createTicket } from '../ticketService';
+import { changeTicketStatus, createTicket, type TicketActor } from '../ticketService';
 import { resolvePartnerByRecipient } from './resolvePartner';
 import { resolveOrgBySenderDomain, resolveEmailRequester, loadPartnerInboundPolicy } from './resolveOrg';
 import { maybeSendAutoresponse } from './autoresponder';
@@ -22,15 +22,18 @@ import { TICKET_TOKEN_RE, findTicketInPartner, findClosedTicketInPartner, type S
 import { claimMessageLink, findLinkByMessageId, normalizeMessageId } from '../ticketEmailLinks';
 import { ownOutboundReason, ticketCreationLoopReason } from './loopPrevention';
 
-// Synthetic actor for the inbound pipeline. Only ever written to audit_logs.actor_id
-// (NOT NULL, but no FK to users — same pattern as auditEvents.ANONYMOUS_ACTOR_ID /
-// notificationDispatcher). createTicket does NOT write actor.userId to any tickets FK
-// column. The resolved-ticket reopen is performed as a direct partner-scoped UPDATE here
-// (NOT via changeTicketStatus) precisely because changeTicketStatus inserts a
-// ticket_comments row with user_id = actor.userId, and ticket_comments.user_id IS FK'd to
-// users(id) — a synthetic id would FK-violate at runtime. The direct UPDATE keeps the
-// reopen FK-safe while honoring the partner re-assertion guard.
-const SYSTEM_ACTOR = { userId: '00000000-0000-0000-0000-000000000000', name: 'Inbound Email' };
+// Synthetic actor for the inbound pipeline. Its userId is only ever written to
+// audit_logs.actor_id (NOT NULL, but no FK to users — same pattern as
+// auditEvents.ANONYMOUS_ACTOR_ID / notificationDispatcher). createTicket does NOT write
+// actor.userId to any tickets FK column. `principalKind: 'system'` makes
+// changeTicketStatus write null (not this synthetic id) into the columns that ARE FK'd
+// to users(id) — ticket_comments.user_id, tickets.closed_by — so the resolved-ticket
+// reopen can go through the service's status-change path (#6689).
+const SYSTEM_ACTOR: TicketActor = {
+  userId: '00000000-0000-0000-0000-000000000000',
+  name: 'Inbound Email',
+  principalKind: 'system'
+};
 
 // Per-partner ticket display number, e.g. T-2026-0001.
 const TOKEN_RE = TICKET_TOKEN_RE;
@@ -855,11 +858,22 @@ async function appendInboundComment(
   return commentId;
 }
 
-// Reopen a resolved ticket via a direct partner-scoped UPDATE (FK-safe — see SYSTEM_ACTOR note).
-// The partner_id predicate is a defense-in-depth re-assertion: even though the matched ticket
-// was already partner-checked, the write itself is bounded to the resolved partner.
+// Reopen a resolved ticket through the ticket service's status-change path (#6689), so the
+// `ticket.status_changed` outbox row, the SLA pause ledger, the status-change feed entry,
+// statusId re-pointing and the audit row all run exactly as for a technician reopen.
+//
+// The partner-scoped, row-locked re-read is the defense-in-depth re-assertion that used
+// to live in the raw UPDATE's WHERE: even though the matched ticket was already
+// partner-checked, the reopen only proceeds for a ticket of the resolved partner that is
+// STILL resolved. Runs in the ingest transaction (changeTicketStatus uses the ambient
+// `db`), so a rollback discards the status change with the comment.
 async function reopenResolvedTicket(ticketId: string, partnerId: string): Promise<void> {
-  await db.update(tickets)
-    .set({ status: 'open', resolvedAt: null, updatedAt: new Date() })
-    .where(and(eq(tickets.id, ticketId), eq(tickets.partnerId, partnerId), eq(tickets.status, 'resolved')));
+  const [current] = await db
+    .select({ status: tickets.status })
+    .from(tickets)
+    .where(and(eq(tickets.id, ticketId), eq(tickets.partnerId, partnerId)))
+    .for('update')
+    .limit(1);
+  if (current?.status !== 'resolved') return;
+  await changeTicketStatus(ticketId, { status: 'open' }, {}, SYSTEM_ACTOR);
 }

@@ -1822,6 +1822,64 @@ describe('changeTicketStatus — additional lifecycle cases', () => {
     });
   });
 
+  // #6689: the inbound-email pipeline reopens a resolved ticket through this
+  // path with a synthetic system actor. Its userId is not a users(id) row, so
+  // every FK'd column (ticket_comments.user_id, tickets.closed_by) and the
+  // event's actorUserId must carry null — while the outbox event, the reopen
+  // stamps, and the SLA ledger behave exactly as for a technician reopen.
+  it('reopen by a system actor: nulls the users FK, still writes the outbox event, leaves the SLA ledger alone', async () => {
+    const systemActor = { userId: '00000000-0000-0000-0000-000000000000', name: 'Inbound Email', principalKind: 'system' as const };
+    dbMocks.selectResult.mockResolvedValue([{
+      id: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      status: 'resolved',
+      resolvedAt: new Date('2026-01-10T12:00:00Z'),
+      slaPausedAt: null,
+      slaPausedMinutes: 17,
+      pendingReason: null
+    }]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', status: 'open' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await changeTicketStatus('t-1', { status: 'open' }, {}, systemActor);
+
+    const updatePayload = setMock.mock.calls[0]![0];
+    expect(updatePayload).toMatchObject({ status: 'open', resolvedAt: null, closedAt: null, closedBy: null });
+    // Not paused before or after: the pause ledger is not touched.
+    expect(updatePayload).not.toHaveProperty('slaPausedAt');
+    expect(updatePayload).not.toHaveProperty('slaPausedMinutes');
+
+    // call 0 = status-change feed row, call 1 = outbox row.
+    expect(valuesMock).toHaveBeenCalledTimes(2);
+    expect(valuesMock.mock.calls[0]![0]).toMatchObject({
+      commentType: 'status_change', oldValue: 'resolved', newValue: 'open',
+      userId: null, authorName: 'Inbound Email'
+    });
+    expect(valuesMock.mock.calls[1]![0]).toMatchObject({
+      orgId: 'o-1', ticketId: 't-1', eventType: 'ticket.status_changed',
+      payload: { from: 'resolved', to: 'open' }
+    });
+    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'ticket.status_changed',
+      actorUserId: null,
+      payload: { from: 'resolved', to: 'open' }
+    }));
+  });
+
+  it('close by a system actor: closedBy is null, never the synthetic id', async () => {
+    const systemActor = { userId: '00000000-0000-0000-0000-000000000000', name: 'System', principalKind: 'system' as const };
+    dbMocks.selectResult.mockResolvedValue([{
+      id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'resolved',
+      resolvedAt: new Date('2026-01-10T12:00:00Z'), closedAt: null, closedBy: null, pendingReason: null
+    }]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', status: 'closed' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await changeTicketStatus('t-1', { status: 'closed' }, {}, systemActor);
+
+    expect(setMock.mock.calls[0]![0].closedBy).toBeNull();
+    expect(valuesMock.mock.calls[0]![0].userId).toBeNull();
+  });
+
   it('close an already-resolved ticket: preserves resolvedAt, stamps closedAt/closedBy', async () => {
     const resolvedDate = new Date('2026-01-10T12:00:00Z');
     dbMocks.selectResult.mockResolvedValue([{
