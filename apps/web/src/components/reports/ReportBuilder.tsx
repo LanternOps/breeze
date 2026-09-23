@@ -34,6 +34,8 @@ import { FilterBuilder, DEFAULT_FILTER_FIELDS } from '../filters/FilterBuilder';
 import { FilterPreview } from '../filters/FilterPreview';
 import { useFilterPreview } from '../../hooks/useFilterPreview';
 import { useTranslation } from 'react-i18next';
+import { isBusinessReportType } from './businessReportAccess';
+import { BUSINESS_REFUSED_CONFIG_KEYS, omitConfigKeys } from './businessReportConfig';
 
 type BuilderReportType = 'devices' | 'alerts' | 'patches' | 'compliance' | 'activity';
 type ReportBuilderType = BuilderReportType | LegacyReportType;
@@ -108,6 +110,13 @@ type ReportBuilderProps = {
    * to schema defaults on the next edit.
    */
   baseConfig?: Record<string, unknown>;
+  /**
+   * The report being edited is partner-owned (`orgId` null, covers all the
+   * partner's organizations, #3198). Its PUT must OMIT `orgId` entirely: the
+   * API answers 400 `report_ownership_immutable` for any `orgId` on a
+   * partner-owned row, `null` included, and ownership never changes on edit.
+   */
+  partnerOwned?: boolean;
   onSubmit?: (values: ReportBuilderFormValues) => void | Promise<void>;
   onPreview?: (values: ReportBuilderFormValues) => void | Promise<void>;
   onCancel?: () => void;
@@ -742,6 +751,7 @@ export default function ReportBuilder({
   defaultValues,
   reportId,
   baseConfig,
+  partnerOwned = false,
   onSubmit,
   onPreview,
   onCancel
@@ -1399,22 +1409,29 @@ export default function ReportBuilder({
 
     const values = buildFormValues();
     const primaryFormat = values.format ?? 'pdf';
+    // Business report types (#3198) are builder-opaque: their options come from
+    // their own form via `baseConfig`, and the server REFUSES the builder's
+    // selectors on them (dateRange/filters/… → 400) and narrows `groupBy` to an
+    // enum (the builder's free-text `''` → 400). So for those types the builder
+    // contributes none of its selectors or its groupBy — baseConfig wins — and
+    // any refused key that reached baseConfig is dropped.
+    const isBusiness = isBusinessReportType(defaultValues?.type);
 
     const payload = {
       name: values.name || 'Untitled Report',
       type: values.type,
       schedule: values.schedule,
       format: primaryFormat,
-      ...(currentOrgId ? { orgId: currentOrgId } : {}),
+      ...(currentOrgId && !partnerOwned ? { orgId: currentOrgId } : {}),
       config: {
         // Keys the builder doesn't own (posture thresholds, executive-summary
         // settings) come first so live builder state below still wins.
-        ...baseConfig,
+        ...(isBusiness ? omitConfigKeys(baseConfig, BUSINESS_REFUSED_CONFIG_KEYS) : baseConfig),
         builderType,
         dataSource,
         columns: selectedFields,
         filterConditions,
-        groupBy,
+        ...(isBusiness ? {} : { groupBy }),
         aggregation,
         chartType,
         schedule: {
@@ -1426,8 +1443,12 @@ export default function ReportBuilder({
         emailRecipients,
         saveTemplate,
         templateName: saveTemplate ? templateName : undefined,
-        legacyFilters: defaultValues?.filters,
-        dateRange: defaultValues?.dateRange
+        ...(isBusiness
+          ? {}
+          : {
+              legacyFilters: defaultValues?.filters,
+              dateRange: defaultValues?.dateRange
+            })
       }
     };
 

@@ -67,6 +67,11 @@ export type Report = {
   schedule: ReportSchedule;
   format: ReportFormat;
   config: Record<string, unknown>;
+  /** Owner. A partner-owned report (#3198: covers all of the partner's
+   *  organizations) has `orgId: null` and `partnerId` set; an org-owned one has
+   *  `orgId` set. Ownership is immutable after create. */
+  orgId: string | null;
+  partnerId: string | null;
   portalSelfService: boolean;
   lastGeneratedAt: string | null;
   createdAt: string;
