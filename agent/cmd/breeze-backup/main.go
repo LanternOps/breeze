@@ -419,9 +419,13 @@ func initBackupManager(cfg *config.Config) *backup.BackupManager {
 		Retention:          retention,
 		VSSEnabled:         cfg.BackupVSSEnabled,
 		SystemStateEnabled: cfg.BackupSystemStateEnabled,
-		StagingDir:         stagingDir,
-		AgentID:            cfg.AgentID,
-		AgentVersion:       version,
+		// W06: paths are always set here (guard above), so system state ON is
+		// the whole-machine shape — capture NTFS security descriptors exactly
+		// as managerFromBackupRunPayload does for a wholeMachine run.
+		CaptureSecurityDescriptors: cfg.BackupSystemStateEnabled,
+		StagingDir:                 stagingDir,
+		AgentID:                    cfg.AgentID,
+		AgentVersion:               version,
 	})
 
 	return mgr

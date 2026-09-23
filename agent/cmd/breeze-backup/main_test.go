@@ -491,6 +491,39 @@ func TestInitBackupManager_CarriesAgentIDIntoManager(t *testing.T) {
 	}
 }
 
+// TestInitBackupManager_CaptureSecurityDescriptorsOnlyWithSystemState pins
+// the agent.yaml fallback's W06 wiring: initBackupManager always has paths,
+// so system state ON is the same files + system-state (whole-machine) shape
+// the backup_run payload builds for a wholeMachine selection, and must
+// capture security descriptors identically. A plain file backup must not.
+func TestInitBackupManager_CaptureSecurityDescriptorsOnlyWithSystemState(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		systemState bool
+		want        bool
+	}{
+		{"system state + paths captures SDs", true, true},
+		{"plain file backup does not", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mgr := initBackupManager(&config.Config{
+				AgentID:                  "agent-sd-wiring",
+				BackupEnabled:            true,
+				BackupPaths:              []string{t.TempDir()},
+				BackupProvider:           "local",
+				BackupLocalPath:          t.TempDir(),
+				BackupSystemStateEnabled: tc.systemState,
+			})
+			if mgr == nil {
+				t.Fatal("initBackupManager returned nil")
+			}
+			if got := mgr.GetCaptureSecurityDescriptors(); got != tc.want {
+				t.Fatalf("CaptureSecurityDescriptors = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // ── D20b item B: provider-backed workloads route through a payload-built
 // manager when mgr == nil (the normal state for every policy-managed
 // device) ──────────────────────────────────────────────────────────────

@@ -326,6 +326,13 @@ func (m *BackupManager) GetSystemStateEnabled() bool {
 	return m.config.SystemStateEnabled
 }
 
+// GetCaptureSecurityDescriptors reports whether this manager captures the
+// NTFS security descriptor of every file and directory (whole-machine
+// Windows runs; a no-op elsewhere — see BackupConfig.CaptureSecurityDescriptors).
+func (m *BackupManager) GetCaptureSecurityDescriptors() bool {
+	return m.config.CaptureSecurityDescriptors
+}
+
 // GetVSSEnabled reports whether this manager creates a VSS shadow copy
 // before a file-mode backup (Windows only; see BackupConfig.VSSEnabled).
 func (m *BackupManager) GetVSSEnabled() bool {
