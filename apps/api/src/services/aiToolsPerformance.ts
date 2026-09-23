@@ -211,7 +211,66 @@ async function queryMetricRollupsForAnalysis(
     )
     .groupBy(metricRollups.bucketStart)
     .orderBy(desc(metricRollups.bucketStart))
-    .limit(500);
+    .limit(METRIC_WINDOW_ROW_CAP);
+}
+
+// #6745: analyze_metrics point paging + projection. The summary is computed
+// over every row fetched for the window (up to METRIC_WINDOW_ROW_CAP); only the
+// returned point list is paged. The default is the largest page of full raw
+// points (metric=all) that fits the chat budget uncompacted — measured in
+// aiToolsPerformance.outputShape.test.ts, not asserted.
+const METRIC_POINTS_DEFAULT_LIMIT = 40;
+const METRIC_POINTS_MAX_LIMIT = 500;
+const METRIC_WINDOW_ROW_CAP = 500;
+
+type MetricSelector = 'cpu' | 'ram' | 'disk' | 'network' | 'all';
+type RawMetricRow = typeof deviceMetrics.$inferSelect;
+// Per-metric raw columns. `all` keeps the headline percentages + bandwidth and
+// leaves the absolute ramUsedMb/diskUsedGb to the summary; the jsonb
+// interfaceStats/customMetrics columns and the cumulative byte/op counters are
+// never echoed (they were the bulk of the old raw rows).
+const RAW_POINT_FIELDS: Record<MetricSelector, ReadonlyArray<keyof RawMetricRow>> = {
+  cpu: ['cpuPercent'],
+  ram: ['ramPercent', 'ramUsedMb'],
+  disk: ['diskPercent', 'diskUsedGb', 'diskReadBps', 'diskWriteBps'],
+  network: ['bandwidthInBps', 'bandwidthOutBps'],
+  all: ['cpuPercent', 'ramPercent', 'diskPercent', 'bandwidthInBps', 'bandwidthOutBps'],
+};
+
+function clampPointLimit(raw: unknown): number {
+  const n = Math.trunc(Number(raw));
+  const base = Number.isFinite(n) && n > 0 ? n : METRIC_POINTS_DEFAULT_LIMIT;
+  return Math.min(base, METRIC_POINTS_MAX_LIMIT);
+}
+
+function projectRawPoint(row: RawMetricRow, metric: MetricSelector): Record<string, unknown> {
+  const point: Record<string, unknown> = { timestamp: row.timestamp };
+  for (const field of RAW_POINT_FIELDS[metric]) {
+    const value = row[field];
+    point[field] = typeof value === 'bigint' ? Number(value) : value ?? null;
+  }
+  return point;
+}
+
+/**
+ * Honest paging for a time series: `pointsInWindow` is how many points the
+ * window holds (capped at the row fetch cap), `hasMore` whether older points
+ * were left out. There is no cursor — new samples arrive at the head, so an
+ * offset would drift — and the note names only the parameters this tool takes.
+ */
+function pointPageMeta(available: number, limit: number): Record<string, unknown> {
+  const showing = Math.min(available, limit);
+  const hasMore = available > limit;
+  return {
+    showing,
+    limit,
+    pointsInWindow: available,
+    ...(available >= METRIC_WINDOW_ROW_CAP ? { pointsInWindowCapped: true } : {}),
+    hasMore,
+    ...(hasMore
+      ? { note: `Showing the newest ${showing} of ${available} points. Narrow hoursBack, pass a larger limit, or use aggregation=hourly|daily for the older range.` }
+      : {}),
+  };
 }
 
 export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
@@ -230,14 +289,15 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'analyze_metrics',
-      description: 'Query and analyze time-series metrics (CPU, RAM, disk, network) for a device. Supports time range filtering and aggregation.',
+      description: 'Query and analyze time-series metrics (CPU, RAM, disk, network) for a device. Supports time range filtering and aggregation. The summary covers the whole window; the point list is the newest `limit` points.',
       input_schema: {
         type: 'object' as const,
         properties: {
           deviceId: { type: 'string', description: 'The device UUID' },
           metric: { type: 'string', enum: ['cpu', 'ram', 'disk', 'network', 'all'], description: 'Which metric to analyze (default: all)' },
           hoursBack: { type: 'number', description: 'How many hours back to look (default: 24, max: 168)' },
-          aggregation: { type: 'string', enum: ['raw', 'hourly', 'daily'], description: 'Aggregation level (default: raw for <=24h, hourly for >24h)' }
+          aggregation: { type: 'string', enum: ['raw', 'hourly', 'daily'], description: 'Aggregation level (default: raw for <=24h, hourly for >24h)' },
+          limit: { type: 'number', description: `Max data points, newest first (default ${METRIC_POINTS_DEFAULT_LIMIT}, max ${METRIC_POINTS_MAX_LIMIT})` },
         },
         required: ['deviceId']
       }
@@ -252,6 +312,10 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
       const hoursBack = Math.min(Math.max(1, Number(input.hoursBack) || 24), 168);
       const since = new Date(Date.now() - hoursBack * 60 * 60 * 1000);
       const aggregation = input.aggregation || (hoursBack <= 24 ? 'raw' : 'hourly');
+      const limit = clampPointLimit(input.limit);
+      const metric = typeof input.metric === 'string' && input.metric in RAW_POINT_FIELDS
+        ? input.metric as MetricSelector
+        : 'all';
 
       if (aggregation === 'hourly' || aggregation === 'daily') {
         const rollupMetrics = await queryMetricRollupsForAnalysis(access.device.orgId, deviceId, since, aggregation);
@@ -269,7 +333,8 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
             summary,
             aggregation,
             source: 'metric_rollups',
-            buckets
+            buckets: buckets.slice(0, limit),
+            ...pointPageMeta(buckets.length, limit),
           }, (_, v) => typeof v === 'bigint' ? Number(v) : v);
         }
       }
@@ -284,7 +349,7 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
           )
         )
         .orderBy(desc(deviceMetrics.timestamp))
-        .limit(500);
+        .limit(METRIC_WINDOW_ROW_CAP);
 
       if (metrics.length === 0) {
         return JSON.stringify({ message: 'No metrics found for the specified time range', deviceId, hoursBack });
@@ -297,7 +362,8 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
       if (aggregation === 'raw') {
         return JSON.stringify({
           summary,
-          metrics: metrics.slice(0, 50) // Limit raw output
+          metrics: metrics.slice(0, limit).map((row) => projectRawPoint(row, metric)),
+          ...pointPageMeta(metrics.length, limit),
         }, (_, v) => typeof v === 'bigint' ? Number(v) : v);
       }
 
@@ -308,7 +374,8 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
         summary,
         aggregation,
         source: 'device_metrics',
-        buckets
+        buckets: buckets.slice(0, limit),
+        ...pointPageMeta(buckets.length, limit),
       }, (_, v) => typeof v === 'bigint' ? Number(v) : v);
     }
   });
@@ -818,7 +885,8 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
         properties: {
           deviceId: { type: 'string', description: 'The device UUID' },
           bootsBack: { type: 'number', description: 'Number of recent boots to analyze (default: 10, max: 30)' },
-          triggerCollection: { type: 'boolean', description: 'If true and device is online, trigger fresh collection before analysis (default: false)' }
+          triggerCollection: { type: 'boolean', description: 'If true and device is online, trigger fresh collection before analysis (default: false)' },
+          includePaths: { type: 'boolean', description: 'Include each top startup item\'s command path (default: false; itemId is enough for manage_startup_items)' },
         },
         required: ['deviceId']
       }
@@ -827,6 +895,7 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
       const deviceId = input.deviceId as string;
       const bootsBack = Math.min(Number(input.bootsBack) || 10, 30);
       const triggerCollection = Boolean(input.triggerCollection);
+      const includePaths = input.includePaths === true;
 
       const access = await verifyDeviceAccess(deviceId, auth, false);
       if ('error' in access) return JSON.stringify({ error: access.error });
@@ -929,11 +998,15 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
           timestamp: latestBoot.bootTimestamp,
           totalSeconds: latestBoot.totalBootSeconds,
           startupItemCount: latestBootStartupItemCount,
+          // #6745: only the top 10 by impact are listed; say how many were not.
+          startupItemsNotShown: Math.max(0, allStartupItems.length - topImpactItems.length),
+          // #6745: command paths are the bulk of each row and manage_startup_items
+          // resolves by itemId, so they are opt-in.
           topImpactItems: topImpactItems.map(item => ({
             itemId: item.itemId,
             name: item.name,
             type: item.type,
-            path: item.path,
+            ...(includePaths ? { path: item.path } : {}),
             enabled: item.enabled,
             impactScore: Number(item.impactScore.toFixed(1)),
             cpuTimeMs: item.cpuTimeMs,

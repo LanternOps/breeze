@@ -38,6 +38,7 @@ import {
   policyAccessCondition,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
   PolicyHasChildrenError,
+  type EffectiveConfiguration,
 } from './configurationPolicy';
 import {
   getConfigPolicyComplianceRuleInfo,
@@ -274,6 +275,42 @@ export function legacyFeatureWarning(featureType: string | undefined): { warning
   } : {};
 }
 
+/**
+ * #6745 (A-W05 follow-up): the per-feature `inlineSettings` jsonb is the bulk of
+ * an effective-config result (one blob per feature type), and most questions
+ * only need which policy won where. Settings are opt-in; `featureType` narrows
+ * the result (and the inheritance chain) to one feature.
+ */
+function shapeEffectiveConfig(
+  result: EffectiveConfiguration,
+  opts: { featureType?: string; includeSettings: boolean },
+): Record<string, unknown> {
+  const features: Record<string, unknown> = {};
+  for (const [featureType, feature] of Object.entries(result.features)) {
+    if (opts.featureType && featureType !== opts.featureType) continue;
+    // `featureType` repeats the map key, and the inheritedFrom* pair is null
+    // unless the link came from a parent policy — both dropped when redundant.
+    const { inlineSettings, featureType: _key, inheritedFromPolicyId, inheritedFromPolicyName, ...rest } = feature;
+    const inherited = inheritedFromPolicyId ? { inheritedFromPolicyId, inheritedFromPolicyName } : {};
+    const hasInlineSettings = inlineSettings !== null && inlineSettings !== undefined
+      && !(typeof inlineSettings === 'object' && Object.keys(inlineSettings as object).length === 0);
+    features[featureType] = opts.includeSettings
+      ? { ...rest, ...inherited, inlineSettings }
+      : { ...rest, ...inherited, hasInlineSettings };
+  }
+  const inheritanceChain = opts.featureType
+    ? result.inheritanceChain.filter((entry) => (entry.featureTypes as string[]).includes(opts.featureType!))
+    : result.inheritanceChain;
+  return {
+    deviceId: result.deviceId,
+    features,
+    inheritanceChain,
+    ...(opts.includeSettings
+      ? {}
+      : { settingsOmitted: true, note: 'Inline settings omitted. Call again with includeSettings=true (and featureType to narrow) to read them.' }),
+  };
+}
+
 export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
   function registerTool(tool: AiTool): void {
     aiTools.set(tool.definition.name, tool);
@@ -359,11 +396,13 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'get_effective_configuration',
-      description: 'Resolve the effective configuration for a device by evaluating all configuration policy assignments in the hierarchy (device > group > site > org > partner). Returns the winning policy per feature type with full inheritance chain for debugging.',
+      description: 'Resolve the effective configuration for a device across the policy hierarchy (device > group > site > org > partner). Returns the winning policy per feature type with the inheritance chain. Inline settings omitted unless includeSettings=true (narrow with featureType).',
       input_schema: {
         type: 'object' as const,
         properties: {
           deviceId: { type: 'string', description: 'The device UUID to resolve configuration for' },
+          featureType: { type: 'string', enum: [...CONFIG_FEATURE_TYPES], description: 'Only this feature type (default: all)' },
+          includeSettings: { type: 'boolean', description: 'Include each winning feature\'s inlineSettings (default false)' },
         },
         required: ['deviceId'],
       },
@@ -372,7 +411,10 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       const deviceId = input.deviceId as string;
       const result = await resolveEffectiveConfig(deviceId, auth);
       if (!result) return JSON.stringify({ error: 'Device not found or access denied' });
-      return JSON.stringify(result);
+      return JSON.stringify(shapeEffectiveConfig(result, {
+        featureType: typeof input.featureType === 'string' ? input.featureType : undefined,
+        includeSettings: input.includeSettings === true,
+      }));
     }),
   });
 

@@ -51,6 +51,43 @@ function normalizedAllowedSiteIds(auth: AuthContext): string[] | null {
     : Array.from(new Set(auth.allowedSiteIds)).sort();
 }
 
+// #6745 (A-W05 follow-up): measured defaults — the largest page of realistic
+// rows that fits the chat budget uncompacted (aiToolsEventLogs.outputShape.test.ts).
+const SEARCH_LOGS_DEFAULT_LIMIT = 12;
+const SEARCH_LOGS_MAX_LIMIT = 500;
+const LOG_TRENDS_DEFAULT_LIMIT = 20;
+const LOG_TRENDS_MAX_LIMIT = 100;
+/** Per-row message budget; `includeFullMessage` lifts it. */
+const LOG_MESSAGE_PREVIEW_CHARS = 200;
+/** Spikes kept (highest counts first) when the timeline itself is omitted. */
+const LOG_TRENDS_MAX_SPIKES = 10;
+/** Grouped buckets returned with includeTimeline (unchanged pre-#6745 cap). */
+const LOG_TRENDS_MAX_SERIES = 200;
+
+type FleetLogRow = Awaited<ReturnType<typeof searchFleetLogs>>['results'][number];
+
+function shapeLogRow(row: FleetLogRow, includeFullMessage: boolean): Record<string, unknown> {
+  const message = row.log.message ?? '';
+  const cut = !includeFullMessage && message.length > LOG_MESSAGE_PREVIEW_CHARS;
+  return {
+    id: row.log.id,
+    timestamp: row.log.timestamp.toISOString(),
+    level: row.log.level,
+    category: row.log.category,
+    source: row.log.source,
+    eventId: row.log.eventId,
+    message: cut ? `${message.slice(0, LOG_MESSAGE_PREVIEW_CHARS)}…` : message,
+    ...(cut ? { messageChars: message.length } : {}),
+    deviceId: row.log.deviceId,
+    hostname: row.device?.hostname ?? null,
+    ...(row.device?.displayName && row.device.displayName !== row.device.hostname
+      ? { displayName: row.device.displayName }
+      : {}),
+    siteId: row.device?.siteId ?? row.site?.id ?? null,
+    siteName: row.site?.name ?? null,
+  };
+}
+
 export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
   function registerTool(tool: AiTool): void {
     aiTools.set(tool.definition.name, tool);
@@ -90,12 +127,13 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
           source: { type: 'string', description: 'Filter by event source (partial match)' },
           deviceIds: { type: 'array', items: { type: 'string' }, description: 'Filter by specific device IDs' },
           siteIds: { type: 'array', items: { type: 'string' }, description: 'Filter by specific site IDs' },
-          limit: { type: 'number', description: 'Maximum rows to return (default 50, max 500)' },
+          limit: { type: 'number', description: `Maximum rows to return (default ${SEARCH_LOGS_DEFAULT_LIMIT}, max ${SEARCH_LOGS_MAX_LIMIT})` },
           offset: { type: 'number', description: 'Pagination offset (default 0)' },
           cursor: { type: 'string', description: 'Keyset pagination cursor from a previous search_logs response' },
           countMode: { type: 'string', enum: ['exact', 'estimated', 'none'], description: 'Total-count mode (exact is slower on large ranges)' },
           sortBy: { type: 'string', enum: ['timestamp', 'level', 'device'] },
           sortOrder: { type: 'string', enum: ['asc', 'desc'] },
+          includeFullMessage: { type: 'boolean', description: `Return whole messages (default false: messages over ${LOG_MESSAGE_PREVIEW_CHARS} chars are cut and messageChars gives the full length)` },
         },
       },
     },
@@ -110,7 +148,7 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
             total: 0,
             totalMode: 'exact',
             showing: 0,
-            limit: Math.min(Number(input.limit) || 50, 500),
+            limit: Math.min(Number(input.limit) || SEARCH_LOGS_DEFAULT_LIMIT, SEARCH_LOGS_MAX_LIMIT),
             offset: Math.max(0, Number(input.offset) || 0),
             hasMore: false,
             nextCursor: null,
@@ -137,7 +175,7 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
           source: typeof input.source === 'string' ? input.source : undefined,
           deviceIds: Array.isArray(input.deviceIds) ? input.deviceIds as string[] : undefined,
           siteIds: Array.isArray(input.siteIds) ? input.siteIds as string[] : undefined,
-          limit: Math.min(Number(input.limit) || 50, 500),
+          limit: Math.min(Number(input.limit) || SEARCH_LOGS_DEFAULT_LIMIT, SEARCH_LOGS_MAX_LIMIT),
           offset: Math.max(0, Number(input.offset) || 0),
           cursor: typeof input.cursor === 'string' ? input.cursor : undefined,
           countMode: typeof input.countMode === 'string'
@@ -155,25 +193,7 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
           offset: result.offset,
           hasMore: result.hasMore,
           nextCursor: result.nextCursor,
-          logs: result.results.map((row) => ({
-            id: row.log.id,
-            timestamp: row.log.timestamp.toISOString(),
-            level: row.log.level,
-            category: row.log.category,
-            source: row.log.source,
-            eventId: row.log.eventId,
-            message: row.log.message,
-            deviceId: row.log.deviceId,
-            device: row.device
-              ? {
-                  id: row.device.id,
-                  hostname: row.device.hostname,
-                  displayName: row.device.displayName,
-                  siteId: row.device.siteId,
-                }
-              : null,
-            site: row.site,
-          })),
+          logs: result.results.map((row) => shapeLogRow(row, input.includeFullMessage === true)),
         });
       } catch (error) {
         const message = sanitizeThrownToolError('event-logs', error);
@@ -191,7 +211,7 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'get_log_trends',
       description:
-        'Analyze event log trends including level distribution, top sources, devices with most issues, hourly error/critical timeline, and spike detection.',
+        'Analyze event log trends: level distribution, top sources, devices with most issues and error/critical spikes. The full hourly timeline is opt-in (includeTimeline).',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -216,7 +236,8 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
           source: { type: 'string', description: 'Filter by source pattern' },
           deviceIds: { type: 'array', items: { type: 'string' } },
           siteIds: { type: 'array', items: { type: 'string' } },
-          limit: { type: 'number', description: 'Max top-list entries (default 20, max 100)' },
+          limit: { type: 'number', description: `Max top-list entries (default ${LOG_TRENDS_DEFAULT_LIMIT}, max ${LOG_TRENDS_MAX_LIMIT})` },
+          includeTimeline: { type: 'boolean', description: 'Include the hourly error/critical timeline and, with groupBy, the per-bucket series (default false: spikes and totals only)' },
         },
       },
     },
@@ -249,7 +270,9 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
               levelDistribution: [],
               topSources: [],
               topDevices: [],
-              errorTimeline: [],
+              topSourcesHasMore: false,
+              topDevicesHasMore: false,
+              ...(input.includeTimeline === true ? { errorTimeline: [] } : { errorTimelineBuckets: 0, spikeCount: 0 }),
               spikes: [],
               spikeThreshold: 3,
             },
@@ -269,7 +292,7 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
           source: typeof input.source === 'string' ? input.source : undefined,
           deviceIds: Array.isArray(input.deviceIds) ? input.deviceIds as string[] : undefined,
           siteIds: Array.isArray(input.siteIds) ? input.siteIds as string[] : undefined,
-          limit: Math.min(Number(input.limit) || 20, 100),
+          limit: Math.min(Number(input.limit) || LOG_TRENDS_DEFAULT_LIMIT, LOG_TRENDS_MAX_LIMIT),
         });
 
         let groupingSummary: Awaited<ReturnType<typeof getLogAggregation>> | undefined;
@@ -285,13 +308,27 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
           });
         }
 
+        const includeTimeline = input.includeTimeline === true;
+        const { errorTimeline, spikes, ...trendTotals } = trends;
         return JSON.stringify({
-          trends,
+          trends: includeTimeline
+            ? trends
+            : {
+                ...trendTotals,
+                // #6745: the hourly timeline is one row per hour (168 over a
+                // week) — opt-in. Spikes are what an answer is built from; keep
+                // the largest, and say how many there were.
+                errorTimelineBuckets: errorTimeline.length,
+                spikes: [...spikes].sort((a, b) => b.count - a.count).slice(0, LOG_TRENDS_MAX_SPIKES),
+                spikeCount: spikes.length,
+              },
           grouped: groupingSummary
             ? {
                 groupBy: groupingSummary.groupBy,
                 totals: groupingSummary.totals,
-                sampleSeries: groupingSummary.series.slice(0, 200),
+                ...(includeTimeline
+                  ? { sampleSeries: groupingSummary.series.slice(0, LOG_TRENDS_MAX_SERIES) }
+                  : { seriesBuckets: groupingSummary.series.length }),
               }
             : undefined,
         });
