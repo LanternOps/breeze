@@ -37,7 +37,11 @@
     },
     "deleteConfirm": "{{name}} monitörü silinsin mi? Uyarı kuralı ve yanıt otomasyonu da kaldırılır.",
     "builtIn": "Yerleşik",
-    "builtInHint": "Breeze tarafından sağlandı. Eşikleri düzenleyin, devre dışı bırakın veya silin; geri gelmez."
+    "builtInHint": "Breeze tarafından sağlandı. Eşikleri düzenleyin, devre dışı bırakın veya silin; geri gelmez.",
+    "recommended": {
+      "title": "Önerilenler",
+      "description": "Yerleşik monitörleri bir ilkeye ekleyin."
+    }
   },
   "editor": {
     "attachedToPolicy": "Monitör oluşturuldu ve ilkeye bağlandı",
@@ -144,6 +148,15 @@
         "disabled": "devre dışı",
         "unavailable": "kullanılamıyor"
       }
+    },
+    "composite": {
+      "children": "Alt koşullar",
+      "add": "Koşul ekle"
+    },
+    "restart": {
+      "label": "Cihazdaki hizmeti yeniden başlat",
+      "maxAttempts": "En fazla yeniden başlatma denemesi",
+      "cooldownSeconds": "Yeniden başlatma bekleme süresi (saniye)"
     }
   },
   "kinds": {
@@ -486,5 +499,16 @@
       "invalid_reason": "Bu kullanımdan kaldırma nedeni geçerli değil.",
       "unknown": "Dönüştürme başarısız oldu. Yeniden deneyin."
     }
+  },
+  "device": {
+    "title": "Etkin monitörler",
+    "empty": "Bu cihaza uygulanan monitör yok.",
+    "error": "Etkin monitörler yüklenemedi.",
+    "monitor": "Monitör",
+    "kind": "Tür",
+    "policy": "Kaynak ilke",
+    "state": "Durum",
+    "episode": "Açık olay",
+    "escalation": "Yükseltme"
   }
 }

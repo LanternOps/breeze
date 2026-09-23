@@ -6,6 +6,7 @@ import { softwareRoutes } from './software';
 import { commandsRoutes } from './commands';
 import { hardwareRoutes } from './hardware';
 import { alertsRoutes } from './alerts';
+import { deviceMonitorsRoutes } from './monitors';
 import { anomaliesRoutes } from './anomalies';
 import { groupsRoutes } from './groups';
 import { patchesRoutes } from './patches';
@@ -145,6 +146,8 @@ deviceRoutes.route('/', softwareRoutes);
 deviceRoutes.route('/', commandsRoutes);
 deviceRoutes.route('/', hardwareRoutes);
 deviceRoutes.route('/', alertsRoutes);
+// #6371 W05c2: GET /:id/monitors — effective monitors for the device page.
+deviceRoutes.route('/', deviceMonitorsRoutes);
 deviceRoutes.route('/', anomaliesRoutes);
 deviceRoutes.route('/', patchesRoutes);
 deviceRoutes.route('/', scriptsRoutes);

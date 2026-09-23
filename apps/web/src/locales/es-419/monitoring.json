@@ -37,7 +37,11 @@
     },
     "deleteConfirm": "¿Eliminar el monitor {{name}}? También se eliminarán su regla de alerta y la automatización de respuesta.",
     "builtIn": "Integrado",
-    "builtInHint": "Aprovisionado por Breeze. Edita los umbrales, desactívalo o elimínalo; no volverá a aparecer."
+    "builtInHint": "Aprovisionado por Breeze. Edita los umbrales, desactívalo o elimínalo; no volverá a aparecer.",
+    "recommended": {
+      "title": "Recomendados",
+      "description": "Adjunte los monitores integrados a una política."
+    }
   },
   "editor": {
     "attachedToPolicy": "Monitor creado y adjuntado a la política",
@@ -144,6 +148,15 @@
         "disabled": "deshabilitado",
         "unavailable": "no disponible"
       }
+    },
+    "composite": {
+      "children": "Condiciones secundarias",
+      "add": "Agregar condición"
+    },
+    "restart": {
+      "label": "Reiniciar servicio en el dispositivo",
+      "maxAttempts": "Máximo de intentos de reinicio",
+      "cooldownSeconds": "Espera entre reinicios (segundos)"
     }
   },
   "kinds": {
@@ -486,5 +499,16 @@
       "invalid_reason": "Ese motivo de retiro no es válido.",
       "unknown": "La conversión falló. Vuelve a intentarlo."
     }
+  },
+  "device": {
+    "title": "Monitores efectivos",
+    "empty": "No hay monitores aplicados a este dispositivo.",
+    "error": "No se pudieron cargar los monitores efectivos.",
+    "monitor": "Nombre del monitor",
+    "kind": "Tipo",
+    "policy": "Política de origen",
+    "state": "Estado",
+    "episode": "Episodio abierto",
+    "escalation": "Escalamiento"
   }
 }

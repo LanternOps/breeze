@@ -37,7 +37,11 @@
     },
     "deleteConfirm": "Supprimer le moniteur {{name}}? Sa règle d’alerte et son automatisation de réponse seront également supprimées.",
     "builtIn": "Intégré",
-    "builtInHint": "Fourni par Breeze. Modifiez les seuils, désactivez-le ou supprimez-le – il ne reviendra pas."
+    "builtInHint": "Fourni par Breeze. Modifiez les seuils, désactivez-le ou supprimez-le – il ne reviendra pas.",
+    "recommended": {
+      "title": "Recommandés",
+      "description": "Rattachez les moniteurs intégrés à une politique."
+    }
   },
   "editor": {
     "attachedToPolicy": "Moniteur créé et attaché à la politique",
@@ -144,6 +148,15 @@
         "disabled": "désactivé",
         "unavailable": "indisponible"
       }
+    },
+    "composite": {
+      "children": "Conditions enfants",
+      "add": "Ajouter une condition"
+    },
+    "restart": {
+      "label": "Redémarrer le service sur l'appareil",
+      "maxAttempts": "Nombre maximal de redémarrages",
+      "cooldownSeconds": "Délai entre redémarrages (secondes)"
     }
   },
   "kinds": {
@@ -486,5 +499,16 @@
       "invalid_reason": "Ce motif de retrait n'est pas valide.",
       "unknown": "La conversion a échoué. Réessayez."
     }
+  },
+  "device": {
+    "title": "Moniteurs effectifs",
+    "empty": "Aucun moniteur ne s'applique à cet appareil.",
+    "error": "Impossible de charger les moniteurs effectifs.",
+    "monitor": "Moniteur",
+    "kind": "Type",
+    "policy": "Politique source",
+    "state": "État",
+    "episode": "Épisode ouvert",
+    "escalation": "Escalade"
   }
 }

@@ -37,7 +37,11 @@
     },
     "deleteConfirm": "Eliminare il monitor {{name}}? Verranno rimosse anche la relativa regola di avviso e l'automazione di risposta.",
     "builtIn": "Integrato",
-    "builtInHint": "Fornito da Breeze. Modifica le soglie, disattivalo o eliminalo: non tornerà."
+    "builtInHint": "Fornito da Breeze. Modifica le soglie, disattivalo o eliminalo: non tornerà.",
+    "recommended": {
+      "title": "Consigliati",
+      "description": "Associa i monitor integrati a una policy."
+    }
   },
   "editor": {
     "attachedToPolicy": "Monitor creato e collegato alla policy",
@@ -144,6 +148,15 @@
         "disabled": "disabilitato",
         "unavailable": "non disponibile"
       }
+    },
+    "composite": {
+      "children": "Condizioni figlie",
+      "add": "Aggiungi condizione"
+    },
+    "restart": {
+      "label": "Riavvia servizio sul dispositivo",
+      "maxAttempts": "Tentativi massimi di riavvio",
+      "cooldownSeconds": "Attesa tra riavvii (secondi)"
     }
   },
   "kinds": {
@@ -486,5 +499,16 @@
       "invalid_reason": "Il motivo di ritiro non è valido.",
       "unknown": "Conversione non riuscita. Riprova."
     }
+  },
+  "device": {
+    "title": "Monitor effettivi",
+    "empty": "Nessun monitor si applica a questo dispositivo.",
+    "error": "Impossibile caricare i monitor effettivi.",
+    "monitor": "Nome del monitor",
+    "kind": "Tipo",
+    "policy": "Policy di origine",
+    "state": "Stato",
+    "episode": "Episodio aperto",
+    "escalation": "Stato di escalation"
   }
 }

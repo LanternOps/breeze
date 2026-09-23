@@ -37,7 +37,11 @@
     },
     "deleteConfirm": "Monitor {{name}} löschen? Die zugehörige Alarmregel und die Reaktionsautomatisierung werden ebenfalls entfernt.",
     "builtIn": "Integriert",
-    "builtInHint": "Von Breeze bereitgestellt. Schwellenwerte bearbeiten, deaktivieren oder löschen – er kommt nicht zurück."
+    "builtInHint": "Von Breeze bereitgestellt. Schwellenwerte bearbeiten, deaktivieren oder löschen – er kommt nicht zurück.",
+    "recommended": {
+      "title": "Empfohlen",
+      "description": "Integrierte Monitore einer Richtlinie zuordnen."
+    }
   },
   "editor": {
     "attachedToPolicy": "Monitor erstellt und der Richtlinie zugeordnet",
@@ -144,6 +148,15 @@
         "disabled": "deaktiviert",
         "unavailable": "nicht verfügbar"
       }
+    },
+    "composite": {
+      "children": "Teilbedingungen",
+      "add": "Bedingung hinzufügen"
+    },
+    "restart": {
+      "label": "Dienst auf dem Gerät neu starten",
+      "maxAttempts": "Maximale Neustartversuche",
+      "cooldownSeconds": "Neustartwartezeit (Sekunden)"
     }
   },
   "kinds": {
@@ -486,5 +499,16 @@
       "invalid_reason": "Dieser Stilllegungsgrund ist ungültig.",
       "unknown": "Die Konvertierung ist fehlgeschlagen. Versuchen Sie es erneut."
     }
+  },
+  "device": {
+    "title": "Wirksame Monitore",
+    "empty": "Für dieses Gerät gelten keine Monitore.",
+    "error": "Wirksame Monitore konnten nicht geladen werden.",
+    "monitor": "Monitorname",
+    "kind": "Art",
+    "policy": "Quellrichtlinie",
+    "state": "Zustand",
+    "episode": "Offene Episode",
+    "escalation": "Eskalation"
   }
 }

@@ -37,7 +37,11 @@
     },
     "deleteConfirm": "Delete monitor {{name}}? Its alert rule and response automation are removed too.",
     "builtIn": "Built-in",
-    "builtInHint": "Provisioned by Breeze. Edit thresholds, disable it, or delete it — it will not come back."
+    "builtInHint": "Provisioned by Breeze. Edit thresholds, disable it, or delete it — it will not come back.",
+    "recommended": {
+      "title": "Recommended",
+      "description": "Attach the built-in monitors to a policy."
+    }
   },
   "editor": {
     "attachedToPolicy": "Monitor created and attached to the policy",
@@ -144,6 +148,15 @@
         "disabled": "disabled",
         "unavailable": "unavailable"
       }
+    },
+    "composite": {
+      "children": "Child conditions",
+      "add": "Add condition"
+    },
+    "restart": {
+      "label": "Restart service on the device",
+      "maxAttempts": "Maximum restart attempts",
+      "cooldownSeconds": "Restart cooldown (seconds)"
     }
   },
   "kinds": {
@@ -486,5 +499,16 @@
       "invalid_reason": "That retirement reason is not valid.",
       "unknown": "The conversion failed. Try again."
     }
+  },
+  "device": {
+    "title": "Effective monitors",
+    "empty": "No monitors apply to this device.",
+    "error": "Could not load effective monitors.",
+    "monitor": "Monitor",
+    "kind": "Kind",
+    "policy": "Source policy",
+    "state": "State",
+    "episode": "Open episode",
+    "escalation": "Escalation"
   }
 }

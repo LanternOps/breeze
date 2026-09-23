@@ -37,7 +37,11 @@
     },
     "deleteConfirm": "Excluir o monitor {{name}}? A regra de alerta e a automação de resposta dele também serão removidas.",
     "builtIn": "Integrado",
-    "builtInHint": "Provisionado pelo Breeze. Edite os limites, desative ou exclua — ele não voltará."
+    "builtInHint": "Provisionado pelo Breeze. Edite os limites, desative ou exclua — ele não voltará.",
+    "recommended": {
+      "title": "Recomendados",
+      "description": "Anexe os monitores integrados a uma política."
+    }
   },
   "editor": {
     "attachedToPolicy": "Monitor criado e anexado à política",
@@ -144,6 +148,15 @@
         "disabled": "desativado",
         "unavailable": "indisponível"
       }
+    },
+    "composite": {
+      "children": "Condições filhas",
+      "add": "Adicionar condição"
+    },
+    "restart": {
+      "label": "Reiniciar serviço no dispositivo",
+      "maxAttempts": "Máximo de tentativas de reinício",
+      "cooldownSeconds": "Espera entre reinícios (segundos)"
     }
   },
   "kinds": {
@@ -486,5 +499,16 @@
       "invalid_reason": "Esse motivo de desativação não é válido.",
       "unknown": "A conversão falhou. Tente novamente."
     }
+  },
+  "device": {
+    "title": "Monitores efetivos",
+    "empty": "Nenhum monitor se aplica a este dispositivo.",
+    "error": "Não foi possível carregar os monitores efetivos.",
+    "monitor": "Nome do monitor",
+    "kind": "Tipo",
+    "policy": "Política de origem",
+    "state": "Estado",
+    "episode": "Episódio aberto",
+    "escalation": "Escalonamento"
   }
 }
