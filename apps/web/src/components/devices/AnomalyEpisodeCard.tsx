@@ -50,9 +50,12 @@ function closedChipLabel(episode: MetricAnomalyEpisodeDto, t: TFunction): string
     return t('deviceAnomaliesPanel.closeReason.expiredOfflineSince', { when: formatWhen(episode.deviceLastSeenAt) });
   }
   if (episode.closeReason === 'expired_offline' || episode.closeReason === 'expired_no_data' || episode.closeReason === 'detection_off') {
-    return t(CLOSE_REASON_LABEL_KEY[episode.closeReason]!);
+    // i18n-dynamic: the key is looked up from CLOSE_REASON_LABEL_KEY by a
+    // runtime closeReason value, so keyUsage's static scanner can't verify it
+    // — every value in that map is a real, present key (checked above).
+    return t(/* i18n-dynamic */ CLOSE_REASON_LABEL_KEY[episode.closeReason]!);
   }
-  return `${formatWhen(episode.firstSeenAt)} – ${formatWhen(episode.lastSeenAt)} · ${t(CLOSE_REASON_LABEL_KEY[episode.closeReason ?? 'user']!)}`;
+  return `${formatWhen(episode.firstSeenAt)} – ${formatWhen(episode.lastSeenAt)} · ${t(/* i18n-dynamic */ CLOSE_REASON_LABEL_KEY[episode.closeReason ?? 'user']!)}`;
 }
 
 export default function AnomalyEpisodeCard({
