@@ -6,8 +6,7 @@ import WebhookDeliveryHistory, { type WebhookDelivery } from './WebhookDeliveryH
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { extractApiError } from '@/lib/apiError';
-import { ActionError, runAction } from '@/lib/runAction';
-import { showToast } from '../shared/Toast';
+import { handleActionError, runAction } from '@/lib/runAction';
 import { formSecretValue, MASKED_SECRET } from '@/lib/redactedSecret';
 import { Trans, useTranslation } from 'react-i18next';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
@@ -198,8 +197,7 @@ export default function WebhooksPage() {
         )
       );
     } catch (err) {
-      if (err instanceof ActionError && err.status === 401) return;
-      if (!(err instanceof ActionError)) showToast({ type: 'error', message: errorFallback });
+      handleActionError(err, errorFallback);
     }
   };
 
