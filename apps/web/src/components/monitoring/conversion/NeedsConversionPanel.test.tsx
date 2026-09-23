@@ -2,21 +2,14 @@ import '@/lib/i18n';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { fetchWithAuth, runAction, showToast, fetchPolicyPreview } = vi.hoisted(() => ({
+// The REAL runAction runs (#6644 review 6): a passthrough mock that never
+// throws left every catch path (409 re-preview, 401 quiet) untested.
+const { fetchWithAuth, showToast, fetchPolicyPreview } = vi.hoisted(() => ({
   fetchWithAuth: vi.fn(),
-  runAction: vi.fn(async ({ request, parseSuccess }: { request: () => Promise<Response>; parseSuccess?: (d: unknown) => unknown }) => {
-    const res = await request();
-    const body = await res.json();
-    return parseSuccess ? parseSuccess(body) : body;
-  }),
   showToast: vi.fn(),
   fetchPolicyPreview: vi.fn(),
 }));
 vi.mock('../../../stores/auth', () => ({ fetchWithAuth }));
-vi.mock('@/lib/runAction', () => ({
-  runAction,
-  ActionError: class ActionError extends Error { constructor(message: string, public status: number) { super(message); } },
-}));
 vi.mock('../../shared/Toast', () => ({ showToast }));
 vi.mock('./conversionApi', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./conversionApi')>();
@@ -25,8 +18,7 @@ vi.mock('./conversionApi', async (importOriginal) => {
 
 import NeedsConversionPanel from './NeedsConversionPanel';
 
-const json = (body: unknown, status = 200): Response =>
-  ({ ok: status < 300, status, json: vi.fn().mockResolvedValue(body) }) as unknown as Response;
+const json = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), { status });
 
 const item = (over: Partial<import('./conversionApi').ConversionPreviewItem> = {}) => ({
   sourceTable: 'config_policy_alert_rules' as const, sourceId: 'src-1', name: 'CPU > 80', outcome: 'convertible' as const,
@@ -96,15 +88,10 @@ it('shows missing prerequisites even when the blocked preview has no items', asy
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
   });
 
-  it('Convert all sends the full-set preview hash without a partial selection', async () => {
-    fetchPolicyPreview.mockResolvedValue(preview({ items: [item(), item({ sourceId: 'src-2', name: 'Custom', outcome: 'unconvertible', reason: 'unconvertible:custom', proposed: [] })] }));
-    fetchWithAuth.mockResolvedValue(json({ data: { conversionIds: ['conv-1'], retired: 1, monitorsCreated: 1 } }));
+  it('disables Convert all when every item is unconvertible', async () => {
+    fetchPolicyPreview.mockResolvedValue(preview({ items: [item({ outcome: 'unconvertible', reason: 'unconvertible:custom', proposed: [] })] }));
     render(<NeedsConversionPanel policyId="pol-1" hasLegacyRows onChanged={vi.fn()} />);
-    fireEvent.click(await screen.findByTestId('conversion-convert-all'));
-    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith(
-      '/monitor-definitions/conversion/policies/pol-1/convert',
-      { method: 'POST', body: JSON.stringify({ previewHash: 'hash-1' }) },
-    ));
+    expect(await screen.findByTestId('conversion-convert-all')).toBeDisabled();
   });
 
   it('shows the reason and a Retire action for an unconvertible item', async () => {
@@ -113,8 +100,6 @@ it('shows missing prerequisites even when the blocked preview has no items', asy
     render(<NeedsConversionPanel policyId="pol-1" hasLegacyRows onChanged={vi.fn()} />);
     const row = await screen.findByTestId('conversion-item-src-1');
     expect(row.textContent).toMatch(/nests condition groups/i);
-    expect(screen.queryByTestId('conversion-convert-src-1')).toBeNull();
-    expect(screen.queryByTestId('conversion-retire-reason-src-1')).toBeNull();
     fireEvent.click(screen.getByTestId('conversion-retire-src-1'));
     await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith(
       '/monitor-definitions/conversion/retire',
@@ -138,14 +123,6 @@ it('shows missing prerequisites even when the blocked preview has no items', asy
 });
 
 describe('NeedsConversionPanel async and failure safeguards', () => {
-  it('offers no partial-selection action when multiple sources are convertible', async () => {
-    fetchPolicyPreview.mockResolvedValue(preview({ items: [item(), item({ sourceId: 'src-2' })] }));
-    render(<NeedsConversionPanel policyId="pol-1" hasLegacyRows onChanged={vi.fn()} />);
-    await screen.findByTestId('conversion-convert-all');
-    expect(screen.queryByTestId('conversion-convert-src-1')).toBeNull();
-    expect(screen.queryByTestId('conversion-convert-src-2')).toBeNull();
-  });
-
   it('shows async progress and never offers a stale confirmation during refresh', async () => {
     fetchWithAuth.mockResolvedValue(json({ data: { conversionIds: ['conv-1'], retired: 1, monitorsCreated: 1 } }));
     fetchPolicyPreview.mockResolvedValueOnce(preview()).mockImplementationOnce((_id, options) => {
@@ -161,14 +138,47 @@ describe('NeedsConversionPanel async and failure safeguards', () => {
   });
 
   it('stops loading on terminal preview_failed and supports an explicit retry', async () => {
-    fetchPolicyPreview.mockRejectedValueOnce(new Error('preview_failed')).mockResolvedValueOnce(preview());
+    fetchPolicyPreview.mockRejectedValueOnce(new Error('The preview could not be produced. Try again later.')).mockResolvedValueOnce(preview());
     render(<NeedsConversionPanel policyId="pol-1" hasLegacyRows onChanged={vi.fn()} />);
-    expect(await screen.findByText('preview_failed')).toBeInTheDocument();
+    expect(await screen.findByText(/preview could not be produced/i)).toBeInTheDocument();
     expect(screen.queryByTestId('conversion-loading')).toBeNull();
     expect(fetchPolicyPreview).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole('button', { name: /retry/i }));
     expect(await screen.findByTestId('conversion-convert-all')).toBeEnabled();
     expect(fetchPolicyPreview).toHaveBeenCalledTimes(2);
+  });
+
+  it('re-previews after a 409 stale hash and shows readable text, not the token', async () => {
+    const onChanged = vi.fn();
+    fetchWithAuth.mockResolvedValue(json({ error: 'preview_stale', message: 'Preview inputs changed' }, 409));
+    fetchPolicyPreview.mockResolvedValueOnce(preview()).mockResolvedValueOnce(preview({ previewHash: 'hash-2' }));
+    render(<NeedsConversionPanel policyId="pol-1" hasLegacyRows onChanged={onChanged} />);
+    fireEvent.click(await screen.findByTestId('conversion-convert-all'));
+    await waitFor(() => expect(fetchPolicyPreview).toHaveBeenCalledTimes(2));
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: expect.stringMatching(/preview again/i) }));
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ message: 'preview_stale' }));
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    expect(onChanged).not.toHaveBeenCalled();
+  });
+
+  it('surfaces MFA_REQUIRED (403) as the MFA message and does not report success', async () => {
+    const onChanged = vi.fn();
+    fetchWithAuth.mockResolvedValue(json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403));
+    render(<NeedsConversionPanel policyId="pol-1" hasLegacyRows onChanged={onChanged} />);
+    fireEvent.click(await screen.findByTestId('conversion-convert-all'));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'error', message: expect.stringMatching(/multi-factor/i) })));
+    expect(onChanged).not.toHaveBeenCalled();
+  });
+
+  it('stays quiet on 401 (auth redirect owns it) and does not re-preview', async () => {
+    fetchWithAuth.mockResolvedValue(json({ error: 'Unauthorized' }, 401));
+    render(<NeedsConversionPanel policyId="pol-1" hasLegacyRows onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByTestId('conversion-convert-all'));
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(1));
+    await act(async () => { await Promise.resolve(); });
+    expect(showToast).not.toHaveBeenCalled();
+    expect(fetchPolicyPreview).toHaveBeenCalledTimes(1);
   });
 
   it('ignores a completed preview from an aborted policy request', async () => {

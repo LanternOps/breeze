@@ -251,6 +251,19 @@ describe('MonitorsTab — check interval write-through (W05c2)', () => {
     await waitFor(() => expect(saveMock).toHaveBeenCalledTimes(1));
   });
 
+  // #6644 review finding 7: a regression here would create an empty monitoring
+  // link on EVERY Monitors-tab save of a policy that never had one.
+  it('creates no monitoring link when the policy has none and the default interval is unchanged', async () => {
+    render(<MonitorsTab {...baseProps} existingLink={ownMonitorsLink} siblingLinks={[ownMonitorsLink]} />);
+    await screen.findByTestId('monitors-tab-check-interval');
+    clickSave();
+    await waitFor(() => expect(saveMock).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(saveMock).toHaveBeenCalledTimes(1);
+    const [, payload] = saveMock.mock.calls[0] as unknown as [string | null, { featureType: string }];
+    expect(payload.featureType).toBe('monitors');
+  });
+
   it('refuses an interval outside 10–3600 without saving anything', async () => {
     render(<MonitorsTab {...baseProps} existingLink={ownMonitorsLink} siblingLinks={[ownMonitorsLink]} />);
     fireEvent.change(await screen.findByTestId('monitors-tab-check-interval'), { target: { value: '5' } });
@@ -304,7 +317,11 @@ describe('MonitorsTab — inheritance switch (W05c2)', () => {
 });
 
 vi.mock('../../monitoring/conversion/NeedsConversionPanel', () => ({
-  default: (p: { hasLegacyRows: boolean }) => <div data-testid="needs-conversion-panel" data-legacy={String(p.hasLegacyRows)} />,
+  default: (p: { hasLegacyRows: boolean; onChanged: () => void }) => (
+    <div data-testid="needs-conversion-panel" data-legacy={String(p.hasLegacyRows)}>
+      <button type="button" data-testid="needs-conversion-panel-changed" onClick={p.onChanged}>changed</button>
+    </div>
+  ),
 }));
 describe('MonitorsTab — Needs-conversion mount gate (W05c2)', () => {
   it('passes hasLegacyRows=true when the policy carries an alert_rule, a watch-bearing monitoring or an automation link', async () => {
@@ -315,6 +332,29 @@ describe('MonitorsTab — Needs-conversion mount gate (W05c2)', () => {
     render(<MonitorsTab {...baseProps} siblingLinks={[{ id: 'workflow', featureType: 'automation', featurePolicyId: null,
       inlineSettings: { items: [{ triggerType: 'event', eventType: 'alert.triggered' }] } }]} />);
     expect(await screen.findByTestId('needs-conversion-panel')).toHaveAttribute('data-legacy', 'true');
+  });
+  // #6644 review finding 7: after a conversion the tab must re-read ALL four
+  // link types (a converted policy gains a monitors link and its legacy links
+  // change), or the tab shows stale links until a full reload.
+  it('refetches the policy links after a conversion and reports every link type, including removed ones', async () => {
+    const monitorsAfter = { id: 'link-new', featureType: 'monitors', featurePolicyId: null, inlineSettings: { items: [] } };
+    const monitoringAfter = { id: 'link-mon', featureType: 'monitoring', featurePolicyId: null, inlineSettings: { checkIntervalSeconds: 60, watches: [] } };
+    // Once for the catalog on mount, once for the post-conversion refetch — so
+    // the file-level default implementation is untouched for later tests.
+    fetchWithAuthMock
+      .mockImplementationOnce((async () => ({ ok: true, json: async () => ({ data: [] }) })) as never)
+      .mockImplementationOnce((async (url: string) => ({
+        ok: true,
+        json: async () => ({ data: url === '/configuration-policies/policy-1/features' ? [monitorsAfter, monitoringAfter] : [] }),
+      })) as never);
+    render(<MonitorsTab {...baseProps} siblingLinks={[{ id: 'l1', featureType: 'alert_rule', featurePolicyId: null, inlineSettings: { items: [{ name: 'x' }] } }]} />);
+    fireEvent.click(await screen.findByTestId('needs-conversion-panel-changed'));
+    await waitFor(() => expect(baseProps.onLinkChanged).toHaveBeenCalledTimes(4));
+    expect(fetchWithAuthMock).toHaveBeenCalledWith('/configuration-policies/policy-1/features');
+    expect(baseProps.onLinkChanged).toHaveBeenCalledWith(monitorsAfter, 'monitors');
+    expect(baseProps.onLinkChanged).toHaveBeenCalledWith(monitoringAfter, 'monitoring');
+    expect(baseProps.onLinkChanged).toHaveBeenCalledWith(null, 'alert_rule');
+    expect(baseProps.onLinkChanged).toHaveBeenCalledWith(null, 'automation');
   });
   it('passes hasLegacyRows=false for a monitoring link with no watches (the Check-interval carrier)', async () => {
     render(<MonitorsTab {...baseProps} siblingLinks={[{ id: 'l1', featureType: 'monitoring', featurePolicyId: null, inlineSettings: { checkIntervalSeconds: 60, watches: [] } }]} />);
