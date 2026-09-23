@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import {
+  boolean,
   index,
   integer,
   numeric,
@@ -65,6 +66,11 @@ export const metricAnomalyIncidents = pgTable('metric_anomaly_incidents', {
   /** Set by Task 3's subscriber on successful admission, best-effort. FK is
    *  SQL-only — see file header. */
   agentRunId: uuid('agent_run_id'),
+  /** Episode of the highest-scoring member (set by W02). NO FK, same cycle
+   *  reason as agentRunId — see file header. */
+  episodeId: uuid('episode_id'),
+  /** W02: true when another incident of the same episode already dispatched. */
+  suppressedByEpisode: boolean('suppressed_by_episode').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
   keyUniq: uniqueIndex('metric_anomaly_incidents_key_uq').on(
@@ -95,6 +101,7 @@ export const metricAnomalyIncidents = pgTable('metric_anomaly_incidents', {
   // cutoff scan (dispatched_at < cutoff), the mirror image of
   // undispatchedIdx above.
   dispatchedAtIdx: index('metric_anomaly_incidents_dispatched_at_idx').on(table.dispatchedAt),
+  episodeIdx: index('metric_anomaly_incidents_episode_id_idx').on(table.episodeId),
 }));
 
 export type MetricAnomalyIncidentRow = typeof metricAnomalyIncidents.$inferSelect;

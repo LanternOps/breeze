@@ -138,6 +138,25 @@ describe('device anomaly routes', () => {
     app.route('/devices', anomaliesRoutes);
   });
 
+  it('accepts status=cleared on the legacy list route (rows closed by episode auto-resolve)', async () => {
+    const limit = vi.fn().mockResolvedValue([{ ...anomaly, status: 'cleared' }]);
+    const orderBy = vi.fn().mockReturnValue({ limit });
+    const where = vi.fn().mockReturnValue({ orderBy });
+    selectMock.mockReturnValue({ from: vi.fn().mockReturnValue({ where }) });
+
+    const res = await app.request(`/devices/${device.id}/anomalies?status=cleared`);
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: Array<{ status: string }> };
+    expect(body.data[0]?.status).toBe('cleared');
+    expect(where).toHaveBeenCalledWith({
+      type: 'and',
+      conditions: expect.arrayContaining([
+        { type: 'eq', left: 'metricAnomalies.status', right: 'cleared' },
+      ]),
+    });
+  });
+
   it('promotes an anomaly through the anomaly-to-alert service', async () => {
     promoteMetricAnomalyToAlertMock.mockResolvedValueOnce({
       status: 'promoted',

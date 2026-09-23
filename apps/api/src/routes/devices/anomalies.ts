@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
+import { METRIC_ANOMALY_STATUSES } from '@breeze/shared';
 import { and, desc, eq, ne } from 'drizzle-orm';
 
 import { db } from '../../db';
@@ -16,7 +17,9 @@ export const anomaliesRoutes = new Hono();
 anomaliesRoutes.use('*', authMiddleware);
 
 const anomaliesQuerySchema = z.object({
-  status: z.enum(['open', 'dismissed', 'promoted', 'resolved', 'all']).optional().default('open'),
+  // `cleared` = closed by episode auto-resolve (metric anomaly episodes W01).
+  // PATCH below deliberately still refuses it: a human never sets `cleared`.
+  status: z.enum([...METRIC_ANOMALY_STATUSES, 'all']).optional().default('open'),
   limit: z.coerce.number().int().min(1).max(100).optional().default(25),
 });
 

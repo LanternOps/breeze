@@ -163,6 +163,7 @@ export * from './deviceMtlsCertificates';
 export * from './supportSessions';
 export * from './eventDispatch';
 export * from './metricAnomalyIncidents';
+export * from './metricAnomalyEpisodes';
 export * from './agentRollback';
 export * from './offlineTransitionEffects';
 export * from './monitorDefinitions';
