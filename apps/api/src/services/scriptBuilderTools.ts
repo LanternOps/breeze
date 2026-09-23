@@ -20,7 +20,7 @@ import type { ToolExecutionContext } from './toolExecutionContext';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { normalizeScriptCode } from './scriptCodeNormalize';
 import { aiRunContextInputShape } from './scriptRunRequest';
-import { pageZodShape } from './aiToolPagination';
+import { keysetZodShape, pageZodShape } from './aiToolPagination';
 
 const TOOL_EXECUTION_TIMEOUT_MS = 60_000;
 
@@ -317,7 +317,7 @@ export function buildScriptBuilderTools(
         status: z.enum(['active', 'acknowledged', 'resolved', 'suppressed']).optional(),
         severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
         deviceId: uuid.optional(),
-        limit: z.number().int().min(1).max(50).optional(),
+        ...keysetZodShape(8, 100),
       },
       makeExistingHandler('manage_alerts', getAuth, onPreToolUse, onPostToolUse)
     ),

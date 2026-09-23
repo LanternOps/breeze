@@ -19,7 +19,7 @@ import {
   SYSTEM_CLEANUP_ACTION_IDS,
 } from '@breeze/shared/validators';
 import { aiRunContextInputShape } from './scriptRunRequest';
-import { pageZodShape } from './aiToolPagination';
+import { keysetZodShape, pageZodShape } from './aiToolPagination';
 import { fleetToolInputSchemas } from './aiToolSchemasFleet';
 import { backupToolSchemas } from './aiToolSchemasBackup';
 import { m365ToolSchemas } from './aiToolSchemasM365';
@@ -633,7 +633,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     status: z.enum(['active', 'acknowledged', 'resolved', 'suppressed']).optional(),
     severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
     deviceId: uuid.optional(),
-    limit: z.number().int().min(1).max(100).optional(),
+    ...keysetZodShape(8, 100),
     resolutionNote: z.string().max(1000).optional(),
     suppressDuration: z.number().int().min(0).max(720).optional(),
   }).refine(
@@ -1151,7 +1151,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     resourceId: uuid.optional(),
     actorType: z.enum(ACTOR_TYPES).optional(),
     hoursBack: z.number().int().min(1).max(168).optional(),
-    limit: z.number().int().min(1).max(100).optional(),
+    ...keysetZodShape(20, 100),
+    includeDetails: z.boolean().optional(),
   }),
 
   get_network_changes: z.object({
@@ -1187,7 +1188,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     endTime: z.string().datetime({ offset: true }).optional(),
     changeType: z.enum(['software', 'service', 'startup', 'network', 'scheduled_task', 'user_account', 'hardware', 'os_version']).optional(),
     changeAction: z.enum(['added', 'removed', 'modified', 'updated']).optional(),
-    limit: z.number().int().min(1).max(500).optional(),
+    ...keysetZodShape(20, 500),
+    includeValues: z.boolean().optional(),
   }),
 
   network_discovery: z.object({
@@ -1377,7 +1379,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     startTime: z.string().datetime({ offset: true }).optional(),
     endTime: z.string().datetime({ offset: true }).optional(),
     message: z.string().max(500).optional(),
-    limit: z.number().int().min(1).max(500).optional(),
+    ...keysetZodShape(5, 500),
+    includeFields: z.boolean().optional(),
   }),
 
   set_agent_log_level: z.object({

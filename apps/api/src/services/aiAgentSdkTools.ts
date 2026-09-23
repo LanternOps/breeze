@@ -38,7 +38,7 @@ import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
 import { deliveryToolShape } from './aiToolSchemas';
 import { aiScriptAuthoringEnabled } from '../config/env';
-import { pageZodShape } from './aiToolPagination';
+import { keysetZodShape, pageZodShape } from './aiToolPagination';
 import { captureMessage } from './sentry';
 import {
   m365LookupUserHandler, m365RecentSigninsHandler, m365ListGroupMembershipsHandler,
@@ -1487,7 +1487,7 @@ export function buildBreezeSdkTools(
         status: z.enum(['active', 'acknowledged', 'resolved', 'suppressed']).optional(),
         severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
         deviceId: uuid.optional(),
-        limit: z.number().int().min(1).max(100).optional(),
+        ...keysetZodShape(8, 100),
         resolutionNote: z.string().max(1000).optional(),
       },
       makeHandler('manage_alerts', getAuth, onPreToolUse, onPostToolUse)
@@ -1874,7 +1874,8 @@ export function buildBreezeSdkTools(
         resourceId: uuid.optional(),
         actorType: z.enum(ACTOR_TYPES).optional(),
         hoursBack: z.number().int().min(1).max(168).optional(),
-        limit: z.number().int().min(1).max(100).optional(),
+        ...keysetZodShape(20, 100),
+        includeDetails: z.boolean().optional(),
       },
       makeHandler('query_audit_log', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -1888,7 +1889,8 @@ export function buildBreezeSdkTools(
         endTime: z.string().datetime({ offset: true }).optional(),
         changeType: z.enum(['software', 'service', 'startup', 'network', 'scheduled_task', 'user_account', 'hardware', 'os_version']).optional(),
         changeAction: z.enum(['added', 'removed', 'modified', 'updated']).optional(),
-        limit: z.number().int().min(1).max(500).optional(),
+        ...keysetZodShape(20, 500),
+        includeValues: z.boolean().optional(),
       },
       makeHandler('query_change_log', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -2220,7 +2222,8 @@ export function buildBreezeSdkTools(
         startTime: z.string().datetime({ offset: true }).optional(),
         endTime: z.string().datetime({ offset: true }).optional(),
         message: z.string().max(500).optional(),
-        limit: z.number().int().min(1).max(500).optional(),
+        ...keysetZodShape(5, 500),
+        includeFields: z.boolean().optional(),
       },
       makeHandler('search_agent_logs', getAuth, onPreToolUse, onPostToolUse)
     ),
