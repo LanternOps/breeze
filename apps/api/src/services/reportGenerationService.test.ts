@@ -27,6 +27,7 @@ import {
 } from './reportGenerationService';
 import { reportTypeEnum } from '../db/schema/reports';
 import { organizations } from '../db/schema';
+import { REPORT_TYPES as SHARED_REPORT_TYPES } from '@breeze/shared';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const OTHER_ORG_ID = '22222222-2222-4222-8222-222222222222';
@@ -381,6 +382,14 @@ describe('stored-artifact-only report types (P2-3)', () => {
     // a `never`-check failure at a call site far from either file.
     expect([...REPORT_TYPES, ...STORED_ARTIFACT_ONLY_TYPES, ...GENERATOR_LESS_BUSINESS_TYPES].sort())
       .toEqual([...reportTypeEnum.enumValues].sort());
+  });
+
+  it('#3198 W02: the canonical @breeze/shared REPORT_TYPES tuple equals the DB enum, IN ORDER', () => {
+    // Pins the shared tuple (packages/shared/src/reportTypes.ts) against the
+    // pgEnum's declared order. The pgEnum is the shipped database fact and
+    // cannot be spread from the tuple (a later author might reorder it), so
+    // this is the one place order is checked, not just membership.
+    expect([...SHARED_REPORT_TYPES]).toEqual([...reportTypeEnum.enumValues]);
   });
 });
 

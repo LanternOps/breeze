@@ -120,7 +120,8 @@ vi.mock('./helpers', () => ({
   PORTAL_SELF_SERVICE_REPORT: 'portal_self_service',
 }));
 
-vi.mock('@breeze/shared', () => ({
+vi.mock('@breeze/shared', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@breeze/shared')>()),
   rowsToCsv: vi.fn(),
   rowsToTsv: vi.fn(),
 }));

@@ -13,7 +13,7 @@ import {
   organizations,
   reportRuns
 } from '../db/schema';
-import type { ExecutiveSummary } from '@breeze/shared';
+import type { ExecutiveSummary, ReportType as SharedReportType } from '@breeze/shared';
 import { emptyVulnerabilityManagementSummary } from '@breeze/shared';
 import {
   ENDPOINT_MANAGEMENT_NO_SITES_GAP,
@@ -31,60 +31,16 @@ import { isManagedEvidenceType, type ManagedEvidenceType } from './managedEviden
  *  imported because routes/reports/schemas.ts imports back from this module. */
 const ENDPOINT_MANAGEMENT_DEFAULT_STALE_DAYS = 14;
 
-export type ReportType =
-  | 'device_inventory'
-  | 'software_inventory'
-  | 'alert_summary'
-  | 'compliance'
-  | 'performance'
-  | 'executive_summary'
-  | 'security_compliance_posture'
-  // P2-3 (#4190). A STORED artifact, never generated: the weekly AI narrative's
-  // `report_runs` row is written once inside the agent run's transaction
-  // (`persistNarrativeReport`, services/aiAgents/narrativeReport.ts) from a
-  // model-authored narrative that no query could reproduce. It is a member of
-  // this union — rather than excluded from it — precisely so BOTH exhaustive
-  // switches below are forced to say what happens, instead of a `never` check
-  // reporting "Invalid report type" for a type that is perfectly valid
-  // everywhere except here. `reportGenerationService.test.ts` pins the union
-  // against `reportTypeEnum` so the two can never drift.
-  | 'ai_org_narrative'
-  // Fleet Designer W01 (#5651). Same "stored, never generated" shape as
-  // `ai_org_narrative` above: the Fleet Design's `report_runs` row is written
-  // once inside the design run's own transaction
-  // (`persistFleetDesignReport`, services/aiAgents/fleetDesignReport.ts) from
-  // a model-authored design no query could reproduce.
-  | 'ai_fleet_design'
-  // Hardware Lifecycle: generated on demand from devices/manual assets +
-  // warranty; see services/hardwareLifecycleReport.ts.
-  | 'hardware_lifecycle'
-  // #5784 W02. Service-plan evidence: Huntress incidents for the occurrence's
-  // period, with an explicit coverage window. Generated on demand and by the
-  // managed-evidence system path; see services/threatDetectionReport.ts.
-  | 'threat_detection_review'
-  // #5784 W03. Service-plan evidence: Intune enrolment, compliance and licence
-  // posture from the #5327 sync tables, with the freshness of each domain
-  // printed. Current inventory plus rollup trend only — entity-level history is
-  // not reconstructible (see services/endpointManagementReport.ts).
-  | 'endpoint_management_review'
-  // #5784 W04. Service-plan evidence: the vulnerability DETAIL artifact.
-  // security_compliance_posture keeps its single control line; this is the
-  // findings, exceptions and remediation ranking a vulnerability-management
-  // deliverable needs. See services/vulnerabilityManagementReport.ts.
-  | 'vulnerability_management'
-  // #5784 W06. Service-plan evidence: interactive sign-in review, identity
-  // inventory, conditional access posture and remote-access client presence.
-  // Org-wide by construction — M365 identity has no site dimension — so a
-  // restricted authority gets the zero-safe shape, never a silently org-wide
-  // view. See services/identityAccessReport.ts.
-  | 'identity_access_review'
-  // #3198 W01. PSA business reports. Enum labels only this wave: W02 registers
-  // their generators (and which owner axes each supports). Until then every
-  // generation entry point refuses them with `UnsupportedReportScopeError`, so
-  // a partner-owned definition can be created and scheduled but never runs.
-  | 'ticket_sla_attainment'
-  | 'technician_time_billability'
-  | 'ar_aging';
+// `ReportType` is derived from the canonical tuple in `@breeze/shared`
+// (`packages/shared/src/reportTypes.ts` carries the abridged per-type notes:
+// which types are STORED artifacts never generated on demand
+// (`ai_org_narrative`, `ai_fleet_design`), which are #5784 service-plan
+// evidence, and which are the #3198 business trio). Kept as a re-export
+// rather than an inline import at every call site: `managedEvidenceRegistry.ts`,
+// this file's own tests, and several route files import `ReportType` from
+// this module. `reportGenerationService.test.ts` pins the tuple's members
+// against `reportTypeEnum` so the two can never drift.
+export type ReportType = SharedReportType;
 
 /**
  * Thrown by every generation entry point for a `ReportType` whose artifact is
