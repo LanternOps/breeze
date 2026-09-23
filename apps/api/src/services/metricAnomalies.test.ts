@@ -6,6 +6,11 @@ const {
   runOutsideDbContextMock,
   withSystemDbAccessContextMock,
   captureMessageMock,
+  assembleMock,
+  resolveMock,
+  detectionOffMock,
+  notifyMock,
+  recordStageSkippedMock,
   recordFallbackMock,
 } = vi.hoisted(() => ({
   executeMock: vi.fn(),
@@ -13,13 +18,12 @@ const {
   runOutsideDbContextMock: vi.fn(),
   withSystemDbAccessContextMock: vi.fn(),
   captureMessageMock: vi.fn(),
+  assembleMock: vi.fn(),
+  resolveMock: vi.fn(),
+  detectionOffMock: vi.fn(),
+  notifyMock: vi.fn(),
+  recordStageSkippedMock: vi.fn(),
   recordFallbackMock: vi.fn(),
-}));
-
-vi.mock('./metricAnomalyEpisodeMetrics', () => ({
-  recordBaselineFallback: recordFallbackMock,
-  // Present once W01b lands (it adds recordStageSkippedMock); harmless before.
-  recordEpisodeStageSkipped: vi.fn(),
 }));
 
 vi.mock('./sentry', () => ({
@@ -36,6 +40,18 @@ vi.mock('../db', () => ({
 
 vi.mock('./mlFeatureFlags', () => ({
   shouldProduceMlOutput: shouldProduceMlOutputMock,
+}));
+
+vi.mock('./metricAnomalyEpisodes', () => ({
+  assembleMetricAnomalyEpisodes: assembleMock,
+  resolveMetricAnomalyEpisodes: resolveMock,
+  closeEpisodesForDisabledDetection: detectionOffMock,
+  notifyEpisodesClosed: notifyMock,
+}));
+
+vi.mock('./metricAnomalyEpisodeMetrics', () => ({
+  recordEpisodeStageSkipped: recordStageSkippedMock,
+  recordBaselineFallback: recordFallbackMock,
 }));
 
 import {
@@ -80,6 +96,15 @@ function resetDbMocks(): void {
   runOutsideDbContextMock.mockImplementation((fn: () => unknown) => fn());
   withSystemDbAccessContextMock.mockReset();
   withSystemDbAccessContextMock.mockImplementation((fn: () => unknown) => fn());
+  assembleMock.mockReset();
+  assembleMock.mockResolvedValue([]);
+  resolveMock.mockReset();
+  resolveMock.mockResolvedValue([]);
+  detectionOffMock.mockReset();
+  detectionOffMock.mockResolvedValue([]);
+  notifyMock.mockReset();
+  notifyMock.mockResolvedValue(undefined);
+  recordStageSkippedMock.mockReset();
   recordFallbackMock.mockReset();
 }
 
@@ -90,7 +115,7 @@ describe('metric anomalies service', () => {
     shouldProduceMlOutputMock.mockImplementation(async (_orgId: string, flag: string) => flag === 'ml.anomalies.enabled');
   });
 
-  it('gates all writes behind the anomaly ML feature flag', async () => {
+  it('gates detection, assembly and incidents behind ml.anomalies.enabled; episode-resolve closes as detection_off (D4, A5)', async () => {
     shouldProduceMlOutputMock.mockResolvedValue(false);
 
     const result = await detectMetricAnomaliesRange({
@@ -106,13 +131,15 @@ describe('metric anomalies service', () => {
       statements: 0,
       skipped: true,
       skippedReason: 'ml-disabled',
-      stages: [],
+      stages: [{ stage: 'episode-resolve', outcome: 'completed', durationMs: expect.any(Number) }],
+      episodesClosed: 0,
     });
-    expect(shouldProduceMlOutputMock).toHaveBeenCalledWith(
-      '11111111-1111-1111-1111-111111111111',
-      'ml.anomalies.enabled',
-    );
-    expect(executeMock).not.toHaveBeenCalled();
+    expect(shouldProduceMlOutputMock).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111', 'ml.anomalies.enabled');
+    expect(detectorStatements()).toHaveLength(0);
+    expect(assembleMock).not.toHaveBeenCalled();
+    // A5: rollups nobody evaluated prove nothing — no `cleared` closes.
+    expect(resolveMock).not.toHaveBeenCalled();
+    expect(detectionOffMock).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111', expect.any(Date));
   });
 
   it('upserts baseline deviations, growth trends, process sample runaways, and the collapsed incident row idempotently', async () => {
@@ -122,13 +149,15 @@ describe('metric anomalies service', () => {
       to: new Date('2026-06-18T12:30:00.000Z'),
     });
 
-    expect(result).toMatchObject({ statements: 4, skipped: false });
+    expect(result).toMatchObject({ statements: 5, skipped: false });
     expect(result).toMatchObject({ v1ShadowStatements: 0, v1ShadowSkipped: true });
     expect(result.stages.map((stage) => `${stage.stage}:${stage.outcome}`)).toEqual([
       'baseline:completed',
       'growth-trend:completed',
       'process-runaway:completed',
+      'episodes:completed',
       'incidents:completed',
+      'episode-resolve:completed',
     ]);
     expect(detectorStatements()).toHaveLength(4);
     const executedSql = JSON.stringify(executeMock.mock.calls);
@@ -163,7 +192,7 @@ describe('metric anomalies service', () => {
     });
 
     expect(result).toMatchObject({
-      statements: 4,
+      statements: 5,
       v1ShadowStatements: 1,
       v1ShadowSkipped: false,
       skipped: false,
@@ -319,7 +348,7 @@ describe('metric anomaly incidents upsert (#3828 wave-6-4 task 2)', () => {
     });
 
     expect(result).toMatchObject({ statements: 0, skipped: true });
-    expect(executeMock).not.toHaveBeenCalled();
+    expect(detectorStatements()).toHaveLength(0);
   });
 });
 
@@ -348,7 +377,7 @@ describe('metric anomaly overlap guard (#5283)', () => {
     const lockProbes = texts.filter((text) => text.includes('pg_try_advisory_xact_lock'));
     // One per stage — the lock is transaction-scoped, so a single probe at the
     // top of the run would protect only the first stage's transaction.
-    expect(lockProbes).toHaveLength(4);
+    expect(lockProbes).toHaveLength(6);
 
     // `pg_try_advisory_*` never waits, so a contended run returns immediately
     // instead of joining the queue. A blocking `pg_advisory_xact_lock` here
@@ -396,8 +425,8 @@ describe('metric anomaly overlap guard (#5283)', () => {
     const texts = executeMock.mock.calls.map((call) => JSON.stringify(call));
     const lockTimeouts = texts.filter((text) => text.includes("'lock_timeout'"));
     const statementTimeouts = texts.filter((text) => text.includes("'statement_timeout'"));
-    expect(lockTimeouts).toHaveLength(4);
-    expect(statementTimeouts).toHaveLength(4);
+    expect(lockTimeouts).toHaveLength(6);
+    expect(statementTimeouts).toHaveLength(6);
     expect(lockTimeouts[0]).toContain(String(METRIC_ANOMALY_LOCK_TIMEOUT_MS));
     expect(statementTimeouts[0]).toContain(String(METRIC_ANOMALY_STATEMENT_TIMEOUT_MS));
     // `SET LOCAL` semantics (set_config's third arg), so the bound dies with
@@ -436,8 +465,10 @@ describe('metric anomaly overlap guard (#5283)', () => {
       'completed',
       'completed',
       'completed',
+      'completed',
+      'completed',
     ]);
-    expect(result).toMatchObject({ statements: 3, skipped: false });
+    expect(result).toMatchObject({ statements: 4, skipped: false });
   });
 
   it('reports skippedReason "timeout" when every stage trips its wait bound', async () => {
@@ -445,6 +476,9 @@ describe('metric anomaly overlap guard (#5283)', () => {
       if (JSON.stringify(query).includes('INSERT INTO')) throw pgError('57014');
       return [{ acquired: true }];
     });
+
+    assembleMock.mockRejectedValue(pgError('57014'));
+    resolveMock.mockRejectedValue(pgError('57014'));
 
     const result = await detectMetricAnomaliesRange({
       orgId: '11111111-1111-1111-1111-111111111111',
@@ -484,6 +518,8 @@ describe('metric anomaly overlap guard (#5283)', () => {
     expect(labels).toContain('metricAnomalies.growth-trend');
     expect(labels).toContain('metricAnomalies.process-runaway');
     expect(labels).toContain('metricAnomalies.incidents');
+    expect(labels).toContain('metricAnomalies.episodes');
+    expect(labels).toContain('metricAnomalies.episode-resolve');
 
     // Every context is opened via runOutsideDbContext: withDbAccessContext
     // early-returns into an ambient context, so a caller that still wrapped the
@@ -577,34 +613,23 @@ describe('metric anomaly skip reporting and stall escalation (#5283 review)', ()
 
   it('does not mark the whole run skipped when only the v1 shadow stage loses the lock', async () => {
     shouldProduceMlOutputMock.mockResolvedValue(true);
-    let detectorIndex = 0;
+    let probes = 0;
     executeMock.mockImplementation(async (query: unknown) => {
       const text = JSON.stringify(query);
-      // Refuse the lock only for the 5th stage (v1-shadow).
-      if (text.includes('pg_try_advisory_xact_lock')) return [{ acquired: detectorIndex < 4 }];
-      if (text.includes('INSERT INTO')) {
-        detectorIndex += 1;
-        return [];
+      // Six main stages acquire; the 7th probe (v1-shadow) is refused.
+      if (text.includes('pg_try_advisory_xact_lock')) {
+        probes += 1;
+        return [{ acquired: probes <= 6 }];
       }
-      return [{ acquired: true }];
+      return [];
     });
 
     const result = await detectMetricAnomaliesRange({ orgId, ...range });
 
-    expect(result).toMatchObject({
-      statements: 4,
-      v1ShadowStatements: 0,
-      v1ShadowSkipped: true,
-      skipped: false,
-    });
-    // The four main stages committed, so no skip reason may leak through.
+    expect(result).toMatchObject({ statements: 5, v1ShadowStatements: 0, v1ShadowSkipped: true, skipped: false });
     expect(result.skippedReason).toBeUndefined();
     expect(result.stages.map((stage) => stage.outcome)).toEqual([
-      'completed',
-      'completed',
-      'completed',
-      'completed',
-      'locked',
+      'completed', 'completed', 'completed', 'completed', 'completed', 'completed', 'locked',
     ]);
   });
 
@@ -648,6 +673,112 @@ describe('metric anomaly skip reporting and stall escalation (#5283 review)', ()
     await detectMetricAnomaliesRange({ orgId, ...range });
 
     expect(captureMessageMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('episode stages (metric anomaly episodes W01)', () => {
+  const orgId = '11111111-1111-1111-1111-111111111111';
+  const range = { from: new Date('2026-06-18T12:00:00.000Z'), to: new Date('2026-06-18T12:15:00.000Z') };
+
+  beforeEach(() => {
+    resetDbMocks();
+    shouldProduceMlOutputMock.mockReset();
+    shouldProduceMlOutputMock.mockImplementation(async (_orgId: string, flag: string) => flag === 'ml.anomalies.enabled');
+  });
+
+  it('runs assembly before incidents, with the normalised range (A6)', async () => {
+    const order: string[] = [];
+    assembleMock.mockImplementation(async () => { order.push('episodes'); return []; });
+    executeMock.mockImplementation(async (query: unknown) => {
+      if (JSON.stringify(query).includes('INSERT INTO metric_anomaly_incidents')) order.push('incidents');
+      return [{ acquired: true }];
+    });
+    await detectMetricAnomaliesRange({ orgId, ...range });
+    expect(assembleMock).toHaveBeenCalledWith({ orgId, ...range, trigger: 'scan' });
+    expect(order).toEqual(['episodes', 'incidents']);
+  });
+
+  it('each incident carries the episode of its highest-score member, and a later upsert never unlinks it (A6)', async () => {
+    await detectMetricAnomaliesRange({ orgId, ...range });
+    const incidentSql = JSON.stringify(executeMock.mock.calls.find(([query]) =>
+      JSON.stringify(query).includes('INSERT INTO metric_anomaly_incidents'))?.[0]);
+    expect(incidentSql).toContain('episode_id');
+    expect(incidentSql).toContain('(array_agg(ma.episode_id ORDER BY ma.score DESC NULLS LAST))[1]');
+    expect(incidentSql).toContain('episode_id = COALESCE(EXCLUDED.episode_id, metric_anomaly_incidents.episode_id)');
+  });
+
+  it('episode-resolve is bounded by the range end and runs last (A4)', async () => {
+    const result = await detectMetricAnomaliesRange({ orgId, ...range });
+    expect(resolveMock).toHaveBeenCalledWith(orgId, range.to, expect.any(Date));
+    expect(detectionOffMock).not.toHaveBeenCalled();
+    expect(result.stages.at(-1)?.stage).toBe('episode-resolve');
+  });
+
+  it('a backfill runs assembly but never episode-resolve (now-relative)', async () => {
+    const result = await detectMetricAnomaliesRange({ orgId, ...range, trigger: 'backfill' });
+    expect(assembleMock).toHaveBeenCalledWith({ orgId, ...range, trigger: 'backfill' });
+    expect(resolveMock).not.toHaveBeenCalled();
+    expect(result.stages.map((stage) => stage.stage)).not.toContain('episode-resolve');
+  });
+
+  it('a flag-off backfill runs nothing at all', async () => {
+    shouldProduceMlOutputMock.mockResolvedValue(false);
+    const result = await detectMetricAnomaliesRange({ orgId, ...range, trigger: 'backfill' });
+    expect(result).toMatchObject({ skipped: true, skippedReason: 'ml-disabled', stages: [], episodesClosed: 0 });
+    expect(executeMock).not.toHaveBeenCalled();
+  });
+
+  it('hands every auto-closed episode to the close handler once, after the stages', async () => {
+    const superseded = { episodeId: 'ep-1', deviceId: 'dev-1', linkedAlertId: null, closeReason: 'cleared' as const };
+    const expired = { episodeId: 'ep-2', deviceId: 'dev-2', linkedAlertId: 'alert-2', closeReason: 'expired_offline' as const };
+    assembleMock.mockResolvedValue([superseded]);
+    resolveMock.mockResolvedValue([expired]);
+
+    const result = await detectMetricAnomaliesRange({ orgId, ...range });
+
+    expect(notifyMock).toHaveBeenCalledTimes(1);
+    expect(notifyMock).toHaveBeenCalledWith(orgId, [superseded, expired]);
+    expect(result.episodesClosed).toBe(2);
+  });
+
+  it('counts a timed-out episode stage, and only episode stages', async () => {
+    assembleMock.mockRejectedValue(pgError('57014'));
+    executeMock.mockImplementation(async (query: unknown) => {
+      if (JSON.stringify(query).includes('INSERT INTO metric_anomalies (')) throw pgError('57014');
+      return [{ acquired: true }];
+    });
+
+    await detectMetricAnomaliesRange({ orgId, ...range });
+
+    expect(recordStageSkippedMock).toHaveBeenCalledTimes(1);
+    expect(recordStageSkippedMock).toHaveBeenCalledWith('episodes');
+  });
+
+  it('a timed-out episode-resolve is counted and its closes never reach the handler', async () => {
+    const superseded = { episodeId: 'ep-1', deviceId: 'dev-1', linkedAlertId: null, closeReason: 'cleared' as const };
+    assembleMock.mockResolvedValue([superseded]);
+    resolveMock.mockRejectedValue(pgError('57014'));
+
+    const result = await detectMetricAnomaliesRange({ orgId, ...range });
+
+    expect(result.stages.at(-1)).toMatchObject({ stage: 'episode-resolve', outcome: 'timeout' });
+    expect(recordStageSkippedMock).toHaveBeenCalledTimes(1);
+    expect(recordStageSkippedMock).toHaveBeenCalledWith('episode-resolve');
+    // Only the committed `episodes` stage's supersede is handed on.
+    expect(notifyMock).toHaveBeenCalledWith(orgId, [superseded]);
+    expect(result.episodesClosed).toBe(1);
+  });
+
+  it('a timed-out episodes stage drops its supersedes (the stage rolled back)', async () => {
+    // The stage's statement times out, so its transaction rolls back and
+    // nothing it planned to close may be reported.
+    assembleMock.mockRejectedValue(pgError('57014'));
+    resolveMock.mockResolvedValue([]);
+
+    const result = await detectMetricAnomaliesRange({ orgId, ...range });
+
+    expect(notifyMock).toHaveBeenCalledWith(orgId, []);
+    expect(result.episodesClosed).toBe(0);
   });
 });
 
