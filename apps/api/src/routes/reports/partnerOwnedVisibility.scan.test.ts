@@ -106,6 +106,25 @@ const MUST_CALL_HELPER: ReadonlyArray<{ file: string; fn: string }> = [
   { file: 'src/routes/reports/runs.ts', fn: 'GET /runs' },
 ];
 
+/**
+ * Ruling F1 (#3198 W02): the org-scope tenant predicates — the only places an
+ * ORGANIZATION-scope caller's report/run reads are built — must each apply
+ * `reportAudienceCondition` (reports.type NOT IN the msp_staff types) in their
+ * own body. Every other guarded route site reaches one of these transitively:
+ * getReportWithOwnerCheck, loadLockedDefinition and loadOrgOwnedDefinition go
+ * through tenantAuthorizedReportCondition; getReportRunWithOwnerCheck through
+ * tenantAuthorizedRunCondition (GUARD_ENTRYPOINTS proves each reaches its
+ * helper). Allowlisted scopes answer the audience question per entry instead
+ * (AllowEntry.audience).
+ */
+const MUST_CALL_AUDIENCE: ReadonlyArray<{ file: string; fn: string }> = [
+  { file: 'src/routes/reports/helpers.ts', fn: 'tenantAuthorizedReportCondition' },
+  { file: 'src/routes/reports/helpers.ts', fn: 'tenantAuthorizedRunCondition' },
+  { file: 'src/routes/reports/core.ts', fn: 'resolveDefinitionListScope' },
+  { file: 'src/routes/reports/runs.ts', fn: 'GET /runs' },
+];
+const AUDIENCE_CALL = /(?<!function\s)\breportAudienceCondition\(/;
+
 const ORG_PIN = 'a partner-owned row has org_id NULL and cannot match an org_id equality';
 
 /**
@@ -114,88 +133,104 @@ const ORG_PIN = 'a partner-owned row has org_id NULL and cannot match an org_id 
  * a different scope is NOT covered.
  */
 /** `sites` = exact count of unguarded query sites in that scope (pinned). */
-const pinned = (sites: number, reason: string): AllowEntry => ({ sites, reason });
+const pinned = (sites: number, reason: string, audience = ''): AllowEntry => ({ sites, reason, audience });
+
+/**
+ * Ruling F1 (#3198 W02): why an org-scope caller cannot reach an msp_staff
+ * (business) report through an allowlisted scope. Every allowlist entry names
+ * one — a new entry has to answer the audience question, not only the
+ * partner-owned one.
+ */
+const AUD_SYSTEM = 'system context only; nothing selected is returned to an org-scope caller';
+const AUD_WORKER = 'system context; org-owned msp_staff rows are re-checked on the PARTNER axis only (resolveLiveReportTypePermissions partnerAxisOnly)';
+const AUD_TYPE_PINNED = 'pinned to a system-authored or managed-evidence type whose registry audience is any';
+const AUD_PORTAL = 'portal definitions are never business types (reportRegistry.test pins BUSINESS ∉ portal definitions)';
+const AUD_AI_TOOL = 'org-axis AI report tool: the metadata reads and the list apply reportAudienceCondition (MUST_CALL_AUDIENCE)';
+const AUD_AI_AGENT_ARTIFACT = 'reads only narrative / fleet-design scalars of the run an AI agent linked; reportRunId is set only by those persisters';
+const AUD_EVIDENCE_REFUSES = 'deliverable evidence refuses msp_staff definitions/runs before any link, attach or run (ruling F1)';
+const AUD_EVIDENCE_LINKED = 'reaches report_runs only through deliverable evidence, which can never reference an msp_staff run (ruling F1)';
+const AUD_CALLER_AUTHORIZED = 'keyed on a definition its caller already authorized, audience included';
 
 const SITE_ALLOWLIST: SiteAllowlist = new Map<string, Map<string, AllowEntry>>([
   ['src/routes/aiAgents.ts', new Map([
-    ['GET /runs/:runId', pinned(4, `AI-agent run artifact reads join reports and pin eq(reports.orgId, run.orgId) AND auth.orgCondition(reports.orgId); ${ORG_PIN}`)],
+    ['GET /runs/:runId', pinned(4, `AI-agent run artifact reads join reports and pin eq(reports.orgId, run.orgId) AND auth.orgCondition(reports.orgId); ${ORG_PIN}`, AUD_AI_AGENT_ARTIFACT)],
   ])],
   ['src/routes/fleetDesign.ts', new Map([
-    ['GET /', pinned(2, 'lists type ai_fleet_design (system-authored, org-owned) under auth.orgCondition(reports.orgId)')],
+    ['GET /', pinned(2, 'lists type ai_fleet_design (system-authored, org-owned) under auth.orgCondition(reports.orgId)', AUD_TYPE_PINNED)],
   ])],
   ['src/services/aiAgents/fleetDesignReport.ts', new Map([
-    ['persistFleetDesignReport', pinned(3, `Fleet Design is system-authored and org-owned: definition read/update keyed on eq(reports.orgId, run.orgId); the run update targets the artifact row it just inserted; ${ORG_PIN}`)],
-    ['loadFleetDesignReport', pinned(2, 'by-id run read joined to reports with type ai_fleet_design AND orgCondition(reports.orgId); a partner-owned row is never that type')],
+    ['persistFleetDesignReport', pinned(3, `Fleet Design is system-authored and org-owned: definition read/update keyed on eq(reports.orgId, run.orgId); the run update targets the artifact row it just inserted; ${ORG_PIN}`, AUD_TYPE_PINNED)],
+    ['loadFleetDesignReport', pinned(2, 'by-id run read joined to reports with type ai_fleet_design AND orgCondition(reports.orgId); a partner-owned row is never that type', AUD_TYPE_PINNED)],
   ])],
   ['src/services/aiAgents/narrativeReport.ts', new Map([
-    ['persistNarrativeReport', pinned(3, 'the weekly AI narrative is system-authored and org-owned; keyed on eq(reports.orgId, run.orgId) + source schedule; the run update targets the artifact it just inserted')],
+    ['persistNarrativeReport', pinned(3, 'the weekly AI narrative is system-authored and org-owned; keyed on eq(reports.orgId, run.orgId) + source schedule; the run update targets the artifact it just inserted', AUD_TYPE_PINNED)],
   ])],
   ['src/services/aiToolsFleet.ts', new Map([
-    ['aiReportDefinitionAccess', pinned(2, 'refuses a partner-owned row via requireOrgOwnedReportRow before returning access (#3198 W01 Task 5b owner guard); predicates are reports.org_id')],
-    ['aiReportRunAccess', pinned(2, 'refuses a partner-owned row via requireOrgOwnedReportRow before returning access (#3198 W01 Task 5b owner guard); predicates are reports.org_id')],
-    ['tool:generate_report', pinned(8, 'AI report tool, org-axis: the list keys on reports.org_id (eq / inArray / org-axis scope predicates); update and delete pin eq(reports.orgId, existing.orgId) + access.predicate after aiReportDefinitionAccess; run reads pin reports.org_id after aiReportRunAccess. The generate-branch lastGeneratedAt update keys on reports.id ONLY — safe because that id is reportDef.id returned by aiReportDefinitionAccess, which refuses a partner-owned row (requireOrgOwnedReportRow)')],
+    ['aiReportDefinitionAccess', pinned(2, 'refuses a partner-owned row via requireOrgOwnedReportRow before returning access (#3198 W01 Task 5b owner guard); predicates are reports.org_id', AUD_AI_TOOL)],
+    ['aiReportRunAccess', pinned(2, 'refuses a partner-owned row via requireOrgOwnedReportRow before returning access (#3198 W01 Task 5b owner guard); predicates are reports.org_id', AUD_AI_TOOL)],
+    ['tool:generate_report', pinned(8, 'AI report tool, org-axis: the list keys on reports.org_id (eq / inArray / org-axis scope predicates); update and delete pin eq(reports.orgId, existing.orgId) + access.predicate after aiReportDefinitionAccess; run reads pin reports.org_id after aiReportRunAccess. The generate-branch lastGeneratedAt update keys on reports.id ONLY — safe because that id is reportDef.id returned by aiReportDefinitionAccess, which refuses a partner-owned row (requireOrgOwnedReportRow)', AUD_AI_TOOL)],
   ])],
   ['src/services/deliverableAutoEvidence.ts', new Map([
-    ['generateAutoEvidenceForOccurrence', pinned(1, `managed evidence is org-owned by construction (#5784): definition read is id AND org_id = <deliverable org>; ${ORG_PIN}`)],
-    ['finishRun', pinned(1, 'generateAutoEvidenceForOccurrence\'s local: updates the run id runGenerator just inserted for the org-owned evidence definition')],
-    ['runGenerator', pinned(1, 'generateAutoEvidenceForOccurrence\'s local: inserts a run for the org-owned evidence definition and updates only that run by id')],
+    ['generateAutoEvidenceForOccurrence', pinned(1, `managed evidence is org-owned by construction (#5784): definition read is id AND org_id = <deliverable org>; ${ORG_PIN}`, AUD_EVIDENCE_REFUSES)],
+    ['finishRun', pinned(1, 'generateAutoEvidenceForOccurrence\'s local: updates the run id runGenerator just inserted for the org-owned evidence definition', AUD_EVIDENCE_REFUSES)],
+    ['runGenerator', pinned(1, 'generateAutoEvidenceForOccurrence\'s local: inserts a run for the org-owned evidence definition and updates only that run by id', AUD_EVIDENCE_REFUSES)],
   ])],
   ['src/services/evidenceBaseline.ts', new Map([
-    ['previousOccurrenceBaselineFor', pinned(1, 'reaches report_runs only through service_deliverable_evidence of one org-owned deliverable (evidence linkage validates reports.org_id = <deliverable org>)')],
+    ['previousOccurrenceBaselineFor', pinned(1, 'reaches report_runs only through service_deliverable_evidence of one org-owned deliverable (evidence linkage validates reports.org_id = <deliverable org>)', AUD_EVIDENCE_LINKED)],
   ])],
   ['src/services/fleetDesign/drift.ts', new Map([
-    ['loadApprovedDesign', pinned(1, 'reads the run id taken from fleet_design_applied_items pinned to eq(orgId, orgId); applied items only reference org-owned ai_fleet_design runs')],
+    ['loadApprovedDesign', pinned(1, 'reads the run id taken from fleet_design_applied_items pinned to eq(orgId, orgId); applied items only reference org-owned ai_fleet_design runs', AUD_TYPE_PINNED)],
   ])],
   ['src/services/fleetDesign/ledger.ts', new Map([
-    ['lockReportRun', pinned(2, 'Fleet Design ledger reads type ai_fleet_design under orgCondition(reports.org_id); a partner-owned row is never that type')],
+    ['lockReportRun', pinned(2, 'Fleet Design ledger reads type ai_fleet_design under orgCondition(reports.org_id); a partner-owned row is never that type', AUD_TYPE_PINNED)],
   ])],
   ['src/services/managedEvidenceDefinitions.ts', new Map([
-    ['loadManagedEvidenceDefinition', pinned(1, `the org's ONE managed evidence definition, keyed on eq(reports.orgId, orgId) + type + portal_self_service; ${ORG_PIN}`)],
+    ['loadManagedEvidenceDefinition', pinned(1, `the org's ONE managed evidence definition, keyed on eq(reports.orgId, orgId) + type + portal_self_service; ${ORG_PIN}`, AUD_TYPE_PINNED)],
   ])],
   ['src/services/portal/reportsSelfService.ts', new Map([
-    ['provisionPortalReportDefinitions', pinned(1, 'portal definitions keyed on eq(reports.orgId, orgId) + portal_self_service; partner-owned rows are never portal-visible (spec §3.5)')],
-    ['hardwareLifecycleConfigWithInheritance', pinned(1, `keyed on eq(reports.orgId, orgId) + type hardware_lifecycle; ${ORG_PIN}`)],
-    ['listPortalRuns', pinned(4, 'portalRunListPredicate keys on reports.org_id = <portal org> AND portal_self_service; partner-owned rows are never portal-visible (spec §3.5)')],
-    ['generatePortalReport', pinned(1, 'portalDefinitionPredicate keys on reports.org_id = <portal org> AND portal_self_service')],
-    ['latestPortalHardwareLifecycleRun', pinned(2, `keyed on eq(reports.orgId, orgId) + portal_self_service; ${ORG_PIN}`)],
-    ['completedRun', pinned(2, 'portalRunPredicate keys on reports.org_id = <portal org> AND portal_self_service')],
+    ['provisionPortalReportDefinitions', pinned(1, 'portal definitions keyed on eq(reports.orgId, orgId) + portal_self_service; partner-owned rows are never portal-visible (spec §3.5)', AUD_PORTAL)],
+    ['hardwareLifecycleConfigWithInheritance', pinned(1, `keyed on eq(reports.orgId, orgId) + type hardware_lifecycle; ${ORG_PIN}`, AUD_PORTAL)],
+    ['listPortalRuns', pinned(4, 'portalRunListPredicate keys on reports.org_id = <portal org> AND portal_self_service; partner-owned rows are never portal-visible (spec §3.5)', AUD_PORTAL)],
+    ['generatePortalReport', pinned(1, 'portalDefinitionPredicate keys on reports.org_id = <portal org> AND portal_self_service', AUD_PORTAL)],
+    ['latestPortalHardwareLifecycleRun', pinned(2, `keyed on eq(reports.orgId, orgId) + portal_self_service; ${ORG_PIN}`, AUD_PORTAL)],
+    ['completedRun', pinned(2, 'portalRunPredicate keys on reports.org_id = <portal org> AND portal_self_service', AUD_PORTAL)],
   ])],
   ['src/services/portal/serviceReadModel.ts', new Map([
-    ['evidenceQuery', pinned(1, 'portal evidence join is `reports.org_id = service_deliverable_evidence.org_id` for the portal org — a NULL-org row cannot match')],
+    ['evidenceQuery', pinned(1, 'portal evidence join is `reports.org_id = service_deliverable_evidence.org_id` for the portal org — a NULL-org row cannot match', AUD_EVIDENCE_LINKED)],
   ])],
   ['src/services/reportGenerationService.ts', new Map([
-    ['previousBaselineFor', pinned(1, 'baseline for the definition being generated, keyed on report_id + the run\'s own scope fingerprint; the caller already authorized that definition (preflight)')],
+    ['previousBaselineFor', pinned(1, 'baseline for the definition being generated, keyed on report_id + the run\'s own scope fingerprint; the caller already authorized that definition (preflight)', AUD_CALLER_AUTHORIZED)],
   ])],
   ['src/services/reportNarrativeDelivery.ts', new Map([
-    ['loadArtifact', pinned(2, 'delivers the org-owned AI narrative run by id in system context; report_run_deliveries rows exist only for narrative runs')],
+    ['loadArtifact', pinned(2, 'delivers the org-owned AI narrative run by id in system context; report_run_deliveries rows exist only for narrative runs', AUD_SYSTEM)],
   ])],
   ['src/services/reportRunDelivery.ts', new Map([
-    ['claimDelivery', pinned(1, 'system-context delivery CAS by delivery id for the narrative delivery pass / reconciler; no caller-supplied visibility')],
-    ['settleDelivery', pinned(1, 'system-context delivery settle by delivery id for the narrative delivery pass / reconciler; no caller-supplied visibility')],
-    ['recordTransientGateFailure', pinned(1, 'system-context delivery update by delivery id for the narrative delivery pass; no caller-supplied visibility')],
-    ['listPendingDeliveriesForRun', pinned(1, 'system-context read for the narrative delivery pass over ONE run it is delivering; nothing is shown to a caller')],
-    ['listUnsettledDeliveries', pinned(1, 'system-context reconciler scan; the reconciler settles partner-owned runs as failed and shows nothing to a caller')],
-    ['query', pinned(1, 'summarizeDeliveries\' count query: keyed on a run id its caller already authorized (aiAgents run detail pins the run to the agent run\'s org; the delivery pass runs in system context)')],
+    ['claimDelivery', pinned(1, 'system-context delivery CAS by delivery id for the narrative delivery pass / reconciler; no caller-supplied visibility', AUD_SYSTEM)],
+    ['settleDelivery', pinned(1, 'system-context delivery settle by delivery id for the narrative delivery pass / reconciler; no caller-supplied visibility', AUD_SYSTEM)],
+    ['recordTransientGateFailure', pinned(1, 'system-context delivery update by delivery id for the narrative delivery pass; no caller-supplied visibility', AUD_SYSTEM)],
+    ['listPendingDeliveriesForRun', pinned(1, 'system-context read for the narrative delivery pass over ONE run it is delivering; nothing is shown to a caller', AUD_SYSTEM)],
+    ['listUnsettledDeliveries', pinned(1, 'system-context reconciler scan; the reconciler settles partner-owned runs as failed and shows nothing to a caller', AUD_SYSTEM)],
+    ['query', pinned(1, 'summarizeDeliveries\' count query: keyed on a run id its caller already authorized (aiAgents run detail pins the run to the agent run\'s org; the delivery pass runs in system context)', AUD_SYSTEM)],
   ])],
   ['src/services/serviceDeliverableService.ts', new Map([
-    ['validateReferences', pinned(1, `evidence linkage validates eq(reports.orgId, <deliverable org>) — ${ORG_PIN}`)],
-    ['insertEvidenceRef', pinned(2, `run evidence joins reports and pins eq(reports.orgId, orgId); ${ORG_PIN}`)],
+    ['validateReferences', pinned(1, `evidence linkage validates eq(reports.orgId, <deliverable org>) — ${ORG_PIN}`, AUD_EVIDENCE_REFUSES)],
+    ['insertEvidenceRef', pinned(2, `run evidence joins reports and pins eq(reports.orgId, orgId); ${ORG_PIN}`, AUD_EVIDENCE_REFUSES)],
   ])],
   ['src/jobs/reportScheduleWorker.ts', new Map([
-    ['findDueReports', pinned(2, 'system DB context due scan; nothing selected is shown to anyone — every due row is re-authorized per run (#3198 W01 Task 6)')],
-    ['claimReportOccurrence', pinned(1, 'system DB context occurrence CAS by report id on a row findDueReports selected')],
-    ['processRunScheduledReport', pinned(4, 'system DB context, reads by id, re-asserts live partner authority per row before generating (#3198 W01 Task 6); run updates target the run it inserted')],
+    ['findDueReports', pinned(2, 'system DB context due scan; nothing selected is shown to anyone — every due row is re-authorized per run (#3198 W01 Task 6)', AUD_WORKER)],
+    ['claimReportOccurrence', pinned(1, 'system DB context occurrence CAS by report id on a row findDueReports selected', AUD_WORKER)],
+    ['processRunScheduledReport', pinned(4, 'system DB context, reads by id, re-asserts live partner authority per row before generating (#3198 W01 Task 6); run updates target the run it inserted', AUD_WORKER)],
   ])],
   ['src/jobs/reportRunDeliveryReconciler.ts', new Map([
-    ['loadRunOwners', pinned(2, 'system reconciler maps narrative delivery runs to their owner by id; partner-owned runs are settled failed, never delivered (#3198 W01 Task 6)')],
+    ['loadRunOwners', pinned(2, 'system reconciler maps narrative delivery runs to their owner by id; partner-owned runs are settled failed, never delivered (#3198 W01 Task 6)', AUD_SYSTEM)],
   ])],
   // Raw-SQL sites (fix round 1): system-context tenant lifecycle, never a caller read.
   ['src/services/tenantCascade.ts', new Map([
-    ['clearSql', pinned(2, 'org erasure pre-clear in system context: DELETE FROM report_runs WHERE report_id IN (SELECT id FROM reports WHERE org_id = <erased org>) — a partner-owned definition has org_id NULL and never matches; its runs go with the partner sweep via ON DELETE CASCADE')],
+    ['clearSql', pinned(2, 'org erasure pre-clear in system context: DELETE FROM report_runs WHERE report_id IN (SELECT id FROM reports WHERE org_id = <erased org>) — a partner-owned definition has org_id NULL and never matches; its runs go with the partner sweep via ON DELETE CASCADE', AUD_SYSTEM)],
   ])],
   ['src/services/orgMergeCustomExecutors.ts', new Map([
-    ['rehomeReportChildrenThenDelete', pinned(8, 'org merge (platform admin, system context): every statement keys on t.org_id = <loser> and s.org_id = <survivor>; a partner-owned definition has org_id NULL and is never re-homed, deduplicated or deleted')],
-    ['reports', pinned(1, 'org merge preview counter: SELECT count(*) FROM reports t WHERE t.org_id = <loser> — a NULL-org partner-owned row never matches, and only a count is returned to the admin')],
+    ['rehomeReportChildrenThenDelete', pinned(8, 'org merge (platform admin, system context): every statement keys on t.org_id = <loser> and s.org_id = <survivor>; a partner-owned definition has org_id NULL and is never re-homed, deduplicated or deleted', AUD_SYSTEM)],
+    ['reports', pinned(1, 'org merge preview counter: SELECT count(*) FROM reports t WHERE t.org_id = <loser> — a NULL-org partner-owned row never matches, and only a count is returned to the admin', AUD_SYSTEM)],
   ])],
 ]);
 
@@ -433,7 +468,12 @@ function querySiteMatches(source: string): Array<{ index: number; text: string }
 }
 
 /** An allowlisted scope: its written reason and the exact number of unguarded sites it holds. */
-interface AllowEntry { sites: number; reason: string }
+interface AllowEntry {
+  sites: number;
+  reason: string;
+  /** Ruling F1: why an org-scope caller cannot reach an msp_staff report here. */
+  audience: string;
+}
 type SiteAllowlist = ReadonlyMap<string, ReadonlyMap<string, AllowEntry>>;
 
 /**
@@ -681,6 +721,16 @@ describe('partner-owned report visibility is mechanical (#3198 W01, per-site sin
     expect(offenders).toEqual([]);
   });
 
+  it('each org-scope tenant predicate applies the msp_staff audience exclusion (ruling F1)', () => {
+    const offenders: string[] = [];
+    for (const { file, fn } of MUST_CALL_AUDIENCE) {
+      const body = scopeBody(code(join(process.cwd(), file)), fn);
+      if (!body) offenders.push(`${file}: ${fn} not found`);
+      else if (!AUDIENCE_CALL.test(body)) offenders.push(`${file}: ${fn} does not call reportAudienceCondition`);
+    }
+    expect(offenders).toEqual([]);
+  });
+
   it('a raw reports.partnerId predicate appears only inside the gated helper functions', () => {
     const offenders: string[] = [];
     let found = 0;
@@ -705,9 +755,10 @@ describe('partner-owned report visibility is mechanical (#3198 W01, per-site sin
     for (const [file, scopes] of SITE_ALLOWLIST) {
       const source = code(join(process.cwd(), file));
       const live = new Set(siteOffenders(file, source, new Map()).map((o) => /\(in (.+?)\) /.exec(o)?.[1]));
-      for (const [fn, { reason, sites }] of scopes) {
+      for (const [fn, { reason, sites, audience }] of scopes) {
         if (!live.has(fn)) stale.push(`${file}: ${fn}`);
         expect(reason.length, `${file}:${fn}`).toBeGreaterThan(20);
+        expect(audience.length, `${file}:${fn} audience (ruling F1)`).toBeGreaterThan(20);
         expect(sites, `${file}:${fn}`).toBeGreaterThan(0);
       }
     }

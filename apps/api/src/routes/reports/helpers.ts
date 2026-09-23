@@ -5,6 +5,10 @@ import { portalBranding, reports, reportRuns } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import { canManagePartnerWidePolicies } from '../../services/partnerWideAccess';
 import {
+  reportAudienceCondition,
+  reportTypeHiddenFromCaller,
+} from '../../services/reportTypePermissions';
+import {
   decodeSiteScope,
   isSiteScopeSubset,
   reportDefinitionScopeSqlPredicate,
@@ -240,6 +244,9 @@ export async function getReportWithOwnerCheck(
   if (!metadata) {
     return null;
   }
+  // Ruling F1, defense in depth: the tenant condition above already excludes
+  // msp_staff types for an org-scope caller.
+  if (reportTypeHiddenFromCaller(metadata.type, auth)) return null;
 
   const owner = reportOwnerOfRow(metadata);
   if (!owner) return null;
@@ -348,9 +355,10 @@ export function tenantAuthorizedReportCondition(
 
   // Organization scope never gains a partner_id predicate (#3198 W01): its
   // `org_id = auth.orgId` filter is one no partner-owned row can satisfy.
+  // Ruling F1: nor does it ever see an msp_staff (business) type.
   if (auth.scope === 'organization') {
     return auth.orgId
-      ? and(idCondition, eq(reports.orgId, auth.orgId))!
+      ? and(idCondition, eq(reports.orgId, auth.orgId), reportAudienceCondition(auth, reports.type))!
       : sql<unknown>`FALSE`;
   }
 
@@ -378,7 +386,10 @@ export function tenantAuthorizedRunCondition(
   auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'partnerId' | 'partnerOrgAccess'>,
 ): SQL<unknown> | undefined | null {
   if (auth.scope === 'organization') {
-    return auth.orgId ? eq(reports.orgId, auth.orgId) : null;
+    // Ruling F1: an org-scope caller never sees a run of an msp_staff type.
+    return auth.orgId
+      ? and(eq(reports.orgId, auth.orgId), reportAudienceCondition(auth, reports.type))!
+      : null;
   }
   if (auth.scope === 'partner') {
     const orgIds = auth.accessibleOrgIds ?? [];
@@ -411,6 +422,8 @@ export async function getReportRunWithOwnerCheck(
     .limit(1);
 
   if (!metadata) return null;
+  // Ruling F1, defense in depth (see getReportWithOwnerCheck).
+  if (reportTypeHiddenFromCaller(metadata.type, auth)) return null;
 
   const owner = reportOwnerOfRow(metadata);
   if (!owner) return null;
@@ -453,6 +466,8 @@ export const reportRunMetadataProjection = {
   reportId: reportRuns.reportId,
   orgId: reports.orgId,
   partnerId: reports.partnerId,
+  // Ruling F1: the loader's audience belt reads the definition's type.
+  type: reports.type,
   executionScopeVersion: reportRuns.executionScopeVersion,
   executionScopeKind: reportRuns.executionScopeKind,
   executionScopeSiteIds: reportRuns.executionScopeSiteIds,

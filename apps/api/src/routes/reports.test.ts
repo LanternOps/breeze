@@ -125,6 +125,8 @@ vi.mock('drizzle-orm', () => ({
   or: (...conditions: any[]) => ({ op: 'or', conditions }),
   eq: (column: unknown, value: unknown) => ({ op: 'eq', column, value }),
   inArray: (column: unknown, values: unknown[]) => ({ op: 'inArray', column, values }),
+  // #3198 W02 ruling F1 — the org-scope audience exclusion.
+  notInArray: (column: unknown, values: unknown[]) => ({ op: 'notInArray', column, values }),
   gte: (column: unknown, value: unknown) => ({ op: 'gte', column, value }),
   lte: (column: unknown, value: unknown) => ({ op: 'lte', column, value }),
   desc: (column: unknown) => ({ op: 'desc', column }),
@@ -3122,6 +3124,8 @@ describe('report run immutable scope enforcement', () => {
           // #3198 W01: the other owner axis (reports_one_owner_chk).
           'partnerId',
           'reportId',
+          // #3198 W02 ruling F1: the loader's audience belt reads the type.
+          'type',
         ]);
       expect(resolveRequestReportAuthority).toHaveBeenCalledWith(
         expect.anything(),

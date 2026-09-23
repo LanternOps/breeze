@@ -20,6 +20,8 @@ import {
 import { reportScopeFromAuthority } from '../../services/reportScope';
 import {
   missingReportTypePermission,
+  reportAudienceCondition,
+  reportTypeHiddenFromCaller,
   REPORT_TYPE_PERMISSION_DENIED,
 } from '../../services/reportTypePermissions';
 import type { UserPermissions } from '../../services/permissions';
@@ -103,6 +105,11 @@ runsRoutes.post(
     // underlying read permissions its registry entry lists — before any
     // authority lookup or run row.
     if (missingReportTypePermission(report.type, c.get('permissions') as UserPermissions | undefined)) {
+      return c.json(REPORT_TYPE_PERMISSION_DENIED, 403);
+    }
+    // Ruling F1, defense in depth: getReportWithOrgCheck already hides an
+    // msp_staff type from an org-scope caller (404 above).
+    if (reportTypeHiddenFromCaller(report.type, auth)) {
       return c.json(REPORT_TYPE_PERMISSION_DENIED, 403);
     }
 
@@ -299,6 +306,9 @@ runsRoutes.get(
         return c.json({ data: [], pagination: { page, limit, total: 0 } });
       }
       conditions.push(eq(reports.orgId, auth.orgId));
+      // Ruling F1: an org-scope caller never lists a run of an msp_staff type.
+      const audience = reportAudienceCondition(auth, reports.type);
+      if (audience) conditions.push(audience);
       runScopePredicate = reportRunScopeSqlPredicate(
         reportRuns,
         result.authority.scope,

@@ -17,6 +17,7 @@ import {
 import { reportTypeDef } from '../../services/reportRegistry';
 import {
   missingReportTypePermission,
+  reportTypeHiddenFromCaller,
   REPORT_TYPE_PERMISSION_DENIED,
 } from '../../services/reportTypePermissions';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
@@ -104,7 +105,11 @@ generateRoutes.post(
       auditOrgId = null;
     } else {
       // #3198 W02 (ruling P8): same per-type permission gate on the org arm.
-      if (missingReportTypePermission(data.type, permissions)) {
+      // Ruling F1: an org-scope caller may never run an msp_staff type.
+      if (
+        reportTypeHiddenFromCaller(data.type, auth)
+        || missingReportTypePermission(data.type, permissions)
+      ) {
         return c.json(REPORT_TYPE_PERMISSION_DENIED, 403);
       }
       // Determine orgId

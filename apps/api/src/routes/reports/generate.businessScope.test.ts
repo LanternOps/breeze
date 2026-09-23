@@ -183,9 +183,18 @@ describe('POST /reports/generate — business report scope (#3198 W02)', () => {
     expect(generateReport).not.toHaveBeenCalled();
   });
 
-  it('3. org scope + ar_aging → 200 with an organization scope', async () => {
+  it('3. org-scope token + ar_aging → 403: business types are internal to the MSP (ruling F1)', async () => {
     state.auth = orgAuth();
     const res = await post({ type: 'ar_aging' });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Insufficient permissions' });
+    expect(resolveRequestReportAuthority).not.toHaveBeenCalled();
+    expect(generateReport).not.toHaveBeenCalled();
+  });
+
+  it('3b. partner caller + ar_aging for one org → 200 with an organization scope', async () => {
+    const res = await post({ type: 'ar_aging', orgId: ORG_A });
 
     expect(res.status).toBe(200);
     expect(resolveRequestPartnerReportAuthority).not.toHaveBeenCalled();

@@ -955,8 +955,9 @@ describe('POST /reports/:id/generate on a partner-owned definition', () => {
 });
 
 describe('POST /reports/:id/generate on an org-owned business-type definition', () => {
+  // A partner caller: since ruling F1 an org-scope token never reaches an
+  // org-owned business definition (mspStaffAudience.test.ts).
   it('400s unsupported_report_scope and records the stable code (not err.message) on the failed run', async () => {
-    state.auth = orgAuth();
     const orgDefinition = partnerDefinition({
       orgId: ORG_ID,
       partnerId: null,

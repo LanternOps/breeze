@@ -13,6 +13,8 @@ import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import {
   missingReportTypePermission,
+  reportAudienceCondition,
+  reportTypeHiddenFromCaller,
   REPORT_TYPE_PERMISSION_DENIED,
 } from '../../services/reportTypePermissions';
 import {
@@ -95,6 +97,13 @@ const TYPE_PERMISSION_DENIED = 'type_permission_denied' as const;
  * letting the mutation reach the partner authority resolver.
  */
 const PARTNER_WIDE_DENIED = 'partner_wide_denied' as const;
+/**
+ * #3198 W02 ruling F1 — `loadLockedDefinition`'s audience refusal, DEFENSE IN
+ * DEPTH like PARTNER_WIDE_DENIED: `tenantAuthorizedReportCondition` already
+ * hides msp_staff types from an org-scope caller (404). Fires only if that
+ * predicate regresses; callers answer 403 `REPORT_TYPE_PERMISSION_DENIED`.
+ */
+const AUDIENCE_DENIED = 'audience_denied' as const;
 /** #3198 W01 — PUT's refusal to re-home a partner-owned definition. */
 const OWNERSHIP_IMMUTABLE = 'ownership_immutable' as const;
 
@@ -137,7 +146,9 @@ async function resolveDefinitionListScope(
     }
     return {
       ok: true,
-      tenantCondition: eq(reports.orgId, exactOrgId),
+      // Ruling F1: an org-scope caller never lists an msp_staff type (a
+      // partner caller's explicit orgId gets no audience predicate).
+      tenantCondition: and(eq(reports.orgId, exactOrgId), reportAudienceCondition(auth, reports.type))!,
       definitionScopePredicate: reportDefinitionScopeSqlPredicate(reports, scope),
     };
   }
@@ -236,6 +247,7 @@ async function loadLockedDefinition(
     .where(tenantAuthorizedReportCondition(reportId, auth))
     .limit(1);
   if (!metadata) return null;
+  if (reportTypeHiddenFromCaller(metadata.type, auth)) return AUDIENCE_DENIED;
   if (isSystemManagedReportDefinition(metadata)) return SYSTEM_MANAGED;
 
   const owner = reportOwnerOfRow(metadata);
@@ -554,7 +566,11 @@ coreRoutes.post(
     }
 
     // #3198 W02 (ruling P8): same per-type permission gate on the org arm.
-    if (missingReportTypePermission(data.type, permissions)) {
+    // Ruling F1: an org-scope caller may never create an msp_staff type.
+    if (
+      reportTypeHiddenFromCaller(data.type, auth)
+      || missingReportTypePermission(data.type, permissions)
+    ) {
       return c.json(REPORT_TYPE_PERMISSION_DENIED, 403);
     }
     // Determine orgId
@@ -656,6 +672,7 @@ coreRoutes.put(
       );
       if (locked === SYSTEM_MANAGED) return SYSTEM_MANAGED;
       if (locked === PARTNER_WIDE_DENIED) return PARTNER_WIDE_DENIED;
+      if (locked === AUDIENCE_DENIED) return TYPE_PERMISSION_DENIED;
       if (!locked) return null;
       // #3198 W01: ownership is immutable. The report_schedule_recipients /
       // service_deliverables composite FKs are ON UPDATE NO ACTION, so flipping
@@ -765,6 +782,7 @@ coreRoutes.post(
       );
       if (locked === SYSTEM_MANAGED) return { kind: 'system_managed' as const };
       if (locked === PARTNER_WIDE_DENIED) return { kind: 'partner_wide_denied' as const };
+      if (locked === AUDIENCE_DENIED) return { kind: 'type_permission_denied' as const };
       if (!locked) return { kind: 'not_found' as const };
       // #3198 W02 (rulings P8, T11b). Reauthorize re-stamps the CALLER as the
       // execution user, so it needs the stored type's underlying read
@@ -862,6 +880,7 @@ coreRoutes.delete(
       );
       if (locked === SYSTEM_MANAGED) return SYSTEM_MANAGED;
       if (locked === PARTNER_WIDE_DENIED) return PARTNER_WIDE_DENIED;
+      if (locked === AUDIENCE_DENIED) return AUDIENCE_DENIED;
       if (!locked) return null;
 
       if (await isPortalSelfServiceLocked(tx, locked.locked)) {
@@ -901,6 +920,9 @@ coreRoutes.delete(
     }
     if (deleted === PARTNER_WIDE_DENIED) {
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
+    if (deleted === AUDIENCE_DENIED) {
+      return c.json(REPORT_TYPE_PERMISSION_DENIED, 403);
     }
     if (deleted?.kind === PORTAL_SELF_SERVICE) {
       return c.json(PORTAL_SELF_SERVICE_REPORT, 409);

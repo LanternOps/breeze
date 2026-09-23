@@ -15,7 +15,7 @@ import {
   MANAGED_EVIDENCE_REPORT_TYPES,
   REPORT_TYPES,
 } from '@breeze/shared';
-import { REPORT_GENERATORS, reportTypeDef } from './reportRegistry';
+import { MSP_STAFF_REPORT_TYPES, REPORT_GENERATORS, reportTypeDef } from './reportRegistry';
 import { MANAGED_EVIDENCE_REGISTRY } from './managedEvidenceRegistry';
 import { PORTAL_DEFINITIONS_FOR_TEST } from './portal/reportsSelfService';
 import { UnexecutableReportScopeError } from './reportErrors';
@@ -100,6 +100,19 @@ describe('REPORT_GENERATORS', () => {
       } else {
         expect(def.requiredPermissions).toEqual([]);
       }
+    }
+  });
+
+  // Ruling F1 (#3198 W02 final review): margin, utilization, AR and SLA
+  // attainment are internal to the MSP (spec §2). The audience set is exactly
+  // the three business types; every other type stays visible to org callers.
+  it("audience 'msp_staff' is exactly the three business types; MSP_STAFF_REPORT_TYPES derives from it", () => {
+    const mspStaff = Object.values(REPORT_GENERATORS)
+      .filter((d) => d.audience === 'msp_staff').map((d) => d.type).sort();
+    expect(mspStaff).toEqual([...BUSINESS_REPORT_TYPES].sort());
+    expect([...MSP_STAFF_REPORT_TYPES].sort()).toEqual(mspStaff);
+    for (const def of Object.values(REPORT_GENERATORS)) {
+      expect(['any', 'msp_staff']).toContain(def.audience);
     }
   });
 

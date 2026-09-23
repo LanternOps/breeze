@@ -34,6 +34,8 @@ import {
   vulnerabilityManagementConfigSchema,
 } from './reportConfigSchemas';
 
+export type ReportAudience = 'any' | 'msp_staff';
+
 export interface ReportTypeDef {
   /** Identical to the key. The registry has no second naming space. */
   readonly type: ReportType;
@@ -57,6 +59,12 @@ export interface ReportTypeDef {
    *  here so one place says what a type reads. Empty for every pre-#3198 type —
    *  their route middleware is unchanged. */
   readonly requiredPermissions: readonly Permission[];
+  /** Who may see this type at all (ruling F1, spec §2 "internal to the MSP").
+   *  'msp_staff' types are refused to organization-scope callers (customer
+   *  users, org API/MCP keys) on every write, generate and read path: writes
+   *  403, reads hidden (list-excluded, by-id 404). The worker re-check of an
+   *  org-owned msp_staff report resolves partner-axis grants only. */
+  readonly audience: ReportAudience;
   /** Max DETAIL rows stored in `report_runs.result.rows`. Aggregates are always
    *  computed over the full set first (§4). POSITIVE_INFINITY = unchanged. */
   readonly detailRowCap: number;
@@ -133,7 +141,7 @@ const generators = {
   device_inventory: {
     type: 'device_inventory', label: 'Device inventory',
     configSchema: legacyReportConfigSchema, supportedScopes: ORG_ONLY,
-    execution: 'user', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
+    execution: 'user', audience: 'any', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
     // Takes the authority narrowed to the org axis only — NOT requestAuthority(),
     // exactly as the switch arm this replaced did (a system authority is
     // org-axis and still reaches it).
@@ -147,7 +155,7 @@ const generators = {
   software_inventory: {
     type: 'software_inventory', label: 'Software inventory',
     configSchema: legacyReportConfigSchema, supportedScopes: ORG_ONLY,
-    execution: 'user', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
+    execution: 'user', audience: 'any', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
     generate: async (scope, config, authority) => {
       const orgId = orgOf(scope);
       const orgAuthority = requestAuthority(authority, 'software_inventory');
@@ -158,7 +166,7 @@ const generators = {
   alert_summary: {
     type: 'alert_summary', label: 'Alert summary',
     configSchema: legacyReportConfigSchema, supportedScopes: ORG_ONLY,
-    execution: 'user', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
+    execution: 'user', audience: 'any', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
     generate: async (scope, config, authority) => {
       const orgId = orgOf(scope);
       const orgAuthority = requestAuthority(authority, 'alert_summary');
@@ -169,7 +177,7 @@ const generators = {
   compliance: {
     type: 'compliance', label: 'Compliance',
     configSchema: legacyReportConfigSchema, supportedScopes: ORG_ONLY,
-    execution: 'user', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
+    execution: 'user', audience: 'any', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
     generate: async (scope, config, authority) => {
       const orgId = orgOf(scope);
       const orgAuthority = requestAuthority(authority, 'compliance');
@@ -180,7 +188,7 @@ const generators = {
   performance: {
     type: 'performance', label: 'Performance',
     configSchema: legacyReportConfigSchema, supportedScopes: ORG_ONLY,
-    execution: 'user', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
+    execution: 'user', audience: 'any', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
     generate: async (scope, config, authority) => {
       const orgId = orgOf(scope);
       const orgAuthority = requestAuthority(authority, 'performance');
@@ -191,7 +199,7 @@ const generators = {
   executive_summary: {
     type: 'executive_summary', label: 'Executive summary',
     configSchema: legacyReportConfigSchema, supportedScopes: ORG_ONLY,
-    execution: 'user', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
+    execution: 'user', audience: 'any', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
     generate: async (scope, config, authority) => {
       const orgId = orgOf(scope);
       const orgAuthority = requestAuthority(authority, 'executive_summary');
@@ -202,7 +210,7 @@ const generators = {
   security_compliance_posture: {
     type: 'security_compliance_posture', label: 'Security & compliance posture',
     configSchema: securityCompliancePostureConfigSchema, supportedScopes: ORG_ONLY,
-    execution: 'user', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
+    execution: 'user', audience: 'any', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
     generate: async (scope, config, authority) => {
       const orgId = orgOf(scope);
       const orgAuthority = requestAuthority(authority, 'security_compliance_posture');
@@ -215,20 +223,20 @@ const generators = {
   ai_org_narrative: {
     type: 'ai_org_narrative', label: 'AI organization narrative',
     configSchema: storedArtifactConfigSchema, supportedScopes: ORG_ONLY,
-    execution: 'user', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
+    execution: 'user', audience: 'any', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
     generate: async () => { throw new StoredArtifactOnlyReportError('ai_org_narrative'); },
   },
   // Fleet Designer W01 (#5651) — stored, never generated, same as above.
   ai_fleet_design: {
     type: 'ai_fleet_design', label: 'AI fleet design',
     configSchema: storedArtifactConfigSchema, supportedScopes: ORG_ONLY,
-    execution: 'user', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
+    execution: 'user', audience: 'any', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
     generate: async () => { throw new StoredArtifactOnlyReportError('ai_fleet_design'); },
   },
   hardware_lifecycle: {
     type: 'hardware_lifecycle', label: 'Hardware lifecycle',
     configSchema: hardwareLifecycleConfigSchema, supportedScopes: ORG_ONLY,
-    execution: 'user', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
+    execution: 'user', audience: 'any', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
     generate: async (scope, config, authority) => {
       const orgId = orgOf(scope);
       const orgAuthority = requestAuthority(authority, 'hardware_lifecycle');
@@ -244,7 +252,7 @@ const generators = {
   threat_detection_review: {
     type: 'threat_detection_review', label: 'Threat detection review',
     configSchema: threatDetectionConfigSchema, supportedScopes: ORG_ONLY,
-    execution: 'managed_evidence', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
+    execution: 'managed_evidence', audience: 'any', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
     generate: async (scope, config, authority, evidence) => {
       const orgId = orgOf(scope);
       const orgAuthority = orgAxisAuthority(authority, 'threat_detection_review');
@@ -255,7 +263,7 @@ const generators = {
   endpoint_management_review: {
     type: 'endpoint_management_review', label: 'Endpoint management review',
     configSchema: endpointManagementConfigSchema, supportedScopes: ORG_ONLY,
-    execution: 'managed_evidence', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
+    execution: 'managed_evidence', audience: 'any', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
     generate: async (scope, config, authority, evidence) => {
       const orgId = orgOf(scope);
       const orgAuthority = orgAxisAuthority(authority, 'endpoint_management_review');
@@ -266,7 +274,7 @@ const generators = {
   vulnerability_management: {
     type: 'vulnerability_management', label: 'Vulnerability management',
     configSchema: vulnerabilityManagementConfigSchema, supportedScopes: ORG_ONLY,
-    execution: 'managed_evidence', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
+    execution: 'managed_evidence', audience: 'any', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
     generate: async (scope, config, authority, evidence) => {
       const orgId = orgOf(scope);
       const orgAuthority = orgAxisAuthority(authority, 'vulnerability_management');
@@ -279,7 +287,7 @@ const generators = {
   identity_access_review: {
     type: 'identity_access_review', label: 'Identity & access review',
     configSchema: identityAccessConfigSchema, supportedScopes: ORG_ONLY,
-    execution: 'managed_evidence', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
+    execution: 'managed_evidence', audience: 'any', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
     generate: async (scope, config, authority, evidence) => {
       const orgId = orgOf(scope);
       const orgAuthority = orgAxisAuthority(authority, 'identity_access_review');
@@ -293,7 +301,7 @@ const generators = {
   ticket_sla_attainment: {
     type: 'ticket_sla_attainment', label: 'Ticket SLA attainment',
     configSchema: ticketSlaConfigSchema, supportedScopes: ORG_OR_PARTNER,
-    execution: 'user', requiredPermissions: [PERMISSION_GRANTS.TICKETS_READ],
+    execution: 'user', audience: 'msp_staff', requiredPermissions: [PERMISSION_GRANTS.TICKETS_READ],
     detailRowCap: BUSINESS_DETAIL_ROW_CAP,
     generate: async (scope, config, authority) => {
       const { generateTicketSlaAttainmentReport } = await import('./businessReports/ticketSlaReport');
@@ -303,7 +311,7 @@ const generators = {
   technician_time_billability: {
     type: 'technician_time_billability', label: 'Technician time & billability',
     configSchema: technicianTimeConfigSchema, supportedScopes: ORG_OR_PARTNER,
-    execution: 'user',
+    execution: 'user', audience: 'msp_staff',
     requiredPermissions: [PERMISSION_GRANTS.TIME_ENTRIES_READ, PERMISSION_GRANTS.TICKETS_READ],
     detailRowCap: BUSINESS_DETAIL_ROW_CAP,
     generate: async (scope, config, authority) => {
@@ -314,7 +322,7 @@ const generators = {
   ar_aging: {
     type: 'ar_aging', label: 'AR aging',
     configSchema: arAgingConfigSchema, supportedScopes: ORG_OR_PARTNER,
-    execution: 'user', requiredPermissions: [PERMISSION_GRANTS.INVOICES_READ],
+    execution: 'user', audience: 'msp_staff', requiredPermissions: [PERMISSION_GRANTS.INVOICES_READ],
     detailRowCap: BUSINESS_DETAIL_ROW_CAP,
     generate: async (scope, config, authority) => {
       const { generateArAgingReport } = await import('./businessReports/arAgingReport');
@@ -329,6 +337,12 @@ const generators = {
  * key is a compile error: the same guarantee the switch's `never` default gave.
  */
 export const REPORT_GENERATORS: Readonly<Record<ReportType, ReportTypeDef>> = Object.freeze(generators);
+
+/** Ruling F1: the types organization-scope callers may never see or run.
+ *  Derived from the registry so there is no second list to keep in step. */
+export const MSP_STAFF_REPORT_TYPES: readonly ReportType[] = Object.freeze(
+  Object.values(REPORT_GENERATORS).filter((d) => d.audience === 'msp_staff').map((d) => d.type),
+);
 
 export function reportTypeDef(type: ReportType): ReportTypeDef {
   const def = (REPORT_GENERATORS as Readonly<Record<string, ReportTypeDef | undefined>>)[type];
