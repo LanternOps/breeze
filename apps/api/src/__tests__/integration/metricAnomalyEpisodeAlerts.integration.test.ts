@@ -104,4 +104,21 @@ describe('episode close → linked alert auto-resolve (W02, spec §7)', () => {
     // Idempotent: a second pass resolves nothing.
     expect(await resolveAlertsForAutoClosedEpisodes(org.id)).toBe(0);
   });
+
+  it('catch-up is org-scoped: it never resolves another org\'s auto-closed alert (system context, app-layer filter)', async () => {
+    const a = await seedTenant();
+    const b = await seedTenant();
+    const deviceA = await insertEpisodeDevice(a.org.id, a.site.id);
+    const deviceB = await insertEpisodeDevice(b.org.id, b.site.id);
+    const alertA = await seedAlert({ orgId: a.org.id, deviceId: deviceA });
+    const alertB = await seedAlert({ orgId: b.org.id, deviceId: deviceB });
+    const closed = { memberCount: 1, start: new Date(Date.now() - 5 * HOUR), status: 'resolved' as const, closeReason: 'cleared' as const, resolvedAt: new Date(Date.now() - HOUR) };
+    await seedEpisode({ orgId: a.org.id, deviceId: deviceA, linkedAlertId: alertA, ...closed });
+    await seedEpisode({ orgId: b.org.id, deviceId: deviceB, linkedAlertId: alertB, ...closed });
+
+    expect(await resolveAlertsForAutoClosedEpisodes(a.org.id)).toBe(1);
+
+    expect((await alertRow(alertA)).status).toBe('resolved');
+    expect((await alertRow(alertB)).status).toBe('active');
+  });
 });

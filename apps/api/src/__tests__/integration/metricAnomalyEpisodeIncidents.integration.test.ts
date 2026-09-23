@@ -83,4 +83,24 @@ describe('publisher: one dispatch per episode (W02 §11)', () => {
     expect(row).toMatchObject({ suppressedByEpisode: false, dispatchAttempts: 1 });
     expect(row!.dispatchedAt).not.toBeNull();
   });
+
+  it('a failed publish of the episode\'s dispatching incident is retried on the next pass (siblings stay suppressed)', async () => {
+    publishEventMock.mockClear();
+    const { org, site } = await seedTenant();
+    const deviceId = await insertEpisodeDevice(org.id, site.id);
+    const start = new Date(Math.floor((Date.now() - 2 * HOUR) / 300_000) * 300_000);
+    const ep = await seedEpisode({ orgId: org.id, deviceId, memberCount: 2, start });
+    const first = await seedIncident({ orgId: org.id, deviceId, episodeId: ep.episodeId, windowStart: start });
+    await seedIncident({ orgId: org.id, deviceId, episodeId: ep.episodeId, windowStart: new Date(start.getTime() + 300_000) });
+
+    publishEventMock.mockRejectedValueOnce(new Error('redis down'));
+    expect(await publishPendingIncidents()).toEqual({ published: 0, skipped: 0, suppressed: 1 });
+
+    expect(await publishPendingIncidents()).toEqual({ published: 1, skipped: 0, suppressed: 0 });
+    expect(publishEventMock).toHaveBeenLastCalledWith('anomaly.incident_opened', org.id, { incidentId: first, deviceId }, expect.any(String));
+    const rows = await incidentsOf(ep.episodeId);
+    expect(rows.map((r) => [r.suppressedByEpisode, r.dispatchedAt !== null, r.dispatchAttempts])).toEqual([
+      [false, true, 2], [true, true, 1],
+    ]);
+  });
 });

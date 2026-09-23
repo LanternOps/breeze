@@ -224,4 +224,25 @@ describe('applyEpisodeAction (W02, spec §8)', () => {
 
     expect(await act({ orgId: org.id, deviceId, episodeId: ep.episodeId, action: 'promote', actorUserId: user.id })).toMatchObject({ status: 'conflict', reason: 'no_promotable_member' });
   });
+
+  it('two concurrent actions on one open episode serialize on the episode row lock: one wins, the other gets episode_closed', async () => {
+    const { org, site, user } = await seedTenant();
+    const deviceId = await insertEpisodeDevice(org.id, site.id);
+    const ep = await seedEpisode({ orgId: org.id, deviceId, memberCount: 6, start: new Date(Date.now() - 2 * HOUR) });
+
+    // Two separate transactions (one pooled connection each), racing.
+    const results = await Promise.all([
+      act({ orgId: org.id, deviceId, episodeId: ep.episodeId, action: 'resolve', actorUserId: user.id }),
+      act({ orgId: org.id, deviceId, episodeId: ep.episodeId, action: 'dismiss', actorUserId: user.id }),
+    ]);
+
+    const ok = results.filter((r) => r.status === 'ok');
+    const conflicts = results.filter((r) => r.status === 'conflict');
+    expect(ok).toHaveLength(1);
+    expect(conflicts).toEqual([expect.objectContaining({ reason: 'episode_closed' })]);
+    // Labels were written exactly once, by the winner only.
+    expect(await episodeFeedback(ep.episodeId)).toHaveLength(6);
+    const winner = (ok[0] as { action: string }).action;
+    expect((await episodeRow(ep.episodeId)).status).toBe(winner === 'resolve' ? 'resolved' : 'dismissed');
+  });
 });
