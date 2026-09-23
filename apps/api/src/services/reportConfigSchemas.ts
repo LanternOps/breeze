@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { periodSchema } from '@breeze/shared';
 
 /**
  * Per-report-type config schemas (#3198 spec §6). Moved here from
@@ -156,3 +157,21 @@ export const identityAccessConfigSchema = legacyReportConfigSchema.extend({
   homeCountries: z.array(z.string().regex(/^[A-Z]{2}$/)).max(50).optional().default([]),
   adminDetail: z.boolean().optional().default(true),
 });
+
+/**
+ * #3198 W02 R1 — Ticket SLA attainment (spec §3.3 R1).
+ *
+ * - `groupBy` has NO `.default()`: the default depends on the scope
+ *   (`organization` at partner scope, `priority` at org scope) and is applied
+ *   in the generator. It narrows the legacy free-text `groupBy`.
+ * - `includeNoSla` (default true, applied in the generator) filters DETAIL rows
+ *   only; it never moves an aggregate.
+ * - Declares no org/site/device selector keys (ruling T3e): at partner scope
+ *   the org set comes from the live org list, never from config.
+ */
+export const ticketSlaConfigSchema = legacyReportConfigSchema.extend({
+  period: periodSchema.optional(),
+  groupBy: z.enum(['organization', 'priority', 'technician', 'category']).optional(),
+  includeNoSla: z.boolean().optional(),
+});
+export type TicketSlaConfig = z.infer<typeof ticketSlaConfigSchema>;

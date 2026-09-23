@@ -29,6 +29,7 @@ import {
   securityCompliancePostureConfigSchema,
   storedArtifactConfigSchema,
   threatDetectionConfigSchema,
+  ticketSlaConfigSchema,
   vulnerabilityManagementConfigSchema,
 } from './reportConfigSchemas';
 
@@ -128,7 +129,7 @@ const UNCAPPED = Number.POSITIVE_INFINITY;
 const BUSINESS_DETAIL_ROW_CAP = 5000;
 
 /**
- * PLACEHOLDER — not implemented until #3198 W02 task 7/8/9 (each replaces its
+ * PLACEHOLDER — not implemented until #3198 W02 task 8/9 (each replaces its
  * own entry's `generate` and `configSchema`). It throws W01's
  * `UnsupportedReportScopeError` rather than a bare Error so every caller keeps
  * W01's observable behaviour in the meantime: routes answer 400
@@ -299,14 +300,20 @@ const generators = {
       return generateIdentityAccessReport(orgId, config, orgAuthority, evidence);
     },
   },
-  // #3198 W02 business types. PLACEHOLDERS until tasks 7/8/9 (see
-  // `businessPlaceholder`); scopes, execution, cap and permissions are final.
+  // #3198 W02 business types. They take the ReportScope itself (org OR
+  // partner) and the authority untouched: the generator runs its own
+  // `runInReportScope`. technician_time_billability and ar_aging are
+  // PLACEHOLDERS until tasks 8/9 (see `businessPlaceholder`); scopes,
+  // execution, cap and permissions are final.
   ticket_sla_attainment: {
     type: 'ticket_sla_attainment', label: 'Ticket SLA attainment',
-    configSchema: legacyReportConfigSchema, supportedScopes: ORG_OR_PARTNER,
+    configSchema: ticketSlaConfigSchema, supportedScopes: ORG_OR_PARTNER,
     execution: 'user', requiredPermissions: [PERMISSION_GRANTS.TICKETS_READ],
     detailRowCap: BUSINESS_DETAIL_ROW_CAP,
-    generate: businessPlaceholder('ticket_sla_attainment'),
+    generate: async (scope, config, authority) => {
+      const { generateTicketSlaAttainmentReport } = await import('./businessReports/ticketSlaReport');
+      return generateTicketSlaAttainmentReport(scope, config, authority);
+    },
   },
   technician_time_billability: {
     type: 'technician_time_billability', label: 'Technician time & billability',

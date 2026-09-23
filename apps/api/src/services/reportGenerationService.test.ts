@@ -14,7 +14,16 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
 }));
 
+// #3198 W02 Task 7: the business generators run raw SQL through their own
+// runInReportScope; this suite proves only that the registry REACHES them.
+// Their SQL and tenancy are proven in businessReports/*.test.ts and the
+// businessReportsPartnerScope integration suite.
+vi.mock('./businessReports/ticketSlaReport', () => ({
+  generateTicketSlaAttainmentReport: vi.fn(async () => ({ rows: [], rowCount: 0, summary: { generator: 'ticket_sla' } })),
+}));
+
 import { db } from '../db';
+import { generateTicketSlaAttainmentReport } from './businessReports/ticketSlaReport';
 import type { OrgReportExecutionAuthority, ReportExecutionAuthority } from './siteScope';
 import {
   assertReportExecutionPreflight,
@@ -63,11 +72,16 @@ const SITE_SCOPED_REPORT_TYPES: readonly ReportType[] = REPORT_TYPES
  *  only ever read back — there is no query that could reproduce it. Fleet
  *  Designer W01 (#5651) added the second, same shape. */
 const STORED_ARTIFACT_ONLY_TYPES: readonly ReportType[] = ['ai_org_narrative', 'ai_fleet_design'];
+/** #3198 W02. Business report types whose generator has landed. Each W02
+ *  generator task moves its type here from GENERATOR_LESS_BUSINESS_TYPES
+ *  (ruling P2). */
+const BUSINESS_TYPES: readonly ReportType[] = [
+  'ticket_sla_attainment',
+];
 /** #3198 W01. Business report types that exist as enum labels only: W02
  *  registers their generators. Until then every generation entry point
  *  refuses them with `UnsupportedReportScopeError`. */
 const GENERATOR_LESS_BUSINESS_TYPES: readonly ReportType[] = [
-  'ticket_sla_attainment',
   'technician_time_billability',
   'ar_aging',
 ];
@@ -381,7 +395,7 @@ describe('stored-artifact-only report types (P2-3)', () => {
     // Drift guard: `reportGenerationService.ts` keeps its own union rather than
     // deriving from the pgEnum, and a value added to one and not the other is
     // a `never`-check failure at a call site far from either file.
-    expect([...REPORT_TYPES, ...STORED_ARTIFACT_ONLY_TYPES, ...GENERATOR_LESS_BUSINESS_TYPES].sort())
+    expect([...REPORT_TYPES, ...STORED_ARTIFACT_ONLY_TYPES, ...BUSINESS_TYPES, ...GENERATOR_LESS_BUSINESS_TYPES].sort())
       .toEqual([...reportTypeEnum.enumValues].sort());
   });
 
@@ -453,7 +467,7 @@ describe('generator-less business report types (#3198 W01)', () => {
     },
   );
 
-  it.each(GENERATOR_LESS_BUSINESS_TYPES)(
+  it.each([...BUSINESS_TYPES, ...GENERATOR_LESS_BUSINESS_TYPES])(
     // #3198 W02 (P1b): tickets, time entries and invoices carry no site axis, so
     // a site-restricted authority queried NOTHING. Unlike the dispatch-switch
     // refusal above, the zero-safe branch does NOT throw — it hands back an
@@ -566,6 +580,22 @@ describe('registry dispatch gate order (#3198 W02 Task 3)', () => {
       expect(db.select).not.toHaveBeenCalled();
     },
   );
+
+  it.each(BUSINESS_TYPES)(
+    '%s reaches its generator with the partner scope and authority untouched (no placeholder)',
+    async (type) => {
+      const auth = partnerWideAuthority();
+      const result = await generateReport(type, PARTNER_SCOPE, { groupBy: 'organization' }, auth);
+      expect(result.summary).toEqual({ generator: 'ticket_sla' });
+      expect(generateTicketSlaAttainmentReport).toHaveBeenCalledWith(PARTNER_SCOPE, { groupBy: 'organization' }, auth);
+    },
+  );
+
+  it.each(BUSINESS_TYPES)('%s reaches its generator at organization scope', async (type) => {
+    const auth = authority('unrestricted');
+    await generateReport(type, organizationScope(ORG_ID), {}, auth);
+    expect(generateTicketSlaAttainmentReport).toHaveBeenCalledWith(organizationScope(ORG_ID), {}, auth);
+  });
 
   it('a business type under a partner scope still runs the partner preflight (wrong partner → 403 shape)', async () => {
     await expect(generateReport(

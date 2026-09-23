@@ -24,6 +24,7 @@ import {
   runOutsideDbContext,
   withSystemDbAccessContext,
 } from '../db';
+import { sqlUuidArray } from '../db/sqlValues';
 import type { AuthContext } from '../middleware/auth';
 import { canManagePartnerWidePolicies } from './partnerWideAccess';
 import type { UserPermissions } from './permissions';
@@ -775,15 +776,6 @@ function sqlFalse(): SQL<unknown> {
   return sql<unknown>`FALSE`;
 }
 
-function uuidArraySql(siteIds: readonly string[]): SQL<unknown> {
-  return siteIds.length === 0
-    ? sql<unknown>`ARRAY[]::uuid[]`
-    : sql<unknown>`ARRAY[${sql.join(
-        siteIds.map((siteId) => sql`${siteId}::uuid`),
-        sql`, `,
-      )}]`;
-}
-
 function completeVersionOneBase(
   columns: ReportScopeColumns,
 ): SQL<unknown> {
@@ -896,7 +888,7 @@ function definitionScopePredicate(
         completeVersionOneBase(columns),
         eq(columns.executionScopeKind, 'restricted'),
         isNotNull(columns.executionScopeSiteIds),
-        sql`${columns.executionScopeSiteIds} <@ ${uuidArraySql(normalizedSiteIds)}`,
+        sql`${columns.executionScopeSiteIds} <@ ${sqlUuidArray(normalizedSiteIds)}`,
       )!;
     }
     case 'partner_wide':

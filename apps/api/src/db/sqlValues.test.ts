@@ -2,7 +2,7 @@ import { sql } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
 
-import { sqlTimestamp, sqlTimestamptz, sqlValue } from './sqlValues';
+import { sqlTimestamp, sqlTimestamptz, sqlUuidArray, sqlValue } from './sqlValues';
 
 const dialect = new PgDialect();
 const AT = new Date('2026-08-10T06:14:42.123Z');
@@ -82,5 +82,35 @@ describe('sqlValues (#3369)', () => {
 
     expect(params).toEqual(["'); DROP TABLE devices; --"]);
     expect(text).not.toContain('DROP TABLE');
+  });
+});
+
+describe('sqlUuidArray (#3198 W02 ruling P5)', () => {
+  const A = '11111111-1111-4111-8111-111111111111';
+  const B = '22222222-2222-4222-8222-222222222222';
+
+  it('a bare JS array interpolation expands to a parenthesised list — the behaviour being guarded against', () => {
+    // `ANY(${arr}::uuid[])` renders as `ANY(($1, $2)::uuid[])`, a syntax error
+    // in Postgres. This pins WHY the helper exists.
+    const { sql: text } = dialect.sqlToQuery(sql`x = ANY(${[A, B]}::uuid[])`);
+    expect(text).toContain('($1, $2)::uuid[]');
+  });
+
+  it('binds each id as its own uuid-cast parameter inside an ARRAY constructor', () => {
+    const { sql: text, params } = dialect.sqlToQuery(sql`x = ANY(${sqlUuidArray([A, B])})`);
+    expect(text).toBe('x = ANY(ARRAY[$1::uuid, $2::uuid])');
+    expect(params).toEqual([A, B]);
+  });
+
+  it('renders an empty list as a typed empty array, never `ARRAY[]` or `()`', () => {
+    const { sql: text, params } = dialect.sqlToQuery(sql`x = ANY(${sqlUuidArray([])})`);
+    expect(text).toBe('x = ANY(ARRAY[]::uuid[])');
+    expect(params).toEqual([]);
+  });
+
+  it('never inlines an id as SQL text', () => {
+    const { sql: text, params } = dialect.sqlToQuery(sqlUuidArray(["x'); DROP TABLE tickets; --"]));
+    expect(text).not.toContain('DROP TABLE');
+    expect(params).toEqual(["x'); DROP TABLE tickets; --"]);
   });
 });

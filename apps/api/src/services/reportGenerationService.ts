@@ -36,6 +36,10 @@ import { isManagedEvidenceType, type ManagedEvidenceType } from './managedEviden
 import { reportTypeDef } from './reportRegistry';
 import { endpointManagementConfigSchema } from './reportConfigSchemas';
 import { organizationScope, reportOwnerOfScope, type ReportScope } from './reportScope';
+// #3198 W02: shared with the business generators, which refuse a restricted
+// authority with a non-empty site list themselves (the zero-safe branch below
+// only sees the empty-list case).
+import { SITE_RESTRICTED_NOTE } from './businessReports/common';
 import {
   StoredArtifactOnlyReportError,
   UnexecutableReportScopeError,
@@ -157,14 +161,6 @@ function emptyRowsReport() {
   return { rows: [], rowCount: 0 };
 }
 
-// #3198 W02. Tickets, time entries and invoices carry no site axis, so a
-// site-restricted authority queried NOTHING. Each empty*Summary() prints
-// that sentence on the artifact rather than a reassuring zero — a zero here
-// would read as "you had no overdue invoices", which is a lie.
-const SITE_RESTRICTED_NOTE =
-  'This report ran under a site-restricted authority. Tickets, time entries and '
-  + 'invoices have no site dimension, so nothing was queried — the figures below '
-  + 'are not measured, and they are not zero.';
 
 /**
  * Push the authority's allowed-site predicate onto `conditions`, returning true
