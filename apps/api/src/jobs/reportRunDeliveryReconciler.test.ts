@@ -57,8 +57,16 @@ const settleDelivery = vi.hoisted(() => vi.fn(async (id: string, outcome: { stat
   const row = fake.rows.find((r) => r.id === id);
   if (row && row.state === 'claimed') { row.state = outcome.state; row.lastError = outcome.error ?? null; }
 }));
+const claimDelivery = vi.hoisted(() => vi.fn(async (id: string) => {
+  const row = fake.rows.find((r) => r.id === id);
+  if (!row || row.state !== 'pending') return false;
+  row.state = 'claimed';
+  row.attempts += 1;
+  return true;
+}));
 vi.mock('../services/reportRunDelivery', () => ({
   STALE_CLAIM_MS: 15 * 60 * 1000,
+  claimDelivery,
   listUnsettledDeliveries: vi.fn(async (olderThan: Date, limit: number) =>
     fake.rows
       .filter((r) => (r.state === 'pending' || r.state === 'claimed') && (r.claimedAt ?? r.createdAt) < olderThan)
@@ -75,7 +83,11 @@ const deliverNarrativeEmails = vi.hoisted(() => vi.fn(async (reportRunId: string
 }));
 vi.mock('../services/reportNarrativeDelivery', () => ({ deliverNarrativeEmails }));
 
-import { reconcileReportRunDeliveries, RECONCILE_INTERVAL_MS } from './reportRunDeliveryReconciler';
+import {
+  PARTNER_OWNED_DELIVERY_ERROR,
+  reconcileReportRunDeliveries,
+  RECONCILE_INTERVAL_MS,
+} from './reportRunDeliveryReconciler';
 import { STALE_CLAIM_MS } from '../services/reportRunDelivery';
 
 const RUN_A = '00000000-0000-4000-8000-0000000000b1';
@@ -240,5 +252,35 @@ describe('reconcileReportRunDeliveries (#4248 W03)', () => {
     expect(vi.mocked(captureException)).toHaveBeenCalledWith(
       expect.objectContaining({ message: expect.stringMatching(/partner-owned/i) }),
     );
+  });
+
+  it('settles a pending delivery on a PARTNER-owned run as failed ONCE, then never reports it again (#3198 W02, addendum B7)', async () => {
+    const RUN_P = '00000000-0000-4000-8000-0000000000b3';
+    const PARTNER = '00000000-0000-4000-8000-0000000000c1';
+    fake.runPartners = new Map([[RUN_P, PARTNER]]);
+    const p1 = seedDelivery({ state: 'pending', reportRunId: RUN_P });
+    const p2 = seedDelivery({ state: 'pending', reportRunId: RUN_P });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { captureException } = await import('../services/sentry');
+
+    await reconcileReportRunDeliveries();
+
+    // pending -> claimed -> failed (the state machine's permanent-refusal
+    // path); nothing was sent.
+    for (const row of [p1, p2]) {
+      expect(row.state).toBe('failed');
+      expect(row.lastError).toBe(PARTNER_OWNED_DELIVERY_ERROR);
+    }
+    expect(settleDelivery).toHaveBeenCalledWith(p1.id, { state: 'failed', error: PARTNER_OWNED_DELIVERY_ERROR });
+    expect(deliverNarrativeEmails).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(captureException)).toHaveBeenCalledTimes(1);
+
+    // Next pass: the rows are settled, so no log and no Sentry event.
+    error.mockClear();
+    vi.mocked(captureException).mockClear();
+    await reconcileReportRunDeliveries();
+    expect(error).not.toHaveBeenCalled();
+    expect(vi.mocked(captureException)).not.toHaveBeenCalled();
   });
 });
