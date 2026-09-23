@@ -766,6 +766,96 @@ describe('GET /reports list for partner scope', () => {
   });
 });
 
+// #3198 W03 fix round: `?ownerScope=` narrows GET /reports to one owner axis.
+// It is an AND-ed filter on top of the tenant predicate, so it can only ever
+// remove rows — never widen what the caller could already list.
+describe('GET /reports ?ownerScope= owner filter', () => {
+  function whereText(): string {
+    return sqlText(state.wheres[0]);
+  }
+
+  it('partner: an all-access partner user gets only partner-owned rows of their partner', async () => {
+    state.rows = [{ count: 0 }, null];
+    const res = await app().request('/reports?ownerScope=partner');
+
+    expect(res.status).toBe(200);
+    expect(whereText()).toContain('"reports"."org_id" is null');
+    expect(params(state.wheres[0])).toContain(PARTNER_ID);
+    // The count query and the page query share one predicate.
+    expect(sqlText(state.wheres[1])).toBe(whereText());
+  });
+
+  it('partner: a selected-access partner user gets an empty page and no query', async () => {
+    state.auth = partnerAuth('selected');
+    const res = await app().request('/reports?ownerScope=partner&limit=25');
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: [], pagination: { page: 1, limit: 25, total: 0 } });
+    expect(state.wheres).toEqual([]);
+  });
+
+  it('partner: an org-scope token gets an empty page and no query', async () => {
+    state.auth = orgAuth();
+    const res = await app().request('/reports?ownerScope=partner');
+
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { data: unknown[] }).data).toEqual([]);
+    expect(state.wheres).toEqual([]);
+  });
+
+  it('organization: a selected-access partner user still lists (no short-circuit)', async () => {
+    state.auth = partnerAuth('selected');
+    state.rows = [{ count: 0 }, null];
+    const res = await app().request('/reports?ownerScope=organization');
+
+    expect(res.status).toBe(200);
+    expect(whereText()).toContain('"reports"."org_id" is not null');
+    expect(params(state.wheres[0])).not.toContain(PARTNER_ID);
+  });
+
+  it('partner + explicit orgId stays empty-by-construction (org arm AND org_id is null)', async () => {
+    state.rows = [{ count: 0 }, null];
+    const res = await app().request(`/reports?ownerScope=partner&orgId=${ORG_ID}`);
+
+    expect(res.status).toBe(200);
+    expect(whereText()).toContain('"reports"."org_id" = $');
+    expect(whereText()).toContain('"reports"."org_id" is null');
+  });
+
+  it('organization: keeps only org-owned rows', async () => {
+    state.rows = [{ count: 0 }, null];
+    const res = await app().request('/reports?ownerScope=organization');
+
+    expect(res.status).toBe(200);
+    expect(whereText()).toContain('"reports"."org_id" is not null');
+  });
+
+  it('no ownerScope: the listing is unchanged (no owner-axis narrowing)', async () => {
+    state.rows = [{ count: 0 }, null];
+    const res = await app().request('/reports');
+
+    expect(res.status).toBe(200);
+    expect(whereText()).not.toContain('"reports"."org_id" is null');
+    expect(whereText()).not.toContain('"reports"."org_id" is not null');
+  });
+
+  it('400s an unknown ownerScope value', async () => {
+    const res = await app().request('/reports?ownerScope=everyone');
+    expect(res.status).toBe(400);
+    expect(state.wheres).toEqual([]);
+  });
+
+  it('system scope: partner narrows to partner-owned rows of any partner', async () => {
+    state.auth = systemAuth();
+    state.rows = [{ count: 0 }, null];
+    const res = await app().request('/reports?ownerScope=partner');
+
+    expect(res.status).toBe(200);
+    expect(whereText()).toContain('"reports"."org_id" is null');
+    expect(params(state.wheres[0])).toContain('partner_wide');
+  });
+});
+
 // #3198 W02 (addendum B7, ruling P9): a system-scope (platform admin) list
 // also sees partner-owned rows, but only with a well-formed partner_wide
 // envelope on a row that actually has a partner owner.

@@ -397,6 +397,56 @@ describe('partner-owned report definitions through the real routes (#3198 W01/W0
     expect(await readDefinition(created.id)).toBeUndefined();
   });
 
+  runDb('GET /reports?ownerScope= narrows by owner axis and never widens (#3198 W03)', async () => {
+    const fixture = await seedFixture();
+    const app = buildApp();
+    const partnerOwned = await createPartnerDefinition(app, fixture, 'Partner-owned for ownerScope filter');
+    const orgRes = await call(app, fixture.adminToken, 'POST', '/reports', {
+      ownerScope: 'organization',
+      orgId: fixture.orgA.id,
+      name: 'Org-owned for ownerScope filter',
+      type: 'device_inventory',
+    });
+    expect(orgRes.status, await orgRes.clone().text()).toBe(201);
+    const orgOwned = (await orgRes.json()) as { id: string };
+
+    type ListBody = { data: Array<{ id: string; orgId: string | null; partnerId: string | null }>; pagination: { total: number } };
+    const list = async (token: string, path: string) => {
+      const res = await call(app, token, 'GET', path);
+      expect(res.status, await res.clone().text()).toBe(200);
+      return (await res.json()) as ListBody;
+    };
+
+    // All-access partner admin: partner → only the partner-owned row, and the
+    // total counts the filtered set; organization → only org-owned rows.
+    const adminPartner = await list(fixture.adminToken, '/reports?ownerScope=partner&limit=100');
+    expect(adminPartner.data.map((r) => r.id)).toEqual([partnerOwned.id]);
+    expect(adminPartner.pagination.total).toBe(1);
+    expect(adminPartner.data[0]).toMatchObject({ orgId: null, partnerId: fixture.partner.id });
+    const adminOrg = await list(fixture.adminToken, '/reports?ownerScope=organization&limit=100');
+    expect(adminOrg.data.map((r) => r.id)).toEqual([orgOwned.id]);
+    // Unfiltered listing: both (the filter is the only difference).
+    const adminAll = await list(fixture.adminToken, '/reports?limit=100');
+    expect(adminAll.data.map((r) => r.id).sort()).toEqual([partnerOwned.id, orgOwned.id].sort());
+    // An explicit orgId excludes partner-owned rows, so partner + orgId is empty.
+    const adminPartnerOrg = await list(fixture.adminToken, `/reports?ownerScope=partner&orgId=${fixture.orgA.id}&limit=100`);
+    expect(adminPartnerOrg.data).toEqual([]);
+
+    // 'selected' partner user and org token: partner → nothing, never widened.
+    const selectedPartner = await list(fixture.selectedToken, '/reports?ownerScope=partner&limit=100');
+    expect(selectedPartner).toMatchObject({ data: [], pagination: { total: 0 } });
+    const orgPartner = await list(fixture.orgToken, '/reports?ownerScope=partner&limit=100');
+    expect(orgPartner).toMatchObject({ data: [], pagination: { total: 0 } });
+    // ...while their organization view still sees the org-owned row.
+    const selectedOrg = await list(fixture.selectedToken, '/reports?ownerScope=organization&limit=100');
+    expect(selectedOrg.data.map((r) => r.id)).toEqual([orgOwned.id]);
+    const orgOrg = await list(fixture.orgToken, '/reports?ownerScope=organization&limit=100');
+    expect(orgOrg.data.map((r) => r.id)).toEqual([orgOwned.id]);
+
+    const bad = await call(app, fixture.adminToken, 'GET', '/reports?ownerScope=everyone');
+    expect(bad.status).toBe(400);
+  });
+
   runDb('a selected partner user cannot list, read or download partner-owned RUNS; an all admin can (#3198 W02, addendum B2)', async () => {
     // RLS admits a 'selected' partner user to every report_runs row of the
     // partner (breeze_has_partner_access is flat membership); the app-layer

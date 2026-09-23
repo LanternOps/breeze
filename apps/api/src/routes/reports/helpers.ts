@@ -1,4 +1,4 @@
-import { and, eq, inArray, or, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { isManagedEvidenceType } from '../../services/managedEvidenceRegistry';
 import { db } from '../../db';
 import { portalBranding, reports, reportRuns } from '../../db/schema';
@@ -116,6 +116,22 @@ export function partnerOwnedReportVisibility(
   return canManagePartnerWidePolicies(auth) && auth.partnerId
     ? eq(reports.partnerId, auth.partnerId)
     : sql<unknown>`FALSE`;
+}
+
+/**
+ * #3198 W03. The `GET /reports?ownerScope=` owner filter. It is AND-ed onto
+ * the listing's tenant predicate, so it can only NARROW the result — it never
+ * grants a row the caller could not already list:
+ *  - 'organization' keeps org-owned rows (`org_id IS NOT NULL`).
+ *  - 'partner' keeps partner-owned rows (`org_id IS NULL`; the owner XOR
+ *    check makes that equivalent to a partner owner). Which partner-owned rows
+ *    a caller may see at all stays the tenant predicate's job
+ *    (`partnerOwnedReportVisibility` via `resolveDefinitionListScope`); the
+ *    route additionally answers an empty page up front, with no query, to
+ *    every non-system caller for whom `partnerWideListTarget` is undefined.
+ */
+export function reportOwnerScopeListFilter(ownerScope: 'organization' | 'partner'): SQL<unknown> {
+  return ownerScope === 'organization' ? isNotNull(reports.orgId) : isNull(reports.orgId);
 }
 
 /**

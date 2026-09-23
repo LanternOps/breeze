@@ -509,7 +509,7 @@ All data endpoints accept these common query parameters:
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/reports` | List saved reports. Filter by `type`, `schedule`, `orgId`. Paginated. |
+| `GET` | `/reports` | List saved reports. Filter by `type`, `schedule`, `orgId`, and `ownerScope` (`partner` = only reports owned partner-wide across all organizations, `organization` = only single-organization reports). `ownerScope` only narrows the list: a caller who cannot manage partner-wide reports (organization logins, partner users with selected-organization access) gets an empty list for `ownerScope=partner`. Paginated. |
 | `POST` | `/reports` | Create a saved report definition with name, type, config, schedule, and format. Pass `ownerScope: "partner"` (and no `orgId`) for a partner-wide [business report](#business-reports). |
 | `GET` | `/reports/:id` | Get a single report with its 5 most recent runs. |
 | `PUT` | `/reports/:id` | Update report name, config, schedule, or format. |

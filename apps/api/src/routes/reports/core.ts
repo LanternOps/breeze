@@ -40,6 +40,7 @@ import {
   reportOwnerCondition,
   reportOwnerOfRow,
   reportOwnerScopePredicate,
+  reportOwnerScopeListFilter,
   resolveReportOwnerAuthority,
   tenantAuthorizedReportCondition,
 } from './helpers';
@@ -337,6 +338,14 @@ coreRoutes.get(
     const auth = c.get('auth');
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
+    // #3198 W03: `?ownerScope=partner` from a caller who may not see
+    // partner-owned rows (an org token, a 'selected' partner user) is an empty
+    // page — answered here, without a query. The SQL filter below would reach
+    // the same answer through the tenant predicate; this keeps the refusal
+    // independent of it.
+    if (query.ownerScope === 'partner' && auth.scope !== 'system' && !partnerWideListTarget(auth)) {
+      return c.json({ data: [], pagination: { page, limit, total: 0 } });
+    }
     const scopeResult = await resolveDefinitionListScope(auth, query.orgId, {
       includePartnerOwned: true,
     }, c.get('permissions') as UserPermissions | undefined);
@@ -357,6 +366,11 @@ coreRoutes.get(
 
     if (query.schedule) {
       conditions.push(eq(reports.schedule, query.schedule));
+    }
+
+    // #3198 W03: owner-axis filter. Narrowing only — see the helper.
+    if (query.ownerScope) {
+      conditions.push(reportOwnerScopeListFilter(query.ownerScope));
     }
 
     const whereCondition = and(...conditions);
