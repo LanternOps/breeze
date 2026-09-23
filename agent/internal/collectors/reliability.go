@@ -216,14 +216,16 @@ func containsPhrase(msgLower, phrase string) bool {
 	return false
 }
 
-// isWordByte reports whether s[i] is an ASCII letter or digit. Out-of-range
-// positions (string start/end) are boundaries.
+// isWordByte reports whether s[i] is part of a word: an ASCII letter or digit,
+// or any non-ASCII byte (so a phrase glued to a localized letter, e.g. "àecc",
+// is not treated as standalone). Out-of-range positions (string start/end) are
+// boundaries.
 func isWordByte(s string, i int) bool {
 	if i < 0 || i >= len(s) {
 		return false
 	}
 	c := s[i]
-	return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+	return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c >= 0x80
 }
 
 // numericEventID extracts the numeric event ID from an EventLogEntry.

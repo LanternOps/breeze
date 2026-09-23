@@ -785,6 +785,14 @@ func TestClassifyHardwareTypeMessageSignals(t *testing.T) {
 		{"smartscreen is not hardware", "SmartScreen blocked an unrecognized app.", "unknown"},
 		{"display dimming is not hardware", "Display dimming policy applied.", "unknown"},
 		{"eccentric is not ecc", "Eccentric configuration value ignored.", "unknown"},
+		{"non-ascii letter glued to token is not a boundary", "Paramètre àecc invalide", "unknown"},
+
+		// Matcher edges: embedded first occurrence must not stop the scan,
+		// phrase at string start/end, plural on a disk phrase.
+		{"embedded then standalone occurrence", "predimm value cached, then DIMM failure reported", "memory"},
+		{"phrase is the whole message", "disk error", "disk"},
+		{"phrase at end of message", "device fault reported on dimm", "memory"},
+		{"disk phrase plural", "2 bad sectors remapped", "disk"},
 
 		// True positives: hardware-phrased memory signals.
 		{"memory error", "A memory error was detected by the hardware.", "memory"},
