@@ -180,6 +180,11 @@ vi.mock('../../db/schema', () => ({
     consentAttemptId: 'consentAttemptId', status: 'status'
   }
 }));
+// #6688: inbound attachment rows are inserted by ./inboundAttachments straight
+// from the table module; give it a marker so the insert is captured by name.
+vi.mock('../../db/schema/ticketAttachments', () => ({
+  ticketAttachments: { __t: 'ticket_attachments' }
+}));
 
 const { captureExceptionMock, captureMessageMock } = vi.hoisted(() => ({
   captureExceptionMock: vi.fn(),
@@ -1789,5 +1794,94 @@ describe('processInboundEmail — cross-channel claim ledger (spec §4)', () => 
     const rows = inboundOf();
     expect(rows[0]!.parseStatus).toBe('created');
     expect(String(rows[0]!.error)).toContain('t-winner');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #6688 — M365 attachments prepared by the worker (bytes already in storage)
+// land as ATTACHED ticket_attachments rows; skipped ones become a one-line note.
+// ---------------------------------------------------------------------------
+describe('processInboundEmail — inbound attachments (#6688)', () => {
+  const storedPdf = {
+    filename: 'report.pdf',
+    contentType: 'application/pdf',
+    size: 12,
+    stored: {
+      attachmentId: 'att-1', contentType: 'application/pdf', byteSize: 12, sha256: 'c'.repeat(64),
+      storageBackend: 's3' as const, storageKey: 'ticket-attachments/att-1', data: null,
+    },
+  };
+  const skippedEml = { filename: 'orig.eml', contentType: 'message/rfc822', size: 99, skipReason: 'unsupported_type' as const };
+
+  function knownSenderCreate() {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [];
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1', name: 'Jane Stored' }];
+    state.selectRows['organizations'] = [{ id: 'o-1' }];
+    createTicketMock.mockResolvedValue({ id: 't-created', internalNumber: 'T-2026-0010' });
+  }
+
+  it('create path: persists the stored file on an email-authored comment of the NEW ticket, without a second event', async () => {
+    knownSenderCreate();
+    const n = email({ attachments: [{ ...storedPdf }] });
+
+    await processInboundEmail(n);
+
+    const comments = state.inserts.filter((i) => i.table === 'ticket_comments').map((i) => i.values);
+    expect(comments).toHaveLength(1);
+    expect(comments[0]).toMatchObject({ ticketId: 't-created', authorType: 'email', isPublic: true, portalUserId: 'pu-1' });
+
+    const rows = state.inserts.filter((i) => i.table === 'ticket_attachments').map((i) => i.values as unknown);
+    expect(rows).toEqual([[expect.objectContaining({
+      id: 'att-1', ticketId: 't-created', orgId: 'o-1', commentId: 'c-1', originalFilename: 'report.pdf',
+    })]]);
+    expect(n.attachments[0]!.persisted).toBe(true);
+    // ticket.created already notifies; the attachment carrier comment must not add a ticket.commented.
+    expect(emitMock).not.toHaveBeenCalled();
+  });
+
+  it('create path: a skipped attachment is recorded as a one-line note on the description, no carrier comment', async () => {
+    knownSenderCreate();
+
+    await processInboundEmail(email({ attachments: [skippedEml] }));
+
+    const input = createTicketMock.mock.calls[0]![0] as { description: string };
+    expect(input.description.startsWith('It is broken.')).toBe(true);
+    expect(input.description).toContain('orig.eml (file type not supported)');
+    expect(state.inserts.filter((i) => i.table === 'ticket_comments')).toHaveLength(0);
+    expect(state.inserts.filter((i) => i.table === 'ticket_attachments')).toHaveLength(0);
+  });
+
+  it('reply path: attaches stored files to the inbound comment and appends the skip note to it', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [{
+      id: 't-1', partnerId: 'p-1', orgId: 'o-1', status: 'open',
+      emailThreadKey: '<msg-1@tickets.example.com>', internalNumber: 'T-2026-0001'
+    }];
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
+
+    await processInboundEmail(email({
+      inReplyTo: '<msg-1@tickets.example.com>',
+      attachments: [{ ...storedPdf }, skippedEml],
+    }));
+
+    const comments = state.inserts.filter((i) => i.table === 'ticket_comments').map((i) => i.values);
+    expect(comments).toHaveLength(1);
+    expect(String(comments[0]!.content).startsWith('It is broken.')).toBe(true);
+    expect(comments[0]!.content).toContain('orig.eml (file type not supported)');
+
+    const rows = state.inserts.filter((i) => i.table === 'ticket_attachments').map((i) => i.values as unknown);
+    expect(rows).toEqual([[expect.objectContaining({ id: 'att-1', ticketId: 't-1', orgId: 'o-1', commentId: 'c-1' })]]);
+    expect(inboundOf()[0]!.parseStatus).toBe('matched');
+  });
+
+  it('an email with no attachments writes no attachment rows and leaves the description untouched', async () => {
+    knownSenderCreate();
+    await processInboundEmail(email());
+    expect((createTicketMock.mock.calls[0]![0] as { description: string }).description).toBe('It is broken.');
+    expect(state.inserts.filter((i) => i.table === 'ticket_attachments')).toHaveLength(0);
+    expect(state.inserts.filter((i) => i.table === 'ticket_comments')).toHaveLength(0);
   });
 });

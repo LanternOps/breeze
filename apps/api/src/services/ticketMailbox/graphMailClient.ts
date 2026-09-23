@@ -107,6 +107,74 @@ export async function listInboxDelta(
   return { messages, deltaLink: finalDelta };
 }
 
+/**
+ * Attachment METADATA for one message (#6688). `contentBytes` is deliberately
+ * not selected: bytes are fetched per attachment, only for the ones we keep,
+ * so an oversized file is never downloaded. `@odata.type` is not selectable —
+ * Graph always returns it on this polymorphic collection.
+ */
+const ATTACHMENT_SELECT = 'id,name,contentType,size,isInline';
+
+export interface GraphAttachmentMeta {
+  id: string;
+  name?: string | null;
+  contentType?: string | null;
+  size?: number | null;
+  isInline?: boolean | null;
+  /** '#microsoft.graph.fileAttachment' | '#microsoft.graph.itemAttachment' | '#microsoft.graph.referenceAttachment' */
+  '@odata.type'?: string;
+}
+
+function messageUrl(mailbox: string, messageId: string): string {
+  return `${GRAPH}/users/${encodeURIComponent(mailbox)}/messages/${encodeURIComponent(messageId)}`;
+}
+
+async function graphJsonOrThrow<T>(res: Response, what: string): Promise<T> {
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    const err = new Error(`Graph ${what} ${res.status}: ${body.slice(0, 200)}`);
+    (err as Error & { status?: number }).status = res.status;
+    throw err;
+  }
+  return (await res.json()) as T;
+}
+
+export async function listMessageAttachments(
+  token: string,
+  mailbox: string,
+  messageId: string,
+): Promise<GraphAttachmentMeta[]> {
+  let url =
+    `${messageUrl(mailbox, messageId)}/attachments` +
+    `?${encodeURIComponent('$select')}=${encodeURIComponent(ATTACHMENT_SELECT)}`;
+  const out: GraphAttachmentMeta[] = [];
+  for (let guard = 0; guard < 50; guard++) {
+    const data = await graphJsonOrThrow<{ value?: GraphAttachmentMeta[]; '@odata.nextLink'?: string }>(
+      await graphFetch(url, token),
+      'attachments',
+    );
+    if (Array.isArray(data.value)) out.push(...data.value);
+    if (!data['@odata.nextLink']) break;
+    url = data['@odata.nextLink'];
+  }
+  return out;
+}
+
+/** Bytes of one fileAttachment, decoded from its `contentBytes`. */
+export async function getFileAttachmentBytes(
+  token: string,
+  mailbox: string,
+  messageId: string,
+  attachmentId: string,
+): Promise<Buffer> {
+  const url = `${messageUrl(mailbox, messageId)}/attachments/${encodeURIComponent(attachmentId)}`;
+  const data = await graphJsonOrThrow<{ contentBytes?: string }>(await graphFetch(url, token), 'attachment');
+  if (typeof data.contentBytes !== 'string') {
+    throw new Error('Graph attachment response carried no contentBytes');
+  }
+  return Buffer.from(data.contentBytes, 'base64');
+}
+
 export async function markRead(token: string, mailbox: string, messageId: string): Promise<void> {
   const url = `${GRAPH}/users/${encodeURIComponent(mailbox)}/messages/${encodeURIComponent(messageId)}`;
   await graphFetch(url, token, {

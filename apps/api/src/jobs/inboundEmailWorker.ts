@@ -26,6 +26,10 @@ import {
   type InboundEmailQueueJob,
 } from '../services/inboundEmailQueue';
 import { processInboundEmail } from '../services/inboundEmail/inboundEmailService';
+import {
+  discardUnpersistedAttachments,
+  prepareM365Attachments,
+} from '../services/ticketMailbox/fetchInboundAttachments';
 import { inboundQueueMaxPerSec } from '../config/env';
 import { attachWorkerObservability } from './workerObservability';
 
@@ -41,9 +45,25 @@ export async function handleInboundEmail(job: Job<InboundEmailQueueJob>): Promis
   // idle-in-transaction pool poison (#1105). Flood protection is the global
   // per-second queue limiter configured on the Worker below (INBOUND_QUEUE_MAX_PER_SEC);
   // there is no per-sender Redis cap in the pipeline.
-  return dbModule.runOutsideDbContext(() =>
-    dbModule.withSystemDbAccessContext(() => processInboundEmail(email, mailboxGeneration)),
-  );
+  const run = () =>
+    dbModule.runOutsideDbContext(() =>
+      dbModule.withSystemDbAccessContext(() => processInboundEmail(email, mailboxGeneration)),
+    );
+
+  // M365 attachments (#6688): Graph download + blob put happen HERE, before the
+  // transaction opens, never inside it (see fetchInboundAttachments.ts). Only a
+  // generation-bound job can name the tenant to fetch from.
+  if (email.provider !== 'm365' || !mailboxGeneration || !email.hasAttachments) return run();
+
+  await prepareM365Attachments(email, {
+    tenantId: mailboxGeneration.tenantId,
+    finalAttempt: (job.attemptsMade ?? 0) + 1 >= (job.opts?.attempts ?? 1),
+  });
+  try {
+    return await run();
+  } finally {
+    await discardUnpersistedAttachments(email);
+  }
 }
 
 export function initializeInboundEmailWorker(): Promise<void> {

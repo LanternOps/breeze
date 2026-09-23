@@ -13,6 +13,7 @@ import { resolvePartnerByRecipient } from './resolvePartner';
 import { resolveOrgBySenderDomain, resolveEmailRequester, loadPartnerInboundPolicy } from './resolveOrg';
 import { maybeSendAutoresponse } from './autoresponder';
 import { insertEmailAuthoredComment } from './emailComments';
+import { hasStoredAttachments, persistInboundAttachments, withInboundAttachmentNote } from './inboundAttachments';
 import { captureException, captureMessage } from '../sentry';
 import { getConfig } from '../../config/validate';
 import type { NormalizedInboundEmail, InboundParseStatus } from './types';
@@ -389,6 +390,7 @@ export async function processInboundEmail(
 
       // Append a public inbound comment, then reopen if resolved.
       const commentId = await appendInboundComment(matched.id, n, partnerId, senderResolver);
+      await persistInboundAttachments(n, { ticketId: matched.id, orgId: matched.orgId, commentId });
       if (matched.status === 'resolved') {
         await reopenResolvedTicket(matched.id, partnerId);
       }
@@ -656,7 +658,8 @@ async function createFromEmail(
     .limit(1);
   if (!orgOk[0]) throw new Error(`org ${orgId} not in partner ${partnerId}`);
 
-  const description = priorNumber ? `Re: ${priorNumber} (continued)\n\n${n.text}` : n.text;
+  const body = withInboundAttachmentNote(n.text, n);
+  const description = priorNumber ? `Re: ${priorNumber} (continued)\n\n${body}` : body;
   const ticket = await createTicket(
     {
       orgId,
@@ -726,6 +729,22 @@ async function createFromEmail(
       emailMessageId: n.messageId ?? null,
     })
     .where(eq(tickets.id, ticket.id));
+
+  // Email attachments (#6688). ticket_attachments rows hang off a COMMENT — a
+  // comment-less row is a pending upload (reaped at 24h, readable only by its
+  // uploader) — so a new ticket's files ride on one public email-authored
+  // comment. No ticket.commented event: ticket.created already announced it.
+  if (hasStoredAttachments(n)) {
+    const { commentId } = await insertEmailAuthoredComment({
+      ticketId: ticket.id,
+      orgId,
+      senderPortalUserId: requester?.kind === 'portal' ? requester.portalUserId : null,
+      authorName: n.fromName ?? n.from,
+      content: 'Attachments from the original email.',
+      emitEvent: false,
+    });
+    await persistInboundAttachments(n, { ticketId: ticket.id, orgId, commentId });
+  }
 
   // One-time autoresponse — ONLY for an accepted known sender on a FRESH ticket.
   //
@@ -824,7 +843,7 @@ async function appendInboundComment(
     orgId: '', // existing wart, preserved — see EmailCommentInput
     senderPortalUserId: sender?.id ?? null,
     authorName,
-    content: n.text
+    content: withInboundAttachmentNote(n.text, n)
   });
   // This stamp is also the optimistic move fence. The subject-token matcher
   // holds the ticket row lock through this write; a concurrent cross-org move

@@ -38,6 +38,14 @@ vi.mock('../services/inboundEmail/inboundEmailService', () => ({
 vi.mock('../services/inboundEmailQueue', () => ({
   INBOUND_EMAIL_QUEUE: 'inbound-email'
 }));
+const { prepareMock, discardMock } = vi.hoisted(() => ({
+  prepareMock: vi.fn().mockResolvedValue(undefined),
+  discardMock: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock('../services/ticketMailbox/fetchInboundAttachments', () => ({
+  prepareM365Attachments: prepareMock,
+  discardUnpersistedAttachments: discardMock,
+}));
 
 import * as workerModule from './inboundEmailWorker';
 
@@ -115,6 +123,60 @@ describe('inboundEmailWorker', () => {
     await workerModule.handleInboundEmail({ data: email } as any);
 
     expect(processInboundEmailMock).toHaveBeenCalledWith(email, undefined);
+  });
+
+  describe('M365 attachments (#6688)', () => {
+    const mailboxGeneration = {
+      connectionId: '44444444-4444-4444-8444-444444444444',
+      partnerId: '22222222-2222-4222-8222-222222222222',
+      tenantId: '11111111-1111-4111-8111-111111111111',
+      consentAttemptId: '66666666-6666-4666-8666-666666666666',
+    };
+    const m365 = (hasAttachments: boolean) => ({ ...makeEmail(), provider: 'm365' as const, hasAttachments });
+
+    it('fetches attachments BEFORE opening the DB transaction, then discards unpersisted blobs', async () => {
+      const callOrder: string[] = [];
+      prepareMock.mockImplementationOnce(async () => { callOrder.push('prepare'); });
+      withSystemDbAccessContextMock.mockImplementation(<T>(fn: () => Promise<T>) => {
+        callOrder.push('withSystemDbAccessContext');
+        return fn();
+      });
+      discardMock.mockImplementationOnce(async () => { callOrder.push('discard'); });
+      const email = m365(true);
+
+      await workerModule.handleInboundEmail({
+        data: { email, mailboxGeneration }, attemptsMade: 0, opts: { attempts: 3 },
+      } as any);
+
+      expect(prepareMock).toHaveBeenCalledWith(email, { tenantId: mailboxGeneration.tenantId, finalAttempt: false });
+      expect(callOrder).toEqual(['prepare', 'withSystemDbAccessContext', 'discard']);
+    });
+
+    it('flags the final BullMQ attempt so a Graph failure degrades instead of dropping the email', async () => {
+      const email = m365(true);
+      await workerModule.handleInboundEmail({
+        data: { email, mailboxGeneration }, attemptsMade: 2, opts: { attempts: 3 },
+      } as any);
+      expect(prepareMock).toHaveBeenCalledWith(email, { tenantId: mailboxGeneration.tenantId, finalAttempt: true });
+    });
+
+    it('still discards unpersisted blobs when processing throws', async () => {
+      processInboundEmailMock.mockRejectedValueOnce(new Error('boom'));
+      const email = m365(true);
+      await expect(workerModule.handleInboundEmail({ data: { email, mailboxGeneration } } as any)).rejects.toThrow('boom');
+      expect(discardMock).toHaveBeenCalledWith(email);
+    });
+
+    it('makes no attachment call when hasAttachments is false', async () => {
+      await workerModule.handleInboundEmail({ data: { email: m365(false), mailboxGeneration } } as any);
+      expect(prepareMock).not.toHaveBeenCalled();
+      expect(discardMock).not.toHaveBeenCalled();
+    });
+
+    it('makes no attachment call for a job without a mailbox generation (Mailgun / legacy)', async () => {
+      await workerModule.handleInboundEmail({ data: { email: makeEmail() } } as any);
+      expect(prepareMock).not.toHaveBeenCalled();
+    });
   });
 });
 
