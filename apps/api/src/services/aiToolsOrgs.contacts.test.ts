@@ -85,6 +85,14 @@ describe('list_org_contacts', () => {
     expect(listContacts).not.toHaveBeenCalled();
     expect(countContacts).not.toHaveBeenCalled();
   });
+  it('fails closed when allowedSiteIds is null (#6737)', async () => {
+    expect(await run({ orgId: ORG }, { allowedSiteIds: null }))
+      .toEqual({ contacts: [], total: 0, limit: 25, offset: 0 });
+    expect(await run({ orgId: ORG, siteId: SITE }, { allowedSiteIds: null }))
+      .toEqual({ error: 'Access to this site denied' });
+    expect(listContacts).not.toHaveBeenCalled();
+    expect(countContacts).not.toHaveBeenCalled();
+  });
   it('rejects invalid site and role filters', async () => {
     for (const input of [{ siteId: 'bad' }, { role: '' }, { role: 'x'.repeat(65) }]) {
       expect((await run({ orgId: ORG, ...input })).error).toBeTruthy();

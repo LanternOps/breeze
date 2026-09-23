@@ -289,6 +289,20 @@ describe('list_organizations', () => {
     expect(mockDb.select).toHaveBeenCalledTimes(1);
   });
 
+  // #6737: AuthContext types allowedSiteIds as `string[] | undefined`, but a
+  // raw DB NULL leaking through would read `.length` off null and 500. A
+  // non-array allowlist is an invariant breach — deny sites, never widen.
+  it('fails closed (no crash, no sites) when allowedSiteIds is null', async () => {
+    selectQueue.push([{ id: ORG_1, name: 'Acme Dental', slug: 'acme-dental', status: 'active' }]);
+
+    const out = JSON.parse(
+      await getTools().list.handler({}, orgAuth({ allowedSiteIds: null } as unknown as Partial<AuthContext>))
+    );
+    expect(out.organizations[0].sites).toEqual([]);
+    expect(out.organizations[0].siteCount).toBe(0);
+    expect(mockDb.select).toHaveBeenCalledTimes(1);
+  });
+
   it('site-restricted caller only sees allowed sites', async () => {
     selectQueue.push([{ id: ORG_1, name: 'Acme Dental', slug: 'acme-dental', status: 'active' }]);
     selectQueue.push([{ id: SITE_1, name: 'Main Office', orgId: ORG_1 }]);
@@ -698,6 +712,17 @@ describe('manage_organizations add_contact', () => {
       await getTools().manage.handler(
         { action: 'add_contact', orgId: ORG_1, siteId: SITE_2, name: 'Rogue Site Contact' },
         orgAuth({ allowedSiteIds: [SITE_1] } as Partial<AuthContext>)
+      )
+    );
+    expect(out.code).toBe('site-access-denied');
+    expect(mockCreateContact).not.toHaveBeenCalled();
+  });
+
+  it('denies a site-targeted contact when allowedSiteIds is null (#6737, fail closed)', async () => {
+    const out = JSON.parse(
+      await getTools().manage.handler(
+        { action: 'add_contact', orgId: ORG_1, siteId: SITE_1, name: 'Null Scope Contact' },
+        orgAuth({ allowedSiteIds: null, canAccessSite: () => true } as unknown as Partial<AuthContext>)
       )
     );
     expect(out.code).toBe('site-access-denied');

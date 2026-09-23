@@ -65,6 +65,11 @@ describe('site reads', () => {
     expect(await run('get_site', { siteId: SITE }, { allowedSiteIds: [] })).toEqual({ error: 'Site not found' });
     expect(db.select).not.toHaveBeenCalled();
   });
+  it('fails closed when allowedSiteIds is null (#6737)', async () => {
+    expect(await run('list_sites', {}, { allowedSiteIds: null })).toEqual({ sites: [], total: 0, limit: 25, offset: 0 });
+    expect(await run('get_site', { siteId: SITE }, { allowedSiteIds: null })).toEqual({ error: 'Site not found' });
+    expect(db.select).not.toHaveBeenCalled();
+  });
   it('scopes partner list and count identically and hides quick-support sites', async () => {
     expect(await run('list_sites')).toEqual({ sites: [{ ...row, deviceCount: 3 }], total: 1, limit: 25, offset: 0 });
     const condition = and(inArray(sites.orgId, [ORG]), notQuickSupport, undefined);
