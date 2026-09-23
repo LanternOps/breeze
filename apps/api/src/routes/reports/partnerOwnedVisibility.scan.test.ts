@@ -122,6 +122,11 @@ const MUST_CALL_AUDIENCE: ReadonlyArray<{ file: string; fn: string }> = [
   { file: 'src/routes/reports/helpers.ts', fn: 'tenantAuthorizedRunCondition' },
   { file: 'src/routes/reports/core.ts', fn: 'resolveDefinitionListScope' },
   { file: 'src/routes/reports/runs.ts', fn: 'GET /runs' },
+  // The org-axis AI report tool builds its own org-scope reads (allowlisted
+  // above for the partner-owned rule); each applies the exclusion itself.
+  { file: 'src/services/aiToolsFleet.ts', fn: 'aiReportDefinitionAccess' },
+  { file: 'src/services/aiToolsFleet.ts', fn: 'aiReportRunAccess' },
+  { file: 'src/services/aiToolsFleet.ts', fn: 'tool:generate_report' },
 ];
 const AUDIENCE_CALL = /(?<!function\s)\breportAudienceCondition\(/;
 

@@ -75,7 +75,13 @@ async function scheduleAiGroupPeripheralReconciliation(deviceIds: readonly strin
 import type { AiTool } from './aiTools';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
-import type { UserPermissions } from './permissions';
+import { getUserPermissions, type UserPermissions } from './permissions';
+import {
+  missingReportTypePermission,
+  reportAudienceCondition,
+  reportTypeHiddenFromCaller,
+} from './reportTypePermissions';
+import { reportTypeDef } from './reportRegistry';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from './partnerWideAccess';
 import { filterWindowsToSiteScope, scopeWindowForRead } from './maintenanceSiteScope';
 import {
@@ -220,6 +226,8 @@ const aiReportRunMetadataProjection = {
   orgId: reports.orgId,
   // #3198 W01: the other owner axis (siteScope.projections.test.ts).
   partnerId: reports.partnerId,
+  // #3198 W02 ruling F1: the audience belt reads the definition's type.
+  type: reports.type,
   executionScopeVersion: reportRuns.executionScopeVersion,
   executionScopeKind: reportRuns.executionScopeKind,
   executionScopeSiteIds: reportRuns.executionScopeSiteIds,
@@ -274,6 +282,9 @@ async function aiReportDefinitionAccess(
   const metadataConditions: SQL[] = [eq(reports.id, reportId)];
   const tenantCondition = orgWhere(auth, reports.orgId);
   if (tenantCondition) metadataConditions.push(tenantCondition);
+  // #3198 W02 ruling F1: an org-scope caller never reaches an msp_staff type.
+  const audience = reportAudienceCondition(auth, reports.type);
+  if (audience) metadataConditions.push(audience);
   const [metadataRow] = await db
     .select(aiReportDefinitionMetadataProjection)
     .from(reports)
@@ -308,6 +319,8 @@ async function aiReportDefinitionAccess(
   if (!reportRow) return null;
   const report = requireOrgOwnedReportRow(reportRow, 'aiReportDefinitionAccess report');
   if (!report) return null;
+  // Ruling F1, defense in depth (the metadata read already excludes it).
+  if (reportTypeHiddenFromCaller(report.type, auth)) return null;
 
   try {
     const storedScope = decodeSiteScope(
@@ -329,6 +342,9 @@ async function aiReportRunAccess(
   const metadataConditions: SQL[] = [eq(reportRuns.id, runId)];
   const tenantCondition = orgWhere(auth, reports.orgId);
   if (tenantCondition) metadataConditions.push(tenantCondition);
+  // #3198 W02 ruling F1: an org-scope caller never reaches an msp_staff run.
+  const audience = reportAudienceCondition(auth, reports.type);
+  if (audience) metadataConditions.push(audience);
   const [metadataRow] = await db
     .select(aiReportRunMetadataProjection)
     .from(reportRuns)
@@ -338,6 +354,8 @@ async function aiReportRunAccess(
   if (!metadataRow) return null;
   const metadata = requireOrgOwnedReportRow(metadataRow, 'aiReportRunAccess metadata');
   if (!metadata) return null;
+  // Ruling F1, defense in depth (the metadata read already excludes it).
+  if (reportTypeHiddenFromCaller(metadata.type, auth)) return null;
 
   const authority = await aiLiveReportAuthority(auth, metadata.orgId, action);
   if (!authority) return null;
@@ -2847,6 +2865,9 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
             return JSON.stringify({ reports: [], showing: 0 });
           }
           conditions.push(eq(reports.orgId, auth.orgId));
+          // #3198 W02 ruling F1: never list an msp_staff type to an org caller.
+          const audience = reportAudienceCondition(auth, reports.type);
+          if (audience) conditions.push(audience);
           definitionPredicate = reportDefinitionScopeSqlPredicate(
             reports,
             authority.scope,
@@ -2912,6 +2933,24 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           );
           if (!access) return JSON.stringify({ error: 'Report not found or access denied' });
           reportDef = access.report;
+          // #3198 W02 (ruling P8 + F1): the stored type's underlying read
+          // permissions, from the caller's LIVE permission set, before any run
+          // row — the HTTP generate route's gate. Only a type that lists extra
+          // permissions pays the lookup. (Org-scope callers never get here with
+          // an msp_staff type: aiReportDefinitionAccess hid it.)
+          if (reportTypeDef(reportDef.type).requiredPermissions.length > 0) {
+            const permissions = await getUserPermissions(auth.user.id, {
+              partnerId: auth.partnerId || undefined,
+              orgId: auth.orgId || undefined,
+              scope: auth.scope,
+            });
+            if (
+              reportTypeHiddenFromCaller(reportDef.type, auth)
+              || missingReportTypePermission(reportDef.type, permissions)
+            ) {
+              return JSON.stringify({ error: 'Insufficient permissions' });
+            }
+          }
           try {
             const persistedScope = decodeSiteScope(
               reportDef as unknown as PersistedSiteScopeColumns,
