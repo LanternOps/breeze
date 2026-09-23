@@ -87,6 +87,19 @@ const SUMMARY: TicketSlaSummary = {
   ],
 };
 
+function makeRow(i: number, breached: boolean): TicketSlaSummary['rows'][number] {
+  return {
+    ticketId: `t${i}`, ticketNumber: `T-${i}`, internalNumber: null, orgId: 'o1', orgName: 'Acme Co',
+    subject: `Ticket ${i}`, priority: 'normal', category: null, assignedToName: null,
+    createdAt: '2026-09-10T10:00:00.000Z', firstResponseAt: '2026-09-10T10:30:00.000Z',
+    resolvedAt: '2026-09-10T11:00:00.000Z', responseSlaMinutes: 120, resolutionSlaMinutes: 240,
+    slaPausedMinutes: 0,
+    responseOutcome: breached ? 'missed' : 'met',
+    resolutionOutcome: 'met',
+    stampedBreachAt: null, stampedBreachReason: null,
+  };
+}
+
 describe('buildReportPdf: ticket_sla_attainment', () => {
   it('routes to the SLA renderer, not renderGenericReport', () => {
     const spy = vi.spyOn(slaPdf, 'renderTicketSlaReport');
@@ -113,5 +126,27 @@ describe('buildReportPdf: ticket_sla_attainment', () => {
   it('discloses truncation with both numbers', () => {
     const s = { ...SUMMARY, detail: { cap: 5000, stored: 5000, available: 9000, truncated: true } };
     expect(extractText(buildReportPdf([], { ...opts, summary: s }))).toMatch(/5000 of 9000/);
+  });
+
+  it('does not falsely disclose truncation when the total ticket set exceeds the local cap but the breached subset does not', () => {
+    // 600 total detail rows, only 2 breached: the "Breached tickets" table
+    // shows every breached ticket, so it must not claim a 500-of-600 cut.
+    const rows = [
+      ...Array.from({ length: 598 }, (_, i) => makeRow(i, false)),
+      makeRow(998, true),
+      makeRow(999, true),
+    ];
+    const s = { ...SUMMARY, detail: { cap: 5000, stored: 600, available: 600, truncated: false }, rows };
+    const text = extractText(buildReportPdf([], { ...opts, summary: s }));
+    // jsPDF escapes literal parens in its content stream, so match the digits,
+    // not the punctuation — same convention as the "5000 of 9000" case above.
+    expect(text).not.toMatch(/showing 500 of/);
+  });
+
+  it('discloses truncation, with the breached count, when the breached subset itself exceeds the local cap', () => {
+    const rows = Array.from({ length: 600 }, (_, i) => makeRow(i, true));
+    const s = { ...SUMMARY, detail: { cap: 5000, stored: 600, available: 600, truncated: false }, rows };
+    const text = extractText(buildReportPdf([], { ...opts, summary: s }));
+    expect(text).toMatch(/showing 500 of 600/);
   });
 });

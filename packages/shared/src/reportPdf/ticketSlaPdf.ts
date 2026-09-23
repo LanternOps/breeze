@@ -214,7 +214,12 @@ export function renderTicketSlaReport(
 
   // --- Breached tickets --------------------------------------------------------
   const breachedRows = summary.rows.filter((r: TicketSlaDetailRow) => r.responseOutcome === 'missed' || r.resolutionOutcome === 'missed');
-  y = chrome.drawSectionHeading(doc, detailHeading('Breached tickets', summary.rows.length, summary.detail), y + 2);
+  // The local-slice fallback must be sized against the FILTERED set the table
+  // actually renders (breachedRows), not the general detail set (summary.rows)
+  // — otherwise a large ticket set with few breaches falsely claims a cut that
+  // never happened. The generator-truncation branch (detail.truncated) is
+  // unaffected: it already reports the generator's own stored/available pair.
+  y = chrome.drawSectionHeading(doc, detailHeading('Breached tickets', breachedRows.length, summary.detail), y + 2);
   if (breachedRows.length === 0) {
     y = drawProse(doc, chrome, 'No breached tickets in the covered window.', y + 1, 9, C.muted);
   } else {
