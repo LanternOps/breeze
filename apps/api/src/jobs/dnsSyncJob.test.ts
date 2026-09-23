@@ -1,6 +1,29 @@
 import { describe, expect, it } from 'vitest';
-import { runSequentialDomainMutations, tenantVisibleSyncError } from './dnsSyncJob';
+import { normalizeThreatCategory, runSequentialDomainMutations, tenantVisibleSyncError } from './dnsSyncJob';
 import { DnsProviderHttpError } from '../services/dnsProviders';
+
+describe('normalizeThreatCategory (issue #6693 — "ad" matched before "adult")', () => {
+  it.each([
+    ['Adult Themes', 'adult_content'],
+    ['Trading', 'unknown'],
+    ['Download', 'unknown'],
+    ['Advertisements', 'adware'],
+    ['Adware', 'adware'],
+    ['Ads', 'adware'],
+    ['NotAdware', 'unknown'],
+    ['Phishing', 'phishing'],
+    ['Malware', 'malware'],
+    ['Botnet', 'botnet'],
+    ['Ransomware', 'ransomware'],
+    ['Cryptomining', 'cryptomining'],
+    ['Spam', 'spam'],
+    ['Gambling', 'gambling'],
+    ['Social Media', 'social_media'],
+    ['Streaming', 'streaming'],
+  ])('maps provider label %s -> %s', (input, expected) => {
+    expect(normalizeThreatCategory(input)).toBe(expected);
+  });
+});
 
 describe('runSequentialDomainMutations (issue #827 — policy-sync rule clobbering)', () => {
   it('runs domain mutations one at a time, never concurrently', async () => {
