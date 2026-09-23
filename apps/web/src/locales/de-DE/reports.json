@@ -958,6 +958,8 @@
       "spec": {
         "cadence": "Berichtsintervall",
         "defaultRange": "Standardbereich",
+        "lastFullMonth": "Letzter vollständiger Monat",
+        "asOfRunDate": "Zum Zeitpunkt der Ausführung",
         "format": "Formatieren"
       },
       "success": {
@@ -1121,7 +1123,8 @@
       "allOrganizations": "Alle Organisationen",
       "allOrganizationsHint": "Umfasst alle aktiven Organisationen und Organisationen in der Testphase, bei jedem Lauf neu ermittelt. Ausgeschlossene Organisationen werden in den Hinweisen des Berichts aufgeführt. Erfordert Zugriff auf alle Organisationen.",
       "singleOrganization": "Eine Organisation",
-      "singleOrganizationHint": "Die im Organisationswechsler ausgewählte Organisation."
+      "singleOrganizationHint": "Die im Organisationswechsler ausgewählte Organisation.",
+      "singleOrganizationDisabledHint": "Wählen Sie eine Organisation im Organisationswechsler aus, um einen organisationsbezogenen Bericht zu erstellen."
     }
   }
 }

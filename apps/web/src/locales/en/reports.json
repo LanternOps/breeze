@@ -958,6 +958,8 @@
       "spec": {
         "cadence": "Cadence",
         "defaultRange": "Default range",
+        "lastFullMonth": "Last full month",
+        "asOfRunDate": "As of run date",
         "format": "Format"
       },
       "success": {
@@ -1121,7 +1123,8 @@
       "allOrganizations": "All organizations",
       "allOrganizationsHint": "Covers every active and trial organization, resolved at each run. Excluded organizations are listed in the report's notes. Requires access to all organizations.",
       "singleOrganization": "One organization",
-      "singleOrganizationHint": "The organization selected in the organization switcher."
+      "singleOrganizationHint": "The organization selected in the organization switcher.",
+      "singleOrganizationDisabledHint": "Pick an organization in the organization switcher to create an organization-scoped report."
     }
   }
 }

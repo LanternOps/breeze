@@ -38,7 +38,12 @@ export function ReportOwnerScopeField({
 }) {
   const { t } = useTranslation('reports');
   const { canChoose } = useDefaultReportOwnerScope();
+  const { currentOrgId } = useOrgStore();
   if (!canChoose) return null;
+  // A single-organization report needs an organization to own it. With no
+  // org focused (the All-organizations view), disable rather than let the
+  // user pick it and 400 on submit — and say what to do instead.
+  const orgChoiceDisabled = !currentOrgId;
 
   return (
     <fieldset className="space-y-3 rounded-md border p-4" data-testid="report-owner-scope">
@@ -68,13 +73,21 @@ export function ReportOwnerScopeField({
           className="mt-1"
           data-testid="report-owner-scope-org"
           checked={value === 'organization'}
+          disabled={orgChoiceDisabled}
           onChange={() => onChange('organization')}
         />
         <span>
-          <span className="font-medium">{t('reports.ownerScope.singleOrganization')}</span>
+          <span className={orgChoiceDisabled ? 'font-medium text-muted-foreground' : 'font-medium'}>
+            {t('reports.ownerScope.singleOrganization')}
+          </span>
           <span className="block text-xs text-muted-foreground">
             {t('reports.ownerScope.singleOrganizationHint')}
           </span>
+          {orgChoiceDisabled && (
+            <span data-testid="report-owner-scope-org-disabled-hint" className="block text-xs text-muted-foreground">
+              {t('reports.ownerScope.singleOrganizationDisabledHint')}
+            </span>
+          )}
         </span>
       </label>
     </fieldset>

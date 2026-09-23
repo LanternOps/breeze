@@ -32,6 +32,10 @@ import {
   type FleetDesignReportSummary,
   type EndpointManagementSummary,
   type VulnerabilityManagementSummary,
+  type IdentityAccessSummary,
+  type TicketSlaSummary,
+  type TechnicianTimeSummary,
+  type ArAgingSummary,
   type ReportType as SharedReportType
 } from '@breeze/shared';
 import { useTranslation } from 'react-i18next';
@@ -295,6 +299,13 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
             // designed vulnerability summary as an unrelated type and the
             // compiler stops guarding buildReportPdf's arm for it.
             | VulnerabilityManagementSummary
+            // #5784 W06 — same reasoning, for the identity access review cover.
+            | IdentityAccessSummary
+            // #3198 W03 — the three business report types (ticket SLA
+            // attainment, technician time & billability, AR aging).
+            | TicketSlaSummary
+            | TechnicianTimeSummary
+            | ArAgingSummary
             | undefined,
           // Drives the scorecard trend chip ("79, up from 74 last month")
           // when the stored run snapshot captured a prior baseline.

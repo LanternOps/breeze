@@ -958,6 +958,8 @@
       "spec": {
         "cadence": "Cadencia",
         "defaultRange": "Rango predeterminado",
+        "lastFullMonth": "Último mes completo",
+        "asOfRunDate": "A la fecha de ejecución",
         "format": "Formato"
       },
       "success": {
@@ -1121,7 +1123,8 @@
       "allOrganizations": "Todas las organizaciones",
       "allOrganizationsHint": "Abarca todas las organizaciones activas y de prueba, determinadas en cada ejecución. Las organizaciones excluidas se indican en las notas del informe. Requiere acceso a todas las organizaciones.",
       "singleOrganization": "Una organización",
-      "singleOrganizationHint": "La organización seleccionada en el selector de organizaciones."
+      "singleOrganizationHint": "La organización seleccionada en el selector de organizaciones.",
+      "singleOrganizationDisabledHint": "Selecciona una organización en el selector de organizaciones para crear un informe con ámbito de organización."
     }
   }
 }

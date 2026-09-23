@@ -79,4 +79,20 @@ describe('report owner scope (#3198 W03)', () => {
     const { container } = render(<ReportOwnerScopeField value="organization" onChange={() => {}} />);
     expect(container).toBeEmptyDOMElement();
   });
+
+  it('disables "one organization" and explains why when no organization is focused (#3198 W03)', () => {
+    org.currentOrgId = null;
+    render(<ReportOwnerScopeField value="partner" onChange={() => {}} />);
+    expect(screen.getByTestId('report-owner-scope-org')).toBeDisabled();
+    expect(screen.getByTestId('report-owner-scope-org-disabled-hint')).toHaveTextContent(
+      /pick an organization in the (organization )?switcher/i
+    );
+  });
+
+  it('leaves "one organization" enabled, with no disabled hint, once an organization is focused', () => {
+    org.currentOrgId = 'org-1';
+    render(<ReportOwnerScopeField value="organization" onChange={() => {}} />);
+    expect(screen.getByTestId('report-owner-scope-org')).toBeEnabled();
+    expect(screen.queryByTestId('report-owner-scope-org-disabled-hint')).toBeNull();
+  });
 });

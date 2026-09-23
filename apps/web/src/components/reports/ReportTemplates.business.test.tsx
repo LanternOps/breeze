@@ -67,6 +67,24 @@ describe('ReportTemplates — Business group (#3198 W03)', () => {
     expect(within(general).getByTestId('report-template-card-identity_access_review')).toBeInTheDocument();
   });
 
+  it('describes each business card\'s real default range instead of "Custom" (#3198 W03)', async () => {
+    mockTemplatesFetch(() => Promise.resolve({ ok: true, json: () => Promise.resolve({}) }));
+    render(<ReportTemplates />);
+
+    const business = await screen.findByTestId('report-template-group-business');
+    // These two report a full calendar month, so "Custom" would misdescribe
+    // them; they have no ad-hoc dateRange at all (the server refuses one).
+    for (const id of ['ticket_sla_attainment', 'technician_time_billability']) {
+      const card = within(business).getByTestId(`report-template-card-${id}`);
+      expect(within(card).getByText(/last full month/i)).toBeInTheDocument();
+      expect(within(card).queryByText(/^custom$/i)).toBeNull();
+    }
+    // AR aging has no period at all — it is a balance as of a date.
+    const arCard = within(business).getByTestId('report-template-card-ar_aging');
+    expect(within(arCard).getByText(/as of run date/i)).toBeInTheDocument();
+    expect(within(arCard).queryByText(/^custom$/i)).toBeNull();
+  });
+
   it('hides the Business section entirely for an org-scope user', async () => {
     claimsState = { status: 'resolved', claims: { scope: 'organization', orgId: 'org-1', partnerId: 'p-1' } };
     mockTemplatesFetch(() => Promise.resolve({ ok: true, json: () => Promise.resolve({}) }));
@@ -275,6 +293,33 @@ describe('ReportTemplates — Business group (#3198 W03)', () => {
 
     await waitFor(() => expect(postBody()).toBeDefined());
     expect(postBody()).toMatchObject({ ownerScope: 'organization', orgId: 'org-1' });
+  });
+
+  it('never posts a stale ownerScope:"partner" once canChoose has gone false after the modal opened', async () => {
+    // No org focused, so the selector opens on "All organizations" by default.
+    currentOrgId = null;
+    mockTemplatesFetch(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ data: { id: 'rep-11' } }) }));
+    const { rerender } = render(<ReportTemplates />);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByTestId('report-template-use-ar_aging'));
+    expect(screen.getByTestId('report-owner-scope-partner')).toBeChecked();
+
+    // Simulate the auth token being demoted to org-scope mid-session (e.g. a
+    // refresh mid-flow) WITHOUT the user touching the radio again — the
+    // `ownerScope` component state still holds the stale 'partner' value.
+    claimsState = { status: 'resolved', claims: { scope: 'organization', orgId: 'org-1', partnerId: 'p-1' } };
+    rerender(<ReportTemplates />);
+
+    // The selector disappears (org-scope tokens never get to choose)...
+    expect(screen.queryByTestId('report-owner-scope')).toBeNull();
+    // ...but the options form (and its stale-state submit) is still reachable.
+    await user.click(screen.getByTestId('ar-aging-create-report'));
+
+    await waitFor(() => expect(postBody()).toBeDefined());
+    // Must fall back to 'organization', never leak the stale 'partner' value
+    // a de-privileged token can no longer legally submit.
+    expect(postBody()).toMatchObject({ ownerScope: 'organization' });
   });
 
   it('keeps the non-business create body unchanged: no ownerScope, no owner-scope selector', async () => {

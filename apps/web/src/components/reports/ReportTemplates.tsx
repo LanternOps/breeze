@@ -554,8 +554,14 @@ export default function ReportTemplates() {
   const [arAgingOptions, setArAgingOptions] = useState<ArAgingOptions>(DEFAULT_AR_AGING_OPTIONS);
   // Create-only ownership for the business modal. The selector renders only
   // for a resolved partner-scope token; everyone else creates org-owned.
-  const { defaultScope: defaultOwnerScope } = useDefaultReportOwnerScope();
+  const { canChoose: canChooseOwnerScope, defaultScope: defaultOwnerScope } = useDefaultReportOwnerScope();
   const [ownerScope, setOwnerScope] = useState<ReportOwnerScope>('organization');
+  // A token can go from partner-scope to org-scope mid-session (e.g. a
+  // refresh while the modal is open) without the `ownerScope` state — set
+  // when the modal opened, or by the now-hidden radio — ever changing. Never
+  // trust that state once canChoose has gone false; a de-privileged token
+  // can no longer legally submit 'partner'.
+  const effectiveOwnerScope: ReportOwnerScope = canChooseOwnerScope ? ownerScope : 'organization';
   const [builderOpen, setBuilderOpen] = useState(false);
   const [creatingId, setCreatingId] = useState<string | null>(null);
 
@@ -718,7 +724,7 @@ export default function ReportTemplates() {
             onChange={setTicketSlaOptions}
             submitLabel={t('reports.ticketSlaOptions.createReport')}
             onSubmit={() => {
-              void handleCreateDirect(template, ticketSlaConfigFromOptions(ticketSlaOptions), ownerScope);
+              void handleCreateDirect(template, ticketSlaConfigFromOptions(ticketSlaOptions), effectiveOwnerScope);
             }}
           />
         );
@@ -730,7 +736,7 @@ export default function ReportTemplates() {
             onChange={setTechnicianTimeOptions}
             submitLabel={t('reports.technicianTimeOptions.createReport')}
             onSubmit={() => {
-              void handleCreateDirect(template, technicianTimeConfigFromOptions(technicianTimeOptions), ownerScope);
+              void handleCreateDirect(template, technicianTimeConfigFromOptions(technicianTimeOptions), effectiveOwnerScope);
             }}
           />
         );
@@ -742,7 +748,7 @@ export default function ReportTemplates() {
             onChange={setArAgingOptions}
             submitLabel={t('reports.arAgingOptions.createReport')}
             onSubmit={() => {
-              void handleCreateDirect(template, arAgingConfigFromOptions(arAgingOptions), ownerScope);
+              void handleCreateDirect(template, arAgingConfigFromOptions(arAgingOptions), effectiveOwnerScope);
             }}
           />
         );
@@ -841,12 +847,22 @@ export default function ReportTemplates() {
             { label: t('reports.reportTemplates.spec.format'), value: formatLabel },
             {
               label: t('reports.reportTemplates.spec.defaultRange'),
-              // Business report types (#3198) have no ad-hoc date range
-              // at all — the server refuses one — so a bare fallback to
-              // "last 30 days" would misdescribe them.
-              value: template.defaults.dateRange?.preset
-                ? template.defaults.dateRange.preset.replace(/_/g, ' ')
-                : t('reports.reportTemplates.custom'),
+              // Business report types (#3198) have no ad-hoc date range at
+              // all — the server refuses one — but they DO have a real
+              // default period (the config schema's own default, applied
+              // when the field is omitted), so "Custom" misdescribes them.
+              // ticket_sla_attainment / technician_time_billability default
+              // to a full calendar month; ar_aging has no period at all —
+              // it is a running balance as of a date.
+              value:
+                template.defaults.type === 'ar_aging'
+                  ? t('reports.reportTemplates.spec.asOfRunDate')
+                  : template.defaults.type === 'ticket_sla_attainment'
+                    || template.defaults.type === 'technician_time_billability'
+                    ? t('reports.reportTemplates.spec.lastFullMonth')
+                    : template.defaults.dateRange?.preset
+                      ? template.defaults.dateRange.preset.replace(/_/g, ' ')
+                      : t('reports.reportTemplates.custom'),
             },
           ]}
         />
