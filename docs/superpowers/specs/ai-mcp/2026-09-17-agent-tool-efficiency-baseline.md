@@ -114,11 +114,57 @@ Full miss tables for both runs are in the workflow run artifacts (`tool-eval-rep
 
 ## 4. Hot/cold (90 days, EU + US)
 
-`not run: no production database access in this environment.` The reporting endpoint (`GET /api/v1/admin/ai/tool-usage?days=90`, `apps/api/src/routes/admin/aiToolUsage.ts`) and the operator SQL this plan calls for (`docs/superpowers/specs/ai-mcp/sql/2026-09-17-ai-tool-usage-90d.sql`) exist in the codebase, but running either requires either a live deployed API with real `ai_tool_executions` history or Todd's direct psql access to the EU/US production databases — neither is available from this worktree/session. Top-20-by-executions, the cold list, and the Helper-vs-chat split are all `not run: <reason above>` and remain open for Todd to fill (per the plan's Step 2 instruction that a row of `not run` is acceptable, a row of invented numbers is not).
+**Measured 2026-09-23.** The operator ran the SQL from `toolUsageReportSqlText(90)` in `apps/api/src/services/aiToolUsageReport.ts`, a superset of `sql/2026-09-17-ai-tool-usage-90d.sql` that adds the delivered-size columns. It ran read-only (`SET TRANSACTION READ ONLY` plus a `breeze.scope=system` election) against both managed production databases. Ranking follows the `hotForShaping` rule: chat and Helper rows only, scored `executions × delivered_bytes_p50` and summed across regions.
+
+**Volume is low, so treat this ranking as a rough signal.** There were 1,069 tool executions in 90 days:
+
+| Surface | US | EU |
+|---|---|---|
+| chat | 671 | 10 |
+| helper | 84 | 250 |
+| agent | 32 | 0 |
+| script_builder | 22 | 0 |
+
+US used 57 distinct tools and EU used 33.
+
+| # | Tool | Calls (chat+helper) | Max-region p50 bytes | Max-region p95 bytes | Score | Shaped in A-W05 |
+|---|---|---|---|---|---|---|
+| 1 | `get_device_details` | 46 | 7468 | 7835 | 324114 | yes |
+| 2 | `query_change_log` | 45 | 6516 | 8109 | 235560 | yes |
+| 3 | `query_audit_log` | 8 | 7704 | 8145 | 61392 | yes |
+| 4 | `analyze_metrics` | 19 | 5140 | 5172 | 48857 | no |
+| 5 | `get_log_trends` | 8 | 5602 | 5798 | 43974 | no |
+| 6 | `disk_cleanup` | 6 | 7120 | 7485 | 40524 | no |
+| 7 | `search_logs` | 99 | 1997 | 7556 | 40371 | no |
+| 8 | `get_fleet_health` | 18 | 2005 | 7859 | 35770 | no |
+| 9 | `analyze_boot_performance` | 6 | 4237 | 4299 | 24922 | no |
+| 10 | `execute_command` | 234 | 464 | 2051 | 24133 | no |
+| 11 | `get_effective_configuration` | 11 | 2940 | 3222 | 20400 | no |
+| 12 | `get_security_posture` | 10 | 2227 | 5628 | 20066 | yes |
+| 13 | `list_playbooks` | 5 | 4293 | 4293 | 17201 | yes |
+| 14 | `manage_patches` | 88 | 2504 | 7259 | 13543 | yes |
+| 15 | `search_documentation` | 2 | 6110 | 6571 | 12220 | no |
+| 16 | `query_devices` | 23 | 485 | 2692 | 11025 | yes |
+| 17 | `get_configuration_policy` | 4 | 3332 | 5405 | 9797 | no |
+| 18 | `manage_alert_rules` | 6 | 2529 | 2529 | 7677 | no |
+| 19 | `manage_policy_feature_link` | 16 | 535 | 1187 | 6769 | no |
+| 20 | `manage_startup_items` | 1 | 5019 | 5019 | 5019 | no |
+
+The byte columns take the higher of the two regions' per-surface values.
+
+**What this says about the A-W05 20-tool list (§7.1):**
+- **Confirmed hot:** A-W05 shaped the top 3 (`get_device_details`, `query_change_log`, `query_audit_log`) and 7 of the top 20 overall.
+- **Hot but not shaped:** 7 tools: `analyze_metrics`, `get_log_trends`, `disk_cleanup`, `search_logs`, `get_fleet_health`, `analyze_boot_performance`, `get_effective_configuration`. Tracked in #6745.
+- **Deliberately skipped:** `execute_command` ranks 10th only on call volume. Its median output is under 500 bytes.
+- **Shaped but cold in production:** `list_scripts`, `get_device_vulnerabilities`, `manage_alerts`, `search_agent_logs`, `list_organizations`, `list_configuration_policies`, `get_script_execution`, `get_cis_compliance`. They stay shaped, since shaping them caused no regression, but they were a lower priority than the survey assumed.
+- **Never called, because chat can't call them:** `manage_tickets`, `list_monitors`, `list_ai_agents`, `get_incident_timeline`, `get_active_users`.
+  - The first four have no `TOOL_TIERS` entry. Either they sit in the frozen `KNOWN_MISSING_TOOL_TIERS` baseline, or they postdate this measurement window. Chat's pre-tool gate rejects them as unknown, so a zero count here shows a wiring gap, not a lack of demand.
+  - `get_active_users` does have a tier and was simply not called in the window.
+  - MCP usage can't be ranked: the MCP ledger keeps only a 500-char summary (Q10).
 
 ## 5. Inputs to A-W04
 
-`not run: blocked on §4.` The plan's Task 9 makes A-W04's `alwaysLoad` set, the Helper `onlyTools` recommendation, and the BYO fallback decision each derive from the hot/cold list intersected with the context-tool set — none of which exists without §4's data. What this session can contribute instead:
+§4 now has measured data, and the hot list for the `alwaysLoad` intersection is the §4 table. The Haiku and BYO rows below are still `not run`. The plan's Task 9 makes A-W04's `alwaysLoad` set, the Helper `onlyTools` recommendation, and the BYO fallback decision each derive from the hot/cold list intersected with the context-tool set — none of which exists without §4's data. What this session can contribute instead:
 
 - **Haiku decision (spec open decision 2):** `not run` — the plan calls for a `--model claude-haiku-4-5-20251001` eval row to decide this; out of scope for this task's instructed command set (chat/default only). Left for A-W04 alongside the full per-surface/per-mode eval matrix.
 - **BYO fallback decision:** `not run` — no BYO endpoint/credentials available to test whether `tool_reference` is rejected.
