@@ -4,6 +4,8 @@ import { sql as dsql } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getAppDb } from './setup';
 import { recordRunningVersion, runUpgradePreflight } from '../../upgrade/upgradePreflightRunner';
+import { readRequestDeploymentState } from '../../upgrade/deprecationsReport';
+import { closeDb, db, withDbAccessContext } from '../../db';
 
 /**
  * #6605 against real Postgres: the version-history table the migration creates,
@@ -26,6 +28,7 @@ beforeAll(() => {
 afterAll(async () => {
   await owner.unsafe('DELETE FROM breeze_version_history');
   await owner.end({ timeout: 5 });
+  await closeDb();
 });
 
 beforeEach(async () => {
@@ -106,5 +109,49 @@ describe('runUpgradePreflight', () => {
     expect(report.historyKnown).toBe(false);
     expect(report.ledger.status).toBe('missing');
     expect(exitCode).toBe(0);
+  });
+});
+
+describe('readRequestDeploymentState (Settings → System → Deprecations, #6605 wave 2)', () => {
+  it('reads history and the ledger on the request role inside a request transaction, without writing', async () => {
+    await owner`INSERT INTO breeze_version_history (version) VALUES ('0.115.0'), ('0.116.0')`;
+    const orgId = '00000000-0000-4000-8000-000000006605';
+    const context = { scope: 'organization' as const, orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], userId: null };
+    const state = await withDbAccessContext(context, async () => {
+      const read = await readRequestDeploymentState('0.116.0');
+      // The request transaction is still usable after the savepointed reads.
+      const [row] = (await db.execute(dsql`SELECT 1 AS ok`)) as unknown as Array<{ ok: number }>;
+      expect(row?.ok).toBe(1);
+      return read;
+    });
+    expect(state.history.status).toBe('ok');
+    expect(state.history.status === 'ok' && state.history.versions.map((v) => v.version).sort()).toEqual([
+      '0.115.0',
+      '0.116.0',
+    ]);
+    expect(state.ledger).toMatchObject({ status: 'ok', pendingCount: 0 });
+    const rows = await owner`SELECT version FROM breeze_version_history ORDER BY version`;
+    expect(rows.map((r) => r.version)).toEqual(['0.115.0', '0.116.0']);
+  });
+
+  it('degrades a failed history read to "missing" without poisoning the request transaction', async () => {
+    await owner`INSERT INTO breeze_version_history (version) VALUES ('0.116.0')`;
+    await owner.unsafe('REVOKE SELECT ON breeze_version_history FROM breeze_app');
+    try {
+      const orgId = '00000000-0000-4000-8000-000000006606';
+      const context = { scope: 'organization' as const, orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], userId: null };
+      const state = await withDbAccessContext(context, async () => {
+        const read = await readRequestDeploymentState('0.116.0');
+        const [row] = (await db.execute(dsql`SELECT 1 AS ok`)) as unknown as Array<{ ok: number }>;
+        expect(row?.ok).toBe(1);
+        return read;
+      });
+      expect(state.history.status).toBe('missing');
+      expect(state.history.status === 'missing' && state.history.reason).toMatch(/permission denied/);
+      // The other half is read independently and still succeeds.
+      expect(state.ledger).toMatchObject({ status: 'ok', pendingCount: 0 });
+    } finally {
+      await owner.unsafe('GRANT SELECT ON breeze_version_history TO breeze_app');
+    }
   });
 });

@@ -169,7 +169,8 @@
     "agreementTemplateNew": "Nueva plantilla de acuerdo",
     "signedAgreements": "Acuerdos firmados",
     "settingsTicketing": "Configuración de tickets",
-    "securityScans": "Escaneos de IOC"
+    "securityScans": "Escaneos de IOC",
+    "settingsSystemDeprecations": "Obsolescencias"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Monitoreo y Gestión Remota",

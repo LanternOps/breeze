@@ -5837,5 +5837,58 @@
   "ticketCategories": {
     "defaultWorkType": "Tipo de trabajo predeterminado",
     "defaultWorkTypeHelp": "Se usa cuando se registra tiempo para esta categoría sin un tipo de trabajo."
+  },
+  "systemDeprecations": {
+    "title": "Obsolescencias",
+    "description": "Retiros de la API que esta versión de Breeze conoce, y en qué punto se encuentra esta implementación respecto a cada uno. Este es un informe de solo lectura para administradores de la plataforma; aquí no se configura nada.",
+    "refresh": "Actualizar",
+    "loading": "Cargando obsolescencias…",
+    "errors": {
+      "load": "No se pudo cargar el informe de obsolescencias."
+    },
+    "platformAdmin": {
+      "title": "Se requiere acceso de administrador de la plataforma",
+      "description": "Este informe abarca toda la implementación, por lo que solo los administradores de la plataforma pueden verlo."
+    },
+    "manifestError": "No se pudo leer el manifiesto de cambios incompatibles en esta imagen ({{error}}). No se pueden comprobar los retiros.",
+    "historyMissing": "No se pudo determinar qué versiones ejecutó esta implementación; se muestran todos los retiros vigentes.",
+    "noReleaseVersion": "Esta imagen no incluye una versión de lanzamiento, por lo que cada retiro del manifiesto se muestra como posiblemente superado.",
+    "historyReason": "Motivo: {{reason}}",
+    "summary": {
+      "imageVersion": "Versión en ejecución",
+      "unknownVersion": "Desconocida ({{raw}})",
+      "lastRecorded": "Última versión registrada",
+      "noneRecorded": "Ninguna registrada",
+      "migrations": "Migraciones",
+      "migrationCounts": "{{applied}} aplicadas, {{pending}} pendientes",
+      "ledgerMissing": "Registro de migraciones no disponible ({{reason}})"
+    },
+    "table": {
+      "heading": "Retiros",
+      "entry": "Entrada",
+      "affected": "Endpoints y campos afectados",
+      "replacement": "Reemplazo",
+      "deprecatedIn": "Obsoleto desde",
+      "removal": "Eliminación",
+      "status": "Estado aquí",
+      "wholeEndpoint": "Endpoint completo",
+      "notBefore": "No antes de {{date}}",
+      "empty": "El manifiesto no enumera ningún retiro."
+    },
+    "status": {
+      "crossed": "Superado",
+      "possibly_crossed": "Posiblemente superado",
+      "in_effect": "Vigente",
+      "upcoming": "Próximo"
+    },
+    "milestone": {
+      "deprecation": "obsolescencia",
+      "removal": "eliminación"
+    },
+    "history": {
+      "heading": "Historial de versiones",
+      "firstSeen": "Visto por primera vez el {{date}}",
+      "none": "No hay versiones registradas para esta implementación."
+    }
   }
 }

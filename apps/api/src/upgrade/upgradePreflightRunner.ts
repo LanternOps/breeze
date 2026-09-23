@@ -35,7 +35,12 @@ function openConnection(databaseUrl: string): postgres.Sql {
 }
 
 function describeError(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  if (!(err instanceof Error)) return String(err);
+  // Drizzle wraps driver errors as "Failed query: <sql>"; the database's own
+  // message (e.g. "permission denied for table …") is on `cause`.
+  const cause = (err as { cause?: unknown }).cause;
+  if (cause instanceof Error && cause.message) return cause.message;
+  return err.message;
 }
 
 /** Best-effort close of the one-connection pool; a failure is logged, never thrown. */
@@ -47,22 +52,37 @@ async function closeQuietly(sql: postgres.Sql, logger: Logger): Promise<void> {
   }
 }
 
-async function tableExists(sql: postgres.Sql, table: string): Promise<boolean> {
-  const rows = await sql<{ present: boolean }[]>`
-    SELECT to_regclass(${`public.${table}`}) IS NOT NULL AS present
-  `;
+/**
+ * The one query shape the readers need: run a parameter-free SELECT and return
+ * its rows. Injected so the same readers serve the boot/CLI path (a dedicated
+ * postgres.js connection) and the request path (the admin deprecations report,
+ * on the request's own transaction). Every statement sent through it is a SELECT.
+ */
+export type PreflightQuery = <T extends Record<string, unknown>>(text: string) => Promise<T[]>;
+
+const SQL_IDENTIFIER = /^[a-z_][a-z0-9_]*$/;
+
+async function tableExists(query: PreflightQuery, table: string): Promise<boolean> {
+  // Inlined rather than bound, because the request-path adapter runs raw text.
+  // Only this module's own table-name constants reach here; the guard keeps it so.
+  if (!SQL_IDENTIFIER.test(table)) {
+    throw new Error(`tableExists: refusing a non-identifier table name ${JSON.stringify(table)}`);
+  }
+  const rows = await query<{ present: boolean }>(
+    `SELECT to_regclass('public.${table}') IS NOT NULL AS present`,
+  );
   return rows[0]?.present === true;
 }
 
-async function readHistory(sql: postgres.Sql): Promise<DeploymentState['history']> {
+async function readHistory(query: PreflightQuery): Promise<DeploymentState['history']> {
   try {
-    if (!(await tableExists(sql, BREEZE_VERSION_HISTORY_TABLE))) {
+    if (!(await tableExists(query, BREEZE_VERSION_HISTORY_TABLE))) {
       return {
         status: 'missing',
         reason: `${BREEZE_VERSION_HISTORY_TABLE} does not exist yet — this deployment predates version recording`,
       };
     }
-    const rows = await sql.unsafe<{ version: string; first_seen_at: Date }[]>(
+    const rows = await query<{ version: string; first_seen_at: Date }>(
       `SELECT version, first_seen_at FROM ${BREEZE_VERSION_HISTORY_TABLE} ORDER BY first_seen_at`,
     );
     return { status: 'ok', versions: rows.map((r) => ({ version: r.version, firstSeenAt: r.first_seen_at })) };
@@ -71,13 +91,13 @@ async function readHistory(sql: postgres.Sql): Promise<DeploymentState['history'
   }
 }
 
-async function readLedger(sql: postgres.Sql): Promise<DeploymentState['ledger']> {
+async function readLedger(query: PreflightQuery): Promise<DeploymentState['ledger']> {
   try {
     const { MIGRATION_TABLE, discoverCoreMigrationFilenames } = await import('../db/autoMigrate');
-    if (!(await tableExists(sql, MIGRATION_TABLE))) {
+    if (!(await tableExists(query, MIGRATION_TABLE))) {
       return { status: 'missing', reason: `${MIGRATION_TABLE} does not exist — an empty database` };
     }
-    const rows = await sql.unsafe<{ filename: string }[]>(`SELECT filename FROM ${MIGRATION_TABLE}`);
+    const rows = await query<{ filename: string }>(`SELECT filename FROM ${MIGRATION_TABLE}`);
     // Extension migrations share the ledger as `<extension>/<file>`; count core only.
     const applied = new Set(rows.map((r) => r.filename).filter((f) => !f.includes('/')));
     const image = await discoverCoreMigrationFilenames();
@@ -91,18 +111,32 @@ async function readLedger(sql: postgres.Sql): Promise<DeploymentState['ledger']>
   }
 }
 
-export async function readDeploymentState(
-  sql: postgres.Sql,
+/**
+ * Read the deployment state through an injected query. Never throws for a
+ * failed read: history and ledger each degrade to a "missing" state on their own.
+ */
+export async function readDeploymentStateWith(
+  query: PreflightQuery,
   currentVersion: string | null | undefined,
 ): Promise<DeploymentState> {
   return {
     currentVersion,
-    history: await readHistory(sql),
-    ledger: await readLedger(sql),
+    history: await readHistory(query),
+    ledger: await readLedger(query),
   };
 }
 
-function unreadableState(currentVersion: string | null | undefined, reason: string): DeploymentState {
+export async function readDeploymentState(
+  sql: postgres.Sql,
+  currentVersion: string | null | undefined,
+): Promise<DeploymentState> {
+  const query: PreflightQuery = async <T extends Record<string, unknown>>(text: string) =>
+    (await sql.unsafe(text)) as unknown as T[];
+  return readDeploymentStateWith(query, currentVersion);
+}
+
+/** What every failed read degrades to: history and ledger both unknown. */
+export function unreadableState(currentVersion: string | null | undefined, reason: string): DeploymentState {
   return {
     currentVersion,
     history: { status: 'missing', reason },

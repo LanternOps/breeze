@@ -98,7 +98,8 @@
     "serviceManagement": "Gestione servizi",
     "ticketing": "Ticket",
     "deliverableTemplates": "Modelli di consegna",
-    "securityScans": "Scansioni IOC"
+    "securityScans": "Scansioni IOC",
+    "systemDeprecations": "Deprecazioni"
   },
   "documentTitles": {
     "dashboard": "Dashboard",

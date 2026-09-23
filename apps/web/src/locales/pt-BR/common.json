@@ -98,7 +98,8 @@
     "serviceManagement": "Gestão de serviços",
     "ticketing": "Tickets",
     "deliverableTemplates": "Modelos de entregáveis",
-    "securityScans": "Varreduras de IOC"
+    "securityScans": "Varreduras de IOC",
+    "systemDeprecations": "Descontinuações"
   },
   "documentTitles": {
     "dashboard": "Painel",

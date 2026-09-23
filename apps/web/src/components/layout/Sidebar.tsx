@@ -407,6 +407,11 @@ export const navSections: NavSection[] = [
       // adds the console path once one exists. The SQL fallback documented in
       // docs/deploy/ai-kill-switch.md still works and remains the runbook.
       { name: 'AI Kill Switch', labelKey: 'nav.aiKillSwitch', href: '/admin/ai-kill-switch', icon: Power, platformAdminOnly: true },
+      // #6605: Settings → System → Deprecations. The page lives under
+      // /settings/system/ (it is a deployment report), but the nav entry sits
+      // here because every platform-admin-only surface lives in this section
+      // (Sidebar.nav.test.tsx) — the data is deployment-wide, not per tenant.
+      { name: 'Deprecations', labelKey: 'nav.systemDeprecations', href: '/settings/system/deprecations', icon: CalendarClock, platformAdminOnly: true },
     ],
   },
 ];

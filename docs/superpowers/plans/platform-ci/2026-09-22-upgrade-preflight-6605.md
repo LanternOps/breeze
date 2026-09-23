@@ -57,17 +57,30 @@ schema owner).
 - The table has no org cascade, export-policy or merge registration because it
   has no `org_id`.
 
-## Wave 2 (follow-up): Settings → System → Deprecations
+## Wave 2: Settings → System → Deprecations
 
 Scope item 4. It lists active and upcoming retirements for the deployment,
 each with its replacement, and the recorded version history.
 
-- A read-only system-scope API route returns the bundled manifest and the
-  `buildPreflightReport` result, reading `breeze_version_history` with the
-  request role's SELECT grant.
-- A web page under Settings → System, registered in `settingsPageRegistry`.
-  Per the settings rules it is a report, not a setting: it adds no
-  configurable concept. The PR description must still state its home, level,
-  resolver, and the count of places it is configured before and after (0 → 0).
-- Who can view it: platform or system admins only, because the table is
-  deployment-wide rather than per-tenant. This needs a decision before building.
+- **API:** `GET /api/v1/admin/deprecations` (`routes/admin/deprecations.ts`),
+  mounted under `adminRoutes`, so `platformAdminMiddleware` gates it (decision
+  on #6605, 2026-09-22: platform admins only). GET is the only verb. It returns
+  every manifest entry with a status for this deployment (`crossed`,
+  `possibly_crossed`, `in_effect`, `upcoming`), the recorded version history
+  and the migration ledger counts. The status comes from
+  `buildPreflightReport`; `upgrade/deprecationsReport.ts` only projects the
+  report's lists onto one status per entry.
+- **Reads:** the same readers as the boot preflight (`readDeploymentStateWith`
+  in `upgradePreflightRunner.ts`), driven by a query adapter on the request
+  transaction (`breeze_app`, SELECT grant). Each statement runs in its own
+  savepoint (`withDbTransaction`), so a failed read degrades that half of the
+  report to "missing" without aborting the request transaction. A read that
+  throws anyway yields the broad report, never a 500 and never "no issues".
+- **Web:** `/settings/system/deprecations`
+  (`components/settings/SystemDeprecationsPage.tsx`). Its nav entry is in the
+  Administration section with `platformAdminOnly`, because
+  `Sidebar.nav.test.tsx` requires every platform-admin-only item to live
+  there. `settingsPageRegistry.test.ts` finds the page through that link.
+- **Settings rules:** it is a report, not a setting. Home: Settings → System →
+  Deprecations. Level: the deployment. Resolver: `buildPreflightReport`.
+  Places configured: 0 before, 0 after.

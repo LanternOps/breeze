@@ -192,6 +192,13 @@ describe('navSections structure (#1321, #1324)', () => {
     expect(item?.partnerScopeOnly).toBe(true);
   });
 
+  it('lists the platform-admin-only Deprecations report, linking to /settings/system/deprecations (#6605)', () => {
+    const item = section('administration').items.find((i) => i.href === '/settings/system/deprecations');
+    expect(item, 'Administration section should link to /settings/system/deprecations').toBeDefined();
+    expect(item?.labelKey).toBe('nav.systemDeprecations');
+    expect(item?.platformAdminOnly).toBe(true);
+  });
+
   it('lists Deliverable Templates under the Billing section (M3, #6224)', () => {
     const item = section('billing').items.find((i) => i.href === '/settings/deliverable-templates');
     expect(item, 'Billing section should link to /settings/deliverable-templates').toBeDefined();

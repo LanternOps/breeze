@@ -169,7 +169,8 @@
     "agreementTemplateNew": "Neue Vereinbarungsvorlage",
     "signedAgreements": "Unterzeichnete Vereinbarungen",
     "settingsTicketing": "Ticketing-Einstellungen",
-    "securityScans": "IOC-Scans"
+    "securityScans": "IOC-Scans",
+    "settingsSystemDeprecations": "Abkündigungen"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Remote-Überwachung und -Verwaltung",
