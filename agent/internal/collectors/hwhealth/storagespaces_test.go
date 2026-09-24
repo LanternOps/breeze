@@ -1,10 +1,41 @@
 package hwhealth
 
-import "testing"
+import (
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+)
+
+// The member map must survive an agent restart: a disk that drops out while
+// the agent is down comes back as a stand-in on the first post-restart poll.
+func TestSpacesMemberMemoryPersists(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Unix(1_800_000_000, 0)
+	s, _ := loadState(dir, now)
+	if _, e := parseSpaces(fixture(t, "storage_spaces", "lab-6895-healthy.json"), s.SpacesMembers); e != nil {
+		t.Fatal(e)
+	}
+	if e := reserveSequence(dir, &s); e != nil {
+		t.Fatal(e)
+	}
+	restarted, e := loadState(dir, now)
+	if e != nil {
+		t.Fatal(e)
+	}
+	r, e := parseSpaces(fixture(t, "storage_spaces", "lab-6895-missing.json"), restarted.SpacesMembers)
+	if e != nil {
+		t.Fatal(e)
+	}
+	c := findComponent(t, r.Components, slotKey("storage_spaces:ctrl", "-", objectHash("60022480CFCA9CD7995F7E79FEF2B2F9")))
+	if c.State != "missing" {
+		t.Fatal(c)
+	}
+}
 
 func TestSpacesFixtures(t *testing.T) {
 	for _, name := range []string{"optimal", "degraded", "failed", "rebuilding-with-progress", "predictive", "missing-member", "multi-controller", "unrecognized-state", "truncated"} {
-		r, e := parseSpaces(fixture(t, "storage_spaces", name+".json"))
+		r, e := parseSpaces(fixture(t, "storage_spaces", name+".json"), map[string]string{})
 		if name == "truncated" {
 			if e == nil {
 				t.Fatal("truncation accepted")
@@ -45,7 +76,7 @@ func TestWindowsMappings(t *testing.T) {
 }
 
 func TestSpacesMissingPoolIdentity(t *testing.T) {
-	r, e := parseSpaces([]byte(`{"Pools":[{"FriendlyName":"partial","HealthStatus":"Healthy"}],"VirtualDisks":[],"PhysicalDisks":[],"Warnings":[]}`))
+	r, e := parseSpaces([]byte(`{"Pools":[{"FriendlyName":"partial","HealthStatus":"Healthy"}],"VirtualDisks":[],"PhysicalDisks":[],"Warnings":[]}`), map[string]string{})
 	if e != nil || r.Complete {
 		t.Fatalf("%+v %v", r, e)
 	}
@@ -53,5 +84,155 @@ func TestSpacesMissingPoolIdentity(t *testing.T) {
 		if c.ComponentType == "enclosure" {
 			t.Fatal("invented pool identity", c)
 		}
+	}
+}
+
+// Real Get-PhysicalDisk output from a two-member mirror on Windows Server 2022
+// (#6895): while a pool member is in Lost Communication, Windows replaces its
+// UniqueId with the pool-member GUID, but the ObjectId's PD:{guid} segment is
+// the same in every state. The missing member must land on its original key.
+func TestSpacesLostCommunicationKeepsMemberKey(t *testing.T) {
+	ck := "storage_spaces:ctrl"
+	keyA := slotKey(ck, "-", objectHash("60022480B4C7526392E9530DABDCE67F"))
+	keyB := slotKey(ck, "-", objectHash("60022480CFCA9CD7995F7E79FEF2B2F9"))
+	vdKey := "storage_spaces:vd:" + objectHash(`{1}\\HOST\root/Microsoft/Windows/Storage/Providers_v2\SPACES_VirtualDisk.ObjectId="{51d89d4d-36bf-11f1-97ce-806e6f6e6963}:VD:{58685b05-2d13-47d9-92b8-15c62d6c1bc6}{4b23193e-6843-4c72-87f2-88f346cc0a38}"`)
+	remembered := map[string]string{}
+	for _, tc := range []struct {
+		state, vdState string
+		wantB          string
+	}{
+		{"healthy", "optimal", "online"},
+		{"missing", "degraded", "missing"},
+		{"recovered", "optimal", "online"},
+	} {
+		r, e := parseSpaces(fixture(t, "storage_spaces", "lab-6895-"+tc.state+".json"), remembered)
+		if e != nil || !r.Complete {
+			t.Fatalf("%s: %+v %v", tc.state, r, e)
+		}
+		disks := map[string]Component{}
+		for _, c := range r.Components {
+			if c.ComponentType == "physical_disk" {
+				disks[c.ComponentKey] = c
+			}
+		}
+		if len(disks) != 2 {
+			t.Fatalf("%s: want exactly the two member keys, got %v", tc.state, disks)
+		}
+		if disks[keyA].State != "online" || disks[keyB].State != tc.wantB {
+			t.Fatalf("%s: A=%+v B=%+v", tc.state, disks[keyA], disks[keyB])
+		}
+		v := findComponent(t, r.Components, vdKey)
+		if v.State != tc.vdState {
+			t.Fatalf("%s: vd %+v", tc.state, v)
+		}
+		members, _ := v.Attributes["memberKeys"].([]string)
+		if len(members) != 2 || members[0] != keyA || members[1] != keyB {
+			t.Fatalf("%s: memberKeys %v", tc.state, members)
+		}
+	}
+}
+
+// Without a remembered identity (first run after install, or quarantined state)
+// the stand-in keeps the pre-#6895 behaviour: keyed by the UniqueId it reports.
+func TestSpacesLostCommunicationWithoutMemory(t *testing.T) {
+	remembered := map[string]string{}
+	r, e := parseSpaces(fixture(t, "storage_spaces", "lab-6895-missing.json"), remembered)
+	if e != nil {
+		t.Fatal(e)
+	}
+	c := findComponent(t, r.Components, slotKey("storage_spaces:ctrl", "-", objectHash("{97978214-4542-a5b2-308f-43ed169c97b9}")))
+	if c.State != "missing" {
+		t.Fatal(c)
+	}
+	if _, ok := remembered["{97978214-4542-a5b2-308f-43ed169c97b9}"]; ok {
+		t.Fatal("stand-in identity must not be remembered as the member's key")
+	}
+}
+
+func TestSpacesMemberMemoryPrunesDepartedMembers(t *testing.T) {
+	remembered := map[string]string{"{00000000-0000-0000-0000-000000000000}": "gone"}
+	if _, e := parseSpaces(fixture(t, "storage_spaces", "lab-6895-healthy.json"), remembered); e != nil {
+		t.Fatal(e)
+	}
+	if len(remembered) != 2 || remembered["{00000000-0000-0000-0000-000000000000}"] != "" {
+		t.Fatalf("%v", remembered)
+	}
+}
+
+func TestSpacesMemberMemoryCap(t *testing.T) {
+	remembered := map[string]string{}
+	for i := 0; len(remembered) < maxSpacesMembers-1; i++ {
+		remembered[fmt.Sprintf("{%08x-0000-0000-0000-000000000000}", i)] = "x"
+	}
+	remembered["{4b771da6-b897-a0e5-4f0b-60f9608f390a}"] = "stale-uid" // member A, already tracked
+	r, e := parseSpaces(fixture(t, "storage_spaces", "lab-6895-healthy.json"), remembered)
+	if e != nil {
+		t.Fatal(e)
+	}
+	// Recording happens before the (complete-answer) prune drops the filler.
+	if remembered["{4b771da6-b897-a0e5-4f0b-60f9608f390a}"] != "60022480B4C7526392E9530DABDCE67F" {
+		t.Fatalf("tracked member not refreshed: %v", remembered["{4b771da6-b897-a0e5-4f0b-60f9608f390a}"])
+	}
+	if remembered["{97978214-4542-a5b2-308f-43ed169c97b9}"] != "" {
+		t.Fatal("new member recorded past the cap")
+	}
+	if !hasWarning(r.Warnings, "identity map full") {
+		t.Fatalf("cap overflow must warn: %v", r.Warnings)
+	}
+}
+
+func TestSpacesPartialAnswerKeepsMemory(t *testing.T) {
+	remembered := map[string]string{"{11111111-1111-1111-1111-111111111111}": "KEEP"}
+	doc := `{"Pools":[{"ObjectId":"P","FriendlyName":"p","HealthStatus":"Healthy"}],"VirtualDisks":[],"PhysicalDisks":[{"FriendlyName":"no id"}],"Warnings":[]}`
+	r, e := parseSpaces([]byte(doc), remembered)
+	if e != nil || r.Complete {
+		t.Fatalf("%+v %v", r, e)
+	}
+	if remembered["{11111111-1111-1111-1111-111111111111}"] != "KEEP" {
+		t.Fatal("partial answer pruned a remembered member")
+	}
+}
+
+func TestSpacesUnparseableLostCommunicationWarns(t *testing.T) {
+	doc := `{"Pools":[{"ObjectId":"P","FriendlyName":"p","HealthStatus":"Warning"}],"VirtualDisks":[],"PhysicalDisks":[{"UniqueId":"U","ObjectId":"no-guid-here","OperationalStatus":["Lost Communication"]}],"Warnings":[]}`
+	r, e := parseSpaces([]byte(doc), map[string]string{})
+	if e != nil || !hasWarning(r.Warnings, "identity unavailable") {
+		t.Fatalf("%v %v", r.Warnings, e)
+	}
+}
+
+func hasWarning(ws []string, part string) bool {
+	for _, w := range ws {
+		if strings.Contains(w, part) {
+			return true
+		}
+	}
+	return false
+}
+
+// windows_physical_disk lists the same stand-in; once Storage Spaces has
+// recorded the member, it must stay on winpd:<real UniqueId> too.
+func TestWinPDLostCommunicationKeepsMemberKey(t *testing.T) {
+	remembered := map[string]string{}
+	if _, e := parseSpaces(fixture(t, "storage_spaces", "lab-6895-healthy.json"), remembered); e != nil {
+		t.Fatal(e)
+	}
+	for _, tc := range []struct{ state, wantB string }{{"healthy", "online"}, {"missing", "missing"}, {"recovered", "online"}} {
+		r, e := parseWinPD(fixture(t, "windows_physical_disk", "lab-6895-"+tc.state+".json"), remembered)
+		if e != nil || !r.Complete {
+			t.Fatalf("%s: %+v %v", tc.state, r, e)
+		}
+		keys := map[string]string{}
+		for _, c := range r.Components {
+			keys[c.ComponentKey] = c.State
+		}
+		// OS disk + the two pool members, never a third member row.
+		if len(keys) != 3 || keys["winpd:{166803cd-a32c-11f1-97df-806e6f6e6963}"] != "online" ||
+			keys["winpd:60022480B4C7526392E9530DABDCE67F"] != "online" || keys["winpd:60022480CFCA9CD7995F7E79FEF2B2F9"] != tc.wantB {
+			t.Fatalf("%s: %v", tc.state, keys)
+		}
+	}
+	if len(remembered) != 2 {
+		t.Fatalf("winpd must not record members: %v", remembered)
 	}
 }

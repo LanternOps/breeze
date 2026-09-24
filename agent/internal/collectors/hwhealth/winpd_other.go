@@ -2,6 +2,6 @@
 
 package hwhealth
 
-func newWinPD() Source {
+func newWinPD(map[string]string) Source {
 	return unavailableSource("windows_physical_disk", TierDisk)
 }

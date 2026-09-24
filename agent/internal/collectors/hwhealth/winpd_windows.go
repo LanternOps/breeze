@@ -17,7 +17,7 @@ foreach($d in @(Get-PhysicalDisk)) {
 }
 [pscustomobject]@{Disks=@($disks);Warnings=@($warnings)} | ConvertTo-Json -Depth 3 -Compress`
 
-func newWinPD() Source {
+func newWinPD(remembered map[string]string) Source {
 	return &source{
 		kind: "windows_physical_disk",
 		tier: TierDisk,
@@ -32,7 +32,7 @@ func newWinPD() Source {
 			if o.ExitCode != 0 {
 				return Result{}, fmt.Errorf("Get-PhysicalDisk exit %d", o.ExitCode)
 			}
-			return parseWinPD(o.Stdout)
+			return parseWinPD(o.Stdout, remembered)
 		},
 	}
 }

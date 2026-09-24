@@ -36,7 +36,7 @@ foreach($p in $pools) {
 }
 [pscustomobject]@{Pools=@($pools|ForEach-Object{[pscustomobject]@{ObjectId=[string]$_.ObjectId;FriendlyName=$_.FriendlyName;HealthStatus=[string]$_.HealthStatus}});VirtualDisks=@($vds);PhysicalDisks=@($pds|Sort-Object UniqueId -Unique);Warnings=@($warnings)} | ConvertTo-Json -Depth 3 -Compress`
 
-func newStorageSpaces() Source {
+func newStorageSpaces(remembered map[string]string) Source {
 	return &source{
 		kind: "storage_spaces",
 		tier: TierRAID,
@@ -52,7 +52,7 @@ func newStorageSpaces() Source {
 			if o.ExitCode != 0 {
 				return Result{}, fmt.Errorf("storage spaces exit %d", o.ExitCode)
 			}
-			return parseSpaces(o.Stdout)
+			return parseSpaces(o.Stdout, remembered)
 		},
 	}
 }

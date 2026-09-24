@@ -11,10 +11,14 @@ import (
 )
 
 type diskState struct {
-	Sequence       uint64            `json:"sequence"`
-	Next           Kind              `json:"next"`
-	LastNone       time.Time         `json:"lastNone"`
-	MDMembers      map[string]string `json:"mdMembers"`
+	Sequence  uint64            `json:"sequence"`
+	Next      Kind              `json:"next"`
+	LastNone  time.Time         `json:"lastNone"`
+	MDMembers map[string]string `json:"mdMembers"`
+	// SpacesMembers maps a Storage Spaces pool-member GUID to the UniqueId hash
+	// its disk last reported under, so a Lost Communication stand-in keeps the
+	// member's component key (#6895).
+	SpacesMembers  map[string]string `json:"spacesMembers,omitempty"`
 	VendorTopology vendorTopology    `json:"vendorTopology,omitempty"`
 	BMCLastRun     time.Time         `json:"bmcLastRun"`
 }

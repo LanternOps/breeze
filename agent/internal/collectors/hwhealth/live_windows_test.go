@@ -17,7 +17,7 @@ func TestLiveWindowsSources(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	pd := newWinPD()
+	pd := newWinPD(map[string]string{})
 	r, e := pd.Collect(ctx, pd.Detect(ctx))
 	if e != nil {
 		t.Fatalf("windows_physical_disk collect: %v", e)
@@ -33,7 +33,7 @@ func TestLiveWindowsSources(t *testing.T) {
 	}
 	t.Logf("windows_physical_disk complete=%v warnings=%v", r.Complete, r.Warnings)
 
-	ss := newStorageSpaces()
+	ss := newStorageSpaces(map[string]string{})
 	a := ss.Detect(ctx)
 	t.Logf("storage_spaces available=%v", a.Available)
 	// Collect runs even when detection says unavailable: a host without any

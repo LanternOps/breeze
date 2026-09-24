@@ -2,6 +2,6 @@
 
 package hwhealth
 
-func newStorageSpaces() Source {
+func newStorageSpaces(map[string]string) Source {
 	return unavailableSource("storage_spaces", TierRAID)
 }
