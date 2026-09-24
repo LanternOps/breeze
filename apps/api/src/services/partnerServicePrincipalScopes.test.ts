@@ -17,10 +17,10 @@ describe('partner partner-service-principal scopes', () => {
   });
 
   it('rejects an unsupported scope', () => {
-    expect(validatePartnerServicePrincipalScopes(['organizations:read', 'alerts:read'])).toEqual({
+    expect(validatePartnerServicePrincipalScopes(['organizations:read', 'tickets:read'])).toEqual({
       ok: false,
       status: 400,
-      error: 'Unsupported partner service principal scope: alerts:read',
+      error: 'Unsupported partner service principal scope: tickets:read',
       details: { supportedScopes: PARTNER_SERVICE_PRINCIPAL_SCOPES },
     });
   });
@@ -78,6 +78,14 @@ describe('partner partner-service-principal scopes', () => {
       'contracts:write',
     );
     expect(Object.isFrozen(DEFAULT_WEAVESTREAM_PARTNER_SERVICE_PRINCIPAL_SCOPES)).toBe(true);
+  });
+
+  it('accepts alerts:read as an explicit opt-in that never joins the default delegation', () => {
+    expect(validatePartnerServicePrincipalScopes(['organizations:read', 'alerts:read'])).toEqual({
+      ok: true,
+      scopes: ['organizations:read', 'alerts:read'],
+    });
+    expect(DEFAULT_WEAVESTREAM_PARTNER_SERVICE_PRINCIPAL_SCOPES).not.toContain('alerts:read');
   });
 
   it('never includes a write scope in the default delegation', () => {

@@ -113,6 +113,7 @@ or user management.
 | `GET /api/v1/partner-api/backup-configurations` | `backup-configuration:read` |
 | `GET /api/v1/partner-api/custom-fields` | `custom-fields:read` |
 | `GET /api/v1/partner-api/custom-field-values` | `custom-fields:read` |
+| `GET /api/v1/partner-api/alerts` | `alerts:read` (opt-in) |
 | `POST /api/v1/partner-api/organizations` | `organizations:write` |
 | `POST /api/v1/partner-api/sites` | `sites:write` |
 | `POST /api/v1/partner-api/enrollment-keys` | `enrollment-keys:write` |
@@ -194,7 +195,7 @@ idempotent and cannot be undone; issue a replacement instead.
 
 ## Pagination, checkpoints, and versioning
 
-Every resource returns the same strict envelope:
+Every resource except `/alerts` returns the same strict envelope (the alerts feed has its own checkpoint envelope, described under "Alerts feed" below):
 
 ```json
 {
@@ -458,3 +459,57 @@ mint budget.
 | `409` | `partner_provisioning_idempotency_in_flight` | A concurrent request holds the claim; retry |
 | `429` | `partner_provisioning_rate_limited` | Mint bucket exhausted; honor `Retry-After` |
 | `503` | `partner_provisioning_idempotency_state_invalid` | Claim exists but its key row is unreadable |
+
+## Alerts feed (`alerts:read`)
+
+`GET /api/v1/partner-api/alerts` is a read-only, latest-state feed of alerts
+across every organization the principal can reach. `alerts:read` is an opt-in
+scope: it is never part of the default delegation and must be requested
+explicitly. There is no acknowledge or resolve through this scope.
+
+Query parameters (all optional): `orgId`, `status` and `severity` (comma
+lists), `triggeredSince` (offset ISO timestamp), `limit` (1-500, default
+100), and exactly one of `since` or `cursor`.
+
+Sync contract:
+
+1. First sync: call without `since`. Follow `nextCursor` (as `cursor`) while
+   `hasMore` is true. The last page returns `checkpoint`.
+2. Persist `checkpoint` only after the whole traversal has been processed,
+   then pass it as `since` on the next poll to receive every alert inserted
+   or changed after that traversal.
+3. `409 partner_alerts_resync_required` means the checkpoint no longer
+   describes this feed (the principal's organization set changed, or the
+   database was restored or recovered). Start again without `since`.
+   Restores are detected by the cluster identifier, timeline, database OID
+   and alerts table OID, which covers a restore into a new cluster,
+   point-in-time recovery, and a logical restore that recreates the database
+   or the alerts table in the same cluster. Two cases are NOT detectable from
+   inside the database: a filesystem or VM snapshot rollback of the same
+   cluster, and a data-only reload into the existing alerts table with
+   triggers disabled. After either, discard stored checkpoints and run a
+   full sync.
+
+Guarantees and limits:
+
+- Change tracking uses the writing transaction id, bounded by the reading
+  snapshot's xmin, so an alert whose transaction commits late is never
+  skipped behind a checkpoint you already hold. A long-running transaction
+  anywhere in the database delays the feed; it does not lose alerts.
+- Latest state only: several transitions of one alert between polls arrive
+  as its current row. Compare `changeVersion` for equality to detect change.
+- Filters apply to the alert's current row. A feed filtered by
+  `status=active` does not report an alert leaving that status; mirror
+  consumers should not filter.
+- Deleted alerts are not reported. Raw alert `context` is not exported, and
+  `deviceHostname` is the device's current hostname, read at request time: a
+  device rename does not advance the feed and does not change `revision`. `deviceId` and
+  `deviceHostname` are null when the device no longer exists in the alert's
+  organization. `deviceHostname` is also null when the hostname itself looks
+  like a secret; the alert is still delivered.
+- A record whose title or message contains a detected secret is withheld and
+  listed in `blocked` instead. A blocked record reappears only when the alert
+  itself is written again; reconcile blocked ids with a periodic full sync.
+- Checkpoints and cursors are signed, bound to the partner, filters and
+  organization set, and cursors expire after 24 hours.
+

@@ -7,6 +7,7 @@ import { partnerRelationshipRoutes } from './relationships';
 import { partnerConfigurationRoutes } from './configuration';
 import { partnerProvisioningRoutes } from './provisioning';
 import { partnerContractRoutes } from './contracts';
+import { partnerAlertRoutes } from './alerts';
 import { partnerExportAuditMiddleware } from './audit';
 
 export const partnerApiRoutes = new Hono();
@@ -26,3 +27,5 @@ partnerApiRoutes.route('/', partnerConfigurationRoutes);
 // writeSurface.test.ts allowlist — adding a route here alone fails CI.
 partnerApiRoutes.route('/', partnerProvisioningRoutes);
 partnerApiRoutes.route('/', partnerContractRoutes);
+// alerts:read (opt-in scope). Read-only latest-state feed; see alerts.ts.
+partnerApiRoutes.route('/', partnerAlertRoutes);

@@ -15,6 +15,7 @@ export const PARTNER_EXPORT_RESOURCES = [
   'backup-configurations',
   'custom-fields',
   'custom-field-values',
+  'alerts',
 ] as const;
 
 export const partnerExportResourceSchema = z.enum(PARTNER_EXPORT_RESOURCES);
@@ -606,3 +607,66 @@ export type PartnerExportEnvelope<T extends PartnerExportRecordBase> = {
   hasMore: boolean;
   blocked?: PartnerExportBlockedRecord[];
 };
+
+// ---------------------------------------------------------------------------
+// Alerts feed (alerts:read). Latest-state change feed keyed by the writing
+// transaction id (see migrations/2026-10-30-130000-partner-api-alerts-read.sql),
+// so it has its own cursor/checkpoint contract rather than the timestamp
+// watermark envelope above.
+// ---------------------------------------------------------------------------
+export const PARTNER_ALERT_STATUSES = ['active', 'acknowledged', 'resolved', 'suppressed', 'dismissed'] as const;
+export const PARTNER_ALERT_SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
+const nullableTimestamp = partnerExportTimestampSchema.nullable();
+const nullableUuid = z.string().uuid().nullable();
+
+export const partnerAlertExportRecordSchema = z.object({
+  id: z.string().uuid(),
+  orgId: z.string().uuid(),
+  // Null when the alert's device is gone or not in the alert's organization.
+  deviceId: z.string().uuid().nullable(),
+  // Current device hostname at read time: enrichment, NOT a feed event. A
+  // device rename does not advance the feed and is excluded from `revision`.
+  // Limits are 2x the DB varchar length: Postgres counts characters, JS/Zod
+  // counts UTF-16 code units, and a non-BMP character is two units.
+  deviceHostname: z.string().max(510).nullable(),
+  severity: z.enum(PARTNER_ALERT_SEVERITIES),
+  status: z.enum(PARTNER_ALERT_STATUSES),
+  title: z.string().max(1000),
+  message: z.string().max(12_000).nullable(),
+  triggeredAt: partnerExportTimestampSchema,
+  acknowledgedAt: nullableTimestamp,
+  resolvedAt: nullableTimestamp,
+  dismissedAt: nullableTimestamp,
+  suppressedUntil: nullableTimestamp,
+  requiresHuman: z.boolean(),
+  episodeId: nullableUuid,
+  ruleId: nullableUuid,
+  monitorId: nullableUuid,
+  // Opaque, monotonic per row: changes whenever the row is written. Compare
+  // for equality only; never parse.
+  changeVersion: z.string().regex(/^[0-9]{1,20}$/u),
+  revision: z.string().regex(/^[a-f0-9]{64}$/u),
+}).strict();
+
+export type PartnerAlertExportRecord = z.infer<typeof partnerAlertExportRecordSchema>;
+
+export const partnerAlertFeedEnvelopeSchema = z.object({
+  schemaVersion: z.literal('1'),
+  mode: z.enum(['full', 'incremental']),
+  data: z.array(partnerAlertExportRecordSchema).max(500),
+  nextCursor: partnerExportCursorTokenSchema.nullable(),
+  hasMore: z.boolean(),
+  // Present exactly on the last page of a traversal: pass it back as `since`
+  // to fetch everything written after this traversal. Persist it only after
+  // the whole traversal has been processed.
+  checkpoint: partnerExportCursorTokenSchema.nullable(),
+  blocked: z.array(partnerExportBlockedRecordSchema).max(500).optional(),
+}).strict().superRefine((value, ctx) => {
+  if (value.hasMore !== (value.nextCursor !== null)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['nextCursor'], message: 'nextCursor must be present exactly when hasMore is true' });
+  }
+  if (value.hasMore === (value.checkpoint !== null)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['checkpoint'], message: 'checkpoint must be present exactly on the last page' });
+  }
+});
+

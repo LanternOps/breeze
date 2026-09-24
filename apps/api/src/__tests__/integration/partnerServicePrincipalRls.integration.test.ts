@@ -206,7 +206,7 @@ describe('partner-service-principal database contract', () => {
   runDb.each([
     { label: 'empty', scopes: [] },
     { label: 'duplicate', scopes: ['devices:read', 'devices:read'] },
-    { label: 'unknown', scopes: ['devices:read', 'alerts:read'] },
+    { label: 'unknown', scopes: ['devices:read', 'tickets:read'] },
   ])('rejects $label principal scopes in PostgreSQL', async ({ scopes }) => {
     const { partnerA, userA } = await seedTwoPartners();
     const cause = await captureCause(() =>
