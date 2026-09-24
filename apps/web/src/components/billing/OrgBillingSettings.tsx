@@ -64,6 +64,11 @@ interface OrgBilling {
    *  ambient request context. Used ONLY to label the blank-rate placeholder
    *  with the inherited value (settings rule 4); never sent back on save. */
   partnerDefaultTaxRate: string | null;
+  /** Org payment-terms override (#6229); null = inherit the partner default. */
+  invoiceTermsDays?: number | null;
+  /** Additive field from GET /orgs/organizations/:id (#6229) — the partner's
+   *  `invoiceTermsDays`, shown as the inherited value. Never sent back. */
+  partnerDefaultInvoiceTermsDays?: number | null;
   billingContact: { email?: string | null; name?: string | null } | null;
   billingAddressLine1: string | null;
   billingAddressLine2: string | null;
@@ -101,6 +106,8 @@ export default function OrgBillingSettings({ orgId }: Props) {
   const [taxExempt, setTaxExempt] = useState(false);
   const [taxPercent, setTaxPercent] = useState('');
   const [partnerDefaultTaxRate, setPartnerDefaultTaxRate] = useState<string | null>(null);
+  const [termsDays, setTermsDays] = useState('');
+  const [partnerDefaultTermsDays, setPartnerDefaultTermsDays] = useState<number | null>(null);
   const [contactEmail, setContactEmail] = useState('');
   const [contactName, setContactName] = useState('');
   const [line1, setLine1] = useState('');
@@ -124,6 +131,9 @@ export default function OrgBillingSettings({ orgId }: Props) {
       setTaxExempt(Boolean(o.taxExempt));
       setTaxPercent(pctFromFraction(o.taxRate));
       setPartnerDefaultTaxRate(o.partnerDefaultTaxRate ?? null);
+      // `?? ''` not `|| ''`: an override of 0 (due on receipt) must load as "0".
+      setTermsDays(o.invoiceTermsDays === null || o.invoiceTermsDays === undefined ? '' : String(o.invoiceTermsDays));
+      setPartnerDefaultTermsDays(o.partnerDefaultInvoiceTermsDays ?? null);
       setContactEmail(o.billingContact?.email ?? '');
       setContactName(o.billingContact?.name ?? '');
       setLine1(o.billingAddressLine1 ?? '');
@@ -234,9 +244,13 @@ export default function OrgBillingSettings({ orgId }: Props) {
   // valid address. Guard client-side so the Save button reflects it pre-submit;
   // the server still validates the format on PATCH.
   const contactEmailInvalid = contactEmail.trim() !== '' && !isValidEmail(contactEmail);
+  // Same 0–365 whole-day bounds as the shared validator and the DB CHECK.
+  const termsTrimmed = termsDays.trim();
+  const termsDaysInvalid = termsTrimmed !== ''
+    && !(/^\d+$/.test(termsTrimmed) && Number(termsTrimmed) <= 365);
 
   const save = useCallback(async () => {
-    if (saving || contactEmailInvalid) return;
+    if (saving || contactEmailInvalid || termsDaysInvalid) return;
     setSaving(true);
     try {
       const pct = taxPercent.trim();
@@ -248,6 +262,8 @@ export default function OrgBillingSettings({ orgId }: Props) {
             taxId: taxId.trim() === '' ? null : taxId.trim(),
             taxExempt,
             taxRate: pct === '' ? null : Number(pct) / 100,
+            // Blank = inherit the partner default → null, never ''.
+            invoiceTermsDays: termsDays.trim() === '' ? null : Number(termsDays.trim()),
             // Send null (not '') when cleared — the schema validates email format
             // and treats null as "no recipient" rather than rejecting a blank.
             billingContactEmail: contactEmail.trim() === '' ? null : contactEmail.trim(),
@@ -271,7 +287,7 @@ export default function OrgBillingSettings({ orgId }: Props) {
     } finally {
       setSaving(false);
     }
-  }, [saving, contactEmailInvalid, taxId, taxExempt, taxPercent, contactEmail, contactName, line1, line2, city, region, postal, country, orgId, load, billingProfile.billingProfileId, billingProfile.markSaved, t]);
+  }, [saving, contactEmailInvalid, termsDaysInvalid, termsDays, taxId, taxExempt, taxPercent, contactEmail, contactName, line1, line2, city, region, postal, country, orgId, load, billingProfile.billingProfileId, billingProfile.markSaved, t]);
 
   if (loading) return <p className="text-sm text-muted-foreground">{t('orgBillingSettings.loading')}</p>;
   if (loadError) {
@@ -472,6 +488,35 @@ export default function OrgBillingSettings({ orgId }: Props) {
         </label>
       </section>
 
+      {/* Settings consolidation W06 (#6229): org override of the partner's
+          payment terms. Blank = inherit; frozen as the due date at issue. */}
+      <section className="rounded-lg border bg-card p-6 shadow-xs">
+        <h2 className="text-lg font-semibold">{t('orgBillingSettings.terms.title')}</h2>
+        <p className="mt-1 text-sm text-muted-foreground">{t('orgBillingSettings.terms.description')}</p>
+        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+          <div>
+            <InheritedField
+              id="ob-terms-days"
+              label={t('orgBillingSettings.terms.paymentTermsDays')}
+              value={termsDays}
+              onChange={setTermsDays}
+              inheritedValue={partnerDefaultTermsDays !== null ? String(partnerDefaultTermsDays) : null}
+              inheritedSource={t('orgBillingSettings.terms.partnerDefault')}
+              type="number"
+              min={0}
+              max={365}
+              step="1"
+              data-testid="org-billing-terms-days"
+            />
+            {termsDaysInvalid && (
+              <p className="mt-1 text-xs text-destructive" data-testid="org-billing-terms-days-error">
+                {t('orgBillingSettings.terms.invalid')}
+              </p>
+            )}
+          </div>
+        </div>
+      </section>
+
       <section className="rounded-lg border bg-card p-6 shadow-xs">
         <h2 className="text-lg font-semibold">{t('orgBillingSettings.contact.title')}</h2>
         <p className="mt-1 text-sm text-muted-foreground">
@@ -526,7 +571,7 @@ export default function OrgBillingSettings({ orgId }: Props) {
 
       <div className="flex justify-end">
         <button
-          type="button" onClick={() => void save()} disabled={saving || contactEmailInvalid}
+          type="button" onClick={() => void save()} disabled={saving || contactEmailInvalid || termsDaysInvalid}
           data-testid="org-billing-save"
           className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
         >

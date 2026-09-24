@@ -2202,6 +2202,13 @@
       "taxId": "ID fiscale",
       "taxRate": "Aliquota fiscale (%)",
       "title": "Imposta"
+    },
+    "terms": {
+      "description": "Giorni dall'emissione alla scadenza delle fatture di questa organizzazione. Lascia vuoto per usare il valore predefinito del partner. Le modifiche si applicano alle fatture emesse da ora in poi; le fatture già emesse mantengono la loro data di scadenza.",
+      "invalid": "Inserisci un numero intero di giorni da 0 a 365.",
+      "partnerDefault": "Predefinito partner",
+      "paymentTermsDays": "Termini di pagamento (giorni)",
+      "title": "Termini di pagamento"
     }
   },
   "partnerBillingSettings": {

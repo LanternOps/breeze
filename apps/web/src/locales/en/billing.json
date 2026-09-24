@@ -2202,6 +2202,13 @@
       "taxId": "Tax ID",
       "taxRate": "Tax rate (%)",
       "title": "Tax"
+    },
+    "terms": {
+      "description": "Days from issue until this organization's invoices are due. Leave blank to use the partner default. Changes apply to invoices issued from now on; issued invoices keep their due date.",
+      "invalid": "Enter a whole number of days from 0 to 365.",
+      "partnerDefault": "Partner default",
+      "paymentTermsDays": "Payment terms (days)",
+      "title": "Payment terms"
     }
   },
   "partnerBillingSettings": {

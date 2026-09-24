@@ -429,3 +429,71 @@ describe('OrgBillingSettings assignment save consistency', () => {
     expect(JSON.parse(findPatch()![1]!.body as string)).not.toHaveProperty('billingProfileId');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Settings consolidation W06 (#6229): org payment-terms override. Blank =
+// inherit the partner default, shown as the placeholder VALUE (rule 4). Saved
+// through the page Save (runAction); cleared sends null, never ''.
+// ---------------------------------------------------------------------------
+
+describe('OrgBillingSettings — payment terms override', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const withPatch = (over: Record<string, unknown> = {}) =>
+    fetchMock.mockImplementation(async (_input: string, opts?: RequestInit) =>
+      opts?.method === 'PATCH' ? json({ data: {} }) : orgPayload(over));
+
+  it('shows the partner default days as the placeholder when the org inherits', async () => {
+    fetchMock.mockResolvedValue(orgPayload({ invoiceTermsDays: null, partnerDefaultInvoiceTermsDays: 30 }));
+    render(<OrgBillingSettings orgId="org-1" />);
+    await waitFor(() => expect(screen.getByTestId('org-billing-settings')).toBeInTheDocument());
+    const input = screen.getByTestId('org-billing-terms-days') as HTMLInputElement;
+    expect(input.value).toBe('');
+    expect(input.placeholder).toBe('30');
+  });
+
+  it('loads a saved override of 0 as "0", not blank', async () => {
+    fetchMock.mockResolvedValue(orgPayload({ invoiceTermsDays: 0, partnerDefaultInvoiceTermsDays: 30 }));
+    render(<OrgBillingSettings orgId="org-1" />);
+    await waitFor(() =>
+      expect((screen.getByTestId('org-billing-terms-days') as HTMLInputElement).value).toBe('0'));
+  });
+
+  it('PATCHes the override as a number', async () => {
+    withPatch({ invoiceTermsDays: null, partnerDefaultInvoiceTermsDays: 30 });
+    render(<OrgBillingSettings orgId="org-1" />);
+    await waitFor(() => expect(screen.getByTestId('org-billing-settings')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('org-billing-terms-days'), { target: { value: '14' } });
+    fireEvent.click(screen.getByTestId('org-billing-save'));
+    await waitFor(() => {
+      const patch = findPatch();
+      expect(patch).toBeTruthy();
+      expect(JSON.parse((patch![1] as RequestInit).body as string).invoiceTermsDays).toBe(14);
+    });
+  });
+
+  it('clearing the override sends null (inherit), never ""', async () => {
+    withPatch({ invoiceTermsDays: 14, partnerDefaultInvoiceTermsDays: 30 });
+    render(<OrgBillingSettings orgId="org-1" />);
+    await waitFor(() =>
+      expect((screen.getByTestId('org-billing-terms-days') as HTMLInputElement).value).toBe('14'));
+    fireEvent.change(screen.getByTestId('org-billing-terms-days'), { target: { value: '' } });
+    fireEvent.click(screen.getByTestId('org-billing-save'));
+    await waitFor(() => {
+      const patch = findPatch();
+      expect(patch).toBeTruthy();
+      expect(JSON.parse((patch![1] as RequestInit).body as string).invoiceTermsDays).toBeNull();
+    });
+  });
+
+  it.each(['366', '-1', '2.5'])('blocks save on an out-of-range value %s', async (value) => {
+    withPatch({ invoiceTermsDays: null, partnerDefaultInvoiceTermsDays: 30 });
+    render(<OrgBillingSettings orgId="org-1" />);
+    await waitFor(() => expect(screen.getByTestId('org-billing-settings')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('org-billing-terms-days'), { target: { value } });
+    expect(screen.getByTestId('org-billing-terms-days-error')).toBeInTheDocument();
+    expect(screen.getByTestId('org-billing-save')).toBeDisabled();
+    fireEvent.click(screen.getByTestId('org-billing-save'));
+    expect(findPatch()).toBeUndefined();
+  });
+});
