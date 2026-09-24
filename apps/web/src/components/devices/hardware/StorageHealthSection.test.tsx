@@ -32,6 +32,20 @@ describe('StorageHealthSection', () => {
     expect(await screen.findByTestId('hardware-empty-state')).toHaveTextContent('disabled by policy Servers');
     expect(screen.getByTestId('hardware-controller-card')).toBeInTheDocument();
   });
+  it('treats a disabled collection tier the same as a disabled policy', async () => {
+    vi.mocked(fetchWithAuth).mockResolvedValue(response(view({
+      tiersRun: ['disabled'], policy: null,
+    })));
+    render(<StorageHealthSection deviceId="device-a" />);
+    expect(await screen.findByTestId('hardware-empty-state')).toHaveTextContent('disabled by policy —');
+    expect(screen.getByTestId('hardware-controller-card')).toBeInTheDocument();
+  });
+  it('shows no-tooling when a RAID sweep ran but every probed source is unavailable', async () => {
+    vi.mocked(fetchWithAuth).mockResolvedValue(response(view({ components: [], tiersRun: ['raid'],
+      sources: [{ source: 'storcli', status: 'unavailable' }, { source: 'megacli', status: 'unavailable' }] })));
+    render(<StorageHealthSection deviceId="device-a" />);
+    expect(await screen.findByTestId('hardware-empty-state')).toHaveTextContent('No RAID or disk-health tooling detected — probed: storcli, megacli');
+  });
   it('uses fresh=false as well as stale and collapses VD-backed OS disks', async () => {
     vi.mocked(fetchWithAuth).mockResolvedValue(response(view({ components: [component(),
       component({ componentType: 'physical_disk', componentKey: 'winpd:1', source: 'windows_physical_disk',

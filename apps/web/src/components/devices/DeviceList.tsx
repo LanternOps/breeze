@@ -35,6 +35,7 @@ import type {
   FilterConditionGroup,
   HardwareHealth,
 } from "@breeze/shared";
+import { HARDWARE_HEALTH_RANK } from "@breeze/shared";
 import ComponentStatePill from "./hardware/ComponentStatePill";
 import {
   matchesMergedListFilters,
@@ -759,7 +760,10 @@ const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
   // sorts as a blank-last null to match the dash the cell renders (#1284).
   reliability: (d) =>
     typeof d.reliabilityScore === "number" ? d.reliabilityScore : null,
-  hardwareHealth: (d) => d.hardwareHealth ?? null,
+  // Sort by severity rank, not alphabetically ("critical" < "ok" < "unknown"
+  // < "warning" would otherwise put the worst rows in the middle).
+  hardwareHealth: (d) =>
+    d.hardwareHealth ? HARDWARE_HEALTH_RANK[d.hardwareHealth] : null,
   // Sort by the first badge's provider label — active VPNs sort ahead of
   // running-but-disconnected ones because vpnList orders them first. Devices
   // with no VPN at all sort blanks-last (null) to match the dash the cell

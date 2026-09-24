@@ -36,6 +36,13 @@ describe('ControllerCard', () => {
     expect(screen.getByRole('progressbar')).toHaveAttribute('value', '0');
     expect(screen.getByTestId(`hardware-disk-${pd.componentKey}`)).toHaveClass('opacity-60');
   });
+  it('does not dim a fresh, non-stale disk row', () => {
+    const healthyDisk = component({ componentKey: 'storcli:c0:e1:s4', parentKey: 'storcli:c0',
+      componentType: 'physical_disk', name: 'Slot 4', serial: 'DISK-4', stale: false, fresh: true });
+    render(<ControllerCard controller={component()} components={[healthyDisk]} />);
+    expect(screen.getByTestId(`hardware-disk-${healthyDisk.componentKey}`)).not.toHaveClass('opacity-60');
+    expect(screen.queryByText(/Not seen since/)).not.toBeInTheDocument();
+  });
   it('does not include disks belonging to another controller', () => {
     render(<ControllerCard controller={component()} components={[
       { ...pd, parentKey: 'storcli:c1', serial: 'OTHER' },
