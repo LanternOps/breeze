@@ -1027,10 +1027,24 @@ type BackupGcSnapshotSummary = {
   newestMs: number | null; // over items WITH a known last-modified
   oldestMs: number | null; // over items WITH a known last-modified
   hasUnknownAge: boolean; // any item without a last-modified
+  // Root pass only (#6840 review). A "bare" key is `snapshots/<id>` itself —
+  // no path after the id. It groups under <id> exactly as it did pre-#6834,
+  // but a `snapshots/<id>/`-scoped re-list can never return it, so the root
+  // pass keeps it (at most one per group) and relistGroup replays it as a
+  // member. `hasPathKeys` records whether the group had anything BELOW
+  // `snapshots/<id>/`; a group without any is never re-listed at all (on a
+  // local destination `<id>` is then a plain file, and walking it as a
+  // directory would fail with ENOTDIR).
+  bareItem: BackupObjectListing | null;
+  hasPathKeys: boolean;
 };
 
 function emptySnapshotSummary(): BackupGcSnapshotSummary {
-  return { manifestItem: null, newestMs: null, oldestMs: null, hasUnknownAge: false };
+  return { manifestItem: null, newestMs: null, oldestMs: null, hasUnknownAge: false, bareItem: null, hasPathKeys: false };
+}
+
+function bareSnapshotKey(snapshotId: string): string {
+  return `${BACKUP_SNAPSHOT_ROOT_DIR}/${snapshotId}`;
 }
 
 /**
@@ -1078,6 +1092,8 @@ async function summarizeListingBySnapshotId(
         summary = emptySnapshotSummary();
         groups.set(snapshotId, summary);
       }
+      if (item.key === bareSnapshotKey(snapshotId)) summary.bareItem = item;
+      else summary.hasPathKeys = true;
       foldIntoSnapshotSummary(summary, snapshotId, item);
     }
   }
@@ -1502,11 +1518,25 @@ async function sweepStorageIdentity(
   // against the root pass. Membership is re-checked with the SAME grouping
   // rule as the root pass, so a provider that ignores or widens the prefix
   // can never leak another group's key in.
+  //
+  // The group's bare key (if the root pass saw one) is replayed FIRST, from
+  // the root pass — the position S3's lexicographic order gave it before
+  // `snapshots/<id>/…` — so every per-group rule (candidates, the
+  // manifest-last count, the manifest-less age gate) sees the same members
+  // the pre-#6834 single listing did. A group with no keys below
+  // `snapshots/<id>/` in the root pass is not re-listed.
   async function relistGroup(
     snapshotId: string,
+    rootSummary: BackupGcSnapshotSummary,
     onItem: (item: BackupObjectListing) => void,
   ): Promise<BackupGcSnapshotSummary> {
     const summary = emptySnapshotSummary();
+    const bareKey = bareSnapshotKey(snapshotId);
+    if (rootSummary.bareItem) {
+      foldIntoSnapshotSummary(summary, snapshotId, rootSummary.bareItem);
+      onItem(rootSummary.bareItem);
+    }
+    if (!rootSummary.hasPathKeys) return summary;
     const pages = iterateBackupObjectsUnderPrefix({
       provider: identity.provider,
       providerConfig: identity.providerConfig,
@@ -1526,6 +1556,7 @@ async function sweepStorageIdentity(
       if (next.done) break;
       for (const item of next.value) {
         if (snapshotIdOfKey(item.key) !== snapshotId) continue;
+        if (item.key === bareKey) continue; // already replayed from the root pass (a provider ignoring Prefix)
         foldIntoSnapshotSummary(summary, snapshotId, item);
         onItem(item);
       }
@@ -1550,7 +1581,7 @@ async function sweepStorageIdentity(
     // if no object in the root pass was that old, there is none to find.
     if (summary.oldestMs === null || summary.oldestMs > graceThreshold) return;
     const candidates = new OldestFirstCandidates(remaining, skipSet);
-    const current = await relistGroup(snapshotId, (item) => {
+    const current = await relistGroup(snapshotId, summary, (item) => {
       if (!liveSet.has(item.key) && item.lastModified && item.lastModified.getTime() <= graceThreshold) {
         candidates.offer(item);
       }
@@ -1565,7 +1596,7 @@ async function sweepStorageIdentity(
   async function sweepManifestless(snapshotId: string, summary: BackupGcSnapshotSummary, liveSet: Set<string>): Promise<void> {
     if (!manifestlessPrefixExpired(summary, manifestlessThreshold)) return;
     const candidates = new OldestFirstCandidates(remaining, skipSet);
-    const current = await relistGroup(snapshotId, (item) => {
+    const current = await relistGroup(snapshotId, summary, (item) => {
       if (!liveSet.has(item.key)) candidates.offer(item);
     });
     if (current.manifestItem !== null) {
@@ -1587,7 +1618,7 @@ async function sweepStorageIdentity(
     const manifestKey = backupSnapshotManifestKey(snapshotId);
     const candidates = new OldestFirstCandidates(remaining, skipSet);
     let nonManifestNonLiveCount = 0;
-    const current = await relistGroup(snapshotId, (item) => {
+    const current = await relistGroup(snapshotId, summary, (item) => {
       if (liveSet.has(item.key) || item.key === manifestKey) return;
       nonManifestNonLiveCount++;
       candidates.offer(item);

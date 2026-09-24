@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, symlink } from 'node:fs/promises';
+import { mkdir, mkdtemp, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import v8 from 'node:v8';
@@ -928,6 +928,283 @@ describe('sweepUnreferencedBackupObjects', () => {
       expect((deleteBackupObjectKeysMock.mock.calls[0]![0] as { keys: string[] }).keys)
         .toEqual(['snapshots/BIG/files/f01', 'snapshots/BIG/files/f03', 'snapshots/BIG/files/f06']);
       expect(result.deleted).toBe(3); // manifest NOT deleted — 11 non-manifest keys remain
+    });
+  });
+
+  // #6840 review: a "bare" key sitting directly under the root with no path
+  // after the id (`snapshots/X`) groups under X in the root pass exactly as
+  // it did pre-#6834, but a `snapshots/X/`-scoped re-list can never return
+  // it. It must still count as a member of X for every per-group rule.
+  describe('bare keys directly under the snapshot root (#6840 review)', () => {
+    it('a skip-set bare key blocks manifest deletion of its unrooted snapshot, exactly as before', async () => {
+      redisSmembersMock.mockResolvedValueOnce(['snapshots/X']);
+      pushRunLevel([destination]);
+      pushIdentity({ retirements: [{ id: 'retirement-x', snapshotId: 'X' }] });
+      const old = new Date(Date.now() - 30 * DAY_MS);
+      rootListingMock.mockResolvedValueOnce([
+        { key: 'snapshots/X', lastModified: old },
+        { key: 'snapshots/X/manifest.json', lastModified: old },
+      ]);
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result.deleted).toBe(0);
+      expect(result.retiredSwept).toBe(0);
+    });
+
+    it('a bare key counts as a non-manifest member: it is deleted in phase 1, before the manifest', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retirements: [{ id: 'retirement-x', snapshotId: 'X' }] });
+      const old = new Date(Date.now() - 30 * DAY_MS);
+      rootListingMock.mockResolvedValueOnce([
+        { key: 'snapshots/X', lastModified: old },
+        { key: 'snapshots/X/manifest.json', lastModified: old },
+      ]);
+      deleteBackupObjectKeysMock.mockImplementation(async ({ keys }: { keys: string[] }) => ({ deletedKeys: keys, failedKeys: [] }));
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      const calls = deleteBackupObjectKeysMock.mock.calls.map((c) => (c[0] as { keys: string[] }).keys);
+      expect(calls).toEqual([['snapshots/X'], ['snapshots/X/manifest.json']]);
+      expect(result.deleted).toBe(2);
+    });
+
+    it('s3: an aged bare-only manifest-less group is reclaimed without a re-list and without a spurious warning', async () => {
+      pushRunLevel([destination]);
+      pushIdentity();
+      rootListingMock.mockResolvedValueOnce([{ key: 'snapshots/README', lastModified: JUST_PAST_MANIFESTLESS_THRESHOLD() }]);
+      deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: ['snapshots/README'], failedKeys: [] });
+
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      let result;
+      let warnings: string[];
+      try {
+        result = await sweepUnreferencedBackupObjects();
+        warnings = warn.mock.calls.map(([msg]) => String(msg));
+      } finally {
+        warn.mockRestore();
+      }
+
+      expect((deleteBackupObjectKeysMock.mock.calls[0]![0] as { keys: string[] }).keys).toEqual(['snapshots/README']);
+      expect(result.deleted).toBe(1);
+      expect(iterateBackupObjectsMock.mock.calls.map((c) => c[0].prefix)).toEqual(['snapshots']);
+      expect(warnings.some((m) => m.includes('between listing passes'))).toBe(false);
+    });
+
+    it('s3: a retired bare-only remnant is reclaimed, then confirmed swept once a later root listing no longer shows it', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retirements: [{ id: 'retirement-rb', snapshotId: 'RB' }] });
+      rootListingMock.mockResolvedValueOnce([{ key: 'snapshots/RB', lastModified: new Date() }]);
+      deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: ['snapshots/RB'], failedKeys: [] });
+      const first = await sweepUnreferencedBackupObjects();
+      expect(first.deleted).toBe(1);
+      expect(first.retiredSwept).toBe(0);
+
+      pushRunLevel([destination]);
+      pushIdentity({ retirements: [{ id: 'retirement-rb', snapshotId: 'RB' }] });
+      rootListingMock.mockResolvedValueOnce([]);
+      const second = await sweepUnreferencedBackupObjects();
+      expect(second.retiredSwept).toBe(1);
+    });
+
+    it('local: a bare FILE under snapshots/ is reclaimed like before and never stalls later groups (no ENOTDIR re-list)', async () => {
+      const actualStorage = await vi.importActual<typeof import('../services/backupSnapshotStorage')>('../services/backupSnapshotStorage');
+      iterateBackupObjectsMock.mockImplementation(actualStorage.iterateBackupObjectsUnderPrefix);
+      const realDir = await mkdtemp(join(tmpdir(), 'breeze-gc-bare-'));
+      await mkdir(join(realDir, 'snapshots', 'zpart', 'files'), { recursive: true });
+      const bareFile = join(realDir, 'snapshots', 'README');
+      const partFile = join(realDir, 'snapshots', 'zpart', 'files', 'a.dat');
+      await writeFile(bareFile, 'x');
+      await writeFile(partFile, 'x');
+      const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
+      await utimes(bareFile, old, old);
+      await utimes(partFile, old, old);
+
+      pushRunLevel([{ id: 'cfg-bare', provider: 'local', providerConfig: { path: realDir } }]);
+      pushIdentity();
+      deleteBackupObjectKeysMock.mockImplementation(async ({ keys }: { keys: string[] }) => ({ deletedKeys: keys, failedKeys: [] }));
+
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      let result;
+      try {
+        result = await sweepUnreferencedBackupObjects();
+      } finally {
+        error.mockRestore();
+      }
+
+      const deletedKeys = deleteBackupObjectKeysMock.mock.calls.flatMap((c) => (c[0] as { keys: string[] }).keys).sort();
+      expect(deletedKeys).toEqual(['snapshots/README', 'snapshots/zpart/files/a.dat']);
+      expect(result.blockedIdentities).toBe(0);
+      expect(result.skippedIdentities).toBe(0);
+    });
+  });
+
+  // #6840 review: mutations of the two-pass logic that survived the suite.
+  describe('two-pass sweep: manifest drift, cap carry-over, paging (#6840 review)', () => {
+    const old = () => new Date(Date.now() - 30 * DAY_MS);
+
+    // Serves the root pass from `root` and each re-list from `relist`,
+    // optionally in several pages, optionally failing after some pages.
+    function serve(root: ListingItem[][], relist: Record<string, { pages: ListingItem[][]; failAfter?: number }>) {
+      iterateBackupObjectsMock.mockImplementation(async function* (input) {
+        if (input.prefix === 'snapshots') {
+          for (const page of root) yield page;
+          return;
+        }
+        const spec = relist[input.prefix] ?? { pages: [] };
+        for (let i = 0; i < spec.pages.length; i++) {
+          if (spec.failAfter !== undefined && i >= spec.failAfter) throw new Error('SlowDown');
+          yield spec.pages[i]!;
+        }
+        if (spec.failAfter !== undefined && spec.failAfter >= spec.pages.length) throw new Error('SlowDown');
+      });
+    }
+
+    async function runQuietly() {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const result = await sweepUnreferencedBackupObjects();
+        return { result, warnings: warn.mock.calls.map(([m]) => String(m)) };
+      } finally {
+        warn.mockRestore();
+        error.mockRestore();
+      }
+    }
+
+    it('rooted: skips a snapshot whose manifest was rewritten between the passes (no delete of its old loose object)', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'R' }] });
+      fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
+      const loose = { key: 'snapshots/R/files/loose.dat', lastModified: old() };
+      serve(
+        [[{ key: 'snapshots/R/manifest.json', lastModified: old() }, loose]],
+        { 'snapshots/R': { pages: [[{ key: 'snapshots/R/manifest.json', lastModified: new Date() }, loose]] } },
+      );
+
+      const { result, warnings } = await runQuietly();
+
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result.deleted).toBe(0);
+      expect(warnings.some((m) => m.includes('snapshot R manifest changed'))).toBe(true);
+    });
+
+    it('rooted: skips a snapshot whose manifest disappeared between the passes', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'R' }] });
+      fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
+      const loose = { key: 'snapshots/R/files/loose.dat', lastModified: old() };
+      serve(
+        [[{ key: 'snapshots/R/manifest.json', lastModified: old() }, loose]],
+        { 'snapshots/R': { pages: [[loose]] } },
+      );
+
+      const { result } = await runQuietly();
+
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result.deleted).toBe(0);
+    });
+
+    it('unrooted: skips a retired snapshot whose manifest disappeared between the passes', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retirements: [{ id: 'retirement-gone', snapshotId: 'GONE' }] });
+      const file = { key: 'snapshots/GONE/files/x.dat', lastModified: old() };
+      serve(
+        [[{ key: 'snapshots/GONE/manifest.json', lastModified: old() }, file]],
+        { 'snapshots/GONE': { pages: [[file]] } },
+      );
+
+      const { result } = await runQuietly();
+
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result.deleted).toBe(0);
+    });
+
+    it('carries the remaining cap from one group to the next', async () => {
+      process.env.BACKUP_GC_MAX_DELETES_PER_RUN = '3';
+      pushRunLevel([destination]);
+      pushIdentity({
+        retirements: [
+          { id: 'retirement-a', snapshotId: 'A' },
+          { id: 'retirement-b', snapshotId: 'B' },
+        ],
+      });
+      const a = [0, 1].map((i) => ({ key: `snapshots/A/files/${i}`, lastModified: old() }));
+      const b = [0, 1, 2, 3, 4].map((i) => ({ key: `snapshots/B/files/${i}`, lastModified: old() }));
+      serve([[...a, ...b]], { 'snapshots/A': { pages: [a] }, 'snapshots/B': { pages: [b] } });
+      deleteBackupObjectKeysMock.mockImplementation(async ({ keys }: { keys: string[] }) => ({ deletedKeys: keys, failedKeys: [] }));
+
+      const { result } = await runQuietly();
+
+      const calls = deleteBackupObjectKeysMock.mock.calls.map((c) => (c[0] as { keys: string[] }).keys);
+      expect(calls).toEqual([['snapshots/A/files/0', 'snapshots/A/files/1'], ['snapshots/B/files/0']]);
+      expect(result.deleted).toBe(3);
+    });
+
+    it('a re-list that fails after its first page deletes nothing from that group and blocks the identity', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retirements: [{ id: 'retirement-x', snapshotId: 'X' }] });
+      const manifest = { key: 'snapshots/X/manifest.json', lastModified: old() };
+      const f1 = { key: 'snapshots/X/files/1', lastModified: old() };
+      serve([[manifest, f1]], { 'snapshots/X': { pages: [[manifest, f1]], failAfter: 1 } });
+
+      const { result } = await runQuietly();
+
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result.deleted).toBe(0);
+      expect(result.blockedIdentities).toBe(1);
+      expect(result.skippedIdentities).toBe(1);
+    });
+
+    it('a multi-page re-list deletes every data object before the manifest', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retirements: [{ id: 'retirement-x', snapshotId: 'X' }] });
+      const manifest = { key: 'snapshots/X/manifest.json', lastModified: old() };
+      const [f1, f2, f3] = [1, 2, 3].map((i) => ({ key: `snapshots/X/files/${i}`, lastModified: old() }));
+      serve([[manifest, f1!, f2!, f3!]], { 'snapshots/X': { pages: [[manifest, f1!], [f2!, f3!]] } });
+      deleteBackupObjectKeysMock.mockImplementation(async ({ keys }: { keys: string[] }) => ({ deletedKeys: keys, failedKeys: [] }));
+
+      const { result } = await runQuietly();
+
+      const calls = deleteBackupObjectKeysMock.mock.calls.map((c) => (c[0] as { keys: string[] }).keys);
+      expect(calls).toEqual([[f1!.key, f2!.key, f3!.key], [manifest.key]]);
+      expect(result.deleted).toBe(4);
+    });
+
+    it('a multi-page re-list keeps the manifest when a data object on a later page fails to delete', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retirements: [{ id: 'retirement-x', snapshotId: 'X' }] });
+      const manifest = { key: 'snapshots/X/manifest.json', lastModified: old() };
+      const [f1, f2, f3] = [1, 2, 3].map((i) => ({ key: `snapshots/X/files/${i}`, lastModified: old() }));
+      serve([[manifest, f1!, f2!, f3!]], { 'snapshots/X': { pages: [[manifest, f1!], [f2!, f3!]] } });
+      deleteBackupObjectKeysMock.mockResolvedValueOnce({
+        deletedKeys: [f1!.key, f3!.key],
+        failedKeys: [{ key: f2!.key, error: 'AccessDenied' }],
+      });
+
+      const { result } = await runQuietly();
+
+      expect(deleteBackupObjectKeysMock).toHaveBeenCalledTimes(1);
+      expect(result.deleted).toBe(2);
+    });
+
+    it('merges one snapshot whose keys (manifest included) are split across root pages', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retirements: [{ id: 'retirement-x', snapshotId: 'X' }] });
+      const manifest = { key: 'snapshots/X/manifest.json', lastModified: old() };
+      const f1 = { key: 'snapshots/X/files/1', lastModified: old() };
+      const f2 = { key: 'snapshots/X/files/2', lastModified: old() };
+      const other = { key: 'snapshots/Y/files/young', lastModified: new Date() };
+      serve([[f1], [other, manifest], [f2]], { 'snapshots/X': { pages: [[manifest, f1, f2]] } });
+      deleteBackupObjectKeysMock.mockImplementation(async ({ keys }: { keys: string[] }) => ({ deletedKeys: keys, failedKeys: [] }));
+
+      const { result } = await runQuietly();
+
+      const calls = deleteBackupObjectKeysMock.mock.calls.map((c) => (c[0] as { keys: string[] }).keys);
+      expect(calls).toEqual([[f1.key, f2.key], [manifest.key]]);
+      expect(result.deleted).toBe(3);
+      expect(iterateBackupObjectsMock.mock.calls.map((c) => c[0].prefix)).toEqual(['snapshots', 'snapshots/X']);
     });
   });
 
