@@ -328,6 +328,20 @@ describe('billing settings routes', () => {
     expect(svc.updateOrgBillingSettings).not.toHaveBeenCalled();
   });
 
+  // Settings consolidation W06 (#6229): org payment-terms override.
+  it.each([0, 14, null])('passes invoiceTermsDays %s through to the service', async (invoiceTermsDays) => {
+    vi.mocked(svc.updateOrgBillingSettings).mockResolvedValue({ id: ORG_ID, invoiceTermsDays } as any);
+    const res = await invoiceSettingsRoutes.request(`/orgs/${ORG_ID}/billing-settings`, jsonBody({ invoiceTermsDays }));
+    expect(res.status).toBe(200);
+    expect(svc.updateOrgBillingSettings).toHaveBeenCalledWith(ORG_ID, { invoiceTermsDays }, expect.anything());
+  });
+
+  it.each([-1, 366, 2.5])('rejects out-of-range invoiceTermsDays %s (→ 400, no service call)', async (invoiceTermsDays) => {
+    const res = await invoiceSettingsRoutes.request(`/orgs/${ORG_ID}/billing-settings`, jsonBody({ invoiceTermsDays }));
+    expect(res.status).toBe(400);
+    expect(svc.updateOrgBillingSettings).not.toHaveBeenCalled();
+  });
+
   it('PATCH /orgs/:orgId/billing-settings rejects a non-UUID orgId (→ 400, no service call)', async () => {
     const res = await invoiceSettingsRoutes.request('/orgs/not-a-uuid/billing-settings', jsonBody({ taxExempt: true }));
     expect(res.status).toBe(400);

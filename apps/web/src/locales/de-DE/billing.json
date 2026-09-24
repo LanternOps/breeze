@@ -2202,6 +2202,13 @@
       "taxId": "Steuer-ID",
       "taxRate": "Steuersatz (%)",
       "title": "Steuer"
+    },
+    "terms": {
+      "description": "Tage ab Rechnungsstellung, bis die Rechnungen dieser Organisation fällig sind. Leer lassen, um den Partnerstandard zu verwenden. Änderungen gelten für ab jetzt ausgestellte Rechnungen; ausgestellte Rechnungen behalten ihr Fälligkeitsdatum.",
+      "invalid": "Geben Sie eine ganze Zahl von 0 bis 365 Tagen ein.",
+      "partnerDefault": "Partnerstandard",
+      "paymentTermsDays": "Zahlungsbedingungen (Tage)",
+      "title": "Zahlungsbedingungen"
     }
   },
   "partnerBillingSettings": {

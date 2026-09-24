@@ -43,7 +43,7 @@ function queueResult(rows: unknown[]) { results.push(rows); }
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
-    const methods = ['select', 'from', 'where', 'limit', 'orderBy', 'insert', 'values', 'returning', 'update', 'set', 'delete', 'for', 'innerJoin', 'execute', 'transaction'];
+    const methods = ['select', 'from', 'where', 'limit', 'orderBy', 'insert', 'values', 'returning', 'update', 'set', 'delete', 'for', 'innerJoin', 'leftJoin', 'execute', 'transaction'];
     for (const m of methods) chain[m] = vi.fn(() => chain);
     (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) => {
       const rows = results.shift() ?? [];

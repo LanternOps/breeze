@@ -2202,6 +2202,13 @@
       "taxId": "Vergi Numarası",
       "taxRate": "Vergi oranı (%)",
       "title": "Vergi"
+    },
+    "terms": {
+      "description": "Bu kuruluşun faturalarının düzenlenmesinden vadesine kadar geçen gün sayısı. İş ortağı varsayılanını kullanmak için boş bırakın. Değişiklikler bundan sonra düzenlenen faturalara uygulanır; düzenlenmiş faturalar vade tarihlerini korur.",
+      "invalid": "0 ile 365 arasında tam sayı olarak gün girin.",
+      "partnerDefault": "İş ortağı varsayılanı",
+      "paymentTermsDays": "Ödeme koşulları (gün)",
+      "title": "Ödeme koşulları"
     }
   },
   "partnerBillingSettings": {

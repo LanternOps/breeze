@@ -2202,6 +2202,13 @@
       "taxId": "ID fiscal",
       "taxRate": "Alíquota de imposto (%)",
       "title": "Imposto"
+    },
+    "terms": {
+      "description": "Dias entre a emissão e o vencimento das faturas desta organização. Deixe em branco para usar o padrão do parceiro. As alterações valem para faturas emitidas a partir de agora; faturas já emitidas mantêm a data de vencimento.",
+      "invalid": "Informe um número inteiro de dias entre 0 e 365.",
+      "partnerDefault": "Padrão do parceiro",
+      "paymentTermsDays": "Prazo de pagamento (dias)",
+      "title": "Prazo de pagamento"
     }
   },
   "partnerBillingSettings": {

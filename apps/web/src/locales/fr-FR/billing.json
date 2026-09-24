@@ -2202,6 +2202,13 @@
       "taxId": "Identifiant fiscal",
       "taxRate": "Taux de taxe (%)",
       "title": "Taxe"
+    },
+    "terms": {
+      "description": "Nombre de jours entre l'émission et l'échéance des factures de cette organisation. Laissez vide pour utiliser la valeur par défaut du partenaire. Les modifications s'appliquent aux factures émises à partir de maintenant ; les factures émises conservent leur date d'échéance.",
+      "invalid": "Saisissez un nombre entier de jours entre 0 et 365.",
+      "partnerDefault": "Valeur par défaut du partenaire",
+      "paymentTermsDays": "Délai de paiement (jours)",
+      "title": "Délai de paiement"
     }
   },
   "partnerBillingSettings": {

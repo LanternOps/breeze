@@ -2202,6 +2202,13 @@
       "taxId": "Impuesto ID",
       "taxRate": "Tasa impositiva (%)",
       "title": "Impuesto"
+    },
+    "terms": {
+      "description": "Días desde la emisión hasta el vencimiento de las facturas de esta organización. Déjelo en blanco para usar el valor predeterminado del socio. Los cambios se aplican a las facturas emitidas a partir de ahora; las facturas emitidas conservan su fecha de vencimiento.",
+      "invalid": "Ingrese un número entero de días entre 0 y 365.",
+      "partnerDefault": "Valor predeterminado del socio",
+      "paymentTermsDays": "Condiciones de pago (días)",
+      "title": "Condiciones de pago"
     }
   },
   "partnerBillingSettings": {

@@ -159,6 +159,20 @@ describe('partnerBillingSettingsSchema — contact fields', () => {
   });
 });
 
+describe('orgBillingSettingsSchema — payment terms override (#6229)', () => {
+  it.each([0, 1, 30, 365])('accepts %i days', (n) => {
+    expect(orgBillingSettingsSchema.parse({ invoiceTermsDays: n }).invoiceTermsDays).toBe(n);
+  });
+
+  it('accepts null (clear the override = inherit the partner default)', () => {
+    expect(orgBillingSettingsSchema.parse({ invoiceTermsDays: null }).invoiceTermsDays).toBeNull();
+  });
+
+  it.each([-1, 366, 1.5, '30'])('rejects %s', (n) => {
+    expect(orgBillingSettingsSchema.safeParse({ invoiceTermsDays: n }).success).toBe(false);
+  });
+});
+
 describe('orgBillingSettingsSchema — billing contact', () => {
   it('accepts a billing contact email + name', () => {
     const parsed = orgBillingSettingsSchema.parse({

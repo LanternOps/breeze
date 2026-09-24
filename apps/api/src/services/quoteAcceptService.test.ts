@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const { stagePax8OrderFromQuoteMock, createContractMock, createExecutedDocumentsMock, callLog } = vi.hoisted(() => ({
   stagePax8OrderFromQuoteMock: vi.fn(),
@@ -40,7 +40,7 @@ function queueResult(rows: unknown[]) { results.push(rows); }
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
-    const methods = ['select', 'from', 'where', 'limit', 'orderBy', 'insert', 'values', 'returning', 'update', 'set', 'delete', 'for', 'innerJoin', 'execute', 'transaction'];
+    const methods = ['select', 'from', 'where', 'limit', 'orderBy', 'insert', 'values', 'returning', 'update', 'set', 'delete', 'for', 'innerJoin', 'leftJoin', 'execute', 'transaction'];
     for (const m of methods) chain[m] = vi.fn(() => chain);
     (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) => {
       const rows = results.shift() ?? [];
@@ -58,6 +58,8 @@ vi.mock('../db', () => {
 
 import { acceptQuote } from './quoteAcceptService';
 import { db } from '../db';
+import { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { computeQuoteSha256 } from './quoteContentHash';
 import { buildContractHashParts } from './contractDocumentService';
 import type { ContractBlockRenderData } from './contractTemplateRender';
@@ -66,6 +68,7 @@ type Chain = {
   set: { mock: { calls: unknown[][] } };
   values: { mock: { calls: unknown[][] } };
   insert: { mock: { calls: unknown[][] } };
+  leftJoin: { mock: { calls: unknown[][] } };
 };
 
 const baseParams = {
@@ -160,6 +163,49 @@ describe('acceptQuote deposit snapshot', () => {
 
     const setMock = (db as unknown as Chain).set;
     expect(setMock.mock.calls[0]![0]).toMatchObject({ documentLocale: 'de-DE' });
+  });
+
+  // Settings consolidation W06 (#6229): the direct accept issue resolves terms
+  // through the SAME resolver as issueInvoice — org override ?? partner ?? 30.
+  // The org's terms ride on the partner read (left join), so no extra query.
+  describe('auto-issued invoice due date from resolved payment terms', () => {
+    beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-09-23T12:00:00Z')); });
+    afterEach(() => { vi.useRealTimers(); });
+
+    it('uses the org override over the partner default', async () => {
+      queueAcceptHappyPath({}, {}, { termsDays: 30, orgTermsDays: 10 });
+      await acceptQuote(baseParams);
+      const setMock = (db as unknown as Chain).set;
+      expect(setMock.mock.calls[0]![0]).toMatchObject({ issueDate: '2026-09-23', dueDate: '2026-10-03' });
+    });
+
+    it('an org override of 0 is due on the issue date', async () => {
+      queueAcceptHappyPath({}, {}, { termsDays: 30, orgTermsDays: 0 });
+      await acceptQuote(baseParams);
+      const setMock = (db as unknown as Chain).set;
+      expect(setMock.mock.calls[0]![0]).toMatchObject({ dueDate: '2026-09-23' });
+    });
+
+    it('a blank org override inherits the partner default', async () => {
+      queueAcceptHappyPath({}, {}, { termsDays: 14, orgTermsDays: null });
+      await acceptQuote(baseParams);
+      const setMock = (db as unknown as Chain).set;
+      expect(setMock.mock.calls[0]![0]).toMatchObject({ dueDate: '2026-10-07' });
+    });
+
+    it('joins the quote org onto the partner read (scoped to the same partner)', async () => {
+      queueAcceptHappyPath({}, {}, { termsDays: 30, orgTermsDays: 5 });
+      await acceptQuote(baseParams);
+      const leftJoin = (db as unknown as Chain).leftJoin;
+      expect(leftJoin).toHaveBeenCalledTimes(1);
+      // The ON clause must pin the org to the quote's org AND to the same
+      // partner — dropping the partner predicate is the cross-tenant leak the
+      // join comment rules out, and the positional mock can't see it otherwise.
+      const { sql, params } = new PgDialect().sqlToQuery(leftJoin.mock.calls[0]![1] as SQL);
+      expect(sql).toContain('"organizations"."id" = $');
+      expect(sql).toContain('"organizations"."partner_id" = "partners"."id"');
+      expect(params).toContain('org1');
+    });
   });
 
   it('leaves depositDue unset on the invoice when the quote has no deposit configured', async () => {
