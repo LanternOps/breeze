@@ -187,6 +187,25 @@ export default function AiUsagePage() {
 
   const formatTokens = (n: number) => n >= 1_000_000 ? `${formatNumber(n / 1_000_000, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}M` : n >= 1_000 ? `${formatNumber(n / 1_000, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}K` : formatNumber(n);
 
+  /**
+   * A fired threshold survives raising or removing the budget it fired
+   * against — the alert row is history, not a live gauge. Sweep E8: this
+   * showed "80% monthly alert sent" while the effective monthly budget read
+   * "No limit". Hide a rung once its period's CURRENT effective budget is
+   * confirmed null (no limit); `effectiveBudget === null` just means it
+   * hasn't loaded yet (or there's no org context), so those rungs stay
+   * visible rather than flickering off and back on.
+   */
+  const budgetForPeriod = (period: string): number | null | undefined => {
+    if (!effectiveBudget) return undefined;
+    if (period === 'monthly') return effectiveBudget.monthlyBudgetCents;
+    if (period === 'daily') return effectiveBudget.dailyBudgetCents;
+    return undefined;
+  };
+  const visibleFiredRungs = (usage?.alerts?.fired ?? []).filter(
+    (f) => budgetForPeriod(f.period) !== null,
+  );
+
   return (
     <div className="space-y-6">
       <div>
@@ -244,9 +263,9 @@ export default function AiUsagePage() {
         )}
       </div>
 
-      {usage?.alerts?.fired?.length ? (
+      {visibleFiredRungs.length ? (
         <p data-testid="ai-budget-fired-rungs" className="text-xs text-muted-foreground">
-          {usage.alerts.fired.map((f) => {
+          {visibleFiredRungs.map((f) => {
             const periodKey = PERIOD_LABEL_KEYS[f.period as keyof typeof PERIOD_LABEL_KEYS];
             return t('aiUsagePage.firedRung', {
               pct: f.thresholdPct,
