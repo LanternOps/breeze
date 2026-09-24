@@ -486,6 +486,7 @@
       "more": "Mehr laden",
       "empty": "Kein Konvertierungsverlauf.",
       "system": "Automatisches System",
+      "reverted": "Rückgängig gemacht",
       "deadline": "Rückgängig ist nach Entfernung der Quelllaufzeit durch W05d nicht verfügbar."
     },
     "errorCodes": {

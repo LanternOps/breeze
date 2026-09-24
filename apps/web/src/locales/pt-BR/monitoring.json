@@ -486,6 +486,7 @@
       "more": "Carregar mais",
       "empty": "Nenhum histórico de conversão.",
       "system": "Sistema",
+      "reverted": "Revertido",
       "deadline": "Desfazer fica indisponível após W05d remover o avaliador de origem."
     },
     "errorCodes": {

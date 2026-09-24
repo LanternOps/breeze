@@ -486,6 +486,7 @@
       "more": "Carica altro",
       "empty": "Nessuna conversione precedente.",
       "system": "Sistema",
+      "reverted": "Annullato",
       "deadline": "Annullamento non disponibile dopo la rimozione del motore di origine in W05d."
     },
     "errorCodes": {

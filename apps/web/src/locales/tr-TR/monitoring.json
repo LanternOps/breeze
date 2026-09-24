@@ -486,6 +486,7 @@
       "more": "Daha fazla yükle",
       "empty": "Dönüştürme geçmişi yok.",
       "system": "Sistem",
+      "reverted": "Geri alındı",
       "deadline": "W05d kaynak değerlendiriciyi kaldırdıktan sonra geri alma kullanılamaz."
     },
     "errorCodes": {

@@ -486,6 +486,7 @@
       "more": "Cargar más",
       "empty": "No hay historial de conversión.",
       "system": "Sistema",
+      "reverted": "Revertido",
       "deadline": "Deshacer no está disponible cuando W05d elimina el evaluador de origen."
     },
     "errorCodes": {
