@@ -47,6 +47,10 @@ export default defineConfig({
       // (real postgres + autoMigrate). Belongs to vitest.integration.config.ts;
       // the no-DB unit runner would fail it on connect.
       'src/services/warrantyAlertEvaluator.integration.test.ts',
+      // Hardware & RAID monitoring real-DB migration/RLS proof (W01 #6856):
+      // imports `__tests__/integration/setup` (real postgres pool + autoMigrate).
+      // Belongs to vitest.integration.config.ts.
+      'src/services/hardwareHealth/**/*.integration.test.ts',
       // Suppression-expiry reaper real-DB test: imports `__tests__/integration/setup`
       // (real postgres pool + autoMigrate in its beforeAll), so the unit runner's
       // no-DB environment fails the suite on connect. Belongs to vitest.integration.config.ts.
