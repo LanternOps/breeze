@@ -2,6 +2,7 @@ package hwhealth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -29,6 +30,13 @@ func TestRunnerChild(t *testing.T) {
 }
 
 func TestRunner(t *testing.T) {
+	// os.Args[0] may be cwd-relative (e.g. `hwhealth.test.exe` launched from its
+	// own directory on Windows), which exec refuses with ErrDot; use the
+	// absolute path so every mode actually spawns the child.
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
 		mode     string
 		code     int
@@ -44,9 +52,15 @@ func TestRunner(t *testing.T) {
 				d = 50 * time.Millisecond
 			}
 			start := time.Now()
-			r, e := runTool(context.Background(), d, os.Args[0], "-test.run=TestRunnerChild", "--", "hw-child", tc.mode)
+			r, e := runTool(context.Background(), d, self, "-test.run=TestRunnerChild", "--", "hw-child", tc.mode)
 			if (e != nil) != tc.bad || r.Truncated != tc.cap {
 				t.Fatalf("%+v %v", r, e)
+			}
+			if tc.mode == "hang" && !errors.Is(e, context.DeadlineExceeded) {
+				t.Fatalf("hang must fail on the deadline, got %v", e)
+			}
+			if tc.mode == "overflow" && r.ExitCode != 0 {
+				t.Fatalf("overflow child must have run to completion: %+v", r)
 			}
 			if !tc.bad && (r.ExitCode != tc.code || !strings.Contains(string(r.Stdout), "smart_status")) {
 				t.Fatal(r)
