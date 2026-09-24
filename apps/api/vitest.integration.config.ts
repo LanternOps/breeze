@@ -28,6 +28,13 @@ export default defineConfig({
       'src/services/contractRenewal.integration.test.ts',
       // Hardware & RAID monitoring real-DB migration/RLS proof (W01 #6856).
       'src/services/hardwareHealth/**/*.integration.test.ts',
+      // Hardware & RAID monitoring (W05 BMC in-band): real-DB migration/enum
+      // proof and BMC discovery-worker/topology-publish suites. Import
+      // `__tests__/integration/setup` (real postgres pool + autoMigrate).
+      // Belong to vitest.integration.config.ts (excluded from the unit runner).
+      'src/services/discovery/agentReportedBmcLink.integration.test.ts',
+      'src/jobs/discoveryWorker.bmc.integration.test.ts',
+      'src/services/topology/bmc.integration.test.ts',
       // #5861 Customer Portal Network Visibility: real-Postgres proof of
       // org isolation and partner-wide monitor result scoping.
       'src/services/portal/networkVisibilityReadModel.integration.test.ts',
