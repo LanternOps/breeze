@@ -40,6 +40,9 @@ import {
 } from '../../db';
 import {
   configPolicyAssignments,
+  configPolicyAlertRules,
+  configPolicyMonitoringSettings,
+  configPolicyMonitoringWatches,
   configPolicyFeatureLinks,
   configPolicyMonitors,
   configurationPolicies,
@@ -178,10 +181,18 @@ async function seedFixture(): Promise<Fixture> {
 
   const baselinePolicyId = await withDbAccessContext(dbCtxA, async () => {
     const policy = await createConfigPolicy({ orgId: envA.orgId }, { name: 'Server Baseline Monitoring', status: 'inactive' }, envA.userId);
-    await addFeatureLink(policy.id, 'monitoring', null, {
+    // Persist the retained legacy link and retired child exactly as after upgrading.
+    const legacySettings = {
       checkIntervalSeconds: 60,
       watches: [{ watchType: 'service', name: 'Spooler', enabled: true, alertOnStop: true, autoRestart: false }],
-    });
+    };
+    await db.insert(configPolicyFeatureLinks).values({ configPolicyId: policy.id, featureType: 'monitoring', inlineSettings: legacySettings });
+    const monitorsLink = await addFeatureLink(policy.id, 'monitors', null, { inheritance: 'cumulative', items: [], checkIntervalSeconds: 60 });
+    // The upgrade re-keys monitoring settings to the monitors link.
+    const [settings] = await db.insert(configPolicyMonitoringSettings).values({ featureLinkId: monitorsLink!.id, checkIntervalSeconds: 60 }).onConflictDoUpdate({
+      target: configPolicyMonitoringSettings.featureLinkId, set: { checkIntervalSeconds: 60 },
+    }).returning();
+    await db.insert(configPolicyMonitoringWatches).values({ settingsId: settings!.id, watchType: 'service', name: 'Spooler', retiredAt: new Date(), retiredReason: 'unconvertible:equivalence_delta' });
     await assignPolicy(policy.id, 'organization', envA.orgId, 0, envA.userId);
     const activated = await updateConfigPolicy(policy.id, { status: 'active' }, authA);
     return activated!.id as string;
@@ -268,7 +279,7 @@ function fullApproval(deviceIds: [string, string, string], displacementsAccepted
   return {
     functions: ['file_server'],
     monitoring: ['monitoring:file_server:watch:0', 'monitoring:file_server:rule:0'],
-    retired: ['retired:0'],
+    retired: [],
     automation: [],
     legacy: [],
     roleCorrections: [deviceIds[1]],
@@ -369,6 +380,14 @@ async function readMonitoringLink(policyId: string) {
   return row;
 }
 
+async function readLegacyWatches(policyId: string) {
+  return getTestDb().select({ watch: configPolicyMonitoringWatches })
+    .from(configPolicyMonitoringWatches)
+    .innerJoin(configPolicyMonitoringSettings, eq(configPolicyMonitoringWatches.settingsId, configPolicyMonitoringSettings.id))
+    .innerJoin(configPolicyFeatureLinks, eq(configPolicyMonitoringSettings.featureLinkId, configPolicyFeatureLinks.id))
+    .where(eq(configPolicyFeatureLinks.configPolicyId, policyId));
+}
+
 async function readAlertRuleLink(policyId: string) {
   const [row] = await getTestDb()
     .select()
@@ -420,13 +439,14 @@ describe('Fleet Design apply / rollback / ledger against live Postgres (Fleet De
       functionKey: 'file_server', deviceIds: f.deviceIds, roleCorrectionDeviceId: f.deviceIds[1], retiredPolicyId: f.baselinePolicyId, rule: GOOD_RULE,
     }));
 
-    const preview = await withDbAccessContext(f.dbCtxA, () => previewFleetDesignApply(f.authA, runId, fullApproval(f.deviceIds)));
+    const preview = await withDbAccessContext(f.dbCtxA, () => previewFleetDesignApply(f.authA, runId, { ...fullApproval(f.deviceIds), retired: ['retired:0'] }));
 
     expect(preview.functions[0]?.keptManual).toBe(1);
     expect(preview.policies[0]?.displaces).toEqual(
-      expect.arrayContaining([expect.objectContaining({ policyId: f.baselinePolicyId, featureType: 'monitoring', deviceCount: 3 })]),
+      expect.arrayContaining([expect.objectContaining({ policyId: f.baselinePolicyId, featureType: 'monitors', deviceCount: 3 })]),
     );
-    expect(preview.retired[0]?.found).toBe(true);
+    expect(preview.retired[0]).toMatchObject({ found: true, editable: false });
+    expect(preview.blockers).toContainEqual({ itemRef: 'retired:0', reason: 'legacy_source_retired' });
     expect(preview.roleCorrections[0]?.to).toBe('server');
   });
 
@@ -443,7 +463,7 @@ describe('Fleet Design apply / rollback / ledger against live Postgres (Fleet De
     expect(await readGroupByName(f.envA.orgId, 'Fleet Design: File server')).toBeUndefined();
   });
 
-  runDb('3. apply with displacementsAccepted: writes function/group, policy, monitoring, retire, role correction', async () => {
+  runDb('3. apply with displacementsAccepted: writes function/group, policy, monitors and role correction; legacy sources stay untouched', async () => {
     const f = await seedFixture();
     const runId = await seedReportRun(f.envA.orgId, buildOutcome({
       functionKey: 'file_server', deviceIds: f.deviceIds, roleCorrectionDeviceId: f.deviceIds[1], retiredPolicyId: f.baselinePolicyId, rule: GOOD_RULE,
@@ -452,7 +472,7 @@ describe('Fleet Design apply / rollback / ledger against live Postgres (Fleet De
     const result = await withDbAccessContext(f.dbCtxA, () => applyFleetDesign(f.authA, runId, fullApproval(f.deviceIds, [f.baselinePolicyId])));
     expect(result.partial).toBeNull();
     expect(result.applied.sort()).toEqual([
-      'functions:file_server', 'monitoring:file_server:rule:0', 'monitoring:file_server:watch:0', 'policy:file_server', 'retired:0', `roleCorrections:${f.deviceIds[1]}`,
+      'functions:file_server', 'monitoring:file_server:rule:0', 'monitoring:file_server:watch:0', 'policy:file_server', `roleCorrections:${f.deviceIds[1]}`,
     ].sort());
 
     const group = await readGroupByName(f.envA.orgId, DEVICE_FUNCTION_LABELS.file_server ? 'Fleet Design: File server' : 'Fleet Design: file_server');
@@ -497,14 +517,14 @@ describe('Fleet Design apply / rollback / ledger against live Postgres (Fleet De
 
     const baselineMonitoringLink = await readMonitoringLink(f.baselinePolicyId);
     const baselineWatches = (baselineMonitoringLink?.inlineSettings as { watches: Array<{ name: string; enabled?: boolean }> }).watches;
-    expect(baselineWatches.find((w) => w.name === 'Spooler')?.enabled).toBe(false);
+    expect(baselineWatches.find((w) => w.name === 'Spooler')?.enabled).toBe(true);
 
     const device2 = await readDevice(f.deviceIds[1]);
     expect(device2).toMatchObject({ deviceRole: 'server', deviceRoleSource: 'ai' });
 
     expect(ledger.every((r) => r.status === 'applied')).toBe(true);
     expect(ledger.map((r) => r.itemRef).sort()).toEqual([
-      'functions:file_server', 'monitoring:file_server:rule:0', 'monitoring:file_server:watch:0', 'policy:file_server', 'retired:0', `roleCorrections:${f.deviceIds[1]}`,
+      'functions:file_server', 'monitoring:file_server:rule:0', 'monitoring:file_server:watch:0', 'policy:file_server', `roleCorrections:${f.deviceIds[1]}`,
     ].sort());
   });
 
@@ -523,7 +543,7 @@ describe('Fleet Design apply / rollback / ledger against live Postgres (Fleet De
 
     expect(second.applied).toEqual([]);
     expect(second.skipped.sort()).toEqual([
-      'functions:file_server', 'monitoring:file_server:rule:0', 'monitoring:file_server:watch:0', 'retired:0', `roleCorrections:${f.deviceIds[1]}`,
+      'functions:file_server', 'monitoring:file_server:rule:0', 'monitoring:file_server:watch:0', `roleCorrections:${f.deviceIds[1]}`,
     ].sort());
 
     const ledgerAfter = await readLedger(runId);
@@ -560,7 +580,7 @@ describe('Fleet Design apply / rollback / ledger against live Postgres (Fleet De
     expect(inserted).toBeDefined();
   });
 
-  runDb('6. rollback: policy archived, assignment gone, Spooler re-enabled, group deleted, role restored, assessments cleared', async () => {
+  runDb('6. rollback: policy archived, assignment gone, legacy Spooler unchanged, group deleted, role restored, assessments cleared', async () => {
     const f = await seedFixture();
     const runId = await seedReportRun(f.envA.orgId, buildOutcome({
       functionKey: 'file_server', deviceIds: f.deviceIds, roleCorrectionDeviceId: f.deviceIds[1], retiredPolicyId: f.baselinePolicyId, rule: GOOD_RULE,
@@ -629,14 +649,14 @@ describe('Fleet Design apply / rollback / ledger against live Postgres (Fleet De
       { itemRef: 'functions:file_server', reason: 'modified_since_apply' },
     ]));
     expect(result.refused).toHaveLength(2);
-    expect(result.rolledBack).toEqual(expect.arrayContaining(['retired:0', `roleCorrections:${f.deviceIds[1]}`]));
-    expect(result.rolledBack).toHaveLength(2);
+    expect(result.rolledBack).toEqual(expect.arrayContaining([`roleCorrections:${f.deviceIds[1]}`]));
+    expect(result.rolledBack).toHaveLength(1);
 
     const policy = await readPolicy(policyId);
     expect(policy?.status).toBe('active'); // untouched — refused, not rolled back
   });
 
-  runDb('8. partial apply: an invalid rule shape fails step 3; steps 1-2 stay applied; rollback restores them', async () => {
+  runDb('8. partial apply: an invalid rule shape fails step 3; function changes stay applied and rollback restores them', async () => {
     const f = await seedFixture();
     // Independent devices + function key so this scenario cannot collide
     // with test 7's dangling (refused, still-`applied`) file_server group.
@@ -657,7 +677,7 @@ describe('Fleet Design apply / rollback / ledger against live Postgres (Fleet De
     const approval: FleetDesignApproval = {
       functions: ['print_server'],
       monitoring: ['monitoring:print_server:watch:0', 'monitoring:print_server:rule:0'],
-      retired: ['retired:0'],
+      retired: [],
       automation: [], legacy: [],
       roleCorrections: [printDeviceIds[1]],
       displacementsAccepted: [f.baselinePolicyId],
@@ -665,7 +685,7 @@ describe('Fleet Design apply / rollback / ledger against live Postgres (Fleet De
 
     const result = await withDbAccessContext(f.dbCtxA, () => applyFleetDesign(f.authA, runId, approval));
     expect(result.partial).toMatchObject({ failedStep: 3 });
-    expect(result.applied.sort()).toEqual(['functions:print_server', 'retired:0'].sort());
+    expect(result.applied.sort()).toEqual(['functions:print_server'].sort());
 
     const group = await readGroupByName(f.envA.orgId, 'Fleet Design: Print server');
     expect(group).toBeDefined();
@@ -673,16 +693,16 @@ describe('Fleet Design apply / rollback / ledger against live Postgres (Fleet De
 
     const baselineMonitoringLink = await readMonitoringLink(f.baselinePolicyId);
     const baselineWatches = (baselineMonitoringLink?.inlineSettings as { watches: Array<{ name: string; enabled?: boolean }> }).watches;
-    expect(baselineWatches.find((w) => w.name === 'Spooler')?.enabled).toBe(false);
+    expect(baselineWatches.find((w) => w.name === 'Spooler')?.enabled).toBe(true);
 
     const ledger = await readLedger(runId);
     const failedRow = ledger.find((r) => r.itemRef === 'step:3');
     expect(failedRow).toMatchObject({ status: 'failed', itemKind: 'policy' });
-    expect(ledger.filter((r) => r.status === 'applied').map((r) => r.itemRef).sort()).toEqual(['functions:print_server', 'retired:0'].sort());
+    expect(ledger.filter((r) => r.status === 'applied').map((r) => r.itemRef).sort()).toEqual(['functions:print_server'].sort());
 
     const rollback = await withDbAccessContext(f.dbCtxA, () => rollbackFleetDesign(f.authA, runId));
     expect(rollback.refused).toEqual([]);
-    expect(rollback.rolledBack.sort()).toEqual(['functions:print_server', 'retired:0'].sort());
+    expect(rollback.rolledBack.sort()).toEqual(['functions:print_server'].sort());
     const groupAfterRollback = await getTestDb().select().from(deviceGroups).where(eq(deviceGroups.id, group!.id));
     expect(groupAfterRollback).toEqual([]);
     const baselineAfterRollback = await readMonitoringLink(f.baselinePolicyId);
@@ -771,6 +791,8 @@ describe('Fleet Design apply / rollback / ledger against live Postgres (Fleet De
     const createdRefs = policyRows[0]!.createdRefs!;
     const linksSnapshot = createdRefs.linksSnapshot as { monitoring: unknown; alertRule: unknown; monitors?: unknown };
     expect(linksSnapshot.monitors).toBeDefined();
+    expect(linksSnapshot.monitoring).toBeNull();
+    expect(linksSnapshot.alertRule).toBeNull();
     expect(Object.keys(createdRefs.monitorIdsByItemRef ?? {}).sort())
       .toEqual(['monitoring:file_server:rule:0', 'monitoring:file_server:watch:0']);
 
@@ -787,62 +809,68 @@ describe('Fleet Design apply / rollback / ledger against live Postgres (Fleet De
     expect(policyAfterRollback?.status).toBe('archived');
   });
 
-  runDb('11. retire kind "rule": apply removes only the named item from the alert_rule link, rollback restores it exactly', async () => {
-    const f = await seedFixture();
-    // Give the baseline policy a second, independent alert_rule link with
-    // two items so retiring one proves only the named item moves.
-    // `notificationChannelIds` is deliberately OMITTED here: the read path
-    // (assembleInlineSettings) returns the raw NULL column, so a link seeded
-    // this way and re-saved by the retire step reproduces the round trip that
-    // used to throw `expected array, received null` before
-    // alertRuleItemSchema.notificationChannelIds gained `.nullable()`.
-    await withDbAccessContext(f.dbCtxA, () => addFeatureLink(f.baselinePolicyId, 'alert_rule', null, {
-      items: [
-        { name: 'LegacyDiskRule', severity: 'high', conditions: [{ type: 'metric', metric: 'disk', operator: 'gt', value: 90 }], cooldownMinutes: 30, rationale: 'stale' },
-        { name: 'KeepRule', severity: 'low', conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 90 }], cooldownMinutes: 15, rationale: 'keep me' },
-      ],
-    }));
+  for (const kind of ['watch', 'rule'] as const) {
+    runDb(`11. legacy ${kind} retirement blocks the whole approval and preserves historical rows`, async () => {
+      const f = await seedFixture();
+      const legacyItems = [
+        { name: 'LegacyDiskRule', severity: 'high' as const, conditions: [{ type: 'metric', metric: 'disk', operator: 'gt', value: 90 }], cooldownMinutes: 30, rationale: 'stale' },
+        { name: 'KeepRule', severity: 'low' as const, conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 90 }], cooldownMinutes: 15, rationale: 'keep me' },
+      ];
+      await withDbAccessContext(f.dbCtxA, async () => {
+        const [link] = await db.insert(configPolicyFeatureLinks).values({
+          configPolicyId: f.baselinePolicyId, featureType: 'alert_rule', inlineSettings: { items: legacyItems },
+        }).returning();
+        await db.insert(configPolicyAlertRules).values(legacyItems.map((item, sortOrder) => ({
+          ...item, featureLinkId: link!.id, sortOrder, retiredAt: new Date(), retiredReason: 'unconvertible:equivalence_delta',
+        })));
+      });
+      const submission: FleetDesignSubmission = {
+        ...buildSubmission({ functionKey: 'file_server', deviceIds: f.deviceIds, roleCorrectionDeviceId: f.deviceIds[1], retiredPolicyId: f.baselinePolicyId, rule: GOOD_RULE }),
+        retired: [{ kind, policyId: f.baselinePolicyId, policyName: 'Server Baseline Monitoring', itemName: kind === 'rule' ? 'LegacyDiskRule' : 'Spooler', reason: 'Superseded' }],
+      };
+      const outcome = fleetDesignOutcomeFromSubmission(submission, {
+        deviceIds: new Set(f.deviceIds),
+        baseline: { alertsPer100EndpointsPerMonth: null, ticketsPerMonth: null, precursors: [] },
+        generatedAt: new Date().toISOString(),
+      });
+      const runId = await seedReportRun(f.envA.orgId, outcome);
+      const approval = { ...fullApproval(f.deviceIds, [f.baselinePolicyId]), retired: ['retired:0'] };
+      const linkBefore = await readAlertRuleLink(f.baselinePolicyId);
+      const watchLinkBefore = await readMonitoringLink(f.baselinePolicyId);
+      const rulesBefore = await getTestDb().select().from(configPolicyAlertRules).where(eq(configPolicyAlertRules.featureLinkId, linkBefore!.id));
+      const watchesBefore = await readLegacyWatches(f.baselinePolicyId);
+      const roleBefore = await readDevice(f.deviceIds[1]);
+      await expect(withDbAccessContext(f.dbCtxA, () => applyFleetDesign(f.authA, runId, approval)))
+        .rejects.toMatchObject({ code: 'blocked', payload: { blockers: [{ itemRef: 'retired:0', reason: 'legacy_source_retired' }] } });
+      expect(await readLedger(runId)).toEqual([]);
+      expect(await readGroupByName(f.envA.orgId, 'Fleet Design: File server')).toBeUndefined();
+      expect(await readDevice(f.deviceIds[1])).toEqual(roleBefore);
+      expect(await readAlertRuleLink(f.baselinePolicyId)).toEqual(linkBefore);
+      expect(await readMonitoringLink(f.baselinePolicyId)).toEqual(watchLinkBefore);
+      expect(await getTestDb().select().from(configPolicyAlertRules).where(eq(configPolicyAlertRules.featureLinkId, linkBefore!.id))).toEqual(rulesBefore);
+      expect(await readLegacyWatches(f.baselinePolicyId)).toEqual(watchesBefore);
 
-    const dRule1 = await createDevice(f.envA.orgId, f.envA.siteId, 'fda-rule-1');
-    const dRule2 = await createDevice(f.envA.orgId, f.envA.siteId, 'fda-rule-2');
-    const dRule3 = await createDevice(f.envA.orgId, f.envA.siteId, 'fda-rule-3');
-    const ruleDeviceIds: [string, string, string] = [dRule1, dRule2, dRule3];
+      // A pre-upgrade ledger can still be inspected, but rollback must not
+      // recreate or edit a retired source even though its historical link exists.
+      const targetLink = kind === 'rule' ? linkBefore! : watchLinkBefore!;
+      await withDbAccessContext(f.dbCtxA, () => db.insert(fleetDesignAppliedItems).values({
+        reportRunId: runId, orgId: f.envA.orgId, itemRef: 'retired:0', itemKind: 'retired',
+        step: 2, status: 'applied', appliedByUserId: f.envA.userId,
+        createdRefs: { policyId: f.baselinePolicyId, linkId: targetLink.id },
+        beforeImage: { inlineSettings: targetLink.inlineSettings },
+      }));
+      const ledgerBefore = await readLedger(runId);
+      const rollback = await withDbAccessContext(f.dbCtxA, () => rollbackFleetDesign(f.authA, runId));
+      expect(rollback.rolledBack).toEqual([]);
+      expect(rollback.refused).toEqual([{ itemRef: 'retired:0', reason: 'legacy_source_retired' }]);
+      expect(await readLedger(runId)).toEqual(ledgerBefore);
+      expect(await readAlertRuleLink(f.baselinePolicyId)).toEqual(linkBefore);
+      expect(await readMonitoringLink(f.baselinePolicyId)).toEqual(watchLinkBefore);
+      expect(await getTestDb().select().from(configPolicyAlertRules).where(eq(configPolicyAlertRules.featureLinkId, linkBefore!.id))).toEqual(rulesBefore);
+      expect(await readLegacyWatches(f.baselinePolicyId)).toEqual(watchesBefore);
 
-    const submission: FleetDesignSubmission = {
-      ...buildSubmission({ functionKey: 'domain_controller', deviceIds: ruleDeviceIds, roleCorrectionDeviceId: ruleDeviceIds[1], retiredPolicyId: f.baselinePolicyId, rule: GOOD_RULE }),
-      retired: [{ kind: 'rule', policyId: f.baselinePolicyId, policyName: 'Server Baseline Monitoring', itemName: 'LegacyDiskRule', reason: 'Superseded by the function-specific policy' }],
-    };
-    const outcome = fleetDesignOutcomeFromSubmission(submission, {
-      deviceIds: new Set(ruleDeviceIds),
-      baseline: { alertsPer100EndpointsPerMonth: null, ticketsPerMonth: null, precursors: [] },
-      generatedAt: new Date().toISOString(),
     });
-    const runId = await seedReportRun(f.envA.orgId, outcome);
-    const approval: FleetDesignApproval = {
-      functions: ['domain_controller'],
-      monitoring: ['monitoring:domain_controller:watch:0', 'monitoring:domain_controller:rule:0'],
-      retired: ['retired:0'],
-      automation: [], legacy: [],
-      roleCorrections: [ruleDeviceIds[1]],
-      displacementsAccepted: [f.baselinePolicyId],
-    };
-
-    const result = await withDbAccessContext(f.dbCtxA, () => applyFleetDesign(f.authA, runId, approval));
-    expect(result.partial).toBeNull();
-    expect(result.applied).toEqual(expect.arrayContaining(['retired:0']));
-
-    const alertRuleLinkAfterApply = await readAlertRuleLink(f.baselinePolicyId);
-    const itemsAfterApply = (alertRuleLinkAfterApply?.inlineSettings as { items: Array<{ name: string }> }).items;
-    expect(itemsAfterApply.map((i) => i.name)).toEqual(['KeepRule']);
-
-    const rollback = await withDbAccessContext(f.dbCtxA, () => rollbackFleetDesign(f.authA, runId));
-    expect(rollback.refused).toEqual([]);
-    expect(rollback.rolledBack).toContain('retired:0');
-
-    const alertRuleLinkAfterRollback = await readAlertRuleLink(f.baselinePolicyId);
-    const itemsAfterRollback = (alertRuleLinkAfterRollback?.inlineSettings as { items: Array<{ name: string }> }).items;
-    expect(itemsAfterRollback.map((i) => i.name).sort()).toEqual(['KeepRule', 'LegacyDiskRule'].sort());
-  });
+  }
 
   // -------------------------------------------------------------------------
   // W04 (#5654): step 4 — approved scripts through the bundle importer
@@ -982,7 +1010,7 @@ describe('Fleet Design apply / rollback / ledger against live Postgres (Fleet De
       const result = await withDbAccessContext(f.dbCtxA, () => applyFleetDesign(f.authA, runId, approval));
       expect(result.partial).toEqual({ failedStep: 4, reason: 'injected failure after script import' });
       expect(result.applied.sort()).toEqual([
-        'functions:file_server', 'retired:0', 'policy:file_server', 'monitoring:file_server:watch:0', 'monitoring:file_server:rule:0',
+        'functions:file_server', 'policy:file_server', 'monitoring:file_server:watch:0', 'monitoring:file_server:rule:0',
       ].sort());
       expect(result.rollbackAvailable).toBe(true);
     } finally {
@@ -1008,7 +1036,7 @@ describe('Fleet Design apply / rollback / ledger against live Postgres (Fleet De
     expect(await readPolicy(policyId)).toMatchObject({ status: 'active' });
     const retiredLink = await readMonitoringLink(f.baselinePolicyId);
     expect((retiredLink?.inlineSettings as { watches: Array<{ name: string; enabled: boolean }> }).watches)
-      .toEqual(expect.arrayContaining([expect.objectContaining({ name: 'Spooler', enabled: false })]));
+      .toEqual(expect.arrayContaining([expect.objectContaining({ name: 'Spooler', enabled: true })]));
     // Step 5 was never entered after the failure.
     expect(await readDevice(f.deviceIds[1])).toMatchObject({ deviceRole: 'unknown', deviceRoleSource: 'auto' });
   });

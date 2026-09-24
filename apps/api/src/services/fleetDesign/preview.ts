@@ -31,7 +31,7 @@ import {
 import { db } from '../../db';
 import { configurationPolicies, deviceGroupMemberships, devices } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
-import { listFeatureLinks, policyAccessCondition, resolveEffectiveConfig } from '../configurationPolicy';
+import { policyAccessCondition, resolveEffectiveConfig } from '../configurationPolicy';
 import { canManagePartnerWidePolicies } from '../partnerWideAccess';
 import { findSecretVariableReferences, previewBundle } from '../scriptBundle';
 import { findReusableGroup, loadLedger, lockReportRun, type FleetDesignLedgerRow, type LockedReportRun } from './ledger';
@@ -222,7 +222,7 @@ export async function previewFleetDesignApplyWithContext(
       // it is not masking a failure (resolveEffectiveConfig's only null is the
       // device lookup, configurationPolicy.ts:2120).
       if (!eff) continue;
-      for (const featureType of ['monitoring', 'alert_rule'] as const) {
+      for (const featureType of ['monitors'] as const) {
         const winner = eff.features[featureType];
         if (!winner || winner.sourceLevel === 'default') continue;
         if (reusedPolicyId && winner.sourcePolicyId === reusedPolicyId) continue;
@@ -257,11 +257,11 @@ export async function previewFleetDesignApplyWithContext(
       kind: item.kind,
       itemName: item.itemName,
       found: resolved?.found ?? false,
-      editable: resolved?.editable ?? false,
+      editable: false,
     });
     if (!resolved || !resolved.found) { if (!appliedRefs.has(ref)) blockers.push({ itemRef: ref, reason: 'retired_item_not_found' }); continue; }
     if (!resolved.editable) { blockers.push({ itemRef: ref, reason: 'partner_wide_write_denied' }); continue; }
-    retiredResolved.set(ref, { item, linkId: resolved.linkId, inlineSettings: resolved.inlineSettings, policyOrgId: resolved.policyOrgId });
+    blockers.push({ itemRef: ref, reason: 'legacy_source_retired' });
   }
 
   // --- Section 5: automation scripts (W04) ---------------------------------
@@ -333,11 +333,10 @@ export async function previewFleetDesignApply(
 }
 
 /**
- * Resolve a retired item against the policy's CURRENT inline link. `found`
- * means the named watch is present and enabled / the named rule is present.
- * `editable` follows `updateConfigPolicy`'s gate: org-owned, or partner-wide
- * with `canManagePartnerWidePolicies`. A policy owned by ANOTHER org (the
- * design named a policy that later moved, or a stale id) reads as not found.
+ * Validate access to a historical retirement proposal's policy. Legacy sources
+ * cannot be edited after upgrading, so no filtered feature-link read is needed.
+ * `found` refers to the accessible historical policy; the preview marks every
+ * legacy proposal non-editable and supplies the typed retirement blocker.
  */
 async function resolveRetiredItem(
   auth: AuthContext,
@@ -356,16 +355,7 @@ async function resolveRetiredItem(
   if (policy.orgId !== null && policy.orgId !== orgId) return null;
 
   const editable = policy.orgId !== null || canManagePartnerWidePolicies(auth);
-  const featureType = item.kind === 'watch' ? 'monitoring' : 'alert_rule';
-  const links = await listFeatureLinks(policy.id);
-  const link = links.find((l) => l.featureType === featureType && !l.featurePolicyId);
-  if (!link) return { found: false, editable, policyName: policy.name, linkId: '', inlineSettings: null, policyOrgId: policy.orgId };
-
-  const settings = (link.inlineSettings ?? {}) as { watches?: Array<{ name: string; enabled?: boolean }>; items?: Array<{ name: string }> };
-  const found = item.kind === 'watch'
-    ? (settings.watches ?? []).some((w) => w.name === item.itemName && w.enabled !== false)
-    : (settings.items ?? []).some((r) => r.name === item.itemName);
-  return { found, editable, policyName: policy.name, linkId: link.id, inlineSettings: link.inlineSettings, policyOrgId: policy.orgId };
+  return { found: true, editable, policyName: policy.name, linkId: '', inlineSettings: null, policyOrgId: policy.orgId };
 }
 
 /**

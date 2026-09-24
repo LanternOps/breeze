@@ -1,5 +1,5 @@
 /**
- * Fleet Design apply (Fleet Designer W03, #5653; spec §4.8 steps 1, 2, 3, 5;
+ * Fleet Design apply (Fleet Designer W03, #5653; spec §4.8 steps 1, 3, 5;
  * step 4, scripts, W04 #5654 — see ./scripts.ts).
  *
  * Runs under the request's ambient `withDbAccessContext` transaction. Each
@@ -34,7 +34,6 @@ import {
   createConfigPolicy,
   listFeatureLinks,
   updateConfigPolicy,
-  updateFeatureLink,
 } from '../configurationPolicy';
 import { getMonitorDefinition, updateMonitorDefinition } from '../monitors/monitorService';
 import { attachFleetMonitors, ruleMonitorInput, snapshotFleetMonitors, watchMonitorInput } from './monitorAttachments';
@@ -101,6 +100,15 @@ export async function applyFleetDesign(
 ): Promise<FleetDesignApplyResult> {
   const previewCtx = await previewFleetDesignApplyWithContext(auth, reportRunId, approval);
   const { preview } = previewCtx;
+  // Defend the apply boundary as well as preview: legacy retirement cannot be
+  // part of an approved write set now that its feature links are read-only.
+  const retiredBlockers = [...previewCtx.retiredResolved.keys()]
+    .filter((itemRef) => !previewCtx.appliedRefs.has(itemRef))
+    .map((itemRef) => ({ itemRef, reason: 'legacy_source_retired' as const }));
+  if (retiredBlockers.length > 0) {
+    throw new FleetDesignApplyError('blocked', { blockers: retiredBlockers, unaccepted: [] });
+  }
+
   const accepted = new Set(approval.displacementsAccepted);
   const unaccepted = preview.policies.flatMap((p) => p.displaces).filter((d) => !accepted.has(d.policyId));
   if (preview.blockers.length > 0 || unaccepted.length > 0) {
@@ -125,7 +133,6 @@ export async function applyFleetDesign(
 
   const steps: Array<[number, (tx: ApplyTransaction) => Promise<void>]> = [
     [1, (tx) => stepFunctions(ctx, tx)],
-    [2, (tx) => stepRetire(ctx, tx)],
     [3, (tx) => stepMonitoring(ctx, tx)],
     [4, (tx) => stepScripts(ctx, tx)],
     [5, (tx) => stepRoleCorrections(ctx, tx)],
@@ -260,47 +267,6 @@ async function stepFunctions(ctx: ApplyCtx, tx: ApplyTransaction): Promise<void>
           // written and never thrown on (applyDesignFunctions' contract).
           assessmentsWritten: functionWrites.written, keptManual: functionWrites.keptManual, skippedForeign: functionWrites.skippedForeign,
         },
-      });
-    } else warnUnrecordedApply(ctx.reportRunId, itemRef);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Step 2: retire watches / rules in existing policies
-// ---------------------------------------------------------------------------
-type WatchSettings = { checkIntervalSeconds?: number; watches?: Array<Record<string, unknown> & { name: string; enabled?: boolean }> };
-type RuleSettings = { items?: Array<Record<string, unknown> & { name: string }> };
-
-/** The rewrite the retire step applies; rollback recomputes it to prove nothing else changed. */
-export function retireRewrite(kind: 'watch' | 'rule', itemName: string, inlineSettings: unknown): unknown {
-  if (kind === 'watch') {
-    const s = (inlineSettings ?? {}) as WatchSettings;
-    return { ...s, watches: (s.watches ?? []).map((w) => (w.name === itemName ? { ...w, enabled: false } : w)) };
-  }
-  const s = (inlineSettings ?? {}) as RuleSettings;
-  return { ...s, items: (s.items ?? []).filter((r) => r.name !== itemName) };
-}
-
-async function stepRetire(ctx: ApplyCtx, tx: ApplyTransaction): Promise<void> {
-  for (const [itemRef, resolved] of ctx.retiredResolved) {
-    if (ctx.appliedRefs.has(itemRef)) continue;
-    const { item, linkId, inlineSettings } = resolved;
-    const next = retireRewrite(item.kind, item.itemName, inlineSettings);
-    const updated = await updateFeatureLink(linkId, { inlineSettings: next }, item.policyId, undefined, tx);
-    if (!updated) throw new Error(`retired_link_missing: ${itemRef}`);
-    const row = await recordApplied({
-      orgId: ctx.orgId, reportRunId: ctx.reportRunId, itemRef, itemKind: 'retired', step: 2,
-      createdRefs: { policyId: item.policyId, linkId },
-      beforeImage: { inlineSettings },
-      userId: ctx.userId,
-    }, tx);
-    if (row) {
-      ctx.applied.push(itemRef);
-      ctx.appliedRefs.add(itemRef);
-      writeAuditEvent(ctx.audit, {
-        orgId: ctx.orgId, action: 'fleet_design.apply.retire', resourceType: 'configuration_policy', resourceId: item.policyId, resourceName: item.policyName,
-        actorType: 'user', actorId: ctx.userId, actorEmail: ctx.auth.user.email,
-        details: { reportRunId: ctx.reportRunId, kind: item.kind, itemName: item.itemName, itemRef },
       });
     } else warnUnrecordedApply(ctx.reportRunId, itemRef);
   }
@@ -446,8 +412,9 @@ export function snapshotLinks(
 ): { monitoring: unknown; alertRule: unknown; monitors?: unknown } {
   const read = (kind: string) => links.find((l) => l.featureType === kind && !l.featurePolicyId);
   const monitors = read('monitors');
-  // `monitors` is only present when the policy has that link, so a snapshot
-  // taken before W05c2 (no such key) still compares equal on rollback.
+  // Keep the null legacy keys: existing monitor-era ledger snapshots contain
+  // them, and rollback compares the complete object exactly. Historical non-null
+  // values also identify legacy policy ledgers that rollback must refuse.
   return {
     monitoring: canonical(read('monitoring')?.inlineSettings ?? null),
     alertRule: canonical(read('alert_rule')?.inlineSettings ?? null),
@@ -531,15 +498,8 @@ async function stepScripts(ctx: ApplyCtx, tx: ApplyTransaction): Promise<void> {
 }
 
 /**
- * Spec §4.8 step 4: "the alert rules that reference them are updated with the
- * created ids". Rules were written by step 3 (this or an earlier apply) into
- * the function policy's inline alert_rule link; each one whose design rule
- * names a script created in THIS step gets `[script created: <id>]` appended
- * to its stored rationale (text only — alert rules have no action binding).
- * The policy ledger row's `linksSnapshot` is refreshed so rollback's
- * unmodified-since-apply comparison stays exact. A rule is matched by the
- * name + rationale step 3 wrote, so one a technician has since edited is
- * deliberately left alone (it is theirs now).
+ * Append created script ids to unedited monitor descriptions and refresh the
+ * definition snapshots used by rollback. Historical legacy links stay untouched.
  */
 async function linkRulesToCreatedScripts(ctx: ApplyCtx, createdRefs: Set<string>, tx: ApplyTransaction): Promise<void> {
   for (const [functionKey, policyRow] of ctx.policyRowByFunction) {
@@ -573,35 +533,7 @@ async function linkRulesToCreatedScripts(ctx: ApplyCtx, createdRefs: Set<string>
       }
       continue;
     }
-    // Legacy ledgers (applied before W05c2): the rule lives in an inline
-    // alert_rule link. Stored rationale (as step 3 wrote it) → the rationale it should now carry.
-    const rewrites = new Map<string, { name: string; rationale: string }>();
-    for (const rule of section.alertRules) {
-      const ref = proposalRefForRule(ctx.outcome, rule.action, functionKey);
-      const scriptId = ref && createdRefs.has(ref) ? ctx.createdScriptIds.get(ref) : undefined;
-      if (!scriptId) continue;
-      const stored = toRuleItem(rule);
-      rewrites.set(JSON.stringify([stored.name, stored.rationale]), { name: stored.name, rationale: withScriptCreated(stored.rationale, scriptId) });
-    }
-    if (rewrites.size === 0) continue;
 
-    const links = await listFeatureLinks(policyId, tx);
-    const ruleLink = links.find((l) => l.featureType === 'alert_rule' && !l.featurePolicyId);
-    if (!ruleLink) continue; // no rule of this function was approved
-    const cur = (ruleLink.inlineSettings ?? {}) as RuleSettings;
-    let changed = false;
-    const items = (cur.items ?? []).map((item) => {
-      const next = rewrites.get(JSON.stringify([item.name, String(item.rationale ?? '')]));
-      if (!next) return item;
-      changed = true;
-      return { ...item, rationale: next.rationale };
-    });
-    if (!changed) continue;
-    const updated = await updateFeatureLink(ruleLink.id, { inlineSettings: { ...cur, items } }, policyId, undefined, tx);
-    if (!updated) throw new Error(`rule_link_missing: ${policyId}`);
-    const createdRefsNext: FleetDesignCreatedRefs = { ...policyRow.createdRefs, linksSnapshot: snapshotLinks(await listFeatureLinks(policyId, tx)) };
-    await updateCreatedRefs(policyRow.id, ctx.orgId, createdRefsNext, tx);
-    policyRow.createdRefs = createdRefsNext;
   }
 }
 
