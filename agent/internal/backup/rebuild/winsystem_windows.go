@@ -29,6 +29,24 @@ import (
 	"github.com/breeze-rmm/agent/internal/backup/winhive"
 )
 
+// virtdisk.h constants — used only by the calls below (the struct layouts
+// they fill live untagged in winsystem_args.go).
+const (
+	createVirtualDiskVersion2 = 2
+	openVirtualDiskVersion2   = 2
+	attachVirtualDiskVersion2 = 2
+	virtualDiskAccessNone     = 0 // VIRTUAL_DISK_ACCESS_NONE: required with the Version2 create/open parameters
+	createVirtualDiskFlagNone = 0 // dynamic (no FULL_PHYSICAL_ALLOCATION)
+	openVirtualDiskFlagNone   = 0
+	attachFlagNoDriveLetter   = 0x00000002 // ATTACH_VIRTUAL_DISK_FLAG_NO_DRIVE_LETTER; PERMANENT_LIFETIME (0x4) deliberately absent
+	detachVirtualDiskFlagNone = 0
+	vhdxBlockSizeBytes        = 32 * 1024 * 1024 // Global Constraint: dynamic, 32 MiB block
+)
+
+// withTrailingBackslash: SetVolumeMountPointW/DeleteVolumeMountPointW and
+// the volume-root forms of every volume path need exactly one.
+func withTrailingBackslash(p string) string { return strings.TrimSuffix(p, `\`) + `\` }
+
 // virtdisk.dll is not wrapped by x/sys. Every virtdisk API returns its
 // Win32 error code directly (0 = success) rather than via GetLastError.
 var (
@@ -728,7 +746,15 @@ func (w *winSystemWindows) HasWindowsTree(volumeGUIDPath string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if _, err := windows.GetFileAttributes(p); err != nil {
+	// A just-arrived volume (fresh WriteGPT, RAW) answers
+	// ERROR_INVALID_PARAMETER for a few tens of milliseconds before it
+	// settles to "unrecognized/not found" (lab, Server 2022). Retry that
+	// window only; an error that persists still fails closed below.
+	err = retryTransient(20, 100*time.Millisecond, func(e error) bool { return errors.Is(e, windows.ERROR_INVALID_PARAMETER) }, func() error {
+		_, e := windows.GetFileAttributes(p)
+		return e
+	})
+	if err != nil {
 		if errors.Is(err, windows.ERROR_FILE_NOT_FOUND) || errors.Is(err, windows.ERROR_PATH_NOT_FOUND) || errors.Is(err, errUnrecognizedVolume) {
 			return false, nil
 		}

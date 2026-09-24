@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup/winhive"
 )
@@ -177,18 +178,6 @@ type attachVirtualDiskParametersV2 struct {
 	RestrictedLength uint64
 }
 
-const (
-	createVirtualDiskVersion2 = 2
-	openVirtualDiskVersion2   = 2
-	attachVirtualDiskVersion2 = 2
-	virtualDiskAccessNone     = 0 // VIRTUAL_DISK_ACCESS_NONE: required with the Version2 create/open parameters
-	createVirtualDiskFlagNone = 0 // dynamic (no FULL_PHYSICAL_ALLOCATION)
-	openVirtualDiskFlagNone   = 0
-	attachFlagNoDriveLetter   = 0x00000002 // ATTACH_VIRTUAL_DISK_FLAG_NO_DRIVE_LETTER; PERMANENT_LIFETIME (0x4) deliberately absent
-	detachVirtualDiskFlagNone = 0
-	vhdxBlockSizeBytes        = 32 * 1024 * 1024 // Global Constraint: dynamic, 32 MiB block
-)
-
 // letterCandidates is AssignLetter's search order: Z down to D (A/B are
 // historically reserved, C: is never free on a live host).
 func letterCandidates() []byte {
@@ -220,10 +209,6 @@ func formatComArgs(volume, filesystem, label string) []string {
 func volumeDevicePath(volumeGUIDPath string) string {
 	return `\\.\` + strings.TrimPrefix(strings.TrimSuffix(volumeGUIDPath, `\`), `\\?\`)
 }
-
-// withTrailingBackslash: SetVolumeMountPointW/DeleteVolumeMountPointW and
-// the volume-root forms of every volume path need exactly one.
-func withTrailingBackslash(p string) string { return strings.TrimSuffix(p, `\`) + `\` }
 
 // physicalDriveNumber parses GetVirtualDiskPhysicalPath's output
 // (\\.\PhysicalDriveN; case and the \\?\ prefix vary by build).
@@ -257,5 +242,23 @@ func (h *hiveWithRelease) Close() error {
 		err = h.Handle.Close()
 		h.release()
 	})
+	return err
+}
+
+// retryTransient runs fn up to attempts times, sleeping delay between
+// tries, for as long as its error satisfies transient; any other error —
+// or a transient one that outlasts the budget — is returned as is. Used by
+// the real HasWindowsTree (winsystem_windows.go): a volume that has just
+// arrived answers ERROR_INVALID_PARAMETER briefly before it settles.
+func retryTransient(attempts int, delay time.Duration, transient func(error) bool, fn func() error) error {
+	var err error
+	for i := 0; i < attempts; i++ {
+		if err = fn(); err == nil || !transient(err) {
+			return err
+		}
+		if i < attempts-1 {
+			time.Sleep(delay)
+		}
+	}
 	return err
 }

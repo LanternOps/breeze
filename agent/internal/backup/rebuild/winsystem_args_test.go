@@ -247,3 +247,37 @@ func TestVHDXGeometry(t *testing.T) {
 		}
 	}
 }
+
+// A just-arrived RAW volume answers GetFileAttributes with
+// ERROR_INVALID_PARAMETER for well under 100 ms before settling (lab,
+// Server 2022: 4 of 10 VHDX round trips) — retryTransient absorbs that
+// window and still surfaces an error that persists, or any other error at
+// once.
+func TestRetryTransient(t *testing.T) {
+	errTransient, errOther := errors.New("transient"), errors.New("other")
+	isTransient := func(err error) bool { return errors.Is(err, errTransient) }
+
+	calls := 0
+	err := retryTransient(5, 0, isTransient, func() error {
+		calls++
+		if calls < 3 {
+			return errTransient
+		}
+		return nil
+	})
+	if err != nil || calls != 3 {
+		t.Fatalf("settling error: err=%v calls=%d, want nil after 3", err, calls)
+	}
+
+	calls = 0
+	err = retryTransient(5, 0, isTransient, func() error { calls++; return errTransient })
+	if !errors.Is(err, errTransient) || calls != 5 {
+		t.Fatalf("persistent transient error: err=%v calls=%d, want errTransient after 5", err, calls)
+	}
+
+	calls = 0
+	err = retryTransient(5, 0, isTransient, func() error { calls++; return errOther })
+	if !errors.Is(err, errOther) || calls != 1 {
+		t.Fatalf("non-transient error: err=%v calls=%d, want errOther after 1", err, calls)
+	}
+}
