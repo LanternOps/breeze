@@ -84,6 +84,17 @@ vi.mock('../services/assetApproval', () => ({
   normalizeMac: vi.fn(),
   buildApprovalDecision: vi.fn(),
 }));
+// BMC in-band identity matching (#6854) runs before ordinary NIC identity in
+// the auto-link block and is a separate identity source from this test's
+// concern (asset site vs. scanning job site). Returning null here means the
+// code takes zero branches on it (`if (normalizedBmcMac)` short-circuits),
+// so it never touches `deviceHardwareComponents` or opens a transaction,
+// leaving the NIC-based auto-link path — what this file actually asserts on
+// — unchanged.
+vi.mock('../services/discovery/agentReportedBmcLink', () => ({
+  normalizeBmcMac: vi.fn(() => null),
+  linkBmcAssetFromAgentReport: vi.fn(),
+}));
 vi.mock('../services/redis', () => ({
   getRedisConnection: vi.fn(() => ({})),
   getBullMQConnection: vi.fn(() => ({ host: 'localhost', port: 6379 })),
