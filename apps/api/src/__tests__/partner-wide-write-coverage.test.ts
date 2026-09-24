@@ -127,7 +127,6 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'routes/oauthInteraction.ts': 'records the end-user\'s own OAuth consent grant, not partner configuration',
 
   // --- known gaps, tracked; listed so the count cannot silently grow ---------
-  'routes/alertTemplates/rules.ts': 'alert RULES are org-owned in practice; partner-wide rule ownership is not exposed by this route',
   'routes/softwareInstallMethods.ts': 'software_catalog rows here are catalog metadata, gated by the software permission set',
   // Corrected 2026-09 (site-ceiling gate review): this entry previously read
   // "read-oriented inventory surface; its policy writes delegate to
@@ -453,7 +452,16 @@ describe('partner-wide write coverage (security review 2026-08-16 §1.1)', () =>
     expect(undocumented).toEqual([]);
   });
 
-  it('the six sites from the 2026-08-16 review carry the gate', () => {
+  it.each(['routes/alertTemplates/templates.ts', 'routes/alertTemplates/rules.ts'])(
+    '%s cannot mutate partner-axis tables after retirement',
+    (rel) => {
+      const source = readFileSync(join(API_SRC, rel), 'utf8');
+      expect(mutatedTables(source, tableNames)).toEqual([]);
+      expect(source).toContain('legacyAlertingGone');
+    },
+  );
+
+  it('the surviving write sites from the 2026-08-16 review carry the gate', () => {
     // Named explicitly so a regression on any ONE of them is a clearly-labelled
     // failure rather than an anonymous line in the sweep above.
     const fixed = [
@@ -462,7 +470,7 @@ describe('partner-wide write coverage (security review 2026-08-16 §1.1)', () =>
       'routes/updateRings.ts',
       'services/aiToolsPolicyPrereqs.ts',
       'routes/clientAi/adminTemplates.ts',
-      'routes/alertTemplates/templates.ts',
+      // Alert-template writes were retired; their absence is checked above.
       'routes/partnerServicePrincipals.ts',
     ];
 

@@ -147,7 +147,9 @@ describe('feature-link readers contract', () => {
   });
 
   it('scripts cannot recreate retired config-policy alert rules', () => {
-    const writers = walk(join(SRC, 'scripts')).filter((file) =>
+    // Retirement removed the last script, so a checkout may have no directory.
+    const scripts = join(SRC, 'scripts');
+    const writers = (existsSync(scripts) ? walk(scripts) : []).filter((file) =>
       /(?:insert\s*\(\s*configPolicyAlertRules\b|INSERT\s+INTO\s+config_policy_alert_rules\b)/i.test(readFileSync(file, 'utf8'))
     );
     expect(writers.map((file) => relative(SRC, file))).toEqual([]);

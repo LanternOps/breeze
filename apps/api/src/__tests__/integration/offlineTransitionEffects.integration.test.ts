@@ -6,7 +6,7 @@ import { buildOrgExportZip } from '../../services/tenantExport';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { and, eq, sql } from 'drizzle-orm';
 import { closeDb, db, hasDbAccessContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { alerts, alertRules, alertTemplates, devices, configurationPolicies, configPolicyAssignments, configPolicyFeatureLinks, configPolicyAlertRules, configPolicyMaintenanceSettings, offlineTransitionEffects as effects, type OfflineEffect } from '../../db/schema';
+import { alerts, alertRules, alertTemplates, devices, configurationPolicies, configPolicyAssignments, configPolicyFeatureLinks, configPolicyAlertRules, configPolicyMaintenanceSettings, configPolicyMonitors, monitorDefinitions, offlineTransitionEffects as effects, type OfflineEffect } from '../../db/schema';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getAppDb, getTestDb, getTestRedis } from './setup';
 import { getOfflineQueue, offlineTransitionId, processMarkOffline, shutdownOfflineDetector } from '../../jobs/offlineDetector';
@@ -17,6 +17,7 @@ import { applyOfflineAlertPostprocess } from '../../services/offlineAlertPostpro
 import { closeRedis, getRedis } from '../../services/redis';
 import { resolveAlert } from '../../services/alertService';
 import { cascadeDeleteOrg } from '../../services/tenantCascade';
+import { compileMonitorInTx } from '../../services/monitors/monitorCompiler';
 
 // Correlation has its own worker tests. All alert/lease/RLS SQL and event Redis
 // publication here are real; no external subscriber registry is booted.
@@ -68,6 +69,21 @@ async function addPolicy(f: Awaited<ReturnType<typeof fixture>>, duration = 5, m
       windowStart: '00:00', durationHours: 24, suppressAlerts: true });
   }
   return rule!;
+}
+
+async function addMonitor(f: Awaited<ReturnType<typeof fixture>>, duration = 5) {
+  return getTestDb().transaction(async (tx) => {
+    const [monitor] = await tx.insert(monitorDefinitions).values({
+      orgId: f.org.id, name: 'Offline monitor', kind: 'offline',
+      condition: { durationMinutes: duration }, severity: 'high', cooldownMinutes: 5,
+    }).returning();
+    const compiled = await compileMonitorInTx(tx, monitor!);
+    const [policy] = await tx.insert(configurationPolicies).values({ orgId: f.org.id, name: 'Monitor policy', status: 'active' }).returning();
+    const [link] = await tx.insert(configPolicyFeatureLinks).values({ configPolicyId: policy!.id, featureType: 'monitors' }).returning();
+    await tx.insert(configPolicyMonitors).values({ featureLinkId: link!.id, monitorId: monitor!.id });
+    await tx.insert(configPolicyAssignments).values({ configPolicyId: policy!.id, level: 'device', targetId: f.device.id });
+    return { monitor: monitor!, ruleId: compiled.alertRuleId };
+  });
 }
 
 async function admitAlert(f: Awaited<ReturnType<typeof fixture>>) {
@@ -359,10 +375,12 @@ describe('durable offline effects', () => {
     expect(current.cooldownUntil!.getTime() - new Date((current.payload as { occurredAt: string }).occurredAt).getTime()).toBe(4 * 60_000);
   });
 
-  it('creates a policy alert with cpar cooldown and retries atomic child admission failure', async () => {
+  it('creates a monitor alert with rule cooldown and retries atomic child admission failure', async () => {
     const f = await fixture();
-    const rule = await addPolicy(f);
+    const { monitor, ruleId } = await addMonitor(f);
+    await addPolicy(f); // Retained legacy rows must not add a second child.
     await processMarkOffline(f.data);
+
     await executeKind(f.device.id, 'alert-plan');
     const insert = store.insertOfflineEffect;
     vi.spyOn(store, 'insertOfflineEffect').mockImplementation(async (...args) => {
@@ -378,36 +396,68 @@ describe('durable offline effects', () => {
     await retryNow(task!.id);
     await executeKind(f.device.id, 'alert-rule');
     const [alert] = await getTestDb().select().from(alerts).where(eq(alerts.deviceId, f.device.id));
-    expect(alert).toMatchObject({ configPolicyId: rule.id, configItemName: rule.name, ruleId: null });
+    expect(alert).toMatchObject({ monitorId: monitor.id, configPolicyId: null, configItemName: null, ruleId });
+    expect(await pending(f.device.id, 'alert-rule')).toHaveLength(1);
     const [event] = await pending(f.device.id, 'alert-event');
-    expect(event!.payload).toMatchObject({ type: 'alert-event', event: { configPolicyAlertRuleId: rule.id, source: 'config_policy' } });
+    expect(event!.payload).toMatchObject({ type: 'alert-event', event: { ruleId } });
+    expect(event!.payload).not.toHaveProperty('event.configPolicyAlertRuleId');
     await executeKind(f.device.id, 'alert-postprocess');
-    expect(await getTestRedis().exists(`breeze:alerts:cooldown:cpar:${rule.id}:${f.device.id}`)).toBe(1);
+    expect(await getTestRedis().exists(`breeze:alerts:cooldown:${ruleId}:${f.device.id}`)).toBe(1);
   });
 
-  it.each([{ duration: 60, maintenance: false }, { duration: 5, maintenance: true }])('skips policy conditions that are false or suppressed by maintenance: %j', async ({ duration, maintenance }) => {
+  it.each([
+    { duration: 5, maintenance: false },
+    { duration: 60, maintenance: false },
+    { duration: 5, maintenance: true },
+  ])('never plans alerts or cooldowns for retained legacy policy rules: %j', async ({ duration, maintenance }) => {
     const f = await fixture();
-    await addPolicy(f, duration, maintenance);
+    const rule = await addPolicy(f, duration, maintenance);
     await admitAlert(f);
     expect(await getTestDb().select().from(alerts).where(eq(alerts.deviceId, f.device.id))).toHaveLength(0);
-    expect((await pending(f.device.id, 'alert-rule'))[0]!.completedAt).not.toBeNull();
+    expect(await pending(f.device.id, 'alert-rule')).toHaveLength(0);
+    expect(await pending(f.device.id, 'alert-postprocess')).toHaveLength(0);
+    expect(await pending(f.device.id, 'alert-event')).toHaveLength(0);
+    expect((await pending(f.device.id, 'alert-plan'))[0]!.completedAt).not.toBeNull();
+    expect(await getTestRedis().exists(`breeze:alerts:cooldown:cpar:${rule.id}:${f.device.id}`)).toBe(0);
   });
 
-  it('isolates invalid cooldown work without starving valid policy or legacy siblings', async () => {
+  it.each([{ duration: 60, maintenance: false }, { duration: 5, maintenance: true }])('defers not-yet-due monitors and suppresses monitors in maintenance: %j', async ({ duration, maintenance }) => {
+    const f = await fixture();
+    await addPolicy(f, duration, maintenance);
+    const { monitor, ruleId } = await addMonitor(f, duration);
+    await admitAlert(f);
+    expect(await getTestDb().select().from(alerts).where(eq(alerts.deviceId, f.device.id))).toHaveLength(0);
+    const tasks = await pending(f.device.id, 'alert-rule');
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]!.payload).toMatchObject({ rule: { ruleId, monitorId: monitor.id } });
+    if (maintenance) expect(tasks[0]!.completedAt).not.toBeNull();
+    else {
+      expect(tasks[0]!.completedAt).toBeNull();
+      expect(tasks[0]!.availableAt.getTime()).toBe(new Date(f.data.observedLastSeenAt).getTime() + duration * 60_000 + 1);
+    }
+  });
+
+  it('isolates invalid cooldown work without starving valid monitor or standalone siblings', async () => {
     const f = await fixture();
     const invalid = await addRule(f.org.id, f.device.id);
     await getTestDb().update(alertRules).set({ overrideSettings: { cooldownMinutes: 'invalid' } }).where(eq(alertRules.id, invalid.id));
-    await addRule(f.org.id, f.device.id);
+    const standalone = await addRule(f.org.id, f.device.id);
+    const { monitor, ruleId } = await addMonitor(f);
     await addPolicy(f);
     await processMarkOffline(f.data);
     await executeKind(f.device.id, 'alert-plan');
     const tasks = await pending(f.device.id, 'alert-rule');
-    expect(tasks).toHaveLength(3);
+    expect(tasks.map((task) => task.ruleId).sort()).toEqual([invalid.id, standalone.id, ruleId].sort());
     for (const task of tasks) {
       if (task.ruleId === invalid.id) await expect(processOfflineEffect(task.id)).rejects.toThrow('Invalid offline alert cooldown');
       else await processOfflineEffect(task.id);
     }
-    expect(await getTestDb().select().from(alerts).where(eq(alerts.deviceId, f.device.id))).toHaveLength(2);
+    const created = await getTestDb().select().from(alerts).where(eq(alerts.deviceId, f.device.id));
+    expect(created).toHaveLength(2);
+    expect(created).toEqual(expect.arrayContaining([
+      expect.objectContaining({ ruleId: standalone.id, configPolicyId: null }),
+      expect.objectContaining({ ruleId, monitorId: monitor.id, configPolicyId: null }),
+    ]));
     expect((await pending(f.device.id, 'alert-rule')).find((t) => t.ruleId === invalid.id)).toMatchObject({ completedAt: null, lastError: 'effect_delivery_failed' });
   });
 
