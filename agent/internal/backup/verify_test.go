@@ -8,12 +8,16 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
 
+// recordingTestRestoreProvider is called from concurrent verify workers, so
+// the downloads map is guarded by mu.
 type recordingTestRestoreProvider struct {
+	mu        sync.Mutex
 	manifest  []byte
 	files     map[string][]byte
 	downloads map[string]string
@@ -34,10 +38,12 @@ func (p *recordingTestRestoreProvider) Download(remotePath, localPath string) er
 	if !ok {
 		return os.ErrNotExist
 	}
+	p.mu.Lock()
 	if p.downloads == nil {
 		p.downloads = make(map[string]string)
 	}
 	p.downloads[remotePath] = localPath
+	p.mu.Unlock()
 	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
 		return err
 	}
@@ -502,6 +508,7 @@ type cancelAfterDownloadProvider struct {
 	files       map[string][]byte
 	cancelOn    string
 	cancel      context.CancelFunc
+	mu          sync.Mutex
 	downloads   []string
 }
 
@@ -510,7 +517,9 @@ func (p *cancelAfterDownloadProvider) Upload(localPath, remotePath string) error
 }
 
 func (p *cancelAfterDownloadProvider) Download(remotePath, localPath string) error {
+	p.mu.Lock()
 	p.downloads = append(p.downloads, remotePath)
+	p.mu.Unlock()
 
 	var data []byte
 	if remotePath == p.manifestKey {
@@ -594,7 +603,11 @@ func newCancelAfterFirstDownloadProvider(t *testing.T, snapshotID string) (
 	return ctx, provider, firstPath, secondPath
 }
 
+// With one worker, a cancellation observed after the first file must stop
+// the run before the second file starts. (With several workers files already
+// in flight may finish; the "no new file after cancel" rule is the same.)
 func TestVerifyIntegrityContextStopsAfterCancellation(t *testing.T) {
+	defer setVerifyConcurrencyForTest(1)()
 	ctx, provider, firstPath, secondPath :=
 		newCancelAfterFirstDownloadProvider(t, "verify-context-cancel")
 
@@ -617,6 +630,7 @@ func TestVerifyIntegrityContextStopsAfterCancellation(t *testing.T) {
 }
 
 func TestTestRestoreContextStopsAfterCancellation(t *testing.T) {
+	defer setVerifyConcurrencyForTest(1)()
 	ctx, provider, firstPath, secondPath :=
 		newCancelAfterFirstDownloadProvider(t, "restore-context-cancel")
 

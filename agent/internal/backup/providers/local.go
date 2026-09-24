@@ -85,6 +85,16 @@ func (p *LocalProvider) UploadContext(ctx context.Context, localPath, remotePath
 
 // Download retrieves a file from the local backup store.
 func (p *LocalProvider) Download(remotePath, localPath string) error {
+	return p.DownloadContext(context.Background(), remotePath, localPath)
+}
+
+// DownloadContext retrieves a file from the local backup store. Cancelling
+// ctx stops the copy/decompression between reads (a local store on a hung
+// network share is the local-provider analogue of a stalled cloud transfer).
+func (p *LocalProvider) DownloadContext(ctx context.Context, remotePath, localPath string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if p.BasePath == "" {
 		return errors.New("local provider base path is required")
 	}
@@ -119,9 +129,9 @@ func (p *LocalProvider) Download(remotePath, localPath string) error {
 	}
 
 	if strings.HasSuffix(remotePath, ".gz") {
-		return decompressFile(srcPath, localPath)
+		return decompressFileContext(ctx, srcPath, localPath)
 	}
-	return copyFileContext(context.Background(), srcPath, localPath)
+	return copyFileContext(ctx, srcPath, localPath)
 }
 
 // List enumerates files under the given prefix.
@@ -316,13 +326,16 @@ func (r *contextReader) Read(p []byte) (int, error) {
 	return r.reader.Read(p)
 }
 
-func decompressFile(srcPath, destPath string) error {
+func decompressFileContext(ctx context.Context, srcPath, destPath string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	srcFile, err := os.Open(srcPath)
 	if err != nil {
 		return fmt.Errorf("failed to open source file: %w", err)
 	}
 
-	gzipReader, err := gzip.NewReader(srcFile)
+	gzipReader, err := gzip.NewReader(&contextReader{ctx: ctx, reader: srcFile})
 	if err != nil {
 		_ = srcFile.Close()
 		return fmt.Errorf("failed to create gzip reader: %w", err)

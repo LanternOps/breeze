@@ -94,6 +94,15 @@ func (p *B2Provider) UploadContext(ctx context.Context, localPath, remotePath st
 
 // Download retrieves a file from Backblaze B2.
 func (p *B2Provider) Download(remotePath, localPath string) error {
+	return p.DownloadContext(context.Background(), remotePath, localPath)
+}
+
+// DownloadContext retrieves a file from Backblaze B2. Cancelling ctx aborts
+// the in-progress read.
+func (p *B2Provider) DownloadContext(ctx context.Context, remotePath, localPath string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if remotePath == "" {
 		return errors.New("remote path is required")
 	}
@@ -115,7 +124,6 @@ func (p *B2Provider) Download(remotePath, localPath string) error {
 		"object", remotePath,
 	)
 
-	ctx := context.Background()
 	reader := bucket.Object(remotePath).NewReader(ctx)
 
 	file, err := os.Create(localPath)

@@ -490,11 +490,33 @@ func execBackupRestoreWithProgress(ctx context.Context, commandID string, payloa
 	return marshalRestoreResult(result, err)
 }
 
-func execBackupVerify(payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef) backupipc.BackupCommandResult {
-	return execBackupVerifyContext(context.Background(), payload, mgr, vaultState)
+// verifyRunBudget bounds each backup_verify / backup_test_restore run so it
+// reports its partial counts before the agent's forward wait expires (see
+// backupipc.VerifyRunBudget, #6598). A var so tests can shorten it.
+var verifyRunBudget = backupipc.VerifyRunBudget
+
+// verifyOptions builds the run options for a verify or test restore:
+// the run budget, and progress over conn (nil conn = log-only progress).
+func verifyOptions(conn *ipc.Conn, commandID, phase string) backup.VerifyOptions {
+	var send func(backupipc.BackupProgress)
+	if conn != nil {
+		send = func(p backupipc.BackupProgress) { sendBackupRunProgress(conn, commandID, p) }
+	}
+	return backup.VerifyOptions{
+		TimeBudget: verifyRunBudget,
+		Progress:   newVerifyProgressReporter(send, commandID, phase, verifyProgressInterval, time.Now),
+	}
 }
 
-func execBackupVerifyContext(ctx context.Context, payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef) backupipc.BackupCommandResult {
+func execBackupVerify(payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef) backupipc.BackupCommandResult {
+	return execBackupVerifyContext(context.Background(), "", payload, mgr, vaultState, nil)
+}
+
+// execBackupVerifyContext runs a backup_verify. When the run budget elapses
+// the result is still a successful command whose body carries the partial
+// counts and a `partial`/`failed` status — the API reads the verification
+// body only from a completed command. conn may be nil.
+func execBackupVerifyContext(ctx context.Context, commandID string, payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef, conn *ipc.Conn) backupipc.BackupCommandResult {
 	restoreProvider, err := restoreProviderForCommand(payload, mgr, vaultState)
 	if err != nil {
 		return fail(err.Error())
@@ -508,15 +530,18 @@ func execBackupVerifyContext(ctx context.Context, payload json.RawMessage, mgr *
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return fail("invalid verify payload: " + err.Error())
 	}
-	result, err := backup.VerifyIntegrityContext(ctx, restoreProvider, p.SnapshotID)
+	result, err := backup.VerifyIntegrityWithOptions(ctx, restoreProvider, p.SnapshotID,
+		verifyOptions(conn, commandID, "verifying"))
 	return marshalResult(result, err)
 }
 
 func execBackupTestRestore(payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef) backupipc.BackupCommandResult {
-	return execBackupTestRestoreContext(context.Background(), payload, mgr, vaultState)
+	return execBackupTestRestoreContext(context.Background(), "", payload, mgr, vaultState, nil)
 }
 
-func execBackupTestRestoreContext(ctx context.Context, payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef) backupipc.BackupCommandResult {
+// execBackupTestRestoreContext runs a backup_test_restore; see
+// execBackupVerifyContext for the budget and progress behaviour.
+func execBackupTestRestoreContext(ctx context.Context, commandID string, payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef, conn *ipc.Conn) backupipc.BackupCommandResult {
 	restoreProvider, err := restoreProviderForCommand(payload, mgr, vaultState)
 	if err != nil {
 		return fail(err.Error())
@@ -530,7 +555,8 @@ func execBackupTestRestoreContext(ctx context.Context, payload json.RawMessage, 
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return fail("invalid test restore payload: " + err.Error())
 	}
-	result, err := backup.TestRestoreContext(ctx, restoreProvider, p.SnapshotID, backupRestoreWorkRoot(), nil)
+	result, err := backup.TestRestoreWithOptions(ctx, restoreProvider, p.SnapshotID, backupRestoreWorkRoot(),
+		verifyOptions(conn, commandID, "test_restore"))
 	return marshalResult(result, err)
 }
 

@@ -53,13 +53,35 @@ func (f *FallbackProvider) UploadContext(ctx context.Context, localPath, remoteP
 
 // Download tries each provider in order until one succeeds.
 func (f *FallbackProvider) Download(remotePath, localPath string) error {
+	return f.DownloadContext(context.Background(), remotePath, localPath)
+}
+
+// DownloadContext tries each provider in order until one succeeds, passing
+// ctx to every provider that supports cancellation. Once ctx is done it stops
+// instead of moving on to the next provider: a cancelled or timed-out
+// download is not a reason to try the secondary.
+func (f *FallbackProvider) DownloadContext(ctx context.Context, remotePath, localPath string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if len(f.providers) == 0 {
 		return errors.New("fallback provider has no configured providers")
 	}
 
 	var lastErr error
 	for i, p := range f.providers {
-		err := p.Download(remotePath, localPath)
+		if err := ctx.Err(); err != nil {
+			if lastErr != nil {
+				return fmt.Errorf("download of %s stopped: %w (last provider error: %v)", remotePath, err, lastErr)
+			}
+			return err
+		}
+		var err error
+		if d, ok := p.(ContextDownloader); ok {
+			err = d.DownloadContext(ctx, remotePath, localPath)
+		} else {
+			err = p.Download(remotePath, localPath)
+		}
 		if err == nil {
 			if i > 0 {
 				slog.Info("fallback download succeeded on secondary provider",

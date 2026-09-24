@@ -133,6 +133,15 @@ func (s *S3Provider) UploadContext(ctx context.Context, localPath, remotePath st
 
 // Download retrieves a file from S3.
 func (s *S3Provider) Download(remotePath, localPath string) error {
+	return s.DownloadContext(context.Background(), remotePath, localPath)
+}
+
+// DownloadContext retrieves a file from S3. Cancelling ctx aborts the request
+// and any in-progress body read.
+func (s *S3Provider) DownloadContext(ctx context.Context, remotePath, localPath string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if s.Bucket == "" || s.Region == "" {
 		return errors.New("s3 bucket and region are required")
 	}
@@ -148,7 +157,6 @@ func (s *S3Provider) Download(remotePath, localPath string) error {
 		return err
 	}
 
-	ctx := context.Background()
 	resp, err := client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.Bucket),
 		Key:    aws.String(remotePath),
@@ -250,7 +258,8 @@ func (s *S3Provider) getClient() (*s3.Client, error) {
 	// has no dial/TLS/header deadline and a stalled network peer wedges the
 	// request forever. The mid-body stall (a peer that accepts the request
 	// but never finishes reading/writing the body) is NOT covered here — that
-	// case is handled by the per-file upload deadline in snapshot.go.
+	// case is handled by the caller's context: the per-file upload deadline in
+	// snapshot.go, and the per-file download deadline in verify.go (#6598).
 	httpClient := awshttp.NewBuildableClient().
 		WithDialerOptions(func(d *net.Dialer) { d.Timeout = 30 * time.Second }).
 		WithTransportOptions(func(tr *http.Transport) {
