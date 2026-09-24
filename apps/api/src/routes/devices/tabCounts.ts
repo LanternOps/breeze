@@ -13,6 +13,7 @@ import {
 } from '../../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
+import { isMlFeatureEnabledForOrg } from '../../services/mlFeatureFlags';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 
 /**
@@ -68,6 +69,12 @@ tabCountsRoutes.get(
       return c.json({ error: 'Device not found' }, 404);
     }
 
+    // Anomaly detection can be off for the device's org (partner default or
+    // org override) — the Anomalies panel then reads "disabled" regardless of
+    // any stale open episodes, so the badge must not count them either (#E1
+    // sweep finding: badge showed "2" over a disabled panel).
+    const anomaliesEnabled = await isMlFeatureEnabledForOrg(device.orgId, 'ml.anomalies.enabled');
+
     const [alertCount, anomalyCount, ticketCount, operatorTaskCount, monitoringRows, complianceCount] =
       await Promise.all([
         countRows(
@@ -75,11 +82,13 @@ tabCountsRoutes.get(
             and(eq(alerts.deviceId, deviceId), inArray(alerts.status, ['active', 'acknowledged'])),
           ),
         ),
-        countRows(
-          db.select({ count: countExpr }).from(metricAnomalies).where(
-            and(eq(metricAnomalies.deviceId, deviceId), eq(metricAnomalies.status, 'open')),
-          ),
-        ),
+        anomaliesEnabled
+          ? countRows(
+              db.select({ count: countExpr }).from(metricAnomalies).where(
+                and(eq(metricAnomalies.deviceId, deviceId), eq(metricAnomalies.status, 'open')),
+              ),
+            )
+          : Promise.resolve(0),
         countRows(
           db.select({ count: countExpr }).from(tickets).where(
             and(

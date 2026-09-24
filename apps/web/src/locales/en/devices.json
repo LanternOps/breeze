@@ -335,6 +335,7 @@
     "metricAnomalies": "Metric Anomalies",
     "anomalyDetectionIsDisabledForThis": "Anomaly detection is disabled for this organization.",
     "anomalyDetectionDisabled": "Anomaly detection disabled",
+    "anomalyDetectionDisabledHint": "Turn it on in <orgLink>organization settings</orgLink> → AI.",
     "showingTheLinkedAnomalyAndRecent": "Showing the linked anomaly and recent anomaly history",
     "openSignalsDetectedFromMetricRollups": "Open signals detected from metric rollups",
     "refreshAnomalies": "Refresh anomalies",

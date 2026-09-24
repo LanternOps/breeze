@@ -335,6 +335,7 @@
     "metricAnomalies": "Anomalie delle metriche",
     "anomalyDetectionIsDisabledForThis": "Il rilevamento delle anomalie è disabilitato per questa organizzazione.",
     "anomalyDetectionDisabled": "Rilevamento anomalie disabilitato",
+    "anomalyDetectionDisabledHint": "Attivalo nelle <orgLink>impostazioni dell’organizzazione</orgLink> → IA.",
     "showingTheLinkedAnomalyAndRecent": "Visualizzazione dell'anomalia collegata e della cronologia recente delle anomalie",
     "openSignalsDetectedFromMetricRollups": "Segnali aperti rilevati dai rollup delle metriche",
     "refreshAnomalies": "Aggiorna anomalie",
