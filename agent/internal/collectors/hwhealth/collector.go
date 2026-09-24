@@ -73,7 +73,7 @@ func New(opts Options) *Collector {
 			newStorcli("storcli", opts.ExtraToolDirs, runTool),
 			newStorcli("perccli", opts.ExtraToolDirs, runTool),
 			newMDADM(opts.ExtraToolDirs, runTool, c.state.MDMembers),
-			newStorageSpaces(),
+			newStorageSpaces(c.state.SpacesMembers),
 			newWinPD(),
 			newSMART(opts.ExtraToolDirs, runTool, opts.Now),
 		}

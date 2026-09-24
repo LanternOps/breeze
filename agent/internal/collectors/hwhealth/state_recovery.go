@@ -58,6 +58,9 @@ func loadState(dir string, now time.Time) (diskState, error) {
 	if s.MDMembers == nil {
 		s.MDMembers = map[string]string{}
 	}
+	if s.SpacesMembers == nil {
+		s.SpacesMembers = map[string]string{}
+	}
 	return s, readErr
 }
 
