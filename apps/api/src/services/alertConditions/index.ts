@@ -144,13 +144,16 @@ async function evaluateConditionRecursive(
       results.notMet.push(result.description);
     }
 
-    // Capture the value the threshold/metric handler actually evaluated (the
-    // window average) so context.actualValue reflects what drove the decision
-    // rather than the latest raw sample — which can be sub-threshold once the
-    // window is averaged (#1980).
-    const condType = (condition as { type?: string }).type;
+    // Capture the value the FIRST evaluated leaf actually reported (the
+    // threshold/metric handler's window average, or the equivalent computed
+    // value from any other handler — patch compliance %, bandwidth Mbps,
+    // consecutive-failure count, …) so context.actualValue reflects what
+    // drove the decision rather than the latest raw sample — which can be
+    // sub-threshold once the window is averaged (#1980). Every handler that
+    // populates a template's {{actualValue}} placeholder returns a numeric
+    // `actualValue` on its ConditionResult (#6932), so this is not limited
+    // to threshold/metric conditions.
     if (
-      (condType === 'threshold' || condType === 'metric') &&
       results.primaryActualValue === undefined &&
       typeof result.actualValue === 'number'
     ) {
@@ -211,31 +214,47 @@ export async function evaluateConditions(
 
   const context: EvaluationResult['context'] = { deviceId, evaluatedAt };
 
-  // Find first threshold condition to include in context
-  const findFirstThreshold = (cond: RootCondition): ThresholdCondition | undefined => {
+  // Find the first condition carrying operator/value (threshold-shaped)
+  // fields to include in context. `ThresholdCondition` is one such shape,
+  // but several other kinds (bandwidth_high, disk_io_high,
+  // process_cpu_high/process_memory_high, network_errors, patch_compliance)
+  // also compare an `operator`/`value` pair and their templates reference
+  // {{operator}}/{{threshold}} — those were left unfilled before #6932.
+  type ThresholdLikeCondition = { operator: ThresholdCondition['operator']; value: number; metric?: string; durationMinutes?: number };
+  const isThresholdLike = (cond: AlertCondition): cond is AlertCondition & ThresholdLikeCondition =>
+    'operator' in cond && typeof (cond as { value?: unknown }).value === 'number';
+
+  const findFirstThreshold = (cond: RootCondition): ThresholdLikeCondition | undefined => {
     if (isConditionGroup(cond)) {
       for (const c of cond.conditions) {
         const found = findFirstThreshold(c);
         if (found) return found;
       }
       return undefined;
-    } else if (cond.type === 'threshold' || cond.type === 'metric') {
-      return cond as ThresholdCondition;
+    } else if (isThresholdLike(cond)) {
+      return cond;
     }
     return undefined;
   };
 
   const primaryThreshold = findFirstThreshold(rootCondition);
   if (primaryThreshold) {
-    const normalizedMetric = normalizeMetricName(primaryThreshold.metric);
+    const normalizedMetric = primaryThreshold.metric ? normalizeMetricName(primaryThreshold.metric) : undefined;
     const latestValue = normalizedMetric ? latestMetric?.[normalizedMetric] ?? undefined : undefined;
-    context.metric = primaryThreshold.metric;
+    if (primaryThreshold.metric) {
+      context.metric = primaryThreshold.metric;
+    }
     // Prefer the averaged value the handler evaluated; fall back to the latest
     // raw sample only when no handler value was captured (e.g. window empty).
+    // The raw-sample fallback only applies to real device metrics.
     context.actualValue = results.primaryActualValue ?? latestValue;
     context.threshold = primaryThreshold.value;
     context.operator = getOperatorDisplay(primaryThreshold.operator);
     context.durationMinutes = primaryThreshold.durationMinutes;
+  } else if (results.primaryActualValue !== undefined) {
+    // No threshold-shaped condition, but a leaf handler (e.g. network_check,
+    // antivirus) still reported a numeric actualValue its template uses.
+    context.actualValue = results.primaryActualValue;
   }
 
   return {

@@ -2,7 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // utils.ts (transitively imported by the handlers) pulls in the db module at
 // import time; stub it so importing the registry doesn't open a connection.
-vi.mock('../../db', () => ({ db: {} }));
+// `select` is a real mock (not `{}`) so handlers that query the db directly
+// (e.g. patchComplianceHandler) can be driven per-test.
+const { mockDbSelect } = vi.hoisted(() => ({ mockDbSelect: vi.fn() }));
+vi.mock('../../db', () => ({ db: { select: mockDbSelect } }));
 
 const { getRecentMetricsMock, getLatestMetricMock } = vi.hoisted(() => ({
   getRecentMetricsMock: vi.fn(),
@@ -19,6 +22,10 @@ import './index';
 import { conditionPayloadsFrom, evaluateConditions, findRetiredConditionTypes, interpolateTemplate, retiredConditionTypeError } from './index';
 import { conditionRegistry } from './registry';
 import { offlineHandler } from './handlers/offline';
+import { interpolateAlertTemplate } from '@breeze/shared';
+import { patchComplianceKind } from '../monitors/kinds/patchCompliance';
+import { bandwidthKind } from '../monitors/kinds/bandwidth';
+import { networkErrorsKind } from '../monitors/kinds/networkErrors';
 
 describe('condition registry wiring (issue #1857)', () => {
   it('resolves the legacy "status" condition type to the offline handler', () => {
@@ -238,5 +245,96 @@ describe('interpolateTemplate', () => {
     expect(interpolateTemplate('{{device}} offline', { deviceName: 'DESKTOP-8UG65K6' })).toBe(
       'DESKTOP-8UG65K6 offline',
     );
+  });
+});
+
+describe('evaluateConditions context for non-threshold kinds (issue #6932)', () => {
+  beforeEach(() => {
+    mockDbSelect.mockReset();
+    getRecentMetricsMock.mockReset();
+    getLatestMetricMock.mockReset();
+  });
+
+  it('fills actualValue/operator/threshold for a patch_compliance condition, so the built-in template renders with no {{ left', async () => {
+    // Drives db.select({...}).from(...).where(...).orderBy(...).limit(1).
+    mockDbSelect.mockReturnValue({
+      from: () => ({
+        where: () => ({
+          orderBy: () => ({
+            limit: () => Promise.resolve([{ patchComplianceScore: 50 }]),
+          }),
+        }),
+      }),
+    });
+
+    const result = await evaluateConditions(
+      { type: 'patch_compliance', operator: 'lt', value: 80 },
+      'device-1'
+    );
+
+    expect(result.triggered).toBe(true);
+    expect(result.context.actualValue).toBe(50);
+    expect(result.context.threshold).toBe(80);
+    expect(result.context.operator).toBe('<');
+
+    const title = interpolateAlertTemplate(patchComplianceKind.titleTemplate, {
+      ...result.context,
+      ruleName: 'Low patch compliance',
+      deviceName: 'DESKTOP-8UG65K6',
+    });
+    const message = interpolateAlertTemplate(patchComplianceKind.messageTemplate, {
+      ...result.context,
+      ruleName: 'Low patch compliance',
+      deviceName: 'DESKTOP-8UG65K6',
+    });
+
+    expect(title).not.toContain('{{');
+    expect(message).toBe('Low patch compliance: patch compliance 50% (< 80%)');
+  });
+
+  it('fills actualValue/operator/threshold for a bandwidth_high condition', async () => {
+    getRecentMetricsMock.mockResolvedValue([
+      { bandwidthInBps: 120_000_000, bandwidthOutBps: 0 },
+    ] as never);
+
+    const result = await evaluateConditions(
+      { type: 'bandwidth_high', direction: 'in', operator: 'gt', value: 100 },
+      'device-1'
+    );
+
+    expect(result.triggered).toBe(true);
+    expect(result.context.actualValue).toBe(120_000_000);
+    expect(result.context.threshold).toBe(100);
+    expect(result.context.operator).toBe('>');
+
+    const message = interpolateAlertTemplate(bandwidthKind.messageTemplate, {
+      ...result.context,
+      ruleName: 'High bandwidth',
+      direction: 'in',
+    });
+    expect(message).not.toContain('{{');
+  });
+
+  it('fills actualValue/operator/threshold for a network_errors condition', async () => {
+    getRecentMetricsMock.mockResolvedValue([
+      { interfaceStats: [{ name: 'eth0', inErrors: 12, outErrors: 0 }] },
+    ] as never);
+
+    const result = await evaluateConditions(
+      { type: 'network_errors', errorType: 'in', operator: 'gt', value: 5 },
+      'device-1'
+    );
+
+    expect(result.triggered).toBe(true);
+    expect(result.context.actualValue).toBe(12);
+    expect(result.context.threshold).toBe(5);
+    expect(result.context.operator).toBe('>');
+
+    const message = interpolateAlertTemplate(networkErrorsKind.messageTemplate, {
+      ...result.context,
+      ruleName: 'Network errors',
+      errorType: 'in',
+    });
+    expect(message).not.toContain('{{');
   });
 });
