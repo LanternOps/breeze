@@ -522,7 +522,7 @@ describe('remote sessions — site-scope enforcement', () => {
       });
 
       expect(res.status).toBe(403);
-      expect(await res.json()).toEqual({ error: 'Device not found or access denied', code: ERROR_CODES.NOT_FOUND });
+      expect(await res.json()).toEqual({ error: 'Device not found or access denied', code: ERROR_CODES.ACCESS_DENIED });
     });
 
     it('narrows the active session list to the caller allowed sites', async () => {
@@ -661,7 +661,7 @@ describe('remote sessions — site-scope enforcement', () => {
       });
 
       expect(res.status).toBe(403);
-      expect(await res.json()).toEqual({ error: 'Device not found or access denied', code: ERROR_CODES.NOT_FOUND });
+      expect(await res.json()).toEqual({ error: 'Device not found or access denied', code: ERROR_CODES.ACCESS_DENIED });
     });
 
     it('narrows session history and stats to the caller allowed sites', async () => {

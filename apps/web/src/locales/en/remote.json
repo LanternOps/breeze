@@ -36,6 +36,8 @@
     },
     "errors": {
       "agentUpgradeRequired": "Remote desktop needs an agent update on this device (session revocation lease and start fence support). The agent updates itself automatically — this usually clears within a minute. Terminal and file transfer are unaffected.",
+      "deviceNotFoundOrAccessDenied": "Device not found or access denied",
+      "siteAccessDenied": "Access to this site denied",
       "connectionFailed": "Connection failed",
       "createDesktopCode": "Failed to create desktop connect code",
       "createDesktopSession": "Failed to create desktop session",
