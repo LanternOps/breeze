@@ -261,11 +261,13 @@ List tools return `hasMore` and `nextCursor` in their result; when `hasMore` is 
 | `system_cleanup` | 1/3 | List the OS-native maintenance cleaners a device offers — Windows Disk Cleanup handlers and DISM component cleanup, macOS local snapshots and Homebrew, Linux package caches and journal — with an "up to" reclaim estimate (Tier 1). Run the selected actions (Tier 3); `run` returns a `cleanupRunId` immediately and `status` (Tier 1) reads the run's progress and result. |
 
 <Aside type="caution">
-  **Tier 3 actions cannot be executed over MCP at all.** This transport has no interactive approval surface, so `tools/call` answers a Tier 3 action with a structured `MCP_APPROVAL_REQUIRED` error *before* it checks scopes, RBAC, rate limits or the production allowlist — holding `ai:execute` does not change the outcome. `disk_cleanup` and `system_cleanup` stay listed because their read-only actions still work; `tools/list` appends a note to each one's description:
+  **By default, Tier 3 actions cannot be executed over MCP.** This transport has no interactive approval surface, so `tools/call` answers a Tier 3 action with a structured `MCP_APPROVAL_REQUIRED` error *before* it checks scopes, RBAC, rate limits or the production allowlist — holding `ai:execute` does not change the outcome. `disk_cleanup` and `system_cleanup` stay listed because their read-only actions still work; `tools/list` appends a note to each one's description:
 
   `(Actions "run" require interactive approval and are not available over MCP — use the Breeze web app AI assistant for those.)`
 
   A tool whose *every* action is Tier 3 is not listed at all, because advertising a tool that can only ever answer with a refusal is worse than omitting it. The practical contract for an MCP client is therefore: `analyze_disk_usage`, `disk_cleanup` preview and `system_cleanup` list/status give you a complete read-only diagnosis, and you hand the destructive step to a technician in the Breeze web app AI assistant, where it goes through the approval workflow.
+
+  **One operator-controlled exception:** principals named in `MCP_UNATTENDED_TIER3_PRINCIPALS` (`api_key:<id>` or `oauth_client_user:<client_id>/<user id>`) are exempt from this deny for core-registry Tier 3 tools, so the tools are listed and callable for them without the approval step. Everything else still applies to them: `ai:execute`, `ai:execute_admin` in production, the production allowlist, RBAC, rate limits, the Tier 3 execution ledger and the audit log. Tier 4, tenant (BYO MCP) and onboarding bootstrap tools stay approval-only for everyone. See [Environment variables](/deploy/environment/).
 </Aside>
 
 ### Security tools
@@ -411,8 +413,8 @@ When a client calls `tools/list`, the server filters the full tool catalogue:
 
 1. **Tier 1** tools (read-only) are always included if the key has `ai:read`.
 2. **Tier 2** tools are included if the key has `ai:write` (or `ai:execute`, which implies write).
-3. **Tier 3+** tools are included only when *some* action of them is below Tier 3 and the key has `ai:execute`; a wholly Tier 3 tool is never listed.
-4. A Tier 3 **action** is refused over MCP regardless of scope — see the caution above. `MCP_REQUIRE_EXECUTE_ADMIN` and `MCP_EXECUTE_TOOL_ALLOWLIST` therefore only affect which *tools* a key may see and reach, never whether a Tier 3 action executes.
+3. **Tier 3+** tools are included only when *some* action of them is below Tier 3 and the key has `ai:execute`; a wholly Tier 3 tool is never listed — except for a principal named in `MCP_UNATTENDED_TIER3_PRINCIPALS` that also passes the `ai:execute` / `ai:execute_admin` / production-allowlist gates for that tool.
+4. A Tier 3 **action** is refused over MCP regardless of scope — see the caution above — unless the caller is a principal named in `MCP_UNATTENDED_TIER3_PRINCIPALS`. For every other principal, `MCP_REQUIRE_EXECUTE_ADMIN` and `MCP_EXECUTE_TOOL_ALLOWLIST` only affect which *tools* a key may see and reach, never whether a Tier 3 action executes; for a named principal they gate its Tier 3 calls as well.
 
 When a client calls `tools/call`, the server re-checks scopes before execution. Attempting to call a tool your key lacks permission for returns a JSON-RPC error:
 
