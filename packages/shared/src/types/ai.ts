@@ -199,6 +199,20 @@ export type AiStreamEvent =
   | { type: 'content_delta'; delta: string }
   | { type: 'tool_use_start'; toolName: string; toolUseId: string; input: Record<string, unknown> }
   /**
+   * Sweep E6 (#6932-adjacent): `tool_use_start` fires at the SDK's
+   * `content_block_start`, before the tool's `input` has streamed in — it is
+   * ALWAYS `{}` at that point, not a partial preview. That left every live
+   * tool row unable to tell a read (`list`/`get`) from a write, so a
+   * read-only `manage_alerts` lookup rendered "Updated alerts" instead of
+   * "Checked alerts" — the same label history replay (which loads the real,
+   * persisted input) gets right. Published once the SDK's `assistant`
+   * message for this turn completes and the tool's real arguments are known,
+   * already redacted the same way the persisted row is (SR5-16), so no
+   * denylisted secret reaches the browser here that wasn't already going to
+   * reach it on reload.
+   */
+  | { type: 'tool_use_input'; toolUseId: string; input: Record<string, unknown> }
+  /**
    * `handoff` is set ONLY by the server's own pre-tool-use gate (#5107) — it
    * is never derived from the tool's returned JSON. `output.status` carries
    * the same value for the model and for replayed history rows, but a tool

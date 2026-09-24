@@ -9,7 +9,16 @@ vi.mock('react-markdown', () => ({
   default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
 vi.mock('remark-gfm', () => ({ default: () => {} }));
-vi.mock('./AiToolCallCard', () => ({ default: () => null }));
+// Records the props each AiToolCallCard instance receives (sweep E6): what
+// this file owns is the wiring from a message row to the card's `input`
+// prop, not the card's own rendering, which has its own test suite.
+const toolCallCards = vi.hoisted(() => ({ props: [] as Array<Record<string, unknown>> }));
+vi.mock('./AiToolCallCard', () => ({
+  default: (props: Record<string, unknown>) => {
+    toolCallCards.props.push(props);
+    return null;
+  },
+}));
 
 // Records the props AiChatMessages forwards to the approval card. The real
 // dialog is heavy (WebAuthn + i18n), and what this file owns is the wiring:
@@ -357,5 +366,33 @@ describe('unattended_release note (#5612 W04)', () => {
       { id: 'r1', role: 'tool_result', content: '{}', toolName: 'run_script' } as never,
     ]);
     expect(queryByTestId('ai-unattended-release-note')).toBeNull();
+  });
+});
+
+/**
+ * Sweep E6 — the tool_result card used to render with no `input` prop at
+ * all, so its label (aiToolLabel, which needs `input.action` to tell a read
+ * from a write) always fell back to the tool name's own verb. It must reuse
+ * the input already sitting on the matching tool_use row.
+ */
+describe('tool_result reuses its tool_use sibling\'s input (sweep E6)', () => {
+  beforeEach(() => { toolCallCards.props.length = 0; });
+
+  it('passes the matching tool_use row\'s toolInput to the tool_result card', () => {
+    renderWithMessages([
+      { id: 'tu-1', role: 'tool_use', content: '', toolName: 'manage_alerts', toolUseId: 'call-1', toolInput: { action: 'list' } } as never,
+      { id: 'r1', role: 'tool_result', content: '[]', toolName: 'manage_alerts', toolUseId: 'call-1' } as never,
+    ]);
+
+    const resultCardProps = toolCallCards.props.find((p) => p.output !== undefined);
+    expect(resultCardProps?.input).toEqual({ action: 'list' });
+  });
+
+  it('leaves input undefined when no matching tool_use row exists (e.g. replayed pre-#6086 history)', () => {
+    renderWithMessages([
+      { id: 'r1', role: 'tool_result', content: '[]', toolName: 'manage_alerts', toolUseId: 'call-orphan' } as never,
+    ]);
+
+    expect(toolCallCards.props.at(-1)?.input).toBeUndefined();
   });
 });
