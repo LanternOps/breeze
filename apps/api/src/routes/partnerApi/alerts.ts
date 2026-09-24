@@ -238,8 +238,17 @@ partnerAlertRoutes.get('/alerts', requirePartnerApiScope('alerts:read'), async (
       // enrichment that never advances the feed, so it must not move revision.
       const { deviceHostname: _enrichment, ...revisionBasis } = withoutRevision;
       const record = { ...withoutRevision, revision: computePartnerExportRevision(revisionBasis) };
-      const inspected = safelyExportDefinition({ resource: 'alerts', id: row.id, orgId: row.orgId }, record);
-      if (inspected.safe) data.push(inspected.definition);
+      const ref = { resource: 'alerts' as const, id: row.id, orgId: row.orgId };
+      const inspected = safelyExportDefinition(ref, record);
+      if (inspected.safe) {
+        data.push(inspected.definition);
+        continue;
+      }
+      // A hostname change never restamps the alert, so a record blocked only
+      // by its hostname would never be re-delivered. Drop the enrichment and
+      // deliver the alert itself; block only when the alert's own fields hit.
+      const withoutHostname = safelyExportDefinition(ref, { ...record, deviceHostname: null });
+      if (withoutHostname.safe) data.push(withoutHostname.definition);
       else blocked.push(inspected.blocked);
     }
 

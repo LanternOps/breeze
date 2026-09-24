@@ -505,7 +505,8 @@ Guarantees and limits:
   `deviceHostname` is the device's current hostname, read at request time: a
   device rename does not advance the feed and does not change `revision`. `deviceId` and
   `deviceHostname` are null when the device no longer exists in the alert's
-  organization.
+  organization. `deviceHostname` is also null when the hostname itself looks
+  like a secret; the alert is still delivered.
 - A record whose title or message contains a detected secret is withheld and
   listed in `blocked` instead. A blocked record reappears only when the alert
   itself is written again; reconcile blocked ids with a periodic full sync.

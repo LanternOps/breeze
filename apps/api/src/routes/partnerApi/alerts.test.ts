@@ -279,6 +279,30 @@ describe('partner alerts feed', () => {
     expect(body.blocked).toEqual([expect.objectContaining({ resource: 'alerts', id: ALERT_A, reason: 'secret_detected' })]);
   });
 
+  it('delivers an alert whose only secret-shaped field is the hostname, with the hostname dropped', async () => {
+    // A rename never restamps the alert, so blocking on the hostname would lose the alert for good.
+    selectResults = [[
+      alertRow(ALERT_A, '900', { deviceHostname: 'ghp_1234567890abcdefghijklmnopqrstuvwxyzAB' }),
+    ]];
+    const body = partnerAlertFeedEnvelopeSchema.parse(await (await request('/alerts')).json());
+    expect(body.blocked).toBeUndefined();
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0]).toMatchObject({ id: ALERT_A, deviceHostname: null });
+    expect(JSON.stringify(body)).not.toContain('ghp_1234567890');
+  });
+
+  it('still blocks when the alert itself carries a secret alongside a secret-shaped hostname', async () => {
+    selectResults = [[
+      alertRow(ALERT_A, '900', {
+        deviceHostname: 'ghp_1234567890abcdefghijklmnopqrstuvwxyzAB',
+        message: 'token ghp_abcdefghijklmnopqrstuvwxyz1234567890AB leaked',
+      }),
+    ]];
+    const body = partnerAlertFeedEnvelopeSchema.parse(await (await request('/alerts')).json());
+    expect(body.data).toEqual([]);
+    expect(body.blocked).toEqual([expect.objectContaining({ id: ALERT_A, reason: 'secret_detected' })]);
+  });
+
   it('an empty org set still returns a checkpoint without querying alerts', async () => {
     mocks.accessibleOrgIds = [];
     const body = partnerAlertFeedEnvelopeSchema.parse(await (await request('/alerts')).json());
