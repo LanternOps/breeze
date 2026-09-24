@@ -1,5 +1,5 @@
 ---
-tracking_issue: (assigned by feature-lifecycle after plan approval)
+tracking_issue: LanternOps/breeze#6854
 ---
 # Hardware & RAID Monitoring — Plan Index
 

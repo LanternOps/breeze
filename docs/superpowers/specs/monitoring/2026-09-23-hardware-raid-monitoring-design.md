@@ -4,7 +4,7 @@ status: approved design (Todd, 2026-09-23); advisor quorum (Fable + Codex gpt-6-
 date: 2026-09-23
 origin: owner request 2026-09-23 ("hardware monitoring for RAID systems — Dell OMSA, Lenovo, HP, MegaRAID, LSI; iDRAC maybe separate")
 related: "#3866 (SMART/battery/thermal failure prediction — PARKED, not built here); #2310 (GPU monitoring, adjacent); #4984 / 2026-09-19 alerting consolidation (the monitor model this rides on); 2026-09-16 network-device-page-truth (SNMP probe path the BMC follow-on will reuse)"
-tracking_issue: (assigned by feature-lifecycle after plan approval)
+tracking_issue: LanternOps/breeze#6854
 follow_on_spec: BMC out-of-band health (Redfish / SNMP polling of iDRAC, iLO, XCC; chassis sensors; SEL) — separate spec, writes into the tables defined here (§8.5)
 ---
 
