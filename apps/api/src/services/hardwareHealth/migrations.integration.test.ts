@@ -42,3 +42,32 @@ it('replays the first migration without deleting observations', async () => {
   await replayMigration('2026-10-30-110000-hardware-health-tables.sql');
   expect(await getTestDb().execute(sql`SELECT * FROM device_hardware_health WHERE device_id=${f.device}`)).toHaveLength(1);
 });
+it('protects normalized settings through the policy chain and bounds both intervals', async () => {
+  const rows = await getTestDb().execute(sql`SELECT c.relrowsecurity,c.relforcerowsecurity,pg_get_expr(p.polqual,p.polrelid) AS predicate FROM pg_class c JOIN pg_policy p ON p.polrelid=c.oid WHERE c.oid=to_regclass('config_policy_hardware_monitoring_settings') AND p.polcmd='r'`);
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({relrowsecurity:true,relforcerowsecurity:true});
+  expect(String(rows[0]!.predicate)).toContain('configuration_policies');
+  expect(String(rows[0]!.predicate)).toContain('breeze_has_partner_access');
+  const checks = await getTestDb().execute(sql`SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conrelid=to_regclass('config_policy_hardware_monitoring_settings') AND contype='c'`);
+  expect(checks).toHaveLength(2);
+  await replayMigration('2026-10-30-110100-hardware-monitoring-config-feature.sql');
+});
+it('isolates settings writes through the full parent chain and enforces intervals',async()=>{
+ const f=await fixture();
+ const seedLink=async(orgId:string)=>{
+  const [policy]=await getTestDb().execute(sql`INSERT INTO configuration_policies(org_id,name) VALUES(${orgId},'Hardware policy') RETURNING id`);
+  const [link]=await getTestDb().execute(sql`INSERT INTO config_policy_feature_links(config_policy_id,feature_type) VALUES(${policy!.id},'hardware_monitoring') RETURNING id`);
+  return String(link!.id);
+ };
+ const ownLink=await seedLink(f.org),foreignLink=await seedLink(f.other);
+ const own:DbAccessContext={scope:'organization',orgId:f.org,accessibleOrgIds:[f.org],accessiblePartnerIds:[],currentPartnerId:f.partner};
+ const other:DbAccessContext={...own,orgId:f.other,accessibleOrgIds:[f.other]};
+ await expect(withDbAccessContext(other,()=>db.execute(sql`INSERT INTO config_policy_hardware_monitoring_settings(feature_link_id) VALUES(${ownLink})`))).rejects.toSatisfy((e:unknown)=>pgErrorCode(e)==='42501');
+ await withDbAccessContext(own,()=>db.execute(sql`INSERT INTO config_policy_hardware_monitoring_settings(feature_link_id) VALUES(${ownLink})`));
+ expect(await withDbAccessContext(other,()=>db.execute(sql`SELECT * FROM config_policy_hardware_monitoring_settings WHERE feature_link_id=${ownLink}`))).toHaveLength(0);
+ expect(await withDbAccessContext(other,()=>db.execute(sql`UPDATE config_policy_hardware_monitoring_settings SET enabled=false WHERE feature_link_id=${ownLink} RETURNING id`))).toHaveLength(0);
+ expect(await withDbAccessContext(other,()=>db.execute(sql`DELETE FROM config_policy_hardware_monitoring_settings WHERE feature_link_id=${ownLink} RETURNING id`))).toHaveLength(0);
+ await expect(withDbAccessContext(own,()=>db.execute(sql`UPDATE config_policy_hardware_monitoring_settings SET feature_link_id=${foreignLink} WHERE feature_link_id=${ownLink}`))).rejects.toSatisfy((e:unknown)=>pgErrorCode(e)==='42501');
+ for(const [raid,disk] of [[4,60],[61,60],[10,14],[10,1441]])await expect(withDbAccessContext(own,()=>db.execute(sql`UPDATE config_policy_hardware_monitoring_settings SET poll_interval_minutes=${raid},disk_health_interval_minutes=${disk} WHERE feature_link_id=${ownLink}`))).rejects.toSatisfy((e:unknown)=>pgErrorCode(e)==='23514');
+ for(const [raid,disk] of [[5,15],[60,1440]])await withDbAccessContext(own,()=>db.execute(sql`UPDATE config_policy_hardware_monitoring_settings SET poll_interval_minutes=${raid},disk_health_interval_minutes=${disk} WHERE feature_link_id=${ownLink}`));
+});
