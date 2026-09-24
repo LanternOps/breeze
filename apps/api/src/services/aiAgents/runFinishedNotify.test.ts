@@ -970,3 +970,99 @@ describe('deliverRunFinishedNotifications — patch plan (W01)', () => {
     expect(input.title).toBe('Agent run finished');
   });
 });
+
+// ---------------------------------------------------------------------------
+// #6908 — suppress the "Agent run finished" notification for an
+// alert-triggered `full`-profile run that ended `no_action` with nothing
+// proposed. Same rationale `runLoop.ts` already applies to VERDICT-profile
+// runs (their finished surface is the alert badge, not a bell item); this is
+// the equivalent decision for a full-profile run, made here because only
+// this module reads the run's own `runVerdict`.
+// ---------------------------------------------------------------------------
+describe('deliverRunFinishedNotifications — alert-triggered no-action suppression (#6908)', () => {
+  function alertNoActionRun(overrides: Record<string, unknown> = {}) {
+    return {
+      ...baseRun,
+      profile: 'full',
+      triggerKind: 'alert',
+      status: 'completed',
+      intentIds: [] as string[],
+      outcome: { toolExecutionCount: 1, runVerdict: 'no_action' },
+      ...overrides,
+    };
+  }
+
+  it('suppresses: alert-triggered full run, completed, no_action, zero intents', async () => {
+    queueRows('ai_agent_runs', [alertNoActionRun()]);
+    queueRows('ai_agents', [baseAgent]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    expect(createNotification).not.toHaveBeenCalled();
+    expect(resolveRecipientUserIds).not.toHaveBeenCalled();
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining('no notification'),
+      expect.objectContaining({ runId: RUN_ID }),
+    );
+    infoSpy.mockRestore();
+  });
+
+  it('does NOT suppress the same run when it carries one intent', async () => {
+    queueRows('ai_agent_runs', [alertNoActionRun({
+      intentIds: [INTENT_ID],
+      status: 'awaiting_approval',
+    })]);
+    queueRows('ai_agents', [baseAgent]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    expect(createNotification).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT suppress the same run when the verdict is needs_attention', async () => {
+    queueRows('ai_agent_runs', [alertNoActionRun({
+      outcome: { toolExecutionCount: 1, runVerdict: 'needs_attention' },
+    })]);
+    queueRows('ai_agents', [baseAgent]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    expect(createNotification).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT suppress the same run when the verdict is acted (remediated)', async () => {
+    queueRows('ai_agent_runs', [alertNoActionRun({
+      outcome: { toolExecutionCount: 1, runVerdict: 'remediated' },
+    })]);
+    queueRows('ai_agents', [baseAgent]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    expect(createNotification).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT suppress a sweep run with the same no_action shape (P2-2 rule unchanged)', async () => {
+    queueRows('ai_agent_runs', [alertNoActionRun({ profile: 'sweep' })]);
+    queueRows('ai_agents', [baseAgent]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    expect(createNotification).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT suppress a manual-triggered full run with the same no_action shape', async () => {
+    queueRows('ai_agent_runs', [alertNoActionRun({ triggerKind: 'manual' })]);
+    queueRows('ai_agents', [baseAgent]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    expect(createNotification).toHaveBeenCalledTimes(1);
+  });
+});

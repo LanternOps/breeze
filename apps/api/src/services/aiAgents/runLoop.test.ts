@@ -1757,7 +1757,9 @@ describe('executeAgentRun', () => {
   });
 
   it('recipients are notified once with dedupeKey agent-run:<id>', async () => {
-    seedRows({ recipients: { userIds: [USER_A, USER_B], roleIds: [] } });
+    // #6908: not alert-triggered, so this exercises notify plumbing without
+    // hitting the alert/no_action suppression covered in runFinishedNotify.test.ts.
+    seedRows({ triggerKind: 'manual', recipients: { userIds: [USER_A, USER_B], roleIds: [] } });
     resolveRecipientUserIds.mockResolvedValue([USER_A, USER_B]);
     scriptQuery({ assistantText: 'Nothing actionable found.' });
 
@@ -1781,7 +1783,8 @@ describe('executeAgentRun', () => {
   // -------------------------------------------------------------------------
 
   it('a notify failure enqueues exactly one durable retry job and does not fail the run', async () => {
-    seedRows({ recipients: { userIds: [], roleIds: [] } });
+    // #6908: not alert-triggered, so notify actually runs (and can fail) here.
+    seedRows({ triggerKind: 'manual', recipients: { userIds: [], roleIds: [] } });
     resolveRecipientUserIds.mockResolvedValue([USER_A]);
     createNotification.mockRejectedValueOnce(new Error('notifications db down'));
     vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -2242,7 +2245,9 @@ describe('executeAgentRun', () => {
   it('notifies the MERGED recipient set from the run snapshot, not the baseline row', async () => {
     // Partner baseline row lists only USER_A; the org override added USER_B, so
     // the run's immutable snapshot carries the union.
+    // #6908: not alert-triggered, so notify actually runs and resolveRecipientUserIds is called.
     seedRows({
+      triggerKind: 'manual',
       effective: policy({ recipients: { userIds: [USER_A, USER_B], roleIds: [] } }),
       recipients: { userIds: [USER_A], roleIds: [] },
     });
@@ -2871,7 +2876,10 @@ describe('verdict profile in the run loop (P2-1)', () => {
   });
 
   it('finishRun still notifies and schedules fix-watch for a full-profile run (contrast)', async () => {
-    seedRows({ effective: policy({ toolAllowlist: [] }) }); // profile defaults to 'full'
+    // #6908: not alert-triggered here — this test is about the verdict-profile
+    // contrast, not the (separate) alert/no_action suppression covered in
+    // runFinishedNotify.test.ts, so keep it off that narrower path.
+    seedRows({ triggerKind: 'manual', effective: policy({ toolAllowlist: [] }) }); // profile defaults to 'full'
     scriptQuery({ assistantText: 'All good.' });
 
     await executeAgentRun(RUN_ID);

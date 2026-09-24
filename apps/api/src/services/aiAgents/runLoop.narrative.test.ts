@@ -351,6 +351,7 @@ function seedRows(options: {
   scheduleId?: string | null;
   triggerRef?: Record<string, unknown>;
   deviceId?: string | null;
+  triggerKind?: 'alert' | 'schedule' | 'manual';
 } = {}) {
   const effective = options.effective ?? policy();
   const deviceId = options.deviceId === undefined ? null : options.deviceId;
@@ -366,7 +367,7 @@ function seedRows(options: {
     anomalyIncidentId: null,
     status: 'queued',
     modeAtStart: 'shadow',
-    triggerKind: profile === 'narrative' || profile === 'sweep' ? 'schedule' : 'alert',
+    triggerKind: options.triggerKind ?? (profile === 'narrative' || profile === 'sweep' ? 'schedule' : 'alert'),
     policySnapshot: snapshot(effective),
     profile,
     correlationGroupId: null,
@@ -848,7 +849,9 @@ describe('notify / fix-watch split at finish (P2-3)', () => {
   });
 
   it('a full run still does BOTH (unchanged by the split)', async () => {
-    seedRows({ profile: 'full', deviceId: DEVICE_ID });
+    // #6908: manual trigger — an alert-triggered full run that ends no_action with
+    // nothing proposed is now deliberately silent (runFinishedNotify.test.ts).
+    seedRows({ profile: 'full', deviceId: DEVICE_ID, triggerKind: 'manual' });
     scriptQuery({ assistantText: 'All good.' });
 
     await executeAgentRun(RUN_ID);
