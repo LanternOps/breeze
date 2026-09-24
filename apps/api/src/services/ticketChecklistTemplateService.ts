@@ -602,10 +602,13 @@ export async function applyChecklistTemplateToTicket(
       //
       // The pre-check above is a plain read, so it cannot see an Operator
       // item committed after it runs. The NOT EXISTS below is what ENFORCES
-      // the rule: it is evaluated against the DELETE's own snapshot, so an
-      // item whose step is waiting is never removed by this statement, however
-      // the two transactions interleave. The pre-check stays for the readable
-      // 409 in the common case.
+      // the rule, against the DELETE statement's own snapshot (READ
+      // COMMITTED). A human-work item and its waiting link are committed
+      // together (humanWorkService opens both in one transaction), so an
+      // item committed BEFORE this statement starts is visible together with
+      // its waiting step and is excluded here, and one committed AFTER it
+      // starts is not visible to this statement at all. The pre-check stays
+      // for the readable 409 in the common case.
       await tx
         .delete(ticketChecklistItems)
         .where(

@@ -445,9 +445,12 @@ describe('AI Operator human-work + wait steps against real Postgres (E3, #6168)'
     expect(appended.items.map((i) => i.id)).toContain(itemId);
   });
 
-  // (6c) #6930 — the race Codex r4 described: the pre-check passed (nothing was
-  // waiting yet), then an Operator item committed before the DELETE ran. The
-  // DELETE's own NOT EXISTS must still keep the waited-on item and its link.
+  // (6c) #6930 — the state the replace_unticked DELETE sees when an Operator
+  // item commits AFTER the pre-check and BEFORE the DELETE statement starts:
+  // the pre-check has already passed, and the item plus its waiting link are
+  // visible. Reproduced by stubbing the pre-check, not with two connections.
+  // (A commit after the statement starts is invisible to it by snapshot, so
+  // it cannot be deleted.) The DELETE's own NOT EXISTS must keep the item.
   runDb('replace_unticked never deletes a waited-on item even when the pre-check already passed', async () => {
     const org = await seedOrg();
     const taskId = await seedTask(org, { currentStepKey: 'confirm_identity' });
