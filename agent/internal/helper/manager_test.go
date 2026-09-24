@@ -91,6 +91,7 @@ func TestApplyRestartsHelperOnConfigChangeWhenIdle(t *testing.T) {
 	stopped := 0
 	spawned := 0
 	mgr := New(context.Background(), nil, nil, "")
+	t.Cleanup(mgr.Shutdown) // stop the watcher this test spawns (#6872: avoid leaking it into later tests)
 	mgr.baseDir = tmpDir
 	mgr.sessionEnumerator = &mockEnumerator{
 		sessions: []SessionInfo{{Key: "501", Username: "alice", UID: 501}},
@@ -151,6 +152,7 @@ func TestApplyDefersRestartWhileChatActive(t *testing.T) {
 	stopped := 0
 	spawned := 0
 	mgr := New(context.Background(), nil, nil, "")
+	t.Cleanup(mgr.Shutdown) // the already-running session still gets a watcher (#6872: avoid leaking it into later tests)
 	mgr.baseDir = tmpDir
 	mgr.sessionEnumerator = &mockEnumerator{
 		sessions: []SessionInfo{{Key: "501", Username: "alice", UID: 501}},
@@ -198,6 +200,7 @@ func TestApplyEnabledSpawnsPerSession(t *testing.T) {
 	stopHelperLegacyFunc = func() {}
 
 	mgr := New(context.Background(), nil, nil, "")
+	t.Cleanup(mgr.Shutdown) // stop the watchers this test spawns (#6872: avoid leaking them into later tests)
 	mgr.baseDir = tmpDir
 	mgr.sessionEnumerator = &mockEnumerator{
 		sessions: []SessionInfo{
@@ -405,6 +408,7 @@ func TestApplyReapsOnDiskSessionNotSurfacedByEnumerator(t *testing.T) {
 
 	var stoppedPIDs []int
 	mgr := New(context.Background(), nil, nil, "")
+	t.Cleanup(mgr.Shutdown) // stop the watcher this test spawns (#6872: avoid leaking it into later tests)
 	mgr.baseDir = tmpDir
 	// Console-only enumerator: only the interactive console session surfaces,
 	// never the RDP session 999 that owns the stale on-disk state.
@@ -773,6 +777,7 @@ func TestApplyEnabledNotInstalledNoPendingDoesNotSpawn(t *testing.T) {
 
 func TestApplyNotInstalledWarnResetsWhenInstalledOrDisabled(t *testing.T) {
 	mgr, _ := newNotInstalledManager(t)
+	t.Cleanup(mgr.Shutdown) // installing the binary mid-test starts a watcher (#6872: avoid leaking it into later tests)
 	mgr.Apply(&Settings{Enabled: true})
 	if !mgr.notInstalledWarned {
 		t.Fatal("warn flag not set")

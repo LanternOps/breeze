@@ -2,14 +2,16 @@ package helper
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
-const (
+var (
 	watcherBaseInterval = 30 * time.Second
 	watcherBackoffCap   = 30 * time.Second
-	watcherMaxRetries   = 5
 )
+
+const watcherMaxRetries = 5
 
 type watcher struct {
 	ctx    context.Context
@@ -75,6 +77,15 @@ func (w *watcher) run() {
 		}
 
 		err := w.mgr.ensureRunningSession(w.state)
+		if errors.Is(err, ErrNotInstalled) {
+			// #6872: not a crash. Undo the failure we just counted, leave
+			// watcherGaveUp alone, and exit — Apply starts a fresh watcher
+			// once the server-offered install lands.
+			failures--
+			w.mgr.mu.Unlock()
+			log.Debug("breeze assist not installed; watcher exiting", "session", w.state.key)
+			return
+		}
 		w.mgr.mu.Unlock()
 
 		if err != nil {

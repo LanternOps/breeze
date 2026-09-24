@@ -987,7 +987,13 @@ func (m *Manager) Shutdown() {
 
 func (m *Manager) startSessionWatcher(state *sessionState) {
 	if state.watcher != nil {
-		return
+		select {
+		case <-state.watcher.done:
+			// Exited on its own (ErrNotInstalled, #6872): replace it.
+			state.watcher = nil
+		default:
+			return
+		}
 	}
 	w := newSessionWatcher(m.ctx, m, state)
 	state.watcher = w
