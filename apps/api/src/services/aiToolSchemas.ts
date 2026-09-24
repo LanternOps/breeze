@@ -1620,6 +1620,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     ownerScope: z.enum(['organization', 'partner']).optional(),
     selections: backupProfileSelectionsSchema.optional(),
     isActive: z.boolean().optional(),
+    orgId: uuid.optional(),
   }),
 
   // Playbook tools
@@ -1707,6 +1708,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     config: z.record(z.string(), z.unknown()).optional(),
     isActive: z.boolean().optional(),
     limit: z.number().int().min(1).max(100).optional(),
+    orgId: uuid.optional(),
   }).refine(
     (d) => {
       const needsId = ['get', 'update', 'delete'];
@@ -1777,6 +1779,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     config: z.record(z.string(), z.unknown()).optional(),
     enabled: z.boolean().optional(),
     limit: z.number().int().min(1).max(50).optional(),
+    orgId: uuid.optional(),
   }).refine(
     (d) => !['test', 'update', 'delete'].includes(d.action) || !!d.channelId,
     { message: 'channelId is required for test/update/delete actions' },
@@ -1872,6 +1875,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     encryption: z.boolean().optional(),
     isActive: z.boolean().optional(),
     limit: z.number().int().min(1).max(100).optional(),
+    orgId: uuid.optional(),
   }),
 
   manage_scheduled_tasks: z.object({
@@ -2003,6 +2007,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     }).optional(),
     isActive: z.boolean().optional(),
     limit: z.number().int().min(1).max(100).optional(),
+    orgId: uuid.optional(),
   }).refine(
     (data) => !['get', 'update'].includes(data.action) || !!data.policyId,
     { message: 'policyId is required for get/update actions' }
@@ -2027,6 +2032,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     })).max(500).optional(),
     isActive: z.boolean().optional(),
     limit: z.number().int().min(1).max(100).optional(),
+    orgId: uuid.optional(),
   }).refine(
     (data) => !['get', 'update'].includes(data.action) || !!data.policyId,
     { message: 'policyId is required for get/update actions' }

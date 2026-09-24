@@ -14,6 +14,29 @@ vi.mock('./deviceGroupDelete', async (importOriginal) => {
   return { ...actual, deleteDeviceGroup: mockDeleteDeviceGroup };
 });
 
+// Stub the report-authority resolver so generate_report:create write-org
+// tests (#6667) exercise resolveWritableToolOrgId without needing real role
+// grant rows behind resolveRequestReportAuthority.
+vi.mock('./siteScope', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./siteScope')>();
+  return {
+    ...actual,
+    resolveRequestReportAuthority: vi.fn(async (_auth: unknown, orgId: string) => {
+      const scope = { version: 1 as const, kind: 'unrestricted' as const, orgId };
+      return {
+        ok: true,
+        authority: {
+          principalKind: 'user' as const,
+          scope,
+          principalUserId: 'u1',
+          capturedAt: new Date(),
+          fingerprint: actual.siteScopeFingerprint(scope),
+        },
+      };
+    }),
+  };
+});
+
 // Mock all DB and service dependencies so we can test registration without a database
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
@@ -420,10 +443,8 @@ describe('manage_groups peripheral reconciliation', () => {
   });
 });
 
-// ============================================
-// Handler-level tests for new actions
-// ============================================
-
+// =====================================// Handler-level tests for new actions
+// =====================================
 describe('manage_automations managed-row protection', () => {
   const toolMap = new Map<string, AiTool>();
   registerFleetTools(toolMap);
@@ -1642,5 +1663,124 @@ describe('requireOrgOwnedReportRow (#3198 W01)', () => {
     const result = requireOrgOwnedReportRow(row, 'test-context');
 
     expect(result).toEqual(row);
+  });
+});
+
+describe('write-org resolution for org-owning creates (#6667)', () => {
+  const toolMap = new Map<string, AiTool>();
+  registerFleetTools(toolMap);
+
+  // A partner tech reachable to TWO orgs with no anchored auth.orgId — the
+  // shape that silently picked accessibleOrgIds[0] before the fix.
+  const multiOrgAuth = {
+    user: { id: 'u1', email: 'tech@test.com', name: 'Tech' },
+    orgId: null,
+    partnerId: 'partner-1',
+    scope: 'partner',
+    accessibleOrgIds: ['org-1', 'org-2'],
+    canAccessOrg: (id: string) => id === 'org-1' || id === 'org-2',
+    orgCondition: () => undefined,
+  } as any;
+
+  afterEach(() => {
+    vi.mocked(db.insert).mockClear();
+    vi.mocked(db.select).mockClear();
+  });
+
+  describe('manage_deployments:create', () => {
+    const tool = () => toolMap.get('manage_deployments')!;
+    const baseInput = {
+      action: 'create',
+      name: 'Rollout',
+      type: 'agent_update',
+      payload: { version: '1.2.3' },
+      targetType: 'device',
+      targetConfig: {},
+      rolloutConfig: {},
+    };
+
+    it('refuses with the ambiguous-org error and inserts nothing when orgId is omitted', async () => {
+      const result = JSON.parse(await tool().handler(baseInput, multiOrgAuth));
+      expect(result.error).toBe('orgId is required: you have access to multiple organizations');
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('uses the explicit accessible orgId for the insert', async () => {
+      const insertValuesSpy = vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id: 'd1', name: 'Rollout' }]) }));
+      vi.mocked(db.insert).mockReturnValueOnce({ values: insertValuesSpy } as never);
+
+      const result = JSON.parse(await tool().handler({ ...baseInput, orgId: 'org-2' }, multiOrgAuth));
+      expect(result.success).toBe(true);
+      expect(insertValuesSpy).toHaveBeenCalledWith(expect.objectContaining({ orgId: 'org-2' }));
+    });
+  });
+
+  describe('manage_patches:install', () => {
+    const tool = () => toolMap.get('manage_patches')!;
+    const patchId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+    const deviceId = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+    const baseInput = { action: 'install', patchIds: [patchId], deviceIds: [deviceId] };
+
+    function mockOwnedDeviceLookup(rows: Array<{ id: string; siteId: string | null }>) {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(rows) }),
+      } as never);
+    }
+
+    it('refuses with the ambiguous-org error and inserts nothing when orgId is omitted', async () => {
+      const result = JSON.parse(await tool().handler(baseInput, multiOrgAuth));
+      expect(result.error).toBe('orgId is required: you have access to multiple organizations');
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('uses the explicit accessible orgId for the device filter and the insert', async () => {
+      mockOwnedDeviceLookup([{ id: deviceId, siteId: null }]);
+      const insertValuesSpy = vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id: 'job-1' }]) }));
+      vi.mocked(db.insert).mockReturnValueOnce({ values: insertValuesSpy } as never);
+
+      const result = JSON.parse(await tool().handler({ ...baseInput, orgId: 'org-2' }, multiOrgAuth));
+      expect(result.success).toBe(true);
+      expect(insertValuesSpy).toHaveBeenCalledWith(expect.objectContaining({ orgId: 'org-2' }));
+    });
+  });
+
+  describe('manage_groups:create', () => {
+    const tool = () => toolMap.get('manage_groups')!;
+    const baseInput = { action: 'create', name: 'Group' };
+
+    it('refuses with the ambiguous-org error and inserts nothing when orgId is omitted', async () => {
+      const result = JSON.parse(await tool().handler(baseInput, multiOrgAuth));
+      expect(result.error).toBe('orgId is required: you have access to multiple organizations');
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('uses the explicit accessible orgId for the insert', async () => {
+      const insertValuesSpy = vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id: 'g1', name: 'Group' }]) }));
+      vi.mocked(db.insert).mockReturnValueOnce({ values: insertValuesSpy } as never);
+
+      const result = JSON.parse(await tool().handler({ ...baseInput, orgId: 'org-2' }, multiOrgAuth));
+      expect(result.success).toBe(true);
+      expect(insertValuesSpy).toHaveBeenCalledWith(expect.objectContaining({ orgId: 'org-2' }));
+    });
+  });
+
+  describe('generate_report:create', () => {
+    const tool = () => toolMap.get('generate_report')!;
+    const baseInput = { action: 'create', name: 'Report', reportType: 'device_inventory' };
+
+    it('refuses with the ambiguous-org error and inserts nothing when orgId is omitted', async () => {
+      const result = JSON.parse(await tool().handler(baseInput, multiOrgAuth));
+      expect(result.error).toBe('orgId is required: you have access to multiple organizations');
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('uses the explicit accessible orgId for the insert', async () => {
+      const insertValuesSpy = vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id: 'r1', name: 'Report' }]) }));
+      vi.mocked(db.insert).mockReturnValueOnce({ values: insertValuesSpy } as never);
+
+      const result = JSON.parse(await tool().handler({ ...baseInput, orgId: 'org-2' }, multiOrgAuth));
+      expect(result.success).toBe(true);
+      expect(insertValuesSpy).toHaveBeenCalledWith(expect.objectContaining({ orgId: 'org-2' }));
+    });
   });
 });

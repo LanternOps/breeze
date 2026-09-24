@@ -51,7 +51,7 @@ vi.mock('./aiToolsSoftwarePolicyAudit', () => ({
   AI_AUTO_INSTALL_REFUSAL_MESSAGE: 'AI_AUTO_INSTALL_REFUSAL_MESSAGE (mocked)',
 }));
 vi.mock('../db/schema/peripheralControl', () => ({ peripheralPolicies: {} }));
-vi.mock('../db/schema/backup', () => ({ backupConfigs: {} }));
+vi.mock('../db/schema/backup', () => ({ backupConfigs: {}, backupProfiles: {} }));
 
 import { registerPolicyPrereqTools } from './aiToolsPolicyPrereqs';
 
@@ -87,6 +87,29 @@ function getBackupConfigsTool() {
   const tool = tools.get('manage_backup_configs');
   if (!tool) throw new Error('manage_backup_configs tool not registered');
   return tool;
+}
+
+function getToolByName(name: string) {
+  const tools = new Map<string, any>();
+  registerPolicyPrereqTools(tools);
+  const tool = tools.get(name);
+  if (!tool) throw new Error(`${name} tool not registered`);
+  return tool;
+}
+
+// A partner tech reachable to TWO orgs with no anchored auth.orgId — the
+// shape that silently picked accessibleOrgIds[0] before the #6667 fix.
+function makeMultiOrgAuth() {
+  return {
+    user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
+    scope: 'partner',
+    partnerId: PARTNER_ID,
+    partnerOrgAccess: 'selected',
+    orgId: null,
+    accessibleOrgIds: [ORG_ID, 'org-2'],
+    canAccessOrg: (id: string) => id === ORG_ID || id === 'org-2',
+    orgCondition: () => undefined,
+  } as any;
 }
 
 function makeOrgAuth() {
@@ -714,7 +737,117 @@ describe('manage_peripheral_policies create (#2814 — first reachable)', () => 
       makeAuth()
     );
 
-    expect(JSON.parse(output).error).toMatch(/Organization context required/);
+    // #6667: the write org is now resolved via the shared
+    // resolveWritableToolOrgId, whose final fallback message differs slightly
+    // from the tool's own former literal, but the outcome (refuse + no write)
+    // is unchanged.
+    expect(JSON.parse(output).error).toMatch(/orgId is required/);
     expect(insertMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('write-org resolution for org-owning creates (#6667)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resolvePolicyDeviceIdsMock.mockResolvedValue(['device-1']);
+    schedulePolicyDevicesMock.mockResolvedValue(['job-1']);
+  });
+
+  describe('manage_software_policies:create', () => {
+    const INPUT = { action: 'create', name: 'Blocklist', mode: 'blocklist' };
+
+    it('refuses with the ambiguous-org error and inserts nothing when orgId is omitted', async () => {
+      const output = await getToolByName('manage_software_policies').handler(INPUT, makeMultiOrgAuth());
+      expect(JSON.parse(output).error).toBe('orgId is required: you have access to multiple organizations');
+      expect(insertMock).not.toHaveBeenCalled();
+    });
+
+    it('uses the explicit accessible orgId for the insert', async () => {
+      mockInsertReturns({ id: 'sp-1', name: 'Blocklist', orgId: 'org-2', partnerId: null });
+      const output = await getToolByName('manage_software_policies').handler(
+        { ...INPUT, orgId: 'org-2' },
+        makeMultiOrgAuth(),
+      );
+      const parsed = JSON.parse(output);
+      expect(parsed.success).toBe(true);
+      const values = insertMock.mock.results[0]!.value.values.mock.calls[0][0];
+      expect(values.orgId).toBe('org-2');
+    });
+  });
+
+  describe('manage_peripheral_policies:create', () => {
+    const INPUT = { action: 'create', name: 'USB block', deviceClass: 'storage', action_type: 'block' };
+
+    it('refuses with the ambiguous-org error and inserts nothing when orgId is omitted', async () => {
+      const output = await getToolByName('manage_peripheral_policies').handler(INPUT, makeMultiOrgAuth());
+      expect(JSON.parse(output).error).toBe('orgId is required: you have access to multiple organizations');
+      expect(insertMock).not.toHaveBeenCalled();
+    });
+
+    it('uses the explicit accessible orgId for the insert', async () => {
+      mockInsertReturns({ id: 'pp-1', name: 'USB block', orgId: 'org-2' });
+      const output = await getToolByName('manage_peripheral_policies').handler(
+        { ...INPUT, orgId: 'org-2' },
+        makeMultiOrgAuth(),
+      );
+      const parsed = JSON.parse(output);
+      expect(parsed.success).toBe(true);
+      const values = insertMock.mock.results[0]!.value.values.mock.calls[0][0];
+      expect(values.orgId).toBe('org-2');
+    });
+  });
+
+  describe('manage_backup_profiles:create', () => {
+    const INPUT = {
+      action: 'create',
+      name: 'Files profile',
+      selections: { file: { enabled: true, paths: ['/data'] } },
+    };
+
+    it('refuses with the ambiguous-org error and inserts nothing when orgId is omitted', async () => {
+      const output = await getToolByName('manage_backup_profiles').handler(INPUT, makeMultiOrgAuth());
+      expect(JSON.parse(output).error).toBe('orgId is required: you have access to multiple organizations');
+      expect(insertMock).not.toHaveBeenCalled();
+    });
+
+    it('uses the explicit accessible orgId for the insert', async () => {
+      mockInsertReturns({ id: 'bp-1', orgId: 'org-2', partnerId: null });
+      const output = await getToolByName('manage_backup_profiles').handler(
+        { ...INPUT, orgId: 'org-2' },
+        makeMultiOrgAuth(),
+      );
+      const parsed = JSON.parse(output);
+      expect(parsed.success).toBe(true);
+      const values = insertMock.mock.results[0]!.value.values.mock.calls[0][0];
+      expect(values.orgId).toBe('org-2');
+    });
+  });
+
+  describe('manage_backup_configs:create', () => {
+    const INPUT = {
+      action: 'create',
+      name: 'Local backup',
+      type: 'file',
+      provider: 'local',
+      providerConfig: { path: '/backups' },
+    };
+
+    it('refuses with the ambiguous-org error and inserts nothing when orgId is omitted', async () => {
+      const output = await getBackupConfigsTool().handler(INPUT, makeMultiOrgAuth());
+      expect(JSON.parse(output).error).toBe('orgId is required: you have access to multiple organizations');
+      expect(insertMock).not.toHaveBeenCalled();
+    });
+
+    it('uses the explicit accessible orgId for the insert', async () => {
+      mockInsertReturns({ id: BACKUP_CONFIG_ID, name: 'Local backup' });
+      const output = await getBackupConfigsTool().handler(
+        { ...INPUT, orgId: 'org-2' },
+        makeMultiOrgAuth(),
+      );
+      const parsed = JSON.parse(output);
+      expect(parsed.success).toBe(true);
+      const values = insertMock.mock.results[0]!.value.values.mock.calls[0][0];
+      expect(values.orgId).toBe('org-2');
+    });
   });
 });

@@ -137,6 +137,7 @@ import {
   getConfigPolicy,
   listFeatureLinks,
   removeFeatureLink,
+  updateConfigPolicy,
   updateFeatureLink,
 } from './configurationPolicy';
 import { onedriveHelperInlineSettingsSchema } from '@breeze/shared/validators';
@@ -1703,5 +1704,116 @@ describe('manage_policy_feature_link compliance validation + rejection hints (#6
     const out = JSON.parse(await tools.get('manage_policy_feature_link')!.handler({ action: 'describe', featureType: 'compliance' }, {} as never));
     expect(out.inlineSettings).toContain('softwareName');
     expect(out.example.items[0].rules.map((r: { type: string }) => r.type)).toContain('required_software');
+  });
+});
+
+// ─── #6667 / #6668 — owner-org authority on create and update ───────────────
+// #6667: org-scoped create used `auth.orgId ?? accessibleOrgIds[0]`, so a
+// partner tech with several orgs who omitted orgId got the policy written into
+// whichever customer org sorted first. #6668: update silently dropped `orgId`
+// and reported success for a call that changed nothing.
+describe('manage_configuration_policy owner-org authority (#6667, #6668)', () => {
+  const ORG_B = '55555555-5555-5555-5555-555555555555';
+  const OWNER_CHANGE_ERROR =
+    'A policy owner cannot be changed; create a new policy in the target organization instead.';
+
+  function makeMultiOrgPartnerAuth() {
+    return {
+      ...makePartnerAuth(),
+      accessibleOrgIds: [ORG_ID, ORG_B],
+      canAccessOrg: (orgId: string) => orgId === ORG_ID || orgId === ORG_B,
+    } as any;
+  }
+
+  function tool() {
+    const map = new Map<string, any>();
+    registerConfigPolicyTools(map);
+    return map.get('manage_configuration_policy')!;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    enable2faState.value = true;
+    createConfigPolicyMock.mockImplementation(async (owner: { orgId?: string }) => ({ id: POLICY_ID, ...owner }));
+  });
+
+  it('refuses an org-scoped create with no orgId when the caller can reach several orgs', async () => {
+    const output = await tool().handler({ action: 'create', name: 'Stray' }, makeMultiOrgPartnerAuth());
+
+    expect(JSON.parse(output).error).toBe('orgId is required: you have access to multiple organizations');
+    expect(createConfigPolicyMock).not.toHaveBeenCalled();
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('refuses an org-scoped create with no orgId for an unrestricted (accessibleOrgIds=null) caller', async () => {
+    const auth = { ...makeMultiOrgPartnerAuth(), accessibleOrgIds: null, canAccessOrg: () => true } as any;
+    const output = await tool().handler({ action: 'create', name: 'Stray' }, auth);
+
+    expect(JSON.parse(output).error).toBe('orgId is required: you have access to multiple organizations');
+    expect(createConfigPolicyMock).not.toHaveBeenCalled();
+  });
+
+  it('uses the explicit orgId for a multi-org partner caller', async () => {
+    mockSelectRows([]); // duplicate-name check
+    const output = await tool().handler({ action: 'create', name: 'Scoped', orgId: ORG_B }, makeMultiOrgPartnerAuth());
+
+    expect(JSON.parse(output).success).toBe(true);
+    expect(createConfigPolicyMock).toHaveBeenCalledWith({ orgId: ORG_B }, expect.any(Object), 'user-1');
+  });
+
+  it('uses the only org when a partner caller can reach exactly one', async () => {
+    mockSelectRows([]);
+    const output = await tool().handler({ action: 'create', name: 'Single' }, makePartnerAuth());
+
+    expect(JSON.parse(output).success).toBe(true);
+    expect(createConfigPolicyMock).toHaveBeenCalledWith({ orgId: ORG_ID }, expect.any(Object), 'user-1');
+  });
+
+  it('uses auth.orgId for an org-scoped token (incl. the narrowed auth of a device-bound session)', async () => {
+    mockSelectRows([]);
+    const output = await tool().handler({ action: 'create', name: 'Org' }, makeAuth());
+
+    expect(JSON.parse(output).success).toBe(true);
+    expect(createConfigPolicyMock).toHaveBeenCalledWith({ orgId: ORG_ID }, expect.any(Object), 'user-1');
+  });
+
+  it('refuses an org-scoped token naming a different org', async () => {
+    const output = await tool().handler({ action: 'create', name: 'Other', orgId: ORG_B }, makeAuth());
+
+    expect(JSON.parse(output).error).toBe('Cannot access another organization');
+    expect(createConfigPolicyMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a partner caller naming an org it cannot reach', async () => {
+    const output = await tool().handler({ action: 'create', name: 'Other', orgId: ORG_B }, makePartnerAuth());
+
+    expect(JSON.parse(output).error).toBe('Access denied to this organization');
+    expect(createConfigPolicyMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['orgId', { orgId: ORG_B }],
+    ['ownerScope', { ownerScope: 'partner' }],
+    ['orgId alongside a real change', { orgId: ORG_B, name: 'Renamed' }],
+  ])('update rejects %s instead of silently ignoring it', async (_label, extra) => {
+    const output = await tool().handler({ action: 'update', policyId: POLICY_ID, ...extra }, makePartnerAuth());
+
+    expect(JSON.parse(output).error).toBe(OWNER_CHANGE_ERROR);
+    expect(vi.mocked(updateConfigPolicy)).not.toHaveBeenCalled();
+  });
+
+  it('update with no updatable field is an error, not a success', async () => {
+    const output = await tool().handler({ action: 'update', policyId: POLICY_ID }, makePartnerAuth());
+
+    expect(JSON.parse(output).error).toBe('Nothing to update: supply at least one of name, description, status.');
+    expect(vi.mocked(updateConfigPolicy)).not.toHaveBeenCalled();
+  });
+
+  it('update applies a real field change', async () => {
+    vi.mocked(updateConfigPolicy).mockResolvedValue({ id: POLICY_ID, name: 'Renamed' } as any);
+    const output = await tool().handler({ action: 'update', policyId: POLICY_ID, name: 'Renamed' }, makePartnerAuth());
+
+    expect(JSON.parse(output).success).toBe(true);
+    expect(vi.mocked(updateConfigPolicy)).toHaveBeenCalledWith(POLICY_ID, { name: 'Renamed' }, expect.any(Object));
   });
 });
