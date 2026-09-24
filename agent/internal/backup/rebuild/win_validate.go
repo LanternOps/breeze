@@ -36,8 +36,9 @@ var winValidateSkipPrefixes = []string{"windows/system32/config/", "programdata/
 //  5. the no-drive-letter bit is cleared on root/data partitions — the LAST
 //     layout write, once nothing on the host is using the volumes; ESP, MSR
 //     and Recovery keep it;
-//  6. the GPT is read back and every partition GUID must still match the
-//     plan (Global Constraint "Partition GUIDs are identity");
+//  6. the GPT is read back: every planned partition must still be there
+//     with its planned GUID (Global Constraint "Partition GUIDs are
+//     identity");
 //  7. the VHDX is detached (teardown's r.detach).
 func winValidate(ctx context.Context, r *run) error {
 	if r.opts.ExpectSystemState && !r.result.StateApplied {
@@ -145,13 +146,20 @@ func winValidate(ctx context.Context, r *run) error {
 	return nil
 }
 
-// checkPartitionGUIDs fails when any planned partition's GUID on disk
-// differs from the plan's recorded one.
+// checkPartitionGUIDs fails when a planned partition is missing from the
+// disk, or its GUID on disk differs from the plan's recorded one.
 func (r *run) checkPartitionGUIDs(parts []WinGPTPartition) error {
+	onDisk := map[int]WinGPTPartition{}
 	for _, p := range parts {
-		planned := r.plannedPartition(p.Number)
-		if planned == nil {
-			continue
+		onDisk[p.Number] = p
+	}
+	if r.result.Plan == nil {
+		return errors.New("validate: no partition plan recorded for this run")
+	}
+	for _, planned := range r.result.Plan.Partitions {
+		p, ok := onDisk[planned.Number]
+		if !ok {
+			return fmt.Errorf("planned partition %d is missing from the disk (%d of %d partitions present)", planned.Number, len(parts), len(r.result.Plan.Partitions))
 		}
 		if planned.PartUUID != "" && !strings.EqualFold(planned.PartUUID, p.PartGUID) {
 			return fmt.Errorf("partition %d GUID changed during the run (%s → %s)", p.Number, planned.PartUUID, p.PartGUID)

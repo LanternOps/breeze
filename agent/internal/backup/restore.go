@@ -617,6 +617,16 @@ func RestoreSourceKey(f SnapshotFile) string {
 	return restoreSourcePath(f)
 }
 
+// RestoreVolume is the volume (drive, e.g. "D:") RestoreKey strips from an
+// entry: restoreSourcePath's volume — OriginalPath's for a VSS entry, never
+// the shadow-copy device of SourcePath — or "" when the recorded path
+// carries none. A restore into one target base flattens every volume into
+// it, so the rebuild engine uses this to refuse a snapshot whose entries
+// span more than the root volume.
+func RestoreVolume(f SnapshotFile) string {
+	return volumeName(restoreSourcePath(f))
+}
+
 // SetVolumeNameForTest overrides the package-level volumeName hook restore.go
 // uses to strip a leading Windows drive volume, returning a restore func.
 // Exported (test-only by convention, never called from non-test code) so an

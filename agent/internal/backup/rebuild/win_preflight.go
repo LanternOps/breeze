@@ -5,17 +5,28 @@ package rebuild
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 
+	"github.com/breeze-rmm/agent/internal/backup"
 	"github.com/breeze-rmm/agent/internal/backup/layout"
 	"github.com/breeze-rmm/agent/internal/backup/winhive"
 )
 
 func winPreflight(ctx context.Context, r *run) error {
+	// Final-review ruling (Imp 2): the offline system-state, boot, identity
+	// and encryption phases are staged until W06c (win_phases.go), so a run
+	// without SkipBoot could only provision and restore and then fail —
+	// refuse it here, before any disk/VHDX inspection or write. Part C
+	// Task 17 deletes this refusal together with the last staged function.
+	if !r.opts.SkipBoot {
+		return &RefusalError{Reason: "Windows system-state apply is not available in this build; pass --skip-boot for a files-only rehearsal"}
+	}
 	lay := r.layout // fetched + schema/platform-checked by resolvePlatform
 	if v := layout.Assess(lay); !v.Restorable {
 		return &RefusalError{Reason: "layout is not bare-metal restorable: " + strings.Join(v.Reasons, "; ")}
@@ -27,6 +38,9 @@ func winPreflight(ctx context.Context, r *run) error {
 		return err
 	}
 	r.manifest = man
+	if err := refuseOtherVolumes(man, src); err != nil {
+		return err
+	}
 	var manifestBytes int64
 	for _, f := range man.Files {
 		if f.HasContent() {
@@ -142,18 +156,68 @@ func winPreflight(ctx context.Context, r *run) error {
 // (Part C Task 14, bmr.RestoreSystemStateOfflineWindows) applies the same
 // winhive.HasNTDS check to the FILE-TREE SYSTEM hive before any hive edit,
 // per the Global Constraint "Hives: file tree first".
-func (r *run) hasNTDS() (bool, error) {
+//
+// It fails closed: only a confirmed-absent artifact (fs.ErrNotExist) reads
+// as "no artifact"; any other Stat error, a missing staging dir, and a hive
+// that will not unload afterwards are errors, never "not a DC".
+func (r *run) hasNTDS() (isDC bool, err error) {
+	if r.stateStaging == "" {
+		return false, errors.New("domain-controller check: no system-state staging directory")
+	}
 	hivePath := filepath.Join(r.stateStaging, "registry", "SYSTEM")
 	if _, err := os.Stat(hivePath); err != nil {
-		return false, nil
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("domain-controller check: %w", err)
 	}
 	mountName := "BRZ_" + targetKey(r.opts.Target) + "_PRE"
 	h, err := r.opts.WinSystem.LoadHive(hivePath, mountName)
 	if err != nil {
 		return false, fmt.Errorf("load SYSTEM hive for domain-controller check: %w", err)
 	}
-	defer func() { _ = h.Close() }()
+	defer func() {
+		if cerr := h.Close(); cerr != nil {
+			err = errors.Join(err, fmt.Errorf("unload SYSTEM hive after domain-controller check: %w", cerr))
+		}
+	}()
 	return winhive.HasNTDS(h.Root())
+}
+
+// refuseOtherVolumes refuses a snapshot holding entries from a volume other
+// than the source's root: the restore writes into the one root volume and
+// backup.RestoreKey strips every entry's volume, so a D:\ entry would land
+// in C:\ (final-review ruling, Imp 3). Only entries whose recorded path
+// carries a drive letter can be attributed; an entry with no drive (a
+// relative or device path) restores under the root regardless and is not
+// counted.
+func refuseOtherVolumes(man *backup.Snapshot, src *layout.Disk) error {
+	rootVol := "C:"
+	for _, p := range src.Partitions {
+		if p.Role == layout.RoleRoot && isDriveLetterVolume(strings.TrimRight(p.MountPoint, `\/`)) {
+			rootVol = strings.TrimRight(p.MountPoint, `\/`)
+		}
+	}
+	var n int
+	var first string
+	for _, f := range man.Files {
+		vol := backup.RestoreVolume(f)
+		if !isDriveLetterVolume(vol) || strings.EqualFold(vol, rootVol) {
+			continue
+		}
+		if first == "" {
+			first = strings.ToUpper(vol)
+		}
+		n++
+	}
+	if n > 0 {
+		return &RefusalError{Reason: fmt.Sprintf("snapshot contains %d files from volume %s; multi-volume Windows rebuilds are not supported in this build", n, first)}
+	}
+	return nil
+}
+
+func isDriveLetterVolume(v string) bool {
+	return len(v) == 2 && v[1] == ':' && ((v[0] >= 'A' && v[0] <= 'Z') || (v[0] >= 'a' && v[0] <= 'z'))
 }
 
 // parseDiskTargetPath extracts the disk number from a Windows physical

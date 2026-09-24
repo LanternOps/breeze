@@ -2,10 +2,13 @@ package rebuild
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/breeze-rmm/agent/internal/backup/layout"
 )
 
 // A full Windows vhdx run with SkipBoot completes: validate samples
@@ -192,5 +195,74 @@ func TestWinConvert_AlwaysSkipped(t *testing.T) {
 	}
 	if strings.Contains(sys.dumpForTest(), "qemu-img") {
 		t.Fatalf("the Windows engine must never invoke qemu-img: %v", sys.cmds)
+	}
+}
+
+// Final-review minor: the GUID read-back also fails when a planned
+// partition is missing from the disk, not only when a GUID changed.
+func TestWinValidate_RefusesMissingPlannedPartition(t *testing.T) {
+	withHostPlatformWindows(t)
+	dir := t.TempDir()
+	opts, sys := winFakeOptions(t, dir)
+	opts.Progress = func(ph Phase, msg string, _, _ int64) {
+		if ph == PhaseValidate && msg == "starting" {
+			sys.mu.Lock()
+			d := sys.disks[sys.vhdxDiskNumber[opts.Target.Path]]
+			var kept []WinGPTPartition
+			for _, p := range d.parts {
+				if p.Number != 4 {
+					kept = append(kept, p)
+				}
+			}
+			d.parts = kept
+			sys.mu.Unlock()
+		}
+	}
+	res, err := Run(context.Background(), opts)
+	if err == nil || res.Status != "failed" || !strings.Contains(res.Error, "planned partition 4 is missing from the disk") {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+	if sys.has("SetPartitionAttributes") {
+		t.Fatalf("no attribute write on a disk whose layout moved: %v", sys.cmds)
+	}
+}
+
+// Ruling (Task 13): a failed FlushVolume fails validation — an unflushed
+// volume before detach risks a torn image.
+func TestWinValidate_FlushFailureFailsValidation(t *testing.T) {
+	withHostPlatformWindows(t)
+	dir := t.TempDir()
+	opts, sys := winFakeOptions(t, dir)
+	sys.fail["FlushVolume"] = errors.New("FlushFileBuffers: the device is not ready")
+	res, err := Run(context.Background(), opts)
+	if err == nil || res.Status != "failed" || res.PhaseReached != PhaseValidate || !strings.Contains(res.Error, "flush volume for partition") {
+		t.Fatalf("res=%+v err=%v, want a failed validate naming the flush", res, err)
+	}
+}
+
+// Final-review Imp 3: a data partition on the system disk is recreated and
+// formatted but nothing is restored into it — the run says so, once.
+func TestWinRun_WarnsOncePerEmptyDataPartition(t *testing.T) {
+	withHostPlatformWindows(t)
+	dir := t.TempDir()
+	opts, _ := winFakeOptions(t, dir)
+	lay := testLayoutWindows()
+	d := &lay.Disks[0]
+	d.Partitions = append(d.Partitions, layout.Partition{Number: 5, Name: "data", TypeGUID: layout.GUIDMicrosoftBasic, PartUUID: "6a1e0000-0000-4000-8000-000000000005",
+		StartBytes: 61 * GiB, SizeBytes: 10 * GiB, Filesystem: "ntfs", Label: "Data", MountPoint: `D:\`, Role: layout.RoleData, Encryption: layout.EncryptionNone})
+	opts.Provider = seedWindowsSnapshot(t, "win-1", lay)
+	res, err := Run(context.Background(), opts)
+	if err != nil || res.Status != "completed" {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+	want := "data partition 5 (Data) was recreated empty; its contents were not restored"
+	n := 0
+	for _, w := range res.Warnings {
+		if w == want {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("warnings = %q, want %q exactly once", res.Warnings, want)
 	}
 }

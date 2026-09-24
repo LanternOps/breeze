@@ -185,18 +185,41 @@ func (r *run) winAttach(_ context.Context, create bool) error {
 }
 
 // winReattach is the resume twin (reattach(), provision.go): attach the
-// existing target once per process, restore r.volumes from the persisted
-// runState.Volumes and remount the tree — never WriteGPT/Format again (R29).
-// Run calls it for each skipped destructive phase (provision, restore), so
-// every step is idempotent.
+// existing target once per process, rebuild r.volumes from the LIVE disk
+// and remount the tree — never WriteGPT/Format again (R29). Run calls it
+// for each skipped destructive phase (provision, restore), so every step is
+// idempotent.
+//
+// A fresh attach surfaces its volumes asynchronously, so the live list
+// comes from WaitForVolumes for as many volumes as the earlier run
+// recorded; runState.Volumes is only the expectation to check against (a
+// volume GUID path is not guaranteed stable across attaches). A recorded
+// partition with no volume on the live disk is an error.
 func (r *run) winReattach(ctx context.Context) error {
 	if !r.winAttached {
 		if err := r.winAttach(ctx, false); err != nil {
 			return err
 		}
 	}
-	if r.volumes == nil {
-		r.volumes = r.state.Volumes
+	if r.volumes == nil && len(r.state.Volumes) > 0 {
+		vols, err := r.opts.WinSystem.WaitForVolumes(ctx, r.diskNumber, len(r.state.Volumes))
+		if err != nil {
+			return fmt.Errorf("resume: volumes of disk %d: %w", r.diskNumber, err)
+		}
+		byNumber := map[int]string{}
+		for _, v := range vols {
+			byNumber[v.PartitionNumber] = v.GUIDPath
+		}
+		live := map[int]string{}
+		for number := range r.state.Volumes {
+			path, ok := byNumber[number]
+			if !ok {
+				return fmt.Errorf("resume: partition %d recorded by the earlier run has no volume on disk %d", number, r.diskNumber)
+			}
+			live[number] = path
+		}
+		r.volumes = live
+		r.state.Volumes = live
 	}
 	if r.rootDir == "" && r.state.Completed[PhaseProvision] {
 		return r.winMountTree(ctx)

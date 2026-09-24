@@ -16,8 +16,8 @@ import (
 // winMountTree mounts root and Recovery at folder mount points under the
 // staging root (Global Constraint "No PowerShell, no diskpart … Mounts") for
 // Part C's external tools, records the root volume path the restore and
-// validate go through (Ruling B1), and remembers the ESP's volume for
-// W06c's boot/validate.
+// validate go through (Ruling B1), remembers the ESP's volume for W06c's
+// boot/validate, and warns about every data partition left empty.
 func (r *run) winMountTree(_ context.Context) error {
 	root := filepath.Join(r.staging, "root")
 	mounted := false
@@ -41,6 +41,23 @@ func (r *run) winMountTree(_ context.Context) error {
 			r.recoveryDir = dir
 		case layout.RoleEFI:
 			r.espVolume = guidPath
+		}
+	}
+	// A data partition on the system disk is recreated and formatted but
+	// never restored into (multi-volume snapshots are refused in
+	// preflight, so its files were not in the snapshot) — say so, once per
+	// partition (final-review ruling, Imp 3). winMountTree runs once per
+	// process, from the restore phase or a resume's winReattach.
+	if r.result.Plan != nil {
+		for _, pp := range r.result.Plan.Partitions {
+			if pp.Role != layout.RoleData {
+				continue
+			}
+			label := pp.Label
+			if label == "" {
+				label = "no label"
+			}
+			r.warn("data partition %d (%s) was recreated empty; its contents were not restored", pp.Number, label)
 		}
 	}
 	if !mounted {

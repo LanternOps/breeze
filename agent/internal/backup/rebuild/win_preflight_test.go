@@ -3,10 +3,14 @@ package rebuild
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/breeze-rmm/agent/internal/backup"
 	"github.com/breeze-rmm/agent/internal/backup/winhive"
 )
 
@@ -113,7 +117,7 @@ func TestWinPreflight_VhdxNeedsNoQemuImg(t *testing.T) {
 	dir := t.TempDir()
 	opts, sys := winFakeOptions(t, dir)
 	sys.lookPathErr["qemu-img"] = errNotFoundForTest
-	res, _ := Run(context.Background(), opts) // at this task's commit the run stops at the staged winProvision
+	res, _ := Run(context.Background(), opts) // SkipBoot run: completes; only the preflight row is under test
 	if res == nil {
 		t.Fatal("expected a Result")
 	}
@@ -211,4 +215,88 @@ func winhiveDCFake() *winhive.Fake {
 	_ = sel.SetDWORD("Default", 1)
 	_, _ = h.CreateKey(`ControlSet001\Services\NTDS`)
 	return h
+}
+
+// Final-review Imp 2: until W06c lands the offline system-state, boot,
+// identity and encryption phases, a Windows run without SkipBoot is refused
+// in preflight — before anything is created, attached or written — instead
+// of provisioning and restoring and then failing at the staged hook. Part C
+// Task 17 deletes this refusal together with the last staged function.
+func TestWinPreflight_RefusesWithoutSkipBoot(t *testing.T) {
+	withHostPlatformWindows(t)
+	dir := t.TempDir()
+	opts, sys := winFakeOptions(t, dir)
+	opts.SkipBoot = false
+	res, err := Run(context.Background(), opts)
+	want := "Windows system-state apply is not available in this build; pass --skip-boot for a files-only rehearsal"
+	if err == nil || res == nil || res.Status != "refused" || res.Refusal != want {
+		t.Fatalf("res=%+v err=%v, want refused with %q", res, err, want)
+	}
+	for _, c := range []string{"CreateVHDX", "AttachVHDX", "WipeDisk", "WriteGPT", "format.com"} {
+		if sys.has(c) {
+			t.Fatalf("a refused run must not touch the target (%s ran): %v", c, sys.cmds)
+		}
+	}
+}
+
+// Final-review Imp 3: a restore into the root volume flattens every drive
+// into it (backup.RestoreKey strips the volume), so a snapshot holding
+// entries from another volume is refused before anything is written.
+func TestWinPreflight_RefusesEntriesFromOtherVolumes(t *testing.T) {
+	withHostPlatformWindows(t)
+	dir := t.TempDir()
+	opts, sys := winFakeOptions(t, dir)
+	p := opts.Provider.(*memProvider)
+	var snap backup.Snapshot
+	if err := json.Unmarshal(p.files["snapshots/win-1/manifest.json"], &snap); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{"data/a.txt", "data/b.txt"} {
+		b := []byte("d-drive " + rel)
+		key := "snapshots/win-1/files/path_1/" + rel
+		p.files[key] = b
+		snap.Files = append(snap.Files, backup.SnapshotFile{SourcePath: `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy2/` + rel, OriginalPath: "D:/" + rel, BackupPath: key, Size: int64(len(b)), Checksum: sum(b)})
+	}
+	// A lower-case c: entry is the root volume, not another one.
+	snap.Files = append(snap.Files, backup.SnapshotFile{SourcePath: "c:/Temp/x", BackupPath: "snapshots/win-1/files/path_0/Temp/x"})
+	man, _ := json.Marshal(snap)
+	p.files["snapshots/win-1/manifest.json"] = man
+
+	res, err := Run(context.Background(), opts)
+	want := "snapshot contains 2 files from volume D:; multi-volume Windows rebuilds are not supported in this build"
+	if err == nil || res == nil || res.Status != "refused" || res.Refusal != want {
+		t.Fatalf("res=%+v err=%v, want refused with %q", res, err, want)
+	}
+	if sys.has("CreateVHDX") || sys.has("WriteGPT") {
+		t.Fatalf("refusal must not write: %v", sys.cmds)
+	}
+}
+
+// Final-review Imp 5: hasNTDS fails closed — no staging dir is an error,
+// never "not a DC".
+func TestHasNTDS_EmptyStagingIsAnError(t *testing.T) {
+	r := &run{opts: Options{WinSystem: newFakeWinSystem(t.TempDir())}}
+	if isDC, err := r.hasNTDS(); err == nil || isDC {
+		t.Fatalf("hasNTDS with no staging dir = %v, %v; want an error", isDC, err)
+	}
+}
+
+// Final-review Imp 5: a hive that will not unload is an error, not a
+// silently dropped Close.
+func TestHasNTDS_CloseErrorIsReturned(t *testing.T) {
+	dir := t.TempDir()
+	staging := filepath.Join(dir, "state")
+	if err := os.MkdirAll(filepath.Join(staging, "registry"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, "registry", "SYSTEM"), []byte("hive"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sys := newFakeWinSystem(dir)
+	sys.hives["SYSTEM"] = winhive.NewFake()
+	sys.hiveCloseErr = errors.New("RegUnLoadKeyW: access denied")
+	r := &run{opts: Options{WinSystem: sys, Target: Target{Kind: TargetVHDX, Path: "x.vhdx"}}, stateStaging: staging}
+	if _, err := r.hasNTDS(); err == nil || !strings.Contains(err.Error(), "access denied") {
+		t.Fatalf("hasNTDS err = %v, want the unload failure", err)
+	}
 }

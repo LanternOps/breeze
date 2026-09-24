@@ -3,6 +3,8 @@ package rebuild
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,19 +62,14 @@ func TestWinRestoreTree_RestoresIntoRootVolumeNotFolderMount(t *testing.T) {
 	}
 }
 
-// Without SkipBoot the staged hook fails the restore phase. Part C Task 14
-// deletes this test (the hook is real from then on).
-func TestWinRestoreTree_FailsOnStagedSystemStateWithoutSkipBoot(t *testing.T) {
-	withHostPlatformWindows(t)
-	dir := t.TempDir()
-	opts, _ := winFakeOptions(t, dir)
-	opts.SkipBoot = false
-	res, err := Run(context.Background(), opts)
-	if err == nil || res == nil || res.Status != "failed" || res.PhaseReached != PhaseRestore {
-		t.Fatalf("res=%+v err=%v, want a failed run at restore", res, err)
-	}
-	if !strings.Contains(res.Error, "arrive in W06c") {
-		t.Fatalf("res.Error = %q", res.Error)
+// Without SkipBoot the staged hook fails. A Run never reaches it that way
+// any more (winPreflight refuses SkipBoot=false, final-review Imp 2), so
+// the hook is exercised directly. Part C Task 14 deletes this test (the
+// hook is real from then on).
+func TestWinRestoreTree_StagedSystemStateFailsWithoutSkipBoot(t *testing.T) {
+	r := &run{opts: Options{SkipBoot: false}}
+	if err := applyWindowsSystemState(context.Background(), r); !errors.Is(err, errWindowsOSStateStaged) {
+		t.Fatalf("applyWindowsSystemState = %v, want errWindowsOSStateStaged", err)
 	}
 }
 
@@ -120,6 +117,88 @@ func TestRun_ResumeAfterBootFailureRemountsFromPersistedVolumes(t *testing.T) {
 	}
 	if want := vols[3] + " " + filepath.Join(dir, "mnt", "root"); len(countCalls(sys.mountLog, want)) != 1 {
 		t.Fatalf("mountLog = %v, want the persisted root volume remounted once (%q)", sys.mountLog, want)
+	}
+}
+
+// Final-review Imp 1: a resumed run waits for the re-attached disk's
+// volumes (a fresh attach surfaces them asynchronously) and rebuilds
+// r.volumes from the LIVE disk by partition number — the state file's
+// paths are only the expectation. The persisted paths here are stale, so a
+// resume that trusted them would validate against the wrong directory.
+func TestRun_ResumeWaitsForLiveVolumesAndUsesTheirPaths(t *testing.T) {
+	withHostPlatformWindows(t)
+	dir := t.TempDir()
+	opts, sys := winFakeOptions(t, dir)
+	res1, _ := Run(context.Background(), opts)
+	if res1 == nil || !phaseCompleted(res1, PhaseRestore) || res1.Plan == nil {
+		t.Fatalf("first run did not get through restore: %+v", res1)
+	}
+	live := sys.volumePathsForDisk(sys.vhdxDiskNumber[opts.Target.Path])
+	stale := map[int]string{}
+	for n := range live {
+		stale[n] = fmt.Sprintf(`\\?\Volume{stale-%d}\`, n)
+	}
+	st := runState{
+		SnapshotID: "win-1", TargetKey: targetKey(opts.Target),
+		Completed: map[Phase]bool{PhasePreflight: true, PhaseProvision: true, PhaseRestore: true},
+		Platform:  "windows", HostOS: "windows", Plan: res1.Plan, Volumes: stale,
+	}
+	b, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "rebuild-win-1-"+targetKey(opts.Target)+".json"), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sys.mu.Lock()
+	sys.cmds, sys.mountLog = nil, nil
+	sys.hideVolumesCalls = 3 // the re-attached disk's volumes are not there yet
+	sys.mu.Unlock()
+
+	res2, err := Run(context.Background(), opts)
+	if err != nil || res2 == nil || !res2.Resumed || res2.Status != "completed" {
+		t.Fatalf("resumed run: res=%+v err=%v", res2, err)
+	}
+	if len(countCalls(sys.cmds, "WaitForVolumes")) == 0 {
+		t.Fatalf("resume must wait for the re-attached volumes: %v", sys.cmds)
+	}
+	if want := live[3] + " " + filepath.Join(dir, "mnt", "root"); len(countCalls(sys.mountLog, want)) != 1 {
+		t.Fatalf("mountLog = %v, want the LIVE root volume mounted (%q)", sys.mountLog, want)
+	}
+	for _, c := range sys.cmds {
+		if strings.Contains(c, "stale-") {
+			t.Fatalf("a persisted (stale) volume path reached the seam: %q", c)
+		}
+	}
+}
+
+// Final-review Imp 1: a partition the earlier run recorded that has no
+// volume on the live disk fails the resume.
+func TestRun_ResumeFailsWhenRecordedPartitionIsMissing(t *testing.T) {
+	withHostPlatformWindows(t)
+	dir := t.TempDir()
+	opts, sys := winFakeOptions(t, dir)
+	res1, _ := Run(context.Background(), opts)
+	if res1 == nil || res1.Plan == nil {
+		t.Fatalf("first run: %+v", res1)
+	}
+	vols := sys.volumePathsForDisk(sys.vhdxDiskNumber[opts.Target.Path])
+	// Same count as the live disk (so WaitForVolumes is satisfied), but one
+	// recorded partition number the disk does not have.
+	delete(vols, 4)
+	vols[9] = `\\?\Volume{gone}\`
+	st := runState{
+		SnapshotID: "win-1", TargetKey: targetKey(opts.Target),
+		Completed: map[Phase]bool{PhasePreflight: true, PhaseProvision: true, PhaseRestore: true},
+		Platform:  "windows", HostOS: "windows", Plan: res1.Plan, Volumes: vols,
+	}
+	b, _ := json.Marshal(st)
+	if err := os.WriteFile(filepath.Join(dir, "rebuild-win-1-"+targetKey(opts.Target)+".json"), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res2, err := Run(context.Background(), opts)
+	if err == nil || res2 == nil || res2.Status != "failed" || !strings.Contains(res2.Error, "partition 9") {
+		t.Fatalf("res=%+v err=%v, want a failed resume naming partition 9", res2, err)
 	}
 }
 

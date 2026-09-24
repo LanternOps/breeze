@@ -141,7 +141,13 @@ type fakeWinSystem struct {
 	unmounts []string
 	letters  map[string]string // guidPath -> assigned letter
 
-	hives map[string]*winhive.Fake // hive file base name -> pre-seeded fake
+	hives        map[string]*winhive.Fake // hive file base name -> pre-seeded fake
+	hiveCloseErr error                    // when set, every LoadHive handle's Close returns it (a failed RegUnLoadKeyW)
+
+	// hideVolumesCalls makes the next N VolumesOnDisk calls report no
+	// volumes — a freshly attached VHDX whose volumes the host has not
+	// surfaced yet. WaitForVolumes polls through it.
+	hideVolumesCalls int
 
 	staleHiveCount     int // preset by a test to simulate leftover mounts
 	staleHivesUnloaded []string
@@ -211,6 +217,15 @@ func (f *fakeWinSystem) DiskInfo(n int) (WinDiskInfo, error) {
 	return WinDiskInfo{}, fmt.Errorf("fakeWinSystem: no DiskInfo configured for disk %d", n)
 }
 func (f *fakeWinSystem) VolumesOnDisk(diskNumber int) ([]WinVolume, error) {
+	f.mu.Lock()
+	hidden := f.hideVolumesCalls > 0
+	if hidden {
+		f.hideVolumesCalls--
+	}
+	f.mu.Unlock()
+	if hidden {
+		return nil, nil
+	}
 	var out []WinVolume
 	for _, v := range f.volumes {
 		if v.diskNumber == diskNumber {
@@ -343,8 +358,22 @@ func (f *fakeWinSystem) SetPartitionAttributes(diskNumber, number int, attrs uin
 	}
 	return fmt.Errorf("fakeWinSystem: no partition %d on disk %d", number, diskNumber)
 }
-func (f *fakeWinSystem) WaitForVolumes(_ context.Context, diskNumber int, _ int) ([]WinVolume, error) {
-	return f.VolumesOnDisk(diskNumber)
+
+// WaitForVolumes polls VolumesOnDisk like the real seam (without the
+// sleep), giving up after a bounded number of polls.
+func (f *fakeWinSystem) WaitForVolumes(_ context.Context, diskNumber int, want int) ([]WinVolume, error) {
+	_, _ = f.record("WaitForVolumes", fmt.Sprint(diskNumber), fmt.Sprint(want))
+	var vols []WinVolume
+	for attempt := 0; attempt < 50; attempt++ {
+		var err error
+		if vols, err = f.VolumesOnDisk(diskNumber); err != nil {
+			return nil, err
+		}
+		if len(vols) >= want {
+			return vols, nil
+		}
+	}
+	return vols, fmt.Errorf("fakeWinSystem: only %d of %d expected volumes appeared on disk %d", len(vols), want, diskNumber)
 }
 func (f *fakeWinSystem) Format(_ context.Context, volumeGUIDPath, filesystem, label string) error {
 	_, err := f.record("format.com", volumeGUIDPath, "/FS:"+strings.ToUpper(filesystem), "/Q", "/Y", "/V:"+label)
@@ -403,8 +432,19 @@ func (f *fakeWinSystem) LoadHive(hiveFile, mountName string) (winhive.Handle, er
 		h = winhive.NewFake()
 		f.hives[base] = h
 	}
+	if f.hiveCloseErr != nil {
+		return fakeHiveHandle{Fake: h, closeErr: f.hiveCloseErr}, nil
+	}
 	return h, nil
 }
+
+// fakeHiveHandle is a loaded fake hive whose unload fails.
+type fakeHiveHandle struct {
+	*winhive.Fake
+	closeErr error
+}
+
+func (h fakeHiveHandle) Close() error { return h.closeErr }
 func (f *fakeWinSystem) UnloadStaleHives(prefix string) (int, error) {
 	if _, err := f.record("UnloadStaleHives", prefix); err != nil {
 		return 0, err
