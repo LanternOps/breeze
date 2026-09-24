@@ -1211,6 +1211,12 @@ async function handleToolsList(
   const requireExecuteAdmin = shouldRequireExecuteAdminInProd();
   const hasExecuteAdmin = scopes.includes('ai:execute_admin');
   const hasWrite = hasExecute || scopes.includes('ai:write');
+  // Listed ⇒ callable: a designated principal only escapes the approval gate
+  // for a Tier 3 action it can also pass the scope/admin/allowlist gates for.
+  // Otherwise the tool is listed exactly as for any other principal.
+  const canRunTier3Unattended = (toolName: string) => unattendedPrincipal
+    && hasExecute && (!requireExecuteAdmin || hasExecuteAdmin)
+    && (process.env.NODE_ENV !== 'production' || isExecuteToolAllowedInProd(toolName));
 
   // Filter tools based on API key scopes.
   const scopedTools = allTools.filter((tool) => {
@@ -1218,7 +1224,7 @@ async function handleToolsList(
     // tier — see isToolWhollyGatedOverMcp) is never advertised: every call to
     // it would be denied by the tools/call gate below, so listing it is
     // exactly the advertised-but-dead pattern this payoff eliminates.
-    if (isToolWhollyGatedOverMcp(tool.name, tool.input_schema, getToolTier, unattendedPrincipal)) return false;
+    if (isToolWhollyGatedOverMcp(tool.name, tool.input_schema, getToolTier, canRunTier3Unattended(tool.name))) return false;
 
     const registryTier = getToolTier(tool.name);
     if (registryTier === undefined) return false;
@@ -1245,7 +1251,7 @@ async function handleToolsList(
     // A mixed multiplexer (some but not all actions gated over MCP) stays
     // listed — its ungated actions (typically reads/drafts) still work —
     // but its MCP-visible description gains a note about which don't.
-    const gatedActions = gatedActionsForTool(tool.name, tool.input_schema, unattendedPrincipal);
+    const gatedActions = gatedActionsForTool(tool.name, tool.input_schema, canRunTier3Unattended(tool.name));
     const description = gatedActions.length > 0
       ? `${tool.description ?? ''} (Actions ${gatedActions.map((a) => `"${a}"`).join(', ')} require interactive approval and are not available over MCP — use the Breeze web app AI assistant for those.)`
       : tool.description ?? '';

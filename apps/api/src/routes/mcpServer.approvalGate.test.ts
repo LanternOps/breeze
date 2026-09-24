@@ -681,6 +681,15 @@ describe('MCP_UNATTENDED_TIER3_PRINCIPALS operator opt-in', () => {
       expect(registry.description).not.toContain('not available over MCP');
     });
 
+    it('designated principal WITHOUT ai:execute: multiplexer keeps its approval note (listed ⇒ callable)', async () => {
+      testState.scopes = ['ai:read', 'ai:write'];
+      const tools = (await (await listTools()).json()).result.tools;
+      const registry = tools.find((t: any) => t.name === 'registry_operations');
+      expect(registry).toBeDefined();
+      expect(registry.description).toContain('not available over MCP');
+      expect(registry.description).toContain('set_value');
+    });
+
     it('still hides Tier 3 tools from a caller without ai:execute', async () => {
       testState.scopes = ['ai:read', 'ai:write'];
       const names = (await (await listTools()).json()).result.tools.map((t: any) => t.name);
