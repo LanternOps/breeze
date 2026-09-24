@@ -705,7 +705,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
           proposalId: { type: 'string', description: 'UUID of a reviewed AI-authored proposal to run. Mutually exclusive with scriptId; takes no parameters.' },
           deviceIds: { type: 'array', items: { type: 'string' }, description: 'Device UUIDs to run on' },
           parameters: { type: 'object', description: 'Script parameters (library scripts only)' },
-          expectedContentSha256: { type: 'string', description: 'Optional pin (library scripts only): the contentSha256 from get_script_details. If the script content changed since, nothing is dispatched and the call returns {"error":"script_content_mismatch"}.' },
+          expectedContentSha256: { type: 'string', description: 'Optional: contentSha256 from get_script_details. If the script changed, nothing runs and it returns error script_content_mismatch.' },
           // #4888 — see services/scriptRunRequest.ts. Shared with the three
           // other declarations of this tool's input shape so the model can
           // express a run context on every surface, not just some of them.
