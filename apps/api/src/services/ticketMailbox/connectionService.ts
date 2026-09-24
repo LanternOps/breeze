@@ -700,6 +700,11 @@ export interface GmailMailboxSnapshot {
   id: string;
   partnerId: string;
   consentAttemptId: string;
+  /** The credential org the sweep loaded. When set, every generation check also
+   * requires the row to still belong to it, so an org merge that repoints the row
+   * mid-sweep (keeping consentAttemptId) stops the sweep before any enqueue,
+   * status change or cursor move made through the old org's credential. */
+  orgId?: string;
 }
 
 /** A connected Gmail mailbox the poll worker sweeps. */
@@ -719,6 +724,7 @@ function connectedGmailPredicate(snapshot: GmailMailboxSnapshot) {
     eq(ticketMailboxConnections.consentAttemptId, snapshot.consentAttemptId),
     eq(ticketMailboxConnections.provider, 'gmail'),
     eq(ticketMailboxConnections.status, 'connected'),
+    ...(snapshot.orgId ? [eq(ticketMailboxConnections.orgId, snapshot.orgId)] : []),
   );
 }
 
@@ -768,10 +774,13 @@ export async function listConnectedGmailMailboxes(): Promise<ConnectedGmailMailb
 export async function getConnectedGmailMailboxOrgId(
   snapshot: GmailMailboxSnapshot,
 ): Promise<string | null> {
+  // Deliberately org-agnostic: this reads the row's CURRENT org, so it must not
+  // be filtered by the org the caller loaded.
+  const { id, partnerId, consentAttemptId } = snapshot;
   return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const rows = await db.select({ orgId: ticketMailboxConnections.orgId })
       .from(ticketMailboxConnections)
-      .where(connectedGmailPredicate(snapshot))
+      .where(connectedGmailPredicate({ id, partnerId, consentAttemptId }))
       .limit(1);
     return rows[0]?.orgId ?? null;
   }));

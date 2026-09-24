@@ -124,7 +124,9 @@ const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(
  * a same-Workspace org merge can be a plain repoint instead of a forced reauth.
  */
 async function sweepOneGmail(c: ConnectedGmailMailbox): Promise<void> {
-  const snapshot = { id: c.id, partnerId: c.partnerId, consentAttemptId: c.consentAttemptId };
+  // orgId binds every later generation check to the credential org loaded below,
+  // so a mid-sweep org merge (repoint, generation kept) aborts the sweep.
+  const snapshot = { id: c.id, partnerId: c.partnerId, consentAttemptId: c.consentAttemptId, orgId: c.orgId };
 
   let saKey: string;
   try {
@@ -143,8 +145,9 @@ async function sweepOneGmail(c: ConnectedGmailMailbox): Promise<void> {
       // while the row is healthy under the survivor. Re-read the row's CURRENT org;
       // if it changed (or the row moved out of this generation), skip this sweep so
       // the next one loads the survivor credential — do NOT falsely mark a healthy
-      // mailbox reauth_required (setGmailMailboxStatus's predicate ignores org and
-      // would otherwise clobber the repointed row).
+      // mailbox reauth_required. (setGmailMailboxStatus now also requires the
+      // snapshot org, so it could not clobber the repointed row either; the early
+      // return keeps this path explicit.)
       const currentOrgId = await getConnectedGmailMailboxOrgId(snapshot);
       if (currentOrgId !== c.orgId) return;
       await setGmailMailboxStatus(snapshot, 'reauth_required', 'google workspace connection missing or inactive');

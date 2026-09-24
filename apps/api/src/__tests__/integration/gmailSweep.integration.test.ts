@@ -300,6 +300,30 @@ describe('Gmail sweep (sweepOneGmail via runMailboxSweep)', () => {
     expect((await readConn(connId)).status).toBe('connected'); // NOT reauth_required
   });
 
+  it('org-merge race AFTER identity: a repoint committed between the account check and enqueue stops the sweep (no enqueue, no cursor move)', async () => {
+    // The merge lands after this sweep verified the account through the OLD org's
+    // credential. The generation (consentAttemptId) is preserved by the repoint, so
+    // only the org binding in the snapshot can see it.
+    const { connId, partnerId } = await seedConnection({ historyId: 'H0' });
+    const survivor = await withSystemDbAccessContext(() => createOrganization({ partnerId }));
+    gmail.listInboxChanges.mockResolvedValue({ messageIds: ['m1'], newHistoryId: 'H9' });
+    gmail.getFullMessage.mockResolvedValue(gmailMessage('m1'));
+    idMock.identity.mockImplementation(async () => {
+      await withSystemDbAccessContext(() => db.update(ticketMailboxConnections)
+        .set({ orgId: survivor.id })
+        .where(eq(ticketMailboxConnections.id, connId)));
+      return { sub: SUB, email: 'help@client.example' };
+    });
+
+    await runMailboxSweep();
+
+    expect(enqueue.fn).not.toHaveBeenCalled();
+    const row = await readConn(connId);
+    expect(row.historyId).toBe('H0'); // cursor not advanced through the stale credential
+    expect(row.status).toBe('connected'); // and the repointed row is not clobbered
+    expect(row.orgId).toBe(survivor.id);
+  });
+
   it('no-loss: ANY message fetch error (even a non-retryable 400) aborts the page and does NOT advance the cursor', async () => {
     // A message must never be silently dropped: the cursor stays put so the next
     // sweep re-lists and retries (durable dedup absorbs the re-enqueued prefix).
