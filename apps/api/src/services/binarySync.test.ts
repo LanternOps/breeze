@@ -1012,6 +1012,145 @@ describe("binarySync", () => {
     });
   });
 
+  describe("local-binary helper installer registration (#6872)", () => {
+    function setLocalEnv() {
+      process.env.BINARY_SOURCE = "local";
+      process.env.AGENT_BINARY_DIR = "/fake/agent/bin";
+      process.env.HELPER_BINARY_DIR = "/fake/helper/bin";
+      process.env.BINARY_VERSION_FILE = "/fake/version";
+      delete process.env.BREEZE_VERSION;
+      fsMocks.stat.mockResolvedValue({ isFile: () => true, size: 4096 } as any);
+      mockReadFileVersionOnly("0.116.0");
+    }
+
+    // readdir is called once for the agent dir and once for the helper dir;
+    // route by path so the two directories can hold different files.
+    function mockDirs(agentFiles: string[], helperFiles: string[]) {
+      fsMocks.readdir.mockImplementation(async (dir: any) => {
+        if (String(dir).includes("/fake/helper/bin")) return helperFiles as any;
+        return agentFiles as any;
+      });
+    }
+
+    afterEach(() => {
+      delete process.env.HELPER_BINARY_DIR;
+    });
+
+    it("registers component=helper rows for every installer present, two for the shared macOS dmg", async () => {
+      setLocalEnv();
+      mockDirs(
+        ["breeze-agent-windows-amd64.exe"],
+        ["breeze-helper-windows.msi", "breeze-helper-macos.dmg", "breeze-helper-linux.AppImage"],
+      );
+
+      await syncBinaries();
+
+      const rows = dbMocks.insertValues.mock.calls
+        .map((call: any[]) => call[0] as Record<string, unknown>)
+        .filter((v) => v.component === "helper");
+      expect(rows.map((r) => `${r.platform}/${r.architecture}`).sort()).toEqual([
+        "linux/amd64",
+        "macos/amd64",
+        "macos/arm64",
+        "windows/amd64",
+      ]);
+      const win = rows.find((r) => r.platform === "windows")!;
+      expect(win).toMatchObject({
+        version: "0.116.0",
+        component: "helper",
+        isLatest: true,
+        downloadUrl: "http://localhost:3001/api/v1/agents/download/helper/windows/amd64",
+      });
+      expect(JSON.parse(win.releaseManifest as string)).toMatchObject({
+        version: "0.116.0",
+        component: "helper",
+        platform: "windows",
+        arch: "amd64",
+      });
+      const dmg = rows.filter((r) => r.platform === "macos");
+      expect(dmg[0]!.checksum).toBe(dmg[1]!.checksum);
+      expect(rows.find((r) => r.platform === "macos" && r.architecture === "arm64")!.downloadUrl)
+        .toBe("http://localhost:3001/api/v1/agents/download/helper/darwin/arm64"); // registerLocalBinaries maps macos → darwin in the route param
+    });
+
+    it("registers only the macOS rows when only the dmg is present", async () => {
+      setLocalEnv();
+      mockDirs(["breeze-agent-windows-amd64.exe"], ["breeze-helper-macos.dmg"]);
+
+      await syncBinaries();
+
+      const rows = dbMocks.insertValues.mock.calls
+        .map((call: any[]) => call[0] as Record<string, unknown>)
+        .filter((v) => v.component === "helper");
+      expect(rows.map((r) => `${r.platform}/${r.architecture}`).sort()).toEqual([
+        "macos/amd64",
+        "macos/arm64",
+      ]);
+    });
+
+    it("warns once and still registers the agent when the helper dir is missing or empty", async () => {
+      setLocalEnv();
+      fsMocks.readdir.mockImplementation(async (dir: any) => {
+        if (String(dir).includes("/fake/helper/bin")) throw new Error("ENOENT");
+        return ["breeze-agent-windows-amd64.exe"] as any;
+      });
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      await expect(syncBinaries()).resolves.toBeUndefined();
+
+      const rows = dbMocks.insertValues.mock.calls.map((c: any[]) => c[0] as Record<string, unknown>);
+      expect(rows.some((v) => v.component === "agent")).toBe(true);
+      expect(rows.some((v) => v.component === "helper")).toBe(false);
+      expect(
+        warnSpy.mock.calls.filter((args) => String(args[0] ?? "").includes("helper installer")).length,
+      ).toBe(1);
+      warnSpy.mockRestore();
+    });
+
+    it("defaults HELPER_BINARY_DIR to ./agent/bin when unset", async () => {
+      setLocalEnv();
+      delete process.env.HELPER_BINARY_DIR;
+      const seen: string[] = [];
+      fsMocks.readdir.mockImplementation(async (dir: any) => {
+        seen.push(String(dir));
+        return ["breeze-agent-windows-amd64.exe"] as any;
+      });
+
+      await syncBinaries();
+
+      // resolve("./agent/bin") — the same default the download route uses.
+      expect(seen.some((d) => d.endsWith("/agent/bin") && !d.includes("/fake/"))).toBe(true);
+    });
+
+    it("isolates helper registration failures after the agent succeeds", async () => {
+      setLocalEnv();
+      mockDirs(["breeze-agent-windows-amd64.exe"], ["breeze-helper-windows.msi"]);
+      const defaultTxImpl = async (fn: (tx: any) => Promise<void>) => fn(dbMocks.tx);
+      dbMocks.transaction.mockImplementation(async (fn: (tx: any) => Promise<void>) => {
+        const insertWrap = vi.fn((row: Record<string, unknown>) => {
+          if (row.component === "helper") throw new Error("simulated helper upsert failure");
+          return (dbMocks.insertValues as any)(row);
+        });
+        return fn({ update: dbMocks.tx.update, insert: vi.fn(() => ({ values: insertWrap })) });
+      });
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        await expect(syncBinaries()).resolves.toBeUndefined();
+        const rows = dbMocks.insertValues.mock.calls.map((c: any[]) => c[0] as Record<string, unknown>);
+        expect(rows.some((v) => v.component === "agent")).toBe(true);
+        expect(rows.some((v) => v.component === "helper")).toBe(false);
+        expect(
+          errorSpy.mock.calls.some((args) =>
+            String(args[0] ?? "").includes("Failed to register local helper installers"),
+          ),
+        ).toBe(true);
+      } finally {
+        errorSpy.mockRestore();
+        dbMocks.transaction.mockImplementation(defaultTxImpl);
+      }
+    });
+  });
+
   // #1802: the local-binary path historically registered ONLY the agent
   // component, so self-hosters on BINARY_SOURCE=local never got watchdog
   // auto-update. It now also scans + registers breeze-watchdog-* siblings.
