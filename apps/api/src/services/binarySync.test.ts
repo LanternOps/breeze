@@ -1107,6 +1107,22 @@ describe("binarySync", () => {
       warnSpy.mockRestore();
     });
 
+    it("warns exactly once when the helper dir exists but holds no installer (empty helper dir)", async () => {
+      setLocalEnv();
+      mockDirs(["breeze-agent-windows-amd64.exe"], []);
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      await expect(syncBinaries()).resolves.toBeUndefined();
+
+      const rows = dbMocks.insertValues.mock.calls.map((c: any[]) => c[0] as Record<string, unknown>);
+      expect(rows.some((v) => v.component === "agent")).toBe(true);
+      expect(rows.some((v) => v.component === "helper")).toBe(false);
+      expect(
+        warnSpy.mock.calls.filter((args) => String(args[0] ?? "").includes("helper installer")).length,
+      ).toBe(1);
+      warnSpy.mockRestore();
+    });
+
     it("defaults HELPER_BINARY_DIR to ./agent/bin when unset", async () => {
       setLocalEnv();
       delete process.env.HELPER_BINARY_DIR;

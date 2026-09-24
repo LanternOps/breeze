@@ -373,7 +373,9 @@ COMMIT;
 Caveats:
 - **Omitting `component`** in the SQL above promotes everything (agent + helper + watchdog + user-helper). Narrow with `AND component='agent'` etc. if doing a partial roll.
 - The DB path **skips the `audit_logs` row** the API endpoint would write. The table is hash-chained — do **not** hand-forge an audit row (a bad row corrupts the chain). Just note the audit gap; re-running the real `/promote` endpoint later is idempotent on the version rows and writes the audit entry.
-- Verify after: `select component,platform,architecture,version,is_latest from agent_versions where is_latest and edition='<BINARY_EDITION of this droplet>' order by 1,2,3;` — expect the new version across all covered slots, and no slot left with zero `is_latest`. (A full release currently covers 15 slots across agent/helper/user-helper/watchdog.)
+- Verify after: `select component,platform,architecture,version,is_latest from agent_versions where is_latest and edition='<BINARY_EDITION of this droplet>' order by 1,2,3;` — expect the new version across all covered slots, and no slot left with zero `is_latest`.
+  - **Hosted:** agent/backup/watchdog on linux amd64+arm64, macos amd64+arm64, windows amd64; user-helper windows/amd64; helper windows/amd64, macos amd64+arm64, linux amd64.
+  - **Self-host:** the same set plus whatever the public release ships.
   - **Hosted specifically:** expect `helper` rows for windows/amd64, macos/amd64, macos/arm64, linux/amd64. Zero helper rows means `BINARY_SOURCE=local` sync did not see `/data/binaries/helper` (#6872) — Assist bootstrap is down until it does.
 
 Rolling the fleet is a user-facing change — get Todd's go-ahead before promoting, and don't promote until both regions are deployed and healthy.

@@ -2,7 +2,7 @@
 
 Issue: LanternOps/breeze#6872
 Date: 2026-09-24
-Status: draft, awaiting Todd's review
+Status: approved 2026-09-24 (D1–D3 accepted); implemented in #6920 (API) and #6921 (agent)
 Blast radius: agent-shipped code (Windows spawn path, helper manager) + API binary registration on hosted prod. Full rigor.
 
 ## 1. Summary

@@ -49,11 +49,16 @@ describe('helper bootstrap offer resolves the registered helper row (#6872)', ()
   });
 
   it('returns null for a platform with no helper row', async () => {
+    // `architecture: 'arm64-none-6872'` rather than a real arch (e.g. linux/arm64):
+    // a real (platform, architecture) pair could legitimately be populated by
+    // another suite sharing this DB, which would make this case flaky rather
+    // than a true "no row" assertion. This value can never exist as a genuine
+    // helper row.
     const target = await withSystemDbAccessContext(() =>
       resolvePinnedUpgradeTarget({
         component: 'helper',
         platform: 'linux',
-        architecture: 'arm64',
+        architecture: 'arm64-none-6872',
         pin: null,
       }),
     );

@@ -497,7 +497,8 @@ async function scanBinaryDir(
 // runs BINARY_SOURCE=local and had ZERO helper rows for that reason: the
 // heartbeat's bootstrap offer (helperUpgradeTo) resolved null and no device
 // could ever install Assist.
-async function scanHelperInstallerDir(dir: string): Promise<BinaryInfo[]> {
+// exported for tests (#6872)
+export async function scanHelperInstallerDir(dir: string): Promise<BinaryInfo[]> {
   const results: BinaryInfo[] = [];
 
   let entries: string[];
@@ -1258,6 +1259,24 @@ export async function syncBinaries(): Promise<void> {
       } catch (err) {
         console.error(
           `[binarySync] Failed to register local helper installers — Breeze Assist install/upgrade unavailable: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+    } else {
+      // scanHelperInstallerDir already warns (and returns []) when the
+      // directory itself is missing — only warn again here when the
+      // directory exists but holds none of the HELPER_TARGETS installers, so
+      // a genuinely empty deployment doesn't go silent about Assist being
+      // unavailable while also avoiding a double warning for the missing-dir
+      // case.
+      let helperDirExists = true;
+      try {
+        await readdir(helperBinaryDir);
+      } catch {
+        helperDirExists = false;
+      }
+      if (helperDirExists) {
+        console.warn(
+          `[binarySync] No helper installers found in ${helperBinaryDir} — Breeze Assist install/upgrade unavailable on this deployment`,
         );
       }
     }
