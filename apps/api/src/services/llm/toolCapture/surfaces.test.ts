@@ -13,11 +13,11 @@ describe('CAPTURE_SURFACES derive from the surfaces\' own exports', () => {
     expect(CAPTURE_SURFACES['agent-full'].includePartialMessages).toBe(false);
   });
 
-  it('helper levels are permission allowlists over the full server (8/14/20 tools)', () => {
+  it('helper levels are permission allowlists over the full server (basic = 9 tools)', () => {
     expect(CAPTURE_SURFACES['helper-basic'].allowedTools).toEqual(getHelperAllowedMcpToolNames('basic'));
     expect(CAPTURE_SURFACES['helper-standard'].allowedTools).toEqual(getHelperAllowedMcpToolNames('standard'));
     expect(CAPTURE_SURFACES['helper-extended'].allowedTools).toEqual(getHelperAllowedMcpToolNames('extended'));
-    expect(CAPTURE_SURFACES['helper-basic'].allowedTools).toHaveLength(8);
+    expect(CAPTURE_SURFACES['helper-basic'].allowedTools).toHaveLength(9);
     expect(CAPTURE_SURFACES['helper-extended'].onlyTools).toBeUndefined();
   });
 

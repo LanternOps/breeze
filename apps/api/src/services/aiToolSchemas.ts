@@ -147,6 +147,11 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     deviceId: uuid,
   }),
 
+  get_device_hardware_health: z.object({
+    deviceId: uuid,
+    includeEvents: z.boolean().optional(),
+  }),
+
   // BE-16 vulnerability tools. status/severity accept any case (feeds disagree on
   // casing); the handler re-normalizes to lowercase before querying.
   get_vulnerability_report: z.object({

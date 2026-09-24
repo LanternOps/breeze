@@ -479,6 +479,9 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'device_group_memberships',
   'device_groups',
   'device_hardware',
+  'device_hardware_components',
+  'device_hardware_events',
+  'device_hardware_health',
   'device_ip_history',
   // #2138 — linked multi-boot profiles. The topo-sort deletes `devices` before
   // this (devices carries the FK to device_link_groups), so members are cleared

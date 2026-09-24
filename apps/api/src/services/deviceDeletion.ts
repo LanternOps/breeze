@@ -9,6 +9,7 @@ import { devices } from '../db/schema';
 // below). It lives in `db/` so this request-path service does not import from
 // `jobs/`, which would drag BullMQ + ioredis into a plain DELETE's module graph.
 import { extractRowCount } from '../db/rowCount';
+import { resolveAlertsForRemovedComponents } from './hardwareHealth/retire';
 import {
   DEVICE_DETACH_DEVICE_ID_TABLES,
   DEVICE_LINKED_DEVICE_ID_TABLES,
@@ -214,6 +215,11 @@ export async function deleteDeviceCascade(
       tags: { device_deletion_warning: 'parent-lock-missing' },
     });
   }
+
+  const hardwareRows = await tx.execute(sql`SELECT component_key FROM device_hardware_components WHERE device_id = ${deviceId} ORDER BY component_key`);
+  // postgres-js execute returns the row array, not a { rows } wrapper.
+  const componentKeys = (hardwareRows as { component_key: string }[]).map(row => row.component_key);
+  if (componentKeys.length) await resolveAlertsForRemovedComponents(deviceId, componentKeys);
 
   const deviceAlertIds = sql`(SELECT id FROM alerts WHERE device_id = ${deviceId})`;
   const deviceAiSessionIds = sql`(SELECT id FROM ai_sessions WHERE device_id = ${deviceId})`;

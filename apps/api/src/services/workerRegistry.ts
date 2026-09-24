@@ -396,6 +396,14 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'hardwareHealthRetention',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/hardwareHealthRetention');
+      return { init: m.initializeHardwareHealthRetention, shutdown: m.shutdownHardwareHealthRetention };
+    },
+  },
+  {
     name: 'logCorrelationWorker',
     placement: 'global',
     load: async () => {

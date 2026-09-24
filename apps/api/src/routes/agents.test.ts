@@ -973,6 +973,7 @@ describe('agent routes', () => {
           { file_path: '/etc/ssh/sshd_config', config_key: 'PermitRootLogin' }
         ],
         patch_source_settings: { exclusiveWindowsUpdate: false },
+        hardware_monitoring_settings: { enabled: true, poll_interval_minutes: 10, disk_health_interval_minutes: 60 },
         // #5511 W02: a resolved absent warranty policy delivers an explicit
         // false (the revoke-on-unassign contract), exactly like patch_source.
         warranty_settings: { hp_cmsl_enabled: false },
@@ -1095,6 +1096,7 @@ describe('agent routes', () => {
         policy_registry_state_probes: [],
         policy_config_state_probes: [],
         patch_source_settings: { exclusiveWindowsUpdate: false },
+        hardware_monitoring_settings: { enabled: true, poll_interval_minutes: 10, disk_health_interval_minutes: 60 },
         warranty_settings: { hp_cmsl_enabled: false },
         require_manifest_signing_key_id: false
       });

@@ -20,7 +20,7 @@ import { OUTCOME_TOOL_NAMES } from './outcomeTools';
  * can never silently drift onto a mutating action or a Tier-3 tool.
  */
 export const VERDICT_TOOL_ALLOWLIST = [
-  'manage_alerts:list', 'manage_alerts:get', 'get_device_details', 'analyze_metrics', 'query_monitors',
+  'manage_alerts:list', 'manage_alerts:get', 'get_device_details', 'get_device_hardware_health', 'analyze_metrics', 'query_monitors',
 ] as const;
 // Tuned from 3 to 4 (with a matching 2¢ -> 5¢ verdictBudgetCentsPerRun default
 // bump in packages/shared/src/types/aiAgents.ts) after the P2-1 live check

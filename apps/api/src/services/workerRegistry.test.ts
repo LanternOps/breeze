@@ -42,7 +42,7 @@ const EXPECTED_WORKER_NAMES = [
   'agentNotifyRetry', 'fixWatchWorker',
   'auditBaselineJobs', 'cisJobs', 'automationWorker', 'securityPostureWorker',
   'reliabilityWorker', 'userRiskWorker', 'abuseSignalsWorker', 'userRiskRetention',
-  'backupVerificationJobs', 'eventLogRetention', 'logCorrelationWorker', 'agentLogRetention',
+  'backupVerificationJobs', 'eventLogRetention', 'hardwareHealthRetention', 'logCorrelationWorker', 'agentLogRetention',
   'ticketOutboxRetention', 'intentOutboxRetention', 'metricAnomalyIncidentRetention',
   'ipHistoryRetention', 'reliabilityRetention', 'processSampleRetention', 'deviceMetricsRetention',
   'm365SyncRetention',

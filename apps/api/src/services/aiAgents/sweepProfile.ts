@@ -33,7 +33,7 @@ import { OUTCOME_TOOL_NAMES } from './outcomeTools';
  * scope.
  */
 export const SWEEP_TOOL_ALLOWLIST = [
-  'get_device_details', 'get_service_monitoring_status', 'get_device_vulnerabilities', 'analyze_metrics',
+  'get_device_details', 'get_device_hardware_health', 'get_service_monitoring_status', 'get_device_vulnerabilities', 'analyze_metrics',
 ] as const;
 
 export function isSweepProfile(run: { profile: AiAgentRunProfile }): boolean {

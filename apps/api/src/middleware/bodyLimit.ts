@@ -33,6 +33,7 @@ export type BodyLimitRule =
   | 'avatar'
   | 'contract-template'
   | 'agent-ingest'
+  | 'agent-hardware-health'
   | 'ticket-attachment'
   | 'org-document'
   | 'quote-acceptance-evidence'
@@ -190,6 +191,13 @@ export function bodyLimitForPath(path: string): BodyLimitPolicy {
   // final-segment allowlist (not a broad `agents/:id/.*`) so it does NOT match
   // `/monitoring-results` (deliberately 1MB in heartbeat.ts) or the already
   // carved-out `/commands/:id/result` above.
+  // Hardware/RAID snapshot ingest (#6856): bounded at 2 MiB by the route's own
+  // schema caps (max 2000 components, max 32 sources). Matched before the
+  // broader agent-ingest branch below so it gets its own distinct rule label
+  // and its own (smaller) size, not the 5MB agent-ingest allowance.
+  if (path.match(/^\/api\/v1\/agents\/[^/]+\/hardware-health$/)) {
+    return { rule: 'agent-hardware-health', maxSize: 2 * 1024 * 1024, error: 'Request body too large' };
+  }
   if (path.match(/^\/api\/v1\/agents\/[^/]+\/(hardware|software|disks|network|connections|heartbeat)$/)) {
     return { rule: 'agent-ingest', maxSize: 5 * 1024 * 1024, error: 'Request body too large' };
   }

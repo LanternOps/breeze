@@ -62,4 +62,20 @@ describe('shared hook stays feature-neutral', () => {
     await act(async () => { expect(await result.current.remove(LINK, { successMessage: 'Removed' })).toBe(true); });
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Removed' }));
   });
+  it.each([200, 403])('remove surfaces failed body at HTTP %s', async (status) => {
+    vi.clearAllMocks();
+    vi.mocked(fetchWithAuth).mockResolvedValue(new Response(JSON.stringify({ success: false, error: 'Denied' }), { status }));
+    const { result } = renderHook(() => useFeatureLink(POLICY));
+    await act(async () => { expect(await result.current.remove(LINK)).toBe(false); });
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+  });
+  it('remove redirects on 401 without an extra toast', async () => {
+    vi.clearAllMocks();
+    vi.mocked(fetchWithAuth).mockResolvedValue(new Response('{}', { status: 401 }));
+    const { result } = renderHook(() => useFeatureLink(POLICY));
+    await act(async () => { expect(await result.current.remove(LINK)).toBe(false); });
+    expect(navigateTo).toHaveBeenCalledWith('/login', { replace: true });
+    expect(showToast).not.toHaveBeenCalled();
+  });
 });
