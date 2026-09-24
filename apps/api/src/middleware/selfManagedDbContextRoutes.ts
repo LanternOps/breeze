@@ -365,6 +365,17 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   { method: 'GET', pattern: /^\/api\/v1\/orgs\/[^/]+\/caller-verification-directory-users\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/orgs\/[^/]+\/caller-verification-directory-sync\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/orgs\/[^/]+\/contacts\/[^/]+\/caller-verification-bindings\/?$/ },
+  // #6849 — configuration-policy "run now" patch-job creation calls
+  // enqueuePatchJob (BullMQ `Queue.add`, a Redis round-trip) inside the
+  // handler. Under the ambient request transaction that enqueue could START
+  // before the new patch_jobs row committed: the execute-patch-job worker
+  // reads its own transaction, still sees no row, logs "not found", and
+  // finishes. The row is stranded `scheduled` until the #1733 reconcile sweep
+  // re-enqueues it ~2 minutes later (a same-shape, lower-impact race than
+  // #6632/#6848, filed separately rather than widen that PR). The handler
+  // writes the job row(s) in a short withAuthDbAccessContext block and
+  // enqueues each one strictly after that block commits.
+  { method: 'POST', pattern: /^\/api\/v1\/configuration-policies\/[^/]+\/patch-job\/?$/ },
 ];
 
 /**
