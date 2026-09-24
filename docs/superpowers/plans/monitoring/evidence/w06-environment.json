@@ -1,0 +1,65 @@
+{
+  "commit": "b2d1051f5b5d6069935f79cbf24d2ebebd227896",
+  "note": "Agent binaries (enroll build and dev-push) and the worktree stack were built from this commit (origin/main after W05 merged).",
+  "prerequisites": [
+    {
+      "mergeCommit": "ddfcd2a044010b2efb999a7ad2046dc701600d1f",
+      "number": 6882,
+      "state": "MERGED",
+      "title": "feat(hardware): W01 API contract — tables, ingest, rollup, GET, AI tool, config feature (#6854)"
+    },
+    {
+      "mergeCommit": "8d79246f47baef147d875ebe41a0d5853fa1ac50",
+      "number": 6879,
+      "state": "MERGED",
+      "title": "feat(agent): W02a hardware health core — hwhealth package, scheduler, breaker, storcli/mdadm/Storage Spaces/Windows disks/smartctl (#6854)"
+    },
+    {
+      "mergeCommit": "c871b728e29dd27ecfc501d27ccd4622d4b67b93",
+      "number": 6880,
+      "state": "MERGED",
+      "title": "feat(agent): W02b hardware sources — MegaCli, ssacli, arcconf, omreport, zfs, Broadcom precedence, tool_dirs (#6854)"
+    },
+    {
+      "mergeCommit": "b9b294e7591a44a2435da342792913d226e83d99",
+      "number": 6887,
+      "state": "MERGED",
+      "title": "feat(alerts): W03 hardware alerting — subject_key, per-subject sweep, hardware_health kind, built-ins v3 (#6854)"
+    },
+    {
+      "mergeCommit": "57c10e0c4f86ca7f02a1acf190a27220fb972e2d",
+      "number": 6893,
+      "state": "MERGED",
+      "title": "feat(web): W04 hardware health — Storage & RAID section, device-list column/filter, docs (#6854)"
+    },
+    {
+      "mergeCommit": "b2d1051f5b5d6069935f79cbf24d2ebebd227896",
+      "number": 6894,
+      "state": "MERGED",
+      "title": "feat(hardware): W05 BMC in-band — bmc source, agent_report link, linker gates, Management controller card (#6854)"
+    }
+  ],
+  "sameLabPartner": true,
+  "devices": [
+    {
+      "id": "fe6c4a0c-d033-4904-83e5-49819cae9093",
+      "osType": "windows",
+      "osVersion": "Microsoft Windows Server 2022 Standard Evaluation 21H2",
+      "architecture": "amd64",
+      "agentVersion": "dev-1790247825"
+    },
+    {
+      "id": "9c1a5863-ee21-401f-8ed5-88cbea756626",
+      "osType": "linux",
+      "osVersion": "debian 12.15",
+      "architecture": "arm64",
+      "agentVersion": "dev-1790248759"
+    }
+  ],
+  "lab": {
+    "stack": "pnpm wt-stack (per-worktree, code-mounted dev images) with caddy pinned to a fixed port reachable from the lab hosts; PUBLIC_API_URL set to that origin",
+    "windows": "Windows Server 2022 lab VM; production agent config backed up before the run and restored after (see w06-close-checklist.md)",
+    "linux": "local QEMU/HVF Debian 12 arm64 VM (systemd, udev, md raid1, QEMU-emulated NVMe for smartctl). OrbStack Docker kernel has no md driver, so the privileged-container fallback could not run mdadm",
+    "zfs": "skipped (optional)"
+  }
+}
