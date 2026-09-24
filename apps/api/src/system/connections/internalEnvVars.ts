@@ -240,6 +240,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   MCP_REQUIRE_EXECUTE_ADMIN: 'MCP tool policy',
   MCP_SESSION_TTL_SECONDS: 'timing knob',
   MCP_SSE_RATE_LIMIT_PER_MINUTE: 'rate limit knob',
+  MCP_UNATTENDED_TIER3_PRINCIPALS: 'MCP tool policy',
   MCP_TOOLS_LIST_PAGE_SIZE: 'paging knob',
   MCP_UNKNOWN_SESSION_ALERT_THRESHOLD: 'alert threshold',
   // METRICS_*

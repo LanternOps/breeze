@@ -2423,6 +2423,43 @@ describe('validateConfig', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // MCP_UNATTENDED_TIER3_PRINCIPALS boot visibility
+  // ---------------------------------------------------------------------------
+  describe('MCP_UNATTENDED_TIER3_PRINCIPALS boot warnings', () => {
+    const principalWarnings = (value: string | undefined): string[] => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      let calls: string[] = [];
+      withEnv({ ...validEnv, ...(value === undefined ? {} : { MCP_UNATTENDED_TIER3_PRINCIPALS: value }) }, () => {
+        expect(() => validateConfig()).not.toThrow();
+        calls = warnSpy.mock.calls
+          .map((args) => args[0] as string)
+          .filter((msg) => msg.includes('MCP_UNATTENDED_TIER3_PRINCIPALS'));
+      });
+      warnSpy.mockRestore();
+      return calls;
+    };
+
+    it('lists the configured principals at boot', () => {
+      const calls = principalWarnings('api_key:11111111-1111-4111-8111-111111111111, oauth_client_user:client-a/22222222-2222-4222-8222-222222222222');
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toMatch(/LIFTED for Tier 3 tools for 2 principal\(s\)/);
+      expect(calls[0]).toContain('api_key:11111111-1111-4111-8111-111111111111');
+      expect(calls[0]).toContain('oauth_client_user:client-a/22222222-2222-4222-8222-222222222222');
+    });
+
+    it('warns separately about entries that can never match', () => {
+      const good = 'api_key:33333333-3333-4333-8333-333333333333';
+      const calls = principalWarnings(`${good},api_key:ok-1,apikey:typo,oauth_client_user:client-only,oauth_client_user:client-a/not-a-uuid,client-b/user`);
+      expect(calls.join('\n')).toMatch(new RegExp(`1 principal\\(s\\): ${good}\\.`));
+      expect(calls.join('\n')).toMatch(/ignoring 5 malformed entries that can never match: api_key:ok-1, apikey:typo, oauth_client_user:client-only, oauth_client_user:client-a\/not-a-uuid, client-b\/user/);
+    });
+
+    it('stays silent when unset or empty', () => {
+      expect(principalWarnings(undefined)).toEqual([]);
+      expect(principalWarnings(' , ')).toEqual([]);
+    });
+  });
+
   // TURN over TLS pairing warnings (#6163)
   // ---------------------------------------------------------------------------
   describe('TURN TLS pairing warnings (#6163)', () => {
