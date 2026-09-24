@@ -480,11 +480,15 @@ Sync contract:
    or changed after that traversal.
 3. `409 partner_alerts_resync_required` means the checkpoint no longer
    describes this feed (the principal's organization set changed, or the
-   database was restored from a logical dump or recovered to a point in time,
-   detected by the cluster identifier and timeline). Start again without
-   `since`. A filesystem or VM snapshot rollback of the same cluster keeps
-   both values and is NOT detectable from inside the database: after such a
-   rollback, discard stored checkpoints and run a full sync.
+   database was restored or recovered). Start again without `since`.
+   Restores are detected by the cluster identifier, timeline, database OID
+   and alerts table OID, which covers a restore into a new cluster,
+   point-in-time recovery, and a logical restore that recreates the database
+   or the alerts table in the same cluster. Two cases are NOT detectable from
+   inside the database: a filesystem or VM snapshot rollback of the same
+   cluster, and a data-only reload into the existing alerts table with
+   triggers disabled. After either, discard stored checkpoints and run a
+   full sync.
 
 Guarantees and limits:
 

@@ -119,7 +119,9 @@ partnerAlertRoutes.get('/alerts', requirePartnerApiScope('alerts:read'), async (
       SELECT pg_snapshot_xmin(pg_current_snapshot())::text AS "horizon",
              pg_snapshot_xmax(pg_current_snapshot())::text AS "xmax",
              (SELECT system_identifier::text FROM pg_control_system())
-               || ':' || (SELECT timeline_id::text FROM pg_control_checkpoint()) AS "epoch"
+               || ':' || (SELECT timeline_id::text FROM pg_control_checkpoint())
+               || ':' || (SELECT oid::text FROM pg_database WHERE datname = current_database())
+               || ':' || ('public.alerts'::regclass)::oid::text AS "epoch"
     `);
     if (!snapshot) throw new Error('Partner alerts feed snapshot unavailable.');
     const binding: PartnerAlertsFeedBinding = {

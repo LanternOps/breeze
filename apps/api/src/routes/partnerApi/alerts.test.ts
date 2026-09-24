@@ -80,7 +80,7 @@ describe('partner alerts feed', () => {
     whereArgs = [];
     mocks.accessibleOrgIds = [ORG_ID, OTHER_ORG_ID];
     mocks.select.mockImplementation(() => query(selectResults.shift() ?? []));
-    mocks.execute.mockResolvedValue([{ horizon: '1000', xmax: '1005', epoch: '7688900532099108902:1' }]);
+    mocks.execute.mockResolvedValue([{ horizon: '1000', xmax: '1005', epoch: '7688900532099108902:1:16384:24601' }]);
     app = new Hono();
     app.route('/', partnerApiRoutes);
   });
@@ -129,7 +129,7 @@ describe('partner alerts feed', () => {
   it('incremental sync from a checkpoint', async () => {
     selectResults = [[]];
     const first = partnerAlertFeedEnvelopeSchema.parse(await (await request('/alerts')).json());
-    mocks.execute.mockResolvedValue([{ horizon: '1200', xmax: '1210', epoch: '7688900532099108902:1' }]);
+    mocks.execute.mockResolvedValue([{ horizon: '1200', xmax: '1210', epoch: '7688900532099108902:1:16384:24601' }]);
     selectResults = [[alertRow(ALERT_A, '1100', { status: 'resolved' })]];
     const res = await request(`/alerts?since=${encodeURIComponent(first.checkpoint!)}`);
     expect(res.status).toBe(200);
@@ -150,7 +150,7 @@ describe('partner alerts feed', () => {
   it('409 resync when the checkpoint is beyond the database xid range (restored database)', async () => {
     selectResults = [[]];
     const first = partnerAlertFeedEnvelopeSchema.parse(await (await request('/alerts')).json());
-    mocks.execute.mockResolvedValue([{ horizon: '10', xmax: '20', epoch: '7688900532099108902:1' }]);
+    mocks.execute.mockResolvedValue([{ horizon: '10', xmax: '20', epoch: '7688900532099108902:1:16384:24601' }]);
     const res = await request(`/alerts?since=${encodeURIComponent(first.checkpoint!)}`);
     expect(res.status).toBe(409);
   });
@@ -159,7 +159,20 @@ describe('partner alerts feed', () => {
     selectResults = [[]];
     const first = partnerAlertFeedEnvelopeSchema.parse(await (await request('/alerts')).json());
     // Same xid range, new timeline: without the epoch binding this would silently skip rows.
-    mocks.execute.mockResolvedValue([{ horizon: '1500', xmax: '1510', epoch: '7688900532099108902:2' }]);
+    mocks.execute.mockResolvedValue([{ horizon: '1500', xmax: '1510', epoch: '7688900532099108902:2:16384:24601' }]);
+    const res = await request(`/alerts?since=${encodeURIComponent(first.checkpoint!)}`);
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('partner_alerts_resync_required');
+  });
+
+  it.each([
+    ['database recreated in the same cluster (new database OID)', '7688900532099108902:1:16999:24601'],
+    ['alerts table recreated by an in-place logical restore (new table OID)', '7688900532099108902:1:16384:25999'],
+  ])('409 resync when the %s', async (_label, epoch) => {
+    selectResults = [[]];
+    const first = partnerAlertFeedEnvelopeSchema.parse(await (await request('/alerts')).json());
+    // Same cluster identifier, timeline and xid range: only the OIDs reveal the restore.
+    mocks.execute.mockResolvedValue([{ horizon: '1500', xmax: '1510', epoch }]);
     const res = await request(`/alerts?since=${encodeURIComponent(first.checkpoint!)}`);
     expect(res.status).toBe(409);
     expect((await res.json()).code).toBe('partner_alerts_resync_required');
@@ -168,7 +181,7 @@ describe('partner alerts feed', () => {
   it('409 when a page cursor crosses a database incarnation change', async () => {
     selectResults = [[alertRow(ALERT_A, '900'), alertRow(ALERT_B, '950')]];
     const first = partnerAlertFeedEnvelopeSchema.parse(await (await request('/alerts?limit=1')).json());
-    mocks.execute.mockResolvedValue([{ horizon: '1000', xmax: '1005', epoch: '1111:1' }]);
+    mocks.execute.mockResolvedValue([{ horizon: '1000', xmax: '1005', epoch: '1111:1:16384:24601' }]);
     const res = await request(`/alerts?limit=1&cursor=${encodeURIComponent(first.nextCursor!)}`);
     expect(res.status).toBe(409);
   });

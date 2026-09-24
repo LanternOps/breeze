@@ -23,14 +23,17 @@ const xid8String = z.string().regex(/^[0-9]{1,20}$/u);
 
 const bindingSchema = z.object({
   partnerId: z.string().uuid(),
-  // Database incarnation: cluster system identifier + timeline. xid8 positions
-  // are meaningless across a restore (dump/restore gets a new identifier;
-  // point-in-time recovery gets a new timeline), so a token from another
-  // incarnation must force a resync rather than skip restored rows. A
-  // filesystem/VM snapshot rollback of the SAME cluster keeps both values and
-  // cannot be detected here; the documented contract is a consumer-side full
-  // sync after such a rollback (docs/integrations/partner-api.md).
-  epoch: z.string().regex(/^[0-9]{1,20}:[0-9]{1,10}$/u),
+  // Database incarnation: cluster system identifier, timeline, database OID
+  // and alerts table OID. xid8 positions are meaningless across a restore, so
+  // a token from another incarnation must force a resync rather than skip
+  // restored rows. A restore into a new cluster changes the identifier;
+  // point-in-time recovery changes the timeline; a logical restore into the
+  // SAME cluster recreates the database or the alerts table, which gets a new
+  // OID. Not detectable here, and documented as needing a consumer-side full
+  // sync (docs/integrations/partner-api.md): a filesystem/VM snapshot rollback
+  // of the same cluster, and a data-only reload into the existing table with
+  // triggers disabled.
+  epoch: z.string().regex(/^[0-9]{1,20}:[0-9]{1,10}:[0-9]{1,10}:[0-9]{1,10}$/u),
   filtersHash: z.string().regex(/^[a-f0-9]{64}$/u),
   orgSetHash: z.string().regex(/^[a-f0-9]{64}$/u),
 }).strict();
