@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Optional ZFS lab not run: the Linux lab host is a local QEMU Debian 12 cloud-kernel VM and ZFS would need contrib zfs-dkms built against its kernel; the wave brief accepts an explicit skip. zfs coverage remains fixture-only (W02b parser suite passed on darwin/arm64 and linux/arm64 with -race)."
+}
