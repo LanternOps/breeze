@@ -71,8 +71,6 @@ Complete conversion before the W05d retirement release, at least one release aft
 W05c. W05d will process leftovers and list unconvertible retirements for review.
 Until then, review pending rows; a zero count is the completion signal.
 
-Revert is available during W05c. Upgrading to W05d ends Revert for legacy alert rules, templates, watches and alert-triggered source automations because their legacy monitoring paths have been retired. Conversion history remains available; Undo is disabled for those entries and the API returns `409 conversion_revert_unavailable`. Review and revert conversions before upgrading if needed. Existing monitors and alert history remain intact.
-
 ## Device Monitoring and recurrence
 
 Open a device's **Monitoring** tab (`#monitoring`) to see effective monitor, kind,

@@ -81,8 +81,6 @@ Last release: **v0.115.0** (2026-09-21).
   later. W05d performs the remaining sweep and lists unconvertible retirements.
   The legacy policy tabs still exist during W05c. Alert Templates settings URLs
   redirect to Monitors immediately; condition authoring belongs to Monitors.
-Revert is available during W05c. Upgrading to W05d ends Revert for legacy alert rules, templates, watches and alert-triggered source automations because their legacy monitoring paths have been retired. Conversion history remains available; Undo is disabled for those entries and the API returns `409 conversion_revert_unavailable`. Review and revert conversions before upgrading if needed. Existing monitors and alert history remain intact.
-
 - **Delivery defaults:** the explicit Everything else row controls fallback.
   New channels are not subscribed until added to a routing row or monitor override.
 - **Device and automation views:** device Monitoring shows effective monitors,
