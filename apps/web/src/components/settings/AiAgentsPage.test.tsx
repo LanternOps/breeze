@@ -322,6 +322,11 @@ describe('AiAgentsPage', () => {
 
     await waitFor(() => expect(screen.getByTestId('ai-agent-row-a1')).toBeInTheDocument());
     expect(screen.queryByTestId('ai-agent-inert-badge-a1')).toBeNull();
+    // sweep E7: no row needs the "no partner-wide baseline" description, so
+    // it must not sit orphaned in the DOM either — a screen reader stepping
+    // through the page linearly used to hit it right above this very row,
+    // which IS the partner-wide ("All orgs") baseline.
+    expect(screen.queryByText(/No partner-wide baseline exists yet for this kind/)).toBeNull();
   });
 
   // The create form has no existing row for a not-yet-created kind to read
