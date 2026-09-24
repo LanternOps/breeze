@@ -76,6 +76,9 @@ export interface FetchAllDevicesOptions {
    *  arrived partial). Callers should display this rather than the
    *  pagesWalked * pageLimit product. (Todd's #778 review.) */
   onTruncated?: (info: { pagesWalked: number; pageLimit: number; actualCount: number }) => void;
+  /** Server-side hardware health rollup filter (#6854 W04). Carried on
+   *  every cursor page so a fleet-wide filtered walk stays consistent. */
+  hardwareHealth?: 'warning' | 'critical' | 'unknown';
 }
 
 /**
@@ -117,6 +120,7 @@ export async function fetchAllDevices(
 
     const params = new URLSearchParams();
     if (includeDecommissioned) params.set('includeDecommissioned', 'true');
+    if (options.hardwareHealth) params.set('hardwareHealth', options.hardwareHealth);
     params.set('limit', String(pageLimit));
     if (cursor !== null) params.set('cursor', cursor);
     // includeTotal only on the cursor-less first page — the cursor API
