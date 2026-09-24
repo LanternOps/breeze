@@ -46,7 +46,7 @@ const CANONICAL_ESCAPER = 'packages/shared/src/utils/csvExport.ts';
  * writer here instead, you want `csvRow`/`tsvRow`, not an allowlist entry.
  */
 const NON_CSV_JOIN_ALLOWLIST: Record<string, string> = {
-  'apps/api/src/services/googleClient.ts': 'OAuth scope list sent to Google, not a spreadsheet row',
+  'packages/shared/src/constants/googleDwdScopes.ts': 'OAuth scope list sent to Google, not a spreadsheet row',
   'apps/api/src/services/ticketSla.ts': 'comma-separated tag column stored in the DB, not an export',
 };
 
