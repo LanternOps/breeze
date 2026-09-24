@@ -64,7 +64,7 @@ describe('latestVersion', () => {
     vi.useFakeTimers();
     try {
       const pending = getLatestVersion();
-      await vi.advanceTimersByTimeAsync(5001);
+      await vi.advanceTimersByTimeAsync(10_001);
       const r = await pending;
       expect(r.latest).toBeNull();
       expect(r.source).toBe('error');
@@ -118,14 +118,82 @@ describe('latestVersion', () => {
     expect(r.latest).toBeNull();
   });
 
-  it('caches error result for the full TTL (no retry storm)', async () => {
-    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(
-      new Response('boom', { status: 500 }),
-    );
-    await getLatestVersion();
-    await getLatestVersion();
-    await getLatestVersion();
-    expect(fetchSpy).toHaveBeenCalledOnce();
+  it('does not abort a slow-but-healthy GitHub response before 10s (#6629)', async () => {
+    // Cold GitHub latency of ~4-6s used to trip the old 5s timeout.
+    vi.spyOn(global, 'fetch').mockImplementationOnce((_url, init) => {
+      return new Promise((resolve, reject) => {
+        const signal = (init as RequestInit | undefined)?.signal;
+        signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+        setTimeout(
+          () => resolve(new Response(JSON.stringify({ tag_name: 'v1.2.3' }), { status: 200 })),
+          6000,
+        );
+      });
+    });
+    vi.useFakeTimers();
+    try {
+      const pending = getLatestVersion();
+      await vi.advanceTimersByTimeAsync(6001);
+      const r = await pending;
+      expect(r.latest).toBe('1.2.3');
+      expect(r.source).toBe('github');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  describe('cache TTLs (#6629)', () => {
+    const MIN = 60 * 1000;
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-09-23T12:00:00Z'));
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('serves an error result from cache within the short error TTL (no retry storm)', async () => {
+      const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(
+        new Response('boom', { status: 500 }),
+      );
+      await getLatestVersion();
+      vi.advanceTimersByTime(5 * MIN - 1);
+      const r = await getLatestVersion();
+      expect(r.source).toBe('cache');
+      expect(r.latest).toBeNull();
+      expect(fetchSpy).toHaveBeenCalledOnce();
+    });
+
+    it('expires an error result after the short error TTL, not the 1h success TTL', async () => {
+      const fetchSpy = vi
+        .spyOn(global, 'fetch')
+        .mockResolvedValueOnce(new Response('boom', { status: 500 }))
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ tag_name: 'v1.2.3' }), { status: 200 }),
+        );
+      const first = await getLatestVersion();
+      expect(first.source).toBe('error');
+      vi.advanceTimersByTime(5 * MIN + 1);
+      const second = await getLatestVersion();
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      expect(second.source).toBe('github');
+      expect(second.latest).toBe('1.2.3');
+    });
+
+    it('keeps a successful result cached for the full hour', async () => {
+      const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation(async () =>
+        new Response(JSON.stringify({ tag_name: 'v1.2.3' }), { status: 200 }),
+      );
+      await getLatestVersion();
+      vi.advanceTimersByTime(60 * MIN - 1);
+      const cached = await getLatestVersion();
+      expect(cached.source).toBe('cache');
+      expect(fetchSpy).toHaveBeenCalledOnce();
+      vi.advanceTimersByTime(2);
+      const refreshed = await getLatestVersion();
+      expect(refreshed.source).toBe('github');
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    });
   });
 
   it('strips leading v from tag', async () => {
