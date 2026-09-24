@@ -365,7 +365,8 @@ const namespaceDuplicateBaselines = {
     // +1 #5808 W03: drawer.checklistProgress "{{done}} / {{total}}" is pure interpolation, same as checklists.json card.progress.
     'deliverables.json': 7,
     // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
-    'devices.json': 154,
+    // +1 (network asset site move, #6766): networkSettings.details.site "Site" is the identical cognate in fr-FR.
+    'devices.json': 155,
     'discovery.json': 15,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.
@@ -523,7 +524,8 @@ const namespaceDuplicateBaselines = {
     // +1 #5808 W03: drawer.checklistProgress "{{done}} / {{total}}" is pure interpolation, same as checklists.json card.progress.
     'deliverables.json': 7,
     // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
-    'devices.json': 154,
+    // +1 (network asset site move, #6766): networkSettings.details.site "Site" is the identical cognate in fr-CA.
+    'devices.json': 155,
     'discovery.json': 15,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.
