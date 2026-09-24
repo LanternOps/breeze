@@ -15,6 +15,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 const testState = vi.hoisted(() => ({
   scopes: ['ai:read', 'ai:write', 'ai:execute'] as string[],
   redis: null as unknown,
+  apiKeyExtra: {} as Record<string, unknown>,
 }));
 
 const mocks = vi.hoisted(() => ({
@@ -83,6 +84,7 @@ vi.mock('../middleware/apiKeyAuth', () => ({
       scopes: testState.scopes,
       rateLimit: 1000,
       createdBy: 'user-1',
+      ...testState.apiKeyExtra,
     });
     c.set('apiKeyOrgId', 'org-1');
     await next();
@@ -219,6 +221,7 @@ const MANAGE_POLICY_FEATURE_LINK_SCHEMA = {
 beforeEach(() => {
   vi.clearAllMocks();
   testState.scopes = ['ai:read', 'ai:write', 'ai:execute'];
+  testState.apiKeyExtra = {};
   mocks.executeTool.mockReset().mockResolvedValue(JSON.stringify({ ok: true }));
   mocks.getToolDefinitions.mockReset().mockReturnValue([]);
   mocks.getToolTier.mockReset().mockReturnValue(undefined);
@@ -620,9 +623,10 @@ describe('MCP interactive-approval-only gate (all Tier 3, tier-driven)', () => {
   });
 });
 
-// Operator opt-in MCP_ALLOW_UNATTENDED_TIER3 (default OFF). It removes ONLY
-// the approval-only deny; the scope gates, RBAC, ledger and audit still run.
-describe('MCP_ALLOW_UNATTENDED_TIER3 operator opt-in', () => {
+// Operator opt-in MCP_UNATTENDED_TIER3_PRINCIPALS (default: nobody). It removes
+// ONLY the approval-only deny, ONLY for the named principals; scope gates,
+// RBAC, ledger and audit still run.
+describe('MCP_UNATTENDED_TIER3_PRINCIPALS operator opt-in', () => {
   beforeEach(() => {
     vi.unstubAllEnvs();
     mocks.getToolDefinitions.mockReturnValue([
@@ -638,8 +642,8 @@ describe('MCP_ALLOW_UNATTENDED_TIER3 operator opt-in', () => {
     });
   });
 
-  it.each([undefined, '', 'false', '0', 'no'])('stays gated when the flag is %s', async (value) => {
-    if (value !== undefined) vi.stubEnv('MCP_ALLOW_UNATTENDED_TIER3', value);
+  it.each([undefined, '', 'true', 'key-1', 'api_key:other-key', 'oauth_client:key-1', ' api_key:key-2'])('stays gated for this key when MCP_UNATTENDED_TIER3_PRINCIPALS is %s', async (value) => {
+    if (value !== undefined) vi.stubEnv('MCP_UNATTENDED_TIER3_PRINCIPALS', value);
     const res = await callTool('execute_command', { deviceId: 'dev-1', commandType: 'list_processes' });
     const payload = JSON.parse((await res.json()).result.content[0].text);
     expect(payload.code).toBe('MCP_APPROVAL_REQUIRED');
@@ -651,7 +655,23 @@ describe('MCP_ALLOW_UNATTENDED_TIER3 operator opt-in', () => {
   });
 
   describe('when enabled', () => {
-    beforeEach(() => { vi.stubEnv('MCP_ALLOW_UNATTENDED_TIER3', 'true'); });
+    beforeEach(() => { vi.stubEnv('MCP_UNATTENDED_TIER3_PRINCIPALS', 'oauth_client:someone, api_key:key-1'); });
+
+    it('never lifts Tier 4 (no approval path): unlisted and denied even for a designated principal', async () => {
+      mocks.getToolDefinitions.mockReturnValue([
+        { name: 'forbidden_tool', description: 'Tier 4.', input_schema: {} },
+      ]);
+      mocks.getToolTier.mockImplementation((name: string) => (name === 'forbidden_tool' ? 4 : undefined));
+      const names = (await (await listTools()).json()).result.tools.map((t: any) => t.name);
+      expect(names).not.toContain('forbidden_tool');
+      const body = await (await callTool('forbidden_tool', {})).json();
+      if (body.result) {
+        expect(body.result.isError).toBe(true);
+      } else {
+        expect(body.error).toBeDefined();
+      }
+      expect(mocks.executeTool).not.toHaveBeenCalled();
+    });
 
     it('lists Tier 3 tools for an ai:execute caller, with no "not available over MCP" note', async () => {
       const tools = (await (await listTools()).json()).result.tools;
@@ -730,6 +750,18 @@ describe('MCP_ALLOW_UNATTENDED_TIER3 operator opt-in', () => {
       } finally {
         testState.redis = null;
       }
+    });
+
+    it('binds OAuth callers by client_id, never by their synthetic oauth:<jti> key id', async () => {
+      testState.apiKeyExtra = { id: 'oauth:jti-1', oauthGrantId: 'grant-1', oauthClientId: 'cc-1' };
+      vi.stubEnv('MCP_UNATTENDED_TIER3_PRINCIPALS', 'api_key:oauth:jti-1');
+      const denied = await (await callTool('execute_command', { deviceId: 'dev-1', commandType: 'list_processes' })).json();
+      expect(JSON.parse(denied.result.content[0].text).code).toBe('MCP_APPROVAL_REQUIRED');
+      expect(mocks.executeTool).not.toHaveBeenCalled();
+
+      vi.stubEnv('MCP_UNATTENDED_TIER3_PRINCIPALS', 'oauth_client:cc-1');
+      await callTool('execute_command', { deviceId: 'dev-1', commandType: 'list_processes' });
+      expect(mocks.executeTool).toHaveBeenCalledTimes(1);
     });
 
     it('still requires ai:execute for Tier 3 — the scope gate is not bypassed', async () => {

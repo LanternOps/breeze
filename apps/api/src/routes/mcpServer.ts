@@ -97,21 +97,31 @@ function shouldRequireExecuteAdminInProd(): boolean {
 }
 
 /**
- * Operator opt-in (default OFF): lift the MCP interactive-approval gate so
- * core-registry Tier 3 tools/actions (and MCP_APPROVAL_REQUIRED_EXTRA_TOOLS)
- * are listed and callable over MCP without a human approval step. Bootstrap
- * (onboarding) and tenant (BYO MCP) tools stay approval-only. For self-hosted operators
- * who deliberately run a trusted, unattended agent against their own
- * instance. It ONLY removes the approval-only deny; every other Tier 3 gate
- * still applies unchanged: ai:execute, ai:execute_admin in production
- * (MCP_REQUIRE_EXECUTE_ADMIN), MCP_EXECUTE_TOOL_ALLOWLIST in production,
- * product RBAC, per-tool rate limits, the Tier 3 execution ledger and the
- * audit log. Approval extras are floored to Tier 3 (mcpTierFloor). Tenant
- * (BYO MCP) tools are excluded: they run outside the Tier 3 ledger lifecycle.
- * Read per call so the gate cannot be latched on by module load order.
+ * Operator opt-in (default: nobody): MCP_UNATTENDED_TIER3_PRINCIPALS names the
+ * specific principals for which the MCP interactive-approval gate is lifted,
+ * so core-registry Tier 3 tools/actions (and MCP_APPROVAL_REQUIRED_EXTRA_TOOLS,
+ * floored to Tier 3) are listed and callable without a human approval step.
+ * Comma-separated entries: `api_key:<api key id>` or
+ * `oauth_client:<OAuth client_id>`. Every other principal keeps the default
+ * approval-only deny. Only Tier 3 is lifted; Tier 4 stays denied. Bootstrap
+ * (onboarding) and tenant (BYO MCP) tools stay approval-only (tenant tools
+ * run outside the Tier 3 ledger lifecycle). ai:execute, ai:execute_admin
+ * (production), MCP_EXECUTE_TOOL_ALLOWLIST (production), product RBAC,
+ * per-tool rate limits, the Tier 3 execution ledger and the audit log still
+ * apply. Read per call so the gate cannot be latched on by module load order.
  */
-function isUnattendedTier3AllowedOverMcp(): boolean {
-  return envFlag('MCP_ALLOW_UNATTENDED_TIER3', false);
+function mcpPrincipalRef(apiKey: McpApiKeyContext | undefined | null): string | null {
+  if (!apiKey) return null;
+  if (apiKey.oauthClientId) return `oauth_client:${apiKey.oauthClientId}`;
+  // OAuth bearers use a synthetic `oauth:<jti>` id; never treat it as a key id.
+  if (apiKey.oauthGrantId || apiKey.id.startsWith('oauth:')) return null;
+  return `api_key:${apiKey.id}`;
+}
+
+function isUnattendedTier3PrincipalOverMcp(apiKey: McpApiKeyContext | undefined | null): boolean {
+  const ref = mcpPrincipalRef(apiKey);
+  if (!ref) return false;
+  return parseCsvSet(process.env.MCP_UNATTENDED_TIER3_PRINCIPALS).has(ref);
 }
 
 const MCP_MESSAGE_MAX_BODY_BYTES = envInt('MCP_MESSAGE_MAX_BODY_BYTES', 64 * 1024);
@@ -277,6 +287,8 @@ type McpApiKeyContext = {
   orgId: string | null;
   partnerId?: string | null;
   oauthGrantId?: string | null;
+  // Set by bearerTokenAuth for OAuth callers (the token's client_id claim).
+  oauthClientId?: string | null;
 };
 
 type McpApiKeyWithAuthFields = McpApiKeyContext & {
@@ -942,7 +954,7 @@ async function handleJsonRpc(
         return jsonRpcResult(req.id, {});
 
       case 'tools/list':
-        return await handleToolsList(req.id, scopes, auth, req.params);
+        return await handleToolsList(req.id, scopes, auth, req.params, apiKey);
 
       case 'tools/call':
         return await handleToolsCall(req.id, req.params ?? {}, auth, scopes, apiKey, c, sessionId);
@@ -1029,10 +1041,12 @@ const BOOTSTRAP_TOOL_TIER = 3;
 function isMcpApprovalRequired(
   toolName: string,
   effectiveTier: number,
-  opts: { honorUnattendedOptIn: boolean } = { honorUnattendedOptIn: true },
+  opts: { unattendedPrincipal: boolean } = { unattendedPrincipal: false },
 ): boolean {
-  if (opts.honorUnattendedOptIn && isUnattendedTier3AllowedOverMcp()) return false;
-  return effectiveTier === 3 || MCP_APPROVAL_REQUIRED_EXTRA_TOOLS[toolName] === true;
+  // Only Tier 3 is ever lifted (see MCP_UNATTENDED_TIER3_PRINCIPALS); Tier 4
+  // has no approval path and stays denied for everyone.
+  if (opts.unattendedPrincipal && effectiveTier === 3) return false;
+  return effectiveTier >= 3 || MCP_APPROVAL_REQUIRED_EXTRA_TOOLS[toolName] === true;
 }
 
 /** Tier floor MCP applies on top of the registry tier (3 for approval extras). */
@@ -1060,13 +1074,15 @@ function isToolWhollyGatedOverMcp(
   toolName: string,
   inputSchema: unknown,
   getTier: (name: string) => number | undefined,
+  unattendedPrincipal = false,
 ): boolean {
-  // Operator opt-in: nothing is approval-gated, so nothing is wholly gated.
-  // The tier/scope filter in handleToolsList still decides visibility.
-  if (isUnattendedTier3AllowedOverMcp()) return false;
+  const baseTier = getTier(toolName);
+  // A designated unattended principal can call Tier 3 (incl. approval extras,
+  // floored to Tier 3), so only Tier 4+ stays wholly gated for it. The
+  // tier/scope/allowlist filter in handleToolsList still decides visibility.
+  if (unattendedPrincipal) return baseTier !== undefined && baseTier >= 4;
   if (MCP_APPROVAL_REQUIRED_EXTRA_TOOLS[toolName] === true) return true;
 
-  const baseTier = getTier(toolName);
   if (baseTier === undefined) return false;
   if (baseTier >= 3) return true;
 
@@ -1094,8 +1110,8 @@ function extractActionEnum(inputSchema: unknown): string[] | null {
  * entirely, see isToolWhollyGatedOverMcp) and for a tool with no gated
  * actions at all.
  */
-function gatedActionsForTool(toolName: string, inputSchema: unknown): string[] {
-  if (isUnattendedTier3AllowedOverMcp()) return [];
+function gatedActionsForTool(toolName: string, inputSchema: unknown, unattendedPrincipal = false): string[] {
+  if (unattendedPrincipal) return [];
   const actionEnum = extractActionEnum(inputSchema);
   if (!actionEnum) return [];
   const tier3Actions = new Set(TIER3_ACTIONS[toolName] ?? []);
@@ -1176,7 +1192,9 @@ async function handleToolsList(
   scopes: string[],
   auth: AuthContext,
   params?: Record<string, unknown>,
+  apiKey?: McpApiKeyContext,
 ): Promise<JsonRpcResponse> {
+  const unattendedPrincipal = isUnattendedTier3PrincipalOverMcp(apiKey);
   const allTools = getToolDefinitions();
   const hasExecute = scopes.includes('ai:execute');
   const requireExecuteAdmin = shouldRequireExecuteAdminInProd();
@@ -1189,7 +1207,7 @@ async function handleToolsList(
     // tier — see isToolWhollyGatedOverMcp) is never advertised: every call to
     // it would be denied by the tools/call gate below, so listing it is
     // exactly the advertised-but-dead pattern this payoff eliminates.
-    if (isToolWhollyGatedOverMcp(tool.name, tool.input_schema, getToolTier)) return false;
+    if (isToolWhollyGatedOverMcp(tool.name, tool.input_schema, getToolTier, unattendedPrincipal)) return false;
 
     const registryTier = getToolTier(tool.name);
     if (registryTier === undefined) return false;
@@ -1216,7 +1234,7 @@ async function handleToolsList(
     // A mixed multiplexer (some but not all actions gated over MCP) stays
     // listed — its ungated actions (typically reads/drafts) still work —
     // but its MCP-visible description gains a note about which don't.
-    const gatedActions = gatedActionsForTool(tool.name, tool.input_schema);
+    const gatedActions = gatedActionsForTool(tool.name, tool.input_schema, unattendedPrincipal);
     const description = gatedActions.length > 0
       ? `${tool.description ?? ''} (Actions ${gatedActions.map((a) => `"${a}"`).join(', ')} require interactive approval and are not available over MCP — use the Breeze web app AI assistant for those.)`
       : tool.description ?? '';
@@ -1236,7 +1254,7 @@ async function handleToolsList(
   // interactive approval surface. Deliberately not a filtered loop — a loop
   // that can never push reads as if some bootstrap tool might be listed.
   // `handleToolsCall` denies them with MCP_APPROVAL_REQUIRED to match, with
-  // or without the MCP_ALLOW_UNATTENDED_TIER3 opt-in (onboarding-only tools).
+  // or without the MCP_UNATTENDED_TIER3_PRINCIPALS opt-in (onboarding-only tools).
 
   // Tenant (BYO MCP) tools — Task A10. Same scope formula as the core
   // registry above (tier 1 = ai:read; tier 2 = ai:write; tier 3 = ai:execute
@@ -1254,7 +1272,7 @@ async function handleToolsList(
       // (this transport has no interactive approval surface), so a listed
       // tier-3 tool could never actually be called. Revisit when tier-3-over-MCP
       // support lands (#6158) — do not widen this filter before then.
-      // (MCP_ALLOW_UNATTENDED_TIER3 does not apply to tenant tools — see
+      // (MCP_UNATTENDED_TIER3_PRINCIPALS does not apply to tenant tools — see
       // handleTenantToolCall.)
       .filter((d) => d.tier <= 1 || (d.tier === 2 && hasWrite))
       .map((d) => ({
@@ -1370,7 +1388,7 @@ async function handleToolsCall(
   if (bootstrapAuthTool) {
     // Onboarding-only tools: the unattended opt-in does not apply (they are
     // never listed, so listed ⇒ callable holds).
-    if (isMcpApprovalRequired(toolName, BOOTSTRAP_TOOL_TIER, { honorUnattendedOptIn: false })) {
+    if (isMcpApprovalRequired(toolName, BOOTSTRAP_TOOL_TIER)) {
       return jsonRpcResult(id, {
         content: [{ type: 'text', text: JSON.stringify(MCP_APPROVAL_REQUIRED_ERROR) }],
         isError: true,
@@ -1428,7 +1446,7 @@ async function handleToolsCall(
   }
   // MCP_APPROVAL_REQUIRED_EXTRA_TOOLS are Tier 3 over MCP (their registered
   // tier understates unattended risk). Flooring them here means that under the
-  // MCP_ALLOW_UNATTENDED_TIER3 opt-in they still need ai:execute,
+  // MCP_UNATTENDED_TIER3_PRINCIPALS opt-in they still need ai:execute,
   // ai:execute_admin (production), the production allowlist and the Tier 3
   // ledger lifecycle, exactly like any other Tier 3 call.
   const tier = Math.max(baseTier, guardrailCheck.tier, mcpTierFloor(toolName));
@@ -1438,7 +1456,7 @@ async function handleToolsCall(
   // gates below — this is an unconditional deny regardless of what scope the
   // caller holds, not "insufficient scope" (those gates report that
   // distinctly). executeTool is never reached for a gated tool/action.
-  if (isMcpApprovalRequired(toolName, tier)) {
+  if (isMcpApprovalRequired(toolName, tier, { unattendedPrincipal: isUnattendedTier3PrincipalOverMcp(apiKey) })) {
     return jsonRpcResult(id, {
       content: [{ type: 'text', text: JSON.stringify(MCP_APPROVAL_REQUIRED_ERROR) }],
       isError: true,
@@ -1497,7 +1515,7 @@ async function handleToolsCall(
   // entry, floored to Tier 3) has already been denied by the
   // isMcpApprovalRequired gate above — user decision 2026-08-02, because MCP
   // has no interactive approval surface. Under the operator opt-in
-  // MCP_ALLOW_UNATTENDED_TIER3 a Tier 3 call CAN reach this point, having
+  // MCP_UNATTENDED_TIER3_PRINCIPALS a Tier 3 call CAN reach this point, having
   // passed ai:execute, ai:execute_admin (production), the production
   // allowlist, RBAC and rate limits; it then runs through the fail-closed
   // Tier 3 ledger lifecycle below. Treat this block as reachable by Tier 3.
@@ -1686,11 +1704,11 @@ async function handleTenantToolCall(
 
   // Same unconditional interactive-approval-only gate as core (see
   // MCP_APPROVAL_REQUIRED_EXTRA_TOOLS's block comment) — checked BEFORE the
-  // scope gates below, same as core. The MCP_ALLOW_UNATTENDED_TIER3 opt-in is
+  // scope gates below, same as core. The MCP_UNATTENDED_TIER3_PRINCIPALS opt-in is
   // deliberately NOT honored here: tenant tools execute outside the shared
   // fail-closed Tier 3 ledger lifecycle (runTier3ToolLifecycle), so tier-3
   // tenant tools stay approval-only until they are routed through it.
-  if (isMcpApprovalRequired(toolName, tier, { honorUnattendedOptIn: false })) {
+  if (isMcpApprovalRequired(toolName, tier)) {
     return jsonRpcResult(id, {
       content: [{ type: 'text', text: JSON.stringify(MCP_APPROVAL_REQUIRED_ERROR) }],
       isError: true,

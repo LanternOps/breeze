@@ -391,8 +391,8 @@ describe('bootstrap Tier 3 interactive-approval boundary', () => {
   it.each([
     ['send_deployment_invites', { emails: ['a@b.com'] }],
     ['configure_defaults', {}],
-  ])('%s stays approval-only even with MCP_ALLOW_UNATTENDED_TIER3=true (onboarding tools, never listed)', async (toolName, args) => {
-    vi.stubEnv('MCP_ALLOW_UNATTENDED_TIER3', 'true');
+  ])('%s stays approval-only even with MCP_UNATTENDED_TIER3_PRINCIPALS=true (onboarding tools, never listed)', async (toolName, args) => {
+    vi.stubEnv('MCP_UNATTENDED_TIER3_PRINCIPALS', 'api_key:key-1');
     try {
       const body = await callBootstrap(toolName, {
         perms: [{ resource: '*', action: '*' }],

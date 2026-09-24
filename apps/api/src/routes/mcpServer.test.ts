@@ -1701,11 +1701,11 @@ describe('MCP transport integration', () => {
       expect(routeMocks.executeTenantToolDetailed).not.toHaveBeenCalled();
     });
 
-    // MCP_ALLOW_UNATTENDED_TIER3 deliberately does not reach tenant tools:
+    // MCP_UNATTENDED_TIER3_PRINCIPALS deliberately does not reach tenant tools:
     // they execute outside the fail-closed Tier 3 ledger lifecycle.
-    it('keeps a tier-3 tenant tool approval-only (unlisted + MCP_APPROVAL_REQUIRED) even with MCP_ALLOW_UNATTENDED_TIER3', async () => {
+    it('keeps a tier-3 tenant tool approval-only (unlisted + MCP_APPROVAL_REQUIRED) even with MCP_UNATTENDED_TIER3_PRINCIPALS', async () => {
       delete process.env.IS_HOSTED;
-      process.env.MCP_ALLOW_UNATTENDED_TIER3 = 'true';
+      process.env.MCP_UNATTENDED_TIER3_PRINCIPALS = 'api_key:key-1';
       try {
         setTestApiKey({ scopes: ['ai:read', 'ai:write', 'ai:execute'] });
         const descriptor = makeTenantToolDescriptor({ qualifiedName: 'hudu__create_asset', tier: 3 });
@@ -1733,7 +1733,7 @@ describe('MCP transport integration', () => {
         expect(routeMocks.executeTenantTool).not.toHaveBeenCalled();
         expect(routeMocks.executeTenantToolDetailed).not.toHaveBeenCalled();
       } finally {
-        delete process.env.MCP_ALLOW_UNATTENDED_TIER3;
+        delete process.env.MCP_UNATTENDED_TIER3_PRINCIPALS;
       }
     });
 
