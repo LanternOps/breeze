@@ -254,10 +254,12 @@ const ABORTED = Symbol('aborted');
  * m365 path. A durable per-message dead-letter/replay ledger is the future
  * enhancement that would let such a message be set aside without blocking.
  *
- * `minInternalDateMs` (recovery path only): the exact millisecond eligibility floor.
- * Expiry recovery queries one second wide (see listInboxMessageIdsSince), so drop
- * any returned message that actually predates the floor — that is pre-connection
- * mail, never eligible, so not ingesting it is correct, not loss. */
+ * The eligibility floor (the connection's `eligibleAfter`, the connect instant)
+ * applies on BOTH paths: a message whose Gmail receipt time predates it is
+ * pre-connection mail and is never ticketed. On the incremental path that is a
+ * labelAdded(INBOX) change on an old message (e.g. an old thread moved back into
+ * the inbox); on the recovery path the query is one second wide (see
+ * listInboxMessageIdsSince). `minInternalDateMs` overrides the floor when given. */
 async function ingestGmailIds(
   c: ConnectedGmailMailbox,
   snapshot: GmailMailboxSnapshot,
@@ -266,16 +268,14 @@ async function ingestGmailIds(
   minInternalDateMs?: number,
 ): Promise<Date | null | typeof ABORTED> {
   let lastMessageAt: Date | null = null;
+  const floorMs = minInternalDateMs ?? c.eligibleAfter?.getTime() ?? null;
   if (!await isConnectedGmailMailboxCurrent(snapshot)) return ABORTED;
   for (const id of ids) {
     const msg = await getFullMessage(gmail, id);
     if (!msg) continue; // deleted between listing and fetch — a normal race
-    // Recovery over-includes by <1s at the query boundary; drop any message that
-    // actually predates the eligibility floor so pre-connection mail is never
-    // ticketed. Incremental sweeps pass no floor (history changes are all
-    // post-connection arrivals).
-    if (minInternalDateMs != null && msg.internalDate != null
-        && Number(msg.internalDate) < minInternalDateMs) continue;
+    // Pre-connection mail is never ticketed, whichever path surfaced it.
+    if (floorMs != null && msg.internalDate != null
+        && Number(msg.internalDate) < floorMs) continue;
     // Ingestion scope (decision A): ticket ONLY mail delivered to the support
     // mailbox per the MTA-stamped Delivered-To. history.list returns the whole INBOX
     // with no recipient filter, and the mailbox may be an alias on a personal/shared

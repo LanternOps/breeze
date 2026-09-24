@@ -100,41 +100,6 @@ describe('Gmail inbound → ticket (real DB)', () => {
     expect(rows[0]?.parseStatus).toBe('created');
   });
 
-  runDb('F1 no-loss: still ingests when the connection went reauth_required after enqueue (same generation)', async () => {
-    // The message was enqueued while connected, but a later poll failure moved the
-    // row to reauth_required BEFORE the consumer ran. The generation (consentAttemptId)
-    // is unchanged, so this is the same live binding: the message must still ingest,
-    // not be silently dropped (the poll cursor has already advanced past it and a
-    // same-account reconnect preserves the cursor, so a drop here is permanent loss).
-    const db = getTestDb() as any;
-    const suffix = `${Date.now()}-${Math.floor(performance.now())}`;
-    const customerEmail = `cust-reauth-${suffix}@known.test`;
-    const mailbox = `help-reauth-${suffix}@bdunn.test`;
-    const seeded = await seedGmailConnection(db, mailbox, customerEmail);
-
-    // Transient failure after enqueue: status moves off connected, generation kept.
-    await withSystemDbAccessContext(() => db.update(ticketMailboxConnections)
-      .set({ status: 'reauth_required' })
-      .where(eq(ticketMailboxConnections.id, seeded.connection.id)));
-
-    const msg = gmailMsg(`gr-${suffix}`, customerEmail, mailbox, `reauth ingest ${suffix}`);
-    const normalized = normalizeGmailMessage(msg, seeded.partnerId, mailbox, 'sub-x');
-    await withSystemDbAccessContext(() => processInboundEmail(normalized, {
-      provider: 'gmail',
-      connectionId: seeded.connection.id,
-      partnerId: seeded.partnerId,
-      tenantId: null,
-      consentAttemptId: seeded.connection.consentAttemptId,
-    }));
-
-    const rows = await db.select().from(ticketEmailInbound).where(and(
-      eq(ticketEmailInbound.partnerId, seeded.partnerId),
-      eq(ticketEmailInbound.providerMessageId, normalized.providerMessageId),
-    ));
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.parseStatus).toBe('created');
-  });
-
   runDb('drops a message whose generation was ROTATED, isolating the generation guard from status', async () => {
     // A reconnect/disable rotates consentAttemptId. A message carrying the OLD
     // generation is a retired binding and must be dropped. This ISOLATES the

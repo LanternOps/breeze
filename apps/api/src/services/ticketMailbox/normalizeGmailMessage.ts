@@ -1,5 +1,7 @@
 import type { gmail_v1 } from '@googleapis/gmail';
-import type { NormalizedInboundEmail, SenderAuth, SenderAuthVerdict } from '../inboundEmail/types';
+import type { InboundEmailAttachment, NormalizedInboundEmail } from '../inboundEmail/types';
+import { htmlToText } from '../inboundEmail/htmlToText';
+import { buildSenderAuth, stripComments } from '../inboundEmail/authenticationResults';
 import { BREEZE_OUTBOUND_HEADER } from '../emailDomains/outboundMarker';
 
 // Cap decoded body size defensively (a hostile message must not let us decode an
@@ -49,7 +51,7 @@ function decodeBody(data: string | null | undefined, charset?: string): string {
 interface WalkResult {
   text: string;
   html: string | undefined;
-  attachments: { filename: string; contentType: string; size: number }[];
+  attachments: InboundEmailAttachment[];
 }
 
 /** A part is an attachment when it declares Content-Disposition: attachment OR
@@ -80,6 +82,10 @@ function walkParts(part: gmail_v1.Schema$MessagePart | undefined, depth: number,
       filename: filename || '(unnamed)',
       contentType: mime || 'application/octet-stream',
       size: Number(part.body?.size ?? 0),
+      // Gmail attachment import is not implemented yet. Marking the file skipped
+      // puts a visible "[Email attachments not imported: …]" line on the ticket
+      // (inboundAttachments.ts) instead of dropping it silently.
+      skipReason: 'provider_unsupported',
     });
     return; // do not descend into an attachment's own body
   }
@@ -94,14 +100,6 @@ function walkParts(part: gmail_v1.Schema$MessagePart | undefined, depth: number,
 }
 
 // ── Sender authentication ────────────────────────────────────────────────────
-function normalizeVerdict(raw: string | undefined): SenderAuthVerdict {
-  const v = raw?.trim().toLowerCase();
-  if (v === 'pass') return 'pass';
-  if (v === 'fail' || v === 'softfail' || v === 'permerror' || v === 'temperror') return 'fail';
-  if (v === 'neutral') return 'neutral';
-  if (v === 'none') return 'none';
-  return 'unknown';
-}
 
 // The authserv-id Google stamps on Authentication-Results for mail delivered to
 // a Gmail/Workspace mailbox. Only a header carrying THIS authserv-id is trusted:
@@ -112,41 +110,6 @@ function normalizeVerdict(raw: string | undefined): SenderAuthVerdict {
 // until this constant is tuned.
 const GOOGLE_AUTHSERV_ID = 'mx.google.com';
 
-/**
- * Parse ONE `method=result` verdict out of a trusted Authentication-Results value,
- * clause by clause. RFC 8601 allows CFWS comments in parentheses and trailing
- * properties; we strip parenthesised comments per clause and read only the leading
- * `method=result` token, so `spf=pass (dmarc=pass); dmarc=fail` correctly yields
- * dmarc=fail (not the value hidden inside the spf clause's comment).
- */
-/** Remove CFWS comments (RFC 5322 parentheses, which may NEST and may contain
- * semicolons) so they cannot smuggle a fake clause boundary or verdict. Must run
- * BEFORE splitting on ';' — a comment like `(explanation; dmarc=pass)` otherwise
- * survives a naive split-then-strip and forges a pass. */
-function stripComments(s: string): string {
-  let out = '';
-  let depth = 0;
-  let escaped = false;
-  for (const ch of s) {
-    if (escaped) { escaped = false; continue; } // drop the escaped char (inside a comment)
-    if (depth > 0 && ch === '\\') { escaped = true; continue; } // RFC 5322 quoted-pair: \) is a literal ')', not a terminator
-    if (ch === '(') { depth++; continue; }
-    if (ch === ')') { if (depth > 0) depth--; continue; }
-    if (depth === 0) out += ch;
-  }
-  return out;
-}
-
-function mechanism(authResults: string | undefined, name: string): string | undefined {
-  if (!authResults) return undefined;
-  // Strip comments FIRST, then split into clauses and drop the authserv-id.
-  const clauses = stripComments(authResults).split(';').slice(1);
-  for (const clause of clauses) {
-    const m = /^\s*([A-Za-z][\w-]*)\s*=\s*(\w+)/.exec(clause);
-    if (m && m[1] && m[1].toLowerCase() === name.toLowerCase()) return m[2];
-  }
-  return undefined;
-}
 
 /**
  * Return the Authentication-Results header we can TRUST, or '' if none.
@@ -178,100 +141,7 @@ function trustedAuthResults(headers: GHeader[] | undefined): string {
   return '';
 }
 
-function buildSenderAuth(authResults: string): SenderAuth {
-  const spf = normalizeVerdict(mechanism(authResults, 'spf'));
-  const dkim = normalizeVerdict(mechanism(authResults, 'dkim'));
-  const dmarc = normalizeVerdict(mechanism(authResults, 'dmarc'));
-  return { spf, dkim, dmarc, verified: dmarc === 'pass' };
-}
 
-/** Flatten an HTML body to readable plain text for the ticket description. No
- * dependency: strip script/style, turn block-closers and <br> into newlines,
- * drop remaining tags, decode the common entities, collapse whitespace. Good
- * enough for a support ticket body.
- *
- * The whole body is flattened (no sub-cap): the derived `text` is the durable
- * record — `html` is NOT persisted (ticket_email_inbound has no html column, the
- * description is built from `text`) — so a cap here would silently lose content
- * from a long HTML-only email. The input is already bounded to MAX_BODY_BYTES by
- * decodeBody, and this pass is LINEAR, so the full body is safe to process.
- *
- * Single LINEAR pass (indexOf-based), never a backtracking regex. The previous
- * `.replace(/<[^>]+>/g, '')` was QUADRATIC on a body with many `<` and no matching
- * `>` (O(n) per `<`), a synchronous event-loop DoS reachable by anyone who can email
- * the mailbox (normalize runs in the poll worker before enqueue). Every branch here
- * makes strictly forward progress: an unmatched `<` is kept as literal text, and the
- * style/script closer search never re-scans (once a closer type is absent ahead, it
- * is not searched again), so the whole pass is O(n) regardless of input. */
-function htmlToText(html: string): string {
-  const src = html;
-  const lower = src.toLowerCase();
-  const out: string[] = [];
-  const n = src.length;
-  let i = 0;
-  let noStyleCloser = false;
-  let noScriptCloser = false;
-  while (i < n) {
-    const lt = src.indexOf('<', i);
-    if (lt < 0) { out.push(src.slice(i)); break; }
-    if (lt > i) out.push(src.slice(i, lt));
-    // Find the tag terminator, skipping any '>' inside a quoted attribute value
-    // (e.g. <p title="1 > 0">). Still one forward scan per tag, so O(n) overall.
-    let gt = -1;
-    for (let j = lt + 1, q: string | null = null; j < n; j++) {
-      const ch = src[j]!;
-      if (q) { if (ch === q) q = null; }
-      else if (ch === '"' || ch === "'") q = ch;
-      else if (ch === '>') { gt = j; break; }
-    }
-    if (gt < 0) {
-      // A '<' with no closing '>' anywhere after it is NOT a tag — it is literal
-      // text (e.g. "price < 100 total"). Keep the remainder as text rather than
-      // dropping it, matching the old regex, which left an unclosed '<' in place.
-      // Silently discarding it would truncate a legitimate ticket body.
-      out.push(src.slice(lt));
-      break;
-    }
-    const tagLower = lower.slice(lt, gt + 1);
-    // Match the ELEMENT precisely: `<style`/`<script` followed by a name boundary
-    // (space, '/', or '>'), so a tag like `<styled-x>` or `<scripting>` is treated
-    // as an ordinary (dropped) tag, not a style/script block whose missing closer
-    // would otherwise swallow the rest of the body.
-    const block = /^<(style|script)[\s/>]/.exec(tagLower);
-    if (block) {
-      const isStyle = block[1] === 'style';
-      const closer = isStyle ? '</style>' : '</script>';
-      const exhausted = isStyle ? noStyleCloser : noScriptCloser;
-      const ci = exhausted ? -1 : lower.indexOf(closer, gt + 1);
-      if (ci < 0) {
-        // No matching closer ahead (unclosed/malformed). Skip ONLY this opening tag
-        // and keep the body; remember the closer is absent so a later same-type
-        // opener does not re-scan to end-of-string (keeps the pass linear).
-        if (isStyle) noStyleCloser = true; else noScriptCloser = true;
-        i = gt + 1;
-        continue;
-      }
-      i = ci + closer.length; // skip the whole style/script block
-      continue;
-    }
-    if (/^<br\s*\/?>$/.test(tagLower) || /^<\/(p|div|tr|h[1-6]|li|blockquote)>$/.test(tagLower)) {
-      out.push('\n');
-    }
-    // any other tag: dropped (contributes nothing)
-    i = gt + 1;
-  }
-  return out
-    .join('')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;|&apos;/gi, "'")
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
 
 // The ONLY recipient header we trust as proof the support mailbox was actually a
 // delivery recipient: Delivered-To, which the receiving server (Gmail) prepends at

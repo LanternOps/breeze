@@ -64,7 +64,7 @@ export async function handleInboundEmail(job: Job<InboundEmailQueueJob>): Promis
   // M365 attachments (#6688): Graph download + blob put happen HERE, before the
   // transaction opens, never inside it (see fetchInboundAttachments.ts). Only a
   // generation-bound job can name the tenant to fetch from.
-  if (email.provider !== 'm365' || !mailboxGeneration || !email.hasAttachments) return run();
+  if (email.provider !== 'm365' || !mailboxGeneration?.tenantId || !email.hasAttachments) return run();
 
   await prepareM365Attachments(email, {
     tenantId: mailboxGeneration.tenantId,

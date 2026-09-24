@@ -370,6 +370,7 @@ describe('processInboundEmail', () => {
     partnerId: '22222222-2222-4222-8222-222222222222',
     tenantId: '11111111-1111-4111-8111-111111111111',
     consentAttemptId: '66666666-6666-4666-8666-666666666666',
+    provider: 'm365' as const,
   };
 
   it('discards a stale M365 generation before ticket, comment, or inbound-log writes', async () => {
@@ -1649,6 +1650,7 @@ describe('processInboundEmail — inbound enabled master switch (#3597)', () => 
       partnerId: '22222222-2222-4222-8222-222222222222',
       tenantId: '11111111-1111-4111-8111-111111111111',
       consentAttemptId: '66666666-6666-4666-8666-666666666666',
+    provider: 'm365' as const,
     };
     state.selectRows['ticket_mailbox_connections'] = [{ id: mailboxGeneration.connectionId }];
     loadPolicyMock.mockResolvedValue(disabled);

@@ -327,6 +327,24 @@ describe('Gmail sweep (sweepOneGmail via runMailboxSweep)', () => {
     expect((await readConn(connId)).historyId).toBe('H9');
   });
 
+  it('incremental: an old message moved INTO the inbox (labelAdded) is not ticketed; a new one is, and the cursor advances', async () => {
+    const floor = new Date();
+    const { connId } = await seedConnection({ historyId: 'H0', eligibleAfter: floor });
+    gmail.listInboxChanges.mockResolvedValue({ messageIds: ['old', 'new'], newHistoryId: 'H1' });
+    gmail.getFullMessage.mockImplementation(async (_g: unknown, id: string) => ({
+      ...gmailMessage(id),
+      internalDate: id === 'old'
+        ? String(floor.getTime() - 24 * 60 * 60 * 1000) // received a day before the connection
+        : String(floor.getTime() + 2000),
+    }));
+
+    await runMailboxSweep();
+
+    expect(enqueue.fn).toHaveBeenCalledTimes(1); // only 'new'
+    expect((enqueue.fn.mock.calls[0] as unknown[])[0]).toMatchObject({ providerMessageId: expect.stringContaining('new') });
+    expect((await readConn(connId)).historyId).toBe('H1'); // skipped, not stuck
+  });
+
   it('expiry recovery drops a message that predates the eligibility floor (no pre-connection mail ticketed)', async () => {
     // The recovery query is widened by 1s, so a message just before the floor can be
     // returned; ingest must drop it by exact-millisecond internalDate.

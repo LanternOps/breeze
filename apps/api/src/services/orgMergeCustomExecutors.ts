@@ -548,7 +548,6 @@ const moveScriptExecutionsDetachingAiOrigin: CustomMergeExecutor = async (loser,
 
 /** ticket_drafts, MOVE half — a no-op: resolve already leaves zero rows behind. */
 const moveTicketDrafts: CustomMergeExecutor = async () => ({ moved: 0, dropped: 0, notes: [] });
-
 // ---------------------------------------------------------------------------
 // m365 tenant sync snapshots (spec §3.5) — resolve-phase DELETE of every
 // loser-org row.

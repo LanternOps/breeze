@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { normalizeGmailMessage, isAddressedToMailbox } from './normalizeGmailMessage';
+import { withInboundAttachmentNote } from '../inboundEmail/inboundAttachments';
+import { MAX_HTML_DERIVED_TEXT_LENGTH } from '../inboundEmail/htmlToText';
 import type { gmail_v1 } from '@googleapis/gmail';
 
 describe('isAddressedToMailbox (ingestion scope A — MTA-stamped headers only)', () => {
@@ -233,7 +235,7 @@ describe('normalizeGmailMessage', () => {
     ]);
     const n = normalizeGmailMessage(msg, 'p', MAILBOX, SUB);
     expect(n.text).toBe('see attached');
-    expect(n.attachments).toEqual([{ filename: 'invoice.pdf', contentType: 'application/pdf', size: 20480 }]);
+    expect(n.attachments).toEqual([{ filename: 'invoice.pdf', contentType: 'application/pdf', size: 20480, skipReason: 'provider_unsupported' }]);
   });
 
   it('treats an UNNAMED Content-Disposition: attachment part as an attachment, not the body', () => {
@@ -250,7 +252,7 @@ describe('normalizeGmailMessage', () => {
     ]);
     const n = normalizeGmailMessage(msg, 'p', MAILBOX, SUB);
     expect(n.text).toBe('the real body');
-    expect(n.attachments).toEqual([{ filename: '(unnamed)', contentType: 'text/plain', size: 12 }]);
+    expect(n.attachments).toEqual([{ filename: '(unnamed)', contentType: 'text/plain', size: 12, skipReason: 'provider_unsupported' }]);
   });
 
   it('F5: treats an embedded message/rfc822 as an attachment, not the body', () => {
@@ -268,7 +270,7 @@ describe('normalizeGmailMessage', () => {
     const n = normalizeGmailMessage(msg, 'p', MAILBOX, SUB);
     expect(n.text).toBe('the real reply body');
     expect(n.text).not.toContain('FORWARDED private content');
-    expect(n.attachments).toEqual([{ filename: '(unnamed)', contentType: 'message/rfc822', size: 42 }]);
+    expect(n.attachments).toEqual([{ filename: '(unnamed)', contentType: 'message/rfc822', size: 42, skipReason: 'provider_unsupported' }]);
   });
 
   it('F4: does NOT copy a single-part ROOT attachment body into the ticket description', () => {
@@ -291,10 +293,28 @@ describe('normalizeGmailMessage', () => {
     const n = normalizeGmailMessage(msg, 'p', MAILBOX, SUB);
     expect(n.text).not.toContain('SECRET DUMP');
     expect(n.text).toBe('snippet fallback');
-    expect(n.attachments).toEqual([{ filename: 'dump.txt', contentType: 'text/plain', size: 11 }]);
+    expect(n.attachments).toEqual([{ filename: 'dump.txt', contentType: 'text/plain', size: 11, skipReason: 'provider_unsupported' }]);
   });
 
-  it('F3: processes a hostile unmatched-"<" body at scale with no truncation or blowup', () => {
+  it('marks Gmail attachments not-imported so the ticket carries a visible note', () => {
+    const msg: gmail_v1.Schema$Message = {
+      id: 'gmsg-att-note', threadId: 't', internalDate: '1758300000000', labelIds: ['INBOX'],
+      snippet: 'snippet fallback',
+      payload: {
+        mimeType: 'multipart/mixed', headers: [{ name: 'From', value: 'cust@x.com' }],
+        parts: [
+          { mimeType: 'text/plain', body: { data: b64url('see attached') } },
+          { mimeType: 'application/pdf', filename: 'invoice.pdf', body: { size: 20480, attachmentId: 'a1' } },
+        ],
+      },
+    };
+    const n = normalizeGmailMessage(msg, 'p', MAILBOX, SUB);
+    expect(withInboundAttachmentNote(n.text, n)).toBe(
+      'see attached\n\n[Email attachments not imported: invoice.pdf (attachment import is not available for this mailbox yet)]',
+    );
+  });
+
+  it('F3: processes a hostile unmatched-"<" body at scale, bounded by the shared caps', () => {
     // Regression for the quadratic /<[^>]+>/g strip (O(n) per unmatched '<', O(n^2)
     // overall — a synchronous event-loop DoS from anyone who can email the mailbox).
     // The replacement is linear BY CONSTRUCTION (every branch makes forward progress;
@@ -311,10 +331,11 @@ describe('normalizeGmailMessage', () => {
       };
       return normalizeGmailMessage(msg, 'p', MAILBOX, SUB);
     };
-    // Unmatched '<' is literal text, so the whole run survives (no silent drop) and is
-    // bounded by the input, at two very different sizes.
+    // Shared htmlToText (inboundEmail/htmlToText.ts, also used by Microsoft Graph):
+    // unmatched '<' is kept as literal text and the derived text is capped at the
+    // ticket description limit, so a huge hostile body finishes and stays bounded.
     expect(run(50_000).text).toBe('<'.repeat(50_000));
-    expect(run(400_000).text).toBe('<'.repeat(400_000));
+    expect(run(400_000).text).toBe('<'.repeat(MAX_HTML_DERIVED_TEXT_LENGTH));
   });
 
   it('F3: keeps a lone "<" and the text after it (no silent body truncation)', () => {
@@ -360,31 +381,31 @@ describe('normalizeGmailMessage', () => {
     expect(n.text).toContain('done');
   });
 
-  it('F27-1: an UNCLOSED <style> skips only the opening tag and keeps the rest of the body', () => {
+  it('F27-1: an UNCLOSED <style> drops what follows it, like the Microsoft 365 path (shared parser)', () => {
     const msg: gmail_v1.Schema$Message = {
       id: 'gmsg-uncl', threadId: 't', internalDate: '1758300000000', labelIds: ['INBOX'],
       snippet: 'snippet fallback',
-      // No </style> anywhere: the old "drop to end" behavior would lose everything.
       payload: { mimeType: 'text/html', headers: [{ name: 'From', value: 'cust@x.com' }],
         body: { data: b64url('<p>Important before</p><style type="text/css">and the actual message the customer typed') } },
     };
     const n = normalizeGmailMessage(msg, 'p', MAILBOX, SUB);
+    // Content before the malformed block survives; sanitize-html treats an unclosed
+    // <style> as running to the end, the same result a Microsoft 365 mailbox gives.
     expect(n.text).toContain('Important before');
-    expect(n.text).toContain('the actual message the customer typed');
+    expect(n.text).not.toContain('the actual message the customer typed');
   });
 
-  it('F27-2: an HTML-only body longer than 200k characters is NOT truncated (html is not persisted)', () => {
-    // The derived text is the durable record, so the full body must flatten. Put a
-    // marker well past the old 200k cap and assert it survives.
-    const filler = '<p>line</p>'.repeat(30_000); // ~330k chars, > 200k
-    const html = `<p>start</p>${filler}<p>END-MARKER-past-200k</p>`;
+  it('F27-2: a long HTML-only body flattens from the start and is capped at the ticket description limit', () => {
+    const filler = '<p>line</p>'.repeat(30_000); // ~330k chars of HTML
+    const html = `<p>start</p>${filler}<p>END-MARKER</p>`;
     const msg: gmail_v1.Schema$Message = {
       id: 'gmsg-long', threadId: 't', internalDate: '1758300000000', labelIds: ['INBOX'],
       snippet: 'snippet fallback',
       payload: { mimeType: 'text/html', headers: [{ name: 'From', value: 'cust@x.com' }], body: { data: b64url(html) } },
     };
     const n = normalizeGmailMessage(msg, 'p', MAILBOX, SUB);
-    expect(n.text).toContain('END-MARKER-past-200k');
+    expect(n.text.startsWith('start')).toBe(true);
+    expect(n.text.length).toBeLessThanOrEqual(MAX_HTML_DERIVED_TEXT_LENGTH);
   });
 
   it('bounds a hostile oversized body to the 1 MiB cap without decoding the whole input', () => {
