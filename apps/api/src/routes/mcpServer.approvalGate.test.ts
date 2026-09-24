@@ -76,14 +76,14 @@ vi.mock('../db/schema', async () => {
 vi.mock('../middleware/apiKeyAuth', () => ({
   apiKeyAuthMiddleware: async (c: any, next: any) => {
     c.set('apiKey', {
-      id: 'key-1',
+      id: '11111111-1111-4111-8111-111111111111',
       orgId: 'org-1',
       partnerId: 'partner-1',
       name: 'test',
       keyPrefix: 'brz_test',
       scopes: testState.scopes,
       rateLimit: 1000,
-      createdBy: 'user-1',
+      createdBy: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       ...testState.apiKeyExtra,
     });
     c.set('apiKeyOrgId', 'org-1');
@@ -642,7 +642,7 @@ describe('MCP_UNATTENDED_TIER3_PRINCIPALS operator opt-in', () => {
     });
   });
 
-  it.each([undefined, '', 'true', 'key-1', 'api_key:other-key', 'oauth_client:key-1', ' api_key:key-2'])('stays gated for this key when MCP_UNATTENDED_TIER3_PRINCIPALS is %s', async (value) => {
+  it.each([undefined, '', 'true', '11111111-1111-4111-8111-111111111111', 'api_key:other-key', 'oauth_client:key-1', ' api_key:22222222-2222-4222-8222-222222222222'])('stays gated for this key when MCP_UNATTENDED_TIER3_PRINCIPALS is %s', async (value) => {
     if (value !== undefined) vi.stubEnv('MCP_UNATTENDED_TIER3_PRINCIPALS', value);
     const res = await callTool('execute_command', { deviceId: 'dev-1', commandType: 'list_processes' });
     const payload = JSON.parse((await res.json()).result.content[0].text);
@@ -655,7 +655,7 @@ describe('MCP_UNATTENDED_TIER3_PRINCIPALS operator opt-in', () => {
   });
 
   describe('when enabled', () => {
-    beforeEach(() => { vi.stubEnv('MCP_UNATTENDED_TIER3_PRINCIPALS', 'oauth_client_user:someone/user-9, api_key:key-1'); });
+    beforeEach(() => { vi.stubEnv('MCP_UNATTENDED_TIER3_PRINCIPALS', 'oauth_client_user:someone/99999999-9999-4999-8999-999999999999, api_key:11111111-1111-4111-8111-111111111111'); });
 
     it('never lifts Tier 4 (no approval path): unlisted and denied even for a designated principal', async () => {
       mocks.getToolDefinitions.mockReturnValue([
@@ -714,7 +714,7 @@ describe('MCP_UNATTENDED_TIER3_PRINCIPALS operator opt-in', () => {
       expect(tier3Audit.details).toMatchObject({
         approvalId: null,
         approvalBypass: 'unattended_principal',
-        approvalBypassPrincipal: 'api_key:key-1',
+        approvalBypassPrincipal: 'api_key:11111111-1111-4111-8111-111111111111',
         tier: 3,
       });
     });
@@ -733,14 +733,14 @@ describe('MCP_UNATTENDED_TIER3_PRINCIPALS operator opt-in', () => {
     });
 
     it('records the OAuth client+user ref for a bypassed OAuth call', async () => {
-      testState.apiKeyExtra = { id: 'oauth:jti-9', oauthGrantId: 'grant-9', oauthClientId: 'someone', createdBy: 'user-9' };
+      testState.apiKeyExtra = { id: 'oauth:jti-9', oauthGrantId: 'grant-9', oauthClientId: 'someone', createdBy: '99999999-9999-4999-8999-999999999999' };
       await callTool('execute_command', { deviceId: 'dev-1', commandType: 'list_processes' });
       const audit = mocks.writeAuditEvent.mock.calls
         .map((args: any[]) => args[1])
         .find((event: any) => event?.action === 'mcp.tool.execute_command');
       expect(audit?.details).toMatchObject({
         approvalBypass: 'unattended_principal',
-        approvalBypassPrincipal: 'oauth_client_user:someone/user-9',
+        approvalBypassPrincipal: 'oauth_client_user:someone/99999999-9999-4999-8999-999999999999',
       });
     });
 
@@ -806,20 +806,20 @@ describe('MCP_UNATTENDED_TIER3_PRINCIPALS operator opt-in', () => {
         const body = await (await call()).json();
         expect(JSON.parse(body.result.content[0].text).code).toBe('MCP_APPROVAL_REQUIRED');
       };
-      // Billy's grant (user-1) and another user's grant through the SAME shared client.
-      testState.apiKeyExtra = { id: 'oauth:jti-1', oauthGrantId: 'grant-1', oauthClientId: 'cc-1', createdBy: 'user-1' };
-      for (const value of ['api_key:oauth:jti-1', 'oauth_client:cc-1', 'oauth_client_user:cc-1/user-2', 'oauth_client_user:cc-2/user-1']) {
+      // One user's grant and another user's grant through the SAME shared client.
+      testState.apiKeyExtra = { id: 'oauth:jti-1', oauthGrantId: 'grant-1', oauthClientId: 'cc-1', createdBy: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' };
+      for (const value of ['api_key:oauth:jti-1', 'oauth_client:cc-1', 'oauth_client_user:cc-1/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'oauth_client_user:cc-2/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa']) {
         vi.stubEnv('MCP_UNATTENDED_TIER3_PRINCIPALS', value);
         await expectDenied();
       }
       expect(mocks.executeTool).not.toHaveBeenCalled();
 
-      vi.stubEnv('MCP_UNATTENDED_TIER3_PRINCIPALS', 'oauth_client_user:cc-1/user-1');
+      vi.stubEnv('MCP_UNATTENDED_TIER3_PRINCIPALS', 'oauth_client_user:cc-1/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
       await call();
       expect(mocks.executeTool).toHaveBeenCalledTimes(1);
 
       // Same client, different user: still approval-only.
-      testState.apiKeyExtra = { id: 'oauth:jti-2', oauthGrantId: 'grant-2', oauthClientId: 'cc-1', createdBy: 'user-2' };
+      testState.apiKeyExtra = { id: 'oauth:jti-2', oauthGrantId: 'grant-2', oauthClientId: 'cc-1', createdBy: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' };
       await expectDenied();
       expect(mocks.executeTool).toHaveBeenCalledTimes(1);
     });
