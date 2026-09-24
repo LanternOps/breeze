@@ -489,6 +489,60 @@ async function scanBinaryDir(
   return results;
 }
 
+// #6872: the Tauri Breeze Assist helper ships as installers
+// (breeze-helper-windows.msi / -macos.dmg / -linux.AppImage), not as
+// breeze-helper-{os}-{arch} raw binaries, so parseBinaryFilename can never
+// match it. Map the HELPER_TARGETS asset names to (platform, arch) exactly
+// as GitHub mode does — the one .dmg covers both macOS arches. Hosted prod
+// runs BINARY_SOURCE=local and had ZERO helper rows for that reason: the
+// heartbeat's bootstrap offer (helperUpgradeTo) resolved null and no device
+// could ever install Assist.
+// exported for tests (#6872)
+export async function scanHelperInstallerDir(dir: string): Promise<BinaryInfo[]> {
+  const results: BinaryInfo[] = [];
+
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[binarySync] helper installer directory not found: ${dir} (${msg}) — Breeze Assist install/upgrade unavailable`,
+    );
+    return results;
+  }
+  const present = new Set(entries);
+
+  // One checksum per FILE, reused for every target that shares it (dmg).
+  const checksums = new Map<string, { checksum: string; fileSize: bigint }>();
+  for (const target of HELPER_TARGETS) {
+    if (!present.has(target.assetName)) continue;
+    const platform = GH_PLATFORM_MAP[target.goos];
+    if (!platform) continue;
+    const filePath = join(dir, target.assetName);
+    try {
+      let info = checksums.get(target.assetName);
+      if (!info) {
+        const checksum = await computeStreamingChecksum(filePath);
+        const fileStat = await stat(filePath);
+        info = { checksum, fileSize: BigInt(fileStat.size) };
+        checksums.set(target.assetName, info);
+      }
+      results.push({
+        filename: target.assetName,
+        filePath,
+        platform,
+        architecture: target.goarch,
+        checksum: info.checksum,
+        fileSize: info.fileSize,
+      });
+    } catch (err) {
+      console.error(`[binarySync] Failed to read ${target.assetName}:`, err);
+    }
+  }
+  return results;
+}
+
 // Registers a set of locally-scanned binaries for one component (agent,
 // watchdog, …) in agent_versions, signing each manifest so
 // /agent-versions/:v/download returns 200 (the strict-signing check from #568
@@ -1047,6 +1101,8 @@ export async function syncBinaries(): Promise<void> {
   const userHelperBinaries = await scanBinaryDir(agentBinaryDir, "user-helper");
   const watchdogBinaries = await scanBinaryDir(agentBinaryDir, "watchdog");
   const backupBinaries = await scanBinaryDir(agentBinaryDir, "backup");
+  const helperBinaryDir = resolve(process.env.HELPER_BINARY_DIR || "./agent/bin");
+  const helperInstallers = await scanHelperInstallerDir(helperBinaryDir);
 
   if (binaries.length > 0) {
     const serverUrl =
@@ -1149,6 +1205,78 @@ export async function syncBinaries(): Promise<void> {
       } catch (err) {
         console.error(
           `[binarySync] Failed to register local user-helper binaries — interactive-session helper auto-update unavailable: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+    }
+
+    // #6872: register the Breeze Assist helper installers in local mode.
+    // GitHub mode already registers component=helper (HELPER_TARGETS); local
+    // mode never did, so hosted deployments (BINARY_SOURCE=local) never
+    // produced the row that heartbeat's helperUpgradeTo bootstrap resolves.
+    // Same two tiers as user-helper: official manifest first, then
+    // per-deployment re-signing for whatever the manifest does not cover —
+    // never for an asset the manifest refused (D4, #3836).
+    if (helperInstallers.length > 0) {
+      try {
+        let coveredHelperFilenames = new Set<string>();
+        let excludedHelperFilenames = new Set<string>();
+        if (officialManifest) {
+          const result = await registerFromOfficialManifest({
+            binaries: helperInstallers,
+            component: "helper",
+            version,
+            manifestBytes: officialManifest.manifestBytes,
+            signatureBytes: officialManifest.signatureBytes,
+            downloadUrlFor: (osParam, arch) =>
+              `${serverUrl}/api/v1/agents/download/helper/${osParam}/${arch}`,
+          });
+          coveredHelperFilenames = result.registeredFilenames;
+          excludedHelperFilenames = result.excludedFilenames;
+          if (coveredHelperFilenames.size > 0) {
+            console.log(
+              `[binarySync] Registered ${coveredHelperFilenames.size} helper installers from the official release manifest (version: ${version})`,
+            );
+          }
+        }
+        const remainingHelperInstallers = helperInstallers.filter(
+          (b) =>
+            !coveredHelperFilenames.has(b.filename) &&
+            !excludedHelperFilenames.has(b.filename),
+        );
+        if (remainingHelperInstallers.length > 0) {
+          await registerLocalBinaries({
+            binaries: remainingHelperInstallers,
+            component: "helper",
+            version,
+            keyId,
+            downloadUrlFor: (osParam, arch) =>
+              `${serverUrl}/api/v1/agents/download/helper/${osParam}/${arch}`,
+          });
+          console.log(
+            `[binarySync] Registered ${remainingHelperInstallers.length} helper installer targets via per-deployment re-signing (version: ${version})`,
+          );
+        }
+      } catch (err) {
+        console.error(
+          `[binarySync] Failed to register local helper installers — Breeze Assist install/upgrade unavailable: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+    } else {
+      // scanHelperInstallerDir already warns (and returns []) when the
+      // directory itself is missing — only warn again here when the
+      // directory exists but holds none of the HELPER_TARGETS installers, so
+      // a genuinely empty deployment doesn't go silent about Assist being
+      // unavailable while also avoiding a double warning for the missing-dir
+      // case.
+      let helperDirExists = true;
+      try {
+        await readdir(helperBinaryDir);
+      } catch {
+        helperDirExists = false;
+      }
+      if (helperDirExists) {
+        console.warn(
+          `[binarySync] No helper installers found in ${helperBinaryDir} — Breeze Assist install/upgrade unavailable on this deployment`,
         );
       }
     }
