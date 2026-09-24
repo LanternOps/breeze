@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -47,6 +48,10 @@ type scriptedDownloadProvider struct {
 	// the file only at the end, so the ONLY progress signal is the
 	// providers.WithDownloadProgress callback (no file growth to observe).
 	manifestHookOnly bool
+	// manifestShrinkAfterFirstChunk writes the first piece and then keeps
+	// SHRINKING the destination file one byte at a time without ever
+	// delivering more: size changes, but no new data arrives.
+	manifestShrinkAfterFirstChunk bool
 
 	inflight  atomic.Int32
 	peak      atomic.Int32
@@ -180,6 +185,22 @@ func (p *scriptedDownloadProvider) trickleManifest(ctx context.Context, localPat
 	chunk := (len(p.manifest) + p.manifestChunks - 1) / p.manifestChunks
 	for off := 0; off < len(p.manifest); off += chunk {
 		if off > 0 {
+			if p.manifestShrinkAfterFirstChunk {
+				for size := int64(off); ; size-- {
+					if size > 0 {
+						if err := f.Truncate(size - 1); err != nil {
+							return err
+						}
+					}
+					select {
+					case <-ctx.Done():
+						return fmt.Errorf("read body: %w", ctx.Err())
+					case <-p.release:
+						return errors.New("released at test end")
+					case <-time.After(20 * time.Millisecond):
+					}
+				}
+			}
 			if p.manifestStallAfterFirstChunk {
 				select {
 				case <-ctx.Done():
@@ -612,6 +633,28 @@ func TestVerifyIntegrity_StalledManifestHookOnlyFails(t *testing.T) {
 	}
 }
 
+// A destination file that changes size by SHRINKING (a provider, or
+// FallbackProvider's next candidate, re-creating it) delivered no new data
+// and must not keep the stall window open forever.
+func TestVerifyIntegrity_ShrinkingManifestFileIsNotProgress(t *testing.T) {
+	defer setDownloadTimeoutFloorForTest(150 * time.Millisecond)()
+	p := newScriptedDownloadProvider(t, "verify-shrinking-manifest", 3)
+	p.manifestChunks = 2
+	p.manifestShrinkAfterFirstChunk = true
+
+	var result *VerifyResult
+	var err error
+	runWithWatchdog(t, 5*time.Second, func() {
+		result, err = VerifyIntegrityWithOptions(context.Background(), p, "verify-shrinking-manifest", VerifyOptions{})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "failed" || !strings.Contains(result.Error, "manifest download stalled") {
+		t.Fatalf("status=%q error=%q, want failed with a manifest-stall reason", result.Status, result.Error)
+	}
+}
+
 // A manifest the provider positively reports missing is still "not found";
 // any other transport failure is not.
 func TestManifestDownloadError_OnlyMissingObjectIsNotFound(t *testing.T) {
@@ -621,6 +664,13 @@ func TestManifestDownloadError_OnlyMissingObjectIsNotFound(t *testing.T) {
 	}
 	if got := manifestDownloadError(ctx, VerifyOptions{}, errors.New("403 AccessDenied")); strings.Contains(got, "not found") {
 		t.Fatalf("access error => %q, must not claim the manifest is missing", got)
+	}
+	// A DESTINATION-side ENOENT (the temp dir vanished) says nothing about
+	// the remote object; providers map a missing source to ErrObjectNotFound.
+	destErr := fmt.Errorf("failed to create local destination file: %w",
+		&fs.PathError{Op: "open", Path: "/tmp/gone/verify-manifest.json", Err: fs.ErrNotExist})
+	if got := manifestDownloadError(ctx, VerifyOptions{}, destErr); strings.Contains(got, "not found") {
+		t.Fatalf("destination ENOENT => %q, must not claim the manifest is missing", got)
 	}
 }
 

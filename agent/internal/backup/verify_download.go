@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -150,7 +149,8 @@ func downloadStallWindow() time.Duration { return downloadTimeoutFloor }
 // downloadStallWindow().
 //
 // Progress comes from the provider's WithDownloadProgress callback (every
-// production provider reports it), backed up by growth of localPath, so a
+// production provider reports it), backed up by localPath growing past the
+// largest size seen so far, so a
 // provider that writes the destination without reporting is still seen as
 // progressing. File growth is sampled only when the window is about to
 // expire, so a transfer seen only that way fails at most two windows after
@@ -182,7 +182,10 @@ func downloadWithStallTimeout(ctx context.Context, provider providers.BackupProv
 	watcherDone := make(chan struct{})
 	go func() {
 		defer close(watcherDone)
-		lastSize := localFileSize(localPath)
+		// Only growth past the largest size seen is progress: a file that
+		// shrinks (re-created by a retry or by FallbackProvider's next
+		// candidate) and regrows to an old size delivered no new data.
+		maxSize := max(localFileSize(localPath), 0)
 		timer := time.NewTimer(window)
 		defer timer.Stop()
 		for {
@@ -194,8 +197,8 @@ func downloadWithStallTimeout(ctx context.Context, provider providers.BackupProv
 			case <-timer.C:
 			}
 			now := time.Now()
-			if size := localFileSize(localPath); size != lastSize {
-				lastSize = size
+			if size := localFileSize(localPath); size > maxSize {
+				maxSize = size
 				lastProgress.Store(now.UnixNano())
 			}
 			idle := now.Sub(time.Unix(0, lastProgress.Load()))
@@ -343,7 +346,10 @@ func manifestDownloadError(runCtx context.Context, opts VerifyOptions, err error
 		return fmt.Sprintf("time budget of %s exhausted before the snapshot manifest finished downloading: %v", opts.TimeBudget.Round(time.Second), err)
 	case errors.As(err, &stall):
 		return fmt.Sprintf("snapshot manifest download stalled: no data received for %s (%d bytes received before it stopped): %v", stall.window, stall.received, stall.err)
-	case errors.Is(err, providers.ErrObjectNotFound), errors.Is(err, fs.ErrNotExist):
+	case errors.Is(err, providers.ErrObjectNotFound):
+		// Not fs.ErrNotExist: a destination-side ENOENT (the temp dir
+		// vanished) must never read as "the object is missing". Providers
+		// map a missing SOURCE to ErrObjectNotFound (see LocalProvider).
 		return fmt.Sprintf("manifest not found: %v", err)
 	default:
 		return fmt.Sprintf("failed to download snapshot manifest: %v", err)

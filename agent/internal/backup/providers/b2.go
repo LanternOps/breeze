@@ -132,6 +132,10 @@ func (p *B2Provider) DownloadContext(ctx context.Context, remotePath, localPath 
 		return fmt.Errorf("failed to create local destination file: %w", err)
 	}
 
+	// Progress granularity caveat: blazer buffers ~10 MB chunks before Read
+	// returns, so below ~33 KB/s a chunk that IS progressing can report
+	// nothing for a whole 5 min stall window. Verify/test-restore only build
+	// S3 and Local providers today (cmd/breeze-backup/exec_backup.go).
 	if _, err := io.Copy(DownloadProgressWriter(ctx, file), reader); err != nil {
 		_ = file.Close()
 		_ = reader.Close()
