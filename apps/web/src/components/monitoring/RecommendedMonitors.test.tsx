@@ -25,6 +25,13 @@ const policyId = '11111111-1111-4111-8111-111111111111';
 
 beforeEach(() => vi.resetAllMocks());
 
+it('labels the opener as an action, not the noun phrase used for the select (sweep D6)', () => {
+  render(<RecommendedMonitors rows={[monitor]} onAttached={vi.fn()} />);
+  const opener = screen.getByTestId('recommended-open');
+  expect(opener).not.toHaveTextContent('Configuration policy');
+  expect(opener.textContent).toMatch(/attach/i);
+});
+
 it('attaches built-ins to a chosen policy without discarding replacement mode', async () => {
   fetchMock
     .mockResolvedValueOnce(json({ data: [{ id: policyId, name: 'Servers' }], pagination: { total: 1 } }))

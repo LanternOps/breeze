@@ -296,6 +296,7 @@
       "device_group": "un gruppo di dispositivi"
     },
     "selectPolicy": "Criterio di configurazione",
+    "attachToPolicy": "Collega a un criterio…",
     "selectTarget": "Destinazione",
     "noOrgSelected": "Seleziona un'organizzazione per la distribuzione.",
     "policyName": "Nome del criterio",

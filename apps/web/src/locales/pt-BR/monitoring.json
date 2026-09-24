@@ -296,6 +296,7 @@
       "device_group": "um grupo de dispositivos"
     },
     "selectPolicy": "Política de configuração",
+    "attachToPolicy": "Anexar a uma política…",
     "selectTarget": "Destino",
     "noOrgSelected": "Selecione uma organização para implantar.",
     "policyName": "Nome da política",

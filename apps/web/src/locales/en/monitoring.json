@@ -296,6 +296,7 @@
       "device_group": "a device group"
     },
     "selectPolicy": "Configuration policy",
+    "attachToPolicy": "Attach to policy…",
     "selectTarget": "Target",
     "noOrgSelected": "Select an organization to deploy to.",
     "policyName": "Policy name",

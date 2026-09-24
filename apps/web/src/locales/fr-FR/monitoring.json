@@ -296,6 +296,7 @@
       "device_group": "un groupe de dispositifs"
     },
     "selectPolicy": "Politique de configuration",
+    "attachToPolicy": "Attacher à une politique…",
     "selectTarget": "Cible",
     "noOrgSelected": "Sélectionnez une organisation pour le déploiement.",
     "policyName": "Nom de la politique",

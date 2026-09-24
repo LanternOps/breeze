@@ -296,6 +296,7 @@
       "device_group": "bir cihaz grubu"
     },
     "selectPolicy": "Yapılandırma politikası",
+    "attachToPolicy": "Politikaya ekle…",
     "selectTarget": "Hedef",
     "noOrgSelected": "Dağıtılacak bir kuruluş seçin.",
     "policyName": "Politika adı",
