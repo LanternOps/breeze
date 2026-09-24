@@ -106,6 +106,17 @@ describe('script result → exit-code alert wiring (#6690)', () => {
     expect(callOrder.indexOf('execution-update')).toBeLessThan(callOrder.indexOf('evaluate'));
   });
 
+  it('still evaluates when an UNPROVEN cancel closes the row (the real outcome is kept)', async () => {
+    // No cancelled marker → skips the confirm CAS; the unconfirmed CAS matches.
+    updateMock.mockReturnValueOnce(updateReturning([executionRow]));
+
+    await commandResultHandlers.script!(scriptInput({ status: 'completed', exitCode: 3 }));
+
+    expect(updateMock).toHaveBeenCalledTimes(1);
+    expect(evaluateMock).toHaveBeenCalledTimes(1);
+    expect(evaluateMock).toHaveBeenCalledWith(expect.objectContaining({ exitCode: 3, triggerType: 'scheduled' }));
+  });
+
   it('does not evaluate a timeout (no real exit code)', async () => {
     updateMock.mockReturnValueOnce(updateReturning([executionRow]));
 

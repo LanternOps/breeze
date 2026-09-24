@@ -231,12 +231,29 @@ describe('evaluateScriptExitCodeAlert', () => {
     expect(resolveAlertMock).not.toHaveBeenCalled();
   });
 
-  it('does nothing when the script row is not visible', async () => {
+  it('does nothing when the script row is not visible, but leaves a warning', async () => {
     selectResults.push([]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     await evaluateScriptExitCodeAlert(input());
 
     expect(selectMock).toHaveBeenCalledTimes(1);
     expect(createSourcedAlertMock).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('script row not visible'),
+      expect.objectContaining({ scriptId: SCRIPT_ID, executionId: EXECUTION_ID }),
+    );
+    warn.mockRestore();
+  });
+
+  it('truncates a long stderr line so the message is exactly the cap, ending in an ellipsis', async () => {
+    selectResults.push(script({ '3': 'high' }), [], [], [{ hostname: 'ws-01', displayName: null }]);
+
+    await evaluateScriptExitCodeAlert(input({ stderr: 'x'.repeat(1000) }));
+
+    const { message } = createSourcedAlertMock.mock.calls[0]![0];
+    expect(message).toHaveLength(300);
+    expect(message.endsWith('…')).toBe(true);
+    expect(message.startsWith('The scheduled run exited with code 3')).toBe(true);
   });
 });

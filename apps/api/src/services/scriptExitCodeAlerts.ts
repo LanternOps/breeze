@@ -87,7 +87,17 @@ async function evaluate(input: ScriptExitCodeAlertInput & { scriptId: string; ex
     .from(scripts)
     .where(eq(scripts.id, scriptId))
     .limit(1);
-  if (!script) return;
+  if (!script) {
+    // Deleted mid-flight is legitimate; an RLS read-branch regression is not.
+    // Either way leave a trace, so "why did this script stop alerting" has
+    // something to grep for.
+    console.warn('[ScriptExitCodeAlerts] script row not visible; skipping exit-code alert', {
+      scriptId,
+      executionId: input.executionId,
+      deviceId,
+    });
+    return;
+  }
 
   // Opt-in gate, checked BEFORE deriveSeverityFromScript so its legacy
   // NULL/{} → 'medium' branch is never reached from here.
