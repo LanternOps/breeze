@@ -2,13 +2,17 @@ package hwhealth
 
 import (
 	"bytes"
+	"context"
 	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 var errNoBMC = errors.New("BMC unavailable")
@@ -25,8 +29,11 @@ func bmcUnavailable(raw []byte) bool {
 }
 
 // parseBMC extracts a small allowlist of BMC facts (ip, mac, firmware, vendor-derived name)
-// from vendor-specific text or XML captures. It never surfaces credential material even
-// when present in the raw export (e.g. hponcfg RIBCL LOGIN/PASSWORD attributes).
+// from vendor-specific text or XML captures. Safety here rests entirely on only ever reading
+// the allowlisted keys (ip/mac/vendor/firmware) that these specific commands can produce — it
+// does not inspect or sanitize the raw export for credential material, so it must never be
+// extended to a command or key set that could carry secrets (e.g. hponcfg RIBCL LOGIN/PASSWORD
+// attributes are present in some exports but are never read here).
 func parseBMC(kind Kind, network, info []byte) (Component, error) {
 	if len(network)+len(info) > 4*1024*1024 {
 		return Component{}, errors.New("BMC output exceeds 4 MB")
@@ -126,4 +133,81 @@ func parseBMC(kind Kind, network, info []byte) (Component, error) {
 		c.Firmware = ptr(fw)
 	}
 	return c, nil
+}
+
+// newBMC builds a Source that runs a bounded set of read-only BMC inspection commands
+// (ipmitool/racadm/hponcfg) and turns their output into a single "bmc" Component via
+// parseBMC. No credential material is ever passed to these tools, and the hponcfg
+// private export is always removed, on both the success and failure paths.
+func newBMC(kind Kind, extra []string, run toolRunner) Source {
+	return &source{
+		kind: kind,
+		tier: TierRAID,
+		detect: func(context.Context) Availability {
+			p, ok := lookupTool(bmcToolNames(kind), extra)
+			return Availability{Path: p, Available: ok}
+		},
+		collect: func(parent context.Context, a Availability) (Result, error) {
+			ctx, cancel := context.WithTimeout(parent, 20*time.Second)
+			defer cancel()
+			query := func(args ...string) ([]byte, error) {
+				out, err := run(ctx, 20*time.Second, a.Path, args...)
+				if err != nil {
+					return nil, fmt.Errorf("BMC command failed: %w", err)
+				}
+				if out.Truncated {
+					return nil, errors.New("BMC output truncated")
+				}
+				if bmcUnavailable(out.Stdout) || bmcUnavailable(out.Stderr) {
+					return nil, errNoBMC
+				}
+				if out.ExitCode != 0 {
+					return nil, fmt.Errorf("BMC command exit %d", out.ExitCode)
+				}
+				return out.Stdout, nil
+			}
+			var network, info []byte
+			var err error
+			switch kind {
+			case "ipmi":
+				network, err = query("lan", "print", "1")
+				if err == nil {
+					info, err = query("mc", "info")
+				}
+			case "racadm":
+				network, err = query("getniccfg")
+				if err == nil {
+					info, err = query("getversion")
+				}
+			case "hponcfg":
+				dir, e := os.MkdirTemp("", "breeze-bmc-")
+				if e != nil {
+					return Result{}, e
+				}
+				defer func() { _ = os.RemoveAll(dir) }()
+				path := filepath.Join(dir, "ribcl.xml")
+				info, err = query("-w", path)
+				if err == nil {
+					f, openErr := os.Open(path)
+					if openErr != nil {
+						return Result{}, errors.New("BMC export not readable")
+					}
+					network, err = io.ReadAll(io.LimitReader(f, 4*1024*1024+1))
+					if closeErr := f.Close(); closeErr != nil && err == nil {
+						err = closeErr
+					}
+				}
+			default:
+				return Result{}, fmt.Errorf("unsupported BMC source %s", kind)
+			}
+			if err != nil {
+				return Result{}, err
+			}
+			c, err := parseBMC(kind, network, info)
+			if err != nil {
+				return Result{}, err
+			}
+			return Result{Components: []Component{c}, Complete: true}, nil
+		},
+	}
 }
