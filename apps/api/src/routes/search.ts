@@ -15,7 +15,9 @@ const searchQuerySchema = z.object({
 
 const SETTINGS_ENTRIES = [
   { id: 'settings-profile', type: 'settings', title: 'Profile settings', description: 'Manage your profile', href: '/settings/profile' },
-  { id: 'settings-security', type: 'settings', title: 'Security settings', description: 'Manage MFA and account security', href: '/settings/security' },
+  // MFA, passkeys and password live on the profile page. There is no
+  // /settings/security page; linking there 404'd (#6748).
+  { id: 'settings-security', type: 'settings', title: 'Security settings', description: 'Manage MFA and account security', href: '/settings/profile' },
   { id: 'settings-users', type: 'settings', title: 'User management', description: 'Manage users and roles', href: '/settings/users' }
 ] as const;
 

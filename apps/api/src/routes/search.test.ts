@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { searchRoutes } from './search';
 
 // Partial-mock drizzle-orm so `inArray` is a spy while every other operator
@@ -230,6 +233,61 @@ describe('search routes', () => {
       title: 'host-16',
       description: 'online'
     });
+  });
+
+  describe('settings shortcuts (#6748)', () => {
+    const WEB_PAGES = resolve(dirname(fileURLToPath(import.meta.url)), '../../../web/src/pages');
+
+    // Resolve an href to the Astro page that serves it. A redirect-only page
+    // counts as missing: search should land on the canonical page directly.
+    function servingPage(href: string): string | null {
+      const path = href.split(/[?#]/)[0]!.replace(/\/$/, '');
+      for (const candidate of [`${WEB_PAGES}${path}.astro`, `${WEB_PAGES}${path}/index.astro`]) {
+        if (existsSync(candidate)) {
+          return /Astro\.redirect\(/.test(readFileSync(candidate, 'utf-8')) ? null : candidate;
+        }
+      }
+      return null;
+    }
+
+    function mockEmptyEntityResults() {
+      const empty = {
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+        }),
+      };
+      vi.mocked(db.select).mockReturnValue(empty as never);
+    }
+
+    async function settingsResults(q: string) {
+      mockEmptyEntityResults();
+      const res = await app.request(`/search?q=${encodeURIComponent(q)}`);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      return (body.results as Array<{ type?: string; id: string; href?: string }>).filter(
+        (row) => row.type === 'settings'
+      );
+    }
+
+    it('sends "mfa" to the page that actually manages MFA', async () => {
+      const results = await settingsResults('mfa');
+      expect(results.map((r) => r.id)).toContain('settings-security');
+      for (const row of results) {
+        expect(row.href).toBe('/settings/profile');
+      }
+    });
+
+    it.each(['profile', 'security', 'mfa', 'user'])(
+      'every settings result for "%s" links to a real web page',
+      async (q) => {
+        const results = await settingsResults(q);
+        expect(results.length).toBeGreaterThan(0);
+        for (const row of results) {
+          expect(row.href, `${row.id} links to a page that does not exist`).toBeTruthy();
+          expect(servingPage(row.href!), `${row.id} -> ${row.href} has no Astro page`).not.toBeNull();
+        }
+      }
+    );
   });
 
   it('validates required query parameter', async () => {
