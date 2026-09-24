@@ -6,7 +6,7 @@
  *   - patch-job-devices: per-device execution (resolve patches, install, reboot)
  */
 
-import { Queue, Worker, Job } from 'bullmq';
+import { DelayedError, Queue, Worker, Job } from 'bullmq';
 import { z } from 'zod';
 import { policyAppRuleSchema } from '@breeze/shared/validators';
 import * as dbModule from '../db';
@@ -173,6 +173,19 @@ export class PatchCompletionCheckError extends Error {
 }
 
 /**
+ * A per-device job kept finding its parent `scheduled` after every recheck
+ * (#6632). The orchestrator commits the claim before it enqueues any device
+ * job, so this should be unreachable; if it fires, a new fan-out path is
+ * enqueueing ahead of its own commit.
+ */
+export class PatchParentNotRunningError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'PatchParentNotRunningError';
+  }
+}
+
+/**
  * Return the reusable queue job for one of `candidateIds`, clearing any
  * terminal leftover so the caller can re-add on the same stable jobId.
  *
@@ -254,6 +267,12 @@ interface ExecutePatchJobDeviceData {
   patchJobId: string;
   deviceId: string;
   orgId: string;
+  /**
+   * How many times this device job has re-delayed itself because its parent
+   * was still `scheduled` (#6632). Absent on first run. Written by the job
+   * itself via `updateData`, never by the enqueuer.
+   */
+  parentNotRunningRechecks?: number;
 }
 
 interface CheckCompletionData {
@@ -458,14 +477,17 @@ export function createPatchJobWorker(): Worker<PatchJobData> {
   return new Worker<PatchJobData>(
     PATCH_JOB_QUEUE,
     async (job: Job<PatchJobData>) => {
-      return runWithSystemDbAccess(async () => {
-        switch (job.data.type) {
-          case 'execute-patch-job':
-            return processExecutePatchJob(job.data);
-          case 'check-completion':
-            return processCheckCompletion(job.data);
-        }
-      });
+      const data = job.data;
+      switch (data.type) {
+        case 'execute-patch-job':
+          // NOT wrapped in one runWithSystemDbAccess (#6632): the claim must
+          // COMMIT before any per-device job is enqueued, so
+          // processExecutePatchJob opens its own short contexts and does every
+          // Redis call outside them.
+          return processExecutePatchJob(data);
+        case 'check-completion':
+          return runWithSystemDbAccess(() => processCheckCompletion(data));
+      }
     },
     {
       connection: getBullMQConnection(),
@@ -477,10 +499,19 @@ export function createPatchJobWorker(): Worker<PatchJobData> {
   );
 }
 
-async function processExecutePatchJob(data: ExecutePatchJobData): Promise<unknown> {
-  const { patchJobId } = data;
+type PatchJobClaim =
+  | { kind: 'claimed'; orgId: string; deviceIds: string[] }
+  | { kind: 'already_running' }
+  | { kind: 'done'; result: unknown };
 
-  // Load and verify job
+/**
+ * Load the job and flip it `scheduled` → `running`. DB-only; the caller runs it
+ * in its own short system context so the flip COMMITS before any per-device job
+ * is enqueued (#6632). A device worker picks its job up within about a
+ * millisecond and reads the parent in a separate transaction, so a claim still
+ * open at enqueue time reads as `scheduled` there.
+ */
+async function claimPatchJob(patchJobId: string): Promise<PatchJobClaim> {
   const [patchJob] = await db
     .select()
     .from(patchJobs)
@@ -489,14 +520,17 @@ async function processExecutePatchJob(data: ExecutePatchJobData): Promise<unknow
 
   if (!patchJob) {
     console.error(`[PatchJobExecutor] Job ${patchJobId} not found`);
-    return { error: 'Job not found' };
+    return { kind: 'done', result: { error: 'Job not found' } };
+  }
+
+  if (patchJob.status === 'running') {
+    return { kind: 'already_running' };
   }
 
   if (patchJob.status !== 'scheduled') {
-    return { skipped: true, reason: `Job status is ${patchJob.status}` };
+    return { kind: 'done', result: { skipped: true, reason: `Job status is ${patchJob.status}` } };
   }
 
-  // Transition to running
   const claimed = await db
     .update(patchJobs)
     .set({ status: 'running', startedAt: new Date() })
@@ -504,7 +538,7 @@ async function processExecutePatchJob(data: ExecutePatchJobData): Promise<unknow
     .returning({ id: patchJobs.id });
 
   if (claimed.length === 0) {
-    return { skipped: true, reason: 'Job was already claimed' };
+    return { kind: 'done', result: { skipped: true, reason: 'Job was already claimed' } };
   }
 
   // Extract target device IDs from the JSONB targets field
@@ -516,10 +550,38 @@ async function processExecutePatchJob(data: ExecutePatchJobData): Promise<unknow
       .update(patchJobs)
       .set({ status: 'completed', completedAt: new Date() })
       .where(eq(patchJobs.id, patchJobId));
-    return { completed: true, reason: 'No target devices' };
+    return { kind: 'done', result: { completed: true, reason: 'No target devices' } };
   }
 
-  // Fan out to per-device queue.
+  return { kind: 'claimed', orgId: patchJob.orgId, deviceIds };
+}
+
+async function processExecutePatchJob(data: ExecutePatchJobData): Promise<unknown> {
+  const { patchJobId } = data;
+
+  // Phase 1 — claim, in its own transaction, committed on return.
+  const claim = await runWithSystemDbAccess(() => claimPatchJob(patchJobId));
+  if (claim.kind === 'done') {
+    return claim.result;
+  }
+  if (claim.kind === 'already_running') {
+    // The claim commits before fan-out, so a worker that died in between left
+    // this row `running` with no device jobs and no completion check. BullMQ's
+    // stall detection re-runs this job, and this branch is where that re-run
+    // lands. Nothing else would ever settle the row: the #1733 sweep only
+    // scans `scheduled`. Device jobs are NOT re-added, because one may already
+    // have run and re-adding clears a completed stable id. Guaranteeing the
+    // completion check (idempotent on its stable id) means undispatched
+    // devices are force-failed at the timeout.
+    await enqueueCompletionCheck(patchJobId);
+    return { skipped: true, reason: 'Job status is running' };
+  }
+  const { orgId, deviceIds } = claim;
+
+  // Phase 2 — fan out. Runs OUTSIDE any DB context: the claim above is
+  // committed, so every device worker reads the parent as `running`, and no
+  // pooled connection sits idle-in-transaction across the Redis round-trips
+  // below (#1105).
   //
   // Every device is dispatched inside its own try/catch, and a failure costs
   // ONLY that device. This runs AFTER the claim UPDATE above has already
@@ -543,7 +605,7 @@ async function processExecutePatchJob(data: ExecutePatchJobData): Promise<unknow
             type: 'execute-patch-job-device',
             patchJobId,
             deviceId,
-            orgId: patchJob.orgId,
+            orgId,
           } satisfies ExecutePatchJobDeviceData,
           {
             ...PATCH_JOB_RETENTION,
@@ -565,9 +627,12 @@ async function processExecutePatchJob(data: ExecutePatchJobData): Promise<unknow
   // by the 35-minute completion checker — and only if that checker was itself
   // enqueued. Recording them as failed keeps the counters exact and lets the
   // normal `devicesPending === 0` finalization close the job out on its own.
+  // One short context per device: DB-only work, never spanning a Redis call.
   for (const failure of dispatchFailures) {
     try {
-      await markDeviceDispatchFailed(patchJobId, failure.deviceId, failure.error);
+      await runWithSystemDbAccess(() =>
+        markDeviceDispatchFailed(patchJobId, failure.deviceId, failure.error),
+      );
     } catch (error) {
       console.error(
         `[PatchJobExecutor] Failed to record dispatch failure for device ${failure.deviceId} `
@@ -761,12 +826,17 @@ async function processCheckCompletion(data: CheckCompletionData): Promise<unknow
 export function createPatchJobDeviceWorker(): Worker<PatchJobDeviceData> {
   return new Worker<PatchJobDeviceData>(
     PATCH_JOB_DEVICE_QUEUE,
-    async (job: Job<PatchJobDeviceData>) => {
+    async (job: Job<PatchJobDeviceData>, token?: string) => {
       // NOT wrapped in one runWithSystemDbAccess: processExecuteDevice manages its
       // own short contexts so the up-to-30-min completion poll never holds a
       // pooled connection in an open transaction (#1105 conn-hold that starved
       // the DB pool under concurrency 10 → user-facing 503s).
-      return processExecuteDevice(job.data);
+      const outcome = await processExecuteDevice(job.data);
+      if (isParentNotStarted(outcome)) {
+        // Outside any DB context: the re-delay is Redis-only.
+        return deferUntilParentRunning(job, token);
+      }
+      return outcome;
     },
     {
       connection: getBullMQConnection(),
@@ -803,6 +873,91 @@ type SkippedDeviceExecution = { kind: 'skipped'; skipped: true; reason: string }
 type FailedDeviceExecution = { kind: 'error'; error: string };
 
 /**
+ * The parent was still `scheduled` when this device job read it (#6632). Not
+ * terminal: the worker wrapper re-delays the job and reads again. Only
+ * `scheduled` maps here; a missing, cancelled, completed or failed parent stays
+ * a terminal skip.
+ */
+type ParentNotStartedExecution = { kind: 'parent_not_started' };
+
+const JOB_NOT_RUNNING_SKIP: SkippedDeviceExecution = {
+  kind: 'skipped',
+  skipped: true,
+  reason: 'Job not running',
+};
+
+/**
+ * Recheck budget for a parent still `scheduled`: delays of 2s, 4s, 8s, 16s,
+ * 32s and 64s, about two minutes in total. The orchestrator commits its claim
+ * before enqueueing, so in practice the first read already sees `running` —
+ * this only bounds how long a regression can hide before it is reported.
+ */
+const MAX_PARENT_NOT_RUNNING_RECHECKS = 6;
+const PARENT_NOT_RUNNING_BASE_DELAY_MS = 2_000;
+
+function isParentNotStarted(outcome: unknown): outcome is ParentNotStartedExecution {
+  return (
+    typeof outcome === 'object'
+    && outcome !== null
+    && (outcome as { kind?: unknown }).kind === 'parent_not_started'
+  );
+}
+
+/**
+ * Re-delay this device job until its parent is `running`, via BullMQ's
+ * `moveToDelayed` + `DelayedError` (same mechanism as fixWatchWorker.ts). It
+ * keeps the stable jobId and consumes no attempt; a re-`add()` on that id
+ * would be a silent no-op while this job is still active.
+ *
+ * When the budget is spent it returns the old terminal skip and reports it.
+ * The device stays pending, so the 35-minute completion check still settles
+ * the run if the parent ever starts. If the parent is still `scheduled` when
+ * the orchestrator does claim it, resolveActiveQueueJob clears this completed
+ * job and re-adds it.
+ */
+async function deferUntilParentRunning(
+  job: Job<PatchJobDeviceData>,
+  token: string | undefined,
+): Promise<SkippedDeviceExecution> {
+  const { patchJobId, deviceId } = job.data;
+  const raw = job.data.parentNotRunningRechecks;
+  const rechecks = typeof raw === 'number' && Number.isInteger(raw) && raw >= 0 ? raw : 0;
+
+  if (rechecks >= MAX_PARENT_NOT_RUNNING_RECHECKS || !token) {
+    const message =
+      `[PatchJobExecutor] Device job ${patchJobId}/${deviceId} still found its parent `
+      + `scheduled after ${rechecks} recheck(s); giving up`
+      + (token ? '' : ' (no lock token to re-delay with)');
+    console.error(message);
+    captureException(new PatchParentNotRunningError(message), undefined, {
+      patch_reconcile_stage: 'device_parent_not_running',
+    });
+    return JOB_NOT_RUNNING_SKIP;
+  }
+
+  try {
+    await job.updateData({ ...job.data, parentNotRunningRechecks: rechecks + 1 });
+    await job.moveToDelayed(
+      Date.now() + PARENT_NOT_RUNNING_BASE_DELAY_MS * 2 ** rechecks,
+      token,
+    );
+  } catch (error) {
+    // A Redis failure here must not vanish into a bare BullMQ failure. Report
+    // it and fall back to the terminal skip. The device stays pending for the
+    // completion check, and a later claim clears this job's id and re-adds it.
+    const message =
+      `[PatchJobExecutor] Device job ${patchJobId}/${deviceId} could not re-delay while its `
+      + 'parent is scheduled';
+    console.error(`${message}:`, error instanceof Error ? error.message : error);
+    captureException(new PatchParentNotRunningError(message, { cause: error }), undefined, {
+      patch_reconcile_stage: 'device_parent_not_running',
+    });
+    return JOB_NOT_RUNNING_SKIP;
+  }
+  throw new DelayedError();
+}
+
+/**
  * Deliberately discriminated on `kind` rather than probed with `in`: a
  * `queued` execution ALSO carries a `commandId`, so an `'commandId' in prep`
  * check that ran first would route an offline device — whose install was handed
@@ -813,7 +968,8 @@ type DeviceExecutionOutcome =
   | PreparedDeviceExecution
   | QueuedDeviceExecution
   | SkippedDeviceExecution
-  | FailedDeviceExecution;
+  | FailedDeviceExecution
+  | ParentNotStartedExecution;
 
 async function processExecuteDevice(data: ExecutePatchJobDeviceData): Promise<unknown> {
   // Phased so the up-to-30-min completion poll never holds a pooled connection
@@ -824,6 +980,7 @@ async function processExecuteDevice(data: ExecutePatchJobDeviceData): Promise<un
     case 'queued':
     case 'skipped':
     case 'error':
+    case 'parent_not_started':
       return prep;
     case 'prepared': {
       const finalCommand = await pollForPatchCommandResult(prep.commandId);
@@ -891,8 +1048,13 @@ async function prepareDeviceExecution(
     .where(eq(patchJobs.id, patchJobId))
     .limit(1);
 
+  // `scheduled` means the orchestrator's claim is not visible yet (#6632), so
+  // look again later. Every other non-running status is terminal.
+  if (patchJob?.status === 'scheduled') {
+    return { kind: 'parent_not_started' };
+  }
   if (!patchJob || patchJob.status !== 'running') {
-    return { kind: 'skipped', skipped: true, reason: 'Job not running' };
+    return JOB_NOT_RUNNING_SKIP;
   }
 
   if (orgId !== patchJob.orgId) {
@@ -1448,4 +1610,5 @@ export const __testOnly = {
    * Postgres without a Redis connection.
    */
   processExecuteDevice,
+  MAX_PARENT_NOT_RUNNING_RECHECKS,
 };
