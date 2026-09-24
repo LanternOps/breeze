@@ -43,7 +43,7 @@ func TestPlanWindows_GrowsRootBeforeRecovery(t *testing.T) {
 		t.Fatalf("recovery does not end at the disk's usable end: %+v", recovery)
 	}
 	if recovery.Attributes != 0x8000000000000001 {
-		t.Fatalf("recovery.Attributes = %#x, want the source's recorded attributes preserved", recovery.Attributes)
+		t.Fatalf("recovery.Attributes = %#x, want 0x8000000000000001 (this source's recorded attributes, copied verbatim — see TestPlanWindows_PreservesSourceAttributes for the discriminating case)", recovery.Attributes)
 	}
 }
 
@@ -73,6 +73,31 @@ func TestPlanWindows_PartitionNamesAreRoleDefaults(t *testing.T) {
 	}
 	if recovery.Name != "" {
 		t.Fatalf("recovery.Name = %q, want empty", recovery.Name)
+	}
+}
+
+// Global Constraint "partition GUIDs and GPT attributes preserved":
+// PlanPartitionsWindows must copy each source partition's GPT attribute
+// bits verbatim, never derive them from role. ESP/MSR here carry the
+// platform-required bit (0x1) as real firmware does; root carries a stray
+// hidden bit that has nothing to do with drive-letter policy, to prove the
+// planner isn't quietly adding/clearing bits by role — Task 11's
+// winProvision ORs in the no-drive-letter bit at write time, and Task 13
+// clears it; neither is this function's job.
+func TestPlanWindows_PreservesSourceAttributes(t *testing.T) {
+	d := winPlanSrcDisk()
+	d.Partitions[0].Attributes = 0x1
+	d.Partitions[1].Attributes = 0x1
+	d.Partitions[2].Attributes = 0x4000000000000000
+	d.Partitions[3].Attributes = 0x8000000000000001
+	p, err := PlanPartitionsWindows(d, 100*GiB, 512, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []uint64{0x1, 0x1, 0x4000000000000000, 0x8000000000000001} {
+		if got := p.Partitions[i].Attributes; got != want {
+			t.Fatalf("partition %d Attributes = %#x, want %#x (source value copied verbatim, not role-derived)", i, got, want)
+		}
 	}
 }
 

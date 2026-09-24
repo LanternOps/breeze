@@ -9,27 +9,6 @@ import (
 
 var supportedWindowsFilesystems = map[string]bool{"ntfs": true, "fat32": true, "vfat": true, "": true}
 
-// GPT attribute bits PlanPartitionsWindows assigns by role (Ruling B7/see
-// task-9 controller notes), rather than copying the source disk's recorded
-// Partition.Attributes verbatim: every partition is planned with the
-// no-drive-letter attribute so the provisioner (not Windows' automount)
-// controls which volumes get letters, except Recovery, which additionally
-// carries the required-partition bit Windows itself expects on the
-// recovery volume.
-const (
-	winAttrNoDriveLetter = uint64(0x8000000000000000)
-	winAttrRecovery      = uint64(0x8000000000000001)
-)
-
-// windowsGPTAttributes returns the GPT attribute bitmask PlanPartitionsWindows
-// writes for a partition of the given role.
-func windowsGPTAttributes(role string) uint64 {
-	if role == layout.RoleRecovery {
-		return winAttrRecovery
-	}
-	return winAttrNoDriveLetter
-}
-
 // windowsPartitionName returns the GPT partition name PlanPartitionsWindows
 // writes for a partition of the given role. These are ROLE defaults, never
 // the source layout.Partition.Name — the Windows collector stores
@@ -58,6 +37,10 @@ func windowsPartitionName(role string) string {
 // manifestBytes is the whole-machine file manifest's total logical content
 // size (winPreflight computes it before calling this, since hard links
 // become copies under Windows restore — Global Constraint "Sizing").
+// GPT attributes are copied verbatim from the source (Global Constraint
+// "partition GUIDs and GPT attributes preserved") — the planner is not the
+// place to add or clear bits. Task 11's winProvision ORs in the
+// no-drive-letter bit at write time and Task 13 clears it.
 func PlanPartitionsWindows(src *layout.Disk, targetSizeBytes int64, sectorSize int, manifestBytes int64) (*Plan, error) {
 	if src == nil {
 		return nil, &RefusalError{Reason: "no source disk in layout"}
@@ -123,7 +106,7 @@ func PlanPartitionsWindows(src *layout.Disk, targetSizeBytes int64, sectorSize i
 		plan.Partitions = append(plan.Partitions, PlannedPartition{
 			Number: p.Number, Role: p.Role, TypeGUID: p.TypeGUID, PartUUID: p.PartUUID, Name: windowsPartitionName(p.Role),
 			StartBytes: cursor, SizeBytes: size, Filesystem: strings.ToLower(p.Filesystem), FSUUID: p.FSUUID,
-			Label: p.Label, MountPoint: p.MountPoint, Grown: grown, Attributes: windowsGPTAttributes(p.Role),
+			Label: p.Label, MountPoint: p.MountPoint, Grown: grown, Attributes: p.Attributes,
 		})
 		cursor += size
 	}
