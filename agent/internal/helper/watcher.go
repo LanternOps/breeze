@@ -78,10 +78,9 @@ func (w *watcher) run() {
 
 		err := w.mgr.ensureRunningSession(w.state)
 		if errors.Is(err, ErrNotInstalled) {
-			// #6872: not a crash. Undo the failure we just counted, leave
-			// watcherGaveUp alone, and exit — Apply starts a fresh watcher
-			// once the server-offered install lands.
-			failures--
+			// #6872: not a crash. The failure counted above dies with this
+			// goroutine, watcherGaveUp is left alone, and Apply starts a
+			// fresh watcher once the server-offered install lands.
 			w.mgr.mu.Unlock()
 			log.Debug("breeze assist not installed; watcher exiting", "session", w.state.key)
 			return
