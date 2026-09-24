@@ -3430,6 +3430,43 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
     expect(configUpdate?.monitoring_settings).toEqual(settings);
   });
 
+  it('delivers an explicit empty watch set (the #2949 clear) rather than dropping it as falsy', async () => {
+    // "No monitoring policy applies" resolves to `{ watches: [] }`. The
+    // agent treats an ABSENT key as "no change", so this object must reach
+    // the wire — a truthiness slip here would strand a deleted policy's
+    // watches on the agent again.
+    const { buildMonitoringConfigUpdate } = await import('./helpers');
+    const cleared = { check_interval_seconds: 60, watches: [] };
+    vi.mocked(buildMonitoringConfigUpdate).mockResolvedValueOnce(cleared as any);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    const configUpdate = body.configUpdate as Record<string, unknown> | null;
+    expect(configUpdate?.monitoring_settings).toEqual(cleared);
+  });
+
+  it('omits monitoring_settings when the resolver returns null (device vanished mid-resolution, #5677)', async () => {
+    const { buildMonitoringConfigUpdate } = await import('./helpers');
+    vi.mocked(buildMonitoringConfigUpdate).mockResolvedValueOnce(null);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    const configUpdate = body.configUpdate as Record<string, unknown> | null;
+    expect(configUpdate).not.toHaveProperty('monitoring_settings');
+  });
+
   it('omits monitoring_settings when the resolver throws (no unintended revert)', async () => {
     const { buildMonitoringConfigUpdate } = await import('./helpers');
     vi.mocked(buildMonitoringConfigUpdate).mockRejectedValueOnce(new Error('boom'));

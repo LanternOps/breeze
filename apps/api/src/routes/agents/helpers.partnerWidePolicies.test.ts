@@ -544,7 +544,7 @@ describe('monitoring: a matched policy with zero enabled watches (#2949)', () =>
     expect(result?.watches).toEqual([]);
   });
 
-  it('still returns null when no policy row matches at all', async () => {
+  it('sends an explicit empty config (not null) when no policy row matches at all — the deleted/unassigned policy clear (#2949)', async () => {
     dbMock._resetQueue([
       deviceRow,
       orgWithPartner,
@@ -562,7 +562,7 @@ describe('monitoring: a matched policy with zero enabled watches (#2949)', () =>
 
     const result = await buildMonitoringConfigUpdate(DEVICE_ID);
 
-    expect(result).toBeNull();
+    expect(result).toEqual({ check_interval_seconds: 60, watches: [] });
   });
 
   it('caches the empty-watches result via redis.set, same as any other match', async () => {

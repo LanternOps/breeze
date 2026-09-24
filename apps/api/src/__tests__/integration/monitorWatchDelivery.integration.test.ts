@@ -220,7 +220,8 @@ describe('partner-wide monitor watch delivery (#5291 W04)', () => {
       buildMonitoringConfigUpdate(device.id),
     );
 
-    expect(result).toBeNull();
+    // Invisible → "nothing applies" → the explicit #2949 empty clear.
+    expect(result).toEqual({ check_interval_seconds: 60, watches: [] });
   });
 
   it('does not leak a partner-wide monitor to an org under a DIFFERENT partner', async () => {
@@ -237,7 +238,8 @@ describe('partner-wide monitor watch delivery (#5291 W04)', () => {
       buildMonitoringConfigUpdate(deviceB.id),
     );
 
-    expect(result).toBeNull();
+    // Invisible → "nothing applies" → the explicit #2949 empty clear.
+    expect(result).toEqual({ check_interval_seconds: 60, watches: [] });
   });
 });
 
