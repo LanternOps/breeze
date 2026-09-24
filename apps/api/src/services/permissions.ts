@@ -4,6 +4,7 @@ import { eq, and } from 'drizzle-orm';
 import { getRedis } from './redis';
 import { PERMISSION_GRANTS } from '@breeze/shared';
 import { permissionGrantMatches } from './permissionMatching';
+import { normalizeSiteAllowlist } from './siteAllowlist';
 
 export interface Permission {
   resource: string;
@@ -354,10 +355,11 @@ export function canAccessSite(
   userPerms: UserPermissions,
   siteId: string
 ): boolean {
-  // If no site restrictions, allow access
-  if (!userPerms.allowedSiteIds) return true;
+  // undefined = unrestricted; a malformed (non-array) allowlist fails closed (#6790).
+  const allowed = normalizeSiteAllowlist(userPerms.allowedSiteIds);
+  if (allowed === undefined) return true;
 
-  return userPerms.allowedSiteIds.includes(siteId);
+  return allowed.includes(siteId);
 }
 
 export async function clearPermissionCache(userId?: string): Promise<void> {

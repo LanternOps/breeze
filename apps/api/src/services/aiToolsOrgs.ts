@@ -57,6 +57,7 @@ import { CONTACT_ROLES } from './contacts/types';
 import { ensureOrgAccess } from '../routes/systemTools/helpers';
 import { deviceScopeCondition, siteScopeCondition } from './aiToolsSiteScope';
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
+import { normalizeSiteAllowlist } from './siteAllowlist';
 
 // Mirrors the org PATCH route's status set (schema orgStatusEnum). Kept as a
 // literal array (not orgStatusEnum.enumValues) so schema mocks in tests don't
@@ -122,7 +123,8 @@ function resolveWritableOrgId(
 }
 
 /**
- * The caller's site allowlist, normalised FAIL-CLOSED (#6737).
+ * The caller's site allowlist, normalised FAIL-CLOSED (#6737). The rule itself
+ * lives in `services/siteAllowlist.ts` (#6790), shared with every site helper.
  *
  * `undefined` = unrestricted; an array = restricted to those sites (empty =
  * no sites). `AuthContext.allowedSiteIds` is typed `string[] | undefined` and
@@ -138,9 +140,7 @@ function resolveWritableOrgId(
  * `allowedSiteIds ? inArray(sites.id, allowedSiteIds) : no filter`).
  */
 function siteAllowlistOf(auth: AuthContext): readonly string[] | undefined {
-  const raw: unknown = auth.allowedSiteIds;
-  if (raw === undefined) return undefined;
-  return Array.isArray(raw) ? (raw as string[]) : [];
+  return normalizeSiteAllowlist(auth.allowedSiteIds);
 }
 
 function jsonError(message: string, code?: string): string {
