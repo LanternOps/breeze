@@ -16,6 +16,7 @@ type diskState struct {
 	LastNone       time.Time         `json:"lastNone"`
 	MDMembers      map[string]string `json:"mdMembers"`
 	VendorTopology vendorTopology    `json:"vendorTopology,omitempty"`
+	BMCLastRun     time.Time         `json:"bmcLastRun"`
 }
 
 const maxHardwareStateBytes = 4 * 1024 * 1024

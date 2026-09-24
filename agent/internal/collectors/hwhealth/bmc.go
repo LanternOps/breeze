@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -184,7 +185,11 @@ func newBMC(kind Kind, extra []string, run toolRunner) Source {
 				if e != nil {
 					return Result{}, e
 				}
-				defer func() { _ = os.RemoveAll(dir) }()
+				defer func() {
+					if rmErr := os.RemoveAll(dir); rmErr != nil {
+						slog.Warn("hardware BMC export cleanup failed", "error", rmErr)
+					}
+				}()
 				path := filepath.Join(dir, "ribcl.xml")
 				info, err = query("-w", path)
 				if err == nil {
@@ -210,4 +215,38 @@ func newBMC(kind Kind, extra []string, run toolRunner) Source {
 			return Result{Components: []Component{c}, Complete: true}, nil
 		},
 	}
+}
+
+// isBMCSource reports whether kind is one of the in-band BMC adapters that
+// share the once-per-24h attempt gate and IPMI -> Dell -> HPE fallback order.
+func isBMCSource(k Kind) bool { return k == "ipmi" || k == "racadm" || k == "hponcfg" }
+
+// orderBMC groups the BMC adapters together, in fallback order (IPMI, then
+// Dell racadm, then HPE hponcfg), at the position of the first BMC source in
+// the input slice, leaving all non-BMC sources in their original relative
+// order and position. This preserves W02a's fairness rotation (which moves
+// c.state.Next to the front of the slice before this is called) while still
+// giving the BMC group a stable internal fallback order every cycle.
+func orderBMC(sources []Source) []Source {
+	group := []Source{}
+	for _, k := range []Kind{"ipmi", "racadm", "hponcfg"} {
+		for _, s := range sources {
+			if s.Name() == k {
+				group = append(group, s)
+			}
+		}
+	}
+	out := make([]Source, 0, len(sources))
+	inserted := false
+	for _, s := range sources {
+		if isBMCSource(s.Name()) {
+			if !inserted {
+				out = append(out, group...)
+				inserted = true
+			}
+		} else {
+			out = append(out, s)
+		}
+	}
+	return out
 }

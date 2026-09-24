@@ -7,7 +7,10 @@ import (
 )
 
 func TestBMCFixtures(t *testing.T) {
-	for _, tc := range []struct{ kind Kind; network, info, name, ip, mac, fw string }{
+	for _, tc := range []struct {
+		kind                             Kind
+		network, info, name, ip, mac, fw string
+	}{
 		{"ipmi", "lan.txt", "info.txt", "iDRAC", "192.0.2.10", "02:00:00:00:00:10", "2.80"},
 		{"racadm", "nic.txt", "version.txt", "iDRAC", "192.0.2.11", "02:00:00:00:00:11", "7.10.30.00"},
 		{"hponcfg", "export.txt", "", "iLO", "192.0.2.12", "02:00:00:00:00:12", "2.99"},
@@ -35,7 +38,10 @@ func TestBMCFixtures(t *testing.T) {
 }
 
 func TestBMCNoHardwareAndMalformed(t *testing.T) {
-	for _, tc := range []struct{ kind Kind; file string }{
+	for _, tc := range []struct {
+		kind Kind
+		file string
+	}{
 		{"ipmi", "no-bmc.txt"}, {"ipmi", "driver-missing.txt"},
 		{"racadm", "no-bmc.txt"}, {"hponcfg", "no-bmc.txt"},
 	} {
