@@ -966,6 +966,16 @@ describe('processInboundEmail', () => {
 
   // TEST 2 — durable failed-log path: when a WORK write throws, logInboundFailedDurable
   // still commits a `failed` row in a fresh transaction (the prior commit's key fix).
+  it('a failure BEFORE partner resolution rethrows for a BullMQ retry and writes no partner-less failed row', async () => {
+    const transient = new Error('recipient lookup timed out');
+    resolveMock.mockRejectedValue(transient);
+
+    await expect(processInboundEmail(email({ subject: 'No partner yet' }))).rejects.toBe(transient);
+    // No partner_id NULL row: no partner-scoped review queue could ever show it.
+    expect(inboundOf().filter((r) => r.parseStatus === 'failed')).toHaveLength(0);
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+  });
+
   it('durable-fail: when createTicket throws, a failed row is still written, sentry is called, and it throws the recorded-failure sentinel (rolls back partial work)', async () => {
     resolveMock.mockResolvedValue('p-1');
     state.selectRows['ticket_email_inbound'] = []; // no dup

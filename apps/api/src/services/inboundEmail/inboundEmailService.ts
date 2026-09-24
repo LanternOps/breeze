@@ -538,8 +538,8 @@ export async function processInboundEmail(
     // (8) 'quarantine' (default) -> review queue for manual handling.
     await logInbound(n, partnerId, 'quarantined', null);
   } catch (err) {
-    // (9) Any guard/error -> failed, logged under the RESOLVED partner (or null if
-    // resolution failed). Never a cross-tenant write.
+    // (9) Any guard/error after partner resolution -> failed, logged under the
+    // RESOLVED partner. Never a cross-tenant write.
     //
     // The outer work transaction is now poisoned (25P02): we CANNOT log on it. Record
     // the terminal `failed` row in a FRESH transaction (logInboundFailedDurable) so it
@@ -547,6 +547,12 @@ export async function processInboundEmail(
     // writes and BullMQ does NOT retry — the durable `failed` row is the terminal record
     // surfaced by the review queue.
     captureException(err instanceof Error ? err : new Error(String(err)));
+    // A failure BEFORE the partner was resolved (e.g. a transient error inside
+    // recipient resolution) has no review queue to land in: every queue is
+    // partner-scoped, so a partner_id NULL `failed` row is invisible to operators.
+    // Acknowledging it would lose the message, so rethrow and let BullMQ retry; an
+    // exhausted job stays visible in the queue's failed set.
+    if (partnerId === null) throw err;
     const recorded = await logInboundFailedDurable(n, partnerId, err);
     // Force the outer work transaction to ROLL BACK its partial writes. Returning
     // normally here only rolls back when the caught error was a DATABASE error
