@@ -533,6 +533,9 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'fleet_remediation_runs',
   'google_workspace_connections',
   'group_membership_log',
+  // W03 Task 12 (#6859): org-scoped, no device_id — the retirement recovery
+  // outbox survives device-delete cascades by design; see hardwareHealth/retirementOutbox.ts.
+  'hardware_alert_retirement_outbox',
   'huntress_agents',
   'huntress_incidents',
   'huntress_integrations',

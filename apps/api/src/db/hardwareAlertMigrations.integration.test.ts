@@ -62,6 +62,11 @@ it('deduplicates NULL subjects once, keeps newest, and preserves distinct subjec
     // stand-in proves that ADD COLUMN IF NOT EXISTS lands (and replays
     // idempotently) without depending on the full real table shape here.
     await sql.unsafe('CREATE TABLE monitor_episodes (id uuid PRIMARY KEY)');
+    // Task 12 prerequisites: the retirement outbox FK and its RLS policy
+    // helper. The disposable database has neither the real `organizations`
+    // table nor the real breeze_has_org_access() function.
+    await sql.unsafe('CREATE TABLE organizations (id uuid PRIMARY KEY)');
+    await sql.unsafe("CREATE FUNCTION public.breeze_has_org_access(uuid) RETURNS boolean LANGUAGE sql AS 'SELECT true'");
     const rule = randomUUID(), device = randomUUID(), old = randomUUID(), newest = randomUUID();
     await sql`INSERT INTO alerts VALUES
       (${old}, ${rule}, ${device}, 'acknowledged', '2026-09-22', NULL, NULL),
@@ -87,5 +92,9 @@ it('deduplicates NULL subjects once, keeps newest, and preserves distinct subjec
     const columns = await sql`SELECT column_name FROM information_schema.columns
       WHERE table_name = 'monitor_episodes' ORDER BY column_name`;
     expect(columns.map((row) => row.column_name)).toEqual(['id', 'response_dispatch', 'responses_admitted_at']);
+    expect((await sql`SELECT relrowsecurity, relforcerowsecurity FROM pg_class
+      WHERE oid = 'hardware_alert_retirement_outbox'::regclass`)[0])
+      .toMatchObject({ relrowsecurity: true, relforcerowsecurity: true });
+    expect(await sql`SELECT policyname FROM pg_policies WHERE tablename = 'hardware_alert_retirement_outbox'`).toHaveLength(4);
   });
 });

@@ -7,7 +7,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, hasDbAccessContext, withDbAccessContext, withSystemDbAccessContext } from '../db';
 import {
   alerts, alertRules, alertTemplates, devices, monitorDefinitions, monitorEpisodes, monitorDeviceState,
-  deviceHardwareHealth, deviceHardwareComponents, automations, automationRuns,
+  deviceHardwareHealth, deviceHardwareComponents, automations, automationRuns, hardwareAlertRetirementOutbox,
 } from '../db/schema';
 
 const m = vi.hoisted(() => ({
@@ -57,6 +57,7 @@ import { drainSubjectResponseOutbox } from './subjectResponseOutbox';
 import { recordMonitorEvaluation } from './monitors/episodeService';
 import { __testOnly as automationWorker, createAutomationWorker } from '../jobs/automationWorker';
 import { processAlertNotifications } from './notificationDispatcher';
+import { resolveAlertsForRemovedComponents } from './hardwareHealth/retire';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -476,4 +477,72 @@ it('response admission and envelope roll back together, then failed enqueue retr
   expect(m.queue).toHaveBeenCalledTimes(2);
   expect(m.queue.mock.calls.map(c => c[0].runId)).toEqual([admitted.runId, admitted.runId]);
   expect(await getTestDb().select().from(automationRuns).where(eq(automationRuns.automationId, f.automation.id))).toHaveLength(1);
+});
+
+// ---------------------------------------------------------------------------
+// Task 12 — retirement recovery outbox
+// ---------------------------------------------------------------------------
+
+it('retirement rollback leaves alerts open and emits no recovery or cooldown', async () => {
+  const f = await fixture();
+  await withSystemDbAccessContext(() => evaluateDeviceAlerts(f.device.id));
+  await drainSubjectAlertOutbox(f.device.id);
+  m.publish.mockClear(); m.cooldown.mockClear();
+  await expect(withSystemDbAccessContext(async () => {
+    expect(await resolveAlertsForRemovedComponents(f.device.id, ['a'])).toBe(1);
+    await db.delete(deviceHardwareComponents).where(and(eq(deviceHardwareComponents.deviceId, f.device.id),
+      eq(deviceHardwareComponents.componentKey, 'a')));
+    expect(m.publish).not.toHaveBeenCalled(); expect(m.cooldown).not.toHaveBeenCalled();
+    throw new Error('later ingest or reaper failure');
+  })).rejects.toThrow('later ingest or reaper failure');
+  await drainSubjectAlertOutbox(f.device.id);
+  expect((await alertRows(f.device.id)).every(a => a.status === 'active')).toBe(true);
+  expect(await getTestDb().select().from(hardwareAlertRetirementOutbox)
+    .where(eq(hardwareAlertRetirementOutbox.orgId, f.org.id))).toEqual([]);
+  expect(m.publish).not.toHaveBeenCalled(); expect(m.cooldown).not.toHaveBeenCalled();
+});
+
+it('committed retirement survives deleting alert and device rows; transport failure retries', async () => {
+  const f = await fixture();
+  await withSystemDbAccessContext(() => evaluateDeviceAlerts(f.device.id));
+  await drainSubjectAlertOutbox(f.device.id);
+  m.publish.mockClear(); m.cooldown.mockClear();
+  const rows = await alertRows(f.device.id);
+  await withSystemDbAccessContext(async () => {
+    await db.update(alerts).set({ requiresHuman: true }).where(eq(alerts.deviceId, f.device.id));
+    expect(await resolveAlertsForRemovedComponents(f.device.id, ['a', 'b'])).toBe(2);
+    expect(await resolveAlertsForRemovedComponents(f.device.id, ['a', 'b'])).toBe(0);
+    await db.delete(alerts).where(eq(alerts.deviceId, f.device.id));
+    await db.delete(devices).where(eq(devices.id, f.device.id));
+    expect(m.publish).not.toHaveBeenCalled(); expect(m.cooldown).not.toHaveBeenCalled();
+  });
+  const queued = await getTestDb().select().from(hardwareAlertRetirementOutbox)
+    .where(eq(hardwareAlertRetirementOutbox.orgId, f.org.id));
+  expect(queued).toHaveLength(2);
+  m.publish.mockRejectedValueOnce(new Error('recovery transport unavailable'));
+  await drainSubjectAlertOutbox(f.device.id);
+  expect(await getTestDb().select().from(hardwareAlertRetirementOutbox)
+    .where(eq(hardwareAlertRetirementOutbox.orgId, f.org.id))).toHaveLength(1);
+  await drainSubjectAlertOutbox(f.device.id);
+  expect(await getTestDb().select().from(hardwareAlertRetirementOutbox)
+    .where(eq(hardwareAlertRetirementOutbox.orgId, f.org.id))).toEqual([]);
+  const events = m.publish.mock.calls.map(call => call[2]);
+  expect(new Set(events.map(event => event.alertId))).toEqual(new Set(rows.map(row => row.id)));
+  expect(events.every(event => event.resolutionNote === 'component no longer reported')).toBe(true);
+  expect(m.publish.mock.calls.every(call => call[0] === 'alert.resolved')).toBe(true);
+  expect(m.cooldown).toHaveBeenCalledTimes(2);
+  expect(m.cooldown.mock.calls.map(call => call[3]).sort()).toEqual(['a', 'b']);
+});
+
+it('retirement outbox enforces app-role cross-org read and insert isolation', async () => {
+  const f = await fixture();
+  await withSystemDbAccessContext(() => evaluateDeviceAlerts(f.device.id));
+  await withSystemDbAccessContext(() => resolveAlertsForRemovedComponents(f.device.id, ['a']));
+  const outsider = await createOrganization({ partnerId: f.partner.id });
+  const context = { scope: 'organization' as const, orgId: outsider.id, accessibleOrgIds: [outsider.id],
+    accessiblePartnerIds: [], currentPartnerId: f.partner.id, userId: null };
+  expect(await withDbAccessContext(context, () => db.select().from(hardwareAlertRetirementOutbox)
+    .where(eq(hardwareAlertRetirementOutbox.orgId, f.org.id)))).toEqual([]);
+  await expect(withDbAccessContext(context, () => db.insert(hardwareAlertRetirementOutbox)
+    .values({ id: randomUUID(), orgId: f.org.id, envelope: {} }))).rejects.toMatchObject({ cause: { code: '42501' } });
 });

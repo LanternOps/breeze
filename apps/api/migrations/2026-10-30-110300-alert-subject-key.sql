@@ -37,3 +37,32 @@ CREATE UNIQUE INDEX IF NOT EXISTS alerts_open_rule_device_subject_uidx
 -- `alerts.context._subjectDispatch`.
 ALTER TABLE monitor_episodes ADD COLUMN IF NOT EXISTS responses_admitted_at timestamptz;
 ALTER TABLE monitor_episodes ADD COLUMN IF NOT EXISTS response_dispatch jsonb;
+
+-- W03 Task 12 — durable retirement recovery outbox. Org-scoped (no
+-- device_id/alert_id FK) so it survives device-delete cascades and org
+-- lifecycle deletes it through CORE_ORG_CASCADE_DELETE_ORDER.
+CREATE TABLE IF NOT EXISTS hardware_alert_retirement_outbox (
+  id uuid PRIMARY KEY,
+  org_id uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  envelope jsonb NOT NULL,
+  lease_token uuid,
+  lease_until timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS hardware_alert_retirement_outbox_org_idx
+  ON hardware_alert_retirement_outbox(org_id);
+ALTER TABLE hardware_alert_retirement_outbox ENABLE ROW LEVEL SECURITY;
+ALTER TABLE hardware_alert_retirement_outbox FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS breeze_org_isolation_select ON hardware_alert_retirement_outbox;
+DROP POLICY IF EXISTS breeze_org_isolation_insert ON hardware_alert_retirement_outbox;
+DROP POLICY IF EXISTS breeze_org_isolation_update ON hardware_alert_retirement_outbox;
+DROP POLICY IF EXISTS breeze_org_isolation_delete ON hardware_alert_retirement_outbox;
+CREATE POLICY breeze_org_isolation_select ON hardware_alert_retirement_outbox
+  FOR SELECT USING (public.breeze_has_org_access(org_id));
+CREATE POLICY breeze_org_isolation_insert ON hardware_alert_retirement_outbox
+  FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
+CREATE POLICY breeze_org_isolation_update ON hardware_alert_retirement_outbox
+  FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
+CREATE POLICY breeze_org_isolation_delete ON hardware_alert_retirement_outbox
+  FOR DELETE USING (public.breeze_has_org_access(org_id));
+GRANT SELECT, INSERT, UPDATE, DELETE ON hardware_alert_retirement_outbox TO breeze_app;

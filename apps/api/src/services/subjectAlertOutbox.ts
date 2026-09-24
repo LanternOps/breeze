@@ -29,6 +29,7 @@ import { enqueueAlertCorrelation } from '../jobs/alertCorrelation';
 import { captureException } from './sentry';
 import type { SubjectAlertDispatch } from './alertService';
 import { escalationSeverityFor } from './monitors/escalationLatch';
+import { drainRetirementOutbox } from './hardwareHealth/retirementOutbox';
 
 type Claimed = {
   id: string;
@@ -50,6 +51,7 @@ export async function drainSubjectAlertOutbox(deviceId?: string): Promise<void> 
   if (hasDbAccessContext()) {
     throw new Error('Subject outbox must run after commit — call it with no ambient DB access context');
   }
+  await drainRetirementOutbox(deviceId);
   await stagePendingHardwareEscalations(deviceId);
 
   // System scope belongs only to this background cross-tenant dispatcher.
