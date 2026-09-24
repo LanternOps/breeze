@@ -12,6 +12,7 @@ import {
   configPolicyPatchSettings,
   configPolicyMaintenanceSettings,
   configPolicyEventLogSettings,
+  configPolicyHardwareMonitoringSettings,
   configPolicySensitiveDataSettings,
   configPolicyMonitoringSettings,
   configPolicyMonitoringWatches,
@@ -53,6 +54,7 @@ import {
   configFeatureInlineSettingsSchema,
   deviceLifecycleInlineSettingsSchema,
   eventLogInlineSettingsSchema,
+  hardwareMonitoringInlineSettingsSchema,
   maintenanceInlineSettingsSchema,
   monitoringInlineSettingsSchema,
   monitorsInlineSettingsSchema,
@@ -881,6 +883,15 @@ async function decomposeInlineSettings(
       break;
     }
 
+    case 'hardware_monitoring': {
+      const parsed = hardwareMonitoringInlineSettingsSchema.parse(s);
+      await tx.insert(configPolicyHardwareMonitoringSettings).values({
+        featureLinkId: linkId,
+        ...parsed,
+      });
+      break;
+    }
+
     case 'sensitive_data': {
       await tx.insert(configPolicySensitiveDataSettings).values({
         featureLinkId: linkId,
@@ -1167,6 +1178,9 @@ function assertDecomposableInlineSettings(featureType: ConfigFeatureType, settin
     case 'event_log':
       eventLogInlineSettingsSchema.parse(settings);
       break;
+    case 'hardware_monitoring':
+      hardwareMonitoringInlineSettingsSchema.parse(settings);
+      break;
     case 'maintenance':
       maintenanceInlineSettingsSchema.parse(settings);
       break;
@@ -1214,6 +1228,9 @@ async function deleteNormalizedRows(
       break;
     case 'event_log':
       await tx.delete(configPolicyEventLogSettings).where(eq(configPolicyEventLogSettings.featureLinkId, linkId));
+      break;
+    case 'hardware_monitoring':
+      await tx.delete(configPolicyHardwareMonitoringSettings).where(eq(configPolicyHardwareMonitoringSettings.featureLinkId, linkId));
       break;
     case 'sensitive_data':
       await tx.delete(configPolicySensitiveDataSettings).where(eq(configPolicySensitiveDataSettings.featureLinkId, linkId));
@@ -1434,6 +1451,21 @@ async function assembleInlineSettings(
         collectionIntervalMinutes: row.collectionIntervalMinutes,
         rateLimitPerHour: row.rateLimitPerHour,
       };
+    }
+
+    case 'hardware_monitoring': {
+      const [row] = await executor
+        .select()
+        .from(configPolicyHardwareMonitoringSettings)
+        .where(eq(configPolicyHardwareMonitoringSettings.featureLinkId, linkId))
+        .limit(1);
+      return row
+        ? {
+            enabled: row.enabled,
+            pollIntervalMinutes: row.pollIntervalMinutes,
+            diskHealthIntervalMinutes: row.diskHealthIntervalMinutes,
+          }
+        : null;
     }
 
     case 'sensitive_data': {
@@ -2973,6 +3005,7 @@ export async function validateFeaturePolicyExists(
   if (
     featureType === 'monitoring' ||
     featureType === 'event_log' ||
+    featureType === 'hardware_monitoring' ||
     featureType === 'onedrive_helper' ||
     featureType === 'vulnerability' ||
     featureType === 'device_lifecycle' ||

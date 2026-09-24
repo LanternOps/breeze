@@ -156,6 +156,24 @@ describe('featureLinks routes', () => {
     app = buildApp();
   });
 
+  it.each(['POST', 'PATCH'])('validates hardware bounds on %s before mutation', async method => {
+    getConfigPolicyMock.mockResolvedValue({ ...STUB_POLICY, featureLinks: [{ id: LINK_ID, featureType: 'hardware_monitoring' }] });
+    validateFeaturePolicyExistsMock.mockResolvedValue({ valid: true });
+    addFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'hardware_monitoring' });
+    updateFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'hardware_monitoring' });
+    const res = await app.request(`/${POLICY_ID}/features${method === 'PATCH' ? '/' + LINK_ID : ''}`, {
+      method,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...(method === 'POST' ? { featureType: 'hardware_monitoring' } : {}),
+        inlineSettings: { pollIntervalMinutes: 1 },
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+  });
+
   // ============================================================
   // POST /:id/features — pam inlineSettings validation (Fix A)
   // ============================================================
