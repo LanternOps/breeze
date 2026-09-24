@@ -27,7 +27,7 @@ func answeringDesktopHelper(t *testing.T, sessionID string) (*sessionbroker.Sess
 	session := sessionbroker.NewSession(serverIPC, 1000, "1000", "alice", "quartz", "helper-desktop-"+sessionID, []string{"desktop"})
 	go session.RecvLoop(func(*sessionbroker.Session, *ipc.Envelope) {})
 	go func() {
-		clientIPC.SetReadDeadline(time.Now().Add(5 * time.Second))
+		_ = clientIPC.SetReadDeadline(time.Now().Add(5 * time.Second))
 		for {
 			env, err := clientIPC.Recv()
 			if err != nil {
@@ -100,7 +100,7 @@ func TestHandleStartDesktopConsentProceedReportsTimeout(t *testing.T) {
 	go consentHelper.RecvLoop(func(*sessionbroker.Session, *ipc.Envelope) {})
 	// IPC failure on the consent round-trip = (verdict "", present, timedOut).
 	_ = ipc.NewConn(clientConn).Close()
-	defer consentHelper.Close()
+	defer func() { _ = consentHelper.Close() }()
 
 	h := &Heartbeat{
 		isService:     true,
