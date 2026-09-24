@@ -4,6 +4,7 @@ import { db } from '../../db';
 import { deviceHardwareComponents,deviceHardwareEvents,deviceHardwareHealth } from '../../db/schema';
 import { resolveDeviceHardwareMonitoringPolicy } from '../../routes/agents/helpers';
 import { isComponentFresh } from './freshness';
+import { captureException } from '../sentry';
 type JsonDates<T>={[K in keyof T]:T[K] extends Date?string:T[K] extends Date|null?string|null:T[K]};
 export type HardwareComponentView=JsonDates<typeof deviceHardwareComponents.$inferSelect>&{fresh:boolean};
 export type HardwareEventView=JsonDates<typeof deviceHardwareEvents.$inferSelect>;
@@ -20,7 +21,7 @@ export async function getDeviceHardwareHealthView(deviceId:string,opts?:{eventLi
  const limit=Math.max(0,Math.min(50,Math.floor(opts?.eventLimit??50)));
  const events=limit?await db.select().from(deviceHardwareEvents).where(eq(deviceHardwareEvents.deviceId,deviceId)).orderBy(desc(deviceHardwareEvents.occurredAt),desc(deviceHardwareEvents.createdAt),desc(deviceHardwareEvents.id)).limit(limit):[];
  let policy:HardwareHealthView['policy']=null;
- try{policy=await resolveDeviceHardwareMonitoringPolicy(deviceId);}catch(error){console.warn('[hardware-health] policy view unavailable',error);}
+ try{policy=await resolveDeviceHardwareMonitoringPolicy(deviceId);}catch(error){console.warn('[hardware-health] policy view unavailable',error);captureException(error);}
  const now=new Date();
  return {health:health.health,collectorHealth:health.collectorHealth,lastReceivedAt:health.lastReceivedAt?.toISOString()??null,lastCollectedAt:health.lastCollectedAt?.toISOString()??null,pollIntervalMinutes:health.pollIntervalMinutes,diskHealthIntervalMinutes:health.diskHealthIntervalMinutes,tiersRun:health.tiersRun,agentVersion:health.agentVersion,sources:health.sources,
   components:rows.map(row=>({...row,firstSeenAt:row.firstSeenAt.toISOString(),lastSeenAt:row.lastSeenAt.toISOString(),createdAt:row.createdAt.toISOString(),updatedAt:row.updatedAt.toISOString(),staleSince:row.staleSince?.toISOString()??null,fresh:isComponentFresh(row,health,now)})),

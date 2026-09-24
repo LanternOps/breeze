@@ -31,3 +31,8 @@ it('does not notify the parent when save fails',async()=>{
  m.save.mockResolvedValue(null);render(<HardwareMonitoringTab policyId="policy" existingLink={undefined} linkedPolicyId={null} onLinkChanged={m.changed}/>);
  fireEvent.click(screen.getByRole('button',{name:/^save$/i}));await waitFor(()=>expect(m.save).toHaveBeenCalled());expect(m.changed).not.toHaveBeenCalled();
 });
+it('falls back to defaults instead of crashing on malformed stored settings',()=>{
+ const bad={id:'link',featureType:'hardware_monitoring' as const,featurePolicyId:null,inlineSettings:{pollIntervalMinutes:'oops'}};
+ render(<HardwareMonitoringTab policyId="policy" existingLink={bad as never} linkedPolicyId={null} onLinkChanged={m.changed}/>);
+ expect((screen.getByTestId('hardware-monitoring-raid-interval') as HTMLInputElement).value).toBe('10');
+});

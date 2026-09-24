@@ -5,15 +5,20 @@ import { FEATURE_META,type FeatureTabProps } from './types';
 import { useFeatureLink } from './useFeatureLink';
 import FeatureTabShell from './FeatureTabShell';
 
+// Stored settings from an older/newer policy shape must not crash the tab; fall back to defaults.
+function parseStoredSettings(value:unknown){
+ const parsed=hardwareMonitoringInlineSettingsSchema.safeParse(value??HARDWARE_MONITORING_DEFAULTS);
+ return parsed.success?parsed.data:{...HARDWARE_MONITORING_DEFAULTS};
+}
 export default function HardwareMonitoringTab({policyId,existingLink,parentLink,linkedPolicyId,onLinkChanged}:FeatureTabProps){
  const {save,remove,saving,error,clearError}=useFeatureLink(policyId);
- const read=()=>hardwareMonitoringInlineSettingsSchema.parse((existingLink??parentLink)?.inlineSettings??HARDWARE_MONITORING_DEFAULTS);
+ const read=()=>parseStoredSettings((existingLink??parentLink)?.inlineSettings);
  const initial=read();
  const [enabled,setEnabled]=useState(initial.enabled);
  const [raid,setRaid]=useState(String(initial.pollIntervalMinutes));
  const [disk,setDisk]=useState(String(initial.diskHealthIntervalMinutes));
  useEffect(()=>{
-  const next=hardwareMonitoringInlineSettingsSchema.parse((existingLink??parentLink)?.inlineSettings??HARDWARE_MONITORING_DEFAULTS);
+  const next=parseStoredSettings((existingLink??parentLink)?.inlineSettings);
   setEnabled(next.enabled);setRaid(String(next.pollIntervalMinutes));setDisk(String(next.diskHealthIntervalMinutes));
  },[existingLink,parentLink]);
  const parsed=hardwareMonitoringInlineSettingsSchema.safeParse({enabled,pollIntervalMinutes:raid===''?NaN:Number(raid),diskHealthIntervalMinutes:disk===''?NaN:Number(disk)});
