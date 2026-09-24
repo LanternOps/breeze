@@ -108,7 +108,7 @@ describe('manage_ticket_checklist (#6930)', () => {
 
   it('refuses an organization-scoped token before any lookup', async () => {
     const out = await run({ action: 'list', ticketId: TICKET_ID }, makeAuth({ scope: 'organization' }));
-    expect(out.code).toBe('PARTNER_SCOPE_REQUIRED');
+    expect(out).toEqual({ error: expect.stringContaining('[PARTNER_SCOPE_REQUIRED]') });
     expect(mockSelect).not.toHaveBeenCalled();
   });
 
@@ -157,7 +157,7 @@ describe('manage_ticket_checklist (#6930)', () => {
     mockAccessibleTicket();
     checklistMocks.isChecklistItemTickedForUpdate.mockResolvedValueOnce(true);
     const out = await run({ action: 'update_item', itemId: ITEM_ID, label: 'new' });
-    expect(out.code).toBe('CHECKLIST_TICKED_ITEM_REQUIRES_USER');
+    expect(out).toEqual({ error: expect.stringContaining('[CHECKLIST_TICKED_ITEM_REQUIRES_USER]') });
     expect(checklistMocks.patchChecklistItem).not.toHaveBeenCalled();
   });
 
@@ -165,7 +165,7 @@ describe('manage_ticket_checklist (#6930)', () => {
     mockAccessibleTicket();
     checklistMocks.isChecklistItemTickedForUpdate.mockResolvedValueOnce(true);
     const out = await run({ action: 'delete_item', itemId: ITEM_ID });
-    expect(out.code).toBe('CHECKLIST_TICKED_ITEM_REQUIRES_USER');
+    expect(out).toEqual({ error: expect.stringContaining('[CHECKLIST_TICKED_ITEM_REQUIRES_USER]') });
     expect(checklistMocks.deleteChecklistItem).not.toHaveBeenCalled();
   });
 
@@ -179,7 +179,7 @@ describe('manage_ticket_checklist (#6930)', () => {
 
   it('a `done` key that bypassed validation is still refused before any lookup', async () => {
     const out = await run({ action: 'update_item', itemId: ITEM_ID, done: true });
-    expect(out.code).toBe('CHECKLIST_TICKED_ITEM_REQUIRES_USER');
+    expect(out).toEqual({ error: expect.stringContaining('[CHECKLIST_TICKED_ITEM_REQUIRES_USER]') });
     expect(checklistMocks.getChecklistItemOr404).not.toHaveBeenCalled();
     expect(checklistMocks.patchChecklistItem).not.toHaveBeenCalled();
   });
@@ -191,12 +191,14 @@ describe('manage_ticket_checklist (#6930)', () => {
     expect(checklistMocks.reorderChecklist).toHaveBeenCalledWith(TICKET_ID, [ITEM_ID_2, ITEM_ID]);
   });
 
-  it('service errors come back as { error, code, details }', async () => {
+  // Error-ONLY envelope: routes/mcpServer.ts pureReturnedToolError marks a call
+  // failed only when `error` is the sole key.
+  it('service errors come back as a single-key { error } carrying code and details', async () => {
     mockAccessibleTicket();
     const err = Object.assign(new Error('mismatch'), { status: 400, code: 'CHECKLIST_REORDER_MISMATCH', details: { expected: 2, received: 1 } });
     checklistMocks.reorderChecklist.mockRejectedValue(err);
     const out = await run({ action: 'reorder', ticketId: TICKET_ID, itemIds: [ITEM_ID] });
-    expect(out).toEqual({ error: 'mismatch', code: 'CHECKLIST_REORDER_MISMATCH', details: { expected: 2, received: 1 } });
+    expect(out).toEqual({ error: 'mismatch [CHECKLIST_REORDER_MISMATCH] {"expected":2,"received":1}' });
   });
 
   it('apply_template defaults to append and passes the template actor', async () => {
@@ -225,7 +227,7 @@ describe('manage_ticket_checklist (#6930)', () => {
   it('maps PartnerWideWriteDeniedError to PARTNER_WIDE_WRITE_DENIED', async () => {
     templateMocks.getChecklistTemplate.mockRejectedValue(new PartnerWideWriteDeniedError());
     const out = await run({ action: 'get_template', templateId: TEMPLATE_ID });
-    expect(out.code).toBe('PARTNER_WIDE_WRITE_DENIED');
+    expect(out).toEqual({ error: expect.stringContaining('[PARTNER_WIDE_WRITE_DENIED]') });
   });
 
   it('refuses writes from an ai_agent principal (its user id is not a users row)', async () => {

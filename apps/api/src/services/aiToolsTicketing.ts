@@ -393,6 +393,20 @@ function checklistTemplateActorFrom(auth: AuthContext): ChecklistTemplateActor {
 }
 
 /**
+ * The ONE error envelope this tool returns: `{ error }` and nothing else.
+ * routes/mcpServer.ts pureReturnedToolError classifies a returned payload as a
+ * failed call (isError: true, failure audit outcome) only when `error` is its
+ * sole key, so a `{ error, code }` refusal would be recorded as a SUCCESS. The
+ * stable code and any details ride inside the message instead.
+ */
+function checklistError(message: string, code?: string, details?: unknown): string {
+  const suffix = [code ? `[${code}]` : '', details !== undefined ? JSON.stringify(details) : '']
+    .filter(Boolean)
+    .join(' ');
+  return JSON.stringify({ error: suffix ? `${message} ${suffix}` : message });
+}
+
+/**
  * The checklist and template services throw ChecklistServiceError,
  * ChecklistTemplateServiceError and (delete of an Operator-bound step)
  * HumanWorkStepWaitingError — all `{ status, code, message }`. Matched
@@ -402,7 +416,7 @@ function checklistTemplateActorFrom(auth: AuthContext): ChecklistTemplateActor {
  */
 function checklistErrorToJson(err: unknown): string | null {
   if (err instanceof PartnerWideWriteDeniedError) {
-    return JSON.stringify({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, code: 'PARTNER_WIDE_WRITE_DENIED' });
+    return checklistError(PARTNER_WIDE_WRITE_DENIED_MESSAGE, 'PARTNER_WIDE_WRITE_DENIED');
   }
   if (
     err && typeof err === 'object' &&
@@ -410,11 +424,7 @@ function checklistErrorToJson(err: unknown): string | null {
     typeof (err as { code?: unknown }).code === 'string'
   ) {
     const e = err as { code: string; message?: string; details?: unknown };
-    return JSON.stringify({
-      error: e.message || e.code,
-      code: e.code,
-      ...(e.details !== undefined ? { details: e.details } : {}),
-    });
+    return checklistError(e.message || e.code, e.code, e.details);
   }
   return null;
 }
@@ -428,10 +438,10 @@ function checklistErrorToJson(err: unknown): string | null {
  * a person's sign-off. A human does that from the ticket page.
  */
 function refuseTickedItem(action: string): string {
-  return JSON.stringify({
-    error: `Checklist step is ticked; ${action} of a ticked step requires a signed-in user on the ticket page`,
-    code: 'CHECKLIST_TICKED_ITEM_REQUIRES_USER',
-  });
+  return checklistError(
+    `Checklist step is ticked; ${action} of a ticked step requires a signed-in user on the ticket page`,
+    'CHECKLIST_TICKED_ITEM_REQUIRES_USER',
+  );
 }
 
 export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
@@ -1368,7 +1378,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
       // routes/tickets/checklist.ts and ticketChecklistTemplates.ts are both
       // requireScope('partner', 'system').
       if (auth.scope !== 'partner' && auth.scope !== 'system') {
-        return JSON.stringify({ error: 'Ticket checklists require a partner or system token', code: 'PARTNER_SCOPE_REQUIRED' });
+        return checklistError('Ticket checklists require a partner or system token', 'PARTNER_SCOPE_REQUIRED');
       }
 
       const reads = new Set<string>(['list', 'list_templates', 'get_template']);
