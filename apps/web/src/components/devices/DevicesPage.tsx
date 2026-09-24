@@ -61,6 +61,7 @@ import { asList } from '@/lib/asList';
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 // vm_host member role (#2308): unknown values degrade to "ungrouped" (null) by
 // design — a wrong nesting would be worse than none — but the degradation must
@@ -264,6 +265,7 @@ function AddAssetMenu({
 
 export default function DevicesPage() {
   const { t } = useTranslation('devices');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   // Org scope is shown by the always-visible top-bar switcher (scope pill +
   // org picker); the page header no longer repeats it. orgStoreOrgs is still
   // used to name orgs in the run-script confirm dialog.
@@ -662,7 +664,7 @@ export default function DevicesPage() {
           onTruncated: ({ actualCount }) => {
             showToast({
               type: 'error',
-              message: t('devicesPage.toasts.listTruncated', { count: actualCount }),
+              message: stableT('devicesPage.toasts.listTruncated', { count: actualCount }),
               duration: 8000
             });
           }
@@ -727,7 +729,7 @@ export default function DevicesPage() {
 
         return {
           id: d.id as string,
-          hostname: (d.hostname ?? t('devicesPage.unknownDevice')) as string,
+          hostname: (d.hostname ?? stableT('devicesPage.unknownDevice')) as string,
           displayName: typeof d.displayName === 'string' ? d.displayName : undefined,
           os: (d.osType ?? d.os ?? 'windows') as OSType,
           osVersion: (d.osVersion ?? '') as string,
@@ -832,7 +834,7 @@ export default function DevicesPage() {
         id: d.id as string,
         deviceClass: (d.deviceClass as DeviceClass) ?? 'network',
         assetType: (d.assetType as DeviceRole | undefined) ?? 'unknown',
-        hostname: (d.hostname ?? t('devicesPage.unknownDevice')) as string,
+        hostname: (d.hostname ?? stableT('devicesPage.unknownDevice')) as string,
         displayName: typeof d.displayName === 'string' ? d.displayName : undefined,
         // No OS for a network device; the OS column renders "—" for network rows.
         os: '' as OSType,
@@ -877,7 +879,7 @@ export default function DevicesPage() {
         id: d.id as string,
         deviceClass: 'manual' as const,
         assetType: (d.assetType as DeviceRole | undefined) ?? 'unknown',
-        hostname: (d.hostname ?? t('devicesPage.unknownDevice')) as string,
+        hostname: (d.hostname ?? stableT('devicesPage.unknownDevice')) as string,
         displayName: typeof d.displayName === 'string' ? d.displayName : undefined,
         os: '' as OSType,
         osVersion: '',
@@ -936,8 +938,8 @@ export default function DevicesPage() {
       // Assign org and site names to devices (agent + network arms).
       const devicesWithNames = allTransformed.map(device => ({
         ...device,
-        orgName: orgMap.get(device.orgId) ?? t('devicesPage.unknownOrg'),
-        siteName: siteMap.get(device.siteId) ?? t('devicesPage.unknownSite')
+        orgName: orgMap.get(device.orgId) ?? stableT('devicesPage.unknownOrg'),
+        siteName: siteMap.get(device.siteId) ?? stableT('devicesPage.unknownSite')
       }));
 
       // Fetch groups for group filter
@@ -999,7 +1001,7 @@ export default function DevicesPage() {
         // list on screen. Swapping it for the full-page error card would
         // throw away data the user was already looking at over a transient
         // blip, so report the failure without tearing the page down.
-        showToast({ type: 'error', message: t('devicesPage.toasts.refreshFailed') });
+        showToast({ type: 'error', message: stableT('devicesPage.toasts.refreshFailed') });
         return;
       }
       setError(err);
@@ -1013,7 +1015,7 @@ export default function DevicesPage() {
         else setLoading(false);
       }
     }
-  }, [t, hardwareHealth]);
+  }, [stableT, hardwareHealth]);
 
   /**
    * The post-change refresh — use this, not `fetchDevices`, anywhere something

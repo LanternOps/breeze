@@ -5,6 +5,7 @@ import { fetchWithAuth } from '@/stores/auth';
 import { buildBreadcrumbs, getParentPath, isPathRoot } from './filePathUtils';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type FileEntry = {
   name: string;
@@ -33,6 +34,7 @@ export default function FolderPickerDialog({
   onClose
 }: FolderPickerDialogProps) {
   const { t } = useTranslation('remote');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [currentPath, setCurrentPath] = useState(initialPath);
   const [directories, setDirectories] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -46,8 +48,8 @@ export default function FolderPickerDialog({
       const params = new URLSearchParams({ path });
       const response = await fetchWithAuth(`/system-tools/devices/${deviceId}/files?${params}`);
       if (!response.ok) {
-        const json = await response.json().catch(() => ({ error: t('folderPickerDialog.errors.loadDirectory') }));
-        throw new Error(json.error || t('folderPickerDialog.errors.loadDirectory'));
+        const json = await response.json().catch(() => ({ error: stableT('folderPickerDialog.errors.loadDirectory') }));
+        throw new Error(json.error || stableT('folderPickerDialog.errors.loadDirectory'));
       }
       const json = await response.json();
       const entries: FileEntry[] = Array.isArray(json.data) ? json.data : [];
@@ -61,13 +63,13 @@ export default function FolderPickerDialog({
       // destination must be the path it actually listed, not the alias file.
       setCurrentPath(typeof json.path === 'string' && json.path ? json.path : path);
     } catch (err) {
-      const message = err instanceof Error ? err.message : t('folderPickerDialog.errors.loadDirectory');
+      const message = err instanceof Error ? err.message : stableT('folderPickerDialog.errors.loadDirectory');
       setError(message);
       setDirectories([]);
     } finally {
       setLoading(false);
     }
-  }, [deviceId, t]);
+  }, [deviceId, stableT]);
 
   // Fetch directory when dialog opens or initialPath changes
   useEffect(() => {

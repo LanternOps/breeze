@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 interface PendingRequest {
   requestId: string;
@@ -37,6 +38,9 @@ function formatDate(input: string): string {
 
 export default function AccountDeletionPage() {
   const { t } = useTranslation('common');
+  // Effects use the stable translator so a locale change does not re-run them
+  // (#3632); JSX keeps the plain `t` so rendered text still re-translates.
+  const stableT = useStableT(t);
   const user = useAuthStore((s) => s.user);
 
   const [loadingExisting, setLoadingExisting] = useState(true);
@@ -64,7 +68,7 @@ export default function AccountDeletionPage() {
             // Auth expired — AuthOverlay will handle the redirect.
             return;
           }
-          setPendingError(t('account.deletion.errors.load'));
+          setPendingError(stableT('account.deletion.errors.load'));
           return;
         }
         const data = (await res.json()) as { pending: PendingRequest | null };
@@ -72,7 +76,7 @@ export default function AccountDeletionPage() {
       })
       .catch(() => {
         if (cancelled) return;
-        setPendingError(t('account.deletion.errors.load'));
+        setPendingError(stableT('account.deletion.errors.load'));
       })
       .finally(() => {
         if (!cancelled) setLoadingExisting(false);
@@ -80,7 +84,7 @@ export default function AccountDeletionPage() {
     return () => {
       cancelled = true;
     };
-  }, [t]);
+  }, [stableT]);
 
   const canSubmit = useMemo(() => {
     if (submitState.kind === 'submitting') return false;

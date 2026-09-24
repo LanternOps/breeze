@@ -71,6 +71,7 @@ import { useTranslation } from 'react-i18next';
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type ReportEditPageProps = {
   reportId: string;
@@ -78,6 +79,7 @@ type ReportEditPageProps = {
 
 export default function ReportEditPage({ reportId }: ReportEditPageProps) {
   const { t } = useTranslation('reports');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [report, setReport] = useState<Report | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -108,7 +110,7 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
         return;
       }
       if (!response.ok) {
-        throw new Error(t('reports.reportEditPage.errors.fetchReport'));
+        throw new Error(stableT('reports.reportEditPage.errors.fetchReport'));
       }
       const data = await response.json() as Report;
       setReport(data);
@@ -123,11 +125,11 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
       setTechnicianTimeOptions(technicianTimeOptionsFromConfig(config));
       setArAgingOptions(arAgingOptionsFromConfig(config));
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('reports.reportEditPage.errors.generic'));
+      setError(err instanceof Error ? err.message : stableT('reports.reportEditPage.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [reportId, t]);
+  }, [reportId, stableT]);
 
   useEffect(() => {
     fetchReport();

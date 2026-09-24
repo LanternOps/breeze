@@ -10,6 +10,7 @@ import Breadcrumbs from '../layout/Breadcrumbs';
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type Site = { id: string; name: string };
 type Group = { id: string; name: string };
@@ -23,6 +24,7 @@ type PolicyEditPageProps = {
 
 export default function PolicyEditPage({ policyId, isNew = false }: PolicyEditPageProps) {
   const { t } = useTranslation('scripts');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
@@ -40,7 +42,7 @@ export default function PolicyEditPage({ policyId, isNew = false }: PolicyEditPa
       setError(undefined);
       const response = await fetchWithAuth(`/policies/${policyId}`);
       if (!response.ok) {
-        throw new Error(t('policyEditPage.errors.fetch'));
+        throw new Error(stableT('policyEditPage.errors.fetch'));
       }
       const data = await response.json();
       const policy = data.policy ?? data;
@@ -57,11 +59,11 @@ export default function PolicyEditPage({ policyId, isNew = false }: PolicyEditPa
         checkIntervalMinutes: policy.checkIntervalMinutes ?? 60
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('policyEditPage.errors.generic'));
+      setError(err instanceof Error ? err.message : stableT('policyEditPage.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [policyId, isNew, t]);
+  }, [policyId, isNew, stableT]);
 
   const fetchSites = useCallback(async () => {
     try {

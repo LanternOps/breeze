@@ -24,6 +24,7 @@ import { formatDateTime } from '@/lib/dateTimeFormat';
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type SortKey = 'timestamp' | 'user' | 'action' | 'resource' | 'details' | 'ipAddress';
 
@@ -130,6 +131,7 @@ interface AuditLogViewerProps {
 
 export default function AuditLogViewer({ timezone, orgId }: AuditLogViewerProps) {
   const { t } = useTranslation('admin');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const formatAuditAction = useAuditActionFormatter();
   const [entries, setEntries] = useState<AuditLogEntry[]>([]);
   const columnLabels: Record<SortKey, string> = {
@@ -192,7 +194,7 @@ export default function AuditLogViewer({ timezone, orgId }: AuditLogViewerProps)
       }
 
       if (!response.ok) {
-        throw new Error(t('audit.auditLogViewer.errors.fetch'));
+        throw new Error(stableT('audit.auditLogViewer.errors.fetch'));
       }
 
       const data = await response.json();
@@ -204,11 +206,11 @@ export default function AuditLogViewer({ timezone, orgId }: AuditLogViewerProps)
         setTotalCount(data.pagination.total ?? 0);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('audit.auditLogViewer.errors.load'));
+      setError(err instanceof Error ? err.message : stableT('audit.auditLogViewer.errors.load'));
     } finally {
       setIsLoading(false);
     }
-  }, [t, orgId]);
+  }, [stableT, orgId]);
 
   useEffect(() => {
     fetchAuditLogs(currentPage, activeFilters);

@@ -6,6 +6,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { useAuditActionFormatter } from '@/lib/auditFormat';
 import { formatDateTime } from '@/lib/dateTimeFormat';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type ActivityEntry = {
   id: string;
@@ -30,6 +31,7 @@ interface UserActivityReportProps {
 
 export default function UserActivityReport({ timezone }: UserActivityReportProps) {
   const { t } = useTranslation('admin');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const formatAuditAction = useAuditActionFormatter();
   const [users, setUsers] = useState<UserOption[]>([{ id: 'all', name: t('audit.userActivityReport.allUsers') }]);
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
@@ -53,18 +55,18 @@ export default function UserActivityReport({ timezone }: UserActivityReportProps
       }
 
       if (!usersRes.ok) {
-        throw new Error(t('audit.userActivityReport.errors.fetchUsers'));
+        throw new Error(stableT('audit.userActivityReport.errors.fetchUsers'));
       }
 
       if (!activityRes.ok) {
-        throw new Error(t('audit.userActivityReport.errors.fetchActivity'));
+        throw new Error(stableT('audit.userActivityReport.errors.fetchActivity'));
       }
 
       const usersData = await usersRes.json();
       const activityData = await activityRes.json();
 
       const usersList = [
-        { id: 'all', name: t('audit.userActivityReport.allUsers') },
+        { id: 'all', name: stableT('audit.userActivityReport.allUsers') },
         ...(usersData.users || []).map((u: { id: string; name: string }) => ({
           id: u.id,
           name: u.name
@@ -75,7 +77,7 @@ export default function UserActivityReport({ timezone }: UserActivityReportProps
       const activityList = (activityData.entries || activityData.logs || []).map((entry: ActivityEntry & { user?: { id: string; name: string } }) => ({
         id: entry.id,
         userId: entry.userId || entry.user?.id || '',
-        userName: entry.userName || entry.user?.name || t('audit.userActivityReport.unknown'),
+        userName: entry.userName || entry.user?.name || stableT('audit.userActivityReport.unknown'),
         timestamp: entry.timestamp,
         action: entry.action,
         resource: entry.resource,
@@ -83,11 +85,11 @@ export default function UserActivityReport({ timezone }: UserActivityReportProps
       }));
       setActivity(activityList);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('audit.userActivityReport.errors.loadData'));
+      setError(err instanceof Error ? err.message : stableT('audit.userActivityReport.errors.loadData'));
     } finally {
       setIsLoading(false);
     }
-  }, [t]);
+  }, [stableT]);
 
   useEffect(() => {
     fetchData();

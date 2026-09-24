@@ -23,6 +23,7 @@ import { useReviseQuote, isRevisable } from './useReviseQuote';
 import { computeQuoteProfit, type QuoteProfit } from '@breeze/shared';
 import { useQuotePdfDownload } from './useQuoteImage';
 import { type Quote, type QuoteDetail as QuoteDetailData, formatMoney } from './quoteTypes';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -244,6 +245,7 @@ interface Props {
  */
 export default function QuoteActions({ detail, onChanged, variant, savePending = false, unsavedFieldLabel = null, saveFailureNonce = 0, onSendWhilePending }: Props) {
   const { t } = useTranslation('billing');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { can } = usePermissions();
   const organizations = useOrgStore((s) => s.organizations);
   const { quote, lines, revisionOf } = detail;
@@ -464,7 +466,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
     if (!queued) return;
     if (saveFailureNonce !== queued.atFailureNonce) {
       setQueued(null);
-      showToast({ message: t('quotes.actions.sendCanceledSaveFailed'), type: 'error' });
+      showToast({ message: stableT('quotes.actions.sendCanceledSaveFailed'), type: 'error' });
       return;
     }
     if (savePending) return;
@@ -480,7 +482,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
       return;
     }
     openSend();
-  }, [queued, saveFailureNonce, savePending, unsavedFieldLabel, refuseForUnsaved, openSend, t]);
+  }, [queued, saveFailureNonce, savePending, unsavedFieldLabel, refuseForUnsaved, openSend, stableT]);
 
   // Escape hatch for a hung save: the queued-open above normally fires within a
   // blur-save round-trip. If the editor is still not quiescent after 10s the
@@ -493,10 +495,10 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
     if (!queued) return;
     const timer = setTimeout(() => {
       setQueued(null);
-      showToast({ message: t('quotes.actions.savingTimeout'), type: 'warning' });
+      showToast({ message: stableT('quotes.actions.savingTimeout'), type: 'warning' });
     }, 10_000);
     return () => clearTimeout(timer);
-  }, [queued, t]);
+  }, [queued, stableT]);
 
   // The options of the last scheduled send, kept so "Send now" can cancel the
   // delayed job and dispatch the SAME composed email immediately. null after a

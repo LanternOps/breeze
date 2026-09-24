@@ -14,6 +14,7 @@ import { formatDate } from '../billing/shared/format';
 import { Dialog } from '../shared/Dialog';
 import DeliverableForm from './DeliverableForm';
 import { runClientAction } from '../../lib/runClientAction';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 export interface DeliverableTableProps {
   fetcher: Fetcher;
@@ -70,6 +71,7 @@ export default function DeliverableTable({
   refreshKey = 0,
 }: DeliverableTableProps) {
   const { t } = useTranslation('deliverables');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [rows, setRows] = useState<Deliverable[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -89,7 +91,7 @@ export default function DeliverableTable({
         const data = await listDeliverables(fetcher, orgId, contractId ? { contractId } : {});
         if (!cancelled) setRows(data);
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error && err.message ? err.message : t('errors.loadFailed'));
+        if (!cancelled) setError(err instanceof Error && err.message ? err.message : stableT('errors.loadFailed'));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -97,7 +99,7 @@ export default function DeliverableTable({
     return () => {
       cancelled = true;
     };
-  }, [fetcher, orgId, contractId, refreshKey, reloadTick, t]);
+  }, [fetcher, orgId, contractId, refreshKey, reloadTick, stableT]);
 
   const replaceRow = (next: Deliverable) => setRows((prev) => prev.map((r) => (r.id === next.id ? next : r)));
 

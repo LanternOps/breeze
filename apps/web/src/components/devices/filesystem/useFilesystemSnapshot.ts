@@ -25,6 +25,7 @@ import {
   type FilesystemSnapshot,
   type ThresholdEvent,
 } from './filesystemTabUtils';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 function isAbort(error: unknown): boolean {
   return typeof error === 'object' && error !== null && (error as { name?: unknown }).name === 'AbortError';
@@ -41,6 +42,7 @@ export function useFilesystemSnapshot(
   reload: (options?: { silent?: boolean }) => Promise<void>;
 } {
   const { t } = useTranslation('devices');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [snapshot, setSnapshot] = useState<FilesystemSnapshot | null>(null);
   const [thresholdEvents, setThresholdEvents] = useState<ThresholdEvent[]>([]);
   const [loading, setLoading] = useState(true);
@@ -75,7 +77,7 @@ export function useFilesystemSnapshot(
           const body = await snapshotResponse.json().catch(() => null);
           throw new Error(
             (body && typeof body.error === 'string' && body.error)
-            || t('deviceFilesystemTab.failedToFetchFilesystemStatus'),
+            || stableT('deviceFilesystemTab.failedToFetchFilesystemStatus'),
           );
         } else {
           const body = await snapshotResponse.json();
@@ -86,7 +88,7 @@ export function useFilesystemSnapshot(
           const body = await commandsResponse.json().catch(() => null);
           throw new Error(
             (body && typeof body.error === 'string' && body.error)
-            || t('deviceFilesystemTab.failedToFetchCommandHistory'),
+            || stableT('deviceFilesystemTab.failedToFetchCommandHistory'),
           );
         }
         const commandsBody = await commandsResponse.json();
@@ -95,13 +97,13 @@ export function useFilesystemSnapshot(
         setThresholdEvents(readThresholdEvents(rows));
       } catch (err) {
         if (isAbort(err) || controller.signal.aborted) return;
-        setError(err instanceof Error ? err.message : t('deviceFilesystemTab.failedToLoadFilesystemStatus'));
+        setError(err instanceof Error ? err.message : stableT('deviceFilesystemTab.failedToLoadFilesystemStatus'));
         setSnapshot(null);
       } finally {
         if (!controller.signal.aborted && !options.silent) setLoading(false);
       }
     },
-    [deviceId, scanPath, t],
+    [deviceId, scanPath, stableT],
   );
 
   useEffect(() => {

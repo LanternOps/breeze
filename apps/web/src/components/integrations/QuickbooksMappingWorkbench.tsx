@@ -7,6 +7,7 @@ import { showToast } from "../shared/Toast";
 import { useHashTab } from "@/lib/useHashState";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type MappingEntityType = "org" | "catalog_item";
 type MappingConfidence =
@@ -690,6 +691,7 @@ function RemoteCandidatePicker({
   onUnauthorized,
 }: PickerProps) {
   const { t } = useTranslation("integrations");
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [term, setTerm] = useState("");
   const [candidates, setCandidates] = useState<RemoteCandidate[] | null>(null);
   const [searching, setSearching] = useState(false);
@@ -711,7 +713,7 @@ function RemoteCandidatePicker({
               fetchWithAuth(
                 `/accounting/quickbooks/remote-candidates?entityType=${entityType}&q=${encodeURIComponent(q)}`,
               ),
-            errorFallback: t("quickbooksMapping.failedToSearchCandidates"),
+            errorFallback: stableT("quickbooksMapping.failedToSearchCandidates"),
             onUnauthorized,
           });
           if (!cancelled) setCandidates(res.data);
@@ -720,7 +722,7 @@ function RemoteCandidatePicker({
           // usable (the suggested option is still selectable) instead of
           // wedging it behind a permanent spinner.
           if (!cancelled) setCandidates([]);
-          handleActionError(err, t("quickbooksMapping.failedToSearchCandidates"));
+          handleActionError(err, stableT("quickbooksMapping.failedToSearchCandidates"));
         } finally {
           if (!cancelled) setSearching(false);
         }
@@ -730,7 +732,7 @@ function RemoteCandidatePicker({
       cancelled = true;
       clearTimeout(handle);
     };
-  }, [term, entityType, onUnauthorized, t]);
+  }, [term, entityType, onUnauthorized, stableT]);
 
   // Suggested match first, then search hits, de-duplicated by remote id. The
   // currently selected id is always present as an option even when it is in

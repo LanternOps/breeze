@@ -21,6 +21,7 @@ import { asList } from '@/lib/asList';
 import { useDeviceOptions } from '../../hooks/useDeviceOptions';
 import { useAdvancedFilterIds } from '../../hooks/useAdvancedFilterIds';
 import { useHashState } from '@/lib/useHashState';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 // Past-tense verbs for bulk-action success toasts. Without this, `${action}d`
 // produces "suppressd".
@@ -65,6 +66,7 @@ function normalizeAlertRows(rows: Record<string, unknown>[], unknownDevice: stri
 
 export default function AlertsPage() {
   const { t } = useTranslation('alerts');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const mlFlags = useMlFeatureFlags();
   const [alerts, setAlerts] = useState<Alert[]>([]);
   // Tracked separately from `loading` (which only follows the alerts fetch):
@@ -148,19 +150,19 @@ export default function AlertsPage() {
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error(t('alertsPage.failedToFetchAlerts'));
+        throw new Error(stableT('alertsPage.failedToFetchAlerts'));
       }
       const data = await response.json();
       if (fetchId !== alertsFetchId.current) return;
       const raw: Record<string, unknown>[] = asList(data, 'alerts');
-      setAlerts(normalizeAlertRows(raw, t('alertsPage.unknownDevice')));
+      setAlerts(normalizeAlertRows(raw, stableT('alertsPage.unknownDevice')));
     } catch (err) {
       if (fetchId !== alertsFetchId.current) return;
-      setError(err instanceof Error ? err.message : t('alertsPage.genericError'));
+      setError(err instanceof Error ? err.message : stableT('alertsPage.genericError'));
     } finally {
       if (fetchId === alertsFetchId.current) setLoading(false);
     }
-  }, [currentOrgId, hideAiNoise, t]);
+  }, [currentOrgId, hideAiNoise, stableT]);
 
   const fetchAlertDetails = useCallback(async (alertId: string) => {
     try {

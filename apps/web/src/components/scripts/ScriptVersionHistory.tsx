@@ -4,6 +4,7 @@ import { Calendar, GitCompare, RotateCcw, User, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type ScriptVersion = {
   id: string;
@@ -66,6 +67,7 @@ const formatDate = (dateString: string, timezone?: string) => {
 
 export default function ScriptVersionHistory({ scriptId, timezone }: ScriptVersionHistoryProps) {
   const { t } = useTranslation('scripts');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [versions, setVersions] = useState<ScriptVersion[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -88,7 +90,7 @@ export default function ScriptVersionHistory({ scriptId, timezone }: ScriptVersi
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error(t('scriptVersionHistory.errors.fetch'));
+        throw new Error(stableT('scriptVersionHistory.errors.fetch'));
       }
 
       const script = await response.json();
@@ -99,9 +101,9 @@ export default function ScriptVersionHistory({ scriptId, timezone }: ScriptVersi
         id: `v${script.version || 1}`,
         version: script.version || 1,
         date: script.updatedAt || script.createdAt || new Date().toISOString(),
-        author: script.createdByName || script.createdBy || t('common:states.unknown'),
+        author: script.createdByName || script.createdBy || stableT('common:states.unknown'),
         authorEmail: script.createdByEmail,
-        changelog: script.changelog || [t('scriptVersionHistory.currentVersion')],
+        changelog: script.changelog || [stableT('scriptVersionHistory.currentVersion')],
         content: script.content || ''
       };
 
@@ -110,11 +112,11 @@ export default function ScriptVersionHistory({ scriptId, timezone }: ScriptVersi
       setCompareRightId(currentVersion.id);
       setCompareLeftId(currentVersion.id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('scriptVersionHistory.errors.generic'));
+      setError(err instanceof Error ? err.message : stableT('scriptVersionHistory.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [scriptId, t]);
+  }, [scriptId, stableT]);
 
   useEffect(() => {
     fetchVersions();

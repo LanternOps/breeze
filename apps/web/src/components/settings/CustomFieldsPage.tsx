@@ -10,6 +10,7 @@ import type { CustomFieldDefinition, CustomFieldType, CustomFieldOptions } from 
 import { asList } from '@/lib/asList';
 import HelpTooltip from '../shared/HelpTooltip';
 import RmmCustomFieldImport from '../devices/RmmCustomFieldImport';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 interface CustomField extends Omit<CustomFieldDefinition, 'createdAt' | 'updatedAt'> {
   createdAt: string | Date;
@@ -34,6 +35,7 @@ const DEVICE_TYPE_OPTIONS = [
 
 export default function CustomFieldsPage() {
   const { t } = useTranslation('settings');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [fields, setFields] = useState<CustomField[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -87,16 +89,16 @@ export default function CustomFieldsPage() {
 
       const response = await fetchWithAuth(`/custom-fields?${params.toString()}`);
       if (!response.ok) {
-        throw new Error(t('customFieldsPage.errors.fetch'));
+        throw new Error(stableT('customFieldsPage.errors.fetch'));
       }
       const data = await response.json();
       setFields(asList(data));
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('customFieldsPage.errors.fetch'));
+      setError(err instanceof Error ? err.message : stableT('customFieldsPage.errors.fetch'));
     } finally {
       setLoading(false);
     }
-  }, [typeFilter, searchQuery, t]);
+  }, [typeFilter, searchQuery, stableT]);
 
   useEffect(() => {
     fetchFields();

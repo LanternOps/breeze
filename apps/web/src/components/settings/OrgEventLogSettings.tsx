@@ -7,6 +7,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { extractApiError } from '@/lib/apiError';
 import { navigateTo } from '@/lib/navigation';
 import { showToast } from '../shared/Toast';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type LogForwardingData = {
   enabled: boolean;
@@ -26,6 +27,9 @@ type OrgEventLogSettingsProps = {
 
 export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSettingsProps) {
   const { t } = useTranslation('settings');
+  // Effects use the stable translator so a locale change does not re-run them
+  // (#3632); JSX keeps the plain `t` so rendered text still re-translates.
+  const stableT = useStableT(t);
   const isLocked = (field: string) => locked?.includes(`eventLogs.${field}`) ?? false;
   const allFieldsLocked = ['enabled', 'elasticsearchUrl', 'elasticsearchApiKey', 'elasticsearchUsername', 'elasticsearchPassword', 'indexPrefix'].every(f => isLocked(f));
   const { currentOrgId } = useOrgStore();
@@ -54,7 +58,7 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
             void navigateTo('/login', { replace: true });
             return;
           }
-          throw new Error(t('orgEventLogSettings.errors.loadForwarding'));
+          throw new Error(stableT('orgEventLogSettings.errors.loadForwarding'));
         }
         const data = await response.json();
         const lf = data.settings?.logForwarding as LogForwardingData | undefined;
@@ -72,14 +76,14 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
           }
         }
       } catch (err) {
-        setError(err instanceof Error ? err.message : t('orgEventLogSettings.errors.load'));
+        setError(err instanceof Error ? err.message : stableT('orgEventLogSettings.errors.load'));
       } finally {
         setLoading(false);
       }
     };
 
     load();
-  }, [currentOrgId, t]);
+  }, [currentOrgId, stableT]);
 
   const markDirty = () => {
     onDirty?.();

@@ -12,6 +12,7 @@ import { navigateTo } from '@/lib/navigation';
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type CompliancePageProps = {
   policyId?: string;
@@ -19,6 +20,7 @@ type CompliancePageProps = {
 
 export default function CompliancePage({ policyId }: CompliancePageProps) {
   const { t } = useTranslation('scripts');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [overallCompliance, setOverallCompliance] = useState({
@@ -43,7 +45,7 @@ export default function CompliancePage({ policyId }: CompliancePageProps) {
 
       const response = await fetchWithAuth(url);
       if (!response.ok) {
-        throw new Error(t('compliancePage.errors.fetch'));
+        throw new Error(stableT('compliancePage.errors.fetch'));
       }
       const data = await response.json();
 
@@ -58,11 +60,11 @@ export default function CompliancePage({ policyId }: CompliancePageProps) {
       setNonCompliantDevices(data.nonCompliantDevices ?? []);
       setPolicyName(data.policyName);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('compliancePage.errors.generic'));
+      setError(err instanceof Error ? err.message : stableT('compliancePage.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [policyId, t]);
+  }, [policyId, stableT]);
 
   useEffect(() => {
     fetchComplianceData();

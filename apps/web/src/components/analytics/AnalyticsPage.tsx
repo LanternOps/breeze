@@ -23,6 +23,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { cn, formatNumber } from '@/lib/utils';
 import { formatTime } from '@/lib/dateTimeFormat';
 import { formatPercent } from '@/lib/i18n/format';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 const dashboardOptions = [
   { value: 'operations', labelKey: 'analytics.analyticsPage.dashboardOptions.operations' },
@@ -448,6 +449,7 @@ const isDashboardValue = (value: string) => dashboardOptions.some(option => opti
 
 export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
   const { t } = useTranslation('reports');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [selectedDashboard, setSelectedDashboard] = useState('operations');
   const [dateRange, setDateRange] = useState('30d');
   const [customStartDate, setCustomStartDate] = useState('');
@@ -739,20 +741,20 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
         trendData,
         trendLabel: typeof analyticsRecord.trendLabel === 'string'
           ? analyticsRecord.trendLabel
-          : t('analytics.analyticsPage.trend.operationalHealth')
+          : stableT('analytics.analyticsPage.trend.operationalHealth')
       });
 
       if (errors.length > 0) {
-        setError(t('analytics.analyticsPage.errors.unableToLoad', { sources: errors.join(', ') }));
+        setError(stableT('analytics.analyticsPage.errors.unableToLoad', { sources: errors.join(', ') }));
       }
 
       setLastUpdated(new Date());
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('analytics.analyticsPage.errors.failedToLoadAnalytics'));
+      setError(err instanceof Error ? err.message : stableT('analytics.analyticsPage.errors.failedToLoadAnalytics'));
     } finally {
       setLoading(false);
     }
-  }, [dateRange, customEndDate, customStartDate, t]);
+  }, [dateRange, customEndDate, customStartDate, stableT]);
 
   useEffect(() => {
     fetchAnalyticsData();

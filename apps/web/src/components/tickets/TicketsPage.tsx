@@ -18,6 +18,7 @@ import { usePermissions } from '../../lib/permissions';
 import { useQueueKeyboard } from './useQueueKeyboard';
 import { type TicketPriority, type TicketStatus, type TicketSummary } from './ticketConfig';
 import { fetchTicketConfig, type TicketConfig } from '../../lib/ticketConfigApi';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 // Aggregate outcome of a POST /tickets/bulk call.
 interface BulkResult { updated: number; skipped: number; failed: number; total: number; skippedReasons?: Record<string, number> }
@@ -145,6 +146,7 @@ function hashFor(selection: string | null, sort: TicketSort): string {
 
 export default function TicketsPage() {
   const { t } = useTranslation('tickets');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   // Soft-delete / restore / archived queue are all tickets:manage-gated (server
   // re-enforces). UX-only: hides controls the caller can't use. Partner/Org Admin.
   const { can } = usePermissions();
@@ -250,18 +252,18 @@ export default function TicketsPage() {
       const res = await fetchWithAuth(`/tickets?${params.toString()}`);
       if (!res.ok) {
         if (res.status === 401) { void navigateTo(loginPathWithNext(), { replace: true }); return; }
-        throw new Error(t('ticketsPage.loadFailed'));
+        throw new Error(stableT('ticketsPage.loadFailed'));
       }
       const body = await res.json();
       if (seq !== fetchSeq.current) return;
       setTickets(body.data ?? []);
     } catch (e) {
       if (seq !== fetchSeq.current) return;
-      setError(e instanceof Error ? e.message : t('ticketsPage.loadFailed'));
+      setError(e instanceof Error ? e.message : stableT('ticketsPage.loadFailed'));
     } finally {
       if (seq === fetchSeq.current) setLoading(false);
     }
-  }, [tab, debouncedSearch, priorityFilter, categoryFilter, assigneeFilter, sort, t]);
+  }, [tab, debouncedSearch, priorityFilter, categoryFilter, assigneeFilter, sort, stableT]);
 
   const fetchStats = useCallback(async () => {
     try {

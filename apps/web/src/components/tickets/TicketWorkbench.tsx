@@ -47,6 +47,7 @@ interface MoveBlockedDetails {
 import { fetchTicketConfig, activeStatusesByCore, type TicketConfig } from '../../lib/ticketConfigApi';
 import { onTimerChanged, onBillingChanged } from '../../lib/timerActions';
 import { formatDateTime } from '@/lib/dateTimeFormat';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 // ─── TagEditor ───────────────────────────────────────────────────────────────
 
@@ -156,6 +157,7 @@ type TicketAiDraft = {
 
 export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, expanded, resolveRequestToken, refreshToken, assignees: assigneesProp, categories = [] }: Props) {
   const { t } = useTranslation('tickets');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [ticket, setTicket] = useState<TicketDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -268,21 +270,21 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
       if (res.status === 404 || res.status === 403) {
         if (background) return; // keep the current view; a reconcile 404 isn't a load failure
         setTicket(null);
-        setError(t('ticketWorkbench.notFound'));
+        setError(stableT('ticketWorkbench.notFound'));
         setErrorKind('not-found');
         return;
       }
-      if (!res.ok) throw new Error(t('ticketWorkbench.loadFailed'));
+      if (!res.ok) throw new Error(stableT('ticketWorkbench.loadFailed'));
       const body = await res.json();
       setTicket(body.data);
     } catch (e) {
       if (background) return; // swallow — the mutation already succeeded
-      setError(e instanceof Error ? e.message : t('ticketWorkbench.loadFailed'));
+      setError(e instanceof Error ? e.message : stableT('ticketWorkbench.loadFailed'));
       setErrorKind('load');
     } finally {
       if (!background) setLoading(false);
     }
-  }, [ticketId, t]);
+  }, [ticketId, stableT]);
 
   useEffect(() => { void load(); }, [load]);
 

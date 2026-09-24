@@ -15,6 +15,7 @@ import { formatDateTime } from '@/lib/dateTimeFormat';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatNumber } from '@/lib/i18n/format';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type C2CItem = {
   id: string;
@@ -63,6 +64,7 @@ export default function C2CRestoreDialog({
   onComplete,
 }: C2CRestoreDialogProps) {
   const { t } = useTranslation('common');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [items, setItems] = useState<C2CItem[]>(initialItems);
   const [connections, setConnections] = useState<C2CConnection[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -85,29 +87,29 @@ export default function C2CRestoreDialog({
       if (itemType) params.set('itemType', itemType);
       if (userEmail.trim()) params.set('userEmail', userEmail.trim());
       const response = await fetchWithAuth(`/c2c/items?${params.toString()}`);
-      if (!response.ok) throw new Error(t('longTail.c2c.C2CRestoreDialog.errors.loadBackupItems'));
+      if (!response.ok) throw new Error(stableT('longTail.c2c.C2CRestoreDialog.errors.loadBackupItems'));
       const payload = await response.json();
       setItems(payload?.data ?? payload?.items ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('longTail.c2c.C2CRestoreDialog.errors.loadBackupItems'));
+      setError(err instanceof Error ? err.message : stableT('longTail.c2c.C2CRestoreDialog.errors.loadBackupItems'));
     } finally {
       setLoadingItems(false);
     }
-  }, [itemType, search, userEmail, t]);
+  }, [itemType, search, userEmail, stableT]);
 
   const fetchConnections = useCallback(async () => {
     try {
       setLoadingConnections(true);
       const response = await fetchWithAuth('/c2c/connections');
-      if (!response.ok) throw new Error(t('longTail.c2c.C2CRestoreDialog.errors.loadRestoreTargets'));
+      if (!response.ok) throw new Error(stableT('longTail.c2c.C2CRestoreDialog.errors.loadRestoreTargets'));
       const payload = await response.json();
       setConnections(payload?.data ?? payload?.connections ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('longTail.c2c.C2CRestoreDialog.errors.loadRestoreTargets'));
+      setError(err instanceof Error ? err.message : stableT('longTail.c2c.C2CRestoreDialog.errors.loadRestoreTargets'));
     } finally {
       setLoadingConnections(false);
     }
-  }, [t]);
+  }, [stableT]);
 
   useEffect(() => {
     setItems(initialItems);

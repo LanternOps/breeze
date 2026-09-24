@@ -14,6 +14,7 @@ import { MarginToggle } from '../billingUi';
 import { useShowInternalMargin } from './quoteEditorShared';
 import { useOrgStore } from '../../../stores/orgStore';
 import { STATUS_ROLES, type QuoteDetail as QuoteDetailData, resolveQuoteOrgName } from './quoteTypes';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -38,6 +39,7 @@ function readTab(isDraft: boolean): Tab {
 
 export default function QuoteWorkspace({ id }: Props) {
   const { t } = useTranslation('billing');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const organizations = useOrgStore((s) => s.organizations);
   const [detail, setDetail] = useState<QuoteDetailData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -99,7 +101,7 @@ export default function QuoteWorkspace({ id }: Props) {
   // canvas. A quiet failure still stays silent HERE — reporting it is the
   // caller's job, since only the caller knows what the user was promised.
   const fetchDetail = useCallback(async (quiet = false): Promise<boolean> => {
-    if (!id) { setError(t('quotes.workspace.errors.missingId')); setLoading(false); return false; }
+    if (!id) { setError(stableT('quotes.workspace.errors.missingId')); setLoading(false); return false; }
     const seq = ++fetchSeq.current;
     try {
       if (!quiet) setLoading(true);
@@ -109,8 +111,8 @@ export default function QuoteWorkspace({ id }: Props) {
       // contract runAction follows), so this counts as handled, not as a stale
       // view the caller should warn about on top of a navigation.
       if (res.status === 401) { UNAUTHORIZED(); return true; }
-      if (res.status === 404) { if (!quiet) setError(t('quotes.workspace.errors.notFound')); return false; }
-      if (!res.ok) throw new Error(t('quotes.workspace.errors.loadFailed'));
+      if (res.status === 404) { if (!quiet) setError(stableT('quotes.workspace.errors.notFound')); return false; }
+      if (!res.ok) throw new Error(stableT('quotes.workspace.errors.loadFailed'));
       const body = (await res.json()) as { data: QuoteDetailData };
       // Superseded by a newer refetch that already landed: dropping this stale
       // payload is the correct outcome, and the view IS fresh — the newer
@@ -122,12 +124,12 @@ export default function QuoteWorkspace({ id }: Props) {
     } catch (err) {
       // A failed quiet reload leaves the editor intact and mounted; the caller
       // decides whether the user needs to hear about the stale view.
-      if (!quiet) setError(err instanceof Error ? err.message : t('quotes.workspace.errors.loadFailed'));
+      if (!quiet) setError(err instanceof Error ? err.message : stableT('quotes.workspace.errors.loadFailed'));
       return false;
     } finally {
       if (!quiet) setLoading(false);
     }
-  }, [id, t]);
+  }, [id, stableT]);
 
   const load = useCallback(() => fetchDetail(false), [fetchDetail]);
   const reload = useCallback(() => fetchDetail(true), [fetchDetail]);

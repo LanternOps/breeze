@@ -42,6 +42,7 @@ import { BILLABLE_DEVICE_ROLES, getDeviceRoleIcon, getDeviceRoleLabel, type Devi
 import { LINE_TYPE_LABELS, AUTO_QTY_TYPES, ALLOWANCE_TYPES, SITE_SCOPED_TYPES } from './lineTypes';
 import DeviceCoverageNotice from './DeviceCoverageNotice';
 import AllowanceCell, { OverageNotice } from './AllowanceCell';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 interface Organization { id: string; name: string }
 interface Site { id: string; name: string }
@@ -162,6 +163,7 @@ interface Props {
 
 export default function ContractEditor({ detail, presetOrgId, onChanged }: Props) {
   const { t } = useTranslation('billing');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { can } = usePermissions();
   const canWrite = can('contracts', 'write');
   const isCreate = !detail;
@@ -344,9 +346,9 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
       setOrgs(await fetchAllOrganizationsFrom<Organization>('/orgs/organizations'));
     } catch (err) {
       if (err instanceof ListFetchError && err.status === 401) return UNAUTHORIZED();
-      handleActionError(err, t('contracts.contractEditor.errors.loadOrganizations'));
+      handleActionError(err, stableT('contracts.contractEditor.errors.loadOrganizations'));
     }
-  }, [t]);
+  }, [stableT]);
 
   const loadCatalog = useCallback(async () => {
     const res = await listCatalog({ isActive: true, limit: 200 });
@@ -365,10 +367,10 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
       // 401 keeps its dedicated bail: the auth redirect owns it, a toast would
       // just talk over the navigation.
       if (err instanceof ListFetchError && err.status === 401) return UNAUTHORIZED();
-      handleActionError(err, t('contracts.contractEditor.errors.loadSites'));
+      handleActionError(err, stableT('contracts.contractEditor.errors.loadSites'));
       setSites([]);
     }
-  }, [t]);
+  }, [stableT]);
 
   const loadEstimate = useCallback(async () => {
     if (!contract) return;

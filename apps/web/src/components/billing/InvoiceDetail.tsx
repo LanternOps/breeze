@@ -32,6 +32,7 @@ import AccountingSyncCard from './AccountingSyncCard';
 import { MarginPanel, MarginToggle, useShowMargin } from './billingUi';
 import { computeChargeNow } from '@breeze/shared';
 import InvoiceLineDevices from './InvoiceLineDevices';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -48,6 +49,7 @@ interface Props {
 
 export default function InvoiceDetail({ detail, onChanged, actionsInHeader = false }: Props) {
   const { t } = useTranslation('billing');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { can } = usePermissions();
   const { invoice, lines } = detail;
   const currency = invoice.currencyCode;
@@ -125,13 +127,13 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
       // An operator must NOT read "No payments recorded" when the fetch actually
       // failed — surface a visible error (with inline retry) and a toast.
       setPaymentsError(true);
-      handleActionError(new Error(res.statusText), t('invoiceDetail.payments.loadFailed'));
+      handleActionError(new Error(res.statusText), stableT('invoiceDetail.payments.loadFailed'));
       return;
     }
     setPaymentsError(false);
     const body = (await res.json()) as { data: InvoicePayment[] };
     setPayments(body.data ?? []);
-  }, [invoice.id, t]);
+  }, [invoice.id, stableT]);
 
   useEffect(() => { void loadPayments(); }, [loadPayments]);
 

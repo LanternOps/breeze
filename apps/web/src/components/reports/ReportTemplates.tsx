@@ -79,6 +79,7 @@ import { isBusinessReportType, useCanUseBusinessReportType } from './businessRep
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type TemplateTone = {
   iconBg: string;
@@ -568,6 +569,7 @@ const TemplateSection = ({
 
 export default function ReportTemplates() {
   const { t } = useTranslation('reports');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { currentOrgId } = useOrgStore();
   const jwtClaims = useJwtClaims();
   const canUseBusinessReportType = useCanUseBusinessReportType();
@@ -616,7 +618,7 @@ export default function ReportTemplates() {
     try {
       const response = await fetchWithAuth('/reports/templates');
       if (!response.ok) {
-        throw new Error(t('reports.reportTemplates.errors.fetchTemplates'));
+        throw new Error(stableT('reports.reportTemplates.errors.fetchTemplates'));
       }
       const data = await response.json();
       const items = asList<TemplateApiItem>(data, 'templates');
@@ -624,11 +626,11 @@ export default function ReportTemplates() {
         setTemplates(mergeTemplates(items));
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('reports.reportTemplates.errors.loadTemplates'));
+      setError(err instanceof Error ? err.message : stableT('reports.reportTemplates.errors.loadTemplates'));
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [stableT]);
 
   useEffect(() => {
     fetchTemplates();

@@ -11,6 +11,7 @@ import { listContractDocuments, contractDocumentPdfPath, linkContractDocument, t
 import { listContracts, type ContractSummary } from '../../lib/api/contracts';
 import { usePdfDownload } from '../billing/shared/usePdfDownload';
 import { formatDate } from '../billing/invoiceTypes';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -63,6 +64,7 @@ export default function SignedAgreementsPage({
   defaultUnlinkedOnly = false,
 }: SignedAgreementsPageProps = {}) {
   const { t } = useTranslation('billing');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const locked = Boolean(lockedOrgId || lockedContractId);
 
   // CLAUDE.md: hash for transient UI state, never query params. Embeds do NOT
@@ -102,16 +104,16 @@ export default function SignedAgreementsPage({
           : { orgId: lockedOrgId, linked: unlinkedOnly ? 'unlinked' : 'all' },
       );
       if (res.status === 401) return UNAUTHORIZED();
-      if (!res.ok) throw new Error(t('contracts.documentsTab.loadError'));
+      if (!res.ok) throw new Error(stableT('contracts.documentsTab.loadError'));
       const body = (await res.json().catch(() => null)) as { data?: ContractDocument[] } | null;
-      if (!body) throw new Error(t('contracts.documentsTab.loadError'));
+      if (!body) throw new Error(stableT('contracts.documentsTab.loadError'));
       setDocuments(body.data ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('contracts.documentsTab.loadError'));
+      setError(err instanceof Error ? err.message : stableT('contracts.documentsTab.loadError'));
     } finally {
       setLoading(false);
     }
-  }, [t, unlinkedOnly, lockedOrgId, lockedContractId]);
+  }, [stableT, unlinkedOnly, lockedOrgId, lockedContractId]);
 
   useEffect(() => {
     void load();

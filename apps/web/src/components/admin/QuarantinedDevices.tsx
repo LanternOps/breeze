@@ -7,6 +7,7 @@ import { runAction, handleActionError } from '@/lib/runAction';
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type QuarantinedDevice = {
   id: string;
@@ -43,6 +44,7 @@ function formatDate(dateString: string): string {
 
 export default function QuarantinedDevices() {
   const { t } = useTranslation('admin');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [devices, setDevices] = useState<QuarantinedDevice[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -55,16 +57,16 @@ export default function QuarantinedDevices() {
       setError(undefined);
       const response = await fetchWithAuth('/agents/quarantined');
       if (!response.ok) {
-        throw new Error(t('admin.quarantinedDevices.errors.fetch'));
+        throw new Error(stableT('admin.quarantinedDevices.errors.fetch'));
       }
       const data = await response.json();
       setDevices(data.devices ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('admin.quarantinedDevices.errors.generic'));
+      setError(err instanceof Error ? err.message : stableT('admin.quarantinedDevices.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [stableT]);
 
   useEffect(() => {
     fetchDevices();

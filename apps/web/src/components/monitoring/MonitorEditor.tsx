@@ -46,6 +46,7 @@ import Breadcrumbs from '../layout/Breadcrumbs';
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import { i18n } from '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -201,6 +202,7 @@ export async function attachAfterCreate(
 
 export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
   const { t } = useTranslation(['monitoring', 'common']);
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const isNew = !monitorId;
   const jwt = useJwtClaims();
   const currentPartnerId = jwt.status === 'resolved' ? jwt.claims.partnerId : null;
@@ -353,7 +355,7 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
       setLoading(true);
       setError(undefined);
       const response = await fetchWithAuth(`/monitor-definitions/${monitorId}`);
-      if (!response.ok) throw new Error(t('monitoring:editor.errors.load'));
+      if (!response.ok) throw new Error(stableT('monitoring:editor.errors.load'));
       const data = await response.json();
       const monitor = data?.data ?? data;
       setAttachments(Array.isArray(monitor.attachments) ? monitor.attachments : []);
@@ -381,11 +383,11 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
         aiAgentId: monitor.aiAgentId ?? null,
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('monitoring:editor.errors.load'));
+      setError(err instanceof Error ? err.message : stableT('monitoring:editor.errors.load'));
     } finally {
       setLoading(false);
     }
-  }, [isNew, monitorId, reset, t]);
+  }, [isNew, monitorId, reset, stableT]);
 
   useEffect(() => {
     void fetchKinds();

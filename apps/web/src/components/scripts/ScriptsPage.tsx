@@ -24,6 +24,7 @@ import type { ScriptAdmissionResult } from '@breeze/shared';
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type ModalMode =
   | 'closed'
@@ -50,6 +51,7 @@ type SystemScript = {
 
 export default function ScriptsPage() {
   const { t } = useTranslation('scripts');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [scripts, setScripts] = useState<ScriptWithDetails[]>([]);
   const [sites, setSites] = useState<Site[]>([]);
   const [loading, setLoading] = useState(true);
@@ -99,16 +101,16 @@ export default function ScriptsPage() {
           void navigateTo('/login', { replace: true });
           return;
         }
-        if (!opts.silent) setError(t('scriptsPage.errors.fetch'));
+        if (!opts.silent) setError(stableT('scriptsPage.errors.fetch'));
         return;
       }
       // A silent (background) refetch must not swap the page for the error
       // branch either — that would unmount the open import modal (#6005).
-      if (!opts.silent) setError(err instanceof Error ? err.message : t('scriptsPage.errors.generic'));
+      if (!opts.silent) setError(err instanceof Error ? err.message : stableT('scriptsPage.errors.generic'));
     } finally {
       if (!opts.silent) setLoading(false);
     }
-  }, [t]);
+  }, [stableT]);
 
   const fetchSites = useCallback(async () => {
     try {

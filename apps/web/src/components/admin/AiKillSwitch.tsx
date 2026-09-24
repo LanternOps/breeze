@@ -7,6 +7,7 @@ import { showToast } from '../shared/Toast';
 // Initializes the shared i18next singleton — see ThirdPartyCatalog.tsx for why
 // this import must run before any island renders translated text.
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 interface AiKillStateRow {
   killed: boolean;
@@ -43,6 +44,7 @@ function actorLabel(row: AiKillStateRow): string | null {
  */
 export default function AiKillSwitch() {
   const { t } = useTranslation('admin');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [row, setRow] = useState<AiKillStateRow | null>(null);
   const [loading, setLoading] = useState(true);
   const [requiresPlatformAdmin, setRequiresPlatformAdmin] = useState(false);
@@ -62,17 +64,17 @@ export default function AiKillSwitch() {
           setRow(null);
           return;
         }
-        throw new Error(t('admin.aiKillSwitch.errors.load'));
+        throw new Error(stableT('admin.aiKillSwitch.errors.load'));
       }
       setRequiresPlatformAdmin(false);
       const body = await response.json();
       setRow(body.data as AiKillStateRow);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('admin.aiKillSwitch.errors.generic'));
+      setError(err instanceof Error ? err.message : stableT('admin.aiKillSwitch.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [stableT]);
 
   useEffect(() => {
     void fetchState();

@@ -14,6 +14,7 @@ import {
   type ConnectionStatus,
   type ConnectionsReport,
 } from './connectionsTypes';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 /**
  * System → Connections (spec 2026-09-23-system-connections-page-design.md §4).
@@ -112,6 +113,7 @@ function ConnectionCard({ entry }: { entry: ConnectionEntryView }) {
 
 export default function ConnectionsTab() {
   const { t } = useTranslation('admin');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [report, setReport] = useState<ConnectionsReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [forbidden, setForbidden] = useState(false);
@@ -142,11 +144,11 @@ export default function ConnectionsTab() {
       // useful to an admin and should not leak implementation detail.
       console.error('[ConnectionsTab] failed to load connection status', err);
       setReport(null);
-      setError(t('admin.systemPage.connections.errors.load'));
+      setError(stableT('admin.systemPage.connections.errors.load'));
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [stableT]);
 
   useEffect(() => {
     void load();

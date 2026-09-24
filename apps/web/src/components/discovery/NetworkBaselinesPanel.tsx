@@ -6,6 +6,7 @@ import { runAction, handleActionError, ActionError } from '@/lib/runAction';
 import { formatDateTime, mapNetworkBaseline, type NetworkBaseline } from './networkTypes';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type SiteOption = {
   id: string;
@@ -81,6 +82,7 @@ export default function NetworkBaselinesPanel({
   onViewChanges
 }: NetworkBaselinesPanelProps) {
   const { t } = useTranslation('discovery');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [baselines, setBaselines] = useState<NetworkBaseline[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -115,7 +117,7 @@ export default function NetworkBaselinesPanel({
       const query = params.toString();
       const response = await fetchWithAuth(`/network/baselines${query ? `?${query}` : ''}`);
       if (!response.ok) {
-        throw new Error(await extractError(response, t('networkBaselinesPanel.errors.load')));
+        throw new Error(await extractError(response, stableT('networkBaselinesPanel.errors.load')));
       }
 
       const payload = await response.json();
@@ -131,11 +133,11 @@ export default function NetworkBaselinesPanel({
 
       setBaselines(mapped);
     } catch (fetchError) {
-      setError(fetchError instanceof Error ? fetchError.message : t('networkBaselinesPanel.errors.load'));
+      setError(fetchError instanceof Error ? fetchError.message : stableT('networkBaselinesPanel.errors.load'));
     } finally {
       setLoading(false);
     }
-  }, [currentOrgId, currentSiteId, t]);
+  }, [currentOrgId, currentSiteId, stableT]);
 
   useEffect(() => {
     fetchBaselines();

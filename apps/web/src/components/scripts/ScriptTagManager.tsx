@@ -5,6 +5,7 @@ import { cn, resolveUiColorToken, sanitizeHexColor } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { asList } from '@/lib/asList';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type ScriptTag = {
   id: string;
@@ -25,6 +26,7 @@ type ScriptTagManagerProps = {
 
 export default function ScriptTagManager({ tags: externalTags, scripts: externalScripts }: ScriptTagManagerProps) {
   const { t } = useTranslation('scripts');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [tags, setTags] = useState<ScriptTag[]>(
     (externalTags ?? []).map((tag) => ({
       ...tag,
@@ -56,7 +58,7 @@ export default function ScriptTagManager({ tags: externalTags, scripts: external
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error(t('scriptTagManager.errors.fetch'));
+        throw new Error(stableT('scriptTagManager.errors.fetch'));
       }
 
       const scriptsData = await scriptsResponse.json();
@@ -115,11 +117,11 @@ export default function ScriptTagManager({ tags: externalTags, scripts: external
       setTags(Array.from(tagMap.values()));
       setScripts(scriptItems);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('scriptTagManager.errors.generic'));
+      setError(err instanceof Error ? err.message : stableT('scriptTagManager.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [externalTags, externalScripts, t]);
+  }, [externalTags, externalScripts, stableT]);
 
   useEffect(() => {
     fetchData();

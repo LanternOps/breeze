@@ -4,6 +4,7 @@ import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import { Dialog } from '../shared/Dialog';
 import { formatNumber } from '@/lib/i18n/format';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type Row = { name: string; pid: number; cpu: number; ramMb: number; diskBps?: number; netBps?: number };
 type SortKey = 'cpu' | 'ramMb';
@@ -23,6 +24,9 @@ type EmptyKind = null | 'none-recorded' | 'none-near-time';
 
 export default function ProcessDrilldownPanel({ deviceId, at, onClose }: Props) {
   const { t } = useTranslation('devices');
+  // Effects use the stable translator so a locale change does not re-run them
+  // (#3632); JSX keeps the plain `t` so rendered text still re-translates.
+  const stableT = useStableT(t);
   const [rows, setRows] = useState<Row[]>([]);
   const [sampleTime, setSampleTime] = useState<string | null>(null);
   const [emptyKind, setEmptyKind] = useState<EmptyKind>(null);
@@ -46,7 +50,7 @@ export default function ProcessDrilldownPanel({ deviceId, at, onClose }: Props) 
           // already returns CPU-desc order by default (sortBy/sortDesc aren't
           // accepted query params here).
           const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/processes?limit=16`);
-          if (!res.ok) throw new Error(t('processDrilldownPanel.errors.liveProcesses'));
+          if (!res.ok) throw new Error(stableT('processDrilldownPanel.errors.liveProcesses'));
           const json = await res.json();
           // The on-demand endpoint returns { data: [...processes], meta } — the
           // process array lives directly under `data`.
@@ -64,7 +68,7 @@ export default function ProcessDrilldownPanel({ deviceId, at, onClose }: Props) 
           setEmptyKind(null);
         } else {
           const res = await fetchWithAuth(`/devices/${deviceId}/process-samples?at=${encodeURIComponent(at)}`);
-          if (!res.ok) throw new Error(t('processDrilldownPanel.errors.processSample'));
+          if (!res.ok) throw new Error(stableT('processDrilldownPanel.errors.processSample'));
           const json = await res.json();
           if (cancelled) return;
           if (!json.sample) {
@@ -80,14 +84,14 @@ export default function ProcessDrilldownPanel({ deviceId, at, onClose }: Props) 
           setEmptyKind(null);
         }
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : t('processDrilldownPanel.errors.loadProcesses'));
+        if (!cancelled) setError(err instanceof Error ? err.message : stableT('processDrilldownPanel.errors.loadProcesses'));
       } finally {
         if (!cancelled) setLoading(false);
       }
     })();
 
     return () => { cancelled = true; };
-  }, [deviceId, at, live, t]);
+  }, [deviceId, at, live, stableT]);
 
   const sorted = useMemo(
     () => [...rows].sort((a, b) => (sortKey === 'cpu' ? b.cpu - a.cpu : b.ramMb - a.ramMb)),

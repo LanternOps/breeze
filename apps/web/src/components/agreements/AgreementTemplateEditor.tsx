@@ -22,6 +22,7 @@ import {
   type TemplateVersionSummary,
   type TemplateUsage,
 } from '../../lib/api/contractTemplates';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -51,6 +52,7 @@ interface Props {
  *  rather than calling back up into a parent that no longer exists. */
 export default function AgreementTemplateEditor({ templateId }: Props) {
   const { t } = useTranslation('billing');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [detail, setDetail] = useState<ContractTemplateDetail | null>(null);
@@ -82,9 +84,9 @@ export default function AgreementTemplateEditor({ templateId }: Props) {
       setError(undefined);
       const res = await getContractTemplate(templateId);
       if (res.status === 401) return UNAUTHORIZED();
-      if (!res.ok) throw new Error(t('contracts.templateEditor.loadError'));
+      if (!res.ok) throw new Error(stableT('contracts.templateEditor.loadError'));
       const payload = (await res.json().catch(() => null)) as { data: ContractTemplateDetail } | null;
-      if (!payload) throw new Error(t('contracts.templateEditor.loadError'));
+      if (!payload) throw new Error(stableT('contracts.templateEditor.loadError'));
       setDetail(payload.data);
       // Seed the editing buffer from the newest authored version's body — but only
       // when the user hasn't diverged from what we last loaded. publish()/upload()
@@ -105,11 +107,11 @@ export default function AgreementTemplateEditor({ templateId }: Props) {
       lastLoaded.current = seed;
       setBody((cur) => (opts?.force || cur === previouslyLoaded ? seed : cur));
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('contracts.templateEditor.loadError'));
+      setError(err instanceof Error ? err.message : stableT('contracts.templateEditor.loadError'));
     } finally {
       setLoading(false);
     }
-  }, [templateId, t]);
+  }, [templateId, stableT]);
 
   useEffect(() => {
     void load();

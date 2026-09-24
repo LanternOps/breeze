@@ -11,6 +11,7 @@ import { usePermissions } from '@/lib/permissions';
 import { canonicalMoveOrgResource, moveOrgRequestBody } from '../../lib/moveOrgResource';
 import { moveDeviceOrg } from '../../services/deviceActions';
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 export interface MoveDeviceOrgDialogProps {
   open: boolean;
@@ -58,6 +59,7 @@ export default function MoveDeviceOrgDialog({
   onCompleted,
 }: MoveDeviceOrgDialogProps) {
   const { t } = useTranslation('devices');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { can } = usePermissions();
   const organizations = useOrgStore((s) => s.organizations);
   const fetchOrganizations = useOrgStore((s) => s.fetchOrganizations);
@@ -123,10 +125,10 @@ export default function MoveDeviceOrgDialog({
         if (cancelled) return;
         setSites(list);
       })
-      .catch(() => { if (!cancelled) { setSites([]); setError(t('moveDeviceOrgDialog.genericError')); } })
+      .catch(() => { if (!cancelled) { setSites([]); setError(stableT('moveDeviceOrgDialog.genericError')); } })
       .finally(() => { if (!cancelled) setSitesLoading(false); });
     return () => { cancelled = true; };
-  }, [open, targetOrgId, t]);
+  }, [open, targetOrgId, stableT]);
 
   const tier: ReauthTier | null = useMemo(
     () =>

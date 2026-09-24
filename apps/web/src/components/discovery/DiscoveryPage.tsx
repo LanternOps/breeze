@@ -23,6 +23,7 @@ import { asList } from '@/lib/asList';
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 const DISCOVERY_TABS = ['assets', 'profiles', 'jobs', 'topology', 'changes', 'baselines'] as const;
 type DiscoveryTab = (typeof DISCOVERY_TABS)[number];
@@ -257,6 +258,7 @@ function getTabFromHash(): DiscoveryTab {
 
 export default function DiscoveryPage() {
   const { t } = useTranslation('discovery');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { currentOrgId, sites, fetchSites, allOrgs } = useOrgStore();
   // "All orgs" mode: a partner/multi-org user who has *explicitly* chosen the
   // All-orgs scope via the switcher. Network discovery is inherently
@@ -377,16 +379,16 @@ export default function DiscoveryPage() {
       setProfilesError(undefined);
       const response = await fetchWithAuth('/discovery/profiles');
       if (!response.ok) {
-        throw new Error(t('discoveryPage.errors.fetchProfiles'));
+        throw new Error(stableT('discoveryPage.errors.fetchProfiles'));
       }
       const data = await response.json();
       setProfiles(asList(data, 'profiles'));
     } catch (err) {
-      setProfilesError(err instanceof Error ? err.message : t('discoveryPage.errors.generic'));
+      setProfilesError(err instanceof Error ? err.message : stableT('discoveryPage.errors.generic'));
     } finally {
       setProfilesLoading(false);
     }
-  }, [currentOrgId, allOrgsMode, t]);
+  }, [currentOrgId, allOrgsMode, stableT]);
 
   useEffect(() => {
     fetchProfiles();

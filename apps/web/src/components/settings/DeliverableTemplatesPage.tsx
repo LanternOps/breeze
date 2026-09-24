@@ -21,6 +21,7 @@ import { listChecklistTemplates, type ChecklistTemplate } from '../../lib/api/ti
 import type { DeliverableCadence, DeliverableCompletionMode } from '../../lib/api/serviceDeliverables';
 import { ActionError, handleActionError } from '../../lib/runAction';
 import { runClientAction } from '../../lib/runClientAction';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type SetModalMode = 'closed' | 'create' | 'edit' | 'delete';
 
@@ -113,6 +114,7 @@ const labelClass = 'block text-xs font-medium text-muted-foreground';
  */
 export default function DeliverableTemplatesPage() {
   const { t } = useTranslation('deliverables');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const uid = useId();
 
   const [sets, setSets] = useState<TemplateSet[] | LoadFailure | null>(null);
@@ -150,10 +152,10 @@ export default function DeliverableTemplatesPage() {
       setSets(rows);
     } catch (err) {
       console.error('[DeliverableTemplatesPage] failed to load template sets', err);
-      const message = err instanceof ActionError && err.message ? err.message : t('templates.errors.loadFailed');
+      const message = err instanceof ActionError && err.message ? err.message : stableT('templates.errors.loadFailed');
       setSets({ failed: true, message });
     }
-  }, [t]);
+  }, [stableT]);
 
   useEffect(() => {
     void load();

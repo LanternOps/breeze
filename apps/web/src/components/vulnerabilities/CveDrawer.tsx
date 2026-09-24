@@ -21,6 +21,7 @@ import {
   reopenVuln,
   type CveDevicesPayload,
 } from '../../lib/api/vulnerabilities';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 const ACTION_BTN =
   'inline-flex items-center rounded-md border px-3 py-1.5 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50';
@@ -54,6 +55,7 @@ export function CveDrawer({
   onActionComplete: () => void;
 }) {
   const { t } = useTranslation('vulnerabilities');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [payload, setPayload] = useState<CveDevicesPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -82,9 +84,9 @@ export function CveDrawer({
       setSelected(new Set(p.findings.filter((f) => f.status === 'open').map((f) => f.deviceVulnerabilityId)));
     } catch (err) {
       setPayload(null);
-      setError(err instanceof Error ? err.message : t('cveDrawer.errors.load'));
+      setError(err instanceof Error ? err.message : stableT('cveDrawer.errors.load'));
     }
-  }, [cveId, t]);
+  }, [cveId, stableT]);
 
   useEffect(() => {
     void load();

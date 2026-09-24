@@ -17,6 +17,7 @@ import {
 } from '../../lib/api/ticketChecklistTemplates';
 import { ActionError, handleActionError } from '../../lib/runAction';
 import { runClientAction } from '../../lib/runClientAction';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type ModalMode = 'closed' | 'create' | 'edit' | 'delete';
 
@@ -39,6 +40,7 @@ const labelClass = 'block text-xs font-medium text-muted-foreground';
  */
 export default function TicketChecklistTemplatesPage() {
   const { t } = useTranslation('checklists');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const uid = useId();
 
   const [templates, setTemplates] = useState<ChecklistTemplate[] | LoadFailure | null>(null);
@@ -73,10 +75,10 @@ export default function TicketChecklistTemplatesPage() {
     } catch (err) {
       console.error('[TicketChecklistTemplatesPage] failed to load templates', err);
       const message =
-        err instanceof ActionError && err.message ? err.message : t('templates.errors.loadFailed');
+        err instanceof ActionError && err.message ? err.message : stableT('templates.errors.loadFailed');
       setTemplates({ failed: true, message });
     }
-  }, [t]);
+  }, [stableT]);
 
   useEffect(() => {
     void load();

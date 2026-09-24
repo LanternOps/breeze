@@ -7,6 +7,7 @@ import { formatDateTime } from '@/lib/dateTimeFormat';
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type IncidentSeverity = 'p1' | 'p2' | 'p3' | 'p4';
 type IncidentStatus = 'detected' | 'analyzing' | 'contained' | 'recovering' | 'closed';
@@ -75,6 +76,7 @@ const statusColors: Record<IncidentStatus, string> = {
 
 export default function IncidentDetailPage({ incidentId }: IncidentDetailProps) {
   const { t } = useTranslation('common');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [incident, setIncident] = useState<Incident | null>(null);
   const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
   const [actions, setActions] = useState<ActionEntry[]>([]);
@@ -94,10 +96,10 @@ export default function IncidentDetailPage({ incidentId }: IncidentDetailProps) 
           return;
         }
         if (response.status === 404) {
-          setError(t('longTail.incidents.IncidentDetailPage.errors.notFound'));
+          setError(stableT('longTail.incidents.IncidentDetailPage.errors.notFound'));
           return;
         }
-        throw new Error(t('longTail.incidents.IncidentDetailPage.errors.fetchFailed'));
+        throw new Error(stableT('longTail.incidents.IncidentDetailPage.errors.fetchFailed'));
       }
       const data = await response.json();
       setIncident(data.incident);
@@ -105,11 +107,11 @@ export default function IncidentDetailPage({ incidentId }: IncidentDetailProps) 
       setActions(data.actions ?? []);
       setEvidence(data.evidence ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('common:states.error'));
+      setError(err instanceof Error ? err.message : stableT('common:states.error'));
     } finally {
       setLoading(false);
     }
-  }, [incidentId, t]);
+  }, [incidentId, stableT]);
 
   useEffect(() => {
     fetchDetail();

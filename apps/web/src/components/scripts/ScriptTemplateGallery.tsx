@@ -5,6 +5,7 @@ import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { formatNumber } from '@/lib/i18n/format';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 export type ScriptTemplate = {
   id: string;
@@ -28,6 +29,7 @@ const languageConfig: Record<ScriptTemplate['language'], { label: string; color:
 
 export default function ScriptTemplateGallery({ onUseTemplate }: ScriptTemplateGalleryProps) {
   const { t } = useTranslation('scripts');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [templates, setTemplates] = useState<ScriptTemplate[]>([]);
   const [query, setQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('all');
@@ -48,17 +50,17 @@ export default function ScriptTemplateGallery({ onUseTemplate }: ScriptTemplateG
       }
 
       if (!response.ok) {
-        throw new Error(t('scriptTemplateGallery.errors.fetch'));
+        throw new Error(stableT('scriptTemplateGallery.errors.fetch'));
       }
 
       const data = await response.json();
       setTemplates(data.templates || []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('scriptTemplateGallery.errors.load'));
+      setError(err instanceof Error ? err.message : stableT('scriptTemplateGallery.errors.load'));
     } finally {
       setIsLoading(false);
     }
-  }, [t]);
+  }, [stableT]);
 
   useEffect(() => {
     fetchTemplates();
