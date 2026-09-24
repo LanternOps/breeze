@@ -256,6 +256,9 @@ func (f *fakeWinSystem) AttachVHDX(path string) (int, func() error, error) {
 	detach := func() error {
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		// Recorded in cmds (not via f.record, which takes f.mu) so tests
+		// can assert the handle detach's position in the call order.
+		f.cmds = append(f.cmds, "DetachVHDXHandle "+path)
 		delete(f.attachedVHDX, path)
 		f.detachedVHDXPaths = append(f.detachedVHDXPaths, path)
 		return nil
@@ -359,6 +362,7 @@ func (f *fakeWinSystem) MountVolume(volumeGUIDPath, dir string) error {
 func (f *fakeWinSystem) UnmountVolume(dir string) error {
 	f.mu.Lock()
 	f.unmounts = append(f.unmounts, dir)
+	f.cmds = append(f.cmds, "UnmountVolume "+dir)
 	f.mu.Unlock()
 	return nil
 }

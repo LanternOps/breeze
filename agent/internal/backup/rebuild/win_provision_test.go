@@ -41,6 +41,7 @@ func TestWinProvision_WritesGPTFormatsAndRecordsVolumes(t *testing.T) {
 	withHostPlatformWindows(t)
 	dir := t.TempDir()
 	opts, sys := winFakeOptions(t, dir)
+	atRestore := captureAfterProvision(t, &opts, sys)
 	res, _ := Run(context.Background(), opts)
 	if res == nil {
 		t.Fatalf("expected a Result")
@@ -59,10 +60,7 @@ func TestWinProvision_WritesGPTFormatsAndRecordsVolumes(t *testing.T) {
 			t.Fatalf("partition %d not formatted %s: %v", n, fs, formats)
 		}
 	}
-	diskGUID, parts, err := sys.ReadGPT(sys.vhdxDiskNumber[opts.Target.Path])
-	if err != nil {
-		t.Fatal(err)
-	}
+	diskGUID, parts := atRestore.diskGUID, atRestore.parts
 	if want := testLayoutWindows().SystemDisk().GUID; diskGUID != want {
 		t.Fatalf("disk GUID = %q, want the recorded %q", diskGUID, want)
 	}
@@ -89,12 +87,8 @@ func TestWinProvision_WritesGPTFormatsAndRecordsVolumes(t *testing.T) {
 		}
 	}
 	// The volumes are persisted for resume (R29): every formatted partition.
-	b, err := os.ReadFile(filepath.Join(dir, "rebuild-win-1-"+targetKey(opts.Target)+".json"))
-	if err != nil {
-		t.Fatal(err)
-	}
 	var st runState
-	if err := json.Unmarshal(b, &st); err != nil {
+	if err := json.Unmarshal(atRestore.state, &st); err != nil {
 		t.Fatal(err)
 	}
 	if len(st.Volumes) != 3 || st.Volumes[2] != "" || st.Volumes[3] == "" {
@@ -113,13 +107,11 @@ func TestWinProvision_AddsPlatformRequiredByRoleOnly(t *testing.T) {
 		lay.Disks[0].Partitions[i].Attributes = 0 // source carries no bits at all
 	}
 	opts.Layout = lay
+	atRestore := captureAfterProvision(t, &opts, sys)
 	if res, _ := Run(context.Background(), opts); res == nil {
 		t.Fatal("expected a Result")
 	}
-	_, parts, err := sys.ReadGPT(sys.vhdxDiskNumber[opts.Target.Path])
-	if err != nil {
-		t.Fatal(err)
-	}
+	parts := atRestore.parts
 	want := map[int]uint64{1: 0x8000000000000001, 2: 0x8000000000000001, 3: 0x8000000000000000, 4: 0x8000000000000001}
 	if len(parts) != 4 {
 		t.Fatalf("parts = %+v", parts)
@@ -241,4 +233,37 @@ func countCalls(cmds []string, prefix string) []string {
 		}
 	}
 	return out
+}
+
+// provisionSnapshot is what the disk and the state file held when the
+// restore phase started — i.e. exactly what winProvision wrote, before
+// winValidate clears the no-drive-letter bit and Run removes the state file
+// on completion.
+type provisionSnapshot struct {
+	diskGUID string
+	parts    []WinGPTPartition
+	state    []byte
+}
+
+// captureAfterProvision installs an opts.Progress hook that records a
+// provisionSnapshot at the restore phase's "starting" report.
+func captureAfterProvision(t *testing.T, opts *Options, sys *fakeWinSystem) *provisionSnapshot {
+	t.Helper()
+	snap := &provisionSnapshot{}
+	opts.Progress = func(ph Phase, msg string, _, _ int64) {
+		if ph != PhaseRestore || msg != "starting" {
+			return
+		}
+		guid, parts, err := sys.ReadGPT(sys.vhdxDiskNumber[opts.Target.Path])
+		if err != nil {
+			t.Fatalf("ReadGPT at restore start: %v", err)
+		}
+		snap.diskGUID, snap.parts = guid, parts
+		b, err := os.ReadFile(filepath.Join(opts.StateDir, "rebuild-"+opts.SnapshotID+"-"+targetKey(opts.Target)+".json"))
+		if err != nil {
+			t.Fatalf("state file at restore start: %v", err)
+		}
+		snap.state = b
+	}
+	return snap
 }

@@ -16,7 +16,7 @@ func TestWinRestoreTree_SkipBootToleratesStagedSystemState(t *testing.T) {
 	withHostPlatformWindows(t)
 	dir := t.TempDir()
 	opts, _ := winFakeOptions(t, dir)
-	res, _ := Run(context.Background(), opts) // stops at the staged winValidate until Task 13
+	res, _ := Run(context.Background(), opts)
 	if res == nil || res.StateApplied || !phaseCompleted(res, PhaseRestore) {
 		t.Fatalf("res = %+v, want restore completed with StateApplied=false", res)
 	}

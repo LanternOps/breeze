@@ -1,8 +1,7 @@
 // win_phases.go holds the Windows platform table's entry points.
 //
-// Staged until later in THIS PR (each task deletes its function here and
-// adds the real one in its own file): winValidate (Task 13,
-// win_validate.go), winConvert (Task 13, win_convert.go).
+// The real validate/convert phases live in win_validate.go and
+// win_convert.go.
 //
 // Staged for W06c (these five stay in this file when this PR merges; Part C
 // deletes each one from here and adds the real one): applyWindowsSystemState
@@ -23,13 +22,6 @@ import (
 // errWindowsOSStateStaged is what the W06c-staged functions return outside
 // SkipBoot in this PR.
 var errWindowsOSStateStaged = errors.New("windows offline system-state, boot, identity and encryption phases arrive in W06c")
-
-func winValidate(_ context.Context, _ *run) error {
-	return errors.New("winValidate: not yet implemented (Task 13)")
-}
-func winConvert(_ context.Context, _ *run) error {
-	return errors.New("winConvert: not yet implemented (Task 13)")
-}
 
 // A Windows run in this PR therefore reaches "completed" only with
 // SkipBoot set — exactly what the Task 13 tests and CI VHDX gate use.
