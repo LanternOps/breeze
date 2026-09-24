@@ -150,11 +150,11 @@ function trustedAuthResults(headers: GHeader[] | undefined): string {
 // so they are forgeable and are deliberately NOT trusted (a forged `To: help@` on a
 // message delivered only to the account owner must not defeat the recipient scope).
 //
-// LIVE-VERIFIED (help@bdunn.com via GAM, 2026-09-22): Gmail stamps Delivered-To with
+// LIVE-VERIFIED (support-primary@example.com via GAM, 2026-09-22): Gmail stamps Delivered-To with
 // the EXACT address a message was delivered to — the ALIAS for alias-delivered mail
-// (e.g. Delivered-To: support@bdunn.com, ltalerts@bdunn.com — both aliases of the
-// primary help@bdunn.com) and the PRIMARY for direct mail (Delivered-To:
-// help@bdunn.com). So matching the connected mailbox address against Delivered-To is
+// (e.g. Delivered-To: support@example.com, alerts@example.com — both aliases of the
+// primary support-primary@example.com) and the PRIMARY for direct mail (Delivered-To:
+// support-primary@example.com). So matching the connected mailbox address against Delivered-To is
 // correct for both a dedicated mailbox and an alias, and drops neither. X-Original-To
 // was empty on every Gmail-delivered sample (it is added by upstream gateways, not by
 // Gmail) and is therefore NOT trusted here.
@@ -188,11 +188,11 @@ function baseAddress(addr: string): string {
  * deleted; the sweep logs every skip so a wrongly-filtered message is visible
  * (see sweepOneGmail).
  *
- * LIVE-VERIFIED (help@bdunn.com via GAM, 2026-09-22): Gmail stamps Delivered-To with
+ * LIVE-VERIFIED (support-primary@example.com via GAM, 2026-09-22): Gmail stamps Delivered-To with
  * the EXACT address a message was delivered to. Alias-delivered mail carries the
- * ALIAS (samples: Delivered-To: support@bdunn.com, ltalerts@bdunn.com — both aliases
- * of the primary help@bdunn.com); direct mail carries the PRIMARY (Delivered-To:
- * help@bdunn.com). So a Delivered-To match against the connected address captures BOTH
+ * ALIAS (samples: Delivered-To: support@example.com, alerts@example.com — both aliases
+ * of the primary support-primary@example.com); direct mail carries the PRIMARY (Delivered-To:
+ * support-primary@example.com). So a Delivered-To match against the connected address captures BOTH
  * a dedicated support mailbox and an alias, and drops neither. X-Original-To was empty
  * on every Gmail-delivered sample (it is a gateway header, not Gmail's) and is not
  * trusted here.

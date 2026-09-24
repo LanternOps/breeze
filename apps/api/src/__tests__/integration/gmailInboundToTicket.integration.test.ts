@@ -77,7 +77,7 @@ describe('Gmail inbound → ticket (real DB)', () => {
     const db = getTestDb() as any;
     const suffix = `${Date.now()}-${Math.floor(performance.now())}`;
     const customerEmail = `cust-${suffix}@known.test`;
-    const mailbox = `help-${suffix}@bdunn.test`;
+    const mailbox = `help-${suffix}@example.test`;
     const seeded = await seedGmailConnection(db, mailbox, customerEmail);
 
     const msg = gmailMsg(`g-${suffix}`, customerEmail, mailbox, `Gmail ingest ${suffix}`);
@@ -109,7 +109,7 @@ describe('Gmail inbound → ticket (real DB)', () => {
     const db = getTestDb() as any;
     const suffix = `${Date.now()}-${Math.floor(performance.now())}`;
     const customerEmail = `cust-rot-${suffix}@known.test`;
-    const mailbox = `help-rot-${suffix}@bdunn.test`;
+    const mailbox = `help-rot-${suffix}@example.test`;
     const seeded = await seedGmailConnection(db, mailbox, customerEmail);
     const staleGeneration = seeded.connection.consentAttemptId;
 
@@ -137,7 +137,7 @@ describe('Gmail inbound → ticket (real DB)', () => {
   runDb('fails closed for a gmail message with NO generation', async () => {
     const db = getTestDb() as any;
     const suffix = `${Date.now()}-${Math.floor(performance.now())}`;
-    const mailbox = `help-nogen-${suffix}@bdunn.test`;
+    const mailbox = `help-nogen-${suffix}@example.test`;
     const seeded = await seedGmailConnection(db, mailbox, `c-${suffix}@known.test`);
     const msg = gmailMsg(`gn-${suffix}`, `c-${suffix}@known.test`, mailbox, 'no gen');
     const normalized = normalizeGmailMessage(msg, seeded.partnerId, mailbox, 'sub-x');
@@ -153,7 +153,7 @@ describe('Gmail inbound → ticket (real DB)', () => {
   runDb('rejects a generation whose provider does not match the message provider', async () => {
     const db = getTestDb() as any;
     const suffix = `${Date.now()}-${Math.floor(performance.now())}`;
-    const mailbox = `help-mism-${suffix}@bdunn.test`;
+    const mailbox = `help-mism-${suffix}@example.test`;
     const seeded = await seedGmailConnection(db, mailbox, `c-${suffix}@known.test`);
     const msg = gmailMsg(`gm-${suffix}`, `c-${suffix}@known.test`, mailbox, 'mismatch');
     const normalized = normalizeGmailMessage(msg, seeded.partnerId, mailbox, 'sub-x');
@@ -184,7 +184,7 @@ describe('Gmail inbound → ticket (real DB)', () => {
         provider: 'gmail',
         orgId: org.id,
         googleAccountSub: null, // missing → CHECK violation for a connected row
-        mailboxAddress: `bad-${Date.now()}@bdunn.test`,
+        mailboxAddress: `bad-${Date.now()}@example.test`,
         status: 'connected',
       });
     })).rejects.toThrow();
@@ -202,7 +202,7 @@ describe('Gmail inbound → ticket (real DB)', () => {
         provider: 'gmail',
         orgId: orgB.id,
         googleAccountSub: `sub-${Date.now()}`,
-        mailboxAddress: `xtenant-${Date.now()}@bdunn.test`,
+        mailboxAddress: `xtenant-${Date.now()}@example.test`,
         status: 'connected',
       });
     })).rejects.toThrow();

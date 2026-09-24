@@ -9,12 +9,12 @@ describe('isAddressedToMailbox (ingestion scope A — MTA-stamped headers only)'
   const MB = 'help@client.example';
 
   it('true when the mailbox is in the Gmail-stamped Delivered-To', () => {
-    // LIVE-VERIFIED (help@bdunn.com via GAM, 2026-09-22): Gmail stamps Delivered-To
+    // LIVE-VERIFIED (support-primary@example.com via GAM, 2026-09-22): Gmail stamps Delivered-To
     // with the exact delivered address — the alias for alias mail, the primary for
     // direct mail — so a Delivered-To match captures a dedicated mailbox AND an alias.
     expect(isAddressedToMailbox([H('Delivered-To', MB)], MB)).toBe(true);
     // an alias delivered to the connected address matches (observed: Delivered-To
-    // carried the alias support@bdunn.com / ltalerts@bdunn.com, not the primary)
+    // carried the alias support@example.com / alerts@example.com, not the primary)
     expect(isAddressedToMailbox([H('Delivered-To', `alias-of <${MB}>`)], MB)).toBe(true);
     // case-insensitive + plus-addressing on the trusted header
     expect(isAddressedToMailbox([H('Delivered-To', 'HELP@CLIENT.EXAMPLE')], MB)).toBe(true);

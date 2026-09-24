@@ -284,7 +284,7 @@ async function ingestGmailIds(
     // error, not lost) and the cursor advances past it. Every skip is logged for
     // observability. Gmail's Delivered-To carries the exact delivered address — the
     // ALIAS for alias mail, the PRIMARY for direct mail (live-verified against
-    // help@bdunn.com, 2026-09-22) — so alias mail is captured, not skipped.
+    // support-primary@example.com, 2026-09-22) — so alias mail is captured, not skipped.
     if (!isAddressedToMailbox(msg.payload?.headers ?? undefined, c.mailboxAddress)) {
       // Observability only. Do NOT log the message's recipient/correspondent headers
       // (Delivered-To / To / X-Original-To): when the support alias shares a mailbox
