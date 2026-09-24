@@ -18,19 +18,28 @@ Last release: **v0.115.0** (2026-09-21).
 
 ## Self-Hosting / Upgrade Notes (fold into the release body)
 
-- **Billing profiles — the six legacy labour-pricing columns are unused and will be
-  dropped in v0.117.** (#4628 W04a, #6335) Nothing in Breeze reads or writes them since
-  the v0.115.0 cut-over, and v0.116.0 rejects the three retired API fields (#6477; see
-  the v0.116.0 note in `deploy/upgrades.mdx`). The columns themselves are still in the
-  database in v0.116.0, so v0.116 can still be rolled back to v0.115. **v0.117 drops
-  them.** If a report, BI query or integration reads `ticket_categories.default_billable`,
-  `ticket_categories.default_hourly_rate`, `ticket_categories.rate_currency`, or the
-  same three columns on `org_ticket_settings`, directly from the database, repoint it
-  before upgrading to v0.117. Use the billing-profile tables (`billing_profiles`,
-  `billing_profile_rules`, `org_billing_profile_assignments`) for pricing, or the values
-  stamped on each time entry (`time_entries.hourly_rate`, `coverage`, `work_type_id`,
-  `billable_minutes`). Those columns hold only the pre-conversion values: editing a rate
-  on **Settings → Billing → Rates** has never changed them.
+- **Billing profiles — the six legacy labour-pricing columns are dropped (#4628 W04b,
+  #6335).** `ticket_categories` and `org_ticket_settings` each lose `default_billable`,
+  `default_hourly_rate` and `rate_currency`. Nothing in Breeze has read or written them
+  since the v0.115.0 cut-over, and v0.116.0 already rejects the three retired API fields
+  (#6477). A report, BI query or integration that selects these columns directly from
+  the database fails after the upgrade. Repoint it at the billing-profile tables
+  (`billing_profiles`, `billing_profile_rules`, `org_billing_profile_assignments`) or at
+  the values stamped on each time entry (`time_entries.hourly_rate`, `coverage`,
+  `work_type_id`, `billable_minutes`).
+  - **The old values are archived, not lost.** Before dropping the columns, the migration
+    copies every row that still holds legacy pricing into the new table
+    `legacy_labour_pricing_archive`. Its `skip_reason` column flags the values the v0.115.0
+    conversion never carried into a billing profile: organizations in an off-list
+    currency, organization rates entered in another currency, non-billable category
+    rates, and category rates with no or an unsupported currency. Re-enter any of those
+    you still need on **Settings → Billing → Rates**. The query is in
+    `deploy/upgrades.mdx` (v0.117.0), and the API log counts every archived row.
+  - **Rollback to v0.116 needs a database restore.** The v0.116 image's tenant-export
+    policy still lists the dropped `org_ticket_settings` columns, so organization data
+    export fails on a v0.116 image against an upgraded database. Back up before upgrading.
+  - The migration refuses to run (the API does not start) if any partner was never
+    converted to billing profiles. A normal upgrade cannot produce that state.
 - **Billables CSV gains two columns, appended at the end:** `work_type` and
   `included_minutes` (worked minutes of contract-included time; `0` on other time rows,
   empty on parts). Existing columns keep their position, so index-mapped imports keep

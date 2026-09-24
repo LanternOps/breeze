@@ -7,7 +7,7 @@
  * while explicitly choosing an inactive work type remains forbidden.
  */
 import './setup';
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import postgres from 'postgres';
@@ -18,6 +18,7 @@ import { resolveBillingRule, type ResolvedCard } from '../../services/billingRul
 import { buildDryRunReport, type PartnerReport } from '../../../scripts/labour-pricing-dry-run.lib';
 import { legacyResolve } from './fixtures/legacyLabourPricingResolver';
 import { LEGACY_SHAPES, PRODUCTION_SHAPE, seedShape, type SeededFixture } from './fixtures/labourPricingConversionSeeds';
+import { dropLegacyLabourPricingColumns, restoreLegacyLabourPricingColumns } from './fixtures/legacyLabourPricingColumns';
 import { withDbAccessContext, type DbAccessContext } from '../../db';
 import { createTimeEntry, type TimeEntryActor } from '../../services/timeEntryService';
 
@@ -173,6 +174,11 @@ async function assertParity(fixture: SeededFixture) {
 }
 
 describe('labour pricing conversion — legacy parity gate', () => {
+  // #4628 W04b dropped the legacy columns after the conversion; a skip-version
+  // upgrade still runs the conversion against them, so the gate restores them.
+  beforeAll(restoreLegacyLabourPricingColumns);
+  afterAll(dropLegacyLabourPricingColumns);
+
   it('stamp DDL replays safely, defaults new fields, and keeps its composite FK NO ACTION', async () => {
     const fixture = await seedShape(LEGACY_SHAPES[0]!);
     const before = await snapshot([fixture.partner.id]);

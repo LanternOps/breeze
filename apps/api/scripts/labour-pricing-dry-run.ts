@@ -14,6 +14,13 @@
  *   pnpm --filter @breeze/api dry-run:labour-pricing
  *
  * Run it on each region in turn and paste BOTH outputs onto #4628.
+ *
+ * Still shipped after #4628 W04b removed the legacy columns: a self-hoster
+ * jumping from a pre-billing-profiles release straight to a release with the
+ * removal runs the conversion and the removal in one boot, and this script is
+ * how they read the conversion's effect first — against their NOT-yet-upgraded
+ * database, where the columns still exist. On an upgraded database it says so
+ * and points at legacy_labour_pricing_archive instead of failing.
  */
 import { sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../src/db';
@@ -24,8 +31,15 @@ async function main() {
   // partner context. breeze_current_scope() defaults to 'none', under which a
   // FORCE ROW LEVEL SECURITY table returns ZERO ROWS SILENTLY -- the report
   // would print "nothing to convert" and be believed.
-  const { partners, categories, orgs } = await withSystemDbAccessContext(async () => {
+  const result = await withSystemDbAccessContext(async () => {
     await db.execute(sql`SET TRANSACTION READ ONLY`);
+
+    const [legacy] = (await db.execute(sql`
+      SELECT count(*)::int AS n FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'ticket_categories'
+         AND column_name = 'default_hourly_rate'
+    `)) as unknown as Array<{ n: number }>;
+    if (!legacy || legacy.n === 0) return null;
 
     const partners = (await db.execute(sql`
       SELECT id, name, currency_code AS "currencyCode" FROM partners ORDER BY name
@@ -61,6 +75,15 @@ async function main() {
     return { partners, categories, orgs };
   });
 
+  if (result === null) {
+    process.stdout.write(
+      'This database has already been upgraded past the labour-pricing conversion: the legacy\n'
+      + 'pricing columns are gone (#4628 W04b), so there is nothing left to convert. Their last\n'
+      + 'values, and why the conversion skipped any of them, are in legacy_labour_pricing_archive.\n',
+    );
+    return;
+  }
+  const { partners, categories, orgs } = result;
   process.stdout.write(formatReport(buildDryRunReport({ partners, categories, orgs })));
   process.stdout.write('\n');
 }
