@@ -107,6 +107,7 @@ vi.mock('../db/schema', () => ({
   devicePatches: {},
   deviceWarranty: {},
   devices: {},
+  discoveredAssets: {},
   // The portal route graph transitively imports networkBaseline.ts, which reads
   // discoveredAssetTypeEnum.enumValues at module load — the full-module mock must
   // provide it or the whole suite fails to load.

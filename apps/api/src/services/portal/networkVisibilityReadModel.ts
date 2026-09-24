@@ -179,10 +179,11 @@ export async function networkAssets(
   // The org may have discovered assets even when a filter matches none of
   // them. no_data must mean "nothing in this org", not "nothing matched this
   // filter" — that second case is a legitimate ok/empty result.
-  const [{ orgHasAnyAsset }] = await db
+  const [orgHasAnyAssetRow] = await db
     .select({ orgHasAnyAsset: sql<boolean>`count(*) > 0` })
     .from(discoveredAssets)
     .where(and(eq(discoveredAssets.orgId, orgId), ne(discoveredAssets.approvalStatus, 'dismissed')));
+  const orgHasAnyAsset = orgHasAnyAssetRow?.orgHasAnyAsset ?? false;
 
   if (!orgHasAnyAsset) {
     return { dataStatus: 'no_data', data: [], pagination: { page, limit, total: 0 } };
@@ -192,10 +193,11 @@ export async function networkAssets(
   // it cannot be pushed into this query. Without it, count + limit/offset
   // keeps this bounded for large orgs instead of loading every asset.
   if (!filter.status) {
-    const [{ total }] = await db
+    const [totalRow] = await db
       .select({ total: sql<number>`count(*)::int` })
       .from(discoveredAssets)
       .where(baseWhere);
+    const total = totalRow?.total ?? 0;
 
     if (total === 0) {
       return { dataStatus: 'ok', data: [], pagination: { page, limit, total: 0 } };
