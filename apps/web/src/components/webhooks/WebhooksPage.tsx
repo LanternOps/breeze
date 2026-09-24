@@ -3,10 +3,9 @@ import { Plus, Send } from 'lucide-react';
 import WebhookList, { type Webhook, isWebhookActive } from './WebhookList';
 import WebhookForm, { type WebhookFormValues, webhookEventOptions } from './WebhookForm';
 import WebhookDeliveryHistory, { type WebhookDelivery } from './WebhookDeliveryHistory';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, handleSessionExpired } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
-import { extractApiError } from '@/lib/apiError';
-import { handleActionError, runAction } from '@/lib/runAction';
+import { ActionError, handleActionError, runAction } from '@/lib/runAction';
 import { formSecretValue, MASKED_SECRET } from '@/lib/redactedSecret';
 import { Trans, useTranslation } from 'react-i18next';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
@@ -152,24 +151,25 @@ export default function WebhooksPage() {
 
   const handleTest = async (webhook: Webhook, eventType?: string) => {
     try {
-      const response = await fetchWithAuth(`/webhooks/${webhook.id}/test`, {
-        method: 'POST',
-        body: JSON.stringify({
-          event: eventType ?? webhook.events?.[0] ?? defaultEventType,
-          payloadTemplate: webhook.payloadTemplate
-        })
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/webhooks/${webhook.id}/test`, {
+            method: 'POST',
+            body: JSON.stringify({
+              event: eventType ?? webhook.events?.[0] ?? defaultEventType,
+              payloadTemplate: webhook.payloadTemplate
+            })
+          }),
+        errorFallback: t('longTail.webhooks.WebhooksPage.errors.testFailed'),
+        onUnauthorized: handleSessionExpired,
       });
-
-      if (!response.ok) {
-        throw new Error(t('longTail.webhooks.WebhooksPage.errors.testFailed'));
-      }
 
       await fetchWebhooks();
       if (activeWebhookId === webhook.id) {
         await fetchDeliveries(webhook.id);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('longTail.webhooks.WebhooksPage.errors.testFailed'));
+      handleActionError(err, t('longTail.webhooks.WebhooksPage.errors.testFailed'));
     }
   };
 
@@ -185,7 +185,8 @@ export default function WebhooksPage() {
           method: 'PATCH',
           body: JSON.stringify({ status: enabled ? 'active' : 'paused' })
         }),
-        errorFallback
+        errorFallback,
+        onUnauthorized: handleSessionExpired,
       });
 
       // Render what the server saved, not what we asked for.
@@ -270,20 +271,26 @@ export default function WebhooksPage() {
         ? { ...payload, orgId: currentOrgId }
         : payload;
 
-      const response = await fetchWithAuth(url, {
-        method,
-        body: JSON.stringify(requestPayload)
+      await runAction({
+        request: () =>
+          fetchWithAuth(url, {
+            method,
+            body: JSON.stringify(requestPayload)
+          }),
+        errorFallback: t('longTail.webhooks.WebhooksPage.errors.saveWebhook'),
+        onUnauthorized: handleSessionExpired,
       });
-
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(extractApiError(data, t('longTail.webhooks.WebhooksPage.errors.saveWebhook')));
-      }
 
       await fetchWebhooks();
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('longTail.webhooks.WebhooksPage.errors.generic'));
+      // runAction toasted the failure; also keep the inline message inside the
+      // still-open form modal so it sits next to the fields being edited.
+      if (err instanceof ActionError) {
+        if (err.status !== 401) setError(err.message);
+      } else {
+        handleActionError(err, t('longTail.webhooks.WebhooksPage.errors.saveWebhook'));
+      }
     } finally {
       setSubmitting(false);
     }
@@ -294,18 +301,21 @@ export default function WebhooksPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetchWithAuth(`/webhooks/${selectedWebhook.id}`, {
-        method: 'DELETE'
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/webhooks/${selectedWebhook.id}`, {
+            method: 'DELETE'
+          }),
+        errorFallback: t('longTail.webhooks.WebhooksPage.errors.deleteWebhook'),
+        onUnauthorized: handleSessionExpired,
       });
-
-      if (!response.ok) {
-        throw new Error(t('longTail.webhooks.WebhooksPage.errors.deleteWebhook'));
-      }
 
       await fetchWebhooks();
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('longTail.webhooks.WebhooksPage.errors.generic'));
+      // The page error banner is hidden while any modal is open (#3531), so
+      // runAction's toast is the feedback; the delete modal stays open.
+      handleActionError(err, t('longTail.webhooks.WebhooksPage.errors.deleteWebhook'));
     } finally {
       setSubmitting(false);
     }
@@ -315,18 +325,21 @@ export default function WebhooksPage() {
     if (!activeWebhookId) return;
 
     try {
-      const response = await fetchWithAuth(
-        `/webhooks/${activeWebhookId}/deliveries/${delivery.id}/retry`,
-        { method: 'POST' }
-      );
-
-      if (!response.ok) {
-        throw new Error(t('longTail.webhooks.WebhooksPage.errors.retryDelivery'));
-      }
+      await runAction({
+        request: () =>
+          fetchWithAuth(
+            `/webhooks/${activeWebhookId}/deliveries/${delivery.id}/retry`,
+            { method: 'POST' }
+          ),
+        errorFallback: t('longTail.webhooks.WebhooksPage.errors.retryDelivery'),
+        onUnauthorized: handleSessionExpired,
+      });
 
       await fetchDeliveries(activeWebhookId);
     } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
       setDeliveriesError(err instanceof Error ? err.message : t('longTail.webhooks.WebhooksPage.errors.retryDelivery'));
+      handleActionError(err, t('longTail.webhooks.WebhooksPage.errors.retryDelivery'));
     }
   };
 

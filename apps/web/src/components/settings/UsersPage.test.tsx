@@ -3,9 +3,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import UsersPage from './UsersPage';
 import { fetchWithAuth } from '../../stores/auth';
+import { showToast } from '../shared/Toast';
 
+vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+  handleSessionExpired: vi.fn(),
   useAuthStore: (sel: (s: { user: { id: string } | null }) => unknown) => sel({ user: { id: 'me' } }),
 }));
 vi.mock('../../stores/orgStore', () => ({
@@ -209,5 +212,60 @@ describe('UsersPage — mfaStatus mapping from GET /users (#5690)', () => {
     await screen.findByText('Trevor');
 
     expect(screen.queryByText(/Pending|Overdue|Enrolled|Not required/)).toBeNull();
+  });
+});
+
+// #3531: the remove confirmation is a fixed z-50 overlay and the page `error`
+// banner renders behind it, so a failed DELETE used to be invisible.
+describe('UsersPage — remove confirmation surfaces failures (#3531)', () => {
+  const toastMock = vi.mocked(showToast);
+
+  function seedRemove(status: number, payload: unknown) {
+    fetchMock.mockImplementation(async (url, opts) => {
+      const method = (opts as RequestInit | undefined)?.method ?? 'GET';
+      if (url === '/users' && method === 'GET') return jsonResponse({ data: [TREVOR] });
+      if (url === '/users/roles' && method === 'GET') return jsonResponse({ data: [ROLE_ADMIN, ROLE_TECH] });
+      return jsonResponse(payload, status);
+    });
+  }
+
+  const listFetches = () =>
+    fetchMock.mock.calls.filter(([url, opts]) => url === '/users' && !(opts as RequestInit | undefined)?.method).length;
+
+  async function openRemoveDialog() {
+    render(<UsersPage />);
+    await screen.findByText('Trevor');
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    await screen.findByRole('heading', { name: 'Remove User' });
+    const buttons = screen.getAllByRole('button', { name: 'Remove' });
+    return buttons[buttons.length - 1];
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('remove failure: toasts, keeps the modal open, does not refetch', async () => {
+    seedRemove(500, { error: 'Remove blew up' });
+    const confirm = await openRemoveDialog();
+    expect(listFetches()).toBe(1);
+
+    fireEvent.click(confirm);
+
+    await waitFor(() =>
+      expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: 'Remove blew up' })),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(`/users/${TREVOR.id}`, expect.objectContaining({ method: 'DELETE' }));
+    expect(screen.getByRole('heading', { name: 'Remove User' })).toBeInTheDocument();
+    expect(listFetches()).toBe(1);
+  });
+
+  it('remove success: refetches and closes the modal', async () => {
+    seedRemove(200, { success: true });
+    fireEvent.click(await openRemoveDialog());
+
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Remove User' })).toBeNull());
+    expect(listFetches()).toBe(2);
+    expect(toastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
   });
 });

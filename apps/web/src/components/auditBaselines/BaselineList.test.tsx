@@ -5,10 +5,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import BaselineList from './BaselineList';
 import type { Baseline } from './BaselineFormModal';
 import { fetchWithAuth } from '../../stores/auth';
+import { showToast } from '../shared/Toast';
 
 vi.mock('../../stores/auth', () => ({
-  fetchWithAuth: vi.fn()
+  fetchWithAuth: vi.fn(),
+  handleSessionExpired: vi.fn()
 }));
+vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 
 const orgStoreState: {
   currentOrgId: string | null;
@@ -85,5 +88,62 @@ describe('BaselineList active toggle org scoping', () => {
     await userEvent.click(toggle);
 
     await waitFor(() => expect(postBody()).toMatchObject({ id: 'baseline-1', orgId: 'org-other' }));
+  });
+});
+
+describe('BaselineList delete confirmation (#3531)', () => {
+  const toastMock = vi.mocked(showToast);
+  const listFetches = () =>
+    fetchWithAuthMock.mock.calls.filter(
+      ([url, init]) => String(url).startsWith('/audit-baselines?') && !(init as RequestInit | undefined)?.method
+    ).length;
+
+  function route(deleteStatus: number, deleteBody: unknown) {
+    fetchWithAuthMock.mockReset();
+    toastMock.mockReset();
+    orgStoreState.currentOrgId = 'org-1';
+    fetchWithAuthMock.mockImplementation(async (_url, init) => {
+      if ((init as RequestInit | undefined)?.method === 'DELETE') {
+        return { ok: deleteStatus < 400, status: deleteStatus, json: async () => deleteBody } as unknown as Response;
+      }
+      return jsonResponse({ data: [existing] });
+    });
+  }
+
+  async function openAndConfirm() {
+    render(<BaselineList />);
+    await screen.findByText('Windows CIS L1');
+    await userEvent.click(screen.getByTitle('Delete'));
+    const heading = await screen.findByRole('heading', { name: 'Delete Baseline' });
+    const dialog = heading.parentElement as HTMLElement;
+    const confirm = Array.from(dialog.querySelectorAll('button')).find((b) => b.textContent === 'Delete')!;
+    await userEvent.click(confirm);
+  }
+
+  it.each([
+    [500, { error: 'Delete blew up' }, 'Delete blew up'],
+    [403, { error: 'Insufficient permissions' }, 'Insufficient permissions'],
+  ])('%i: toasts, keeps the modal open, does not refetch the list', async (status, body, message) => {
+    route(status, body);
+    await openAndConfirm();
+
+    await waitFor(() =>
+      expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message }))
+    );
+    expect(fetchWithAuthMock).toHaveBeenCalledWith(
+      '/audit-baselines/baseline-1',
+      expect.objectContaining({ method: 'DELETE' })
+    );
+    expect(screen.getByRole('heading', { name: 'Delete Baseline' })).toBeInTheDocument();
+    expect(listFetches()).toBe(1);
+  });
+
+  it('success: refetches and closes the modal', async () => {
+    route(200, { success: true });
+    await openAndConfirm();
+
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Delete Baseline' })).toBeNull());
+    expect(listFetches()).toBe(2);
+    expect(toastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
   });
 });
