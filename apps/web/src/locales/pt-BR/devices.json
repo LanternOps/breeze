@@ -133,7 +133,8 @@
     "thisOrganizationOnlyHasOneSite": "Esta organização tem apenas um site. Adicione outros sites em Configurações → Organizações para permitir movimentações.",
     "current": "(atual)",
     "cancel": "Cancelar",
-    "moving": "Movendo..."
+    "moving": "Movendo...",
+    "toADifferentSite": "para outro site."
   },
   "createGroupModal": {
     "failedToCreateGroup": "Falha ao criar o grupo",
@@ -2702,7 +2703,9 @@
           "networkGear": "Equipamentos de rede",
           "peripherals": "Periféricos",
           "other": "Outros"
-        }
+        },
+        "site": "Local",
+        "changeSite": "Alterar local…"
       },
       "monitoring": {
         "description": "Configure a coleta SNMP e as verificações de rede.",
@@ -2814,7 +2817,12 @@
         "checkCreated": "Verificação de rede adicionada",
         "checkCreateFailed": "Não foi possível adicionar a verificação de rede",
         "checkRemoved": "Verificação de rede removida",
-        "checkRemoveFailed": "Não foi possível remover a verificação de rede"
+        "checkRemoveFailed": "Não foi possível remover a verificação de rede",
+        "siteChanged": "Movido para {{site}}.",
+        "siteChangeFailed": "Não foi possível mover o ativo para o novo site",
+        "siteChangedUnlinked": "O vínculo com o dispositivo com agente foi removido porque esse dispositivo está em outro site.",
+        "siteChangedPolicies_one": "{{count}} política de monitoramento de topologia foi desativada.",
+        "siteChangedPolicies_other": "{{count}} políticas de monitoramento de topologia foram desativadas."
       }
     },
     "header": {

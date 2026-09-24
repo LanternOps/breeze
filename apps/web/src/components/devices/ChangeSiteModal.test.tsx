@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import ChangeSiteModal from './ChangeSiteModal';
+import ChangeSiteModal, { type ChangeSiteSubject } from './ChangeSiteModal';
 import { fetchWithAuth } from '../../stores/auth';
 import type { Device } from './DeviceList';
 
@@ -126,5 +126,81 @@ describe('ChangeSiteModal', () => {
     expect(await screen.findByText(/target site not found/i)).toBeInTheDocument();
     expect(onSaved).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
+  });
+});
+
+describe('ChangeSiteModal — generalised subject + submit (network assets)', () => {
+  const subject: ChangeSiteSubject = {
+    id: 'asset-1',
+    name: 'Core switch',
+    orgId: 'org-1',
+    siteId: 'site-a',
+    siteName: 'HQ',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('fetches sites for the subject org and hands the chosen site to submit instead of PATCHing /devices', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [SITE_A, SITE_B] }));
+    const submit = vi.fn().mockResolvedValue({ siteMove: { unlinkedDevice: false } });
+    const onSaved = vi.fn();
+    const onClose = vi.fn();
+
+    render(
+      <ChangeSiteModal subject={subject} submit={submit} isOpen onClose={onClose} onSaved={onSaved} />
+    );
+
+    await waitFor(() => {
+      expect(fetchWithAuthMock).toHaveBeenCalledWith(
+        `/orgs/sites?organizationId=${subject.orgId}&page=1&limit=100`,
+        undefined,
+      );
+    });
+    expect(screen.getByText('Core switch')).toBeInTheDocument();
+
+    const select = await screen.findByLabelText(/new site/i);
+    fireEvent.change(select, { target: { value: 'site-b' } });
+    fireEvent.click(screen.getByRole('button', { name: /move device/i }));
+
+    await waitFor(() => {
+      expect(submit).toHaveBeenCalledWith('site-b', 'Branch');
+      expect(onSaved).toHaveBeenCalledTimes(1);
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
+    // Only the site listing went through fetchWithAuth; the write is the caller's.
+    expect(fetchWithAuthMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows a submit rejection inline and keeps the dialog open', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [SITE_A, SITE_B] }));
+    const submit = vi.fn().mockRejectedValue(new Error('Access to this site denied'));
+    const onSaved = vi.fn();
+    const onClose = vi.fn();
+
+    render(
+      <ChangeSiteModal subject={subject} submit={submit} isOpen onClose={onClose} onSaved={onSaved} />
+    );
+
+    const select = await screen.findByLabelText(/new site/i);
+    fireEvent.change(select, { target: { value: 'site-b' } });
+    fireEvent.click(screen.getByRole('button', { name: /move device/i }));
+
+    expect(await screen.findByText(/access to this site denied/i)).toBeInTheDocument();
+    expect(onSaved).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('omits the "within <org>" clause when the subject carries no org name', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [SITE_A, SITE_B] }));
+
+    render(
+      <ChangeSiteModal subject={subject} submit={vi.fn()} isOpen onClose={vi.fn()} onSaved={vi.fn()} />
+    );
+
+    await screen.findByLabelText(/new site/i);
+    expect(screen.queryByText(/to a different site within/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/to a different site\./i)).toBeInTheDocument();
   });
 });

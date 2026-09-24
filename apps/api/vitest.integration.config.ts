@@ -313,6 +313,11 @@ export default defineConfig({
       // the shared glob above; named here for discoverability only (same
       // pattern staleBackupReaper.integration.test.ts uses).
       'src/__tests__/integration/agentCommandRelay.integration.test.ts',
+      // Real-Postgres proof for the discovered-asset site move service: the two
+      // BEFORE UPDATE triggers on discovered_assets (topology binding lifecycle +
+      // monitor-authority detach) and the network_monitors site guard the
+      // re-attach must pass. The mocked unit suite never executes any of them.
+      'src/services/discoveredAssetSiteMove.integration.test.ts',
     ],
     exclude: [
       // Uses fresh request-pool modules and manages its own temporary role;

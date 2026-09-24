@@ -133,7 +133,8 @@
     "thisOrganizationOnlyHasOneSite": "Cette organisation ne possède qu’un seul site. Ajoutez plus de sites depuis Paramètres → Organisations pour permettre les déplacements.",
     "current": "(actuel)",
     "cancel": "Annuler",
-    "moving": "En mouvement..."
+    "moving": "En mouvement...",
+    "toADifferentSite": "vers un autre site."
   },
   "createGroupModal": {
     "failedToCreateGroup": "Impossible de créer un groupe",
@@ -2702,7 +2703,9 @@
           "networkGear": "Équipements réseau",
           "peripherals": "Périphériques",
           "other": "Autres"
-        }
+        },
+        "site": "Site",
+        "changeSite": "Changer de site…"
       },
       "monitoring": {
         "description": "Configurez la collecte SNMP et les contrôles réseau.",
@@ -2814,7 +2817,12 @@
         "checkCreated": "Contrôle réseau ajoutée",
         "checkCreateFailed": "Impossible d’ajouter la contrôle réseau",
         "checkRemoved": "Contrôle réseau supprimée",
-        "checkRemoveFailed": "Impossible de supprimer la contrôle réseau"
+        "checkRemoveFailed": "Impossible de supprimer la contrôle réseau",
+        "siteChanged": "Déplacé vers {{site}}.",
+        "siteChangeFailed": "Impossible de déplacer l’actif vers le nouveau site",
+        "siteChangedUnlinked": "Le lien avec son appareil agent a été supprimé, car cet appareil se trouve sur un autre site.",
+        "siteChangedPolicies_one": "{{count}} politique de surveillance de topologie a été désactivée.",
+        "siteChangedPolicies_other": "{{count}} politiques de surveillance de topologie ont été désactivées."
       }
     },
     "header": {

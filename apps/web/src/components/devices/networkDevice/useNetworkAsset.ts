@@ -74,6 +74,7 @@ export function useNetworkAsset(assetId: string) {
       setExtras({
         model: raw.model ?? null,
         netbiosName: raw.netbiosName ?? null,
+        orgId: raw.orgId ?? null,
         siteId: raw.siteId ?? null,
         siteName: raw.siteName ?? null,
         siteTimezone: raw.siteTimezone ?? null,

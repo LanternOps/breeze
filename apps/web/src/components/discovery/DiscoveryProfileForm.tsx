@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, useCallback } from 'react';
+import { useEffect, useRef, useState, type FormEvent, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 
@@ -49,6 +49,9 @@ export type DiscoveryProfileFormValues = {
   schedule: DiscoverySchedule;
   snmp: SnmpSettings;
   alertSettings: ProfileAlertSettings;
+  /** Edit mode only: move the assets this profile discovered along with the
+   *  site change. Always false unless the site was changed AND the user opted in. */
+  moveDiscoveredAssets?: boolean;
 };
 
 type SiteOption = {
@@ -64,6 +67,10 @@ type DiscoveryProfileFormProps = {
   submitLabel?: string;
   disabled?: boolean;
   error?: string;
+  /** Edit mode: resolves how many discovered assets a site change would move
+   *  (GET /discovery/profiles/:id/movable-assets). Called lazily, once, the
+   *  first time the selected site differs from the original. */
+  loadMovableAssetCount?: () => Promise<number>;
 };
 
 const methodOptions = [
@@ -145,17 +152,39 @@ export default function DiscoveryProfileForm({
   onCancel,
   submitLabel,
   disabled = false,
-  error
+  error,
+  loadMovableAssetCount
 }: DiscoveryProfileFormProps) {
   const { t } = useTranslation('discovery');
   const [formValues, setFormValues] = useState<DiscoveryProfileFormValues>(initialValues ?? defaultValues);
   const [subnetsText, setSubnetsText] = useState((initialValues?.subnets ?? []).join('\n'));
   const [subnetErrors, setSubnetErrors] = useState<string[]>([]);
+  // Site-move offer (edit mode). `movableAssetCount` is undefined until the
+  // loader has been asked, null when it failed (checkbox still shown, no count).
+  const [moveAssets, setMoveAssets] = useState(false);
+  const [movableAssetCount, setMovableAssetCount] = useState<number | null | undefined>(undefined);
+  // The count is requested once per edit session, not once per site toggle.
+  const movableAssetCountRequested = useRef(false);
   const isSnmpEnabled = formValues.methods.includes('snmp');
   const resolvedSubmitLabel = submitLabel ?? t('discoveryProfileForm.actions.saveProfile');
+  const originalSiteId = initialValues?.siteId;
+  const siteChanged = originalSiteId !== undefined
+    && formValues.siteId !== ''
+    && formValues.siteId !== originalSiteId;
+
+  useEffect(() => {
+    if (!siteChanged || !loadMovableAssetCount || movableAssetCountRequested.current) return;
+    movableAssetCountRequested.current = true;
+    loadMovableAssetCount()
+      .then(count => setMovableAssetCount(count))
+      .catch(() => setMovableAssetCount(null)); // offer still shown, without a number
+  }, [siteChanged, loadMovableAssetCount]);
 
   useEffect(() => {
     setSubnetErrors([]);
+    setMoveAssets(false);
+    setMovableAssetCount(undefined);
+    movableAssetCountRequested.current = false;
     if (initialValues) {
       setFormValues({
         ...initialValues,
@@ -202,7 +231,8 @@ export default function DiscoveryProfileForm({
 
     onSubmit?.({
       ...formValues,
-      subnets
+      subnets,
+      moveDiscoveredAssets: siteChanged && moveAssets
     });
   };
 
@@ -233,6 +263,7 @@ export default function DiscoveryProfileForm({
             <select
               value={formValues.siteId}
               onChange={event => setFormValues(prev => ({ ...prev, siteId: event.target.value }))}
+              data-testid="discovery-profile-site-select"
               className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
               <option value="">{t('discoveryProfileForm.options.selectSite')}</option>
@@ -240,6 +271,28 @@ export default function DiscoveryProfileForm({
                 <option key={site.id} value={site.id}>{site.name}</option>
               ))}
             </select>
+            {siteChanged && (
+              <div
+                data-testid="discovery-profile-site-move-notice"
+                className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs"
+              >
+                <p className="text-muted-foreground">{t('discoveryProfileForm.siteMove.notice')}</p>
+                <label className="mt-2 flex items-start gap-2">
+                  <input
+                    type="checkbox"
+                    checked={moveAssets}
+                    onChange={event => setMoveAssets(event.target.checked)}
+                    data-testid="discovery-profile-move-assets"
+                    className="mt-0.5 h-4 w-4 rounded border"
+                  />
+                  <span>
+                    {typeof movableAssetCount === 'number'
+                      ? t('discoveryProfileForm.siteMove.moveAssets', { count: movableAssetCount })
+                      : t('discoveryProfileForm.siteMove.moveAssetsUnknown')}
+                  </span>
+                </label>
+              </div>
+            )}
           </div>
           <div>
             <label className="text-sm font-medium">{t('discoveryProfileForm.fields.scheduleCadence')}</label>

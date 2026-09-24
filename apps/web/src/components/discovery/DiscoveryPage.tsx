@@ -47,6 +47,44 @@ type ApiSnmpCredentials = {
   privacyPassphrase?: string;
 };
 
+type ProfileAssetMoveSummary = {
+  candidates: number;
+  moved: number;
+  unlinkedDevices: number;
+  monitorsReattached: number;
+  topologyPoliciesDisabled: number;
+};
+
+/** Success toast for a profile save. A site change leads with the new site and
+ *  appends only the non-zero move clauses. */
+function composeProfileSavedToast(
+  t: TFunction,
+  input: {
+    created: boolean;
+    name: string;
+    previousSiteId?: string;
+    siteId?: string;
+    siteName?: string;
+    assetMove?: ProfileAssetMoveSummary | null;
+  }
+): string {
+  if (input.created) return t('discoveryPage.toasts.profileCreated', { name: input.name });
+  const siteChanged = input.previousSiteId !== undefined && input.siteId !== undefined && input.siteId !== input.previousSiteId;
+  if (!siteChanged) return t('discoveryPage.toasts.profileUpdated', { name: input.name });
+
+  const parts = [t('discoveryPage.toasts.profileMoved', { site: input.siteName ?? input.siteId })];
+  const move = input.assetMove;
+  if (move) {
+    const clauses: string[] = [];
+    if (move.moved > 0) clauses.push(t('discoveryPage.toasts.assetsMoved', { count: move.moved }));
+    if (move.unlinkedDevices > 0) clauses.push(t('discoveryPage.toasts.agentLinksRemoved', { count: move.unlinkedDevices }));
+    if (move.monitorsReattached > 0) clauses.push(t('discoveryPage.toasts.monitorsReattached', { count: move.monitorsReattached }));
+    if (move.topologyPoliciesDisabled > 0) clauses.push(t('discoveryPage.toasts.topologyPoliciesDisabled', { count: move.topologyPoliciesDisabled }));
+    if (clauses.length > 0) parts.push(`${clauses.join('; ')}.`);
+  }
+  return parts.join(' ');
+}
+
 type ApiDiscoveryProfile = {
   id: string;
   name: string;
@@ -493,6 +531,9 @@ export default function DiscoveryPage() {
         snmpCommunities,
         snmpCredentials,
         alertSettings: values.alertSettings,
+        // Edit only: the API moves the assets this profile discovered along
+        // with the site change when this is true (ignored if the site is unchanged).
+        ...(editingProfile ? { moveDiscoveredAssets: values.moveDiscoveredAssets === true } : {}),
         ...(currentOrgId ? { orgId: currentOrgId } : {})
       };
 
@@ -500,27 +541,47 @@ export default function DiscoveryPage() {
         ? `/discovery/profiles/${editingProfile.id}`
         : '/discovery/profiles';
       const method = editingProfile ? 'PATCH' : 'POST';
+      const previousSiteId = editingProfile?.siteId;
+      const created = !editingProfile;
 
-      const response = await fetchWithAuth(url, {
-        method,
-        body: JSON.stringify(payload)
+      await runAction<ApiDiscoveryProfile & { assetMove?: ProfileAssetMoveSummary | null }>({
+        request: () => fetchWithAuth(url, {
+          method,
+          body: JSON.stringify(payload)
+        }),
+        errorFallback: t('discoveryPage.errors.saveProfile'),
+        successMessage: (saved) => composeProfileSavedToast(t, {
+          created,
+          name: saved?.name ?? values.name,
+          previousSiteId,
+          siteId: saved?.siteId ?? values.siteId,
+          siteName: siteOptions.find(site => site.id === (saved?.siteId ?? values.siteId))?.name,
+          assetMove: saved?.assetMove ?? null
+        }),
+        onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
-
-      if (!response.ok) {
-        const data = await response.json().catch(() => null);
-        throw new Error(data?.error ?? t('discoveryPage.errors.saveProfile'));
-      }
 
       await fetchProfiles();
       setEditingProfile(null);
       setIsProfileModalOpen(false);
       setProfileFormError(undefined);
     } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
+      // runAction already toasted a non-401 ActionError; the modal stays open,
+      // so mirror the message inline where the user is looking.
       setProfileFormError(err instanceof Error ? err.message : t('discoveryPage.errors.generic'));
     } finally {
       setSavingProfile(false);
     }
   };
+
+  const loadMovableAssetCount = useCallback(async () => {
+    if (!editingProfile) return 0;
+    const response = await fetchWithAuth(`/discovery/profiles/${editingProfile.id}/movable-assets`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json() as { count?: number };
+    return typeof data.count === 'number' ? data.count : 0;
+  }, [editingProfile]);
 
   const handleDeleteProfile = async (profile: DiscoveryProfile) => {
     if (!confirm(t('discoveryPage.confirmDeleteProfile', { name: profile.name }))) {
@@ -779,6 +840,7 @@ export default function DiscoveryPage() {
                   : (savingProfile ? t('discoveryPage.modal.creating') : t('discoveryPage.modal.createProfile'))}
                 disabled={savingProfile}
                 error={profileFormError}
+                loadMovableAssetCount={editingProfile ? loadMovableAssetCount : undefined}
               />
             </div>
           </div>

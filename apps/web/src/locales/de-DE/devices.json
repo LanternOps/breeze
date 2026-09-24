@@ -133,7 +133,8 @@
     "thisOrganizationOnlyHasOneSite": "Diese Organisation hat nur einen Standort. Unter Einstellungen → Organisationen weitere Standorte hinzufügen, um Verschiebungen zu ermöglichen.",
     "current": "(aktuell)",
     "cancel": "Abbrechen",
-    "moving": "Wird verschoben..."
+    "moving": "Wird verschoben...",
+    "toADifferentSite": "an einen anderen Standort."
   },
   "createGroupModal": {
     "failedToCreateGroup": "Gruppe konnte nicht erstellt werden",
@@ -2702,7 +2703,9 @@
           "networkGear": "Netzwerkgeräte",
           "peripherals": "Peripheriegeräte",
           "other": "Sonstige"
-        }
+        },
+        "site": "Standort",
+        "changeSite": "Standort ändern…"
       },
       "monitoring": {
         "description": "SNMP-Datenerfassung und Netzwerkprüfungen konfigurieren.",
@@ -2814,7 +2817,12 @@
         "checkCreated": "Netzwerkprüfung hinzugefügt",
         "checkCreateFailed": "Die Netzwerkprüfung konnte nicht hinzugefügt werden",
         "checkRemoved": "Netzwerkprüfung entfernt",
-        "checkRemoveFailed": "Die Netzwerkprüfung konnte nicht entfernt werden"
+        "checkRemoveFailed": "Die Netzwerkprüfung konnte nicht entfernt werden",
+        "siteChanged": "Nach {{site}} verschoben.",
+        "siteChangeFailed": "Das Asset konnte nicht an den neuen Standort verschoben werden",
+        "siteChangedUnlinked": "Die Verknüpfung mit dem Agent-Gerät wurde entfernt, da sich dieses Gerät an einem anderen Standort befindet.",
+        "siteChangedPolicies_one": "{{count}} Topologie-Überwachungsrichtlinie wurde deaktiviert.",
+        "siteChangedPolicies_other": "{{count}} Topologie-Überwachungsrichtlinien wurden deaktiviert."
       }
     },
     "header": {

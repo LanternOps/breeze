@@ -200,7 +200,18 @@
     },
     "title": "Découverte du réseau",
     "toasts": {
-      "scanQueued": "Le scan de découverte est mis en file d’attente pour « {{name}} »"
+      "scanQueued": "Le scan de découverte est mis en file d’attente pour « {{name}} »",
+      "profileCreated": "Profil de découverte « {{name}} » créé",
+      "profileUpdated": "Profil de découverte « {{name}} » mis à jour",
+      "profileMoved": "Profil déplacé vers {{site}}.",
+      "assetsMoved_one": "{{count}} appareil réseau déplacé",
+      "assetsMoved_other": "{{count}} appareils réseau déplacés",
+      "agentLinksRemoved_one": "{{count}} lien d'agent supprimé",
+      "agentLinksRemoved_other": "{{count}} liens d'agent supprimés",
+      "monitorsReattached_one": "{{count}} moniteur rattaché",
+      "monitorsReattached_other": "{{count}} moniteurs rattachés",
+      "topologyPoliciesDisabled_one": "{{count}} politique de topologie désactivée",
+      "topologyPoliciesDisabled_other": "{{count}} politiques de topologie désactivées"
     },
     "days": {
       "monday": "Lundi",
@@ -295,6 +306,12 @@
       "arp": "Analyse ARP",
       "snmp": "Interrogation SNMP",
       "portScan": "Analyse des ports TCP"
+    },
+    "siteMove": {
+      "notice": "Ce profil analysera désormais depuis le nouveau site. Les appareils déjà découverts restent sur le site actuel sauf si vous les déplacez.",
+      "moveAssets_one": "Déplacer aussi le {{count}} appareil réseau découvert par ce profil vers le nouveau site",
+      "moveAssets_other": "Déplacer aussi les {{count}} appareils réseau découverts par ce profil vers le nouveau site",
+      "moveAssetsUnknown": "Déplacer aussi les appareils réseau découverts par ce profil vers le nouveau site"
     }
   },
   "discoveryProfileList": {

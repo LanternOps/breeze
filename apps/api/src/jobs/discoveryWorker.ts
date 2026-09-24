@@ -794,6 +794,12 @@ export function buildScanUpdateSet(
  * belt and braces — but it is the condition that states the intent, and it
  * survives someone "helpfully" defaulting `is_online` to true later. The create
  * route must never set `is_online`; the route test (W02) asserts that.
+ *
+ * Site-scoped on purpose, unlike the identity lookups in processResults (which
+ * match on org + ip, the unique key): the sweep flips every monitored asset
+ * this scan did NOT see to offline, and a scan of site A has no evidence about
+ * site B's hosts. Widening it to the org would let each site's scan mark every
+ * other site's assets offline.
  */
 export function buildMonitoredAssetConditions(
   orgId: string,
@@ -885,6 +891,13 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
   const knownGuestMacs = new Set(knownGuests.map(g => g.macAddress));
 
   // ── Load existing assets for approval comparison ──────────────────────
+  // Asset identity is (org, ip) — `discovered_assets_org_ip_unique` — NOT
+  // (org, site, ip). An asset can be moved between sites of the same org by
+  // hand, so a scan from one site may re-find an asset whose stored site is
+  // another. Filtering on the job's site here would miss that row, the
+  // per-host INSERT below would then hit 23505, and the host error would be
+  // swallowed — freezing the asset forever. Match on org + ip only; the map is
+  // keyed by ip alone for the same reason (one row per ip per org).
   const scannedIps = data.hosts.map(h => h.ip).filter(Boolean);
   const scannedExistingAssets = scannedIps.length > 0
     ? await db.select({
@@ -897,13 +910,17 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
       }).from(discoveredAssets).where(
         and(
           eq(discoveredAssets.orgId, data.orgId),
-          eq(discoveredAssets.siteId, data.siteId),
           inArray(discoveredAssets.ipAddress, scannedIps),
         )
       )
     : [];
   const existingByIp = new Map(scannedExistingAssets.map(a => [a.ipAddress, a]));
 
+  // The "went offline" sweep, by contrast, MUST stay scoped to the job's site:
+  // it marks every monitored asset this scan did not see as offline, and a
+  // scan of site A knows nothing about site B's hosts. (Consequence: an asset
+  // moved to site B that site A's profile still scans is kept fresh by A's
+  // scans but is only ever swept offline by B's — accepted.)
   const monitoredAssetConditions = buildMonitoredAssetConditions(
     data.orgId,
     data.siteId,
@@ -984,10 +1001,15 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
     if (!host.ip) continue;
 
     try {
-    // Check if asset already exists (by org + IP)
+    // Check if asset already exists (by org + IP — the unique key; see the
+    // approval pre-load above for why the job's site is deliberately NOT a
+    // predicate here). The stored site is read back because link decisions
+    // below are made relative to where the asset LIVES, not where the scan
+    // came from.
     const [existing] = await db
       .select({
         id: discoveredAssets.id,
+        siteId: discoveredAssets.siteId,
         typeSource: discoveredAssets.typeSource,
         detectedTypeSource: discoveredAssets.detectedTypeSource,
         autoLinkSuppressedAt: discoveredAssets.autoLinkSuppressedAt,
@@ -997,11 +1019,15 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
       .where(
         and(
           eq(discoveredAssets.orgId, data.orgId),
-          eq(discoveredAssets.siteId, data.siteId),
           sql`${discoveredAssets.ipAddress} = ${host.ip}`
         )
       )
       .limit(1);
+
+    // The site an auto-link must be same-site WITH: the stored site for a row
+    // that already exists (it may have been moved), the job's site for a row
+    // this scan is about to create.
+    const assetSiteId = existing?.siteId ?? data.siteId;
 
     // Identity is resolved SERVER-side now (spec §9): the IANA enterprise arc
     // of the sysObjectID outranks the NIC OUI, and the raw sysObjectID can no
@@ -1071,6 +1097,9 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
       // not constrain the source's keys to the target's).
       // #5213: hostname/manufacturer/model are additionally guarded against
       // clobbering an operator's manual row. See buildScanUpdateSet.
+      // `site_id` is deliberately NOT in the update set: the site is owned by
+      // the first insert and by manual moves. A scan re-finding an asset that
+      // was moved to a sibling site must not drag it back.
       const updateSet = buildScanUpdateSet(assetData, classification);
       await db
         .update(discoveredAssets)
@@ -1081,6 +1110,9 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
 
       // Preserve only same-site links. Older code could auto-link an asset to
       // an org-sibling site's device when private IPs or MACs collided.
+      // "Same site" is judged against the asset's STORED site (`existing.siteId`),
+      // not the scanning job's: a scan from site A re-finding an asset that
+      // lives in site B must keep its link to a site-B device.
       const [currentAsset] = await db
         .select({
           linkedDeviceId: discoveredAssets.linkedDeviceId,
@@ -1091,15 +1123,15 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
         .where(eq(discoveredAssets.id, existing.id))
         .limit(1);
       alreadyLinked = !!currentAsset?.linkedDeviceId
-        && currentAsset.linkedDeviceSiteId === data.siteId;
+        && currentAsset.linkedDeviceSiteId === existing.siteId;
       if (currentAsset?.linkedDeviceId && !alreadyLinked) {
+        // Keyed by id alone: a site predicate pinned to the job's site would
+        // silently match zero rows for a moved asset and leave the stale
+        // cross-site link in place.
         await db
           .update(discoveredAssets)
           .set({ linkedDeviceId: null, linkSource: null })
-          .where(and(
-            eq(discoveredAssets.id, existing.id),
-            eq(discoveredAssets.siteId, data.siteId),
-          ));
+          .where(eq(discoveredAssets.id, existing.id));
       }
     } else {
       // Net-new row, so there is nothing to outrank — write the classification
@@ -1189,7 +1221,8 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
             .innerJoin(devices, eq(devices.id, deviceNetwork.deviceId))
             .where(and(
               eq(devices.orgId, data.orgId),
-              eq(devices.siteId, data.siteId),
+              // Same-site relative to where the asset lives (see assetSiteId).
+              eq(devices.siteId, assetSiteId),
               or(...conditions),
             ))
             .limit(1);

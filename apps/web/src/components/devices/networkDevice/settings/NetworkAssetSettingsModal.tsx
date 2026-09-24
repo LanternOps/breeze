@@ -99,7 +99,7 @@ export function NetworkAssetSettingsModal({
           </nav>
 
           {section === 'identity' && (
-            <IdentitySection asset={asset} assetId={assetId} onSaved={onSaved} onAnnounce={onAnnounce} />
+            <IdentitySection asset={asset} assetId={assetId} extras={extras} onSaved={onSaved} onAnnounce={onAnnounce} />
           )}
           {section === 'monitoring' && (
             <MonitoringSection asset={asset} assetId={assetId} onSaved={onSaved} onAnnounce={onAnnounce} />

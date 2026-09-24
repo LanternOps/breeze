@@ -9,6 +9,7 @@ import { writeRouteAudit } from '../services/auditEvents';
 import { enqueueDiscoveryScan } from '../jobs/discoveryWorker';
 import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
 import { networkTopology, topologyLayout, discoveredAssets, sites } from '../db/schema';
+import { moveDiscoveredAssetsToSite } from '../services/discoveredAssetSiteMove';
 
 // W01 (spec §4.4): the route now derives `reachability` through the batched
 // loader. The derivation is pinned by services/assetReachability.test.ts; this
@@ -21,6 +22,15 @@ vi.mock('../services/assetReachabilityLoader', () => ({
 }));
 
 vi.mock('../services', () => ({}));
+
+// The site-move service is pinned by services/discoveredAssetSiteMove.test.ts;
+// this suite owns the route gate (org + site allowlist) and the wiring.
+vi.mock('../services/discoveredAssetSiteMove', () => ({
+  moveDiscoveredAssetsToSite: vi.fn(),
+  DiscoveredAssetSiteMoveError: class DiscoveredAssetSiteMoveError extends Error {
+    constructor(public code: string, message: string) { super(message); }
+  },
+}));
 
 // The service's authorization, real transaction/replay and cross-site node
 // checks are exercised in topology-compatible-writes.integration.test.ts.
@@ -115,12 +125,14 @@ vi.mock('../db/schema', () => ({
     id: 'discoveryJobs.id',
     orgId: 'discoveryJobs.orgId',
     siteId: 'discoveryJobs.siteId',
+    profileId: 'discoveryJobs.profileId',
   },
   discoveredAssets: {
     id: 'discoveredAssets.id',
     orgId: 'discoveredAssets.orgId',
     siteId: 'discoveredAssets.siteId',
     linkedDeviceId: 'discoveredAssets.linkedDeviceId',
+    lastJobId: 'discoveredAssets.lastJobId',
   },
   networkTopology: { orgId: 'orgId' },
   topologyLayout: {
@@ -2551,6 +2563,352 @@ describe('discovery routes', () => {
       const body = await res.json();
       expect(body.data.typeSource).toBe('manual');
       expect(body.data.detectedAssetType).toBe('workstation');
+    });
+  });
+  describe('PATCH /assets/:id siteId (site move)', () => {
+    const ORG = '00000000-0000-0000-0000-000000000000';
+    const ASSET_ID = '00000000-0000-0000-0000-000000000010';
+    const SITE_FROM = '00000000-0000-0000-0000-0000000000a1';
+    const SITE_TO = '00000000-0000-0000-0000-0000000000a2';
+
+    function setSiteRestrictedAuth(allowedSiteIds: string[] | undefined) {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          scope: 'organization',
+          orgId: ORG,
+          partnerId: null,
+          canAccessOrg: (orgId: string) => orgId === ORG,
+          accessibleOrgIds: null,
+        });
+        c.set('permissions', allowedSiteIds ? { allowedSiteIds } : {});
+        return next();
+      });
+    }
+
+    // mockImplementation survives vi.clearAllMocks(); start each case unrestricted.
+    beforeEach(() => setSiteRestrictedAuth(undefined));
+
+    /** Asset lookup (loadAuthorizedAsset) followed by the target-site lookup. */
+    function mockAssetThenSite(asset: any, site: any) {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(asset ? [asset] : []) }),
+          }),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(site ? [site] : []) }),
+          }),
+        } as any);
+    }
+
+    const patch = (body: unknown) => app.request(`/discovery/assets/${ASSET_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify(body),
+    });
+
+    it('rejects a target site that belongs to another org without writing', async () => {
+      mockAssetThenSite({ id: ASSET_ID, orgId: ORG, siteId: SITE_FROM }, null);
+
+      const res = await patch({ siteId: SITE_TO });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Target site not found or belongs to a different organization' });
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+      expect(moveDiscoveredAssetsToSite).not.toHaveBeenCalled();
+    });
+
+    it('denies a site-restricted caller moving an asset into a site outside their allowlist', async () => {
+      setSiteRestrictedAuth([SITE_FROM]);
+      mockAssetThenSite({ id: ASSET_ID, orgId: ORG, siteId: SITE_FROM }, { id: SITE_TO });
+
+      const res = await patch({ siteId: SITE_TO });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Access to this site denied' });
+      expect(db.transaction).not.toHaveBeenCalled();
+      expect(moveDiscoveredAssetsToSite).not.toHaveBeenCalled();
+    });
+
+    it('runs the move through the service inside one transaction and reports the summary', async () => {
+      mockAssetThenSite({ id: ASSET_ID, orgId: ORG, siteId: SITE_FROM }, { id: SITE_TO });
+      vi.mocked(moveDiscoveredAssetsToSite).mockResolvedValueOnce([{
+        assetId: ASSET_ID,
+        moved: true,
+        previousSiteId: SITE_FROM,
+        unlinkedDeviceId: '00000000-0000-0000-0000-0000000000d9',
+        monitorsReattached: 2,
+        topologyPoliciesDisabled: 1,
+      }]);
+
+      let capturedSetPayload: any;
+      const tx = {
+        update: vi.fn(() => ({
+          set: vi.fn((payload: any) => {
+            capturedSetPayload = payload;
+            return {
+              where: vi.fn().mockReturnValue({
+                returning: vi.fn().mockResolvedValue([{
+                  id: ASSET_ID, orgId: ORG, siteId: SITE_TO, label: 'Core switch', hostname: null,
+                  ipAddress: '10.0.0.1', linkedDeviceId: null, linkSource: null,
+                }]),
+              }),
+            };
+          }),
+        })),
+      };
+      vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn(tx));
+
+      const res = await patch({ siteId: SITE_TO, label: 'Core switch' });
+
+      expect(res.status).toBe(200);
+      expect(moveDiscoveredAssetsToSite).toHaveBeenCalledTimes(1);
+      expect(moveDiscoveredAssetsToSite).toHaveBeenCalledWith({
+        tx, orgId: ORG, assetIds: [ASSET_ID], targetSiteId: SITE_TO,
+      });
+      // The remaining field edits ride the same transaction, after the move.
+      expect(capturedSetPayload).toMatchObject({ label: 'Core switch' });
+      expect(capturedSetPayload).not.toHaveProperty('siteId');
+      expect(db.update).not.toHaveBeenCalled();
+
+      const body = await res.json();
+      expect(body.siteId).toBe(SITE_TO);
+      expect(body.siteMove).toEqual({ unlinkedDevice: true, monitorsReattached: 2, topologyPoliciesDisabled: 1 });
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'discovery.asset.update',
+        details: expect.objectContaining({
+          changedFields: expect.arrayContaining(['siteId', 'label']),
+          siteMove: expect.objectContaining({ fromSiteId: SITE_FROM, toSiteId: SITE_TO }),
+        }),
+      }));
+    });
+
+    it('treats siteId equal to the current site as a no-op and still requires another change', async () => {
+      mockAssetThenSite({ id: ASSET_ID, orgId: ORG, siteId: SITE_FROM }, null);
+
+      const res = await patch({ siteId: SITE_FROM });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'No updates provided' });
+      expect(db.transaction).not.toHaveBeenCalled();
+      expect(moveDiscoveredAssetsToSite).not.toHaveBeenCalled();
+    });
+
+    it('404s when the asset does not exist in the caller org', async () => {
+      mockAssetThenSite(null, null);
+
+      const res = await patch({ siteId: SITE_TO });
+
+      expect(res.status).toBe(404);
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+  });
+  describe('PATCH /profiles/:id siteId (profile site move)', () => {
+    const ORG = '00000000-0000-0000-0000-000000000000';
+    const PROFILE_ID = '00000000-0000-0000-0000-000000000020';
+    const SITE_FROM = '00000000-0000-0000-0000-0000000000a1';
+    const SITE_TO = '00000000-0000-0000-0000-0000000000a2';
+    const ASSET_A = '00000000-0000-0000-0000-0000000000e1';
+    const ASSET_B = '00000000-0000-0000-0000-0000000000e2';
+    const existingProfile = {
+      id: PROFILE_ID, orgId: ORG, siteId: SITE_FROM, snmpCommunities: [], snmpCredentials: null,
+    };
+
+    function setSiteRestrictedAuth(allowedSiteIds: string[] | undefined) {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          scope: 'organization',
+          orgId: ORG,
+          partnerId: null,
+          canAccessOrg: (orgId: string) => orgId === ORG,
+          accessibleOrgIds: null,
+        });
+        c.set('permissions', allowedSiteIds ? { allowedSiteIds } : {});
+        return next();
+      });
+    }
+
+    beforeEach(() => {
+      setSiteRestrictedAuth(undefined);
+      // vi.clearAllMocks() keeps queued mockReturnValueOnce values; an earlier
+      // block that queued more lookups than its route consumed would otherwise
+      // feed this block's first select. mockReset restores the vi.fn default.
+      vi.mocked(db.select).mockReset();
+      vi.mocked(db.update).mockReset();
+      vi.mocked(db.transaction).mockReset();
+    });
+
+    const limitSelect = (rows: unknown[]) => ({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+      }),
+    } as any);
+
+    /** Profile lookup followed by the target-site lookup. */
+    function mockProfileThenSite(profile: any, site: any) {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(limitSelect(profile ? [profile] : []))
+        .mockReturnValueOnce(limitSelect(site ? [site] : []));
+    }
+
+    /** A movable-asset selection: select({id}).from(assets).innerJoin(jobs).where(...). */
+    const candidateSelect = (rows: Array<{ id: string }>) => ({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(rows) }),
+      }),
+    });
+
+    function mockProfileUpdate(updatedRow: any) {
+      const setSpy = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([updatedRow]) }),
+      });
+      vi.mocked(db.update).mockReturnValueOnce({ set: setSpy } as any);
+      return setSpy;
+    }
+
+    const patch = (body: unknown) => app.request(`/discovery/profiles/${PROFILE_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify(body),
+    });
+
+    it('rejects a target site that belongs to another org without writing', async () => {
+      mockProfileThenSite(existingProfile, null);
+
+      const res = await patch({ siteId: SITE_TO });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Target site not found or belongs to a different organization' });
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+      expect(moveDiscoveredAssetsToSite).not.toHaveBeenCalled();
+    });
+
+    it('denies a site-restricted caller moving the profile into a site outside their allowlist', async () => {
+      setSiteRestrictedAuth([SITE_FROM]);
+      mockProfileThenSite(existingProfile, { id: SITE_TO });
+
+      const res = await patch({ siteId: SITE_TO });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Access to this site denied' });
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+      expect(moveDiscoveredAssetsToSite).not.toHaveBeenCalled();
+    });
+
+    it('changes the site without moving assets when moveDiscoveredAssets is not set', async () => {
+      mockProfileThenSite(existingProfile, { id: SITE_TO });
+      const setSpy = mockProfileUpdate({ ...existingProfile, siteId: SITE_TO, name: 'HQ' });
+
+      const res = await patch({ siteId: SITE_TO, name: 'HQ' });
+
+      expect(res.status).toBe(200);
+      expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ siteId: SITE_TO, name: 'HQ' }));
+      expect(moveDiscoveredAssetsToSite).not.toHaveBeenCalled();
+      const body = await res.json();
+      expect(body.siteId).toBe(SITE_TO);
+      expect(body.assetMove).toBeUndefined();
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'discovery.profile.update',
+        details: expect.objectContaining({
+          siteMove: expect.objectContaining({ fromSiteId: SITE_FROM, toSiteId: SITE_TO, assetMove: null }),
+        }),
+      }));
+    });
+
+    it('moves exactly the candidate assets through the service inside one transaction and reports the summary', async () => {
+      mockProfileThenSite(existingProfile, { id: SITE_TO });
+      vi.mocked(moveDiscoveredAssetsToSite).mockResolvedValueOnce([
+        { assetId: ASSET_A, moved: true, previousSiteId: SITE_FROM, unlinkedDeviceId: '00000000-0000-0000-0000-0000000000d9', monitorsReattached: 2, topologyPoliciesDisabled: 1 },
+        { assetId: ASSET_B, moved: true, previousSiteId: SITE_FROM, unlinkedDeviceId: null, monitorsReattached: 0, topologyPoliciesDisabled: 1 },
+      ]);
+
+      let capturedSetPayload: any;
+      const tx = {
+        select: vi.fn().mockReturnValueOnce(candidateSelect([{ id: ASSET_A }, { id: ASSET_B }])),
+        update: vi.fn(() => ({
+          set: vi.fn((payload: any) => {
+            capturedSetPayload = payload;
+            return {
+              where: vi.fn().mockReturnValue({
+                returning: vi.fn().mockResolvedValue([{ ...existingProfile, siteId: SITE_TO, name: 'Nightly' }]),
+              }),
+            };
+          }),
+        })),
+      };
+      vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn(tx));
+
+      const res = await patch({ siteId: SITE_TO, moveDiscoveredAssets: true });
+
+      expect(res.status).toBe(200);
+      expect(moveDiscoveredAssetsToSite).toHaveBeenCalledTimes(1);
+      expect(moveDiscoveredAssetsToSite).toHaveBeenCalledWith({
+        tx, orgId: ORG, assetIds: [ASSET_A, ASSET_B], targetSiteId: SITE_TO,
+      });
+      expect(capturedSetPayload).toMatchObject({ siteId: SITE_TO });
+      expect(db.update).not.toHaveBeenCalled();
+
+      const body = await res.json();
+      expect(body.siteId).toBe(SITE_TO);
+      expect(body.assetMove).toEqual({
+        candidates: 2, moved: 2, unlinkedDevices: 1, monitorsReattached: 2, topologyPoliciesDisabled: 2,
+      });
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'discovery.profile.update',
+        details: expect.objectContaining({
+          changedFields: expect.arrayContaining(['siteId', 'moveDiscoveredAssets']),
+          siteMove: expect.objectContaining({
+            fromSiteId: SITE_FROM, toSiteId: SITE_TO, assetMove: expect.objectContaining({ moved: 2 }),
+          }),
+        }),
+      }));
+    });
+
+    it('treats siteId equal to the current site as a no-op for the site while other fields still apply', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(limitSelect([existingProfile]));
+      const setSpy = mockProfileUpdate({ ...existingProfile, name: 'Renamed' });
+
+      const res = await patch({ siteId: SITE_FROM, name: 'Renamed', moveDiscoveredAssets: true });
+
+      expect(res.status).toBe(200);
+      // Only one select ran (the profile lookup): no target-site gate for the same site.
+      expect(db.select).toHaveBeenCalledTimes(1);
+      expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ name: 'Renamed' }));
+      expect(setSpy).not.toHaveBeenCalledWith(expect.objectContaining({ siteId: expect.anything() }));
+      expect(db.transaction).not.toHaveBeenCalled();
+      expect(moveDiscoveredAssetsToSite).not.toHaveBeenCalled();
+      expect((await res.json()).assetMove).toBeUndefined();
+    });
+
+    it('GET /profiles/:id/movable-assets returns the candidate count and the current site', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(limitSelect([{ ...existingProfile, name: 'HQ' }]))
+        .mockReturnValueOnce(candidateSelect([{ id: ASSET_A }, { id: ASSET_B }]) as any);
+
+      const res = await app.request(`/discovery/profiles/${PROFILE_ID}/movable-assets`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ count: 2, siteId: SITE_FROM });
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it('GET /profiles/:id/movable-assets 404s for a profile outside the caller org', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(limitSelect([]));
+
+      const res = await app.request(`/discovery/profiles/${PROFILE_ID}/movable-assets`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(404);
     });
   });
 });
