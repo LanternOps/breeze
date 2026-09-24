@@ -18,6 +18,8 @@ type diskState struct {
 	VendorTopology vendorTopology    `json:"vendorTopology,omitempty"`
 }
 
+const maxHardwareStateBytes = 4 * 1024 * 1024
+
 func readJSON(path string, value any) error {
 	f, e := os.Open(path)
 	if errors.Is(e, os.ErrNotExist) {
@@ -27,12 +29,12 @@ func readJSON(path string, value any) error {
 		return e
 	}
 	defer f.Close()
-	b, e := io.ReadAll(io.LimitReader(f, 4*1024*1024+1))
+	b, e := io.ReadAll(io.LimitReader(f, maxHardwareStateBytes+1))
 	if e != nil {
 		return e
 	}
-	if len(b) > 4*1024*1024 {
-		return fmt.Errorf("hardware state exceeds 4 MB")
+	if len(b) > maxHardwareStateBytes {
+		return fmt.Errorf("hardware state exceeds 4 MiB")
 	}
 	return json.Unmarshal(b, value)
 }
@@ -41,6 +43,9 @@ func writeJSON(path string, value any) error {
 	b, e := json.Marshal(value)
 	if e != nil {
 		return e
+	}
+	if len(b) > maxHardwareStateBytes {
+		return fmt.Errorf("hardware state exceeds 4 MiB")
 	}
 	if e = os.MkdirAll(filepath.Dir(path), 0700); e != nil {
 		return e

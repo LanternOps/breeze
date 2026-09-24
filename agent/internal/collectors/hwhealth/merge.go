@@ -36,21 +36,62 @@ type vendorIdentity struct {
 
 type vendorTopology map[string]vendorIdentity
 
+const maxVendorIdentities = 2000
+const maxVendorTopologyBytes = 2 * 1024 * 1024
+
 func updateVendorTopology(previous vendorTopology, rows []Component, reports []SourceReport, now time.Time, interval time.Duration) vendorTopology {
+	next, _ := boundedVendorTopology(previous, rows, reports, now, interval)
+	return next
+}
+
+func boundedVendorTopology(previous vendorTopology, rows []Component, reports []SourceReport, now time.Time, interval time.Duration) (vendorTopology, bool) {
 	next := vendorTopology{}
-	for key, e := range previous {
-		if !now.Before(e.ObservedAt) && now.Sub(e.ObservedAt) < 2*interval {
-			next[key] = e
+	sizes := map[string]int{}
+	used := 2
+	add := func(key string, e vendorIdentity) bool {
+		if key == "" || wireStringLen(key) > 200 || wireStringLen(e.Serial) > 200 || wireStringLen(e.Model) > 200 {
+			return false
 		}
-	}
-	// Only a complete inventory proves removal. Partial/failed/skipped polls never renew unseen evidence.
-	for _, r := range reports {
-		if vendorSource(r.Source) && r.Status == "ok" && r.Complete != nil && *r.Complete {
-			for key, e := range next {
-				if e.Source == r.Source {
-					delete(next, key)
-				}
+		if !vendorSource(e.Source) || (e.Type != "physical_disk" && e.Type != "virtual_disk") {
+			return false
+		}
+		// Include JSON escaping, field names and map-key bytes, not just the raw string lengths.
+		b, err := json.Marshal(map[string]vendorIdentity{key: e})
+		if err != nil {
+			return false
+		}
+		size := len(b) - 2
+		old, exists := sizes[key]
+		count := len(next)
+		bytes := used - old + size
+		if !exists {
+			count++
+			if len(next) > 0 {
+				bytes++
 			}
+		}
+		if count > maxVendorIdentities || bytes > maxVendorTopologyBytes {
+			return false
+		}
+		next[key] = e
+		sizes[key] = size
+		used = bytes
+		return true
+	}
+	replaced := func(source Kind) bool {
+		for _, r := range reports {
+			if r.Source == source && r.Status == "ok" && r.Complete != nil && *r.Complete {
+				return true
+			}
+		}
+		return false
+	}
+	for key, e := range previous {
+		if now.Before(e.ObservedAt) || now.Sub(e.ObservedAt) >= 2*interval || replaced(e.Source) {
+			continue
+		}
+		if !add(key, e) {
+			return vendorTopology{}, true
 		}
 	}
 	for _, c := range rows {
@@ -61,9 +102,11 @@ func updateVendorTopology(previous vendorTopology, rows []Component, reports []S
 		if c.Model != nil {
 			model = *c.Model
 		}
-		next[c.ComponentKey] = vendorIdentity{Source: c.Source, Type: c.ComponentType, Serial: serial(c), Model: model, ObservedAt: now}
+		if !add(c.ComponentKey, vendorIdentity{Source: c.Source, Type: c.ComponentType, Serial: serial(c), Model: model, ObservedAt: now}) {
+			return vendorTopology{}, true
+		}
 	}
-	return next
+	return next, false
 }
 
 func merge(rows []Component, cache map[string]smartCacheEntry, now time.Time, interval time.Duration, topologies ...vendorTopology) []Component {
