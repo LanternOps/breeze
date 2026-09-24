@@ -320,3 +320,65 @@ func TestAvailablePatchesToMapsDerivesHomebrewCaskCategory(t *testing.T) {
 		t.Fatalf("expected second category homebrew, got %#v", got)
 	}
 }
+
+type skippingMockProvider struct{ heartbeatMockProvider }
+
+func (p *skippingMockProvider) Install(patchID string) (patching.InstallResult, error) {
+	if patchID == "current-pkg" {
+		return patching.InstallResult{
+			PatchID:    patchID,
+			Message:    "No available upgrade found.",
+			Skipped:    true,
+			SkipReason: patching.SkipReasonAlreadyCurrent,
+		}, nil
+	}
+	return patching.InstallResult{PatchID: patchID, Message: "ok", RebootRequired: true}, nil
+}
+
+// #6910: a skipped install (already current / no longer offered) is neither a
+// failure nor an install. The command succeeds, the item stays visible in
+// results[] as status "skipped" with its reason and message, and it is
+// counted in skippedCount — never failedCount or installedCount.
+func TestExecutePatchInstallCommandReportsSkippedAsNonFailure(t *testing.T) {
+	provider := &skippingMockProvider{heartbeatMockProvider{id: "winget"}}
+	h := &Heartbeat{patchMgr: patching.NewPatchManager(provider), stopChan: make(chan struct{})}
+	defer close(h.stopChan)
+
+	result := h.executePatchInstallCommand(map[string]any{
+		"patchIds": []any{"winget:current-pkg", "winget:other-pkg"},
+	}, false)
+
+	if result.Status != "completed" {
+		t.Fatalf("expected completed status, got %s (%s)", result.Status, result.Error)
+	}
+	var summary struct {
+		Success        bool             `json:"success"`
+		InstalledCount int              `json:"installedCount"`
+		SkippedCount   int              `json:"skippedCount"`
+		FailedCount    int              `json:"failedCount"`
+		RebootRequired bool             `json:"rebootRequired"`
+		Results        []map[string]any `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(result.Stdout), &summary); err != nil {
+		t.Fatalf("expected JSON stdout, got parse error: %v", err)
+	}
+	if !summary.Success || summary.InstalledCount != 1 || summary.SkippedCount != 1 || summary.FailedCount != 0 {
+		t.Fatalf("unexpected counts: %+v", summary)
+	}
+	if !summary.RebootRequired {
+		t.Fatal("rebootRequired from the real install must survive")
+	}
+	var skipped map[string]any
+	for _, r := range summary.Results {
+		if r["installId"] == "winget:current-pkg" {
+			skipped = r
+		}
+	}
+	if skipped == nil {
+		t.Fatalf("skipped item missing from results: %+v", summary.Results)
+	}
+	if skipped["status"] != "skipped" || skipped["skipReason"] != patching.SkipReasonAlreadyCurrent ||
+		skipped["message"] != "No available upgrade found." || skipped["rebootRequired"] != false {
+		t.Fatalf("unexpected skipped entry: %+v", skipped)
+	}
+}

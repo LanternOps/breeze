@@ -68,6 +68,23 @@ func (w *WindowsUpdateProvider) Install(patchID string) (InstallResult, error) {
 
 	err := w.withSession(func(session *ole.IDispatch) error {
 		update, err := w.findUpdate(session, "IsInstalled=0", patchID)
+		if isUpdateNotFound(err) {
+			// The update was in the scan set but this fresh search no longer
+			// offers it: installed meanwhile, or superseded/expired (Defender
+			// definitions, KB2267602). Skipped, not failed (#6910).
+			alreadyInstalled := false
+			installed, instErr := w.findUpdate(session, "IsInstalled=1", patchID)
+			if instErr == nil && installed != nil {
+				installed.Release()
+				alreadyInstalled = true
+			} else if instErr != nil && !isUpdateNotFound(instErr) {
+				log.Debug("installed-update lookup failed; reporting as not offered", "patchId", patchID, "error", instErr)
+			}
+			result = notOfferedInstallResult(patchID, alreadyInstalled)
+			log.Info("update no longer offered at install time; skipping",
+				"patchId", patchID, "reason", result.SkipReason)
+			return nil
+		}
 		if err != nil {
 			return err
 		}
@@ -566,7 +583,10 @@ func (w *WindowsUpdateProvider) findUpdate(session *ole.IDispatch, criteria, pat
 		update.Release()
 	}
 
-	return nil, fmt.Errorf("update %s not found", patchID)
+	// Wraps the sentinel so Install can tell "search succeeded, no match"
+	// (skippable, #6910) from a search failure. Text is unchanged:
+	// "update <id> not found".
+	return nil, fmt.Errorf("update %s %w", patchID, errUpdateNotFound)
 }
 
 func (w *WindowsUpdateProvider) createInstaller(session *ole.IDispatch, update *ole.IDispatch) (*ole.IDispatch, error) {
