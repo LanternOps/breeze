@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context, type Next } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { zodValidationErrorBody } from '../../lib/zodIssues';
 import type { AuthContext } from '../../middleware/auth';
@@ -17,7 +17,7 @@ import {
   warrantyHpCmslRequested,
   warrantyInlineSettingsSchema,
 } from '@breeze/shared/validators';
-import { ORG_SCOPED_ONLY_FEATURE_TYPES } from '@breeze/shared/constants';
+import { ORG_SCOPED_ONLY_FEATURE_TYPES, isRetiredConfigFeatureType } from '@breeze/shared/constants';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
@@ -112,12 +112,25 @@ const WARRANTY_CONSENT_REFUSAL = {
   code: 'WARRANTY_CONSENT_NOT_CLIENT_SETTABLE',
 } as const;
 
+export const RETIRED_FEATURE_TYPE_GONE = (featureType: string) => ({
+  error: `Feature type "${featureType}" was retired by the alerting consolidation.`,
+  hint: 'Author the condition as a monitor (POST /monitor-definitions) and attach it to the policy through the "monitors" feature link.',
+  retiredFeatureType: featureType,
+});
+const rejectRetiredFeatureType = async (c: Context, next: Next) => {
+  const body = await c.req.raw.clone().json().catch(() => null);
+  const ft = (body as { featureType?: unknown } | null)?.featureType;
+  if (isRetiredConfigFeatureType(ft)) return c.json(RETIRED_FEATURE_TYPE_GONE(ft), 410);
+  await next();
+};
+
 featureLinkRoutes.post(
   '/:id/features',
   requireScope('organization', 'partner', 'system'),
   requireConfigPolicyWrite,
   requireMfa(),
   zValidator('param', idParamSchema),
+  rejectRetiredFeatureType,
   zValidator('json', addFeatureLinkSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;

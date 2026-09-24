@@ -27,7 +27,6 @@ import {
   deviceGroupMemberships,
   sites,
   patchPolicies,
-  alertRules,
   backupConfigs,
   backupProfiles,
   securityPolicies,
@@ -37,7 +36,7 @@ import {
   sensitiveDataPolicies,
   peripheralPolicies,
 } from '../db/schema';
-import { and, eq, desc, or, isNull, isNotNull, sql, inArray, asc, getTableColumns, SQL } from 'drizzle-orm';
+import { and, eq, desc, or, isNull, isNotNull, sql, inArray, notInArray, asc, getTableColumns, SQL } from 'drizzle-orm';
 import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './partnerWideAccess';
 import { buildRoleOsFilterConditions } from './featureConfigResolver';
 import {
@@ -151,7 +150,7 @@ export const vulnerabilityInlineSettingsSchema = z
 // configurationPolicy ⇄ policyBaselineDefaults import cycle (and to keep route/
 // helper test suites from transitively crash-loading this service). Re-exported
 // here so existing importers that read them from configurationPolicy still work.
-import { CONFIG_FEATURE_TYPES, type ConfigFeatureType } from './configFeatureTypes';
+import { CONFIG_FEATURE_TYPES, RETIRED_CONFIG_FEATURE_TYPES, type ConfigFeatureType } from './configFeatureTypes';
 export { CONFIG_FEATURE_TYPES };
 export type { ConfigFeatureType };
 export type ConfigAssignmentLevel = 'partner' | 'organization' | 'site' | 'device_group' | 'device';
@@ -2077,7 +2076,11 @@ export async function listFeatureLinks(configPolicyId: string, executor: DbExecu
   const links = await executor
     .select()
     .from(configPolicyFeatureLinks)
-    .where(eq(configPolicyFeatureLinks.configPolicyId, configPolicyId));
+    .where(and(
+      eq(configPolicyFeatureLinks.configPolicyId, configPolicyId),
+      // Preserve retired rows for history without exposing them as active links.
+      notInArray(configPolicyFeatureLinks.featureType, [...RETIRED_CONFIG_FEATURE_TYPES]),
+    ));
 
   // Assemble inlineSettings from normalized tables for each link
   const enriched = await Promise.all(
@@ -2608,6 +2611,7 @@ async function resolveEffectiveConfigWithExecutor(
     )
     .where(and(
       sql`(${sql.join(targetConditions, sql` OR `)})`,
+      notInArray(configPolicyEffectiveFeatureLinks.featureType, [...RETIRED_CONFIG_FEATURE_TYPES]),
       // Apply the optional role/os device-type filter (#1724). A NULL filter
       // matches all; a set filter gates the assignment to matching devices.
       ...buildRoleOsFilterConditions(device),
@@ -2826,7 +2830,6 @@ export const PARTNER_LINKABLE_FEATURE_TYPES: ReadonlySet<ConfigFeatureType> = ne
   'patch',
   'software_policy',
   'security',
-  'alert_rule',
   'compliance',
   'sensitive_data',
   'peripheral_control',
@@ -2976,7 +2979,6 @@ export async function validateFeaturePolicyExists(
   if (
     featureType === 'software_policy' ||
     featureType === 'security' ||
-    featureType === 'alert_rule' ||
     featureType === 'compliance' ||
     featureType === 'sensitive_data' ||
     featureType === 'peripheral_control' ||
@@ -2986,7 +2988,7 @@ export async function validateFeaturePolicyExists(
       return { valid: true };
     }
 
-    // Software (#2126), security (#2127), alert-rule (#2128), compliance
+    // Software (#2126), security (#2127), compliance
     // (#2129, automation_policies), sensitive-data, and peripheral-control
     // (#2131) policies are dual-ownership. A config policy may link:
     //  - an org-owned policy belonging to the config policy's own org
@@ -2998,15 +3000,13 @@ export async function validateFeaturePolicyExists(
       ? { table: softwarePolicies, label: 'Software policy' }
       : featureType === 'security'
         ? { table: securityPolicies, label: 'Security policy' }
-        : featureType === 'alert_rule'
-          ? { table: alertRules, label: 'Alert rule' }
-          : featureType === 'compliance'
-            ? { table: automationPolicies, label: 'Compliance policy' }
-            : featureType === 'sensitive_data'
-              ? { table: sensitiveDataPolicies, label: 'Sensitive data policy' }
-              : featureType === 'peripheral_control'
-                ? { table: peripheralPolicies, label: 'Peripheral policy' }
-                : { table: maintenanceWindows, label: 'Maintenance window' };
+        : featureType === 'compliance'
+          ? { table: automationPolicies, label: 'Compliance policy' }
+          : featureType === 'sensitive_data'
+            ? { table: sensitiveDataPolicies, label: 'Sensitive data policy' }
+            : featureType === 'peripheral_control'
+              ? { table: peripheralPolicies, label: 'Peripheral policy' }
+              : { table: maintenanceWindows, label: 'Maintenance window' };
     const partnerId =
       owner.partnerId ?? (owner.orgId ? await resolvePartnerIdForOrg(owner.orgId) : null);
 
@@ -3062,7 +3062,6 @@ export async function validateFeaturePolicyExists(
   }
 
   if (
-    featureType === 'monitoring' ||
     featureType === 'event_log' ||
     featureType === 'hardware_monitoring' ||
     featureType === 'onedrive_helper' ||

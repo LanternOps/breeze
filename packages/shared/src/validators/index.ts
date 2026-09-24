@@ -1,3 +1,4 @@
+import { CONFIG_FEATURE_TYPES } from '../constants/configFeatureTypes';
 import { z } from 'zod';
 import {
   ACTOR_TYPES,
@@ -570,7 +571,7 @@ export const deviceLifecycleInlineSettingsSchema = z
 export type DeviceLifecycleInlineSettings = z.infer<typeof deviceLifecycleInlineSettingsSchema>;
 
 export const addFeatureLinkSchema = z.object({
-  featureType: z.enum(['patch', 'alert_rule', 'backup', 'security', 'monitoring', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data', 'peripheral_control', 'warranty', 'helper', 'remote_access', 'pam', 'onedrive_helper', 'vulnerability', 'device_lifecycle', 'monitors', 'hardware_monitoring']),
+  featureType: z.enum(CONFIG_FEATURE_TYPES),
   featurePolicyId: z.string().guid().optional(),
   inlineSettings: configFeatureInlineSettingsSchema.optional(),
 }).refine(
