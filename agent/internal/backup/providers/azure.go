@@ -88,6 +88,15 @@ func (a *AzureProvider) UploadContext(ctx context.Context, localPath, remotePath
 
 // Download retrieves a file from Azure Blob Storage.
 func (a *AzureProvider) Download(remotePath, localPath string) error {
+	return a.DownloadContext(context.Background(), remotePath, localPath)
+}
+
+// DownloadContext retrieves a file from Azure Blob Storage. Cancelling ctx
+// aborts the in-progress transfer.
+func (a *AzureProvider) DownloadContext(ctx context.Context, remotePath, localPath string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if remotePath == "" {
 		return errors.New("remote path is required")
 	}
@@ -114,7 +123,6 @@ func (a *AzureProvider) Download(remotePath, localPath string) error {
 		"blob", remotePath,
 	)
 
-	ctx := context.Background()
 	if _, err := client.DownloadFile(ctx, a.containerName, remotePath, file, nil); err != nil {
 		closeErr := file.Close()
 		if closeErr != nil {

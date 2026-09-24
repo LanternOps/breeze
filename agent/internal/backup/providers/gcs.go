@@ -87,6 +87,15 @@ func (g *GCSProvider) UploadContext(ctx context.Context, localPath, remotePath s
 
 // Download retrieves a file from Google Cloud Storage.
 func (g *GCSProvider) Download(remotePath, localPath string) error {
+	return g.DownloadContext(context.Background(), remotePath, localPath)
+}
+
+// DownloadContext retrieves a file from Google Cloud Storage. Cancelling ctx
+// aborts the in-progress read.
+func (g *GCSProvider) DownloadContext(ctx context.Context, remotePath, localPath string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if remotePath == "" {
 		return errors.New("remote path is required")
 	}
@@ -108,7 +117,6 @@ func (g *GCSProvider) Download(remotePath, localPath string) error {
 		"object", remotePath,
 	)
 
-	ctx := context.Background()
 	reader, err := client.Bucket(g.bucketName).Object(remotePath).NewReader(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create gcs reader: %w", err)
