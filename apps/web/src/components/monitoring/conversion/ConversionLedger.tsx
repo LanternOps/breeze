@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../../stores/auth';
 import { ActionError, runAction } from '@/lib/runAction';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 import { showToast } from '../../shared/Toast';
 import { conversionFriendly, conversionPaths, fetchLedgerPage, type ConversionLedgerEntry } from './conversionApi';
 export default function ConversionLedger({ orgId, policyId, revision = 0, onChanged }: {
@@ -45,10 +46,11 @@ export default function ConversionLedger({ orgId, policyId, revision = 0, onChan
     {error && <button onClick={() => void load()}>{t('common:actions.retry')}</button>}
     {!loading && !error && rows.length === 0 && <p>{t('monitoring:conversion.ledger.empty')}</p>}
     <ul>{rows.map((row) => <li key={row.id}>
-      <p>{row.sourceName} · {row.convertedAt} · {row.convertedBy ?? t('monitoring:conversion.ledger.system')}</p>
+      <p>{row.sourceName} · {formatDateTime(row.convertedAt)} · {row.convertedByName ?? row.convertedBy ?? t('monitoring:conversion.ledger.system')}</p>
       <ul>{row.outputs.map((output) => <li key={`${output.monitorId}:${output.role}`}>
-        <a href={`/alerts/monitors/${output.monitorId}`}>{output.monitorId}</a> · {output.role}
+        <a href={`/alerts/monitors/${output.monitorId}`}>{output.monitorName ?? output.monitorId}</a> · {output.role}
       </li>)}</ul>
+      {row.revertedAt && <span data-testid={`ledger-reverted-${row.id}`}>{t('monitoring:conversion.ledger.reverted')}</span>}
       <button data-testid={`ledger-undo-${row.id}`} disabled={loading || error || busy || !row.revertable || !!row.revertedAt}
         onClick={() => void undo(row)}>{t('monitoring:conversion.ledger.undo')}</button>
     </li>)}</ul>

@@ -10,9 +10,11 @@ export interface ConversionPendingBannerProps {
   orgId: string | null;
   onReview: () => void;
   onConverted?: () => void;
+  /** Bump to force a refetch after a conversion elsewhere on the page (e.g. an Undo). */
+  revision?: number;
 }
 
-export default function ConversionPendingBanner({ orgId, onReview, onConverted }: ConversionPendingBannerProps) {
+export default function ConversionPendingBanner({ orgId, onReview, onConverted, revision }: ConversionPendingBannerProps) {
   const { t } = useTranslation(['monitoring', 'common']);
   const claims = useJwtClaims();
   const canManagePartnerWide = useAuthStore((s) => s.user?.canManagePartnerWide) !== false;
@@ -25,7 +27,7 @@ export default function ConversionPendingBanner({ orgId, onReview, onConverted }
   const load = useCallback(async () => {
     try { setCounts(await fetchPendingCounts(orgId)); } catch { setCounts(null); }
   }, [orgId]);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void load(); }, [load, revision]);
 
   if (!counts || counts.rows === 0) return null;
 

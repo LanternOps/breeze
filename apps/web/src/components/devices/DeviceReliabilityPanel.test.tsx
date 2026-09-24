@@ -117,7 +117,7 @@ describe('DeviceReliabilityPanel', () => {
   it('renders an error state with a working Retry when the load fails', async () => {
     fetchWithAuthMock
       .mockResolvedValueOnce(makeJsonResponse({ error: 'down' }, false, 500))
-      .mockResolvedValueOnce(makeJsonResponse({ error: 'No snapshot' }, false, 404));
+      .mockResolvedValueOnce(makeJsonResponse({ snapshot: null, history: [] }));
 
     render(<DeviceReliabilityPanel deviceId="dev-1" />);
 
@@ -127,8 +127,12 @@ describe('DeviceReliabilityPanel', () => {
     await screen.findByText('No reliability snapshot available yet.');
   });
 
-  it('renders an empty state when no snapshot exists yet', async () => {
-    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ error: 'No snapshot' }, false, 404));
+  // sweep D15: no snapshot yet is an expected empty state, so the API now
+  // answers 200 with snapshot: null instead of 404 — a 404 on every load of
+  // a device without enough history logged as a console error for nothing
+  // broken.
+  it('renders an empty state when no snapshot exists yet (200, snapshot: null)', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ snapshot: null, history: [] }));
 
     render(<DeviceReliabilityPanel deviceId="dev-1" />);
 

@@ -296,6 +296,7 @@
       "device_group": "eine Gerätegruppe"
     },
     "selectPolicy": "Konfigurationsrichtlinie",
+    "attachToPolicy": "Richtlinie zuweisen…",
     "selectTarget": "Ziel",
     "noOrgSelected": "Wählen Sie eine Organisation aus, für die bereitgestellt werden soll.",
     "policyName": "Richtlinienname",
@@ -486,6 +487,7 @@
       "more": "Mehr laden",
       "empty": "Kein Konvertierungsverlauf.",
       "system": "Automatisches System",
+      "reverted": "Rückgängig gemacht",
       "deadline": "Rückgängig ist nach Entfernung der Quelllaufzeit durch W05d nicht verfügbar."
     },
     "errorCodes": {

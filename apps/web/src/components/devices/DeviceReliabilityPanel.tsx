@@ -299,11 +299,10 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
     setLoading(true);
     setError(undefined);
     try {
+      // sweep D15: no snapshot yet is an expected empty state, so the API
+      // answers 200 with snapshot: null (not 404) — a 404 here would now
+      // also wrongly mask a genuine "device not found".
       const response = await fetchWithAuth(`/reliability/${deviceId}`);
-      if (response.status === 404) {
-        setSnapshot(null);
-        return;
-      }
       if (!response.ok) throw new Error(stableT('deviceReliabilityPanel.errors.loadScore'));
       const json = await response.json();
       setSnapshot(json?.snapshot ?? null);

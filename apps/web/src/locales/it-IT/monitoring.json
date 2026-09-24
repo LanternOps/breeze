@@ -296,6 +296,7 @@
       "device_group": "un gruppo di dispositivi"
     },
     "selectPolicy": "Criterio di configurazione",
+    "attachToPolicy": "Collega a un criterio…",
     "selectTarget": "Destinazione",
     "noOrgSelected": "Seleziona un'organizzazione per la distribuzione.",
     "policyName": "Nome del criterio",
@@ -486,6 +487,7 @@
       "more": "Carica altro",
       "empty": "Nessuna conversione precedente.",
       "system": "Sistema",
+      "reverted": "Annullato",
       "deadline": "Annullamento non disponibile dopo la rimozione del motore di origine in W05d."
     },
     "errorCodes": {

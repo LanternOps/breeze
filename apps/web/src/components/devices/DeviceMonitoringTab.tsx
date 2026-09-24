@@ -30,6 +30,8 @@ export interface DeviceEffectiveMonitorRow {
 
 type DeviceMonitoringTabProps = {
   deviceId: string;
+  /** Displayed in the reset-escalation confirmation; falls back to the device id when omitted. */
+  deviceName?: string;
   timezone?: string;
 };
 
@@ -41,7 +43,7 @@ const STATE_STYLES: Record<string, string> = {
 
 const COLUMNS = ['monitor', 'kind', 'policy', 'state', 'episode', 'escalation'] as const;
 
-export default function DeviceMonitoringTab({ deviceId, timezone }: DeviceMonitoringTabProps) {
+export default function DeviceMonitoringTab({ deviceId, deviceName, timezone }: DeviceMonitoringTabProps) {
   const { t } = useTranslation(['monitoring', 'common']);
   const [rows, setRows] = useState<DeviceEffectiveMonitorRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -77,7 +79,7 @@ export default function DeviceMonitoringTab({ deviceId, timezone }: DeviceMonito
   }, [load]);
 
   const reset = async (row: DeviceEffectiveMonitorRow) => {
-    if (!window.confirm(t('monitoring:activity.reset.confirm', { device: row.name }))) return;
+    if (!window.confirm(t('monitoring:activity.reset.confirm', { device: deviceName ?? deviceId }))) return;
     setResetting(row.monitorId);
     try {
       await runAction({

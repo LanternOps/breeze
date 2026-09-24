@@ -296,6 +296,7 @@
       "device_group": "un grupo de dispositivos"
     },
     "selectPolicy": "Política de configuración",
+    "attachToPolicy": "Adjuntar a una política…",
     "selectTarget": "Destino",
     "noOrgSelected": "Selecciona una organización para desplegar.",
     "policyName": "Nombre de la política",
@@ -486,6 +487,7 @@
       "more": "Cargar más",
       "empty": "No hay historial de conversión.",
       "system": "Sistema",
+      "reverted": "Revertido",
       "deadline": "Deshacer no está disponible cuando W05d elimina el evaluador de origen."
     },
     "errorCodes": {

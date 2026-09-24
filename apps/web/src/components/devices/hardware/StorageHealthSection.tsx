@@ -23,7 +23,11 @@ export default function StorageHealthSection({ deviceId }: { deviceId: string })
         const response = await fetchWithAuth(`/devices/${deviceId}/hardware-health`, { signal: controller.signal });
         const body = await response.json();
         if (!active) return;
-        if (response.status === 404 && body.error === 'no_hardware_health') {
+        // sweep D15: no report yet is an expected empty state, so the API
+        // answers 200 with this same discriminant body (not 404) — a 404 on
+        // every device-detail load logged as a console error for nothing
+        // broken.
+        if (body?.error === 'no_hardware_health') {
           setLoad({ status: 'absent' });
           return;
         }

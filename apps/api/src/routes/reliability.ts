@@ -368,13 +368,13 @@ reliabilityRoutes.get(
       getDeviceReliabilityHistory(deviceId, 30),
     ]);
 
-    if (!snapshot) {
-      return c.json({ error: 'No reliability snapshot available for this device yet' }, 404);
-    }
-
+    // No snapshot yet is an expected empty state (not enough history has
+    // accumulated), not an error — a device detail page hits this route on
+    // every load. 200 with a null snapshot matches this same success shape,
+    // so callers need no separate not-found branch (sweep D15).
     return c.json({
       snapshot,
-      history,
+      history: snapshot ? history : [],
     });
   }
 );

@@ -202,6 +202,13 @@ describe('navSections structure (#1321, #1324)', () => {
     expect(allHrefs).not.toContain('/settings/system/deprecations');
   });
 
+  // D4 (v0.116.0 sweep): /admin/monitor-conversion existed with no nav entry.
+  it('lists a platform-admin-only Monitor Conversion entry in Administration', () => {
+    const item = section('administration').items.find((i) => i.href === '/admin/monitor-conversion');
+    expect(item, 'Administration section should link to /admin/monitor-conversion').toBeDefined();
+    expect(item?.platformAdminOnly).toBe(true);
+  });
+
   it('lists Deliverable Templates under the Billing section (M3, #6224)', () => {
     const item = section('billing').items.find((i) => i.href === '/settings/deliverable-templates');
     expect(item, 'Billing section should link to /settings/deliverable-templates').toBeDefined();

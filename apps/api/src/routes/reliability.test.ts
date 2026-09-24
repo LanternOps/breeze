@@ -300,17 +300,23 @@ describe('public reliability routes', () => {
       expect(body.error).toMatch(/device not found/i);
     });
 
-    it('returns 404 when no reliability snapshot exists yet', async () => {
+    // sweep D15: no snapshot yet is an expected empty state (a device that
+    // hasn't accumulated enough history), not an error — a device detail page
+    // visits this on every load, and a 404 there logs as a console error for
+    // something that isn't broken. 200 with a null snapshot matches the
+    // shape the success branch already returns, so the client needs no new
+    // status-code branch to treat it as empty.
+    it('returns 200 with a null snapshot when none exists yet', async () => {
       vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: ORG_ID } as any);
       vi.mocked(getDeviceReliability).mockResolvedValue(null);
       vi.mocked(getDeviceReliabilityHistory).mockResolvedValue([]);
 
       const app = buildApp();
       const res = await app.request(`/reliability/${DEVICE_ID}`);
-      expect(res.status).toBe(404);
+      expect(res.status).toBe(200);
 
       const body = await res.json();
-      expect(body.error).toMatch(/no reliability snapshot/i);
+      expect(body).toEqual({ snapshot: null, history: [] });
     });
 
     it('returns 200 with snapshot and history when device exists', async () => {

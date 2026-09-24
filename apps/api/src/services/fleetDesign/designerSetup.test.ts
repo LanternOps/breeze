@@ -156,10 +156,10 @@ describe('describeDesignerSetup', () => {
 
 describe('enableDesigner', () => {
   it('creates a partner-wide designer in act, enabled, with the caller as recipient when none resolves', async () => {
-    resolveEffectiveAgentMock.mockResolvedValueOnce(null).mockResolvedValueOnce(resolved());
-    createAgentMock.mockResolvedValue(agentRow({ enabled: true, mode: 'act' }));
+    resolveEffectiveAgentMock.mockResolvedValueOnce(null);
+    createAgentMock.mockResolvedValue(agentRow({ id: PARTNER_AGENT_ID, enabled: true, mode: 'act' }));
 
-    await expect(enableDesigner(partnerAdminAuth(), ORG_ID)).resolves.toMatchObject({ status: 'ready', agentId: PARTNER_AGENT_ID });
+    await expect(enableDesigner(partnerAdminAuth(), ORG_ID)).resolves.toEqual({ status: 'ready', agentId: PARTNER_AGENT_ID, canEnable: false });
 
     expect(createAgentMock).toHaveBeenCalledTimes(1);
     const [, owner, input] = createAgentMock.mock.calls[0]!;
@@ -173,6 +173,22 @@ describe('enableDesigner', () => {
       recipients: { userIds: [USER_ID] },
     });
     expect(updateAgentMock).not.toHaveBeenCalled();
+  });
+
+  // D7 (v0.116.0 sweep): describeDesignerSetup's partner-baseline read
+  // (readWithPartnerAxisVisibility) escapes to a SECOND pooled connection —
+  // it cannot see the row `createAgent` just wrote inside the request's own
+  // still-open transaction, so a stale re-read after create reported
+  // {status:"missing", agentId:null}. The create branch must report state
+  // from the row it just wrote, not from a fresh cross-connection read.
+  it('reports ready from the just-created row even when a stale re-read would still say missing (sweep D7)', async () => {
+    resolveEffectiveAgentMock.mockResolvedValueOnce(null).mockResolvedValueOnce(null);
+    createAgentMock.mockResolvedValue(agentRow({ id: PARTNER_AGENT_ID, enabled: true, mode: 'act' }));
+
+    await expect(enableDesigner(partnerAdminAuth(), ORG_ID)).resolves.toEqual({ status: 'ready', agentId: PARTNER_AGENT_ID, canEnable: false });
+    // Only the pre-create existence check should hit resolveEffectiveAgent —
+    // no re-describe after the write.
+    expect(resolveEffectiveAgentMock).toHaveBeenCalledTimes(1);
   });
 
   it('refuses to create for a token with no partner scope', async () => {

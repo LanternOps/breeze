@@ -1,5 +1,5 @@
 import '@/lib/i18n';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 import { fetchWithAuth } from '../../../stores/auth';
@@ -37,5 +37,13 @@ describe('PendingPoliciesList', () => {
     render(<PendingPoliciesList orgId="org-1" />);
     expect(await screen.findByTestId('pending-policies-error')).toBeInTheDocument();
     expect(screen.queryByTestId('pending-policies-empty')).toBeNull();
+  });
+
+  it('refetches when revision changes externally (e.g. Convert everything or Undo elsewhere on the page)', async () => {
+    vi.mocked(fetchWithAuth).mockResolvedValue(json({ data: { policies: 0, rows: 0, pendingPolicies: [] } }));
+    const { rerender } = render(<PendingPoliciesList orgId="org-1" revision={0} />);
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(1));
+    rerender(<PendingPoliciesList orgId="org-1" revision={1} />);
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(2));
   });
 });

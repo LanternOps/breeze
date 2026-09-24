@@ -60,6 +60,16 @@ describe('DeviceMonitoringTab — effective device monitors', () => {
     expect(screen.queryByTestId('device-monitor-reset-m1')).toBeNull();
   });
 
+  it('confirms the reset against the device name, not the monitor name (sweep D5)', async () => {
+    fetchMock.mockImplementation(async (_url, init) =>
+      init?.method === 'POST' ? json({ success: true }) : json({ data: [row] }),
+    );
+    render(<DeviceMonitoringTab deviceId="d1" deviceName="Sweep D high CPU" />);
+    fireEvent.click(await screen.findByTestId('device-monitor-reset-m1'));
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('Sweep D high CPU'));
+    expect(window.confirm).not.toHaveBeenCalledWith(expect.stringContaining(row.name));
+  });
+
   it('resets a latch through runAction and reloads', async () => {
     fetchMock.mockImplementation(async (_url, init) =>
       init?.method === 'POST' ? json({ success: true }) : json({ data: [row] }),

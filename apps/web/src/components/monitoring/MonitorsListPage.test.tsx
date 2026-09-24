@@ -150,9 +150,19 @@ describe('MonitorsListPage (#5289)', () => {
   });
 });
 
-vi.mock('./conversion/ConversionPendingBanner', () => ({ default: (p: { onReview: () => void }) => <button data-testid="banner" onClick={p.onReview} /> }));
-vi.mock('./conversion/PendingPoliciesList', () => ({ default: () => <div data-testid="pending-policies" /> }));
-vi.mock('./LegacyRulesTable', () => ({ default: () => <div data-testid="legacy-rules-table" /> }));
+vi.mock('./conversion/ConversionPendingBanner', () => ({
+  default: (p: { onReview: () => void; onConverted?: () => void; revision?: number }) => <>
+    <button data-testid="banner" onClick={p.onReview} />
+    <button data-testid="banner-convert-everything" onClick={() => p.onConverted?.()} />
+    <span data-testid="banner-revision">{p.revision}</span>
+  </>,
+}));
+vi.mock('./conversion/PendingPoliciesList', () => ({
+  default: (p: { revision?: number }) => <div data-testid="pending-policies">{p.revision}</div>,
+}));
+vi.mock('./LegacyRulesTable', () => ({
+  default: (p: { onConverted?: () => void }) => <button data-testid="legacy-rules-table" onClick={() => p.onConverted?.()} />,
+}));
 vi.mock('../../stores/orgStore', () => ({ useOrgStore: (sel: (s: { currentOrgId: string | null }) => unknown) => sel({ currentOrgId: 'org-1' }) }));
 
 describe('MonitorsListPage — Needs-conversion view (W05c2)', () => {
@@ -176,5 +186,32 @@ describe('MonitorsListPage — Needs-conversion view (W05c2)', () => {
     expect(window.location.hash).toBe('#needs-conversion');
     fireEvent.click(screen.getByTestId('monitors-list-view-all'));
     expect(window.location.hash).toBe('');
+  });
+  it('labels the legacy rules table with a heading', async () => {
+    window.location.hash = '#needs-conversion';
+    render(<MonitorsListPage />);
+    await screen.findByTestId('legacy-rules-table');
+    expect(screen.getByRole('heading', { name: 'Legacy alert rules' })).toBeInTheDocument();
+  });
+  // D3: Convert everything (banner) or Undo (ledger) must not leave the
+  // Policies-with-legacy-rules list or the banner's own counts stale.
+  it('bumps a shared revision so the pending list and banner refetch after Convert everything', async () => {
+    window.location.hash = '#needs-conversion';
+    render(<MonitorsListPage />);
+    await screen.findByTestId('pending-policies');
+    const before = Number(screen.getByTestId('pending-policies').textContent);
+    expect(screen.getByTestId('banner-revision').textContent).toBe(String(before));
+    fireEvent.click(screen.getByTestId('banner-convert-everything'));
+    await waitFor(() => expect(screen.getByTestId('pending-policies').textContent).toBe(String(before + 1)));
+    expect(screen.getByTestId('banner-revision').textContent).toBe(String(before + 1));
+  });
+  it('bumps the shared revision so the pending list and banner refetch after a legacy-rule conversion', async () => {
+    window.location.hash = '#needs-conversion';
+    render(<MonitorsListPage />);
+    await screen.findByTestId('pending-policies');
+    const before = Number(screen.getByTestId('pending-policies').textContent);
+    fireEvent.click(screen.getByTestId('legacy-rules-table'));
+    await waitFor(() => expect(screen.getByTestId('pending-policies').textContent).toBe(String(before + 1)));
+    expect(screen.getByTestId('banner-revision').textContent).toBe(String(before + 1));
   });
 });

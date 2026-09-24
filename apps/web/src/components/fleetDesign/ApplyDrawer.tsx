@@ -28,6 +28,13 @@ export interface ApplyDrawerProps {
   /** Called after a successful (including partial) apply or rollback, so the
    *  page can reload the design's ledger. */
   onApplied: () => void;
+  /**
+   * The report's per-function confidence (0-1), keyed by functionKey — the
+   * SAME source FleetDesignViewer reads (`outcome.sections.functions[].confidence`).
+   * The apply preview itself carries no confidence field, so without this the
+   * drawer has nothing but a hardcoded guess.
+   */
+  functionConfidence?: Record<string, number>;
 }
 
 function selectionCount(base: Omit<FleetDesignApproval, "displacementsAccepted">): number {
@@ -36,7 +43,7 @@ function selectionCount(base: Omit<FleetDesignApproval, "displacementsAccepted">
   );
 }
 
-export default function ApplyDrawer({ open, onClose, reportRunId, approvalBase, onApplied }: ApplyDrawerProps) {
+export default function ApplyDrawer({ open, onClose, reportRunId, approvalBase, onApplied, functionConfidence }: ApplyDrawerProps) {
   const { t } = useTranslation("fleetDesign");
   const [previewLoading, setPreviewLoading] = useState(false);
   const [preview, setPreview] = useState<FleetDesignApplyPreview | null>(null);
@@ -247,12 +254,15 @@ export default function ApplyDrawer({ open, onClose, reportRunId, approvalBase, 
                 <ul className="mt-1 space-y-1 text-sm">
                   {preview.functions.map((f) => (
                     <li key={f.functionKey}>
-                      {f.groupName} — {t("items.functionMeta", { count: f.deviceCount, pct: 100 })}
+                      {f.groupName} — {t("items.functionMeta", {
+                        count: f.deviceCount,
+                        pct: Math.round((functionConfidence?.[f.functionKey] ?? 0) * 100),
+                      })}
                     </li>
                   ))}
                   {preview.policies.map((p) => (
                     <li key={p.functionKey}>
-                      {p.policyName} — {t("drawer.watchAndRuleCount", { watches: p.watchCount, rules: p.ruleCount })}
+                      {p.policyName} — {t("drawer.watchCount", { count: p.watchCount })}, {t("drawer.ruleCount", { count: p.ruleCount })}
                     </li>
                   ))}
                 </ul>

@@ -373,6 +373,12 @@ export default function FleetDesignPage() {
   const drift = detail?.summary.fleetDesign?.drift ?? null;
   const unavailable = detail?.summary.fleetDesign?.unavailable;
   const hasAppliedRows = ledger.some((i) => i.status === "applied");
+  // The apply preview carries no confidence field of its own (#D8) — the
+  // drawer reads it from the same report data FleetDesignViewer does.
+  const functionConfidence: Record<string, number> = {};
+  for (const f of [...(outcome?.sections.functions ?? []), ...(outcome?.sections.unsure.lowConfidenceFunctions ?? [])]) {
+    functionConfidence[f.functionKey] = f.confidence;
+  }
 
   return (
     <div className="space-y-6" data-testid="fleet-design-page">
@@ -604,6 +610,7 @@ export default function FleetDesignPage() {
             onClose={() => setDrawerOpen(false)}
             reportRunId={selectedRunId}
             approvalBase={selection.toApproval()}
+            functionConfidence={functionConfidence}
             onApplied={() => {
               void loadDetail(selectedRunId);
               void loadList();

@@ -59,8 +59,11 @@ describe('StorageHealthSection', () => {
     expect(screen.getByTestId('hardware-disk-winpd:1')).toHaveClass('opacity-60');
     expect(screen.getByText(/Not seen since/)).toBeVisible();
   });
-  it('handles only the contracted 404 as an absent report', async () => {
-    vi.mocked(fetchWithAuth).mockResolvedValue(response({ error: 'no_hardware_health' }, 404));
+  // sweep D15: no report yet is an expected empty state, so the API answers
+  // 200 with this discriminant body (not 404) — a 404 here logged as a
+  // console error on every device-detail load of a device without one yet.
+  it('handles the contracted no_hardware_health body (200) as an absent report', async () => {
+    vi.mocked(fetchWithAuth).mockResolvedValue(response({ error: 'no_hardware_health' }));
     render(<StorageHealthSection deviceId="device-a" />);
     expect(await screen.findByTestId('hardware-empty-state')).toHaveTextContent('No hardware health report received yet.');
   });
