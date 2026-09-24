@@ -54,8 +54,11 @@
     "wait": "Esperar: {{duration}}"
   },
   "aiRiskRateLimitStatus": {
+    "defaultLimit": "(predeterminado {{limit}})",
+    "failedToLoad": "No se pudieron cargar los límites de uso vigentes. Inténtalo de nuevo más tarde.",
     "filterRateLimits": "Límites de tasa de filtrado...",
     "limit": "Límite",
+    "multiplierApplied": "Los límites incluyen un multiplicador de límites por herramienta de {{multiplier}}×, configurado en los ajustes de presupuesto de IA.",
     "noRateLimitsMatchYourSearch": "No hay límites de tarifas que coincidan con su búsqueda.",
     "permission": "Permiso",
     "rateLimitConfiguration": "Configuración del límite de velocidad",

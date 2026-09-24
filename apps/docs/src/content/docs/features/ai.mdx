@@ -144,6 +144,19 @@ Many tools have a per-tool sliding window rate limit. Requests that exceed the l
 | `collect_evidence` | 10 requests | 5 min |
 | `execute_playbook` | 5 requests | 10 min |
 
+The limits above are the shipped defaults. The counter is kept per user and per tool, across every organisation that user works in.
+
+#### Raising the per-tool limits
+
+A self-hosted or smaller model usually retries and re-plans more than Claude does, so it reaches these limits sooner. To give it more room, set **Per-tool rate limit multiplier** in the AI budget settings. It takes a whole number from 1 to 10, and the default is 1.
+
+Every per-tool limit becomes `ceil(limit × multiplier)`. At a multiplier of 3, for example, `run_script` allows 15 requests per 5 minutes instead of 5. The window stays the same. The multiplier applies to the built-in assistant and to the [MCP Server](/features/mcp-server/#per-tool-rate-limits).
+
+- The multiplier can only raise a limit. It never lowers or removes one. The API rejects a value outside 1–10, and a stored value that is out of range is treated as 1.
+- You set it in the same two places as the other budget fields (see [Configuring thresholds](#configuring-thresholds)): **Org settings → AI** for one organisation, or the **AI Budgets** tab of Partner Settings for every organisation under the partner. A partner value overrides the organisation value and locks the field.
+- The organisation of the current call selects the multiplier: the chat session's organisation, or the MCP API key's organisation. A partner-scoped MCP caller that has no organisation uses the partner's value. Because the counter is shared across organisations, a user who works in two organisations with different multipliers is checked against the limit of the organisation they are working in now.
+- **AI Risk → Rate Limits** shows the limits that are in effect for the selected organisation, with the multiplier applied, and shows the default next to each limit that was raised.
+
 ### Action Plans
 
 The AI can propose multi-step action plans for complex operations that require human review before execution. When the AI invokes `propose_action_plan`, it creates a structured plan with pre-flight checks for each step. Plans operate in two modes:
@@ -164,7 +177,7 @@ The Risk Engine dashboard provides five views, each filterable by time range (24
 | **Tier Overview Matrix** | Tool counts per tier with colour-coded risk levels |
 | **Tool Execution Analytics** | Execution status breakdown, top tools, average duration |
 | **Approval History** | Pending, approved, and rejected Tier 3 requests |
-| **Rate Limit Status** | Per-tool limit cards with current usage |
+| **Rate Limit Status** | The per-tool limits in effect for the selected organisation, with the rate-limit multiplier applied |
 | **Rejection & Denial Log** | Failed, rejected, and security-denied operations |
 
 ### API reference

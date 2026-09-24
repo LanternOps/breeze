@@ -1456,6 +1456,7 @@ export async function updateBudget(orgId: string, settings: {
   messagesPerHourPerOrg?: number;
   approvalMode?: 'per_step' | 'action_plan' | 'auto_approve' | 'hybrid_plan';
   alertThresholdPercents?: number[] | null;
+  toolRateLimitMultiplier?: number;
 }): Promise<void> {
   // Serialize local budget changes with reserve/settle, which use the same
   // stable org row as their transaction lock. Without this, lowering or
@@ -1489,6 +1490,7 @@ export async function updateBudget(orgId: string, settings: {
       // and only sticks on the second save, which takes the update branch.
       approvalMode: settings.approvalMode ?? 'per_step',
       alertThresholdPercents: settings.alertThresholdPercents ?? null,
+      toolRateLimitMultiplier: settings.toolRateLimitMultiplier ?? 1,
     });
   }
 }

@@ -80,6 +80,7 @@ const BUDGET_FIELD_LABEL_KEYS: Record<AiBudgetField, string> = {
   messagesPerHourPerOrg: 'aiUsagePage.msgsHrPerOrg',
   approvalMode: 'aiUsagePage.approvalMode',
   alertThresholdPercents: 'aiUsagePage.alertThresholds',
+  toolRateLimitMultiplier: 'aiUsagePage.toolRateLimitMultiplier',
 };
 
 const APPROVAL_MODE_LABEL_KEYS: Record<string, string> = {

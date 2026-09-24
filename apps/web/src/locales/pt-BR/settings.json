@@ -1662,6 +1662,8 @@
     "maxTurnsPerSession": "Máximo de turnos por sessão",
     "msgsMinPerUser": "Mensagens/minuto por usuário",
     "msgsHrPerOrg": "Mensagens/hora por organização",
+    "toolRateLimitMultiplier": "Multiplicador de limite de taxa por ferramenta",
+    "toolRateLimitMultiplierHelp": "Aumenta cada limite de taxa de IA e MCP por ferramenta por este fator (1–10). Nunca reduz nem remove um limite.",
     "saveBudget": "Salvar orçamento",
     "savedSuccessfully": "Salvo com sucesso",
     "allBudgetSettingsAreManagedByYourPartner": "Todas as configurações de orçamento são gerenciadas pelo seu parceiro",

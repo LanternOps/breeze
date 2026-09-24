@@ -6131,6 +6131,51 @@ describe('org routes', () => {
     // aiBudgets write path (the partner-wide equivalent) must do the same so a
     // legitimate no-op resubmit in a different array order isn't stored
     // differently from what was actually enforced.
+    // #6476 — the partner-wide multiplier obeys the same 1–10 bound as the org
+    // PUT: it can only raise per-tool limits, never lower or remove them.
+    it.each([0, 11, 1.5])('rejects aiBudgets.toolRateLimitMultiplier %s', async (m) => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { aiBudgets: { toolRateLimitMultiplier: m } } }),
+      });
+      expect(res.status).toBe(400);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('persists a valid aiBudgets.toolRateLimitMultiplier', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      const currentPartner = { id: 'partner-123', name: 'Acme MSP', settings: {} };
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([currentPartner]),
+          }),
+        }),
+      } as any);
+      let persistedSettings: Record<string, unknown> | undefined;
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockImplementation((data: Record<string, unknown>) => {
+          persistedSettings = data.settings as Record<string, unknown>;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ ...currentPartner, settings: persistedSettings }]),
+            }),
+          };
+        }),
+      } as any);
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { aiBudgets: { toolRateLimitMultiplier: 4 } } }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(persistedSettings?.aiBudgets).toMatchObject({ toolRateLimitMultiplier: 4 });
+    });
+
     it('normalises aiBudgets.alertThresholdPercents before persisting', async () => {
       setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
       const currentPartner = { id: 'partner-123', name: 'Acme MSP', settings: {} };

@@ -43,6 +43,11 @@ import { createTicket, changeTicketStatus, TicketServiceError } from '../service
 import { createTimeEntry, TimeEntryServiceError } from '../services/timeEntryService';
 import { writeRouteAudit } from '../services/auditEvents';
 import { assertNotLocked } from '../services/effectiveSettings';
+import {
+  listEffectiveToolRateLimits,
+  resolveToolRateLimitMultiplier,
+  toolRateLimitMultiplierSchema,
+} from '../services/aiToolRateLimits';
 import { normalizeAlertThresholds, evaluateAiBudgetThresholds } from '../services/aiBudgetAlerts';
 import { db } from '../db';
 import { aiSessions, aiMessages, aiToolExecutions, auditLogs, organizations, devices, actionIntents, scriptProposals, scriptExecutions, aiScriptLaneState } from '../db/schema';
@@ -1300,6 +1305,8 @@ aiRoutes.put(
     messagesPerHourPerOrg: z.number().int().min(1).max(10000).optional(),
     approvalMode: z.enum(['per_step', 'action_plan', 'auto_approve', 'hybrid_plan']).optional(),
     alertThresholdPercents: z.array(z.number().int().min(1).max(99)).max(5).nullable().optional(),
+    // #6476 — raises every per-tool AI/MCP rate limit; 1–10, never lowers one.
+    toolRateLimitMultiplier: toolRateLimitMultiplierSchema.optional(),
   })),
   async (c) => {
     const auth = c.get('auth');
@@ -1341,6 +1348,34 @@ aiRoutes.put(
     });
 
     return c.json({ success: true });
+  }
+);
+
+// GET /tool-rate-limits - Effective per-tool AI/MCP rate limits (#6476).
+// The limits checkToolRateLimit enforces for this org: TOOL_RATE_LIMITS scaled
+// by the org's effective toolRateLimitMultiplier (partner value wins). With no
+// org (partner/system caller, no org selected) the partner's own value is used,
+// matching the MCP partner-scope fallback. Config, not usage — gated like
+// GET /usage. The AI Risk → Rate Limits tab reads this instead of a web copy.
+aiRoutes.get(
+  '/tool-rate-limits',
+  requireScope('organization', 'partner', 'system'),
+  requireAiUse,
+  async (c) => {
+    const auth = c.get('auth');
+    const orgId = c.req.query('orgId') || auth.orgId || null;
+
+    if (orgId && orgId !== auth.orgId && !auth.canAccessOrg(orgId)) {
+      return c.json({ error: 'Access denied to this organization' }, 403);
+    }
+
+    const multiplier = await resolveToolRateLimitMultiplier({
+      orgId,
+      partnerId: orgId ? null : auth.partnerId ?? null,
+    });
+    const limits = listEffectiveToolRateLimits(multiplier);
+
+    return c.json({ orgId, multiplier, limits });
   }
 );
 

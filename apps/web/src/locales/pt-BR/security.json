@@ -54,8 +54,11 @@
     "wait": "Espera: {{duration}}"
   },
   "aiRiskRateLimitStatus": {
+    "defaultLimit": "(padrão {{limit}})",
+    "failedToLoad": "Não foi possível carregar os limites de taxa em vigor. Tente novamente mais tarde.",
     "filterRateLimits": "Filtrar limites de taxa...",
     "limit": "Limite",
+    "multiplierApplied": "Os limites incluem um multiplicador de limites por ferramenta de {{multiplier}}×, definido nas configurações de orçamento de IA.",
     "noRateLimitsMatchYourSearch": "Nenhum limite de taxa corresponde à sua pesquisa.",
     "permission": "Permissão",
     "rateLimitConfiguration": "Configuração de limite de taxa",

@@ -86,6 +86,7 @@ import { registerOrgTicketSettingsRoutes } from './orgTicketSettings';
 import { registerOrgBillingProfileRoutes } from './orgBillingProfile';
 import { registerOrgAuditRetentionSettingsRoutes } from './orgAuditRetentionSettings';
 import { TOPOLOGY_FLAG_KEYS } from '../services/topology/flags';
+import { toolRateLimitMultiplierSchema } from '../services/aiToolRateLimits';
 
 /**
  * Fold the legacy `security.allowedMfaMethods` input alias into the canonical
@@ -773,6 +774,8 @@ const partnerSettingsSchema = z.object({
     messagesPerHourPerOrg: z.number().int().min(1).max(10000).optional(),
     approvalMode: z.enum(['per_step', 'action_plan', 'auto_approve', 'hybrid_plan']).optional(),
     alertThresholdPercents: z.array(z.number().int().min(1).max(99)).max(5).optional(),
+    // #6476 — partner value wins and locks, like every other aiBudgets key.
+    toolRateLimitMultiplier: toolRateLimitMultiplierSchema.optional(),
   }).optional(),
   organizationOrder: z.array(z.string().guid()).max(10_000).optional(),
   remoteAccessProviders: z.object({

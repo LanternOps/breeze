@@ -26,6 +26,7 @@ describe('AI_BUDGET_DEFAULTS', () => {
       messagesPerHourPerOrg: 200,
       approvalMode: 'per_step',
       alertThresholdPercents: [50, 80, 95],
+      toolRateLimitMultiplier: 1,
     });
     expect([...AI_BUDGET_FIELDS].sort()).toEqual(Object.keys(AI_BUDGET_DEFAULTS).sort());
   });
@@ -58,6 +59,7 @@ describe('aiBudgetSource', () => {
       messagesPerHourPerOrg: 42,
       approvalMode: 'auto_approve' as const,
       alertThresholdPercents: [60, 90],
+      toolRateLimitMultiplier: 3,
     };
     for (const field of AI_BUDGET_FIELDS) {
       expect(aiBudgetSource(field, orgSet, []), field).toBe('organization');

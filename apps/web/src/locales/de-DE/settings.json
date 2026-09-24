@@ -1662,6 +1662,8 @@
     "maxTurnsPerSession": "Maximale Umdrehungen pro Sitzung",
     "msgsMinPerUser": "Nachrichten/Minute pro Benutzer",
     "msgsHrPerOrg": "Nachrichten/Std. pro Organisation",
+    "toolRateLimitMultiplier": "Multiplikator für Tool-Ratenlimits",
+    "toolRateLimitMultiplierHelp": "Erhöht jedes KI- und MCP-Ratenlimit pro Tool um diesen Faktor (1–10). Ein Limit wird nie gesenkt oder entfernt.",
     "saveBudget": "Budget speichern",
     "savedSuccessfully": "Erfolgreich gespeichert",
     "allBudgetSettingsAreManagedByYourPartner": "Alle Budgeteinstellungen werden von Ihrem Partner verwaltet",

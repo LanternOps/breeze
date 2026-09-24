@@ -106,6 +106,7 @@ describe('OrgAiBudgetSettings — partner locks', () => {
         'aiBudgets.enabled', 'aiBudgets.monthlyBudgetCents', 'aiBudgets.dailyBudgetCents',
         'aiBudgets.maxTurnsPerSession', 'aiBudgets.messagesPerMinutePerUser',
         'aiBudgets.messagesPerHourPerOrg', 'aiBudgets.approvalMode', 'aiBudgets.alertThresholdPercents',
+        'aiBudgets.toolRateLimitMultiplier',
       ],
     );
     const { findByTestId } = renderTab();
@@ -278,5 +279,39 @@ describe('OrgAiBudgetSettings — save failures are surfaced', () => {
     // The form is still editable and still holds what the user typed — a
     // failed save must not look like a successful one.
     expect((getByTestId('org-ai-budget-monthly') as HTMLInputElement).value).toBe('25');
+  });
+});
+
+describe('OrgAiBudgetSettings — per-tool rate-limit multiplier (#6476)', () => {
+  it('renders empty with a "Default (1)" placeholder when inherited', async () => {
+    mockEffective({ ...DEFAULT_BUDGET, toolRateLimitMultiplier: 1 });
+    const { findByTestId } = renderTab();
+
+    const input = (await findByTestId('org-ai-budget-tool-rate-limit-multiplier')) as HTMLInputElement;
+    expect(input.value).toBe('');
+    expect(input.placeholder).toBe('Default (1)');
+    expect(input.min).toBe('1');
+    expect(input.max).toBe('10');
+  });
+
+  it('sends the multiplier when the user sets it', async () => {
+    mockEffective({ ...DEFAULT_BUDGET, toolRateLimitMultiplier: 1 });
+    const { findByTestId, getByTestId } = renderTab();
+
+    const input = (await findByTestId('org-ai-budget-tool-rate-limit-multiplier')) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '3' } });
+    fireEvent.click(getByTestId('org-ai-budget-save'));
+
+    await waitFor(() => expect(budgetPut().body).toEqual({ toolRateLimitMultiplier: 3 }));
+  });
+
+  it('is disabled and never sent when the partner locks it', async () => {
+    mockEffective({ ...DEFAULT_BUDGET, toolRateLimitMultiplier: 2 }, ['aiBudgets.toolRateLimitMultiplier']);
+    const { findByTestId, getByTestId } = renderTab();
+
+    const input = (await findByTestId('org-ai-budget-tool-rate-limit-multiplier')) as HTMLInputElement;
+    expect(input.disabled).toBe(true);
+    expect(input.value).toBe('2');
+    expect(getByTestId('org-ai-budget-locked-toolRateLimitMultiplier').textContent).toContain('Managed by partner');
   });
 });
