@@ -231,7 +231,7 @@ describe('ExecutionDetails empty stdout (sweep E5)', () => {
   it('shows "No output" in the open section body, not also "(empty)" in its header', () => {
     // stderr gets real content so its own (unrelated) collapsed "(empty)"
     // marker can't interfere with the assertion below.
-    renderExecution({ stdout: null, stderr: 'a warning' });
+    renderExecution({ stdout: undefined, stderr: 'a warning' });
 
     // The stdout section is `defaultOpen`, so the body's own "No output"
     // message is visible; the header marker used to render at the same time
