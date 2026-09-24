@@ -433,34 +433,52 @@ async function readActiveAssessment(deviceId: string) {
 // ---------------------------------------------------------------------------
 
 describe('Fleet Design apply / rollback / ledger against live Postgres (Fleet Designer W03, #5653)', () => {
-  runDb('1. preview: keptManual, displacement, retired found, role correction', async () => {
+  runDb('1. preview: keptManual, cumulative monitors without displacement, no retirement selection, role correction', async () => {
     const f = await seedFixture();
     const runId = await seedReportRun(f.envA.orgId, buildOutcome({
       functionKey: 'file_server', deviceIds: f.deviceIds, roleCorrectionDeviceId: f.deviceIds[1], retiredPolicyId: f.baselinePolicyId, rule: GOOD_RULE,
     }));
 
-    const preview = await withDbAccessContext(f.dbCtxA, () => previewFleetDesignApply(f.authA, runId, { ...fullApproval(f.deviceIds), retired: ['retired:0'] }));
+    // Historical outcomes can carry retirement proposals, but they are no
+    // longer selectable. Case 11 covers explicitly submitting a stale ref.
+    const preview = await withDbAccessContext(f.dbCtxA, () => previewFleetDesignApply(f.authA, runId, fullApproval(f.deviceIds)));
 
     expect(preview.functions[0]?.keptManual).toBe(1);
-    expect(preview.policies[0]?.displaces).toEqual(
-      expect.arrayContaining([expect.objectContaining({ policyId: f.baselinePolicyId, featureType: 'monitors', deviceCount: 3 })]),
-    );
-    expect(preview.retired[0]).toMatchObject({ found: true, editable: false });
-    expect(preview.blockers).toContainEqual({ itemRef: 'retired:0', reason: 'legacy_source_retired' });
+    // The existing organization-level cumulative monitors link keeps
+    // contributing alongside the proposed device-group policy.
+    expect(preview.policies).toHaveLength(1);
+    expect(preview.policies[0]).toMatchObject({ functionKey: 'file_server', watchCount: 1, ruleCount: 1, displaces: [] });
+    expect(preview.retired).toEqual([]);
+    expect(preview.blockers).toEqual([]);
     expect(preview.roleCorrections[0]?.to).toBe('server');
   });
 
-  runDb('2. apply without displacementsAccepted throws blocked; nothing is written', async () => {
+  runDb('2. apply without displacementsAccepted succeeds for cumulative monitors', async () => {
     const f = await seedFixture();
     const runId = await seedReportRun(f.envA.orgId, buildOutcome({
       functionKey: 'file_server', deviceIds: f.deviceIds, roleCorrectionDeviceId: f.deviceIds[1], retiredPolicyId: f.baselinePolicyId, rule: GOOD_RULE,
     }));
 
-    await expect(withDbAccessContext(f.dbCtxA, () => applyFleetDesign(f.authA, runId, fullApproval(f.deviceIds))))
-      .rejects.toSatisfy((e: unknown) => e instanceof FleetDesignApplyError && e.code === 'blocked');
+    const approval = fullApproval(f.deviceIds);
+    expect(approval.displacementsAccepted).toEqual([]);
+    const baselineAssignments = await readAssignments(f.baselinePolicyId);
+    const result = await withDbAccessContext(f.dbCtxA, () => applyFleetDesign(f.authA, runId, approval));
 
-    expect(await readLedger(runId)).toEqual([]);
-    expect(await readGroupByName(f.envA.orgId, 'Fleet Design: File server')).toBeUndefined();
+    expect(result.partial).toBeNull();
+    const expectedRefs = [
+      'functions:file_server', 'monitoring:file_server:rule:0', 'monitoring:file_server:watch:0', 'policy:file_server', `roleCorrections:${f.deviceIds[1]}`,
+    ].sort();
+    expect(result.applied.sort()).toEqual(expectedRefs);
+    const ledger = await readLedger(runId);
+    expect(ledger.map((row) => row.itemRef).sort()).toEqual(expectedRefs);
+    expect(ledger.every((row) => row.status === 'applied')).toBe(true);
+    const group = await readGroupByName(f.envA.orgId, 'Fleet Design: File server');
+    expect(group).toBeDefined();
+    expect((await readGroupMembers(group!.id)).sort()).toEqual([...f.deviceIds].sort());
+    const policyId = ledger.find((row) => row.itemRef === 'policy:file_server')!.createdRefs!.policyId as string;
+    expect((await readPolicyMonitors(policyId)).map((row) => row.definition.kind).sort()).toEqual(['disk', 'service']);
+    expect(await readAssignments(f.baselinePolicyId)).toEqual(baselineAssignments);
+    expect(await readPolicy(f.baselinePolicyId)).toMatchObject({ status: 'active' });
   });
 
   runDb('3. apply with displacementsAccepted: writes function/group, policy, monitors and role correction; legacy sources stay untouched', async () => {
