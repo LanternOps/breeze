@@ -10,6 +10,9 @@ import { eq } from 'drizzle-orm';
 import { db, withDbAccessContext, SYSTEM_DB_ACCESS_CONTEXT } from '../../db';
 import { configPolicyAlertRules, configPolicyMonitoringSettings, configPolicyMonitoringWatches, configPolicyFeatureLinks, configPolicyMonitors, configurationPolicies, monitorDefinitions, monitorConversions, partners, users } from '../../db/schema';
 import { runLegacyAlertingRetirement, checkLegacyAlertingRetired } from '../../services/monitors/conversion/retirementSweep';
+import { readRetirementReport } from '../../services/monitors/conversion/loadSources';
+import { createSystemAuthContext } from '../../services/featureConfigResolver';
+import type { AuthContext } from '../../middleware/auth';
 import { createOrganization, createPartner } from './db-utils';
 
 const SYSTEM_CTX = SYSTEM_DB_ACCESS_CONTEXT;
@@ -96,6 +99,34 @@ describe('legacy alerting retirement sweep', () => {
     });
 
     expect(await checkLegacyAlertingRetired()).toEqual({ configPolicyAlertRules: 0, configPolicyMonitoringWatches: 0 });
+    const otherOrg = await createOrganization({ partnerId: partner.id });
+    const orgAuth: AuthContext = { ...createSystemAuthContext(), scope: 'organization',
+      orgId: org.id, partnerId: partner.id, accessibleOrgIds: [org.id],
+      canAccessOrg: id => id === org.id,
+      orgCondition: column => eq(column, org.id),
+    };
+    await withDbAccessContext({ scope: 'organization', orgId: org.id,
+      accessibleOrgIds: [org.id], currentPartnerId: partner.id }, async () => {
+      const report = await readRetirementReport(orgAuth, org.id);
+      expect(report.unconvertible).toEqual([expect.objectContaining({
+        sourceId: customId, policyId, policyName: 'W05d sweep', reason: 'unconvertible:custom_condition',
+      })]);
+      expect(report.sweep).toBeNull();
+      await expect(readRetirementReport(orgAuth, otherOrg.id)).rejects.toThrow('Organization access denied');
+    });
+    await withDbAccessContext(SYSTEM_CTX, async () => {
+      const report = await readRetirementReport(createSystemAuthContext(), otherOrg.id);
+      expect(report.unconvertible).toEqual([]);
+      expect(report.sweep).toBeNull();
+      const partnerAuth: AuthContext = { ...createSystemAuthContext(), scope: 'partner',
+        partnerId: partner.id, partnerOrgAccess: 'all',
+        orgCondition: column => eq(column, org.id),
+      };
+      expect((await readRetirementReport(partnerAuth, null)).sweep).toEqual({
+        sweptAt: expect.any(String), converted: expect.any(Number), retired: expect.any(Number),
+      });
+      expect((await readRetirementReport({ ...partnerAuth, partnerOrgAccess: 'selected' }, null)).sweep).toBeNull();
+    });
     expect(policyId).toBeTruthy();
     expect(await runLegacyAlertingRetirement()).toMatchObject({ partners: 0, converted: 0, retired: 0, failed: 0 });
   });

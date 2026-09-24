@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth, useAuthStore } from '../../../stores/auth';
 import { useJwtClaims } from '@/lib/authScope';
@@ -14,22 +14,59 @@ export interface ConversionPendingBannerProps {
   revision?: number;
 }
 
+const dismissKey = (viewerId: string, scopeId: string, sweptAt: string) =>
+  `breeze.legacyAlertingRetirement.dismissed:${viewerId}:${scopeId}:${sweptAt}`;
+function isDismissed(key: string): boolean {
+  try { return window.localStorage.getItem(key) === '1'; } catch { return false; }
+}
+function dismiss(key: string) {
+  try { window.localStorage.setItem(key, '1'); } catch { /* Private windows can still dismiss for this render. */ }
+}
+
 export default function ConversionPendingBanner({ orgId, onReview, onConverted, revision }: ConversionPendingBannerProps) {
   const { t } = useTranslation(['monitoring', 'common']);
   const claims = useJwtClaims();
   const canManagePartnerWide = useAuthStore((s) => s.user?.canManagePartnerWide) !== false;
   const isPartnerScope = claims.status === 'resolved' && claims.claims?.scope === 'partner';
-  const [counts, setCounts] = useState<PendingCounts | null>(null);
+  const viewerId = useAuthStore((s) => s.user?.id ?? 'anonymous');
+  const scopeId = orgId ?? (claims.status === 'resolved' ? claims.claims?.partnerId : null) ?? 'unscoped';
+  const requestScope = JSON.stringify([viewerId, orgId, claims.status,
+    claims.status === 'resolved' ? claims.claims : null]);
+  const [report, setReport] = useState<{ scope: string; counts: PendingCounts } | null>(null);
+  const counts = report?.scope === requestScope ? report.counts : null;
+  const activeScope = useRef<string | null>(null);
+  const requestVersion = useRef(0);
   const [confirming, setConfirming] = useState(false);
   const [partnerPreview, setPartnerPreview] = useState<PartnerConversionPreview | null>(null);
   const [running, setRunning] = useState(false);
 
   const load = useCallback(async () => {
-    try { setCounts(await fetchPendingCounts(orgId)); } catch { setCounts(null); }
-  }, [orgId]);
-  useEffect(() => { void load(); }, [load, revision]);
+    if (activeScope.current !== requestScope) return;
+    const version = ++requestVersion.current;
+    try {
+      const result = await fetchPendingCounts(orgId);
+      if (requestVersion.current === version && activeScope.current === requestScope) {
+        setReport({ scope: requestScope, counts: result });
+      }
+    } catch {
+      if (requestVersion.current === version && activeScope.current === requestScope) setReport(null);
+    }
+  }, [orgId, requestScope]);
+  useEffect(() => {
+    activeScope.current = requestScope;
+    void load();
+    return () => { activeScope.current = null; requestVersion.current++; };
+  }, [load, requestScope, revision]);
 
-  if (!counts || counts.rows === 0) return null;
+  const sweptAt = counts?.sweep?.sweptAt ?? counts?.unconvertible[0]?.retiredAt ?? 'manual';
+  const key = dismissKey(viewerId, scopeId, sweptAt);
+  const [dismissedKey, setDismissedKey] = useState<string | null>(null);
+  const [openKey, setOpenKey] = useState<string | null>(null);
+  const listId = useId();
+  const hidden = dismissedKey === key || isDismissed(key);
+  const open = openKey === key;
+
+  if (!counts) return null;
 
   // Two independent counts in one sentence: i18next only pluralizes a single
   // `count`, so each is pluralized on its own and composed into the template
@@ -79,7 +116,8 @@ export default function ConversionPendingBanner({ orgId, onReview, onConverted, 
   };
 
   return (
-    <div className="rounded-md border border-warning/40 bg-warning/10 px-4 py-3 text-sm" data-testid="conversion-pending-banner">
+    <>
+    {counts.rows > 0 && <div className="rounded-md border border-warning/40 bg-warning/10 px-4 py-3 text-sm" data-testid="conversion-pending-banner">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p>{t('monitoring:conversion.banner.text', { rows: rowsText, policies: policiesText })}</p>
         <div className="flex gap-2">
@@ -110,6 +148,39 @@ export default function ConversionPendingBanner({ orgId, onReview, onConverted, 
           </div>
         </div>
       )}
-    </div>
+    </div>}
+    {!hidden && counts.unconvertible.length > 0 && (
+      <div role="status" data-testid="legacy-retirement-banner" className="rounded-md border border-warning/40 bg-warning/10 px-4 py-3 text-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p>{t('monitoring:conversion.retirement.summary', { count: counts.unconvertible.length })}</p>
+          <div className="flex gap-2">
+            <button type="button" aria-expanded={open} aria-controls={listId} className="rounded-md border px-3 py-1.5 font-medium hover:bg-muted" onClick={() => setOpenKey(open ? null : key)}>
+              {t('monitoring:conversion.retirement.review')}
+            </button>
+            <button type="button" className="rounded-md border px-3 py-1.5 font-medium hover:bg-muted" onClick={() => { dismiss(key); setDismissedKey(key); }}>
+              {t('monitoring:conversion.retirement.dismiss')}
+            </button>
+          </div>
+        </div>
+        {open && (
+          <div id={listId} className="mt-3">
+            <ul className="space-y-2 break-words">
+              {counts.unconvertible.map((item) => (
+                <li key={`${item.sourceTable}:${item.sourceId}`}>
+                  <span className="font-medium">{item.name}</span>
+                  {item.policyName ? <span> — {item.policyName}</span> : null}
+                  <div className="mt-1">
+                    <span>{t([/* i18n-dynamic */ `monitoring:conversion.retirement.reasons.${item.reason.replace(/^unconvertible:/, '')}`, 'monitoring:conversion.retirement.reasons.unknown'])}</span>
+                    {' '}<code className="break-all text-xs">{item.reason}</code>
+                  </div>
+                </li>
+              ))}
+            </ul>
+            <p className="mt-3">{t('monitoring:conversion.retirement.openAlertsNote')}</p>
+          </div>
+        )}
+      </div>
+    )}
+    </>
   );
 }

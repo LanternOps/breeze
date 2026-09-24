@@ -39,7 +39,12 @@ export type PartnerConversionPreview = {
 };
 export const readPartnerPreview = (body: unknown): PartnerConversionPreview => unwrap(body);
 export const readRetireResult = (body: unknown): { conversionId: string } => unwrap(body);
-export type PendingCounts = { policies: number; rows: number; pendingPolicies?: Array<{ id: string; name: string }> };
+export type PendingCounts = {
+  policies: number; rows: number; pendingPolicies?: Array<{ id: string; name: string }>;
+  unconvertible: Array<{ sourceTable: ConversionSourceTable; sourceId: string; name: string;
+    reason: string; policyId: string | null; policyName: string | null; retiredAt: string }>;
+  sweep: { sweptAt: string; converted: number; retired: number } | null;
+};
 export type ConvertResult = { conversionIds: string[]; retired: number; monitorsCreated: number };
 export type PartnerConvertResult = { policies: number; converted: number; unconvertible: number };
 

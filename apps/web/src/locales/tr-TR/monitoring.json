@@ -509,6 +509,29 @@
       "conversion_revert_unavailable": "Bu dönüştürme artık geri alınamaz.",
       "invalid_reason": "Bu kullanımdan kaldırma nedeni geçerli değil.",
       "unknown": "Dönüştürme başarısız oldu. Yeniden deneyin."
+    },
+    "retirement": {
+      "summary_one": "{{count}} eski kural bir monitöre dönüştürülemedi — inceleyin.",
+      "summary_other": "{{count}} eski kural monitörlere dönüştürülemedi — inceleyin.",
+      "review": "İncele",
+      "dismiss": "Kapat",
+      "openAlertsNote": "Bu kurallar artık tetiklenmiyor. Açık uyarıları biri çözene kadar açık kalır; hâlâ gerekiyorsa koşulu bir monitör olarak yeniden oluşturun.",
+      "reasons": {
+        "custom_condition": "özel koşul",
+        "nested_group": "iç içe koşul grubu",
+        "no_condition": "değerlendirilebilir koşul yok",
+        "equivalence_delta": "dönüştürme bazı cihazlarda neyin tetikleneceğini değiştirirdi",
+        "escalation_policy_axis": "yükseltme politikası tek bir kuruluşa ait",
+        "parent_unconverted": "üst politika dönüştürülmedi",
+        "prerequisite_missing": "bu sunucuda ön koşul düzeltmesi eksik",
+        "metric_without_kind": "metriğin monitör türü yok",
+        "child_kind_not_composable": "koşul bileşik monitörde kullanılamaz",
+        "too_many_conditions": "çok fazla koşul",
+        "too_many_responses": "ondan fazla yanıt gerekir",
+        "auto_resolve_conditions": "özel çözüm koşulları korunamıyor",
+        "target_unconvertible": "yanıt hedefi dönüştürülemiyor",
+        "unknown": "dönüştürme reddedildi; kaynağı inceleyin"
+      }
     }
   },
   "device": {

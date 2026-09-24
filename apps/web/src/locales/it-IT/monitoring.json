@@ -509,6 +509,29 @@
       "conversion_revert_unavailable": "Questa conversione non può più essere annullata.",
       "invalid_reason": "Il motivo di ritiro non è valido.",
       "unknown": "Conversione non riuscita. Riprova."
+    },
+    "retirement": {
+      "summary_one": "{{count}} regola legacy non è stata convertita in un monitor: verificala.",
+      "summary_other": "{{count}} regole legacy non sono state convertite in monitor: verificale.",
+      "review": "Verifica",
+      "dismiss": "Ignora",
+      "openAlertsNote": "Queste regole non scattano più. Gli avvisi aperti restano aperti finché qualcuno non li risolve; ricrea la condizione come monitor se serve ancora.",
+      "reasons": {
+        "custom_condition": "condizione personalizzata",
+        "nested_group": "gruppo di condizioni annidato",
+        "no_condition": "nessuna condizione valutabile",
+        "equivalence_delta": "la conversione cambierebbe cosa scatta su alcuni dispositivi",
+        "escalation_policy_axis": "la policy di escalation appartiene a una sola organizzazione",
+        "parent_unconverted": "la policy padre non è stata convertita",
+        "prerequisite_missing": "su questo server manca una correzione prerequisita",
+        "metric_without_kind": "la metrica non ha un tipo di monitor",
+        "child_kind_not_composable": "condizione incompatibile con un monitor composto",
+        "too_many_conditions": "troppe condizioni",
+        "too_many_responses": "servirebbero più di dieci risposte",
+        "auto_resolve_conditions": "impossibile mantenere le condizioni di risoluzione personalizzate",
+        "target_unconvertible": "impossibile convertire la destinazione della risposta",
+        "unknown": "conversione rifiutata; verifica l’origine"
+      }
     }
   },
   "device": {

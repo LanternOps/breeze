@@ -509,6 +509,29 @@
       "conversion_revert_unavailable": "Diese Konvertierung kann nicht mehr rückgängig gemacht werden.",
       "invalid_reason": "Dieser Stilllegungsgrund ist ungültig.",
       "unknown": "Die Konvertierung ist fehlgeschlagen. Versuchen Sie es erneut."
+    },
+    "retirement": {
+      "summary_one": "{{count}} alte Regel konnte nicht in einen Monitor umgewandelt werden – bitte prüfen.",
+      "summary_other": "{{count}} alte Regeln konnten nicht in Monitore umgewandelt werden – bitte prüfen.",
+      "review": "Prüfen",
+      "dismiss": "Ausblenden",
+      "openAlertsNote": "Diese Regeln lösen nicht mehr aus. Ihre offenen Warnungen bleiben offen, bis jemand sie löst; legen Sie die Bedingung bei Bedarf als Monitor neu an.",
+      "reasons": {
+        "custom_condition": "benutzerdefinierte Bedingung",
+        "nested_group": "verschachtelte Bedingungsgruppe",
+        "no_condition": "keine auswertbare Bedingung",
+        "equivalence_delta": "Umwandlung würde ändern, was auf einigen Geräten auslöst",
+        "escalation_policy_axis": "Eskalationsrichtlinie gehört zu einer einzelnen Organisation",
+        "parent_unconverted": "übergeordnete Richtlinie wurde nicht umgewandelt",
+        "prerequisite_missing": "auf diesem Server fehlt eine vorausgesetzte Korrektur",
+        "metric_without_kind": "für die Metrik gibt es keinen Monitortyp",
+        "child_kind_not_composable": "Bedingung ist nicht für zusammengesetzte Monitore geeignet",
+        "too_many_conditions": "zu viele Bedingungen",
+        "too_many_responses": "mehr als zehn Reaktionen wären erforderlich",
+        "auto_resolve_conditions": "benutzerdefinierte Auflösungsbedingungen können nicht beibehalten werden",
+        "target_unconvertible": "das Reaktionsziel kann nicht konvertiert werden",
+        "unknown": "Konvertierung abgelehnt; Quelle prüfen"
+      }
     }
   },
   "device": {

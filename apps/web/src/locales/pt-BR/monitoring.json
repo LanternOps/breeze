@@ -509,6 +509,29 @@
       "conversion_revert_unavailable": "Esta conversão não pode mais ser desfeita.",
       "invalid_reason": "Esse motivo de desativação não é válido.",
       "unknown": "A conversão falhou. Tente novamente."
+    },
+    "retirement": {
+      "summary_one": "{{count}} regra legada não pôde ser convertida em monitor — revise.",
+      "summary_other": "{{count}} regras legadas não puderam ser convertidas em monitores — revise.",
+      "review": "Revisar",
+      "dismiss": "Dispensar",
+      "openAlertsNote": "Estas regras não disparam mais. Os alertas abertos permanecem abertos até que alguém os resolva; recrie a condição como monitor se ainda for necessária.",
+      "reasons": {
+        "custom_condition": "condição personalizada",
+        "nested_group": "grupo de condições aninhado",
+        "no_condition": "sem condição avaliável",
+        "equivalence_delta": "a conversão mudaria o que dispara em alguns dispositivos",
+        "escalation_policy_axis": "a política de escalonamento pertence a uma única organização",
+        "parent_unconverted": "a política pai não foi convertida",
+        "prerequisite_missing": "falta uma correção pré-requisito neste servidor",
+        "metric_without_kind": "a métrica não tem tipo de monitor",
+        "child_kind_not_composable": "condição incompatível com monitor composto",
+        "too_many_conditions": "condições demais",
+        "too_many_responses": "seriam necessárias mais de dez respostas",
+        "auto_resolve_conditions": "não é possível preservar as condições de resolução personalizadas",
+        "target_unconvertible": "o destino da resposta não pode ser convertido",
+        "unknown": "conversão recusada; revise a origem"
+      }
     }
   },
   "device": {

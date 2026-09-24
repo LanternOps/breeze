@@ -25,6 +25,9 @@ vi.mock('../services/monitors/conversion', () => ({
     constructor(public missing: string[]) { super('conversion prerequisites missing'); }
   },
 }));
+vi.mock('../services/monitors/conversion/loadSources', () => ({
+  readRetirementReport: vi.fn(async () => ({ unconvertible: [], sweep: null })),
+}));
 import { monitorConversionRoutes } from './monitorDefinitions.conversion';
 import { ConversionError, ConversionPrerequisiteMissingError } from '../services/monitors/conversion';
 
@@ -107,12 +110,12 @@ describe('conversion resource', () => {
   });
   it('pending projects the banner contract and denies a cross-org query before reading', async () => {
     const r = await request('/pending');
-    expect(await r.json()).toEqual({ data: { policies: 0, rows: 0, pendingPolicies: [] } });
+    expect(await r.json()).toEqual({ data: { policies: 0, rows: 0, pendingPolicies: [], unconvertible: [], sweep: null } });
     expect(m.counts).toHaveBeenCalledWith({ orgId: ORG, partnerId: PARTNER, includePartnerWide: false });
     // The list and the count come from one query, so the banner and the
     // pending-policies list can never disagree (#6644 review finding 5).
     m.counts.mockResolvedValueOnce({ policies: 1, rows: 3, standaloneRules: 0, pendingPolicies: [{ id: POLICY, name: 'Legacy' }] });
-    expect(await (await request('/pending')).json()).toEqual({ data: { policies: 1, rows: 3, pendingPolicies: [{ id: POLICY, name: 'Legacy' }] } });
+    expect(await (await request('/pending')).json()).toEqual({ data: { policies: 1, rows: 3, pendingPolicies: [{ id: POLICY, name: 'Legacy' }], unconvertible: [], sweep: null } });
     m.counts.mockClear();
     expect((await request(`/pending?orgId=${OTHER}`)).status).toBe(403);
     expect(m.counts).not.toHaveBeenCalled();
