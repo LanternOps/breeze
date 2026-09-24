@@ -149,6 +149,7 @@ says why:
 |---|---|
 | `org_currency_off_list` | The organization's currency is not on the supported list, so its rate and billable default were skipped entirely. |
 | `org_rate_currency_mismatch` | The organization's rate was entered in a different currency from the organization's own, so the rate was not carried over. |
+| `non_billable_org_rate` | The organization was non-billable but also had a rate. A non-billable card carries no rate, so the rate was dropped. |
 | `non_billable_category_rate` | The category was non-billable but also had a rate. The rate was dropped. |
 | `category_rate_currency_unsupported` | The category rate had no currency, or an unsupported one, so it was not carried over. |
 | *(empty)* | Converted into a billing profile. The row is kept for reference. |
@@ -167,10 +168,12 @@ COMMIT;
 ```
 
 The migration counts what it archived in the API log (`billing profiles W04b:`
-lines). It refuses to run, and the API does not start, if any partner was never
-converted (`refusing to drop legacy labour-pricing columns`). A normal upgrade
-path cannot produce that state, because the conversion runs earlier in the same
-migration sequence.
+lines). It refuses to run, and the API does not start
+(`refusing to drop legacy labour-pricing columns`), in two cases. The first is
+when any partner was never converted. A normal upgrade path cannot produce
+that, because the conversion runs earlier in the same migration sequence. The
+second is when manual DDL left only some of a table's three legacy columns in
+place, which the migration will not drop without archiving them.
 
 **Rolling back to v0.116 after this upgrade needs a database restore.** The
 v0.116 image's tenant-export policy still lists the three `org_ticket_settings`

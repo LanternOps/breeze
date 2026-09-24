@@ -10,8 +10,8 @@
 --
 -- ARCHIVE BEFORE DROP. The conversion deliberately skipped some legacy values
 -- (off-list-currency orgs; org rates whose rate_currency differed from the org
--- currency; non-billable category rates; category rates in an unsupported or
--- missing currency). The legacy columns were the only copy of those values, so
+-- currency; rates on non-billable orgs and categories; category rates in an
+-- unsupported or missing currency). The legacy columns were the only copy of those values, so
 -- every row that still carries legacy pricing is copied into
 -- legacy_labour_pricing_archive first — a full snapshot, not only the skipped
 -- rows, so a misclassification cannot lose data. skip_reason names why the
@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS legacy_labour_pricing_archive (
     CHECK (skip_reason IS NULL OR skip_reason IN (
       'org_currency_off_list',
       'org_rate_currency_mismatch',
+      'non_billable_org_rate',
       'non_billable_category_rate',
       'category_rate_currency_unsupported'
     )),
@@ -118,14 +119,27 @@ END $$;
 GRANT SELECT, INSERT, UPDATE, DELETE ON legacy_labour_pricing_archive TO breeze_app;
 
 -- 3) Archive every row that still carries legacy pricing. --------------------
---    Only while the columns exist: on a re-apply they are gone and this is a
---    no-op. The static SQL below is planned only when its branch executes.
+--    Per table: all three legacy columns present -> archive; none -> already
+--    dropped (re-apply), a no-op; any other count is manual DDL and is REFUSED,
+--    because step 4 would drop the survivors without an archive copy. The
+--    static SQL below is planned only when its branch executes.
 DO $$
 DECLARE
   n bigint;
+  present integer;
+  legacy_table text;
   summary record;
 BEGIN
   PERFORM set_config('breeze.scope', 'system', true);
+  FOREACH legacy_table IN ARRAY ARRAY['ticket_categories', 'org_ticket_settings'] LOOP
+    SELECT count(*) INTO present FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = legacy_table
+      AND column_name IN ('default_billable', 'default_hourly_rate', 'rate_currency');
+    IF present NOT IN (0, 3) THEN
+      RAISE EXCEPTION 'refusing to drop legacy labour-pricing columns: % has % of the 3 legacy labour-pricing columns (partial manual DDL?); restore or archive the survivors by hand first', legacy_table, present;
+    END IF;
+  END LOOP;
+
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.columns
     WHERE table_schema = 'public' AND table_name = 'ticket_categories' AND column_name = 'default_hourly_rate'
@@ -167,7 +181,10 @@ BEGIN
       CASE
         WHEN NOT EXISTS (SELECT 1 FROM supported_currencies sc WHERE sc.code = o.currency_code)
           THEN 'org_currency_off_list'
-        WHEN s.default_hourly_rate IS NOT NULL AND s.default_billable IS DISTINCT FROM false
+        -- A non-billable org card carries no rate (conversion base_rate).
+        WHEN s.default_hourly_rate IS NOT NULL AND s.default_billable = false
+          THEN 'non_billable_org_rate'
+        WHEN s.default_hourly_rate IS NOT NULL
           AND s.rate_currency IS DISTINCT FROM o.currency_code
           THEN 'org_rate_currency_mismatch'
         ELSE NULL

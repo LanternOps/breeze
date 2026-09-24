@@ -66,7 +66,7 @@ export const legacyLabourPricingArchive = pgTable('legacy_labour_pricing_archive
   rateCurrency: char('rate_currency', { length: 3 }),
   ownerCurrencyCode: char('owner_currency_code', { length: 3 }),
   skipReason: text('skip_reason').$type<
-    'org_currency_off_list' | 'org_rate_currency_mismatch' | 'non_billable_category_rate' | 'category_rate_currency_unsupported'
+    'org_currency_off_list' | 'org_rate_currency_mismatch' | 'non_billable_org_rate' | 'non_billable_category_rate' | 'category_rate_currency_unsupported'
   >(),
   archivedAt: timestamp('archived_at', { withTimezone: true }).notNull().defaultNow(),
 });

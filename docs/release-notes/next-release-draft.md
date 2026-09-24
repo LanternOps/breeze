@@ -31,15 +31,16 @@ Last release: **v0.115.0** (2026-09-21).
     copies every row that still holds legacy pricing into the new table
     `legacy_labour_pricing_archive`. Its `skip_reason` column flags the values the v0.115.0
     conversion never carried into a billing profile: organizations in an off-list
-    currency, organization rates entered in another currency, non-billable category
-    rates, and category rates with no or an unsupported currency. Re-enter any of those
+    currency, organization rates entered in another currency, rates on non-billable
+    organizations and categories, and category rates with no or an unsupported currency. Re-enter any of those
     you still need on **Settings → Billing → Rates**. The query is in
     `deploy/upgrades.mdx` (v0.117.0), and the API log counts every archived row.
   - **Rollback to v0.116 needs a database restore.** The v0.116 image's tenant-export
     policy still lists the dropped `org_ticket_settings` columns, so organization data
     export fails on a v0.116 image against an upgraded database. Back up before upgrading.
   - The migration refuses to run (the API does not start) if any partner was never
-    converted to billing profiles. A normal upgrade cannot produce that state.
+    converted to billing profiles, or if manual DDL left only some of a table's three
+    legacy columns. A normal upgrade cannot produce either state.
 - **Billables CSV gains two columns, appended at the end:** `work_type` and
   `included_minutes` (worked minutes of contract-included time; `0` on other time rows,
   empty on parts). Existing columns keep their position, so index-mapped imports keep

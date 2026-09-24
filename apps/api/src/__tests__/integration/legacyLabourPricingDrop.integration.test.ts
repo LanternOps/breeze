@@ -18,13 +18,18 @@
  *  - the interlock's scope election is load-bearing: run as breeze_app (FORCE
  *    RLS applies; breeze_test is a superuser and bypasses RLS, so it cannot
  *    prove this), the block sees the unconverted partner — and with the
- *    election removed it does not (the fail-open the election closes).
+ *    election removed it does not (the fail-open the election closes);
+ *  - a partial legacy column set (manual DDL) is refused, never half-archived;
+ *  - the archive table is partner-axis: a partner sees only its own rows, an
+ *    org token sees none, and a cross-partner forge is rejected (42501).
  */
 import './setup';
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import postgres from 'postgres';
+import { sql } from 'drizzle-orm';
+import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { RESTORE_LEGACY_LABOUR_PRICING_COLUMNS_SQL } from './fixtures/legacyLabourPricingColumns';
 
 const MIGRATION = '2026-10-29-100300-drop-legacy-labour-pricing-columns.sql';
@@ -93,15 +98,19 @@ describe('drop legacy labour-pricing columns (#4628 W04b)', () => {
         (${cat.unpriced}, ${partnerId}, 'Unpriced', true, NULL, NULL),
         (${cat.nonBillableNoRate}, ${partnerId}, 'Internal', false, NULL, NULL)`;
 
-      const org = { converted: randomUUID(), mismatch: randomUUID(), offList: randomUUID(), slaOnly: randomUUID() };
+      const org = {
+        converted: randomUUID(), mismatch: randomUUID(), nonBillable: randomUUID(), offList: randomUUID(), slaOnly: randomUUID(),
+      };
       await tx`INSERT INTO organizations (id, partner_id, name, slug, currency_code) VALUES
         (${org.converted}, ${partnerId}, 'Converted org', ${`w04b-${org.converted}`}, 'USD'),
         (${org.mismatch}, ${partnerId}, 'Mismatched rate org', ${`w04b-${org.mismatch}`}, 'USD'),
+        (${org.nonBillable}, ${partnerId}, 'Non-billable org', ${`w04b-${org.nonBillable}`}, 'USD'),
         (${org.offList}, ${partnerId}, 'Off-list org', ${`w04b-${org.offList}`}, 'ZZZ'),
         (${org.slaOnly}, ${partnerId}, 'SLA-only org', ${`w04b-${org.slaOnly}`}, 'USD')`;
       await tx`INSERT INTO org_ticket_settings (org_id, default_billable, default_hourly_rate, rate_currency) VALUES
         (${org.converted}, NULL, '120.00', 'USD'),
         (${org.mismatch}, true, '130.00', 'EUR'),
+        (${org.nonBillable}, false, '75.00', 'USD'),
         (${org.offList}, false, '99.00', 'USD'),
         (${org.slaOnly}, NULL, NULL, 'USD')`;
 
@@ -121,6 +130,9 @@ describe('drop legacy labour-pricing columns (#4628 W04b)', () => {
         { source_table: 'org_ticket_settings', source_id: await settingsId(org.mismatch), org_id: org.mismatch,
           source_name: 'Mismatched rate org', default_billable: true, default_hourly_rate: '130.00', rate_currency: 'EUR',
           owner_currency_code: 'USD', skip_reason: 'org_rate_currency_mismatch' },
+        { source_table: 'org_ticket_settings', source_id: await settingsId(org.nonBillable), org_id: org.nonBillable,
+          source_name: 'Non-billable org', default_billable: false, default_hourly_rate: '75.00', rate_currency: 'USD',
+          owner_currency_code: 'USD', skip_reason: 'non_billable_org_rate' },
         { source_table: 'org_ticket_settings', source_id: await settingsId(org.offList), org_id: org.offList,
           source_name: 'Off-list org', default_billable: false, default_hourly_rate: '99.00', rate_currency: 'USD',
           owner_currency_code: 'ZZZ', skip_reason: 'org_currency_off_list' },
@@ -139,18 +151,33 @@ describe('drop legacy labour-pricing columns (#4628 W04b)', () => {
       ]);
       // Counts are reported (repo convention for row-writing migrations).
       expect(notices).toContainEqual(expect.stringContaining('archived 4 ticket_categories legacy pricing row(s)'));
-      expect(notices).toContainEqual(expect.stringContaining('archived 3 org_ticket_settings legacy pricing row(s)'));
+      expect(notices).toContainEqual(expect.stringContaining('archived 4 org_ticket_settings legacy pricing row(s)'));
       expect(notices).toContainEqual(expect.stringContaining('all six legacy labour-pricing columns dropped'));
 
       // Re-apply: a no-op that neither fails nor duplicates the archive.
       notices.length = 0;
       await tx.unsafe(migration);
       const [again] = await tx`SELECT count(*)::int AS n FROM legacy_labour_pricing_archive WHERE partner_id = ${partnerId}`;
-      expect(again!.n).toBe(7);
+      expect(again!.n).toBe(8);
       expect(notices).toContainEqual(expect.stringContaining('ticket_categories legacy pricing columns already dropped'));
       expect(notices).toContainEqual(expect.stringContaining('org_ticket_settings legacy pricing columns already dropped'));
     });
   });
+
+  it.each(['ticket_categories', 'org_ticket_settings'])(
+    'refuses a partial legacy column set on %s instead of dropping unarchived values',
+    async (table) => {
+      const migration = await loadMigration();
+      await inRolledBackTx(async (tx) => {
+        await tx.unsafe(RESTORE_LEGACY_LABOUR_PRICING_COLUMNS_SQL);
+        // Manual DDL left two of the three columns behind.
+        await tx.unsafe(`ALTER TABLE ${table} DROP COLUMN default_hourly_rate`);
+        await expect(tx.unsafe(migration)).rejects.toThrow(
+          new RegExp(`${table} has 2 of the 3 legacy labour-pricing columns`),
+        );
+      });
+    },
+  );
 
   it('refuses to drop anything while a partner is unconverted', async () => {
     const migration = await loadMigration();
@@ -186,5 +213,67 @@ describe('drop legacy labour-pricing columns (#4628 W04b)', () => {
       await tx`SELECT set_config('breeze.scope', 'none', true)`;
       await expect(tx.unsafe(interlock!)).rejects.toThrow(/refusing to drop legacy labour-pricing columns/);
     });
+  });
+});
+
+describe('legacy_labour_pricing_archive — partner-axis RLS', () => {
+  const partnerA = randomUUID();
+  const partnerB = randomUUID();
+  const orgA = randomUUID();
+  const partnerContext = (partnerId: string): DbAccessContext => ({
+    scope: 'partner', orgId: null, accessibleOrgIds: [orgA], accessiblePartnerIds: [partnerId],
+    currentPartnerId: partnerId, userId: null,
+  });
+  // An org token of partner A: partner prices are not its data, even for its own org.
+  const orgContext: DbAccessContext = {
+    scope: 'organization', orgId: orgA, accessibleOrgIds: [orgA], accessiblePartnerIds: [],
+    currentPartnerId: partnerA, userId: null,
+  };
+
+  // Shared setup truncates partners before each test, so every case reseeds.
+  beforeEach(async () => {
+    await withSystemDbAccessContext(async () => {
+      await db.execute(sql`INSERT INTO partners (id, name, slug, currency_code) VALUES
+        (${partnerA}, 'Archive A', ${`lla-a-${partnerA}`}, 'USD'),
+        (${partnerB}, 'Archive B', ${`lla-b-${partnerB}`}, 'USD')`);
+      await db.execute(sql`INSERT INTO organizations (id, partner_id, name, slug, currency_code)
+        VALUES (${orgA}, ${partnerA}, 'Archive org', ${`lla-org-${orgA}`}, 'USD')`);
+      await db.execute(sql`INSERT INTO legacy_labour_pricing_archive
+        (partner_id, org_id, source_table, source_id, source_name, default_hourly_rate, rate_currency, owner_currency_code)
+        VALUES (${partnerA}, NULL, 'ticket_categories', ${randomUUID()}, 'Remote', '100.00', 'USD', 'USD'),
+               (${partnerA}, ${orgA}, 'org_ticket_settings', ${randomUUID()}, 'Archive org', '120.00', 'USD', 'USD')`);
+    });
+  });
+
+  afterAll(async () => {
+    await withSystemDbAccessContext(async () => {
+      await db.execute(sql`DELETE FROM legacy_labour_pricing_archive WHERE partner_id IN (${partnerA}, ${partnerB})`);
+      await db.execute(sql`DELETE FROM organizations WHERE partner_id IN (${partnerA}, ${partnerB})`);
+      await db.execute(sql`DELETE FROM partners WHERE id IN (${partnerA}, ${partnerB})`);
+    });
+  });
+
+  const visible = (ctx: DbAccessContext) => withDbAccessContext(ctx, async () =>
+    ((await db.execute(sql`SELECT count(*)::int AS n FROM legacy_labour_pricing_archive
+      WHERE partner_id IN (${partnerA}, ${partnerB})`)) as unknown as Array<{ n: number }>)[0]!.n);
+
+  it('partner A sees its archive rows; partner B and an org token see none', async () => {
+    expect(await visible(partnerContext(partnerA))).toBe(2);
+    expect(await visible(partnerContext(partnerB))).toBe(0);
+    expect(await visible(orgContext)).toBe(0);
+  });
+
+  it("partner B cannot forge a row into partner A's archive (42501) or change A's rows", async () => {
+    await expect(withDbAccessContext(partnerContext(partnerB), () => db.execute(sql`
+      INSERT INTO legacy_labour_pricing_archive (partner_id, source_table, source_id, source_name)
+      VALUES (${partnerA}, 'ticket_categories', ${randomUUID()}, 'Forged')`)))
+      .rejects.toMatchObject({ cause: { code: '42501' } });
+    await withDbAccessContext(partnerContext(partnerB), () => db.execute(sql`
+      UPDATE legacy_labour_pricing_archive SET default_hourly_rate = '1.00' WHERE partner_id = ${partnerA}`));
+    await withDbAccessContext(partnerContext(partnerB), () => db.execute(sql`
+      DELETE FROM legacy_labour_pricing_archive WHERE partner_id = ${partnerA}`));
+    const rows = await withSystemDbAccessContext(() => db.execute(sql`
+      SELECT default_hourly_rate FROM legacy_labour_pricing_archive WHERE partner_id = ${partnerA} ORDER BY 1`));
+    expect(rows).toEqual([{ default_hourly_rate: '100.00' }, { default_hourly_rate: '120.00' }]);
   });
 });

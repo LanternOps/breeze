@@ -34,12 +34,18 @@ async function main() {
   const result = await withSystemDbAccessContext(async () => {
     await db.execute(sql`SET TRANSACTION READ ONLY`);
 
+    // All six legacy columns -> report; none -> already upgraded; anything
+    // else is a half-applied schema this report cannot describe honestly.
     const [legacy] = (await db.execute(sql`
       SELECT count(*)::int AS n FROM information_schema.columns
-       WHERE table_schema = 'public' AND table_name = 'ticket_categories'
-         AND column_name = 'default_hourly_rate'
+       WHERE table_schema = 'public' AND table_name IN ('ticket_categories', 'org_ticket_settings')
+         AND column_name IN ('default_billable', 'default_hourly_rate', 'rate_currency')
     `)) as unknown as Array<{ n: number }>;
-    if (!legacy || legacy.n === 0) return null;
+    const present = legacy?.n ?? 0;
+    if (present === 0) return null;
+    if (present !== 6) {
+      throw new Error(`found ${present} of the 6 legacy labour-pricing columns; expected all 6 (not yet upgraded) or none (upgraded)`);
+    }
 
     const partners = (await db.execute(sql`
       SELECT id, name, currency_code AS "currencyCode" FROM partners ORDER BY name
