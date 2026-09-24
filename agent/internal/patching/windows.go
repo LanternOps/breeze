@@ -78,7 +78,7 @@ func (w *WindowsUpdateProvider) Install(patchID string) (InstallResult, error) {
 				installed.Release()
 				alreadyInstalled = true
 			} else if instErr != nil && !isUpdateNotFound(instErr) {
-				log.Debug("installed-update lookup failed; reporting as not offered", "patchId", patchID, "error", instErr)
+				log.Warn("installed-update lookup failed; reporting as not offered", "patchId", patchID, "error", instErr)
 			}
 			result = notOfferedInstallResult(patchID, alreadyInstalled)
 			log.Info("update no longer offered at install time; skipping",
@@ -542,31 +542,42 @@ func (w *WindowsUpdateProvider) findUpdate(session *ole.IDispatch, criteria, pat
 	defer countVar.Clear()
 
 	count := int(countVar.Val)
+	// Results this loop could not read. A miss is only a trustworthy
+	// "not offered" (skippable, #6910) when every result was inspected;
+	// otherwise the target may be one of the unreadable items.
+	unreadable := 0
 	for i := 0; i < count; i++ {
 		itemVar, err := getCollectionItem(updates, i)
 		if err != nil {
+			unreadable++
 			continue
 		}
 
 		update := itemVar.ToIDispatch()
 		if update == nil {
+			unreadable++
 			continue
 		}
 
 		identityVar, err := oleutil.GetProperty(update, "Identity")
 		if err != nil {
+			unreadable++
 			update.Release()
 			continue
 		}
 
 		identity := identityVar.ToIDispatch()
 		if identity == nil {
+			unreadable++
 			update.Release()
 			continue
 		}
 
-		updateID, _ := w.getStringProperty(identity, "UpdateID")
+		updateID, idErr := w.getStringProperty(identity, "UpdateID")
 		identity.Release()
+		if idErr != nil || updateID == "" {
+			unreadable++
+		}
 
 		if updateID == patchID {
 			return update, nil
@@ -583,10 +594,7 @@ func (w *WindowsUpdateProvider) findUpdate(session *ole.IDispatch, criteria, pat
 		update.Release()
 	}
 
-	// Wraps the sentinel so Install can tell "search succeeded, no match"
-	// (skippable, #6910) from a search failure. Text is unchanged:
-	// "update <id> not found".
-	return nil, fmt.Errorf("update %s %w", patchID, errUpdateNotFound)
+	return nil, updateNotFoundError(patchID, unreadable, count)
 }
 
 func (w *WindowsUpdateProvider) createInstaller(session *ole.IDispatch, update *ole.IDispatch) (*ole.IDispatch, error) {

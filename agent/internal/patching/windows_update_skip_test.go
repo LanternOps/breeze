@@ -52,3 +52,24 @@ func TestIsUpdateNotFound(t *testing.T) {
 		t.Fatal("nil is not a not-found")
 	}
 }
+
+// A miss is only a skippable "not offered" when findUpdate inspected every
+// search result. If any result was unreadable, the target may be among them,
+// so the miss must stay a real (alerting) install error.
+func TestUpdateNotFoundErrorRequiresCompleteEnumeration(t *testing.T) {
+	complete := updateNotFoundError("KB2267602", 0, 5)
+	if !isUpdateNotFound(complete) {
+		t.Fatalf("complete enumeration must be a not-found, got %v", complete)
+	}
+	if complete.Error() != "update KB2267602 not found" {
+		t.Fatalf("error text changed: %q", complete.Error())
+	}
+
+	partial := updateNotFoundError("KB2267602", 2, 5)
+	if partial == nil || isUpdateNotFound(partial) {
+		t.Fatalf("partial enumeration must NOT be a skippable not-found, got %v", partial)
+	}
+	if !strings.Contains(partial.Error(), "2 of 5") {
+		t.Fatalf("error should say how many results were unreadable: %q", partial.Error())
+	}
+}
