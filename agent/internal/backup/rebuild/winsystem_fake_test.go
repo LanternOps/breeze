@@ -252,11 +252,19 @@ func (f *fakeWinSystem) simulateBcdboot(args []string) error {
 	}
 	return nil
 }
+
+// LookPath records "LookPath <name>" and answers a PATH-shaped decoy
+// (C:\PATH\<name>), never the System32 path: ruling C4's host tools must
+// not resolve through PATH, and a decoy answer makes such a regression
+// visible in argv.
 func (f *fakeWinSystem) LookPath(name string) (string, error) {
+	f.mu.Lock()
+	f.cmds = append(f.cmds, "LookPath "+name)
+	f.mu.Unlock()
 	if err, ok := f.lookPathErr[name]; ok {
 		return "", err
 	}
-	return `C:\Windows\System32\` + name, nil
+	return `C:\PATH\` + name, nil
 }
 func (f *fakeWinSystem) InWinPE() bool                    { return f.inWinPE }
 func (f *fakeWinSystem) SystemDiskNumber() (int, error)   { return f.systemDiskNumber, nil }

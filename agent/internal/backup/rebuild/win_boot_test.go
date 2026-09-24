@@ -13,10 +13,14 @@ import (
 	"github.com/breeze-rmm/agent/internal/backup/winhive"
 )
 
-// The fake's SystemRoot-less default: the host tools' absolute paths.
+// The boot tests pin SystemRoot to a non-default value (X:\Windows, as in
+// WinPE) so a tool resolved any other way — PATH (the fake's LookPath
+// answers C:\PATH\<name>), a hard-coded C:\Windows, the restored tree —
+// shows up in argv.
 const (
-	testHostBcdboot = `C:\Windows\System32\bcdboot.exe`
-	testHostDism    = `C:\Windows\System32\dism.exe`
+	testSystemRoot  = `X:\Windows`
+	testHostBcdboot = testSystemRoot + `\System32\bcdboot.exe`
+	testHostDism    = testSystemRoot + `\System32\dism.exe`
 )
 
 // newBootRun: a fake disk whose ESP (partition 1) is a real volume, so the
@@ -24,7 +28,7 @@ const (
 // r.rootDir is only ever a tool argument (ruling C1).
 func newBootRun(t *testing.T, kind TargetKind) (*run, *fakeWinSystem) {
 	t.Helper()
-	t.Setenv("SystemRoot", "")
+	t.Setenv("SystemRoot", testSystemRoot)
 	sys := newFakeWinSystem(t.TempDir())
 	if err := sys.WriteGPT(1, "disk-guid", []WinGPTPartition{
 		{Number: 1, TypeGUID: layout.GUIDEFISystem, PartGUID: "esp", SizeBytes: 100 * MiB},
@@ -89,6 +93,9 @@ func TestWinBoot_HostBcdbootNeverTreeCopy(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, c := range sys.cmds {
+		if strings.HasPrefix(c, "LookPath") {
+			t.Fatalf("host tools must not resolve through PATH (C4): %v", sys.cmds)
+		}
 		if strings.Contains(c, "bcdboot.exe") && !strings.HasPrefix(c, testHostBcdboot+" ") {
 			t.Fatalf("a non-host bcdboot ran: %q (all: %v)", c, sys.cmds)
 		}
@@ -151,6 +158,23 @@ func TestWinBoot_BcdbootFailureCarriesOutput(t *testing.T) {
 	err := winBoot(context.Background(), r)
 	if err == nil || !strings.Contains(err.Error(), "bcdboot") || !strings.Contains(err.Error(), "simulated failure") {
 		t.Fatalf("err = %v", err)
+	}
+	if r.espLetterRelease == nil {
+		t.Fatal("ESP letter release dropped on bcdboot failure; teardown could not release it")
+	}
+}
+
+// A second winBoot on the same run releases the first letter before
+// assigning another, so neither is leaked.
+func TestWinBoot_SecondCallReleasesPreviousLetter(t *testing.T) {
+	r, sys := newBootRun(t, TargetDisk)
+	prev := 0
+	r.espLetterRelease = func() error { prev++; return nil }
+	if err := winBoot(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	if prev != 1 || r.espLetterRelease == nil || sys.letters[r.espVolume] != "Z" {
+		t.Fatalf("previous releases = %d, letters = %v; want the old one released once and the new one held", prev, sys.letters)
 	}
 }
 
@@ -217,7 +241,7 @@ func TestWinBoot_Drivers(t *testing.T) {
 		t.Fatalf("unexpected inbox-only warning: %v", r.warnings)
 	}
 	for _, c := range sys.cmds {
-		if strings.HasPrefix(c, "dism.exe") {
+		if strings.HasPrefix(c, "dism.exe") || strings.HasPrefix(c, "LookPath") || strings.HasPrefix(c, `C:\PATH\`) {
 			t.Fatalf("DISM resolved through PATH (C4): %v", sys.cmds)
 		}
 	}
@@ -297,7 +321,7 @@ func TestWinBoot_SkipBoot(t *testing.T) {
 // preflight entry is wrapped to run with SkipBoot set.
 func TestRun_WindowsBootClosesHivesBeforeDism(t *testing.T) {
 	withHostPlatformWindows(t)
-	t.Setenv("SystemRoot", "")
+	t.Setenv("SystemRoot", testSystemRoot)
 	orig := platformPhases["windows"][0]
 	platformPhases["windows"][0] = phaseFn{PhasePreflight, func(ctx context.Context, r *run) error {
 		r.opts.SkipBoot = true

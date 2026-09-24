@@ -114,6 +114,12 @@ func winBoot(ctx context.Context, r *run) error {
 		return fmt.Errorf("boot: %w", err)
 	}
 
+	if r.espLetterRelease != nil { // a second winBoot on this run: never leak the first letter
+		if err := r.espLetterRelease(); err != nil {
+			return fmt.Errorf("release the ESP's previous drive letter: %w", err)
+		}
+		r.espLetterRelease = nil
+	}
 	letter, release, err := r.opts.WinSystem.AssignLetter(r.espVolume)
 	if err != nil {
 		return fmt.Errorf("assign a temporary drive letter to the ESP: %w", err)
