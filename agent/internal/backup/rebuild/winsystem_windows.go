@@ -40,23 +40,31 @@ var (
 	procGetVirtualDiskPhysicalPath = virtdisk.NewProc("GetVirtualDiskPhysicalPath")
 )
 
-// fileDeviceDisk is FILE_DEVICE_DISK (winioctl.h): the STORAGE_DEVICE_NUMBER
-// DeviceType of a volume on a real (or attached virtual) disk. CD-ROMs
-// (FILE_DEVICE_CD_ROM) and WinPE's X: RAM disk report something else.
-const fileDeviceDisk = 0x00000007
-
 // errUnrecognizedVolume is ERROR_UNRECOGNIZED_VOLUME: a RAW (unformatted)
 // volume's root cannot be opened.
 const errUnrecognizedVolume = windows.Errno(1005)
 
-type winSystemWindows struct {
-	mu          sync.Mutex
-	vhdxHandles map[string]windows.Handle // path -> open virtual-disk handle while this process holds the attach
-}
+type winSystemWindows struct{}
 
 // NewWinSystem is the real WinSystem.
-func NewWinSystem() WinSystem {
-	return &winSystemWindows{vhdxHandles: map[string]windows.Handle{}}
+func NewWinSystem() WinSystem { return &winSystemWindows{} }
+
+// attachedVHDX is the PROCESS-wide registry of VHDX attaches this process
+// holds: normalised path -> the virtual-disk handle the attach lives on.
+// Process-wide, not per WinSystem, because a non-permanent attach can only
+// be detached through the handle that attached it — DetachVirtualDisk on
+// any other handle to the same file fails with ERROR_NOT_READY (lab-proven,
+// every open variant) — so any WinSystem in this process must find it.
+var (
+	attachedVHDXMu sync.Mutex
+	attachedVHDX   = map[string]windows.Handle{}
+)
+
+func vhdxKey(path string) string {
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	return strings.ToLower(filepath.Clean(path))
 }
 
 var _ WinSystem = (*winSystemWindows)(nil)
@@ -90,21 +98,23 @@ func openDevice(devPath string, access uint32) (windows.Handle, error) {
 	return h, nil
 }
 
-// storageDeviceNumber issues IOCTL_STORAGE_GET_DEVICE_NUMBER
-// (STORAGE_DEVICE_NUMBER: DeviceType u32@0, DeviceNumber u32@4,
-// PartitionNumber u32@8) on a volume or disk device path.
-func storageDeviceNumber(devPath string) (devType, devNumber, partNumber uint32, err error) {
+// storageDeviceNumber issues IOCTL_STORAGE_GET_DEVICE_NUMBER on a volume
+// or disk device path.
+func storageDeviceNumber(devPath string) (storageDeviceNumberResult, error) {
+	var out storageDeviceNumberResult
 	h, err := openDevice(devPath, 0)
 	if err != nil {
-		return 0, 0, 0, err
+		return out, err
 	}
 	defer func() { _ = windows.CloseHandle(h) }()
-	var out [3]uint32
 	var n uint32
-	if err := windows.DeviceIoControl(h, wingpt.IOCTLStorageGetDeviceNumber, nil, 0, (*byte)(unsafe.Pointer(&out[0])), uint32(unsafe.Sizeof(out)), &n, nil); err != nil {
-		return 0, 0, 0, err
+	if err := windows.DeviceIoControl(h, wingpt.IOCTLStorageGetDeviceNumber, nil, 0, (*byte)(unsafe.Pointer(&out)), uint32(unsafe.Sizeof(out)), &n, nil); err != nil {
+		return out, fmt.Errorf("IOCTL_STORAGE_GET_DEVICE_NUMBER %s: %w", devPath, err)
 	}
-	return out[0], out[1], out[2], nil
+	if n < uint32(unsafe.Sizeof(out)) {
+		return out, fmt.Errorf("IOCTL_STORAGE_GET_DEVICE_NUMBER %s returned %d bytes", devPath, n)
+	}
+	return out, nil
 }
 
 // volumeDiskNumbers issues IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS on a volume
@@ -192,12 +202,12 @@ func (w *winSystemWindows) MediaDiskNumbers() ([]int, error) {
 		if _, err := windows.GetFileAttributes(p); err != nil {
 			return nil
 		}
-		devType, n, _, err := storageDeviceNumber(volumeDevicePath(vol))
-		if err != nil || devType != fileDeviceDisk || seen[int(n)] {
+		dn, err := storageDeviceNumber(volumeDevicePath(vol))
+		if err != nil || dn.DeviceType != fileDeviceDisk || seen[int(dn.DeviceNumber)] {
 			return nil
 		}
-		seen[int(n)] = true
-		out = append(out, int(n))
+		seen[int(dn.DeviceNumber)] = true
+		out = append(out, int(dn.DeviceNumber))
 		return nil
 	})
 	return out, err
@@ -237,32 +247,41 @@ func (w *winSystemWindows) DiskInfo(diskNumber int) (WinDiskInfo, error) {
 		return WinDiskInfo{}, fmt.Errorf("IOCTL_DISK_GET_DRIVE_GEOMETRY_EX returned %d bytes", n)
 	}
 	info := WinDiskInfo{SizeBytes: length, LogicalSectorSize: int(binary.LittleEndian.Uint32(geo[20:24]))}
-	// GET_DISK_ATTRIBUTES { ULONG Version; ULONG Reserved1; ULONGLONG
-	// Attributes } — DISK_ATTRIBUTE_OFFLINE 0x1, DISK_ATTRIBUTE_READ_ONLY
-	// 0x2 (winioctl.h). A device that does not implement the IOCTL (some
-	// virtual disks) is treated as online and writable.
-	var attrs [2]uint64
-	if err := windows.DeviceIoControl(h, wingpt.IOCTLDiskGetDiskAttributes, nil, 0, (*byte)(unsafe.Pointer(&attrs[0])), uint32(unsafe.Sizeof(attrs)), &n, nil); err == nil {
-		info.Offline = attrs[1]&0x1 != 0
-		info.ReadOnly = attrs[1]&0x2 != 0
+	// Offline/read-only unknown is an error, never "online and writable":
+	// preflight's read-only/offline refusal then fails closed.
+	attrs := make([]byte, 16)
+	if err := windows.DeviceIoControl(h, wingpt.IOCTLDiskGetDiskAttributes, nil, 0, &attrs[0], uint32(len(attrs)), &n, nil); err != nil {
+		return WinDiskInfo{}, fmt.Errorf("IOCTL_DISK_GET_DISK_ATTRIBUTES on disk %d: %w", diskNumber, err)
+	}
+	if info.Offline, info.ReadOnly, err = parseDiskAttributes(attrs[:n]); err != nil {
+		return WinDiskInfo{}, fmt.Errorf("disk %d: %w", diskNumber, err)
 	}
 	return info, nil
 }
 
 // VolumesOnDisk lists diskNumber's volumes with their partition numbers
 // (IOCTL_STORAGE_GET_DEVICE_NUMBER on each host volume). GUIDPath is the
-// \\?\Volume{GUID}\ form, trailing backslash included (Ruling B1a).
+// \\?\Volume{GUID}\ form, trailing backslash included (Ruling B1a). A
+// non-basic volume with an extent on diskNumber is an error, never skipped
+// (classifyVolume).
 func (w *winSystemWindows) VolumesOnDisk(diskNumber int) ([]WinVolume, error) {
 	var out []WinVolume
 	err := forEachVolume(func(vol string) error {
-		devType, n, part, err := storageDeviceNumber(volumeDevicePath(vol))
-		if err != nil || devType != fileDeviceDisk || int(n) != diskNumber {
-			return nil // CD-ROMs, spanned volumes and other disks are not ours
+		dev := volumeDevicePath(vol)
+		dn, dnErr := storageDeviceNumber(dev)
+		include, part, err := classifyVolume(vol, diskNumber, dn, dnErr, func() ([]int, error) { return volumeDiskNumbers(dev) })
+		if err != nil {
+			return err
 		}
-		out = append(out, WinVolume{GUIDPath: withTrailingBackslash(vol), DiskNumber: diskNumber, PartitionNumber: int(part), DriveLetter: driveLetterFor(vol)})
+		if include {
+			out = append(out, WinVolume{GUIDPath: withTrailingBackslash(vol), DiskNumber: diskNumber, PartitionNumber: part, DriveLetter: driveLetterFor(vol)})
+		}
 		return nil
 	})
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func driveLetterFor(volGUIDPath string) string {
@@ -312,12 +331,9 @@ func (w *winSystemWindows) CreateVHDX(path string, sizeBytes int64, logicalSecto
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	sector := uint32(logicalSectorSize)
-	if sector != 4096 {
-		sector = 512 // VHDX supports 512 and 4096 logical sectors only
-	}
+	size, sector := vhdxGeometry(sizeBytes, logicalSectorSize)
 	params := createVirtualDiskParametersV2{
-		Version: createVirtualDiskVersion2, MaximumSize: uint64(sizeBytes),
+		Version: createVirtualDiskVersion2, MaximumSize: size,
 		BlockSizeInBytes: vhdxBlockSizeBytes, SectorSizeInBytes: sector, PhysicalSectorSizeInBytes: 4096,
 	}
 	var h windows.Handle
@@ -335,9 +351,9 @@ func (w *winSystemWindows) CreateVHDX(path string, sizeBytes int64, logicalSecto
 // keeping the virtual-disk handle open (the attach lives exactly as long as
 // it) until detach / DetachVHDXByPath closes it.
 func (w *winSystemWindows) AttachVHDX(path string) (int, func() error, error) {
-	w.mu.Lock()
-	_, already := w.vhdxHandles[path]
-	w.mu.Unlock()
+	attachedVHDXMu.Lock()
+	_, already := attachedVHDX[vhdxKey(path)]
+	attachedVHDXMu.Unlock()
 	if already {
 		return 0, nil, fmt.Errorf("VHDX %s is already attached by this process", path)
 	}
@@ -361,9 +377,9 @@ func (w *winSystemWindows) AttachVHDX(path string) (int, func() error, error) {
 		_ = windows.CloseHandle(h)
 		return 0, nil, err
 	}
-	w.mu.Lock()
-	w.vhdxHandles[path] = h
-	w.mu.Unlock()
+	attachedVHDXMu.Lock()
+	attachedVHDX[vhdxKey(path)] = h
+	attachedVHDXMu.Unlock()
 	return n, func() error { _, err := w.DetachVHDXByPath(path); return err }, nil
 }
 
@@ -379,15 +395,21 @@ func physicalPath(h windows.Handle) (string, error) {
 	return windows.UTF16ToString(buf[:]), nil
 }
 
-// DetachVHDXByPath: the handle this process holds when it attached the
-// VHDX; otherwise open the file and detach it only if it is attached
-// (GetVirtualDiskPhysicalPath fails on a detached disk). No file → (false,
-// nil).
+// DetachVHDXByPath detaches through the handle this process attached with
+// (the process-wide attachedVHDX registry, so any WinSystem instance finds
+// it). Otherwise it opens the file: not attached (GetVirtualDiskPhysicalPath
+// fails) → (false, nil); attached with PERMANENT_LIFETIME by someone else →
+// detached. A NON-permanent attach held by another live handle cannot be
+// detached from outside (DetachVirtualDisk answers ERROR_NOT_READY on every
+// open variant — lab-proven); that is reported as an error naming the
+// holder problem. Such an attach dies with its holder's process anyway, so
+// a crashed run never leaves one behind. No file → (false, nil).
 func (w *winSystemWindows) DetachVHDXByPath(path string) (bool, error) {
-	w.mu.Lock()
-	h, ours := w.vhdxHandles[path]
-	delete(w.vhdxHandles, path)
-	w.mu.Unlock()
+	key := vhdxKey(path)
+	attachedVHDXMu.Lock()
+	h, ours := attachedVHDX[key]
+	delete(attachedVHDX, key)
+	attachedVHDXMu.Unlock()
 	if !ours {
 		if _, err := os.Stat(path); err != nil {
 			return false, nil
@@ -404,6 +426,9 @@ func (w *winSystemWindows) DetachVHDXByPath(path string) (bool, error) {
 	r1, _, _ := procDetachVirtualDisk.Call(uintptr(h), detachVirtualDiskFlagNone, 0)
 	closeErr := windows.CloseHandle(h)
 	if r1 != 0 {
+		if !ours && windows.Errno(r1) == windows.ERROR_NOT_READY {
+			return false, fmt.Errorf("VHDX %s is attached by another live process without PERMANENT_LIFETIME; it can only be detached by that process (or detaches when it exits): %w", path, windows.Errno(r1))
+		}
 		return false, fmt.Errorf("DetachVirtualDisk %s: %w", path, windows.Errno(r1))
 	}
 	return true, closeErr
@@ -558,10 +583,24 @@ func (w *winSystemWindows) WaitForVolumes(ctx context.Context, diskNumber int, w
 	}
 }
 
-func (w *winSystemWindows) Format(ctx context.Context, volumeGUIDPath, filesystem, label string) error {
-	out, err := winRunWithRetry(ctx, w, "format.com", formatComArgs(volumeGUIDPath, filesystem, label)...)
+// Format runs format.com on a temporary drive letter: format.com refuses a
+// \\?\Volume{GUID}\ path ("The given volume name does not have a mount
+// point or drive letter", lab-proven). The letter exists only for the
+// format.com call and is released on every path, so the run's
+// no-letters-during-the-run contract holds outside that window.
+func (w *winSystemWindows) Format(ctx context.Context, volumeGUIDPath, filesystem, label string) (err error) {
+	letter, release, err := w.AssignLetter(volumeGUIDPath)
 	if err != nil {
-		return fmt.Errorf("format.com %s: %s: %w", volumeGUIDPath, strings.TrimSpace(string(out)), err)
+		return fmt.Errorf("format %s: temporary drive letter: %w", volumeGUIDPath, err)
+	}
+	defer func() {
+		if rerr := release(); rerr != nil && err == nil {
+			err = fmt.Errorf("format %s: release temporary drive letter %s: %w", volumeGUIDPath, letter, rerr)
+		}
+	}()
+	out, err := winRunWithRetry(ctx, w, "format.com", formatComArgs(letter+":", filesystem, label)...)
+	if err != nil {
+		return fmt.Errorf("format.com %s (%s:): %s: %w", volumeGUIDPath, letter, strings.TrimSpace(string(out)), err)
 	}
 	return nil
 }

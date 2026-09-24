@@ -47,9 +47,11 @@ type WinSystem interface {
 	// DetachVHDXByPath detaches a VHDX by path when it is currently
 	// attached (by this process or another), reporting whether it was —
 	// cleanupLeftovers (win_phases.go, Task 8) uses it when only the path
-	// (from a stale state file) is known. A non-permanent attach normally
-	// dies with its process; this covers a helper that is still alive or
-	// wedged. Not attached (or no such file) → (false, nil).
+	// (from a stale state file) is known. A non-permanent attach dies with
+	// its process; one held by another LIVE process cannot be detached from
+	// outside (the real seam reports that as an error), while one held in
+	// this process, or a PERMANENT_LIFETIME attach, is detached. Not
+	// attached (or no such file) → (false, nil).
 	DetachVHDXByPath(path string) (detached bool, err error)
 	// WipeDisk locks+dismounts every existing volume on diskNumber, deletes
 	// its drive layout, and zeroes the first and last MiB.

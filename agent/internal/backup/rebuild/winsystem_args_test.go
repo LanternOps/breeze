@@ -174,3 +174,76 @@ func TestHiveWithRelease_UnloadsThenReleasesOnce(t *testing.T) {
 		}
 	}
 }
+
+// R1: VolumesOnDisk must never silently drop a volume that has an extent on
+// the target disk. The device-number answer is used when it exists; when
+// the IOCTL fails (dynamic-disk simple/spanned/mirrored volumes) the disk
+// extents decide, and an extent on the target is an error — the preflight
+// Windows-tree guard and WipeDisk's lock/dismount would otherwise never see
+// that volume. Only a device that is provably elsewhere (or not a disk at
+// all) is skipped.
+func TestClassifyVolume(t *testing.T) {
+	failed := errors.New("ioctl failed")
+	for _, tc := range []struct {
+		name    string
+		dn      storageDeviceNumberResult
+		dnErr   error
+		extents []int
+		extErr  error
+		include bool
+		part    int
+		wantErr bool
+	}{
+		{"basic volume on target", storageDeviceNumberResult{fileDeviceDisk, 2, 3}, nil, nil, nil, true, 3, false},
+		{"basic volume elsewhere", storageDeviceNumberResult{fileDeviceDisk, 0, 1}, nil, nil, nil, false, 0, false},
+		{"cd-rom", storageDeviceNumberResult{0x2, 2, 0}, nil, nil, nil, false, 0, false},
+		{"dynamic volume with an extent on target", storageDeviceNumberResult{}, failed, []int{0, 2}, nil, false, 0, true},
+		{"dynamic volume only elsewhere", storageDeviceNumberResult{}, failed, []int{0, 1}, nil, false, 0, false},
+		{"not a disk at all (both IOCTLs fail)", storageDeviceNumberResult{}, failed, nil, failed, false, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			include, part, err := classifyVolume(`\\?\Volume{x}\`, 2, tc.dn, tc.dnErr, func() ([]int, error) { return tc.extents, tc.extErr })
+			if include != tc.include || part != tc.part || (err != nil) != tc.wantErr {
+				t.Fatalf("classifyVolume = %v, %d, %v; want %v, %d, err=%v", include, part, err, tc.include, tc.part, tc.wantErr)
+			}
+		})
+	}
+}
+
+// R3: GET_DISK_ATTRIBUTES is 16 bytes; anything shorter is unknown and
+// must not read as "online and writable".
+func TestParseDiskAttributes(t *testing.T) {
+	buf := make([]byte, 16)
+	binary.LittleEndian.PutUint64(buf[8:16], 0x3)
+	if off, ro, err := parseDiskAttributes(buf); err != nil || !off || !ro {
+		t.Fatalf("parseDiskAttributes(0x3) = %v, %v, %v", off, ro, err)
+	}
+	binary.LittleEndian.PutUint64(buf[8:16], 0)
+	if off, ro, err := parseDiskAttributes(buf); err != nil || off || ro {
+		t.Fatalf("parseDiskAttributes(0) = %v, %v, %v", off, ro, err)
+	}
+	if _, _, err := parseDiskAttributes(buf[:8]); err == nil {
+		t.Fatal("short GET_DISK_ATTRIBUTES output accepted")
+	}
+}
+
+// R4: the VHDX virtual size must be a multiple of its logical sector size.
+func TestVHDXGeometry(t *testing.T) {
+	for _, tc := range []struct {
+		size       int64
+		sector     int
+		wantSize   uint64
+		wantSector uint32
+	}{
+		{64 * MiB, 512, 64 << 20, 512},
+		{64*MiB + 1, 512, 64<<20 + 512, 512},
+		{64*MiB + 1, 4096, 64<<20 + 4096, 4096},
+		{1000, 0, 1024, 512},
+		{4096, 520, 4096, 512},
+	} {
+		size, sector := vhdxGeometry(tc.size, tc.sector)
+		if size != tc.wantSize || sector != tc.wantSector {
+			t.Errorf("vhdxGeometry(%d, %d) = %d, %d; want %d, %d", tc.size, tc.sector, size, sector, tc.wantSize, tc.wantSector)
+		}
+	}
+}

@@ -194,6 +194,16 @@ func TestWinSystem_VHDXProvisionRoundTrip(t *testing.T) {
 	if err := sys.Format(ctx, v1.GUIDPath, "ntfs", "BRZTEST"); err != nil {
 		t.Fatalf("Format: %v", err)
 	}
+	// Format's temporary letter must be gone again (no letters during the run).
+	if after, err := sys.VolumesOnDisk(disk); err != nil {
+		t.Fatal(err)
+	} else {
+		for _, v := range after {
+			if v.DriveLetter != "" {
+				t.Fatalf("volume %s still has drive letter %s after Format", v.GUIDPath, v.DriveLetter)
+			}
+		}
+	}
 
 	mnt := filepath.Join(t.TempDir(), "mnt", "root") // does not exist yet
 	if err := sys.MountVolume(v1.GUIDPath, mnt); err != nil {
@@ -274,9 +284,11 @@ func TestWinSystem_VHDXProvisionRoundTrip(t *testing.T) {
 	}
 }
 
-// cleanupLeftovers' case: a second WinSystem (a later process) that only
-// knows the path detaches a VHDX the first one still holds attached, and
-// reports not-attached / missing files as (false, nil).
+// cleanupLeftovers' in-process case: a second WinSystem instance that only
+// knows the path detaches a VHDX the first one attached (the attach
+// registry is process-wide — a non-permanent attach can only be detached
+// through its own handle), then reports not-attached and missing files as
+// (false, nil).
 func TestWinSystem_DetachVHDXByPathFromAnotherInstance(t *testing.T) {
 	requireElevatedForTest(t)
 	holder := NewWinSystem()
@@ -291,6 +303,66 @@ func TestWinSystem_DetachVHDXByPathFromAnotherInstance(t *testing.T) {
 	}
 	if detached, err := other.DetachVHDXByPath(filepath.Join(t.TempDir(), "absent.vhdx")); err != nil || detached {
 		t.Fatalf("DetachVHDXByPath(missing file) = %v, %v; want false, nil", detached, err)
+	}
+}
+
+// rawAttachForTest attaches path through a virtual-disk handle the
+// WinSystem registry knows nothing about — standing in for another
+// process — optionally with PERMANENT_LIFETIME.
+func rawAttachForTest(t *testing.T, path string, permanent bool) windows.Handle {
+	t.Helper()
+	h, err := openVHDX(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flags := uintptr(attachFlagNoDriveLetter)
+	if permanent {
+		flags |= 0x4 // ATTACH_VIRTUAL_DISK_FLAG_PERMANENT_LIFETIME
+	}
+	params := attachVirtualDiskParametersV2{Version: attachVirtualDiskVersion2}
+	if r1, _, _ := procAttachVirtualDisk.Call(uintptr(h), 0, flags, 0, uintptr(unsafe.Pointer(&params)), 0); r1 != 0 {
+		_ = windows.CloseHandle(h)
+		t.Fatalf("AttachVirtualDisk: %v", windows.Errno(r1))
+	}
+	return h
+}
+
+// Foreign attaches: a PERMANENT_LIFETIME attach whose holder is gone is
+// detached by path; a non-permanent attach whose holder is still alive
+// cannot be (ERROR_NOT_READY) and is reported as an error, with the disk
+// left attached — never as (false, nil), which would read as "not
+// attached".
+func TestWinSystem_DetachVHDXByPathForeignAttaches(t *testing.T) {
+	requireElevatedForTest(t)
+	sys := NewWinSystem()
+	dir := t.TempDir()
+
+	perm := filepath.Join(dir, "perm.vhdx")
+	if err := sys.CreateVHDX(perm, 64*MiB, 512); err != nil {
+		t.Fatal(err)
+	}
+	h := rawAttachForTest(t, perm, true)
+	_ = windows.CloseHandle(h) // the "other process" exits; the permanent attach stays
+	t.Cleanup(func() { _, _ = sys.DetachVHDXByPath(perm) })
+	if detached, err := sys.DetachVHDXByPath(perm); err != nil || !detached {
+		t.Fatalf("DetachVHDXByPath(permanent foreign attach) = %v, %v; want true, nil", detached, err)
+	}
+	if detached, err := sys.DetachVHDXByPath(perm); err != nil || detached {
+		t.Fatalf("second DetachVHDXByPath(perm) = %v, %v; want false, nil", detached, err)
+	}
+
+	live := filepath.Join(dir, "live.vhdx")
+	if err := sys.CreateVHDX(live, 64*MiB, 512); err != nil {
+		t.Fatal(err)
+	}
+	holder := rawAttachForTest(t, live, false)
+	t.Cleanup(func() { _ = windows.CloseHandle(holder) }) // closing a non-permanent holder detaches
+	detached, err := sys.DetachVHDXByPath(live)
+	if err == nil || detached || !strings.Contains(err.Error(), "another live process") {
+		t.Fatalf("DetachVHDXByPath(non-permanent foreign attach) = %v, %v; want false and the live-holder error", detached, err)
+	}
+	if _, err := physicalPath(holder); err != nil {
+		t.Fatalf("holder's attach was lost: %v", err)
 	}
 }
 

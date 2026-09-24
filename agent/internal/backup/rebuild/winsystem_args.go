@@ -52,6 +52,73 @@ func parseVolumeDiskExtents(b []byte) ([]int, error) {
 	return out, nil
 }
 
+// fileDeviceDisk is FILE_DEVICE_DISK (winioctl.h): the STORAGE_DEVICE_NUMBER
+// DeviceType of a volume on a real (or attached virtual) disk. CD-ROMs
+// (FILE_DEVICE_CD_ROM) and WinPE's X: RAM disk report something else.
+const fileDeviceDisk = 0x00000007
+
+// storageDeviceNumberResult is STORAGE_DEVICE_NUMBER (DeviceType u32@0,
+// DeviceNumber u32@4, PartitionNumber u32@8).
+type storageDeviceNumberResult struct {
+	DeviceType, DeviceNumber, PartitionNumber uint32
+}
+
+// classifyVolume decides whether one host volume belongs to diskNumber for
+// VolumesOnDisk. IOCTL_STORAGE_GET_DEVICE_NUMBER answers for every volume
+// on a basic disk; it fails for dynamic-disk volumes (simple, spanned,
+// mirrored), and then the disk extents decide: an extent on diskNumber is
+// an error, never a silent skip — the preflight Windows-tree guard and
+// WipeDisk's lock/dismount both rely on this list being complete. A volume
+// whose extents are also unavailable is not on any disk (WinPE's X: RAM
+// disk, an empty optical drive) and is skipped.
+func classifyVolume(vol string, diskNumber int, dn storageDeviceNumberResult, dnErr error, extents func() ([]int, error)) (include bool, partitionNumber int, err error) {
+	if dnErr == nil {
+		if dn.DeviceType != fileDeviceDisk || int(dn.DeviceNumber) != diskNumber {
+			return false, 0, nil
+		}
+		return true, int(dn.PartitionNumber), nil
+	}
+	disks, extErr := extents()
+	if extErr != nil {
+		return false, 0, nil
+	}
+	for _, d := range disks {
+		if d == diskNumber {
+			return false, 0, fmt.Errorf("volume %s has an extent on disk %d but is not a basic partition volume (dynamic, spanned or mirrored; %v): refusing to treat the disk as understood", vol, diskNumber, dnErr)
+		}
+	}
+	return false, 0, nil
+}
+
+// parseDiskAttributes reads GET_DISK_ATTRIBUTES { ULONG Version; ULONG
+// Reserved1; ULONGLONG Attributes } — DISK_ATTRIBUTE_OFFLINE 0x1,
+// DISK_ATTRIBUTE_READ_ONLY 0x2 (winioctl.h). A short buffer is an error:
+// unknown must not read as online and writable.
+func parseDiskAttributes(b []byte) (offline, readOnly bool, err error) {
+	if len(b) < 16 {
+		return false, false, fmt.Errorf("GET_DISK_ATTRIBUTES returned %d bytes, want 16", len(b))
+	}
+	attrs := binary.LittleEndian.Uint64(b[8:16])
+	return attrs&0x1 != 0, attrs&0x2 != 0, nil
+}
+
+// vhdxGeometry normalises CreateVHDX's inputs: the logical sector size is
+// 512 or 4096 (anything else → 512, the only other size VHDX supports),
+// and the virtual size is rounded up to a multiple of it (VHDX requires
+// that; a real source disk size always is, an operator-given image size
+// may not be).
+func vhdxGeometry(sizeBytes int64, logicalSectorSize int) (uint64, uint32) {
+	sector := uint32(512)
+	if logicalSectorSize == 4096 {
+		sector = 4096
+	}
+	size := uint64(sizeBytes)
+	if rem := size % uint64(sector); rem != 0 {
+		size += uint64(sector) - rem
+	}
+	return size, sector
+}
+
 // virtualStorageType is VIRTUAL_STORAGE_TYPE {ULONG DeviceId; GUID
 // VendorId} — 20 bytes, 4-byte aligned. VendorID holds the GUID in Win32
 // (mixed-endian) byte order.
@@ -133,14 +200,14 @@ func letterCandidates() []byte {
 }
 
 // formatComArgs builds format.com's arguments: <volume> /FS:<NTFS|FAT32>
-// /Q /Y [/V:<label>]. The volume is a \\?\Volume{GUID}\ path, which
-// format.com accepts as the volume argument.
-func formatComArgs(volumeGUIDPath, filesystem, label string) []string {
+// /Q /Y [/V:<label>]. The real Format passes a temporary drive letter
+// ("Z:"): format.com does not accept a \\?\Volume{GUID}\ path.
+func formatComArgs(volume, filesystem, label string) []string {
 	fs := "NTFS"
 	if strings.EqualFold(filesystem, "fat32") || strings.EqualFold(filesystem, "vfat") {
 		fs = "FAT32"
 	}
-	args := []string{volumeGUIDPath, "/FS:" + fs, "/Q", "/Y"}
+	args := []string{volume, "/FS:" + fs, "/Q", "/Y"}
 	if label != "" {
 		args = append(args, "/V:"+label)
 	}
