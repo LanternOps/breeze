@@ -126,7 +126,15 @@ func textComponent(source Kind, typ ComponentType, key, parent, name, raw string
 
 var sizePattern = regexp.MustCompile(`(?i)([0-9]+(?:\.[0-9]+)?)\s*(bytes|[KMGTP]i?B|[KMGTP])?`)
 
+var exactBytesPattern = regexp.MustCompile(`(?i)\(\s*([0-9]+)\s*bytes\s*\)`)
+
 func textSize(raw string) *int64 {
+	// "278.88 GB (299439751168 bytes)": the exact byte count beats a rounded, ambiguous unit.
+	if m := exactBytesPattern.FindStringSubmatch(raw); m != nil {
+		if v, err := strconv.ParseInt(m[1], 10, 64); err == nil {
+			return &v
+		}
+	}
 	m := sizePattern.FindStringSubmatch(raw)
 	if m == nil {
 		return nil
