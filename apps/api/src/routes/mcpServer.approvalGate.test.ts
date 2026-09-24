@@ -655,7 +655,7 @@ describe('MCP_UNATTENDED_TIER3_PRINCIPALS operator opt-in', () => {
   });
 
   describe('when enabled', () => {
-    beforeEach(() => { vi.stubEnv('MCP_UNATTENDED_TIER3_PRINCIPALS', 'oauth_client:someone, api_key:key-1'); });
+    beforeEach(() => { vi.stubEnv('MCP_UNATTENDED_TIER3_PRINCIPALS', 'oauth_client_user:someone/user-9, api_key:key-1'); });
 
     it('never lifts Tier 4 (no approval path): unlisted and denied even for a designated principal', async () => {
       mocks.getToolDefinitions.mockReturnValue([
@@ -752,15 +752,27 @@ describe('MCP_UNATTENDED_TIER3_PRINCIPALS operator opt-in', () => {
       }
     });
 
-    it('binds OAuth callers by client_id, never by their synthetic oauth:<jti> key id', async () => {
-      testState.apiKeyExtra = { id: 'oauth:jti-1', oauthGrantId: 'grant-1', oauthClientId: 'cc-1' };
-      vi.stubEnv('MCP_UNATTENDED_TIER3_PRINCIPALS', 'api_key:oauth:jti-1');
-      const denied = await (await callTool('execute_command', { deviceId: 'dev-1', commandType: 'list_processes' })).json();
-      expect(JSON.parse(denied.result.content[0].text).code).toBe('MCP_APPROVAL_REQUIRED');
+    it('binds OAuth callers by client AND user, never by client alone or the synthetic oauth:<jti> id', async () => {
+      const call = () => callTool('execute_command', { deviceId: 'dev-1', commandType: 'list_processes' });
+      const expectDenied = async () => {
+        const body = await (await call()).json();
+        expect(JSON.parse(body.result.content[0].text).code).toBe('MCP_APPROVAL_REQUIRED');
+      };
+      // Billy's grant (user-1) and another user's grant through the SAME shared client.
+      testState.apiKeyExtra = { id: 'oauth:jti-1', oauthGrantId: 'grant-1', oauthClientId: 'cc-1', createdBy: 'user-1' };
+      for (const value of ['api_key:oauth:jti-1', 'oauth_client:cc-1', 'oauth_client_user:cc-1/user-2', 'oauth_client_user:cc-2/user-1']) {
+        vi.stubEnv('MCP_UNATTENDED_TIER3_PRINCIPALS', value);
+        await expectDenied();
+      }
       expect(mocks.executeTool).not.toHaveBeenCalled();
 
-      vi.stubEnv('MCP_UNATTENDED_TIER3_PRINCIPALS', 'oauth_client:cc-1');
-      await callTool('execute_command', { deviceId: 'dev-1', commandType: 'list_processes' });
+      vi.stubEnv('MCP_UNATTENDED_TIER3_PRINCIPALS', 'oauth_client_user:cc-1/user-1');
+      await call();
+      expect(mocks.executeTool).toHaveBeenCalledTimes(1);
+
+      // Same client, different user: still approval-only.
+      testState.apiKeyExtra = { id: 'oauth:jti-2', oauthGrantId: 'grant-2', oauthClientId: 'cc-1', createdBy: 'user-2' };
+      await expectDenied();
       expect(mocks.executeTool).toHaveBeenCalledTimes(1);
     });
 

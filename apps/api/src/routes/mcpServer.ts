@@ -102,7 +102,10 @@ function shouldRequireExecuteAdminInProd(): boolean {
  * so core-registry Tier 3 tools/actions (and MCP_APPROVAL_REQUIRED_EXTRA_TOOLS,
  * floored to Tier 3) are listed and callable without a human approval step.
  * Comma-separated entries: `api_key:<api key id>` or
- * `oauth_client:<OAuth client_id>`. Every other principal keeps the default
+ * `oauth_client_user:<OAuth client_id>/<user id>`. A public/DCR client_id is
+ * shared by every user and partner that consents to it, so OAuth entries bind
+ * the client AND the signed-in user (the token's signed `sub`); a client_id
+ * alone is never accepted. Every other principal keeps the default
  * approval-only deny. Only Tier 3 is lifted; Tier 4 stays denied. Bootstrap
  * (onboarding) and tenant (BYO MCP) tools stay approval-only (tenant tools
  * run outside the Tier 3 ledger lifecycle). ai:execute, ai:execute_admin
@@ -112,7 +115,9 @@ function shouldRequireExecuteAdminInProd(): boolean {
  */
 function mcpPrincipalRef(apiKey: McpApiKeyContext | undefined | null): string | null {
   if (!apiKey) return null;
-  if (apiKey.oauthClientId) return `oauth_client:${apiKey.oauthClientId}`;
+  if (apiKey.oauthClientId) {
+    return apiKey.createdBy ? `oauth_client_user:${apiKey.oauthClientId}/${apiKey.createdBy}` : null;
+  }
   // OAuth bearers use a synthetic `oauth:<jti>` id; never treat it as a key id.
   if (apiKey.oauthGrantId || apiKey.id.startsWith('oauth:')) return null;
   return `api_key:${apiKey.id}`;
@@ -289,6 +294,8 @@ type McpApiKeyContext = {
   oauthGrantId?: string | null;
   // Set by bearerTokenAuth for OAuth callers (the token's client_id claim).
   oauthClientId?: string | null;
+  // API key creator, or the signed `sub` (user id) for OAuth bearers.
+  createdBy?: string;
 };
 
 type McpApiKeyWithAuthFields = McpApiKeyContext & {
