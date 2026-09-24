@@ -1029,6 +1029,7 @@ export default function DeviceDetails({
       {activeTab === "monitoring" && (
         <DeviceMonitoringTab
           deviceId={device.id}
+          deviceName={device.displayName || device.hostname}
           timezone={effectiveTimezone}
         />
       )}
