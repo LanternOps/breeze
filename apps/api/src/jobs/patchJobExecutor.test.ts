@@ -2409,6 +2409,58 @@ describe('claim commits before device fan-out (#6632)', () => {
     consoleSpy.mockRestore();
   });
 
+  // The claim now commits BEFORE fan-out, so a worker that dies in between
+  // leaves a `running` row with no device jobs. BullMQ's stall detection
+  // re-runs this job; that re-run must at least guarantee the completion
+  // check, or nothing ever settles the row (the #1733 sweep only scans
+  // `scheduled`). Device jobs are NOT re-added: one may already have run.
+  it('re-entry on an already-running parent ensures the completion check and dispatches no device', async () => {
+    vi.mocked(db.select).mockImplementationOnce(() => createSelectChain([{
+      id: 'job-1',
+      orgId: 'org-1',
+      status: 'running',
+      targets: { deviceIds: ['device-1'] },
+    }]) as any);
+
+    createPatchJobWorker();
+    const result = await shared.processorRefs['patch-jobs']({
+      data: { type: 'execute-patch-job', patchJobId: 'job-1' },
+    });
+
+    expect(result).toEqual({ skipped: true, reason: 'Job status is running' });
+    expect(db.update).not.toHaveBeenCalled();
+    expect(shared.addMock).toHaveBeenCalledTimes(1);
+    expect(shared.addMock).toHaveBeenCalledWith(
+      'check-completion',
+      { type: 'check-completion', patchJobId: 'job-1' },
+      expect.objectContaining({ jobId: 'patch-job-completion-job-1' }),
+    );
+    expect(addDepths).toEqual([0]);
+  });
+
+  it.each(['scheduled-but-lost-race', 'completed', 'cancelled'])(
+    'a %s parent enqueues nothing',
+    async (variant) => {
+      if (variant === 'scheduled-but-lost-race') {
+        vi.mocked(db.select).mockImplementationOnce(() => createSelectChain([{
+          id: 'job-1', orgId: 'org-1', status: 'scheduled', targets: { deviceIds: ['device-1'] },
+        }]) as any);
+        vi.mocked(db.update).mockImplementationOnce(() => createUpdateChain([]) as any);
+      } else {
+        vi.mocked(db.select).mockImplementationOnce(() => createSelectChain([{
+          id: 'job-1', orgId: 'org-1', status: variant, targets: { deviceIds: ['device-1'] },
+        }]) as any);
+      }
+
+      createPatchJobWorker();
+      await shared.processorRefs['patch-jobs']({
+        data: { type: 'execute-patch-job', patchJobId: 'job-1' },
+      });
+
+      expect(shared.addMock).not.toHaveBeenCalled();
+    },
+  );
+
   it('completes an empty-target job inside the claim transaction and enqueues nothing', async () => {
     primeScheduledJob([]);
 
@@ -2513,6 +2565,49 @@ describe('device worker re-delays while the parent is still scheduled (#6632)', 
     expect(job.moveToDelayed).not.toHaveBeenCalled();
     expect(captureException).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'PatchParentNotRunningError' }),
+      undefined,
+      expect.anything(),
+    );
+    errorSpy.mockRestore();
+  });
+
+  it('reports and falls back to a terminal skip when the re-delay itself fails', async () => {
+    primeParent('scheduled');
+    const job = deviceJob();
+    job.moveToDelayed.mockRejectedValueOnce(new Error('redis down'));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    createPatchJobDeviceWorker();
+    const result = await shared.processorRefs['patch-job-devices'](job, 'lock-token');
+
+    expect(result).toEqual({ kind: 'skipped', skipped: true, reason: 'Job not running' });
+    expect(captureException).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'PatchParentNotRunningError',
+        message: expect.stringContaining('could not re-delay'),
+      }),
+      undefined,
+      expect.anything(),
+    );
+    errorSpy.mockRestore();
+  });
+
+  it('falls back to a reported terminal skip when no lock token is available to re-delay with', async () => {
+    primeParent('scheduled');
+    const job = deviceJob();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    createPatchJobDeviceWorker();
+    const result = await shared.processorRefs['patch-job-devices'](job, undefined);
+
+    expect(result).toEqual({ kind: 'skipped', skipped: true, reason: 'Job not running' });
+    expect(job.updateData).not.toHaveBeenCalled();
+    expect(job.moveToDelayed).not.toHaveBeenCalled();
+    expect(captureException).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'PatchParentNotRunningError',
+        message: expect.stringContaining('no lock token'),
+      }),
       undefined,
       expect.anything(),
     );

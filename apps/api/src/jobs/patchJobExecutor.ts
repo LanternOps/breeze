@@ -501,6 +501,7 @@ export function createPatchJobWorker(): Worker<PatchJobData> {
 
 type PatchJobClaim =
   | { kind: 'claimed'; orgId: string; deviceIds: string[] }
+  | { kind: 'already_running' }
   | { kind: 'done'; result: unknown };
 
 /**
@@ -520,6 +521,10 @@ async function claimPatchJob(patchJobId: string): Promise<PatchJobClaim> {
   if (!patchJob) {
     console.error(`[PatchJobExecutor] Job ${patchJobId} not found`);
     return { kind: 'done', result: { error: 'Job not found' } };
+  }
+
+  if (patchJob.status === 'running') {
+    return { kind: 'already_running' };
   }
 
   if (patchJob.status !== 'scheduled') {
@@ -558,6 +563,18 @@ async function processExecutePatchJob(data: ExecutePatchJobData): Promise<unknow
   const claim = await runWithSystemDbAccess(() => claimPatchJob(patchJobId));
   if (claim.kind === 'done') {
     return claim.result;
+  }
+  if (claim.kind === 'already_running') {
+    // The claim commits before fan-out, so a worker that died in between left
+    // this row `running` with no device jobs and no completion check. BullMQ's
+    // stall detection re-runs this job, and this branch is where that re-run
+    // lands. Nothing else would ever settle the row: the #1733 sweep only
+    // scans `scheduled`. Device jobs are NOT re-added, because one may already
+    // have run and re-adding clears a completed stable id. Guaranteeing the
+    // completion check (idempotent on its stable id) means undispatched
+    // devices are force-failed at the timeout.
+    await enqueueCompletionCheck(patchJobId);
+    return { skipped: true, reason: 'Job status is running' };
   }
   const { orgId, deviceIds } = claim;
 
@@ -918,11 +935,25 @@ async function deferUntilParentRunning(
     return JOB_NOT_RUNNING_SKIP;
   }
 
-  await job.updateData({ ...job.data, parentNotRunningRechecks: rechecks + 1 });
-  await job.moveToDelayed(
-    Date.now() + PARENT_NOT_RUNNING_BASE_DELAY_MS * 2 ** rechecks,
-    token,
-  );
+  try {
+    await job.updateData({ ...job.data, parentNotRunningRechecks: rechecks + 1 });
+    await job.moveToDelayed(
+      Date.now() + PARENT_NOT_RUNNING_BASE_DELAY_MS * 2 ** rechecks,
+      token,
+    );
+  } catch (error) {
+    // A Redis failure here must not vanish into a bare BullMQ failure. Report
+    // it and fall back to the terminal skip. The device stays pending for the
+    // completion check, and a later claim clears this job's id and re-adds it.
+    const message =
+      `[PatchJobExecutor] Device job ${patchJobId}/${deviceId} could not re-delay while its `
+      + 'parent is scheduled';
+    console.error(`${message}:`, error instanceof Error ? error.message : error);
+    captureException(new PatchParentNotRunningError(message, { cause: error }), undefined, {
+      patch_reconcile_stage: 'device_parent_not_running',
+    });
+    return JOB_NOT_RUNNING_SKIP;
+  }
   throw new DelayedError();
 }
 
