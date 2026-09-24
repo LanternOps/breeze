@@ -356,7 +356,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         properties: {
           action: { type: 'string', enum: ['list', 'get', 'create', 'update'], description: 'Action to perform' },
           policyId: { type: 'string', description: 'Software policy UUID (required for get/update)' },
-          ownerScope: { type: 'string', enum: ['organization', 'partner'], description: "Create ownership: organization (default; needs orgId unless you can access exactly one organization) or partner (all-org template; requires full partner org access)." },
+          ownerScope: { type: 'string', enum: ['organization', 'partner'], description: "Create ownership: organization (default; needs orgId unless one org accessible) or partner (all-org template; requires full partner org access)." },
           name: { type: 'string', description: 'Policy name (required for create)' },
           description: { type: 'string', description: 'Policy description' },
           mode: { type: 'string', enum: ['allowlist', 'blocklist', 'audit'], description: 'Policy mode (required for create)' },

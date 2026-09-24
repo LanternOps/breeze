@@ -726,7 +726,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           description: { type: 'string', description: 'Policy description' },
           status: { type: 'string', enum: ['active', 'inactive', 'archived'], description: 'Policy status (for create/update)' },
           ownerScope: { type: 'string', enum: ['organization', 'partner'], description: 'Create only. Ownership: organization (default, one org) or partner (unassigned library policy; requires full partner org access). Not accepted on update.' },
-          orgId: { type: 'string', description: 'Create only. UUID of the organization that will own the policy. Required unless you can access exactly one organization; nothing is inferred from the page or device being viewed. Ignored when ownerScope is "partner". Not accepted on update: a policy owner cannot be changed.' },
+          orgId: { type: 'string', description: 'Create only. Org UUID to own the policy; required unless you access exactly one org. Ignored for ownerScope "partner". Cannot be set on update.' },
         },
         required: ['action'],
       },

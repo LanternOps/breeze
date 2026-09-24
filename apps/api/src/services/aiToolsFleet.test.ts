@@ -1663,6 +1663,9 @@ describe('requireOrgOwnedReportRow (#3198 W01)', () => {
     const result = requireOrgOwnedReportRow(row, 'test-context');
 
     expect(result).toEqual(row);
+  });
+});
+
 describe('write-org resolution for org-owning creates (#6667)', () => {
   const toolMap = new Map<string, AiTool>();
   registerFleetTools(toolMap);
