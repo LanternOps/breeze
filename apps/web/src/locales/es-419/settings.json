@@ -1013,6 +1013,7 @@
     "connectFailed": "No se pudo conectar el buzón de Gmail.",
     "empty": "Todavía no hay ningún buzón de Gmail conectado.",
     "loadError": "No se pudieron cargar las conexiones de buzones de Gmail. Actualiza para intentarlo de nuevo.",
+    "orgsLoadError": "No se pudieron cargar las organizaciones. Actualiza para intentarlo de nuevo.",
     "organization": "Organización",
     "selectOrg": "Selecciona una organización",
     "address": "dirección del buzón",

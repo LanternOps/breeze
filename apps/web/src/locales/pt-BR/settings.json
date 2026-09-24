@@ -1013,6 +1013,7 @@
     "connectFailed": "Não foi possível conectar a caixa do Gmail.",
     "empty": "Nenhuma caixa do Gmail conectada ainda.",
     "loadError": "Não foi possível carregar as conexões de caixas do Gmail. Atualize para tentar novamente.",
+    "orgsLoadError": "Não foi possível carregar as organizações. Atualize para tentar novamente.",
     "organization": "Organização",
     "selectOrg": "Selecione uma organização",
     "address": "Endereço da caixa de correio",

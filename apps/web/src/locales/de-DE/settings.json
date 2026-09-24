@@ -1013,6 +1013,7 @@
     "connectFailed": "Das Gmail-Postfach konnte nicht verbunden werden.",
     "empty": "Noch kein Gmail-Postfach verbunden.",
     "loadError": "Gmail-Postfachverbindungen konnten nicht geladen werden. Aktualisieren Sie, um es erneut zu versuchen.",
+    "orgsLoadError": "Organisationen konnten nicht geladen werden. Aktualisieren Sie, um es erneut zu versuchen.",
     "organization": "Organisation",
     "selectOrg": "Organisation auswählen",
     "address": "Postfachadresse",

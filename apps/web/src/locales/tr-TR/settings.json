@@ -1013,6 +1013,7 @@
     "connectFailed": "Gmail posta kutusu bağlanamadı.",
     "empty": "Henüz bağlı Gmail posta kutusu yok.",
     "loadError": "Gmail posta kutusu bağlantıları yüklenemedi. Tekrar denemek için yenileyin.",
+    "orgsLoadError": "Kuruluşlar yüklenemedi. Tekrar denemek için yenileyin.",
     "organization": "Organizasyon",
     "selectOrg": "Bir kuruluş seçin",
     "address": "Posta kutusu adresi",

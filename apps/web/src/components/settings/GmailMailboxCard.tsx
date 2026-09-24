@@ -92,6 +92,7 @@ function GmailMailboxCardContent({ canAdminMailbox }: { canAdminMailbox: boolean
   const [orgs, setOrgs] = useState<OrgOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
+  const [orgsLoadError, setOrgsLoadError] = useState(false);
   const [orgId, setOrgId] = useState('');
   const [address, setAddress] = useState('');
   const [displayName, setDisplayName] = useState('');
@@ -112,9 +113,12 @@ function GmailMailboxCardContent({ canAdminMailbox }: { canAdminMailbox: boolean
       if (!res.ok) { setLoadError(true); return; }
       const body = await res.json().catch(() => null);
       if (!isRecord(body) || !Array.isArray(body.connections)) { setLoadError(true); return; }
+      const parsed = body.connections.map(parseMailboxConnection);
+      // One malformed row is a malformed list: dropping it could leave the
+      // "no mailbox connected" state showing while a mailbox is connected.
+      if (parsed.some((connection) => connection === null)) { setLoadError(true); return; }
       setConnections(
-        body.connections
-          .map(parseMailboxConnection)
+        parsed
           .filter((connection): connection is GmailMailboxConnectionDTO => connection !== null)
           .filter((connection) => connection.provider === 'gmail'),
       );
@@ -127,12 +131,14 @@ function GmailMailboxCardContent({ canAdminMailbox }: { canAdminMailbox: boolean
 
   const loadOrgs = useCallback(async () => {
     if (!canAdminMailbox) return;
+    setOrgsLoadError(false);
     try {
       const list = await fetchAllOrganizationsFrom<OrgOption>('/orgs/organizations');
       setOrgs(list);
     } catch {
-      // A failed org load only disables the "connect new" picker; existing
-      // connections still render and manage. No toast — non-mutating read.
+      // A failed org load disables the "connect new" picker and says so; existing
+      // connections still render and manage. No toast: non-mutating read.
+      setOrgsLoadError(true);
     }
   }, [canAdminMailbox]);
 
@@ -253,7 +259,10 @@ function GmailMailboxCardContent({ canAdminMailbox }: { canAdminMailbox: boolean
               </div>
               <p className="text-xs text-muted-foreground" data-testid="gmail-credential-org">
                 {t('gmailMailbox.credentialOrg', {
-                  org: orgs.find((o) => o.id === c.orgId)?.name ?? t('gmailMailbox.credentialOrgUnknown'),
+                  // A failed org lookup proves nothing about access, so show the id
+                  // rather than claiming the org cannot be viewed.
+                  org: orgs.find((o) => o.id === c.orgId)?.name
+                    ?? (orgsLoadError ? c.orgId : t('gmailMailbox.credentialOrgUnknown')),
                 })}
               </p>
               {c.status === 'reauth_required' ? (
@@ -303,10 +312,16 @@ function GmailMailboxCardContent({ canAdminMailbox }: { canAdminMailbox: boolean
           <label className="text-sm" htmlFor="gmail-org">
             {t('gmailMailbox.organization')}
           </label>
+          {orgsLoadError ? (
+            <p className="text-xs text-destructive" data-testid="gmail-orgs-load-error">
+              {t('gmailMailbox.orgsLoadError')}
+            </p>
+          ) : null}
           <select
             id="gmail-org"
             data-testid="gmail-org"
             className="rounded border p-2 text-sm"
+            disabled={orgsLoadError}
             value={orgId}
             onChange={(e) => setOrgId(e.target.value)}
           >

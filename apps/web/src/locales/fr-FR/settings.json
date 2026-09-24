@@ -1013,6 +1013,7 @@
     "connectFailed": "Impossible de connecter la boîte aux lettres Gmail.",
     "empty": "Aucune boîte aux lettres Gmail connectée pour l'instant.",
     "loadError": "Impossible de charger les connexions de boîtes aux lettres Gmail. Actualisez pour réessayer.",
+    "orgsLoadError": "Impossible de charger les organisations. Actualisez pour réessayer.",
     "organization": "Organisation",
     "selectOrg": "Sélectionnez une organisation",
     "address": "Adresse de boîte aux lettres",

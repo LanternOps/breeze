@@ -1013,6 +1013,7 @@
     "connectFailed": "Impossibile collegare la casella Gmail.",
     "empty": "Nessuna casella Gmail collegata.",
     "loadError": "Impossibile caricare le connessioni delle caselle Gmail. Aggiorna per riprovare.",
+    "orgsLoadError": "Impossibile caricare le organizzazioni. Aggiorna per riprovare.",
     "organization": "Organizzazione",
     "selectOrg": "Seleziona un'organizzazione",
     "address": "Indirizzo cassetta postale",

@@ -112,6 +112,26 @@ describe('GmailMailboxCard', () => {
     });
   });
 
+  it('treats one malformed connection row as a load error, never as "no mailbox connected"', async () => {
+    fetchWithAuth.mockResolvedValueOnce(jsonRes({ connections: [{ ...GROW, status: 42 }] }));
+    render(<GmailMailboxCard />);
+    expect(await screen.findByTestId('gmail-load-error')).toBeInTheDocument();
+    expect(screen.queryByText(/No Gmail mailbox connected/i)).not.toBeInTheDocument();
+  });
+
+  it('says the organization list failed, disables the picker, and does not claim the org is hidden', async () => {
+    fetchAllOrganizationsFrom.mockReset();
+    fetchAllOrganizationsFrom.mockRejectedValue(new Error('503'));
+    fetchWithAuth.mockResolvedValueOnce(jsonRes({ connections: [GROW] }));
+    render(<GmailMailboxCard />);
+    expect(await screen.findByTestId('gmail-orgs-load-error')).toBeInTheDocument();
+    expect(screen.getByTestId('gmail-org')).toBeDisabled();
+    await screen.findByText('help@client.example');
+    const line = screen.getByTestId('gmail-credential-org').textContent ?? '';
+    expect(line).toContain('org-1');
+    expect(line).not.toContain('an organization you cannot view');
+  });
+
   it('shows status but no mutation controls with read-only permission', async () => {
     grantedActions.delete('ticket_mailbox:admin');
     fetchWithAuth.mockResolvedValueOnce(jsonRes({ connections: [{ ...GROW, status: 'reauth_required' }] }));

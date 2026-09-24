@@ -1013,6 +1013,7 @@
     "connectFailed": "Could not connect the Gmail mailbox.",
     "empty": "No Gmail mailbox connected yet.",
     "loadError": "Could not load Gmail mailbox connections. Refresh to try again.",
+    "orgsLoadError": "Could not load organizations. Refresh to try again.",
     "organization": "Organization",
     "selectOrg": "Select an organization",
     "address": "Mailbox address",
