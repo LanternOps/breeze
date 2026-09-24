@@ -306,8 +306,8 @@ describe('execute_command restart parameters (W05c1, spec C9)', () => {
 });
 
 describe('monitors inline settings — checkIntervalSeconds (W05d)', () => {
-  it('defaults to 60 and accepts 10..3600', () => {
-    expect(monitorsInlineSettingsSchema.parse({ items: [] }).checkIntervalSeconds).toBe(60);
+  it('leaves the interval absent and accepts explicit 10..3600', () => {
+    expect(monitorsInlineSettingsSchema.parse({ items: [] })).not.toHaveProperty('checkIntervalSeconds');
     expect(monitorsInlineSettingsSchema.parse({ items: [], checkIntervalSeconds: 10 }).checkIntervalSeconds).toBe(10);
     expect(monitorsInlineSettingsSchema.parse({ items: [], checkIntervalSeconds: 3600 }).checkIntervalSeconds).toBe(3600);
   });

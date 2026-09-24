@@ -50,7 +50,7 @@ describe('baseline monitor attachments', () => {
     m.links.mockResolvedValue([{ id: 'link', featureType: 'monitors', inlineSettings: { inheritance: 'replace', items: [existing] } }]);
     await applyStandardAlertPolicy(ORG, 'standard', PARTNER);
     expect(m.update).toHaveBeenCalledWith('link', { inlineSettings: {
-      checkIntervalSeconds: 60, inheritance: 'replace', items: [existing, { monitorId: OTHER, enabled: true, overrides: null, sortOrder: 9 }],
+      inheritance: 'replace', items: [existing, { monitorId: OTHER, enabled: true, overrides: null, sortOrder: 9 }],
     } }, 'policy', undefined, expect.anything());
   });
   it('does not rewrite a fully attached baseline', async () => {

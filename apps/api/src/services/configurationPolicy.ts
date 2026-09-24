@@ -1139,12 +1139,16 @@ async function decomposeInlineSettings(
       }
       // Upsert preserves the settings id and its retired watch history after
       // 2026-10-31-100000-legacy-alerting-retirement-sweep.sql re-keys ownership.
-      await tx.insert(configPolicyMonitoringSettings)
-        .values({ featureLinkId: linkId, checkIntervalSeconds: parsed.checkIntervalSeconds })
-        .onConflictDoUpdate({
-          target: configPolicyMonitoringSettings.featureLinkId,
-          set: { checkIntervalSeconds: parsed.checkIntervalSeconds, updatedAt: new Date() },
-        });
+      // Attachment edits must neither create an interval override nor reset an
+      // existing (including migration-re-keyed) interval.
+      if (parsed.checkIntervalSeconds !== undefined) {
+        await tx.insert(configPolicyMonitoringSettings)
+          .values({ featureLinkId: linkId, checkIntervalSeconds: parsed.checkIntervalSeconds })
+          .onConflictDoUpdate({
+            target: configPolicyMonitoringSettings.featureLinkId,
+            set: { checkIntervalSeconds: parsed.checkIntervalSeconds, updatedAt: new Date() },
+          });
+      }
       break;
     }
 
@@ -1611,7 +1615,7 @@ async function assembleInlineSettings(
           sortOrder: r.sortOrder,
         })),
         inheritance,
-        checkIntervalSeconds: settingsRow?.checkIntervalSeconds ?? 60,
+        ...(settingsRow ? { checkIntervalSeconds: settingsRow.checkIntervalSeconds } : {}),
       };
     }
 
@@ -1755,6 +1759,27 @@ export function resolveWarrantyInlineSettingsForWrite(
   };
 }
 
+/** Keep the compatibility mirror and mutation response faithful to the interval row. */
+async function reloadMonitorsInterval(
+  link: typeof configPolicyFeatureLinks.$inferSelect,
+  executor: DbExecutor,
+) {
+  const [settings] = await executor
+    .select({ checkIntervalSeconds: configPolicyMonitoringSettings.checkIntervalSeconds })
+    .from(configPolicyMonitoringSettings)
+    .where(eq(configPolicyMonitoringSettings.featureLinkId, link.id))
+    .limit(1);
+  const inlineSettings = { ...(link.inlineSettings as Record<string, unknown> | null ?? {}) };
+  const previousInterval = inlineSettings.checkIntervalSeconds;
+  delete inlineSettings.checkIntervalSeconds;
+  if (settings) inlineSettings.checkIntervalSeconds = settings.checkIntervalSeconds;
+  if (previousInterval !== inlineSettings.checkIntervalSeconds) {
+    await executor.update(configPolicyFeatureLinks).set({ inlineSettings })
+      .where(eq(configPolicyFeatureLinks.id, link.id));
+  }
+  return { ...link, inlineSettings };
+}
+
 export async function addFeatureLink(
   configPolicyId: string,
   featureType: ConfigFeatureType,
@@ -1848,7 +1873,7 @@ export async function addFeatureLink(
       );
     }
 
-    return link;
+    return featureType === 'monitors' ? reloadMonitorsInterval(link, tx) : link;
   });
 }
 
@@ -1984,7 +2009,8 @@ export async function updateFeatureLink(
       }
     }
 
-    return updated ?? null;
+    if (!updated) return null;
+    return existing.featureType === 'monitors' ? reloadMonitorsInterval(updated, tx) : updated;
   });
 }
 
@@ -2022,8 +2048,11 @@ export async function removeFeatureLink(linkId: string, configPolicyId: string) 
       // Legacy monitoring links may still own duplicate settings and history.
       if (existing.featureType !== 'monitors') return { ...existing, kept: true as const, reason };
       await tx.delete(configPolicyMonitors).where(eq(configPolicyMonitors.featureLinkId, linkId));
+      const inlineSettings: Record<string, unknown> = { ...inline, items: [] };
+      delete inlineSettings.checkIntervalSeconds;
+      if (settings) inlineSettings.checkIntervalSeconds = settings.checkIntervalSeconds;
       const [updated] = await tx.update(configPolicyFeatureLinks).set({
-        inlineSettings: { ...inline, items: [], checkIntervalSeconds: settings?.checkIntervalSeconds ?? 60 },
+        inlineSettings,
         updatedAt: new Date(),
       }).where(predicate).returning();
       return updated ? { ...updated, kept: true as const, reason } : null;

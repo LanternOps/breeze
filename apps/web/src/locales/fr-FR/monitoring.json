@@ -523,6 +523,7 @@
         "equivalence_delta": "la conversion changerait ce qui se déclenche sur certains appareils",
         "escalation_policy_axis": "la politique d’escalade appartient à une seule organisation",
         "parent_unconverted": "la politique parente n’a pas été convertie",
+        "policy_inactive": "la politique est inactive ou archivée",
         "prerequisite_missing": "un correctif préalable manque sur ce serveur",
         "metric_without_kind": "aucun type de moniteur pour cette métrique",
         "child_kind_not_composable": "condition incompatible avec un moniteur composite",

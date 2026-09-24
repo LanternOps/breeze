@@ -74,7 +74,7 @@ const { buildMonitoringConfigUpdate } = await import('./helpers');
 
 const DEVICE_ID = 'device-1';
 
-/** The interval's four reads precede the monitor-definitions read. */
+/** Assignments and explicit interval rows precede the monitor-definitions read. */
 function policyQueue(opts: {
   checkIntervalSeconds?: number;
   resolved?: boolean;
@@ -84,9 +84,11 @@ function policyQueue(opts: {
     [{ partnerId: 'partner-1' }],
     [],
     opts.resolved === false ? [] : [{
-      level: 'organization', assignmentPriority: 0,
-      checkIntervalSeconds: opts.checkIntervalSeconds ?? 45,
+      policyId: 'policy-1', parentPolicyId: null, level: 'organization', assignmentPriority: 0,
     }],
+    ...(opts.resolved === false ? [] : [[{
+      policyId: 'policy-1', checkIntervalSeconds: opts.checkIntervalSeconds ?? 45,
+    }]]),
   ];
 }
 
@@ -119,6 +121,50 @@ describe('buildMonitoringConfigUpdate — monitor-derived watches (#5291 W04)', 
     vi.clearAllMocks();
     redisMock.get.mockResolvedValue(null);
     resolveMonitorsMock.mockResolvedValue({ kind: 'resolved', monitors: [] });
+  });
+
+  it.each([
+    { name: 'inherits the parent interval despite its own attachment link', intervals: [{ policyId: 'parent', checkIntervalSeconds: 30 }], expected: 30 },
+    { name: 'prefers its own explicit interval over the parent', intervals: [{ policyId: 'parent', checkIntervalSeconds: 30 }, { policyId: 'child', checkIntervalSeconds: 45 }], expected: 45 },
+    { name: 'does not turn an attachment-only policy into a default interval override', intervals: [], expected: 60 },
+  ])('$name', async ({ intervals, expected }) => {
+    dbMock._resetQueue([
+      [{ orgId: 'org-1', siteId: 'site-1' }], [{ partnerId: 'partner-1' }], [],
+      [{ policyId: 'child', parentPolicyId: 'parent', level: 'device', assignmentPriority: 0 }],
+      intervals,
+    ]);
+    expect(await buildMonitoringConfigUpdate(DEVICE_ID)).toEqual({ check_interval_seconds: expected, watches: [] });
+  });
+
+  it('excludes interval-less assignments before ranking by level and priority', async () => {
+    dbMock._resetQueue([
+      [{ orgId: 'org-1', siteId: 'site-1' }], [{ partnerId: 'partner-1' }], [],
+      [
+        { policyId: 'device-policy', parentPolicyId: null, level: 'device', assignmentPriority: 0 },
+        { policyId: 'org-later', parentPolicyId: null, level: 'organization', assignmentPriority: 2 },
+        { policyId: 'org-first', parentPolicyId: null, level: 'organization', assignmentPriority: 1 },
+        { policyId: 'partner', parentPolicyId: null, level: 'partner', assignmentPriority: 0 },
+      ],
+      [
+        { policyId: 'org-later', checkIntervalSeconds: 90 },
+        { policyId: 'org-first', checkIntervalSeconds: 30 },
+        { policyId: 'partner', checkIntervalSeconds: 120 },
+      ],
+    ]);
+    expect(await buildMonitoringConfigUpdate(DEVICE_ID)).toEqual({ check_interval_seconds: 30, watches: [] });
+  });
+
+  it('excludes role and OS mismatches before reading intervals', async () => {
+    dbMock._resetQueue([
+      [{ orgId: 'org-1', siteId: 'site-1', deviceRole: 'workstation', osType: 'windows' }],
+      [{ partnerId: 'partner-1' }], [],
+      [
+        { policyId: 'wrong-role', level: 'device', assignmentPriority: 0, roleFilter: ['server'] },
+        { policyId: 'wrong-os', level: 'device', assignmentPriority: 0, osFilter: ['linux'] },
+      ],
+    ]);
+    expect(await buildMonitoringConfigUpdate(DEVICE_ID)).toEqual({ check_interval_seconds: 60, watches: [] });
+    expect(dbMock.select).toHaveBeenCalledTimes(4);
   });
 
   it('emits exactly the frozen monitoring_settings key set', async () => {

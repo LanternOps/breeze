@@ -364,8 +364,8 @@ export type MonitorsInheritance = z.infer<typeof monitorsInheritanceSchema>;
  *    what a converted policy needs to reproduce its inline behaviour.
  */
 export const monitorsInlineSettingsSchema = z.object({
-  // Collection interval is normalized on the settings row owned by this link.
-  checkIntervalSeconds: z.number().int().min(10).max(3600).default(60),
+  // A settings row represents an explicit interval; omission inherits the parent.
+  checkIntervalSeconds: z.number().int().min(10).max(3600).optional(),
   items: z.array(monitorAttachmentItemSchema).max(200).default([]),
   inheritance: monitorsInheritanceSchema.default('cumulative'),
 });

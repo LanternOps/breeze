@@ -68,7 +68,9 @@ export async function listPartnersWithUnretiredLegacyAlerting(): Promise<string[
        WHERE w.retired_at IS NULL
       UNION ALL
       SELECT COALESCE(ar.partner_id, o.partner_id)
-        FROM alert_rules ar LEFT JOIN organizations o ON o.id = ar.org_id
+        FROM alert_rules ar
+        JOIN alert_templates t ON t.id = ar.template_id AND t.is_built_in = false
+        LEFT JOIN organizations o ON o.id = ar.org_id
        WHERE ar.retired_at IS NULL AND ar.managed_by_monitor_id IS NULL
       UNION ALL
       SELECT COALESCE(t.partner_id, o.partner_id)
@@ -116,14 +118,67 @@ export async function retirePreviewRefusals(preview: PartnerConversionPreview, a
   return retired;
 }
 
+/**
+ * Unretired inline rules and watches under a policy that is not `active`. The
+ * partner conversion plan only walks active policies, yet nothing evaluates
+ * these rows after this release either, so they are retired and listed with
+ * `unconvertible:policy_inactive`. Retiring them BEFORE the conversion also
+ * keeps an inactive parent from blocking its active children as
+ * `parent_unconverted`.
+ */
+export async function listInactivePolicyLegacySources(partnerId: string): Promise<Array<{
+  sourceTable: 'config_policy_alert_rules' | 'config_policy_monitoring_watches'; sourceId: string; name: string; policyId: string;
+}>> {
+  const rows = await runOutsideDbContext(() => withSystemDbAccessContext(() => db.execute<{
+    source_table: 'config_policy_alert_rules' | 'config_policy_monitoring_watches'; source_id: string; name: string; policy_id: string;
+  }>(sql`
+    SELECT 'config_policy_alert_rules' AS source_table, r.id AS source_id, r.name, cp.id AS policy_id
+      FROM config_policy_alert_rules r
+      JOIN config_policy_feature_links l ON l.id = r.feature_link_id
+      JOIN configuration_policies cp ON cp.id = l.config_policy_id
+      LEFT JOIN organizations o ON o.id = cp.org_id
+     WHERE r.retired_at IS NULL AND cp.status <> 'active'
+       AND COALESCE(cp.partner_id, o.partner_id) = ${partnerId}
+    UNION ALL
+    SELECT 'config_policy_monitoring_watches', w.id, COALESCE(w.display_name, w.name), cp.id
+      FROM config_policy_monitoring_watches w
+      JOIN config_policy_monitoring_settings s ON s.id = w.settings_id
+      JOIN config_policy_feature_links l ON l.id = s.feature_link_id
+      JOIN configuration_policies cp ON cp.id = l.config_policy_id
+      LEFT JOIN organizations o ON o.id = cp.org_id
+     WHERE w.retired_at IS NULL AND cp.status <> 'active'
+       AND COALESCE(cp.partner_id, o.partner_id) = ${partnerId}
+     ORDER BY 1, 2
+  `)));
+  return rows.map((r) => ({ sourceTable: r.source_table, sourceId: r.source_id, name: r.name, policyId: r.policy_id }));
+}
+
+async function retireInactivePolicySources(partnerId: string, auth: AuthContext): Promise<RetiredSource[]> {
+  const retired: RetiredSource[] = [];
+  const reason = 'unconvertible:policy_inactive';
+  for (const item of await listInactivePolicyLegacySources(partnerId)) {
+    try {
+      await retireSource(item.sourceTable, item.sourceId, reason, auth);
+      retired.push({ ...item, reason });
+    } catch (error) {
+      if (error instanceof ConversionError && error.code === 'already_converted') continue;
+      throw error;
+    }
+  }
+  return retired;
+}
+
 export async function sweepPartnerLegacyAlerting(partnerId: string): Promise<{ converted: number; retired: RetiredSource[] }> {
   return runOutsideDbContext(async () => {
     // Conversion APIs own their serializable transactions (D30). Only the
     // marker write below opens a sweep-owned system transaction.
     const auth = createSystemAuthContext();
+    const retiredInactive = await retireInactivePolicySources(partnerId, auth);
     const preview = await previewPartnerConversion(partnerId, auth);
     const result = await convertPartnerLegacy(partnerId, preview.previewHash, auth);
-    const retired = await retirePreviewRefusals(preview, auth);
+    const retired = [...retiredInactive, ...await retirePreviewRefusals(preview, auth)];
+    // A later boot that finds nothing to do keeps the first sweep's summary.
+    if (result.converted === 0 && retired.length === 0) return { converted: 0, retired };
     const now = new Date().toISOString();
     await withSystemDbAccessContext(() => db
       .update(partners)

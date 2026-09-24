@@ -58,7 +58,13 @@ export default function ConversionPendingBanner({ orgId, onReview, onConverted, 
     return () => { activeScope.current = null; requestVersion.current++; };
   }, [load, requestScope, revision]);
 
-  const sweptAt = counts?.sweep?.sweptAt ?? counts?.unconvertible[0]?.retiredAt ?? 'manual';
+  // Newest of the sweep marker and the newest retirement, so a later manual
+  // conversion or retirement re-opens a banner dismissed after the sweep.
+  // Both are ISO-8601 UTC strings, which compare correctly as text.
+  const sweptAt = [counts?.sweep?.sweptAt, counts?.unconvertible[0]?.retiredAt]
+    .filter((v): v is string => typeof v === 'string')
+    .sort()
+    .at(-1) ?? 'manual';
   const key = dismissKey(viewerId, scopeId, sweptAt);
   const [dismissedKey, setDismissedKey] = useState<string | null>(null);
   const [openKey, setOpenKey] = useState<string | null>(null);

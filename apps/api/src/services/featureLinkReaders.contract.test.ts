@@ -28,6 +28,10 @@ const DIRECT_READ_ALLOWLIST = new Set([
   // therefore reads the AUTHORED links for the policy and its parent and ranks
   // the attachments itself (closest attachment wins, per monitor).
   'services/monitors/monitorResolver.ts',
+  // The interval inherits field-level (own explicit interval else parent's).
+  // The effective view returns the child's monitors link whenever it exists,
+  // hiding the parent's interval. Other feature resolvers still use the view.
+  'routes/agents/helpers.ts',
   // #5289 — attachment CRUD and the "which policies attach this monitor" view:
   // the policy's own links, never an inherited projection of them.
   'routes/monitorDefinitions.ts',

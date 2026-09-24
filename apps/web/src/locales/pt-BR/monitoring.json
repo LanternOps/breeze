@@ -523,6 +523,7 @@
         "equivalence_delta": "a conversão mudaria o que dispara em alguns dispositivos",
         "escalation_policy_axis": "a política de escalonamento pertence a uma única organização",
         "parent_unconverted": "a política pai não foi convertida",
+        "policy_inactive": "a política está inativa ou arquivada",
         "prerequisite_missing": "falta uma correção pré-requisito neste servidor",
         "metric_without_kind": "a métrica não tem tipo de monitor",
         "child_kind_not_composable": "condição incompatível com monitor composto",

@@ -523,6 +523,7 @@
         "equivalence_delta": "Umwandlung würde ändern, was auf einigen Geräten auslöst",
         "escalation_policy_axis": "Eskalationsrichtlinie gehört zu einer einzelnen Organisation",
         "parent_unconverted": "übergeordnete Richtlinie wurde nicht umgewandelt",
+        "policy_inactive": "Richtlinie ist inaktiv oder archiviert",
         "prerequisite_missing": "auf diesem Server fehlt eine vorausgesetzte Korrektur",
         "metric_without_kind": "für die Metrik gibt es keinen Monitortyp",
         "child_kind_not_composable": "Bedingung ist nicht für zusammengesetzte Monitore geeignet",

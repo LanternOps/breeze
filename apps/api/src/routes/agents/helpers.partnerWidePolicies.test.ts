@@ -103,7 +103,7 @@ vi.mock('drizzle-orm', async (importOriginal) => {
   eqMock.mockImplementation(actual.eq);
   return { ...actual, eq: eqMock };
 });
-import { configPolicyEffectiveFeatureLinks, configPolicyMonitoringWatches } from '../../db/schema';
+import { configPolicyEffectiveFeatureLinks, configPolicyFeatureLinks, configPolicyMonitoringWatches } from '../../db/schema';
 
 vi.mock('../../db', () => ({
   runOutsideDbContext: systemEscapeMock,
@@ -130,7 +130,8 @@ vi.mock('../../db/schema', () => ({
     configPolicyId: 'cpa.configPolicyId',
     priority: 'cpa.priority',
   },
-  configurationPolicies: { id: 'cp.id', status: 'cp.status', orgId: 'cp.orgId', partnerId: 'cp.partnerId' },
+  configurationPolicies: { id: 'cp.id', parentPolicyId: 'cp.parentPolicyId', status: 'cp.status', orgId: 'cp.orgId', partnerId: 'cp.partnerId' },
+  configPolicyFeatureLinks: { id: 'cpfl.id', configPolicyId: 'cpfl.configPolicyId', featureType: 'cpfl.featureType' },
   configPolicyEffectiveFeatureLinks: {
     id: 'cpefl.id',
     configPolicyId: 'cpefl.configPolicyId',
@@ -284,7 +285,8 @@ describe.each([
       deviceRow,
       org,
       [],
-      [{ level: 'partner', assignmentPriority: 1, checkIntervalSeconds: 90 }],
+      [{ policyId: 'policy-1', parentPolicyId: null, level: 'partner', assignmentPriority: 1 }],
+      [{ policyId: 'policy-1', checkIntervalSeconds: 90 }],
       deviceRow, org, [], [], // monitor resolution: device found, no monitors
     ],
   },
@@ -461,7 +463,8 @@ describe('partner-owned policies actually reach the agent payload', () => {
       deviceRow,
       orgWithPartner,
       [],
-      [{ level: 'partner', assignmentPriority: 1, settingsId: 'set-1', checkIntervalSeconds: 90 }],
+      [{ policyId: 'policy-1', parentPolicyId: null, level: 'partner', assignmentPriority: 1 }],
+      [{ policyId: 'policy-1', checkIntervalSeconds: 90 }],
       // resolveMonitorDerivedWatches runs its OWN resolveMonitorsForDevice
       // pass after the interval lookup above (#5677's discriminated
       // result correctly tells device-not-found apart from device-found-
@@ -478,7 +481,8 @@ describe('partner-owned policies actually reach the agent payload', () => {
 
     const tables = dbMock.select.mock.results.map(r => r.value.from.mock.calls[0]?.[0]);
     expect(tables).not.toContain(configPolicyMonitoringWatches);
-    expect(eqMock).toHaveBeenCalledWith(configPolicyEffectiveFeatureLinks.featureType, 'monitors');
+    expect(tables).toContain(configPolicyFeatureLinks);
+    expect(eqMock).toHaveBeenCalledWith(configPolicyFeatureLinks.featureType, 'monitors');
     expect(eqMock).not.toHaveBeenCalledWith(configPolicyEffectiveFeatureLinks.featureType, 'monitoring');
     expect(result).toEqual({ check_interval_seconds: 90, watches: [] });
   });
@@ -488,7 +492,8 @@ describe('partner-owned policies actually reach the agent payload', () => {
       deviceRow,
       orgWithPartner,
       [],
-      [{ level: 'partner', assignmentPriority: 1, settingsId: 'set-1', checkIntervalSeconds: 90 }],
+      [{ policyId: 'policy-1', parentPolicyId: null, level: 'partner', assignmentPriority: 1 }],
+      [{ policyId: 'policy-1', checkIntervalSeconds: 90 }],
       // resolveMonitorDerivedWatches's own resolveMonitorsForDevice pass —
       // device found, zero monitor assignments (see #5677 comment above).
       // This test only asserts systemEscapeMock, but leaving the queue
@@ -518,7 +523,8 @@ describe('monitoring: a matched policy with zero enabled watches (#2949)', () =>
       deviceRow,
       orgWithPartner,
       [],
-      [{ level: 'organization', assignmentPriority: 1, settingsId: 'set-1', checkIntervalSeconds: 90 }],
+      [{ policyId: 'policy-1', parentPolicyId: null, level: 'organization', assignmentPriority: 1 }],
+      [{ policyId: 'policy-1', checkIntervalSeconds: 90 }],
       // resolveMonitorDerivedWatches's own resolveMonitorsForDevice pass —
       // device found, zero monitor assignments (see #5677 comment above).
       deviceRow,
@@ -565,7 +571,8 @@ describe('monitoring: a matched policy with zero enabled watches (#2949)', () =>
       deviceRow,
       orgWithPartner,
       [],
-      [{ level: 'organization', assignmentPriority: 1, settingsId: 'set-1', checkIntervalSeconds: 90 }],
+      [{ policyId: 'policy-1', parentPolicyId: null, level: 'organization', assignmentPriority: 1 }],
+      [{ policyId: 'policy-1', checkIntervalSeconds: 90 }],
       // resolveMonitorDerivedWatches's own resolveMonitorsForDevice pass —
       // device found, zero monitor assignments (see #5677 comment above).
       deviceRow,

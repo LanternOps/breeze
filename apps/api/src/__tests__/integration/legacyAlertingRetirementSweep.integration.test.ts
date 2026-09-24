@@ -22,11 +22,98 @@ beforeEach(() => vi.stubEnv('BREEZE_LEGACY_ALERTING_SWEEP', 'true'));
 afterEach(() => vi.unstubAllEnvs());
 afterEach(async () => {
   await withDbAccessContext(SYSTEM_CTX, async () => {
-    for (const id of policyIds.splice(0)) await db.delete(configurationPolicies).where(eq(configurationPolicies.id, id));
+    for (const id of policyIds.splice(0).reverse()) await db.delete(configurationPolicies).where(eq(configurationPolicies.id, id));
   });
 });
 
+
+async function policyRule(owner: { orgId: string } | { partnerId: string }, status: 'active' | 'inactive' | 'archived', parentPolicyId?: string) {
+  return withDbAccessContext(SYSTEM_CTX, async () => {
+    const [policy] = await db.insert(configurationPolicies).values({
+      ...owner, name: `W05d ${status} policy`, status, parentPolicyId,
+    }).returning();
+    policyIds.push(policy!.id);
+    const [link] = await db.insert(configPolicyFeatureLinks).values({
+      configPolicyId: policy!.id, featureType: 'alert_rule', inlineSettings: { items: [] },
+    }).returning();
+    const [rule] = await db.insert(configPolicyAlertRules).values({
+      featureLinkId: link!.id, name: 'CPU high', severity: 'high', cooldownMinutes: 5, autoResolve: true,
+      conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 80, durationMinutes: 5 }],
+      titleTemplate: 'CPU high', messageTemplate: 'CPU high', sortOrder: 0,
+    }).returning();
+    return { policy: policy!, rule: rule! };
+  });
+}
+
 describe('legacy alerting retirement sweep', () => {
+  it.each(['inactive', 'archived'] as const)('retires %s policy rules and watches with a reportable reason', async status => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const { policy, rule } = await policyRule({ orgId: org.id }, status);
+    const watch = await withDbAccessContext(SYSTEM_CTX, async () => {
+      const [link] = await db.insert(configPolicyFeatureLinks).values({
+        configPolicyId: policy.id, featureType: 'monitors', inlineSettings: { items: [], inheritance: 'cumulative' },
+      }).returning();
+      const [settings] = await db.insert(configPolicyMonitoringSettings).values({ featureLinkId: link!.id }).returning();
+      const [row] = await db.insert(configPolicyMonitoringWatches).values({
+        settingsId: settings!.id, watchType: 'service', name: 'inactive-service', displayName: 'Inactive service',
+      }).returning();
+      return row!;
+    });
+
+    expect(await runLegacyAlertingRetirement()).toMatchObject({ converted: 0, retired: 2, failed: 0 });
+    await withDbAccessContext(SYSTEM_CTX, async () => {
+      const [retiredRule] = await db.select().from(configPolicyAlertRules).where(eq(configPolicyAlertRules.id, rule.id));
+      const [retiredWatch] = await db.select().from(configPolicyMonitoringWatches).where(eq(configPolicyMonitoringWatches.id, watch.id));
+      for (const source of [retiredRule!, retiredWatch!]) {
+        expect(source.retiredReason).toBe('unconvertible:policy_inactive');
+        expect(source.retiredAt).toBeInstanceOf(Date);
+        expect(source.convertedToMonitorId).toBeNull();
+      }
+    });
+    const auth: AuthContext = { ...createSystemAuthContext(), scope: 'organization',
+      orgId: org.id, partnerId: partner.id, accessibleOrgIds: [org.id],
+      canAccessOrg: id => id === org.id, orgCondition: column => eq(column, org.id),
+    };
+    await withDbAccessContext({ scope: 'organization', orgId: org.id,
+      accessibleOrgIds: [org.id], currentPartnerId: partner.id }, async () => {
+      const report = await readRetirementReport(auth, org.id);
+      expect(report.unconvertible).toHaveLength(2);
+      expect(report.unconvertible).toEqual(expect.arrayContaining([
+        expect.objectContaining({ sourceTable: 'config_policy_alert_rules', sourceId: rule.id,
+          policyId: policy.id, reason: 'unconvertible:policy_inactive', retiredAt: expect.any(String) }),
+        expect.objectContaining({ sourceTable: 'config_policy_monitoring_watches', sourceId: watch.id,
+          policyId: policy.id, name: 'Inactive service', reason: 'unconvertible:policy_inactive' }),
+      ]));
+    });
+    expect(await checkLegacyAlertingRetired()).toEqual({ configPolicyAlertRules: 0, configPolicyMonitoringWatches: 0 });
+  });
+
+  it.each(['organization', 'partner'] as const)('converts an active %s child after retiring its inactive parent', async ownership => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const owner = ownership === 'organization' ? { orgId: org.id } : { partnerId: partner.id };
+    const parent = await policyRule(owner, 'inactive');
+    const child = await policyRule(owner, 'active', parent.policy.id);
+
+    expect(await runLegacyAlertingRetirement()).toMatchObject({ converted: 1, retired: 1, failed: 0 });
+    await withDbAccessContext(SYSTEM_CTX, async () => {
+      const [parentRule] = await db.select().from(configPolicyAlertRules).where(eq(configPolicyAlertRules.id, parent.rule.id));
+      const [childRule] = await db.select().from(configPolicyAlertRules).where(eq(configPolicyAlertRules.id, child.rule.id));
+      expect(parentRule!.retiredReason).toBe('unconvertible:policy_inactive');
+      expect(childRule!.retiredAt).toBeInstanceOf(Date);
+      expect(childRule!.retiredReason).toBe('operator');
+      expect(childRule!.convertedToMonitorId).not.toBeNull();
+      const [attachment] = await db.select().from(configPolicyMonitors).where(eq(configPolicyMonitors.monitorId, childRule!.convertedToMonitorId!));
+      expect(attachment).toBeDefined();
+      const report = await readRetirementReport(createSystemAuthContext(), ownership === 'organization' ? org.id : null);
+      expect(report.unconvertible).toEqual([expect.objectContaining({
+        sourceId: parent.rule.id, policyId: parent.policy.id, reason: 'unconvertible:policy_inactive',
+      })]);
+    });
+    expect(await checkLegacyAlertingRetired()).toEqual({ configPolicyAlertRules: 0, configPolicyMonitoringWatches: 0 });
+  });
+
   it('counts an unretired watch under a re-keyed monitors link even with the sweep disabled', async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });

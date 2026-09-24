@@ -25,6 +25,7 @@ import {
   configPolicyAssignments,
   configurationPolicies,
   configPolicyEffectiveFeatureLinks,
+  configPolicyFeatureLinks,
   configPolicyEventLogSettings,
   configPolicyHardwareMonitoringSettings,
   configPolicyMonitoringSettings,
@@ -2544,22 +2545,18 @@ async function resolvePolicyCheckInterval(deviceId: string): Promise<PolicyCheck
   // branch on the feature-link table and the settings table, plus the
   // agent's breeze.current_partner_id GUC, grant this read without a system
   // escape or a second pooled connection. Keep it pinned to this hierarchy.
-  // 5. assignments → active policies → monitors feature link → settings
+  // 5. Load eligible assignments independently of attachment inheritance.
   const rows = await db
     .select({
+      policyId: configurationPolicies.id,
+      parentPolicyId: configurationPolicies.parentPolicyId,
       level: configPolicyAssignments.level,
       assignmentPriority: configPolicyAssignments.priority,
       roleFilter: configPolicyAssignments.roleFilter,
       osFilter: configPolicyAssignments.osFilter,
-      checkIntervalSeconds: configPolicyMonitoringSettings.checkIntervalSeconds,
     })
     .from(configPolicyAssignments)
     .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
-    .innerJoin(configPolicyEffectiveFeatureLinks, and(
-      eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
-      eq(configPolicyEffectiveFeatureLinks.featureType, 'monitors'),
-    ))
-    .innerJoin(configPolicyMonitoringSettings, eq(configPolicyMonitoringSettings.featureLinkId, configPolicyEffectiveFeatureLinks.id))
     .where(and(
       eq(configurationPolicies.status, 'active'),
       policyOwnershipCondition({ orgId: device.orgId, partnerId: org?.partnerId ?? null }),
@@ -2567,11 +2564,34 @@ async function resolvePolicyCheckInterval(deviceId: string): Promise<PolicyCheck
       ...buildRoleOsFilterConditions({ deviceRole: device.deviceRole, osType: device.osType }),
     ));
 
-  // Filter by deviceRole and osType using canonical predicate
-  const eligibleRows = rows.filter((r) =>
+  const assignments = rows.filter((r) =>
     matchesRoleOsFilter(r, { deviceRole: device.deviceRole, osType: device.osType })
   );
+  if (assignments.length === 0) return { kind: 'no_policy' };
 
+  // Interval inheritance is field-level: a child's attachment link must not
+  // hide its parent's explicit interval. Parents need not be active/assigned.
+  // Read only these policies and their immediate parents, in this DB context.
+  const policyIds = [...new Set(assignments.flatMap((r) =>
+    r.parentPolicyId ? [r.policyId, r.parentPolicyId] : [r.policyId]
+  ))];
+  const settingsRows = await db
+    .select({
+      policyId: configPolicyFeatureLinks.configPolicyId,
+      checkIntervalSeconds: configPolicyMonitoringSettings.checkIntervalSeconds,
+    })
+    .from(configPolicyFeatureLinks)
+    .innerJoin(configPolicyMonitoringSettings, eq(configPolicyMonitoringSettings.featureLinkId, configPolicyFeatureLinks.id))
+    .where(and(
+      inArray(configPolicyFeatureLinks.configPolicyId, policyIds),
+      eq(configPolicyFeatureLinks.featureType, 'monitors'),
+    ));
+  const intervals = new Map(settingsRows.map((r) => [r.policyId, r.checkIntervalSeconds]));
+  const eligibleRows = assignments.flatMap((r) => {
+    const checkIntervalSeconds = intervals.get(r.policyId)
+      ?? (r.parentPolicyId ? intervals.get(r.parentPolicyId) : undefined);
+    return checkIntervalSeconds === undefined ? [] : [{ ...r, checkIntervalSeconds }];
+  });
   if (eligibleRows.length === 0) return { kind: 'no_policy' };
 
   // 6. Sort by level priority DESC, then assignment priority ASC — first match wins

@@ -523,6 +523,7 @@
         "equivalence_delta": "dönüştürme bazı cihazlarda neyin tetikleneceğini değiştirirdi",
         "escalation_policy_axis": "yükseltme politikası tek bir kuruluşa ait",
         "parent_unconverted": "üst politika dönüştürülmedi",
+        "policy_inactive": "politika etkin değil veya arşivlenmiş",
         "prerequisite_missing": "bu sunucuda ön koşul düzeltmesi eksik",
         "metric_without_kind": "metriğin monitör türü yok",
         "child_kind_not_composable": "koşul bileşik monitörde kullanılamaz",

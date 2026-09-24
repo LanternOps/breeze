@@ -118,13 +118,23 @@ export default function MonitorsTab({
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [catalogError, setCatalogError] = useState<string>();
 
-  const savedCheckInterval = readCheckInterval(existingLink) ?? readCheckInterval(parentLink) ?? CHECK_INTERVAL_DEFAULT;
+  // Interval inheritance is field-level, independent of attachment inheritance.
+  const ownCheckInterval = readCheckInterval(existingLink);
+  const parentCheckInterval = readCheckInterval(parentLink);
+  const savedCheckInterval = ownCheckInterval ?? parentCheckInterval ?? CHECK_INTERVAL_DEFAULT;
   const [checkInterval, setCheckInterval] = useState<string>(String(savedCheckInterval));
   const [checkIntervalError, setCheckIntervalError] = useState<string>();
+  const [checkIntervalEdited, setCheckIntervalEdited] = useState(false);
   const [inheritance, setInheritance] = useState<InheritanceMode>(() => readInheritance(existingLink));
   useEffect(() => { setInheritance(readInheritance(existingLink)); }, [existingLink]);
   const parentItems = seedItems(parentLink);
-  useEffect(() => { setCheckInterval(String(savedCheckInterval)); }, [savedCheckInterval]);
+  useEffect(() => {
+    setCheckInterval(String(savedCheckInterval));
+    setCheckIntervalEdited(false);
+    setCheckIntervalError(undefined);
+  }, [savedCheckInterval, policyId, existingLink, parentLink]);
+  const isIntervalInherited = !checkIntervalEdited && ownCheckInterval === undefined && parentCheckInterval !== undefined;
+  const intervalPayload = () => checkIntervalEdited ? { checkIntervalSeconds: Number(checkInterval) } : {};
 
   useEffect(() => {
     if (!meta.fetchUrl) {
@@ -232,18 +242,21 @@ export default function MonitorsTab({
     }));
 
   const saveAttachments = async (): Promise<boolean> => {
-    const checkIntervalSeconds = Number(checkInterval);
-    if (!existingLink && items.length === 0 && checkIntervalSeconds === CHECK_INTERVAL_DEFAULT && inheritance === "cumulative") return true;
+    if (!existingLink && items.length === 0 && !checkIntervalEdited && inheritance === "cumulative") return true;
     const result = await save(existingLink?.id ?? null, {
       featureType: "monitors",
       featurePolicyId: null,
-      inlineSettings: { items: buildPayloadItems(), inheritance, checkIntervalSeconds },
+      inlineSettings: { items: buildPayloadItems(), inheritance, ...intervalPayload() },
     });
-    if (result) onLinkChanged(result, "monitors");
+    if (result) {
+      setCheckIntervalEdited(false);
+      onLinkChanged(result, "monitors");
+    }
     return !!result;
   };
 
   const validateCheckInterval = (): boolean => {
+    if (!checkIntervalEdited) return true;
     const parsed = Number(checkInterval);
     const ok = Number.isInteger(parsed) && parsed >= CHECK_INTERVAL_MIN && parsed <= CHECK_INTERVAL_MAX;
     setCheckIntervalError(ok ? undefined : i18n.t("policies:configurationPolicies.featureTabs.monitorsTab.checkIntervalInvalid"));
@@ -263,11 +276,15 @@ export default function MonitorsTab({
     const result = await save(existingLink.id, {
       featureType: "monitors",
       featurePolicyId: null,
-      inlineSettings: { items: [], inheritance, checkIntervalSeconds: Number(checkInterval) },
+      // Remove = stop overriding: an empty `replace` link would block every
+      // monitor the parent attaches, so the kept link goes back to cumulative.
+      inlineSettings: { items: [], inheritance: "cumulative", ...intervalPayload() },
     });
     if (result) {
       onLinkChanged(result, "monitors");
+      setCheckIntervalEdited(false);
       setItems([]);
+      setInheritance("cumulative");
     }
   };
 
@@ -282,15 +299,20 @@ export default function MonitorsTab({
     const result = await save(null, {
       featureType: "monitors",
       featurePolicyId: null,
-      inlineSettings: { items: buildPayloadItems(), inheritance, checkIntervalSeconds: Number(checkInterval) },
+      inlineSettings: { items: buildPayloadItems(), inheritance, ...intervalPayload() },
     });
-    if (result) onLinkChanged(result, "monitors");
+    if (result) {
+      setCheckIntervalEdited(false);
+      onLinkChanged(result, "monitors");
+    }
   };
 
   const handleRevert = async () => {
     if (!existingLink) return;
     const ok = await remove(existingLink.id, { successMessage: i18n.t("common:states.saved") });
-    if (ok) onLinkChanged(null, "monitors");
+    // D11 retains an empty link when it owns collection settings.
+    // Read back the server state so that interval remains visible after revert.
+    if (ok) await refreshLinks();
   };
 
   return (
@@ -383,9 +405,14 @@ export default function MonitorsTab({
             step={1}
             value={checkInterval}
             disabled={isInherited}
-            onChange={(e) => { setCheckInterval(e.target.value); setCheckIntervalError(undefined); }}
+            onChange={(e) => { setCheckInterval(e.target.value); setCheckIntervalEdited(true); setCheckIntervalError(undefined); }}
             className="mt-1 h-9 w-40 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
+          {isIntervalInherited && (
+            <p className="mt-1 text-xs text-muted-foreground" data-testid="monitors-tab-check-interval-inherited">
+              {t("configurationPolicies.featureTabs.monitorsTab.inherited")}
+            </p>
+          )}
           <p className="mt-1 text-xs text-muted-foreground">
             {i18n.t("policies:configurationPolicies.featureTabs.monitorsTab.checkIntervalHint")}
           </p>

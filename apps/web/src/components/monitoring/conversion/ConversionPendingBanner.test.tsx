@@ -151,6 +151,21 @@ describe('retirement report', () => {
     expect(await screen.findByTestId('legacy-retirement-banner')).toBeInTheDocument();
   });
 
+  it.each([
+    ['2026-09-20T10:00:00.000Z', '2026-09-21T10:00:00.000Z'],
+    ['2026-09-21T10:00:00.000Z', '2026-09-20T10:00:00.000Z'],
+  ])('uses the newer of sweep %s and retirement %s for dismissal', async (sweptAt, retiredAt) => {
+    const report = retirementReport(sweptAt);
+    report.unconvertible[0]!.retiredAt = retiredAt;
+    const newer = '2026-09-21T10:00:00.000Z';
+    localStorage.setItem('breeze.legacyAlertingRetirement.dismissed:viewer-1:org-1:2026-09-20T10:00:00.000Z', '1');
+    fetchPendingCounts.mockResolvedValue(report);
+    render(<ConversionPendingBanner orgId="org-1" onReview={vi.fn()} />);
+    expect(await screen.findByTestId('legacy-retirement-banner')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /dismiss/i }));
+    expect(localStorage.getItem(`breeze.legacyAlertingRetirement.dismissed:viewer-1:org-1:${newer}`)).toBe('1');
+  });
+
   it('uses the retirement timestamp without a marker and preserves pending conversion actions', async () => {
     fetchPendingCounts.mockResolvedValue({ ...retirementReport(), policies: 1, rows: 2, sweep: null });
     render(<ConversionPendingBanner orgId={null} onReview={vi.fn()} />);

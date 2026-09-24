@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 const h = vi.hoisted(() => ({
   context: 'none',
@@ -8,6 +9,8 @@ const h = vi.hoisted(() => ({
   previewPartnerConversion: vi.fn(),
   retireSource: vi.fn(),
   captureException: vi.fn(),
+  execute: vi.fn(),
+  inactiveRows: [] as Array<Record<string, unknown>>,
   executeRows: [] as Array<Record<string, unknown>>,
   updateSet: vi.fn(),
   countRows: [{ rules: 0, watches: 0 }],
@@ -15,7 +18,7 @@ const h = vi.hoisted(() => ({
 
 vi.mock('../../../db', () => ({
   db: {
-    execute: vi.fn(async () => h.executeRows),
+    execute: h.execute,
     update: vi.fn(() => ({ set: h.updateSet.mockImplementation(() => { h.markerContexts.push(h.context); return { where: vi.fn(async () => undefined) }; }) })),
     select: vi.fn(() => ({ from: vi.fn(async () => h.countRows) })),
   },
@@ -38,7 +41,7 @@ vi.mock('./index', () => ({
 vi.mock('../../sentry', () => ({ captureException: h.captureException }));
 vi.mock('../../featureConfigResolver', () => ({ createSystemAuthContext: () => ({ scope: 'system' }) }));
 
-import { runLegacyAlertingRetirement, checkLegacyAlertingRetired, LegacyAlertingUnretiredError, retirePreviewRefusals } from './retirementSweep';
+import { runLegacyAlertingRetirement, checkLegacyAlertingRetired, LegacyAlertingUnretiredError, retirePreviewRefusals, listPartnersWithUnretiredLegacyAlerting, listInactivePolicyLegacySources } from './retirementSweep';
 import { ConversionError } from './index';
 import type { PartnerConversionPreview } from './types';
 
@@ -49,6 +52,9 @@ beforeEach(() => {
   h.markerContexts = [];
   vi.stubEnv('BREEZE_LEGACY_ALERTING_SWEEP', 'true');
   h.executeRows = [];
+  h.inactiveRows = [];
+  h.execute.mockImplementationOnce(async () => h.executeRows)
+    .mockImplementation(async () => h.inactiveRows);
   h.countRows = [{ rules: 0, watches: 0 }];
   h.previewPartnerConversion.mockImplementation(async (partnerId: string) => ({
     partnerId, previewHash: 'a'.repeat(64), policies: 0, rows: 0, convertible: 0, unconvertible: [],
@@ -89,7 +95,40 @@ describe('runLegacyAlertingRetirement (W05d)', () => {
     expect(h.convertPartnerLegacy).toHaveBeenCalledWith('p1', 'a'.repeat(64), expect.objectContaining({ scope: 'system' }));
     expect(h.retireSource).toHaveBeenCalledWith('config_policy_alert_rules', 'r1', 'unconvertible:custom_condition', expect.objectContaining({ scope: 'system' }));
     expect(out).toMatchObject({ partners: 2, converted: 2, retired: 1, failed: 0 });
-    expect(h.updateSet).toHaveBeenCalledTimes(2);
+    expect(h.updateSet).toHaveBeenCalledTimes(1);
+  });
+  it('retires inactive policy rules and watches before previewing active children', async () => {
+    h.executeRows = [{ partner_id: 'p1' }];
+    h.inactiveRows = [
+      { source_table: 'config_policy_alert_rules', source_id: 'inactive-rule', name: 'CPU', policy_id: 'parent' },
+      { source_table: 'config_policy_monitoring_watches', source_id: 'inactive-watch', name: 'Service', policy_id: 'parent' },
+    ];
+    h.previewPartnerConversion.mockImplementationOnce(async () => {
+      expect(h.retireSource.mock.calls.map(([table, id, reason]) => ({ table, id, reason }))).toEqual([
+        { table: 'config_policy_alert_rules', id: 'inactive-rule', reason: 'unconvertible:policy_inactive' },
+        { table: 'config_policy_monitoring_watches', id: 'inactive-watch', reason: 'unconvertible:policy_inactive' },
+      ]);
+      expect(h.context).toBe('none');
+      return { partnerId: 'p1', previewHash: 'active-child', policies: 1, rows: 1, convertible: 1, unconvertible: [] };
+    });
+    h.convertPartnerLegacy.mockResolvedValueOnce({ converted: 1 });
+    expect(await runLegacyAlertingRetirement()).toMatchObject({ partners: 1, converted: 1, retired: 2, failed: 0 });
+    expect(h.convertPartnerLegacy).toHaveBeenCalledWith('p1', 'active-child', expect.anything());
+    expect(h.updateSet).toHaveBeenCalledTimes(1);
+  });
+  it('keeps the previous marker when a sweep converts and retires nothing', async () => {
+    h.executeRows = [{ partner_id: 'p1' }];
+    h.convertPartnerLegacy.mockResolvedValueOnce({ converted: 0 });
+    expect(await runLegacyAlertingRetirement()).toMatchObject({ partners: 1, converted: 0, retired: 0, failed: 0 });
+    expect(h.updateSet).not.toHaveBeenCalled();
+  });
+  it('tolerates an inactive source retired concurrently without reporting it twice', async () => {
+    h.executeRows = [{ partner_id: 'p1' }];
+    h.inactiveRows = [{ source_table: 'config_policy_alert_rules', source_id: 'r1', name: 'CPU', policy_id: 'parent' }];
+    h.retireSource.mockRejectedValueOnce(new ConversionError('already_converted', 'completed'));
+    h.convertPartnerLegacy.mockResolvedValueOnce({ converted: 0 });
+    expect(await runLegacyAlertingRetirement()).toMatchObject({ partners: 1, retired: 0, failed: 0 });
+    expect(h.updateSet).not.toHaveBeenCalled();
   });
   it('one partner failing never blocks the rest, and is reported to Sentry', async () => {
     h.executeRows = [{ partner_id: 'p1' }, { partner_id: 'p2' }];
@@ -175,5 +214,24 @@ describe('checkLegacyAlertingRetired (W05d)', () => {
     expect(remaining).toEqual({ configPolicyAlertRules: 2, configPolicyMonitoringWatches: 5 });
     expect(err).toHaveBeenCalledWith(expect.stringContaining('2 config_policy_alert_rules'));
     expect(h.captureException).toHaveBeenCalledWith(expect.any(LegacyAlertingUnretiredError), undefined, expect.objectContaining({ area: 'legacy_alerting_unretired' }));
+  });
+});
+
+// Exercise the generated SQL as well as the sweep order: mocks alone cannot
+// distinguish active rows, a different partner, or built-in standalone rules.
+describe('retirement source selection', () => {
+  it('limits standalone rules to non-built-in templates', async () => {
+    await listPartnersWithUnretiredLegacyAlerting();
+    const query = new PgDialect().sqlToQuery(h.execute.mock.calls[0]![0]);
+    expect(query.sql).toMatch(/JOIN alert_templates t ON t.id = ar.template_id AND t.is_built_in = false/);
+  });
+  it('scopes both inactive rule and watch queries by owner and unretired state', async () => {
+    await listInactivePolicyLegacySources('partner-owner');
+    const query = new PgDialect().sqlToQuery(h.execute.mock.calls[0]![0]);
+    expect(query.params).toEqual(['partner-owner', 'partner-owner']);
+    expect(query.sql.match(/cp.status <> 'active'/g)).toHaveLength(2);
+    expect(query.sql).toContain('r.retired_at IS NULL');
+    expect(query.sql).toContain('w.retired_at IS NULL');
+    expect(query.sql.match(/COALESCE\(cp.partner_id, o.partner_id\) = /g)).toHaveLength(2);
   });
 });

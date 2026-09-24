@@ -21,7 +21,7 @@
 import './setup';
 import { afterEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'crypto';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import {
   configPolicyAssignments,
@@ -36,6 +36,9 @@ import {
 import { buildMonitoringConfigUpdate } from '../../routes/agents/helpers';
 import { createMonitorDefinition, getMonitorDefinition } from '../../services/monitors/monitorService';
 import { getRedis } from '../../services/redis';
+import { updateFeatureLink } from '../../services/configurationPolicy';
+import { monitorsLinkSettings, readMonitorsLink } from '../../services/monitors/monitorAttachments';
+import { replayMigration } from './replayMigration';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 
 const SYSTEM_CTX: DbAccessContext = {
@@ -76,8 +79,12 @@ const createdMonitors: string[] = [];
 
 afterEach(async () => {
   await withDbAccessContext(SYSTEM_CTX, async () => {
-    for (const id of createdDevices) await db.delete(devices).where(eq(devices.id, id));
+    // Device-level assignments reference the device and the policy owner; drop them first.
     for (const id of createdPolicies) {
+      await db.delete(configPolicyAssignments).where(eq(configPolicyAssignments.configPolicyId, id));
+    }
+    for (const id of createdDevices) await db.delete(devices).where(eq(devices.id, id));
+    for (const id of [...createdPolicies].reverse()) {
       await db.delete(configurationPolicies).where(eq(configurationPolicies.id, id));
     }
     for (const id of createdMonitors) {
@@ -356,5 +363,115 @@ describe('restart response watch delivery (#6343)', () => {
       max_restart_attempts: 7,
       restart_cooldown_seconds: 120,
     }]);
+  });
+});
+
+/** Separate attachment inheritance from the policy's explicit interval. */
+describe('monitors interval provenance reaches the agent', () => {
+  async function fixture() {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+    const device = await seedDevice(org.id, site.id);
+    await purgeCache(device.id);
+    return { partner, org, device };
+  }
+
+  async function policy(orgId: string, opts: {
+    interval?: number;
+    parentPolicyId?: string;
+    status?: 'active' | 'inactive';
+    legacy?: boolean;
+    assignment?: { level: 'device' | 'organization'; targetId: string };
+  } = {}) {
+    return withDbAccessContext(SYSTEM_CTX, async () => {
+      const [row] = await db.insert(configurationPolicies).values({
+        orgId, name: `interval-${randomUUID()}`, status: opts.status ?? 'active',
+        parentPolicyId: opts.parentPolicyId,
+      }).returning();
+      createdPolicies.push(row!.id);
+      const [link] = await db.insert(configPolicyFeatureLinks).values({
+        configPolicyId: row!.id, featureType: opts.legacy ? 'monitoring' : 'monitors',
+        inlineSettings: opts.legacy ? { watches: [] } : { items: [], inheritance: 'cumulative' },
+      }).returning();
+      if (opts.interval !== undefined) {
+        await db.insert(configPolicyMonitoringSettings).values({
+          featureLinkId: link!.id, checkIntervalSeconds: opts.interval,
+        });
+      }
+      if (opts.assignment) {
+        await db.insert(configPolicyAssignments).values({
+          configPolicyId: row!.id, ...opts.assignment, priority: 0,
+        });
+      }
+      return { policyId: row!.id, linkId: link!.id };
+    });
+  }
+
+  it('shared attachment settings preserve an existing 30-second interval and its JSON mirror', async () => {
+    const { partner, org, device } = await fixture();
+    const target = await policy(org.id, { interval: 30, assignment: { level: 'device', targetId: device.id } });
+    await withDbAccessContext(orgContext(org.id, partner.id), async () => {
+      const [monitor] = await db.insert(monitorDefinitions).values({
+        orgId: org.id, name: `attach-${randomUUID()}`, kind: 'service',
+        condition: { serviceName: 'AttachKeepsThirty' }, severity: 'high',
+      }).returning();
+      createdMonitors.push(monitor!.id);
+      const { linkId, items, inheritance } = await readMonitorsLink(target.policyId);
+      const saved = await updateFeatureLink(linkId!, {
+        inlineSettings: monitorsLinkSettings([...items, {
+          monitorId: monitor!.id, enabled: true, overrides: null, sortOrder: items.length,
+        }], inheritance),
+      }, target.policyId);
+      expect(saved!.inlineSettings).toMatchObject({ checkIntervalSeconds: 30 });
+      const [settings] = await db.select().from(configPolicyMonitoringSettings)
+        .where(eq(configPolicyMonitoringSettings.featureLinkId, linkId!));
+      expect(settings!.checkIntervalSeconds).toBe(30);
+      const [link] = await db.select().from(configPolicyFeatureLinks).where(eq(configPolicyFeatureLinks.id, linkId!));
+      expect(link!.inlineSettings).toMatchObject({ checkIntervalSeconds: 30 });
+      const delivered = await buildMonitoringConfigUpdate(device.id);
+      expect(delivered!.check_interval_seconds).toBe(30);
+      expect(delivered!.watches).toEqual([expect.objectContaining({ name: 'AttachKeepsThirty' })]);
+    });
+  });
+
+  it('an own attachment link without settings inherits 30 from its inactive, unassigned parent', async () => {
+    const { partner, org, device } = await fixture();
+    const parent = await policy(org.id, { interval: 30, status: 'inactive' });
+    const child = await policy(org.id, {
+      parentPolicyId: parent.policyId, assignment: { level: 'device', targetId: device.id },
+    });
+    await withDbAccessContext(orgContext(org.id, partner.id), async () => {
+      expect(await db.select().from(configPolicyMonitoringSettings)
+        .where(eq(configPolicyMonitoringSettings.featureLinkId, child.linkId))).toEqual([]);
+      expect(await buildMonitoringConfigUpdate(device.id)).toEqual({ check_interval_seconds: 30, watches: [] });
+    });
+  });
+
+  it('an interval-less device policy does not beat an explicit organization interval', async () => {
+    const { partner, org, device } = await fixture();
+    await policy(org.id, { interval: 30, assignment: { level: 'organization', targetId: org.id } });
+    await policy(org.id, { assignment: { level: 'device', targetId: device.id } });
+    const delivered = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+      buildMonitoringConfigUpdate(device.id));
+    expect(delivered).toEqual({ check_interval_seconds: 30, watches: [] });
+  });
+
+  it('delivers the migration-re-keyed interval under the agent context', async () => {
+    const { partner, org, device } = await fixture();
+    const target = await policy(org.id, {
+      interval: 30, legacy: true, assignment: { level: 'device', targetId: device.id },
+    });
+    await replayMigration('2026-10-31-100000-legacy-alerting-retirement-sweep.sql');
+    await withDbAccessContext(orgContext(org.id, partner.id), async () => {
+      const rows = await db.select({ linkId: configPolicyFeatureLinks.id, interval: configPolicyMonitoringSettings.checkIntervalSeconds })
+        .from(configPolicyFeatureLinks)
+        .innerJoin(configPolicyMonitoringSettings, eq(configPolicyMonitoringSettings.featureLinkId, configPolicyFeatureLinks.id))
+        .where(and(eq(configPolicyFeatureLinks.configPolicyId, target.policyId), eq(configPolicyFeatureLinks.featureType, 'monitors')));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.linkId).not.toBe(target.linkId);
+      expect(rows[0]!.interval).toBe(30);
+      expect(await buildMonitoringConfigUpdate(device.id)).toEqual({ check_interval_seconds: 30, watches: [] });
+    });
   });
 });

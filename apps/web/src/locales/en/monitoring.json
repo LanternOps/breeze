@@ -523,6 +523,7 @@
         "equivalence_delta": "conversion would change what fires on some devices",
         "escalation_policy_axis": "escalation policy belongs to a single organization",
         "parent_unconverted": "parent policy was not converted",
+        "policy_inactive": "policy is inactive or archived",
         "prerequisite_missing": "a prerequisite fix is missing on this server",
         "metric_without_kind": "metric has no monitor kind",
         "child_kind_not_composable": "condition cannot be part of a composite monitor",
