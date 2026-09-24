@@ -952,4 +952,126 @@ describe('webhook routes', () => {
     expect(queueDeliveryMock).not.toHaveBeenCalled();
   });
 
+
+  // #6767. The webhooks.headers jsonb column also holds a legacy record shape
+  // ({ "X-Api-Key": "enc:v1:..." }) that delivery still honours. The edit form
+  // reads headers from GET, so dropping them there made the next save submit
+  // `headers: []` and wipe the stored credentials.
+  describe('legacy record-shaped headers (#6767)', () => {
+    async function legacyRow() {
+      const { encryptSecret } = await import('../services/secretCrypto');
+      return {
+        id: WEBHOOK_ID_1,
+        orgId: '11111111-1111-1111-1111-111111111111',
+        name: 'Legacy Hook',
+        url: 'https://example.com/legacy',
+        secret: null,
+        events: ['device.created'],
+        headers: { 'X-Api-Key': encryptSecret('legacy-key-123') as string },
+        status: 'active',
+        createdBy: 'user-123',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        lastDeliveryAt: null,
+      };
+    }
+
+    it('returns legacy headers to the edit form as redacted entries instead of dropping them', async () => {
+      const row = await legacyRow();
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockSelectWhere([{ count: 1 }]) as any)
+        .mockReturnValueOnce(mockSelectList([row]) as any);
+
+      const res = await app.request('/webhooks', { method: 'GET', headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data[0].headers).toEqual([
+        { key: 'X-Api-Key', value: { redacted: true, hasSecret: true, masked: '********' } },
+      ]);
+      expect(JSON.stringify(body)).not.toContain('legacy-key-123');
+    });
+
+    it('keeps the stored legacy header value when the edit form re-submits it masked', async () => {
+      const row = await legacyRow();
+      vi.mocked(db.select).mockReturnValueOnce(mockSelectLimit([row]) as any);
+      const setSpy = vi.fn((values: Record<string, unknown>) => ({
+        where: vi.fn(() => ({ returning: vi.fn(async () => [{ ...row, ...values }]) })),
+      }));
+      vi.mocked(db.update).mockReturnValueOnce({ set: setSpy } as any);
+
+      const res = await app.request(`/webhooks/${WEBHOOK_ID_1}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Renamed', headers: [{ key: 'X-Api-Key', value: '********' }] }),
+      });
+
+      expect(res.status).toBe(200);
+      const setPayload = (setSpy.mock.calls as any[])[0][0];
+      expect(setPayload.headers).toEqual([{ key: 'X-Api-Key', value: row.headers['X-Api-Key'] }]);
+    });
+  });
+
+  // #6767. The Webhooks tab toggle and the form's enabled switch speak `status`.
+  it('pauses and resumes a webhook through PATCH status', async () => {
+    const stored = {
+      id: WEBHOOK_ID_1,
+      orgId: '11111111-1111-1111-1111-111111111111',
+      name: 'Device Alerts',
+      url: 'https://example.com/webhook',
+      secret: null,
+      events: ['device.created'],
+      headers: [],
+      status: 'active',
+      createdBy: 'user-123',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      lastDeliveryAt: null,
+    };
+    vi.mocked(db.select).mockReturnValueOnce(mockSelectLimit([stored]) as any);
+    const setSpy = vi.fn((values: Record<string, unknown>) => ({
+      where: vi.fn(() => ({ returning: vi.fn(async () => [{ ...stored, ...values }]) })),
+    }));
+    vi.mocked(db.update).mockReturnValueOnce({ set: setSpy } as any);
+
+    const res = await app.request(`/webhooks/${WEBHOOK_ID_1}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ status: 'paused' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect((setSpy.mock.calls as any[])[0][0].status).toBe('disabled');
+    expect((await res.json()).status).toBe('paused');
+  });
+
+  it('creates a webhook paused when the create form asks for it', async () => {
+    const valuesSpy = vi.fn((values: Record<string, unknown>) => ({
+      returning: vi.fn(async () => [{
+        id: WEBHOOK_ID_1,
+        createdBy: 'user-123',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        lastDeliveryAt: null,
+        ...values,
+      }]),
+    }));
+    vi.mocked(db.insert).mockReturnValueOnce({ values: valuesSpy } as any);
+
+    const res = await app.request('/webhooks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Paused hook',
+        url: 'https://example.com/webhooks/paused',
+        secret: 'secret-123',
+        events: ['device.created'],
+        status: 'paused',
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    expect((valuesSpy.mock.calls as any[])[0][0].status).toBe('disabled');
+    expect((await res.json()).status).toBe('paused');
+  });
 });
