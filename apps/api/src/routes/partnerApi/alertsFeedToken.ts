@@ -26,7 +26,10 @@ const bindingSchema = z.object({
   // Database incarnation: cluster system identifier + timeline. xid8 positions
   // are meaningless across a restore (dump/restore gets a new identifier;
   // point-in-time recovery gets a new timeline), so a token from another
-  // incarnation must force a resync rather than skip restored rows.
+  // incarnation must force a resync rather than skip restored rows. A
+  // filesystem/VM snapshot rollback of the SAME cluster keeps both values and
+  // cannot be detected here; the documented contract is a consumer-side full
+  // sync after such a rollback (docs/integrations/partner-api.md).
   epoch: z.string().regex(/^[0-9]{1,20}:[0-9]{1,10}$/u),
   filtersHash: z.string().regex(/^[a-f0-9]{64}$/u),
   orgSetHash: z.string().regex(/^[a-f0-9]{64}$/u),
