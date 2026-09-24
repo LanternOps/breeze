@@ -176,7 +176,7 @@ export default function ConversionPendingBanner({ orgId, onReview, onConverted, 
                   <span className="font-medium">{item.name}</span>
                   {item.policyName ? <span> — {item.policyName}</span> : null}
                   <div className="mt-1">
-                    <span>{t([/* i18n-dynamic */ `monitoring:conversion.retirement.reasons.${item.reason.replace(/^unconvertible:/, '')}`, 'monitoring:conversion.retirement.reasons.unknown'])}</span>
+                    <span>{t(/* i18n-dynamic */ [`monitoring:conversion.retirement.reasons.${item.reason.replace(/^unconvertible:/, '')}`, 'monitoring:conversion.retirement.reasons.unknown'])}</span>
                     {' '}<code className="break-all text-xs">{item.reason}</code>
                   </div>
                 </li>
