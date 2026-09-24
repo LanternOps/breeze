@@ -253,6 +253,9 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/links.ts': { gap: '#6141' },
   'devices/manual.ts': { gap: '#6141' },
   'devices/metrics.ts': { tools: ['analyze_metrics', 'analyze_fleet_metrics'] },
+  // GET /devices/:id/monitors (#6371 W05c2): the same per-device monitor state
+  // is agent-reachable per monitor via get_monitor_activity's deviceId filter.
+  'devices/monitors.ts': { tools: ['list_monitors', 'get_monitor_activity', 'reset_monitor_escalation'] },
   'devices/moveOrg.ts': { gap: '#6141' },
   'devices/network.ts': { tools: ['list_network_assets'] },
   'devices/options.ts': { gap: '#6141' },

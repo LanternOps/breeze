@@ -16,6 +16,7 @@ import { BuiltInBadge } from './BuiltInBadge';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { Switch } from '../pam/ui';
 import AlertsTabStrip from '../alerts/AlertsTabStrip';
+import RecommendedMonitors from './RecommendedMonitors';
 import type { MonitorKind } from '@breeze/shared';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -186,6 +187,9 @@ export default function MonitorsListPage() {
         </div>
       ) : (
         <>
+          {/* Only after a successful load: a failed read must never read as "nothing deployed". */}
+          {!loading && !error && <RecommendedMonitors rows={rows} onAttached={() => void fetchMonitors()} />}
+
           {error && (
             <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
               {error}

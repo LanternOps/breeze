@@ -13,6 +13,8 @@ import {
   monitorKindSchema,
   monitorSeveritySchema,
   monitorDeliveryModeSchema,
+  monitorConditionSchemas,
+  monitorResponsesSchema,
   MONITOR_KINDS,
   type MonitorKind,
   type MonitorDeliveryMode,
@@ -33,6 +35,7 @@ import ActionsEditor, {
   type SoftwareCatalogItem,
 } from '../automations/ActionsEditor';
 import MonitorConditionFields from './MonitorConditionFields';
+import { RestartResponseFields } from './MonitorAuthoringFields';
 import DeployMonitorDialog from './DeployMonitorDialog';
 import MonitorDevicesTable from './MonitorDevicesTable';
 import MonitorActivityTab from './MonitorActivityTab';
@@ -97,26 +100,37 @@ export interface MonitorFormValues {
 // for the business rules (delivery channels required, ai_triage needs an
 // agent, recurrence threshold/window set together); this schema only catches
 // shape errors early.
-const monitorFormSchema = z.object({
-  name: z.string().min(1),
-  description: z.string().optional(),
-  kind: monitorKindSchema,
-  enabled: z.boolean(),
-  condition: z.record(z.string(), z.unknown()),
-  severity: monitorSeveritySchema,
-  cooldownMinutes: z.number().int().min(0).max(1440),
-  autoResolve: z.boolean(),
-  responses: z.array(z.record(z.string(), z.unknown())),
-  deliveryMode: monitorDeliveryModeSchema,
-  deliveryChannelIds: z.array(z.string()),
-  escalationPolicyId: z.string().nullable().optional(),
-  recurrenceThreshold: z.number().int().min(2).max(100).nullable().optional(),
-  recurrenceWindowDays: z.number().int().min(1).max(365).nullable().optional(),
-  recurrenceActions: z.array(z.record(z.string(), z.unknown())),
-  pauseResponsesOnEscalation: z.boolean(),
-  aiAgentId: z.string().nullable().optional(),
-  ownerScope: z.enum(['organization', 'partner']).optional(),
-});
+const monitorFormSchema = z
+  .object({
+    name: z.string().min(1),
+    description: z.string().optional(),
+    kind: monitorKindSchema,
+    enabled: z.boolean(),
+    condition: z.record(z.string(), z.unknown()),
+    severity: monitorSeveritySchema,
+    cooldownMinutes: z.number().int().min(0).max(1440),
+    autoResolve: z.boolean(),
+    responses: z.array(z.record(z.string(), z.unknown())),
+    deliveryMode: monitorDeliveryModeSchema,
+    deliveryChannelIds: z.array(z.string()),
+    escalationPolicyId: z.string().nullable().optional(),
+    recurrenceThreshold: z.number().int().min(2).max(100).nullable().optional(),
+    recurrenceWindowDays: z.number().int().min(1).max(365).nullable().optional(),
+    recurrenceActions: z.array(z.record(z.string(), z.unknown())),
+    pauseResponsesOnEscalation: z.boolean(),
+    aiAgentId: z.string().nullable().optional(),
+    ownerScope: z.enum(['organization', 'partner']).optional(),
+  })
+  // Shape-only above; these two rules pull in the REAL shared per-kind
+  // condition schema and the shared responses schema (composite children,
+  // restart-service bounds) so a bad composite child or an out-of-range
+  // restart limit surfaces on the field, not only after the server 400s.
+  .superRefine((value, ctx) => {
+    const condition = monitorConditionSchemas[value.kind].safeParse(value.condition);
+    if (!condition.success) ctx.addIssue({ code: 'custom', path: ['condition'], message: 'Invalid condition' });
+    const responses = monitorResponsesSchema.safeParse(value.responses);
+    if (!responses.success) ctx.addIssue({ code: 'custom', path: ['responses'], message: 'Invalid responses' });
+  });
 
 const DEFAULT_VALUES: MonitorFormValues = {
   name: '',
@@ -738,6 +752,11 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
               </select>
             </div>
             <MonitorConditionFields kind={watchKind} name="condition" />
+            {errors.condition && (
+              <p role="alert" data-testid="monitor-editor-condition-error" className="text-sm text-destructive">
+                {t('monitoring:editor.errors.invalidCondition')}
+              </p>
+            )}
           </section>
 
           <section className="space-y-3">
@@ -810,6 +829,12 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
               notificationChannels={notificationChannels}
               softwareCatalog={softwareCatalog}
             />
+            <RestartResponseFields />
+            {errors.responses && (
+              <p role="alert" data-testid="monitor-editor-responses-error" className="text-sm text-destructive">
+                {t('monitoring:editor.errors.invalidResponses')}
+              </p>
+            )}
           </section>
 
           <section className="space-y-3">

@@ -243,3 +243,23 @@ describe('AutomationEditPage — run_script run context (#4888)', () => {
     expect((putBody().actions as Array<Record<string, unknown>>)[0]).toMatchObject({ whenOffline: 'skip' });
   });
 });
+
+describe('AutomationEditPage — alert workflow filter round-trip (#6367 W05c2)', () => {
+  it('preserves the loaded filter on an unrelated edit', async () => {
+    const filter = { ruleId: 'r1', severity: ['critical'], kind: ['cpu'] };
+    mockEndpoints({
+      ...baseAutomation,
+      trigger: { ...baseAutomation.trigger, filter },
+      actions: [{ type: 'execute_command', command: 'echo test' }],
+    });
+
+    render(<AutomationEditPage automationId="automation-1" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /Save Changes/i }));
+
+    await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')).toBe(true));
+
+    const call = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')!;
+    expect(JSON.parse(String((call[1] as RequestInit).body)).trigger.filter).toEqual(filter);
+  });
+});

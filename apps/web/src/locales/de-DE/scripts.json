@@ -52,6 +52,11 @@
         "weeklySunday": "Wöchentlicher Sonntag"
       }
     },
+    "alertWorkflow": {
+      "severity": "Schweregrade",
+      "kind": "Monitorarten",
+      "hint": "Eine leere Gruppe passt auf jeden Wert. Bestehende erweiterte Filter bleiben erhalten."
+    },
     "validation": {
       "valueRequired": "Wert ist erforderlich",
       "nameRequired": "Automatisierungsname ist erforderlich",
@@ -361,7 +366,7 @@
       "scheduled": "Geplant",
       "on-demand": "Manuell",
       "webhooks": "Webhooks",
-      "event-rules": "Ereignisregeln"
+      "event-rules": "Alarmabläufe"
     }
   },
   "complianceDashboard": {

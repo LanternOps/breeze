@@ -52,6 +52,11 @@
         "weeklySunday": "Haftalık Pazar"
       }
     },
+    "alertWorkflow": {
+      "severity": "Önem dereceleri",
+      "kind": "Monitör türleri",
+      "hint": "Her değeri eşleştirmek için grubu boş bırakın. Mevcut gelişmiş filtreler korunur."
+    },
     "validation": {
       "valueRequired": "Değer gerekli",
       "nameRequired": "Otomasyon adı gerekli",
@@ -361,7 +366,7 @@
       "scheduled": "Zamanlanmış",
       "on-demand": "İsteğe bağlı",
       "webhooks": "Webhook'lar",
-      "event-rules": "Olay kuralları"
+      "event-rules": "Uyarı iş akışları"
     }
   },
   "complianceDashboard": {

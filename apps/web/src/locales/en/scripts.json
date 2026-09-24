@@ -52,6 +52,11 @@
         "weeklySunday": "Weekly Sunday"
       }
     },
+    "alertWorkflow": {
+      "severity": "Severities",
+      "kind": "Monitor kinds",
+      "hint": "Leave a group empty to match any value. Existing advanced filters are preserved."
+    },
     "validation": {
       "valueRequired": "Value is required",
       "nameRequired": "Automation name is required",
@@ -361,7 +366,7 @@
       "scheduled": "Scheduled",
       "on-demand": "On demand",
       "webhooks": "Webhooks",
-      "event-rules": "Event rules"
+      "event-rules": "Alert workflows"
     }
   },
   "complianceDashboard": {

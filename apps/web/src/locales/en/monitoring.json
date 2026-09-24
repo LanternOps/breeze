@@ -37,7 +37,11 @@
     },
     "deleteConfirm": "Delete monitor {{name}}? Its alert rule and response automation are removed too.",
     "builtIn": "Built-in",
-    "builtInHint": "Provisioned by Breeze. Edit thresholds, disable it, or delete it — it will not come back."
+    "builtInHint": "Provisioned by Breeze. Edit thresholds, disable it, or delete it — it will not come back.",
+    "recommended": {
+      "title": "Recommended",
+      "description": "Attach the built-in monitors to a policy."
+    }
   },
   "editor": {
     "attachedToPolicy": "Monitor created and attached to the policy",
@@ -100,7 +104,9 @@
       "save": "Failed to save monitor",
       "delete": "Failed to delete monitor",
       "test": "Test failed",
-      "generic": "Something went wrong"
+      "generic": "Something went wrong",
+      "invalidCondition": "Some condition values are missing or out of range. Nothing was saved.",
+      "invalidResponses": "Some response settings are missing or out of range. Nothing was saved."
     },
     "saved": "Monitor saved",
     "deleted": "Monitor deleted",
@@ -144,6 +150,15 @@
         "disabled": "disabled",
         "unavailable": "unavailable"
       }
+    },
+    "composite": {
+      "children": "Child conditions",
+      "add": "Add condition"
+    },
+    "restart": {
+      "label": "Restart service on the device",
+      "maxAttempts": "Maximum restart attempts",
+      "cooldownSeconds": "Restart cooldown (seconds)"
     }
   },
   "kinds": {
@@ -289,7 +304,8 @@
     "detachConfirm": "Detach from {{policy}}?",
     "errors": {
       "attach": "Failed to attach monitor",
-      "detach": "Failed to detach monitor"
+      "detach": "Failed to detach monitor",
+      "linkedFeature": "This policy's monitors come from a shared feature policy. Edit that policy or choose another one."
     }
   },
   "policyTab": {
@@ -486,5 +502,16 @@
       "invalid_reason": "That retirement reason is not valid.",
       "unknown": "The conversion failed. Try again."
     }
+  },
+  "device": {
+    "title": "Effective monitors",
+    "empty": "No monitors apply to this device.",
+    "error": "Could not load effective monitors.",
+    "monitor": "Monitor",
+    "kind": "Kind",
+    "policy": "Source policy",
+    "state": "State",
+    "episode": "Open episode",
+    "escalation": "Escalation"
   }
 }

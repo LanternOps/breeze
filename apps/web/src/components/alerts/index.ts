@@ -18,9 +18,9 @@ export type { NotificationHistory, StatusChange } from './AlertDetails';
 export { default as AlertRuleForm } from './AlertRuleForm';
 export type { AlertRuleFormValues, AlertRuleConditionFormValues } from './AlertRuleForm';
 
-// Alert Templates
-export { default as AlertTemplateList } from './AlertTemplateList';
-export { default as AlertTemplateEditor } from './AlertTemplateEditor';
+// Alert Templates: AlertTemplateList / AlertTemplateEditor were removed
+// (alerting consolidation W05c2, #6367) — /settings/alert-templates and
+// /settings/alert-templates/:id now 301 to /alerts/monitors.
 
 // Alert Rule Editor
 

@@ -37,7 +37,11 @@
     },
     "deleteConfirm": "Supprimer le moniteur {{name}}? Sa règle d’alerte et son automatisation de réponse seront également supprimées.",
     "builtIn": "Intégré",
-    "builtInHint": "Fourni par Breeze. Modifiez les seuils, désactivez-le ou supprimez-le – il ne reviendra pas."
+    "builtInHint": "Fourni par Breeze. Modifiez les seuils, désactivez-le ou supprimez-le – il ne reviendra pas.",
+    "recommended": {
+      "title": "Recommandés",
+      "description": "Rattachez les moniteurs intégrés à une politique."
+    }
   },
   "editor": {
     "attachedToPolicy": "Moniteur créé et attaché à la politique",
@@ -100,7 +104,9 @@
       "save": "Impossible d’enregistrer le moniteur",
       "delete": "Impossible de supprimer le moniteur",
       "test": "Test échoué",
-      "generic": "Quelque chose a mal tourné"
+      "generic": "Quelque chose a mal tourné",
+      "invalidCondition": "Certaines valeurs de la condition sont manquantes ou hors limites. Rien n'a été enregistré.",
+      "invalidResponses": "Certains paramètres de réponse sont manquants ou hors limites. Rien n'a été enregistré."
     },
     "saved": "Moniteur enregistré",
     "deleted": "Moniteur supprimé",
@@ -144,6 +150,15 @@
         "disabled": "désactivé",
         "unavailable": "indisponible"
       }
+    },
+    "composite": {
+      "children": "Conditions enfants",
+      "add": "Ajouter une condition"
+    },
+    "restart": {
+      "label": "Redémarrer le service sur l'appareil",
+      "maxAttempts": "Nombre maximal de redémarrages",
+      "cooldownSeconds": "Délai entre redémarrages (secondes)"
     }
   },
   "kinds": {
@@ -289,7 +304,8 @@
     "detachConfirm": "Détacher de {{policy}}?",
     "errors": {
       "attach": "Impossible de joindre le moniteur",
-      "detach": "Impossible de détacher le moniteur"
+      "detach": "Impossible de détacher le moniteur",
+      "linkedFeature": "Les moniteurs de cette politique proviennent d'une politique de fonctionnalité partagée. Modifiez cette politique ou choisissez-en une autre."
     }
   },
   "policyTab": {
@@ -486,5 +502,16 @@
       "invalid_reason": "Ce motif de retrait n'est pas valide.",
       "unknown": "La conversion a échoué. Réessayez."
     }
+  },
+  "device": {
+    "title": "Moniteurs effectifs",
+    "empty": "Aucun moniteur ne s'applique à cet appareil.",
+    "error": "Impossible de charger les moniteurs effectifs.",
+    "monitor": "Moniteur",
+    "kind": "Type",
+    "policy": "Politique source",
+    "state": "État",
+    "episode": "Épisode ouvert",
+    "escalation": "Escalade"
   }
 }

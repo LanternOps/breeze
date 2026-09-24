@@ -52,6 +52,11 @@
         "weeklySunday": "Semanalmente aos domingos"
       }
     },
+    "alertWorkflow": {
+      "severity": "Severidades",
+      "kind": "Tipos de monitor",
+      "hint": "Deixe um grupo vazio para aceitar qualquer valor. Os filtros avançados existentes são preservados."
+    },
     "validation": {
       "valueRequired": "O valor é obrigatório",
       "nameRequired": "O nome da automação é obrigatório",
@@ -361,7 +366,7 @@
       "scheduled": "Agendados",
       "on-demand": "Sob demanda",
       "webhooks": "Webhooks",
-      "event-rules": "Regras de evento"
+      "event-rules": "Fluxos de alertas"
     }
   },
   "complianceDashboard": {

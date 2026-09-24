@@ -124,6 +124,30 @@ describe('MonitorsListPage (#5289)', () => {
     expect(toggle).toHaveAttribute('aria-checked', 'true');
     expect(toggle.getAttribute('aria-label')).toMatch(/Disk usage/);
   });
+
+  it('shows the Recommended strip for an undeployed built-in from the actual library response', async () => {
+    fetchMock.mockImplementation(async (input: string) =>
+      input === '/monitor-definitions'
+        ? json({ data: [{ ...rows[1], builtinKey: 'shipped-key', attachmentCount: 0 }] })
+        : json({ data: [] }),
+    );
+    render(<MonitorsListPage />);
+    expect(await screen.findByTestId('library-recommended')).toBeInTheDocument();
+  });
+
+  it('hides the Recommended strip when every built-in is deployed or no row is a built-in', async () => {
+    render(<MonitorsListPage />);
+    expect((await screen.findAllByText('Disk usage')).length).toBeGreaterThan(0);
+    expect(screen.queryByTestId('library-recommended')).toBeNull();
+  });
+
+  it('does not recommend anything when the library read fails', async () => {
+    fetchMock.mockResolvedValue(json({ error: 'boom' }, false, 500));
+    render(<MonitorsListPage />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByText(/./, { selector: '.text-destructive' })).not.toBeNull());
+    expect(screen.queryByTestId('library-recommended')).toBeNull();
+  });
 });
 
 vi.mock('./conversion/ConversionPendingBanner', () => ({ default: (p: { onReview: () => void }) => <button data-testid="banner" onClick={p.onReview} /> }));

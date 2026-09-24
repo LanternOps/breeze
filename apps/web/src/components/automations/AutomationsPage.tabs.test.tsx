@@ -38,17 +38,17 @@ describe('Jobs tabs (#5288)', () => {
     window.location.hash = '';
   });
 
-  it('clicking the "Event rules" tab filters the list and writes the hash (PR #5648 review)', async () => {
+  it('clicking the "Alert workflows" tab filters the list and writes the hash (PR #5648 review)', async () => {
     render(<AutomationsPage />);
     await waitFor(() => expect(screen.getByText('Nightly cleanup')).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole('button', { name: 'Event rules' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Alert workflows' }));
 
     await waitFor(() => expect(screen.getByText('On disk alert')).toBeInTheDocument());
     expect(screen.queryByText('Nightly cleanup')).toBeNull();
     expect(screen.queryByText('Inbound webhook')).toBeNull();
     expect(window.location.hash).toBe('#event-rules');
-    expect(screen.getByRole('button', { name: 'Event rules' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('button', { name: 'Alert workflows' })).toHaveAttribute('aria-current', 'page');
 
     window.location.hash = '';
   });
