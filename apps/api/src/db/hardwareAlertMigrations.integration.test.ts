@@ -57,6 +57,11 @@ it('deduplicates NULL subjects once, keeps newest, and preserves distinct subjec
       id uuid PRIMARY KEY, rule_id uuid, device_id uuid NOT NULL, status text NOT NULL,
       triggered_at timestamp NOT NULL, resolved_at timestamp, resolution_note text
     )`);
+    // Task 10 — the 110300 migration also extends the ALREADY-SHIPPED
+    // monitor_episodes table with the response-admission columns. A skeletal
+    // stand-in proves that ADD COLUMN IF NOT EXISTS lands (and replays
+    // idempotently) without depending on the full real table shape here.
+    await sql.unsafe('CREATE TABLE monitor_episodes (id uuid PRIMARY KEY)');
     const rule = randomUUID(), device = randomUUID(), old = randomUUID(), newest = randomUUID();
     await sql`INSERT INTO alerts VALUES
       (${old}, ${rule}, ${device}, 'acknowledged', '2026-09-22', NULL, NULL),
@@ -79,5 +84,8 @@ it('deduplicates NULL subjects once, keeps newest, and preserves distinct subjec
       VALUES (${randomUUID()},${rule},${device},'active',now(),'')`).rejects.toMatchObject({ code: '23514' });
     await expect(sql`INSERT INTO alerts (id,rule_id,device_id,status,triggered_at,subject_key)
       VALUES (${randomUUID()},${rule},${device},'active',now(),'storcli:c0:e1:s3')`).rejects.toMatchObject({ code: '23505' });
+    const columns = await sql`SELECT column_name FROM information_schema.columns
+      WHERE table_name = 'monitor_episodes' ORDER BY column_name`;
+    expect(columns.map((row) => row.column_name)).toEqual(['id', 'response_dispatch', 'responses_admitted_at']);
   });
 });

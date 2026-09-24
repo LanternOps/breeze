@@ -3001,6 +3001,13 @@ export async function createAutomationRunRecord(options: {
   /** Event-target binding (#3824): when set, the run targets EXACTLY these
    * devices and resolveAutomationTargetDeviceIds is NOT consulted. */
   boundDeviceIds?: string[];
+  /**
+   * W03 Task 10 — the caller (subjectResponseOutbox's `admitSubjectResponse`)
+   * owns publishing `automation.started` itself, only after ITS OWN outer
+   * transaction commits. Skips the publish loop below entirely; the default
+   * path (every other caller) is unchanged byte-for-byte.
+   */
+  deferStartedEvent?: boolean;
 }): Promise<{ run: AutomationRunRow; targetDeviceIds: string[] }> {
   const normalized = normalizeAutomationInput({
     trigger: options.automation.trigger,
@@ -3049,6 +3056,8 @@ export async function createAutomationRunRecord(options: {
       .where(eq(automations.id, options.automation.id));
     return created;
   });
+
+  if (options.deferStartedEvent) return { run, targetDeviceIds };
 
   // Lifecycle events carry an org. An org-owned automation publishes to its
   // own org (unchanged); a partner-wide automation (orgId NULL, #2133) has no

@@ -47,6 +47,7 @@ import { automationQueueJobDataSchema, type AutomationAssignmentLevel, type Auto
 import { attachWorkerObservability } from './workerObservability';
 import { policyWorkflowApplies } from '../services/monitors/conversion/workflows';
 import { recordEpisodeResponse } from '../services/monitors/episodeService';
+import { admitSubjectResponse, drainSubjectResponseOutbox } from '../services/subjectResponseOutbox';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -574,6 +575,14 @@ async function processTriggerEvent(data: TriggerEventJobData): Promise<{ runId?:
     // the state row lock before the alert is ever published, so this read can
     // never observe a half-latched pair.
     if (isMonitorManaged) {
+      // W03 Task 11 — only the episode's atomic first-alert owner runs its
+      // compiled response. Two subjects on the same device both publish
+      // `alert.triggered`, but exactly one carries `responsesOwner: true`
+      // (Task 8's `linkEpisodeAlert` CAS). Returns before even reading pause
+      // state or `monitorDeviceState`, so a non-owner event costs one query.
+      if (payload.responsesOwner === false) {
+        return { skipped: 'subject_alert_not_response_owner' };
+      }
       const monitorId = automation.managedByMonitorId as string;
       const [state] = await db
         .select({ paused: monitorDeviceState.responsesPaused })
@@ -616,6 +625,30 @@ async function processTriggerEvent(data: TriggerEventJobData): Promise<{ runId?:
       return { skipped: 'event_device_outside_automation_scope' };
     }
     boundDeviceIds = [payload.deviceId];
+  }
+
+  // W03 Task 10 — a hardware-subject event routes through the durable
+  // response-admission outbox instead of the legacy synchronous path: the
+  // admission CAS on `monitor_episodes.responses_admitted_at` is the
+  // single-response-owner guarantee, and `automation.started` publishes only
+  // after that admission transaction commits. Missing/NULL-subject events
+  // (every other monitor-managed or unmanaged automation) keep today's path,
+  // including recurrence actions.
+  if (isMonitorManaged && typeof payload.subjectKey === 'string') {
+    if (payload.responsesOwner !== true || typeof payload.episodeId !== 'string'
+        || typeof payload.alertId !== 'string' || !boundDeviceIds?.[0] || !triggerContext) {
+      return { skipped: 'subject_response_identity_missing' };
+    }
+    return admitSubjectResponse({
+      automation,
+      episodeId: payload.episodeId,
+      alertId: payload.alertId,
+      deviceId: boundDeviceIds[0],
+      eventType: data.eventType,
+      eventId: data.eventId,
+      eventTimestamp: data.eventTimestamp,
+      triggerContext,
+    });
   }
 
   const { run, targetDeviceIds } = await createAutomationRunRecord({
@@ -1091,6 +1124,28 @@ async function processExecuteConfigPolicyRun(
   return { runId: result.runId };
 }
 
+/**
+ * W03 Task 10 — dispatch every committed-but-undelivered response admission.
+ * Uses the queue directly rather than `enqueueAutomationRun`: that helper can
+ * swallow an enqueue failure and fall back to an in-memory inline execution,
+ * which cannot acknowledge a durable outbox envelope. The stable `jobId`
+ * (keyed on the episode's admitted run, not the triggering event) lets a
+ * retry after an enqueue-success/ack-failure find the same execution job
+ * rather than creating a duplicate; ordinary trigger jobs keep their existing
+ * 200-job retention policy untouched. The database admission marker — not
+ * either retention policy — is what prevents a second response run for the
+ * episode.
+ */
+async function drainCommittedSubjectResponses(): Promise<void> {
+  await drainSubjectResponseOutbox((pending) =>
+    getAutomationQueue().add(
+      'execute-run',
+      { type: 'execute-run', runId: pending.runId, targetDeviceIds: [pending.deviceId], triggerContext: pending.triggerContext },
+      { jobId: `automation-run-${pending.runId}`, removeOnComplete: false, removeOnFail: false },
+    ),
+  );
+}
+
 export function createAutomationWorker(): Worker<AutomationJobData> {
   return new Worker<AutomationJobData>(
     AUTOMATION_QUEUE,
@@ -1109,7 +1164,20 @@ export function createAutomationWorker(): Worker<AutomationJobData> {
         assertQueueJobName(AUTOMATION_QUEUE, job, 'execute-config-policy-run');
         return runOutsideDbAccess(() => processExecuteConfigPolicyRun(data));
       }
-      return runWithSystemDbAccess(async () => {
+      // W03 Task 10 — a trigger-event admission commits its response outbox
+      // envelope inside processTriggerEvent's own transaction; the drain below
+      // MUST run after runWithSystemDbAccess returns (outside any ambient
+      // context) or drainSubjectResponseOutbox's "must run after commit" guard
+      // throws. scan-schedules drains too so a crash between a prior
+      // admission's commit and its dispatch retries on the next minute tick
+      // even without another alert event.
+      if (data.type === 'trigger-event') {
+        assertQueueJobName(AUTOMATION_QUEUE, job, 'trigger-event');
+        const result = await runWithSystemDbAccess(() => processTriggerEvent(data));
+        await drainCommittedSubjectResponses();
+        return result;
+      }
+      const result = await runWithSystemDbAccess(async () => {
         switch (data.type) {
           case 'scan-schedules':
             assertQueueJobName(AUTOMATION_QUEUE, job, 'scan-schedules');
@@ -1117,14 +1185,13 @@ export function createAutomationWorker(): Worker<AutomationJobData> {
           case 'trigger-schedule':
             assertQueueJobName(AUTOMATION_QUEUE, job, 'trigger-schedule');
             return processTriggerSchedule(data);
-          case 'trigger-event':
-            assertQueueJobName(AUTOMATION_QUEUE, job, 'trigger-event');
-            return processTriggerEvent(data);
           case 'trigger-config-policy-schedule':
             assertQueueJobName(AUTOMATION_QUEUE, job, 'trigger-config-policy-schedule');
             return processTriggerConfigPolicySchedule(data);
         }
       });
+      if (data.type === 'scan-schedules') await drainCommittedSubjectResponses();
+      return result;
     },
     {
       connection: getBullMQConnection(),

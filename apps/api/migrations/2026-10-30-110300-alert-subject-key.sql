@@ -29,3 +29,11 @@ END $$;
 CREATE UNIQUE INDEX IF NOT EXISTS alerts_open_rule_device_subject_uidx
   ON alerts (rule_id, device_id, COALESCE(subject_key, ''))
   WHERE rule_id IS NOT NULL AND status IN ('active', 'acknowledged', 'suppressed');
+
+-- W03 Task 10 — durable response admission for the subject response outbox.
+-- `responses_admitted_at` is never reset (see subjectResponseOutbox.ts); its
+-- CAS predicate is the single-response-owner guarantee. `response_dispatch`
+-- stages a committed automation run for post-commit delivery, mirroring
+-- `alerts.context._subjectDispatch`.
+ALTER TABLE monitor_episodes ADD COLUMN IF NOT EXISTS responses_admitted_at timestamptz;
+ALTER TABLE monitor_episodes ADD COLUMN IF NOT EXISTS response_dispatch jsonb;

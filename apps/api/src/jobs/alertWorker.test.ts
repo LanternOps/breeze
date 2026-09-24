@@ -164,6 +164,14 @@ vi.mock('../services/monitors/networkCheckAlertSweep', () => ({
   evaluateNetworkCheckAlertsForOrg: evaluateNetworkCheckAlertsForOrgMock,
 }));
 
+// W03 Task 10 — records the #1105 depth it was called at, so a drain
+// accidentally moved inside the evaluate-device/evaluate-all transaction is
+// caught the same way every other read/enqueue in this file is.
+const subjectOutbox = vi.hoisted(() => ({ depths: [] as number[] }));
+vi.mock('../services/subjectAlertOutbox', () => ({
+  drainSubjectAlertOutbox: vi.fn(async () => { subjectOutbox.depths.push(ctx.depth); }),
+}));
+
 import { createAlertWorker, processEvaluateAll, triggerFullEvaluation } from './alertWorker';
 
 const resetCtx = () => {
@@ -352,6 +360,19 @@ describe('alertWorker evaluate-all #1105 DB-context scoping', () => {
 
     // evaluate-device does its own reads AND writes; it keeps the wrapper.
     expect(seenDepths).toEqual([1]);
+  });
+
+  it('drains subject events after device commit and outside the fleet context', async () => {
+    subjectOutbox.depths.length = 0;
+    createAlertWorker();
+    const { evaluateDeviceAlerts, evaluateDeviceAlertsFromPolicy } = await import('../services/alertService');
+    vi.mocked(evaluateDeviceAlerts).mockResolvedValue([]);
+    vi.mocked(evaluateDeviceAlertsFromPolicy).mockResolvedValue([]);
+    await workerState.processor!({ data: { type: 'evaluate-device', deviceId: 'device-1', orgId: 'org-1' } });
+    expect(subjectOutbox.depths).toEqual([0]);
+    fleetState.fleet = [];
+    await workerState.processor!({ data: { type: 'evaluate-all' } });
+    expect(subjectOutbox.depths).toEqual([0, 0]);
   });
 });
 

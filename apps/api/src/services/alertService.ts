@@ -41,6 +41,7 @@ import {
   type MonitorObservation,
 } from './monitors/episodeService';
 import { fireEscalationLatch } from './monitors/escalationLatch';
+import { evaluateSubjectAlerts } from './alertSubjects';
 
 // Types for alert creation
 export interface CreateAlertParams {
@@ -1201,6 +1202,44 @@ async function evaluateDeviceAlertsInMode(deviceId: string, mode: DeviceEvaluati
     try {
       // Evaluate conditions
       const result = await evaluateConditions(effectiveConditions, deviceId);
+
+      // W03 Task 10 — a hardware/RAID leaf reports per-COMPONENT evidence
+      // instead of one device-level verdict. Its whole reconciliation
+      // (create/recover, episode allocation/adoption, the final observation)
+      // runs inside one savepoint under an advisory lock so concurrent sweeps
+      // cannot close an episode between another sweep's creation and its
+      // ownership claim — and, critically, so nothing it does (publish,
+      // Redis write, correlation enqueue) can escape before the CALLER's
+      // outer transaction commits. Task 10's outbox drains the staged
+      // envelope only after that commit. This branch never falls through to
+      // the legacy NULL-subject block below.
+      if (result.subjects !== undefined) {
+        if (rule.managedByMonitorId) evaluatedMonitorIds.add(rule.managedByMonitorId);
+        const subjectAlertIds: string[] = [];
+        await withDbTransaction(async () => {
+          await db.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`hardware-subject:${rule.id}:${deviceId}`}, 0))`);
+          const evidence = await evaluateConditions(effectiveConditions, deviceId);
+          if (evidence.subjects === undefined) {
+            throw new Error('Subject evidence disappeared during evaluation');
+          }
+          const observation = await evaluateSubjectAlerts({
+            rule: {
+              ...rule,
+              overrideSettings: {
+                ...(rule.overrideSettings as Record<string, unknown> | null),
+                severity: effectiveSeverity,
+                cooldownMinutes: effectiveCooldownMinutes,
+              },
+            },
+            template, device, monitor, evidence: { ...evidence, createdAlertIds: subjectAlertIds },
+          });
+          if (monitor) {
+            await recordMonitorEvaluation({ monitor, deviceId, orgId: device.orgId, observation });
+          }
+        });
+        createdAlerts.push(...subjectAlertIds);
+        continue;
+      }
 
       // #5290 — the episode seam sits HERE, after the evaluation and BEFORE
       // createAlert, on purpose:
