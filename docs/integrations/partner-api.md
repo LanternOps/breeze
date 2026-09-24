@@ -195,7 +195,7 @@ idempotent and cannot be undone; issue a replacement instead.
 
 ## Pagination, checkpoints, and versioning
 
-Every resource returns the same strict envelope:
+Every resource except `/alerts` returns the same strict envelope (the alerts feed has its own checkpoint envelope, described under "Alerts feed" below):
 
 ```json
 {

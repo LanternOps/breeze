@@ -155,6 +155,24 @@ describe('partner alerts feed (real Postgres)', () => {
     }
   });
 
+  runDb('never discloses a device id from another tenant when alerts.device_id points across orgs', async () => {
+    const mine = await seed();
+    const foreign = await seed();
+    const admin = getTestDb();
+    // alerts has only existence FKs, so this cross-org row is storable.
+    const [row] = await admin.insert(alerts).values({
+      orgId: mine.org.id, deviceId: foreign.device.id, severity: 'high', title: 'forged-device',
+    }).returning({ id: alerts.id });
+    const result = await sync(feedApp(), mine.rawKey, null);
+    expect(result.ids).toContain(row!.id);
+    const res = await feedApp().request('/alerts', { headers: { 'X-API-Key': mine.rawKey } });
+    const body = partnerAlertFeedEnvelopeSchema.parse(await res.json());
+    const record = body.data.find((r) => r.id === row!.id)!;
+    expect(record.deviceId).toBeNull();
+    expect(record.deviceHostname).toBeNull();
+    expect(JSON.stringify(body)).not.toContain(foreign.device.id);
+  });
+
   runDb('stamps partner_feed_xid on insert and update via the trigger, ignoring app-supplied values', async () => {
     const { org, device } = await seed();
     const admin = getTestDb();

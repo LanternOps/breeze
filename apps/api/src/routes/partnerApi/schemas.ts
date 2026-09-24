@@ -629,7 +629,7 @@ export const partnerAlertExportRecordSchema = z.object({
   severity: z.enum(PARTNER_ALERT_SEVERITIES),
   status: z.enum(PARTNER_ALERT_STATUSES),
   title: z.string().max(500),
-  message: z.string().max(20_000).nullable(),
+  message: z.string().max(12_000).nullable(),
   triggeredAt: partnerExportTimestampSchema,
   acknowledgedAt: nullableTimestamp,
   resolvedAt: nullableTimestamp,

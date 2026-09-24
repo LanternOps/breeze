@@ -181,6 +181,16 @@ describe('partner alerts feed', () => {
     expect(body.data[0]!.deviceHostname).toBeNull();
   });
 
+  it('truncates an oversized message instead of failing the page', async () => {
+    selectResults = [[alertRow(ALERT_A, '900', { message: 'Disk C: free space below threshold on the file server. '.repeat(1_000) })]];
+    const res = await request('/alerts');
+    expect(res.status).toBe(200);
+    const body = partnerAlertFeedEnvelopeSchema.parse(await res.json());
+    expect(body.data[0]!.message!.length).toBe(12_000);
+    expect(body.blocked).toBeUndefined();
+    expect(body.checkpoint).toEqual(expect.any(String));
+  });
+
   it('400 when a checkpoint is replayed with different filters', async () => {
     selectResults = [[]];
     const first = partnerAlertFeedEnvelopeSchema.parse(await (await request('/alerts?status=active')).json());

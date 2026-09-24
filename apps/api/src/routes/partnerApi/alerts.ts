@@ -1,9 +1,9 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
-import { and, asc, eq, gt, inArray, sql, type SQL } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../../db';
-import { alerts, devices } from '../../db/schema';
+import { alertRules, alerts, devices, monitorDefinitions, monitorEpisodes } from '../../db/schema';
 import { requirePartnerApiScope } from '../../middleware/partnerApiAuth';
 import {
   compareXid8,
@@ -79,6 +79,15 @@ const querySchema = z.object({
 
 function invalidQuery(c: Context) {
   return c.json({ error: 'Invalid partner alerts query.', code: 'invalid_partner_export_query' }, 400);
+}
+
+// alerts.message is unbounded text; the DTO caps it so one oversized row can
+// never fail envelope validation (or exceed what the secret scanner will
+// inspect, PARTNER_EXPORT_MAX_INSPECTABLE_STRING_LENGTH) and wedge the feed.
+export const PARTNER_ALERT_MESSAGE_MAX = 12_000;
+function truncateMessage(message: string | null): string | null {
+  if (message === null || message.length <= PARTNER_ALERT_MESSAGE_MAX) return message;
+  return `${message.slice(0, PARTNER_ALERT_MESSAGE_MAX - 1)}…`;
 }
 
 function iso(value: Date | string | null): string | null {
@@ -172,12 +181,24 @@ partnerAlertRoutes.get('/alerts', requirePartnerApiScope('alerts:read'), async (
       dismissedAt: alerts.dismissedAt,
       suppressedUntil: alerts.suppressedUntil,
       requiresHuman: alerts.requiresHuman,
-      episodeId: alerts.episodeId,
-      ruleId: alerts.ruleId,
-      monitorId: alerts.monitorId,
+      // Same rule as deviceId: alerts carries only existence FKs for these, so
+      // each id is emitted only when the referenced row belongs to the alert's
+      // org (or, for partner-wide rules/monitors, to this principal's partner).
+      episodeId: monitorEpisodes.id,
+      ruleId: alertRules.id,
+      monitorId: monitorDefinitions.id,
       changeXid: sql<string>`${alerts.partnerFeedXid}::text`,
     }).from(alerts)
       .leftJoin(devices, and(eq(devices.id, alerts.deviceId), eq(devices.orgId, alerts.orgId)))
+      .leftJoin(alertRules, and(eq(alertRules.id, alerts.ruleId), or(
+        eq(alertRules.orgId, alerts.orgId),
+        and(isNull(alertRules.orgId), eq(alertRules.partnerId, principal.partnerId)),
+      )))
+      .leftJoin(monitorDefinitions, and(eq(monitorDefinitions.id, alerts.monitorId), or(
+        eq(monitorDefinitions.orgId, alerts.orgId),
+        and(isNull(monitorDefinitions.orgId), eq(monitorDefinitions.partnerId, principal.partnerId)),
+      )))
+      .leftJoin(monitorEpisodes, and(eq(monitorEpisodes.id, alerts.episodeId), eq(monitorEpisodes.orgId, alerts.orgId)))
       .where(and(...conditions))
       .orderBy(asc(alerts.partnerFeedXid), asc(alerts.id))
       .limit(limit + 1);
@@ -195,7 +216,7 @@ partnerAlertRoutes.get('/alerts', requirePartnerApiScope('alerts:read'), async (
         severity: row.severity,
         status: row.status,
         title: row.title,
-        message: row.message ?? null,
+        message: truncateMessage(row.message),
         triggeredAt: iso(row.triggeredAt)!,
         acknowledgedAt: iso(row.acknowledgedAt),
         resolvedAt: iso(row.resolvedAt),

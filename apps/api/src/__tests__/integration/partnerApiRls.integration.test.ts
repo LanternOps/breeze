@@ -32,6 +32,7 @@ import {
 } from '../../db/schema';
 import { partnerApiAuthMiddleware } from '../../middleware/partnerApiAuth';
 import { partnerAlertRoutes } from '../../routes/partnerApi/alerts';
+import { partnerAlertFeedEnvelopeSchema } from '../../routes/partnerApi/schemas';
 import { partnerConfigurationRoutes } from '../../routes/partnerApi/configuration';
 import {
   decodePartnerExportCursor,
@@ -1201,13 +1202,22 @@ async function walkResource(app: Hono, rawKey: string, resource: PartnerExportRe
     const envelope = await getEnvelope(app, rawKey, `/${resource}?${query}`);
     expect(envelope.schemaVersion).toBe('1');
     expect(envelope.hasMore).toBe(envelope.nextCursor !== null);
-    snapshots.add(envelope.snapshotAt);
+    if (resource === 'alerts') {
+      // The alerts feed has its own xid8 checkpoint contract, not snapshotAt.
+      const feed = partnerAlertFeedEnvelopeSchema.parse(envelope);
+      expect(feed.mode).toBe('full');
+      expect(feed.checkpoint === null).toBe(feed.hasMore);
+      expect(envelope).not.toHaveProperty('snapshotAt');
+    } else {
+      expect(envelope.snapshotAt).toEqual(expect.any(String));
+      snapshots.add(envelope.snapshotAt);
+    }
     records.push(...envelope.data);
     cursor = envelope.nextCursor;
     pages += 1;
     expect(pages).toBeLessThan(20);
   } while (cursor);
-  expect(snapshots.size).toBe(1);
+  expect(snapshots.size).toBe(resource === 'alerts' ? 0 : 1);
   return { records, pages };
 }
 
