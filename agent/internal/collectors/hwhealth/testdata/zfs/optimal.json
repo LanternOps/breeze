@@ -1,0 +1,1 @@
+{"pools":{"tank":{"name":"tank","state":"ONLINE","scan_stats":{"function":"SCRUB","state":"SCANNING","examined":42,"to_examine":100},"vdevs":{"tank":{"vdev_type":"root","vdevs":{"mirror-0":{"vdev_type":"mirror","vdevs":{"disk":{"vdev_type":"disk","guid":12345,"path":"/dev/disk/by-id/ata-A","state":"ONLINE","read_errors":1,"write_errors":0,"checksum_errors":0}}}}}}}}}

@@ -46,13 +46,31 @@ func (s *zfsSource) Collect(ctx context.Context, a Availability) (Result, error)
 	if rows, _ := zfsBase(string(list.Stdout)); len(rows) == 0 {
 		return Result{}, fmt.Errorf("unrecognized zpool list output")
 	}
-	status, err := s.run(ctx, 30*time.Second, a.Path, "status", "-pP")
-	r := parseZFSText(string(list.Stdout), string(status.Stdout), s.stable)
-	if err != nil || status.Truncated || status.ExitCode != 0 {
-		r = parseZFSText(string(list.Stdout), "", s.stable)
-		r.Complete = false
-		r.Warnings = append(r.Warnings, "zpool status failed")
+	version, versionErr := s.run(ctx, 30*time.Second, a.Path, "version")
+	versionText := strings.TrimSpace(string(version.Stdout))
+	if len(versionText) > 100 {
+		versionText = versionText[:100]
 	}
+	warnings := []string{}
+	if versionErr == nil && version.ExitCode == 0 && !version.Truncated && zfsJSONCapable(versionText) {
+		output, jsonErr := s.run(ctx, 30*time.Second, a.Path, "status", "-pP", "-j", "--json-int")
+		if jsonErr == nil && output.ExitCode == 0 && !output.Truncated {
+			if r, parseErr := parseZFSJSON(string(list.Stdout), output.Stdout, s.stable); parseErr == nil {
+				r.ToolVersion = versionText
+				return r, nil
+			}
+		}
+		warnings = append(warnings, "ZFS JSON unavailable; used text status")
+	}
+	output, statusErr := s.run(ctx, 30*time.Second, a.Path, "status", "-pP")
+	status := string(output.Stdout)
+	if statusErr != nil || output.ExitCode != 0 || output.Truncated {
+		status = ""
+		warnings = append(warnings, "zpool status failed")
+	}
+	r := parseZFSText(string(list.Stdout), status, s.stable)
+	r.ToolVersion = versionText
+	r.Warnings = append(r.Warnings, warnings...)
 	return r, nil
 }
 func stableZFSID(path string) string {
