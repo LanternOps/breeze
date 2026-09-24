@@ -25,8 +25,14 @@ func parseSMART(b []byte, exit int, dev smartDevice, now time.Time) (Component, 
 			Current *int `json:"current"`
 		} `json:"temperature"`
 		Capacity struct {
-			Bytes int64 `json:"bytes"`
+			Bytes *int64 `json:"bytes"`
 		} `json:"user_capacity"`
+		NVMeTotalCapacity *int64 `json:"nvme_total_capacity"`
+		NVMeNamespaces    []struct {
+			Size struct {
+				Bytes int64 `json:"bytes"`
+			} `json:"size"`
+		} `json:"nvme_namespaces"`
 		Power struct {
 			Hours int64 `json:"hours"`
 		} `json:"power_on_time"`
@@ -64,7 +70,20 @@ func parseSMART(b []byte, exit int, dev smartDevice, now time.Time) (Component, 
 	c.Serial = ptr(strings.TrimSpace(d.Serial))
 	c.Model = ptr(d.Model)
 	c.Firmware = ptr(d.Firmware)
-	c.SizeBytes = ptr(d.Capacity.Bytes)
+	switch {
+	case d.Capacity.Bytes != nil:
+		c.SizeBytes = d.Capacity.Bytes
+	case d.NVMeTotalCapacity != nil:
+		c.SizeBytes = d.NVMeTotalCapacity
+	case len(d.NVMeNamespaces) > 0:
+		var sum int64
+		for _, ns := range d.NVMeNamespaces {
+			sum += ns.Size.Bytes
+		}
+		if sum > 0 {
+			c.SizeBytes = ptr(sum)
+		}
+	}
 	c.TemperatureC = d.Temperature.Current
 	c.SmartPassed = passed
 	c.PredictiveFailure = predict

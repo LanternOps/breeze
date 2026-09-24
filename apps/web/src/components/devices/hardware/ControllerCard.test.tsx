@@ -64,4 +64,13 @@ describe('ControllerCard', () => {
     render(<PhysicalDisksTable disks={[disk]} />);
     expect(screen.getByText(`33 °C / 0 / 2 / ${expected}`)).toBeInTheDocument();
   });
+  it('renders a dash for a disk with no reported capacity', () => {
+    const disk = component({ componentType: 'physical_disk', componentKey: 'smart:NVME-0',
+      source: 'smartctl', parentKey: null, sizeBytes: null });
+    render(<PhysicalDisksTable disks={[disk]} />);
+    const row = screen.getByTestId(`hardware-disk-${disk.componentKey}`);
+    const sizeCell = row.querySelectorAll('td')[1];
+    expect(sizeCell).toHaveTextContent('—');
+    expect(sizeCell).not.toHaveTextContent('GiB');
+  });
 });
