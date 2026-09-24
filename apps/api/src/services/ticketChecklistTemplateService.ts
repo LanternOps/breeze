@@ -626,6 +626,11 @@ export async function applyChecklistTemplateToTicket(
             ),
           ),
         );
+      // The NOT EXISTS can leave a waited-on item in place (the race above).
+      // A replace that quietly kept an old step would be a partial replace,
+      // so re-check on this statement's fresh snapshot and refuse: the
+      // throw rolls the whole apply back, delete included.
+      await assertTicketUntickedChecklistItemsDeletable(ticket.id, tx);
     }
 
     const [agg] = (await tx

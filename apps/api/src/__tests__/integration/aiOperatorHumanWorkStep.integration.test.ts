@@ -450,8 +450,9 @@ describe('AI Operator human-work + wait steps against real Postgres (E3, #6168)'
   // the pre-check has already passed, and the item plus its waiting link are
   // visible. Reproduced by stubbing the pre-check, not with two connections.
   // (A commit after the statement starts is invisible to it by snapshot, so
-  // it cannot be deleted.) The DELETE's own NOT EXISTS must keep the item.
-  runDb('replace_unticked never deletes a waited-on item even when the pre-check already passed', async () => {
+  // it cannot be deleted.) The DELETE's own NOT EXISTS must keep the item, and
+  // the post-delete re-check must then refuse the whole apply (409, rolled back).
+  runDb('replace_unticked never deletes a waited-on item, and never half-replaces, even when the pre-check already passed', async () => {
     const org = await seedOrg();
     const taskId = await seedTask(org, { currentStepKey: 'confirm_identity' });
     const { itemId, step } = await openHumanWork(org, taskId);
@@ -468,11 +469,14 @@ describe('AI Operator human-work + wait steps against real Postgres (E3, #6168)'
     }, actor));
 
     vi.mocked(assertTicketUntickedChecklistItemsDeletable).mockResolvedValueOnce(undefined);
-    const applied = await withDbAccessContext(org.ctx, () =>
-      applyChecklistTemplateToTicket(ticket, { templateId: template.id, mode: 'replace_unticked' }, actor));
+    await expect(withDbAccessContext(org.ctx, () =>
+      applyChecklistTemplateToTicket(ticket, { templateId: template.id, mode: 'replace_unticked' }, actor)))
+      .rejects.toMatchObject({ status: 409, code: 'CHECKLIST_OPERATOR_STEP_WAITING' });
 
-    expect(applied.items.map((i) => i.id)).toContain(itemId);
-    expect(applied.items.map((i) => i.label)).toContain('From template');
+    // Never a partial replace: the waited-on item survives, and nothing from
+    // the template was appended (the refusal rolled the apply back).
+    const after = await withDbAccessContext(org.ctx, () => listChecklist(ticket.id));
+    expect(after.items.map((i) => i.id)).toEqual([itemId]);
     const [link] = await withSystemDbAccessContext(() =>
       db.select().from(aiOperatorTaskSteps).where(eq(aiOperatorTaskSteps.id, step.id)));
     expect(link?.checklistItemId).toBe(itemId);
