@@ -17,7 +17,7 @@ import { snapshotCost } from './catalogPricing';
 // to keep allocation atomic with the number write inside its single transaction.
 import { formatInvoiceNumber } from './invoiceNumbers';
 import { emitInvoiceEvent } from './invoiceEvents';
-import { resolveInvoiceFooter, resolveDraftBillTo } from './invoicePdf';
+import { resolveInvoiceFooter, resolveDraftBillTo, invoiceTicketNumberSql } from './invoicePdf';
 import { resolveOrgTaxRate, resolveOrgTaxRateOn, OrgNotVisibleForTaxError, PartnerNotVisibleForTaxError } from './taxRateResolver';
 import { stampedPresentation } from './invoicePresentation';
 import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
@@ -755,7 +755,7 @@ export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
   const inv = await getOwnedInvoiceOr404(invoiceId); requireInvoiceAccess(actor, inv);
   const rawLines = await db.select({
     ...getTableColumns(invoiceLines),
-    ticketNumber: sql<string | null>`COALESCE(${tickets.ticketNumber}, ${tickets.internalNumber})`,
+    ticketNumber: invoiceTicketNumberSql(),
     ticketSubject: tickets.subject,
     ticketCategory: sql<string | null>`COALESCE(${ticketCategories.name}, ${tickets.category})`,
   }).from(invoiceLines)
@@ -969,7 +969,7 @@ export async function getCustomerInvoice(
   if (orgId !== undefined && inv.orgId !== orgId) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
   const rows = await db.select({
     ticketId: invoiceLines.ticketId,
-    ticketNumber: sql<string | null>`COALESCE(${tickets.ticketNumber}, ${tickets.internalNumber})`,
+    ticketNumber: invoiceTicketNumberSql(),
     ticketSubject: tickets.subject,
     ticketCategory: sql<string | null>`COALESCE(${ticketCategories.name}, ${tickets.category})`,
     name: invoiceLines.name,

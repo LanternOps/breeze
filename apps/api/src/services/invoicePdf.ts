@@ -697,6 +697,17 @@ export function resolveDraftBillTo(input: {
   return { billToName: input.orgName ?? null, billToEmail: resolveBillingEmail(input.orgBillingContact) };
 }
 
+/** The ticket label an invoice line prints ("Ticket #…"): the human number the
+ *  ticket UI and customer emails use (`tickets.internal_number`, T-2026-0001),
+ *  falling back to the legacy random `ticket_number` for tickets created before
+ *  internal numbering. Read live at render (not snapshotted on the line), so
+ *  every invoice surface — PDF, web, portal — goes through this one expression
+ *  (sweep C4: the order was reversed, and ticket_number is NOT NULL, so the
+ *  legacy id always won). */
+export function invoiceTicketNumberSql() {
+  return sql<string | null>`COALESCE(${tickets.internalNumber}, ${tickets.ticketNumber})`;
+}
+
 async function loadInvoiceForRender(invoiceId: string): Promise<{
   invoice: InvoiceRow;
   lines: InvoiceLineRow[];
@@ -707,7 +718,7 @@ async function loadInvoiceForRender(invoiceId: string): Promise<{
   if (!invoice) return null;
   const lines = await db.select({
     ...getTableColumns(invoiceLines),
-    ticketNumber: sql<string | null>`COALESCE(${tickets.ticketNumber}, ${tickets.internalNumber})`,
+    ticketNumber: invoiceTicketNumberSql(),
     ticketSubject: tickets.subject,
     ticketCategory: sql<string | null>`COALESCE(${ticketCategories.name}, ${tickets.category})`,
   }).from(invoiceLines)
