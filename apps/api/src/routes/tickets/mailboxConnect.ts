@@ -300,7 +300,11 @@ mailboxRoutes.get(
     const resolved = resolvePartnerId(c.get('auth'));
     if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
     const list = await listMailboxConnections(resolved.partnerId);
-    return c.json({ connections: list });
+    // The Breeze Ticketing app's public client id, served at runtime so the
+    // card's Application Access Policy snippet works on prebuilt web images
+    // (#6935). Never the secret; null when the app is not configured.
+    const appId = getMailboxPlatformConfig()?.clientId ?? null;
+    return c.json({ connections: list, appId });
   },
 );
 

@@ -68,15 +68,21 @@ function parseMailboxConnection(value: unknown): MailboxConnectionDTO | null {
   };
 }
 
-const APP_ID =
-  (import.meta.env.PUBLIC_TICKET_MAILBOX_APP_ID as string | undefined)?.trim() ||
-  '<Breeze Ticketing app id>';
+const APP_ID_PLACEHOLDER = '<Breeze Ticketing app id>';
 
-function powershellSnippet(mailbox: string): string {
+// The API serves the Breeze Ticketing app's public client id at runtime (#6935);
+// a build-time PUBLIC_ var never reached prebuilt web images.
+function parseAppId(body: unknown): string | null {
+  if (!isRecord(body) || typeof body.appId !== 'string') return null;
+  const trimmed = body.appId.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function powershellSnippet(mailbox: string, appId: string | null): string {
   return [
     '# Run in Exchange Online PowerShell (Connect-ExchangeOnline) as a tenant admin:',
     `New-DistributionGroup -Name "Breeze Ticketing Mailboxes" -Type Security -Members "${mailbox}"`,
-    `New-ApplicationAccessPolicy -AppId ${APP_ID} \\`,
+    `New-ApplicationAccessPolicy -AppId ${appId ?? APP_ID_PLACEHOLDER} \\`,
     '  -PolicyScopeGroupId "Breeze Ticketing Mailboxes" -AccessRight RestrictAccess \\',
     '  -Description "Restrict Breeze Ticketing to the support mailbox"',
   ].join('\n');
@@ -85,6 +91,7 @@ function powershellSnippet(mailbox: string): string {
 function M365MailboxCardContent({ canAdminMailbox }: { canAdminMailbox: boolean }) {
   const { t } = useTranslation('settings');
   const [connections, setConnections] = useState<MailboxConnectionDTO[]>([]);
+  const [appId, setAppId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [address, setAddress] = useState('');
   const [displayName, setDisplayName] = useState('');
@@ -101,6 +108,7 @@ function M365MailboxCardContent({ canAdminMailbox }: { canAdminMailbox: boolean 
       if (res.ok) {
         const body = await res.json().catch(() => null);
         const rawConnections = isRecord(body) && Array.isArray(body.connections) ? body.connections : [];
+        setAppId(parseAppId(body));
         setConnections(
           rawConnections
             .map(parseMailboxConnection)
@@ -247,7 +255,7 @@ function M365MailboxCardContent({ canAdminMailbox }: { canAdminMailbox: boolean 
                 <details className="text-xs">
                   <summary className="cursor-pointer">{t('m365Mailbox.scopeMailbox')}</summary>
                   <pre className="mt-2 overflow-x-auto whitespace-pre-wrap rounded bg-muted p-2">
-                    {powershellSnippet(c.mailboxAddress)}
+                    {powershellSnippet(c.mailboxAddress, appId)}
                   </pre>
                 </details>
               ) : null}

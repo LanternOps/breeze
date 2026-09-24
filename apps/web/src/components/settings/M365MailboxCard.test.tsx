@@ -291,6 +291,40 @@ describe('M365MailboxCard', () => {
     expect(await screen.findByText('Mailbox verification failed: Graph 403 (ErrorAccessDenied)')).toBeInTheDocument();
   });
 
+  describe('Application Access Policy snippet app id (#6935)', () => {
+    const errorRow = {
+      id: 'c1',
+      mailboxAddress: 'support@a.com',
+      displayName: null,
+      status: 'error',
+      lastPolledAt: null,
+      lastMessageAt: null,
+      verificationError: null,
+    };
+
+    it('uses the runtime appId from the connections response', async () => {
+      fetchWithAuth.mockResolvedValueOnce(
+        jsonRes({ connections: [errorRow], appId: 'c15fe9ee-0000-4000-8000-000000000001' }),
+      );
+      render(<M365MailboxCard />);
+      const snippet = await screen.findByText(/New-ApplicationAccessPolicy/);
+      expect(snippet.textContent).toContain('-AppId c15fe9ee-0000-4000-8000-000000000001');
+      expect(snippet.textContent).not.toContain('<Breeze Ticketing app id>');
+    });
+
+    it.each([
+      ['null', { appId: null }],
+      ['absent', {}],
+      ['blank', { appId: '   ' }],
+      ['non-string', { appId: 42 }],
+    ])('keeps the placeholder when appId is %s', async (_label, extra) => {
+      fetchWithAuth.mockResolvedValueOnce(jsonRes({ connections: [errorRow], ...extra }));
+      render(<M365MailboxCard />);
+      const snippet = await screen.findByText(/New-ApplicationAccessPolicy/);
+      expect(snippet.textContent).toContain('-AppId <Breeze Ticketing app id>');
+    });
+  });
+
   it('Disconnect calls the delete endpoint', async () => {
     fetchWithAuth
       .mockResolvedValueOnce(
