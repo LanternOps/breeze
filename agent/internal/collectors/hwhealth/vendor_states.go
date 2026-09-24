@@ -6,8 +6,8 @@ var remainingVendorStates = func() map[string]map[string]string {
 	rows := []struct{ key, raw, normalized string }{
 		{"megacli/controller", "Optimal|OK|Degraded|Failed", "ok|ok|degraded|failed"},
 		{"megacli/virtual_disk", "Optimal|Degraded|Partially Degraded|Offline|Rebuild|Consistency Check|Initialization", "optimal|degraded|partially_degraded|offline|rebuilding|checking|initializing"},
-		{"megacli/physical_disk", "Online, Spun Up|Hotspare, Spun Up|Unconfigured(good)|Unconfigured(bad)|Rebuild|Copyback|Failed|Offline|JBOD", "online|hotspare|ready|failed|rebuilding|copyback|failed|offline|jbod"},
-		{"megacli/cache_battery", "Optimal|Learn Cycle Active|Battery Replacement required|Pack is about to fail|Degraded", "ok|learning|failed|failed|degraded"},
+		{"megacli/physical_disk", "Online, Spun Up|Hotspare, Spun Up|Unconfigured(good)|Unconfigured(bad)|Rebuild|Copyback|Failed|Offline|JBOD|Online|Hotspare", "online|hotspare|ready|failed|rebuilding|copyback|failed|offline|jbod|online|hotspare"},
+		{"megacli/cache_battery", "Optimal|Learn Cycle Active|Battery Replacement required|Pack is about to fail|Degraded|Operational|Battery Pack Missing", "ok|learning|failed|failed|degraded|ok|missing"},
 		{"ssacli/controller", "OK|Failed|Temporarily Disabled|Permanently Disabled", "ok|failed|degraded|degraded"},
 		{"ssacli/cache_battery", "OK|Recharging|Failed|Not Present", "ok|charging|failed|missing"},
 		{"ssacli/virtual_disk", "OK|Interim Recovery Mode|Failed|Recovering|Rebuilding|Ready for Rebuild|Transforming|Queued for Expansion|In Progress", "optimal|degraded|failed|rebuilding|rebuilding|rebuilding|migrating|migrating|initializing"},
