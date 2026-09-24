@@ -37,7 +37,7 @@ function postureFixture(i: number) {
 }
 const auth = () => ({
   scope: 'partner', partnerId: 'p1', orgId: null, accessibleOrgIds: ['o1'],
-  orgCondition: () => undefined, allowedSiteIds: null, allowedDeviceIds: null,
+  orgCondition: () => undefined, allowedSiteIds: undefined, allowedDeviceIds: null,
   canAccessOrg: () => true, user: { id: 'u1' },
 }) as never;
 
