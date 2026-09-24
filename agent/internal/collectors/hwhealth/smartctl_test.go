@@ -46,6 +46,10 @@ func TestSMARTCapacityFallback(t *testing.T) {
 		{"nvme-no-capacity", nil},
 		{"nvme-no-capacity-with-namespaces", ptr(int64(4294967296))},
 		{"nvme-total-capacity-fallback", ptr(int64(4294967296))},
+		{"user-capacity-zero", nil},
+		{"nvme-total-capacity-zero", ptr(int64(2147483648))},
+		{"nvme-total-capacity-precedence", ptr(int64(8589934592))},
+		{"nvme-namespaces-zero", nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.fixture, func(t *testing.T) {

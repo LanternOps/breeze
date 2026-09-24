@@ -71,14 +71,16 @@ func parseSMART(b []byte, exit int, dev smartDevice, now time.Time) (Component, 
 	c.Model = ptr(d.Model)
 	c.Firmware = ptr(d.Firmware)
 	switch {
-	case d.Capacity.Bytes != nil:
+	case d.Capacity.Bytes != nil && *d.Capacity.Bytes > 0:
 		c.SizeBytes = d.Capacity.Bytes
-	case d.NVMeTotalCapacity != nil:
+	case d.NVMeTotalCapacity != nil && *d.NVMeTotalCapacity > 0:
 		c.SizeBytes = d.NVMeTotalCapacity
 	case len(d.NVMeNamespaces) > 0:
 		var sum int64
 		for _, ns := range d.NVMeNamespaces {
-			sum += ns.Size.Bytes
+			if ns.Size.Bytes > 0 {
+				sum += ns.Size.Bytes
+			}
 		}
 		if sum > 0 {
 			c.SizeBytes = ptr(sum)
