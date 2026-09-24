@@ -14,6 +14,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/backup"
 	"github.com/breeze-rmm/agent/internal/backup/layout"
+	"github.com/breeze-rmm/agent/internal/backup/winhive"
 )
 
 // runState is the engine's resumable on-disk state: which phases already
@@ -52,6 +53,24 @@ type run struct {
 	disk       string
 	diskNumber int // Windows: the disk number under provisioning (vhdx: from AttachVHDX, disk: parsed from \\.\PhysicalDriveN)
 	detach     func() error
+
+	winAttached bool           // Windows: r.diskNumber is valid for this process (disk number 0 is a real disk, so the number alone cannot say)
+	volumes     map[int]string // partition number -> volume path (WinVolume.GUIDPath), Windows only
+	// rootVolume is the root (C:) partition's volume path, r.volumes[root]:
+	// the restore target, the disk: work dir's parent and Task 13's
+	// validate sampling base (Ruling B1) — securefs opens only a volume
+	// root by path and refuses every reparse point below it, and rootDir's
+	// folder mount point IS one.
+	rootVolume  string
+	espVolume   string                    // the ESP's volume path (W06c boot/validate)
+	espDir      string                    // W06c: folder mount point of the ESP (<staging>\esp) while mounted
+	rootDir     string                    // Windows root folder mount (<staging>\root) for external tools (bcdboot, DISM); Linux uses rootMount instead
+	recoveryDir string                    // Windows Recovery folder mount (<staging>\recovery), "" if the layout has none
+	hives       map[string]winhive.Handle // W06c: loaded SYSTEM/SOFTWARE hives, kept open from restore until validate closes them
+	// espLetterRelease releases the ESP's temporary drive letter (W06c
+	// winBoot assigns it for bcdboot /s and releases it itself; teardown is
+	// the failure-path backstop).
+	espLetterRelease func() error
 
 	staging string
 	// Mounts are tracked in three groups so teardown can unmount safely
@@ -172,10 +191,12 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	r := &run{opts: opts, sys: opts.System, winSys: opts.WinSystem, staging: opts.StagingRoot,
 		result: &Result{SnapshotID: opts.SnapshotID, Target: opts.Target, Identity: opts.Identity, Status: "failed"}}
 	r.statePath = filepath.Join(opts.StateDir, fmt.Sprintf("rebuild-%s-%s.json", opts.SnapshotID, targetKey(opts.Target)))
+	// cleanupLeftovers reads the state file to find a VHDX a crashed run
+	// left attached, so it must run before ForceReprovision discards it.
+	cleanupLeftovers(r)
 	if opts.ForceReprovision {
 		_ = os.Remove(r.statePath)
 	}
-	cleanupLeftovers(r)
 	r.loadState()
 	defer r.teardown()
 
@@ -268,7 +289,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 
 // reattachForResume dispatches a resumed run's re-mount step to the right
 // platform twin: reattach (provision.go, Linux) or winReattach
-// (win_provision.go, Task 11 — stubbed in win_phases.go until then).
+// (win_provision.go).
 func (r *run) reattachForResume(ctx context.Context) error {
 	if r.platform == "windows" {
 		return r.winReattach(ctx)
@@ -389,6 +410,7 @@ func (r *run) saveState() {
 // and removes the system-state staging dir. Errors are warnings: the
 // result already carries the outcome.
 func (r *run) teardown() {
+	r.winTeardown() // Windows hives/letters/folder mounts; r.detach below releases the VHDX
 	ctx := context.Background()
 	for i := len(r.treeMounts) - 1; i >= 0; i-- {
 		if err := r.sys.Unmount(ctx, r.treeMounts[i]); err != nil {

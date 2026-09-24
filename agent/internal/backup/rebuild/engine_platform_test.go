@@ -88,7 +88,7 @@ func TestRun_CleanupLeftovers_UnloadsStaleHivesAndDetachesVHDX(t *testing.T) {
 	opts, sys := winFakeOptions(t, dir)
 	sys.staleHiveCount = 2
 	sPath := filepath.Join(dir, "rebuild-win-1-"+targetKey(opts.Target)+".json")
-	stale := runState{SnapshotID: "win-1", TargetKey: targetKey(opts.Target), Plan: &Plan{}, Completed: map[Phase]bool{PhaseProvision: true}, Platform: "windows", HostOS: "windows", Volumes: map[int]string{3: `\\?\Volume{stale}\`}}
+	stale := runState{SnapshotID: "win-1", TargetKey: targetKey(opts.Target), Plan: &Plan{}, Completed: map[Phase]bool{PhaseProvision: true}, Platform: "windows", HostOS: "windows", Volumes: map[int]string{3: filepath.Join(dir, "stale-vol")}}
 	b, _ := json.Marshal(stale)
 	if err := os.WriteFile(sPath, b, 0o600); err != nil {
 		t.Fatal(err)

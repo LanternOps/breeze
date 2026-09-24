@@ -89,7 +89,12 @@ type WinDiskInfo struct {
 }
 
 type WinVolume struct {
-	GUIDPath        string // \\?\Volume{...}\
+	// GUIDPath is a path that opens the volume root: the real seam
+	// (Task 12) returns \\?\Volume{GUID}\ — no drive letter or folder
+	// mount point involved, so securefs (which refuses every reparse point
+	// below the volume root) can restore into it (Ruling B1); the test fake
+	// returns the volume's backing directory.
+	GUIDPath        string
 	DiskNumber      int
 	PartitionNumber int
 	DriveLetter     string // "" when none

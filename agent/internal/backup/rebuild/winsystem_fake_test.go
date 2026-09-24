@@ -88,7 +88,13 @@ func TestFakeWinSystem_RunRecordsAndFailPrefixWorks(t *testing.T) {
 
 // fakeVolume is fakeWinSystem's stand-in for one provisioned partition's
 // volume: dir is a real, on-disk directory (created by WriteGPT) that
-// answers HasWindowsTree/inspection queries; MountVolume creates a SEPARATE
+// answers HasWindowsTree/inspection queries. guidPath is the WinVolume.
+// GUIDPath the fake hands out — for WriteGPT-created volumes it IS dir
+// (Ruling B1a: GUIDPath is "a path that opens the volume root"; the real
+// seam's is \\?\Volume{GUID}\), so the engine's restore into the root
+// volume lands in a real directory on every test host. Tests may still
+// append hand-made volumes with an informational \\?\Volume{...}\ path
+// and no dir. MountVolume creates a SEPARATE
 // real directory (the staging mount point restored files actually land
 // under) and does not alias it to dir — mirroring how the real WinSystem's
 // MountVolume (SetVolumeMountPointW) attaches an independent volume to a
@@ -257,6 +263,9 @@ func (f *fakeWinSystem) AttachVHDX(path string) (int, func() error, error) {
 	return disk, detach, nil
 }
 func (f *fakeWinSystem) DetachVHDXByPath(path string) (bool, error) {
+	if _, err := f.record("DetachVHDXByPath", path); err != nil {
+		return false, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if _, ok := f.attachedVHDX[path]; !ok {
@@ -299,7 +308,7 @@ func (f *fakeWinSystem) WriteGPT(diskNumber int, diskGUID string, parts []WinGPT
 			return err
 		}
 		f.mu.Lock()
-		f.volumes = append(f.volumes, fakeVolume{guidPath: fmt.Sprintf(`\\?\Volume{%s}\`, id), dir: volDir, diskNumber: diskNumber, partitionNumber: p.Number})
+		f.volumes = append(f.volumes, fakeVolume{guidPath: volDir, dir: volDir, diskNumber: diskNumber, partitionNumber: p.Number})
 		f.mu.Unlock()
 	}
 	return nil
@@ -405,6 +414,35 @@ func (f *fakeWinSystem) UnloadStaleHives(prefix string) (int, error) {
 }
 func (f *fakeWinSystem) HasWindowsTree(volumeGUIDPath string) (bool, error) {
 	return f.hasWindowsTree[volumeGUIDPath], nil
+}
+
+// volumeDirForPartition returns the backing directory (== GUIDPath, Ruling
+// B1a) of the fake volume for partition number on any disk.
+func (f *fakeWinSystem) volumeDirForPartition(t *testing.T, number int) string {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, v := range f.volumes {
+		if v.partitionNumber == number {
+			return v.dir
+		}
+	}
+	t.Fatalf("fakeWinSystem: no volume for partition %d", number)
+	return ""
+}
+
+// volumePathsForDisk is the partition number -> GUIDPath map a real
+// provision persists in runState.Volumes for diskNumber.
+func (f *fakeWinSystem) volumePathsForDisk(diskNumber int) map[int]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := map[int]string{}
+	for _, v := range f.volumes {
+		if v.diskNumber == diskNumber {
+			out[v.partitionNumber] = v.guidPath
+		}
+	}
+	return out
 }
 
 func (f *fakeWinSystem) dumpForTest() string {
