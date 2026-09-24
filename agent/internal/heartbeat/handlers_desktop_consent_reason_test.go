@@ -115,6 +115,31 @@ func TestHandleStartDesktopConsentProceedReportsTimeout(t *testing.T) {
 	}
 }
 
+// The direct start path (the only one linux takes) carries the gate's reason
+// in consent mode and no marker otherwise.
+func TestDirectStartResultCarriesDecidedReason(t *testing.T) {
+	for _, reason := range []string{"user", "helper_absent", "timeout"} {
+		result := directStartResult("s", "a", &ipc.DesktopPrompt{Mode: "consent"}, reason, 1)
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(result.Stdout), &payload); err != nil {
+			t.Fatalf("stdout not JSON: %v", err)
+		}
+		if payload["consentReason"] != reason || payload["answer"] != "a" || payload["sessionId"] != "s" {
+			t.Fatalf("reason %s: unexpected payload %+v", reason, payload)
+		}
+	}
+	for _, prompt := range []*ipc.DesktopPrompt{nil, {Mode: "notify"}} {
+		result := directStartResult("s", "a", prompt, "helper_absent", 1)
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(result.Stdout), &payload); err != nil {
+			t.Fatalf("stdout not JSON: %v", err)
+		}
+		if _, ok := payload["consentReason"]; ok {
+			t.Fatalf("non-consent start must carry no marker, got %+v", payload)
+		}
+	}
+}
+
 // The marker carries whatever reason the gate decided; notify mode gets none.
 func TestWithConsentGrantedCarriesDecidedReason(t *testing.T) {
 	base := tools.NewSuccessResult(map[string]any{"sessionId": "s", "answer": "a"}, 1)

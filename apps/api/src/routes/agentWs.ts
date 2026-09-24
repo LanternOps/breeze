@@ -3225,6 +3225,12 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                         'agent',
                       );
                     }
+                  } else if (isUnsolicitedConsentReason(consentReason)) {
+                    // Distinct from the generic miss below: this is also what a
+                    // refused unsolicited-consent activation looks like (#6819 —
+                    // the start did not bind a `proceed` fallback), so keep it
+                    // greppable and carry the reason.
+                    console.warn(`[AgentWs] Session ${sessionId} not activated: consentReason=${consentReason} requires a bound consentUnavailableBehavior=proceed on the current start (or the session was not found / not owned by agent ${agentId})`);
                   } else {
                     console.warn(`[AgentWs] Session ${sessionId} not found or not owned by agent ${agentId}`);
                   }

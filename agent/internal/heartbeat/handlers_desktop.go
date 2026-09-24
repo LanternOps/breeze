@@ -367,17 +367,25 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 		// either renewed or released — never left to silently expire.
 		h.startDesktopLeaseRenewal(sessionID)
 	}
+	if prompt != nil {
+		h.afterDesktopStart(sessionID, prompt, targetSession)
+	}
+	return directStartResult(sessionID, answer, prompt, consentReason, time.Since(start).Milliseconds())
+}
+
+// directStartResult builds the direct-mode start result. In consent mode it
+// carries the gate's consentReason (#6819) exactly as the helper path does via
+// withConsentGranted. Split out so the marker is unit-testable on linux, where
+// handleStartDesktop always takes this path and capture cannot run in tests.
+func directStartResult(sessionID, answer string, prompt *ipc.DesktopPrompt, consentReason string, durationMs int64) tools.CommandResult {
 	resultData := map[string]any{
 		"sessionId": sessionID,
 		"answer":    answer,
 	}
-	if prompt != nil {
-		h.afterDesktopStart(sessionID, prompt, targetSession)
-		if prompt.Mode == "consent" {
-			resultData["consentReason"] = consentReason
-		}
+	if prompt != nil && prompt.Mode == "consent" {
+		resultData["consentReason"] = consentReason
 	}
-	return tools.NewSuccessResult(resultData, time.Since(start).Milliseconds())
+	return tools.NewSuccessResult(resultData, durationMs)
 }
 
 // parseDesktopSessionPolicy extracts the agent-enforced session policy from a
