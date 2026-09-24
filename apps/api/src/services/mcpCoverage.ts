@@ -535,7 +535,8 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'thirdPartyCatalog/list.ts': { exempt: 'platform_admin', note: 'Behind platformAdminMiddleware (mis-registered as a gap).' },
   'thirdPartyCatalog/operations.ts': { exempt: 'platform_admin', note: 'Behind platformAdminMiddleware (mis-registered as a gap).' },
   'ticketCategories.ts': { gap: '#6776' },
-  'ticketChecklistTemplates.ts': { tools: ['manage_ticket_checklist'] },
+  // Reads are on manage_ticket_checklist (#6930); template/item authoring is still the #6776 gap.
+  'ticketChecklistTemplates.ts': { gap: '#6776' },
   'ticketConfig.ts': { gap: '#6776' },
   'tickets/aiDrafts.ts': { tools: ['manage_tickets'] },
   'tickets/attachments.ts': { gap: '#6776' },
