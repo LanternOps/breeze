@@ -4,7 +4,8 @@ description: Use the inbox to act on problems, monitors to define conditions and
 ---
 
 Alerts is one domain with three facets: **Inbox**, **Monitors**, and **Delivery**.
-Configuration policies select the devices a monitor reaches.
+Alerts are raised by **monitors** you define. Configuration policies select the
+devices a monitor reaches.
 
 ## Inbox
 
@@ -18,12 +19,12 @@ Condition-based alerts trace to a monitor. Feature engines such as compliance,
 warranty, security, patching and backup also raise alerts; their configuration
 remains with those features.
 
-## Monitors
+## Alert conditions are monitors
 
 Open **Alerts → Monitors** to create a condition, choose its severity and noise
 settings, add device-bound responses, and choose delivery and escalation.
 Attach the monitor to a configuration policy and assign that policy to devices.
-See [Monitors](/features/monitors/) for kinds, deployment and conversion.
+See [Monitors](/features/monitors/) for kinds, deployment and legacy retirement.
 
 Per-monitor responses run on the device whose alert triggered them. For a broad
 workflow such as “any critical CPU alert → triage,” open **Jobs → Alert workflows**.
@@ -38,17 +39,15 @@ matching row. The explicit **Everything else** row supplies the default. New
 channels receive no alerts until added to a routing row or monitor override.
 See [Notifications and delivery](/features/notifications/).
 
-## Converting existing configuration
+## Legacy alerting retirement
 
-Open **Alerts → Monitors → Needs conversion**, or a policy's **Monitors** tab.
-Preview the proposed monitors and the device equivalence result. Convert only
-when the preview has no differences or blockers. Unconvertible items show their
-reason; replace their behavior deliberately or use **Retire** with a reason.
-Successful conversion preserves source rows and alert history. The persistent
-**Conversion history → Undo** reverses an available ledger entry, including manual retirement, after revisiting the page. Undo becomes unavailable for legacy runtimes removed by W05d.
+The legacy policy alert and service/process tabs have been removed. Create and
+test conditions in **Alerts → Monitors**, then attach them on a policy's
+**Monitors** tab. The previous release offered conversion previews; this release
+processes remaining legacy sources at startup. Items that cannot convert are
+retired with a reason and listed on **Alerts → Monitors** for review.
 
-Authorized partner managers can use **Convert everything** after reviewing the
-affected policies. Resolve unconvertible rows before the W05d retirement release,
-which ships at least one release after W05c. Legacy policy tabs remain available
-during this conversion release; the Alert Templates settings screens redirect
-to Monitors now.
+Open alerts from unconvertible retired sources stay open until someone resolves
+them. Source rows and history are retained, but **Conversion history → Undo** is
+unavailable for sources whose runtime was removed in this release. See
+[Monitors](/features/monitors/#legacy-rules) for replacement and review guidance.

@@ -96,3 +96,40 @@ Last release: **v0.115.0** (2026-09-21).
   installed. A rebuilding array is a warning, and a critical array alert resolves
   after two below-critical polls. Known issue: on Windows Storage Spaces, a member
   that disconnects and returns can leave its physical-disk alert open (#6895).
+
+## Legacy alerting retirement
+
+- **Removed authoring paths.** The policy **Alerts** and **Service & Process
+  Monitoring** tabs are removed, and the old `/alerts/rules` page redirects to
+  **Alerts → Monitors**. Legacy rule and template write endpoints under
+  `/alerts/rules*` and `/alert-templates*`, including rule tests and toggles, return
+  `410 Gone`; reads remain for history. The retired configuration feature types
+  `alert_rule` and `monitoring` also return `410 Gone`. Author and test monitors
+  through `/monitor-definitions` and attach them using `featureType: "monitors"`.
+- **Before upgrading:** run the previous release's **Convert everything** and
+  review every refusal. Conversion must have been available for one full release
+  before this upgrade. This avoids a gap in evaluation while the startup sweep
+  runs after the API starts serving requests. Undo for removed legacy runtimes
+  ends at this upgrade.
+- **Unattended conversion on boot.** The API processes remaining legacy sources
+  per partner, converts supported sources and retires unconvertible sources with
+  reasons. **Alerts → Monitors** shows a dismissible review banner listing them.
+  Recreate needed conditions as monitors before dismissing it. Open alerts from
+  unconvertible retired sources stay open until a person resolves them; converted
+  sources' open alerts move to the compiled monitor path. Network checks retain
+  their runtime and are excluded from automatic retirement.
+- **Startup verification.** After the sweep, every boot counts unretired
+  `config_policy_alert_rules` and `config_policy_monitoring_watches`. Non-zero
+  counts are logged at error level and reported to Sentry: those rows no longer
+  have an evaluator. Review the banner and startup errors, including any failed
+  partner conversions. `BREEZE_LEGACY_ALERTING_SWEEP=false` skips conversion but
+  still runs the count check.
+- **Delivery boundary.** Queued legacy alerts and unconverted standalone rules
+  no longer use their old channel or escalation overrides. Delivery follows
+  monitor settings, routing rows and the explicit **Everything else** row;
+  without a matching destination, no notification is sent. Review routing before
+  upgrading.
+- **Migration `2026-10-31-100000-legacy-alerting-retirement-sweep.sql`** moves each
+  policy's check interval to its `monitors` feature link and prints warning counts
+  of remaining unretired sources. It is idempotent and deletes no data. The
+  **Monitors** tab owns **Check interval**; legacy source rows remain for history.
