@@ -1978,34 +1978,46 @@ jobs:
       # of these tests skips loudly when the token is not elevated (the
       # assertions would be vacuous), and the bare package run above has no
       # -v, so a skip there reads as a pass. windows-latest runners are
-      # elevated; assert all nine actually PASSED.
+      # elevated; assert all eleven actually PASSED.
+      # W06c (#5499) adds two: TestControlSetsAndMountedDevices_RealHive
+      # proves winhive's offline edits (control sets, MountedDevices) round-
+      # trip through a real reg-save SYSTEM hive load/unload, and
+      # TestLoadReadOnly_ReadsAnAdminReadOnlyBCDStore proves
+      # WinSystem.LoadHiveReadOnly can read a BCD-Template-derived store,
+      # which denies KEY_ALL_ACCESS to Administrators even with
+      # SeBackup/SeRestore held (a lab-found production defect, see the W06c
+      # PR).
       - name: Run Windows rebuild-engine host seam tests (must not skip)
         working-directory: agent
         env:
           CGO_ENABLED: "0"
         shell: pwsh
         run: |
-          $out = go test ./internal/backup/rebuild ./internal/backup/winhive -run '^Test(WinSystem_VolumesOnDiskSystemDisk|WinSystem_FreeSpaceWalksUpToAnExistingDir|WinSystem_CreateAttachVHDXSectorSizes|WinSystem_VHDXProvisionRoundTrip|WinSystem_DetachVHDXByPathFromAnotherInstance|WinSystem_DetachVHDXByPathForeignAttaches|WinSystem_LoadHiveRoundTripAndStaleSweep|UnloadStale_NoMatches|Load_MissingFileFailsWithoutMount)$' -v 2>&1
+          $out = go test ./internal/backup/rebuild ./internal/backup/winhive -run '^Test(WinSystem_VolumesOnDiskSystemDisk|WinSystem_FreeSpaceWalksUpToAnExistingDir|WinSystem_CreateAttachVHDXSectorSizes|WinSystem_VHDXProvisionRoundTrip|WinSystem_DetachVHDXByPathFromAnotherInstance|WinSystem_DetachVHDXByPathForeignAttaches|WinSystem_LoadHiveRoundTripAndStaleSweep|UnloadStale_NoMatches|Load_MissingFileFailsWithoutMount|ControlSetsAndMountedDevices_RealHive|LoadReadOnly_ReadsAnAdminReadOnlyBCDStore)$' -v 2>&1
           $exit = $LASTEXITCODE
           $out | ForEach-Object { Write-Host $_ }
           if ($exit -ne 0) { throw "go test failed (exit $exit)" }
           $skips = @($out | Select-String -Pattern '^\s*--- SKIP: Test').Count
           if ($skips -ne 0) { throw "$skips of the rebuild-engine host seam tests SKIPPED - the real WinSystem/winhive have no live coverage on this runner (not elevated?)" }
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
-          if ($passes -ne 9) { throw "expected exactly 9 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+          if ($passes -ne 11) { throw "expected exactly 11 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # TestRun_WindowsVhdxRealSystem (internal/backup/rebuild) is the W06
       # Windows engine's one end-to-end real-hardware proof: create/attach a
       # 2 GiB dynamic VHDX, provision GPT partitions with the recorded GUIDs,
-      # format, restore files through the root volume's \\?\Volume{GUID}\
-      # path, validate (checksum sample, flush, unmount, no-letter bit
-      # cleared, GUIDs read back), detach — then re-attach and read the
-      # restored bytes back. windows-latest runners are elevated and ship
-      # virtdisk.dll (no Hyper-V role needed — VHDX create/attach works
-      # without it), so this has no reason to skip here; a skip must fail the
-      # job, exactly like the Linux loopback step's own must-not-skip
-      # assertion.
-      - name: Run Windows real-VHDX rebuild engine test (must not skip)
+      # format, restore files (including real SYSTEM/SOFTWARE/BCD hives)
+      # through the root volume's \\?\Volume{GUID}\ path, apply the offline
+      # system-state edits, run with SkipBoot:false so it drives the host's
+      # own bcdboot.exe to regenerate the ESP (/f UEFI /v /p) and identity
+      # (-RESTORED, MachineGuid, enrollment strip), validate (BCD default
+      # entry read back through a read-only hive load, checksum sample,
+      # flush, unmount, no-letter bit cleared, GUIDs read back), detach —
+      # then re-attach and read the restored bytes back. windows-latest
+      # runners are elevated and ship virtdisk.dll (no Hyper-V role needed —
+      # VHDX create/attach works without it), so this has no reason to skip
+      # here; a skip must fail the job, exactly like the Linux loopback
+      # step's own must-not-skip assertion.
+      - name: Run Windows real-VHDX rebuild engine test — bcdboot + identity (must not skip)
         working-directory: agent
         env:
           CGO_ENABLED: "0"

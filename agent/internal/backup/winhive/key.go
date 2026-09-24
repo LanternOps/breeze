@@ -10,7 +10,10 @@
 // file that talks to RegLoadKeyW for real.
 package winhive
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 // ErrNotExist is returned by OpenKey/GetString/GetDWORD/GetBinary when the
 // key or value does not exist. Callers that treat absence as "unset" check
@@ -56,36 +59,32 @@ type Handle interface {
 }
 
 // HasNTDS reports whether the SYSTEM hive rooted at root has
-// ControlSet<Select\Default>\Services\NTDS — the domain-controller signal
-// the Global Constraint "Refuse before destructive work" checks (a DC source
-// is refused unless Options.AllowDomainController). Every key it opens is
-// closed before it returns: an open handle under a loaded hive makes
-// RegUnLoadKeyW fail with ERROR_ACCESS_DENIED.
+// Services\NTDS in ANY selected control set (ControlSet<Select\Default>,
+// and ControlSet<Select\Current> when it differs — see ControlSets) — the
+// domain-controller signal the Global Constraint "Refuse before destructive
+// work" checks (a DC source is refused unless
+// Options.AllowDomainController). It fails closed: a hive whose selected
+// control sets cannot be resolved, or whose NTDS key cannot be opened for
+// any reason other than absence, is an error, never "not a DC". Every key it
+// opens is closed before it returns: an open handle under a loaded hive
+// makes RegUnLoadKeyW fail with ERROR_ACCESS_DENIED.
 func HasNTDS(root Key) (bool, error) {
-	sel, err := root.OpenKey(`Select`)
+	sets, err := ControlSets(root)
 	if err != nil {
-		if errors.Is(err, ErrNotExist) {
-			return false, nil
-		}
-		return false, err
+		return false, fmt.Errorf("resolve control sets: %w", err)
 	}
-	def, err := sel.GetDWORD("Default")
-	_ = sel.Close()
-	if err != nil {
+	for _, cs := range sets {
+		ntds, err := root.OpenKey(cs + `\Services\NTDS`)
 		if errors.Is(err, ErrNotExist) {
-			return false, nil
+			continue
 		}
-		return false, err
-	}
-	ntds, err := root.OpenKey(controlSetName(def) + `\Services\NTDS`)
-	if err != nil {
-		if errors.Is(err, ErrNotExist) {
-			return false, nil
+		if err != nil {
+			return false, fmt.Errorf(`open %s\Services\NTDS: %w`, cs, err)
 		}
-		return false, err
+		_ = ntds.Close()
+		return true, nil
 	}
-	_ = ntds.Close()
-	return true, nil
+	return false, nil
 }
 
 // controlSetName formats a Select\Default DWORD as "ControlSet001" etc.

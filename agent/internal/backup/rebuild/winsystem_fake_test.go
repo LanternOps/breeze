@@ -199,13 +199,78 @@ func (f *fakeWinSystem) record(name string, args ...string) ([]byte, error) {
 }
 
 func (f *fakeWinSystem) Run(_ context.Context, name string, args ...string) ([]byte, error) {
-	return f.record(name, args...)
+	out, err := f.record(name, args...)
+	if err != nil || !strings.EqualFold(name[strings.LastIndexAny(name, `\/`)+1:], "bcdboot.exe") {
+		return out, err
+	}
+	return out, f.simulateBcdboot(args)
 }
+
+// fakeDefaultBootEntry is the BCD element validate asserts (Global "ESP and
+// boot"): the boot manager's default entry.
+const fakeDefaultBootEntry = `Objects\{9dea862c-5cdd-4e70-acc1-f32b344d4795}\Elements\23000003`
+
+// simulateBcdboot is what bcdboot /s <L>: leaves on the ESP (ruling C7):
+// EFI\Microsoft\Boot\{BCD,bootmgfw.efi} under the backing dir of the volume
+// that holds letter L, plus a fake-loadable BCD hive (keyed "BCD", as
+// LoadHive expects) with the default boot-manager entry — unless a test
+// pre-seeded one. EFI\Boot\bootx64.efi is deliberately NOT written, so
+// winBoot's ensureBootx64 copy is exercised.
+func (f *fakeWinSystem) simulateBcdboot(args []string) error {
+	letter := ""
+	for i := 0; i+1 < len(args); i++ {
+		if strings.EqualFold(args[i], "/s") {
+			letter = strings.TrimSuffix(args[i+1], ":")
+		}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	dir := ""
+	for _, v := range f.volumes {
+		if letter != "" && f.letters[v.guidPath] == letter {
+			dir = v.dir
+		}
+	}
+	if dir == "" {
+		return fmt.Errorf("fakeWinSystem: bcdboot /s %q: no volume holds that drive letter", letter)
+	}
+	boot := filepath.Join(dir, "EFI", "Microsoft", "Boot")
+	if err := os.MkdirAll(boot, 0o755); err != nil {
+		return err
+	}
+	for name, body := range map[string]string{"BCD": "fake-bcd-hive", "bootmgfw.efi": "fake-bootmgr"} {
+		if err := os.WriteFile(filepath.Join(boot, name), []byte(body), 0o644); err != nil {
+			return err
+		}
+	}
+	if _, ok := f.hives["BCD"]; !ok {
+		bcd := winhive.NewFake()
+		el, err := bcd.CreateKey(fakeDefaultBootEntry)
+		if err != nil {
+			return err
+		}
+		// The element's value (the default {bootmgr} object) is what
+		// winhive.DefaultBCDEntryExists looks for.
+		if err := el.SetString("Element", "{7619dcc9-fafe-11d9-b411-000476eba25f}"); err != nil {
+			return err
+		}
+		f.hives["BCD"] = bcd
+	}
+	return nil
+}
+
+// LookPath records "LookPath <name>" and answers a PATH-shaped decoy
+// (C:\PATH\<name>), never the System32 path: ruling C4's host tools must
+// not resolve through PATH, and a decoy answer makes such a regression
+// visible in argv.
 func (f *fakeWinSystem) LookPath(name string) (string, error) {
+	f.mu.Lock()
+	f.cmds = append(f.cmds, "LookPath "+name)
+	f.mu.Unlock()
 	if err, ok := f.lookPathErr[name]; ok {
 		return "", err
 	}
-	return `C:\Windows\System32\` + name, nil
+	return `C:\PATH\` + name, nil
 }
 func (f *fakeWinSystem) InWinPE() bool                    { return f.inWinPE }
 func (f *fakeWinSystem) SystemDiskNumber() (int, error)   { return f.systemDiskNumber, nil }
@@ -418,7 +483,17 @@ func (f *fakeWinSystem) FreeSpace(string) (int64, error) { return f.freeSpace, n
 // The base name is taken after the LAST `\` or `/`, so Windows-shaped hive
 // paths resolve the same on every host.
 func (f *fakeWinSystem) LoadHive(hiveFile, mountName string) (winhive.Handle, error) {
-	if _, err := f.record("LoadHive", hiveFile, mountName); err != nil {
+	return f.loadHive("LoadHive", hiveFile, mountName)
+}
+
+// LoadHiveReadOnly is LoadHive recorded as "LoadHiveReadOnly <file>
+// <mount>" (the fake does not enforce read-only access).
+func (f *fakeWinSystem) LoadHiveReadOnly(hiveFile, mountName string) (winhive.Handle, error) {
+	return f.loadHive("LoadHiveReadOnly", hiveFile, mountName)
+}
+
+func (f *fakeWinSystem) loadHive(verb, hiveFile, mountName string) (winhive.Handle, error) {
+	if _, err := f.record(verb, hiveFile, mountName); err != nil {
 		return nil, err
 	}
 	base := hiveFile

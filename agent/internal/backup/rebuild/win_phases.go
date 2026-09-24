@@ -1,69 +1,13 @@
-// win_phases.go holds the Windows platform table's entry points.
-//
-// The real validate/convert phases live in win_validate.go and
-// win_convert.go.
-//
-// Staged for W06c (these five stay in this file when this PR merges; Part C
-// deletes each one from here and adds the real one): applyWindowsSystemState
-// (Part C Task 14, win_system_state.go), winIdentity and winEncryption
-// (Task 15, win_identity.go / win_encryption.go), winBoot (Task 16,
-// win_boot.go), validateOSState (Task 17, win_validate_os.go). Each is
-// honest: a hard error unless Options.SkipBoot (test/CI mode) — never a
-// silent no-op.
+// win_phases.go — Windows-engine startup housekeeping. The Windows phase
+// functions live in win_preflight.go, win_provision.go,
+// win_restore_tree.go, win_system_state.go, win_boot.go, win_identity.go,
+// win_encryption.go, win_validate.go, win_validate_os.go, win_convert.go.
 package rebuild
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"os"
 )
-
-// errWindowsOSStateStaged is what the W06c-staged functions return outside
-// SkipBoot in this PR.
-var errWindowsOSStateStaged = errors.New("windows offline system-state, boot, identity and encryption phases arrive in W06c")
-
-// A Windows run in this PR therefore reaches "completed" only with
-// SkipBoot set — exactly what the Task 13 tests and CI VHDX gate use.
-
-// applyWindowsSystemState is winRestoreTree's offline system-state hook
-// (hives, MountedDevices, boot-start drivers). Part C replaces it.
-func applyWindowsSystemState(_ context.Context, r *run) error {
-	if r.opts.SkipBoot {
-		r.warn("system state not applied (SkipBoot): %v", errWindowsOSStateStaged)
-		return nil
-	}
-	return errWindowsOSStateStaged
-}
-
-func winBoot(_ context.Context, r *run) error {
-	if r.opts.SkipBoot {
-		r.recordSkipped(PhaseBoot, "skipped: Options.SkipBoot")
-		return nil
-	}
-	return errWindowsOSStateStaged
-}
-
-func winIdentity(_ context.Context, r *run) error {
-	if r.opts.SkipBoot {
-		r.recordSkipped(PhaseIdentity, "not implemented until W06c")
-		return nil
-	}
-	return errWindowsOSStateStaged
-}
-
-func winEncryption(_ context.Context, r *run) error {
-	if r.opts.SkipBoot {
-		r.recordSkipped(PhaseEncryption, "not implemented until W06c")
-		return nil
-	}
-	return errWindowsOSStateStaged
-}
-
-// validateOSState is winValidate's OS-state hook (close hives, ESP + BCD
-// checks). Nothing is loaded or written by the staged phases above, so the
-// staged hook has nothing to check; Part C replaces it.
-func validateOSState(_ context.Context, _ *run) error { return nil }
 
 // cleanupLeftovers runs before loadState (Run's very first step after
 // computing r.statePath), releasing Windows-host resources a previous

@@ -102,3 +102,70 @@ func TestLoad_MissingFileFailsWithoutMount(t *testing.T) {
 		t.Fatalf("Load created %s (stat err %v)", hiveFile, err)
 	}
 }
+
+// A BCD store built from BCD-Template (what bcdboot writes on a real ESP)
+// grants BUILTIN\Administrators only ReadKey + WRITE_DAC: Load (root opened
+// KEY_ALL_ACCESS) is denied even with SeBackup/SeRestore held, and
+// LoadReadOnly (KEY_READ throughout) reads it — lab-proven on Server 2022.
+// Writes through a read-only handle fail; Close still flushes and unloads.
+func TestLoadReadOnly_ReadsAnAdminReadOnlyBCDStore(t *testing.T) {
+	enablePrivilegesForTest(t, "SeBackupPrivilege", "SeRestorePrivilege")
+	tmpl, err := os.ReadFile(filepath.Join(os.Getenv("SystemRoot"), "System32", "config", "BCD-Template"))
+	if err != nil {
+		t.Skipf("host has no readable BCD-Template: %v", err)
+	}
+	hiveFile := filepath.Join(t.TempDir(), "BCD")
+	if err := os.WriteFile(hiveFile, tmpl, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const mount = "BRZ_winhive_test_bcd_ro"
+	t.Cleanup(func() { _, _ = UnloadStale(mount) })
+
+	if h, err := Load(hiveFile, mount); err == nil {
+		_ = h.Close()
+		t.Log("Load (read-write) of BCD-Template succeeded on this host; the read-only path is still exercised below")
+	} else if !errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+		t.Fatalf("Load = %v, want success or ERROR_ACCESS_DENIED", err)
+	}
+	if hklmKeyExists(mount) {
+		t.Fatalf("HKLM\\%s left mounted after the read-write attempt", mount)
+	}
+
+	h, err := LoadReadOnly(hiveFile, mount)
+	if err != nil {
+		t.Fatalf("LoadReadOnly: %v", err)
+	}
+	names, err := h.Root().SubKeyNames()
+	if err != nil || !containsFold(names, "Objects") {
+		_ = h.Close()
+		t.Fatalf("root subkeys = %v, %v; want Objects", names, err)
+	}
+	objects, err := h.Root().OpenKey("Objects")
+	if err != nil {
+		_ = h.Close()
+		t.Fatalf("open Objects read-only: %v", err)
+	}
+	werr := objects.SetString("BRZ_write_probe", "x")
+	_ = objects.Close()
+	if _, cerr := h.Root().CreateKey("BRZ_create_probe"); cerr == nil {
+		t.Error("CreateKey through a read-only hive succeeded")
+	}
+	if err := h.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if werr == nil {
+		t.Error("SetString through a read-only hive succeeded")
+	}
+	if hklmKeyExists(mount) {
+		t.Fatalf("HKLM\\%s still mounted after Close", mount)
+	}
+}
+
+func containsFold(names []string, want string) bool {
+	for _, n := range names {
+		if strings.EqualFold(n, want) {
+			return true
+		}
+	}
+	return false
+}

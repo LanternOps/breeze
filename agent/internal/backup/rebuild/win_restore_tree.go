@@ -16,8 +16,8 @@ import (
 // winMountTree mounts root and Recovery at folder mount points under the
 // staging root (Global Constraint "No PowerShell, no diskpart … Mounts") for
 // Part C's external tools, records the root volume path the restore and
-// validate go through (Ruling B1), remembers the ESP's volume for W06c's
-// boot/validate, and warns about every data partition left empty.
+// validate go through (Ruling B1), remembers the ESP's volume for the
+// boot and validate phases, and warns about every data partition left empty.
 func (r *run) winMountTree(_ context.Context) error {
 	root := filepath.Join(r.staging, "root")
 	mounted := false
@@ -82,8 +82,8 @@ func (r *run) plannedPartition(number int) *PlannedPartition {
 // winReattach already did), restores the whole-machine file snapshot into
 // the root VOLUME path r.rootVolume — not the r.rootDir folder mount point,
 // which securefs would refuse as a reparse point (Ruling B1) — then runs
-// the offline system-state hook (applyWindowsSystemState — staged in
-// win_phases.go until W06c), which alone decides Result.StateApplied.
+// the offline system-state step (applyWindowsSystemState,
+// win_system_state.go), which alone decides Result.StateApplied.
 func winRestoreTree(ctx context.Context, r *run) error {
 	if r.rootDir == "" {
 		if err := r.winMountTree(ctx); err != nil {
