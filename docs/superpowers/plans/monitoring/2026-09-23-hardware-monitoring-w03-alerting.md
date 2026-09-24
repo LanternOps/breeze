@@ -70,7 +70,9 @@ All anchors refer to the inspected base; resolve by symbol after preceding tasks
 | Create | `apps/api/src/services/alertService.subjects.test.ts` | Insert/publication/rollback regressions |
 | Create | `apps/api/src/services/alertSubjects.ts` | Per-subject reconciliation and final observation |
 | Create | `apps/api/src/services/alertSubjects.test.ts` | Recovery and observation matrix |
-| Create | `apps/api/src/services/alertSubjects.integration.test.ts` | Real identity races, sweep, response routing, tenancy |
+| Create | `apps/api/src/services/alertSubjects.integration.test.ts` | Real identity races, commit/outbox failure boundaries, response routing, tenancy |
+| Create | `apps/api/src/services/subjectAlertOutbox.ts` | Claim committed pending alerts, publish, compensate failed publication |
+| Modify | `apps/api/src/jobs/alertWorker.ts:122,170`, `apps/api/src/jobs/alertWorker.test.ts`, `apps/api/src/jobs/alertQueue.test.ts` | Drain committed subject outbox after device jobs and on the minute tick; prove both context boundaries |
 | Modify | `apps/api/src/jobs/automationWorker.ts:576` | Skip non-owner compiled responses |
 | Create | `apps/api/src/jobs/automationWorker.subjects.test.ts` | Owner guard through worker seam |
 | Modify | `apps/api/src/services/hardwareHealth/retire.ts` | Fill W01 contract function body |
@@ -87,11 +89,11 @@ All anchors refer to the inspected base; resolve by symbol after preceding tasks
 | Modify | `apps/web/src/components/monitoring/MonitorConditionFields.tsx:15,46,85` | Accessible checkbox group |
 | Create | `apps/web/src/components/monitoring/MonitorConditionFields.hardwareHealth.test.tsx` | Form values, reset, validation and translated fields |
 | Modify | `apps/web/src/components/monitoring/monitorKindFields.test.ts:125` | Include multiselect option translations |
-| Modify | `apps/web/src/locales/en/monitoring.json:1` | Hardware labels and option text |
+| Modify | `apps/web/src/locales/{en,de-DE,es-419,fr-CA,fr-FR,it-IT,pt-BR,tr-TR}/monitoring.json` | Hardware labels and option text in every catalog |
 
-Read-only precedents: `alertConditions/registry.ts:10` defines `evaluate(condition: unknown, deviceId: string): Promise<ConditionResult>`; `handlers/service.ts:7` and `handlers/threshold.ts:5` implement it. `monitors/kinds/types.ts:30` defines `MonitorKindSpec<C>`; `disk.ts:7` and `service.ts:9` show compilation. `monitorCompiler.ts:131` already emits a single root and honors `alertCategory`; `packages/shared/src/utils/alertTemplate.ts:35` already accepts arbitrary context keys. `alertWorker.ts:221` selects online devices and `:463` schedules the minute sweep; neither changes. `monitorEpisodes.ts:61` has no FK on `alertId`, making explicit failed-publish claim release necessary.
+Read-only precedents: `alertConditions/registry.ts:10` defines `evaluate(condition: unknown, deviceId: string): Promise<ConditionResult>`; `handlers/service.ts:7` and `handlers/threshold.ts:5` implement it. `monitors/kinds/types.ts:30` defines `MonitorKindSpec<C>`; `disk.ts:7` and `service.ts:9` show compilation. `monitorCompiler.ts:131` already emits a single root and honors `alertCategory`; `packages/shared/src/utils/alertTemplate.ts:35` already accepts arbitrary context keys. `alertWorker.ts:221` still selects online devices and `:463` still schedules the minute sweep; Task 10 adds outbox draining before that selection so offline devices also retry pending publication. `monitorEpisodes.ts:61` has no FK on `alertId`, making explicit failed-publish claim release necessary.
 
-Decisions: `HardwareHealthComponentFilter` is defined here as `Exclude<HardwareComponentType, 'bmc'>` (index §F names it but does not declare it). `RETURNING id` yields `{ id: string }[]`; `createAlert` actually returns `Promise<string | null>` (`alertService.ts:167,296`), so no full-row mapping or hydration is required. `responsesOwner` is computed immediately after `linkEpisodeAlert`, before `alert.triggered` publication. The subject path opens/reuses an episode before publishing, then records the authoritative post-reconciliation observation; it serializes this sequence by rule/device within the existing ambient transaction. An all-cooldown-suppressed sweep may provisionally open then close an episode, following §9.1's explicit final observation rule. UI keys remain literally `monitors.fields.hardware_health.*` inside the existing `monitoring` namespace; English fallback already exists (`lib/i18n/index.ts:290`).
+Decisions: `HardwareHealthComponentFilter` is defined here as `Exclude<HardwareComponentType, 'bmc'>` (index §F names it but does not declare it). `RETURNING id` yields `{ id: string }[]`; `createAlert` actually returns `Promise<string | null>` (`alertService.ts:167,296`), so no full-row mapping or hydration is required. `responsesOwner` is computed immediately after `linkEpisodeAlert`, before `alert.triggered` publication. The subject path opens/reuses an episode, atomically stores ownership and a pending publication in the alert context, and records the authoritative post-reconciliation observation under the rule/device lock. Task 10 publishes only after the outer transaction commits. An all-cooldown-suppressed sweep may provisionally open then close an episode, following §9.1's explicit final observation rule. UI keys remain literally `monitors.fields.hardware_health.*` inside the existing `monitoring` namespace; Task 15 supplies them in all eight catalogs and runs locale parity.
 
 Each step below is a 2–5 minute edit/run unit; commands start at repository root unless a `cd` is shown. Do not execute commits while merely reviewing this document. Implementation commits use shell ANSI-C strings so the two newlines in the attribution are actual commit-message newlines.
 
@@ -697,6 +699,9 @@ it('keeps legacy Redis keys and separates adaptive and flap keys', async () => {
   await setCooldown('rule', 'device', 5);
   await setCooldown('rule', 'device', 5, 'disk:3');
   expect(m.store.has('breeze:alerts:cooldown:rule:device')).toBe(true);
+  expect(m.store.has('breeze:alerts:cooldown:adaptive:rule:device')).toBe(true);
+  await recordStateTransition('rule', 'device', 'resolved');
+  expect(m.lists.has('breeze:alerts:flap:rule:device')).toBe(true);
   expect(m.store.has('breeze:alerts:cooldown:adaptive:rule:device:disk:3')).toBe(true);
   for (let i = 0; i < 4; i++) await recordStateTransition('rule', 'device', 'triggered', 'disk:3');
   expect(await isFlapping('rule', 'device', undefined, undefined, 'disk:3')).toBe(true);
@@ -774,7 +779,7 @@ export async function isFlapping(ruleId: string, deviceId: string, windowMinutes
 }
 ```
 
-- [ ] **Step 4: Run green.** `cd apps/api && npx vitest run src/services/alertCooldown.subjects.test.ts src/services/alertCooldown.test.ts` — subject keys isolate both Redis and memory fallback; existing absent-subject keys stay byte-identical.
+- [ ] **Step 4: Run green.** `cd apps/api && npx vitest run src/services/alertCooldown.subjects.test.ts src/services/alertCooldown.rekey.test.ts` — subject keys isolate both Redis and memory fallback; existing absent-subject keys stay byte-identical.
 - [ ] **Step 5: Commit.**
 
 ```bash
@@ -838,9 +843,9 @@ git commit -m $'fix(monitors): retain the first episode response owner\n\nCo-Aut
 ```ts
 import { beforeEach, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
-const m = vi.hoisted(() => ({ select: vi.fn(), execute: vi.fn(), update: vi.fn(), delete: vi.fn(),
+const m = vi.hoisted(() => ({ select: vi.fn(), execute: vi.fn(), update: vi.fn(), delete: vi.fn(), staged: undefined as any,
   publish: vi.fn(), link: vi.fn(), cooldown: vi.fn(), transition: vi.fn() }));
-vi.mock('../db', () => ({ db: m }));
+vi.mock('../db', () => ({ db: m, withDbTransaction: async (fn: () => Promise<unknown>) => fn() }));
 vi.mock('./eventBus', () => ({ publishEvent: m.publish }));
 vi.mock('./deviceSiteResolver', () => ({ resolveDeviceSiteId: async () => null }));
 vi.mock('../jobs/alertCorrelation', () => ({ enqueueAlertCorrelation: vi.fn().mockResolvedValue('correlation-job') }));
@@ -858,14 +863,15 @@ beforeEach(() => {
   m.execute.mockResolvedValue([{ id: 'alert' }]); m.publish.mockResolvedValue(undefined);
   m.link.mockResolvedValue({ owner: true });
   m.delete.mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
-  m.update.mockReturnValue({ set: () => ({ where: vi.fn().mockResolvedValue(undefined) }) });
+  m.update.mockReturnValue({ set: (value: any) => { m.staged = value; return { where: vi.fn().mockResolvedValue(undefined) }; } });
 });
-it.each([true, false])('publishes subject with ownership %s after claim', async owner => {
+it.each([true, false])('stages subject ownership %s without external effects', async owner => {
   m.link.mockResolvedValue({ owner });
   expect(await createAlert({ ...params, subjectKey: 'disk:3', episodeId: 'episode' })).toBe('alert');
-  expect(m.publish.mock.calls[0]![2]).toMatchObject({ subjectKey: 'disk:3', responsesOwner: owner });
-  expect(m.link.mock.invocationCallOrder[0]!).toBeLessThan(m.publish.mock.invocationCallOrder[0]!);
-  expect(m.cooldown).toHaveBeenCalledWith(params.ruleId, params.deviceId, 5, 'disk:3');
+  expect(m.staged.context._subjectDispatch.payload).toMatchObject({ subjectKey: 'disk:3', responsesOwner: owner });
+  expect(m.publish).not.toHaveBeenCalled();
+  expect(m.cooldown).not.toHaveBeenCalled();
+  expect(m.transition).not.toHaveBeenCalled();
   const query = new PgDialect().sqlToQuery(m.execute.mock.calls[0]![0]);
   expect(query.sql).toContain("COALESCE(subject_key, '')");
   expect(query.sql).toContain('DO NOTHING RETURNING id');
@@ -880,11 +886,17 @@ it('legacy identity is NULL and owns responses', async () => {
   await createAlert(params);
   expect(m.publish.mock.calls[0]![2]).toMatchObject({ subjectKey: null, responsesOwner: true });
 });
-it('releases only the failed publish claim and does not start cooldown', async () => {
-  m.publish.mockRejectedValue(new Error('transport down'));
-  expect(await createAlert({ ...params, subjectKey: 'disk:3', episodeId: 'episode' })).toBeNull();
-  expect(m.delete).toHaveBeenCalled(); expect(m.update).toHaveBeenCalled();
+it('subject claim failure aborts before staging or publication', async () => {
+  m.link.mockRejectedValueOnce(new Error('claim failed'));
+  await expect(createAlert({ ...params, subjectKey: 'disk:3', episodeId: 'episode' })).rejects.toThrow('claim failed');
+  expect(m.update).not.toHaveBeenCalled(); expect(m.publish).not.toHaveBeenCalled();
   expect(m.cooldown).not.toHaveBeenCalled();
+});
+it('NULL-subject creation never requires a prepublication episode claim', async () => {
+  m.link.mockRejectedValueOnce(new Error('bookkeeping failed'));
+  expect(await createAlert({ ...params, episodeId: 'episode' })).toBe('alert');
+  expect(m.link).not.toHaveBeenCalled(); expect(m.delete).not.toHaveBeenCalled();
+  expect(m.publish.mock.calls[0]![2]).toMatchObject({ subjectKey: null, responsesOwner: true });
 });
 it('never invokes device-level auto-resolve for a subject', async () => {
   m.select.mockReturnValue({ from: () => ({ where: () => ({ limit: async () => [{ status: 'active', subjectKey: 'disk:3', ruleId: params.ruleId, requiresHuman: false }] }) }) });
@@ -894,7 +906,22 @@ it('never invokes device-level auto-resolve for a subject', async () => {
 ```
 
 - [ ] **Step 2: Run red.** `cd apps/api && npx vitest run src/services/alertService.subjects.test.ts` — old insert path/ownership and subject early-return assertions fail.
-- [ ] **Step 3: Add `subjectKey?: string` to `CreateAlertParams`, import `monitorEpisodes` from schema, and replace `createAlert` entirely.** The raw result contains only `id`, the only field consumed by this function or its callers. Bound SQL parameters handle subject keys and JSON safely.
+- [ ] **Step 3: Add `subjectKey?: string` to `CreateAlertParams`, import `withDbTransaction` from `../db`, and replace `createAlert` entirely.** The raw result contains only `id`, the only field consumed by this function or its callers. Bound SQL parameters handle subject keys and JSON safely.
+
+The subject row's existing tenant-scoped, export-excluded `context` holds the transactional outbox envelope; no new table or migration slot is needed. Task 10 drains `_subjectDispatch` after the **outer** context commits. A subject ID means a committed-or-pending insert, not a completed notification; NULL-subject publication/return semantics stay synchronous. Add this exported type next to `CreateAlertParams`:
+
+```ts
+export interface SubjectAlertDispatch {
+  eventId: string;
+  eventType: 'alert.triggered' | 'alert.resolved';
+  publisher?: string;
+  siteId: string | null | undefined;
+  cooldownMinutes: number;
+  payload: Record<string, unknown>;
+  leaseToken?: string;
+  leaseUntil?: string;
+}
+```
 
 ```ts
 export async function createAlert(params: CreateAlertParams): Promise<string | null> {
@@ -914,45 +941,50 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
   )).limit(1);
   if (existing) { console.log(`[AlertService] Dedupe rule=${ruleId} device=${deviceId} subject=${subjectKey ?? 'null'}`); return null; }
   if (await isFlapping(ruleId, deviceId, undefined, undefined, subjectKey)) {
-    await setCooldown(ruleId, deviceId, cooldownMinutes, subjectKey); return null;
+    if (subjectKey === undefined) await setCooldown(ruleId, deviceId, cooldownMinutes);
+    return null;
   }
   const monitorFields = await monitorEventFields(monitorId ?? rule.managedByMonitorId, params.kind);
-  const [newAlert] = await db.execute<{ id: string }>(sql`
-    INSERT INTO alerts (rule_id, device_id, org_id, severity, title, message, context,
-      monitor_id, episode_id, requires_human, subject_key, status, triggered_at)
-    VALUES (${ruleId}, ${deviceId}, ${orgId}, ${severity}, ${title}, ${message},
-      ${JSON.stringify(context ?? {})}::jsonb, ${monitorFields.monitorId}, ${episodeId ?? null},
-      ${requiresHuman ?? false}, ${subjectKey ?? null}, 'active', now())
-    ON CONFLICT (rule_id, device_id, COALESCE(subject_key, ''))
-      WHERE rule_id IS NOT NULL AND status IN ('active', 'acknowledged', 'suppressed')
-    DO NOTHING RETURNING id`);
-  if (!newAlert) { console.log(`[AlertService] Concurrent dedupe rule=${ruleId} device=${deviceId} subject=${subjectKey ?? 'null'}`); return null; }
-  let responsesOwner = subjectKey === undefined;
-  try {
-    if (episodeId) {
-      const claim = await linkEpisodeAlert(episodeId, newAlert.id);
-      if (subjectKey !== undefined) responsesOwner = claim.owner;
-    }
-    const siteId = await resolveDeviceSiteId(deviceId);
-    const published = await publishAlertTriggeredOrRollback({
-      alertId: newAlert.id, orgId, deviceId, source: 'alert_rule', publisher: 'alert-service', siteId,
-      payload: { alertId: newAlert.id, ruleId, deviceId, severity, title, message,
-        ...monitorFields, subjectKey: subjectKey ?? null, responsesOwner },
+  const insert = async () => {
+    const [row] = await db.execute<{ id: string }>(sql`
+      INSERT INTO alerts (rule_id, device_id, org_id, severity, title, message, context,
+        monitor_id, episode_id, requires_human, subject_key, status, triggered_at)
+      VALUES (${ruleId}, ${deviceId}, ${orgId}, ${severity}, ${title}, ${message},
+        ${JSON.stringify(context ?? {})}::jsonb, ${monitorFields.monitorId}, ${episodeId ?? null},
+        ${requiresHuman ?? false}, ${subjectKey ?? null}, 'active', now())
+      ON CONFLICT (rule_id, device_id, COALESCE(subject_key, ''))
+        WHERE rule_id IS NOT NULL AND status IN ('active', 'acknowledged', 'suppressed')
+      DO NOTHING RETURNING id`);
+    return row;
+  };
+  if (subjectKey !== undefined) {
+    // All three writes share a savepoint AND the caller's outer commit. No
+    // event or Redis write may escape before that outer transaction commits.
+    return withDbTransaction(async () => {
+      const newAlert = await insert();
+      if (!newAlert) return null;
+      const responsesOwner = episodeId ? (await linkEpisodeAlert(episodeId, newAlert.id)).owner : false;
+      const pending: SubjectAlertDispatch = {
+        eventId: newAlert.id, eventType: 'alert.triggered', siteId: await resolveDeviceSiteId(deviceId), cooldownMinutes,
+        payload: { alertId: newAlert.id, ruleId, deviceId, severity, title, message,
+          ...monitorFields, subjectKey, responsesOwner },
+      };
+      await db.update(alerts).set({ context: { ...context, _subjectDispatch: pending } })
+        .where(eq(alerts.id, newAlert.id));
+      return newAlert.id;
     });
-    if (!published) {
-      if (episodeId) await db.update(monitorEpisodes).set({ alertId: null, updatedAt: new Date() })
-        .where(and(eq(monitorEpisodes.id, episodeId), eq(monitorEpisodes.alertId, newAlert.id)));
-      return null;
-    }
-  } catch (error) {
-    // Pre-publication failure must not leave an active unpublished dedupe row.
-    await db.delete(alerts).where(eq(alerts.id, newAlert.id));
-    if (episodeId) await db.update(monitorEpisodes).set({ alertId: null, updatedAt: new Date() })
-      .where(and(eq(monitorEpisodes.id, episodeId), eq(monitorEpisodes.alertId, newAlert.id)));
-    throw error;
   }
-  await recordStateTransition(ruleId, deviceId, 'triggered', subjectKey);
-  await setCooldown(ruleId, deviceId, cooldownMinutes, subjectKey);
+  const newAlert = await insert();
+  if (!newAlert) return null;
+  const published = await publishAlertTriggeredOrRollback({
+    alertId: newAlert.id, orgId, deviceId, source: 'alert_rule', publisher: 'alert-service',
+    siteId: await resolveDeviceSiteId(deviceId),
+    payload: { alertId: newAlert.id, ruleId, deviceId, severity, title, message,
+      ...monitorFields, subjectKey: null, responsesOwner: true },
+  });
+  if (!published) return null;
+  await recordStateTransition(ruleId, deviceId, 'triggered');
+  await setCooldown(ruleId, deviceId, cooldownMinutes, undefined);
   enqueueAlertCorrelationForDevice(orgId, deviceId);
   return newAlert.id;
 }
@@ -973,6 +1005,41 @@ execute: vi.fn(() => Promise.resolve(insertReturnResults.shift() ?? [])),
 expect(dbMock.execute).toHaveBeenCalledTimes(1);
 ```
 
+For subject recovery inside the locked sweep, extend `resolveAlert` with a fourth argument `deferSubjectEffects = false`, import `randomUUID` from `node:crypto`, and insert this branch immediately after its existing `if (!alert) return false` CAS guard. The default preserves existing callers, including Task 12's retirement-before-cascade path; only Task 9 opts in. Replace its signature with:
+
+```ts
+export async function resolveAlert(
+  alertId: string,
+  resolutionNote?: string,
+  resolvedBy?: string,
+  deferSubjectEffects = false,
+): Promise<boolean> {
+```
+
+Keep its existing body and closing brace, inserting the following branch at the guard described above. A normal subject recovery commits its resolution and pending event together, cancels an undelivered trigger, and performs no Redis writes/publication in that transaction.
+
+```ts
+if (deferSubjectEffects && alert.subjectKey && alert.ruleId) {
+  const [rule] = await db.select().from(alertRules).where(eq(alertRules.id, alert.ruleId)).limit(1);
+  const [template] = rule
+    ? await db.select().from(alertTemplates).where(eq(alertTemplates.id, rule.templateId)).limit(1)
+    : [];
+  const overrides = rule?.overrideSettings as Record<string, unknown> | null;
+  const pending: SubjectAlertDispatch = {
+    eventId: randomUUID(), eventType: 'alert.resolved',
+    siteId: await resolveDeviceSiteId(alert.deviceId),
+    cooldownMinutes: (overrides?.cooldownMinutes as number) ?? template?.cooldownMinutes ?? 15,
+    payload: { alertId, ruleId: alert.ruleId, deviceId: alert.deviceId, resolutionNote,
+      resolvedAt: alert.resolvedAt!.toISOString(), resolvedBy: alert.resolvedBy,
+      triggeredAt: alert.triggeredAt.toISOString() },
+  };
+  await db.update(alerts).set({ context: sql`jsonb_set(
+    COALESCE(${alerts.context}, '{}'::jsonb) - '_subjectDispatch', '{_subjectResolutionDispatch}', ${JSON.stringify(pending)}::jsonb)` })
+    .where(eq(alerts.id, alertId));
+  return true;
+}
+```
+
 Keep sourced-alert tests using `insert`; the raw insert is only the rule-backed path. Replace the existing rule cooldown assertion at `alertService.test.ts:292` with:
 
 ```ts
@@ -991,13 +1058,25 @@ execute: vi.fn(async (statement: { values: unknown[] }) => {
 }),
 ```
 
+Add this regression inside the existing `alertService.episodes.test.ts` describe block; its fixtures exercise the real NULL-subject sweep and the retained post-publication catch:
+
+```ts
+it('keeps a published legacy alert when episode linking fails', async () => {
+  pushSweepQueue({ triggered: true });
+  linkEpisodeAlertMock.mockRejectedValueOnce(new Error('episode bookkeeping unavailable'));
+  expect(await evaluateDeviceAlerts(DEVICE_ID)).toContain('alert-1');
+  expect(insertedAlerts).toHaveLength(1);
+  expect(linkEpisodeAlertMock).toHaveBeenCalledWith('episode-1', 'alert-1');
+});
+```
+
 In both suites replace the `beforeEach` ownership mock with:
 
 ```ts
 linkEpisodeAlertMock.mockResolvedValue({ owner: true });
 ```
 
-- [ ] **Step 5: Run green and commit.** `cd apps/api && npx vitest run src/services/alertService.subjects.test.ts src/services/alertService.test.ts src/services/alertService.episodes.test.ts src/services/alertService.networkCheck.test.ts` — subject and existing sourced paths pass. Task 10 adds the real race proof.
+- [ ] **Step 5: Run green and commit.** `cd apps/api && npx vitest run src/services/alertService.subjects.test.ts src/services/alertService.test.ts src/services/alertService.episodes.test.ts src/services/alertService.networkCheck.test.ts` — subject and existing sourced paths pass. Task 10 proves commit visibility, outbox rollback and publication compensation against PostgreSQL.
 
 ```bash
 git add apps/api/src/services/alertService.ts apps/api/src/services/alertService.test.ts apps/api/src/services/alertService.episodes.test.ts apps/api/src/services/alertService.networkCheck.test.ts apps/api/src/services/alertService.subjects.test.ts
@@ -1048,7 +1127,7 @@ it('creates two subjects; acknowledging one never blocks its sibling', async () 
 it.each(['active','acknowledged','suppressed'])('recovers only its own %s alert', async status => {
   m.open = [{ id: 'a', subjectKey: 'a', status }, { id: 'b', subjectKey: 'b', status: 'active' }];
   expect(await evaluateSubjectAlerts(input({ a: 'recovered', b: 'unknown' }))).toBe('breach');
-  expect(m.resolve).toHaveBeenCalledWith('a', 'Auto-resolved: recovered'); expect(m.open.map(a => a.id)).toEqual(['b']);
+  expect(m.resolve).toHaveBeenCalledWith('a', 'Auto-resolved: recovered', undefined, true); expect(m.open.map(a => a.id)).toEqual(['b']);
 });
 it.each(['unknown','absent','autoResolveOff','requiresHuman'])('%s preserves open alert and episode', async variant => {
   m.open = [{ id: 'a', subjectKey: 'a', status: 'active', requiresHuman: variant === 'requiresHuman' }];
@@ -1074,7 +1153,6 @@ import { alerts, devices } from '../db/schema';
 import { createAlert, resolveAlert, RESOLVABLE_ALERT_STATUSES, type RuleWithTemplate } from './alertService';
 import type { EvaluationResult } from './alertConditions/types';
 import { recordMonitorEvaluation, type MonitorObservation } from './monitors/episodeService';
-import { fireEscalationLatch } from './monitors/escalationLatch';
 export interface SubjectAlertInput {
   rule: RuleWithTemplate['rule'];
   template: RuleWithTemplate['template'];
@@ -1091,9 +1169,7 @@ export async function evaluateSubjectAlerts({ rule, template, device, monitor, e
   if (monitor && subjects.some(s => s.status === 'breaching')) {
     const outcome = await recordMonitorEvaluation({ monitor, deviceId: device.id, orgId: device.orgId, observation: 'breach' });
     episodeId = outcome.episodeId;
-    if ((outcome.latched || outcome.needsEscalationAlert) && episodeId) {
-      await fireEscalationLatch({ monitor, deviceId: device.id, orgId: device.orgId, episodeId, episodesInWindow: outcome.episodesInWindow });
-    }
+    // The committed latch is drained by Task 10, after the outer commit.
   }
   for (const subject of subjects) {
     if (subject.status !== 'breaching') continue;
@@ -1115,7 +1191,7 @@ export async function evaluateSubjectAlerts({ rule, template, device, monitor, e
     for (const alert of await open()) {
       const subject = byKey.get(alert.subjectKey!);
       if (!alert.requiresHuman && subject?.status === 'recovered') {
-        await resolveAlert(alert.id, `Auto-resolved: ${subject.description}`);
+        await resolveAlert(alert.id, `Auto-resolved: ${subject.description}`, undefined, true);
       }
     }
   }
@@ -1133,10 +1209,10 @@ git add apps/api/src/services/alertSubjects.ts apps/api/src/services/alertSubjec
 git commit -m $'feat(alerts): reconcile component subjects independently\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>'
 ```
 
-### Task 10: Wire the locked subject sweep and prove it against PostgreSQL
+### Task 10: Commit subject ownership and outbox before publication
 
-**Files:** Modify `apps/api/src/services/alertService.ts:12,1095,1194`, `apps/api/vitest.integration.config.ts:13`, `apps/api/vitest.config.ts:18`; Create/Test `apps/api/src/services/alertSubjects.integration.test.ts`.
-**Interfaces:** Consumes `withDbTransaction<T>(fn: () => Promise<T>): Promise<T>` (`db/index.ts:946`), `evaluateSubjectAlerts`, and `recordMonitorEvaluation(input: RecordEvaluationInput): Promise<RecordEvaluationResult>`. Preserves `evaluateDeviceAlerts(deviceId: string): Promise<string[]>`; leaves `evaluateDeviceAlertsFromPolicy` unchanged.
+**Files:** Modify `apps/api/src/services/alertService.ts:12,1095,1194`, `apps/api/vitest.integration.config.ts:13`, `apps/api/vitest.config.ts:18`; Create `apps/api/src/services/subjectAlertOutbox.ts`; Modify `apps/api/src/jobs/alertWorker.ts:122,170`, `apps/api/src/jobs/alertWorker.test.ts`, `apps/api/src/jobs/alertQueue.test.ts`; Create/Test `apps/api/src/services/alertSubjects.integration.test.ts`.
+**Interfaces:** Consumes `withDbTransaction<T>(fn: () => Promise<T>): Promise<T>` (`db/index.ts:946`), `evaluateSubjectAlerts`, and `recordMonitorEvaluation(input: RecordEvaluationInput): Promise<RecordEvaluationResult>`. Preserves `evaluateDeviceAlerts(deviceId: string): Promise<string[]>`; leaves `evaluateDeviceAlertsFromPolicy` unchanged. Adds `drainSubjectAlertOutbox(deviceId?: string): Promise<void>`, called with no ambient database context. `_subjectDispatch` is durable in the existing RLS-protected alerts row and commits with the episode owner; this is a transactional outbox, not an in-memory callback list. `withDbTransaction` alone is a savepoint, not a commit.
 
 - [ ] **Step 1: Write the real database fixture and failing sweep/race tests.** Only external publication, correlation, policy selection and noise controls are stubbed; alerts, components, episodes, RLS and all lifecycle writes use real PostgreSQL.
 
@@ -1148,19 +1224,20 @@ import { randomUUID } from 'node:crypto';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { and, eq, inArray } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
-import { alerts, alertRules, alertTemplates, devices, monitorDefinitions, monitorEpisodes,
+import { alerts, alertRules, alertTemplates, devices, monitorDefinitions, monitorEpisodes, monitorDeviceState,
   deviceHardwareHealth, deviceHardwareComponents, automations, automationRuns } from '../db/schema';
-const m = vi.hoisted(() => ({ publish: vi.fn(), monitorId: '', notify: vi.fn(), queue: vi.fn(), flap: vi.fn() }));
+const m = vi.hoisted(() => ({ publish: vi.fn(), monitorId: '', notify: vi.fn(), queue: vi.fn(), flap: vi.fn(), cooldown: vi.fn() }));
 vi.mock('./eventBus', async original => ({ ...await original<typeof import('./eventBus')>(), publishEvent: m.publish }));
 vi.mock('../jobs/alertCorrelation', () => ({ enqueueAlertCorrelation: vi.fn().mockResolvedValue('correlation-job') }));
 vi.mock('./alertCooldown', async original => ({ ...await original<typeof import('./alertCooldown')>(),
-  isCooldownActive: async () => false, isFlapping: m.flap, setCooldown: async () => {}, recordStateTransition: async () => {} }));
+  isCooldownActive: async () => false, isFlapping: m.flap, setCooldown: m.cooldown, recordStateTransition: async () => {} }));
 vi.mock('./monitors/monitorResolver', () => ({ resolveMonitorsForDevice: async () => ({ kind: 'resolved', monitors: [
   { monitorId: m.monitorId, enabled: true, overrides: null, sourcePolicyId: 'test', sourceLevel: 'device', inheritedFromParent: false },
 ] }) }));
 import { createAlert, evaluateDeviceAlerts } from './alertService';
+import { drainSubjectAlertOutbox } from './subjectAlertOutbox';
 import { recordMonitorEvaluation } from './monitors/episodeService';
-beforeEach(() => { vi.clearAllMocks(); m.publish.mockResolvedValue(undefined); m.flap.mockReset().mockResolvedValue(false); });
+beforeEach(() => { vi.clearAllMocks(); m.publish.mockResolvedValue(undefined); m.flap.mockReset().mockResolvedValue(false); m.cooldown.mockReset().mockResolvedValue(undefined); });
 async function fixture() {
   const partner = await createPartner();
   const org = await createOrganization({ partnerId: partner.id });
@@ -1243,7 +1320,117 @@ it.each(['disk:race', undefined])('concurrent createAlert collapses subject %s t
   const ids = await Promise.all([withSystemDbAccessContext(() => createAlert(args)), withSystemDbAccessContext(() => createAlert(args))]);
   expect(ids.filter(Boolean)).toHaveLength(1);
   expect(await alertRows(f.device.id)).toHaveLength(1);
+  await drainSubjectAlertOutbox(f.device.id);
   expect(m.publish.mock.calls.filter(c => c[0] === 'alert.triggered')).toHaveLength(1);
+});
+it('publishes only after commit and subscribers can read the owner', async () => {
+  const f = await fixture();
+  await withSystemDbAccessContext(async () => {
+    expect(await evaluateDeviceAlerts(f.device.id)).toHaveLength(2);
+    expect(m.publish).not.toHaveBeenCalled(); expect(m.cooldown).not.toHaveBeenCalled();
+    await expect(drainSubjectAlertOutbox(f.device.id)).rejects.toThrow('must run after commit');
+  });
+  m.publish.mockImplementation(async (_type, _orgId, payload) => {
+    // The dispatcher has no ambient transaction: this opens another connection.
+    const row = (await alertRows(f.device.id)).find(a => a.id === payload.alertId);
+    expect(row).toBeDefined();
+    const [episode] = await withSystemDbAccessContext(() => db.select().from(monitorEpisodes)
+      .where(eq(monitorEpisodes.id, row!.episodeId!)));
+    expect(payload.responsesOwner).toBe(episode!.alertId === row!.id);
+  });
+  await Promise.all([drainSubjectAlertOutbox(f.device.id), drainSubjectAlertOutbox(f.device.id)]);
+  expect(m.publish).toHaveBeenCalledTimes(2);
+  expect(m.cooldown).toHaveBeenCalledTimes(2);
+});
+it('outer rollback discards alerts, ownership and pending publication together', async () => {
+  const f = await fixture();
+  await expect(withSystemDbAccessContext(async () => {
+    await evaluateDeviceAlerts(f.device.id);
+    throw new Error('later transaction failure');
+  })).rejects.toThrow('later transaction failure');
+  await drainSubjectAlertOutbox(f.device.id);
+  expect(await alertRows(f.device.id)).toEqual([]);
+  const episodes = await withSystemDbAccessContext(() => db.select().from(monitorEpisodes)
+    .where(eq(monitorEpisodes.monitorId, f.monitor.id)));
+  expect(episodes).toEqual([]);
+  expect(m.publish).not.toHaveBeenCalled(); expect(m.cooldown).not.toHaveBeenCalled();
+});
+it('failed publication deletes only its alert and releases only its ownership claim', async () => {
+  const f = await fixture();
+  await withSystemDbAccessContext(() => evaluateDeviceAlerts(f.device.id));
+  const rows = await alertRows(f.device.id);
+  const [episode] = await withSystemDbAccessContext(() => db.select().from(monitorEpisodes)
+    .where(eq(monitorEpisodes.monitorId, f.monitor.id)));
+  const failedId = episode!.alertId;
+  m.publish.mockImplementation(async (_type, _orgId, payload) => {
+    if (payload.alertId === failedId) throw new Error('transport unavailable');
+  });
+  await drainSubjectAlertOutbox(f.device.id);
+  expect((await alertRows(f.device.id)).map(a => a.id)).toEqual(rows.filter(a => a.id !== failedId).map(a => a.id));
+  const [after] = await withSystemDbAccessContext(() => db.select().from(monitorEpisodes)
+    .where(eq(monitorEpisodes.id, episode!.id)));
+  expect(after!.alertId).toBeNull(); expect(m.cooldown).toHaveBeenCalledTimes(1);
+});
+it('a Redis failure after publication cannot undo alerts or ownership', async () => {
+  const f = await fixture();
+  await withSystemDbAccessContext(() => evaluateDeviceAlerts(f.device.id));
+  const before = await alertRows(f.device.id);
+  m.cooldown.mockRejectedValue(new Error('Redis unavailable'));
+  await drainSubjectAlertOutbox(f.device.id);
+  expect((await alertRows(f.device.id)).map(a => a.id).sort()).toEqual(before.map(a => a.id).sort());
+  const [episode] = await withSystemDbAccessContext(() => db.select().from(monitorEpisodes)
+    .where(eq(monitorEpisodes.monitorId, f.monitor.id)));
+  expect(before.map(a => a.id)).toContain(episode!.alertId);
+  await drainSubjectAlertOutbox(f.device.id);
+  expect(m.publish).toHaveBeenCalledTimes(2);
+});
+it('recovery before dispatch cancels triggers and retries only committed resolved events', async () => {
+  const f = await fixture();
+  await withSystemDbAccessContext(() => evaluateDeviceAlerts(f.device.id));
+  await withSystemDbAccessContext(async () => {
+    await db.update(deviceHardwareComponents).set({ health: 'ok', state: 'online', criticalStreak: 0,
+      unhealthyStreak: 0, healthyStreak: 2, belowCriticalStreak: 2 }).where(eq(deviceHardwareComponents.deviceId, f.device.id));
+    await evaluateDeviceAlerts(f.device.id);
+    expect(m.publish).not.toHaveBeenCalled(); expect(m.cooldown).not.toHaveBeenCalled();
+  });
+  m.publish.mockRejectedValue(new Error('transport unavailable'));
+  await drainSubjectAlertOutbox(f.device.id);
+  expect(m.publish.mock.calls.every(call => call[0] === 'alert.resolved')).toBe(true);
+  expect((await alertRows(f.device.id)).map(a => a.status)).toEqual(['resolved', 'resolved']);
+  expect(m.cooldown).not.toHaveBeenCalled();
+  m.publish.mockClear().mockResolvedValue(undefined);
+  await drainSubjectAlertOutbox(f.device.id);
+  expect(m.publish).toHaveBeenCalledTimes(2);
+  expect(m.cooldown).toHaveBeenCalledTimes(2);
+});
+it.each([false, true])('hardware recurrence never publishes before commit; rollback=%s', async rollback => {
+  const f = await fixture();
+  await withSystemDbAccessContext(async () => {
+    await db.update(monitorDefinitions).set({ recurrenceThreshold: 2, recurrenceWindowHours: 24 })
+      .where(eq(monitorDefinitions.id, f.monitor.id));
+    await db.insert(monitorEpisodes).values({ monitorId: f.monitor.id, deviceId: f.device.id, orgId: f.org.id,
+      startedAt: new Date(Date.now() - 3600_000), endedAt: new Date(Date.now() - 1800_000), endReason: 'recovered' });
+  });
+  const transaction = withSystemDbAccessContext(async () => {
+    await evaluateDeviceAlerts(f.device.id);
+    expect(m.publish).not.toHaveBeenCalled();
+    if (rollback) throw new Error('rollback recurrence');
+  });
+  if (rollback) await expect(transaction).rejects.toThrow('rollback recurrence');
+  else await transaction;
+  await drainSubjectAlertOutbox(f.device.id);
+  const events = m.publish.mock.calls.filter(call => call[0] === 'alert.triggered').map(call => call[2]);
+  expect(events).toHaveLength(rollback ? 0 : 3);
+  if (!rollback) {
+    const escalation = events.filter(payload => payload.requiresHuman === true);
+    expect(escalation).toHaveLength(1);
+    const [state] = await withSystemDbAccessContext(() => db.select().from(monitorDeviceState)
+      .where(and(eq(monitorDeviceState.monitorId, f.monitor.id), eq(monitorDeviceState.deviceId, f.device.id))));
+    expect(state!.escalationAlertId).toBe(escalation[0]!.alertId);
+    expect(state!.responsesPaused).toBe(true);
+  }
+  await drainSubjectAlertOutbox(f.device.id);
+  expect(m.publish).toHaveBeenCalledTimes(rollback ? 0 : 3);
 });
 it('subject queries cannot read another organization under app RLS', async () => {
   const f = await fixture();
@@ -1261,7 +1448,7 @@ Add this exact string to integration `include` and unit `exclude`:
 'src/services/alertSubjects.integration.test.ts',
 ```
 
-- [ ] **Step 2: Run red.** `cd apps/api && npx vitest run -c vitest.integration.config.ts src/services/alertSubjects.integration.test.ts` — sweep creates one NULL-subject alert, expected two. Race tests also exercise Task 8's real raw SQL.
+- [ ] **Step 2: Run red.** `cd apps/api && npx vitest run -c vitest.integration.config.ts src/services/alertSubjects.integration.test.ts` — first fails on the missing outbox module; after adding it, the unwired sweep creates one NULL-subject alert instead of two. The commit-boundary tests must fail against immediate publication. Race tests also exercise Task 8's real raw SQL.
 - [ ] **Step 3: Wire the subject branch immediately after evaluation at line 1095, before the existing episode block.** Import `withDbTransaction` from `../db` and `evaluateSubjectAlerts` from `./alertSubjects`. Take a transaction advisory lock before re-reading evidence so concurrent sweeps cannot close an episode between another sweep's creation and ownership claim. The lock namespace is internal, not a Redis key or public contract.
 
 ```ts
@@ -1278,11 +1465,7 @@ if (result.subjects !== undefined) {
       template, device, monitor, evidence: { ...evidence, createdAlertIds: subjectAlertIds },
     });
     if (monitor) {
-      const outcome = await recordMonitorEvaluation({ monitor, deviceId, orgId: device.orgId, observation });
-      if ((outcome.latched || outcome.needsEscalationAlert) && outcome.episodeId) {
-        await fireEscalationLatch({ monitor, deviceId, orgId: device.orgId,
-          episodeId: outcome.episodeId, episodesInWindow: outcome.episodesInWindow });
-      }
+      await recordMonitorEvaluation({ monitor, deviceId, orgId: device.orgId, observation });
     }
   });
   createdAlerts.push(...subjectAlertIds);
@@ -1290,17 +1473,211 @@ if (result.subjects !== undefined) {
 }
 ```
 
-Replace the entire old `if (alertId)` block at lines 1192–1210 with this, removing the post-publish link (Task 8 now owns it):
+Preserve the existing NULL-subject `if (alertId)` block at `alertService.ts:1192–1210` verbatim. Its `linkEpisodeAlert(...).catch(...)` runs after publication and remains best-effort: it logs/captures bookkeeping errors without deleting the published alert, dropping its ID, or changing `responsesOwner: true`. Only subject alerts require the prepublication claim in Task 8.
+
+- [ ] **Step 4: Implement the committed-outbox dispatcher.** Create the complete file below. This mirrors `publishAlertTriggeredOrRollback`'s ordering: the row is committed before publication, publication failure compensates in a **new** transaction, and cooldown/correlation follow successful publication. Compensation clears only an exact matching episode owner and deletes the failed alert atomically. It never runs because a later cooldown or acknowledgement write failed. The outbox lease prevents two sweep workers from claiming one pending alert; process death leaves a durable envelope eligible again after five minutes. Subject recoveries use a second envelope and never delete their resolved row on transport failure. Pending trigger publication is canceled when recovery wins first. Hardware recurrence alerts are staged from the committed latch with their exact existing message and pause semantics; the NULL-subject legacy escalation path stays unchanged. Event IDs stay stable on retries; delivery remains at-least-once across a crash after publish but before acknowledgement.
 
 ```ts
-if (alertId) createdAlerts.push(alertId);
+import { randomUUID } from 'node:crypto';
+import { and, eq, inArray, isNull, isNotNull, sql } from 'drizzle-orm';
+import { db, hasDbAccessContext, withSystemDbAccessContext } from '../db';
+import { alerts, monitorEpisodes, monitorDeviceState, monitorDefinitions, devices } from '../db/schema';
+import { publishEvent } from './eventBus';
+import { recordStateTransition, setCooldown } from './alertCooldown';
+import { enqueueAlertCorrelation } from '../jobs/alertCorrelation';
+import { captureException } from './sentry';
+import type { SubjectAlertDispatch } from './alertService';
+import { escalationSeverityFor } from './monitors/escalationLatch';
+
+type Claimed = {
+  id: string; orgId: string; deviceId: string; ruleId: string | null;
+  episodeId: string | null; subjectKey: string | null; pending: SubjectAlertDispatch;
+};
+export async function drainSubjectAlertOutbox(deviceId?: string): Promise<void> {
+  if (hasDbAccessContext()) throw new Error('Subject outbox must run after commit');
+  await stagePendingHardwareEscalations(deviceId);
+  // System scope belongs only to this background cross-tenant dispatcher.
+  for (const slot of ['_subjectDispatch', '_subjectResolutionDispatch'] as const) {
+    const triggering = slot === '_subjectDispatch';
+    const statuses = triggering ? ['active', 'acknowledged', 'suppressed'] as const : ['resolved'] as const;
+    const claimed = await withSystemDbAccessContext(async () => {
+      const token = randomUUID();
+      return db.execute<Claimed>(sql`
+        WITH candidates AS (
+          SELECT id FROM alerts
+          WHERE context ? ${slot}
+            AND status IN (${sql.join(statuses.map(status => sql`${status}`), sql`, `)})
+            AND (${deviceId ?? null}::uuid IS NULL OR device_id = ${deviceId ?? null}::uuid)
+            AND COALESCE((context->${slot}->>'leaseUntil')::timestamptz, '-infinity') < now()
+          ORDER BY created_at, id FOR UPDATE SKIP LOCKED LIMIT 100
+        )
+        UPDATE alerts a SET context = jsonb_set(a.context, ARRAY[${slot}::text],
+          (a.context->${slot}) || jsonb_build_object(
+            'leaseToken', ${token}::text, 'leaseUntil', now() + interval '5 minutes'))
+        FROM candidates c WHERE a.id = c.id
+        RETURNING a.id, a.org_id AS "orgId", a.device_id AS "deviceId", a.rule_id AS "ruleId",
+          a.episode_id AS "episodeId", a.subject_key AS "subjectKey", a.context->${slot} AS pending`);
+    });
+    for (const row of claimed) {
+      const ownsLease = and(eq(alerts.id, row.id),
+        sql`${alerts.context}->${slot}->>'leaseToken' = ${row.pending.leaseToken}`);
+      // Renew just before each send; skip a trigger canceled by recovery while
+      // this batch was waiting. A send racing a later recovery is at-least-once.
+      const live = await withSystemDbAccessContext(() => db.update(alerts).set({
+        context: sql`jsonb_set(${alerts.context}, ARRAY[${slot}::text, 'leaseUntil'], to_jsonb(now() + interval '5 minutes'))`,
+      }).where(and(ownsLease, inArray(alerts.status, [...statuses]))).returning({ id: alerts.id }));
+      if (live.length === 0) continue;
+      try {
+        await publishEvent(row.pending.eventType, row.orgId, row.pending.payload, row.pending.publisher ?? 'alert-service',
+          { siteId: row.pending.siteId, eventId: row.pending.eventId });
+      } catch (error) {
+        captureException(error, undefined, { errorId: 'subject-alert-publish-failed', alertId: row.id });
+        console.error('[SubjectAlertOutbox] Publication failed', row.id, error);
+        try {
+          await withSystemDbAccessContext(async () => {
+            if (!triggering) {
+              await db.update(alerts).set({ context: sql`jsonb_set(${alerts.context}, ARRAY[${slot}::text],
+                (${alerts.context}->${slot}) - 'leaseToken' - 'leaseUntil')` }).where(ownsLease);
+              return; // A resolved alert survives transport failure and retries next tick.
+            }
+            const [locked] = await db.select({ id: alerts.id }).from(alerts).where(ownsLease).for('update');
+            if (!locked) return;
+            if (row.episodeId) await db.update(monitorEpisodes).set({ alertId: null, updatedAt: new Date() })
+              .where(and(eq(monitorEpisodes.id, row.episodeId), eq(monitorEpisodes.alertId, row.id)));
+            await db.update(monitorDeviceState).set({ escalationAlertId: null, updatedAt: new Date() })
+              .where(eq(monitorDeviceState.escalationAlertId, row.id));
+            await db.delete(alerts).where(ownsLease);
+          });
+        } catch (cleanupError) {
+          captureException(cleanupError, undefined, { errorId: 'subject-alert-compensation-failed', alertId: row.id });
+          console.error('[SubjectAlertOutbox] Compensation failed; durable envelope will retry', row.id, cleanupError);
+        }
+        continue;
+      }
+      // No failure after a successful publish may delete an alert or its owner.
+      try {
+        await withSystemDbAccessContext(() => db.update(alerts)
+          .set({ context: sql`${alerts.context} - ${slot}` }).where(ownsLease));
+      } catch (error) {
+        console.error('[SubjectAlertOutbox] Acknowledgement failed; stable event ID will retry', row.id, error);
+      }
+      const effects: Array<() => Promise<unknown>> = [];
+      const { ruleId, subjectKey } = row;
+      if (ruleId && subjectKey) effects.push(
+        () => recordStateTransition(ruleId, row.deviceId, triggering ? 'triggered' : 'resolved', subjectKey),
+        () => setCooldown(ruleId, row.deviceId, row.pending.cooldownMinutes, subjectKey),
+      );
+      if (triggering) effects.push(() => enqueueAlertCorrelation({ orgId: row.orgId, deviceId: row.deviceId }));
+      for (const effect of effects) {
+        try { await effect(); }
+        catch (error) { console.error('[SubjectAlertOutbox] Post-publication effect failed', row.id, error); }
+      }
+    }
+  }
+}
+
+async function stagePendingHardwareEscalations(deviceId?: string): Promise<void> {
+  await withSystemDbAccessContext(async () => {
+    const candidates = await db.select({ state: monitorDeviceState, monitor: monitorDefinitions, device: devices })
+      .from(monitorDeviceState)
+      .innerJoin(monitorDefinitions, eq(monitorDefinitions.id, monitorDeviceState.monitorId))
+      .innerJoin(devices, eq(devices.id, monitorDeviceState.deviceId))
+      .where(and(eq(monitorDefinitions.kind, 'hardware_health'),
+        isNotNull(monitorDeviceState.escalatedAt), isNull(monitorDeviceState.escalationAlertId),
+        isNotNull(monitorDeviceState.currentEpisodeId), eq(monitorDeviceState.lastState, 'breach'),
+        deviceId ? eq(monitorDeviceState.deviceId, deviceId) : undefined))
+      .orderBy(monitorDeviceState.updatedAt).limit(100)
+      .for('update', { of: monitorDeviceState, skipLocked: true });
+    for (const { state, monitor, device } of candidates) {
+      const id = randomUUID();
+      const episodeId = state.currentEpisodeId!;
+      const n = state.episodesInWindow;
+      const occurrences = `${n} ${n === 1 ? 'time' : 'times'}`;
+      const hours = monitor.recurrenceWindowHours;
+      const days = hours ? Math.round(hours / 24) : 0;
+      const window = !hours ? 'the recurrence window' : hours < 24
+        ? `${hours} ${hours === 1 ? 'hour' : 'hours'}` : `${days} ${days === 1 ? 'day' : 'days'}`;
+      const name = device.displayName || device.hostname || device.id;
+      const severity = escalationSeverityFor(monitor.severity);
+      const title = `${monitor.name} recurred ${occurrences} in ${window} on ${name}`;
+      const message = `${monitor.name} has opened ${occurrences} on ${name} within ${window}. Automatic responses for this device are held until a human resets the escalation.`;
+      const pending: SubjectAlertDispatch = { eventId: id, eventType: 'alert.triggered',
+        siteId: device.siteId, cooldownMinutes: 0, publisher: 'monitor-escalation',
+        payload: { alertId: id, ruleId: null, deviceId: device.id, severity, title, message,
+          monitorId: monitor.id, kind: 'hardware_health', episodeId, requiresHuman: true,
+          subjectKey: null, responsesOwner: true, source: 'monitor_recurrence' } };
+      await db.insert(alerts).values({ id, ruleId: null, deviceId: device.id, orgId: device.orgId,
+        severity, title, message, monitorId: monitor.id, episodeId, requiresHuman: true,
+        status: 'active', context: { source: 'monitor_recurrence', monitorId: monitor.id, episodeId,
+          episodesInWindow: n, recurrenceThreshold: monitor.recurrenceThreshold,
+          recurrenceWindowHours: hours, recurrenceActionsPending: monitor.recurrenceActions.length,
+          _subjectDispatch: pending } });
+      await db.update(monitorDeviceState).set({ escalationAlertId: id, updatedAt: new Date() })
+        .where(and(eq(monitorDeviceState.monitorId, monitor.id), eq(monitorDeviceState.deviceId, device.id)));
+    }
+  });
+}
+
 ```
 
-- [ ] **Step 4: Run green.** `cd apps/api && npx vitest run -c vitest.integration.config.ts src/services/alertSubjects.integration.test.ts` — two subjects, own recovery, stable episode, both race variants and RLS isolation pass.
-- [ ] **Step 5: Commit.**
+- [ ] **Step 5: Drain only after the worker's outer commit, and retry on the minute tick.** Import `drainSubjectAlertOutbox` into `alertWorker.ts`. Replace its `evaluate-device` case with this complete case; add the second block at the start of `processEvaluateAll`, immediately after `const startTime = Date.now()`. The tick drains even when no online device is selected, so a crash between commit and dispatch does not strand alerts. Keep the current selection and schedule unchanged.
+
+```ts
+case 'evaluate-device': {
+  const result = await runWithSystemDbAccess(() => processEvaluateDevice(data));
+  await drainSubjectAlertOutbox(data.deviceId);
+  return result;
+}
+```
+
+```ts
+try {
+  await drainSubjectAlertOutbox();
+} catch (error) {
+  captureException(error, undefined, { errorId: 'subject-alert-outbox-drain-failed' });
+  console.error('[AlertWorker] Subject outbox drain failed', error);
+}
+```
+
+Add this mock alongside the other top-level worker mocks in `alertWorker.test.ts`, and add the test to its existing worker-context describe block. It uses the real worker processor and the existing `ctx.depth` instrumentation to catch a drain accidentally moved inside the transaction. Add it before the worker edit for red, then rerun for green.
+
+```ts
+const subjectOutbox = vi.hoisted(() => ({ depths: [] as number[] }));
+vi.mock('../services/subjectAlertOutbox', () => ({
+  drainSubjectAlertOutbox: vi.fn(async () => { subjectOutbox.depths.push(ctx.depth); }),
+}));
+
+it('drains subject events after device commit and outside the fleet context', async () => {
+  subjectOutbox.depths.length = 0;
+  createAlertWorker();
+  const { evaluateDeviceAlerts, evaluateDeviceAlertsFromPolicy } = await import('../services/alertService');
+  vi.mocked(evaluateDeviceAlerts).mockResolvedValue([]);
+  vi.mocked(evaluateDeviceAlertsFromPolicy).mockResolvedValue([]);
+  await workerState.processor!({ data: { type: 'evaluate-device', deviceId: 'device-1', orgId: 'org-1' } });
+  expect(subjectOutbox.depths).toEqual([0]);
+  fleetState.fleet = [];
+  await workerState.processor!({ data: { type: 'evaluate-all' } });
+  expect(subjectOutbox.depths).toEqual([0, 0]);
+});
+```
+
+The queue-only suite also imports `alertWorker`; keep its existing narrow mocks by adding this top-level mock to `alertQueue.test.ts`:
+
+```ts
+vi.mock('../services/subjectAlertOutbox', () => ({
+  drainSubjectAlertOutbox: vi.fn(async () => undefined),
+}));
+```
 
 ```bash
-git add apps/api/src/services/alertService.ts apps/api/src/services/alertSubjects.integration.test.ts apps/api/vitest.integration.config.ts apps/api/vitest.config.ts
+cd apps/api && npx vitest run src/jobs/alertWorker.test.ts src/jobs/alertQueue.test.ts
+```
+
+- [ ] **Step 6: Run green.** `cd apps/api && npx vitest run -c vitest.integration.config.ts src/services/alertSubjects.integration.test.ts` — two subjects, own recovery, stable episode, both race variants and RLS isolation pass.
+- [ ] **Step 7: Commit.**
+
+```bash
+git add apps/api/src/services/alertService.ts apps/api/src/services/alertSubjects.integration.test.ts apps/api/vitest.integration.config.ts apps/api/vitest.config.ts apps/api/src/services/subjectAlertOutbox.ts apps/api/src/jobs/alertWorker.ts apps/api/src/jobs/alertWorker.test.ts apps/api/src/jobs/alertQueue.test.ts
 git commit -m $'feat(alerts): reconcile subject observations in the device sweep\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>'
 ```
 
@@ -1345,6 +1722,7 @@ it('two failing disks notify twice, but only their atomic episode owner runs res
     withSystemDbAccessContext(() => evaluateDeviceAlerts(f.device.id)),
     withSystemDbAccessContext(() => evaluateDeviceAlerts(f.device.id)),
   ]);
+  await drainSubjectAlertOutbox(f.device.id);
   const events = m.publish.mock.calls.filter(c => c[0] === 'alert.triggered').map(c => c[2]);
   expect(events).toHaveLength(2); expect(events.filter(p => p.responsesOwner)).toHaveLength(1);
   const [automation] = await getTestDb().insert(automations).values({ orgId: f.org.id, name: 'Hardware response',
@@ -1680,7 +2058,7 @@ git commit -m $'feat(monitors): provision hardware defaults at version three\n\n
 
 ### Task 15: Author hardware monitors with an accessible component multiselect
 
-**Files:** Modify `apps/web/src/components/monitoring/monitorKindFields.ts:10,47,254`, `apps/web/src/components/monitoring/MonitorConditionFields.tsx:15,85`, `apps/web/src/components/monitoring/monitorKindFields.test.ts:125`, `apps/web/src/locales/en/monitoring.json:144`; Create/Test `apps/web/src/components/monitoring/MonitorConditionFields.hardwareHealth.test.tsx`.
+**Files:** Modify `apps/web/src/components/monitoring/monitorKindFields.ts:10,47,254`, `apps/web/src/components/monitoring/MonitorConditionFields.tsx:15,85`, `apps/web/src/components/monitoring/monitorKindFields.test.ts:125`, `apps/web/src/locales/{en,de-DE,es-419,fr-CA,fr-FR,it-IT,pt-BR,tr-TR}/monitoring.json`; Create/Test `apps/web/src/components/monitoring/MonitorConditionFields.hardwareHealth.test.tsx`.
 **Interfaces:** Adds `'multiselect'` to `FieldKind`, reuses `KindField.options`, renders an array of component strings through react-hook-form. Produces the exact `defaultConditionFor('hardware_health')` contract. No new mutation or fetching path.
 
 - [ ] **Step 1: Write the jsdom form test.**
@@ -1771,30 +2149,42 @@ if (field.kind === 'multiselect') {
 }
 ```
 
-Add `"hardware_health": "Hardware health"` to the English catalog's existing `kinds` object, and merge this root object without replacing other translations:
+- [ ] **Step 5: Add English first, demonstrate the parity failure, then supply every locale.** Save this complete merge script from the repository root, then run the explicit red/green commands below. It changes only the new keys and preserves every existing translation. Then run `cd apps/web && npx vitest run src/lib/i18n/localeParity.test.ts` — red: seven catalogs lack `kinds.hardware_health` and `monitors.fields.hardware_health.*`. Re-run the same script with `HW_MONITOR_LOCALES=all` to add the translated values to all eight catalogs; W03 does not wait for W04 translations.
 
-```json
-{
-  "monitors": {
-    "fields": {
-      "hardware_health": {
-        "componentTypes": "Components",
-        "minHealth": "Minimum health",
-        "includePredictiveFailure": "Include predictive failure",
-        "consecutiveSnapshots": "Consecutive snapshots",
-        "componentTypeOptions": {
-          "controller": "Controllers",
-          "virtual_disk": "Virtual disks",
-          "physical_disk": "Physical disks",
-          "cache_battery": "Cache batteries",
-          "enclosure": "Enclosures",
-          "collector": "Monitoring tools"
-        },
-        "minHealthOptions": { "warning": "Warning", "critical": "Critical" }
-      }
-    }
-  }
+```bash
+cat > /tmp/breeze-hardware-monitor-locales.py <<'PY_LOCALES'
+import json
+import os
+from pathlib import Path
+
+translations = {
+    'en': ['Hardware health', 'Components', 'Minimum health', 'Include predictive failure', 'Consecutive snapshots', 'Controllers', 'Virtual disks', 'Physical disks', 'Cache batteries', 'Enclosures', 'Monitoring tools', 'Warning', 'Critical'],
+    'de-DE': ['Hardwarezustand', 'Komponenten', 'Mindestzustand', 'Vorhergesagte Ausfälle einbeziehen', 'Aufeinanderfolgende Momentaufnahmen', 'Controller', 'Virtuelle Datenträger', 'Physische Datenträger', 'Cache-Batterien', 'Gehäuse', 'Überwachungstools', 'Warnung', 'Kritisch'],
+    'es-419': ['Estado del hardware', 'Componentes', 'Estado mínimo', 'Incluir fallas previstas', 'Instantáneas consecutivas', 'Controladoras', 'Discos virtuales', 'Discos físicos', 'Baterías de caché', 'Gabinetes', 'Herramientas de monitoreo', 'Advertencia', 'Crítico'],
+    'fr-CA': ['État du matériel', 'Composants', 'État minimal', 'Inclure les défaillances prédites', 'Instantanés consécutifs', 'Contrôleurs', 'Disques virtuels', 'Disques physiques', 'Batteries de cache', 'Boîtiers', 'Outils de surveillance', 'Avertissement', 'Critique'],
+    'fr-FR': ['État du matériel', 'Composants', 'État minimal', 'Inclure les défaillances prédites', 'Instantanés consécutifs', 'Contrôleurs', 'Disques virtuels', 'Disques physiques', 'Batteries de cache', 'Boîtiers', 'Outils de surveillance', 'Avertissement', 'Critique'],
+    'it-IT': ['Stato hardware', 'Componenti', 'Stato minimo', 'Includi guasti previsti', 'Istantanee consecutive', 'Controller', 'Dischi virtuali', 'Dischi fisici', 'Batterie della cache', 'Alloggiamenti', 'Strumenti di monitoraggio', 'Avviso', 'Critico'],
+    'pt-BR': ['Integridade do hardware', 'Componentes', 'Integridade mínima', 'Incluir falhas previstas', 'Instantâneos consecutivos', 'Controladoras', 'Discos virtuais', 'Discos físicos', 'Baterias de cache', 'Gabinetes', 'Ferramentas de monitoramento', 'Aviso', 'Crítico'],
+    'tr-TR': ['Donanım sağlığı', 'Bileşenler', 'En düşük sağlık düzeyi', 'Öngörülen arızaları dahil et', 'Ardışık anlık görüntüler', 'Denetleyiciler', 'Sanal diskler', 'Fiziksel diskler', 'Önbellek pilleri', 'Kasalar', 'İzleme araçları', 'Uyarı', 'Kritik'],
 }
+selected = translations if os.environ['HW_MONITOR_LOCALES'] == 'all' else {'en': translations['en']}
+for locale, values in selected.items():
+    path = Path('apps/web/src/locales') / locale / 'monitoring.json'
+    catalog = json.loads(path.read_text())
+    catalog['kinds']['hardware_health'] = values[0]
+    fields = catalog.setdefault('monitors', {}).setdefault('fields', {}).setdefault('hardware_health', {})
+    fields.update(dict(zip(['componentTypes', 'minHealth', 'includePredictiveFailure', 'consecutiveSnapshots'], values[1:5])))
+    fields['componentTypeOptions'] = dict(zip(['controller', 'virtual_disk', 'physical_disk', 'cache_battery', 'enclosure', 'collector'], values[5:11]))
+    fields['minHealthOptions'] = dict(zip(['warning', 'critical'], values[11:13]))
+    path.write_text(json.dumps(catalog, ensure_ascii=False, indent=2) + '\n')
+PY_LOCALES
+```
+
+```bash
+HW_MONITOR_LOCALES=en python3 /tmp/breeze-hardware-monitor-locales.py
+(cd apps/web && npx vitest run src/lib/i18n/localeParity.test.ts)
+# Expected red: new English keys are missing from the seven other catalogs.
+HW_MONITOR_LOCALES=all python3 /tmp/breeze-hardware-monitor-locales.py
 ```
 
 Extend the existing field-option translation contract at `monitorKindFields.test.ts:125` to include the new renderer:
@@ -1803,10 +2193,10 @@ Extend the existing field-option translation contract at `monitorKindFields.test
 if (field.kind !== 'select' && field.kind !== 'multiselect') continue;
 ```
 
-- [ ] **Step 5: Run green and commit.** `cd apps/web && npx vitest run src/components/monitoring/MonitorConditionFields.hardwareHealth.test.tsx src/components/monitoring/monitorKindFields.test.ts` — array/reset/error test and exhaustive schema/translation checks pass.
+- [ ] **Step 6: Run green and commit.** `cd apps/web && npx vitest run src/components/monitoring/MonitorConditionFields.hardwareHealth.test.tsx src/components/monitoring/monitorKindFields.test.ts src/lib/i18n/localeParity.test.ts` — array/reset/error test and exhaustive schema/translation checks pass.
 
 ```bash
-git add apps/web/src/components/monitoring/monitorKindFields.ts apps/web/src/components/monitoring/MonitorConditionFields.tsx apps/web/src/components/monitoring/monitorKindFields.test.ts apps/web/src/components/monitoring/MonitorConditionFields.hardwareHealth.test.tsx apps/web/src/locales/en/monitoring.json
+git add apps/web/src/components/monitoring/monitorKindFields.ts apps/web/src/components/monitoring/MonitorConditionFields.tsx apps/web/src/components/monitoring/monitorKindFields.test.ts apps/web/src/components/monitoring/MonitorConditionFields.hardwareHealth.test.tsx apps/web/src/locales/{en,de-DE,es-419,fr-CA,fr-FR,it-IT,pt-BR,tr-TR}/monitoring.json
 git commit -m $'feat(web): add hardware monitor component selection\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>'
 ```
 
@@ -1838,11 +2228,20 @@ Before implementation commits, re-check the committed migration ceiling with `ls
 ## Self-review
 
 - Spec §9.1: nullable subject identity, nonempty CHECK, NULL-only historic dedupe, atomic insert and subject noise controls are pinned by Tasks 3, 6 and 8.
-- Spec §9.1/D7: Tasks 7–11 retain one episode owner, compute ownership before publication, release failed-publication claims and prove two notifications with one real automation run.
+- Spec §9.1/D7: Tasks 7–11 retain one episode owner, commit ownership and its outbox envelope before publication, compensate failed-publication claims and prove two notifications with one real automation run.
 - Spec §9.1: Tasks 9–10 honor autoResolve, ignore custom autoResolveConditions for subjects, preserve unknown/absent subjects and derive observation from remaining open alerts.
 - Spec §9.2–§9.4: Tasks 1, 4, 5, 13 and 15 implement the exact leaf, streak/freshness evidence, compiler templates, registration and checkbox editor.
 - Spec §9.5/D9: Task 14 provisions exactly four version-3 defaults partner-wide without attachments, preserving earlier edits/deletions.
 - Spec §7.3 retirement: Task 12 fills W01's declared resolver; W01 owns stale marking, reaper/device-delete invocation, storage and freshness implementation.
 - W02a/W02b own agent collection and ingest streak inputs; W04 owns device storage UI/list/docs; W05 owns BMC facts/linking; W06 owns hardware lab proof.
 - Index §F ambiguities resolved: define HardwareHealthComponentFilter locally; preserve createAlert's actual ID return, use pre-publish atomic ownership, and retain the literal i18n key path within the existing namespace.
-- Index §F sweep-order ambiguity resolved: provisional episode creation precedes subject publication; the locked final observation follows reconciliation, and the created-ID accumulator preserves the existing sweep return type.
+- Index §F sweep-order ambiguity resolved: provisional episode creation and outbox staging precede the locked final observation; publication follows the outer commit, and the created-ID accumulator preserves the existing sweep return type.
+
+- Cross-plan review: Task 6 runs the real `alertCooldown.rekey.test.ts` regression suite and explicitly pins legacy cooldown, adaptive and flapping keys.
+- D6 compatibility: Tasks 8/10 keep NULL-subject episode linking after publication with the existing best-effort catch; a bookkeeping failure never deletes a legacy alert.
+- Locale boundary: Task 15 supplies the kind, field and option keys in all eight monitoring catalogs and runs `localeParity.test.ts`; no W04 translation dependency remains.
+- Retirement finding superseded by the supplied W01 prerequisite: W01 invokes the seam from both retention and shared device deletion before the cascade. Task 12 remains body-only; no duplicate W01 call-site work is planned here.
+
+- Publication boundary: Tasks 8/10 store the subject event envelope and atomic response claim in one transaction, drain only after the outer worker commit, compensate publication failures in a new transaction, and keep post-publication Redis failures from rolling back ownership. Integration tests cover commit visibility, outer rollback, parallel drain claims, publish failure and cooldown failure. The minute tick retries durable pending events even for offline devices.
+
+- The same publication fix covers subject recovery and hardware recurrence: Task 9 stages recovery side effects, Task 10 cancels pending triggers on recovery and stages requires-human alerts from committed latches. Legacy resolution and W01 retirement-before-cascade calls retain their default path; Task 12 remains unchanged.

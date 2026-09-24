@@ -140,7 +140,7 @@ synthesized server-side from the snapshot's `sources` array (§7.4), never sent 
 | physical_disk (slotted) | `<controllerKey>:e<enclosure>:s<slot>` (`e-` when the tool reports no enclosure) | `ssacli:c0:e1:s3` |
 | physical_disk (mdadm / zfs member) | `<vdKey>:m:<stable dev id>` (by-id / GUID, never `/dev/sdX`) | `zfs:pool:tank:m:ata-ST4000_Z1Z5` |
 | physical_disk (windows_physical_disk) | `winpd:<UniqueId>` | |
-| physical_disk (smartctl standalone) | `smart:<serial>` when the serial is non-blank and unique within this scan; otherwise `smart:dev:<device path>` | |
+| physical_disk (smartctl standalone) | `smart:<serial>` when the serial is non-blank and unique within this scan; otherwise `smart:dev:<scan type>:<device path>` (the `--scan-open` type disambiguates two probes of one path) | |
 | cache_battery | `<controllerKey>:bbu` or `:cv` | `perccli:c0:cv` |
 | enclosure | `<controllerKey>:enc<id>` | |
 | bmc | `bmc:<source>` | `bmc:ipmi` |

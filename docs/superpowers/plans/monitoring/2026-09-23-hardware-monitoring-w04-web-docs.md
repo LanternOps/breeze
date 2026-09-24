@@ -366,14 +366,14 @@ git commit -m $'feat(hardware): render component health pills\n\nCo-Authored-By:
 ### Task 3: Show controller hierarchy and disk replacement facts
 
 **Files:** Create `apps/web/src/components/devices/hardware/ControllerCard.tsx` and `apps/web/src/components/devices/hardware/ControllerCard.test.tsx`. Test: `apps/web/src/components/devices/hardware/ControllerCard.test.tsx`.
-**Interfaces:** Consumes Task 1 `HardwareComponentView`, Task 2 pill. Produces default `ControllerCard({ controller, components })` and named `PhysicalDisksTable({ disks })` for Task 6. `parentKey` establishes hierarchy; a PD below a VD remains visible. `attributes.memberKeys` is optional membership evidence, not another row identity.
+**Interfaces:** Consumes Task 1 `HardwareComponentView`, Task 2 pill. Produces default `ControllerCard({ controller, components })` and named `PhysicalDisksTable({ disks })` for Task 6. `parentKey` establishes hierarchy; a PD below a VD remains visible. `attributes.memberKeys` is optional membership evidence, not another row identity. SMART hours come from `attributes.smart.powerOnHours`, as emitted by W02a Task 10 and preserved on enriched vendor disks by Task 11; narrow the unknown JSON object before reading it. Missing SMART evidence renders a dash, while zero hours remains visible.
 
-- [ ] **Step 1: Write hierarchy, progress and stale tests (4 minutes).**
+- [ ] **Step 1: Write hierarchy, progress, stale and SMART hours tests (4 minutes).**
 
 ```tsx
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import ControllerCard from './ControllerCard';
+import ControllerCard, { PhysicalDisksTable } from './ControllerCard';
 import { component } from './hardwareHealth.fixtures';
 const vd = component({ componentKey: 'storcli:c0:v0', parentKey: 'storcli:c0',
   name: 'VD 0', componentType: 'virtual_disk', state: 'rebuilding', health: 'warning',
@@ -382,7 +382,8 @@ const pd = component({ componentKey: 'storcli:c0:e1:s3', parentKey: vd.component
   componentType: 'physical_disk', name: 'Slot 3', model: 'Drive Model', serial: 'DISK-3',
   state: 'failed', health: 'critical', stale: true, fresh: false,
   temperatureC: 33, attributes: { slot: 3, mediaType: 'SSD', interface: 'SAS',
-    mediaErrors: 0, otherErrors: 2, powerOnHours: 2000 } });
+    mediaErrors: 0, otherErrors: 2,
+    smart: { observedAt: '2026-09-23T12:00:00Z', powerOnHours: 2000 } } });
 describe('ControllerCard', () => {
   it('shows hierarchy, zero counters, battery, enclosure and rebuild progress', () => {
     render(<ControllerCard controller={component()} components={[vd, pd,
@@ -414,6 +415,21 @@ describe('ControllerCard', () => {
     ]} />);
     expect(screen.queryByText('OTHER')).not.toBeInTheDocument();
   });
+  it.each([
+    ['reported hours', { observedAt: '2026-09-23T12:00:00Z', powerOnHours: 2000 }, '2000'],
+    ['zero hours', { observedAt: '2026-09-23T12:00:00Z', powerOnHours: 0 }, '0'],
+    ['absent evidence', undefined, '—'],
+    ['null evidence', null, '—'],
+    ['non-object evidence', 'unavailable', '—'],
+    ['missing hours', { observedAt: '2026-09-23T12:00:00Z' }, '—'],
+  ])('renders standalone SMART %s', (_label, smart, expected) => {
+    const disk = component({ componentType: 'physical_disk', componentKey: 'smart:DISK-3',
+      source: 'smartctl', parentKey: null, temperatureC: 33,
+      attributes: { mediaErrors: 0, otherErrors: 2,
+        ...(smart === undefined ? {} : { smart }) } });
+    render(<PhysicalDisksTable disks={[disk]} />);
+    expect(screen.getByText(`33 °C / 0 / 2 / ${expected}`)).toBeInTheDocument();
+  });
 });
 ```
 
@@ -423,7 +439,7 @@ describe('ControllerCard', () => {
 cd apps/web && npx vitest run src/components/devices/hardware/ControllerCard.test.tsx
 ```
 
-Expected: `Failed to resolve import "./ControllerCard"`.
+Expected on first implementation: `Failed to resolve import "./ControllerCard"`. If the component already exists with the top-level hours lookup, the enriched vendor assertion expects `33 °C / 0 / 2 / 2000` but receives a dash for hours; the standalone reported-hours and zero-hours cases fail for the same reason.
 
 - [ ] **Step 3: Implement disk rows and controller card (5 minutes).**
 
@@ -435,6 +451,11 @@ import ComponentStatePill from './ComponentStatePill';
 import type { HardwareComponentView } from './types';
 const datum = (value: unknown): string =>
   typeof value === 'string' || typeof value === 'number' ? String(value) : '—';
+function smartPowerOnHours(attributes: Record<string, unknown>): unknown {
+  const smart = attributes.smart;
+  return typeof smart === 'object' && smart !== null && !Array.isArray(smart)
+    ? (smart as Record<string, unknown>).powerOnHours : undefined;
+}
 const size = (bytes: number | null): string => bytes === null ? '—'
   : `${formatNumber(bytes / 1024 ** 3, { maximumFractionDigits: 1 })} GiB`;
 const expired = (c: HardwareComponentView) => c.stale || !c.fresh;
@@ -467,7 +488,7 @@ export function PhysicalDisksTable({ disks }: { disks: HardwareComponentView[] }
       <td className="p-2"><State c={c} /></td>
       <td className="p-2 whitespace-nowrap">{c.temperatureC === null ? '—' : `${c.temperatureC} °C`}
         {' / '}{datum(c.attributes.mediaErrors)}{' / '}{datum(c.attributes.otherErrors)}
-        {' / '}{datum(c.attributes.powerOnHours)}</td>
+        {' / '}{datum(smartPowerOnHours(c.attributes))}</td>
     </tr>)}</tbody>
   </table></div>;
 }
@@ -524,7 +545,7 @@ export default function ControllerCard({ controller, components }: {
 cd apps/web && npx vitest run src/components/devices/hardware/ControllerCard.test.tsx
 ```
 
-Expected: 3 tests pass; literal zero values remain visible.
+Expected: 9 tests pass; enriched vendor disks and standalone SMART disks display nested operating hours, zero hours remains visible, and missing or malformed SMART evidence renders a dash without throwing.
 
 ```bash
 git add apps/web/src/components/devices/hardware/ControllerCard.tsx apps/web/src/components/devices/hardware/ControllerCard.test.tsx
@@ -1876,6 +1897,7 @@ The integration stack in Task 8 is owned by this execution. Do not stop a pre-ex
 
 ## Self-review
 
+- Task 3 corrects the reviewed SMART hours mismatch: the fixture and `PhysicalDisksTable` consume W02a's `attributes.smart.powerOnHours`, with guarded JSON access and red→green regressions for vendor enrichment, standalone disks, zero hours and absent/malformed evidence. W04 owns this rendering and its tests; W02a's producer and merge remain unchanged. The planned `ControllerCard.tsx` and `hwhealth/smartctl.go` do not yet exist in this checkout, so the field path was verified against W02a Tasks 10–11 and spec §6.5.
 - Spec §11.1 is covered by Tasks 1–7: full storage hierarchy, progress, predictive indicator, stale/fresh distinction, OS grouping, source status and event disclosure.
 - Spec §11.2 is covered by Tasks 8–10: hidden-by-default column, opaque numeric summary tooltip, validated API filter, count join and both response mappers.
 - Spec §11.4 is covered by Task 11: tool matrix, official installation pointers, collection policy, monitor attachment, alert semantics and `tool_dirs`.

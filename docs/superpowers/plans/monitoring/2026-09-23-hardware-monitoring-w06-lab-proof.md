@@ -49,7 +49,7 @@ W06's owned index §J acceptance is pinned as follows:
 - Create `docs/superpowers/plans/monitoring/evidence/w06-windows-baseline.png`, `w06-windows-degraded.png`, `w06-windows-recovered.png`, `w06-policy-disabled.png`, `w06-linux-baseline.png`, `w06-linux-degraded.png`, `w06-linux-rebuilding.png`, `w06-linux-recovered.png` — cropped live Hardware sections.
 - Create `docs/superpowers/plans/monitoring/evidence/w06-storcli.json`, `w06-perccli.json`, `w06-megacli.json`, `w06-ssacli.json`, `w06-arcconf.json`, `w06-omreport.json`, `w06-ipmi.json`, `w06-racadm.json`, `w06-hponcfg.json` — capture manifests or explicit fixture-only records.
 - Create capture files under `agent/internal/collectors/hwhealth/testdata/{storcli,perccli,megacli,ssacli,arcconf,omreport,ipmi,racadm,hponcfg}/` only when a real sanitized capture exists; exact filenames appear in Tasks 9–17.
-- Modify `apps/docs/src/content/docs/features/hardware-monitoring.mdx` — W04-created file, index §G; append the W06 verification table, never replace its supported-tools table. It does not exist in this checkout, so no pre-existing line anchor is claimed.
+- Modify `apps/docs/src/content/docs/features/hardware-monitoring.mdx` — W04-created file, index §G; update validation cells in its supported-tools table in place, add W05's BMC sources to that table, and replace the future-wave BMC copy with verified availability. It does not exist in this checkout, so no pre-existing line anchor is claimed.
 - Modify `docs/release-notes/next-release-draft.md:15,19` — agent release gate and user-visible upgrade note.
 - Create `docs/superpowers/plans/monitoring/evidence/w06-release-request.md`, `w06-release-validation.json`, `w06-close-checklist.md` — release handoff, test result, and closure evidence index.
 - Tests and operational scripts in this plan are created under `$LAB`, a private `mktemp` directory, and run against the live stack. They are not shipped product files. The `review_evidence` helper, transient SQL/PowerShell scripts and capture sanitizer are defined in full below. The evidence files are the task outputs; red means the claimed observation has not yet been demonstrated.
@@ -67,7 +67,7 @@ A prepared worktree stack and two agents already enrolled to that stack are prer
 
 Source audit: `agent/README.md` is absent. Dev-push documentation is `.claude/skills/agent-info/SKILL.md:202–231` and `docs/remote-desktop-performance/README.md:71–86`; the authoritative target is `agent/Makefile:242–294`. It builds and uploads; `DEVICE` is passed as multipart `agentId` at line 291. `apps/api/src/routes/devPush.ts:61–66` resolves by agent ID, and lines 172–205 construct the download URL from `PUBLIC_API_URL` and return `wsSent`, `version`, `agentId`, `deviceId`. Set explicit `PLATFORM` to bypass the Makefile's UUID-only device GET. Preserve `hwhealth_state.json` across dev-push; resetting the sequence can cause 409 for one hour (index §D).
 
-The index's package, view, and built-ins are future prerequisites, not existing symbols in this checkout: `hwhealth/` is absent; `builtInMonitors.ts:38` is version 2. W06 creates none of those implementation symbols. It consumes index §C `PUT /api/v1/agents/:agentId/hardware-health`, §D `GET /api/v1/devices/:id/hardware-health`, §F `alerts.subject_key`, and §H `Collector.Run` indirectly through the real agent. A missing prerequisite blocks proof; do not seed fake health rows to pass.
+The index's package, view, and built-ins are future prerequisites, not existing symbols in this checkout: `hwhealth/` is absent; `builtInMonitors.ts:38` is version 2. W06 creates none of those implementation symbols. It consumes index §C `PUT /api/v1/agents/:id/hardware-health` (`:id` holds the agent ID), §D `GET /api/v1/devices/:id/hardware-health`, §F `alerts.subject_key`, and §H `Collector.Run` indirectly through the real agent. A missing prerequisite blocks proof; do not seed fake health rows to pass.
 
 Use 5-minute RAID and 15-minute disk intervals, both legal index §B values. Count two distinct accepted snapshots with `critical_streak >= 2`, not two executions of the minute sweep. The fault observer fails if no matching alert is visible before the third failing snapshot; its captured timeline must contain two distinct failing snapshot IDs. Bound each condition wait at 20 minutes (two 5-minute polls with jitter, a 4-minute collection budget and sweep lag); record actual elapsed times. Long waits are observed in 30-second increments so progress can be reported. Recovery under the critical built-in may occur during rebuilding after two below-critical observations; it need not remain active until optimal (§9.3).
 
@@ -375,7 +375,7 @@ git commit -m $'test(monitoring): record lab monitor attachment\n\nCo-Authored-B
 
 ### Task 3: Build on Windows, dev-push, and prove the mirror baseline
 
-**Files:** Create `docs/superpowers/plans/monitoring/evidence/w06-windows-baseline.json`, `w06-windows-baseline.png`. Read `agent/Makefile:250–294`, `agent/internal/config/config.go:190`, `apps/api/src/routes/devPush.ts:172–205`. Test: `$LAB/test-windows-baseline.sh`.
+**Files:** Create `docs/superpowers/plans/monitoring/evidence/w06-windows-baseline.json`, `w06-windows-baseline.png`. Read `agent/Makefile:250–294`, `agent/internal/config/config.go:190`, `apps/api/src/routes/devPush.ts:172–205`, `apps/api/src/middleware/requestPathLogger.ts:29–31`, `apps/api/src/services/safeRequestLabel.ts:17–38` and W01's `hardwareHealthRoutes.put` declaration for `/:id/hardware-health`. Test: `$LAB/test-windows-baseline.sh`.
 
 **Interfaces:** Consumes Task 1 helpers, Task 2 settings, index §A component types and §G test IDs. Produces native Windows test receipt, pool `BreezeW06Pool`, virtual disk `BreezeW06Mirror`, private VHD paths and baseline view.
 
@@ -494,7 +494,7 @@ await_jq "$WIN_ID" ".agentVersion==\"$WIN_PUSH_VERSION\"" "$LAB/windows-installe
 await_jq "$WIN_ID" '.policy.enabled and .pollIntervalMinutes==5 and .diskHealthIntervalMinutes==15 and
   ([.components[]|select(.source=="storage_spaces" and .componentType=="virtual_disk" and .state=="optimal")]|length)>0' "$LAB/windows-view.json"
 docker logs --since "$STARTED_AT" "$API_CONTAINER" > "$LAB/api.log" 2>&1
-rg -- '--> PUT route=/api/v1/agents/:agentId/hardware-health status=200' "$LAB/api.log"
+rg -F -- '--> PUT route=/api/v1/agents/:id/hardware-health status=200 ' "$LAB/api.log"
 shot "$WIN_ID" w06-windows-baseline
 jq -n --slurpfile view "$LAB/windows-view.json" --slurpfile push "$LAB/windows-push-receipt.json" '{nativeTests:true,putObserved:true,push:$push[0],view:$view[0]}' > "$EVIDENCE/w06-windows-baseline.json"
 bash "$LAB/test-windows-baseline.sh"
@@ -961,9 +961,9 @@ git commit -m $'test(monitoring): prove md degraded rebuild and recovery semanti
 
 ### Task 8: Record an optional real ZFS mirror run or an explicit skip
 
-**Files:** Create `docs/superpowers/plans/monitoring/evidence/w06-zfs.json`. Test: `$LAB/test-zfs.sh`. W02b owns `agent/internal/collectors/hwhealth/zfs_linux.go` (index §H).
+**Files:** Create `docs/superpowers/plans/monitoring/evidence/w06-zfs.json`. Read `agent/service/systemd/breeze-agent.service`, W02a Tasks 3/13 (`detection.get` and `Collector.New`). Test: `$LAB/test-zfs.sh`. W02b owns `agent/internal/collectors/hwhealth/zfs_linux.go` (index §H).
 
-**Interfaces:** Consumes Debian SSH, `view`, `await_jq`; produces either `status:"lab-proof"` with real pool evidence or `status:"skipped"` with a package/kernel reason. ZFS skip never waives Windows, mdadm or SMART proof.
+**Interfaces:** Consumes Debian SSH, `view`, `await_jq` and the `breeze-agent.service` systemd unit; produces either `status:"lab-proof"` with a detection-refresh receipt and real pool evidence or `status:"skipped"` with a package/kernel reason. ZFS skip never waives Windows, mdadm or SMART proof.
 
 - [ ] **Step 1: Write and run the failing outcome assertion (2 minutes).**
 
@@ -972,7 +972,11 @@ cat > "$LAB/test-zfs.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 jq -e '(.status=="skipped" and (.reason|length>0)) or
-  (.status=="lab-proof" and .degraded and .resolved and .view.health!=null)' "$EVIDENCE/w06-zfs.json"
+  (.status=="lab-proof" and .degraded and .resolved and .view.health!=null and
+   .detectionRefresh.service=="breeze-agent.service" and
+   (.detectionRefresh.beforeInvocation|length)>0 and
+   (.detectionRefresh.afterInvocation|length)>0 and
+   .detectionRefresh.beforeInvocation!=.detectionRefresh.afterInvocation)' "$EVIDENCE/w06-zfs.json"
 echo 'PASS optional ZFS outcome recorded without a fabricated success'
 SH
 bash "$LAB/test-zfs.sh"
@@ -999,7 +1003,7 @@ fi
 
 Expected exit 0 with ZFS version, or explicit skip. Do not turn a pool creation/parser/alert failure into an installation skip.
 
-- [ ] **Step 3: If available, execute and verify an actual mirror fault cycle (5 minutes plus polling).**
+- [ ] **Step 3: If available, create the mirror, refresh detection and verify the fault cycle (5 minutes plus polling).**
 
 ```bash
 if [ "$ZFS_AVAILABLE" = true ]; then
@@ -1012,18 +1016,33 @@ zpool create -m none breeze-w06 mirror /var/tmp/breeze-w06/zfs-a.img /var/tmp/br
 zpool offline breeze-w06 /var/tmp/breeze-w06/zfs-b.img
 zpool status -pP breeze-w06
 SH
+  ssh "$LINUX_SSH" 'bash -se' > "$LAB/zfs-detection-refresh.json" <<'SH'
+set -euo pipefail
+# Both the tool and a nonempty pool list must exist before the first fresh probe.
+[ "$(zpool list -H -o name breeze-w06)" = breeze-w06 ]
+systemctl is-active --quiet breeze-agent.service
+before=$(systemctl show --property=InvocationID --value breeze-agent.service)
+[ -n "$before" ]
+systemctl restart breeze-agent.service
+systemctl is-active --quiet breeze-agent.service
+after=$(systemctl show --property=InvocationID --value breeze-agent.service)
+[ -n "$after" ] && [ "$before" != "$after" ]
+jq -n --arg before "$before" --arg after "$after" \
+  '{service:"breeze-agent.service",beforeInvocation:$before,afterInvocation:$after}'
+SH
   await_jq "$LINUX_ID" '[.components[]|select(.componentKey=="zfs:pool:breeze-w06" and .health=="critical" and .criticalStreak>=2)]|length==1' "$LAB/zfs-degraded.json"
   await_alerts "$LINUX_ID" '[.[]|select(.subject_key=="zfs:pool:breeze-w06" and .status=="active")]|length==1' "$LAB/zfs-alerts.json"
   ssh "$LINUX_SSH" 'zpool online breeze-w06 /var/tmp/breeze-w06/zfs-b.img'
   await_jq "$LINUX_ID" '[.components[]|select(.componentKey=="zfs:pool:breeze-w06" and .state=="optimal" and .healthyStreak>=2)]|length==1' "$LAB/zfs-optimal.json"
   await_alerts "$LINUX_ID" '[.[]|select(.subject_key=="zfs:pool:breeze-w06")]|length==1 and all(.status=="resolved")' "$LAB/zfs-resolved.json"
   jq -n --slurpfile d "$LAB/zfs-degraded.json" --slurpfile v "$LAB/zfs-optimal.json" --slurpfile a "$LAB/zfs-resolved.json" \
-    '{status:"lab-proof",degraded:true,resolved:true,degradedView:$d[0],view:$v[0],alerts:$a[0]}' > "$EVIDENCE/w06-zfs.json"
+    --slurpfile refresh "$LAB/zfs-detection-refresh.json" \
+    '{status:"lab-proof",degraded:true,resolved:true,detectionRefresh:$refresh[0],degradedView:$d[0],view:$v[0],alerts:$a[0]}' > "$EVIDENCE/w06-zfs.json"
 fi
 bash "$LAB/test-zfs.sh"
 ```
 
-Expected green: outcome PASS. File-backed vdevs are dedicated lab devices, not a claim about hardware ZFS fault coverage.
+Expected green: outcome PASS. W02a caches detection, including unavailability, for one hour in memory; restarting after installation and pool creation resets that cache before `await_jq` starts its twenty-minute deadline. Keep `hwhealth_state.json` and `hwhealth_smart_cache.json` intact so the sequence and persisted collector state survive. A failed restart or observation is a failed lab assertion, never an installation skip. File-backed vdevs are dedicated lab devices, not a claim about hardware ZFS fault coverage.
 
 - [ ] **Step 4: Commit the optional-ZFS outcome (2 minutes).**
 
@@ -1562,23 +1581,97 @@ git commit -m $'test(monitoring): record hponcfg in-band capture provenance\n\nC
 
 ### Task 18: Sweep customer docs and prepare the agent release request
 
-**Files:** Modify `apps/docs/src/content/docs/features/hardware-monitoring.mdx` (created by W04, index §G; append W06 verification section), `docs/release-notes/next-release-draft.md:15–21`. Create `docs/superpowers/plans/monitoring/evidence/w06-release-request.md`, `w06-release-validation.json`. Test: `$LAB/test-release.sh`.
+**Files:** Modify `apps/docs/src/content/docs/features/hardware-monitoring.mdx` (created by W04, index §G; update the original supported-tools table and BMC availability paragraph in place), `docs/release-notes/next-release-draft.md:15–21`. Create `docs/superpowers/plans/monitoring/evidence/w06-release-request.md`, `w06-release-validation.json`. Test: `$LAB/test-release.sh`.
 
-**Interfaces:** Consumes Tasks 1–17 evidence and merged PR provenance. Produces release-request checklist and unreleased copy; consumes tag-derived version from `.github/workflows/release.yml:170–188`, not the local `agent/Makefile:3` fallback. Publication and fleet promotion are release-operator actions, not W06 lab commands.
+**Interfaces:** Consumes Tasks 1–17 evidence and merged PR provenance, including W05's in-band BMC implementation. Produces one authoritative supported-tools table, current BMC availability copy, release-request checklist and unreleased copy; consumes tag-derived version from `.github/workflows/release.yml:170–188`, not the local `agent/Makefile:3` fallback. Publication and fleet promotion are release-operator actions, not W06 lab commands.
 
 - [ ] **Step 1: Write and run the failing docs/release assertion (3 minutes).**
 
 ```bash
+cp apps/docs/src/content/docs/features/hardware-monitoring.mdx "$LAB/hardware-monitoring-before.mdx"
+cat > "$LAB/hardware_docs_coverage.py" <<'PY'
+import json, os, pathlib
+
+HEADER = '| Source | OS | Detection / read commands | Data | Cadence / timeout | Validation |'
+
+def coverage():
+    evidence = pathlib.Path(os.environ['EVIDENCE'])
+    expected = {}
+    for source in ('storcli','perccli','megacli','ssacli','arcconf','omreport','ipmi','racadm','hponcfg'):
+        manifest = json.loads((evidence/f'w06-{source}.json').read_text())
+        assert manifest['source'] == source and manifest['parserSuite'] == 'passed', source
+        assert manifest['status'] in ('fixture-only','real capture'), source
+        if manifest['status'] == 'real capture':
+            assert manifest['files'], source
+        expected[source] = manifest['status']
+    for name, source, kind, state in (
+        ('windows-baseline','windows_physical_disk','physical_disk',None),
+        ('linux-baseline','smartctl','physical_disk',None),
+        ('windows-degraded','storage_spaces','virtual_disk','degraded'),
+        ('windows-recovered','storage_spaces','virtual_disk','optimal'),
+        ('linux-degraded','mdadm','virtual_disk','degraded'),
+        ('linux-rebuilding','mdadm','virtual_disk','rebuilding'),
+        ('linux-recovered','mdadm','virtual_disk','optimal'),
+    ):
+        receipt = json.loads((evidence/f'w06-{name}.json').read_text())
+        assert any(c['source'] == source and c['componentType'] == kind and
+                   (state is None or c['state'] == state)
+                   for c in receipt['view']['components']), name
+    expected.update({
+        'storage_spaces': 'live mirror fault and recovery',
+        'windows_physical_disk': 'live disk inventory',
+        'mdadm': 'live mirror fault, rebuild and recovery',
+        'smartctl': 'live standalone disk inventory',
+    })
+    zfs = json.loads((evidence/'w06-zfs.json').read_text())
+    assert zfs['status'] in ('lab-proof','skipped')
+    if zfs['status'] == 'lab-proof':
+        assert zfs['degraded'] and zfs['resolved']
+        expected['zfs'] = 'live mirror fault and recovery'
+    else:
+        assert zfs['reason']
+        expected['zfs'] = 'fixture-only; optional lab unavailable'
+    return expected
+
+def table_bounds(text):
+    assert text.count(HEADER) == 1, 'Expected one supported-tools table'
+    start = text.index(HEADER)
+    end = text.index('\n\n', start)
+    return start, end
+
+def table_rows(text):
+    start, end = table_bounds(text)
+    rows = {}
+    for line in text[start:end].splitlines()[2:]:
+        cells = [cell.strip() for cell in line.strip('|').split('|')]
+        assert len(cells) == 6, line
+        source = cells[0].strip('`')
+        assert source not in rows, 'Duplicate source: '+source
+        rows[source] = cells
+    return rows
+PY
 cat > "$LAB/test-release.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 python3 - <<'PY'
-import json,os,pathlib
+import json,os,pathlib,sys
+sys.path.insert(0,os.environ['LAB'])
+from hardware_docs_coverage import coverage, table_rows
 root=pathlib.Path(os.environ['ROOT']); e=pathlib.Path(os.environ['EVIDENCE'])
 doc=(root/'apps/docs/src/content/docs/features/hardware-monitoring.mdx').read_text()
-for source in ('storcli','perccli','megacli','ssacli','arcconf','omreport','ipmi','racadm','hponcfg'):
-    m=json.loads((e/f'w06-{source}.json').read_text())
-    assert f'| {source} | {m["status"]} |' in doc, source
+rows=table_rows(doc); expected=coverage()
+assert set(rows)==set(expected), 'Missing or duplicate supported source'
+for source,status in expected.items():
+    assert rows[source][-1]==status, source
+before=table_rows((pathlib.Path(os.environ['LAB'])/'hardware-monitoring-before.mdx').read_text())
+for source,cells in before.items():
+    assert rows[source][:-1]==cells[:-1], 'Changed tool guidance: '+source
+assert 'lab validation pending' not in doc.lower()
+assert '## Verification coverage' not in doc, 'Do not append a competing coverage table'
+assert 'belongs to the BMC follow-on wave' not in doc
+assert 'Management-controller address/firmware collection is available' in doc
+assert '**Management controller** card' in doc
+assert 'Chassis sensors, SEL ingestion and out-of-band Redfish/SNMP monitoring remain outside this feature.' in doc
 notes=(root/'docs/release-notes/next-release-draft.md').read_text()
 assert 'Hardware & RAID monitoring requires an agent release' in notes
 assert 'Attach the four built-in hardware monitors' in notes
@@ -1591,9 +1684,9 @@ SH
 bash "$LAB/test-release.sh"
 ```
 
-Expected red: assertion for the absent W06 coverage table or release request. Do not weaken the assertion by changing a real-capture marker without the matching manifest.
+Expected red: the original table has pending validation cells and lacks W05 BMC rows; the release request is also absent. The assertion checks every validation cell against its receipt and preserves the original OS, commands, data and cadence cells. Do not weaken it by changing a real-capture marker without the matching manifest.
 
-- [ ] **Step 2: Generate the honest docs table and append upgrade copy (4 minutes).**
+- [ ] **Step 2: Update the original support table and BMC availability, then append upgrade copy (4 minutes).**
 
 ```bash
 for pr in $(jq -r '.prerequisites[].number' "$EVIDENCE/w06-environment.json"); do
@@ -1602,23 +1695,33 @@ for pr in $(jq -r '.prerequisites[].number' "$EVIDENCE/w06-environment.json"); d
   jq -r '.title,.body' "$LAB/release-pr-$pr.json"
 done
 python3 - <<'PY'
-import json,os,pathlib
+import json,os,pathlib,sys
+sys.path.insert(0,os.environ['LAB'])
+from hardware_docs_coverage import coverage, table_bounds, table_rows
 root=pathlib.Path(os.environ['ROOT']); e=pathlib.Path(os.environ['EVIDENCE'])
 p=root/'apps/docs/src/content/docs/features/hardware-monitoring.mdx'
 text=p.read_text(); assert '## Verification coverage' not in text
-rows=['','## Verification coverage','','| Source | Evidence |','| --- | --- |']
-for source in ('storcli','perccli','megacli','ssacli','arcconf','omreport','ipmi','racadm','hponcfg'):
-    m=json.loads((e/f'w06-{source}.json').read_text())
-    rows.append(f'| {source} | {m["status"]} |')
-rows += ['| storage_spaces | live mirror fault and recovery |',
-         '| windows_physical_disk | live disk inventory |',
-         '| mdadm | live mirror fault, rebuild and recovery |',
-         '| smartctl | live standalone disk inventory |']
-z=json.loads((e/'w06-zfs.json').read_text())
-rows.append('| zfs | '+('live mirror fault and recovery' if z['status']=='lab-proof' else 'fixture-only; optional lab unavailable')+' |')
-rows += ['', '“Fixture-only” means parser coverage uses samples. “Real capture” means sanitized output from an installed vendor CLI has been retained; it does not claim a live hardware fault test.',
-         '', 'Storage Spaces and Linux md mirrors were tested through disk failure and recovery. Rebuilding is a warning; the critical array monitor resolves after two below-critical observations. Vendor tools must already be installed, and hardware monitors must be attached to a configuration policy.','']
-p.write_text(text+'\n'.join(rows))
+expected=coverage(); original=table_rows(text)
+start,end=table_bounds(text); lines=text[start:end].splitlines()
+updated=lines[:2]
+for line in lines[2:]:
+    source=line.split('|')[1].strip().strip('`')
+    prefix,old_validation,suffix=line.rsplit('|',2)
+    updated.append(prefix+'| '+expected[source]+' |'+suffix)
+bmc_rows={
+    'ipmi': '| `ipmi` | Windows, Linux | `ipmitool lan print 1`; `ipmitool mc info` | In-band management-controller address, MAC, firmware and vendor | RAID tier, daily; 20 seconds per command | ',
+    'racadm': '| `racadm` | Windows, Linux | `racadm getniccfg`; `racadm getversion` | In-band management-controller address, MAC, firmware and vendor | RAID tier, daily; 20 seconds per command | ',
+    'hponcfg': '| `hponcfg` | Windows, Linux | `hponcfg -w` with a temporary output file (RIBCL export) | In-band management-controller address, MAC, firmware and vendor | RAID tier, daily; 20 seconds | ',
+}
+for source,prefix in bmc_rows.items():
+    if source not in original:
+        updated.append(prefix+expected[source]+' |')
+text=text[:start]+'\n'.join(updated)+text[end:]
+old='Management-controller address/firmware collection through `ipmi` / `racadm` / `hponcfg` belongs to the BMC follow-on wave. This page does not claim chassis sensors, SEL ingestion or out-of-band Redfish/SNMP monitoring are available.'
+new='Management-controller address/firmware collection is available through installed `ipmitool`, `racadm` or `hponcfg` tools. The Hardware tab’s **Management controller** card shows in-band address, MAC, vendor and firmware facts, collected at most daily, and a link to the matching discovered asset when linked. The validation cells above distinguish fixture-only coverage from real captures; a real capture does not claim a live hardware fault test. Chassis sensors, SEL ingestion and out-of-band Redfish/SNMP monitoring remain outside this feature.'
+assert text.count(old)==1, 'Review changed BMC copy before replacing it'
+text=text.replace(old,new)
+p.write_text(text)
 p=root/'docs/release-notes/next-release-draft.md'; text=p.read_text()
 assert 'Hardware & RAID monitoring requires an agent release' not in text
 text=text.replace('## Release to-do (pre-cut gates — see `/release` Step 0.2)',
@@ -1888,6 +1991,8 @@ Expected no containers belonging to the owned worktree project; do not remove an
 - Spec §9.3 and index §J: critical array alerts may resolve during rebuilding after two below-critical snapshots; Tasks 4 and 7 still require final optimal-state evidence.
 - W01 owns schema, ingest ordering, tenancy, retention and settings; W03 owns subject dedupe, notifications, response ownership and streak-handler correctness. W06 consumes their merged implementation and does not reimplement them.
 - W02a/W02b own parsers, bounded runner and scheduler; W05 owns BMC linking and side-effect gates; W04 owns UI implementation and seeded e2e. W06 records coverage without claiming vendor hardware fault proof.
-- Index §C/§E take precedence over the spec's older key spellings: agent route is `:agentId`, heartbeat key is `hardware_monitoring_settings`, and operator inline settings are camelCase.
+- Index §C/§E take precedence over older key spellings: agent route is `:id` (the agent ID), heartbeat key is `hardware_monitoring_settings`, and operator inline settings are camelCase. Task 3 now matches the literal `:id` template emitted by `requestPathLogger`/`safeMatchedRouteLabel`, consistent with W01's route declaration.
+- Task 8 now restarts `breeze-agent.service` after ZFS installation and pool creation, asserts a new service invocation, and records the refresh before starting the twenty-minute observation deadline. This resets W02a's in-memory one-hour detection cache while preserving its on-disk sequence and SMART state; no W02a/W02b implementation change is assigned.
+- Task 18 now updates W04's original supported-tools validation cells in place, adds W05's three BMC sources to that same table, and replaces the future-wave BMC paragraph after verifying merged prerequisites. Its red→green assertion rejects stale pending markers, duplicate sources, a second coverage table and changed tool guidance. W06 owns this docs sweep using Tasks 1–17 evidence; W04/W05 need no additional work, and fixture-only/real-capture markers still do not claim live vendor fault proof.
 - Index §J leaves evidence naming and runtime timing to this plan: stable `w06-` filenames, private runtime identities, 5/15-minute lab intervals and observed snapshot streaks are chosen here.
 - Release request satisfies §13's agent-release note; publishing tags, marketing notes and fleet promotion follow the release workflow, while feature closure requires the merged lab evidence and all seven wave issues closed.

@@ -284,7 +284,7 @@ with a comment; not in `ORG_SCOPED_ONLY_FEATURE_TYPES`.
 
 ### C. Agent wire contract
 
-**`PUT /api/v1/agents/:agentId/hardware-health`** — `routes/agents/hardwareHealth.ts`
+**`PUT /api/v1/agents/:id/hardware-health`** (`:id` is the agent id, matching every existing `routes/agents/*` file) — `routes/agents/hardwareHealth.ts`
 (`hardwareHealthRoutes`, mounted `agentRoutes.route('/', hardwareHealthRoutes)` in
 `routes/agents/index.ts`; `hardwareHealthRoutes.use('*', requireAgentRole)`; `bodyLimit` 2 MB;
 `zValidator('json', hardwareHealthSnapshotSchema)`; device resolved by `agentId` exactly as
@@ -501,7 +501,7 @@ components `stale_since < now() - 7 days` — collect their `component_key`s per
 | `collector.go` | `type Collector struct`, `func New(opts Options) *Collector` (`Options{DataDir string; ExtraToolDirs []string; Sources []Source; Now func() time.Time}`), `(*Collector).ApplyConfig(Config)`, `(*Collector).Run(ctx, tiers []Tier) (*Snapshot, error)` — single-flight, budget 4 min, fairness rotation, breaker, merge, sequence persistence (`hwhealth_state.json` under `config.GetDataDir()` via `state.Write` idiom), smartctl cache (`hwhealth_smart_cache.json`) |
 | `breaker.go` | per-source breaker: 3 failures → 6 h `backing_off`; visible in `SourceReport` |
 | `merge.go` | §6.5 rules: smartctl enrichment by unique serial, `windows_physical_disk` drop/`AlertExempt`, Broadcom precedence |
-| `keys.go` | §4.2 key builders |
+| `keys.go` | §4.2 key builders; smartctl standalone fallback is `smart:dev:<scan type>:<device path>` (scan `type` included so two probes of one path never collide — W02a Task 1) |
 | `storcli.go` (+ `perccli` as `Kind` alias with the same parser), `mdadm_linux.go`, `storagespaces_windows.go`, `winpd_windows.go`, `smartctl.go` | W02a sources |
 | `megacli.go`, `ssacli.go`, `arcconf.go`, `omreport.go`, `zfs_linux.go` | W02b sources |
 | `bmc.go` (+ `bmc_windows.go` / `bmc_linux.go` for tool names) | W05 |

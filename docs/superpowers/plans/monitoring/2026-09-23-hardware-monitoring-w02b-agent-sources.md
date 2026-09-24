@@ -941,9 +941,31 @@ func TestZFSText(t *testing.T) {
     })
     if r.Complete { t.Fatal("unstable identity must not permit staling") }
 }
+func TestZFSTextShortLeaves(t *testing.T) {
+    parts:=strings.Split(string(w02bFixture(t,"zfs/optimal.txt")),"\n===\n")
+    original:="/dev/disk/by-id/ata-A     ONLINE       0     0     0"
+    for _,leaf:=range []string{"/dev/disk/by-id/ata-A","12345"} {
+        for _,suffix:=range []string{""," ONLINE"," ONLINE 0"," ONLINE 0 0"} {
+            t.Run(leaf+suffix,func(t *testing.T) {
+                status:=strings.Replace(parts[1],original,leaf+suffix,1)
+                if status==parts[1] || !strings.Contains(status,"errors: No known data errors") { t.Fatal("fixture must retain footer and shorten a leaf") }
+                r:=parseZFSText(parts[0],status,stableZFSID)
+                if r.Complete || len(r.Warnings)==0 { t.Fatalf("short leaf must withhold staling: %+v",r) }
+                if len(r.Components)!=3 { t.Fatalf("expected controller, pool and intact sibling: %+v",r) }
+                if w02bComponent(t,r,"zfs:pool:tank:m:ata-B").State!="online" { t.Fatal("intact sibling lost") }
+                members:=w02bComponent(t,r,"zfs:pool:tank").Attributes["memberKeys"].([]string)
+                if len(members)!=1 || members[0]!="zfs:pool:tank:m:ata-B" { t.Fatalf("fabricated membership: %v",members) }
+            })
+        }
+    }
+    // Non-leaf section labels have fewer columns and must not invalidate a complete table.
+    status:=strings.Replace(parts[1],"          mirror-0","        logs\n          mirror-0",1)
+    r:=parseZFSText(parts[0],status,stableZFSID)
+    if !r.Complete || len(r.Components)!=4 { t.Fatalf("section label treated as malformed leaf: %+v",r) }
+}
 ```
 
-- [ ] **Step 2: Run red on Linux (2 minutes).** `cd agent && go test -race ./internal/collectors/hwhealth/...` — expect `undefined: parseZFSText`. Linux-tagged tests must actually run; a macOS package pass is insufficient.
+- [ ] **Step 2: Run red on Linux (2 minutes).** `cd agent && go test -race ./internal/collectors/hwhealth/...` — expect `undefined: parseZFSText`. Linux-tagged tests must actually run; a macOS package pass is insufficient. If revising an existing implementation, run `cd agent && go test -race ./internal/collectors/hwhealth/... -run '^TestZFSTextShortLeaves$' -count=1` before Step 3 — each shortened path/GUID case must fail because the old parser reports complete despite its footer.
 - [ ] **Step 3: Implement the text source (5 minutes).** Create `zfs_linux.go`:
 
 ```go
@@ -1023,9 +1045,11 @@ func parseZFSText(list,status string,stable func(string)string) Result {
         }; rows[key]=vd; observed[key]=true; table:=false; finished:=false
         for _,line:=range strings.Split(block[1],"\n") {
             f:=strings.Fields(line); if len(f)==0 { continue }
-            if f[0]=="NAME" { table=true; continue }; if f[0]=="errors:" { finished=true; table=false }; if !table || len(f)<5 { continue }
+            if f[0]=="NAME" { table=true; continue }; if f[0]=="errors:" { finished=true; table=false }; if !table { continue }
             // Only leaf paths or unavailable numeric GUIDs are physical disks.
             if !strings.HasPrefix(f[0],"/dev/") { if _,err:=strconv.ParseUint(f[0],10,64);err!=nil { continue } }
+            // A footer cannot make a skipped, shortened leaf a complete observation.
+            if len(f)<5 { complete=false; continue }
             identity:=stable(f[0]); if identity=="" { complete=false; continue }
             counters:=[3]uint64{}; valid:=true
             for i:=0;i<3;i++ { n,err:=strconv.ParseUint(f[i+2],10,64); if err!=nil { valid=false }; counters[i]=n }
@@ -1037,7 +1061,7 @@ func parseZFSText(list,status string,stable func(string)string) Result {
 }
 ```
 
-- [ ] **Step 4: Run green on Linux (2 minutes).** `cd agent && go test -race ./internal/collectors/hwhealth/...` — expect `TestZFSText` PASS, including no synthetic mirror-0 disk.
+- [ ] **Step 4: Run green on Linux (2 minutes).** `cd agent && go test -race ./internal/collectors/hwhealth/...` — expect `TestZFSText` and `TestZFSTextShortLeaves` PASS, including no synthetic mirror-0 disk, all eight shortened-leaf cases incomplete with intact siblings retained, and section labels accepted.
 - [ ] **Step 5: Commit (2 minutes).**
 
 ```bash
@@ -1047,7 +1071,7 @@ git commit -m $'feat(agent): collect ZFS pools and stable member health\n\nCo-Au
 
 ### Task 8: Prefer OpenZFS 2.3 JSON with text fallback
 
-**Files:** Create `agent/internal/collectors/hwhealth/zfs_json_linux.go`, `agent/internal/collectors/hwhealth/zfs_json_linux_test.go`, `agent/internal/collectors/hwhealth/testdata/zfs/optimal.json`; Modify Task 7 `zfs_linux.go`, `(*zfsSource).Collect` declaration.
+**Files:** Create `agent/internal/collectors/hwhealth/zfs_json_linux.go`, `agent/internal/collectors/hwhealth/zfs_json_linux_test.go`, `agent/internal/collectors/hwhealth/testdata/zfs/optimal.json`, `agent/internal/collectors/hwhealth/testdata/zfs/cant-open.json`; Modify Task 7 `zfs_linux.go`, `(*zfsSource).Collect` declaration, and Task 1 `vendor_states.go`.
 **Interfaces:** Consumes Task 7 `zfsBase`, `zfsMember`, `zfsProgress`. Produces `zfsJSONCapable(string) bool`, `parseZFSJSON(string,[]byte,func(string) string) (Result,error)`.
 
 Decision: use `status -pP -j --json-int` only after numeric userland `zfs-<major>.<minor>` version detection; failed/invalid JSON falls back once to text within the same cycle context. JSON counters stay integers. The nested `pools`/`vdevs` format and `--json-int` are documented by [OpenZFS 2.3 zpool-status](https://openzfs.github.io/openzfs-docs/man/v2.3/8/zpool-status.8.html); the fixture below is independently authored.
@@ -1056,6 +1080,55 @@ Decision: use `status -pP -j --json-int` only after numeric userland `zfs-<major
 
 ```json
 {"pools":{"tank":{"name":"tank","state":"ONLINE","scan_stats":{"function":"SCRUB","state":"SCANNING","examined":42,"to_examine":100},"vdevs":{"tank":{"vdev_type":"root","vdevs":{"mirror-0":{"vdev_type":"mirror","vdevs":{"disk":{"vdev_type":"disk","guid":12345,"path":"/dev/disk/by-id/ata-A","state":"ONLINE","read_errors":1,"write_errors":0,"checksum_errors":0}}}}}}}}}
+```
+
+Save `testdata/zfs/cant-open.json`. This independently authored, reduced real-format excerpt uses the OpenZFS 2.3 `pools`/`vdevs` object structure and integer GUID/counter fields from `zpool status -pP -j --json-int`; it is not a lab capture. The upstream [vdev state table and JSON emitter](https://github.com/openzfs/zfs/blob/zfs-2.3.0/cmd/zpool/zpool_main.c#L296) emit `CANT_OPEN` for an unopenable device (via `fill_vdev_info`), whereas text uses `UNAVAIL`.
+
+```json
+{
+  "pools": {
+    "tank": {
+      "name": "tank",
+      "state": "DEGRADED",
+      "vdevs": {
+        "tank": {
+          "name": "tank",
+          "vdev_type": "root",
+          "state": "DEGRADED",
+          "vdevs": {
+            "mirror-0": {
+              "name": "mirror-0",
+              "vdev_type": "mirror",
+              "state": "DEGRADED",
+              "vdevs": {
+                "/dev/disk/by-id/ata-A": {
+                  "name": "/dev/disk/by-id/ata-A",
+                  "vdev_type": "disk",
+                  "guid": 12345,
+                  "path": "/dev/disk/by-id/ata-A",
+                  "state": "ONLINE",
+                  "read_errors": 0,
+                  "write_errors": 0,
+                  "checksum_errors": 0
+                },
+                "/dev/disk/by-id/ata-B": {
+                  "name": "/dev/disk/by-id/ata-B",
+                  "vdev_type": "disk",
+                  "guid": 67890,
+                  "path": "/dev/disk/by-id/ata-B",
+                  "state": "CANT_OPEN",
+                  "read_errors": 0,
+                  "write_errors": 0,
+                  "checksum_errors": 0
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
 ```
 
 Create `zfs_json_linux_test.go`:
@@ -1084,6 +1157,31 @@ func TestZFSJSON(t *testing.T) {
     raw=strings.ReplaceAll(raw,`"vdev_type":"disk"`,`"vdev_type":"future"`)
     r,err=parseZFSJSON("tank ONLINE 100G 20G 80G",[]byte(raw),stableZFSID)
     if err!=nil || r.Complete { t.Fatalf("unrecognized topology: %+v %v",r,err) }
+}
+func TestZFSJSONMemberStates(t *testing.T) {
+    fixture:=string(w02bFixture(t,"zfs/cant-open.json"))
+    for _,tc:=range []struct{raw,want string}{
+        {"ONLINE","online"},{"DEGRADED","degraded"},{"FAULTED","failed"},
+        {"OFFLINE","offline"},{"UNAVAIL","missing"},{"REMOVED","missing"},
+        {"CANT_OPEN","missing"},{"FUTURE_STATE","unknown"},
+    } {
+        t.Run(tc.raw,func(t *testing.T) {
+            data:=[]byte(strings.Replace(fixture,"CANT_OPEN",tc.raw,1))
+            r,err:=parseZFSJSON("tank DEGRADED 100G 20G 80G",data,stableZFSID)
+            if err!=nil || !r.Complete || len(r.Components)!=4 { t.Fatalf("%+v %v",r,err) }
+            pd:=w02bComponent(t,r,"zfs:pool:tank:m:ata-B")
+            if pd.State!=tc.want || pd.StateDetail==nil || *pd.StateDetail!=tc.raw { t.Fatalf("state/detail lost: %+v",pd) }
+            if pd.MemberErrors==nil || *pd.MemberErrors || pd.PredictiveFailure { t.Fatalf("zero counters fabricated flags: %+v",pd) }
+            if w02bComponent(t,r,"zfs:pool:tank:m:ata-A").State!="online" { t.Fatal("healthy sibling lost") }
+            vd:=w02bComponent(t,r,"zfs:pool:tank")
+            members:=vd.Attributes["memberKeys"].([]string)
+            if vd.State!="degraded" || len(members)!=2 || members[0]!="zfs:pool:tank:m:ata-A" || members[1]!=pd.ComponentKey { t.Fatalf("pool/membership lost: %+v",vd) }
+        })
+    }
+    r,err:=parseZFSJSON("tank DEGRADED 100G 20G 80G",[]byte(fixture),func(string)string{return ""})
+    if err!=nil || !r.Complete { t.Fatalf("GUID fallback: %+v %v",r,err) }
+    pd:=w02bComponent(t,r,"zfs:pool:tank:m:67890")
+    if pd.State!="missing" || pd.StateDetail==nil || *pd.StateDetail!="CANT_OPEN" { t.Fatalf("GUID missing evidence lost: %+v",pd) }
 }
 ```
 
@@ -1151,7 +1249,15 @@ func parseZFSJSON(list string,data []byte,stable func(string)string)(Result,erro
 }
 ```
 
-- [ ] **Step 4: Replace Task 7's `Collect` method (4 minutes).** Complete replacement, using its existing imports:
+- [ ] **Step 4: Prove the missing-state regression red, then extend the shared mapping (3 minutes).** With Step 3's parser present and Task 1's mapping unchanged, run `cd agent && go test -race ./internal/collectors/hwhealth/... -run '^TestZFSJSONMemberStates$' -count=1` on Linux — expect the `CANT_OPEN` case and GUID fallback to fail with `State:unknown`. Replace the `zfs/physical_disk` row in `vendor_states.go` with this complete row; `StateDetail` continues to retain the raw input through `textComponent`:
+
+```go
+        {"zfs/physical_disk","ONLINE|DEGRADED|FAULTED|OFFLINE|UNAVAIL|REMOVED|CANT_OPEN","online|degraded|failed|offline|missing|missing|missing"},
+```
+
+Run `cd agent && go test -race ./internal/collectors/hwhealth/... -run '^(TestVendorStates|TestZFSJSONMemberStates)$' -count=1` on Linux — expect PASS. A fully reported missing member remains an observation with `Complete:true`; an unrecognized state still maps to `unknown`. No new wire vocabulary or server health rule is needed.
+
+- [ ] **Step 5: Replace Task 7's `Collect` method (4 minutes).** Complete replacement, using its existing imports:
 
 ```go
 func(s *zfsSource) Collect(ctx context.Context,a Availability)(Result,error) {
@@ -1173,11 +1279,11 @@ func(s *zfsSource) Collect(ctx context.Context,a Availability)(Result,error) {
 }
 ```
 
-- [ ] **Step 5: Run green on Linux (2 minutes).** `cd agent && go test -race ./internal/collectors/hwhealth/...` — expect `TestZFSJSON` and `TestZFSText` PASS.
-- [ ] **Step 6: Commit (2 minutes).**
+- [ ] **Step 6: Run green on Linux (2 minutes).** `cd agent && go test -race ./internal/collectors/hwhealth/...` — expect `TestZFSJSON`, `TestZFSJSONMemberStates`, `TestZFSText` and `TestZFSTextShortLeaves` PASS.
+- [ ] **Step 7: Commit (2 minutes).**
 
 ```bash
-git add agent/internal/collectors/hwhealth/zfs_linux.go agent/internal/collectors/hwhealth/zfs_json_linux.go agent/internal/collectors/hwhealth/zfs_json_linux_test.go agent/internal/collectors/hwhealth/testdata/zfs/optimal.json
+git add agent/internal/collectors/hwhealth/vendor_states.go agent/internal/collectors/hwhealth/testdata/zfs/cant-open.json agent/internal/collectors/hwhealth/zfs_linux.go agent/internal/collectors/hwhealth/zfs_json_linux.go agent/internal/collectors/hwhealth/zfs_json_linux_test.go agent/internal/collectors/hwhealth/testdata/zfs/optimal.json
 git commit -m $'feat(agent): prefer version-gated OpenZFS JSON\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>'
 ```
 
@@ -1642,6 +1748,9 @@ git commit -m $'docs(agent): document local hardware tool directories\n\nCo-Auth
 ```
 
 ## Self-review
+
+- Cross-plan review, Task 7: leaf recognition now precedes the five-column guard; shortened path/GUID records set `Complete=false` before being skipped even with an errors footer. Eight regression cases retain the intact sibling and its membership; a section-label control remains complete. This enforces spec §§6.1/7.3 without changing W01 ingest.
+- Cross-plan review, Task 8: verified OpenZFS 2.3's `vdev_state_str` and `fill_vdev_info` in upstream `cmd/zpool/zpool_main.c`; add `CANT_OPEN → missing` in W02b's own state table, a reduced real-format fixture, raw-detail/counter/membership assertions, GUID fallback and all existing ZFS member spellings. W02b supplies the mapping and fixtures itself; W01 retains health derivation, W02a retains core collection, and W06 retains live capture proof. The local `hwhealth` package and W01 ingest implementation are absent, so review used the concrete planned declarations and contract rather than claiming a source implementation or runtime test pass.
 
 - Spec §5.1 W02b rows: all five source command families, timeout values, aliases, platform restrictions and read-only behavior are pinned in Tasks 3–8/11.
 - Spec §5.2 and index §B: Task 1 hardcodes the allowed Go vocabulary and every W02b mapping; parser fixtures retain unknown raw `StateDetail` and exercise flags without sending health.

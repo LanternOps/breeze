@@ -68,7 +68,11 @@ The copied registration bullet mentions `alerts.subject_key`; that clause belong
 - Create `apps/api/src/routes/agents/hardwareHealth.ts`, `apps/api/src/routes/agents/hardwareHealth.test.ts`: bounded main-agent ingest transport.
 - Modify `apps/api/src/routes/agents/index.ts`, `apps/api/src/routes/devices/index.ts`, `apps/api/src/services/mcpCoverage.ts`: route mounting and MCP coverage.
 - Create `apps/api/src/services/hardwareHealth/view.ts`, `apps/api/src/services/hardwareHealth/view.test.ts`, `apps/api/src/routes/devices/hardwareHealth.ts`, `apps/api/src/routes/devices/hardwareHealth.test.ts`: serialized view and authorized operator read.
-- Modify `apps/api/src/services/aiToolsDevice.ts`: tier-1 hardware-health tool.
+- Modify `apps/api/src/services/aiToolsDevice.ts`, `aiToolSchemas.ts`, `aiGuardrails.ts`, `aiAgentSdkTools.ts`, `aiTools.ts`, `helperToolFilter.ts`, `scriptBuilderTools.ts`, `mcpGuidance.ts`, `aiAgents/agentToolCatalog.ts`, and the five device-read profile allowlists (all service paths): complete hardware-health AI registration; Task 13 lists exact files and parity suites.
+- Modify `apps/web/src/components/ai-risk/tierConfig.ts`, `apps/api/src/services/helperToolFilter.test.ts`, `apps/api/src/services/aiGuardrails.agentPrincipal.contract.test.ts`; Create `apps/api/src/services/aiToolsDevice.hardwareHealth.registry.test.ts`: display/RBAC and deliberate read-only admission parity.
+- Modify `apps/api/src/services/aiToolsConfigPolicy.ts`, `.test.ts`: exhaustive hardware collection inline-settings reference.
+- Modify `apps/api/src/middleware/bodyLimit.ts`, `.test.ts`; Create `apps/api/src/routes/agents/hardwareHealth.mounted.test.ts`: global 2 MiB gate and mounted transport regression.
+- Modify `apps/api/src/services/deviceDeletion.ts`, `.test.ts`; Create `apps/api/src/services/deviceDeletion.hardwareHealth.test.ts`, `apps/api/src/services/hardwareHealth/ingest.retirement.test.ts`: retirement before deletion at both shared callers.
 - Create `apps/api/src/services/aiToolsDevice.hardwareHealth.test.ts`: AI access-before-read test.
 - Create `apps/api/src/services/hardwareHealth/retire.ts`, `apps/api/src/services/hardwareHealth/retire.test.ts`, `apps/api/src/jobs/hardwareHealthRetention.ts`, `apps/api/src/jobs/hardwareHealthRetention.test.ts`: W03 retirement seam and bounded daily reaper.
 - Modify `apps/api/src/services/workerRegistry.ts`, `apps/api/src/jobs/workerReadinessManifest.ts`, `apps/api/src/jobs/scheduleRegistry.ts`: retention lifecycle, readiness and daily slot.
@@ -412,7 +416,7 @@ git commit -m $'feat(hardware): add tenant-owned health tables\n\nCo-Authored-By
 
 ### Task 4: Add the normalized config table and feature vocabulary
 
-**Files:** Modify `packages/shared/src/constants/configFeatureTypes.ts:8`, `packages/shared/src/validators/index.ts:571`, `apps/api/src/db/schema/configurationPolicies.ts:32–57,338`, `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts:920`; Create `apps/api/migrations/2026-10-27-100100-hardware-monitoring-config-feature.sql`; Test `services/hardwareHealth/migrations.integration.test.ts`.
+**Files:** Modify `packages/shared/src/constants/configFeatureTypes.ts:8`, `packages/shared/src/validators/index.ts:571`, `apps/api/src/db/schema/configurationPolicies.ts:32–57,338`, `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts:920`; Create `apps/api/migrations/2026-10-27-100100-hardware-monitoring-config-feature.sql`; Modify `apps/api/src/services/aiToolsConfigPolicy.ts`, `apps/api/src/services/aiToolsConfigPolicy.test.ts`; Test `services/hardwareHealth/migrations.integration.test.ts`.
 **Interfaces:** Consumes `configPolicyFeatureLinks.id` and parent ownership. Produces `configPolicyHardwareMonitoringSettings`, appended `'hardware_monitoring'`, inherited `ConfigFeatureType` (already re-exported by `services/configFeatureTypes.ts`, not a new union).
 
 - [ ] **Step 1: Append the settings catalog and range tests.** Add the exact parent allowlist entry before running red.
@@ -469,7 +473,27 @@ export const configPolicyHardwareMonitoringSettings = pgTable('config_policy_har
  check('config_policy_hardware_monitoring_disk_interval_chk',sql`${t.diskHealthIntervalMinutes} BETWEEN 15 AND 1440`),
 ]);
 ```
-- [ ] **Step 4: Implement the second migration.** This uses the exact event-log parent-chain predicate at `2026-07-26-a-normalized-policy-tenant-integrity.sql:318–332`; heartbeat resolves it in the existing system block. No inserted row uses the new enum label.
+- [ ] **Step 4: Pin the AI policy reference before filling its required key.** Append inside `describe('manage_policy_feature_link describe action (A-W03)')` in `aiToolsConfigPolicy.test.ts`, where `tool()` already registers the real policy tool:
+```ts
+it('describes hardware collection defaults and bounds without reading a policy',async()=>{
+ vi.clearAllMocks();
+ const out=JSON.parse(await tool().handler({action:'describe',featureType:'hardware_monitoring'},{} as never));
+ expect(out).toMatchObject({featureType:'hardware_monitoring',linkOnly:false});
+ for(const text of ['enabled: true','pollIntervalMinutes: 10','diskHealthIntervalMinutes: 60','5..60','15..1440'])expect(out.inlineSettings).toContain(text);
+ expect(db.select).not.toHaveBeenCalled();expect(getConfigPolicy).not.toHaveBeenCalled();
+});
+```
+Run red after Step 3 expands the feature type:
+```bash
+pnpm --filter @breeze/api exec vitest run src/services/aiToolsConfigPolicy.test.ts
+```
+Expected: the new describe test and existing exact-key reference parity test fail. Add this entry to `POLICY_FEATURE_INLINE_SETTINGS_REFERENCE` in `aiToolsConfigPolicy.ts`; the required `Readonly<Record<ConfigFeatureType,string>>` must remain exhaustive:
+```ts
+hardware_monitoring: `{ enabled: true, pollIntervalMinutes: 10, diskHealthIntervalMinutes: 60 } — inline-only RAID and disk-health collection settings. All fields are optional; these are the defaults. enabled is boolean; pollIntervalMinutes is an integer in 5..60; diskHealthIntervalMinutes is an integer in 15..1440. Collection is enabled without a policy link. Attach hardware monitors separately for alerts.`,
+```
+Run green with the same command; all describe tests, including exact keys and no-DB-access parity, pass. Do not add this feature to `LINK_ONLY_FEATURE_TYPES` or the linked-policy hints.
+
+- [ ] **Step 5: Implement the second migration.** This uses the exact event-log parent-chain predicate at `2026-07-26-a-normalized-policy-tenant-integrity.sql:318–332`; heartbeat resolves it in the existing system block. No inserted row uses the new enum label.
 ```sql
 ALTER TYPE config_feature_type ADD VALUE IF NOT EXISTS 'hardware_monitoring';
 CREATE TABLE IF NOT EXISTS config_policy_hardware_monitoring_settings (
@@ -494,14 +518,14 @@ DO $$ DECLARE t text := 'config_policy_hardware_monitoring_settings'; predicate 
 END $$;
 GRANT SELECT, INSERT, UPDATE, DELETE, REFERENCES ON config_policy_hardware_monitoring_settings TO breeze_app;
 ```
-- [ ] **Step 5: Run green and capture expected parity red.** Repeat Step 2, expect passes. Then run these existing complete tests unchanged; expect missing `hardware_monitoring` registration/default failures, pinned for Tasks 6 and 15:
+- [ ] **Step 6: Run green and capture expected parity red.** Repeat Step 2, expect passes. Then run these existing complete tests unchanged; expect missing `hardware_monitoring` registration/default failures, pinned for Tasks 6 and 15:
 ```bash
 cd apps/api && npx vitest run src/services/policyBaselineDefaults.test.ts
 cd apps/web && npx vitest run src/components/configurationPolicies/featureTabs/featureTypeParity.test.ts src/components/devices/DeviceEffectiveConfigTab.featureParity.test.ts
 ```
-- [ ] **Step 6: Commit.**
+- [ ] **Step 7: Commit.**
 ```bash
-git add packages/shared/src/constants/configFeatureTypes.ts packages/shared/src/validators/index.ts apps/api/src/db/schema/configurationPolicies.ts apps/api/src/__tests__/integration/rls-coverage.integration.test.ts apps/api/src/services/hardwareHealth/migrations.integration.test.ts apps/api/migrations/2026-10-27-100100-hardware-monitoring-config-feature.sql
+git add packages/shared/src/constants/configFeatureTypes.ts packages/shared/src/validators/index.ts apps/api/src/db/schema/configurationPolicies.ts apps/api/src/__tests__/integration/rls-coverage.integration.test.ts apps/api/src/services/hardwareHealth/migrations.integration.test.ts apps/api/migrations/2026-10-27-100100-hardware-monitoring-config-feature.sql apps/api/src/services/aiToolsConfigPolicy.ts apps/api/src/services/aiToolsConfigPolicy.test.ts
 git commit -m $'feat(hardware): add inherited collection settings schema\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>'
 ```
 
@@ -965,8 +989,8 @@ git commit -m $'feat(hardware): derive component events and streaks\n\nCo-Author
 
 ### Task 10: Apply completeness, collector lifecycle and rollup rules
 
-**Files:** Modify `apps/api/src/services/hardwareHealth/ingest.ts`, `ingest.test.ts` (created in Task 9).
-**Interfaces:** Consumes `componentChange`. Produces `reduceSnapshot(previous,device,snapshot,receivedAt)` with `{rows,upserts,deletedKeys,events,health,collectorHealth,summary}` and `InvalidHardwareSnapshotError.path`; Task 11 persists it atomically.
+**Files:** Modify `apps/api/src/services/hardwareHealth/ingest.ts`, `ingest.test.ts` (created in Task 9), `apps/api/src/services/deviceDeletion.ts`, `apps/api/src/services/deviceDeletion.test.ts`; Create `apps/api/src/services/hardwareHealth/retire.ts`, `retire.test.ts`, `apps/api/src/services/deviceDeletion.hardwareHealth.test.ts`.
+**Interfaces:** Consumes `componentChange`. Produces `reduceSnapshot(previous,device,snapshot,receivedAt)` with `{rows,upserts,deletedKeys,events,health,collectorHealth,summary}` and `InvalidHardwareSnapshotError.path`; Task 11 persists it atomically and must retire `deletedKeys` before deleting them. Produces index §D `resolveAlertsForRemovedComponents(deviceId:string,componentKeys:string[]):Promise<number>` as a W01 no-op; W03 supplies the body. The shared deletion caller is `deleteDeviceCascade` in `services/deviceDeletion.ts:98`, reached through `purgeRemovedDevice` from `routes/devices/core.ts:2262`, and it consumes `getDeviceCascadeDeleteTables()` from core. No route-local duplicate deletion logic.
 
 - [ ] **Step 1: Append the exhaustive source matrix and semantic-validation tests.** Add `reduceSnapshot` and `InvalidHardwareSnapshotError` to the existing ingest test import.
 ```ts
@@ -1065,7 +1089,10 @@ export function reduceSnapshot(previous:ComponentRow[],device:{id:string;orgId:s
   const collectorKey=`collector:${source.source}`;
   if(source.status==='ok'||source.status==='failed'||source.status==='backing_off'){
    apply({componentKey:collectorKey,componentType:'collector',source:source.source,name:source.source,state:source.status,stateDetail:source.error??null,predictiveFailure:false,alertExempt:false,attributes:{}});
-  }else if(rows.delete(collectorKey)){deletedKeys.push(collectorKey);upserts.delete(collectorKey);}
+  }else if(rows.delete(collectorKey)){
+   // Pure reduction only: Task 11 must await retirement for these keys before SQL deletion.
+   deletedKeys.push(collectorKey);upserts.delete(collectorKey);
+  }
  }
  const live=[...rows.values()].filter(r=>!r.stale);
  const hardware=live.filter(r=>r.componentType!=='collector'&&r.componentType!=='bmc');
@@ -1078,15 +1105,95 @@ export function reduceSnapshot(previous:ComponentRow[],device:{id:string;orgId:s
 }
 ```
 - [ ] **Step 4: Run green.** Repeat Step 2 — all 18 matrix cases and collector/stale/rollup tests pass. `ok` with absent complete is rejected at the schema boundary; the matrix verifies the reducer remains non-destructive if called with that structural input internally.
-- [ ] **Step 5: Commit.**
+- [ ] **Step 5: Write the retirement seam and shared deletion regression tests.**
+```ts
+// services/hardwareHealth/retire.test.ts
+import { expect,it } from 'vitest';
+import { resolveAlertsForRemovedComponents } from './retire';
+it.each([{keys:[]},{keys:['storcli:c0:e1:s1']}])('W01 retirement is a no-op for $keys',async({keys})=>{
+ expect(await resolveAlertsForRemovedComponents('11111111-1111-4111-8111-111111111111',keys)).toBe(0);
+});
+```
+```ts
+// apps/api/src/services/deviceDeletion.hardwareHealth.test.ts
+import { beforeEach,expect,it,vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
+const m=vi.hoisted(()=>({retire:vi.fn(),keys:['collector:storcli','storcli:c0'],order:[] as string[]}));
+vi.mock('./hardwareHealth/retire',()=>({resolveAlertsForRemovedComponents:m.retire}));
+vi.mock('./sentry',()=>({captureMessage:vi.fn()}));
+vi.mock('../db/lockTimeout',()=>({tightenLockTimeout:vi.fn(async()=>null),lockTimeoutWasChanged:()=>false}));
+vi.mock('../routes/devices/core',()=>({DEVICE_DETACH_DEVICE_ID_TABLES:[],DEVICE_LINKED_DEVICE_ID_TABLES:[],DEVICE_LINK_DEPENDENT_COLUMNS:[],getDeviceCascadeDeleteTables:()=>['alerts','device_hardware_components','device_hardware_events','device_hardware_health']}));
+import { deleteDeviceCascade,type DeviceDeletionTx } from './deviceDeletion';
+const dialect=new PgDialect();
+function tx():DeviceDeletionTx{
+ return {
+  execute:vi.fn(async query=>{
+   const text=dialect.sqlToQuery(query as SQL).sql;m.order.push(text);
+   if(text.includes('FROM device_hardware_components'))return m.keys.map(component_key=>({component_key}));
+   if(text.includes('FOR UPDATE'))return Object.assign([{id:'device'}],{count:1});
+   return [];
+  }),
+  delete:()=>({where:async()=>{m.order.push('delete-device');}}),
+ };
+}
+beforeEach(()=>{m.keys=['collector:storcli','storcli:c0'];m.order=[];m.retire.mockReset().mockImplementation(async()=>{m.order.push('retire');return 0;});});
+it('locks the device, retires every component key, then deletes dependents and the device',async()=>{
+ await deleteDeviceCascade(tx(),'device');
+ expect(m.retire).toHaveBeenCalledWith('device',['collector:storcli','storcli:c0']);
+ const retired=m.order.indexOf('retire');
+ expect(retired).toBeGreaterThan(m.order.findIndex(q=>q.includes('FOR UPDATE')));
+ expect(m.order.findIndex(q=>q.startsWith('DELETE'))).toBeGreaterThan(retired);
+ expect(m.order.indexOf('delete-device')).toBeGreaterThan(retired);
+});
+it('deletes devices with no hardware without calling retirement',async()=>{
+ m.keys=[];await deleteDeviceCascade(tx(),'device');expect(m.retire).not.toHaveBeenCalled();expect(m.order).toContain('delete-device');
+});
+it('propagates retirement errors before any destructive statement',async()=>{
+ m.retire.mockRejectedValue(new Error('retirement unavailable'));
+ await expect(deleteDeviceCascade(tx(),'device')).rejects.toThrow('retirement unavailable');
+ expect(m.order.some(q=>q.startsWith('DELETE')||q==='delete-device')).toBe(false);
+});
+```
+Run red:
 ```bash
-git add apps/api/src/services/hardwareHealth/ingest.ts apps/api/src/services/hardwareHealth/ingest.test.ts
-git commit -m $'feat(hardware): reduce complete snapshots and collectors\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>'
+pnpm --filter @breeze/api exec vitest run src/services/hardwareHealth/retire.test.ts src/services/deviceDeletion.hardwareHealth.test.ts
+```
+Expected: missing seam module and retirement never called from deletion.
+
+- [ ] **Step 6: Implement the no-op seam and wire shared deletion before any child deletion.**
+```ts
+// services/hardwareHealth/retire.ts
+export async function resolveAlertsForRemovedComponents(_deviceId:string,_componentKeys:string[]):Promise<number>{return 0;}
+```
+In `services/deviceDeletion.ts`, add the import and insert the query/call immediately before `const deviceAlertIds` (after the parent lock and lock-timeout restoration, before alert dependents or cascade tables can disappear). This function already requires a transaction inside the caller's DB context; keep that context, propagate errors, and never detach retirement into a second connection.
+```ts
+import { resolveAlertsForRemovedComponents } from './hardwareHealth/retire';
+// Inside deleteDeviceCascade, immediately before const deviceAlertIds:
+const hardwareRows=await tx.execute(sql`SELECT component_key FROM device_hardware_components WHERE device_id = ${deviceId} ORDER BY component_key`);
+// postgres-js execute returns the row array, not a { rows } wrapper.
+const componentKeys=(hardwareRows as {component_key:string}[]).map(row=>row.component_key);
+if(componentKeys.length)await resolveAlertsForRemovedComponents(deviceId,componentKeys);
+```
+The existing `deviceDeletion.test.ts` transaction doubles currently return `undefined` for unhandled SELECTs. Add this branch immediately after each `const text = JSON.stringify(query)` in its mocked `execute` implementations, before their fallback, so the new query gets the driver's real empty-array shape:
+```ts
+if(text.includes('SELECT component_key FROM device_hardware_components'))return Promise.resolve([]);
+```
+Run green:
+```bash
+pnpm --filter @breeze/api exec vitest run src/services/hardwareHealth/ingest.test.ts src/services/hardwareHealth/retire.test.ts src/services/deviceDeletion.hardwareHealth.test.ts src/services/deviceDeletion.test.ts src/services/deviceLifecycle.test.ts src/routes/devices/cascadeDelete.test.ts
+```
+Expected: collector removal remains pure reduction; shared deletion retires collector and hardware subjects before deleting alert dependents or components, and aborts on retirement failure. W01 does not implement subject-alert resolution or import W03's future column.
+
+- [ ] **Step 7: Commit.**
+```bash
+git add apps/api/src/services/hardwareHealth/ingest.ts apps/api/src/services/hardwareHealth/ingest.test.ts apps/api/src/services/hardwareHealth/retire.ts apps/api/src/services/hardwareHealth/retire.test.ts apps/api/src/services/deviceDeletion.ts apps/api/src/services/deviceDeletion.test.ts apps/api/src/services/deviceDeletion.hardwareHealth.test.ts
+git commit -m $'feat(hardware): reduce snapshots and wire component retirement\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>'
 ```
 
 ### Task 11: Persist accepted snapshots under one device-health lock
 
-**Files:** Modify `apps/api/src/services/hardwareHealth/ingest.ts`, `.test.ts`; Create `ingest.integration.test.ts` (runner registration already in Task 3).
+**Files:** Modify `apps/api/src/services/hardwareHealth/ingest.ts`, `.test.ts`; Create `ingest.retirement.test.ts`, `ingest.integration.test.ts` (runner registration already in Task 3).
 **Interfaces:** Produces exact index §D `IngestResult` and `ingestHardwareHealthSnapshot(input): Promise<IngestResult>`. Consumes `reduceSnapshot`; caller supplies authenticated `{id,orgId}` and server `receivedAt`. Decision: a first-ever sequence 0 is accepted when `lastReceivedAt` is null; the reset window is strictly greater than 1 hour. Server writers preserve the agent sequence/receipt/config envelope; the future server poller owns its independent ordering column.
 
 - [ ] **Step 1: Append unit ordering cases and write the real concurrency test.**
@@ -1135,16 +1242,63 @@ it('serializes two same-sequence restart snapshots and rejects without writes',a
  expect(unchanged!.lastAgentSequence).toBe(0);
 });
 ```
+Add the isolated persistence-order regression (the retirement export is already present from Task 10):
+```ts
+// apps/api/src/services/hardwareHealth/ingest.retirement.test.ts
+import { beforeEach,expect,it,vi } from 'vitest';
+const m=vi.hoisted(()=>({rows:[] as any[][],order:[] as string[],retire:vi.fn()}));
+vi.mock('../../db',()=>{
+ const db={
+  select:()=>{const rows=m.rows.shift()??[];const q:any={then:(a:any,b:any)=>Promise.resolve(rows).then(a,b)};for(const k of ['from','where','for'])q[k]=()=>q;return q;},
+  insert:()=>({values:()=>({onConflictDoNothing:async()=>{},onConflictDoUpdate:async()=>{m.order.push('upsert');},then:(a:any,b:any)=>Promise.resolve().then(a,b)})}),
+  delete:()=>({where:async()=>{m.order.push('delete');}}),
+  update:()=>({set:()=>({where:async()=>{m.order.push('rollup');}})}),
+ };
+ return {db,withDbTransaction:async(fn:any)=>fn()};
+});
+vi.mock('./retire',()=>({resolveAlertsForRemovedComponents:m.retire}));
+import { hardwareHealthSnapshotSchema } from '@breeze/shared';
+import { componentChange,ingestHardwareHealthSnapshot } from './ingest';
+const device={id:'11111111-1111-4111-8111-111111111111',orgId:'22222222-2222-4222-8222-222222222222'};
+const now=new Date('2026-09-23T12:00:00Z');
+const wire=hardwareHealthSnapshotSchema.parse({snapshotId:'33333333-3333-4333-8333-333333333333',sequence:2,collectedAt:now.toISOString(),agentVersion:'1',pollIntervalMinutes:10,diskHealthIntervalMinutes:60,tiersRun:['raid'],sources:[],components:[]});
+const collector=componentChange(undefined,{componentKey:'collector:storcli',componentType:'collector',source:'storcli',name:'storcli',state:'failed',predictiveFailure:false,alertExempt:false,attributes:{}},device,wire,now).row;
+const health={lastAgentSequence:1,lastReceivedAt:now};
+beforeEach(()=>{m.rows=[[device],[health],[collector]];m.order=[];m.retire.mockReset().mockImplementation(async()=>{m.order.push('retire');return 0;});});
+it.each(['unavailable','superseded','disabled'] as const)('retires %s collector subjects before deletion and rollup',async status=>{
+ await ingestHardwareHealthSnapshot({device,snapshot:{...wire,sources:[{source:'storcli',status}]},writer:'agent',receivedAt:now});
+ expect(m.retire).toHaveBeenCalledExactlyOnceWith(device.id,['collector:storcli']);
+ expect(m.order).toEqual(['retire','delete','rollup']);
+});
+it('does not delete or publish a new rollup if retirement fails',async()=>{
+ m.retire.mockRejectedValue(new Error('retirement unavailable'));
+ await expect(ingestHardwareHealthSnapshot({device,snapshot:{...wire,sources:[{source:'storcli',status:'disabled'}]},writer:'agent',receivedAt:now})).rejects.toThrow('retirement unavailable');
+ expect(m.order).toEqual([]);
+});
+it('does not retire on a rejected snapshot or a silent source',async()=>{
+ await ingestHardwareHealthSnapshot({device,snapshot:{...wire,sequence:1,sources:[{source:'storcli',status:'disabled'}]},writer:'agent',receivedAt:now});
+ expect(m.retire).not.toHaveBeenCalled();expect(m.order).toEqual([]);
+ m.rows=[[device],[health],[collector]];
+ await ingestHardwareHealthSnapshot({device,snapshot:wire,writer:'agent',receivedAt:now});
+ expect(m.retire).not.toHaveBeenCalled();expect(m.order).toEqual(['rollup']);
+});
+```
 - [ ] **Step 2: Run red.**
 ```bash
-cd apps/api && npx vitest run src/services/hardwareHealth/ingest.test.ts
+cd apps/api && npx vitest run src/services/hardwareHealth/ingest.test.ts src/services/hardwareHealth/ingest.retirement.test.ts
 cd apps/api && npx vitest run -c vitest.integration.config.ts src/services/hardwareHealth/ingest.integration.test.ts
 ```
-Expect missing `acceptsAgentSequence` / `ingestHardwareHealthSnapshot` exports.
-- [ ] **Step 3: Implement the transaction.** Add these imports and append the functions. Parent key-share follows the existing agent-health ownership pattern and prevents concurrent device move/delete from invalidating the authenticated org between lookup and insert.
+Expect missing `acceptsAgentSequence` / `ingestHardwareHealthSnapshot` exports. With the old immediate-delete implementation, the retirement assertions fail for all three nonfault statuses.
+- [ ] **Step 3: Implement the transaction.** Add these imports and append the functions. Use `withDbTransaction` (`db/index.ts:947`) to bind the ambient `db` used by the two-argument retirement seam to the same savepoint as every ingest write. Its errors roll back the accepted snapshot; do not catch retirement failures or open a second DB context. Parent key-share follows the existing agent-health ownership pattern and prevents concurrent device move/delete from invalidating the authenticated org between lookup and insert.
+Replace Task 9's DB mock in `ingest.test.ts` so the pure reducer tests can import the new transaction helper:
+```ts
+vi.mock('../../db',()=>({db:{transaction:vi.fn()},withDbTransaction:vi.fn()}));
+```
+Then append the implementation:
 ```ts
 import { and,eq,inArray } from 'drizzle-orm';
-import { db } from '../../db';
+import { db,withDbTransaction } from '../../db';
+import { resolveAlertsForRemovedComponents } from './retire';
 import { devices } from '../../db/schema';
 export type IngestResult={accepted:true;events:number;health:HardwareHealth}|{accepted:false;reason:'stale_snapshot'};
 export function acceptsAgentSequence(health:{lastReceivedAt:Date|null;lastAgentSequence:number},sequence:number,receivedAt:Date):boolean{
@@ -1152,7 +1306,8 @@ export function acceptsAgentSequence(health:{lastReceivedAt:Date|null;lastAgentS
 }
 export async function ingestHardwareHealthSnapshot(input:{device:{id:string;orgId:string};snapshot:HardwareHealthSnapshot;writer:'agent'|'server';receivedAt:Date}):Promise<IngestResult>{
  const {device,snapshot,receivedAt,writer}=input;
- return db.transaction(async tx=>{
+ return withDbTransaction(async()=>{
+  const tx=db;
   const [owner]=await tx.select({id:devices.id}).from(devices).where(and(eq(devices.id,device.id),eq(devices.orgId,device.orgId))).for('key share');
   if(!owner)throw new Error('Hardware device missing or ownership changed');
   await tx.insert(deviceHardwareHealth).values({deviceId:device.id,orgId:device.orgId}).onConflictDoNothing({target:deviceHardwareHealth.deviceId});
@@ -1165,7 +1320,10 @@ export async function ingestHardwareHealthSnapshot(input:{device:{id:string;orgI
    const {id,createdAt,firstSeenAt,...update}=row;
    await tx.insert(deviceHardwareComponents).values(row).onConflictDoUpdate({target:[deviceHardwareComponents.deviceId,deviceHardwareComponents.componentKey],set:update});
   }
-  if(change.deletedKeys.length)await tx.delete(deviceHardwareComponents).where(and(eq(deviceHardwareComponents.deviceId,device.id),inArray(deviceHardwareComponents.componentKey,change.deletedKeys)));
+  if(change.deletedKeys.length){
+   await resolveAlertsForRemovedComponents(device.id,change.deletedKeys);
+   await tx.delete(deviceHardwareComponents).where(and(eq(deviceHardwareComponents.deviceId,device.id),inArray(deviceHardwareComponents.componentKey,change.deletedKeys)));
+  }
   for(let i=0;i<change.events.length;i+=500)await tx.insert(deviceHardwareEvents).values(change.events.slice(i,i+500));
   await tx.update(deviceHardwareHealth).set({health:change.health,collectorHealth:change.collectorHealth,summary:change.summary,updatedAt:receivedAt,
    ...(writer==='agent'?{sources:snapshot.sources,lastAgentSequence:snapshot.sequence,lastSnapshotId:snapshot.snapshotId,lastCollectedAt:new Date(snapshot.collectedAt),lastReceivedAt:receivedAt,lastRaidReceivedAt:snapshot.tiersRun.includes('raid')?receivedAt:health.lastRaidReceivedAt,lastDiskReceivedAt:snapshot.tiersRun.includes('disk')?receivedAt:health.lastDiskReceivedAt,pollIntervalMinutes:snapshot.pollIntervalMinutes,diskHealthIntervalMinutes:snapshot.diskHealthIntervalMinutes,tiersRun:snapshot.tiersRun,agentVersion:snapshot.agentVersion}:{}),
@@ -1174,17 +1332,17 @@ export async function ingestHardwareHealthSnapshot(input:{device:{id:string;orgI
  });
 }
 ```
-- [ ] **Step 4: Run green.** Repeat Step 2 — same-sequence race accepts exactly one reset, counters advance twice total, event count does not grow for rejected snapshots, server writer preserves agent metadata.
+- [ ] **Step 4: Run green.** Repeat Step 2 — same-sequence race accepts exactly one reset, counters advance twice total, event count does not grow for rejected snapshots, server writer preserves agent metadata, and retirement precedes collector deletion for each nonfault status.
 - [ ] **Step 5: Commit.**
 ```bash
-git add apps/api/src/services/hardwareHealth/ingest.ts apps/api/src/services/hardwareHealth/ingest.test.ts apps/api/src/services/hardwareHealth/ingest.integration.test.ts
+git add apps/api/src/services/hardwareHealth/ingest.ts apps/api/src/services/hardwareHealth/ingest.test.ts apps/api/src/services/hardwareHealth/ingest.integration.test.ts apps/api/src/services/hardwareHealth/ingest.retirement.test.ts
 git commit -m $'feat(hardware): serialize snapshot ingestion and resets\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>'
 ```
 
 ### Task 12: Expose bounded, main-agent-only snapshot ingest
 
-**Files:** Create `apps/api/src/routes/agents/hardwareHealth.ts`, `.test.ts`; Modify `routes/agents/index.ts:12,76`, `services/mcpCoverage.ts:70`.
-**Interfaces:** Consumes `ingestHardwareHealthSnapshot` and `InvalidHardwareSnapshotError`; produces `hardwareHealthRoutes` and PUT `/api/v1/agents/:agentId/hardware-health`. The internal route parameter is `:id`, because `agentAuthMiddleware` at `middleware/agentAuth.ts:565–566` reads that name; the external URL is identical to index §C.
+**Files:** Create `apps/api/src/routes/agents/hardwareHealth.ts`, `.test.ts`, `apps/api/src/routes/agents/hardwareHealth.mounted.test.ts`; Modify `routes/agents/index.ts:12,76`, `services/mcpCoverage.ts:70`, `apps/api/src/middleware/bodyLimit.ts`, `apps/api/src/middleware/bodyLimit.test.ts`.
+**Interfaces:** Consumes `ingestHardwareHealthSnapshot` and `InvalidHardwareSnapshotError`; produces `hardwareHealthRoutes` and PUT `/api/v1/agents/:id/hardware-health`. Keep the parameter `:id`: `agentAuthMiddleware` at `middleware/agentAuth.ts:565–566` reads that name, as required by index §C. Both the global gate and the route allow exactly 2 MiB.
 
 - [ ] **Step 1: Write transport tests using the real role guard and validator.**
 ```ts
@@ -1250,16 +1408,104 @@ agentRoutes.route('/',hardwareHealthRoutes);
 // services/mcpCoverage.ts entry:
 'agents/hardwareHealth.ts':{exempt:'agent_transport'},
 ```
-- [ ] **Step 4: Run green.** `cd apps/api && npx vitest run src/routes/agents/hardwareHealth.test.ts src/__tests__/mcp-coverage.test.ts` — transport and coverage pass. Parent auth remains ahead of the new mounted route; do not add an auth skip.
-- [ ] **Step 5: Commit.**
+- [ ] **Step 4: Prove the global gate on the fully mounted agent route.** Add these unit cases to `middleware/bodyLimit.test.ts`:
+```ts
+it('allows exactly 2 MiB on hardware-health without widening sibling paths',()=>{
+ expect(bodyLimitForPath('/api/v1/agents/agent-1/hardware-health')).toEqual({rule:'agent-hardware-health',maxSize:2*1024*1024,error:'Request body too large'});
+ for(const suffix of ['hardware-health/extra','hardware-health-extra','monitoring-results','warranty-info'])expect(bodyLimitForPath(`/api/v1/agents/agent-1/${suffix}`).maxSize).toBe(1024*1024);
+});
+```
+Create the mounted regression below. It uses the production `createGlobalBodyLimitMiddleware` and the real `agentRoutes` parent mount; only sibling routers, DB persistence and credential lookup are mocked. It does not start the server or workers. A direct `hardwareHealthRoutes.request()` would miss this bug.
+```ts
+// apps/api/src/routes/agents/hardwareHealth.mounted.test.ts
+import { beforeEach,expect,it,vi } from 'vitest';
+import { Hono } from 'hono';
+const m=vi.hoisted(()=>({ingest:vi.fn(),authIds:[] as string[]}));
+vi.mock('../../db',()=>({db:{select:()=>({from:()=>({where:()=>({limit:async()=>[{id:'11111111-1111-4111-8111-111111111111',orgId:'22222222-2222-4222-8222-222222222222'}]})})})}}));
+vi.mock('../../services/hardwareHealth/ingest',()=>({ingestHardwareHealthSnapshot:m.ingest,InvalidHardwareSnapshotError:class extends Error{constructor(public path:string){super(path);}}}));
+vi.mock('../../middleware/agentAuth',()=>({agentAuthMiddleware:async(c:any,next:any)=>{m.authIds.push(c.req.param('id'));c.set('agent',{role:'agent'});return next();}}));
+vi.mock('./download',async()=>({downloadRoutes:new (await import('hono')).Hono()}));
+vi.mock('./enrollment',async()=>({enrollmentRoutes:new (await import('hono')).Hono()}));
+vi.mock('./heartbeat',async()=>({heartbeatRoutes:new (await import('hono')).Hono()}));
+vi.mock('./uninstallIntent',async()=>({uninstallIntentRoutes:new (await import('hono')).Hono()}));
+vi.mock('./commands',async()=>({commandsRoutes:new (await import('hono')).Hono()}));
+vi.mock('./pamObservations',async()=>({pamObservationRoutes:new (await import('hono')).Hono()}));
+vi.mock('./pamReconciliation',async()=>({pamReconciliationRoutes:new (await import('hono')).Hono()}));
+vi.mock('./security',async()=>({agentSecurityRoutes:new (await import('hono')).Hono()}));
+vi.mock('./recoveryKeys',async()=>({agentRecoveryKeysRoutes:new (await import('hono')).Hono()}));
+vi.mock('./inventory',async()=>({inventoryRoutes:new (await import('hono')).Hono()}));
+vi.mock('./state',async()=>({stateRoutes:new (await import('hono')).Hono()}));
+vi.mock('./sessions',async()=>({sessionsRoutes:new (await import('hono')).Hono()}));
+vi.mock('./patches',async()=>({patchesRoutes:new (await import('hono')).Hono()}));
+vi.mock('./connections',async()=>({connectionsRoutes:new (await import('hono')).Hono()}));
+vi.mock('./eventlogs',async()=>({eventLogsRoutes:new (await import('hono')).Hono()}));
+vi.mock('./logs',async()=>({logsRoutes:new (await import('hono')).Hono()}));
+vi.mock('./mtls',async()=>({mtlsRoutes:new (await import('hono')).Hono()}));
+vi.mock('./bootPerformance',async()=>({bootPerformanceRoutes:new (await import('hono')).Hono()}));
+vi.mock('./reliability',async()=>({reliabilityRoutes:new (await import('hono')).Hono()}));
+vi.mock('./changes',async()=>({changesRoutes:new (await import('hono')).Hono()}));
+vi.mock('./peripherals',async()=>({peripheralRoutes:new (await import('hono')).Hono()}));
+vi.mock('./token',async()=>({tokenRoutes:new (await import('hono')).Hono()}));
+vi.mock('./elevationRequests',async()=>({elevationRequestsRoutes:new (await import('hono')).Hono()}));
+vi.mock('./processSample',async()=>({processSampleRoutes:new (await import('hono')).Hono()}));
+vi.mock('./unifiTelemetry',async()=>({unifiTelemetryRoutes:new (await import('hono')).Hono()}));
+vi.mock('./wingetBootstrap',async()=>({wingetBootstrapRoutes:new (await import('hono')).Hono()}));
+import { agentRoutes } from './index';
+import { hardwareHealthSnapshotSchema } from '@breeze/shared';
+import { createGlobalBodyLimitMiddleware } from '../../middleware/bodyLimitGate';
+const wire={snapshotId:'33333333-3333-4333-8333-333333333333',sequence:1,collectedAt:'2026-09-23T00:00:00Z',agentVersion:'1',pollIntervalMinutes:10,diskHealthIntervalMinutes:60,tiersRun:['disk'],sources:[{source:'smartctl',status:'ok',complete:true}],components:Array.from({length:220},(_,i)=>({componentKey:`smart:serial-${i}`,componentType:'physical_disk',source:'smartctl',name:`Disk ${i}`,state:'online',attributes:{padding:'x'.repeat(7000)}}))};
+const json=JSON.stringify(wire);
+const app=new Hono();
+app.use('*',createGlobalBodyLimitMiddleware({warn:()=>{},capture:()=>{}}));
+app.route('/api/v1/agents',agentRoutes);
+beforeEach(()=>{m.authIds=[];m.ingest.mockReset().mockResolvedValue({accepted:true,events:220,health:'ok'});});
+function request(body:string,withLength:boolean){
+ const headers:Record<string,string>={'content-type':'application/json'};
+ if(withLength)headers['content-length']=String(Buffer.byteLength(body));
+ return app.request('/api/v1/agents/agent-1/hardware-health',{method:'PUT',headers,body});
+}
+it.each([false,true])('accepts a valid snapshot between 1 and 2 MiB (Content-Length: %s)',async withLength=>{
+ expect(Buffer.byteLength(json)).toBeGreaterThan(1024*1024);expect(Buffer.byteLength(json)).toBeLessThan(2*1024*1024);
+ expect(hardwareHealthSnapshotSchema.safeParse(wire).success).toBe(true);
+ const res=await request(json,withLength);expect(res.status).toBe(200);expect(await res.json()).toEqual({accepted:true,events:220});
+ expect(m.authIds).toEqual(['agent-1']);expect(m.ingest).toHaveBeenCalledOnce();
+});
+it.each([false,true])('accepts the byte boundary and rejects one byte over (Content-Length: %s)',async withLength=>{
+ const exact=json+' '.repeat(2*1024*1024-Buffer.byteLength(json));
+ expect((await request(exact,withLength)).status).toBe(200);
+ m.ingest.mockClear();m.authIds=[];
+ expect((await request(exact+' ',withLength)).status).toBe(413);
+ expect(m.ingest).not.toHaveBeenCalled();expect(m.authIds).toEqual([]);
+});
+```
+Run red after Step 3 creates and mounts the route:
 ```bash
-git add apps/api/src/routes/agents/hardwareHealth.ts apps/api/src/routes/agents/hardwareHealth.test.ts apps/api/src/routes/agents/index.ts apps/api/src/services/mcpCoverage.ts
+pnpm --filter @breeze/api exec vitest run src/middleware/bodyLimit.test.ts src/routes/agents/hardwareHealth.mounted.test.ts
+```
+Expected: the global rule is still `default`/1 MiB; the valid large snapshot and exact-boundary requests return 413 before ingest.
+
+- [ ] **Step 5: Add the explicit global exception.** In `middleware/bodyLimit.ts`, append the bounded rule label to `BodyLimitRule`, and insert this branch before the existing 5 MiB agent-ingest branch. Keep its final-segment allowlist unchanged so only hardware-health gains this 2 MiB allowance.
+```ts
+// BodyLimitRule union:
+| 'agent-hardware-health'
+// bodyLimitForPath, before the agent-ingest branch:
+if(path.match(/^\/api\/v1\/agents\/[^/]+\/hardware-health$/)){
+ return {rule:'agent-hardware-health',maxSize:2*1024*1024,error:'Request body too large'};
+}
+// bodyLimit.test.ts sampled rule-label map:
+'agent-hardware-health':'/api/v1/agents/agent-1/hardware-health',
+```
+
+- [ ] **Step 6: Run green.** `cd apps/api && npx vitest run src/routes/agents/hardwareHealth.test.ts src/routes/agents/hardwareHealth.mounted.test.ts src/middleware/bodyLimit.test.ts src/middleware/bodyLimitGate.test.ts src/__tests__/mcp-coverage.test.ts` — transport and coverage pass. Parent auth remains ahead of the new mounted route; do not add an auth skip.
+- [ ] **Step 7: Commit.**
+```bash
+git add apps/api/src/routes/agents/hardwareHealth.ts apps/api/src/routes/agents/hardwareHealth.test.ts apps/api/src/routes/agents/index.ts apps/api/src/services/mcpCoverage.ts apps/api/src/middleware/bodyLimit.ts apps/api/src/middleware/bodyLimit.test.ts apps/api/src/routes/agents/hardwareHealth.mounted.test.ts
 git commit -m $'feat(hardware): accept authenticated hardware snapshots\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>'
 ```
 
 ### Task 13: Share the hardware view between authorized GET and AI reads
 
-**Files:** Create `apps/api/src/services/hardwareHealth/view.ts`, `.test.ts`, `apps/api/src/routes/devices/hardwareHealth.ts`, `.test.ts`, `apps/api/src/services/aiToolsDevice.hardwareHealth.test.ts`; Modify `routes/devices/index.ts:7,146`, `services/aiToolsDevice.ts:196–248`, `services/mcpCoverage.ts:218`.
+**Files:** Create `apps/api/src/services/hardwareHealth/view.ts`, `.test.ts`, `apps/api/src/routes/devices/hardwareHealth.ts`, `.test.ts`, `apps/api/src/services/aiToolsDevice.hardwareHealth.test.ts`; Modify `routes/devices/index.ts:7,146`, `services/aiToolsDevice.ts:196–248`, `services/mcpCoverage.ts:218`. Also create `apps/api/src/services/aiToolsDevice.hardwareHealth.registry.test.ts`; modify `apps/api/src/services/aiToolSchemas.ts`, `aiGuardrails.ts`, `aiAgentSdkTools.ts`, `aiTools.ts`, `helperToolFilter.ts`, `helperToolFilter.test.ts`, `scriptBuilderTools.ts`, `mcpGuidance.ts`, `aiGuardrails.agentPrincipal.contract.test.ts`, `aiAgents/agentToolCatalog.ts`, `aiAgents/analysisProfile.ts`, `aiAgents/sweepProfile.ts`, `aiAgents/verdictProfile.ts`, `aiAgents/designProfile.ts`, `aiAgents/patchProfile.ts` (service paths relative to `apps/api/src/services/`), and `apps/web/src/components/ai-risk/tierConfig.ts`.
 **Interfaces:** Produces `HardwareComponentView`, `HardwareEventView`, exact index §D `HardwareHealthView` and `getDeviceHardwareHealthView(deviceId:string,opts?:{eventLimit?:number}):Promise<HardwareHealthView|null>`. Consumes `isComponentFresh`; existing authorization signatures are `getDeviceWithOrgAndSiteCheck(c:Context,deviceId:string,auth:Pick<AuthContext,'scope'|'orgId'|'accessibleOrgIds'|'canAccessOrg'>)` and `verifyDeviceAccess(deviceId:string,auth:AuthContext,requireOnline=false)` (`aiTools.ts:166`). All dates in the wire view are ISO strings, nullable dates stay null, and event limit clamps to 0–50.
 
 - [ ] **Step 1: Write view shape/freshness tests.**
@@ -1391,31 +1637,142 @@ registerTool({tier:1,domain:'devices',deviceArgs:['deviceId'],searchHint:'RAID a
  },
 });
 ```
-- [ ] **Step 8: Run all read-surface checks green.**
+- [ ] **Step 8: Inventory every existing device-tool registry and pin the new tool red.** Run from the repository root:
 ```bash
-cd apps/api && npx vitest run src/services/hardwareHealth/view.test.ts src/routes/devices/hardwareHealth.test.ts src/services/aiToolsDevice.hardwareHealth.test.ts src/services/aiToolsDevice.siteScope.test.ts src/__tests__/mcp-coverage.test.ts
+rg -n 'get_device_details' apps/api/src packages/
 ```
-Expected: pass; missing/foreign-org/forbidden-site checks short-circuit reads.
-- [ ] **Step 9: Commit.**
+The runtime registrations are: `registerDeviceTools`; `toolInputSchemas`; `TOOL_PERMISSIONS`; `TOOL_TIERS` and `buildBreezeSdkTools` declarations; `HELPER_TOOL_SCOPING` and helper `BASIC_TOOLS`; `SCRIPT_BUILDER_TOOL_TIERS` and `buildScriptBuilderTools` declarations; `TOOL_CAPABILITY`; the analysis/sweep/verdict/design/patch profile allowlists; and the device-investigation `MCP_PROMPTS.referencedTools`. `mcpCoverage.ts` is route-specific: register the new hardware-health route as in Step 5, without claiming that this tool covers `devices/core.ts` or `devices/hardware.ts`. The other grep matches are fixtures, assertions, or explanatory text, not additional dispatch registries. Shared-package matches are validator tests, not a tool registry. The capability map also has a web category parity dependency, so W01 supplies both `TIER_DEFINITIONS` and `RBAC_MAPPINGS` entries in `tierConfig.ts`.
+
+Create this test with the real registry (separate from Step 6’s mocked handler test):
+```ts
+// apps/api/src/services/aiToolsDevice.hardwareHealth.registry.test.ts
+import { expect,it } from 'vitest';
+import { aiTools,HELPER_TOOL_SCOPING,applyHelperDeviceScope } from './aiTools';
+import { toolInputSchemas } from './aiToolSchemas';
+import { TOOL_PERMISSIONS,checkGuardrails } from './aiGuardrails';
+import { TOOL_TIERS,buildBreezeSdkTools } from './aiAgentSdkTools';
+import { SCRIPT_BUILDER_TOOL_TIERS,buildScriptBuilderTools } from './scriptBuilderTools';
+import { getHelperAllowedTools } from './helperToolFilter';
+import { TOOL_CAPABILITY } from './aiAgents/agentToolCatalog';
+import { ANALYSIS_TOOL_ALLOWLIST } from './aiAgents/analysisProfile';
+import { SWEEP_TOOL_ALLOWLIST } from './aiAgents/sweepProfile';
+import { VERDICT_TOOL_ALLOWLIST } from './aiAgents/verdictProfile';
+import { DESIGN_TOOL_ALLOWLIST } from './aiAgents/designProfile';
+import { PATCH_TOOL_ALLOWLIST } from './aiAgents/patchProfile';
+import { MCP_PROMPTS } from './mcpGuidance';
+const name='get_device_hardware_health';
+const deviceId='11111111-1111-4111-8111-111111111111';
+it('registers schema, read permission and tier without legacy-gap exemptions',()=>{
+ expect(aiTools.get(name)).toMatchObject({tier:1,domain:'devices',deviceArgs:['deviceId']});
+ expect(TOOL_TIERS[name]).toBe(1);expect(checkGuardrails(name,{deviceId}).tier).toBe(1);
+ expect(TOOL_PERMISSIONS[name]).toEqual({resource:'devices',action:'read'});
+ const schema=toolInputSchemas[name]!;
+ expect(schema.safeParse({deviceId}).success).toBe(true);
+ expect(schema.safeParse({deviceId,includeEvents:true}).success).toBe(true);
+ for(const input of [{},{deviceId:'invalid'},{deviceId,includeEvents:'true'}])expect(schema.safeParse(input).success).toBe(false);
+});
+it('declares callable chat and script-builder tools with matching inputs',()=>{
+ const auth=()=>{throw new Error('declaration inspection must not execute handlers');};
+ for(const tools of [buildBreezeSdkTools(auth),buildScriptBuilderTools(auth)]){
+  const tool=tools.find(t=>t.name===name);expect(tool).toBeDefined();expect(typeof tool!.handler).toBe('function');
+  expect(Object.keys(tool!.inputSchema).sort()).toEqual(['deviceId','includeEvents']);
+ }
+ expect(SCRIPT_BUILDER_TOOL_TIERS[name]).toBe(1);
+});
+it('pins Helper reads to its own device and exposes the tool in every device-read profile',()=>{
+ expect(getHelperAllowedTools('basic')).toContain(name);expect(HELPER_TOOL_SCOPING[name]).toBe('deviceId');
+ expect(applyHelperDeviceScope(name,{deviceId},'helper-device')).toEqual(applyHelperDeviceScope('get_device_details',{deviceId},'helper-device'));
+ for(const list of [ANALYSIS_TOOL_ALLOWLIST,SWEEP_TOOL_ALLOWLIST,VERDICT_TOOL_ALLOWLIST,DESIGN_TOOL_ALLOWLIST,PATCH_TOOL_ALLOWLIST])expect(list).toContain(name);
+ expect(TOOL_CAPABILITY[name]).toBe(TOOL_CAPABILITY.get_device_details);
+ expect(MCP_PROMPTS.find(p=>p.name==='breeze-device-investigate')!.referencedTools).toContain(name);
+});
+```
+Run red after Step 7 registers the handler:
 ```bash
-git add apps/api/src/services/hardwareHealth/view.ts apps/api/src/services/hardwareHealth/view.test.ts apps/api/src/routes/devices/hardwareHealth.ts apps/api/src/routes/devices/hardwareHealth.test.ts apps/api/src/routes/devices/index.ts apps/api/src/services/aiToolsDevice.ts apps/api/src/services/aiToolsDevice.hardwareHealth.test.ts apps/api/src/services/mcpCoverage.ts apps/api/src/routes/agents/helpers.ts
+pnpm --filter @breeze/api exec vitest run src/services/aiToolsDevice.hardwareHealth.registry.test.ts src/services/aiToolsRegistryParity.test.ts src/services/aiAgentSdkTools.registryParity.contract.test.ts
+```
+Expected: new tool missing schema/RBAC/tier/SDK and secondary registries. Never add it to any missing-registration exception set.
+
+- [ ] **Step 9: Register the input, RBAC and both SDK surfaces.** Insert each entry next to `get_device_details` in the named registry:
+```ts
+// aiToolSchemas.ts — toolInputSchemas:
+get_device_hardware_health:z.object({deviceId:uuid,includeEvents:z.boolean().optional()}),
+// aiGuardrails.ts — TOOL_PERMISSIONS:
+get_device_hardware_health:{resource:'devices',action:'read'},
+// aiAgentSdkTools.ts — TOOL_TIERS:
+get_device_hardware_health:1,
+// aiAgentSdkTools.ts — buildBreezeSdkTools array:
+tool(
+ 'get_device_hardware_health',
+ registryDescription('get_device_hardware_health'),
+ {deviceId:uuid,includeEvents:z.boolean().optional()},
+ makeHandler('get_device_hardware_health',getAuth,onPreToolUse,onPostToolUse)
+),
+// scriptBuilderTools.ts — SCRIPT_BUILDER_TOOL_TIERS:
+get_device_hardware_health:1,
+// scriptBuilderTools.ts — buildScriptBuilderTools array:
+tool(
+ 'get_device_hardware_health',
+ 'Get current hardware health, components, collectors and optional recent events.',
+ {deviceId:uuid,includeEvents:z.boolean().optional()},
+ makeExistingHandler('get_device_hardware_health',getAuth,onPreToolUse,onPostToolUse)
+),
+```
+All used helpers and `z`/`uuid` already exist in their respective files. Missing `includeEvents` stays optional; the handler defaults to no events exactly as in Step 7.
+
+- [ ] **Step 10: Complete the scoped-read registries and their exact-set expectations.** Insert each map/array entry next to its existing `get_device_details` entry:
+```ts
+// aiTools.ts — HELPER_TOOL_SCOPING:
+get_device_hardware_health:'deviceId',
+// helperToolFilter.ts — BASIC_TOOLS:
+'get_device_hardware_health',
+// aiAgents/agentToolCatalog.ts — TOOL_CAPABILITY:
+get_device_hardware_health:'automations_reports',
+// aiAgents/analysisProfile.ts — ANALYSIS_TOOL_ALLOWLIST:
+'get_device_hardware_health',
+// aiAgents/sweepProfile.ts — SWEEP_TOOL_ALLOWLIST:
+'get_device_hardware_health',
+// aiAgents/verdictProfile.ts — VERDICT_TOOL_ALLOWLIST:
+'get_device_hardware_health',
+// aiAgents/designProfile.ts — DESIGN_TOOL_ALLOWLIST:
+'get_device_hardware_health',
+// aiAgents/patchProfile.ts — PATCH_TOOL_ALLOWLIST:
+'get_device_hardware_health',
+// aiGuardrails.agentPrincipal.contract.test.ts — EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS:
+'get_device_hardware_health',
+// helperToolFilter.test.ts — expected array in the basic-set test:
+'get_device_hardware_health',
+// apps/web/src/components/ai-risk/tierConfig.ts — tier-1 TIER_DEFINITIONS.tools:
+{name:'get_device_hardware_health',description:'Get RAID, disk and hardware collector health',category:'Devices & Hardware'},
+// apps/web/src/components/ai-risk/tierConfig.ts — RBAC_MAPPINGS:
+get_device_hardware_health:'devices.read',
+```
+Rename the helper test to `basic set contains the 9 read-only device-scoped tools`. This read-only admission is deliberate; preserve device scoping and every existing guard. In `mcpGuidance.ts`, replace the device-investigation prompt's `referencedTools` value and line 2 of its render template with:
+```ts
+referencedTools:['resolve_device_context','query_devices','get_device_details','get_device_hardware_health','analyze_metrics','search_agent_logs','get_device_vulnerabilities'],
+```
+```text
+2. Pull get_device_details, get_device_hardware_health, analyze_metrics, and recent logs via search_agent_logs.
+```
+
+- [ ] **Step 11: Run all read-surface checks green.**
+```bash
+pnpm --filter @breeze/api exec vitest run src/services/hardwareHealth/view.test.ts src/routes/devices/hardwareHealth.test.ts src/services/aiToolsDevice.hardwareHealth.test.ts src/services/aiToolsDevice.siteScope.test.ts src/services/aiToolsDevice.hardwareHealth.registry.test.ts src/services/aiToolsRegistryParity.test.ts src/services/aiAgentSdkTools.registryParity.contract.test.ts src/__tests__/mcp-coverage.test.ts
+pnpm --filter @breeze/api exec vitest run src/services/helperToolFilter.test.ts src/services/aiTools.helperScope.test.ts src/services/scriptBuilderTools.guard.test.ts src/services/aiGuardrails.agentPrincipal.contract.test.ts src/services/aiToolPermissionsCatalogParity.contract.test.ts src/services/aiAgents/agentToolCatalog.contract.test.ts src/services/aiAgents/agentToolCatalog.categoryParity.test.ts src/services/aiAgents/agentToolCatalog.domainRelation.contract.test.ts src/services/aiAgents/analysisProfile.test.ts src/services/aiAgents/sweepProfile.test.ts src/services/aiAgents/verdictProfile.test.ts src/services/aiAgents/verdictProfile.contract.test.ts src/services/aiAgents/designProfile.test.ts src/services/aiAgents/patchProfile.test.ts src/services/mcpGuidancePromptTools.test.ts src/services/mcpGuidance.test.ts
+```
+Expected: both tool-registry parity suites (`aiToolsRegistryParity.test.ts` and `aiAgentSdkTools.registryParity.contract.test.ts`) pass with unchanged exception sets; SDK declarations are callable, helper reads remain device-pinned, capability/category parity and all five profiles include the tool, and missing/foreign-org/forbidden-site checks short-circuit reads.
+- [ ] **Step 12: Commit.**
+```bash
+git add apps/api/src/services/hardwareHealth/view.ts apps/api/src/services/hardwareHealth/view.test.ts apps/api/src/routes/devices/hardwareHealth.ts apps/api/src/routes/devices/hardwareHealth.test.ts apps/api/src/routes/devices/index.ts apps/api/src/services/aiToolsDevice.ts apps/api/src/services/aiToolsDevice.hardwareHealth.test.ts apps/api/src/services/mcpCoverage.ts apps/api/src/routes/agents/helpers.ts apps/api/src/services/aiToolsDevice.hardwareHealth.registry.test.ts apps/api/src/services/aiToolSchemas.ts apps/api/src/services/aiGuardrails.ts apps/api/src/services/aiAgentSdkTools.ts apps/api/src/services/aiTools.ts apps/api/src/services/helperToolFilter.ts apps/api/src/services/helperToolFilter.test.ts apps/api/src/services/scriptBuilderTools.ts apps/api/src/services/mcpGuidance.ts apps/api/src/services/aiGuardrails.agentPrincipal.contract.test.ts apps/api/src/services/aiAgents/agentToolCatalog.ts apps/api/src/services/aiAgents/analysisProfile.ts apps/api/src/services/aiAgents/sweepProfile.ts apps/api/src/services/aiAgents/verdictProfile.ts apps/api/src/services/aiAgents/designProfile.ts apps/api/src/services/aiAgents/patchProfile.ts apps/web/src/components/ai-risk/tierConfig.ts
 git commit -m $'feat(hardware): expose authorized health views and AI tool\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>'
 ```
 
 ### Task 14: Retire stale components and schedule bounded daily retention
 
-**Files:** Create `apps/api/src/services/hardwareHealth/retire.ts`, `.test.ts`, `apps/api/src/jobs/hardwareHealthRetention.ts`, `.test.ts`; Modify `apps/api/src/services/workerRegistry.ts:390–397`, `apps/api/src/jobs/scheduleRegistry.ts:104`, `apps/api/src/jobs/workerReadinessManifest.ts:82`.
-**Interfaces:** Produces exact `resolveAlertsForRemovedComponents(deviceId:string,componentKeys:string[]):Promise<number>` returning 0 in W01; W03 implements alert resolution in the ambient transaction. Consumes `pruneInCtidBatches(options:{table:string;where:SQL;batchSize:number;maxBatches:number;label:string}):Promise<BatchedPruneResult>` (`retentionBatch.ts:149`). New job exports `runHardwareHealthRetention`, `initializeHardwareHealthRetention`, `shutdownHardwareHealthRetention`.
+**Files:** Test `apps/api/src/services/hardwareHealth/retire.test.ts` (seam created in Task 10); Create `apps/api/src/jobs/hardwareHealthRetention.ts`, `.test.ts`; Modify `apps/api/src/services/workerRegistry.ts:390–397`, `apps/api/src/jobs/scheduleRegistry.ts:104`, `apps/api/src/jobs/workerReadinessManifest.ts:82`.
+**Interfaces:** Consumes Task 10’s exact `resolveAlertsForRemovedComponents(deviceId:string,componentKeys:string[]):Promise<number>` returning 0 in W01; W03 implements alert resolution in the ambient transaction. Consumes `pruneInCtidBatches(options:{table:string;where:SQL;batchSize:number;maxBatches:number;label:string}):Promise<BatchedPruneResult>` (`retentionBatch.ts:149`). New job exports `runHardwareHealthRetention`, `initializeHardwareHealthRetention`, `shutdownHardwareHealthRetention`.
 
-- [ ] **Step 1: Write the no-op seam and worker red tests.**
-```ts
-// services/hardwareHealth/retire.test.ts
-import { expect,it } from 'vitest';
-import { resolveAlertsForRemovedComponents } from './retire';
-it.each([{keys:[]},{keys:['storcli:c0:e1:s1']}])('W01 retirement is a no-op for $keys',async({keys})=>{
- expect(await resolveAlertsForRemovedComponents('11111111-1111-4111-8111-111111111111',keys)).toBe(0);
-});
-```
+- [ ] **Step 1: Write worker red tests using Task 10’s retirement seam.**
 ```ts
 // jobs/hardwareHealthRetention.test.ts
 import { beforeEach,expect,it,vi } from 'vitest';
@@ -1448,12 +1805,8 @@ it('registers a daily cron and closes resources',async()=>{
  await initializeHardwareHealthRetention();expect(m.add).toHaveBeenCalledWith('cleanup',{},expect.objectContaining({repeat:{pattern:'8 7 * * *'}}));await shutdownHardwareHealthRetention();expect(m.close).toHaveBeenCalledTimes(2);
 });
 ```
-- [ ] **Step 2: Run red.** `cd apps/api && npx vitest run src/services/hardwareHealth/retire.test.ts src/jobs/hardwareHealthRetention.test.ts` — missing modules.
-- [ ] **Step 3: Implement the W03 seam and retention worker.** Decision: events prune in existing ctid batches; components retire in bounded transactions sharing ingest's device→health→component lock order. Recheck stale eligibility after locking; a concurrent revival cannot be deleted. Never call `pruneInCtidBatches` inside component retirement because that helper escapes the ambient transaction.
-```ts
-// services/hardwareHealth/retire.ts
-export async function resolveAlertsForRemovedComponents(_deviceId:string,_componentKeys:string[]):Promise<number>{return 0;}
-```
+- [ ] **Step 2: Run red.** `cd apps/api && npx vitest run src/services/hardwareHealth/retire.test.ts src/jobs/hardwareHealthRetention.test.ts` — missing retention module; the existing seam test stays green.
+- [ ] **Step 3: Implement the retention worker using the existing W03 seam.** Decision: events prune in existing ctid batches; components retire in bounded transactions sharing ingest's device→health→component lock order. Recheck stale eligibility after locking; a concurrent revival cannot be deleted. Never call `pruneInCtidBatches` inside component retirement because that helper escapes the ambient transaction.
 ```ts
 // jobs/hardwareHealthRetention.ts
 import { Queue,Worker } from 'bullmq';
@@ -1518,7 +1871,7 @@ cd apps/api && npx vitest run src/services/hardwareHealth/retire.test.ts src/job
 Expected: seam returns zero, retirement orders resolve→event→delete, schedule has no collision, readiness registry remains exhaustive.
 - [ ] **Step 6: Commit.**
 ```bash
-git add apps/api/src/services/hardwareHealth/retire.ts apps/api/src/services/hardwareHealth/retire.test.ts apps/api/src/jobs/hardwareHealthRetention.ts apps/api/src/jobs/hardwareHealthRetention.test.ts apps/api/src/services/workerRegistry.ts apps/api/src/jobs/scheduleRegistry.ts apps/api/src/jobs/workerReadinessManifest.ts
+git add apps/api/src/jobs/hardwareHealthRetention.ts apps/api/src/jobs/hardwareHealthRetention.test.ts apps/api/src/services/workerRegistry.ts apps/api/src/jobs/scheduleRegistry.ts apps/api/src/jobs/workerReadinessManifest.ts
 git commit -m $'feat(hardware): retain events and retire stale components\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>'
 ```
 
@@ -1651,6 +2004,7 @@ cd apps/api && npx vitest run src/services/policyBaselineDefaults.test.ts
 Expected: all three parity suites now pass; controls save the exact schema fields.
 - [ ] **Step 7: Run the final contract gate and inspect exit codes.**
 ```bash
+pnpm --filter @breeze/api exec vitest run src/services/aiToolsConfigPolicy.test.ts src/services/aiToolsRegistryParity.test.ts src/services/aiAgentSdkTools.registryParity.contract.test.ts src/services/aiToolsDevice.hardwareHealth.registry.test.ts src/services/hardwareHealth/ingest.retirement.test.ts src/services/deviceDeletion.hardwareHealth.test.ts src/services/deviceDeletion.test.ts src/middleware/bodyLimit.test.ts src/middleware/bodyLimitGate.test.ts src/routes/agents/hardwareHealth.mounted.test.ts
 cd apps/api && npx vitest run src/services/hardwareHealth/ingest.test.ts src/services/hardwareHealth/freshness.test.ts src/services/hardwareHealth/view.test.ts src/services/hardwareHealth/retire.test.ts src/services/configurationPolicy.hardwareHealth.test.ts src/routes/agents/helpers.hardwareHealth.test.ts src/routes/agents/heartbeat.test.ts src/routes/agents/hardwareHealth.test.ts src/routes/devices/hardwareHealth.test.ts src/jobs/hardwareHealthRetention.test.ts src/db/autoMigrate.test.ts src/db/migrationRlsScope.test.ts src/__tests__/mcp-coverage.test.ts
 cd apps/api && npx vitest run -c vitest.integration.config.ts src/services/hardwareHealth/migrations.integration.test.ts src/services/hardwareHealth/ingest.integration.test.ts src/__tests__/integration/tenantCascade.integration.test.ts src/__tests__/integration/orgMergeRegistry.integration.test.ts src/__tests__/integration/tenant-export-policy.integration.test.ts src/__tests__/integration/tenantExportErasureRoundtrip.integration.test.ts src/__tests__/integration/orgLifecycleFoundations.integration.test.ts
 DB_CONTEXTLESS_WRITE_STRICT=true pnpm --filter=@breeze/api test:rls-coverage
@@ -1666,6 +2020,11 @@ git commit -m $'feat(hardware): add inherited collection policy controls\n\nCo-A
 ```
 
 ## Self-review
+
+- Cross-plan P1 / Task 4: `hardware_monitoring` now has the required `POLICY_FEATURE_INLINE_SETTINGS_REFERENCE` entry with exact defaults/bounds, a no-DB describe regression, and red→green `aiToolsConfigPolicy.test.ts` exact-key parity; the final gate retains full API typechecking.
+- Cross-plan P1 / Task 13: audited every `get_device_details` match across `apps/api/src` and `packages/`; added schema, RBAC, tier, chat SDK, script-builder SDK, Helper scoping/allowlist, capability, all five profile floors and MCP prompt registrations. W01 also supplies the web category/RBAC entries required by capability parity. Both `aiToolsRegistryParity.test.ts` and `aiAgentSdkTools.registryParity.contract.test.ts` are explicit red→green gates, with no new gap exceptions.
+- Cross-plan P2 / Task 12: global and local gates now agree on 2 MiB. A production-global-middleware + real-agent-router mounted regression exercises a schema-valid payload above 1 MiB, exactly 2 MiB, and one byte over, with/without Content-Length. The route contract remains `PUT /api/v1/agents/:id/hardware-health`.
+- Cross-plan P2 / Tasks 10–11 and 14: moved the W01 no-op retirement seam into Task 10; ingest awaits it before deleting unavailable/superseded/disabled collectors, and shared `deleteDeviceCascade` awaits it before deleting alert dependents or components. Source verification found the shared function in `services/deviceDeletion.ts:98,320`; `routes/devices/core.ts:622,2262` owns the registry and delegates purge. Task 11 binds retirement to the ingest savepoint with `withDbTransaction`. Ordering/error regressions cover both callers; Task 14 reuses the seam for retention. W03 alone implements subject-alert resolution; W01 introduces neither its column nor its resolution logic.
 
 - §4.3 / index §B: all normalized states and raise-only flags are defined and tested; `collector` cannot arrive as an agent component.
 - §7.1–7.5: Tasks 8–12 pin freshness, five streaks, partial completeness, collector lifecycle, atomic ordering, receipt-clock reset and rollups.

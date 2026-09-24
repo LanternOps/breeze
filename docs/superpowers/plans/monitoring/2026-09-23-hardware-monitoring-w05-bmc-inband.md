@@ -44,7 +44,7 @@ W01/W02a/W04 source files are not present in this checkout yet. Anchors for thos
 
 - Create `apps/api/migrations/2026-10-27-100400-discovered-asset-link-source-agent-report.sql` — enum label only.
 - Modify `apps/api/src/db/schema/discovery.ts` — append the Drizzle label in database order.
-- Modify `apps/api/vitest.integration.config.ts` — discover the three new colocated real-DB suites.
+- Modify `apps/api/vitest.integration.config.ts` and `apps/api/vitest.config.ts` — discover the three new colocated real-DB suites only in the integration runner.
 - Create `apps/api/src/services/discovery/agentReportedBmcLink.integration.test.ts` — migration, tenancy, association and ingest proofs.
 - Create `apps/api/src/services/discovery/bmc.fixtures.ts` — real-DB test setup shared by this wave's suites; test-only imports.
 - Create `apps/api/src/services/discovery/agentReportedBmcLink.ts` — normalized MAC, decision matrix, transaction-scoped linking and read decoration.
@@ -70,14 +70,18 @@ W01/W02a/W04 source files are not present in this checkout yet. Anchors for thos
 - Create `agent/internal/collectors/hwhealth/testdata/ipmi/{lan,info,no-bmc,driver-missing}.txt` — synthetic IPMI captures.
 - Create `agent/internal/collectors/hwhealth/testdata/racadm/{nic,version,no-bmc}.txt` — synthetic Dell captures.
 - Create `agent/internal/collectors/hwhealth/testdata/hponcfg/{export,no-bmc,malformed}.txt` — synthetic RIBCL and failure captures.
-- Create `apps/web/src/components/devices/hardware/ManagementControllerCard.tsx` and `.test.tsx` — read-only facts and association presentation.
+- Create `apps/web/src/components/devices/hardware/ManagementControllerCard.tsx` and `.test.tsx` — read-only facts, association presentation and direct catalog coverage.
+- Modify `apps/web/src/components/discovery/networkTypes.ts`; create `networkTypes.linkSource.test.ts` and extend `DiscoveredAssetList.test.tsx` in that directory — preserve `agent_report` through parsing and mapping.
+- Modify `apps/web/src/components/discovery/AssetDetailModal.tsx` and `.test.tsx` — show distinct BMC provenance in the discovery preview.
+- Modify `apps/web/src/components/devices/networkDevice/settings/LinkSection.tsx` and `.test.tsx`, `apps/web/src/components/devices/networkDevice/IdentityCard.tsx`, and `apps/web/src/components/devices/NetworkDeviceDetailPage.test.tsx` — distinguish BMC association and host-agent provenance in settings and overview.
+- Modify `apps/web/src/locales/{en,de-DE,es-419,fr-FR,fr-CA,it-IT,pt-BR,tr-TR}/devices.json` — all W05 card and association keys in every devices catalog.
 - Modify `apps/web/src/components/devices/hardware/StorageHealthSection.tsx` and `apps/web/src/components/devices/hardware/StorageHealthSection.test.tsx` — render the newest BMC observation.
 
 All shell blocks start at the repo root in a fresh shell. Implementation snippets marked “replace” replace only the named block; other existing code stays. No new table, column, route, cascade registration or MCP entry is added in W05. Task 1 still runs existing registration contracts. Test-stack lifecycle commands are implementation-time commands, not instructions to start infrastructure merely while reading this plan.
 
 ### Task 1: Add the enum label and real-database test entry points
 
-**Files:** Create `apps/api/migrations/2026-10-27-100400-discovered-asset-link-source-agent-report.sql`, `apps/api/src/services/discovery/bmc.fixtures.ts`, `apps/api/src/services/discovery/agentReportedBmcLink.integration.test.ts`; Modify `apps/api/src/db/schema/discovery.ts:60–63`, `apps/api/vitest.integration.config.ts:13`.
+**Files:** Create `apps/api/migrations/2026-10-27-100400-discovered-asset-link-source-agent-report.sql`, `apps/api/src/services/discovery/bmc.fixtures.ts`, `apps/api/src/services/discovery/agentReportedBmcLink.integration.test.ts`; Modify `apps/api/src/db/schema/discovery.ts:60–63`, `apps/api/vitest.integration.config.ts:13`, `apps/api/vitest.config.ts` (`test.exclude`).
 **Test:** `apps/api/src/services/discovery/agentReportedBmcLink.integration.test.ts`.
 **Interfaces:** Consumes existing `createTopologyTenant()`, `orgContext(orgId: string): DbAccessContext`, `getTestDb()`. Produces `bmcFixture()` and `discoveredAssetLinkSourceEnum` with `agent_report` appended.
 
@@ -109,7 +113,27 @@ Insert these exact entries into `test.include` (the latter two files are created
 'src/jobs/discoveryWorker.bmc.integration.test.ts',
 'src/services/topology/bmc.integration.test.ts',
 ```
-- [ ] **Step 2: Run red (2 minutes).**
+- [ ] **Step 2: Run red (2 minutes).** First verify runner isolation without starting a database:
+```bash
+python3 - <<'PYCONFIG'
+import re
+from pathlib import Path
+suites = [
+    'src/services/discovery/agentReportedBmcLink.integration.test.ts',
+    'src/jobs/discoveryWorker.bmc.integration.test.ts',
+    'src/services/topology/bmc.integration.test.ts',
+]
+for filename, field in [('vitest.config.ts', 'exclude'), ('vitest.integration.config.ts', 'include')]:
+    config = Path('apps/api', filename).read_text()
+    entries = re.search(r'\b' + field + r':\s*\[(.*?)\]', config, re.S)
+    assert entries, (filename, field)
+    for suite in suites:
+        assert repr(suite) in entries.group(1), (filename, field, suite)
+print('All three BMC suites are integration-only')
+PYCONFIG
+```
+Expected: assertion naming `vitest.config.ts`, `exclude`, and the first BMC suite. The unit glob `src/**/*.test.ts` includes colocated `*.integration.test.ts`; `src/__tests__/setup.ts` mocks Redis and is incompatible with these real-DB suites. Keep the exclusions specific because some existing integration-named files are mocked unit tests. Then run the migration red check:
+
 ```bash
 pnpm test-stack up
 cd apps/api && npx vitest run -c vitest.integration.config.ts src/services/discovery/agentReportedBmcLink.integration.test.ts
@@ -126,6 +150,13 @@ export const discoveredAssetLinkSourceEnum = pgEnum('discovered_asset_link_sourc
   'auto',
   'agent_report'
 ]);
+```
+Append these entries to `test.exclude` in `apps/api/vitest.config.ts`, preserving every existing exclusion:
+```ts
+// W05 BMC suites use real PostgreSQL and the integration setup.
+'src/services/discovery/agentReportedBmcLink.integration.test.ts',
+'src/jobs/discoveryWorker.bmc.integration.test.ts',
+'src/services/topology/bmc.integration.test.ts',
 ```
 - [ ] **Step 4: Create the reusable real-DB fixture (3 minutes).** `bmc.fixtures.ts`:
 ```ts
@@ -157,6 +188,24 @@ export async function bmcFixture() {
 ```
 - [ ] **Step 5: Run green and migration/registration guards (3 minutes).**
 ```bash
+python3 - <<'PYCONFIG'
+import re
+from pathlib import Path
+suites = [
+    'src/services/discovery/agentReportedBmcLink.integration.test.ts',
+    'src/jobs/discoveryWorker.bmc.integration.test.ts',
+    'src/services/topology/bmc.integration.test.ts',
+]
+for filename, field in [('vitest.config.ts', 'exclude'), ('vitest.integration.config.ts', 'include')]:
+    config = Path('apps/api', filename).read_text()
+    entries = re.search(r'\b' + field + r':\s*\[(.*?)\]', config, re.S)
+    assert entries, (filename, field)
+    for suite in suites:
+        assert repr(suite) in entries.group(1), (filename, field, suite)
+print('All three BMC suites are integration-only')
+PYCONFIG
+```
+```bash
 cd apps/api && npx vitest run -c vitest.integration.config.ts src/services/discovery/agentReportedBmcLink.integration.test.ts
 cd apps/api && npx vitest run src/db/autoMigrate.test.ts src/db/migrationRlsScope.test.ts
 DB_CONTEXTLESS_WRITE_STRICT=true pnpm --filter=@breeze/api test:rls-coverage
@@ -164,7 +213,7 @@ DB_CONTEXTLESS_WRITE_STRICT=true pnpm --filter=@breeze/api test:rls-coverage
 Expected: all pass, enum order exactly `manual, auto, agent_report`; no baseline additions. Before commit run `ls apps/api/migrations | sort | tail -1` and compare the reserved slot with origin/main. The index requires moving an unshipped slot upward if main overtook it; update this file's references together if that happens. No data statement uses the new label inside the migration transaction.
 - [ ] **Step 6: Commit (2 minutes).**
 ```bash
-git add apps/api/migrations/2026-10-27-100400-discovered-asset-link-source-agent-report.sql apps/api/src/db/schema/discovery.ts apps/api/vitest.integration.config.ts apps/api/src/services/discovery/bmc.fixtures.ts apps/api/src/services/discovery/agentReportedBmcLink.integration.test.ts
+git add apps/api/migrations/2026-10-27-100400-discovered-asset-link-source-agent-report.sql apps/api/src/db/schema/discovery.ts apps/api/vitest.config.ts apps/api/vitest.integration.config.ts apps/api/src/services/discovery/bmc.fixtures.ts apps/api/src/services/discovery/agentReportedBmcLink.integration.test.ts
 git commit -m $'feat(discovery): add agent-reported BMC link provenance\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>'
 ```
 
@@ -881,6 +930,58 @@ it('links accepted BMC observations, rejects stale side effects, and reads unlin
  const [stored]=await getTestDb().select().from(deviceHardwareComponents).where(eq(deviceHardwareComponents.deviceId,f.device.id));
  expect(stored!.attributes).not.toHaveProperty('bmcLink');
 });
+function bmcSnapshot(f:Awaited<ReturnType<typeof bmcFixture>>) {
+ return hardwareHealthSnapshotSchema.parse({snapshotId:crypto.randomUUID(),sequence:1,
+  collectedAt:new Date().toISOString(),agentVersion:'test',pollIntervalMinutes:10,diskHealthIntervalMinutes:60,
+  tiersRun:['raid'],sources:[{source:'ipmi',status:'ok',complete:true}],components:[{
+   componentKey:'bmc:ipmi',componentType:'bmc',source:'ipmi',name:'BMC',state:'ok',
+   attributes:{mac:f.input.mac,ip:f.input.ip,vendor:'Dell'},
+  }]});
+}
+it.each(['failed','unavailable','superseded','backing_off','disabled','absent'] as const)(
+ 'ignores BMC observations from %s sources, both new and previously stored',async status=>{
+  for(const previouslyStored of [false,true]){
+   const f=await bmcFixture();const initial=bmcSnapshot(f);
+   const first=new Date('2026-09-23T12:00:00.000Z');
+   if(previouslyStored){
+    expect(await f.scoped(()=>ingestHardwareHealthSnapshot({device:f.device,snapshot:initial,
+     writer:'server',receivedAt:first}))).toMatchObject({accepted:true});
+   }
+   const readBmc=async()=>(await getTestDb().select().from(deviceHardwareComponents)
+    .where(eq(deviceHardwareComponents.deviceId,f.device.id))).filter(c=>c.componentType==='bmc');
+   const before=await readBmc();
+   const [assetBefore]=await getTestDb().select().from(discoveredAssets).where(eq(discoveredAssets.id,f.asset.id));
+   expect(assetBefore!.linkedDeviceId).toBeNull();
+   const snapshot=hardwareHealthSnapshotSchema.parse({...initial,sequence:2,snapshotId:crypto.randomUUID(),
+    sources:[{source:'racadm',status:'ok',complete:true},
+     ...(status==='absent'?[]:[{source:'ipmi',status}])],
+   });
+   expect(await f.scoped(()=>ingestHardwareHealthSnapshot({device:f.device,snapshot,
+    writer:'agent',receivedAt:new Date(+first+1000)}))).toMatchObject({accepted:true});
+   expect(await readBmc()).toEqual(before);
+   const [assetAfter]=await getTestDb().select().from(discoveredAssets).where(eq(discoveredAssets.id,f.asset.id));
+   expect(assetAfter).toEqual(assetBefore);
+  }
+ });
+it.each([true,false])('links accepted BMC observations when complete is %s',async complete=>{
+ const f=await bmcFixture();const initial=bmcSnapshot(f);
+ const snapshot=hardwareHealthSnapshotSchema.parse({...initial,sources:[{source:'ipmi',status:'ok',complete}]});
+ expect(await f.scoped(()=>ingestHardwareHealthSnapshot({device:f.device,snapshot,
+  writer:'agent',receivedAt:new Date()}))).toMatchObject({accepted:true});
+ const [asset]=await getTestDb().select().from(discoveredAssets).where(eq(discoveredAssets.id,f.asset.id));
+ expect(asset).toMatchObject({linkedDeviceId:f.device.id,linkSource:'agent_report',approvalStatus:'pending'});
+});
+it('does not associate a historical BMC upserted only to mark it stale',async()=>{
+ const f=await bmcFixture();const initial=bmcSnapshot(f);const first=new Date('2026-09-23T12:00:00.000Z');
+ await f.scoped(()=>ingestHardwareHealthSnapshot({device:f.device,snapshot:initial,writer:'server',receivedAt:first}));
+ const snapshot=hardwareHealthSnapshotSchema.parse({...initial,sequence:2,snapshotId:crypto.randomUUID(),components:[]});
+ expect(await f.scoped(()=>ingestHardwareHealthSnapshot({device:f.device,snapshot,
+  writer:'agent',receivedAt:new Date(+first+1000)}))).toMatchObject({accepted:true});
+ const rows=await getTestDb().select().from(deviceHardwareComponents).where(eq(deviceHardwareComponents.deviceId,f.device.id));
+ expect(rows.find(c=>c.componentType==='bmc')).toMatchObject({stale:true});
+ const [asset]=await getTestDb().select().from(discoveredAssets).where(eq(discoveredAssets.id,f.asset.id));
+ expect(asset).toMatchObject({linkedDeviceId:null,linkSource:null,approvalStatus:'pending'});
+});
 it('stores an other-site observation without linking and labels the site on read',async()=>{
  const f=await bmcFixture();
  const other=await createSite({orgId:f.orgId,name:'Secondary site'});
@@ -896,7 +997,7 @@ it('stores an other-site observation without linking and labels the site on read
 ```bash
 cd apps/api && npx vitest run -c vitest.integration.config.ts src/services/discovery/agentReportedBmcLink.integration.test.ts
 ```
-Expected: `bmcViewAttributes is not a function` or link metadata assertion fails; accepted W01 ingest alone does not link.
+Expected: `bmcViewAttributes is not a function` or link metadata assertion fails; accepted W01 ingest alone does not link. With the previous raw-component hook, the failed/absent-source cases incorrectly set `linkedDeviceId`; with an unfiltered `change.upserts` hook, the stale-only case incorrectly links. Both regressions must stay in this suite.
 - [ ] **Step 3: Add the hook inside the existing transaction (5 minutes).** Add import:
 ```ts
 import { linkBmcAssetFromAgentReport } from '../discovery/agentReportedBmcLink';
@@ -919,8 +1020,10 @@ for(const row of change.upserts){
  });
 }
 if(writer==='agent'){
- for(const component of snapshot.components){
-  if(component.componentType!=='bmc'||typeof component.attributes.mac!=='string')continue;
+ const successfulSources=new Set(snapshot.sources.filter(source=>source.status==='ok').map(source=>source.source));
+ for(const component of change.upserts){
+  if(component.componentType!=='bmc'||component.stale||!successfulSources.has(component.source)
+   ||typeof component.attributes.mac!=='string')continue;
   await linkBmcAssetFromAgentReport(tx,{
    deviceId:device.id,orgId:device.orgId,siteId:owner.siteId,mac:component.attributes.mac,
    ip:typeof component.attributes.ip==='string'?component.attributes.ip:null,
@@ -928,6 +1031,8 @@ if(writer==='agent'){
  }
 }
 ```
+`change.upserts` is W01's accepted reducer output, not raw input or retained `change.rows`. Its stale-marking upserts are excluded by `component.stale`; the source must report `ok`, including valid partial (`complete:false`) reports. Failed, unavailable, superseded, backing-off, disabled and absent sources cannot establish associations, even when another source succeeds. The hook stays after ordering rejection and inside the transaction; server writes never invoke it.
+
 No catch converts a failed association write to a successful snapshot: a DB failure rolls back the health update, component writes and links together. A missing/suppressed/occupied asset is a normal union result and does not abort ingestion.
 - [ ] **Step 4: Add current metadata projection (5 minutes).** Add `sites` to the linker schema import; append:
 ```ts
@@ -970,7 +1075,7 @@ This decorates only in-memory rows. The view's existing `fresh` calculation is u
 cd apps/api && npx vitest run -c vitest.integration.config.ts src/services/discovery/agentReportedBmcLink.integration.test.ts src/services/hardwareHealth/ingest.integration.test.ts
 cd apps/api && npx vitest run src/services/hardwareHealth/ingest.test.ts src/services/hardwareHealth/view.test.ts
 ```
-Expected: all pass, including unchanged ordering tests and live suppression metadata.
+Expected: all pass, including the rejected-source matrix, partial success, stale-only upserts, unchanged ordering tests and live suppression metadata.
 - [ ] **Step 6: Commit (2 minutes).**
 ```bash
 git add apps/api/src/services/hardwareHealth/ingest.ts apps/api/src/services/hardwareHealth/view.ts apps/api/src/services/discovery/agentReportedBmcLink.ts apps/api/src/services/discovery/agentReportedBmcLink.integration.test.ts
@@ -1343,11 +1448,11 @@ git add apps/api/src/services/topology/legacyReplay.ts apps/api/src/services/top
 git commit -m $'fix(topology): preserve BMC nodes during legacy replay\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>'
 ```
 
-### Task 10: Render the read-only management controller card
+### Task 10: Render translated BMC facts and distinct discovery association provenance
 
-**Files:** Create `apps/web/src/components/devices/hardware/ManagementControllerCard.tsx`, `apps/web/src/components/devices/hardware/ManagementControllerCard.test.tsx`. Read-only anchors: `DeviceDetails.tsx:268–309` establishes `/devices/network/${asset.id}`; W04 `types.ts` plan:139–172 defines `HardwareComponentView`.
-**Test:** `apps/web/src/components/devices/hardware/ManagementControllerCard.test.tsx`.
-**Interfaces:** Consumes W04 `HardwareComponentView`, Task 6 `attributes.bmcLink`. Produces default `ManagementControllerCard({component}:{component:HardwareComponentView})`. It consumes the parent's fetched view; no extra fetch or mutation handler is needed.
+**Files:** Create `apps/web/src/components/devices/hardware/ManagementControllerCard.tsx`, `apps/web/src/components/devices/hardware/ManagementControllerCard.test.tsx`, `apps/web/src/components/discovery/networkTypes.linkSource.test.ts`; Modify `apps/web/src/components/discovery/networkTypes.ts`, `apps/web/src/components/discovery/DiscoveredAssetList.test.tsx`, `apps/web/src/components/discovery/AssetDetailModal.tsx`, `apps/web/src/components/discovery/AssetDetailModal.test.tsx`, `apps/web/src/components/devices/networkDevice/settings/LinkSection.tsx`, `apps/web/src/components/devices/networkDevice/settings/LinkSection.test.tsx`, `apps/web/src/components/devices/networkDevice/IdentityCard.tsx`, `apps/web/src/components/devices/NetworkDeviceDetailPage.test.tsx`, and `apps/web/src/locales/{en,de-DE,es-419,fr-FR,fr-CA,it-IT,pt-BR,tr-TR}/devices.json`. Read-only anchors: `DeviceDetails.tsx:268–309` establishes `/devices/network/${asset.id}`; W04 `types.ts` plan:139–172 defines `HardwareComponentView`.
+**Test:** `apps/web/src/components/discovery/AssetDetailModal.test.tsx`, `apps/web/src/components/devices/hardware/ManagementControllerCard.test.tsx`, `apps/web/src/components/discovery/networkTypes.linkSource.test.ts`, `apps/web/src/components/discovery/DiscoveredAssetList.test.tsx`, `apps/web/src/components/devices/networkDevice/settings/LinkSection.test.tsx`, `apps/web/src/components/devices/NetworkDeviceDetailPage.test.tsx`, `apps/web/src/lib/i18n/keyUsage.test.ts`, `apps/web/src/lib/i18n/localeParity.test.ts`, `apps/web/src/lib/i18n/translationCoverage.test.ts`.
+**Interfaces:** Consumes W04 `HardwareComponentView`, Task 6 `attributes.bmcLink`. Produces default `ManagementControllerCard({component}:{component:HardwareComponentView})`. It consumes the parent's fetched view; no extra fetch or mutation handler is needed. Extends `DiscoveredAssetLinkSource` and `parseDiscoveredAssetLinkSource(value:unknown):DiscoveredAssetLinkSource|null` with `agent_report`; `mapAsset` already calls this parser. W05 supplies all eleven new `devices:hardwareHealth.*` keys (seven card keys and four association keys) in every locale, preserving W04's other entries.
 
 - [ ] **Step 1: Write jsdom rendering and safe-link tests (5 minutes).**
 ```tsx
@@ -1384,11 +1489,89 @@ it('handles absent optional facts and rejects malformed link metadata',()=>{
  expect(screen.getByTestId('hardware-management-controller-card')).toHaveTextContent('BMC');
 });
 ```
+Append catalog-presence assertions to the card test; these read each catalog directly so English fallback and `defaultValue` cannot mask missing locale entries:
+```ts
+const catalogs=import.meta.glob<{hardwareHealth?:Record<string,string>}>('../../../locales/*/devices.json',{
+ eager:true,import:'default',
+});
+it.each(Object.entries(catalogs))('defines every BMC key in %s',(_path,catalog)=>{
+ for(const key of ['managementController','bmcVendor','bmcFirmware','bmcIp','bmcMac','bmcOtherSite','bmcObserved',
+  'bmcHost','bmcAgentReport','bmcAssociation','bmcConfirmUnlink']){
+  expect(catalog.hardwareHealth?.[key],key).toEqual(expect.any(String));
+  expect(catalog.hardwareHealth?.[key]?.trim().length,key).toBeGreaterThan(0);
+ }
+});
+```
+Create `networkTypes.linkSource.test.ts`:
+```ts
+import { expect,it } from 'vitest';
+import { parseDiscoveredAssetLinkSource } from './networkTypes';
+it.each(['manual','auto','agent_report'] as const)('preserves %s provenance',source=>{
+ expect(parseDiscoveredAssetLinkSource(source)).toBe(source);
+});
+it.each([null,undefined,'future_source',42,{}])('rejects unknown provenance %j',source=>{
+ expect(parseDiscoveredAssetLinkSource(source)).toBeNull();
+});
+```
+Append to `DiscoveredAssetList.test.tsx`, which already imports `mapAsset` and `toDetail`:
+```ts
+it('preserves agent-reported BMC provenance through both asset transforms',()=>{
+ const mapped=mapAsset({id:'bmc-1',ipAddress:'192.0.2.10',linkedDeviceId:'dev-9',linkSource:'agent_report'});
+ expect(mapped.linkSource).toBe('agent_report');
+ expect(toDetail(mapped).linkSource).toBe('agent_report');
+});
+```
+Append to `AssetDetailModal.test.tsx`, using its existing `asset` fixture and imports:
+```tsx
+it('keeps the discovery preview BMC association distinct from a same-device link',()=>{
+ render(<AssetDetailModal open asset={{...asset,linkedDeviceId:'dev-1',
+  linkedDeviceName:'agent-host',linkSource:'agent_report'}} onClose={()=>{}} />);
+ const link=screen.getByTestId('asset-modal-same-device-link');
+ expect(link).toHaveAttribute('href','/devices/dev-1');
+ expect(link).toHaveTextContent('Management controller for agent-host');
+ expect(link).not.toHaveTextContent('Same device as');
+ expect(screen.getByTestId('asset-modal-link-provenance')).toHaveTextContent('reported by host agent');
+ expect(fetchMock).not.toHaveBeenCalled();
+});
+```
+Append inside `LinkSection.test.tsx`'s `LinkSection — linked asset` describe, using its `linked` and `props` fixtures:
+```tsx
+it('describes the agent-reported management controller as a separate associated device',()=>{
+ render(<LinkSection {...props} asset={{...linked,linkSource:'agent_report'}} />);
+ expect(screen.getByTestId('network-settings-link-device')).toHaveTextContent('Management controller for WS-FRONTDESK');
+ expect(screen.getByTestId('network-settings-link-device')).toHaveAttribute('href','/devices/dev-9');
+ expect(screen.getByTestId('network-settings-link-provenance')).toHaveTextContent('reported by host agent');
+ expect(screen.getByText('This management controller is associated with its host and remains a separate network device.')).toBeInTheDocument();
+ expect(screen.queryByText(/same (device|machine)/i)).not.toBeInTheDocument();
+ expect(screen.queryByText(/auto-detected/i)).not.toBeInTheDocument();
+ fireEvent.click(screen.getByTestId('network-settings-link-unlink'));
+ expect(screen.getByText('Remove the management-controller association? Auto-linking stays off for this asset until you link it again.')).toBeInTheDocument();
+ expect(writes()).toHaveLength(0);
+});
+```
+Expand the existing unlink test table from `['manual', 'auto'] as const` to:
+```ts
+['manual', 'auto', 'agent_report'] as const
+```
+Append inside `NetworkDeviceDetailPage.test.tsx`'s existing describe, using its imports and `baseAsset`, `ASSET_ID`, `makeJsonResponse` fixtures:
+```tsx
+it('shows BMC host association and agent provenance on the read-only overview',async()=>{
+ fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({
+  data:{...baseAsset,linkedDeviceId:'dev-9',linkedDeviceName:'agent-host',linkSource:'agent_report'},
+ }));
+ render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+ const link=await screen.findByTestId('network-detail-linked-device');
+ expect(link).toHaveAttribute('href','/devices/dev-9');
+ expect(link).toHaveTextContent('Management controller for agent-host');
+ expect(link).not.toHaveTextContent('Same device as');
+ expect(screen.getByTestId('network-detail-link-provenance')).toHaveTextContent('reported by host agent');
+});
+```
 - [ ] **Step 2: Run red (2 minutes).**
 ```bash
-cd apps/web && npx vitest run src/components/devices/hardware/ManagementControllerCard.test.tsx
+cd apps/web && npx vitest run src/components/devices/hardware/ManagementControllerCard.test.tsx src/components/discovery/networkTypes.linkSource.test.ts src/components/discovery/DiscoveredAssetList.test.tsx src/components/discovery/AssetDetailModal.test.tsx src/components/devices/networkDevice/settings/LinkSection.test.tsx src/components/devices/NetworkDeviceDetailPage.test.tsx
 ```
-Expected: `Failed to resolve import "./ManagementControllerCard"`.
+Expected: missing card import, parser returns `null` for `agent_report`, and the discovery UI renders same-device/automatic wording instead of BMC association wording. Existing manual/auto cases remain the regression controls.
 - [ ] **Step 3: Implement the complete card (5 minutes).**
 ```tsx
 import { useTranslation } from 'react-i18next';
@@ -1427,16 +1610,165 @@ export default function ManagementControllerCard({component}:{component:Hardware
  </section>;
 }
 ```
-All new strings use translation keys with explicit English defaults, matching the fallback behavior without altering W04's existing key contract. The daily observation label describes facts, not a live BMC reachability verdict. React escapes vendor text and site names; the link target always uses a validated UUID under the local network-device route.
-- [ ] **Step 4: Run green (2 minutes).**
-```bash
-cd apps/web && npx vitest run src/components/devices/hardware/ManagementControllerCard.test.tsx
+English defaults remain for rendering, but they do not satisfy `keyUsage.test.ts`; Step 6 supplies the actual catalog entries. The daily observation label describes facts, not a live BMC reachability verdict. React escapes vendor text and site names; the link target always uses a validated UUID under the local network-device route.
+- [ ] **Step 4: Preserve provenance and distinguish controller association from device identity (5 minutes).** Replace the link-source union and parser in `networkTypes.ts` (leave `DiscoveredAssetTypeSource` unchanged):
+```ts
+export type DiscoveredAssetLinkSource = 'manual' | 'auto' | 'agent_report';
+
+export function parseDiscoveredAssetLinkSource(value: unknown): DiscoveredAssetLinkSource | null {
+ return value==='manual'||value==='auto'||value==='agent_report'?value:null;
+}
 ```
-Expected: six test cases pass; no direct IP hyperlink and no controls that would require `runAction`.
-- [ ] **Step 5: Commit (2 minutes).**
+In both `LinkSection.tsx` and `IdentityCard.tsx`, replace only the anchor's existing `sameDeviceAs` translation expression with this complete expression:
+```tsx
+{asset.linkSource==='agent_report'
+ ? t('hardwareHealth.bmcHost',{name:asset.linkedDeviceName||t('common:states.unknown')})
+ : t('networkDeviceDetailPage.sameDeviceAs',{name:asset.linkedDeviceName||t('common:states.unknown')})}
+```
+In both files, replace the provenance span's existing `isManualLink` expression with:
+```tsx
+{asset.linkSource==='agent_report'
+ ? t('hardwareHealth.bmcAgentReport')
+ : isManualLink(asset.linkSource)
+  ? t('networkDeviceDetailPage.provenance.manual')
+  : t('networkDeviceDetailPage.provenance.auto')}
+```
+In `LinkSection.tsx`, replace `SettingsSectionShell`'s description attribute:
+```tsx
+description={asset.linkSource==='agent_report'
+ ? t('hardwareHealth.bmcAssociation')
+ : t('networkDeviceDetailPage.settings.link.description')}
+```
+Replace `ConfirmDialog`'s message attribute, since a BMC already has a separate topology identity before unlinking:
+```tsx
+message={asset.linkSource==='agent_report'
+ ? t('hardwareHealth.bmcConfirmUnlink')
+ : t('networkDeviceDetailPage.confirmUnlinkMessage')}
+```
+`AssetDetailModal.tsx` is the discovery preview of the same association. Its namespace is `discovery`, so replace its `assetDetailModal.sameDeviceAs` expression with explicitly namespaced BMC copy:
+```tsx
+{asset.linkSource==='agent_report'
+ ? t('devices:hardwareHealth.bmcHost',{name:asset.linkedDeviceName||t('common:states.unknown')})
+ : t('assetDetailModal.sameDeviceAs',{name:asset.linkedDeviceName||t('common:states.unknown')})}
+```
+Immediately after that anchor, inside the same linked-device container, insert:
+```tsx
+{asset.linkSource==='agent_report'&&<p className="text-xs text-muted-foreground" data-testid="asset-modal-link-provenance">
+ {t('devices:hardwareHealth.bmcAgentReport')}
+</p>}
+```
+The existing host hrefs, test IDs, manual/auto wording, confirmation flow, mutation hook and suppression behavior remain in place. The overview and settings section now both describe a management-controller association with explicit host-agent provenance.
+
+- [ ] **Step 5: Prove the catalog contract is red after the components exist (2 minutes).**
 ```bash
-git add apps/web/src/components/devices/hardware/ManagementControllerCard.tsx apps/web/src/components/devices/hardware/ManagementControllerCard.test.tsx
-git commit -m $'feat(web): show management controller facts and asset association\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>'
+cd apps/web && npx vitest run src/components/devices/hardware/ManagementControllerCard.test.tsx src/lib/i18n/keyUsage.test.ts
+```
+Expected: direct catalog-presence assertions fail for the eleven new keys, and key usage reports missing `devices:hardwareHealth.*` entries despite the seven English defaults. Do not add exceptions or raise translation-coverage baselines.
+
+- [ ] **Step 6: Add W05's keys to every devices catalog (5 minutes).** Run from the repository root. This merges only the eleven W05 keys into each existing `hardwareHealth` object; all W04 keys and other catalog objects are preserved.
+```bash
+python3 - <<'PYLOCALES'
+import json
+from pathlib import Path
+keys = [
+    'managementController', 'bmcVendor', 'bmcFirmware', 'bmcIp', 'bmcMac',
+    'bmcOtherSite', 'bmcObserved', 'bmcHost', 'bmcAgentReport', 'bmcAssociation', 'bmcConfirmUnlink',
+]
+translations = {
+    'en': [
+        'Management controller', 'Vendor', 'Firmware', 'IP address', 'MAC address',
+        'Management controller found in site {{site}}',
+        'Last reported {{time}}; collected daily.',
+        'Management controller for {{name}}',
+        '— reported by host agent',
+        'This management controller is associated with its host and remains a separate network device.',
+        'Remove the management-controller association? Auto-linking stays off for this asset until you link it again.',
+    ],
+    'de-DE': [
+        'Management-Controller', 'Hersteller', 'Firmwareversion', 'IP-Adresse', 'MAC-Adresse',
+        'Management-Controller am Standort {{site}} gefunden',
+        'Zuletzt gemeldet: {{time}}; tägliche Erfassung.',
+        'Management-Controller für {{name}}',
+        '— vom Agenten des Hosts gemeldet',
+        'Dieser Management-Controller ist seinem Host zugeordnet und bleibt ein eigenständiges Netzwerkgerät.',
+        'Zuordnung des Management-Controllers entfernen? Die automatische Verknüpfung bleibt für dieses Gerät deaktiviert, bis Sie es erneut verknüpfen.',
+    ],
+    'es-419': [
+        'Controlador de administración', 'Fabricante', 'Versión del firmware', 'Dirección IP', 'Dirección MAC',
+        'Controlador de administración encontrado en el sitio {{site}}',
+        'Último reporte: {{time}}; recopilación diaria.',
+        'Controlador de administración de {{name}}',
+        '— reportado por el agente del host',
+        'Este controlador de administración está asociado con su host y sigue siendo un dispositivo de red independiente.',
+        '¿Eliminar la asociación del controlador de administración? La vinculación automática seguirá desactivada para este activo hasta que lo vincules de nuevo.',
+    ],
+    'fr-FR': [
+        'Contrôleur de gestion', 'Fabricant', 'Version du micrologiciel', 'Adresse IP', 'Adresse MAC',
+        'Contrôleur de gestion trouvé sur le site {{site}}',
+        'Dernier rapport : {{time}} ; collecte quotidienne.',
+        'Contrôleur de gestion de {{name}}',
+        '— signalé par l’agent de l’hôte',
+        'Ce contrôleur de gestion est associé à son hôte et reste un équipement réseau distinct.',
+        'Supprimer l’association du contrôleur de gestion ? La liaison automatique reste désactivée pour cet équipement jusqu’à ce que vous le liiez à nouveau.',
+    ],
+    'fr-CA': [
+        'Contrôleur de gestion', 'Fabricant', 'Version du micrologiciel', 'Adresse IP', 'Adresse MAC',
+        'Contrôleur de gestion trouvé sur le site {{site}}',
+        'Dernier rapport : {{time}}; collecte quotidienne.',
+        'Contrôleur de gestion de {{name}}',
+        '— signalé par l’agent de l’hôte',
+        'Ce contrôleur de gestion est associé à son hôte et demeure un appareil réseau distinct.',
+        'Supprimer l’association du contrôleur de gestion? La liaison automatique demeure désactivée pour cet appareil jusqu’à ce que vous le liiez de nouveau.',
+    ],
+    'it-IT': [
+        'Controller di gestione', 'Produttore', 'Versione firmware', 'Indirizzo IP', 'Indirizzo MAC',
+        'Controller di gestione trovato nel sito {{site}}',
+        'Ultima segnalazione: {{time}}; raccolta giornaliera.',
+        'Controller di gestione di {{name}}',
+        '— segnalato dall’agente dell’host',
+        'Questo controller di gestione è associato al proprio host e rimane un dispositivo di rete separato.',
+        'Rimuovere l’associazione del controller di gestione? Il collegamento automatico rimane disattivato per questa risorsa finché non viene collegata di nuovo.',
+    ],
+    'pt-BR': [
+        'Controlador de gerenciamento', 'Fabricante', 'Versão do firmware', 'Endereço IP', 'Endereço MAC',
+        'Controlador de gerenciamento encontrado no site {{site}}',
+        'Último relatório: {{time}}; coleta diária.',
+        'Controlador de gerenciamento de {{name}}',
+        '— informado pelo agente do host',
+        'Este controlador de gerenciamento está associado ao host e continua sendo um dispositivo de rede separado.',
+        'Remover a associação do controlador de gerenciamento? A vinculação automática permanece desativada para este ativo até que você o vincule novamente.',
+    ],
+    'tr-TR': [
+        'Yönetim denetleyicisi', 'Üretici', 'Donanım yazılımı', 'IP adresi', 'MAC adresi',
+        '{{site}} sitesinde yönetim denetleyicisi bulundu',
+        'Son bildirim: {{time}}; günlük toplanır.',
+        '{{name}} için yönetim denetleyicisi',
+        '— ana makine aracısı tarafından bildirildi',
+        'Bu yönetim denetleyicisi ana makinesiyle ilişkilidir ve ayrı bir ağ cihazı olarak kalır.',
+        'Yönetim denetleyicisi ilişkisi kaldırılsın mı? Bu varlığı yeniden bağlayana kadar otomatik bağlantı kapalı kalır.',
+    ],
+}
+root = Path('apps/web/src/locales')
+catalogs = sorted(root.glob('*/devices.json'))
+assert {path.parent.name for path in catalogs} == set(translations)
+for path in catalogs:
+    values = translations[path.parent.name]
+    assert len(values) == len(keys)
+    catalog = json.loads(path.read_text())
+    catalog.setdefault('hardwareHealth', {}).update(dict(zip(keys, values)))
+    path.write_text(json.dumps(catalog, ensure_ascii=False, indent=2) + '\n')
+PYLOCALES
+```
+- [ ] **Step 7: Run green, including the translation contracts (2 minutes per command launch).**
+```bash
+cd apps/web && npx vitest run src/components/devices/hardware/ManagementControllerCard.test.tsx src/components/discovery/networkTypes.linkSource.test.ts src/components/discovery/DiscoveredAssetList.test.tsx src/components/discovery/AssetDetailModal.test.tsx src/components/devices/networkDevice/settings/LinkSection.test.tsx src/components/devices/NetworkDeviceDetailPage.test.tsx
+cd apps/web && npx vitest run src/lib/i18n/keyUsage.test.ts src/lib/i18n/localeParity.test.ts src/lib/i18n/translationCoverage.test.ts
+```
+Expected: card rendering and all eight direct catalog checks pass; parser/mapping preserves all three known provenances and rejects unknown values. Settings and overview show BMC association wording; manual/auto cases and confirmed unlink behavior still pass. Translation keys, interpolation tokens and technical literals match across all locales with no new English-copy baseline exceptions.
+- [ ] **Step 8: Commit (2 minutes).**
+```bash
+git add apps/web/src/components/devices/hardware/ManagementControllerCard.tsx apps/web/src/components/devices/hardware/ManagementControllerCard.test.tsx apps/web/src/components/discovery/networkTypes.ts apps/web/src/components/discovery/networkTypes.linkSource.test.ts apps/web/src/components/discovery/DiscoveredAssetList.test.tsx apps/web/src/components/discovery/AssetDetailModal.tsx apps/web/src/components/discovery/AssetDetailModal.test.tsx apps/web/src/components/devices/networkDevice/settings/LinkSection.tsx apps/web/src/components/devices/networkDevice/settings/LinkSection.test.tsx apps/web/src/components/devices/networkDevice/IdentityCard.tsx apps/web/src/components/devices/NetworkDeviceDetailPage.test.tsx apps/web/src/locales/{en,de-DE,es-419,fr-FR,fr-CA,it-IT,pt-BR,tr-TR}/devices.json
+git commit -m $'feat(web): show translated BMC facts and distinct host associations\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>'
 ```
 
 ### Task 11: Mount the card in Storage & RAID and verify the wave contracts
@@ -1493,7 +1825,8 @@ Change only the empty-state condition from `storage.length === 0` to `storage.le
 The disabled-policy message continues to render; previously observed facts stay visible just as W04 retains storage rows. No second browser request races the parent deviceId lifecycle.
 - [ ] **Step 4: Run green and wave-level checks (2–5 minutes per command launch).**
 ```bash
-cd apps/web && npx vitest run src/components/devices/hardware/StorageHealthSection.test.tsx src/components/devices/hardware/ManagementControllerCard.test.tsx
+cd apps/web && npx vitest run src/components/devices/hardware/StorageHealthSection.test.tsx src/components/devices/hardware/ManagementControllerCard.test.tsx src/components/discovery/networkTypes.linkSource.test.ts src/components/discovery/DiscoveredAssetList.test.tsx src/components/discovery/AssetDetailModal.test.tsx src/components/devices/networkDevice/settings/LinkSection.test.tsx src/components/devices/NetworkDeviceDetailPage.test.tsx
+cd apps/web && npx vitest run src/lib/i18n/keyUsage.test.ts src/lib/i18n/localeParity.test.ts src/lib/i18n/translationCoverage.test.ts
 cd apps/api && npx vitest run src/services/discovery/agentReportedBmcLink.test.ts src/jobs/discoveryWorker.test.ts src/services/topology/aliasClusters.test.ts src/services/topology/legacyIdentitySplit.test.ts
 cd apps/api && npx vitest run -c vitest.integration.config.ts src/services/discovery/agentReportedBmcLink.integration.test.ts src/jobs/discoveryWorker.bmc.integration.test.ts src/services/topology/bmc.integration.test.ts
 NODE_OPTIONS=--max-old-space-size=12288 pnpm --filter @breeze/api exec tsc --noEmit
@@ -1511,6 +1844,11 @@ pnpm test-stack down
 ```
 
 ## Self-review
+
+- Cross-plan review, Task 1: all three colocated BMC database suites now have explicit unit-runner exclusions as well as integration-runner includes, with red/green configuration assertions. The broad unit glob and Redis mock in `src/__tests__/setup.ts` were verified against the real config.
+- Cross-plan review, Task 6: BMC linking now consumes accepted `change.upserts` from successful sources and excludes stale-only rows; failed/absent-source, retained-row, partial-success and stale-only integration regressions enforce the boundary. W01 source is absent in this checkout; its reducer and transaction were verified in the predecessor plan against spec §7.2. W05 adds this hook and its tests without changing W01's acceptance contract.
+- Cross-plan review, Task 10: W05 adds its seven card keys and four association keys to all eight devices catalogs and runs key-usage, locale-parity and translation-coverage contracts. English defaults are not catalog entries; W04 supplies none of these keys and is not assigned follow-up work.
+- Cross-plan review, Task 10: the discovery union/parser preserves `agent_report`; mapping, discovery preview, settings, overview and unlink regressions cover explicit host-agent provenance and a distinct management-controller association. Existing manual/auto semantics stay intact; no API return union or topology identity contract changes.
 
 - Spec §5.1, §6.1–6.4 and §12: Tasks 2–4 define installed-tool detection, bounded commands, sanitized facts, unavailable outcomes and persisted daily attempts.
 - Spec §7.6 and §12: Tasks 5–6 associate only normalized MAC matches under the ingest transaction; RLS, suppression, site eligibility and competing writers have explicit tests.

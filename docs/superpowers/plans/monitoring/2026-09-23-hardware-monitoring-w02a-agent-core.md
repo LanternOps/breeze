@@ -156,6 +156,24 @@ Run every shell block from the repository root unless it explicitly changes dire
 **Test:** `agent/internal/collectors/hwhealth/types_test.go`, `agent/internal/collectors/hwhealth/keys_test.go`.
 **Interfaces:** Consumes index §B/§C. Produces `Kind`, `Tier`, `ComponentType`, `SourceStatus`, `Component`, `SourceReport`, `Snapshot`, `Config`, `Availability`, `Result`, `Source`, `TierRAID`, `TierDisk` and key builders below.
 
+Index-facing §4.2 key contract (index §H references the design's key table):
+
+| Type / source | Key |
+|---|---|
+| controller (vendor CLI) | `<source>:c<index>` |
+| controller (synthetic) | `<source>:ctrl` |
+| virtual_disk | `<controllerKey>:v<id>` / `mdadm:md0` / `zfs:pool:<name>` / `storage_spaces:vd:<ObjectId-hash>` |
+| physical_disk (slotted) | `<controllerKey>:e<enclosure>:s<slot>`; `e-` without an enclosure |
+| physical_disk (mdadm / zfs member) | `<vdKey>:m:<stable dev id>`; never `/dev/sdX` |
+| physical_disk (windows_physical_disk) | `winpd:<UniqueId>` |
+| physical_disk (smartctl standalone) | `smart:<serial>` for a trimmed, non-blank serial unique within the scan; otherwise `smart:dev:<type>:<name>` using the scan's exact `Type` and `Name` |
+| cache_battery | `<controllerKey>:bbu` or `<controllerKey>:cv` |
+| enclosure | `<controllerKey>:enc<id>` |
+| bmc | `bmc:<source>` |
+| collector (server only) | `collector:<source>` |
+
+The SMART fallback is the authorized extension to §4.2: `smart:dev:megaraid,0:/dev/bus/0` and `smart:dev:megaraid,1:/dev/bus/0` identify distinct probes. An omitted scan type remains empty (`smart:dev::/dev/sda`); do not invent a type or use a scan ordinal. All other key formats and the unique-serial rule remain unchanged.
+
 - [ ] **Step 1: Write the wire and identity tests (5 min).** `types_test.go`:
 ```go
 package hwhealth
@@ -178,7 +196,18 @@ func assertKeys(t *testing.T,m map[string]json.RawMessage,want string){t.Helper(
 ```go
 package hwhealth
 import "testing"
-func TestKeys(t *testing.T){for _,tc:=range []struct{got,want string}{{controllerKey("storcli","0"),"storcli:c0"},{slotKey("perccli:c1","","3"),"perccli:c1:e-:s3"},{memberKey("mdadm:md0","ata-S1"),"mdadm:md0:m:ata-S1"},{smartKey("S","/dev/sda",true),"smart:S"},{smartKey("S","/dev/sda",false),"smart:dev:/dev/sda"}}{if tc.got!=tc.want{t.Fatalf("%q != %q",tc.got,tc.want)}}}
+func TestKeys(t *testing.T){for _,tc:=range []struct{got,want string}{
+ {controllerKey("storcli","0"),"storcli:c0"},
+ {slotKey("perccli:c1","","3"),"perccli:c1:e-:s3"},
+ {memberKey("mdadm:md0","ata-S1"),"mdadm:md0:m:ata-S1"},
+ {smartKey(" S ","sat","/dev/sda",true),"smart:S"},
+ {smartKey("S","sat","/dev/sda",false),"smart:dev:sat:/dev/sda"},
+ {smartKey("","megaraid,0","/dev/bus/0",true),"smart:dev:megaraid,0:/dev/bus/0"},
+ {smartKey("  ","megaraid,1","/dev/bus/0",true),"smart:dev:megaraid,1:/dev/bus/0"},
+ {smartKey("S","megaraid,0","/dev/bus/0",false),"smart:dev:megaraid,0:/dev/bus/0"},
+ {smartKey("S","megaraid,1","/dev/bus/0",false),"smart:dev:megaraid,1:/dev/bus/0"},
+ {smartKey("","","/dev/sda",false),"smart:dev::/dev/sda"},
+ }{if tc.got!=tc.want{t.Fatalf("%q != %q",tc.got,tc.want)}}}
 ```
 - [ ] **Step 2: Run red (2 min).** `cd agent && go test -race ./internal/collectors/hwhealth/...` → `undefined: Snapshot`.
 - [ ] **Step 3: Create the contract types (5 min).** `types.go`:
@@ -257,7 +286,7 @@ func controllerKey(k Kind,id string)string{return string(k)+":c"+id}
 func slotKey(c,e,s string)string{if e==""{e="-"};return c+":e"+e+":s"+s}
 func memberKey(v,id string)string{return v+":m:"+id}
 func objectHash(id string)string{return fmt.Sprintf("%x",sha256.Sum256([]byte(id)))[:24]}
-func smartKey(serial,dev string,unique bool)string{serial=strings.TrimSpace(serial);if serial!=""&&unique{return "smart:"+serial};return "smart:dev:"+dev}
+func smartKey(serial,deviceType,dev string,unique bool)string{serial=strings.TrimSpace(serial);if serial!=""&&unique{return "smart:"+serial};return "smart:dev:"+deviceType+":"+dev}
 func component(k Kind,typ ComponentType,key,parent,name,raw,state string)Component{
  c:=Component{ComponentKey:key,ComponentType:typ,Source:k,Name:name,State:state,StateDetail:ptr(raw),Attributes:map[string]any{}}
  if parent!=""{c.ParentKey=ptr(parent)};return c
@@ -842,9 +871,9 @@ git commit -m $'feat(agent): report Windows disk state and reliability counters\
 
 **Files:** Create `agent/internal/collectors/hwhealth/smartctl.go`, `agent/internal/collectors/hwhealth/smartctl_test.go` and `agent/internal/collectors/hwhealth/testdata/smartctl/{scan,optimal,degraded,failed,rebuilding-with-progress,predictive,missing-member,multi-controller,unrecognized-state,truncated}.json`.
 **Test:** `agent/internal/collectors/hwhealth/smartctl_test.go`.
-**Interfaces:** Produces `newSMART(extra []string, run toolRunner, now func() time.Time) Source`, `parseSMART([]byte, int, string, time.Time) (Component, error)`. Consumes `toolRunner`, `smartKey`. The three-minute smartctl budget is nested inside the four-minute cycle budget.
+**Interfaces:** Produces `newSMART(extra []string, run toolRunner, now func() time.Time) Source`, `smartDevice{Name, Type string}`, `parseSMART([]byte, int, smartDevice, time.Time) (Component, error)`. Consumes `toolRunner`, `smartKey(serial, deviceType, dev string, unique bool) string`. Preserve both scan identity fields through parsing and the final serial-uniqueness pass. The three-minute smartctl budget is nested inside the four-minute cycle budget.
 
-- [ ] **Step 1: Create fixtures and exit-bit tests (5 min).**
+- [ ] **Step 1: Create fixtures, exit-bit and shared-path identity tests (5 min).**
 ```bash
 python3 - <<'PY'
 from pathlib import Path
@@ -863,37 +892,89 @@ PY
 `smartctl_test.go`:
 ```go
 package hwhealth
-import("context";"fmt";"strings";"testing";"time")
-func TestSMARTFixtures(t *testing.T){for _,name:=range []string{"optimal","degraded","failed","rebuilding-with-progress","predictive","missing-member","multi-controller","unrecognized-state","truncated"}{code:=0;if name=="missing-member"{code=2};c,e:=parseSMART(fixture(t,"smartctl",name+".json"),code,"/dev/sda",time.Unix(10,0));if name=="missing-member"||name=="truncated"{if e==nil{t.Fatal(name)};continue};if e!=nil{t.Fatal(e)};if c.PredictiveFailure!=(name=="failed"||name=="predictive"){t.Fatalf("%s %+v",name,c)};if name=="unrecognized-state"&&c.State!="unknown"{t.Fatal(c)};if name=="failed"&&(c.SmartPassed==nil||*c.SmartPassed){t.Fatal(c)}}}
-func TestSMARTExitBits(t *testing.T){for bit:=0;bit<8;bit++{c,e:=parseSMART(fixture(t,"smartctl","optimal.json"),1<<bit,"/dev/sda",time.Unix(1,0));if (e!=nil)!=(bit<3){t.Fatalf("bit %d err %v",bit,e)};if bit==3&&(c.SmartPassed==nil||*c.SmartPassed||!c.PredictiveFailure){t.Fatal(c)}}}
+import("context";"encoding/json";"fmt";"strings";"testing";"time")
+func TestSMARTFixtures(t *testing.T){for _,name:=range []string{"optimal","degraded","failed","rebuilding-with-progress","predictive","missing-member","multi-controller","unrecognized-state","truncated"}{code:=0;if name=="missing-member"{code=2};c,e:=parseSMART(fixture(t,"smartctl",name+".json"),code,smartDevice{Name:"/dev/sda",Type:"sat"},time.Unix(10,0));if name=="missing-member"||name=="truncated"{if e==nil{t.Fatal(name)};continue};if e!=nil{t.Fatal(e)};if c.PredictiveFailure!=(name=="failed"||name=="predictive"){t.Fatalf("%s %+v",name,c)};if name=="unrecognized-state"&&c.State!="unknown"{t.Fatal(c)};if name=="failed"&&(c.SmartPassed==nil||*c.SmartPassed){t.Fatal(c)}}}
+func TestSMARTExitBits(t *testing.T){for bit:=0;bit<8;bit++{c,e:=parseSMART(fixture(t,"smartctl","optimal.json"),1<<bit,smartDevice{Name:"/dev/sda",Type:"sat"},time.Unix(1,0));if (e!=nil)!=(bit<3){t.Fatalf("bit %d err %v",bit,e)};if bit==3&&(c.SmartPassed==nil||*c.SmartPassed||!c.PredictiveFailure){t.Fatal(c)}}}
 func TestSMARTDeviceLimit(t *testing.T){count:=0;run:=func(_ context.Context,_ time.Duration,_ string,args ...string)(execResult,error){if args[0]=="--scan-open"{rows:=[]string{};for i:=0;i<65;i++{rows=append(rows,fmt.Sprintf(`{"name":"/dev/d%d","type":"sat"}`,i))};return execResult{Stdout:[]byte(`{"devices":[`+strings.Join(rows,",")+`]}`)},nil};count++;return execResult{Stdout:fixture(t,"smartctl","optimal.json")},nil};r,e:=newSMART(nil,run,time.Now).Collect(context.Background(),Availability{Available:true,Path:"smartctl"});if e!=nil||count!=64||r.Complete||len(r.Components)!=64{t.Fatalf("%d %+v %v",count,r,e)};for _,c:=range r.Components{if !strings.HasPrefix(c.ComponentKey,"smart:dev:"){t.Fatal("duplicate serial merged",c)}}}
+// Shared by the source regression here and the full collector regression in Task 13.
+func smartIdentityCases()[]struct{name string;serials,keys [2]string}{
+ fallback:=[2]string{"smart:dev:megaraid,0:/dev/bus/0","smart:dev:megaraid,1:/dev/bus/0"}
+ return []struct{name string;serials,keys [2]string}{
+  {"blank",[2]string{"",""},fallback},
+  {"whitespace",[2]string{" ","\t"},fallback},
+  {"duplicate",[2]string{"DUP","DUP"},fallback},
+  {"trimmed_duplicate",[2]string{" DUP ","DUP"},fallback},
+  {"unique",[2]string{" A ","B"},[2]string{"smart:A","smart:B"}},
+ }
+}
+func smartSharedPathSource(t *testing.T,serials [2]string,reverse,failedProbe bool)Source{
+ t.Helper()
+ return newSMART(nil,func(_ context.Context,timeout time.Duration,path string,args ...string)(execResult,error){
+  if timeout!=15*time.Second||path!="fixture-smartctl"{t.Fatalf("unexpected invocation: %s %v",path,timeout)}
+  if strings.Join(args," ")=="--scan-open -j"{
+   devices:=[]map[string]string{{"name":"/dev/bus/0","type":"megaraid,0"},{"name":"/dev/bus/0","type":"megaraid,1"}}
+   if reverse{devices[0],devices[1]=devices[1],devices[0]}
+   if failedProbe{devices=append(devices[:1],append([]map[string]string{{"name":"/dev/bus/0","type":"megaraid,9"}},devices[1:]...)...)}
+   b,e:=json.Marshal(map[string]any{"devices":devices});if e!=nil{t.Fatal(e)};return execResult{Stdout:b},nil
+  }
+  if len(args)!=5||strings.Join(args[:4]," ")!="-a -j /dev/bus/0 -d"{t.Fatalf("scan identity lost in command: %v",args)}
+  i:=0;switch args[4]{case "megaraid,0":case "megaraid,1":i=1;case "megaraid,9":return execResult{ExitCode:2,Stdout:[]byte(`{}`)},nil;default:t.Fatalf("unexpected type: %s",args[4])}
+  b,e:=json.Marshal(map[string]any{"serial_number":serials[i],"smart_status":map[string]any{"passed":i==0},"temperature":map[string]any{"current":30+i}});if e!=nil{t.Fatal(e)}
+  return execResult{Stdout:b},nil
+ },func()time.Time{return time.Unix(100,0)})
+}
+func assertSMARTIdentityRows(t *testing.T,rows []Component,keys [2]string){
+ t.Helper();if len(rows)!=2{t.Fatalf("lost shared-path probes: %+v",rows)}
+ for i,key:=range keys{
+  c:=findComponent(t,rows,key)
+  if c.Source!="smartctl"||c.Name!="/dev/bus/0"||c.Attributes["osDevice"]!="/dev/bus/0"||c.TemperatureC==nil||*c.TemperatureC!=30+i||c.SmartPassed==nil||*c.SmartPassed!=(i==0)||c.PredictiveFailure!=(i==1){t.Fatalf("probe evidence assigned to wrong identity: %+v",c)}
+ }
+}
+func TestSMARTSharedPathIdentity(t *testing.T){
+ for _,tc:=range smartIdentityCases(){for _,reverse:=range []bool{false,true}{for _,failedProbe:=range []bool{false,true}{
+  t.Run(fmt.Sprintf("%s/reverse=%t/failed=%t",tc.name,reverse,failedProbe),func(t *testing.T){
+   src:=smartSharedPathSource(t,tc.serials,reverse,failedProbe)
+   r,e:=src.Collect(context.Background(),Availability{Available:true,Path:"fixture-smartctl"})
+   if e!=nil||r.Complete==failedProbe{t.Fatalf("%+v %v",r,e)}
+   assertSMARTIdentityRows(t,r.Components,tc.keys)
+  })
+ }}}
+}
 ```
-- [ ] **Step 2: Run red (2 min).** `cd agent && go test -race ./internal/collectors/hwhealth/...` → `undefined: parseSMART`.
+- [ ] **Step 2: Run red (2 min).** `cd agent && go test -race ./internal/collectors/hwhealth/...` → `undefined: parseSMART` (and `smartDevice`). When correcting an existing implementation, `TestSMARTSharedPathIdentity` must fail for blank and duplicate serials with the old name-only fallback.
 - [ ] **Step 3: Implement scan/probe and normalization (5 min).** `smartctl.go`:
 ```go
 package hwhealth
 import("context";"encoding/json";"fmt";"strings";"time")
-func parseSMART(b []byte,exit int,dev string,now time.Time)(Component,error){
+type smartDevice struct{Name,Type string}
+func parseSMART(b []byte,exit int,dev smartDevice,now time.Time)(Component,error){
  if exit<0||exit&7!=0{return Component{},fmt.Errorf("SMART probe failed (exit %d)",exit)}
  var d struct{Serial string `json:"serial_number"`;Model string `json:"model_name"`;Firmware string `json:"firmware_version"`;Status struct{Passed *bool `json:"passed"`} `json:"smart_status"`;Temperature struct{Current *int `json:"current"`} `json:"temperature"`;Capacity struct{Bytes int64 `json:"bytes"`} `json:"user_capacity"`;Power struct{Hours int64 `json:"hours"`} `json:"power_on_time"`;ATA struct{Table []struct{ID int `json:"id"`;Raw struct{Value any `json:"value"`} `json:"raw"`} `json:"table"`} `json:"ata_smart_attributes"`;NVMe map[string]any `json:"nvme_smart_health_information_log"`}
  if e:=json.Unmarshal(b,&d);e!=nil{return Component{},e};passed:=d.Status.Passed;if exit&8!=0{passed=ptr(false)};state:="unknown";predict:=false
  if passed!=nil{if *passed{state="online"}else{state="predictive_failure";predict=true}}
- if number(d.NVMe["critical_warning"])!=0{predict=true};c:=component("smartctl","physical_disk",smartKey(d.Serial,dev,true),"",dev,"smartctl",state);c.Serial=ptr(strings.TrimSpace(d.Serial));c.Model=ptr(d.Model);c.Firmware=ptr(d.Firmware);c.SizeBytes=ptr(d.Capacity.Bytes);c.TemperatureC=d.Temperature.Current;c.SmartPassed=passed;c.PredictiveFailure=predict
+ if number(d.NVMe["critical_warning"])!=0{predict=true};c:=component("smartctl","physical_disk",smartKey(d.Serial,dev.Type,dev.Name,false),"",dev.Name,"smartctl",state);c.Serial=ptr(strings.TrimSpace(d.Serial));c.Model=ptr(d.Model);c.Firmware=ptr(d.Firmware);c.SizeBytes=ptr(d.Capacity.Bytes);c.TemperatureC=d.Temperature.Current;c.SmartPassed=passed;c.PredictiveFailure=predict
  smart:=map[string]any{"observedAt":now.UTC().Format(time.RFC3339Nano),"powerOnHours":d.Power.Hours};attrs:=map[string]any{};for _,a:=range d.ATA.Table{switch a.ID{case 5,9,187,188,194,197,198,199:attrs[fmt.Sprint(a.ID)]=a.Raw.Value}};smart["ata"]=attrs
- for _,k:=range []string{"critical_warning","percentage_used","media_errors","unsafe_shutdowns"}{if v,ok:=d.NVMe[k];ok{smart[k]=v}};c.Attributes["smart"]=smart;c.Attributes["osDevice"]=dev;return c,nil
+ for _,k:=range []string{"critical_warning","percentage_used","media_errors","unsafe_shutdowns"}{if v,ok:=d.NVMe[k];ok{smart[k]=v}};c.Attributes["smart"]=smart;c.Attributes["osDevice"]=dev.Name;return c,nil
 }
 func newSMART(extra []string,run toolRunner,now func()time.Time)Source{return &source{kind:"smartctl",tier:TierDisk,detect:func(context.Context)Availability{p,ok:=lookupTool([]string{"smartctl"},extra);return Availability{Path:p,Available:ok}},collect:func(parent context.Context,a Availability)(Result,error){
  ctx,cancel:=context.WithTimeout(parent,3*time.Minute);defer cancel();scan,e:=run(ctx,15*time.Second,a.Path,"--scan-open","-j");if e!=nil{return Result{},e};if scan.ExitCode&7!=0{return Result{},fmt.Errorf("smartctl scan exit %d",scan.ExitCode)}
- var doc struct{Devices []struct{Name,Type string}};if e=json.Unmarshal(scan.Stdout,&doc);e!=nil{return Result{},e};if doc.Devices==nil{return Result{},fmt.Errorf("missing smartctl devices")}
+ var doc struct{Devices []smartDevice};if e=json.Unmarshal(scan.Stdout,&doc);e!=nil{return Result{},e};if doc.Devices==nil{return Result{},fmt.Errorf("missing smartctl devices")}
  r:=Result{Complete:true};if len(doc.Devices)>64{doc.Devices=doc.Devices[:64];r.Complete=false;r.Warnings=append(r.Warnings,"scan limited to 64 devices")}
- counts:=map[string]int{};devices:=[]string{}
- for _,d:=range doc.Devices{if ctx.Err()!=nil{r.Complete=false;r.Warnings=append(r.Warnings,"SMART budget exceeded");break};args:=[]string{"-a","-j",d.Name};if d.Type!=""{args=append(args,"-d",d.Type)};o,e:=run(ctx,15*time.Second,a.Path,args...);var c Component;if e==nil{c,e=parseSMART(o.Stdout,o.ExitCode,d.Name,now())};if e!=nil{r.Complete=false;r.Warnings=append(r.Warnings,d.Name+": "+e.Error());continue};serial:=strings.TrimSpace(*c.Serial);if serial!=""{counts[serial]++};r.Components=append(r.Components,c);devices=append(devices,d.Name)}
- for i:=range r.Components{c:=&r.Components[i];c.ComponentKey=smartKey(*c.Serial,devices[i],counts[*c.Serial]==1)}
+ counts:=map[string]int{};devices:=[]smartDevice{}
+ for _,d:=range doc.Devices{if ctx.Err()!=nil{r.Complete=false;r.Warnings=append(r.Warnings,"SMART budget exceeded");break};args:=[]string{"-a","-j",d.Name};if d.Type!=""{args=append(args,"-d",d.Type)};o,e:=run(ctx,15*time.Second,a.Path,args...);var c Component;if e==nil{c,e=parseSMART(o.Stdout,o.ExitCode,d,now())};if e!=nil{r.Complete=false;r.Warnings=append(r.Warnings,d.Name+": "+e.Error());continue};serial:=strings.TrimSpace(*c.Serial);if serial!=""{counts[serial]++};r.Components=append(r.Components,c);devices=append(devices,d)}
+ for i:=range r.Components{c:=&r.Components[i];c.ComponentKey=smartKey(*c.Serial,devices[i].Type,devices[i].Name,counts[*c.Serial]==1)}
  if len(r.Components)==0&&!r.Complete{return r,fmt.Errorf("all SMART probes failed: %v",r.Warnings)};return r,nil
 }}}
 ```
-Decision: bit 3 explicitly sets `SmartPassed=false` even if the JSON boolean disagrees, preserving server-derived critical health. Bits 4–7 only admit data; raw ATA counts and NVMe wear/error counters never set a health flag. A missing SMART overall status remains unknown rather than inventing a healthy self-assessment.
-- [ ] **Step 4: Run green (2 min).** `cd agent && go test -race ./internal/collectors/hwhealth/...` → `ok`.
+Decision: bit 3 explicitly sets `SmartPassed=false` even if the JSON boolean disagrees, preserving server-derived critical health. Bits 4–7 only admit data; raw ATA counts and NVMe wear/error counters never set a health flag. A missing SMART overall status remains unknown rather than inventing a healthy self-assessment. Parsing starts with the typed device fallback; only the completed serial-count pass selects `smart:<serial>`. Append scan identities only for successful probes so failed probes cannot shift the type/name association. Blank and duplicate serials retain separate typed keys regardless of scan order.
+- [ ] **Step 4: Run green (2 min).**
+```bash
+cd agent && go test -race ./internal/collectors/hwhealth/... -run 'Test(Keys|SMART)' -count=1
+```
+```bash
+cd agent && go test -race ./internal/collectors/hwhealth/...
+```
+Both commands must return exit code 0. The shared-path matrix verifies exact keys and per-probe evidence with forward/reversed scans, blank/duplicate/unique serials and an intervening failed probe.
 - [ ] **Step 5: Commit (2 min).**
 ```bash
 git add agent/internal/collectors/hwhealth/{smartctl.go,smartctl_test.go,testdata/smartctl}
@@ -915,7 +996,7 @@ func TestMergeRules(t *testing.T){now:=time.Unix(1000,0);vendor:=component("stor
  replay:=merge([]Component{vendor},cache,now.Add(time.Hour),time.Hour);if !replay[0].PredictiveFailure{t.Fatal("SMART lost on RAID tier")}
  expired:=merge([]Component{vendor},cache,now.Add(2*time.Hour),time.Hour);b,_:=json.Marshal(expired[0]);if expired[0].PredictiveFailure||!strings.Contains(string(b),`"smartPassed":null`)||!strings.Contains(string(b),`"temperatureC":null`){t.Fatal(string(b))}
  for _,serial:=range []string{"","S"}{v2:=vendor;v2.ComponentKey+="2";v2.Serial=ptr(serial);v1:=vendor;v1.Serial=ptr(serial);s:=smart;s.Serial=ptr(serial);got:=merge([]Component{v1,v2,s},map[string]smartCacheEntry{},now,time.Hour);if len(got)!=3{t.Fatal("ambiguous merge",got)}}
- s2:=smart;s2.ComponentKey="smart:dev:second";if got:=merge([]Component{vendor,smart,s2},map[string]smartCacheEntry{},now,time.Hour);len(got)!=3{t.Fatal("duplicate smart serial merged")}
+ s2:=smart;s2.ComponentKey="smart:dev:sat:/dev/second";if got:=merge([]Component{vendor,smart,s2},map[string]smartCacheEntry{},now,time.Hour);len(got)!=3{t.Fatal("duplicate smart serial merged")}
  win:=component("windows_physical_disk","physical_disk","winpd:1","","disk","OK","online");win.Serial=ptr("S");if got:=merge([]Component{vendor,win},map[string]smartCacheEntry{},now,time.Hour);len(got)!=1{t.Fatal(got)}
  vd:=component("storcli","virtual_disk","storcli:c0:v0","storcli:c0","VD","Optl","optimal");for _,model:=range []string{"PERC H730","LOGICAL VOLUME","Virtual Disk","MR9361","Smart Array","raid volume"}{win.Model=ptr(model);win.Serial=ptr("");got:=merge([]Component{vd,win},map[string]smartCacheEntry{},now,time.Hour);if !got[1].AlertExempt||got[1].Attributes["backedByVd"]!=true{t.Fatal(model)};got=merge([]Component{win},map[string]smartCacheEntry{},now,time.Hour);if got[0].AlertExempt{t.Fatal("no VD present")}}
 }
@@ -1022,8 +1103,23 @@ func TestCollectorUnavailableDoesNotTripBreaker(t *testing.T){
  for i:=0;i<4;i++{if _,e:=c.Run(context.Background(),[]Tier{TierRAID});e!=nil{t.Fatal(e)}}
  if c.breakers["smartctl"].failures!=0{t.Fatal("unavailable opened breaker")}
 }
+func TestCollectorSMARTSharedPathIdentity(t *testing.T){
+ for _,tc:=range smartIdentityCases(){t.Run(tc.name,func(t *testing.T){
+  for _,reverse:=range []bool{false,true}{for _,failedProbe:=range []bool{false,true}{
+   smart:=smartSharedPathSource(t,tc.serials,reverse,failedProbe)
+   src:=fakeSource("smartctl",TierDisk,true,func(ctx context.Context)(Result,error){return smart.Collect(ctx,Availability{Available:true,Path:"fixture-smartctl"})})
+   c:=New(Options{DataDir:t.TempDir(),Sources:[]Source{src},Now:func()time.Time{return time.Unix(100,0)}})
+   snap,e:=c.Run(context.Background(),[]Tier{TierDisk});if e!=nil||snap==nil{t.Fatalf("snapshot=%+v error=%v",snap,e)}
+   assertSMARTIdentityRows(t,snap.Components,tc.keys)
+   if len(snap.Sources)!=1{t.Fatal(snap.Sources)};report:=snap.Sources[0]
+   if report.Source!="smartctl"||report.Status!="ok"||report.Complete==nil||*report.Complete==failedProbe{t.Fatal(report)}
+   for _,warning:=range report.Warnings{if warning=="component output limited"{t.Fatal("identity collision reached payload filter")}}
+   if tc.name!="unique"&&len(c.cache)!=0{t.Fatal("ambiguous serial cached",c.cache)}
+  }}
+ })}
+}
 ```
-- [ ] **Step 2: Run red (2 min).** `cd agent && go test -race ./internal/collectors/hwhealth/...` → `undefined: New`.
+- [ ] **Step 2: Run red (2 min).** `cd agent && go test -race ./internal/collectors/hwhealth/...` → `undefined: New`. The SMART regression uses Task 10's mocked scan/probe helper and checks the final snapshot after `merge` and `limitSnapshot`; restoring the name-only fallback must lose a row and fail this test.
 - [ ] **Step 3: Implement construction and synchronized configuration (5 min).** Create `collector.go` with this block and append Step 4's methods:
 ```go
 package hwhealth
@@ -1093,6 +1189,11 @@ func limitSnapshot(s *Snapshot){
 ```
 `tiersRun` contains actual scheduled tiers, including failed/backing-off attempts; it never claims a disk probe because cached SMART was replayed. `none` means no capability across both tiers and is persisted at most daily. A budget-skipped source is visible as failed but does not accrue a breaker strike. The next-cycle cursor is a source `Kind`, not a filtered index.
 - [ ] **Step 5: Run green (2 min).** `cd agent && go test -race ./internal/collectors/hwhealth/...` → `ok`; the budget test uses 20 ms contexts, never sleeps four minutes.
+```bash
+cd agent && go test -race ./internal/collectors/hwhealth/... -run 'Test(SMARTSharedPathIdentity|CollectorSMARTSharedPathIdentity)' -count=1
+```
+Expect exit code 0: both disks and their distinct SMART observations survive the complete collector path; a successful full scan remains complete. Keep the existing duplicate-key payload guard: the source now supplies distinct keys.
+
 - [ ] **Step 6: Commit (2 min).**
 ```bash
 git add agent/internal/collectors/hwhealth/{collector.go,collector_test.go}
@@ -1290,6 +1391,9 @@ git commit -m $'feat(agent): deliver hardware health on jittered tracked heartbe
 ```
 
 ## Self-review
+
+- Cross-plan P2 (SMART identity): Tasks 1 and 10 extend only the §4.2 fallback to `smart:dev:<type>:<name>` and retain the unique non-blank serial key. Task 10 carries the exact scan type/name through successful probes; tests cover shared paths, blank/whitespace/duplicate serials, scan reordering and an intervening failed probe. Task 13 checks those rows survive merge and payload filtering with completeness preserved. Task 11's synthetic fallback example uses the same format.
+- Index synchronization boundary: the Task 1 table records the authorized SMART fallback extension for the index's §H → §4.2 contract reference; the index/design still need that fallback text synchronized by their owner. This wave supplies its own key builder and regressions and requires no implementation from another wave. Only this W02a plan is edited.
 
 - Spec §4.1–§4.2: Task 1 fixes camelCase wire names and source-specific identities; Task 7 persists stable md member identities.
 - Spec §5.1–§5.2: Tasks 5–10 cover storcli/perccli, mdadm, Storage Spaces, Windows disks and smartctl with raw fixtures and mapping tests.
