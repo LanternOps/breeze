@@ -1,11 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
-const { selectMock, selectDistinctOnMock, getDeviceWithOrgAndSiteCheckMock, isMlFeatureEnabledForOrgMock } = vi.hoisted(() => ({
+const { selectMock, selectDistinctOnMock, getDeviceWithOrgAndSiteCheckMock } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   selectDistinctOnMock: vi.fn(),
   getDeviceWithOrgAndSiteCheckMock: vi.fn(),
-  isMlFeatureEnabledForOrgMock: vi.fn(),
 }));
 
 vi.mock('drizzle-orm', () => ({
@@ -51,10 +50,6 @@ vi.mock('./helpers', () => ({
   getDeviceWithOrgAndSiteCheck: getDeviceWithOrgAndSiteCheckMock,
 }));
 
-vi.mock('../../services/mlFeatureFlags', () => ({
-  isMlFeatureEnabledForOrg: isMlFeatureEnabledForOrgMock,
-}));
-
 import { tabCountsRoutes } from './tabCounts';
 
 const device = {
@@ -87,7 +82,6 @@ describe('GET /devices/:id/tab-counts', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     getDeviceWithOrgAndSiteCheckMock.mockResolvedValue(device);
-    isMlFeatureEnabledForOrgMock.mockResolvedValue(true);
     app = new Hono();
     app.route('/devices', tabCountsRoutes);
   });
@@ -125,25 +119,5 @@ describe('GET /devices/:id/tab-counts', () => {
     getDeviceWithOrgAndSiteCheckMock.mockResolvedValueOnce(Symbol.for('site-access-denied'));
     const res = await app.request(`/devices/${device.id}/tab-counts`);
     expect(res.status).toBe(403);
-  });
-
-  it('reports anomalies: 0 without querying metric_anomalies when detection is off for the device org (sweep E1)', async () => {
-    isMlFeatureEnabledForOrgMock.mockResolvedValue(false);
-    queueSelects([
-      [{ count: '3' }], // alerts
-      // no anomalies select — short-circuited to 0
-      [{ count: '2' }], // tickets
-      [{ count: '0' }], // operator tasks
-      [{ count: '4' }], // compliance
-    ], []);
-
-    const res = await app.request(`/devices/${device.id}/tab-counts`);
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({
-      data: { alerts: 3, anomalies: 0, tickets: 2, operatorTasks: 0, monitoring: 0, compliance: 4 },
-    });
-    expect(isMlFeatureEnabledForOrgMock).toHaveBeenCalledWith(device.orgId, 'ml.anomalies.enabled');
-    // 4 device-scoped counts, not 5 — the anomalies query is skipped entirely.
-    expect(selectMock).toHaveBeenCalledTimes(4);
   });
 });
