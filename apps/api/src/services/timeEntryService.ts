@@ -1175,11 +1175,11 @@ export async function deleteTimeEntry(id: string, actor: TimeEntryActor) {
       'ENTRY_BILLED',
     );
   }
-  const deleted = await db
+  const [deletedRow] = await db
     .delete(timeEntries)
     .where(eq(timeEntries.id, id))
     .returning({ id: timeEntries.id, orgId: timeEntries.orgId });
-  if (deleted.length === 0) {
+  if (!deletedRow) {
     // The entry existed at the top of this call (getEntryOr404's FOR UPDATE
     // re-read) but the DELETE matched zero rows — it was re-pointed out of
     // this caller's visibility in between (org move, RLS context change).
@@ -1193,7 +1193,7 @@ export async function deleteTimeEntry(id: string, actor: TimeEntryActor) {
       'ENTRY_DELETE_LOST',
     );
   }
-  recordAuditMutation(actor, 'time_entry.deleted', deleted[0]);
+  recordAuditMutation(actor, 'time_entry.deleted', deletedRow);
 
   await insertTimeEntryFeedComment(
     entry.ticketId,
