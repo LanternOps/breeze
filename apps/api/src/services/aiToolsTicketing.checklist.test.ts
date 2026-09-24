@@ -6,11 +6,12 @@ const ITEM_ID_2 = '00000000-0000-0000-0000-000000000003';
 const TEMPLATE_ID = '00000000-0000-0000-0000-000000000004';
 const ORG_ID = '00000000-0000-0000-0000-000000000010';
 
-const { checklistMocks, templateMocks, mockLimit, mockFor, mockSelect } = vi.hoisted(() => {
+const { checklistMocks, templateMocks, mockLimit, mockSelect } = vi.hoisted(() => {
   const checklistMocks = {
     addChecklistItem: vi.fn(),
     deleteChecklistItem: vi.fn(),
     getChecklistItemOr404: vi.fn(),
+    isChecklistItemTickedForUpdate: vi.fn(),
     listChecklist: vi.fn(),
     patchChecklistItem: vi.fn(),
     reorderChecklist: vi.fn(),
@@ -20,15 +21,14 @@ const { checklistMocks, templateMocks, mockLimit, mockFor, mockSelect } = vi.hoi
     getChecklistTemplate: vi.fn(),
     listChecklistTemplates: vi.fn(),
   };
-  // findTicketWithAccess ends in .limit(1); the ticked-item row lock ends in .for('update').
+  // findTicketWithAccess ends in .limit(1).
   const mockLimit = vi.fn<() => Promise<unknown[]>>(() => Promise.resolve([]));
-  const mockFor = vi.fn<() => Promise<unknown[]>>(() => Promise.resolve([]));
   const mockSelect = vi.fn(() => ({
     from: vi.fn(() => ({
-      where: vi.fn(() => ({ limit: mockLimit, for: mockFor })),
+      where: vi.fn(() => ({ limit: mockLimit })),
     })),
   }));
-  return { checklistMocks, templateMocks, mockLimit, mockFor, mockSelect };
+  return { checklistMocks, templateMocks, mockLimit, mockSelect };
 });
 
 vi.mock('../db', () => ({ db: { select: mockSelect } }));
@@ -86,7 +86,6 @@ describe('manage_ticket_checklist (#6930)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockLimit.mockResolvedValue([]);
-    mockFor.mockResolvedValue([]);
     checklistMocks.getChecklistItemOr404.mockResolvedValue({ id: ITEM_ID, ticketId: TICKET_ID });
   });
 
@@ -147,16 +146,16 @@ describe('manage_ticket_checklist (#6930)', () => {
 
   it('update_item edits an unticked step with label/detail only', async () => {
     mockAccessibleTicket();
-    mockFor.mockResolvedValueOnce([{ doneAt: null }]);
+    checklistMocks.isChecklistItemTickedForUpdate.mockResolvedValueOnce(false);
     checklistMocks.patchChecklistItem.mockResolvedValue({ id: ITEM_ID, label: 'new' });
     await run({ action: 'update_item', itemId: ITEM_ID, label: 'new', detail: null });
-    expect(mockFor).toHaveBeenCalledWith('update');
+    expect(checklistMocks.isChecklistItemTickedForUpdate).toHaveBeenCalledWith(ITEM_ID);
     expect(checklistMocks.patchChecklistItem).toHaveBeenCalledWith(ITEM_ID, { label: 'new', detail: null }, { userId: 'user-1' });
   });
 
   it('update_item refuses a ticked step (a text edit would clear the attestation)', async () => {
     mockAccessibleTicket();
-    mockFor.mockResolvedValueOnce([{ doneAt: new Date() }]);
+    checklistMocks.isChecklistItemTickedForUpdate.mockResolvedValueOnce(true);
     const out = await run({ action: 'update_item', itemId: ITEM_ID, label: 'new' });
     expect(out.code).toBe('CHECKLIST_TICKED_ITEM_REQUIRES_USER');
     expect(checklistMocks.patchChecklistItem).not.toHaveBeenCalled();
@@ -164,7 +163,7 @@ describe('manage_ticket_checklist (#6930)', () => {
 
   it('delete_item refuses a ticked step', async () => {
     mockAccessibleTicket();
-    mockFor.mockResolvedValueOnce([{ doneAt: new Date() }]);
+    checklistMocks.isChecklistItemTickedForUpdate.mockResolvedValueOnce(true);
     const out = await run({ action: 'delete_item', itemId: ITEM_ID });
     expect(out.code).toBe('CHECKLIST_TICKED_ITEM_REQUIRES_USER');
     expect(checklistMocks.deleteChecklistItem).not.toHaveBeenCalled();
@@ -172,7 +171,7 @@ describe('manage_ticket_checklist (#6930)', () => {
 
   it('delete_item deletes an unticked step', async () => {
     mockAccessibleTicket();
-    mockFor.mockResolvedValueOnce([{ doneAt: null }]);
+    checklistMocks.isChecklistItemTickedForUpdate.mockResolvedValueOnce(false);
     const out = await run({ action: 'delete_item', itemId: ITEM_ID });
     expect(out.deleted).toBe(true);
     expect(checklistMocks.deleteChecklistItem).toHaveBeenCalledWith(ITEM_ID);

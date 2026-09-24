@@ -9,7 +9,7 @@
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { and, desc, eq, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
-import { deviceHardware, devices, ticketChecklistItems, ticketDrafts, tickets } from '../db/schema';
+import { deviceHardware, devices, ticketDrafts, tickets } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import { isAiAgentPrincipal } from '../middleware/auth';
 import { deviceInSiteScope, ticketSiteScopeCondition } from '../routes/tickets/siteScope';
@@ -56,6 +56,7 @@ import {
   addChecklistItem,
   deleteChecklistItem,
   getChecklistItemOr404,
+  isChecklistItemTickedForUpdate,
   listChecklist,
   patchChecklistItem,
   reorderChecklist,
@@ -1332,8 +1333,8 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'manage_ticket_checklist',
       description:
-        'Manage a ticket\'s checklist steps and read checklist templates. Actions: list, add_item, update_item (label/detail), delete_item, reorder, apply_template, list_templates, get_template. ' +
-        'Ticking a step done is NOT available to tools: it is a human attestation and needs a signed-in user on the ticket page. Ticked steps cannot be edited or deleted here either.',
+        'Ticket checklist steps and templates. Actions: list, add_item, update_item (label/detail), delete_item, reorder, apply_template, list_templates, get_template. ' +
+        'Ticking a step done needs a signed-in user on the ticket page; ticked steps cannot be edited or deleted here.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -1399,16 +1400,11 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
           const item = await getChecklistItemOr404(input.itemId);
           if (!(await findTicketWithAccess(item.ticketId, auth))) return jsonError('Checklist item not found');
 
-          // Row lock so a concurrent human tick cannot land between this
-          // check and the write below and then be cleared by it. Inside the
-          // request transaction the lock holds until commit.
-          const [locked] = await db
-            .select({ doneAt: ticketChecklistItems.doneAt })
-            .from(ticketChecklistItems)
-            .where(eq(ticketChecklistItems.id, item.id))
-            .for('update');
-          if (!locked) return jsonError('Checklist item not found');
-          if (locked.doneAt !== null) return refuseTickedItem(action);
+          // Row-locked read, so a concurrent human tick cannot land between
+          // this check and the write below and then be cleared by it.
+          const ticked = await isChecklistItemTickedForUpdate(item.id);
+          if (ticked === null) return jsonError('Checklist item not found');
+          if (ticked) return refuseTickedItem(action);
 
           if (action === 'delete_item') {
             await deleteChecklistItem(item.id);

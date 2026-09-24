@@ -167,6 +167,8 @@ export const TOOL_TIERS = {
   list_time_entries: 1,
   get_running_timer: 1,
   get_timesheet: 1,
+  // #6930. Base tier; the mutating actions are Tier 2 in aiGuardrails.
+  manage_ticket_checklist: 1,
 
   query_devices: 1,
   search_documentation: 1,
