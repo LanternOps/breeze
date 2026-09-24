@@ -50,7 +50,7 @@ vi.mock('../../db', () => {
           innerJoin: vi.fn((table: unknown, condition: unknown) => {
             dbMocks.innerJoins.push({ table, condition });
             return joined;
-          }),
+          }),          leftJoin: vi.fn(() => joined),
         };
       }),
     };
@@ -404,9 +404,12 @@ describe('ticket mailbox connection service', () => {
     );
   });
 
-  it('returns an exact public list DTO with no tenant or processing internals', async () => {
+  it('returns an exact public list DTO (incl. provider) with no tenant or processing internals', async () => {
     const publicRow = {
       id: CONNECTION_ID,
+      provider: 'm365',
+      orgId: null,
+      orgName: null,
       mailboxAddress: 'support@example.com',
       displayName: 'Support',
       status: 'connected',
@@ -419,11 +422,21 @@ describe('ticket mailbox connection service', () => {
 
     expect(result).toEqual([{ ...publicRow, verificationError: null }]);
     expect(Object.keys(result[0]!)).toEqual([
-      'id', 'mailboxAddress', 'displayName', 'status', 'lastPolledAt', 'lastMessageAt', 'verificationError',
+      'id', 'provider', 'orgId', 'orgName', 'mailboxAddress', 'displayName', 'status', 'lastPolledAt', 'lastMessageAt', 'verificationError',
     ]);
     expect(Object.keys(dbMocks.selectedFields[0] ?? {})).toEqual([
-      'id', 'mailboxAddress', 'displayName', 'status', 'lastPolledAt', 'lastMessageAt', 'lastError',
+      'id', 'provider', 'orgId', 'orgName', 'mailboxAddress', 'displayName', 'status', 'lastPolledAt', 'lastMessageAt', 'lastError',
     ]);
+  });
+
+  it('surfaces the provider discriminator so a client can keep gmail rows out of the Microsoft card', async () => {
+    const base = { mailboxAddress: 'help@example.com', displayName: null, status: 'connected', lastPolledAt: null, lastMessageAt: null, lastError: null };
+    dbMocks.selectResults.push([
+      { ...base, id: 'm', provider: 'm365' },
+      { ...base, id: 'g', provider: 'gmail' },
+    ]);
+    const result = await listMailboxConnections(PARTNER_ID);
+    expect(result.map((r) => [r.id, r.provider])).toEqual([['m', 'm365'], ['g', 'gmail']]);
   });
 
   it('exposes lastError only when it is our sanitized verification reason, never poller error text', async () => {
@@ -496,7 +509,13 @@ describe('ticket mailbox connection service', () => {
       },
     }]);
     expect(dbMocks.selectWheres).toEqual([
-      { op: 'eq', column: ticketMailboxConnections.status, value: 'connected' },
+      {
+        op: 'and',
+        conditions: [
+          { op: 'eq', column: ticketMailboxConnections.provider, value: 'm365' },
+          { op: 'eq', column: ticketMailboxConnections.status, value: 'connected' },
+        ],
+      },
     ]);
     expect(Object.keys(dbMocks.selectedFields[0] ?? {})).toEqual([
       'id', 'partnerId', 'tenantId', 'mailboxAddress', 'deltaLink',

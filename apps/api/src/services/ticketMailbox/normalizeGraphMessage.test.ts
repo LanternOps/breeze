@@ -85,6 +85,18 @@ describe('normalizeGraphMessage', () => {
     expect(n.senderAuth?.verified).toBe(true);
   });
 
+  it('ignores a verdict hidden in an RFC comment (shared parser strips comments first)', () => {
+    const smuggled: GraphMessage = {
+      ...msg,
+      internetMessageHeaders: [
+        // The genuine header says dmarc=fail; a comment in the spf clause carries a fake pass.
+        { name: 'Authentication-Results', value: 'a.com; spf=pass (dmarc=pass); dkim=pass; dmarc=fail' },
+      ],
+    };
+    const n = normalizeGraphMessage(smuggled, 'partner-9', 'support@a.com');
+    expect(n.senderAuth).toEqual({ spf: 'pass', dkim: 'pass', dmarc: 'fail', verified: false });
+  });
+
   describe('body text (#6687)', () => {
     const longPara = 'The printer on the second floor has been jamming since Monday morning. '.repeat(6).trim();
 

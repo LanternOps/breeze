@@ -1009,6 +1009,38 @@
     "namePlaceholder": "Unterstützung",
     "connect": "Verbinden"
   },
+  "gmailMailbox": {
+    "title": "Google Workspace-Support-Postfach",
+    "description": "Verbinden Sie ein Google Workspace-Postfach, damit Kunden-E-Mails zu Tickets werden. Es wird die domänenweite Delegierung verwendet, daher sind keine MX- oder Weiterleitungsänderungen und keine OAuth-Weiterleitung nötig.",
+    "connectHint": "Das Postfach wird über die Google Workspace-Dienstkontoverbindung der ausgewählten Organisation gelesen, die damit die Anmeldedaten hält. Wählen Sie für ein Partner-Postfach (etwa Ihr eigenes help@) die Organisation, deren Workspace das Postfach enthält. Geben Sie das gemeinsame Support-Postfach ein, um es zu verbinden.",
+    "status": {
+      "pending_consent": "Ausstehend",
+      "connected": "Verbunden",
+      "error": "Aktion erforderlich",
+      "reauth_required": "Erneute Authentifizierung erforderlich",
+      "disabled": "Deaktiviert"
+    },
+    "reauthRequired": "Der Gmail-Abruf für dieses Postfach ist pausiert. Verbinden Sie es erneut, um fortzufahren: Das Dienstkonto muss eventuell neu autorisiert werden, seine Google Workspace-Verbindung ist möglicherweise inaktiv, oder das Postfach gehört jetzt zu einem anderen Google-Konto.",
+    "reconnect": "Wieder verbinden",
+    "reconnectNoOrg": "Dieser Verbindung fehlt ihre Organisation; sie kann hier nicht erneut verbunden werden.",
+    "disconnect": "Trennen",
+    "disconnected": "Postfach getrennt",
+    "disconnectFailed": "Verbindungstrennung fehlgeschlagen.",
+    "connected": "Postfach verbunden",
+    "connectFailed": "Das Gmail-Postfach konnte nicht verbunden werden.",
+    "empty": "Noch kein Gmail-Postfach verbunden.",
+    "loadError": "Gmail-Postfachverbindungen konnten nicht geladen werden. Aktualisieren Sie, um es erneut zu versuchen.",
+    "orgsLoadError": "Organisationen konnten nicht geladen werden. Aktualisieren Sie, um es erneut zu versuchen.",
+    "organization": "Organisation",
+    "selectOrg": "Organisation auswählen",
+    "address": "Postfachadresse",
+    "addressPlaceholder": "hilfe@example.com",
+    "displayName": "Anzeigename (optional)",
+    "namePlaceholder": "Unterstützung",
+    "connect": "Verbinden",
+    "credentialOrg": "Anmeldedaten: Google Workspace-Verbindung von {{org}}",
+    "credentialOrgUnknown": "eine Organisation, die Sie nicht sehen können"
+  },
   "orgApprovalSecurityTab": {
     "title": "Genehmigungssicherheit",
     "description": "Fordern Sie Techniker auf, bei der Genehmigung die Überprüfung mit einem registrierten Gerät durchzuführen. Sie können die Sicherheitsstufe nur über den Breeze-Standardwert hinaus erhöhen – niemals senken.",

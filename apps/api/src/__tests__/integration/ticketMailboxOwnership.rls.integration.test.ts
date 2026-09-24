@@ -6,9 +6,9 @@
  */
 import './setup';
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import {
   db,
@@ -23,6 +23,27 @@ const MIGRATION_FILE = join(
   __dirname,
   '../../../migrations/2026-07-15-a-ticket-mailbox-verified-ownership.sql',
 );
+
+// This suite rewinds ticket_mailbox_connections to its pre-hardening shape and
+// replays MIGRATION_FILE, which leaves the shared test database on the
+// 2026-07-15 definition of the table's constraints. Re-apply every later
+// migration that touches the table so suites running after this one see the
+// current schema (e.g. the Gmail inbound constraints). Migrations are
+// idempotent by contract, so the replay is a no-op wherever nothing changed.
+afterAll(async () => {
+  if (!process.env.DATABASE_URL) return;
+  const dir = join(__dirname, '../../../migrations');
+  const current = MIGRATION_FILE.split('/').pop()!;
+  const later = readdirSync(dir)
+    .filter((f) => /^\d{4}-.*\.sql$/u.test(f) && f.localeCompare(current) > 0)
+    .sort((a, b) => a.localeCompare(b));
+  const adminDb = getTestDb();
+  for (const file of later) {
+    const text = readFileSync(join(dir, file), 'utf8');
+    if (!text.includes('ticket_mailbox_connections')) continue;
+    await adminDb.execute(sql.raw(text));
+  }
+});
 
 function partnerCtx(partnerId: string): DbAccessContext {
   return {

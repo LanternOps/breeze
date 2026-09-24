@@ -189,6 +189,14 @@ const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
   // (Shape 1) and is deliberately NOT excluded — it is auto-discovered and
   // must carry breeze_has_org_access(org_id) on all four commands.
   'backup_provider_customers',
+  // ticket_mailbox_connections (2026-10-24, Gmail inbound): partner-axis (Shape
+  // 3, in PARTNER_TENANT_TABLES). Its new org_id is NOT the tenancy axis -- it
+  // names which org's google_workspace_connections holds the DWD service-account
+  // key used to impersonate the Gmail mailbox, and is bound to the connection's
+  // partner by the composite (org_id, partner_id) FK. RLS axis stays partner_id.
+  // Cross-partner forge proof: gmailInboundToTicket.integration.test.ts (composite
+  // FK rejects an org owned by a different partner).
+  'ticket_mailbox_connections',
 ]);
 
 // Tables whose own `id` column is the tenant identifier (no `org_id`).

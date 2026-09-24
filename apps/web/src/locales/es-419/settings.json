@@ -1009,6 +1009,38 @@
     "namePlaceholder": "Soporte",
     "connect": "Conectar"
   },
+  "gmailMailbox": {
+    "title": "Buzón de soporte de Google Workspace",
+    "description": "Conecta un buzón de Google Workspace para que los correos de los clientes se conviertan en tickets. Se usa la delegación en todo el dominio, así que no hay cambios de MX ni de reenvío, ni redirección OAuth.",
+    "connectHint": "El buzón se lee con la conexión de cuenta de servicio de Google Workspace de la organización seleccionada, que conserva su credencial. Para un buzón del partner (como tu propio help@), elige la organización cuyo Workspace contiene el buzón. Ingresa el buzón de soporte compartido para conectarlo.",
+    "status": {
+      "pending_consent": "Pendiente",
+      "connected": "Conectado",
+      "error": "necesita atencion",
+      "reauth_required": "Se requiere nueva autenticación",
+      "disabled": "Desactivado"
+    },
+    "reauthRequired": "La lectura de Gmail está en pausa para este buzón. Vuelve a conectarlo para reanudar: puede que la cuenta de servicio necesite una nueva autorización, que su conexión de Google Workspace esté inactiva o que el buzón ahora corresponda a otra cuenta de Google.",
+    "reconnect": "Reconectar",
+    "reconnectNoOrg": "A esta conexión le falta su organización y no se puede volver a conectar desde aquí.",
+    "disconnect": "Desconectar",
+    "disconnected": "Buzón desconectado",
+    "disconnectFailed": "Falló la desconexión.",
+    "connected": "Buzón conectado",
+    "connectFailed": "No se pudo conectar el buzón de Gmail.",
+    "empty": "Todavía no hay ningún buzón de Gmail conectado.",
+    "loadError": "No se pudieron cargar las conexiones de buzones de Gmail. Actualiza para intentarlo de nuevo.",
+    "orgsLoadError": "No se pudieron cargar las organizaciones. Actualiza para intentarlo de nuevo.",
+    "organization": "Organización",
+    "selectOrg": "Selecciona una organización",
+    "address": "dirección del buzón",
+    "addressPlaceholder": "soporte@example.com",
+    "displayName": "Nombre para mostrar (opcional)",
+    "namePlaceholder": "Soporte",
+    "connect": "Conectar",
+    "credentialOrg": "Credencial: conexión de Google Workspace de {{org}}",
+    "credentialOrgUnknown": "una organización que no puedes ver"
+  },
   "orgApprovalSecurityTab": {
     "title": "Seguridad de aprobación",
     "description": "Exija que los técnicos verifiquen con un dispositivo registrado al aprobar. Sólo puede elevar el nivel de seguridad por encima del valor predeterminado Breeze; nunca bajarlo.",

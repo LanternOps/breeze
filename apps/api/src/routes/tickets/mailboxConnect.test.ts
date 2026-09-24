@@ -12,6 +12,8 @@ const TENANT_ID = '11111111-1111-4111-8111-111111111111';
 const ATTACKER_TENANT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const MICROSOFT_OID = '55555555-5555-4555-8555-555555555555';
 const ATTEMPT_ID = '66666666-6666-4666-8666-666666666666';
+const ORG_ID = '77777777-7777-4777-8777-777777777777';
+const GMAIL_CONN_ID = '88888888-8888-4888-8888-888888888888';
 
 type PermissionName = 'ticket_mailbox:read' | 'ticket_mailbox:admin';
 type AuthState = {
@@ -26,6 +28,7 @@ const { authRef, mocks } = vi.hoisted(() => ({
   authRef: { current: null as AuthState | null },
   mocks: {
     createPendingConnection: vi.fn(),
+    createGmailConnection: vi.fn(),
     getMailboxConnection: vi.fn(),
     markPendingConsentFailed: vi.fn(async () => true),
     setConnectedMailboxStatus: vi.fn(async () => true),
@@ -94,6 +97,7 @@ vi.mock('../../services/ticketMailbox/mailboxToken', () => ({
 }));
 vi.mock('../../services/ticketMailbox/connectionService', () => ({
   createPendingConnection: mocks.createPendingConnection,
+  createGmailConnection: mocks.createGmailConnection,
   getMailboxConnection: mocks.getMailboxConnection,
   markPendingConsentFailed: mocks.markPendingConsentFailed,
   setConnectedMailboxStatus: mocks.setConnectedMailboxStatus,
@@ -973,4 +977,86 @@ describe('M365 mailbox lifecycle routes', () => {
       expect(mocks.bindVerifiedTenant).not.toHaveBeenCalled();
     },
   );
+});
+
+describe('POST /connect/gmail (production Gmail connect route, #6593)', () => {
+  let app: Hono;
+
+  const gmailBody = (overrides: Record<string, unknown> = {}) => ({
+    orgId: ORG_ID, mailboxAddress: 'help@client.example', displayName: 'Support', ...overrides,
+  });
+  const postGmail = (target: Hono, body: Record<string, unknown> = gmailBody()) =>
+    target.request('/connect/gmail', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authRef.current = adminAuth();
+    mocks.createGmailConnection.mockResolvedValue({ ok: true, id: GMAIL_CONN_ID });
+    app = new Hono();
+    app.route('/', mailboxRoutes);
+  });
+
+  it('denies unauthenticated callers', async () => {
+    authRef.current = null;
+    expect((await postGmail(app)).status).toBe(401);
+    expect(mocks.createGmailConnection).not.toHaveBeenCalled();
+  });
+
+  it('denies callers missing mailbox admin', async () => {
+    authRef.current = adminAuth({ permissions: new Set(['ticket_mailbox:read']) });
+    expect((await postGmail(app)).status).toBe(403);
+    expect(mocks.createGmailConnection).not.toHaveBeenCalled();
+  });
+
+  it('denies callers missing MFA', async () => {
+    authRef.current = adminAuth({ mfa: false });
+    expect((await postGmail(app)).status).toBe(403);
+    expect(mocks.createGmailConnection).not.toHaveBeenCalled();
+  });
+
+  it.each(['selected', 'none'] as const)('denies partner orgAccess=%s before the service or audit', async (orgAccess) => {
+    authRef.current = adminAuth({ partnerOrgAccess: orgAccess });
+    const response = await postGmail(app);
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+    expect(mocks.createGmailConnection).not.toHaveBeenCalled();
+    expect(mocks.writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid body (missing orgId, bad email) before the service', async () => {
+    expect((await postGmail(app, { mailboxAddress: 'help@client.example' } as Record<string, unknown>)).status).toBe(400);
+    expect((await postGmail(app, gmailBody({ mailboxAddress: 'not-an-email' }))).status).toBe(400);
+    expect(mocks.createGmailConnection).not.toHaveBeenCalled();
+  });
+
+  it('provisions the connection, returns the connected DTO, and audits once', async () => {
+    const response = await postGmail(app);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ connectionId: GMAIL_CONN_ID, status: 'connected' });
+    expect(mocks.createGmailConnection).toHaveBeenCalledWith({
+      partnerId: PARTNER_ID, orgId: ORG_ID, mailboxAddress: 'help@client.example',
+      displayName: 'Support', createdBy: USER_ID,
+    });
+    expect(mocks.writeRouteAudit).toHaveBeenCalledTimes(1);
+    expect(mocks.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      orgId: ORG_ID, action: 'ticket_mailbox.gmail_connected',
+      resourceId: GMAIL_CONN_ID, resourceName: 'help@client.example',
+      details: { provider: 'gmail' },
+    }));
+  });
+
+  it.each([
+    ['org_not_in_partner', 404],
+    ['no_google_connection', 400],
+    ['mailbox_unreadable', 422],
+  ] as const)('maps service failure %s to HTTP %d and does not audit', async (code, status) => {
+    mocks.createGmailConnection.mockResolvedValue({ ok: false, code, error: `err:${code}` });
+    const response = await postGmail(app);
+    expect(response.status).toBe(status);
+    await expect(response.json()).resolves.toEqual({ error: `err:${code}` });
+    expect(mocks.writeRouteAudit).not.toHaveBeenCalled();
+  });
 });

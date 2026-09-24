@@ -379,6 +379,18 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // writes the job row(s) in a short withAuthDbAccessContext block and
   // enqueues each one strictly after that block commits.
   { method: 'POST', pattern: /^\/api\/v1\/configuration-policies\/[^/]+\/patch-job\/?$/ },
+  // #6593 — Gmail inbound connect. createGmailConnection reads the org + Google
+  // Workspace credential in short withSystemDbAccessContext blocks, then makes a
+  // domain-wide-delegation probe to Google (Gmail history + OpenID identity, a
+  // multi-hundred-ms round trip) BETWEEN those blocks, then writes the connected
+  // row in a final short block. Under the auth middleware's ambient request
+  // transaction that Google probe runs inside a held pooled connection — the #1105
+  // pool-poison class (a hang at concurrency >= pool size). runOutsideDbContext in
+  // the service only swaps the ALS proxy; it cannot close the outer transaction, so
+  // the route must own its context. (Only the Gmail connect makes an outbound call
+  // at connect time; the Microsoft /connect builds a consent URL with no server-side
+  // Graph call, so it is not listed.)
+  { method: 'POST', pattern: /^\/api\/v1\/tickets\/mailbox\/connect\/gmail\/?$/ },
 ];
 
 /**

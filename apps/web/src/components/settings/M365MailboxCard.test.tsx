@@ -127,6 +127,22 @@ describe('M365MailboxCard', () => {
     expect(screen.getByText(/connected/i)).toBeTruthy();
   });
 
+  it('does NOT render gmail rows in the Microsoft card (a gmail reconnect here would convert it to m365)', async () => {
+    fetchWithAuth.mockResolvedValueOnce(
+      jsonRes({
+        connections: [
+          { id: 'm', provider: 'm365', mailboxAddress: 'support@a.com', displayName: 'Support', status: 'connected', lastPolledAt: null, lastMessageAt: null },
+          { id: 'g', provider: 'gmail', mailboxAddress: 'help@client.example', displayName: 'Help', status: 'reauth_required', lastPolledAt: null, lastMessageAt: null },
+        ],
+      }),
+    );
+    render(<M365MailboxCard />);
+    expect(await screen.findByText('support@a.com')).toBeInTheDocument();
+    // The gmail row is filtered out entirely — its address never appears and no
+    // Microsoft reconnect/retest control is offered for it.
+    expect(screen.queryByText('help@client.example')).not.toBeInTheDocument();
+  });
+
   it('Connect posts the address and redirects the browser to authUrl', async () => {
     fetchWithAuth
       .mockResolvedValueOnce(jsonRes({ connections: [] }))

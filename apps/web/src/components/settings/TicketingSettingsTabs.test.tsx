@@ -41,6 +41,9 @@ vi.mock('./InboundEmailCard', () => ({
 vi.mock('./M365MailboxCard', () => ({
   default: () => <div data-testid="m365-mailbox-card">MailboxStub</div>
 }));
+vi.mock('./GmailMailboxCard', () => ({
+  default: () => <div data-testid="gmail-mailbox-card">GmailMailboxStub</div>
+}));
 vi.mock('./CannedResponsesCard', () => ({
   default: () => <div data-testid="stub-canned-responses-card">CannedStub</div>
 }));

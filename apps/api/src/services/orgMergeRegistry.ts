@@ -488,6 +488,13 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   tenant_variables: { kind: 'repoint-dedupe', key: ['key'] }, // verified: tenant_variables_org_key_uniq (org_id, key) WHERE org_id IS NOT NULL — trivially true for org-scoped rows
   catalog_item_org_pricing: { kind: 'repoint-dedupe', key: ['catalog_item_id'] }, // verified: catalog_item_org_pricing_item_org_uq (catalog_item_id, org_id)
   ticket_form_org_links: { kind: 'repoint-dedupe', key: ['form_id'] }, // verified: ticket_form_org_links_form_org_uq (form_id, org_id)
+  // #6592: Gmail mailbox connections carry org_id; repoint them to the survivor
+  // instead of letting the FK cascade delete them with the loser org. Plain
+  // repoint (no dedupe): the only unique is (partner_id, mailbox_address), which
+  // does NOT include org_id, and a merge is within one partner — so two orgs can
+  // never already hold the same partner+mailbox, and repointing org_id cannot
+  // create a collision. Microsoft rows have org_id NULL and are not matched.
+  ticket_mailbox_connections: { kind: 'repoint' }, // Gmail rows carry org_id; plain repoint to the survivor preserves the cursor/sub/generation. Safety against a survivor credential that reads a DIFFERENT Google account is enforced at POLL time: every sweep verifies the mailbox's live immutable sub against the stored google_account_sub before ingesting and goes reauth_required on a mismatch, and a sweep already in flight when the merge commits stops at its next generation check, which also requires the org it loaded the credential for (sweepOneGmail). m365 rows carry org_id NULL and never merge.
   oauth_client_blocks: { kind: 'repoint-dedupe', key: ['client_id'] }, // verified: oauth_client_blocks_org_client_uniq (org_id, client_id) — migrations/2026-05-07, not in Drizzle schema
   sso_verified_domains: { kind: 'repoint-dedupe', key: ['domain'] }, // verified: sso_verified_domains_org_domain_idx (org_id, domain)
   alert_correlation_groups: { kind: 'repoint-dedupe', key: ['group_key'] }, // verified: alert_correlation_groups_org_key_uq (org_id, group_key)

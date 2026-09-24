@@ -273,7 +273,6 @@ export const ORG_CASCADE_FK_UNSAFE: ReadonlyArray<OrgCascadeFkRef> = Object.free
   { childTable: 'td_synnex_ec_express_integrations', constraint: 'td_synnex_ec_express_integrations_created_by_fkey', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: true },
   { childTable: 'td_synnex_sftp_integrations', constraint: 'td_synnex_sftp_integrations_created_by_fkey', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: true },
   { childTable: 'ticket_comments', constraint: 'ticket_comments_user_id_users_id_fk', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: true },
-  { childTable: 'ticket_mailbox_connections', constraint: 'ticket_mailbox_connections_created_by_fkey', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: true },
   { childTable: 'ticket_mailbox_consent_sessions', constraint: 'ticket_mailbox_consent_sessions_user_id_fkey', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: true },
   { childTable: 'ticket_mailbox_tenant_ownerships', constraint: 'ticket_mailbox_tenant_ownerships_verified_by_fkey', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: true },
   { childTable: 'ticket_response_templates', constraint: 'ticket_response_templates_created_by_fkey', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: true },

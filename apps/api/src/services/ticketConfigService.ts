@@ -827,16 +827,22 @@ export async function convertEmailInbound(partnerId: string, id: string, orgId: 
     throw new TicketConfigServiceError('This email has no usable sender address; it cannot be converted to a ticket', 400, 'INBOUND_ROW_NO_SENDER');
   }
 
-  // The persisted `raw` JSONB is the UNTRANSFORMED Mailgun webhook form body, so
-  // it carries `stripped-text`/`body-plain` (not `text`) and `from` (the full
-  // From header, not `fromName`). Read those real keys — using `raw.text` /
-  // `raw.fromName` here silently lost the body and submitter name on every convert.
+  // Reconstruct the body + submitter name from the persisted `raw` JSONB, which is
+  // provider-shaped. The Mailgun path stores its UNTRANSFORMED webhook form
+  // (`stripped-text`/`body-plain`, and `from` = the full From header). The Gmail
+  // path has no such form, so it persists neutral keys `bodyText`/`fromName`
+  // (normalizeGmailMessage). Prefer the neutral keys, then fall back to the Mailgun
+  // ones — reading only the Mailgun keys produced an empty description and no
+  // submitter name for every converted Gmail row.
   const raw = (row.raw as Record<string, unknown> | null) ?? {};
   const description =
+    (typeof raw.bodyText === 'string' && raw.bodyText) ||
     (typeof raw['stripped-text'] === 'string' && raw['stripped-text']) ||
     (typeof raw['body-plain'] === 'string' && raw['body-plain']) ||
     '';
-  const fromName = extractFromName(typeof raw.from === 'string' ? raw.from : '') || undefined;
+  const fromName =
+    (typeof raw.fromName === 'string' && raw.fromName.trim() ? raw.fromName.trim() : undefined) ||
+    extractFromName(typeof raw.from === 'string' ? raw.from : '') || undefined;
 
   // CLAIM-FIRST: atomically transition the row out of the review state BEFORE any
   // ticket is created. If a concurrent dismiss/convert won the race, this affects

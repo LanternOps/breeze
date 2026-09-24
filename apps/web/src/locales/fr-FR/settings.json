@@ -1009,6 +1009,38 @@
     "namePlaceholder": "Soutien",
     "connect": "Connecter"
   },
+  "gmailMailbox": {
+    "title": "Boîte aux lettres d'assistance Google Workspace",
+    "description": "Connectez une boîte aux lettres Google Workspace pour que les courriels des clients deviennent des tickets. La délégation à l'échelle du domaine est utilisée : aucune modification MX ou de transfert, et aucune redirection OAuth.",
+    "connectHint": "La boîte aux lettres est lue avec la connexion par compte de service Google Workspace de l'organisation sélectionnée, qui détient donc ses identifiants. Pour une boîte aux lettres appartenant au partenaire (comme votre propre help@), choisissez l'organisation dont l'espace Workspace contient la boîte. Saisissez la boîte aux lettres d'assistance partagée pour la connecter.",
+    "status": {
+      "pending_consent": "En attente",
+      "connected": "Connectée",
+      "error": "Besoin d’attention",
+      "reauth_required": "Réauthentification requise",
+      "disabled": "Désactivée"
+    },
+    "reauthRequired": "La relève Gmail est suspendue pour cette boîte aux lettres. Reconnectez-la pour reprendre : le compte de service doit peut-être être réautorisé, sa connexion Google Workspace est peut-être inactive, ou la boîte correspond désormais à un autre compte Google.",
+    "reconnect": "Reconnecter",
+    "reconnectNoOrg": "Cette connexion n'a plus d'organisation et ne peut pas être reconnectée ici.",
+    "disconnect": "Déconnecter",
+    "disconnected": "Boîte aux lettres déconnectée",
+    "disconnectFailed": "Échec de la déconnexion.",
+    "connected": "Boîte aux lettres connectée",
+    "connectFailed": "Impossible de connecter la boîte aux lettres Gmail.",
+    "empty": "Aucune boîte aux lettres Gmail connectée pour l'instant.",
+    "loadError": "Impossible de charger les connexions de boîtes aux lettres Gmail. Actualisez pour réessayer.",
+    "orgsLoadError": "Impossible de charger les organisations. Actualisez pour réessayer.",
+    "organization": "Organisation",
+    "selectOrg": "Sélectionnez une organisation",
+    "address": "Adresse de boîte aux lettres",
+    "addressPlaceholder": "assistance@example.com",
+    "displayName": "Nom d’affichage (optionnel)",
+    "namePlaceholder": "Soutien",
+    "connect": "Connecter",
+    "credentialOrg": "Identifiants : connexion Google Workspace de {{org}}",
+    "credentialOrgUnknown": "une organisation que vous ne pouvez pas voir"
+  },
   "orgApprovalSecurityTab": {
     "title": "Sécurité de l’approbation",
     "description": "Exigez que les techniciens vérifient avec un appareil enregistré lors de l’approbation. Vous ne pouvez augmenter le niveau d’assurance que au-dessus du défaut Breeze — ne jamais le baisser.",

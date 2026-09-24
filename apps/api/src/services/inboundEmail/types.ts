@@ -8,7 +8,7 @@ export type InboundParseStatus = 'matched' | 'created' | 'quarantined' | 'failed
 
 // Inbound provider identity. The mailgun impl reports 'mailgun'; 'resend' is
 // reserved for the planned second provider.
-export type InboundProviderName = 'mailgun' | 'resend' | 'm365';
+export type InboundProviderName = 'mailgun' | 'resend' | 'm365' | 'gmail';
 
 // A single sender-authentication verdict, normalized to lowercase. 'pass'/'fail'
 // are the meaningful states; 'none'/'neutral'/'unknown' are all treated as NOT a
@@ -115,7 +115,9 @@ export type InboundAttachmentSkipReason =
   | 'unsupported_type'
   | 'too_many'
   | 'fetch_failed'
-  | 'storage_failed';
+  | 'storage_failed'
+  // The provider's attachment import is not implemented yet (Gmail).
+  | 'provider_unsupported';
 
 /** Bytes already written to attachment storage, awaiting their `ticket_attachments` row. */
 export interface StoredInboundAttachment {

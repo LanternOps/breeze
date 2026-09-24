@@ -6,6 +6,7 @@ import TicketStatusesTab from './TicketStatusesTab';
 import TicketPrioritiesTab from './TicketPrioritiesTab';
 import InboundEmailCard from './InboundEmailCard';
 import M365MailboxCard from './M365MailboxCard';
+import GmailMailboxCard from './GmailMailboxCard';
 import CannedResponsesCard from './CannedResponsesCard';
 import TicketFormsCard from './TicketFormsCard';
 import TicketChecklistTemplatesPage from './TicketChecklistTemplatesPage';
@@ -127,6 +128,7 @@ export default function TicketingSettingsTabs() {
         <div data-testid="ticketing-tab-panel-email" className="space-y-6">
           <InboundEmailCard />
           {canReadMailbox ? <M365MailboxCard /> : null}
+          {canReadMailbox ? <GmailMailboxCard /> : null}
         </div>
       )}
       {activeTab === 'templates' && (

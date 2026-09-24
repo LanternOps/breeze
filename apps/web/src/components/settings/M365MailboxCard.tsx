@@ -10,6 +10,7 @@ import '@/lib/i18n';
 
 interface MailboxConnectionDTO {
   id: string;
+  provider: 'm365' | 'gmail';
   mailboxAddress: string;
   displayName: string | null;
   status: 'pending_consent' | 'connected' | 'error' | 'reauth_required' | 'disabled';
@@ -50,9 +51,14 @@ function parseMailboxConnection(value: unknown): MailboxConnectionDTO | null {
   if (!isNullableString(value.lastPolledAt) || !isNullableString(value.lastMessageAt)) return null;
   const verificationError = 'verificationError' in value ? value.verificationError : null;
   if (!isNullableString(verificationError)) return null;
+  // Provider defaults to m365 when absent (older API responses); a gmail row is
+  // filtered out of this Microsoft card so its reconnect/retest never routes
+  // through the Microsoft consent path.
+  const provider = value.provider === 'gmail' ? 'gmail' : 'm365';
 
   return {
     id: value.id,
+    provider,
     mailboxAddress: value.mailboxAddress,
     displayName: value.displayName,
     status: value.status,
@@ -98,7 +104,12 @@ function M365MailboxCardContent({ canAdminMailbox }: { canAdminMailbox: boolean 
         setConnections(
           rawConnections
             .map(parseMailboxConnection)
-            .filter((connection): connection is MailboxConnectionDTO => connection !== null),
+            .filter((connection): connection is MailboxConnectionDTO => connection !== null)
+            // This is the Microsoft 365 card; a gmail row must never be managed
+            // here (reconnect posts to the Microsoft consent endpoint, which would
+            // convert it to m365 and drop its Gmail binding). Gmail management is a
+            // separate surface.
+            .filter((connection) => connection.provider === 'm365'),
         );
       }
     } finally {

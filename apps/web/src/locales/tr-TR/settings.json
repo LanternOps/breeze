@@ -1009,6 +1009,38 @@
     "namePlaceholder": "Destek",
     "connect": "Bağlan"
   },
+  "gmailMailbox": {
+    "title": "Google Workspace destek posta kutusu",
+    "description": "Müşteri e-postalarının talebe dönüşmesi için bir Google Workspace posta kutusu bağlayın. Alan genelinde yetki devri kullanılır; MX veya yönlendirme değişikliği ve OAuth yönlendirmesi gerekmez.",
+    "connectHint": "Posta kutusu, seçilen kuruluşun Google Workspace hizmet hesabı bağlantısıyla okunur; kimlik bilgisi bu kuruluşta tutulur. İş ortağına ait bir posta kutusu için (kendi help@ adresiniz gibi) Workspace'i bu posta kutusunu içeren kuruluşu seçin. Bağlamak için paylaşılan destek posta kutusunu girin.",
+    "status": {
+      "pending_consent": "Beklemede",
+      "connected": "Bağlandı",
+      "error": "İlgilenmesi gerekiyor",
+      "reauth_required": "Yeniden kimlik doğrulama gerekli",
+      "disabled": "Devre Dışı"
+    },
+    "reauthRequired": "Bu posta kutusu için Gmail okuması duraklatıldı. Devam etmek için yeniden bağlayın: hizmet hesabının yeniden yetkilendirilmesi gerekebilir, Google Workspace bağlantısı devre dışı olabilir veya posta kutusu artık başka bir Google hesabına çözümleniyor olabilir.",
+    "reconnect": "Yeniden bağlan",
+    "reconnectNoOrg": "Bu bağlantının kuruluşu eksik ve buradan yeniden bağlanamaz.",
+    "disconnect": "Bağlantıyı kes",
+    "disconnected": "Posta kutusunun bağlantısı kesildi",
+    "disconnectFailed": "Bağlantı kesilemedi.",
+    "connected": "Posta kutusu bağlandı",
+    "connectFailed": "Gmail posta kutusu bağlanamadı.",
+    "empty": "Henüz bağlı Gmail posta kutusu yok.",
+    "loadError": "Gmail posta kutusu bağlantıları yüklenemedi. Tekrar denemek için yenileyin.",
+    "orgsLoadError": "Kuruluşlar yüklenemedi. Tekrar denemek için yenileyin.",
+    "organization": "Organizasyon",
+    "selectOrg": "Bir kuruluş seçin",
+    "address": "Posta kutusu adresi",
+    "addressPlaceholder": "destek@example.com",
+    "displayName": "Görünen ad (isteğe bağlı)",
+    "namePlaceholder": "Destek",
+    "connect": "Bağlan",
+    "credentialOrg": "Kimlik bilgisi: {{org}} kuruluşunun Google Workspace bağlantısı",
+    "credentialOrgUnknown": "göremediğiniz bir kuruluş"
+  },
   "orgApprovalSecurityTab": {
     "title": "Onay Güvenliği",
     "description": "Teknisyenlerin onaylama sırasında kayıtlı bir cihazla doğrulama yapmasını zorunlu kılın. Güvence düzeyini yalnızca Breeze varsayılanının üzerine yükseltebilirsiniz; asla düşürmeyin.",

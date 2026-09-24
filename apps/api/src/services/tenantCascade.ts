@@ -828,6 +828,13 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // partner_id sweep (information_schema-driven), not a static list; this
   // entry only covers the org-owned axis of the GDPR org cascade.
   'ticket_forms',
+  // ticket_mailbox_connections: Gmail rows carry org_id (Microsoft rows are
+  // partner-scoped, org_id NULL and not matched by the org cascade). In the org
+  // cascade so a merge repoints the Gmail row (REPOINT_TABLES) instead of the FK
+  // cascade-deleting it with the loser org (#6592). localeCompare: 'ticket_forms'
+  // < 'ticket_mailbox_connections' < 'ticket_outbox' ('f' < 'm' < 'o'); it
+  // precedes its FK parent 'organizations'.
+  'ticket_mailbox_connections',
   // ticket_outbox (wave 6 PR 3, #3828): transactional outbox for ticket
   // lifecycle events. Shape 1 (direct org_id, RLS-scoped — unlike
   // intent_outbox, which is intentionally unscoped). ticket_id FK is ON

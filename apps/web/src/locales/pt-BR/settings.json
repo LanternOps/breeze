@@ -1009,6 +1009,38 @@
     "namePlaceholder": "Suporte",
     "connect": "Conectar"
   },
+  "gmailMailbox": {
+    "title": "Caixa de suporte do Google Workspace",
+    "description": "Conecte uma caixa de correio do Google Workspace para que os e-mails dos clientes virem tickets. É usada a delegação em todo o domínio, então não há alterações de MX ou encaminhamento nem redirecionamento OAuth.",
+    "connectHint": "A caixa de correio é lida com a conexão de conta de serviço do Google Workspace da organização selecionada, que passa a guardar a credencial. Para uma caixa do parceiro (como o seu próprio help@), escolha a organização cujo Workspace contém a caixa. Informe a caixa de suporte compartilhada para conectá-la.",
+    "status": {
+      "pending_consent": "Pendente",
+      "connected": "Conectada",
+      "error": "Requer atenção",
+      "reauth_required": "Nova autenticação necessária",
+      "disabled": "Desativada"
+    },
+    "reauthRequired": "A leitura do Gmail está pausada para esta caixa. Reconecte-a para retomar: a conta de serviço pode precisar de nova autorização, a conexão do Google Workspace pode estar inativa ou a caixa pode agora corresponder a outra conta Google.",
+    "reconnect": "Reconectar",
+    "reconnectNoOrg": "Esta conexão está sem organização e não pode ser reconectada aqui.",
+    "disconnect": "Desconectar",
+    "disconnected": "Caixa de correio desconectada",
+    "disconnectFailed": "Falha ao desconectar.",
+    "connected": "Caixa de correio conectada",
+    "connectFailed": "Não foi possível conectar a caixa do Gmail.",
+    "empty": "Nenhuma caixa do Gmail conectada ainda.",
+    "loadError": "Não foi possível carregar as conexões de caixas do Gmail. Atualize para tentar novamente.",
+    "orgsLoadError": "Não foi possível carregar as organizações. Atualize para tentar novamente.",
+    "organization": "Organização",
+    "selectOrg": "Selecione uma organização",
+    "address": "Endereço da caixa de correio",
+    "addressPlaceholder": "suporte@example.com",
+    "displayName": "Nome de exibição (opcional)",
+    "namePlaceholder": "Suporte",
+    "connect": "Conectar",
+    "credentialOrg": "Credencial: conexão do Google Workspace de {{org}}",
+    "credentialOrgUnknown": "uma organização que você não pode ver"
+  },
   "orgApprovalSecurityTab": {
     "title": "Segurança de aprovação",
     "description": "Exija que os técnicos façam a verificação com um dispositivo registrado ao aprovar. Você só pode aumentar o nível de garantia acima do padrão do Breeze — nunca reduzi-lo.",
