@@ -549,6 +549,8 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'invoice_payments',
   'invoice_stripe_payments',
   'invoices',
+  // #4628 W04b: snapshot of the dropped labour-pricing columns (org rows carry org_id).
+  'legacy_labour_pricing_archive',
   'llm_egress_events',
   'local_vaults',
   'log_correlation_rules',

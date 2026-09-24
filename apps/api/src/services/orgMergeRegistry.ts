@@ -851,6 +851,7 @@ const REPOINT_TABLES: readonly string[] = [
   "invoice_payments",
   "invoice_stripe_payments",
   "invoices",
+  "legacy_labour_pricing_archive",
   "local_vaults",
   "log_correlation_rules",
   "log_correlations",

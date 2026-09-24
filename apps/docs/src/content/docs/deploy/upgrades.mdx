@@ -128,6 +128,66 @@ Before upgrading a proxy-fronted deployment to **v0.103.0 or later**, verify tha
 
 ## Version-specific notes
 
+### v0.117.0 — legacy labour-pricing columns dropped
+
+**The six legacy labour-pricing columns are dropped.** The migration removes
+`default_billable`, `default_hourly_rate` and `rate_currency` from both
+`ticket_categories` and `org_ticket_settings`. Nothing in Breeze has read them
+since v0.115.0. Any report, BI query or integration that still selects them
+directly from the database fails after this upgrade. Read pricing from the
+billing-profile tables (`billing_profiles`, `billing_profile_rules`,
+`org_billing_profile_assignments`) or from the values stamped on each time entry
+(`time_entries.hourly_rate`, `coverage`, `work_type_id`, `billable_minutes`).
+
+**Nothing is lost: the old values are archived first.** Before it drops the
+columns, the migration copies every row that still holds a legacy value into a
+new table, `legacy_labour_pricing_archive`. A few values never made it into a
+billing profile during the v0.115.0 conversion. For those rows, `skip_reason`
+says why:
+
+| `skip_reason` | What the conversion did |
+|---|---|
+| `org_currency_off_list` | The organization's currency is not on the supported list, so its rate and billable default were skipped entirely. |
+| `org_rate_currency_mismatch` | The organization's rate was entered in a different currency from the organization's own, so the rate was not carried over. |
+| `non_billable_org_rate` | The organization was non-billable but also had a rate. A non-billable card carries no rate, so the rate was dropped. |
+| `non_billable_category_rate` | The category was non-billable but also had a rate. The rate was dropped. |
+| `category_rate_currency_unsupported` | The category rate had no currency, or an unsupported one, so it was not carried over. |
+| *(empty)* | Converted into a billing profile. The row is kept for reference. |
+
+To see what still needs re-entering on **Settings → Billing → Rates**:
+
+```sql
+BEGIN;
+SELECT set_config('breeze.scope', 'system', true);  -- the table is row-level secured
+SELECT source_table, source_name, default_billable, default_hourly_rate,
+       rate_currency, owner_currency_code, skip_reason
+  FROM legacy_labour_pricing_archive
+ WHERE skip_reason IS NOT NULL
+ ORDER BY partner_id, source_table, source_name;
+COMMIT;
+```
+
+The migration counts what it archived in the API log (`billing profiles W04b:`
+lines). It refuses to run, and the API does not start
+(`refusing to drop legacy labour-pricing columns`), in two cases. The first is
+when any partner was never converted. A normal upgrade path cannot produce
+that, because the conversion runs earlier in the same migration sequence. The
+second is when manual DDL left only some of a table's three legacy columns in
+place, which the migration will not drop without archiving them.
+
+**Rolling back to v0.116 after this upgrade needs a database restore.** The
+v0.116 image's tenant-export policy still lists the three `org_ticket_settings`
+columns, and tenant export rejects any mismatch between that list and the live
+schema, so organization data export fails on a v0.116 image running against an
+upgraded database. **Back up your database before upgrading.** To roll back,
+restore that backup together with the v0.116 image.
+
+**Billables CSV: two new columns at the end.** The billables export
+(`GET /tickets/export/billables.csv`) appends `work_type` and
+`included_minutes` (worked minutes of contract-included time, `0` on other
+time rows, empty on parts). Existing columns keep their positions. An importer
+that rejects unknown trailing columns needs updating.
+
 ### v0.116.0 — retired labour-pricing fields are rejected
 
 **Breaking API change: `defaultHourlyRate`, `defaultBillable` and `rateCurrency`
@@ -166,12 +226,6 @@ before upgrading to v0.117. Read pricing from the billing-profile tables
 entry (`time_entries.hourly_rate`, `coverage`, `work_type_id`,
 `billable_minutes`). The legacy columns hold only the pre-conversion values.
 **Back up your database before upgrading** all the same.
-
-**Billables CSV: two new columns at the end.** The billables export
-(`GET /tickets/export/billables.csv`) appends `work_type` and
-`included_minutes` (worked minutes of contract-included time, `0` on other
-time rows, empty on parts). Existing columns keep their positions. An importer
-that rejects unknown trailing columns needs updating.
 
 ### v0.115.0 — billing profiles replace per-organization labour rates
 

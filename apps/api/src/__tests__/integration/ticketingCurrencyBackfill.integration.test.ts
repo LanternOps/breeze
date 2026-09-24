@@ -1,4 +1,3 @@
-// W04: Delete this legacy-column constraint/backfill suite when the six pricing columns are dropped.
 /**
  * Backfill anomaly-count test for the wave-4 ticketing currency migration
  * (multi-currency #3776, spec §14).
@@ -10,7 +9,9 @@
  * statements) — this test replays the migration file inside ONE transaction
  * that is deliberately rolled back:
  *
- *   1. drop the NOT NULL / CHECK guards the migration installs (DDL is
+ *   1. restore the legacy labour-pricing columns that #4628 W04b dropped
+ *      (a skip-version upgrade still replays this file against them) and
+ *      drop the NOT NULL / CHECK guards the migration installs (DDL is
  *      transactional, so the live schema is untouched after ROLLBACK);
  *   2. insert pre-migration-shaped rows with NULL currency;
  *   3. `client.unsafe(<migration file>)` on a dedicated postgres.js client
@@ -31,6 +32,7 @@ import postgres from 'postgres';
 import { sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { organizations, partners, tickets, users } from '../../db/schema';
+import { RESTORE_LEGACY_LABOUR_PRICING_COLUMNS_SQL } from './fixtures/legacyLabourPricingColumns';
 
 const RUN = !!process.env.DATABASE_URL;
 const DATABASE_URL = process.env.DATABASE_URL
@@ -109,14 +111,15 @@ describe.runIf(RUN)('ticketing currency migration backfill (wave 4 #3776)', () =
     try {
       await client.begin(async (tx) => {
         // 1) Relax the guards the migration installs so NULL-currency rows
-        //    can exist again (pre-migration shape).
+        //    can exist again (pre-migration shape). The legacy labour-pricing
+        //    columns come back first; their CHECK is not restored with them.
+        await tx.unsafe(RESTORE_LEGACY_LABOUR_PRICING_COLUMNS_SQL);
         await tx.unsafe(`
           ALTER TABLE ticket_parts ALTER COLUMN currency_code DROP NOT NULL;
           ALTER TABLE org_ticket_settings ALTER COLUMN rate_currency DROP NOT NULL;
           ALTER TABLE org_ticket_settings ALTER COLUMN rate_currency DROP DEFAULT;
           ALTER TABLE time_entries DROP CONSTRAINT time_entries_currency_required_when_org_chk;
           ALTER TABLE time_entries DROP CONSTRAINT time_entries_currency_required_when_rate_chk;
-          ALTER TABLE ticket_categories DROP CONSTRAINT ticket_categories_rate_currency_chk;
         `);
 
         // 2) Pre-migration rows: 2 org-linked entries, 1 standalone RATED
@@ -198,7 +201,9 @@ describe.runIf(RUN)('ticketing currency migration backfill (wave 4 #3776)', () =
     expect(stamped!.settings).toEqual([{ rate_currency: 'EUR' }]);
     expect(stamped!.categories).toEqual([{ rate_currency: 'CAD' }, { rate_currency: null }]);
 
-    // ROLLBACK restored the live schema: every guard the test relaxed is back.
+    // ROLLBACK restored the live schema: every guard the test relaxed is back,
+    // and the restored legacy columns (and the CHECK the replay re-added) are
+    // gone again (#4628 W04b).
     const liveGuards = await withSystemDbAccessContext(() => db.execute(
       sql`
         SELECT
@@ -212,7 +217,7 @@ describe.runIf(RUN)('ticketing currency migration backfill (wave 4 #3776)', () =
              'ticket_categories_rate_currency_chk')) AS checks
       `,
     )) as unknown as Array<{ parts_nullable: string; settings_nullable: string; checks: number }>;
-    expect(liveGuards[0]).toEqual({ parts_nullable: 'NO', settings_nullable: 'NO', checks: 3 });
+    expect(liveGuards[0]).toEqual({ parts_nullable: 'NO', settings_nullable: null, checks: 2 });
 
     // And none of the pre-migration rows survived.
     const survivors = await withSystemDbAccessContext(() => db.execute(

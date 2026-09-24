@@ -136,6 +136,10 @@ const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
   'time_entries',
   // Partner-axis: org metadata must not hide suspended customers' assignments.
   'org_billing_profile_assignments',
+  // #4628 W04b: snapshot of the dropped legacy labour-pricing columns. Partner
+  // prices, partner-axis like its sibling above; org_id is set only on the
+  // org_ticket_settings rows and is metadata for cascade/merge/export.
+  'legacy_labour_pricing_archive',
   // Huntress credentials and discovered-org mappings are partner-scoped.
   // org_id is retained only as legacy/mapping metadata and may be NULL for
   // quarantined Huntress orgs.
@@ -213,6 +217,7 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['billing_profiles', 'partner_id'],
   ['billing_profile_rules', 'partner_id'],
   ['org_billing_profile_assignments', 'partner_id'],
+  ['legacy_labour_pricing_archive', 'partner_id'],
   ['ticket_response_templates', 'partner_id'],
   ['ticket_mailbox_connections', 'partner_id'],
   ['ticket_mailbox_tenant_ownerships', 'partner_id'],
