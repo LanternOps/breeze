@@ -1,5 +1,5 @@
 import {
-  pgTable, uuid, varchar, integer, boolean, timestamp, numeric, jsonb, char,
+  pgTable, uuid, varchar, integer, boolean, timestamp, jsonb,
   uniqueIndex, index
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
@@ -40,10 +40,9 @@ export const orgTicketSettings = pgTable('org_ticket_settings', {
   orgId: uuid('org_id').notNull().unique().references(() => organizations.id, { onDelete: 'cascade' }),
   // { "<priority>": { "responseMinutes": n|null, "resolutionMinutes": n|null } } — shape owned by the shared Zod validator
   slaOverrides: jsonb('sla_overrides').notNull().default(sql`'{}'::jsonb`),
-  defaultHourlyRate: numeric('default_hourly_rate', { precision: 10, scale: 2 }),
-  // W04: legacy snapshot retained for export only; the inert default allows SLA-only inserts.
-  rateCurrency: char('rate_currency', { length: 3 }).notNull().default('USD'),
-  defaultBillable: boolean('default_billable'),
+  // SLA-only since #4628 W04b: the three labour-pricing columns were dropped by
+  // 2026-10-29-100300-drop-legacy-labour-pricing-columns.sql (billing profiles
+  // price labour now; skipped legacy values live in legacy_labour_pricing_archive).
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });

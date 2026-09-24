@@ -2,8 +2,8 @@
 // Phase-1 ticketing extension tables (ticket_categories, ticket_alert_links,
 // partner_ticket_sequences).
 import {
-  pgTable, uuid, varchar, text, integer, boolean, timestamp, numeric,
-  pgEnum, primaryKey, uniqueIndex, index, char, type AnyPgColumn
+  pgTable, uuid, varchar, text, integer, boolean, timestamp,
+  pgEnum, primaryKey, uniqueIndex, index, type AnyPgColumn
 } from 'drizzle-orm/pg-core';
 import { partners, organizations } from './orgs';
 import { users } from './users';
@@ -24,10 +24,6 @@ export const ticketCategories = pgTable('ticket_categories', {
   defaultPriority: ticketPriorityEnum('default_priority'),
   responseSlaMinutes: integer('response_sla_minutes'),
   resolutionSlaMinutes: integer('resolution_sla_minutes'),
-  defaultBillable: boolean('default_billable').notNull().default(true),
-  defaultHourlyRate: numeric('default_hourly_rate', { precision: 10, scale: 2 }),
-  // Partner currency the default rate was entered under (null when no rate); CHECK ticket_categories_rate_currency_chk is SQL-only.
-  rateCurrency: char('rate_currency', { length: 3 }),
   // #4615 / spec §3.1: the work type applied SERVER-SIDE at stamp time when a
   // caller sends no workTypeId and the entry has a ticket. Composite FK
   // ticket_categories_default_work_type_partner_fk is SQL-migration-only.
