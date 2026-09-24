@@ -2,9 +2,9 @@
  * A partner-wide `service` monitor reaches a device's heartbeat
  * `monitoring_settings` under the AGENT'S OWN DB context (#5287 W04, #5291).
  *
- * W04 made `buildMonitoringConfigUpdate` source service/process watches from
- * the device's effective MONITOR set first and the config-policy Monitoring tab
- * second. The monitor-definition read runs in the caller's own context, so a
+ * W05d sources service/process watches only from the device's effective
+ * MONITOR set; the monitors link supplies the check interval. The
+ * monitor-definition read runs in the caller's own context, so a
  * PARTNER-WIDE definition is legible there only because of
  * `monitor_definitions_partner_wide_select` (W02) plus the
  * `breeze.current_partner_id` GUC that `middleware/agentAuth` sets.
@@ -27,6 +27,8 @@ import {
   configPolicyAssignments,
   configPolicyFeatureLinks,
   configPolicyMonitors,
+  configPolicyMonitoringSettings,
+  configPolicyMonitoringWatches,
   configurationPolicies,
   devices,
   monitorDefinitions,
@@ -114,7 +116,11 @@ async function seedDevice(orgId: string, siteId: string) {
  * `serviceName` is the field the assertions key on, so a passing test proves
  * THIS definition resolved rather than some default.
  */
-async function seedPartnerWideServiceMonitor(partnerId: string, serviceName: string) {
+async function seedPartnerWideServiceMonitor(
+  partnerId: string,
+  serviceName: string,
+  checkIntervalSeconds?: number,
+) {
   return withDbAccessContext(SYSTEM_CTX, async () => {
     const [monitor] = await db
       .insert(monitorDefinitions)
@@ -144,6 +150,22 @@ async function seedPartnerWideServiceMonitor(partnerId: string, serviceName: str
       .insert(configPolicyFeatureLinks)
       .values({ configPolicyId: policy!.id, featureType: 'monitors' })
       .returning({ id: configPolicyFeatureLinks.id });
+
+    if (checkIntervalSeconds !== undefined) {
+      const [settings] = await db.insert(configPolicyMonitoringSettings).values({
+        featureLinkId: link!.id,
+        checkIntervalSeconds,
+      }).returning({ id: configPolicyMonitoringSettings.id });
+      // Re-keyed settings retain their historical watches for conversion history.
+      await db.insert(configPolicyMonitoringWatches).values({
+        settingsId: settings!.id,
+        watchType: 'service',
+        name: 'RetiredHistoricalService',
+        enabled: true,
+        retiredAt: new Date(),
+        retiredReason: 'unconvertible:equivalence_delta',
+      });
+    }
 
     await db.insert(configPolicyMonitors).values({
       featureLinkId: link!.id,
@@ -182,7 +204,7 @@ describe('partner-wide monitor watch delivery (#5291 W04)', () => {
     const device = await seedDevice(org!.id, site!.id);
     await purgeCache(device.id);
 
-    await seedPartnerWideServiceMonitor(partner.id, 'PartnerWideSpooler');
+    await seedPartnerWideServiceMonitor(partner.id, 'PartnerWideSpooler', 90);
 
     const result = await withDbAccessContext(orgContext(org!.id, partner.id), () =>
       buildMonitoringConfigUpdate(device.id),
@@ -201,8 +223,8 @@ describe('partner-wide monitor watch delivery (#5291 W04)', () => {
       max_restart_attempts: 3,
       restart_cooldown_seconds: 300,
     });
-    // No monitoring-tab policy resolved, so the monitor-only interval applies.
-    expect(result!.check_interval_seconds).toBe(60);
+    // The monitors link supplies the interval; its historical watch stays off the wire.
+    expect(result!.check_interval_seconds).toBe(90);
   });
 
   it('is INVISIBLE without breeze.current_partner_id — the SELECT branch is load-bearing', async () => {

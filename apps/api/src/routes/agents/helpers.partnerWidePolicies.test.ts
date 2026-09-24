@@ -44,7 +44,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // Hoisted mocks
 // ---------------------------------------------------------------------------
 
-const { dbMock, redisMock, getRedisImpl, ownershipMock, systemEscapeMock } = vi.hoisted(() => {
+const { dbMock, redisMock, getRedisImpl, ownershipMock, systemEscapeMock, eqMock } = vi.hoisted(() => {
   let selectCallQueue: unknown[][] = [];
   let selectCallIdx = 0;
 
@@ -79,6 +79,7 @@ const { dbMock, redisMock, getRedisImpl, ownershipMock, systemEscapeMock } = vi.
   };
 
   return {
+    eqMock: vi.fn(),
     dbMock,
     redisMock,
     getRedisImpl: vi.fn(() => redisMock as any),
@@ -96,6 +97,13 @@ const { dbMock, redisMock, getRedisImpl, ownershipMock, systemEscapeMock } = vi.
     }),
   };
 });
+
+vi.mock('drizzle-orm', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('drizzle-orm')>();
+  eqMock.mockImplementation(actual.eq);
+  return { ...actual, eq: eqMock };
+});
+import { configPolicyEffectiveFeatureLinks, configPolicyMonitoringWatches } from '../../db/schema';
 
 vi.mock('../../db', () => ({
   runOutsideDbContext: systemEscapeMock,
@@ -241,20 +249,6 @@ const deviceRow = [{ orgId: ORG_ID, siteId: SITE_ID, deviceRole: 'workstation', 
 const orgWithPartner = [{ partnerId: PARTNER_ID }];
 const orgWithoutPartner = [{ partnerId: null }];
 
-/** A watch row shaped like config_policy_monitoring_watches. */
-const watchRow = {
-  watchType: 'service' as const,
-  name: 'Spooler',
-  alertOnStop: true,
-  alertAfterConsecutiveFailures: 2,
-  autoRestart: false,
-  maxRestartAttempts: 3,
-  restartCooldownSeconds: 60,
-  cpuThresholdPercent: null,
-  memoryThresholdMb: null,
-  thresholdDurationSeconds: null,
-};
-
 const eventLogPolicyRow = (level: string) => ({
   level,
   assignmentPriority: 1,
@@ -274,7 +268,7 @@ beforeEach(() => {
 
 /**
  * Every agent-facing resolver must (a) hand the device org's partner to the
- * ownership predicate and (b) take the partner-wide RLS escape. Table-driven so
+ * ownership predicate and (b) stay in the caller's DB context. Table-driven so
  * a newly added resolver that forgets either half is a one-line addition here.
  */
 describe.each([
@@ -290,8 +284,8 @@ describe.each([
       deviceRow,
       org,
       [],
-      [{ level: 'partner', assignmentPriority: 1, settingsId: 'set-1', checkIntervalSeconds: 90 }],
-      [watchRow],
+      [{ level: 'partner', assignmentPriority: 1, checkIntervalSeconds: 90 }],
+      deviceRow, org, [], [], // monitor resolution: device found, no monitors
     ],
   },
   {
@@ -462,15 +456,14 @@ describe('partner-owned policies actually reach the agent payload', () => {
     expect(result.uacInterceptionEnabled).toBe(true);
   });
 
-  it('monitoring: a partner-level policy delivers its watches', async () => {
+  it('reads the monitors interval without querying historical watches', async () => {
     dbMock._resetQueue([
       deviceRow,
       orgWithPartner,
       [],
       [{ level: 'partner', assignmentPriority: 1, settingsId: 'set-1', checkIntervalSeconds: 90 }],
-      [watchRow],
       // resolveMonitorDerivedWatches runs its OWN resolveMonitorsForDevice
-      // pass after the policy-tab lookup above (#5677's discriminated
+      // pass after the interval lookup above (#5677's discriminated
       // result correctly tells device-not-found apart from device-found-
       // zero-monitors, so this scenario's device/org/group/assignment reads
       // must be queued too, or the resolver reads past the end of the queue
@@ -483,21 +476,19 @@ describe('partner-owned policies actually reach the agent payload', () => {
 
     const result = await buildMonitoringConfigUpdate(DEVICE_ID);
 
-    expect(result?.check_interval_seconds).toBe(90);
-    expect(result?.watches).toHaveLength(1);
-    expect(result?.watches[0]?.name).toBe('Spooler');
+    const tables = dbMock.select.mock.results.map(r => r.value.from.mock.calls[0]?.[0]);
+    expect(tables).not.toContain(configPolicyMonitoringWatches);
+    expect(eqMock).toHaveBeenCalledWith(configPolicyEffectiveFeatureLinks.featureType, 'monitors');
+    expect(eqMock).not.toHaveBeenCalledWith(configPolicyEffectiveFeatureLinks.featureType, 'monitoring');
+    expect(result).toEqual({ check_interval_seconds: 90, watches: [] });
   });
 
-  it('monitoring: the watches read shares the policy join\'s escape, not a second one', async () => {
-    // The watches table's RLS walks settings_id → feature link →
-    // configuration_policies, so reading it outside the escape would find the
-    // partner-owned policy and then resolve zero watches (returning null).
+  it('monitoring: the interval read stays in the caller context', async () => {
     dbMock._resetQueue([
       deviceRow,
       orgWithPartner,
       [],
       [{ level: 'partner', assignmentPriority: 1, settingsId: 'set-1', checkIntervalSeconds: 90 }],
-      [watchRow],
       // resolveMonitorDerivedWatches's own resolveMonitorsForDevice pass —
       // device found, zero monitor assignments (see #5677 comment above).
       // This test only asserts systemEscapeMock, but leaving the queue
@@ -528,7 +519,6 @@ describe('monitoring: a matched policy with zero enabled watches (#2949)', () =>
       orgWithPartner,
       [],
       [{ level: 'organization', assignmentPriority: 1, settingsId: 'set-1', checkIntervalSeconds: 90 }],
-      [], // no enabled watches for the winning settings row
       // resolveMonitorDerivedWatches's own resolveMonitorsForDevice pass —
       // device found, zero monitor assignments (see #5677 comment above).
       deviceRow,
@@ -551,7 +541,7 @@ describe('monitoring: a matched policy with zero enabled watches (#2949)', () =>
       [],
       [], // no assignment/policy rows matched
       // resolveMonitorDerivedWatches's own resolveMonitorsForDevice pass —
-      // device found, zero monitor assignments — so the null result below
+      // device found, zero monitor assignments — so the empty result below
       // is genuinely "no policy and no monitors", not a device_missing
       // false positive from an exhausted queue.
       deviceRow,
@@ -576,7 +566,6 @@ describe('monitoring: a matched policy with zero enabled watches (#2949)', () =>
       orgWithPartner,
       [],
       [{ level: 'organization', assignmentPriority: 1, settingsId: 'set-1', checkIntervalSeconds: 90 }],
-      [], // no enabled watches for the winning settings row
       // resolveMonitorDerivedWatches's own resolveMonitorsForDevice pass —
       // device found, zero monitor assignments (see #5677 comment above).
       deviceRow,

@@ -28,7 +28,6 @@ import {
   configPolicyEventLogSettings,
   configPolicyHardwareMonitoringSettings,
   configPolicyMonitoringSettings,
-  configPolicyMonitoringWatches,
   configPolicyOnedriveSettings,
   configPolicyOnedriveLibraries,
   onedriveDeviceState,
@@ -2318,7 +2317,7 @@ const MONITOR_WATCH_DEFAULTS = {
   alertAfterConsecutiveFailures: 2,
 } as const;
 
-/** `check_interval_seconds` when monitors deliver watches but no policy resolved. */
+/** Default `check_interval_seconds` when no `monitors` link resolves. */
 const MONITOR_ONLY_CHECK_INTERVAL_SECONDS = 60;
 
 /**
@@ -2415,45 +2414,6 @@ async function resolveMonitorDerivedWatches(deviceId: string): Promise<MonitorDe
 }
 
 /**
- * Union monitor-derived watches with the policy tab's, keyed on
- * (watch_type, lower(name)). The MONITOR wins every field except:
- *  - `auto_restart`, which is OR'd — never lowered, because it drives the
- *    agent's own offline-capable restart; and
- *  - the process thresholds, which fall back to the policy row, because a
- *    `service`/`process` monitor authors none (that is `process_resource`).
- */
-function unionMonitoringWatches(
-  monitorWatches: MonitoringWatchConfig[],
-  policyWatches: MonitoringWatchConfig[],
-): MonitoringWatchConfig[] {
-  const key = (w: MonitoringWatchConfig) => `${w.watch_type}:${w.name.toLowerCase()}`;
-  const merged = new Map<string, MonitoringWatchConfig>();
-
-  for (const w of monitorWatches) merged.set(key(w), { ...w });
-
-  for (const p of policyWatches) {
-    const k = key(p);
-    const existing = merged.get(k);
-    if (!existing) {
-      merged.set(k, { ...p });
-      continue;
-    }
-    existing.auto_restart = existing.auto_restart || p.auto_restart;
-    if (existing.cpu_threshold_percent == null && p.cpu_threshold_percent != null) {
-      existing.cpu_threshold_percent = p.cpu_threshold_percent;
-    }
-    if (existing.memory_threshold_mb == null && p.memory_threshold_mb != null) {
-      existing.memory_threshold_mb = p.memory_threshold_mb;
-    }
-    if (existing.threshold_duration_seconds == null && p.threshold_duration_seconds != null) {
-      existing.threshold_duration_seconds = p.threshold_duration_seconds;
-    }
-  }
-
-  return [...merged.values()];
-}
-
-/**
  * Outcome of resolving a device's monitoring config. Three states, because the
  * wire has three meanings (#2949):
  *  - `unresolved`   — the answer is unknown this cycle (the device vanished
@@ -2474,12 +2434,8 @@ type DeviceMonitoringResolution =
   | { kind: 'resolved'; settings: MonitoringConfigUpdate };
 
 async function resolveDeviceMonitoringSettings(deviceId: string): Promise<DeviceMonitoringResolution> {
-  // Monitors are the primary source and win the union (#5287 W04); the policy
-  // tab is read FIRST only so its query sequence is untouched by this change —
-  // helpers.partnerWidePolicies.test.ts pins that sequence and must stay green
-  // unmodified. Both sources emit the same frozen `MonitoringWatchConfig`
-  // shape; the union below is order-independent.
-  const policyResult = await resolvePolicyMonitoringSettings(deviceId);
+  // W05d: monitors alone supply watches; the monitors link supplies the interval.
+  const policyResult = await resolvePolicyCheckInterval(deviceId);
   const monitorResult = await resolveMonitorDerivedWatches(deviceId);
 
   // A device that vanished between authentication and here (raced a
@@ -2518,7 +2474,7 @@ async function resolveDeviceMonitoringSettings(deviceId: string): Promise<Device
     kind: 'resolved',
     settings: {
       check_interval_seconds: policy?.check_interval_seconds ?? MONITOR_ONLY_CHECK_INTERVAL_SECONDS,
-      watches: unionMonitoringWatches(monitorWatches, policy?.watches ?? []),
+      watches: monitorWatches,
     },
   };
 }
@@ -2528,12 +2484,12 @@ async function resolveDeviceMonitoringSettings(deviceId: string): Promise<Device
  * "no policy applies" — the latter now sends the agent an explicit clear
  * (#2949), the former must omit the update (#5677).
  */
-type PolicyMonitoringResult =
+type PolicyCheckIntervalResult =
   | { kind: 'device_missing' }
   | { kind: 'no_policy' }
-  | { kind: 'resolved'; settings: MonitoringConfigUpdate };
+  | { kind: 'resolved'; settings: { check_interval_seconds: number } };
 
-async function resolvePolicyMonitoringSettings(deviceId: string): Promise<PolicyMonitoringResult> {
+async function resolvePolicyCheckInterval(deviceId: string): Promise<PolicyCheckIntervalResult> {
   // 1. Load device
   const [device] = await db
     .select({
@@ -2584,30 +2540,24 @@ async function resolvePolicyMonitoringSettings(deviceId: string): Promise<Policy
     );
   }
 
-  // 5-7. Policy join + the winning row's watches, both in the CALLER'S OWN
-  // context (#4673 W03). config_policy_monitoring_watches' RLS walks
-  // settings_id → feature link → configuration_policies; for a partner-owned
-  // policy that chain used to need breeze_has_partner_access, which no agent or
-  // org context carries, so the read escaped to a system context. Wave 1's
-  // `config_policy_monitoring_watches_partner_wide_select` now grants exactly
-  // that chain on SELECT via breeze_current_partner_id(), and Wave 2 sets the
-  // GUC on agent contexts — so both reads resolve here without a second pooled
-  // connection. Both are pinned to this device's own hierarchy.
-  // 5. Single query: assignments → active policies → monitoring feature link → settings
+  // #4673 W03: read in the CALLER'S OWN context. The partner-wide SELECT
+  // branch on config_policy_feature_links and the settings table, plus the
+  // agent's breeze.current_partner_id GUC, grant this read without a system
+  // escape or a second pooled connection. Keep it pinned to this hierarchy.
+  // 5. assignments → active policies → monitors feature link → settings
   const rows = await db
     .select({
       level: configPolicyAssignments.level,
       assignmentPriority: configPolicyAssignments.priority,
       roleFilter: configPolicyAssignments.roleFilter,
       osFilter: configPolicyAssignments.osFilter,
-      settingsId: configPolicyMonitoringSettings.id,
       checkIntervalSeconds: configPolicyMonitoringSettings.checkIntervalSeconds,
     })
     .from(configPolicyAssignments)
     .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
     .innerJoin(configPolicyEffectiveFeatureLinks, and(
       eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
-      eq(configPolicyEffectiveFeatureLinks.featureType, 'monitoring'),
+      eq(configPolicyEffectiveFeatureLinks.featureType, 'monitors'),
     ))
     .innerJoin(configPolicyMonitoringSettings, eq(configPolicyMonitoringSettings.featureLinkId, configPolicyEffectiveFeatureLinks.id))
     .where(and(
@@ -2634,45 +2584,9 @@ async function resolvePolicyMonitoringSettings(deviceId: string): Promise<Policy
   const winner = eligibleRows[0];
   if (!winner) return { kind: 'no_policy' };
 
-  // 7. Load watches for the winning settings row
-  const watches = await db
-    .select()
-    .from(configPolicyMonitoringWatches)
-    .where(and(
-      eq(configPolicyMonitoringWatches.settingsId, winner.settingsId),
-      eq(configPolicyMonitoringWatches.enabled, true),
-      isNull(configPolicyMonitoringWatches.retiredAt),
-    ))
-    .orderBy(configPolicyMonitoringWatches.sortOrder);
-
-  // A winning policy row with zero enabled watches is a valid resolution — it
-  // means "clear whatever watches were previously delivered", not "no policy
-  // matched" (that case already returned `no_policy` above).
-  // Collapsing both to null used to make heartbeat.ts omit monitoring_settings
-  // from the payload, so the agent (which handles an empty array fine — see
-  // agent/internal/monitoring/monitor.go ApplyConfig) could never be told to
-  // stop watching something it was configured to watch on a prior heartbeat
-  // (#2949).
   return {
     kind: 'resolved',
-    settings: {
-      check_interval_seconds: winner.checkIntervalSeconds,
-      watches: watches.map((w) => {
-        const entry: MonitoringWatchConfig = {
-          watch_type: w.watchType,
-          name: w.name,
-          alert_on_stop: w.alertOnStop,
-          alert_after_consecutive_failures: w.alertAfterConsecutiveFailures,
-          auto_restart: w.autoRestart,
-          max_restart_attempts: w.maxRestartAttempts,
-          restart_cooldown_seconds: w.restartCooldownSeconds,
-        };
-        if (w.cpuThresholdPercent != null) entry.cpu_threshold_percent = w.cpuThresholdPercent;
-        if (w.memoryThresholdMb != null) entry.memory_threshold_mb = w.memoryThresholdMb;
-        if (w.thresholdDurationSeconds) entry.threshold_duration_seconds = w.thresholdDurationSeconds;
-        return entry;
-      }),
-    },
+    settings: { check_interval_seconds: winner.checkIntervalSeconds },
   };
 }
 
