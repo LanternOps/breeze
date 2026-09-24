@@ -28,7 +28,7 @@ export const ANALYSIS_TOOL_ALLOWLIST = [
   // Gathering, to completion, straight into an artifact.
   'export_dataset',
   // Ordinary read tools, for orientation before an export.
-  'query_devices', 'get_device_details', 'analyze_metrics', 'analyze_fleet_metrics',
+  'query_devices', 'get_device_details', 'get_device_hardware_health', 'analyze_metrics', 'analyze_fleet_metrics',
   'get_device_vulnerabilities', 'search_logs', 'get_log_trends', 'detect_log_correlations',
   'search_agent_logs', 'get_fleet_health', 'get_fleet_findings',
   // The sandbox.

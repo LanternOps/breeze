@@ -28,6 +28,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { verifyDeviceAccess } from './aiTools';
 import { resolveSiteAllowedDeviceIds, runFrozenDeviceIds } from './aiToolsSiteScope';
+import { getDeviceHardwareHealthView } from './hardwareHealth/view';
 import { projectPublicDevice } from '../routes/devices/helpers';
 import {
   sanitizeUntrustedText,
@@ -254,6 +255,36 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         diskCount: disks.length,
         recentMetrics
       }, (_, v) => typeof v === 'bigint' ? Number(v) : v);
+    }
+  });
+
+  // ============================================
+  // get_device_hardware_health - Tier 1 (auto-execute)
+  // ============================================
+
+  registerTool({
+    tier: 1,
+    domain: 'devices',
+    deviceArgs: ['deviceId'],
+    searchHint: 'RAID arrays, physical disks, cache batteries and hardware collector health',
+    definition: {
+      name: 'get_device_hardware_health',
+      description: 'Get current hardware health, components, collectors and optional recent events.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          deviceId: { type: 'string', description: 'The device UUID' },
+          includeEvents: { type: 'boolean', default: false }
+        },
+        required: ['deviceId']
+      }
+    },
+    handler: async (input, auth) => {
+      const deviceId = input.deviceId as string;
+      const access = await verifyDeviceAccess(deviceId, auth);
+      if ('error' in access) return JSON.stringify({ error: access.error });
+      const view = await getDeviceHardwareHealthView(deviceId, { eventLimit: input.includeEvents === true ? 50 : 0 });
+      return JSON.stringify(view ?? { error: 'no_hardware_health' });
     }
   });
 

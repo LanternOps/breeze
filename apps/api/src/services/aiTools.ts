@@ -509,6 +509,7 @@ export function requiresLiveSession(
 export const HELPER_TOOL_SCOPING: Record<string, 'deviceId' | 'deviceIds'> = {
   // Read-only (Phase 0 `basic` set).
   get_device_details: 'deviceId',
+  get_device_hardware_health: 'deviceId',
   analyze_metrics: 'deviceId',
   analyze_disk_usage: 'deviceId',
   get_cis_device_report: 'deviceId',

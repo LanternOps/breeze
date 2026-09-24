@@ -63,6 +63,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // Devices & Hardware
       { name: 'query_devices', description: 'Search and filter devices', category: 'Devices & Hardware' },
       { name: 'get_device_details', description: 'Get comprehensive device info', category: 'Devices & Hardware' },
+      { name: 'get_device_hardware_health', description: 'Get RAID, disk and hardware collector health', category: 'Devices & Hardware' },
       { name: 'analyze_metrics', description: 'Time-series metrics analysis', category: 'Devices & Hardware' },
       { name: 'get_active_users', description: 'Active user sessions', category: 'Devices & Hardware' },
       { name: 'get_user_experience_metrics', description: 'Login performance and session trends', category: 'Devices & Hardware' },
@@ -390,6 +391,7 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   // Device & metrics
   query_devices: 'devices.read',
   get_device_details: 'devices.read',
+  get_device_hardware_health: 'devices.read',
   analyze_metrics: 'devices.read',
   get_active_users: 'devices.read',
   get_user_experience_metrics: 'devices.read',

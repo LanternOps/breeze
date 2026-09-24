@@ -21,7 +21,7 @@ import { AI_AGENT_LIMIT_DEFAULTS, type AiAgentLimits, type AiAgentRunProfile } f
  * reads a run's result, not the script) — dropped rather than swapped.
  */
 export const DESIGN_TOOL_ALLOWLIST = [
-  'get_device_details', 'get_device_context', 'search_logs',
+  'get_device_details', 'get_device_hardware_health', 'get_device_context', 'search_logs',
   'get_configuration_policy', 'get_playbook_history',
 ] as const;
 

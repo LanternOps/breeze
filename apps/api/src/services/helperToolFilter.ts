@@ -21,6 +21,7 @@ export type HelperPermissionLevel = 'basic' | 'standard' | 'extended';
 // default posture require_approval via POST /pam/elevation-requests/:id/respond.
 const BASIC_TOOLS = [
   'get_device_details',
+  'get_device_hardware_health',
   'analyze_metrics',
   'analyze_disk_usage',
   'get_cis_device_report',

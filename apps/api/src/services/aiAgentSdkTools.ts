@@ -171,6 +171,7 @@ export const TOOL_TIERS = {
   query_devices: 1,
   search_documentation: 1,
   get_device_details: 1,
+  get_device_hardware_health: 1,
   analyze_metrics: 1,
   get_active_users: 1,
   get_user_experience_metrics: 1,
@@ -1436,6 +1437,13 @@ export function buildBreezeSdkTools(
       registryDescription('get_device_details'),
       { deviceId: uuid },
       makeHandler('get_device_details', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_device_hardware_health',
+      registryDescription('get_device_hardware_health'),
+      { deviceId: uuid, includeEvents: z.boolean().optional() },
+      makeHandler('get_device_hardware_health', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
