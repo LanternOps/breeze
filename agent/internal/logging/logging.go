@@ -373,8 +373,9 @@ func addField(fields map[string]any, groups []string, attr slog.Attr) {
 		keyParts = append(keyParts, attr.Key)
 	}
 
-	if attr.Value.Kind() == slog.KindGroup {
-		for _, nested := range attr.Value.Group() {
+	value := attr.Value.Resolve()
+	if value.Kind() == slog.KindGroup {
+		for _, nested := range value.Group() {
 			addField(fields, keyParts, nested)
 		}
 		return
@@ -383,7 +384,28 @@ func addField(fields map[string]any, groups []string, attr slog.Attr) {
 	if len(keyParts) == 0 {
 		return
 	}
-	fields[strings.Join(keyParts, ".")] = attr.Value.Any()
+	fields[strings.Join(keyParts, ".")] = shippableValue(value.Any())
+}
+
+// shippableValue converts values that encoding/json cannot represent into their
+// text. An error value (errors.New, fmt.Errorf, errors.Join, ...) has no exported
+// fields, so it marshals as {} and the message is lost from the shipped row.
+func shippableValue(v any) any {
+	if err, ok := v.(error); ok {
+		return errorText(err)
+	}
+	return v
+}
+
+// errorText returns err.Error(), tolerating a typed-nil error whose Error method
+// dereferences its nil receiver.
+func errorText(err error) (text string) {
+	defer func() {
+		if recover() != nil {
+			text = "<nil>"
+		}
+	}()
+	return err.Error()
 }
 
 func extractComponent(fields map[string]any) string {
