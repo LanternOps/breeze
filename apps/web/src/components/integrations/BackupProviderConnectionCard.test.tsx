@@ -109,6 +109,28 @@ describe("BackupProviderConnectionCard", () => {
     expect(onTestResult.mock.calls[0]![0]).toMatchObject({ success: false, error: "2FA is enabled on this Cove user" });
   });
 
+  // D9: the test route persists status (e.g. reauth_required) right away, but
+  // the card was never told to refetch — it kept showing "Active" until a full
+  // page reload. Test must tell the parent to refetch on BOTH outcomes so the
+  // badge/reauth banner reflect reality immediately.
+  it("tells the parent to refetch after a successful test", async () => {
+    fetchMock.mockResolvedValue(res({ success: true, rootName: "OliveTech", customerCount: 12 }));
+    render(<BackupProviderConnectionCard connection={connection()} onChanged={onChanged} onTestResult={onTestResult} />);
+
+    fireEvent.click(screen.getByTestId("backup-connection-test"));
+
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+  });
+
+  it("tells the parent to refetch after a failed test so the reauth state shows immediately", async () => {
+    fetchMock.mockResolvedValue(res({ success: false, error: "Cove login was rejected", reauth: true }));
+    render(<BackupProviderConnectionCard connection={connection()} onChanged={onChanged} onTestResult={onTestResult} />);
+
+    fireEvent.click(screen.getByTestId("backup-connection-test"));
+
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+  });
+
   it("queues a sync and tells the parent to refetch", async () => {
     render(<BackupProviderConnectionCard connection={connection()} onChanged={onChanged} onTestResult={onTestResult} />);
     fireEvent.click(screen.getByTestId("backup-connection-sync"));

@@ -122,6 +122,10 @@ export default function BackupProviderConnectionCard({
       const body = err instanceof ActionError ? (err.body as BackupProviderTestResult | undefined) : undefined;
       onTestResult({ success: false, error: body?.error ?? (err instanceof Error ? err.message : t("backupProviders.errorTest")) });
     } finally {
+      // D9: the API persists the outcome (status, possibly reauth_required)
+      // right away. Refetch so the badge/reauth banner reflect it immediately
+      // instead of only after a page reload.
+      onChanged();
       setBusy(null);
     }
   };
