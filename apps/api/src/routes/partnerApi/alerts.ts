@@ -34,7 +34,7 @@ import {
  * alert feed across the principal's accessible organizations.
  *
  * Change tracking: every write to `alerts` is stamped with its transaction id
- * (`partner_feed_xid`, see migrations/2026-10-30-100000). A traversal reads
+ * (`partner_feed_xid`, see migrations/2026-10-30-130000). A traversal reads
  * the fixed window [lower, horizon) where `horizon` is the request snapshot's
  * xmin: every transaction below it has committed or aborted, so no committed
  * write can land behind a returned checkpoint. A row rewritten mid-traversal
