@@ -9,8 +9,18 @@ import (
 	"time"
 )
 
+// spacesPools lists non-primordial pools. Under ErrorActionPreference=Stop,
+// Get-StoragePool -IsPrimordial $false THROWS ObjectNotFound when the host has
+// no pool (the common case), so only that category means "zero pools"; any
+// other error still fails the probe/collection visibly.
+const spacesPools = `$pools=@(); try { $pools=@(Get-StoragePool -IsPrimordial $false) } catch { if ([string]$_.CategoryInfo.Category -ne 'ObjectNotFound') { throw } }`
+
+const spacesDetectScript = `$ErrorActionPreference='Stop'
+` + spacesPools + `
+$pools.Count`
+
 const spacesScript = `$ErrorActionPreference='Stop'
-$pools=@(Get-StoragePool -IsPrimordial $false)
+` + spacesPools + `
 $vds=@(); $pds=@(); $warnings=@(); $jobs=@()
 try { $jobs=@(Get-StorageJob) } catch { $warnings += 'Storage job progress unavailable' }
 foreach($p in $pools) {
@@ -31,7 +41,7 @@ func newStorageSpaces() Source {
 		kind: "storage_spaces",
 		tier: TierRAID,
 		detect: func(ctx context.Context) Availability {
-			o, e := runPowerShell(ctx, 60*time.Second, `$ErrorActionPreference='Stop';@(Get-StoragePool -IsPrimordial $false).Count`)
+			o, e := runPowerShell(ctx, 60*time.Second, spacesDetectScript)
 			return Availability{Path: "powershell.exe", Available: e != nil || o.ExitCode != 0 || number(strings.TrimSpace(string(o.Stdout))) > 0}
 		},
 		collect: func(ctx context.Context, a Availability) (Result, error) {
