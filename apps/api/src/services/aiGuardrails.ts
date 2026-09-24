@@ -132,7 +132,7 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   manage_groups: ['add_devices', 'remove_devices'],
   // manage_maintenance_windows mutations disabled — managed via configuration policies
   manage_automations: ['enable', 'disable'],
-  // manage_alert_rules mutations disabled — managed via configuration policies
+  // manage_alert_rules is read-only; author conditions via manage_monitor_definitions
   // manage_service_monitors mutations disabled — managed via configuration policies
   generate_report: ['create', 'update', 'delete', 'generate'],
   // Policy prerequisite tools — Tier 2 create/update actions.
@@ -1061,7 +1061,6 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     run: { resource: 'automations', action: 'write' },
   },
   manage_alert_rules: {
-    list_templates: { resource: 'alerts', action: 'read' },
     list_rules: { resource: 'alerts', action: 'read' },
     get_rule: { resource: 'alerts', action: 'read' },
     create_rule: { resource: 'alerts', action: 'write' },

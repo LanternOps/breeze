@@ -239,8 +239,8 @@ describe('configuration policy AI/MCP mutation MFA boundary', () => {
     ['remove_configuration_policy_assignment', { assignmentId: 'assignment-1' }],
     ['manage_configuration_policy', { action: 'create', name: 'Unassured policy' }],
     ['manage_policy_feature_link', {
-      action: 'add', configPolicyId: POLICY_ID, featureType: 'monitoring',
-      inlineSettings: { checkIntervalSeconds: 60, watches: [] },
+      action: 'add', configPolicyId: POLICY_ID, featureType: 'monitors',
+      inlineSettings: { checkIntervalSeconds: 60, items: [] },
     }],
   ])('denies an unassured user in %s before any query or mutation', async (toolName, input) => {
     const output = await tools().get(toolName)!.handler(input, unassuredUser());
@@ -274,11 +274,11 @@ describe('configuration policy AI/MCP mutation MFA boundary', () => {
     // `config_policies` agent capability (agentToolCatalog.ts). The real
     // authorization for an agent run is the Tier-3 approval in aiGuardrails.
     vi.mocked(getConfigPolicy).mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Policy' } as any);
-    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'monitoring' } as any);
+    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'monitors' } as any);
 
     const output = await tools().get('manage_policy_feature_link')!.handler({
-      action: 'add', configPolicyId: POLICY_ID, featureType: 'monitoring',
-      inlineSettings: { checkIntervalSeconds: 60, watches: [] },
+      action: 'add', configPolicyId: POLICY_ID, featureType: 'monitors',
+      inlineSettings: { checkIntervalSeconds: 60, items: [] },
     }, makeAgentAuth());
 
     expect(JSON.parse(output).success).toBe(true);
@@ -301,11 +301,11 @@ describe('configuration policy AI/MCP mutation MFA boundary', () => {
   it('preserves the global MFA-disabled behavior for non-maintenance MCP mutations', async () => {
     enable2faState.value = false;
     vi.mocked(getConfigPolicy).mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, name: 'Policy' } as any);
-    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'monitoring' } as any);
+    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'monitors' } as any);
 
     const output = await tools().get('manage_policy_feature_link')!.handler({
-      action: 'add', configPolicyId: POLICY_ID, featureType: 'monitoring',
-      inlineSettings: { checkIntervalSeconds: 60, watches: [] },
+      action: 'add', configPolicyId: POLICY_ID, featureType: 'monitors',
+      inlineSettings: { checkIntervalSeconds: 60, items: [] },
     }, makeMachineAuth('api_key'));
 
     expect(JSON.parse(output).success).toBe(true);
@@ -1052,149 +1052,31 @@ describe('configuration policy AI tools', () => {
     );
   });
 
-  // The alert_rule / monitoring schemas are parsed with `.parse()` inside
-  // decomposeInlineSettings, so an invalid payload used to throw past the handler
-  // into safeHandler → sanitizeThrownToolError, which is fail-closed and replaces
-  // the message with GENERIC_TOOL_ERROR_MESSAGE. The model then can't self-correct.
-  it('returns the real schema message (not the sanitized generic) for an invalid alert_rule payload', async () => {
-    vi.mocked(getConfigPolicy).mockResolvedValue({
-      id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Org policy',
-    } as any);
-
+  it.each(['alert_rule', 'monitoring'])('refuses retired %s adds before any database read', async (featureType) => {
     const tools = new Map<string, any>();
     registerConfigPolicyTools(tools);
-
-    const output = await tools.get('manage_policy_feature_link')!.handler({
-      action: 'add',
-      configPolicyId: POLICY_ID,
-      featureType: 'alert_rule',
-      inlineSettings: { items: [{ name: 'Custom', conditions: [{ type: 'custom', customCondition: 'x' }] }] },
-    }, makeAuth());
-
-    const parsed = JSON.parse(output);
-    expect(parsed.error).toContain('alert_rule');
-    expect(parsed.error).not.toBe(GENERIC_TOOL_ERROR_MESSAGE);
-    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+    const out = JSON.parse(await tools.get('manage_policy_feature_link')!.handler({
+      action: 'add', configPolicyId: POLICY_ID, featureType, inlineSettings: {},
+    }, makeAuth()));
+    expect(out).toMatchObject({ retiredFeatureType: featureType, useTool: 'manage_monitor_definitions' });
+    expect(out.error).toContain('featureType "monitors"');
+    expect(db.select).not.toHaveBeenCalled();
+    expect(getConfigPolicy).not.toHaveBeenCalled();
+    expect(addFeatureLink).not.toHaveBeenCalled();
   });
 
-  it('surfaces the monitoring write-barrier pointer to the model instead of a generic error', async () => {
-    vi.mocked(getConfigPolicy).mockResolvedValue({
-      id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Org policy',
-    } as any);
-
+  it.each(['alert_rule', 'monitoring'])('refuses updates using the stored retired %s type', async (featureType) => {
+    vi.mocked(getConfigPolicy).mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, name: 'Policy' } as any);
+    mockSelectRows([{ featureType }]);
     const tools = new Map<string, any>();
     registerConfigPolicyTools(tools);
-
-    const output = await tools.get('manage_policy_feature_link')!.handler({
-      action: 'add',
-      configPolicyId: POLICY_ID,
-      featureType: 'monitoring',
-      inlineSettings: {
-        watches: [],
-        alertRules: [{ name: 'High CPU', conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 80 }] }],
-      },
-    }, makeAuth());
-
-    expect(JSON.parse(output).error).toContain('moved to the Alerts feature');
-    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
-  });
-
-  it('passes monitoring inlineSettings through unnormalized (no deprecated barrier keys written back)', async () => {
-    vi.mocked(getConfigPolicy).mockResolvedValue({
-      id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Org policy',
-    } as any);
-    vi.mocked(addFeatureLink).mockResolvedValue({
-      id: 'link-1', configPolicyId: POLICY_ID, featureType: 'monitoring',
-    } as any);
-
-    const tools = new Map<string, any>();
-    registerConfigPolicyTools(tools);
-
-    const raw = { checkIntervalSeconds: 60, watches: [{ watchType: 'service', name: 'Spooler' }] };
-    const output = await tools.get('manage_policy_feature_link')!.handler({
-      action: 'add',
-      configPolicyId: POLICY_ID,
-      featureType: 'monitoring',
-      inlineSettings: raw,
-    }, makeAuth());
-
-    expect(JSON.parse(output).success).toBe(true);
-    expect(vi.mocked(addFeatureLink)).toHaveBeenCalledWith(POLICY_ID, 'monitoring', null, raw);
-  });
-
-  // Condition payloads are a UNION nested inside items[]. Zod reports a union
-  // failure as one `invalid_union` issue whose own message is a bare "Invalid
-  // input"; the model needs the offending field and value named or it cannot
-  // self-correct. describeFirstZodIssue unwraps it.
-  it('names the offending metric value on an invalid alert_rule condition rather than "Invalid input"', async () => {
-    vi.mocked(getConfigPolicy).mockResolvedValue({
-      id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Org policy',
-    } as any);
-
-    const tools = new Map<string, any>();
-    registerConfigPolicyTools(tools);
-
-    const output = await tools.get('manage_policy_feature_link')!.handler({
-      action: 'add',
-      configPolicyId: POLICY_ID,
-      featureType: 'alert_rule',
-      inlineSettings: { items: [{ name: 'Bogus', conditions: [{ type: 'metric', metric: 'bogus', operator: 'gt', value: 80 }] }] },
-    }, makeAuth());
-
-    const { error } = JSON.parse(output);
-    expect(error).toContain('items.0.conditions.0.metric');
-    expect(error).toContain('cpu');
-    expect(error).not.toMatch(/— Invalid input$/);
-    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
-  });
-
-  // The `update` action re-derives featureType from the stored link, so its
-  // validation is a SEPARATE code path from `add` — these two mirror the
-  // add-action cases above.
-  it('rejects an invalid alert_rule payload on the UPDATE action with a specific message', async () => {
-    vi.mocked(getConfigPolicy).mockResolvedValue({
-      id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Org policy',
-    } as any);
-    mockSelectRows([{ featureType: 'alert_rule' }]);
-
-    const tools = new Map<string, any>();
-    registerConfigPolicyTools(tools);
-
-    const output = await tools.get('manage_policy_feature_link')!.handler({
-      action: 'update',
-      configPolicyId: POLICY_ID,
-      featureLinkId: 'link-1',
-      inlineSettings: { items: [{ name: 'Bogus', conditions: [{ type: 'metric', metric: 'bogus', operator: 'gt', value: 80 }] }] },
-    }, makeAuth());
-
-    const { error } = JSON.parse(output);
-    expect(error).toContain('alert_rule');
-    expect(error).toContain('items.0.conditions.0.metric');
-    expect(error).not.toBe(GENERIC_TOOL_ERROR_MESSAGE);
-    expect(vi.mocked(updateFeatureLink)).not.toHaveBeenCalled();
-  });
-
-  it('surfaces the monitoring write-barrier pointer on the UPDATE action too', async () => {
-    vi.mocked(getConfigPolicy).mockResolvedValue({
-      id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Org policy',
-    } as any);
-    mockSelectRows([{ featureType: 'monitoring' }]);
-
-    const tools = new Map<string, any>();
-    registerConfigPolicyTools(tools);
-
-    const output = await tools.get('manage_policy_feature_link')!.handler({
-      action: 'update',
-      configPolicyId: POLICY_ID,
-      featureLinkId: 'link-1',
-      inlineSettings: {
-        watches: [],
-        alertRules: [{ name: 'High CPU', conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 80 }] }],
-      },
-    }, makeAuth());
-
-    expect(JSON.parse(output).error).toContain('moved to the Alerts feature');
-    expect(vi.mocked(updateFeatureLink)).not.toHaveBeenCalled();
+    const out = JSON.parse(await tools.get('manage_policy_feature_link')!.handler({
+      action: 'update', configPolicyId: POLICY_ID, featureLinkId: 'link-1',
+      featureType: 'monitors', featurePolicyId: 'replacement',
+    }, makeAuth()));
+    expect(out).toMatchObject({ retiredFeatureType: featureType, useTool: 'manage_monitor_definitions' });
+    expect(out.error).toContain('featureType "monitors"');
+    expect(updateFeatureLink).not.toHaveBeenCalled();
   });
 
   it('manage_configuration_policy create ownerScope=partner is denied without partner-wide capability', async () => {
@@ -1211,36 +1093,6 @@ describe('configuration policy AI tools', () => {
 
     expect(JSON.parse(output).error).toContain('full partner org access');
     expect(createConfigPolicyMock).not.toHaveBeenCalled();
-  });
-
-  // W05c2 Task 14: legacy alert_rule / monitoring writes still succeed during
-  // W05c, but every successful write points the model at monitors (W05d
-  // replaces the warning with a refusal).
-  it.each(['alert_rule', 'monitoring'])('warns while preserving authorized %s writes', async (featureType) => {
-    vi.mocked(getConfigPolicy).mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Policy' } as any);
-    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1' } as any);
-    const registry = new Map<string, any>();
-    registerConfigPolicyTools(registry);
-    const body = JSON.parse(await registry.get('manage_policy_feature_link').handler({
-      action: 'add', configPolicyId: POLICY_ID, featureType,
-    }, makeAuth()));
-    expect(body).toMatchObject({ success: true, useTool: 'manage_monitor_definitions' });
-    expect(body.warning).toContain(featureType);
-    expect(addFeatureLink).toHaveBeenCalled();
-  });
-
-  it('warns from the stored link type on update, not a caller-supplied replacement', async () => {
-    vi.mocked(getConfigPolicy).mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Policy' } as any);
-    mockSelectRows([{ featureType: 'monitoring' }]);
-    vi.mocked(updateFeatureLink).mockResolvedValue({ id: 'link-1' } as any);
-    const registry = new Map<string, any>();
-    registerConfigPolicyTools(registry);
-    const body = JSON.parse(await registry.get('manage_policy_feature_link').handler({
-      action: 'update', configPolicyId: POLICY_ID, featureLinkId: 'link-1', featureType: 'patch',
-    }, makeAuth()));
-    expect(body.success).toBe(true);
-    expect(body.warning).toContain('monitoring');
-    expect(body.useTool).toBe('manage_monitor_definitions');
   });
 
   it('adds no legacy warning to a monitors write', async () => {
@@ -1390,10 +1242,10 @@ describe('manage_policy_feature_link machine-principal denial (RMM-QA-176 D9.3)'
   });
 
   it('an unassured api_key principal is denied for a non-maintenance link', async () => {
-    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'monitoring' } as any);
+    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'monitors' } as any);
     const output = await toolsWithPolicy().get('manage_policy_feature_link')!.handler({
-      action: 'add', configPolicyId: POLICY_ID, featureType: 'monitoring',
-      inlineSettings: { checkIntervalSeconds: 60, watches: [] },
+      action: 'add', configPolicyId: POLICY_ID, featureType: 'monitors',
+      inlineSettings: { checkIntervalSeconds: 60, items: [] },
     }, makeMachineAuth('api_key'));
 
     expect(JSON.parse(output).error).toBe('MFA required');

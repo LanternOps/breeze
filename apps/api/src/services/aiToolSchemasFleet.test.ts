@@ -305,36 +305,22 @@ describe('manage_alert_rules schema', () => {
     expect(parse('manage_alert_rules', { action: 'list_rules' }).success).toBe(true);
   });
 
-  it('accepts list_templates', () => {
-    expect(parse('manage_alert_rules', { action: 'list_templates' }).success).toBe(true);
-    expect(parse('manage_alert_rules', { action: 'list_templates', category: 'performance', severity: 'high' }).success).toBe(true);
-  });
-
-  it('accepts list_channels and alert_summary', () => {
-    expect(parse('manage_alert_rules', { action: 'list_channels' }).success).toBe(true);
-    expect(parse('manage_alert_rules', { action: 'alert_summary' }).success).toBe(true);
-  });
-
-  it('requires ruleId for get_rule/update_rule/delete_rule/test_rule', () => {
-    for (const action of ['get_rule', 'update_rule', 'delete_rule', 'test_rule']) {
-      expect(parse('manage_alert_rules', { action }).success).toBe(false);
-    }
-  });
-
-  it('requires name, templateId, targetType, targetId for create_rule', () => {
-    expect(parse('manage_alert_rules', { action: 'create_rule', name: 'Test' }).success).toBe(false);
-  });
-
-  it('accepts valid create_rule', () => {
+  it.each(['list_templates', 'create_rule', 'update_rule', 'delete_rule'])('rejects retired action %s even with complete input', (action) => {
     expect(parse('manage_alert_rules', {
-      action: 'create_rule',
-      name: 'High CPU alert',
-      templateId: TEST_UUID,
-      targetType: 'group',
-      targetId: TEST_UUID2,
-      severity: 'high',
-    }).success).toBe(true);
+      action, ruleId: TEST_UUID, name: 'High CPU alert', templateId: TEST_UUID,
+      targetType: 'group', targetId: TEST_UUID2,
+    }).success).toBe(false);
   });
+
+  it.each(['list_channels', 'alert_summary'])('accepts %s', (action) => {
+    expect(parse('manage_alert_rules', { action }).success).toBe(true);
+  });
+
+  it.each(['get_rule', 'test_rule'])('requires ruleId for %s', (action) => {
+    expect(parse('manage_alert_rules', { action }).success).toBe(false);
+    expect(parse('manage_alert_rules', { action, ruleId: TEST_UUID }).success).toBe(true);
+  });
+
 });
 
 // ─── generate_report ────────────────────────────────────────────────────

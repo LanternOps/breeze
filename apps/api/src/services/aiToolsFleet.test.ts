@@ -1,9 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockSchedulePeripheralPolicyDevice, mockDeleteDeviceGroup } = vi.hoisted(() => ({
+const { mockSchedulePeripheralPolicyDevice, mockDeleteDeviceGroup, isNotNullMock } = vi.hoisted(() => ({
   mockSchedulePeripheralPolicyDevice: vi.fn().mockResolvedValue('job-id'),
   mockDeleteDeviceGroup: vi.fn(),
+  isNotNullMock: vi.fn(),
 }));
+
+vi.mock('drizzle-orm', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('drizzle-orm')>();
+  isNotNullMock.mockImplementation(actual.isNotNull);
+  return { ...actual, isNotNull: isNotNullMock };
+});
 
 vi.mock('../jobs/peripheralJobs', () => ({
   schedulePeripheralPolicyDevice: mockSchedulePeripheralPolicyDevice,
@@ -159,7 +166,7 @@ vi.mock('../db/schema/alerts', async (importOriginal) => {
   const actual = await importOriginal() as Record<string, unknown>;
   return {
     ...actual,
-    alertRules: { orgId: 'orgId', id: 'id' },
+    alertRules: { orgId: 'orgId', id: 'id', managedByMonitorId: 'managedByMonitorId' },
     alertTemplates: { orgId: 'orgId', id: 'id', isBuiltIn: 'isBuiltIn', category: 'category', severity: 'severity', name: 'name' },
     alerts: { orgId: 'orgId' },
     notificationChannels: { orgId: 'orgId' },
@@ -680,39 +687,28 @@ describe('manage_alert_rules handler', () => {
     orgCondition: () => undefined,
   } as any;
 
-  it('list_templates returns templates array with hint', async () => {
-    const result = JSON.parse(await tool.handler({ action: 'list_templates' }, mockAuth));
-    expect(result).toHaveProperty('templates');
-    expect(result).toHaveProperty('hint');
-    expect(Array.isArray(result.templates)).toBe(true);
+  it('list_rules requests managed rows only and projects monitorId', async () => {
+    isNotNullMock.mockClear();
+    vi.mocked(db.select).mockClear();
+    const result = JSON.parse(await tool.handler({ action: 'list_rules' }, mockAuth));
+    expect(result.rules).toEqual([]);
+    expect(isNotNullMock).toHaveBeenCalledWith('managedByMonitorId');
+    expect(db.select).toHaveBeenCalledWith(expect.objectContaining({ monitorId: 'managedByMonitorId' }));
   });
 
-  it('create_rule is disabled (managed via configuration policies)', async () => {
-    const result = JSON.parse(await tool.handler({
-      action: 'create_rule', templateId: '00000000-0000-0000-0000-000000000001',
-      targetType: 'org', targetId: 'org-1',
-    }, mockAuth));
-    expect(result.error).toContain('Action "create_rule" is disabled');
-    expect(result.error).toContain('configuration policies');
+  it.each(['list_templates', 'create_rule', 'update_rule', 'delete_rule'])('%s is no longer an action', async (action) => {
+    const result = JSON.parse(await tool.handler({ action }, mockAuth));
+    expect(result.error).toMatch(/unknown action/i);
   });
 
-  it('create_rule is disabled even with all fields provided', async () => {
-    const result = JSON.parse(await tool.handler({
-      action: 'create_rule', name: 'Test Rule',
-      templateId: '00000000-0000-0000-0000-000000000001',
-      targetType: 'org', targetId: 'org-1',
-    }, mockAuth));
-    expect(result.error).toContain('Action "create_rule" is disabled');
-    expect(result.error).toContain('manage_policy_feature_link');
+  it('advertises only compiled rule reads and monitor authoring', () => {
+    const schema = tool.definition.input_schema as { properties: { action: { enum: string[] }; category?: unknown } };
+    expect(schema.properties.action.enum).toEqual(['list_rules', 'get_rule', 'test_rule', 'list_channels', 'alert_summary']);
+    expect(schema.properties.category).toBeUndefined();
+    expect(tool.definition.description).toContain('manage_monitor_definitions');
+    expect(tool.definition.description).not.toContain('featureType "alert_rule"');
   });
 
-  it('create_rule is disabled regardless of input completeness', async () => {
-    const result = JSON.parse(await tool.handler({
-      action: 'create_rule', name: 'Test Rule',
-      targetType: 'org', targetId: 'org-1',
-    }, mockAuth));
-    expect(result.error).toContain('Action "create_rule" is disabled');
-  });
 });
 
 describe('manage_patches handler', () => {

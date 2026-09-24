@@ -906,53 +906,6 @@ export const alertRuleItemSchema = z.object({
   rationale: z.string().trim().max(2000).nullable().optional(),
 });
 
-export const alertRuleInlineSettingsSchema = z.object({
-  items: z.array(alertRuleItemSchema).max(100).default([]),
-});
-
-export const monitoringInlineSettingsSchema = z.object({
-  checkIntervalSeconds: z.number().int().min(10).max(3600).default(60),
-  watches: z.array(z.object({
-    watchType: z.enum(['service', 'process']),
-    name: z.string().min(1).max(255),
-    // These three are the only watch columns without NOT NULL
-    // (config_policy_monitoring_watches.display_name / cpu_threshold_percent /
-    // memory_threshold_mb). The write path stores an unset value as `?? null`
-    // and the read path returns that null verbatim, so the editor loads a saved
-    // watch carrying nulls and posts them straight back. `.optional()` alone
-    // rejected them, which made an existing policy impossible to re-save once
-    // any watch had an unset field (#3491, #3492). Keep in sync with the
-    // columns, same as updateDeviceSchema.displayName above. Consumers already
-    // treat null and undefined alike (`!= null` in agents/helpers.ts).
-    displayName: z.string().max(255).nullable().optional(),
-    enabled: z.boolean().default(true),
-    alertOnStop: z.boolean().default(true),
-    alertAfterConsecutiveFailures: z.number().int().min(1).max(100).default(2),
-    alertSeverity: z.enum(['critical', 'high', 'medium', 'low', 'info']).default('high'),
-    cpuThresholdPercent: z.number().min(0).max(100).nullable().optional(),
-    memoryThresholdMb: z.number().min(0).nullable().optional(),
-    thresholdDurationSeconds: z.number().int().min(0).max(86400).default(300),
-    autoRestart: z.boolean().default(false),
-    maxRestartAttempts: z.number().int().min(0).max(50).default(3),
-    restartCooldownSeconds: z.number().int().min(30).max(86400).default(300),
-    rationale: z.string().trim().max(2000).nullable().optional(),
-  })).max(200).default([]),
-  // Write barrier (2026-07-30 consolidation): server-evaluated rules moved to the
-  // alert_rule feature. Empty arrays from stale clients are tolerated; non-empty
-  // payloads are rejected so stale editor sessions can't resurrect ghost rules.
-  //
-  // Element type is `unknown`, not `never`: a `never` element emits its own
-  // "expected never, received object" issue FIRST, which shadows the pointer
-  // message for any consumer that reports `issues[0]` (the AI tool path does).
-  // `.max(0, ...)` on an unknown[] makes the pointer the only issue raised.
-  eventLogAlerts: z.array(z.unknown())
-    .max(0, 'Event log alert rules have moved to the Alerts feature of this policy')
-    .default([]),
-  alertRules: z.array(z.unknown())
-    .max(0, 'Metric alert rules have moved to the Alerts feature of this policy')
-    .default([]),
-});
-
 export const updateFeatureLinkSchema = z.object({
   featurePolicyId: z.string().guid().nullable().optional(),
   inlineSettings: configFeatureInlineSettingsSchema.nullable().optional(),
