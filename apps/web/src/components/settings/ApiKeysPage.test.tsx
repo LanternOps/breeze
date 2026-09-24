@@ -88,6 +88,21 @@ describe('ApiKeysPage destructive confirmations (#3531)', () => {
     expect(toastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
   });
 
+  it('revoke 404 (already gone): toasts, closes the modal, and refetches the list (sweep A2)', async () => {
+    routeFetch({ status: 404, payload: { error: 'API key not found' } });
+    await renderPage();
+    expect(listFetches()).toBe(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Revoke' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Revoke Key' }));
+
+    await waitFor(() =>
+      expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: 'API key not found' })),
+    );
+    await waitFor(() => expect(screen.queryByText('Revoke API Key')).toBeNull());
+    expect(listFetches()).toBe(2);
+  });
+
   it('rotate failure (403): toasts, keeps the modal open, does not refetch', async () => {
     routeFetch({ status: 403, payload: { error: 'Not allowed to rotate' } });
     await renderPage();
