@@ -164,3 +164,6 @@ export const SESSION_EXPIRY_HOURS = 24;
 
 // Ticket comment attachments (W08 #3902)
 export * from './ticketAttachments';
+
+// Hardware & RAID monitoring (W01 #6856)
+export * from './hardwareHealth';
