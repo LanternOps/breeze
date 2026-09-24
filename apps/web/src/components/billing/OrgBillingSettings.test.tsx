@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import OrgBillingSettings from './OrgBillingSettings';
@@ -19,6 +19,8 @@ const orgPayload = (over: Record<string, unknown> = {}) => json({
   billingContact: null,
   billingAddressLine1: null, billingAddressLine2: null, billingAddressCity: null,
   billingAddressRegion: null, billingAddressPostalCode: null, billingAddressCountry: null,
+  // partners.invoice_terms_days is NOT NULL DEFAULT 30, so the API always sends a partner default.
+  invoiceTermsDays: null, partnerDefaultInvoiceTermsDays: 30,
   ...over,
 });
 const findPatch = () =>
@@ -113,7 +115,8 @@ describe('OrgBillingSettings — tax rate inherited-value placeholder', () => {
     const input = screen.getByTestId('org-billing-taxrate') as HTMLInputElement;
     expect(input.value).toBe('');
     expect(input.placeholder).toBe('7.5');
-    expect(screen.getByText(/inherits from partner default/i)).toBeInTheDocument();
+    const taxField = within(screen.getByTestId('org-billing-taxrate').parentElement as HTMLElement);
+    expect(taxField.getByText(/inherits from partner default/i)).toBeInTheDocument();
   });
 
   it('shows a "no partner default configured" note when the partner has no default set', async () => {
@@ -122,7 +125,8 @@ describe('OrgBillingSettings — tax rate inherited-value placeholder', () => {
     await waitFor(() => expect(screen.getByTestId('org-billing-settings')).toBeInTheDocument());
 
     expect((screen.getByTestId('org-billing-taxrate') as HTMLInputElement).placeholder).toBe('');
-    expect(screen.getByText(/no partner default configured/i)).toBeInTheDocument();
+    const taxField = within(screen.getByTestId('org-billing-taxrate').parentElement as HTMLElement);
+    expect(taxField.getByText(/no partner default configured/i)).toBeInTheDocument();
   });
 });
 
