@@ -462,10 +462,9 @@ describe('recordMonitorEvaluation', () => {
     );
   });
 
-  it('adopts the concurrent winner\'s episode when the open-episode unique fires', async () => {
+  it('adopts the existing episode without recording an extra insertion', async () => {
     state.selectRows = [[stateRow()], [{ id: EPISODE }]];
-    state.insertRows = [[]];
-    state.insertThrow = Object.assign(new Error('duplicate key'), { code: '23505' });
+    state.insertRows = [[], []];
 
     const result = await recordMonitorEvaluation({
       monitor: monitor(),
@@ -474,10 +473,9 @@ describe('recordMonitorEvaluation', () => {
       observation: 'breach',
     });
 
-    // The racing sweep already opened it: adopt, do not throw (an uncaught
-    // 23505 inside a request transaction surfaces as a 500).
     expect(result.episodeId).toBe(EPISODE);
     expect(result.episodeOpened).toBe(false);
+    expect(state.inserts[1]!.some(call => call.method === 'onConflictDoNothing')).toBe(true);
   });
 
   it('rethrows an insert error that is NOT a unique violation', async () => {
