@@ -4,6 +4,7 @@ import { deriveHardwareHealth,HARDWARE_STATES,worstHardwareHealth,type HardwareC
 import { db,withDbTransaction } from '../../db';
 import { deviceHardwareComponents,deviceHardwareEvents,deviceHardwareHealth,devices } from '../../db/schema';
 import { resolveAlertsForRemovedComponents } from './retire';
+import { linkBmcAssetFromAgentReport, type BmcLinkTx } from '../discovery/agentReportedBmcLink';
 export type ComponentRow=typeof deviceHardwareComponents.$inferSelect;
 type EventRow=typeof deviceHardwareEvents.$inferInsert;
 export type ComponentInput=Omit<HardwareComponentReport,'componentType'> & {componentType:HardwareComponentType};
@@ -84,8 +85,8 @@ export function acceptsAgentSequence(health:{lastReceivedAt:Date|null;lastAgentS
 export async function ingestHardwareHealthSnapshot(input:{device:{id:string;orgId:string};snapshot:HardwareHealthSnapshot;writer:'agent'|'server';receivedAt:Date}):Promise<IngestResult>{
  const {device,snapshot,receivedAt,writer}=input;
  return withDbTransaction(async()=>{
-  const tx=db;
-  const [owner]=await tx.select({id:devices.id}).from(devices).where(and(eq(devices.id,device.id),eq(devices.orgId,device.orgId))).for('key share');
+  const tx = db satisfies BmcLinkTx;
+  const [owner]=await tx.select({id:devices.id,siteId:devices.siteId}).from(devices).where(and(eq(devices.id,device.id),eq(devices.orgId,device.orgId))).for('key share');
   if(!owner)throw new Error('Hardware device missing or ownership changed');
   await tx.insert(deviceHardwareHealth).values({deviceId:device.id,orgId:device.orgId}).onConflictDoNothing({target:deviceHardwareHealth.deviceId});
   const [health]=await tx.select().from(deviceHardwareHealth).where(and(eq(deviceHardwareHealth.deviceId,device.id),eq(deviceHardwareHealth.orgId,device.orgId))).for('update');
@@ -94,8 +95,22 @@ export async function ingestHardwareHealthSnapshot(input:{device:{id:string;orgI
   const previous=await tx.select().from(deviceHardwareComponents).where(eq(deviceHardwareComponents.deviceId,device.id));
   const change=reduceSnapshot(previous,device,snapshot,receivedAt);
   for(const row of change.upserts){
+   if(row.componentType==='bmc'){
+    const {bmcLink:_untrusted,...facts}=row.attributes;
+    row.attributes=facts;
+   }
    const {id,createdAt,firstSeenAt,...update}=row;
    await tx.insert(deviceHardwareComponents).values(row).onConflictDoUpdate({target:[deviceHardwareComponents.deviceId,deviceHardwareComponents.componentKey],set:update});
+  }
+  if(writer==='agent'){
+   const successfulSources=new Set(snapshot.sources.filter(source=>source.status==='ok').map(source=>source.source));
+   for(const component of change.upserts){
+    if(component.componentType!=='bmc'||component.stale||!successfulSources.has(component.source)||typeof component.attributes.mac!=='string')continue;
+    await linkBmcAssetFromAgentReport(tx,{
+     deviceId:device.id,orgId:device.orgId,siteId:owner.siteId,mac:component.attributes.mac,
+     ip:typeof component.attributes.ip==='string'?component.attributes.ip:null,
+    });
+   }
   }
   if(change.deletedKeys.length){
    await resolveAlertsForRemovedComponents(device.id,change.deletedKeys);

@@ -1,6 +1,6 @@
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { db } from '../../db';
-import { devices, discoveredAssets } from '../../db/schema';
+import { devices, discoveredAssets, sites } from '../../db/schema';
 
 type DbTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -151,4 +151,27 @@ export async function linkBmcAssetFromAgentReport(
     .returning({ id: discoveredAssets.id });
   if (!updated.length) throw new Error('BMC link changed while locked');
   return 'linked';
+}
+
+/**
+ * Server-derived, read-time association metadata for a BMC component's
+ * `attributes.bmcLink`. Never persisted — always recomputed from the current
+ * discovered_assets state so a card reflects live linked/suppressed/moved
+ * status even though the underlying component row is only refreshed on the
+ * agent's own poll interval. Overwrites any agent-supplied `bmcLink` value.
+ */
+export async function bmcViewAttributes(report: BmcReport, attributes: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const { bmcLink: _untrusted, ...facts } = attributes;
+  const choice = chooseBmcAsset(await readBmcCandidates(db, report.orgId, report.mac), report);
+  const metadata: { status: BmcLinkStatus; assetId?: string; siteName?: string } = { status: choice.status };
+  if (choice.asset?.linkedDeviceId === report.deviceId && !choice.asset.autoLinkSuppressedAt && choice.status === 'already_linked') {
+    metadata.assetId = choice.asset.id;
+  } else if (choice.status === 'other_site' && choice.asset?.siteId) {
+    const [site] = await db.select({ name: sites.name }).from(sites)
+      .where(and(eq(sites.id, choice.asset.siteId), eq(sites.orgId, report.orgId))).limit(1);
+    if (site) metadata.siteName = site.name;
+  } else if (choice.status === 'linked') {
+    metadata.status = 'no_asset';
+  }
+  return { ...facts, bmcLink: metadata };
 }

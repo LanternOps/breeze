@@ -1,10 +1,11 @@
 import { desc,eq } from 'drizzle-orm';
 import type { HardwareHealth,HardwareSourceReport } from '@breeze/shared';
 import { db } from '../../db';
-import { deviceHardwareComponents,deviceHardwareEvents,deviceHardwareHealth } from '../../db/schema';
+import { deviceHardwareComponents,deviceHardwareEvents,deviceHardwareHealth,devices } from '../../db/schema';
 import { resolveDeviceHardwareMonitoringPolicy } from '../../routes/agents/helpers';
 import { isComponentFresh } from './freshness';
 import { captureException } from '../sentry';
+import { bmcViewAttributes } from '../discovery/agentReportedBmcLink';
 type JsonDates<T>={[K in keyof T]:T[K] extends Date?string:T[K] extends Date|null?string|null:T[K]};
 export type HardwareComponentView=JsonDates<typeof deviceHardwareComponents.$inferSelect>&{fresh:boolean};
 export type HardwareEventView=JsonDates<typeof deviceHardwareEvents.$inferSelect>;
@@ -18,6 +19,16 @@ export async function getDeviceHardwareHealthView(deviceId:string,opts?:{eventLi
  const [health]=await db.select().from(deviceHardwareHealth).where(eq(deviceHardwareHealth.deviceId,deviceId)).limit(1);
  if(!health)return null;
  const rows=await db.select().from(deviceHardwareComponents).where(eq(deviceHardwareComponents.deviceId,deviceId)).orderBy(deviceHardwareComponents.componentKey);
+ if(rows.some(row=>row.componentType==='bmc')){
+  const [device]=await db.select({siteId:devices.siteId}).from(devices).where(eq(devices.id,deviceId)).limit(1);
+  for(const row of rows){
+   if(row.componentType!=='bmc')continue;
+   row.attributes=await bmcViewAttributes({deviceId,orgId:row.orgId,siteId:device?.siteId??null,
+    mac:typeof row.attributes.mac==='string'?row.attributes.mac:'',
+    ip:typeof row.attributes.ip==='string'?row.attributes.ip:null,
+   },row.attributes);
+  }
+ }
  const limit=Math.max(0,Math.min(50,Math.floor(opts?.eventLimit??50)));
  const events=limit?await db.select().from(deviceHardwareEvents).where(eq(deviceHardwareEvents.deviceId,deviceId)).orderBy(desc(deviceHardwareEvents.occurredAt),desc(deviceHardwareEvents.createdAt),desc(deviceHardwareEvents.id)).limit(limit):[];
  let policy:HardwareHealthView['policy']=null;
