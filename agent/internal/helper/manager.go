@@ -193,6 +193,12 @@ type Manager struct {
 	abandonedVersion     string // version we gave up updating to
 
 	legacyAutoStartCleaned bool
+
+	// notInstalledWarned: the "enabled but not installed, waiting for the
+	// server" warning has fired for the current not-installed episode. Reset
+	// when the binary appears or the policy turns off, so the log carries one
+	// line per transition instead of one per heartbeat (#6872).
+	notInstalledWarned bool
 }
 
 // New creates a new helper Manager. serverURL is a provider (func() string) so
@@ -334,8 +340,18 @@ func (m *Manager) Apply(settings *Settings) {
 		// before this Apply call within the same heartbeat. Without it we fail
 		// closed rather than fetch unverified bytes.
 		if m.pendingHelperVersion == "" {
-			log.Debug("breeze assist enabled but no signed target version yet; deferring install")
-		} else if err := m.downloadAndInstall(m.pendingHelperVersion); err != nil {
+			if !m.notInstalledWarned {
+				log.Warn("breeze assist enabled but not installed; waiting for the server to offer a helper version")
+				m.notInstalledWarned = true
+			}
+			// #6872: nothing to configure, spawn, or watch. A watcher left over
+			// from an installed state must not keep respawning a missing binary.
+			for _, state := range m.sessions {
+				m.stopSessionWatcher(state)
+			}
+			return
+		}
+		if err := m.downloadAndInstall(m.pendingHelperVersion); err != nil {
 			// downloadAndInstall wraps the verified downloader's error, which for
 			// any transport failure is a *url.Error carrying the presigned
 			// helper-asset URL. This log line ships, so it must be redacted.
@@ -343,6 +359,9 @@ func (m *Manager) Apply(settings *Settings) {
 			log.Error("failed to install breeze assist", key, value)
 			return
 		}
+	}
+	if !settings.Enabled || m.isInstalled() {
+		m.notInstalledWarned = false
 	}
 
 	activeSessions := m.sessionEnumerator.ActiveSessions()
@@ -401,7 +420,11 @@ func (m *Manager) Apply(settings *Settings) {
 			}
 
 			if err := m.ensureRunningSession(state); err != nil {
-				log.Error("failed to start breeze assist", "session", si.Key, "error", err.Error())
+				if errors.Is(err, ErrNotInstalled) {
+					log.Debug("breeze assist not installed; skipping spawn", "session", si.Key)
+				} else {
+					log.Error("failed to start breeze assist", "session", si.Key, "error", err.Error())
+				}
 			} else {
 				m.reapDuplicateHelpersLocked(state)
 				m.startSessionWatcher(state)

@@ -751,3 +751,74 @@ func TestEnsureRunningSessionNotInstalledBeatsWatcherGaveUp(t *testing.T) {
 		t.Fatalf("spawnFunc called %d times after install, want 1", *spawns)
 	}
 }
+
+func TestApplyEnabledNotInstalledNoPendingDoesNotSpawn(t *testing.T) {
+	mgr, spawns := newNotInstalledManager(t)
+
+	mgr.Apply(&Settings{Enabled: true})
+	mgr.Apply(&Settings{Enabled: true})
+
+	if *spawns != 0 {
+		t.Fatalf("spawnFunc called %d times with no helper installed", *spawns)
+	}
+	for key, st := range mgr.sessions {
+		if st.watcher != nil {
+			t.Fatalf("session %s has a watcher with no helper installed", key)
+		}
+	}
+	if !mgr.notInstalledWarned {
+		t.Fatal("expected the not-installed warning to have fired once")
+	}
+}
+
+func TestApplyNotInstalledWarnResetsWhenInstalledOrDisabled(t *testing.T) {
+	mgr, _ := newNotInstalledManager(t)
+	mgr.Apply(&Settings{Enabled: true})
+	if !mgr.notInstalledWarned {
+		t.Fatal("warn flag not set")
+	}
+
+	mgr.Apply(&Settings{Enabled: false})
+	if mgr.notInstalledWarned {
+		t.Fatal("warn flag must reset when the policy turns off")
+	}
+
+	mgr.Apply(&Settings{Enabled: true})
+	if !mgr.notInstalledWarned {
+		t.Fatal("warn flag not set on re-enable")
+	}
+	if err := os.WriteFile(mgr.binaryPath, []byte("bin"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	mgr.Apply(&Settings{Enabled: true})
+	if mgr.notInstalledWarned {
+		t.Fatal("warn flag must reset once the binary is installed")
+	}
+}
+
+// Binary removed while a session watcher is running: the next Apply must stop
+// that watcher and spawn nothing.
+func TestApplyNotInstalledStopsExistingWatcher(t *testing.T) {
+	mgr, spawns := newNotInstalledManager(t)
+	if err := os.WriteFile(mgr.binaryPath, []byte("bin"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	mgr.Apply(&Settings{Enabled: true})
+	if *spawns != 1 {
+		t.Fatalf("installed: spawnFunc called %d times, want 1", *spawns)
+	}
+	if mgr.sessions["1"] == nil || mgr.sessions["1"].watcher == nil {
+		t.Fatal("expected a watcher for session 1 while installed")
+	}
+
+	if err := os.Remove(mgr.binaryPath); err != nil {
+		t.Fatal(err)
+	}
+	mgr.Apply(&Settings{Enabled: true})
+	if mgr.sessions["1"].watcher != nil {
+		t.Fatal("watcher still running after the binary vanished")
+	}
+	if *spawns != 1 {
+		t.Fatalf("spawnFunc called %d times after the binary vanished, want still 1", *spawns)
+	}
+}
