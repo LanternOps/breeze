@@ -50,6 +50,7 @@ export * from './deviceRoles';
 export * from './deviceFunctions';
 export * from './customFieldImport';
 export * from './alertRuleConditions';
+export * from './complianceInlineSettings';
 
 // ============================================
 // Device Roles

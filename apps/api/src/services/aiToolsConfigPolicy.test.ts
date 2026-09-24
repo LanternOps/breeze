@@ -1575,3 +1575,133 @@ describe('manage_policy_feature_link maintenance inlineSettings validation (#631
     );
   });
 });
+
+describe('manage_policy_feature_link compliance validation + rejection hints (#6669)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    vi.mocked(getConfigPolicy).mockReset();
+    vi.mocked(addFeatureLink).mockReset();
+    vi.mocked(updateFeatureLink).mockReset();
+    canManagePartnerWidePoliciesMock.mockReset().mockReturnValue(true);
+    policyAccessConditionMock.mockReset().mockReturnValue(undefined);
+    enable2faState.value = true;
+  });
+
+  function toolsWithPolicy() {
+    vi.mocked(getConfigPolicy).mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Org policy' } as any);
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+    return tools;
+  }
+
+  async function add(featureType: string, inlineSettings: unknown) {
+    // Armed so an ungated tool would complete the write — the not.toHaveBeenCalled
+    // assertions below are then meaningful.
+    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType } as any);
+    const output = await toolsWithPolicy().get('manage_policy_feature_link')!.handler({
+      action: 'add',
+      configPolicyId: POLICY_ID,
+      featureType,
+      inlineSettings,
+    }, makeAuth());
+    return JSON.parse(output);
+  }
+
+  it('rejects a compliance required_software rule built from the old reference (`name`, no softwareName)', async () => {
+    const out = await add('compliance', {
+      items: [{ name: 'App present', enforcementLevel: 'warn', rules: [{ type: 'required_software', name: 'Contoso Agent' }] }],
+    });
+    expect(out.error).toContain('compliance');
+    expect(out.error).toContain('items.0.rules.0.softwareName');
+    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it('rejects the `config_file_check` rule type and names the accepted types', async () => {
+    const out = await add('compliance', {
+      items: [{ name: 'Cfg', rules: [{ type: 'config_file_check', configFilePath: '/etc/x', configKey: 'k' }] }],
+    });
+    expect(out.error).toContain('config_check');
+    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it('saves a well-formed compliance payload unnormalized (UI-only keys such as remediation survive)', async () => {
+    const raw = {
+      items: [{
+        name: 'App present',
+        enforcementLevel: 'warn',
+        checkIntervalMinutes: 60,
+        rules: [{ type: 'required_software', softwareName: 'Contoso Agent', remediation: { type: 'none' } }],
+      }],
+    };
+    const out = await add('compliance', raw);
+    expect(out.success).toBe(true);
+    expect(vi.mocked(addFeatureLink)).toHaveBeenCalledWith(POLICY_ID, 'compliance', null, raw);
+  });
+
+  it('points an app-presence alert_rule guess at the compliance required_software rule and lists the valid condition types', async () => {
+    const out = await add('alert_rule', {
+      items: [{ name: 'App removed', conditions: [{ type: 'software_presence', softwareName: 'Contoso Agent' }] }],
+    });
+    expect(out.error).toContain('items.0.conditions.0.type');
+    for (const type of ['metric', 'offline', 'event_log']) expect(out.error).toContain(type);
+    expect(out.error).toContain('required_software');
+    expect(out.error).toContain('compliance');
+    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it('on a rejected event_log level lists the valid levels and says Information events are not collected', async () => {
+    const out = await add('alert_rule', {
+      items: [{ name: 'Uninstall', conditions: [{ type: 'event_log', category: 'application', level: 'info', sourcePattern: 'MsiInstaller' }] }],
+    });
+    expect(out.error).toContain('items.0.conditions.0.level');
+    for (const level of ['warning', 'error', 'critical']) expect(out.error).toContain(level);
+    expect(out.error).toMatch(/Information-level events can never match/);
+    expect(out.error).toContain('required_software');
+    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it('attaches the hint to a bad type inside autoResolveConditions too', async () => {
+    const out = await add('alert_rule', {
+      items: [{
+        name: 'CPU',
+        conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 80 }],
+        autoResolveConditions: [{ type: 'software_presence' }],
+      }],
+    });
+    expect(out.error).toContain('items.0.autoResolveConditions.0.type');
+    expect(out.error).toContain('required_software');
+    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it('validates compliance on the UPDATE action (featureType re-derived from the stored link)', async () => {
+    vi.mocked(updateFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'compliance' } as any);
+    mockSelectRows([{ featureType: 'compliance' }]);
+    const output = await toolsWithPolicy().get('manage_policy_feature_link')!.handler({
+      action: 'update',
+      configPolicyId: POLICY_ID,
+      featureLinkId: 'link-1',
+      inlineSettings: { items: [{ name: 'App present', rules: [{ type: 'required_software', name: 'Contoso Agent' }] }] },
+    }, makeAuth());
+    const { error } = JSON.parse(output);
+    expect(error).toContain('compliance');
+    expect(error).toContain('items.0.rules.0.softwareName');
+    expect(vi.mocked(updateFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it('does not attach the app-presence hint to an unrelated alert_rule error', async () => {
+    const out = await add('alert_rule', {
+      items: [{ name: 'CPU', conditions: [{ type: 'metric', metric: 'bogus', operator: 'gt', value: 80 }] }],
+    });
+    expect(out.error).toContain('items.0.conditions.0.metric');
+    expect(out.error).not.toContain('required_software');
+  });
+
+  it('describe returns a validated example alongside the compliance reference', async () => {
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+    const out = JSON.parse(await tools.get('manage_policy_feature_link')!.handler({ action: 'describe', featureType: 'compliance' }, {} as never));
+    expect(out.inlineSettings).toContain('softwareName');
+    expect(out.example.items[0].rules.map((r: { type: string }) => r.type)).toContain('required_software');
+  });
+});

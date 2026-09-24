@@ -7,6 +7,7 @@ import { hasSatisfiedMfa, type AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import {
   alertRuleInlineSettingsSchema,
+  complianceInlineSettingsSchema,
   maintenanceInlineSettingsSchema,
   monitoringInlineSettingsSchema,
   onedriveHelperInlineSettingsSchema,
@@ -16,6 +17,7 @@ import { sanitizeThrownToolError } from './aiToolErrors';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 import { deviceScopeCondition } from './aiToolsSiteScope';
 import { describeFirstZodIssue } from '../lib/zodIssues';
+import { INLINE_SETTINGS_EXAMPLES } from './aiToolsConfigPolicyExamples';
 import {
   resolveEffectiveConfig,
   previewEffectiveConfig,
@@ -100,7 +102,7 @@ function configPolicyMutationMfaError(auth: AuthContext): string | null {
  * those dead keys back into the stored JSONB mirror. Same call made in the HTTP
  * route (routes/configurationPolicies/featureLinks.ts).
  */
-const VALIDATED_INLINE_SETTINGS: Record<string, { schema: { safeParse: (raw: unknown) => any }; normalize: boolean }> = {
+export const VALIDATED_INLINE_SETTINGS: Record<string, { schema: { safeParse: (raw: unknown) => any }; normalize: boolean }> = {
   onedrive_helper: { schema: onedriveHelperInlineSettingsSchema, normalize: true },
   alert_rule: { schema: alertRuleInlineSettingsSchema, normalize: true },
   monitoring: { schema: monitoringInlineSettingsSchema, normalize: false },
@@ -113,7 +115,27 @@ const VALIDATED_INLINE_SETTINGS: Record<string, { schema: { safeParse: (raw: unk
   // collection — addFeatureLink refuses without an authenticated actor, and
   // this Tier-2 tool has none.
   warranty: { schema: warrantyInlineSettingsSchema, normalize: false },
+  // #6669: validate-only. The reference used to advertise `name` and
+  // `config_file_check`, which the evaluator never reads, so assistant-built
+  // rules saved and then evaluated as permanent failures. Not normalized: the
+  // stored JSONB keeps whatever UI-only keys (description, remediation) the
+  // caller sent, exactly as the HTTP route stores it.
+  compliance: { schema: complianceInlineSettingsSchema, normalize: false },
 };
+
+/**
+ * #6669: appended to an alert_rule rejection on a condition `type` or `level`.
+ * Those are the two fields the model reaches for when it wants "tell me if an
+ * app is removed". Neither can express that, and a bare enum error sent it
+ * guessing until it found an event_log rule that could never fire (#6666).
+ */
+export const ALERT_RULE_APP_PRESENCE_HINT =
+  'Valid condition types: "metric", "offline", "event_log"; valid event_log levels: "warning", "error", "critical" (a floor: that level and above). '
+  + 'Information-level events can never match, so event_log cannot detect software installs or uninstalls. '
+  + 'To detect a missing or removed app, use featureType "compliance" with a { type: "required_software", softwareName } rule. '
+  + 'It reports the device non-compliant (configuration_policy_compliance). Configuration-policy compliance does not currently create an alert.';
+
+const ALERT_RULE_HINT_PATH = /conditions\.\d+\.(type|level):/i;
 
 /**
  * Refuses an assistant-authored automation action that asks to run a script
@@ -198,7 +220,10 @@ function validateInlineSettingsForFeature(
     // "Invalid input" that tells the model nothing about what to fix.
     const described = describeFirstZodIssue(parsed.error);
     if (!described) return { error: `Invalid ${featureType} inline settings.` };
-    return { error: `Invalid ${featureType} inline settings — ${described}` };
+    const hint = featureType === 'alert_rule' && ALERT_RULE_HINT_PATH.test(described)
+      ? ` ${ALERT_RULE_APP_PRESENCE_HINT}`
+      : '';
+    return { error: `Invalid ${featureType} inline settings — ${described}${hint}` };
   }
   return { value: entry.normalize ? parsed.data : raw };
 }
@@ -231,12 +256,12 @@ export const MAINTENANCE_LINK_FEATURE_TYPE_REQUIRED =
 /** Per-feature inline settings reference, returned on demand by describe. */
 export const POLICY_FEATURE_INLINE_SETTINGS_REFERENCE: Readonly<Record<ConfigFeatureType, string>> = {
   patch: `{ sources: ["os","third_party"], autoApprove: true, autoApproveSeverities: ["critical","important"], scheduleFrequency: "daily"|"weekly"|"monthly", scheduleTime: "02:00", scheduleDayOfWeek?: "tue", scheduleDayOfMonth?: 1, rebootPolicy: "never"|"if_required"|"always"|"maintenance_window" } can also use featurePolicyId → existing update ring UUID (for approval deferral), combined with inlineSettings for schedule/reboot`,
-  alert_rule: `server-evaluated rules — CPU/RAM/disk thresholds, offline detection, and event log alerts. { items: [{ name, severity: "critical"|"high"|"medium"|"low"|"info" (default "medium"), conditions: 1-10 of [ { type: "metric" ("threshold" is accepted as an alias and canonicalized to "metric"), metric: "cpu"|"ram"|"disk"|"processCount" (these four are canonical; the aliases "cpuPercent"->cpu, "ramPercent"/"memory"->ram, "diskPercent"->disk, "processes"->processCount are accepted but map onto them — prefer the canonical names), operator: "gt"|"gte"|"lt"|"lte"|"eq"|"neq", value: number (a PERCENTAGE 0-100 for cpu/ram/disk; a plain count for processCount), durationMinutes?: number (1-10080; sustained window the samples are averaged over, default 1 minute) } | { type: "offline", durationMinutes?: number } | { type: "event_log", category: "security"|"hardware"|"application"|"system", level: "warning"|"error"|"critical" (matches this level and above), sourcePattern?: string (case-insensitive substring match, NOT a regex), messagePattern?: string, countThreshold?: number (1-10000, default 1), windowMinutes?: number (1-1440, default 15) } ], cooldownMinutes?: number (default 5), autoResolve?: boolean (default false), autoResolveConditions?: same condition shapes or null, titleTemplate?: string, messageTemplate?: string, sortOrder?: number }] } — 'custom' conditions and the extended types (bandwidth_high, disk_io_high, network_errors, patch_compliance, cert_expiry) are rejected on write. When the same threshold is configured in policies at different levels (e.g. org and site), the CLOSEST level to the device wins.`,
+  alert_rule: `server-evaluated rules — CPU/RAM/disk thresholds, offline detection, and event log alerts. { items: [{ name, severity: "critical"|"high"|"medium"|"low"|"info" (default "medium"), conditions: 1-10 of [ { type: "metric" ("threshold" is accepted as an alias and canonicalized to "metric"), metric: "cpu"|"ram"|"disk"|"processCount" (these four are canonical; the aliases "cpuPercent"->cpu, "ramPercent"/"memory"->ram, "diskPercent"->disk, "processes"->processCount are accepted but map onto them — prefer the canonical names), operator: "gt"|"gte"|"lt"|"lte"|"eq"|"neq", value: number (a PERCENTAGE 0-100 for cpu/ram/disk; a plain count for processCount), durationMinutes?: number (1-10080; sustained window the samples are averaged over, default 1 minute) } | { type: "offline", durationMinutes?: number } | { type: "event_log", category: "security"|"hardware"|"application"|"system", level: "warning"|"error"|"critical" (a floor: matches this level and above), sourcePattern?: string (case-insensitive substring match, NOT a regex), messagePattern?: string, countThreshold?: number (1-10000, default 1), windowMinutes?: number (1-1440, default 15) } ], cooldownMinutes?: number (default 5), autoResolve?: boolean (default false), autoResolveConditions?: same condition shapes or null, titleTemplate?: string, messageTemplate?: string, sortOrder?: number }] } — 'custom' conditions and the extended types (bandwidth_high, disk_io_high, network_errors, patch_compliance, cert_expiry) are rejected on write. When the same threshold is configured in policies at different levels (e.g. org and site), the CLOSEST level to the device wins. What the Windows agent collects for event_log: application = Application log error/critical only; system = System log error/critical (disk, driver and WHEA errors, collected only when the event_log feature's hardware category is enabled) plus unexpected-shutdown events; security = Security log warning and above; hardware = a category="hardware" condition never matches a Windows device, because the agent stores its hardware errors under category "system". Information-level events can never match (the lowest level is "warning"), so an event_log condition cannot detect software installs or uninstalls (MsiInstaller events are Information). To detect a missing or removed app, use a compliance required_software rule instead.`,
   monitoring: `agent-side service/process watches with auto-restart, delivered via heartbeat — not evaluated by the alert engine; watch failures are recorded and shown in the UI but do not currently raise alerts (alertOnStop/alertSeverity are stored but unused at runtime). { checkIntervalSeconds: 60, watches: [{ watchType: "service"|"process", name: "wuauserv", displayName?: "Windows Update", enabled: true, alertOnStop: true, alertAfterConsecutiveFailures: 2, alertSeverity: "critical"|"high"|"medium"|"low"|"info", cpuThresholdPercent?: 90, memoryThresholdMb?: 500, thresholdDurationSeconds: 300, autoRestart: false, maxRestartAttempts: 3, restartCooldownSeconds: 300 }] } — inline settings carry ONLY checkIntervalSeconds/watches now; metric alert rules and event log alerts moved to the alert_rule feature. Sending a non-empty 'alertRules' or 'eventLogAlerts' array is rejected with an error directing you to the alert_rule feature type instead.`,
   maintenance: `{ recurrence: "once"|"daily"|"weekly"|"monthly", windowStart?: "naive ISO-8601 local datetime for once (e.g. 2026-03-15T02:00) | HH:MM local time of day for daily/weekly/monthly (omit or null = 00:00). Never pass a Z-suffixed or offset-bearing instant for a recurring cadence — it is rejected and the window falls back to midnight.", durationHours: 1-72, timezone: "America/New_York", suppressAlerts: true, suppressPatching: true, suppressAutomations: false, suppressScripts: false, notifyBeforeMinutes?: 15, notifyOnStart: true, notifyOnEnd: true }`,
   automation: `{ items: [{ name, enabled: true, triggerType: "schedule"|"event"|"manual", cronExpression?: "0 2 * * *", timezone?: "America/New_York", eventType?: "device.offline"|"alert.triggered"|"compliance.failed"|"patch.available", actions: [{ type: "run_script"|"send_notification"|"create_alert"|"execute_command", scriptId?|channelId?|severity?|message?|command? }], onFailure: "stop"|"continue"|"notify" }] }`,
   event_log: `{ retentionDays: 30, maxEventsPerCycle: 100, collectCategories: ["security","hardware","application","system"], minimumLevel: "info"|"warning"|"error"|"critical", collectionIntervalMinutes: 15, rateLimitPerHour: 12000 }`,
-  compliance: `{ items: [{ name, enforcementLevel: "monitor"|"warn"|"enforce", checkIntervalMinutes: 60, rules: [{ type: "required_software"|"prohibited_software"|"disk_space_minimum"|"os_version"|"registry_check"|"config_file_check", name?|minGb?|osType?|path?|valueName?|expectedValue?|minVersion? }] }] }`,
+  compliance: `{ items: [{ name, enforcementLevel?: "monitor"|"warn"|"enforce" (default "monitor"; enforce also runs the rule's remediation), checkIntervalMinutes?: 60, rules: 1-50 of [ { type: "required_software", softwareName: "Contoso Agent" (case-insensitive name match against installed software), softwareVersion?: "7.0", versionOperator?: "any"|"eq"|"gte"|"gt"|"lte" (omit or "any" = presence only; any other operator REQUIRES softwareVersion; "gt" is evaluated as >=) } | { type: "prohibited_software", prohibitedName } | { type: "disk_space_minimum", minGb: number (minimum FREE space in GB), diskPath?: "C:" (default: every disk) } | { type: "os_version", osType?: "windows"|"macos"|"linux"|"any" (default "any"), minOsVersion?: "10.0.19045" } | { type: "registry_check", registryPath, registryValueName, registryExpectedValue? (omit = the value only has to exist) } | { type: "config_check", configFilePath, configKey, configExpectedValue? } ] }] }. Each rule may also carry description? and remediation?. A failing rule marks the device non-compliant (see configuration_policy_compliance); configuration-policy compliance does not currently create an alert. A required_software rule is how to detect that an app is missing or was removed.`,
   security: `{ realTimeProtection: true, behavioralMonitoring: true, cloudLookup: true, scheduledScans: true, scanHour: "2", scanMinute: "0", scanDayOfWeek: "*", scanDayOfMonth: "*", autoQuarantine: true, notifyUser: true, blockUntrustedUsb: false, exclusions: [] }`,
   backup: `{ schedule: { frequency: "daily"|"weekly"|"monthly", time: "02:00", dayOfWeek?: 2 (0=Sunday..6=Saturday), dayOfMonth?: 1 (1..28), timezone?: "UTC" }, retention: { preset: "standard"|"extended"|"compliance"|"custom", retentionDays?: 30, maxVersions?: 5 }, paths: [], targets: { paths: [], excludes: [] }, backupMode: "file"|"hyperv"|"mssql"|"system_image", destinationConfigId?: "UUID" }. featurePolicyId → backup PROFILE UUID (manage_backup_profiles — "what to protect"), combined with inlineSettings { schedule, retention, destinationConfigId? } (destination omitted = the device org's default destination). Legacy links with featurePolicyId → backup config UUID still work. Partner-wide policies may link partner-wide profiles; their destination always resolves per device org. Compression, encryption and notification flags are not persisted by configuration-policy backup settings.`,
   sensitive_data: `{ detectionClasses: ["credential","pci","phi","pii","financial"], includePaths: [], excludePaths: [], fileTypes: [], maxFileSizeBytes: 104857600, workers: 4, timeoutSeconds: 300, scheduleType: "manual"|"interval"|"cron", intervalMinutes?: 60, cron?: "...", timezone: "UTC" }`,
@@ -981,7 +1006,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: `featureType must be one of: ${CONFIG_FEATURE_TYPES.join(', ')}` });
         }
         const ft = featureType as ConfigFeatureType;
-        return JSON.stringify({ featureType: ft, linkOnly: LINK_ONLY_FEATURE_TYPES.has(ft), inlineSettings: POLICY_FEATURE_INLINE_SETTINGS_REFERENCE[ft], featurePolicyIdHint: FEATURE_POLICY_ID_HINTS[ft] });
+        return JSON.stringify({ featureType: ft, linkOnly: LINK_ONLY_FEATURE_TYPES.has(ft), inlineSettings: POLICY_FEATURE_INLINE_SETTINGS_REFERENCE[ft], example: INLINE_SETTINGS_EXAMPLES[ft], featurePolicyIdHint: FEATURE_POLICY_ID_HINTS[ft] });
       }
       const configPolicyId = input.configPolicyId as string;
       if (!configPolicyId) return JSON.stringify({ error: 'configPolicyId is required' });
