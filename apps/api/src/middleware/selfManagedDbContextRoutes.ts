@@ -72,6 +72,9 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // currentPartnerId populated for SELECT-only partner-wide network_monitors
   // access. No outer portal request transaction is held.
   { method: 'GET', pattern: /^\/api\/v1\/portal\/network\/overview\/?$/ },
+  // #5861 PR 2: the per-asset list opens the same org-scoped context as the
+  // overview, so it must opt out of the portal request transaction too.
+  { method: 'GET', pattern: /^\/api\/v1\/portal\/network\/assets\/?$/ },
   // Stripe key verification — savePartnerStripeKey calls accounts.retrieve.
   { method: 'POST', pattern: /^\/api\/v1\/partner\/stripe-connect\/key\/?$/ },
   // Stripe cache lazy refresh — getPartnerStripeAccountSnapshot may call accounts.retrieve.
