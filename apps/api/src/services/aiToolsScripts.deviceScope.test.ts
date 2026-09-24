@@ -16,7 +16,7 @@ vi.mock('../db', () => ({
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { eq } from 'drizzle-orm';
 import { db } from '../db';
-import { scriptExecutions } from '../db/schema';
+import { scriptExecutions, executionStatusEnum } from '../db/schema';
 import { registerScriptTools } from './aiToolsScripts';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
@@ -210,5 +210,35 @@ describe('get_script_details includeExecutionStats — scope annotation (review 
       makeAuth({}),
     );
     expect(JSON.parse(r).executionStatsScopeNote).toBeUndefined();
+  });
+});
+
+describe('get_script_details includeExecutionStats — status buckets (#5322)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('selects a count for every execution_status value, including queued and cancelling', async () => {
+    let statsCols: Record<string, unknown> | undefined;
+    mockScriptDetails();
+    const inner = mockDb.select.getMockImplementation() as (cols?: unknown) => unknown;
+    mockDb.select.mockImplementation((cols?: unknown) => {
+      if (cols && typeof cols === 'object' && 'totalExecutions' in (cols as object)) {
+        statsCols = cols as Record<string, unknown>;
+      }
+      return inner(cols);
+    });
+    await handlerFor('get_script_details')(
+      { scriptId: 'script-1', includeExecutionStats: true },
+      makeAuth({}),
+    );
+    expect(statsCols).toBeDefined();
+    for (const status of executionStatusEnum.enumValues) {
+      expect(statsCols, `missing ${status}Count`).toHaveProperty(`${status}Count`);
+      // Render the column: it must count rows filtered to THIS status only.
+      const { sql, params } = renderWhere(statsCols![`${status}Count`]);
+      expect(sql).toMatch(/count\(\*\) filter \(where "script_executions"\."status" = \$1\)::int/);
+      expect(params, `${status}Count filters on the wrong status`).toEqual([status]);
+    }
+    expect(statsCols).toHaveProperty('queuedCount');
+    expect(statsCols).toHaveProperty('cancellingCount');
   });
 });

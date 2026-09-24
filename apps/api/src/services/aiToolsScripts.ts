@@ -27,6 +27,7 @@ import {
   scriptVersions,
   scriptTemplates,
   scriptExecutions,
+  executionStatusEnum,
 } from '../db/schema';
 import { eq, and, desc, sql, ilike, inArray, isNull, or, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
@@ -1072,12 +1073,10 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
         const [stats] = await db
           .select({
             totalExecutions: sql<number>`count(*)::int`,
-            completedCount: sql<number>`count(*) filter (where ${scriptExecutions.status} = 'completed')::int`,
-            failedCount: sql<number>`count(*) filter (where ${scriptExecutions.status} = 'failed')::int`,
-            pendingCount: sql<number>`count(*) filter (where ${scriptExecutions.status} = 'pending')::int`,
-            runningCount: sql<number>`count(*) filter (where ${scriptExecutions.status} = 'running')::int`,
-            timeoutCount: sql<number>`count(*) filter (where ${scriptExecutions.status} = 'timeout')::int`,
-            cancelledCount: sql<number>`count(*) filter (where ${scriptExecutions.status} = 'cancelled')::int`,
+            // One bucket per execution_status value, derived from the enum so a
+            // status added later is counted too (#5322: queued and cancelling
+            // runs were in totalExecutions but in no bucket).
+            ...executionStatusCountColumns(),
             avgDurationSeconds: sql<number>`avg(extract(epoch from (${scriptExecutions.completedAt} - ${scriptExecutions.startedAt})))::numeric(10,2)`,
           })
           .from(scriptExecutions)
@@ -1650,3 +1649,13 @@ function shapeExecutionRow(row: {
 // Extended by Task 21 (runScriptHandler) — keep as a plain object literal
 // rather than reassigning it, so later work can merge into the same export.
 export const __testOnly = { shapeExecutionRow, runScriptHandler };
+
+/** `<status>Count` for every execution_status value, e.g. `queuedCount`. */
+function executionStatusCountColumns(): Record<string, SQL<number>> {
+  return Object.fromEntries(
+    executionStatusEnum.enumValues.map((status) => [
+      `${status}Count`,
+      sql<number>`count(*) filter (where ${scriptExecutions.status} = ${status})::int`,
+    ]),
+  );
+}
