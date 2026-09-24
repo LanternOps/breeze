@@ -106,8 +106,9 @@ Approved shape (Todd, 2026-09-23, "yes as recommended"):
 ## 4. Component model
 
 Every source normalizes to the same record. The agent does no pass/fail judgement beyond mapping
-the vendor's own state strings; the server derives health from state plus the per-source flags in
-§4.3.
+the vendor's own state strings and setting the boolean flags; **the server alone derives `health`**
+from state plus the flags (§4.3) — the agent never sends a `health` value, and `collector` rows are
+synthesized server-side from the snapshot's `sources` array (§7.4), never sent by the agent.
 
 ### 4.1 Record
 
@@ -120,7 +121,7 @@ the vendor's own state strings; the server derives health from state plus the pe
 | `name` | text | Human label: "PERC H730P Mini", "VD 0 (RAID-10)", "Slot 3", "md0", "tank". |
 | `model`, `serial`, `firmware` | text, nullable | Serial is what identity merging keys on (§6.5). |
 | `sizeBytes` | bigint, nullable | |
-| `health` | enum `ok \| warning \| critical \| unknown` | Derived (§4.3). |
+| `health` | enum `ok \| warning \| critical \| unknown` | Server-derived (§4.3); absent from the agent payload. |
 | `state` | text | Normalized vocabulary per type (§4.3). Validated on ingest. |
 | `stateDetail` | text, nullable | The vendor's own string, verbatim ("Interim Recovery Mode"). |
 | `progressPercent` | smallint 0–100, nullable | Rebuild / resync / init / scrub progress when the tool reports it. |
@@ -310,7 +311,9 @@ checksum) → probe failure for that device (no row). Bits 3–7 → parse the J
   under its own timeout from §5.1; the cycle context is cancelled at the budget and remaining sources
   report `failed: budget exceeded`. Fairness: when a cycle hits the budget, the next cycle starts
   from the first source that did not run, so one slow tool cannot starve the same sources every time.
-- Tracked by the existing `inventoryWg` for graceful shutdown.
+- Tracked for graceful shutdown by explicit `inventoryWg.Add(1)` / `Done()` around the cycle goroutine
+  (mirror `sendInventory`, `heartbeat.go` ~2220 — the hardware-identity goroutine at ~2482 is untracked
+  and is not the pattern to copy).
 - First run: 60 s after start (after the hardware-identity collector), so a freshly enrolled server
   shows RAID state within a minute.
 
@@ -369,7 +372,7 @@ PUT /api/v1/agents/:agentId/hardware-health         // requireAgentRole (main ag
     { "source": "megacli", "status": "superseded" },
     { "source": "omreport", "status": "backing_off", "error": "exit 255: OMSA service not running", "retryAt": "…" }
   ],
-  "components": [ { /* §4.1 record, camelCase */ } ]
+  "components": [ { /* §4.1 record, camelCase, WITHOUT `health`; no `collector` rows */ } ]
 }
 ```
 
@@ -514,7 +517,7 @@ creation). All files idempotent, no inner `BEGIN`, system scope elected before a
 | `device_hardware_components` | yes (`localeCompare` order: `device_hardware_components` < `device_hardware_events` < `device_hardware_health`) | yes | yes | `repoint` | `included` for typed columns; `attributes` **excludedOpen** |
 | `device_hardware_events` | yes | yes | yes | `repoint` | `detail` **excludedOpen** |
 | `device_hardware_health` | yes | yes | yes | `repoint` | `summary`, `sources` **excludedOpen** |
-| `config_policy_hardware_monitoring_settings` | no `org_id` — not in the cascade/export/merge lists (deleted through the feature-link FK cascade, like `config_policy_event_log_settings`) — **but it still needs parent-chain RLS**: enable + force + policies through `config_policy_feature_links → configuration_policies` exactly as `2026-07-26-a-normalized-policy-tenant-integrity.sql` (~302) does for the event-log settings table, and a `['config_policy_hardware_monitoring_settings', ['configuration_policies']]` entry next to the event-log one in `rls-coverage.integration.test.ts` (~920) | — | — | — | — |
+| `config_policy_hardware_monitoring_settings` | no `org_id` — not in the cascade/export/merge lists (deleted through the feature-link FK cascade, like `config_policy_event_log_settings`) — **but it still needs parent-chain RLS**: enable + force + policies through `config_policy_feature_links → configuration_policies` exactly as `2026-07-26-a-normalized-policy-tenant-integrity.sql` (~302) does for the event-log settings table, and a `['config_policy_hardware_monitoring_settings', ['configuration_policies']]` entry in `PARENT_FK_JOIN_POLICY_TABLES` next to the event-log one in `rls-coverage.integration.test.ts` (~920). The three `device_hardware_*` tables carry a real `org_id` and are auto-discovered as shape 1 — no allowlist entry for them | — | — | — | — |
 | `alerts.subject_key` (new column on a registered table) | — | — | — | — | `included` |
 
 No FK between the three new tables (events reference `component_key` textually) so alphabetical order
@@ -755,7 +758,9 @@ projection and its test).
 
 ### 11.4 Docs
 
-`apps/docs/src/content/docs/monitoring/hardware.mdx`: what is monitored, the §5.1 matrix as a
+`apps/docs/src/content/docs/features/hardware-monitoring.mdx` (the customer-facing "Monitoring &
+Alerting" sidebar group in `apps/docs/astro.config.mjs` ~119–143 — `monitoring/*` slugs are the
+self-hosting observability docs, not feature docs): what is monitored, the §5.1 matrix as a
 supported-tools table with per-vendor install pointers (perccli/OMSA for Dell, ssacli for HPE, storcli
 for Lenovo/Broadcom, arcconf for Adaptec/Microchip, smartmontools), the policy feature, the four
 built-in monitors and how to attach them, the alert semantics (per component, resolves on recovery,
