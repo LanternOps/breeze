@@ -2,6 +2,9 @@ import type { PostureSummary, ExecutiveSummary, OrgNarrativeReportSummary, Fleet
   EndpointManagementSummary,
   VulnerabilityManagementSummary,
   IdentityAccessSummary,
+  TicketSlaSummary,
+  TechnicianTimeSummary,
+  ArAgingSummary,
 } from '@breeze/shared';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { escapeCsvCell, escapeTsvCell, neutralizeSpreadsheetFormula, rowsToCsv, rowsToTsv } from '@/lib/csvExport';
@@ -51,7 +54,11 @@ export async function exportReport(
     // summary that does not typecheck here gets dropped at the call site, and
     // the PDF silently falls through to the generic renderer, keeping the
     // sign-in rows while losing every limit printed alongside them.
-    summary?: PostureSummary | ExecutiveSummary | OrgNarrativeReportSummary | FleetDesignReportSummary | EndpointManagementSummary | VulnerabilityManagementSummary | IdentityAccessSummary;
+    // #3198 W03: further widened for the three business report types (ticket
+    // SLA attainment, technician time & billability, AR aging) — see
+    // reportExport.business.test.tsx.
+    summary?: PostureSummary | ExecutiveSummary | OrgNarrativeReportSummary | FleetDesignReportSummary | EndpointManagementSummary | VulnerabilityManagementSummary | IdentityAccessSummary
+      | TicketSlaSummary | TechnicianTimeSummary | ArAgingSummary;
     /** Slim baseline from the previous completed run (report_runs.result.previous),
      * used to draw the scorecard trend chip; ignored by non-cover report types. */
     previous?: { generatedAt?: string | null; summary?: unknown };

@@ -522,7 +522,15 @@ Uplink ports carrying many MAC addresses are filtered out of host-attachment so 
 Where it's enabled, the **Topology** tab shows a per-site **Site Map** instead of the classic view above: a logical map of a site built automatically from what your agents passively observe on the network -- interfaces, routes, and neighbor tables -- refreshed on an interval without you having to run a scan. It adds shared configuration templates you can apply across many sites at once, automatic layout, and on-demand diagnostics you can launch straight from the map.
 
 <Aside type="caution">
-  Site Map needs agents running **v0.115.0 or later** to collect the passive network evidence it's built from. Sites with older agents keep showing the classic Topology view (or an emptier map) until their agents are updated. This feature is being rolled out gradually -- if you don't see it yet for an organization, the classic view above is what's shown instead.
+  Site Map needs agents running **v0.115.0 or later** to collect the passive network evidence it's built from. Sites with older agents keep showing the classic Topology view (or an emptier map) until their agents are updated.
+</Aside>
+
+### Turning it on
+
+Network Topology (Beta) is off for every partner by default. A partner admin enables it from **Settings → Partner → Modules**: the main toggle turns on topology materialization and the UI together, and four sub-toggles underneath control physical topology, interface health, diagnostics, and AI insights independently. Until it's turned on, a device's Topology tab shows an empty state explaining that Network Topology is off -- with a link straight to Modules settings for a partner admin, or "Ask your MSP to enable it" for an organization user.
+
+<Aside type="note">
+  Network Topology shipped in v0.115.0 but had no way to enable it until this Modules toggle landed in v0.116.0 -- every device's Topology tab showed a raw `materialization_disabled` code in the meantime. If you're on v0.115.0, there is no supported way to turn it on; upgrade to v0.116.0 or later.
 </Aside>
 
 ### Exploring a site's map

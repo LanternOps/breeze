@@ -98,7 +98,8 @@
     "serviceManagement": "Gestion des services",
     "ticketing": "Tickets",
     "deliverableTemplates": "Modèles de livrables",
-    "securityScans": "Analyses IOC"
+    "securityScans": "Analyses IOC",
+    "system": "Système"
   },
   "documentTitles": {
     "dashboard": "Tableau de bord",

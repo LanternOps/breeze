@@ -334,7 +334,8 @@
     "to": "À",
     "allOrganizations": "Toutes les organisations",
     "exporting": "Exporter...",
-    "downloadCsv": "Télécharger CSV"
+    "downloadCsv": "Télécharger CSV",
+    "seeBusinessReports": "Voir les rapports métier"
   },
   "partnerSettingsCard": {
     "title": "Paramètres partenaires",
@@ -4862,12 +4863,14 @@
     "description": "Importez des organisations et des sites depuis un CSV exporté de votre ancien RMM.",
     "dropzone": "Déposez un fichier CSV ici ou cliquez pour parcourir",
     "dropzoneHint": "Colonnes : organisation (obligatoire), site, ID externe, système externe, fuseau horaire",
+    "docsLink": "Guide d’importation",
     "actions": {
       "close": "Fermer",
       "preview": "Prévisualiser {{count}} lignes",
       "previewing": "Prévisualisation…",
       "import": "Importer {{count}} sélectionnées",
-      "importing": "Import en cours…"
+      "importing": "Import en cours…",
+      "downloadSample": "Télécharger un exemple de CSV"
     },
     "mapping": {
       "title": "Correspondance des colonnes",
@@ -5838,5 +5841,58 @@
   "ticketCategories": {
     "defaultWorkType": "Type de travail par défaut",
     "defaultWorkTypeHelp": "Utilisé lorsque du temps est enregistré pour cette catégorie sans type de travail."
+  },
+  "systemDeprecations": {
+    "title": "Dépréciations",
+    "description": "Retraits d'API connus de cette version de Breeze, et l'état de ce déploiement pour chacun d'eux. Il s'agit d'un rapport en lecture seule destiné aux administrateurs de la plateforme ; rien n'est configuré ici.",
+    "refresh": "Actualiser",
+    "loading": "Chargement des dépréciations…",
+    "errors": {
+      "load": "Impossible de charger le rapport de dépréciations."
+    },
+    "platformAdmin": {
+      "title": "Accès administrateur de la plateforme requis",
+      "description": "Ce rapport couvre l'ensemble du déploiement ; seuls les administrateurs de la plateforme peuvent le consulter."
+    },
+    "manifestError": "Le manifeste des changements incompatibles de cette image n'a pas pu être lu ({{error}}). Les retraits ne peuvent pas être vérifiés.",
+    "historyMissing": "Impossible de déterminer quelles versions ce déploiement a exécutées — tous les retraits en vigueur sont affichés.",
+    "noReleaseVersion": "Cette image ne comporte pas de version de publication ; chaque retrait du manifeste est donc affiché comme potentiellement franchi.",
+    "historyReason": "Motif : {{reason}}",
+    "summary": {
+      "imageVersion": "Version en cours d'exécution",
+      "unknownVersion": "Inconnue ({{raw}})",
+      "lastRecorded": "Dernière version enregistrée",
+      "noneRecorded": "Aucune enregistrée",
+      "migrations": "État des migrations",
+      "migrationCounts": "{{applied}} appliquées, {{pending}} en attente",
+      "ledgerMissing": "Registre des migrations indisponible ({{reason}})"
+    },
+    "table": {
+      "heading": "Retraits",
+      "entry": "Entrée",
+      "affected": "Points de terminaison et champs concernés",
+      "replacement": "Remplacement",
+      "deprecatedIn": "Déprécié dans",
+      "removal": "Suppression",
+      "status": "Statut ici",
+      "wholeEndpoint": "Point de terminaison entier",
+      "notBefore": "Pas avant le {{date}}",
+      "empty": "Le manifeste ne répertorie aucun retrait."
+    },
+    "status": {
+      "crossed": "Franchi",
+      "possibly_crossed": "Peut-être franchi",
+      "in_effect": "En vigueur",
+      "upcoming": "À venir"
+    },
+    "milestone": {
+      "deprecation": "dépréciation",
+      "removal": "suppression"
+    },
+    "history": {
+      "heading": "Historique des versions",
+      "firstSeen": "Vu pour la première fois le {{date}}",
+      "none": "Aucune version enregistrée pour ce déploiement."
+    }
   }
 }

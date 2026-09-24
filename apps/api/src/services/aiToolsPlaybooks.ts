@@ -8,6 +8,7 @@
  */
 
 import { db } from '../db';
+import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import {
   devices,
   playbookDefinitions,
@@ -71,11 +72,21 @@ registerTool({
           enum: ['disk', 'service', 'memory', 'patch', 'security', 'all'],
           description: 'Filter by playbook category (default: all)',
         },
+        includeSteps: {
+          type: 'boolean',
+          description: 'Include the full steps array per playbook (default false)',
+        },
+        ...pageParamSchema(25, 100),
       },
     },
   },
   handler: async (input, auth) => {
     try {
+      const page = readPageArgs('list_playbooks', input, { defaultLimit: 25, maxLimit: 100 });
+      if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
+      const { limit, offset, fingerprint } = page;
+      const includeSteps = input.includeSteps === true;
+
       const conditions: SQL[] = [eq(playbookDefinitions.isActive, true)];
       const category = typeof input.category === 'string' ? input.category : undefined;
       if (category && category !== 'all') {
@@ -87,7 +98,10 @@ registerTool({
         conditions.push(sql`(${playbookDefinitions.isBuiltIn} = true OR ${orgCond})`);
       }
 
-      const playbooks = await db
+      // A-W05 (5c): over-fetch by one to report hasMore/nextCursor without a
+      // separate COUNT; `steps` (jsonb) is replaced by `stepCount`/
+      // `stepNames` unless the caller opts in.
+      const rows = await db
         .select({
           id: playbookDefinitions.id,
           name: playbookDefinitions.name,
@@ -99,9 +113,25 @@ registerTool({
         })
         .from(playbookDefinitions)
         .where(and(...conditions))
-        .orderBy(playbookDefinitions.category, playbookDefinitions.name);
+        // Fix 6: category/name are not guaranteed unique together, so a tied
+        // pair could be skipped or duplicated across an offset page under
+        // concurrent inserts. `id` is the final, unique tiebreaker.
+        .orderBy(playbookDefinitions.category, playbookDefinitions.name, playbookDefinitions.id)
+        .limit(limit + 1)
+        .offset(offset);
 
-      return JSON.stringify({ playbooks, count: playbooks.length });
+      const playbooks = rows.map(({ steps, ...rest }) => {
+        const stepList = Array.isArray(steps) ? (steps as Array<{ name?: string; type?: string }>) : [];
+        return {
+          ...rest,
+          stepCount: stepList.length,
+          stepNames: stepList.slice(0, 10).map((s) => s.name ?? s.type ?? 'step'),
+          ...(includeSteps ? { steps } : {}),
+        };
+      });
+
+      const envelope = pageEnvelope({ key: 'playbooks', items: playbooks, limit, offset, fingerprint });
+      return JSON.stringify({ ...envelope, count: envelope.showing });
     } catch (err) {
       const message = sanitizeThrownToolError('playbooks', err);
       console.error(`[AI] list_playbooks failed:`, err);

@@ -334,7 +334,8 @@
     "to": "A",
     "allOrganizations": "Tutte le organizzazioni",
     "exporting": "Esportazione...",
-    "downloadCsv": "Scarica CSV"
+    "downloadCsv": "Scarica CSV",
+    "seeBusinessReports": "Visualizza i report aziendali"
   },
   "partnerSettingsCard": {
     "title": "Impostazioni partner",
@@ -4910,12 +4911,14 @@
     "description": "Importa organizzazioni e sedi da un CSV esportato dal tuo RMM precedente.",
     "dropzone": "Trascina qui un file CSV o fai clic per sfogliare",
     "dropzoneHint": "Colonne: organizzazione (obbligatoria), sede, ID esterno, sistema esterno, fuso orario",
+    "docsLink": "Guida all’importazione",
     "actions": {
       "close": "Chiudi",
       "preview": "Anteprima di {{count}} righe",
       "previewing": "Anteprima in corso…",
       "import": "Importa {{count}} selezionate",
-      "importing": "Importazione…"
+      "importing": "Importazione…",
+      "downloadSample": "Scarica CSV di esempio"
     },
     "mapping": {
       "title": "Mappatura colonne",
@@ -5838,5 +5841,58 @@
   "ticketCategories": {
     "defaultWorkType": "Tipo di lavoro predefinito",
     "defaultWorkTypeHelp": "Utilizzato quando si registra tempo per questa categoria senza specificare un tipo di lavoro."
+  },
+  "systemDeprecations": {
+    "title": "Deprecazioni",
+    "description": "Ritiri delle API noti a questa versione di Breeze e lo stato di questa distribuzione per ciascuno di essi. Questo è un report in sola lettura per gli amministratori della piattaforma; qui non viene configurato nulla.",
+    "refresh": "Aggiorna",
+    "loading": "Caricamento delle deprecazioni…",
+    "errors": {
+      "load": "Impossibile caricare il report delle deprecazioni."
+    },
+    "platformAdmin": {
+      "title": "È richiesto l'accesso come amministratore della piattaforma",
+      "description": "Questo report copre l'intera distribuzione, quindi può essere visualizzato solo dagli amministratori della piattaforma."
+    },
+    "manifestError": "Impossibile leggere il manifesto delle modifiche incompatibili in questa immagine ({{error}}). Non è possibile verificare i ritiri.",
+    "historyMissing": "Impossibile determinare quali versioni ha eseguito questa distribuzione: vengono mostrati tutti i ritiri attualmente in vigore.",
+    "noReleaseVersion": "Questa immagine non riporta una versione di rilascio, quindi ogni ritiro nel manifesto viene mostrato come potenzialmente superato.",
+    "historyReason": "Motivo: {{reason}}",
+    "summary": {
+      "imageVersion": "Versione in esecuzione",
+      "unknownVersion": "Sconosciuta ({{raw}})",
+      "lastRecorded": "Ultima versione registrata",
+      "noneRecorded": "Nessuna registrata",
+      "migrations": "Migrazioni",
+      "migrationCounts": "{{applied}} applicate, {{pending}} in sospeso",
+      "ledgerMissing": "Registro delle migrazioni non disponibile ({{reason}})"
+    },
+    "table": {
+      "heading": "Ritiri",
+      "entry": "Voce",
+      "affected": "Endpoint e campi interessati",
+      "replacement": "Sostituzione",
+      "deprecatedIn": "Deprecato in",
+      "removal": "Rimozione",
+      "status": "Stato qui",
+      "wholeEndpoint": "Endpoint completo",
+      "notBefore": "Non prima del {{date}}",
+      "empty": "Il manifesto non elenca alcun ritiro."
+    },
+    "status": {
+      "crossed": "Superato",
+      "possibly_crossed": "Possibilmente superato",
+      "in_effect": "In vigore",
+      "upcoming": "In arrivo"
+    },
+    "milestone": {
+      "deprecation": "deprecazione",
+      "removal": "rimozione"
+    },
+    "history": {
+      "heading": "Cronologia delle versioni",
+      "firstSeen": "Visto per la prima volta il {{date}}",
+      "none": "Nessuna versione registrata per questa distribuzione."
+    }
   }
 }

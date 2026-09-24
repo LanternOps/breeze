@@ -2,7 +2,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 
 const fetchWithAuth = vi.fn();
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
+// No JWT/user in this fixture (equivalent to a not-yet-resolved session), so
+// the #3198 Business group (partner-scope gated) stays hidden and every
+// existing assertion here is about the General section only.
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a),
+  useAuthStore: Object.assign((selector: (s: { tokens?: unknown; user?: unknown }) => unknown) => selector({}), {
+    getState: () => ({}),
+  }),
+}));
 vi.mock('../../stores/orgStore', () => ({ useOrgStore: () => ({ currentOrgId: 'org-1' }) }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));

@@ -3,7 +3,13 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 const fetchWithAuth = vi.fn();
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a),
+  useAuthStore: (selector: (s: { user: null }) => unknown) => selector({ user: null }),
+}));
+// ReportsList reads the focused org and the JWT scope for the all-organizations hint.
+vi.mock('../../stores/orgStore', () => ({ useOrgStore: () => ({ currentOrgId: null }) }));
+vi.mock('@/lib/authScope', () => ({ useJwtClaims: () => ({ status: 'unresolved' }) }));
 
 vi.mock('./reportExport', () => ({
   exportReport: vi.fn(),

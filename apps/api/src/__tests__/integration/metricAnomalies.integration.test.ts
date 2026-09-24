@@ -471,6 +471,8 @@ describe('metric anomaly overlap guard (#5283)', () => {
       'completed',
       'completed',
       'completed',
+      'completed',
+      'completed',
     ]);
   });
 
@@ -484,6 +486,8 @@ describe('metric anomaly overlap guard (#5283)', () => {
     expect(first.skipped).toBe(false);
     expect(second.skipped).toBe(false);
     expect(second.stages.map((stage) => stage.outcome)).toEqual([
+      'completed',
+      'completed',
       'completed',
       'completed',
       'completed',
@@ -546,6 +550,8 @@ describe('metric anomaly overlap guard (#5283)', () => {
     // Guard against a vacuous pass: if the seed stopped producing writes the
     // xid delta would collapse for the RIGHT reason and hide a real regression.
     expect(result.stages.map((stage) => stage.outcome)).toEqual([
+      'completed',
+      'completed',
       'completed',
       'completed',
       'completed',

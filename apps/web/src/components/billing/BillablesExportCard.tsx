@@ -4,6 +4,7 @@ import '@/lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
 import { fetchAllOrganizationsFrom } from '@/lib/fetchAllOrganizations';
 import { showToast } from '../shared/Toast';
+import { useJwtClaims } from '@/lib/authScope';
 
 function localDateStr(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -18,6 +19,11 @@ function today(): string {
 
 export default function BillablesExportCard() {
   const { t } = useTranslation('settings');
+  // Business reports (#3198) are MSP-staff-only — an org-scope user (the
+  // customer's own login) must never see the link, since the templates
+  // gallery behind it can create partner-wide, cross-org reports.
+  const claimsState = useJwtClaims();
+  const isPartnerScope = claimsState.status === 'resolved' && claimsState.claims.scope === 'partner';
   const [from, setFrom] = useState(firstOfMonth());
   const [to, setTo] = useState(today());
   const [orgId, setOrgId] = useState('');
@@ -63,6 +69,17 @@ export default function BillablesExportCard() {
       <p className="mb-1 text-xs text-muted-foreground">{t('billablesExport.description')}</p>
       {/* #4628 W04 — the two columns appended to the CSV (work_type, included_minutes). */}
       <p className="mb-3 text-xs text-muted-foreground" data-testid="billables-export-columns-note">{t('billablesExport.columnsNote')}</p>
+      {isPartnerScope && (
+        <p className="mb-3 text-xs">
+          <a
+            href="/reports/templates"
+            data-testid="billables-see-business-reports"
+            className="font-medium text-primary hover:underline"
+          >
+            {t('billablesExport.seeBusinessReports')}
+          </a>
+        </p>
+      )}
       <div className="flex flex-wrap items-end gap-2">
         <label className="text-xs">
           {t('billablesExport.from')}

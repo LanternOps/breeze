@@ -5,7 +5,7 @@ import { authMiddleware, requirePermission, requireScope } from '../middleware/a
 import { PERMISSIONS } from '../services/permissions';
 import { captureException } from '../services/sentry';
 import { safeContentDispositionFilename } from '../utils/httpHeaders';
-import { findArtifactForAuth, openArtifactStream } from '../services/artifacts/artifactService';
+import { artifactDownloadContentType, findArtifactForAuth, openArtifactStream } from '../services/artifacts/artifactService';
 import { BlobNotFoundError } from '../services/artifacts/blobStorage';
 
 /**
@@ -42,28 +42,12 @@ const scopes = requireScope('organization', 'partner', 'system');
 
 const UUID = z.string().guid();
 
-/**
- * The ONLY content types an artifact download may echo. Everything else —
- * html, svg, xml, any script type, anything unrecognised — becomes
- * octet-stream. An allowlist, never a denylist: a new active type must not
- * become renderable by default.
- */
-const SAFE_DOWNLOAD_CONTENT_TYPES = new Set([
-  'application/json',
-  'application/jsonl',
-  'text/plain; charset=utf-8',
-  'text/plain',
-  'text/csv',
-  'text/tab-separated-values',
-  'application/gzip',
-  'application/zip',
-  'application/pdf',
-]);
-
-export function artifactDownloadContentType(stored: string): string {
-  const normalised = stored.trim().toLowerCase();
-  return SAFE_DOWNLOAD_CONTENT_TYPES.has(normalised) ? normalised : 'application/octet-stream';
-}
+// A-W05 (D13a): the safe-content-type map now lives in artifactService.ts so
+// `aiToolsArtifacts.ts` (imported by the `aiTools.ts` hub) can reuse it
+// without importing this route module. Re-exported here so this file's own
+// callers and its test (`artifactDownloadContentType` from `./aiArtifacts`)
+// are unaffected.
+export { artifactDownloadContentType };
 
 function notFound(c: { json: (b: unknown, s: 404) => Response }): Response {
   return c.json({ error: 'Artifact not found', code: 'ARTIFACT_NOT_FOUND' }, 404);

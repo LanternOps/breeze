@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { reportRuns, reports } from '../db/schema';
@@ -40,6 +40,8 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn((callback: () => unknown) => callback()),
 }));
 
+vi.mock('./sentry', () => ({ captureException: vi.fn() }));
+
 import {
   decodeSiteScope,
   intersectSiteScopes,
@@ -58,6 +60,7 @@ import {
   reportRunScopeSqlPredicate,
   resolveLivePartnerReportAuthority,
   resolveLiveReportAuthority,
+  resolveLiveReportTypePermissions,
   resolveRequestPartnerReportAuthority,
   resolveRequestReportAuthority,
   resolveRequestReportAuthorityMap,
@@ -67,11 +70,13 @@ import {
   type LiveSiteScopeV1,
   type PersistedSiteScopeColumns,
   type ReportAction,
+  type ReportAuthorityAction,
   type ReportExecutionAuthority,
   type SiteScopeV1,
   type SystemReportExecutionAuthority,
 } from './siteScope';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { captureException } from './sentry';
 
 const ORG_A = '11111111-1111-1111-1111-111111111111';
 const ORG_B = '22222222-2222-2222-2222-222222222222';
@@ -850,6 +855,17 @@ describe('report definition scope SQL predicates', () => {
     }
   });
 
+  // #3198 W02 (addendum B6). An unknown scope kind is a wiring bug (a new
+  // SiteScopeV1 kind without a predicate arm), never "no rows": the default
+  // arm is an exhaustive assertNever. The compile-time half is the `never`
+  // parameter; this is the runtime half for a value that escaped the types.
+  it('throws on a scope kind it does not know instead of matching nothing', () => {
+    expect(() => reportDefinitionScopeSqlPredicate(
+      reports,
+      { version: 1, kind: 'bogus', orgId: ORG_A } as unknown as LiveSiteScopeV1,
+    )).toThrow(/unsupported site scope kind/);
+  });
+
   it('admits non-user principals in the unrestricted branch only', () => {
     // Without this branch the download/list predicates drop every
     // system-authored row (they require execution_scope_user_id NOT NULL),
@@ -1135,8 +1151,20 @@ describe('live report authority resolution', () => {
     };
   }
 
-  function organization(id = ORG_A, partnerId = PARTNER_A) {
-    return { id, partnerId };
+  function organization(
+    id = ORG_A,
+    partnerId = PARTNER_A,
+    lifecycle: Record<string, unknown> = {},
+  ) {
+    return {
+      id,
+      partnerId,
+      status: 'active',
+      deletedAt: null,
+      partnerStatus: 'active',
+      partnerDeletedAt: null,
+      ...lifecycle,
+    };
   }
 
   function orgMembership(siteIds: string[] | null, roleId: string | null = ROLE_ORG) {
@@ -1191,9 +1219,9 @@ describe('live report authority resolution', () => {
       .toEqualTypeOf<3>();
     expectTypeOf<Parameters<typeof resolveRequestReportAuthorityMap>['length']>()
       .toEqualTypeOf<3>();
-    expectTypeOf(resolveLiveReportAuthority).parameter(2).toEqualTypeOf<ReportAction>();
-    expectTypeOf(resolveRequestReportAuthority).parameter(2).toEqualTypeOf<ReportAction>();
-    expectTypeOf(resolveRequestReportAuthorityMap).parameter(2).toEqualTypeOf<ReportAction>();
+    expectTypeOf(resolveLiveReportAuthority).parameter(2).toEqualTypeOf<ReportAuthorityAction>();
+    expectTypeOf(resolveRequestReportAuthority).parameter(2).toEqualTypeOf<ReportAuthorityAction>();
+    expectTypeOf(resolveRequestReportAuthorityMap).parameter(2).toEqualTypeOf<ReportAuthorityAction>();
   });
 
   it.each([
@@ -2075,6 +2103,273 @@ describe('live report authority resolution', () => {
       reason: 'permission_removed',
     });
   });
+
+  // #6699 - abuse containment. Suspending the owning partner (or taking the
+  // org out of service) must stop report authority even while the acting
+  // user row stays 'active'; the scheduled worker re-checks through here.
+  describe('tenant lifecycle gate (#6699)', () => {
+    it.each([
+      { name: 'owning partner suspended', lifecycle: { partnerStatus: 'suspended' } },
+      { name: 'owning partner churned', lifecycle: { partnerStatus: 'churned' } },
+      { name: 'owning partner offboarding', lifecycle: { partnerStatus: 'offboarding' } },
+      { name: 'owning partner pending', lifecycle: { partnerStatus: 'pending' } },
+      { name: 'owning partner soft-deleted', lifecycle: { partnerDeletedAt: new Date() } },
+      { name: 'org suspended', lifecycle: { status: 'suspended' } },
+      { name: 'org churned', lifecycle: { status: 'churned' } },
+      { name: 'org offboarding', lifecycle: { status: 'offboarding' } },
+      { name: 'org merging', lifecycle: { status: 'merging' } },
+      { name: 'org archived', lifecycle: { status: 'archived' } },
+      { name: 'org purging', lifecycle: { status: 'purging' } },
+      { name: 'org soft-deleted', lifecycle: { deletedAt: new Date() } },
+    ])('refuses org authority with tenant_inactive when $name', async ({ lifecycle }) => {
+      queueRows(
+        [activeUser()],
+        [organization(ORG_A, PARTNER_A, lifecycle)],
+        [orgMembership(null)],
+        [permission('read')],
+      );
+
+      await expect(resolveLiveReportAuthority(USER_ID, ORG_A, 'read'))
+        .resolves.toEqual({ ok: false, reason: 'tenant_inactive' });
+      // Refused on the tenant row, before any membership is consulted.
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps a trial org under an active partner authorised', async () => {
+      queueRows(
+        [activeUser()],
+        [organization(ORG_A, PARTNER_A, { status: 'trial' })],
+        [orgMembership(null)],
+        [permission('read')],
+      );
+
+      await expect(resolveLiveReportAuthority(USER_ID, ORG_A, 'read'))
+        .resolves.toMatchObject({ ok: true, authority: { scope: unrestricted() } });
+    });
+
+    it('reads the owning partner status in the same organization query', async () => {
+      queueRows(
+        [activeUser()],
+        [organization()],
+        [orgMembership(null)],
+        [permission('read')],
+      );
+
+      await resolveLiveReportAuthority(USER_ID, ORG_A, 'read');
+
+      expect(Object.keys(liveDbState.projections[1] as object)).toEqual(
+        expect.arrayContaining(['status', 'deletedAt', 'partnerStatus', 'partnerDeletedAt']),
+      );
+    });
+
+    it('refuses a platform admin too - containment is about the tenant, not the caller', async () => {
+      queueRows(
+        [activeUser({ isPlatformAdmin: true })],
+        [organization(ORG_A, PARTNER_A, { partnerStatus: 'suspended' })],
+      );
+
+      await expect(resolveLiveReportAuthority(USER_ID, ORG_A, 'read'))
+        .resolves.toEqual({ ok: false, reason: 'tenant_inactive' });
+    });
+
+    it('refuses the request-path resolver for a suspended org', async () => {
+      queueRows(
+        [activeUser()],
+        [organization(ORG_A, PARTNER_A, { status: 'suspended' })],
+      );
+
+      await expect(resolveRequestReportAuthority(requestAuth(), ORG_A, 'read'))
+        .resolves.toEqual({ ok: false, reason: 'tenant_inactive' });
+    });
+
+    it('refuses only the out-of-service orgs in a batch', async () => {
+      queueRows(
+        [activeUser()],
+        [
+          organization(ORG_A),
+          organization(ORG_B, PARTNER_A, { status: 'archived' }),
+        ],
+        [],
+        [{ partnerId: PARTNER_A, roleId: ROLE_PARTNER, orgAccess: 'all', orgIds: null }],
+        [{
+          roleId: ROLE_PARTNER,
+          resource: 'reports',
+          action: 'read',
+          roleScope: 'partner',
+          roleIsSystem: false,
+          roleOrgId: null,
+          rolePartnerId: PARTNER_A,
+        }],
+      );
+      const auth = requestAuth({
+        scope: 'partner',
+        orgId: null,
+        accessibleOrgIds: [ORG_A, ORG_B],
+        canAccessOrg: () => true,
+      });
+
+      const result = await resolveRequestReportAuthorityMap(auth, [ORG_A, ORG_B], 'read');
+
+      expect(result.get(ORG_A)).toMatchObject({ ok: true, authority: { scope: unrestricted(ORG_A) } });
+      expect(result.get(ORG_B)).toEqual({ ok: false, reason: 'tenant_inactive' });
+    });
+
+    it('refuses every org in a batch for a platform admin when the partner is suspended', async () => {
+      queueRows(
+        [activeUser({ isPlatformAdmin: true })],
+        [organization(ORG_A, PARTNER_A, { partnerStatus: 'suspended' })],
+      );
+      const auth = requestAuth({
+        scope: 'system',
+        orgId: null,
+        accessibleOrgIds: [ORG_A],
+        canAccessOrg: () => true,
+      });
+
+      const result = await resolveRequestReportAuthorityMap(auth, [ORG_A], 'read');
+
+      expect(result.get(ORG_A)).toEqual({ ok: false, reason: 'tenant_inactive' });
+    });
+
+    // #6699 decision B: read-only history of an out-of-service tenant stays
+    // readable. Only the dedicated 'read_history' action admits it; every
+    // action that produces, delivers, exports or mutates is refused.
+    describe('decision B: read_history is the only action an out-of-service tenant passes', () => {
+      it.each([
+        { name: 'org suspended', lifecycle: { status: 'suspended' } },
+        { name: 'org archived', lifecycle: { status: 'archived' } },
+        { name: 'owning partner suspended', lifecycle: { partnerStatus: 'suspended' } },
+        { name: 'org soft-deleted', lifecycle: { deletedAt: new Date() } },
+      ])('grants read_history when $name', async ({ lifecycle }) => {
+        queueRows(
+          [activeUser()],
+          [organization(ORG_A, PARTNER_A, lifecycle)],
+          [orgMembership(null)],
+          [permission('read')],
+        );
+
+        await expect(resolveLiveReportAuthority(USER_ID, ORG_A, 'read_history'))
+          .resolves.toMatchObject({ ok: true, authority: { scope: unrestricted() } });
+      });
+
+      it.each(['read', 'write', 'export', 'delete'] as const)(
+        'still refuses %s for a suspended org',
+        async (action) => {
+          queueRows(
+            [activeUser()],
+            [organization(ORG_A, PARTNER_A, { status: 'suspended' })],
+            [orgMembership(null)],
+            [permission(action)],
+          );
+
+          await expect(resolveLiveReportAuthority(USER_ID, ORG_A, action))
+            .resolves.toEqual({ ok: false, reason: 'tenant_inactive' });
+        },
+      );
+
+      it('still needs the reports:read grant (a write-only role is refused)', async () => {
+        queueRows(
+          [activeUser()],
+          [organization(ORG_A, PARTNER_A, { status: 'suspended' })],
+          [orgMembership(null)],
+          [permission('write')],
+        );
+
+        await expect(resolveLiveReportAuthority(USER_ID, ORG_A, 'read_history'))
+          .resolves.toEqual({ ok: false, reason: 'permission_removed' });
+      });
+
+      it('keeps site restriction for read_history on an out-of-service org', async () => {
+        queueRows(
+          [activeUser()],
+          [organization(ORG_A, PARTNER_A, { status: 'suspended' })],
+          [orgMembership([SITE_B, SITE_A])],
+          [permission('read')],
+        );
+
+        await expect(resolveLiveReportAuthority(USER_ID, ORG_A, 'read_history'))
+          .resolves.toMatchObject({ ok: true, authority: { scope: restricted([SITE_A, SITE_B]) } });
+      });
+
+      it('grants read_history on the request path', async () => {
+        queueRows(
+          [activeUser()],
+          [organization(ORG_A, PARTNER_A, { status: 'suspended' })],
+          [orgMembership(null)],
+          [permission('read')],
+        );
+
+        await expect(resolveRequestReportAuthority(requestAuth(), ORG_A, 'read_history'))
+          .resolves.toMatchObject({ ok: true });
+      });
+
+      it('grants read_history for an out-of-service org in a batch (membership branch)', async () => {
+        queueRows(
+          [activeUser()],
+          [
+            organization(ORG_A),
+            organization(ORG_B, PARTNER_A, { status: 'archived' }),
+          ],
+          [],
+          [{ partnerId: PARTNER_A, roleId: ROLE_PARTNER, orgAccess: 'all', orgIds: null }],
+          [{
+            roleId: ROLE_PARTNER,
+            resource: 'reports',
+            action: 'read',
+            roleScope: 'partner',
+            roleIsSystem: false,
+            roleOrgId: null,
+            rolePartnerId: PARTNER_A,
+          }],
+        );
+        const auth = requestAuth({
+          scope: 'partner',
+          orgId: null,
+          accessibleOrgIds: [ORG_A, ORG_B],
+          canAccessOrg: () => true,
+        });
+
+        const result = await resolveRequestReportAuthorityMap(auth, [ORG_A, ORG_B], 'read_history');
+
+        expect(result.get(ORG_A)).toMatchObject({ ok: true, authority: { scope: unrestricted(ORG_A) } });
+        expect(result.get(ORG_B)).toMatchObject({ ok: true, authority: { scope: unrestricted(ORG_B) } });
+      });
+
+      it('grants read_history in a batch for a platform admin under a suspended partner', async () => {
+        queueRows(
+          [activeUser({ isPlatformAdmin: true })],
+          [organization(ORG_A, PARTNER_A, { partnerStatus: 'suspended' })],
+        );
+        const auth = requestAuth({
+          scope: 'system',
+          orgId: null,
+          accessibleOrgIds: [ORG_A],
+          canAccessOrg: () => true,
+        });
+
+        const result = await resolveRequestReportAuthorityMap(auth, [ORG_A], 'read_history');
+
+        expect(result.get(ORG_A)).toMatchObject({ ok: true, authority: { scope: unrestricted(ORG_A) } });
+      });
+
+      it('queries role grants for reports:read when the action is read_history', async () => {
+        queueRows(
+          [activeUser()],
+          [organization(ORG_A, PARTNER_A, { status: 'suspended' })],
+          [orgMembership(null)],
+          [permission('read')],
+        );
+
+        await resolveLiveReportAuthority(USER_ID, ORG_A, 'read_history');
+
+        const rendered = liveDbState.whereConditions
+          .map((condition) => new PgDialect().sqlToQuery(condition as SQL).params)
+          .flat();
+        expect(rendered).toContain('read');
+        expect(rendered).not.toContain('read_history');
+      });
+    });
+  });
 });
 
 describe('partner-wide execution scope (#3198 W01)', () => {
@@ -2102,6 +2397,16 @@ describe('partner-wide execution scope (#3198 W01)', () => {
       isPlatformAdmin: false,
       partnerId,
       ...overrides,
+    };
+  }
+
+  function activePartner(
+    overrides: { status?: string; deletedAt?: Date | null } = {},
+  ) {
+    return {
+      id: partnerId,
+      partnerStatus: overrides.status ?? 'active',
+      partnerDeletedAt: overrides.deletedAt ?? null,
     };
   }
 
@@ -2352,6 +2657,7 @@ describe('partner-wide execution scope (#3198 W01)', () => {
   it('grants partner_wide authority to an org_access=all member whose role grants the action', async () => {
     queueRows(
       [partnerUser()],
+      [activePartner()],
       [{ roleId: PARTNER_ROLE, orgAccess: 'all' }],
       [partnerReportsGrant('read')],
     );
@@ -2379,6 +2685,7 @@ describe('partner-wide execution scope (#3198 W01)', () => {
   ])('refuses a partner-wide authority for $name', async ({ orgAccess, reason }) => {
     queueRows(
       [partnerUser()],
+      [activePartner()],
       [{ roleId: PARTNER_ROLE, orgAccess }],
       [partnerReportsGrant('read')],
     );
@@ -2386,14 +2693,17 @@ describe('partner-wide execution scope (#3198 W01)', () => {
     await expect(resolveLivePartnerReportAuthority(userId, partnerId, 'read'))
       .resolves.toEqual({ ok: false, reason });
     // The role lookup is never reached: access is refused on the membership.
-    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(3);
   });
 
   it('refuses a user who belongs to a different partner', async () => {
-    queueRows([partnerUser({ partnerId: orgId })]);
+    queueRows([partnerUser({ partnerId: orgId })], [activePartner({ status: 'suspended' })]);
 
+    // Refused before the foreign partner's row is read, so its lifecycle
+    // (suspended here) never leaks through the reason.
     await expect(resolveLivePartnerReportAuthority(userId, partnerId, 'read'))
       .resolves.toEqual({ ok: false, reason: 'partner_inaccessible' });
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
   });
 
   it('refuses an inactive user, a missing membership, and a duplicate membership', async () => {
@@ -2401,12 +2711,13 @@ describe('partner-wide execution scope (#3198 W01)', () => {
     await expect(resolveLivePartnerReportAuthority(userId, partnerId, 'read'))
       .resolves.toEqual({ ok: false, reason: 'user_inactive' });
 
-    queueRows([partnerUser()], []);
+    queueRows([partnerUser()], [activePartner()], []);
     await expect(resolveLivePartnerReportAuthority(userId, partnerId, 'read'))
       .resolves.toEqual({ ok: false, reason: 'membership_removed' });
 
     queueRows(
       [partnerUser()],
+      [activePartner()],
       [
         { roleId: PARTNER_ROLE, orgAccess: 'all' },
         { roleId: PARTNER_ROLE, orgAccess: 'all' },
@@ -2419,6 +2730,7 @@ describe('partner-wide execution scope (#3198 W01)', () => {
   it('refuses when the partner role does not grant the requested action', async () => {
     queueRows(
       [partnerUser()],
+      [activePartner()],
       [{ roleId: PARTNER_ROLE, orgAccess: 'all' }],
       [partnerReportsGrant('read')],
     );
@@ -2428,11 +2740,11 @@ describe('partner-wide execution scope (#3198 W01)', () => {
   });
 
   it('grants a platform admin partner_wide authority without a membership', async () => {
-    queueRows([partnerUser({ isPlatformAdmin: true, partnerId: orgId })]);
+    queueRows([partnerUser({ isPlatformAdmin: true, partnerId: orgId })], [activePartner()]);
 
     await expect(resolveLivePartnerReportAuthority(userId, partnerId, 'delete'))
       .resolves.toMatchObject({ ok: true, authority: { scope: partnerWideScope(partnerId) } });
-    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
   });
 
   it('treats a database failure as unverifiable rather than authority', async () => {
@@ -2445,6 +2757,7 @@ describe('partner-wide execution scope (#3198 W01)', () => {
   it('re-reads the membership on the request path instead of trusting the token', async () => {
     queueRows(
       [partnerUser()],
+      [activePartner()],
       [{ roleId: PARTNER_ROLE, orgAccess: 'selected' }],
     );
 
@@ -2480,7 +2793,7 @@ describe('partner-wide execution scope (#3198 W01)', () => {
   });
 
   it('lets a system-scope request resolve platform authority', async () => {
-    queueRows([partnerUser({ isPlatformAdmin: true })]);
+    queueRows([partnerUser({ isPlatformAdmin: true })], [activePartner()]);
 
     await expect(
       resolveRequestPartnerReportAuthority(
@@ -2489,5 +2802,368 @@ describe('partner-wide execution scope (#3198 W01)', () => {
         'read',
       ),
     ).resolves.toMatchObject({ ok: true, authority: { scope: partnerWideScope(partnerId) } });
+  });
+
+  describe('tenant lifecycle gate (#6699)', () => {
+    it.each([
+      { name: 'suspended', partner: { status: 'suspended' } },
+      { name: 'churned', partner: { status: 'churned' } },
+      { name: 'offboarding', partner: { status: 'offboarding' } },
+      { name: 'pending', partner: { status: 'pending' } },
+      { name: 'soft-deleted', partner: { deletedAt: new Date() } },
+    ])('refuses partner_wide authority with tenant_inactive when the partner is $name', async ({ partner }) => {
+      queueRows(
+        [partnerUser()],
+        [activePartner(partner)],
+        [{ roleId: PARTNER_ROLE, orgAccess: 'all' }],
+        [partnerReportsGrant('read')],
+      );
+
+      await expect(resolveLivePartnerReportAuthority(userId, partnerId, 'read'))
+        .resolves.toEqual({ ok: false, reason: 'tenant_inactive' });
+      // Refused on the partner row, before the membership is consulted.
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
+    });
+
+    it('refuses a partner that no longer exists as partner_inaccessible', async () => {
+      queueRows([partnerUser()], []);
+
+      await expect(resolveLivePartnerReportAuthority(userId, partnerId, 'read'))
+        .resolves.toEqual({ ok: false, reason: 'partner_inaccessible' });
+    });
+
+    it('refuses a platform admin for a suspended partner', async () => {
+      queueRows(
+        [partnerUser({ isPlatformAdmin: true, partnerId: orgId })],
+        [activePartner({ status: 'suspended' })],
+      );
+
+      await expect(resolveLivePartnerReportAuthority(userId, partnerId, 'read'))
+        .resolves.toEqual({ ok: false, reason: 'tenant_inactive' });
+    });
+
+    it('refuses the request-path resolver for a suspended partner', async () => {
+      queueRows(
+        [partnerUser()],
+        [activePartner({ status: 'suspended' })],
+      );
+
+      await expect(
+        resolveRequestPartnerReportAuthority(partnerAuth(), partnerId, 'read'),
+      ).resolves.toEqual({ ok: false, reason: 'tenant_inactive' });
+    });
+
+    // #6699 decision B.
+    it.each([
+      { name: 'suspended', partner: { status: 'suspended' } },
+      { name: 'soft-deleted', partner: { deletedAt: new Date() } },
+    ])('grants read_history when the partner is $name', async ({ partner }) => {
+      queueRows(
+        [partnerUser()],
+        [activePartner(partner)],
+        [{ roleId: PARTNER_ROLE, orgAccess: 'all' }],
+        [partnerReportsGrant('read')],
+      );
+
+      await expect(resolveLivePartnerReportAuthority(userId, partnerId, 'read_history'))
+        .resolves.toMatchObject({ ok: true, authority: { scope: partnerWideScope(partnerId) } });
+    });
+
+    it.each(['read', 'write', 'export', 'delete'] as const)(
+      'still refuses %s for a suspended partner',
+      async (action) => {
+        queueRows(
+          [partnerUser()],
+          [activePartner({ status: 'suspended' })],
+          [{ roleId: PARTNER_ROLE, orgAccess: 'all' }],
+          [partnerReportsGrant(action)],
+        );
+
+        await expect(resolveLivePartnerReportAuthority(userId, partnerId, action))
+          .resolves.toEqual({ ok: false, reason: 'tenant_inactive' });
+      },
+    );
+
+    it('still refuses read_history for a foreign partner before reading its row', async () => {
+      queueRows([partnerUser({ partnerId: orgId })]);
+
+      await expect(resolveLivePartnerReportAuthority(userId, partnerId, 'read_history'))
+        .resolves.toEqual({ ok: false, reason: 'partner_inaccessible' });
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
+    });
+
+    it('still refuses read_history with selected org access', async () => {
+      queueRows(
+        [partnerUser()],
+        [activePartner({ status: 'suspended' })],
+        [{ roleId: PARTNER_ROLE, orgAccess: 'selected' }],
+      );
+
+      await expect(resolveLivePartnerReportAuthority(userId, partnerId, 'read_history'))
+        .resolves.toEqual({ ok: false, reason: 'partner_access_not_all' });
+    });
+  });
+});
+
+/**
+ * #3198 W02 (ruling P8) — the schedule worker's re-check of a business type's
+ * underlying read permissions against the EXECUTION user's live role grants.
+ * The request routes check `c.get('permissions')`; the worker has no request,
+ * so it re-reads the same membership axis the authority resolvers use.
+ */
+describe('resolveLiveReportTypePermissions', () => {
+  const partnerId = '11111111-1111-4111-8111-111111111111';
+  const orgId = '22222222-2222-4222-8222-222222222222';
+  const userId = '33333333-3333-4333-8333-333333333333';
+  const PARTNER_ROLE = '88888888-8888-4888-8888-888888888888';
+  const ORG_ROLE = '99999999-9999-4999-8999-999999999999';
+  const INVOICES_READ = [{ resource: 'invoices', action: 'read' }];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    liveDbState.rows.length = 0;
+    liveDbState.projections.length = 0;
+    liveDbState.fromTables.length = 0;
+    liveDbState.whereConditions.length = 0;
+  });
+
+  function queueRows(...rows: Array<unknown[] | Error>) {
+    liveDbState.rows.push(...rows);
+  }
+
+  const user = (overrides: Record<string, unknown> = {}) => ({
+    id: userId, status: 'active', isPlatformAdmin: false, partnerId, ...overrides,
+  });
+  const grant = (resource: string, action: string, role: 'partner' | 'organization' = 'partner') => ({
+    resource,
+    action,
+    roleScope: role,
+    roleIsSystem: false,
+    roleOrgId: role === 'organization' ? orgId : null,
+    rolePartnerId: role === 'partner' ? partnerId : null,
+  });
+
+  it('a type with no extra permissions is granted without touching the database', async () => {
+    await expect(resolveLiveReportTypePermissions(userId, { partnerId }, [])).resolves.toBe(true);
+    expect(vi.mocked(db.select)).not.toHaveBeenCalled();
+  });
+
+  it('partner owner: grants when the partner role holds every required permission', async () => {
+    queueRows([user()], [{ roleId: PARTNER_ROLE }], [grant('reports', '*'), grant('invoices', 'read')]);
+    await expect(resolveLiveReportTypePermissions(userId, { partnerId }, INVOICES_READ)).resolves.toBe(true);
+    expect(runOutsideDbContext).toHaveBeenCalled();
+    expect(withSystemDbAccessContext).toHaveBeenCalled();
+  });
+
+  it('partner owner: refuses a reports:* role that lacks invoices:read', async () => {
+    queueRows([user()], [{ roleId: PARTNER_ROLE }], [grant('reports', '*'), grant('tickets', 'read')]);
+    await expect(resolveLiveReportTypePermissions(userId, { partnerId }, INVOICES_READ)).resolves.toBe(false);
+  });
+
+  it('honours a wildcard super-role (#2874)', async () => {
+    queueRows([user()], [{ roleId: PARTNER_ROLE }], [grant('*', '*')]);
+    await expect(resolveLiveReportTypePermissions(
+      userId, { partnerId }, [...INVOICES_READ, { resource: 'time_entries', action: 'read' }],
+    )).resolves.toBe(true);
+  });
+
+  it('ignores a grant row from a role of the wrong scope', async () => {
+    queueRows([user()], [{ roleId: PARTNER_ROLE }], [grant('invoices', 'read', 'organization')]);
+    await expect(resolveLiveReportTypePermissions(userId, { partnerId }, INVOICES_READ)).resolves.toBe(false);
+  });
+
+  it('grants a platform admin exactly as the live authority resolvers do', async () => {
+    queueRows([user({ isPlatformAdmin: true, partnerId: null })]);
+    await expect(resolveLiveReportTypePermissions(userId, { partnerId }, INVOICES_READ)).resolves.toBe(true);
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses an inactive user, a foreign partner, a missing or duplicate membership', async () => {
+    queueRows([user({ status: 'disabled' })]);
+    await expect(resolveLiveReportTypePermissions(userId, { partnerId }, INVOICES_READ)).resolves.toBe(false);
+
+    queueRows([user({ partnerId: orgId })]);
+    await expect(resolveLiveReportTypePermissions(userId, { partnerId }, INVOICES_READ)).resolves.toBe(false);
+
+    queueRows([user()], []);
+    await expect(resolveLiveReportTypePermissions(userId, { partnerId }, INVOICES_READ)).resolves.toBe(false);
+
+    queueRows([user()], [{ roleId: PARTNER_ROLE }, { roleId: PARTNER_ROLE }]);
+    await expect(resolveLiveReportTypePermissions(userId, { partnerId }, INVOICES_READ)).resolves.toBe(false);
+  });
+
+  it('org owner: the ORG membership role decides when there is one', async () => {
+    queueRows(
+      [user()],
+      [{ id: orgId, partnerId }],
+      [{ roleId: ORG_ROLE }],
+      [grant('reports', 'read', 'organization')],
+    );
+    await expect(resolveLiveReportTypePermissions(userId, { orgId }, INVOICES_READ)).resolves.toBe(false);
+
+    queueRows(
+      [user()],
+      [{ id: orgId, partnerId }],
+      [{ roleId: ORG_ROLE }],
+      [grant('invoices', 'read', 'organization')],
+    );
+    await expect(resolveLiveReportTypePermissions(userId, { orgId }, INVOICES_READ)).resolves.toBe(true);
+  });
+
+  it('org owner: falls back to the partner membership of the org\'s partner', async () => {
+    queueRows(
+      [user()],
+      [{ id: orgId, partnerId }],
+      [],
+      [{ roleId: PARTNER_ROLE }],
+      [grant('invoices', 'read')],
+    );
+    await expect(resolveLiveReportTypePermissions(userId, { orgId }, INVOICES_READ)).resolves.toBe(true);
+  });
+
+  // #3198 W02 ruling F1: an msp_staff type on an ORG owner resolves the
+  // partner-axis membership only — the org membership is never consulted.
+  describe('partnerAxisOnly (org-owned msp_staff types)', () => {
+    const partnerMembership = (overrides: Record<string, unknown> = {}) => ({
+      roleId: PARTNER_ROLE, orgAccess: 'all', orgIds: null, ...overrides,
+    });
+
+    it('refuses a user who reaches the org only through an org membership', async () => {
+      queueRows([user({ partnerId: null })], [{ id: orgId, partnerId }]);
+      await expect(resolveLiveReportTypePermissions(
+        userId, { orgId }, INVOICES_READ, { partnerAxisOnly: true },
+      )).resolves.toBe(false);
+      // The org-membership table is never read: an org role cannot satisfy it.
+      expect(liveDbState.projections).toHaveLength(2);
+    });
+
+    it('refuses a partner user with no partner membership row even if an org role would grant', async () => {
+      queueRows([user()], [{ id: orgId, partnerId }], []);
+      await expect(resolveLiveReportTypePermissions(
+        userId, { orgId }, INVOICES_READ, { partnerAxisOnly: true },
+      )).resolves.toBe(false);
+    });
+
+    it('grants through a partner membership that covers the org and whose role holds the permission', async () => {
+      queueRows([user()], [{ id: orgId, partnerId }], [partnerMembership()], [grant('invoices', 'read')]);
+      await expect(resolveLiveReportTypePermissions(
+        userId, { orgId }, INVOICES_READ, { partnerAxisOnly: true },
+      )).resolves.toBe(true);
+    });
+
+    it('grants a selected-access partner user whose org list includes the org', async () => {
+      queueRows(
+        [user()], [{ id: orgId, partnerId }],
+        [partnerMembership({ orgAccess: 'selected', orgIds: [orgId] })], [grant('invoices', 'read')],
+      );
+      await expect(resolveLiveReportTypePermissions(
+        userId, { orgId }, INVOICES_READ, { partnerAxisOnly: true },
+      )).resolves.toBe(true);
+    });
+
+    it('refuses a partner membership whose org access does not cover the org', async () => {
+      queueRows(
+        [user()], [{ id: orgId, partnerId }],
+        [partnerMembership({ orgAccess: 'selected', orgIds: [] })], [grant('invoices', 'read')],
+      );
+      await expect(resolveLiveReportTypePermissions(
+        userId, { orgId }, INVOICES_READ, { partnerAxisOnly: true },
+      )).resolves.toBe(false);
+
+      queueRows([user()], [{ id: orgId, partnerId }], [partnerMembership({ orgAccess: 'none' })]);
+      await expect(resolveLiveReportTypePermissions(
+        userId, { orgId }, INVOICES_READ, { partnerAxisOnly: true },
+      )).resolves.toBe(false);
+    });
+
+    it('still rejects on a database failure (the worker maps it to scope_unverifiable)', async () => {
+      queueRows([user()], new Error('connection reset'));
+      await expect(resolveLiveReportTypePermissions(
+        userId, { orgId }, INVOICES_READ, { partnerAxisOnly: true },
+      )).rejects.toThrow('connection reset');
+    });
+  });
+
+  it('rejects on a database failure (could-not-check is not "not granted"; the worker decides)', async () => {
+    queueRows(new Error('connection reset'));
+    await expect(resolveLiveReportTypePermissions(userId, { partnerId }, INVOICES_READ)).rejects.toThrow('connection reset');
+  });
+});
+
+describe('resolver DB failures are logged, not swallowed (#3198 W02 B4)', () => {
+  const partnerId = '11111111-1111-4111-8111-111111111111';
+  const orgId = '22222222-2222-4222-8222-222222222222';
+  const userId = '33333333-3333-4333-8333-333333333333';
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    liveDbState.rows.length = 0;
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    errorSpy.mockRestore();
+  });
+
+  function expectLogged(context: Record<string, unknown>, err: Error) {
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(errorSpy.mock.calls[0]?.[1]).toMatchObject({ ...context, err });
+    expect(vi.mocked(captureException)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(captureException)).toHaveBeenCalledWith(err);
+  }
+
+  it('org resolver logs userId/orgId + captures, denial unchanged', async () => {
+    const err = new Error('connection reset');
+    liveDbState.rows.push(err);
+
+    await expect(resolveLiveReportAuthority(userId, orgId, 'read'))
+      .resolves.toEqual({ ok: false, reason: 'unverifiable_scope' });
+    expectLogged({ userId, orgId }, err);
+  });
+
+  it('partner resolver logs userId/partnerId + captures, denial unchanged', async () => {
+    const err = new Error('connection reset');
+    liveDbState.rows.push(err);
+
+    await expect(resolveLivePartnerReportAuthority(userId, partnerId, 'read'))
+      .resolves.toEqual({ ok: false, reason: 'unverifiable_scope' });
+    expectLogged({ userId, partnerId }, err);
+  });
+
+  it('map resolver logs userId/orgIds + captures, every org denied unchanged', async () => {
+    const err = new Error('connection reset');
+    liveDbState.rows.push(err);
+    const auth = {
+      user: { id: userId, email: 'a@example.com', name: 'A', isPlatformAdmin: false },
+      token: {},
+      partnerId,
+      orgId: null,
+      scope: 'partner',
+      accessibleOrgIds: [orgId],
+      orgCondition: vi.fn(),
+      canAccessOrg: () => true,
+    } as any;
+
+    const result = await resolveRequestReportAuthorityMap(auth, [orgId], 'read');
+    expect(result.get(orgId)).toEqual({ ok: false, reason: 'unverifiable_scope' });
+    expectLogged({ userId, orgIds: [orgId] }, err);
+  });
+
+  it('a non-error unverifiable denial (duplicate memberships) is not reported', async () => {
+    liveDbState.rows.push(
+      [{ id: userId, status: 'active', isPlatformAdmin: false, partnerId }],
+      // #6699: the partner row is read (and must be operational) first.
+      [{ id: partnerId, partnerStatus: 'active', partnerDeletedAt: null }],
+      [
+        { roleId: '88888888-8888-4888-8888-888888888888', orgAccess: 'all' },
+        { roleId: '88888888-8888-4888-8888-888888888888', orgAccess: 'all' },
+      ],
+    );
+
+    await expect(resolveLivePartnerReportAuthority(userId, partnerId, 'read'))
+      .resolves.toEqual({ ok: false, reason: 'unverifiable_scope' });
+    expect(errorSpy).not.toHaveBeenCalled();
+    expect(vi.mocked(captureException)).not.toHaveBeenCalled();
   });
 });

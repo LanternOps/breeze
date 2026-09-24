@@ -14,8 +14,12 @@ vi.mock('../db', () => ({
 vi.mock('./aiAgent', () => ({ waitForPlanApproval: vi.fn() }));
 
 // Identity compaction so we can assert on the exact handler output text.
+// setToolPaginationHintResolver is a no-op here: aiTools.ts calls it at
+// import time (A-W05 D12) and this mock replaces the whole module, so the
+// real export must be stubbed too or the top-level call throws.
 vi.mock('./aiToolOutput', () => ({
   compactToolResultForChat: vi.fn((_tool: string, raw: string) => raw),
+  setToolPaginationHintResolver: vi.fn(),
 }));
 
 // The M365 handlers are imported by the module under test; stub them out — we

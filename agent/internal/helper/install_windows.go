@@ -142,7 +142,7 @@ func stopByPIDIfOurs(pid int, binaryPath string) (bool, error) {
 		return false, nil
 	}
 	handle, err := windows.OpenProcess(
-		windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_TERMINATE,
+		windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_TERMINATE|windows.SYNCHRONIZE,
 		false, uint32(pid),
 	)
 	if err != nil {
@@ -164,8 +164,21 @@ func stopByPIDIfOurs(pid int, binaryPath string) (bool, error) {
 	if err := windows.TerminateProcess(handle, 0); err != nil {
 		return false, fmt.Errorf("TerminateProcess(%d): %w", pid, err)
 	}
+	// TerminateProcess only starts teardown. Wait (bounded) for the process to
+	// actually exit so its handles — including the helper's per-session
+	// single-instance mutex (#6251) — are released before a caller respawns.
+	// A timeout is not an error: the process is already being torn down.
+	_, _ = windows.WaitForSingleObject(handle, stopExitWait)
 	return true, nil
 }
+
+// stopExitWait bounds how long stopByPIDIfOurs waits for a terminated helper
+// to finish exiting. Callers stop helpers one after another while holding
+// Manager.mu on the heartbeat goroutine, so this stays short: a normal
+// TerminateProcess finishes well inside it, and the cost only adds up for a
+// process wedged in teardown. If a respawn still races the old mutex, the new
+// instance exits and the session watcher respawns on its next tick.
+const stopExitWait = 250 // milliseconds
 
 func spawnWithConfig(binaryPath, sessionKey, configPath string) (int, error) {
 	sessionNum, err := strconv.ParseUint(sessionKey, 10, 32)

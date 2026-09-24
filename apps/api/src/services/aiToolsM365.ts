@@ -526,7 +526,7 @@ export function registerM365Tools(aiTools: Map<string, AiTool>): void {
           mode: { type: 'string', enum: ['list', 'get', 'members'], description: 'list to search groups, get to fetch one by id, members to list a group\'s members' },
           groupId: { type: 'string', description: 'Group object id (required for get and members modes)' },
           search: { type: 'string', description: 'Search term matched against display name (list mode)' },
-          limit: { type: 'number', description: 'Max results (default 25, max 50 for list, max 100 for members)' },
+          limit: { type: 'number', description: 'Max results (default 25, max 100)' },
           orgId: orgIdProperty,
         },
         required: ['mode'],

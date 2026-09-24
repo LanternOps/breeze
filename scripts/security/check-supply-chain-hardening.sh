@@ -791,8 +791,6 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 &
   rm -f "$monitoring_err"
 fi
 
-require_grep 'envFlag..ENABLE_REGISTRATION., false' apps/api/src/routes/system.ts \
-  "system config status must default registration to disabled"
 require_grep "envFlag\\('ENABLE_REGISTRATION', false\\)" apps/api/src/routes/auth/schemas.ts \
   "API registration must default to disabled"
 require_grep "envFlag\\('ENABLE_REGISTRATION', false\\)" apps/api/src/routes/config.ts \

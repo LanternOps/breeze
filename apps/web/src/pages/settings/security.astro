@@ -1,0 +1,6 @@
+---
+// There has never been a /settings/security page, but global search linked
+// here for "Security settings / MFA" until #6748, so it sits in browser
+// history and bookmarks. MFA, passkeys and password live on the profile page.
+return Astro.redirect('/settings/profile', 301);
+---

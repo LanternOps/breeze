@@ -12,6 +12,7 @@ import { devices } from '../db/schema';
 import { eq, and, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { validateToolInput } from './aiToolSchemas';
+import { setToolPaginationHintResolver } from './aiToolOutput';
 import type { CaptureScope } from './artifacts/toolResultCapture';
 import { captureContextFrom, captureLargeToolResult } from './artifacts/toolResultCapture';
 import { captureException } from './sentry';
@@ -92,6 +93,7 @@ import { registerQuoteTools } from './aiToolsQuotes';
 import { registerOrgTools } from './aiToolsOrgs';
 import { registerPamTools } from './aiToolsPam';
 import { registerExportTools } from './aiToolsExport';
+import { registerArtifactTools } from './aiToolsArtifacts';
 // M365 helpdesk tools are session-aware (handler signature includes a sessionId)
 // so they are NOT registered in the `aiTools` execution registry — they run via
 // makeSessionAwareHandler in the SDK server. Their tiers still must be visible to
@@ -352,6 +354,17 @@ registerVulnerabilityTools(aiTools);
 registerWorkspaceTools(aiTools);
 registerM365Tools(aiTools);
 registerExportTools(aiTools);
+registerArtifactTools(aiTools);
+
+// A-W05 (D12): the compactor's truncation guidance follows the tool's real
+// paging shape. Covers extension-contributed tools too — they live in the
+// contribution registry, not this map.
+setToolPaginationHintResolver((name) => {
+  const core = aiTools.get(name)?.definition.input_schema as { properties?: Record<string, unknown> } | undefined;
+  const ext = core ? undefined : (resolveExtensionTool(name, extensionContributionRegistry)?.definition.input_schema as { properties?: Record<string, unknown> } | undefined);
+  const props = (core ?? ext)?.properties ?? {};
+  return 'cursor' in props ? 'cursor' : 'limit' in props ? 'limit' : 'none';
+});
 
 // ============================================
 // Exports
@@ -628,13 +641,27 @@ export async function executeTool(
   const gate = await enforceDeviceArgs(tool, effectiveInput, auth);
   if (!gate.ok) return JSON.stringify({ error: gate.error });
 
+  // A-W05 (D13a/Q4): `read_artifact` must read with the SAME anchor capture
+  // would write with — the exact org/run/session this call is attributed to,
+  // never "any session belonging to this user". Computed here, BEFORE the
+  // handler runs (capture's own computation below runs AFTER, for a
+  // different purpose), and threaded through `context.captureAnchor`.
+  //
+  // Name-gated to `read_artifact` rather than folded into every call's
+  // context: every other core handler's `context` argument must keep its
+  // existing identity — `aiTools.executeToolGate.test.ts` asserts a
+  // caller-supplied context is passed through with `toBe` (reference)
+  // equality, and a context rebuilt for every call would break that.
+  const captureAnchor = toolName === 'read_artifact' ? captureContextFrom(auth, opts, toolName) : null;
+  const handlerContext = captureAnchor ? { ...opts?.context, captureAnchor } : opts?.context;
+
   // Only CORE handlers receive the execution context. Extension handlers are
   // third-party code and are called with exactly two arguments — not merely
   // typed without a third one, since a handler written `(input, auth, ...rest)`
   // or reading `arguments` would otherwise capture pre-verified release
   // material the host never intended to hand out.
   const rawResult = coreTool
-    ? await coreTool.handler(effectiveInput, auth, opts?.context)
+    ? await coreTool.handler(effectiveInput, auth, handlerContext)
     : await (tool as RegistryAiTool).handler(effectiveInput, auth);
 
   // Large-result capture (execution-plane spec §5.2). HERE, after the handler

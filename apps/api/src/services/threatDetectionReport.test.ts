@@ -9,7 +9,7 @@ vi.mock('../db', () => ({
 }));
 
 import { db } from '../db';
-import type { ReportGenerationAuthority } from './siteScope';
+import type { OrgReportGenerationAuthority } from './siteScope';
 import { generateThreatDetectionReport } from './threatDetectionReport';
 import type { ThreatDetectionSummary, ThreatIncidentRow } from '@breeze/shared';
 import type { EvidenceRunContext, ReportResult } from './reportGenerationService';
@@ -49,7 +49,7 @@ function queueSelects(...resultSets: unknown[][]) {
 function authority(
   kind: 'unrestricted' | 'restricted' = 'unrestricted',
   siteIds: string[] = [],
-): ReportGenerationAuthority {
+): OrgReportGenerationAuthority {
   return {
     principalKind: 'user',
     scope: kind === 'restricted'

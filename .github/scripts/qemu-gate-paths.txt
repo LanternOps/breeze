@@ -31,6 +31,7 @@ agent/internal/backup/providers/
 agent/internal/backup/rebuild/
 agent/internal/backup/systemstate/
 agent/internal/backup/vss/
+agent/internal/backup/wingpt/
 agent/internal/backupipc/
 agent/internal/config/
 agent/internal/hostpolicy/

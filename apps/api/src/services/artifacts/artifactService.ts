@@ -1,11 +1,11 @@
 import { isUtf8 } from 'node:buffer';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, gt, like, ne, or } from 'drizzle-orm';
 import { z } from 'zod';
 import { isTextArtifactContentType, type AiArtifactKind, type AiRunArtifactDto } from '@breeze/shared';
 import { db } from '../../db';
 import { aiRunArtifacts } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
-import { redactAiToolOutputText } from '../aiToolOutput';
+import { redactAiToolOutputText, shrinkToJsonBudget } from '../aiToolOutput';
 import { captureException } from '../sentry';
 import { getBlobStorage, type BlobRegion } from './blobStorage';
 
@@ -267,6 +267,194 @@ export async function resolveArtifact(
     ))
     .limit(1);
   return (row as ArtifactRecord | undefined) ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// A-W05 (D13a/D13b) — `read_artifact` tool support: ranged reads, and a
+// scope stricter than the REST download below.
+// ---------------------------------------------------------------------------
+
+/** A `read_artifact` page never exceeds this many characters, whatever `maxChars` asks for. */
+export const ARTIFACT_READ_MAX_CHARS = 6_000;
+
+/**
+ * Fix 4a: the JSON-escaped/quoted length `text` may cost inside the tool's
+ * response, leaving headroom under MAX_TOOL_RESULT_CHARS for the rest of the
+ * `read_artifact` envelope (handle, name, contentType, bytes, offset,
+ * nextOffset, hasMore).
+ */
+const ARTIFACT_READ_JSON_BUDGET_CHARS = 7_000;
+
+/** Index of the last byte that ends a complete UTF-8 sequence in `buf`, or 0 when none does. */
+function utf8Boundary(buf: Buffer): number {
+  const end = buf.length;
+  let i = end - 1;
+  while (i >= 0 && i >= end - 4 && (buf[i]! & 0xc0) === 0x80) i--;
+  if (i < 0) return 0;
+  const lead = buf[i]!;
+  const need = lead >= 0xf0 ? 4 : lead >= 0xe0 ? 3 : lead >= 0xc0 ? 2 : 1;
+  return end - i >= need ? end : i;
+}
+
+async function collect(stream: NodeJS.ReadableStream, cap: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const raw of stream) {
+    const chunk = Buffer.isBuffer(raw) ? raw : Buffer.from(raw as string);
+    chunks.push(chunk);
+    total += chunk.length;
+    if (total >= cap) break;
+  }
+  return Buffer.concat(chunks, Math.min(total, cap));
+}
+
+/**
+ * A-W05 (D13a): a character window read through a byte Range. Never splits a
+ * UTF-8 sequence; `nextOffset` is the byte offset of the first byte NOT
+ * returned, so passing it straight back in continues exactly where this left
+ * off. `maxChars` is clamped to `ARTIFACT_READ_MAX_CHARS` regardless of what
+ * the caller asked for.
+ */
+export async function readArtifactWindow(
+  record: ArtifactRecord,
+  offset: number,
+  maxChars: number,
+): Promise<{ text: string; nextOffset: number; hasMore: boolean }> {
+  const start = Math.max(0, Math.trunc(offset));
+  const want = Math.min(Math.max(1, Math.trunc(maxChars) || ARTIFACT_READ_MAX_CHARS), ARTIFACT_READ_MAX_CHARS);
+  if (start >= record.bytes) return { text: '', nextOffset: record.bytes, hasMore: false };
+  const end = Math.min(record.bytes - 1, start + want * 4 - 1); // 4 bytes/char is the UTF-8 worst case
+  const buf = await collect(await getBlobStorage().openRange(record.blobKey, start, end), end - start + 1);
+  let cut = utf8Boundary(buf);
+  if (cut === 0 && buf.length > 0) cut = buf.length; // undecodable tail at EOF: emit lossy rather than loop forever
+  let text = buf.toString('utf8', 0, cut);
+  const chars = Array.from(text);
+  if (chars.length > want) text = chars.slice(0, want).join('');
+  // Fix 4a: shrink further so the JSON-escaped cost fits the budget —
+  // escape-heavy content sized only by raw char count can still overflow
+  // compactToolResultForChat and get replaced by a digest, silently
+  // dropping text `nextOffset` told the caller it could read.
+  text = shrinkToJsonBudget(text, ARTIFACT_READ_JSON_BUDGET_CHARS);
+  const used = Buffer.byteLength(text, 'utf8');
+  const nextOffset = start + used;
+  return { text, nextOffset, hasMore: nextOffset < record.bytes };
+}
+
+/**
+ * A-W05 (D13b/Q5) — the redact-then-capture marker. `captureLargeToolResult`
+ * names every artifact it writes `<tool>.redacted.<ext>` (REDACTED_CAPTURE_NAME_INFIX),
+ * and only a row carrying that marker is readable back through `read_artifact`.
+ * A legacy `input_capture` row written before redact-then-capture shipped is
+ * named `<tool>.<ext>` and may hold raw credential material, so it is excluded
+ * — deterministically, with no deploy-time cutoff date to get wrong.
+ */
+export const REDACTED_CAPTURE_NAME_INFIX = '.redacted.';
+export const REDACTED_CAPTURE_NAME_PATTERN = `%${REDACTED_CAPTURE_NAME_INFIX}%`;
+
+/**
+ * What `executeTool` resolves a call's capture attribution to (the same
+ * anchor `captureContextFrom`/`CaptureContext` in toolResultCapture.ts
+ * produces on the write side) — threaded through by the tool registration
+ * layer, not derived here.
+ */
+export interface ArtifactCallerAnchor {
+  orgId: string;
+  /** Set when the caller is inside an agent run. Wins over `sessionId` when both are present — one anchor per artifact, same rule the write side uses. */
+  runId?: string | null;
+  /** The CALLER'S CURRENT chat session only — never "any session belonging to this user" (Q4). */
+  sessionId?: string | null;
+}
+
+/**
+ * The real query, exported UNAWAITED so a dedicated SQL-compiled test can
+ * prove the predicate without a vacuous mocked-`where` assertion (see
+ * artifactService.callerScope.sql.test.ts) — same pattern as
+ * `ticketPush.ts`'s `anySlaSubscribersQuery`. `findArtifactForCaller` below
+ * is the only real caller.
+ */
+export function findArtifactForCallerQuery(handle: string, anchor: ArtifactCallerAnchor) {
+  const runId = anchor.runId ?? null;
+  const sessionId = runId ? null : (anchor.sessionId ?? null);
+  const ownership = runId
+    ? eq(aiRunArtifacts.runId, runId)
+    : eq(aiRunArtifacts.sessionId, sessionId as string);
+  return db
+    .select(ARTIFACT_COLUMNS)
+    .from(aiRunArtifacts)
+    .where(and(
+      eq(aiRunArtifacts.id, handle),
+      eq(aiRunArtifacts.orgId, anchor.orgId),
+      ownership,
+      gt(aiRunArtifacts.expiresAt, new Date()),
+      // Q5: an export is an intentional bulk write, never redacted, and never
+      // meant to be paged back through this tool.
+      ne(aiRunArtifacts.createdByTool, 'export_dataset'),
+      // Q5: a legacy raw capture (written before redact-then-capture shipped)
+      // may still hold credential material — only a marked capture is
+      // readable. Any other kind is not gated on the marker.
+      or(
+        ne(aiRunArtifacts.kind, 'input_capture'),
+        like(aiRunArtifacts.name, REDACTED_CAPTURE_NAME_PATTERN),
+      ),
+    ))
+    .limit(1);
+}
+
+/**
+ * Tool-side resolve for `read_artifact` (A-W05 D13a/Q4): STRONGER than the
+ * REST download (`findArtifactForAuth` below, org-wide) — an artifact is
+ * visible only to the run or chat session it was captured under, matched
+ * EXACTLY. "Any session of this user" is deliberately NOT an ownership test:
+ * a prompt-injected agent running in session B must not be able to read what
+ * the same user captured in session A.
+ *
+ * Returns `null` — never a distinguishable "forbidden" — for a missing row,
+ * a wrong-scope row, an expired row, an `export_dataset` row, and a
+ * legacy unmarked (raw) `input_capture` row alike: a handle is opaque, so "this
+ * exists but is not yours" is itself a disclosure (same posture as
+ * `resolveArtifact`/`findArtifactForAuth`).
+ */
+export async function findArtifactForCaller(
+  handle: string,
+  anchor: ArtifactCallerAnchor,
+): Promise<ArtifactRecord | null> {
+  // A non-uuid must never reach the query (22P02 poisons the transaction —
+  // the `uuidParam` trap `resolveArtifact` above already documents).
+  if (!UUID.safeParse(handle).success || !UUID.safeParse(anchor.orgId).success) return null;
+  if (!anchor.runId && !anchor.sessionId) return null;
+  const [row] = await findArtifactForCallerQuery(handle, anchor);
+  return (row as ArtifactRecord | undefined) ?? null;
+}
+
+/**
+ * The ONLY content types an artifact download (REST or `read_artifact`) may
+ * echo. Everything else — html, svg, xml, any script type, anything
+ * unrecognised — becomes octet-stream. An allowlist, never a denylist: a new
+ * active type must not become renderable by default.
+ *
+ * A-W05 (D13a): lives here rather than in `routes/aiArtifacts.ts` (its
+ * original home) so `aiToolsArtifacts.ts` can import it without dragging that
+ * route module's `new Hono()` + middleware side effects into the `aiTools.ts`
+ * hub — `services/aiToolNames.ts`'s header documents exactly this failure
+ * shape for a different import (`workerEntrypointClosure.contract.test.ts`).
+ * `routes/aiArtifacts.ts` re-exports this symbol so its own callers and test
+ * are unaffected.
+ */
+const SAFE_DOWNLOAD_CONTENT_TYPES = new Set([
+  'application/json',
+  'application/jsonl',
+  'text/plain; charset=utf-8',
+  'text/plain',
+  'text/csv',
+  'text/tab-separated-values',
+  'application/gzip',
+  'application/zip',
+  'application/pdf',
+]);
+
+export function artifactDownloadContentType(stored: string): string {
+  const normalised = stored.trim().toLowerCase();
+  return SAFE_DOWNLOAD_CONTENT_TYPES.has(normalised) ? normalised : 'application/octet-stream';
 }
 
 /** Route-side resolve: scoped by `auth.orgCondition`, which is `undefined` (no filter) for system scope. */

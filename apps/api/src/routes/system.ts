@@ -2,18 +2,12 @@ import { Hono } from 'hono';
 import { eq } from 'drizzle-orm';
 import { db } from '../db';
 import { users } from '../db/schema';
-import { authMiddleware, requirePermission } from '../middleware/auth';
+import { authMiddleware } from '../middleware/auth';
 import { API_VERSION } from '../version';
-import { PERMISSIONS } from '../services/permissions';
-import { envFlag } from '../utils/envFlag';
 import { semverCompare } from '@breeze/shared';
 import { getLatestVersion } from '../services/latestVersion';
 
 export const systemRoutes = new Hono();
-const requireSystemConfigRead = requirePermission(
-  PERMISSIONS.ORGS_READ.resource,
-  PERMISSIONS.ORGS_READ.action,
-);
 
 systemRoutes.use('*', authMiddleware);
 
@@ -27,54 +21,6 @@ systemRoutes.get('/version', async (c) => {
     isStale,
     latestFetchedAt: fetchedAt.toISOString(),
     latestSource: source,
-  });
-});
-
-// GET /system/config-status — read-only view of env-driven feature status (no secrets)
-systemRoutes.get('/config-status', requireSystemConfigRead, async (c) => {
-  const auth = c.get('auth');
-  if (auth.scope !== 'partner' && auth.scope !== 'system') {
-    return c.json({ error: 'Forbidden' }, 403);
-  }
-
-  const env = process.env;
-
-  // Email provider detection ('auto' or unset = detect from available keys)
-  let emailProvider: 'resend' | 'smtp' | 'mailgun' | 'none' = 'none';
-  const emailConfigured =
-    !!env.RESEND_API_KEY || !!env.SMTP_HOST || !!env.MAILGUN_API_KEY;
-  const autoDetect = !env.EMAIL_PROVIDER || env.EMAIL_PROVIDER === 'auto';
-  if (env.EMAIL_PROVIDER === 'resend' || (autoDetect && env.RESEND_API_KEY)) {
-    emailProvider = 'resend';
-  } else if (env.EMAIL_PROVIDER === 'smtp' || (autoDetect && env.SMTP_HOST)) {
-    emailProvider = 'smtp';
-  } else if (env.EMAIL_PROVIDER === 'mailgun' || (autoDetect && env.MAILGUN_API_KEY)) {
-    emailProvider = 'mailgun';
-  }
-
-  return c.json({
-    email: {
-      configured: emailConfigured,
-      provider: emailProvider,
-      from: env.EMAIL_FROM || env.RESEND_FROM || ''
-    },
-    domain: {
-      breezeDomain: env.BREEZE_DOMAIN || '',
-      publicUrl: env.PUBLIC_API_URL || env.PUBLIC_APP_URL || env.DASHBOARD_URL || '',
-      corsOrigins: env.CORS_ALLOWED_ORIGINS || ''
-    },
-    security: {
-      httpsForced: env.FORCE_HTTPS === 'true' || env.NODE_ENV === 'production',
-      mfaEnabled: env.ENABLE_2FA !== 'false',
-      registrationEnabled: envFlag('ENABLE_REGISTRATION', false)
-    },
-    integrations: {
-      sms: !!env.TWILIO_ACCOUNT_SID,
-      ai: !!env.ANTHROPIC_API_KEY || !!env.OPENAI_API_KEY,
-      mtls: !!env.CLOUDFLARE_API_TOKEN && !!env.CLOUDFLARE_ZONE_ID,
-      storage: !!env.S3_BUCKET || !!env.STORAGE_PROVIDER,
-      sentry: !!env.SENTRY_DSN
-    }
   });
 });
 

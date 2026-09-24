@@ -12,6 +12,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/breeze-rmm/agent/internal/backup/providers"
@@ -133,6 +134,15 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 			result.Warnings = append(result.Warnings, "no files matched the selected paths")
 		}
 		return result, nil
+	}
+	// NTFS security descriptors (W06a): Windows only — see restore_sd.go.
+	// The restore privilege scope (SeRestore/SeTakeOwnership/SeSecurity) is
+	// held for this run only and released when it returns.
+	secDescs, secWarnings := newRestoreSecurity(snapshot.SecurityDescriptors, append(append(append([]SnapshotFile(nil), contentFiles...), links...), dirs...), restoreAppliesSecurityDescriptors)
+	result.Warnings = append(result.Warnings, secWarnings...)
+	if secDescs.active() {
+		release := enableRestoreSDPrivileges()
+		defer release()
 	}
 	applyOwnership := restoreCanApplyOwnership()
 	ownershipWarned := false
@@ -280,16 +290,26 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		// Publish only verified bytes. Linux, macOS and Windows pin the
 		// target hierarchy with directory descriptors/handles and never follow
 		// a destination symlink/reparse point. Mode (full ModeBits when the
-		// manifest carries them, else the perm-only Mode), owner and mtime are
-		// applied to the pinned temporary BEFORE the atomic replace, so #5520's
-		// fidelity is preserved without any post-publication pathname
-		// chmod/chown/chtimes — the exact operations this boundary exists to
-		// remove.
+		// manifest carries them, else the perm-only Mode), owner, mtime,
+		// Windows attributes and the captured NTFS security descriptor (W06a)
+		// are all applied to the pinned temporary's handle BEFORE the atomic
+		// replace, so #5520's fidelity is preserved without any
+		// post-publication pathname chmod/chown/chtimes/SetSecurity — the
+		// exact operations this boundary (SEC-121) exists to remove.
 		mode := os.FileMode(file.Mode).Perm()
 		if file.ModeBits != 0 {
 			mode = os.FileMode(file.ModeBits)
 		}
-		installWarnings, err := securefs.InstallFileWithAttrs(targetBase, relativeTarget, stagingFile, mode, file.ModTime, entryOwner(file, applyOwnership), file.WinAttrs)
+		var secApplier *securefs.SecurityApplier
+		if sd := secDescs.forEntry(file); sd != nil {
+			var secErr error
+			if secApplier, secErr = restoreSecurityApplier(sd); secErr != nil {
+				// An invalid descriptor is a fidelity warning; the content
+				// still installs (R39).
+				result.Warnings = append(result.Warnings, fmt.Sprintf("restored %s with reduced fidelity: could not reapply security descriptor: %v", displayPath, secErr))
+			}
+		}
+		installWarnings, err := securefs.InstallFileWithSecurity(targetBase, relativeTarget, stagingFile, mode, file.ModTime, entryOwner(file, applyOwnership), file.WinAttrs, secApplier)
 		if err != nil {
 			result.FilesFailed++
 			result.FailedFiles = append(result.FailedFiles, displayPath)
@@ -324,6 +344,16 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 	// Pass 2: symlinks (parents exist now, from the file pass above). Pass
 	// 3: directories last so their modes/owners are applied after every
 	// child (file or symlink) has been written under them.
+	//
+	// Directory security descriptors are collected here and applied in a
+	// post-pass after this loop: a restrictive DACL applied as each
+	// directory is created could deny the restore the access it still needs
+	// for later entries beneath it. Symlinks/junctions never take one.
+	type dirSD struct {
+		relative, display string
+		sd                []byte
+	}
+	var dirSecurity []dirSD
 	for _, entry := range append(links, dirs...) {
 		if checkCancelled() {
 			return result, nil
@@ -379,15 +409,19 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 				}
 				entryErr = securefs.InstallDir(targetBase, relativeEntry, mode, entry.ModeBits != 0, entryOwner(entry, applyOwnership), entry.ModTime)
 				if entryErr == nil {
-					// The walker records a Windows directory entry only when
-					// the directory is empty, but when it does, a Hidden or
+					// The walker records a Windows directory entry when the
+					// directory is empty, and for EVERY directory when
+					// security-descriptor capture is on (W06a). A Hidden or
 					// System folder must come back Hidden/System rather than
-					// plain (#5407, review finding). Applied last and
-					// best-effort: losing a directory attribute is a fidelity
-					// warning, never a failed restore.
+					// plain (#5407, review finding). Applied best-effort:
+					// losing a directory attribute is a fidelity warning,
+					// never a failed restore.
 					if attrErr := applyWinAttrs(filepath.Join(targetBase, relativeEntry), entry.WinAttrs); attrErr != nil {
 						result.Warnings = append(result.Warnings,
 							fmt.Sprintf("recreated %s with reduced fidelity: could not reapply windows attributes: %v", displayPath, attrErr))
+					}
+					if sd := secDescs.forEntry(entry); sd != nil {
+						dirSecurity = append(dirSecurity, dirSD{relative: relativeEntry, display: displayPath, sd: sd})
 					}
 				}
 			}
@@ -405,6 +439,26 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		}
 		result.FilesRestored++
 	}
+
+	// Directory security descriptors, now that every file, symlink and
+	// directory is in place. Deepest first, so a parent's DACL can never
+	// stand between the restore and a child it has yet to update. Each
+	// directory is reached by securefs's pinned, reparse-refusing walk from
+	// the volume root and the descriptor is set on THAT handle — never on a
+	// joined pathname a swapped-in junction could redirect (SEC-121).
+	sort.SliceStable(dirSecurity, func(i, j int) bool {
+		return strings.Count(dirSecurity[i].relative, string(filepath.Separator)) > strings.Count(dirSecurity[j].relative, string(filepath.Separator))
+	})
+	for _, ds := range dirSecurity {
+		applier, secErr := restoreSecurityApplier(ds.sd)
+		if secErr == nil && applier != nil {
+			secErr = securefs.ApplyDirSecurity(targetBase, ds.relative, *applier)
+		}
+		if secErr != nil {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("recreated %s with reduced fidelity: could not reapply security descriptor: %v", ds.display, secErr))
+		}
+	}
+	result.Warnings = append(result.Warnings, secDescs.finish()...)
 
 	if checkCancelled() {
 		return result, nil
@@ -536,6 +590,44 @@ var volumeName = filepath.VolumeName
 // MUST go through this, never f.SourcePath directly.
 func restoreSourcePath(f SnapshotFile) string {
 	return journalEntryKey(f)
+}
+
+// RestoreKey returns the path an entry restores under, relative to the
+// restore target: restoreSourcePath (OriginalPath when VSS rewrote
+// SourcePath) with the volume and leading separators stripped — exactly
+// what resolveTargetPath joins under the target base. Separators are left
+// as recorded (a Windows manifest's `\` stays `\`), so
+// filepath.Join(root, RestoreKey(f)) is the file the restore wrote on the
+// host that ran the restore. Callers outside this package (the rebuild
+// engine's validate/winValidate) must use this, never f.SourcePath.
+func RestoreKey(f SnapshotFile) string {
+	return stripVolumeAndLeadingSeparators(restoreSourcePath(f))
+}
+
+// RestoreSourceKey is restoreSourcePath exported: the exact string
+// RestoreResult.FailedFiles entries are written under (displayPath in the
+// download loop above — OriginalPath when VSS rewrote SourcePath, else
+// SourcePath itself; volume NOT stripped, separators as recorded). Use this,
+// never RestoreKey, to look an entry up in a FailedFiles-derived set (e.g.
+// the rebuild engine's r.failedFiles, populated unchanged from
+// RestoreResult.FailedFiles) — RestoreKey is the relative-to-target-base
+// path an entry restores under on disk, a different string for any Windows
+// entry (it additionally strips the drive volume and leading separators).
+func RestoreSourceKey(f SnapshotFile) string {
+	return restoreSourcePath(f)
+}
+
+// SetVolumeNameForTest overrides the package-level volumeName hook restore.go
+// uses to strip a leading Windows drive volume, returning a restore func.
+// Exported (test-only by convention, never called from non-test code) so an
+// external package's test — rebuild/validate_test.go's
+// TestValidate_UsesRestoreKey — can exercise RestoreKey's Windows-path
+// branch on a non-Windows CI runner, exactly like restore_volume_test.go's
+// unexported withWindowsVolumeName does for this package's own tests.
+func SetVolumeNameForTest(f func(string) string) (restore func()) {
+	orig := volumeName
+	volumeName = f
+	return func() { volumeName = orig }
 }
 
 // stripVolumeAndLeadingSeparators removes the volume/drive (e.g. "C:") and any

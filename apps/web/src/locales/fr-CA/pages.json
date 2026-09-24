@@ -14,6 +14,7 @@
     "adminConnectedApps": "Applications connectées (admin)",
     "adminLlmProviderCatalog": "Catalogue des fournisseurs LLM",
     "adminQuarantined": "Appareils en quarantaine",
+    "adminSystem": "Système",
     "adminThirdPartyCatalog": "Catalogue tiers",
     "adminTrustAct": "Action de confiance du partenaire",
     "adminTrustQueue": "File d'attente de confiance du partenaire",

@@ -216,7 +216,7 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
           source: { type: 'string', description: 'Filter by source pattern' },
           deviceIds: { type: 'array', items: { type: 'string' } },
           siteIds: { type: 'array', items: { type: 'string' } },
-          limit: { type: 'number', description: 'Limit for top lists (default 20, max 100)' },
+          limit: { type: 'number', description: 'Max top-list entries (default 20, max 100)' },
         },
       },
     },

@@ -100,6 +100,25 @@ export interface TicketActor {
   principalKind?: 'user' | 'ai_agent' | 'system';
 }
 
+/**
+ * #6689: the value to write into a column FK'd to `users(id)` for this actor.
+ * A `principalKind: 'system'` actor (e.g. the inbound-email pipeline) carries a
+ * synthetic userId that is not a users row, so FK'd columns
+ * (`ticket_comments.user_id`, `tickets.closed_by`) and the event's
+ * `actorUserId` get null instead. `audit_logs.actor_id` has no FK and keeps
+ * the synthetic id.
+ *
+ * The status-change feed row deliberately keeps the default
+ * `origin_principal_kind = 'user'` even for a system actor: the inbound
+ * reopen writes it in the same transaction (same `created_at`) as the
+ * customer's comment, and a non-'user' row would count as agent activity in
+ * the helpdesk loop guard (`humanCommentIsNewerThanAgentActivity`, strict `>`)
+ * and suppress the helpdesk agent's reply to that customer comment.
+ */
+function actorUserFk(actor: TicketActor): string | null {
+  return actor.principalKind === 'system' ? null : actor.userId;
+}
+
 // Legacy display identifier (NOT NULL UNIQUE), retry loop dropped when creation
 // moved into the service — internalNumber is canonical; a nanoid(10) collision
 // surfaces as a unique-violation insert error.
@@ -1092,7 +1111,7 @@ export async function changeTicketStatus(
     if (feedContent) {
       await db.insert(ticketComments).values({
         ticketId,
-        userId: actor.userId,
+        userId: actorUserFk(actor),
         authorName: actor.name ?? null,
         authorType: 'internal',
         commentType: 'status_change',
@@ -1153,7 +1172,7 @@ export async function changeTicketStatus(
     patch.pendingReason = null;
   } else if (toStatus === 'closed') {
     patch.closedAt = now;
-    patch.closedBy = actor.userId;
+    patch.closedBy = actorUserFk(actor);
     patch.resolvedAt = ticket.resolvedAt ?? now;
     patch.pendingReason = null;
   } else if (toStatus === 'open' && (fromStatus === 'resolved' || fromStatus === 'closed')) {
@@ -1203,7 +1222,7 @@ export async function changeTicketStatus(
 
   await db.insert(ticketComments).values({
     ticketId,
-    userId: actor.userId,
+    userId: actorUserFk(actor),
     authorName: actor.name ?? null,
     authorType: 'internal',
     commentType: 'status_change',
@@ -1218,7 +1237,7 @@ export async function changeTicketStatus(
     ticketId,
     orgId: ticket.orgId,
     partnerId: ticket.partnerId ?? null,
-    actorUserId: actor.userId,
+    actorUserId: actorUserFk(actor),
     payload: { from: fromStatus, to: toStatus }
   });
   await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.status_changed', {
@@ -1236,6 +1255,54 @@ export async function changeTicketStatus(
     details: { from: fromStatus, to: toStatus },
     result: 'success'
   });
+
+  // #6697: ML triage feedback — resolution outcomes were declared on
+  // emitTicketTriageFeedback but no caller ever emitted them. `wasResolved`/
+  // `willBeResolved` treat 'resolved' and 'closed' as the same closed-ish
+  // state so a resolved -> closed relabel (already resolved, resolvedAt
+  // preserved above) does not double-count as a fresh resolution, and the FSM
+  // transition table only ever allows leaving {resolved, closed} for 'open',
+  // so willBeResolved=false here always means toStatus === 'open'.
+  const wasResolved = fromStatus === 'resolved' || fromStatus === 'closed';
+  const willBeResolved = toStatus === 'resolved' || toStatus === 'closed';
+  if (!wasResolved && willBeResolved) {
+    await emitTicketTriageFeedback({
+      orgId: ticket.orgId,
+      ticketId,
+      eventType: 'ticket.resolved',
+      // #6697 review: `ticketTriageDedupeKey('status', fromStatus, toStatus)`
+      // alone would collide across repeat resolve/reopen/resolve cycles on the
+      // SAME ticket (identical fromStatus/toStatus each time), and the
+      // ON CONFLICT target is (orgId, sourceType, sourceId, eventType,
+      // dedupeKey) — a collision silently drops the second, genuine
+      // resolution signal via onConflictDoNothing. Folding `now` in makes
+      // each transition's key unique while still deduping true retries of
+      // the SAME transaction (same `now`, captured once above).
+      dedupeKey: ticketTriageDedupeKey('status', fromStatus, `${toStatus}@${now.toISOString()}`),
+      outcome: 'resolved',
+      actorUserId: actor.userId,
+      metadata: ticketTriageFeedbackMetadata(actor, {
+        fromStatus,
+        toStatus,
+        minutesOpen: Math.max(0, Math.floor((now.getTime() - new Date(ticket.createdAt).getTime()) / 60_000)),
+      }),
+    });
+  } else if (wasResolved && !willBeResolved) {
+    await emitTicketTriageFeedback({
+      orgId: ticket.orgId,
+      ticketId,
+      eventType: 'ticket.reopened',
+      dedupeKey: ticketTriageDedupeKey('status', fromStatus, `${toStatus}@${now.toISOString()}`),
+      outcome: 'reopened',
+      actorUserId: actor.userId,
+      metadata: ticketTriageFeedbackMetadata(actor, {
+        fromStatus,
+        toStatus,
+        minutesOpen: Math.max(0, Math.floor((now.getTime() - new Date(ticket.createdAt).getTime()) / 60_000)),
+      }),
+    });
+  }
+
   return updated[0];
 }
 

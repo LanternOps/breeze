@@ -322,7 +322,10 @@
         "security_compliance_posture": "Security & Compliance Posture",
         "software_inventory": "Software Inventory",
         "threat_detection_review": "Threat Detection Review",
-        "endpoint_management_review": "Endpoint Management Review"
+        "endpoint_management_review": "Endpoint Management Review",
+        "ticket_sla_attainment": "Ticket SLA attainment",
+        "technician_time_billability": "Technician time & billability",
+        "ar_aging": "AR aging"
       },
       "threatDetection": {
         "agents": "Endpoints with a detection agent",
@@ -419,7 +422,10 @@
         "security_compliance_posture": "Security & Compliance Posture",
         "software_inventory": "Software Inventory",
         "threat_detection_review": "Threat Detection Review",
-        "endpoint_management_review": "Endpoint Management Review"
+        "endpoint_management_review": "Endpoint Management Review",
+        "ticket_sla_attainment": "Ticket SLA attainment",
+        "technician_time_billability": "Technician time & billability",
+        "ar_aging": "AR aging"
       },
       "runsTable": {
         "actions": "Actions",
@@ -455,7 +461,8 @@
       "templates": "Templates",
       "title": "Reports",
       "tryAgain": "Try again",
-      "unknownReport": "Unknown Report"
+      "unknownReport": "Unknown Report",
+      "partnerWideIncomplete": "Some reports that cover all organizations could not be loaded, so this list may be incomplete. Switch to All organizations to see every report."
     },
     "reportBuilder": {
       "actions": {
@@ -800,7 +807,10 @@
         "updateFailed": "Could not update the report recipients",
         "convertFailed": "Could not convert this email address",
         "mfaRequired": "Converting a recipient requires multi-factor authentication. Enable MFA in your profile and try again.",
-        "loadFailed": "Could not load the report recipients"
+        "loadFailed": "Could not load the report recipients",
+        "businessEmailOnly": "Business reports are delivered only to the email addresses below. Organization contacts can't be added.",
+        "partnerOwnedEmailOnly": "This report covers all organizations, so it is delivered only to the email addresses below. Organization contacts can't be added.",
+        "emailAddresses": "Email addresses"
       },
       "previewTable": {
         "selectFields": "Select fields to populate the preview table."
@@ -934,7 +944,10 @@
         "security_compliance_posture": "Security & Compliance Posture",
         "software_inventory": "Software Inventory",
         "threat_detection_review": "Threat Detection Review",
-        "endpoint_management_review": "Endpoint Management Review"
+        "endpoint_management_review": "Endpoint Management Review",
+        "ticket_sla_attainment": "Ticket SLA attainment",
+        "technician_time_billability": "Technician time & billability",
+        "ar_aging": "AR aging"
       },
       "schedules": {
         "daily": "Daily",
@@ -945,6 +958,8 @@
       "spec": {
         "cadence": "Cadence",
         "defaultRange": "Default range",
+        "lastFullMonth": "Last full month",
+        "asOfRunDate": "As of run date",
         "format": "Format"
       },
       "success": {
@@ -988,11 +1003,28 @@
         "endpoint_management_review": {
           "description": "Microsoft Intune evidence: enrolment coverage, compliance breakdown with a 30-day trend, stale enrolments and licence seats, with the freshness of each sync stated.",
           "name": "Intune Endpoint Management Review"
+        },
+        "ticket_sla_attainment": {
+          "name": "Ticket SLA attainment",
+          "description": "Response and resolution attainment for the period, recomputed from the ticket timestamps rather than read off the breach stamps — so a ticket answered late but eventually answered still counts as a miss. Grouped by organization, priority, technician or category."
+        },
+        "technician_time_billability": {
+          "name": "Technician time & billability",
+          "description": "Logged time against an assumed weekly capacity, the billable / included / non-billable split, and how much of the billable time has actually been approved and billed. Technicians with no time in the period are listed at zero rather than dropped."
+        },
+        "ar_aging": {
+          "name": "AR aging",
+          "description": "Unpaid invoice balances bucketed current / 1–30 / 31–60 / 61–90 / 90+ days past due, one set of totals per currency with no conversion. Invoices with no due date get their own bucket, never \"current\"."
         }
       },
       "title": "Report Templates",
       "useTemplate": "Use template",
-      "useTemplateTitle": "Use {{name}}"
+      "useTemplateTitle": "Use {{name}}",
+      "groups": {
+        "business": "Business",
+        "general": "General",
+        "businessDescription": "MSP-facing numbers — SLA attainment, technician billability, and accounts receivable — for staff only."
+      }
     },
     "threatDetectionOptions": {
       "cancel": "Cancel",
@@ -1024,6 +1056,76 @@
       "adminDetail": "Include administrator sign-in detail",
       "adminDetailHelp": "Lists each interactive sign-in by an account holding an admin role, including the address it came from. This is the section an auditor reads first.",
       "coverageNote": "The report covers interactive sign-ins only and prints the window it actually covers. Microsoft keeps sign-in logs for about 30 days and requires an Entra ID P1 or P2 licence to release them, so the first report after enabling collection is partial and says so."
+    },
+    "reportPeriod": {
+      "label": "Reporting period",
+      "kinds": {
+        "last_full_month": "Last full month",
+        "last_30_days": "Last 30 days",
+        "last_quarter": "Last full quarter",
+        "custom": "Custom dates"
+      },
+      "start": "Start date",
+      "end": "End date (inclusive)",
+      "help": "Preset periods are worked out each time the report runs, so a monthly schedule always covers the month that just ended.",
+      "errors": {
+        "missing": "Choose both a start date and an end date.",
+        "invalid": "Both dates must be real calendar dates.",
+        "order": "The start date must not be after the end date."
+      }
+    },
+    "ticketSlaOptions": {
+      "approximationNote": "Attainment is recomputed from ticket timestamps rather than read from breach flags, so a ticket answered late still counts as a miss. Paused time is stored as a lifetime total, so pauses after the first response slightly flatter response attainment.",
+      "groupBy": "Group by",
+      "groupByAutomatic": "Automatic: by organization for all organizations, by priority for one organization",
+      "groupByValues": {
+        "organization": "Organization",
+        "priority": "Priority",
+        "technician": "Technician (current assignee)",
+        "category": "Category"
+      },
+      "technicianNote": "Tickets are grouped by their current assignee. Reassignment history is not tracked, so this is not necessarily the technician who responded.",
+      "includeNoSla": "List tickets without an SLA target",
+      "includeNoSlaHelp": "Tickets with no SLA target are always counted separately and never affect attainment. This only controls whether they appear in the detail rows.",
+      "cancel": "Cancel",
+      "createReport": "Create report"
+    },
+    "technicianTimeOptions": {
+      "groupBy": "Group by",
+      "groupByValues": {
+        "technician": "Technician",
+        "organization": "Organization",
+        "work_type": "Work type"
+      },
+      "orgAxisNote": "Time entries not linked to an organization appear in their own \"No organization\" row. A report owned by a single organization only sees time logged against its tickets.",
+      "capacityHours": "Weekly capacity per technician (hours)",
+      "capacityHoursHelp": "Utilization assumes uniform capacity for every technician, prorated over working days. PTO and part-time schedules are not modelled.",
+      "cancel": "Cancel",
+      "createReport": "Create report"
+    },
+    "arAgingOptions": {
+      "asOf": "Age balances as of",
+      "asOfHelp": "Leave empty to age against the day the report runs. A date moves only the aging reference date: balances are current, so it does not reconstruct past balances or undo payments recorded after that date.",
+      "asOfInvalid": "Enter a real calendar date, or leave the field empty.",
+      "groupBy": "Group by",
+      "groupByValues": {
+        "organization": "Organization",
+        "currency": "Currency"
+      },
+      "currencyNote": "Each currency gets its own totals. Amounts are not converted between currencies.",
+      "includePaidInPeriod": "List invoices paid month to date",
+      "includePaidInPeriodHelp": "Adds a note listing invoices fully paid from the first of the as-of month through the as-of date. It never changes the aging buckets.",
+      "cancel": "Cancel",
+      "createReport": "Create report"
+    },
+    "ownerScope": {
+      "legend": "Report covers",
+      "allOrganizations": "All organizations",
+      "allOrganizationsHint": "Covers every active and trial organization, resolved at each run. Excluded organizations are listed in the report's notes. Requires access to all organizations.",
+      "singleOrganization": "One organization",
+      "singleOrganizationHint": "The organization selected in the organization switcher.",
+      "singleOrganizationDisabledHint": "Pick an organization in the organization switcher to create an organization-scoped report.",
+      "needsOrganizationHint": "Pick an organization in the organization switcher to create this report. Reports for all organizations require access to all organizations."
     }
   }
 }

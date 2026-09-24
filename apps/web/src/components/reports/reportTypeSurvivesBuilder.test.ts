@@ -49,5 +49,11 @@ describe('reportTypeSurvivesBuilder', () => {
     // identity_access_review → devices (#5784 W06): curated type with its own
     // options form; the builder would downgrade it to a plain devices report.
     expect(reportTypeSurvivesBuilder('identity_access_review')).toBe(false);
+    // #3198 Phase 1 business reports (W02): curated, never portal-visible, the
+    // only types whose supportedScopes include 'partner' — the freeform
+    // builder cannot represent any of them.
+    expect(reportTypeSurvivesBuilder('ticket_sla_attainment')).toBe(false);
+    expect(reportTypeSurvivesBuilder('technician_time_billability')).toBe(false);
+    expect(reportTypeSurvivesBuilder('ar_aging')).toBe(false);
   });
 });

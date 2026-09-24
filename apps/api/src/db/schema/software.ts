@@ -39,9 +39,17 @@ export const softwareCatalog = pgTable('software_catalog', {
   iconUrl: text('icon_url'),
   websiteUrl: text('website_url'),
   isManaged: boolean('is_managed').notNull().default(false),
-  createdAt: timestamp('created_at').defaultNow().notNull()
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  // Soft delete (#4980). A package referenced by deployment history cannot be
+  // hard-deleted (NO ACTION FKs from software_deployments), so DELETE archives
+  // it here instead. Forward-looking read paths (catalog list/detail, version
+  // and method management, new deployments, policy remediation, automation
+  // references) filter `deletedAt IS NULL`; deployment-history joins and the
+  // dispatch of already-created deployments intentionally keep it.
+  deletedAt: timestamp('deleted_at')
 }, (table) => ({
   orgIdx: index('software_catalog_org_id_idx').on(table.orgId),
+  activeIdx: index('software_catalog_active_idx').on(table.orgId).where(sql`${table.deletedAt} IS NULL`),
   partnerIdx: index('software_catalog_partner_id_idx').on(table.partnerId),
   partnerProviderIdx: index('software_catalog_partner_provider_idx').on(table.partnerId, table.integrationProvider),
   nameIdx: index('software_catalog_name_idx').on(table.name),

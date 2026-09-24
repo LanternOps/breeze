@@ -24,6 +24,7 @@ import { createPlannedWorkTicket } from './plannedWorkTicket';
 import { captureException } from './sentry';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { assertChecklistTemplateUsableByOrg } from './checklistTemplateReference';
+import { isMspStaffReportType } from './reportRegistry';
 
 /**
  * Spec #5573 §5–§7, §12. Every read and write filters by `orgId` in addition to
@@ -205,11 +206,22 @@ async function validateReferences(orgId: string, input: RefInput, executor: DbEx
     }
   }
   if (input.autoEvidenceReportId != null) {
-    const [r] = await executor.select({ id: reports.id }).from(reports)
+    const [r] = await executor.select({ id: reports.id, type: reports.type }).from(reports)
       .where(and(eq(reports.id, input.autoEvidenceReportId), eq(reports.orgId, orgId))).limit(1);
     if (!r) throw notFound();
+    if (isMspStaffReportType(r.type)) throw internalReportType();
   }
 }
+
+/**
+ * #3198 W02 ruling F1. Business report types (registry audience 'msp_staff':
+ * SLA attainment, technician time, AR aging) are internal to the MSP, and
+ * deliverable evidence can be customer-visible (portal service read model).
+ * Refused on link (autoEvidenceReportId) and on manual attach; the nightly
+ * auto-evidence sweep refuses them too (deliverableAutoEvidence.ts).
+ */
+const internalReportType = () =>
+  new DeliverableServiceError('Internal business reports cannot be attached as deliverable evidence', 400, 'INTERNAL_REPORT_TYPE');
 
 const duplicateName = () =>
   new DeliverableServiceError('A deliverable with this name already exists for this contract', 409, 'DUPLICATE_NAME');
@@ -433,12 +445,13 @@ async function countEvidence(orgId: string, occurrenceId: string, executor: DbEx
 async function insertEvidenceRef(orgId: string, occurrenceId: string, ref: EvidenceRef, actor: DeliverableActor, executor: DbExecutor): Promise<void> {
   switch (ref.kind) {
     case 'report_run': {
-      const [run] = await executor.select({ id: reportRuns.id, reportId: reportRuns.reportId })
+      const [run] = await executor.select({ id: reportRuns.id, reportId: reportRuns.reportId, type: reports.type })
         .from(reportRuns)
         .innerJoin(reports, eq(reports.id, reportRuns.reportId))
         .where(and(eq(reportRuns.id, ref.reportRunId), eq(reports.orgId, orgId)))
         .limit(1);
       if (!run) throw notFound();
+      if (isMspStaffReportType(run.type)) throw internalReportType();
       await executor.insert(serviceDeliverableEvidence).values({
         orgId, occurrenceId, kind: 'report_run', documentId: null, reportId: run.reportId, reportRunId: run.id, createdByUserId: actor.userId,
       });

@@ -119,6 +119,9 @@ const TARGET_GLOBS = [
   // drawer needs its own entry or its mutations are invisible to it.
   'src/components/aiAgents/ImpactWeightsDrawer.tsx',
   'src/components/devices/DeviceInfoTab.tsx',
+  // Metric anomaly episodes W04: card actions (dismiss/resolve/promote/unsnooze)
+  // are the only mutation surface for the rewritten panel.
+  'src/components/devices/AnomalyEpisodeCard.tsx',
   // Fleet Designer W02 (#5652): the Function field's PUT is its own file.
   'src/components/devices/DeviceFunctionField.tsx',
   'src/components/devices/DevicePatchStatusTab.tsx',
@@ -288,6 +291,11 @@ const TARGET_GLOBS = [
   // so a slow response invited a duplicate-creating double click. The mount at
   // /reports/builder passed no onSubmit, the only success path.
   'src/components/reports/ReportBuilder.tsx',
+  // Business reports (#3198 W03): the curated-template create POST is the only
+  // mutation in this file and it is runAction-wrapped. A partner-wide create
+  // that 403s on the all-organizations access gate must never look identical
+  // to one that succeeded.
+  'src/components/reports/ReportTemplates.tsx',
   // QuickBooks connection panel (Phase D): connect/disconnect/push-mode/settings
   // -refresh already routed through runAction, but the file was never guarded —
   // so the pull-payments PATCH and the "Sync now" enqueue would have shipped
@@ -748,7 +756,9 @@ describe('no silent mutations in targeted set', () => {
     // Accept on behalf adds quotes/AcceptOnBehalfDialog.tsx: 160 → 161.
     // Decline on behalf (#6634) adds quotes/DeclineOnBehalfDialog.tsx: 161 → 162.
     // Accept-on-behalf evidence (#6633) adds quotes/AcceptanceEvidenceControl.tsx: 162 → 163.
-    expect(absoluteFiles.length).toBe(163);
+    // Metric anomaly episodes W04 adds devices/AnomalyEpisodeCard.tsx: 163 → 164.
+    // Business reports (#3198 W03) add reports/ReportTemplates.tsx: 164 → 165.
+    expect(absoluteFiles.length).toBe(165);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

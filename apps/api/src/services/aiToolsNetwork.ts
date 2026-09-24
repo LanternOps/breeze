@@ -176,7 +176,7 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
             description: 'Type: workstation, server, printer, router, switch, firewall, access_point, phone, iot, camera, nas, unknown, website, service',
           },
           linkedDeviceId: { type: 'string', description: 'Linked managed device UUID' },
-          limit: { type: 'number', description: 'Maximum rows (default 50, maximum 200)' },
+          limit: { type: 'number', description: 'Max rows (default 50, max 200)' },
         },
       },
     },
@@ -269,7 +269,7 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
           },
           acknowledged: { type: 'boolean', description: 'Filter by acknowledgment status' },
           since: { type: 'string', description: 'Only include changes detected after this ISO timestamp' },
-          limit: { type: 'number', description: 'Max results (default: 50, max: 200)' }
+          limit: { type: 'number', description: 'Max results (default 100, max 500)' }
         }
       }
     },

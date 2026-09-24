@@ -6,6 +6,7 @@
  * Each tool wraps existing DB schema and service logic with org-scoped isolation.
  */
 
+import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import type Anthropic from '@anthropic-ai/sdk';
 import { db } from '../db';
 import { pgErrorCode, pgErrorConstraint } from '../utils/pgErrors';
@@ -75,7 +76,16 @@ async function scheduleAiGroupPeripheralReconciliation(deviceIds: readonly strin
 import type { AiTool } from './aiTools';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
-import type { UserPermissions } from './permissions';
+import { getUserPermissions, type UserPermissions } from './permissions';
+import {
+  missingReportTypePermission,
+  reportAudienceCondition,
+  reportTypeHiddenByPermission,
+  reportTypeHiddenFromCaller,
+  reportTypePermissionCondition,
+  reportTypeRequiresPermissions,
+} from './reportTypePermissions';
+import { reportTypeDef } from './reportRegistry';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from './partnerWideAccess';
 import { filterWindowsToSiteScope, scopeWindowForRead } from './maintenanceSiteScope';
 import {
@@ -110,7 +120,7 @@ import {
   type PersistedSiteScopeColumns,
   type ReportAction,
   type ReportExecutionAuthority,
-  type UserReportExecutionAuthority,
+  type OrgAxisUserReportExecutionAuthority,
 } from './siteScope';
 import { upsertPatchApproval, resolvePartnerIdForOrg, declineAllRingApprovals } from '../routes/patches/helpers';
 import { sanitizeThrownToolError } from './aiToolErrors';
@@ -205,6 +215,8 @@ const aiReportDefinitionMetadataProjection = {
   orgId: reports.orgId,
   // #3198 W01: the other owner axis (siteScope.projections.test.ts).
   partnerId: reports.partnerId,
+  // #3198 W02 ruling P8b: the permission belt reads the definition's type.
+  type: reports.type,
   executionScopeVersion: reports.executionScopeVersion,
   executionScopeKind: reports.executionScopeKind,
   executionScopeSiteIds: reports.executionScopeSiteIds,
@@ -220,6 +232,8 @@ const aiReportRunMetadataProjection = {
   orgId: reports.orgId,
   // #3198 W01: the other owner axis (siteScope.projections.test.ts).
   partnerId: reports.partnerId,
+  // #3198 W02 ruling F1: the audience belt reads the definition's type.
+  type: reports.type,
   executionScopeVersion: reportRuns.executionScopeVersion,
   executionScopeKind: reportRuns.executionScopeKind,
   executionScopeSiteIds: reportRuns.executionScopeSiteIds,
@@ -233,14 +247,16 @@ export async function aiLiveReportAuthority(
   auth: AuthContext,
   orgId: string,
   action: ReportAction,
-): Promise<
-  (Omit<UserReportExecutionAuthority, 'scope'> & { scope: LiveSiteScopeV1 }) | null
-> {
+): Promise<OrgAxisUserReportExecutionAuthority | null> {
   const result = await resolveRequestReportAuthority(auth, orgId, action);
-  if (!result.ok || result.authority.scope.kind === 'legacy_unscoped') return null;
-  return result.authority as Omit<UserReportExecutionAuthority, 'scope'> & {
-    scope: LiveSiteScopeV1;
-  };
+  if (!result.ok) return null;
+  // #3198 W02 (addendum B5): only an ORG-axis scope is usable here — every
+  // caller runs an org generator. legacy_unscoped was always refused; a
+  // partner_wide scope (never produced by the org resolver) is refused too
+  // rather than cast through.
+  const { authority } = result;
+  if (authority.scope.kind !== 'unrestricted' && authority.scope.kind !== 'restricted') return null;
+  return authority as OrgAxisUserReportExecutionAuthority;
 }
 
 /**
@@ -264,6 +280,26 @@ export function requireOrgOwnedReportRow<T extends { orgId: string | null; partn
   return row as T & { orgId: string };
 }
 
+/** The AI caller's LIVE permission set — what `requirePermission` would
+ *  resolve for the same token on an HTTP route. */
+function aiCallerPermissions(auth: AuthContext): Promise<UserPermissions | null> {
+  return getUserPermissions(auth.user.id, {
+    partnerId: auth.partnerId || undefined,
+    orgId: auth.orgId || undefined,
+    scope: auth.scope,
+  });
+}
+
+/**
+ * #3198 W02, ruling P8b: a stored type whose underlying read permissions the
+ * caller lacks is hidden from every AI report read, exactly as from the HTTP
+ * routes. Only a type that lists extra permissions pays the permission lookup.
+ */
+async function aiReportTypeHiddenByPermission(auth: AuthContext, type: string): Promise<boolean> {
+  if (!reportTypeRequiresPermissions(type)) return false;
+  return reportTypeHiddenByPermission(type, await aiCallerPermissions(auth));
+}
+
 async function aiReportDefinitionAccess(
   auth: AuthContext,
   reportId: string,
@@ -272,6 +308,9 @@ async function aiReportDefinitionAccess(
   const metadataConditions: SQL[] = [eq(reports.id, reportId)];
   const tenantCondition = orgWhere(auth, reports.orgId);
   if (tenantCondition) metadataConditions.push(tenantCondition);
+  // #3198 W02 ruling F1: an org-scope caller never reaches an msp_staff type.
+  const audience = reportAudienceCondition(auth, reports.type);
+  if (audience) metadataConditions.push(audience);
   const [metadataRow] = await db
     .select(aiReportDefinitionMetadataProjection)
     .from(reports)
@@ -280,6 +319,8 @@ async function aiReportDefinitionAccess(
   if (!metadataRow) return null;
   const metadata = requireOrgOwnedReportRow(metadataRow, 'aiReportDefinitionAccess metadata');
   if (!metadata) return null;
+  // Ruling P8b: hidden (not found) when the caller lacks the type's read permissions.
+  if (await aiReportTypeHiddenByPermission(auth, metadata.type)) return null;
 
   const authority = await aiLiveReportAuthority(auth, metadata.orgId, action);
   if (!authority) return null;
@@ -306,6 +347,8 @@ async function aiReportDefinitionAccess(
   if (!reportRow) return null;
   const report = requireOrgOwnedReportRow(reportRow, 'aiReportDefinitionAccess report');
   if (!report) return null;
+  // Ruling F1, defense in depth (the metadata read already excludes it).
+  if (reportTypeHiddenFromCaller(report.type, auth)) return null;
 
   try {
     const storedScope = decodeSiteScope(
@@ -327,6 +370,9 @@ async function aiReportRunAccess(
   const metadataConditions: SQL[] = [eq(reportRuns.id, runId)];
   const tenantCondition = orgWhere(auth, reports.orgId);
   if (tenantCondition) metadataConditions.push(tenantCondition);
+  // #3198 W02 ruling F1: an org-scope caller never reaches an msp_staff run.
+  const audience = reportAudienceCondition(auth, reports.type);
+  if (audience) metadataConditions.push(audience);
   const [metadataRow] = await db
     .select(aiReportRunMetadataProjection)
     .from(reportRuns)
@@ -336,6 +382,10 @@ async function aiReportRunAccess(
   if (!metadataRow) return null;
   const metadata = requireOrgOwnedReportRow(metadataRow, 'aiReportRunAccess metadata');
   if (!metadata) return null;
+  // Ruling F1, defense in depth (the metadata read already excludes it).
+  if (reportTypeHiddenFromCaller(metadata.type, auth)) return null;
+  // Ruling P8b: hidden (not found) when the caller lacks the type's read permissions.
+  if (await aiReportTypeHiddenByPermission(auth, metadata.type)) return null;
 
   const authority = await aiLiveReportAuthority(auth, metadata.orgId, action);
   if (!authority) return null;
@@ -766,7 +816,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           targetConfig: { type: 'object', description: 'Target configuration (for create)' },
           rolloutConfig: { type: 'object', description: 'Rollout configuration: batch size, failure threshold (for create)' },
           schedule: { type: 'object', description: 'Schedule configuration (for create)' },
-          limit: { type: 'number', description: 'Max results (default 25)' },
+          limit: { type: 'number', description: 'Max results (default 25, max 100)' },
         },
         required: ['action'],
       },
@@ -1056,7 +1106,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           eq(patches.externalId, patchName),
         ),
       ))
-      .orderBy(desc(patches.createdAt))
+      .orderBy(desc(patches.createdAt), desc(patches.id))
       .limit(6);
 
     if (rows.length === 0) {
@@ -1125,7 +1175,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           scheduleTime: { type: 'string', description: 'Time to run scans in HH:MM format (for setup_auto_approval, default: 02:00)' },
           rebootPolicy: { type: 'string', enum: ['if_required', 'always', 'never'], description: 'Reboot policy after patching (for setup_auto_approval, default: if_required)' },
           sources: { type: 'array', items: { type: 'string', enum: ['os', 'third_party', 'custom'] }, description: 'Patch sources to include (for setup_auto_approval, default: ["os"])' },
-          limit: { type: 'number', description: 'Max results (default 25)' },
+          ...pageParamSchema(25, 100),
         },
         required: ['action'],
       },
@@ -1174,7 +1224,9 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (!orgId) return JSON.stringify({ error: 'Organization context required' });
 
         const deviceId = typeof input.deviceId === 'string' ? input.deviceId : undefined;
-        const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
+        const page = readPageArgs('manage_patches', input, { defaultLimit: 25, maxLimit: 100 });
+        if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
+        const { limit, offset, fingerprint } = page;
 
         const catalogConds: SQL[] = [];
         if (typeof input.source === 'string') catalogConds.push(eq(patches.source, input.source as any));
@@ -1196,7 +1248,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         // only its own devices'. `null` = unrestricted (no narrowing, no query).
         const patchListAllowed = await resolveSiteAllowedDeviceIds(orgId, auth);
         if (patchListAllowed && patchListAllowed.length === 0) {
-          return JSON.stringify({ patches: [], showing: 0, note: SITE_SCOPE_EMPTY_NOTE });
+          return JSON.stringify({ ...pageEnvelope({ key: 'patches', items: [], limit, offset, fingerprint }), note: SITE_SCOPE_EMPTY_NOTE });
         }
         const patchListScope: SQL[] = patchListAllowed ? [inArray(devicePatches.deviceId, patchListAllowed)] : [];
 
@@ -1206,9 +1258,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
             .from(devicePatches)
             .innerJoin(patches, eq(devicePatches.patchId, patches.id))
             .where(and(eq(devicePatches.orgId, orgId), eq(devicePatches.deviceId, deviceId), ...patchListScope, ...catalogConds))
-            .orderBy(desc(patches.createdAt))
-            .limit(limit);
-          return JSON.stringify({ patches: rows, showing: rows.length, scope: { deviceId } });
+            .orderBy(desc(patches.createdAt), desc(patches.id))
+            .limit(limit + 1)
+            .offset(offset);
+          return JSON.stringify({ ...pageEnvelope({ key: 'patches', items: rows, limit, offset, fingerprint }), scope: { deviceId } });
         }
 
         // Org-wide: distinct catalog entries present on any of the org's
@@ -1219,10 +1272,11 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           .from(patches)
           .innerJoin(devicePatches, eq(devicePatches.patchId, patches.id))
           .where(and(eq(devicePatches.orgId, orgId), ...patchListScope, ...catalogConds))
-          .orderBy(desc(patches.createdAt))
-          .limit(limit);
+          .orderBy(desc(patches.createdAt), desc(patches.id))
+          .limit(limit + 1)
+          .offset(offset);
 
-        return JSON.stringify({ patches: rows, showing: rows.length, scope: { orgId } });
+        return JSON.stringify({ ...pageEnvelope({ key: 'patches', items: rows, limit, offset, fingerprint }), scope: { orgId } });
       }
 
       if (action === 'compliance') {
@@ -1628,7 +1682,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           siteId: { type: 'string', description: 'Site UUID filter (for list) or scope (for create)' },
           filterConditions: { type: 'object', description: 'Dynamic filter conditions (for create/update/preview)' },
           deviceIds: { type: 'array', items: { type: 'string' }, description: 'Device UUIDs (for add_devices/remove_devices)' },
-          limit: { type: 'number', description: 'Max results (default 25)' },
+          limit: { type: 'number', description: 'Max results (default 25, max 200)' },
         },
         required: ['action'],
       },
@@ -1970,7 +2024,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           suppressAlerts: { type: 'boolean', description: 'Suppress alerts during window' },
           suppressPatching: { type: 'boolean', description: 'Suppress patching during window' },
           suppressAutomations: { type: 'boolean', description: 'Suppress automations during window' },
-          limit: { type: 'number', description: 'Max results (default 25)' },
+          limit: { type: 'number', description: 'Max results (default 25, max 100)' },
         },
         required: ['action'],
       },
@@ -2234,7 +2288,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           onFailure: { type: 'string', enum: ['stop', 'continue', 'notify'], description: 'Failure behavior' },
           enabled: { type: 'boolean', description: 'Enable state' },
           triggerType: { type: 'string', enum: ['schedule', 'event', 'webhook', 'manual'], description: 'Filter by trigger type (for list)' },
-          limit: { type: 'number', description: 'Max results (default 25)' },
+          limit: { type: 'number', description: 'Max results (default 25, max 100)' },
         },
         required: ['action'],
       },
@@ -2571,7 +2625,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           ruleId: { type: 'string', description: 'Alert rule UUID (required for get_rule/test_rule)' },
           category: { type: 'string', description: 'Filter templates by category (for list_templates)' },
           severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low', 'info'], description: 'Filter by severity (for list_templates/alert_summary)' },
-          limit: { type: 'number', description: 'Max results (default 25)' },
+          limit: { type: 'number', description: 'Max results (default 25, max 100)' },
         },
         required: ['action'],
       },
@@ -2802,7 +2856,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           config: { type: 'object', description: 'Report configuration (filters, options)' },
           schedule: { type: 'string', enum: ['one_time', 'daily', 'weekly', 'monthly'], description: 'Schedule (for create/update)' },
           format: { type: 'string', enum: ['csv', 'pdf', 'excel'], description: 'Output format (for create/update)' },
-          limit: { type: 'number', description: 'Max results (default 25)' },
+          limit: { type: 'number', description: 'Max results (default 25, max 100)' },
         },
         required: ['action'],
       },
@@ -2838,6 +2892,13 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       if (action === 'list') {
         const conditions: SQL[] = [];
         let definitionPredicate: SQL;
+        // #3198 W02 ruling P8b: never list a type whose underlying read
+        // permissions the caller lacks, on any scope.
+        const typePermission = reportTypePermissionCondition(
+          await aiCallerPermissions(auth),
+          reports.type,
+        );
+        if (typePermission) conditions.push(typePermission);
         if (auth.scope === 'organization') {
           if (!auth.orgId) return JSON.stringify({ error: 'Organization context required' });
           const authority = await aiLiveReportAuthority(auth, auth.orgId, 'read');
@@ -2845,6 +2906,9 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
             return JSON.stringify({ reports: [], showing: 0 });
           }
           conditions.push(eq(reports.orgId, auth.orgId));
+          // #3198 W02 ruling F1: never list an msp_staff type to an org caller.
+          const audience = reportAudienceCondition(auth, reports.type);
+          if (audience) conditions.push(audience);
           definitionPredicate = reportDefinitionScopeSqlPredicate(
             reports,
             authority.scope,
@@ -2910,6 +2974,22 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           );
           if (!access) return JSON.stringify({ error: 'Report not found or access denied' });
           reportDef = access.report;
+          // #3198 W02 (ruling P8 + F1): the stored type's underlying read
+          // permissions, from the caller's LIVE permission set, before any run
+          // row — the HTTP generate route's gate. Only a type that lists extra
+          // permissions pays the lookup. (Org-scope callers never get here with
+          // an msp_staff type, and since ruling P8b nobody gets here without
+          // the type's permissions: aiReportDefinitionAccess hid it. Kept as
+          // defense in depth.)
+          if (reportTypeDef(reportDef.type).requiredPermissions.length > 0) {
+            const permissions = await aiCallerPermissions(auth);
+            if (
+              reportTypeHiddenFromCaller(reportDef.type, auth)
+              || missingReportTypePermission(reportDef.type, permissions)
+            ) {
+              return JSON.stringify({ error: 'Insufficient permissions' });
+            }
+          }
           try {
             const persistedScope = decodeSiteScope(
               reportDef as unknown as PersistedSiteScopeColumns,

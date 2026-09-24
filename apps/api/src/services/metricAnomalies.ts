@@ -5,6 +5,14 @@ import { tightenLockTimeout, tightenStatementTimeout } from '../db/lockTimeout';
 import { pgErrorCode } from '../utils/pgErrors';
 import { captureMessage } from './sentry';
 import { shouldProduceMlOutput, type MlFeatureFlagName } from './mlFeatureFlags';
+import {
+  assembleMetricAnomalyEpisodes,
+  closeEpisodesForDisabledDetection,
+  notifyEpisodesClosed,
+  resolveMetricAnomalyEpisodes,
+  type EpisodeCloseResult,
+} from './metricAnomalyEpisodes';
+import { recordBaselineFallback, recordEpisodeStageSkipped } from './metricAnomalyEpisodeMetrics';
 
 export const METRIC_ANOMALY_VERSION = 'metric-anomalies-v1';
 export const METRIC_ANOMALY_V1_SHADOW_VERSION = 'metric-anomaly-v1-seasonal-robust';
@@ -40,12 +48,24 @@ export const METRIC_ANOMALY_STATEMENT_TIMEOUT_MS = 90_000;
  * whole run used to share one, so a second run's `ON CONFLICT` upsert waited on
  * the first run's *transactionid* for the duration of all four statements
  * instead of just the one it actually conflicted with.
+ *
+ * `episodes` (assembly) runs BEFORE `incidents` (second quorum A6), so
+ * upsertMetricAnomalyIncidents writes each incident's episode_id at insert —
+ * the publisher never sees an unlinked incident that assembly was about to
+ * link. `episode-resolve` runs last; the loop stops at the first `locked`
+ * stage, and a skipped `episodes` stage only means this tick's incidents are
+ * born unlinked (a later tick's upsert fills episode_id via COALESCE).
+ * `episode-resolve` is the only stage that runs with ml.anomalies.enabled off
+ * (then it closes every open episode as `detection_off`, A5), and it never
+ * runs for a backfill.
  */
 export const METRIC_ANOMALY_STAGES = [
   'baseline',
   'growth-trend',
   'process-runaway',
+  'episodes',
   'incidents',
+  'episode-resolve',
   'v1-shadow',
 ] as const;
 export type MetricAnomalyStage = (typeof METRIC_ANOMALY_STAGES)[number];
@@ -81,10 +101,19 @@ const MIN_BASELINE_BUCKETS = 12;
 const MIN_SEASONAL_BASELINE_BUCKETS = 8;
 const MIN_TREND_BUCKETS = 6;
 
+/**
+ * `scan` (default) — the 10-minute cron. `backfill` — an explicit historical
+ * window (enqueueMetricAnomalyBackfill, the CLI). A backfill still assembles
+ * episodes (attach predicates are episode-relative, so replay is safe) but
+ * skips `episode-resolve`, which is now()-relative.
+ */
+export type MetricAnomalyTrigger = 'scan' | 'backfill';
+
 export interface MetricAnomalyRange {
   orgId: string;
   from: Date;
   to: Date;
+  trigger?: MetricAnomalyTrigger;
 }
 
 export interface MetricAnomalyResult {
@@ -108,6 +137,13 @@ export interface MetricAnomalyResult {
    * `stages` array — that partial coverage is only legible here.
    */
   stages: MetricAnomalyStageResult[];
+  /**
+   * Episodes closed automatically this run (supersede + auto-resolve, or
+   * detection_off with the flag off), already handed to the close handler.
+   * `statements` / `skipped` describe detection, assembly and incidents only;
+   * `episode-resolve` is reported here and in `stages`.
+   */
+  episodesClosed: number;
 }
 
 /**
@@ -305,11 +341,14 @@ function anomalyUpsertAssignments(): SQL {
  * first-detected timestamp across every subsequent pass.
  */
 function incidentUpsertAssignments(): SQL {
+  // episode_id (metric anomaly episodes W01, A6): a re-upsert fills a link a
+  // tick with a skipped `episodes` stage left NULL, and never unlinks one.
   return sql`
     last_seen_at = EXCLUDED.last_seen_at,
     peak_score = GREATEST(metric_anomaly_incidents.peak_score, EXCLUDED.peak_score),
     row_count = EXCLUDED.row_count,
-    metric_names = EXCLUDED.metric_names
+    metric_names = EXCLUDED.metric_names,
+    episode_id = COALESCE(EXCLUDED.episode_id, metric_anomaly_incidents.episode_id)
   `;
 }
 
@@ -329,6 +368,67 @@ function candidateUpsertAssignments(): SQL {
   `;
 }
 
+/**
+ * Spec §10 — buckets that belong to a CURRENTLY OPEN episode are excluded from
+ * the baseline, so a long burst cannot inflate its own threshold and stop being
+ * detected. Buckets of closed episodes rejoin the baseline, so a device that
+ * legitimately steps up re-baselines once its episode closes. Growth rows are
+ * not used: their window_start is the start of a multi-bucket trend window, not
+ * an anomalous bucket (plan deviation 6).
+ */
+function openEpisodeBucketsSql(orgId: string, sourceTable: 'device_metrics' | 'device_process_samples'): SQL {
+  return sql`
+    SELECT DISTINCT ma.device_id, ma.metric_name, ma.window_start
+    FROM metric_anomaly_episodes e
+    JOIN metric_anomalies ma ON ma.episode_id = e.id
+    WHERE e.org_id = ${orgId}
+      AND e.status = 'open'
+      AND ma.org_id = ${orgId}
+      AND ma.source_table = ${sourceTable}
+      AND ma.anomaly_type NOT IN ('memory_growth', 'disk_growth')
+  `;
+}
+
+/** Raw and open-episode-filtered aggregates over `b` (baseline rollups) LEFT JOINed to `oeb`. */
+function baselineAggregatesSql(): SQL {
+  return sql.raw(`
+        avg(b.avg_value)::double precision AS raw_value,
+        min(b.avg_value)::double precision AS raw_min,
+        max(b.avg_value)::double precision AS raw_max,
+        stddev_samp(b.avg_value)::double precision AS raw_stddev,
+        count(*)::integer AS raw_count,
+        (avg(b.avg_value) FILTER (WHERE oeb.device_id IS NULL))::double precision AS clean_value,
+        (min(b.avg_value) FILTER (WHERE oeb.device_id IS NULL))::double precision AS clean_min,
+        (max(b.avg_value) FILTER (WHERE oeb.device_id IS NULL))::double precision AS clean_max,
+        (stddev_samp(b.avg_value) FILTER (WHERE oeb.device_id IS NULL))::double precision AS clean_stddev,
+        (count(*) FILTER (WHERE oeb.device_id IS NULL))::integer AS clean_count`);
+}
+
+/**
+ * Use the filtered baseline when it still has MIN_BASELINE_BUCKETS rows, else
+ * fall back to the unfiltered one (`used_fallback`) — without the fallback a
+ * long burst would remove most of the 24 h window and detection would stop
+ * silently, the failure §10 exists to prevent, reached from the other side.
+ * MIN_BASELINE_BUCKETS is a module constant, never user input.
+ */
+function chosenBaselineSql(): SQL {
+  const min = MIN_BASELINE_BUCKETS;
+  return sql.raw(`
+        CASE WHEN bl.clean_count >= ${min} THEN bl.clean_value ELSE bl.raw_value END AS baseline_value,
+        CASE WHEN bl.clean_count >= ${min} THEN bl.clean_min ELSE bl.raw_min END AS baseline_min,
+        CASE WHEN bl.clean_count >= ${min} THEN bl.clean_max ELSE bl.raw_max END AS baseline_max,
+        CASE WHEN bl.clean_count >= ${min} THEN bl.clean_stddev ELSE bl.raw_stddev END AS baseline_stddev,
+        CASE WHEN bl.clean_count >= ${min} THEN bl.clean_count ELSE bl.raw_count END AS baseline_count,
+        (bl.clean_count < ${min} AND bl.raw_count >= ${min}) AS used_fallback,
+        (bl.raw_count - bl.clean_count)::integer AS excluded_count`);
+}
+
+function readFallbackPairs(result: unknown): number {
+  const row = Array.isArray(result) ? (result[0] as { fallbackPairs?: unknown } | undefined) : undefined;
+  const pairs = Number(row?.fallbackPairs ?? 0);
+  return Number.isFinite(pairs) && pairs > 0 ? pairs : 0;
+}
+
 async function detectBaselineDeviations(options: MetricAnomalyRange): Promise<void> {
   const { from, to } = normalizeRange(options.from, options.to);
   // bucket_start is timestamp-without-tz; bind ISO strings + ::timestamp so the
@@ -337,7 +437,7 @@ async function detectBaselineDeviations(options: MetricAnomalyRange): Promise<vo
   const fromIso = from.toISOString();
   const toIso = to.toISOString();
 
-  await db.execute(sql`
+  const result = await db.execute(sql`
     WITH recent AS (
       SELECT
         mr.org_id,
@@ -358,6 +458,7 @@ async function detectBaselineDeviations(options: MetricAnomalyRange): Promise<vo
         AND mr.avg_value IS NOT NULL
         AND mr.sample_count > 0
     ),
+    open_episode_buckets AS (${openEpisodeBucketsSql(options.orgId, 'device_metrics')}),
     baseline AS (
       SELECT
         r.org_id,
@@ -369,11 +470,7 @@ async function detectBaselineDeviations(options: MetricAnomalyRange): Promise<vo
         r.bucket_seconds,
         r.avg_value,
         r.sample_count,
-        avg(b.avg_value)::double precision AS baseline_value,
-        min(b.avg_value)::double precision AS baseline_min,
-        max(b.avg_value)::double precision AS baseline_max,
-        stddev_samp(b.avg_value)::double precision AS baseline_stddev,
-        count(*)::integer AS baseline_count
+        ${baselineAggregatesSql()}
       FROM recent r
       JOIN metric_rollups b
         ON b.org_id = r.org_id
@@ -386,6 +483,10 @@ async function detectBaselineDeviations(options: MetricAnomalyRange): Promise<vo
        AND b.sample_count > 0
        AND b.bucket_start >= r.bucket_start - (${BASELINE_LOOKBACK_HOURS} * interval '1 hour')
        AND b.bucket_start < r.bucket_start - (${BASELINE_GAP_MINUTES} * interval '1 minute')
+      LEFT JOIN open_episode_buckets oeb
+        ON oeb.device_id = b.device_id
+       AND oeb.metric_name = b.metric_name
+       AND oeb.window_start = b.bucket_start
       GROUP BY
         r.org_id,
         r.device_id,
@@ -396,6 +497,20 @@ async function detectBaselineDeviations(options: MetricAnomalyRange): Promise<vo
         r.bucket_seconds,
         r.avg_value,
         r.sample_count
+    ),
+    chosen AS (
+      SELECT
+        bl.org_id,
+        bl.device_id,
+        bl.source_table,
+        bl.metric_type,
+        bl.metric_name,
+        bl.bucket_start,
+        bl.bucket_seconds,
+        bl.avg_value,
+        bl.sample_count,
+        ${chosenBaselineSql()}
+      FROM baseline bl
     ),
     scored AS (
       SELECT
@@ -423,67 +538,76 @@ async function detectBaselineDeviations(options: MetricAnomalyRange): Promise<vo
           abs(b.avg_value - coalesce(b.baseline_value, b.avg_value))
           / greatest(coalesce(b.baseline_stddev, 0), 1)
         )::double precision AS score
-      FROM baseline b
+      FROM chosen b
       WHERE b.baseline_count >= ${MIN_BASELINE_BUCKETS}
-    )
-    INSERT INTO metric_anomalies (
-      org_id,
-      device_id,
-      source_table,
-      metric_type,
-      metric_name,
-      anomaly_type,
-      status,
-      window_start,
-      window_end,
-      bucket_seconds,
-      observed_value,
-      baseline_value,
-      baseline_min,
-      baseline_max,
-      score,
-      confidence,
-      sample_count,
-      baseline_summary,
-      evidence
-    )
-    SELECT
-      s.org_id,
-      s.device_id,
-      s.source_table,
-      s.metric_type,
-      s.metric_name,
-      s.anomaly_type,
-      'open',
-      s.bucket_start,
-      s.bucket_start + (${RAW_BUCKET_SECONDS} * interval '1 second'),
-      s.bucket_seconds,
-      s.avg_value,
-      s.baseline_value,
-      s.baseline_min,
-      s.baseline_max,
-      greatest(s.score, 0),
-      least(0.99, greatest(0.5, 0.5 + (s.score / 10)))::double precision,
-      s.sample_count,
-      jsonb_build_object(
-        'modelVersion', ${METRIC_ANOMALY_VERSION}::text,
-        'baselineHours', ${BASELINE_LOOKBACK_HOURS}::integer,
-        'baselineGapMinutes', ${BASELINE_GAP_MINUTES}::integer,
-        'baselineBuckets', s.baseline_count,
-        'baselineStddev', s.baseline_stddev
-      ),
-      jsonb_build_object(
-        'kind', 'baseline_deviation',
-        'metricName', s.metric_name,
-        'observedValue', s.avg_value,
-        'baselineValue', s.baseline_value
+    ),
+    inserted AS (
+      INSERT INTO metric_anomalies (
+        org_id,
+        device_id,
+        source_table,
+        metric_type,
+        metric_name,
+        anomaly_type,
+        status,
+        window_start,
+        window_end,
+        bucket_seconds,
+        observed_value,
+        baseline_value,
+        baseline_min,
+        baseline_max,
+        score,
+        confidence,
+        sample_count,
+        baseline_summary,
+        evidence
       )
-    FROM scored s
-    WHERE s.anomaly_type IS NOT NULL
-    ON CONFLICT (org_id, device_id, metric_name, anomaly_type, bucket_seconds, window_start)
-    DO UPDATE SET ${anomalyUpsertAssignments()}
-    WHERE metric_anomalies.status = 'open'
+      SELECT
+        s.org_id,
+        s.device_id,
+        s.source_table,
+        s.metric_type,
+        s.metric_name,
+        s.anomaly_type,
+        'open',
+        s.bucket_start,
+        s.bucket_start + (${RAW_BUCKET_SECONDS} * interval '1 second'),
+        s.bucket_seconds,
+        s.avg_value,
+        s.baseline_value,
+        s.baseline_min,
+        s.baseline_max,
+        greatest(s.score, 0),
+        least(0.99, greatest(0.5, 0.5 + (s.score / 10)))::double precision,
+        s.sample_count,
+        jsonb_build_object(
+          'modelVersion', ${METRIC_ANOMALY_VERSION}::text,
+          'baselineHours', ${BASELINE_LOOKBACK_HOURS}::integer,
+          'baselineGapMinutes', ${BASELINE_GAP_MINUTES}::integer,
+          'baselineBuckets', s.baseline_count,
+          'baselineStddev', s.baseline_stddev,
+          'baselineFallback', s.used_fallback,
+          'baselineExcludedBuckets', s.excluded_count
+        ),
+        jsonb_build_object(
+          'kind', 'baseline_deviation',
+          'metricName', s.metric_name,
+          'observedValue', s.avg_value,
+          'baselineValue', s.baseline_value
+        )
+      FROM scored s
+      WHERE s.anomaly_type IS NOT NULL
+      ON CONFLICT (org_id, device_id, metric_name, anomaly_type, bucket_seconds, window_start)
+      DO UPDATE SET ${anomalyUpsertAssignments()}
+      WHERE metric_anomalies.status = 'open'
+      RETURNING 1
+    )
+    SELECT count(DISTINCT (c.device_id, c.metric_name))::integer AS "fallbackPairs"
+    FROM chosen c
+    WHERE c.used_fallback
   `);
+  recordBaselineFallback('baseline', readFallbackPairs(result));
 }
 
 async function detectGrowthTrends(options: MetricAnomalyRange): Promise<void> {
@@ -634,7 +758,7 @@ async function detectProcessSampleRunaways(options: MetricAnomalyRange): Promise
   const fromIso = from.toISOString();
   const toIso = to.toISOString();
 
-  await db.execute(sql`
+  const result = await db.execute(sql`
     WITH recent AS (
       SELECT
         mr.org_id,
@@ -664,6 +788,7 @@ async function detectProcessSampleRunaways(options: MetricAnomalyRange): Promise
         AND mr.avg_value IS NOT NULL
         AND mr.sample_count > 0
     ),
+    open_episode_buckets AS (${openEpisodeBucketsSql(options.orgId, 'device_process_samples')}),
     baseline AS (
       SELECT
         r.org_id,
@@ -676,11 +801,7 @@ async function detectProcessSampleRunaways(options: MetricAnomalyRange): Promise
         r.avg_value,
         r.max_value,
         r.sample_count,
-        avg(b.avg_value)::double precision AS baseline_value,
-        min(b.avg_value)::double precision AS baseline_min,
-        max(b.avg_value)::double precision AS baseline_max,
-        stddev_samp(b.avg_value)::double precision AS baseline_stddev,
-        count(*)::integer AS baseline_count
+        ${baselineAggregatesSql()}
       FROM recent r
       JOIN metric_rollups b
         ON b.org_id = r.org_id
@@ -693,6 +814,10 @@ async function detectProcessSampleRunaways(options: MetricAnomalyRange): Promise
        AND b.sample_count > 0
        AND b.bucket_start >= r.bucket_start - (${BASELINE_LOOKBACK_HOURS} * interval '1 hour')
        AND b.bucket_start < r.bucket_start - (${BASELINE_GAP_MINUTES} * interval '1 minute')
+      LEFT JOIN open_episode_buckets oeb
+        ON oeb.device_id = b.device_id
+       AND oeb.metric_name = b.metric_name
+       AND oeb.window_start = b.bucket_start
       GROUP BY
         r.org_id,
         r.device_id,
@@ -705,6 +830,21 @@ async function detectProcessSampleRunaways(options: MetricAnomalyRange): Promise
         r.max_value,
         r.sample_count
     ),
+    chosen AS (
+      SELECT
+        bl.org_id,
+        bl.device_id,
+        bl.source_table,
+        bl.metric_type,
+        bl.metric_name,
+        bl.bucket_start,
+        bl.bucket_seconds,
+        bl.avg_value,
+        bl.max_value,
+        bl.sample_count,
+        ${chosenBaselineSql()}
+      FROM baseline bl
+    ),
     scored AS (
       SELECT
         b.*,
@@ -712,7 +852,7 @@ async function detectProcessSampleRunaways(options: MetricAnomalyRange): Promise
           abs(b.avg_value - coalesce(b.baseline_value, b.avg_value))
           / greatest(coalesce(b.baseline_stddev, 0), 1)
         )::double precision AS score
-      FROM baseline b
+      FROM chosen b
       WHERE b.baseline_count >= ${MIN_BASELINE_BUCKETS}
         AND (
           (
@@ -740,69 +880,78 @@ async function detectProcessSampleRunaways(options: MetricAnomalyRange): Promise
             )
           )
         )
-    )
-    INSERT INTO metric_anomalies (
-      org_id,
-      device_id,
-      source_table,
-      metric_type,
-      metric_name,
-      anomaly_type,
-      status,
-      window_start,
-      window_end,
-      bucket_seconds,
-      observed_value,
-      baseline_value,
-      baseline_min,
-      baseline_max,
-      score,
-      confidence,
-      sample_count,
-      baseline_summary,
-      evidence
-    )
-    SELECT
-      s.org_id,
-      s.device_id,
-      s.source_table,
-      s.metric_type,
-      s.metric_name,
-      CASE
-        WHEN s.metric_name = 'top_process_net_bps_sum' THEN 'network_egress'
-        ELSE 'process_runaway'
-      END,
-      'open',
-      s.bucket_start,
-      s.bucket_start + (${RAW_BUCKET_SECONDS} * interval '1 second'),
-      s.bucket_seconds,
-      s.avg_value,
-      s.baseline_value,
-      s.baseline_min,
-      s.baseline_max,
-      greatest(s.score, 0),
-      least(0.99, greatest(0.55, 0.55 + (s.score / 10)))::double precision,
-      s.sample_count,
-      jsonb_build_object(
-        'modelVersion', ${METRIC_ANOMALY_VERSION}::text,
-        'baselineHours', ${BASELINE_LOOKBACK_HOURS}::integer,
-        'baselineGapMinutes', ${BASELINE_GAP_MINUTES}::integer,
-        'baselineBuckets', s.baseline_count,
-        'baselineStddev', s.baseline_stddev,
-        'sourceTable', s.source_table
-      ),
-      jsonb_build_object(
-        'kind', 'process_sample_runaway',
-        'metricName', s.metric_name,
-        'observedValue', s.avg_value,
-        'baselineValue', s.baseline_value,
-        'baselineMax', s.baseline_max
+    ),
+    inserted AS (
+      INSERT INTO metric_anomalies (
+        org_id,
+        device_id,
+        source_table,
+        metric_type,
+        metric_name,
+        anomaly_type,
+        status,
+        window_start,
+        window_end,
+        bucket_seconds,
+        observed_value,
+        baseline_value,
+        baseline_min,
+        baseline_max,
+        score,
+        confidence,
+        sample_count,
+        baseline_summary,
+        evidence
       )
-    FROM scored s
-    ON CONFLICT (org_id, device_id, metric_name, anomaly_type, bucket_seconds, window_start)
-    DO UPDATE SET ${anomalyUpsertAssignments()}
-    WHERE metric_anomalies.status = 'open'
+      SELECT
+        s.org_id,
+        s.device_id,
+        s.source_table,
+        s.metric_type,
+        s.metric_name,
+        CASE
+          WHEN s.metric_name = 'top_process_net_bps_sum' THEN 'network_egress'
+          ELSE 'process_runaway'
+        END,
+        'open',
+        s.bucket_start,
+        s.bucket_start + (${RAW_BUCKET_SECONDS} * interval '1 second'),
+        s.bucket_seconds,
+        s.avg_value,
+        s.baseline_value,
+        s.baseline_min,
+        s.baseline_max,
+        greatest(s.score, 0),
+        least(0.99, greatest(0.55, 0.55 + (s.score / 10)))::double precision,
+        s.sample_count,
+        jsonb_build_object(
+          'modelVersion', ${METRIC_ANOMALY_VERSION}::text,
+          'baselineHours', ${BASELINE_LOOKBACK_HOURS}::integer,
+          'baselineGapMinutes', ${BASELINE_GAP_MINUTES}::integer,
+          'baselineBuckets', s.baseline_count,
+          'baselineStddev', s.baseline_stddev,
+          'baselineFallback', s.used_fallback,
+          'baselineExcludedBuckets', s.excluded_count,
+          'sourceTable', s.source_table
+        ),
+        jsonb_build_object(
+          'kind', 'process_sample_runaway',
+          'metricName', s.metric_name,
+          'observedValue', s.avg_value,
+          'baselineValue', s.baseline_value,
+          'baselineMax', s.baseline_max
+        )
+      FROM scored s
+      ON CONFLICT (org_id, device_id, metric_name, anomaly_type, bucket_seconds, window_start)
+      DO UPDATE SET ${anomalyUpsertAssignments()}
+      WHERE metric_anomalies.status = 'open'
+      RETURNING 1
+    )
+    SELECT count(DISTINCT (c.device_id, c.metric_name))::integer AS "fallbackPairs"
+    FROM chosen c
+    WHERE c.used_fallback
   `);
+  recordBaselineFallback('process-runaway', readFallbackPairs(result));
 }
 
 /**
@@ -845,6 +994,10 @@ async function detectProcessSampleRunaways(options: MetricAnomalyRange): Promise
  * `dispatch_attempts` / `agent_run_id` never appear in this statement at
  * all — not in the INSERT column list, not in SELECT, not in the ON
  * CONFLICT SET list. That is the re-publish guard.
+ *
+ * `episode_id` is the episode of the highest-score member (the `episodes`
+ * stage runs first, A6); the publisher (W02) dispatches at most one incident
+ * per episode.
  */
 async function upsertMetricAnomalyIncidents(options: MetricAnomalyRange): Promise<void> {
   const { from } = normalizeRange(options.from, options.to);
@@ -861,7 +1014,8 @@ async function upsertMetricAnomalyIncidents(options: MetricAnomalyRange): Promis
       last_seen_at,
       peak_score,
       row_count,
-      metric_names
+      metric_names,
+      episode_id
     )
     SELECT
       ma.org_id,
@@ -873,7 +1027,10 @@ async function upsertMetricAnomalyIncidents(options: MetricAnomalyRange): Promis
       (max(ma.detected_at) AT TIME ZONE 'UTC'),
       max(ma.score),
       count(*)::integer,
-      array_agg(DISTINCT ma.metric_name ORDER BY ma.metric_name)
+      array_agg(DISTINCT ma.metric_name ORDER BY ma.metric_name),
+      -- A6: the episode of the incident's highest-score member. The 'episodes'
+      -- stage ran first in this detection run, so members are already assigned.
+      (array_agg(ma.episode_id ORDER BY ma.score DESC NULLS LAST))[1]
     FROM metric_anomalies ma
     WHERE ma.org_id = ${options.orgId}
       AND ma.status = 'open'
@@ -1187,34 +1344,66 @@ function deriveSkipReason(stages: MetricAnomalyStageResult[]): MetricAnomalySkip
   return stages.some((stage) => stage.outcome === 'timeout') ? 'timeout' : 'locked';
 }
 
+function isEpisodeStage(stage: MetricAnomalyStage): stage is 'episodes' | 'episode-resolve' {
+  return stage === 'episodes' || stage === 'episode-resolve';
+}
+
 export async function detectMetricAnomaliesRange(options: MetricAnomalyRange): Promise<MetricAnomalyResult> {
   const { from, to } = normalizeRange(options.from, options.to);
-  const range: MetricAnomalyRange = { orgId: options.orgId, from, to };
+  const trigger: MetricAnomalyTrigger = options.trigger ?? 'scan';
+  const range: MetricAnomalyRange = { orgId: options.orgId, from, to, trigger };
   const base = { orgId: options.orgId, from: from.toISOString(), to: to.toISOString() };
 
-  if (!(await readMlFlag(options.orgId, 'ml.anomalies.enabled'))) {
-    return { ...base, statements: 0, skipped: true, skippedReason: 'ml-disabled', stages: [] };
-  }
+  const detectionEnabled = await readMlFlag(options.orgId, 'ml.anomalies.enabled');
 
-  // Task 2 (#3828): `incidents` collapses the rows the three detectors above it
-  // just touched into their canonical incident row. It is listed LAST and runs
-  // even when an earlier stage was skipped — it reads `metric_anomalies`, so it
-  // still has this tick's committed rows plus anything a previous tick left
-  // unmaterialised, and skipping it would strand those anomalies with no
-  // incident to dispatch.
-  const orderedStages: ReadonlyArray<readonly [MetricAnomalyStage, () => Promise<void>]> = [
-    ['baseline', () => detectBaselineDeviations(range)],
-    ['growth-trend', () => detectGrowthTrends(range)],
-    ['process-runaway', () => detectProcessSampleRunaways(range)],
-    ['incidents', () => upsertMetricAnomalyIncidents(range)],
-  ];
+  // Episodes a stage closed are kept only once that stage has COMMITTED; a
+  // timed-out or locked stage rolled back, so its closes never happened.
+  const pending: { closed: EpisodeCloseResult[] } = { closed: [] };
+  const closed: EpisodeCloseResult[] = [];
+
+  // `episodes` assembles the rows the three detectors above it just touched
+  // (plus anything a previous tick left unassigned); it runs even when an
+  // earlier stage was skipped, because it reads committed metric_anomalies.
+  // Task 2 (#3828): `incidents` then collapses the same rows into their
+  // canonical incident row, now carrying the episode_id assembly just set
+  // (A6). It also runs when an earlier stage was skipped — skipping it would
+  // strand those anomalies with no incident to dispatch.
+  const orderedStages: Array<readonly [MetricAnomalyStage, () => Promise<void>]> = [];
+  if (detectionEnabled) {
+    orderedStages.push(
+      ['baseline', () => detectBaselineDeviations(range)],
+      ['growth-trend', () => detectGrowthTrends(range)],
+      ['process-runaway', () => detectProcessSampleRunaways(range)],
+      ['episodes', async () => {
+        pending.closed = await assembleMetricAnomalyEpisodes(range);
+      }],
+      ['incidents', () => upsertMetricAnomalyIncidents(range)],
+    );
+  }
+  // D4: turning detection off must not freeze open episodes, so the resolve
+  // stage sits outside the flag gate. scan-orgs already enqueues flag-off orgs
+  // (jobs/metricAnomalies.ts findAnomalyOrgRows has no flag filter) and, since
+  // W01, every org that still owns an open episode. A5: with detection off no
+  // detector evaluated the rollups, so they cannot prove "cleared" — every
+  // open episode closes as detection_off instead. A4: with detection on,
+  // eligibility is bounded by this run's range end, expiry by the clock.
+  if (trigger === 'scan') {
+    orderedStages.push(['episode-resolve', async () => {
+      pending.closed = detectionEnabled
+        ? await resolveMetricAnomalyEpisodes(options.orgId, to, new Date())
+        : await closeEpisodesForDisabledDetection(options.orgId, new Date());
+    }]);
+  }
 
   const stages: MetricAnomalyStageResult[] = [];
   let lockContended = false;
 
   for (const [stage, run] of orderedStages) {
+    pending.closed = [];
     const result = await runDetectionStage(stage, options.orgId, run);
     stages.push(result);
+    if (result.outcome === 'completed') closed.push(...pending.closed);
+    if (result.outcome === 'timeout' && isEpisodeStage(stage)) recordEpisodeStageSkipped(stage);
     // Stop on `locked` — every later stage takes the SAME org key, so they
     // would all fail to acquire too and the round trips would be pure waste.
     // A `timeout` is per-statement, so the remaining stages still get a turn.
@@ -1226,7 +1415,7 @@ export async function detectMetricAnomaliesRange(options: MetricAnomalyRange): P
 
   let v1ShadowStatements = 0;
   let v1ShadowSkipped = true;
-  if (!lockContended && (await readMlFlag(options.orgId, 'ml.anomalies.v1_shadow.enabled'))) {
+  if (detectionEnabled && !lockContended && (await readMlFlag(options.orgId, 'ml.anomalies.v1_shadow.enabled'))) {
     const shadow = await runDetectionStage('v1-shadow', options.orgId, () =>
       detectSeasonalRobustCandidates(range),
     );
@@ -1236,8 +1425,26 @@ export async function detectMetricAnomaliesRange(options: MetricAnomalyRange): P
     if (shadow.outcome === 'locked') lockContended = true;
   }
 
+  // After every stage transaction has committed, outside any DB context
+  // (processDetectOrgRange opens none, #5283). `closed` holds the supersedes
+  // from `episodes` (returned by assembleMetricAnomalyEpisodes itself) AND the
+  // closes from `episode-resolve`, so a promoted episode that is superseded
+  // reaches W02's alert handler too. Never throws.
+  await notifyEpisodesClosed(options.orgId, closed);
+
+  if (!detectionEnabled) {
+    return {
+      ...base,
+      statements: 0,
+      skipped: true,
+      skippedReason: 'ml-disabled',
+      stages,
+      episodesClosed: closed.length,
+    };
+  }
+
   const statements = stages.filter(
-    (stage) => stage.stage !== 'v1-shadow' && stage.outcome === 'completed',
+    (stage) => stage.stage !== 'v1-shadow' && stage.stage !== 'episode-resolve' && stage.outcome === 'completed',
   ).length;
   const skipped = statements === 0 && v1ShadowStatements === 0;
 
@@ -1249,5 +1456,6 @@ export async function detectMetricAnomaliesRange(options: MetricAnomalyRange): P
     skipped,
     ...(skipped ? { skippedReason: deriveSkipReason(stages) } : {}),
     stages,
+    episodesClosed: closed.length,
   };
 }

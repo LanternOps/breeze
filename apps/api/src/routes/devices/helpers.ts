@@ -32,7 +32,7 @@ export const PUBLIC_DEVICE_FIELDS = [
   'lastUser', 'uptimeSeconds', 'isHeadless', 'pendingReboot',
   'rebootScheduledAt', 'rebootDeadline', 'rebootSource', 'rebootDeferralsUsed',
   'rebootMaxDeferrals', 'batteryStatus', 'activeVpns',
-  'watchdogStatus', 'watchdogLastSeen', 'watchdogVersion', 'backupVersion',
+  'watchdogStatus', 'watchdogLastSeen', 'watchdogVersion', 'backupVersion', 'helperVersion',
   'agentServerUrl', 'mainAgentSilentSince',
   'outboundNetworkPolicyVersion', 'scriptSecretEnvVersion',
   'peripheralPolicyProtocolVersion', 'rollbackProtocolVersion',

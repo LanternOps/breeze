@@ -374,7 +374,57 @@ func ensureDir(path string, mode os.FileMode, private bool) error {
 	return verifyPrivateDirDACLProtected(chain.leaf())
 }
 
-func installFile(base, relative, source string, mode os.FileMode, modTime time.Time, owner *Owner, winAttrs uint32) ([]error, error) {
+// baseTempAccess is what installFile needs on its temporary without any
+// SecurityApplier: write the content, set attributes, publish (rename needs
+// DELETE) and, on failure, discard through the same handle.
+const baseTempAccess = uint32(windows.GENERIC_WRITE | windows.DELETE | windows.FILE_WRITE_ATTRIBUTES | windows.FILE_READ_ATTRIBUTES)
+
+// isSecurityAccessRefusal reports whether an exclusive create failed because
+// of the access mask rather than the target: NtCreateFile answers
+// STATUS_PRIVILEGE_NOT_HELD when ACCESS_SYSTEM_SECURITY is requested without
+// SeSecurityPrivilege enabled, and STATUS_ACCESS_DENIED when a filter or
+// volume policy refuses WRITE_DAC/WRITE_OWNER. The Win32 spellings
+// (ERROR_PRIVILEGE_NOT_HELD, ERROR_ACCESS_DENIED) are accepted too because
+// windows.NTStatus has no Is method mapping between the two families.
+func isSecurityAccessRefusal(err error) bool {
+	for _, target := range []error{
+		windows.STATUS_PRIVILEGE_NOT_HELD, windows.STATUS_ACCESS_DENIED,
+		windows.ERROR_PRIVILEGE_NOT_HELD, windows.ERROR_ACCESS_DENIED,
+	} {
+		if errors.Is(err, target) {
+			return true
+		}
+	}
+	return false
+}
+
+// discardTemporary marks an unpublished temporary for deletion through its
+// own open handle: clear read-only (a read-only file refuses delete
+// disposition), then set FILE_DISPOSITION_INFO. The file goes when the handle
+// closes.
+func discardTemporary(handle windows.Handle) error {
+	basic := fileBasicInfo{FileAttributes: windows.FILE_ATTRIBUTE_NORMAL}
+	if err := setBasicInfo(handle, &basic); err != nil {
+		return fmt.Errorf("clear temporary attributes: %w", err)
+	}
+	// FILE_DISPOSITION_INFO is a single BOOLEAN DeleteFile, padded to 4 bytes.
+	buf := make([]byte, 4)
+	buf[0] = 1
+	return windows.SetFileInformationByHandle(handle, windows.FileDispositionInfo, &buf[0], uint32(len(buf)))
+}
+
+// createTemporary and publishTemporary are installFile's exclusive create and
+// atomic publish. They are variables only so tests can inject a create or
+// rename failure that no real filesystem produces on demand; production never
+// reassigns them.
+var (
+	createTemporary = func(parent windows.Handle, name string, access uint32) (windows.Handle, error) {
+		return openRelativeComponent(parent, name, access, shareFile, windows.FILE_CREATE, ntFileOptions, nil)
+	}
+	publishTemporary = renameRelative
+)
+
+func installFile(base, relative, source string, mode os.FileMode, modTime time.Time, owner *Owner, winAttrs uint32, sec *SecurityApplier) ([]error, error) {
 	parent := base
 	if dir := filepath.Dir(relative); dir != "." {
 		parent = filepath.Join(base, dir)
@@ -393,20 +443,46 @@ func installFile(base, relative, source string, mode os.FileMode, modTime time.T
 		return nil, fmt.Errorf("generate temporary name: %w", err)
 	}
 	tempName := ".breeze-restore-" + hex.EncodeToString(random[:])
-	tempHandle, err := openRelativeComponent(parentHandle, tempName,
-		windows.GENERIC_WRITE|windows.DELETE|windows.FILE_WRITE_ATTRIBUTES|windows.FILE_READ_ATTRIBUTES,
-		shareFile, windows.FILE_CREATE, ntFileOptions, nil)
+	tempAccess := baseTempAccess
+	if sec != nil {
+		// The creator of a new file is granted the access it asks for, so the
+		// security rights the applier needs (WRITE_DAC/WRITE_OWNER, and
+		// ACCESS_SYSTEM_SECURITY only when the caller holds
+		// SeSecurityPrivilege) are requested on the exclusive create itself.
+		tempAccess |= sec.Access
+	}
+	tempHandle, err := createTemporary(parentHandle, tempName, tempAccess)
+	var secWarn error
+	if err != nil && sec != nil && isSecurityAccessRefusal(err) {
+		// R39: the security descriptor is fidelity, never a reason to lose
+		// the file. The refusal is about the EXTRA access (e.g.
+		// ACCESS_SYSTEM_SECURITY without SeSecurityPrivilege), so retry the
+		// exclusive create once with the base mask, skip Apply (the handle
+		// could not honour it) and report the file as restored with a warning.
+		secWarn = fmt.Errorf("could not reapply security descriptor: %w", err)
+		sec = nil
+		tempHandle, err = createTemporary(parentHandle, tempName, baseTempAccess)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("create target temporary file: %w", err)
 	}
 	temp := os.NewFile(uintptr(tempHandle), tempName)
 	committed := false
 	defer func() {
+		if committed {
+			_ = temp.Close()
+			return
+		}
+		// Discard through the still-open pinned handle first: it already
+		// holds DELETE and FILE_WRITE_ATTRIBUTES, whereas a by-name reopen is
+		// checked against whatever DACL the applier just wrote — a restrictive
+		// captured descriptor can deny exactly the rights needed to clear
+		// read-only and delete, orphaning a .breeze-restore-<hex> file.
+		discardErr := discardTemporary(tempHandle)
 		_ = temp.Close()
-		if !committed {
+		if discardErr != nil {
 			// The temporary may already carry FILE_ATTRIBUTE_READONLY from the
-			// manifest mode, which would make the delete below refuse and
-			// orphan a .breeze-restore-<hex> file in the caller's tree.
+			// manifest mode, which would make the delete below refuse.
 			_ = clearReadOnlyRelative(parentHandle, tempName)
 			_ = deleteRelative(parentHandle, tempName)
 		}
@@ -432,6 +508,9 @@ func installFile(base, relative, source string, mode os.FileMode, modTime time.T
 	}
 
 	var warnings []error
+	if secWarn != nil {
+		warnings = append(warnings, secWarn)
+	}
 	if sparseWarn != nil {
 		warnings = append(warnings, sparseWarn)
 	}
@@ -470,12 +549,20 @@ func installFile(base, relative, source string, mode os.FileMode, modTime time.T
 	if err := setBasicInfo(tempHandle, &basic); err != nil {
 		warnings = append(warnings, fmt.Errorf("apply file attributes: %w", err))
 	}
+	// The captured security descriptor (W06a) goes on the pinned temporary's
+	// handle before publication, so it can never be redirected onto another
+	// file by a reparse point swapped into the path afterwards.
+	if sec != nil && sec.Apply != nil {
+		if err := sec.Apply(uintptr(tempHandle)); err != nil {
+			warnings = append(warnings, fmt.Errorf("apply security descriptor: %w", err))
+		}
+	}
 	if err := temp.Sync(); err != nil {
 		return nil, fmt.Errorf("sync target temporary file: %w", err)
 	}
 
 	destination := filepath.Base(relative)
-	if err := renameRelative(tempHandle, parentHandle, destination); err != nil {
+	if err := publishTemporary(tempHandle, parentHandle, destination); err != nil {
 		if !errors.Is(err, windows.ERROR_ACCESS_DENIED) && !errors.Is(err, windows.STATUS_ACCESS_DENIED) {
 			return nil, fmt.Errorf("publish target file: %w", err)
 		}
@@ -486,7 +573,7 @@ func installFile(base, relative, source string, mode os.FileMode, modTime time.T
 		if clearErr := clearReadOnlyRelative(parentHandle, destination); clearErr != nil {
 			return nil, fmt.Errorf("publish target file: %w", err)
 		}
-		if retryErr := renameRelative(tempHandle, parentHandle, destination); retryErr != nil {
+		if retryErr := publishTemporary(tempHandle, parentHandle, destination); retryErr != nil {
 			return nil, fmt.Errorf("publish target file: %w", retryErr)
 		}
 	}
@@ -1090,4 +1177,15 @@ func maybeSetSparse(handle windows.Handle, winAttrs uint32) error {
 		return fmt.Errorf("mark restored file sparse: %w", err)
 	}
 	return nil
+}
+
+func applyDirSecurity(base, relative string, sec SecurityApplier) error {
+	// The same pinned, reparse-refusing walk installDir uses, opening only
+	// (never creating), with the applier's access on the final component.
+	chain, err := openVerifiedDir(filepath.Join(base, relative), false, nil, sec.Access)
+	if err != nil {
+		return fmt.Errorf("open target directory: %w", err)
+	}
+	defer chain.close()
+	return sec.Apply(uintptr(chain.leaf()))
 }

@@ -98,7 +98,8 @@
     "serviceManagement": "Gestión de servicios",
     "ticketing": "Tickets",
     "deliverableTemplates": "Plantillas de entregables",
-    "securityScans": "Escaneos de IOC"
+    "securityScans": "Escaneos de IOC",
+    "system": "Sistema"
   },
   "documentTitles": {
     "dashboard": "Panel",

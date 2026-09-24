@@ -11,6 +11,7 @@
  * - query_custom_fields (Tier 1): Get custom field definitions or device values
  */
 
+import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { db } from '../db';
 import {
   devices,
@@ -21,7 +22,7 @@ import {
   sites,
   customFieldDefinitions,
 } from '../db/schema';
-import { eq, and, desc, sql, inArray, SQL } from 'drizzle-orm';
+import { eq, and, asc, desc, sql, inArray, SQL } from 'drizzle-orm';
 import { escapeLike } from '../utils/sql';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
@@ -99,7 +100,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
     alwaysLoad: true,
     definition: {
       name: 'query_devices',
-      description: 'Search and filter devices in the organization. Returns a summary list of matching devices including hostname, OS, status, IP, and last seen time.',
+      description: 'Search and filter devices in the organization. Returns a summary list of matching devices including hostname, OS, status, IP, and last seen time, sorted by hostname for stable pagination.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -108,11 +109,15 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
           siteId: { type: 'string', description: 'Filter by site UUID' },
           search: { type: 'string', description: 'Search by hostname or display name (partial match)' },
           tags: { type: 'array', items: { type: 'string' }, description: 'Filter by tags (devices must have all specified tags)' },
-          limit: { type: 'number', description: 'Max results to return (default 25, max 100)' }
+          ...pageParamSchema(25, 100),
         }
       }
     },
     handler: async (input, auth) => {
+      const page = readPageArgs('query_devices', input, { defaultLimit: 25, maxLimit: 100 });
+      if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
+      const { limit, offset, fingerprint } = page;
+
       const conditions: SQL[] = [];
       const orgCondition = auth.orgCondition(devices.orgId);
       if (orgCondition) conditions.push(orgCondition);
@@ -142,7 +147,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
       if (auth.allowedSiteIds && queryOrgId) {
         const allowed = await resolveSiteAllowedDeviceIds(queryOrgId, auth);
         if (!allowed || allowed.length === 0) {
-          return JSON.stringify({ devices: [], total: 0, showing: 0 });
+          return JSON.stringify(pageEnvelope({ key: 'devices', items: [], limit, offset, fingerprint, total: 0 }));
         }
         conditions.push(inArray(devices.id, allowed));
       }
@@ -151,8 +156,6 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
       // org — see `runFrozenDeviceIds`'s docstring.
       const frozenDeviceIds = runFrozenDeviceIds(auth);
       if (frozenDeviceIds) conditions.push(inArray(devices.id, frozenDeviceIds));
-
-      const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
 
       const results = await db
         .select({
@@ -170,8 +173,14 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         .from(devices)
         .leftJoin(sites, eq(devices.siteId, sites.id))
         .where(conditions.length > 0 ? and(...conditions) : undefined)
-        .orderBy(desc(devices.lastSeenAt))
-        .limit(limit);
+        // Fix 2: `desc(lastSeenAt)` alone has no tiebreaker, so agent
+        // heartbeat churn between page requests can shift a device across
+        // the offset boundary — an offset page then skips or duplicates
+        // rows. `(hostname, id)` is stable and unique, so offset pagination
+        // is deterministic across calls.
+        .orderBy(asc(devices.hostname), asc(devices.id))
+        .limit(limit)
+        .offset(offset);
 
       // Get count
       const countResult = await db
@@ -181,11 +190,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
 
       const total = Number(countResult[0]?.count ?? 0);
 
-      return JSON.stringify({
-        devices: results,
-        total,
-        showing: results.length
-      });
+      return JSON.stringify(pageEnvelope({ key: 'devices', items: results, limit, offset, fingerprint, total }));
     }
   });
 
@@ -234,14 +239,19 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         .where(eq(sites.id, device.siteId))
         .limit(1);
 
+      // A-W05 (5c): cap the sub-arrays so a NIC-heavy or disk-heavy device
+      // can't blow the page budget; every column here is already a scalar
+      // (no jsonb on device_hardware/device_network/device_disks).
       return JSON.stringify({
         device: {
           ...projectPublicDevice(device),
           siteName: site?.name
         },
         hardware: hardware[0] ?? null,
-        networkInterfaces: network,
-        disks,
+        networkInterfaces: network.slice(0, 16),
+        networkInterfaceCount: network.length,
+        disks: disks.slice(0, 16),
+        diskCount: disks.length,
         recentMetrics
       }, (_, v) => typeof v === 'bigint' ? Number(v) : v);
     }

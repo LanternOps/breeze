@@ -219,6 +219,10 @@ interface Binding {
  * comments in `aiGuardrails.ts` beside each mapping.
  */
 const BINDINGS: readonly Binding[] = [
+  {
+    tool: 'read_artifact', routeFile: 'aiArtifacts.ts', method: 'get', path: '/:id',
+    toolOnly: { extra: [], reason: 'Only artifacts anchored to the caller\'s own session or agent run, and only where capture is enabled; the REST download is org-wide.' },
+  },
   { tool: 'list_ai_agents', routeFile: 'aiAgents.ts', method: 'get', path: '/' },
   {
     tool: 'list_ai_agent_runs', routeFile: 'aiAgents.ts', method: 'get', path: '/runs',

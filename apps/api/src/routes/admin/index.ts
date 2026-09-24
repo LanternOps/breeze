@@ -11,6 +11,8 @@ import { aiToolUsageAdminRoutes } from './aiToolUsage';
 import { trustAdminRoutes } from './trust';
 import { trustActionAdminRoutes } from './trustAct';
 import { adminSendingDomainsRoutes } from './sendingDomains';
+import { deprecationsAdminRoutes } from './deprecations';
+import { systemConnectionsAdminRoutes } from './systemConnections';
 
 export const adminRoutes = new Hono();
 
@@ -43,3 +45,12 @@ adminRoutes.route('/ai', aiToolUsageAdminRoutes);
 // platform-admin gate above; the router adds its own requireMfa() on each
 // mutating verb.
 adminRoutes.route('/sending-domains', adminSendingDomainsRoutes);
+// #6605 wave 2: read-only deployment deprecations report behind Settings →
+// System → Deprecations. Deployment-wide data, so platform-admin only (the
+// gate above); the router has no write verb.
+adminRoutes.route('/deprecations', deprecationsAdminRoutes);
+// System page W01: read-only connection status (which integrations this
+// deployment has configured). Deployment-wide, so platform-admin only via the
+// gate above; GET only. Never mount this as api.route('/admin/...') in
+// src/index.ts — that would sit outside platformAdminMiddleware.
+adminRoutes.route('/system', systemConnectionsAdminRoutes);

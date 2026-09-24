@@ -47,6 +47,11 @@ const artifacts = new Map<string, {
 
 vi.mock('../artifacts/artifactService', () => ({
   ARTIFACT_PREVIEW_BYTES: 2048,
+  // A-W05 (D13a): registerArtifactTools reads this at module load
+  // (services/aiToolsArtifacts.ts's tool description) — this suite's
+  // full-replacement mock must supply it or the eager import throws before
+  // any test runs.
+  ARTIFACT_READ_MAX_CHARS: 6_000,
   resolveArtifact: async (handle: string, scope: { orgId: string }) => {
     const row = artifacts.get(handle);
     return row && row.orgId === scope.orgId ? row : null;

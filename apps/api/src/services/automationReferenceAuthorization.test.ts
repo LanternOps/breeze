@@ -92,6 +92,7 @@ const baseCatalog: CatalogRow = {
   websiteUrl: null,
   isManaged: true,
   createdAt: new Date('2026-08-24T00:00:00.000Z'),
+  deletedAt: null,
 };
 const orgCatalogA: CatalogRow = { ...baseCatalog };
 const orgCatalogB: CatalogRow = {

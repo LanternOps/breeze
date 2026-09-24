@@ -59,7 +59,7 @@ describe('query_devices — site narrowing (cross-site enumeration)', () => {
       if (cols && typeof cols === 'object' && 'count' in (cols as object)) {
         return { from: () => ({ where: () => Promise.resolve([{ count: 1 }]) }) };
       }
-      return { from: () => ({ leftJoin: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([{ id: 'd1', hostname: 'h' }]) }) }) }) }) };
+      return { from: () => ({ leftJoin: () => ({ where: () => ({ orderBy: () => ({ limit: () => ({ offset: () => Promise.resolve([{ id: 'd1', hostname: 'h' }]) }) }) }) }) }) };
     });
     const r = await handlerFor('query_devices')({}, makeAuth(undefined));
     const parsed = JSON.parse(r);
@@ -97,6 +97,27 @@ describe('get_device_details — public device projection', () => {
       'agentTokenHash', 'previousTokenHash', 'pendingTokenHash', 'pendingWatchdogTokenHash',
       'pendingHelperTokenHash', 'pendingTokenExpiresAt', 'mtlsCertCfId', 'agentTokenSuspendedReason',
     ]) expect(parsed.device).not.toHaveProperty(key);
+  });
+
+  it('caps network interfaces and disks at 16 and reports the real counts (A-W05 5c)', async () => {
+    const nics = Array.from({ length: 20 }, (_, i) => ({ id: `nic${i}`, deviceId: 'd1', interfaceName: `eth${i}` }));
+    const diskRows = Array.from({ length: 20 }, (_, i) => ({ id: `disk${i}`, deviceId: 'd1', mountPoint: `/mnt${i}` }));
+    mockDb.select
+      .mockReturnValueOnce(limited([device]))
+      .mockReturnValueOnce(limited([]))
+      .mockReturnValueOnce({ from: () => ({ where: () => Promise.resolve(nics) }) })
+      .mockReturnValueOnce({ from: () => ({ where: () => Promise.resolve(diskRows) }) })
+      .mockReturnValueOnce({ from: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([]) }) }) }) })
+      .mockReturnValueOnce(limited([{ name: 'Allowed site' }]));
+
+    const parsed = JSON.parse(await handlerFor('get_device_details')({ deviceId: 'd1' }, makeAuth(['site-A'])));
+    expect(parsed.networkInterfaces).toHaveLength(16);
+    expect(parsed.networkInterfaceCount).toBe(20);
+    expect(parsed.disks).toHaveLength(16);
+    expect(parsed.diskCount).toBe(20);
+    for (const row of [...parsed.networkInterfaces, ...parsed.disks] as Record<string, unknown>[]) {
+      expect(Object.values(row).every((v) => typeof v !== 'object' || v === null)).toBe(true);
+    }
   });
 
   it('returns an opaque denial for a hidden-site device before subsidiary reads', async () => {

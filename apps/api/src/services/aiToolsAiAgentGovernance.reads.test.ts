@@ -98,12 +98,16 @@ describe('AI-agent reads', () => {
     const safe = { id: RUN, name: 'Triage', kind: 'triage', enabled: true, orgId: ORG, partnerId: null, createdAt: '2026-09-17' };
     vi.mocked(listAgents).mockResolvedValue([{ ...safe, policySnapshot: { secret: 'hidden' }, triggers: {}, instructions: 'private' }] as never);
     const caller = auth();
-    expect(JSON.parse(await tools.get('list_ai_agents')!.handler({ includeDisabled: true }, caller))).toEqual({ agents: [safe], showing: 1 });
-    expect(listAgents).toHaveBeenCalledWith(caller, { includeDisabled: true });
+    expect(JSON.parse(await tools.get('list_ai_agents')!.handler({ includeDisabled: true }, caller))).toEqual({
+      agents: [safe], showing: 1, limit: 25, offset: 0, hasMore: false, nextCursor: null,
+    });
+    expect(listAgents).toHaveBeenCalledWith(caller, { includeDisabled: true, limit: 26, offset: 0 });
   });
   it('defaults includeDisabled to false', async () => {
-    expect(await run('list_ai_agents')).toEqual({ agents: [], showing: 0 });
-    expect(listAgents).toHaveBeenCalledWith(expect.anything(), { includeDisabled: false });
+    expect(await run('list_ai_agents')).toEqual({
+      agents: [], showing: 0, limit: 25, offset: 0, hasMore: false, nextCursor: null,
+    });
+    expect(listAgents).toHaveBeenCalledWith(expect.anything(), { includeDisabled: false, limit: 26, offset: 0 });
   });
   it('denies an inaccessible explicit organization before querying', async () => {
     expect((await run('list_ai_agent_runs', { orgId: RUN })).error).toMatch(/organization/i);

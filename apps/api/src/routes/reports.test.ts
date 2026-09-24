@@ -34,6 +34,7 @@ const siteScopeState = vi.hoisted(() => {
     exactRunPredicate: { op: 'runScope', mode: 'exact' },
     compositeRunPredicate: { op: 'runScope', mode: 'composite' },
     systemRunPredicate: { op: 'runScope', mode: 'system' },
+    systemPartnerWidePredicate: { op: 'partnerWideScope', mode: 'system' },
     result: {
       ok: true,
       authority: {
@@ -63,6 +64,7 @@ vi.mock('../services/siteScope', () => ({
   reportRunScopeSqlPredicate: vi.fn(() => siteScopeState.exactRunPredicate),
   reportRunMultiOrgScopeSqlPredicate: vi.fn(() => siteScopeState.compositeRunPredicate),
   unrestrictedReportRunScopeSqlPredicate: vi.fn(() => siteScopeState.systemRunPredicate),
+  reportAnyPartnerWideScopeSqlPredicate: vi.fn(() => siteScopeState.systemPartnerWidePredicate),
   siteScopeFingerprint: vi.fn((scope: any) =>
     scope.kind === 'restricted' ? 'a'.repeat(64) : 'f'.repeat(64)
   ),
@@ -123,6 +125,8 @@ vi.mock('drizzle-orm', () => ({
   or: (...conditions: any[]) => ({ op: 'or', conditions }),
   eq: (column: unknown, value: unknown) => ({ op: 'eq', column, value }),
   inArray: (column: unknown, values: unknown[]) => ({ op: 'inArray', column, values }),
+  // #3198 W02 ruling F1 — the org-scope audience exclusion.
+  notInArray: (column: unknown, values: unknown[]) => ({ op: 'notInArray', column, values }),
   gte: (column: unknown, value: unknown) => ({ op: 'gte', column, value }),
   lte: (column: unknown, value: unknown) => ({ op: 'lte', column, value }),
   desc: (column: unknown) => ({ op: 'desc', column }),
@@ -776,7 +780,7 @@ describe('generateReport dispatch — security_compliance_posture', () => {
     };
     await generateReport(
       'security_compliance_posture',
-      'org-1',
+      { kind: 'organization', orgId: 'org-1' },
       {},
       executionAuthority,
     );
@@ -816,6 +820,9 @@ describe('report definition scope enforcement', () => {
     return {
       id: REPORT_ID,
       orgId: ORG_ID,
+      // The metadata projection always carries `type` (NOT NULL enum); PUT
+      // reads it for the per-type permission gate (#3198 W02, ruling P8).
+      type: 'device_inventory',
       executionScopeVersion: 1,
       executionScopeKind: 'unrestricted',
       executionScopeSiteIds: null,
@@ -1009,7 +1016,7 @@ describe('report definition scope enforcement', () => {
       expect(resolveRequestReportAuthority).toHaveBeenCalledWith(
         authState.auth,
         ORG_ID,
-        'read'
+        'read_history'
       );
       expect(reportDefinitionScopeSqlPredicate).toHaveBeenCalledTimes(1);
       expect(captured).toHaveLength(2);
@@ -1099,7 +1106,7 @@ describe('report definition scope enforcement', () => {
     expect(resolveRequestReportAuthorityMap).toHaveBeenCalledWith(
       authState.auth,
       [ORG_ID, orgB],
-      'read'
+      'read_history'
     );
     expect(reportDefinitionMultiOrgScopeSqlPredicate).toHaveBeenCalledTimes(1);
     expect(captured.every((condition) =>
@@ -1329,7 +1336,7 @@ describe('report definition scope enforcement', () => {
     expect(resolveRequestReportAuthority).toHaveBeenCalledWith(
       authState.auth,
       ORG_ID,
-      'read'
+      'read_history'
     );
   });
 
@@ -1373,7 +1380,7 @@ describe('report definition scope enforcement', () => {
   });
 
   it.each([
-    { method: 'GET', suffix: '', body: undefined, action: 'read' },
+    { method: 'GET', suffix: '', body: undefined, action: 'read_history' },
     { method: 'PUT', suffix: '', body: { name: 'Nope' }, action: 'write' },
     { method: 'DELETE', suffix: '', body: undefined, action: 'delete' },
     { method: 'POST', suffix: '/reauthorize', body: undefined, action: 'write' }
@@ -2036,6 +2043,7 @@ describe('reports routes', () => {
     const metadata = {
       id: 'report-1',
       orgId: ORG_ID,
+      type: 'executive_summary',
       executionScopeVersion: 1,
       executionScopeKind: 'unrestricted',
       executionScopeSiteIds: null,
@@ -2801,7 +2809,7 @@ describe('report run immutable scope enforcement', () => {
     ]);
     expect(generateReport).toHaveBeenCalledWith(
       'device_inventory',
-      ORG_A,
+      { kind: 'organization', orgId: ORG_A },
       {},
       expect.objectContaining({
         scope: narrowedScope,
@@ -2828,7 +2836,7 @@ describe('report run immutable scope enforcement', () => {
     expect(resolveRequestReportAuthority).toHaveBeenCalledWith(
       expect.anything(),
       ORG_A,
-      'read',
+      'read_history',
     );
     expect(db.insert).not.toHaveBeenCalled();
     expect(generateReport).not.toHaveBeenCalled();
@@ -3063,7 +3071,7 @@ describe('report run immutable scope enforcement', () => {
   it.each([
     {
       route: (id: string) => `/reports/runs/${id}`,
-      action: 'read',
+      action: 'read_history',
     },
     {
       route: (id: string) => `/reports/runs/${id}/download?format=json`,
@@ -3116,6 +3124,8 @@ describe('report run immutable scope enforcement', () => {
           // #3198 W01: the other owner axis (reports_one_owner_chk).
           'partnerId',
           'reportId',
+          // #3198 W02 ruling F1: the loader's audience belt reads the type.
+          'type',
         ]);
       expect(resolveRequestReportAuthority).toHaveBeenCalledWith(
         expect.anything(),
@@ -3195,7 +3205,7 @@ describe('report run immutable scope enforcement', () => {
       expect(resolveRequestReportAuthority).toHaveBeenCalledWith(
         expect.anything(),
         ORG_B,
-        'read',
+        'read_history',
       );
       expect(resolveRequestReportAuthorityMap).not.toHaveBeenCalled();
     },

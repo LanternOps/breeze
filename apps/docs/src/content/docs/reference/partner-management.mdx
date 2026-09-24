@@ -84,7 +84,7 @@ Partner self-registration allows MSPs and IT companies to create their own Breez
 
 4. **No account is created yet.** The endpoint performs **no email-existence lookup** -- doing so would let an attacker learn whether an address already has an account from response timing alone. Instead the API hashes the password, parks a pending registration keyed by a hashed, single-use verification token, and queues a verification email. Every accepted request -- new address or one that already has an account -- gets the same generic body: `{ "success": true, "message": "If registration can proceed, you will receive next steps shortly." }`.
 
-5. **User clicks the verification link** in the email, which submits the token to `POST /auth/verify-email`.
+5. **User opens the verification link** in the email, which lands on a page holding the token. As of v0.116.0, the token is **not** submitted automatically on page load — the page shows a **Confirm your email** button, and only clicking it calls `POST /auth/verify-email`. (Before v0.116.0, the page auto-submitted on load, which meant a mail-security scanner that renders JavaScript to prescan links — Microsoft 365 Safe Links, Proofpoint/Mimecast detonation — could complete the registration itself, before the real recipient ever saw the email.)
 
 6. **Slug generation and account creation** -- Inside a single database transaction, the API derives a URL-safe slug from the company name (lowercased, non-alphanumeric characters replaced with hyphens, trimmed to 50 characters, with a numeric suffix appended on collision), then creates four records:
    - A **partner** with type `msp` and plan `free`

@@ -831,7 +831,9 @@ function resolveMailgunConfig(
   };
 }
 
-function resolveEmailProviderConfig(): ResolvedProviderConfig {
+// Exported for the System page drift test (system/connections/customStatus.drift.test.ts),
+// which checks emailStatus against this resolver. Not for other callers.
+export function resolveEmailProviderConfig(): ResolvedProviderConfig {
   const selection = parseEmailProviderSelection();
   const resendApiKey = getEnvString('RESEND_API_KEY');
   const emailFrom = getEnvString('EMAIL_FROM');

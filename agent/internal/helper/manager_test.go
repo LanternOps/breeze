@@ -556,3 +556,124 @@ func TestInstalledVersionEmptyWhenNoStatus(t *testing.T) {
 		t.Fatalf("InstalledVersion() = %q, want empty string", got)
 	}
 }
+
+// #6252: the on-disk binary version is authoritative. A helper session whose
+// status file has not been written yet (e.g. a fresh Windows session id after
+// logoff/logon) used to make InstalledVersion() return "" while the binary was
+// on disk — the heartbeat downgrade guard then refused every server-directed
+// update as invalid_current, forever.
+func TestInstalledVersionPrefersOnDiskBinaryVersion(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmpDir, "sessions", "2"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	mgr := New(context.Background(), nil, nil, "")
+	mgr.baseDir = tmpDir
+	mgr.binaryPath = filepath.Join(tmpDir, "breeze-helper.exe")
+	mgr.sessions["2"] = newSessionState("2", tmpDir) // no status file
+	mgr.binaryVersionFunc = func(path string) (string, error) {
+		if path != mgr.binaryPath {
+			t.Fatalf("binaryVersionFunc got %q, want %q", path, mgr.binaryPath)
+		}
+		return "0.108.0", nil
+	}
+
+	if got := mgr.InstalledVersion(); got != "0.108.0" {
+		t.Fatalf("InstalledVersion() = %q, want on-disk 0.108.0", got)
+	}
+}
+
+// The running helper's status can lag the installed binary (the new binary is
+// on disk but the old process has not been restarted yet). Decisions about
+// what is INSTALLED must use the binary, not the stale process.
+func TestInstalledVersionOnDiskWinsOverSessionStatus(t *testing.T) {
+	tmpDir := t.TempDir()
+	statusPath := filepath.Join(tmpDir, "sessions", "1", "helper_status.yaml")
+	if err := os.MkdirAll(filepath.Dir(statusPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statusPath, []byte("version: 0.108.0\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	mgr := New(context.Background(), nil, nil, "")
+	mgr.baseDir = tmpDir
+	mgr.sessions["1"] = newSessionState("1", tmpDir)
+	mgr.binaryVersionFunc = func(string) (string, error) { return "0.114.0", nil }
+
+	if got := mgr.InstalledVersion(); got != "0.114.0" {
+		t.Fatalf("InstalledVersion() = %q, want on-disk 0.114.0", got)
+	}
+}
+
+func TestInstalledVersionFallsBackToStatusWhenBinaryVersionUnreadable(t *testing.T) {
+	tmpDir := t.TempDir()
+	statusPath := filepath.Join(tmpDir, "sessions", "1", "helper_status.yaml")
+	if err := os.MkdirAll(filepath.Dir(statusPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statusPath, []byte("version: 0.113.0\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	for name, readErr := range map[string]error{
+		"unsupported": errBinaryVersionUnsupported,
+		"read error":  fmt.Errorf("no version resource"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			mgr := New(context.Background(), nil, nil, "")
+			mgr.baseDir = tmpDir
+			mgr.sessions["1"] = newSessionState("1", tmpDir)
+			mgr.binaryVersionFunc = func(string) (string, error) { return "", readErr }
+			if got := mgr.InstalledVersion(); got != "0.113.0" {
+				t.Fatalf("InstalledVersion() = %q, want status fallback 0.113.0", got)
+			}
+		})
+	}
+}
+
+// #6252 chicken-and-egg: with no readable status, helperSupportsConfigFlag
+// was false, so the helper was spawned WITHOUT --config and wrote its status
+// to the legacy root file — which the agent ignores once sessions/ exists —
+// so the version stayed unknown forever. With the on-disk version known, the
+// spawn must carry --config for the per-session path.
+func TestApplySpawnsWithConfigWhenOnlyOnDiskVersionKnown(t *testing.T) {
+	tmpDir := t.TempDir()
+	origRemove := removeAutoStartFunc
+	origStopLegacy := stopHelperLegacyFunc
+	t.Cleanup(func() {
+		removeAutoStartFunc = origRemove
+		stopHelperLegacyFunc = origStopLegacy
+	})
+	removeAutoStartFunc = func() error { return nil }
+	stopHelperLegacyFunc = func() {}
+
+	helperBinary := filepath.Join(tmpDir, "breeze-helper")
+	if err := os.WriteFile(helperBinary, []byte("bin"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(tmpDir, "sessions"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	var spawnArgs [][]string
+	mgr := New(context.Background(), nil, nil, "")
+	mgr.baseDir = tmpDir
+	mgr.binaryPath = helperBinary
+	mgr.sessionEnumerator = &mockEnumerator{sessions: []SessionInfo{{Key: "3", Username: "bob", UID: 503}}}
+	mgr.isOurProcessFunc = func(int, string) bool { return false }
+	mgr.stopIfOursFunc = func(int, string) (bool, error) { return false, nil }
+	mgr.spawnFunc = func(sessionKey, binaryPath string, args ...string) (int, error) {
+		spawnArgs = append(spawnArgs, append([]string(nil), args...))
+		return 7001, nil
+	}
+	mgr.binaryVersionFunc = func(string) (string, error) { return "0.108.0", nil }
+
+	mgr.Apply(&Settings{Enabled: true, ShowOpenPortal: true})
+	mgr.Shutdown()
+
+	if len(spawnArgs) == 0 {
+		t.Fatal("expected the helper to be spawned")
+	}
+	if len(spawnArgs[0]) < 2 || spawnArgs[0][0] != "--config" {
+		t.Fatalf("spawn args = %v, want --config <session path>", spawnArgs[0])
+	}
+}

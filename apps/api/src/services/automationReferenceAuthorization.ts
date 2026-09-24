@@ -173,6 +173,8 @@ export async function resolveOwnedAutomationReferences(
       .where(and(
         inArray(softwareVersions.catalogId, [...catalogIds]),
         eq(softwareVersions.isLatest, true),
+        // Archived packages (#4980) resolve as missing, like deleted ones.
+        isNull(softwareCatalog.deletedAt),
         catalogOwnershipCondition(owner),
       ));
 

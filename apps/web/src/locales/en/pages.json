@@ -14,6 +14,7 @@
     "adminConnectedApps": "Connected apps (admin)",
     "adminLlmProviderCatalog": "LLM Provider Catalog",
     "adminQuarantined": "Quarantined Devices",
+    "adminSystem": "System",
     "adminThirdPartyCatalog": "Third-Party Catalog",
     "adminTrustAct": "Partner trust action",
     "adminTrustQueue": "Partner Trust Queue",

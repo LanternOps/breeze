@@ -120,16 +120,16 @@ describe('aiToolsAgentLogs', () => {
       expect(parsed.logs[0].level).toBe('error');
       expect(parsed.logs[0].timestamp).toBe('2026-02-15T10:00:00.000Z');
       expect(parsed.logs[0].receivedAt).toBe('2026-02-15T10:00:05.000Z');
-      // Receipt time dominates; event time only breaks ties inside one receipt
-      // instant (a 100-row ingest batch shares created_at), and the random uuid
-      // is last. Assert the sequence, not just membership.
+      // Receipt time dominates; the random uuid id is the tiebreak so the
+      // sort key is total (A-W05 5b: matches the keyset predicate's
+      // `(created_at, id)` comparison exactly — `timestamp` dropped from the
+      // ORDER BY).
       const dialect = new PgDialect();
       const orderingSql = (orderBy.mock.calls[0] as SQL[])
         .map((clause) => dialect.sqlToQuery(clause).sql)
         .join(', ');
       expect(orderingSql).toContain('"created_at"');
-      expect(orderingSql.indexOf('"timestamp"')).toBeGreaterThan(orderingSql.indexOf('"created_at"'));
-      expect(orderingSql.indexOf('"id"')).toBeGreaterThan(orderingSql.indexOf('"timestamp"'));
+      expect(orderingSql.indexOf('"id"')).toBeGreaterThan(orderingSql.indexOf('"created_at"'));
     });
 
     it('redacts legacy raw secrets before returning log search results', async () => {
@@ -154,7 +154,9 @@ describe('aiToolsAgentLogs', () => {
       } as any);
 
       const tool = tools.get('search_agent_logs')!;
-      const result = await tool.handler({}, makeAuth('org-1'));
+      // A-W05 5b: `fields` is opt-in (`includeFields`) — request it here so
+      // the redaction-on-fields assertion below still means something.
+      const result = await tool.handler({ includeFields: true }, makeAuth('org-1'));
 
       const parsed = JSON.parse(result);
       expect(parsed.logs[0]).toMatchObject({
@@ -177,9 +179,10 @@ describe('aiToolsAgentLogs', () => {
       const tool = tools.get('search_agent_logs')!;
       await tool.handler({ limit: 9999 }, makeAuth('org-1'));
 
-      // The limit call should have been called with 500
+      // The limit is clamped to 500, then the query over-fetches by one
+      // (A-W05 5b keyset mode) to detect hasMore without a COUNT.
       const limitFn = vi.mocked(db.select).mock.results[0]!.value.from().where().orderBy().limit;
-      expect(limitFn).toHaveBeenCalledWith(500);
+      expect(limitFn).toHaveBeenCalledWith(501);
     });
 
     it('should handle DB errors gracefully', async () => {

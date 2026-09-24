@@ -114,6 +114,105 @@ Key metrics:
 | Ticket triage | Override rate for category/priority/assignee |
 | User risk | True-positive rate, training completion, repeat signal rate |
 
+## Anomaly Episodes
+
+The anomaly pipeline has three grouping grains — don't confuse them:
+
+| Grain | Table | Purpose |
+| --- | --- | --- |
+| Per-bucket row | `metric_anomalies` | one row per device × metric × anomaly type × 5-min bucket; the raw evidence |
+| Dispatch outbox | `metric_anomaly_incidents` | AI-pilot dispatch queue, same per-bucket grain, gains `episode_id` (set when the incident is created — assembly runs first) + `suppressed_by_episode` so only one incident per episode is actually published |
+| Lifecycle | `metric_anomaly_episodes` | one row per contiguous run of anomalous buckets for a (device, episode key); what the tech-facing panel shows |
+
+### Lifecycle
+
+`open → resolved` (human, or automatic `cleared`/`expired_offline`/`expired_no_data`/`detection_off`)
+or `open → dismissed` (human, or an already-snoozed successor). Closed episodes are never reopened;
+new activity after a close starts a new episode with `recurrence_count` = episodes with the same
+(device, episode key) that closed in the 7 days **before this episode's first bucket** — relative to
+the episode, not to "now", so a backfill replay gets the count it would have had live.
+
+Member `metric_anomalies` rows cascade to the episode's new status **only while still `open`** — a
+promoted member keeps its `promoted` status regardless of what the episode does next. Auto-resolve
+(`cleared`) sets open members to a `cleared` status that is distinct from a human `resolved`.
+
+### Constants (defined in `apps/api/src/services/metricAnomalyEpisodeKeys.ts`, re-exported from `metricAnomalyEpisodes.ts`; override with env `METRIC_ANOMALY_EPISODE_<NAME>`, e.g. `METRIC_ANOMALY_EPISODE_GAP_MINUTES`, positive integers only)
+
+| Constant | Default | Meaning |
+| --- | --- | --- |
+| `EPISODE_GAP_MINUTES` | 30 | max gap between anomalous buckets inside one episode; auto-resolve only looks at an episode once a detection run has covered the bucket `last_seen_at + gap` |
+| `EPISODE_CLEAN_BUCKETS` | 6 | clean 5-min rollup buckets required (per member metric) to auto-resolve |
+| `EPISODE_EXPIRE_HOURS` | 24 | no clean data for this long → expired instead of resolved |
+| `EPISODE_RECURRENCE_DAYS` | 7 | window before an episode's first bucket for `recurrence_count` |
+| `EPISODE_SNOOZE_DAYS` | 7 | how long a user dismiss silences the episode key on that device |
+| `EPISODE_ASSEMBLY_LOOKBACK_HOURS` | 24 | how far back the assembly scan looks for unassigned `metric_anomalies` rows |
+
+### Close reasons
+
+| `close_reason` | Meaning | Human label? |
+| --- | --- | --- |
+| `cleared` | auto-resolved — 6+ clean rollup buckets after the last anomalous bucket | no |
+| `expired_offline` | auto-resolved after 24h with no clean data because the device itself is offline | no |
+| `expired_no_data` | auto-resolved after 24h with no clean data while the device is still checking in (series stopped: sampling disabled, agent downgrade, metric removed) | no |
+| `detection_off` | `ml.anomalies.enabled` was turned off for the org: every open episode closes on the next scan, because rollups no detector evaluated cannot prove the device recovered. Members become `cleared`; a linked alert is **not** auto-resolved | no |
+| `user` | a human clicked Resolve or Dismiss | yes |
+| `snoozed` | a new episode opened for a key a human dismissed within the last `EPISODE_SNOOZE_DAYS`; created already-dismissed | no (the label was on the *original* dismiss, not this successor) |
+
+Assembly can close an episode too: when a new burst for the same (device, key) starts more than
+`EPISODE_GAP_MINUTES` after an open episode ended, the old one is superseded and closed — `cleared`
+if every member metric had ≥ `EPISODE_CLEAN_BUCKETS` clean buckets in between, else
+`expired_no_data`. Backfill history older than the current episode is created already closed with
+the same rule. Both flow to the same close handler as auto-resolve (linked alert auto-resolved).
+
+The resolve stage runs **even when `ml.anomalies.enabled` is off** — turning off detection must not
+freeze open episodes forever — but then it closes them as `detection_off`, never `cleared`. The
+10-minute `scan-orgs` job also picks up orgs that have no live device left but still own an open
+episode, so those close too.
+
+### Snooze
+
+Dismiss = dismiss-and-snooze: `snoozed_until = now() + EPISODE_SNOOZE_DAYS` on that (device, episode
+key). A new episode opened for a still-snoozed key is created already-dismissed
+(`close_reason: 'snoozed'`) — auditable, silent, no feedback row. `unsnooze` (`PATCH
+/devices/:id/anomaly-episodes/:id { action: 'unsnooze' }`) clears `snoozed_until` without changing
+status. Dismissing (or resolving) a promoted episode also resolves its linked alert unless the
+request says `resolveAlert: false`.
+
+**Dismissing an episode lets the baseline absorb the behaviour:** snoozed successors are dismissed,
+so their buckets are not excluded from the baseline, and the key usually stops firing even after the
+snooze ends. There is no permanent suppression yet: a recurring scheduled task (the hourly `:30`
+process spike) that still fires after the snooze needs another dismiss. "Mute until changed" is a
+tracked follow-up (spec §19).
+
+### Reading the evaluation endpoint
+
+```bash
+curl -H "Authorization: Bearer <token>" \
+  "https://<host>/api/analytics/anomalies/evaluation?range=30d"
+```
+
+- `status.cleared` is reported separately from `status.{open,dismissed,promoted,resolved}` and is
+  **excluded** from `total` and every rate in `rates` — it is an automatic close, not a human label.
+  Don't read a rising `status.cleared` as a rising dismiss rate; read it alongside `episodes.byCloseReason.cleared`
+  as "detection volume that resolved itself without a human looking at it."
+- `episodes.byStatus` / `episodes.byCloseReason` are per-episode counts (contrast with the top-level
+  `status`, which is per-*member-row*) — an episode with 17 members counts once here.
+- `episodes.medianDurationSeconds` is the median `resolved_at − first_seen_at` over episodes that
+  closed in the window; `null` when none have closed yet.
+- `episodes.recurrenceShare` = episodes with `recurrence_count >= 1` ÷ all episodes in the window — a
+  high share on one device/key points at a scheduled task or a real unfixed problem re-triggering
+  detection, not detector noise.
+- `episodes.humanLabelledShare` = closed episodes a human labelled — closed with `close_reason: 'user'`
+  **or** promoted to an alert (`linked_alert_id` set), however they closed afterwards — ÷ closed
+  episodes **except** `snoozed` successors (those echo an earlier dismiss; they are not new episodes
+  awaiting a verdict). `cleared` / `expired_*` / `detection_off` closes stay in the denominator — they
+  are episodes nobody looked at. Low + a high `episodes.byCloseReason.cleared` share means the fleet is
+  mostly self-resolving and techs rarely need to look — that's the target steady state, not a problem.
+  Member-level `total` and `rates` still count `open` rows (only `cleared` is excluded there).
+- The v1-shadow block (`includeV1=true`) is unaffected by episodes — it still compares
+  `metric_anomaly_candidates` to `metric_anomalies` at the per-bucket grain, per-member feedback rows
+  still join to it exactly as before.
+
 ## V1 Promotion Baselines
 
 Before enabling a learned v1 model, compare it to the active v0 rule/heuristic

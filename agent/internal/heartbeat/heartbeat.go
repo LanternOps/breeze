@@ -5018,13 +5018,18 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	// Handle helper upgrade if requested
 	if !rollbackActive && response.HelperUpgradeTo != "" {
 		installedHelper := h.helperMgr.InstalledVersion()
-		if allowed, reason := helperUpgradeAllowed(response.HelperUpgradeTo, installedHelper, h.helperMgr.IsInstalled()); !allowed {
+		installedOnDisk := h.helperMgr.IsInstalled()
+		if allowed, reason := helperUpgradeAllowed(response.HelperUpgradeTo, installedHelper, installedOnDisk); !allowed {
 			// SECURITY: never auto-downgrade the helper. The signed manifest
 			// only binds manifest.Release == requested version, so a
 			// compromised/MITM'd control plane could replay an older,
 			// validly-signed, known-vulnerable helper release.
+			// installedOnDisk distinguishes a genuine downgrade directive from
+			// "binary present but its version unreadable" (#6252), which
+			// otherwise looks identical in the log.
 			log.Error("SECURITY: refusing server-directed helper update",
 				"installedVersion", installedHelper,
+				"installedOnDisk", installedOnDisk,
 				"targetVersion", response.HelperUpgradeTo,
 				"reason", reason)
 		} else {

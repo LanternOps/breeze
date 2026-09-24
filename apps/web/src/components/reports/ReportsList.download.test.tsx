@@ -3,7 +3,13 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 const fetchWithAuth = vi.fn();
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a),
+  useAuthStore: (selector: (s: { user: null }) => unknown) => selector({ user: null }),
+}));
+// ReportsList reads the focused org and the JWT scope for the all-organizations hint.
+vi.mock('../../stores/orgStore', () => ({ useOrgStore: () => ({ currentOrgId: null }) }));
+vi.mock('@/lib/authScope', () => ({ useJwtClaims: () => ({ status: 'unresolved' }) }));
 
 const exportReport = vi.fn();
 const downloadBlob = vi.fn();
@@ -44,6 +50,19 @@ function mountWith(downloadResponse: (url: string) => Promise<unknown> | undefin
 describe('ReportsList download', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('exposes stable testids on the tabs and each recent-run row, status and download button', async () => {
+    mountWith(() => undefined);
+
+    render(<ReportsList />);
+    expect(await screen.findByTestId('reports-tab-saved')).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId('reports-tab-runs'));
+
+    const row = await screen.findByTestId('report-run-row-run-1');
+    expect(row).toContainElement(screen.getByTestId('report-run-status-run-1'));
+    expect(screen.getByTestId('report-run-status-run-1')).toHaveAttribute('data-status', 'completed');
+    expect(row).toContainElement(screen.getByTestId('report-run-download-run-1'));
   });
 
   it('saves the returned CSV blob without regenerating', async () => {

@@ -19,6 +19,7 @@ vi.mock('../db', () => ({
 
 import {
   emitMlFeedbackEvent,
+  emitMlFeedbackEvents,
   emitSystemMlFeedbackEvent,
 } from './mlFeedback';
 
@@ -111,5 +112,57 @@ describe('mlFeedback service', () => {
 
     expect(dbMocks.runOutsideDbContextMock).toHaveBeenCalledTimes(1);
     expect(dbMocks.withSystemDbAccessContextMock).toHaveBeenCalledTimes(1);
+  });
+
+  describe('emitMlFeedbackEvents (batch, W02)', () => {
+    const member = (i: number) => ({
+      orgId: '00000000-0000-4000-8000-000000000001',
+      sourceType: 'anomaly' as const,
+      sourceId: `00000000-0000-4000-8000-${String(100 + i).padStart(12, '0')}`,
+      eventType: 'anomaly.dismissed' as const,
+      dedupeKey: 'episode:00000000-0000-4000-8000-000000000099',
+      outcome: 'dismissed' as const,
+      metadata: { episodeId: '00000000-0000-4000-8000-000000000099' },
+      occurredAt: new Date('2026-09-22T00:00:00.000Z'),
+    });
+
+    it('inserts every event in one statement against the semantic dedupe target', async () => {
+      dbMocks.returningMock.mockResolvedValue([{ id: 'a' }, { id: 'b' }, { id: 'c' }]);
+
+      const result = await emitMlFeedbackEvents([member(1), member(2), member(3)]);
+
+      expect(result).toEqual({ inserted: 3 });
+      expect(dbMocks.insertMock).toHaveBeenCalledTimes(1);
+      const inserted = dbMocks.valuesMock.mock.calls[0]![0] as Array<Record<string, unknown>>;
+      expect(inserted).toHaveLength(3);
+      expect(inserted.map((r) => r.sourceId)).toEqual([member(1).sourceId, member(2).sourceId, member(3).sourceId]);
+      const conflict = dbMocks.onConflictDoNothingMock.mock.calls[0]![0] as { target: unknown[]; where: unknown };
+      expect(conflict.target).toHaveLength(5);
+      expect(conflict.where).toBeDefined();
+    });
+
+    it('refuses an event without a dedupeKey and writes nothing', async () => {
+      const { dedupeKey: _omit, ...noKey } = member(1);
+      await expect(emitMlFeedbackEvents([member(2), noKey])).rejects.toThrow(/dedupeKey/);
+      expect(dbMocks.insertMock).not.toHaveBeenCalled();
+    });
+
+    it('chunks at 500 rows', async () => {
+      dbMocks.returningMock.mockResolvedValueOnce(new Array(500).fill({ id: 'x' }));
+      dbMocks.returningMock.mockResolvedValueOnce([{ id: 'y' }]);
+      const result = await emitMlFeedbackEvents(Array.from({ length: 501 }, (_, i) => member(i)));
+      expect(dbMocks.insertMock).toHaveBeenCalledTimes(2);
+      expect(result).toEqual({ inserted: 501 });
+    });
+
+    it('is a no-op for an empty list', async () => {
+      expect(await emitMlFeedbackEvents([])).toEqual({ inserted: 0 });
+      expect(dbMocks.insertMock).not.toHaveBeenCalled();
+    });
+
+    it('propagates insert failures (never best-effort)', async () => {
+      dbMocks.returningMock.mockRejectedValue(new Error('connection lost'));
+      await expect(emitMlFeedbackEvents([member(1)])).rejects.toThrow('connection lost');
+    });
   });
 });

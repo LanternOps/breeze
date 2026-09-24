@@ -1,0 +1,10 @@
+---
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import SystemPage, { parseSystemTab } from '../../components/admin/system/SystemPage';
+
+const initialTab = parseSystemTab(Astro.url.searchParams.get('tab'));
+---
+
+<DashboardLayout titleKey="titles.adminSystem">
+  <SystemPage client:load initialTab={initialTab} />
+</DashboardLayout>

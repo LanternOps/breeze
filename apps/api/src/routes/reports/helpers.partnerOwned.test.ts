@@ -14,6 +14,8 @@ const REPORT_ID = '44444444-4444-4444-8444-444444444444';
 const RUN_ID = '66666666-6666-4666-8666-666666666666';
 const USER_ID = '11111111-1111-4111-8111-111111111111';
 const CAPTURED_AT = new Date('2026-09-21T12:00:00.000Z');
+/** Ruling P8b: the loaders take the caller's resolved permissions. */
+const ALL_PERMS = { permissions: [{ resource: '*', action: '*' }] };
 
 const state = vi.hoisted(() => ({
   rows: [] as Array<Record<string, unknown> | null>,
@@ -62,8 +64,10 @@ import {
   getReportRunWithOwnerCheck,
   getReportWithOwnerCheck,
   partnerOwnedReportVisibility,
+  systemPartnerWideListArm,
   tenantAuthorizedReportCondition,
 } from './helpers';
+import { reportRuns, reports } from '../../db/schema';
 import {
   partnerWideScope,
   resolveRequestPartnerReportAuthority,
@@ -145,7 +149,7 @@ describe('owner-aware report helpers (#3198 W01)', () => {
     const auth = partnerAuth('all');
     state.rows = [partnerRow(), partnerRow()];
 
-    const report = await getReportWithOwnerCheck(REPORT_ID, auth);
+    const report = await getReportWithOwnerCheck(REPORT_ID, auth, ALL_PERMS);
 
     expect(report).not.toBeNull();
     expect(report!.owner).toEqual({ partnerId: PARTNER_ID });
@@ -164,7 +168,7 @@ describe('owner-aware report helpers (#3198 W01)', () => {
     // `org_id = auth.orgId`), the owner check refuses it.
     state.rows = [partnerRow(), partnerRow()];
 
-    const report = await getReportWithOwnerCheck(REPORT_ID, orgAuth());
+    const report = await getReportWithOwnerCheck(REPORT_ID, orgAuth(), ALL_PERMS);
 
     expect(report).toBeNull();
     expect(resolveRequestPartnerReportAuthority).not.toHaveBeenCalled();
@@ -177,7 +181,7 @@ describe('owner-aware report helpers (#3198 W01)', () => {
   it('getReportWithOwnerCheck returns null for a selected-access partner user', async () => {
     state.rows = [partnerRow(), partnerRow()];
 
-    const report = await getReportWithOwnerCheck(REPORT_ID, partnerAuth('selected'));
+    const report = await getReportWithOwnerCheck(REPORT_ID, partnerAuth('selected'), ALL_PERMS);
 
     expect(report).toBeNull();
     expect(resolveRequestPartnerReportAuthority).not.toHaveBeenCalled();
@@ -187,14 +191,14 @@ describe('owner-aware report helpers (#3198 W01)', () => {
     state.partnerAuthority = { ok: false, reason: 'partner_access_not_all' };
     state.rows = [partnerRow(), partnerRow()];
 
-    expect(await getReportWithOwnerCheck(REPORT_ID, partnerAuth('all'))).toBeNull();
+    expect(await getReportWithOwnerCheck(REPORT_ID, partnerAuth('all'), ALL_PERMS)).toBeNull();
   });
 
   it('getReportRunWithOwnerCheck returns the partner_wide run predicate for a partner-owned run', async () => {
     const auth = partnerAuth('all');
     state.rows = [partnerRow({ id: RUN_ID })];
 
-    const access = await getReportRunWithOwnerCheck(RUN_ID, auth, 'export');
+    const access = await getReportRunWithOwnerCheck(RUN_ID, auth, 'export', ALL_PERMS);
 
     expect(access).not.toBeNull();
     expect(access!.owner).toEqual({ partnerId: PARTNER_ID });
@@ -212,7 +216,7 @@ describe('owner-aware report helpers (#3198 W01)', () => {
   it('getReportRunWithOwnerCheck returns null for a selected-access partner user', async () => {
     state.rows = [partnerRow({ id: RUN_ID })];
 
-    expect(await getReportRunWithOwnerCheck(RUN_ID, partnerAuth('selected'), 'read')).toBeNull();
+    expect(await getReportRunWithOwnerCheck(RUN_ID, partnerAuth('selected'), 'read', ALL_PERMS)).toBeNull();
     expect(compiled(state.wheres[0]).params).not.toContain(PARTNER_ID);
     expect(resolveRequestPartnerReportAuthority).not.toHaveBeenCalled();
   });
@@ -236,10 +240,27 @@ describe('partnerOwnedReportVisibility (#3198 W01 spec 3.1a)', () => {
   });
 
   it('tenantAuthorizedReportCondition adds the partner branch only for an all-access partner', () => {
-    expect(compiled(tenantAuthorizedReportCondition(REPORT_ID, partnerAuth('all'))).params).toContain(PARTNER_ID);
-    expect(compiled(tenantAuthorizedReportCondition(REPORT_ID, partnerAuth('selected'))).params).not.toContain(PARTNER_ID);
-    const org = compiled(tenantAuthorizedReportCondition(REPORT_ID, orgAuth()));
+    expect(compiled(tenantAuthorizedReportCondition(REPORT_ID, partnerAuth('all'), ALL_PERMS)).params).toContain(PARTNER_ID);
+    expect(compiled(tenantAuthorizedReportCondition(REPORT_ID, partnerAuth('selected'), ALL_PERMS)).params).not.toContain(PARTNER_ID);
+    const org = compiled(tenantAuthorizedReportCondition(REPORT_ID, orgAuth(), ALL_PERMS));
     expect(org.params).not.toContain(PARTNER_ID);
     expect(org.sql).not.toContain('partner_id');
+  });
+});
+
+describe('systemPartnerWideListArm (#3198 W02, addendum B7)', () => {
+  it.each(['partner', 'organization'] as const)('returns undefined for a %s token', (scope) => {
+    expect(systemPartnerWideListArm({ scope }, reports)).toBeUndefined();
+    expect(systemPartnerWideListArm({ scope }, reportRuns)).toBeUndefined();
+  });
+
+  it('returns the any-partner partner_wide predicate for a system token', () => {
+    for (const columns of [reports, reportRuns]) {
+      const arm = systemPartnerWideListArm({ scope: 'system' }, columns);
+      expect(arm).toBeDefined();
+      const { sql, params } = compiled(arm);
+      expect(sql).toMatch(/partner_id/);
+      expect(params).toContain('partner_wide');
+    }
   });
 });

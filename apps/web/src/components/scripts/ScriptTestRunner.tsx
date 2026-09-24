@@ -9,7 +9,8 @@ import { asList } from '@/lib/asList';
 import { deviceScriptsHref } from '@/lib/deviceScriptsLink';
 import { RunContextSelect, RunContextChip, type RunContextChoice, type RunContextValue } from '../common/RunContext';
 import { fetchLiveSessions, type LiveSession } from '@/services/deviceActions';
-import { OutputSection } from './ExecutionDetails';
+import { OutputSection, CustomFieldWriteSummarySection } from './ExecutionDetails';
+import type { ScriptCustomFieldWriteResult } from './ExecutionHistory';
 import type { OSType } from './ScriptList';
 import { runtimeParameters, type ScriptParameter } from './ScriptFormSchema';
 import type { ScriptAdmissionResult, ExecutionStatus } from '@breeze/shared';
@@ -49,6 +50,13 @@ type TestRunExecution = {
    */
   runAs?: RunContextValue | null;
   targetSessionId?: number | null;
+  /**
+   * #6537 — the #2698 custom-field write-back outcome. NULL for a run that
+   * emitted no marker. Shown here because the test runner is where a script
+   * author checks a marker, and a rejected write (every new field starts
+   * `script_write = false`) is otherwise invisible.
+   */
+  customFieldResult?: ScriptCustomFieldWriteResult | null;
 };
 
 type ScriptTestRunnerProps = {
@@ -657,6 +665,7 @@ export default function ScriptTestRunner({
               {t('testRunner.runAgain')}
             </button>
           </div>
+          <CustomFieldWriteSummarySection result={execution.customFieldResult} />
           <OutputSection
             title={t('executionDetails.output.stdout')}
             content={execution.stdout ?? undefined}

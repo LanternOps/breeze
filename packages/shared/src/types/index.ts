@@ -920,3 +920,6 @@ export * from './securityScan';
 
 // Metric anomaly episodes (spec 2026-09-21)
 export * from './metricAnomalyEpisodes';
+
+// Business reports (#3198 W02)
+export * from './businessReports';

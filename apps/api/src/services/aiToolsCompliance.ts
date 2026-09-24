@@ -218,7 +218,7 @@ registerTool({
         enforceMode: { type: 'boolean', description: 'Auto-remediate violations' },
         isActive: { type: 'boolean', description: 'Enable/disable policy' },
         remediationOptions: { type: 'object', description: "Options: autoUninstall, notifyUser, gracePeriod, cooldownMinutes, maintenanceWindowOnly. autoInstall is forbidden here; arming installs needs a human with MFA." },
-        limit: { type: 'number', description: 'List limit (default 50)' },
+        limit: { type: 'number', description: 'Max results (default 50, max 200)' },
       },
       required: ['action'],
     },

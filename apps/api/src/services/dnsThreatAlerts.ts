@@ -4,7 +4,8 @@
  * Subscribes to `dns.threat.blocked` events on the event bus and inserts
  * a row into `alerts` (severity=high, ruleId=null) when a device hits a
  * threat-categorized domain that DNS blocked, subject to a per-(device,
- * category) cooldown.
+ * category) cooldown. Content-policy categories and `unknown` are ignored
+ * (#6692 — see DNS_THREAT_CATEGORIES in db/schema/dnsSecurity.ts).
  *
  * Mirrors the rule-less alert insert pattern used in
  * `services/warrantyAlertEvaluator.ts` and `services/networkBaseline.ts`
@@ -16,6 +17,7 @@
 import { and, eq, gt, inArray } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { alerts, devices } from '../db/schema';
+import { isDnsThreatCategory } from '../db/schema/dnsSecurity';
 import type { BreezeEvent } from './eventBus';
 
 const { db } = dbModule;
@@ -49,6 +51,15 @@ export async function handleDnsThreatBlocked(
   payload: DnsThreatBlockedPayload,
   options: { cooldownMinutes?: number } = {}
 ): Promise<{ alertId: string | null; reason: string }> {
+  // #6692 — only security-threat categories are a severity=high "DNS threat".
+  // The sync job no longer publishes content-policy (social_media, streaming,
+  // gambling, adult_content) or `unknown` blocks, but events queued before
+  // that fix can still arrive here; drop them rather than page on-call for a
+  // policy block.
+  if (!isDnsThreatCategory(payload.category)) {
+    return { alertId: null, reason: 'not_threat_category' };
+  }
+
   if (!payload.deviceId) {
     // No device resolution — the DNS event couldn't be tied back to a
     // managed device. Nothing useful to alert on. (Could be a guest

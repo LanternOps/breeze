@@ -14,8 +14,25 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
 }));
 
+// #3198 W02 Task 7: the business generators run raw SQL through their own
+// runInReportScope; this suite proves only that the registry REACHES them.
+// Their SQL and tenancy are proven in businessReports/*.test.ts and the
+// businessReportsPartnerScope integration suite.
+vi.mock('./businessReports/ticketSlaReport', () => ({
+  generateTicketSlaAttainmentReport: vi.fn(async () => ({ rows: [], rowCount: 0, summary: { generator: 'ticket_sla' } })),
+}));
+vi.mock('./businessReports/technicianTimeReport', () => ({
+  generateTechnicianTimeBillabilityReport: vi.fn(async () => ({ rows: [], rowCount: 0, summary: { generator: 'technician_time' } })),
+}));
+vi.mock('./businessReports/arAgingReport', () => ({
+  generateArAgingReport: vi.fn(async () => ({ rows: [], rowCount: 0, summary: { generator: 'ar_aging' } })),
+}));
+
 import { db } from '../db';
-import type { ReportExecutionAuthority } from './siteScope';
+import { generateTicketSlaAttainmentReport } from './businessReports/ticketSlaReport';
+import { generateTechnicianTimeBillabilityReport } from './businessReports/technicianTimeReport';
+import { generateArAgingReport } from './businessReports/arAgingReport';
+import type { OrgReportExecutionAuthority, ReportExecutionAuthority } from './siteScope';
 import {
   assertReportExecutionPreflight,
   generateDeviceInventoryReport,
@@ -25,8 +42,10 @@ import {
   UnsupportedReportScopeError,
   type ReportType,
 } from './reportGenerationService';
+import { organizationScope } from './reportScope';
 import { reportTypeEnum } from '../db/schema/reports';
 import { organizations } from '../db/schema';
+import { REPORT_TYPES as SHARED_REPORT_TYPES } from '@breeze/shared';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const OTHER_ORG_ID = '22222222-2222-4222-8222-222222222222';
@@ -61,14 +80,20 @@ const SITE_SCOPED_REPORT_TYPES: readonly ReportType[] = REPORT_TYPES
  *  only ever read back — there is no query that could reproduce it. Fleet
  *  Designer W01 (#5651) added the second, same shape. */
 const STORED_ARTIFACT_ONLY_TYPES: readonly ReportType[] = ['ai_org_narrative', 'ai_fleet_design'];
-/** #3198 W01. Business report types that exist as enum labels only: W02
- *  registers their generators. Until then every generation entry point
- *  refuses them with `UnsupportedReportScopeError`. */
-const GENERATOR_LESS_BUSINESS_TYPES: readonly ReportType[] = [
+/** #3198 W02. The business report types — every one has a generator (the
+ *  W01 generator-less list emptied with Task 9, ruling P2). */
+const BUSINESS_TYPES: readonly ReportType[] = [
   'ticket_sla_attainment',
   'technician_time_billability',
   'ar_aging',
 ];
+/** The mocked generator each BUSINESS_TYPES entry must reach, and the marker
+ *  summary it returns. */
+const BUSINESS_GENERATORS: Record<string, { fn: () => unknown; marker: string }> = {
+  ticket_sla_attainment: { fn: generateTicketSlaAttainmentReport as never, marker: 'ticket_sla' },
+  technician_time_billability: { fn: generateTechnicianTimeBillabilityReport as never, marker: 'technician_time' },
+  ar_aging: { fn: generateArAgingReport as never, marker: 'ar_aging' },
+};
 const PARTNER_ID = '44444444-4444-4444-8444-444444444444';
 
 const capturedWhere: SQL[] = [];
@@ -96,7 +121,7 @@ function authority(
   kind: 'unrestricted' | 'restricted',
   siteIds: string[] = [],
   orgId = ORG_ID,
-): ReportExecutionAuthority {
+): OrgReportExecutionAuthority {
   return {
     principalKind: 'user',
     scope: kind === 'restricted'
@@ -108,7 +133,7 @@ function authority(
   };
 }
 
-function portalAuthority(): ReportExecutionAuthority {
+function portalAuthority(): OrgReportExecutionAuthority {
   return {
     principalKind: 'portal_user',
     scope: { version: 1, kind: 'unrestricted', orgId: ORG_ID },
@@ -135,7 +160,7 @@ describe('generateReport mandatory execution authority', () => {
     await expect(
       generateReport(
         'device_inventory',
-        ORG_ID,
+        organizationScope(ORG_ID),
         {},
         undefined as never,
       ),
@@ -147,7 +172,7 @@ describe('generateReport mandatory execution authority', () => {
     await expect(
       generateReport(
         'device_inventory',
-        ORG_ID,
+        organizationScope(ORG_ID),
         {},
         authority('unrestricted', [], OTHER_ORG_ID),
       ),
@@ -160,7 +185,7 @@ describe('generateReport mandatory execution authority', () => {
     async (type) => {
       const result = await generateReport(
         type,
-        ORG_ID,
+        organizationScope(ORG_ID),
         {},
         authority('restricted', []),
       );
@@ -187,7 +212,7 @@ describe('generateReport mandatory execution authority', () => {
   it('vulnerability_management returns a shaped, unmeasured summary for restricted-empty, not a bare empty result', async () => {
     const result = await generateReport(
       'vulnerability_management',
-      ORG_ID,
+      organizationScope(ORG_ID),
       {},
       authority('restricted', []),
     );
@@ -208,7 +233,7 @@ describe('generateReport mandatory execution authority', () => {
   it.each(['executive_summary', 'security_compliance_posture', 'hardware_lifecycle'] as const)(
     'allows portal-user authority for %s',
     async (type) => {
-      await expect(generateReport(type, ORG_ID, {}, portalAuthority()))
+      await expect(generateReport(type, organizationScope(ORG_ID), {}, portalAuthority()))
         .resolves.toBeDefined();
     },
   );
@@ -221,7 +246,7 @@ describe('generateReport mandatory execution authority', () => {
     'performance',
     'ai_org_narrative',
   ] as const)('rejects portal-user authority for %s before querying', async (type) => {
-    await expect(generateReport(type, ORG_ID, {}, portalAuthority()))
+    await expect(generateReport(type, organizationScope(ORG_ID), {}, portalAuthority()))
       .rejects.toThrow(/portal|authority|report type/i);
     expect(db.select).not.toHaveBeenCalled();
   });
@@ -248,7 +273,7 @@ describe('generateReport mandatory execution authority', () => {
   it('identity_access_review refuses a restricted authority instead of binding a site scope', async () => {
     const result = await generateReport(
       'identity_access_review',
-      ORG_ID,
+      organizationScope(ORG_ID),
       {},
       authority('restricted', [SITE_A]),
     );
@@ -274,7 +299,7 @@ describe('generateReport mandatory execution authority', () => {
     async (type) => {
       await generateReport(
         type,
-        ORG_ID,
+        organizationScope(ORG_ID),
         {},
         authority('restricted', [SITE_A]),
       );
@@ -293,7 +318,7 @@ describe('generateReport mandatory execution authority', () => {
   it('endpoint_management_review returns a SHAPED zero-safe summary, not a bare empty result', async () => {
     const result = await generateReport(
       'endpoint_management_review',
-      ORG_ID,
+      organizationScope(ORG_ID),
       {},
       authority('restricted', []),
     );
@@ -317,7 +342,7 @@ describe('generateReport mandatory execution authority', () => {
     async (type) => {
       await generateReport(
         type,
-        ORG_ID,
+        organizationScope(ORG_ID),
         {},
         authority('unrestricted'),
       );
@@ -347,7 +372,7 @@ describe('stored-artifact-only report types (P2-3)', () => {
     '%s is refused by the dispatch switch before any query runs',
     async (type) => {
       await expect(
-        generateReport(type, ORG_ID, {}, authority('unrestricted')),
+        generateReport(type, organizationScope(ORG_ID), {}, authority('unrestricted')),
       ).rejects.toBeInstanceOf(StoredArtifactOnlyReportError);
       expect(db.select).not.toHaveBeenCalled();
     },
@@ -361,14 +386,14 @@ describe('stored-artifact-only report types (P2-3)', () => {
       // that would otherwise hand back a plausible-looking empty report for a
       // document that exists.
       await expect(
-        generateReport(type, ORG_ID, {}, authority('restricted', [])),
+        generateReport(type, organizationScope(ORG_ID), {}, authority('restricted', [])),
       ).rejects.toBeInstanceOf(StoredArtifactOnlyReportError);
       expect(db.select).not.toHaveBeenCalled();
     },
   );
 
   it('carries the stable code routes map to 409', async () => {
-    const error = await generateReport('ai_org_narrative', ORG_ID, {}, authority('unrestricted'))
+    const error = await generateReport('ai_org_narrative', organizationScope(ORG_ID), {}, authority('unrestricted'))
       .catch((e: unknown) => e as StoredArtifactOnlyReportError);
 
     expect(error).toBeInstanceOf(StoredArtifactOnlyReportError);
@@ -379,8 +404,16 @@ describe('stored-artifact-only report types (P2-3)', () => {
     // Drift guard: `reportGenerationService.ts` keeps its own union rather than
     // deriving from the pgEnum, and a value added to one and not the other is
     // a `never`-check failure at a call site far from either file.
-    expect([...REPORT_TYPES, ...STORED_ARTIFACT_ONLY_TYPES, ...GENERATOR_LESS_BUSINESS_TYPES].sort())
+    expect([...REPORT_TYPES, ...STORED_ARTIFACT_ONLY_TYPES, ...BUSINESS_TYPES].sort())
       .toEqual([...reportTypeEnum.enumValues].sort());
+  });
+
+  it('#3198 W02: the canonical @breeze/shared REPORT_TYPES tuple equals the DB enum, IN ORDER', () => {
+    // Pins the shared tuple (packages/shared/src/reportTypes.ts) against the
+    // pgEnum's declared order. The pgEnum is the shipped database fact and
+    // cannot be spread from the tuple (a later author might reorder it), so
+    // this is the one place order is checked, not just membership.
+    expect([...SHARED_REPORT_TYPES]).toEqual([...reportTypeEnum.enumValues]);
   });
 });
 
@@ -419,36 +452,35 @@ describe('managed evidence system execution path (#5784 OD-5 = B)', () => {
   });
 
   it('leaves the ordinary user path unchanged: a user authority with an empty restricted scope still reaches the zero-safe shape', async () => {
-    const result = await generateReport('device_inventory', ORG_ID, {}, authority('restricted', []));
+    const result = await generateReport('device_inventory', organizationScope(ORG_ID), {}, authority('restricted', []));
     expect(result.rowCount).toBe(0);
     expect(db.select).not.toHaveBeenCalled();
   });
 });
 
-describe('generator-less business report types (#3198 W01)', () => {
+describe('business report types under a zero-site restricted authority (#3198 W02)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     capturedWhere.length = 0;
     vi.mocked(db.select).mockReturnValue(selectChain([]));
   });
 
-  it.each(GENERATOR_LESS_BUSINESS_TYPES)(
-    '%s is refused by the dispatch switch with UnsupportedReportScopeError before any query',
+  it.each(BUSINESS_TYPES)(
+    // #3198 W02 (P1b): tickets, time entries and invoices carry no site axis, so
+    // a site-restricted authority queried NOTHING. The zero-safe branch does
+    // NOT throw — it hands back an empty-but-shaped summary carrying the site-restricted note, the same
+    // "not measured, not zero" contract as every other zero-safe business arm.
+    '%s zero-safe branch returns an empty-but-shaped summary carrying the site-restricted note, NOT a throw',
     async (type) => {
-      const error = await generateReport(type, ORG_ID, {}, authority('unrestricted'))
-        .catch((e: unknown) => e);
-      expect(error).toBeInstanceOf(UnsupportedReportScopeError);
-      expect((error as Error).message).toBe(`${type} cannot run at organization scope`);
-      expect(db.select).not.toHaveBeenCalled();
-    },
-  );
-
-  it.each(GENERATOR_LESS_BUSINESS_TYPES)(
-    '%s is refused by the zero-safe branch too',
-    async (type) => {
-      await expect(
-        generateReport(type, ORG_ID, {}, authority('restricted', [])),
-      ).rejects.toBeInstanceOf(UnsupportedReportScopeError);
+      const result = await generateReport(type, organizationScope(ORG_ID), {}, authority('restricted', []));
+      expect(result.rowCount).toBe(0);
+      expect(result.rows).toEqual([]);
+      expect(result.summary).toBeDefined();
+      expect((result.summary as { notes: string[] }).notes).toEqual([
+        'This report ran under a site-restricted authority. Tickets, time entries and '
+        + 'invoices have no site dimension, so nothing was queried — the figures below '
+        + 'are not measured, and they are not zero.',
+      ]);
       expect(db.select).not.toHaveBeenCalled();
     },
   );
@@ -501,5 +533,160 @@ describe('assertReportExecutionPreflight owner axis (#3198 W01)', () => {
   it('keeps the portal-user report-type gate (4th parameter)', () => {
     expect(() => assertReportExecutionPreflight({ orgId: ORG_ID }, {}, portalAuthority(), 'device_inventory'))
       .toThrow(/Portal-user authority cannot generate report type device_inventory/);
+  });
+});
+
+describe('registry dispatch gate order (#3198 W02 Task 3)', () => {
+  const PARTNER_SCOPE = { kind: 'partner' as const, partnerId: PARTNER_ID, orgIds: [ORG_ID] };
+  function partnerWideAuthority(): ReportExecutionAuthority {
+    return {
+      principalKind: 'user',
+      scope: { version: 1, kind: 'partner_wide', partnerId: PARTNER_ID },
+      principalUserId: USER_ID,
+      capturedAt: new Date('2026-09-21T12:00:00.000Z'),
+      fingerprint: 'e'.repeat(64),
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReturnValue(selectChain([]));
+  });
+
+  it.each(REPORT_TYPES)(
+    'org-only %s under a partner scope is UnsupportedReportScopeError(partner), checked BEFORE the preflight',
+    async (type) => {
+      // An org authority against a partner owner would fail the preflight with
+      // "partner authority mismatch" (403 shape) if the preflight ran first.
+      const error = await generateReport(type, PARTNER_SCOPE, {}, authority('unrestricted'))
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(UnsupportedReportScopeError);
+      expect((error as UnsupportedReportScopeError).scope).toBe('partner');
+      expect((error as Error).message).toBe(`${type} cannot run at partner scope`);
+      expect(db.select).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(BUSINESS_TYPES)(
+    '%s reaches its generator with the partner scope and authority untouched (no placeholder)',
+    async (type) => {
+      const auth = partnerWideAuthority();
+      const generator = BUSINESS_GENERATORS[type]!;
+      const result = await generateReport(type, PARTNER_SCOPE, { groupBy: 'organization' }, auth);
+      expect(result.summary).toEqual({ generator: generator.marker });
+      expect(generator.fn).toHaveBeenCalledWith(PARTNER_SCOPE, { groupBy: 'organization' }, auth);
+    },
+  );
+
+  it.each(BUSINESS_TYPES)('%s reaches its generator at organization scope', async (type) => {
+    const auth = authority('unrestricted');
+    await generateReport(type, organizationScope(ORG_ID), {}, auth);
+    expect(BUSINESS_GENERATORS[type]!.fn).toHaveBeenCalledWith(organizationScope(ORG_ID), {}, auth);
+  });
+
+  it.each(BUSINESS_TYPES)(
+    // Ruling T7a: tickets, time entries and invoices have no site axis, so a
+    // site-restricted authority WITH sites must never reach a business
+    // generator either — the dispatcher answers zero-safe for any restricted
+    // authority, not only the zero-sites one.
+    '%s under a restricted authority WITH sites gets the zero-safe summary; the generator is never called',
+    async (type) => {
+      const result = await generateReport(type, organizationScope(ORG_ID), {}, authority('restricted', [SITE_A]));
+      expect(result.rowCount).toBe(0);
+      expect((result.summary as { notes: string[] }).notes).toEqual([
+        'This report ran under a site-restricted authority. Tickets, time entries and '
+        + 'invoices have no site dimension, so nothing was queried — the figures below '
+        + 'are not measured, and they are not zero.',
+      ]);
+      for (const generator of Object.values(BUSINESS_GENERATORS)) expect(generator.fn).not.toHaveBeenCalled();
+      expect(db.select).not.toHaveBeenCalled();
+    },
+  );
+
+  it('a business type under a partner scope still runs the partner preflight (wrong partner → 403 shape)', async () => {
+    await expect(generateReport(
+      'ar_aging',
+      { kind: 'partner', partnerId: '55555555-5555-4555-8555-555555555555', orgIds: [] },
+      {},
+      partnerWideAuthority(),
+    )).rejects.toThrow(/partner authority mismatch/);
+  });
+});
+
+describe('partner preflight refuses org/site selectors in config (#3198 W02, addendum B5)', () => {
+  function partnerWideAuthority() {
+    return {
+      principalKind: 'user' as const,
+      scope: { version: 1 as const, kind: 'partner_wide' as const, partnerId: PARTNER_ID },
+      principalUserId: USER_ID,
+      capturedAt: new Date('2026-09-21T12:00:00.000Z'),
+      fingerprint: 'e'.repeat(64),
+    };
+  }
+  const owner = { partnerId: PARTNER_ID };
+
+  // A partner-scope generator runs in a context wider than one org; any of
+  // these would either widen past or re-target the partner's own org set.
+  it.each([
+    ['filters.siteIds', { filters: { siteIds: [SITE_A] } }],
+    ['filters.deviceIds', { filters: { deviceIds: ['dddddddd-dddd-4ddd-8ddd-dddddddddddd'] } }],
+    ['sites', { sites: [SITE_A] }],
+    ['orgId', { orgId: OTHER_ORG_ID }],
+    ['orgIds', { orgIds: [OTHER_ORG_ID] }],
+    ['a malformed (non-array) sites value', { sites: SITE_A }],
+    ['a malformed (non-object) filters value', { filters: 'x' }],
+  ])('refuses %s', (_label, config) => {
+    expect(() => assertReportExecutionPreflight(
+      owner, config as Record<string, unknown>, partnerWideAuthority(), 'ar_aging',
+    )).toThrow(/partner-scope report config cannot select/);
+    expect(() => assertReportExecutionPreflight(
+      owner, config as Record<string, unknown>, partnerWideAuthority(), 'ar_aging',
+    )).toThrow(UnexecutableReportScopeError);
+  });
+
+  it('accepts a config with no selectors, or with empty selector arrays (= no filter)', () => {
+    for (const config of [
+      {},
+      { asOf: '2026-08-31', groupBy: 'currency', includePaidInPeriod: true, filters: {} },
+      { sites: [], filters: { siteIds: [], deviceIds: [] }, orgIds: [] },
+    ]) {
+      expect(() => assertReportExecutionPreflight(owner, config, partnerWideAuthority(), 'ar_aging'))
+        .not.toThrow();
+    }
+  });
+
+  // Fix round item 6: a business type refuses EVERY legacy selector that
+  // selects something (its own schema), not only the org/site/device
+  // denylist — a status/severity filter the generator would ignore is refused.
+  it('refuses a non-empty legacy filter on a business type through its own config schema', () => {
+    expect(() => assertReportExecutionPreflight(
+      owner, { filters: { status: ['open'], severity: ['high'] } }, partnerWideAuthority(), 'ar_aging',
+    )).toThrow(UnexecutableReportScopeError);
+  });
+
+  // #3198 W02 (ruling T3e). Loose schemas pass any undeclared key, so the
+  // denylist above stays; in addition the config must parse under the TYPE's
+  // own schema — a stored config the type rejects never reaches a generator
+  // running wider than one org.
+  it('refuses a config the report type\'s own schema rejects', () => {
+    for (const config of [{ groupBy: 42 }, { emailRecipients: ['not-an-email'] }, { schedule: { time: '25:99' } },
+      // ar_aging's own keys (Task 9): a timestamp or impossible asOf, an unknown groupBy.
+      { asOf: '2026-08-31T00:00:00Z' }, { asOf: '2026-02-30' }, { groupBy: 'site' }]) {
+      expect(() => assertReportExecutionPreflight(
+        owner, config as Record<string, unknown>, partnerWideAuthority(), 'ar_aging',
+      )).toThrow(UnexecutableReportScopeError);
+    }
+  });
+
+  it('the schema check needs the type: without one only the denylist applies', () => {
+    expect(() => assertReportExecutionPreflight(
+      owner, { groupBy: 42 } as Record<string, unknown>, partnerWideAuthority(),
+    )).not.toThrow();
+  });
+
+  it('does not change the org-owned path: an in-scope filters.siteIds still passes there', () => {
+    expect(() => assertReportExecutionPreflight(
+      ORG_ID, { filters: { siteIds: [SITE_A] } }, authority('restricted', [SITE_A]), 'device_inventory',
+    )).not.toThrow();
   });
 });

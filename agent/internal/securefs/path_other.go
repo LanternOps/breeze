@@ -121,7 +121,7 @@ func rejectLinkedPath(base, relative string, create bool) error {
 	return nil
 }
 
-func installFile(base, relative, source string, mode os.FileMode, modTime time.Time, owner *Owner, _ uint32) ([]error, error) {
+func installFile(base, relative, source string, mode os.FileMode, modTime time.Time, owner *Owner, _ uint32, sec *SecurityApplier) ([]error, error) {
 	if err := rejectLinkedPath(base, filepath.Dir(relative), true); err != nil {
 		return nil, err
 	}
@@ -166,6 +166,11 @@ func installFile(base, relative, source string, mode os.FileMode, modTime time.T
 	if mode != 0 {
 		if err := dst.Chmod(mode.Perm()); err != nil {
 			warnings = append(warnings, fmt.Errorf("apply file mode: %w", err))
+		}
+	}
+	if sec != nil && sec.Apply != nil {
+		if err := sec.Apply(dst.Fd()); err != nil {
+			warnings = append(warnings, fmt.Errorf("apply security descriptor: %w", err))
 		}
 	}
 	if err := dst.Sync(); err != nil {
@@ -250,4 +255,16 @@ func installDir(base, relative string, mode os.FileMode, applyMode bool, owner *
 		return os.Chtimes(destination, modTime, modTime)
 	}
 	return nil
+}
+
+func applyDirSecurity(base, relative string, sec SecurityApplier) error {
+	if err := rejectLinkedPath(base, relative, false); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Join(base, relative))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = dir.Close() }()
+	return sec.Apply(dir.Fd())
 }

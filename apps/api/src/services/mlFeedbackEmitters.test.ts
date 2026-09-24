@@ -3,15 +3,19 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 // Capture every payload handed to the underlying writer so we can assert shape
 // and the actorUserIdOrNull normalization without exporting the helper.
 const emitMlFeedbackEvent = vi.fn();
+const emitMlFeedbackEvents = vi.fn();
 
 vi.mock('./mlFeedback', () => ({
   emitMlFeedbackEvent: (...args: unknown[]) => emitMlFeedbackEvent(...args),
+  emitMlFeedbackEvents: (...args: unknown[]) => emitMlFeedbackEvents(...args),
 }));
 
 import {
   emitAlertStateFeedback,
   emitCorrelationFeedback,
   emitAnomalyFeedback,
+  emitAnomalyEpisodeFeedback,
+  emitAnomalyEpisodeMemberFeedback,
   emitRcaFeedback,
   emitRemediationSuggestionFeedback,
   emitDeviceReliabilityFeedback,
@@ -110,6 +114,62 @@ describe('mlFeedbackEmitters', () => {
     });
   });
 
+  describe('emitAnomalyEpisodeFeedback (W03)', () => {
+    const EPISODE = '99999999-9999-4999-8999-999999999999';
+
+    it('writes one anomaly_episode row keyed by the episode, with the episode dedupeKey', async () => {
+      emitMlFeedbackEvent.mockResolvedValueOnce({ id: 'evt-99', inserted: true });
+
+      const inserted = await emitAnomalyEpisodeFeedback({
+        orgId: 'org-1',
+        episodeId: EPISODE,
+        eventType: 'anomaly_episode.dismissed',
+        outcome: 'dismissed',
+        actorUserId: VALID_UUID,
+        occurredAt: new Date('2026-09-22T00:00:00.000Z'),
+        metadata: { memberCount: 17 },
+      });
+
+      expect(inserted).toBe(1);
+      expect(lastPayload()).toMatchObject({
+        orgId: 'org-1',
+        sourceType: 'anomaly_episode',
+        sourceId: EPISODE,
+        eventType: 'anomaly_episode.dismissed',
+        dedupeKey: `episode:${EPISODE}`,
+        outcome: 'dismissed',
+        actorUserId: VALID_UUID,
+        metadata: { memberCount: 17, episodeId: EPISODE },
+      });
+    });
+
+    it('normalizes a non-uuid actor to null', async () => {
+      emitMlFeedbackEvent.mockResolvedValueOnce({ id: 'evt-100', inserted: true });
+      await emitAnomalyEpisodeFeedback({
+        orgId: 'org-1', episodeId: EPISODE, eventType: 'anomaly_episode.resolved', outcome: 'resolved',
+        actorUserId: 'system', occurredAt: new Date(),
+      });
+      expect(lastPayload().actorUserId).toBeNull();
+    });
+
+    it('returns 0 on a dedupe replay (no row inserted)', async () => {
+      emitMlFeedbackEvent.mockResolvedValueOnce({ id: null, inserted: false });
+      const inserted = await emitAnomalyEpisodeFeedback({
+        orgId: 'org-1', episodeId: EPISODE, eventType: 'anomaly_episode.resolved', outcome: 'resolved',
+        occurredAt: new Date(),
+      });
+      expect(inserted).toBe(0);
+    });
+
+    it('propagates a write failure (W02 D-7: labels are never best-effort)', async () => {
+      emitMlFeedbackEvent.mockRejectedValueOnce(new Error('db down'));
+      await expect(emitAnomalyEpisodeFeedback({
+        orgId: 'org-1', episodeId: EPISODE, eventType: 'anomaly_episode.resolved', outcome: 'resolved',
+        occurredAt: new Date(),
+      })).rejects.toThrow('db down');
+    });
+  });
+
   describe('actorUserIdOrNull normalization', () => {
     it('passes through a well-formed RFC UUID', async () => {
       await emitAlertStateFeedback({
@@ -177,5 +237,61 @@ describe('mlFeedbackEmitters', () => {
         orgId: 'org-1', userId: 'usr-1', eventType: 'user_risk.false_positive', outcome: 'false_positive',
       })).rejects.toThrow('db exploded');
     });
+  });
+});
+
+describe('emitAnomalyEpisodeMemberFeedback (W02)', () => {
+  const EPISODE = '99999999-9999-4999-8999-999999999999';
+  beforeEach(() => {
+    emitMlFeedbackEvents.mockReset();
+    emitMlFeedbackEvents.mockResolvedValue({ inserted: 2 });
+  });
+
+  it('writes one anomaly-sourced row per member with the episode dedupe key and metadata', async () => {
+    const inserted = await emitAnomalyEpisodeMemberFeedback({
+      orgId: 'org-1',
+      episodeId: EPISODE,
+      members: [
+        { id: 'm-1', metricName: 'top_process_ram_mb_max', anomalyType: 'process_runaway' },
+        { id: 'm-2', metricName: 'top_process_ram_mb_sum', anomalyType: 'process_runaway' },
+      ],
+      outcome: 'dismissed',
+      actorUserId: VALID_UUID,
+      occurredAt: new Date('2026-09-22T00:00:00.000Z'),
+      metadata: { route: 'devices.anomalyEpisodes.action' },
+    });
+
+    expect(inserted).toBe(2);
+    const events = emitMlFeedbackEvents.mock.calls[0]![0] as Array<Record<string, any>>;
+    expect(events).toHaveLength(2);
+    for (const [i, event] of events.entries()) {
+      expect(event).toMatchObject({
+        orgId: 'org-1',
+        sourceType: 'anomaly',
+        sourceId: `m-${i + 1}`,
+        eventType: 'anomaly.dismissed',
+        outcome: 'dismissed',
+        dedupeKey: `episode:${EPISODE}`,
+        actorUserId: VALID_UUID,
+      });
+      expect(event.metadata).toMatchObject({ episodeId: EPISODE, route: 'devices.anomalyEpisodes.action' });
+    }
+    expect(events[1]!.metadata.metricName).toBe('top_process_ram_mb_sum');
+  });
+
+  it('normalizes a non-uuid actor to null', async () => {
+    await emitAnomalyEpisodeMemberFeedback({
+      orgId: 'org-1', episodeId: EPISODE, members: [{ id: 'm-1', metricName: 'cpu_percent', anomalyType: 'spike' }],
+      outcome: 'resolved', actorUserId: 'system', occurredAt: new Date(),
+    });
+    expect((emitMlFeedbackEvents.mock.calls[0]![0] as Array<Record<string, unknown>>)[0]!.actorUserId).toBeNull();
+  });
+
+  it('propagates writer errors instead of swallowing them', async () => {
+    emitMlFeedbackEvents.mockRejectedValue(new Error('boom'));
+    await expect(emitAnomalyEpisodeMemberFeedback({
+      orgId: 'org-1', episodeId: EPISODE, members: [{ id: 'm-1', metricName: 'cpu_percent', anomalyType: 'spike' }],
+      outcome: 'promoted', occurredAt: new Date(),
+    })).rejects.toThrow('boom');
   });
 });

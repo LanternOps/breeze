@@ -215,11 +215,22 @@ type CatalogDeleteIdentity = {
 type CatalogDeleteResult =
   | { kind: 'deleted' }
   | { kind: 'not_found' }
-  | { kind: 'blocked'; deploymentCount: number; inventoryCount: number };
+  | { kind: 'archived'; deploymentCount: number; inventoryCount: number };
+
+/**
+ * Forward-looking catalog reads exclude archived (soft-deleted, #4980)
+ * packages. Deployment-history joins and the dispatch of already-created
+ * deployments deliberately do not use this.
+ */
+const activeCatalog = isNull(softwareCatalog.deletedAt);
 
 /**
  * Delete one catalog and its uploaded objects under a complete deployment
- * view. The request transaction is intentionally left before entering system
+ * view. A catalog still referenced by deployment history (or legacy inventory
+ * rows) cannot be hard-deleted — those FKs are NO ACTION and no route removes
+ * deployment history — so it is archived instead (#4980): deleted_at is
+ * stamped and its versions, methods and uploaded objects are kept for the
+ * history that points at them. The request transaction is intentionally left before entering system
  * scope: partner-wide packages may be referenced by suspended organizations,
  * which request RLS correctly hides even from an `orgAccess=all` user.
  *
@@ -238,7 +249,7 @@ async function deleteCatalogAndUploadedObjects(
       integrationProvider: softwareCatalog.integrationProvider,
     })
       .from(softwareCatalog)
-      .where(eq(softwareCatalog.id, expected.id))
+      .where(and(eq(softwareCatalog.id, expected.id), activeCatalog))
       .for('update');
     if (
       !lockedCatalog
@@ -283,7 +294,10 @@ async function deleteCatalogAndUploadedObjects(
       .where(eq(softwareInventory.catalogId, expected.id));
     const inventoryCount = inventoryRef?.count ?? 0;
     if (deploymentCount > 0 || inventoryCount > 0) {
-      return { kind: 'blocked', deploymentCount, inventoryCount };
+      await db.update(softwareCatalog)
+        .set({ deletedAt: new Date() })
+        .where(eq(softwareCatalog.id, expected.id));
+      return { kind: 'archived', deploymentCount, inventoryCount };
     }
 
     const objectKeys = storedVersions.map((version) => version.s3Key)
@@ -763,7 +777,7 @@ softwareRoutes.get(
       return c.json({ data: [], pagination: { page, limit, total: 0 } });
     }
 
-    const conditions: SQL[] = [];
+    const conditions: SQL[] = [activeCatalog];
     // Include partner-scoped built-in (integration) packages alongside the caller's
     // own org packages. RLS scopes built-ins to the caller's partner, so widening
     // the WHERE here cannot leak another partner's rows. Partner-scope callers
@@ -916,6 +930,7 @@ softwareRoutes.get(
       scopeBranches.push(and(isNull(softwareCatalog.orgId), eq(softwareCatalog.partnerId, auth.partnerId))!);
     }
     const conditions = [
+      activeCatalog,
       or(...scopeBranches)!,
       or(
         like(softwareCatalog.name, term),
@@ -953,7 +968,7 @@ softwareRoutes.get(
     // package), falling back to canAccessOrg only in the org-less
     // All-organizations view.
     const [item] = await db.select().from(softwareCatalog)
-      .where(eq(softwareCatalog.id, id));
+      .where(and(eq(softwareCatalog.id, id), activeCatalog));
     if (!item) return c.json({ error: 'Catalog item not found' }, 404);
     const readError = authorizeCatalogItemRead(auth, item.orgId, c.req.query('orgId'));
     if (readError) return c.json({ error: readError.error }, readError.status);
@@ -980,7 +995,7 @@ softwareRoutes.patch(
     const payload = c.req.valid('json');
 
     const [existing] = await db.select().from(softwareCatalog)
-      .where(eq(softwareCatalog.id, id));
+      .where(and(eq(softwareCatalog.id, id), activeCatalog));
     if (!existing) return c.json({ error: 'Catalog item not found' }, 404);
     // Built-ins are provisioned in system context and stay immutable here.
     if (existing.integrationProvider !== null && auth.scope !== 'system') {
@@ -1019,7 +1034,7 @@ softwareRoutes.delete(
 
     const { id } = c.req.valid('param');
     const [existing] = await db.select().from(softwareCatalog)
-      .where(eq(softwareCatalog.id, id));
+      .where(and(eq(softwareCatalog.id, id), activeCatalog));
     if (!existing) return c.json({ error: 'Catalog item not found' }, 404);
     // Built-ins are provisioned in system context and stay immutable here.
     if (existing.integrationProvider !== null && auth.scope !== 'system') {
@@ -1037,22 +1052,7 @@ softwareRoutes.delete(
     if (deletion.kind === 'not_found') {
       return c.json({ error: 'Catalog item not found' }, 404);
     }
-    if (deletion.kind === 'blocked') {
-      const dependencies = [
-        deletion.deploymentCount > 0
-          ? `${deletion.deploymentCount} deployment${deletion.deploymentCount === 1 ? '' : 's'}`
-          : null,
-        deletion.inventoryCount > 0
-          ? `${deletion.inventoryCount} inventory record${deletion.inventoryCount === 1 ? '' : 's'}`
-          : null,
-      ].filter((value): value is string => value !== null).join(' and ');
-      return c.json(
-        {
-          error: `Cannot delete: ${dependencies} still reference this software. Remove those references first.`,
-        },
-        409
-      );
-    }
+    const archived = deletion.kind === 'archived';
 
     writeRouteAudit(c, {
       orgId: existing.orgId,
@@ -1060,9 +1060,18 @@ softwareRoutes.delete(
       resourceType: 'software_catalog_item',
       resourceId: existing.id,
       resourceName: existing.name,
+      ...(archived
+        ? {
+            details: {
+              archived: true,
+              deploymentCount: deletion.deploymentCount,
+              inventoryCount: deletion.inventoryCount,
+            },
+          }
+        : {}),
     });
 
-    return c.json({ success: true, id });
+    return c.json(archived ? { success: true, id, archived: true } : { success: true, id });
   }
 );
 
@@ -1090,7 +1099,7 @@ softwareRoutes.get(
     // resolved org; only the org-less All-organizations view falls back to
     // canAccessOrg.
     const [catalogItem] = await db.select().from(softwareCatalog)
-      .where(eq(softwareCatalog.id, id));
+      .where(and(eq(softwareCatalog.id, id), activeCatalog));
     if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
     const readError = authorizeCatalogItemRead(auth, catalogItem.orgId, c.req.query('orgId'));
     if (readError) return c.json({ error: readError.error }, readError.status);
@@ -1120,7 +1129,7 @@ softwareRoutes.post(
     // Dual-axis fetch + write authorization (#2135): partner-wide packages have
     // org_id NULL and take versions from full-partner admins only.
     const [catalogItem] = await db.select().from(softwareCatalog)
-      .where(eq(softwareCatalog.id, id));
+      .where(and(eq(softwareCatalog.id, id), activeCatalog));
     if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
     const denied = authorizeCatalogItemWrite(auth, catalogItem, c.req.query('orgId'));
     if (denied) return c.json({ error: denied.error }, denied.status);
@@ -1197,7 +1206,7 @@ softwareRoutes.post(
 
     const catalogId = c.req.param('id')!;
     const [catalogItem] = await db.select().from(softwareCatalog)
-      .where(and(eq(softwareCatalog.id, catalogId), eq(softwareCatalog.orgId, orgId)));
+      .where(and(eq(softwareCatalog.id, catalogId), eq(softwareCatalog.orgId, orgId), activeCatalog));
     if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
 
     // Stream the multipart body straight to a temp file via busboy, hashing as
@@ -1409,7 +1418,7 @@ softwareRoutes.patch(
 
     // Dual-axis fetch + write authorization (#2135) — see version create above.
     const [catalogItem] = await db.select().from(softwareCatalog)
-      .where(eq(softwareCatalog.id, id));
+      .where(and(eq(softwareCatalog.id, id), activeCatalog));
     if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
     const denied = authorizeCatalogItemWrite(auth, catalogItem, c.req.query('orgId'));
     if (denied) return c.json({ error: denied.error }, denied.status);
@@ -1471,7 +1480,7 @@ softwareRoutes.post(
     const { id, versionId } = c.req.valid('param');
     // Dual-axis fetch + write authorization (#2135) — see version create above.
     const [catalogItem] = await db.select().from(softwareCatalog)
-      .where(eq(softwareCatalog.id, id));
+      .where(and(eq(softwareCatalog.id, id), activeCatalog));
     if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
     const denied = authorizeCatalogItemWrite(auth, catalogItem, c.req.query('orgId'));
     if (denied) return c.json({ error: denied.error }, denied.status);
@@ -1519,7 +1528,7 @@ softwareRoutes.get(
     // resolved org (canAccessOrg fallback only in the org-less All-orgs view);
     // partner rows (org_id NULL) are already bound to the caller's partner by RLS.
     const [catalogItem] = await db.select().from(softwareCatalog)
-      .where(eq(softwareCatalog.id, catalogId));
+      .where(and(eq(softwareCatalog.id, catalogId), activeCatalog));
     if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
     const readError = authorizeCatalogItemRead(auth, catalogItem.orgId, c.req.query('orgId'));
     if (readError) return c.json({ error: readError.error }, readError.status);
@@ -1803,7 +1812,7 @@ async function createManagerDeployments(
     name: softwareCatalog.name,
     integrationProvider: softwareCatalog.integrationProvider,
   }).from(softwareCatalog)
-    .where(eq(softwareCatalog.id, payload.catalogId));
+    .where(and(eq(softwareCatalog.id, payload.catalogId), activeCatalog));
   // Same ownership guard as the version path: built-ins (org_id NULL) are
   // visible to everyone, an org-owned row must match the caller's org.
   if (!catalogItem || (catalogItem.orgId !== null && catalogItem.orgId !== orgId)) {
@@ -1968,7 +1977,7 @@ softwareRoutes.post(
       name: softwareCatalog.name,
       integrationProvider: softwareCatalog.integrationProvider,
     }).from(softwareCatalog)
-      .where(eq(softwareCatalog.id, versionRecord.catalogId));
+      .where(and(eq(softwareCatalog.id, versionRecord.catalogId), activeCatalog));
     // RLS already restricts visibility to the caller's org rows + partner-scoped
     // NULL-org rows (built-in EDR packages, and — for partner-scope tokens —
     // partner-wide custom packages, #2135). Extra guard: an org-owned row must
@@ -2084,7 +2093,7 @@ softwareRoutes.post(
       name: softwareCatalog.name,
       integrationProvider: softwareCatalog.integrationProvider,
     }).from(softwareCatalog)
-      .where(eq(softwareCatalog.id, softwareId));
+      .where(and(eq(softwareCatalog.id, softwareId), activeCatalog));
     if (!catalogItem || (catalogItem.orgId !== null && catalogItem.orgId !== orgId)) {
       return c.json({ error: 'Catalog item not found' }, 404);
     }
@@ -2362,6 +2371,8 @@ async function redispatchSoftwareInstall(opts: {
       name: softwareCatalog.name,
       integrationProvider: softwareCatalog.integrationProvider,
     }).from(softwareCatalog)
+      // Deliberately NOT filtered on deletedAt: a deployment created before its
+      // package was archived (#4980) still dispatches.
       .where(eq(softwareCatalog.id, method.catalogId));
     if (!managerCatalogItem) {
       const error = 'Catalog item no longer exists for this deployment';
@@ -2411,6 +2422,7 @@ async function redispatchSoftwareInstall(opts: {
     name: softwareCatalog.name,
     integrationProvider: softwareCatalog.integrationProvider,
   }).from(softwareCatalog)
+    // Deliberately NOT filtered on deletedAt — see the manager branch above.
     .where(eq(softwareCatalog.id, versionRecord.catalogId));
   if (!catalogItem) {
     const error = 'Catalog item no longer exists for this deployment';

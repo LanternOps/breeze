@@ -28,6 +28,8 @@
     "evidence:link": "tsx scripts/link-evidence-reports.ts",
     "recover:stuck-agents": "tsx scripts/recover-stuck-agents.ts",
     "recover:stuck-agents:prod": "node dist/scripts/recover-stuck-agents.cjs",
+    "upgrade:preflight": "tsx scripts/upgrade-preflight.ts",
+    "upgrade:preflight:prod": "node dist/scripts/upgrade-preflight.cjs",
     "secrets:reencrypt": "tsx ../../scripts/re-encrypt-secrets.ts",
     "start": "node dist/index.cjs",
     "test": "vitest",

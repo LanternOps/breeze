@@ -121,6 +121,83 @@ describe('ScriptTestRunner', () => {
     });
   }, 10000);
 
+  // #6537 — the test runner is where an author checks a custom-field marker,
+  // and it used to show only stdout/stderr: a write rejected as
+  // not_script_writable (the default for every new field) was invisible.
+  it('surfaces the custom-field write-back outcome, including rejections', async () => {
+    fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.startsWith('/devices')) return jsonResponse({ data: [onlineDevice] });
+      if (url === `/scripts/${SCRIPT_ID}/execute` && init?.method === 'POST') {
+        return jsonResponse({
+          requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          status: 'queued',
+          targets: [{ requestedDeviceId: DEVICE_ID, admission: 'admitted', executionId: EXECUTION_ID }],
+        }, 201);
+      }
+      if (url === `/scripts/executions/${EXECUTION_ID}`) {
+        return jsonResponse({
+          id: EXECUTION_ID,
+          status: 'completed',
+          exitCode: 0,
+          stdout: null,
+          stderr: '',
+          customFieldResult: {
+            applied: [],
+            rejected: [
+              { key: 'ram_slot_type', reason: 'not_script_writable' },
+              { key: 'ram_slot_tpe', reason: 'unknown_field' },
+            ],
+          },
+        });
+      }
+      return jsonResponse({}, 404);
+    });
+
+    render(
+      <ScriptTestRunner scriptId={SCRIPT_ID} osTypes={['windows']} isDirty={false} onSaveChanges={async () => true} />
+    );
+
+    await waitFor(() => expect(screen.getByText('test-box')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('test-device-select'), { target: { value: DEVICE_ID } });
+    fireEvent.click(screen.getByTestId('test-run-button'));
+
+    const rejected = await screen.findByTestId('exec-custom-fields-rejected', {}, { timeout: 5000 });
+    expect(rejected).toHaveTextContent('ram_slot_type');
+    expect(rejected).toHaveTextContent('Field is not script-writable');
+    expect(rejected).toHaveTextContent('ram_slot_tpe');
+    expect(rejected).toHaveTextContent('No custom field with this key');
+  }, 10000);
+
+  it('renders no custom-field section for a run that wrote nothing', async () => {
+    fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.startsWith('/devices')) return jsonResponse({ data: [onlineDevice] });
+      if (url === `/scripts/${SCRIPT_ID}/execute` && init?.method === 'POST') {
+        return jsonResponse({
+          requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          status: 'queued',
+          targets: [{ requestedDeviceId: DEVICE_ID, admission: 'admitted', executionId: EXECUTION_ID }],
+        }, 201);
+      }
+      if (url === `/scripts/executions/${EXECUTION_ID}`) {
+        return jsonResponse({
+          id: EXECUTION_ID, status: 'completed', exitCode: 0, stdout: 'plain', stderr: '', customFieldResult: null,
+        });
+      }
+      return jsonResponse({}, 404);
+    });
+
+    render(
+      <ScriptTestRunner scriptId={SCRIPT_ID} osTypes={['windows']} isDirty={false} onSaveChanges={async () => true} />
+    );
+
+    await waitFor(() => expect(screen.getByText('test-box')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('test-device-select'), { target: { value: DEVICE_ID } });
+    fireEvent.click(screen.getByTestId('test-run-button'));
+
+    await screen.findByText('plain', {}, { timeout: 5000 });
+    expect(screen.queryByTestId('exec-custom-fields-applied')).toBeNull();
+  }, 10000);
+
   it('shows a typed rejection inline and never polls an execution', async () => {
     fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
       if (url.startsWith('/devices')) return jsonResponse({ data: [onlineDevice] });

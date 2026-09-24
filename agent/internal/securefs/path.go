@@ -51,11 +51,49 @@ func InstallFile(base, relative, source string, mode os.FileMode, modTime time.T
 // published file never needs a pathname attribute call. 0 means "unknown" and
 // reproduces InstallFile's previous behavior exactly. Ignored off Windows.
 func InstallFileWithAttrs(base, relative, source string, mode os.FileMode, modTime time.Time, owner *Owner, winAttrs uint32) ([]error, error) {
+	return InstallFileWithSecurity(base, relative, source, mode, modTime, owner, winAttrs, nil)
+}
+
+// SecurityApplier applies caller-owned security metadata (an NTFS security
+// descriptor, W06a) through a handle this package has already pinned, so the
+// caller never has to reopen a restored entry by pathname — a pathname
+// reopen after publication is exactly the race this package exists to
+// remove (SEC-121).
+//
+// Access is the extra access mask the pinned handle must carry for Apply to
+// succeed (WRITE_DAC, WRITE_OWNER, ACCESS_SYSTEM_SECURITY on Windows; ignored
+// elsewhere). Apply receives the raw pinned handle: a windows.Handle on
+// Windows, a file descriptor on Linux/macOS. It must not close it.
+type SecurityApplier struct {
+	Access uint32
+	Apply  func(handle uintptr) error
+}
+
+// InstallFileWithSecurity is InstallFileWithAttrs plus sec, which runs on the
+// PINNED temporary after its content, mode, owner, mtime and attributes are
+// set and BEFORE the atomic publish. An Apply error is a fidelity warning,
+// never a failed install. nil sec is exactly InstallFileWithAttrs.
+func InstallFileWithSecurity(base, relative, source string, mode os.FileMode, modTime time.Time, owner *Owner, winAttrs uint32, sec *SecurityApplier) ([]error, error) {
 	clean, err := CleanRelative(relative)
 	if err != nil {
 		return nil, err
 	}
-	return installFile(base, clean, source, mode, modTime, owner, winAttrs)
+	return installFile(base, clean, source, mode, modTime, owner, winAttrs, sec)
+}
+
+// ApplyDirSecurity opens the EXISTING directory base/relative with the same
+// component-by-component, never-follow walk InstallDir uses (every component
+// pinned for the duration) and runs sec.Apply on the directory's own handle.
+// It never creates anything.
+func ApplyDirSecurity(base, relative string, sec SecurityApplier) error {
+	clean, err := CleanRelative(relative)
+	if err != nil {
+		return err
+	}
+	if sec.Apply == nil {
+		return errors.New("security applier has no Apply function")
+	}
+	return applyDirSecurity(base, clean, sec)
 }
 
 // InstallSymlink recreates a symbolic link beneath base, relative to the pinned

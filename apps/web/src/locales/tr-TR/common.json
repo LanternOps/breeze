@@ -98,7 +98,8 @@
     "serviceManagement": "Servis yönetimi",
     "ticketing": "Bilet Sistemi",
     "deliverableTemplates": "Teslimat Şablonları",
-    "securityScans": "IOC Taramaları"
+    "securityScans": "IOC Taramaları",
+    "system": "Sistem"
   },
   "documentTitles": {
     "dashboard": "Kontrol Paneli",

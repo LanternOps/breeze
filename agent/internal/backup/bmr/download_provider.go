@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	stdpath "path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -679,7 +680,7 @@ func formatRecoveryTokenHeader(format, token string) string {
 }
 
 func pathClean(path string) string {
-	cleaned := filepath.ToSlash(filepath.Clean(path))
+	cleaned := stdpath.Clean(path)
 	if cleaned == "." {
 		return ""
 	}

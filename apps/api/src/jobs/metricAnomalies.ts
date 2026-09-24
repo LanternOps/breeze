@@ -2,11 +2,16 @@ import { Job, Queue, Worker } from 'bullmq';
 import { sql } from 'drizzle-orm';
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { devices } from '../db/schema';
+import { devices, metricAnomalyEpisodes } from '../db/schema';
 import { isReusableState } from '../services/bullmqUtils';
-import { detectMetricAnomaliesRange, type MetricAnomalyResult } from '../services/metricAnomalies';
+import {
+  detectMetricAnomaliesRange,
+  type MetricAnomalyResult,
+  type MetricAnomalyTrigger,
+} from '../services/metricAnomalies';
 import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
+import { registerEpisodeCloseAlertHandler } from '../services/metricAnomalyEpisodeAlerts';
 
 const METRIC_ANOMALIES_QUEUE = 'metric-anomalies';
 const SCAN_CRON_PATTERN = '*/10 * * * *';
@@ -57,6 +62,8 @@ type DetectOrgRangeJobData = {
   from: string;
   to: string;
   queuedAt: string;
+  /** Absent on jobs enqueued before metric anomaly episodes W01 — treated as 'scan'. */
+  trigger?: MetricAnomalyTrigger;
 };
 
 export type MetricAnomalyJobData = ScanOrgsJobData | DetectOrgRangeJobData;
@@ -119,12 +126,32 @@ function recentWindow(now = new Date(), lookbackMinutes = DEFAULT_LOOKBACK_MINUT
 // technicians' accessibleOrgIds for RLS reasons, so this fleet-wide sweep is NOT
 // filtered for us; excluding the devices also drops the hidden org out of the
 // fan-out entirely (it holds nothing but ephemeral devices).
+//
+// Metric anomaly episodes W01 (spec D4): orgs that still own an OPEN episode
+// are scanned too, even with no live device, so `episode-resolve` can close
+// those episodes (it runs whatever ml.anomalies.enabled says). Detection for
+// such an org finds no rollups and writes nothing. Both reads run in the one
+// system context processScanOrgs opens.
 async function findAnomalyOrgRows(): Promise<Array<{ orgId: string }>> {
-  return db
+  const deviceOrgs = await db
     .select({ orgId: devices.orgId })
     .from(devices)
     .where(sql`${devices.status} <> 'decommissioned' AND ${devices.isEphemeral} = false`)
     .groupBy(devices.orgId);
+  const openEpisodeOrgs = await db
+    .select({ orgId: metricAnomalyEpisodes.orgId })
+    .from(metricAnomalyEpisodes)
+    .where(sql`${metricAnomalyEpisodes.status} = 'open'`)
+    .groupBy(metricAnomalyEpisodes.orgId);
+
+  const seen = new Set<string>();
+  const rows: Array<{ orgId: string }> = [];
+  for (const row of [...deviceOrgs, ...openEpisodeOrgs]) {
+    if (seen.has(row.orgId)) continue;
+    seen.add(row.orgId);
+    rows.push({ orgId: row.orgId });
+  }
+  return rows;
 }
 
 async function processScanOrgs(
@@ -158,6 +185,7 @@ async function processScanOrgs(
       orgId: row.orgId,
       from,
       to,
+      trigger: 'scan',
     });
     if (outcome === 'reused') reused += 1;
     else if (outcome === 'stale-remove-failed') staleRemoveFailed += 1;
@@ -191,6 +219,7 @@ async function processDetectOrgRange(data: DetectOrgRangeJobData): Promise<Metri
     orgId: data.orgId,
     from: new Date(data.from),
     to: new Date(data.to),
+    trigger: data.trigger ?? 'scan',
   });
 }
 
@@ -244,6 +273,9 @@ async function scheduleMetricAnomaliesScan(): Promise<void> {
 }
 
 export async function initializeMetricAnomaliesWorker(): Promise<void> {
+  // W02: the resolve stage runs in this worker; wire its close hook before
+  // the first job can run.
+  registerEpisodeCloseAlertHandler();
   metricAnomaliesWorker = createMetricAnomaliesWorker();
   attachWorkerObservability(metricAnomaliesWorker, 'metricAnomaliesWorker');
   metricAnomaliesWorker.on('error', (error) => {
@@ -282,6 +314,7 @@ async function enqueueDetectOrgRange(options: {
   orgId: string;
   from: Date;
   to: Date;
+  trigger: MetricAnomalyTrigger;
 }): Promise<{ id: string; outcome: EnqueueOutcome }> {
   const queue = getMetricAnomaliesQueue();
   const { jobId } = options;
@@ -326,6 +359,7 @@ async function enqueueDetectOrgRange(options: {
       orgId: options.orgId,
       from: options.from.toISOString(),
       to: options.to.toISOString(),
+      trigger: options.trigger,
       queuedAt: new Date().toISOString(),
     },
     {
@@ -348,6 +382,7 @@ export async function enqueueMetricAnomalyBackfill(options: {
     orgId: options.orgId,
     from: options.from,
     to: options.to,
+    trigger: 'backfill',
   });
   return id;
 }

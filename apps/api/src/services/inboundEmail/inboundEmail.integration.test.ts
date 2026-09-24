@@ -32,6 +32,7 @@ import {
   partnerInboundDomains,
   tickets,
   ticketComments,
+  ticketOutbox,
   portalUsers,
   organizations,
   partners,
@@ -422,15 +423,29 @@ describe('processInboundEmail — cross-partner isolation (real driver, system c
 
     await withSystemDbAccessContext(() => processInboundEmail(email));
 
-    // Ticket row reopened (NOTE: reopen is a direct UPDATE; there is no
-    // ticket.status_changed event — assert on the row state, not an event).
+    // Ticket row reopened through changeTicketStatus (#6689).
     const ticketAfter = await ticketById(fx.aResolvedTicketId);
     expect(ticketAfter.status).toBe('open');
     expect(ticketAfter.resolvedAt).toBeNull();
 
-    // A public inbound comment row was appended.
+    // #6689: the reopen writes the same `ticket.status_changed` outbox row a
+    // technician reopen does, in the ingest transaction.
+    const outboxRows = await admin().select().from(ticketOutbox).where(and(
+      eq(ticketOutbox.ticketId, fx.aResolvedTicketId),
+      eq(ticketOutbox.eventType, 'ticket.status_changed')
+    ));
+    expect(outboxRows).toHaveLength(1);
+    expect(outboxRows[0]!.payload).toEqual({ from: 'resolved', to: 'open' });
+
+    // A public inbound comment row AND the status-change feed row were
+    // appended. The feed row's user_id is NULL: the synthetic system actor is
+    // not a users(id) row, and a real FK would reject it.
     const commentsAfter = await commentsForTicket(fx.aResolvedTicketId);
-    expect(commentsAfter.length).toBe(commentsBefore.length + 1);
+    expect(commentsAfter.length).toBe(commentsBefore.length + 2);
+    const statusRow = commentsAfter.find((c: any) => c.commentType === 'status_change');
+    expect(statusRow).toMatchObject({
+      oldValue: 'resolved', newValue: 'open', userId: null, authorName: 'Inbound Email', isPublic: false
+    });
     const inboundComment = commentsAfter.find(
       (c: any) => c.authorType === 'email' && c.content === 'Actually it is back — please reopen.'
     );
@@ -679,7 +694,9 @@ describe('processInboundEmail — cross-partner isolation (real driver, system c
     await expect(move).rejects.toMatchObject({ status: 409 });
     expect((await ticketById(ticket.id)).orgId).toBe(fx.orgA.id);
     expect((await ticketById(ticket.id)).status).toBe('open');
-    expect(await commentsForTicket(ticket.id)).toHaveLength(1);
+    // The inbound comment + the reopen's status-change feed row (#6689).
+    const comments = await commentsForTicket(ticket.id);
+    expect(comments.map((c: any) => c.commentType).sort()).toEqual(['comment', 'status_change']);
   });
 
   it('CASE 11: a closed subject-token continuation that wins stays in the source org when the original moves', async () => {

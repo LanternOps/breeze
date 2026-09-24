@@ -167,7 +167,11 @@ type Snapshot struct {
 	ID        string         `json:"id"`
 	Timestamp time.Time      `json:"timestamp"`
 	Files     []SnapshotFile `json:"files"`
-	Size      int64          `json:"size"`
+	// SecurityDescriptors is the run's deduplicated table of captured NTFS
+	// security descriptors (self-relative, base64), indexed 1-based by
+	// SnapshotFile.SDIndex — see sdTable. Omitted when nothing was captured.
+	SecurityDescriptors []string `json:"securityDescriptors,omitempty"`
+	Size                int64    `json:"size"`
 	// FormatVersion marks manifest v2 (reference entries + BaseSnapshotID).
 	// Omitted (zero value) on a full backup that never consulted a previous
 	// manifest, matching a v1 manifest byte-for-byte for that case. A v1
@@ -321,16 +325,22 @@ type SnapshotFile struct {
 	// exactly as before. Archive is deliberately not captured — see
 	// securefs.PreservedWinAttrs.
 	WinAttrs uint32 `json:"winAttrs,omitempty"`
+	// SDIndex is the 1-based slot of this entry's NTFS security descriptor
+	// in Snapshot.SecurityDescriptors — see sdTable. 0 = none captured
+	// (capture off, a symlink, non-Windows, a per-entry capture failure, or
+	// a manifest older than this field).
+	SDIndex int `json:"sdIndex,omitempty"`
 }
 
 // HasContent reports whether the entry has an uploaded object at BackupPath.
 func (f SnapshotFile) HasContent() bool { return f.Kind == "" }
 
 // snapshotNeedsFidelityFormat reports whether files contains any
-// content-less entry or ownership — see manifestFormatFidelity.
+// content-less entry, ownership, or a captured security descriptor — see
+// manifestFormatFidelity.
 func snapshotNeedsFidelityFormat(files []SnapshotFile) bool {
 	for _, f := range files {
-		if f.Kind != "" || f.Owner != nil {
+		if f.Kind != "" || f.Owner != nil || f.SDIndex > 0 {
 			return true
 		}
 	}
@@ -665,6 +675,26 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		snapshot.BaseSnapshotID = prevSnapshot.ID
 	}
 	prevIndex := buildPreviousIndex(prevSnapshot)
+	// sdTbl assigns this run's SDIndex slots; every entry-append site below
+	// stamps from it, and finalizeManifest attaches it to the manifest.
+	sdTbl := newSDTable()
+	// finalizeManifest derives the manifest fields that depend on the full
+	// entry list. It MUST run before EVERY publishSnapshotManifest call —
+	// including abortSourceGone's mid-loop partial publish — or a published
+	// manifest can carry SDIndex values with no securityDescriptors table
+	// (restore would silently fall back to inherited ACLs) and miss the
+	// fidelity format stamp.
+	finalizeManifest := func() {
+		// W02: a manifest carrying any content-less entry (symlink/dir),
+		// ownership or a captured security descriptor is stamped
+		// formatVersion 3 so an older reader knows to check HasContent()
+		// before trusting BackupPath — see manifestFormatFidelity's doc
+		// comment. Overrides the incremental format-2 stamp when both apply.
+		if snapshotNeedsFidelityFormat(snapshot.Files) {
+			snapshot.FormatVersion = manifestFormatFidelity
+		}
+		snapshot.SecurityDescriptors = sdTbl.encoded()
+	}
 
 	prefix := path.Join(snapshotRootDir, snapshot.ID)
 
@@ -920,6 +950,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		// abort point (500 intended, 100 stored, 5 errored would otherwise be
 		// stamped "5 missing" rather than 400).
 		recordIncompleteFilesOfTotal(snapshot, errs, failedSources, filesTotal)
+		finalizeManifest()
 		if pubErr := publishSnapshotManifest(ctx, provider, snapshot, prefix); pubErr != nil {
 			// Deliberately NOT followed by cleanupSnapshotPrefix. Deletion is
 			// irreversible and this is a data-protection product: retained
@@ -953,7 +984,9 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			// Content-less entry (symlink/directory): nothing to upload,
 			// dedupe against, or checkpoint — see contentlessEntry's doc
 			// comment. Rebuilt from the live filesystem on every run.
-			snapshot.Files = append(snapshot.Files, contentlessEntry(file))
+			e := contentlessEntry(file)
+			e.SDIndex = sdTbl.index(file.sd)
+			snapshot.Files = append(snapshot.Files, e)
 			markDone(1, 0)
 			emitProgress(false)
 			continue
@@ -962,11 +995,18 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			// Already uploaded in a prior (interrupted) run with identical
 			// (size, modTime) — filesDone/bytesDone already reflect this
 			// file via the pre-loop seed above; do not double count.
+			// The journaled SDIndex names a slot in the INTERRUPTED run's
+			// table, which this run does not have: re-stamp it from this
+			// run's capture.
+			entry.SDIndex = sdTbl.index(file.sd)
 			snapshot.Files = append(snapshot.Files, entry)
 			snapshot.Size += entry.Size
 			continue
 		}
 		if decision, refEntry := decideFile(file, prevIndex); decision == decideReference {
+			// A referenced file carries THIS run's descriptor, like the
+			// other current-stat fields referenceEntry documents.
+			refEntry.SDIndex = sdTbl.index(file.sd)
 			// Unchanged since prevSnapshot: no upload, no journal Record
 			// (there is nothing new to checkpoint — the bytes already live
 			// under prevSnapshot's prefix), but bytes/files still count
@@ -1202,6 +1242,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			Owner:        file.owner,
 			Volatile:     volatile,
 			WinAttrs:     file.winAttrs,
+			SDIndex:      sdTbl.index(file.sd),
 		}
 		snapshot.Files = append(snapshot.Files, entry)
 		snapshot.Size += entry.Size
@@ -1219,14 +1260,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	// were swallowed by the `!force` check above.
 	emitProgress(true)
 
-	// W02: a manifest carrying any content-less entry (symlink/dir) or
-	// ownership is stamped formatVersion 3 so an older reader knows to
-	// check HasContent() before trusting BackupPath — see
-	// manifestFormatFidelity's doc comment. Overrides the incremental
-	// format-2 stamp above when both apply.
-	if snapshotNeedsFidelityFormat(snapshot.Files) {
-		snapshot.FormatVersion = manifestFormatFidelity
-	}
+	finalizeManifest()
 
 	if len(snapshot.Files) == 0 {
 		return nil, errors.Join(errs...)

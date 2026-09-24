@@ -16,6 +16,7 @@
  */
 
 import { getEmailService } from './email';
+import { captureException } from './sentry';
 import { renderLayout, renderButton, renderParagraph, escapeHtml } from './emailLayout';
 import { rowsToCsv } from '@breeze/shared';
 import type { PostureSummary, ExecutiveSummary } from '@breeze/shared';
@@ -115,6 +116,11 @@ export async function emailReportRun(opts: {
         summary: opts.summary as PostureSummary | ExecutiveSummary | undefined,
         previous: opts.previous,
         branding: opts.branding,
+        // A designed type degrading to the generic table loses its body and
+        // notes; the recipient still gets a PDF, so this is the only signal.
+        onRendererFallback: ({ reportType, reason }) => {
+          captureException(new Error(`Report PDF fell back to the generic renderer: ${reportType} (${reason})`));
+        },
       });
       const content = Buffer.from(doc.output('arraybuffer'));
       if (content.byteLength <= MAX_ATTACHMENT_BYTES) {

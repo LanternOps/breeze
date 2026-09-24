@@ -8,3 +8,10 @@ export { renderVulnerabilityManagementReport } from './vulnerabilityManagementPd
 export type { VulnerabilityManagementPdfOpts } from './vulnerabilityManagementPdf';
 export { renderIdentityAccessReport } from './identityAccessPdf';
 export type { IdentityAccessPdfOpts } from './identityAccessPdf';
+export { renderTicketSlaReport } from './ticketSlaPdf';
+export type { TicketSlaPdfOpts } from './ticketSlaPdf';
+export { renderTechnicianTimeReport } from './technicianTimePdf';
+export type { TechnicianTimePdfOpts } from './technicianTimePdf';
+export { renderArAgingReport } from './arAgingPdf';
+export type { ArAgingPdfOpts } from './arAgingPdf';
+export { formatMinutes, formatMoney, formatPercent } from './moneyFormat';

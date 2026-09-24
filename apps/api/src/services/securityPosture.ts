@@ -1047,6 +1047,90 @@ export async function listLatestSecurityPosture(filter: SecurityPostureFilter): 
   return hydratePostureRows(latestRows, deviceRows);
 }
 
+export interface SecurityPostureCounts {
+  total: number;
+  averageScore: number;
+  lowRiskDevices: number;
+  mediumRiskDevices: number;
+  highRiskDevices: number;
+  criticalRiskDevices: number;
+}
+
+const EMPTY_SECURITY_POSTURE_COUNTS: SecurityPostureCounts = {
+  total: 0, averageScore: 0, lowRiskDevices: 0, mediumRiskDevices: 0, highRiskDevices: 0, criticalRiskDevices: 0
+};
+
+/**
+ * A-W05 fix 1: `listLatestSecurityPosture` returns a bounded, worst-first
+ * page. Reducing a fleet summary over just that page (the old behavior)
+ * silently reports the N worst devices as the whole fleet's posture once
+ * N < the true device count. This runs the SAME scope/filter conditions
+ * with no limit/offset as a SQL aggregate, so the counts are exact over the
+ * entire filtered set regardless of page size.
+ */
+export async function getSecurityPostureCounts(filter: SecurityPostureFilter): Promise<SecurityPostureCounts> {
+  if (filter.deviceIds && filter.deviceIds.length === 0) return EMPTY_SECURITY_POSTURE_COUNTS;
+
+  const scopeConditions: SQL[] = [];
+  if (filter.orgId) {
+    scopeConditions.push(eq(securityPostureSnapshots.orgId, filter.orgId));
+  } else if (filter.orgIds && filter.orgIds.length > 0) {
+    scopeConditions.push(inArray(securityPostureSnapshots.orgId, filter.orgIds));
+  }
+  if (filter.deviceIds) {
+    scopeConditions.push(inArray(securityPostureSnapshots.deviceId, [...filter.deviceIds]));
+  }
+
+  const rankedSnapshots = db
+    .select({
+      deviceId: securityPostureSnapshots.deviceId,
+      overallScore: securityPostureSnapshots.overallScore,
+      riskLevel: securityPostureSnapshots.riskLevel,
+      rn: sql<number>`row_number() over (partition by ${securityPostureSnapshots.deviceId} order by ${securityPostureSnapshots.capturedAt} desc)`.as('rn')
+    })
+    .from(securityPostureSnapshots)
+    .where(scopeConditions.length > 0 ? and(...scopeConditions) : undefined)
+    .as('ranked_security_posture_counts');
+
+  const latestConditions: SQL[] = [eq(rankedSnapshots.rn, 1)];
+  if (typeof filter.minScore === 'number') {
+    latestConditions.push(gte(rankedSnapshots.overallScore, filter.minScore));
+  }
+  if (typeof filter.maxScore === 'number') {
+    latestConditions.push(lte(rankedSnapshots.overallScore, filter.maxScore));
+  }
+  if (filter.riskLevel) {
+    latestConditions.push(eq(rankedSnapshots.riskLevel, filter.riskLevel));
+  }
+  if (filter.search) {
+    latestConditions.push(ilike(devices.hostname, `%${filter.search}%`));
+  }
+
+  const [row] = await db
+    .select({
+      total: sql<number>`count(*)`,
+      avgScore: sql<number>`avg(${rankedSnapshots.overallScore})`,
+      low: sql<number>`count(*) filter (where ${rankedSnapshots.riskLevel} = 'low')`,
+      medium: sql<number>`count(*) filter (where ${rankedSnapshots.riskLevel} = 'medium')`,
+      high: sql<number>`count(*) filter (where ${rankedSnapshots.riskLevel} = 'high')`,
+      critical: sql<number>`count(*) filter (where ${rankedSnapshots.riskLevel} = 'critical')`,
+    })
+    .from(rankedSnapshots)
+    .innerJoin(devices, eq(devices.id, rankedSnapshots.deviceId))
+    .where(and(...latestConditions));
+
+  if (!row || Number(row.total) === 0) return EMPTY_SECURITY_POSTURE_COUNTS;
+
+  return {
+    total: Number(row.total),
+    averageScore: Math.round(Number(row.avgScore ?? 0)),
+    lowRiskDevices: Number(row.low),
+    mediumRiskDevices: Number(row.medium),
+    highRiskDevices: Number(row.high),
+    criticalRiskDevices: Number(row.critical),
+  };
+}
+
 export async function getLatestSecurityPostureForDevice(deviceId: string): Promise<SecurityPostureItem | null> {
   const [row] = await db
     .select({

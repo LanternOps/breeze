@@ -43,3 +43,95 @@ export interface EpisodeAttribution {
   opened?: AttributionSnapshot;
   peak?: AttributionSnapshot;
 }
+
+// ── W02: episode API surface (spec §8.1, §12) ─────────────────────────────
+
+export const EPISODE_ACTIONS = ['resolve', 'dismiss', 'promote', 'unsnooze'] as const;
+export type EpisodeAction = (typeof EPISODE_ACTIONS)[number];
+
+export const EPISODE_LIST_STATUSES = ['open', 'closed', 'all'] as const;
+export type EpisodeListStatus = (typeof EPISODE_LIST_STATUSES)[number];
+
+/** Spec §12: the detail endpoint returns at most this many members. */
+export const EPISODE_DETAIL_MEMBER_LIMIT = 200;
+
+/**
+ * Spec §12 serialization: every §4.1 column in camelCase (timestamps as ISO
+ * strings) plus derived fields. `rangeMin`/`rangeMax` are min/max observedValue
+ * over members whose metric_name equals `peakMetricName` — the ram/cpu families
+ * mix `_sum` and `_max` members and a range across both is meaningless.
+ */
+export interface MetricAnomalyEpisodeDto {
+  id: string;
+  orgId: string;
+  deviceId: string;
+  episodeKey: string;
+  sourceTable: string;
+  anomalyType: string;
+  metricFamily: string;
+  metricNames: string[];
+  status: MetricAnomalyEpisodeStatus;
+  closeReason: EpisodeCloseReason | null;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  bucketCount: number;
+  peakValue: number;
+  peakMetricName: string;
+  peakBaselineValue: number | null;
+  peakScore: number;
+  peakAt: string;
+  recurrenceCount: number;
+  attribution: EpisodeAttribution | null;
+  linkedAlertId: string | null;
+  snoozedUntil: string | null;
+  resolvedAt: string | null;
+  resolvedByUserId: string | null;
+  note: string | null;
+  createdAt: string;
+  updatedAt: string;
+  durationSeconds: number;
+  ongoing: boolean;
+  promoted: boolean;
+  snoozed: boolean;
+  rangeMin: number | null;
+  rangeMax: number | null;
+  /**
+   * Highest-score member (score DESC, window_start ASC — W01's peak rule).
+   * The web card keys remediation suggestions on it (`sourceType: 'anomaly'`,
+   * which is keyed by metric_anomalies.id, never an episode id).
+   */
+  peakAnomalyId: string | null;
+  /**
+   * `devices.last_seen_at` of the episode's device (ISO), for the web card's
+   * "expired: device not seen since …" chip (second quorum A9). NULL when the
+   * device never checked in.
+   */
+  deviceLastSeenAt: string | null;
+}
+
+export interface MetricAnomalyEpisodeMemberDto {
+  id: string;
+  metricName: string;
+  anomalyType: string;
+  status: MetricAnomalyStatus;
+  windowStart: string;
+  windowEnd: string;
+  observedValue: number;
+  baselineValue: number | null;
+  baselineMax: number | null;
+  score: number;
+  confidence: number;
+  linkedAlertId: string | null;
+}
+
+export interface MetricAnomalyEpisodeDetailDto extends MetricAnomalyEpisodeDto {
+  members: MetricAnomalyEpisodeMemberDto[];
+  /** true when the episode has more than EPISODE_DETAIL_MEMBER_LIMIT members. */
+  membersTruncated: boolean;
+}
+
+export interface MetricAnomalyEpisodeListResponse {
+  data: MetricAnomalyEpisodeDto[];
+  /** The episode a `ref` resolved to (always data[0] when non-null). */
+  focusedEpisodeId: string | null;
+}

@@ -5,6 +5,7 @@ import NotificationChannelList, { type NotificationChannel } from '../Notificati
 import NotificationChannelForm, { type NotificationChannelFormValues } from '../NotificationChannelForm';
 import { ActionError } from '../../../lib/runAction';
 import { runChannelDelete, runChannelSave, runChannelTest } from './deliveryActions';
+import { formSecretValue } from '../../../lib/redactedSecret';
 
 type ModalMode = 'closed' | 'create' | 'edit' | 'delete';
 
@@ -159,6 +160,10 @@ export default function ChannelsSection({ channels, currentOrgId, isPartnerScope
     }
 
     const config = channel.config;
+    // Secret keys arrive as redaction markers, never strings; formSecretValue
+    // maps them to the masked string the API reads as "keep what is stored"
+    // (#4983). Which keys are secret: `secretKeysForType` in
+    // apps/api/src/services/notificationChannelSecrets.ts.
 
     switch (channel.type) {
       case 'email':
@@ -167,34 +172,38 @@ export default function ChannelsSection({ channels, currentOrgId, isPartnerScope
           : [{ value: '' }];
         break;
       case 'slack':
-        base.slackWebhookUrl = config.webhookUrl as string;
+        base.slackWebhookUrl = formSecretValue(config.webhookUrl);
         base.slackChannel = config.channel as string;
         break;
       case 'teams':
-        base.teamsWebhookUrl = config.webhookUrl as string;
+        base.teamsWebhookUrl = formSecretValue(config.webhookUrl);
         break;
       case 'pagerduty':
-        base.pagerdutyIntegrationKey = config.integrationKey as string;
+        base.pagerdutyIntegrationKey = formSecretValue(config.integrationKey);
         base.pagerdutySeverity = config.severity as 'critical' | 'error' | 'warning' | 'info';
         break;
       case 'webhook':
-        base.webhookUrl = config.url as string;
+        base.webhookUrl = formSecretValue(config.url);
         base.webhookMethod = config.method as 'POST' | 'PUT' | 'PATCH';
         // Mirror of the outbound conversion. The array branch is kept because
         // any channel saved before the fix — or hand-written via the API —
         // may still carry the old shape.
+        // Every header value is secret, so each one is a redaction marker too.
         base.webhookHeaders = Array.isArray(config.headers)
-          ? (config.headers as { key: string; value: string }[])
+          ? (config.headers as { key: string; value: unknown }[]).map(({ key, value }) => ({
+              key,
+              value: formSecretValue(value),
+            }))
           : config.headers && typeof config.headers === 'object'
-            ? Object.entries(config.headers as Record<string, string>).map(([key, value]) => ({
+            ? Object.entries(config.headers as Record<string, unknown>).map(([key, value]) => ({
                 key,
-                value: String(value),
+                value: formSecretValue(value),
               }))
             : [];
         base.webhookAuthType = config.authType as 'none' | 'basic' | 'bearer';
         base.webhookAuthUsername = config.authUsername as string;
-        base.webhookAuthPassword = config.authPassword as string;
-        base.webhookAuthToken = config.authToken as string;
+        base.webhookAuthPassword = formSecretValue(config.authPassword);
+        base.webhookAuthToken = formSecretValue(config.authToken);
         break;
       case 'sms':
         base.smsPhoneNumbers = Array.isArray(config.phoneNumbers)
@@ -204,8 +213,8 @@ export default function ChannelsSection({ channels, currentOrgId, isPartnerScope
         base.smsMessagingServiceSid = config.messagingServiceSid as string;
         break;
       case 'pushover':
-        base.pushoverToken = (config.token as string) ?? '';
-        base.pushoverUser = (config.user as string) ?? '';
+        base.pushoverToken = formSecretValue(config.token);
+        base.pushoverUser = formSecretValue(config.user);
         base.pushoverDevice = (config.device as string) ?? '';
         base.pushoverSound = (config.sound as string) ?? '';
         if (typeof config.priority === 'number') {

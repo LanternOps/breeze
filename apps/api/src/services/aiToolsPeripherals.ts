@@ -109,7 +109,7 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
           },
           start: { type: 'string', description: 'ISO timestamp lower bound (max 90-day window)' },
           end: { type: 'string', description: 'ISO timestamp upper bound (max 90-day window)' },
-          limit: { type: 'number', description: 'Max rows to return (default 100, max 500). REST API supports up to 1000.' }
+          limit: { type: 'number', description: 'Max rows (default 100, max 500)' }
         }
       }
     },

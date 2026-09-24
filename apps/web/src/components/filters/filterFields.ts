@@ -27,6 +27,7 @@ export const FILTER_FIELDS: FilterFieldDefinition[] = [
   { key: 'status', label: 'Status', category: 'core', type: 'enum', operators: E,
     enumValues: ['online', 'offline', 'maintenance', 'decommissioned', 'quarantined', 'updating', 'pending'] },
   { key: 'agentVersion', label: 'Agent Version', category: 'core', type: 'string', operators: S },
+  { key: 'helperVersion', label: 'Helper Version', category: 'core', type: 'string', operators: S },
   { key: 'enrolledAt', label: 'Enrolled At', category: 'core', type: 'datetime', operators: DT },
   { key: 'lastSeenAt', label: 'Last Seen At', category: 'core', type: 'datetime', operators: DT },
   { key: 'tags', label: 'Tags', category: 'core', type: 'array', operators: A },

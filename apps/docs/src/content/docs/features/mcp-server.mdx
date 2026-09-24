@@ -219,6 +219,8 @@ This URL is the Streamable HTTP endpoint; the client negotiates the protocol ver
 
 Tools are the primary way AI clients interact with Breeze. Each tool maps to one or more fleet operations and is classified into a tier that determines how it executes. The MCP server filters the tool list based on the scopes attached to your API key -- you only see tools you are authorized to use.
 
+List tools return `hasMore` and `nextCursor` in their result; when `hasMore` is `true`, call the same tool again with `cursor` set to the previous `nextCursor` and the same filters to get the next page. A result whose payload was too large to return in full is stored as an artifact and comes back with an `artifact.handle` instead -- `read_artifact` pages through that stored copy by byte offset. `read_artifact` only reads an artifact captured by your own chat session or agent run, and capture itself only happens on hosted deployments with the AI workspace enabled; an MCP `tools/call` has no session to anchor a capture to, so `read_artifact` over MCP usually returns `no_capture_anchor` today. It is listed for forward compatibility while MCP-side capture anchoring is designed.
+
 ### Device tools
 
 | Tool | Tier | Description |
@@ -307,6 +309,7 @@ Tools are the primary way AI clients interact with Breeze. Each tool maps to one
 | `search_agent_logs` | 1 | Search agent diagnostic logs with filters for device, level, component, time range, and message text. |
 | `set_agent_log_level` | 2 | Temporarily increase agent log shipping verbosity for debugging. Auto-reverts after a set duration. |
 | `query_audit_log` | 1 | Search the audit log for recent actions, filterable by action, resource, actor type, and time range. |
+| `read_artifact` | 1 | Page through a stored large tool-result artifact by byte offset, using the `artifact.handle` from an earlier result. Scoped to your own session or agent run; see the note above "Available tools". |
 
 ### Configuration policy tools
 

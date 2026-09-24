@@ -289,9 +289,20 @@ describe('PAM actuation lifecycle schema governance', () => {
   it('idempotently quarantines legacy approved and actuating requests without fabricating cleanup evidence', async () => {
     const legacyActuating = await createFixture('actuating');
     const definitionBefore = await getTestDb().execute(sql`SELECT pg_get_functiondef('public.pam_actuations_transition_guard()'::regprocedure) AS definition`);
-    // Restore later guard definitions immediately, including org immutability.
+    // The base file drops and re-adds intent_outbox_event_type_check with its
+    // 09-16 event list; later migrations widen it (#6700). Snapshot it so the
+    // replay is proven to leave it exactly as a fresh migrate does.
+    const outboxCheckSql = sql`
+      SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint
+      WHERE conname = 'intent_outbox_event_type_check' AND conrelid = 'public.intent_outbox'::regclass
+    `;
+    const outboxCheckBefore = await getTestDb().execute(outboxCheckSql);
+    expect(outboxCheckBefore).toHaveLength(1);
+    // Restore later guard definitions and constraint widenings immediately,
+    // including org immutability.
     await replayMigration('2026-09-16-pam-actuation-lifecycle.sql');
     expect(await getTestDb().execute(sql`SELECT pg_get_functiondef('public.pam_actuations_transition_guard()'::regprocedure) AS definition`)).toEqual(definitionBefore);
+    expect(await getTestDb().execute(outboxCheckSql)).toEqual(outboxCheckBefore);
 
     const rows = await getTestDb().execute(sql`
       SELECT elevation_request_id AS "requestId", desired_state AS "desiredState",

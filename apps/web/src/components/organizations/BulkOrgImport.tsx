@@ -5,6 +5,8 @@ import { fetchWithAuth } from '../../stores/auth';
 import { runAction } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { parseCsv, type ParsedCsv } from '../../lib/csvParse';
+import { downloadBlob } from '../../lib/downloadBlob';
+import { rebaseDocsUrl } from '../../stores/helpStore';
 import OrgImportPreviewTable, {
   defaultPreviewSelection,
   toCommitRow,
@@ -26,6 +28,42 @@ const FIELD_GUESSES: Record<MappableField, string[]> = {
   externalSystem: ['externalsystem', 'system', 'source', 'vendor'],
   timezone: ['timezone', 'tz'],
 };
+
+/**
+ * Example rows for the downloadable sample CSV. Typed against `MappableField`
+ * so adding an importable column fails to compile until the sample shows it —
+ * the header itself is always `MAPPABLE_FIELDS`, never a second hand-kept list.
+ * Two rows share an organization to show "one org, many sites".
+ */
+const SAMPLE_ROWS: ReadonlyArray<Record<MappableField, string>> = [
+  { organization: 'Acme Manufacturing', site: 'Head Office', externalId: '1042', externalSystem: 'datto_rmm', timezone: 'America/Chicago' },
+  { organization: 'Acme Manufacturing', site: 'Detroit Plant', externalId: '1042', externalSystem: 'datto_rmm', timezone: 'America/Detroit' },
+  { organization: 'Bright Dental', site: 'Main Clinic', externalId: '2077', externalSystem: 'datto_rmm', timezone: 'Europe/London' },
+];
+
+/**
+ * The sample CSV offered by "Download sample CSV" (#6051). Joined unquoted so
+ * it reads cleanly in a text editor — the values are fixed literals with no
+ * commas or quotes, and the test asserts every row splits into one cell per
+ * field.
+ */
+export function buildOrgImportSampleCsv(): string {
+  return [
+    MAPPABLE_FIELDS.join(','),
+    ...SAMPLE_ROWS.map((row) => MAPPABLE_FIELDS.map((field) => row[field]).join(',')),
+  ].join('\n');
+}
+
+/** Migration Toolkit recipe documenting this importer's columns and API. */
+export const ORG_IMPORT_DOCS_URL =
+  'https://docs.breezermm.com/migration/toolkit/#recipe-1--bootstrap-the-tenancy-tree-from-csv';
+
+function downloadSampleCsv() {
+  downloadBlob(
+    new Blob([buildOrgImportSampleCsv()], { type: 'text/csv;charset=utf-8' }),
+    'breeze-organization-import-sample.csv',
+  );
+}
 
 function guessMapping(headers: string[]): Partial<Record<MappableField, string>> {
   const normalized = headers.map((h) => h.toLowerCase().replace(/[\s_-]+/g, ''));
@@ -195,6 +233,25 @@ export default function BulkOrgImport({ onImported, onUnauthorized, onClose }: P
         <div>
           <h2 className="text-sm font-semibold">{t('bulkOrgImport.title')}</h2>
           <p className="mt-0.5 text-xs text-muted-foreground">{t('bulkOrgImport.description')}</p>
+          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+            <button
+              type="button"
+              data-testid="bulk-org-import-download-sample"
+              onClick={downloadSampleCsv}
+              className="font-medium text-primary hover:underline"
+            >
+              {t('bulkOrgImport.actions.downloadSample')}
+            </button>
+            <a
+              data-testid="bulk-org-import-docs-link"
+              href={rebaseDocsUrl(ORG_IMPORT_DOCS_URL)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-medium text-primary hover:underline"
+            >
+              {t('bulkOrgImport.docsLink')}
+            </a>
+          </div>
         </div>
         {onClose && (
           <button

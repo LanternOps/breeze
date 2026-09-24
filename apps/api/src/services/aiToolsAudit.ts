@@ -6,6 +6,7 @@
  * - query_change_log (Tier 1): Search device configuration changes
  */
 
+import { keysetEnvelope, keysetParamSchema, keysetWhereCondition, readKeysetArgs } from './aiToolPagination';
 import { db } from '../db';
 import { ACTOR_TYPES } from '@breeze/shared';
 import { devices, auditLogs, deviceChangeLog } from '../db/schema';
@@ -85,11 +86,25 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
           resourceId: { type: 'string', description: 'Filter by resource UUID' },
           actorType: { type: 'string', enum: [...ACTOR_TYPES], description: 'Filter by actor type' },
           hoursBack: { type: 'number', description: 'How many hours back to search (default: 24, max: 168)' },
-          limit: { type: 'number', description: 'Max results (default 25, max 100)' }
+          ...keysetParamSchema(25, 100),
+          includeDetails: { type: 'boolean', description: 'Include the details object per entry (default false)' }
         }
       }
     },
     handler: async (input, auth) => {
+      const page = readKeysetArgs('query_audit_log', input, { defaultLimit: 25, maxLimit: 100 });
+      if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
+      const { limit, after, fingerprint } = page;
+      const includeDetails = input.includeDetails === true;
+      const emptyKeysetPage = (extra: Record<string, unknown> = {}) =>
+        JSON.stringify({
+          ...keysetEnvelope<{ timestampText: string; id: string }>({
+            key: 'entries', items: [], limit, fingerprint,
+            keyOf: (r) => ({ t: r.timestampText, i: r.id }),
+          }),
+          ...extra,
+        });
+
       const conditions: SQL[] = [];
       const orgCondition = auth.orgCondition(auditLogs.orgId);
       if (orgCondition) conditions.push(orgCondition);
@@ -140,12 +155,12 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
             input.resourceId &&
             !allowedDeviceIds.includes(input.resourceId as string)
           ) {
-            return JSON.stringify({ entries: [], showing: 0, scopeNote: SITE_SCOPE_EMPTY_NOTE });
+            return emptyKeysetPage({ scopeNote: SITE_SCOPE_EMPTY_NOTE });
           }
           // An explicit lookup of a device id known to be out-of-scope is denied
           // outright (mirrors the device-typed short-circuit above).
           if (input.resourceId && forbiddenDeviceIds.includes(input.resourceId as string)) {
-            return JSON.stringify({ entries: [], showing: 0, scopeNote: SITE_SCOPE_EMPTY_NOTE });
+            return emptyKeysetPage({ scopeNote: SITE_SCOPE_EMPTY_NOTE });
           }
           // (1) Device-typed rows: only for in-scope devices.
           // Empty allowed set ⇒ exclude all device rows.
@@ -191,12 +206,16 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
       const since = new Date(Date.now() - hoursBack * 60 * 60 * 1000);
       conditions.push(gte(auditLogs.timestamp, since));
 
-      const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
+      if (after) {
+        conditions.push(keysetWhereCondition(auditLogs.timestamp, auditLogs.id, after)!);
+      }
 
       const results = await db
         .select({
           id: auditLogs.id,
           timestamp: auditLogs.timestamp,
+          // Q1: full microsecond-precision text for the keyset cursor.
+          timestampText: sql<string>`${auditLogs.timestamp}::text`,
           actorType: auditLogs.actorType,
           actorEmail: auditLogs.actorEmail,
           action: auditLogs.action,
@@ -207,10 +226,35 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
         })
         .from(auditLogs)
         .where(conditions.length > 0 ? and(...conditions) : undefined)
-        .orderBy(desc(auditLogs.timestamp))
-        .limit(limit);
+        .orderBy(desc(auditLogs.timestamp), desc(auditLogs.id))
+        .limit(limit + 1);
 
-      return JSON.stringify({ entries: results, showing: results.length });
+      const items = results.map((row) => {
+        const detailsKeys = row.details && typeof row.details === 'object' && !Array.isArray(row.details)
+          ? Object.keys(row.details as Record<string, unknown>)
+          : [];
+        return {
+          id: row.id,
+          timestamp: row.timestamp instanceof Date ? row.timestamp.toISOString() : row.timestamp,
+          timestampText: row.timestampText,
+          actorType: row.actorType,
+          actorEmail: row.actorEmail,
+          action: row.action,
+          resourceType: row.resourceType,
+          resourceName: row.resourceName,
+          result: row.result,
+          ...(includeDetails ? { details: row.details } : { detailsKeys }),
+        };
+      });
+
+      const envelope = keysetEnvelope({
+        key: 'entries', items, limit, fingerprint,
+        keyOf: (r) => ({ t: r.timestampText, i: r.id }),
+      });
+      const outEntries = (envelope.entries as Array<Record<string, unknown>>).map(
+        ({ timestampText: _timestampText, ...rest }) => rest
+      );
+      return JSON.stringify({ ...envelope, entries: outEntries });
     }
   });
 
@@ -242,11 +286,25 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
             enum: ['added', 'removed', 'modified', 'updated'],
             description: 'Optional change action filter'
           },
-          limit: { type: 'number', description: 'Max results to return (default 100, max 500)' }
+          ...keysetParamSchema(25, 500),
+          includeValues: { type: 'boolean', description: 'Include before/after values and details per change (default false)' }
         }
       }
     },
     handler: async (input, auth) => {
+      const page = readKeysetArgs('query_change_log', input, { defaultLimit: 25, maxLimit: 500 });
+      if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
+      const { limit, after, fingerprint } = page;
+      const includeValues = input.includeValues === true;
+      const emptyKeysetPage = (extra: Record<string, unknown> = {}) =>
+        JSON.stringify({
+          ...keysetEnvelope<{ timestampText: string; id: string }>({
+            key: 'changes', items: [], limit, fingerprint, total: 0,
+            keyOf: (r) => ({ t: r.timestampText, i: r.id }),
+          }),
+          ...extra,
+        });
+
       const conditions: SQL[] = [];
       const orgCondition = auth.orgCondition(deviceChangeLog.orgId);
       if (orgCondition) conditions.push(orgCondition);
@@ -265,7 +323,7 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
         // gated on `allowedSiteIds` alone (#6096 RC3). No-op when unrestricted.
         const allowed = await resolveScopedDeviceIds(auth);
         if (!allowed || allowed.length === 0) {
-          return JSON.stringify({ changes: [], total: 0, showing: 0, scopeNote: SITE_SCOPE_EMPTY_NOTE });
+          return emptyKeysetPage({ scopeNote: SITE_SCOPE_EMPTY_NOTE });
         }
         conditions.push(inArray(deviceChangeLog.deviceId, allowed));
       }
@@ -286,13 +344,22 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
         conditions.push(eq(deviceChangeLog.changeAction, input.changeAction as any));
       }
 
-      const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
-      const limit = Math.min(Math.max(1, Number(input.limit) || 100), 500);
+      // `total` reflects the whole filtered set, so the COUNT query keeps the
+      // base conditions — the keyset predicate is only added to the ROWS
+      // query's conditions below.
+      const countWhereClause = conditions.length > 0 ? and(...conditions) : undefined;
+      const rowsConditions = after
+        ? [...conditions, keysetWhereCondition(deviceChangeLog.timestamp, deviceChangeLog.id, after)!]
+        : conditions;
+      const rowsWhereClause = rowsConditions.length > 0 ? and(...rowsConditions) : undefined;
 
       const [changes, countResult] = await Promise.all([
         db
           .select({
+            id: deviceChangeLog.id,
             timestamp: deviceChangeLog.timestamp,
+            // Q1: full microsecond-precision text for the keyset cursor.
+            timestampText: sql<string>`${deviceChangeLog.timestamp}::text`,
             changeType: deviceChangeLog.changeType,
             changeAction: deviceChangeLog.changeAction,
             subject: deviceChangeLog.subject,
@@ -304,19 +371,47 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
           })
           .from(deviceChangeLog)
           .leftJoin(devices, eq(deviceChangeLog.deviceId, devices.id))
-          .where(whereClause)
-          .orderBy(desc(deviceChangeLog.timestamp))
-          .limit(limit),
+          .where(rowsWhereClause)
+          .orderBy(desc(deviceChangeLog.timestamp), desc(deviceChangeLog.id))
+          .limit(limit + 1),
         db
           .select({ count: sql<number>`count(*)` })
           .from(deviceChangeLog)
-          .where(whereClause)
+          .where(countWhereClause)
       ]);
 
+      const total = Number(countResult[0]?.count ?? 0);
+
+      const items = changes.map((row) => {
+        const changedKeys = row.afterValue && typeof row.afterValue === 'object' && !Array.isArray(row.afterValue)
+          ? Object.keys(row.afterValue as Record<string, unknown>)
+          : [];
+        return {
+          id: row.id,
+          timestamp: row.timestamp instanceof Date ? row.timestamp.toISOString() : row.timestamp,
+          timestampText: row.timestampText,
+          changeType: row.changeType,
+          changeAction: row.changeAction,
+          subject: row.subject,
+          hostname: row.hostname,
+          deviceId: row.deviceId,
+          ...(includeValues
+            ? { beforeValue: row.beforeValue, afterValue: row.afterValue, details: row.details }
+            : { changedKeys }),
+        };
+      });
+
+      const envelope = keysetEnvelope({
+        key: 'changes', items, limit, fingerprint, total,
+        keyOf: (r) => ({ t: r.timestampText, i: r.id }),
+      });
+      const outChanges = (envelope.changes as Array<Record<string, unknown>>).map(
+        ({ timestampText: _timestampText, ...rest }) => rest
+      );
+
       return JSON.stringify({
-        changes,
-        total: Number(countResult[0]?.count ?? 0),
-        showing: changes.length,
+        ...envelope,
+        changes: outChanges,
         filters: {
           deviceId: input.deviceId ?? null,
           startTime: input.startTime ?? null,

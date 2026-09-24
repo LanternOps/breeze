@@ -98,7 +98,8 @@
     "serviceManagement": "Gestion des services",
     "ticketing": "Billetterie",
     "deliverableTemplates": "Modèles de livrables",
-    "securityScans": "Balayages IOC"
+    "securityScans": "Balayages IOC",
+    "system": "Système"
   },
   "documentTitles": {
     "dashboard": "Tableau de bord",

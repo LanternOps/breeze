@@ -231,6 +231,87 @@ export function extractDefinedFunctionNames(content: string): string[] {
 }
 
 /**
+ * Every constraint name a migration file (re)writes via
+ * `ADD CONSTRAINT` / `DROP CONSTRAINT [IF EXISTS]` / `ALTER CONSTRAINT` /
+ * `VALIDATE CONSTRAINT` / `RENAME CONSTRAINT a TO b` (both names).
+ *
+ * The constraint-side twin of `extractDefinedFunctionNames` (#6700 / #6701):
+ * replaying a file that drops and re-adds a CHECK re-narrows it to that file's
+ * list, and replaying one that runs `ALTER CONSTRAINT x NOT DEFERRABLE` undoes
+ * a later deferrable conversion — so `replayMigration` must also re-apply every
+ * later file that rewrites the same constraint name.
+ *
+ * Returned lowercase with double quotes stripped. Line comments are stripped
+ * first, same as the function detector. Deliberately NOT matched:
+ * - `SET CONSTRAINTS ...` (transaction-local, rewrites nothing).
+ * - an inline `CONSTRAINT x` clause in `CREATE TABLE` — a replayed
+ *   `CREATE TABLE IF NOT EXISTS` never rewrites the existing table.
+ * - names built at runtime (`format('... ALTER CONSTRAINT %I ...', r.conname)`),
+ *   e.g. the loop in `2026-09-12-100001-org-lifecycle-foundations.sql`. Those
+ *   are invisible to a text scan; a suite whose replay collides with one must
+ *   restore that state explicitly after `replayMigration` returns.
+ *
+ * Names are not table-qualified (Postgres scopes them per table), so an
+ * unrelated same-named constraint on another table over-selects — harmless,
+ * because shipped migrations are idempotent and re-applying one just re-runs it.
+ *
+ * Exported for unit testing.
+ */
+export function extractTouchedConstraintNames(content: string): string[] {
+  const withoutLineComments = content.replace(/--[^\n]*/g, '');
+  const names = new Set<string>();
+  const normalize = (raw: string) => raw.replace(/"/g, '').toLowerCase();
+  const touch = /\b(?:add|drop|alter|validate)\s+constraint\s+(?:if\s+exists\s+)?("[^"]+"|\w+)/gi;
+  let match: RegExpExecArray | null;
+  while ((match = touch.exec(withoutLineComments)) !== null) {
+    names.add(normalize(match[1]!));
+  }
+  const rename = /\brename\s+constraint\s+("[^"]+"|\w+)\s+to\s+("[^"]+"|\w+)/gi;
+  while ((match = rename.exec(withoutLineComments)) !== null) {
+    names.add(normalize(match[1]!));
+    names.add(normalize(match[2]!));
+  }
+  return [...names].sort();
+}
+
+/**
+ * Which of `laterFiles` (every shipped migration AFTER the replayed base, in
+ * filename order) must be re-applied after replaying `baseContent` so the
+ * database ends in the state a fresh `autoMigrate` leaves it in.
+ *
+ * A later file is selected when it (re)defines a function name, or rewrites a
+ * constraint name, already in the tracked set. The set starts as the base
+ * file's names and grows with every selected file's names — a transitive
+ * closure (#5788): a re-applied file can roll back a function/constraint the
+ * base never mentioned, and every later writer of THAT name is still ahead in
+ * this single forward scan. Function and constraint names are tracked
+ * separately so a function and a constraint that happen to share a name never
+ * cross-select.
+ *
+ * Pure (no I/O) and exported for unit testing; `replayMigration` in
+ * `__tests__/integration/replayMigration.ts` executes the result.
+ */
+export function selectReplayFollowers(
+  baseContent: string,
+  laterFiles: ReadonlyArray<{ name: string; content: string }>,
+): string[] {
+  const functions = new Set(extractDefinedFunctionNames(baseContent));
+  const constraints = new Set(extractTouchedConstraintNames(baseContent));
+  const selected: string[] = [];
+  if (functions.size === 0 && constraints.size === 0) return selected;
+  for (const { name, content } of laterFiles) {
+    const laterFunctions = extractDefinedFunctionNames(content);
+    const laterConstraints = extractTouchedConstraintNames(content);
+    const hit = laterFunctions.some((n) => functions.has(n)) || laterConstraints.some((n) => constraints.has(n));
+    if (!hit) continue;
+    selected.push(name);
+    for (const n of laterFunctions) functions.add(n);
+    for (const n of laterConstraints) constraints.add(n);
+  }
+  return selected;
+}
+
+/**
  * Split a SQL file into individual statements for no-transaction execution.
  *
  * Postgres's simple-query protocol wraps multi-statement single queries

@@ -51,6 +51,8 @@ import {
   UnsupportedReportScopeError,
   type ReportResult,
 } from '../services/reportGenerationService';
+import { reportScopeFromAuthority } from '../services/reportScope';
+import { reportTypeDef } from '../services/reportRegistry';
 import { emailReportFailure, emailReportRun } from '../services/reportDelivery';
 import { getBullMQConnection, isRedisAvailable } from '../services/redis';
 import {
@@ -74,10 +76,12 @@ import { attachWorkerObservability } from './workerObservability';
 import {
   decodeSiteScope,
   intersectSiteScopes,
+  partnerWideScope,
   persistedSiteScopeValues,
   reportOwnerOf,
   resolveLivePartnerReportAuthority,
   resolveLiveReportAuthority,
+  resolveLiveReportTypePermissions,
   siteScopeFingerprint,
   type LiveReportAuthorityResult,
   type PersistedSiteScopeColumns,
@@ -488,6 +492,49 @@ export async function processRunScheduledReport(
 
   const config = (report.config ?? {}) as Record<string, unknown>;
 
+  // Set once the owner axis is resolved (below); a deny before that point
+  // cannot know which envelope the row would need.
+  let knownOwner: ReportOwner | undefined;
+
+  /**
+   * #3198 W02 (addendum B3). A PARTNER-owned run is only ever listed / read by
+   * id when it carries a complete partner_wide envelope (partnerWideRowPredicate
+   * and decodeSiteScope reject the all-NULL shape for a partner owner), so a
+   * bare failed row would be invisible to the partner admins who need to see
+   * why the schedule stopped. Stamp the owner's partner_wide scope with the
+   * definition's execution user — the principal the refusal is about. The
+   * report_runs_execution_scope_shape_chk partner_wide arm requires a user id,
+   * so a deny before the owner is known, or for a definition with no execution
+   * user, stays envelope-less (and invisible to partner callers; it is still
+   * in the table for operators). Org-owned denies keep the all-NULL shape the
+   * org-axis predicates already admit.
+   */
+  const partnerDenyEnvelope = (
+    requestedByKind: 'user' | 'system' | 'portal_user' | null,
+  ): PersistedSiteScopeColumns | Record<string, never> => {
+    if (
+      knownOwner?.partnerId === undefined
+      || requestedByKind !== 'user'
+      || !report.executionScopeUserId
+    ) {
+      return {};
+    }
+    try {
+      const scope = partnerWideScope(knownOwner.partnerId);
+      return persistedSiteScopeValues({
+        principalKind: 'user',
+        scope,
+        principalUserId: report.executionScopeUserId,
+        capturedAt: new Date(),
+        fingerprint: siteScopeFingerprint(scope),
+      });
+    } catch (err) {
+      // Never lose the refusal itself over its visibility envelope.
+      reportScopeFailure('deny_envelope', err);
+      return {};
+    }
+  };
+
   const deny = async (
     reason: string,
     requestedByKind:
@@ -511,8 +558,21 @@ export async function processRunScheduledReport(
         requestedByUserId:
           requestedByKind === 'user' ? report.executionScopeUserId : null,
         requestedByPortalUserId: null,
+        ...partnerDenyEnvelope(requestedByKind),
       })
       .returning();
+  };
+
+  // #3198 W02 (B4): the owner/decode/live-resolve catches below fail closed as
+  // 'scope_unverifiable', but the cause (a corrupt row, a DB outage) must be
+  // visible - otherwise it reads as an ordinary permission refusal.
+  const reportScopeFailure = (stage: string, err: unknown): void => {
+    console.error('[ReportScheduleWorker] Execution scope could not be verified', {
+      reportId: report.id,
+      stage,
+      err,
+    });
+    captureException(err);
   };
 
   // P2-3 (#4190) — defence in depth. A system-authored definition (the weekly
@@ -546,10 +606,12 @@ export async function processRunScheduledReport(
   let owner: ReportOwner;
   try {
     owner = reportOwnerOf(report);
-  } catch {
+  } catch (err) {
+    reportScopeFailure('owner', err);
     await deny('scope_unverifiable');
     return;
   }
+  knownOwner = owner;
 
   let persistedScope;
   try {
@@ -557,7 +619,8 @@ export async function processRunScheduledReport(
       report as unknown as PersistedSiteScopeColumns,
       owner,
     );
-  } catch {
+  } catch (err) {
+    reportScopeFailure('decode', err);
     await deny('scope_unverifiable');
     return;
   }
@@ -584,12 +647,47 @@ export async function processRunScheduledReport(
           owner.orgId,
           'read',
         );
-  } catch {
+  } catch (err) {
+    reportScopeFailure('live_authority', err);
     await deny('scope_unverifiable');
     return;
   }
   if (!liveResult.ok || liveResult.authority.scope.kind === 'legacy_unscoped') {
     await deny(`scope_${liveResult.ok ? 'unverifiable_scope' : liveResult.reason}`);
+    return;
+  }
+
+  // #3198 W02 (spec §2, ruling P8). A business type also needs its underlying
+  // read permissions (e.g. invoices:read for ar_aging), re-checked here
+  // against the execution user's LIVE role grants on the same axis the
+  // resolver above used. The routes gate create/PUT/generate on the caller's
+  // permission set; without this re-check a creator demoted off invoices:read
+  // would keep receiving AR aging by email. Skipped (no query) for every
+  // pre-#3198 type, which lists no extra permissions.
+  // An unknown stored type (reportTypeDef throws) and a re-check that could
+  // not run (DB failure) are "could not verify", not a permission loss.
+  // Ruling F1: an msp_staff (business) type is internal to the MSP, so the
+  // re-check resolves the PARTNER axis only — an execution user who reaches an
+  // org-owned report through an org membership alone (a customer user) is
+  // denied scope_permission_missing.
+  let typePermissionsGranted: boolean;
+  try {
+    const typeDef = reportTypeDef(report.type);
+    const requiredPermissions = typeDef.requiredPermissions;
+    typePermissionsGranted = requiredPermissions.length === 0
+      || await resolveLiveReportTypePermissions(
+        liveResult.authority.principalUserId,
+        owner,
+        requiredPermissions,
+        { partnerAxisOnly: typeDef.audience === 'msp_staff' },
+      );
+  } catch (err) {
+    reportScopeFailure('live_permissions', err);
+    await deny('scope_unverifiable');
+    return;
+  }
+  if (!typePermissionsGranted) {
+    await deny('scope_permission_missing');
     return;
   }
 
@@ -619,8 +717,20 @@ export async function processRunScheduledReport(
   };
 
   try {
-    assertReportExecutionPreflight(owner, config, executionAuthority);
-  } catch {
+    // The type rides along so a stored config its own type rejects is a deny
+    // here, not a failed run after a row exists (ruling T3e).
+    assertReportExecutionPreflight(owner, config, executionAuthority, report.type);
+  } catch (err) {
+    // A deterministic refusal (the stored config selects outside the live
+    // authority, or its type rejects it), so a warning, not an exception
+    // report — but never a silent one: the reason names the offending key.
+    console.warn('[ReportScheduleWorker] Execution preflight refused the stored config', {
+      reportId: report.id,
+      reportType: report.type,
+      ownerOrgId: owner.orgId ?? null,
+      ownerPartnerId: owner.partnerId ?? null,
+      reason: err instanceof Error ? err.message : String(err),
+    });
     await deny('scope_config_outside_authority');
     return;
   }
@@ -652,20 +762,20 @@ export async function processRunScheduledReport(
   }
 
   try {
-    // #3198 W01: no report type has a partner-scope generator yet, and the
-    // public `generateReport` is org-only — a partner-owned definition is
-    // refused here, before it could reach it (W02 replaces this with a
-    // registry-driven ReportScope dispatch).
-    if (owner.partnerId !== undefined) {
-      throw new UnsupportedReportScopeError(report.type, 'partner');
-    }
+    // #3198 W02: the generator's scope comes from the owner axis and the
+    // authority just resolved for it. A partner owner's org list is resolved
+    // LIVE here (never stored on the definition), in this worker's system
+    // context via runInReportScope. A type that cannot run under its owner
+    // axis throws UnsupportedReportScopeError from the dispatcher, mapped to
+    // a stable reason below.
+    const scope = await reportScopeFromAuthority(owner, executionAuthority);
     const previous = await previousBaselineFor(
       report.id,
       executionAuthority.fingerprint,
     );
     const result = await generateReport(
       report.type,
-      owner.orgId,
+      scope,
       config,
       executionAuthority,
     );
@@ -711,12 +821,14 @@ export async function processRunScheduledReport(
           partnerId: delivery.partnerId,
         });
       } catch (err) {
-        // Delivery failure must not fail the (already stored) run.
+        // Delivery failure must not fail the (already stored) run — but the
+        // recipients silently got nothing, so it goes to error tracking.
         console.error(`[ReportScheduleWorker] Email delivery failed for report ${report.id}:`, err);
+        captureException(err);
       }
     }
   } catch (err) {
-    // #3198 W01: a definition whose owner axis its type cannot run under is a
+    // #3198: a definition whose owner axis its type cannot run under is a
     // deterministic refusal, not a transient failure. It records the stable
     // reason and RESOLVES: a retry could only write the same failed row again,
     // and recipients are not told a report "failed" that cannot be produced.

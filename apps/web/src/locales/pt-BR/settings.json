@@ -334,7 +334,8 @@
     "to": "Até",
     "allOrganizations": "Todas as organizações",
     "exporting": "Exportando…",
-    "downloadCsv": "Baixar CSV"
+    "downloadCsv": "Baixar CSV",
+    "seeBusinessReports": "Ver relatórios de negócio"
   },
   "partnerSettingsCard": {
     "title": "Configurações do parceiro",
@@ -4915,12 +4916,14 @@
     "description": "Importe organizações e locais a partir de um CSV exportado do seu RMM anterior.",
     "dropzone": "Solte um arquivo CSV aqui ou clique para procurar",
     "dropzoneHint": "Colunas: organização (obrigatória), local, ID externo, sistema externo, fuso horário",
+    "docsLink": "Guia de importação",
     "actions": {
       "close": "Fechar",
       "preview": "Pré-visualizar {{count}} linhas",
       "previewing": "Pré-visualizando…",
       "import": "Importar {{count}} selecionadas",
-      "importing": "Importando…"
+      "importing": "Importando…",
+      "downloadSample": "Baixar CSV de exemplo"
     },
     "mapping": {
       "title": "Mapeamento de colunas",
@@ -5838,5 +5841,58 @@
   "ticketCategories": {
     "defaultWorkType": "Tipo de trabalho padrão",
     "defaultWorkTypeHelp": "Usado quando o tempo é registrado para esta categoria sem um tipo de trabalho."
+  },
+  "systemDeprecations": {
+    "title": "Descontinuações",
+    "description": "Descontinuações de API que esta versão do Breeze conhece, e a situação desta implantação em cada uma delas. Este é um relatório somente leitura para administradores de plataforma; nada aqui é configurado.",
+    "refresh": "Atualizar",
+    "loading": "Carregando descontinuações…",
+    "errors": {
+      "load": "Não foi possível carregar o relatório de descontinuações."
+    },
+    "platformAdmin": {
+      "title": "Acesso de administrador de plataforma necessário",
+      "description": "Este relatório abrange toda a implantação, então somente administradores de plataforma podem visualizá-lo."
+    },
+    "manifestError": "Não foi possível ler o manifesto de mudanças incompatíveis nesta imagem ({{error}}). Não é possível verificar as descontinuações.",
+    "historyMissing": "Não foi possível determinar quais versões esta implantação executou — mostrando todas as descontinuações em vigor.",
+    "noReleaseVersion": "Esta imagem não traz uma versão de lançamento, então toda descontinuação no manifesto é mostrada como possivelmente ultrapassada.",
+    "historyReason": "Motivo: {{reason}}",
+    "summary": {
+      "imageVersion": "Versão em execução",
+      "unknownVersion": "Desconhecida ({{raw}})",
+      "lastRecorded": "Última versão registrada",
+      "noneRecorded": "Nenhuma registrada",
+      "migrations": "Migrações",
+      "migrationCounts": "{{applied}} aplicadas, {{pending}} pendentes",
+      "ledgerMissing": "Registro de migrações indisponível ({{reason}})"
+    },
+    "table": {
+      "heading": "Retiradas",
+      "entry": "Entrada",
+      "affected": "Endpoints e campos afetados",
+      "replacement": "Substituição",
+      "deprecatedIn": "Descontinuado em",
+      "removal": "Remoção",
+      "status": "Status aqui",
+      "wholeEndpoint": "Endpoint inteiro",
+      "notBefore": "Não antes de {{date}}",
+      "empty": "O manifesto não lista nenhuma retirada."
+    },
+    "status": {
+      "crossed": "Ultrapassado",
+      "possibly_crossed": "Possivelmente ultrapassado",
+      "in_effect": "Em vigor",
+      "upcoming": "Em breve"
+    },
+    "milestone": {
+      "deprecation": "descontinuação",
+      "removal": "remoção"
+    },
+    "history": {
+      "heading": "Histórico de versões",
+      "firstSeen": "Visto pela primeira vez em {{date}}",
+      "none": "Nenhuma versão registrada para esta implantação."
+    }
   }
 }

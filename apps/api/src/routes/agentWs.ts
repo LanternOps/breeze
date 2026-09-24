@@ -3504,36 +3504,18 @@ onClose: async (_event: unknown, ws: WSContext) => {
                 console.log(`[AgentWs] Preserving 'updating' status for agent ${agentId} on disconnect`);
                 return;
               }
-              const { transitioned } = await transitionDeviceOffline(agentId, ['online']);
-              // Only announce the offline event if the device row actually
-              // flipped — transitionDeviceOffline no-ops (transitioned:false)
-              // on a status/last_seen_at race (e.g. a reconnect or a
-              // concurrent write beat us to it), and publishing here anyway
-              // would tell subscribers the device went offline when the DB
-              // still says otherwise.
-              if (!transitioned) return;
-              publishEvent('device.offline', agentDb.orgId, {
-                deviceId: current.id,
-                hostname: current.hostname,
-              }, 'agent-ws', { siteId: current.siteId }).catch(err => {
-                console.error('[AgentWs] Failed to publish device.offline:', err);
-                captureException(err);
-              });
+              // No publishEvent('device.offline') here: when the row actually
+              // flips, transitionDeviceOffline persists an 'offline-event'
+              // effect whose worker publishes it (offlineTransitionEffects.ts).
+              // Publishing here too fired webhooks/automations twice (#6566).
+              await transitionDeviceOffline(agentId, ['online']);
             } catch (err) {
               console.error(`[AgentWs] Failed to check status for ${agentId} on disconnect, falling back to offline:`, err);
               captureException(err instanceof Error ? err : new Error(String(err)));
-              const { transitioned } = await transitionDeviceOffline(agentId, ['online']).catch(fallbackErr => {
+              // The effect path publishes device.offline (see above).
+              await transitionDeviceOffline(agentId, ['online']).catch(fallbackErr => {
                 console.error(`[AgentWs] Failed to transition ${agentId} offline on fallback:`, fallbackErr);
                 captureException(fallbackErr instanceof Error ? fallbackErr : new Error(String(fallbackErr)));
-                return { transitioned: false };
-              });
-              if (!transitioned) return;
-              publishEvent('device.offline', agentDb.orgId, {
-                deviceId: agentId,
-                hostname: '',
-              }, 'agent-ws').catch(pubErr => {
-                console.error('[AgentWs] Failed to publish device.offline:', pubErr);
-                captureException(pubErr);
               });
             }
           });

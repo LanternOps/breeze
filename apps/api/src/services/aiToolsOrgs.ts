@@ -56,6 +56,7 @@ import { contactCreateAuditEvent } from './contacts/audit';
 import { CONTACT_ROLES } from './contacts/types';
 import { ensureOrgAccess } from '../routes/systemTools/helpers';
 import { deviceScopeCondition, siteScopeCondition } from './aiToolsSiteScope';
+import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 
 // Mirrors the org PATCH route's status set (schema orgStatusEnum). Kept as a
 // literal array (not orgStatusEnum.enumValues) so schema mocks in tests don't
@@ -120,6 +121,28 @@ function resolveWritableOrgId(
   return { error: 'orgId is required for this operation' };
 }
 
+/**
+ * The caller's site allowlist, normalised FAIL-CLOSED (#6737).
+ *
+ * `undefined` = unrestricted; an array = restricted to those sites (empty =
+ * no sites). `AuthContext.allowedSiteIds` is typed `string[] | undefined` and
+ * every producer normalises a DB NULL to `undefined` at the source
+ * (`services/permissions.ts` `orgUser.siteIds || undefined`), so any other
+ * runtime value — e.g. a raw `null` from a future AuthContext builder that
+ * skips that step — is an invariant breach. Treat it as an EMPTY allowlist
+ * rather than reading `.length` off it (500) or letting a truthiness check
+ * collapse it into "unrestricted".
+ *
+ * For every type-valid value this matches GET /orgs/sites
+ * (routes/orgs.ts: `allowedSiteIds?.length === 0` → empty page;
+ * `allowedSiteIds ? inArray(sites.id, allowedSiteIds) : no filter`).
+ */
+function siteAllowlistOf(auth: AuthContext): readonly string[] | undefined {
+  const raw: unknown = auth.allowedSiteIds;
+  if (raw === undefined) return undefined;
+  return Array.isArray(raw) ? (raw as string[]) : [];
+}
+
 function jsonError(message: string, code?: string): string {
   return JSON.stringify(code ? { error: message, code } : { error: message });
 }
@@ -164,7 +187,9 @@ async function handleListOrganizations(
   input: Record<string, unknown>,
   auth: AuthContext
 ): Promise<string> {
-  const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
+  const page = readPageArgs('list_organizations', input, { defaultLimit: 25, maxLimit: 100 });
+  if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
+  const { limit, offset, fingerprint } = page;
   const search = typeof input.search === 'string' ? input.search.trim() : '';
   const searchCondition = search
     ? ilike(organizations.name, `%${escapeLike(search)}%`)
@@ -180,23 +205,25 @@ async function handleListOrganizations(
 
   if (auth.scope === 'organization') {
     // Org-scoped callers see ONLY their own org.
-    if (!auth.orgId) return JSON.stringify({ organizations: [], showing: 0 });
+    if (!auth.orgId) return JSON.stringify(pageEnvelope({ key: 'organizations', items: [], limit, offset, fingerprint }));
     conditions.push(eq(organizations.id, auth.orgId));
   } else if (auth.scope === 'partner') {
     const orgIds = auth.accessibleOrgIds ?? [];
-    if (orgIds.length === 0) return JSON.stringify({ organizations: [], showing: 0 });
+    if (orgIds.length === 0) return JSON.stringify(pageEnvelope({ key: 'organizations', items: [], limit, offset, fingerprint }));
     conditions.push(inArray(organizations.id, orgIds));
   }
   // system scope: no extra org filter (mirrors GET /orgs/organizations).
 
   // Safe projection for every scope — an unprojected select would leak
-  // settings/ssoConfig/billingContact into the model context.
+  // settings/ssoConfig/billingContact into the model context. Over-fetch by
+  // one (A-W05 5c) to report hasMore/nextCursor without a separate COUNT.
   const orgs = await db
     .select(SAFE_ORG_PROJECTION)
     .from(organizations)
     .where(and(...conditions))
-    .orderBy(organizations.name)
-    .limit(limit);
+    .orderBy(organizations.name, organizations.id)
+    .limit(limit + 1)
+    .offset(offset);
 
   // Attach each org's sites (id + name — enough to feed manage_quotes'
   // siteId). Site-restricted callers only see their allowed sites, mirroring
@@ -205,11 +232,12 @@ async function handleListOrganizations(
   const orgIdsOnPage = orgs.map((o) => o.id);
   // Site-restricted caller with an empty allowlist sees no sites at all —
   // skip the query entirely rather than emit an empty IN ().
-  const siteListDenied = auth.allowedSiteIds !== undefined && auth.allowedSiteIds.length === 0;
+  const allowedSiteIds = siteAllowlistOf(auth);
+  const siteListDenied = allowedSiteIds?.length === 0;
   if (orgIdsOnPage.length > 0 && !siteListDenied) {
     const siteConditions: SQL[] = [inArray(sites.orgId, orgIdsOnPage)];
-    if (auth.allowedSiteIds && auth.allowedSiteIds.length > 0) {
-      siteConditions.push(inArray(sites.id, auth.allowedSiteIds));
+    if (allowedSiteIds) {
+      siteConditions.push(inArray(sites.id, [...allowedSiteIds]));
     }
     const siteRows = await db
       .select({ id: sites.id, name: sites.name, orgId: sites.orgId })
@@ -223,12 +251,14 @@ async function handleListOrganizations(
     }
   }
 
-  const data = orgs.map((org) => ({
-    ...org,
-    sites: sitesByOrg.get(org.id) ?? [],
-  }));
+  // A-W05 (5c): cap the per-org sites payload at 20 and report the real
+  // count, so one org with hundreds of sites can't blow the page budget.
+  const data = orgs.map((org) => {
+    const orgSites = sitesByOrg.get(org.id) ?? [];
+    return { ...org, sites: orgSites.slice(0, 20), siteCount: orgSites.length };
+  });
 
-  return JSON.stringify({ organizations: data, showing: data.length });
+  return JSON.stringify(pageEnvelope({ key: 'organizations', items: data, limit, offset, fingerprint }));
 }
 
 async function handleCreateOrg(
@@ -499,8 +529,9 @@ async function handleAddContact(
   // AuthContext is only guaranteed to carry the restriction itself. A caller
   // that is restricted but has no closure to evaluate it with is denied.
   const siteId = typeof input.siteId === 'string' ? input.siteId : undefined;
-  if (siteId !== undefined && auth.allowedSiteIds
-    && (!auth.canAccessSite || !auth.canAccessSite(siteId))) {
+  const allowedSiteIds = siteAllowlistOf(auth);
+  if (siteId !== undefined && allowedSiteIds
+    && (!allowedSiteIds.includes(siteId) || !auth.canAccessSite || !auth.canAccessSite(siteId))) {
     return jsonError(
       'Access denied to that site. You can only add contacts to sites you have access to.',
       'site-access-denied'
@@ -600,7 +631,7 @@ export function registerOrgTools(aiTools: Map<string, AiTool>): void {
           if (orgIds.length === 0) return empty();
           conditions.push(inArray(sites.orgId, orgIds));
         }
-        if (auth.allowedSiteIds?.length === 0) return empty();
+        if (siteAllowlistOf(auth)?.length === 0) return empty();
         // Same correlated exclusion as GET /orgs/sites; no open JSONB containers.
         conditions.push(sql`NOT EXISTS (
     SELECT 1 FROM ${organizations} qs_org
@@ -649,11 +680,12 @@ export function registerOrgTools(aiTools: Map<string, AiTool>): void {
     },
     handler: async (input, auth) => {
       try {
+        const allowedSiteIds = siteAllowlistOf(auth);
         if (typeof input.siteId !== 'string' || !PG_UUID_REGEX.test(input.siteId)
-          || auth.allowedSiteIds?.length === 0) return jsonError('Site not found');
+          || allowedSiteIds?.length === 0) return jsonError('Site not found');
         const [site] = await db.select(SAFE_SITE_PROJECTION).from(sites).where(eq(sites.id, input.siteId)).limit(1);
         if (!site || !await ensureOrgAccess(site.orgId, auth)
-          || (auth.allowedSiteIds && !auth.allowedSiteIds.includes(site.id))) return jsonError('Site not found');
+          || (allowedSiteIds && !allowedSiteIds.includes(site.id))) return jsonError('Site not found');
         return JSON.stringify({ site });
       } catch (err) {
         console.error('[get_site]', err);
@@ -694,8 +726,9 @@ export function registerOrgTools(aiTools: Map<string, AiTool>): void {
       if (siteId !== undefined && (typeof siteId !== 'string' || (siteId !== 'none' && !PG_UUID_REGEX.test(siteId)))) {
         return jsonError('siteId must be a site UUID or none');
       }
+      const allowedSiteIds = siteAllowlistOf(auth);
       if (siteId !== undefined && siteId !== 'none' && (
-        (auth.allowedSiteIds && !auth.allowedSiteIds.includes(siteId)) ||
+        (allowedSiteIds && !allowedSiteIds.includes(siteId)) ||
         (auth.canAccessSite && !auth.canAccessSite(siteId))
       )) return jsonError('Access to this site denied');
       const role = input.role;
@@ -705,7 +738,7 @@ export function registerOrgTools(aiTools: Map<string, AiTool>): void {
       const limit = Math.min(Math.max(1, Math.floor(Number(input.limit) || 25)), 100);
       const offset = Math.max(0, Math.floor(Number(input.offset) || 0));
       // Stricter than REST: even org-level contacts are hidden for empty site scope.
-      if (auth.allowedSiteIds?.length === 0) {
+      if (allowedSiteIds?.length === 0) {
         return JSON.stringify({ contacts: [], total: 0, limit, offset });
       }
       try {
@@ -716,7 +749,7 @@ export function registerOrgTools(aiTools: Map<string, AiTool>): void {
         const filters: ContactListFilters = {
           ...(siteId === undefined ? {} : { siteId: siteId === 'none' ? null : siteId }),
           ...(role === undefined ? {} : { role }),
-          ...(auth.allowedSiteIds ? { allowedSiteIds: auth.allowedSiteIds } : {}),
+          ...(allowedSiteIds ? { allowedSiteIds: [...allowedSiteIds] } : {}),
         };
         const [contacts, total] = await Promise.all([
           listContacts(db, orgId, filters, { limit, offset }),
@@ -751,7 +784,7 @@ export function registerOrgTools(aiTools: Map<string, AiTool>): void {
         type: 'object' as const,
         properties: {
           search: { type: 'string', description: 'Case-insensitive name substring filter' },
-          limit: { type: 'number', description: 'Max results (default 25, max 100)' },
+          ...pageParamSchema(25, 100),
         },
         required: [],
       },

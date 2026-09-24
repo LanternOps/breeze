@@ -64,6 +64,14 @@ Line items can come from several sources: catalog items, bundles, tracked time e
 
 A line pulled in from a time entry bills the entry's **billed** quantity, not necessarily the time actually worked -- the entry's [billing profile](/features/rates/) can apply a minimum or round up to a billing increment first. When the two differ, the line's description states both, for example "On-site -- 0.50 h worked, 1.00 h billed." There is still exactly one invoice line per time entry.
 
+### Line grouping by ticket and category
+
+Wherever an invoice is rendered -- the web editor and document view, the generated PDF, the authenticated customer portal, and the public invoice link -- line items are grouped under the ticket they came from, then by category within that ticket (Labour, Materials, Recurring, and so on), instead of a flat list. This makes it clear to the customer which charges belong to which piece of work. Lines with no ticket are grouped together at the top.
+
+<Aside type="caution" title="Known gap">
+  The customer portal's **logged-in** invoice view groups lines by ticket but does not yet show the ticket's category label next to the group heading. The web editor/document view, the generated PDF, and the public (non-portal) invoice link all show the category label correctly. This is tracked for a follow-up fix.
+</Aside>
+
 ## Issuing and Sending
 
 **Issuing** an invoice finalizes it: it assigns the next sequential invoice number (using your partner prefix and the current year), sets the issue and due dates, and generates the PDF. **Sending** emails the invoice to the customer.

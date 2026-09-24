@@ -165,6 +165,10 @@ for the script-based fleet install.
   </TabItem>
 </Tabs>
 
+<Aside type="tip" title="Self-hosted server with a self-signed or internal-CA certificate?">
+  The agent and every installer verify the server certificate against the machine's trust store. If your server uses Caddy's internal CA (`CADDY_LOCAL_CERTS`, a bare IP or `localhost`) or any other private CA, install its root certificate on each endpoint first. Otherwise the MSI, the PowerShell one-liner and `breeze-agent enroll` all fail before enrollment. See [Trusting the internal CA on agents](/deploy/tls/#trusting-the-internal-ca-on-agents).
+</Aside>
+
 ## Pre-Configured Installers
 
 Instead of running manual enrollment commands, you can download a ready-to-run installer from the Breeze dashboard.

@@ -93,8 +93,50 @@ export interface NormalizedInboundEmail {
   // obtained (vs a genuine DMARC fail) — observability for the silent-quarantine failure
   // modes. Absent on a normal pass/fail. See SenderAuthDiagnostic.
   senderAuthDiagnostic?: SenderAuthDiagnostic;
-  attachments: { filename: string; contentType: string; size: number }[]; // metadata only
+  /**
+   * Provider-reported attachments. Across the queue this is METADATA ONLY
+   * (Mailgun emits [] today; M365 emits [] and sets `hasAttachments`). The
+   * `stored` / `skipReason` / `persisted` fields are set IN-PROCESS by the
+   * inbound worker's pre-transaction attachment step (#6688) and never cross
+   * the BullMQ boundary — attachment bytes do not belong in Redis.
+   */
+  attachments: InboundEmailAttachment[];
+  /**
+   * M365 only: Graph's `hasAttachments`. True means the inbound worker fetches
+   * the message's file attachments before processing it (#6688).
+   */
+  hasAttachments?: boolean;
   raw: Record<string, unknown>;
+}
+
+/** Why an inbound attachment was not imported (recorded as a one-line note on the ticket). */
+export type InboundAttachmentSkipReason =
+  | 'too_large'
+  | 'unsupported_type'
+  | 'too_many'
+  | 'fetch_failed'
+  | 'storage_failed';
+
+/** Bytes already written to attachment storage, awaiting their `ticket_attachments` row. */
+export interface StoredInboundAttachment {
+  attachmentId: string;
+  /** Sniffed from the bytes (spec D4) — never the sender's declared type. */
+  contentType: string;
+  byteSize: number;
+  sha256: string;
+  storageBackend: 's3' | 'db';
+  storageKey: string | null;
+  data: Buffer | null;
+}
+
+export interface InboundEmailAttachment {
+  filename: string;
+  contentType: string;
+  size: number;
+  stored?: StoredInboundAttachment;
+  skipReason?: InboundAttachmentSkipReason;
+  /** Set once the `ticket_attachments` row is inserted; a stored-but-unpersisted blob is an orphan to discard. */
+  persisted?: boolean;
 }
 
 export interface InboundEmailProvider {

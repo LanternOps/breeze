@@ -47,13 +47,6 @@ describe('partner reconstruction resource watermarks', () => {
     await expect(db.execute(sql.raw(migration))).resolves.toBeDefined();
     await expect(db.execute(sql.raw(hardeningMigration))).resolves.toBeDefined();
     await expect(db.execute(sql.raw(hardeningMigration))).resolves.toBeDefined();
-    // The hardening migration unconditionally runs
-    // `ALTER TABLE public.devices ALTER CONSTRAINT devices_site_org_fk NOT DEFERRABLE`
-    // (by design, for the enrollment-atomicity reason in its own comment), so
-    // replaying it undoes the org-lifecycle branch's deferrable-FK contract
-    // (migrations/2026-09-12-100001-org-lifecycle-foundations.sql Section 2,
-    // which lists devices_site_org_fk among the 16 constraints it converts).
-    // Restore it rather than editing the shipped migration.
     // The bare sql.raw replays above prove idempotency but also revert every
     // function the hardening file (re)defines — breeze_partner_export_device_
     // child_insert/update/delete — to its 2026-07-23 body for the rest of this
@@ -64,11 +57,23 @@ describe('partner reconstruction resource watermarks', () => {
     // (PR #5253, Integration shard 1). replayMigration re-applies, in filename
     // order, every later migration that redefines the same functions.
     await replayMigration('2026-07-23-partner-export-material-state-hardening.sql');
-    // AFTER replayMigration: it re-executes the 07-23 file itself, which makes
-    // devices_site_org_fk NOT DEFERRABLE again — restoring before it left the
-    // merge contract (orgLifecycleFoundations) red for any later suite in the
-    // same process.
+    // The hardening migration unconditionally runs
+    // `ALTER TABLE public.devices ALTER CONSTRAINT devices_site_org_fk NOT DEFERRABLE`
+    // (by design, for the enrollment-atomicity reason in its own comment), so
+    // every replay above — including replayMigration's own re-execution of the
+    // base file — undoes the org-lifecycle branch's deferrable-FK contract
+    // (migrations/2026-09-12-100001-org-lifecycle-foundations.sql Section 2).
+    // replayMigration cannot restore it: that file converts the FKs in a loop
+    // under runtime-built names (`format('... ALTER CONSTRAINT %I ...')`), which
+    // the constraint closure cannot see. So restore it explicitly, and AFTER
+    // replayMigration — restoring before it was undone by the replay (#6701),
+    // leaving devices_site_org_fk NOT DEFERRABLE for every later suite.
     await reapplyOrgIdFkDeferrability(db, ['devices_site_org_fk']);
+    const [fk] = await db.execute<{ deferrable: boolean }>(sql`
+      SELECT condeferrable AS deferrable FROM pg_constraint
+      WHERE conname = 'devices_site_org_fk' AND conrelid = 'public.devices'::regclass
+    `);
+    expect(fk?.deferrable).toBe(true);
     const sourceId = '55555555-5555-4555-8555-555555555555';
     const [identity] = await db.execute<{ value: string }>(sql`
       SELECT public.breeze_partner_export_stable_uuid(

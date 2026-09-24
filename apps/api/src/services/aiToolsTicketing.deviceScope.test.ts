@@ -57,7 +57,8 @@ function chain(rows: unknown[]): any {
     orderBy: () => self,
     set: () => self,
     returning: () => Promise.resolve(rows),
-    limit: () => Promise.resolve(rows),
+    limit: () => self,
+    offset: () => Promise.resolve(rows),
     then: (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) =>
       Promise.resolve(rows).then(res, rej),
   };

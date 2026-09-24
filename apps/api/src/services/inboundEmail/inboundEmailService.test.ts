@@ -16,7 +16,11 @@ const { state } = vi.hoisted(() => ({
     updates: [] as { table: string; set: Record<string, unknown> }[],
     locks: [] as { table: string; mode: string }[],
     // id to hand back from comment insert .returning()
-    insertedCommentId: 'c-1' as string
+    insertedCommentId: 'c-1' as string,
+    // #6689: where-conditions of the reopen re-read, and an optional override
+    // of the rows it returns (null = serve selectRows like any other select).
+    reopenRereads: [] as unknown[],
+    reopenRereadRows: null as unknown[] | null
   }
 }));
 
@@ -69,12 +73,29 @@ function whereExcludesDeleted(cond: unknown): boolean {
   return false;
 }
 
+// Flatten a drizzle SQL condition into its leaf tokens: plain-string chunks
+// (the mocked column names and bound literals) and raw operator text.
+function flattenChunks(cond: unknown): string[] {
+  if (typeof cond === 'string') return [cond];
+  const raw = (cond as { value?: unknown })?.value;
+  if (Array.isArray(raw) && raw.every((v) => typeof v === 'string')) return [raw.join('')];
+  const chunks = (cond as { queryChunks?: unknown[] })?.queryChunks;
+  if (!Array.isArray(chunks)) return [];
+  return chunks.flatMap(flattenChunks);
+}
+
 vi.mock('../../db', () => {
   // select(cols).from(table).where().limit() and .innerJoin().where().limit()
-  function makeSelect() {
+  function makeSelect(cols?: Record<string, unknown>) {
     let resolvedTable = 'unknown';
     let statusConstraint: { op: string; value: string } | null = null;
     let excludesDeleted = false;
+    let whereCond: unknown;
+    // #6689: the reopen's `select({ status }).from(tickets)` re-read. Recorded
+    // (so tests can assert its predicate) and overridable (so a test can make
+    // the re-read disagree with the initial match).
+    const isReopenReread = () =>
+      resolvedTable === 'tickets' && cols !== undefined && Object.keys(cols).join(',') === 'status';
     const chain: Record<string, unknown> = {
       from(tbl: unknown) {
         resolvedTable = tableName(tbl);
@@ -84,6 +105,7 @@ vi.mock('../../db', () => {
         return chain;
       },
       where(w: unknown) {
+        whereCond = w;
         statusConstraint = extractStatusConstraint(w);
         excludesDeleted = whereExcludesDeleted(w);
         return chain;
@@ -92,6 +114,10 @@ vi.mock('../../db', () => {
         return Promise.resolve(state.selectRows[resolvedTable + '_participants'] ?? []).then(resolve);
       },
       limit(_n: number) {
+        if (isReopenReread()) {
+          state.reopenRereads.push(whereCond);
+          if (state.reopenRereadRows) return Promise.resolve(state.reopenRereadRows);
+        }
         let rows = state.selectRows[resolvedTable] ?? [];
         // Honor a tickets `status` constraint so the mock can tell the live-match
         // query (ne status closed) from the closed-original lookup (eq status closed).
@@ -151,7 +177,7 @@ vi.mock('../../db', () => {
   }
   return {
     db: {
-      select: vi.fn(() => makeSelect()),
+      select: vi.fn((cols?: Record<string, unknown>) => makeSelect(cols)),
       insert: vi.fn((tbl: unknown) => makeInsert(tbl)),
       update: vi.fn((tbl: unknown) => makeUpdate(tbl))
     },
@@ -179,6 +205,11 @@ vi.mock('../../db/schema', () => ({
     __t: 'ticket_mailbox_connections', id: 'id', partnerId: 'partnerId', tenantId: 'tenantId',
     consentAttemptId: 'consentAttemptId', status: 'status'
   }
+}));
+// #6688: inbound attachment rows are inserted by ./inboundAttachments straight
+// from the table module; give it a marker so the insert is captured by name.
+vi.mock('../../db/schema/ticketAttachments', () => ({
+  ticketAttachments: { __t: 'ticket_attachments' }
 }));
 
 const { captureExceptionMock, captureMessageMock } = vi.hoisted(() => ({
@@ -291,6 +322,8 @@ beforeEach(() => {
   state.updates = [];
   state.locks = [];
   state.insertedCommentId = 'c-1';
+  state.reopenRereads = [];
+  state.reopenRereadRows = null;
   resolveMock.mockReset();
   createTicketMock.mockReset();
   changeStatusMock.mockReset();
@@ -449,9 +482,20 @@ describe('processInboundEmail', () => {
     expect(comments[0]!.portalUserId).toBe('pu-1');
     expect(comments[0]!.content).toBe('It is broken.');
 
-    // reopen resolved -> open (direct partner-scoped tickets UPDATE — FK-safe)
+    // #6689: reopen resolved -> open goes through the ticket service's
+    // status-change path (outbox event, SLA ledger, feed row) with the system
+    // actor — never a raw tickets UPDATE of status.
+    expect(changeStatusMock).toHaveBeenCalledTimes(1);
+    expect(changeStatusMock).toHaveBeenCalledWith(
+      't-1',
+      { status: 'open' },
+      {},
+      expect.objectContaining({ principalKind: 'system', name: 'Inbound Email' })
+    );
     const ticketUpdates = state.updates.filter((u) => u.table === 'tickets');
-    expect(ticketUpdates.some((u) => u.set.status === 'open')).toBe(true);
+    expect(ticketUpdates.some((u) => 'status' in u.set || 'resolvedAt' in u.set)).toBe(false);
+    // The re-read that gates the reopen is partner-scoped and row-locked.
+    expect(state.locks.some((l) => l.table === 'tickets' && l.mode === 'update')).toBe(true);
 
     // event emitted with inbound:true (no echo to sender)
     expect(emitMock).toHaveBeenCalledTimes(1);
@@ -464,6 +508,60 @@ describe('processInboundEmail', () => {
     expect(log).toHaveLength(1);
     expect(log[0]!.parseStatus).toBe('matched');
     expect(log[0]!.ticketId).toBe('t-1');
+  });
+
+  // #6689: the reopen's row-locked re-read is the real gate. If the ticket is
+  // no longer resolved by then, the reply is still appended but no status
+  // change is attempted.
+  it('does not reopen when the row-locked re-read finds the ticket no longer resolved', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [{
+      id: 't-1', partnerId: 'p-1', orgId: 'o-1', status: 'resolved',
+      emailThreadKey: '<msg-1@tickets.example.com>', internalNumber: 'T-2026-0001'
+    }];
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
+    state.reopenRereadRows = [{ status: 'open' }];
+
+    await processInboundEmail(email({ inReplyTo: '<msg-1@tickets.example.com>' }));
+
+    expect(state.reopenRereads).toHaveLength(1);
+    expect(changeStatusMock).not.toHaveBeenCalled();
+    expect(state.inserts.filter((i) => i.table === 'ticket_comments')).toHaveLength(1);
+    expect(inboundOf()[0]!.parseStatus).toBe('matched');
+  });
+
+  it('does not reopen when the partner-scoped re-read finds no row', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [{
+      id: 't-1', partnerId: 'p-1', orgId: 'o-1', status: 'resolved',
+      emailThreadKey: '<msg-1@tickets.example.com>', internalNumber: 'T-2026-0001'
+    }];
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
+    state.reopenRereadRows = [];
+
+    await processInboundEmail(email({ inReplyTo: '<msg-1@tickets.example.com>' }));
+
+    expect(changeStatusMock).not.toHaveBeenCalled();
+  });
+
+  it('scopes the reopen re-read to the ticket AND the resolved partner', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [{
+      id: 't-1', partnerId: 'p-1', orgId: 'o-1', status: 'resolved',
+      emailThreadKey: '<msg-1@tickets.example.com>', internalNumber: 'T-2026-0001'
+    }];
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
+
+    await processInboundEmail(email({ inReplyTo: '<msg-1@tickets.example.com>' }));
+
+    expect(state.reopenRereads).toHaveLength(1);
+    const tokens = flattenChunks(state.reopenRereads[0]);
+    const pairs = tokens.map((t, i) => `${t}${tokens[i + 1] ?? ''}${tokens[i + 2] ?? ''}`);
+    expect(pairs).toContain('id = t-1');
+    expect(pairs).toContain('partnerId = p-1');
   });
 
   it('matches on a thread key in the MIDDLE of references (not just In-Reply-To / last)', async () => {
@@ -486,6 +584,8 @@ describe('processInboundEmail', () => {
     const comments = state.inserts.filter((i) => i.table === 'ticket_comments').map((i) => i.values);
     expect(comments).toHaveLength(1);
     expect(comments[0]!.isPublic).toBe(true);
+    // #6689: an open ticket gets no status change at all.
+    expect(changeStatusMock).not.toHaveBeenCalled();
 
     const log = inboundOf();
     expect(log).toHaveLength(1);
@@ -542,7 +642,7 @@ describe('processInboundEmail', () => {
 
     // NO comment appended, NO reopen
     expect(state.inserts.filter((i) => i.table === 'ticket_comments')).toHaveLength(0);
-    expect(state.updates.filter((u) => u.table === 'tickets' && u.set.status === 'open')).toHaveLength(0);
+    expect(changeStatusMock).not.toHaveBeenCalled();
     expect(createTicketMock).not.toHaveBeenCalled();
 
     // logged failed, under the RESOLVED partner (A), never matched against B
@@ -808,7 +908,7 @@ describe('processInboundEmail', () => {
 
     // The soft-deleted ticket must NOT be appended to or reopened.
     expect(state.inserts.filter((i) => i.table === 'ticket_comments')).toHaveLength(0);
-    expect(state.updates.filter((u) => u.table === 'tickets' && u.set.status === 'open')).toHaveLength(0);
+    expect(changeStatusMock).not.toHaveBeenCalled();
     // Instead, a brand-new ticket is created for the reply.
     expect(createTicketMock).toHaveBeenCalledTimes(1);
 
@@ -1061,7 +1161,7 @@ describe('processInboundEmail', () => {
 
     // NO public comment appended, NO reopen.
     expect(state.inserts.filter((i) => i.table === 'ticket_comments')).toHaveLength(0);
-    expect(state.updates.filter((u) => u.table === 'tickets' && u.set.status === 'open')).toHaveLength(0);
+    expect(changeStatusMock).not.toHaveBeenCalled();
     expect(createTicketMock).not.toHaveBeenCalled();
 
     // Routed to quarantine for human review.
@@ -1151,7 +1251,8 @@ describe('processInboundEmail', () => {
     expect(comments[0]!.authorName).toBe('Jane Stored-Name');
 
     const ticketUpdates = state.updates.filter((u) => u.table === 'tickets');
-    expect(ticketUpdates.some((u) => u.set.status === 'open')).toBe(true);
+    expect(changeStatusMock).toHaveBeenCalledWith('t-1', { status: 'open' }, {}, expect.objectContaining({ principalKind: 'system' }));
+    expect(ticketUpdates.some((u) => 'status' in u.set)).toBe(false);
 
     const log = inboundOf();
     expect(log[0]!.parseStatus).toBe('matched');
@@ -1538,7 +1639,8 @@ describe('subject-token matches are bound to the sender (§1.3)', () => {
   }
 
   function reopened() {
-    return state.updates.filter((u) => u.table === 'tickets' && u.set.status === 'open');
+    // #6689: the reopen goes through changeTicketStatus, never a raw UPDATE.
+    return changeStatusMock.mock.calls.filter((c) => (c[1] as { status?: string } | undefined)?.status === 'open');
   }
 
   beforeEach(() => {
@@ -1789,5 +1891,94 @@ describe('processInboundEmail — cross-channel claim ledger (spec §4)', () => 
     const rows = inboundOf();
     expect(rows[0]!.parseStatus).toBe('created');
     expect(String(rows[0]!.error)).toContain('t-winner');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #6688 — M365 attachments prepared by the worker (bytes already in storage)
+// land as ATTACHED ticket_attachments rows; skipped ones become a one-line note.
+// ---------------------------------------------------------------------------
+describe('processInboundEmail — inbound attachments (#6688)', () => {
+  const storedPdf = {
+    filename: 'report.pdf',
+    contentType: 'application/pdf',
+    size: 12,
+    stored: {
+      attachmentId: 'att-1', contentType: 'application/pdf', byteSize: 12, sha256: 'c'.repeat(64),
+      storageBackend: 's3' as const, storageKey: 'ticket-attachments/att-1', data: null,
+    },
+  };
+  const skippedEml = { filename: 'orig.eml', contentType: 'message/rfc822', size: 99, skipReason: 'unsupported_type' as const };
+
+  function knownSenderCreate() {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [];
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1', name: 'Jane Stored' }];
+    state.selectRows['organizations'] = [{ id: 'o-1' }];
+    createTicketMock.mockResolvedValue({ id: 't-created', internalNumber: 'T-2026-0010' });
+  }
+
+  it('create path: persists the stored file on an email-authored comment of the NEW ticket, without a second event', async () => {
+    knownSenderCreate();
+    const n = email({ attachments: [{ ...storedPdf }] });
+
+    await processInboundEmail(n);
+
+    const comments = state.inserts.filter((i) => i.table === 'ticket_comments').map((i) => i.values);
+    expect(comments).toHaveLength(1);
+    expect(comments[0]).toMatchObject({ ticketId: 't-created', authorType: 'email', isPublic: true, portalUserId: 'pu-1' });
+
+    const rows = state.inserts.filter((i) => i.table === 'ticket_attachments').map((i) => i.values as unknown);
+    expect(rows).toEqual([[expect.objectContaining({
+      id: 'att-1', ticketId: 't-created', orgId: 'o-1', commentId: 'c-1', originalFilename: 'report.pdf',
+    })]]);
+    expect(n.attachments[0]!.persisted).toBe(true);
+    // ticket.created already notifies; the attachment carrier comment must not add a ticket.commented.
+    expect(emitMock).not.toHaveBeenCalled();
+  });
+
+  it('create path: a skipped attachment is recorded as a one-line note on the description, no carrier comment', async () => {
+    knownSenderCreate();
+
+    await processInboundEmail(email({ attachments: [skippedEml] }));
+
+    const input = createTicketMock.mock.calls[0]![0] as { description: string };
+    expect(input.description.startsWith('It is broken.')).toBe(true);
+    expect(input.description).toContain('orig.eml (file type not supported)');
+    expect(state.inserts.filter((i) => i.table === 'ticket_comments')).toHaveLength(0);
+    expect(state.inserts.filter((i) => i.table === 'ticket_attachments')).toHaveLength(0);
+  });
+
+  it('reply path: attaches stored files to the inbound comment and appends the skip note to it', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [{
+      id: 't-1', partnerId: 'p-1', orgId: 'o-1', status: 'open',
+      emailThreadKey: '<msg-1@tickets.example.com>', internalNumber: 'T-2026-0001'
+    }];
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
+
+    await processInboundEmail(email({
+      inReplyTo: '<msg-1@tickets.example.com>',
+      attachments: [{ ...storedPdf }, skippedEml],
+    }));
+
+    const comments = state.inserts.filter((i) => i.table === 'ticket_comments').map((i) => i.values);
+    expect(comments).toHaveLength(1);
+    expect(String(comments[0]!.content).startsWith('It is broken.')).toBe(true);
+    expect(comments[0]!.content).toContain('orig.eml (file type not supported)');
+
+    const rows = state.inserts.filter((i) => i.table === 'ticket_attachments').map((i) => i.values as unknown);
+    expect(rows).toEqual([[expect.objectContaining({ id: 'att-1', ticketId: 't-1', orgId: 'o-1', commentId: 'c-1' })]]);
+    expect(inboundOf()[0]!.parseStatus).toBe('matched');
+  });
+
+  it('an email with no attachments writes no attachment rows and leaves the description untouched', async () => {
+    knownSenderCreate();
+    await processInboundEmail(email());
+    expect((createTicketMock.mock.calls[0]![0] as { description: string }).description).toBe('It is broken.');
+    expect(state.inserts.filter((i) => i.table === 'ticket_attachments')).toHaveLength(0);
+    expect(state.inserts.filter((i) => i.table === 'ticket_comments')).toHaveLength(0);
   });
 });

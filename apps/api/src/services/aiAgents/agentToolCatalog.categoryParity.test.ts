@@ -254,7 +254,13 @@ const CATEGORY_CAPABILITY_PAIRS: Record<ToolCategory, AgentCapabilityId[]> = {
   'Remote Access & Control': ['remote_access', 'scripts_commands'],
   Integrations: ['endpoint_agent', 'tenancy'],
   Ticketing: ['tickets'],
-  'AI Governance': ['tenancy'],
+  // A-W05 (D13a): read_artifact is TOOL_CAPABILITY 'workspace' (same bucket
+  // export_dataset uses — CAPABILITY_DOMAINS.workspace covers the `ai`
+  // domain) but displays under 'AI Governance' beside list_ai_agents: it
+  // reads back a stored AI tool-result artifact, not a sandbox/dataset
+  // export, so grouping it with the other AI-governance read tools is the
+  // more legible choice for an operator scanning this page.
+  'AI Governance': ['tenancy', 'workspace'],
   Other: ['automations_reports'],
 };
 
