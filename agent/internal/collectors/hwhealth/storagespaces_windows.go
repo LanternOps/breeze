@@ -50,7 +50,7 @@ func newStorageSpaces() Source {
 				return Result{}, e
 			}
 			if o.ExitCode != 0 {
-				return Result{}, fmt.Errorf("Storage Spaces exit %d", o.ExitCode)
+				return Result{}, fmt.Errorf("storage spaces exit %d", o.ExitCode)
 			}
 			return parseSpaces(o.Stdout)
 		},

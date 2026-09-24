@@ -78,7 +78,9 @@ func salvage(path string) uint64 {
 	if e != nil {
 		return 0
 	}
-	defer f.Close()
+	// Read-only, best-effort salvage: a Close error cannot affect the bytes
+	// already read, and the handle is released before quarantineState renames.
+	defer func() { _ = f.Close() }()
 	b, _ := io.ReadAll(io.LimitReader(f, maxHardwareStateBytes+1))
 	m := salvageSequence.FindSubmatch(b)
 	if m == nil {

@@ -67,7 +67,3 @@ func runTool(parent context.Context, timeout time.Duration, path string, args ..
 	}
 	return r, e
 }
-
-func runPowerShell(ctx context.Context, timeout time.Duration, script string) (execResult, error) {
-	return runTool(ctx, timeout, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"+script)
-}

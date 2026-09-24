@@ -28,7 +28,10 @@ func readJSON(path string, value any) error {
 	if e != nil {
 		return e
 	}
-	defer f.Close()
+	// Read-only handle: every byte we use has already been read, so a Close
+	// error cannot lose data. Closing before return also matters on Windows,
+	// where loadState may rename this file right after a failed read.
+	defer func() { _ = f.Close() }()
 	b, e := io.ReadAll(io.LimitReader(f, maxHardwareStateBytes+1))
 	if e != nil {
 		return e
@@ -55,7 +58,10 @@ func writeJSON(path string, value any) error {
 	if e != nil {
 		return e
 	}
-	defer os.Remove(tmp)
+	// Best-effort cleanup of the temporary file on any failed step. After a
+	// successful rename it no longer exists (ErrNotExist), and a leftover .tmp
+	// is truncated by O_TRUNC on the next write, so the error is irrelevant.
+	defer func() { _ = os.Remove(tmp) }()
 	if _, e = f.Write(b); e != nil {
 		_ = f.Close()
 		return e
