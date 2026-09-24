@@ -26,6 +26,11 @@ func init() {
 // exercised without root/real block devices.
 var rebuildSystemForTest rebuild.System
 
+// rebuildWinSystemForTest mirrors rebuildSystemForTest for the Windows seam
+// (rebuild.Options.WinSystem): nil in every real build, where rebuild.Run
+// constructs the real Windows system on a Windows host.
+var rebuildWinSystemForTest rebuild.WinSystem
+
 // newRebuildCommand wires the bare-metal rebuild engine (agent/internal/
 // backup/rebuild) to the CLI. W04a adds --token/--server: the operator
 // passes the recovery token minted by POST /bmr/recover/exchange (via the
@@ -37,6 +42,9 @@ func newRebuildCommand() *cobra.Command {
 		snapshot, target, imageSize, providerConfig, identityFlag, markerFile, resultJSON, stateDir string
 		token, server, expectSystemState                                                            string
 		dryRun, force, allowPartial, noInitramfs, skipBoot                                          bool
+		driverDirs                                                                                  []string
+		forceDisk, allowDomainController                                                            bool
+		workRoot                                                                                    string
 	)
 	cmd := &cobra.Command{
 		Use:   "rebuild",
@@ -77,6 +85,7 @@ func newRebuildCommand() *cobra.Command {
 				SnapshotID: snapshot, Target: tgt, Identity: rebuild.IdentityMode(identityFlag),
 				StateDir: stateDir, DryRun: dryRun, ForceReprovision: force, AllowPartialRestore: allowPartial,
 				RegenerateInitramfs: !noInitramfs, SkipBoot: skipBoot, System: rebuildSystemForTest,
+				WinSystem: rebuildWinSystemForTest, DriverDirs: driverDirs, ForceDisk: forceDisk, AllowDomainController: allowDomainController, WorkRoot: workRoot,
 				Progress: func(ph rebuild.Phase, msg string, cur, total int64) {
 					line := fmt.Sprintf("[%s] %s", ph, msg)
 					if total > 0 {
@@ -149,7 +158,7 @@ func newRebuildCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&snapshot, "snapshot", "", "snapshot id")
-	cmd.Flags().StringVar(&target, "target", "", "disk:/dev/sdX, image:/path/to/file.img or vhdx:/path/to/file.vhdx (needs qemu-img)")
+	cmd.Flags().StringVar(&target, "target", "", "disk:/dev/sdX (Windows: disk:\\\\.\\PhysicalDriveN), image:/path/to/file.img (Linux only) or vhdx:/path/to/file.vhdx (Linux: needs qemu-img; Windows: written natively)")
 	cmd.Flags().StringVar(&imageSize, "image-size", "", "size for a new image or vhdx file, e.g. 40G")
 	cmd.Flags().StringVar(&providerConfig, "provider-config", "", "JSON file {provider, providerConfig}")
 	cmd.Flags().StringVar(&token, "token", "", "server-issued bare-metal recovery token (exchange a code for one via POST /bmr/recover/exchange)")
@@ -157,7 +166,11 @@ func newRebuildCommand() *cobra.Command {
 	cmd.Flags().StringVar(&identityFlag, "identity", "original", "original|new (with --token, defaults to the recovery's own identity)")
 	cmd.Flags().StringVar(&markerFile, "marker-file", "", "JSON {recoveryId, nonce} for original identity (--provider-config mode only; --token mode gets this from the bootstrap)")
 	cmd.Flags().StringVar(&resultJSON, "result-json", "", "write the result JSON here as well as stdout")
-	cmd.Flags().StringVar(&stateDir, "state-dir", "", "engine state dir (default /var/lib/breeze/rebuild)")
+	cmd.Flags().StringVar(&stateDir, "state-dir", "", "engine state dir (default /var/lib/breeze/rebuild; Windows: %ProgramData%\\Breeze\\rebuild)")
+	cmd.Flags().StringArrayVar(&driverDirs, "drivers", nil, "Windows only: a directory of driver packages for DISM /Add-Driver (repeatable)")
+	cmd.Flags().BoolVar(&forceDisk, "force-disk", false, "Windows only: overwrite a disk target that holds a Windows installation")
+	cmd.Flags().BoolVar(&allowDomainController, "allow-domain-controller", false, "Windows only: allow rebuilding a domain controller source")
+	cmd.Flags().StringVar(&workRoot, "work-root", "", "Windows vhdx: restore scratch dir override (default %ProgramData%\\Breeze\\rebuild\\work\\<snapshotID>)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preflight only; print the plan")
 	cmd.Flags().BoolVar(&force, "force-reprovision", false, "discard resume state and start from provisioning")
 	cmd.Flags().BoolVar(&allowPartial, "allow-partial", false, "continue when some files fail to restore")

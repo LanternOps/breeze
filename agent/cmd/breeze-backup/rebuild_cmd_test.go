@@ -126,3 +126,22 @@ func TestRebuildCommand_TokenModeRequiresServer(t *testing.T) {
 		t.Fatalf("expected the --server-required error, got: %v", err)
 	}
 }
+
+func TestRebuildCommand_WindowsFlags(t *testing.T) {
+	cmd := newRebuildCommand()
+	if err := cmd.ParseFlags([]string{"--drivers", `X:\a`, "--drivers", `X:\b`, "--force-disk", "--allow-domain-controller", "--work-root", `D:\scratch`}); err != nil {
+		t.Fatal(err)
+	}
+	dirs, err := cmd.Flags().GetStringArray("drivers")
+	if err != nil || len(dirs) != 2 || dirs[0] != `X:\a` || dirs[1] != `X:\b` {
+		t.Fatalf("drivers = %v, %v", dirs, err)
+	}
+	for _, name := range []string{"force-disk", "allow-domain-controller"} {
+		if v, err := cmd.Flags().GetBool(name); err != nil || !v {
+			t.Fatalf("%s = %v, %v", name, v, err)
+		}
+	}
+	if v, err := cmd.Flags().GetString("work-root"); err != nil || v != `D:\scratch` {
+		t.Fatalf("work-root = %q, %v", v, err)
+	}
+}

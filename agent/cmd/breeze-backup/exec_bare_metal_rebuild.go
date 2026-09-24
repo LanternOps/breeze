@@ -91,6 +91,7 @@ func execBareMetalRebuild(parentCtx context.Context, payload json.RawMessage, re
 	}
 	opts.RegenerateInitramfs = true // the CLI's default; a direct Options caller must ask for it explicitly
 	opts.System = rebuildSystemForTest
+	opts.WinSystem = rebuildWinSystemForTest
 	opts.Progress = func(ph rebuild.Phase, msg string, cur, total int64) {
 		slog.Info("bare_metal_rebuild progress", "recoveryId", p.RecoveryID, "phase", string(ph), "message", msg, "current", cur, "total", total)
 	}
