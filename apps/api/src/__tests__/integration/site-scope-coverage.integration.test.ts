@@ -166,9 +166,7 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   'routes/agents/connections.ts:PUT /:id/connections',
   'routes/agents/elevationRequests.ts:POST /:id/elevation-requests',
   'routes/agents/enrollment.ts:POST /enroll',
-  'routes/agents/inventory.ts:PUT /:id/disks',
   'routes/agents/inventory.ts:PUT /:id/hardware',
-  'routes/agents/inventory.ts:PUT /:id/network',
   'routes/agents/inventory.ts:PUT /:id/warranty-info',
   // Agent-token mTLS renewal confirm (Wave 5 Task 4/6). The atomic
   // activate+demote writes device_mtls_certificates and devices.mtls_cert_*

@@ -23,12 +23,17 @@ vi.mock('../../db/schema', async (importOriginal) => {
   return { ...actual };
 });
 
+vi.mock('../../services/inventoryChildSync', () => ({
+  syncDeviceDisks: vi.fn(),
+  syncDeviceNetwork: vi.fn(),
+}));
 vi.mock('../../services/warrantySync', () => ({ upsertAgentWarranty: vi.fn() }));
 vi.mock('../../services/warrantyWorker', () => ({
   queueWarrantySyncForDevice: vi.fn().mockResolvedValue(undefined),
 }));
 
 import { db } from '../../db';
+import { syncDeviceNetwork } from '../../services/inventoryChildSync';
 import { inventoryRoutes } from './inventory';
 
 function mockDeviceLookup(device: { id: string; orgId: string } | null) {
@@ -54,21 +59,12 @@ function mockTransactionCapture() {
     updateCalled: false,
     ops: [],
   };
+  vi.mocked(syncDeviceNetwork).mockImplementation(async (_tx, _device, adapters) => {
+    captured.ops.push('network-sync');
+    captured.inserted = [...adapters];
+  });
   vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
     const tx = {
-      delete: vi.fn().mockImplementation(() => {
-        captured.ops.push('delete');
-        return { where: vi.fn().mockResolvedValue(undefined) };
-      }),
-      insert: vi.fn().mockImplementation(() => {
-        captured.ops.push('insert');
-        return {
-          values: vi.fn().mockImplementation((rows: unknown[]) => {
-            captured.inserted = rows;
-            return Promise.resolve(undefined);
-          }),
-        };
-      }),
       update: vi.fn().mockImplementation(() => {
         captured.ops.push('update');
         return {
@@ -161,8 +157,8 @@ describe('agent network inventory — VPN presence ingest (#2139)', () => {
     });
 
     expect(res.status).toBe(200);
-    // Guard against vacuous order checks: all three statements must have run.
-    expect(captured.ops).toEqual(['update', 'delete', 'insert']);
+    // Guard against vacuous order checks: both writes must have run.
+    expect(captured.ops).toEqual(['update', 'network-sync']);
   });
 
   it('leaves activeVpns untouched (preserving last-known) when an older agent omits vpns', async () => {
