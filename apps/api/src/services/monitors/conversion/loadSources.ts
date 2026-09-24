@@ -38,11 +38,14 @@ export async function loadPolicySources(policyId: string, executor: DbExecutor =
   const inlineRules = alertRuleLink
     ? await executor.select().from(configPolicyAlertRules).where(and(eq(configPolicyAlertRules.featureLinkId, alertRuleLink.id), isNull(configPolicyAlertRules.retiredAt))).orderBy(configPolicyAlertRules.sortOrder)
     : [];
-  const [settings] = monitoringLink
-    ? await executor.select().from(configPolicyMonitoringSettings).where(eq(configPolicyMonitoringSettings.featureLinkId, monitoringLink.id)).limit(1)
+  // Re-keying may leave the old settings row when the monitors link already
+  // owns one. Both rows still contain legacy sources that must be swept.
+  const settingsLinkIds = links.filter((l) => l.featureType === 'monitoring' || l.featureType === 'monitors').map((l) => l.id);
+  const settings = settingsLinkIds.length
+    ? await executor.select().from(configPolicyMonitoringSettings).where(inArray(configPolicyMonitoringSettings.featureLinkId, settingsLinkIds))
     : [];
-  const watches = settings
-    ? await executor.select().from(configPolicyMonitoringWatches).where(and(eq(configPolicyMonitoringWatches.settingsId, settings.id), isNull(configPolicyMonitoringWatches.retiredAt))).orderBy(configPolicyMonitoringWatches.sortOrder)
+  const watches = settings.length
+    ? await executor.select().from(configPolicyMonitoringWatches).where(and(inArray(configPolicyMonitoringWatches.settingsId, settings.map((s) => s.id)), isNull(configPolicyMonitoringWatches.retiredAt))).orderBy(configPolicyMonitoringWatches.sortOrder)
     : [];
   const automationLink = link('automation');
   const policyAutomations = automationLink
@@ -92,7 +95,7 @@ export async function loadPolicySources(policyId: string, executor: DbExecutor =
     links: {
       alertRule: alertRuleLink?.id ?? null,
       monitoring: monitoringLink?.id ?? null,
-      monitoringSettingsId: settings?.id ?? null,
+      monitoringSettingsId: settings[0]?.id ?? null,
       monitors: monitorsLink ? { id: monitorsLink.id, inheritance: monitorsSettings?.success ? monitorsSettings.data.inheritance : 'cumulative', items: monitorsSettings?.success ? monitorsSettings.data.items : [] } : null,
     },
     inlineRules, watches, policyAutomations, standaloneAutomations, openAlertsBySource, parentUnconverted,
