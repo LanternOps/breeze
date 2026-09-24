@@ -159,7 +159,8 @@ function trustedAuthResults(headers: GHeader[] | undefined): string {
 // was empty on every Gmail-delivered sample (it is added by upstream gateways, not by
 // Gmail) and is therefore NOT trusted here.
 const TRUSTED_RECIPIENT_HEADER_NAMES = new Set(['delivered-to']);
-const EMAIL_ADDR_RE = /[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}/gi;
+// The last label may hold digits and hyphens: punycode TLDs (xn--p1ai) are valid.
+const EMAIL_ADDR_RE = /[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z0-9-]{2,}/gi;
 
 /** Collapse `+suffix` plus-addressing to the base mailbox so `help+urgent@x`
  * matches a `help@x` mailbox (same mailbox, tagged). Domain kept verbatim. */
