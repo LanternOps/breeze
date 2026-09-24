@@ -98,6 +98,22 @@
       "inaccessible": "Cette organisation est {{status}}, ses données en direct ne sont donc pas disponibles. Vous pouvez tout de même la voir dans la liste des organisations.",
       "backToList": "Retour aux organisations"
     },
+    "reportHistory": {
+      "title": "Historique des rapports",
+      "loading": "Chargement de l'historique des rapports…",
+      "readOnlyNote": "Lecture seule : cette organisation est {{status}}, les rapports ne peuvent donc pas être générés, planifiés ou téléchargés.",
+      "forbidden": "Vous n'avez pas accès à l'historique des rapports de cette organisation.",
+      "error": "Impossible de charger l'historique des rapports.",
+      "empty": "Aucun rapport ni exécution de rapport trouvé.",
+      "definitionsTitle": "Définitions de rapports",
+      "definitionsEmpty": "Aucune définition de rapport.",
+      "runsTitle": "Exécutions récentes",
+      "runsEmpty": "Aucune exécution de rapport.",
+      "lastGenerated": "Généré pour la dernière fois le {{date}}",
+      "neverGenerated": "Jamais généré",
+      "rowCount_one": "{{count}} ligne",
+      "rowCount_other": "{{count}} lignes"
+    },
     "unavailable": {
       "title": "Non disponible dans cet espace de travail",
       "description": "Les fiches organisation sont une vue au niveau du partenaire. Votre connexion est limitée à une seule organisation, il n'y a donc rien à changer ici.",

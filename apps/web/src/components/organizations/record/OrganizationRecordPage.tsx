@@ -32,6 +32,7 @@ import OrgBillingTab from './OrgBillingTab';
 import OrgDevicesTab from './OrgDevicesTab';
 import OrgOverviewTab from './OrgOverviewTab';
 import OrgRecordHeader from './OrgRecordHeader';
+import OrgReportHistory from './OrgReportHistory';
 import OrgServiceTab from './OrgServiceTab';
 import OrgDocumentsTab from './OrgDocumentsTab';
 import OrgSitesTab from './OrgSitesTab';
@@ -231,18 +232,20 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
       storeOrg && (storeOrg.status === 'suspended' || storeOrg.status === 'churned') ? storeOrg : null;
     if (lifecycleOrg) {
       const statusLabelKey = statusLabelKeys[lifecycleOrg.status];
+      const lifecycleStatusLabel = statusLabelKey ? tSettings(/* i18n-dynamic */ statusLabelKey) : lifecycleOrg.status;
       return (
-        <Centered
-          testId="org-record-lifecycle"
-          icon={<Building2 className="h-7 w-7" aria-hidden="true" />}
-          title={lifecycleOrg.name}
-          description={t('orgRecord.lifecycle.inaccessible', {
-            status: statusLabelKey ? tSettings(/* i18n-dynamic */ statusLabelKey) : lifecycleOrg.status,
-          })}
-          detail={lifecycleOrg.createdAt ? t('orgRecord.header.created', { date: formatDate(lifecycleOrg.createdAt) }) : undefined}
-          actionLabel={t('orgRecord.lifecycle.backToList')}
-          actionHref="/organizations"
-        />
+        <div className="space-y-4">
+          <Centered
+            testId="org-record-lifecycle"
+            icon={<Building2 className="h-7 w-7" aria-hidden="true" />}
+            title={lifecycleOrg.name}
+            description={t('orgRecord.lifecycle.inaccessible', { status: lifecycleStatusLabel })}
+            detail={lifecycleOrg.createdAt ? t('orgRecord.header.created', { date: formatDate(lifecycleOrg.createdAt) }) : undefined}
+            actionLabel={t('orgRecord.lifecycle.backToList')}
+            actionHref="/organizations"
+          />
+          <OrgReportHistory orgId={orgId} orgFetch={orgFetch} statusLabel={lifecycleStatusLabel} />
+        </div>
       );
     }
     return (
@@ -281,21 +284,32 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
       />
 
       {archived && (
-        <div
-          data-testid="org-record-archived-banner"
-          className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-sm"
-        >
-          <span>{t('orgRecord.archived.banner')}</span>
-          <button
-            type="button"
-            data-testid="org-record-restore"
-            disabled={restoring}
-            onClick={() => void handleRestore()}
-            className="inline-flex items-center rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-accent disabled:opacity-60"
+        <>
+          <div
+            data-testid="org-record-archived-banner"
+            className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-sm"
           >
-            {t('orgRecord.actions.restore')}
-          </button>
-        </div>
+            <span>{t('orgRecord.archived.banner')}</span>
+            <button
+              type="button"
+              data-testid="org-record-restore"
+              disabled={restoring}
+              onClick={() => void handleRestore()}
+              className="inline-flex items-center rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-accent disabled:opacity-60"
+            >
+              {t('orgRecord.actions.restore')}
+            </button>
+          </div>
+          <OrgReportHistory
+            orgId={orgId}
+            orgFetch={orgFetch}
+            statusLabel={
+              statusLabelKeys[loadedOrg.status as Organization['status']]
+                ? tSettings(/* i18n-dynamic */ statusLabelKeys[loadedOrg.status as Organization['status']])
+                : loadedOrg.status
+            }
+          />
+        </>
       )}
 
       <OverflowTabs tabs={overflowTabs} activeTab={effectiveTab} onTabChange={switchTab} />

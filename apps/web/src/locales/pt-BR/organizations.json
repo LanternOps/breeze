@@ -98,6 +98,22 @@
       "inaccessible": "Esta organização está {{status}}, portanto seus dados ao vivo não estão disponíveis. Você ainda pode vê-la na lista de organizações.",
       "backToList": "Voltar para organizações"
     },
+    "reportHistory": {
+      "title": "Histórico de relatórios",
+      "loading": "Carregando histórico de relatórios…",
+      "readOnlyNote": "Somente leitura: esta organização está {{status}}. Os relatórios não podem ser gerados, agendados ou baixados.",
+      "forbidden": "Você não tem acesso ao histórico de relatórios desta organização.",
+      "error": "Não foi possível carregar o histórico de relatórios.",
+      "empty": "Nenhum relatório ou execução de relatório encontrado.",
+      "definitionsTitle": "Definições de relatórios",
+      "definitionsEmpty": "Nenhuma definição de relatório.",
+      "runsTitle": "Execuções recentes",
+      "runsEmpty": "Nenhuma execução de relatório.",
+      "lastGenerated": "Gerado pela última vez em {{date}}",
+      "neverGenerated": "Nunca gerado",
+      "rowCount_one": "{{count}} linha",
+      "rowCount_other": "{{count}} linhas"
+    },
     "unavailable": {
       "title": "Não disponível neste espaço de trabalho",
       "description": "Os registros de organização são uma visão em nível de parceiro. Seu login é restrito a uma única organização, portanto não há nada para alternar aqui.",
