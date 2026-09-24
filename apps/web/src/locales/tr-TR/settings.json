@@ -987,6 +987,16 @@
     }
   },
   "m365Mailbox": {
+    "consentNotCompleted": "Onay tamamlanmadı",
+    "consentNotCompletedHint": "Bu posta kutusu için Microsoft oturum açma işlemi zamanında tamamlanmadı, bu yüzden kendiliğinden bağlanmayacak. Onayı yeniden deneyin veya bağlantısını kesin.",
+    "retryConsent": "Onayı yeniden dene",
+    "redirectUriLabel": "Microsoft Entra uygulamasına kaydedilecek yönlendirme URI’si",
+    "redirectUriHint": "Tam olarak eşleşmelidir ve bağlanırken Breeze’i aynı şema ve ana bilgisayarla açmalısınız; aksi takdirde oturum açma tamamlanamaz.",
+    "callbackReason": {
+      "binding_mismatch": "Microsoft 365 bağlantısı başarısız oldu: tarayıcı oturum açma çerezi olmadan geri döndü. Breeze’i yönlendirme URI’si ile aynı adreste açın (şema ve ana bilgisayar eşleşmelidir), çerezlere izin verin ve yeniden deneyin.",
+      "invalid_callback": "Microsoft 365 bağlantısı başarısız oldu: Microsoft beklenmeyen bir yanıt döndürdü. Yeniden bağlanmayı deneyin.",
+      "expired": "Microsoft 365 bağlantısı başarısız oldu: oturum açma bağlantısının süresi doldu veya zaten kullanıldı. Yeniden bağlanmayı deneyin."
+    },
     "connected": "Posta kutusu bağlandı",
     "consentGranted": "Onay verildi — posta kutusunun kapsamını aşağıdaki Uygulama Erişim Politikasıyla belirleyin, ardından Yeniden Test Edin",
     "consentAttention": "Posta kutusu onayı yöneticinin dikkatini gerektirir.",

@@ -987,6 +987,16 @@
     }
   },
   "m365Mailbox": {
+    "consentNotCompleted": "Consenso non completato",
+    "consentNotCompletedHint": "L’accesso Microsoft per questa casella di posta non è stato completato in tempo, quindi non si collegherà da solo. Riprova il consenso oppure scollegala.",
+    "retryConsent": "Riprova consenso",
+    "redirectUriLabel": "URI di reindirizzamento da registrare nell’app Microsoft Entra",
+    "redirectUriHint": "Deve corrispondere esattamente e, durante il collegamento, devi aprire Breeze con lo stesso schema e host, altrimenti l’accesso non può essere completato.",
+    "callbackReason": {
+      "binding_mismatch": "Connessione a Microsoft 365 non riuscita: il browser è tornato senza il cookie di accesso. Apri Breeze allo stesso indirizzo dell’URI di reindirizzamento (schema e host devono corrispondere), consenti i cookie e riprova.",
+      "invalid_callback": "Connessione a Microsoft 365 non riuscita: Microsoft ha restituito una risposta imprevista. Riprova a collegarti.",
+      "expired": "Connessione a Microsoft 365 non riuscita: il link di accesso è scaduto o è già stato usato. Riprova a collegarti."
+    },
     "connected": "Cassetta postale connessa",
     "consentGranted": "Consenso concesso - limita l'ambito della cassetta postale con l'Application Access Policy qui sotto, quindi riesegui il test",
     "consentAttention": "Il consenso della cassetta postale richiede l'attenzione di un amministratore.",

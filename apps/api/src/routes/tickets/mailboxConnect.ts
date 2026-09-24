@@ -90,6 +90,26 @@ const callbackQuery = z.object({
 const idParam = z.object({ id: z.string().uuid() });
 
 type CallbackQuery = z.infer<typeof callbackQuery>;
+
+/**
+ * Why a callback was turned away before any session work (#6936). A fixed enum:
+ * the settings card maps each code to a message, and nothing from the
+ * (untrusted) query string is ever reflected into the redirect.
+ *  - binding_mismatch: the HttpOnly browser-binding cookie is missing or does
+ *    not match the state. In practice the browser left on one host/scheme and
+ *    Microsoft sent it back to another (PUBLIC_APP_URL vs the URL the user
+ *    browsed), or third-party/strict cookie settings dropped it.
+ *  - invalid_callback: the query is malformed or mixes fields.
+ *  - expired: the state is unknown, already used, or past its TTL.
+ */
+export type CallbackRejectReason = 'binding_mismatch' | 'invalid_callback' | 'expired';
+
+function rejectCallback(c: Context, reason: CallbackRejectReason): Response {
+  // No DB write and no audit: the state is untrusted on every path that lands
+  // here, so it must not be allowed to mutate (or even look up) a connection.
+  // An abandoned row is surfaced by the list read instead (consentExpired).
+  return c.redirect(`/settings/ticketing?ticketMailbox=error&reason=${reason}#email`);
+}
 type CallbackIntent =
   | { kind: 'admin_success'; tenantHint: string }
   | { kind: 'identity_success'; code: string }
@@ -303,8 +323,10 @@ mailboxRoutes.get(
     // The Breeze Ticketing app's public client id, served at runtime so the
     // card's Application Access Policy snippet works on prebuilt web images
     // (#6935). Never the secret; null when the app is not configured.
+    // redirectUri: the exact value to register on the Entra app, from the same
+    // resolver the consent flow sends to Microsoft (#6936).
     const appId = getMailboxPlatformConfig()?.clientId ?? null;
-    return c.json({ connections: list, appId });
+    return c.json({ connections: list, appId, redirectUri: getMailboxCallbackUri() });
   },
 );
 
@@ -413,16 +435,22 @@ mailboxRoutes.post(
 // Microsoft redirect target. The single-use DB session plus HttpOnly browser
 // binding authenticates this public callback; browser query tenant values are
 // never treated as verified ownership evidence.
-mailboxRoutes.get('/callback', zValidator('query', callbackQuery), async (c) => {
+//
+// Every exit before a session is consumed and verified redirects back to the
+// settings card via rejectCallback (no DB write) instead of a bare JSON 400 on
+// the API origin (#6936). The checks themselves, and their order, are unchanged.
+mailboxRoutes.get('/callback', zValidator('query', callbackQuery, (result, c) => {
+  if (!result.success) return rejectCallback(c, 'invalid_callback');
+}), async (c) => {
   const query = c.req.valid('query');
   const binding = readBrowserBinding(c, query.state);
-  if (!binding) return c.json({ error: 'OAuth state binding mismatch' }, 400);
+  if (!binding) return rejectCallback(c, 'binding_mismatch');
   const { phase } = binding;
   const intent = parseCallbackIntent(phase, query);
-  if (!intent) return c.json({ error: 'Invalid OAuth callback parameters' }, 400);
+  if (!intent) return rejectCallback(c, 'invalid_callback');
 
   const session = await consumeConsentSession(query.state, phase);
-  if (!session) return c.json({ error: 'Invalid or expired OAuth state' }, 400);
+  if (!session) return rejectCallback(c, 'expired');
   deleteCookie(c, STATE_COOKIE, { path: '/' });
 
   if (phase === 'identity_verification') {
@@ -432,7 +460,7 @@ mailboxRoutes.get('/callback', zValidator('query', callbackQuery), async (c) => 
       || !session.tenantHintHash
       || !constantTimeEqual(presentedHash, session.tenantHintHash)
     ) {
-      return c.json({ error: 'OAuth state binding mismatch' }, 400);
+      return rejectCallback(c, 'binding_mismatch');
     }
   }
 

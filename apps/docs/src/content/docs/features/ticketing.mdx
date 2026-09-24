@@ -256,6 +256,12 @@ Instead of forwarding to your Breeze inbound address, you can connect a Microsof
 
 Once connected, Breeze polls the mailbox every minute or two, turns new messages into tickets (threading and the review queue work exactly as above), and marks each handled message as read so your team can see what's been picked up. Only mail that arrives after you connect is ticketed -- existing inbox history is not imported. Public replies go out **from the support address** and thread natively in the customer's mailbox; internal notes and technician notifications are unaffected. You can connect more than one mailbox (for example `support@` and `billing@`). **Disconnect** stops polling immediately; to fully remove access, also revoke the app's consent in your Microsoft Entra admin center.
 
+If a connection does not complete:
+
+- **Consent not completed** means the Microsoft sign-in for that mailbox was not finished within its 10-minute window. Consent is two Microsoft sign-ins: the admin consent, then a second sign-in that confirms the consenting account is an administrator of that tenant. Closing the tab between them, or Microsoft never sending you back, leaves the mailbox here. Click **Retry consent**, or **Disconnect** it.
+- A **cookie** error after Microsoft sends you back means the browser returned to a different address than the one you started from. The card shows the redirect URI Breeze sends to Microsoft; open Breeze at that same scheme and host (for example `https://`, not `http://`), allow cookies, and connect again.
+- An **expired or already used** sign-in link means the consent took longer than 10 minutes or the page was reloaded. Connect again.
+
 <Aside>
   Connecting or managing a mailbox requires **partner scope and MFA**. The Microsoft 365 mailbox card only appears once your operator has configured the Breeze Ticketing Azure app -- see [Ticket Mailbox environment variables](/deploy/environment/#ticket-mailbox-m365-email-to-ticket).
 </Aside>

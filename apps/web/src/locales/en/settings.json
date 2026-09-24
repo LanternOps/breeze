@@ -987,6 +987,16 @@
     }
   },
   "m365Mailbox": {
+    "consentNotCompleted": "Consent not completed",
+    "consentNotCompletedHint": "The Microsoft sign-in for this mailbox was not finished in time, so it will not connect on its own. Retry consent, or disconnect it.",
+    "retryConsent": "Retry consent",
+    "redirectUriLabel": "Redirect URI to register on the Microsoft Entra app",
+    "redirectUriHint": "It must match exactly, and you must open Breeze at this same scheme and host when you connect, or the sign-in cannot complete.",
+    "callbackReason": {
+      "binding_mismatch": "Microsoft 365 connection failed: the browser came back without its sign-in cookie. Open Breeze at the same address as the redirect URI (scheme and host must match), allow cookies, and try again.",
+      "invalid_callback": "Microsoft 365 connection failed: Microsoft returned an unexpected response. Try connecting again.",
+      "expired": "Microsoft 365 connection failed: the sign-in link expired or was already used. Try connecting again."
+    },
     "connected": "Mailbox connected",
     "consentGranted": "Consent granted — scope the mailbox with the Application Access Policy below, then Re-test",
     "consentAttention": "Mailbox consent requires administrator attention.",

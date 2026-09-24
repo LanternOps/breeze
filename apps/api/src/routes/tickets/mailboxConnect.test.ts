@@ -193,6 +193,21 @@ function adminAuth(overrides: Partial<AuthState> = {}): AuthState {
   };
 }
 
+// #6936: an early callback exit (untrusted state/binding/params) must land the
+// browser back on the settings card with a fixed reason code, never a bare JSON
+// 400 on the API origin, and must not touch the connection row or audit log.
+function expectCallbackRejected(response: Response, reason: string) {
+  expect(response.status).toBe(302);
+  expect(response.headers.get('location')).toBe(
+    `/settings/ticketing?ticketMailbox=error&reason=${reason}#email`,
+  );
+  expect(mocks.getMailboxConnection).not.toHaveBeenCalled();
+  expect(mocks.markPendingConsentFailed).not.toHaveBeenCalled();
+  expect(mocks.createIdentityVerificationSession).not.toHaveBeenCalled();
+  expect(mocks.bindVerifiedTenant).not.toHaveBeenCalled();
+  expect(mocks.writeAuditEvent).not.toHaveBeenCalled();
+}
+
 function expectNoLifecycleEffects() {
   expect(mocks.createPendingConnection).not.toHaveBeenCalled();
   expect(mocks.probeMailbox).not.toHaveBeenCalled();
@@ -262,6 +277,9 @@ describe('M365 mailbox lifecycle routes', () => {
       await expect(response.json()).resolves.toEqual({
         connections: [{ id: CONNECTION_ID, mailboxAddress: 'support@example.com' }],
         appId: 'platform-client-id',
+        // #6936: the exact redirect URI to register on the Entra app, computed
+        // by the same resolver the consent flow uses.
+        redirectUri: 'https://app.example.com/api/v1/tickets/mailbox/callback',
       });
       expect(mocks.listMailboxConnections).toHaveBeenCalledWith(PARTNER_ID);
     });
@@ -478,7 +496,7 @@ describe('M365 mailbox lifecycle routes', () => {
     const response = await app.request('/callback?state=admin-state&tenant=11111111-1111-4111-8111-111111111111&admin_consent=True', {
       headers: cookie ? { cookie: `ticket_mailbox_oauth_state=${cookie}` } : undefined,
     });
-    expect(response.status).toBe(400);
+    expectCallbackRejected(response, 'binding_mismatch');
     expect(mocks.consumeConsentSession).not.toHaveBeenCalled();
     expect(mocks.writeAuditEvent).not.toHaveBeenCalled();
   });
@@ -546,7 +564,7 @@ describe('M365 mailbox lifecycle routes', () => {
       },
     });
 
-    expect(response.status).toBe(400);
+    expectCallbackRejected(response, 'binding_mismatch');
     expect(mocks.consumeConsentSession).toHaveBeenCalledWith('identity-state', 'identity_verification');
     expect(mocks.exchangeMicrosoftAuthorizationCode).not.toHaveBeenCalled();
     expect(mocks.verifyMicrosoftAdminIdToken).not.toHaveBeenCalled();
@@ -563,7 +581,7 @@ describe('M365 mailbox lifecycle routes', () => {
       headers: { cookie: `ticket_mailbox_oauth_state=identity_verification.${mac}` },
     });
 
-    expect(response.status).toBe(400);
+    expectCallbackRejected(response, 'binding_mismatch');
     expect(mocks.consumeConsentSession).not.toHaveBeenCalled();
     expect(mocks.exchangeMicrosoftAuthorizationCode).not.toHaveBeenCalled();
     expect(mocks.probeMailbox).not.toHaveBeenCalled();
@@ -578,7 +596,7 @@ describe('M365 mailbox lifecycle routes', () => {
       headers: cookie ? { cookie: `ticket_mailbox_oauth_state=${cookie}` } : undefined,
     });
 
-    expect(response.status).toBe(400);
+    expectCallbackRejected(response, 'binding_mismatch');
     expect(mocks.consumeConsentSession).not.toHaveBeenCalled();
     expect(mocks.exchangeMicrosoftAuthorizationCode).not.toHaveBeenCalled();
     expect(mocks.verifyMicrosoftAdminIdToken).not.toHaveBeenCalled();
@@ -592,7 +610,7 @@ describe('M365 mailbox lifecycle routes', () => {
       `/callback?state=${identityState}&code=authorization-code&tenant=${ATTACKER_TENANT}`,
       { headers: { cookie: `ticket_mailbox_oauth_state=${cookieFor('identity_verification', identityState)}` } },
     );
-    expect(response.status).toBe(400);
+    expectCallbackRejected(response, 'invalid_callback');
     expect(mocks.consumeConsentSession).not.toHaveBeenCalled();
     expect(mocks.probeMailbox).not.toHaveBeenCalled();
     expect(mocks.bindVerifiedTenant).not.toHaveBeenCalled();
@@ -696,7 +714,7 @@ describe('M365 mailbox lifecycle routes', () => {
     const response = await app.request('/callback?state=identity-state&code=authorization-code', {
       headers: { cookie: `ticket_mailbox_oauth_state=${cookieFor('identity_verification', 'identity-state')}` },
     });
-    expect(response.status).toBe(400);
+    expectCallbackRejected(response, 'expired');
     expect(mocks.exchangeMicrosoftAuthorizationCode).not.toHaveBeenCalled();
     expect(mocks.probeMailbox).not.toHaveBeenCalled();
     expect(mocks.bindVerifiedTenant).not.toHaveBeenCalled();
@@ -949,7 +967,7 @@ describe('M365 mailbox lifecycle routes', () => {
     const response = await app.request(path, {
       headers: { cookie: `ticket_mailbox_oauth_state=${cookieFor(phase as never, state)}` },
     });
-    expect(response.status).toBe(400);
+    expectCallbackRejected(response, 'invalid_callback');
     expect(mocks.consumeConsentSession).not.toHaveBeenCalled();
     expect(mocks.probeMailbox).not.toHaveBeenCalled();
     expect(mocks.bindVerifiedTenant).not.toHaveBeenCalled();
@@ -973,10 +991,21 @@ describe('M365 mailbox lifecycle routes', () => {
     const response = await app.request(path, {
       headers: { cookie: `ticket_mailbox_oauth_state=${cookieFor(phase as never, state)}` },
     });
-    expect(response.status).toBe(400);
+    expectCallbackRejected(response, 'invalid_callback');
     expect(mocks.consumeConsentSession).not.toHaveBeenCalled();
     expect(mocks.probeMailbox).not.toHaveBeenCalled();
     expect(mocks.bindVerifiedTenant).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['no query at all', '/callback'],
+    ['an empty state', '/callback?state=&code=authorization-code'],
+  ])('redirects a callback with %s back to the card without consuming state', async (_label, path) => {
+    const response = await app.request(path, {
+      headers: { cookie: `ticket_mailbox_oauth_state=${cookieFor('identity_verification', 'identity-state')}` },
+    });
+    expectCallbackRejected(response, 'invalid_callback');
+    expect(mocks.consumeConsentSession).not.toHaveBeenCalled();
   });
 
   it.each(['state', 'code', 'tenant', 'admin_consent', 'error'])(
@@ -989,7 +1018,7 @@ describe('M365 mailbox lifecycle routes', () => {
       const response = await app.request(`${base.pathname}${base.search}`, {
         headers: { cookie: `ticket_mailbox_oauth_state=${cookieFor('identity_verification', 'identity-state')}` },
       });
-      expect(response.status).toBe(400);
+      expectCallbackRejected(response, 'invalid_callback');
       expect(mocks.consumeConsentSession).not.toHaveBeenCalled();
       expect(mocks.probeMailbox).not.toHaveBeenCalled();
       expect(mocks.bindVerifiedTenant).not.toHaveBeenCalled();

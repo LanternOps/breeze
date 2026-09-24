@@ -17,7 +17,12 @@ interface MailboxConnectionDTO {
   lastPolledAt: string | null;
   lastMessageAt: string | null;
   verificationError: string | null;
+  /** Pending row whose consent attempt can no longer complete (#6936). */
+  consentExpired: boolean;
 }
+
+/** Fixed reason codes the consent callback may redirect back with (#6936). */
+const CALLBACK_REASONS = new Set(['binding_mismatch', 'invalid_callback', 'expired']);
 
 const MAILBOX_STATUSES = new Set<MailboxConnectionDTO['status']>([
   'pending_consent',
@@ -55,6 +60,7 @@ function parseMailboxConnection(value: unknown): MailboxConnectionDTO | null {
   // filtered out of this Microsoft card so its reconnect/retest never routes
   // through the Microsoft consent path.
   const provider = value.provider === 'gmail' ? 'gmail' : 'm365';
+  const consentExpired = value.status === 'pending_consent' && value.consentExpired === true;
 
   return {
     id: value.id,
@@ -65,6 +71,7 @@ function parseMailboxConnection(value: unknown): MailboxConnectionDTO | null {
     lastPolledAt: value.lastPolledAt,
     lastMessageAt: value.lastMessageAt,
     verificationError,
+    consentExpired,
   };
 }
 
@@ -92,6 +99,7 @@ function M365MailboxCardContent({ canAdminMailbox }: { canAdminMailbox: boolean 
   const { t } = useTranslation('settings');
   const [connections, setConnections] = useState<MailboxConnectionDTO[]>([]);
   const [appId, setAppId] = useState<string | null>(null);
+  const [redirectUri, setRedirectUri] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [address, setAddress] = useState('');
   const [displayName, setDisplayName] = useState('');
@@ -109,6 +117,9 @@ function M365MailboxCardContent({ canAdminMailbox }: { canAdminMailbox: boolean 
         const body = await res.json().catch(() => null);
         const rawConnections = isRecord(body) && Array.isArray(body.connections) ? body.connections : [];
         setAppId(parseAppId(body));
+        setRedirectUri(
+          isRecord(body) && typeof body.redirectUri === 'string' && body.redirectUri ? body.redirectUri : null,
+        );
         setConnections(
           rawConnections
             .map(parseMailboxConnection)
@@ -130,17 +141,27 @@ function M365MailboxCardContent({ canAdminMailbox }: { canAdminMailbox: boolean 
   }, [refresh]);
 
   // Surface the consent redirect-back status (Plan 1 callback redirects with
-  // ?ticketMailbox=connected|needs_policy|error), then strip it so a refresh
-  // doesn't re-toast. Non-mutating UI — no runAction.
+  // ?ticketMailbox=connected|needs_policy|error, and an early rejection adds
+  // &reason=<code>, #6936), then strip both so a refresh doesn't re-toast.
+  // Non-mutating UI — no runAction.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search || '');
     const status = params.get('ticketMailbox');
     if (!status) return;
+    const reason = params.get('reason');
     if (status === 'connected') showToast({ type: 'success', message: t('m365Mailbox.connected') });
     else if (status === 'needs_policy')
       showToast({ type: 'warning', message: t('m365Mailbox.consentAttention') });
-    else if (status === 'error') showToast({ type: 'error', message: t('m365Mailbox.connectionFailed') });
+    else if (status === 'error')
+      showToast({
+        type: 'error',
+        message:
+          reason && CALLBACK_REASONS.has(reason)
+            ? t(/* i18n-dynamic */ `m365Mailbox.callbackReason.${reason}`)
+            : t('m365Mailbox.connectionFailed'),
+      });
     params.delete('ticketMailbox');
+    params.delete('reason');
     const qs = params.toString();
     window.history.replaceState({}, '', window.location.pathname + (qs ? `?${qs}` : '') + window.location.hash);
   }, [t]);
@@ -238,9 +259,16 @@ function M365MailboxCardContent({ canAdminMailbox }: { canAdminMailbox: boolean 
                   ) : null}
                 </div>
                 <span className="text-sm" data-testid="m365-status">
-                  {t(/* i18n-dynamic */ `m365Mailbox.status.${c.status}`)}
+                  {c.consentExpired
+                    ? t('m365Mailbox.consentNotCompleted')
+                    : t(/* i18n-dynamic */ `m365Mailbox.status.${c.status}`)}
                 </span>
               </div>
+              {c.consentExpired ? (
+                <p className="text-xs text-destructive" data-testid="m365-consent-expired">
+                  {t('m365Mailbox.consentNotCompletedHint')}
+                </p>
+              ) : null}
               {c.status === 'reauth_required' ? (
                 <p className="text-xs text-destructive">
                   {t('m365Mailbox.reauthRequired')}
@@ -270,6 +298,17 @@ function M365MailboxCardContent({ canAdminMailbox }: { canAdminMailbox: boolean 
                       {t('m365Mailbox.retest')}
                     </button>
                   ) : null}
+                  {c.consentExpired ? (
+                    <button
+                      type="button"
+                      data-testid="m365-retry-consent"
+                      disabled={busy}
+                      className="text-sm text-primary hover:underline disabled:opacity-50"
+                      onClick={() => startConsent(c.mailboxAddress, c.displayName)}
+                    >
+                      {t('m365Mailbox.retryConsent')}
+                    </button>
+                  ) : null}
                   {c.status === 'reauth_required' ? (
                     <button
                       type="button"
@@ -296,6 +335,19 @@ function M365MailboxCardContent({ canAdminMailbox }: { canAdminMailbox: boolean 
       ) : (
         <p className="mt-4 text-sm text-muted-foreground">{t('m365Mailbox.empty')}</p>
       )}
+
+      {redirectUri ? (
+        <div className="mt-4 text-xs">
+          <p className="text-muted-foreground">{t('m365Mailbox.redirectUriLabel')}</p>
+          <code
+            data-testid="m365-redirect-uri"
+            className="mt-1 block overflow-x-auto whitespace-nowrap rounded bg-muted p-2"
+          >
+            {redirectUri}
+          </code>
+          <p className="mt-1 text-muted-foreground">{t('m365Mailbox.redirectUriHint')}</p>
+        </div>
+      ) : null}
 
       {canAdminMailbox ? (
         <div className="mt-4 flex flex-col gap-2 border-t pt-4">

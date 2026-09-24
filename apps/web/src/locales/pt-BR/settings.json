@@ -987,6 +987,16 @@
     }
   },
   "m365Mailbox": {
+    "consentNotCompleted": "Consentimento não concluído",
+    "consentNotCompletedHint": "O login da Microsoft para esta caixa de correio não foi concluído a tempo, então ela não será conectada sozinha. Tente o consentimento novamente ou desconecte-a.",
+    "retryConsent": "Tentar consentimento novamente",
+    "redirectUriLabel": "URI de redirecionamento a registrar no aplicativo do Microsoft Entra",
+    "redirectUriHint": "Ele precisa corresponder exatamente, e você precisa abrir o Breeze com o mesmo esquema e host ao conectar; caso contrário, o login não pode ser concluído.",
+    "callbackReason": {
+      "binding_mismatch": "Falha na conexão com o Microsoft 365: o navegador voltou sem o cookie de login. Abra o Breeze no mesmo endereço do URI de redirecionamento (esquema e host precisam corresponder), permita cookies e tente novamente.",
+      "invalid_callback": "Falha na conexão com o Microsoft 365: a Microsoft retornou uma resposta inesperada. Tente conectar novamente.",
+      "expired": "Falha na conexão com o Microsoft 365: o link de login expirou ou já foi usado. Tente conectar novamente."
+    },
     "connected": "Caixa de correio conectada",
     "consentGranted": "Consentimento concedido — restrinja a caixa de correio com a Política de Acesso ao Aplicativo abaixo e teste novamente",
     "consentAttention": "O consentimento da caixa de correio requer atenção do administrador.",

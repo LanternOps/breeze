@@ -987,6 +987,16 @@
     }
   },
   "m365Mailbox": {
+    "consentNotCompleted": "Consentimiento no completado",
+    "consentNotCompletedHint": "El inicio de sesión de Microsoft para este buzón no se terminó a tiempo, por lo que no se conectará por sí solo. Vuelve a intentar el consentimiento o desconéctalo.",
+    "retryConsent": "Reintentar consentimiento",
+    "redirectUriLabel": "URI de redirección que debes registrar en la app de Microsoft Entra",
+    "redirectUriHint": "Debe coincidir exactamente, y debes abrir Breeze con este mismo esquema y host al conectar; de lo contrario, el inicio de sesión no puede completarse.",
+    "callbackReason": {
+      "binding_mismatch": "Falló la conexión con Microsoft 365: el navegador regresó sin su cookie de inicio de sesión. Abre Breeze en la misma dirección que el URI de redirección (el esquema y el host deben coincidir), permite las cookies e inténtalo de nuevo.",
+      "invalid_callback": "Falló la conexión con Microsoft 365: Microsoft devolvió una respuesta inesperada. Intenta conectarte de nuevo.",
+      "expired": "Falló la conexión con Microsoft 365: el enlace de inicio de sesión caducó o ya se usó. Intenta conectarte de nuevo."
+    },
     "connected": "Buzón conectado",
     "consentGranted": "Consentimiento otorgado: alcance el buzón con la Política de acceso a aplicaciones a continuación y luego vuelva a realizar la prueba.",
     "consentAttention": "El consentimiento del buzón requiere la atención del administrador.",
