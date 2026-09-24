@@ -1,0 +1,325 @@
+[
+  {
+    "Name": "optimal",
+    "Captures": [
+      {
+        "Args": [
+          "ctrl",
+          "all",
+          "show",
+          "status"
+        ],
+        "Text": "Smart Array P440 in Slot 0\n   Controller Status: OK\n   Cache Status: OK\n   Battery/Capacitor Status: OK",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "ctrl",
+          "all",
+          "show",
+          "config",
+          "detail"
+        ],
+        "Text": "Smart Array P440 in Slot 0\n   Serial Number: CTRL-TEST\n   Firmware Version: 7.00\n   Controller Status: OK\n   Cache Status: OK\n   Battery/Capacitor Status: OK\n   array A\n      logicaldrive 1 (100 GB, RAID 1, OK)\n         Status: OK\n         Size: 100 GB\n         Fault Tolerance: 1\n      physicaldrive 1I:1:3\n         Status: OK\n         Drive Type: Data Drive\n         Serial Number: DISK-TEST\n         Model: Fixture disk\n         Size: 100 GB\n         Current Temperature (C): 31\n",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "ssacli:c0:v1",
+        "State": "optimal"
+      },
+      {
+        "Key": "ssacli:c0:e1I-1:s3",
+        "State": "online"
+      }
+    ],
+    "Complete": true,
+    "Error": false
+  },
+  {
+    "Name": "degraded",
+    "Captures": [
+      {
+        "Args": [
+          "ctrl",
+          "all",
+          "show",
+          "status"
+        ],
+        "Text": "Smart Array P440 in Slot 0\n   Controller Status: OK\n   Cache Status: OK\n   Battery/Capacitor Status: OK",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "ctrl",
+          "all",
+          "show",
+          "config",
+          "detail"
+        ],
+        "Text": "Smart Array P440 in Slot 0\n   Serial Number: CTRL-TEST\n   Firmware Version: 7.00\n   Controller Status: OK\n   Cache Status: OK\n   Battery/Capacitor Status: OK\n   array A\n      logicaldrive 1 (100 GB, RAID 1, OK)\n         Status: Interim Recovery Mode\n         Size: 100 GB\n         Fault Tolerance: 1\n      physicaldrive 1I:1:3\n         Status: OK\n         Drive Type: Data Drive\n         Serial Number: DISK-TEST\n         Model: Fixture disk\n         Size: 100 GB\n         Current Temperature (C): 31\n",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "ssacli:c0:v1",
+        "State": "degraded"
+      }
+    ],
+    "Complete": true,
+    "Error": false
+  },
+  {
+    "Name": "failed",
+    "Captures": [
+      {
+        "Args": [
+          "ctrl",
+          "all",
+          "show",
+          "status"
+        ],
+        "Text": "Smart Array P440 in Slot 0\n   Controller Status: OK\n   Cache Status: OK\n   Battery/Capacitor Status: OK",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "ctrl",
+          "all",
+          "show",
+          "config",
+          "detail"
+        ],
+        "Text": "Smart Array P440 in Slot 0\n   Serial Number: CTRL-TEST\n   Firmware Version: 7.00\n   Controller Status: OK\n   Cache Status: OK\n   Battery/Capacitor Status: OK\n   array A\n      logicaldrive 1 (100 GB, RAID 1, OK)\n         Status: OK\n         Size: 100 GB\n         Fault Tolerance: 1\n      physicaldrive 1I:1:3\n         Status: Failed\n         Drive Type: Data Drive\n         Serial Number: DISK-TEST\n         Model: Fixture disk\n         Size: 100 GB\n         Current Temperature (C): 31\n",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "ssacli:c0:e1I-1:s3",
+        "State": "failed"
+      }
+    ],
+    "Complete": true,
+    "Error": false
+  },
+  {
+    "Name": "rebuilding",
+    "Captures": [
+      {
+        "Args": [
+          "ctrl",
+          "all",
+          "show",
+          "status"
+        ],
+        "Text": "Smart Array P440 in Slot 0\n   Controller Status: OK\n   Cache Status: OK\n   Battery/Capacitor Status: OK",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "ctrl",
+          "all",
+          "show",
+          "config",
+          "detail"
+        ],
+        "Text": "Smart Array P440 in Slot 0\n   Serial Number: CTRL-TEST\n   Firmware Version: 7.00\n   Controller Status: OK\n   Cache Status: OK\n   Battery/Capacitor Status: OK\n   array A\n      logicaldrive 1 (100 GB, RAID 1, OK)\n         Status: Rebuilding\n         Rebuild Status: 42%\n         Size: 100 GB\n         Fault Tolerance: 1\n      physicaldrive 1I:1:3\n         Status: OK\n         Drive Type: Data Drive\n         Serial Number: DISK-TEST\n         Model: Fixture disk\n         Size: 100 GB\n         Current Temperature (C): 31\n",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "ssacli:c0:v1",
+        "State": "rebuilding",
+        "Progress": 42
+      }
+    ],
+    "Complete": true,
+    "Error": false
+  },
+  {
+    "Name": "predictive_failure",
+    "Captures": [
+      {
+        "Args": [
+          "ctrl",
+          "all",
+          "show",
+          "status"
+        ],
+        "Text": "Smart Array P440 in Slot 0\n   Controller Status: OK\n   Cache Status: OK\n   Battery/Capacitor Status: OK",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "ctrl",
+          "all",
+          "show",
+          "config",
+          "detail"
+        ],
+        "Text": "Smart Array P440 in Slot 0\n   Serial Number: CTRL-TEST\n   Firmware Version: 7.00\n   Controller Status: OK\n   Cache Status: OK\n   Battery/Capacitor Status: OK\n   array A\n      logicaldrive 1 (100 GB, RAID 1, OK)\n         Status: OK\n         Size: 100 GB\n         Fault Tolerance: 1\n      physicaldrive 1I:1:3\n         Status: Predictive Failure\n         Drive Type: Data Drive\n         Serial Number: DISK-TEST\n         Model: Fixture disk\n         Size: 100 GB\n         Current Temperature (C): 31\n",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "ssacli:c0:e1I-1:s3",
+        "State": "predictive_failure",
+        "Predictive": true
+      }
+    ],
+    "Complete": true,
+    "Error": false
+  },
+  {
+    "Name": "missing_member",
+    "Captures": [
+      {
+        "Args": [
+          "ctrl",
+          "all",
+          "show",
+          "status"
+        ],
+        "Text": "Smart Array P440 in Slot 0\n   Controller Status: OK\n   Cache Status: OK\n   Battery/Capacitor Status: OK",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "ctrl",
+          "all",
+          "show",
+          "config",
+          "detail"
+        ],
+        "Text": "Smart Array P440 in Slot 0\n   Serial Number: CTRL-TEST\n   Firmware Version: 7.00\n   Controller Status: OK\n   Cache Status: OK\n   Battery/Capacitor Status: OK\n   array A\n      logicaldrive 1 (100 GB, RAID 1, OK)\n         Status: OK\n         Size: 100 GB\n         Fault Tolerance: 1\n",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [],
+    "Complete": true,
+    "Error": false,
+    "PhysicalCount": 0
+  },
+  {
+    "Name": "multi_controller",
+    "Captures": [
+      {
+        "Args": [
+          "ctrl",
+          "all",
+          "show",
+          "status"
+        ],
+        "Text": "Smart Array P440 in Slot 0\n   Controller Status: OK\n   Cache Status: OK\n   Battery/Capacitor Status: OK\nSmart Array P440 in Slot 2\n   Controller Status: OK\n   Cache Status: OK\n   Battery/Capacitor Status: OK",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "ctrl",
+          "all",
+          "show",
+          "config",
+          "detail"
+        ],
+        "Text": "Smart Array P440 in Slot 0\n   Serial Number: CTRL-TEST\n   Firmware Version: 7.00\n   Controller Status: OK\n   Cache Status: OK\n   Battery/Capacitor Status: OK\n   array A\n      logicaldrive 1 (100 GB, RAID 1, OK)\n         Status: OK\n         Size: 100 GB\n         Fault Tolerance: 1\n      physicaldrive 1I:1:3\n         Status: OK\n         Drive Type: Data Drive\n         Serial Number: DISK-TEST\n         Model: Fixture disk\n         Size: 100 GB\n         Current Temperature (C): 31\n\nSmart Array P440 in Slot 2\n   Serial Number: CTRL-TEST\n   Firmware Version: 7.00\n   Controller Status: OK\n   Cache Status: OK\n   Battery/Capacitor Status: OK\n   array A\n      logicaldrive 1 (100 GB, RAID 1, OK)\n         Status: OK\n         Size: 100 GB\n         Fault Tolerance: 1\n      physicaldrive 1I:1:3\n         Status: OK\n         Drive Type: Data Drive\n         Serial Number: DISK-TEST\n         Model: Fixture disk\n         Size: 100 GB\n         Current Temperature (C): 31\n",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "ssacli:c2:v1",
+        "State": "optimal"
+      }
+    ],
+    "Complete": true,
+    "Error": false,
+    "PhysicalCount": 2
+  },
+  {
+    "Name": "unrecognized",
+    "Captures": [
+      {
+        "Args": [
+          "ctrl",
+          "all",
+          "show",
+          "status"
+        ],
+        "Text": "Smart Array P440 in Slot 0\n   Controller Status: OK\n   Cache Status: OK\n   Battery/Capacitor Status: OK",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "ctrl",
+          "all",
+          "show",
+          "config",
+          "detail"
+        ],
+        "Text": "Smart Array P440 in Slot 0\n   Serial Number: CTRL-TEST\n   Firmware Version: 7.00\n   Controller Status: OK\n   Cache Status: OK\n   Battery/Capacitor Status: OK\n   array A\n      logicaldrive 1 (100 GB, RAID 1, OK)\n         Status: OK\n         Size: 100 GB\n         Fault Tolerance: 1\n      physicaldrive 1I:1:3\n         Status: Future State\n         Drive Type: Data Drive\n         Serial Number: DISK-TEST\n         Model: Fixture disk\n         Size: 100 GB\n         Current Temperature (C): 31\n",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "ssacli:c0:e1I-1:s3",
+        "State": "unknown",
+        "Detail": "Future State"
+      }
+    ],
+    "Complete": true,
+    "Error": false
+  },
+  {
+    "Name": "truncated",
+    "Captures": [
+      {
+        "Args": [
+          "ctrl",
+          "all",
+          "show",
+          "status"
+        ],
+        "Text": "Smart Array P440 in Slot 0\n   Controller Status: OK\n   Cache Status: OK\n   Battery/Capacitor Status: OK",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "ctrl",
+          "all",
+          "show",
+          "config",
+          "detail"
+        ],
+        "Text": "Smart Array P440 in Slot 0\n   Serial Number: CTRL-TEST\n   Firmware Version: 7.00\n   Controller Status: OK\n   Cache Status: OK\n   Battery/Capacitor Status: OK\n   array A\n      logicaldrive 1 (100 GB, RAID 1, OK)\n         Status: OK\n         Size: 100 GB\n         Fault Tolerance: 1\n      physicaldrive 1I:1:3\n         Status: OK\n         Drive Type: Data Drive\n         Serial Number: DISK-TEST\n         Model: Fixture disk\n         Size: 100 GB\n         Current Temperature (C): 31\n",
+        "ExitCode": 0,
+        "Truncated": true
+      }
+    ],
+    "Want": [],
+    "Complete": false,
+    "Error": false
+  }
+]

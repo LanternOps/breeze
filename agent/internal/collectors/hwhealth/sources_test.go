@@ -51,3 +51,26 @@ func TestCollectorKeepsSuppressionWhenWinnerFails(t *testing.T) {
 		t.Fatalf("statuses=%v calls=%d", statuses, calls)
 	}
 }
+
+func TestSuppressionSurvivesBreaker(t *testing.T) {
+	calls := 0
+	col := New(Options{DataDir: t.TempDir(), Sources: []Source{failingSelectedSource{selectionStub{"storcli", true, nil}}, selectionStub{"omreport", true, &calls}}})
+	col.ApplyConfig(Config{Enabled: true, PollInterval: 10 * time.Minute, DiskHealthInterval: time.Hour})
+	for cycle := 0; cycle < 4; cycle++ {
+		snapshot, err := col.Run(context.Background(), []Tier{"raid"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, report := range snapshot.Sources {
+			if report.Source == "omreport" && report.Status != "superseded" {
+				t.Fatalf("%+v", report)
+			}
+			if report.Source == "storcli" && cycle == 3 && report.Status != "backing_off" {
+				t.Fatalf("breaker did not open: %+v", report)
+			}
+		}
+	}
+	if calls != 0 {
+		t.Fatal("fallback executed while winner backed off")
+	}
+}

@@ -1,0 +1,376 @@
+[
+  {
+    "Name": "optimal",
+    "Captures": [
+      {
+        "Args": [
+          "list",
+          "-H",
+          "-o",
+          "name,health,size,alloc,free"
+        ],
+        "Text": "tank\tONLINE\t100G\t20G\t80G",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "status",
+          "-pP"
+        ],
+        "Text": "  pool: tank\n state: ONLINE\n  scan: none requested\nconfig:\n        NAME                         STATE     READ WRITE CKSUM\n        tank                         ONLINE       0     0     0\n          mirror-0                   ONLINE       0     0     0\n            /dev/disk/by-id/ata-A     ONLINE       0     0     0\n            /dev/disk/by-id/ata-B     ONLINE       0     0     0\nerrors: No known data errors\n",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "version"
+        ],
+        "Text": "zfs-2.2.9",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "zfs:pool:tank",
+        "State": "optimal"
+      },
+      {
+        "Key": "zfs:pool:tank:m:ata-A",
+        "State": "online"
+      }
+    ],
+    "Complete": true,
+    "Error": false
+  },
+  {
+    "Name": "degraded",
+    "Captures": [
+      {
+        "Args": [
+          "list",
+          "-H",
+          "-o",
+          "name,health,size,alloc,free"
+        ],
+        "Text": "tank\tONLINE\t100G\t20G\t80G",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "status",
+          "-pP"
+        ],
+        "Text": "  pool: tank\n state: DEGRADED\n  scan: none requested\nconfig:\n        NAME                         STATE     READ WRITE CKSUM\n        tank                         ONLINE       0     0     0\n          mirror-0                   ONLINE       0     0     0\n            /dev/disk/by-id/ata-A     ONLINE       0     0     0\n            /dev/disk/by-id/ata-B     ONLINE       0     0     0\nerrors: No known data errors\n",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "version"
+        ],
+        "Text": "zfs-2.2.9",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "zfs:pool:tank",
+        "State": "degraded"
+      }
+    ],
+    "Complete": true,
+    "Error": false
+  },
+  {
+    "Name": "failed",
+    "Captures": [
+      {
+        "Args": [
+          "list",
+          "-H",
+          "-o",
+          "name,health,size,alloc,free"
+        ],
+        "Text": "tank\tONLINE\t100G\t20G\t80G",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "status",
+          "-pP"
+        ],
+        "Text": "  pool: tank\n state: ONLINE\n  scan: none requested\nconfig:\n        NAME                         STATE     READ WRITE CKSUM\n        tank                         ONLINE       0     0     0\n          mirror-0                   ONLINE       0     0     0\n            /dev/disk/by-id/ata-A     FAULTED       0     0     0\n            /dev/disk/by-id/ata-B     ONLINE       0     0     0\nerrors: No known data errors\n",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "version"
+        ],
+        "Text": "zfs-2.2.9",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "zfs:pool:tank:m:ata-A",
+        "State": "failed"
+      }
+    ],
+    "Complete": true,
+    "Error": false
+  },
+  {
+    "Name": "rebuilding",
+    "Captures": [
+      {
+        "Args": [
+          "list",
+          "-H",
+          "-o",
+          "name,health,size,alloc,free"
+        ],
+        "Text": "tank\tONLINE\t100G\t20G\t80G",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "status",
+          "-pP"
+        ],
+        "Text": "  pool: tank\n state: ONLINE\n  scan: resilver in progress\n        42% done\nconfig:\n        NAME                         STATE     READ WRITE CKSUM\n        tank                         ONLINE       0     0     0\n          mirror-0                   ONLINE       0     0     0\n            /dev/disk/by-id/ata-A     ONLINE       0     0     0\n            /dev/disk/by-id/ata-B     ONLINE       0     0     0\nerrors: No known data errors\n",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "version"
+        ],
+        "Text": "zfs-2.2.9",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "zfs:pool:tank",
+        "State": "rebuilding",
+        "Progress": 42
+      }
+    ],
+    "Complete": true,
+    "Error": false
+  },
+  {
+    "Name": "predictive_failure",
+    "Captures": [
+      {
+        "Args": [
+          "list",
+          "-H",
+          "-o",
+          "name,health,size,alloc,free"
+        ],
+        "Text": "tank\tONLINE\t100G\t20G\t80G",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "status",
+          "-pP"
+        ],
+        "Text": "  pool: tank\n state: ONLINE\n  scan: none requested\nconfig:\n        NAME                         STATE     READ WRITE CKSUM\n        tank                         ONLINE       0     0     0\n          mirror-0                   ONLINE       0     0     0\n            /dev/disk/by-id/ata-A     ONLINE       1     0     0\n            /dev/disk/by-id/ata-B     ONLINE       0     0     0\nerrors: No known data errors\n",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "version"
+        ],
+        "Text": "zfs-2.2.9",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "zfs:pool:tank:m:ata-A",
+        "State": "online",
+        "Predictive": false,
+        "MemberErrors": true
+      }
+    ],
+    "Complete": true,
+    "Error": false
+  },
+  {
+    "Name": "missing_member",
+    "Captures": [
+      {
+        "Args": [
+          "list",
+          "-H",
+          "-o",
+          "name,health,size,alloc,free"
+        ],
+        "Text": "tank\tONLINE\t100G\t20G\t80G",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "status",
+          "-pP"
+        ],
+        "Text": "  pool: tank\n state: ONLINE\n  scan: none requested\nconfig:\n        NAME                         STATE     READ WRITE CKSUM\n        tank                         ONLINE       0     0     0\n          mirror-0                   ONLINE       0     0     0\n            /dev/disk/by-id/ata-A     ONLINE       0     0     0\n            /dev/disk/by-id/ata-B     UNAVAIL       0     0     0\nerrors: No known data errors\n",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "version"
+        ],
+        "Text": "zfs-2.2.9",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "zfs:pool:tank:m:ata-B",
+        "State": "missing"
+      }
+    ],
+    "Complete": true,
+    "Error": false,
+    "PhysicalCount": 2
+  },
+  {
+    "Name": "multi_controller",
+    "Captures": [
+      {
+        "Args": [
+          "list",
+          "-H",
+          "-o",
+          "name,health,size,alloc,free"
+        ],
+        "Text": "tank\tONLINE\t100G\t20G\t80G\nvault\tONLINE\t100G\t20G\t80G",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "status",
+          "-pP"
+        ],
+        "Text": "  pool: tank\n state: ONLINE\n  scan: none requested\nconfig:\n        NAME                         STATE     READ WRITE CKSUM\n        tank                         ONLINE       0     0     0\n          mirror-0                   ONLINE       0     0     0\n            /dev/disk/by-id/ata-A     ONLINE       0     0     0\n            /dev/disk/by-id/ata-B     ONLINE       0     0     0\nerrors: No known data errors\n\n  pool: vault\n state: ONLINE\n  scan: none requested\nconfig:\n        NAME                         STATE     READ WRITE CKSUM\n        vault                         ONLINE       0     0     0\n          mirror-0                   ONLINE       0     0     0\n            /dev/disk/by-id/ata-A     ONLINE       0     0     0\n            /dev/disk/by-id/ata-B     ONLINE       0     0     0\nerrors: No known data errors\n",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "version"
+        ],
+        "Text": "zfs-2.2.9",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "zfs:pool:vault",
+        "State": "optimal"
+      }
+    ],
+    "Complete": true,
+    "Error": false,
+    "PhysicalCount": 4
+  },
+  {
+    "Name": "unrecognized",
+    "Captures": [
+      {
+        "Args": [
+          "list",
+          "-H",
+          "-o",
+          "name,health,size,alloc,free"
+        ],
+        "Text": "tank\tONLINE\t100G\t20G\t80G",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "status",
+          "-pP"
+        ],
+        "Text": "  pool: tank\n state: ONLINE\n  scan: none requested\nconfig:\n        NAME                         STATE     READ WRITE CKSUM\n        tank                         ONLINE       0     0     0\n          mirror-0                   ONLINE       0     0     0\n            /dev/disk/by-id/ata-A     FutureState       0     0     0\n            /dev/disk/by-id/ata-B     ONLINE       0     0     0\nerrors: No known data errors\n",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "version"
+        ],
+        "Text": "zfs-2.2.9",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "zfs:pool:tank:m:ata-A",
+        "State": "unknown",
+        "Detail": "FutureState"
+      }
+    ],
+    "Complete": true,
+    "Error": false
+  },
+  {
+    "Name": "truncated",
+    "Captures": [
+      {
+        "Args": [
+          "list",
+          "-H",
+          "-o",
+          "name,health,size,alloc,free"
+        ],
+        "Text": "tank\tONLINE\t100G\t20G\t80G",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "status",
+          "-pP"
+        ],
+        "Text": "  pool: tank\n state: ONLINE\n  scan: none requested\nconfig:\n        NAME                         STATE     READ WRITE CKSUM\n        tank                         ONLINE       0     0     0\n          mirror-0                   ONLINE       0     0     0\n            /dev/disk/by-id/ata-A     ONLINE       0     0     0\n            /dev/disk/by-id/ata-B     ONLINE       0     0     0\nerrors: No known data errors\n",
+        "ExitCode": 0,
+        "Truncated": true
+      },
+      {
+        "Args": [
+          "version"
+        ],
+        "Text": "zfs-2.2.9",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [],
+    "Complete": false,
+    "Error": false
+  }
+]
