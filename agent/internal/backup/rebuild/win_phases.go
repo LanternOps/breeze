@@ -5,10 +5,9 @@
 //
 // Staged for W06c (Part C deletes each one from here and adds the real
 // one; applyWindowsSystemState (Task 14, win_system_state.go), winIdentity
-// and winEncryption (Task 15, win_identity.go / win_encryption.go) are
-// already real): winBoot (Task 16, win_boot.go), validateOSState (Task 17,
-// win_validate_os.go). Each is honest: a hard error unless
-// Options.SkipBoot (test/CI mode) — never a silent no-op.
+// and winEncryption (Task 15, win_identity.go / win_encryption.go) and
+// winBoot (Task 16, win_boot.go) are already real): validateOSState
+// (Task 17, win_validate_os.go).
 package rebuild
 
 import (
@@ -24,14 +23,6 @@ var errWindowsOSStateStaged = errors.New("windows offline system-state, boot, id
 
 // A Windows run in this PR therefore reaches "completed" only with
 // SkipBoot set — exactly what the Task 13 tests and CI VHDX gate use.
-
-func winBoot(_ context.Context, r *run) error {
-	if r.opts.SkipBoot {
-		r.recordSkipped(PhaseBoot, "skipped: Options.SkipBoot")
-		return nil
-	}
-	return errWindowsOSStateStaged
-}
 
 // validateOSState is winValidate's OS-state hook (close hives, ESP + BCD
 // checks). Nothing is loaded or written by the staged phases above, so the
