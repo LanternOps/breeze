@@ -787,6 +787,10 @@ const envObjectSchema = z
     // matching superRefine block below for the exact pairing. None of these
     // are required at boot in development/test.
     //
+    // MCP unattended Tier 3 opt-in (routes/mcpServer.ts). Comma-separated
+    // `api_key:<id>` / `oauth_client_user:<client_id>/<user id>` entries;
+    // collectWarnings() logs the configured principals and malformed entries.
+    MCP_UNATTENDED_TIER3_PRINCIPALS: z.string().optional(),
     // OAuth (MCP) — required when MCP_OAUTH_ENABLED=true:
     MCP_OAUTH_ENABLED: z.string().optional(),
     OAUTH_JWKS_PRIVATE_JWK: z.string().optional(),
@@ -2395,6 +2399,31 @@ function collectWarnings(env: Record<string, string | undefined>): ConfigWarning
   const warnings: ConfigWarning[] = [];
   const nodeEnv = env.NODE_ENV ?? 'development';
   const isProduction = nodeEnv === 'production';
+
+  // MCP_UNATTENDED_TIER3_PRINCIPALS lifts interactive approval for the named
+  // principals, so a deploy that sets it must say so at boot, and an entry
+  // that can never match (a typo) must not look like a working allowlist.
+  const unattendedEntries = (env.MCP_UNATTENDED_TIER3_PRINCIPALS ?? '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  if (unattendedEntries.length > 0) {
+    const wellFormed = unattendedEntries.filter((entry) =>
+      /^api_key:[^\s/]+$/u.test(entry) || /^oauth_client_user:[^\s/]+\/[^\s/]+$/u.test(entry));
+    const malformed = unattendedEntries.filter((entry) => !wellFormed.includes(entry));
+    if (wellFormed.length > 0) {
+      warnings.push({
+        key: 'MCP_UNATTENDED_TIER3_PRINCIPALS',
+        message: `MCP interactive approval is LIFTED for Tier 3 tools for ${wellFormed.length} principal(s): ${wellFormed.join(', ')}. Tier 4, tenant and bootstrap tools stay approval-only.`,
+      });
+    }
+    if (malformed.length > 0) {
+      warnings.push({
+        key: 'MCP_UNATTENDED_TIER3_PRINCIPALS',
+        message: `ignoring ${malformed.length} malformed entr${malformed.length === 1 ? 'y' : 'ies'} that can never match: ${malformed.join(', ')}. Each entry must be api_key:<api key id> or oauth_client_user:<client_id>/<user id>.`,
+      });
+    }
+  }
 
   // Production: FORCE_HTTPS should be true
   if (isProduction) {

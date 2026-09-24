@@ -705,6 +705,45 @@ describe('MCP_UNATTENDED_TIER3_PRINCIPALS operator opt-in', () => {
       expect(mocks.ledgerComplete).toHaveBeenCalledTimes(1);
     });
 
+    it('marks the audit row when approval was bypassed, naming the matched principal', async () => {
+      await callTool('execute_command', { deviceId: 'dev-1', commandType: 'list_processes' });
+      const tier3Audit = mocks.writeAuditEvent.mock.calls
+        .map((args: any[]) => args[1])
+        .find((event: any) => event?.action === 'mcp.tool.execute_command');
+      expect(tier3Audit).toBeDefined();
+      expect(tier3Audit.details).toMatchObject({
+        approvalId: null,
+        approvalBypass: 'unattended_principal',
+        approvalBypassPrincipal: 'api_key:key-1',
+        tier: 3,
+      });
+    });
+
+    it('does not mark a call that never needed approval (Tier 2 action)', async () => {
+      await callTool('registry_operations', {
+        action: 'get_value', deviceId: 'dev-1', keyPath: 'HKLM\\Software\\Foo', valueName: 'Bar',
+      });
+      const audit = mocks.writeAuditEvent.mock.calls
+        .map((args: any[]) => args[1])
+        .find((event: any) => event?.action === 'mcp.tool.registry_operations');
+      expect(audit).toBeDefined();
+      expect(audit.details.tier).toBe(2);
+      expect(audit.details.approvalBypass).toBeUndefined();
+      expect(audit.details.approvalBypassPrincipal).toBeUndefined();
+    });
+
+    it('records the OAuth client+user ref for a bypassed OAuth call', async () => {
+      testState.apiKeyExtra = { id: 'oauth:jti-9', oauthGrantId: 'grant-9', oauthClientId: 'someone', createdBy: 'user-9' };
+      await callTool('execute_command', { deviceId: 'dev-1', commandType: 'list_processes' });
+      const audit = mocks.writeAuditEvent.mock.calls
+        .map((args: any[]) => args[1])
+        .find((event: any) => event?.action === 'mcp.tool.execute_command');
+      expect(audit?.details).toMatchObject({
+        approvalBypass: 'unattended_principal',
+        approvalBypassPrincipal: 'oauth_client_user:someone/user-9',
+      });
+    });
+
     it('executes a Tier-3-escalated multiplexer action (registry set_value)', async () => {
       await callTool('registry_operations', {
         action: 'set_value', deviceId: 'dev-1', keyPath: 'HKLM\\Software\\Foo', valueName: 'Bar', valueData: '1',

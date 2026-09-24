@@ -1473,12 +1473,19 @@ async function handleToolsCall(
   // gates below — this is an unconditional deny regardless of what scope the
   // caller holds, not "insufficient scope" (those gates report that
   // distinctly). executeTool is never reached for a gated tool/action.
-  if (isMcpApprovalRequired(toolName, tier, { unattendedPrincipal: isUnattendedTier3PrincipalOverMcp(apiKey) })) {
+  // Only an effective Tier 3 call can be lifted (isMcpApprovalRequired re-checks
+  // this too); checking it here keeps the intent readable at the call site.
+  const unattendedPrincipal = tier === 3 && isUnattendedTier3PrincipalOverMcp(apiKey);
+  if (isMcpApprovalRequired(toolName, tier, { unattendedPrincipal })) {
     return jsonRpcResult(id, {
       content: [{ type: 'text', text: JSON.stringify(MCP_APPROVAL_REQUIRED_ERROR) }],
       isError: true,
     });
   }
+  // Past the gate with an effective Tier 3 call means approval was skipped for
+  // a named principal. Carried to the audit row so an unattended run is
+  // distinguishable from every other Tier 3 row in an investigation.
+  const approvalBypassPrincipal = unattendedPrincipal ? mcpPrincipalRef(apiKey) : null;
 
   const hasExecute = scopes.includes('ai:execute');
   const requireExecuteAdmin = shouldRequireExecuteAdminInProd();
@@ -1661,6 +1668,7 @@ async function handleToolsCall(
       requestedToolName,
       tier,
       toolInput,
+      approvalBypassPrincipal,
     },
     execute,
   );
@@ -1865,6 +1873,8 @@ function writeMcpToolAuditEvent(
     status: 'success' | 'failure';
     result?: string;
     error?: unknown;
+    /** See Tier3LifecycleContext.approvalBypassPrincipal. */
+    approvalBypassPrincipal?: string | null;
   },
 ): void {
   if (!c || !event.apiKey) return;
@@ -1887,6 +1897,9 @@ function writeMcpToolAuditEvent(
     details: {
       sessionId: event.sessionId ?? null,
       approvalId: null,
+      ...(event.approvalBypassPrincipal
+        ? { approvalBypass: 'unattended_principal', approvalBypassPrincipal: event.approvalBypassPrincipal }
+        : {}),
       oauthGrantId: event.apiKey.oauthGrantId ?? null,
       partnerId: event.auth.partnerId ?? event.apiKey.partnerId ?? null,
       orgId: orgId ?? null,
@@ -1927,6 +1940,11 @@ interface Tier3LifecycleContext {
   requestedToolName?: string;
   tier: number;
   toolInput: Record<string, unknown>;
+  /**
+   * Set only when the interactive-approval gate was lifted for this call by
+   * MCP_UNATTENDED_TIER3_PRINCIPALS: the principal ref that matched.
+   */
+  approvalBypassPrincipal?: string | null;
 }
 
 interface Tier3ExecutionOutcome {
@@ -2040,6 +2058,7 @@ async function finalizeTier3ToolLifecycle(
     requestedToolName: ctx.requestedToolName,
     tier: ctx.tier,
     toolInput: ctx.toolInput,
+    approvalBypassPrincipal: ctx.approvalBypassPrincipal ?? null,
     durationMs,
     status: outcome.status,
     result: outcome.status === 'success' ? outcome.ledgerResult : undefined,
