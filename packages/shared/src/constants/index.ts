@@ -16,6 +16,10 @@ export * from './agentFileTransfer';
 // consent is compared against (#5511 D2). Leaf module, no imports.
 export * from './hpCmsl';
 
+// Google Workspace DWD OAuth scopes, shared by the API and the web integration
+// page so the list an admin authorizes cannot drift. Leaf module, no imports.
+export * from './googleDwdScopes';
+
 // OS Types
 export const OS_TYPES = ['windows', 'macos', 'linux'] as const;
 

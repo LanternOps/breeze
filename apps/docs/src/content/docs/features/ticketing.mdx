@@ -264,7 +264,7 @@ Once connected, Breeze polls the mailbox every minute or two, turns new messages
 
 A Google Workspace mailbox (for example `support@yourdomain.com` or an alias of it) can also feed tickets directly, with no MX or forwarding changes and no OAuth redirect. Breeze reads it through the **domain-wide delegation** service account of an organization's Google Workspace connection. Set it up on the **Google Workspace support mailbox** card under **Settings → Ticketing → Inbound Email**.
 
-1. Pick the **organization** whose Google Workspace connection should read the mailbox, then enter the mailbox address and an optional display name, and click **Connect**. That organization holds the mailbox's credential, and the card shows it on each connected mailbox. For a mailbox your MSP owns (such as your own `help@`), pick the organization whose Workspace contains that mailbox.
+1. Pick the **organization** whose Google Workspace connection should read the mailbox, then enter the mailbox address and an optional display name, and click **Connect**. That organization holds the mailbox's credential, and the card shows it on each connected mailbox. For a mailbox your MSP owns (such as your own `help@`), pick the organization whose Workspace contains that mailbox. Because the mailbox belongs to that organization's credential, an export of that organization's data includes the mailbox's address and connection record, even for a mailbox your MSP owns.
 2. In the Google Admin console, the service account's domain-wide delegation must include `https://www.googleapis.com/auth/gmail.readonly`, `openid` and `https://www.googleapis.com/auth/userinfo.email`. Breeze only reads the mailbox; it never changes labels, read state or messages.
 
 How it behaves once connected:

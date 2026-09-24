@@ -24,10 +24,6 @@ export interface MailboxGenerationContext {
   consentAttemptId: string;
 }
 
-/** @deprecated Use MailboxGenerationContext. Retained as an alias so existing
- * M365 call sites keep compiling during the transition. */
-export type M365MailboxGenerationContext = MailboxGenerationContext;
-
 export interface InboundEmailJobData {
   email: NormalizedInboundEmail;
   mailboxGeneration?: MailboxGenerationContext;

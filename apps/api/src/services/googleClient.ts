@@ -10,7 +10,7 @@
  *
  * The DWD grant in the customer's Admin console (Security > API controls >
  * Domain-wide delegation) must authorize this service account's client id for
- * exactly the scopes in DIRECTORY_SCOPES + GMAIL_USER_SCOPES.
+ * exactly the scopes in GOOGLE_DWD_SCOPES_CSV (@breeze/shared).
  *
  * The service-account key JSON arrives DECRYPTED (caller decrypts via
  * secretCrypto). It is a domain god-key: never log it, never echo it back.
@@ -20,66 +20,26 @@ import { admin, auth as adminAuth, type admin_directory_v1 } from '@googleapis/a
 import { gmail, auth as gmailAuth, type gmail_v1 } from '@googleapis/gmail';
 import { calendar, auth as calendarAuth, type calendar_v3 } from '@googleapis/calendar';
 import { licensing, auth as licensingAuth, type licensing_v1 } from '@googleapis/licensing';
+import {
+  DIRECTORY_SCOPES,
+  GMAIL_USER_SCOPES,
+  GMAIL_INBOUND_SCOPES,
+  CALENDAR_SCOPES,
+  LICENSING_SCOPES,
+  GOOGLE_DWD_SCOPES_CSV,
+} from '@breeze/shared';
 
-// Least-privilege scope sets. Keep these minimal; the DWD grant authorizes
-// exactly this union, so widening here widens the god-key.
-export const DIRECTORY_SCOPES = [
-  'https://www.googleapis.com/auth/admin.directory.user', // read + update user (password, suspend, profile)
-  'https://www.googleapis.com/auth/admin.directory.user.security', // signOut, 2SV state, OAuth token revoke
-  'https://www.googleapis.com/auth/admin.directory.user.alias', // aliases
-  'https://www.googleapis.com/auth/admin.directory.group', // list a user's groups (offboard)
-  'https://www.googleapis.com/auth/admin.directory.group.member', // remove from groups (offboard)
-  'https://www.googleapis.com/auth/admin.directory.device.mobile.action', // selective account-wipe / stolen-device wipe
-] as const;
+// Least-privilege DWD scope sets live in @breeze/shared (one list shared with the
+// web integration page). Re-exported here for existing API callers.
+export { DIRECTORY_SCOPES, GMAIL_USER_SCOPES, GMAIL_INBOUND_SCOPES, CALENDAR_SCOPES, LICENSING_SCOPES };
+export const ALL_DWD_SCOPES_CSV = GOOGLE_DWD_SCOPES_CSV;
 
-export const GMAIL_USER_SCOPES = [
-  'https://www.googleapis.com/auth/gmail.settings.basic', // vacation responder
-  'https://www.googleapis.com/auth/gmail.settings.sharing', // forwarding addresses + auto-forwarding
-] as const;
-
-// Inbound ticket connector scope, deliberately separate from GMAIL_USER_SCOPES
-// (the settings scopes) so each caller requests only what it needs. Uses
-// gmail.readonly: the connector only reads (the historyId cursor is the
-// incremental mechanism, history.list / messages.get / getProfile are all
-// covered). Access is granted by domain-wide delegation, so the scope applies to
-// every mailbox in the customer's Workspace; request the least the connector
-// needs. A later phase that writes labels would add its scope, and the
-// customer's admin would authorize that change explicitly.
 // Explicit per-request deadline for every Gmail/UserInfo call. gaxios has no
 // finite default, so a hung Google connection would never settle — and the ticket
 // mailbox poll worker sweeps mailboxes serially, so one hung request would stall
 // every later mailbox. With a timeout the request rejects, the per-mailbox catch in
 // runMailboxSweep records it, and the sweep moves on.
 export const GMAIL_REQUEST_TIMEOUT_MS = 30_000;
-
-export const GMAIL_INBOUND_SCOPES = [
-  'https://www.googleapis.com/auth/gmail.readonly',
-  // Identity: `openid` yields the impersonated mailbox's immutable Google account
-  // `sub` (stable across email/alias changes, never reused), and userinfo.email
-  // lets us cross-check the returned principal is the address we impersonated.
-  // The sub is the connector's dedup namespace AND the same-account proof used to
-  // decide, on reconnect, whether a preserved history cursor still belongs to the
-  // same mailbox (org merge safety).
-  'openid',
-  'https://www.googleapis.com/auth/userinfo.email',
-] as const;
-
-export const CALENDAR_SCOPES = [
-  'https://www.googleapis.com/auth/calendar.acls', // share a calendar (ACL insert), nothing more
-] as const;
-
-export const LICENSING_SCOPES = [
-  'https://www.googleapis.com/auth/apps.licensing', // assign / list / remove Workspace license assignments
-] as const;
-
-/** Comma-separated scope list for the operator's DWD setup instructions. */
-export const ALL_DWD_SCOPES_CSV = [
-  ...DIRECTORY_SCOPES,
-  ...GMAIL_USER_SCOPES,
-  ...GMAIL_INBOUND_SCOPES,
-  ...CALENDAR_SCOPES,
-  ...LICENSING_SCOPES,
-].join(',');
 
 interface ServiceAccountKey {
   client_email: string;
