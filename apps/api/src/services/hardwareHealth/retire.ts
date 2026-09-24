@@ -14,7 +14,9 @@ import { alerts } from '../../db/schema';
 import { resolveAlert, RESOLVABLE_ALERT_STATUSES } from '../alertService';
 import { stageRetiredSubjectResolution } from './retirementOutbox';
 
-export async function resolveAlertsForRemovedComponents(deviceId: string, componentKeys: string[]): Promise<number> {
+export async function resolveAlertsForRemovedComponents(
+  deviceId: string, componentKeys: string[], note = 'component no longer reported',
+): Promise<number> {
   if (componentKeys.length === 0) return 0;
   return withDbTransaction(async () => {
     const open = await db.select({ id: alerts.id }).from(alerts).where(and(
@@ -23,7 +25,7 @@ export async function resolveAlertsForRemovedComponents(deviceId: string, compon
     ));
     let count = 0;
     for (const alert of open) {
-      if (!await resolveAlert(alert.id, 'component no longer reported', undefined, true)) continue;
+      if (!await resolveAlert(alert.id, note, undefined, true)) continue;
       await stageRetiredSubjectResolution(alert.id);
       count++;
     }

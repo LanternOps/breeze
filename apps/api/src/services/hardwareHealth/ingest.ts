@@ -32,6 +32,43 @@ export function componentChange(previous:ComponentRow|undefined,report:Component
 export class InvalidHardwareSnapshotError extends Error{
  constructor(public readonly path:string){super(`invalid_snapshot: ${path}`);this.name='InvalidHardwareSnapshotError';}
 }
+/**
+ * #6895 — stale rows are excluded from alert evaluation (spec §7.3), so an
+ * unhealthy row that stops being reported keeps its open alert until the
+ * 7-day reaper retires it. When the snapshot itself proves the fault is over,
+ * retire it now through the same path the reaper uses: the row's parent was
+ * reported by a complete answer from the same source, and that parent plus
+ * every live same-source row beneath it has been healthy for
+ * STALE_RECOVERY_SNAPSHOTS consecutive snapshots (the built-in rules' default
+ * `consecutiveSnapshots`, so the retirement lands with the array's own
+ * recovery). A stale row with no parent is never retired early: a standalone
+ * disk that vanished is itself a fault.
+ */
+export const STALE_RECOVERY_SNAPSHOTS=2;
+function staleKeysUnderRecoveredParent(rows:Map<string,ComponentRow>,live:ComponentRow[],completeSources:Set<string>):string[]{
+ const liveByKey=new Map(live.map(r=>[r.componentKey,r]));
+ const children=new Map<string,ComponentRow[]>();
+ for(const r of live)if(r.parentKey)children.set(r.parentKey,[...(children.get(r.parentKey)??[]),r]);
+ const verdicts=new Map<string,boolean>();
+ const subtreeHealthy=(root:ComponentRow):boolean=>{
+  const cached=verdicts.get(root.componentKey);if(cached!==undefined)return cached;
+  const seen=new Set<string>(),stack=[root];let healthy=true;
+  while(stack.length&&healthy){
+   const r=stack.pop()!;if(seen.has(r.componentKey))continue;seen.add(r.componentKey);
+   if(r.health!=='ok'||r.healthyStreak<STALE_RECOVERY_SNAPSHOTS||r.predictiveFailure){healthy=false;break;}
+   for(const child of children.get(r.componentKey)??[])if(child.source===root.source)stack.push(child);
+  }
+  verdicts.set(root.componentKey,healthy);return healthy;
+ };
+ const keys:string[]=[];
+ for(const r of rows.values()){
+  if(!r.stale||r.componentType==='collector'||!r.parentKey||!completeSources.has(r.source))continue;
+  if(r.health!=='warning'&&r.health!=='critical'&&!r.predictiveFailure)continue;
+  const parent=liveByKey.get(r.parentKey);
+  if(parent&&parent.source===r.source&&subtreeHealthy(parent))keys.push(r.componentKey);
+ }
+ return keys;
+}
 export function reduceSnapshot(previous:ComponentRow[],device:{id:string;orgId:string},snapshot:HardwareHealthSnapshot,receivedAt:Date){
  const sourceNames=new Set<string>();
  snapshot.sources.forEach((s,i)=>{if(sourceNames.has(s.source))throw new InvalidHardwareSnapshotError(`sources.${i}.source`);sourceNames.add(s.source);});
@@ -74,7 +111,8 @@ export function reduceSnapshot(previous:ComponentRow[],device:{id:string;orgId:s
  const hardware=live.filter(r=>r.componentType!=='collector'&&r.componentType!=='bmc');
  const collectors=live.filter(r=>r.componentType==='collector');
  const counts:Record<string,number>={};for(const c of hardware){const k=`${c.componentType}:${c.health}`;counts[k]=(counts[k]??0)+1;}
- return {rows:[...rows.values()],upserts:[...upserts.values()],deletedKeys,events,
+ const completeSources=new Set(snapshot.sources.filter(s=>s.status==='ok'&&s.complete===true).map(s=>s.source));
+ return {rows:[...rows.values()],upserts:[...upserts.values()],deletedKeys,events,retiredStaleKeys:staleKeysUnderRecoveredParent(rows,live,completeSources),
   health:worstHardwareHealth(hardware.map(r=>r.health)),collectorHealth:collectors.length?worstHardwareHealth(collectors.map(r=>r.health)):'ok' as HardwareHealth,
   summary:{counts,controllerNames:hardware.filter(r=>r.componentType==='controller').map(r=>r.name)},
  };
@@ -124,6 +162,9 @@ export async function ingestHardwareHealthSnapshot(input:{device:{id:string;orgI
   if(change.deletedKeys.length){
    await resolveAlertsForRemovedComponents(device.id,change.deletedKeys);
    await tx.delete(deviceHardwareComponents).where(and(eq(deviceHardwareComponents.deviceId,device.id),inArray(deviceHardwareComponents.componentKey,change.deletedKeys)));
+  }
+  if(change.retiredStaleKeys.length){
+   await resolveAlertsForRemovedComponents(device.id,change.retiredStaleKeys,'component no longer reported; the array it belonged to reports healthy');
   }
   for(let i=0;i<change.events.length;i+=500)await tx.insert(deviceHardwareEvents).values(change.events.slice(i,i+500));
   await tx.update(deviceHardwareHealth).set({health:change.health,collectorHealth:change.collectorHealth,summary:change.summary,updatedAt:receivedAt,
