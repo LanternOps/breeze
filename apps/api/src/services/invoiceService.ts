@@ -9,6 +9,7 @@ import {
 } from '../db/schema';
 import { getConnection } from './stripeConnectService';
 import { computeLineTotal, computeInvoiceTotals, resolveEffectiveTaxRate, deriveInvoiceStatus, toCents, fromCents } from './invoiceMath';
+import { computeDueDate, resolveInvoiceTermsDays } from './invoiceTerms';
 import { resolvePrice, computeBundleEconomics, CatalogServiceError, type CatalogActor } from './catalogService';
 import { snapshotCost } from './catalogPricing';
 // formatInvoiceNumber is shared with the standalone allocator; issueInvoice
@@ -562,7 +563,8 @@ export async function deleteDraftInvoice(invoiceId: string, actor: InvoiceActor)
 
 /** Draft-only header edit (notes/site/dueDate/termsAndConditions). Only provided fields are written;
  *  siteId can be explicitly set to null to clear it. issue() overwrites dueDate
- *  with issueDate + partner terms, so a draft dueDate is advisory until then. */
+ *  with issueDate + the resolved payment terms (org override ?? partner default,
+ *  resolveInvoiceTermsDays), so a draft dueDate is advisory until then. */
 export async function updateInvoice(
   invoiceId: string,
   patch: { notes?: string; siteId?: string | null; dueDate?: string; termsAndConditions?: string | null },
@@ -1471,7 +1473,9 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
       .from(portalBranding).where(eq(portalBranding.orgId, inv.orgId)).limit(1);
     const taxRate = resolveEffectiveTaxRate({ taxExempt: org?.taxExempt ?? false, orgRate: org?.taxRate ?? null, partnerRate: partner?.defaultTaxRate ?? null });
     const issueDate = new Date();
-    const dueDate = new Date(issueDate.getTime() + (partner?.invoiceTermsDays ?? 30) * 86400000);
+    // Settings consolidation W06 (#6229): org override ?? partner default ?? 30,
+    // frozen here as due_date. Issued invoices are never restamped.
+    const dueDate = computeDueDate(issueDate, resolveInvoiceTermsDays(org?.invoiceTermsDays, partner?.invoiceTermsDays));
     const year = issueDate.getUTCFullYear();
 
     const { subtotal, taxTotal, total } = computeInvoiceTotals(lines, taxRate, inv.currencyCode);
@@ -1498,7 +1502,7 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
       // header currency is a snapshot and must survive issue verbatim — totals
       // above are already rounded with inv.currencyCode, so header and totals agree.
       status: 'sent', invoiceNumber: number,
-      issueDate: issueDate.toISOString().slice(0, 10), dueDate: dueDate.toISOString().slice(0, 10),
+      issueDate: issueDate.toISOString().slice(0, 10), dueDate,
       taxRate, subtotal, taxTotal, total, balance: total,
       billToName: org?.name ?? null, billToAddress, billToTaxId: org?.taxId ?? null,
       billToTaxExempt: org?.taxExempt ?? false,

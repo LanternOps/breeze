@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Controllable Drizzle chain mock: every builder method returns the same
 // chain; a query is resolved when it is awaited (the chain is a thenable that
@@ -919,11 +919,12 @@ describe('issueInvoice document_locale stamp', () => {
     inv: Record<string, unknown>,
     partner: Record<string, unknown>,
     branding: Record<string, unknown>[] = [],
+    orgOverrides: Record<string, unknown> = {},
   ) {
     queueResult([inv]); // 0. pre-tx fast-fail read (RLS-scoped, non-authoritative)
     queueResult([inv]); // 1. invoice row lock
     queueResult([{ id: 'l1', invoiceId: 'inv1', sourceType: 'manual', sourceId: null, lineTotal: '100.00', taxable: false, customerVisible: true }]); // 2. lines lock
-    queueResult([{ id: 'org1', name: 'Customer', taxExempt: false, taxRate: null, taxId: null }]); // 3. org
+    queueResult([{ id: 'org1', name: 'Customer', taxExempt: false, taxRate: null, taxId: null, invoiceTermsDays: null, ...orgOverrides }]); // 3. org
     queueResult([partner]); // 4. partner (read inside the tx, after all locks)
     queueResult(branding); // 5. portal branding for the invoice's org (W02-API: the shared footer chain's last resort)
     queueResult([{ counter: 1 }]); // 6. counter upsert
@@ -937,6 +938,33 @@ describe('issueInvoice document_locale stamp', () => {
     expect(found, 'issue should write the guarded status=sent update').toBeDefined();
     return found!;
   }
+
+  // Settings consolidation W06 (#6229): due date = issue date + the RESOLVED
+  // terms (org override ?? partner default ?? 30), frozen at issue.
+  describe('due date from resolved payment terms', () => {
+    const NOW = new Date('2026-09-23T12:00:00Z');
+    beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(NOW); });
+    afterEach(() => { vi.useRealTimers(); });
+
+    it('uses the org override over the partner default', async () => {
+      queueIssuePath(draft(), { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: {} }, [], { invoiceTermsDays: 7 });
+      await svc.issueInvoice('inv1', actor);
+      expect(issueSet().issueDate).toBe('2026-09-23');
+      expect(issueSet().dueDate).toBe('2026-09-30');
+    });
+
+    it('an org override of 0 makes the invoice due on the issue date', async () => {
+      queueIssuePath(draft(), { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: {} }, [], { invoiceTermsDays: 0 });
+      await svc.issueInvoice('inv1', actor);
+      expect(issueSet().dueDate).toBe('2026-09-23');
+    });
+
+    it('a blank org override inherits the partner default', async () => {
+      queueIssuePath(draft(), { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 14, settings: {} }, [], { invoiceTermsDays: null });
+      await svc.issueInvoice('inv1', actor);
+      expect(issueSet().dueDate).toBe('2026-10-07');
+    });
+  });
 
   it('stamps documentLocale from the partner language when the draft has none', async () => {
     queueIssuePath(draft(), { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: { language: 'fr-CA' } });

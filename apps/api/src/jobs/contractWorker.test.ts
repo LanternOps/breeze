@@ -217,6 +217,38 @@ describe('runContractBillingSweep price-book gap logging (#3775)', () => {
   });
 });
 
+/**
+ * Settings consolidation W06 (#6229): contract auto-issue computes NO due date of
+ * its own — it delegates to issueInvoice, which resolves the org payment-terms
+ * override (resolveInvoiceTermsDays). Pinning the delegation means a future
+ * "fast path" that stamps status/dueDate directly fails here.
+ */
+describe('runContractBillingSweep auto-issue delegates to issueInvoice (#6229)', () => {
+  beforeEach(() => { vi.clearAllMocks(); dueRows.length = 0; });
+
+  it('issues the generated draft through issueInvoice with the generation actor', async () => {
+    dueRows.push({ id: 'c1' });
+    generateDueInvoiceMock.mockResolvedValue({
+      generated: true, invoiceId: 'inv1', autoIssue: true, actor: ACTOR,
+      priceBookGaps: [], uncoveredDevices: null, overages: [],
+    });
+    issueInvoiceMock.mockResolvedValue({ id: 'inv1', status: 'sent' });
+    await runContractBillingSweep(new Date('2026-07-01T06:00:00Z'));
+    expect(issueInvoiceMock).toHaveBeenCalledTimes(1);
+    expect(issueInvoiceMock).toHaveBeenCalledWith('inv1', ACTOR);
+  });
+
+  it('does not issue when the contract is not auto-issue', async () => {
+    dueRows.push({ id: 'c1' });
+    generateDueInvoiceMock.mockResolvedValue({
+      generated: true, invoiceId: 'inv1', autoIssue: false, actor: ACTOR,
+      priceBookGaps: [], uncoveredDevices: null, overages: [],
+    });
+    await runContractBillingSweep(new Date('2026-07-01T06:00:00Z'));
+    expect(issueInvoiceMock).not.toHaveBeenCalled();
+  });
+});
+
 // ── billing sweep tenant scope (org-lifecycle Wave 4 review fix C-A.2) ──────
 // Structurally identical to the overdue/renewal sweeps: fleet-wide select
 // under a system context, so an ARCHIVED tenant would keep generating (and
