@@ -40,6 +40,7 @@ import {
 } from './monitors/episodeService';
 import { fireEscalationLatch } from './monitors/escalationLatch';
 import { evaluateSubjectAlerts } from './alertSubjects';
+import { resolveMaintenanceConfigForDevice, isInMaintenanceWindow } from './featureConfigResolver';
 
 // Types for alert creation
 export interface CreateAlertParams {
@@ -1134,6 +1135,16 @@ export async function evaluateNetworkCheckAlertsForDevice(
 }
 
 async function evaluateDeviceAlertsInMode(deviceId: string, mode: DeviceEvaluationMode): Promise<string[]> {
+  // Match policy maintenance semantics before any monitor evaluation can
+  // create an alert, subject alert, episode or escalation. Component recovery
+  // shares this evaluator, so it must still run without admitting new breaches.
+  const maintenance = await resolveMaintenanceConfigForDevice(deviceId);
+  let suppressAlerts = false;
+  if (maintenance) {
+    const status = isInMaintenanceWindow(maintenance);
+    suppressAlerts = status.active && status.suppressAlerts;
+  }
+
   const applicableRules = await getApplicableRules(deviceId);
 
   if (applicableRules.length === 0) {
@@ -1159,6 +1170,9 @@ async function evaluateDeviceAlertsInMode(deviceId: string, mode: DeviceEvaluati
   const evaluatedMonitorIds = new Set<string>();
 
   for (const { rule, template, effectiveConditions, effectiveSeverity, effectiveCooldownMinutes, monitor } of applicableRules) {
+    // Other monitor kinds recover through checkAutoResolve. Hardware subjects
+    // recover only through their locked reconciliation below.
+    if (suppressAlerts && monitor?.kind !== 'hardware_health') continue;
     // #6353 — a network_check has ONE verdict per org, evaluated by the
     // device-independent sweep on the check's alert device. The per-device
     // sweep skips it (but still counts it as evaluated, or the detach scan
@@ -1207,15 +1221,23 @@ async function evaluateDeviceAlertsInMode(deviceId: string, mode: DeviceEvaluati
                 cooldownMinutes: effectiveCooldownMinutes,
               },
             },
-            template, device, monitor, evidence: { ...evidence, createdAlertIds: subjectAlertIds },
+            template, device, monitor, evidence: {
+              ...evidence,
+              subjects: suppressAlerts
+                ? evidence.subjects.filter(subject => subject.status !== 'breaching')
+                : evidence.subjects,
+              createdAlertIds: subjectAlertIds,
+            },
           });
-          if (monitor) {
+          if (monitor && !suppressAlerts) {
             await recordMonitorEvaluation({ monitor, deviceId, orgId: device.orgId, observation });
           }
         });
         createdAlerts.push(...subjectAlertIds);
         continue;
       }
+
+      if (suppressAlerts) continue;
 
       // #5290 — the episode seam sits HERE, after the evaluation and BEFORE
       // createAlert, on purpose:
@@ -1347,7 +1369,7 @@ async function evaluateDeviceAlertsInMode(deviceId: string, mode: DeviceEvaluati
 
   // Only the per-device sweep saw every monitor that resolves to this device;
   // the network_check pass saw a subset and must not detach the rest.
-  if (mode.kind === 'device_sweep') {
+  if (mode.kind === 'device_sweep' && !suppressAlerts) {
     await detachUnresolvedMonitors(deviceId, evaluatedMonitorIds);
   }
 

@@ -633,7 +633,10 @@ export async function listConfigPolicies(
           featureType: configPolicyFeatureLinks.featureType,
         })
         .from(configPolicyFeatureLinks)
-        .where(inArray(configPolicyFeatureLinks.configPolicyId, policyIds))
+        .where(and(
+          inArray(configPolicyFeatureLinks.configPolicyId, policyIds),
+          notInArray(configPolicyFeatureLinks.featureType, [...RETIRED_CONFIG_FEATURE_TYPES]),
+        ))
         .orderBy(asc(configPolicyFeatureLinks.featureType))
     : [];
 

@@ -162,6 +162,8 @@ vi.mock('./sentry', () => ({ captureException: captureExceptionMock }));
 vi.mock('./deviceSiteResolver', () => ({ resolveDeviceSiteId: vi.fn(() => Promise.resolve('site-1')) }));
 vi.mock('../jobs/alertCorrelation', () => ({ enqueueAlertCorrelation: vi.fn(() => Promise.resolve('job-1')) }));
 
+import { resolveMaintenanceConfigForDevice, isInMaintenanceWindow } from './featureConfigResolver';
+
 import { evaluateDeviceAlerts, evaluateNetworkCheckAlertsForDevice } from './alertService';
 
 const DEVICE_ORG = 'org-device';
@@ -245,6 +247,7 @@ beforeEach(() => {
   callOrder.length = 0;
   insertedAlerts.length = 0;
   vi.clearAllMocks();
+  vi.mocked(resolveMaintenanceConfigForDevice).mockResolvedValue(null);
   resolveMonitorsForDeviceMock.mockResolvedValue({
     kind: 'resolved',
     monitors: [
@@ -327,3 +330,12 @@ describe('#6353 — network_check rules are evaluated once per check, not once p
   });
 });
 
+
+it('suppresses the device-independent network-check evaluation during maintenance', async () => {
+  vi.mocked(resolveMaintenanceConfigForDevice).mockResolvedValue({ suppressAlerts: true } as never);
+  vi.mocked(isInMaintenanceWindow).mockReturnValue({ active: true, suppressAlerts: true } as never);
+  pushSweepQueue({ deviceId: 'device-offline', createsAlert: true, detachScan: false });
+  expect(await evaluateNetworkCheckAlertsForDevice('device-offline', new Set([MONITOR_ID]))).toEqual([]);
+  expect(evaluateConditionsMock).not.toHaveBeenCalled();
+  expect(insertedAlerts).toHaveLength(0);
+});

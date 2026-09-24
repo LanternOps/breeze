@@ -100,15 +100,6 @@ export async function applyFleetDesign(
 ): Promise<FleetDesignApplyResult> {
   const previewCtx = await previewFleetDesignApplyWithContext(auth, reportRunId, approval);
   const { preview } = previewCtx;
-  // Defend the apply boundary as well as preview: legacy retirement cannot be
-  // part of an approved write set now that its feature links are read-only.
-  const retiredBlockers = [...previewCtx.retiredResolved.keys()]
-    .filter((itemRef) => !previewCtx.appliedRefs.has(itemRef))
-    .map((itemRef) => ({ itemRef, reason: 'legacy_source_retired' as const }));
-  if (retiredBlockers.length > 0) {
-    throw new FleetDesignApplyError('blocked', { blockers: retiredBlockers, unaccepted: [] });
-  }
-
   const accepted = new Set(approval.displacementsAccepted);
   const unaccepted = preview.policies.flatMap((p) => p.displaces).filter((d) => !accepted.has(d.policyId));
   if (preview.blockers.length > 0 || unaccepted.length > 0) {

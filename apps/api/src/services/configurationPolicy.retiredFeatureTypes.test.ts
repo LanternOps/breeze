@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
+import { registerConfigPolicyTools } from './aiToolsConfigPolicy';
 const h = vi.hoisted(() => ({ rows: [] as unknown[][], predicates: [] as unknown[],
   mutate: vi.fn(() => { throw new Error('unexpected mutation'); }) }));
 vi.mock('../db', () => {
@@ -10,8 +11,10 @@ vi.mock('../db', () => {
       const chain: any = {};
       chain.from = vi.fn(() => chain);
       chain.where = vi.fn((predicate: unknown) => { h.predicates.push(predicate); return chain; });
-      chain.limit = vi.fn(async () => rows);
-      chain.orderBy = vi.fn(async () => rows);
+      chain.limit = vi.fn(() => chain);
+      chain.orderBy = vi.fn(() => chain);
+      chain.leftJoin = vi.fn(() => chain);
+      chain.offset = vi.fn(() => chain);
       chain.then = (resolve: (value: unknown) => unknown, reject: (error: unknown) => unknown) => Promise.resolve(rows).then(resolve, reject);
       return chain;
     }),
@@ -22,7 +25,7 @@ vi.mock('../db', () => {
     withDbAccessContext: (_ctx: unknown, fn: () => unknown) => fn(),
     withSystemDbAccessContext: (fn: () => unknown) => fn() };
 });
-import { listFeatureLinks, updateFeatureLink, getRetiredFeatureLink } from './configurationPolicy';
+import { listConfigPolicies, listFeatureLinks, updateFeatureLink, getRetiredFeatureLink } from './configurationPolicy';
 beforeEach(() => { h.rows.length = 0; h.predicates.length = 0; h.mutate.mockClear(); });
 it('filters retired feature types in the list SQL', async () => {
   h.rows.push([]);
@@ -56,4 +59,29 @@ it('retired-link lookup binds both policy and link IDs and only returns retired 
   expect(query.params).toEqual(expect.arrayContaining(['policy-1', 'legacy-link', 'alert_rule', 'monitoring']));
   expect(query.sql).toMatch(/config_policy_id/);
   expect(h.mutate).not.toHaveBeenCalled();
+});
+
+
+const systemAuth = { scope: 'system', orgCondition: () => undefined } as never;
+it('filters retired badges in the policy list SQL', async () => {
+  h.rows.push([{ count: 1 }], [{ id: 'policy-1' }], []);
+  const result = await listConfigPolicies(systemAuth, {}, { page: 1, limit: 20 });
+  expect(result.data[0]?.featureLinks).toEqual([]);
+  const query = new PgDialect().sqlToQuery(h.predicates[2] as never);
+  expect(query.sql).toMatch(/feature_type.*not in/i);
+  expect(query.params).toEqual(expect.arrayContaining(['policy-1', 'alert_rule', 'monitoring']));
+});
+
+it.each([
+  ['list_configuration_policies', {}],
+  ['configuration_policy_compliance', { action: 'summary' }],
+])('filters retired links from %s SQL', async (name, input) => {
+  h.rows.push([{ id: 'policy-1', name: 'Policy', status: 'active' }], []);
+  const tools = new Map();
+  registerConfigPolicyTools(tools);
+  const response = JSON.parse(await tools.get(name).handler(input, systemAuth));
+  expect(response.error).toBeUndefined();
+  const query = new PgDialect().sqlToQuery(h.predicates[1] as never);
+  expect(query.sql).toMatch(/feature_type.*not in/i);
+  expect(query.params).toEqual(expect.arrayContaining(['policy-1', 'alert_rule', 'monitoring']));
 });

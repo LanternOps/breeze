@@ -696,6 +696,11 @@ describe('manage_alert_rules handler', () => {
     expect(db.select).toHaveBeenCalledWith(expect.objectContaining({ monitorId: 'managedByMonitorId' }));
   });
 
+  it('list_rules explains how to read omitted feature-engine rules', async () => {
+    const result = JSON.parse(await tool.handler({ action: 'list_rules' }, mockAuth));
+    expect(result.note).toBe('Only monitor-managed rules are listed. Feature-engine rules (patch, compliance/policy bridge, automation) are not listed; use get_rule with an alert\'s ruleId to read them.');
+  });
+
   it.each(['list_templates', 'create_rule', 'update_rule', 'delete_rule'])('%s is no longer an action', async (action) => {
     const result = JSON.parse(await tool.handler({ action }, mockAuth));
     expect(result.error).toMatch(/unknown action/i);

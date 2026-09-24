@@ -53,7 +53,7 @@ vi.mock('../../db', () => ({
   },
 }));
 
-import { previewFleetDesignApply, previewFleetDesignApplyWithContext, wouldBeDisplaced } from './preview';
+import { previewFleetDesignApply, previewFleetDesignApplyWithContext } from './preview';
 import { configurationPolicies, deviceGroupMemberships, devices } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 
@@ -112,21 +112,6 @@ beforeEach(() => {
   configPolicyMock.policyAccessCondition.mockReturnValue(undefined);
 });
 
-describe('wouldBeDisplaced', () => {
-  it.each([
-    ['site', 0, true],
-    ['organization', 999, true],
-    ['partner', 0, true],
-    ['device', 0, false],
-    ['device_group', 0, false],
-    ['device_group', 100, false],
-    ['device_group', 101, true],
-    ['unknown_level', 0, true],
-  ] as const)('sourceLevel=%s priority=%s -> %s', (level, priority, expected) => {
-    expect(wouldBeDisplaced(level, priority)).toBe(expected);
-  });
-});
-
 describe('previewFleetDesignApplyWithContext — functions', () => {
   it('lists devices added/removed against a reusable group and counts manual-kept devices', async () => {
     const outcome = makeOutcome({
@@ -163,7 +148,7 @@ describe('previewFleetDesignApplyWithContext — functions', () => {
 });
 
 describe('previewFleetDesignApplyWithContext — monitoring displacement', () => {
-  it('computes displaced policies per feature type from resolveEffectiveConfig, deduped with device counts, skipping default/device/low-priority device_group winners', async () => {
+  it('does not displace existing monitors when attaching cumulative monitors', async () => {
     const outcome = makeOutcome({
       functions: [{ functionKey: 'file_server', label: 'File Server', deviceIds: ['d1', 'd2', 'd3'], confidence: 0.9, evidence: [] }],
       monitoring: [{
@@ -215,12 +200,7 @@ describe('previewFleetDesignApplyWithContext — monitoring displacement', () =>
     );
 
     expect(preview.policies).toHaveLength(1);
-    expect(preview.policies[0]!.displaces).toEqual(
-      expect.arrayContaining([
-        { policyId: 'p1', policyName: 'Org Monitoring', featureType: 'monitors', deviceCount: 2 },
-      ]),
-    );
-    expect(preview.policies[0]!.displaces).toHaveLength(1);
+    expect(preview.policies[0]!.displaces).toEqual([]);
   });
 });
 

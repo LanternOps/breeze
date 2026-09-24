@@ -2684,7 +2684,11 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           visibleRules = rows.filter((_, i) => !denied[i]);
         }
 
-        return JSON.stringify({ rules: visibleRules, showing: visibleRules.length });
+        return JSON.stringify({
+          rules: visibleRules,
+          showing: visibleRules.length,
+          note: 'Only monitor-managed rules are listed. Feature-engine rules (patch, compliance/policy bridge, automation) are not listed; use get_rule with an alert\'s ruleId to read them.',
+        });
       }
 
       if (action === 'get_rule') {

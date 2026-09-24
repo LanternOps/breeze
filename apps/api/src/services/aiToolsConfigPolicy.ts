@@ -1,8 +1,8 @@
 import { db } from '../db';
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
-import { CONFIG_FEATURE_TYPES, isRetiredConfigFeatureType, ORG_SCOPED_ONLY_FEATURE_TYPES, type ConfigFeatureType } from '@breeze/shared/constants';
+import { CONFIG_FEATURE_TYPES, RETIRED_CONFIG_FEATURE_TYPES, isRetiredConfigFeatureType, ORG_SCOPED_ONLY_FEATURE_TYPES, type ConfigFeatureType } from '@breeze/shared/constants';
 import { configurationPolicies, configPolicyFeatureLinks, configPolicyAssignments, automationPolicyCompliance } from '../db/schema';
-import { eq, and, desc, isNull, isNotNull, inArray, SQL } from 'drizzle-orm';
+import { eq, and, desc, isNull, isNotNull, inArray, notInArray, SQL } from 'drizzle-orm';
 import { hasSatisfiedMfa, type AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import {
@@ -374,7 +374,10 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
               featureType: configPolicyFeatureLinks.featureType,
             })
             .from(configPolicyFeatureLinks)
-            .where(inArray(configPolicyFeatureLinks.configPolicyId, policyIds))
+            .where(and(
+              inArray(configPolicyFeatureLinks.configPolicyId, policyIds),
+              notInArray(configPolicyFeatureLinks.featureType, [...RETIRED_CONFIG_FEATURE_TYPES]),
+            ))
         : [];
 
       const linksByPolicy = new Map<string, string[]>();
@@ -911,7 +914,10 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         const links = await db
           .select({ id: configPolicyFeatureLinks.id, configPolicyId: configPolicyFeatureLinks.configPolicyId, featureType: configPolicyFeatureLinks.featureType })
           .from(configPolicyFeatureLinks)
-          .where(inArray(configPolicyFeatureLinks.configPolicyId, policyIds));
+          .where(and(
+            inArray(configPolicyFeatureLinks.configPolicyId, policyIds),
+            notInArray(configPolicyFeatureLinks.featureType, [...RETIRED_CONFIG_FEATURE_TYPES]),
+          ));
 
         const featureLinkIds = links.map((l) => l.id);
 

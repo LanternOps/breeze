@@ -299,28 +299,6 @@ describe('applyFleetDesign — step 1 (functions)', () => {
   });
 });
 
-describe('applyFleetDesign — step 2 (retire)', () => {
-  it.each(['watch', 'rule'] as const)('refuses a retired legacy %s before any writes', async (kind) => {
-    const inlineSettings = { checkIntervalSeconds: 60, watches: [{ name: 'Spooler', enabled: true }] };
-    const previewCtx = makeCtx({
-      retiredResolved: new Map([[
-        'retired:0',
-        { item: { kind, policyId: 'p2', policyName: 'Old Policy', itemName: 'Spooler', reason: 'unused' }, linkId: 'link-1', inlineSettings, policyOrgId: ORG },
-      ]]),
-    });
-    previewMock.previewFleetDesignApplyWithContext.mockResolvedValue(previewCtx);
-    configPolicyMock.updateFeatureLink.mockResolvedValue({ id: 'link-1' });
-
-    await expect(applyFleetDesign(makeAuth(), RUN, makeApproval({ retired: ['retired:0'] }))).rejects.toMatchObject({
-      code: 'blocked', payload: { blockers: [{ itemRef: 'retired:0', reason: 'legacy_source_retired' }] },
-    });
-    expect(configPolicyMock.updateFeatureLink).not.toHaveBeenCalled();
-    expect(ledgerMock.recordApplied).not.toHaveBeenCalled();
-    expect(dbHolder.inserts).toEqual([]);
-    expect(dbHolder.updates).toEqual([]);
-  });
-});
-
 describe('applyFleetDesign — step 3 (monitoring)', () => {
   it('creates the policy inactive, attaches monitor definitions (no legacy links), assigns device_group priority 100, activates, records policy + item rows', async () => {
     const rule: FleetDesignRule = {

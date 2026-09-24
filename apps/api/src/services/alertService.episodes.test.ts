@@ -58,6 +58,7 @@ const {
         },
       })),
       execute: vi.fn(async (statement: { values: unknown[] }) => {
+        if (statement.values.length === 1) return []; // subject advisory lock
         callOrder.push('createAlert.insert');
         const [ruleId, deviceId, orgId, severity, title, message, context, monitorId, episodeId, requiresHuman, subjectKey] = statement.values;
         insertedAlerts.push({
@@ -96,7 +97,8 @@ vi.mock('drizzle-orm', () => ({
   desc: (col: unknown) => ({ op: 'desc', col }),
 }));
 
-vi.mock('../db', () => ({ db: dbMock }));
+vi.mock('../db', () => ({ db: dbMock, withDbTransaction: async (fn: () => Promise<unknown>) => fn() }));
+vi.mock('./alertSubjects', () => ({ evaluateSubjectAlerts: vi.fn(async () => 'ok') }));
 
 vi.mock('../db/schema', () => ({
   alerts: { id: 'alerts.id', ruleId: 'alerts.ruleId', deviceId: 'alerts.deviceId', status: 'alerts.status' },
@@ -164,6 +166,9 @@ vi.mock('./eventBus', () => ({ publishEvent: vi.fn(() => Promise.resolve()) }));
 vi.mock('./sentry', () => ({ captureException: captureExceptionMock }));
 vi.mock('./deviceSiteResolver', () => ({ resolveDeviceSiteId: vi.fn(() => Promise.resolve('site-1')) }));
 vi.mock('../jobs/alertCorrelation', () => ({ enqueueAlertCorrelation: vi.fn(() => Promise.resolve('job-1')) }));
+
+import { resolveMaintenanceConfigForDevice, isInMaintenanceWindow } from './featureConfigResolver';
+import { evaluateSubjectAlerts } from './alertSubjects';
 
 import { evaluateDeviceAlerts } from './alertService';
 
@@ -252,6 +257,7 @@ beforeEach(() => {
   callOrder.length = 0;
   insertedAlerts.length = 0;
   vi.clearAllMocks();
+  vi.mocked(resolveMaintenanceConfigForDevice).mockResolvedValue(null);
   resolveMonitorsForDeviceMock.mockResolvedValue({
     kind: 'resolved',
     monitors: [
@@ -481,5 +487,52 @@ describe('evaluateDeviceAlerts — monitor episodes (#5290)', () => {
       undefined,
       expect.objectContaining({ issue: 'episode_record_failed' }),
     );
+  });
+});
+
+describe('monitor maintenance suppression', () => {
+  it('preserves component recovery under the subject lock without admitting breaches or episode side effects', async () => {
+    vi.mocked(resolveMaintenanceConfigForDevice).mockResolvedValue({ suppressAlerts: true } as never);
+    vi.mocked(isInMaintenanceWindow).mockReturnValue({ active: true, suppressAlerts: true } as never);
+    const recovered = { subjectKey: 'disk:healthy', status: 'recovered', description: 'Recovered disk' };
+    const unknown = { subjectKey: 'disk:missing', status: 'unknown', description: 'Missing data' };
+    evaluateConditionsMock.mockResolvedValue({
+      triggered: true, conditionsMet: [], conditionsNotMet: [], context: {},
+      subjects: [recovered, unknown, { subjectKey: 'disk:failed', status: 'breaching' }],
+    });
+    pushSweepQueue({ triggered: false, monitorRow: { id: MONITOR_ID, kind: 'hardware_health' } });
+
+    expect(await evaluateDeviceAlerts(DEVICE_ID)).toEqual([]);
+
+    expect(dbMock.execute).toHaveBeenCalledWith(expect.objectContaining({
+      values: [`hardware-subject:rule-1:${DEVICE_ID}`],
+    }));
+    expect(evaluateSubjectAlerts).toHaveBeenCalledWith(expect.objectContaining({
+      evidence: expect.objectContaining({ subjects: [recovered, unknown], createdAlertIds: [] }),
+    }));
+    expect(insertedAlerts).toHaveLength(0);
+    expect(recordMonitorEvaluationMock).not.toHaveBeenCalled();
+    expect(fireEscalationLatchMock).not.toHaveBeenCalled();
+    expect(detachMonitorFromDeviceMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { active: true, suppressAlerts: true, creates: false },
+    { active: false, suppressAlerts: true, creates: true },
+    { active: true, suppressAlerts: false, creates: true },
+  ])('active=$active suppressAlerts=$suppressAlerts creates=$creates', async ({ active, suppressAlerts, creates }) => {
+    vi.mocked(resolveMaintenanceConfigForDevice).mockResolvedValue({ suppressAlerts } as never);
+    vi.mocked(isInMaintenanceWindow).mockReturnValue({ active, suppressAlerts } as never);
+    pushSweepQueue({ triggered: true });
+    const ids = await evaluateDeviceAlerts(DEVICE_ID);
+    expect(ids).toHaveLength(creates ? 1 : 0);
+    expect(insertedAlerts).toHaveLength(creates ? 1 : 0);
+    expect(resolveMaintenanceConfigForDevice).toHaveBeenCalledWith(DEVICE_ID);
+    if (!creates) {
+      expect(evaluateConditionsMock).not.toHaveBeenCalled();
+      expect(recordMonitorEvaluationMock).not.toHaveBeenCalled();
+      expect(fireEscalationLatchMock).not.toHaveBeenCalled();
+      expect(detachMonitorFromDeviceMock).not.toHaveBeenCalled();
+    }
   });
 });
