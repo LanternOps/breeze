@@ -175,7 +175,7 @@ func (p *scriptedDownloadProvider) trickleManifest(ctx context.Context, localPat
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	var w io.Writer = f
 	var buf bytes.Buffer
 	if p.manifestHookOnly {
