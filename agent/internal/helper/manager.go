@@ -63,6 +63,13 @@ type SpawnFunc func(sessionKey string, binaryPath string, args ...string) (pid i
 // ErrNoActiveSession is returned by SpawnFunc when no user session is available.
 var ErrNoActiveSession = fmt.Errorf("no active user session")
 
+// ErrNotInstalled: Breeze Assist is enabled by policy but the helper binary is
+// not on disk (never installed, or a failed in-place update removed it).
+// Callers must not spawn, must not count it as a crash, and must not log it
+// as an error on every heartbeat — the server's HelperUpgradeTo bootstrap
+// offer is the only thing that resolves it (#6872).
+var ErrNotInstalled = errors.New("breeze assist is not installed")
+
 // Option configures a Manager.
 type Option func(*Manager)
 
@@ -186,6 +193,12 @@ type Manager struct {
 	abandonedVersion     string // version we gave up updating to
 
 	legacyAutoStartCleaned bool
+
+	// notInstalledWarned: the "enabled but not installed, waiting for the
+	// server" warning has fired for the current not-installed episode. Reset
+	// when the binary appears or the policy turns off, so the log carries one
+	// line per transition instead of one per heartbeat (#6872).
+	notInstalledWarned bool
 }
 
 // New creates a new helper Manager. serverURL is a provider (func() string) so
@@ -327,8 +340,18 @@ func (m *Manager) Apply(settings *Settings) {
 		// before this Apply call within the same heartbeat. Without it we fail
 		// closed rather than fetch unverified bytes.
 		if m.pendingHelperVersion == "" {
-			log.Debug("breeze assist enabled but no signed target version yet; deferring install")
-		} else if err := m.downloadAndInstall(m.pendingHelperVersion); err != nil {
+			if !m.notInstalledWarned {
+				log.Warn("breeze assist enabled but not installed; waiting for the server to offer a helper version")
+				m.notInstalledWarned = true
+			}
+			// #6872: nothing to configure, spawn, or watch. A watcher left over
+			// from an installed state must not keep respawning a missing binary.
+			for _, state := range m.sessions {
+				m.stopSessionWatcher(state)
+			}
+			return
+		}
+		if err := m.downloadAndInstall(m.pendingHelperVersion); err != nil {
 			// downloadAndInstall wraps the verified downloader's error, which for
 			// any transport failure is a *url.Error carrying the presigned
 			// helper-asset URL. This log line ships, so it must be redacted.
@@ -336,6 +359,12 @@ func (m *Manager) Apply(settings *Settings) {
 			log.Error("failed to install breeze assist", key, value)
 			return
 		}
+		for _, state := range m.sessions {
+			state.watcherGaveUp = false // new binary — give it a fresh chance (#6872)
+		}
+	}
+	if !settings.Enabled || m.isInstalled() {
+		m.notInstalledWarned = false
 	}
 
 	activeSessions := m.sessionEnumerator.ActiveSessions()
@@ -394,7 +423,11 @@ func (m *Manager) Apply(settings *Settings) {
 			}
 
 			if err := m.ensureRunningSession(state); err != nil {
-				log.Error("failed to start breeze assist", "session", si.Key, "error", err.Error())
+				if errors.Is(err, ErrNotInstalled) {
+					log.Debug("breeze assist not installed; skipping spawn", "session", si.Key)
+				} else {
+					log.Error("failed to start breeze assist", "session", si.Key, "error", err.Error())
+				}
 			} else {
 				m.reapDuplicateHelpersLocked(state)
 				m.startSessionWatcher(state)
@@ -579,6 +612,11 @@ func (m *Manager) ensureRunningSession(state *sessionState) error {
 	}
 	if state.pid > 0 && state.pid != state.spawnedPID && m.isOurProcessFunc(state.pid, m.binaryPath) {
 		return nil
+	}
+	// #6872: nothing to spawn. Checked BEFORE watcherGaveUp so a device that
+	// burned its retries against a missing binary recovers on install.
+	if !m.isInstalled() {
+		return ErrNotInstalled
 	}
 	if state.watcherGaveUp {
 		return fmt.Errorf("helper keeps crashing, not respawning until next update")
@@ -952,7 +990,14 @@ func (m *Manager) Shutdown() {
 
 func (m *Manager) startSessionWatcher(state *sessionState) {
 	if state.watcher != nil {
-		return
+		select {
+		case <-state.watcher.done:
+			// Exited on its own — ErrNotInstalled (#6872) or gave up — so a
+			// fresh one can take over.
+			state.watcher = nil
+		default:
+			return
+		}
 	}
 	w := newSessionWatcher(m.ctx, m, state)
 	state.watcher = w

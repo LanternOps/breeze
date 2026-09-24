@@ -27,6 +27,17 @@ func SpawnProcessInSession(binaryPath string, sessionID uint32) error {
 
 // SpawnProcessInSessionWithArgs launches a binary plus args in the specified Windows session.
 func SpawnProcessInSessionWithArgs(binaryPath string, args []string, sessionID uint32) error {
+	// #6872: cmd.exe always exists, so CreateProcessAsUser(cmd.exe /c start
+	// "" "<binary>") succeeds even when <binary> does not — the log then
+	// claims a spawn with cmd.exe's PID and the user gets a "Windows cannot
+	// find" dialog. Check the target first.
+	if _, statErr := os.Stat(binaryPath); statErr != nil {
+		if os.IsNotExist(statErr) {
+			return fmt.Errorf("%w: %s", ErrBinaryMissing, binaryPath)
+		}
+		return fmt.Errorf("stat spawn target %s: %w", binaryPath, statErr)
+	}
+
 	dupToken, envBlock, identity, err := acquireUserToken(sessionID)
 	if err != nil {
 		return err
