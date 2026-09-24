@@ -74,6 +74,7 @@ export const listDevicesSchema = z.object({
   includeDecommissioned: boolStr,
   osType: z.enum(['windows', 'macos', 'linux']).optional(),
   role: z.enum(DEVICE_ROLES).optional(),
+  hardwareHealth: z.enum(['warning', 'critical', 'unknown']).optional(),
   search: z.string().optional()
 });
 
