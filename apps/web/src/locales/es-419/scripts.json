@@ -1064,9 +1064,9 @@
       "elevatedHint": "Utiliza sudo en macOS/Linux, runas en Windows."
     },
     "exitCodeSeverity": {
-      "emptyPrefix": "Asigne códigos de salida específicos para alertar sobre la gravedad. Cuando el script devuelve uno de estos códigos, se genera una alerta en la gravedad configurada. Elegir",
+      "emptyPrefix": "Asigne códigos de salida específicos a gravedades de alerta. Cuando una ejecución desatendida (programada, de automatización, de política o activada por una alerta) devuelve uno de estos códigos, se genera una alerta con la gravedad configurada; las ejecuciones manuales nunca generan una. Una ejecución posterior que termina correctamente la resuelve. Elija",
       "suppressAlert": "Suprimir alerta",
-      "emptySuffix": "para marcar un código como informativo (no se plantea ninguna incidencia). Los códigos de salida que no enumera aquí utilizan el manejo de resultados predeterminado.",
+      "emptySuffix": "para marcar un código como informativo (sin alerta). Un código distinto de cero que no enumere usa la gravedad del código inferior más cercano de la lista, o media.",
       "suppressHint": "Suprimir alerta: el código de salida se trata como informativo y no se genera ningún incidente."
     },
     "keyboardSave": "{{shortcut}} para guardar",
