@@ -4915,12 +4915,14 @@
     "description": "Önceki RMM dosyanızdan dışa aktarılan CSV'deki kuruluşları ve siteleri içe aktarın.",
     "dropzone": "Buraya bir CSV dosyası bırakın veya göz atmak için tıklayın",
     "dropzoneHint": "Sütunlar: organizasyon (gerekli), site, harici kimlik, harici sistem, saat dilimi",
+    "docsLink": "İçe aktarma kılavuzu",
     "actions": {
       "close": "Kapat",
       "preview": "{{count}} satırın önizlemesini yapın",
       "previewing": "Önizleme yapılıyor…",
       "import": "İçe aktar {{count}} seçildi",
-      "importing": "İçe aktarılıyor…"
+      "importing": "İçe aktarılıyor…",
+      "downloadSample": "Örnek CSV indir"
     },
     "mapping": {
       "title": "Sütun eşleme",

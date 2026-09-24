@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import BulkOrgImport from './BulkOrgImport';
+import BulkOrgImport, { buildOrgImportSampleCsv, ORG_IMPORT_DOCS_URL } from './BulkOrgImport';
+
+const downloadBlobMock = vi.fn();
+vi.mock('../../lib/downloadBlob', () => ({
+  downloadBlob: (...a: unknown[]) => downloadBlobMock(...a),
+}));
 
 const fetchWithAuthMock = vi.fn();
 vi.mock('../../stores/auth', () => ({
@@ -292,5 +297,55 @@ describe('BulkOrgImport', () => {
     await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(2));
     const body = JSON.parse((fetchWithAuthMock.mock.calls[1]![1] as RequestInit).body as string);
     expect(body.mode).toBe('update');
+  });
+});
+
+describe('BulkOrgImport sample CSV + docs link (#6051)', () => {
+  it('builds the sample header from exactly the mappable import fields', () => {
+    const [header, ...rows] = buildOrgImportSampleCsv().split('\n');
+    expect(header).toBe('organization,site,externalId,externalSystem,timezone');
+    expect(rows.length).toBeGreaterThan(1);
+    // Every sample row fills every column so the example shows real values.
+    for (const row of rows) expect(row.split(',')).toHaveLength(5);
+  });
+
+  it('downloads the sample CSV from the panel', async () => {
+    render(<BulkOrgImport />);
+    fireEvent.click(screen.getByTestId('bulk-org-import-download-sample'));
+    expect(downloadBlobMock).toHaveBeenCalledTimes(1);
+    const [blob, filename] = downloadBlobMock.mock.calls[0]! as [Blob, string];
+    expect(filename).toBe('breeze-organization-import-sample.csv');
+    expect(blob.type).toBe('text/csv;charset=utf-8');
+    expect(await blob.text()).toBe(buildOrgImportSampleCsv());
+  });
+
+  it('round-trips: re-uploading the sample auto-maps every column and previews its rows', async () => {
+    render(<BulkOrgImport />);
+    await uploadCsv(buildOrgImportSampleCsv());
+    for (const field of ['organization', 'site', 'externalId', 'externalSystem', 'timezone']) {
+      expect(screen.getByTestId(`bulk-org-import-map-${field}`)).toHaveValue(field);
+    }
+    fetchWithAuthMock.mockReturnValueOnce(jsonResponse({ rows: [] }));
+    fireEvent.click(screen.getByTestId('bulk-org-import-preview'));
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    const body = JSON.parse((fetchWithAuthMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body.rows[0]).toEqual({
+      organization: expect.any(String),
+      site: expect.any(String),
+      externalId: expect.any(String),
+      externalSystem: expect.any(String),
+      timezone: expect.any(String),
+    });
+  });
+
+  it('links to the Migration Toolkit bulk-import recipe in a new tab', () => {
+    render(<BulkOrgImport />);
+    const link = screen.getByTestId('bulk-org-import-docs-link');
+    expect(ORG_IMPORT_DOCS_URL).toBe(
+      'https://docs.breezermm.com/migration/toolkit/#recipe-1--bootstrap-the-tenancy-tree-from-csv',
+    );
+    expect(link).toHaveAttribute('href', ORG_IMPORT_DOCS_URL);
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
   });
 });

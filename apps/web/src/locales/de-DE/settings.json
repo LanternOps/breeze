@@ -4862,12 +4862,14 @@
     "description": "Organisationen und Standorte aus einer CSV-Datei Ihres bisherigen RMM importieren.",
     "dropzone": "CSV-Datei hier ablegen oder klicken zum Auswählen",
     "dropzoneHint": "Spalten: Organisation (erforderlich), Standort, externe ID, externes System, Zeitzone",
+    "docsLink": "Importanleitung",
     "actions": {
       "close": "Schließen",
       "preview": "{{count}} Zeilen prüfen",
       "previewing": "Vorschau wird geladen…",
       "import": "{{count}} ausgewählte importieren",
-      "importing": "Import läuft…"
+      "importing": "Import läuft…",
+      "downloadSample": "Beispiel-CSV herunterladen"
     },
     "mapping": {
       "title": "Spaltenzuordnung",

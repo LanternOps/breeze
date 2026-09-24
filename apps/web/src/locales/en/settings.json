@@ -4910,12 +4910,14 @@
     "description": "Import organizations and sites from a CSV exported from your previous RMM.",
     "dropzone": "Drop a CSV file here or click to browse",
     "dropzoneHint": "Columns: organization (required), site, external ID, external system, timezone",
+    "docsLink": "Import guide",
     "actions": {
       "close": "Close",
       "preview": "Preview {{count}} rows",
       "previewing": "Previewing…",
       "import": "Import {{count}} selected",
-      "importing": "Importing…"
+      "importing": "Importing…",
+      "downloadSample": "Download sample CSV"
     },
     "mapping": {
       "title": "Column mapping",

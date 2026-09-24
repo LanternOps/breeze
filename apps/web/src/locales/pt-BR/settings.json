@@ -4915,12 +4915,14 @@
     "description": "Importe organizações e locais a partir de um CSV exportado do seu RMM anterior.",
     "dropzone": "Solte um arquivo CSV aqui ou clique para procurar",
     "dropzoneHint": "Colunas: organização (obrigatória), local, ID externo, sistema externo, fuso horário",
+    "docsLink": "Guia de importação",
     "actions": {
       "close": "Fechar",
       "preview": "Pré-visualizar {{count}} linhas",
       "previewing": "Pré-visualizando…",
       "import": "Importar {{count}} selecionadas",
-      "importing": "Importando…"
+      "importing": "Importando…",
+      "downloadSample": "Baixar CSV de exemplo"
     },
     "mapping": {
       "title": "Mapeamento de colunas",
