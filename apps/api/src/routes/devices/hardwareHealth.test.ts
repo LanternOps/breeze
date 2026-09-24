@@ -10,5 +10,8 @@ it('returns the shared view',async()=>{const res=await request();expect(res.stat
 it.each([401,403])('stops forbidden caller %s before reading',async status=>{m.status=status;expect((await request()).status).toBe(status);expect(m.view).not.toHaveBeenCalled();});
 it.each([[null,404],[m.denied,403]])('stops missing/cross-org/site result %s',async(value,status)=>{m.device.mockResolvedValue(value);expect((await request()).status).toBe(status);expect(m.view).not.toHaveBeenCalled();});
 it('checks DEVICES_READ before lookup',async()=>{m.permissionDenied=true;expect((await request()).status).toBe(403);expect(m.device).not.toHaveBeenCalled();expect(m.view).not.toHaveBeenCalled();});
-it('distinguishes absent hardware data',async()=>{m.view.mockResolvedValue(null);const res=await request();expect(res.status).toBe(404);expect(await res.json()).toEqual({error:'no_hardware_health'});});
+// sweep D15: no hardware-health report yet is an expected empty state (every
+// device detail load hits this route) — 404 there logged as a console error
+// for something that isn't broken. 200 keeps the same discriminant body.
+it('distinguishes absent hardware data with a 200, not a 404',async()=>{m.view.mockResolvedValue(null);const res=await request();expect(res.status).toBe(200);expect(await res.json()).toEqual({error:'no_hardware_health'});});
 it('surfaces backend failure',async()=>{m.view.mockRejectedValue(new Error('database'));expect((await request()).status).toBe(500);});
