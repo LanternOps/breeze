@@ -89,8 +89,10 @@ func textFields(text string) map[string]string {
 		if !ok {
 			k, v, ok = strings.Cut(strings.TrimSpace(line), ":")
 		}
-		if ok {
-			out[strings.ToLower(strings.TrimSpace(k))] = strings.TrimSpace(v)
+		// First non-empty value wins: vendor records list their own fields before trailing
+		// sub-sections (ports, SEPs, enclosures) whose same-named fields must not overwrite them.
+		if key := strings.ToLower(strings.TrimSpace(k)); ok && out[key] == "" {
+			out[key] = strings.TrimSpace(v)
 		}
 	}
 	return out

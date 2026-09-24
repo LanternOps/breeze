@@ -1,0 +1,69 @@
+Controllers found: 1
+Controller #1
+==============
+Firmware                               : 7.5-0 (32483)
+Command completed successfully.
+===
+Controllers found: 1
+----------------------------------------------------------------------
+Controller information
+----------------------------------------------------------------------
+   Controller Status                        : Optimal
+   Controller Mode                          : RAID (Expose RAW)
+   Controller Model                         : Adaptec fixture
+   Controller Serial Number                 : CTRL-TEST
+   --------------------------------------------------------
+   Controller Version Information
+   --------------------------------------------------------
+   Firmware                                 : 7.5-0 (32483)
+   --------------------------------------------------------
+   Controller ZMM Information
+   --------------------------------------------------------
+   Status                                   : ZMM Optimal
+
+----------------------------------------------------------------------
+Logical device information
+----------------------------------------------------------------------
+Logical Device number 0
+   Logical Device name                      : mirror
+   RAID level                               : 1
+   Status of Logical Device                 : Optimal
+   Size                                     : 952310 MB
+   --------------------------------------------------------
+   Logical Device segment information
+   --------------------------------------------------------
+   Group 0, Segment 0                       : Present (953869MB, SATA, HDD, Connector:0, Device:0)             DISK-A
+   Group 0, Segment 1                       : Present (953869MB, SATA, HDD, Connector:0, Device:1)             DISK-B
+
+----------------------------------------------------------------------
+Physical Device information
+----------------------------------------------------------------------
+      Device #0
+         Device is a Hard drive
+         State                              : Online
+         Reported Channel,Device(T:L)       : 0,0(0:0)
+         Model                              : Fixture disk
+         Serial number                      : DISK-A
+         Total Size                         : 953869 MB
+         S.M.A.R.T. warnings                : 0
+      Device #1
+         Device is a Hard drive
+         State                              : Global Hot-Spare
+         Reported Channel,Device(T:L)       : 0,1(1:0)
+         Model                              : Fixture disk
+         Serial number                      : DISK-B
+         Total Size                         : 953869 MB
+         S.M.A.R.T. warnings                : 0
+      Device #2
+         Device is an Enclosure services device
+         Reported Channel,Device(T:L)       : 2,0(0:0)
+         Model                              : Fixture SEP
+         State                              : Standby
+
+----------------------------------------------------------------------
+Connector information
+----------------------------------------------------------------------
+   Status                                   : Optimal
+   Model                                    : Connector fixture
+
+Command completed successfully.
