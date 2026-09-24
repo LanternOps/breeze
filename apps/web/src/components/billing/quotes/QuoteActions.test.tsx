@@ -363,3 +363,58 @@ describe('QuoteActions — Stripe currency-mismatch warning (#3777)', () => {
     expect(screen.queryByTestId('quote-stripe-currency-warning')).not.toBeInTheDocument();
   });
 });
+
+describe('QuoteActions — send subject placeholder mirrors the server default (sweep C1)', () => {
+  const resp = (payload: unknown): Response =>
+    ({ ok: true, status: 200, statusText: 'OK', json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
+
+  function mockPartner(partner: Record<string, unknown>) {
+    vi.mocked(fetchWithAuth).mockImplementation(async (url: string) => {
+      if (url === '/orgs/partners/me') return resp(partner);
+      return resp({ data: {} });
+    });
+  }
+
+  async function openComposer(detail: QuoteDetailData) {
+    render(<QuoteActions detail={detail} onChanged={vi.fn()} variant="header" />);
+    await waitFor(() => expect(screen.getByTestId('quote-actions-header')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('quote-send'));
+    await waitFor(() => expect(screen.getByTestId('quote-send-confirm')).toBeInTheDocument());
+  }
+
+  const titled = (): QuoteDetailData => ({
+    ...sendable(),
+    quote: { ...sendable().quote, quoteNumber: 'Q-2026-0001', title: 'Office Wi-Fi Upgrade' },
+  });
+
+  it('titled quote: "<title> — proposal from <partner>"', async () => {
+    authState.tokens = PARTNER_TOKENS;
+    mockPartner({ name: 'Default Partner', emailSignature: null, settings: {} });
+    await openComposer(titled());
+    await waitFor(() => expect(screen.getByTestId('quote-send-subject'))
+      .toHaveAttribute('placeholder', 'Office Wi-Fi Upgrade — proposal from Default Partner'));
+  });
+
+  it('untitled quote: "Proposal <number> from <partner>"', async () => {
+    authState.tokens = PARTNER_TOKENS;
+    mockPartner({ name: 'Default Partner', emailSignature: null, settings: {} });
+    await openComposer({ ...titled(), quote: { ...titled().quote, title: null } });
+    await waitFor(() => expect(screen.getByTestId('quote-send-subject'))
+      .toHaveAttribute('placeholder', 'Proposal Q-2026-0001 from Default Partner'));
+  });
+
+  it('partner name unknown (org-scoped session): falls back to "your company"', async () => {
+    authState.tokens = null;
+    await openComposer(titled());
+    expect(screen.getByTestId('quote-send-subject'))
+      .toHaveAttribute('placeholder', 'Office Wi-Fi Upgrade — proposal from your company');
+  });
+
+  it('a partner-customised subject is not misstated as the built-in default', async () => {
+    authState.tokens = PARTNER_TOKENS;
+    mockPartner({ name: 'Default Partner', emailSignature: null, settings: { emailTemplates: { quote_send: { subject: 'Your quote {{quote_number}}' } } } });
+    await openComposer(titled());
+    await waitFor(() => expect(screen.getByTestId('quote-send-subject'))
+      .toHaveAttribute('placeholder', 'Uses the subject from your proposal email template'));
+  });
+});
