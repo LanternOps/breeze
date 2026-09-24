@@ -69,6 +69,10 @@ const DIRECT_READ_ALLOWLIST = new Set([
   // parent's link into every child policy and count the same rows repeatedly.
   'services/monitors/conversion/partnerBacklog.ts',
 
+  // The retirement sweep counts source rows attached to authored links. An
+  // effective projection would count a parent's source once for every child.
+  'services/monitors/conversion/retirementSweep.ts',
+
   // Authored link CRUD + listFeatureLinks (the editor's own-links view). This
   // file's own effective-config resolver imports the view instead.
   'services/configurationPolicy.ts',
@@ -130,7 +134,9 @@ function walk(dir: string, out: string[] = []): string[] {
 // a table reference — the trailing \b keeps it from matching, and the same goes
 // for any other `config_policy_feature_links_*` identifier.
 function readsBaseTable(src: string): boolean {
-  return /\bconfigPolicyFeatureLinks\b/.test(src) || /\bconfig_policy_feature_links\b/.test(src);
+  // Documentation naming a table does not constitute a direct read.
+  const code = src.replace(/^\s*\/\/.*$/gm, '');
+  return /\bconfigPolicyFeatureLinks\b/.test(code) || /\bconfig_policy_feature_links\b/.test(code);
 }
 
 describe('feature-link readers contract', () => {

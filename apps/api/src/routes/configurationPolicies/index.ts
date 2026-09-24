@@ -2,7 +2,6 @@ import { Hono } from 'hono';
 import { authMiddleware } from '../../middleware/auth';
 import { crudRoutes } from './crud';
 import { featureLinkRoutes } from './featureLinks';
-import { alertRuleTestRoutes } from './alertRuleTest';
 import { assignmentRoutes } from './assignments';
 import { resolutionRoutes } from './resolution';
 import { patchJobRoutes } from './patchJobs';
@@ -16,5 +15,4 @@ configPolicyRoutes.route('/', resolutionRoutes);   // /effective/:deviceId
 configPolicyRoutes.route('/', assignmentRoutes);     // /assignments/target + /:id/assignments
 configPolicyRoutes.route('/', patchJobRoutes);       // /:id/patch-job, /:id/patch-settings, /:id/resolve-patch-config/:deviceId
 configPolicyRoutes.route('/', featureLinkRoutes);    // /:id/features
-configPolicyRoutes.route('/', alertRuleTestRoutes);  // /:id/alert-rules/test
 configPolicyRoutes.route('/', crudRoutes);           // / and /:id

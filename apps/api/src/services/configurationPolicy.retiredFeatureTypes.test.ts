@@ -22,7 +22,7 @@ vi.mock('../db', () => {
     withDbAccessContext: (_ctx: unknown, fn: () => unknown) => fn(),
     withSystemDbAccessContext: (fn: () => unknown) => fn() };
 });
-import { listFeatureLinks } from './configurationPolicy';
+import { listFeatureLinks, updateFeatureLink, getRetiredFeatureLink } from './configurationPolicy';
 beforeEach(() => { h.rows.length = 0; h.predicates.length = 0; h.mutate.mockClear(); });
 it('filters retired feature types in the list SQL', async () => {
   h.rows.push([]);
@@ -34,4 +34,26 @@ it('filters retired feature types in the list SQL', async () => {
 it('filters retired types in the effective-link query too', () => {
   const source = readFileSync(new URL('./configurationPolicy.ts', import.meta.url), 'utf8');
   expect(source).toMatch(/notInArray\(configPolicyEffectiveFeatureLinks\.featureType,\s*\[\.\.\.RETIRED_CONFIG_FEATURE_TYPES\]\)/);
+});
+
+it.each(['alert_rule', 'monitoring'])('updateFeatureLink refuses retired %s before normalized writes', async featureType => {
+  h.rows.push([{ id: 'legacy-link', featureType, configPolicyId: 'policy-1' }]);
+  await expect(updateFeatureLink('legacy-link', { inlineSettings: { items: [] } }, 'policy-1'))
+    .rejects.toThrow(`Feature link legacy-link is retired (${featureType}); it cannot be edited`);
+  expect(h.mutate).not.toHaveBeenCalled();
+});
+it('the public assembler no longer queries legacy tables', () => {
+  const source = readFileSync(new URL('./configurationPolicy.ts', import.meta.url), 'utf8');
+  const assembler = source.slice(source.indexOf('async function assembleInlineSettings'), source.indexOf('export async function addFeatureLink'));
+  expect(assembler).not.toContain("case 'alert_rule'");
+  expect(assembler).not.toContain("case 'monitoring'");
+});
+
+it('retired-link lookup binds both policy and link IDs and only returns retired types', async () => {
+  h.rows.push([]);
+  expect(await getRetiredFeatureLink('policy-1', 'legacy-link')).toBeNull();
+  const query = new PgDialect().sqlToQuery(h.predicates[0] as never);
+  expect(query.params).toEqual(expect.arrayContaining(['policy-1', 'legacy-link', 'alert_rule', 'monitoring']));
+  expect(query.sql).toMatch(/config_policy_id/);
+  expect(h.mutate).not.toHaveBeenCalled();
 });
