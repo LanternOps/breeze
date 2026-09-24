@@ -140,6 +140,8 @@ describe('GmailMailboxCard', () => {
     expect(screen.queryByTestId('gmail-connect')).not.toBeInTheDocument();
     expect(screen.queryByTestId('gmail-reconnect')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /disconnect/i })).not.toBeInTheDocument();
+    // Read-only users still see which organization's credential the mailbox uses.
+    expect(screen.getByTestId('gmail-credential-org').textContent).toContain('Acme');
   });
 
   it('connects a new gmail mailbox via the DWD route with the selected org', async () => {

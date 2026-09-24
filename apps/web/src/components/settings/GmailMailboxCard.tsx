@@ -129,8 +129,9 @@ function GmailMailboxCardContent({ canAdminMailbox }: { canAdminMailbox: boolean
     }
   }, []);
 
+  // Loaded for read-only users too: every connection line names the organization
+  // whose Google Workspace credential it uses. The picker stays admin-only.
   const loadOrgs = useCallback(async () => {
-    if (!canAdminMailbox) return;
     setOrgsLoadError(false);
     try {
       const list = await fetchAllOrganizationsFrom<OrgOption>('/orgs/organizations');
@@ -140,7 +141,7 @@ function GmailMailboxCardContent({ canAdminMailbox }: { canAdminMailbox: boolean
       // connections still render and manage. No toast: non-mutating read.
       setOrgsLoadError(true);
     }
-  }, [canAdminMailbox]);
+  }, []);
 
   useEffect(() => {
     void refresh();

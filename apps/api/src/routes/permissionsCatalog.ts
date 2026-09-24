@@ -16,7 +16,7 @@ const RESOURCE_LABELS: Record<string, string> = {
   scripts: 'Scripts',
   alerts: 'Alerts',
   tickets: 'Tickets',
-  ticket_mailbox: 'Ticket Mailbox (Microsoft 365)',
+  ticket_mailbox: 'Ticket Mailbox (Microsoft 365, Google Workspace)',
   time_entries: 'Time Entries',
   billing_profiles: 'Rates & Work Types',
   users: 'Users',

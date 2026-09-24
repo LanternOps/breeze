@@ -125,3 +125,16 @@ ALTER TABLE ticket_mailbox_connections
     OR
     (provider = 'gmail' AND tenant_id IS NULL)
   );
+
+-- The ticket_mailbox permissions now gate Gmail mailboxes too; say so in the
+-- role editor instead of describing them as Microsoft 365 only. Row writes
+-- need system scope, or on a non-bypass connection they match zero rows.
+SELECT set_config('breeze.scope', 'system', true);
+
+UPDATE permissions
+SET description = 'View Microsoft 365 and Google Workspace ticket mailbox connection status'
+WHERE resource = 'ticket_mailbox' AND action = 'read';
+
+UPDATE permissions
+SET description = 'Connect, verify, retest, and disconnect Microsoft 365 and Google Workspace ticket mailboxes'
+WHERE resource = 'ticket_mailbox' AND action = 'admin';
