@@ -6,6 +6,10 @@ const shared = vi.hoisted(() => ({
   closeMock: vi.fn(),
   processorRef: undefined as any,
   processorRefs: {} as Record<string, any>,
+  // #6632: depth of open system DB contexts (each is one Postgres transaction
+  // in production). Tracked by a plain function, NOT vi.fn, so the suites that
+  // call vi.resetAllMocks() cannot wipe its passthrough implementation.
+  txDepth: 0,
 }));
 
 vi.mock('bullmq', () => ({
@@ -24,6 +28,12 @@ vi.mock('bullmq', () => ({
     }
   },
   Job: class {},
+  DelayedError: class DelayedError extends Error {
+    constructor(message?: string) {
+      super(message);
+      this.name = 'DelayedError';
+    }
+  },
 }));
 
 vi.mock('../db', () => {
@@ -35,7 +45,17 @@ vi.mock('../db', () => {
   // Both `recordDeviceQueued` and the shared finalizer wrap their writes in a
   // transaction; run the callback against the same doubles.
   db.transaction = vi.fn((fn: (tx: unknown) => unknown) => fn(db));
-  return { db, withSystemDbAccessContext: undefined };
+  // Each system context is one transaction in production. Tracked so #6632's
+  // tests can prove no BullMQ add runs while the claim transaction is open.
+  const withSystemDbAccessContext = async (fn: () => Promise<unknown>) => {
+    shared.txDepth += 1;
+    try {
+      return await fn();
+    } finally {
+      shared.txDepth -= 1;
+    }
+  };
+  return { db, withSystemDbAccessContext };
 });
 
 vi.mock('../db/schema', () => ({
@@ -2274,5 +2294,253 @@ describe('completion checker keeps a job open while devices are queued (#5128 W3
     expect(result).toEqual({ finalStatus: 'failed' });
     expect(updateSets).toHaveLength(1);
     expect(updateSets[0].status).toBe('failed');
+  });
+});
+
+// ============================================================================
+// #6632 — the per-device worker must never read the parent before the claim
+// that flipped it to `running` has committed.
+// ============================================================================
+
+describe('claim commits before device fan-out (#6632)', () => {
+  function thenableChain(result: unknown = undefined) {
+    const c: any = {};
+    c.set = vi.fn(() => c);
+    c.values = vi.fn(() => Promise.resolve(result));
+    c.where = vi.fn(() => Promise.resolve(result));
+    return c;
+  }
+
+  let addDepths: number[];
+  let writeDepths: { op: string; depth: number }[];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    shared.processorRef = undefined;
+    shared.processorRefs = {};
+    shared.txDepth = 0;
+    shared.getJobMock.mockResolvedValue(null);
+    addDepths = [];
+    writeDepths = [];
+    shared.addMock.mockImplementation(async () => {
+      addDepths.push(shared.txDepth);
+      return { id: 'queue-job-1' };
+    });
+    __testOnly.resetWedgedJobReporting();
+  });
+
+  afterEach(() => {
+    shared.addMock.mockReset();
+  });
+
+  function primeScheduledJob(deviceIds: string[]) {
+    vi.mocked(db.select)
+      .mockImplementationOnce(() => createSelectChain([{
+        id: 'job-1',
+        orgId: 'org-1',
+        status: 'scheduled',
+        targets: { deviceIds },
+      }]) as any)
+      .mockImplementation(() => createSelectChain([
+        { status: 'running', devicesPending: deviceIds.length, devicesFailed: 1 },
+      ]) as any);
+    vi.mocked(db.update)
+      .mockImplementationOnce(() => {
+        writeDepths.push({ op: 'claim', depth: shared.txDepth });
+        return createUpdateChain([{ id: 'job-1' }]) as any;
+      })
+      .mockImplementation(() => {
+        writeDepths.push({ op: 'update', depth: shared.txDepth });
+        return thenableChain() as any;
+      });
+    vi.mocked(db.insert).mockImplementation(() => {
+      writeDepths.push({ op: 'insert', depth: shared.txDepth });
+      return thenableChain() as any;
+    });
+  }
+
+  it('enqueues no device job or completion check while the claim transaction is open', async () => {
+    primeScheduledJob(['device-1', 'device-2']);
+
+    createPatchJobWorker();
+    const result = await shared.processorRefs['patch-jobs']({
+      data: { type: 'execute-patch-job', patchJobId: 'job-1' },
+    });
+
+    expect(result).toEqual({ dispatched: 2, dispatchFailed: 0 });
+    // The claim itself ran inside a system DB context (i.e. a transaction)...
+    expect(writeDepths).toContainEqual({ op: 'claim', depth: 1 });
+    // ...and every BullMQ add (2 device jobs + the completion check) happened
+    // only after it had closed. Before the fix every add ran at depth 1, so a
+    // device worker could read the parent as still `scheduled` and skip.
+    const names = shared.addMock.mock.calls.map(([name]: any[]) => name);
+    expect(names).toEqual([
+      'execute-patch-job-device',
+      'execute-patch-job-device',
+      'check-completion',
+    ]);
+    expect(addDepths).toEqual([0, 0, 0]);
+  });
+
+  it('records a device dispatch failure in its own short transaction, after the claim committed', async () => {
+    primeScheduledJob(['device-1', 'device-2']);
+    shared.addMock.mockImplementation(async (name: string, data: any) => {
+      addDepths.push(shared.txDepth);
+      if (name === 'execute-patch-job-device' && data.deviceId === 'device-1') {
+        throw new Error('redis down');
+      }
+      return { id: 'queue-job-1' };
+    });
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    createPatchJobWorker();
+    const result = await shared.processorRefs['patch-jobs']({
+      data: { type: 'execute-patch-job', patchJobId: 'job-1' },
+    });
+
+    expect(result).toEqual({ dispatched: 1, dispatchFailed: 1 });
+    expect(addDepths.length).toBe(3);
+    expect(addDepths.every((d) => d === 0)).toBe(true);
+    // The failure bookkeeping (result row + counter update) is DB work, so it
+    // runs inside a context — one per device, never spanning a Redis call.
+    const bookkeeping = writeDepths.filter((w) => w.op !== 'claim');
+    expect(bookkeeping.map((w) => w.op)).toEqual(['insert', 'update']);
+    expect(bookkeeping.every((w) => w.depth === 1)).toBe(true);
+    consoleSpy.mockRestore();
+  });
+
+  it('completes an empty-target job inside the claim transaction and enqueues nothing', async () => {
+    primeScheduledJob([]);
+
+    createPatchJobWorker();
+    const result = await shared.processorRefs['patch-jobs']({
+      data: { type: 'execute-patch-job', patchJobId: 'job-1' },
+    });
+
+    expect(result).toEqual({ completed: true, reason: 'No target devices' });
+    expect(shared.addMock).not.toHaveBeenCalled();
+    expect(writeDepths).toEqual([
+      { op: 'claim', depth: 1 },
+      { op: 'update', depth: 1 },
+    ]);
+  });
+});
+
+describe('device worker re-delays while the parent is still scheduled (#6632)', () => {
+  function deviceJob(extra: Record<string, unknown> = {}) {
+    return {
+      data: {
+        type: 'execute-patch-job-device',
+        patchJobId: 'job-1',
+        deviceId: 'device-1',
+        orgId: 'org-1',
+        ...extra,
+      },
+      moveToDelayed: vi.fn().mockResolvedValue(undefined),
+      updateData: vi.fn().mockResolvedValue(undefined),
+    };
+  }
+
+  function primeParent(status: string) {
+    vi.mocked(db.select).mockImplementationOnce(() => createSelectChain([{
+      id: 'job-1',
+      orgId: 'org-1',
+      status,
+      patches: {},
+      targets: { deviceIds: ['device-1'] },
+    }]) as any);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    shared.processorRef = undefined;
+    shared.processorRefs = {};
+    shared.txDepth = 0;
+  });
+
+  it('re-delays itself (no attempt consumed) instead of a terminal skip', async () => {
+    primeParent('scheduled');
+    const job = deviceJob();
+    let depthAtDelay = -1;
+    job.moveToDelayed.mockImplementation(async () => {
+      depthAtDelay = shared.txDepth;
+    });
+
+    createPatchJobDeviceWorker();
+    const run = shared.processorRefs['patch-job-devices'](job, 'lock-token');
+
+    await expect(run).rejects.toMatchObject({ name: 'DelayedError' });
+    expect(job.updateData).toHaveBeenCalledWith(
+      expect.objectContaining({ parentNotRunningRechecks: 1 }),
+    );
+    expect(job.moveToDelayed).toHaveBeenCalledTimes(1);
+    const [when, token] = job.moveToDelayed.mock.calls[0]! as [number, string];
+    expect(token).toBe('lock-token');
+    expect(when).toBeGreaterThan(Date.now());
+    // Re-delayed OUTSIDE the DB context: no pooled connection held across Redis.
+    expect(depthAtDelay).toBe(0);
+    expect(dispatchDeviceCommand).not.toHaveBeenCalled();
+    expect(resolveApprovedPatchesForDevice).not.toHaveBeenCalled();
+  });
+
+  it('backs off further on each recheck', async () => {
+    primeParent('scheduled');
+    const first = deviceJob();
+    createPatchJobDeviceWorker();
+    await expect(shared.processorRefs['patch-job-devices'](first, 't')).rejects.toBeDefined();
+
+    primeParent('scheduled');
+    const third = deviceJob({ parentNotRunningRechecks: 2 });
+    await expect(shared.processorRefs['patch-job-devices'](third, 't')).rejects.toBeDefined();
+
+    const firstDelay = (first.moveToDelayed.mock.calls[0]![0] as number) - Date.now();
+    const thirdDelay = (third.moveToDelayed.mock.calls[0]![0] as number) - Date.now();
+    expect(thirdDelay).toBeGreaterThan(firstDelay);
+    expect(third.updateData).toHaveBeenCalledWith(
+      expect.objectContaining({ parentNotRunningRechecks: 3 }),
+    );
+  });
+
+  it('gives up with a terminal skip and a report once the recheck budget is spent', async () => {
+    primeParent('scheduled');
+    const job = deviceJob({ parentNotRunningRechecks: __testOnly.MAX_PARENT_NOT_RUNNING_RECHECKS });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    createPatchJobDeviceWorker();
+    const result = await shared.processorRefs['patch-job-devices'](job, 'lock-token');
+
+    expect(result).toEqual({ kind: 'skipped', skipped: true, reason: 'Job not running' });
+    expect(job.moveToDelayed).not.toHaveBeenCalled();
+    expect(captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'PatchParentNotRunningError' }),
+      undefined,
+      expect.anything(),
+    );
+    errorSpy.mockRestore();
+  });
+
+  it.each(['cancelled', 'completed', 'failed'])(
+    'keeps the terminal skip for a %s parent',
+    async (status) => {
+      primeParent(status);
+      const job = deviceJob();
+
+      createPatchJobDeviceWorker();
+      const result = await shared.processorRefs['patch-job-devices'](job, 'lock-token');
+
+      expect(result).toEqual({ kind: 'skipped', skipped: true, reason: 'Job not running' });
+      expect(job.moveToDelayed).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps the terminal skip for a missing parent', async () => {
+    vi.mocked(db.select).mockImplementationOnce(() => createSelectChain([]) as any);
+    const job = deviceJob();
+
+    createPatchJobDeviceWorker();
+    const result = await shared.processorRefs['patch-job-devices'](job, 'lock-token');
+
+    expect(result).toEqual({ kind: 'skipped', skipped: true, reason: 'Job not running' });
+    expect(job.moveToDelayed).not.toHaveBeenCalled();
   });
 });
