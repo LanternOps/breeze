@@ -8,6 +8,7 @@ import { authMiddleware, requireMfa, requirePermission } from '../middleware/aut
 import { writeRouteAudit } from '../services/auditEvents';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { csvRow } from '../services/spreadsheetExport';
+import { redactPersistedToolInput } from '../services/aiToolOutput';
 import type { ActorType, AuditResult } from '@breeze/shared';
 
 export const auditLogRoutes = new Hono();
@@ -214,10 +215,24 @@ export function resolveActorName(row: DbRow, details?: Record<string, unknown> |
   return 'Unknown User';
 }
 
+/**
+ * #6577: `details` as it may be serialised to a client. Rows written before the
+ * write-side sanitiser (auditEvents.ts → sanitizeAuditPayload), and rows from
+ * direct createAuditLog writers, can hold raw credentials; every read path below
+ * redacts with the same helper the AI admin history reads use (#5570, SEC-050).
+ * Idempotent for already-sanitised rows. Internal lookups (actor name, session
+ * link) keep reading the raw value — they never echo a secret-named key.
+ */
+function redactedDetails(log: DbRow['log']): Record<string, unknown> | null {
+  if (log.details === null || log.details === undefined) return null;
+  return redactPersistedToolInput(log.details) as Record<string, unknown>;
+}
+
 function flattenEntry(row: DbRow) {
   const log = row.log;
-  const details = log.details as Record<string, unknown> | null;
-  const actorName = resolveActorName(row, details);
+  const rawDetails = log.details as Record<string, unknown> | null;
+  const actorName = resolveActorName(row, rawDetails);
+  const details = redactedDetails(log);
   return {
     id: log.id,
     timestamp: log.timestamp.toISOString(),
@@ -227,7 +242,7 @@ function flattenEntry(row: DbRow) {
     details: details ? JSON.stringify(details) : '{}',
     ipAddress: log.ipAddress ?? '',
     userAgent: log.userAgent ?? '',
-    sessionId: details?.sessionId ?? null,
+    sessionId: rawDetails?.sessionId ?? null,
     user: {
       name: actorName,
       email: log.actorEmail ?? '',
@@ -268,7 +283,7 @@ function toFullEntry(row: DbRow, includeDetails = true) {
     initiatedBy: log.initiatedBy ?? null,
   };
   if (includeDetails) {
-    entry.details = details ?? {};
+    entry.details = redactedDetails(log) ?? {};
   }
   return entry;
 }
@@ -484,7 +499,7 @@ function toExportRecord(row: DbRow, includeDetails: boolean): Record<AuditExport
     result: log.result,
     ipAddress: log.ipAddress ?? '',
     userAgent: log.userAgent ?? '',
-    details: includeDetails ? JSON.stringify(log.details ?? {}) : ''
+    details: includeDetails ? JSON.stringify(redactedDetails(log) ?? {}) : ''
   };
 }
 
@@ -617,7 +632,9 @@ function paginatedListHandler(
     ]);
 
     return c.json({
-      [dataKey]: rows.map(mapFn),
+      // Arrow wrapper, not `rows.map(mapFn)`: map's index argument would land
+      // in toFullEntry's `includeDetails` and drop details from row 0.
+      [dataKey]: rows.map((row) => mapFn(row)),
       pagination: {
         page,
         limit,
