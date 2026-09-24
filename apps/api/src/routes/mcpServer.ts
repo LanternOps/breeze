@@ -98,8 +98,9 @@ function shouldRequireExecuteAdminInProd(): boolean {
 
 /**
  * Operator opt-in (default OFF): lift the MCP interactive-approval gate so
- * Tier 3 tools/actions (and MCP_APPROVAL_REQUIRED_EXTRA_TOOLS) are listed and
- * callable over MCP without a human approval step. For self-hosted operators
+ * core-registry Tier 3 tools/actions (and MCP_APPROVAL_REQUIRED_EXTRA_TOOLS)
+ * are listed and callable over MCP without a human approval step. Bootstrap
+ * (onboarding) and tenant (BYO MCP) tools stay approval-only. For self-hosted operators
  * who deliberately run a trusted, unattended agent against their own
  * instance. It ONLY removes the approval-only deny; every other Tier 3 gate
  * still applies unchanged: ai:execute, ai:execute_admin in production
@@ -1234,10 +1235,8 @@ async function handleToolsList(
   // them: they are NEVER advertised over MCP while this transport has no
   // interactive approval surface. Deliberately not a filtered loop — a loop
   // that can never push reads as if some bootstrap tool might be listed.
-  // `handleToolsCall` denies them with MCP_APPROVAL_REQUIRED to match. Under
-  // the MCP_ALLOW_UNATTENDED_TIER3 opt-in they become callable by name
-  // (dispatchBootstrapAuthTool keeps its execute/execute_admin/allowlist/RBAC
-  // gates) but stay unlisted: they are onboarding-only tools.
+  // `handleToolsCall` denies them with MCP_APPROVAL_REQUIRED to match, with
+  // or without the MCP_ALLOW_UNATTENDED_TIER3 opt-in (onboarding-only tools).
 
   // Tenant (BYO MCP) tools — Task A10. Same scope formula as the core
   // registry above (tier 1 = ai:read; tier 2 = ai:write; tier 3 = ai:execute
@@ -1369,7 +1368,9 @@ async function handleToolsCall(
     (t) => t.definition.name === toolName,
   );
   if (bootstrapAuthTool) {
-    if (isMcpApprovalRequired(toolName, BOOTSTRAP_TOOL_TIER)) {
+    // Onboarding-only tools: the unattended opt-in does not apply (they are
+    // never listed, so listed ⇒ callable holds).
+    if (isMcpApprovalRequired(toolName, BOOTSTRAP_TOOL_TIER, { honorUnattendedOptIn: false })) {
       return jsonRpcResult(id, {
         content: [{ type: 'text', text: JSON.stringify(MCP_APPROVAL_REQUIRED_ERROR) }],
         isError: true,
@@ -1492,14 +1493,14 @@ async function handleToolsCall(
     return jsonRpcError(id, -32000, 'Unable to verify rate limits');
   }
 
-  // By this point every Tier 3 call (and the sub-Tier-3
-  // MCP_APPROVAL_REQUIRED_EXTRA_TOOLS) has already been denied by the
-  // isMcpApprovalRequired gate above — user decision 2026-08-02 replaced the
-  // old "MCP server auto-executes Tier 3 tools, API key holder trusted at the
-  // scope level" model with a hard fail-closed over MCP, because MCP has no
-  // interactive approval surface. Everything reaching this point is Tier ≤2
-  // (or a Tier 3 action that was itself downgraded by TIER1_ACTIONS/
-  // TIER2_ACTIONS), so auto-execution here is intentional and safe.
+  // By default every Tier 3 call (and every MCP_APPROVAL_REQUIRED_EXTRA_TOOLS
+  // entry, floored to Tier 3) has already been denied by the
+  // isMcpApprovalRequired gate above — user decision 2026-08-02, because MCP
+  // has no interactive approval surface. Under the operator opt-in
+  // MCP_ALLOW_UNATTENDED_TIER3 a Tier 3 call CAN reach this point, having
+  // passed ai:execute, ai:execute_admin (production), the production
+  // allowlist, RBAC and rate limits; it then runs through the fail-closed
+  // Tier 3 ledger lifecycle below. Treat this block as reachable by Tier 3.
 
   // Authoritative execution org (MCP-OAUTH-05): for device-targeted tools this
   // is resolved from the TARGETED DEVICES via the org+site access gate — NOT

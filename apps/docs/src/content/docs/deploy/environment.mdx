@@ -586,7 +586,7 @@ Both variables are validated when the API starts. An invalid mode or an unknown 
 | `MCP_MAX_SSE_SESSIONS_PER_KEY` | `5` | Max concurrent SSE sessions per API key |
 | `MCP_REQUIRE_EXECUTE_ADMIN` | `false` | Require `ai:execute_admin` scope for Tier 3 tools |
 | `MCP_EXECUTE_TOOL_ALLOWLIST` | — | Comma-separated allowed Tier 3 tools (empty = deny all) |
-| `MCP_ALLOW_UNATTENDED_TIER3` | `false` | Operator opt-in. By default every Tier 3 tool/action (and `collect_evidence`) is denied over MCP with `MCP_APPROVAL_REQUIRED` because MCP has no interactive approval step. `true` lifts only that deny for a trusted unattended agent; `ai:execute`, `ai:execute_admin` (production), `MCP_EXECUTE_TOOL_ALLOWLIST` (production), RBAC, rate limits, the Tier 3 execution ledger and the audit log still apply, and `collect_evidence` is gated as Tier 3. Does not apply to tenant (BYO MCP) tools, which stay approval-only. |
+| `MCP_ALLOW_UNATTENDED_TIER3` | `false` | Operator opt-in. By default every Tier 3 tool/action (and `collect_evidence`) is denied over MCP with `MCP_APPROVAL_REQUIRED` because MCP has no interactive approval step. `true` lifts only that deny for a trusted unattended agent; `ai:execute`, `ai:execute_admin` (production), `MCP_EXECUTE_TOOL_ALLOWLIST` (production), RBAC, rate limits, the Tier 3 execution ledger and the audit log still apply, and `collect_evidence` is gated as Tier 3. Does not apply to tenant (BYO MCP) tools or the onboarding bootstrap tools, which stay approval-only. |
 
 ## Cloudflare mTLS
 

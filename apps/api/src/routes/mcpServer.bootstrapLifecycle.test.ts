@@ -388,6 +388,25 @@ describe('bootstrap Tier 3 interactive-approval boundary', () => {
     expect(mocks.configureHandler).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['send_deployment_invites', { emails: ['a@b.com'] }],
+    ['configure_defaults', {}],
+  ])('%s stays approval-only even with MCP_ALLOW_UNATTENDED_TIER3=true (onboarding tools, never listed)', async (toolName, args) => {
+    vi.stubEnv('MCP_ALLOW_UNATTENDED_TIER3', 'true');
+    try {
+      const body = await callBootstrap(toolName, {
+        perms: [{ resource: '*', action: '*' }],
+        args,
+      });
+      expect(JSON.parse(body.result.content[0].text).code).toBe('MCP_APPROVAL_REQUIRED');
+      expect(mocks.ledgerBegin).not.toHaveBeenCalled();
+      expect(mocks.sendHandler).not.toHaveBeenCalled();
+      expect(mocks.configureHandler).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('denies malformed bootstrap input at the approval boundary before schema parsing', async () => {
     const body = await callBootstrap('send_deployment_invites', {
       perms: [{ resource: '*', action: '*' }],
