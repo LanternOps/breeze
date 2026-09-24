@@ -1471,6 +1471,12 @@
           "editTitle": "Webhook bearbeiten"
         },
         "subtitle": "Übermitteln Sie Ereignisse an externe Systeme.",
+        "success": {
+          "created": "Webhook erstellt",
+          "disabled": "Webhook deaktiviert",
+          "enabled": "Webhook aktiviert",
+          "updated": "Webhook aktualisiert"
+        },
         "title": "Webhooks"
       }
     },

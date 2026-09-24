@@ -77,4 +77,18 @@ describe('WebhooksPage delete confirmation (#3531)', () => {
     expect(listFetches()).toBe(2);
     expect(toastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
   });
+
+  it('delete 404 (already gone): toasts, closes the modal, and refetches the list (sweep A2)', async () => {
+    routeFetch({ status: 404, payload: { error: 'Webhook not found' } });
+    const confirm = await openDeleteDialog();
+    expect(listFetches()).toBe(1);
+
+    fireEvent.click(confirm);
+
+    await waitFor(() =>
+      expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: 'Webhook not found' })),
+    );
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Delete Webhook' })).toBeNull());
+    expect(listFetches()).toBe(2);
+  });
 });

@@ -99,6 +99,7 @@
     "name": "Nom",
     "principalDescription": "Description",
     "scopes": "Portées",
+    "noScopes": "Aucune portée accordée",
     "sourceCidrs": "IP ou CIDR sources (une par ligne)",
     "writeScopeRestrictionsRequired": "La portée enrollment-keys:write exige une date d'expiration et au moins une IP ou un CIDR source.",
     "expiresAt": "Expire le",

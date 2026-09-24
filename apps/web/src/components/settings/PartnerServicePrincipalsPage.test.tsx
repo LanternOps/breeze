@@ -55,6 +55,27 @@ describe('PartnerServicePrincipalsPage', () => {
     expect(document.body.textContent).not.toContain('keyHash');
   });
 
+  it('shows the principal row\'s granted scopes without opening Edit (sweep A5)', async () => {
+    render(<PartnerServicePrincipalsPage />);
+    await screen.findByText('Weavestream');
+
+    const scopesRow = screen.getByTestId(`principal-scopes-${PRINCIPAL_ID}`);
+    expect(scopesRow).toHaveTextContent('devices:read');
+  });
+
+  it('shows a "no scopes" placeholder for a principal with zero scopes', async () => {
+    mocks.fetchWithAuth.mockResolvedValue(response({ data: [{
+      id: PRINCIPAL_ID,
+      name: 'Weavestream', description: null, status: 'active', scopes: [],
+      expiresAt: null, sourceCidrs: [], keys: [],
+    }] }));
+    render(<PartnerServicePrincipalsPage />);
+    await screen.findByText('Weavestream');
+
+    const scopesRow = screen.getByTestId(`principal-scopes-${PRINCIPAL_ID}`);
+    expect(scopesRow).toHaveTextContent('partnerServicePrincipals.noScopes');
+  });
+
   it('uses runAction for issuing, rotating, revoking, and disabling', async () => {
     mocks.runAction.mockResolvedValueOnce({ key: 'brz_sp_ONETIME', keyId: KEY_ID, keyPrefix: 'brz_sp_ONE' });
     render(<PartnerServicePrincipalsPage />);

@@ -64,6 +64,7 @@ describe('WebhooksPage — enable/disable (#6767)', () => {
 
     await waitFor(() => expect(patchBodies()).toEqual([{ status: 'paused' }]));
     expect(await screen.findByRole('button', { name: 'Disabled' })).toBeTruthy();
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Webhook disabled' }));
   });
 
   it('shows a paused webhook as disabled and resumes it with { status: "active" }', async () => {
@@ -74,6 +75,7 @@ describe('WebhooksPage — enable/disable (#6767)', () => {
 
     await waitFor(() => expect(patchBodies()).toEqual([{ status: 'active' }]));
     expect(await screen.findByRole('button', { name: 'Active' })).toBeTruthy();
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Webhook enabled' }));
   });
 
   it('toasts a rejected toggle and leaves the row as it was', async () => {
@@ -116,5 +118,18 @@ describe('WebhooksPage — enable/disable (#6767)', () => {
 
     await waitFor(() => expect(patchBodies()).toHaveLength(1));
     expect(patchBodies()[0]!.status).toBe('paused');
+  });
+
+  it('shows a success toast when saving edits (sweep A1)', async () => {
+    serve(webhook(), (body) => json(webhook({ ...body })));
+    render(<WebhooksPage />);
+
+    const [editButton] = await screen.findAllByTitle('Edit webhook');
+    fireEvent.click(editButton!);
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Webhook updated' }))
+    );
   });
 });

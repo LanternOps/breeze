@@ -140,6 +140,15 @@ describe("BackupProviderConnectionCard", () => {
     expect(JSON.parse((fetchMock.mock.calls.at(-1)![1] as RequestInit).body as string)).not.toHaveProperty("credentials");
   });
 
+  it("does not let browser autofill offer the operator's own login for the edit-credentials username/password (D12 follow-up)", () => {
+    render(
+      <BackupProviderConnectionCard connection={connection({ status: "reauth_required" })} onChanged={onChanged} onTestResult={onTestResult} />,
+    );
+    fireEvent.click(screen.getByTestId("backup-connection-reauth"));
+    expect(screen.getByTestId("backup-connection-username")).toHaveAttribute("autoComplete", "off");
+    expect(screen.getByTestId("backup-connection-password")).toHaveAttribute("autoComplete", "new-password");
+  });
+
   it("confirms before deleting and names the connection in the prompt", async () => {
     render(<BackupProviderConnectionCard connection={connection()} onChanged={onChanged} onTestResult={onTestResult} />);
     fireEvent.click(screen.getByTestId("backup-connection-delete"));

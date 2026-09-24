@@ -188,6 +188,9 @@ export default function WebhooksPage() {
           body: JSON.stringify({ status: enabled ? 'active' : 'paused' })
         }),
         errorFallback,
+        successMessage: enabled
+          ? t('longTail.webhooks.WebhooksPage.success.enabled')
+          : t('longTail.webhooks.WebhooksPage.success.disabled'),
         onUnauthorized: handleSessionExpired,
       });
 
@@ -280,6 +283,9 @@ export default function WebhooksPage() {
             body: JSON.stringify(requestPayload)
           }),
         errorFallback: t('longTail.webhooks.WebhooksPage.errors.saveWebhook'),
+        successMessage: modalMode === 'create'
+          ? t('longTail.webhooks.WebhooksPage.success.created')
+          : t('longTail.webhooks.WebhooksPage.success.updated'),
         onUnauthorized: handleSessionExpired,
       });
 
@@ -316,7 +322,15 @@ export default function WebhooksPage() {
       handleCloseModal();
     } catch (err) {
       // The page error banner is hidden while any modal is open (#3531), so
-      // runAction's toast is the feedback; the delete modal stays open.
+      // runAction's toast is the feedback; the delete modal stays open on a
+      // real failure so the operator can retry or cancel. A 404 means the row
+      // is already gone (deleted elsewhere) — retrying can't help, so close
+      // the modal and refetch instead of leaving a stale row on screen (sweep A2).
+      if (err instanceof ActionError && err.status === 404) {
+        await fetchWebhooks();
+        handleCloseModal();
+        return;
+      }
       handleActionError(err, t('longTail.webhooks.WebhooksPage.errors.deleteWebhook'));
     } finally {
       setSubmitting(false);

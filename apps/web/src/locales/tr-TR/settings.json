@@ -99,6 +99,7 @@
     "name": "Ad",
     "principalDescription": "Açıklama",
     "scopes": "Kapsamlar",
+    "noScopes": "Verilmiş kapsam yok",
     "sourceCidrs": "Kaynak IP'leri veya CIDR'ler (satır başına bir tane)",
     "writeScopeRestrictionsRequired": "enrollment-keys:write kapsamı bir son kullanma tarihi ve en az bir kaynak IP veya CIDR gerektirir.",
     "expiresAt": "Süresi doluyor",

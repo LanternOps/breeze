@@ -6,7 +6,7 @@ import ApiKeyForm, { CreatedKeyModal, type ApiKeyFormValues } from './ApiKeyForm
 import { fetchWithAuth, handleSessionExpired } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { navigateTo } from '@/lib/navigation';
-import { runAction, handleActionError } from '@/lib/runAction';
+import { ActionError, runAction, handleActionError } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
 
 type ModalMode = 'closed' | 'create' | 'view' | 'rotate' | 'revoke';
@@ -164,6 +164,14 @@ export default function ApiKeysPage() {
       await fetchApiKeys(currentPage);
       handleCloseModal();
     } catch (err) {
+      // A 404 means the key is already gone (revoked/deleted elsewhere) —
+      // retrying can't help, so close the modal and refetch instead of
+      // leaving a stale row and an open confirm on screen (sweep A2).
+      if (err instanceof ActionError && err.status === 404) {
+        await fetchApiKeys(currentPage);
+        handleCloseModal();
+        return;
+      }
       handleActionError(err, t('apiKeysPage.failedToRevokeAPIKey'));
     } finally {
       setSubmitting(false);

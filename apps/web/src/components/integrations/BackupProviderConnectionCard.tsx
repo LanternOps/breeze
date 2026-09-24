@@ -263,7 +263,7 @@ export default function BackupProviderConnectionCard({
           </label>
           <label className="text-sm">
             <span className="text-xs text-muted-foreground">{t("backupProviders.usernameLabel")}</span>
-            <input data-testid="backup-connection-username" value={username} onChange={(e) => setUsername(e.target.value)} className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm" />
+            <input data-testid="backup-connection-username" autoComplete="off" value={username} onChange={(e) => setUsername(e.target.value)} className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm" />
           </label>
           <label className="text-sm">
             <span className="text-xs text-muted-foreground">{t("backupProviders.passwordLabel")}</span>
@@ -271,6 +271,7 @@ export default function BackupProviderConnectionCard({
               <input
                 data-testid="backup-connection-password"
                 type={showPassword ? "text" : "password"}
+                autoComplete="new-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 className="h-9 w-full rounded-md border bg-background px-2 text-sm"
