@@ -117,7 +117,8 @@ type PlannedPartition struct {
 	FSUUID     string `json:"fsUuid,omitempty"`
 	Label      string `json:"label,omitempty"`
 	MountPoint string `json:"mountPoint,omitempty"`
-	Grown      bool   `json:"grown"` // absorbed the target's extra (or short) space
+	Grown      bool   `json:"grown"`                // absorbed the target's extra (or short) space
+	Attributes uint64 `json:"attributes,omitempty"` // GPT attribute bits (Windows only; 0 on Linux plans)
 }
 
 // Plan is PlanPartitions' output: the partition table the engine will
