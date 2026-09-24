@@ -337,6 +337,19 @@ export function classifyConsentDenyAction(reason: string): ConsentDenyAuditActio
 }
 
 /**
+ * Consent-mode start reasons that mean consent was never obtained from the end
+ * user: no consent-capable helper was present, or the prompt went unanswered.
+ * A start carrying one may activate only under a `proceed` fallback bound to
+ * that start, and is audited as a bypass, never as a user grant (#6819).
+ */
+export const UNSOLICITED_CONSENT_REASONS = ['helper_absent', 'timeout'] as const;
+export type UnsolicitedConsentReason = typeof UNSOLICITED_CONSENT_REASONS[number];
+
+export function isUnsolicitedConsentReason(reason: unknown): reason is UnsolicitedConsentReason {
+  return (UNSOLICITED_CONSENT_REASONS as readonly unknown[]).includes(reason);
+}
+
+/**
  * Resolve the desktop session id carried by an agent consent marker. The command
  * id is authoritative (`expected`); when the result body also carries a session
  * id it must match, otherwise the marker is rejected (returns null) rather than

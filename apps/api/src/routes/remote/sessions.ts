@@ -42,6 +42,7 @@ import {
 } from './helpers';
 import {
   assertDesktopStartIntentCurrent,
+  boundConsentUnavailableBehavior,
   commitDesktopStartIntent,
   formatDesktopGeneration,
   startIntentDenialCode,
@@ -1011,6 +1012,9 @@ sessionRoutes.post(
       sessionId,
       startCommandId,
       promptMode,
+      // Bound with the generation so the answer path can refuse an
+      // unsolicited-consent start this policy did not allow (#6819).
+      consentUnavailableBehavior: boundConsentUnavailableBehavior(prompt),
       offer: data.offer,
     });
 

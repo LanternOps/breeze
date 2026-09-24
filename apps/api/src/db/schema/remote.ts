@@ -21,6 +21,11 @@ export const remoteSessions = pgTable('remote_sessions', {
   // delayed result from the superseded start command.
   desktopStartCommandId: text('desktop_start_command_id'),
   desktopPromptMode: text('desktop_prompt_mode').$type<'off' | 'notify' | 'consent'>(),
+  // consentUnavailableBehavior the same start shipped to the agent (#6819).
+  // A consent-mode answer reporting consentReason helper_absent/timeout may
+  // activate the session only when this is 'proceed'. NULL (pre-#6819 rows, or
+  // a start with no prompt block) is treated as not-proceed.
+  desktopConsentUnavailableBehavior: text('desktop_consent_unavailable_behavior').$type<'proceed' | 'block'>(),
   // SEC-038 start/terminal fence (#5533). Monotonic generation bumped by BOTH
   // the start-intent commit and (W03) the terminal-intent commit, so every
   // start decision is linearized against every terminal decision. Carried to
@@ -56,6 +61,10 @@ export const remoteSessions = pgTable('remote_sessions', {
   check(
     'remote_sessions_desktop_prompt_mode_check',
     sql`${t.desktopPromptMode} IS NULL OR ${t.desktopPromptMode} IN ('off', 'notify', 'consent')`,
+  ),
+  check(
+    'remote_sessions_desktop_consent_unavailable_behavior_check',
+    sql`${t.desktopConsentUnavailableBehavior} IS NULL OR ${t.desktopConsentUnavailableBehavior} IN ('proceed', 'block')`,
   ),
   check(
     'remote_sessions_termination_phase_check',

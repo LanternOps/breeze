@@ -72,6 +72,8 @@ import {
 import {
   logSessionAudit,
   classifyConsentDenyAction,
+  isUnsolicitedConsentReason,
+  UNSOLICITED_CONSENT_REASONS,
   resolveConsentMarkerSessionId,
   parseDesktopStartCommandId,
 } from './remote/helpers';
@@ -3135,11 +3137,22 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
               try {
                 await runWithAgentDbAccess('agentWs.desktop.webrtcAnswer', async () => {
                   // A consent-mode generation may become active only when the
-                  // exact agent result carries the explicit user-grant marker.
-                  // Notify/off generations do not require that marker.
-                  const consentPredicate = fastResult.consentReason === 'user'
+                  // exact agent result carries a consent marker it is entitled
+                  // to: 'user' (the end user allowed), or — #6819 — an
+                  // unsolicited-consent reason (helper_absent / timeout) when
+                  // THIS start shipped consentUnavailableBehavior='proceed'. A
+                  // NULL/'block' binding fails closed. Notify/off generations
+                  // need no marker. Older agents send 'user' for every
+                  // consent-mode start; that path is unchanged.
+                  const consentReason = fastResult.consentReason;
+                  const consentPredicate = consentReason === 'user'
                     ? []
-                    : [ne(remoteSessions.desktopPromptMode, 'consent')];
+                    : isUnsolicitedConsentReason(consentReason)
+                      ? [or(
+                          ne(remoteSessions.desktopPromptMode, 'consent'),
+                          eq(remoteSessions.desktopConsentUnavailableBehavior, 'proceed'),
+                        )]
+                      : [ne(remoteSessions.desktopPromptMode, 'consent')];
                   const [updated] = await db
                     .update(remoteSessions)
                     .set({
@@ -3162,6 +3175,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                       userId: remoteSessions.userId,
                       type: remoteSessions.type,
                       promptMode: remoteSessions.desktopPromptMode,
+                      consentUnavailableBehavior: remoteSessions.desktopConsentUnavailableBehavior,
                     });
 
                   if (updated) {
@@ -3189,7 +3203,36 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                         undefined,
                         'agent',
                       );
+                    } else if (isUnsolicitedConsentReason(consentReason) && updated.promptMode === 'consent') {
+                      // #6819: nobody was asked, or nobody answered, and the
+                      // policy fallback let the session proceed. Audit it as a
+                      // bypass carrying the true reason — never as a grant.
+                      await logSessionAudit(
+                        'session_consent_bypassed',
+                        authenticatedAgent.deviceId,
+                        updated.orgId,
+                        {
+                          sessionId,
+                          type: updated.type,
+                          reason: consentReason,
+                          outcome: 'proceeded',
+                          consentUnavailableBehavior: updated.consentUnavailableBehavior,
+                          sessionOwnerId: updated.userId,
+                          deviceId: authenticatedAgent.deviceId,
+                          startCommandId: fastCommandId,
+                          promptMode: updated.promptMode,
+                          reportedBy: 'authenticated_agent',
+                        },
+                        undefined,
+                        'agent',
+                      );
                     }
+                  } else if (isUnsolicitedConsentReason(consentReason)) {
+                    // Distinct from the generic miss below: this is also what a
+                    // refused unsolicited-consent activation looks like (#6819 —
+                    // the start did not bind a `proceed` fallback), so keep it
+                    // greppable and carry the reason.
+                    console.warn(`[AgentWs] Session ${sessionId} not activated: consentReason=${consentReason} requires a bound consentUnavailableBehavior=proceed on the current start (or the session was not found / not owned by agent ${agentId})`);
                   } else {
                     console.warn(`[AgentWs] Session ${sessionId} not found or not owned by agent ${agentId}`);
                   }
@@ -3717,10 +3760,13 @@ const desktopCommandResultSchema = z.object({
     error: z.string().max(8192).optional(),
     candidate: z.unknown().optional(),
     // Consent gate markers (Task 9). `reason` accompanies a `consent_denied`
-    // event; `consentReason` rides alongside a successful start when a consent
-    // prompt was allowed by the user.
+    // event; `consentReason` rides alongside a successful consent-mode start:
+    // 'user' when the end user allowed it, or (#6819) 'helper_absent' /
+    // 'timeout' when consent could not be solicited and the start's
+    // consentUnavailableBehavior='proceed' let it through. Older agents send
+    // 'user' for all three.
     reason: z.enum(['user', 'timeout', 'no_user', 'helper_absent']).optional(),
-    consentReason: z.literal('user').optional(),
+    consentReason: z.enum(['user', ...UNSOLICITED_CONSENT_REASONS] as const).optional(),
     // Desk-stop confirmations from fielded agents send {"stopped": true}
     // (agent/internal/heartbeat/handlers_desktop.go). Not consumed
     // server-side, but must be accepted so the result isn't dropped as

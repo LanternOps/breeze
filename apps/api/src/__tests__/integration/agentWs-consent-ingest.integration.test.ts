@@ -17,6 +17,10 @@
  *   3. device-ownership guard: a different agent's deviceId → NO write (stays connecting)
  *   4. status guard: an already-active session is NOT flipped to denied
  *   5. grant path: answer + consentReason=user → status='active', audit session_consent_granted
+ *   6. unavailable-proceed path (#6819): answer + consentReason=helper_absent|timeout
+ *      activates ONLY when the start bound consentUnavailableBehavior='proceed',
+ *      and is audited session_consent_bypassed with the true reason — never as
+ *      a user grant
  */
 import { describe, it, expect } from 'vitest';
 import { eq, and } from 'drizzle-orm';
@@ -98,6 +102,7 @@ async function insertSession(opts: {
   userId: string;
   status?: 'connecting' | 'active';
   promptMode?: 'off' | 'notify' | 'consent';
+  consentUnavailableBehavior?: 'proceed' | 'block' | null;
 }): Promise<string> {
   const tdb = getTestDb();
   const sessionId = randomUUID();
@@ -112,6 +117,9 @@ async function insertSession(opts: {
       status: opts.status ?? 'connecting',
       desktopStartCommandId: startCommandId(sessionId),
       desktopPromptMode: opts.promptMode ?? 'consent',
+      desktopConsentUnavailableBehavior: opts.consentUnavailableBehavior === undefined
+        ? 'block'
+        : opts.consentUnavailableBehavior,
       iceCandidates: [],
     })
     .returning({ id: remoteSessions.id });
@@ -295,6 +303,105 @@ describe('agentWs consent ingestion (real onMessage, breeze_app)', () => {
       actorType: 'agent',
       actorId: dev.id,
     });
+  });
+
+  for (const reason of ['helper_absent', 'timeout'] as const) {
+    runDb(`answer + consentReason=${reason} under a proceed fallback → active + audit session_consent_bypassed (not granted)`, async () => {
+      const env = await setupTestEnvironment({ scope: 'organization' });
+      const dev = await insertDevice(env.organization.id, env.site.id);
+      const sessionId = await insertSession({
+        deviceId: dev.id,
+        orgId: env.organization.id,
+        userId: env.user.id,
+        consentUnavailableBehavior: 'proceed',
+      });
+
+      await sendDeskStartResult(dev.agentId, dev.id, env.organization.id, env.partner.id, sessionId, {
+        sessionId,
+        answer: 'v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\n',
+        consentReason: reason,
+      });
+
+      expect((await readSessionStatus(sessionId)).status).toBe('active');
+      const actions = await auditActionsFor(sessionId);
+      expect(actions).not.toContain('session_consent_granted');
+      expect(actions).toContain('session_consent_bypassed');
+      expect(await consentAuditFor(sessionId, 'session_consent_bypassed')).toMatchObject({
+        actorType: 'agent',
+        actorId: dev.id,
+        details: expect.objectContaining({
+          reason,
+          outcome: 'proceeded',
+          consentUnavailableBehavior: 'proceed',
+          promptMode: 'consent',
+          startCommandId: startCommandId(sessionId),
+          reportedBy: 'authenticated_agent',
+        }),
+      });
+    });
+
+    runDb(`answer + consentReason=${reason} under a block fallback fails closed`, async () => {
+      const env = await setupTestEnvironment({ scope: 'organization' });
+      const dev = await insertDevice(env.organization.id, env.site.id);
+      const sessionId = await insertSession({
+        deviceId: dev.id,
+        orgId: env.organization.id,
+        userId: env.user.id,
+        consentUnavailableBehavior: 'block',
+      });
+
+      await sendDeskStartResult(dev.agentId, dev.id, env.organization.id, env.partner.id, sessionId, {
+        sessionId,
+        answer: 'v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\n',
+        consentReason: reason,
+      });
+
+      expect(await readSessionStatus(sessionId)).toMatchObject({ status: 'connecting', webrtcAnswer: null });
+      expect(await auditActionsFor(sessionId)).toEqual([]);
+    });
+  }
+
+  runDb('answer + consentReason=timeout on a row with no bound fallback (pre-#6819 start) fails closed', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const dev = await insertDevice(env.organization.id, env.site.id);
+    const sessionId = await insertSession({
+      deviceId: dev.id,
+      orgId: env.organization.id,
+      userId: env.user.id,
+      consentUnavailableBehavior: null,
+    });
+
+    await sendDeskStartResult(dev.agentId, dev.id, env.organization.id, env.partner.id, sessionId, {
+      sessionId,
+      answer: 'v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\n',
+      consentReason: 'timeout',
+    });
+
+    expect((await readSessionStatus(sessionId)).status).toBe('connecting');
+    expect(await auditActionsFor(sessionId)).toEqual([]);
+  });
+
+  runDb('an explicit user grant activates regardless of the bound fallback (older agents send only "user")', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const dev = await insertDevice(env.organization.id, env.site.id);
+    const sessionId = await insertSession({
+      deviceId: dev.id,
+      orgId: env.organization.id,
+      userId: env.user.id,
+      consentUnavailableBehavior: null,
+    });
+
+    await sendDeskStartResult(dev.agentId, dev.id, env.organization.id, env.partner.id, sessionId, {
+      sessionId,
+      answer: 'v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\n',
+      consentReason: 'user',
+    });
+
+    expect((await readSessionStatus(sessionId)).status).toBe('active');
+    expect(await consentAuditFor(sessionId, 'session_consent_granted')).toMatchObject({
+      details: expect.objectContaining({ reason: 'user' }),
+    });
+    expect(await auditActionsFor(sessionId)).not.toContain('session_consent_bypassed');
   });
 
   runDb('consent-mode answer without the explicit grant marker fails closed', async () => {
