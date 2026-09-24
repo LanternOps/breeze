@@ -62,6 +62,8 @@ export type TimeEntryServiceErrorCode =
   | 'PART_UPDATE_LOST'
   /** 409 — DELETE ... RETURNING matched zero rows (part re-pointed between the lock-read and the delete). */
   | 'PART_DELETE_LOST'
+  /** 409 — DELETE ... RETURNING matched zero rows (entry re-pointed between the lock-read and the delete). */
+  | 'ENTRY_DELETE_LOST'
   /**
    * 422 — `time_entries_billable_minutes_chk` rejected the write (#6463): the
    * TypeScript `computeBillableMinutes()` and the SQL `billableMinutesSql()`
@@ -1177,9 +1179,21 @@ export async function deleteTimeEntry(id: string, actor: TimeEntryActor) {
     .delete(timeEntries)
     .where(eq(timeEntries.id, id))
     .returning({ id: timeEntries.id, orgId: timeEntries.orgId });
-  if (deleted[0]) {
-    recordAuditMutation(actor, 'time_entry.deleted', deleted[0]);
+  if (deleted.length === 0) {
+    // The entry existed at the top of this call (getEntryOr404's FOR UPDATE
+    // re-read) but the DELETE matched zero rows — it was re-pointed out of
+    // this caller's visibility in between (org move, RLS context change).
+    // Reporting success here would tell the caller the row is gone when it
+    // is not, and would still fire the feed comment + event below. Same race
+    // class as deleteTicketPart (#6568/#6588/#6589), with its own code so
+    // callers can tell the two write paths apart.
+    throw new TimeEntryServiceError(
+      'Entry could not be deleted — reload and retry',
+      409,
+      'ENTRY_DELETE_LOST',
+    );
   }
+  recordAuditMutation(actor, 'time_entry.deleted', deleted[0]);
 
   await insertTimeEntryFeedComment(
     entry.ticketId,
