@@ -1,0 +1,18 @@
+{
+  "testedCommit": "b2d1051f5b5d6069935f79cbf24d2ebebd227896",
+  "hwhealthGoTestRace": {
+    "darwin_arm64": "ok",
+    "linux_arm64_labVM": "ok",
+    "windows_amd64_labVM": "ok without -race (no cgo toolchain on the VM)"
+  },
+  "hwhealthGoVet": {
+    "linux_arm64_labVM": "ok",
+    "windows_amd64_labVM": "ok"
+  },
+  "fullAgentSuite": "not claimed: only agent/ was staged on the lab VMs, so contract tests that read packages/shared fixtures, and packages that need libpcap headers or bash.exe, fail there. The full suite is gated by the CI Test Agent job.",
+  "docsCheck": "pass (pnpm --filter @breeze/docs check: 0 errors, 0 warnings)",
+  "docsBuild": "pass (178 pages)",
+  "hardwareE2e": "pass (pnpm wt-stack test -- tests/device-hardware-health.spec.ts: 6 passed)",
+  "apiTypecheck": "not run: W06 changes no API or web code",
+  "tenancyContractSuites": "not run: W06 changes no tenancy, migration or cascade code"
+}

@@ -1,0 +1,24 @@
+{
+  "source": "storcli",
+  "status": "fixture-only",
+  "parserSuite": "passed",
+  "parserSuiteRuns": [
+    "go test -race ./internal/collectors/hwhealth/... on darwin/arm64 (ok)",
+    "go test -race ./internal/collectors/hwhealth/... on the linux/arm64 lab VM (ok)",
+    "go test ./internal/collectors/hwhealth/... native windows/amd64 on the lab VM (ok, no -race: no cgo toolchain)"
+  ],
+  "files": [],
+  "syntheticFixtures": [
+    "agent/internal/collectors/hwhealth/testdata/storcli/64-drive.json",
+    "agent/internal/collectors/hwhealth/testdata/storcli/degraded.json",
+    "agent/internal/collectors/hwhealth/testdata/storcli/failed.json",
+    "agent/internal/collectors/hwhealth/testdata/storcli/missing-member.json",
+    "agent/internal/collectors/hwhealth/testdata/storcli/multi-controller.json",
+    "agent/internal/collectors/hwhealth/testdata/storcli/optimal.json",
+    "agent/internal/collectors/hwhealth/testdata/storcli/predictive.json",
+    "agent/internal/collectors/hwhealth/testdata/storcli/rebuilding-with-progress.json",
+    "agent/internal/collectors/hwhealth/testdata/storcli/truncated.json",
+    "agent/internal/collectors/hwhealth/testdata/storcli/unrecognized-state.json"
+  ],
+  "reason": "No authorized capture target with this vendor controller/tool existed for the W06 lab run; no vendor tool was installed and no transcript was fabricated. Coverage stays fixture-only until a real sanitized capture lands."
+}

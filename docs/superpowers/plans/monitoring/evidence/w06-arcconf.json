@@ -1,0 +1,17 @@
+{
+  "source": "arcconf",
+  "status": "fixture-only",
+  "parserSuite": "passed",
+  "parserSuiteRuns": [
+    "go test -race ./internal/collectors/hwhealth/... on darwin/arm64 (ok)",
+    "go test -race ./internal/collectors/hwhealth/... on the linux/arm64 lab VM (ok)",
+    "go test ./internal/collectors/hwhealth/... native windows/amd64 on the lab VM (ok, no -race: no cgo toolchain)"
+  ],
+  "files": [],
+  "syntheticFixtures": [
+    "agent/internal/collectors/hwhealth/testdata/arcconf/matrix.json",
+    "agent/internal/collectors/hwhealth/testdata/arcconf/modern.txt",
+    "agent/internal/collectors/hwhealth/testdata/arcconf/optimal.txt"
+  ],
+  "reason": "No authorized capture target with this vendor controller/tool existed for the W06 lab run; no vendor tool was installed and no transcript was fabricated. Coverage stays fixture-only until a real sanitized capture lands."
+}

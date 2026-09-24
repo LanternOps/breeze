@@ -18,6 +18,10 @@ Last release: **v0.115.0** (2026-09-21).
 - [ ] Run the platform-admin conversion page for each hosted partner. Record
   pending policies/rows before and after, converted and unconvertible counts,
   actor and run time in the release checklist. Review every non-zero remainder.
+- [ ] Hardware & RAID monitoring requires an agent release containing W02a, W02b and
+  W05 (#6854). Follow `docs/superpowers/plans/monitoring/evidence/w06-release-request.md`
+  (controlled rollout, `AGENT_AUTO_PROMOTE=false`, Windows + Linux canaries) and
+  decide whether #6895 must land first.
 - [ ] Announce the W05d retirement release at least one release after W05c.
   Self-hosters must review Needs conversion before upgrading to that release.
 
@@ -83,3 +87,12 @@ Last release: **v0.115.0** (2026-09-21).
   source policy, episodes and escalation. Reset escalation resumes responses but
   does not resolve an alert. Jobs → Alert workflows supports severity/kind filters.
   Fleet Designer applies monitor attachments; regenerate old rule-shaped proposals.
+- **Hardware & RAID monitoring (#6854) — needs the agent update too.** The device
+  Hardware tab shows RAID arrays, physical disks, controller cache batteries and
+  collection status. Attach the four built-in hardware monitors to a configuration
+  policy to receive per-component failure alerts; they are not attached by default.
+  Collection is on by default (RAID every 10 minutes, disk health every 60 minutes),
+  set per policy under **Hardware Monitoring**. Vendor tools must already be
+  installed. A rebuilding array is a warning, and a critical array alert resolves
+  after two below-critical polls. Known issue: on Windows Storage Spaces, a member
+  that disconnects and returns can leave its physical-disk alert open (#6895).

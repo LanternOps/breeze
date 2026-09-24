@@ -1,0 +1,17 @@
+{
+  "policyId": "17ca40ae-2906-44cf-89b9-a36e7345799b",
+  "partnerOwned": true,
+  "assignments": 2,
+  "deviceOnly": true,
+  "monitorKeys": [
+    "cache_battery_problem",
+    "hardware_collector_failing",
+    "physical_disk_failed",
+    "raid_array_degraded"
+  ],
+  "collection": {
+    "enabled": true,
+    "pollIntervalMinutes": 5,
+    "diskHealthIntervalMinutes": 15
+  }
+}
