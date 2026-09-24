@@ -2206,18 +2206,22 @@
   },
   "partnerBillingSettings": {
     "company": {
+      "addressInherited": "Uguale ai dettagli dell'azienda",
       "addressLine1": "Indirizzo riga 1",
       "addressLine2": "Indirizzo riga 2",
+      "addressTitle": "Indirizzo",
       "city": "Città",
       "country": "Paese",
       "defaultTerms": "Termini e condizioni predefiniti",
       "defaultTermsPlaceholder": "Termini di pagamento, liberatorie, testo di garanzia, ecc.",
       "description": "Mostrato come venditore su preventivi e fatture.",
+      "inheritedFromCompanyDetails": "Dettagli dell'azienda",
       "name": "Nome azienda",
       "phone": "Telefono",
       "postal": "Codice postale",
       "region": "Stato / regione",
       "title": "Contatto aziendale",
+      "useCompanyAddress": "Usa l'indirizzo dell'azienda",
       "website": "Sito web"
     },
     "defaults": {

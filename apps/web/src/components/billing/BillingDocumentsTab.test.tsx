@@ -56,4 +56,42 @@ describe('BillingDocumentsTab', () => {
     fireEvent.change(screen.getByTestId('partner-billing-company-name'), { target: { value: 'Acme MSP' } });
     expect(props.setCompanyName).toHaveBeenCalledWith('Acme MSP');
   });
+
+  describe('company-details fallback (#6228)', () => {
+    it('shows the inherited phone/website as placeholders when the override is blank', () => {
+      renderTab({ inheritedPhone: '555-0100', inheritedWebsite: 'https://acme.test' });
+      expect(screen.getByTestId('partner-billing-phone')).toHaveAttribute('placeholder', '555-0100');
+      expect(screen.getByTestId('partner-billing-website')).toHaveAttribute('placeholder', 'https://acme.test');
+    });
+
+    it('shows "same as company details" when every address override field is blank and a company address exists', () => {
+      renderTab({
+        inheritedAddress: { line1: '1 Company Rd', line2: null, city: 'Company City', region: null, postalCode: null, country: 'CA' },
+      });
+      expect(screen.getByTestId('partner-billing-address-inherited-note')).toBeInTheDocument();
+      expect(screen.queryByTestId('partner-billing-use-company-address')).not.toBeInTheDocument();
+    });
+
+    it('shows a "Use company address" reset once any address override field is non-blank', () => {
+      renderTab({
+        addr1: '1 Override St',
+        inheritedAddress: { line1: '1 Company Rd', line2: null, city: 'Company City', region: null, postalCode: null, country: 'CA' },
+      });
+      expect(screen.getByTestId('partner-billing-use-company-address')).toBeInTheDocument();
+    });
+
+    it('"Use company address" clears every address override field', () => {
+      const props = renderTab({
+        addr1: '1 Override St', city: 'Override City',
+        inheritedAddress: { line1: '1 Company Rd', line2: null, city: 'Company City', region: null, postalCode: null, country: 'CA' },
+      });
+      fireEvent.click(screen.getByTestId('partner-billing-use-company-address'));
+      expect(props.setAddr1).toHaveBeenCalledWith('');
+      expect(props.setAddr2).toHaveBeenCalledWith('');
+      expect(props.setCity).toHaveBeenCalledWith('');
+      expect(props.setRegion).toHaveBeenCalledWith('');
+      expect(props.setPostal).toHaveBeenCalledWith('');
+      expect(props.setCountry).toHaveBeenCalledWith('');
+    });
+  });
 });

@@ -1326,3 +1326,6 @@ export * from './callerVerification';
 
 // Business reports (#3198 W02)
 export * from './businessReports';
+
+// Partner company-identity tolerant reader (#6228 W05)
+export * from './companyIdentity';

@@ -2206,18 +2206,22 @@
   },
   "partnerBillingSettings": {
     "company": {
+      "addressInherited": "Same as company details",
       "addressLine1": "Address line 1",
       "addressLine2": "Address line 2",
+      "addressTitle": "Address",
       "city": "City",
       "country": "Country",
       "defaultTerms": "Default terms & conditions",
       "defaultTermsPlaceholder": "Payment terms, disclaimers, warranty language, etc.",
       "description": "Shown as the seller on quotes and invoices.",
+      "inheritedFromCompanyDetails": "Company details",
       "name": "Company name",
       "phone": "Phone",
       "postal": "Postal code",
       "region": "State / region",
       "title": "Company contact",
+      "useCompanyAddress": "Use company address",
       "website": "Website"
     },
     "defaults": {

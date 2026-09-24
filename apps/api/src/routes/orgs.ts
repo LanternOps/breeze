@@ -617,13 +617,13 @@ const supportedLocales = SUPPORTED_LOCALES;
  * shared `httpUrlValue`/`httpUrlField` helpers (`@breeze/shared`). They split
  * into two risk classes and both land on the same guard:
  *
- *  - `contact.website` — a partner-authored value shaped like a link. Its only
- *    consumers today are this settings form itself (PartnerSettingsPage /
- *    PartnerCompanyTab), so there is no live XSS sink; the guard is here so the
- *    first person to put it in an `href` inherits a safe value. NOTE: the
- *    website printed on branded PDFs/invoices/quotes is a DIFFERENT column,
- *    `partners.billing_website` (see `buildSellerSnapshot`), validated by
- *    `partnerBillingSettingsSchema` in `@breeze/shared`.
+ *  - `contact.website` — a partner-authored value shaped like a link. As of
+ *    #6228, this is no longer form-only: `buildSellerSnapshot` (sellerSnapshot.ts)
+ *    falls back to `contact.website`/`contact.phone` on branded PDFs/invoices/
+ *    quotes whenever the billing letterhead override (`partners.billing_website`,
+ *    validated by `partnerBillingSettingsSchema` in `@breeze/shared`) is blank —
+ *    so this guard is now a genuine second line of defense for a real render
+ *    sink, not just a courtesy for a future `href`.
  *  - values the SERVER dials outbound (Slack webhook, extra webhooks, the
  *    Elasticsearch endpoint), where a non-http scheme like `file://` is a
  *    scheme-confusion problem rather than an XSS one. This guard covers the

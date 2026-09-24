@@ -2206,18 +2206,22 @@
   },
   "partnerBillingSettings": {
     "company": {
+      "addressInherited": "Igual aos dados da empresa",
       "addressLine1": "Endereço - linha 1",
       "addressLine2": "Endereço - linha 2",
+      "addressTitle": "Endereço",
       "city": "Cidade",
       "country": "País",
       "defaultTerms": "Termos e condições padrão",
       "defaultTermsPlaceholder": "Termos de pagamento, avisos legais, condições de garantia etc.",
       "description": "Exibido como vendedor nas cotações e faturas.",
+      "inheritedFromCompanyDetails": "Dados da empresa",
       "name": "Nome da empresa",
       "phone": "Telefone",
       "postal": "CEP",
       "region": "Estado / região",
       "title": "Contato da empresa",
+      "useCompanyAddress": "Usar o endereço da empresa",
       "website": "Site"
     },
     "defaults": {
