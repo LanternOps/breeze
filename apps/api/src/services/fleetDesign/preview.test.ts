@@ -225,6 +225,51 @@ describe('previewFleetDesignApplyWithContext — monitoring displacement', () =>
   });
 });
 
+describe('previewFleetDesignApplyWithContext — legacy rule proposals (W05c2)', () => {
+  const legacyRule = {
+    name: 'Old disk', severity: 'high', conditions: [{ type: 'metric', metric: 'disk', operator: 'gt', value: 90 }],
+    cooldownMinutes: 30, rationale: 'r', action: 'none', paging: 'none',
+  };
+  const monitorRule = {
+    name: 'New disk', severity: 'high', kind: 'disk', condition: { operator: 'gt', value: 90 },
+    cooldownMinutes: 30, responses: [], deliveryMode: 'inherit', deliveryChannelIds: [], rationale: 'r', action: 'none', paging: 'none',
+  };
+  function outcomeWithRules() {
+    return makeOutcome({
+      functions: [{ functionKey: 'file_server', label: 'File Server', deviceIds: ['d1'], confidence: 0.9, evidence: [] }],
+      monitoring: [{ functionKey: 'file_server', watches: [], alertRules: [legacyRule, monitorRule] as any }],
+    });
+  }
+
+  it('blocks a selected legacy rule proposal but not a monitor-shaped one', async () => {
+    ledgerMock.lockReportRun.mockResolvedValue(lockedOk(outcomeWithRules()));
+    ledgerMock.findReusableGroup.mockResolvedValue(null);
+    dbSeed(devices, [{ id: 'd1', hostname: 'H1', deviceRole: 'workstation', deviceRoleSource: 'ai', deviceFunctionSource: null }]);
+    configPolicyMock.resolveEffectiveConfig.mockResolvedValue({ deviceId: 'd1', inheritanceChain: [], features: {} });
+
+    const preview = await previewFleetDesignApply(makeAuth(), RUN, makeApproval({
+      functions: ['file_server'],
+      monitoring: ['monitoring:file_server:rule:0', 'monitoring:file_server:rule:1'],
+    }));
+
+    expect(preview.blockers).toEqual([{ itemRef: 'monitoring:file_server:rule:0', reason: 'legacy_monitor_proposal' }]);
+  });
+
+  it('does not block a legacy rule an earlier apply already applied', async () => {
+    ledgerMock.lockReportRun.mockResolvedValue(lockedOk(outcomeWithRules()));
+    ledgerMock.loadLedger.mockResolvedValue([{ itemRef: 'monitoring:file_server:rule:0', status: 'applied' }]);
+    ledgerMock.findReusableGroup.mockResolvedValue(null);
+    dbSeed(devices, [{ id: 'd1', hostname: 'H1', deviceRole: 'workstation', deviceRoleSource: 'ai', deviceFunctionSource: null }]);
+    configPolicyMock.resolveEffectiveConfig.mockResolvedValue({ deviceId: 'd1', inheritanceChain: [], features: {} });
+
+    const preview = await previewFleetDesignApply(makeAuth(), RUN, makeApproval({
+      functions: ['file_server'], monitoring: ['monitoring:file_server:rule:0'],
+    }));
+
+    expect(preview.blockers).toEqual([]);
+  });
+});
+
 describe('previewFleetDesignApplyWithContext — retired', () => {
   it('marks a retired item not found when the current link no longer has the named watch', async () => {
     const outcome = makeOutcome({

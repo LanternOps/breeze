@@ -366,7 +366,7 @@ const VALID_FLEET_DESIGN_SUBMISSION = {
       watches: [{ watchType: 'service', name: 'LanmanServer', alertOnStop: true, autoRestart: true, rationale: 'SMB is the function.' }],
       alertRules: [{
         name: 'File server disk over 85%', severity: 'high',
-        conditions: [{ type: 'metric', metric: 'disk', operator: 'gt', value: 85, durationMinutes: 15 }],
+        kind: 'disk', condition: { operator: 'gt', value: 85, durationMinutes: 15 }, responses: [], deliveryMode: 'inherit', deliveryChannelIds: [],
         cooldownMinutes: 60, rationale: 'Data volume growth is the failure mode.', action: 'none', paging: 'business_hours',
       }],
     },

@@ -276,7 +276,7 @@ export async function createMonitorDefinition(
 async function createValidatedMonitorInTx(
   input: CreateMonitorDefinitionInput, auth: AuthContext,
   owner: ReturnType<typeof resolveOwnerForCreate>, shape: ReturnType<typeof validateDefinitionShape>,
-  _options: CompileOptions, executor: DbExecutor,
+  options: CompileOptions, executor: DbExecutor,
 ): Promise<MonitorDefinitionRow> {
   return executor.transaction(async (tx) => {
     const [created] = await tx
@@ -307,7 +307,7 @@ async function createValidatedMonitorInTx(
       .returning();
     if (!created) throw new Error('Failed to create monitor definition');
 
-    const refs = await compileMonitorInTx(tx, created);
+    const refs = await compileMonitorInTx(tx, created, options);
     return {
       ...created,
       compiledAlertTemplateId: refs.alertTemplateId,
@@ -322,8 +322,9 @@ export async function updateMonitorDefinition(
   id: string,
   input: UpdateMonitorDefinitionInput,
   auth: AuthContext,
+  executor: DbExecutor = db,
 ): Promise<MonitorDefinitionRow> {
-  const existing = await getMonitorDefinition(id, auth);
+  const existing = await getMonitorDefinition(id, auth, executor);
   if (!existing) throw new MonitorNotFoundError(id);
   assertCanWrite(auth, { orgId: existing.orgId, partnerId: existing.partnerId });
 
@@ -345,7 +346,7 @@ export async function updateMonitorDefinition(
   await assertEscalationPolicyCompatible(effectiveEscalationPolicyId, {
     orgId: existing.orgId,
     partnerId: existing.partnerId,
-  });
+  }, executor);
 
   const recurrenceThreshold =
     input.recurrenceThreshold !== undefined ? input.recurrenceThreshold : existing.recurrenceThreshold;
@@ -365,7 +366,7 @@ export async function updateMonitorDefinition(
     throw new MonitorValidationError('deliveryChannelIds required when deliveryMode is channels');
   }
 
-  return db.transaction(async (tx) => {
+  return executor.transaction(async (tx) => {
     const [updated] = await tx
       .update(monitorDefinitions)
       .set({

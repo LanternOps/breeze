@@ -167,7 +167,7 @@ A row the wizard can't resolve to exactly one device — no match, or more than 
 
 ## Monitors and Alerting
 
-Datto monitors live inside **Policies**, one monitor type per policy, targeted by site or device filter. Breeze splits this differently: [monitors](/features/service-monitoring/) define *what* is measured and [alert rules](/features/alerts/) define *when it fires and who hears about it*.
+Rebuild Datto conditions as Breeze [monitors](/features/monitors/). Each monitor carries its condition, responses and delivery settings; attach it to a configuration policy to choose the devices it reaches.
 
 Do not port one-for-one. Export your last 90 days of Datto alerts, sort by volume, and rebuild only what actually generated action. The top three alert types on most Datto fleets are disk space, offline, and patch failure — start there, and define them **partner-wide** so they apply to every organization at once.
 

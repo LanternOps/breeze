@@ -2400,7 +2400,7 @@ function resolveToolPermissionRequirements(
     // Unknown action for a mapped tool — deny (fail-closed)
     // Include redirect hints for tools that have been replaced by policy-based management
     const redirectHints: Record<string, string> = {
-      manage_service_monitors: 'To add, update, or remove monitoring watches, use manage_policy_feature_link with the existing policy\'s featureLinkId and action "update". First call get_configuration_policy to find the monitoring featureLinkId and current inlineSettings.watches array, then update it with the new watch appended.',
+      manage_service_monitors: 'Use manage_monitor_definitions to author service/process monitors, then manage_policy_feature_link with featureType "monitors" to attach them to a policy.',
     };
     const hint = redirectHints[toolName];
     return {

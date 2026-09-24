@@ -4,6 +4,7 @@ import {
   fleetDesignOutcomeFromSubmission,
   renderFleetDesignMarkdown,
   triggerFleetDesignRunSchema,
+  fleetDesignRuleSchema,
   type FleetDesignOutcomeRefs,
 } from './fleetDesign';
 import { FLEET_DESIGN_SECTION_KEYS, FLEET_DESIGN_CONFIDENCE_THRESHOLD, type FleetDesignSubmission } from '../types/fleetDesign';
@@ -35,7 +36,9 @@ function validSubmission() {
         watches: [{ watchType: 'service', name: 'LanmanServer', alertOnStop: true, autoRestart: true, rationale: 'SMB is the function.' }],
         alertRules: [{
           name: 'File server disk over 85%', severity: 'high',
-          conditions: [{ type: 'metric', metric: 'disk', operator: 'gt', value: 85, durationMinutes: 15 }],
+          kind: 'disk',
+          condition: { operator: 'gt', value: 85, durationMinutes: 15 },
+          responses: [], deliveryMode: 'inherit', deliveryChannelIds: [],
           cooldownMinutes: 60, rationale: 'Data volume growth is the failure mode.', action: 'none', paging: 'business_hours',
         }],
       },
@@ -143,5 +146,49 @@ describe('renderFleetDesignMarkdown', () => {
     const headings = md.split('\n').filter((l) => l.startsWith('## '));
     expect(headings).toHaveLength(8);
     expect(md).not.toContain('\n# not');
+  });
+});
+
+// W05c2 Task 15: Fleet Designer proposes monitor definitions, not legacy
+// alert-rule condition arrays.
+describe('fleetDesignRuleSchema (monitor-definition proposals)', () => {
+  const monitorProposal = {
+    name: 'Disk capacity', kind: 'disk',
+    condition: { operator: 'gt', value: 85, durationMinutes: 15 }, severity: 'high',
+    cooldownMinutes: 60, responses: [], deliveryMode: 'inherit', deliveryChannelIds: [],
+    rationale: 'Data volume growth is the failure mode.', action: 'none', paging: 'business_hours',
+  };
+  it('accepts a validated monitor-definition proposal', () => {
+    expect(fleetDesignRuleSchema.parse(monitorProposal)).toMatchObject(monitorProposal);
+  });
+  it('rejects legacy fields, invalid kind conditions and empty explicit delivery', () => {
+    expect(fleetDesignRuleSchema.safeParse({ ...monitorProposal, conditions: [] }).success).toBe(false);
+    expect(fleetDesignRuleSchema.safeParse({ ...monitorProposal, sourceTemplateId: D1 }).success).toBe(false);
+    expect(fleetDesignRuleSchema.safeParse({ ...monitorProposal, kind: 'service' }).success).toBe(false);
+    expect(fleetDesignRuleSchema.safeParse({ ...monitorProposal, deliveryMode: 'channels' }).success).toBe(false);
+  });
+  it('rejects responses that would run arbitrary code or need an agent the proposal cannot name', () => {
+    for (const response of [
+      { type: 'ai_triage' },
+      { type: 'execute_command', command: 'rm -rf /' },
+      { type: 'run_script', scriptId: D1 },
+      { type: 'deploy_software', catalogId: D1 },
+    ]) {
+      expect(fleetDesignRuleSchema.safeParse({ ...monitorProposal, responses: [response] }).success, response.type).toBe(false);
+    }
+  });
+  it('accepts agent-local restart and notification responses', () => {
+    expect(fleetDesignRuleSchema.safeParse({ ...monitorProposal, kind: 'service', condition: { serviceName: 'Spooler' },
+      responses: [{ type: 'execute_command', kind: 'restart_service' }] }).success).toBe(true);
+    expect(fleetDesignRuleSchema.safeParse({ ...monitorProposal,
+      responses: [{ type: 'create_alert', alertSeverity: 'high', alertMessage: 'm' }] }).success).toBe(true);
+  });
+  it('the submission schema rejects a legacy rule-shaped proposal', () => {
+    const sub = validSubmission() as any;
+    sub.monitoring[0].alertRules[0] = {
+      name: 'Old', severity: 'high', conditions: [{ type: 'metric', metric: 'disk', operator: 'gt', value: 85 }],
+      cooldownMinutes: 60, rationale: 'r', action: 'none', paging: 'none',
+    };
+    expect(fleetDesignSubmissionSchema.safeParse(sub).success).toBe(false);
   });
 });

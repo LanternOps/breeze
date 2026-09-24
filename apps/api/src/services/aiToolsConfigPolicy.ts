@@ -261,6 +261,19 @@ const FEATURE_POLICY_ID_HINTS: Partial<Record<ConfigFeatureType, string>> = {
   peripheral_control: 'featurePolicyId → existing peripheral policy UUID',
 };
 
+/**
+ * W05c2 (#6371): `alert_rule` and `monitoring` links are legacy during the
+ * conversion release. Writes still succeed (W05d turns this into a refusal),
+ * but every successful one tells the model where new conditions belong. The
+ * update path passes the STORED link type, never the caller's featureType.
+ */
+export function legacyFeatureWarning(featureType: string | undefined): { warning?: string; useTool?: string } {
+  return featureType === 'alert_rule' || featureType === 'monitoring' ? {
+    warning: `Feature type "${featureType}" is legacy. Use manage_monitor_definitions and attach via featureType "monitors". Existing writes remain available until W05d.`,
+    useTool: 'manage_monitor_definitions',
+  } : {};
+}
+
 export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
   function registerTool(tool: AiTool): void {
     aiTools.set(tool.definition.name, tool);
@@ -1083,7 +1096,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         if (!link) {
           return JSON.stringify({ error: `Feature type "${featureType}" already exists on this policy. Use update action instead.` });
         }
-        return JSON.stringify({ success: true, featureLink: link });
+        return JSON.stringify({ success: true, featureLink: link, ...legacyFeatureWarning(featureType) });
       }
 
       if (action === 'update') {
@@ -1115,7 +1128,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           throw err;
         }
         if (!updated) return JSON.stringify({ error: 'Feature link not found' });
-        return JSON.stringify({ success: true, featureLink: updated });
+        return JSON.stringify({ success: true, featureLink: updated, ...legacyFeatureWarning(existingFeatureType) });
       }
 
       if (action === 'remove') {

@@ -145,7 +145,7 @@ The practical approach:
 
 Automate has two kinds and neither ports:
 
-- **Internal monitors** are SQL queries against the Automate database. They have no meaning outside Automate. Re-express the *intent* as Breeze [monitors](/features/service-monitoring/) and [alert rules](/features/alerts/).
+- **Internal monitors** are SQL queries against the Automate database. They have no meaning outside Automate. Re-express the *intent* as Breeze [monitors](/features/monitors/) with [Delivery](/features/notifications/).
 - **Remote monitors** are agent-side checks (service state, performance counter, event log, drive space). These map well onto Breeze's equivalents — service monitoring, [event log forwarding](/features/event-log-forwarding/), and disk thresholds.
 
 Rank by alert volume over the last 90 days and rebuild the top of the list partner-wide. Automate estates typically carry hundreds of monitors of which a dozen generate every ticket that mattered.

@@ -37,6 +37,17 @@ vi.mock('../groupMembership', () => groupMembershipMock);
 const peripheralJobsMock = vi.hoisted(() => ({ schedulePeripheralPolicyDevice: vi.fn(async () => undefined) }));
 vi.mock('../../jobs/peripheralJobs', () => peripheralJobsMock);
 
+const monitorAttachMock = vi.hoisted(() => ({
+  attachFleetMonitors: vi.fn(),
+  snapshotFleetMonitors: vi.fn(async () => ({ snap: true })),
+  watchMonitorInput: vi.fn((w: { name: string; rationale: string }) => ({ fromWatch: w.name, description: w.rationale })),
+  ruleMonitorInput: vi.fn((r: { name: string }, description: string) => ({ fromRule: r.name, description })),
+}));
+vi.mock('./monitorAttachments', () => monitorAttachMock);
+
+const monitorServiceMock = vi.hoisted(() => ({ getMonitorDefinition: vi.fn(), updateMonitorDefinition: vi.fn() }));
+vi.mock('../monitors/monitorService', () => monitorServiceMock);
+
 const bundleMock = vi.hoisted(() => ({ importBundle: vi.fn() }));
 vi.mock('../scriptBundle', () => bundleMock);
 
@@ -216,6 +227,8 @@ afterEach(() => {
     ...Object.values(configPolicyMock), ...Object.values(deviceFunctionMock),
     ...Object.values(groupMembershipMock), bundleMock.importBundle,
     ledgerMock.findReusableGroup, ledgerMock.recordApplied, ledgerMock.updateCreatedRefs,
+    monitorAttachMock.attachFleetMonitors, monitorAttachMock.snapshotFleetMonitors,
+    ...Object.values(monitorServiceMock),
   ]) {
     for (const args of helper.mock.calls) expect(args.at(-1)).toBe(transactionState.tx);
   }
@@ -317,9 +330,9 @@ describe('applyFleetDesign — step 2 (retire)', () => {
 });
 
 describe('applyFleetDesign — step 3 (monitoring)', () => {
-  it('creates the policy inactive, adds monitoring and alert_rule links with rationale, assigns device_group priority 100 with null filters, activates, records policy + item rows', async () => {
+  it('creates the policy inactive, attaches monitor definitions (no legacy links), assigns device_group priority 100, activates, records policy + item rows', async () => {
     const rule: FleetDesignRule = {
-      name: 'Disk full', severity: 'high', conditions: [], cooldownMinutes: 30, rationale: 'why', action: 'none', paging: 'always',
+      name: 'Disk full', severity: 'high', kind: 'disk', condition: { operator: 'gt', value: 90 }, responses: [], deliveryMode: 'inherit', deliveryChannelIds: [], cooldownMinutes: 30, rationale: 'why', action: 'none', paging: 'always',
     };
     const outcome = makeOutcome({
       monitoring: [{
@@ -340,13 +353,13 @@ describe('applyFleetDesign — step 3 (monitoring)', () => {
     previewMock.previewFleetDesignApplyWithContext.mockResolvedValue(previewCtx);
 
     configPolicyMock.createConfigPolicy.mockResolvedValue({ id: 'p-new' });
-    configPolicyMock.addFeatureLink.mockResolvedValueOnce({ id: 'link-w' }).mockResolvedValueOnce({ id: 'link-r' });
     configPolicyMock.assignPolicy.mockResolvedValue({ id: 'assign-1' });
     configPolicyMock.updateConfigPolicy.mockResolvedValue({ id: 'p-new', status: 'active' });
-    configPolicyMock.listFeatureLinks.mockResolvedValue([
-      { featureType: 'monitoring', featurePolicyId: null, inlineSettings: { watches: [{ name: 'Spooler', enabled: true }] } },
-      { featureType: 'alert_rule', featurePolicyId: null, inlineSettings: { items: [{ name: 'Disk full' }] } },
-    ]);
+    const monitorsLink = { id: 'link-mon', featureType: 'monitors', featurePolicyId: null, inlineSettings: { inheritance: 'cumulative', items: [] } };
+    configPolicyMock.listFeatureLinks.mockResolvedValue([monitorsLink]);
+    monitorAttachMock.attachFleetMonitors.mockResolvedValue({
+      'monitoring:file_server:watch:0': 'mon-w', 'monitoring:file_server:rule:0': 'mon-r',
+    });
 
     const result = await applyFleetDesign(makeAuth(), RUN, makeApproval({ monitoring: ['monitoring:file_server:watch:0', 'monitoring:file_server:rule:0'] }));
 
@@ -356,26 +369,55 @@ describe('applyFleetDesign — step 3 (monitoring)', () => {
       USER,
       transactionState.tx,
     );
-    expect(configPolicyMock.addFeatureLink).toHaveBeenNthCalledWith(1, 'p-new', 'monitoring', null, {
-      checkIntervalSeconds: 60,
-      watches: [{ watchType: 'service', name: 'Spooler', enabled: true, alertOnStop: true, autoRestart: false, rationale: 'because' }],
-    }, undefined, transactionState.tx);
-    expect(configPolicyMock.addFeatureLink).toHaveBeenNthCalledWith(2, 'p-new', 'alert_rule', null, {
-      items: [{ name: 'Disk full', severity: 'high', conditions: [], cooldownMinutes: 30, rationale: 'why [Action: none; Paging: always]' }],
-    }, undefined, transactionState.tx);
+    expect(configPolicyMock.addFeatureLink).not.toHaveBeenCalled();
+    expect(configPolicyMock.updateFeatureLink).not.toHaveBeenCalled();
+    expect(monitorAttachMock.attachFleetMonitors).toHaveBeenCalledWith('p-new', [
+      { itemRef: 'monitoring:file_server:watch:0', definition: { fromWatch: 'Spooler', description: 'because' } },
+      { itemRef: 'monitoring:file_server:rule:0', definition: { fromRule: 'Disk full', description: 'why [Action: none; Paging: always]' } },
+    ], expect.anything(), transactionState.tx);
     expect(configPolicyMock.assignPolicy).toHaveBeenCalledWith('p-new', 'device_group', 'g1', 100, USER, undefined, undefined, transactionState.tx);
     expect(configPolicyMock.updateConfigPolicy).toHaveBeenCalledWith('p-new', { status: 'active' }, expect.anything(), transactionState.tx);
-    expect(ledgerMock.recordApplied).toHaveBeenCalledWith(expect.objectContaining({ itemRef: 'policy:file_server', itemKind: 'policy', step: 3 }), transactionState.tx);
-    expect(ledgerMock.recordApplied).toHaveBeenCalledWith(expect.objectContaining({ itemRef: 'monitoring:file_server:watch:0', itemKind: 'watch', step: 3, createdRefs: { policyId: 'p-new' } }), transactionState.tx);
-    expect(ledgerMock.recordApplied).toHaveBeenCalledWith(expect.objectContaining({ itemRef: 'monitoring:file_server:rule:0', itemKind: 'rule', step: 3, createdRefs: { policyId: 'p-new' } }), transactionState.tx);
+    expect(monitorAttachMock.snapshotFleetMonitors).toHaveBeenCalledWith(['mon-w', 'mon-r'], transactionState.tx);
+    expect(ledgerMock.recordApplied).toHaveBeenCalledWith(expect.objectContaining({
+      itemRef: 'policy:file_server', itemKind: 'policy', step: 3,
+      createdRefs: {
+        policyId: 'p-new', groupId: 'g1', assignmentId: 'assign-1',
+        monitorIdsByItemRef: { 'monitoring:file_server:watch:0': 'mon-w', 'monitoring:file_server:rule:0': 'mon-r' },
+        monitorLinkId: 'link-mon', monitorSnapshots: { snap: true },
+        linksSnapshot: snapshotLinks([monitorsLink]),
+      },
+    }), transactionState.tx);
+    expect(ledgerMock.recordApplied).toHaveBeenCalledWith(expect.objectContaining({ itemRef: 'monitoring:file_server:watch:0', itemKind: 'watch', step: 3, createdRefs: { policyId: 'p-new', monitorId: 'mon-w' } }), transactionState.tx);
+    expect(ledgerMock.recordApplied).toHaveBeenCalledWith(expect.objectContaining({ itemRef: 'monitoring:file_server:rule:0', itemKind: 'rule', step: 3, createdRefs: { policyId: 'p-new', monitorId: 'mon-r' } }), transactionState.tx);
     expect(result.applied).toEqual(expect.arrayContaining(['policy:file_server', 'monitoring:file_server:watch:0', 'monitoring:file_server:rule:0']));
+  });
+
+  it('a failure attaching monitors fails step 3 before the policy is assigned or recorded', async () => {
+    const outcome = makeOutcome({
+      monitoring: [{ functionKey: 'file_server', watches: [{ watchType: 'service', name: 'Spooler', alertOnStop: true, autoRestart: false, rationale: 'b' }], alertRules: [] }],
+    });
+    previewMock.previewFleetDesignApplyWithContext.mockResolvedValue(makeCtx({
+      outcome,
+      preview: makePreview({
+        functions: [{ functionKey: 'file_server', label: 'File Server', groupId: 'g1', groupName: 'Fleet Design: File Server', deviceCount: 1, devicesAdded: [], devicesRemoved: [], keptManual: 0, missingDevices: [] }],
+      }),
+      monitoringByFunction: new Map([['file_server', { watches: [0], rules: [] }]]),
+    }));
+    configPolicyMock.createConfigPolicy.mockResolvedValue({ id: 'p-new' });
+    monitorAttachMock.attachFleetMonitors.mockRejectedValue(new Error('condition does not match kind service'));
+
+    const result = await applyFleetDesign(makeAuth(), RUN, makeApproval({ monitoring: ['monitoring:file_server:watch:0'] }));
+
+    expect(result.partial).toEqual({ failedStep: 3, reason: expect.stringContaining('condition does not match kind') });
+    expect(configPolicyMock.assignPolicy).not.toHaveBeenCalled();
+    expect(ledgerMock.recordApplied).not.toHaveBeenCalledWith(expect.objectContaining({ itemRef: 'policy:file_server' }), expect.anything());
   });
 });
 
 describe('applyFleetDesign — step 3 (monitoring) — second apply in the same run', () => {
-  it('unions new watches into the existing monitoring link, creates the missing alert_rule link, and refreshes created_refs.linksSnapshot instead of creating a new policy', async () => {
+  it('attaches the new items to the SAME policy, merges monitor ids, and refreshes created_refs instead of creating a policy', async () => {
     const rule: FleetDesignRule = {
-      name: 'Disk full', severity: 'high', conditions: [], cooldownMinutes: 30, rationale: 'why', action: 'none', paging: 'always',
+      name: 'Disk full', severity: 'high', kind: 'disk', condition: { operator: 'gt', value: 90 }, responses: [], deliveryMode: 'inherit', deliveryChannelIds: [], cooldownMinutes: 30, rationale: 'why', action: 'none', paging: 'always',
     };
     const outcome = makeOutcome({
       monitoring: [{
@@ -389,68 +431,39 @@ describe('applyFleetDesign — step 3 (monitoring) — second apply in the same 
     });
     const existingRow = {
       id: 'ledger-row-policy',
-      createdRefs: { policyId: 'p-existing', groupId: 'g1' },
+      createdRefs: { policyId: 'p-existing', groupId: 'g1', monitorIdsByItemRef: { 'monitoring:file_server:watch:0': 'mon-old' } },
     } as unknown as FleetDesignLedgerRow;
-    const previewCtx = makeCtx({
+    previewMock.previewFleetDesignApplyWithContext.mockResolvedValue(makeCtx({
       outcome,
       preview: makePreview({
         functions: [{ functionKey: 'file_server', label: 'File Server', groupId: 'g1', groupName: 'Fleet Design: File Server', deviceCount: 2, devicesAdded: [], devicesRemoved: [], keptManual: 0, missingDevices: [] }],
         policies: [{ functionKey: 'file_server', policyName: 'Fleet Design: File Server', watchCount: 1, ruleCount: 1, displaces: [] }],
       }),
-      // Only the NEW items are approved this time — index 0 (Spooler) was
-      // already applied in a prior run and is not part of this approval.
       monitoringByFunction: new Map([['file_server', { watches: [1], rules: [0] }]]),
       policyRowByFunction: new Map([['file_server', existingRow]]),
+    }));
+    const afterLinks = [{ id: 'link-mon', featureType: 'monitors', featurePolicyId: null, inlineSettings: { inheritance: 'cumulative', items: [] } }];
+    configPolicyMock.listFeatureLinks.mockResolvedValue(afterLinks);
+    monitorAttachMock.attachFleetMonitors.mockResolvedValue({
+      'monitoring:file_server:watch:1': 'mon-bits', 'monitoring:file_server:rule:0': 'mon-disk',
     });
-    previewMock.previewFleetDesignApplyWithContext.mockResolvedValue(previewCtx);
-
-    const existingWatchItem = { watchType: 'service', name: 'Spooler', enabled: true, alertOnStop: true, autoRestart: false, rationale: 'first apply' };
-    const newWatchItem = toWatchItem(outcome.sections.monitoring[0]!.watches[1]!);
-    const newRuleItem = toRuleItem(rule);
-    const afterLinks = [
-      { id: 'link-mon-old', featureType: 'monitoring', featurePolicyId: null, inlineSettings: { checkIntervalSeconds: 60, watches: [existingWatchItem, newWatchItem] } },
-      { id: 'link-rule-new', featureType: 'alert_rule', featurePolicyId: null, inlineSettings: { items: [newRuleItem] } },
-    ];
-    configPolicyMock.listFeatureLinks
-      .mockResolvedValueOnce([{ id: 'link-mon-old', featureType: 'monitoring', featurePolicyId: null, inlineSettings: { checkIntervalSeconds: 60, watches: [existingWatchItem] } }])
-      .mockResolvedValueOnce(afterLinks);
-    configPolicyMock.updateFeatureLink.mockResolvedValue({ id: 'link-mon-old' });
-    configPolicyMock.addFeatureLink.mockResolvedValue({ id: 'link-rule-new' });
 
     const result = await applyFleetDesign(makeAuth(), RUN, makeApproval({ monitoring: ['monitoring:file_server:watch:1', 'monitoring:file_server:rule:0'] }));
 
-    // Not a new policy: the second apply reuses the existing one.
     expect(configPolicyMock.createConfigPolicy).not.toHaveBeenCalled();
     expect(configPolicyMock.assignPolicy).not.toHaveBeenCalled();
-
-    // Existing monitoring link updated with the union of old + new watches.
-    expect(configPolicyMock.updateFeatureLink).toHaveBeenCalledWith(
-      'link-mon-old',
-      { inlineSettings: { checkIntervalSeconds: 60, watches: [existingWatchItem, newWatchItem] } },
-      'p-existing',
-      undefined, transactionState.tx,
-    );
-    // Missing alert_rule link created fresh.
-    expect(configPolicyMock.addFeatureLink).toHaveBeenCalledWith('p-existing', 'alert_rule', null, { items: [newRuleItem] }, undefined, transactionState.tx);
-
-    // created_refs refreshed with a snapshot of the union, on the SAME ledger row.
-    expect(ledgerMock.updateCreatedRefs).toHaveBeenCalledWith(
-      'ledger-row-policy',
-      ORG,
-      expect.objectContaining({
-        policyId: 'p-existing',
-        groupId: 'g1',
-        monitoringLinkId: 'link-mon-old',
-        alertRuleLinkId: 'link-rule-new',
-        linksSnapshot: snapshotLinks(afterLinks),
-      }),
-      transactionState.tx,
-    );
-
-    // New item rows recorded; the policy ref itself is not (it already exists).
+    expect(monitorAttachMock.attachFleetMonitors).toHaveBeenCalledWith('p-existing', [
+      expect.objectContaining({ itemRef: 'monitoring:file_server:watch:1' }),
+      expect.objectContaining({ itemRef: 'monitoring:file_server:rule:0' }),
+    ], expect.anything(), transactionState.tx);
+    const merged = { 'monitoring:file_server:watch:0': 'mon-old', 'monitoring:file_server:watch:1': 'mon-bits', 'monitoring:file_server:rule:0': 'mon-disk' };
+    expect(monitorAttachMock.snapshotFleetMonitors).toHaveBeenCalledWith(['mon-old', 'mon-bits', 'mon-disk'], transactionState.tx);
+    expect(ledgerMock.updateCreatedRefs).toHaveBeenCalledWith('ledger-row-policy', ORG, expect.objectContaining({
+      policyId: 'p-existing', groupId: 'g1', monitorIdsByItemRef: merged, monitorLinkId: 'link-mon',
+      monitorSnapshots: { snap: true }, linksSnapshot: snapshotLinks(afterLinks),
+    }), transactionState.tx);
     expect(ledgerMock.recordApplied).not.toHaveBeenCalledWith(expect.objectContaining({ itemRef: 'policy:file_server' }), transactionState.tx);
-    expect(ledgerMock.recordApplied).toHaveBeenCalledWith(expect.objectContaining({ itemRef: 'monitoring:file_server:watch:1', itemKind: 'watch', step: 3, createdRefs: { policyId: 'p-existing' } }), transactionState.tx);
-    expect(ledgerMock.recordApplied).toHaveBeenCalledWith(expect.objectContaining({ itemRef: 'monitoring:file_server:rule:0', itemKind: 'rule', step: 3, createdRefs: { policyId: 'p-existing' } }), transactionState.tx);
+    expect(ledgerMock.recordApplied).toHaveBeenCalledWith(expect.objectContaining({ itemRef: 'monitoring:file_server:watch:1', createdRefs: { policyId: 'p-existing', monitorId: 'mon-bits' } }), transactionState.tx);
     expect(result.applied).toEqual(expect.arrayContaining(['monitoring:file_server:watch:1', 'monitoring:file_server:rule:0']));
     expect(result.applied).not.toContain('policy:file_server');
   });
@@ -571,9 +584,9 @@ describe('applyFleetDesign — step 4 (scripts, W04)', () => {
     expect(bundleMock.importBundle).not.toHaveBeenCalled();
   });
 
-  it('appends the created id to the rationale of an applied rule that names the proposal, and refreshes the policy snapshot', async () => {
+  it('legacy ledger (applied before W05c2): appends the created id to the rationale of an applied rule, and refreshes the policy snapshot', async () => {
     const rule: FleetDesignRule = {
-      name: 'Spooler stuck', severity: 'medium', conditions: [], cooldownMinutes: 30, rationale: 'jobs pile up',
+      name: 'Spooler stuck', severity: 'medium', kind: 'disk', condition: { operator: 'gt', value: 90 }, responses: [], deliveryMode: 'inherit', deliveryChannelIds: [], cooldownMinutes: 30, rationale: 'jobs pile up',
       action: { kind: 'script', ref: spooler.name }, paging: 'business_hours',
     };
     const other: FleetDesignRule = { ...rule, name: 'Unrelated', action: 'none' };
@@ -588,8 +601,9 @@ describe('applyFleetDesign — step 4 (scripts, W04)', () => {
       policyRowByFunction: new Map([['file_server', policyRow]]),
     }));
     bundleMock.importBundle.mockResolvedValue(importOk);
-    const before = { items: [toRuleItem(rule), toRuleItem(other)] };
-    const patchedItems = [{ ...toRuleItem(rule), rationale: `${toRuleItem(rule).rationale} [script created: script-a]` }, toRuleItem(other)];
+    const legacyItem = (r: FleetDesignRule) => ({ name: r.name, severity: r.severity, conditions: [], cooldownMinutes: r.cooldownMinutes, rationale: toRuleItem(r).rationale });
+    const before = { items: [legacyItem(rule), legacyItem(other)] };
+    const patchedItems = [{ ...legacyItem(rule), rationale: `${toRuleItem(rule).rationale} [script created: script-a]` }, legacyItem(other)];
     configPolicyMock.listFeatureLinks
       .mockResolvedValueOnce([{ id: 'link-r', featureType: 'alert_rule', featurePolicyId: null, inlineSettings: before }])
       .mockResolvedValueOnce([{ id: 'link-r', featureType: 'alert_rule', featurePolicyId: null, inlineSettings: { items: patchedItems } }]);
@@ -602,48 +616,43 @@ describe('applyFleetDesign — step 4 (scripts, W04)', () => {
       policyId: 'p1',
       linksSnapshot: snapshotLinks([{ featureType: 'alert_rule', featurePolicyId: null, inlineSettings: { items: patchedItems } }]),
     }), transactionState.tx);
+    expect(monitorServiceMock.updateMonitorDefinition).not.toHaveBeenCalled();
   });
 
-  it('a second apply that adds a rule (reused policy) AND its script keeps the refs step 3 just wrote when step 4 refreshes the snapshot', async () => {
+  it('monitor ledger: writes the created script id into an unedited monitor description and refreshes monitor snapshots', async () => {
     const rule: FleetDesignRule = {
-      name: 'Spooler stuck', severity: 'medium', conditions: [], cooldownMinutes: 30, rationale: 'jobs pile up',
+      name: 'Spooler stuck', severity: 'medium', kind: 'disk', condition: { operator: 'gt', value: 90 }, responses: [], deliveryMode: 'inherit', deliveryChannelIds: [], cooldownMinutes: 30, rationale: 'jobs pile up',
       action: { kind: 'script', ref: spooler.name }, paging: 'none',
     };
+    const other: FleetDesignRule = { ...rule, name: 'Edited', action: { kind: 'script', ref: spooler.name } };
     const outcome = makeOutcome({
-      monitoring: [{ functionKey: 'file_server', watches: [], alertRules: [rule] }],
+      monitoring: [{ functionKey: 'file_server', watches: [], alertRules: [rule, other] }],
       automation: [{ functionKey: 'file_server', playbooks: [], scripts: [spooler] }],
     });
-    // First apply created the policy with watches only — no alert_rule link yet.
-    const existingRow = { id: 'ledger-policy', createdRefs: { policyId: 'p1', groupId: 'g1', monitoringLinkId: 'link-m' } } as unknown as FleetDesignLedgerRow;
+    const monitorIdsByItemRef = { 'monitoring:file_server:rule:0': 'mon-a', 'monitoring:file_server:rule:1': 'mon-b' };
+    const policyRow = { id: 'ledger-policy', createdRefs: { policyId: 'p1', groupId: 'g1', monitorIdsByItemRef } } as unknown as FleetDesignLedgerRow;
     previewMock.previewFleetDesignApplyWithContext.mockResolvedValue(makeCtx({
-      outcome,
-      scriptsToCreate: [toCreate[0]!],
-      preview: makePreview({
-        functions: [{ functionKey: 'file_server', label: 'File Server', groupId: 'g1', groupName: 'Fleet Design: File Server', deviceCount: 1, devicesAdded: [], devicesRemoved: [], keptManual: 0, missingDevices: [] }],
-        policies: [{ functionKey: 'file_server', policyName: 'Fleet Design: File Server', watchCount: 0, ruleCount: 1, displaces: [] }],
-      }),
-      monitoringByFunction: new Map([['file_server', { watches: [], rules: [0] }]]),
-      policyRowByFunction: new Map([['file_server', existingRow]]),
+      outcome, scriptsToCreate: [toCreate[0]!], policyRowByFunction: new Map([['file_server', policyRow]]),
     }));
     bundleMock.importBundle.mockResolvedValue({ ...importOk, imported: 1, renamed: 0, scripts: [{ index: 0, name: spooler.name, action: 'imported', scriptId: 'script-a' }] });
-    const ruleItem = toRuleItem(rule);
-    const monitoringLink = { id: 'link-m', featureType: 'monitoring', featurePolicyId: null, inlineSettings: { watches: [] } };
-    configPolicyMock.listFeatureLinks
-      .mockResolvedValueOnce([monitoringLink]) // step 3 reads the policy's links before adding the rule link
-      .mockResolvedValue([monitoringLink, { id: 'link-r', featureType: 'alert_rule', featurePolicyId: null, inlineSettings: { items: [ruleItem] } }]);
-    configPolicyMock.addFeatureLink.mockResolvedValue({ id: 'link-r' });
-    configPolicyMock.updateFeatureLink.mockResolvedValue({ id: 'link-r' });
+    monitorServiceMock.getMonitorDefinition
+      .mockResolvedValueOnce({ id: 'mon-a', description: toRuleItem(rule).rationale })
+      .mockResolvedValueOnce({ id: 'mon-b', description: 'a technician rewrote this' });
 
-    await applyFleetDesign(makeAuth(), RUN, makeApproval({ monitoring: ['monitoring:file_server:rule:0'], automation: ['automation:file_server:script:0'] }));
+    await applyFleetDesign(makeAuth(), RUN, makeApproval({ automation: ['automation:file_server:script:0'] }));
 
-    const calls = ledgerMock.updateCreatedRefs.mock.calls.filter((c) => c[0] === 'ledger-policy');
-    expect(calls.length).toBe(2); // step 3 union, then step 4 snapshot refresh
-    expect(calls[1]![2]).toMatchObject({ policyId: 'p1', monitoringLinkId: 'link-m', alertRuleLinkId: 'link-r' });
+    expect(monitorServiceMock.updateMonitorDefinition).toHaveBeenCalledTimes(1);
+    expect(monitorServiceMock.updateMonitorDefinition).toHaveBeenCalledWith('mon-a',
+      { description: `${toRuleItem(rule).rationale} [script created: script-a]` }, expect.anything(), transactionState.tx);
+    expect(configPolicyMock.updateFeatureLink).not.toHaveBeenCalled();
+    expect(ledgerMock.updateCreatedRefs).toHaveBeenCalledWith('ledger-policy', ORG, expect.objectContaining({
+      policyId: 'p1', monitorIdsByItemRef, monitorSnapshots: { snap: true },
+    }), transactionState.tx);
   });
 
-  it('step 3 of a LATER apply writes the id of a script an earlier apply created into the rule rationale', async () => {
+  it('step 3 of a LATER apply writes the id of a script an earlier apply created into the monitor description', async () => {
     const rule: FleetDesignRule = {
-      name: 'Spooler stuck', severity: 'medium', conditions: [], cooldownMinutes: 30, rationale: 'jobs pile up',
+      name: 'Spooler stuck', severity: 'medium', kind: 'disk', condition: { operator: 'gt', value: 90 }, responses: [], deliveryMode: 'inherit', deliveryChannelIds: [], cooldownMinutes: 30, rationale: 'jobs pile up',
       action: { kind: 'script', ref: 'automation:file_server:script:0' }, paging: 'none',
     };
     const outcome = makeOutcome({
@@ -660,16 +669,17 @@ describe('applyFleetDesign — step 4 (scripts, W04)', () => {
       monitoringByFunction: new Map([['file_server', { watches: [], rules: [0] }]]),
     }));
     configPolicyMock.createConfigPolicy.mockResolvedValue({ id: 'p-new' });
-    configPolicyMock.addFeatureLink.mockResolvedValue({ id: 'link-r' });
     configPolicyMock.assignPolicy.mockResolvedValue({ id: 'a1' });
     configPolicyMock.updateConfigPolicy.mockResolvedValue({ id: 'p-new' });
     configPolicyMock.listFeatureLinks.mockResolvedValue([]);
+    monitorAttachMock.attachFleetMonitors.mockResolvedValue({ 'monitoring:file_server:rule:0': 'mon-a' });
 
     await applyFleetDesign(makeAuth(), RUN, makeApproval({ monitoring: ['monitoring:file_server:rule:0'] }));
 
-    expect(configPolicyMock.addFeatureLink).toHaveBeenCalledWith('p-new', 'alert_rule', null, {
-      items: [expect.objectContaining({ rationale: 'jobs pile up [Action: script automation:file_server:script:0; Paging: none] [script created: script-old]' })],
-    }, undefined, transactionState.tx);
+    expect(monitorAttachMock.attachFleetMonitors).toHaveBeenCalledWith('p-new', [{
+      itemRef: 'monitoring:file_server:rule:0',
+      definition: expect.objectContaining({ description: 'jobs pile up [Action: script automation:file_server:script:0; Paging: none] [script created: script-old]' }),
+    }], expect.anything(), transactionState.tx);
   });
 });
 
@@ -787,7 +797,7 @@ describe('pure helpers', () => {
     });
 
     it('appends "[Action: …; Paging: …]" to the rationale', () => {
-      const rule: FleetDesignRule = { name: 'Disk full', severity: 'high', conditions: [], cooldownMinutes: 30, rationale: 'disk fills up', action: { kind: 'playbook', ref: 'pb-1' }, paging: 'business_hours' };
+      const rule: FleetDesignRule = { name: 'Disk full', severity: 'high', kind: 'disk', condition: { operator: 'gt', value: 90 }, responses: [], deliveryMode: 'inherit', deliveryChannelIds: [], cooldownMinutes: 30, rationale: 'disk fills up', action: { kind: 'playbook', ref: 'pb-1' }, paging: 'business_hours' };
       expect(toRuleItem(rule).rationale).toBe('disk fills up [Action: playbook pb-1; Paging: business_hours]');
     });
   });
@@ -815,6 +825,15 @@ describe('pure helpers', () => {
     it('ignores a link that belongs to a linked feature policy (featurePolicyId set)', () => {
       const links = [{ featureType: 'monitoring', featurePolicyId: 'other-policy', inlineSettings: { a: 1 } }];
       expect(snapshotLinks(links).monitoring).toBeNull();
+    });
+
+    it('includes monitor attachments in the rollback snapshot without changing old snapshots', () => {
+      expect(snapshotLinks([])).toEqual({ monitoring: null, alertRule: null });
+      expect(snapshotLinks([{ featureType: 'monitors', featurePolicyId: null,
+        inlineSettings: { inheritance: 'cumulative', items: [{ monitorId: 'm1', enabled: true }] } }]))
+        .toEqual({ monitoring: null, alertRule: null, monitors: {
+          inheritance: 'cumulative', items: [{ monitorId: 'm1', enabled: true }],
+        } });
     });
 
     it('canonical drops undefined keys so two structurally-different-but-equivalent objects compare equal', () => {

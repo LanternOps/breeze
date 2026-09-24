@@ -74,7 +74,11 @@ const OUTCOME: FleetDesignOutcome = {
           {
             name: 'High CPU',
             severity: 'high',
-            conditions: [],
+            kind: 'cpu',
+            condition: { operator: 'gt', value: 90 },
+            responses: [],
+            deliveryMode: 'inherit',
+            deliveryChannelIds: [],
             cooldownMinutes: 15,
             rationale: 'CPU pressure',
             action: 'none',

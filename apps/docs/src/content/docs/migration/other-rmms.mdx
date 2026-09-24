@@ -96,7 +96,7 @@ curl -sf -H "$H" "https://console.automox.com/api/servers?o=$ORG_ID&limit=500" \
   | jq -r '.[] | [.name, .os_family, .last_disconnect_time] | @tsv'
 ```
 
-**Worklets** are the valuable part: each is a plain bash or PowerShell pair (evaluation + remediation). The remediation body ports directly into a Breeze script; the evaluation body maps well onto a Breeze [monitor](/features/service-monitoring/) or a script with `exitCodeSeverityMapping`.
+**Worklets** are the valuable part: each is a plain bash or PowerShell pair (evaluation + remediation). The remediation body ports directly into a Breeze script; the evaluation body maps well onto a Breeze [monitor](/features/monitors/) or a script with `exitCodeSeverityMapping`.
 
 **Uninstall** — `msiexec /x` the *Automox Agent*, or `/opt/amagent/uninstall.sh` on Linux. Breeze Management Posture fingerprints Automox.
 
@@ -153,7 +153,7 @@ Every guide in this section is the same eight questions. Answer them for your pl
 | 4 | Can its script engine run PowerShell/bash as SYSTEM on a schedule? | [Recipe 3](/migration/toolkit/#recipe-3--the-push-payload) |
 | 5 | Are its scripts text-based (port) or step-based (re-author)? | [Recipe 6](/migration/toolkit/#recipe-6--bulk-script-import) |
 | 6 | Where do its custom fields / UDFs live, and which are populated? | [Custom fields](/features/custom-fields/) |
-| 7 | Which alerts actually generated tickets in the last 90 days? | [Monitors](/features/service-monitoring/) + [alert rules](/features/alerts/) |
+| 7 | Which alerts actually generated tickets in the last 90 days? | [Monitors](/features/monitors/) with [Delivery](/features/notifications/) |
 | 8 | What is the silent uninstall command, and does the platform bundle a *separate* remote-access agent? | [Recipe 5](/migration/toolkit/#recipe-5--find-endpoints-still-running-the-old-agent) |
 
 Question 8 is the one people miss. Datto, Atera, Syncro, and ConnectWise all ship remote-access components installed separately from the RMM agent, and all of them can survive the RMM uninstall.

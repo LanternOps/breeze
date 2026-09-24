@@ -31,6 +31,7 @@ import { restoreDeviceFunction } from '../deviceFunction';
 import { addManualGroupMemberships, validateManualMembershipDevices } from '../groupMembership';
 import { canManagePartnerWidePolicies } from '../partnerWideAccess';
 import { canonical, retireRewrite, snapshotLinks } from './apply';
+import { snapshotFleetMonitors } from './monitorAttachments';
 import { loadLedger, lockReportRun, markRolledBack, type FleetDesignLedgerRow } from './ledger';
 import { FleetDesignApplyError } from './preview';
 import { FLEET_DESIGN_SCRIPT_TAG } from './scripts';
@@ -201,6 +202,19 @@ async function rollbackPolicy(ctx: RollbackCtx, row: FleetDesignLedgerRow): Prom
   const current = canonical(snapshotLinks(await listFeatureLinks(policyId)));
   const expected = row.createdRefs?.linksSnapshot;
   if (!expected || JSON.stringify(current) !== JSON.stringify(canonical(expected))) throw new RollbackRefused('modified_since_apply');
+  // Rollback archives and unassigns the policy but never deletes the monitor
+  // definitions it created (like scripts, they stay for history and reuse);
+  // with the policy archived they no longer reach any device.
+  // W05c2: the monitor definitions this policy's apply created must also be
+  // exactly as apply left them (author fields only). An edited or deleted
+  // definition means a technician owns it now — refuse, never undo their work.
+  const monitorIds = row.createdRefs?.monitorIdsByItemRef;
+  if (monitorIds && Object.keys(monitorIds).length > 0) {
+    const currentMonitors = await snapshotFleetMonitors(Object.values(monitorIds));
+    if (JSON.stringify(canonical(currentMonitors)) !== JSON.stringify(canonical(row.createdRefs?.monitorSnapshots ?? null))) {
+      throw new RollbackRefused('modified_since_apply');
+    }
+  }
 
   const assignmentConditions = [eq(configPolicyAssignments.configPolicyId, policyId)];
   if (row.createdRefs?.assignmentId) assignmentConditions.push(eq(configPolicyAssignments.id, row.createdRefs.assignmentId));

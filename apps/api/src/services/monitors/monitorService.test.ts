@@ -427,7 +427,7 @@ it('creates a system monitor with a null actor using the supplied executor throu
     expect(executor.select).toHaveBeenCalledTimes(2);
     expect(executor.transaction).toHaveBeenCalledTimes(1);
     expect(tx.insert).toHaveBeenCalledTimes(1);
-    expect(compile).toHaveBeenCalledWith(tx, created);
+    expect(compile).toHaveBeenCalledWith(tx, created, {});
     expect(result).toMatchObject({ createdBy: null, compiledAlertRuleId: 'rule-1' });
     expect(dbMock.select).not.toHaveBeenCalled();
     expect(dbMock.transaction).not.toHaveBeenCalled();
@@ -499,5 +499,52 @@ describe('deleteMonitorDefinition: dependent-row FK violation (#6509)', () => {
     await expect(
       deleteMonitorDefinition('monitor-1', auth(), executor as never),
     ).rejects.toBe(otherError);
+  });
+});
+
+describe('Fleet Design savepoint executor propagation (W05c2 Task 16)', () => {
+  it('forwards the exact compile options through the extracted create helper', async () => {
+    const row = existingRow();
+    const values = vi.fn(() => ({ returning: async () => [row] }));
+    const tx = { insert: vi.fn(() => ({ values })) };
+    const executor = { transaction: vi.fn(async (work: (value: typeof tx) => Promise<unknown>) => work(tx)) };
+    const options: monitorCompiler.CompileOptions = {};
+    const compile = vi.spyOn(monitorCompiler, 'compileMonitorInTx').mockResolvedValue({
+      alertTemplateId: 'template', alertRuleId: 'rule', automationId: 'automation', hash: 'hash',
+    } as Awaited<ReturnType<typeof monitorCompiler.compileMonitorInTx>>);
+    try {
+      await createMonitorDefinition(input(), auth(), options,
+        executor as unknown as Parameters<typeof createMonitorDefinition>[3]);
+      expect(executor.transaction).toHaveBeenCalledOnce();
+      expect(compile).toHaveBeenCalledWith(tx, row, options);
+      expect(compile.mock.calls[0]![2]).toBe(options);
+      expect(dbMock.select).not.toHaveBeenCalled();
+      expect(dbMock.transaction).not.toHaveBeenCalled();
+    } finally { compile.mockRestore(); }
+  });
+
+  it('uses the supplied executor for update reads, reference validation and compilation', async () => {
+    const row = existingRow({ escalationPolicyId: ESCALATION_POLICY });
+    const query = (result: unknown[]) => ({ from: () => ({ where: () => ({ limit: async () => result }) }) });
+    const select = vi.fn().mockReturnValueOnce(query([row]))
+      .mockReturnValueOnce(query([{ orgId: null, partnerId: PARTNER }]))
+      .mockReturnValueOnce(query([{ partnerId: PARTNER }]));
+    const updated = { ...row, description: 'Fleet provenance' };
+    const set = vi.fn(() => ({ where: () => ({ returning: async () => [updated] }) }));
+    const tx = { update: vi.fn(() => ({ set })) };
+    const executor = { select, transaction: vi.fn(async (work: (value: typeof tx) => Promise<unknown>) => work(tx)) };
+    const compile = vi.spyOn(monitorCompiler, 'compileMonitorInTx').mockResolvedValue({
+      alertTemplateId: 'template', alertRuleId: 'rule', automationId: 'automation', hash: 'updated-hash',
+    } as Awaited<ReturnType<typeof monitorCompiler.compileMonitorInTx>>);
+    try {
+      await expect(updateMonitorDefinition(row.id as string, { description: 'Fleet provenance' }, auth(),
+        executor as unknown as Parameters<typeof updateMonitorDefinition>[3]))
+        .resolves.toMatchObject({ description: 'Fleet provenance', compiledHash: 'updated-hash' });
+      expect(select).toHaveBeenCalledTimes(3);
+      expect(executor.transaction).toHaveBeenCalledOnce();
+      expect(compile).toHaveBeenCalledWith(tx, updated);
+      expect(dbMock.select).not.toHaveBeenCalled();
+      expect(dbMock.transaction).not.toHaveBeenCalled();
+    } finally { compile.mockRestore(); }
   });
 });

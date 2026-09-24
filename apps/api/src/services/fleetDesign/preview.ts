@@ -36,6 +36,7 @@ import { canManagePartnerWidePolicies } from '../partnerWideAccess';
 import { findSecretVariableReferences, previewBundle } from '../scriptBundle';
 import { findReusableGroup, loadLedger, lockReportRun, type FleetDesignLedgerRow, type LockedReportRun } from './ledger';
 import { buildScriptEnvelope, parseAutomationRef, type FleetDesignScriptToCreate } from './scripts';
+import { legacySelectedMonitorRefs } from './monitorProposalCompatibility';
 
 export type FleetDesignApplyErrorCode = 'not_found' | 'blocked' | 'no_outcome';
 
@@ -176,6 +177,15 @@ export async function previewFleetDesignApplyWithContext(
     const bucket = monitoringByFunction.get(parsed.functionKey) ?? { watches: [], rules: [] };
     (parsed.kind === 'watch' ? bucket.watches : bucket.rules).push(parsed.index);
     monitoringByFunction.set(parsed.functionKey, bucket);
+  }
+  // W05c2 (#6371): a report generated before monitor-shaped proposals carries
+  // legacy rule conditions the monitor writer cannot apply as approved. Block
+  // those items (apply refuses on any blocker, before any write); refs already
+  // applied by an earlier run are not re-applied, so they never block.
+  const pendingRuleRefs = [...monitoringByFunction].flatMap(([key, items]) =>
+    items.rules.map((index) => `monitoring:${key}:rule:${index}`)).filter((ref) => !appliedRefs.has(ref));
+  for (const ref of legacySelectedMonitorRefs(outcome.sections.monitoring, pendingRuleRefs)) {
+    blockers.push({ itemRef: ref, reason: 'legacy_monitor_proposal' });
   }
 
   const policies: FleetDesignApplyPreviewPolicy[] = [];

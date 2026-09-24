@@ -502,3 +502,13 @@ describe('policy feature reference input and read-only resolution (A-W03)', () =
     expect(requiredPermissionsForTool(name, input)).toEqual([{ resource: 'devices', action: 'read' }]);
   });
 });
+
+describe('manage_service_monitors is a resolver-backed read (W05c2 Task 14)', () => {
+  it('advertises service monitors as resolver-backed reads and points writes at definitions', () => {
+    expect(declaredDescription('manage_service_monitors')).toContain('manage_monitor_definitions');
+    const block = SOURCE.split("'manage_service_monitors',")[1]!.split("makeHandler('manage_service_monitors'")[0]!;
+    expect(block).toContain("action: z.enum(['list'])");
+    expect(block).not.toContain('watchType:');
+    expect(validateToolInput('manage_service_monitors', { action: 'add' }).success).toBe(false);
+  });
+});

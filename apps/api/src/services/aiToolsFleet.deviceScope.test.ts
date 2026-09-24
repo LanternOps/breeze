@@ -44,6 +44,8 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: deleteSpy, transaction: vi.fn() },
 }));
+const resolverMock = vi.hoisted(() => vi.fn());
+vi.mock('./monitors/monitorResolver', () => ({ resolveMonitorsForDevice: resolverMock }));
 vi.mock('../jobs/peripheralJobs', () => ({
   schedulePeripheralPolicyDevice: vi.fn(async () => undefined),
 }));
@@ -541,62 +543,48 @@ describe('manage_maintenance_windows get — device targets are narrowed', () =>
 });
 
 // ── 8. manage_service_monitors ───────────────────────────────────────────────
-describe('manage_service_monitors list — narrowed to policies that reach the caller', () => {
-  function mockMonitors(assignments: Array<Record<string, unknown>>) {
+// W05c2 (#6371): the list resolves effective monitors per DEVICE, so the device
+// axis is enforced before the resolver ever runs for a sibling device.
+describe('manage_service_monitors list — resolves only devices that reach the caller', () => {
+  function mockDevices(rows: Array<{ id: string; orgId: string; siteId: string }>) {
     let call = 0;
     mockDb.select.mockImplementation(() => {
       if (call++ === 0) {
-        const chain: any = {
-          innerJoin: () => chain,
-          where: () => ({ orderBy: () => Promise.resolve([
-            { watchId: 'w1', name: 'svc-a', policyId: 'pol-1' },
-            { watchId: 'w2', name: 'svc-b', policyId: 'pol-2' },
-          ]) }),
-        };
-        return { from: () => chain };
+        return { from: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve(rows) }) }) }) };
       }
-      return { from: () => ({ where: () => Promise.resolve(assignments) }) };
+      return { from: () => ({ where: () => Promise.resolve([
+        { id: 'mon-1', name: 'Spooler', kind: 'service', enabled: true, condition: { serviceName: 'Spooler' } },
+      ]) }) };
     });
   }
 
-  it('drops a policy assigned only to a sibling device', async () => {
-    mockMonitors([
-      { configPolicyId: 'pol-1', level: 'device', targetId: 'dev-1' },
-      { configPolicyId: 'pol-2', level: 'device', targetId: 'dev-2' },
+  beforeEach(() => {
+    resolverMock.mockReset();
+    resolverMock.mockResolvedValue({
+      kind: 'resolved',
+      monitors: [{ monitorId: 'mon-1', enabled: true, overrides: null, sourcePolicyId: 'pol-1' }],
+    });
+  });
+
+  it('never resolves a sibling device for a device-bound run', async () => {
+    mockDevices([
+      { id: 'dev-1', orgId: 'org-1', siteId: 'site-1' },
+      { id: 'dev-2', orgId: 'org-1', siteId: 'site-1' },
     ]);
     const body = JSON.parse(await handlerFor('manage_service_monitors')({ action: 'list' }, deviceBoundAuth()));
-    expect(body.monitors.map((m: any) => m.policyId)).toEqual(['pol-1']);
+    expect(resolverMock.mock.calls.map((c) => c[0])).toEqual(['dev-1']);
+    expect(body.monitors.map((m: any) => m.deviceId)).toEqual(['dev-1']);
     expect(body.showing).toBe(1);
   });
 
-  it('keeps an org-wide policy, which reaches the run device too', async () => {
-    mockMonitors([
-      { configPolicyId: 'pol-1', level: 'organization', targetId: 'org-1' },
-      { configPolicyId: 'pol-2', level: 'site', targetId: 'site-9' },
+  it('unrestricted caller resolves every accessible device', async () => {
+    mockDevices([
+      { id: 'dev-1', orgId: 'org-1', siteId: 'site-1' },
+      { id: 'dev-2', orgId: 'org-1', siteId: 'site-2' },
     ]);
-    const body = JSON.parse(await handlerFor('manage_service_monitors')({ action: 'list' }, deviceBoundAuth()));
-    expect(body.monitors.map((m: any) => m.policyId)).toEqual(['pol-1']);
-  });
-
-  it('unrestricted caller sees every monitor and runs no assignment query', async () => {
-    let assignmentQueries = 0;
-    let call = 0;
-    mockDb.select.mockImplementation(() => {
-      if (call++ === 0) {
-        const chain: any = {
-          innerJoin: () => chain,
-          where: () => ({ orderBy: () => Promise.resolve([
-            { watchId: 'w1', policyId: 'pol-1' }, { watchId: 'w2', policyId: 'pol-2' },
-          ]) }),
-        };
-        return { from: () => chain };
-      }
-      assignmentQueries++;
-      return { from: () => ({ where: () => Promise.resolve([]) }) };
-    });
     const body = JSON.parse(await handlerFor('manage_service_monitors')({ action: 'list' }, unrestrictedAuth()));
     expect(body.showing).toBe(2);
-    expect(assignmentQueries).toBe(0);
+    expect(body).not.toHaveProperty('truncated');
   });
 });
 

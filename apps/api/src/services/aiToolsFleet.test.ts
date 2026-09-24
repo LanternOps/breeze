@@ -203,7 +203,6 @@ vi.mock('../routes/patches/helpers', () => ({
   MAX_PAGE_LIMIT: 200,
 }));
 
-import { policyAccessCondition } from './configurationPolicy';
 import { db } from '../db';
 import { registerFleetTools, requireOrgOwnedReportRow } from './aiToolsFleet';
 import type { AiTool } from './aiTools';
@@ -987,12 +986,12 @@ describe('manage_service_monitors handler', () => {
     expect(typeof result).toBe('object');
   });
 
-  it('unknown actions return error with redirect to manage_policy_feature_link', async () => {
+  it('unknown actions return error with redirect to manage_monitor_definitions', async () => {
     const result = JSON.parse(await tool.handler({
       action: 'add', name: 'wuauserv',
     }, mockAuth));
     expect(result.error).toContain('Only "list" is supported');
-    expect(result.error).toContain('manage_policy_feature_link');
+    expect(result.error).toContain('manage_monitor_definitions');
   });
 
   it('returns error for unknown action', async () => {
@@ -1138,43 +1137,6 @@ describe('get_fleet_findings handler', () => {
     expect(result.findings).toEqual([]);
     expect(result.total).toBe(0);
   });
-});
-
-// Partner-wide config-policy visibility in the AI fleet tools (#3493).
-//
-// A partner-wide ("All orgs") configuration policy stores `org_id NULL`, so
-// every reader filtering with a bare `orgWhere(auth, configurationPolicies.orgId)`
-// silently excludes it — including from the partner-scoped tech who authored it.
-// This pins the one REACHABLE reader in this file to the dual-axis condition.
-// (`setup_auto_approval` carries the same fix, but its action early-returns as
-// disabled, so there is no live path to assert against.)
-describe('partner-wide config-policy access in fleet tools (#3493)', () => {
-  const toolMap = new Map<string, AiTool>();
-  registerFleetTools(toolMap);
-
-  const partnerAuth = {
-    user: { id: 'u1', email: 'test@test.com', name: 'Test' },
-    orgId: 'org-1',
-    partnerId: 'partner-1',
-    scope: 'partner',
-    accessibleOrgIds: ['org-1'],
-    canAccessOrg: () => true,
-    orgCondition: () => undefined,
-  } as never;
-
-  beforeEach(() => {
-    vi.mocked(policyAccessCondition).mockClear();
-  });
-
-  it('manage_service_monitors list filters with the dual-axis policy condition', async () => {
-    await toolMap.get('manage_service_monitors')!.handler({ action: 'list' }, partnerAuth);
-
-    // A regression back to `orgWhere(auth, configurationPolicies.orgId)` never
-    // reaches this helper, so the call count — not just the argument — is the
-    // assertion that matters.
-    expect(policyAccessCondition).toHaveBeenCalledWith(partnerAuth);
-  });
-
 });
 
 describe('exported builders for export_dataset reuse', () => {

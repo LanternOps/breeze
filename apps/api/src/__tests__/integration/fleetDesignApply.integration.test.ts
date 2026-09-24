@@ -41,12 +41,14 @@ import {
 import {
   configPolicyAssignments,
   configPolicyFeatureLinks,
+  configPolicyMonitors,
   configurationPolicies,
   deviceFunctionAssessments,
   deviceGroupMemberships,
   deviceGroups,
   devices,
   fleetDesignAppliedItems,
+  monitorDefinitions,
   reportRuns,
   reports,
   scripts,
@@ -66,6 +68,8 @@ import {
 } from '../../services/configurationPolicy';
 import { upsertDeviceFunction } from '../../services/deviceFunction';
 import { applyFleetDesign } from '../../services/fleetDesign/apply';
+import { attachFleetMonitors } from '../../services/fleetDesign/monitorAttachments';
+import { updateMonitorDefinition } from '../../services/monitors/monitorService';
 import { loadLedger } from '../../services/fleetDesign/ledger';
 import { FleetDesignApplyError, previewFleetDesignApply } from '../../services/fleetDesign/preview';
 import { rollbackFleetDesign } from '../../services/fleetDesign/rollback';
@@ -193,21 +197,29 @@ async function seedFixture(): Promise<Fixture> {
 const GOOD_RULE: FleetDesignRule = {
   name: 'File server disk full',
   severity: 'high',
-  conditions: [{ type: 'metric', metric: 'disk', operator: 'gt', value: 90 }],
+  kind: 'disk',
+  condition: { operator: 'gt', value: 90, durationMinutes: 15 },
+  responses: [],
+  deliveryMode: 'inherit',
+  deliveryChannelIds: [],
   cooldownMinutes: 30,
   rationale: 'Disk exhaustion breaks file shares',
   action: 'none',
   paging: 'business_hours',
 };
 
-/** Deliberately bypasses fleetDesignSubmissionSchema (name > alertRuleItemSchema's
- *  max(200)) — case 8 models a stored outcome whose rule content the apply-time
- *  decompose step (alertRuleInlineSettingsSchema, config_policy_alert_rules) is
- *  the one to reject, not the HTTP submission validator. */
+/** Deliberately bypasses fleetDesignSubmissionSchema (name > the monitor
+ *  definition's max(200)) — case 8 models a stored outcome whose rule content the
+ *  apply-time monitor writer (createMonitorDefinitionSchema, W05c2) is the one to
+ *  reject, not the HTTP submission validator. */
 const BAD_RULE: FleetDesignRule = {
   name: 'x'.repeat(250),
   severity: 'high',
-  conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 1 }],
+  kind: 'cpu',
+  condition: { operator: 'gt', value: 1 },
+  responses: [],
+  deliveryMode: 'inherit',
+  deliveryChannelIds: [],
   cooldownMinutes: 5,
   rationale: 'bad',
   action: 'none',
@@ -365,6 +377,17 @@ async function readAlertRuleLink(policyId: string) {
   return row;
 }
 
+/** The monitor definitions attached through a policy's inline `monitors` link (W05c2). */
+async function readPolicyMonitors(policyId: string) {
+  const rows = await getTestDb()
+    .select({ definition: monitorDefinitions, attachment: configPolicyMonitors })
+    .from(configPolicyMonitors)
+    .innerJoin(configPolicyFeatureLinks, eq(configPolicyFeatureLinks.id, configPolicyMonitors.featureLinkId))
+    .innerJoin(monitorDefinitions, eq(monitorDefinitions.id, configPolicyMonitors.monitorId))
+    .where(and(eq(configPolicyFeatureLinks.configPolicyId, policyId), eq(configPolicyFeatureLinks.featureType, 'monitors')));
+  return rows;
+}
+
 async function readGroupByName(orgId: string, name: string) {
   const [row] = await getTestDb().select().from(deviceGroups).where(and(eq(deviceGroups.orgId, orgId), eq(deviceGroups.name, name)));
   return row;
@@ -454,14 +477,23 @@ describe('Fleet Design apply / rollback / ledger against live Postgres (Fleet De
     expect(assignments).toHaveLength(1);
     expect(assignments[0]).toMatchObject({ level: 'device_group', targetId: group!.id, priority: 100, roleFilter: null, osFilter: null });
 
-    const monitoringLink = await readMonitoringLink(policyId);
-    const monitoringSettings = monitoringLink?.inlineSettings as { watches: Array<{ name: string; rationale?: string }> };
-    expect(monitoringSettings.watches[0]?.name).toBe('LanmanServer');
-    expect(monitoringSettings.watches[0]?.rationale).toBe('Core file-sharing service');
-
-    const alertRuleLink = await readAlertRuleLink(policyId);
-    const alertRuleSettings = alertRuleLink?.inlineSettings as { items: Array<{ name: string; rationale?: string }> };
-    expect(alertRuleSettings.items[0]?.rationale).toBe('Disk exhaustion breaks file shares [Action: none; Paging: business_hours]');
+    // W05c2: the policy carries ONE `monitors` link — no legacy watch/rule links.
+    const links = await withDbAccessContext(f.dbCtxA, () => listFeatureLinks(policyId));
+    expect(links.map((link) => link.featureType)).toEqual(['monitors']);
+    expect(await readMonitoringLink(policyId)).toBeUndefined();
+    expect(await readAlertRuleLink(policyId)).toBeUndefined();
+    const made = await readPolicyMonitors(policyId);
+    expect(made.map((row) => row.definition.kind).sort()).toEqual(['disk', 'service']);
+    expect(made.every((row) => row.definition.orgId === f.envA.orgId && row.definition.partnerId === null)).toBe(true);
+    expect(made.every((row) => row.definition.compiledAlertRuleId !== null)).toBe(true);
+    const watchMonitor = made.find((row) => row.definition.kind === 'service')!.definition;
+    expect(watchMonitor).toMatchObject({ name: 'LanmanServer', description: 'Core file-sharing service', condition: { serviceName: 'LanmanServer' } });
+    expect(watchMonitor.responses).toEqual([expect.objectContaining({ type: 'execute_command', kind: 'restart_service' })]);
+    const ruleMonitor = made.find((row) => row.definition.kind === 'disk')!.definition;
+    expect(ruleMonitor.description).toBe('Disk exhaustion breaks file shares [Action: none; Paging: business_hours]');
+    // Every watch/rule ledger row names the monitor it created.
+    const ruleLedger = (await readLedger(runId)).find((r) => r.itemRef === 'monitoring:file_server:rule:0');
+    expect(ruleLedger?.createdRefs?.monitorId).toBe(ruleMonitor.id);
 
     const baselineMonitoringLink = await readMonitoringLink(f.baselinePolicyId);
     const baselineWatches = (baselineMonitoringLink?.inlineSettings as { watches: Array<{ name: string; enabled?: boolean }> }).watches;
@@ -485,6 +517,7 @@ describe('Fleet Design apply / rollback / ledger against live Postgres (Fleet De
     const ledgerBefore = await readLedger(runId);
     const policiesBefore = await getTestDb().select().from(configurationPolicies).where(eq(configurationPolicies.orgId, f.envA.orgId));
     const groupsBefore = await getTestDb().select().from(deviceGroups).where(eq(deviceGroups.orgId, f.envA.orgId));
+    const monitorsBefore = await getTestDb().select({ id: monitorDefinitions.id }).from(monitorDefinitions).where(eq(monitorDefinitions.orgId, f.envA.orgId));
 
     const second = await withDbAccessContext(f.dbCtxA, () => applyFleetDesign(f.authA, runId, fullApproval(f.deviceIds, [f.baselinePolicyId])));
 
@@ -499,6 +532,8 @@ describe('Fleet Design apply / rollback / ledger against live Postgres (Fleet De
     expect(ledgerAfter).toHaveLength(ledgerBefore.length);
     expect(policiesAfter).toHaveLength(policiesBefore.length);
     expect(groupsAfter).toHaveLength(groupsBefore.length);
+    const monitorsAfter = await getTestDb().select({ id: monitorDefinitions.id }).from(monitorDefinitions).where(eq(monitorDefinitions.orgId, f.envA.orgId));
+    expect(monitorsAfter).toHaveLength(monitorsBefore.length);
   });
 
   runDb("5. cross-org: preview throws not_found; RLS forges 42501, org A's own insert succeeds", async () => {
@@ -577,13 +612,13 @@ describe('Fleet Design apply / rollback / ledger against live Postgres (Fleet De
     const ledger = await readLedger(runId);
     const policyId = ledger.find((r) => r.itemRef === 'policy:file_server')!.createdRefs!.policyId as string;
 
-    // Corrupt the created policy's monitoring link by hand.
+    // Edit the created policy's monitors link by hand (disable every attachment).
     await withDbAccessContext(f.dbCtxA, async () => {
       const links = await listFeatureLinks(policyId);
-      const monitoringLink = links.find((l) => l.featureType === 'monitoring')!;
-      const settings = monitoringLink.inlineSettings as { checkIntervalSeconds: number; watches: Array<Record<string, unknown>> };
-      await updateFeatureLink(monitoringLink.id, {
-        inlineSettings: { ...settings, watches: settings.watches.map((w) => ({ ...w, name: 'CorruptedWatchName' })) },
+      const monitorsLink = links.find((l) => l.featureType === 'monitors')!;
+      const settings = monitorsLink.inlineSettings as { inheritance: string; items: Array<Record<string, unknown>> };
+      await updateFeatureLink(monitorsLink.id, {
+        inlineSettings: { ...settings, items: settings.items.map((item) => ({ ...item, enabled: false })) },
       }, policyId);
     });
 
@@ -723,19 +758,21 @@ describe('Fleet Design apply / rollback / ledger against live Postgres (Fleet De
     expect(namedPolicies).toHaveLength(1);
     expect(namedPolicies[0]!.id).toBe(policyId);
 
-    // Both links carry their item.
-    const monitoringLink = await readMonitoringLink(policyId);
-    expect((monitoringLink?.inlineSettings as { watches: Array<{ name: string }> }).watches.map((w) => w.name)).toEqual(['LanmanServer']);
-    const alertRuleLink = await readAlertRuleLink(policyId);
-    expect((alertRuleLink?.inlineSettings as { items: Array<{ name: string }> }).items.map((i) => i.name)).toEqual(['File server disk full']);
+    // One monitors link carries both items (watch from apply 1, rule from apply 2).
+    expect((await readPolicyMonitors(policyId)).map((row) => row.definition.name).sort())
+      .toEqual(['File server disk full', 'LanmanServer'].sort());
+    expect(await readMonitoringLink(policyId)).toBeUndefined();
+    expect(await readAlertRuleLink(policyId)).toBeUndefined();
 
     // Ledger has exactly ONE policy:<key> row, refreshed to cover both.
     const ledgerAfterSecond = await readLedger(runId);
     const policyRows = ledgerAfterSecond.filter((r) => r.itemRef === 'policy:file_server');
     expect(policyRows).toHaveLength(1);
-    const linksSnapshot = policyRows[0]!.createdRefs!.linksSnapshot as { monitoring: unknown; alertRule: unknown };
-    expect(linksSnapshot.monitoring).not.toBeNull();
-    expect(linksSnapshot.alertRule).not.toBeNull();
+    const createdRefs = policyRows[0]!.createdRefs!;
+    const linksSnapshot = createdRefs.linksSnapshot as { monitoring: unknown; alertRule: unknown; monitors?: unknown };
+    expect(linksSnapshot.monitors).toBeDefined();
+    expect(Object.keys(createdRefs.monitorIdsByItemRef ?? {}).sort())
+      .toEqual(['monitoring:file_server:rule:0', 'monitoring:file_server:watch:0']);
 
     // Rollback of the run succeeds — must NOT refuse with modified_since_apply
     // (the failure this case exists to catch: an unrefreshed linksSnapshot
@@ -868,11 +905,10 @@ describe('Fleet Design apply / rollback / ledger against live Postgres (Fleet De
     const [untouched] = await getTestDb().select().from(scripts).where(eq(scripts.id, existing!.id));
     expect(untouched!.content).toBe('Write-Output "hand-written"');
 
-    // The rule that named the proposal now names the created script.
+    // The monitor created from the rule that named the proposal now names the created script.
     const policyId = ledger.find((r) => r.itemRef === 'policy:file_server')!.createdRefs!.policyId as string;
-    const ruleLink = await readAlertRuleLink(policyId);
-    const rationale = (ruleLink?.inlineSettings as { items: Array<{ rationale: string }> }).items[0]!.rationale;
-    expect(rationale).toContain(`[script created: ${scriptId}]`);
+    const ruleMonitor = (await readPolicyMonitors(policyId)).find((row) => row.definition.name === 'Spooler stuck');
+    expect(ruleMonitor?.definition.description).toContain(`[script created: ${scriptId}]`);
 
     // Re-apply: no second script.
     const again = await withDbAccessContext(f.dbCtxA, () => applyFleetDesign(f.authA, runId, approval));
@@ -975,5 +1011,61 @@ describe('Fleet Design apply / rollback / ledger against live Postgres (Fleet De
       .toEqual(expect.arrayContaining([expect.objectContaining({ name: 'Spooler', enabled: false })]));
     // Step 5 was never entered after the failure.
     expect(await readDevice(f.deviceIds[1])).toMatchObject({ deviceRole: 'unknown', deviceRoleSource: 'auto' });
+  });
+
+  // -------------------------------------------------------------------------
+  // W05c2 (#6371): monitor attachments are atomic with the step savepoint
+  // -------------------------------------------------------------------------
+  runDb('15. Fleet monitor creation rolls back with its step: no orphan definition, no link', async () => {
+    const f = await seedFixture();
+    const policy = await withDbAccessContext(f.dbCtxA, () => createConfigPolicy(
+      { orgId: f.envA.orgId }, { name: 'Atomic monitor apply', status: 'inactive' }, f.envA.userId));
+    const name = `Atomic ${randomUUID()}`;
+    await expect(withDbAccessContext(f.dbCtxA, () => db.transaction(async (tx) => {
+      await attachFleetMonitors(policy.id, [{ itemRef: 'x', definition: {
+        name, kind: 'cpu', condition: { operator: 'gt', value: 80 }, severity: 'high',
+      } }], f.authA, tx);
+      throw new Error('force_step_failure');
+    }))).rejects.toThrow('force_step_failure');
+    expect(await getTestDb().select().from(monitorDefinitions).where(eq(monitorDefinitions.name, name))).toEqual([]);
+    expect(await withDbAccessContext(f.dbCtxA, () => listFeatureLinks(policy.id))).toEqual([]);
+  });
+
+  runDb('16. rollback preserves a monitor edited after Fleet apply', async () => {
+    const f = await seedFixture();
+    const runId = await seedReportRun(f.envA.orgId, buildOutcome({
+      functionKey: 'file_server', deviceIds: f.deviceIds, roleCorrectionDeviceId: f.deviceIds[1], retiredPolicyId: f.baselinePolicyId, rule: GOOD_RULE,
+    }));
+    await withDbAccessContext(f.dbCtxA, () => applyFleetDesign(f.authA, runId, fullApproval(f.deviceIds, [f.baselinePolicyId])));
+    const ledger = await readLedger(runId);
+    const created = ledger.find((row) => row.itemRef === 'policy:file_server')!.createdRefs!;
+    const monitorId = (created.monitorIdsByItemRef as Record<string, string>)['monitoring:file_server:rule:0']!;
+    await withDbAccessContext(f.dbCtxA, () => updateMonitorDefinition(monitorId, {
+      condition: { operator: 'gt', value: 92, durationMinutes: 15 },
+    }, f.authA));
+
+    const result = await withDbAccessContext(f.dbCtxA, () => rollbackFleetDesign(f.authA, runId));
+
+    expect(result.refused).toContainEqual({ itemRef: 'policy:file_server', reason: 'modified_since_apply' });
+    const [row] = await getTestDb().select().from(monitorDefinitions).where(eq(monitorDefinitions.id, monitorId));
+    expect(row!.condition).toMatchObject({ value: 92 });
+  });
+
+  runDb('17. rollback of an unedited monitor apply archives the policy and keeps the definitions', async () => {
+    const f = await seedFixture();
+    const runId = await seedReportRun(f.envA.orgId, buildOutcome({
+      functionKey: 'file_server', deviceIds: f.deviceIds, roleCorrectionDeviceId: f.deviceIds[1], retiredPolicyId: f.baselinePolicyId, rule: GOOD_RULE,
+    }));
+    await withDbAccessContext(f.dbCtxA, () => applyFleetDesign(f.authA, runId, fullApproval(f.deviceIds, [f.baselinePolicyId])));
+    const created = (await readLedger(runId)).find((row) => row.itemRef === 'policy:file_server')!.createdRefs!;
+    const ids = Object.values(created.monitorIdsByItemRef as Record<string, string>);
+
+    const result = await withDbAccessContext(f.dbCtxA, () => rollbackFleetDesign(f.authA, runId));
+
+    expect(result.refused).toEqual([]);
+    expect((await readPolicy(created.policyId as string))?.status).toBe('archived');
+    for (const id of ids) {
+      expect(await getTestDb().select({ id: monitorDefinitions.id }).from(monitorDefinitions).where(eq(monitorDefinitions.id, id))).toHaveLength(1);
+    }
   });
 });

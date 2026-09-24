@@ -60,6 +60,8 @@ import {
 } from '../../db/schema';
 import { buildDbAccessContext, buildOrgAccessClosures, type AuthContext } from '../../middleware/auth';
 import { applyFleetDesign } from '../../services/fleetDesign/apply';
+import { attachFleetMonitors } from '../../services/fleetDesign/monitorAttachments';
+import { addFeatureLink } from '../../services/configurationPolicy';
 import { rollbackFleetDesign } from '../../services/fleetDesign/rollback';
 import { computeDrift, loadApprovedDesign, loadDriftLiveState } from '../../services/fleetDesign/drift';
 import { fileFleetDesignDocument, fleetDesignDocumentFilename } from '../../services/fleetDesign/documents';
@@ -165,7 +167,11 @@ async function seedFixture(): Promise<Fixture> {
 const DRIFT_RULE: FleetDesignRule = {
   name: 'File server disk full',
   severity: 'high',
-  conditions: [{ type: 'metric', metric: 'disk', operator: 'gt', value: 90 }],
+  kind: 'disk',
+  condition: { operator: 'gt', value: 90 },
+  responses: [],
+  deliveryMode: 'inherit',
+  deliveryChannelIds: [],
   cooldownMinutes: 30,
   rationale: 'Disk exhaustion breaks file shares',
   action: 'none',
@@ -268,40 +274,41 @@ async function readLedger(reportRunId: string) {
   return getTestDb().select().from(fleetDesignAppliedItems).where(eq(fleetDesignAppliedItems.reportRunId, reportRunId));
 }
 
-/** Hand-disables the named watch on the given policy's monitoring feature
- *  link, mimicking a technician editing the applied policy directly. Run
+/** Hand-disables the design's monitor attachment for the named service
+ *  (W05c2: Fleet Design applies watches as monitors on the policy's `monitors`
+ *  link), mimicking a technician editing the applied policy directly. Run
  *  under system DB context (bypasses RLS, exactly like `loadDesignEvidence`
  *  itself is invoked in these tests). */
 async function disableWatchByHand(policyId: string, watchName: string): Promise<void> {
   await withSystemDbAccessContext(() => db.execute(sql`
-    UPDATE config_policy_monitoring_watches w
+    UPDATE config_policy_monitors pm
     SET enabled = false
-    FROM config_policy_monitoring_settings ms, config_policy_feature_links fl
-    WHERE w.settings_id = ms.id
-      AND ms.feature_link_id = fl.id
+    FROM config_policy_feature_links fl, monitor_definitions md
+    WHERE pm.feature_link_id = fl.id
+      AND md.id = pm.monitor_id
       AND fl.config_policy_id = ${policyId}::uuid
-      AND fl.feature_type = 'monitoring'
-      AND w.name = ${watchName}
+      AND fl.feature_type = 'monitors'
+      AND md.condition->>'serviceName' = ${watchName}
   `));
 }
 
-/** Inserts a watch or rule row directly onto the policy's own feature link,
- *  mimicking a technician adding one by hand after the design was applied. */
-async function addItemByHand(policyId: string, kind: 'watch' | 'rule', name: string): Promise<void> {
-  await withSystemDbAccessContext(() => (kind === 'watch'
-    ? db.execute(sql`
-        INSERT INTO config_policy_monitoring_watches (settings_id, watch_type, name, enabled)
-        SELECT ms.id, 'service', ${name}, true
-        FROM config_policy_monitoring_settings ms
-        JOIN config_policy_feature_links fl ON fl.id = ms.feature_link_id
-        WHERE fl.config_policy_id = ${policyId}::uuid AND fl.feature_type = 'monitoring'
-      `)
-    : db.execute(sql`
-        INSERT INTO config_policy_alert_rules (feature_link_id, name, severity, conditions, cooldown_minutes)
-        SELECT fl.id, ${name}, 'low', '[]'::jsonb, 5
-        FROM config_policy_feature_links fl
-        WHERE fl.config_policy_id = ${policyId}::uuid AND fl.feature_type = 'alert_rule'
-      `)));
+/** Adds an item to the design's own policy by hand after apply: a legacy watch
+ *  on a new `monitoring` link (still writable during W05c), or a monitor
+ *  attached through the policy's `monitors` link that no design item created. */
+async function addItemByHand(f: { dbCtxA: DbAccessContext; authA: AuthContext }, policyId: string, kind: 'watch' | 'rule' | 'service_monitor', name: string): Promise<void> {
+  await withDbAccessContext(f.dbCtxA, async () => {
+    if (kind === 'watch') {
+      await addFeatureLink(policyId, 'monitoring', null, {
+        checkIntervalSeconds: 60,
+        watches: [{ watchType: 'service', name, enabled: true, alertOnStop: true, autoRestart: false }],
+      });
+      return;
+    }
+    const definition = kind === 'service_monitor'
+      ? { name, kind: 'service', condition: { serviceName: name }, severity: 'low' }
+      : { name, kind: 'cpu', condition: { operator: 'gt', value: 95 }, severity: 'low' };
+    await db.transaction((tx) => attachFleetMonitors(policyId, [{ itemRef: 'hand', definition }], f.authA, tx));
+  });
 }
 
 async function countFleetDesignLedger(orgId: string): Promise<number> {
@@ -387,15 +394,17 @@ describe('Fleet Design drift against live Postgres (Fleet Designer W05, #5655)',
     const ledger = await readLedger(runId);
     const policyId = ledger.find((r) => r.itemRef === 'policy:file_server')!.createdRefs!.policyId as string;
 
-    await addItemByHand(policyId, 'watch', 'HandAddedWatch');
-    await addItemByHand(policyId, 'rule', 'Hand-added rule');
+    await addItemByHand(f, policyId, 'watch', 'HandAddedWatch');
+    await addItemByHand(f, policyId, 'rule', 'Hand-added rule');
+    await addItemByHand(f, policyId, 'service_monitor', 'HandAttachedSvc');
 
     const evidence = await withSystemDbAccessContext(() => loadDesignEvidence(f.envA.orgId, {}));
     const drift = computeDrift(evidence.approvedDesign!, evidence.driftLive!);
 
     // Both arrive through loadDriftLiveState's own watch/rule JOINs — the
     // part of the loader the fixture-driven unit tests cannot exercise.
-    expect(drift.extra.map((e) => `${e.kind}:${e.name}`).sort()).toEqual(['rule:Hand-added rule', 'watch:HandAddedWatch']);
+    // A hand-attached service monitor with no design provenance is a watch.
+    expect(drift.extra.map((e) => `${e.kind}:${e.name}`).sort()).toEqual(['rule:Hand-added rule', 'watch:HandAddedWatch', 'watch:HandAttachedSvc']);
     // Both devices are still in the function group, so the count is real.
     expect(drift.extra.every((e) => e.deviceCount === 2)).toBe(true);
     expect(drift.missing).toEqual([]);

@@ -113,12 +113,12 @@ Bulk-load with [Recipe 6](/migration/toolkit/#recipe-6--bulk-script-import), `av
 
 ## Thresholds, Alerting, and the PSA Decision
 
-Atera's monitoring is configured through **Threshold Profiles** applied per customer or agent. Rebuild them as Breeze [monitors](/features/service-monitoring/) plus [alert rules](/features/alerts/), defined **partner-wide** so one profile covers your whole estate rather than one per customer.
+Atera's monitoring is configured through **Threshold Profiles** applied per customer or agent. Rebuild them as Breeze [monitors](/features/monitors/) with [Delivery](/features/notifications/), defined **partner-wide** so one profile covers your whole estate rather than one per customer.
 
 Then make the ticketing decision explicitly:
 
-- **Moving to Breeze ticketing.** Use [Breeze tickets](/features/ticketing/) and point alert rules at them. Atera ticket history does not migrate — export it and keep it as an archive.
-- **Moving to an external PSA.** Connect it via [PSA integrations](/features/psa-integrations/) and point alert rules there.
+- **Moving to Breeze ticketing.** Use [Breeze tickets](/features/ticketing/) and configure its supported alert integration. Atera ticket history does not migrate — export it and keep it as an archive.
+- **Moving to an external PSA.** Connect it via [PSA integrations](/features/psa-integrations/) and configure its supported alert integration.
 
 Either way, disable Atera's alerting for a customer only after Breeze alerting is proven for that customer.
 
