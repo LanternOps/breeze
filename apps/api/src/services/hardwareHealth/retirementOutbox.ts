@@ -24,6 +24,7 @@ import { alerts, hardwareAlertRetirementOutbox } from '../../db/schema';
 import type { SubjectAlertDispatch } from '../alertService';
 import { publishEvent } from '../eventBus';
 import { recordStateTransition, setCooldown } from '../alertCooldown';
+import { captureException } from '../sentry';
 
 export async function stageRetiredSubjectResolution(alertId: string): Promise<void> {
   assertInTransaction('stageRetiredSubjectResolution');
@@ -72,6 +73,7 @@ export async function drainRetirementOutbox(deviceId?: string): Promise<void> {
       }
       await withSystemDbAccessContext(() => db.delete(hardwareAlertRetirementOutbox).where(owned));
     } catch (error) {
+      captureException(error, undefined, { errorId: 'hardware-retirement-outbox-dispatch-failed', outboxId: row.id });
       console.error('[RetirementOutbox] Committed recovery will retry', row.id, error);
       await withSystemDbAccessContext(() => db.update(hardwareAlertRetirementOutbox)
         .set({ leaseToken: null, leaseUntil: null }).where(owned));

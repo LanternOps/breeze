@@ -1359,6 +1359,13 @@ async function evaluateDeviceAlertsInMode(deviceId: string, mode: DeviceEvaluati
       }
     } catch (error) {
       console.error(`[AlertService] Error evaluating rule ${rule.id} for device ${deviceId}:`, error);
+      // Also the only guard around the hardware subject transaction (W03):
+      // report it, or a recurring failure silently stops hardware alerts.
+      captureException(error, undefined, {
+        errorId: 'alert-rule-evaluation-failed',
+        ruleId: rule.id,
+        deviceId,
+      });
     }
   }
 

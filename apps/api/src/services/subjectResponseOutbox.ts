@@ -23,6 +23,7 @@ import { db, hasDbAccessContext, withDbTransaction, withSystemDbAccessContext } 
 import { automations, monitorEpisodes } from '../db/schema';
 import { createAutomationRunRecord, type AutomationTriggerContext } from './automationRuntime';
 import { publishEvent } from './eventBus';
+import { captureException } from './sentry';
 
 type Dispatch = {
   runId: string;
@@ -116,6 +117,7 @@ export async function drainSubjectResponseOutbox(
       await withSystemDbAccessContext(() =>
         db.update(monitorEpisodes).set({ responseDispatch: null, updatedAt: new Date() }).where(ownsLease));
     } catch (error) {
+      captureException(error, undefined, { errorId: 'subject-response-outbox-dispatch-failed', episodeId: row.id });
       console.error('[SubjectResponseOutbox] Dispatch failed; admission remains committed', row.id, error);
       await withSystemDbAccessContext(() =>
         db.update(monitorEpisodes).set({

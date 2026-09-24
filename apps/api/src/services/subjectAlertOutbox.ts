@@ -138,6 +138,7 @@ export async function drainSubjectAlertOutbox(deviceId?: string): Promise<void> 
           'subject-alert-outbox.ack',
         );
       } catch (error) {
+        captureException(error, undefined, { errorId: 'subject-alert-ack-failed', alertId: row.id });
         console.error('[SubjectAlertOutbox] Acknowledgement failed; stable event ID will retry', row.id, error);
       }
 
@@ -154,6 +155,7 @@ export async function drainSubjectAlertOutbox(deviceId?: string): Promise<void> 
         try {
           await effect();
         } catch (error) {
+          captureException(error, undefined, { errorId: 'subject-alert-post-publish-effect-failed', alertId: row.id });
           console.error('[SubjectAlertOutbox] Post-publication effect failed', row.id, error);
         }
       }
