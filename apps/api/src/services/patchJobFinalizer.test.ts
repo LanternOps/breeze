@@ -651,6 +651,100 @@ describe('finalizePatchJobDevice — patch job failure alert (#5750 W04)', () =>
     expect(emitPatchJobFailureAlert).not.toHaveBeenCalled();
   });
 
+  // #6910: winget "no applicable upgrade" (0x8A15002B) and a WUA update that
+  // is no longer offered (superseded Defender definitions, KB2267602) come
+  // back from the agent as status 'skipped'. They are not failures — no alert,
+  // the device counts as completed — but they stay visible as `skipped` rows
+  // carrying the agent's explanation.
+  function skippedResult(entries: Array<Record<string, unknown>>, failedCount = 0) {
+    return {
+      kind: 'result' as const,
+      commandResult: {
+        status: failedCount > 0 ? ('failed' as const) : ('completed' as const),
+        exitCode: failedCount > 0 ? 1 : 0,
+        stdout: JSON.stringify({
+          success: failedCount === 0,
+          installedCount: entries.filter((e) => e.status === 'installed').length,
+          skippedCount: entries.filter((e) => e.status === 'skipped').length,
+          failedCount,
+          rebootRequired: false,
+          results: entries,
+        }),
+      },
+    };
+  }
+
+  it('does NOT fire the failure alert when items were skipped (#6910) and records them as skipped rows', async () => {
+    vi.mocked(db.select)
+      .mockImplementationOnce(() => whereChain([]) as any)
+      .mockImplementationOnce(() => limitChain([]) as any);
+
+    await finalizePatchJobDevice({
+      patchJobId: JOB,
+      deviceId: DEVICE,
+      commandId: COMMAND,
+      terminal: skippedResult([
+        { id: 'patch-1', externalId: 'KB1', status: 'installed' },
+        {
+          id: 'patch-2',
+          externalId: 'KB2',
+          status: 'skipped',
+          skipReason: 'not_offered',
+          message: 'update KB2267602 is no longer offered by Windows Update (superseded or expired since the scan); skipped',
+        },
+      ]),
+      completedAt: new Date(),
+      source: { kind: 'synchronous', context: CONTEXT },
+    });
+
+    expect(emitPatchJobFailureAlert).not.toHaveBeenCalled();
+    const rows = inserts.filter((i) => i.table === patchJobResults).map((i) => i.values);
+    expect(rows.find((r) => r.patchId === 'patch-1')).toMatchObject({ status: 'completed', errorMessage: null });
+    expect(rows.find((r) => r.patchId === 'patch-2')).toMatchObject({
+      status: 'skipped',
+      errorMessage: expect.stringContaining('no longer offered'),
+      rebootRequired: false,
+    });
+    expectCounterDelta(jobCounterUpdate(), 'devicesCompleted', '+ 1');
+  });
+
+  it('counts only genuinely failed items in the alert when a batch mixes skipped and failed (#6910)', async () => {
+    vi.mocked(db.select)
+      .mockImplementationOnce(() => whereChain([]) as any)
+      .mockImplementationOnce(() => limitChain([]) as any);
+
+    await finalizePatchJobDevice({
+      patchJobId: JOB,
+      deviceId: DEVICE,
+      commandId: COMMAND,
+      terminal: skippedResult(
+        [
+          { id: 'patch-1', externalId: 'KB1', status: 'failed', error: 'disk full' },
+          {
+            id: 'patch-2',
+            externalId: 'KB2',
+            status: 'skipped',
+            skipReason: 'already_current',
+            message: 'No available upgrade found.',
+          },
+        ],
+        1,
+      ),
+      completedAt: new Date(),
+      source: { kind: 'synchronous', context: CONTEXT },
+    });
+
+    expect(emitPatchJobFailureAlert).toHaveBeenCalledTimes(1);
+    expect(emitPatchJobFailureAlert).toHaveBeenCalledWith(
+      expect.objectContaining({ failedCount: 1, errorExcerpt: 'disk full' }),
+    );
+    const rows = inserts.filter((i) => i.table === patchJobResults).map((i) => i.values);
+    expect(rows.find((r) => r.patchId === 'patch-2')).toMatchObject({
+      status: 'skipped',
+      errorMessage: 'No available upgrade found.',
+    });
+  });
+
   it('does NOT fire the failure alert for an expired (queued-offline delivery deadline) terminal', async () => {
     // #5128 W3: the device never got the command — it did not fail an install.
     vi.mocked(db.select)

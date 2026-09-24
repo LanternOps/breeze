@@ -6645,6 +6645,7 @@ func (h *Heartbeat) executePatchInstallCommand(payload map[string]any, rollback 
 
 	results := make([]map[string]any, 0, len(refs))
 	successCount := 0
+	skippedCount := 0
 	failedCount := 0
 	rebootRequired := false
 
@@ -6685,6 +6686,20 @@ func (h *Heartbeat) executePatchInstallCommand(payload map[string]any, rollback 
 			continue
 		}
 
+		if installResult.Skipped {
+			// Nothing to do — already current / no longer offered (#6910).
+			// Visible in results[] with its reason, but neither an install
+			// nor a failure, so it cannot fail the job or raise an alert.
+			skippedCount++
+			result := patchCommandResultFields(ref, installID)
+			result["status"] = "skipped"
+			result["skipReason"] = installResult.SkipReason
+			result["rebootRequired"] = false
+			result["message"] = installResult.Message
+			results = append(results, result)
+			continue
+		}
+
 		successCount++
 		rebootRequired = rebootRequired || installResult.RebootRequired
 		result := patchCommandResultFields(ref, installID)
@@ -6697,6 +6712,7 @@ func (h *Heartbeat) executePatchInstallCommand(payload map[string]any, rollback 
 	summary := map[string]any{
 		"success":        failedCount == 0,
 		"installedCount": successCount,
+		"skippedCount":   skippedCount,
 		"failedCount":    failedCount,
 		"rebootRequired": rebootRequired,
 		"results":        results,
@@ -6707,7 +6723,9 @@ func (h *Heartbeat) executePatchInstallCommand(payload map[string]any, rollback 
 
 	// Post-install rescan: trigger an immediate patch inventory so the
 	// dashboard reflects the new state without waiting up to 15 minutes.
-	if successCount > 0 {
+	// A skipped item also means the inventory is stale (the update was
+	// superseded, or the package is already current), so it rescans too.
+	if successCount > 0 || skippedCount > 0 {
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {

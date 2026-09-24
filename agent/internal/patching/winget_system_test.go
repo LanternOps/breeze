@@ -188,3 +188,61 @@ func TestSystemInstallSuccess(t *testing.T) {
 		t.Fatalf("got %+v", res)
 	}
 }
+
+// #6910: winget exits 0x8A15002B (APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE,
+// 2316632107 unsigned) when the package is already at the newest available
+// version. That is "nothing to do", not an install failure — it must come back
+// as a skipped InstallResult (visible, with winget's message), never an error.
+func TestSystemInstallExitCodeClassification(t *testing.T) {
+	const notApplicableOut = "Found an existing package already installed. Trying to upgrade the installed package...\nNo available upgrade found.\nNo newer package versions are available from the configured sources."
+	cases := []struct {
+		name        string
+		code        int
+		stdout      string
+		wantErr     bool
+		wantSkipped bool
+	}{
+		{name: "exit 0 installs", code: 0, stdout: "Successfully installed"},
+		{name: "0x8A15002B unsigned is already current", code: 2316632107, stdout: notApplicableOut, wantSkipped: true},
+		{name: "0x8A15002B as signed int32 is already current", code: -1978335189, stdout: notApplicableOut, wantSkipped: true},
+		// 0x8A150014 APPINSTALLER_CLI_ERROR_NO_APPLICATIONS_FOUND — a real failure.
+		{name: "other non-zero fails", code: 2316632084, stdout: "No package found matching input criteria.", wantErr: true},
+		// Exit code wins over text: the "No available upgrade" wording on a
+		// different non-zero code is still a failure.
+		{name: "not-applicable text on other code fails", code: 1, stdout: notApplicableOut, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := NewSystemWingetProvider(`C:\wg\winget.exe`, func(string, []string, time.Duration) (string, string, int, error) {
+				return tc.stdout, "", tc.code, nil
+			})
+			res, err := p.Install("Mozilla.Firefox")
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("want error, got %+v", res)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if res.Skipped != tc.wantSkipped {
+				t.Fatalf("Skipped = %v, want %v (%+v)", res.Skipped, tc.wantSkipped, res)
+			}
+			if tc.wantSkipped {
+				if res.SkipReason != SkipReasonAlreadyCurrent {
+					t.Fatalf("SkipReason = %q, want %q", res.SkipReason, SkipReasonAlreadyCurrent)
+				}
+				if !strings.Contains(res.Message, "No available upgrade found") {
+					t.Fatalf("message must carry winget's output, got %q", res.Message)
+				}
+				if res.RebootRequired {
+					t.Fatal("a skipped install cannot require a reboot")
+				}
+				if res.PatchID != "Mozilla.Firefox" || res.Provider != "winget" {
+					t.Fatalf("got %+v", res)
+				}
+			}
+		})
+	}
+}
