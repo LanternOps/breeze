@@ -140,6 +140,83 @@ describe('M365 inbound → ticket (real DB)', () => {
     expect(rows[0]?.parseStatus).toBe('created');
   });
 
+  // No-loss (same generation): a transient poll failure moves the row off
+  // 'connected' without rotating consentAttemptId. A message enqueued while
+  // connected must still be ingested when consumed afterwards, because the poll
+  // cursor has already advanced past it. Retired/unconsented rows stay excluded.
+  for (const [status, ingests] of [
+    ['reauth_required', true],
+    ['error', true],
+    ['pending_consent', false],
+    ['disabled', false],
+  ] as const) {
+    runDb(`same generation, status ${status}: ${ingests ? 'still ingests' : 'is not ingested'}`, async () => {
+      const db = getTestDb() as any;
+      const suffix = `${status}-${Date.now()}-${Math.floor(performance.now())}`;
+      const tenantId = randomUUID();
+      const customerEmail = `gen-${suffix}@known.test`;
+      const mailboxAddress = `support-gen-${suffix}@example.com`;
+
+      const seeded = await withSystemDbAccessContext(async () => {
+        const partner = await createPartner();
+        const org = await createOrganization({ partnerId: partner.id });
+        await db.insert(portalUsers).values({ orgId: org.id, email: customerEmail, name: 'Customer' });
+        await db.insert(ticketMailboxTenantOwnerships).values({
+          tenantId,
+          partnerId: partner.id,
+          verifiedMicrosoftOid: randomUUID(),
+        });
+        const [connection] = await db.insert(ticketMailboxConnections).values({
+          partnerId: partner.id,
+          tenantId,
+          mailboxAddress,
+          status: 'connected',
+        }).returning({
+          id: ticketMailboxConnections.id,
+          consentAttemptId: ticketMailboxConnections.consentAttemptId,
+        });
+        // The status change after enqueue; the generation (consentAttemptId) is kept.
+        await db.update(ticketMailboxConnections)
+          .set({ status })
+          .where(eq(ticketMailboxConnections.id, connection!.id));
+        return { partnerId: partner.id, connection: connection! };
+      });
+
+      const msg: GraphMessage = {
+        id: `gen-${suffix}`,
+        internetMessageId: `<gen-${suffix}@known.test>`,
+        subject: `Generation ${suffix}`,
+        from: { emailAddress: { address: customerEmail, name: 'Customer' } },
+        toRecipients: [{ emailAddress: { address: mailboxAddress } }],
+        body: { contentType: 'text', content: 'same generation' },
+        bodyPreview: 'same generation',
+        hasAttachments: false,
+        internetMessageHeaders: [
+          { name: 'Authentication-Results', value: 'example.com; spf=pass; dkim=pass; dmarc=pass' },
+        ],
+      };
+      const normalized = normalizeGraphMessage(msg, seeded.partnerId, mailboxAddress);
+
+      await withSystemDbAccessContext(() => processInboundEmail(normalized, {
+        connectionId: seeded.connection.id,
+        partnerId: seeded.partnerId,
+        tenantId,
+        consentAttemptId: seeded.connection.consentAttemptId,
+      }));
+
+      const rows = await db.select().from(ticketEmailInbound).where(and(
+        eq(ticketEmailInbound.partnerId, seeded.partnerId),
+        eq(ticketEmailInbound.providerMessageId, msg.id),
+      ));
+      if (ingests) {
+        expect(rows).toHaveLength(1);
+        expect(rows[0]?.parseStatus).toBe('created');
+      } else {
+        expect(rows).toHaveLength(0);
+      }
+    });
+  }
+
   runDb('holds the generation row lock in the ingestion transaction until ticket creation commits', async () => {
     const db = getTestDb() as any;
     const suffix = `${Date.now()}-${Math.floor(performance.now())}`;

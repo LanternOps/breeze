@@ -1,5 +1,6 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { isPgUniqueViolation } from '../../utils/pgErrors';
 import {
   ticketEmailInbound,
   tickets,
@@ -79,11 +80,16 @@ async function logInbound(
 // a BRAND-NEW transaction on a FRESH pooled connection — fully independent of the
 // poisoned outer tx, which is still aborted on its own connection. This insert
 // therefore commits even though the outer tx will roll back its partial writes.
+// Returns true when the terminal `failed` row is durably recorded (a fresh insert,
+// or a 23505 meaning a concurrent retry already recorded it), false when it could
+// NOT be recorded. The caller uses this to decide whether the message may be
+// acknowledged (recorded) or must be retried by BullMQ (not recorded — never
+// silently drop an unrecorded message).
 async function logInboundFailedDurable(
   n: NormalizedInboundEmail,
   partnerId: string | null,
   error: unknown
-): Promise<void> {
+): Promise<boolean> {
   const message = error instanceof Error ? error.message : String(error);
   try {
     await runOutsideDbContext(() =>
@@ -105,11 +111,17 @@ async function logInboundFailedDurable(
         })
       )
     );
+    return true;
   } catch (logErr) {
-    // A 23505 here means a concurrent retry already logged the failed row (the
-    // (partner_id, provider_message_id) unique index) — or any other write error.
-    // A failure to LOG must never crash the worker; record it and swallow.
+    // A 23505 means a concurrent retry already durably logged this failed row (the
+    // (partner_id, provider_message_id) unique index) — the terminal record EXISTS,
+    // so it counts as recorded. Any OTHER error means we could NOT record it: report
+    // that so the caller lets BullMQ retry rather than acknowledge an unrecorded loss.
+    // isPgUniqueViolation walks the DrizzleQueryError `.cause` chain — the production
+    // postgres-js error is WRAPPED, so its 23505 lives at `.cause.code`, not `.code`.
+    if (isPgUniqueViolation(logErr)) return true;
     captureException(logErr instanceof Error ? logErr : new Error(String(logErr)));
+    return false;
   }
 }
 
@@ -124,7 +136,17 @@ async function lockActiveMailboxGeneration(
       eq(ticketMailboxConnections.partnerId, generation.partnerId),
       eq(ticketMailboxConnections.tenantId, generation.tenantId),
       eq(ticketMailboxConnections.consentAttemptId, generation.consentAttemptId),
-      eq(ticketMailboxConnections.status, 'connected'),
+      // The consentAttemptId (generation) match above is the "same live binding"
+      // proof: a DISABLE rotates it, so a retired/rotated connection already fails
+      // this lock. A transient poll failure (reauth_required/error) does NOT rotate
+      // it — the binding is unchanged. Requiring status='connected' here would then
+      // SILENTLY DROP a message that was enqueued while connected but consumed after
+      // a poll failure (the consumer returns without a durable record, the poll
+      // cursor has already advanced past it, and a same-account reconnect preserves
+      // the cursor — so the message is never re-listed and is lost). Accept the two
+      // transient statuses so already-received mail is ingested; a pending_consent
+      // or disabled row is still excluded.
+      inArray(ticketMailboxConnections.status, ['connected', 'reauth_required', 'error']),
     ))
     .for('update')
     .limit(1);
@@ -516,8 +538,8 @@ export async function processInboundEmail(
     // (8) 'quarantine' (default) -> review queue for manual handling.
     await logInbound(n, partnerId, 'quarantined', null);
   } catch (err) {
-    // (9) Any guard/error -> failed, logged under the RESOLVED partner (or null if
-    // resolution failed). Never a cross-tenant write.
+    // (9) Any guard/error after partner resolution -> failed, logged under the
+    // RESOLVED partner. Never a cross-tenant write.
     //
     // The outer work transaction is now poisoned (25P02): we CANNOT log on it. Record
     // the terminal `failed` row in a FRESH transaction (logInboundFailedDurable) so it
@@ -525,7 +547,43 @@ export async function processInboundEmail(
     // writes and BullMQ does NOT retry — the durable `failed` row is the terminal record
     // surfaced by the review queue.
     captureException(err instanceof Error ? err : new Error(String(err)));
-    await logInboundFailedDurable(n, partnerId, err);
+    // A failure BEFORE the partner was resolved (e.g. a transient error inside
+    // recipient resolution) has no review queue to land in: every queue is
+    // partner-scoped, so a partner_id NULL `failed` row is invisible to operators.
+    // Acknowledging it would lose the message, so rethrow and let BullMQ retry; an
+    // exhausted job stays visible in the queue's failed set.
+    if (partnerId === null) throw err;
+    const recorded = await logInboundFailedDurable(n, partnerId, err);
+    // Force the outer work transaction to ROLL BACK its partial writes. Returning
+    // normally here only rolls back when the caught error was a DATABASE error
+    // (which poisons the tx with 25P02); an ordinary application/JS exception thrown
+    // AFTER a ticket/comment/link was already written does NOT poison the tx, so a
+    // plain return would COMMIT that half-done work beside the separate `failed` row.
+    // Throwing guarantees rollback regardless of the error kind.
+    if (!recorded) {
+      // The terminal `failed` row could NOT be recorded (e.g. the database is down).
+      // Rethrow the ORIGINAL error, not the swallow-me sentinel, so the worker lets
+      // BullMQ RETRY the whole message — acknowledging it now would drop it with no
+      // record anywhere.
+      throw err;
+    }
+    // Recorded durably (or a concurrent retry already did): the `failed` row is the
+    // terminal record surfaced in the review queue, so the worker swallows this
+    // sentinel and BullMQ does NOT retry.
+    throw new InboundEmailProcessingRecorded(err);
+  }
+}
+
+/**
+ * Thrown by processInboundEmail AFTER a terminal `failed` row has been durably
+ * recorded (on its own connection). It exists solely to roll back the outer work
+ * transaction's partial writes. handleInboundEmail swallows it — the durable
+ * `failed` row is the terminal record, so BullMQ must NOT retry the job.
+ */
+export class InboundEmailProcessingRecorded extends Error {
+  constructor(public readonly reason: unknown) {
+    super('inbound email processing failed and was recorded as a durable failed row');
+    this.name = 'InboundEmailProcessingRecorded';
   }
 }
 

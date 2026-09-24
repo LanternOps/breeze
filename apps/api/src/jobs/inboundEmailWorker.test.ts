@@ -1,12 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { processInboundEmailMock, runOutsideDbContextMock, withSystemDbAccessContextMock } = vi.hoisted(() => {
+const { processInboundEmailMock, runOutsideDbContextMock, withSystemDbAccessContextMock, InboundEmailProcessingRecordedMock } = vi.hoisted(() => {
   const withSystemDbAccessContextMock = vi.fn(<T>(fn: () => Promise<T>) => fn());
   const runOutsideDbContextMock = vi.fn(<T>(fn: () => T) => fn());
+  // Stand-in for the real sentinel: the worker checks `instanceof` against the
+  // class it imports from the (mocked) service, so the mock must export THIS class
+  // and the tests must throw instances of it for the identity check to hold.
+  class InboundEmailProcessingRecorded extends Error {}
   return {
     processInboundEmailMock: vi.fn().mockResolvedValue(undefined),
     withSystemDbAccessContextMock,
-    runOutsideDbContextMock
+    runOutsideDbContextMock,
+    InboundEmailProcessingRecordedMock: InboundEmailProcessingRecorded,
   };
 });
 
@@ -33,7 +38,8 @@ vi.mock('../db', () => ({
   runOutsideDbContext: runOutsideDbContextMock
 }));
 vi.mock('../services/inboundEmail/inboundEmailService', () => ({
-  processInboundEmail: processInboundEmailMock
+  processInboundEmail: processInboundEmailMock,
+  InboundEmailProcessingRecorded: InboundEmailProcessingRecordedMock
 }));
 vi.mock('../services/inboundEmailQueue', () => ({
   INBOUND_EMAIL_QUEUE: 'inbound-email'
@@ -95,6 +101,21 @@ describe('inboundEmailWorker', () => {
     expect(processInboundEmailMock).toHaveBeenCalledWith(email, undefined);
     expect(callOrder.indexOf('runOutsideDbContext')).toBeLessThan(callOrder.indexOf('withSystemDbAccessContext'));
     expect(callOrder.indexOf('withSystemDbAccessContext')).toBeLessThan(callOrder.indexOf('processInboundEmail'));
+  });
+
+  it('SWALLOWS the recorded-failure sentinel (no BullMQ retry — the durable failed row is terminal)', async () => {
+    processInboundEmailMock.mockRejectedValue(new InboundEmailProcessingRecordedMock('recorded'));
+    const email = makeEmail({ providerMessageId: 'mg-fail-1' });
+    // Resolves (does not reject) so BullMQ marks the job done rather than retrying;
+    // processInboundEmail already recorded the durable failed row and rolled back.
+    await expect(workerModule.handleInboundEmail({ data: { email } } as any)).resolves.toBeUndefined();
+  });
+
+  it('RETHROWS a genuine infra error so BullMQ retries the job', async () => {
+    const infra = new Error('redis connection reset');
+    processInboundEmailMock.mockRejectedValue(infra);
+    const email = makeEmail({ providerMessageId: 'mg-fail-2' });
+    await expect(workerModule.handleInboundEmail({ data: { email } } as any)).rejects.toBe(infra);
   });
 
   it('real handleInboundEmail: resolves without throwing when processInboundEmail succeeds', async () => {
