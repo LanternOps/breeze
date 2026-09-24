@@ -99,7 +99,8 @@
     "ticketing": "Ticketing",
     "deliverableTemplates": "Liefervorlagen",
     "securityScans": "IOC-Scans",
-    "system": "System"
+    "system": "System",
+    "monitorConversion": "Monitor-Konvertierung"
   },
   "documentTitles": {
     "dashboard": "Dashboard",

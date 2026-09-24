@@ -99,7 +99,8 @@
     "ticketing": "Ticket",
     "deliverableTemplates": "Modelli di consegna",
     "securityScans": "Scansioni IOC",
-    "system": "Sistema"
+    "system": "Sistema",
+    "monitorConversion": "Conversione monitor"
   },
   "documentTitles": {
     "dashboard": "Dashboard",

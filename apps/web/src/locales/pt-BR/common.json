@@ -99,7 +99,8 @@
     "ticketing": "Tickets",
     "deliverableTemplates": "Modelos de entregáveis",
     "securityScans": "Varreduras de IOC",
-    "system": "Sistema"
+    "system": "Sistema",
+    "monitorConversion": "Conversão de monitores"
   },
   "documentTitles": {
     "dashboard": "Painel",
