@@ -363,12 +363,20 @@ export async function detachMonitorFromDevice(
   });
 }
 
-/** Stamp the alert that represents this breach onto its episode. */
-export async function linkEpisodeAlert(episodeId: string, alertId: string): Promise<void> {
-  await db
+/**
+ * Stamp the alert that represents this breach onto its episode, atomically.
+ * The `alertId is null` guard makes this claim a compare-and-swap: only the
+ * first caller to reach an episode still carrying no alert wins ownership of
+ * the episode's automation responses (W03 — two subjects racing to open the
+ * same episode must produce exactly one response run).
+ */
+export async function linkEpisodeAlert(episodeId: string, alertId: string): Promise<{ owner: boolean }> {
+  const claimed = await db
     .update(monitorEpisodes)
     .set({ alertId, updatedAt: new Date() })
-    .where(eq(monitorEpisodes.id, episodeId));
+    .where(and(eq(monitorEpisodes.id, episodeId), isNull(monitorEpisodes.alertId)))
+    .returning({ id: monitorEpisodes.id });
+  return { owner: claimed.length === 1 };
 }
 
 export interface RecordEpisodeResponseInput {
