@@ -1,0 +1,1 @@
+{"serial_number": "SMART1", "model_name": "Fixture SSD", "firmware_version": "1", "user_capacity": {"bytes": 1000}, "temperature": {"current": 32}, "power_on_time": {"hours": 20}, "ata_smart_attributes": {"table": [{"id": 5, "raw": {"value": 999}}, {"id": 197, "raw": {"value": 100}}]}}
