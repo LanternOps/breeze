@@ -530,7 +530,13 @@
       },
       "inheritanceNote": "Los cambios se aplican a toda organización que no haya definido su propia anulación.",
       "saved": "Guardado",
-      "saveFailed": "No se pudo cambiar esta configuración"
+      "saveFailed": "No se pudo cambiar esta configuración",
+      "remediation": {
+        "title": "Correcciones sugeridas",
+        "description": "Sugerencias de corrección generadas por IA en la página de detalle de la alerta. Es el valor predeterminado para cada organización; una organización puede anularlo en su propia pestaña de IA.",
+        "enabled": "Generar correcciones sugeridas",
+        "enabledDescription": "Permite a los técnicos generar correcciones sugeridas para una alerta desde su página de detalle."
+      }
     },
     "tabs": {
       "company": {
@@ -584,7 +590,7 @@
       },
       "aiFeatures": {
         "label": "Funciones de IA",
-        "description": "Valores predeterminados de detección de anomalías"
+        "description": "Valores predeterminados de detección de anomalías y correcciones sugeridas"
       },
       "branding": {
         "label": "Marca",
@@ -4672,7 +4678,14 @@
         "off": "Desactivado",
         "saved": "Guardado",
         "saveFailed": "No se pudo cambiar esta configuración",
-        "killSwitch": "El operador desactivó la detección de anomalías para toda la plataforma. Esta configuración tendrá efecto cuando se vuelva a activar."
+        "killSwitch": "El operador desactivó la detección de anomalías para toda la plataforma. Esta configuración tendrá efecto cuando se vuelva a activar.",
+        "remediation": {
+          "title": "Correcciones sugeridas",
+          "description": "Sugerencias de corrección generadas por IA para las alertas de esta organización. En blanco significa que se aplica el valor predeterminado del partner.",
+          "enabled": "Generar correcciones sugeridas",
+          "enabledDescription": "Permite a los técnicos generar correcciones sugeridas para una alerta desde su página de detalle.",
+          "killSwitch": "El operador desactivó las correcciones sugeridas para toda la plataforma. Esta configuración entrará en vigor cuando se vuelvan a activar."
+        }
       }
     },
     "breadcrumbs": {

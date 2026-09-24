@@ -21,6 +21,7 @@ function flagsResponse(overrides: Record<string, Partial<{ enabled: boolean; inh
       mlFeatureFlags: {
         'ml.anomalies.enabled': base('ml.anomalies.enabled'),
         'ml.anomalies.create_alerts': base('ml.anomalies.create_alerts'),
+        'ml.remediation_suggestions.enabled': base('ml.remediation_suggestions.enabled'),
       },
     }),
   };
@@ -96,5 +97,53 @@ describe('OrgMlFeaturesCard', () => {
     const { findByTestId } = render(<OrgMlFeaturesCard orgId="o1" settings={{}} onSaved={vi.fn()} />);
     await findByTestId('org-ml-kill-switch-notice');
     expect((await findByTestId('org-ml-anomalies-enabled') as HTMLSelectElement).disabled).toBe(true);
+  });
+  it('shows a Suggested fixes row with the inherited value and the org override (#6934)', async () => {
+    fetchWithAuth.mockResolvedValue(flagsResponse({ 'ml.remediation_suggestions.enabled': { enabled: true, inheritedEnabled: true, inheritedSource: 'partner_settings', source: 'partner_settings' } }));
+    const { getByTestId, findByText } = render(<OrgMlFeaturesCard orgId="o1" settings={{}} onSaved={vi.fn()} />);
+    expect((getByTestId('org-ml-remediation-suggestions-enabled') as HTMLSelectElement).value).toBe('inherit');
+    await findByText((text) => text.startsWith('orgSettingsPage.ai.mlFeatures.inheritOn') && text.includes('fromPartner'));
+
+    const { getAllByTestId } = render(
+      <OrgMlFeaturesCard orgId="o1" settings={{ ml: { remediation_suggestions: { enabled: false } } }} onSaved={vi.fn()} />,
+    );
+    expect((getAllByTestId('org-ml-remediation-suggestions-enabled').at(-1) as HTMLSelectElement).value).toBe('off');
+  });
+
+  it('saves Suggested fixes without touching ml.anomalies, and drops the key on "inherit" (#6934)', async () => {
+    fetchWithAuth.mockResolvedValue(flagsResponse());
+    const settings = { branding: { theme: 'dark' }, ml: { anomalies: { enabled: true, create_alerts: false } } };
+    const { getByTestId } = render(<OrgMlFeaturesCard orgId="o1" settings={settings} onSaved={vi.fn()} />);
+
+    fireEvent.change(getByTestId('org-ml-remediation-suggestions-enabled'), { target: { value: 'on' } });
+    await waitFor(() => expect(runAction).toHaveBeenCalledTimes(1));
+    await runAction.mock.calls[0]![0].request();
+    expect(fetchWithAuth).toHaveBeenCalledWith('/orgs/organizations/o1', {
+      method: 'PATCH',
+      body: JSON.stringify({ settings: { branding: { theme: 'dark' }, ml: { anomalies: { enabled: true, create_alerts: false }, remediation_suggestions: { enabled: true } } } }),
+    });
+
+    fireEvent.change(getByTestId('org-ml-remediation-suggestions-enabled'), { target: { value: 'inherit' } });
+    await waitFor(() => expect(runAction).toHaveBeenCalledTimes(2));
+    await runAction.mock.calls[1]![0].request();
+    const lastBody = JSON.parse(fetchWithAuth.mock.calls.at(-1)![1].body);
+    expect(lastBody.settings.ml).toEqual({ anomalies: { enabled: true, create_alerts: false } });
+  });
+
+  it('scopes the kill switch per section: a remediation kill switch locks only the Suggested fixes row (#6934)', async () => {
+    fetchWithAuth.mockResolvedValue(flagsResponse({ 'ml.remediation_suggestions.enabled': { source: 'global_kill_switch' } }));
+    const { findByTestId, getByTestId, queryByTestId } = render(<OrgMlFeaturesCard orgId="o1" settings={{}} onSaved={vi.fn()} />);
+    await findByTestId('org-ml-remediation-kill-switch-notice');
+    expect((getByTestId('org-ml-remediation-suggestions-enabled') as HTMLSelectElement).disabled).toBe(true);
+    expect(queryByTestId('org-ml-kill-switch-notice')).toBeNull();
+    expect((getByTestId('org-ml-anomalies-enabled') as HTMLSelectElement).disabled).toBe(false);
+  });
+
+  it('an anomalies kill switch does not lock the Suggested fixes row (#6934)', async () => {
+    fetchWithAuth.mockResolvedValue(flagsResponse({ 'ml.anomalies.enabled': { source: 'global_kill_switch' } }));
+    const { findByTestId, getByTestId, queryByTestId } = render(<OrgMlFeaturesCard orgId="o1" settings={{}} onSaved={vi.fn()} />);
+    await findByTestId('org-ml-kill-switch-notice');
+    expect(queryByTestId('org-ml-remediation-kill-switch-notice')).toBeNull();
+    expect((getByTestId('org-ml-remediation-suggestions-enabled') as HTMLSelectElement).disabled).toBe(false);
   });
 });

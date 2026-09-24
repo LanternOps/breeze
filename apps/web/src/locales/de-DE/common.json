@@ -2446,7 +2446,7 @@
         },
         "title": "Vorgeschlagene Korrekturen",
         "refresh": "Aktualisieren Sie die vorgeschlagenen Korrekturen",
-        "disabledTitle": "Vorgeschlagene Korrekturen sind für diese Organisation deaktiviert",
+        "disabledTitle": "Vorgeschlagene Korrekturen sind für diese Organisation deaktiviert. Aktivieren Sie sie unter Einstellungen → Partner → KI-Funktionen oder für eine einzelne Organisation auf ihrer KI-Registerkarte.",
         "suggestionsDisabled": "Vorschläge deaktiviert",
         "generate": "Generieren",
         "empty": "Noch keine Lösungsvorschläge.",

@@ -2446,7 +2446,7 @@
         },
         "title": "Suggestions de solutions",
         "refresh": "Actualiser les solutions suggérées",
-        "disabledTitle": "Les solutions proposées sont désactivées pour cette organisation",
+        "disabledTitle": "Les solutions proposées sont désactivées pour cette organisation. Activez-les dans Paramètres → Partenaire → Fonctionnalités IA, ou pour une seule organisation dans son onglet IA.",
         "suggestionsDisabled": "Suggestions désactivées",
         "generate": "Générer",
         "empty": "Aucune solution suggérée pour l’instant.",

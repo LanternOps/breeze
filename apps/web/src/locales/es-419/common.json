@@ -2446,7 +2446,7 @@
         },
         "title": "Correcciones sugeridas",
         "refresh": "Actualizar correcciones sugeridas",
-        "disabledTitle": "Las correcciones sugeridas están deshabilitadas para esta organización.",
+        "disabledTitle": "Las correcciones sugeridas están desactivadas para esta organización. Actívalas en Configuración → Partner → Funciones de IA, o para una sola organización en su pestaña de IA.",
         "suggestionsDisabled": "Sugerencias deshabilitadas",
         "generate": "Generar",
         "empty": "Aún no hay soluciones sugeridas.",

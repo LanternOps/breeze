@@ -2446,7 +2446,7 @@
         },
         "title": "Correzioni suggerite",
         "refresh": "Aggiorna le correzioni suggerite",
-        "disabledTitle": "Le correzioni suggerite sono disabilitate per questa organizzazione",
+        "disabledTitle": "Le correzioni suggerite sono disattivate per questa organizzazione. Attivale in Impostazioni → Partner → Funzionalità IA, oppure per una singola organizzazione nella sua scheda IA.",
         "suggestionsDisabled": "Suggerimenti disabilitati",
         "generate": "Genera",
         "empty": "Nessuna soluzione suggerita ancora.",

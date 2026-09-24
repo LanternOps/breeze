@@ -2446,7 +2446,7 @@
         },
         "title": "Correções Sugeridas",
         "refresh": "Atualizar correções sugeridas",
-        "disabledTitle": "Correções sugeridas estão desativadas para esta organização",
+        "disabledTitle": "As correções sugeridas estão desativadas para esta organização. Ative-as em Configurações → Parceiro → Recursos de IA, ou para uma única organização na aba de IA dela.",
         "suggestionsDisabled": "Sugestões desativadas",
         "generate": "Gerar",
         "empty": "Ainda não há correções sugeridas.",

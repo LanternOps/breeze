@@ -2446,7 +2446,7 @@
         },
         "title": "Suggested Fixes",
         "refresh": "Refresh suggested fixes",
-        "disabledTitle": "Suggested fixes are disabled for this organization",
+        "disabledTitle": "Suggested fixes are off for this organization. Turn them on in Settings → Partner → AI Features, or for one organization on its AI tab.",
         "suggestionsDisabled": "Suggestions disabled",
         "generate": "Generate",
         "empty": "No suggested fixes yet.",

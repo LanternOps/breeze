@@ -530,7 +530,13 @@
       },
       "inheritanceNote": "As alterações se aplicam a todas as organizações que não definiram sua própria substituição.",
       "saved": "Salvo",
-      "saveFailed": "Não foi possível alterar esta configuração"
+      "saveFailed": "Não foi possível alterar esta configuração",
+      "remediation": {
+        "title": "Correções sugeridas",
+        "description": "Sugestões de correção geradas por IA na página de detalhes do alerta. Este é o padrão para todas as organizações; uma organização pode substituí-lo na própria aba de IA.",
+        "enabled": "Gerar correções sugeridas",
+        "enabledDescription": "Permite que técnicos gerem correções sugeridas para um alerta na página de detalhes."
+      }
     },
     "tabs": {
       "company": {
@@ -584,7 +590,7 @@
       },
       "aiFeatures": {
         "label": "Recursos de IA",
-        "description": "Padrões de detecção de anomalias"
+        "description": "Padrões de detecção de anomalias e correções sugeridas"
       },
       "branding": {
         "label": "Identidade visual",
@@ -4725,7 +4731,14 @@
         "off": "Desativado",
         "saved": "Salvo",
         "saveFailed": "Não foi possível alterar esta configuração",
-        "killSwitch": "A detecção de anomalias está desativada para toda a plataforma pelo operador. Essas configurações terão efeito quando ela for reativada."
+        "killSwitch": "A detecção de anomalias está desativada para toda a plataforma pelo operador. Essas configurações terão efeito quando ela for reativada.",
+        "remediation": {
+          "title": "Correções sugeridas",
+          "description": "Sugestões de correção geradas por IA para os alertas desta organização. Em branco significa que o padrão do parceiro se aplica.",
+          "enabled": "Gerar correções sugeridas",
+          "enabledDescription": "Permite que técnicos gerem correções sugeridas para um alerta na página de detalhes.",
+          "killSwitch": "As correções sugeridas foram desativadas para toda a plataforma pelo operador. Esta configuração terá efeito quando forem reativadas."
+        }
       }
     },
     "breadcrumbs": {

@@ -804,6 +804,10 @@ export interface MlFeatureSettings {
     enabled?: boolean;
     create_alerts?: boolean;
   };
+  /** Suggested fixes on alert detail (`ml.remediation_suggestions.enabled`). */
+  remediation_suggestions?: {
+    enabled?: boolean;
+  };
 }
 
 // ============================================

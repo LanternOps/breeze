@@ -10,10 +10,27 @@ import { fetchWithAuth, handleSessionExpired } from '@/stores/auth';
  * sets its own override on the org AI tab (OrgMlFeaturesCard).
  *
  * Self-saving: each switch PATCHes /orgs/partners/me immediately with the
- * COMPLETE `ml.anomalies` object (the API deep-merges `ml` one level only) and
- * reverts on failure.
+ * COMPLETE block of the section it belongs to (`ml.anomalies` or
+ * `ml.remediation_suggestions`) and nothing else — the API deep-merges `ml` one
+ * level, so sibling blocks are preserved — and reverts on failure.
  */
-type AnomalyKey = 'enabled' | 'create_alerts';
+type MlState = {
+  anomalies: { enabled: boolean; create_alerts: boolean };
+  remediation_suggestions: { enabled: boolean };
+};
+type Section = keyof MlState;
+
+function initialState(value: MlFeatureSettings | undefined): MlState {
+  return {
+    anomalies: {
+      enabled: value?.anomalies?.enabled ?? false,
+      create_alerts: value?.anomalies?.create_alerts ?? false,
+    },
+    remediation_suggestions: {
+      enabled: value?.remediation_suggestions?.enabled ?? false,
+    },
+  };
+}
 
 export default function PartnerMlFeaturesCard({
   value,
@@ -23,24 +40,21 @@ export default function PartnerMlFeaturesCard({
   onSaved: () => void;
 }) {
   const { t } = useTranslation('settings');
-  const [anomalies, setAnomalies] = useState<{ enabled: boolean; create_alerts: boolean }>({
-    enabled: value?.anomalies?.enabled ?? false,
-    create_alerts: value?.anomalies?.create_alerts ?? false,
-  });
+  const [ml, setMl] = useState<MlState>(() => initialState(value));
   const [busy, setBusy] = useState(false);
 
-  const toggle = async (key: AnomalyKey, next: boolean) => {
+  const toggle = async <S extends Section>(section: S, key: keyof MlState[S], next: boolean) => {
     if (busy) return;
-    const previous = anomalies;
-    const updated = { ...anomalies, [key]: next };
-    setAnomalies(updated);
+    const previous = ml;
+    const block = { ...ml[section], [key]: next } as MlState[S];
+    setMl({ ...ml, [section]: block });
     setBusy(true);
     try {
       await runAction({
         request: () =>
           fetchWithAuth('/orgs/partners/me', {
             method: 'PATCH',
-            body: JSON.stringify({ settings: { ml: { anomalies: updated } } }),
+            body: JSON.stringify({ settings: { ml: { [section]: block } } }),
           }),
         successMessage: t('partnerSettingsPage.aiFeatures.saved'),
         errorFallback: t('partnerSettingsPage.aiFeatures.saveFailed'),
@@ -48,21 +62,27 @@ export default function PartnerMlFeaturesCard({
       });
       onSaved();
     } catch (err) {
-      setAnomalies(previous);
+      setMl(previous);
       if (!(err instanceof ActionError)) throw err;
     } finally {
       setBusy(false);
     }
   };
 
-  const row = (key: AnomalyKey, testId: string, label: string, description: string) => (
+  const row = <S extends Section>(
+    section: S,
+    key: keyof MlState[S] & string,
+    testId: string,
+    label: string,
+    description: string,
+  ) => (
     <label className="flex items-start gap-3 rounded-md border bg-muted/30 p-3">
       <input
         type="checkbox"
         data-testid={testId}
-        checked={anomalies[key]}
+        checked={ml[section][key] as boolean}
         disabled={busy}
-        onChange={(e) => void toggle(key, e.target.checked)}
+        onChange={(e) => void toggle(section, key, e.target.checked)}
         className="mt-0.5"
       />
       <span>
@@ -78,12 +98,19 @@ export default function PartnerMlFeaturesCard({
         <h3 className="text-base font-semibold">{t('partnerSettingsPage.aiFeatures.anomalies.title')}</h3>
         <p className="text-sm text-muted-foreground">{t('partnerSettingsPage.aiFeatures.anomalies.description')}</p>
       </div>
-      {row('enabled', 'partner-ml-anomalies-enabled',
+      {row('anomalies', 'enabled', 'partner-ml-anomalies-enabled',
         t('partnerSettingsPage.aiFeatures.anomalies.enabled'),
         t('partnerSettingsPage.aiFeatures.anomalies.enabledDescription'))}
-      {row('create_alerts', 'partner-ml-anomalies-create-alerts',
+      {row('anomalies', 'create_alerts', 'partner-ml-anomalies-create-alerts',
         t('partnerSettingsPage.aiFeatures.anomalies.createAlerts'),
         t('partnerSettingsPage.aiFeatures.anomalies.createAlertsDescription'))}
+      <div className="pt-3">
+        <h3 className="text-base font-semibold">{t('partnerSettingsPage.aiFeatures.remediation.title')}</h3>
+        <p className="text-sm text-muted-foreground">{t('partnerSettingsPage.aiFeatures.remediation.description')}</p>
+      </div>
+      {row('remediation_suggestions', 'enabled', 'partner-ml-remediation-suggestions-enabled',
+        t('partnerSettingsPage.aiFeatures.remediation.enabled'),
+        t('partnerSettingsPage.aiFeatures.remediation.enabledDescription'))}
       <p className="text-xs text-muted-foreground">{t('partnerSettingsPage.aiFeatures.inheritanceNote')}</p>
     </div>
   );
