@@ -351,7 +351,7 @@ describe('networkAssets (#5861, PR 2)', () => {
           statusSource: 'scan',
           lastSeenAt: new Date('2026-09-17T11:59:00.000Z'),
           firstSeenAt: new Date('2026-09-01T09:00:00.000Z'),
-          snmpData: { sysDescr: 'Cisco IOS Software, C2960 Software' },
+          manufacturer: 'Cisco',
         },
         {
           orgId: orgA.id,

@@ -1,5 +1,5 @@
 import type { NetworkOverviewDto, NetworkAssetsDto, NetworkAssetRowDto } from '@breeze/shared';
-import { and, desc, eq, gte } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, ne, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import {
   discoveredAssets,
@@ -9,7 +9,6 @@ import {
 } from '../../db/schema';
 import { MIN_NETWORK_CHECK_FRESHNESS_MS } from '../assetReachability';
 import { loadReachability } from '../assetReachabilityLoader';
-import { nicVendorFromMac, resolveAssetIdentity } from '../assetIdentity';
 
 // `createMonitorSchema` accepts polling intervals up to 86,400 seconds.
 // The SQL query uses twice that maximum as its absolute lookback so it never
@@ -141,11 +140,22 @@ export async function networkOverview(
 export interface NetworkAssetsFilter {
   siteId?: string;
   assetType?: string;
-  status?: 'online' | 'offline';
+  /** online = reachability 'responding'; offline = 'not_responding'; unverified = state resolves to neither. */
+  status?: 'online' | 'offline' | 'unverified';
   page?: number;
   limit?: number;
 }
 
+/**
+ * Stable sort for keyset-free offset pagination: hostname NULLS LAST, then
+ * IP, then id as the final tiebreaker so page boundaries never repeat or
+ * skip rows across requests.
+ */
+const STABLE_ASSET_ORDER = [
+  sql`${discoveredAssets.hostname} NULLS LAST`,
+  asc(discoveredAssets.ipAddress),
+  asc(discoveredAssets.id),
+];
 
 export async function networkAssets(
   orgId: string,
@@ -155,14 +165,80 @@ export async function networkAssets(
   const page = Math.max(1, filter.page ?? 1);
   const limit = Math.min(500, Math.max(1, filter.limit ?? 50));
 
-  const conditions = [eq(discoveredAssets.orgId, orgId)];
+  const conditions = [
+    eq(discoveredAssets.orgId, orgId),
+    // MSP-dismissed assets are deliberately hidden from technicians; the
+    // customer-facing list must respect that, not just approved/pending ones.
+    ne(discoveredAssets.approvalStatus, 'dismissed'),
+  ];
   if (filter.siteId) conditions.push(eq(discoveredAssets.siteId, filter.siteId));
   if (filter.assetType) conditions.push(eq(discoveredAssets.assetType, filter.assetType as typeof discoveredAssets.assetType.enumValues[number]));
 
+  const baseWhere = and(...conditions);
+
+  // The org may have discovered assets even when a filter matches none of
+  // them. no_data must mean "nothing in this org", not "nothing matched this
+  // filter" — that second case is a legitimate ok/empty result.
+  const [{ orgHasAnyAsset }] = await db
+    .select({ orgHasAnyAsset: sql<boolean>`count(*) > 0` })
+    .from(discoveredAssets)
+    .where(and(eq(discoveredAssets.orgId, orgId), ne(discoveredAssets.approvalStatus, 'dismissed')));
+
+  if (!orgHasAnyAsset) {
+    return { dataStatus: 'no_data', data: [], pagination: { page, limit, total: 0 } };
+  }
+
+  // The status filter depends on reachability, computed in memory below, so
+  // it cannot be pushed into this query. Without it, count + limit/offset
+  // keeps this bounded for large orgs instead of loading every asset.
+  if (!filter.status) {
+    const [{ total }] = await db
+      .select({ total: sql<number>`count(*)::int` })
+      .from(discoveredAssets)
+      .where(baseWhere);
+
+    if (total === 0) {
+      return { dataStatus: 'ok', data: [], pagination: { page, limit, total: 0 } };
+    }
+
+    const rows = await db
+      .select({
+        id: discoveredAssets.id,
+        hostname: discoveredAssets.hostname,
+        label: discoveredAssets.label,
+        ipAddress: discoveredAssets.ipAddress,
+        macAddress: discoveredAssets.macAddress,
+        assetType: discoveredAssets.assetType,
+        lastSeenAt: discoveredAssets.lastSeenAt,
+        firstSeenAt: discoveredAssets.firstSeenAt,
+        manufacturer: discoveredAssets.manufacturer,
+        model: discoveredAssets.model,
+        siteName: sites.name,
+      })
+      .from(discoveredAssets)
+      .innerJoin(sites, eq(discoveredAssets.siteId, sites.id))
+      .where(baseWhere)
+      .orderBy(...STABLE_ASSET_ORDER)
+      .limit(limit)
+      .offset((page - 1) * limit);
+
+    const reachabilityByAsset = await loadReachability(rows.map((r) => r.id), now);
+
+    return {
+      dataStatus: 'ok',
+      data: rows.map((row) => toAssetRow(row, reachabilityByAsset.get(row.id))),
+      pagination: { page, limit, total },
+    };
+  }
+
+  // With a status filter: load every matching asset (identity/site columns
+  // only, no snmpData needed since identity is now read pre-resolved), derive
+  // reachability, filter in memory, then paginate the filtered set.
   const rows = await db
     .select({
       id: discoveredAssets.id,
       hostname: discoveredAssets.hostname,
+      label: discoveredAssets.label,
       ipAddress: discoveredAssets.ipAddress,
       macAddress: discoveredAssets.macAddress,
       assetType: discoveredAssets.assetType,
@@ -170,55 +246,16 @@ export async function networkAssets(
       firstSeenAt: discoveredAssets.firstSeenAt,
       manufacturer: discoveredAssets.manufacturer,
       model: discoveredAssets.model,
-      snmpData: discoveredAssets.snmpData,
       siteName: sites.name,
     })
     .from(discoveredAssets)
     .innerJoin(sites, eq(discoveredAssets.siteId, sites.id))
-    .where(and(...conditions));
-
-  if (rows.length === 0) {
-    return { dataStatus: 'no_data', data: [], pagination: { page, limit, total: 0 } };
-  }
+    .where(baseWhere)
+    .orderBy(...STABLE_ASSET_ORDER);
 
   const reachabilityByAsset = await loadReachability(rows.map((r) => r.id), now);
-
-  const withOnlineState = rows.map((row) => {
-    const reachability = reachabilityByAsset.get(row.id);
-    const onlineState: NetworkAssetRowDto['onlineState'] =
-      reachability?.state === 'responding'
-        ? 'online'
-        : reachability?.state === 'not_responding'
-          ? 'offline'
-          : null;
-
-    const snmpData = (row.snmpData ?? null) as Record<string, unknown> | null;
-    const identity = resolveAssetIdentity({
-      sysObjectId: (snmpData?.sysObjectId as string | undefined) ?? null,
-      sysDescr: (snmpData?.sysDescr as string | undefined) ?? null,
-      snmpData,
-      macVendor: nicVendorFromMac(row.macAddress),
-      current: { manufacturer: row.manufacturer, model: row.model },
-    });
-
-    return {
-      id: row.id,
-      hostname: row.hostname,
-      ipAddress: row.ipAddress,
-      macAddress: row.macAddress,
-      assetType: row.assetType,
-      onlineState,
-      lastSeenAt: row.lastSeenAt?.toISOString() ?? null,
-      firstSeenAt: row.firstSeenAt.toISOString(),
-      manufacturer: identity.manufacturer,
-      model: identity.model,
-      siteName: row.siteName,
-    } satisfies NetworkAssetRowDto;
-  });
-
-  const filtered = filter.status
-    ? withOnlineState.filter((row) => row.onlineState === filter.status)
-    : withOnlineState;
+  const allRows = rows.map((row) => toAssetRow(row, reachabilityByAsset.get(row.id)));
+  const filtered = allRows.filter((row) => row.onlineState === (filter.status === 'unverified' ? null : filter.status));
 
   const total = filtered.length;
   const offset = (page - 1) * limit;
@@ -228,5 +265,52 @@ export async function networkAssets(
     dataStatus: 'ok',
     data: pageData,
     pagination: { page, limit, total },
+  };
+}
+
+interface AssetQueryRow {
+  id: string;
+  hostname: string | null;
+  label: string | null;
+  ipAddress: string | null;
+  macAddress: string | null;
+  assetType: string;
+  lastSeenAt: Date | null;
+  firstSeenAt: Date;
+  manufacturer: string | null;
+  model: string | null;
+  siteName: string;
+}
+
+/**
+ * Manufacturer/model are read as stored, not re-resolved here. Resolution
+ * (resolveAssetIdentity) already runs at ingest and applies manual precedence
+ * there — re-deriving from snmpData at read time could overwrite a value a
+ * technician typed in, putting the portal out of sync with the technician UI.
+ */
+function toAssetRow(
+  row: AssetQueryRow,
+  reachability: Awaited<ReturnType<typeof loadReachability>> extends Map<string, infer V> ? V | undefined : never,
+): NetworkAssetRowDto {
+  const onlineState: NetworkAssetRowDto['onlineState'] =
+    reachability?.state === 'responding'
+      ? 'online'
+      : reachability?.state === 'not_responding'
+        ? 'offline'
+        : null;
+
+  return {
+    id: row.id,
+    hostname: row.hostname,
+    label: row.label,
+    ipAddress: row.ipAddress,
+    macAddress: row.macAddress,
+    assetType: row.assetType,
+    onlineState,
+    lastSeenAt: row.lastSeenAt?.toISOString() ?? null,
+    firstSeenAt: row.firstSeenAt.toISOString(),
+    manufacturer: row.manufacturer,
+    model: row.model,
+    siteName: row.siteName,
   };
 }

@@ -231,7 +231,7 @@ describe('GET /network/assets (#5861, PR 2)', () => {
   const NOT_ENABLED_ASSETS = {
     dataStatus: 'not_enabled',
     data: [],
-    pagination: { page: 1, limit: 0, total: 0 },
+    pagination: { page: 1, limit: 50, total: 0 },
   };
 
   beforeEach(() => {
@@ -274,12 +274,12 @@ describe('GET /network/assets (#5861, PR 2)', () => {
     dbState.rows = [{ enableNetworkVisibility: true, partnerId: PARTNER_ID }];
 
     const response = await makeApp().request(
-      '/network/assets?siteId=s1&assetType=switch&status=online&page=2&limit=10',
+      '/network/assets?siteId=11111111-1111-1111-1111-111111111111&assetType=switch&status=online&page=2&limit=10',
     );
 
     expect(response.status).toBe(200);
     expect(networkAssetsMock).toHaveBeenCalledWith(ORG_ID, {
-      siteId: 's1',
+      siteId: '11111111-1111-1111-1111-111111111111',
       assetType: 'switch',
       status: 'online',
       page: 2,
@@ -287,14 +287,40 @@ describe('GET /network/assets (#5861, PR 2)', () => {
     });
   });
 
-  it('ignores an invalid status value instead of forwarding it', async () => {
+  it('rejects an invalid status value with 400', async () => {
     dbState.rows = [{ enableNetworkVisibility: true, partnerId: PARTNER_ID }];
 
-    await makeApp().request('/network/assets?status=bogus');
+    const response = await makeApp().request('/network/assets?status=bogus');
 
-    expect(networkAssetsMock).toHaveBeenCalledWith(ORG_ID, expect.objectContaining({
-      status: undefined,
-    }));
+    expect(response.status).toBe(400);
+    expect(networkAssetsMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-UUID siteId with 400', async () => {
+    dbState.rows = [{ enableNetworkVisibility: true, partnerId: PARTNER_ID }];
+
+    const response = await makeApp().request('/network/assets?siteId=not-a-uuid');
+
+    expect(response.status).toBe(400);
+    expect(networkAssetsMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid assetType with 400', async () => {
+    dbState.rows = [{ enableNetworkVisibility: true, partnerId: PARTNER_ID }];
+
+    const response = await makeApp().request('/network/assets?assetType=toaster');
+
+    expect(response.status).toBe(400);
+    expect(networkAssetsMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-numeric page with 400', async () => {
+    dbState.rows = [{ enableNetworkVisibility: true, partnerId: PARTNER_ID }];
+
+    const response = await makeApp().request('/network/assets?page=abc');
+
+    expect(response.status).toBe(400);
+    expect(networkAssetsMock).not.toHaveBeenCalled();
   });
 
   it('rejects an unauthenticated request before reading settings', async () => {

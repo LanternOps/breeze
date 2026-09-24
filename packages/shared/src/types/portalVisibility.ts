@@ -323,6 +323,8 @@ export type NetworkOverviewDto =
 export interface NetworkAssetRowDto {
   id: string;
   hostname: string | null;
+  /** Technician-set display name; often more useful than hostname, which is frequently null. */
+  label: string | null;
   ipAddress: string | null;
   macAddress: string | null;
   assetType: string;
