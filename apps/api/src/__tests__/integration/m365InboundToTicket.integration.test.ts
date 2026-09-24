@@ -200,6 +200,7 @@ describe('M365 inbound → ticket (real DB)', () => {
       const normalized = normalizeGraphMessage(msg, seeded.partnerId, mailboxAddress);
 
       await withSystemDbAccessContext(() => processInboundEmail(normalized, {
+        provider: 'm365',
         connectionId: seeded.connection.id,
         partnerId: seeded.partnerId,
         tenantId,
