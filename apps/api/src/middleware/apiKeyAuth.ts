@@ -297,8 +297,14 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
       // read its own partner row (billing gate, MCP provisioning). If the org
       // somehow has no partner link, fall back to an empty allowlist.
       accessiblePartnerIds: resolvedPartnerId ? [resolvedPartnerId] : [],
-      // Own partner — read-visibility of partner-wide catalog rows.
-      currentPartnerId: resolvedPartnerId ?? null
+      // Own partner: read-visibility of partner-wide rows (org_id NULL,
+      // partner_id = own partner) through each table's SELECT-only branch,
+      // exactly what an org-scoped JWT session gets from buildDbAccessContext.
+      // It grants no partner-axis access (accessiblePartnerIds stays empty for
+      // ordinary keys), so partner-wide scripts and config become readable
+      // but never writable. Without it an org key cannot even see the
+      // partner-wide scripts run_script is designed to run.
+      currentPartnerId: ownerTenant.partnerId ?? null
     },
     async () => {
       await next();

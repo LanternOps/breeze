@@ -900,6 +900,10 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     proposalId: uuid.optional(),
     deviceIds: z.array(uuid).min(1).max(10),
     parameters: z.record(z.string(), z.unknown()).optional(),
+    // Optional content pin for a library script: lowercase-hex sha256 of the
+    // content in scriptVersions.sha256Content form (the `contentSha256`
+    // get_script_details returns). Checked against the row being dispatched.
+    expectedContentSha256: z.string().regex(/^[0-9a-f]{64}$/u).optional(),
     // #4888 — an assistant may choose the run context, under exactly the
     // constraints a human caller has (services/scriptRunRequest.ts): the enum
     // excludes 'elevated', and the handler re-parses the pair through the very
@@ -925,6 +929,15 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
         code: z.ZodIssueCode.custom,
         path: ['parameters'],
         message: 'a proposal-backed run does not take parameters',
+      });
+    }
+    // The pin names a LIBRARY script's content; a proposal is pinned by its
+    // own review digest, so accepting one here would be a check that never ran.
+    if (data.proposalId && data.expectedContentSha256 !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['expectedContentSha256'],
+        message: 'expectedContentSha256 applies to library scripts only',
       });
     }
   }),
