@@ -55,6 +55,9 @@ func TestRun_WindowsVhdxRealSystem(t *testing.T) {
 	if res.Status != "completed" {
 		t.Fatalf("res = %s", mustJSON(res))
 	}
+	if res.Platform != "windows" {
+		t.Fatalf("res.Platform = %q, want windows", res.Platform)
+	}
 	if len(res.Phases) != 8 {
 		t.Fatalf("phases = %+v, want 8", res.Phases)
 	}
@@ -99,6 +102,16 @@ func TestRun_WindowsVhdxRealSystem(t *testing.T) {
 	vols, err := sys.WaitForVolumes(context.Background(), diskNumber, 3)
 	if err != nil {
 		t.Fatalf("WaitForVolumes after re-attach: %v", err)
+	}
+	// No automount surprises: the run assigned letters only transiently
+	// (format.com, the ESP), so none survives it on the rebuilt disk. The
+	// fresh attach above did not assign any either — the no-letter bit on
+	// ESP/MSR/Recovery and the host's automount policy for a VHDX decide
+	// what re-attach does, so this is read before any test-side mount.
+	for _, v := range vols {
+		if v.DriveLetter != "" {
+			t.Fatalf("partition %d has drive letter %s after the run: %+v", v.PartitionNumber, v.DriveLetter, vols)
+		}
 	}
 	var rootVol string
 	for _, v := range vols {

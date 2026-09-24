@@ -127,7 +127,7 @@ func storageDeviceNumber(devPath string) (storageDeviceNumberResult, error) {
 	defer func() { _ = windows.CloseHandle(h) }()
 	var n uint32
 	if err := windows.DeviceIoControl(h, wingpt.IOCTLStorageGetDeviceNumber, nil, 0, (*byte)(unsafe.Pointer(&out)), uint32(unsafe.Sizeof(out)), &n, nil); err != nil {
-		return out, fmt.Errorf("IOCTL_STORAGE_GET_DEVICE_NUMBER %s: %w", devPath, err)
+		return out, fmt.Errorf("IOCTL_STORAGE_GET_DEVICE_NUMBER %s: %w", devPath, markNotADisk(err))
 	}
 	if n < uint32(unsafe.Sizeof(out)) {
 		return out, fmt.Errorf("IOCTL_STORAGE_GET_DEVICE_NUMBER %s returned %d bytes", devPath, n)
@@ -146,9 +146,19 @@ func volumeDiskNumbers(devPath string) ([]int, error) {
 	buf := make([]byte, volumeDiskExtentsHeader+64*diskExtentSize)
 	var n uint32
 	if err := windows.DeviceIoControl(h, ioctlVolumeGetVolumeDiskExtents, nil, 0, &buf[0], uint32(len(buf)), &n, nil); err != nil {
-		return nil, fmt.Errorf("IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS %s: %w", devPath, err)
+		return nil, fmt.Errorf("IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS %s: %w", devPath, markNotADisk(err))
 	}
 	return parseVolumeDiskExtents(buf[:n])
+}
+
+// markNotADisk wraps a definite "this device does not implement the
+// IOCTL" failure with errNotADiskDevice (classifyVolume skips a volume only
+// when both of its IOCTLs say so); any other error is returned unchanged.
+func markNotADisk(err error) error {
+	if errors.Is(err, windows.ERROR_INVALID_FUNCTION) || errors.Is(err, windows.ERROR_NOT_SUPPORTED) {
+		return fmt.Errorf("%w: %w", errNotADiskDevice, err)
+	}
+	return err
 }
 
 // forEachVolume calls fn with every volume GUID path (\\?\Volume{GUID}\)
@@ -606,21 +616,14 @@ func (w *winSystemWindows) WaitForVolumes(ctx context.Context, diskNumber int, w
 // point or drive letter", lab-proven). The letter exists only for the
 // format.com call and is released on every path, so the run's
 // no-letters-during-the-run contract holds outside that window.
-func (w *winSystemWindows) Format(ctx context.Context, volumeGUIDPath, filesystem, label string) (err error) {
-	letter, release, err := w.AssignLetter(volumeGUIDPath)
-	if err != nil {
-		return fmt.Errorf("format %s: temporary drive letter: %w", volumeGUIDPath, err)
-	}
-	defer func() {
-		if rerr := release(); rerr != nil && err == nil {
-			err = fmt.Errorf("format %s: release temporary drive letter %s: %w", volumeGUIDPath, letter, rerr)
+func (w *winSystemWindows) Format(ctx context.Context, volumeGUIDPath, filesystem, label string) error {
+	return withTemporaryLetter(volumeGUIDPath, w.AssignLetter, func(letter string) error {
+		out, err := winRunWithRetry(ctx, w, "format.com", formatComArgs(letter+":", filesystem, label)...)
+		if err != nil {
+			return fmt.Errorf("format.com %s (%s:): %s: %w", volumeGUIDPath, letter, strings.TrimSpace(string(out)), err)
 		}
-	}()
-	out, err := winRunWithRetry(ctx, w, "format.com", formatComArgs(letter+":", filesystem, label)...)
-	if err != nil {
-		return fmt.Errorf("format.com %s (%s:): %s: %w", volumeGUIDPath, letter, strings.TrimSpace(string(out)), err)
-	}
-	return nil
+		return nil
+	})
 }
 
 // MountVolume: SetVolumeMountPointW(dir\, \\?\Volume{GUID}\) — both

@@ -7,6 +7,7 @@ package rebuild
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -64,14 +65,22 @@ type storageDeviceNumberResult struct {
 	DeviceType, DeviceNumber, PartitionNumber uint32
 }
 
+// errNotADiskDevice marks an IOCTL failure that is a definite "this
+// device does not answer disk/volume queries" (ERROR_INVALID_FUNCTION,
+// ERROR_NOT_SUPPORTED) — the real seam wraps those with it; every other
+// failure (including a device that cannot be opened) stays unwrapped.
+var errNotADiskDevice = errors.New("device does not support disk queries")
+
 // classifyVolume decides whether one host volume belongs to diskNumber for
 // VolumesOnDisk. IOCTL_STORAGE_GET_DEVICE_NUMBER answers for every volume
 // on a basic disk; it fails for dynamic-disk volumes (simple, spanned,
 // mirrored), and then the disk extents decide: an extent on diskNumber is
 // an error, never a silent skip — the preflight Windows-tree guard and
 // WipeDisk's lock/dismount both rely on this list being complete. A volume
-// whose extents are also unavailable is not on any disk (WinPE's X: RAM
-// disk, an empty optical drive) and is skipped.
+// is skipped only on a definite answer: its number or extents are
+// elsewhere, or BOTH IOCTLs report errNotADiskDevice (WinPE's X: RAM disk).
+// A device that cannot be opened, or whose IOCTLs fail for any other
+// reason, is an error (fail closed): it could be on diskNumber.
 func classifyVolume(vol string, diskNumber int, dn storageDeviceNumberResult, dnErr error, extents func() ([]int, error)) (include bool, partitionNumber int, err error) {
 	if dnErr == nil {
 		if dn.DeviceType != fileDeviceDisk || int(dn.DeviceNumber) != diskNumber {
@@ -81,7 +90,10 @@ func classifyVolume(vol string, diskNumber int, dn storageDeviceNumberResult, dn
 	}
 	disks, extErr := extents()
 	if extErr != nil {
-		return false, 0, nil
+		if errors.Is(dnErr, errNotADiskDevice) && errors.Is(extErr, errNotADiskDevice) {
+			return false, 0, nil
+		}
+		return false, 0, fmt.Errorf("volume %s cannot be placed on or off disk %d (device number: %v; disk extents: %v): refusing to treat the disk as understood", vol, diskNumber, dnErr, extErr)
 	}
 	for _, d := range disks {
 		if d == diskNumber {
@@ -261,4 +273,22 @@ func retryTransient(attempts int, delay time.Duration, transient func(error) boo
 		}
 	}
 	return err
+}
+
+// withTemporaryLetter gives volumeGUIDPath a drive letter (assign — the
+// real seam's AssignLetter) for the duration of fn only: format.com refuses
+// a \\?\Volume{GUID}\ path. The letter is released on every path, and a
+// release failure is joined to fn's error, never dropped: a letter that
+// outlives the call breaks the run's no-letters contract.
+func withTemporaryLetter(volumeGUIDPath string, assign func(string) (string, func() error, error), fn func(letter string) error) (err error) {
+	letter, release, err := assign(volumeGUIDPath)
+	if err != nil {
+		return fmt.Errorf("format %s: temporary drive letter: %w", volumeGUIDPath, err)
+	}
+	defer func() {
+		if rerr := release(); rerr != nil {
+			err = errors.Join(err, fmt.Errorf("format %s: release temporary drive letter %s: %w", volumeGUIDPath, letter, rerr))
+		}
+	}()
+	return fn(letter)
 }

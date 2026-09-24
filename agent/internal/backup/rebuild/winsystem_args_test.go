@@ -3,6 +3,7 @@ package rebuild
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"testing"
 	"unsafe"
 
@@ -180,8 +181,9 @@ func TestHiveWithRelease_UnloadsThenReleasesOnce(t *testing.T) {
 // the IOCTL fails (dynamic-disk simple/spanned/mirrored volumes) the disk
 // extents decide, and an extent on the target is an error — the preflight
 // Windows-tree guard and WipeDisk's lock/dismount would otherwise never see
-// that volume. Only a device that is provably elsewhere (or not a disk at
-// all) is skipped.
+// that volume. Only a device that is provably elsewhere, or that answers
+// both IOCTLs with a definite "not supported" (errNotADiskDevice), is
+// skipped; an unopenable device or any other IOCTL failure is an error.
 func TestClassifyVolume(t *testing.T) {
 	failed := errors.New("ioctl failed")
 	for _, tc := range []struct {
@@ -199,7 +201,10 @@ func TestClassifyVolume(t *testing.T) {
 		{"cd-rom", storageDeviceNumberResult{0x2, 2, 0}, nil, nil, nil, false, 0, false},
 		{"dynamic volume with an extent on target", storageDeviceNumberResult{}, failed, []int{0, 2}, nil, false, 0, true},
 		{"dynamic volume only elsewhere", storageDeviceNumberResult{}, failed, []int{0, 1}, nil, false, 0, false},
-		{"not a disk at all (both IOCTLs fail)", storageDeviceNumberResult{}, failed, nil, failed, false, 0, false},
+		{"not a disk at all (both IOCTLs unsupported)", storageDeviceNumberResult{}, fmt.Errorf("x: %w", errNotADiskDevice), nil, fmt.Errorf("y: %w", errNotADiskDevice), false, 0, false},
+		{"device number unsupported, extents fail otherwise", storageDeviceNumberResult{}, fmt.Errorf("x: %w", errNotADiskDevice), nil, failed, false, 0, true},
+		{"both IOCTLs fail for another reason", storageDeviceNumberResult{}, failed, nil, failed, false, 0, true},
+		{"device cannot be opened", storageDeviceNumberResult{}, errors.New("open \\\\.\\Volume{x}: access denied"), nil, errors.New("open: access denied"), false, 0, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			include, part, err := classifyVolume(`\\?\Volume{x}\`, 2, tc.dn, tc.dnErr, func() ([]int, error) { return tc.extents, tc.extErr })
@@ -279,5 +284,36 @@ func TestRetryTransient(t *testing.T) {
 	err = retryTransient(5, 0, isTransient, func() error { calls++; return errOther })
 	if !errors.Is(err, errOther) || calls != 1 {
 		t.Fatalf("non-transient error: err=%v calls=%d, want errOther after 1", err, calls)
+	}
+}
+
+// Final-review Imp 7: Format's temporary letter is released on every path,
+// and a release failure is joined to — never dropped behind — the
+// format.com error.
+func TestWithTemporaryLetter_JoinsReleaseError(t *testing.T) {
+	formatErr, releaseErr := errors.New("format.com failed"), errors.New("DeleteVolumeMountPointW failed")
+	released := 0
+	assign := func(string) (string, func() error, error) {
+		return "Q", func() error { released++; return releaseErr }, nil
+	}
+	err := withTemporaryLetter(`\\?\Volume{x}\`, assign, func(letter string) error {
+		if letter != "Q" {
+			t.Fatalf("letter = %q", letter)
+		}
+		return formatErr
+	})
+	if !errors.Is(err, formatErr) || !errors.Is(err, releaseErr) || released != 1 {
+		t.Fatalf("err = %v (released %d), want both the format and the release error", err, released)
+	}
+	// Success path: a release failure alone still fails the call.
+	if err := withTemporaryLetter(`\\?\Volume{x}\`, assign, func(string) error { return nil }); !errors.Is(err, releaseErr) {
+		t.Fatalf("err = %v, want the release error", err)
+	}
+	// No letter, no call.
+	called := false
+	err = withTemporaryLetter(`\\?\Volume{x}\`, func(string) (string, func() error, error) { return "", nil, errors.New("no free letter") },
+		func(string) error { called = true; return nil })
+	if err == nil || called {
+		t.Fatalf("err = %v called = %v, want an error and no format call", err, called)
 	}
 }
