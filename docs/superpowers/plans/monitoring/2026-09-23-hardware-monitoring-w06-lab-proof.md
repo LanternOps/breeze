@@ -721,7 +721,7 @@ git commit -m $'test(monitoring): prove hardware policy pause and resume\n\nCo-A
 
 **Files:** Create `docs/superpowers/plans/monitoring/evidence/w06-linux-baseline.json`, `w06-linux-baseline.png`. Read `agent/Makefile:242–294`, index §H `mdadm_linux.go`, `smartctl.go` (created by W02a). Test: `$LAB/test-linux-baseline.sh`.
 
-**Interfaces:** Consumes Task 1 root SSH, registered Linux device, Task 2 settings. Produces `/dev/md0`, two exclusively owned loop devices, native Linux test results and a real `smartctl` standalone row. No hardware state is inserted via SQL.
+**Interfaces:** Consumes Task 1 root SSH, registered Linux device, Task 2 settings and a running udev daemon. Produces `/dev/md0`, two exclusively owned loop devices, `/dev/disk/by-id/breeze-w06-member-{a,b}` managed by `/etc/udev/rules.d/99-breeze-w06-md.rules`, native Linux test results and a real `smartctl` standalone row. W02a Task 7's `stableMDDevice` searches only `/dev/disk/by-id/*`, in sorted order; the backing-file rules below supply identities without changing that resolver. No hardware state is inserted via SQL.
 
 - [ ] **Step 1: Write and run the baseline assertion (3 minutes).**
 
@@ -733,7 +733,12 @@ source "$LAB/lib.sh"
 view "$LINUX_ID" > "$LAB/linux-baseline-view.json"
 jq -e '.policy.enabled and .pollIntervalMinutes==5 and .diskHealthIntervalMinutes==15 and
   ([.components[]|select(.source=="mdadm" and .componentKey=="mdadm:md0" and .state=="optimal")]|length)==1 and
-  ([.components[]|select(.source=="mdadm" and .componentType=="physical_disk")]|length)==2 and
+  ([.sources[]|select(.source=="mdadm" and .status=="ok" and .complete==true)]|length)==1 and
+  ([.components[]|select(.source=="mdadm" and .componentType=="physical_disk" and
+    .fresh and .stale==false and .state=="online")|.componentKey]|sort)==
+    ["mdadm:md0:m:breeze-w06-member-a","mdadm:md0:m:breeze-w06-member-b"] and
+  ([.components[]|select(.componentKey=="mdadm:md0")|.attributes.memberKeys|sort])==
+    [["mdadm:md0:m:breeze-w06-member-a","mdadm:md0:m:breeze-w06-member-b"]] and
   ([.components[]|select(.source=="smartctl" and .componentType=="physical_disk" and .stale==false)]|length)>0' "$LAB/linux-baseline-view.json"
 echo 'PASS Linux mirror and real standalone SMART row'
 SH
@@ -751,15 +756,41 @@ set -euo pipefail
 . /etc/os-release
 [ "$ID" = debian ]
 apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y mdadm smartmontools make gcc jq python3
+DEBIAN_FRONTEND=noninteractive apt-get install -y mdadm smartmontools make gcc jq python3 udev
+udevadm control --ping
 [ ! -e /var/tmp/breeze-w06 ]
 [ ! -b /dev/md0 ]
+[ ! -e /etc/udev/rules.d/99-breeze-w06-md.rules ]
+[ ! -L /etc/udev/rules.d/99-breeze-w06-md.rules ]
+for id in breeze-w06-member-a breeze-w06-member-b; do
+  [ ! -e "/dev/disk/by-id/$id" ] && [ ! -L "/dev/disk/by-id/$id" ]
+done
 mkdir -m 700 /var/tmp/breeze-w06
+cat > /var/tmp/breeze-w06/99-breeze-w06-md.rules <<'RULES'
+SUBSYSTEM=="block", KERNEL=="loop*", ATTR{loop/backing_file}=="/var/tmp/breeze-w06/member-a.img", SYMLINK+="disk/by-id/breeze-w06-member-a"
+SUBSYSTEM=="block", KERNEL=="loop*", ATTR{loop/backing_file}=="/var/tmp/breeze-w06/member-b.img", SYMLINK+="disk/by-id/breeze-w06-member-b"
+RULES
+install -m 644 /var/tmp/breeze-w06/99-breeze-w06-md.rules /etc/udev/rules.d/99-breeze-w06-md.rules
+udevadm control --reload-rules
 truncate -s 4G /var/tmp/breeze-w06/member-a.img
 truncate -s 4G /var/tmp/breeze-w06/member-b.img
 a=$(losetup --find --show /var/tmp/breeze-w06/member-a.img)
 b=$(losetup --find --show /var/tmp/breeze-w06/member-b.img)
 printf 'LOOP_A=%q\nLOOP_B=%q\n' "$a" "$b" > /var/tmp/breeze-w06/loops.env
+udevadm trigger --action=change --sysname-match="${a##*/}"
+udevadm trigger --action=change --sysname-match="${b##*/}"
+udevadm settle --timeout=30
+python3 - "$a" "$b" <<'PY'
+import glob, os, sys
+for dev, name in zip(sys.argv[1:], ('breeze-w06-member-a','breeze-w06-member-b')):
+    link='/dev/disk/by-id/'+name
+    assert os.path.islink(link) and os.path.realpath(link)==os.path.realpath(dev), link
+    # Match stableMDDevice's sorted first-resolving-alias selection exactly.
+    aliases=[p for p in sorted(glob.glob('/dev/disk/by-id/*'))
+             if os.path.exists(p) and os.path.realpath(p)==os.path.realpath(dev)]
+    assert aliases and os.path.basename(aliases[0])==name, aliases
+print('PASS both owned loop devices have the exact resolver identities')
+PY
 mdadm --create /dev/md0 --level=1 --raid-devices=2 --metadata=1.2 --name=breeze-w06 --run "$a" "$b"
 mdadm --wait /dev/md0
 mdadm --detail /dev/md0
@@ -768,7 +799,7 @@ jq -e '.devices|length>0' /var/tmp/breeze-w06/smart-scan.json
 SH
 ```
 
-Expected `State : clean`, two active devices, SMART scan `true`. If SMART scan is empty, pass through the dedicated test disk to this VM and repeat the scan; smartctl being installed is not SMART evidence. Loop devices must be identified by their persistent md membership identity per index §B/§H; unstable `/dev/loopN` component keys are a W02a failure.
+Expected `State : clean`, two active devices, SMART scan `true`. If SMART scan is empty, pass through the dedicated test disk to this VM and repeat the scan; smartctl being installed is not SMART evidence. The udev rules bind each by-id name to its owned backing file, independent of the allocated loop number; they remain installed through Task 7 and agent restarts, then Task 19 removes them. Keep both loops attached throughout the fault/rebuild cycle. A missing udev daemon or mismatched alias is a lab setup failure: stop before dev-push. The live baseline assertion requires both exact member keys and complete mdadm collection, proving W02a's real resolver accepted the links; it rejects empty identities and `/dev/loopN` keys. No resolver change or SMART claim for loop devices is required.
 
 - [ ] **Step 3: Test and dev-push the exact source on Linux (5 minutes plus test runtime).**
 
@@ -1535,9 +1566,9 @@ git commit -m $'test(monitoring): record racadm in-band capture provenance\n\nCo
 
 ### Task 17: Record hponcfg in-band capture coverage
 
-**Files:** Create `docs/superpowers/plans/monitoring/evidence/w06-hponcfg.json`; conditional Create `agent/internal/collectors/hwhealth/testdata/hponcfg/real-config.txt`. Test: `$LAB/test-hponcfg.sh`. W05 creates `bmc.go` under index §H; index §I source value is `hponcfg`, never `bmc`.
+**Files:** Create `docs/superpowers/plans/monitoring/evidence/w06-hponcfg.json`; conditional Create `agent/internal/collectors/hwhealth/testdata/hponcfg/real-config.txt` (XML) and `agent/internal/collectors/hwhealth/testdata/hponcfg/real-stdout.txt` (banner). Test: `$LAB/test-hponcfg.sh`. W05 creates `bmc.go` under index §H; index §I source value is `hponcfg`, never `bmc`.
 
-**Interfaces:** Consumes Task 9 capture helpers; produces the `hponcfg` docs marker. This captures informational in-band BMC facts only; no out-of-band credentials, sensor polling or topology-link proof is claimed.
+**Interfaces:** Consumes Task 9 capture helpers and W05's `parseBMC("hponcfg", network, info)` contract: XML export is `network`, stdout banner is `info` and supplies firmware when the XML omits it (`TestBMCHPEFirmwareBanner`). Produces the `hponcfg` docs marker and a paired XML/stdout capture from one command invocation. This captures informational in-band BMC facts only; no out-of-band credentials, sensor polling or topology-link proof is claimed.
 
 - [ ] **Step 1: Write and run the failing source assertion (2 minutes).**
 
@@ -1547,12 +1578,29 @@ cat > "$LAB/test-hponcfg.sh" <<'SH'
 set -euo pipefail
 source "$LAB/lib.sh"
 vendor_test hponcfg
-echo 'PASS hponcfg capture provenance'
+python3 - <<'PY'
+import hashlib, json, os, pathlib, xml.etree.ElementTree as ET
+root=pathlib.Path(os.environ['ROOT'])
+m=json.loads((pathlib.Path(os.environ['EVIDENCE'])/'w06-hponcfg.json').read_text())
+if m['status']=='real capture':
+    files={f['path']:f['sha256'] for f in m['files']}
+    prefix='agent/internal/collectors/hwhealth/testdata/hponcfg/'
+    for name in ('real-config.txt','real-stdout.txt'):
+        key=prefix+name
+        assert key in files, 'Missing paired hponcfg capture: '+name
+        data=(root/key).read_bytes()
+        assert data.strip() and hashlib.sha256(data).hexdigest()==files[key], name
+    tree=ET.fromstring((root/(prefix+'real-config.txt')).read_text())
+    assert any(e.tag.rsplit('}',1)[-1].upper()=='RIBCL' for e in tree.iter())
+else:
+    assert m['files']==[], 'Fixture-only must not claim a partial capture'
+print('PASS hponcfg paired XML/stdout capture provenance')
+PY
 SH
 bash "$LAB/test-hponcfg.sh"
 ```
 
-Expected red: missing `w06-hponcfg.json`.
+Expected red: missing `w06-hponcfg.json`; an XML-only real-capture manifest also fails with `Missing paired hponcfg capture: real-stdout.txt`. A fixture-only manifest remains valid when no capture target is available.
 
 - [ ] **Step 2: Capture, sanitize and verify (5 minutes plus tests).**
 
@@ -1560,15 +1608,26 @@ Expected red: missing `w06-hponcfg.json`.
 read -r -p 'Authorized hponcfg Linux SSH capture target; empty means fixture-only: ' CAPTURE_SSH
 mkdir -p "$LAB/captures/hponcfg"
 if [ -n "$CAPTURE_SSH" ]; then
-  ssh "$CAPTURE_SSH" 'f=$(mktemp); trap '"'"'rm -f "$f"'"'"' EXIT; hponcfg -w "$f" >/dev/null; cat "$f"' > "$LAB/captures/hponcfg/real-config.txt"
+  ssh "$CAPTURE_SSH" 'bash -se' > "$LAB/hponcfg-capture.tar" 2> "$LAB/hponcfg-stderr.txt" <<'SH'
+set -euo pipefail
+umask 077
+dir=$(mktemp -d)
+trap 'rm -rf -- "$dir"' EXIT
+hponcfg -w "$dir/real-config.txt" > "$dir/real-stdout.txt"
+test -s "$dir/real-config.txt"
+test -s "$dir/real-stdout.txt"
+tar -C "$dir" -cf - real-config.txt real-stdout.txt
+SH
+  tar -xf "$LAB/hponcfg-capture.tar" -C "$LAB/captures/hponcfg" real-config.txt real-stdout.txt
 fi
 python3 "$LAB/publish-capture.py" hponcfg "$LAB/captures/hponcfg" "$ROOT/agent/internal/collectors/hwhealth/testdata/hponcfg" "$REDACTION_MAP"
+(cd agent && go test -race ./internal/collectors/hwhealth/... -run '^TestBMCHPEFirmwareBanner$' -count=1)
 (cd agent && go test -race ./internal/collectors/hwhealth/...)
 capture_manifest hponcfg "$ROOT/agent/internal/collectors/hwhealth/testdata/hponcfg"
 bash "$LAB/test-hponcfg.sh"
 ```
 
-Expected green: parser suite exits 0 and provenance PASS. Before copying, extend the private replacement map for every BMC IP/MAC, host identifier, username, community string or password in the export; preserve the XML/text structure and identity equality. `hponcfg -w` exports configuration; `-g` is insufficient for network facts (§12). No real capture leaves the source `fixture-only`.
+Expected green: firmware-banner regression and parser suite exit 0, and paired-capture provenance PASS. The remote shell fails on hponcfg errors and removes its private temporary directory; stderr and the unsanitized archive remain under `$LAB`. Before running `publish-capture.py`, review both raw files and extend the private replacement map for every BMC IP/MAC, host identifier, username, community string or password in either file. The sanitizer processes both `real-*` files separately; preserve valid XML, stdout banner field names, firmware values and cross-file identity equality. Both sanitized files must appear with matching SHA-256 hashes in the manifest. The existing W05 firmware regression verifies banner support; capturing these files does not claim that the regression consumes the new real transcripts (Task 9's evidence convention still applies). `hponcfg -w` exports configuration; `-g` is insufficient for network facts (§12). No real capture leaves the source `fixture-only`.
 
 - [ ] **Step 3: Commit only the sanitized source and receipt (2 minutes).**
 
@@ -1844,11 +1903,27 @@ ssh "$LINUX_SSH" 'bash -se' <<'SH'
 set -euo pipefail
 if command -v zpool >/dev/null && zpool list breeze-w06 >/dev/null 2>&1; then zpool destroy breeze-w06; fi
 source /var/tmp/breeze-w06/loops.env
+# Verify ownership of both backing files, links and the rule before removing any resource.
+[ "$(losetup -n -O BACK-FILE "$LOOP_A")" = /var/tmp/breeze-w06/member-a.img ]
+[ "$(losetup -n -O BACK-FILE "$LOOP_B")" = /var/tmp/breeze-w06/member-b.img ]
+[ -L /dev/disk/by-id/breeze-w06-member-a ]
+[ -L /dev/disk/by-id/breeze-w06-member-b ]
+[ "$(readlink -f /dev/disk/by-id/breeze-w06-member-a)" = "$LOOP_A" ]
+[ "$(readlink -f /dev/disk/by-id/breeze-w06-member-b)" = "$LOOP_B" ]
+cmp /var/tmp/breeze-w06/99-breeze-w06-md.rules /etc/udev/rules.d/99-breeze-w06-md.rules
 mdadm --stop /dev/md0
+rm /etc/udev/rules.d/99-breeze-w06-md.rules
+udevadm control --reload-rules
+rm /dev/disk/by-id/breeze-w06-member-a /dev/disk/by-id/breeze-w06-member-b
 for member in "$LOOP_A" "$LOOP_B"; do
   backing=$(losetup -n -O BACK-FILE "$member")
   case "$backing" in /var/tmp/breeze-w06/member-*.img) losetup -d "$member";; *) exit 1;; esac
 done
+udevadm settle --timeout=30
+for id in breeze-w06-member-a breeze-w06-member-b; do
+  [ ! -e "/dev/disk/by-id/$id" ] && [ ! -L "/dev/disk/by-id/$id" ]
+done
+[ ! -e /etc/udev/rules.d/99-breeze-w06-md.rules ]
 rm -f /var/tmp/breeze-w06/member-a.img /var/tmp/breeze-w06/member-b.img
 rm -f /var/tmp/breeze-w06/zfs-a.img /var/tmp/breeze-w06/zfs-b.img
 [ ! -b /dev/md0 ] || ! mdadm --detail /dev/md0 >/dev/null 2>&1
@@ -1857,7 +1932,7 @@ api DELETE "/configuration-policies/$POLICY_ID" > "$LAB/deleted-policy.json"
 [ "$(sql "SELECT count(*) FROM configuration_policies WHERE id='$POLICY_ID'::uuid;")" = 0 ]
 ```
 
-Expected no W06 pool, no assembled md0, detached owned loops, no lab policy. Retain source/test logs privately until evidence review completes. Dev-push disables agent auto-update; leave these dedicated lab agents pinned deliberately and document that fact rather than silently enabling a production update path. The SMART test disk remains with its original owner and was never formatted.
+Expected no W06 pool, no assembled md0, detached owned loops, no owned by-id links or udev rule, no lab policy. Retain source/test logs privately until evidence review completes. Dev-push disables agent auto-update; leave these dedicated lab agents pinned deliberately and document that fact rather than silently enabling a production update path. The SMART test disk remains with its original owner and was never formatted.
 
 - [ ] **Step 3: Write and commit the reviewable evidence index (3 minutes).**
 
@@ -1866,7 +1941,7 @@ python3 - <<'PY'
 import os,pathlib
 p=pathlib.Path(os.environ['EVIDENCE'])
 rows=['# W06 completion checklist','',
- '- [x] Lab resources restored: only this run’s VHDX, md0, loops, optional ZFS pool and configuration policy removed.',
+ '- [x] Lab resources restored: only this run’s VHDX, md0, loops, by-id links, udev rule, optional ZFS pool and configuration policy removed.',
  '- [x] Windows and Linux dedicated lab agents remain pinned to their tested dev builds; auto-update remains disabled intentionally.',
  '- [x] Agent release request recorded; this lab completion does not claim fleet release or promotion.',
  '- [x] Vendor coverage distinguishes fixture-only, real capture and live lab fault proof.',
@@ -1983,6 +2058,9 @@ fi
 Expected no containers belonging to the owned worktree project; do not remove another session's projects. Report any pre-existing stack or pinned lab agent intentionally left running. Closure receipts live on GitHub; no post-merge commit is needed to amend the evidence with issue status.
 
 ## Self-review
+
+- Second-pass P1: Task 6 now supplies udev-managed `/dev/disk/by-id/breeze-w06-member-{a,b}` links keyed to owned backing files, verifies W02a's sorted resolver selection, and requires exact fresh member keys, VD membership and complete mdadm collection in the red→green baseline. Task 19 verifies ownership and removes the rule and links. W06 owns this lab setup/cleanup under index §J; W02a's resolver and parsers remain unchanged.
+- Second-pass P3: Task 17 captures hponcfg XML and stdout from the same invocation into separate files, sanitizes both, requires both manifest hashes and valid XML, and reruns W05's firmware-banner regression. W06 supplies the real evidence pair; W05 needs no adapter or test changes, and unavailable hardware still permits fixture-only coverage.
 
 - Spec §13/§14 W06: Windows Storage Spaces and Linux md fault/recovery, screenshots, subject alert IDs and native agent suites are covered by Tasks 1–7 and 18–19.
 - Spec §13: Task 8 records optional ZFS explicitly; Task 6 requires a real SMART-capable device rather than pretending loop devices support SMART.

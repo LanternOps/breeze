@@ -739,12 +739,20 @@ git commit -m $'feat(agent): persist daily ordered BMC collection attempts\n\nCo
 
 **Files:** Create `apps/api/src/services/discovery/agentReportedBmcLink.ts`, `apps/api/src/services/discovery/agentReportedBmcLink.test.ts`; Modify `apps/api/src/services/discovery/agentReportedBmcLink.integration.test.ts` created in Task 1.
 **Test:** `apps/api/src/services/discovery/agentReportedBmcLink.test.ts`, `apps/api/src/services/discovery/agentReportedBmcLink.integration.test.ts`.
-**Interfaces:** Produces exact §I `linkBmcAssetFromAgentReport(tx, {deviceId,orgId,siteId,mac,ip}): Promise<'linked'|'already_linked'|'suppressed'|'no_asset'|'other_site'>`; `BmcLinkTx`, `BmcReport`, `BmcCandidate`, `BmcLinkStatus`, `normalizeBmcMac`, `chooseBmcAsset`, `readBmcCandidates`. All names not in the index are explicitly created here.
+**Interfaces:** Produces exact §I `linkBmcAssetFromAgentReport(tx, {deviceId,orgId,siteId,mac,ip}): Promise<'linked'|'already_linked'|'suppressed'|'no_asset'|'other_site'>`; `BmcLinkTx`, `BmcReport`, `BmcCandidate`, `BmcLinkStatus`, `normalizeBmcMac`, `chooseBmcAsset`, `readBmcCandidates`. All names not in the index are explicitly created here. `BmcLinkTx` is the structural `select`/`update` executor shared by the ambient `db` proxy and Drizzle transactions; the caller owns the transaction and tenant context.
 
 - [ ] **Step 1: Write the full decision matrix (5 minutes).** `.test.ts`:
 ```ts
-import { expect, it } from 'vitest';
-import { chooseBmcAsset, normalizeBmcMac, type BmcCandidate } from './agentReportedBmcLink';
+import { expect, expectTypeOf, it } from 'vitest';
+import type { db } from '../../db';
+import { chooseBmcAsset, normalizeBmcMac, type BmcCandidate, type BmcLinkTx } from './agentReportedBmcLink';
+
+it('accepts both ambient db and Drizzle transactions with only select/update capabilities', () => {
+  type DbTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+  expectTypeOf<typeof db>().toMatchTypeOf<BmcLinkTx>();
+  expectTypeOf<DbTx>().toMatchTypeOf<BmcLinkTx>();
+  expectTypeOf<keyof BmcLinkTx>().toEqualTypeOf<'select' | 'update'>();
+});
 const report = { deviceId: '11111111-1111-4111-8111-111111111111',
   orgId: '22222222-2222-4222-8222-222222222222', siteId: '33333333-3333-4333-8333-333333333333',
   mac: '02:00:00:00:00:10', ip: '192.0.2.10' };
@@ -824,13 +832,18 @@ it('serializes competing links so only one device obtains the asset', async () =
 cd apps/api && npx vitest run src/services/discovery/agentReportedBmcLink.test.ts
 cd apps/api && npx vitest run -c vitest.integration.config.ts src/services/discovery/agentReportedBmcLink.integration.test.ts
 ```
-Expected: missing `./agentReportedBmcLink` module.
+Expected: missing `./agentReportedBmcLink` module. Also run the compiler (Vitest's normal runner does not check `expectTypeOf` assertions):
+```bash
+NODE_OPTIONS=--max-old-space-size=12288 pnpm --filter @breeze/api exec tsc --noEmit
+```
+Expected: missing linker module on first implementation; against the previous full-transaction alias, the ambient-db assignability and exact-capability assertions fail because that alias requires transaction-only members including `rollback`.
 - [ ] **Step 3: Implement identity normalization and deterministic selection (5 minutes).** Create `agentReportedBmcLink.ts`:
 ```ts
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices, discoveredAssets } from '../../db/schema';
-export type BmcLinkTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+type DbTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+export type BmcLinkTx = Pick<DbTx, 'select' | 'update'>;
 export type BmcLinkStatus = 'linked'|'already_linked'|'suppressed'|'no_asset'|'other_site';
 export type BmcReport = { deviceId:string; orgId:string; siteId:string|null; mac:string; ip:string|null };
 export type BmcCandidate = {
@@ -891,7 +904,11 @@ Suppression and link occupancy are checked under a row lock, and the update rech
 cd apps/api && npx vitest run src/services/discovery/agentReportedBmcLink.test.ts
 cd apps/api && npx vitest run -c vitest.integration.config.ts src/services/discovery/agentReportedBmcLink.integration.test.ts
 ```
-Expected: all matrix and concurrency assertions pass; forged insert returns PostgreSQL `42501`.
+Run the compiler as well to enforce both executor assignments and the minimal capability set:
+```bash
+NODE_OPTIONS=--max-old-space-size=12288 pnpm --filter @breeze/api exec tsc --noEmit
+```
+Expected: all matrix, concurrency and type assertions pass; forged insert returns PostgreSQL `42501`. The linker needs no `insert`, `transaction` or `rollback` member and does not open a transaction itself.
 - [ ] **Step 6: Commit (2 minutes).**
 ```bash
 git add apps/api/src/services/discovery/agentReportedBmcLink.ts apps/api/src/services/discovery/agentReportedBmcLink.test.ts apps/api/src/services/discovery/agentReportedBmcLink.integration.test.ts
@@ -900,9 +917,9 @@ git commit -m $'feat(discovery): associate BMC assets with scoped agent reports\
 
 ### Task 6: Connect ingest and expose current association metadata in the view
 
-**Files:** Modify `apps/api/src/services/hardwareHealth/ingest.ts` (W01 plan:1143–1175), `apps/api/src/services/hardwareHealth/view.ts` (W01 plan:1288–1320), `apps/api/src/services/discovery/agentReportedBmcLink.ts` and `apps/api/src/services/discovery/agentReportedBmcLink.integration.test.ts` (Task 5).
+**Files:** Modify `apps/api/src/services/hardwareHealth/ingest.ts` (W01 Task 11 Step 3: `withDbTransaction` / `const tx=db`), `apps/api/src/services/hardwareHealth/view.ts` (W01 plan:1288–1320), `apps/api/src/services/discovery/agentReportedBmcLink.ts` and `apps/api/src/services/discovery/agentReportedBmcLink.integration.test.ts` (Task 5).
 **Test:** `apps/api/src/services/discovery/agentReportedBmcLink.integration.test.ts`.
-**Interfaces:** Consumes exact `ingestHardwareHealthSnapshot(input:{device:{id:string;orgId:string};snapshot:HardwareHealthSnapshot;writer:'agent'|'server';receivedAt:Date}):Promise<IngestResult>` and `getDeviceHardwareHealthView(deviceId:string,opts?:{eventLimit?:number}):Promise<HardwareHealthView|null>`. Produces `bmcViewAttributes(report:BmcReport,attributes:Record<string,unknown>):Promise<Record<string,unknown>>`; `attributes.bmcLink` contains `status:BmcLinkStatus`, optional `assetId:string`, optional `siteName:string`. No top-level response field is added.
+**Interfaces:** Consumes exact `ingestHardwareHealthSnapshot(input:{device:{id:string;orgId:string};snapshot:HardwareHealthSnapshot;writer:'agent'|'server';receivedAt:Date}):Promise<IngestResult>` and `getDeviceHardwareHealthView(deviceId:string,opts?:{eventLimit?:number}):Promise<HardwareHealthView|null>`. Produces `bmcViewAttributes(report:BmcReport,attributes:Record<string,unknown>):Promise<Record<string,unknown>>`; `attributes.bmcLink` contains `status:BmcLinkStatus`, optional `assetId:string`, optional `siteName:string`. No top-level response field is added. Consumes Task 5’s `BmcLinkTx = Pick<DbTx, 'select' | 'update'>`; W01’s `withDbTransaction` binds the ambient `db` proxy to its savepoint, and the hook retains that executor and transaction boundary.
 
 - [ ] **Step 1: Append ingest and read-model tests (5 minutes).**
 ```ts
@@ -1000,8 +1017,13 @@ cd apps/api && npx vitest run -c vitest.integration.config.ts src/services/disco
 Expected: `bmcViewAttributes is not a function` or link metadata assertion fails; accepted W01 ingest alone does not link. With the previous raw-component hook, the failed/absent-source cases incorrectly set `linkedDeviceId`; with an unfiltered `change.upserts` hook, the stale-only case incorrectly links. Both regressions must stay in this suite.
 - [ ] **Step 3: Add the hook inside the existing transaction (5 minutes).** Add import:
 ```ts
-import { linkBmcAssetFromAgentReport } from '../discovery/agentReportedBmcLink';
+import { linkBmcAssetFromAgentReport, type BmcLinkTx } from '../discovery/agentReportedBmcLink';
 ```
+Inside W01’s unchanged `withDbTransaction(async()=>{` callback, replace only `const tx=db;` with:
+```ts
+const tx = db satisfies BmcLinkTx;
+```
+`satisfies` checks the linker contract while preserving the full inferred `typeof db` for ingest’s inserts, deletes and updates. Do not cast `db` to a transaction, replace `withDbTransaction`, or open a separate transaction for linking. The real helper at `db/index.ts:947–949` rebinds the proxy to the driver-owned savepoint, retaining the caller’s RLS context.
 Replace the owner projection, retaining the existing `.for('key share')` and org predicate:
 ```ts
 const [owner]=await tx.select({id:devices.id,siteId:devices.siteId}).from(devices)
@@ -1075,7 +1097,11 @@ This decorates only in-memory rows. The view's existing `fresh` calculation is u
 cd apps/api && npx vitest run -c vitest.integration.config.ts src/services/discovery/agentReportedBmcLink.integration.test.ts src/services/hardwareHealth/ingest.integration.test.ts
 cd apps/api && npx vitest run src/services/hardwareHealth/ingest.test.ts src/services/hardwareHealth/view.test.ts
 ```
-Expected: all pass, including the rejected-source matrix, partial success, stale-only upserts, unchanged ordering tests and live suppression metadata.
+Compile the actual ingest call and Task 5’s two-executor type regressions:
+```bash
+NODE_OPTIONS=--max-old-space-size=12288 pnpm --filter @breeze/api exec tsc --noEmit
+```
+Expected: all pass, including the rejected-source matrix, partial success, stale-only upserts, unchanged ordering tests and live suppression metadata. Restoring the old full-transaction `BmcLinkTx` makes this command fail at the ambient proxy assignment/call; the structural type passes without a cast or a new transaction.
 - [ ] **Step 6: Commit (2 minutes).**
 ```bash
 git add apps/api/src/services/hardwareHealth/ingest.ts apps/api/src/services/hardwareHealth/view.ts apps/api/src/services/discovery/agentReportedBmcLink.ts apps/api/src/services/discovery/agentReportedBmcLink.integration.test.ts
@@ -1844,6 +1870,8 @@ pnpm test-stack down
 ```
 
 ## Self-review
+
+- Second cross-plan review, Tasks 5–6: narrowed `BmcLinkTx` to `Pick<DbTx, 'select' | 'update'>`, added compiler-enforced proxy/transaction assignability and exact-capability regressions, and checked the ingest executor with `satisfies` without losing its other methods. Verified W01 Task 11’s `const tx=db` inside `withDbTransaction` against the real helper (`db/index.ts:947–949`) and proxy (`:1183–1217`). W05 owns this structural contract and its tests; W01’s ambient savepoint, RLS scope and rollback behavior remain unchanged, with no work assigned back to W01. The future linker/ingest source files and installed dependencies are absent here, so these red/green compiler and integration commands are implementation-time checks.
 
 - Cross-plan review, Task 1: all three colocated BMC database suites now have explicit unit-runner exclusions as well as integration-runner includes, with red/green configuration assertions. The broad unit glob and Redis mock in `src/__tests__/setup.ts` were verified against the real config.
 - Cross-plan review, Task 6: BMC linking now consumes accepted `change.upserts` from successful sources and excludes stale-only rows; failed/absent-source, retained-row, partial-success and stale-only integration regressions enforce the boundary. W01 source is absent in this checkout; its reducer and transaction were verified in the predecessor plan against spec §7.2. W05 adds this hook and its tests without changing W01's acceptance contract.

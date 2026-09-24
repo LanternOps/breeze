@@ -67,7 +67,7 @@ All paths below are repository-relative; modifications use anchors from the insp
 | Create | `agent/internal/collectors/hwhealth/smartctl_test.go` | SMART scan, exit bits and observations |
 | Create | `agent/internal/collectors/hwhealth/merge.go` | Unambiguous identities and SMART replay |
 | Create | `agent/internal/collectors/hwhealth/merge_test.go` | Unambiguous identities and SMART replay |
-| Create | `agent/internal/collectors/hwhealth/persist.go` | Atomic state and SMART cache files |
+| Create | `agent/internal/collectors/hwhealth/persist.go` | Atomic state, vendor topology and SMART cache files |
 | Create | `agent/internal/collectors/hwhealth/persist_test.go` | Atomic state and SMART cache files |
 | Create | `agent/internal/collectors/hwhealth/collector.go` | Single-flight cycle, budget and fairness |
 | Create | `agent/internal/collectors/hwhealth/collector_test.go` | Single-flight cycle, budget and fairness |
@@ -459,7 +459,7 @@ git commit -m $'feat(agent): back off repeatedly failing hardware sources\n\nCo-
 
 **Files:** Create `agent/internal/collectors/hwhealth/storcli.go`, `agent/internal/collectors/hwhealth/storcli_test.go` and `agent/internal/collectors/hwhealth/testdata/{storcli,perccli}/{optimal,degraded,failed,rebuilding-with-progress,predictive,missing-member,multi-controller,unrecognized-state,truncated,64-drive}.json` beneath that package.
 **Test:** `agent/internal/collectors/hwhealth/storcli_test.go`.
-**Interfaces:** Consumes Task 1 key builders. Produces `parseStorcli(data []byte, kind Kind) (Result, error)`, `vendorState(typ ComponentType, raw string) string`, `jsonObject`, `textValue`, `number`, `walkJSON`, `mergeComponents` for later commands.
+**Interfaces:** Consumes Task 1 key builders. Produces `parseStorcli(data []byte, kind Kind) (Result, error)`, `parseStorcliSections(data []byte, kind Kind, required ...string) (Result, error)`, `vendorState(typ ComponentType, raw string) string`, `jsonObject`, `textValue`, `number`, `walkJSON`, `mergeComponents` for later commands.
 
 - [ ] **Step 1: Generate the raw fixtures and write parser assertions (5 min).** Run this complete generator from the repo root; it creates synthetic fixtures, not claimed hardware captures:
 ```bash
@@ -486,10 +486,39 @@ PY
 `storcli_test.go`:
 ```go
 package hwhealth
-import("os";"path/filepath";"testing")
+import("encoding/json";"os";"path/filepath";"testing")
 func fixture(t *testing.T,source,name string)[]byte{t.Helper();b,e:=os.ReadFile(filepath.Join("testdata",source,name));if e!=nil{t.Fatal(e)};return b}
 func findComponent(t *testing.T,cs []Component,key string)Component{t.Helper();for _,c:=range cs{if c.ComponentKey==key{return c}};t.Fatalf("missing %s in %+v",key,cs);return Component{}}
 func TestStorcliFixtures(t *testing.T){for _,kind:=range []Kind{"storcli","perccli"}{for _,name:=range []string{"optimal","degraded","failed","rebuilding-with-progress","predictive","missing-member","multi-controller","unrecognized-state","truncated","64-drive"}{t.Run(string(kind)+"/"+name,func(t *testing.T){b:=fixture(t,string(kind),name+".json");r,e:=parseStorcli(b,kind);if name=="truncated"{if e==nil{t.Fatal("truncated accepted")};return};if e!=nil||!r.Complete{t.Fatalf("%+v %v",r,e)};c:=findComponent(t,r.Components,string(kind)+":c0:e252:s0");if c.Source!=kind{t.Fatal(c)};switch name{case "degraded":if findComponent(t,r.Components,string(kind)+":c0:v0").State!="degraded"{t.Fatal(r)};case "failed":if c.State!="failed"{t.Fatal(c)};case "predictive":if !c.PredictiveFailure{t.Fatal(c)};case "missing-member":if c.State!="missing"{t.Fatal(c)};case "unrecognized-state":v:=findComponent(t,r.Components,string(kind)+":c0:v0");if v.State!="unknown"||*v.StateDetail!="NewVendorState"{t.Fatal(v)};case "multi-controller":findComponent(t,r.Components,string(kind)+":c1");case "rebuilding-with-progress":if c.ProgressPercent==nil||*c.ProgressPercent!=42{t.Fatal(c)};case "64-drive":n:=0;for _,p:=range r.Components{if p.ComponentType=="physical_disk"{n++}};if n!=64||len(b)<1000000{t.Fatalf("drives=%d bytes=%d",n,len(b))}}})}}}
+func TestStorcliIncompleteObservations(t *testing.T){
+ for _,kind:=range []Kind{"storcli","perccli"}{for _,bad:=range []string{"response","pd-list","vd-list","null-list","wrong-list","pd-row","pd-missing-id","pd-id","pd-empty-slot","pd-text-slot","vd-id","controller-id"}{t.Run(string(kind)+"/"+bad,func(t *testing.T){
+  var doc map[string]any;if e:=json.Unmarshal(fixture(t,string(kind),"multi-controller.json"),&doc);e!=nil{t.Fatal(e)}
+  ctl:=doc["Controllers"].([]any)[0].(map[string]any);data:=ctl["Response Data"].(map[string]any)
+  pd:=data["PD LIST"].([]any)[0].(map[string]any)
+  switch bad{
+  case "response":delete(ctl,"Response Data")
+  case "pd-list":delete(data,"PD LIST")
+  case "vd-list":delete(data,"VD LIST")
+  case "null-list":data["PD LIST"]=nil
+  case "wrong-list":data["PD LIST"]=map[string]any{}
+  case "pd-row":data["PD LIST"]=[]any{"invalid"}
+  case "pd-missing-id":delete(pd,"EID:Slt")
+  case "pd-id":pd["EID:Slt"]="unparseable"
+  case "pd-empty-slot":pd["EID:Slt"]="252:"
+  case "pd-text-slot":pd["EID:Slt"]="252:slot"
+  case "vd-id":data["VD LIST"].([]any)[0].(map[string]any)["DG/VD"]="0/"
+  case "controller-id":delete(ctl["Command Status"].(map[string]any),"Controller")
+  }
+  b,e:=json.Marshal(doc);if e!=nil{t.Fatal(e)};r,e:=parseStorcli(b,kind)
+  if e!=nil||r.Complete||len(r.Warnings)==0{t.Fatalf("result=%+v error=%v",r,e)}
+  findComponent(t,r.Components,string(kind)+":c1:e252:s0")
+  if bad!="response"&&bad!="controller-id"{findComponent(t,r.Components,string(kind)+":c0")}
+ })}}
+}
+func TestStorcliExplicitEmptyLists(t *testing.T){
+ r,e:=parseStorcli([]byte(`{"Controllers":[{"Command Status":{"Controller":0,"Status":"Success"},"Response Data":{"Status":{"Controller Status":"Optimal"},"PD LIST":[],"VD LIST":[]}}]}`),"storcli")
+ if e!=nil||!r.Complete||len(r.Components)!=1{t.Fatalf("%+v %v",r,e)}
+}
 func TestStorcliMapping(t *testing.T){for typ,rows:=range map[ComponentType]map[string]string{
  "virtual_disk":{"Optl":"optimal","Dgrd":"degraded","Pdgd":"partially_degraded","OfLn":"offline","Rec":"rebuilding"},
  "physical_disk":{"Onln":"online","GHS":"hotspare","DHS":"hotspare","UGood":"ready","UBad":"failed","Rbld":"rebuilding","CpyBck":"copyback","JBOD":"jbod","Offln":"offline","Msng":"missing","UGShld":"shielded","UGUnsp":"unknown"},
@@ -497,7 +526,7 @@ func TestStorcliMapping(t *testing.T){for typ,rows:=range map[ComponentType]map[
  "controller":{"Optimal":"ok","Needs Attention":"degraded","Failed":"failed"},
  }{for raw,want:=range rows{if got:=vendorState(typ,raw);got!=want{t.Fatalf("%s %s=%s want %s",typ,raw,got,want)}}}}
 ```
-- [ ] **Step 2: Run red (2 min).** `cd agent && go test -race ./internal/collectors/hwhealth/...` → `undefined: parseStorcli`.
+- [ ] **Step 2: Run red (2 min).** `cd agent && go test -race ./internal/collectors/hwhealth/...` → `undefined: parseStorcli`. With the pre-review parser already implemented, `TestStorcliIncompleteObservations` must fail because `Complete` remains true.
 - [ ] **Step 3: Implement the JSON mapping and bounded parser (5 min).** `storcli.go`:
 ```go
 package hwhealth
@@ -516,18 +545,33 @@ var vendorStates=map[ComponentType]map[string]string{
 func vendorState(typ ComponentType,raw string)string{if s,ok:=vendorStates[typ][raw];ok{return s};return "unknown"}
 func sizeBytes(raw any)*int64{fields:=strings.Fields(textValue(raw));if len(fields)!=2{return nil};n,e:=strconv.ParseFloat(fields[0],64);if e!=nil||n<0{return nil};scale:=map[string]float64{"B":1,"KB":1e3,"MB":1e6,"GB":1e9,"TB":1e12,"KiB":1024,"MiB":1048576,"GiB":1073741824,"TiB":1099511627776}[fields[1]];if scale==0{return nil};return ptr(int64(n*scale))}
 var drivePath=regexp.MustCompile(`/c[0-9]+/e([0-9]+)/s([0-9]+)`)
-func parseStorcli(data []byte,kind Kind)(Result,error){
+var storcliSlotID=regexp.MustCompile(`^([0-9]+|-):([0-9]+)$`)
+var storcliVDID=regexp.MustCompile(`^[0-9]+/[0-9]+$`)
+func parseStorcli(data []byte,kind Kind)(Result,error){return parseStorcliSections(data,kind,"PD LIST","VD LIST")}
+// The overview requires both lists; individual commands require only their own section.
+func parseStorcliSections(data []byte,kind Kind,required ...string)(Result,error){
  r:=Result{Complete:true};if len(data)>4*1024*1024{return r,fmt.Errorf("storcli output exceeds 4 MB")}
- var doc struct{Controllers []struct{CommandStatus struct{Controller int;Status string;Description string} `json:"Command Status"`;Data jsonObject `json:"Response Data"`}}
+ var doc struct{Controllers []struct{CommandStatus struct{Controller *int;Status string;Description string} `json:"Command Status"`;Data jsonObject `json:"Response Data"`}}
  dec:=json.NewDecoder(bytes.NewReader(data));dec.UseNumber();if e:=dec.Decode(&doc);e!=nil{return Result{},e};var extra any;if e:=dec.Decode(&extra);e!=io.EOF{return Result{},fmt.Errorf("trailing storcli JSON")}
  if doc.Controllers==nil{return Result{},fmt.Errorf("missing Controllers")}
  for _,ctl:=range doc.Controllers{
   if ctl.CommandStatus.Status!="Success"{r.Complete=false;r.Warnings=append(r.Warnings,ctl.CommandStatus.Description);continue}
-  ck:=controllerKey(kind,strconv.Itoa(ctl.CommandStatus.Controller));byKey:=map[string]Component{};members:=map[string][]string{}
+  malformed:=func(message string){r.Complete=false;r.Warnings=append(r.Warnings,message)}
+  if ctl.CommandStatus.Controller==nil||*ctl.CommandStatus.Controller<0{malformed("missing or invalid controller identity");continue}
+  ck:=controllerKey(kind,strconv.Itoa(*ctl.CommandStatus.Controller));byKey:=map[string]Component{};members:=map[string][]string{}
+  if ctl.Data==nil{malformed(ck+": missing Response Data");continue}
+  for _,section:=range required{v,ok:=ctl.Data[section];if !ok||v==nil{malformed(ck+": missing "+section);continue};if section=="PD LIST"||section=="VD LIST"{if _,ok:=v.([]any);!ok{malformed(ck+": invalid "+section)}}}
+  for _,section:=range []string{"PD LIST","VD LIST"}{
+   raw,exists:=ctl.Data[section];if !exists{continue};list,ok:=raw.([]any);if !ok{malformed(ck+": invalid "+section);continue}
+   for _,row:=range list{m,ok:=row.(map[string]any);if !ok{malformed(ck+": invalid "+section+" row");continue}
+    if section=="PD LIST"&&!storcliSlotID.MatchString(textValue(m["EID:Slt"])){malformed(ck+": invalid PD identity")}
+    if section=="VD LIST"&&!storcliVDID.MatchString(textValue(m["DG/VD"])){malformed(ck+": invalid VD identity")}
+   }
+  }
   walkJSON(ctl.Data,"",func(m jsonObject,path string){
    if raw,ok:=m["Controller Status"];ok{c:=component(kind,"controller",ck,"",ck,textValue(raw),vendorState("controller",textValue(raw)));if basics,ok:=ctl.Data["Basics"].(map[string]any);ok{c.Name=textValue(basics["Model"]);c.Model=ptr(c.Name);c.Serial=ptr(textValue(basics["Serial Number"]));c.Firmware=ptr(textValue(basics["FW Package Build"]))};byKey[ck]=c}
-   if id,ok:=m["DG/VD"];ok{parts:=strings.Split(textValue(id),"/");if len(parts)!=2{return};key:=ck+":v"+parts[1];raw:=textValue(m["State"]);c:=component(kind,"virtual_disk",key,ck,"VD "+parts[1],raw,vendorState("virtual_disk",raw));c.SizeBytes=sizeBytes(m["Size"]);c.Attributes["raidLevel"]=m["TYPE"];c.Attributes["diskGroup"]=parts[0];byKey[key]=c}
-   eid,sl:="","";if id,ok:=m["EID:Slt"];ok{p:=strings.Split(textValue(id),":");if len(p)==2{eid,sl=p[0],p[1]}}
+   if id,ok:=m["DG/VD"];ok{parts:=strings.Split(textValue(id),"/");if !storcliVDID.MatchString(textValue(id)){malformed(ck+": invalid VD identity");return};key:=ck+":v"+parts[1];raw:=textValue(m["State"]);c:=component(kind,"virtual_disk",key,ck,"VD "+parts[1],raw,vendorState("virtual_disk",raw));c.SizeBytes=sizeBytes(m["Size"]);c.Attributes["raidLevel"]=m["TYPE"];c.Attributes["diskGroup"]=parts[0];byKey[key]=c}
+   eid,sl:="","";if id,ok:=m["EID:Slt"];ok{p:=storcliSlotID.FindStringSubmatch(textValue(id));if len(p)!=3{malformed(ck+": invalid EID:Slt");return};eid,sl=p[1],p[2]}
    if sl==""{if p:=drivePath.FindStringSubmatch(path);len(p)==3{eid,sl=p[1],p[2]}}
    if sl!=""{
     key:=slotKey(ck,eid,sl);c,exists:=byKey[key];if !exists{c=component(kind,"physical_disk",key,ck,"Slot "+sl,"","unknown")}
@@ -551,6 +595,7 @@ func parseStorcli(data []byte,kind Kind)(Result,error){
 }
 func mergeComponents(dst,src []Component)[]Component{index:=map[string]int{};for i,c:=range dst{index[c.ComponentKey]=i};for _,c:=range src{if i,ok:=index[c.ComponentKey];ok{old:=dst[i];if c.State=="unknown"&&c.StateDetail!=nil&&*c.StateDetail==""&&old.State!="unknown"{c.State=old.State;c.StateDetail=old.StateDetail};if c.Serial==nil{c.Serial=old.Serial};if c.Model==nil{c.Model=old.Model};if c.Firmware==nil{c.Firmware=old.Firmware};if c.SizeBytes==nil{c.SizeBytes=old.SizeBytes};if c.TemperatureC==nil{c.TemperatureC=old.TemperatureC};if c.ProgressPercent==nil{c.ProgressPercent=old.ProgressPercent};c.PredictiveFailure=c.PredictiveFailure||old.PredictiveFailure;for k,v:=range old.Attributes{if _,ok:=c.Attributes[k];!ok{c.Attributes[k]=v}};dst[i]=c}else{index[c.ComponentKey]=len(dst);dst=append(dst,c)}};return dst}
 ```
+Missing/null lists and malformed identities make the source incomplete, while all identifiable observations from that controller and its siblings remain available for upsert. Explicit empty lists establish absence; omitted lists do not. A malformed `EID:Slt` cannot fall back to a path and become a fabricated identity.
 - [ ] **Step 4: Run green and inspect fixture size (2 min).** `cd agent && go test -race ./internal/collectors/hwhealth/...` → `ok`; `64-drive.json` assertions prove ≥1 MB and exactly 64 PDs for both source kinds.
 - [ ] **Step 5: Commit (2 min).**
 ```bash
@@ -562,13 +607,29 @@ git commit -m $'feat(agent): parse Broadcom hardware states with large fixtures\
 
 **Files:** Create `agent/internal/collectors/hwhealth/storcli_source.go`, `agent/internal/collectors/hwhealth/storcli_source_test.go`.
 **Test:** `agent/internal/collectors/hwhealth/storcli_source_test.go`.
-**Interfaces:** Consumes `parseStorcli`, `runTool`, `lookupTool`; produces `newStorcli(kind Kind, extra []string, run toolRunner) Source`. `perccli` uses this function with `Kind("perccli")` and its own executable names.
+**Interfaces:** Consumes `parseStorcliSections`, `runTool`, `lookupTool`; produces `newStorcli(kind Kind, extra []string, run toolRunner) Source`. `perccli` uses this function with `Kind("perccli")` and its own executable names.
 
 - [ ] **Step 1: Write command and partial-observation tests (5 min).** `storcli_source_test.go`:
 ```go
 package hwhealth
-import("context";"errors";"strings";"testing";"time")
+import("context";"encoding/json";"errors";"strings";"testing";"time")
 func TestStorcliCommands(t *testing.T){calls:=[]string{};s:=newStorcli("perccli",nil,func(_ context.Context,d time.Duration,p string,args ...string)(execResult,error){calls=append(calls,strings.Join(args," "));if d!=30*time.Second{t.Fatal(d)};if len(calls)==3{return execResult{},errors.New("timeout")};if len(calls)>5{return execResult{Stdout:[]byte(`{"Controllers":[{"Command Status":{"Controller":0,"Status":"Success"},"Response Data":{"Progress":[{"EID:Slt":"252:0","Progress%":42}]}}]}`)},nil};return execResult{Stdout:fixture(t,"perccli","optimal.json")},nil});r,e:=s.Collect(context.Background(),Availability{Path:"tool",Available:true});if e!=nil||r.Complete||len(r.Components)==0||len(calls)!=8{t.Fatalf("%+v %v %v",r,e,calls)};want:=[]string{"/call show all J","/call/vall show all J","/call/eall/sall show all J","/call/cv show all J","/call/bbu show all J","/call/eall/sall show rebuild J","/call/vall show init J","/call/vall show cc J"};for i,w:=range want{if calls[i]!=w{t.Fatal(calls)}};c:=findComponent(t,r.Components,"perccli:c0:e252:s0");if c.ProgressPercent==nil||*c.ProgressPercent!=42{t.Fatal(c)}}
+func TestStorcliRequiredCommandSections(t *testing.T){
+ for _,kind:=range []Kind{"storcli","perccli"}{for _,bad:=range []int{-1,0,1,2}{t.Run(string(kind)+"/"+string(rune('A'+bad+1)),func(t *testing.T){
+  call:=0;src:=newStorcli(kind,nil,func(context.Context,time.Duration,string,...string)(execResult,error){
+   i:=call;call++;if i>=5{return execResult{Stdout:[]byte(`{"Controllers":[]}`)},nil}
+   var doc map[string]any;if e:=json.Unmarshal(fixture(t,string(kind),"optimal.json"),&doc);e!=nil{t.Fatal(e)}
+   ctl:=doc["Controllers"].([]any)[0].(map[string]any);data:=ctl["Response Data"].(map[string]any)
+   switch i{case 1:ctl["Response Data"]=map[string]any{"VD LIST":data["VD LIST"]};case 2:ctl["Response Data"]=map[string]any{"PD LIST":data["PD LIST"]};case 3:ctl["Response Data"]=map[string]any{"Cachevault_Info":data["Cachevault_Info"]};case 4:ctl["Response Data"]=map[string]any{"BBU_Info":[]any{map[string]any{"State":"Optimal"}}}}
+   if i==bad{if i==0{delete(ctl,"Response Data")}else{ctl["Response Data"]=map[string]any{}}}
+   b,e:=json.Marshal(doc);if e!=nil{t.Fatal(e)};return execResult{Stdout:b},nil
+  })
+  r,e:=src.Collect(context.Background(),Availability{Available:true,Path:"fixture"})
+  if e!=nil||r.Complete!=(bad==-1)||call!=8{t.Fatalf("%+v %v calls=%d",r,e,call)}
+  findComponent(t,r.Components,string(kind)+":c0:e252:s0")
+  findComponent(t,r.Components,string(kind)+":c0:v0")
+ })}}
+}
 func TestStorcliSplitMembershipAndProgressFailure(t *testing.T){
  replies:=[]string{
  `{"Controllers":[{"Command Status":{"Controller":0,"Status":"Success"},"Response Data":{"Status":{"Controller Status":"Optimal"}}}]}`,
@@ -586,7 +647,7 @@ func TestStorcliSplitMembershipAndProgressFailure(t *testing.T){
  if findComponent(t,r.Components,"storcli:c0:cv").State!="missing"{t.Fatal("confirmed absent cache battery lost")}
 }
 ```
-- [ ] **Step 2: Run red (2 min).** `cd agent && go test -race ./internal/collectors/hwhealth/...` → `undefined: newStorcli`.
+- [ ] **Step 2: Run red (2 min).** `cd agent && go test -race ./internal/collectors/hwhealth/...` → `undefined: newStorcli`. `TestStorcliRequiredCommandSections` also rejects successful but empty overview/VD/PD replies while keeping observations from other commands; the complete split-command case must remain complete.
 - [ ] **Step 3: Implement read-only commands and progress (5 min).** `storcli_source.go`:
 ```go
 package hwhealth
@@ -598,7 +659,8 @@ func newStorcli(kind Kind,extra []string,run toolRunner)Source{return &source{ki
   if e==nil&&out.ExitCode!=0{e=fmt.Errorf("exit %d",out.ExitCode)}
   if e!=nil{r.Complete=false;r.Warnings=append(r.Warnings,strings.Join(args," ")+": "+e.Error());continue}
   if i>=5{progress[i-5]=out.Stdout;continue}
-  parsed,e:=parseStorcli(out.Stdout,kind);if e!=nil{r.Complete=false;r.Warnings=append(r.Warnings,e.Error());continue};r.Complete=r.Complete&&parsed.Complete;r.Warnings=append(r.Warnings,parsed.Warnings...);r.Components=mergeComponents(r.Components,parsed.Components)
+  required:=[][]string{{"PD LIST","VD LIST"},{"VD LIST"},{"PD LIST"},{"Cachevault_Info"},{"BBU_Info"}}
+  parsed,e:=parseStorcliSections(out.Stdout,kind,required[i]...);if e!=nil{r.Complete=false;r.Warnings=append(r.Warnings,e.Error());continue};r.Complete=r.Complete&&parsed.Complete;r.Warnings=append(r.Warnings,parsed.Warnings...);r.Components=mergeComponents(r.Components,parsed.Components)
  }
  joinStorcliMembers(r.Components)
  for i,b:=range progress{if b==nil{continue};if e:=applyStorcliProgress(b,kind,&r,i);e!=nil{r.Complete=false;r.Warnings=append(r.Warnings,e.Error())}}
@@ -981,11 +1043,11 @@ git add agent/internal/collectors/hwhealth/{smartctl.go,smartctl_test.go,testdat
 git commit -m $'feat(agent): collect bounded SMART evidence with exit-bit semantics\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>'
 ```
 
-### Task 11: Merge only unique identities and replay unexpired SMART evidence
+### Task 11: Merge unique identities, replay SMART and retain Windows suppression across tiers
 
 **Files:** Create `agent/internal/collectors/hwhealth/merge.go`, `agent/internal/collectors/hwhealth/merge_test.go`. The `Component.MarshalJSON` method lives in `merge.go`.
 **Test:** `agent/internal/collectors/hwhealth/merge_test.go`.
-**Interfaces:** Produces `smartCacheEntry`, `merge(rows []Component, cache map[string]smartCacheEntry, now time.Time, interval time.Duration) []Component`. Enrichment retains vendor state and source, carries `SmartPassed` for server derivation, and never invents a smartctl source report on RAID-only polls.
+**Interfaces:** Produces `smartCacheEntry`, `vendorTopology`, `updateVendorTopology(previous vendorTopology, rows []Component, reports []SourceReport, now time.Time, interval time.Duration) vendorTopology`, and `merge(rows []Component, cache map[string]smartCacheEntry, now time.Time, interval time.Duration, topology ...vendorTopology) []Component`. Enrichment retains vendor state and source, carries `SmartPassed` for server derivation, and never invents a smartctl source report on RAID-only polls.
 
 - [ ] **Step 1: Write uniqueness, suppression, TTL and null-clearing tests (5 min).** `merge_test.go`:
 ```go
@@ -1001,7 +1063,38 @@ func TestMergeRules(t *testing.T){now:=time.Unix(1000,0);vendor:=component("stor
  vd:=component("storcli","virtual_disk","storcli:c0:v0","storcli:c0","VD","Optl","optimal");for _,model:=range []string{"PERC H730","LOGICAL VOLUME","Virtual Disk","MR9361","Smart Array","raid volume"}{win.Model=ptr(model);win.Serial=ptr("");got:=merge([]Component{vd,win},map[string]smartCacheEntry{},now,time.Hour);if !got[1].AlertExempt||got[1].Attributes["backedByVd"]!=true{t.Fatal(model)};got=merge([]Component{win},map[string]smartCacheEntry{},now,time.Hour);if got[0].AlertExempt{t.Fatal("no VD present")}}
 }
 ```
-- [ ] **Step 2: Run red (2 min).** `cd agent && go test -race ./internal/collectors/hwhealth/...` → `undefined: smartCacheEntry`.
+Append to `merge_test.go`:
+```go
+func TestWindowsTopologyAcrossTiers(t *testing.T){
+ now:=time.Unix(1000,0);interval:=10*time.Minute
+ vd:=component("storcli","virtual_disk","storcli:c0:v0","","VD","Optl","optimal");vd.Serial=ptr("VD-S");vd.Model=ptr("PERC volume")
+ pd:=component("storcli","physical_disk","storcli:c0:e1:s1","","PD","Onln","online");pd.Serial=ptr("PD-S");pd.Model=ptr("physical model")
+ topology:=updateVendorTopology(nil,[]Component{vd,pd},nil,now,interval)
+ win:=component("windows_physical_disk","physical_disk","winpd:1","","disk","OK","online");win.Model=ptr("PERC volume")
+ for _,age:=range []time.Duration{time.Minute,2*interval-time.Nanosecond,2*interval}{
+  fresh:=updateVendorTopology(topology,nil,nil,now.Add(age),interval)
+  got:=merge([]Component{win},map[string]smartCacheEntry{},now.Add(age),time.Hour,fresh)
+  if len(got)!=1||got[0].AlertExempt!=(age<2*interval){t.Fatal(age,got)}
+ }
+ for _,status:=range []SourceStatus{"failed","backing_off","superseded","disabled","unavailable","ok"}{
+  got:=updateVendorTopology(topology,nil,[]SourceReport{{Source:"storcli",Status:status,Complete:ptr(false)}},now.Add(time.Minute),interval)
+  if len(got)!=2||!got[pd.ComponentKey].ObservedAt.Equal(now){t.Fatal(status,got)}
+ }
+ partial:=updateVendorTopology(topology,[]Component{pd},[]SourceReport{{Source:"storcli",Status:"ok",Complete:ptr(false)}},now.Add(time.Minute),interval)
+ if !partial[vd.ComponentKey].ObservedAt.Equal(now)||!partial[pd.ComponentKey].ObservedAt.Equal(now.Add(time.Minute)){t.Fatal(partial)}
+ win.Serial=ptr("PD-S");if got:=merge([]Component{win},map[string]smartCacheEntry{},now,time.Hour,topology);len(got)!=0{t.Fatal("cached PD was duplicated",got)}
+ duplicate:=pd;duplicate.ComponentKey+="2";ambiguous:=updateVendorTopology(topology,[]Component{duplicate},nil,now,interval)
+ if got:=merge([]Component{win},map[string]smartCacheEntry{},now,time.Hour,ambiguous);len(got)!=1{t.Fatal("ambiguous serial dropped",got)}
+ cleared:=updateVendorTopology(topology,nil,[]SourceReport{{Source:"storcli",Status:"ok",Complete:ptr(true)}},now.Add(time.Minute),interval)
+ if len(cleared)!=0{t.Fatal("complete empty inventory did not replace topology",cleared)}
+ if got:=updateVendorTopology(topology,nil,nil,now.Add(-time.Second),interval);len(got)!=0{t.Fatal("future evidence retained",got)}
+}
+```
+- [ ] **Step 2: Run red (2 min).**
+```bash
+cd agent && go test -race ./internal/collectors/hwhealth/... -run 'Test(MergeRules|WindowsTopologyAcrossTiers)' -count=1
+```
+Expect missing `smartCacheEntry`/`updateVendorTopology` before implementation; the pre-review merge cannot accept retained topology.
 - [ ] **Step 3: Implement merge and explicit nulls (5 min).** `merge.go`:
 ```go
 package hwhealth
@@ -1009,22 +1102,41 @@ import("encoding/json";"strings";"time")
 type smartCacheEntry struct{ObservedAt time.Time `json:"observedAt"`;Component Component `json:"component"`}
 func serial(c Component)string{if c.Serial==nil{return ""};return strings.TrimSpace(*c.Serial)}
 func vendorSource(k Kind)bool{switch k{case "storcli","perccli","megacli","ssacli","arcconf","omreport","mdadm","zfs","storage_spaces":return true};return false}
-func merge(rows []Component,cache map[string]smartCacheEntry,now time.Time,interval time.Duration)[]Component{
- vendors,smarts,wins:=map[string]int{},map[string]int{},map[string]int{};hasVD:=false
- for _,c:=range rows{if vendorSource(c.Source)&&c.ComponentType=="virtual_disk"{hasVD=true};if c.ComponentType!="physical_disk"{continue};s:=serial(c);if s==""{continue};if vendorSource(c.Source){vendors[s]++};if c.Source=="smartctl"{smarts[s]++};if c.Source=="windows_physical_disk"{wins[s]++}}
+type vendorIdentity struct{
+ Source Kind `json:"source"`
+ Type ComponentType `json:"type"`
+ Serial string `json:"serial"`
+ Model string `json:"model"`
+ ObservedAt time.Time `json:"observedAt"`
+}
+type vendorTopology map[string]vendorIdentity
+func updateVendorTopology(previous vendorTopology,rows []Component,reports []SourceReport,now time.Time,interval time.Duration)vendorTopology{
+ next:=vendorTopology{}
+ for key,e:=range previous{if !now.Before(e.ObservedAt)&&now.Sub(e.ObservedAt)<2*interval{next[key]=e}}
+ // Only a complete inventory proves removal. Partial/failed/skipped polls never renew unseen evidence.
+ for _,r:=range reports{if vendorSource(r.Source)&&r.Status=="ok"&&r.Complete!=nil&&*r.Complete{for key,e:=range next{if e.Source==r.Source{delete(next,key)}}}}
+ for _,c:=range rows{if !vendorSource(c.Source)||(c.ComponentType!="physical_disk"&&c.ComponentType!="virtual_disk"){continue};model:="";if c.Model!=nil{model=*c.Model};next[c.ComponentKey]=vendorIdentity{Source:c.Source,Type:c.ComponentType,Serial:serial(c),Model:model,ObservedAt:now}}
+ return next
+}
+func merge(rows []Component,cache map[string]smartCacheEntry,now time.Time,interval time.Duration,topologies ...vendorTopology)[]Component{
+ vendors,smarts,wins:=map[string]int{},map[string]int{},map[string]int{}
+ topology:=updateVendorTopology(nil,rows,nil,now,interval);if len(topologies)>0{topology=topologies[0]}
+ windowsVendors:=map[string]int{};hasVD:=false
+ for _,e:=range topology{if e.Type=="virtual_disk"{hasVD=true};if e.Type=="physical_disk"&&e.Serial!=""{windowsVendors[e.Serial]++}}
+ for _,c:=range rows{if c.ComponentType!="physical_disk"{continue};s:=serial(c);if s==""{continue};if vendorSource(c.Source){vendors[s]++};if c.Source=="smartctl"{smarts[s]++};if c.Source=="windows_physical_disk"{wins[s]++}}
  for s,e:=range cache{if now.Before(e.ObservedAt)||now.Sub(e.ObservedAt)>=2*interval||smarts[s]>1||vendors[s]>1{delete(cache,s)}}
  for _,c:=range rows{if c.Source!="smartctl"||serial(c)==""||smarts[serial(c)]!=1{continue};observed:=now;if obj,ok:=c.Attributes["smart"].(map[string]any);ok{if raw,ok:=obj["observedAt"].(string);ok{if t,e:=time.Parse(time.RFC3339Nano,raw);e==nil{observed=t}}};cache[serial(c)]=smartCacheEntry{ObservedAt:observed,Component:c}}
  out:=[]Component{};for _,input:=range rows{c:=input;c.Attributes=map[string]any{};for k,v:=range input.Attributes{c.Attributes[k]=v};s:=serial(c)
   if c.ComponentType=="physical_disk"&&vendorSource(c.Source)&&s!=""&&vendors[s]==1{if e,ok:=cache[s];ok&&smarts[s]<=1&&now.Sub(e.ObservedAt)<2*interval{c.PredictiveFailure=c.PredictiveFailure||e.Component.PredictiveFailure;c.SmartPassed=e.Component.SmartPassed;if e.Component.TemperatureC!=nil{c.TemperatureC=e.Component.TemperatureC};c.Attributes["smart"]=e.Component.Attributes["smart"]}}
   if c.Source=="smartctl"&&s!=""&&smarts[s]==1&&vendors[s]==1{continue}
-  if c.Source=="windows_physical_disk"{if s!=""&&wins[s]==1&&vendors[s]==1{continue};c.AlertExempt=false;delete(c.Attributes,"backedByVd");if hasVD&&c.Model!=nil{model:=strings.ToUpper(*c.Model);for _,pattern:=range []string{"PERC","LOGICAL VOLUME","VIRTUAL DISK","MR9","SMART ARRAY","RAID"}{if strings.Contains(model,pattern){c.AlertExempt=true;c.Attributes["backedByVd"]=true;break}}}}
+  if c.Source=="windows_physical_disk"{if s!=""&&wins[s]==1&&windowsVendors[s]==1{continue};c.AlertExempt=false;delete(c.Attributes,"backedByVd");if hasVD&&c.Model!=nil{model:=strings.ToUpper(*c.Model);for _,pattern:=range []string{"PERC","LOGICAL VOLUME","VIRTUAL DISK","MR9","SMART ARRAY","RAID"}{if strings.Contains(model,pattern){c.AlertExempt=true;c.Attributes["backedByVd"]=true;break}}}}
   out=append(out,c)
  };return out
 }
 // Explicit null clears expired SMART fields; all other tags remain the §C tags.
 func(c Component)MarshalJSON()([]byte,error){type wire Component;return json.Marshal(struct{wire;TemperatureC *int `json:"temperatureC"`;SmartPassed *bool `json:"smartPassed"`}{wire:wire(c),TemperatureC:c.TemperatureC,SmartPassed:c.SmartPassed})}
 ```
-The marshaler is in `merge.go`, so no duplicate method is added to `types.go`. The `Component` struct declaration keeps the index's exact tags. Fresh vendor rows are never cached: expiry therefore restores vendor temperature/predictive evidence and drops only SMART contributions. SMART-only disk snapshots may retain standalone rows when no vendor PD is present in that snapshot, as required by the snapshot-local uniqueness rule.
+The marshaler is in `merge.go`, so no duplicate method is added to `types.go`. The `Component` struct declaration keeps the index's exact tags. Vendor health rows are never replayed from topology: expiry therefore restores vendor temperature/predictive evidence and drops only SMART contributions. SMART-only disk snapshots may retain standalone rows when no vendor PD is present in that snapshot, as required by the snapshot-local uniqueness rule. Windows suppression alone uses the last observed vendor VD/PD identities, with serials, models and observation timestamps persisted in Task 12. Task 13 prunes this evidence at 2 × the current RAID interval (and on a future timestamp), replaces a source on a complete inventory, and updates only observed identities after partial collection. Disk-only, failed, disabled and superseded polls cannot refresh its timestamps. No cached vendor health components or source reports are emitted.
 - [ ] **Step 4: Run green (2 min).** `cd agent && go test -race ./internal/collectors/hwhealth/...` → `ok`, including the earlier exact-key round trip.
 - [ ] **Step 5: Commit (2 min).**
 ```bash
@@ -1032,17 +1144,27 @@ git add agent/internal/collectors/hwhealth/{merge.go,merge_test.go}
 git commit -m $'feat(agent): merge unique disk identities and replay SMART evidence\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>'
 ```
 
-### Task 12: Persist sequence, fairness, member identity and SMART cache atomically
+### Task 12: Persist sequence, fairness, member identity, vendor topology and SMART cache atomically
 
 **Files:** Create `agent/internal/collectors/hwhealth/persist.go`, `agent/internal/collectors/hwhealth/persist_test.go`. Read-only reference `agent/internal/state/state.go:58–80`, `agent/internal/collectors/change_tracker.go:612–650`.
 **Test:** `agent/internal/collectors/hwhealth/persist_test.go`.
-**Interfaces:** Produces `diskState`, `readJSON(path string, value any) error`, `writeJSON(path string, value any) error`, `reserveSequence(dir string, state *diskState) error`. Uses exactly `hwhealth_state.json` and `hwhealth_smart_cache.json` under `Options.DataDir` (heartbeat supplies `config.GetDataDir()`). No call to `state.Write` with an incompatible argument.
+**Interfaces:** Produces `diskState`, `readJSON(path string, value any) error`, `writeJSON(path string, value any) error`, `reserveSequence(dir string, state *diskState) error`. Uses exactly `hwhealth_state.json` (including `VendorTopology` with per-identity timestamps) and `hwhealth_smart_cache.json` under `Options.DataDir` (heartbeat supplies `config.GetDataDir()`). No call to `state.Write` with an incompatible argument.
 
 - [ ] **Step 1: Write persistence and refusal-on-error tests (5 min).** `persist_test.go`:
 ```go
 package hwhealth
 import("os";"path/filepath";"testing";"time")
 func TestSequenceAndCachePersistence(t *testing.T){dir:=t.TempDir();s:=diskState{MDMembers:map[string]string{"md0/0":"ata-S1"},Next:"smartctl"};if e:=reserveSequence(dir,&s);e!=nil{t.Fatal(e)};var restored diskState;if e:=readJSON(filepath.Join(dir,"hwhealth_state.json"),&restored);e!=nil{t.Fatal(e)};if restored.Sequence!=1||restored.Next!="smartctl"||restored.MDMembers["md0/0"]!="ata-S1"{t.Fatal(restored)};if e:=reserveSequence(dir,&restored);e!=nil||restored.Sequence!=2{t.Fatal(e)};cache:=map[string]smartCacheEntry{"S":{ObservedAt:time.Unix(100,0),Component:Component{ComponentKey:"smart:S",Serial:ptr("S"),Attributes:map[string]any{}}}};p:=filepath.Join(dir,"hwhealth_smart_cache.json");if e:=writeJSON(p,cache);e!=nil{t.Fatal(e)};var got map[string]smartCacheEntry;if e:=readJSON(p,&got);e!=nil||len(got)!=1{t.Fatal(e)};if _,e:=os.Stat(p+".tmp");!os.IsNotExist(e){t.Fatal("temp stranded")}}
+func TestVendorTopologyPersistence(t *testing.T){
+ dir:=t.TempDir();now:=time.Unix(1000,0)
+ state:=diskState{VendorTopology:vendorTopology{
+  "storcli:c0:v0":{Source:"storcli",Type:"virtual_disk",Serial:"VD-S",Model:"PERC volume",ObservedAt:now},
+  "storcli:c0:e1:s1":{Source:"storcli",Type:"physical_disk",Serial:"PD-S",Model:"physical model",ObservedAt:now},
+ }}
+ if e:=reserveSequence(dir,&state);e!=nil{t.Fatal(e)};var got diskState
+ if e:=readJSON(filepath.Join(dir,"hwhealth_state.json"),&got);e!=nil{t.Fatal(e)}
+ if len(got.VendorTopology)!=2{t.Fatal(got)};for key,want:=range state.VendorTopology{have:=got.VendorTopology[key];if have.Source!=want.Source||have.Type!=want.Type||have.Serial!=want.Serial||have.Model!=want.Model||!have.ObservedAt.Equal(want.ObservedAt){t.Fatal(key,have)}}
+}
 func TestSequenceFailureDoesNotPublish(t *testing.T){dir:=t.TempDir();p:=filepath.Join(dir,"file");if e:=os.WriteFile(p,[]byte("x"),0600);e!=nil{t.Fatal(e)};s:=diskState{Sequence:12};if e:=reserveSequence(p,&s);e==nil||s.Sequence!=12{t.Fatalf("state=%+v error=%v",s,e)}}
 ```
 - [ ] **Step 2: Run red (2 min).** `cd agent && go test -race ./internal/collectors/hwhealth/...` → `undefined: diskState`.
@@ -1050,7 +1172,7 @@ func TestSequenceFailureDoesNotPublish(t *testing.T){dir:=t.TempDir();p:=filepat
 ```go
 package hwhealth
 import("encoding/json";"errors";"fmt";"io";"os";"path/filepath";"time")
-type diskState struct{Sequence uint64 `json:"sequence"`;Next Kind `json:"next"`;LastNone time.Time `json:"lastNone"`;MDMembers map[string]string `json:"mdMembers"`}
+type diskState struct{Sequence uint64 `json:"sequence"`;Next Kind `json:"next"`;LastNone time.Time `json:"lastNone"`;MDMembers map[string]string `json:"mdMembers"`;VendorTopology vendorTopology `json:"vendorTopology,omitempty"`}
 func readJSON(path string,value any)error{f,e:=os.Open(path);if errors.Is(e,os.ErrNotExist){return nil};if e!=nil{return e};defer f.Close();b,e:=io.ReadAll(io.LimitReader(f,4*1024*1024+1));if e!=nil{return e};if len(b)>4*1024*1024{return fmt.Errorf("hardware state exceeds 4 MB")};return json.Unmarshal(b,value)}
 func writeJSON(path string,value any)error{
  b,e:=json.Marshal(value);if e!=nil{return e};if e=os.MkdirAll(filepath.Dir(path),0700);e!=nil{return e};tmp:=path+".tmp"
@@ -1077,7 +1199,7 @@ git commit -m $'feat(agent): persist hardware sequences and SMART cache atomical
 - [ ] **Step 1: Write scheduler and transport-limit regressions (5 min).** `collector_test.go`:
 ```go
 package hwhealth
-import("context";"errors";"os";"path/filepath";"strings";"sync";"testing";"time")
+import("context";"encoding/json";"errors";"os";"path/filepath";"strings";"sync";"testing";"time";"unicode/utf16";"unicode/utf8")
 func fakeSource(k Kind,tier Tier,available bool,fn func(context.Context)(Result,error))Source{return &source{kind:k,tier:tier,detect:func(context.Context)Availability{return Availability{Available:available,Path:"fixture"}},collect:func(ctx context.Context,_ Availability)(Result,error){return fn(ctx)}}}
 func good(ctx context.Context)(Result,error){return Result{Complete:true},nil}
 func TestCollectorSingleFlight(t *testing.T){entered,release:=make(chan struct{}),make(chan struct{});s:=fakeSource("storcli",TierRAID,true,func(context.Context)(Result,error){close(entered);<-release;return good(context.Background())});c:=New(Options{DataDir:t.TempDir(),Sources:[]Source{s}});done:=make(chan struct{});go func(){defer close(done);if _,e:=c.Run(context.Background(),[]Tier{TierRAID});e!=nil{t.Error(e)}}();<-entered;if snap,e:=c.Run(context.Background(),[]Tier{TierRAID});snap!=nil||e!=nil{t.Fatal("queued a second flight")};c.ApplyConfig(Config{Enabled:true,PollInterval:5*time.Minute,DiskHealthInterval:15*time.Minute});close(release);<-done}
@@ -1090,6 +1212,66 @@ func TestCollectorDiskOnlyCapabilityIsNotNone(t *testing.T){c:=New(Options{DataD
 func TestCollectorPartialAndPrecedence(t *testing.T){pd:=component("storcli","physical_disk","storcli:c0:e1:s1","","slot","Onln","online");s:=fakeSource("storcli",TierRAID,true,func(context.Context)(Result,error){return Result{Components:[]Component{pd}},errors.New("second query failed")});p:=fakeSource("perccli",TierRAID,true,func(context.Context)(Result,error){t.Fatal("superseded CLI ran");return Result{},nil});c:=New(Options{DataDir:t.TempDir(),Sources:[]Source{s,p}});snap,e:=c.Run(context.Background(),[]Tier{TierRAID});if e!=nil||len(snap.Components)!=1||snap.Sources[0].Status!="ok"||*snap.Sources[0].Complete||snap.Sources[1].Status!="superseded"{t.Fatal(snap,e)}}
 func TestCollectorConcurrentConfig(t *testing.T){c:=New(Options{DataDir:t.TempDir(),Sources:[]Source{fakeSource("smartctl",TierDisk,true,good)}});var wg sync.WaitGroup;for i:=0;i<10;i++{wg.Add(1);go func(){defer wg.Done();c.ApplyConfig(Config{Enabled:true,PollInterval:10*time.Minute,DiskHealthInterval:time.Hour});_,_=c.Run(context.Background(),[]Tier{TierDisk})}()};wg.Wait()}
 func TestSnapshotLimits(t *testing.T){s:=Snapshot{Sources:[]SourceReport{{Source:"storcli",Status:"ok",Complete:ptr(true)}}};for i:=0;i<2001;i++{c:=component("storcli","physical_disk",strings.Repeat("k",201),"","disk","Onln","online");s.Components=append(s.Components,c)};limitSnapshot(&s);if len(s.Components)!=0||*s.Sources[0].Complete{t.Fatal("oversized keys must not be silently renamed")}}
+func TestSnapshotUTF16Limits(t *testing.T){
+ for _,tc:=range []struct{name,key string;keep bool}{
+  {"bmp-at-limit",strings.Repeat("界",200),true},
+  {"supplementary-at-limit",strings.Repeat("😀",100),true},
+  {"supplementary-over-limit",strings.Repeat("😀",100)+"a",false},
+  {"mixed-over-limit",strings.Repeat("a",199)+"😀",false},
+ }{t.Run(tc.name,func(t *testing.T){
+  c:=component("storcli","physical_disk",tc.key,"","disk","Onln","online")
+  s:=Snapshot{Components:[]Component{c},Sources:[]SourceReport{{Source:"storcli",Status:"ok",Complete:ptr(true)}}};limitSnapshot(&s)
+  if (len(s.Components)==1)!=tc.keep||*s.Sources[0].Complete!=tc.keep{t.Fatal(s)}
+  if tc.keep&&s.Components[0].ComponentKey!=tc.key{t.Fatal("identity renamed")}
+ })}
+ for _,units:=range []int{200,201}{
+  parent:=strings.Repeat("😀",100);if units==201{parent+="x"}
+  c:=component("storcli","physical_disk","pd",parent,"disk","Onln","online")
+  s:=Snapshot{Components:[]Component{c},Sources:[]SourceReport{{Source:"storcli",Status:"ok",Complete:ptr(true)}}};limitSnapshot(&s)
+  if (s.Components[0].ParentKey!=nil)!=(units==200)||*s.Sources[0].Complete!=(units==200){t.Fatal(s)}
+ }
+ large:=strings.Repeat("😀",501)
+ c:=component("storcli","physical_disk","pd","",large,"Onln","online");c.Model=ptr(large);c.Serial=ptr(large);c.Firmware=ptr(large);c.StateDetail=ptr(large)
+ s:=Snapshot{AgentVersion:large,Components:[]Component{c},Sources:[]SourceReport{{Source:"storcli",Status:"ok",Complete:ptr(true),Path:large,ToolVersion:large,Error:large,Warnings:[]string{large}}}}
+ limitSnapshot(&s);c=s.Components[0];r:=s.Sources[0]
+ for _,field:=range []struct{value string;max int}{{c.Name,200},{*c.Model,200},{*c.Serial,200},{*c.StateDetail,200},{*c.Firmware,100},{r.Path,500},{r.ToolVersion,100},{r.Error,500},{r.Warnings[0],500}}{
+  if !utf8.ValidString(field.value)||len(utf16.Encode([]rune(field.value)))!=field.max{t.Fatal(field)}
+ }
+ // Heartbeat injects the runtime version after Run; marshal must bound that late value too.
+ s.AgentVersion=large;b,e:=json.Marshal(s);if e!=nil{t.Fatal(e)};var wire Snapshot;if e=json.Unmarshal(b,&wire);e!=nil{t.Fatal(e)}
+ if len(utf16.Encode([]rune(wire.AgentVersion)))!=50{t.Fatal(wire.AgentVersion)}
+ for _,tc:=range []struct{input string;max int;want string}{{"a😀b",2,"a"},{"a😀b",3,"a😀"},{"界😀",1,"界"},{"😀",1,""},{"😀",2,"😀"}}{if got:=cut(tc.input,tc.max);got!=tc.want||!utf8.ValidString(got){t.Fatal(tc,got)}}
+}
+func TestCollectorWindowsTopologyRestart(t *testing.T){
+ now:=time.Unix(1000,0);observed:=now;interval:=10*time.Minute
+ vd:=component("storcli","virtual_disk","storcli:c0:v0","","VD","Optl","optimal");vd.Serial=ptr("VD-S");vd.Model=ptr("PERC volume")
+ pd:=component("storcli","physical_disk","storcli:c0:e1:s1","","PD","Onln","online");pd.Serial=ptr("PD-S");pd.Model=ptr("physical model")
+ win:=component("windows_physical_disk","physical_disk","winpd:volume","","disk","OK","online");win.Model=ptr("PERC volume")
+ winPD:=component("windows_physical_disk","physical_disk","winpd:member","","disk","OK","online");winPD.Serial=ptr("PD-S")
+ vendorRows:=[]Component{vd,pd};vendorComplete:=true;vendorFailed:=false
+ raid:=fakeSource("storcli",TierRAID,true,func(context.Context)(Result,error){if vendorFailed{return Result{},errors.New("tool failed")};return Result{Components:vendorRows,Complete:vendorComplete},nil})
+ disk:=fakeSource("windows_physical_disk",TierDisk,true,func(context.Context)(Result,error){return Result{Components:[]Component{win,winPD},Complete:true},nil})
+ opts:=Options{DataDir:t.TempDir(),Sources:[]Source{raid,disk},Now:func()time.Time{return now}}
+ c:=New(opts);if _,e:=c.Run(context.Background(),[]Tier{TierRAID,TierDisk});e!=nil{t.Fatal(e)}
+ c=New(opts);now=now.Add(time.Minute)
+ check:=func(want bool){t.Helper();snap,e:=c.Run(context.Background(),[]Tier{TierDisk});if e!=nil||snap==nil{t.Fatal(snap,e)}
+  volume:=findComponent(t,snap.Components,"winpd:volume");if volume.AlertExempt!=want||(volume.Attributes["backedByVd"]==true)!=want{t.Fatal(volume)}
+  count:=2;if want{count=1};if len(snap.Components)!=count||len(snap.Sources)!=1||snap.Sources[0].Source!="windows_physical_disk"||len(snap.TiersRun)!=1||snap.TiersRun[0]!="disk"{t.Fatal("replayed vendor observations or lost PD suppression",snap)}
+ }
+ check(true)
+ if !c.state.VendorTopology[vd.ComponentKey].ObservedAt.Equal(observed){t.Fatal("disk poll refreshed topology")}
+ vendorRows=[]Component{pd};vendorComplete=false
+ if _,e:=c.Run(context.Background(),[]Tier{TierRAID});e!=nil{t.Fatal(e)};check(true)
+ vendorFailed=true;if _,e:=c.Run(context.Background(),[]Tier{TierRAID});e!=nil{t.Fatal(e)};check(true)
+ now=observed.Add(2*interval+time.Minute);check(false)
+ // A complete empty inventory immediately removes suppression, including after restart.
+ vendorFailed=false;vendorComplete=true;vendorRows=[]Component{vd,pd}
+ if _,e:=c.Run(context.Background(),[]Tier{TierRAID});e!=nil{t.Fatal(e)};check(true)
+ vendorRows=nil;if _,e:=c.Run(context.Background(),[]Tier{TierRAID});e!=nil{t.Fatal(e)};c=New(opts);check(false)
+ // A shorter policy interval applies to persisted timestamps without refreshing them.
+ vendorRows=[]Component{vd,pd};if _,e:=c.Run(context.Background(),[]Tier{TierRAID});e!=nil{t.Fatal(e)}
+ now=now.Add(10*time.Minute);c.ApplyConfig(Config{Enabled:true,PollInterval:5*time.Minute,DiskHealthInterval:time.Hour});check(false)
+}
 func TestCollectorFailedPersistenceRetriesNone(t *testing.T){
  dir:=t.TempDir();c:=New(Options{DataDir:dir,Sources:[]Source{fakeSource("smartctl",TierDisk,false,good)}})
  blocker:=filepath.Join(dir,"hwhealth_smart_cache.json.tmp");if e:=os.Mkdir(blocker,0700);e!=nil{t.Fatal(e)}
@@ -1119,11 +1301,15 @@ func TestCollectorSMARTSharedPathIdentity(t *testing.T){
  })}
 }
 ```
-- [ ] **Step 2: Run red (2 min).** `cd agent && go test -race ./internal/collectors/hwhealth/...` → `undefined: New`. The SMART regression uses Task 10's mocked scan/probe helper and checks the final snapshot after `merge` and `limitSnapshot`; restoring the name-only fallback must lose a row and fail this test.
+- [ ] **Step 2: Run red (2 min).** `cd agent && go test -race ./internal/collectors/hwhealth/...` → `undefined: New`. Add the new regression tests before replacing the pre-review implementations, then run:
+```bash
+cd agent && go test -race ./internal/collectors/hwhealth/... -run 'Test(SnapshotUTF16Limits|CollectorWindowsTopologyRestart)' -count=1
+```
+Expect failure: the old limiter accepts 201-unit keys and the old collector clears Windows suppression on disk-only polls. The SMART regression uses Task 10's mocked scan/probe helper and checks the final snapshot after `merge` and `limitSnapshot`; restoring the name-only fallback must lose a row and fail this test.
 - [ ] **Step 3: Implement construction and synchronized configuration (5 min).** Create `collector.go` with this block and append Step 4's methods:
 ```go
 package hwhealth
-import("context";"encoding/json";"fmt";"log/slog";"path/filepath";"runtime";"sort";"sync";"time";"github.com/google/uuid";"github.com/breeze-rmm/agent/internal/collectors")
+import("context";"encoding/json";"fmt";"log/slog";"path/filepath";"runtime";"sort";"sync";"time";"unicode/utf16";"github.com/google/uuid";"github.com/breeze-rmm/agent/internal/collectors")
 type Options struct{DataDir string;ExtraToolDirs []string;Sources []Source;Now func()time.Time}
 type Collector struct{mu sync.Mutex;flight sync.Mutex;config Config;revision uint64;cancel context.CancelFunc;disabledReported bool;dir string;now func()time.Time;sources []Source;detect map[Kind]*detection;breakers map[Kind]*breaker;state diskState;cache map[string]smartCacheEntry;initErr error;budget time.Duration}
 func New(opts Options)*Collector{
@@ -1167,19 +1353,24 @@ func(c *Collector)Run(parent context.Context,tiers []Tier)(*Snapshot,error){
   snapshot.Sources=append(snapshot.Sources,report)
  }
  if cfg.Enabled&&!noTools{for _,t:=range []Tier{TierRAID,TierDisk}{if ranTiers[t]{snapshot.TiersRun=append(snapshot.TiersRun,string(t))}};if len(snapshot.TiersRun)==0{return nil,nil}}
- snapshot.Components=merge(snapshot.Components,c.cache,now,cfg.DiskHealthInterval);limitSnapshot(snapshot)
+ topology:=updateVendorTopology(c.state.VendorTopology,snapshot.Components,snapshot.Sources,now,cfg.PollInterval)
+ snapshot.Components=merge(snapshot.Components,c.cache,now,cfg.DiskHealthInterval,topology);limitSnapshot(snapshot)
  // Cache contains unique serial entries only. Bound retention on many changing devices.
  if len(c.cache)>64{keys:=[]string{};for k:=range c.cache{keys=append(keys,k)};sort.Slice(keys,func(i,j int)bool{return c.cache[keys[i]].ObservedAt.After(c.cache[keys[j]].ObservedAt)});for _,k:=range keys[64:]{delete(c.cache,k)}}
  c.mu.Lock();defer c.mu.Unlock();if revision!=c.revision{return nil,nil};if parent.Err()!=nil{return nil,parent.Err()}
- pending:=c.state;pending.Next=next;if noTools{pending.LastNone=now}
+ pending:=c.state;pending.VendorTopology=topology;pending.Next=next;if noTools{pending.LastNone=now}
  if e:=writeJSON(filepath.Join(c.dir,"hwhealth_smart_cache.json"),c.cache);e!=nil{return nil,fmt.Errorf("persist hardware SMART cache: %w",e)}
  if e:=reserveSequence(c.dir,&pending);e!=nil{return nil,e};c.state=pending;snapshot.Sequence=c.state.Sequence;if !cfg.Enabled{c.disabledReported=true};return snapshot,nil
 }
-func cut(s string,n int)string{r:=[]rune(s);if len(r)>n{return string(r[:n])};return s}
+// Zod string .max() uses JavaScript length: UTF-16 code units, not rune count.
+func wireStringLen(s string)int{n:=0;for _,r:=range s{n+=utf16.RuneLen(r)};return n}
+func cut(s string,n int)string{units:=0;for i,r:=range s{units+=utf16.RuneLen(r);if units>n{return s[:i]}};return s}
+// Runtime version is injected by heartbeat after limitSnapshot; bound it at serialization.
+func(s Snapshot)MarshalJSON()([]byte,error){type wire Snapshot;out:=wire(s);out.AgentVersion=cut(out.AgentVersion,50);return json.Marshal(out)}
 func limitSnapshot(s *Snapshot){
  incomplete:=func(k Kind){for i:=range s.Sources{if s.Sources[i].Source==k&&s.Sources[i].Status=="ok"{s.Sources[i].Complete=ptr(false);s.Sources[i].Warnings=append(s.Sources[i].Warnings,"component output limited")}}}
  kept:=[]Component{};seen:=map[string]bool{}
- for _,c:=range s.Components{if len([]rune(c.ComponentKey))>200||c.ComponentKey==""||seen[c.ComponentKey]||len(kept)>=2000{incomplete(c.Source);continue};seen[c.ComponentKey]=true;c.Name=cut(c.Name,200);if c.Name==""{c.Name=c.ComponentKey};for _,p:=range []*string{c.Model,c.Serial,c.StateDetail}{if p!=nil{*p=cut(*p,200)}};if c.Firmware!=nil{*c.Firmware=cut(*c.Firmware,100)};if c.ParentKey!=nil&&len([]rune(*c.ParentKey))>200{c.ParentKey=nil;incomplete(c.Source)};if c.TemperatureC!=nil&&(*c.TemperatureC< -50||*c.TemperatureC>200){c.TemperatureC=nil};if c.ProgressPercent!=nil&&(*c.ProgressPercent<0||*c.ProgressPercent>100){c.ProgressPercent=nil};if c.Attributes==nil{c.Attributes=map[string]any{}}
+ for _,c:=range s.Components{if wireStringLen(c.ComponentKey)>200||c.ComponentKey==""||wireStringLen(c.State)>40||c.State==""||seen[c.ComponentKey]||len(kept)>=2000{incomplete(c.Source);continue};seen[c.ComponentKey]=true;c.Name=cut(c.Name,200);if c.Name==""{c.Name=c.ComponentKey};for _,p:=range []*string{c.Model,c.Serial,c.StateDetail}{if p!=nil{*p=cut(*p,200)}};if c.Firmware!=nil{*c.Firmware=cut(*c.Firmware,100)};if c.ParentKey!=nil&&wireStringLen(*c.ParentKey)>200{c.ParentKey=nil;incomplete(c.Source)};if c.TemperatureC!=nil&&(*c.TemperatureC< -50||*c.TemperatureC>200){c.TemperatureC=nil};if c.ProgressPercent!=nil&&(*c.ProgressPercent<0||*c.ProgressPercent>100){c.ProgressPercent=nil};if c.Attributes==nil{c.Attributes=map[string]any{}}
   b,e:=json.Marshal(c.Attributes);if e!=nil||len(b)>8192{c.Attributes=map[string]any{};incomplete(c.Source)};kept=append(kept,c)
  };s.Components=kept
  for i:=range s.Sources{r:=&s.Sources[i];r.Path=cut(r.Path,500);r.ToolVersion=cut(r.ToolVersion,100);r.Error=cut(r.Error,500);if len(r.Warnings)>50{r.Warnings=r.Warnings[:50]};for j:=range r.Warnings{r.Warnings[j]=cut(r.Warnings[j],500)}}
@@ -1187,10 +1378,10 @@ func limitSnapshot(s *Snapshot){
  for i:=range s.Sources{if len(s.Sources[i].Warnings)>50{s.Sources[i].Warnings=s.Sources[i].Warnings[:50]}}
 }
 ```
-`tiersRun` contains actual scheduled tiers, including failed/backing-off attempts; it never claims a disk probe because cached SMART was replayed. `none` means no capability across both tiers and is persisted at most daily. A budget-skipped source is visible as failed but does not accrue a breaker strike. The next-cycle cursor is a source `Kind`, not a filtered index.
+`tiersRun` contains actual scheduled tiers, including failed/backing-off attempts; it never claims a disk probe because cached SMART was replayed. `none` means no capability across both tiers and is persisted at most daily. A budget-skipped source is visible as failed but does not accrue a breaker strike. The next-cycle cursor is a source `Kind`, not a filtered index. Vendor topology is built before merge and payload filtering, passed only to Windows suppression, and committed with the reserved sequence; reading it never advances its observation timestamps. Wire string limits use UTF-16 units for identity rejection and display-field truncation, always at a whole-rune boundary. Snapshot marshaling also limits the runtime version injected later by Task 14.
 - [ ] **Step 5: Run green (2 min).** `cd agent && go test -race ./internal/collectors/hwhealth/...` → `ok`; the budget test uses 20 ms contexts, never sleeps four minutes.
 ```bash
-cd agent && go test -race ./internal/collectors/hwhealth/... -run 'Test(SMARTSharedPathIdentity|CollectorSMARTSharedPathIdentity)' -count=1
+cd agent && go test -race ./internal/collectors/hwhealth/... -run 'Test(SMARTSharedPathIdentity|CollectorSMARTSharedPathIdentity|StorcliIncompleteObservations|StorcliExplicitEmptyLists|StorcliRequiredCommandSections|WindowsTopologyAcrossTiers|VendorTopologyPersistence|CollectorWindowsTopologyRestart|SnapshotUTF16Limits)' -count=1
 ```
 Expect exit code 0: both disks and their distinct SMART observations survive the complete collector path; a successful full scan remains complete. Keep the existing duplicate-key payload guard: the source now supplies distinct keys.
 
@@ -1391,6 +1582,11 @@ git commit -m $'feat(agent): deliver hardware health on jittered tracked heartbe
 ```
 
 ## Self-review
+
+- Cross-plan P2 (storcli completeness): Task 5 validates successful wrappers, required response/list sections and controller/PD/VD identities. Missing sections or malformed records preserve valid observations with `Complete:false`; explicit empty lists remain complete. Task 6 supplies command-specific section requirements so split queries do not require unrelated lists. Parser regressions cover both storcli and perccli.
+- Cross-plan P2 (Windows suppression): Task 11 uses the last observed vendor VD/PD serials and models, timestamped per identity. Tasks 12–13 persist them in `hwhealth_state.json`, retain them across restart and disk-only/failed/partial polls without renewing unseen evidence, and expire them at 2 × the current RAID interval. A complete source inventory replaces that source's topology. Regressions cover restart, expiry, policy shortening, partial/failing polls, removal and duplicate serials. SMART merging remains snapshot-local; cached vendor health rows are never replayed.
+- Cross-plan P3 (wire string limits): Task 13 counts UTF-16 code units with `utf16.RuneLen`, rejects oversized keys, bounds all free-text fields without splitting supplementary characters, and limits the late-injected agent version during marshaling. Tests cover BMP, supplementary and mixed strings at and above each bound. Verified against the index §B Zod contract and [Zod 4.4.3's length check](https://github.com/colinhacks/zod/blob/v4.4.3/packages/zod/src/v4/core/checks.ts#L580-L583) (the version resolved in `pnpm-lock.yaml`); the current checkout has no implemented `hwhealth` package yet.
+- Second-pass boundary: W02a supplies all parser, topology persistence, collector wiring and wire-limit tests in this plan. These fixes require no implementation changes from W01/W02b or any other wave; only this plan document is edited.
 
 - Cross-plan P2 (SMART identity): Tasks 1 and 10 extend only the §4.2 fallback to `smart:dev:<type>:<name>` and retain the unique non-blank serial key. Task 10 carries the exact scan type/name through successful probes; tests cover shared paths, blank/whitespace/duplicate serials, scan reordering and an intervening failed probe. Task 13 checks those rows survive merge and payload filtering with completeness preserved. Task 11's synthetic fallback example uses the same format.
 - Index synchronization boundary: the Task 1 table records the authorized SMART fallback extension for the index's §H → §4.2 contract reference; the index/design still need that fallback text synchronized by their owner. This wave supplies its own key builder and regressions and requires no implementation from another wave. Only this W02a plan is edited.
