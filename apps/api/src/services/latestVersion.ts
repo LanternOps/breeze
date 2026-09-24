@@ -5,7 +5,12 @@ const GITHUB_URL = 'https://api.github.com/repos/LanternOps/breeze/releases/late
 // 1h keeps us well under GitHub's 60 req/hr unauthenticated rate limit while
 // letting self-hosters see a new release within an hour.
 const TTL_MS = 60 * 60 * 1000;
-const FETCH_TIMEOUT_MS = 5000;
+// Failures are cached briefly so one transient abort doesn't pin the UI on
+// "latest version unknown" for an hour (#6629). 5 min still caps a persistently
+// failing (flaky / air-gapped) install at 12 req/hr — no retry storm.
+const ERROR_TTL_MS = 5 * 60 * 1000;
+// Cold GitHub API latency can approach 4-5s; 10s leaves headroom (#6629).
+const FETCH_TIMEOUT_MS = 10_000;
 const TAG_RE = /^\d+\.\d+\.\d+$/;
 
 export interface LatestVersionResult {
@@ -65,14 +70,15 @@ export async function getLatestVersion(): Promise<LatestVersionResult> {
     } else {
       console.warn('[latestVersion] failed:', err instanceof Error ? err.message : err);
     }
-    // Cache error results for the full TTL so flaky GitHub / air-gapped installs
-    // don't trigger retry storms.
+    // Cache error results for the short ERROR_TTL_MS: long enough that flaky
+    // GitHub / air-gapped installs don't retry-storm, short enough that one
+    // transient failure recovers within minutes.
     const value: LatestVersionResult = {
       latest: null,
       fetchedAt: new Date(now),
       source: 'error',
     };
-    cache = { value, expiresAt: now + TTL_MS };
+    cache = { value, expiresAt: now + ERROR_TTL_MS };
     return value;
   } finally {
     clearTimeout(timer);
