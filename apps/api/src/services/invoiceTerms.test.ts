@@ -56,7 +56,8 @@ describe('no issue writer hand-rolls the terms fallback', () => {
     const root = join(__dirname, '..');
     const offenders = [...walk(join(root, 'services')), ...walk(join(root, 'jobs')), ...walk(join(root, 'routes'))]
       .filter((p) => !p.endsWith('invoiceTerms.ts'))
-      .filter((p) => /[Tt]ermsDays\s*\?\?/.test(readFileSync(p, 'utf8')));
+      // `?? null` is a projection passthrough (no default applied), not a fallback.
+      .filter((p) => /[Tt]ermsDays\s*\?\?(?!\s*null\b)/.test(readFileSync(p, 'utf8')));
     expect(offenders).toEqual([]);
   });
 });
