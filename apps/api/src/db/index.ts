@@ -163,6 +163,22 @@ export interface DbAccessContext {
    */
   currentPartnerId?: string | null;
   /**
+   * #6771. Org ids whose report HISTORY (definitions + run metadata) this
+   * context may read even though they are not in `accessibleOrgIds` — an
+   * active partner's own suspended/churned/offboarding/archived orgs. Written
+   * as the `breeze.report_history_org_ids` GUC, which only the additive
+   * `FOR SELECT` policies on `reports` / `report_runs` read, and only for a
+   * PARTNER-scope context (`breeze_has_report_history_access`). It never
+   * widens a write, never reaches any other table, and is NOT an org grant:
+   * do not read it anywhere `accessibleOrgIds` is read.
+   *
+   * Undefined (the default everywhere) = none. Populated solely by
+   * `authMiddleware` for the report-history GET routes
+   * (`isReportHistoryReadRoute`) from `computeReportHistoryReach`; no other
+   * code path may set it.
+   */
+  reportHistoryOrgIds?: readonly string[];
+  /**
    * Short, low-cardinality name for the code path that opened this context,
    * e.g. `agentWs.heartbeat`. Purely diagnostic — it grants nothing and is
    * never sent to Postgres. Emitted as the `dbContextLabel` Sentry tag on the
@@ -453,7 +469,7 @@ interface GucExecutor {
 }
 
 /**
- * Write the six `breeze.*` RLS GUCs for `context` onto the CURRENT transaction
+ * Write the seven `breeze.*` RLS GUCs (six statements) for `context` onto the CURRENT transaction
  * (`set_config(..., true)` == SET LOCAL, so they unwind with it).
  *
  * Single source of truth for the GUC contract: `withDbAccessContext`,
@@ -469,6 +485,14 @@ async function applyAccessContextGucs(
   const serializedOrgIds = serializeAccessibleIds(context.scope, context.accessibleOrgIds);
   const serializedPartnerIds = serializeAccessibleIds(context.scope, context.accessiblePartnerIds);
   const serializedUserId = context.userId ?? '';
+  // #6771: only a partner-scope context can carry report-history ids (the SQL
+  // helper re-checks the scope). Written on EVERY context — as '' when unset —
+  // so an opener that re-applies GUCs onto an ambient transaction
+  // (`withResolvedDbAccessContext`) can never inherit a previous context's ids.
+  const serializedReportHistoryOrgIds =
+    context.scope === 'partner' && context.reportHistoryOrgIds && context.reportHistoryOrgIds.length > 0
+      ? context.reportHistoryOrgIds.join(',')
+      : '';
 
   // `deadline.throwIfAborted()` at EVERY statement boundary, not just the first.
   // `Promise.race` does not cancel its loser (#6048): once the budget has
@@ -482,7 +506,9 @@ async function applyAccessContextGucs(
     sql`select set_config('breeze.accessible_org_ids', ${serializedOrgIds}, true)`,
     sql`select set_config('breeze.accessible_partner_ids', ${serializedPartnerIds}, true)`,
     sql`select set_config('breeze.user_id', ${serializedUserId}, true)`,
-    sql`select set_config('breeze.current_partner_id', ${context.currentPartnerId ?? ''}, true)`,
+    // Two GUCs in ONE statement: the report-history ids ride with the partner
+    // id so the prologue stays six round trips on every request.
+    sql`select set_config('breeze.current_partner_id', ${context.currentPartnerId ?? ''}, true), set_config('breeze.report_history_org_ids', ${serializedReportHistoryOrgIds}, true)`,
   ];
 
   for (const statement of statements) {

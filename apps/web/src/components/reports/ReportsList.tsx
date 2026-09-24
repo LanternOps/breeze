@@ -236,7 +236,10 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
 
   const fetchRecentRuns = useCallback(async () => {
     try {
-      const response = await fetchWithAuth('/reports/runs?limit=20');
+      // Cross-org on purpose: GET /reports/runs honors ?orgId= since #6771, and
+      // ambient injection would narrow this panel to the switcher's org (and
+      // drop partner-owned runs). Kept as the all-accessible-orgs listing.
+      const response = await fetchWithAuth('/reports/runs?limit=20', { skipOrgIdInjection: true });
       if (!response.ok) {
         console.error('Failed to fetch recent runs:', response.status);
         return;
@@ -418,7 +421,10 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
     setOpeningReportId(report.id);
     try {
       const res = await fetchWithAuth(
-        `/reports/runs?reportId=${encodeURIComponent(report.id)}&status=completed&limit=1`
+        `/reports/runs?reportId=${encodeURIComponent(report.id)}&status=completed&limit=1`,
+        // The reportId pins the report; an ambient ?orgId= (#6771) must not
+        // narrow the lookup away from it.
+        { skipOrgIdInjection: true },
       );
       if (!res.ok) {
         throw new Error(t('reports.reportsList.errors.downloadFailed'));

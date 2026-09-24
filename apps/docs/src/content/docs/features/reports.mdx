@@ -375,6 +375,18 @@ CSV and Excel files are produced on the server; PDF downloads are rendered in th
 
 ---
 
+## Report History for Inactive Organizations
+
+When a customer organization is **suspended**, **churned**, **offboarding** or **archived**, its report history stays readable to the MSP: a partner user can still open the organization's saved report definitions and its run history (status, dates, row counts, errors) -- on the organization's record page under **Report history**, or through the API with an explicit organization:
+
+- `GET /reports?orgId=ORG_UUID` and `GET /reports/templates?orgId=ORG_UUID`
+- `GET /reports/:id`
+- `GET /reports/runs?orgId=ORG_UUID` and `GET /reports/runs/:id`
+
+It is read-only. New runs, schedules, edits, recipient lists, downloads (`/reports/runs/:id/download`) and the raw data endpoints (`/reports/data/*`) stay refused for an inactive organization, and its devices, scripts and other records stay unavailable. The unfiltered lists (`GET /reports`, `GET /reports/runs` without `orgId`) keep showing active and trial organizations only.
+
+Who can read it: an active user of an active partner whose role grants `reports:read`. A user limited to **selected organizations** sees only the inactive organizations on their list; a user with no organization access sees none. A deleted organization's history is never shown.
+
 ## Analytics Endpoints
 
 The `/analytics` route group provides real-time operational intelligence beyond static reports.
@@ -526,7 +538,7 @@ All data endpoints accept these common query parameters:
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/reports/runs` | List runs. Filter by `reportId`, `status`. Paginated. |
+| `GET` | `/reports/runs` | List runs. Filter by `orgId` (one organization), `reportId`, `status`. Paginated. |
 | `GET` | `/reports/runs/:id` | Get a single run with parent report metadata and download URL. |
 | `GET` | `/reports/runs/:id/download` | Download the run's stored snapshot. Requires `?format=csv\|pdf\|excel`. Returns `409` if the run is not `completed`. |
 

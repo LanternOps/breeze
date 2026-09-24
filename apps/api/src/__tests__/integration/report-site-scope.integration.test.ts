@@ -903,11 +903,20 @@ describe('Wave 2 · forced RLS blocks cross-organization report forgery', () => 
       expect(row.relrowsecurity).toBe(true);
       expect(row.relforcerowsecurity).toBe(true);
     }
-    const runPolicies = await rawRows<{ policyname: string; qual: string | null; with_check: string | null }>(sql`
-      SELECT policyname, qual, with_check FROM pg_policies WHERE tablename = 'report_runs'
+    const runPolicies = await rawRows<{ policyname: string; cmd: string; qual: string | null; with_check: string | null }>(sql`
+      SELECT policyname, cmd, qual, with_check FROM pg_policies WHERE tablename = 'report_runs'
     `);
-    expect(runPolicies.length).toBeGreaterThanOrEqual(4);
-    for (const policy of runPolicies) {
+    // #6771: the ONE policy that does not key on breeze_has_org_access is the
+    // additive report-history read branch. It must stay SELECT-only and still
+    // reach the org through the owning report.
+    const HISTORY_POLICY = 'report_runs_report_history_select';
+    const history = runPolicies.find((policy) => policy.policyname === HISTORY_POLICY);
+    expect(history?.cmd).toBe('SELECT');
+    expect(history?.qual ?? '').toContain('FROM reports');
+    expect(history?.qual ?? '').toContain('breeze_has_report_history_access');
+    const ownerPolicies = runPolicies.filter((policy) => policy.policyname !== HISTORY_POLICY);
+    expect(ownerPolicies.length).toBeGreaterThanOrEqual(4);
+    for (const policy of ownerPolicies) {
       const predicate = `${policy.qual ?? ''}${policy.with_check ?? ''}`;
       expect(predicate).toContain('FROM reports');
       expect(predicate).toContain('breeze_has_org_access');

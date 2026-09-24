@@ -98,6 +98,22 @@
       "inaccessible": "Diese Organisation ist {{status}}, daher sind ihre Live-Daten nicht verfügbar. Sie können sie weiterhin in der Organisationsliste sehen.",
       "backToList": "Zurück zu den Organisationen"
     },
+    "reportHistory": {
+      "title": "Berichtsverlauf",
+      "loading": "Berichtsverlauf wird geladen…",
+      "readOnlyNote": "Schreibgeschützt: Diese Organisation ist {{status}}. Berichte können nicht erstellt, geplant oder heruntergeladen werden.",
+      "forbidden": "Sie haben keinen Zugriff auf den Berichtsverlauf dieser Organisation.",
+      "error": "Berichtsverlauf konnte nicht geladen werden.",
+      "empty": "Keine Berichte oder Berichtsläufe gefunden.",
+      "definitionsTitle": "Berichtsdefinitionen",
+      "definitionsEmpty": "Keine Berichtsdefinitionen.",
+      "runsTitle": "Letzte Ausführungen",
+      "runsEmpty": "Keine Berichtsläufe.",
+      "lastGenerated": "Zuletzt erstellt am {{date}}",
+      "neverGenerated": "Nie erstellt",
+      "rowCount_one": "{{count}} Zeile",
+      "rowCount_other": "{{count}} Zeilen"
+    },
     "unavailable": {
       "title": "In diesem Arbeitsbereich nicht verfügbar",
       "description": "Organisationsdatensätze sind eine Ansicht auf Partnerebene. Ihre Anmeldung ist auf eine einzelne Organisation beschränkt, daher gibt es hier nichts zum Wechseln.",
