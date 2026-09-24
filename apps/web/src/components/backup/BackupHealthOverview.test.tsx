@@ -131,6 +131,16 @@ describe('BackupHealthOverview', () => {
     expect(String(fetchMock.mock.calls.at(-1)![0])).toContain('cursor=c1');
   });
 
+  // D10: the device table must not leak raw enum values (status, data
+  // sources) to the reader.
+  it('translates the row status and data sources instead of showing raw enum values', async () => {
+    respond({ rows: [row({ status: 'failed', dataSources: ['files', 'system_state'] })] });
+    render(<BackupHealthOverview orgId="org-1" />);
+    const rowEl = await screen.findByTestId('backup-health-row-breeze:d1');
+    expect(rowEl.textContent).toContain('Failed');
+    expect(rowEl.textContent).toContain('Files & folders, System state');
+  });
+
   it('surfaces a load failure rather than an empty, all-clear table', async () => {
     fetchMock.mockResolvedValue(res({ error: 'nope' }, false, 500));
     render(<BackupHealthOverview orgId="org-1" />);

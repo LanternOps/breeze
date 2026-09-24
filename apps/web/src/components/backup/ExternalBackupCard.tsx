@@ -124,7 +124,9 @@ export default function ExternalBackupCard({
             <p className="text-sm text-muted-foreground">{row.vendorDeviceName}</p>
           </div>
         </div>
-        <span className="rounded-full border px-2.5 py-0.5 text-xs text-muted-foreground">{row.status}</span>
+        <span className="rounded-full border px-2.5 py-0.5 text-xs text-muted-foreground">
+          {t(/* i18n-dynamic */ `backupHealth.status.${row.status}`, { defaultValue: row.status })}
+        </span>
       </div>
 
       <dl className="mt-4 grid gap-3 sm:grid-cols-3">
@@ -158,7 +160,11 @@ export default function ExternalBackupCard({
         </div>
         <div className="sm:col-span-3">
           <dt className="text-xs text-muted-foreground">{t('backupHealth.table.dataSources')}</dt>
-          <dd className="text-sm text-foreground">{row.dataSources.join(', ') || '--'}</dd>
+          <dd className="text-sm text-foreground">
+            {row.dataSources
+              .map((source) => t(/* i18n-dynamic */ `backupHealth.dataSource.${source}`, { defaultValue: source }))
+              .join(', ') || '--'}
+          </dd>
         </div>
       </dl>
 
