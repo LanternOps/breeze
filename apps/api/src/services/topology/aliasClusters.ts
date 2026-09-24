@@ -3,7 +3,7 @@ import { planCanonicalCluster, type MergeNode, type MergePosition } from './iden
 
 type AliasNode = MergeNode & { kind: string };
 type AliasBinding = { nodeId: string; deviceId?: string | null; discoveredAssetId?: string | null; manualNodeId?: string | null };
-type AcceptedAsset = { id: string; linkedDeviceId: string | null; autoLinkSuppressedAt: Date | null };
+type AcceptedAsset = { id: string; linkedDeviceId: string | null; autoLinkSuppressedAt: Date | null; linkSource?: 'manual' | 'auto' | 'agent_report' | null };
 type AliasRequest = { sourceId: string; targetId: string };
 
 /** Requests refer to current roots (existing aliases are already resolved).
@@ -67,7 +67,7 @@ export function planAcceptedAliasClusters(scope: TopologyScope, input: {
     if (managed.length !== 1 || ids.some(id => !byNode.get(id)?.length) || bindings.some(b => b.manualNodeId)
       || bindings.filter(b => b.discoveredAssetId).some(b => {
         const asset = assets.get(b.discoveredAssetId!);
-        return !asset || asset.autoLinkSuppressedAt || asset.linkedDeviceId !== managed[0]!.deviceId;
+        return !asset || asset.autoLinkSuppressedAt || asset.linkSource === 'agent_report' || asset.linkedDeviceId !== managed[0]!.deviceId;
       })) throw new Error('Canonical alias requires an accepted inventory link');
     clusters.push(planCanonicalCluster(scope, ids.map(id => byId.get(id)!), ids.flatMap(id => positionsByNode.get(id) ?? [])));
   }
