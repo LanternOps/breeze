@@ -96,6 +96,9 @@
     },
     "lifecycle": {
       "inaccessible": "Cette organisation est {{status}}, ses données en direct ne sont donc pas disponibles. Vous pouvez tout de même la voir dans la liste des organisations.",
+      "unknownTitle": "Organisation",
+      "inaccessibleHistoryOnly": "Cette organisation est inactive, ses données en direct ne sont donc pas disponibles. Son historique de rapports reste consultable ci-dessous.",
+      "genericStatusLabel": "inactive",
       "backToList": "Retour aux organisations"
     },
     "reportHistory": {
