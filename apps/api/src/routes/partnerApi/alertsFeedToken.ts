@@ -23,6 +23,11 @@ const xid8String = z.string().regex(/^[0-9]{1,20}$/u);
 
 const bindingSchema = z.object({
   partnerId: z.string().uuid(),
+  // Database incarnation: cluster system identifier + timeline. xid8 positions
+  // are meaningless across a restore (dump/restore gets a new identifier;
+  // point-in-time recovery gets a new timeline), so a token from another
+  // incarnation must force a resync rather than skip restored rows.
+  epoch: z.string().regex(/^[0-9]{1,20}:[0-9]{1,10}$/u),
   filtersHash: z.string().regex(/^[a-f0-9]{64}$/u),
   orgSetHash: z.string().regex(/^[a-f0-9]{64}$/u),
 }).strict();
@@ -134,6 +139,7 @@ function decode(token: string, key: Buffer): unknown {
 
 function sameBinding(token: PartnerAlertsFeedBinding, expected: PartnerAlertsFeedBinding): boolean {
   return token.partnerId === expected.partnerId
+    && token.epoch === expected.epoch
     && token.filtersHash === expected.filtersHash
     && token.orgSetHash === expected.orgSetHash;
 }
@@ -161,6 +167,7 @@ export function decodePageToken(
   const parsed = pageSchema.safeParse(decode(token, key));
   if (!parsed.success) throw new PartnerAlertsFeedTokenError();
   const page = parsed.data;
+  if (page.partnerId === expected.partnerId && page.epoch !== expected.epoch) throw new PartnerAlertsResyncRequiredError();
   if (!sameBinding(page, expected) || Date.parse(page.expiresAt) <= now.getTime()) {
     throw new PartnerAlertsFeedTokenError();
   }
@@ -195,6 +202,8 @@ export function decodeCheckpointToken(
   if (checkpoint.partnerId !== expected.partnerId || checkpoint.filtersHash !== expected.filtersHash) {
     throw new PartnerAlertsFeedTokenError();
   }
-  if (checkpoint.orgSetHash !== expected.orgSetHash) throw new PartnerAlertsResyncRequiredError();
+  if (checkpoint.orgSetHash !== expected.orgSetHash || checkpoint.epoch !== expected.epoch) {
+    throw new PartnerAlertsResyncRequiredError();
+  }
   return checkpoint;
 }

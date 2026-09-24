@@ -622,7 +622,8 @@ const nullableUuid = z.string().uuid().nullable();
 export const partnerAlertExportRecordSchema = z.object({
   id: z.string().uuid(),
   orgId: z.string().uuid(),
-  deviceId: z.string().uuid(),
+  // Null when the alert's device is gone or not in the alert's organization.
+  deviceId: z.string().uuid().nullable(),
   // Current device hostname at read time (enrichment, not historical).
   deviceHostname: z.string().max(255).nullable(),
   severity: z.enum(PARTNER_ALERT_SEVERITIES),

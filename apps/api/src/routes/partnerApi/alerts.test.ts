@@ -80,7 +80,7 @@ describe('partner alerts feed', () => {
     whereArgs = [];
     mocks.accessibleOrgIds = [ORG_ID, OTHER_ORG_ID];
     mocks.select.mockImplementation(() => query(selectResults.shift() ?? []));
-    mocks.execute.mockResolvedValue([{ horizon: '1000', xmax: '1005' }]);
+    mocks.execute.mockResolvedValue([{ horizon: '1000', xmax: '1005', epoch: '7688900532099108902:1' }]);
     app = new Hono();
     app.route('/', partnerApiRoutes);
   });
@@ -110,19 +110,17 @@ describe('partner alerts feed', () => {
     expect(mocks.execute).toHaveBeenCalledTimes(1);
   });
 
-  it('pages with a signed cursor that pins the traversal window (no new snapshot on page 2)', async () => {
+  it('pages with a signed cursor that pins the traversal window', async () => {
     selectResults = [[alertRow(ALERT_A, '900'), alertRow(ALERT_B, '950')]];
     const first = partnerAlertFeedEnvelopeSchema.parse(await (await request('/alerts?limit=1')).json());
     expect(first.hasMore).toBe(true);
     expect(first.checkpoint).toBeNull();
     expect(first.data.map((r) => r.id)).toEqual([ALERT_A]);
 
-    mocks.execute.mockClear();
     selectResults = [[alertRow(ALERT_B, '950')]];
     const second = partnerAlertFeedEnvelopeSchema.parse(
       await (await request(`/alerts?limit=1&cursor=${encodeURIComponent(first.nextCursor!)}`)).json(),
     );
-    expect(mocks.execute).not.toHaveBeenCalled();
     expect(second.data.map((r) => r.id)).toEqual([ALERT_B]);
     expect(second.hasMore).toBe(false);
     expect(second.checkpoint).toEqual(expect.any(String));
@@ -131,7 +129,7 @@ describe('partner alerts feed', () => {
   it('incremental sync from a checkpoint', async () => {
     selectResults = [[]];
     const first = partnerAlertFeedEnvelopeSchema.parse(await (await request('/alerts')).json());
-    mocks.execute.mockResolvedValue([{ horizon: '1200', xmax: '1210' }]);
+    mocks.execute.mockResolvedValue([{ horizon: '1200', xmax: '1210', epoch: '7688900532099108902:1' }]);
     selectResults = [[alertRow(ALERT_A, '1100', { status: 'resolved' })]];
     const res = await request(`/alerts?since=${encodeURIComponent(first.checkpoint!)}`);
     expect(res.status).toBe(200);
@@ -152,9 +150,35 @@ describe('partner alerts feed', () => {
   it('409 resync when the checkpoint is beyond the database xid range (restored database)', async () => {
     selectResults = [[]];
     const first = partnerAlertFeedEnvelopeSchema.parse(await (await request('/alerts')).json());
-    mocks.execute.mockResolvedValue([{ horizon: '10', xmax: '20' }]);
+    mocks.execute.mockResolvedValue([{ horizon: '10', xmax: '20', epoch: '7688900532099108902:1' }]);
     const res = await request(`/alerts?since=${encodeURIComponent(first.checkpoint!)}`);
     expect(res.status).toBe(409);
+  });
+
+  it('409 resync when the database incarnation changed (restore / point-in-time recovery)', async () => {
+    selectResults = [[]];
+    const first = partnerAlertFeedEnvelopeSchema.parse(await (await request('/alerts')).json());
+    // Same xid range, new timeline: without the epoch binding this would silently skip rows.
+    mocks.execute.mockResolvedValue([{ horizon: '1500', xmax: '1510', epoch: '7688900532099108902:2' }]);
+    const res = await request(`/alerts?since=${encodeURIComponent(first.checkpoint!)}`);
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('partner_alerts_resync_required');
+  });
+
+  it('409 when a page cursor crosses a database incarnation change', async () => {
+    selectResults = [[alertRow(ALERT_A, '900'), alertRow(ALERT_B, '950')]];
+    const first = partnerAlertFeedEnvelopeSchema.parse(await (await request('/alerts?limit=1')).json());
+    mocks.execute.mockResolvedValue([{ horizon: '1000', xmax: '1005', epoch: '1111:1' }]);
+    const res = await request(`/alerts?limit=1&cursor=${encodeURIComponent(first.nextCursor!)}`);
+    expect(res.status).toBe(409);
+  });
+
+  it('emits a null deviceId (not a foreign device id) when the device is not in the alert org', async () => {
+    // The route joins devices on id AND org_id, so a mismatched row yields null device columns.
+    selectResults = [[alertRow(ALERT_A, '900', { deviceId: null, deviceHostname: null })]];
+    const body = partnerAlertFeedEnvelopeSchema.parse(await (await request('/alerts')).json());
+    expect(body.data[0]!.deviceId).toBeNull();
+    expect(body.data[0]!.deviceHostname).toBeNull();
   });
 
   it('400 when a checkpoint is replayed with different filters', async () => {

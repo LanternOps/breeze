@@ -102,8 +102,16 @@ partnerAlertRoutes.get('/alerts', requirePartnerApiScope('alerts:read'), async (
     const limit = normalizePartnerExportLimit(query.limit);
     const orgIds = query.orgId ? [query.orgId] : [...principal.accessibleOrgIds];
     const triggeredSince = query.triggeredSince ? new Date(query.triggeredSince).toISOString() : null;
+    const [snapshot] = await db.execute<{ horizon: string; xmax: string; epoch: string }>(sql`
+      SELECT pg_snapshot_xmin(pg_current_snapshot())::text AS "horizon",
+             pg_snapshot_xmax(pg_current_snapshot())::text AS "xmax",
+             (SELECT system_identifier::text FROM pg_control_system())
+               || ':' || (SELECT timeline_id::text FROM pg_control_checkpoint()) AS "epoch"
+    `);
+    if (!snapshot) throw new Error('Partner alerts feed snapshot unavailable.');
     const binding: PartnerAlertsFeedBinding = {
       partnerId: principal.partnerId,
+      epoch: snapshot.epoch,
       filtersHash: sha256Hex(canonicalJsonStringify({
         orgId: query.orgId ?? null,
         status: query.status ?? null,
@@ -122,11 +130,6 @@ partnerAlertRoutes.get('/alerts', requirePartnerApiScope('alerts:read'), async (
       horizon = page.horizon;
       after = { xid: page.lastXid, id: page.lastId };
     } else {
-      const [snapshot] = await db.execute<{ horizon: string; xmax: string }>(sql`
-        SELECT pg_snapshot_xmin(pg_current_snapshot())::text AS "horizon",
-               pg_snapshot_xmax(pg_current_snapshot())::text AS "xmax"
-      `);
-      if (!snapshot) throw new Error('Partner alerts feed snapshot unavailable.');
       horizon = snapshot.horizon;
       lower = null;
       if (query.since) {
@@ -154,7 +157,10 @@ partnerAlertRoutes.get('/alerts', requirePartnerApiScope('alerts:read'), async (
     const rows = orgIds.length === 0 ? [] : await db.select({
       id: alerts.id,
       orgId: alerts.orgId,
-      deviceId: alerts.deviceId,
+      // devices joined on id AND org: an alert whose device_id points at a
+      // device in another org (alerts has no composite device/org FK) must
+      // never disclose that device, so both come back null.
+      deviceId: devices.id,
       deviceHostname: devices.hostname,
       severity: alerts.severity,
       status: alerts.status,
@@ -184,7 +190,7 @@ partnerAlertRoutes.get('/alerts', requirePartnerApiScope('alerts:read'), async (
       const withoutRevision = {
         id: row.id,
         orgId: row.orgId,
-        deviceId: row.deviceId,
+        deviceId: row.deviceId ?? null,
         deviceHostname: row.deviceHostname ?? null,
         severity: row.severity,
         status: row.status,
