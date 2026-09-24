@@ -10,7 +10,7 @@ import (
 // ErrUnsupportedHost is returned by Run when no System was supplied and the
 // host has no real implementation to fall back to (system_other.go's
 // NewSystem returns nil off Linux).
-var ErrUnsupportedHost = errors.New("the rebuild engine runs on Linux only in this release")
+var ErrUnsupportedHost = errors.New("the rebuild engine has no implementation for this host platform")
 
 // System is every interaction with the machine the engine needs. The real
 // implementation (system_linux.go) shells out; tests use fakeSystem

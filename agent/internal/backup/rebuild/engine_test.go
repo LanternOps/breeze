@@ -40,6 +40,7 @@ var (
 )
 
 func TestMain(m *testing.M) {
+	hostPlatform = func() string { return "linux" } // Linux-engine tests run on every dev/CI host, including the Windows job
 	bmr.SetRunCommandForTest(func(_ context.Context, name string, args ...string) ([]byte, error) {
 		bmrCallsMu.Lock()
 		bmrCalls = append(bmrCalls, bmrCall{name: name, args: args})

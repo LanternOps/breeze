@@ -54,23 +54,12 @@ func deviceBelongsTo(disk, dev string) bool {
 // artifacts download and verify (checksums) against the snapshot. Nothing
 // in this phase touches the target disk.
 func preflight(ctx context.Context, r *run) error {
-	// 1. Layout + guard.
-	lay := r.opts.Layout
-	if lay == nil {
-		var err error
-		if lay, err = fetchLayout(ctx, r.opts.Provider, r.opts.SnapshotID); err != nil {
-			return err
-		}
-	} else if lay.SchemaVersion != layout.SchemaVersion {
-		return &RefusalError{Reason: fmt.Sprintf("layout schema version %d is not supported by this helper (supports %d)", lay.SchemaVersion, layout.SchemaVersion)}
-	}
+	// 1. Layout + guard. resolvePlatform (engine.go) already fetched and
+	// schema/platform-checked the layout.
+	lay := r.layout
 	if v := layout.Assess(lay); !v.Restorable {
 		return &RefusalError{Reason: "layout is not bare-metal restorable: " + strings.Join(v.Reasons, "; ")}
 	}
-	if lay.Platform != "linux" {
-		return &RefusalError{Reason: fmt.Sprintf("snapshot platform %q cannot be rebuilt by the Linux engine", lay.Platform)}
-	}
-	r.layout = lay
 	src := lay.SystemDisk()
 
 	// 2. Target sizing and safety. Nothing below writes.
@@ -139,21 +128,29 @@ func preflight(ctx context.Context, r *run) error {
 	r.result.Plan = plan
 	r.progress(PhasePreflight, "plan ready", 1, 3)
 
-	// 3. Verify what we will restore: ordinary manifest + system state (checksums).
 	man, err := fetchManifest(ctx, r.opts.Provider, r.opts.SnapshotID)
 	if err != nil {
 		return err
 	}
 	r.manifest = man
+	if err := preflightVerify(ctx, r); err != nil {
+		return err
+	}
+	r.progress(PhasePreflight, "verified", 3, 3)
+	return nil
+}
 
-	// Belt to bmr.ApplyManifestScope's braces: if the provider tracks its
-	// own admissible set (token-mode recovery), refuse here — before any
-	// target write — rather than letting an unadmitted entry surface as a
-	// download failure mid-restore.
+// preflightVerify is preflight's admission-sweep + system-state-download
+// tail, shared verbatim by the Linux and Windows preflights (Part 0 §2 row
+// 1 "shared preflightVerify(ctx, r) extracted from preflight.go:143-198").
+// r.manifest must already be set. Populates r.stateStaging,
+// r.result.StateManifestFound, and appends to r.warnings — never writes to
+// the rebuild target itself.
+func preflightVerify(ctx context.Context, r *run) error {
 	if admitter, ok := r.opts.Provider.(ObjectAdmission); ok {
 		var n int
 		var first string
-		for _, f := range man.Files {
+		for _, f := range r.manifest.Files {
 			if !f.HasContent() {
 				continue
 			}
@@ -173,12 +170,6 @@ func preflight(ctx context.Context, r *run) error {
 		return err
 	}
 	r.stateStaging = staging
-	// #5412 gate: when the caller says the snapshot carries system state
-	// (a system_image backup / a bootstrap advertising a state manifest), a
-	// confirmed-absent or artifact-less manifest is a refusal, not the
-	// "files only" warning below — that warning is exactly how a
-	// system_image restore once reported completed/validated while
-	// applying no OS state. Nothing has been written yet at this point.
 	if _, warnings, err := bmr.DownloadSystemState(ctx, r.opts.Provider, r.opts.SnapshotID, r.opts.ExpectSystemState, staging); err != nil {
 		switch {
 		case r.opts.ExpectSystemState && (errors.Is(err, bmr.ErrNoSystemState) || errors.Is(err, providers.ErrObjectNotFound)):
@@ -194,7 +185,6 @@ func preflight(ctx context.Context, r *run) error {
 		r.result.StateManifestFound = true
 		r.warnings = append(r.warnings, warnings...)
 	}
-	r.progress(PhasePreflight, "verified", 3, 3)
 	return nil
 }
 
