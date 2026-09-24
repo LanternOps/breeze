@@ -181,6 +181,23 @@ describe('partner alerts feed', () => {
     expect(body.data[0]!.deviceHostname).toBeNull();
   });
 
+  it('accepts DB-valid non-BMP titles/hostnames (UTF-16 length up to 2x the varchar limit)', async () => {
+    selectResults = [[alertRow(ALERT_A, '900', { title: '🔥'.repeat(500), deviceHostname: '🖥'.repeat(255) })]];
+    const res = await request('/alerts');
+    expect(res.status).toBe(200);
+    const body = partnerAlertFeedEnvelopeSchema.parse(await res.json());
+    expect(body.data.length + (body.blocked?.length ?? 0)).toBe(1);
+    expect(body.checkpoint).toEqual(expect.any(String));
+  });
+
+  it('revision ignores the hostname enrichment', async () => {
+    selectResults = [[alertRow(ALERT_A, '900', { deviceHostname: 'old-name' })]];
+    const a = partnerAlertFeedEnvelopeSchema.parse(await (await request('/alerts')).json());
+    selectResults = [[alertRow(ALERT_A, '900', { deviceHostname: 'new-name' })]];
+    const b = partnerAlertFeedEnvelopeSchema.parse(await (await request('/alerts')).json());
+    expect(a.data[0]!.revision).toBe(b.data[0]!.revision);
+  });
+
   it('truncates an oversized message instead of failing the page', async () => {
     selectResults = [[alertRow(ALERT_A, '900', { message: 'Disk C: free space below threshold on the file server. '.repeat(1_000) })]];
     const res = await request('/alerts');

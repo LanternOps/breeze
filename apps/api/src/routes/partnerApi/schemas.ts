@@ -624,11 +624,14 @@ export const partnerAlertExportRecordSchema = z.object({
   orgId: z.string().uuid(),
   // Null when the alert's device is gone or not in the alert's organization.
   deviceId: z.string().uuid().nullable(),
-  // Current device hostname at read time (enrichment, not historical).
-  deviceHostname: z.string().max(255).nullable(),
+  // Current device hostname at read time: enrichment, NOT a feed event. A
+  // device rename does not advance the feed and is excluded from `revision`.
+  // Limits are 2x the DB varchar length: Postgres counts characters, JS/Zod
+  // counts UTF-16 code units, and a non-BMP character is two units.
+  deviceHostname: z.string().max(510).nullable(),
   severity: z.enum(PARTNER_ALERT_SEVERITIES),
   status: z.enum(PARTNER_ALERT_STATUSES),
-  title: z.string().max(500),
+  title: z.string().max(1000),
   message: z.string().max(12_000).nullable(),
   triggeredAt: partnerExportTimestampSchema,
   acknowledgedAt: nullableTimestamp,

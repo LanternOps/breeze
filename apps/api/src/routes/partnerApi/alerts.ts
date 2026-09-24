@@ -228,7 +228,10 @@ partnerAlertRoutes.get('/alerts', requirePartnerApiScope('alerts:read'), async (
         monitorId: row.monitorId ?? null,
         changeVersion: String(row.changeXid),
       };
-      const record = { ...withoutRevision, revision: computePartnerExportRevision(withoutRevision) };
+      // revision covers the alert's own state only; the hostname is read-time
+      // enrichment that never advances the feed, so it must not move revision.
+      const { deviceHostname: _enrichment, ...revisionBasis } = withoutRevision;
+      const record = { ...withoutRevision, revision: computePartnerExportRevision(revisionBasis) };
       const inspected = safelyExportDefinition({ resource: 'alerts', id: row.id, orgId: row.orgId }, record);
       if (inspected.safe) data.push(inspected.definition);
       else blocked.push(inspected.blocked);

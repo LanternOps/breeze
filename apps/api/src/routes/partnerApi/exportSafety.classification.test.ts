@@ -44,6 +44,7 @@ describe('partner export resource classification', () => {
 });
 
 import { RESOURCE_CLASSIFICATION as CLASSIFICATION_FOR_CONTRACT } from './exportSafety.classification';
+import { partnerAlertExportRecordSchema } from './schemas';
 
 describe('classification completeness contract', () => {
   // Fully-populated projection samples: every array non-empty, every nullable set,
@@ -54,10 +55,9 @@ describe('classification completeness contract', () => {
   const POPULATED_PATHS: Partial<Record<string, string[]>> = {
     devices: ['hostname', 'displayName', 'hardwareIdentity.serialNumber',
       'hardwareIdentity.manufacturer', 'hardwareIdentity.model', 'tags[]'],
-    // Keys of partnerAlertExportRecordSchema (alerts.ts emits every key on every record).
-    alerts: ['id', 'orgId', 'deviceId', 'deviceHostname', 'severity', 'status', 'title', 'message',
-      'triggeredAt', 'acknowledgedAt', 'resolvedAt', 'dismissedAt', 'suppressedUntil', 'requiresHuman',
-      'episodeId', 'ruleId', 'monitorId', 'changeVersion', 'revision'],
+    // Derived from the emitted DTO contract (strict schema, every key always
+    // present), so a renamed/removed protected field fails this test.
+    alerts: Object.keys(partnerAlertExportRecordSchema.shape),
   };
 
   it('every exception key corresponds to a real emitted path', () => {

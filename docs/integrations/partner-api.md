@@ -498,11 +498,13 @@ Guarantees and limits:
   `status=active` does not report an alert leaving that status; mirror
   consumers should not filter.
 - Deleted alerts are not reported. Raw alert `context` is not exported, and
-  `deviceHostname` is the device's current hostname. `deviceId` and
+  `deviceHostname` is the device's current hostname, read at request time: a
+  device rename does not advance the feed and does not change `revision`. `deviceId` and
   `deviceHostname` are null when the device no longer exists in the alert's
   organization.
 - A record whose title or message contains a detected secret is withheld and
-  listed in `blocked` instead.
+  listed in `blocked` instead. A blocked record reappears only when the alert
+  itself is written again; reconcile blocked ids with a periodic full sync.
 - Checkpoints and cursors are signed, bound to the partner, filters and
   organization set, and cursors expire after 24 hours.
 
