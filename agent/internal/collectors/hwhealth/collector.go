@@ -76,6 +76,7 @@ func New(opts Options) *Collector {
 			newWinPD(),
 			newSMART(opts.ExtraToolDirs, runTool, opts.Now),
 		}
+		c.sources = append(c.sources, remainingSources(opts.ExtraToolDirs)...)
 	}
 	for _, s := range c.sources {
 		c.detect[s.Name()] = &detection{}
@@ -155,6 +156,14 @@ func (c *Collector) Run(parent context.Context, tiers []Tier) (*Snapshot, error)
 			anyAvailable = anyAvailable || available[s.Name()].Available
 		}
 	}
+	// Broadcom precedence (storcli > perccli > MegaCli; any of them supersedes omreport)
+	// is chosen from cached availability, never from collection success, so a failing or
+	// backing-off winner does not hand the controller to a loser. After a budget-skipped
+	// detection the sentinel Available:true is not evidence of an installed winner.
+	superseded := map[Kind]Kind{}
+	if ctx.Err() == nil {
+		superseded = broadcomSuperseded(available)
+	}
 	noTools := cfg.Enabled && !anyAvailable
 	if noTools && !c.state.LastNone.IsZero() && now.Sub(c.state.LastNone) < 24*time.Hour {
 		return nil, nil
@@ -187,8 +196,9 @@ func (c *Collector) Run(parent context.Context, tiers []Tier) (*Snapshot, error)
 			snapshot.Sources = append(snapshot.Sources, report)
 			continue
 		}
-		if k == "perccli" && available["storcli"].Available {
+		if winner, ok := superseded[k]; ok {
 			report.Status = "superseded"
+			report.Warnings = []string{"superseded by " + string(winner)}
 			snapshot.Sources = append(snapshot.Sources, report)
 			continue
 		}
