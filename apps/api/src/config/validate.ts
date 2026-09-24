@@ -2408,8 +2408,12 @@ function collectWarnings(env: Record<string, string | undefined>): ConfigWarning
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
   if (unattendedEntries.length > 0) {
-    const wellFormed = unattendedEntries.filter((entry) =>
-      /^api_key:[^\s/]+$/u.test(entry) || /^oauth_client_user:[^\s/]+\/[^\s/]+$/u.test(entry));
+    // API key ids and user ids are UUIDs (api_keys.id, users.id); the OAuth
+    // client_id is free-form. Anything else can never match a principal ref.
+    const uuid = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+    const apiKeyEntry = new RegExp(`^api_key:${uuid}$`, 'iu');
+    const oauthEntry = new RegExp(`^oauth_client_user:[^\\s/]+/${uuid}$`, 'iu');
+    const wellFormed = unattendedEntries.filter((entry) => apiKeyEntry.test(entry) || oauthEntry.test(entry));
     const malformed = unattendedEntries.filter((entry) => !wellFormed.includes(entry));
     if (wellFormed.length > 0) {
       warnings.push({

@@ -2448,9 +2448,10 @@ describe('validateConfig', () => {
     });
 
     it('warns separately about entries that can never match', () => {
-      const calls = principalWarnings('api_key:ok-1,apikey:typo,oauth_client_user:client-only,client-b/user');
-      expect(calls.join('\n')).toMatch(/1 principal\(s\): api_key:ok-1\./);
-      expect(calls.join('\n')).toMatch(/ignoring 3 malformed entries that can never match: apikey:typo, oauth_client_user:client-only, client-b\/user/);
+      const good = 'api_key:33333333-3333-4333-8333-333333333333';
+      const calls = principalWarnings(`${good},api_key:ok-1,apikey:typo,oauth_client_user:client-only,oauth_client_user:client-a/not-a-uuid,client-b/user`);
+      expect(calls.join('\n')).toMatch(new RegExp(`1 principal\\(s\\): ${good}\\.`));
+      expect(calls.join('\n')).toMatch(/ignoring 5 malformed entries that can never match: api_key:ok-1, apikey:typo, oauth_client_user:client-only, oauth_client_user:client-a\/not-a-uuid, client-b\/user/);
     });
 
     it('stays silent when unset or empty', () => {
