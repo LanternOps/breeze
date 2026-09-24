@@ -3,6 +3,8 @@
 // read the frozen snapshot. The address sub-object uses the SAME keys as
 // billToAddress so the PDF renderers' existing addressLines() helper works for it.
 
+import { parseCompanyContact, parseCompanyAddress, isCompanyAddressBlank } from '@breeze/shared';
+
 // Intentional duplicate of SellerSnapshot in apps/web/src/components/billing/invoiceTypes.ts
 // and apps/portal/src/lib/api.ts — api/web/portal can't share a package; keep in sync.
 export interface SellerSnapshot {
@@ -30,21 +32,61 @@ interface PartnerContactFields {
   billingAddressRegion?: string | null;
   billingAddressPostalCode?: string | null;
   billingAddressCountry?: string | null;
+  // partners.settings jsonb — the "company details" fallback tier (#6228 W05).
+  // Optional because a caller may select a column list that predates this field;
+  // when absent, every fallback below is simply skipped (parseCompanyContact/
+  // parseCompanyAddress already treat undefined as "no data").
+  settings?: unknown;
+}
+
+/** A non-string, or whitespace-only string, is treated as absent (#6228 W05:
+ *  "whitespace-only = absent" applies to every scalar seller field, not just the
+ *  ones that already had null defaults). */
+function nonBlank(v: string | null | undefined): string | null {
+  if (typeof v !== 'string') return null;
+  const trimmed = v.trim();
+  return trimmed === '' ? null : trimmed;
 }
 
 export function buildSellerSnapshot(partner: PartnerContactFields | null | undefined): SellerSnapshot {
+  const settingsRecord = partner?.settings && typeof partner.settings === 'object' && !Array.isArray(partner.settings)
+    ? (partner.settings as Record<string, unknown>)
+    : {};
+  const companyContact = parseCompanyContact(settingsRecord.contact);
+  const companyAddress = parseCompanyAddress(settingsRecord.address);
+
+  // Address uses BLOCK semantics (#6228 W05 amendment 3): the billing override
+  // applies in full the moment ANY of its 6 fields is non-blank — never a mix of
+  // billing + company fields. Only when the billing block is entirely blank does
+  // the whole company address take over (also as a full block).
+  const billingAddressBlank = nonBlank(partner?.billingAddressLine1) === null
+    && nonBlank(partner?.billingAddressLine2) === null
+    && nonBlank(partner?.billingAddressCity) === null
+    && nonBlank(partner?.billingAddressRegion) === null
+    && nonBlank(partner?.billingAddressPostalCode) === null
+    && nonBlank(partner?.billingAddressCountry) === null;
+
+  const address = billingAddressBlank
+    ? (isCompanyAddressBlank(companyAddress)
+        ? { line1: null, line2: null, city: null, region: null, postalCode: null, country: null }
+        : companyAddress)
+    : {
+        line1: nonBlank(partner?.billingAddressLine1),
+        line2: nonBlank(partner?.billingAddressLine2),
+        city: nonBlank(partner?.billingAddressCity),
+        region: nonBlank(partner?.billingAddressRegion),
+        postalCode: nonBlank(partner?.billingAddressPostalCode),
+        country: nonBlank(partner?.billingAddressCountry),
+      };
+
   return {
-    name: partner?.billingCompanyName ?? partner?.name ?? null,
-    address: {
-      line1: partner?.billingAddressLine1 ?? null,
-      line2: partner?.billingAddressLine2 ?? null,
-      city: partner?.billingAddressCity ?? null,
-      region: partner?.billingAddressRegion ?? null,
-      postalCode: partner?.billingAddressPostalCode ?? null,
-      country: partner?.billingAddressCountry ?? null,
-    },
-    phone: partner?.billingPhone ?? null,
-    email: partner?.billingEmail ?? null,
+    name: nonBlank(partner?.billingCompanyName) ?? nonBlank(partner?.name) ?? null,
+    address,
+    phone: nonBlank(partner?.billingPhone) ?? companyContact.phone ?? null,
+    // Deliberately NOT falling back to settings.contact.email — that's a
+    // contact-person mailbox, not necessarily the billing reply-to (#6228 W05
+    // amendment 4).
+    email: nonBlank(partner?.billingEmail) ?? null,
     // DO NOT LINKIFY `website` downstream without adding an output-side scheme
     // filter first (#3430). Writes are http/https-only as of #3430, but:
     //  - rows predating that guard may still hold any string, and
@@ -54,7 +96,7 @@ export function buildSellerSnapshot(partner: PartnerContactFields | null | undef
     //    already issued.
     // Every current render site (quotePdf, invoicePdf, the web + portal document
     // views) emits this as plain text, which is what keeps legacy values inert.
-    website: partner?.billingWebsite ?? null,
+    website: nonBlank(partner?.billingWebsite) ?? companyContact.website ?? null,
   };
 }
 

@@ -29,6 +29,10 @@ interface InheritedFieldProps {
    *  table cell). Defaults to 'w-full'. */
   inputWidthClassName?: string;
   'data-testid'?: string;
+  /** Passed straight through to the <input> for a caller-owned validation error
+   *  (e.g. a URL scheme check) that lives outside this component. */
+  ariaInvalid?: boolean;
+  ariaDescribedBy?: string;
 }
 
 /**
@@ -50,6 +54,8 @@ export default function InheritedField({
   step,
   hideLabel,
   inputWidthClassName = 'w-full',
+  ariaInvalid,
+  ariaDescribedBy,
   ...rest
 }: InheritedFieldProps) {
   const { t } = useTranslation('common');
@@ -74,6 +80,8 @@ export default function InheritedField({
         onChange={(e) => onChange(e.target.value)}
         placeholder={inheritedValue ?? undefined}
         aria-label={hideLabel ? label : undefined}
+        aria-invalid={ariaInvalid || undefined}
+        aria-describedby={ariaDescribedBy}
         data-testid={testId}
         className={`mt-1 ${inputWidthClassName} rounded-md border bg-background px-3 py-1.5 text-sm disabled:opacity-50`}
       />

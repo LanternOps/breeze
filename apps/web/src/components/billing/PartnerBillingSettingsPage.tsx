@@ -4,7 +4,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { pctFromFraction } from './invoiceTypes';
-import { isHttpUrl } from '@breeze/shared';
+import { isHttpUrl, parseCompanyContact, parseCompanyAddress, isCompanyAddressBlank } from '@breeze/shared';
 import { resetPartnerCurrencyCache } from '@/lib/partnerCurrencyCache';
 import { useHashTab } from '../../lib/useHashState';
 import BillingDefaultsTab from './BillingDefaultsTab';
@@ -24,6 +24,9 @@ interface PartnerBilling {
   billingAddressLine1: string | null; billingAddressLine2: string | null; billingAddressCity: string | null;
   billingAddressRegion: string | null; billingAddressPostalCode: string | null; billingAddressCountry: string | null;
   billingTermsAndConditions: string | null;
+  // "Company details" fallback tier for the letterhead override (#6228) — same
+  // shape GET /orgs/partners/me already returns (partnerPublicColumns()).
+  settings?: { contact?: unknown; address?: unknown } | null;
 }
 
 export default function PartnerBillingSettingsPage() {
@@ -53,6 +56,11 @@ export default function PartnerBillingSettingsPage() {
   const [postal, setPostal] = useState('');
   const [country, setCountry] = useState('');
   const [terms, setTerms] = useState('');
+  // Resolved "company details" values, read straight off the same GET response —
+  // the InheritedField placeholder/source for the letterhead override fields (#6228).
+  const [inheritedPhone, setInheritedPhone] = useState<string | null>(null);
+  const [inheritedWebsite, setInheritedWebsite] = useState<string | null>(null);
+  const [inheritedAddress, setInheritedAddress] = useState<ReturnType<typeof parseCompanyAddress> | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -83,6 +91,11 @@ export default function PartnerBillingSettingsPage() {
       setPostal(p.billingAddressPostalCode ?? '');
       setCountry(p.billingAddressCountry ?? '');
       setTerms(p.billingTermsAndConditions ?? '');
+      const companyContact = parseCompanyContact(p.settings?.contact);
+      const companyAddress = parseCompanyAddress(p.settings?.address);
+      setInheritedPhone(companyContact.phone);
+      setInheritedWebsite(companyContact.website);
+      setInheritedAddress(isCompanyAddressBlank(companyAddress) ? null : companyAddress);
     } catch {
       setLoadError(true);
     } finally {
@@ -198,6 +211,7 @@ export default function PartnerBillingSettingsPage() {
           city={city} setCity={setCity} region={region} setRegion={setRegion}
           postal={postal} setPostal={setPostal} country={country} setCountry={setCountry}
           terms={terms} setTerms={setTerms}
+          inheritedPhone={inheritedPhone} inheritedWebsite={inheritedWebsite} inheritedAddress={inheritedAddress}
         />
       )}
       {activeTab === 'rates' && <BillingRatesTab currencyCode={currencyCode} />}
