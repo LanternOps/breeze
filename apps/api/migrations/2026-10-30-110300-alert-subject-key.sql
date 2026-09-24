@@ -9,6 +9,21 @@ BEGIN
     ALTER TABLE alerts ADD CONSTRAINT alerts_subject_key_nonempty_chk CHECK (subject_key <> '');
   END IF;
 END $$;
+-- Automation `create_alert` actions all insert under ONE synthetic per-org rule
+-- ("Automation Action Alerts"), so several are legitimately open on one device
+-- at once. They are not duplicates: give each its own subject identity (the
+-- same `automation-alert:<id>` key automationRuntime now writes) so the dedupe
+-- below and the unique index never merge distinct automation alerts. Only that
+-- action writes `context.automationRunId`.
+DO $$
+DECLARE n integer;
+BEGIN
+  UPDATE alerts SET subject_key = 'automation-alert:' || id::text
+  WHERE rule_id IS NOT NULL AND subject_key IS NULL AND context ? 'automationRunId'
+    AND status IN ('active', 'acknowledged', 'suppressed');
+  GET DIAGNOSTICS n = ROW_COUNT;
+  RAISE WARNING 'keyed % automation action alerts', n;
+END $$;
 DO $$
 DECLARE n integer;
 BEGIN

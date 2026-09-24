@@ -1,4 +1,4 @@
-import { randomBytes } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 import { automationActionSchema, scriptParametersSchema, alertTriggerKey, buildTriggerKey, interpolateAlertTemplate, type RemediationTrigger, type DeploymentTargetConfig } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
@@ -1864,9 +1864,17 @@ async function executeCreateAlertAction(
   );
   const message = interpolateAlertTemplate(action.alertMessage, templateContext);
 
+  // Every create_alert action shares ONE synthetic per-org rule, so several can
+  // be open on one device at once. Each alert is its own subject: the open-alert
+  // identity index (one open alert per rule, device, subject — W03 #6854) must
+  // never merge distinct automation alerts. The 110300 migration keys existing
+  // rows with the same `automation-alert:<id>` form.
+  const alertId = randomUUID();
   const [createdAlert] = await db
     .insert(alerts)
     .values({
+      id: alertId,
+      subjectKey: `automation-alert:${alertId}`,
       ruleId,
       deviceId: context.device.id,
       orgId: context.device.orgId,

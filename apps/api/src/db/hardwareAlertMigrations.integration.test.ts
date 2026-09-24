@@ -55,7 +55,8 @@ it('deduplicates NULL subjects once, keeps newest, and preserves distinct subjec
   await isolated(async (sql, notices) => {
     await sql.unsafe(`CREATE TABLE alerts (
       id uuid PRIMARY KEY, rule_id uuid, device_id uuid NOT NULL, status text NOT NULL,
-      triggered_at timestamp NOT NULL, resolved_at timestamp, resolution_note text
+      triggered_at timestamp NOT NULL, resolved_at timestamp, resolution_note text,
+      context jsonb NOT NULL DEFAULT '{}'::jsonb
     )`);
     // Task 10 — the 110300 migration also extends the ALREADY-SHIPPED
     // monitor_episodes table with the response-admission columns. A skeletal
@@ -73,7 +74,19 @@ it('deduplicates NULL subjects once, keeps newest, and preserves distinct subjec
       (${newest}, ${rule}, ${device}, 'suppressed', '2026-09-23', NULL, NULL),
       (${randomUUID()}, NULL, ${device}, 'active', '2026-09-23', NULL, NULL),
       (${randomUUID()}, NULL, ${device}, 'active', '2026-09-23', NULL, NULL)`;
+    // Automation create_alert actions all share one synthetic per-org rule, so
+    // several can legitimately be open on one device. They must be keyed, not
+    // deduplicated.
+    const automationRule = randomUUID(), autoA = randomUUID(), autoB = randomUUID();
+    await sql`INSERT INTO alerts (id,rule_id,device_id,status,triggered_at,context) VALUES
+      (${autoA}, ${automationRule}, ${device}, 'active', '2026-09-22', ${sql.json({ automationId: 'a1', automationRunId: 'r1' })}),
+      (${autoB}, ${automationRule}, ${device}, 'active', '2026-09-23', ${sql.json({ automationId: 'a2', automationRunId: 'r2' })})`;
     await sql.begin((tx) => tx.unsafe(migration));
+    expect(notices).toContain('keyed 2 automation action alerts');
+    expect(await sql`SELECT id, status, subject_key FROM alerts WHERE rule_id = ${automationRule} ORDER BY triggered_at`).toEqual([
+      { id: autoA, status: 'active', subject_key: `automation-alert:${autoA}` },
+      { id: autoB, status: 'active', subject_key: `automation-alert:${autoB}` },
+    ]);
     expect((await sql`SELECT status,resolution_note FROM alerts WHERE id=${old}`)[0]).toMatchObject({
       status: 'resolved', resolution_note: 'deduplicated by migration',
     });
@@ -84,7 +97,8 @@ it('deduplicates NULL subjects once, keeps newest, and preserves distinct subjec
       (${randomUUID()},${rule},${device},'active',now(),'storcli:c0:e1:s5')`;
     await sql.begin((tx) => tx.unsafe(migration));
     expect(notices).toContain('resolved 0 duplicate open alerts');
-    expect((await sql`SELECT count(*)::int n FROM alerts WHERE status <> 'resolved'`)[0]!.n).toBe(5);
+    expect(notices).toContain('keyed 0 automation action alerts');
+    expect((await sql`SELECT count(*)::int n FROM alerts WHERE status <> 'resolved'`)[0]!.n).toBe(7);
     await expect(sql`INSERT INTO alerts (id,rule_id,device_id,status,triggered_at,subject_key)
       VALUES (${randomUUID()},${rule},${device},'active',now(),'')`).rejects.toMatchObject({ code: '23514' });
     await expect(sql`INSERT INTO alerts (id,rule_id,device_id,status,triggered_at,subject_key)
