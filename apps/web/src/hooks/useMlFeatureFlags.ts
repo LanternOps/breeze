@@ -19,6 +19,9 @@ export type MlFeatureFlagResolution = {
   flag: MlFeatureFlagName;
   enabled: boolean;
   defaultEnabled: boolean;
+  /** Value with no org override (partner setting or default). Older API builds omit it. */
+  inheritedEnabled?: boolean;
+  inheritedSource?: 'partner_settings' | 'default';
   source: string;
 };
 

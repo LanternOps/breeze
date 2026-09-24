@@ -34,6 +34,7 @@ import type { PinnableVersions, AgentVersionPinsValue } from './AgentVersionPinS
 import OrgNotificationSettings from './OrgNotificationSettings';
 import OrgSecuritySettings from './OrgSecuritySettings';
 import OrgAiProcessingToggle from './OrgAiProcessingToggle';
+import OrgMlFeaturesCard from './OrgMlFeaturesCard';
 import { OrgApprovalSecurityTab } from './OrgApprovalSecurityTab';
 import OrgEventLogSettings from './OrgEventLogSettings';
 import OrgAiBudgetSettings from './OrgAiBudgetSettings';
@@ -677,6 +678,14 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
               initialData={orgDetails?.settings?.aiApprovals}
               effective={aiApprovalTimeout}
               onSave={(data: AiApprovalSettings) => handleSave('aiApprovals', data)}
+            />
+            {/* Self-saving like OrgAiProcessingToggle: outside the page's
+                dirty/save cycle. Home for the org-level ML override; the
+                partner default lives on Partner settings → AI Features. */}
+            <OrgMlFeaturesCard
+              orgId={effectiveOrgId}
+              settings={(orgDetails?.settings ?? {}) as Record<string, unknown>}
+              onSaved={() => void fetchOrgDetails()}
             />
           </>
         );

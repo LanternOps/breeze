@@ -519,6 +519,19 @@
       "communications": "Kommunikation",
       "branding": "Branding"
     },
+    "aiFeatures": {
+      "anomalies": {
+        "title": "Anomalieerkennung",
+        "description": "Statistische Erkennung von ungewöhnlichem CPU-, Arbeitsspeicher-, Festplatten- und Netzwerkverhalten auf verwalteten Geräten. Dies sind die Standardwerte für jede Organisation; eine Organisation kann sie auf ihrer eigenen KI-Registerkarte überschreiben.",
+        "enabled": "Anomalien erkennen",
+        "enabledDescription": "Führt den Anomalie-Detektor alle 10 Minuten aus und zeigt Ergebnisse auf der Registerkarte „Anomalien“ jedes Geräts an.",
+        "createAlerts": "Alarme aus Anomalien erstellen",
+        "createAlertsDescription": "Wandelt bestätigte Anomalien in Alarme um, damit sie Ihre Benachrichtigungsrouten erreichen."
+      },
+      "inheritanceNote": "Änderungen gelten für jede Organisation, die keine eigene Überschreibung festgelegt hat.",
+      "saved": "Gespeichert",
+      "saveFailed": "Diese Einstellung konnte nicht geändert werden"
+    },
     "tabs": {
       "company": {
         "label": "Unternehmen",
@@ -568,6 +581,10 @@
       "aiProvider": {
         "label": "KI-Anbieter",
         "description": "Eigenen Anthropic-Schlüssel verwenden"
+      },
+      "aiFeatures": {
+        "label": "KI-Funktionen",
+        "description": "Standardwerte für Anomalieerkennung"
       },
       "branding": {
         "label": "Branding",
@@ -4606,7 +4623,25 @@
       "externalProcessing": "Sandbox-KI-Analyse zulassen",
       "externalProcessingDescription": "Ermöglicht es KI-Analyseläufen, für diese Organisation Code in einer isolierten Sandbox ohne Netzwerkzugriff auszuführen, gehostet in der Region dieser Organisation. Standardmäßig deaktiviert.",
       "externalProcessingSaved": "Gespeichert",
-      "externalProcessingSaveFailed": "Diese Einstellung konnte nicht geändert werden"
+      "externalProcessingSaveFailed": "Diese Einstellung konnte nicht geändert werden",
+      "mlFeatures": {
+        "title": "Anomalieerkennung",
+        "description": "Statistische Erkennung von ungewöhnlichem CPU-, Arbeitsspeicher-, Festplatten- und Netzwerkverhalten auf den Geräten dieser Organisation. Leer bedeutet, dass der Partner-Standardwert gilt.",
+        "anomaliesEnabled": "Anomalien erkennen",
+        "anomaliesEnabledDescription": "Führt den Anomalie-Detektor alle 10 Minuten aus und zeigt Ergebnisse auf der Registerkarte „Anomalien“ jedes Geräts an.",
+        "createAlerts": "Alarme aus Anomalien erstellen",
+        "createAlertsDescription": "Wandelt bestätigte Anomalien in Alarme um, damit sie Ihre Benachrichtigungsrouten erreichen.",
+        "inherit": "Erben",
+        "inheritOn": "Erben (an, {{from}})",
+        "inheritOff": "Erben (aus, {{from}})",
+        "fromPartner": "Partnereinstellung",
+        "fromDefault": "Plattform-Standardwert",
+        "on": "An",
+        "off": "Aus",
+        "saved": "Gespeichert",
+        "saveFailed": "Diese Einstellung konnte nicht geändert werden",
+        "killSwitch": "Die Anomalieerkennung ist für die gesamte Plattform vom Betreiber deaktiviert. Diese Einstellungen werden wirksam, sobald sie wieder aktiviert wird."
+      }
     },
     "breadcrumbs": {
       "settings": "Einstellungen",
