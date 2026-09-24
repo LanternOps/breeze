@@ -753,9 +753,11 @@ const BACKUP_GC_SUPPORTED_PROVIDERS = new Set(['s3', 'local']);
 // The unit of GC work is a storage identity (possibly several backupConfigs
 // rows sharing one bucket), not a single "destination" row.
 //   skippedIdentities — every identity NOT swept this run, for ANY reason.
-//   blockedIdentities — the SUBSET of skippedIdentities aborted fail-closed
-//     because a manifest was unfetchable/unparseable — the signal of a
-//     genuine, non-self-healing storage leak.
+//   blockedIdentities — the SUBSET of skippedIdentities whose sweep failed
+//     fail-closed after it started: an unfetchable/unparseable manifest, a
+//     failed root listing, a failed per-snapshot re-list (#6834; the sweep
+//     stops at that snapshot), or any other sweep error — the signal that a
+//     genuine, non-self-healing storage leak may be accumulating.
 //   retiredSwept — retirement rows CONFIRMED fully gone from a fresh listing
 //     this run (durable, via swept_at — see the two-pass rule below).
 //   orphansSwept — best-effort per-run metric (no DB row to confirm against).
@@ -1441,10 +1443,12 @@ function manifestOlderThanWindow(item: BackupObjectListing, nowMs: number, windo
  *      or a manifest-less prefix gained a fresh object) is skipped this run.
  *      Objects that appear between the two passes can only be deletion
  *      candidates if they also satisfy the same age rules as before.
- * A bare key directly under the root with no trailing path (`snapshots/<x>`)
- * still forms a group in pass 1 but is never returned by a
- * `snapshots/<x>/`-scoped re-list, so it is no longer ever deleted — the
- * one intended behavior change, strictly more conservative.
+ * A bare key directly under the root with no path after the id
+ * (`snapshots/<x>`) is never returned by a `snapshots/<x>/`-scoped re-list,
+ * so the root pass keeps it on the group summary and relistGroup replays it
+ * as a member; a group consisting ONLY of a bare key is not re-listed at
+ * all. Bare keys are therefore treated exactly as the pre-#6834 single
+ * listing treated them (#6840 review).
  */
 async function sweepStorageIdentity(
   identity: { key: string; provider: string; providerConfig: unknown },
@@ -2108,10 +2112,12 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
         captureException(failure);
       }
     } catch (error) {
-      // A sweep abort here is the fail-closed mark/list failure path (an
-      // unfetchable/unparseable manifest). Count it as BOTH skipped (broad
-      // "not swept" total) and blocked (the distinct signal that a genuine,
-      // non-self-healing storage leak may be accumulating for this identity).
+      // A sweep abort here is a fail-closed failure path — an unfetchable or
+      // unparseable manifest, a failed root listing, or a delete/other sweep
+      // error (a failed per-snapshot re-list is reported above, not thrown).
+      // Count it as BOTH skipped (broad "not swept" total) and blocked (the
+      // distinct signal that a genuine, non-self-healing storage leak may be
+      // accumulating for this identity).
       skippedIdentities++;
       blockedIdentities++;
       console.error(`[BackupGC] Identity ${identity.key}: sweep failed — isolated, other identities proceed:`, error);
@@ -2122,7 +2128,7 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
   console.log(
     `[BackupGC] Run complete: deleted ${deleted} object(s), ${retiredSwept} retirement(s) confirmed swept, ` +
     `${orphansSwept} orphan(s) swept, ${skippedIdentities} identity/identities skipped, ${deferredIdentities} deferred, ` +
-    `${unreachableIdentities} unreachable` + (blockedIdentities > 0 ? ` (${blockedIdentities} blocked by unfetchable manifest — fail-closed)` : ''),
+    `${unreachableIdentities} unreachable` + (blockedIdentities > 0 ? ` (${blockedIdentities} blocked — sweep failed fail-closed: manifest fetch/parse, listing, or delete; see errors above)` : ''),
   );
 
   return { deleted, skippedIdentities, blockedIdentities, retiredSwept, orphansSwept, deferredIdentities, unreachableIdentities };
