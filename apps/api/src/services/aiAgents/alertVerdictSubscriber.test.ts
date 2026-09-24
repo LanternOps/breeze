@@ -76,6 +76,9 @@ interface AlertVerdictRowFixture {
   resolvedAt: Date | null;
   resolvedBy: string | null;
   triggeredAt: Date;
+  /** #6749 — `context ->> 'source'`; explicit `null` so "no lifecycle source"
+   *  is asserted rather than left as an accidental `undefined`. */
+  source: string | null;
 }
 
 const BASE_ALERT_ROW: AlertVerdictRowFixture = {
@@ -86,6 +89,7 @@ const BASE_ALERT_ROW: AlertVerdictRowFixture = {
   resolvedAt: null,
   resolvedBy: null,
   triggeredAt: new Date('2026-08-28T00:00:00.000Z'),
+  source: null,
 };
 
 const BASE_DEVICE_ROW = { siteId: 'site-1', tags: ['prod'] };
@@ -203,7 +207,22 @@ describe('ai-agent-alert-verdict subscriber', () => {
           ruleId: 'rule-critical',
           siteId: 'site-1',
           deviceTags: ['prod'],
+          source: null,
         },
+      }));
+    });
+
+    // #6749 — the group-verdict path threads context.source through so the
+    // trigger-filter's lifecycle exclusion (runService.ts) can see it; admission
+    // itself is exercised in runService.test.ts, this only pins THIS module's
+    // plumbing.
+    it('carries a lifecycle alert source (e.g. warranty_evaluator) into alertContext', async () => {
+      mockCleanGroup({ source: 'warranty_evaluator' });
+
+      await handleAlertVerdictEvent(groupCreatedEvent());
+
+      expect(createAndEnqueueAgentRun).toHaveBeenCalledWith(expect.objectContaining({
+        alertContext: expect.objectContaining({ source: 'warranty_evaluator' }),
       }));
     });
 
@@ -274,6 +293,19 @@ describe('ai-agent-alert-verdict subscriber', () => {
         deviceId: DEVICE_ID,
         dedupeKey: `alert-verdict:${ALERT_ID}`,
         triggerRef: { verdictReason: 'auto_resolved', alertId: ALERT_ID },
+        alertContext: expect.objectContaining({ source: null }),
+      }));
+    });
+
+    // #6749 — the single-alert verdict path (enqueueVerdictRunForAlert)
+    // threads context.source through too, same as the group path above.
+    it('carries a lifecycle alert source (e.g. warranty_evaluator) into alertContext', async () => {
+      mockCleanAutoResolve({ source: 'warranty_evaluator' });
+
+      await handleAlertVerdictEvent(alertResolvedEvent());
+
+      expect(createAndEnqueueAgentRun).toHaveBeenCalledWith(expect.objectContaining({
+        alertContext: expect.objectContaining({ source: 'warranty_evaluator' }),
       }));
     });
 

@@ -2023,6 +2023,9 @@ async function executeAiTriageAction(
       siteId: context.device.siteId,
       deviceTags: deviceRow?.tags ?? [],
       category: classification?.category ?? null,
+      // #6749 — lifecycle-source exclusion (e.g. warranty_evaluator), same
+      // read as `classification` above (see patchWorkClassifier.ts).
+      source: classification?.source ?? null,
     };
   }
 

@@ -102,7 +102,7 @@ describe('executeAiTriageAction — patch-work routing (W04)', () => {
       },
       alertContext: {
         severity: 'high', ruleId: 'rule-1', siteId: 'site-1', deviceTags: ['sql'],
-        category: 'patching', focusDeviceId: 'dev-1',
+        category: 'patching', focusDeviceId: 'dev-1', source: null,
       },
       dedupeKey: 'patch-alert:alert-1',
     });

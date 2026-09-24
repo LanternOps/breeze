@@ -229,6 +229,16 @@ export interface CreateAgentRunInput {
      * those stay keyed on `deviceId`.
      */
     focusDeviceId?: string | null;
+    /**
+     * #6749 — the alert's `context.source` (e.g. `'warranty_evaluator'`),
+     * resolved by the caller from `alerts.context ->> 'source'`. Used ONLY
+     * for the unconditional lifecycle-source exclusion below — never a
+     * caller-configurable filter, unlike every other field here. `null`/
+     * absent means "not a lifecycle-sourced alert" and never trips the
+     * exclusion (fail-open by design: an unresolved source must not block
+     * an otherwise-matching fault alert from triage).
+     */
+    source?: string | null;
   };
   /**
    * The triggering ticket for `triggerKind: 'ticket'` runs (wave 6 PR 3,
@@ -501,12 +511,27 @@ async function deviceMatchesAnyGroup(
  * whenever the list is non-empty, same treatment as `ctx.siteId === null`
  * above it.
  */
+/**
+ * #6749 — alert sources that are lifecycle/administrative (date-driven, not
+ * fault-driven) and must NEVER admit a triage run, regardless of how the
+ * agent's other filters are configured. `warrantyAlertEvaluator.ts` hard-
+ * codes warranty alerts `critical`/`high` (an expired warranty is urgent to
+ * see, not urgent to investigate), so severity alone can't exclude them —
+ * every fleet's warranty alerts would otherwise burn a full triage run each.
+ * Unconditional exclusion (not an opt-in `alertSources` filter) because
+ * there is nothing for a triage agent to ever usefully do with one of these:
+ * no tenant should have to remember to opt out per agent.
+ */
+const LIFECYCLE_ALERT_SOURCES: ReadonlySet<string> = new Set(['warranty_evaluator']);
+
 export async function evaluateAgentTriggerFilters(
   triggers: AiAgentTriggers,
   ctx: NonNullable<CreateAgentRunInput['alertContext']>,
   deviceId: string | null,
   orgId: string,
 ): Promise<boolean> {
+  if (ctx.source != null && LIFECYCLE_ALERT_SOURCES.has(ctx.source)) return false;
+
   const severities = triggers.alertSeverities ?? [];
   if (!severities.includes(ctx.severity)) return false;
 
