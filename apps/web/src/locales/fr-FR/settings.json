@@ -579,6 +579,10 @@
       "modules": {
         "label": "Modules",
         "description": "Service desk, facturation et topologie activés/désactivés"
+      },
+      "aiApprovals": {
+        "label": "Délai d'approbation IA",
+        "description": "Durée d'attente du chat IA pour l'approbation d'une action contrôlée"
       }
     },
     "saved": "Paramètres partenaires enregistrés",
@@ -5894,5 +5898,24 @@
       "firstSeen": "Vu pour la première fois le {{date}}",
       "none": "Aucune version enregistrée pour ce déploiement."
     }
+  },
+  "partnerAiApprovals": {
+    "timeoutLabel": "Délai d'approbation interactive",
+    "productDefault": "Valeur par défaut du produit ({{minutes}} minutes)",
+    "range": "Choisissez {{min}}-{{max}} minutes.",
+    "description": "Durée pendant laquelle un tour de chat IA en cours attend qu'une personne approuve une action contrôlée (niveau 2/3) avant d'abandonner.",
+    "orgOverrideNote": "Les organisations peuvent remplacer cette valeur depuis leurs propres paramètres IA ; la valeur de l'organisation prévaut si elle est définie.",
+    "notForUnattendedNote": "Ceci n'est pas destiné au travail nocturne ou sans surveillance — le travail de longue durée passe par la file d'approbations, qui a son propre délai d'expiration."
+  },
+  "orgAiApprovalTimeout": {
+    "title": "Délai d'approbation IA",
+    "description": "Durée pendant laquelle un chat IA attend qu'une personne approuve une action contrôlée (niveau 2/3) avant d'abandonner. Les organisations peuvent remplacer ici la valeur par défaut du partenaire ; la valeur de l'organisation prévaut si elle est définie.",
+    "fieldLabel": "Délai d'approbation interactive",
+    "inherit": "Hériter",
+    "inheritLabel": "Hériter ({{minutes}} minutes, {{source}})",
+    "sourcePartner": "valeur par défaut du partenaire",
+    "sourceDefault": "valeur par défaut du produit",
+    "range": "Choisissez {{min}}-{{max}} minutes.",
+    "save": "Enregistrer"
   }
 }

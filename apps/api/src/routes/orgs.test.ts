@@ -49,6 +49,15 @@ vi.mock('../services/enrollmentDefaults', () => ({
   }))
 }));
 
+// #6475 — GET /organizations/:id/effective-settings folds in the interactive
+// AI approval timeout via its own resolver/service, imported as a fresh named
+// import (getAiApprovalTimeout) that a pre-#6475 db mock factory never had to
+// satisfy. Mocked so effective-settings tests pin the CALL/response shaping,
+// not the partner-axis read machinery (covered by aiApprovalTimeout.test.ts).
+vi.mock('../services/aiApprovalTimeout', () => ({
+  getAiApprovalTimeout: vi.fn(async () => null),
+}));
+
 // Archived orgs are read through a dedicated READ ONLY DB context (Wave 4
 // Task 3), which needs a real transaction — mocked here so these route tests
 // pin the CALL (partner pinning, when it fires) rather than the DB machinery.
@@ -356,6 +365,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import { db, withSystemDbAccessContext } from '../db';
 import { organizations, sites } from '../db/schema';
 import { getEnrollmentDefaultsForOrg } from '../services/enrollmentDefaults';
+import { getAiApprovalTimeout } from '../services/aiApprovalTimeout';
 import { authMiddleware } from '../middleware/auth';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { clearPartnerAllowlistCache, readPartnerAllowlist } from '../services/ipAllowlist';
@@ -7558,6 +7568,260 @@ describe('org routes', () => {
         body: JSON.stringify({ rows: [{ organization: 'Acme', expectedAnnotation: 'conflict' }] }),
       });
       expect(res.status).toBe(400);
+    });
+  });
+
+  // #6475 — configurable interactive AI approval timeout. Partner default at
+  // settings.aiApprovals.interactiveTimeoutMinutes, validated by
+  // aiApprovalSettingsSchema (packages/shared/src/validators/aiApprovalSettings.ts,
+  // 5-60 int, .strict()). Merged into partner settings the same shallow way as
+  // every other top-level key on this route (orgs.ts ~866, ~985) — NOT one of
+  // the deep-merged sub-objects (security/ticketing/timeTracking/
+  // topologyFeatureFlags/emailTemplates), so a partial aiApprovals block
+  // replaces the whole block wholesale.
+  //
+  // Confirmed these tests are red against pre-#6475 code (git show HEAD~1):
+  // `aiApprovals` did not exist anywhere in orgs.ts or the shared validators
+  // package at that commit, so `partnerSettingsSchema` (a plain z.object, not
+  // .passthrough()) stripped an `aiApprovals` key out of `body.settings` before
+  // the handler ever saw it — the "persists" test's captured `settings.aiApprovals`
+  // assertion would have been `undefined`, and the 400-rejection tests would
+  // have seen 200s (silently-stripped unknown key, not a validation error).
+  describe('PATCH /orgs/partners/me — aiApprovals (#6475)', () => {
+    // Local copies of the emailSignature describe's helpers above — same
+    // pattern, safe to duplicate.
+    function mockCurrentPartnerSelect(settings: Record<string, unknown> = {}) {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            }),
+            limit: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings }])
+          })
+        })
+      } as any);
+    }
+
+    function mockUpdateCapture() {
+      let captured: any;
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockImplementation((data: any) => {
+          captured = data;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings: data.settings }])
+            })
+          };
+        })
+      } as any);
+      return () => captured;
+    }
+
+    function patchMe(body: unknown) {
+      return app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    }
+
+    beforeEach(() => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+    });
+
+    it('persists interactiveTimeoutMinutes and keeps sibling settings keys', async () => {
+      mockCurrentPartnerSelect({ security: { requireMfa: true } });
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { aiApprovals: { interactiveTimeoutMinutes: 30 } } });
+
+      expect(res.status).toBe(200);
+      const written = getCaptured().settings;
+      expect(written.aiApprovals).toEqual({ interactiveTimeoutMinutes: 30 });
+      expect(written.security).toEqual({ requireMfa: true });
+      const body = await res.json();
+      expect(body.settings.aiApprovals).toEqual({ interactiveTimeoutMinutes: 30 });
+    });
+
+    it.each([
+      ['above the 60-minute ceiling', 61],
+      ['below the 5-minute floor', 4],
+      ['non-integer', 7.5],
+    ] as const)('rejects interactiveTimeoutMinutes %s with 400 and never writes', async (_label, value) => {
+      const setSpy = vi.fn();
+      vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+
+      const res = await patchMe({ settings: { aiApprovals: { interactiveTimeoutMinutes: value } } });
+
+      expect(res.status).toBe(400);
+      expect(setSpy).not.toHaveBeenCalled();
+    });
+
+    it('rejects an unknown key inside aiApprovals with 400 (schema is .strict())', async () => {
+      const setSpy = vi.fn();
+      vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+
+      const res = await patchMe({ settings: { aiApprovals: { staleAfterMinutes: 10 } } });
+
+      expect(res.status).toBe(400);
+      expect(setSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  // #6475 — org override for the same setting. Deliberately NOT gated by
+  // assertNotLocked (orgs.ts ~2333): `aiApprovals` is validated by
+  // aiApprovalSettingsSchema.safeParse BEFORE the partner-lock loop over
+  // ['security','notifications','eventLogs','defaults','branding'], and is not
+  // itself one of those categories, so it can never reach that loop.
+  //
+  // Confirmed red against pre-#6475 code: `settingsObj.aiApprovals` validation
+  // didn't exist, so `{ aiApprovals: { interactiveTimeoutMinutes: 1440 } }`
+  // would have passed straight through to the wholesale settings write (200,
+  // not the 400 this suite asserts) — org `settings` is z.any() with no schema
+  // guard at all pre-#6475.
+  describe('PATCH /orgs/organizations/:id — aiApprovals (#6475)', () => {
+    beforeEach(() => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+    });
+
+    function mockUpdateCapture() {
+      let captured: any;
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockImplementation((data: any) => {
+          captured = data;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'O', settings: data.settings }])
+            })
+          };
+        })
+      } as any);
+      return () => captured;
+    }
+
+    function patchOrg(body: unknown) {
+      return app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    }
+
+    it('accepts a valid org override and writes it', async () => {
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchOrg({ settings: { aiApprovals: { interactiveTimeoutMinutes: 45 } } });
+
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings).toEqual({ aiApprovals: { interactiveTimeoutMinutes: 45 } });
+    });
+
+    it('rejects an out-of-range org override with 400 and does not write', async () => {
+      const setSpy = vi.fn();
+      vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+
+      const res = await patchOrg({ settings: { aiApprovals: { interactiveTimeoutMinutes: 1440 } } });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toBe('Invalid AI approval settings');
+      expect(setSpy).not.toHaveBeenCalled();
+    });
+
+    it('accepts a settings PATCH with no aiApprovals key at all', async () => {
+      // Deliberately no locked category (security/notifications/eventLogs/
+      // defaults/branding) in the body either, so assertNotLocked never runs
+      // and this stays a pure "aiApprovals is optional" check rather than
+      // also exercising the lock loop.
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchOrg({ settings: { timezone: 'America/Chicago' } });
+
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings).toEqual({ timezone: 'America/Chicago' });
+    });
+
+    // db.select is left at the factory default (resolves []), which is what
+    // assertNotLocked's org/partner lookup would see if it ran. An
+    // aiApprovals-only body touches none of the five locked categories
+    // (security/notifications/eventLogs/defaults/branding), so the loop that
+    // calls assertNotLocked never executes for it — asserted here by never
+    // wiring db.select for a partner-set aiApprovals value and still getting
+    // 200, where a lock-model treatment would need that partner row to decide
+    // whether to 403.
+    it('does not run assertNotLocked for aiApprovals — an org override succeeds with no lock-check select wired', async () => {
+      mockUpdateCapture();
+      const selectSpy = vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => Promise.reject(new Error('assertNotLocked should not run for aiApprovals'))),
+        })),
+      }));
+      vi.mocked(db.select).mockImplementation(selectSpy as any);
+
+      const res = await patchOrg({ settings: { aiApprovals: { interactiveTimeoutMinutes: 45 } } });
+
+      expect(res.status).toBe(200);
+      expect(selectSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  // #6475 — GET /organizations/:id/effective-settings folds in the resolved
+  // interactive AI approval timeout as a separate `aiApprovalTimeout` field
+  // (orgs.ts ~2088), alongside — not merged into — `getEffectiveOrgSettings`'s
+  // existing `{ effective, locked }` result.
+  //
+  // Confirmed red against pre-#6475 code: the route body ended at
+  // `return c.json(result)` with no `getAiApprovalTimeout` import at all, so
+  // `body.aiApprovalTimeout` would have been `undefined`.
+  describe('GET /orgs/organizations/:id/effective-settings — aiApprovalTimeout (#6475)', () => {
+    beforeEach(() => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      // getEffectiveOrgSettings does two selects: the org row (settings +
+      // partnerId), then the partner row (settings) under
+      // readWithPartnerAxisVisibility, which the db mock factory flattens to a
+      // plain pass-through (getCurrentDbAccessContext -> undefined -> escape
+      // taken -> runOutsideDbContext/withSystemDbAccessContext both no-ops).
+      // Then a THIRD select reads the org's `aiBudgets` table row. All three
+      // use `.where().then(...)`, so a thenable (a resolved Promise) is what
+      // `.where()` must return for each in turn.
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue(Promise.resolve([{ settings: {}, partnerId: 'partner-123' }])),
+          }),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue(Promise.resolve([{ settings: {} }])),
+          }),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue(Promise.resolve([])),
+          }),
+        } as any);
+    });
+
+    it('includes aiApprovalTimeout from getAiApprovalTimeout in the response', async () => {
+      vi.mocked(getAiApprovalTimeout).mockResolvedValueOnce({
+        minutes: 30,
+        source: 'org',
+        inheritedMinutes: 5,
+        inheritedSource: 'default',
+      });
+
+      const res = await app.request('/orgs/organizations/org-1/effective-settings');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.aiApprovalTimeout).toEqual({
+        minutes: 30,
+        source: 'org',
+        inheritedMinutes: 5,
+        inheritedSource: 'default',
+      });
+      expect(getAiApprovalTimeout).toHaveBeenCalledWith('org-1');
     });
   });
 });

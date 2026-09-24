@@ -579,6 +579,10 @@
       "modules": {
         "label": "Modules",
         "description": "Service desk, billing and topology on/off"
+      },
+      "aiApprovals": {
+        "label": "AI Approval Timeout",
+        "description": "How long AI chat waits for gated action approval"
       }
     },
     "saved": "Partner settings saved",
@@ -5894,5 +5898,24 @@
       "firstSeen": "First seen {{date}}",
       "none": "No versions recorded for this deployment."
     }
+  },
+  "partnerAiApprovals": {
+    "timeoutLabel": "Interactive approval timeout",
+    "productDefault": "Product default ({{minutes}} minutes)",
+    "range": "Choose {{min}}-{{max}} minutes.",
+    "description": "How long a live AI chat turn waits for someone to approve a gated (Tier 2/3) action before giving up on it.",
+    "orgOverrideNote": "Organizations can override this value from their own AI settings; the org value wins when set.",
+    "notForUnattendedNote": "This is not for overnight or unattended work — long-running work goes through the Approvals queue, which has its own expiry."
+  },
+  "orgAiApprovalTimeout": {
+    "title": "AI Approval Timeout",
+    "description": "How long an AI chat waits for someone to approve a gated (Tier 2/3) action before giving up. Organizations can override the partner default here; the org value wins when set.",
+    "fieldLabel": "Interactive approval timeout",
+    "inherit": "Inherit",
+    "inheritLabel": "Inherit ({{minutes}} minutes, {{source}})",
+    "sourcePartner": "partner default",
+    "sourceDefault": "product default",
+    "range": "Choose {{min}}-{{max}} minutes.",
+    "save": "Save"
   }
 }

@@ -5,6 +5,7 @@ import {
   Blocks,
   Building2,
   Globe,
+  Hourglass,
   KeyRound,
   Loader2,
   LogIn,
@@ -31,6 +32,7 @@ import PartnerDefaultsTab from './PartnerDefaultsTab';
 import type { PinnableVersions } from './AgentVersionPinSelectors';
 import PartnerBrandingTab from './PartnerBrandingTab';
 import PartnerAiBudgetsTab from './PartnerAiBudgetsTab';
+import PartnerAiApprovalsTab from './PartnerAiApprovalsTab';
 import PartnerAiProviderTab from './PartnerAiProviderTab';
 import PartnerRemoteAccessTab from './PartnerRemoteAccessTab';
 import PartnerSendingDomainTab from './PartnerSendingDomainTab';
@@ -52,6 +54,7 @@ import type {
   InheritableDefaultSettings,
   InheritableBrandingSettings,
   InheritableAiBudgetSettings,
+  AiApprovalSettings,
   InheritableRemoteAccessSettings,
   IpAllowlistStatus,
   SendingDomainsCapabilityDto
@@ -66,7 +69,7 @@ import { PARTNER_SETTINGS_SAVED_EVENT } from '../auth/MfaPolicyOffBanner';
 import { fetchSendingDomains } from '@/lib/api/sendingDomains';
 import { isTabVisible } from './sendingDomains/domainView';
 
-type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'loginBranding' | 'aiBudgets' | 'aiProvider' | 'remoteAccess' | 'ticketing' | 'emailTemplates' | 'sendingDomains' | 'modules';
+type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'loginBranding' | 'aiBudgets' | 'aiApprovals' | 'aiProvider' | 'remoteAccess' | 'ticketing' | 'emailTemplates' | 'sendingDomains' | 'modules';
 
 type Partner = {
   id: string;
@@ -128,6 +131,9 @@ const TAB_GROUPS: { label: string; tabs: TabDef[] }[] = [
       { key: 'emailTemplates', hash: 'email-templates', label: 'partnerSettingsPage.tabs.emailTemplates.label', description: 'partnerSettingsPage.tabs.emailTemplates.description', icon: Mail, selfSaving: true },
       { key: 'sendingDomains', hash: 'sending-domains', label: 'partnerSettingsPage.tabs.sendingDomains.label', description: 'partnerSettingsPage.tabs.sendingDomains.description', icon: AtSign, selfSaving: true },
       { key: 'aiBudgets', hash: 'ai-budgets', label: 'partnerSettingsPage.tabs.aiBudgets.label', description: 'partnerSettingsPage.tabs.aiBudgets.description', icon: Wallet, enforced: true },
+      // NOT enforced: this is inherit-with-override (org wins when set), unlike
+      // the aiBudgets tab's partner-locks model — see aiApprovalSettings.ts.
+      { key: 'aiApprovals', hash: 'ai-approvals', label: 'partnerSettingsPage.tabs.aiApprovals.label', description: 'partnerSettingsPage.tabs.aiApprovals.description', icon: Hourglass },
       { key: 'aiProvider', hash: 'ai-provider', label: 'partnerSettingsPage.tabs.aiProvider.label', description: 'partnerSettingsPage.tabs.aiProvider.description', icon: KeyRound, selfSaving: true },
     ],
   },
@@ -225,6 +231,7 @@ export default function PartnerSettingsPage() {
   // the previous ladder and report success (#4388 W03). The input reports true
   // again when it unmounts, so leaving the tab never strands the Save button.
   const [aiBudgetsValid, setAiBudgetsValid] = useState(true);
+  const [aiApprovalsData, setAiApprovalsData] = useState<AiApprovalSettings>({});
   const [remoteAccessData, setRemoteAccessData] = useState<InheritableRemoteAccessSettings>({});
   // Registered agent/watchdog versions for the pin selectors (#2124).
   const [pinnableVersions, setPinnableVersions] = useState<PinnableVersions | null>(null);
@@ -246,12 +253,13 @@ export default function PartnerSettingsPage() {
     defaults: JSON.stringify(defaultsData),
     branding: JSON.stringify(brandingData),
     aiBudgets: JSON.stringify(aiBudgetsData),
+    aiApprovals: JSON.stringify(aiApprovalsData),
     remoteAccess: JSON.stringify(remoteAccessData),
   }), [
     companyName, address, contactName, contactEmail, contactPhone, contactWebsite, emailSignature,
     timezone, dateFormat, timeFormat, language, businessHoursPreset, customHours,
     securityData, notificationsData, eventLogsData, defaultsData, brandingData,
-    aiBudgetsData, remoteAccessData,
+    aiBudgetsData, aiApprovalsData, remoteAccessData,
   ]);
   const [baseline, setBaseline] = useState<Snapshot | null>(null);
   // fetchPartner can't read the state it just set (updates are async), so it
@@ -322,6 +330,7 @@ export default function PartnerSettingsPage() {
       setDefaultsData(settings.defaults || {});
       setBrandingData(settings.branding || {});
       setAiBudgetsData(settings.aiBudgets || {});
+      setAiApprovalsData(settings.aiApprovals || {});
       setRemoteAccessData(settings.remoteAccessProviders || {});
 
       // Re-baseline dirty tracking against the values that were just fetched.
@@ -473,6 +482,7 @@ export default function PartnerSettingsPage() {
     settings.defaults = defaultsData;
     settings.branding = brandingData;
     settings.aiBudgets = aiBudgetsData;
+    settings.aiApprovals = aiApprovalsData;
     settings.remoteAccessProviders = remoteAccessData;
 
     const payload: Record<string, unknown> = { settings };
@@ -722,6 +732,12 @@ export default function PartnerSettingsPage() {
           {activeTab === 'aiBudgets' && (
             <section className="rounded-lg border bg-card p-6 shadow-xs">
               <PartnerAiBudgetsTab data={aiBudgetsData} onChange={setAiBudgetsData} onValidityChange={setAiBudgetsValid} />
+            </section>
+          )}
+
+          {activeTab === 'aiApprovals' && (
+            <section className="rounded-lg border bg-card p-6 shadow-xs">
+              <PartnerAiApprovalsTab data={aiApprovalsData} onChange={setAiApprovalsData} />
             </section>
           )}
 

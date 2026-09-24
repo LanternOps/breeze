@@ -41,6 +41,7 @@ export * from './scriptProposals';
 export * from './maintenanceWindow';
 export * from './agentVersionPins';
 export * from './enrollmentDefaults';
+export * from './aiApprovalSettings';
 export * from './softwareDetection';
 export * from './softwareDownloadPolicy';
 export * from './systemCleanup';

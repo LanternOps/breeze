@@ -56,7 +56,7 @@ When the AI proposes a Tier 3 action, it enters a **pending** state and waits fo
 
 Routine device work is supervised: running commands and scripts, file and registry operations, starting/stopping services, killing processes, installing patches, disk cleanup, agent upgrades, triggering backups, and policy, deployment, monitor, group, and automation changes.
 
-The chat approval card offers a plain **Approve** / **Deny**. Approving is gated on your **own** permissions for the underlying action — if your role lets you do the operation by hand, you can approve the AI doing it; no second person is involved. The request is still stored durably and the execution is written to the audit trail, marked as a self-approval. A supervised request raised in chat waits up to 5 minutes for your decision.
+The chat approval card offers a plain **Approve** / **Deny**. Approving is gated on your **own** permissions for the underlying action — if your role lets you do the operation by hand, you can approve the AI doing it; no second person is involved. The request is still stored durably and the execution is written to the audit trail, marked as a self-approval. A supervised request raised in chat waits for your decision for the [approval timeout](#approval-timeout) — 5 minutes unless your partner or organization has changed it.
 
 <Aside type="note">
   If your partner enforces an authentication-assurance floor, approving a supervised action prompts the corresponding step-up verification (for example Touch ID / Windows Hello) instead of accepting a plain click.
@@ -88,9 +88,26 @@ To decide a pending four-eyes request:
 
 </Steps>
 
-Approved actions execute immediately. Rejected actions are logged and the AI is notified. A four-eyes request raised in chat waits up to **60 minutes** for a decision; an approval that arrives after the chat turn has moved on still executes, and the session shows the result when you return to it.
+Approved actions execute immediately. Rejected actions are logged and the AI is notified. A four-eyes request raised in chat stays open for **60 minutes**. The chat turn itself only waits for the [approval timeout](#approval-timeout); an approval that arrives after the chat turn has moved on still executes, and the session shows the result when you return to it.
 
 If what the request refers to changes while it waits — the script is edited, the quote or invoice is revised, the organization's state moves on — the approved action does **not** run against the drifted content. It fails with a content-changed error instead, and the AI has to raise a fresh request.
+
+#### Approval timeout
+
+A chat turn that is waiting on an approval is held open, so the wait is bounded. The **approval timeout** is how long the chat waits for someone to approve a gated action before it gives up:
+
+- **Default:** 5 minutes. **Range:** 5 to 60 minutes.
+- **Partner default:** **Settings → Partner → AI Approval Timeout**. Applies to every organization that has not set its own value.
+- **Organization override:** **Settings → Organization → AI**. Choose a value to override the partner default, or **Inherit** to follow it. The organization's value always wins. The selector shows the inherited value and where it comes from.
+- A change applies from the next chat message. It does not change a wait that is already in progress.
+
+**A timeout never approves anything.** When the timeout elapses with no decision:
+
+- A **Tier 2** inline confirmation is rejected. The AI is told, and nothing runs.
+- A **supervised** Tier 3 request stops waiting and expires at the same moment. It never runs. To proceed, ask the AI again.
+- A **four-eyes** request stops holding the chat, but it stays open for its full 60 minutes. If a second person approves it in that time, it still runs.
+
+The timeout is for interactive chat only. It deliberately stops at 60 minutes. Work that must wait longer, such as scheduled or overnight AI agent runs, goes through the durable approvals queue (**Security → AI Risk → Approval History** and the mobile app), where a request stays open for 24 hours.
 
 #### Approving your own request when you are the only approver
 
