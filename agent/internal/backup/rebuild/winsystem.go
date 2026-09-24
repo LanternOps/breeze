@@ -78,6 +78,10 @@ type WinSystem interface {
 	// LoadHive mounts hiveFile at HKLM\mountName under SeBackup/SeRestore
 	// privilege — never the live registry (Global Constraint "Hives").
 	LoadHive(hiveFile, mountName string) (winhive.Handle, error)
+	// LoadHiveReadOnly is LoadHive with every key opened KEY_READ, for a
+	// hive that is only inspected (validate's BCD store, whose ACL grants
+	// Administrators ReadKey only).
+	LoadHiveReadOnly(hiveFile, mountName string) (winhive.Handle, error)
 	// UnloadStaleHives unloads every HKLM subkey starting with prefix,
 	// returning how many it found — cleanupLeftovers' leftover-mount sweep.
 	UnloadStaleHives(prefix string) (int, error)

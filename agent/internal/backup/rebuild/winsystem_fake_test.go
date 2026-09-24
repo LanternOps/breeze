@@ -245,7 +245,13 @@ func (f *fakeWinSystem) simulateBcdboot(args []string) error {
 	}
 	if _, ok := f.hives["BCD"]; !ok {
 		bcd := winhive.NewFake()
-		if _, err := bcd.CreateKey(fakeDefaultBootEntry); err != nil {
+		el, err := bcd.CreateKey(fakeDefaultBootEntry)
+		if err != nil {
+			return err
+		}
+		// The element's value (the default {bootmgr} object) is what
+		// winhive.DefaultBCDEntryExists looks for.
+		if err := el.SetString("Element", "{7619dcc9-fafe-11d9-b411-000476eba25f}"); err != nil {
 			return err
 		}
 		f.hives["BCD"] = bcd
@@ -477,7 +483,17 @@ func (f *fakeWinSystem) FreeSpace(string) (int64, error) { return f.freeSpace, n
 // The base name is taken after the LAST `\` or `/`, so Windows-shaped hive
 // paths resolve the same on every host.
 func (f *fakeWinSystem) LoadHive(hiveFile, mountName string) (winhive.Handle, error) {
-	if _, err := f.record("LoadHive", hiveFile, mountName); err != nil {
+	return f.loadHive("LoadHive", hiveFile, mountName)
+}
+
+// LoadHiveReadOnly is LoadHive recorded as "LoadHiveReadOnly <file>
+// <mount>" (the fake does not enforce read-only access).
+func (f *fakeWinSystem) LoadHiveReadOnly(hiveFile, mountName string) (winhive.Handle, error) {
+	return f.loadHive("LoadHiveReadOnly", hiveFile, mountName)
+}
+
+func (f *fakeWinSystem) loadHive(verb, hiveFile, mountName string) (winhive.Handle, error) {
+	if _, err := f.record(verb, hiveFile, mountName); err != nil {
 		return nil, err
 	}
 	base := hiveFile

@@ -128,7 +128,8 @@ func seedFakeHives(sys *fakeWinSystem) {
 }
 
 // winFakeOptions builds Options for a vhdx: target against a fresh
-// fakeWinSystem with seeded hives. The run uses SkipBoot (no bcdboot).
+// fakeWinSystem with seeded hives. The run uses SkipBoot (no boot phase);
+// a test that clears it gets the fake's simulated bcdboot.
 func winFakeOptions(t *testing.T, dir string) (Options, *fakeWinSystem) {
 	t.Helper()
 	sys := newFakeWinSystem(dir)

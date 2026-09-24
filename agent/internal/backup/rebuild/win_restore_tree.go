@@ -16,8 +16,8 @@ import (
 // winMountTree mounts root and Recovery at folder mount points under the
 // staging root (Global Constraint "No PowerShell, no diskpart … Mounts") for
 // Part C's external tools, records the root volume path the restore and
-// validate go through (Ruling B1), remembers the ESP's volume for W06c's
-// boot/validate, and warns about every data partition left empty.
+// validate go through (Ruling B1), remembers the ESP's volume for the
+// boot and validate phases, and warns about every data partition left empty.
 func (r *run) winMountTree(_ context.Context) error {
 	root := filepath.Join(r.staging, "root")
 	mounted := false

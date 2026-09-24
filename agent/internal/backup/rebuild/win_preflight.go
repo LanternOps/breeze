@@ -19,14 +19,6 @@ import (
 )
 
 func winPreflight(ctx context.Context, r *run) error {
-	// Final-review ruling (Imp 2): the offline system-state, boot, identity
-	// and encryption phases are staged until W06c (win_phases.go), so a run
-	// without SkipBoot could only provision and restore and then fail —
-	// refuse it here, before any disk/VHDX inspection or write. Part C
-	// Task 17 deletes this refusal together with the last staged function.
-	if !r.opts.SkipBoot {
-		return &RefusalError{Reason: "Windows system-state apply is not available in this build; pass --skip-boot for a files-only rehearsal"}
-	}
 	lay := r.layout // fetched + schema/platform-checked by resolvePlatform
 	if v := layout.Assess(lay); !v.Restorable {
 		return &RefusalError{Reason: "layout is not bare-metal restorable: " + strings.Join(v.Reasons, "; ")}
@@ -152,8 +144,8 @@ func winPreflight(ctx context.Context, r *run) error {
 // system-state/registry/SYSTEM artifact (downloaded by preflightVerify into
 // r.stateStaging) — a fast, artifact-only early refusal. No staged SYSTEM
 // artifact (a files-only snapshot, or a snapshot where the artifact was
-// itself missing) means "cannot tell from here"; the W06c state apply
-// (Part C Task 14, bmr.RestoreSystemStateOfflineWindows) applies the same
+// itself missing) means "cannot tell from here"; the offline state apply
+// (bmr.RestoreSystemStateOfflineWindows, win_system_state.go) applies the same
 // winhive.HasNTDS check to the FILE-TREE SYSTEM hive before any hive edit,
 // per the Global Constraint "Hives: file tree first".
 //

@@ -301,8 +301,8 @@ func TestFakeWinSystem_BcdbootSeedsESP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.Root().OpenKey(`Objects\{9dea862c-5cdd-4e70-acc1-f32b344d4795}\Elements\23000003`); err != nil {
-		t.Fatalf("seeded BCD lacks the default entry: %v", err)
+	if ok, err := winhive.DefaultBCDEntryExists(h.Root()); err != nil || !ok {
+		t.Fatalf("seeded BCD lacks the default entry (validate's check): ok=%v err=%v", ok, err)
 	}
 }
 
@@ -317,19 +317,10 @@ func TestWinBoot_SkipBoot(t *testing.T) {
 // Ruling C5 through the engine: a full fake run with --drivers and
 // SkipBoot:false unloads every hive before the first DISM (and bcdboot)
 // command, identity reloads them afterwards, and teardown releases the ESP
-// letter. Until Task 17 deletes winPreflight's SkipBoot=false refusal, the
-// preflight entry is wrapped to run with SkipBoot set.
+// letter.
 func TestRun_WindowsBootClosesHivesBeforeDism(t *testing.T) {
 	withHostPlatformWindows(t)
 	t.Setenv("SystemRoot", testSystemRoot)
-	orig := platformPhases["windows"][0]
-	platformPhases["windows"][0] = phaseFn{PhasePreflight, func(ctx context.Context, r *run) error {
-		r.opts.SkipBoot = true
-		defer func() { r.opts.SkipBoot = false }()
-		return winPreflight(ctx, r)
-	}}
-	t.Cleanup(func() { platformPhases["windows"][0] = orig })
-
 	opts, sys := winFakeOptions(t, t.TempDir())
 	opts.SkipBoot = false
 	opts.DriverDirs = []string{`X:\drv`}

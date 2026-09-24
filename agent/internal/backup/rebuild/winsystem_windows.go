@@ -728,6 +728,21 @@ func (w *winSystemWindows) LoadHive(hiveFile, mountName string) (winhive.Handle,
 	return &hiveWithRelease{Handle: h, release: release}, nil
 }
 
+// LoadHiveReadOnly is LoadHive over winhive.LoadReadOnly (same privileges:
+// RegLoadKeyW/RegUnLoadKeyW need them whatever the key access).
+func (w *winSystemWindows) LoadHiveReadOnly(hiveFile, mountName string) (winhive.Handle, error) {
+	release, err := backup.AcquireHivePrivileges()
+	if err != nil {
+		return nil, fmt.Errorf("load hive %s: %w", hiveFile, err)
+	}
+	h, err := winhive.LoadReadOnly(hiveFile, mountName)
+	if err != nil {
+		release()
+		return nil, err
+	}
+	return &hiveWithRelease{Handle: h, release: release}, nil
+}
+
 // UnloadStaleHives holds SeBackup+SeRestore around winhive.UnloadStale's
 // RegUnLoadKeyW sweep.
 func (w *winSystemWindows) UnloadStaleHives(prefix string) (int, error) {

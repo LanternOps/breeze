@@ -1,7 +1,6 @@
 // win_validate.go — the Windows engine's validate phase (Part 0 §2 row 7).
 // The OS-state checks (close hives FIRST, ESP files, BCD default entry) live
-// behind validateOSState — staged in win_phases.go, real in W06c (Part C
-// Task 17, win_validate_os.go).
+// in validateOSState (win_validate_os.go).
 package rebuild
 
 import (
@@ -25,10 +24,10 @@ var winValidateSkipPrefixes = []string{"windows/system32/config/", "programdata/
 // winValidate proves the rebuild before declaring success, in this order
 // (Ruling B6):
 //
-//  1. the OS-state hook (W06c) and a checksum sample of restored files, read
-//     through the root VOLUME path r.rootVolume — the restore wrote there,
-//     and the <staging>\root folder mount is not an alias of it on the fake
-//     (Ruling B1);
+//  1. the OS-state checks (validateOSState) and a checksum sample of
+//     restored files, read through the root VOLUME path r.rootVolume — the
+//     restore wrote there, and the <staging>\root folder mount is not an
+//     alias of it on the fake (Ruling B1);
 //  2. the disk: work dir under the root volume is removed;
 //  3. every volume is flushed;
 //  4. winTeardown closes hives, releases letters and removes the folder

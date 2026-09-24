@@ -213,6 +213,14 @@ func (w loadWrapper) LoadHive(file, mount string) (winhive.Handle, error) {
 	return w.wrap(h), nil
 }
 
+func (w loadWrapper) LoadHiveReadOnly(file, mount string) (winhive.Handle, error) {
+	h, err := w.fakeWinSystem.LoadHiveReadOnly(file, mount)
+	if err != nil {
+		return nil, err
+	}
+	return w.wrap(h), nil
+}
+
 // Fix round 1: winTeardown unloads through closeWinHives — every hive is
 // closed, the failure is a warning, and r.hives is cleared.
 func TestWinTeardown_ClosesHivesThroughCloseWinHives(t *testing.T) {

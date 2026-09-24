@@ -217,28 +217,6 @@ func winhiveDCFake() *winhive.Fake {
 	return h
 }
 
-// Final-review Imp 2: until W06c lands the offline system-state, boot,
-// identity and encryption phases, a Windows run without SkipBoot is refused
-// in preflight — before anything is created, attached or written — instead
-// of provisioning and restoring and then failing at the staged hook. Part C
-// Task 17 deletes this refusal together with the last staged function.
-func TestWinPreflight_RefusesWithoutSkipBoot(t *testing.T) {
-	withHostPlatformWindows(t)
-	dir := t.TempDir()
-	opts, sys := winFakeOptions(t, dir)
-	opts.SkipBoot = false
-	res, err := Run(context.Background(), opts)
-	want := "Windows system-state apply is not available in this build; pass --skip-boot for a files-only rehearsal"
-	if err == nil || res == nil || res.Status != "refused" || res.Refusal != want {
-		t.Fatalf("res=%+v err=%v, want refused with %q", res, err, want)
-	}
-	for _, c := range []string{"CreateVHDX", "AttachVHDX", "WipeDisk", "WriteGPT", "format.com"} {
-		if sys.has(c) {
-			t.Fatalf("a refused run must not touch the target (%s ran): %v", c, sys.cmds)
-		}
-	}
-}
-
 // Final-review Imp 3: a restore into the root volume flattens every drive
 // into it (backup.RestoreKey strips the volume), so a snapshot holding
 // entries from another volume is refused before anything is written.
