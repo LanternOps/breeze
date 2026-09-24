@@ -819,6 +819,8 @@ export const patchInlineSettingsSchema = z.object({
   }
 });
 
+export * from './hardwareHealth';
+
 export const eventLogInlineSettingsSchema = z.object({
   retentionDays: z.number().int().min(7).max(365).default(30),
   maxEventsPerCycle: z.number().int().min(10).max(500).default(100),
