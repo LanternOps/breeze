@@ -54,6 +54,9 @@ export const monitorKindEnum = pgEnum('monitor_kind', [
   'network_check',
   // W05c1 — 2026-10-23-103000-monitor-kind-composite.sql
   'composite',
+  // W03 (hardware & RAID monitoring) —
+  // 2026-10-30-110200-monitor-kind-hardware-health.sql
+  'hardware_health',
 ]);
 
 export const monitorDefinitions = pgTable(

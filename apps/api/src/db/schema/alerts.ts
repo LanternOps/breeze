@@ -10,7 +10,8 @@ import {
   integer,
   index,
   numeric,
-  uniqueIndex
+  uniqueIndex,
+  check
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { NOTIFICATION_CHANNEL_TYPES } from '@breeze/shared';
@@ -120,6 +121,13 @@ export const alerts = pgTable('alerts', {
   // title/message/context.
   ruleId: uuid('rule_id').references(() => alertRules.id, { onDelete: 'set null' }),
   deviceId: uuid('device_id').notNull().references(() => devices.id),
+  // W03 (hardware & RAID monitoring, migration 2026-10-30-110300): identifies
+  // the specific subject (e.g. a component) an open alert covers, so multiple
+  // independently-breaching subjects under the same rule/device can each hold
+  // their own open alert. NULL for every non-subject alert source. CHECK
+  // `alerts_subject_key_nonempty_chk` forbids empty string; unique index
+  // `alerts_open_rule_device_subject_uidx` enforces open-alert identity below.
+  subjectKey: text('subject_key'),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   configPolicyId: uuid('config_policy_id'),
   configItemName: varchar('config_item_name', { length: 200 }),
@@ -157,7 +165,11 @@ export const alerts = pgTable('alerts', {
   // (apps/api/src/jobs/suppressionExpiryReaper.ts).
   suppressedExpiryIdx: index('idx_alerts_suppressed_expiry')
     .on(table.suppressedUntil)
-    .where(sql`status = 'suppressed' AND suppressed_until IS NOT NULL`)
+    .where(sql`status = 'suppressed' AND suppressed_until IS NOT NULL`),
+  subjectKeyNonempty: check('alerts_subject_key_nonempty_chk', sql`${table.subjectKey} <> ''`),
+  openRuleDeviceSubjectUidx: uniqueIndex('alerts_open_rule_device_subject_uidx')
+    .on(table.ruleId, table.deviceId, sql`COALESCE(${table.subjectKey}, '')`)
+    .where(sql`${table.ruleId} IS NOT NULL AND ${table.status} IN ('active', 'acknowledged', 'suppressed')`)
 }));
 
 export const alertCorrelations = pgTable('alert_correlations', {

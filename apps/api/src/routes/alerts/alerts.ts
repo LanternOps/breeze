@@ -1080,7 +1080,7 @@ alertsRoutes.post(
         const overrides = rule.overrideSettings as Record<string, unknown> | null;
         const cooldownMinutes = (overrides?.cooldownMinutes as number) ??
           template?.cooldownMinutes ?? 15;
-        await setCooldown(alert.ruleId, alert.deviceId, cooldownMinutes);
+        await setCooldown(alert.ruleId, alert.deviceId, cooldownMinutes, alert.subjectKey ?? undefined);
       }
     } else if (alert.configPolicyId) {
       // Config policy alert — cooldownMinutes stored in alert context

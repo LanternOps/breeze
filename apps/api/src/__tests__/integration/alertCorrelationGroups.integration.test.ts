@@ -109,6 +109,8 @@ async function seedFixture(): Promise<Fixture> {
           severity: 'critical',
           title: `High CPU usage detected ${suffix}`,
           triggeredAt: now,
+          // Distinct subjects: alerts_open_rule_device_subject_uidx allows one open alert per (rule, device, subject).
+          subjectKey: 'subject-a',
         },
         {
           ruleId: rule.id,
@@ -117,6 +119,7 @@ async function seedFixture(): Promise<Fixture> {
           severity: 'critical',
           title: `High CPU usage detected ${suffix}`,
           triggeredAt: later,
+          subjectKey: 'subject-b',
         },
       ])
       .returning({ id: alerts.id });

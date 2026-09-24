@@ -40,6 +40,7 @@ const { dbMock, updateWheres, updateReturns, selectRows, alertRow } = vi.hoisted
     status: 'active',
     title: 'Disk almost full',
     triggeredAt: new Date('2026-01-01T00:00:00.000Z'),
+    subjectKey: null as string | null,
   };
   const dbMock = {
     select: () => ({
@@ -237,7 +238,7 @@ describe('POST /alerts/:id/resolve — the winner still writes its cooldown', ()
     expect(res.status).toBe(200);
     // 42 (the rule override), not 15 (the template default) — asserting the value
     // proves the override chain ran, not merely that something was called.
-    expect(setCooldown).toHaveBeenCalledWith('rule-1', 'device-1', 42);
+    expect(setCooldown).toHaveBeenCalledWith('rule-1', 'device-1', 42, undefined);
     expect(markConfigPolicyRuleCooldown).not.toHaveBeenCalled();
   });
 
@@ -280,4 +281,14 @@ describe('POST /alerts/:id/resolve — the shipped predicate (compiled SQL)', ()
     expect(sql).toBe('("alerts"."id" = $1 and "alerts"."status" in ($2, $3, $4))');
     expect(params).toEqual([alertRow.id, 'active', 'acknowledged', 'suppressed']);
   });
+});
+
+it.each([null, 'disk:3'])('manual web resolution isolates subject %s', async subjectKey => {
+  const row = { ...alertRow, ruleId: 'rule-1', subjectKey, status: 'active' };
+  getAlertWithOrgCheck.mockResolvedValue(row);
+  selectRows.push([{ id: 'rule-1', templateId: 'tpl-1', overrideSettings: { cooldownMinutes: 42 } }]);
+  selectRows.push([{ id: 'tpl-1', cooldownMinutes: 15 }]);
+  updateReturns.push([{ ...row, status: 'resolved' }]);
+  expect((await resolveRequest()).status).toBe(200);
+  expect(setCooldown).toHaveBeenCalledExactlyOnceWith('rule-1', 'device-1', 42, subjectKey ?? undefined);
 });

@@ -118,6 +118,29 @@ describe('buildTenantExportPlan', () => {
     );
   });
 
+  it('classifies the retirement lease token in excludedSensitive', () => {
+    const sensitive = tablePolicy('org_id', {
+      included: [], reviewedIncluded: [], excludedSensitive: ['lease_token'], excludedOpen: [],
+    }).columns.lease_token;
+    expect(CORE_TENANT_EXPORT_POLICY.hardware_alert_retirement_outbox?.columns.lease_token)
+      .toBe(sensitive);
+  });
+
+  it('builds the retirement export plan without its lease token or envelope', async () => {
+    const table = 'hardware_alert_retirement_outbox';
+    mockState.columns = [
+      column(table, 'id', 'uuid', 1),
+      column(table, 'org_id', 'uuid', 2),
+      column(table, 'envelope', 'jsonb', 3),
+      column(table, 'lease_token', 'uuid', 4),
+      column(table, 'lease_until', 'timestamp with time zone', 5, 'timestamptz'),
+      column(table, 'created_at', 'timestamp with time zone', 6, 'timestamptz'),
+    ];
+    await expect(buildTenantExportPlan([table], CORE_TENANT_EXPORT_POLICY)).resolves.toEqual([
+      { table, organizationKey: 'org_id', includedColumns: ['id', 'org_id', 'lease_until', 'created_at'] },
+    ]);
+  });
+
   const enrollmentEpochs = [
     ['enrollment_keys', 'credential_generation', ['key', 'key_secret_hash', 'short_code']],
     ['installer_bootstrap_tokens', 'parent_credential_generation', ['token']],

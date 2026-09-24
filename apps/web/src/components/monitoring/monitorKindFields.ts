@@ -7,7 +7,7 @@ import type { MonitorKind } from '@breeze/shared';
  * asserts every key here is a key of the corresponding zod object's shape, and
  * `defaultConditionFor` must produce a value the schema accepts.
  */
-export type FieldKind = 'number' | 'text' | 'select' | 'operator' | 'script' | 'boolean';
+export type FieldKind = 'number' | 'text' | 'select' | 'operator' | 'script' | 'boolean' | 'multiselect';
 
 export interface KindField {
   key: string;
@@ -241,6 +241,32 @@ export const MONITOR_KIND_FIELDS: Record<MonitorKind, readonly KindField[]> = {
   composite: [
     { key: 'match', labelKey: 'monitoring:fields.match', kind: 'select', options: ['all', 'any'] },
   ],
+  hardware_health: [
+    {
+      key: 'componentTypes',
+      labelKey: 'monitoring:monitors.fields.hardware_health.componentTypes',
+      kind: 'multiselect',
+      options: ['controller', 'virtual_disk', 'physical_disk', 'cache_battery', 'enclosure', 'collector'],
+    },
+    {
+      key: 'minHealth',
+      labelKey: 'monitoring:monitors.fields.hardware_health.minHealth',
+      kind: 'select',
+      options: ['warning', 'critical'],
+    },
+    {
+      key: 'includePredictiveFailure',
+      labelKey: 'monitoring:monitors.fields.hardware_health.includePredictiveFailure',
+      kind: 'boolean',
+    },
+    {
+      key: 'consecutiveSnapshots',
+      labelKey: 'monitoring:monitors.fields.hardware_health.consecutiveSnapshots',
+      kind: 'number',
+      min: 1,
+      max: 10,
+    },
+  ],
 
 };
 
@@ -315,6 +341,13 @@ export function defaultConditionFor(kind: MonitorKind): Record<string, unknown> 
           { kind: 'cpu', condition: { operator: 'gt', value: 90, durationMinutes: 5 } },
           { kind: 'memory', condition: { operator: 'gt', value: 90, durationMinutes: 5 } },
         ],
+      };
+    case 'hardware_health':
+      return {
+        componentTypes: ['virtual_disk', 'physical_disk'],
+        minHealth: 'critical',
+        includePredictiveFailure: true,
+        consecutiveSnapshots: 2,
       };
 
   }

@@ -180,7 +180,8 @@
     "software_presence": "Softwarevorhandensein",
     "backup_continuity": "Backup-Kontinuität",
     "script": "Skriptprüfung",
-    "network_check": "Netzwerkprüfung"
+    "network_check": "Netzwerkprüfung",
+    "hardware_health": "Hardwarezustand"
   },
   "fields": {
     "operator": "Vergleich",
@@ -513,5 +514,27 @@
     "state": "Zustand",
     "episode": "Offene Episode",
     "escalation": "Eskalation"
+  },
+  "monitors": {
+    "fields": {
+      "hardware_health": {
+        "componentTypes": "Komponenten",
+        "minHealth": "Mindestzustand",
+        "includePredictiveFailure": "Vorhergesagte Ausfälle einbeziehen",
+        "consecutiveSnapshots": "Aufeinanderfolgende Momentaufnahmen",
+        "componentTypeOptions": {
+          "controller": "Controller",
+          "virtual_disk": "Virtuelle Datenträger",
+          "physical_disk": "Physische Datenträger",
+          "cache_battery": "Cache-Batterien",
+          "enclosure": "Gehäuse",
+          "collector": "Überwachungstools"
+        },
+        "minHealthOptions": {
+          "warning": "Warnung",
+          "critical": "Kritisch"
+        }
+      }
+    }
   }
 }

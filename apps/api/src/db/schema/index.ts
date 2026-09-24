@@ -180,3 +180,4 @@ export * from './topologyTemplates';
 export * from './emailSendingDomains';
 export * from './backupProviders';
 export * from './callerVerification';
+export * from './hardwareAlertRetirementOutbox';

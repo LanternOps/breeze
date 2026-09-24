@@ -840,6 +840,7 @@ const REPOINT_TABLES: readonly string[] = [
   "fleet_remediation_run_targets",
   "fleet_remediation_runs",
   "group_membership_log",
+  "hardware_alert_retirement_outbox",
   "huntress_agents",
   "huntress_incidents",
   "huntress_integrations",

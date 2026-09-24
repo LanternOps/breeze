@@ -32,6 +32,7 @@ describe('monitor definition validators (#5289)', () => {
       'script',
       'network_check',
       'composite',
+      'hardware_health',
     ]);
   });
 

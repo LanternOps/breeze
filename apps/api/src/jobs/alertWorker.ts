@@ -25,6 +25,7 @@ import {
   evaluateNetworkCheckAlertsForOrg,
   selectNetworkCheckOrgIds,
 } from '../services/monitors/networkCheckAlertSweep';
+import { drainSubjectAlertOutbox } from '../services/subjectAlertOutbox';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -117,8 +118,15 @@ export function createAlertWorker(): Worker<AlertJobData> {
           // `scan-orgs`, which are structurally the same fan-out job.
           return await processEvaluateAll(data);
 
-        case 'evaluate-device':
-          return await runWithSystemDbAccess(() => processEvaluateDevice(data));
+        case 'evaluate-device': {
+          const result = await runWithSystemDbAccess(() => processEvaluateDevice(data));
+          // W03 Task 10 — drain the committed subject-alert outbox only after
+          // this device's own evaluation transaction has committed. Retries
+          // even when a device is offline/unreachable on later ticks, so a
+          // crash between commit and dispatch does not strand an alert.
+          await drainSubjectAlertOutbox(data.deviceId);
+          return result;
+        }
 
         case 'auto-resolve':
           return await runWithSystemDbAccess(() => processAutoResolve(data));
@@ -169,6 +177,16 @@ export async function processEvaluateAll(data: EvaluateAllJobData): Promise<{
   durationMs: number;
 }> {
   const startTime = Date.now();
+
+  // W03 Task 10 — retry undelivered subject-alert publication on the minute
+  // tick even when no online device is selected below, so a crash between an
+  // evaluation's commit and its dispatch does not strand an alert forever.
+  try {
+    await drainSubjectAlertOutbox();
+  } catch (error) {
+    captureException(error, undefined, { errorId: 'subject-alert-outbox-drain-failed' });
+    console.error('[AlertWorker] Subject outbox drain failed', error);
+  }
 
   // Caller-supplied batchSize takes precedence (back-compat). Otherwise read the
   // env override; default 5000. Setting the env to 0 means "unlimited per run".

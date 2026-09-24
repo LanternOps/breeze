@@ -150,6 +150,36 @@ export interface NetworkCheckCondition {
   consecutiveFailures?: number;
 }
 
+// --- W03 (hardware & RAID monitoring) -------------------------------------
+
+// `HardwareComponentType` from `@breeze/shared` minus 'bmc' — BMC health is a
+// separate, future, out-of-band spec (see the design doc).
+import type { HardwareComponentType } from '@breeze/shared';
+export type HardwareHealthComponentFilter = Exclude<HardwareComponentType, 'bmc'>;
+
+// Per-subject (per-component) evidence a leaf handler can report, alongside
+// or instead of a single scalar `ConditionResult`. `unknown` means observed
+// but not yet resolvable to breaching/recovered (e.g. missing prior snapshot).
+export type SubjectStatus = 'breaching' | 'recovered' | 'unknown';
+export interface SubjectEvidence {
+  subjectKey: string;
+  status: SubjectStatus;
+  description: string;
+  actualValue?: number;
+  context?: Record<string, unknown>;
+}
+
+// Hardware health condition. Root-only (see `compositeChildSchema` in
+// `@breeze/shared` monitors.ts) — evaluates fresh component evidence rather
+// than a single device-level scalar.
+export interface HardwareHealthCondition {
+  type: 'hardware_health';
+  componentTypes: HardwareHealthComponentFilter[];
+  minHealth: 'warning' | 'critical';
+  includePredictiveFailure: boolean;
+  consecutiveSnapshots: number;
+}
+
 // Union of all condition types
 export type AlertCondition =
   | ThresholdCondition
@@ -167,7 +197,8 @@ export type AlertCondition =
   | SoftwarePresenceCondition
   | BackupContinuityCondition
   | ScriptMonitorCondition
-  | NetworkCheckCondition;
+  | NetworkCheckCondition
+  | HardwareHealthCondition;
 
 // Compound condition with AND/OR logic
 export interface ConditionGroup {
@@ -185,6 +216,8 @@ export interface EvaluationResult {
   conditionsNotMet: string[];
   /** #5290 — 'unknown' when ANY evaluated leaf reported dataAvailable === false. */
   dataState: 'ok' | 'unknown';
+  /** W03 — present when the leaf handler reported per-subject evidence. */
+  subjects?: SubjectEvidence[];
   context: {
     metric?: string;
     actualValue?: number;
@@ -208,4 +241,6 @@ export interface ConditionResult {
    * Never conflate this with `passed: false`, which means "observed, healthy".
    */
   dataAvailable?: boolean;
+  /** W03 — present when the handler reports per-subject (per-component) evidence. */
+  subjects?: SubjectEvidence[];
 }

@@ -25,6 +25,7 @@ const { dbMock, updateWheres, updateReturns, selectReturns, alertRow } = vi.hois
     status: 'active',
     title: 'Agent offline',
     triggeredAt: new Date('2026-08-29T10:00:00.000Z'),
+    subjectKey: null as string | null,
   };
   const dbMock = {
     // mobile.ts keeps its OWN `getAlertWithOrgCheck` (it is not the shared
@@ -174,4 +175,14 @@ describe('POST /mobile/alerts/:id/resolve — the shipped predicate (compiled SQ
     expect(sql).toBe('("alerts"."id" = $1 and "alerts"."status" in ($2, $3, $4))');
     expect(params).toEqual([alertRow.id, 'active', 'acknowledged', 'suppressed']);
   });
+});
+
+it.each([null, 'disk:3'])('manual mobile resolution isolates subject %s', async subjectKey => {
+  const row = { ...alertRow, ruleId: 'rule-1', subjectKey, status: 'active' };
+  selectReturns[0] = [row];
+  selectReturns.push([{ id: 'rule-1', templateId: 'tpl-1', overrideSettings: { cooldownMinutes: 42 } }]);
+  selectReturns.push([{ id: 'tpl-1', cooldownMinutes: 15 }]);
+  updateReturns.push([{ ...row, status: 'resolved' }]);
+  expect((await resolveRequest()).status).toBe(200);
+  expect(setCooldown).toHaveBeenCalledExactlyOnceWith('rule-1', 'device-1', 42, subjectKey ?? undefined);
 });

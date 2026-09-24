@@ -185,6 +185,13 @@ export default defineConfig({
       'src/routes/installerRotationRevocation.integration.test.ts',
       // Disposable-database credential cutover proof uses the integration runner.
       'src/db/installerBootstrapCredentialGeneration.migration.integration.test.ts',
+      // Hardware & RAID monitoring (W03): disposable-database replay proof for
+      // the monitor-kind enum and alert subject-identity migrations. Belongs to
+      // vitest.integration.config.ts (registered in its include list).
+      'src/db/hardwareAlertMigrations.integration.test.ts',
+      // Hardware & RAID monitoring (W03 Task 10/11): real-Postgres subject
+      // outbox/response-owner suite. Belongs to vitest.integration.config.ts.
+      'src/services/alertSubjects.integration.test.ts',
       // Enrollment-key list-filter real-DB test (#3191 live-installer-token
       // carve-out on ?expired=): same story as the two above — imports
       // `__tests__/integration/setup` and lives outside the

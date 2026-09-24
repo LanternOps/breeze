@@ -21,6 +21,8 @@ import { backupContinuityKind } from './backupContinuity';
 import { scriptKind } from './script';
 import { networkCheckKind } from './networkCheck';
 import { compositeKind } from './composite';
+// W03 (hardware & RAID monitoring).
+import { hardwareHealthKind } from './hardwareHealth';
 
 export type { MonitorKindSpec, MonitorCompileContext } from './types';
 export { MonitorValidationError } from './types';
@@ -58,6 +60,7 @@ export const MONITOR_KIND_SPECS: Record<MonitorKind, MonitorKindSpec<any>> = {
   network_check: networkCheckKind,
   // Defer the circular import read when composite.ts is the entry module.
   get composite() { return compositeKind; },
+  hardware_health: hardwareHealthKind,
 };
 
 export function getMonitorKindSpec(kind: string): MonitorKindSpec {
