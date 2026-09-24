@@ -1,3 +1,4 @@
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const { resolveOwnedAutomationReferencesMock } = vi.hoisted(() => ({
@@ -1413,8 +1414,11 @@ describe('listConfigPolicies feature links', () => {
     // Compare against the Column object itself: the SQL wrapper is circular,
     // so it cannot be serialized.
     const whereArg: any = links.where.mock.calls[0][0];
-    expect(whereArg.queryChunks).toContain(configPolicyFeatureLinks.configPolicyId);
-    expect(whereArg.queryChunks).not.toContain(configPolicyFeatureLinks.id);
+    const where = new PgDialect().sqlToQuery(whereArg).sql;
+    expect(where).toContain('"config_policy_feature_links"."config_policy_id" in');
+    expect(where).not.toContain('"config_policy_feature_links"."id" in');
+    // Retired alert_rule/monitoring links never reach a policy listing.
+    expect(where).toContain('"config_policy_feature_links"."feature_type" not in');
     // Ordering is delegated to the query, so the service must NOT re-sort:
     // rows come back in whatever order the DB produced them.
     expect(links.orderBy).toHaveBeenCalledTimes(1);
