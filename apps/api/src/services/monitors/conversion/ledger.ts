@@ -8,6 +8,18 @@ import { getConfigPolicy } from '../../configurationPolicy';
 import { ConversionError } from './convert';
 import { isRevertAvailable, findLiveTargetDependencies } from './lifecycle';
 import type { ConversionLedgerEntry } from './types';
+/**
+ * The converted row's name as the writers stored it: under `source` for
+ * policy rows (convert.ts, equivalence.ts), `template` for alert templates,
+ * top-level `name` for retirements that recorded only a name.
+ */
+function storedSourceName(state: Record<string, unknown>): string | undefined {
+  for (const candidate of [state.source, state.template, state]) {
+    const name = (candidate as { name?: unknown } | undefined)?.name;
+    if (typeof name === 'string' && name.length > 0) return name;
+  }
+  return undefined;
+}
 export async function listConversionLedger(query: { orgId?: string; policyId?: string; cursor?: string; limit?: number }, auth: AuthContext): Promise<{ items: ConversionLedgerEntry[]; nextCursor: string | null }> {
   if (query.orgId && !auth.canAccessOrg(query.orgId)) throw new ConversionError('partner_wide_denied', 'Organization access denied');
   if (query.policyId && !await getConfigPolicy(query.policyId, auth)) throw new ConversionError('policy_not_found', 'Policy not found');
@@ -25,7 +37,7 @@ export async function listConversionLedger(query: { orgId?: string; policyId?: s
   const blockedByLiveTarget = await findLiveTargetDependencies(page, db);
   const outputs = page.length ? await db.select().from(monitorConversionOutputs).where(inArray(monitorConversionOutputs.conversionId, page.map((r) => r.id))) : [];
   return { items: page.map((r) => ({ id: r.id, sourceTable: r.sourceTable, sourceId: r.sourceId,
-    sourceName: String(r.sourceState.name ?? (r.sourceState.template as { name?: string } | undefined)?.name ?? r.sourceId),
+    sourceName: storedSourceName(r.sourceState) ?? r.sourceId,
     policyId: r.policyId, convertedBy: r.convertedBy, convertedAt: r.convertedAt.toISOString(), revertedAt: r.revertedAt?.toISOString() ?? null,
     revertable: !r.revertedAt && isRevertAvailable(r.sourceTable) && canMutateOrgWideGovernance(auth)
       && (r.orgId ? auth.canAccessOrg(r.orgId) : canManagePartnerWidePolicies(auth))

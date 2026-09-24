@@ -97,3 +97,13 @@ it('returns an empty terminal page without reading outputs', async () => {
   expect(await listConversionLedger({}, auth)).toEqual({ items: [], nextCursor: null });
   expect(m.predicates).toHaveLength(1);
 });
+// The writers store the converted row under `source` (convert.ts, equivalence.ts),
+// so the ledger must read the name from there, not from a top-level `name`.
+it.each([
+  { sourceState: { source: { id: RESPONSE, name: 'High CPU rule' }, monitorsLink: null }, name: 'High CPU rule' },
+  { sourceState: { source: { id: RESPONSE, watchType: 'service', name: 'Spooler' }, rules: [] }, name: 'Spooler' },
+  { sourceState: { template: { name: 'Template CPU' }, rules: [] }, name: 'Template CPU' },
+])('names history entries from the stored source row ($name)', async ({ sourceState, name }) => {
+  m.rows = [[{ ...entry, sourceState }], []];
+  expect((await listConversionLedger({}, auth)).items[0]).toMatchObject({ sourceName: name });
+});
