@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
@@ -5,7 +6,7 @@ import type { OfflineEffect } from '../db/schema';
 
 const mocks = vi.hoisted(() => ({
   rows: [] as unknown[][],
-  applicable: vi.fn(), policy: vi.fn(), lock: vi.fn(), finish: vi.fn(), child: vi.fn(),
+  applicable: vi.fn(), lock: vi.fn(), finish: vi.fn(), child: vi.fn(),
   lease: vi.fn(), update: vi.fn(), updateWhere: vi.fn(), insert: vi.fn(), maintenance: vi.fn(),
 }));
 vi.mock('../db', () => ({
@@ -25,7 +26,6 @@ vi.mock('../db', () => ({
 }));
 vi.mock('./alertService', () => ({
   alertRuleOwnershipConditionForOrg: vi.fn(), getApplicableRules: mocks.applicable,
-  getApplicableRulesFromPolicy: mocks.policy,
 }));
 vi.mock('./offlineEffectsStore', async (original) => ({
   ...await original<typeof import('./offlineEffectsStore')>(),
@@ -63,7 +63,7 @@ function effect(type: 'alert-plan' | 'alert-rule' = 'alert-plan'): OfflineEffect
     id: 'effect', transitionId: 'transition', orgId: observation.orgId, deviceId: observation.deviceId,
     leaseToken: 'lease', payload: type === 'alert-plan' ? { type, observation } : {
       type, observation, rule: {
-        ruleId: 'rule', monitorId: 'monitor', policy: false, name: 'Offline monitor', templateId: 'template',
+        ruleId: 'rule', monitorId: 'monitor', name: 'Offline monitor', templateId: 'template',
         conditions: monitor.effectiveConditions, severity: 'critical', cooldownMinutes: 10,
         titleTemplate: 'Offline', messageTemplate: 'Offline duration',
       },
@@ -77,7 +77,6 @@ beforeEach(() => {
   vi.setSystemTime(new Date('2026-09-19T10:05:00Z'));
   mocks.rows = [];
   mocks.applicable.mockResolvedValue([monitor]);
-  mocks.policy.mockResolvedValue([]);
   mocks.lock.mockResolvedValue({ ...observation, id: observation.deviceId });
   mocks.lease.mockImplementation(async (_effect, fn) => fn());
   mocks.child.mockResolvedValue('child');
@@ -89,18 +88,25 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe('offline monitor effects (#6342)', () => {
-  it('plans an effective offline monitor using its attachment duration and severity alongside legacy rules', async () => {
-    mocks.policy.mockResolvedValue([{ id: 'legacy', name: 'Legacy offline' }]);
+  it('plans effective offline monitors without evaluating legacy policy rules', async () => {
     await expandOfflineAlertPlan(effect());
     expect(mocks.child).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       type: 'alert-rule', rule: expect.objectContaining({
-        ruleId: 'rule', monitorId: 'monitor', policy: false,
+        ruleId: 'rule', monitorId: 'monitor',
         conditions: { type: 'offline', durationMinutes: 60 }, severity: 'critical',
       }),
     }), 'rule');
-    expect(mocks.child).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      rule: expect.objectContaining({ ruleId: 'legacy', policy: true }),
-    }), 'legacy');
+    expect(readFileSync(new URL('./offlineAlertEffects.ts', import.meta.url), 'utf8'))
+      .not.toMatch(/getApplicableRulesFromPolicy/);
+    expect(mocks.child).toHaveBeenCalledTimes(1);
+    expect(mocks.child.mock.calls[0]![1].rule).not.toHaveProperty('policy');
+  });
+
+  it('contains no policy dispatch or legacy cooldown writer in durable effects', () => {
+    for (const name of ['offlineAlertEffects.ts', 'offlineAlertPostprocess.ts']) {
+      expect(readFileSync(new URL(`./${name}`, import.meta.url), 'utf8'))
+        .not.toMatch(/rule\.policy|p\.policy|cooldown:cpar|configPolicyAlertRules/);
+    }
   });
 
   it('does not plan other monitor kinds or monitors excluded by effective resolution', async () => {

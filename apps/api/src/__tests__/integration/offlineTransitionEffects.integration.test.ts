@@ -286,7 +286,7 @@ describe('durable offline effects', () => {
     const f = await fixture();
     const old = new Date(Date.now() - 20 * 86400_000);
     const base = { transitionId: randomUUID(), orgId: f.org.id, deviceId: f.device.id, ruleId: randomUUID(), kind: 'alert-postprocess' as const,
-      createdAt: old, availableAt: old, payload: { type: 'alert-postprocess' as const, ruleId: randomUUID(), policy: false, alertId: null,
+      createdAt: old, availableAt: old, payload: { type: 'alert-postprocess' as const, ruleId: randomUUID(), alertId: null,
         occurredAt: old.toISOString(), multiplier: 4, recordTrigger: false } };
     const keepCooldown = randomUUID(), keepPending = randomUUID(), remove = randomUUID();
     await getTestDb().insert(effects).values([
@@ -343,7 +343,7 @@ describe('durable offline effects', () => {
       severity: 'high', title: 'Previous offline', triggeredAt: old });
     const [receipt] = await getTestDb().insert(effects).values({ id: randomUUID(), transitionId: randomUUID(), orgId: f.org.id,
       deviceId: f.device.id, kind: 'alert-postprocess', ruleId: rule.id, createdAt: old, cooldownUntil: new Date(old.getTime() + 60_000),
-      payload: { type: 'alert-postprocess', ruleId: rule.id, policy: false, alertId, occurredAt: old.toISOString(), multiplier: 1, recordTrigger: true },
+      payload: { type: 'alert-postprocess', ruleId: rule.id, alertId, occurredAt: old.toISOString(), multiplier: 1, recordTrigger: true },
     }).returning();
     await applyOfflineAlertPostprocess(getTestRedis(), receipt!);
     await getRedis()!.ping();

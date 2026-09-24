@@ -61,7 +61,6 @@ vi.mock('../services/mlFeedbackEmitters', () => ({
 
 vi.mock('../services/alertCooldown', () => ({
   setCooldown: vi.fn().mockResolvedValue(undefined),
-  markConfigPolicyRuleCooldown: vi.fn().mockResolvedValue(undefined)
 }));
 
 vi.mock('../services/auditEvents', () => ({

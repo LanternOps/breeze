@@ -97,14 +97,11 @@ vi.mock('./alertConditions', () => ({
 vi.mock('./alertCooldown', () => ({
   isCooldownActive: vi.fn(() => Promise.resolve(false)),
   setCooldown: vi.fn(() => Promise.resolve()),
-  isConfigPolicyRuleCooling: vi.fn(),
-  markConfigPolicyRuleCooldown: vi.fn(),
   recordStateTransition: vi.fn(() => Promise.resolve()),
   isFlapping: vi.fn(() => Promise.resolve(false)),
 }));
 
 vi.mock('./featureConfigResolver', () => ({
-  resolveAlertRulesForDevice: vi.fn(),
   resolveMaintenanceConfigForDevice: vi.fn(),
   isInMaintenanceWindow: vi.fn(),
 }));

@@ -20,14 +20,12 @@ import {
   deviceGroupMemberships,
   organizations,
   sites,
-  configPolicyAlertRules,
   monitorDefinitions,
   monitorDeviceState
 } from '../db/schema';
 import { eq, and, inArray, isNull, isNotNull, or, sql, type SQL } from 'drizzle-orm';
 import { evaluateConditions, evaluateAutoResolveConditions, interpolateTemplate } from './alertConditions';
-import { isCooldownActive, setCooldown, isConfigPolicyRuleCooling, markConfigPolicyRuleCooldown, recordStateTransition, isFlapping } from './alertCooldown';
-import { resolveAlertRulesForDevice, resolveMaintenanceConfigForDevice, isInMaintenanceWindow } from './featureConfigResolver';
+import { isCooldownActive, setCooldown, recordStateTransition, isFlapping } from './alertCooldown';
 import { publishEvent } from './eventBus';
 import { resolveDeviceSiteId } from './deviceSiteResolver';
 import { enqueueAlertCorrelation } from '../jobs/alertCorrelation';
@@ -385,8 +383,6 @@ export interface CreateSourcedAlertParams {
   /** Extra fields merged into the `alert.triggered` payload. */
   eventPayload?: Record<string, unknown>;
   triggeredAt?: Date;
-  /** Config-policy alert rule behind this alert, when there is one. */
-  configPolicyId?: string | null;
   /** Human label for the producing config item, e.g. `'warranty_expiry'`. */
   configItemName?: string | null;
   /**
@@ -440,7 +436,6 @@ export async function createSourcedAlert(params: CreateSourcedAlertParams): Prom
       ruleId: null,
       deviceId,
       orgId,
-      configPolicyId: params.configPolicyId ?? null,
       configItemName: params.configItemName ?? null,
       severity,
       title,
@@ -529,7 +524,7 @@ export async function checkAutoResolve(alertId: string): Promise<boolean> {
     return false;
   }
 
-  // Config policy alerts don't have a legacy ruleId — skip legacy auto-resolve path
+  // History-only policy alerts have no rule and remain open for human review.
   if (!alert.ruleId) {
     return false;
   }
@@ -858,8 +853,7 @@ export async function resolveAlert(
   try {
     if (alert.ruleId) {
       await recordStateTransition(alert.ruleId, alert.deviceId, 'resolved', alert.subjectKey ?? undefined);
-    } else if (alert.configPolicyId) {
-      await recordStateTransition(alert.configPolicyId, alert.deviceId, 'resolved');
+
     }
   } catch (error) {
     console.error(`[AlertService] Failed to record state transition for resolved alert:`, error instanceof Error ? error.message : error);
@@ -868,18 +862,8 @@ export async function resolveAlert(
   // Set a cooldown after resolution to prevent immediate re-trigger.
   // Uses the rule's configured cooldown so the condition must persist
   // beyond the cooldown window before a new alert is created.
-  if (alert.configPolicyId) {
-    // Config policy alert — look up cooldown from configPolicyAlertRules
-    const [cpRule] = await db
-      .select()
-      .from(configPolicyAlertRules)
-      .where(eq(configPolicyAlertRules.id, alert.configPolicyId))
-      .limit(1);
-
-    if (cpRule) {
-      await markConfigPolicyRuleCooldown(cpRule.id, alert.deviceId, cpRule.cooldownMinutes);
-    }
-  } else if (alert.ruleId) {
+  // Retired policy alerts are history-only and need no cooldown.
+  if (alert.ruleId) {
     // Legacy standalone alert rule
     const [rule] = await db
       .select()
@@ -932,14 +916,6 @@ export async function resolveAlert(
   return true;
 }
 
-/**
- * LEGACY: Get all applicable rules for a device from standalone alertRules table.
- * Rules can target: all, org, site, group, or specific device.
- *
- * Alert rules are now managed via Configuration Policies.
- * This function remains for legacy/backward compatibility with standalone alertRules.
- * New alert evaluation should use getApplicableRulesFromPolicy() instead.
- */
 /**
  * Rule-ownership condition for EVALUATION (#2128): a device is governed by the
  * standalone rules owned by its OWN org, plus the partner-wide rules (org_id
@@ -1410,286 +1386,6 @@ async function detachUnresolvedMonitors(
       deviceId,
     });
   }
-}
-
-// ============================================
-// Config Policy Alert Rule Evaluation
-// ============================================
-
-/**
- * Resolved config policy alert rule in a shape suitable for the alert evaluator.
- */
-export interface ConfigPolicyAlertRule {
-  id: string;
-  name: string;
-  severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
-  conditions: unknown;
-  cooldownMinutes: number;
-  autoResolve: boolean;
-  autoResolveConditions: unknown;
-  titleTemplate: string;
-  messageTemplate: string;
-}
-
-/**
- * Get applicable alert rules for a device from Configuration Policies.
- * Wraps resolveAlertRulesForDevice and maps the returned configPolicyAlertRules rows
- * into a normalized shape that the alert evaluator can consume.
- */
-export async function getApplicableRulesFromPolicy(
-  deviceId: string
-): Promise<ConfigPolicyAlertRule[]> {
-  const policyRules = await resolveAlertRulesForDevice(deviceId);
-
-  return policyRules.map((row) => ({
-    id: row.id,
-    name: row.name,
-    severity: row.severity,
-    conditions: row.conditions,
-    cooldownMinutes: row.cooldownMinutes,
-    autoResolve: row.autoResolve,
-    autoResolveConditions: row.autoResolveConditions,
-    titleTemplate: row.titleTemplate,
-    messageTemplate: row.messageTemplate,
-  }));
-}
-
-/**
- * Evaluate config policy alert rules for a device and create alerts as needed.
- *
- * This is the config-policy counterpart to evaluateDeviceAlerts(). Instead of
- * querying the standalone alertRules table, it resolves rules from the
- * configuration policy hierarchy, respects maintenance windows, and writes
- * alerts with configPolicyId / configItemName rather than ruleId.
- *
- * @returns list of created alert IDs
- */
-export async function evaluateDeviceAlertsFromPolicy(deviceId: string): Promise<string[]> {
-  // 1. Check maintenance window — skip evaluation if alerts are suppressed
-  const maintenanceConfig = await resolveMaintenanceConfigForDevice(deviceId);
-  if (maintenanceConfig) {
-    const windowStatus = isInMaintenanceWindow(maintenanceConfig);
-    if (windowStatus.active && windowStatus.suppressAlerts) {
-      console.log(`[AlertService] Maintenance window active with suppressAlerts=true for device=${deviceId}; skipping config policy alert evaluation`);
-      return [];
-    }
-  }
-
-  // 2. Resolve config policy alert rules for this device
-  const policyRules = await getApplicableRulesFromPolicy(deviceId);
-
-  if (policyRules.length === 0) {
-    return [];
-  }
-
-  // 3. Get device info for template interpolation
-  const [device] = await db
-    .select()
-    .from(devices)
-    .where(eq(devices.id, deviceId))
-    .limit(1);
-
-  if (!device) {
-    return [];
-  }
-
-  const createdAlerts: string[] = [];
-
-  for (const rule of policyRules) {
-    try {
-      // 4. Check cooldown (uses cpar:<ruleId>:<deviceId> key pattern)
-      const cooling = await isConfigPolicyRuleCooling(rule.id, deviceId);
-      if (cooling) {
-        console.log(`[AlertService] Config policy cooldown active for cpar=${rule.id} device=${deviceId}`);
-        continue;
-      }
-
-      // 5. Deduplicate against existing open alerts sourced from this config policy rule
-      const [existingAlert] = await db
-        .select()
-        .from(alerts)
-        .where(
-          and(
-            eq(alerts.configPolicyId, rule.id),
-            eq(alerts.deviceId, deviceId),
-            inArray(alerts.status, ['active', 'acknowledged', 'suppressed'])
-          )
-        )
-        .limit(1);
-
-      if (existingAlert) {
-        console.log(`[AlertService] Open alert (${existingAlert.status}) already exists for cpar=${rule.id} device=${deviceId}`);
-        continue;
-      }
-
-      // 6. Evaluate conditions
-      const result = await evaluateConditions(rule.conditions, deviceId);
-
-      if (result.triggered) {
-        // Phase 6a: Flapping detection for config policy rules
-        const flapping = await isFlapping(rule.id, deviceId);
-        if (flapping) {
-          console.log(`[AlertService] Flapping detected for cpar=${rule.id} device=${deviceId}, suppressing alert`);
-          await markConfigPolicyRuleCooldown(rule.id, deviceId, rule.cooldownMinutes);
-          continue;
-        }
-
-        // Record state transition for flapping detection
-        await recordStateTransition(rule.id, deviceId, 'triggered');
-
-        // 7. Build template context
-        const templateContext: Record<string, unknown> = {
-          deviceName: device.displayName || device.hostname,
-          hostname: device.hostname,
-          osType: device.osType,
-          osVersion: device.osVersion,
-          ruleName: rule.name,
-          severity: rule.severity,
-          ...result.context,
-        };
-
-        // 8. Interpolate title and message from config policy alert rule templates
-        const title = interpolateTemplate(rule.titleTemplate, templateContext);
-        const message = interpolateTemplate(rule.messageTemplate, templateContext);
-
-        // 9. Create alert with config policy references (ruleId left null).
-        // Routed through createSourcedAlert so a failed publish rolls the row
-        // back instead of leaving a silent, dedupe-blocking alert (#5325).
-        const newAlertId = await createSourcedAlert({
-          deviceId,
-          orgId: device.orgId,
-          severity: rule.severity,
-          title,
-          message,
-          context: {
-            ...result.context,
-            conditionsMet: result.conditionsMet,
-            conditionsNotMet: result.conditionsNotMet,
-            cooldownMinutes: rule.cooldownMinutes,
-            source: 'config_policy',
-          },
-          configPolicyId: rule.id,
-          configItemName: rule.name,
-          publisher: 'alert-service',
-          eventPayload: {
-            configPolicyAlertRuleId: rule.id,
-            configItemName: rule.name,
-          },
-          // The device row already carries its site — no need to re-resolve it.
-          siteId: device.siteId,
-        });
-
-        if (newAlertId) {
-          // 10. Set cooldown — only once the alert actually published, so a
-          // rolled-back create is retried on the next evaluation.
-          await markConfigPolicyRuleCooldown(rule.id, deviceId, rule.cooldownMinutes);
-
-          console.log(`[AlertService] Created config policy alert ${newAlertId} for cpar=${rule.id} device=${deviceId}`);
-          createdAlerts.push(newAlertId);
-        }
-      }
-    } catch (error) {
-      console.error(`[AlertService] Error evaluating config policy rule ${rule.id} for device ${deviceId}:`, error);
-    }
-  }
-
-  return createdAlerts;
-}
-
-/**
- * Check active alerts sourced from configuration policies for auto-resolution.
- *
- * For each active alert where configPolicyId IS NOT NULL, looks up the
- * corresponding config policy alert rule and evaluates auto-resolve logic:
- *   1. If autoResolve is disabled on the rule, skip.
- *   2. If autoResolveConditions are set, evaluate them -- resolve if they fire.
- *   3. Otherwise, evaluate the trigger conditions -- resolve if they NO LONGER fire.
- *
- * After resolution, sets the config policy cooldown so the alert is not
- * immediately re-created.
- *
- * @param deviceId - Device to check auto-resolution for
- * @returns count of resolved alerts
- */
-export async function checkAutoResolveFromConfigPolicy(deviceId: string): Promise<number> {
-  // Find active alerts created from config policies for this device
-  const activeAlerts = await db
-    .select()
-    .from(alerts)
-    .where(
-      and(
-        eq(alerts.deviceId, deviceId),
-        eq(alerts.status, 'active'),
-        isNotNull(alerts.configPolicyId),
-        // #5290 — a requires-human alert is never auto-resolved.
-        eq(alerts.requiresHuman, false)
-      )
-    );
-
-  if (activeAlerts.length === 0) {
-    return 0;
-  }
-
-  // Collect all configPolicyIds referenced by these alerts to batch-load rules
-  const configPolicyIds = [...new Set(activeAlerts.map((a) => a.configPolicyId!))];
-
-  const ruleRows = await db
-    .select()
-    .from(configPolicyAlertRules)
-    .where(inArray(configPolicyAlertRules.id, configPolicyIds));
-
-  const ruleMap = new Map(ruleRows.map((r) => [r.id, r]));
-
-  let resolvedCount = 0;
-
-  // Both branches below count — and previously also wrote the config-policy
-  // cooldown — only on `resolveAlert`'s compare-and-swap WINNER (#4094). Doing it
-  // unconditionally meant a caller that lost the race to the monitor worker or a
-  // policy.compliant redelivery still reported a resolution it did not perform and
-  // still stamped a cooldown, suppressing the next legitimate alert for that rule.
-  // The explicit cooldown write is gone rather than merely gated: on the winning
-  // path `resolveAlert` already calls `markConfigPolicyRuleCooldown` with the same
-  // rule id, device and `cooldownMinutes` (see its config-policy branch), so it was
-  // a duplicate of a write the winner performs anyway.
-  for (const alert of activeAlerts) {
-    try {
-      const rule = ruleMap.get(alert.configPolicyId!);
-      if (!rule) {
-        // Config policy rule was deleted; leave the alert as-is.
-        continue;
-      }
-
-      if (!rule.autoResolve) {
-        continue;
-      }
-
-      if (rule.autoResolveConditions) {
-        // Evaluate specific auto-resolve conditions
-        const result = await evaluateAutoResolveConditions(
-          rule.autoResolveConditions,
-          alert.deviceId
-        );
-
-        if (result.shouldResolve && await resolveAlert(alert.id, `Auto-resolved: ${result.reason}`)) {
-          resolvedCount++;
-        }
-      } else {
-        // No specific auto-resolve conditions; use inverse of trigger conditions
-        const result = await evaluateConditions(rule.conditions, alert.deviceId);
-
-        if (!result.triggered && await resolveAlert(alert.id, 'Auto-resolved: conditions cleared')) {
-          resolvedCount++;
-        }
-      }
-    } catch (error) {
-      console.error(
-        `[AlertService] Error checking config policy auto-resolve for alert ${alert.id}:`,
-        error
-      );
-    }
-  }
-
-  return resolvedCount;
 }
 
 /**
