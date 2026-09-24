@@ -54,7 +54,8 @@ All anchors refer to the inspected base; resolve by symbol after preceding tasks
 | Modify | `apps/api/vitest.config.ts:18` | Exclude those suites from unit runner |
 | Modify | `apps/api/src/db/schema/monitorDefinitions.ts:33` | Append DB enum label |
 | Modify | `apps/api/src/db/schema/alerts.ts:115,151` | Subject column and index/CHECK declarations |
-| Modify | `apps/api/src/services/tenantExportPolicyRegistry.ts:130` | Classify subject/admission scalars and outbox JSON |
+| Modify | `apps/api/src/services/tenantExportPolicyRegistry.ts:130` | Classify subject/admission scalars, sensitive retirement lease token and outbox JSON |
+| Modify | `apps/api/src/services/tenantExportPolicy.test.ts` | Pin retirement lease token to excludedSensitive and prove export-plan construction |
 | Create | `apps/api/src/services/alertConditions/handlers/hardwareHealth.ts` | Fresh component evidence and per-rank streaks |
 | Create | `apps/api/src/services/alertConditions/handlers/hardwareHealth.test.ts` | Matrix and flapping regression |
 | Modify | `apps/api/src/services/alertConditions/index.ts:32,50,99,187,227` | Registration and root-leaf propagation |
@@ -2217,7 +2218,7 @@ git commit -m $'fix(automations): run hardware responses only for the episode ow
 
 ### Task 12: Commit retirement recovery before publishing, including device deletion
 
-**Files:** Modify `apps/api/src/services/hardwareHealth/retire.ts` (W01 seam), `apps/api/src/services/subjectAlertOutbox.ts`, `apps/api/migrations/2026-10-27-100300-alert-subject-key.sql`, `apps/api/src/db/schema/index.ts`, `apps/api/src/services/tenantCascade.ts`, `apps/api/src/services/orgMergeRegistry.ts`, `apps/api/src/services/tenantExportPolicyRegistry.ts`; Create `apps/api/src/db/schema/hardwareAlertRetirementOutbox.ts`, `apps/api/src/services/hardwareHealth/retirementOutbox.ts`; Create/Test `apps/api/src/services/hardwareHealth/retire.test.ts`; Extend/Test `apps/api/src/services/alertSubjects.integration.test.ts`, `apps/api/src/db/hardwareAlertMigrations.integration.test.ts`.
+**Files:** Modify `apps/api/src/services/hardwareHealth/retire.ts` (W01 seam), `apps/api/src/services/subjectAlertOutbox.ts`, `apps/api/migrations/2026-10-27-100300-alert-subject-key.sql`, `apps/api/src/db/schema/index.ts`, `apps/api/src/services/tenantCascade.ts`, `apps/api/src/services/orgMergeRegistry.ts`, `apps/api/src/services/tenantExportPolicyRegistry.ts`, `apps/api/src/services/tenantExportPolicy.test.ts`; Create `apps/api/src/db/schema/hardwareAlertRetirementOutbox.ts`, `apps/api/src/services/hardwareHealth/retirementOutbox.ts`; Create/Test `apps/api/src/services/hardwareHealth/retire.test.ts`; Extend/Test `apps/api/src/services/alertSubjects.integration.test.ts`, `apps/api/src/db/hardwareAlertMigrations.integration.test.ts`.
 **Interfaces:** Keeps `resolveAlertsForRemovedComponents(deviceId: string, componentKeys: string[]): Promise<number>` from index §D. Retirement resolves all selected open subjects regardless of autoResolve/requiresHuman. W01's existing ingest, reaper and device-delete callers remain untouched. Adds `stageRetiredSubjectResolution(alertId: string): Promise<void>` inside the ambient transaction and `drainRetirementOutbox(deviceId?: string): Promise<void>` outside it. Device deletion removes alerts; retirement envelopes therefore live in an org-scoped outbox with no device/alert FK, surviving that cascade until delivered. The envelope carries historical IDs, not authority to execute a device action.
 
 - [ ] **Step 1: Write the failing retirement test.**
@@ -2300,10 +2301,51 @@ export const hardwareAlertRetirementOutbox = pgTable('hardware_alert_retirement_
 export * from './hardwareAlertRetirementOutbox';
 ```
 
-Insert the exact entry `'hardware_alert_retirement_outbox',` alphabetically in `CORE_ORG_CASCADE_DELETE_ORDER` and the exact entry `"hardware_alert_retirement_outbox",` in `REPOINT_TABLES`. Add this export entry:
+Insert the exact entry `'hardware_alert_retirement_outbox',` alphabetically in `CORE_ORG_CASCADE_DELETE_ORDER` and the exact entry `"hardware_alert_retirement_outbox",` in `REPOINT_TABLES`.
+
+Before adding the export entry, insert these registration regressions inside the existing `describe('buildTenantExportPlan', ...)` in `tenantExportPolicy.test.ts`, immediately before `const enrollmentEpochs`. Its existing imports, `mockState`, `column` helper and `beforeEach` supply the complete test setup. `tablePolicy` maps each bucket to a distinct shared decision object: the identity assertion pins `excludedSensitive`, rejecting both `reviewedIncluded` and `excludedOpen` as well as ordinary `included`.
 
 ```ts
-"hardware_alert_retirement_outbox": tablePolicy("org_id", {"included":["id","org_id","lease_token","lease_until","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["envelope"]}),
+it('classifies the retirement lease token in excludedSensitive', () => {
+  const sensitive = tablePolicy('org_id', {
+    included: [], reviewedIncluded: [], excludedSensitive: ['lease_token'], excludedOpen: [],
+  }).columns.lease_token;
+  expect(CORE_TENANT_EXPORT_POLICY.hardware_alert_retirement_outbox?.columns.lease_token)
+    .toBe(sensitive);
+});
+
+it('builds the retirement export plan without its lease token or envelope', async () => {
+  const table = 'hardware_alert_retirement_outbox';
+  mockState.columns = [
+    column(table, 'id', 'uuid', 1),
+    column(table, 'org_id', 'uuid', 2),
+    column(table, 'envelope', 'jsonb', 3),
+    column(table, 'lease_token', 'uuid', 4),
+    column(table, 'lease_until', 'timestamp with time zone', 5, 'timestamptz'),
+    column(table, 'created_at', 'timestamp with time zone', 6, 'timestamptz'),
+  ];
+  await expect(buildTenantExportPlan([table], CORE_TENANT_EXPORT_POLICY)).resolves.toEqual([
+    { table, organizationKey: 'org_id', includedColumns: ['id', 'org_id', 'lease_until', 'created_at'] },
+  ]);
+});
+```
+
+Run red before the export entry is added: the registration assertion receives `undefined` and the builder rejects the missing policy. Against the previously proposed `included` classification, the bucket assertion fails and the builder rejects `hardware_alert_retirement_outbox.lease_token` with `requires reviewedSensitiveName: true`.
+
+```bash
+cd apps/api && npx vitest run src/services/tenantExportPolicy.test.ts
+```
+
+Add this complete export entry. The lease token authorizes outbox ownership checks and is credential-like material; classify it as `excludedSensitive`, never `included` or `reviewedIncluded`. The JSON envelope remains `excludedOpen`.
+
+```ts
+"hardware_alert_retirement_outbox": tablePolicy("org_id", {"included":["id","org_id","lease_until","created_at"],"reviewedIncluded":[],"excludedSensitive":["lease_token"],"excludedOpen":["envelope"]}),
+```
+
+Run green: the registration uses the sensitive-exclusion bucket and the builder returns only the four approved scalar columns.
+
+```bash
+cd apps/api && npx vitest run src/services/tenantExportPolicy.test.ts
 ```
 
 This is direct-org shape 1, auto-discovered by the RLS suite. It has **no `device_id` column**: neither device cascade nor device-org-denormalization registries apply. Adding it to the device cascade would erase the event being delivered. Organization erasure still deletes it and organization merge repoints it through the registrations above.
@@ -2482,7 +2524,7 @@ it('retirement outbox enforces app-role cross-org read and insert isolation', as
 - [ ] **Step 6: Run green and the registration contracts.**
 
 ```bash
-cd apps/api && npx vitest run src/services/hardwareHealth/retire.test.ts src/jobs/hardwareHealthRetention.test.ts src/services/deviceDeletion.hardwareHealth.test.ts src/services/hardwareHealth/ingest.test.ts src/db/migrationRlsScope.test.ts src/db/autoMigrate.test.ts
+cd apps/api && npx vitest run src/services/tenantExportPolicy.test.ts src/services/hardwareHealth/retire.test.ts src/jobs/hardwareHealthRetention.test.ts src/services/deviceDeletion.hardwareHealth.test.ts src/services/hardwareHealth/ingest.test.ts src/db/migrationRlsScope.test.ts src/db/autoMigrate.test.ts
 ```
 
 ```bash
@@ -2498,7 +2540,7 @@ Expected: rollback has zero external side effects; committed recovery retries af
 - [ ] **Step 7: Commit.**
 
 ```bash
-git add apps/api/src/services/hardwareHealth/retire.ts apps/api/src/services/hardwareHealth/retire.test.ts apps/api/src/services/hardwareHealth/retirementOutbox.ts apps/api/src/services/subjectAlertOutbox.ts apps/api/migrations/2026-10-27-100300-alert-subject-key.sql apps/api/src/db/schema/hardwareAlertRetirementOutbox.ts apps/api/src/db/schema/index.ts apps/api/src/services/tenantCascade.ts apps/api/src/services/orgMergeRegistry.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/services/alertSubjects.integration.test.ts apps/api/src/db/hardwareAlertMigrations.integration.test.ts
+git add apps/api/src/services/hardwareHealth/retire.ts apps/api/src/services/hardwareHealth/retire.test.ts apps/api/src/services/hardwareHealth/retirementOutbox.ts apps/api/src/services/subjectAlertOutbox.ts apps/api/migrations/2026-10-27-100300-alert-subject-key.sql apps/api/src/db/schema/hardwareAlertRetirementOutbox.ts apps/api/src/db/schema/index.ts apps/api/src/services/tenantCascade.ts apps/api/src/services/orgMergeRegistry.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/services/tenantExportPolicy.test.ts apps/api/src/services/alertSubjects.integration.test.ts apps/api/src/db/hardwareAlertMigrations.integration.test.ts
 git commit -m $'fix(alerts): publish retired subject recovery after commit\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>'
 ```
 
@@ -2917,3 +2959,5 @@ Before implementation commits, re-check the committed migration ceiling with `ls
 - Manual-resolution correction (Task 8): both real web/mobile `setCooldown` writers pass `alert.subjectKey ?? undefined`; route CAS tests cover subject and NULL keys alongside the Redis/fallback isolation tests.
 - D7 replay correction (Tasks 10–11): `responses_admitted_at IS NULL` is an atomic episode admission gate; claim, run and response envelope commit together. `automation.started` and queue writes follow commit. Replay after alert-outbox acknowledgement failure and trigger-job eviction cannot create a second run; failed response dispatch retries the committed run. This adds only W03-owned columns to the reserved, unshipped `100300` migration.
 - Verification: read `episodeService.ts` fully, both route cooldown writers, `resolveAlert`, `eventBus.publish`, the automation worker/runtime and shared device cascade. Added red/green recurrence, manual-resolution, retirement rollback/deletion/RLS and response replay/outer-commit tests to this implementation plan; no application tests were executed while editing documentation.
+
+- Export-policy correction (Task 12): moved `hardware_alert_retirement_outbox.lease_token` from `included` to `excludedSensitive`; registration regressions pin that exact bucket and prove `buildTenantExportPlan` succeeds while omitting the lease token and JSON envelope. Verified the sensitive-name guard and bucket mapping in the real export services. W03 owns this registration and its red/green tests; no other wave supplies the fix. Only this plan was edited; application tests were not executed.

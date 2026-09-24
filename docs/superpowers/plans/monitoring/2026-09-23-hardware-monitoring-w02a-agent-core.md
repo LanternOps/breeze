@@ -459,7 +459,7 @@ git commit -m $'feat(agent): back off repeatedly failing hardware sources\n\nCo-
 
 **Files:** Create `agent/internal/collectors/hwhealth/storcli.go`, `agent/internal/collectors/hwhealth/storcli_test.go` and `agent/internal/collectors/hwhealth/testdata/{storcli,perccli}/{optimal,degraded,failed,rebuilding-with-progress,predictive,missing-member,multi-controller,unrecognized-state,truncated,64-drive}.json` beneath that package.
 **Test:** `agent/internal/collectors/hwhealth/storcli_test.go`.
-**Interfaces:** Consumes Task 1 key builders. Produces `parseStorcli(data []byte, kind Kind) (Result, error)`, `parseStorcliSections(data []byte, kind Kind, required ...string) (Result, error)`, `vendorState(typ ComponentType, raw string) string`, `jsonObject`, `textValue`, `number`, `walkJSON`, `mergeComponents` for later commands.
+**Interfaces:** Consumes Task 1 key builders. Produces `parseStorcli(data []byte, kind Kind) (Result, error)`, `parseStorcliSections(data []byte, kind Kind, required ...string) (Result, error)`, `decodeStorcliControllers`, `decodeStorcliController`, `storcliNumericID`, `vendorState(typ ComponentType, raw string) string`, `jsonObject`, `textValue`, `number`, `walkJSON`, `mergeComponents` for later commands.
 
 - [ ] **Step 1: Generate the raw fixtures and write parser assertions (5 min).** Run this complete generator from the repo root; it creates synthetic fixtures, not claimed hardware captures:
 ```bash
@@ -515,6 +515,38 @@ func TestStorcliIncompleteObservations(t *testing.T){
   if bad!="response"&&bad!="controller-id"{findComponent(t,r.Components,string(kind)+":c0")}
  })}}
 }
+func TestStorcliMalformedControllerSiblings(t *testing.T){
+ for _,kind:=range []Kind{"storcli","perccli"}{for _,bad:=range []string{"string-id","fractional-id","negative-id","null-id","status-scalar","response-scalar","response-array","controller-scalar"}{for _,badIndex:=range []int{0,1}{t.Run(string(kind)+"/"+bad+"/"+string(rune('0'+badIndex)),func(t *testing.T){
+  var doc map[string]any;if e:=json.Unmarshal(fixture(t,string(kind),"multi-controller.json"),&doc);e!=nil{t.Fatal(e)}
+  controllers:=doc["Controllers"].([]any);ctl:=controllers[badIndex].(map[string]any);status:=ctl["Command Status"].(map[string]any)
+  switch bad{case "string-id":status["Controller"]="0";case "fractional-id":status["Controller"]=0.5;case "negative-id":status["Controller"]=-1;case "null-id":status["Controller"]=nil;case "status-scalar":ctl["Command Status"]=true;case "response-scalar":ctl["Response Data"]=42;case "response-array":ctl["Response Data"]=[]any{};case "controller-scalar":controllers[badIndex]="bad"}
+  b,e:=json.Marshal(doc);if e!=nil{t.Fatal(e)};r,e:=parseStorcli(b,kind)
+  if e!=nil||r.Complete||len(r.Warnings)==0{t.Fatalf("result=%+v error=%v",r,e)}
+  valid:=string(kind)+":c"+string(rune('0'+1-badIndex));findComponent(t,r.Components,valid);findComponent(t,r.Components,valid+":v0");findComponent(t,r.Components,valid+":e252:s0")
+  for _,c:=range r.Components{if c.ComponentKey==string(kind)+":c"+string(rune('0'+badIndex)){t.Fatal("invalid controller emitted",c)}}
+ })}}}
+}
+func TestStorcliBatterySections(t *testing.T){
+ cases:=[]struct{name string;value any;complete bool;state string}{
+  {"empty-record",[]any{map[string]any{}},false,""},
+  {"null-section",nil,false,""},{"object-section",map[string]any{"State":"Failed"},false,""},{"scalar-section","bad",false,""},
+  {"null-row",[]any{nil},false,""},{"scalar-row",[]any{"Failed"},false,""},
+  {"null-state",[]any{map[string]any{"State":nil}},false,""},{"numeric-state",[]any{map[string]any{"State":0}},false,""},
+  {"present-only",[]any{map[string]any{"Present":true}},false,""},{"wrong-present",[]any{map[string]any{"Present":"false","State":"Failed"}},false,""},
+  {"mixed",[]any{map[string]any{"State":"Failed"},map[string]any{}},false,"failed"},
+  {"empty-list",[]any{},true,""},{"absent",[]any{map[string]any{"Present":false}},true,"missing"},
+  {"empty-state",[]any{map[string]any{"State":""}},true,"missing"},{"failed",[]any{map[string]any{"State":"Failed"}},true,"failed"},
+  {"unknown-state",[]any{map[string]any{"State":"NewVendorState"}},true,"unknown"},
+ }
+ for _,kind:=range []Kind{"storcli","perccli"}{for section,suffix:=range map[string]string{"Cachevault_Info":"cv","BBU_Info":"bbu"}{for _,tc:=range cases{t.Run(string(kind)+"/"+section+"/"+tc.name,func(t *testing.T){
+  var doc map[string]any;if e:=json.Unmarshal(fixture(t,string(kind),"optimal.json"),&doc);e!=nil{t.Fatal(e)}
+  data:=doc["Controllers"].([]any)[0].(map[string]any)["Response Data"].(map[string]any);delete(data,"Cachevault_Info");data[section]=tc.value
+  b,e:=json.Marshal(doc);if e!=nil{t.Fatal(e)};r,e:=parseStorcliSections(b,kind,"PD LIST","VD LIST",section)
+  if e!=nil||r.Complete!=tc.complete||(!tc.complete&&len(r.Warnings)==0){t.Fatalf("result=%+v error=%v",r,e)}
+  findComponent(t,r.Components,string(kind)+":c0:e252:s0")
+  key:=string(kind)+":c0:"+suffix;found:=false;for _,c:=range r.Components{if c.ComponentKey==key{found=true;if c.State!=tc.state{t.Fatal(c)}}};if found!=(tc.state!=""){t.Fatal("malformed battery emitted or valid battery lost",r)}
+ })}}}
+}
 func TestStorcliExplicitEmptyLists(t *testing.T){
  r,e:=parseStorcli([]byte(`{"Controllers":[{"Command Status":{"Controller":0,"Status":"Success"},"Response Data":{"Status":{"Controller Status":"Optimal"},"PD LIST":[],"VD LIST":[]}}]}`),"storcli")
  if e!=nil||!r.Complete||len(r.Components)!=1{t.Fatalf("%+v %v",r,e)}
@@ -526,7 +558,11 @@ func TestStorcliMapping(t *testing.T){for typ,rows:=range map[ComponentType]map[
  "controller":{"Optimal":"ok","Needs Attention":"degraded","Failed":"failed"},
  }{for raw,want:=range rows{if got:=vendorState(typ,raw);got!=want{t.Fatalf("%s %s=%s want %s",typ,raw,got,want)}}}}
 ```
-- [ ] **Step 2: Run red (2 min).** `cd agent && go test -race ./internal/collectors/hwhealth/...` → `undefined: parseStorcli`. With the pre-review parser already implemented, `TestStorcliIncompleteObservations` must fail because `Complete` remains true.
+- [ ] **Step 2: Run red (2 min).** `cd agent && go test -race ./internal/collectors/hwhealth/...` → `undefined: parseStorcli`. With the pre-review parser already implemented, run the new tests before replacing it:
+```bash
+cd agent && go test -race ./internal/collectors/hwhealth/... -run 'TestStorcli(BatterySections|MalformedControllerSiblings|IncompleteObservations)' -count=1
+```
+Expect red: malformed battery sections remain complete, and a wrong-type controller envelope loses its valid sibling.
 - [ ] **Step 3: Implement the JSON mapping and bounded parser (5 min).** `storcli.go`:
 ```go
 package hwhealth
@@ -547,29 +583,60 @@ func sizeBytes(raw any)*int64{fields:=strings.Fields(textValue(raw));if len(fiel
 var drivePath=regexp.MustCompile(`/c[0-9]+/e([0-9]+)/s([0-9]+)`)
 var storcliSlotID=regexp.MustCompile(`^([0-9]+|-):([0-9]+)$`)
 var storcliVDID=regexp.MustCompile(`^[0-9]+/[0-9]+$`)
+// Keep each controller opaque until its own decode; one bad envelope cannot discard siblings.
+func decodeStorcliControllers(data []byte)([]json.RawMessage,error){
+ if len(data)>4*1024*1024{return nil,fmt.Errorf("storcli output exceeds 4 MiB")}
+ var doc struct{Controllers []json.RawMessage}
+ dec:=json.NewDecoder(bytes.NewReader(data));if e:=dec.Decode(&doc);e!=nil{return nil,e}
+ var extra any;if e:=dec.Decode(&extra);e!=io.EOF{return nil,fmt.Errorf("trailing storcli JSON")}
+ if doc.Controllers==nil{return nil,fmt.Errorf("missing Controllers")};return doc.Controllers,nil
+}
+func storcliNumericID(v any)(string,bool){
+ var raw string;switch n:=v.(type){case json.Number:raw=string(n);case string:raw=n;default:return "",false}
+ if raw==""{return "",false};for _,c:=range raw{if c<'0'||c>'9'{return "",false}}
+ n,e:=strconv.Atoi(raw);if e!=nil||n<0{return "",false};return strconv.Itoa(n),true
+}
+func decodeStorcliController(raw json.RawMessage)(string,jsonObject,error){
+ var ctl jsonObject;dec:=json.NewDecoder(bytes.NewReader(raw));dec.UseNumber();if e:=dec.Decode(&ctl);e!=nil{return "",nil,e}
+ status,ok:=ctl["Command Status"].(map[string]any);if !ok{return "",nil,fmt.Errorf("invalid Command Status")}
+ if status["Status"]!="Success"{return "",nil,fmt.Errorf("storcli command failed: %s",textValue(status["Description"]))}
+ // A controller index is a required JSON integer; a string or omitted value is invalid.
+ n,ok:=status["Controller"].(json.Number);if !ok{return "",nil,fmt.Errorf("missing or invalid controller identity")}
+ id,ok:=storcliNumericID(n);if !ok{return "",nil,fmt.Errorf("invalid controller identity")}
+ data,ok:=ctl["Response Data"].(map[string]any);if !ok||data==nil{return "",nil,fmt.Errorf("controller %s: invalid Response Data",id)}
+ return id,data,nil
+}
+// A present section must be a list of records. Only explicit evidence yields a battery.
+func storcliBatteryState(m jsonObject)(string,bool){
+ present,hasPresent:=m["Present"];if hasPresent{if _,ok:=present.(bool);!ok{return "",false}}
+ value,hasState:=m["State"];raw,ok:=value.(string);if hasState&&!ok{return "",false}
+ if hasPresent&&present==false{return "",true};if !hasState{return "",false};return raw,true
+}
 func parseStorcli(data []byte,kind Kind)(Result,error){return parseStorcliSections(data,kind,"PD LIST","VD LIST")}
 // The overview requires both lists; individual commands require only their own section.
 func parseStorcliSections(data []byte,kind Kind,required ...string)(Result,error){
- r:=Result{Complete:true};if len(data)>4*1024*1024{return r,fmt.Errorf("storcli output exceeds 4 MB")}
- var doc struct{Controllers []struct{CommandStatus struct{Controller *int;Status string;Description string} `json:"Command Status"`;Data jsonObject `json:"Response Data"`}}
- dec:=json.NewDecoder(bytes.NewReader(data));dec.UseNumber();if e:=dec.Decode(&doc);e!=nil{return Result{},e};var extra any;if e:=dec.Decode(&extra);e!=io.EOF{return Result{},fmt.Errorf("trailing storcli JSON")}
- if doc.Controllers==nil{return Result{},fmt.Errorf("missing Controllers")}
- for _,ctl:=range doc.Controllers{
-  if ctl.CommandStatus.Status!="Success"{r.Complete=false;r.Warnings=append(r.Warnings,ctl.CommandStatus.Description);continue}
-  malformed:=func(message string){r.Complete=false;r.Warnings=append(r.Warnings,message)}
-  if ctl.CommandStatus.Controller==nil||*ctl.CommandStatus.Controller<0{malformed("missing or invalid controller identity");continue}
-  ck:=controllerKey(kind,strconv.Itoa(*ctl.CommandStatus.Controller));byKey:=map[string]Component{};members:=map[string][]string{}
-  if ctl.Data==nil{malformed(ck+": missing Response Data");continue}
-  for _,section:=range required{v,ok:=ctl.Data[section];if !ok||v==nil{malformed(ck+": missing "+section);continue};if section=="PD LIST"||section=="VD LIST"{if _,ok:=v.([]any);!ok{malformed(ck+": invalid "+section)}}}
+ r:=Result{Complete:true};controllers,e:=decodeStorcliControllers(data);if e!=nil{return Result{},e}
+ malformed:=func(message string){r.Complete=false;r.Warnings=append(r.Warnings,message)}
+ for _,raw:=range controllers{
+  id,data,e:=decodeStorcliController(raw);if e!=nil{malformed(e.Error());continue}
+  ck:=controllerKey(kind,id);byKey:=map[string]Component{};members:=map[string][]string{}
+  for _,section:=range required{v,ok:=data[section];if !ok||v==nil{malformed(ck+": missing "+section);continue};if section=="PD LIST"||section=="VD LIST"{if _,ok:=v.([]any);!ok{malformed(ck+": invalid "+section)}}}
   for _,section:=range []string{"PD LIST","VD LIST"}{
-   raw,exists:=ctl.Data[section];if !exists{continue};list,ok:=raw.([]any);if !ok{malformed(ck+": invalid "+section);continue}
+   raw,exists:=data[section];if !exists{continue};list,ok:=raw.([]any);if !ok{malformed(ck+": invalid "+section);continue}
    for _,row:=range list{m,ok:=row.(map[string]any);if !ok{malformed(ck+": invalid "+section+" row");continue}
     if section=="PD LIST"&&!storcliSlotID.MatchString(textValue(m["EID:Slt"])){malformed(ck+": invalid PD identity")}
     if section=="VD LIST"&&!storcliVDID.MatchString(textValue(m["DG/VD"])){malformed(ck+": invalid VD identity")}
    }
   }
-  walkJSON(ctl.Data,"",func(m jsonObject,path string){
-   if raw,ok:=m["Controller Status"];ok{c:=component(kind,"controller",ck,"",ck,textValue(raw),vendorState("controller",textValue(raw)));if basics,ok:=ctl.Data["Basics"].(map[string]any);ok{c.Name=textValue(basics["Model"]);c.Model=ptr(c.Name);c.Serial=ptr(textValue(basics["Serial Number"]));c.Firmware=ptr(textValue(basics["FW Package Build"]))};byKey[ck]=c}
+  for section,suffix:=range map[string]string{"Cachevault_Info":"cv","BBU_Info":"bbu"}{
+   raw,exists:=data[section];if !exists{continue};list,ok:=raw.([]any);if !ok{malformed(ck+": invalid "+section);continue}
+   for _,row:=range list{m,ok:=row.(map[string]any);if !ok{malformed(ck+": invalid "+section+" row");continue}
+    state,ok:=storcliBatteryState(m);if !ok{malformed(ck+": invalid "+section+" record");continue}
+    key:=ck+":"+suffix;byKey[key]=component(kind,"cache_battery",key,ck,strings.ToUpper(suffix),state,vendorState("cache_battery",state))
+   }
+  }
+  walkJSON(data,"",func(m jsonObject,path string){
+   if raw,ok:=m["Controller Status"];ok{c:=component(kind,"controller",ck,"",ck,textValue(raw),vendorState("controller",textValue(raw)));if basics,ok:=data["Basics"].(map[string]any);ok{c.Name=textValue(basics["Model"]);c.Model=ptr(c.Name);c.Serial=ptr(textValue(basics["Serial Number"]));c.Firmware=ptr(textValue(basics["FW Package Build"]))};byKey[ck]=c}
    if id,ok:=m["DG/VD"];ok{parts:=strings.Split(textValue(id),"/");if !storcliVDID.MatchString(textValue(id)){malformed(ck+": invalid VD identity");return};key:=ck+":v"+parts[1];raw:=textValue(m["State"]);c:=component(kind,"virtual_disk",key,ck,"VD "+parts[1],raw,vendorState("virtual_disk",raw));c.SizeBytes=sizeBytes(m["Size"]);c.Attributes["raidLevel"]=m["TYPE"];c.Attributes["diskGroup"]=parts[0];byKey[key]=c}
    eid,sl:="","";if id,ok:=m["EID:Slt"];ok{p:=storcliSlotID.FindStringSubmatch(textValue(id));if len(p)!=3{malformed(ck+": invalid EID:Slt");return};eid,sl=p[1],p[2]}
    if sl==""{if p:=drivePath.FindStringSubmatch(path);len(p)==3{eid,sl=p[1],p[2]}}
@@ -584,8 +651,6 @@ func parseStorcliSections(data []byte,kind Kind,required ...string)(Result,error
     if v,ok:=m["Progress%"];ok{n:=number(v);if n>=0&&n<=100{c.ProgressPercent=ptr(n)}}
     byKey[key]=c;if dg,ok:=m["DG"];ok{members[textValue(dg)]=append(members[textValue(dg)],key)}
    }
-   battery:="";if strings.Contains(strings.ToLower(path),"cachevault"){battery="cv"};if strings.Contains(strings.ToLower(path),"bbu"){battery="bbu"}
-   if raw,ok:=m["State"];battery!=""&&(ok||m["Present"]==false){key:=ck+":"+battery;byKey[key]=component(kind,"cache_battery",key,ck,strings.ToUpper(battery),textValue(raw),vendorState("cache_battery",textValue(raw)))}
    if id,ok:=m["EID"];ok&&strings.Contains(path,"Enclosure"){raw:=textValue(m["State"]);key:=ck+":enc"+textValue(id);byKey[key]=component(kind,"enclosure",key,ck,"Enclosure "+textValue(id),raw,vendorState("enclosure",raw))}
   })
   for key,c:=range byKey{if c.ComponentType=="virtual_disk"{ids:=members[textValue(c.Attributes["diskGroup"])];sort.Strings(ids);c.Attributes["memberKeys"]=ids;byKey[key]=c}}
@@ -595,8 +660,12 @@ func parseStorcliSections(data []byte,kind Kind,required ...string)(Result,error
 }
 func mergeComponents(dst,src []Component)[]Component{index:=map[string]int{};for i,c:=range dst{index[c.ComponentKey]=i};for _,c:=range src{if i,ok:=index[c.ComponentKey];ok{old:=dst[i];if c.State=="unknown"&&c.StateDetail!=nil&&*c.StateDetail==""&&old.State!="unknown"{c.State=old.State;c.StateDetail=old.StateDetail};if c.Serial==nil{c.Serial=old.Serial};if c.Model==nil{c.Model=old.Model};if c.Firmware==nil{c.Firmware=old.Firmware};if c.SizeBytes==nil{c.SizeBytes=old.SizeBytes};if c.TemperatureC==nil{c.TemperatureC=old.TemperatureC};if c.ProgressPercent==nil{c.ProgressPercent=old.ProgressPercent};c.PredictiveFailure=c.PredictiveFailure||old.PredictiveFailure;for k,v:=range old.Attributes{if _,ok:=c.Attributes[k];!ok{c.Attributes[k]=v}};dst[i]=c}else{index[c.ComponentKey]=len(dst);dst=append(dst,c)}};return dst}
 ```
-Missing/null lists and malformed identities make the source incomplete, while all identifiable observations from that controller and its siblings remain available for upsert. Explicit empty lists establish absence; omitted lists do not. A malformed `EID:Slt` cannot fall back to a path and become a fabricated identity.
+Missing/null lists and malformed identities make the source incomplete, while all identifiable observations from that controller and its siblings remain available for upsert. Explicit empty lists establish absence; omitted lists do not. CV/BBU sections must be arrays; each record needs a string `State` (including the explicit empty string) or boolean `Present:false`. Null/wrong-type values and `[{}]` make the source incomplete without emitting a fabricated battery. Each raw controller is decoded independently, so wrong-type identities, wrappers and response objects cannot discard valid siblings. A malformed `EID:Slt` cannot fall back to a path and become a fabricated identity.
 - [ ] **Step 4: Run green and inspect fixture size (2 min).** `cd agent && go test -race ./internal/collectors/hwhealth/...` → `ok`; `64-drive.json` assertions prove ≥1 MB and exactly 64 PDs for both source kinds.
+```bash
+cd agent && go test -race ./internal/collectors/hwhealth/... -run 'TestStorcli(BatterySections|MalformedControllerSiblings|IncompleteObservations)' -count=1
+```
+All cases must pass for storcli and perccli, with valid siblings preserved whether the malformed controller comes first or last.
 - [ ] **Step 5: Commit (2 min).**
 ```bash
 git add agent/internal/collectors/hwhealth/{storcli.go,storcli_test.go,testdata/storcli,testdata/perccli}
@@ -607,7 +676,7 @@ git commit -m $'feat(agent): parse Broadcom hardware states with large fixtures\
 
 **Files:** Create `agent/internal/collectors/hwhealth/storcli_source.go`, `agent/internal/collectors/hwhealth/storcli_source_test.go`.
 **Test:** `agent/internal/collectors/hwhealth/storcli_source_test.go`.
-**Interfaces:** Consumes `parseStorcliSections`, `runTool`, `lookupTool`; produces `newStorcli(kind Kind, extra []string, run toolRunner) Source`. `perccli` uses this function with `Kind("perccli")` and its own executable names.
+**Interfaces:** Consumes `parseStorcliSections`, `decodeStorcliControllers`, `decodeStorcliController`, `storcliNumericID`, `runTool`, `lookupTool`; produces `newStorcli(kind Kind, extra []string, run toolRunner) Source`. `perccli` uses this function with `Kind("perccli")` and its own executable names.
 
 - [ ] **Step 1: Write command and partial-observation tests (5 min).** `storcli_source_test.go`:
 ```go
@@ -646,12 +715,71 @@ func TestStorcliSplitMembershipAndProgressFailure(t *testing.T){
  keys,ok:=vd.Attributes["memberKeys"].([]string);if !ok||len(keys)!=1||keys[0]!="storcli:c0:e1:s2"{t.Fatal(vd.Attributes)}
  if findComponent(t,r.Components,"storcli:c0:cv").State!="missing"{t.Fatal("confirmed absent cache battery lost")}
 }
+func TestStorcliProgressIdentity(t *testing.T){
+ cases:=[]struct{name string;controller any;row map[string]any;valid bool;pd bool}{
+  {"missing-controller",nil,map[string]any{"VD":0},false,false},
+  {"string-controller","0",map[string]any{"VD":0},false,false},
+  {"negative-controller",-1,map[string]any{"VD":0},false,false},
+  {"fractional-controller",0.5,map[string]any{"VD":0},false,false},
+  {"missing-vd",0,map[string]any{},false,false},{"null-vd",0,map[string]any{"VD":nil},false,false},
+  {"negative-vd",0,map[string]any{"VD":-1},false,false},{"fractional-vd",0,map[string]any{"VD":0.5},false,false},
+  {"object-vd",0,map[string]any{"VD":map[string]any{}},false,false},
+  {"cross-controller-vd",0,map[string]any{"VD":"/c1/v0"},false,false},
+  {"conflicting-vd",0,map[string]any{"VD":0,"VD ID":1},false,false},
+  {"unobserved-vd",0,map[string]any{"VD":1},false,false},
+  {"missing-slot",0,map[string]any{"EID:Slt":"252:"},false,true},
+  {"text-slot",0,map[string]any{"EID:Slt":"252:slot"},false,true},
+  {"cross-controller-drive",0,map[string]any{"Drive-ID":"/c1/e252/s0"},false,true},
+  {"invalid-drive-fallback",0,map[string]any{"Drive-ID":"bad","EID:Slt":"252:0"},false,true},
+  {"conflicting-drive",0,map[string]any{"Drive-ID":"/c0/e252/s1","EID:Slt":"252:0"},false,true},
+  {"valid-vd-zero",0,map[string]any{"VD":0},true,false},
+  {"valid-vd-path",0,map[string]any{"VD ID":"/c0/v0"},true,false},
+  {"valid-slot",0,map[string]any{"EID:Slt":"252:0"},true,true},
+  {"valid-drive",0,map[string]any{"Drive-ID":"/c0/e252/s0"},true,true},
+ }
+ for _,kind:=range []Kind{"storcli","perccli"}{for _,operation:=range []int{1,2}{for _,tc:=range cases{t.Run(string(kind)+"/"+tc.name+"/"+string(rune('0'+operation)),func(t *testing.T){
+  r,e:=parseStorcli(fixture(t,string(kind),"multi-controller.json"),kind);if e!=nil{t.Fatal(e)}
+  status:=map[string]any{"Status":"Success"};if tc.controller!=nil{status["Controller"]=tc.controller}
+  row:=map[string]any{"Progress%":23};for k,v:=range tc.row{row[k]=v}
+  // Keep a valid sibling AFTER the bad controller to prove parsing continues on errors.
+  controllers:=[]any{map[string]any{"Command Status":status,"Response Data":map[string]any{"Progress":[]any{row}}},map[string]any{"Command Status":map[string]any{"Controller":1,"Status":"Success"},"Response Data":map[string]any{"Progress":[]any{map[string]any{"VD":0,"Progress%":61}}}}}
+  b,e:=json.Marshal(map[string]any{"Controllers":controllers});if e!=nil{t.Fatal(e)};e=applyStorcliProgress(b,kind,&r,operation)
+  if (e==nil)!=tc.valid||r.Complete!=tc.valid{t.Fatalf("valid=%v result=%+v error=%v",tc.valid,r,e)}
+  key:=string(kind)+":c0:v0";wantState:="optimal";if tc.pd{key=string(kind)+":c0:e252:s0";wantState="online"}
+  if tc.valid&&!tc.pd{wantState="initializing";if operation==2{wantState="checking"}}
+  c:=findComponent(t,r.Components,key);if c.State!=wantState||(c.ProgressPercent!=nil)!=tc.valid{t.Fatal(c)};if tc.valid&&*c.ProgressPercent!=23{t.Fatal(c)}
+  sibling:=findComponent(t,r.Components,string(kind)+":c1:v0");if sibling.ProgressPercent==nil||*sibling.ProgressPercent!=61{t.Fatal("valid sibling lost",sibling)}
+ })}}}
+}
+func TestStorcliProgressTargetIdentity(t *testing.T){
+ for _,bad:=range []string{"source","type","parent","missing-parent"}{t.Run(bad,func(t *testing.T){
+  c:=component("storcli","virtual_disk","storcli:c0:v0","storcli:c0","VD","Optl","optimal")
+  switch bad{case "source":c.Source="perccli";case "type":c.ComponentType="physical_disk";case "parent":c.ParentKey=ptr("storcli:c1");case "missing-parent":c.ParentKey=nil}
+  r:=Result{Complete:true,Components:[]Component{c}}
+  b:=[]byte(`{"Controllers":[{"Command Status":{"Controller":0,"Status":"Success"},"Response Data":{"Progress":[{"VD":0,"Progress%":23}]}}]}`)
+  if e:=applyStorcliProgress(b,"storcli",&r,1);e==nil||r.Complete{t.Fatal("mismatched target accepted",r,e)}
+  if r.Components[0].State!="optimal"||r.Components[0].ProgressPercent!=nil{t.Fatal("mismatched target changed",r.Components[0])}
+ })}
+}
+func TestStorcliProgressMalformedResponseAndPath(t *testing.T){
+ for _,data:=range []any{42,[]any{},nil,map[string]any{"Drive /c1/e252/s0":map[string]any{"Progress%":23}}}{
+  r,e:=parseStorcli(fixture(t,"storcli","multi-controller.json"),"storcli");if e!=nil{t.Fatal(e)}
+  doc:=map[string]any{"Controllers":[]any{map[string]any{"Command Status":map[string]any{"Controller":0,"Status":"Success"},"Response Data":data},map[string]any{"Command Status":map[string]any{"Controller":1,"Status":"Success"},"Response Data":map[string]any{"Drive /c1/e252/s0":map[string]any{"Progress%":61}}}}}
+  b,e:=json.Marshal(doc);if e!=nil{t.Fatal(e)};if e=applyStorcliProgress(b,"storcli",&r,0);e==nil||r.Complete{t.Fatal("invalid identity accepted",r,e)}
+  if findComponent(t,r.Components,"storcli:c0:e252:s0").ProgressPercent!=nil{t.Fatal("wrong controller changed")}
+  c:=findComponent(t,r.Components,"storcli:c1:e252:s0");if c.ProgressPercent==nil||*c.ProgressPercent!=61{t.Fatal(c)}
+ }
+}
 ```
-- [ ] **Step 2: Run red (2 min).** `cd agent && go test -race ./internal/collectors/hwhealth/...` → `undefined: newStorcli`. `TestStorcliRequiredCommandSections` also rejects successful but empty overview/VD/PD replies while keeping observations from other commands; the complete split-command case must remain complete.
+- [ ] **Step 2: Run red (2 min).** `cd agent && go test -race ./internal/collectors/hwhealth/...` → `undefined: newStorcli`. `TestStorcliRequiredCommandSections` also rejects successful but empty overview/VD/PD replies while keeping observations from other commands; the complete split-command case must remain complete. Add the identity regressions before changing an existing implementation:
+```bash
+cd agent && go test -race ./internal/collectors/hwhealth/... -run 'TestStorcliProgress' -count=1
+```
+Expect red: the identityless controller changes `c0:v0`, and the existing parser accepts cross-controller paths or stops before processing a valid sibling.
 - [ ] **Step 3: Implement read-only commands and progress (5 min).** `storcli_source.go`:
 ```go
 package hwhealth
-import("context";"encoding/json";"fmt";"sort";"strconv";"strings";"time")
+import("context";"errors";"fmt";"math";"regexp";"sort";"strconv";"strings";"time")
 var storcliCommands=[][]string{{"/call","show","all","J"},{"/call/vall","show","all","J"},{"/call/eall/sall","show","all","J"},{"/call/cv","show","all","J"},{"/call/bbu","show","all","J"},{"/call/eall/sall","show","rebuild","J"},{"/call/vall","show","init","J"},{"/call/vall","show","cc","J"}}
 func newStorcli(kind Kind,extra []string,run toolRunner)Source{return &source{kind:kind,tier:TierRAID,detect:func(context.Context)Availability{p,ok:=lookupTool([]string{string(kind)+"64",string(kind)},extra);return Availability{Path:p,Available:ok}},collect:func(ctx context.Context,a Availability)(Result,error){
  r:=Result{Complete:true};progress:=[3][]byte{}
@@ -669,16 +797,54 @@ func newStorcli(kind Kind,extra []string,run toolRunner)Source{return &source{ki
 func joinStorcliMembers(rows []Component){
  for i:=range rows{v:=&rows[i];if v.ComponentType!="virtual_disk"||v.ParentKey==nil{continue};keys:=[]string{};for _,p:=range rows{if p.ComponentType=="physical_disk"&&p.ParentKey!=nil&&*p.ParentKey==*v.ParentKey&&p.Attributes["diskGroup"]!=nil&&textValue(p.Attributes["diskGroup"])==textValue(v.Attributes["diskGroup"]){keys=append(keys,p.ComponentKey)}};sort.Strings(keys);v.Attributes["memberKeys"]=keys}
 }
-func applyStorcliProgress(b []byte,kind Kind,r *Result,operation int)error{
- var doc struct{Controllers []struct{Status struct{Controller int;Status string} `json:"Command Status"`;Data jsonObject `json:"Response Data"`}}
- if e:=json.Unmarshal(b,&doc);e!=nil{return e};if doc.Controllers==nil{return fmt.Errorf("missing progress Controllers")}
- for _,ctl:=range doc.Controllers{if ctl.Status.Status!="Success"{return fmt.Errorf("progress command failed")};ck:=controllerKey(kind,strconv.Itoa(ctl.Status.Controller))
-  walkJSON(ctl.Data,"",func(m jsonObject,path string){raw,ok:=m["Progress%"];if !ok{return};value,e:=strconv.ParseFloat(strings.TrimSuffix(textValue(raw),"%"),64);if e!=nil||value<0||value>100{return};key:="";if p:=drivePath.FindStringSubmatch(textValue(m["Drive-ID"]));len(p)==3{key=slotKey(ck,p[1],p[2])};if p:=drivePath.FindStringSubmatch(path);len(p)==3{key=slotKey(ck,p[1],p[2])};if id,ok:=m["EID:Slt"];ok{p:=strings.Split(textValue(id),":");if len(p)==2{key=slotKey(ck,p[0],p[1])}};for _,field:=range []string{"VD","VD ID"}{if id,ok:=m[field];ok{v:=textValue(id);if slash:=strings.LastIndex(v,"/v");slash>=0{v=v[slash+2:]};key=ck+":v"+v}};for j:=range r.Components{c:=&r.Components[j];if c.ComponentKey==key{c.ProgressPercent=ptr(int(value));if c.ComponentType=="virtual_disk"&&c.State=="optimal"{if operation==1{c.State="initializing"};if operation==2{c.State="checking"}}}}})
- };return nil
+var storcliProgressDrive=regexp.MustCompile(`^/c([0-9]+)/e([0-9]+)/s([0-9]+)$`)
+var storcliProgressPath=regexp.MustCompile(`/c([0-9]+)/e([0-9]+)/s([0-9]+)(?:/|$)`)
+var storcliProgressVD=regexp.MustCompile(`^/c([0-9]+)/v([0-9]+)$`)
+func storcliProgressKey(m jsonObject,path string,kind Kind,controller string)(string,ComponentType,error){
+ ck:=controllerKey(kind,controller);key:="";var typ ComponentType
+ accept:=func(candidate string,t ComponentType)bool{if key!=""&&(candidate!=key||typ!=t){return false};key,typ=candidate,t;return true}
+ drive:=func(p []string)bool{if len(p)!=4{return false};c,ok:=storcliNumericID(p[1]);if !ok||c!=controller{return false};enclosure,ok:=storcliNumericID(p[2]);if !ok{return false};slot,ok:=storcliNumericID(p[3]);return ok&&accept(slotKey(ck,enclosure,slot),"physical_disk")}
+ invalid:=func()(string,ComponentType,error){return "","",fmt.Errorf("%s: missing, invalid or conflicting progress identity",ck)}
+ if raw,exists:=m["Drive-ID"];exists{v,ok:=raw.(string);if !ok||!drive(storcliProgressDrive.FindStringSubmatch(v)){return invalid()}}
+ for _,p:=range storcliProgressPath.FindAllStringSubmatch(path,-1){if !drive(p){return invalid()}}
+ if raw,exists:=m["EID:Slt"];exists{
+  v,ok:=raw.(string);if !ok{return invalid()};p:=storcliSlotID.FindStringSubmatch(v);if len(p)!=3{return invalid()}
+  enclosure:=p[1];if enclosure!="-"{enclosure,ok=storcliNumericID(enclosure);if !ok{return invalid()}};slot,ok:=storcliNumericID(p[2]);if !ok||!accept(slotKey(ck,enclosure,slot),"physical_disk"){return invalid()}
+ }
+ for _,field:=range []string{"VD","VD ID"}{if raw,exists:=m[field];exists{
+  id,ok:=storcliNumericID(raw)
+  if !ok{v,isString:=raw.(string);if !isString{return invalid()};p:=storcliProgressVD.FindStringSubmatch(v);if len(p)!=3{return invalid()};c,valid:=storcliNumericID(p[1]);if !valid||c!=controller{return invalid()};id,ok=storcliNumericID(p[2])}
+  if !ok||!accept(ck+":v"+id,"virtual_disk"){return invalid()}
+ }}
+ if key==""{return invalid()};return key,typ,nil
+}
+func applyStorcliProgress(b []byte,kind Kind,r *Result,operation int)(err error){
+ defer func(){if err!=nil{r.Complete=false}}()
+ controllers,e:=decodeStorcliControllers(b);if e!=nil{return e};issues:=[]error{}
+ for _,raw:=range controllers{
+  id,data,e:=decodeStorcliController(raw);if e!=nil{issues=append(issues,e);continue};ck:=controllerKey(kind,id)
+  walkJSON(data,"",func(m jsonObject,path string){
+   raw,exists:=m["Progress%"];if !exists{return}
+   key,typ,e:=storcliProgressKey(m,path,kind,id);if e!=nil{issues=append(issues,e);return}
+   value,e:=strconv.ParseFloat(strings.TrimSuffix(textValue(raw),"%"),64);if e!=nil||math.IsNaN(value)||math.IsInf(value,0)||value<0||value>100{issues=append(issues,fmt.Errorf("%s: invalid progress",key));return}
+   for j:=range r.Components{c:=&r.Components[j];if c.ComponentKey!=key{continue}
+    if c.Source!=kind||c.ComponentType!=typ||c.ParentKey==nil||*c.ParentKey!=ck{issues=append(issues,fmt.Errorf("%s: progress target identity mismatch",key));return}
+    c.ProgressPercent=ptr(int(value));if typ=="virtual_disk"&&c.State=="optimal"{if operation==1{c.State="initializing"};if operation==2{c.State="checking"}};return
+   }
+   issues=append(issues,fmt.Errorf("%s: progress target not observed",key))
+  })
+ };return errors.Join(issues...)
 }
 ```
-Decision: unsupported progress queries or a failed battery query make the source incomplete, never manufacture `missing`. Explicit successful CV/BBU records with `Present: false` or empty State map to missing; an absent field alone is not evidence of absent hardware. A later W02b source can reuse the same runner without changing other collectors.
-- [ ] **Step 4: Run green (2 min).** `cd agent && go test -race ./internal/collectors/hwhealth/...` → `ok`.
+Decision: unsupported progress queries or a failed battery query make the source incomplete, never manufacture `missing`. Explicit successful CV/BBU records with `Present: false` or empty State map to missing; an absent field alone is not evidence of absent hardware. Progress uses the same independent controller decoder as inventory. Missing/wrong-type/negative controller IDs, malformed component IDs, conflicting identifiers and cross-controller paths make the result incomplete and never mutate that row; valid sibling progress still applies. The target must already exist with the same source, component type and parent controller. A later W02b source can reuse the same runner without changing other collectors.
+- [ ] **Step 4: Run green (2 min).**
+```bash
+cd agent && go test -race ./internal/collectors/hwhealth/... -run 'TestStorcli' -count=1
+```
+```bash
+cd agent && go test -race ./internal/collectors/hwhealth/...
+```
+Both commands must return exit code 0; valid zero-valued controller/VD IDs still apply initialization and consistency-check progress.
 - [ ] **Step 5: Commit (2 min).**
 ```bash
 git add agent/internal/collectors/hwhealth/{storcli_source.go,storcli_source_test.go}
@@ -1192,14 +1358,14 @@ git commit -m $'feat(agent): persist hardware sequences and SMART cache atomical
 
 ### Task 13: Orchestrate single-flight collection, budgets, fairness and snapshot limits
 
-**Files:** Create `agent/internal/collectors/hwhealth/collector.go`, `agent/internal/collectors/hwhealth/collector_test.go`.
+**Files:** Create `agent/internal/collectors/hwhealth/collector.go`, `agent/internal/collectors/hwhealth/collector_test.go`; modify Task 11's `agent/internal/collectors/hwhealth/merge.go` and Task 12's `agent/internal/collectors/hwhealth/persist.go` to bound topology capture and state writes.
 **Test:** `agent/internal/collectors/hwhealth/collector_test.go`.
-**Interfaces:** Produces exact contract `Options{DataDir string; ExtraToolDirs []string; Sources []Source; Now func() time.Time}`, `New(opts Options) *Collector`, `(*Collector).ApplyConfig(Config)`, `(*Collector).Run(ctx context.Context, tiers []Tier) (*Snapshot, error)`. Consumes every source and Tasks 4/11/12. `Run` returns `(nil,nil)` for a skipped flight or suppressed daily/disabled duplicate; caller must not upload nil.
+**Interfaces:** Produces exact contract `Options{DataDir string; ExtraToolDirs []string; Sources []Source; Now func() time.Time}`, `New(opts Options) *Collector`, `(*Collector).ApplyConfig(Config)`, `(*Collector).Run(ctx context.Context, tiers []Tier) (*Snapshot, error)`. Consumes every source and Tasks 4/11/12. Adds `boundedVendorTopology` with count/serialized-byte limits, and a shared `maxHardwareStateBytes` for persistence reads and writes. `Run` returns `(nil,nil)` for a skipped flight or suppressed daily/disabled duplicate; caller must not upload nil.
 
 - [ ] **Step 1: Write scheduler and transport-limit regressions (5 min).** `collector_test.go`:
 ```go
 package hwhealth
-import("context";"encoding/json";"errors";"os";"path/filepath";"strings";"sync";"testing";"time";"unicode/utf16";"unicode/utf8")
+import("context";"encoding/json";"errors";"fmt";"os";"path/filepath";"strings";"sync";"testing";"time";"unicode/utf16";"unicode/utf8")
 func fakeSource(k Kind,tier Tier,available bool,fn func(context.Context)(Result,error))Source{return &source{kind:k,tier:tier,detect:func(context.Context)Availability{return Availability{Available:available,Path:"fixture"}},collect:func(ctx context.Context,_ Availability)(Result,error){return fn(ctx)}}}
 func good(ctx context.Context)(Result,error){return Result{Complete:true},nil}
 func TestCollectorSingleFlight(t *testing.T){entered,release:=make(chan struct{}),make(chan struct{});s:=fakeSource("storcli",TierRAID,true,func(context.Context)(Result,error){close(entered);<-release;return good(context.Background())});c:=New(Options{DataDir:t.TempDir(),Sources:[]Source{s}});done:=make(chan struct{});go func(){defer close(done);if _,e:=c.Run(context.Background(),[]Tier{TierRAID});e!=nil{t.Error(e)}}();<-entered;if snap,e:=c.Run(context.Background(),[]Tier{TierRAID});snap!=nil||e!=nil{t.Fatal("queued a second flight")};c.ApplyConfig(Config{Enabled:true,PollInterval:5*time.Minute,DiskHealthInterval:15*time.Minute});close(release);<-done}
@@ -1300,11 +1466,75 @@ func TestCollectorSMARTSharedPathIdentity(t *testing.T){
   }}
  })}
 }
+func TestVendorTopologyBounds(t *testing.T){
+ now:=time.Unix(1000,0)
+ row:=func(i int)Component{return component("storcli","physical_disk",fmt.Sprintf("storcli:c0:e1:s%d",i),"storcli:c0","PD","Onln","online")}
+ rows:=make([]Component,2000);for i:=range rows{rows[i]=row(i)}
+ topology:=updateVendorTopology(nil,rows,nil,now,10*time.Minute);if len(topology)!=2000{t.Fatal("exact count limit rejected",len(topology))}
+ // Partial inventories cannot accumulate an unbounded number of identities across cycles.
+ got:=updateVendorTopology(topology,[]Component{row(2000)},nil,now.Add(time.Minute),10*time.Minute)
+ if len(got)!=0{t.Fatal("overflow must disable suppression, not create false unique serials",len(got))}
+ cases:=[]struct{name string;rows []Component}{{"count",append(rows,row(2000))}}
+ for _,field:=range []string{"key","serial","model"}{c:=row(0);huge:=strings.Repeat("x",4*1024*1024);switch field{case "key":c.ComponentKey=huge;case "serial":c.Serial=&huge;case "model":c.Model=&huge};cases=append(cases,struct{name string;rows []Component}{field,[]Component{c}})}
+ escaped:=make([]Component,1300);for i:=range escaped{c:=row(i);c.ComponentKey=fmt.Sprintf("%04d",i)+strings.Repeat("\x00",190);c.Serial=ptr(strings.Repeat("\x00",200));c.Model=ptr(strings.Repeat("\x00",200));escaped[i]=c}
+ cases=append(cases,struct{name string;rows []Component}{"serialized-bytes",escaped})
+ for _,tc:=range cases{t.Run(tc.name,func(t *testing.T){got:=updateVendorTopology(nil,tc.rows,nil,now,10*time.Minute);if len(got)!=0{t.Fatal("unbounded topology retained",len(got))};b,e:=json.Marshal(got);if e!=nil||len(b)>2*1024*1024{t.Fatal(len(b),e)}})}
+ // Updating an existing identity does not consume an extra count or renew unseen evidence.
+ replacement:=row(0);replacement.Serial=ptr("new")
+ got=updateVendorTopology(topology,[]Component{replacement},nil,now.Add(time.Minute),10*time.Minute)
+ if len(got)!=2000||got[replacement.ComponentKey].Serial!="new"||!got[row(1).ComponentKey].ObservedAt.Equal(now){t.Fatal("replacement or timestamp changed")}
+}
+func TestCollectorTopologyBoundedRestart(t *testing.T){
+ now:=time.Unix(1000,0);rows:=[]Component{};complete:=true
+ vd:=component("storcli","virtual_disk","storcli:c0:v0","storcli:c0","VD","Optl","optimal");vd.Model=ptr("PERC volume")
+ win:=component("windows_physical_disk","physical_disk","winpd:volume","","disk","OK","online");win.Model=ptr("PERC volume")
+ raid:=fakeSource("storcli",TierRAID,true,func(context.Context)(Result,error){return Result{Components:rows,Complete:complete},nil})
+ disk:=fakeSource("windows_physical_disk",TierDisk,true,func(context.Context)(Result,error){return Result{Components:[]Component{win},Complete:true},nil})
+ opts:=Options{DataDir:t.TempDir(),Sources:[]Source{raid,disk},Now:func()time.Time{return now}}
+ c:=New(opts);rows=[]Component{vd}
+ if _,e:=c.Run(context.Background(),[]Tier{TierRAID});e!=nil{t.Fatal(e)}
+ // This raw model alone exceeded the state reader limit before wire-field truncation.
+ huge:=vd;huge.Model=ptr(strings.Repeat("x",4*1024*1024));rows=[]Component{huge};complete=false
+ snap,e:=c.Run(context.Background(),[]Tier{TierRAID});if e!=nil||snap==nil||len(snap.Components)!=1{t.Fatal("lost valid observations",snap,e)}
+ if len(c.state.VendorTopology)!=0{t.Fatal("oversized topology persisted")}
+ if snap.Sources[0].Complete==nil||*snap.Sources[0].Complete||len(snap.Sources[0].Warnings)==0{t.Fatal("topology limit not reported",snap.Sources)}
+ b,e:=os.ReadFile(filepath.Join(opts.DataDir,"hwhealth_state.json"));if e!=nil||len(b)>4*1024*1024{t.Fatal(len(b),e)}
+ c=New(opts);snap,e=c.Run(context.Background(),[]Tier{TierDisk});if e!=nil||snap==nil||snap.Sequence!=3{t.Fatal("restart wedged",snap,e)}
+ if findComponent(t,snap.Components,"winpd:volume").AlertExempt{t.Fatal("limited topology suppressed disk")}
+ rows=[]Component{vd};complete=true
+ if _,e=c.Run(context.Background(),[]Tier{TierRAID});e!=nil{t.Fatal(e)}
+ c=New(opts);snap,e=c.Run(context.Background(),[]Tier{TierDisk});if e!=nil||snap==nil||snap.Sequence!=5{t.Fatal(snap,e)}
+ if !findComponent(t,snap.Components,"winpd:volume").AlertExempt{t.Fatal("normal topology did not recover")}
+}
+func TestHardwareStateWriteLimit(t *testing.T){
+ dir:=t.TempDir();path:=filepath.Join(dir,"boundary.json")
+ // A JSON string contributes two quote bytes. Reader and writer share the exact 4 MiB cap.
+ atLimit:=strings.Repeat("x",4*1024*1024-2)
+ if e:=writeJSON(path,atLimit);e!=nil{t.Fatal(e)};var restored string
+ if e:=readJSON(path,&restored);e!=nil||restored!=atLimit{t.Fatal("boundary unreadable",e)}
+ before,e:=os.ReadFile(path);if e!=nil{t.Fatal(e)}
+ if e=writeJSON(path,atLimit+"x");e==nil{t.Fatal("oversized write accepted")}
+ after,e:=os.ReadFile(path);if e!=nil||string(after)!=string(before){t.Fatal("last readable file replaced",e)}
+ if _,e=os.Stat(path+".tmp");!os.IsNotExist(e){t.Fatal("oversized write touched temporary file",e)}
+ state:=diskState{};if e=reserveSequence(dir,&state);e!=nil{t.Fatal(e)}
+ statePath:=filepath.Join(dir,"hwhealth_state.json");before,e=os.ReadFile(statePath);if e!=nil{t.Fatal(e)}
+ state.MDMembers=map[string]string{"md0/0":atLimit}
+ if e=reserveSequence(dir,&state);e==nil||state.Sequence!=1{t.Fatal("failed reservation advanced sequence",state.Sequence,e)}
+ after,e=os.ReadFile(statePath);if e!=nil||string(after)!=string(before){t.Fatal("sequence file overwritten",e)}
+ var loaded diskState;if e=readJSON(statePath,&loaded);e!=nil||loaded.Sequence!=1{t.Fatal("restart state lost",e)}
+ state.MDMembers=nil;if e=reserveSequence(dir,&state);e!=nil||state.Sequence!=2{t.Fatal("valid retry failed",e)}
+}
 ```
 - [ ] **Step 2: Run red (2 min).** `cd agent && go test -race ./internal/collectors/hwhealth/...` → `undefined: New`. Add the new regression tests before replacing the pre-review implementations, then run:
 ```bash
 cd agent && go test -race ./internal/collectors/hwhealth/... -run 'Test(SnapshotUTF16Limits|CollectorWindowsTopologyRestart)' -count=1
 ```
+Before changing topology and persistence, run these regressions against the pre-review implementations:
+```bash
+cd agent && go test -race ./internal/collectors/hwhealth/... -run 'Test(VendorTopologyBounds|CollectorTopologyBoundedRestart|HardwareStateWriteLimit)' -count=1
+```
+Expect red: identities accumulate beyond the cap, a large raw model poisons restart state, and the writer replaces the readable file with more than 4 MiB. The boundary test also requires exactly 4 MiB to remain readable.
+
 Expect failure: the old limiter accepts 201-unit keys and the old collector clears Windows suppression on disk-only polls. The SMART regression uses Task 10's mocked scan/probe helper and checks the final snapshot after `merge` and `limitSnapshot`; restoring the name-only fallback must lose a row and fail this test.
 - [ ] **Step 3: Implement construction and synchronized configuration (5 min).** Create `collector.go` with this block and append Step 4's methods:
 ```go
@@ -1353,7 +1583,8 @@ func(c *Collector)Run(parent context.Context,tiers []Tier)(*Snapshot,error){
   snapshot.Sources=append(snapshot.Sources,report)
  }
  if cfg.Enabled&&!noTools{for _,t:=range []Tier{TierRAID,TierDisk}{if ranTiers[t]{snapshot.TiersRun=append(snapshot.TiersRun,string(t))}};if len(snapshot.TiersRun)==0{return nil,nil}}
- topology:=updateVendorTopology(c.state.VendorTopology,snapshot.Components,snapshot.Sources,now,cfg.PollInterval)
+ topology,topologyLimited:=boundedVendorTopology(c.state.VendorTopology,snapshot.Components,snapshot.Sources,now,cfg.PollInterval)
+ if topologyLimited{for i:=range snapshot.Sources{report:=&snapshot.Sources[i];if vendorSource(report.Source)&&report.Status=="ok"{report.Complete=ptr(false);report.Warnings=append(report.Warnings,"vendor topology limited; Windows suppression disabled")}}}
  snapshot.Components=merge(snapshot.Components,c.cache,now,cfg.DiskHealthInterval,topology);limitSnapshot(snapshot)
  // Cache contains unique serial entries only. Bound retention on many changing devices.
  if len(c.cache)>64{keys:=[]string{};for k:=range c.cache{keys=append(keys,k)};sort.Slice(keys,func(i,j int)bool{return c.cache[keys[i]].ObservedAt.After(c.cache[keys[j]].ObservedAt)});for _,k:=range keys[64:]{delete(c.cache,k)}}
@@ -1378,16 +1609,70 @@ func limitSnapshot(s *Snapshot){
  for i:=range s.Sources{if len(s.Sources[i].Warnings)>50{s.Sources[i].Warnings=s.Sources[i].Warnings[:50]}}
 }
 ```
-`tiersRun` contains actual scheduled tiers, including failed/backing-off attempts; it never claims a disk probe because cached SMART was replayed. `none` means no capability across both tiers and is persisted at most daily. A budget-skipped source is visible as failed but does not accrue a breaker strike. The next-cycle cursor is a source `Kind`, not a filtered index. Vendor topology is built before merge and payload filtering, passed only to Windows suppression, and committed with the reserved sequence; reading it never advances its observation timestamps. Wire string limits use UTF-16 units for identity rejection and display-field truncation, always at a whole-rune boundary. Snapshot marshaling also limits the runtime version injected later by Task 14.
+In `merge.go`, replace Task 11's entire `updateVendorTopology` function with the following block. Its signature stays unchanged for existing callers; the collector uses the second function to report limiting. The builder checks each entry before inserting it and never truncates an identity or serial. On any overflow it clears this auxiliary suppression cache, since retaining an arbitrary subset could turn duplicate serials into false unique matches.
+```go
+const maxVendorIdentities=2000
+const maxVendorTopologyBytes=2*1024*1024
+func updateVendorTopology(previous vendorTopology,rows []Component,reports []SourceReport,now time.Time,interval time.Duration)vendorTopology{
+ next,_:=boundedVendorTopology(previous,rows,reports,now,interval);return next
+}
+func boundedVendorTopology(previous vendorTopology,rows []Component,reports []SourceReport,now time.Time,interval time.Duration)(vendorTopology,bool){
+ next:=vendorTopology{};sizes:=map[string]int{};used:=2
+ add:=func(key string,e vendorIdentity)bool{
+  if key==""||wireStringLen(key)>200||wireStringLen(e.Serial)>200||wireStringLen(e.Model)>200{return false}
+  if !vendorSource(e.Source)||(e.Type!="physical_disk"&&e.Type!="virtual_disk"){return false}
+  // Include JSON escaping, field names and map-key bytes, not just the raw string lengths.
+  b,err:=json.Marshal(map[string]vendorIdentity{key:e});if err!=nil{return false};size:=len(b)-2
+  old,exists:=sizes[key];count:=len(next);bytes:=used-old+size
+  if !exists{count++;if len(next)>0{bytes++}}
+  if count>maxVendorIdentities||bytes>maxVendorTopologyBytes{return false}
+  next[key]=e;sizes[key]=size;used=bytes;return true
+ }
+ replaced:=func(source Kind)bool{for _,r:=range reports{if r.Source==source&&r.Status=="ok"&&r.Complete!=nil&&*r.Complete{return true}};return false}
+ for key,e:=range previous{
+  if now.Before(e.ObservedAt)||now.Sub(e.ObservedAt)>=2*interval||replaced(e.Source){continue}
+  if !add(key,e){return vendorTopology{},true}
+ }
+ for _,c:=range rows{
+  if !vendorSource(c.Source)||(c.ComponentType!="physical_disk"&&c.ComponentType!="virtual_disk"){continue}
+  model:="";if c.Model!=nil{model=*c.Model}
+  if !add(c.ComponentKey,vendorIdentity{Source:c.Source,Type:c.ComponentType,Serial:serial(c),Model:model,ObservedAt:now}){return vendorTopology{},true}
+ }
+ return next,false
+}
+```
+Also replace `merge`'s local topology initialization (the statement beginning `topology:=updateVendorTopology`) with this block, so supplying the bounded topology does not first build a second copy from raw rows:
+```go
+var topology vendorTopology
+if len(topologies)>0{topology=topologies[0]}else{topology=updateVendorTopology(nil,rows,nil,now,interval)}
+```
+In `persist.go`, replace Task 12's `readJSON` and `writeJSON` functions with the following block. Keep `diskState`, `reserveSequence` and the existing imports. The common size guard runs before creating directories, opening a temporary file or replacing the current file; an oversized state cannot consume a sequence or poison the next restart.
+```go
+const maxHardwareStateBytes=4*1024*1024
+func readJSON(path string,value any)error{
+ f,e:=os.Open(path);if errors.Is(e,os.ErrNotExist){return nil};if e!=nil{return e};defer f.Close()
+ b,e:=io.ReadAll(io.LimitReader(f,maxHardwareStateBytes+1));if e!=nil{return e}
+ if len(b)>maxHardwareStateBytes{return fmt.Errorf("hardware state exceeds 4 MiB")};return json.Unmarshal(b,value)
+}
+func writeJSON(path string,value any)error{
+ b,e:=json.Marshal(value);if e!=nil{return e}
+ if len(b)>maxHardwareStateBytes{return fmt.Errorf("hardware state exceeds 4 MiB")}
+ if e=os.MkdirAll(filepath.Dir(path),0700);e!=nil{return e};tmp:=path+".tmp"
+ f,e:=os.OpenFile(tmp,os.O_CREATE|os.O_TRUNC|os.O_WRONLY,0600);if e!=nil{return e};defer os.Remove(tmp)
+ if _,e=f.Write(b);e!=nil{_ =f.Close();return e};if e=f.Sync();e!=nil{_ =f.Close();return e};if e=f.Close();e!=nil{return e}
+ for attempt:=0;attempt<4;attempt++{if attempt>0{time.Sleep(25*time.Millisecond<<uint(attempt-1))};if e=os.Rename(tmp,path);e==nil{return nil}};return fmt.Errorf("replace hardware state after 4 attempts: %w",e)
+}
+```
+`tiersRun` contains actual scheduled tiers, including failed/backing-off attempts; it never claims a disk probe because cached SMART was replayed. `none` means no capability across both tiers and is persisted at most daily. A budget-skipped source is visible as failed but does not accrue a breaker strike. The next-cycle cursor is a source `Kind`, not a filtered index. Vendor topology capture is independently bounded before merge and payload filtering (2,000 identities, 2 MiB of serialized topology and 200 UTF-16 units per key/serial/model), passed only to Windows suppression, and committed with the reserved sequence; reading it never advances its observation timestamps. Within those bounds the existing TTL, complete-inventory replacement and partial-observation retention rules remain intact. Exceeding a topology bound disables auxiliary Windows suppression for that cycle, reports an incomplete vendor source with a warning, and still uploads the bounded real observations. The full state/cache writer separately enforces the reader's exact 4 MiB cap before replacing any readable file. Wire string limits use UTF-16 units for identity rejection and display-field truncation, always at a whole-rune boundary. Snapshot marshaling also limits the runtime version injected later by Task 14.
 - [ ] **Step 5: Run green (2 min).** `cd agent && go test -race ./internal/collectors/hwhealth/...` → `ok`; the budget test uses 20 ms contexts, never sleeps four minutes.
 ```bash
-cd agent && go test -race ./internal/collectors/hwhealth/... -run 'Test(SMARTSharedPathIdentity|CollectorSMARTSharedPathIdentity|StorcliIncompleteObservations|StorcliExplicitEmptyLists|StorcliRequiredCommandSections|WindowsTopologyAcrossTiers|VendorTopologyPersistence|CollectorWindowsTopologyRestart|SnapshotUTF16Limits)' -count=1
+cd agent && go test -race ./internal/collectors/hwhealth/... -run 'Test(VendorTopologyBounds|CollectorTopologyBoundedRestart|HardwareStateWriteLimit|StorcliBatterySections|StorcliMalformedControllerSiblings|StorcliProgress.*|SMARTSharedPathIdentity|CollectorSMARTSharedPathIdentity|StorcliIncompleteObservations|StorcliExplicitEmptyLists|StorcliRequiredCommandSections|WindowsTopologyAcrossTiers|VendorTopologyPersistence|CollectorWindowsTopologyRestart|SnapshotUTF16Limits)' -count=1
 ```
 Expect exit code 0: both disks and their distinct SMART observations survive the complete collector path; a successful full scan remains complete. Keep the existing duplicate-key payload guard: the source now supplies distinct keys.
 
 - [ ] **Step 6: Commit (2 min).**
 ```bash
-git add agent/internal/collectors/hwhealth/{collector.go,collector_test.go}
+git add agent/internal/collectors/hwhealth/{collector.go,collector_test.go,merge.go,persist.go}
 git commit -m $'feat(agent): schedule bounded hardware cycles with fair retries\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>'
 ```
 
@@ -1582,6 +1867,12 @@ git commit -m $'feat(agent): deliver hardware health on jittered tracked heartbe
 ```
 
 ## Self-review
+
+- Third-pass P2 (battery completeness, Task 5): validate CV/BBU section arrays and record types; `[{}]`, null/wrong-type states and malformed presence flags produce `Complete:false` without inventing a battery. Explicit empty lists and explicit absence retain their existing semantics; mixed lists retain valid observations.
+- Third-pass P2 (controller isolation, Task 5): decode the outer envelope into raw controller messages and each controller's status/identity/`Response Data` independently. Regressions prove both storcli and perccli retain valid sibling controller/VD/PD observations when a malformed controller is first or last. The proposed source files do not yet exist in this checkout; verification used the plan's executable blocks and the index/design partial-observation contract.
+- Third-pass P2 (progress identity, Task 6): share that controller decoder, validate component identifiers and embedded controller paths, reject conflicting identities, and verify source/type/parent on the observed target before changing progress/state. Missing controller identity cannot default to zero; valid zero IDs and valid siblings still work for init/CC/rebuild replies.
+- Third-pass P2 (durable topology bounds, Task 13): bound capture to 2,000 identities / 2 MiB serialized topology, reject oversized identity fields without truncating serials, and enforce the same 4 MiB limit in the reader and writer before any file replacement. Overflow clears only auxiliary suppression evidence to avoid false uniqueness, retains real observations with an incomplete warning, and cannot wedge collection after restart. Tests cover cumulative partial inventories, escaped-byte size, large raw fields, exact reader/writer boundaries, preserved last-readable bytes, unconsumed sequence on failure, restart and recovery.
+- Third-pass boundary: W02a supplies every new decoder, guard and regression itself. Task 13 completes the bounds on its own Task 11/12 helpers; no other wave must supply implementation. Only this plan document is changed; existing persistence references (`state.go` and `change_tracker.go`) remain read-only.
 
 - Cross-plan P2 (storcli completeness): Task 5 validates successful wrappers, required response/list sections and controller/PD/VD identities. Missing sections or malformed records preserve valid observations with `Complete:false`; explicit empty lists remain complete. Task 6 supplies command-specific section requirements so split queries do not require unrelated lists. Parser regressions cover both storcli and perccli.
 - Cross-plan P2 (Windows suppression): Task 11 uses the last observed vendor VD/PD serials and models, timestamped per identity. Tasks 12–13 persist them in `hwhealth_state.json`, retain them across restart and disk-only/failed/partial polls without renewing unseen evidence, and expire them at 2 × the current RAID interval. A complete source inventory replaces that source's topology. Regressions cover restart, expiry, policy shortening, partial/failing polls, removal and duplicate serials. SMART merging remains snapshot-local; cached vendor health rows are never replayed.
