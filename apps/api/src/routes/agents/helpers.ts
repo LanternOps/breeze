@@ -26,6 +26,7 @@ import {
   configurationPolicies,
   configPolicyEffectiveFeatureLinks,
   configPolicyEventLogSettings,
+  configPolicyHardwareMonitoringSettings,
   configPolicyMonitoringSettings,
   configPolicyMonitoringWatches,
   configPolicyOnedriveSettings,
@@ -63,7 +64,8 @@ import {
 } from '../../services/featureConfigResolver';
 import { resolveEffectiveWarrantyInlineSettings } from '../../services/warrantyPolicyResolution';
 import { warrantyHpCmslCollectionEffective } from '@breeze/shared/validators';
-import { policyOwnershipCondition } from '../../services/configPolicyOwnership';
+import { policyOwnershipCondition, withDevicePartnerPolicyVisibility } from '../../services/configPolicyOwnership';
+import { HARDWARE_MONITORING_DEFAULTS, hardwareMonitoringInlineSettingsSchema, type HardwareMonitoringInlineSettings } from '@breeze/shared';
 import { resolveUserGroupMembershipCached } from '../../services/onedriveGraph';
 import { captureException } from '../../services/sentry';
 import { getBinaryEdition } from '../../services/binaryEdition';
@@ -2029,6 +2031,167 @@ export async function buildEventLogConfigUpdate(deviceId: string): Promise<{
     collect_categories: settings.collectCategories,
     minimum_level: settings.minimumLevel,
     collection_interval_minutes: settings.collectionIntervalMinutes,
+  };
+}
+
+type HardwareMonitoringPolicyView = { enabled: boolean; source: 'default' | 'policy'; policyName?: string };
+
+/**
+ * Resolve hardware-monitoring collection settings for a device via the full
+ * assignment hierarchy (device → device_group → site → org → partner),
+ * mirroring `resolveDeviceEventLogSettings`. Also returns provenance
+ * (`policy`/`default` + policy name) for Task 13's AI/read surfaces.
+ *
+ * Uses `withDevicePartnerPolicyVisibility` to temporarily widen visibility to
+ * the device's own partner on this transaction only — the settings table is
+ * reached through `configuration_policies`, whose RLS predicate is
+ * `breeze_has_org_access(org_id) OR breeze_has_partner_access(partner_id)`, and
+ * an org-scoped caller's context does not carry its own partner id in
+ * `accessiblePartnerIds`.
+ */
+async function resolveHardwareMonitoring(deviceId: string): Promise<{ settings: HardwareMonitoringInlineSettings; policy: HardwareMonitoringPolicyView }> {
+  const fallback = { settings: { ...HARDWARE_MONITORING_DEFAULTS }, policy: { enabled: HARDWARE_MONITORING_DEFAULTS.enabled, source: 'default' as const } };
+
+  const [device] = await db
+    .select({
+      orgId: devices.orgId,
+      siteId: devices.siteId,
+      deviceRole: devices.deviceRole,
+      osType: devices.osType,
+    })
+    .from(devices)
+    .where(eq(devices.id, deviceId))
+    .limit(1);
+
+  if (!device) return fallback;
+
+  const [org] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, device.orgId))
+    .limit(1);
+
+  const groupRows = await db
+    .select({ groupId: deviceGroupMemberships.groupId })
+    .from(deviceGroupMemberships)
+    .where(eq(deviceGroupMemberships.deviceId, deviceId));
+  const groupIds = groupRows.map((r) => r.groupId);
+
+  const targetConditions = [
+    and(eq(configPolicyAssignments.level, 'device'), eq(configPolicyAssignments.targetId, deviceId)),
+    and(eq(configPolicyAssignments.level, 'site'), eq(configPolicyAssignments.targetId, device.siteId)),
+    and(eq(configPolicyAssignments.level, 'organization'), eq(configPolicyAssignments.targetId, device.orgId)),
+  ];
+  if (groupIds.length > 0) {
+    targetConditions.push(
+      and(eq(configPolicyAssignments.level, 'device_group'), inArray(configPolicyAssignments.targetId, groupIds))!
+    );
+  }
+  if (org?.partnerId) {
+    targetConditions.push(
+      and(eq(configPolicyAssignments.level, 'partner'), eq(configPolicyAssignments.targetId, org.partnerId))!
+    );
+  }
+
+  const rows = await withDevicePartnerPolicyVisibility(db, org?.partnerId ?? null, async (executor) =>
+    executor
+      .select({
+        policyName: configurationPolicies.name,
+        level: configPolicyAssignments.level,
+        assignmentPriority: configPolicyAssignments.priority,
+        roleFilter: configPolicyAssignments.roleFilter,
+        osFilter: configPolicyAssignments.osFilter,
+        enabled: configPolicyHardwareMonitoringSettings.enabled,
+        pollIntervalMinutes: configPolicyHardwareMonitoringSettings.pollIntervalMinutes,
+        diskHealthIntervalMinutes: configPolicyHardwareMonitoringSettings.diskHealthIntervalMinutes,
+      })
+      .from(configPolicyAssignments)
+      .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
+      .innerJoin(configPolicyEffectiveFeatureLinks, and(
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'hardware_monitoring'),
+      ))
+      .innerJoin(configPolicyHardwareMonitoringSettings, eq(configPolicyHardwareMonitoringSettings.featureLinkId, configPolicyEffectiveFeatureLinks.id))
+      .where(and(
+        eq(configurationPolicies.status, 'active'),
+        policyOwnershipCondition({ orgId: device.orgId, partnerId: org?.partnerId ?? null }),
+        or(...targetConditions),
+        ...buildRoleOsFilterConditions({ deviceRole: device.deviceRole, osType: device.osType }),
+      ))
+  );
+
+  const eligible = rows.filter((r) =>
+    matchesRoleOsFilter(r, { deviceRole: device.deviceRole, osType: device.osType })
+  );
+  eligible.sort((a, b) => {
+    const levelDiff = (LEVEL_PRIORITY[b.level] ?? 0) - (LEVEL_PRIORITY[a.level] ?? 0);
+    if (levelDiff !== 0) return levelDiff;
+    return a.assignmentPriority - b.assignmentPriority;
+  });
+
+  const winner = eligible[0];
+  if (!winner) return fallback;
+  return {
+    settings: hardwareMonitoringInlineSettingsSchema.parse(winner),
+    policy: { enabled: winner.enabled, source: 'policy', policyName: winner.policyName },
+  };
+}
+
+export async function resolveDeviceHardwareMonitoringSettings(deviceId: string): Promise<HardwareMonitoringInlineSettings> {
+  return (await resolveHardwareMonitoring(deviceId)).settings;
+}
+
+export async function resolveDeviceHardwareMonitoringPolicy(deviceId: string): Promise<HardwareMonitoringPolicyView> {
+  return (await resolveHardwareMonitoring(deviceId)).policy;
+}
+
+export const HARDWARE_MONITORING_CACHE_TTL_SECONDS = 120;
+
+/**
+ * Resolve hardware-monitoring settings for a device with a 2-min Redis cache,
+ * matching `getDeviceEventLogSettings`.
+ */
+export async function getDeviceHardwareMonitoringSettings(deviceId: string): Promise<HardwareMonitoringInlineSettings> {
+  const redis = getRedis();
+  const cacheKey = `hwmon:settings:device:${deviceId}`;
+
+  if (redis) {
+    try {
+      const cached = await redis.get(cacheKey);
+      if (cached) return hardwareMonitoringInlineSettingsSchema.parse(JSON.parse(cached));
+    } catch (cacheErr) {
+      console.warn(`[hardware-health] settings cache read failed for device ${deviceId}:`, cacheErr);
+    }
+  }
+
+  const settings = await resolveDeviceHardwareMonitoringSettings(deviceId);
+
+  if (redis) {
+    try {
+      await redis.set(cacheKey, JSON.stringify(settings), 'EX', HARDWARE_MONITORING_CACHE_TTL_SECONDS);
+    } catch (cacheErr) {
+      console.warn(`[hardware-health] settings cache write failed for device ${deviceId}:`, cacheErr);
+    }
+  }
+
+  return settings;
+}
+
+/**
+ * Build hardware_monitoring config update payload for heartbeat response.
+ * Returns agent-facing settings, including defaults when no policy is assigned.
+ */
+export async function buildHardwareMonitoringConfigUpdate(deviceId: string): Promise<{
+  enabled: boolean;
+  poll_interval_minutes: number;
+  disk_health_interval_minutes: number;
+}> {
+  const settings = await getDeviceHardwareMonitoringSettings(deviceId);
+
+  return {
+    enabled: settings.enabled,
+    poll_interval_minutes: settings.pollIntervalMinutes,
+    disk_health_interval_minutes: settings.diskHealthIntervalMinutes,
   };
 }
 

@@ -29,6 +29,7 @@ import {
   normalizeAgentArchitecture,
   compareAgentVersions,
   buildEventLogConfigUpdate,
+  buildHardwareMonitoringConfigUpdate,
   buildMonitoringConfigUpdate,
   buildHelperConfigUpdate,
   buildPamConfigUpdate,
@@ -2083,6 +2084,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     pamSettings: { uacInterceptionEnabled: boolean } | null;
     patchSourceSettings: { exclusiveWindowsUpdate: boolean } | null;
     warrantySettings: { hpCmslEnabled: boolean } | null;
+    hardwareMonitoringSettings: Awaited<ReturnType<typeof buildHardwareMonitoringConfigUpdate>> | null;
   };
   let policyConfigs: PolicyConfigUpdates = {
     eventLogSettings: null,
@@ -2090,6 +2092,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     pamSettings: null,
     patchSourceSettings: null,
     warrantySettings: null,
+    hardwareMonitoringSettings: null,
   };
   try {
     policyConfigs = await withSystemDbAccessContext(async (): Promise<PolicyConfigUpdates> => {
@@ -2098,6 +2101,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       let pamSettings: { uacInterceptionEnabled: boolean } | null = null;
       let patchSourceSettings: { exclusiveWindowsUpdate: boolean } | null = null;
       let warrantySettings: { hpCmslEnabled: boolean } | null = null;
+      let hardwareMonitoringSettings: Awaited<ReturnType<typeof buildHardwareMonitoringConfigUpdate>> | null = null;
 
       // Sentry on all four, not just pam/patch_source. Losing an event_log or
       // monitoring policy is precisely the invisible failure #2930 is about:
@@ -2107,6 +2111,13 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         eventLogSettings = await buildEventLogConfigUpdate(scoped.deviceId);
       } catch (err) {
         console.error(`[agents] failed to build event log config update for ${agentId}:`, err);
+        captureException(err);
+      }
+
+      try {
+        hardwareMonitoringSettings = await buildHardwareMonitoringConfigUpdate(scoped.deviceId);
+      } catch (err) {
+        console.error(`[agents] failed to build hardware monitoring config update for ${agentId}:`, err);
         captureException(err);
       }
 
@@ -2158,7 +2169,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         captureException(err);
       }
 
-      return { eventLogSettings, monitoringSettings, pamSettings, patchSourceSettings, warrantySettings };
+      return { eventLogSettings, monitoringSettings, pamSettings, patchSourceSettings, warrantySettings, hardwareMonitoringSettings };
     });
   } catch (err) {
     // Transaction setup/commit failure — see the note above. Every resolver's
@@ -2167,11 +2178,14 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     console.error(`[agents] policy config context failed for ${agentId} — omitting config updates this heartbeat:`, err);
     captureException(err);
   }
-  const { eventLogSettings, monitoringSettings, pamSettings, patchSourceSettings, warrantySettings } = policyConfigs;
+  const { eventLogSettings, monitoringSettings, pamSettings, patchSourceSettings, warrantySettings, hardwareMonitoringSettings } = policyConfigs;
 
   const policyConfigUpdate: Record<string, unknown> = {};
   if (eventLogSettings) {
     policyConfigUpdate.event_log_settings = eventLogSettings;
+  }
+  if (hardwareMonitoringSettings) {
+    policyConfigUpdate.hardware_monitoring_settings = hardwareMonitoringSettings;
   }
   // null = couldn't resolve this cycle (device vanished mid-resolution, #5677,
   // or the resolver threw) → omit, and the agent keeps its watches. "No

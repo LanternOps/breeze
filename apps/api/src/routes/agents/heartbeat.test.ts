@@ -177,6 +177,7 @@ vi.mock('./helpers', () => ({
   normalizeAgentArchitecture: vi.fn((s: string) => s),
   compareAgentVersions: vi.fn(() => 0),
   buildEventLogConfigUpdate: vi.fn(() => undefined),
+  buildHardwareMonitoringConfigUpdate: vi.fn(),
   buildMonitoringConfigUpdate: vi.fn(() => undefined),
   buildHelperConfigUpdate: vi.fn(() => undefined),
   buildPamConfigUpdate: vi.fn(async () => ({ uacInterceptionEnabled: false })),
@@ -3398,6 +3399,30 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
     const body = (await resp.json()) as Record<string, unknown>;
     const configUpdate = body.configUpdate as Record<string, unknown> | null;
     expect(configUpdate?.event_log_settings).toBeUndefined();
+  });
+
+  it('delivers hardware settings from the post-scoped policy block', async () => {
+    const { buildHardwareMonitoringConfigUpdate } = await import('./helpers');
+    vi.mocked(buildHardwareMonitoringConfigUpdate).mockResolvedValueOnce({ enabled: false, poll_interval_minutes: 20, disk_health_interval_minutes: 120 });
+    const res = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as Record<string, any>).configUpdate.hardware_monitoring_settings).toEqual({ enabled: false, poll_interval_minutes: 20, disk_health_interval_minutes: 120 });
+  });
+
+  it('omits hardware settings when its resolver fails', async () => {
+    const { buildHardwareMonitoringConfigUpdate } = await import('./helpers');
+    vi.mocked(buildHardwareMonitoringConfigUpdate).mockRejectedValueOnce(new Error('resolver unavailable'));
+    const res = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as Record<string, any>).configUpdate ?? {}).not.toHaveProperty('hardware_monitoring_settings');
   });
 
   it('includes monitoring_settings in configUpdate when the resolver succeeds', async () => {
