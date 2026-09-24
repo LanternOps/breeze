@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { writeEnvStack, readStackEnvValue } from './env';
+import { writeEnvStack, readStackEnvValue, setStackEnvValues, pinWebAuthnForStack } from './env';
 
 let dir: string;
 beforeEach(() => { dir = mkdtempSync(path.join(tmpdir(), 'wt-')); });
@@ -76,5 +76,95 @@ describe('readStackEnvValue', () => {
     writeFileSync(path.join(dir, '.env'), '# REDIS_PASSWORD=commented\n');
     expect(readStackEnvValue(dir, 'REDIS_PASSWORD')).toBeUndefined();
     expect(readStackEnvValue(dir, 'NOPE')).toBeUndefined();
+  });
+});
+
+// #6443 — the WebAuthn origin is the caddy port compose picks at `up`, so it
+// is upserted after the fact and must survive the next writeEnvStack.
+describe('setStackEnvValues', () => {
+  it('adds a key once and replaces it in place on a later call', () => {
+    writeEnvStack(dir);
+    setStackEnvValues(dir, { WEBAUTHN_ORIGIN: 'http://localhost:55001' });
+    setStackEnvValues(dir, { WEBAUTHN_ORIGIN: 'http://localhost:55002' });
+    const env = readFileSync(path.join(dir, '.env.stack'), 'utf8');
+    expect(env.match(/^WEBAUTHN_ORIGIN=/gm)).toHaveLength(1);
+    expect(readStackEnvValue(dir, 'WEBAUTHN_ORIGIN')).toBe('http://localhost:55002');
+    expect(env).toContain('IS_HOSTED=false');
+  });
+
+  it('is kept when writeEnvStack rewrites the file on the next up', () => {
+    writeEnvStack(dir);
+    setStackEnvValues(dir, { WEBAUTHN_ORIGIN: 'http://localhost:55001' });
+    writeEnvStack(dir);
+    expect(readStackEnvValue(dir, 'WEBAUTHN_ORIGIN')).toBe('http://localhost:55001');
+    expect(readFileSync(path.join(dir, '.env.stack'), 'utf8').match(/^WEBAUTHN_ORIGIN=/gm)).toHaveLength(1);
+  });
+
+  it('is absent on a fresh stack until up sets it', () => {
+    writeEnvStack(dir);
+    expect(readStackEnvValue(dir, 'WEBAUTHN_ORIGIN')).toBeUndefined();
+  });
+});
+
+describe('writeEnvStack runtime keys', () => {
+  it('does not copy a root .env WEBAUTHN_ORIGIN into .env.stack', () => {
+    writeFileSync(path.join(dir, '.env'), 'WEBAUTHN_ORIGIN=https://prod.example.com\n');
+    writeEnvStack(dir);
+    writeEnvStack(dir);
+    expect(readFileSync(path.join(dir, '.env.stack'), 'utf8')).not.toContain('WEBAUTHN_ORIGIN=');
+  });
+});
+
+// #6443 — the orchestration `wt-stack up` runs once caddy's port is known.
+describe('pinWebAuthnForStack', () => {
+  function fakeDeps() {
+    const calls: string[] = [];
+    return { calls, deps: { recreateApi: () => calls.push('recreate'), waitApiHealthy: () => calls.push('wait') } };
+  }
+
+  it('pins origin and RP ID on a fresh stack and recreates api once', () => {
+    writeEnvStack(dir);
+    const { calls, deps } = fakeDeps();
+    expect(pinWebAuthnForStack(dir, 'http://localhost:55001', deps)).toBe(true);
+    expect(calls).toEqual(['recreate', 'wait']);
+    expect(readStackEnvValue(dir, 'WEBAUTHN_ORIGIN')).toBe('http://localhost:55001');
+    expect(readStackEnvValue(dir, 'WEBAUTHN_RP_ID')).toBe('localhost');
+  });
+
+  it('does not recreate api when the stack is already pinned to that port', () => {
+    writeEnvStack(dir);
+    pinWebAuthnForStack(dir, 'http://localhost:55001', fakeDeps().deps);
+    writeEnvStack(dir); // next `up`
+    const { calls, deps } = fakeDeps();
+    expect(pinWebAuthnForStack(dir, 'http://localhost:55001', deps)).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
+  it('re-pins and recreates when caddy came back on a different port', () => {
+    writeEnvStack(dir);
+    pinWebAuthnForStack(dir, 'http://localhost:55001', fakeDeps().deps);
+    const { calls, deps } = fakeDeps();
+    expect(pinWebAuthnForStack(dir, 'http://localhost:55002', deps)).toBe(true);
+    expect(calls).toEqual(['recreate', 'wait']);
+    expect(readStackEnvValue(dir, 'WEBAUTHN_ORIGIN')).toBe('http://localhost:55002');
+  });
+
+  it('overrides a root .env WEBAUTHN_RP_ID and origin for the local stack', () => {
+    writeFileSync(path.join(dir, '.env'), 'WEBAUTHN_RP_ID=prod.example.com\nWEBAUTHN_ORIGIN=https://prod.example.com\n');
+    writeEnvStack(dir);
+    const { calls, deps } = fakeDeps();
+    expect(pinWebAuthnForStack(dir, 'http://localhost:55001', deps)).toBe(true);
+    expect(calls).toEqual(['recreate', 'wait']);
+    // compose reads .env then .env.stack; the stack's value is what api sees.
+    expect(readStackEnvValue(dir, 'WEBAUTHN_RP_ID')).toBe('localhost');
+    expect(readStackEnvValue(dir, 'WEBAUTHN_ORIGIN')).toBe('http://localhost:55001');
+  });
+});
+
+describe('compose passes the pinned WebAuthn values through to api', () => {
+  it('maps WEBAUTHN_ORIGIN and WEBAUTHN_RP_ID from the env files', () => {
+    const compose = readFileSync(path.resolve(__dirname, '../../../docker-compose.yml'), 'utf8');
+    expect(compose).toMatch(/^\s*WEBAUTHN_ORIGIN: \$\{WEBAUTHN_ORIGIN:-\}\s*$/m);
+    expect(compose).toMatch(/^\s*WEBAUTHN_RP_ID: \$\{WEBAUTHN_RP_ID:-\}\s*$/m);
   });
 });
