@@ -75,6 +75,22 @@ describe('ReportsList ownership (#3198 W03)', () => {
     expect(listCall?.[1]).toBeUndefined();
   });
 
+  it('keeps the recent-runs panel cross-org: GET /reports/runs is not ambient-org scoped (#6771)', async () => {
+    // #6771 made GET /reports/runs honor ?orgId= (single-org run listing, the
+    // way inactive-org report history is read). The ambient org injection
+    // would otherwise silently narrow this panel — and drop partner-owned
+    // runs — whenever the switcher points at one org.
+    org.currentOrgId = 'org-1';
+    mockList([orgOwned]);
+    render(<ReportsList />);
+    await screen.findByTestId('report-row-rep-o');
+    await waitFor(() =>
+      expect(fetchWithAuth.mock.calls.some(([url]) => String(url).startsWith('/reports/runs?limit='))).toBe(true),
+    );
+    const runsCall = fetchWithAuth.mock.calls.find(([url]) => String(url).startsWith('/reports/runs?limit='));
+    expect((runsCall?.[1] as { skipOrgIdInjection?: boolean } | undefined)?.skipOrgIdInjection).toBe(true);
+  });
+
   it('merges partner-owned reports into an org-focused list for a partner-scope user', async () => {
     org.currentOrgId = 'org-1';
     const otherOrgOwned = { ...base, id: 'rep-x', name: 'Other org AR', orgId: 'org-2', partnerId: null };
@@ -96,7 +112,7 @@ describe('ReportsList ownership (#3198 W03)', () => {
     expect(screen.getAllByTestId('report-row-rep-o')).toHaveLength(1);
     expect(screen.queryByTestId('report-row-rep-x')).toBeNull();
     // It asks the server for partner-owned rows only, never every org's reports.
-    const wide = fetchWithAuth.mock.calls.filter(([, o]) => (o as { skipOrgIdInjection?: boolean } | undefined)?.skipOrgIdInjection);
+    const wide = fetchWithAuth.mock.calls.filter(([url, o]) => String(url).startsWith('/reports?') && (o as { skipOrgIdInjection?: boolean } | undefined)?.skipOrgIdInjection);
     expect(wide).toHaveLength(1);
     const q = new URLSearchParams(String(wide[0]![0]).split('?')[1]);
     expect(q.get('ownerScope')).toBe('partner');
@@ -280,7 +296,7 @@ describe('ReportsList ownership (#3198 W03)', () => {
     mockList([orgOwned]);
     render(<ReportsList />);
     await screen.findByTestId('report-row-rep-o');
-    const wide = fetchWithAuth.mock.calls.filter(([, o]) => (o as { skipOrgIdInjection?: boolean } | undefined)?.skipOrgIdInjection);
+    const wide = fetchWithAuth.mock.calls.filter(([url, o]) => String(url).startsWith('/reports?') && (o as { skipOrgIdInjection?: boolean } | undefined)?.skipOrgIdInjection);
     expect(wide).toHaveLength(0);
   });
 
@@ -312,7 +328,7 @@ describe('ReportsList ownership (#3198 W03)', () => {
     expect(screen.getAllByTestId('report-row-rep-o')).toHaveLength(1);
     expect(screen.getAllByTestId(/^report-row-/)).toHaveLength(3);
     expect(fetchWithAuth.mock.calls.filter(([url]) => url === '/reports')).toHaveLength(1);
-    const wide = fetchWithAuth.mock.calls.filter(([, o]) => (o as { skipOrgIdInjection?: boolean } | undefined)?.skipOrgIdInjection);
+    const wide = fetchWithAuth.mock.calls.filter(([url, o]) => String(url).startsWith('/reports?') && (o as { skipOrgIdInjection?: boolean } | undefined)?.skipOrgIdInjection);
     expect(wide).toHaveLength(0);
   });
 
