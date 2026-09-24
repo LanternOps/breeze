@@ -86,6 +86,7 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
       ['manage_deployments', 'device_status'],
       ['manage_patches', 'list'],
       ['manage_patches', 'compliance'],
+      ['manage_patches', 'device_history'],
       ['manage_groups', 'list'],
       ['manage_groups', 'get'],
       ['manage_groups', 'preview'],

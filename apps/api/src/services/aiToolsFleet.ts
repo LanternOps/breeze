@@ -26,6 +26,7 @@ import {
   patchPolicies,
   devicePatches,
   patchJobs,
+  patchJobResults,
   patchRollbacks,
   patchComplianceSnapshots,
 } from '../db/schema/patches';
@@ -1056,21 +1057,24 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceIds', 'deviceId'],
     definition: {
       name: 'manage_patches',
-      description: 'CVEs: get_vulnerability_report. Install requires BOTH patchIds and deviceIds. Approvals default partner-wide. Schedules/auto-approval: manage_policy_feature_link featureType "patch". Actions: list, compliance, scan, approve, decline, defer, bulk_approve, install, rollback.',
+      description: 'CVEs: get_vulnerability_report. Install requires BOTH patchIds and deviceIds. Approvals default partner-wide. Auto-approval: manage_policy_feature_link featureType "patch". Actions: list, compliance, scan, approve, decline, defer, bulk_approve, install, rollback, device_history.',
       input_schema: {
         type: 'object' as const,
         properties: {
-          action: { type: 'string', enum: ['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback'], description: "Install needs patchIds AND deviceIds; scan: deviceIds; bulk_approve: patchIds; approve/decline/defer: patchId or patchName; rollback: patchId+deviceIds." },
+          action: { type: 'string', enum: ['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback', 'device_history'], description: 'Install needs patchIds AND deviceIds; scan: deviceIds; bulk_approve: patchIds; approve/decline/defer: patchId/patchName; rollback: patchId+deviceIds' },
           patchId: { type: 'string', description: 'Patch UUID. Required for approve/decline/defer/rollback unless patchName is given (rollback always needs the UUID).' },
           patchName: { type: 'string', description: "Patch title or KB/external ID on this org's fleet (approve/decline/defer). Ambiguous matches return candidates." },
           patchIds: { type: 'array', items: { type: 'string' }, description: 'Patch UUIDs. Required for bulk_approve and install.' },
           deviceIds: { type: 'array', items: { type: 'string' }, description: 'Device UUIDs. Required for scan, install, and rollback.' },
-          deviceId: { type: 'string', description: 'Single device UUID to scope the patch list to one device (for list); returns per-device install status' },
+          deviceId: { type: 'string', description: "Single device UUID. list: scopes to one device w/ install status. device_history (required): scheduled+user job history, incl. jobs the audit log misses." },
           ringId: { type: 'string', description: 'Update ring UUID for approve/decline/defer. Omit for partner-wide approval; mutually exclusive with allRings.' },
           allRings: { type: 'boolean', description: "Decline only: revoke approval in every update ring for the partner. Mutually exclusive with ringId." },
           source: { type: 'string', enum: ['microsoft', 'apple', 'linux', 'third_party', 'custom'], description: 'Filter by source' },
           severity: { type: 'string', enum: ['critical', 'important', 'moderate', 'low', 'unknown'], description: 'Filter by severity' },
           status: { type: 'string', enum: ['pending', 'approved', 'rejected', 'deferred'], description: 'Filter by approval status' },
+          resultStatus: { type: 'string', enum: ['pending', 'running', 'queued', 'completed', 'failed', 'skipped'], description: 'device_history only: filter by patch job result status.' },
+          since: { type: 'string', description: 'device_history only: ISO timestamp, start of the window. Default: 14 days ago.' },
+          until: { type: 'string', description: 'device_history only: ISO timestamp, end of the window. Default: now.' },
           deferUntil: { type: 'string', description: 'ISO date to defer until (for defer)' },
           notes: { type: 'string', description: 'Approval/decline notes' },
           configPolicyId: { type: 'string', description: 'Configuration policy UUID to attach patch settings to (for setup_auto_approval). If omitted, creates a new policy.' },
@@ -1449,6 +1453,102 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         }).returning();
 
         return JSON.stringify({ success: true, rollbackId: rollback?.id, message: 'Rollback initiated' });
+      }
+
+      if (action === 'device_history') {
+        // #6665: scheduled patch jobs (`patch_jobs.created_by IS NULL`) write no
+        // `audit_logs` row for the device, so `query_audit_log` is blind to them.
+        // This is the read path that closes that gap — join patch_job_results
+        // (one row per patch per device per job) back to the parent job and the
+        // vendor catalog, scoped to one device.
+        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+        const deviceId = typeof input.deviceId === 'string' ? input.deviceId : undefined;
+        if (!deviceId) return JSON.stringify({ error: 'deviceId is required for device_history' });
+
+        const [device] = await db.select({ id: devices.id, siteId: devices.siteId })
+          .from(devices)
+          .where(and(eq(devices.orgId, orgId), eq(devices.id, deviceId)))
+          .limit(1);
+        if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
+        // Site axis (app-layer only; RLS does NOT enforce it) — same check as rollback above.
+        if (deviceSiteDenied(auth, device.siteId, device.id)) return JSON.stringify({ error: 'Device not found or access denied' });
+
+        const now = new Date();
+        const DEFAULT_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
+        const since = typeof input.since === 'string' && !Number.isNaN(Date.parse(input.since))
+          ? new Date(input.since)
+          : new Date(now.getTime() - DEFAULT_WINDOW_MS);
+        const until = typeof input.until === 'string' && !Number.isNaN(Date.parse(input.until))
+          ? new Date(input.until)
+          : now;
+        const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
+
+        const historyConds: SQL[] = [
+          eq(patchJobs.orgId, orgId),
+          eq(patchJobResults.deviceId, deviceId),
+          gte(patchJobResults.createdAt, since),
+          lte(patchJobResults.createdAt, until),
+        ];
+        if (typeof input.resultStatus === 'string') {
+          historyConds.push(eq(patchJobResults.status, input.resultStatus as any));
+        }
+
+        const rows = await db.select({
+          jobId: patchJobs.id,
+          jobName: patchJobs.name,
+          createdBy: patchJobs.createdBy,
+          scheduledAt: patchJobs.scheduledAt,
+          jobStartedAt: patchJobs.startedAt,
+          jobCompletedAt: patchJobs.completedAt,
+          patchTitle: patches.title,
+          patchSource: patches.source,
+          patchExternalId: patches.externalId,
+          resultStatus: patchJobResults.status,
+          exitCode: patchJobResults.exitCode,
+          errorMessage: patchJobResults.errorMessage,
+          resultStartedAt: patchJobResults.startedAt,
+          resultCompletedAt: patchJobResults.completedAt,
+        })
+          .from(patchJobResults)
+          .innerJoin(patchJobs, eq(patchJobResults.jobId, patchJobs.id))
+          .leftJoin(patches, eq(patchJobResults.patchId, patches.id))
+          .where(and(...historyConds))
+          .orderBy(desc(patchJobResults.createdAt))
+          .limit(limit);
+
+        // Never echo the raw `output` column here — it duplicates the whole
+        // batch's stdout/stderr JSON per row. errorMessage is the targeted
+        // failure signal; truncate it too so one giant installer log can't
+        // blow the tool result budget.
+        const ERROR_MESSAGE_TRUNCATE_LEN = 300;
+        const history = rows.map((r) => ({
+          jobId: r.jobId,
+          jobName: r.jobName,
+          initiator: r.createdBy ? 'user' : 'scheduled',
+          scheduledAt: r.scheduledAt,
+          jobStartedAt: r.jobStartedAt,
+          jobCompletedAt: r.jobCompletedAt,
+          patchTitle: r.patchTitle,
+          patchSource: r.patchSource,
+          patchExternalId: r.patchExternalId,
+          resultStatus: r.resultStatus,
+          exitCode: r.exitCode,
+          errorMessage: r.errorMessage
+            ? (r.errorMessage.length > ERROR_MESSAGE_TRUNCATE_LEN
+              ? `${r.errorMessage.slice(0, ERROR_MESSAGE_TRUNCATE_LEN)}… (truncated)`
+              : r.errorMessage)
+            : null,
+          startedAt: r.resultStartedAt,
+          completedAt: r.resultCompletedAt,
+        }));
+
+        return JSON.stringify({
+          deviceId,
+          since: since.toISOString(),
+          until: until.toISOString(),
+          history,
+          showing: history.length,
+        });
       }
 
       if (action === 'setup_auto_approval') {

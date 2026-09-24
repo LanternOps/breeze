@@ -141,6 +141,33 @@ describe('manage_patches schema', () => {
   it('rejects allRings on actions other than decline', () => {
     expect(parse('manage_patches', { action: 'approve', patchId: TEST_UUID, allRings: true }).success).toBe(false);
   });
+
+  // #6665: device_history is the read path that closes the "no AI tool sees
+  // scheduled patch jobs" gap.
+  it('requires deviceId for device_history', () => {
+    expect(parse('manage_patches', { action: 'device_history' }).success).toBe(false);
+  });
+
+  it('accepts device_history with deviceId', () => {
+    expect(parse('manage_patches', { action: 'device_history', deviceId: TEST_UUID }).success).toBe(true);
+  });
+
+  it('accepts device_history with since/until/resultStatus/limit', () => {
+    expect(parse('manage_patches', {
+      action: 'device_history',
+      deviceId: TEST_UUID,
+      since: '2026-09-01T00:00:00Z',
+      until: '2026-09-22T00:00:00Z',
+      resultStatus: 'failed',
+      limit: 10,
+    }).success).toBe(true);
+  });
+
+  it('rejects an invalid resultStatus for device_history', () => {
+    expect(parse('manage_patches', {
+      action: 'device_history', deviceId: TEST_UUID, resultStatus: 'approved',
+    }).success).toBe(false);
+  });
 });
 
 // ─── manage_groups ──────────────────────────────────────────────────────
