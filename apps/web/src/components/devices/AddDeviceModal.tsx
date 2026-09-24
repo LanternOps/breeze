@@ -705,6 +705,11 @@ export default function AddDeviceModal({
       onClose={onClose}
       title={t("addDeviceModal.addNewDevice")}
       maxWidth="2xl"
+      // D14: the CLI > Windows tab makes this panel taller than a common
+      // 1280x900 viewport, which pushes the Done button below the fold when
+      // the backdrop centers it — only Esc could close the modal. Top-align
+      // and let the backdrop itself scroll instead.
+      alignTop
     >
       <div className="p-6">
         <h2 className="text-lg font-semibold mb-4">
