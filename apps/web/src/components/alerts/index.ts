@@ -15,8 +15,6 @@ export type { NotificationHistory, StatusChange } from './AlertDetails';
 // Configuration Policy Alerts tab
 // (components/configurationPolicies/featureTabs/AlertRuleTab.tsx), and the Test
 // verdict now lives beside it in AlertRuleTestModal.tsx.
-export { default as AlertRuleForm } from './AlertRuleForm';
-export type { AlertRuleFormValues, AlertRuleConditionFormValues } from './AlertRuleForm';
 
 // Alert Templates: AlertTemplateList / AlertTemplateEditor were removed
 // (alerting consolidation W05c2, #6367) — /settings/alert-templates and

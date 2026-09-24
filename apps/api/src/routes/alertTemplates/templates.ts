@@ -1,21 +1,14 @@
+import { legacyAlertingGone } from '../legacyAlertingGone';
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { db } from '../../db';
 import { alertTemplates } from '../../db/schema';
 import { eq, and, or, ilike, desc, inArray, isNull } from 'drizzle-orm';
 import { requireMfa, requirePermission, requireScope, type AuthContext } from '../../middleware/auth';
-import { writeRouteAudit } from '../../services/auditEvents';
-import { listTemplatesSchema, createTemplateSchema, updateTemplateSchema } from './schemas';
+import { listTemplatesSchema } from './schemas';
 import { parseBoolean } from './helpers';
 import { getPagination } from '../../utils/pagination';
 import { PERMISSIONS } from '../../services/permissions';
-import { retiredConditionTypeError } from '../../services/alertConditions';
-import {
-  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
-  canManagePartnerWidePolicies,
-} from '../../services/partnerWideAccess';
-import { canAccessTemplateDependents } from './siteScope';
-import { managedByMonitorResponse } from '../../services/monitors/managedRowGuard';
 
 export const templateRoutes = new Hono();
 
@@ -76,34 +69,6 @@ export function templateScopeCondition(auth: AuthContext): ReturnType<typeof or>
   if (orgIds.length > 0) ors.push(inArray(alertTemplates.orgId, orgIds) as ReturnType<typeof eq>);
   if (auth.partnerId) ors.push(partnerWideCondition(auth.partnerId));
   return or(...ors);
-}
-
-// Whether this caller may edit/delete an existing template row. Partner-wide
-// rows belong to the MSP and are read-only for org scope; built-in rows are
-// read-only for everyone (only seeding creates them). Caller is the AuthContext.
-export function canWriteTemplate(
-  auth: Pick<AuthContext, 'scope' | 'partnerId' | 'canAccessOrg' | 'partnerOrgAccess'>,
-  row: { orgId: string | null; partnerId: string | null; isBuiltIn: boolean },
-): { ok: true } | { ok: false; status: 403 | 404; error: string } {
-  if (row.isBuiltIn) return { ok: false, status: 403, error: 'Built-in templates cannot be modified' };
-  if (auth.scope === 'system') return { ok: true };
-  // Partner-wide record (org_id NULL, partner_id set).
-  if (row.orgId === null && row.partnerId !== null) {
-    if (auth.scope === 'organization') {
-      return { ok: false, status: 403, error: 'This template is shared across your organization and is read-only here' };
-    }
-    if (row.partnerId !== auth.partnerId) return { ok: false, status: 404, error: 'Template not found' };
-    // Partner scope proves WHICH partner, not the capability to administer
-    // that partner's shared state (epic #2135; security review 2026-08-16
-    // §1.1 #5).
-    if (!canManagePartnerWidePolicies(auth)) {
-      return { ok: false, status: 403, error: PARTNER_WIDE_WRITE_DENIED_MESSAGE };
-    }
-    return { ok: true };
-  }
-  // Org-specific record: caller must be able to access that org.
-  if (row.orgId !== null && auth.canAccessOrg(row.orgId)) return { ok: true };
-  return { ok: false, status: 404, error: 'Template not found' };
 }
 
 templateRoutes.get(
@@ -217,106 +182,7 @@ templateRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requireAlertWrite,
   requireMfa(),
-  zValidator('json', createTemplateSchema),
-  async (c) => {
-    try {
-      const auth = c.get('auth');
-      const data = c.req.valid('json');
-
-      // #2948 — template conditions are the evaluator's fallback when a rule
-      // carries no override, so a retired type is just as dead here. The
-      // editor nests its triggers under `conditions.triggers`, which the walk
-      // in retiredConditionTypeError descends into.
-      const createConditionTypeError = retiredConditionTypeError(data.conditions);
-      if (createConditionTypeError) {
-        return c.json({ error: createConditionTypeError }, 400);
-      }
-
-      // Resolve org/partner axes from scope + the requested availability,
-      // mirroring Scripts (#1357). EXACTLY ONE axis is set: an org-owned
-      // template is (org_id set, partner_id NULL), a partner-wide template is
-      // (org_id NULL, partner_id set). The old code denormalized partner_id
-      // onto org rows "for RLS consistency"; that shape is what made the
-      // partner-wide read predicate leak across orgs (security review
-      // 2026-08-16 §1.5) and is now rejected by
-      // alert_templates_one_owner_chk.
-      let orgId: string | null = data.orgId ?? null;
-      let partnerId: string | null = null;
-
-      if (auth.scope === 'organization') {
-        if (!auth.orgId) return c.json({ error: 'Organization context required' }, 403);
-        orgId = auth.orgId;
-        partnerId = null;
-      } else if (auth.scope === 'partner') {
-        if (data.availability === 'partner') {
-          orgId = null;
-          partnerId = auth.partnerId ?? null;
-          if (!partnerId) return c.json({ error: 'Partner context required' }, 403);
-          // Partner-wide row: capability gate, not just scope (§1.1 #5).
-          if (!canManagePartnerWidePolicies(auth)) {
-            return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
-          }
-        } else {
-          if (!orgId) {
-            const single = auth.accessibleOrgIds?.[0];
-            if (auth.accessibleOrgIds?.length === 1 && single) {
-              orgId = single;
-            } else {
-              return c.json({ error: 'orgId is required when the partner has multiple organizations' }, 400);
-            }
-          }
-          if (!auth.canAccessOrg(orgId)) {
-            return c.json({ error: 'Access to this organization denied' }, 403);
-          }
-          // Org-owned row: the partner axis stays NULL (see the XOR note above).
-          partnerId = null;
-        }
-      }
-      // System scope: orgId from the request body (may be null), no partner axis.
-
-      const targets = data.targets && Object.keys(data.targets).length > 0
-        ? data.targets
-        : { scope: 'organization' };
-
-      const [template] = await db
-        .insert(alertTemplates)
-        .values({
-          orgId,
-          partnerId,
-          name: data.name.trim(),
-          description: data.description,
-          category: data.category ?? 'Custom',
-          conditions: data.conditions ?? {},
-          severity: data.severity,
-          titleTemplate: `{{deviceName}}: ${data.name.trim()}`,
-          messageTemplate: `Alert triggered: ${data.name.trim()} on {{deviceName}} ({{hostname}}).`,
-          targets,
-          cooldownMinutes: data.defaultCooldownMinutes ?? 15,
-          isBuiltIn: false,
-        })
-        .returning();
-
-      if (!template) {
-        return c.json({ error: 'Failed to create template' }, 500);
-      }
-
-      writeRouteAudit(c, {
-        orgId: template.orgId ?? auth.orgId ?? null,
-        action: 'alert_template.create',
-        resourceType: 'alert_template',
-        resourceId: template.id,
-        resourceName: template.name,
-        details: {
-          category: template.category,
-          severity: template.severity,
-          availability: template.orgId === null && template.partnerId !== null ? 'partner' : 'org',
-        },
-      });
-      return c.json({ data: template }, 201);
-    } catch {
-      return c.json({ error: 'Failed to create template' }, 500);
-    }
-  }
+  legacyAlertingGone
 );
 
 templateRoutes.get(
@@ -355,79 +221,7 @@ templateRoutes.patch(
   requireScope('organization', 'partner', 'system'),
   requireAlertWrite,
   requireMfa(),
-  zValidator('json', updateTemplateSchema),
-  async (c) => {
-    try {
-      const auth = c.get('auth');
-      const templateId = c.req.param('id')!;
-      const updates = c.req.valid('json');
-
-      const [existing] = await db
-        .select()
-        .from(alertTemplates)
-        .where(eq(alertTemplates.id, templateId))
-        .limit(1);
-
-      if (!existing) {
-        return c.json({ error: 'Template not found' }, 404);
-      }
-
-      // #5289 — a template compiled from a monitor definition must be edited
-      // only by the compiler; a side edit here would silently drift from the
-      // definition until the next compile pass overwrote it.
-      if (existing.managedByMonitorId) {
-        return managedByMonitorResponse(c, 'alert_templates', existing.managedByMonitorId);
-      }
-
-      const writable = canWriteTemplate(auth, existing);
-      if (!writable.ok) {
-        return c.json({ error: writable.error }, writable.status);
-      }
-
-      if (auth.allowedSiteIds !== undefined && (
-        existing.orgId === null
-        || !await canAccessTemplateDependents(auth, existing.id, existing.orgId)
-      )) {
-        return c.json({ error: 'Access to one or more dependent alert rule targets denied' }, 403);
-      }
-
-      const updateConditionTypeError = retiredConditionTypeError(updates.conditions);
-      if (updateConditionTypeError) {
-        return c.json({ error: updateConditionTypeError }, 400);
-      }
-
-      if (Object.keys(updates).length === 0) {
-        return c.json({ error: 'No updates provided' }, 400);
-      }
-
-      const setValues: Record<string, unknown> = { updatedAt: new Date() };
-      if (updates.name !== undefined) setValues.name = updates.name.trim();
-      if (updates.description !== undefined) setValues.description = updates.description;
-      if (updates.category !== undefined) setValues.category = updates.category;
-      if (updates.severity !== undefined) setValues.severity = updates.severity;
-      if (updates.conditions !== undefined) setValues.conditions = updates.conditions;
-      if (updates.targets !== undefined) setValues.targets = updates.targets;
-      if (updates.defaultCooldownMinutes !== undefined) setValues.cooldownMinutes = updates.defaultCooldownMinutes;
-
-      const [updated] = await db
-        .update(alertTemplates)
-        .set(setValues)
-        .where(eq(alertTemplates.id, templateId))
-        .returning();
-
-      writeRouteAudit(c, {
-        orgId: existing.orgId ?? auth.orgId ?? null,
-        action: 'alert_template.update',
-        resourceType: 'alert_template',
-        resourceId: templateId,
-        resourceName: updated?.name ?? existing.name,
-        details: { updatedFields: Object.keys(updates) },
-      });
-      return c.json({ data: updated });
-    } catch {
-      return c.json({ error: 'Failed to update template' }, 500);
-    }
-  }
+  legacyAlertingGone
 );
 
 templateRoutes.delete(
@@ -435,52 +229,5 @@ templateRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   requireAlertWrite,
   requireMfa(),
-  async (c) => {
-    try {
-      const auth = c.get('auth');
-      const templateId = c.req.param('id')!;
-
-      const [existing] = await db
-        .select()
-        .from(alertTemplates)
-        .where(eq(alertTemplates.id, templateId))
-        .limit(1);
-
-      if (!existing) {
-        return c.json({ error: 'Template not found' }, 404);
-      }
-
-      // #5289 — see the guard in PATCH above.
-      if (existing.managedByMonitorId) {
-        return managedByMonitorResponse(c, 'alert_templates', existing.managedByMonitorId);
-      }
-
-      const writable = canWriteTemplate(auth, existing);
-      if (!writable.ok) {
-        return c.json({ error: writable.error }, writable.status);
-      }
-
-      if (auth.allowedSiteIds !== undefined && (
-        existing.orgId === null
-        || !await canAccessTemplateDependents(auth, existing.id, existing.orgId)
-      )) {
-        return c.json({ error: 'Access to one or more dependent alert rule targets denied' }, 403);
-      }
-
-      await db
-        .delete(alertTemplates)
-        .where(eq(alertTemplates.id, templateId));
-
-      writeRouteAudit(c, {
-        orgId: existing.orgId ?? auth.orgId ?? null,
-        action: 'alert_template.delete',
-        resourceType: 'alert_template',
-        resourceId: existing.id,
-        resourceName: existing.name,
-      });
-      return c.json({ data: { id: templateId, deleted: true } });
-    } catch {
-      return c.json({ error: 'Failed to delete template' }, 500);
-    }
-  }
+  legacyAlertingGone
 );
