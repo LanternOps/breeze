@@ -171,6 +171,122 @@ describe('audit log routes', () => {
     });
   });
 
+  describe('secret redaction of persisted details (#6577)', () => {
+    // Historical rows (pre write-side sanitiser) and direct createAuditLog
+    // writers can hold raw credentials in details; every read path must
+    // redact before serialising.
+    const planted = 'ghp_PLANTEDsecretTOKENvalue6577abcdef';
+    const secretRow = () => ({
+      log: {
+        id: 'audit-secret',
+        timestamp: new Date('2026-05-02T12:00:00Z'),
+        actorId: 'user-123',
+        actorEmail: 'tech@example.com',
+        actorType: 'user',
+        action: 'ai.tool.manage_backup_configs',
+        resourceType: 'ai_session',
+        resourceId: 'session-1',
+        resourceName: null,
+        result: 'success',
+        ipAddress: '10.0.0.1',
+        userAgent: 'browser',
+        initiatedBy: 'ai',
+        details: {
+          sessionId: 'session-1',
+          toolInput: {
+            providerConfig: { secretKey: planted },
+            apiToken: planted,
+            note: `Authorization: Bearer ${planted}`,
+          },
+          durationMs: 12,
+        },
+      },
+      userName: 'Tech',
+      deviceHostname: null,
+      deviceDisplayName: null,
+      deviceSiteId: null,
+    });
+    const listChain = () => ({
+      from: vi.fn().mockReturnValue({
+        leftJoin: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  offset: vi.fn().mockResolvedValue([secretRow()]),
+                }),
+              }),
+            }),
+          }),
+        }),
+      }),
+    });
+
+    it('GET / (viewer shape) redacts details and keeps the session link', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(listChain() as never);
+      const res = await app.request('/audit-logs?skipCount=true');
+      expect(res.status).toBe(200);
+      const text = await res.text();
+      expect(text).not.toContain(planted);
+      const body = JSON.parse(text);
+      const details = JSON.parse(body.entries[0].details);
+      expect(details.toolInput.apiToken).toBe('[REDACTED]');
+      expect(details.durationMs).toBe(12);
+      expect(body.entries[0].changes.after.toolInput.providerConfig.secretKey).toBe('[REDACTED]');
+      expect(body.entries[0].sessionId).toBe('session-1');
+    });
+
+    it('GET /logs (full shape) redacts details', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(listChain() as never);
+      const res = await app.request('/audit-logs/logs?skipCount=true');
+      expect(res.status).toBe(200);
+      const text = await res.text();
+      expect(text).not.toContain(planted);
+      expect(JSON.parse(text).data[0].details.toolInput.apiToken).toBe('[REDACTED]');
+    });
+
+    it('GET /logs/:id redacts details', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([secretRow()]),
+            }),
+          }),
+        }),
+      } as never);
+      const res = await app.request('/audit-logs/logs/audit-secret');
+      expect(res.status).toBe(200);
+      const text = await res.text();
+      expect(text).not.toContain(planted);
+      expect(JSON.parse(text).details.toolInput.providerConfig.secretKey).toBe('[REDACTED]');
+    });
+
+    it('POST /export redacts details in CSV and JSON', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(listChain() as never);
+      const csvRes = await app.request('/audit-logs/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ format: 'csv' }),
+      });
+      expect(csvRes.status).toBe(200);
+      const csv = await csvRes.text();
+      expect(csv).toContain('[REDACTED]');
+      expect(csv).not.toContain(planted);
+
+      vi.mocked(db.select).mockReturnValueOnce(listChain() as never);
+      const jsonRes = await app.request('/audit-logs/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ format: 'json' }),
+      });
+      expect(jsonRes.status).toBe(200);
+      const json = await jsonRes.text();
+      expect(json).toContain('[REDACTED]');
+      expect(json).not.toContain(planted);
+    });
+  });
+
   describe('GET /audit-logs/logs/:id', () => {
     it('returns a log by id', async () => {
       const res = await app.request('/audit-logs/logs/audit-001');

@@ -7,6 +7,7 @@ import { db } from '../../db';
 import { auditLogs, users } from '../../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
+import { redactPersistedToolInput } from '../../services/aiToolOutput';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 
 export const eventsRoutes = new Hono();
@@ -439,7 +440,10 @@ const REDACTED_DETAILS_KEYS = ['aiSessionId', 'aiAgentRunId'] as const;
 
 function redactAiProvenance(details: unknown): Record<string, unknown> | null {
   if (!details || typeof details !== 'object') return details as null;
-  const redacted = { ...(details as Record<string, unknown>) };
+  // #6577: also run the shared secret redaction (the #5570 / SEC-050 admin
+  // history helper) — legacy rows and direct createAuditLog writers can hold
+  // raw credentials in details.
+  const redacted = { ...(redactPersistedToolInput(details) as Record<string, unknown>) };
   for (const key of REDACTED_DETAILS_KEYS) {
     delete redacted[key];
   }
