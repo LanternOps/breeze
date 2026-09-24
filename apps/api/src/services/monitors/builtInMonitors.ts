@@ -1,7 +1,8 @@
 /**
- * Built-in default monitors — CPU, memory, disk usage and patch compliance.
+ * Built-in default monitors — CPU, memory, disk usage, patch compliance, and
+ * hardware/RAID health.
  *
- * Every partner is provisioned four PARTNER-WIDE monitor_definitions rows
+ * Every partner is provisioned eight PARTNER-WIDE monitor_definitions rows
  * (tagged `builtin_key`). They are NOT attached to any policy: nothing is
  * evaluated until the MSP attaches them to a configuration policy (owner
  * decision 2026-09-13 — no monitoring assigned by default).
@@ -28,6 +29,7 @@ import { monitorDefinitions, partners } from '../../db/schema';
 import { compileMonitorInTx } from './monitorCompiler';
 import { getMonitorKindSpec } from './kinds';
 import type { MonitorKind } from '@breeze/shared';
+import type { HardwareHealthCondition } from '../alertConditions/types';
 
 /**
  * Bump this whenever a new entry is added to `BUILT_IN_MONITOR_DEFAULTS` (and
@@ -35,15 +37,31 @@ import type { MonitorKind } from '@breeze/shared';
  * lazily — the next `ensureBuiltInMonitorsForPartner` call (route, boot
  * backfill) inserts only the defaults newer than their stored marker.
  */
-export const BUILT_IN_MONITORS_VERSION = 2;
+export const BUILT_IN_MONITORS_VERSION = 3;
+
+export interface ThresholdDefaultCondition {
+  operator: 'gt' | 'gte' | 'lt' | 'lte';
+  value: number;
+  durationMinutes?: number;
+}
+
+export type HardwareHealthDefaultCondition = Omit<HardwareHealthCondition, 'type'>;
 
 export interface BuiltInMonitorDefault {
-  key: 'cpu_high' | 'memory_high' | 'disk_full' | 'patch_compliance_low';
+  key:
+    | 'cpu_high'
+    | 'memory_high'
+    | 'disk_full'
+    | 'patch_compliance_low'
+    | 'raid_array_degraded'
+    | 'physical_disk_failed'
+    | 'cache_battery_problem'
+    | 'hardware_collector_failing';
   name: string;
   description: string;
   kind: MonitorKind;
-  condition: { operator: 'gt' | 'gte' | 'lt' | 'lte'; value: number; durationMinutes?: number };
-  severity: 'critical' | 'high' | 'medium';
+  condition: ThresholdDefaultCondition | HardwareHealthDefaultCondition;
+  severity: 'critical' | 'high' | 'medium' | 'low';
   cooldownMinutes: number;
   /** The `BUILT_IN_MONITORS_VERSION` that introduced this default. */
   sinceVersion: number;
@@ -95,6 +113,66 @@ export const BUILT_IN_MONITOR_DEFAULTS: readonly BuiltInMonitorDefault[] = [
     severity: 'medium',
     cooldownMinutes: 1440,
     sinceVersion: 2,
+  },
+  {
+    key: 'raid_array_degraded',
+    name: 'RAID array degraded or failed',
+    description: 'Alerts after two critical array or controller snapshots.',
+    kind: 'hardware_health',
+    condition: {
+      componentTypes: ['virtual_disk', 'controller'],
+      minHealth: 'critical',
+      includePredictiveFailure: false,
+      consecutiveSnapshots: 2,
+    },
+    severity: 'critical',
+    cooldownMinutes: 60,
+    sinceVersion: 3,
+  },
+  {
+    key: 'physical_disk_failed',
+    name: 'Physical disk failed or predicted to fail',
+    description: 'Alerts after two critical or predictive-failure disk snapshots.',
+    kind: 'hardware_health',
+    condition: {
+      componentTypes: ['physical_disk'],
+      minHealth: 'critical',
+      includePredictiveFailure: true,
+      consecutiveSnapshots: 2,
+    },
+    severity: 'high',
+    cooldownMinutes: 60,
+    sinceVersion: 3,
+  },
+  {
+    key: 'cache_battery_problem',
+    name: 'Controller cache battery problem',
+    description: 'Alerts after three unhealthy controller cache battery snapshots.',
+    kind: 'hardware_health',
+    condition: {
+      componentTypes: ['cache_battery'],
+      minHealth: 'warning',
+      includePredictiveFailure: false,
+      consecutiveSnapshots: 3,
+    },
+    severity: 'medium',
+    cooldownMinutes: 240,
+    sinceVersion: 3,
+  },
+  {
+    key: 'hardware_collector_failing',
+    name: 'Hardware monitoring tool failing',
+    description: 'Alerts after three failed or backing-off collector snapshots.',
+    kind: 'hardware_health',
+    condition: {
+      componentTypes: ['collector'],
+      minHealth: 'warning',
+      includePredictiveFailure: false,
+      consecutiveSnapshots: 3,
+    },
+    severity: 'low',
+    cooldownMinutes: 1440,
+    sinceVersion: 3,
   },
 ];
 
