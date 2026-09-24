@@ -6,6 +6,7 @@ import { bmcFixture } from '../discovery/bmc.fixtures';
 import { discoveredAssets, topologySiteState, topologyNodes, topologyNodeBindings } from '../../db/schema';
 import { publishTopologyBuild, type NodePublication, type PublicationInput } from './publish';
 import { canonicalIdentityKey } from './identity';
+import { importLegacyTopologySite, drainTopologyOutbox } from './legacyImport';
 
 async function publication(source: 'agent_report' | 'manual' | 'auto', mode: 'alias' | 'shared') {
   const f = await bmcFixture();
@@ -35,4 +36,20 @@ it.each(['alias', 'shared'] as const)('rejects agent_report %s authority atomica
 it.each(['manual', 'auto'] as const)('still accepts %s identity authority', async source => {
   const { f, input } = await publication(source, 'shared');
   expect(await f.scoped(() => publishTopologyBuild(f.scope, input))).toMatchObject({ published: true });
+});
+
+it('imports and drains a BMC association as two canonical endpoints', async () => {
+  const f = await bmcFixture();
+  await getTestDb().update(discoveredAssets).set({ linkedDeviceId: f.device.id, linkSource: 'agent_report' }).where(eq(discoveredAssets.id, f.asset.id));
+  expect((await f.scoped(() => importLegacyTopologySite(f.scope, { batchSize: 1000 }))).complete).toBe(true);
+  expect((await f.scoped(() => drainTopologyOutbox(f.scope, { batchSize: 1000 }))).complete).toBe(true);
+  const nodes = await getTestDb().select().from(topologyNodes).where(eq(topologyNodes.siteId, f.siteId));
+  const host = nodes.find(n => n.legacySourceId === f.device.id)!;
+  const bmc = nodes.find(n => n.legacySourceId === f.asset.id)!;
+  expect(host).toBeDefined(); expect(bmc).toBeDefined();
+  expect(host.id).not.toBe(bmc.id);
+  expect(host.aliasTargetId).toBeNull(); expect(bmc.aliasTargetId).toBeNull();
+  const bindings = await getTestDb().select().from(topologyNodeBindings).where(eq(topologyNodeBindings.siteId, f.siteId));
+  expect(bindings.find(b => b.deviceId === f.device.id)!.nodeId).toBe(host.id);
+  expect(bindings.find(b => b.discoveredAssetId === f.asset.id)!.nodeId).toBe(bmc.id);
 });

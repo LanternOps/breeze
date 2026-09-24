@@ -63,7 +63,10 @@ export async function replayLegacyBatch(scope: TopologyScope, rows: OutboxRow[],
   const relationships = await db.select().from(topologyRelationships).where(scopeWhere(scope, topologyRelationships));
   let currentBindings = await db.select().from(topologyNodeBindings).where(scopeWhere(scope, topologyNodeBindings));
   const liveDevices = new Set((await db.select({ id: devices.id }).from(devices).where(and(eq(devices.orgId, scope.orgId), eq(devices.siteId, scope.siteId)))).map(r => r.id));
-  const liveAssets = new Map((await db.select({ id: discoveredAssets.id, linkedDeviceId: discoveredAssets.linkedDeviceId, suppressedAt: discoveredAssets.autoLinkSuppressedAt }).from(discoveredAssets).where(and(eq(discoveredAssets.orgId, scope.orgId), eq(discoveredAssets.siteId, scope.siteId)))).map(r => [r.id, r]));
+  const liveAssets = new Map((await db.select({
+    id: discoveredAssets.id, linkedDeviceId: discoveredAssets.linkedDeviceId,
+    suppressedAt: discoveredAssets.autoLinkSuppressedAt, linkSource: discoveredAssets.linkSource,
+  }).from(discoveredAssets).where(and(eq(discoveredAssets.orgId, scope.orgId), eq(discoveredAssets.siteId, scope.siteId)))).map(r => [r.id, r]));
   const liveManual = new Set((await db.select({ id: topologyManualNodes.id }).from(topologyManualNodes).where(and(eq(topologyManualNodes.orgId, scope.orgId), eq(topologyManualNodes.siteId, scope.siteId)))).map(r => r.id));
   const split = await splitRevokedLegacyInventoryLinks(scope, { nodes, bindings: currentBindings, liveDeviceIds: liveDevices, liveAssets: [...liveAssets.values()] }, buildFence);
   if (split.changed) {
@@ -165,7 +168,7 @@ export async function replayLegacyBatch(scope: TopologyScope, rows: OutboxRow[],
   // Only a CURRENT accepted link permits aliasing. A historical event whose
   // link was revoked must never restore identity authority or an invalid FK.
   for (const [assetId, asset] of liveAssets) {
-    if (!asset.linkedDeviceId || asset.suppressedAt || !liveDevices.has(asset.linkedDeviceId)) continue;
+    if (!asset.linkedDeviceId || asset.suppressedAt || asset.linkSource === 'agent_report' || !liveDevices.has(asset.linkedDeviceId)) continue;
     const assetNode = resolveNode('discovered_assets', assetId);
     const deviceNode = resolveNode('devices', asset.linkedDeviceId);
     if (!assetNode || !deviceNode || assetNode.deletedAt || deviceNode.deletedAt || assetNode.id === deviceNode.id) continue;

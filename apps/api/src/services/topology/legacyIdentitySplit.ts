@@ -7,7 +7,7 @@ import { lockTopologyInventoryReferences } from './inventoryLocks';
 
 type SourceNode = Pick<typeof topologyNodes.$inferSelect, 'id' | 'orgId' | 'siteId' | 'kind' | 'createdAt' | 'identityMaterial' | 'legacySourceType' | 'legacySourceId' | 'aliasTargetId' | 'lifecycle' | 'deletedAt'>;
 type SourceBinding = Pick<typeof topologyNodeBindings.$inferSelect, 'id' | 'orgId' | 'siteId' | 'nodeId' | 'deviceId' | 'discoveredAssetId' | 'manualNodeId'>;
-export type SplitInventoryAsset = { id: string; linkedDeviceId: string | null; suppressedAt: Date | null };
+export type SplitInventoryAsset = { id: string; linkedDeviceId: string | null; suppressedAt: Date | null; linkSource?: 'manual' | 'auto' | 'agent_report' | null };
 type SplitInput = { nodes: SourceNode[]; bindings: SourceBinding[]; liveDeviceIds: Set<string>; liveAssets: SplitInventoryAsset[] };
 type NodeChange = { id: string; aliasTargetId: string | null };
 type BindingMove = { id: string; fromNodeId: string; toNodeId: string; deviceId: string | null; discoveredAssetId: string | null };
@@ -45,7 +45,8 @@ export function planLegacyIdentitySplits(scope: TopologyScope, input: SplitInput
     if (table === 'devices') return input.liveDeviceIds.has(id) ? `device:${id}` : null;
     const asset = assetById.get(id);
     if (!asset) return null;
-    return asset.linkedDeviceId && !asset.suppressedAt && input.liveDeviceIds.has(asset.linkedDeviceId)
+    return asset.linkedDeviceId && !asset.suppressedAt && asset.linkSource !== 'agent_report'
+      && input.liveDeviceIds.has(asset.linkedDeviceId)
       ? `device:${asset.linkedDeviceId}` : `asset:${id}`;
   };
   const roots = new Map<string, SourceNode[]>();
