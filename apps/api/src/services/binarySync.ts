@@ -1212,19 +1212,49 @@ export async function syncBinaries(): Promise<void> {
     // GitHub mode already registers component=helper (HELPER_TARGETS); local
     // mode never did, so hosted deployments (BINARY_SOURCE=local) never
     // produced the row that heartbeat's helperUpgradeTo bootstrap resolves.
+    // Same two tiers as user-helper: official manifest first, then
+    // per-deployment re-signing for whatever the manifest does not cover —
+    // never for an asset the manifest refused (D4, #3836).
     if (helperInstallers.length > 0) {
       try {
-        await registerLocalBinaries({
-          binaries: helperInstallers,
-          component: "helper",
-          version,
-          keyId,
-          downloadUrlFor: (osParam, arch) =>
-            `${serverUrl}/api/v1/agents/download/helper/${osParam}/${arch}`,
-        });
-        console.log(
-          `[binarySync] Registered ${helperInstallers.length} helper installer targets via per-deployment re-signing (version: ${version})`,
+        let coveredHelperFilenames = new Set<string>();
+        let excludedHelperFilenames = new Set<string>();
+        if (officialManifest) {
+          const result = await registerFromOfficialManifest({
+            binaries: helperInstallers,
+            component: "helper",
+            version,
+            manifestBytes: officialManifest.manifestBytes,
+            signatureBytes: officialManifest.signatureBytes,
+            downloadUrlFor: (osParam, arch) =>
+              `${serverUrl}/api/v1/agents/download/helper/${osParam}/${arch}`,
+          });
+          coveredHelperFilenames = result.registeredFilenames;
+          excludedHelperFilenames = result.excludedFilenames;
+          if (coveredHelperFilenames.size > 0) {
+            console.log(
+              `[binarySync] Registered ${coveredHelperFilenames.size} helper installers from the official release manifest (version: ${version})`,
+            );
+          }
+        }
+        const remainingHelperInstallers = helperInstallers.filter(
+          (b) =>
+            !coveredHelperFilenames.has(b.filename) &&
+            !excludedHelperFilenames.has(b.filename),
         );
+        if (remainingHelperInstallers.length > 0) {
+          await registerLocalBinaries({
+            binaries: remainingHelperInstallers,
+            component: "helper",
+            version,
+            keyId,
+            downloadUrlFor: (osParam, arch) =>
+              `${serverUrl}/api/v1/agents/download/helper/${osParam}/${arch}`,
+          });
+          console.log(
+            `[binarySync] Registered ${remainingHelperInstallers.length} helper installer targets via per-deployment re-signing (version: ${version})`,
+          );
+        }
       } catch (err) {
         console.error(
           `[binarySync] Failed to register local helper installers — Breeze Assist install/upgrade unavailable: ${err instanceof Error ? err.message : err}`,

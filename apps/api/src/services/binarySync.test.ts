@@ -1149,6 +1149,90 @@ describe("binarySync", () => {
         dbMocks.transaction.mockImplementation(defaultTxImpl);
       }
     });
+
+    // Manifest-first tier (Task 2, #6872): official manifest coverage first,
+    // per-deployment re-signing for the remainder, and a manifest-refused
+    // asset excluded from both — same fail-closed shape as the agent/
+    // user-helper/watchdog loops above (D4, #3836). Extracted locally rather
+    // than reusing the `:1554`/`:1796` describes' helpers verbatim, since
+    // those hard-code "local agent bytes"/size 18 fixtures that don't match
+    // this describe's stat mock (size 4096); the staging approach (manifest
+    // JSON + signature bytes fed through fsMocks.readFile, keyed off path
+    // suffix) is the same.
+    function stageOfficialManifestCovering(
+      filenames: string[],
+      opts: { checksumMismatch?: boolean } = {},
+    ) {
+      const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+      const publicDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
+      const rawPublicKey = publicDer.subarray(publicDer.length - 32).toString("base64");
+      // Matches what computeStreamingChecksum(filePath) yields for every
+      // helper installer in this describe — node:fs's createReadStream is
+      // mocked (unconditionally, regardless of path) to "local agent bytes".
+      const localFileChecksum = createHash("sha256").update("local agent bytes").digest("hex");
+      const manifest = Buffer.from(
+        JSON.stringify({
+          schemaVersion: 1,
+          repository: "LanternOps/breeze",
+          release: "v1.2.3",
+          assets: filenames.map((name) => ({
+            name,
+            sha256: opts.checksumMismatch ? "b".repeat(64) : localFileChecksum,
+            size: 4096, // matches this describe's fsMocks.stat size
+            platformTrust: fixturePlatformTrust(name),
+            edition: "self-host",
+          })),
+        }),
+      );
+      const signature = Buffer.from(sign(null, manifest, privateKey).toString("base64"));
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = rawPublicKey;
+      fsMocks.readFile.mockImplementation((path: unknown) => {
+        if (typeof path === "string" && path.endsWith("release-artifact-manifest.json.ed25519")) {
+          return Promise.resolve(signature);
+        }
+        if (typeof path === "string" && path.endsWith("release-artifact-manifest.json")) {
+          return Promise.resolve(manifest);
+        }
+        return Promise.resolve("0.116.0");
+      });
+    }
+
+    afterEach(() => {
+      delete process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS;
+    });
+
+    it("registers manifest-covered helper installers against the official manifest and re-signs the rest", async () => {
+      setLocalEnv();
+      mockDirs(["breeze-agent-windows-amd64.exe"], ["breeze-helper-windows.msi", "breeze-helper-linux.AppImage"]);
+      // Stage an official manifest that covers ONLY breeze-helper-windows.msi
+      stageOfficialManifestCovering(["breeze-helper-windows.msi"]);
+
+      await syncBinaries();
+
+      const rows = dbMocks.insertValues.mock.calls
+        .map((c: any[]) => c[0] as Record<string, unknown>)
+        .filter((v) => v.component === "helper");
+      const win = rows.find((r) => r.platform === "windows")!;
+      const linux = rows.find((r) => r.platform === "linux")!;
+      expect(win.signingKeyId).toBe("release-artifact-manifest-ed25519");
+      expect(linux.signingKeyId).not.toBe("release-artifact-manifest-ed25519");
+    });
+
+    it("does not re-sign a helper installer the manifest refused (D4 #3836)", async () => {
+      setLocalEnv();
+      mockDirs(["breeze-agent-windows-amd64.exe"], ["breeze-helper-windows.msi"]);
+      // Stage a manifest that lists breeze-helper-windows.msi with a sha256 that
+      // does NOT match the file → registerFromOfficialManifest puts it in
+      // excludedFilenames.
+      stageOfficialManifestCovering(["breeze-helper-windows.msi"], { checksumMismatch: true });
+
+      await syncBinaries();
+
+      const rows = dbMocks.insertValues.mock.calls
+        .map((c: any[]) => c[0] as Record<string, unknown>)
+        .filter((v) => v.component === "helper");
+      expect(rows).toHaveLength(0);
+    });
   });
 
   // #1802: the local-binary path historically registered ONLY the agent
