@@ -19,6 +19,7 @@ import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './par
 import { isPgUniqueViolation, pgErrorConstraint } from '../utils/pgErrors';
 import { listChecklist, type ChecklistSummary } from './ticketChecklistService';
 import { assertChecklistTemplateNotInUse } from './checklistTemplateReference';
+import { assertTicketUntickedChecklistItemsDeletable } from './aiOperator/humanWorkService';
 
 /**
  * Ticket checklist templates (spec #5783 §4.2, §4.3, §6.2). Dual ownership per
@@ -590,6 +591,10 @@ export async function applyChecklistTemplateToTicket(
 
   await db.transaction(async (tx) => {
     if (input.mode === 'replace_unticked') {
+      // An unticked item a running Operator step waits on is guarded exactly
+      // as a single delete is (assertChecklistItemDeletable): the FK is ON
+      // DELETE SET NULL, so nothing below would refuse it.
+      await assertTicketUntickedChecklistItemsDeletable(ticket.id, tx);
       // ONLY unticked rows. A ticked item carries done_at/done_by_user_id — a
       // human attestation that the step was performed — and applying a template
       // must never destroy one. There is no destructive mode by design.

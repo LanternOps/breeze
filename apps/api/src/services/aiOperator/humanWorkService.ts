@@ -477,6 +477,35 @@ export async function assertChecklistItemDeletable(
 }
 
 /**
+ * The bulk twin of assertChecklistItemDeletable, for a delete that removes a
+ * ticket's UNTICKED items in one statement (a checklist template applied with
+ * `replace_unticked`). Same reason, same refusal: the FK is `ON DELETE SET
+ * NULL`, so the bulk delete would silently strand every waiting step on it.
+ */
+export async function assertTicketUntickedChecklistItemsDeletable(
+  ticketId: string,
+  dbh: HumanWorkDbHandle = db,
+): Promise<void> {
+  const [waiting] = await dbh
+    .select({ stepKey: aiOperatorTaskSteps.stepKey })
+    .from(aiOperatorTaskSteps)
+    .innerJoin(ticketChecklistItems, eq(ticketChecklistItems.id, aiOperatorTaskSteps.checklistItemId))
+    .where(and(
+      eq(ticketChecklistItems.ticketId, ticketId),
+      isNull(ticketChecklistItems.doneAt),
+      eq(aiOperatorTaskSteps.state, 'waiting'),
+    ))
+    .limit(1);
+
+  if (waiting) {
+    throw new HumanWorkStepWaitingError(
+      'An unticked step on this ticket belongs to a running AI Operator task, so it cannot be replaced while the task is waiting on it. '
+      + 'Apply the template with mode append, tick the step when the work is done, or stop the task first.',
+    );
+  }
+}
+
+/**
  * Detach every human-work link on a ticket and wake the tasks behind them.
  *
  * Called by `moveTicketOrg`. It nulls the STEP's pointer — not the item's

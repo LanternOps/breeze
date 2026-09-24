@@ -74,6 +74,7 @@ import { advanceHumanWork, advanceTask, advanceWait, claimTaskLease } from '../.
 import { sendHumanWorkReminders } from '../../services/aiOperator/humanWorkService';
 import { openStep } from '../../services/aiOperator/stepService';
 import { deleteChecklistItem, listChecklist, patchChecklistItem } from '../../services/ticketChecklistService';
+import { applyChecklistTemplateToTicket, createChecklistTemplate } from '../../services/ticketChecklistTemplateService';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -398,6 +399,40 @@ describe('AI Operator human-work + wait steps against real Postgres (E3, #6168)'
       db.select().from(aiOperatorTaskSteps).where(eq(aiOperatorTaskSteps.id, step.id)));
     expect(after?.checklistItemId).toBeNull();
     expect(after?.state).toBe('succeeded');
+  });
+
+  // (6b) #6930 — the bulk delete in a template's replace_unticked mode takes the
+  // same guard. Without it the FK's ON DELETE SET NULL strands the task.
+  runDb('applying a template with replace_unticked over a waiting item is a 409 and removes nothing', async () => {
+    const org = await seedOrg();
+    const taskId = await seedTask(org, { currentStepKey: 'confirm_identity' });
+    const { itemId, step } = await openHumanWork(org, taskId);
+    const [item] = await withSystemDbAccessContext(() =>
+      db.select({ ticketId: ticketChecklistItems.ticketId }).from(ticketChecklistItems).where(eq(ticketChecklistItems.id, itemId)));
+    const ticket = { id: item!.ticketId, orgId: org.orgId };
+    const actor = {
+      userId: org.userId, scope: 'organization' as const, partnerId: org.partnerId,
+      partnerOrgAccess: null, accessibleOrgIds: [org.orgId],
+    };
+    const template = await withDbAccessContext(org.ctx, () => createChecklistTemplate({
+      ownerScope: 'organization', orgId: org.orgId, name: `tpl-${randomUUID().slice(0, 8)}`,
+      items: [{ label: 'From template', detail: null, sortOrder: 0 }],
+    }, actor));
+
+    await expect(withDbAccessContext(org.ctx, () =>
+      applyChecklistTemplateToTicket(ticket, { templateId: template.id, mode: 'replace_unticked' }, actor)))
+      .rejects.toMatchObject({ status: 409, code: 'CHECKLIST_OPERATOR_STEP_WAITING' });
+    const afterRefusal = await withDbAccessContext(org.ctx, () => listChecklist(ticket.id));
+    expect(afterRefusal.items.map((i) => i.id)).toEqual([itemId]);
+    const [link] = await withSystemDbAccessContext(() =>
+      db.select().from(aiOperatorTaskSteps).where(eq(aiOperatorTaskSteps.id, step.id)));
+    expect(link?.checklistItemId).toBe(itemId);
+
+    // Positive control: append never deletes, so it is not refused.
+    const appended = await withDbAccessContext(org.ctx, () =>
+      applyChecklistTemplateToTicket(ticket, { templateId: template.id, mode: 'append' }, actor));
+    expect(appended.items.map((i) => i.label)).toContain('From template');
+    expect(appended.items.map((i) => i.id)).toContain(itemId);
   });
 
   // (7) advanceWait with a future waitUntil.
