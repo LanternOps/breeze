@@ -24,3 +24,53 @@ export function componentChange(previous:ComponentRow|undefined,report:Component
  }
  return {row,events};
 }
+export class InvalidHardwareSnapshotError extends Error{
+ constructor(public readonly path:string){super(`invalid_snapshot: ${path}`);this.name='InvalidHardwareSnapshotError';}
+}
+export function reduceSnapshot(previous:ComponentRow[],device:{id:string;orgId:string},snapshot:HardwareHealthSnapshot,receivedAt:Date){
+ const sourceNames=new Set<string>();
+ snapshot.sources.forEach((s,i)=>{if(sourceNames.has(s.source))throw new InvalidHardwareSnapshotError(`sources.${i}.source`);sourceNames.add(s.source);});
+ const keys=new Set<string>();
+ snapshot.components.forEach((c,i)=>{
+  if(keys.has(c.componentKey)||c.componentKey.startsWith('collector:'))throw new InvalidHardwareSnapshotError(`components.${i}.componentKey`);
+  keys.add(c.componentKey);
+  if(!HARDWARE_STATES[c.componentType].includes(c.state))throw new InvalidHardwareSnapshotError(`components.${i}.state`);
+  if(Buffer.byteLength(JSON.stringify(c.attributes),'utf8')>8192)throw new InvalidHardwareSnapshotError(`components.${i}.attributes`);
+ });
+ const rows=new Map(previous.map(r=>[r.componentKey,r]));
+ const upserts=new Map<string,ComponentRow>(),events:EventRow[]=[],deletedKeys:string[]=[];
+ const apply=(report:ComponentInput)=>{
+  const change=componentChange(rows.get(report.componentKey),report,device,snapshot,receivedAt);
+  rows.set(report.componentKey,change.row);upserts.set(report.componentKey,change.row);events.push(...change.events);
+ };
+ for(const source of snapshot.sources){
+  if(source.status==='ok'){
+   const reports=snapshot.components.filter(c=>c.source===source.source);
+   for(const report of reports)apply(report);
+   if(source.complete===true){
+    const seen=new Set(reports.map(r=>r.componentKey));
+    for(const old of rows.values()){
+     if(old.source!==source.source||old.componentType==='collector'||old.stale||seen.has(old.componentKey))continue;
+     const row={...old,stale:true,staleSince:receivedAt,updatedAt:receivedAt};
+     rows.set(row.componentKey,row);upserts.set(row.componentKey,row);
+     events.push({deviceId:device.id,orgId:device.orgId,componentKey:row.componentKey,componentType:row.componentType,eventType:'stale',fromHealth:row.health,toHealth:row.health,fromState:row.state,toState:row.state,detail:{},snapshotId:snapshot.snapshotId,occurredAt:new Date(snapshot.collectedAt),createdAt:receivedAt});
+    }
+   }
+  }
+  const collectorKey=`collector:${source.source}`;
+  if(source.status==='ok'||source.status==='failed'||source.status==='backing_off'){
+   apply({componentKey:collectorKey,componentType:'collector',source:source.source,name:source.source,state:source.status,stateDetail:source.error??null,predictiveFailure:false,alertExempt:false,attributes:{}});
+  }else if(rows.delete(collectorKey)){
+   // Pure reduction only: Task 11 must await retirement for these keys before SQL deletion.
+   deletedKeys.push(collectorKey);upserts.delete(collectorKey);
+  }
+ }
+ const live=[...rows.values()].filter(r=>!r.stale);
+ const hardware=live.filter(r=>r.componentType!=='collector'&&r.componentType!=='bmc');
+ const collectors=live.filter(r=>r.componentType==='collector');
+ const counts:Record<string,number>={};for(const c of hardware){const k=`${c.componentType}:${c.health}`;counts[k]=(counts[k]??0)+1;}
+ return {rows:[...rows.values()],upserts:[...upserts.values()],deletedKeys,events,
+  health:worstHardwareHealth(hardware.map(r=>r.health)),collectorHealth:collectors.length?worstHardwareHealth(collectors.map(r=>r.health)):'ok' as HardwareHealth,
+  summary:{counts,controllerNames:hardware.filter(r=>r.componentType==='controller').map(r=>r.name)},
+ };
+}
