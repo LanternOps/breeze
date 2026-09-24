@@ -10,6 +10,7 @@ import AlertsTabStrip from './AlertsTabStrip';
 import type { AlertSeverity } from './alertConfig';
 import { fetchWithAuth, AuthSessionExpiredError } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { useOrgScope } from '@/hooks/useOrgScope';
 import { fillDevicePlaceholders, type FilterConditionGroup } from '@breeze/shared';
 import { DeviceFilterBar } from '../filters/DeviceFilterBar';
 import { navigateTo } from '@/lib/navigation';
@@ -103,6 +104,12 @@ export default function AlertsPage() {
   // the previous scope.
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
   const allOrgs = useOrgStore((s) => s.allOrgs);
+  // Gates the mount fetch below (#4147, same fix as DevicesPage). Without this,
+  // a fresh page load fires an unscoped /alerts fetch in the sub-second window
+  // before the shell's OrgSwitcher resolves the org list, then fires it again
+  // once currentOrgId lands — two identical GETs at nearly the same instant
+  // (sweep A3).
+  const orgScopeResolving = useOrgScope().status === 'loading';
   const fleetDeviceOptions = useDeviceOptions({ orgId: currentOrgId ?? undefined });
   const deviceStatus = fleetDeviceOptions.state === 'error'
     ? 'error'
@@ -180,9 +187,12 @@ export default function AlertsPage() {
   useEffect(() => {
     // fetchAlerts changes identity when currentOrgId changes, so
     // this re-runs on org switch; each fetch's monotonic token drops any
-    // superseded in-flight response.
+    // superseded in-flight response. Skip while the org scope is still
+    // resolving (#4147/sweep A3) — firing now would go out unscoped, then
+    // fire again the instant currentOrgId lands.
+    if (orgScopeResolving) return;
     fetchAlerts();
-  }, [fetchAlerts]);
+  }, [fetchAlerts, orgScopeResolving]);
 
   const { ids: deviceFilterIds, loading: deviceFilterLoading, state: deviceFilterState, refetch: retryDeviceFilter } = useAdvancedFilterIds(deviceFilter, `${currentOrgId}:${allOrgs}`);
   const deviceFilterBlocked = deviceFilterLoading || deviceFilterState === 'error';
