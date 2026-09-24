@@ -111,7 +111,7 @@ func VerifyIntegrityWithOptions(ctx context.Context, provider providers.BackupPr
 			return result, ctxErr
 		}
 		result.Status = "failed"
-		result.Error = fmt.Sprintf("manifest not found: %v", err)
+		result.Error = manifestDownloadError(runCtx, opts, err)
 		result.DurationMs = time.Since(start).Milliseconds()
 		return result, nil
 	}
@@ -250,6 +250,7 @@ func verifySnapshotFile(ctx context.Context, provider providers.BackupProvider, 
 	if ctx.Err() != nil {
 		// The run ended (caller cancel or time budget) mid-download: no
 		// verdict on this file either way.
+		logInterruptedDownload("verify", file.BackupPath, dlErr)
 		return fileCheckOutcome{state: fileNotChecked}
 	}
 	if dlErr != nil {
@@ -389,7 +390,7 @@ func TestRestoreWithOptions(ctx context.Context, provider providers.BackupProvid
 			return result, ctxErr
 		}
 		result.Status = "failed"
-		result.Error = fmt.Sprintf("manifest not found: %v", err)
+		result.Error = manifestDownloadError(runCtx, opts, err)
 		return result, nil
 	}
 	if err := ctx.Err(); err != nil {
@@ -574,6 +575,7 @@ func restoreSnapshotFile(ctx context.Context, provider providers.BackupProvider,
 
 	dlErr := downloadWithDeadline(ctx, provider, file.BackupPath, destPath, downloadDeadline(file.Size))
 	if ctx.Err() != nil {
+		logInterruptedDownload("restore", file.BackupPath, dlErr)
 		return fileCheckOutcome{state: fileNotChecked}
 	}
 	info, statErr := os.Stat(destPath)

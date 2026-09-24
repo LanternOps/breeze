@@ -215,6 +215,27 @@ func countContentFiles(files []SnapshotFile) int {
 	return n
 }
 
+// manifestDownloadError explains a failed manifest download. A download cut
+// short by the run's own time budget is not evidence the manifest is missing,
+// so it is not reported as "not found".
+func manifestDownloadError(runCtx context.Context, opts VerifyOptions, err error) string {
+	if errors.Is(context.Cause(runCtx), errVerifyTimeBudget) {
+		return fmt.Sprintf("time budget of %s exhausted before the snapshot manifest finished downloading: %v", opts.TimeBudget.Round(time.Second), err)
+	}
+	return fmt.Sprintf("manifest not found: %v", err)
+}
+
+// logInterruptedDownload records the provider error of a download that was
+// cut short by the run ending, so a real failure that coincided with the
+// cancellation still leaves a trace (the file itself is counted unchecked).
+func logInterruptedDownload(phase, backupPath string, dlErr error) {
+	if dlErr == nil {
+		return
+	}
+	log.Debug("download interrupted by the run ending; file left unchecked", "phase", phase,
+		"backupPath", backupPath, "error", dlErr.Error())
+}
+
 // timeBudgetMessage explains a run that stopped at its time budget.
 func timeBudgetMessage(kind string, budget time.Duration, verified, failed, contentFiles int) string {
 	return fmt.Sprintf("%s time budget of %s exhausted: checked %d of %d files (%d ok, %d failed); the remaining %d were not verified",

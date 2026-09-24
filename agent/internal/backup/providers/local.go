@@ -89,8 +89,10 @@ func (p *LocalProvider) Download(remotePath, localPath string) error {
 }
 
 // DownloadContext retrieves a file from the local backup store. Cancelling
-// ctx stops the copy/decompression between reads (a local store on a hung
-// network share is the local-provider analogue of a stalled cloud transfer).
+// ctx stops the copy/decompression between reads, which bounds a SLOW local
+// store (e.g. a crawling network share). It cannot interrupt a single read
+// syscall that never returns — os.File I/O is not cancellable — so a hard-hung
+// share still blocks the caller.
 func (p *LocalProvider) DownloadContext(ctx context.Context, remotePath, localPath string) error {
 	if ctx == nil {
 		ctx = context.Background()

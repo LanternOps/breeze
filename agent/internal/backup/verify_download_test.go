@@ -28,6 +28,9 @@ type scriptedDownloadProvider struct {
 	stall       map[string]bool
 	delay       time.Duration
 	release     chan struct{}
+	// stallManifest makes the manifest download itself stall (context-aware
+	// path only).
+	stallManifest bool
 
 	inflight  atomic.Int32
 	peak      atomic.Int32
@@ -86,6 +89,14 @@ func (p *scriptedDownloadProvider) DownloadContext(ctx context.Context, remotePa
 
 func (p *scriptedDownloadProvider) download(ctx context.Context, remotePath, localPath string) error {
 	if remotePath == p.manifestKey {
+		if p.stallManifest {
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("read body: %w", ctx.Err())
+			case <-p.release:
+				return errors.New("released at test end")
+			}
+		}
 		return os.WriteFile(localPath, p.manifest, 0o644)
 	}
 	p.mu.Lock()
@@ -380,5 +391,103 @@ func TestVerifyIntegrity_ConcurrentResultsKeepManifestOrder(t *testing.T) {
 	}
 	if strings.Join(result.FailedFiles, ",") != strings.Join(want, ",") {
 		t.Fatalf("failedFiles = %v, want manifest order %v", result.FailedFiles, want)
+	}
+}
+
+// Two manifest entries whose restore paths differ only by case must not
+// share a destination: on a case-insensitive volume, concurrent workers would
+// write one file and fail each other's size checks.
+func TestTestRestoreDestinations_CaseCollisionGetsDistinctPath(t *testing.T) {
+	root := t.TempDir()
+	files := []SnapshotFile{
+		{SourcePath: "/data/Report.txt", BackupPath: "a", Size: 1},
+		{SourcePath: "/data/report.txt", BackupPath: "b", Size: 1},
+		{SourcePath: "/data/other.txt", BackupPath: "c", Size: 1},
+	}
+	dests, errs := testRestoreDestinations(root, files)
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("entry %d: unexpected path error %v", i, err)
+		}
+	}
+	if strings.EqualFold(dests[0], dests[1]) {
+		t.Fatalf("case-colliding entries share a destination: %q / %q", dests[0], dests[1])
+	}
+	if dests[2] != filepath.Join(root, "data", "other.txt") {
+		t.Fatalf("non-colliding entry moved: %q", dests[2])
+	}
+}
+
+func TestTestRestore_CaseCollidingEntriesBothVerify(t *testing.T) {
+	p := newScriptedDownloadProvider(t, "restore-case", 2)
+	var snap Snapshot
+	if err := json.Unmarshal(p.manifest, &snap); err != nil {
+		t.Fatal(err)
+	}
+	// Entry 1 restores to the same path as entry 0 up to case, with a
+	// different size, so a shared file fails one of the two size checks.
+	snap.Files[1].SourcePath = strings.ToUpper(snap.Files[0].SourcePath)
+	longer := []byte("a considerably longer object body")
+	p.files[snap.Files[1].BackupPath] = longer
+	snap.Files[1].Size = int64(len(longer))
+	manifest, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.manifest = manifest
+
+	result, err := TestRestoreContext(context.Background(), p, "restore-case", t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "passed" || result.FilesVerified != 2 {
+		t.Fatalf("status=%q verified=%d failed=%v, want passed/2", result.Status, result.FilesVerified, result.FailedFiles)
+	}
+}
+
+// Progress counts only entries that reached a verdict: files interrupted or
+// never started because the budget ran out are not reported as done.
+func TestVerifyIntegrity_ProgressUnderBudgetCountsOnlyFinishedFiles(t *testing.T) {
+	defer setVerifyConcurrencyForTest(2)()
+	defer setDownloadTimeoutFloorForTest(time.Hour)()
+	p := newScriptedDownloadProvider(t, "verify-progress-budget", 8, 3, 4)
+
+	var calls, last int
+	result, err := VerifyIntegrityWithOptions(context.Background(), p, "verify-progress-budget", VerifyOptions{
+		TimeBudget: 300 * time.Millisecond,
+		Progress: func(done, total int) {
+			calls++
+			last = done
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.FilesUnchecked == 0 {
+		t.Fatalf("expected unchecked files, got %+v", result)
+	}
+	checked := result.FilesVerified + result.FilesFailed
+	if calls != checked || last != checked {
+		t.Fatalf("progress calls=%d last=%d, want both = %d checked files (unchecked=%d)", calls, last, checked, result.FilesUnchecked)
+	}
+}
+
+// A budget that runs out while the manifest itself is downloading must not
+// claim the manifest is missing.
+func TestVerifyIntegrity_BudgetDuringManifestIsNotReportedAsMissing(t *testing.T) {
+	p := newScriptedDownloadProvider(t, "verify-manifest-budget", 1)
+	p.stallManifest = true
+
+	var result *VerifyResult
+	var err error
+	runWithWatchdog(t, 10*time.Second, func() {
+		result, err = VerifyIntegrityWithOptions(context.Background(), p, "verify-manifest-budget",
+			VerifyOptions{TimeBudget: 200 * time.Millisecond})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "failed" || strings.Contains(result.Error, "not found") || !strings.Contains(result.Error, "time budget") {
+		t.Fatalf("status=%q error=%q, want failed with a time-budget reason, not 'not found'", result.Status, result.Error)
 	}
 }
