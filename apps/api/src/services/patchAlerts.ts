@@ -341,7 +341,14 @@ export async function loadOldestRebootRequiredSince(
       ),
     );
 
-  return row?.oldest ?? null;
+  // `sql<Date | null>` is a type annotation only: postgres.js returns an
+  // aggregate over a timestamptz as a string (e.g. '2026-09-01 12:00:00+00'),
+  // not a Date (#6835). Coerce explicitly; an unparseable value yields null
+  // (treated like "no reboot-required result") rather than an Invalid Date.
+  const oldest: unknown = row?.oldest ?? null;
+  if (oldest === null || oldest === undefined) return null;
+  const parsed = oldest instanceof Date ? oldest : new Date(String(oldest));
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
 export type EmitRebootPendingAlertInput = {
