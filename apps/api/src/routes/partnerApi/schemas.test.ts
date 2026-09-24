@@ -27,7 +27,7 @@ const baseRecord = {
 };
 
 describe('partner export schemas', () => {
-  it('defines the exact resource names for all thirteen public routes', () => {
+  it('defines the exact resource names for all fourteen public routes', () => {
     expect(PARTNER_EXPORT_RESOURCES).toEqual([
       'organizations',
       'sites',
@@ -42,11 +42,12 @@ describe('partner export schemas', () => {
       'backup-configurations',
       'custom-fields',
       'custom-field-values',
+      'alerts',
     ]);
     for (const resource of PARTNER_EXPORT_RESOURCES) {
       expect(partnerExportResourceSchema.parse(resource)).toBe(resource);
     }
-    expect(partnerExportResourceSchema.safeParse('alerts').success).toBe(false);
+    expect(partnerExportResourceSchema.safeParse('tickets').success).toBe(false);
   });
 
   it('accepts only bounded version-one record base fields', () => {

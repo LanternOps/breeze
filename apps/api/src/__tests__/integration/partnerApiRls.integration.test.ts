@@ -18,6 +18,7 @@ import {
   customFieldDefinitions,
   deviceCustomFieldValues,
   deviceGroups,
+  alerts,
   devices,
   enrollmentKeys,
   partnerExportConfigurationOrgState,
@@ -30,6 +31,7 @@ import {
   softwareInventory,
 } from '../../db/schema';
 import { partnerApiAuthMiddleware } from '../../middleware/partnerApiAuth';
+import { partnerAlertRoutes } from '../../routes/partnerApi/alerts';
 import { partnerConfigurationRoutes } from '../../routes/partnerApi/configuration';
 import {
   decodePartnerExportCursor,
@@ -79,6 +81,7 @@ const ALL_SCOPES = [
   'scripts:read',
   'backup-configuration:read',
   'custom-fields:read',
+  'alerts:read',
 ] as const;
 
 const EXPECTED_COUNTS: Record<PartnerExportResource, number> = {
@@ -95,6 +98,7 @@ const EXPECTED_COUNTS: Record<PartnerExportResource, number> = {
   'backup-configurations': 2,
   'custom-fields': 4,
   'custom-field-values': 4,
+  alerts: 2,
 };
 
 interface ExportRecord {
@@ -1069,6 +1073,13 @@ async function seedPartnerOrg(seed: SeededPartner, label: 'A' | 'B', index: numb
     agentVersion: '1.0.0',
   }).returning();
   if (!device) throw new Error('device seed failed');
+  await admin.insert(alerts).values({
+    orgId: org.id,
+    deviceId: device.id,
+    severity: 'high',
+    title: `${label}-alert-${index}`,
+    message: `${label}-alert-message-${index}`,
+  });
   // #3257 W05 — the datum is the ROW in device_custom_field_values;
   // devices.custom_fields is the projection its triggers rebuild. Seeding the
   // jsonb literal here instead would be invisible to /custom-field-values (which
@@ -1175,6 +1186,7 @@ function actualPartnerApiApp(observedRoles: Array<{ who: string; bypass: boolean
   app.route('/', partnerRelationshipRoutes);
   app.route('/', partnerConfigurationRoutes);
   app.route('/', partnerProvisioningRoutes);
+  app.route('/', partnerAlertRoutes);
   return app;
 }
 

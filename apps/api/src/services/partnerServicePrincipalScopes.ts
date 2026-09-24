@@ -23,8 +23,16 @@ export const PARTNER_SERVICE_PRINCIPAL_WRITE_SCOPES = Object.freeze([
   'contracts:write',
 ] as const);
 
+// Opt-in read scopes: grantable, but deliberately NOT in any default scope set.
+// alerts:read exposes operational alert titles/messages across every org the
+// principal can reach, so it must be requested explicitly.
+export const PARTNER_SERVICE_PRINCIPAL_OPT_IN_READ_SCOPES = Object.freeze([
+  'alerts:read',
+] as const);
+
 export const PARTNER_SERVICE_PRINCIPAL_SCOPES = Object.freeze([
   ...PARTNER_SERVICE_PRINCIPAL_READ_SCOPES,
+  ...PARTNER_SERVICE_PRINCIPAL_OPT_IN_READ_SCOPES,
   ...PARTNER_SERVICE_PRINCIPAL_WRITE_SCOPES,
 ] as const);
 

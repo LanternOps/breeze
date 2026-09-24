@@ -138,6 +138,8 @@ describe('PartnerServicePrincipalsPage', () => {
     const checkedScopes = Array.from(document.querySelectorAll<HTMLInputElement>('[data-testid^="scope-checkbox-"]:checked'))
       .map((input) => input.dataset.testid!.replace('scope-checkbox-', ''));
     expect(checkedScopes).toEqual(defaultScopes);
+    // alerts:read is offered but opt-in, never pre-selected.
+    expect(screen.getByTestId('scope-checkbox-alerts:read')).not.toBeChecked();
     const writeScope = screen.getByTestId('scope-checkbox-enrollment-keys:write');
     expect(writeScope).not.toBeChecked();
     expect(screen.getByTestId('scope-checkbox-contracts:write')).not.toBeChecked();

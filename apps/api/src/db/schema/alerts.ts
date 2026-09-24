@@ -11,13 +11,22 @@ import {
   index,
   numeric,
   uniqueIndex,
-  check
+  check,
+  customType
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { NOTIFICATION_CHANNEL_TYPES } from '@breeze/shared';
 import { organizations, partners } from './orgs';
 import { devices } from './devices';
 import { users } from './users';
+
+// Postgres 64-bit transaction id. Kept as a decimal STRING end to end: xid8
+// values exceed Number.MAX_SAFE_INTEGER over a database's lifetime.
+const xid8 = customType<{ data: string; driverData: string }>({
+  dataType() {
+    return 'xid8';
+  },
+});
 
 export const alertSeverityEnum = pgEnum('alert_severity', ['critical', 'high', 'medium', 'low', 'info']);
 // 'dismissed' is terminal: hidden from list views by default and honored by
@@ -155,7 +164,11 @@ export const alerts = pgTable('alerts', {
   // #5290 — a recurrence-escalation alert. NEVER auto-resolved, never
   // auto-suppressed by an AI verdict, always its own correlation root.
   requiresHuman: boolean('requires_human').notNull().default(false),
-  createdAt: timestamp('created_at').defaultNow().notNull()
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  // Partner API alerts feed change marker (2026-10-28-130000): stamped with
+  // pg_current_xact_id() by a BEFORE INSERT OR UPDATE trigger on every write.
+  // Never set it from application code.
+  partnerFeedXid: xid8('partner_feed_xid').notNull().default(sql`'1'::xid8`)
 }, (table) => ({
   // Backs the `alerts.critical` device-filter field (#968).
   activeCriticalIdx: index('idx_alerts_active_critical')
@@ -169,7 +182,9 @@ export const alerts = pgTable('alerts', {
   subjectKeyNonempty: check('alerts_subject_key_nonempty_chk', sql`${table.subjectKey} <> ''`),
   openRuleDeviceSubjectUidx: uniqueIndex('alerts_open_rule_device_subject_uidx')
     .on(table.ruleId, table.deviceId, sql`COALESCE(${table.subjectKey}, '')`)
-    .where(sql`${table.ruleId} IS NOT NULL AND ${table.status} IN ('active', 'acknowledged', 'suppressed')`)
+    .where(sql`${table.ruleId} IS NOT NULL AND ${table.status} IN ('active', 'acknowledged', 'suppressed')`),
+  // Partner alerts feed keyset (2026-10-28-130100, built CONCURRENTLY).
+  partnerFeedXidIdx: index('idx_alerts_partner_feed_xid').on(table.partnerFeedXid, table.id)
 }));
 
 export const alertCorrelations = pgTable('alert_correlations', {

@@ -54,6 +54,10 @@ describe('classification completeness contract', () => {
   const POPULATED_PATHS: Partial<Record<string, string[]>> = {
     devices: ['hostname', 'displayName', 'hardwareIdentity.serialNumber',
       'hardwareIdentity.manufacturer', 'hardwareIdentity.model', 'tags[]'],
+    // Keys of partnerAlertExportRecordSchema (alerts.ts emits every key on every record).
+    alerts: ['id', 'orgId', 'deviceId', 'deviceHostname', 'severity', 'status', 'title', 'message',
+      'triggeredAt', 'acknowledgedAt', 'resolvedAt', 'dismissedAt', 'suppressedUntil', 'requiresHuman',
+      'episodeId', 'ruleId', 'monitorId', 'changeVersion', 'revision'],
   };
 
   it('every exception key corresponds to a real emitted path', () => {
