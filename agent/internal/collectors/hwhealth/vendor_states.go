@@ -21,7 +21,7 @@ var remainingVendorStates = func() map[string]map[string]string {
 		{"omreport/physical_disk", "Online|Ready|Failed|Foreign|Blocked|Non-RAID|Rebuilding|Removed", "online|ready|failed|foreign|offline|jbod|rebuilding|missing"},
 		{"omreport/cache_battery", "Ready|Degraded|Failed|Charging|Learning|Missing", "ok|degraded|failed|charging|learning|missing"},
 		{"zfs/virtual_disk", "ONLINE|DEGRADED|FAULTED|OFFLINE|UNAVAIL|REMOVED|scrub|resilver", "optimal|degraded|failed|offline|failed|failed|checking|rebuilding"},
-		{"zfs/physical_disk", "ONLINE|DEGRADED|FAULTED|OFFLINE|UNAVAIL|REMOVED", "online|degraded|failed|offline|missing|missing"},
+		{"zfs/physical_disk", "ONLINE|DEGRADED|FAULTED|OFFLINE|UNAVAIL|REMOVED|AVAIL|INUSE", "online|degraded|failed|offline|missing|missing|hotspare|online"},
 	}
 	out := make(map[string]map[string]string)
 	for _, row := range rows {
