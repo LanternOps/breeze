@@ -30,6 +30,7 @@ import { softwarePresenceHandler } from './handlers/softwarePresence';
 import { backupContinuityHandler } from './handlers/backupContinuity';
 import { scriptMonitorHandler } from './handlers/scriptMonitor';
 import { networkCheckHandler } from './handlers/networkCheck';
+import { hardwareHealthHandler } from './handlers/hardwareHealth';
 
 conditionRegistry.register(thresholdHandler);
 conditionRegistry.register(offlineHandler);
@@ -48,9 +49,14 @@ conditionRegistry.register(softwarePresenceHandler);
 conditionRegistry.register(backupContinuityHandler);
 conditionRegistry.register(scriptMonitorHandler);
 conditionRegistry.register(networkCheckHandler);
+conditionRegistry.register(hardwareHealthHandler);
 
 // Re-export types for backward compatibility
 export type {
+  SubjectEvidence,
+  SubjectStatus,
+  HardwareHealthCondition,
+  HardwareHealthComponentFilter,
   ComparisonOperator,
   MetricName,
   ThresholdCondition,
@@ -87,16 +93,25 @@ import type {
   RootCondition,
   EvaluationResult,
   ThresholdCondition,
+  SubjectEvidence,
 } from './types';
 
 function isConditionGroup(condition: RootCondition): condition is ConditionGroup {
   return 'logic' in condition && 'conditions' in condition;
 }
 
+type EvaluationAccumulator = {
+  met: string[];
+  notMet: string[];
+  primaryActualValue?: number;
+  sawUnknown?: boolean;
+  subjects?: SubjectEvidence[];
+};
+
 async function evaluateConditionRecursive(
   condition: RootCondition,
   deviceId: string,
-  results: { met: string[]; notMet: string[]; primaryActualValue?: number; sawUnknown?: boolean }
+  results: EvaluationAccumulator
 ): Promise<boolean> {
   if (isConditionGroup(condition)) {
     const evaluations = await Promise.all(
@@ -114,6 +129,10 @@ async function evaluateConditionRecursive(
       condition as { type: string },
       deviceId
     );
+
+    // W03 — carry per-subject evidence, but only a single leaf's is ever
+    // surfaced on the root result (see evaluateConditions below).
+    results.subjects = result.subjects;
 
     if (result.dataAvailable === false) {
       results.sawUnknown = true;
@@ -184,12 +203,7 @@ export async function evaluateConditions(
     };
   }
 
-  const results = { met: [] as string[], notMet: [] as string[] } as {
-    met: string[];
-    notMet: string[];
-    primaryActualValue?: number;
-    sawUnknown?: boolean;
-  };
+  const results: EvaluationAccumulator = { met: [], notMet: [] };
   const triggered = await evaluateConditionRecursive(rootCondition, deviceId, results);
 
   // Get latest metric for context
@@ -229,7 +243,8 @@ export async function evaluateConditions(
     conditionsMet: results.met,
     conditionsNotMet: results.notMet,
     dataState: results.sawUnknown ? 'unknown' : 'ok',
-    context
+    context,
+    ...(!isConditionGroup(rootCondition) && results.subjects !== undefined ? { subjects: results.subjects } : {}),
   };
 }
 
