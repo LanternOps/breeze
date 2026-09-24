@@ -1,5 +1,5 @@
 -- @no-transaction
--- Keyset index for the partner alerts feed (see 2026-10-28-150000). Built
+-- Keyset index for the partner alerts feed (see 2026-10-30-100000). Built
 -- CONCURRENTLY so a busy alerts table is never write-locked during the build.
 -- IF NOT EXISTS keeps re-application a no-op. An interrupted CONCURRENTLY
 -- build leaves an INVALID index that IF NOT EXISTS would silently accept, so

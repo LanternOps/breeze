@@ -610,7 +610,7 @@ export type PartnerExportEnvelope<T extends PartnerExportRecordBase> = {
 
 // ---------------------------------------------------------------------------
 // Alerts feed (alerts:read). Latest-state change feed keyed by the writing
-// transaction id (see migrations/2026-10-28-150000-partner-api-alerts-read.sql),
+// transaction id (see migrations/2026-10-30-100000-partner-api-alerts-read.sql),
 // so it has its own cursor/checkpoint contract rather than the timestamp
 // watermark envelope above.
 // ---------------------------------------------------------------------------
