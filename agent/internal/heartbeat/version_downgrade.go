@@ -37,7 +37,8 @@ func mainAgentUpgradeDecision(target, current string) versionpolicy.Decision {
 // when it is ALSO genuinely absent from disk (installedOnDisk false) — both
 // signals must agree. installedOnDisk and installed come from independent
 // sources (helper.Manager.IsInstalled() stats the binary path; InstalledVersion()
-// reads separate per-session status files), and a partial uninstall can
+// reads the binary's stamped version, falling back to per-session status
+// files where that is unreadable), and a partial uninstall can
 // desync them: e.g. package removal succeeds but clearing the sessions
 // directory fails (locked file, permission error) and only logs a warning,
 // leaving IsInstalled() == false while InstalledVersion() still returns the
@@ -49,11 +50,15 @@ func mainAgentUpgradeDecision(target, current string) versionpolicy.Decision {
 // itself empty/whitespace; a non-empty installed version — on disk or not —
 // is always compared for real via InstalledComponentCurrent.
 //
-// If the binary IS on disk but its version is unreadable — e.g. no user
-// session has written a status file yet, or a status read failed — we must
-// also FAIL CLOSED: an attacker-replayed older signed release could
-// otherwise be installed during that window. Distinguishing "absent" from
-// "present but version unknown" is the caller's job (helper.Manager.IsInstalled()).
+// If the binary IS on disk but its version is unreadable we must also FAIL
+// CLOSED: an attacker-replayed older signed release could otherwise be
+// installed during that window. Distinguishing "absent" from "present but
+// version unknown" is the caller's job (helper.Manager.IsInstalled()).
+// helper.Manager.InstalledVersion() reads the version stamped into the
+// binary itself on Windows and macOS (#6252), so on those platforms the
+// unreadable case no longer depends on a helper process having written a
+// per-session status file — which previously left this guard refusing every
+// update, every heartbeat, on hosts whose tracked session had no status yet.
 func helperUpgradeAllowed(target, installed string, installedOnDisk bool) (allowed bool, reason string) {
 	policy := versionpolicy.InstalledComponentCurrent
 	if !installedOnDisk && strings.TrimSpace(installed) == "" {
