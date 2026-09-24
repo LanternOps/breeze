@@ -329,6 +329,7 @@
     "exportFailed": "Falha na exportação",
     "title": "Exportação de faturáveis",
     "description": "Lançamentos de tempo e peças faturáveis em CSV (até 366 dias). Inclui o status de aprovação.",
+    "columnsNote": "Inclui o tipo de trabalho e os minutos cobertos pelo contrato de cada lançamento de tempo.",
     "from": "De",
     "to": "Até",
     "allOrganizations": "Todas as organizações",
@@ -579,6 +580,10 @@
       "modules": {
         "label": "Módulos",
         "description": "Central de serviços, faturamento e topologia ativados/desativados"
+      },
+      "aiApprovals": {
+        "label": "Tempo limite de aprovação de IA",
+        "description": "Quanto tempo o chat de IA aguarda a aprovação de uma ação restrita"
       }
     },
     "saved": "Configurações do parceiro salvas",
@@ -1662,6 +1667,8 @@
     "maxTurnsPerSession": "Máximo de turnos por sessão",
     "msgsMinPerUser": "Mensagens/minuto por usuário",
     "msgsHrPerOrg": "Mensagens/hora por organização",
+    "toolRateLimitMultiplier": "Multiplicador de limite de taxa por ferramenta",
+    "toolRateLimitMultiplierHelp": "Aumenta cada limite de taxa de IA e MCP por ferramenta por este fator (1–10). Nunca reduz nem remove um limite.",
     "saveBudget": "Salvar orçamento",
     "savedSuccessfully": "Salvo com sucesso",
     "allBudgetSettingsAreManagedByYourPartner": "Todas as configurações de orçamento são gerenciadas pelo seu parceiro",
@@ -5894,5 +5901,24 @@
       "firstSeen": "Visto pela primeira vez em {{date}}",
       "none": "Nenhuma versão registrada para esta implantação."
     }
+  },
+  "partnerAiApprovals": {
+    "timeoutLabel": "Tempo limite de aprovação interativa",
+    "productDefault": "Padrão do produto ({{minutes}} minutos)",
+    "range": "Escolha entre {{min}} e {{max}} minutos.",
+    "description": "Por quanto tempo uma conversa de IA em andamento aguarda que alguém aprove uma ação restrita (Nível 2/3) antes de desistir.",
+    "orgOverrideNote": "As organizações podem substituir esse valor em suas próprias configurações de IA; o valor da organização prevalece quando definido.",
+    "notForUnattendedNote": "Isso não é para trabalho noturno ou não supervisionado — o trabalho de longa duração passa pela fila de aprovações, que tem seu próprio vencimento."
+  },
+  "orgAiApprovalTimeout": {
+    "title": "Tempo limite de aprovação de IA",
+    "description": "Por quanto tempo um chat de IA aguarda que alguém aprove uma ação restrita (Nível 2/3) antes de desistir. As organizações podem substituir o padrão do parceiro aqui; o valor da organização prevalece quando definido.",
+    "fieldLabel": "Tempo limite de aprovação interativa",
+    "inherit": "Herdar",
+    "inheritLabel": "Herdar ({{minutes}} minutos, {{source}})",
+    "sourcePartner": "padrão do parceiro",
+    "sourceDefault": "padrão do produto",
+    "range": "Escolha entre {{min}} e {{max}} minutos.",
+    "save": "Salvar"
   }
 }

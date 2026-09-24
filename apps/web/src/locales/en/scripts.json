@@ -52,6 +52,11 @@
         "weeklySunday": "Weekly Sunday"
       }
     },
+    "alertWorkflow": {
+      "severity": "Severities",
+      "kind": "Monitor kinds",
+      "hint": "Leave a group empty to match any value. Existing advanced filters are preserved."
+    },
     "validation": {
       "valueRequired": "Value is required",
       "nameRequired": "Automation name is required",
@@ -361,7 +366,7 @@
       "scheduled": "Scheduled",
       "on-demand": "On demand",
       "webhooks": "Webhooks",
-      "event-rules": "Event rules"
+      "event-rules": "Alert workflows"
     }
   },
   "complianceDashboard": {
@@ -1064,9 +1069,9 @@
       "elevatedHint": "Uses sudo on macOS/Linux, runas on Windows."
     },
     "exitCodeSeverity": {
-      "emptyPrefix": "Map specific exit codes to alert severities. When the script returns one of these codes, an alert is raised at the configured severity. Choose",
+      "emptyPrefix": "Map specific exit codes to alert severities. When an unattended run (scheduled, automation, policy or alert-triggered) returns one of these codes, an alert is raised at the configured severity; manual runs never raise one. A later run that exits cleanly resolves it. Choose",
       "suppressAlert": "Suppress alert",
-      "emptySuffix": "to mark a code as informational (no incident raised). Exit codes you don't list here use the default outcome handling.",
+      "emptySuffix": "to mark a code as informational (no alert). A non-zero code you don't list uses the nearest lower listed severity, or medium.",
       "suppressHint": "Suppress alert — exit code is treated as informational, no incident raised."
     },
     "keyboardSave": "{{shortcut}} to save",

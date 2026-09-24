@@ -1,4 +1,4 @@
-import { isTenantToolName, remediationTriggerSchema, type RemediationTrigger } from '@breeze/shared';
+import { isTenantToolName, remediationTriggerSchema, type RemediationTrigger, AI_APPROVAL_TIMEOUT_MAX_MINUTES, AI_APPROVAL_TIMEOUT_MIN_MINUTES } from '@breeze/shared';
 import { buildActionLabel, hasDeviceIdStub } from './actionLabel';
 import { argumentDeviceId, resolveApprovalDeviceName } from './approvalDeviceName';
 import { randomUUID, createHash } from 'crypto';
@@ -183,6 +183,14 @@ export interface CreateActionIntentInput {
    * public input on purpose, never inherited.
    */
   source: 'chat' | 'mcp_api' | 'ai_agent';
+  /**
+   * #6475 — the org's interactive AI approval timeout (ms) for the chat
+   * session minting this intent. Honoured ONLY for `source: 'chat'` +
+   * `supervised`, where it replaces the 5-minute CHAT_EXPIRY_MS so the
+   * intent lives exactly as long as the chat turn waits on it. Clamped to the
+   * setting's 5-60 minute range; ignored for every other source/scope.
+   */
+  chatApprovalWindowMs?: number;
   requestingClientLabel?: string;
   /** MCP callers pass this explicitly; derived deterministically for chat. */
   idempotencyKey?: string;
@@ -321,7 +329,9 @@ export interface ActionIntentTransitionPatch {
 
 // Expiry defaults (spec §3.4, extended by the tier3-supervised-four-eyes
 // split design §4.2): chat matches the existing 5-minute waitForApproval UX
-// for supervised intents; four_eyes chat intents get a longer 60-minute
+// for supervised intents (#6475: now the DEFAULT — the org's configurable
+// interactive approval timeout, 5-60 min, replaces it via
+// `chatApprovalWindowMs`); four_eyes chat intents get a longer 60-minute
 // window since finding a second approver takes real wall-clock time. mcp_api
 // gets a day regardless of scope, since there's no live session blocking on
 // it. Constants, not env vars, per the design.
@@ -592,11 +602,26 @@ export function deriveIntentIdempotencyKey(args: {
     ?? deriveIdempotencyKey(args.actorId, args.toolName, args.argumentDigest, args.scopeId);
 }
 
-function computeExpiresAt(source: ActionIntentSource, approvalScope: ActionIntentApprovalScope): Date {
+export function computeExpiresAt(
+  source: ActionIntentSource,
+  approvalScope: ActionIntentApprovalScope,
+  chatApprovalWindowMs?: number,
+): Date {
   if (source === 'ai_agent') return new Date(Date.now() + AGENT_INTENT_EXPIRY_MS);
   if (source !== 'chat') return new Date(Date.now() + MCP_EXPIRY_MS);
-  const ms = approvalScope === 'supervised' ? CHAT_EXPIRY_MS : FOUR_EYES_CHAT_EXPIRY_MS;
+  const ms = approvalScope === 'supervised'
+    ? clampChatApprovalWindowMs(chatApprovalWindowMs)
+    : FOUR_EYES_CHAT_EXPIRY_MS;
   return new Date(Date.now() + ms);
+}
+
+/** #6475 — a supervised chat intent's window: the configured timeout, bounded to 5-60 min. */
+function clampChatApprovalWindowMs(windowMs: number | undefined): number {
+  if (windowMs === undefined || !Number.isFinite(windowMs)) return CHAT_EXPIRY_MS;
+  return Math.min(
+    AI_APPROVAL_TIMEOUT_MAX_MINUTES * 60_000,
+    Math.max(AI_APPROVAL_TIMEOUT_MIN_MINUTES * 60_000, Math.floor(windowMs)),
+  );
 }
 
 function toSnapshot(
@@ -1662,7 +1687,7 @@ export async function createActionIntent(
     reason: labelReason,
     deviceHostname: labelDeviceName,
   });
-  const expiresAt = computeExpiresAt(input.source, approvalScope);
+  const expiresAt = computeExpiresAt(input.source, approvalScope, input.chatApprovalWindowMs);
   const requestingClientLabel = input.requestingClientLabel
     ?? (agentRow ? agentRow.name : input.source === 'chat' ? 'Breeze AI' : 'MCP API client');
   // Tier → riskTier mapping mirrors aiAgentSdk.ts's mobile-approval bridge.

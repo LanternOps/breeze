@@ -477,6 +477,8 @@ Each tool has its own sliding-window rate limit, enforced per user:
 
 Tools without an entry in this table (e.g., `query_devices`, `get_device_details`) have no per-tool rate limit.
 
+These are the defaults. An organisation can raise all of them together with the **Per-tool rate limit multiplier** AI budget setting (a whole number from 1 to 10). Each limit becomes `ceil(limit × multiplier)`, and the multiplier can never lower or remove a limit. Over MCP, the API key's organisation selects the multiplier. A partner-scoped caller with no organisation uses the partner's value. The counter stays per user and per tool. See [AI → Raising the per-tool limits](/features/ai/#raising-the-per-tool-limits).
+
 ---
 
 ## Session management

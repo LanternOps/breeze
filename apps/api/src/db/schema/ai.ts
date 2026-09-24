@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, numeric, smallint, index, uniqueIndex } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, numeric, smallint, index, uniqueIndex, check } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { organizations } from './orgs';
 import { users } from './users';
@@ -191,9 +191,19 @@ export const aiBudgets = pgTable('ai_budgets', {
   alertThresholdPercents: integer('alert_threshold_pcts').array(),
   // Execution plane W02 (spec §6.3): daily per-org sandbox compute ceiling.
   maxComputeCentsPerDay: integer('max_compute_cents_per_day').notNull().default(500),
+  // #6476 — raises every per-tool AI/MCP rate limit (TOOL_RATE_LIMITS) by this
+  // factor: ceil(limit × multiplier). 1 = shipped limits. Never lowers or
+  // removes a limit; the CHECK pins it to 1–10. Same property name as the
+  // partner-JSONB key, for the AI_BUDGET_FIELDS merge.
+  toolRateLimitMultiplier: integer('tool_rate_limit_multiplier').notNull().default(1),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
-});
+}, (table) => ({
+  toolRateLimitMultiplierRange: check(
+    'ai_budgets_tool_rate_limit_multiplier_chk',
+    sql`${table.toolRateLimitMultiplier} BETWEEN 1 AND 10`,
+  ),
+}));
 
 // ============================================
 // AI Budget Reservations — durable pre-dispatch spend fence (RLS shape 1)

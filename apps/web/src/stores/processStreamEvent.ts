@@ -50,6 +50,10 @@ export interface PendingApproval {
   approvalScope?: AiApprovalScope;
   /** The intent's real server-side expiry (ISO), so the self-approve countdown reflects actual deadline. */
   intentExpiresAt?: string;
+  /** #6475 — the org's configured interactive-approval window (ms), sent on every approval card. */
+  approvalWindowMs?: number;
+  /** #6475 — this specific (legacy, non-intent) wait's real server-side expiry (ISO). */
+  approvalExpiresAt?: string;
   /**
    * #4888 — the run context a script launch will actually execute in, resolved
    * server-side. Present only for `run_script` / `execute_script_on_device`.
@@ -219,6 +223,8 @@ export function processStreamEvent(
           selfApprovalRequestId: event.selfApprovalRequestId,
           approvalScope: event.approvalScope,
           intentExpiresAt: event.intentExpiresAt,
+          approvalWindowMs: event.approvalWindowMs,
+          approvalExpiresAt: event.approvalExpiresAt,
           scriptRunContext: event.scriptRunContext ?? null,
         }
       }));

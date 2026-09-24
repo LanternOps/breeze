@@ -98,6 +98,22 @@
       "inaccessible": "This organization is {{status}}, so its live data is not available. You can still see it in the organizations list.",
       "backToList": "Back to organizations"
     },
+    "reportHistory": {
+      "title": "Report history",
+      "loading": "Loading report history…",
+      "readOnlyNote": "Read-only: this organization is {{status}}. Reports can't be generated, scheduled or downloaded.",
+      "forbidden": "You don't have access to this organization's report history.",
+      "error": "Could not load report history.",
+      "empty": "No reports or report runs found.",
+      "definitionsTitle": "Report definitions",
+      "definitionsEmpty": "No report definitions.",
+      "runsTitle": "Recent runs",
+      "runsEmpty": "No report runs.",
+      "lastGenerated": "Last generated {{date}}",
+      "neverGenerated": "Never generated",
+      "rowCount_one": "{{count}} row",
+      "rowCount_other": "{{count}} rows"
+    },
     "unavailable": {
       "title": "Not available in this workspace",
       "description": "Organization records are a partner-level view. Your sign-in is scoped to a single organization, so there is nothing to switch between here.",

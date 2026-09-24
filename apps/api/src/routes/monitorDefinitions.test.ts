@@ -504,6 +504,35 @@ describe('POST /monitor-definitions/:id/attachments', () => {
     expect(addFeatureLinkMock).not.toHaveBeenCalled();
     expect(updateFeatureLinkMock).not.toHaveBeenCalled();
   });
+  // A monitors link's `inheritance` lives in the link's inline settings, which
+  // this route rewrites on every attach. Writing `{ items }` alone silently
+  // turned a `replace` policy back into `cumulative`, re-admitting every
+  // inherited monitor the policy was set up to shadow.
+  it('keeps a replace link replace when attaching another monitor', async () => {
+    const OTHER_MONITOR_ID = '88888888-8888-4888-8888-888888888888';
+    getMonitorDefinitionMock.mockResolvedValue(monitorRow());
+    vi.mocked(getConfigPolicyMock).mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null } as never);
+    selectMock
+      .mockReturnValueOnce(selectChain([{ id: 'fl-1', inlineSettings: { items: [], inheritance: 'replace' } }]))
+      .mockReturnValueOnce(selectChain([{ monitorId: OTHER_MONITOR_ID, enabled: true, overrides: null, sortOrder: 0 }]));
+
+    const res = await jsonRequest(buildApp(), 'POST', `/${MONITOR_ID}/attachments`, {
+      configPolicyId: POLICY_ID,
+    });
+
+    expect(res.status).toBe(201);
+    expect(updateFeatureLinkMock).toHaveBeenCalledTimes(1);
+    const [, updates] = vi.mocked(updateFeatureLinkMock).mock.calls[0]!;
+    expect(updates).toEqual({
+      inlineSettings: {
+        inheritance: 'replace',
+        items: [
+          { monitorId: OTHER_MONITOR_ID, enabled: true, overrides: null, sortOrder: 0 },
+          { monitorId: MONITOR_ID, enabled: true, overrides: null, sortOrder: 1 },
+        ],
+      },
+    });
+  });
 });
 
 describe('DELETE /monitor-definitions/:id/attachments/:attachmentId', () => {
@@ -545,6 +574,71 @@ describe('DELETE /monitor-definitions/:id/attachments/:attachmentId', () => {
 
     expect(res.status).toBe(204);
     expect(removeFeatureLinkMock).toHaveBeenCalledTimes(1);
+  });
+  it('keeps a replace link replace when detaching one of several monitors', async () => {
+    const OTHER_MONITOR_ID = '88888888-8888-4888-8888-888888888888';
+    getMonitorDefinitionMock.mockResolvedValue(monitorRow());
+    mockAttachmentRow();
+    vi.mocked(getConfigPolicyMock).mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null } as never);
+    selectMock
+      .mockReturnValueOnce(selectChain([{ id: 'fl-1', inlineSettings: { items: [], inheritance: 'replace' } }]))
+      .mockReturnValueOnce(
+        selectChain([
+          { monitorId: MONITOR_ID, enabled: true, overrides: null, sortOrder: 0 },
+          { monitorId: OTHER_MONITOR_ID, enabled: true, overrides: null, sortOrder: 1 },
+        ]),
+      );
+
+    const res = await jsonRequest(buildApp(), 'DELETE', `/${MONITOR_ID}/attachments/${ATTACHMENT_ID}`);
+
+    expect(res.status).toBe(204);
+    expect(removeFeatureLinkMock).not.toHaveBeenCalled();
+    expect(updateFeatureLinkMock).toHaveBeenCalledWith(
+      'fl-1',
+      {
+        inlineSettings: {
+          inheritance: 'replace',
+          items: [{ monitorId: OTHER_MONITOR_ID, enabled: true, overrides: null, sortOrder: 1 }],
+        },
+      },
+      POLICY_ID,
+    );
+  });
+
+  // An empty `replace` link is how a policy says "none of my parents' monitors
+  // apply here". Deleting it on the last detach would quietly re-admit them.
+  it('keeps an emptied replace link instead of deleting it', async () => {
+    getMonitorDefinitionMock.mockResolvedValue(monitorRow());
+    mockAttachmentRow();
+    vi.mocked(getConfigPolicyMock).mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null } as never);
+    selectMock
+      .mockReturnValueOnce(selectChain([{ id: 'fl-1', inlineSettings: { items: [], inheritance: 'replace' } }]))
+      .mockReturnValueOnce(selectChain([{ monitorId: MONITOR_ID, enabled: true, overrides: null, sortOrder: 0 }]));
+
+    const res = await jsonRequest(buildApp(), 'DELETE', `/${MONITOR_ID}/attachments/${ATTACHMENT_ID}`);
+
+    expect(res.status).toBe(204);
+    expect(removeFeatureLinkMock).not.toHaveBeenCalled();
+    expect(updateFeatureLinkMock).toHaveBeenCalledWith(
+      'fl-1',
+      { inlineSettings: { inheritance: 'replace', items: [] } },
+      POLICY_ID,
+    );
+  });
+
+  it('still removes an emptied cumulative link', async () => {
+    getMonitorDefinitionMock.mockResolvedValue(monitorRow());
+    mockAttachmentRow();
+    vi.mocked(getConfigPolicyMock).mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null } as never);
+    selectMock
+      .mockReturnValueOnce(selectChain([{ id: 'fl-1', inlineSettings: { items: [] } }]))
+      .mockReturnValueOnce(selectChain([{ monitorId: MONITOR_ID, enabled: true, overrides: null, sortOrder: 0 }]));
+
+    const res = await jsonRequest(buildApp(), 'DELETE', `/${MONITOR_ID}/attachments/${ATTACHMENT_ID}`);
+
+    expect(res.status).toBe(204);
+    expect(removeFeatureLinkMock).toHaveBeenCalledWith('fl-1', POLICY_ID);
+    expect(updateFeatureLinkMock).not.toHaveBeenCalled();
   });
 });
 

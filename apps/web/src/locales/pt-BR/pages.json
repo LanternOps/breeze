@@ -1,5 +1,6 @@
 {
   "titles": {
+    "adminMonitorConversion": "Conversão de alertas legados",
     "notFound": "Página não encontrada",
     "serverError": "Algo deu errado",
     "acceptInvite": "Aceitar convite",
@@ -131,8 +132,6 @@
     "settingsAiUsage": "Uso de IA",
     "settingsAiScriptAuthoring": "Criação de scripts",
     "settingsToolSources": "Fontes de ferramentas",
-    "settingsAlertTemplatesDetail": "Modelo de alerta",
-    "settingsAlertTemplates": "Modelos de alerta",
     "settingsApiKeys": "Chaves de API",
     "settingsBilling": "Configurações de faturamento",
     "settingsCatalog": "Catálogo de produtos",

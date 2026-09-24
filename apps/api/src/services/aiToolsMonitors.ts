@@ -16,10 +16,8 @@
  * tool's `{ error }` JSON shape, mirroring `routes/monitorDefinitions.ts`'s
  * `errorResponse` helper.
  *
- * Attach/detach duplicate the (route-local, unexported) `currentItems` /
- * attachment logic from `routes/monitorDefinitions.ts` because that logic is
- * not behind a shared service function. Keep the two in sync by hand until a
- * follow-up extracts a shared helper.
+ * Attach/detach read and rewrite the monitors link through
+ * `monitors/monitorAttachments.ts`, the same helper the REST route uses.
  */
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { and, eq, inArray, sql } from 'drizzle-orm';
@@ -28,6 +26,7 @@ import { configPolicyMonitors, configPolicyFeatureLinks, configurationPolicies }
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { isMonitorAttachableToPolicy } from './monitors/monitorAttachability';
+import { monitorsLinkSettings, readMonitorsLink, shouldRemoveEmptiedLink } from './monitors/monitorAttachments';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from './partnerWideAccess';
 import { pgErrorCode, pgErrorConstraint } from '../utils/pgErrors';
 import { toolErrorResult } from './aiToolErrors';
@@ -144,51 +143,6 @@ async function attachmentsFor(monitorId: string) {
       eq(configurationPolicies.id, configPolicyFeatureLinks.configPolicyId),
     )
     .where(eq(configPolicyMonitors.monitorId, monitorId));
-}
-
-interface AttachmentItem {
-  monitorId: string;
-  enabled: boolean;
-  overrides: Record<string, unknown> | null;
-  sortOrder: number;
-}
-
-/** Mirrors `routes/monitorDefinitions.ts`'s local `currentItems` — see header note. */
-async function currentAttachmentItems(
-  configPolicyId: string,
-): Promise<{ linkId: string | null; items: AttachmentItem[] }> {
-  const [link] = await db
-    .select({ id: configPolicyFeatureLinks.id })
-    .from(configPolicyFeatureLinks)
-    .where(
-      and(
-        eq(configPolicyFeatureLinks.configPolicyId, configPolicyId),
-        eq(configPolicyFeatureLinks.featureType, 'monitors'),
-      ),
-    )
-    .limit(1);
-  if (!link) return { linkId: null, items: [] };
-
-  const rows = await db
-    .select({
-      monitorId: configPolicyMonitors.monitorId,
-      enabled: configPolicyMonitors.enabled,
-      overrides: configPolicyMonitors.overrides,
-      sortOrder: configPolicyMonitors.sortOrder,
-    })
-    .from(configPolicyMonitors)
-    .where(eq(configPolicyMonitors.featureLinkId, link.id))
-    .orderBy(configPolicyMonitors.sortOrder);
-
-  return {
-    linkId: link.id,
-    items: rows.map((r) => ({
-      monitorId: r.monitorId,
-      enabled: r.enabled,
-      overrides: (r.overrides as Record<string, unknown> | null) ?? null,
-      sortOrder: r.sortOrder,
-    })),
-  };
 }
 
 export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
@@ -475,7 +429,7 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
         }
 
-        const { linkId, items } = await currentAttachmentItems(input.configPolicyId as string);
+        const { linkId, items, inheritance } = await readMonitorsLink(input.configPolicyId as string);
         if (items.some((i) => i.monitorId === monitor.id)) {
           return JSON.stringify({ error: 'Monitor already attached to this policy' });
         }
@@ -501,7 +455,11 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
 
         try {
           if (linkId) {
-            await updateFeatureLink(linkId, { inlineSettings: { items: nextItems } }, input.configPolicyId as string);
+            await updateFeatureLink(
+              linkId,
+              { inlineSettings: monitorsLinkSettings(nextItems, inheritance) },
+              input.configPolicyId as string,
+            );
           } else {
             await addFeatureLink(input.configPolicyId as string, 'monitors', null, { items: nextItems });
           }
@@ -554,14 +512,14 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
         }
 
-        const { items } = await currentAttachmentItems(attachment.configPolicyId);
+        const { items, inheritance } = await readMonitorsLink(attachment.configPolicyId);
         const nextItems = items.filter((i) => i.monitorId !== monitor.id);
-        if (nextItems.length === 0) {
+        if (shouldRemoveEmptiedLink(nextItems, inheritance)) {
           await removeFeatureLink(attachment.featureLinkId, attachment.configPolicyId);
         } else {
           await updateFeatureLink(
             attachment.featureLinkId,
-            { inlineSettings: { items: nextItems } },
+            { inlineSettings: monitorsLinkSettings(nextItems, inheritance) },
             attachment.configPolicyId,
           );
         }

@@ -329,6 +329,7 @@
     "exportFailed": "Exportación fallida",
     "title": "Exportación de facturas",
     "description": "Entradas de tiempos y piezas facturables como CSV (hasta 366 días). Incluye estado de aprobación.",
+    "columnsNote": "Incluye el tipo de trabajo y los minutos cubiertos por el contrato de cada registro de tiempo.",
     "from": "De",
     "to": "A",
     "allOrganizations": "Todas las organizaciones",
@@ -579,6 +580,10 @@
       "modules": {
         "label": "Módulos",
         "description": "Mesa de servicio, facturación y topología activadas/desactivadas"
+      },
+      "aiApprovals": {
+        "label": "Tiempo de espera de aprobación de IA",
+        "description": "Cuánto tiempo espera el chat de IA la aprobación de una acción restringida"
       }
     },
     "saved": "Configuración de socio guardada",
@@ -1662,6 +1667,8 @@
     "maxTurnsPerSession": "Giros máximos por sesión",
     "msgsMinPerUser": "Mensajes/min por usuario",
     "msgsHrPerOrg": "Mensajes/hora por organización",
+    "toolRateLimitMultiplier": "Multiplicador de límites de uso por herramienta",
+    "toolRateLimitMultiplierHelp": "Aumenta cada límite de uso por herramienta de IA y MCP según este factor (1–10). Nunca reduce ni elimina un límite.",
     "saveBudget": "Guardar presupuesto",
     "savedSuccessfully": "Guardado exitosamente",
     "allBudgetSettingsAreManagedByYourPartner": "Todas las configuraciones del presupuesto son administradas por su socio",
@@ -5894,5 +5901,24 @@
       "firstSeen": "Visto por primera vez el {{date}}",
       "none": "No hay versiones registradas para esta implementación."
     }
+  },
+  "partnerAiApprovals": {
+    "timeoutLabel": "Tiempo de espera de aprobación interactiva",
+    "productDefault": "Predeterminado del producto ({{minutes}} minutos)",
+    "range": "Elija entre {{min}} y {{max}} minutos.",
+    "description": "Cuánto tiempo espera un turno de chat de IA en vivo a que alguien apruebe una acción restringida (Nivel 2/3) antes de desistir.",
+    "orgOverrideNote": "Las organizaciones pueden anular este valor desde su propia configuración de IA; el valor de la organización prevalece cuando está establecido.",
+    "notForUnattendedNote": "Esto no es para trabajo nocturno o desatendido: el trabajo de larga duración pasa por la cola de aprobaciones, que tiene su propio vencimiento."
+  },
+  "orgAiApprovalTimeout": {
+    "title": "Tiempo de espera de aprobación de IA",
+    "description": "Cuánto tiempo espera un chat de IA a que alguien apruebe una acción restringida (Nivel 2/3) antes de desistir. Las organizaciones pueden anular aquí el valor predeterminado del socio; el valor de la organización prevalece cuando está establecido.",
+    "fieldLabel": "Tiempo de espera de aprobación interactiva",
+    "inherit": "Heredar",
+    "inheritLabel": "Heredar ({{minutes}} minutos, {{source}})",
+    "sourcePartner": "predeterminado del socio",
+    "sourceDefault": "predeterminado del producto",
+    "range": "Elija entre {{min}} y {{max}} minutos.",
+    "save": "Guardar"
   }
 }

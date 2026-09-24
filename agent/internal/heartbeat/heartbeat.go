@@ -324,6 +324,9 @@ type helperLifecycleController interface {
 	RenewLease(sessionID uint32, role ipc.HelperRole, opID string, ttl time.Duration) error
 	ReleaseLease(sessionID uint32, role ipc.HelperRole, opID string)
 	WaitForHelperReady(ctx context.Context, key sessionbroker.HelperKey) sessionbroker.HelperWaitResult
+	// HelperRoleAvailable reports whether key's session can host that helper
+	// role right now (a user-role helper needs a signed-in user).
+	HelperRoleAvailable(key sessionbroker.HelperKey) (bool, error)
 }
 
 // lifecycleMode returns the resolved helper lifecycle mode, or "" when no

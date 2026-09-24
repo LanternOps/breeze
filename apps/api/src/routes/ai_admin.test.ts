@@ -148,6 +148,11 @@ vi.mock('../services/effectiveSettings', () => ({
   assertNotLocked: vi.fn(),
 }));
 
+vi.mock('../services/aiToolRateLimits', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/aiToolRateLimits')>()),
+  resolveToolRateLimitMultiplier: vi.fn(),
+}));
+
 vi.mock('../services/aiBudgetAlerts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/aiBudgetAlerts')>();
   return { ...actual, evaluateAiBudgetThresholds: vi.fn().mockResolvedValue([]) };
@@ -168,6 +173,7 @@ import {
 import { getUsageSummary, updateBudget, getSessionHistory } from '../services/aiCostTracker';
 import { evaluateAiBudgetThresholds } from '../services/aiBudgetAlerts';
 import { assertNotLocked } from '../services/effectiveSettings';
+import { resolveToolRateLimitMultiplier } from '../services/aiToolRateLimits';
 import { streamingSessionManager } from '../services/streamingSessionManager';
 import { runPreFlightChecks, abortActivePlan } from '../services/aiAgentSdk';
 
@@ -403,6 +409,33 @@ describe('AI routes', () => {
         ORG_ID,
         expect.objectContaining({ alertThresholdPercents: [50, 95] })
       );
+    });
+
+    // #6476 — the multiplier can only raise limits; the API rejects anything
+    // outside the 1–10 integer range rather than clamping it.
+    it.each([0, -1, 11, 2.5])('rejects toolRateLimitMultiplier %s', async (m) => {
+      const res = await app.request('/ai/budget', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ toolRateLimitMultiplier: m }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(updateBudget).not.toHaveBeenCalled();
+    });
+
+    it('stores a valid toolRateLimitMultiplier and checks the partner lock for it', async () => {
+      vi.mocked(updateBudget).mockResolvedValueOnce(undefined);
+
+      const res = await app.request('/ai/budget', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ toolRateLimitMultiplier: 3 }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(assertNotLocked).toHaveBeenCalledWith(ORG_ID, 'aiBudgets', { toolRateLimitMultiplier: 3 });
+      expect(updateBudget).toHaveBeenCalledWith(ORG_ID, { toolRateLimitMultiplier: 3 });
     });
 
     it('checks the partner lock against the normalised thresholds, not the raw submitted order (finding #2a)', async () => {
@@ -791,4 +824,52 @@ describe('AI routes', () => {
     });
   });
 
+});
+
+describe('GET /ai/tool-rate-limits (#6476)', () => {
+  let app: Hono;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    app = new Hono();
+    app.route('/ai', aiRoutes);
+  });
+
+  it('serves the effective limits for the org, scaled by its multiplier', async () => {
+    vi.mocked(resolveToolRateLimitMultiplier).mockResolvedValueOnce(3);
+
+    const res = await app.request('/ai/tool-rate-limits', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(resolveToolRateLimitMultiplier).toHaveBeenCalledWith({ orgId: ORG_ID, partnerId: null });
+    expect(body.multiplier).toBe(3);
+    const runScript = body.limits.find((l: { toolName: string }) => l.toolName === 'run_script');
+    expect(runScript).toMatchObject({ baseLimit: 5, limit: 15, windowSeconds: 300 });
+  });
+
+  it('serves the shipped limits at multiplier 1', async () => {
+    vi.mocked(resolveToolRateLimitMultiplier).mockResolvedValueOnce(1);
+
+    const res = await app.request('/ai/tool-rate-limits', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    const body = await res.json();
+    for (const row of body.limits) expect(row.limit).toBe(row.baseLimit);
+  });
+
+  it('403s for an org the caller cannot access', async () => {
+    const res = await app.request('/ai/tool-rate-limits?orgId=other-org', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(resolveToolRateLimitMultiplier).not.toHaveBeenCalled();
+  });
 });

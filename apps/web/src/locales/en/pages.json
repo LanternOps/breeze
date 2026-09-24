@@ -1,5 +1,6 @@
 {
   "titles": {
+    "adminMonitorConversion": "Legacy Alert Conversion",
     "notFound": "Page not found",
     "serverError": "Something went wrong",
     "acceptInvite": "Accept Invite",
@@ -131,8 +132,6 @@
     "settingsAiUsage": "AI Usage",
     "settingsAiScriptAuthoring": "Script authoring",
     "settingsToolSources": "Tool Sources",
-    "settingsAlertTemplatesDetail": "Alert Template",
-    "settingsAlertTemplates": "Alert Templates",
     "settingsApiKeys": "API Keys",
     "settingsBilling": "Billing Settings",
     "settingsCatalog": "Product Catalog",

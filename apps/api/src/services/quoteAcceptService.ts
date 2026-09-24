@@ -20,6 +20,7 @@ import { captureException } from './sentry';
 import { isQuoteLineSiteDeleted } from '@breeze/shared';
 import type { ContractBlockRenderData } from './contractTemplateRender';
 import { getOrMintInvoiceLink, buildPublicInvoiceUrl } from './invoiceLinkToken';
+import { stampedPresentation, quotePresentationAsInvoiceSource } from './invoicePresentation';
 import {
   assertContractRenderDataComplete,
   buildContractHashParts,
@@ -341,6 +342,9 @@ export async function acceptQuote(
       // #3205 W07: read alongside the other issue-time partner defaults so the
       // appendix stamp below costs no extra query.
       invoiceDeviceAppendix: partners.invoiceDeviceAppendix,
+      // #6227: fallback for the invoice presentation stamp when the quote
+      // carries no presentation snapshot (legacy pre-snapshot quotes).
+      documentTheme: partners.documentTheme, documentPageSize: partners.documentPageSize,
     })
     .from(partners).where(eq(partners.id, quote.partnerId)).limit(1);
   // Render locale for the contract parts + executed PDF: the quote's send-time
@@ -529,6 +533,16 @@ export async function acceptQuote(
     // through issueInvoice), so the appendix choice is frozen here too — the
     // same reason documentLocale is stamped on this line.
     issueFields.deviceAppendix = invoice!.deviceAppendix ?? partner?.invoiceDeviceAppendix ?? false;
+    // #6227 presentation snapshot: this IS the issue moment, so freeze the
+    // theme / page size here too — from the accepted quote's own send-time
+    // presentationSnapshot (the proposal the customer signed), the same rule
+    // sellerSnapshot and documentLocale follow, with the partner's current
+    // values only as the fallback for a pre-snapshot quote. Same precedence
+    // as quoteBranding, resolved through the invoice resolver.
+    Object.assign(issueFields, stampedPresentation(
+      quotePresentationAsInvoiceSource(quote.presentationSnapshot),
+      partner,
+    ));
     issueFields.termsAndConditions = quote.termsAndConditions ?? null;
     issueFields.terms = quote.terms ?? null;
     // Deposit terms travel from the signed quote onto the issued invoice.

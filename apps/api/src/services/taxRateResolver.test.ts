@@ -24,7 +24,7 @@ vi.mock('../db/partnerAxisRead', () => ({
   }),
 }));
 
-import { resolveOrgTaxRate, OrgNotVisibleForTaxError } from './taxRateResolver';
+import { resolveOrgTaxRate, resolveOrgTaxRateOn, OrgNotVisibleForTaxError, PartnerNotVisibleForTaxError } from './taxRateResolver';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 
 const ORG_ID = 'aaaaaaaa-1111-4111-8111-111111111111';
@@ -86,5 +86,53 @@ describe('resolveOrgTaxRate', () => {
     // version of this test only asserted the call COUNT, which would also
     // pass if both reads were wrapped — this asserts the SHAPE.
     expect(wrapperFlagPerCall).toEqual([false, true]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #6227 (M18): the transaction-aware variant used by persisted draft recompute.
+// ---------------------------------------------------------------------------
+describe('resolveOrgTaxRateOn (transaction-aware, #6227)', () => {
+  /** A fake executor with its OWN queue, so a read that leaked to the global
+   *  `db` mock (or through the partner-axis escape) would come back empty and
+   *  fail the assertion instead of passing by accident. */
+  function executor(rows: unknown[][]) {
+    const q = [...rows];
+    const select = vi.fn(() => ({ from: () => ({ where: () => ({ limit: () => Promise.resolve(q.shift() ?? []) }) }) }));
+    return { select } as unknown as Parameters<typeof resolveOrgTaxRateOn>[0] & { select: typeof select };
+  }
+
+  it('reads org AND partner on the passed executor, never through the partner-axis escape', async () => {
+    const tx = executor([[{ taxExempt: false, taxRate: null }], [{ defaultTaxRate: '0.07000' }]]);
+    const rate = await resolveOrgTaxRateOn(tx, { orgId: ORG_ID, partnerId: PARTNER_ID });
+    expect(rate).toBe('0.07000');
+    expect(tx.select).toHaveBeenCalledTimes(2);
+    expect(readWithPartnerAxisVisibility).not.toHaveBeenCalled();
+    expect(wrapperFlagPerCall).toEqual([]); // the global db was never touched
+  });
+
+  it('org rate wins over the partner default', async () => {
+    const tx = executor([[{ taxExempt: false, taxRate: '0.08000' }], [{ defaultTaxRate: '0.05000' }]]);
+    expect(await resolveOrgTaxRateOn(tx, { orgId: ORG_ID, partnerId: PARTNER_ID })).toBe('0.08000');
+  });
+
+  it('tax-exempt and no-rate both return null (same contract as resolveOrgTaxRate)', async () => {
+    expect(await resolveOrgTaxRateOn(executor([[{ taxExempt: true, taxRate: '0.08000' }], [{ defaultTaxRate: '0.05000' }]]),
+      { orgId: ORG_ID, partnerId: PARTNER_ID })).toBeNull();
+    expect(await resolveOrgTaxRateOn(executor([[{ taxExempt: false, taxRate: null }], [{ defaultTaxRate: null }]]),
+      { orgId: ORG_ID, partnerId: PARTNER_ID })).toBeNull();
+  });
+
+  it('FAILS CLOSED on an invisible org before reading the partner', async () => {
+    const tx = executor([[]]);
+    await expect(resolveOrgTaxRateOn(tx, { orgId: ORG_ID, partnerId: PARTNER_ID })).rejects.toThrow(OrgNotVisibleForTaxError);
+    expect(tx.select).toHaveBeenCalledTimes(1);
+  });
+
+  it('FAILS CLOSED on an invisible partner row instead of silently taxing at the org-only rate', async () => {
+    // invoices.partner_id is a NOT NULL FK, so a missing partner row can only
+    // mean RLS hid it — collapsing to the org-only rate would under-tax.
+    const tx = executor([[{ taxExempt: false, taxRate: null }], []]);
+    await expect(resolveOrgTaxRateOn(tx, { orgId: ORG_ID, partnerId: PARTNER_ID })).rejects.toThrow(PartnerNotVisibleForTaxError);
   });
 });

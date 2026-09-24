@@ -225,7 +225,7 @@ export type AiStreamEvent =
    * assistant choose SYSTEM for a user-context script is a privilege
    * decision, and the human deciding it has to be told.
    */
-  | { type: 'approval_required'; executionId: string; approvalRequestId?: string; selfApprovalRequestId?: string; approvalScope?: AiApprovalScope; intentExpiresAt?: string; toolName: string; input: Record<string, unknown>; description: string; requiresAdminApproval?: boolean; deviceContext?: { hostname: string; displayName?: string; status: string; lastSeenAt?: string; activeSessions?: Array<{ username: string; activityState?: string; idleMinutes?: number; sessionType: string }> }; intentBacked?: boolean; scriptRunContext?: AiScriptRunContext | null; scriptProposal?: AiApprovalScriptProposalSummary }
+  | { type: 'approval_required'; executionId: string; approvalRequestId?: string; selfApprovalRequestId?: string; approvalScope?: AiApprovalScope; intentExpiresAt?: string; approvalWindowMs?: number; approvalExpiresAt?: string; toolName: string; input: Record<string, unknown>; description: string; requiresAdminApproval?: boolean; deviceContext?: { hostname: string; displayName?: string; status: string; lastSeenAt?: string; activeSessions?: Array<{ username: string; activityState?: string; idleMinutes?: number; sessionType: string }> }; intentBacked?: boolean; scriptRunContext?: AiScriptRunContext | null; scriptProposal?: AiApprovalScriptProposalSummary }
   /**
    * W03 (#5612): a proposal outcome delivered into the author's chat session —
    * request-changes findings + note, or a verification result. The durable

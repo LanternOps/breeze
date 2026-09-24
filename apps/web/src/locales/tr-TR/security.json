@@ -54,8 +54,11 @@
     "wait": "Bekle: {{duration}}"
   },
   "aiRiskRateLimitStatus": {
+    "defaultLimit": "(varsayılan {{limit}})",
+    "failedToLoad": "Geçerli hız limitleri yüklenemedi. Daha sonra tekrar deneyin.",
     "filterRateLimits": "Filtre hızı sınırları...",
     "limit": "Sınır",
+    "multiplierApplied": "Limitler, yapay zekâ bütçe ayarlarında belirlenen {{multiplier}}× araç başına hız limiti çarpanını içerir.",
     "noRateLimitsMatchYourSearch": "Aramanızla eşleşen hız sınırı yok.",
     "permission": "İzin",
     "rateLimitConfiguration": "Hız Sınırı Yapılandırması",

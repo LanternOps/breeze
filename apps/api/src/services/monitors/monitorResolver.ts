@@ -197,6 +197,10 @@ export async function resolveMonitorsForDevice(
     .from(organizations)
     .where(eq(organizations.id, device.orgId))
     .limit(1);
+  // Without the org row the partner-level assignments and partner-wide
+  // monitors below silently drop out, so a partial answer would pass for
+  // "resolved". Report it as unresolvable, like a vanished device (#2949).
+  if (!org) return { kind: 'device_missing' };
 
   const groupRows = await executor
     .select({ groupId: deviceGroupMemberships.groupId })

@@ -15,6 +15,8 @@ import type { AiAgentMode, AiAgentProtectedResources, RiskTier } from '@breeze/s
 import { getToolTier } from './aiTools';
 import { getUserPermissions, hasPermission } from './permissions';
 import { rateLimiter } from './rate-limit';
+import { TOOL_RATE_LIMITS, resolveToolRateLimitMultiplier, scaleToolRateLimit, type ToolRateLimitScope } from './aiToolRateLimits';
+export { listEffectiveToolRateLimits, type EffectiveToolRateLimit } from './aiToolRateLimits';
 import { getRedis } from './redis';
 import { isSecretBearingTool } from './actionIntents/secretBearingTools';
 import { WORKSPACE_TOOL_NAMES } from './workspace/workspaceToolNames';
@@ -1583,117 +1585,10 @@ export const TOOL_ACTION_EXTRA_PERMISSIONS: Record<
   },
 };
 
-// Per-tool rate limits: { limit, windowSeconds }
-export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }> = {
-  execute_command: { limit: 10, windowSeconds: 300 },
-  run_script: { limit: 5, windowSeconds: 300 },
-  // Deliberately looser than run_script: a stop is the safe direction, and a
-  // rate limit that blocks a tech's assistant from halting a runaway script is
-  // worse than the burst it prevents.
-  cancel_script_execution: { limit: 20, windowSeconds: 300 },
-  security_scan: { limit: 3, windowSeconds: 600 },
-  network_discovery: { limit: 2, windowSeconds: 600 },
-  file_operations: { limit: 20, windowSeconds: 300 },
-  manage_services: { limit: 10, windowSeconds: 300 },
-  s1_isolate_device: { limit: 5, windowSeconds: 600 },
-  s1_threat_action: { limit: 5, windowSeconds: 600 },
-  analyze_disk_usage: { limit: 10, windowSeconds: 300 },
-  disk_cleanup: { limit: 3, windowSeconds: 600 },
-  // Per TOOL, not per action (checkToolRateLimit keys on the tool name), and
-  // `run` returns immediately while the model polls `status` on this same
-  // counter — spec §9.1's "2 per hour" would exhaust after the first poll and
-  // lock the model out of the run it just started. 30/h leaves room for a
-  // catalog, a run and a poll every few minutes. The safety on `run` is the
-  // Tier 3 supervised approval; the single-run-per-device claim in
-  // startSystemCleanupRun refuses a second run while one is in flight.
-  system_cleanup: { limit: 30, windowSeconds: 3600 },
-  manage_startup_items: { limit: 5, windowSeconds: 600 },
-  manage_scheduled_tasks: { limit: 10, windowSeconds: 300 },
-  take_screenshot: { limit: 10, windowSeconds: 300 },
-  analyze_screen: { limit: 10, windowSeconds: 300 },
-  computer_control: { limit: 20, windowSeconds: 300 },
-  // Fleet tools — per-tool rate limits
-  manage_deployments: { limit: 10, windowSeconds: 600 },
-  manage_patches: { limit: 15, windowSeconds: 300 },
-  manage_groups: { limit: 20, windowSeconds: 300 },
-  manage_maintenance_windows: { limit: 15, windowSeconds: 300 },
-  manage_automations: { limit: 10, windowSeconds: 600 },
-  manage_alert_rules: { limit: 15, windowSeconds: 300 },
-  manage_service_monitors: { limit: 15, windowSeconds: 300 },
-  generate_report: { limit: 10, windowSeconds: 300 },
-  // Brain device context tools
-  set_device_context: { limit: 20, windowSeconds: 300 },
-  resolve_device_context: { limit: 20, windowSeconds: 300 },
-  // Event log tools
-  search_logs: { limit: 30, windowSeconds: 300 },
-  get_log_trends: { limit: 20, windowSeconds: 300 },
-  detect_log_correlations: { limit: 10, windowSeconds: 300 },
-  // One export is a full table scan's worth of work — far below search_logs'
-  // 30/5min on purpose.
-  export_dataset: { limit: 5, windowSeconds: 300 },
-  // Agent log tools
-  set_agent_log_level: { limit: 5, windowSeconds: 600 },
-  capture_agent_pprof: { limit: 3, windowSeconds: 600 },
-  // Configuration policy tools
-  get_configuration_policy: { limit: 30, windowSeconds: 300 },
-  manage_configuration_policy: { limit: 20, windowSeconds: 300 },
-  configuration_policy_compliance: { limit: 30, windowSeconds: 300 },
-  apply_configuration_policy: { limit: 10, windowSeconds: 300 },
-  remove_configuration_policy_assignment: { limit: 10, windowSeconds: 300 },
-  // Playbook tools
-  execute_playbook: { limit: 5, windowSeconds: 600 },
-  manage_processes: { limit: 15, windowSeconds: 300 },
-  // Tags and registry tools
-  manage_tags: { limit: 20, windowSeconds: 300 },
-  registry_operations: { limit: 15, windowSeconds: 300 },
-  // Backup tools
-  trigger_backup: { limit: 5, windowSeconds: 600 },
-  restore_snapshot: { limit: 3, windowSeconds: 600 },
-  restore_as_vm: { limit: 3, windowSeconds: 900 },
-  instant_boot_vm: { limit: 3, windowSeconds: 900 },
-  trigger_mssql_backup: { limit: 5, windowSeconds: 600 },
-  restore_mssql_database: { limit: 3, windowSeconds: 900 },
-  verify_mssql_backup: { limit: 5, windowSeconds: 600 },
-  manage_hyperv_vm: { limit: 10, windowSeconds: 300 },
-  trigger_hyperv_backup: { limit: 5, windowSeconds: 900 },
-  restore_hyperv_vm: { limit: 3, windowSeconds: 900 },
-  manage_hyperv_checkpoints: { limit: 5, windowSeconds: 600 },
-  trigger_vault_sync: { limit: 10, windowSeconds: 600 },
-  configure_vault: { limit: 10, windowSeconds: 300 },
-  trigger_c2c_sync: { limit: 10, windowSeconds: 300 },
-  restore_c2c_items: { limit: 5, windowSeconds: 600 },
-  configure_backup_sla: { limit: 10, windowSeconds: 300 },
-  execute_dr_plan: { limit: 3, windowSeconds: 900 },
-  manage_dr_plan: { limit: 10, windowSeconds: 300 },
-  // Monitoring tools
-  query_monitors: { limit: 30, windowSeconds: 300 },
-  manage_monitors: { limit: 10, windowSeconds: 300 },
-  get_service_monitoring_status: { limit: 30, windowSeconds: 300 },
-  // Integration & webhook tools
-  test_webhook: { limit: 5, windowSeconds: 300 },
-  // AI agent governance — a grant is a rare, deliberate act.
-  manage_ai_agents: { limit: 5, windowSeconds: 3600 },
-  // Agent version & remote session tools
-  trigger_agent_upgrade: { limit: 5, windowSeconds: 600 },
-  trigger_agent_restart: { limit: 5, windowSeconds: 600 },
-  create_remote_session: { limit: 10, windowSeconds: 300 },
-  // Notification channel & saved filter tools
-  manage_delivery: { limit: 10, windowSeconds: 300 },
-  manage_notification_channels: { limit: 10, windowSeconds: 300 },
-  manage_saved_filters: { limit: 15, windowSeconds: 300 },
-  // CIS hardening tools
-  get_cis_compliance: { limit: 30, windowSeconds: 300 },
-  get_cis_device_report: { limit: 30, windowSeconds: 300 },
-  apply_cis_remediation: { limit: 10, windowSeconds: 600 },
-  // Huntress integration tools
-  sync_huntress_data: { limit: 10, windowSeconds: 300 },
-  // User risk tools
-  assign_security_training: { limit: 10, windowSeconds: 300 },
-  // Registration-debt payoff: rate limits for newly-permissioned tools.
-  execute_containment: { limit: 5, windowSeconds: 600 },       // mirrors s1_isolate_device
-  collect_evidence: { limit: 10, windowSeconds: 300 },          // mirrors take_screenshot-class dispatch
-  remediate_software_violation: { limit: 10, windowSeconds: 600 }, // mirrors apply_cis_remediation
-};
+// Per-tool rate limits live in services/aiToolRateLimits.ts (a leaf module, so
+// routes can serve the effective values without importing the tool registry);
+// re-exported here because this is where every guardrail reader looks for them.
+export { TOOL_RATE_LIMITS } from './aiToolRateLimits';
 
 interface GuardrailCheckCommon {
   allowed: boolean;
@@ -2599,17 +2494,31 @@ export function checkToolPermissionForResolvedUser(
  * Check per-tool rate limits.
  * Returns null if allowed, or an error message if rate limited.
  */
+/**
+ * Enforce the per-tool sliding-window limit for one call.
+ *
+ * #6476: the enforced limit is ceil(TOOL_RATE_LIMITS[tool].limit × m), where m
+ * is the effective `toolRateLimitMultiplier` (1–10, default 1) of `scope.orgId`
+ * — the chat session's org, or the MCP API key's org (partner fallback for a
+ * partner-scope caller). The Redis counter stays keyed per user per tool,
+ * across orgs; the CURRENT call's org decides the ceiling it is judged against.
+ * The multiplier can only raise a limit (see services/aiToolRateLimits.ts).
+ */
 export async function checkToolRateLimit(
   toolName: string,
-  userId: string
+  userId: string,
+  scope: ToolRateLimitScope,
 ): Promise<string | null> {
   const config = TOOL_RATE_LIMITS[toolName];
   if (!config) return null; // No rate limit for this tool
 
+  const multiplier = await resolveToolRateLimitMultiplier(scope);
+  const limit = scaleToolRateLimit(config.limit, multiplier);
+
   const redis = getRedis();
   const key = `ai:tool:${userId}:${toolName}`;
 
-  const result = await rateLimiter(redis, key, config.limit, config.windowSeconds);
+  const result = await rateLimiter(redis, key, limit, config.windowSeconds);
   if (!result.allowed) {
     return `Tool rate limit exceeded for ${toolName}. Try again at ${result.resetAt.toISOString()}`;
   }

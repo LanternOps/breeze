@@ -8,6 +8,11 @@
     "monitorLabel": "Monitör"
   },
   "list": {
+    "views": {
+      "ariaLabel": "Monitör görünümleri",
+      "all": "Tüm monitörler",
+      "needsConversion": "Dönüştürme gerekiyor"
+    },
     "title": "Monitörler",
     "description": "Bir koşulu izleyin, cihazda yanıt verin, bildirin ve tekrarlamaya devam ederse yükseltin.",
     "new": "Yeni monitör",
@@ -32,7 +37,11 @@
     },
     "deleteConfirm": "{{name}} monitörü silinsin mi? Uyarı kuralı ve yanıt otomasyonu da kaldırılır.",
     "builtIn": "Yerleşik",
-    "builtInHint": "Breeze tarafından sağlandı. Eşikleri düzenleyin, devre dışı bırakın veya silin; geri gelmez."
+    "builtInHint": "Breeze tarafından sağlandı. Eşikleri düzenleyin, devre dışı bırakın veya silin; geri gelmez.",
+    "recommended": {
+      "title": "Önerilenler",
+      "description": "Yerleşik monitörleri bir ilkeye ekleyin."
+    }
   },
   "editor": {
     "attachedToPolicy": "Monitör oluşturuldu ve ilkeye bağlandı",
@@ -95,7 +104,9 @@
       "save": "Monitör kaydedilemedi",
       "delete": "Monitör silinemedi",
       "test": "Test başarısız oldu",
-      "generic": "Bir şeyler ters gitti"
+      "generic": "Bir şeyler ters gitti",
+      "invalidCondition": "Bazı koşul değerleri eksik veya aralık dışında. Hiçbir şey kaydedilmedi.",
+      "invalidResponses": "Bazı yanıt ayarları eksik veya aralık dışında. Hiçbir şey kaydedilmedi."
     },
     "saved": "Monitör kaydedildi",
     "deleted": "Monitör silindi",
@@ -139,6 +150,15 @@
         "disabled": "devre dışı",
         "unavailable": "kullanılamıyor"
       }
+    },
+    "composite": {
+      "children": "Alt koşullar",
+      "add": "Koşul ekle"
+    },
+    "restart": {
+      "label": "Cihazdaki hizmeti yeniden başlat",
+      "maxAttempts": "En fazla yeniden başlatma denemesi",
+      "cooldownSeconds": "Yeniden başlatma bekleme süresi (saniye)"
     }
   },
   "kinds": {
@@ -284,7 +304,8 @@
     "detachConfirm": "{{policy}} politikasından kaldırılsın mı?",
     "errors": {
       "attach": "Monitör eklenemedi",
-      "detach": "Monitör kaldırılamadı"
+      "detach": "Monitör kaldırılamadı",
+      "linkedFeature": "Bu ilkenin monitörleri paylaşılan bir özellik ilkesinden geliyor. O ilkeyi düzenleyin veya başka bir ilke seçin."
     }
   },
   "policyTab": {
@@ -385,5 +406,112 @@
         "skippedNoResponse": "Atlandı (yanıt yapılandırılmadı)"
       }
     }
+  },
+  "conversion": {
+    "banner": {
+      "text": "{{policies}} ilkedeki {{rows}} eski kural henüz monitöre dönüştürülmedi.",
+      "review": "İncele",
+      "convertEverything": "Tümünü dönüştür…",
+      "confirmTitle": "Tüm ilkelerinizdeki her eski kural, izleme ve uyarıyla tetiklenen otomasyon dönüştürülsün mü?",
+      "confirmBody": "İş ortağının tümünde {{policies}} ilkede {{rows}} eski kural. Dönüştürülen satırlar yerinde emekliye ayrılır. Diğerleri W05c’de inceleme veya elle emekliye ayırma için kalır; W05d kalanları dönüştürür ve dönüştürülemeyenleri emekliye ayırır.",
+      "confirmRun": "Tümünü dönüştür",
+      "convertedAll": "{{policies}} ilkede {{converted}} satır dönüştürüldü; {{unconvertible}} dönüştürülemedi.",
+      "errors": {
+        "convertAll": "Tümü dönüştürülemedi"
+      }
+    },
+    "pendingPolicies": {
+      "title": "Eski kuralları olan ilkeler",
+      "loading": "İlkeler yükleniyor…",
+      "empty": "Hiçbir ilke satır içi uyarı kuralı, izleme veya uyarıyla tetiklenen otomasyon taşımıyor.",
+      "error": "Eski kurallara sahip ilkeler yüklenemedi. Yeniden denemek için yenileyin."
+    },
+    "title": "Dönüştürme gerekiyor",
+    "description": "Bu ilkedeki satır içi uyarı kuralları, hizmet/süreç izlemeleri ve uyarıyla tetiklenen otomasyonlar henüz monitöre dönüştürülmedi. Dönüştürme, kaynak satırı yerinde emekliye ayırır; hiçbir şey silinmez.",
+    "checking": "Cihazlar kontrol ediliyor…",
+    "devicesChecked_one": "{{count}} cihaz aynı davranış için kontrol edildi.",
+    "devicesChecked_other": "{{count}} cihaz aynı davranış için kontrol edildi.",
+    "blocked": {
+      "parent_unconverted": "Önce üst ilkeyi dönüştürün — satır içi kuralları bu ilkenin neyi devralacağını belirler.",
+      "prerequisite_missing": "Ön koşul olan bir düzeltme bu sunucuda henüz dağıtılmadı. Dönüştürme o zamana kadar devre dışı."
+    },
+    "refusedTitle_one": "Dönüştürme reddedildi: {{count}} cihazın davranışı değişirdi.",
+    "refusedTitle_other": "Dönüştürme reddedildi: {{count}} cihazın davranışı değişirdi.",
+    "convert": "Dönüştür",
+    "convertAll_one": "{{count}} dönüştürülebiliri dönüştür",
+    "convertAll_other": "{{count}} dönüştürülebilirin tümünü dönüştür",
+    "retire": "Emekliye ayır",
+    "converted": "{{rows}} eski satır {{monitors}} monitöre dönüştürüldü.",
+    "retired": "{{name}} emekliye ayrıldı.",
+    "undone_one": "{{count}} dönüştürme geri alındı.",
+    "undone_other": "{{count}} dönüştürme geri alındı.",
+    "openAlerts_one": "{{count}} açık uyarı monitöre taşınıyor",
+    "openAlerts_other": "{{count}} açık uyarı monitöre taşınıyor",
+    "sourceTables": {
+      "config_policy_alert_rules": "Satır içi uyarı kuralı",
+      "config_policy_monitoring_watches": "Hizmet/süreç izleme",
+      "alert_templates": "Uyarı şablonu",
+      "automations": "Uyarıyla tetiklenen otomasyon",
+      "config_policy_automations": "İlke otomasyonu",
+      "network_monitors": "Ağ denetimi"
+    },
+    "outcomes": {
+      "convertible": "Dönüştürülebilir",
+      "unconvertible": "Dönüştürülemez"
+    },
+    "roles": {
+      "primary": "Monitör",
+      "resource_cpu": "CPU monitörü",
+      "resource_memory": "Bellek monitörü",
+      "response": "Yanıt"
+    },
+    "reasons": {
+      "unknown": "Dönüştürülemez ({{code}}).",
+      "nested_group": "Kural, koşul gruplarını iç içe kullanıyor; bileşik bir monitör tek bir düz gruptur.",
+      "no_condition": "Şablonun değerlendirilebilir bir koşulu yok ve hiç tetiklenmedi.",
+      "escalation_policy_axis": "Yükseltme ilkesi bir kuruluşa ait ancak ilke iş ortağı genelinde.",
+      "custom": "Özel koşulların monitör türü yok.",
+      "process_count": "Süreç sayısı koşullarının monitör türü yok."
+    },
+    "errors": {
+      "preview": "Dönüştürme ön izlemesi yüklenemedi",
+      "convert": "Dönüştürme başarısız",
+      "retire": "Emekliye ayırma başarısız",
+      "revert": "Dönüştürme geri alınamadı"
+    },
+    "ledger": {
+      "title": "Dönüştürme geçmişi",
+      "undo": "Geri al",
+      "more": "Daha fazla yükle",
+      "empty": "Dönüştürme geçmişi yok.",
+      "system": "Sistem",
+      "deadline": "W05d kaynak değerlendiriciyi kaldırdıktan sonra geri alma kullanılamaz."
+    },
+    "errorCodes": {
+      "preview_stale": "İlke bu önizlemeden sonra değişti. Dönüştürmeden önce yeniden önizleyin.",
+      "preview_failed": "Önizleme oluşturulamadı. Daha sonra yeniden deneyin.",
+      "equivalence_delta": "Dönüştürülen izleyiciler her cihazda eski kurallar gibi davranmayacak. Dönüştürmeden önce önizlemeyi inceleyin.",
+      "CONVERSION_PREREQUISITE_MISSING": "Gerekli bir platform güncellemesi henüz dağıtılmadığı için dönüştürme yapılamıyor.",
+      "blocked": "Bu dönüştürme engellendi. Önce üst ilkeyi dönüştürün, ardından yeniden deneyin.",
+      "already_converted": "Bu kurallar zaten dönüştürüldü. Güncel durumu görmek için yenileyin.",
+      "partner_wide_denied": "İş ortağı genelindeki ilkeleri dönüştürmek için tam iş ortağı erişimi gerekir.",
+      "policy_not_found": "İlke bulunamadı. Silinmiş olabilir.",
+      "source_not_found": "Eski kural bulunamadı. Zaten dönüştürülmüş veya silinmiş olabilir.",
+      "conversion_not_found": "Bu dönüştürme bulunamadı.",
+      "conversion_revert_unavailable": "Bu dönüştürme artık geri alınamaz.",
+      "invalid_reason": "Bu kullanımdan kaldırma nedeni geçerli değil.",
+      "unknown": "Dönüştürme başarısız oldu. Yeniden deneyin."
+    }
+  },
+  "device": {
+    "title": "Etkin monitörler",
+    "empty": "Bu cihaza uygulanan monitör yok.",
+    "error": "Etkin monitörler yüklenemedi.",
+    "monitor": "Monitör",
+    "kind": "Tür",
+    "policy": "Kaynak ilke",
+    "state": "Durum",
+    "episode": "Açık olay",
+    "escalation": "Yükseltme"
   }
 }

@@ -41,6 +41,7 @@ import {
   reportOwnerOfRow,
   reportOwnerScopePredicate,
   reportOwnerScopeListFilter,
+  resolveOrgReportAuthority,
   resolveReportOwnerAuthority,
   tenantAuthorizedReportCondition,
 } from './helpers';
@@ -148,8 +149,11 @@ async function resolveDefinitionListScope(
   }
 
   if (exactOrgId) {
-    // #6699 decision B: listing definitions is read-only history.
-    const result = await resolveRequestReportAuthority(auth, exactOrgId, 'read_history');
+    // #6699 decision B: listing definitions is read-only history. #6771: an
+    // explicit orgId is also the ONLY way a partner lists an out-of-service
+    // org's definitions (the unfiltered listing below stays active-only);
+    // resolveOrgReportAuthority serves it from the verified history reach.
+    const result = await resolveOrgReportAuthority(auth, exactOrgId, 'read_history');
     const scope = liveScopeOf(result);
     if (!scope) {
       return { ok: false, error: 'Access to this organization denied' };

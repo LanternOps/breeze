@@ -4,7 +4,8 @@ import { sql as dsql } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getAppDb } from './setup';
 import { recordRunningVersion, runUpgradePreflight } from '../../upgrade/upgradePreflightRunner';
-import { readRequestDeploymentState } from '../../upgrade/deprecationsReport';
+import { buildDeprecationsView, readRequestDeploymentState } from '../../upgrade/deprecationsReport';
+import { BREAKING_CHANGES_MANIFEST } from '../../upgrade/breakingChangesManifest';
 import { closeDb, db, withDbAccessContext } from '../../db';
 
 /**
@@ -130,6 +131,13 @@ describe('readRequestDeploymentState (Settings → System → Deprecations, #660
       '0.116.0',
     ]);
     expect(state.ledger).toMatchObject({ status: 'ok', pendingCount: 0 });
+    // Drizzle's postgres-js driver returns timestamptz as text; the reader must
+    // still hand back Dates, or the admin page 500s on toISOString/getTime.
+    for (const v of state.history.status === 'ok' ? state.history.versions : []) {
+      expect(v.firstSeenAt).toBeInstanceOf(Date);
+    }
+    const view = buildDeprecationsView(BREAKING_CHANGES_MANIFEST, state, null);
+    expect(view.history.status === 'ok' && view.history.versions).toHaveLength(2);
     const rows = await owner`SELECT version FROM breeze_version_history ORDER BY version`;
     expect(rows.map((r) => r.version)).toEqual(['0.115.0', '0.116.0']);
   });

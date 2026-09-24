@@ -13,10 +13,16 @@ import type { PartnerTrustState } from '../db/schema/orgs';
 import { ENABLE_2FA } from '../routes/auth/schemas';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 import { writeAuditEvent } from '../services/auditEvents';
-import { withSentryRequestScope } from '../services/sentry';
+import { captureException, withSentryRequestScope } from '../services/sentry';
 import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
 import { ipAllowlistGuard } from './ipAllowlistGuard';
 import { isSelfManagedDbContextRoute } from './selfManagedDbContextRoutes';
+import { isReportHistoryReadRoute } from './reportHistoryRoutes';
+import {
+  computeReportHistoryReach,
+  EMPTY_REPORT_HISTORY_REACH,
+  type ReportHistoryReach,
+} from '../services/reportHistoryAccess';
 
 /**
  * The transports/actors that can produce an AuthContext.
@@ -150,6 +156,21 @@ export interface AuthContext {
    * keys) — those fail closed at the gate.
    */
   partnerOrgAccess?: 'all' | 'selected' | 'none' | null;
+
+  /**
+   * #6771. The report-history capability: the caller's OWN out-of-service
+   * orgs (suspended / churned / offboarding / archived) whose report
+   * definitions and run metadata it may READ, with its live scope in each.
+   * Deliberately NOT part of `accessibleOrgIds` / `canAccessOrg` /
+   * `orgCondition` — those stay active/trial-only for every route.
+   *
+   * Set ONLY by `authMiddleware`, ONLY for partner-scope requests to the
+   * report-history GET routes (`isReportHistoryReadRoute`); undefined
+   * everywhere else. Consume it only through `services/reportHistoryAccess.ts`
+   * and the history branches of `routes/reports/helpers.ts`, for the
+   * 'read_history' action.
+   */
+  reportHistory?: ReportHistoryReach;
 
   /**
    * Helper to get the org filter condition for any table.
@@ -480,6 +501,8 @@ export function buildDbAccessContext(args: {
   accessibleOrgIds: string[] | null;
   partnerId: string | null;
   userId: string | null;
+  /** #6771 — see `DbAccessContext.reportHistoryOrgIds`. Omitted = none. */
+  reportHistoryOrgIds?: readonly string[];
 }): DbAccessContext {
   return {
     scope: args.scope,
@@ -488,6 +511,9 @@ export function buildDbAccessContext(args: {
     accessiblePartnerIds: computeAccessiblePartnerIds(args.scope, args.partnerId),
     userId: args.userId,
     currentPartnerId: args.partnerId ?? null,
+    ...(args.scope === 'partner' && args.reportHistoryOrgIds && args.reportHistoryOrgIds.length > 0
+      ? { reportHistoryOrgIds: args.reportHistoryOrgIds }
+      : {}),
   };
 }
 
@@ -512,6 +538,9 @@ export function dbAccessContextFromAuth(auth: AuthContext): DbAccessContext {
     // AI agents carry a synthetic user record for audit attribution only. It
     // must never reach breeze.user_id or satisfy Shape-6 user-scoped RLS.
     userId: auth.principal?.kind === 'ai_agent' ? null : auth.user?.id ?? null,
+    // #6771: re-entering the request's context re-enters its report-history
+    // grant too (only ever set on the report-history GET routes).
+    reportHistoryOrgIds: auth.reportHistory?.orgIds,
   });
 }
 
@@ -754,6 +783,33 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
   }
   const canAccessSite = siteAccessCheck(allowedSiteIds);
 
+  // #6771 — the report-history capability, computed ONLY for a partner-scope
+  // request to one of the report-history GET routes. Like
+  // computeAccessibleOrgIds it reads under its own short system transaction
+  // here, BEFORE the request transaction opens, so the history routes never
+  // need a system escape later. It never touches `accessibleOrgIds`.
+  // A failure degrades to "no history" (fail closed) rather than failing a
+  // request that may only be listing active orgs — but it is never silent.
+  let reportHistory: ReportHistoryReach | undefined;
+  if (
+    payload.scope === 'partner'
+    && payload.partnerId
+    && partnerOrgAccess !== null
+    && isReportHistoryReadRoute(c.req.method, c.req.path)
+  ) {
+    try {
+      reportHistory = await computeReportHistoryReach({ partnerId: payload.partnerId, userId: user.id });
+    } catch (err) {
+      console.error('[authMiddleware] report-history reach lookup failed; serving no history', {
+        userId: user.id,
+        partnerId: payload.partnerId,
+        err,
+      });
+      captureException(err);
+      reportHistory = EMPTY_REPORT_HISTORY_REACH;
+    }
+  }
+
   c.set('auth', {
     // The interactive session JWT path — the one place a real human at a
     // browser produces an AuthContext.
@@ -773,7 +829,8 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
     orgCondition,
     canAccessOrg,
     allowedSiteIds,
-    canAccessSite
+    canAccessSite,
+    ...(reportHistory ? { reportHistory } : {}),
   });
 
   // The return value matters: ipAllowlistGuard returns its deny/error
@@ -806,7 +863,8 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
         orgId: payload.orgId,
         accessibleOrgIds,
         partnerId: payload.partnerId,
-        userId: user.id
+        userId: user.id,
+        reportHistoryOrgIds: reportHistory?.orgIds,
       }),
       next
     );

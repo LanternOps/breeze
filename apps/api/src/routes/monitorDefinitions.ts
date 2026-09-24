@@ -31,6 +31,11 @@ import {
 import { buildCompiledCondition } from '../services/monitors/monitorCompiler';
 import { MONITOR_KIND_SPECS } from '../services/monitors/kinds';
 import { resolveMonitorsForDevice } from '../services/monitors/monitorResolver';
+import {
+  monitorsLinkSettings,
+  readMonitorsLink,
+  shouldRemoveEmptiedLink,
+} from '../services/monitors/monitorAttachments';
 import { isMonitorAttachableToPolicy } from '../services/monitors/monitorAttachability';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { convertRuleToMonitor } from '../services/monitors/ruleConversionService';
@@ -301,53 +306,6 @@ const attachSchema = z.union([
   }),
 ]);
 
-interface AttachmentItem {
-  monitorId: string;
-  enabled: boolean;
-  overrides: Record<string, unknown> | null;
-  sortOrder: number;
-}
-
-/**
- * Current attachment items for a policy, read from the NORMALIZED rows rather
- * than the link's inline settings — the child table is what the resolver and
- * the compatibility trigger see, so it is the only honest source.
- */
-async function currentItems(configPolicyId: string): Promise<{ linkId: string | null; items: AttachmentItem[] }> {
-  const [link] = await db
-    .select({ id: configPolicyFeatureLinks.id })
-    .from(configPolicyFeatureLinks)
-    .where(
-      and(
-        eq(configPolicyFeatureLinks.configPolicyId, configPolicyId),
-        eq(configPolicyFeatureLinks.featureType, 'monitors'),
-      ),
-    )
-    .limit(1);
-  if (!link) return { linkId: null, items: [] };
-
-  const rows = await db
-    .select({
-      monitorId: configPolicyMonitors.monitorId,
-      enabled: configPolicyMonitors.enabled,
-      overrides: configPolicyMonitors.overrides,
-      sortOrder: configPolicyMonitors.sortOrder,
-    })
-    .from(configPolicyMonitors)
-    .where(eq(configPolicyMonitors.featureLinkId, link.id))
-    .orderBy(configPolicyMonitors.sortOrder);
-
-  return {
-    linkId: link.id,
-    items: rows.map((r) => ({
-      monitorId: r.monitorId,
-      enabled: r.enabled,
-      overrides: (r.overrides as Record<string, unknown> | null) ?? null,
-      sortOrder: r.sortOrder,
-    })),
-  };
-}
-
 // POST /monitors/:id/attachments
 monitorDefinitionRoutes.post(
   '/:id/attachments',
@@ -432,7 +390,7 @@ monitorDefinitionRoutes.post(
       configPolicyId = created.id;
     }
 
-    const { linkId, items } = await currentItems(configPolicyId);
+    const { linkId, items, inheritance } = await readMonitorsLink(configPolicyId);
     if (items.some((i) => i.monitorId === monitor.id)) {
       return c.json({ error: 'Monitor already attached to this policy' }, 409);
     }
@@ -464,7 +422,7 @@ monitorDefinitionRoutes.post(
 
     try {
       if (linkId) {
-        await updateFeatureLink(linkId, { inlineSettings: { items: nextItems } }, configPolicyId);
+        await updateFeatureLink(linkId, { inlineSettings: monitorsLinkSettings(nextItems, inheritance) }, configPolicyId);
       } else {
         await addFeatureLink(configPolicyId, 'monitors', null, { items: nextItems });
       }
@@ -530,16 +488,14 @@ monitorDefinitionRoutes.delete(
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
-    const { items } = await currentItems(attachment.configPolicyId);
+    const { items, inheritance } = await readMonitorsLink(attachment.configPolicyId);
     const nextItems = items.filter((i) => i.monitorId !== monitor.id);
-    if (nextItems.length === 0) {
-      // An empty monitors link would keep claiming the feature for this policy
-      // (and shadow a parent policy's monitors link), so remove it outright.
+    if (shouldRemoveEmptiedLink(nextItems, inheritance)) {
       await removeFeatureLink(attachment.featureLinkId, attachment.configPolicyId);
     } else {
       await updateFeatureLink(
         attachment.featureLinkId,
-        { inlineSettings: { items: nextItems } },
+        { inlineSettings: monitorsLinkSettings(nextItems, inheritance) },
         attachment.configPolicyId,
       );
     }

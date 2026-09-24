@@ -838,6 +838,10 @@
         "legacyAlertRulesMovedToAlerts": "{{count}} regra(s) de alerta legada(s) salvas nesta aba foram movidas para o recurso Alertas desta política. O monitoramento não as armazena mais."
       },
       "monitorsTab": {
+        "agentCollectionTitle": "Coleta do agente",
+        "checkIntervalLabel": "Intervalo de verificação (segundos)",
+        "checkIntervalHint": "Com que frequência os agentes desta política verificam os monitores de serviços e processos (10–3600).",
+        "checkIntervalInvalid": "O intervalo de verificação deve ficar entre 10 e 3600 segundos.",
         "attachMonitor": "Anexar um monitor",
         "loadingMonitors": "Carregando monitores…",
         "noMoreMonitorsToAttach": "Não há mais monitores disponíveis para anexar",
@@ -853,7 +857,16 @@
           "title": "Monitores recomendados",
           "body": "O Breeze inclui monitores integrados de CPU, memória, disco e conformidade de patches. Nenhum está anexado a esta política ainda.",
           "action": "Anexar todos os monitores integrados"
-        }
+        },
+        "inheritanceTitle": "Monitores herdados",
+        "inheritance": {
+          "cumulative": "Adicionar aos monitores herdados",
+          "cumulativeHint": "Os dispositivos recebem os monitores das políticas superiores mais estes.",
+          "replace": "Substituir os monitores herdados",
+          "replaceHint": "Só os monitores desta política se aplicam; os anexos superiores são ignorados. Definido pela conversão para manter o comportamento das regras embutidas."
+        },
+        "ignoredInherited_one": "{{count}} monitor herdado é ignorado ao substituir:",
+        "ignoredInherited_other": "{{count}} monitores herdados são ignorados ao substituir:"
       },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Capturar solicitações de elevação do UAC do Windows",

@@ -2811,7 +2811,8 @@ describe('category tenant validation', () => {
 
   it('updateTicketFields allows clearing the category (null) without a lookup', async () => {
     dbMocks.selectResult
-      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', categoryId: 'cat-1', subject: 'Printer' }]); // ticket only
+      // priority is NOT NULL on real rows; the #6691 SLA restamp reads it.
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', categoryId: 'cat-1', priority: 'normal', subject: 'Printer' }]); // ticket only
     dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', categoryId: null }]);
     dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]); // system feed comment insert
 

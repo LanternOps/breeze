@@ -1072,6 +1072,7 @@ describe('addCatalogLine / addBundleLine price-book resolution (#3775)', () => {
     queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', amountPaid: '0.00', currencyCode: 'USD' }]);
     queueResult([{ lineTotal: lineRow.lineTotal, taxable: true, customerVisible: true }]);
     queueResult([{ taxExempt: false, taxRate: null }]);
+    queueResult([{ defaultTaxRate: null }]); // recompute: partner tax rate (#6227)
     queueResult([]);                    // update invoices
   }
 
@@ -1140,6 +1141,7 @@ describe('addCatalogLine / addBundleLine price-book resolution (#3775)', () => {
     queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', amountPaid: '0.00', currencyCode: 'USD' }]);
     queueResult([{ lineTotal: '100.00', taxable: true, customerVisible: true }]);
     queueResult([{ taxExempt: false, taxRate: null }]);
+    queueResult([{ defaultTaxRate: null }]); // recompute: partner tax rate (#6227)
     queueResult([]);
 
     const parent = await svc.addBundleLine('i1', 'b-1', 1, actor);
@@ -1165,6 +1167,7 @@ describe('addCatalogLine / addBundleLine price-book resolution (#3775)', () => {
     queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', amountPaid: '0.00', currencyCode: 'JPY' }]);
     queueResult([{ lineTotal: '1000.00', taxable: true, customerVisible: true }]);
     queueResult([{ taxExempt: false, taxRate: null }]);
+    queueResult([{ defaultTaxRate: null }]); // recompute: partner tax rate (#6227)
     queueResult([]);
 
     await svc.addBundleLine('i1', 'b-1', 1, actor);
@@ -1188,6 +1191,7 @@ describe('addCatalogLine / addBundleLine price-book resolution (#3775)', () => {
     queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', amountPaid: '0.00', currencyCode: 'EUR' }]);
     queueResult([{ lineTotal: '100.00', taxable: true, customerVisible: true }]);
     queueResult([{ taxExempt: false, taxRate: null }]);
+    queueResult([{ defaultTaxRate: null }]); // recompute: partner tax rate (#6227)
     queueResult([]);
 
     await svc.addBundleLine('i1', 'b-1', 1, actor);
@@ -1242,6 +1246,7 @@ describe('addContractLine', () => {
     queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', amountPaid: '0.00' }]); // recomputeInvoiceTotals re-fetch
     queueResult([{ lineTotal: (lineRow as { lineTotal: string }).lineTotal, taxable: false, customerVisible: true }]); // select lines
     queueResult([{ taxExempt: false, taxRate: null }]); // effectiveRateForOrg
+    queueResult([{ defaultTaxRate: null }]); // recompute: partner tax rate (#6227)
     queueResult([]);                    // update invoices
   }
 
@@ -1491,7 +1496,8 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
     queueResult([]);                  // materializeLines insert
     queueResult([draftRow(currencyCode)]); // recompute: owned invoice
     queueResult([]);                  // recompute: lines
-    queueResult([]);                  // recompute: org tax rate
+    queueResult([{ taxExempt: false, taxRate: null }]); // recompute: org tax rate
+    queueResult([{ defaultTaxRate: null }]);            // recompute: partner tax rate (#6227)
     queueResult([]);                  // recompute: update
     queueResult([draftRow(currencyCode)]); // getInvoice: owned invoice
     queueResult([]);                  // getInvoice: lines
@@ -1907,6 +1913,7 @@ describe('changeInvoiceCurrency reprice (price-book reprice of catalog lines, #3
     queueResult([{ ...draft, currencyCode: 'EUR' }]);
     queueResult([{ lineTotal: '40.00', taxable: true, customerVisible: true }]);
     queueResult([{ taxExempt: false, taxRate: null }]);
+    queueResult([{ defaultTaxRate: null }]); // recompute: partner tax rate (#6227)
     queueResult([]);
     queueResult([{ ...draft, currencyCode: 'EUR', subtotal: '40.00', total: '40.00', balance: '40.00' }]); // final select
 
@@ -1982,6 +1989,7 @@ describe('invoiceService currency representability guard (W6-G1-1)', () => {
     queueResult([draft('JPY')]);                                  // recompute: invoice re-read
     queueResult([{ lineTotal: '100', taxable: false, customerVisible: true }]); // recompute: lines
     queueResult([{ taxExempt: false, taxRate: null }]);            // recompute: org tax rate
+    queueResult([{ defaultTaxRate: null }]); // recompute: partner tax rate (#6227)
     queueResult([]);                                              // recompute: header update
     await expect(
       svc.addManualLine('i1', { description: 'x', quantity: 1, unitPrice: 100, taxable: false }, actor)
@@ -1995,10 +2003,54 @@ describe('invoiceService currency representability guard (W6-G1-1)', () => {
     queueResult([draft('USD')]);
     queueResult([{ lineTotal: '100.50', taxable: false, customerVisible: true }]);
     queueResult([{ taxExempt: false, taxRate: null }]);
+    queueResult([{ defaultTaxRate: null }]); // recompute: partner tax rate (#6227)
     queueResult([]);
     await expect(
       svc.addManualLine('i1', { description: 'x', quantity: 1, unitPrice: 100.5, taxable: false }, actor)
     ).resolves.toMatchObject({ id: 'l1' });
+  });
+
+  // #6227 (M18): draft recompute resolves org → partner on the locked tx and fails closed.
+  it('draft recompute persists the PARTNER rate when the org has none', async () => {
+    queueResult([draft('USD')]);
+    queueResult([{ max: 0 }]);
+    queueResult([{ id: 'l1', unitPrice: '100.00' }]);
+    queueResult([draft('USD')]);
+    queueResult([{ lineTotal: '100.00', taxable: true, customerVisible: true }]);
+    queueResult([{ taxExempt: false, taxRate: null }]);
+    queueResult([{ defaultTaxRate: '0.07000' }]);
+    queueResult([]);
+    await svc.addManualLine('i1', { description: 'x', quantity: 1, unitPrice: 100, taxable: true }, actor);
+    const set = (db as unknown as { update: Mock }).update.mock.results.at(-1)!.value.set as Mock;
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ taxRate: '0.07000', taxTotal: '7.00', total: '107.00' }));
+  });
+
+  it('draft recompute maps an invisible org to a 404, never a 0% rate', async () => {
+    queueResult([draft('USD')]);
+    queueResult([{ max: 0 }]);
+    queueResult([{ id: 'l1', unitPrice: '100.00' }]);
+    queueResult([draft('USD')]);
+    queueResult([{ lineTotal: '100.00', taxable: true, customerVisible: true }]);
+    queueResult([]); // org hidden by RLS
+    await expect(
+      svc.addManualLine('i1', { description: 'x', quantity: 1, unitPrice: 100, taxable: true }, actor)
+    ).rejects.toMatchObject({ code: 'ORG_NOT_FOUND', status: 404 });
+  });
+
+  it('draft recompute fails loudly (logged, rethrown) on an invisible partner, never the org-only rate', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    queueResult([draft('USD')]);
+    queueResult([{ max: 0 }]);
+    queueResult([{ id: 'l1', unitPrice: '100.00' }]);
+    queueResult([draft('USD')]);
+    queueResult([{ lineTotal: '100.00', taxable: true, customerVisible: true }]);
+    queueResult([{ taxExempt: false, taxRate: null }]);
+    queueResult([]); // partner hidden by RLS
+    await expect(
+      svc.addManualLine('i1', { description: 'x', quantity: 1, unitPrice: 100, taxable: true }, actor)
+    ).rejects.toThrow(/not visible for tax resolution/);
+    expect(errSpy).toHaveBeenCalledWith('[invoiceService] DRAFT_TAX_PARTNER_NOT_VISIBLE', expect.objectContaining({ partnerId: expect.any(String) }));
+    errSpy.mockRestore();
   });
 
   it('updateLine rejects a patch that would make an existing JPY line fractional', async () => {

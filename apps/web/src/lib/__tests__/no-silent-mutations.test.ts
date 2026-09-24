@@ -33,6 +33,13 @@ const FIXTURE_ROOT = resolve(__dirname, 'fixtures/no-silent-mutations/src');
 // WS-A "targeted set": files that have ADOPTED runAction and must not regress
 // to silent mutations. Grows as more handlers migrate (see the backlog).
 const TARGET_GLOBS = [
+  'src/components/monitoring/conversion/ConversionLedger.tsx',
+  'src/components/monitoring/conversion/NeedsConversionPanel.tsx',
+  'src/components/monitoring/conversion/ConversionPendingBanner.tsx',
+  'src/components/admin/MonitorConversionAdmin.tsx',
+  'src/components/configurationPolicies/featureTabs/useFeatureLink.ts',
+  // Per-rule legacy convert (POST /monitor-definitions/convert-from-rule).
+  'src/components/monitoring/LegacyRulesTable.tsx',
   // Disk Cleanup v2 W01: scan and cleanup-preview failures must surface.
   'src/components/devices/DeviceFilesystemTab.tsx',
   // Disk Cleanup v2 W03: cleanup-execute moved into this panel.
@@ -397,6 +404,16 @@ const TARGET_GLOBS = [
   'src/components/security/SecurityScanManager.tsx',
   'src/components/security/ThreatList.tsx',
   'src/components/security/ThreatDetail.tsx',
+  // Alert workflows typed filter (#6367 W05c2 Task 9): the save handler now
+  // wraps its create/update POST/PUT in runAction — a silent failure here is
+  // a tech believing a workflow's severity/kind restriction is live when the
+  // save never landed.
+  'src/components/automations/AutomationEditPage.tsx',
+  // Device Monitoring tab (#6367 W05c2 Task 10): the escalation reset POST.
+  'src/components/devices/DeviceMonitoringTab.tsx',
+  // Library Recommended strip (#6367 W05c2 Task 13): the feature-link write
+  // that attaches built-ins to a policy.
+  'src/components/monitoring/RecommendedMonitors.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -758,7 +775,13 @@ describe('no silent mutations in targeted set', () => {
     // Accept-on-behalf evidence (#6633) adds quotes/AcceptanceEvidenceControl.tsx: 162 → 163.
     // Metric anomaly episodes W04 adds devices/AnomalyEpisodeCard.tsx: 163 → 164.
     // Business reports (#3198 W03) add reports/ReportTemplates.tsx: 164 → 165.
-    expect(absoluteFiles.length).toBe(165);
+    // Alerting W05c2 adopts the shared feature-link mutation hook: 165 → 166.
+    // W05c2 adds NeedsConversionPanel, ConversionPendingBanner, MonitorConversionAdmin: 166 → 169.
+    // Persistent conversion history adds ConversionLedger (Undo): 169 → 170.
+    // LegacyRulesTable (per-rule convert) joins the guard: 170 → 171.
+    // Alert workflows typed filter (W05c2 Task 9) adds automations/AutomationEditPage.tsx: 171 → 172.
+    // W05c2 Tasks 10 + 13 add devices/DeviceMonitoringTab.tsx and monitoring/RecommendedMonitors.tsx: 172 → 174.
+    expect(absoluteFiles.length).toBe(174);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

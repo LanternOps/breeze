@@ -1430,7 +1430,13 @@ async function handleToolsCall(
 
   // Per-tool rate limit
   try {
-    const rateLimitErr = await checkToolRateLimit(toolName, auth.user.id);
+    // #6476: the API key's org picks the toolRateLimitMultiplier (partner
+    // fallback for an org-less partner-scope caller). The counter stays per
+    // user per tool across orgs.
+    const rateLimitErr = await checkToolRateLimit(toolName, auth.user.id, {
+      orgId: apiKey?.orgId ?? auth.orgId ?? null,
+      partnerId: apiKey?.partnerId ?? auth.partnerId ?? null,
+    });
     if (rateLimitErr) {
       return jsonRpcError(id, -32000, rateLimitErr);
     }

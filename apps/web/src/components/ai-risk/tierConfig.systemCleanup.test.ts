@@ -28,14 +28,12 @@ describe('tierConfig lists system_cleanup', () => {
     expect(toolEntries(3)).toContain('system_cleanup (run)');
   });
 
-  it('advertises the real per-tool rate limit and permission', () => {
+  it('advertises the per-tool rate limit row and permission', () => {
+    // The limit itself is served by GET /ai/tool-rate-limits (#6476); this row
+    // only carries the display metadata.
     const row = RATE_LIMIT_CONFIGS.find((c) => c.toolName === 'system_cleanup');
     expect(row).toEqual({
       toolName: 'system_cleanup',
-      // Per TOOL, and `status` polling shares the counter with `run` — the
-      // number mirrors TOOL_RATE_LIMITS.system_cleanup in aiGuardrails.ts.
-      limit: 30,
-      windowSeconds: 3600,
       tier: 3,
       permission: 'devices.execute',
       category: 'Files, Disk & Registry',

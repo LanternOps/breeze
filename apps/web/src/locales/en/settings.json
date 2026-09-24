@@ -329,6 +329,7 @@
     "exportFailed": "Export failed",
     "title": "Billables export",
     "description": "Billable time entries and parts as CSV (up to 366 days). Includes approval status.",
+    "columnsNote": "Includes the work type and the contract-included minutes for each time entry.",
     "from": "From",
     "to": "To",
     "allOrganizations": "All organizations",
@@ -579,6 +580,10 @@
       "modules": {
         "label": "Modules",
         "description": "Service desk, billing and topology on/off"
+      },
+      "aiApprovals": {
+        "label": "AI Approval Timeout",
+        "description": "How long AI chat waits for gated action approval"
       }
     },
     "saved": "Partner settings saved",
@@ -1662,6 +1667,8 @@
     "maxTurnsPerSession": "Max Turns Per Session",
     "msgsMinPerUser": "Msgs/Min Per User",
     "msgsHrPerOrg": "Msgs/Hr Per Org",
+    "toolRateLimitMultiplier": "Per-tool rate limit multiplier",
+    "toolRateLimitMultiplierHelp": "Raises every per-tool AI and MCP rate limit by this factor (1–10). It never lowers or removes a limit.",
     "saveBudget": "Save Budget",
     "savedSuccessfully": "Saved successfully",
     "allBudgetSettingsAreManagedByYourPartner": "All budget settings are managed by your partner",
@@ -5894,5 +5901,24 @@
       "firstSeen": "First seen {{date}}",
       "none": "No versions recorded for this deployment."
     }
+  },
+  "partnerAiApprovals": {
+    "timeoutLabel": "Interactive approval timeout",
+    "productDefault": "Product default ({{minutes}} minutes)",
+    "range": "Choose {{min}}-{{max}} minutes.",
+    "description": "How long a live AI chat turn waits for someone to approve a gated (Tier 2/3) action before giving up on it.",
+    "orgOverrideNote": "Organizations can override this value from their own AI settings; the org value wins when set.",
+    "notForUnattendedNote": "This is not for overnight or unattended work — long-running work goes through the Approvals queue, which has its own expiry."
+  },
+  "orgAiApprovalTimeout": {
+    "title": "AI Approval Timeout",
+    "description": "How long an AI chat waits for someone to approve a gated (Tier 2/3) action before giving up. Organizations can override the partner default here; the org value wins when set.",
+    "fieldLabel": "Interactive approval timeout",
+    "inherit": "Inherit",
+    "inheritLabel": "Inherit ({{minutes}} minutes, {{source}})",
+    "sourcePartner": "partner default",
+    "sourceDefault": "product default",
+    "range": "Choose {{min}}-{{max}} minutes.",
+    "save": "Save"
   }
 }

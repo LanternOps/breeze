@@ -1,32 +1,106 @@
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
-import { useState, useMemo } from "react";
-import { ChevronDown, ChevronRight, Clock, Search } from "lucide-react";
+import { useState, useMemo, useEffect } from "react";
+import { ChevronDown, ChevronRight, Clock, Loader2, Search } from "lucide-react";
 import { formatToolName } from "../../lib/utils";
+import { fetchWithAuth } from "../../stores/auth";
 import { RATE_LIMIT_CONFIGS, groupByCategory } from "./tierConfig";
-import type { ToolCategory, RateLimitConfig } from "./tierConfig";
+import type { ToolCategory } from "./tierConfig";
 const TIER_BADGE: Record<number, string> = {
   1: "bg-green-500/15 text-green-700 border-green-500/30",
   2: "bg-blue-500/15 text-blue-700 border-blue-500/30",
   3: "bg-amber-500/15 text-amber-700 border-amber-500/30",
 };
+/** One row of GET /ai/tool-rate-limits (#6476). */
+interface EffectiveToolRateLimit {
+  toolName: string;
+  baseLimit: number;
+  limit: number;
+  windowSeconds: number;
+}
+interface ToolRateLimitsResponse {
+  orgId: string | null;
+  multiplier: number;
+  limits: EffectiveToolRateLimit[];
+}
+/** An API row joined with the tab's display metadata (tier/permission/category). */
+interface RateLimitRow extends EffectiveToolRateLimit {
+  tier: 1 | 2 | 3 | null;
+  permission: string | null;
+  category: ToolCategory;
+}
+const METADATA_BY_TOOL = new Map(RATE_LIMIT_CONFIGS.map((cfg) => [cfg.toolName, cfg]));
+function toRow(limit: EffectiveToolRateLimit): RateLimitRow {
+  const meta = METADATA_BY_TOOL.get(limit.toolName);
+  return {
+    ...limit,
+    tier: meta?.tier ?? null,
+    permission: meta?.permission ?? null,
+    category: meta?.category ?? "Other",
+  };
+}
 export function RateLimitStatus() {
   const { t } = useTranslation("security");
   const [search, setSearch] = useState("");
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [data, setData] = useState<ToolRateLimitsResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadFailed, setLoadFailed] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetchWithAuth("/ai/tool-rate-limits");
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const body = (await res.json()) as ToolRateLimitsResponse;
+        if (!cancelled) {
+          setData(body);
+          setLoadFailed(false);
+        }
+      } catch (err) {
+        // Never fall back to a static copy: showing the shipped numbers when an
+        // org has a multiplier would understate what the AI is allowed to do.
+        console.error("[RateLimitStatus] Failed to load effective tool rate limits", err);
+        if (!cancelled) setLoadFailed(true);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const toggle = (key: string) =>
     setCollapsed((prev) => ({ ...prev, [key]: !prev[key] }));
   const q = search.toLowerCase().trim();
+  const rows = useMemo(() => (data?.limits ?? []).map(toRow), [data]);
   const filtered = useMemo(() => {
-    if (!q) return RATE_LIMIT_CONFIGS;
-    return RATE_LIMIT_CONFIGS.filter(
-      (cfg) =>
-        cfg.toolName.toLowerCase().includes(q) ||
-        cfg.permission.toLowerCase().includes(q) ||
-        cfg.category.toLowerCase().includes(q),
+    if (!q) return rows;
+    return rows.filter(
+      (row) =>
+        row.toolName.toLowerCase().includes(q) ||
+        (row.permission ?? "").toLowerCase().includes(q) ||
+        row.category.toLowerCase().includes(q),
     );
-  }, [q]);
+  }, [q, rows]);
   const groups = useMemo(() => groupByCategory(filtered), [filtered]);
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+  if (loadFailed || !data) {
+    return (
+      <div
+        data-testid="rate-limits-error"
+        className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-sm text-destructive"
+      >
+        {t("aiRiskRateLimitStatus.failedToLoad")}
+      </div>
+    );
+  }
   return (
     <div>
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -49,6 +123,15 @@ export function RateLimitStatus() {
           />
         </div>
       </div>
+
+      {data.multiplier > 1 && (
+        <p
+          data-testid="rate-limit-multiplier-note"
+          className="mb-4 rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground"
+        >
+          {t("aiRiskRateLimitStatus.multiplierApplied", { multiplier: data.multiplier })}
+        </p>
+      )}
 
       {groups.length === 0 ? (
         <div className="rounded-lg border bg-card p-6 text-center text-sm text-muted-foreground shadow-xs">
@@ -81,7 +164,7 @@ function RateLimitCategoryGroup({
   onToggle,
 }: {
   category: ToolCategory;
-  configs: RateLimitConfig[];
+  configs: RateLimitRow[];
   isCollapsed: boolean;
   onToggle: () => void;
 }) {
@@ -128,31 +211,41 @@ function RateLimitCategoryGroup({
                 return (
                   <tr
                     key={cfg.toolName}
+                    data-testid={`rate-limit-row-${cfg.toolName}`}
                     className="border-t border-dashed border-muted hover:bg-muted/20"
                   >
                     <td className="py-2 pl-6 font-medium">
                       {formatToolName(cfg.toolName)}
                     </td>
                     <td className="py-2">
-                      <span className="inline-flex items-center gap-1">
+                      <span className="inline-flex items-center gap-1" data-testid="rate-limit-effective">
                         <Clock className="h-3 w-3 text-muted-foreground" />
                         {t("aiRiskRateLimitStatus.requestCount", {
                           count: cfg.limit,
                         })}
                       </span>
+                      {cfg.limit !== cfg.baseLimit && (
+                        <span className="ml-1 text-muted-foreground" data-testid="rate-limit-base">
+                          {t("aiRiskRateLimitStatus.defaultLimit", { limit: cfg.baseLimit })}
+                        </span>
+                      )}
                     </td>
                     <td className="py-2 text-muted-foreground">
                       {windowLabel}
                     </td>
                     <td className="py-2">
-                      <span
-                        className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${TIER_BADGE[cfg.tier]}`}
-                      >
-                        {t("aiRiskRateLimitStatus.t", { tier: cfg.tier })}
-                      </span>
+                      {cfg.tier === null ? (
+                        <span className="text-muted-foreground">—</span>
+                      ) : (
+                        <span
+                          className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${TIER_BADGE[cfg.tier]}`}
+                        >
+                          {t("aiRiskRateLimitStatus.t", { tier: cfg.tier })}
+                        </span>
+                      )}
                     </td>
                     <td className="py-2 font-mono text-muted-foreground">
-                      {cfg.permission}
+                      {cfg.permission ?? "—"}
                     </td>
                   </tr>
                 );

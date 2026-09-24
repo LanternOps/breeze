@@ -98,6 +98,15 @@ describe('monitorKindFields (#5289, #5291)', () => {
       expect(MONITOR_KIND_FIELDS.script.some((f) => f.key === 'parameters')).toBe(false);
     });
   });
+
+  describe('composite children (Task 12)', () => {
+    it.each(['service', 'process', 'network_check'] as const)('%s allows 100 consecutive failures', (kind) => {
+      expect(MONITOR_KIND_FIELDS[kind].find((field) => field.key === 'consecutiveFailures')).toMatchObject({
+        min: 1,
+        max: 100,
+      });
+    });
+  });
 });
 
 describe('monitorKindFields locale coverage (sweep pass-3 G1-2)', () => {

@@ -28,6 +28,11 @@ import {
   type ReportExecutionAuthority,
   type ReportOwner,
 } from '../../services/siteScope';
+import {
+  isReportHistoryOrg,
+  reportHistoryOrgIdsFor,
+  resolveRequestReportHistoryAuthority,
+} from '../../services/reportHistoryAccess';
 
 export { getPagination } from '../../utils/pagination';
 
@@ -204,7 +209,55 @@ export async function resolveReportOwnerAuthority(
     }
     return resolveRequestPartnerReportAuthority(auth, owner.partnerId, action);
   }
-  return resolveRequestReportAuthority(auth, owner.orgId, action);
+  return resolveOrgReportAuthority(auth, owner.orgId, action);
+}
+
+/**
+ * Live authority for an ORG-owned report — the one place the report routes
+ * branch on the report-history capability (#6771).
+ *
+ * An out-of-service org the caller may only read history of is never in
+ * `auth.accessibleOrgIds`, so `resolveRequestReportAuthority` refuses it. For
+ * the 'read_history' action ONLY, and only when this request carries a
+ * verified `auth.reportHistory` reach for that org (partner scope, one of the
+ * five report-history GET routes), the authority comes from that reach
+ * instead — with no database access, so no system escape. Every other action,
+ * and every org the caller can reach normally, takes the ordinary resolver
+ * unchanged.
+ */
+export async function resolveOrgReportAuthority(
+  auth: AuthContext,
+  orgId: string,
+  action: ReportAuthorityAction,
+): Promise<LiveReportAuthorityResult> {
+  if (action === 'read_history' && isReportHistoryOrg(auth, orgId)) {
+    return resolveRequestReportHistoryAuthority(auth, orgId);
+  }
+  return resolveRequestReportAuthority(auth, orgId, action);
+}
+
+/**
+ * #6771. Options for the by-id tenant conditions. `reportHistory: true` adds
+ * the request's report-history orgs to the partner org axis; pass it ONLY from
+ * a 'read_history' read. The mutation, export and download paths never do, so
+ * the history ids cannot reach them even on a request that carries a reach.
+ */
+export interface TenantConditionOptions {
+  reportHistory?: boolean;
+}
+
+/** The partner org axis: accessible orgs, plus history orgs when asked. */
+function partnerOrgAxisCondition(
+  auth: Pick<AuthContext, 'scope' | 'accessibleOrgIds' | 'reportHistory'>,
+  options: TenantConditionOptions | undefined,
+): SQL<unknown> | null {
+  const orgIds = auth.accessibleOrgIds ?? [];
+  const historyOrgIds = options?.reportHistory ? reportHistoryOrgIdsFor(auth) : [];
+  const branches: SQL<unknown>[] = [];
+  if (orgIds.length > 0) branches.push(inArray(reports.orgId, orgIds));
+  if (historyOrgIds.length > 0) branches.push(inArray(reports.orgId, [...historyOrgIds]));
+  if (branches.length === 0) return null;
+  return branches.length === 1 ? branches[0]! : or(...branches)!;
 }
 
 /**
@@ -280,7 +333,9 @@ export async function getReportWithOwnerCheck(
   permissions: GrantedReportPermissions,
   action: 'read' | 'read_history' = 'read',
 ) {
-  const metadataCondition = tenantAuthorizedReportCondition(reportId, auth, permissions);
+  const metadataCondition = tenantAuthorizedReportCondition(reportId, auth, permissions, {
+    reportHistory: action === 'read_history',
+  });
   const [metadata] = await db
     .select(reportDefinitionMetadataProjection)
     .from(reports)
@@ -403,8 +458,9 @@ export function isSystemManagedReportDefinition(
  */
 export function tenantAuthorizedReportCondition(
   reportId: string,
-  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'partnerId' | 'partnerOrgAccess'>,
+  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'partnerId' | 'partnerOrgAccess' | 'reportHistory'>,
   permissions: GrantedReportPermissions,
+  options?: TenantConditionOptions,
 ): SQL<unknown> {
   const idCondition = and(
     eq(reports.id, reportId),
@@ -421,15 +477,12 @@ export function tenantAuthorizedReportCondition(
   }
 
   if (auth.scope === 'partner') {
-    const orgIds = auth.accessibleOrgIds ?? [];
+    // #6771: history orgs join the org axis only for a 'read_history' read.
+    const orgAxis = partnerOrgAxisCondition(auth, options);
     if (!canManagePartnerWidePolicies(auth)) {
-      return orgIds.length > 0
-        ? and(idCondition, inArray(reports.orgId, orgIds))!
-        : sql<unknown>`FALSE`;
+      return orgAxis ? and(idCondition, orgAxis)! : sql<unknown>`FALSE`;
     }
-    const orgCondition = orgIds.length > 0
-      ? inArray(reports.orgId, orgIds)
-      : sql<unknown>`FALSE`;
+    const orgCondition = orgAxis ?? sql<unknown>`FALSE`;
     return and(idCondition, or(orgCondition, partnerOwnedReportVisibility(auth)))!;
   }
 
@@ -441,8 +494,9 @@ export function tenantAuthorizedReportCondition(
  * `null` = the caller can reach nothing (answer empty / 404 without querying).
  */
 export function tenantAuthorizedRunCondition(
-  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'partnerId' | 'partnerOrgAccess'>,
+  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'partnerId' | 'partnerOrgAccess' | 'reportHistory'>,
   permissions: GrantedReportPermissions,
+  options?: TenantConditionOptions,
 ): SQL<unknown> | undefined | null {
   // Ruling P8b: every scope loses the types whose read permissions it lacks.
   const typePermission = reportTypePermissionCondition(permissions, reports.type);
@@ -453,13 +507,12 @@ export function tenantAuthorizedRunCondition(
       : null;
   }
   if (auth.scope === 'partner') {
-    const orgIds = auth.accessibleOrgIds ?? [];
+    // #6771: history orgs join the org axis only for a 'read_history' read.
+    const orgAxis = partnerOrgAxisCondition(auth, options);
     if (!canManagePartnerWidePolicies(auth)) {
-      return orgIds.length > 0 ? and(inArray(reports.orgId, orgIds), typePermission)! : null;
+      return orgAxis ? and(orgAxis, typePermission)! : null;
     }
-    const orgCondition = orgIds.length > 0
-      ? inArray(reports.orgId, orgIds)
-      : sql<unknown>`FALSE`;
+    const orgCondition = orgAxis ?? sql<unknown>`FALSE`;
     return and(or(orgCondition, partnerOwnedReportVisibility(auth)), typePermission)!;
   }
   return typePermission;
@@ -478,7 +531,9 @@ export async function getReportRunWithOwnerCheck(
   permissions: GrantedReportPermissions,
 ) {
   const tenantConditions: SQL<unknown>[] = [eq(reportRuns.id, runId)];
-  const tenantCondition = tenantAuthorizedRunCondition(auth, permissions);
+  const tenantCondition = tenantAuthorizedRunCondition(auth, permissions, {
+    reportHistory: action === 'read_history',
+  });
   if (tenantCondition === null) return null;
   if (tenantCondition) tenantConditions.push(tenantCondition);
 

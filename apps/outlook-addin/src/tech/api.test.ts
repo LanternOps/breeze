@@ -5,6 +5,7 @@ import {
   fetchDraft,
   fetchEmailContext,
   fetchRunningTimer,
+  fetchWorkTypes,
   linkEmail,
   logTime,
   searchOrgs,
@@ -132,6 +133,27 @@ describe('tech api.ts wrappers', () => {
     );
     const [url] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toContain('/office-addin/tickets/draft');
+  });
+
+  it('fetchWorkTypes GETs /office-addin/time/work-types (#4628 W04)', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(200, { workTypes: [{ id: 'wt-1', name: 'Remote' }] }));
+    const result = await fetchWorkTypes(fetchImpl as unknown as typeof fetch);
+    expect(result).toEqual({ workTypes: [{ id: 'wt-1', name: 'Remote' }] });
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain('/office-addin/time/work-types');
+    expect(init.method ?? 'GET').toBe('GET');
+  });
+
+  it('fetchWorkTypes rejects a 200 whose body is not { workTypes: [{id,name}] } instead of handing the widget undefined', async () => {
+    for (const body of [{}, { workTypes: null }, { workTypes: [{ id: 7 }] }]) {
+      const fetchImpl = vi.fn(async () => jsonResponse(200, body));
+      await expect(fetchWorkTypes(fetchImpl as unknown as typeof fetch)).rejects.toThrow(/malformed/i);
+    }
+  });
+
+  it('fetchWorkTypes throws TechApiError on a 403 so the widget can hide the picker', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(403, { error: 'Forbidden' }));
+    await expect(fetchWorkTypes(fetchImpl as unknown as typeof fetch)).rejects.toBeInstanceOf(TechApiError);
   });
 
   it('fetchRunningTimer GETs /office-addin/time/running', async () => {

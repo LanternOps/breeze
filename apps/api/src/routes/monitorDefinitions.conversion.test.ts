@@ -64,7 +64,7 @@ beforeEach(() => {
   m.authenticated = m.permission = m.mfa = true;
   m.preview.mockResolvedValue({ policyId: POLICY, previewHash: HASH, items: [], inheritanceMode: 'replace', equivalence: { devicesChecked: 0, deltas: [] } });
   m.convert.mockResolvedValue({ conversionIds: [SOURCE], retired: 1, monitorsCreated: 1 });
-  m.counts.mockResolvedValue({ policies: 0, rows: 0, standaloneRules: 9 });
+  m.counts.mockResolvedValue({ policies: 0, rows: 0, standaloneRules: 9, pendingPolicies: [] });
   m.retire.mockResolvedValue({ conversionId: SOURCE });
   m.ledger.mockResolvedValue({ items: [], nextCursor: null });
   m.partnerPreview.mockResolvedValue({ partnerId: PARTNER, previewHash: HASH, policies: 2, rows: 3, convertible: 3, unconvertible: [] });
@@ -107,8 +107,12 @@ describe('conversion resource', () => {
   });
   it('pending projects the banner contract and denies a cross-org query before reading', async () => {
     const r = await request('/pending');
-    expect(await r.json()).toEqual({ data: { policies: 0, rows: 0 } });
+    expect(await r.json()).toEqual({ data: { policies: 0, rows: 0, pendingPolicies: [] } });
     expect(m.counts).toHaveBeenCalledWith({ orgId: ORG, partnerId: PARTNER, includePartnerWide: false });
+    // The list and the count come from one query, so the banner and the
+    // pending-policies list can never disagree (#6644 review finding 5).
+    m.counts.mockResolvedValueOnce({ policies: 1, rows: 3, standaloneRules: 0, pendingPolicies: [{ id: POLICY, name: 'Legacy' }] });
+    expect(await (await request('/pending')).json()).toEqual({ data: { policies: 1, rows: 3, pendingPolicies: [{ id: POLICY, name: 'Legacy' }] } });
     m.counts.mockClear();
     expect((await request(`/pending?orgId=${OTHER}`)).status).toBe(403);
     expect(m.counts).not.toHaveBeenCalled();

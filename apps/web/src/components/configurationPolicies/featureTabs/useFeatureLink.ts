@@ -3,7 +3,7 @@ import { navigateTo } from '@/lib/navigation';
 import { i18n } from '@/lib/i18n';
 import { useState, useCallback } from 'react';
 import { fetchWithAuth } from '../../../stores/auth';
-import { extractApiError } from '@/lib/apiError';
+import { showToast } from '../../shared/Toast';
 import type { FeatureType, FeatureLink } from './types';
 
 type SavePayload = {
@@ -38,13 +38,14 @@ export function useFeatureLink(policyId: string) {
 
         return await runAction<FeatureLink>({
           request: () => fetchWithAuth(url, { method, body: JSON.stringify(body) }),
+          parseSuccess: (value) => (value as { data: FeatureLink }).data ?? value as FeatureLink,
           errorFallback: i18n.t('common:states.error'),
           successMessage: i18n.t('common:states.saved'),
           onUnauthorized: () => void navigateTo('/login', { replace: true }),
         });
       } catch (err) {
         if (err instanceof ActionError && err.status === 401) return null;
-        // runAction already toasted request/API failures; preserve the shell's inline error.
+        if (!(err instanceof ActionError)) showToast({ type: 'error', message: i18n.t('common:states.error') });
         setError(err instanceof Error ? err.message : i18n.t('common:states.error'));
         return null;
       } finally {
@@ -54,22 +55,26 @@ export function useFeatureLink(policyId: string) {
     [policyId]
   );
 
+  /**
+   * Success feedback on remove is opt-in: several tabs (PatchTab's remove and
+   * revert) already toast their own outcome, and a default here doubled it.
+   */
   const remove = useCallback(
-    async (linkId: string): Promise<boolean> => {
+    async (linkId: string, opts: { successMessage?: string } = {}): Promise<boolean> => {
       setSaving(true);
       setError(undefined);
       try {
-        const response = await fetchWithAuth(
-          `/configuration-policies/${policyId}/features/${linkId}`,
-          { method: 'DELETE' }
-        );
-        if (!response.ok) {
-          const data = await response.json().catch(() => null);
-          throw new Error(extractApiError(data, 'Failed to remove feature link'));
-        }
+        await runAction({
+          request: () => fetchWithAuth(`/configuration-policies/${policyId}/features/${linkId}`, { method: 'DELETE' }),
+          ...(opts.successMessage ? { successMessage: opts.successMessage } : {}),
+          errorFallback: i18n.t('common:states.error'),
+          onUnauthorized: () => void navigateTo('/login', { replace: true }),
+        });
         return true;
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'An error occurred');
+        if (err instanceof ActionError && err.status === 401) return false;
+        if (!(err instanceof ActionError)) showToast({ type: 'error', message: i18n.t('common:states.error') });
+        setError(err instanceof Error ? err.message : i18n.t('common:states.error'));
         return false;
       } finally {
         setSaving(false);

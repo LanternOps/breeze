@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { ERROR_CODES } from '@breeze/shared';
 import { Hono } from 'hono';
 
 /**
@@ -522,7 +523,7 @@ describe('remote sessions — site-scope enforcement', () => {
       });
 
       expect(res.status).toBe(403);
-      expect(await res.json()).toEqual({ error: 'Device not found or access denied' });
+      expect(await res.json()).toEqual({ error: 'Device not found or access denied', code: ERROR_CODES.NOT_FOUND });
     });
 
     it('narrows the active session list to the caller allowed sites', async () => {
@@ -661,7 +662,7 @@ describe('remote sessions — site-scope enforcement', () => {
       });
 
       expect(res.status).toBe(403);
-      expect(await res.json()).toEqual({ error: 'Device not found or access denied' });
+      expect(await res.json()).toEqual({ error: 'Device not found or access denied', code: ERROR_CODES.NOT_FOUND });
     });
 
     it('narrows session history and stats to the caller allowed sites', async () => {
@@ -1233,7 +1234,7 @@ describe('remote sessions — site-scope enforcement', () => {
         expect(await res.text()).toBe('404 Not Found');
       } else {
         expect(res.status).toBe(403);
-        expect(await res.json()).toEqual({ error: 'Access to this site denied' });
+        expect(await res.json()).toEqual({ error: 'Access to this site denied', code: ERROR_CODES.ACCESS_DENIED });
       }
       expect(db.update).not.toHaveBeenCalled();
       expect(createWsTicket).not.toHaveBeenCalled();
@@ -1714,14 +1715,14 @@ describe('POST /remote/sessions/:id/end', () => {
     const res = await endRequest();
 
     expect(res.status).toBe(404);
-    expect(await res.json()).toEqual({ error: 'Session not found' });
+    expect(await res.json()).toEqual({ error: 'Session not found', code: ERROR_CODES.NOT_FOUND });
   });
 
   it('denies a caller narrowed away from the device site, before any write or teardown', async () => {
     const res = await endRequest({ 'x-restrict-site': ALLOWED_SITE });
 
     expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Access to this site denied' });
+    expect(await res.json()).toEqual({ error: 'Access to this site denied', code: ERROR_CODES.ACCESS_DENIED });
     expect(db.update).not.toHaveBeenCalled();
     expect(dispatchCommandToAgent).not.toHaveBeenCalled();
     expect(revokeViewerSession).not.toHaveBeenCalled();

@@ -195,6 +195,32 @@ describe('makeReplaySender', () => {
 
 
 // ── W06 (#3900): suggestion replay ─────────────────────────────────────────
+describe('makeReplaySender — work type (#4628 W04)', () => {
+  const bounds = { startedAt: '2026-08-30T09:00:00.000Z', endedAt: '2026-08-30T09:40:00.000Z' };
+
+  it('replays a queued create with the work type the technician picked', async () => {
+    const deps = senders();
+    await makeReplaySender(deps)(
+      write({ kind: 'create', payload: { ...bounds, ticketId: 'k1', workTypeId: 'wt-onsite' } })
+    );
+    expect(deps.createTimeEntry).toHaveBeenCalledWith({ ...bounds, ticketId: 'k1', workTypeId: 'wt-onsite' });
+  });
+
+  it('replays an explicit null ("none") as null, distinct from absent', async () => {
+    const deps = senders();
+    await makeReplaySender(deps)(
+      write({ kind: 'create', payload: { ...bounds, ticketId: 'k1', workTypeId: null } })
+    );
+    expect(deps.createTimeEntry).toHaveBeenCalledWith({ ...bounds, ticketId: 'k1', workTypeId: null });
+  });
+
+  it('a queued create with NO workTypeId replays without the field, so the category default applies (§3.1)', async () => {
+    const deps = senders();
+    await makeReplaySender(deps)(write({ kind: 'create', payload: { ...bounds, ticketId: 'k1' } }));
+    expect(deps.createTimeEntry.mock.calls[0][0]).not.toHaveProperty('workTypeId');
+  });
+});
+
 describe('makeReplaySender — suggestion writes', () => {
   const SIG = { kind: 'remote_session', id: 'aaaa1111-0000-4000-8000-000000000001' };
 

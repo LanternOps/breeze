@@ -1,5 +1,6 @@
 {
   "titles": {
+    "adminMonitorConversion": "Conversion des alertes héritées",
     "notFound": "Page introuvable",
     "serverError": "Une erreur est survenue",
     "acceptInvite": "Accepter l'invitation",
@@ -131,8 +132,6 @@
     "settingsAiUsage": "Utilisation de l’IA",
     "settingsAiScriptAuthoring": "Rédaction de scripts",
     "settingsToolSources": "Sources d'outils",
-    "settingsAlertTemplatesDetail": "Modèle d'alerte",
-    "settingsAlertTemplates": "Modèles d'alerte",
     "settingsApiKeys": "Clés API",
     "settingsBilling": "Paramètres de facturation",
     "settingsCatalog": "Catalogue de produits",

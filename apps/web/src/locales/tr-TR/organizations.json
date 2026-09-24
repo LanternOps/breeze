@@ -98,6 +98,22 @@
       "inaccessible": "Bu kuruluş {{status}} durumunda, bu nedenle canlı verileri kullanılamıyor. Yine de kuruluşlar listesinde görebilirsiniz.",
       "backToList": "Kuruluşlara dön"
     },
+    "reportHistory": {
+      "title": "Rapor geçmişi",
+      "loading": "Rapor geçmişi yükleniyor…",
+      "readOnlyNote": "Salt okunur: bu kuruluş {{status}} durumunda. Raporlar oluşturulamaz, zamanlanamaz veya indirilemez.",
+      "forbidden": "Bu kuruluşun rapor geçmişine erişiminiz yok.",
+      "error": "Rapor geçmişi yüklenemedi.",
+      "empty": "Hiçbir rapor veya rapor çalıştırması bulunamadı.",
+      "definitionsTitle": "Rapor tanımları",
+      "definitionsEmpty": "Rapor tanımı yok.",
+      "runsTitle": "Son çalıştırmalar",
+      "runsEmpty": "Rapor çalıştırması yok.",
+      "lastGenerated": "Son oluşturma: {{date}}",
+      "neverGenerated": "Hiç oluşturulmadı",
+      "rowCount_one": "{{count}} satır",
+      "rowCount_other": "{{count}} satır"
+    },
     "unavailable": {
       "title": "Bu çalışma alanında kullanılamıyor",
       "description": "Kuruluş kayıtları partner düzeyinde bir görünümdür. Oturumunuz tek bir kuruluşla sınırlı, bu yüzden burada geçiş yapılacak bir şey yok.",

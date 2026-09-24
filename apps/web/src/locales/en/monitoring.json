@@ -8,6 +8,11 @@
     "monitorLabel": "Monitor"
   },
   "list": {
+    "views": {
+      "ariaLabel": "Monitor views",
+      "all": "All monitors",
+      "needsConversion": "Needs conversion"
+    },
     "title": "Monitors",
     "description": "Watch a condition, respond on the device, notify, and escalate when it keeps happening.",
     "new": "New monitor",
@@ -32,7 +37,11 @@
     },
     "deleteConfirm": "Delete monitor {{name}}? Its alert rule and response automation are removed too.",
     "builtIn": "Built-in",
-    "builtInHint": "Provisioned by Breeze. Edit thresholds, disable it, or delete it — it will not come back."
+    "builtInHint": "Provisioned by Breeze. Edit thresholds, disable it, or delete it — it will not come back.",
+    "recommended": {
+      "title": "Recommended",
+      "description": "Attach the built-in monitors to a policy."
+    }
   },
   "editor": {
     "attachedToPolicy": "Monitor created and attached to the policy",
@@ -95,7 +104,9 @@
       "save": "Failed to save monitor",
       "delete": "Failed to delete monitor",
       "test": "Test failed",
-      "generic": "Something went wrong"
+      "generic": "Something went wrong",
+      "invalidCondition": "Some condition values are missing or out of range. Nothing was saved.",
+      "invalidResponses": "Some response settings are missing or out of range. Nothing was saved."
     },
     "saved": "Monitor saved",
     "deleted": "Monitor deleted",
@@ -139,6 +150,15 @@
         "disabled": "disabled",
         "unavailable": "unavailable"
       }
+    },
+    "composite": {
+      "children": "Child conditions",
+      "add": "Add condition"
+    },
+    "restart": {
+      "label": "Restart service on the device",
+      "maxAttempts": "Maximum restart attempts",
+      "cooldownSeconds": "Restart cooldown (seconds)"
     }
   },
   "kinds": {
@@ -284,7 +304,8 @@
     "detachConfirm": "Detach from {{policy}}?",
     "errors": {
       "attach": "Failed to attach monitor",
-      "detach": "Failed to detach monitor"
+      "detach": "Failed to detach monitor",
+      "linkedFeature": "This policy's monitors come from a shared feature policy. Edit that policy or choose another one."
     }
   },
   "policyTab": {
@@ -385,5 +406,112 @@
         "skippedNoResponse": "Skipped (no response configured)"
       }
     }
+  },
+  "conversion": {
+    "banner": {
+      "text": "{{rows}} legacy rules across {{policies}} policies have not been converted to monitors.",
+      "review": "Review",
+      "convertEverything": "Convert everything…",
+      "confirmTitle": "Convert every legacy rule, watch and alert-triggered automation across all your policies?",
+      "confirmBody": "{{rows}} legacy rules in {{policies}} policies across the whole partner. Converted rows retire in place. Unconvertible rows remain for review or manual retirement in W05c; W05d converts leftovers and retires those it cannot convert.",
+      "confirmRun": "Convert everything",
+      "convertedAll": "Converted {{converted}} rows across {{policies}} policies; {{unconvertible}} could not be converted.",
+      "errors": {
+        "convertAll": "Failed to convert everything"
+      }
+    },
+    "pendingPolicies": {
+      "title": "Policies with legacy rules",
+      "loading": "Loading policies…",
+      "empty": "No policy carries inline alert rules, watches or alert-triggered automations.",
+      "error": "Couldn't load the policies with legacy rules. Refresh to try again."
+    },
+    "title": "Needs conversion",
+    "description": "Inline alert rules, service/process watches and alert-triggered automations on this policy have not been converted to monitors yet. Converting retires the source row in place; nothing is deleted.",
+    "checking": "Checking devices…",
+    "devicesChecked_one": "{{count}} device checked for identical behavior.",
+    "devicesChecked_other": "{{count}} devices checked for identical behavior.",
+    "blocked": {
+      "parent_unconverted": "Convert the parent policy first — its inline rules decide what this policy inherits.",
+      "prerequisite_missing": "A prerequisite fix is not deployed on this server yet. Conversion is disabled until it is."
+    },
+    "refusedTitle_one": "Conversion refused: {{count}} device would change behavior.",
+    "refusedTitle_other": "Conversion refused: {{count}} devices would change behavior.",
+    "convert": "Convert",
+    "convertAll_one": "Convert {{count}} convertible",
+    "convertAll_other": "Convert all {{count}} convertible",
+    "retire": "Retire",
+    "converted": "Converted {{rows}} legacy rows into {{monitors}} monitors.",
+    "retired": "Retired {{name}}.",
+    "undone_one": "Reverted {{count}} conversion.",
+    "undone_other": "Reverted {{count}} conversions.",
+    "openAlerts_one": "{{count}} open alert moves to the monitor",
+    "openAlerts_other": "{{count}} open alerts move to the monitor",
+    "sourceTables": {
+      "config_policy_alert_rules": "Inline alert rule",
+      "config_policy_monitoring_watches": "Service/process watch",
+      "alert_templates": "Alert template",
+      "automations": "Alert-triggered automation",
+      "config_policy_automations": "Policy automation",
+      "network_monitors": "Network check"
+    },
+    "outcomes": {
+      "convertible": "Convertible",
+      "unconvertible": "Cannot convert"
+    },
+    "roles": {
+      "primary": "Monitor",
+      "resource_cpu": "CPU monitor",
+      "resource_memory": "Memory monitor",
+      "response": "Response"
+    },
+    "reasons": {
+      "unknown": "Cannot convert ({{code}}).",
+      "nested_group": "The rule nests condition groups; a composite monitor is one flat group.",
+      "no_condition": "The template has no evaluable condition and never fired.",
+      "escalation_policy_axis": "The escalation policy is org-owned but the policy is partner-wide.",
+      "custom": "Custom conditions have no monitor kind.",
+      "process_count": "Process-count conditions have no monitor kind."
+    },
+    "errors": {
+      "preview": "Failed to load the conversion preview",
+      "convert": "Failed to convert",
+      "retire": "Failed to retire",
+      "revert": "Failed to revert the conversion"
+    },
+    "ledger": {
+      "title": "Conversion history",
+      "undo": "Undo",
+      "more": "Load more",
+      "empty": "No conversion history.",
+      "system": "System",
+      "deadline": "Undo is unavailable after W05d removes the source runtime."
+    },
+    "errorCodes": {
+      "preview_stale": "The policy changed since this preview. Preview again before converting.",
+      "preview_failed": "The preview could not be produced. Try again later.",
+      "equivalence_delta": "The converted monitors would not behave like the legacy rules on every device. Review the preview before converting.",
+      "CONVERSION_PREREQUISITE_MISSING": "A required platform update has not been deployed yet, so this cannot be converted.",
+      "blocked": "This conversion is blocked. Convert the parent policy first, then try again.",
+      "already_converted": "These rules were already converted. Refresh to see the current state.",
+      "partner_wide_denied": "Full partner access is required to convert partner-wide policies.",
+      "policy_not_found": "The policy was not found. It may have been deleted.",
+      "source_not_found": "The legacy rule was not found. It may already be converted or deleted.",
+      "conversion_not_found": "That conversion was not found.",
+      "conversion_revert_unavailable": "This conversion can no longer be undone.",
+      "invalid_reason": "That retirement reason is not valid.",
+      "unknown": "The conversion failed. Try again."
+    }
+  },
+  "device": {
+    "title": "Effective monitors",
+    "empty": "No monitors apply to this device.",
+    "error": "Could not load effective monitors.",
+    "monitor": "Monitor",
+    "kind": "Kind",
+    "policy": "Source policy",
+    "state": "State",
+    "episode": "Open episode",
+    "escalation": "Escalation"
   }
 }

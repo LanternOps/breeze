@@ -37,6 +37,8 @@ import OrgAiProcessingToggle from './OrgAiProcessingToggle';
 import { OrgApprovalSecurityTab } from './OrgApprovalSecurityTab';
 import OrgEventLogSettings from './OrgEventLogSettings';
 import OrgAiBudgetSettings from './OrgAiBudgetSettings';
+import OrgAiApprovalTimeoutCard from './OrgAiApprovalTimeoutCard';
+import type { AiApprovalSettings, ResolvedAiApprovalTimeout } from '@breeze/shared';
 import OrgAuditRetentionSettings from './OrgAuditRetentionSettings';
 import OrgRemoteAccessSettings from './OrgRemoteAccessSettings';
 import { useOrgStore } from '../../stores/orgStore';
@@ -198,6 +200,8 @@ type OrgDetails = {
       elasticsearchPassword?: string;
       indexPrefix?: string;
     };
+    /** #6475 — org override of the interactive AI-approval timeout. Absent/`{}` = inherit. */
+    aiApprovals?: AiApprovalSettings;
   };
   billingContact?: {
     name?: string;
@@ -294,6 +298,12 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
   // partner-locked fields from this so a disabled control shows the value that is
   // actually in force (and re-posts it unchanged, which the API accepts).
   const [effectiveDefaults, setEffectiveDefaults] = useState<Record<string, unknown> | undefined>(undefined);
+  // #6475: the resolved interactive AI-approval timeout (org override, else
+  // partner default, else product default), for OrgAiApprovalTimeoutCard's
+  // "Inherit (…)" label. Null while unresolved (not yet fetched, or an older
+  // API build that doesn't send it) — the card hides the inherit value rather
+  // than guessing at a source in that case.
+  const [aiApprovalTimeout, setAiApprovalTimeout] = useState<ResolvedAiApprovalTimeout | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [copiedOrgId, setCopiedOrgId] = useState(false);
@@ -367,6 +377,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
         const lockedList: string[] = effData.locked || [];
         setLocked(lockedList);
         setEffectiveDefaults(effData.effective?.defaults);
+        setAiApprovalTimeout(effData.aiApprovalTimeout ?? null);
         // Issue #2124: pins are inherit-with-override, NOT enforced-locked (see the
         // assertNotLocked exemption in the org PATCH). But `locked` still carries
         // `defaults.agentVersionPins` when the PARTNER set one — we use that purely
@@ -652,7 +663,21 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
         // No onDirty: the tab owns its own draft AND its own save, so wiring
         // the page's dirty channel would strand it as permanently unsaved
         // (#3432).
-        return <OrgAiBudgetSettings orgId={effectiveOrgId} />;
+        return (
+          <>
+            <OrgAiBudgetSettings orgId={effectiveOrgId} />
+            {/* #6475 — a separate card, not folded into OrgAiBudgetSettings:
+                that one saves through PUT /ai/budget with different
+                semantics (touched-fields-only, its own lock model). This
+                goes through the page's wholesale settings PATCH instead, via
+                handleSave('aiApprovals', ...) below. */}
+            <OrgAiApprovalTimeoutCard
+              initialData={orgDetails?.settings?.aiApprovals}
+              effective={aiApprovalTimeout}
+              onSave={(data: AiApprovalSettings) => handleSave('aiApprovals', data)}
+            />
+          </>
+        );
       case 'event-logs':
         return (
           <OrgEventLogSettings

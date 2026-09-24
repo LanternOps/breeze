@@ -838,6 +838,10 @@
         "legacyAlertRulesMovedToAlerts": "{{count}} regola/e di avviso legacy salvate in questa scheda sono state spostate nella funzione Avvisi di questo criterio. Il monitoraggio non le memorizza più."
       },
       "monitorsTab": {
+        "agentCollectionTitle": "Raccolta dell'agente",
+        "checkIntervalLabel": "Intervallo di controllo (secondi)",
+        "checkIntervalHint": "Ogni quanto gli agenti sotto questa policy controllano i monitor di servizi e processi (10–3600).",
+        "checkIntervalInvalid": "L'intervallo di controllo deve essere compreso tra 10 e 3600 secondi.",
         "attachMonitor": "Collega un monitor",
         "loadingMonitors": "Caricamento dei monitor…",
         "noMoreMonitorsToAttach": "Nessun altro monitor disponibile da collegare",
@@ -853,7 +857,16 @@
           "title": "Monitor consigliati",
           "body": "Breeze include monitor integrati per CPU, memoria, disco e conformità delle patch. Nessuno è ancora collegato a questa policy.",
           "action": "Collega tutti i monitor integrati"
-        }
+        },
+        "inheritanceTitle": "Monitor ereditati",
+        "inheritance": {
+          "cumulative": "Aggiungi ai monitor ereditati",
+          "cumulativeHint": "I dispositivi ricevono i monitor delle policy superiori più questi.",
+          "replace": "Sostituisci i monitor ereditati",
+          "replaceHint": "Si applicano solo i monitor di questa policy; gli allegati superiori vengono ignorati. Impostato dalla conversione per mantenere il comportamento delle regole inline."
+        },
+        "ignoredInherited_one": "{{count}} monitor ereditato viene ignorato durante la sostituzione:",
+        "ignoredInherited_other": "{{count}} monitor ereditati vengono ignorati durante la sostituzione:"
       },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Acquisisci prompt di elevazione UAC di Windows",

@@ -1,5 +1,6 @@
 {
   "titles": {
+    "adminMonitorConversion": "Eski uyarı dönüştürme",
     "notFound": "Sayfa bulunamadı",
     "serverError": "Bir şeyler ters gitti",
     "acceptInvite": "Daveti Kabul Et",
@@ -131,8 +132,6 @@
     "settingsAiUsage": "Yapay Zeka Kullanımı",
     "settingsAiScriptAuthoring": "Betik yazımı",
     "settingsToolSources": "Araç Kaynakları",
-    "settingsAlertTemplatesDetail": "Uyarı Şablonu",
-    "settingsAlertTemplates": "Uyarı Şablonları",
     "settingsApiKeys": "API Anahtarları",
     "settingsBilling": "Faturalandırma Ayarları",
     "settingsCatalog": "Ürün Kataloğu",

@@ -52,6 +52,11 @@
         "weeklySunday": "Ogni domenica"
       }
     },
+    "alertWorkflow": {
+      "severity": "Gravità",
+      "kind": "Tipi di monitor",
+      "hint": "Lascia un gruppo vuoto per accettare qualsiasi valore. I filtri avanzati esistenti vengono conservati."
+    },
     "validation": {
       "valueRequired": "Il valore è obbligatorio",
       "nameRequired": "Il nome dell'automazione è obbligatorio",
@@ -361,7 +366,7 @@
       "scheduled": "Pianificate",
       "on-demand": "Su richiesta",
       "webhooks": "Webhook",
-      "event-rules": "Regole evento"
+      "event-rules": "Flussi degli avvisi"
     }
   },
   "complianceDashboard": {
@@ -1064,9 +1069,9 @@
       "elevatedHint": "Usa sudo su macOS/Linux, runas su Windows."
     },
     "exitCodeSeverity": {
-      "emptyPrefix": "Mappa codici di uscita specifici a gravità degli avvisi. Quando lo script restituisce uno di questi codici, viene generato un avviso con la gravità configurata. Scegli",
+      "emptyPrefix": "Mappa codici di uscita specifici a gravità degli avvisi. Quando un'esecuzione non presidiata (pianificata, automazione, criterio o attivata da un avviso) restituisce uno di questi codici, viene generato un avviso con la gravità configurata; le esecuzioni manuali non ne generano mai. Un'esecuzione successiva che termina correttamente lo risolve. Scegli",
       "suppressAlert": "Sopprimi avviso",
-      "emptySuffix": "per contrassegnare un codice come informativo (nessun incidente generato). I codici di uscita non elencati qui usano la gestione dell'esito predefinita.",
+      "emptySuffix": "per contrassegnare un codice come informativo (nessun avviso). Un codice diverso da zero non elencato usa la gravità del codice inferiore elencato più vicino, oppure media.",
       "suppressHint": "Sopprimi avviso - il codice di uscita viene trattato come informativo, nessun incidente generato."
     },
     "keyboardSave": "{{shortcut}} per salvare",

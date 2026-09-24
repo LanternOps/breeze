@@ -55,6 +55,13 @@ export interface TimeEntry {
   description: string | null;
 }
 
+/**
+ * #4628 §3.1. OMIT the field to let the server apply the ticket category's
+ * default work type at stamp time — that is what keeps older builds priced
+ * correctly. Send `null` only when the technician explicitly chose none.
+ */
+export type WorkTypeChoice = string | null | undefined;
+
 export interface CreateTimeEntryInput {
   ticketId?: string;
   startedAt: string;
@@ -62,6 +69,8 @@ export interface CreateTimeEntryInput {
   description?: string;
   isBillable?: boolean;
   billingStatus?: BillingStatus;
+  /** See WorkTypeChoice. */
+  workTypeId?: string | null;
 }
 
 export interface TimesheetDay {
@@ -164,6 +173,8 @@ export async function getRunningTimer(): Promise<RunningTimer | null> {
 export async function startTimer(input: {
   ticketId?: string;
   description?: string;
+  /** See WorkTypeChoice. Timers are priced at START (§3.7). */
+  workTypeId?: string | null;
 }): Promise<TimeEntry> {
   try {
     const response = await coreRequest<{ data: ServerTimeEntry }>('/time-entries/start', {

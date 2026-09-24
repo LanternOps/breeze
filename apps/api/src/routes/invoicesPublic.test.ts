@@ -122,6 +122,30 @@ describe('GET /invoices/public/:token', () => {
     expect(markViewedMock).toHaveBeenCalledWith(INV_ID, ORG_ID);
   });
 
+  // #6227: an issued invoice renders the presentation frozen at issue, not the
+  // partner's live default (settings audit rule 6).
+  it("renders the invoice's frozen theme/page size, not the partner's current ones", async () => {
+    resolveMock.mockResolvedValue(invoice({ documentTheme: 'condensed', documentPageSize: 'letter' }));
+    dbResults.push(
+      [{ ...PARTNER_ROW[0], documentTheme: 'classic', documentPageSize: 'a4' }],
+      BRAND_ROW,
+      [{ name: 'RMM seat', quantity: '5' }],
+    );
+    const res = await app().request(`/invoices/public/${TOKEN}`);
+    expect(res.status).toBe(200);
+    const { data } = await res.json();
+    expect(data.branding).toMatchObject({ theme: 'condensed', pageSize: 'letter' });
+  });
+
+  it('a void invoice also keeps its frozen presentation', async () => {
+    resolveMock.mockResolvedValue(invoice({ status: 'void', documentTheme: 'condensed', documentPageSize: 'letter' }));
+    dbResults.push([{ ...PARTNER_ROW[0], documentTheme: 'classic', documentPageSize: 'a4' }], BRAND_ROW);
+    const res = await app().request(`/invoices/public/${TOKEN}`);
+    expect(res.status).toBe(200);
+    const { data } = await res.json();
+    expect(data.branding).toMatchObject({ theme: 'condensed', pageSize: 'letter' });
+  });
+
   // #5856: the route selects ticketId/ticketSubject for grouping, but the wire
   // DTO is the customer projection — ticket number + category only.
   it('carries ticket number and category but never ticketId or subject', async () => {

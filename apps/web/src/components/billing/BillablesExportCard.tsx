@@ -66,7 +66,9 @@ export default function BillablesExportCard() {
   return (
     <section className="mt-6 rounded-lg border p-4" data-testid="billables-export-card">
       <h2 className="mb-1 text-sm font-semibold">{t('billablesExport.title')}</h2>
-      <p className="mb-3 text-xs text-muted-foreground">{t('billablesExport.description')}</p>
+      <p className="mb-1 text-xs text-muted-foreground">{t('billablesExport.description')}</p>
+      {/* #4628 W04 — the two columns appended to the CSV (work_type, included_minutes). */}
+      <p className="mb-3 text-xs text-muted-foreground" data-testid="billables-export-columns-note">{t('billablesExport.columnsNote')}</p>
       {isPartnerScope && (
         <p className="mb-3 text-xs">
           <a

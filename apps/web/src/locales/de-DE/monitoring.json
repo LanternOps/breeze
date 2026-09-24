@@ -8,6 +8,11 @@
     "monitorLabel": "Monitor"
   },
   "list": {
+    "views": {
+      "ariaLabel": "Monitoransichten",
+      "all": "Alle Monitore",
+      "needsConversion": "Konvertierung erforderlich"
+    },
     "title": "Monitore",
     "description": "Überwachen Sie eine Bedingung, reagieren Sie auf dem Gerät, benachrichtigen Sie und eskalieren Sie, wenn sie wiederholt auftritt.",
     "new": "Neuer Monitor",
@@ -32,7 +37,11 @@
     },
     "deleteConfirm": "Monitor {{name}} löschen? Die zugehörige Alarmregel und die Reaktionsautomatisierung werden ebenfalls entfernt.",
     "builtIn": "Integriert",
-    "builtInHint": "Von Breeze bereitgestellt. Schwellenwerte bearbeiten, deaktivieren oder löschen – er kommt nicht zurück."
+    "builtInHint": "Von Breeze bereitgestellt. Schwellenwerte bearbeiten, deaktivieren oder löschen – er kommt nicht zurück.",
+    "recommended": {
+      "title": "Empfohlen",
+      "description": "Integrierte Monitore einer Richtlinie zuordnen."
+    }
   },
   "editor": {
     "attachedToPolicy": "Monitor erstellt und der Richtlinie zugeordnet",
@@ -95,7 +104,9 @@
       "save": "Monitor konnte nicht gespeichert werden",
       "delete": "Monitor konnte nicht gelöscht werden",
       "test": "Test fehlgeschlagen",
-      "generic": "Ein Fehler ist aufgetreten"
+      "generic": "Ein Fehler ist aufgetreten",
+      "invalidCondition": "Einige Bedingungswerte fehlen oder liegen außerhalb des zulässigen Bereichs. Es wurde nichts gespeichert.",
+      "invalidResponses": "Einige Reaktionseinstellungen fehlen oder liegen außerhalb des zulässigen Bereichs. Es wurde nichts gespeichert."
     },
     "saved": "Monitor gespeichert",
     "deleted": "Monitor gelöscht",
@@ -139,6 +150,15 @@
         "disabled": "deaktiviert",
         "unavailable": "nicht verfügbar"
       }
+    },
+    "composite": {
+      "children": "Teilbedingungen",
+      "add": "Bedingung hinzufügen"
+    },
+    "restart": {
+      "label": "Dienst auf dem Gerät neu starten",
+      "maxAttempts": "Maximale Neustartversuche",
+      "cooldownSeconds": "Neustartwartezeit (Sekunden)"
     }
   },
   "kinds": {
@@ -284,7 +304,8 @@
     "detachConfirm": "Von {{policy}} lösen?",
     "errors": {
       "attach": "Monitor konnte nicht angehängt werden",
-      "detach": "Monitor konnte nicht gelöst werden"
+      "detach": "Monitor konnte nicht gelöst werden",
+      "linkedFeature": "Die Monitore dieser Richtlinie stammen aus einer gemeinsamen Funktionsrichtlinie. Bearbeiten Sie diese oder wählen Sie eine andere Richtlinie."
     }
   },
   "policyTab": {
@@ -385,5 +406,112 @@
         "skippedNoResponse": "Übersprungen (keine Reaktion konfiguriert)"
       }
     }
+  },
+  "conversion": {
+    "banner": {
+      "text": "{{rows}} Altregeln in {{policies}} Richtlinien wurden noch nicht in Monitore konvertiert.",
+      "review": "Prüfen",
+      "convertEverything": "Alles konvertieren…",
+      "confirmTitle": "Alle Altregeln, Überwachungen und alarmausgelösten Automatisierungen in allen Ihren Richtlinien konvertieren?",
+      "confirmBody": "{{rows}} Altregeln in {{policies}} Richtlinien des gesamten Partners. Konvertierte Zeilen werden stillgelegt. Nicht konvertierbare Zeilen bleiben in W05c zur Prüfung oder manuellen Stilllegung; W05d konvertiert Reste und legt nicht konvertierbare still.",
+      "confirmRun": "Alles konvertieren",
+      "convertedAll": "{{converted}} Zeilen in {{policies}} Richtlinien konvertiert; {{unconvertible}} nicht konvertierbar.",
+      "errors": {
+        "convertAll": "Konvertierung aller Einträge fehlgeschlagen"
+      }
+    },
+    "pendingPolicies": {
+      "title": "Richtlinien mit Altregeln",
+      "loading": "Richtlinien werden geladen…",
+      "empty": "Keine Richtlinie enthält Inline-Alarmregeln, Überwachungen oder alarmausgelöste Automatisierungen.",
+      "error": "Die Richtlinien mit Legacy-Regeln konnten nicht geladen werden. Zum erneuten Versuch aktualisieren."
+    },
+    "title": "Konvertierung erforderlich",
+    "description": "Inline-Alarmregeln, Dienst-/Prozessüberwachungen und alarmausgelöste Automatisierungen dieser Richtlinie wurden noch nicht in Monitore konvertiert. Beim Konvertieren wird die Quellzeile an Ort und Stelle stillgelegt; nichts wird gelöscht.",
+    "checking": "Geräte werden geprüft…",
+    "devicesChecked_one": "{{count}} Gerät auf identisches Verhalten geprüft.",
+    "devicesChecked_other": "{{count}} Geräte auf identisches Verhalten geprüft.",
+    "blocked": {
+      "parent_unconverted": "Konvertieren Sie zuerst die übergeordnete Richtlinie — ihre Inline-Regeln bestimmen, was diese Richtlinie erbt.",
+      "prerequisite_missing": "Eine erforderliche Korrektur ist auf diesem Server noch nicht bereitgestellt. Die Konvertierung ist bis dahin deaktiviert."
+    },
+    "refusedTitle_one": "Konvertierung abgelehnt: {{count}} Gerät würde sein Verhalten ändern.",
+    "refusedTitle_other": "Konvertierung abgelehnt: {{count}} Geräte würden ihr Verhalten ändern.",
+    "convert": "Konvertieren",
+    "convertAll_one": "{{count}} konvertierbare konvertieren",
+    "convertAll_other": "Alle {{count}} konvertierbaren konvertieren",
+    "retire": "Stilllegen",
+    "converted": "{{rows}} Altzeilen in {{monitors}} Monitore konvertiert.",
+    "retired": "{{name}} stillgelegt.",
+    "undone_one": "{{count}} Konvertierung rückgängig gemacht.",
+    "undone_other": "{{count}} Konvertierungen rückgängig gemacht.",
+    "openAlerts_one": "{{count}} offener Alarm wechselt zum Monitor",
+    "openAlerts_other": "{{count}} offene Alarme wechseln zum Monitor",
+    "sourceTables": {
+      "config_policy_alert_rules": "Inline-Alarmregel",
+      "config_policy_monitoring_watches": "Dienst-/Prozessüberwachung",
+      "alert_templates": "Alarmvorlage",
+      "automations": "Alarmausgelöste Automatisierung",
+      "config_policy_automations": "Richtlinienautomatisierung",
+      "network_monitors": "Netzwerkprüfung"
+    },
+    "outcomes": {
+      "convertible": "Konvertierbar",
+      "unconvertible": "Nicht konvertierbar"
+    },
+    "roles": {
+      "primary": "Überwachungsmonitor",
+      "resource_cpu": "CPU-Monitor",
+      "resource_memory": "Speicher-Monitor",
+      "response": "Reaktion"
+    },
+    "reasons": {
+      "unknown": "Nicht konvertierbar ({{code}}).",
+      "nested_group": "Die Regel verschachtelt Bedingungsgruppen; ein zusammengesetzter Monitor ist eine flache Gruppe.",
+      "no_condition": "Die Vorlage hat keine auswertbare Bedingung und hat nie ausgelöst.",
+      "escalation_policy_axis": "Die Eskalationsrichtlinie gehört einer Organisation, die Richtlinie ist aber partnerweit.",
+      "custom": "Benutzerdefinierte Bedingungen haben keine Monitorart.",
+      "process_count": "Prozessanzahl-Bedingungen haben keine Monitorart."
+    },
+    "errors": {
+      "preview": "Konvertierungsvorschau konnte nicht geladen werden",
+      "convert": "Konvertierung fehlgeschlagen",
+      "retire": "Stilllegen fehlgeschlagen",
+      "revert": "Konvertierung konnte nicht rückgängig gemacht werden"
+    },
+    "ledger": {
+      "title": "Konvertierungsverlauf",
+      "undo": "Rückgängig",
+      "more": "Mehr laden",
+      "empty": "Kein Konvertierungsverlauf.",
+      "system": "Automatisches System",
+      "deadline": "Rückgängig ist nach Entfernung der Quelllaufzeit durch W05d nicht verfügbar."
+    },
+    "errorCodes": {
+      "preview_stale": "Die Richtlinie wurde seit dieser Vorschau geändert. Erstellen Sie vor der Konvertierung erneut eine Vorschau.",
+      "preview_failed": "Die Vorschau konnte nicht erstellt werden. Versuchen Sie es später erneut.",
+      "equivalence_delta": "Die konvertierten Monitore würden sich nicht auf jedem Gerät wie die Legacy-Regeln verhalten. Prüfen Sie die Vorschau vor der Konvertierung.",
+      "CONVERSION_PREREQUISITE_MISSING": "Ein erforderliches Plattform-Update wurde noch nicht bereitgestellt, daher ist keine Konvertierung möglich.",
+      "blocked": "Diese Konvertierung ist blockiert. Konvertieren Sie zuerst die übergeordnete Richtlinie und versuchen Sie es dann erneut.",
+      "already_converted": "Diese Regeln wurden bereits konvertiert. Aktualisieren Sie, um den aktuellen Stand zu sehen.",
+      "partner_wide_denied": "Zum Konvertieren partnerweiter Richtlinien ist voller Partnerzugriff erforderlich.",
+      "policy_not_found": "Die Richtlinie wurde nicht gefunden. Möglicherweise wurde sie gelöscht.",
+      "source_not_found": "Die Legacy-Regel wurde nicht gefunden. Möglicherweise wurde sie bereits konvertiert oder gelöscht.",
+      "conversion_not_found": "Diese Konvertierung wurde nicht gefunden.",
+      "conversion_revert_unavailable": "Diese Konvertierung kann nicht mehr rückgängig gemacht werden.",
+      "invalid_reason": "Dieser Stilllegungsgrund ist ungültig.",
+      "unknown": "Die Konvertierung ist fehlgeschlagen. Versuchen Sie es erneut."
+    }
+  },
+  "device": {
+    "title": "Wirksame Monitore",
+    "empty": "Für dieses Gerät gelten keine Monitore.",
+    "error": "Wirksame Monitore konnten nicht geladen werden.",
+    "monitor": "Monitorname",
+    "kind": "Art",
+    "policy": "Quellrichtlinie",
+    "state": "Zustand",
+    "episode": "Offene Episode",
+    "escalation": "Eskalation"
   }
 }

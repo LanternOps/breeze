@@ -251,6 +251,10 @@ export const generateReportSchema = z
 export const listRunsSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
+  // #6771: a single-org run listing. The only way to list the runs of an
+  // out-of-service org the caller may read report history of; for an org
+  // token it must name the token's own org.
+  orgId: z.string().guid().optional(),
   reportId: z.string().guid().optional(),
   status: z.enum(['pending', 'running', 'completed', 'failed']).optional()
 });

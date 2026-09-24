@@ -52,6 +52,11 @@
         "weeklySunday": "Semanalmente aos domingos"
       }
     },
+    "alertWorkflow": {
+      "severity": "Severidades",
+      "kind": "Tipos de monitor",
+      "hint": "Deixe um grupo vazio para aceitar qualquer valor. Os filtros avançados existentes são preservados."
+    },
     "validation": {
       "valueRequired": "O valor é obrigatório",
       "nameRequired": "O nome da automação é obrigatório",
@@ -361,7 +366,7 @@
       "scheduled": "Agendados",
       "on-demand": "Sob demanda",
       "webhooks": "Webhooks",
-      "event-rules": "Regras de evento"
+      "event-rules": "Fluxos de alertas"
     }
   },
   "complianceDashboard": {
@@ -1064,9 +1069,9 @@
       "elevatedHint": "Usa sudo no macOS/Linux, runas no Windows."
     },
     "exitCodeSeverity": {
-      "emptyPrefix": "Mapeie códigos de saída específicos para gravidades de alerta. Quando o script retorna um desses códigos, um alerta é criado na gravidade configurada. Escolha",
+      "emptyPrefix": "Mapeie códigos de saída específicos para gravidades de alerta. Quando uma execução não assistida (agendada, automação, política ou disparada por alerta) retorna um desses códigos, um alerta é criado na gravidade configurada; execuções manuais nunca criam um. Uma execução posterior que termina sem erro o resolve. Escolha",
       "suppressAlert": "Suprimir alerta",
-      "emptySuffix": "para marcar um código como informativo (sem incidente criado). Códigos de saída que você não listar aqui usam o tratamento padrão de resultado.",
+      "emptySuffix": "para marcar um código como informativo (sem alerta). Um código diferente de zero que você não listar usa a gravidade do código inferior listado mais próximo, ou média.",
       "suppressHint": "Suprimir alerta — o código de saída é tratado como informativo, sem incidente criado."
     },
     "keyboardSave": "{{shortcut}} para salvar",

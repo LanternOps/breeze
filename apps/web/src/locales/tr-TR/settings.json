@@ -329,6 +329,7 @@
     "exportFailed": "Dışa aktarma başarısız oldu",
     "title": "Faturalandırılabilir öğeleri dışa aktarma",
     "description": "CSV olarak faturalandırılabilir zaman girişleri ve bölümleri (366 güne kadar). Onay durumunu içerir.",
+    "columnsNote": "Her zaman kaydı için çalışma türünü ve sözleşmeye dahil dakikaları içerir.",
     "from": "Gönderen",
     "to": "Kime",
     "allOrganizations": "Tüm kuruluşlar",
@@ -579,6 +580,10 @@
       "modules": {
         "label": "Modüller",
         "description": "Servis masası, faturalandırma ve topoloji açık/kapalı"
+      },
+      "aiApprovals": {
+        "label": "Yapay Zeka Onay Zaman Aşımı",
+        "description": "Yapay zeka sohbetinin kısıtlı bir eylem onayını ne kadar bekleyeceği"
       }
     },
     "saved": "İş ortağı ayarları kaydedildi",
@@ -1662,6 +1667,8 @@
     "maxTurnsPerSession": "Oturum Başına Maksimum Dönüş Sayısı",
     "msgsMinPerUser": "Mesaj/Kullanıcı Başına Min",
     "msgsHrPerOrg": "Kuruluş Başına Mesaj/Saat",
+    "toolRateLimitMultiplier": "Araç başına hız limiti çarpanı",
+    "toolRateLimitMultiplierHelp": "Araç başına her yapay zekâ ve MCP hız limitini bu katsayı kadar artırır (1–10). Bir limiti asla düşürmez veya kaldırmaz.",
     "saveBudget": "Bütçeden Tasarruf Edin",
     "savedSuccessfully": "Başarıyla kaydedildi",
     "allBudgetSettingsAreManagedByYourPartner": "Tüm bütçe ayarları ortağınız tarafından yönetilir",
@@ -5894,5 +5901,24 @@
       "firstSeen": "İlk kez {{date}} tarihinde görüldü",
       "none": "Bu dağıtım için kayıtlı sürüm yok."
     }
+  },
+  "partnerAiApprovals": {
+    "timeoutLabel": "Etkileşimli onay zaman aşımı",
+    "productDefault": "Ürün varsayılanı ({{minutes}} dakika)",
+    "range": "{{min}}-{{max}} dakika arasında seçin.",
+    "description": "Devam eden bir yapay zeka sohbet turunun, kısıtlı (Katman 2/3) bir eylemi birinin onaylamasını ne kadar bekleyeceği.",
+    "orgOverrideNote": "Kuruluşlar bu değeri kendi yapay zeka ayarlarından geçersiz kılabilir; ayarlandığında kuruluş değeri geçerli olur.",
+    "notForUnattendedNote": "Bu, gece boyu veya gözetimsiz çalışmalar için değildir — uzun süreli çalışmalar kendi son kullanma tarihine sahip Onaylar kuyruğundan geçer."
+  },
+  "orgAiApprovalTimeout": {
+    "title": "Yapay Zeka Onay Zaman Aşımı",
+    "description": "Bir yapay zeka sohbetinin, kısıtlı (Katman 2/3) bir eylemi birinin onaylamasını vazgeçmeden önce ne kadar bekleyeceği. Kuruluşlar burada ortak varsayılanını geçersiz kılabilir; ayarlandığında kuruluş değeri geçerli olur.",
+    "fieldLabel": "Etkileşimli onay zaman aşımı",
+    "inherit": "Devral",
+    "inheritLabel": "Devral ({{minutes}} dakika, {{source}})",
+    "sourcePartner": "iş ortağı varsayılanı",
+    "sourceDefault": "ürün varsayılanı",
+    "range": "{{min}}-{{max}} dakika arasında seçin.",
+    "save": "Kaydet"
   }
 }

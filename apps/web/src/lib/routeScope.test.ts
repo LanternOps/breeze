@@ -37,10 +37,11 @@ describe('isGlobalScopeRoute', () => {
   it('treats alert templates as global', () => {
     expect(isGlobalScopeRoute('/alert-templates')).toBe(true);
   });
-  it('treats the settings alert-template catalog (list/new/edit) as global (#1425)', () => {
-    expect(isGlobalScopeRoute('/settings/alert-templates')).toBe(true);
-    expect(isGlobalScopeRoute('/settings/alert-templates/new')).toBe(true);
-    expect(isGlobalScopeRoute('/settings/alert-templates/abc-123')).toBe(true);
+  it('classifies retired settings stubs through the general settings scope', () => {
+    for (const path of ['/settings/alert-templates', '/settings/alert-templates/new', '/settings/alert-templates/abc-123']) {
+      expect(getRouteScope(path)).toBe(getRouteScope('/settings/unused-redirect'));
+    }
+    expect(ROUTE_SCOPES.some((entry) => entry.pattern.source.includes('settings\\/alert-templates'))).toBe(false);
   });
   it('treats script execution history as org-scoped (exception)', () => {
     // Execution history lives at /scripts/:id/executions (not /scripts/executions)
@@ -60,7 +61,6 @@ describe('getRouteScope', () => {
     expect(getRouteScope('/patches')).toBe('org-or-all');
     expect(getRouteScope('/scripts/abc/executions')).toBe('org-or-all');
     expect(getRouteScope('/scripts')).toBe('catalog');
-    expect(getRouteScope('/settings/alert-templates')).toBe('catalog');
     expect(getRouteScope('/discovery')).toBe('org-required');
     expect(getRouteScope('/monitoring')).toBe('org-required');
     expect(getRouteScope('/settings/organizations')).toBe('partner-settings');

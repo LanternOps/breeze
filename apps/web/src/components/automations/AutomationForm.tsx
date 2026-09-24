@@ -20,13 +20,16 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { TriggerType } from './AutomationList';
-import type { DeploymentTargetConfig } from '@breeze/shared';
+import { type DeploymentTargetConfig, MONITOR_KINDS } from '@breeze/shared';
 import { DeviceTargetSelector } from '../filters/DeviceTargetSelector';
 import ActionsEditor, {
   type Script,
   type NotificationChannel,
   type SoftwareCatalogItem,
 } from './ActionsEditor';
+import { readWorkflowSelection, writeWorkflowSelection } from './alertWorkflowFilter';
+
+const ALERT_WORKFLOW_SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
 
 type ScriptsT = TFunction<'scripts'>;
 
@@ -112,6 +115,10 @@ const createAutomationSchema = (t: ScriptsT) => {
     triggerType: z.enum(['schedule', 'event', 'webhook', 'manual']),
     cronExpression: z.string().optional(),
     eventType: z.string().optional(),
+    // #6367 W05c2: free-form, mirrors `AutomationTrigger.filter` server-side.
+    // Must NOT default to `{}` — an absent value has to stay absent so a
+    // loaded automation with no filter round-trips byte-identically.
+    eventFilter: z.record(z.string(), z.unknown()).optional(),
     webhookSecret: z.string().optional(),
     conditions: z.array(conditionSchema).optional(),
     targetConfig: z.custom<DeploymentTargetConfig>().optional(),
@@ -467,6 +474,52 @@ export default function AutomationForm({
                   </option>
                 ))}
               </select>
+            </div>
+          )}
+
+          {/* Alert workflow filter (#6367 W05c2): typed severity/kind
+              restriction for `alert.triggered` — shown whenever that event
+              type is selected, independent of trigger type, matching the
+              matcher's own `eventType`-only gating. */}
+          {watch('eventType') === 'alert.triggered' && (
+            <div className="mt-4 space-y-3 rounded-md border bg-background p-4" data-testid="workflow-filter">
+              <p className="text-xs text-muted-foreground">{t('automationForm.alertWorkflow.hint')}</p>
+              {(['severity', 'kind'] as const).map((dimension) => {
+                const selected = readWorkflowSelection(
+                  watch('eventFilter') as Record<string, unknown> | undefined,
+                  dimension,
+                );
+                const options: readonly string[] = dimension === 'kind' ? MONITOR_KINDS : ALERT_WORKFLOW_SEVERITIES;
+                return (
+                  <fieldset key={dimension} className="rounded border p-3">
+                    <legend className="px-1 text-xs font-medium text-muted-foreground">
+                      {t(/* i18n-dynamic */ `automationForm.alertWorkflow.${dimension}`)}
+                    </legend>
+                    <div className="flex flex-wrap gap-3">
+                      {options.map((value) => (
+                        <label key={value} className="flex items-center gap-2 text-sm">
+                          <input
+                            type="checkbox"
+                            data-testid={`workflow-${dimension}-${value}`}
+                            checked={selected.includes(value)}
+                            onChange={(event) => {
+                              const values = event.target.checked
+                                ? [...selected, value]
+                                : selected.filter((v) => v !== value);
+                              setValue(
+                                'eventFilter',
+                                writeWorkflowSelection(watch('eventFilter') as Record<string, unknown> | undefined, dimension, values),
+                                { shouldDirty: true },
+                              );
+                            }}
+                          />
+                          {t(/* i18n-dynamic */ `monitoring:${dimension === 'kind' ? 'kinds' : 'severities'}.${value}`)}
+                        </label>
+                      ))}
+                    </div>
+                  </fieldset>
+                );
+              })}
             </div>
           )}
 

@@ -98,6 +98,22 @@
       "inaccessible": "Questa organizzazione è {{status}}, quindi i suoi dati in tempo reale non sono disponibili. Puoi comunque vederla nell'elenco delle organizzazioni.",
       "backToList": "Torna alle organizzazioni"
     },
+    "reportHistory": {
+      "title": "Cronologia dei report",
+      "loading": "Caricamento della cronologia dei report…",
+      "readOnlyNote": "Sola lettura: questa organizzazione è {{status}}. I report non possono essere generati, pianificati o scaricati.",
+      "forbidden": "Non hai accesso alla cronologia dei report di questa organizzazione.",
+      "error": "Impossibile caricare la cronologia dei report.",
+      "empty": "Nessun report o esecuzione di report trovato.",
+      "definitionsTitle": "Definizioni dei report",
+      "definitionsEmpty": "Nessuna definizione di report.",
+      "runsTitle": "Esecuzioni recenti",
+      "runsEmpty": "Nessuna esecuzione di report.",
+      "lastGenerated": "Generato l'ultima volta il {{date}}",
+      "neverGenerated": "Mai generato",
+      "rowCount_one": "{{count}} riga",
+      "rowCount_other": "{{count}} righe"
+    },
     "unavailable": {
       "title": "Non disponibile in questo workspace",
       "description": "Le schede organizzazione sono una vista a livello di partner. Il tuo accesso è limitato a una singola organizzazione, quindi qui non c'è nulla tra cui passare.",

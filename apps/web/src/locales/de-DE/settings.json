@@ -329,6 +329,7 @@
     "exportFailed": "Der Export ist fehlgeschlagen",
     "title": "Export abrechenbarer Assets",
     "description": "Abzurechnende Zeiteinträge und Teile ab CSV (bis zu 366 Tage). Beinhaltet den Genehmigungsstatus.",
+    "columnsNote": "Enthält für jeden Zeiteintrag die Tätigkeitsart und die vertraglich enthaltenen Minuten.",
     "from": "Von",
     "to": "Zu",
     "allOrganizations": "Alle Organisationen",
@@ -579,6 +580,10 @@
       "modules": {
         "label": "Module",
         "description": "Service Desk, Abrechnung und Topologie ein/aus"
+      },
+      "aiApprovals": {
+        "label": "KI-Genehmigungs-Timeout",
+        "description": "Wie lange der KI-Chat auf die Genehmigung einer gesperrten Aktion wartet"
       }
     },
     "saved": "Partnereinstellungen gespeichert",
@@ -1662,6 +1667,8 @@
     "maxTurnsPerSession": "Maximale Umdrehungen pro Sitzung",
     "msgsMinPerUser": "Nachrichten/Minute pro Benutzer",
     "msgsHrPerOrg": "Nachrichten/Std. pro Organisation",
+    "toolRateLimitMultiplier": "Multiplikator für Tool-Ratenlimits",
+    "toolRateLimitMultiplierHelp": "Erhöht jedes KI- und MCP-Ratenlimit pro Tool um diesen Faktor (1–10). Ein Limit wird nie gesenkt oder entfernt.",
     "saveBudget": "Budget speichern",
     "savedSuccessfully": "Erfolgreich gespeichert",
     "allBudgetSettingsAreManagedByYourPartner": "Alle Budgeteinstellungen werden von Ihrem Partner verwaltet",
@@ -5894,5 +5901,24 @@
       "firstSeen": "Erstmals gesehen am {{date}}",
       "none": "Für diese Bereitstellung sind keine Versionen erfasst."
     }
+  },
+  "partnerAiApprovals": {
+    "timeoutLabel": "Zeitüberschreitung für interaktive Genehmigung",
+    "productDefault": "Produktstandard ({{minutes}} Minuten)",
+    "range": "Wählen Sie {{min}}-{{max}} Minuten.",
+    "description": "Wie lange ein laufender KI-Chat-Zug darauf wartet, dass jemand eine gesperrte (Stufe 2/3) Aktion genehmigt, bevor er aufgibt.",
+    "orgOverrideNote": "Organisationen können diesen Wert in ihren eigenen KI-Einstellungen überschreiben; der Organisationswert gewinnt, wenn er gesetzt ist.",
+    "notForUnattendedNote": "Dies ist nicht für nächtliche oder unbeaufsichtigte Arbeiten gedacht — langlaufende Arbeiten durchlaufen die Genehmigungswarteschlange mit eigener Ablaufzeit."
+  },
+  "orgAiApprovalTimeout": {
+    "title": "KI-Genehmigungs-Timeout",
+    "description": "Wie lange ein KI-Chat darauf wartet, dass jemand eine gesperrte (Stufe 2/3) Aktion genehmigt, bevor er aufgibt. Organisationen können hier den Partnerstandard überschreiben; der Organisationswert gewinnt, wenn er gesetzt ist.",
+    "fieldLabel": "Zeitüberschreitung für interaktive Genehmigung",
+    "inherit": "Übernehmen",
+    "inheritLabel": "Übernehmen ({{minutes}} Minuten, {{source}})",
+    "sourcePartner": "Partnerstandard",
+    "sourceDefault": "Produktstandard",
+    "range": "Wählen Sie {{min}}-{{max}} Minuten.",
+    "save": "Speichern"
   }
 }

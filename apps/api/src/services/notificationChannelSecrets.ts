@@ -51,6 +51,19 @@ function transformHeaderValues(
   transform: (value: unknown, existing: unknown) => unknown,
 ): unknown {
   if (Array.isArray(headers)) {
+    // Webhook headers written before the array shape are a { key: value }
+    // record. Resolve a masked array entry against it by key, so re-saving the
+    // edit form keeps the stored value and migrates the row to the array shape
+    // instead of blanking it (#6767).
+    if (isRecord(existing)) {
+      return headers.map((entry) => {
+        if (!isRecord(entry)) return entry;
+        const existingValue = typeof entry.key === 'string' && Object.hasOwn(existing, entry.key)
+          ? existing[entry.key]
+          : undefined;
+        return { ...entry, value: transform(entry.value, existingValue) };
+      });
+    }
     const existingHeaders = Array.isArray(existing) ? existing : [];
     return headers.map((entry, index) => {
       if (!isRecord(entry)) return entry;

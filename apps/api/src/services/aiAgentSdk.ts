@@ -92,6 +92,13 @@ const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
  * which always leaves the model headroom to conclude the turn gracefully.
  * A wait that gives up leaves its tier-3 intent pending_approval — an approver
  * can still decide it and the durable release worker executes it (spec §6.1).
+ *
+ * #6475: this is now only the DEFAULT. The effective budget is per session —
+ * `session.approvalWaitBudgetMs`, the org's configurable interactive approval
+ * timeout (5-60 min, org override -> partner default -> this value; see
+ * services/aiApprovalTimeout.ts) — and the turn timeout / stall window scale
+ * with it (streamingSessionManager turnTimeoutMsFor /
+ * processingStallTimeoutMsFor), preserving the invariant above.
  */
 export const APPROVAL_WAIT_BUDGET_MS = 300_000;
 
@@ -130,7 +137,7 @@ function beginApprovalWait(session: ActiveSession): {
 } {
   const now = Date.now();
   if (session.approvalWaitDeadline == null) {
-    session.approvalWaitDeadline = now + APPROVAL_WAIT_BUDGET_MS;
+    session.approvalWaitDeadline = now + (session.approvalWaitBudgetMs ?? APPROVAL_WAIT_BUDGET_MS);
   }
   const timeoutMs = Math.max(0, session.approvalWaitDeadline - now);
   if (!session.approvalWaitAbort) {
@@ -784,7 +791,12 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
     try {
       const rateLimitErr = tenant
         ? await checkTenantToolRateLimit(tenant, session.auth.user.id)
-        : await checkToolRateLimit(toolName, session.auth.user.id);
+        // #6476: the session's org picks the toolRateLimitMultiplier; the
+        // counter itself stays per user per tool across orgs.
+        : await checkToolRateLimit(toolName, session.auth.user.id, {
+          orgId: session.orgId,
+          partnerId: session.auth.partnerId ?? null,
+        });
       if (rateLimitErr) {
         return { allowed: false, error: rateLimitErr };
       }
@@ -878,6 +890,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
         session.eventBus.publish({
           type: 'approval_required',
           executionId: helperExec.id,
+          approvalWindowMs: session.approvalWaitBudgetMs,
           toolName,
           input,
           description: guardrailCheck.description ?? `Execute ${toolName}`,
@@ -1372,6 +1385,10 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
               reason: riskSummary,
               actionLabel: riskSummary,
               orgId: session.orgId,
+              // #6475 — a supervised chat intent expires with the org's
+              // configured interactive approval window, not a fixed 5 min,
+              // so the wait below is not cut short by the intent's own expiry.
+              chatApprovalWindowMs: session.approvalWaitBudgetMs,
               // Tool catalog W01 PR B (#5216): a tenant (BYO MCP) tool binds
               // the intent to the exact tool row + revision this session
               // resolved, so release revalidation reloads THAT row and fails
@@ -1470,6 +1487,9 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             // rather than a mount-relative client constant that can silently drift
             // from it.
             intentExpiresAt: intent.expiresAt.toISOString(),
+            // #6475 — the org's configured interactive window, so the card's
+            // countdown/progress bar is not pinned to a client-side 5 minutes.
+            approvalWindowMs: session.approvalWaitBudgetMs,
             toolName,
             input,
             description,
@@ -1479,7 +1499,8 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           }
 
           // Block until an approver decides, OR the cycle's SHARED approval-wait
-          // budget (up to 300s — matches the intent's own 5-minute chat expiry)
+          // budget (the org's interactive approval timeout, 5 min by default —
+          // a supervised intent's own chat expiry is the same window, #6475)
           // elapses, OR the wait is settled early (session teardown, a new user
           // message, or interrupt — see settleApprovalWaits, #3089). Unlike the
           // old waitForApproval, this NEVER mutates the intent on timeout: giving
@@ -1504,8 +1525,9 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             // not an oversight, and NOT something to paper over with an ad-hoc
             // notification here.
             //
-            // APPROVAL_WAIT_BUDGET_MS is 300s while a four_eyes CHAT intent
-            // now lives for FOUR_EYES_CHAT_EXPIRY_MS (60 min) and an
+            // The approval-wait budget (5 min by default, up to 60 min per
+            // org since #6475) is usually shorter than a four_eyes CHAT intent,
+            // which lives for FOUR_EYES_CHAT_EXPIRY_MS (60 min) and an
             // `mcp_api` one for MCP_EXPIRY_MS (24 h) — see
             // services/actionIntents/intentService.ts. Timing out here and
             // having a second human decide later is therefore the NORMAL
@@ -2043,6 +2065,11 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             type: 'approval_required',
             executionId: approvalExec.id,
             approvalRequestId,
+            // #6475 — the real deadline of this wait (the remaining shared
+            // cycle budget, same value stamped on the mobile approval row)
+            // and the configured window, so the web card's countdown matches.
+            approvalExpiresAt: expiresAt.toISOString(),
+            approvalWindowMs: session.approvalWaitBudgetMs,
             toolName,
             input,
             description,
@@ -2052,7 +2079,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           });
 
           // Block until user clicks Approve/Reject, the cycle's shared approval
-          // wait budget (up to 5 min) elapses, or the wait is settled early
+          // wait budget (the org's interactive approval timeout) elapses, or the wait is settled early
           // (session teardown / new user message / interrupt — #3089).
           approved = await waitForApproval(
             approvalExec.id,

@@ -52,6 +52,11 @@
         "weeklySunday": "Haftalık Pazar"
       }
     },
+    "alertWorkflow": {
+      "severity": "Önem dereceleri",
+      "kind": "Monitör türleri",
+      "hint": "Her değeri eşleştirmek için grubu boş bırakın. Mevcut gelişmiş filtreler korunur."
+    },
     "validation": {
       "valueRequired": "Değer gerekli",
       "nameRequired": "Otomasyon adı gerekli",
@@ -361,7 +366,7 @@
       "scheduled": "Zamanlanmış",
       "on-demand": "İsteğe bağlı",
       "webhooks": "Webhook'lar",
-      "event-rules": "Olay kuralları"
+      "event-rules": "Uyarı iş akışları"
     }
   },
   "complianceDashboard": {
@@ -1094,9 +1099,9 @@
       "elevatedHint": "macOS/Linux'ta sudo'yu, Windows'de runas'ı kullanır."
     },
     "exitCodeSeverity": {
-      "emptyPrefix": "Önem derecelerini uyarmak için belirli çıkış kodlarını eşleyin. Betik bu kodlardan birini döndürdüğünde, yapılandırılan önem derecesine göre bir uyarı verilir. Seç",
-      "suppressAlert": "Uyarıyı bastır\nBir kodu bilgi amaçlı olarak işaretlemek için ",
-      "emptySuffix": "(hiçbir olay yaşanmadı). Burada listelemediğiniz çıkış kodları, varsayılan sonuç işlemeyi kullanır.",
+      "emptyPrefix": "Çıkış kodlarını uyarı önem derecelerine eşleyin. Gözetimsiz bir çalıştırma (zamanlanmış, otomasyon, ilke veya uyarı tetiklemeli) bu kodlardan birini döndürdüğünde, yapılandırılan önem derecesinde bir uyarı oluşturulur; el ile çalıştırmalar hiçbir zaman uyarı oluşturmaz. Daha sonra başarıyla biten bir çalıştırma uyarıyı çözer. Bir kodu bilgi amaçlı işaretlemek için",
+      "suppressAlert": "Uyarıyı bastır",
+      "emptySuffix": "seçeneğini seçin (uyarı oluşturulmaz). Listelemediğiniz sıfır dışı bir kod, listelenen en yakın düşük kodun önem derecesini veya orta derecesini kullanır.",
       "suppressHint": "Uyarıyı gizle — çıkış kodu bilgi amaçlı olarak değerlendirilir, herhangi bir olay ortaya çıkmaz."
     },
     "keyboardSave": "{{shortcut}} kaydetmek için",

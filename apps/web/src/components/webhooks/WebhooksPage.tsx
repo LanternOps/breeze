@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Plus, Send } from 'lucide-react';
-import WebhookList, { type Webhook } from './WebhookList';
+import WebhookList, { type Webhook, isWebhookActive } from './WebhookList';
 import WebhookForm, { type WebhookFormValues, webhookEventOptions } from './WebhookForm';
 import WebhookDeliveryHistory, { type WebhookDelivery } from './WebhookDeliveryHistory';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { extractApiError } from '@/lib/apiError';
+import { handleActionError, runAction } from '@/lib/runAction';
 import { formSecretValue, MASKED_SECRET } from '@/lib/redactedSecret';
 import { Trans, useTranslation } from 'react-i18next';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
@@ -34,10 +35,6 @@ const formatPayloadPreview = (payload: string | null | undefined, t: (key: strin
   }
 };
 
-const getWebhookEnabled = (webhook: Webhook) => {
-  if (typeof webhook.enabled === 'boolean') return webhook.enabled;
-  return webhook.status !== 'disabled';
-};
 
 export default function WebhooksPage() {
   const { t } = useTranslation('common');
@@ -177,25 +174,30 @@ export default function WebhooksPage() {
   };
 
   const handleToggle = async (webhook: Webhook, enabled: boolean) => {
+    const errorFallback = enabled
+      ? t('longTail.webhooks.WebhooksPage.errors.enableWebhook')
+      : t('longTail.webhooks.WebhooksPage.errors.disableWebhook');
     try {
-      const response = await fetchWithAuth(`/webhooks/${webhook.id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ enabled })
+      // PATCH speaks `status`; an `enabled` key is stripped by the API's
+      // schema, which made this toggle a silent no-op (#6767).
+      const updated = await runAction<Partial<Webhook>>({
+        request: () => fetchWithAuth(`/webhooks/${webhook.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ status: enabled ? 'active' : 'paused' })
+        }),
+        errorFallback
       });
 
-      if (!response.ok) {
-        throw new Error(enabled ? t('longTail.webhooks.WebhooksPage.errors.enableWebhook') : t('longTail.webhooks.WebhooksPage.errors.disableWebhook'));
-      }
-
+      // Render what the server saved, not what we asked for.
       setWebhooks(prev =>
         prev.map(item =>
           item.id === webhook.id
-            ? { ...item, enabled, status: enabled ? 'active' : 'disabled' }
+            ? { ...item, status: updated?.status ?? (enabled ? 'active' : 'paused') }
             : item
         )
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('longTail.webhooks.WebhooksPage.errors.generic'));
+      handleActionError(err, errorFallback);
     }
   };
 
@@ -204,7 +206,14 @@ export default function WebhooksPage() {
     setSelectedWebhook(null);
   };
 
-  const transformFormToPayload = (values: WebhookFormValues) => {
+  const transformFormToPayload = (values: WebhookFormValues, current: Webhook | null) => {
+    const enabled = values.enabled ?? true;
+    // The API has no `enabled` field. On edit, only send `status` when the
+    // switch actually changed, so saving an untouched `failed` webhook does not
+    // quietly re-activate it (#6767).
+    const status = current && enabled === isWebhookActive(current)
+      ? undefined
+      : enabled ? 'active' : 'paused';
     const auth =
       values.authType === 'bearer'
         ? { type: 'bearer', token: values.bearerToken }
@@ -214,7 +223,7 @@ export default function WebhooksPage() {
       name: values.name,
       url: values.url,
       events: values.events,
-      enabled: values.enabled ?? true,
+      ...(status ? { status } : {}),
       auth,
       secret: values.authType === 'hmac' ? values.secret : undefined,
       bearerToken: values.authType === 'bearer' ? values.bearerToken : undefined,
@@ -241,7 +250,7 @@ export default function WebhooksPage() {
         key: header.key,
         value: formSecretValue(header.value),
       })),
-      enabled: getWebhookEnabled(webhook),
+      enabled: isWebhookActive(webhook),
       payloadTemplate: webhook.payloadTemplate ?? ''
     };
   };
@@ -251,7 +260,7 @@ export default function WebhooksPage() {
     setError(undefined);
 
     try {
-      const payload = transformFormToPayload(values);
+      const payload = transformFormToPayload(values, modalMode === 'create' ? null : selectedWebhook);
       const url =
         modalMode === 'create' ? '/webhooks' : `/webhooks/${selectedWebhook?.id}`;
       const method = modalMode === 'create' ? 'POST' : 'PATCH';

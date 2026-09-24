@@ -2173,6 +2173,11 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   if (eventLogSettings) {
     policyConfigUpdate.event_log_settings = eventLogSettings;
   }
+  // null = couldn't resolve this cycle (device vanished mid-resolution, #5677,
+  // or the resolver threw) → omit, and the agent keeps its watches. "No
+  // monitoring policy applies" is NOT null: it arrives as `{ watches: [] }`
+  // and must be sent, because the agent reads an absent key as "no change"
+  // and would otherwise keep a deleted policy's watches forever (#2949).
   if (monitoringSettings) {
     policyConfigUpdate.monitoring_settings = monitoringSettings;
   }

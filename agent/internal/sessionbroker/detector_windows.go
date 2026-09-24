@@ -138,7 +138,7 @@ func (d *windowsDetector) ListSessions() ([]DetectedSession, error) {
 			continue
 		}
 
-		username := d.querySessionString(info.SessionID, wtsUserName)
+		username, usernameKnown := d.querySessionString(info.SessionID, wtsUserName)
 
 		sessionType := "console"
 		if info.SessionID == 0 {
@@ -148,11 +148,12 @@ func (d *windowsDetector) ListSessions() ([]DetectedSession, error) {
 		}
 
 		session := DetectedSession{
-			Username: username,
-			Session:  fmt.Sprintf("%d", info.SessionID),
-			State:    wtsStateString(info.State),
-			Display:  "windows",
-			Type:     sessionType,
+			Username:        username,
+			UsernameUnknown: !usernameKnown,
+			Session:         fmt.Sprintf("%d", info.SessionID),
+			State:           wtsStateString(info.State),
+			Display:         "windows",
+			Type:            sessionType,
 		}
 		if sessionType != "services" {
 			if lastInput, ok := d.querySessionLastInput(info.SessionID); ok {
@@ -250,7 +251,11 @@ func (d *windowsDetector) WatchSessions(ctx context.Context) <-chan SessionEvent
 	return ch
 }
 
-func (d *windowsDetector) querySessionString(sessionID uint32, infoClass uint32) string {
+// querySessionString returns the string value and whether the query
+// succeeded. A successful query can still return "" (WTSUserName for a
+// session nobody is signed in to), so callers that need to tell "empty" from
+// "unknown" must check ok.
+func (d *windowsDetector) querySessionString(sessionID uint32, infoClass uint32) (string, bool) {
 	var buf *uint16
 	var bytesReturned uint32
 
@@ -261,12 +266,15 @@ func (d *windowsDetector) querySessionString(sessionID uint32, infoClass uint32)
 		uintptr(unsafe.Pointer(&buf)),
 		uintptr(unsafe.Pointer(&bytesReturned)),
 	)
-	if r1 == 0 || buf == nil {
-		return ""
+	if r1 == 0 {
+		return "", false
+	}
+	if buf == nil {
+		return "", true
 	}
 	defer procWTSFreeMemory.Call(uintptr(unsafe.Pointer(buf)))
 
-	return windows.UTF16PtrToString(buf)
+	return windows.UTF16PtrToString(buf), true
 }
 
 func (d *windowsDetector) querySessionUint32(sessionID uint32, infoClass uint32) (uint32, bool) {

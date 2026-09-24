@@ -22,6 +22,7 @@ export const AI_BUDGET_FIELDS = [
   'messagesPerHourPerOrg',
   'approvalMode',
   'alertThresholdPercents',
+  'toolRateLimitMultiplier',
 ] as const;
 
 export type AiBudgetField = (typeof AI_BUDGET_FIELDS)[number];
@@ -37,6 +38,8 @@ export interface EffectiveAiBudget {
   messagesPerHourPerOrg: number;
   approvalMode: ApprovalMode;
   alertThresholdPercents: number[];
+  /** #6476 — raises every per-tool AI/MCP rate limit; integer 1–10. */
+  toolRateLimitMultiplier: number;
 }
 
 export const AI_BUDGET_DEFAULTS: EffectiveAiBudget = {
@@ -48,7 +51,12 @@ export const AI_BUDGET_DEFAULTS: EffectiveAiBudget = {
   messagesPerHourPerOrg: 200,
   approvalMode: 'per_step',
   alertThresholdPercents: [50, 80, 95],
+  toolRateLimitMultiplier: 1,
 };
+
+/** #6476 — bounds of `toolRateLimitMultiplier`; the API rejects anything outside. */
+export const TOOL_RATE_LIMIT_MULTIPLIER_MIN = 1;
+export const TOOL_RATE_LIMIT_MULTIPLIER_MAX = 10;
 
 /** Where an effective value came from, for the usage page's source chips. */
 export type AiBudgetSource = 'partner' | 'organization' | 'default';

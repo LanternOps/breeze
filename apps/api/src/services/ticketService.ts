@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, getTableColumns, gt, inArray, isNotNull, isNull, ne, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, getTableColumns, gt, inArray, isNotNull, isNull, ne, notInArray, or, sql } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { matchContactByEmail } from './contacts/crud';
@@ -7,7 +7,7 @@ import { serviceDeliverableOccurrences } from '../db/schema/serviceDeliverables'
 import { allocateInternalTicketNumber } from './ticketNumbers';
 import { emitTicketEvent } from './ticketEvents';
 import { createAuditLogAsync } from './auditService';
-import { resolveSlaTargets } from './ticketSla';
+import { resolveSlaTargets, type TicketSlaPriority } from './ticketSla';
 import { getOrgSlaOverride, getPartnerPrioritySla, getSystemStatusId, getTicketStatusById } from './ticketConfigService';
 import { readOrgStampingDefaultsMany } from './orgCurrencyCore';
 import { emitTicketTriageFeedback } from './mlFeedbackEmitters';
@@ -581,7 +581,12 @@ async function resolveRequesterContactByEmail(
  * to org-scoped request contexts — the explicit partner comparison below is
  * the security boundary, not the read.
  */
-export async function assertCategoryInPartner(categoryId: string, partnerId: string | null) {
+/**
+ * Category row as the SLA chain and the partner guard need it. System-scope
+ * read (partner-axis table) — the tenant decision is the caller's explicit
+ * partner comparison, never this read. `null` when the row does not exist.
+ */
+async function readTicketCategory(categoryId: string) {
   const rows = await runOutsideDbContext(() =>
     withSystemDbAccessContext(() =>
       db
@@ -596,7 +601,11 @@ export async function assertCategoryInPartner(categoryId: string, partnerId: str
         .limit(1)
     )
   );
-  const category = rows[0];
+  return rows[0] ?? null;
+}
+
+export async function assertCategoryInPartner(categoryId: string, partnerId: string | null) {
+  const category = await readTicketCategory(categoryId);
   if (!category) throw new TicketServiceError('Category not found', 404, 'CATEGORY_NOT_FOUND');
   throwIfPartnerUnresolvable(partnerId);
   if (category.partnerId !== partnerId) {
@@ -647,6 +656,86 @@ export function resolveSlaTargetsForWorkKind(
   targets: { responseMinutes: number | null; resolutionMinutes: number | null }
 ): { responseMinutes: number | null; resolutionMinutes: number | null } {
   return workKind === 'support' ? targets : { responseMinutes: null, resolutionMinutes: null };
+}
+
+export interface ResolveEffectiveSlaTargetsInput {
+  orgId: string;
+  /** Null only for broken legacy data; the partner link of the chain is then skipped. */
+  partnerId: string | null;
+  priority: TicketSlaPriority;
+  /** The ticket's category row (null = uncategorised). */
+  category: { responseSlaMinutes: number | null; resolutionSlaMinutes: number | null } | null;
+  workKind: TicketWorkKind;
+}
+
+/**
+ * The ONE resolution of a ticket's stamped SLA minute targets: category → org
+ * override → partner priority setting → hardcoded default (resolveSlaTargets),
+ * then the work-kind drop. Shared by createTicket and the pre-first-response
+ * restamp on a category/priority change (#6691) so the two cannot disagree.
+ */
+export async function resolveEffectiveSlaTargetsForTicket(
+  input: ResolveEffectiveSlaTargetsInput
+): Promise<{ responseMinutes: number | null; resolutionMinutes: number | null }> {
+  const [orgSla, partnerSla] = await Promise.all([
+    getOrgSlaOverride(input.orgId, input.priority),
+    input.partnerId
+      ? getPartnerPrioritySla(input.partnerId, input.priority)
+      : Promise.resolve({ responseMinutes: null, resolutionMinutes: null }),
+  ]);
+  const slaTargets = resolveSlaTargets({
+    categoryResponseMinutes: input.category?.responseSlaMinutes ?? null,
+    categoryResolutionMinutes: input.category?.resolutionSlaMinutes ?? null,
+    orgResponseMinutes: orgSla.responseMinutes,
+    orgResolutionMinutes: orgSla.resolutionMinutes,
+    partnerResponseMinutes: partnerSla.responseMinutes,
+    partnerResolutionMinutes: partnerSla.resolutionMinutes,
+    priority: input.priority
+  });
+  return resolveSlaTargetsForWorkKind(input.workKind, slaTargets);
+}
+
+type SlaTargetField = 'responseSlaMinutes' | 'resolutionSlaMinutes';
+const SLA_TARGET_FIELDS: readonly SlaTargetField[] = ['responseSlaMinutes', 'resolutionSlaMinutes'];
+const SLA_RESTAMP_CLOSED_STATUSES: readonly TicketStatus[] = ['resolved', 'closed'];
+
+/**
+ * #6691 (amends SLA-engine plan D2): a category/priority change restamps the
+ * SLA targets only while the customer has not yet seen a commitment — no
+ * first response, and core status not resolved/closed. After that the stamp
+ * stands.
+ */
+function slaRestampAllowed(ticket: { firstResponseAt: Date | null; status: TicketStatus }): boolean {
+  return ticket.firstResponseAt == null && !SLA_RESTAMP_CLOSED_STATUSES.includes(ticket.status);
+}
+
+/**
+ * The per-target restamp for a ticket that passed `slaRestampAllowed`. A
+ * target is left alone when a human set it (`field_provenance = 'user'`), when
+ * the caller writes it explicitly in the same change (`explicit` — that value
+ * wins and the caller stamps it 'user'), or when the value would not move.
+ */
+function computeSlaRestamp(
+  current: {
+    responseSlaMinutes: number | null;
+    resolutionSlaMinutes: number | null;
+    fieldProvenance: Record<string, string> | null;
+  },
+  targets: { responseMinutes: number | null; resolutionMinutes: number | null },
+  explicit: ReadonlySet<SlaTargetField> = new Set()
+): Partial<Record<SlaTargetField, number | null>> {
+  const next: Record<SlaTargetField, number | null> = {
+    responseSlaMinutes: targets.responseMinutes,
+    resolutionSlaMinutes: targets.resolutionMinutes,
+  };
+  const out: Partial<Record<SlaTargetField, number | null>> = {};
+  for (const field of SLA_TARGET_FIELDS) {
+    if (explicit.has(field)) continue;
+    if (current.fieldProvenance?.[field] === 'user') continue;
+    if ((current[field] ?? null) === next[field]) continue;
+    out[field] = next[field];
+  }
+  return out;
 }
 
 // portal source carries the requester; the worker emails submitterEmail on public replies/resolution.
@@ -827,23 +916,11 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
   const priority = input.priority ?? intake?.defaultPriority ?? 'normal';
   const initialCoreStatus: TicketStatus = input.assigneeId ? 'open' : 'new';
 
-  const [orgSla, partnerSla, statusId] = await Promise.all([
-    getOrgSlaOverride(input.orgId, priority),
-    getPartnerPrioritySla(org.partnerId, priority),
+  const workKind: TicketWorkKind = input.workKind ?? 'support';
+  const [effectiveSla, statusId] = await Promise.all([
+    resolveEffectiveSlaTargetsForTicket({ orgId: input.orgId, partnerId: org.partnerId, priority, category, workKind }),
     getSystemStatusId(org.partnerId, initialCoreStatus),
   ]);
-
-  const slaTargets = resolveSlaTargets({
-    categoryResponseMinutes: category?.responseSlaMinutes ?? null,
-    categoryResolutionMinutes: category?.resolutionSlaMinutes ?? null,
-    orgResponseMinutes: orgSla.responseMinutes,
-    orgResolutionMinutes: orgSla.resolutionMinutes,
-    partnerResponseMinutes: partnerSla.responseMinutes,
-    partnerResolutionMinutes: partnerSla.resolutionMinutes,
-    priority
-  });
-  const workKind: TicketWorkKind = input.workKind ?? 'support';
-  const effectiveSla = resolveSlaTargetsForWorkKind(workKind, slaTargets);
 
   const internalNumber = await allocateInternalTicketNumber(org.partnerId);
 
@@ -1400,9 +1477,11 @@ export async function updateTicketFields(
     }
   }
 
+  // Kept for the SLA restamp below: a validated new category is the first link
+  // of the chain, so it is not read twice.
+  let newCategory: Awaited<ReturnType<typeof assertCategoryInPartner>> | null = null;
   if (typeof fields.categoryId === 'string') {
-    // D2: category changes after create do not restamp SLA targets — return value deliberately discarded.
-    await assertCategoryInPartner(fields.categoryId, await resolveTicketPartnerId(ticket));
+    newCategory = await assertCategoryInPartner(fields.categoryId, await resolveTicketPartnerId(ticket));
   }
 
   // Requester edit: resolve (and tenant-validate) before the change diff so a
@@ -1522,14 +1601,54 @@ export async function updateTicketFields(
   }
   if (changed.length === 0 && !requesterChanged) return ticket;
 
+  // #6691 — amends SLA-engine plan D2 (originally "category changes after
+  // create do not restamp"). When categoryId or priority ACTUALLY changes
+  // while the ticket has no first response and its core status is not
+  // resolved/closed, re-run the create-time chain (category → org override →
+  // partner priority → default, then work kind) and restamp the minute
+  // targets. Otherwise the stamp stands: the customer already saw it. A target
+  // stamped 'user' in field_provenance survives, and an explicit SLA value in
+  // this same patch wins (it is in `changed` and gets 'user' provenance
+  // below); restamped targets are deliberately NOT stamped 'user'. Deadlines
+  // stay anchored to created_at (the SLA worker computes created_at + target
+  // + paused minutes), so only the targets move; sla_breached_at /
+  // sla_breach_reason are left untouched — a breach under the earlier
+  // commitment stands.
+  const restamped: SlaTargetField[] = [];
+  const slaRestampPatch: Partial<Record<SlaTargetField, number | null>> = {};
+  if ((changed.includes('categoryId') || changed.includes('priority')) && slaRestampAllowed(ticket)) {
+    const categoryId = changed.includes('categoryId') ? fields.categoryId ?? null : ticket.categoryId;
+    const category = changed.includes('categoryId')
+      ? newCategory
+      : categoryId
+        ? await readTicketCategory(categoryId)
+        : null;
+    const targets = await resolveEffectiveSlaTargetsForTicket({
+      orgId: ticket.orgId,
+      partnerId: await resolveTicketPartnerId(ticket),
+      priority: changed.includes('priority') ? fields.priority! : ticket.priority,
+      category,
+      workKind: ticket.workKind,
+    });
+    const explicit = new Set(SLA_TARGET_FIELDS.filter((field) => fields[field] !== undefined));
+    Object.assign(slaRestampPatch, computeSlaRestamp(ticket, targets, explicit));
+    restamped.push(...SLA_TARGET_FIELDS.filter((field) => field in slaRestampPatch));
+  }
+
   // Feed/event labels: typed field keys plus a single "requester" token.
-  const changedForLog: string[] = [...changed, ...(requesterChanged ? ['requester'] : [])];
-  const changedLabels: string[] = [...changed.map((k) => UPDATE_FIELD_LABELS[k]), ...(requesterChanged ? ['requester'] : [])];
+  // Restamped SLA targets ride the same diff so the timeline shows them.
+  const changedForLog: string[] = [...changed, ...restamped, ...(requesterChanged ? ['requester'] : [])];
+  const changedLabels: string[] = [
+    ...changed.map((k) => UPDATE_FIELD_LABELS[k]),
+    ...restamped.map((k) => UPDATE_FIELD_LABELS[k]),
+    ...(requesterChanged ? ['requester'] : []),
+  ];
 
   const patch: Partial<typeof tickets.$inferInsert> = { updatedAt: new Date() };
   for (const key of changed) {
     (patch as Record<string, unknown>)[key] = fields[key] ?? null;
   }
+  Object.assign(patch, slaRestampPatch);
   if (requesterChanged) Object.assign(patch, requesterPatch);
 
   // P2-4 (#4191): stamp field_provenance, in the SAME transaction/statement
@@ -2108,7 +2227,20 @@ export async function applyAiFieldUpdates(
   if (!updates.categoryId && !updates.priority) return {};
 
   const [ticket] = await db
-    .select({ id: tickets.id, orgId: tickets.orgId, partnerId: tickets.partnerId })
+    .select({
+      id: tickets.id,
+      orgId: tickets.orgId,
+      partnerId: tickets.partnerId,
+      // #6691 SLA restamp inputs.
+      categoryId: tickets.categoryId,
+      priority: tickets.priority,
+      status: tickets.status,
+      firstResponseAt: tickets.firstResponseAt,
+      workKind: tickets.workKind,
+      responseSlaMinutes: tickets.responseSlaMinutes,
+      resolutionSlaMinutes: tickets.resolutionSlaMinutes,
+      fieldProvenance: tickets.fieldProvenance,
+    })
     .from(tickets)
     .where(and(eq(tickets.id, ticketId), eq(tickets.orgId, orgId)))
     .limit(1);
@@ -2116,8 +2248,9 @@ export async function applyAiFieldUpdates(
     throw new TicketServiceError('Ticket not found', 404);
   }
 
+  let newCategory: Awaited<ReturnType<typeof assertCategoryInPartner>> | null = null;
   if (updates.categoryId) {
-    await assertCategoryInPartner(updates.categoryId.value, await resolveTicketPartnerId(ticket));
+    newCategory = await assertCategoryInPartner(updates.categoryId.value, await resolveTicketPartnerId(ticket));
   }
 
   // Three conjuncts, and all three are load-bearing: the CAS half (the value
@@ -2167,6 +2300,54 @@ export async function applyAiFieldUpdates(
     result.priority = after.priority === updates.priority.value
       ? { applied: true }
       : { applied: false, skipped: after.fieldProvenance?.priority === 'user' ? 'human_set' : 'concurrent_change' };
+  }
+
+  // #6691 — the AI-triage path categorises exactly the email / add-in / chat
+  // tickets that arrive uncategorised on the default SLA, so it restamps under
+  // the same rule as updateTicketFields: only a field this call reports
+  // applied AND that actually moved (`applied` alone also covers "already held
+  // the value"), only while unanswered and not resolved/closed, never over a
+  // 'user'-stamped target, never stamping provenance itself. Breach columns
+  // are left untouched. This path emits no feed/event for its own field writes
+  // today, so the restamp adds none either.
+  const categoryMoved = result.categoryId?.applied === true && (after.categoryId ?? null) !== (ticket.categoryId ?? null);
+  const priorityMoved = result.priority?.applied === true && after.priority !== ticket.priority;
+  if ((categoryMoved || priorityMoved) && slaRestampAllowed(ticket)) {
+    const category = after.categoryId == null
+      ? null
+      : after.categoryId === updates.categoryId?.value
+        ? newCategory
+        : await readTicketCategory(after.categoryId);
+    const targets = await resolveEffectiveSlaTargetsForTicket({
+      orgId: ticket.orgId,
+      partnerId: await resolveTicketPartnerId(ticket),
+      priority: after.priority,
+      category,
+      workKind: ticket.workKind,
+    });
+    const restamp = computeSlaRestamp({ ...ticket, fieldProvenance: after.fieldProvenance }, targets);
+    const restampFields = SLA_TARGET_FIELDS.filter((field) => field in restamp);
+    if (restampFields.length > 0) {
+      const restampSet: Record<string, unknown> = {};
+      for (const field of restampFields) {
+        // The 'user' guard and the gate are re-checked in SQL against the row
+        // under the UPDATE's own lock, so a concurrent human override or first
+        // response between the read above and this write wins.
+        restampSet[field] = sql`CASE WHEN COALESCE(${tickets.fieldProvenance}->>${sql.raw(`'${field}'`)}, '') <> 'user' THEN ${restamp[field] ?? null}::integer ELSE ${tickets[field]} END`;
+      }
+      await db
+        .update(tickets)
+        .set(restampSet)
+        .where(and(
+          eq(tickets.id, ticketId),
+          eq(tickets.orgId, orgId),
+          isNull(tickets.firstResponseAt),
+          notInArray(tickets.status, [...SLA_RESTAMP_CLOSED_STATUSES]),
+          // Still on the inputs the targets were resolved from.
+          sql`${tickets.categoryId} IS NOT DISTINCT FROM ${after.categoryId}::uuid`,
+          eq(tickets.priority, after.priority),
+        ));
+    }
   }
   return result;
 }

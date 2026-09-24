@@ -372,3 +372,40 @@ describe('manage_monitor_definitions detach — partner-wide gate (#5289 review 
     expect(removeFeatureLinkMock).toHaveBeenCalledTimes(1);
   });
 });
+
+// The link's `inheritance` lives in its inline settings, which attach/detach
+// rewrite. Dropping it silently turned a `replace` policy `cumulative`.
+describe('manage_monitor_definitions attach/detach — keeps the link inheritance', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    isMonitorAttachableToPolicyMock.mockImplementation(async () => true);
+  });
+
+  const replaceLink = { id: 'fl1', inlineSettings: { items: [], inheritance: 'replace' } };
+  const item = (monitorId: string, sortOrder: number) => ({ monitorId, enabled: true, overrides: null, sortOrder });
+
+  it('attach keeps a replace link replace', async () => {
+    queueSelects([monitorRow()], [replaceLink], [item('m0', 0)]);
+    getConfigPolicyMock.mockResolvedValue({ id: 'p1', orgId: ORG, partnerId: null });
+
+    const result = await call('manage_monitor_definitions', { action: 'attach', monitorId: 'm1', configPolicyId: 'p1' });
+
+    expect(result.success).toBe(true);
+    expect(updateFeatureLinkMock).toHaveBeenCalledWith(
+      'fl1',
+      { inlineSettings: { inheritance: 'replace', items: [item('m0', 0), item('m1', 1)] } },
+      'p1',
+    );
+  });
+
+  it('detaching the last monitor keeps an empty replace link instead of deleting it', async () => {
+    queueSelects([monitorRow()], [{ id: 'att1', featureLinkId: 'fl1', configPolicyId: 'p1' }], [replaceLink], [item('m1', 0)]);
+    getConfigPolicyMock.mockResolvedValue({ id: 'p1', orgId: ORG, partnerId: null });
+
+    const result = await call('manage_monitor_definitions', { action: 'detach', monitorId: 'm1', attachmentId: 'att1' });
+
+    expect(result.success).toBe(true);
+    expect(removeFeatureLinkMock).not.toHaveBeenCalled();
+    expect(updateFeatureLinkMock).toHaveBeenCalledWith('fl1', { inlineSettings: { inheritance: 'replace', items: [] } }, 'p1');
+  });
+});

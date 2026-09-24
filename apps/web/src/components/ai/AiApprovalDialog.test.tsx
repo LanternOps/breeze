@@ -580,6 +580,81 @@ describe('self-approve expiry countdown', () => {
 });
 
 /**
+ * #6475 — org-configured interactive-approval window. `approvalWindowMs`
+ * replaces the hard-coded AUTO_DENY_MS as the countdown/progress-bar
+ * denominator when the server sends one; absent, the old 5-minute behaviour
+ * is unchanged (covered by the suite above, which never sets these props).
+ */
+describe('org-configured approval window (#6475)', () => {
+  const makeLegacyProps = () => ({
+    toolName: 'file_operations',
+    description: 'Read a file',
+    input: {} as Record<string, unknown>,
+    onApprove: vi.fn<() => void>(),
+    onReject: vi.fn<() => void>(),
+  });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('shows a ~30-minute countdown for a 30-minute approvalWindowMs, and does not auto-deny at 5 minutes', () => {
+    const props = makeLegacyProps();
+    render(<AiApprovalDialog {...props} approvalWindowMs={30 * 60 * 1000} />);
+
+    expect(screen.getByRole('timer')).toHaveTextContent('30:00');
+
+    // Past the OLD 5-minute mark: must still be counting down, not denied.
+    act(() => {
+      vi.advanceTimersByTime(5 * 60 * 1000 + 2000);
+    });
+    expect(props.onReject).not.toHaveBeenCalled();
+    expect(screen.getByRole('timer')).toHaveTextContent('24:5');
+
+    // Past the real 30-minute deadline: now it auto-denies.
+    act(() => {
+      vi.advanceTimersByTime(25 * 60 * 1000);
+    });
+    expect(props.onReject).toHaveBeenCalled();
+  });
+
+  it('anchors to approvalExpiresAt (legacy non-intent path) instead of a fresh window', () => {
+    render(
+      <AiApprovalDialog
+        {...makeLegacyProps()}
+        approvalWindowMs={30 * 60 * 1000}
+        approvalExpiresAt={new Date(Date.now() + 10 * 60 * 1000).toISOString()}
+      />,
+    );
+
+    expect(screen.getByRole('timer')).toHaveTextContent('10:00');
+  });
+
+  it('keeps the old 5-minute countdown when approvalWindowMs/approvalExpiresAt are absent', () => {
+    render(<AiApprovalDialog {...makeLegacyProps()} />);
+
+    expect(screen.getByRole('timer')).toHaveTextContent('5:00');
+  });
+
+  it('sizes the progress bar denominator to the configured window, not AUTO_DENY_MS', () => {
+    render(<AiApprovalDialog {...makeLegacyProps()} approvalWindowMs={30 * 60 * 1000} />);
+
+    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '100');
+
+    act(() => {
+      vi.advanceTimersByTime(15 * 60 * 1000);
+    });
+    // Halfway through a 30-minute window: ~50%, not ~0% (which is what
+    // dividing by the old 5-minute AUTO_DENY_MS would floor to).
+    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '50');
+  });
+});
+
+/**
  * #4888 — the run-context row.
  *
  * Letting an assistant choose `runAs` is a privilege decision: it can launch a

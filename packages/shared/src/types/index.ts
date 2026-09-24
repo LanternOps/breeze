@@ -3,6 +3,7 @@
 // ============================================
 
 import type { EmailTemplateId } from '../utils/emailTemplates';
+import type { AiApprovalSettings } from '../validators/aiApprovalSettings';
 
 export * from './auth';
 export * from './deviceOptions';
@@ -705,6 +706,8 @@ export interface InheritableAiBudgetSettings {
   approvalMode?: 'per_step' | 'action_plan' | 'auto_approve' | 'hybrid_plan';
   /** #4388 — pre-cap alert rungs (1–99). Empty = off. Omit = inherit. */
   alertThresholdPercents?: number[];
+  /** #6476 — per-tool AI/MCP rate-limit multiplier, integer 1–10. Omit = inherit. */
+  toolRateLimitMultiplier?: number;
 }
 
 // A pluggable remote-desktop launcher (e.g. RustDesk, ScreenConnect, TeamViewer).
@@ -777,6 +780,10 @@ export interface PartnerSettings {
   defaults?: InheritableDefaultSettings;
   branding?: InheritableBrandingSettings;
   aiBudgets?: InheritableAiBudgetSettings;
+  // #6475 — partner DEFAULT for the interactive AI approval timeout. Org
+  // override lives at the same key on organizations.settings; the org wins.
+  // Resolved only by resolveAiApprovalTimeout (validators/aiApprovalSettings).
+  aiApprovals?: AiApprovalSettings;
   // Partner-level preferred order of organization IDs. The org list endpoint
   // returns matching orgs in this order; orgs not present in the array
   // (newly created or stale entries) are appended in createdAt order.

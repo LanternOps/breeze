@@ -1,11 +1,3 @@
 ---
-import DashboardLayout from '../../../layouts/DashboardLayout.astro';
-import AlertTemplateEditor from '../../../components/alerts/AlertTemplateEditor';
-
-const { id } = Astro.params;
-if (id === 'new') return Astro.redirect('/alerts/monitors', 302);
+return Astro.redirect('/alerts/monitors', 301);
 ---
-
-<DashboardLayout titleKey="titles.settingsAlertTemplatesDetail">
-  <AlertTemplateEditor templateId={id} client:load />
-</DashboardLayout>

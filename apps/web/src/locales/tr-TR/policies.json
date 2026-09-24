@@ -838,6 +838,10 @@
         "legacyAlertRulesMovedToAlerts": "{{count}} eski uyarı kuralları, bu politikanın Uyarılar özelliğine taşındı. İzleme artık bunları saklamaz."
       },
       "monitorsTab": {
+        "agentCollectionTitle": "Aracı toplama",
+        "checkIntervalLabel": "Kontrol aralığı (saniye)",
+        "checkIntervalHint": "Bu ilkedeki aracıların hizmet ve süreç monitörlerini ne sıklıkla kontrol ettiği (10–3600).",
+        "checkIntervalInvalid": "Kontrol aralığı 10 ile 3600 saniye arasında olmalıdır.",
         "attachMonitor": "Bir izleyici ekle",
         "loadingMonitors": "İzleyiciler yükleniyor…",
         "noMoreMonitorsToAttach": "Eklenecek başka izleyici yok",
@@ -853,7 +857,16 @@
           "title": "Önerilen monitörler",
           "body": "Breeze; CPU, bellek, disk ve yama uyumluluğu için yerleşik monitörler sunar. Bu ilkeye henüz hiçbiri bağlı değil.",
           "action": "Tüm yerleşik monitörleri bağla"
-        }
+        },
+        "inheritanceTitle": "Devralınan monitörler",
+        "inheritance": {
+          "cumulative": "Devralınan monitörlere ekle",
+          "cumulativeHint": "Cihazlar üst ilkelerin monitörlerini ve bunları alır.",
+          "replace": "Devralınan monitörleri değiştir",
+          "replaceHint": "Yalnızca bu ilkenin monitörleri geçerlidir; üst ekler yok sayılır. Satır içi kuralların davranışını korumak için dönüştürme tarafından ayarlanır."
+        },
+        "ignoredInherited_one": "Değiştirme sırasında {{count}} devralınan monitör yok sayılıyor:",
+        "ignoredInherited_other": "Değiştirme sırasında {{count}} devralınan monitör yok sayılıyor:"
       },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Windows UAC yükseltme istemlerini yakalayın",

@@ -1,5 +1,6 @@
 {
   "titles": {
+    "adminMonitorConversion": "Konvertierung alter Alarmregeln",
     "notFound": "Seite nicht gefunden",
     "serverError": "Etwas ist schiefgelaufen",
     "acceptInvite": "Einladung annehmen",
@@ -131,8 +132,6 @@
     "settingsAiUsage": "KI-Nutzung",
     "settingsAiScriptAuthoring": "Skripterstellung",
     "settingsToolSources": "Tool-Quellen",
-    "settingsAlertTemplatesDetail": "Warnmeldungsvorlage",
-    "settingsAlertTemplates": "Warnmeldungsvorlagen",
     "settingsApiKeys": "API-Schlüssel",
     "settingsBilling": "Abrechnungseinstellungen",
     "settingsCatalog": "Produktkatalog",

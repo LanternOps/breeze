@@ -288,6 +288,17 @@ describe('OrganizationRecordPage — lifecycle states', () => {
     await waitFor(() => expect(screen.getByTestId('org-record-not-found')).toBeTruthy());
   });
 
+  it('renders read-only report history for a suspended org whose record 404s (#6771)', async () => {
+    seedStore(
+      [{ id: RECORD_ORG, name: 'Acme Dental', status: 'suspended' }, { id: OTHER_ORG, name: 'Beta Legal' }],
+      OTHER_ORG,
+    );
+    routeFetch({ [`/orgs/organizations/${RECORD_ORG}`]: () => json({ error: 'Organization not found' }, 404) });
+    render(<OrganizationRecordPage orgId={RECORD_ORG} />);
+    await waitFor(() => expect(screen.getByTestId('org-record-lifecycle')).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId('org-report-history')).toBeTruthy());
+  });
+
   it('renders an archived org read-only: banner, no Work in this org, no lifecycle menu', async () => {
     routeFetch({
       '/summary': () => json(SUMMARY_BODY),
@@ -298,6 +309,26 @@ describe('OrganizationRecordPage — lifecycle states', () => {
     expect(screen.queryByTestId('org-record-work-here')).toBeNull();
     expect(screen.queryByTestId('org-record-more')).toBeNull();
     expect(screen.getByTestId('org-record-restore')).toBeTruthy();
+  });
+
+  it('renders read-only report history for an archived org (#6771)', async () => {
+    routeFetch({
+      '/summary': () => json(SUMMARY_BODY),
+      [`/orgs/organizations/${RECORD_ORG}`]: () => json({ ...ORG_BODY, status: 'archived', archived: true }),
+    });
+    render(<OrganizationRecordPage orgId={RECORD_ORG} />);
+    await waitFor(() => expect(screen.getByTestId('org-record-archived-banner')).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId('org-report-history')).toBeTruthy());
+  });
+
+  it('does not render report history for an active org (#6771)', async () => {
+    routeFetch({
+      '/summary': () => json(SUMMARY_BODY),
+      [`/orgs/organizations/${RECORD_ORG}`]: () => json(ORG_BODY),
+    });
+    render(<OrganizationRecordPage orgId={RECORD_ORG} />);
+    await waitFor(() => expect(screen.getByTestId('org-record-header')).toBeTruthy());
+    expect(screen.queryByTestId('org-report-history')).toBeNull();
   });
 
   it('surfaces a retryable error card when the record GET fails outright', async () => {

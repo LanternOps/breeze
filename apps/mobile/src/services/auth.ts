@@ -6,6 +6,7 @@ import { APP_LOCK_STATE_KEY } from './appLockState';
 import { CSRF_TOKEN_KEY, clearCsrfToken } from './csrfToken';
 import { LOCAL_TIMER_KEY, clearLocalTimer } from './localTimer';
 import { QUEUE_KEY, clearQueueForSignOut } from './timeEntryQueue';
+import { clearWorkTypeCache } from './workTypes';
 import {
   AUTH_TOKEN_KEY,
   AUTH_USER_KEY,
@@ -127,6 +128,9 @@ export class SecureWipeError extends Error {
 export async function clearAuthData(
   options: Readonly<{ deliberate?: boolean }> = {}
 ): Promise<void> {
+  // In-memory, synchronous, cannot fail: work types are partner-owned labels,
+  // so the next account on this device must not be offered this one's list.
+  clearWorkTypeCache();
   const deletions: Array<{ key: string; run: () => Promise<unknown> }> = [
     { key: AUTH_TOKEN_KEY, run: () => SecureStore.deleteItemAsync(AUTH_TOKEN_KEY) },
     { key: AUTH_USER_KEY, run: () => SecureStore.deleteItemAsync(AUTH_USER_KEY) },

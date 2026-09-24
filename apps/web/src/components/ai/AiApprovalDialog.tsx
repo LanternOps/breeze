@@ -17,7 +17,10 @@ import { useRunContextLabel } from "../common/RunContext";
 import ScriptProposalApprovalCard from "./ScriptProposalApprovalCard";
 import type { AiApprovalScope, AiScriptRunContext } from "@breeze/shared";
 
-// Must be <= server-side waitForApproval timeout (300s). Plan approvals use 10-min timeout.
+// Fallback only: the product default (also `AI_APPROVAL_TIMEOUT_DEFAULT_MINUTES`
+// in @breeze/shared) for an approval card whose server didn't send
+// `approvalWindowMs` yet (#6475 — older API build). Plan approvals use their
+// own separate 10-min timeout.
 const AUTO_DENY_MS = 5 * 60 * 1000;
 
 /** Keys that are internal identifiers — not useful to show the user */
@@ -78,6 +81,24 @@ interface AiApprovalDialogProps {
    * AUTO_DENY_MS behavior.
    */
   intentExpiresAt?: string;
+  /**
+   * #6475 — the org's configured interactive-approval window (5-60 min,
+   * `resolveAiApprovalTimeout`), sent on every approval card. Replaces
+   * AUTO_DENY_MS as the countdown/progress-bar denominator when present, so
+   * an org that raised its timeout to 30 minutes actually sees 30 minutes
+   * here instead of the hard-coded 5. Falls back to AUTO_DENY_MS for an
+   * older API build that doesn't send it yet.
+   */
+  approvalWindowMs?: number;
+  /**
+   * #6475 — this specific wait's real server-side deadline (ISO), sent on
+   * the legacy (non-intent) approval path — the non-intent twin of
+   * `intentExpiresAt`. `intentExpiresAt` wins when both are present (it
+   * never coexists with this in practice, since a card is either
+   * intent-backed or legacy, but the precedence is explicit rather than
+   * accidental).
+   */
+  approvalExpiresAt?: string;
   /**
    * #4888 — the run context a script launch will execute in, resolved
    * server-side (assistant override, else the script's saved default).
@@ -249,18 +270,26 @@ export default function AiApprovalDialog({
   selfApprovalRequestId,
   approvalScope,
   intentExpiresAt,
+  approvalWindowMs,
+  approvalExpiresAt,
   scriptRunContext,
   onIntentDecided,
 }: AiApprovalDialogProps) {
   const { t } = useTranslation("ai");
-  // Seed from the intent's real deadline when we have one, clamped to the
-  // AUTO_DENY_MS window so the progress bar (denominator AUTO_DENY_MS) can't
-  // exceed 100%. Falls back to the mount-relative constant for the legacy path.
-  const [remainingMs, setRemainingMs] = useState(() =>
-    intentExpiresAt
-      ? Math.max(0, Math.min(AUTO_DENY_MS, new Date(intentExpiresAt).getTime() - Date.now()))
-      : AUTO_DENY_MS,
-  );
+  // #6475: the org's configured window replaces the hard-coded 5 minutes when
+  // the server sends one; an older API build that doesn't send it yet keeps
+  // the AUTO_DENY_MS fallback.
+  const windowMs = approvalWindowMs ?? AUTO_DENY_MS;
+  // Seed from the real deadline when we have one (intent-backed, then legacy
+  // non-intent), clamped to windowMs so the progress bar (denominator
+  // windowMs) can't exceed 100%. Falls back to the window itself when no
+  // server deadline was sent at all.
+  const [remainingMs, setRemainingMs] = useState(() => {
+    const deadlineIso = intentExpiresAt ?? approvalExpiresAt;
+    return deadlineIso
+      ? Math.max(0, Math.min(windowMs, new Date(deadlineIso).getTime() - Date.now()))
+      : windowMs;
+  });
   const [intentDecideState, setIntentDecideState] = useState<
     "idle" | "deciding" | "needs_device" | "decided" | "unavailable"
   >("idle");
@@ -383,12 +412,12 @@ export default function AiApprovalDialog({
   // terminal "expired" presentation a server 410 produces.
   useEffect(() => {
     if (intentBacked && !canSelfDecide) return;
-    // Anchor to the intent's real server-side expiry when we have it, so the
-    // countdown matches the deadline the server will actually enforce. The
-    // legacy path has none, so it counts down the mount-relative window.
-    const deadline = intentExpiresAt
-      ? new Date(intentExpiresAt).getTime()
-      : Date.now() + AUTO_DENY_MS;
+    // Anchor to the real server-side expiry when we have one (intent-backed,
+    // then legacy non-intent's approvalExpiresAt), so the countdown matches
+    // the deadline the server will actually enforce. With neither, count down
+    // the mount-relative window (org-configured, or AUTO_DENY_MS fallback).
+    const deadlineIso = intentExpiresAt ?? approvalExpiresAt;
+    const deadline = deadlineIso ? new Date(deadlineIso).getTime() : Date.now() + windowMs;
     const interval = setInterval(() => {
       // Card already settled (decided / unavailable — via the decide handler's
       // not_sole_approver or a server 409/410) — stop ticking so the countdown
@@ -400,7 +429,7 @@ export default function AiApprovalDialog({
         clearInterval(interval);
         return;
       }
-      const remaining = Math.min(AUTO_DENY_MS, deadline - Date.now());
+      const remaining = Math.min(windowMs, deadline - Date.now());
       if (remaining <= 0) {
         clearInterval(interval);
         setRemainingMs(0);
@@ -422,12 +451,12 @@ export default function AiApprovalDialog({
       }
     }, 1000);
     return () => clearInterval(interval);
-  }, [onReject, intentBacked, canSelfDecide, t, intentExpiresAt]);
+  }, [onReject, intentBacked, canSelfDecide, t, intentExpiresAt, approvalExpiresAt, windowMs]);
 
   const minutes = Math.floor(remainingMs / 60000);
   const seconds = Math.floor((remainingMs % 60000) / 1000);
   const countdown = `${minutes}:${seconds.toString().padStart(2, "0")}`;
-  const progressPct = (remainingMs / AUTO_DENY_MS) * 100;
+  const progressPct = (remainingMs / windowMs) * 100;
 
   const visibleInput = filterInput(input);
   const hasVisibleInput = Object.keys(visibleInput).length > 0;

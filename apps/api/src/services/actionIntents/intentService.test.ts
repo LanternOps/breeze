@@ -1958,6 +1958,37 @@ describe('createActionIntent — supervised/four_eyes scope', () => {
     expect(msUntil(sv.approvalExpiresAt!)).toBeCloseTo(5 * 60 * 1000, -4);
   });
 
+  it('#6475: a supervised chat intent expires with the configured interactive window (clamped 5-60 min); four_eyes and mcp_api ignore it', async () => {
+    const supervised = {
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      description: 'Run a script on one or more devices',
+      approvalScope: 'supervised',
+    } as const;
+    const mint = async (key: string, extra: Record<string, unknown>) => {
+      intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([]);
+      dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: `intent-${key}` }));
+      dbState.insertApprovalRequestsResults.push([{ id: `approval-${key}` }]);
+      return createActionIntent(makeAuth(), baseInput({ idempotencyKey: key, ...extra }));
+    };
+
+    guardrailMock.checkGuardrails.mockReturnValue(supervised);
+    const thirty = await mint('w30', { source: 'chat', chatApprovalWindowMs: 30 * 60_000 });
+    const tooBig = await mint('w999', { source: 'chat', chatApprovalWindowMs: 24 * 60 * 60_000 });
+    const tooSmall = await mint('w1', { source: 'chat', chatApprovalWindowMs: 60_000 });
+    const mcp = await mint('wmcp', { source: 'mcp_api', chatApprovalWindowMs: 30 * 60_000 });
+
+    guardrailMock.checkGuardrails.mockReturnValue({ ...supervised, approvalScope: 'four_eyes' });
+    const fourEyes = await mint('wfe', { source: 'chat', chatApprovalWindowMs: 10 * 60_000 });
+
+    expect(msUntil(thirty.approvalExpiresAt!)).toBeCloseTo(30 * 60 * 1000, -4);
+    expect(msUntil(tooBig.approvalExpiresAt!)).toBeCloseTo(60 * 60 * 1000, -4);
+    expect(msUntil(tooSmall.approvalExpiresAt!)).toBeCloseTo(5 * 60 * 1000, -4);
+    expect(msUntil(mcp.approvalExpiresAt!)).toBeCloseTo(24 * 60 * 60 * 1000, -4);
+    expect(msUntil(fourEyes.approvalExpiresAt!)).toBeCloseTo(60 * 60 * 1000, -4);
+  });
+
   it('THE FIX: an approver with NO phone is still notified in-app', async () => {
     // Before wave 2 the only approver channel was mobile push, and
     // getUserPushTokens reads mobile_devices exclusively — so an approver who

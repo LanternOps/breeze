@@ -124,4 +124,57 @@ describe('MonitorsListPage (#5289)', () => {
     expect(toggle).toHaveAttribute('aria-checked', 'true');
     expect(toggle.getAttribute('aria-label')).toMatch(/Disk usage/);
   });
+
+  it('shows the Recommended strip for an undeployed built-in from the actual library response', async () => {
+    fetchMock.mockImplementation(async (input: string) =>
+      input === '/monitor-definitions'
+        ? json({ data: [{ ...rows[1], builtinKey: 'shipped-key', attachmentCount: 0 }] })
+        : json({ data: [] }),
+    );
+    render(<MonitorsListPage />);
+    expect(await screen.findByTestId('library-recommended')).toBeInTheDocument();
+  });
+
+  it('hides the Recommended strip when every built-in is deployed or no row is a built-in', async () => {
+    render(<MonitorsListPage />);
+    expect((await screen.findAllByText('Disk usage')).length).toBeGreaterThan(0);
+    expect(screen.queryByTestId('library-recommended')).toBeNull();
+  });
+
+  it('does not recommend anything when the library read fails', async () => {
+    fetchMock.mockResolvedValue(json({ error: 'boom' }, false, 500));
+    render(<MonitorsListPage />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByText(/./, { selector: '.text-destructive' })).not.toBeNull());
+    expect(screen.queryByTestId('library-recommended')).toBeNull();
+  });
+});
+
+vi.mock('./conversion/ConversionPendingBanner', () => ({ default: (p: { onReview: () => void }) => <button data-testid="banner" onClick={p.onReview} /> }));
+vi.mock('./conversion/PendingPoliciesList', () => ({ default: () => <div data-testid="pending-policies" /> }));
+vi.mock('./LegacyRulesTable', () => ({ default: () => <div data-testid="legacy-rules-table" /> }));
+vi.mock('../../stores/orgStore', () => ({ useOrgStore: (sel: (s: { currentOrgId: string | null }) => unknown) => sel({ currentOrgId: 'org-1' }) }));
+
+describe('MonitorsListPage — Needs-conversion view (W05c2)', () => {
+  beforeEach(() => { window.location.hash = ''; fetchMock.mockResolvedValue(json({ data: rows })); });
+  it('shows the monitors table by default and the pending banner above it', async () => {
+    render(<MonitorsListPage />);
+    expect(await screen.findByTestId('monitors-list-page')).toBeInTheDocument();
+    expect(screen.getByTestId('banner')).toBeInTheDocument();
+    expect(screen.queryByTestId('pending-policies')).toBeNull();
+  });
+  it('#needs-conversion swaps the table for the pending policies and the legacy rules', async () => {
+    window.location.hash = '#needs-conversion';
+    render(<MonitorsListPage />);
+    expect(await screen.findByTestId('pending-policies')).toBeInTheDocument();
+    expect(screen.getByTestId('legacy-rules-table')).toBeInTheDocument();
+    expect(screen.queryByTestId('monitors-list-enabled-m-org')).toBeNull();
+  });
+  it('the banner Review action and the view toggle both write the hash', async () => {
+    render(<MonitorsListPage />);
+    fireEvent.click(await screen.findByTestId('banner'));
+    expect(window.location.hash).toBe('#needs-conversion');
+    fireEvent.click(screen.getByTestId('monitors-list-view-all'));
+    expect(window.location.hash).toBe('');
+  });
 });

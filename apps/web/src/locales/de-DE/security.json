@@ -54,8 +54,11 @@
     "wait": "Warten Sie: {{duration}}"
   },
   "aiRiskRateLimitStatus": {
+    "defaultLimit": "(Standard {{limit}})",
+    "failedToLoad": "Die geltenden Ratenlimits konnten nicht geladen werden. Versuchen Sie es später erneut.",
     "filterRateLimits": "Filterratengrenzen...",
     "limit": "Begrenzen",
+    "multiplierApplied": "Die Limits enthalten einen Multiplikator für Tool-Ratenlimits von {{multiplier}}×, festgelegt in den KI-Budgeteinstellungen.",
     "noRateLimitsMatchYourSearch": "Zu Ihrer Suche passen keine Ratenlimits.",
     "permission": "Erlaubnis",
     "rateLimitConfiguration": "Ratenbegrenzungskonfiguration",

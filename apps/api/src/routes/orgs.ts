@@ -24,6 +24,7 @@ import { psaConnections } from '../db/schema/integrations';
 import { authMiddleware, requireMfa, requirePermission, requireScope, requirePartner, type AuthContext } from '../middleware/auth';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveSettings';
+import { getAiApprovalTimeout } from '../services/aiApprovalTimeout';
 import { normalizeAlertThresholds } from '../services/aiBudgetAlerts';
 import { enqueueAiBudgetEvaluationForPartner } from '../jobs/aiBudgetAlertDelivery';
 import { clearPartnerScopePolicyCache } from '../oauth/partnerScopePolicy';
@@ -57,7 +58,7 @@ import { syncBillingContactRow, syncSiteContactRow } from '../services/contacts/
 import { escapeLike } from '../utils/sql';
 import { PG_UUID_REGEX } from '../utils/uuid';
 import { isPgUniqueViolation } from '../utils/pgErrors';
-import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, httpUrlValue, httpUrlField, SUPPORTED_LOCALES, ticketingInboundSettingsSchema, timeTrackingSessionSuggestionsSchema, EMAIL_TEMPLATE_IDS, isBlankEmailTemplateHtml } from '@breeze/shared';
+import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, aiApprovalSettingsSchema, httpUrlValue, httpUrlField, SUPPORTED_LOCALES, ticketingInboundSettingsSchema, timeTrackingSessionSuggestionsSchema, EMAIL_TEMPLATE_IDS, isBlankEmailTemplateHtml } from '@breeze/shared';
 import type { IpAllowlistStatus, ResolvedEnrollmentDefaults, SupportedLocale } from '@breeze/shared';
 import { getEnrollmentDefaultsForOrg } from '../services/enrollmentDefaults';
 import { isValidIpOrCidr } from '../services/ipMatch';
@@ -86,6 +87,7 @@ import { registerOrgTicketSettingsRoutes } from './orgTicketSettings';
 import { registerOrgBillingProfileRoutes } from './orgBillingProfile';
 import { registerOrgAuditRetentionSettingsRoutes } from './orgAuditRetentionSettings';
 import { TOPOLOGY_FLAG_KEYS } from '../services/topology/flags';
+import { toolRateLimitMultiplierSchema } from '../services/aiToolRateLimits';
 
 /**
  * Fold the legacy `security.allowedMfaMethods` input alias into the canonical
@@ -773,6 +775,8 @@ const partnerSettingsSchema = z.object({
     messagesPerHourPerOrg: z.number().int().min(1).max(10000).optional(),
     approvalMode: z.enum(['per_step', 'action_plan', 'auto_approve', 'hybrid_plan']).optional(),
     alertThresholdPercents: z.array(z.number().int().min(1).max(99)).max(5).optional(),
+    // #6476 — partner value wins and locks, like every other aiBudgets key.
+    toolRateLimitMultiplier: toolRateLimitMultiplierSchema.optional(),
   }).optional(),
   organizationOrder: z.array(z.string().guid()).max(10_000).optional(),
   remoteAccessProviders: z.object({
@@ -865,6 +869,11 @@ const partnerSettingsSchema = z.object({
     // sites validate against the same contract this write boundary enforces.
     inbound: ticketingInboundSettingsSchema.optional(),
   }).optional(),
+  // #6475 — partner DEFAULT for the interactive AI approval timeout (5-60 min).
+  // Replaced wholesale (one field); `{}` clears it back to the product default.
+  // Inherit-with-override: an org value at the same key WINS (resolver:
+  // resolveAiApprovalTimeout in @breeze/shared) — NOT partner-locked.
+  aiApprovals: aiApprovalSettingsSchema.optional(),
   // One-level merge by template id (see PATCH /partners/me). Unknown ids 400.
   emailTemplates: z.partialRecord(z.enum(EMAIL_TEMPLATE_IDS), emailTemplateOverrideSchema).optional(),
 });
@@ -2074,7 +2083,13 @@ orgRoutes.get('/organizations/:id/effective-settings',
     }
 
     const result = await getEffectiveOrgSettings(id);
-    return c.json(result);
+    // #6475 — the interactive AI approval timeout is inherit-with-override
+    // (org wins), so it is resolved by its own resolver rather than through
+    // getEffectiveOrgSettings' partner-locks merge, and reported separately:
+    // { minutes, source, inheritedMinutes, inheritedSource } for the org UI's
+    // "Inherit (…)" label.
+    const aiApprovalTimeout = await getAiApprovalTimeout(id);
+    return c.json({ ...result, aiApprovalTimeout });
   }
 );
 
@@ -2302,6 +2317,18 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
       );
       if (!enrollmentParsed.success) {
         return c.json({ error: 'Invalid enrollment defaults', details: enrollmentParsed.error.issues }, 400);
+      }
+    }
+
+    // #6475 — the org override for the interactive AI approval timeout. The
+    // org `settings` blob is z.any(), so validate the block explicitly (same
+    // reason as the defaults checks above). Deliberately NOT in the partner-
+    // lock loop below: this is inherit-with-override and the org wins.
+    // Omitting the key (or `{}`) inherits the partner default.
+    if (settingsObj.aiApprovals !== undefined) {
+      const parsed = aiApprovalSettingsSchema.safeParse(settingsObj.aiApprovals);
+      if (!parsed.success) {
+        return c.json({ error: 'Invalid AI approval settings', details: parsed.error.issues }, 400);
       }
     }
 

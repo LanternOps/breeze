@@ -165,6 +165,46 @@ describe('readDeploymentStateWith (query-injected reader)', () => {
     for (const s of statements) expect(s.trim()).toMatch(/^SELECT\b/i);
   });
 
+  it('returns Dates when the driver hands back timestamptz as text (Drizzle postgres-js)', async () => {
+    const query: PreflightQuery = vi.fn(async (text: string) => {
+      if (/to_regclass/.test(text)) return [{ present: true }] as never;
+      if (/breeze_version_history/.test(text)) {
+        return [
+          { version: '0.115.0', first_seen_at: '2026-09-18 10:00:00.123456+00' },
+          { version: '0.116.0', first_seen_at: '2026-09-20 05:30:00+05:30' },
+        ] as never;
+      }
+      return [] as never;
+    });
+    const state = await readDeploymentStateWith(query, '0.116.0');
+    expect(state.history).toEqual({
+      status: 'ok',
+      versions: [
+        { version: '0.115.0', firstSeenAt: new Date('2026-09-18T10:00:00.123Z') },
+        { version: '0.116.0', firstSeenAt: new Date('2026-09-20T00:00:00Z') },
+      ],
+    });
+    const view = buildDeprecationsView(MANIFEST, state, null);
+    expect(view.history).toEqual({
+      status: 'ok',
+      versions: [
+        { version: '0.116.0', firstSeenAt: '2026-09-20T00:00:00.000Z' },
+        { version: '0.115.0', firstSeenAt: '2026-09-18T10:00:00.123Z' },
+      ],
+    });
+  });
+
+  it('reports an unparseable first_seen_at as missing history instead of throwing', async () => {
+    const query: PreflightQuery = vi.fn(async (text: string) => {
+      if (/to_regclass/.test(text)) return [{ present: true }] as never;
+      if (/breeze_version_history/.test(text)) return [{ version: '0.116.0', first_seen_at: 'not a time' }] as never;
+      return [] as never;
+    });
+    const state = await readDeploymentStateWith(query, '0.116.0');
+    expect(state.history.status).toBe('missing');
+    expect(state.history.status === 'missing' && state.history.reason).toMatch(/first_seen_at/);
+  });
+
   it('turns a failing history read into a "missing" state instead of throwing', async () => {
     const query: PreflightQuery = vi.fn(async (text: string) => {
       if (/to_regclass/.test(text)) return [{ present: true }] as never;

@@ -98,6 +98,22 @@
       "inaccessible": "Esta organización está {{status}}, por lo que sus datos en vivo no están disponibles. Aún puede verla en la lista de organizaciones.",
       "backToList": "Volver a organizaciones"
     },
+    "reportHistory": {
+      "title": "Historial de informes",
+      "loading": "Cargando historial de informes…",
+      "readOnlyNote": "Solo lectura: esta organización está {{status}}. Los informes no se pueden generar, programar ni descargar.",
+      "forbidden": "No tiene acceso al historial de informes de esta organización.",
+      "error": "No se pudo cargar el historial de informes.",
+      "empty": "No se encontraron informes ni ejecuciones de informes.",
+      "definitionsTitle": "Definiciones de informes",
+      "definitionsEmpty": "No hay definiciones de informes.",
+      "runsTitle": "Ejecuciones recientes",
+      "runsEmpty": "No hay ejecuciones de informes.",
+      "lastGenerated": "Generado por última vez el {{date}}",
+      "neverGenerated": "Nunca generado",
+      "rowCount_one": "{{count}} fila",
+      "rowCount_other": "{{count}} filas"
+    },
     "unavailable": {
       "title": "No disponible en este espacio de trabajo",
       "description": "Los registros de organización son una vista a nivel de partner. Su inicio de sesión está limitado a una sola organización, por lo que no hay nada para cambiar aquí.",

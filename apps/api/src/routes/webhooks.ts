@@ -142,7 +142,11 @@ function sanitizeWebhook(webhook: typeof webhooksTable.$inferSelect) {
     name: webhook.name,
     url: redactUrlForLogs(decryptedUrl),
     events: webhook.events ?? [],
-    headers: normalizeHeaders(redactWebhookHeaders(webhook.headers)),
+    // Normalise BEFORE redacting: the legacy record shape filters out
+    // non-string values, so redacting first turned every legacy header into a
+    // marker object and dropped it — the edit form then saved `headers: []`
+    // and wiped the stored credentials (#6767).
+    headers: redactWebhookHeaders(normalizeHeaders(webhook.headers)) as WebhookHeaders,
     status: mapDbStatusToApi(webhook.status as DbWebhookStatus),
     createdBy: webhook.createdBy,
     createdAt: webhook.createdAt,
@@ -258,7 +262,8 @@ const createWebhookSchema = z.object({
   url: z.string().url(),
   secret: z.string().min(1).max(255),
   events: z.array(z.string().min(1)).min(1),
-  headers: customHeadersSchema.optional().default([])
+  headers: customHeadersSchema.optional().default([]),
+  status: z.enum(['active', 'paused']).optional()
 });
 
 const updateWebhookSchema = z.object({
@@ -420,7 +425,7 @@ webhookRoutes.post(
         secret: encryptSecret(data.secret),
         events: data.events,
         headers: encryptWebhookHeaders(data.headers ?? []),
-        status: 'active',
+        status: mapApiStatusToDb(data.status ?? 'active'),
         createdBy: auth.user.id,
         createdAt: new Date(),
         updatedAt: new Date()

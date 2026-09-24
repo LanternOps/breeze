@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { TimeWidget } from './TimeWidget';
 import * as api from './api';
 import { TechApiError } from './api';
+import { ApiError, AuthBlockedError } from '@breeze/office-addin-core';
 import type { AddinTicketSummary } from './api';
 
 afterEach(() => {
@@ -389,5 +390,112 @@ describe('TimeWidget', () => {
 
     expect((screen.getByTestId('time-start-button') as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByTestId('time-log-submit') as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe('TimeWidget work-type picker (#4628 W04)', () => {
+  const ENTRY = {
+    id: 'entry-1', partnerId: 'p1', orgId: 'org-1', currencyCode: 'USD', ticketId: 'ticket-1', userId: 'u1',
+    startedAt: '2026-08-15T11:30:00.000Z', endedAt: '2026-08-15T12:00:00.000Z', durationMinutes: 30,
+    description: 'Fixed the jam', isBillable: true, hourlyRate: null, billingStatus: 'unbilled', isApproved: false,
+    approvedBy: null, approvedAt: null, createdAt: '2026-08-15T12:00:00.000Z', ticketNumber: 'T-100',
+    ticketSubject: 'Printer down', userName: 'Tech',
+  } as unknown as api.TimeEntry;
+
+  function fillLog() {
+    fireEvent.change(screen.getByTestId('time-log-duration'), { target: { value: '30' } });
+    fireEvent.change(screen.getByTestId('time-log-description'), { target: { value: 'Fixed the jam' } });
+  }
+
+  it('MOUNT: renders a "Work type" select from the real endpoint, with a blank Default option', async () => {
+    vi.spyOn(api, 'fetchRunningTimer').mockResolvedValue({ running: null });
+    vi.spyOn(api, 'fetchWorkTypes').mockResolvedValue({ workTypes: [{ id: 'wt-1', name: 'Remote' }] });
+    render(<TimeWidget {...baseProps()} />);
+    const select = (await screen.findByLabelText('Work type')) as HTMLSelectElement;
+    expect(Array.from(select.options).map((o) => [o.value, o.textContent])).toEqual([
+      ['', 'Default'],
+      ['wt-1', 'Remote'],
+    ]);
+  });
+
+  it('MOUNT: the chosen work type reaches the logTime body', async () => {
+    vi.spyOn(api, 'fetchRunningTimer').mockResolvedValue({ running: null });
+    vi.spyOn(api, 'fetchWorkTypes').mockResolvedValue({ workTypes: [{ id: 'wt-1', name: 'Remote' }] });
+    const logSpy = vi.spyOn(api, 'logTime').mockResolvedValue({ entry: ENTRY });
+    render(<TimeWidget {...baseProps()} />);
+    fireEvent.change(await screen.findByLabelText('Work type'), { target: { value: 'wt-1' } });
+    fillLog();
+    fireEvent.click(screen.getByTestId('time-log-submit'));
+    await waitFor(() => expect(logSpy).toHaveBeenCalledTimes(1));
+    expect(logSpy.mock.calls[0][0]).toMatchObject({ workTypeId: 'wt-1' });
+  });
+
+  it('leaving the select on Default omits workTypeId, so the category default applies (§3.1)', async () => {
+    vi.spyOn(api, 'fetchRunningTimer').mockResolvedValue({ running: null });
+    vi.spyOn(api, 'fetchWorkTypes').mockResolvedValue({ workTypes: [{ id: 'wt-1', name: 'Remote' }] });
+    const logSpy = vi.spyOn(api, 'logTime').mockResolvedValue({ entry: ENTRY });
+    render(<TimeWidget {...baseProps()} />);
+    await screen.findByLabelText('Work type');
+    fillLog();
+    fireEvent.click(screen.getByTestId('time-log-submit'));
+    await waitFor(() => expect(logSpy).toHaveBeenCalledTimes(1));
+    expect(logSpy.mock.calls[0][0]).not.toHaveProperty('workTypeId');
+  });
+
+  it('MOUNT: starting a timer carries the chosen work type (timers are priced at START)', async () => {
+    vi.spyOn(api, 'fetchRunningTimer').mockResolvedValue({ running: null });
+    vi.spyOn(api, 'fetchWorkTypes').mockResolvedValue({ workTypes: [{ id: 'wt-2', name: 'On-site' }] });
+    const startSpy = vi.spyOn(api, 'startTimer').mockResolvedValue({ entry: ENTRY, autoStopped: null });
+    render(<TimeWidget {...baseProps()} />);
+    fireEvent.change(await screen.findByLabelText('Work type'), { target: { value: 'wt-2' } });
+    fireEvent.click(screen.getByTestId('time-start-button'));
+    await waitFor(() => expect(startSpy).toHaveBeenCalledWith({ ticketId: 'ticket-1', workTypeId: 'wt-2' }));
+  });
+
+  it('a work-types failure hides the select, raises no banner, and still lets the technician log time', async () => {
+    vi.spyOn(api, 'fetchRunningTimer').mockResolvedValue({ running: null });
+    const wtSpy = vi.spyOn(api, 'fetchWorkTypes').mockRejectedValue(new TechApiError(500, 'http_500'));
+    const logSpy = vi.spyOn(api, 'logTime').mockResolvedValue({ entry: ENTRY });
+    const props = baseProps();
+    render(<TimeWidget {...props} />);
+    await waitFor(() => expect(wtSpy).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByTestId('time-idle')).toBeTruthy());
+    expect(screen.queryByLabelText('Work type')).toBeNull();
+    fillLog();
+    fireEvent.click(screen.getByTestId('time-log-submit'));
+    await waitFor(() => expect(logSpy).toHaveBeenCalledTimes(1));
+    expect(logSpy.mock.calls[0][0]).not.toHaveProperty('workTypeId');
+    expect(props.onBanner).not.toHaveBeenCalledWith(expect.stringContaining('work type'));
+  });
+
+  it('logs an unexpected work-types failure for support, but stays silent on 403 and on a session ending', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const cases: Array<[unknown, boolean]> = [
+      [new TechApiError(500, 'http_500'), true],
+      [new Error('work types response malformed'), true],
+      [new TechApiError(403, 'Forbidden'), false],
+      [new ApiError(401, 'unauthorized'), false],
+      [new AuthBlockedError('relink_required', 'binding_missing'), false],
+    ];
+    for (const [err, logged] of cases) {
+      errSpy.mockClear();
+      vi.spyOn(api, 'fetchRunningTimer').mockResolvedValue({ running: null });
+      const wtSpy = vi.spyOn(api, 'fetchWorkTypes').mockRejectedValue(err);
+      render(<TimeWidget {...baseProps()} />);
+      await waitFor(() => expect(wtSpy).toHaveBeenCalled());
+      await waitFor(() => expect(screen.getByTestId('time-idle')).toBeTruthy());
+      const workTypeLogs = errSpy.mock.calls.filter((c) => String(c[0]).includes('work type'));
+      expect(workTypeLogs.length > 0).toBe(logged);
+      cleanup();
+    }
+  });
+
+  it('a partner with no work types gets no select at all', async () => {
+    vi.spyOn(api, 'fetchRunningTimer').mockResolvedValue({ running: null });
+    const wtSpy = vi.spyOn(api, 'fetchWorkTypes').mockResolvedValue({ workTypes: [] });
+    render(<TimeWidget {...baseProps()} />);
+    await waitFor(() => expect(wtSpy).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByTestId('time-idle')).toBeTruthy());
+    expect(screen.queryByLabelText('Work type')).toBeNull();
   });
 });

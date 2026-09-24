@@ -838,6 +838,10 @@
         "legacyAlertRulesMovedToAlerts": "{{count}} regla(s) de alerta heredada(s) guardadas en esta pestaña se movieron a la función Alertas de esta política. Monitoreo ya no las almacena."
       },
       "monitorsTab": {
+        "agentCollectionTitle": "Recolección del agente",
+        "checkIntervalLabel": "Intervalo de comprobación (segundos)",
+        "checkIntervalHint": "Con qué frecuencia los agentes bajo esta política comprueban los monitores de servicios y procesos (10–3600).",
+        "checkIntervalInvalid": "El intervalo de comprobación debe estar entre 10 y 3600 segundos.",
         "attachMonitor": "Adjuntar un monitor",
         "loadingMonitors": "Cargando monitores…",
         "noMoreMonitorsToAttach": "No hay más monitores disponibles para adjuntar",
@@ -853,7 +857,16 @@
           "title": "Monitores recomendados",
           "body": "Breeze incluye monitores integrados de CPU, memoria, disco y cumplimiento de parches. Ninguno está adjunto a esta política todavía.",
           "action": "Adjuntar todos los monitores integrados"
-        }
+        },
+        "inheritanceTitle": "Monitores heredados",
+        "inheritance": {
+          "cumulative": "Agregar a los monitores heredados",
+          "cumulativeHint": "Los dispositivos reciben los monitores de las políticas superiores más estos.",
+          "replace": "Reemplazar los monitores heredados",
+          "replaceHint": "Solo se aplican los monitores de esta política; se ignoran los adjuntos superiores. La conversión lo establece para conservar el comportamiento de las reglas en línea."
+        },
+        "ignoredInherited_one": "Se ignora {{count}} monitor heredado al reemplazar:",
+        "ignoredInherited_other": "Se ignoran {{count}} monitores heredados al reemplazar:"
       },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Capture indicaciones de elevación Windows UAC",
