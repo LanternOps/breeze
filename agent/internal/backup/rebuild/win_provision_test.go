@@ -48,8 +48,16 @@ func TestWinProvision_WritesGPTFormatsAndRecordsVolumes(t *testing.T) {
 	if !sys.has("CreateVHDX") || !sys.has("AttachVHDX") || !sys.has("WipeDisk") || !sys.has("WriteGPT") {
 		t.Fatalf("cmds = %v", sys.cmds)
 	}
-	if n := len(countCalls(sys.cmds, "format.com")); n != 3 { // ESP, C:, Recovery — the MSR has no filesystem
-		t.Fatalf("format.com calls = %d, want 3", n)
+	formats := countCalls(sys.cmds, "format.com")
+	if len(formats) != 3 { // ESP, C:, Recovery — the MSR has no filesystem
+		t.Fatalf("format.com calls = %d, want 3", len(formats))
+	}
+	wantFS := map[int]string{1: "/FS:FAT32", 3: "/FS:NTFS", 4: "/FS:NTFS"}
+	for n, fs := range wantFS {
+		vol := sys.volumeDirForPartition(t, n)
+		if len(countCalls(formats, "format.com "+vol+" "+fs+" ")) != 1 {
+			t.Fatalf("partition %d not formatted %s: %v", n, fs, formats)
+		}
 	}
 	diskGUID, parts, err := sys.ReadGPT(sys.vhdxDiskNumber[opts.Target.Path])
 	if err != nil {
@@ -59,7 +67,8 @@ func TestWinProvision_WritesGPTFormatsAndRecordsVolumes(t *testing.T) {
 		t.Fatalf("disk GUID = %q, want the recorded %q", diskGUID, want)
 	}
 	// Source attributes preserved, no-drive-letter bit OR-ed in on every
-	// partition (winValidate, Task 13, clears it on root/data later).
+	// partition (winValidate, Task 13, clears it on root/data later), and
+	// platform-required on ESP/MSR/Recovery.
 	wantAttrs := map[int]uint64{1: 0x8000000000000001, 2: 0x8000000000000001, 3: 0x8000000000000000, 4: 0x8000000000000001}
 	wantNames := map[int]string{1: "EFI system partition", 2: "Microsoft reserved partition", 3: "Basic data partition", 4: ""}
 	if len(parts) != 4 {
@@ -90,6 +99,35 @@ func TestWinProvision_WritesGPTFormatsAndRecordsVolumes(t *testing.T) {
 	}
 	if len(st.Volumes) != 3 || st.Volumes[2] != "" || st.Volumes[3] == "" {
 		t.Fatalf("persisted volumes = %v, want partitions 1, 3, 4", st.Volumes)
+	}
+}
+
+// The platform-required bit (0x1) is added by ROLE at write time for
+// ESP/MSR/Recovery even when the source lacked it; root/data never gain it.
+func TestWinProvision_AddsPlatformRequiredByRoleOnly(t *testing.T) {
+	withHostPlatformWindows(t)
+	dir := t.TempDir()
+	opts, sys := winFakeOptions(t, dir)
+	lay := testLayoutWindows()
+	for i := range lay.Disks[0].Partitions {
+		lay.Disks[0].Partitions[i].Attributes = 0 // source carries no bits at all
+	}
+	opts.Layout = lay
+	if res, _ := Run(context.Background(), opts); res == nil {
+		t.Fatal("expected a Result")
+	}
+	_, parts, err := sys.ReadGPT(sys.vhdxDiskNumber[opts.Target.Path])
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[int]uint64{1: 0x8000000000000001, 2: 0x8000000000000001, 3: 0x8000000000000000, 4: 0x8000000000000001}
+	if len(parts) != 4 {
+		t.Fatalf("parts = %+v", parts)
+	}
+	for _, p := range parts {
+		if p.Attributes != want[p.Number] {
+			t.Fatalf("partition %d attributes = %#x, want %#x", p.Number, p.Attributes, want[p.Number])
+		}
 	}
 }
 

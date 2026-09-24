@@ -10,13 +10,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/backup/layout"
 	"github.com/breeze-rmm/agent/internal/backup/wingpt"
 )
 
-// gptAttrNoDriveLetter is GPT_BASIC_DATA_ATTRIBUTE_NO_DRIVE_LETTER: set on
-// every partition for the run (Global Constraint "No automount
-// surprises"); winValidate's last layout write clears it on root/data.
-const gptAttrNoDriveLetter = uint64(0x8000000000000000)
+const (
+	// gptAttrPlatformRequired is GPT_ATTRIBUTE_PLATFORM_REQUIRED: written
+	// on ESP, MSR and Recovery by role, whatever the source recorded.
+	gptAttrPlatformRequired = uint64(0x0000000000000001)
+	// gptAttrNoDriveLetter is GPT_BASIC_DATA_ATTRIBUTE_NO_DRIVE_LETTER: set
+	// on every partition for the run (Global Constraint "No automount
+	// surprises"); winValidate's last layout write clears it on root/data.
+	gptAttrNoDriveLetter = uint64(0x8000000000000000)
+)
 
 // winRunWithRetry is runWithBusyRetry's WinSystem twin — same
 // deviceBusyRetryAttempts/deviceBusyRetryDelay budget and the same
@@ -55,10 +61,11 @@ func isWindowsVolumeBusyOutput(out []byte) bool {
 // winProvision partitions and formats the target per r.result.Plan:
 // WipeDisk clears any existing table; WriteGPT lays down the recorded disk
 // and partition GUIDs (a fresh GUID only where the layout recorded none),
-// the plan's role-default names, and the source's GPT attributes verbatim
-// plus the no-drive-letter bit for the run (Global Constraints "Partition
-// GUIDs are identity", "No automount surprises"); then each partition with
-// a filesystem is formatted through WinSystem.Format.
+// the plan's role-default names, and attributes = the source's GPT
+// attributes | the no-drive-letter bit for the run | platform-required on
+// ESP/MSR/Recovery (Global Constraints "Partition GUIDs are identity",
+// "No automount surprises"); then each partition with a filesystem is
+// formatted through WinSystem.Format.
 func winProvision(ctx context.Context, r *run) error {
 	if err := r.winAttach(ctx, true); err != nil {
 		return err
@@ -86,9 +93,14 @@ func winProvision(ctx context.Context, r *run) error {
 			}
 			partGUID = g
 		}
+		attrs := p.Attributes | gptAttrNoDriveLetter
+		switch p.Role {
+		case layout.RoleRecovery, layout.RoleEFI, layout.RoleMSR:
+			attrs |= gptAttrPlatformRequired
+		}
 		gptParts = append(gptParts, WinGPTPartition{
 			Number: p.Number, TypeGUID: p.TypeGUID, PartGUID: partGUID, Name: p.Name,
-			StartBytes: p.StartBytes, SizeBytes: p.SizeBytes, Attributes: p.Attributes | gptAttrNoDriveLetter,
+			StartBytes: p.StartBytes, SizeBytes: p.SizeBytes, Attributes: attrs,
 		})
 		if p.Filesystem != "" {
 			formatted++
