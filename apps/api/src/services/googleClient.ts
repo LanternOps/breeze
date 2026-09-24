@@ -39,12 +39,12 @@ export const GMAIL_USER_SCOPES = [
 
 // Inbound ticket connector scope, deliberately separate from GMAIL_USER_SCOPES
 // (the settings scopes) so each caller requests only what it needs. Uses
-// gmail.modify: it grants read plus label/read-state changes, and is the scope
-// operators already authorize for Gmail mailbox integrations. The connector
-// currently only READS (the historyId cursor is the incremental mechanism); the
-// modify grant leaves room to mark messages processed/labeled in a later phase
-// without a second DWD authorization. gmail.readonly would be stricter but is a
-// separate grant; modify is the operational default here.
+// gmail.readonly: the connector only reads (the historyId cursor is the
+// incremental mechanism, history.list / messages.get / getProfile are all
+// covered). Access is granted by domain-wide delegation, so the scope applies to
+// every mailbox in the customer's Workspace; request the least the connector
+// needs. A later phase that writes labels would add its scope, and the
+// customer's admin would authorize that change explicitly.
 // Explicit per-request deadline for every Gmail/UserInfo call. gaxios has no
 // finite default, so a hung Google connection would never settle — and the ticket
 // mailbox poll worker sweeps mailboxes serially, so one hung request would stall
@@ -53,7 +53,7 @@ export const GMAIL_USER_SCOPES = [
 export const GMAIL_REQUEST_TIMEOUT_MS = 30_000;
 
 export const GMAIL_INBOUND_SCOPES = [
-  'https://www.googleapis.com/auth/gmail.modify',
+  'https://www.googleapis.com/auth/gmail.readonly',
   // Identity: `openid` yields the impersonated mailbox's immutable Google account
   // `sub` (stable across email/alias changes, never reused), and userinfo.email
   // lets us cross-check the returned principal is the address we impersonated.
@@ -151,9 +151,8 @@ export function getGmailClient(
 
 /**
  * Gmail client for the inbound ticket connector, impersonating the target
- * mailbox via DWD. Requests only GMAIL_INBOUND_SCOPES (gmail.modify) — not the
- * settings scopes getGmailClient uses. The connector reads only today; the
- * modify grant is the operational scope and leaves room for mark-processed later.
+ * mailbox via DWD. Requests only GMAIL_INBOUND_SCOPES (gmail.readonly plus the
+ * identity scopes) — not the settings scopes getGmailClient uses.
  */
 export interface MailboxIdentity {
   /** The impersonated account's immutable Google `sub` (opaque string; NEVER a

@@ -115,8 +115,8 @@ const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(
 /**
  * Process one connected Gmail mailbox. Reads via the org's domain-wide-delegation
  * service account (google_workspace_connections), impersonating the mailbox
- * address; this sweep only READS (the granted scope is gmail.modify, but no method
- * here mutates the mailbox — see googleMailboxClient). googleAccountSub holds the
+ * address; this sweep only READS (the granted scope is gmail.readonly — see
+ * googleMailboxClient). googleAccountSub holds the
  * mailbox's immutable Google account sub (captured at connect) and namespaces the
  * dedup key, so an email/alias change does not fracture dedup. Identity is
  * re-verified on EVERY sweep (session.identity().sub vs the stored sub) before any

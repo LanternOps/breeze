@@ -290,7 +290,7 @@ export async function createGmailConnection(input: {
     if (err instanceof MailboxProbeError && err.kind === 'identity') {
       return { ok: false, code: 'account_id_unavailable', error: "Could not read the mailbox's Google account identity. Grant the service account the 'openid' and 'userinfo.email' scopes in domain-wide delegation, then retry." };
     }
-    return { ok: false, code: 'mailbox_unreadable', error: 'Could not read the mailbox via domain-wide delegation. Check the delegation grant and the gmail.readonly/modify scope for this service account.' };
+    return { ok: false, code: 'mailbox_unreadable', error: 'Could not read the mailbox via domain-wide delegation. Check the delegation grant and the gmail.readonly scope for this service account.' };
   }
 
   // "Same binding" = the existing row is already a Gmail row for the SAME org, so

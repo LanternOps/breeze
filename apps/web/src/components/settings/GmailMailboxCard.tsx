@@ -251,6 +251,11 @@ function GmailMailboxCardContent({ canAdminMailbox }: { canAdminMailbox: boolean
                   {t(/* i18n-dynamic */ `gmailMailbox.status.${c.status}`)}
                 </span>
               </div>
+              <p className="text-xs text-muted-foreground" data-testid="gmail-credential-org">
+                {t('gmailMailbox.credentialOrg', {
+                  org: orgs.find((o) => o.id === c.orgId)?.name ?? t('gmailMailbox.credentialOrgUnknown'),
+                })}
+              </p>
               {c.status === 'reauth_required' ? (
                 <p className="text-xs text-destructive">
                   {t('gmailMailbox.reauthRequired')}

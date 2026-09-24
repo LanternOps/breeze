@@ -4,10 +4,8 @@
  * Thin wrapper over @googleapis/gmail (already a dependency). Uses the inbound
  * DWD client (getInboundGmailClient). Every method here is read-only in BEHAVIOR
  * — it never mutates the mailbox, so there is no mark-read; the historyId cursor
- * is the incremental mechanism. Note the granted scope is broader than the
- * behavior: GMAIL_INBOUND_SCOPES is gmail.modify (see googleClient.ts for why),
- * so the authorization boundary permits label/read-state changes even though this
- * client performs none.
+ * is the incremental mechanism. The granted scope matches: GMAIL_INBOUND_SCOPES
+ * is gmail.readonly, so the authorization boundary itself forbids any change.
  *
  * Cursor model (Gmail is NOT a Graph delta URL):
  *  - historyId is an opaque STRING. Never parse it as a number.

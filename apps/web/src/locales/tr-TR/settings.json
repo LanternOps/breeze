@@ -995,7 +995,7 @@
   "gmailMailbox": {
     "title": "Google Workspace support mailbox",
     "description": "Connect a Google Workspace mailbox so customer email becomes tickets. Domain-wide delegation is used, so there are no MX or forwarding changes and no OAuth redirect.",
-    "connectHint": "The selected organization needs a Google Workspace service-account connection already configured. Enter the shared support mailbox to connect it.",
+    "connectHint": "The mailbox is read with the selected organization's Google Workspace service-account connection, so that organization holds its credential. For a partner-owned mailbox (such as your own help@), pick the organization whose Workspace contains the mailbox. Enter the shared support mailbox to connect it.",
     "status": {
       "pending_consent": "Pending",
       "connected": "Connected",
@@ -1019,7 +1019,9 @@
     "addressPlaceholder": "support@customerdomain.com",
     "displayName": "Display name (optional)",
     "namePlaceholder": "Support",
-    "connect": "Connect"
+    "connect": "Connect",
+    "credentialOrg": "Credential: {{org}}'s Google Workspace connection",
+    "credentialOrgUnknown": "an organization you cannot view"
   },
   "orgApprovalSecurityTab": {
     "title": "Onay Güvenliği",

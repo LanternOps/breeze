@@ -59,7 +59,8 @@ describe('scopes', () => {
     );
     expect(ALL_DWD_SCOPES_CSV).toContain('admin.directory.user');
     expect(ALL_DWD_SCOPES_CSV).toContain('gmail.settings.sharing');
-    expect(ALL_DWD_SCOPES_CSV).toContain('gmail.modify'); // inbound connector read scope
+    expect(ALL_DWD_SCOPES_CSV).toContain('gmail.readonly'); // inbound connector read scope
+    expect(ALL_DWD_SCOPES_CSV).not.toContain('gmail.modify'); // least privilege: the connector never writes
     expect(ALL_DWD_SCOPES_CSV).toContain('openid'); // inbound connector identity
     expect(ALL_DWD_SCOPES_CSV).toContain('userinfo.email');
     expect(ALL_DWD_SCOPES_CSV).toContain('apps.licensing');

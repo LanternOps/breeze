@@ -101,6 +101,17 @@ describe('GmailMailboxCard', () => {
     expect(screen.queryByText('support@a.com')).not.toBeInTheDocument();
   });
 
+  it('names the organization whose Google Workspace connection holds each mailbox credential', async () => {
+    fetchWithAuth.mockResolvedValueOnce(jsonRes({ connections: [GROW, { ...GROW, id: 'g9', orgId: 'org-hidden', mailboxAddress: 'other@client.example' }] }));
+    render(<GmailMailboxCard />);
+    await screen.findByText('help@client.example');
+    await waitFor(() => {
+      const lines = screen.getAllByTestId('gmail-credential-org').map((el) => el.textContent);
+      expect(lines[0]).toContain('Acme');
+      expect(lines[1]).toContain('an organization you cannot view');
+    });
+  });
+
   it('shows status but no mutation controls with read-only permission', async () => {
     grantedActions.delete('ticket_mailbox:admin');
     fetchWithAuth.mockResolvedValueOnce(jsonRes({ connections: [{ ...GROW, status: 'reauth_required' }] }));
