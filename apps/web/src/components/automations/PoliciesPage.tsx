@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Plus, Shield } from 'lucide-react';
 import PolicyList, { type Policy } from './PolicyList';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, handleSessionExpired } from '../../stores/auth';
+import { runAction, handleActionError } from '@/lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -65,22 +66,26 @@ export default function PoliciesPage() {
     void navigateTo(`/policies/compliance?policyId=${policy.id}`);
   };
 
+  // Toggle and delete go through runAction so every failure is toasted
+  // (#3531). The page-level `error` banner renders behind the delete modal's
+  // fixed z-50 scrim, so a failed delete used to be invisible.
   const handleToggle = async (policy: Policy, enabled: boolean) => {
+    const fallback = enabled ? t('policiesPage.errors.enable') : t('policiesPage.errors.disable');
     try {
-      const response = await fetchWithAuth(`/policies/${policy.id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ enabled })
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/policies/${policy.id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ enabled })
+          }),
+        errorFallback: fallback,
+        onUnauthorized: handleSessionExpired,
       });
-
-      if (!response.ok) {
-        throw new Error(enabled ? t('policiesPage.errors.enable') : t('policiesPage.errors.disable'));
-      }
-
       setPolicies(prev =>
         prev.map(p => (p.id === policy.id ? { ...p, enabled } : p))
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('policiesPage.errors.generic'));
+      handleActionError(err, fallback);
     }
   };
 
@@ -94,18 +99,20 @@ export default function PoliciesPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetchWithAuth(`/policies/${selectedPolicy.id}`, {
-        method: 'DELETE'
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/policies/${selectedPolicy.id}`, {
+            method: 'DELETE'
+          }),
+        errorFallback: t('policiesPage.errors.delete'),
+        onUnauthorized: handleSessionExpired,
       });
-
-      if (!response.ok) {
-        throw new Error(t('policiesPage.errors.delete'));
-      }
-
       await fetchPolicies();
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('policiesPage.errors.generic'));
+      // runAction already toasted; keep the confirmation modal open so the
+      // operator can retry or cancel, and do not refetch as if it succeeded.
+      handleActionError(err, t('policiesPage.errors.delete'));
     } finally {
       setSubmitting(false);
     }

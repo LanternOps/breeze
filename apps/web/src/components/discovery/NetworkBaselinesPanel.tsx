@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { ArrowRight, Pencil, Play, RefreshCw, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, handleSessionExpired } from '../../stores/auth';
+import { runAction, handleActionError, ActionError } from '@/lib/runAction';
 import { formatDateTime, mapNetworkBaseline, type NetworkBaseline } from './networkTypes';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
@@ -193,39 +194,49 @@ export default function NetworkBaselinesPanel({
       rogueDevice: form.alertRogueDevice
     };
 
+    // Mutations go through runAction so every failure is toasted (#3531); the
+    // inline banner is kept as well because the form it describes stays open.
+    const onFailure = (err: unknown, fallback: string) => {
+      handleActionError(err, fallback);
+      if (err instanceof ActionError) {
+        if (err.status === 401) return;
+        if (err.status === 403) setCanManage(false);
+      }
+      setError(err instanceof Error ? err.message : fallback);
+    };
+
+    const saveFallback = editingId
+      ? t('networkBaselinesPanel.errors.update')
+      : t('networkBaselinesPanel.errors.create');
     try {
       if (editingId) {
-        const response = await fetchWithAuth(`/network/baselines/${editingId}`, {
-          method: 'PATCH',
-          body: JSON.stringify({ scanSchedule, alertSettings })
+        await runAction({
+          request: () =>
+            fetchWithAuth(`/network/baselines/${editingId}`, {
+              method: 'PATCH',
+              body: JSON.stringify({ scanSchedule, alertSettings })
+            }),
+          errorFallback: saveFallback,
+          onUnauthorized: handleSessionExpired,
         });
-
-        if (!response.ok) {
-          if (response.status === 403) {
-            setCanManage(false);
-          }
-          throw new Error(await extractError(response, t('networkBaselinesPanel.errors.update')));
-        }
 
         setInfo(t('networkBaselinesPanel.messages.updated'));
       } else {
-        const response = await fetchWithAuth('/network/baselines', {
-          method: 'POST',
-          body: JSON.stringify({
-            orgId: currentOrgId ?? undefined,
-            siteId: form.siteId.trim(),
-            subnet: form.subnet.trim(),
-            scanSchedule,
-            alertSettings
-          })
+        await runAction({
+          request: () =>
+            fetchWithAuth('/network/baselines', {
+              method: 'POST',
+              body: JSON.stringify({
+                orgId: currentOrgId ?? undefined,
+                siteId: form.siteId.trim(),
+                subnet: form.subnet.trim(),
+                scanSchedule,
+                alertSettings
+              })
+            }),
+          errorFallback: saveFallback,
+          onUnauthorized: handleSessionExpired,
         });
-
-        if (!response.ok) {
-          if (response.status === 403) {
-            setCanManage(false);
-          }
-          throw new Error(await extractError(response, t('networkBaselinesPanel.errors.create')));
-        }
 
         setInfo(t('networkBaselinesPanel.messages.created'));
       }
@@ -233,7 +244,7 @@ export default function NetworkBaselinesPanel({
       await fetchBaselines();
       resetForm();
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : t('networkBaselinesPanel.errors.save'));
+      onFailure(saveError, saveFallback);
     } finally {
       setSaving(false);
     }
@@ -243,19 +254,17 @@ export default function NetworkBaselinesPanel({
     setError(null);
     setInfo(null);
 
+    const fallback = t('networkBaselinesPanel.errors.run');
     try {
-      const response = await fetchWithAuth(`/network/baselines/${baseline.id}/scan`, {
-        method: 'POST'
+      const payload = await runAction<unknown>({
+        request: () =>
+          fetchWithAuth(`/network/baselines/${baseline.id}/scan`, {
+            method: 'POST'
+          }),
+        errorFallback: fallback,
+        onUnauthorized: handleSessionExpired,
       });
 
-      if (!response.ok) {
-        if (response.status === 403) {
-          setCanManage(false);
-        }
-        throw new Error(await extractError(response, t('networkBaselinesPanel.errors.run')));
-      }
-
-      const payload = await response.json().catch(() => null);
       const queueJobId = payload && typeof payload === 'object' && typeof (payload as { queueJobId?: unknown }).queueJobId === 'string'
         ? (payload as { queueJobId: string }).queueJobId
         : null;
@@ -263,7 +272,10 @@ export default function NetworkBaselinesPanel({
       setInfo(queueJobId ? t('networkBaselinesPanel.messages.scanQueuedWithId', { id: queueJobId }) : t('networkBaselinesPanel.messages.scanQueued'));
       await fetchBaselines();
     } catch (runError) {
-      setError(runError instanceof Error ? runError.message : t('networkBaselinesPanel.errors.run'));
+      handleActionError(runError, fallback);
+      if (runError instanceof ActionError && runError.status === 401) return;
+      if (runError instanceof ActionError && runError.status === 403) setCanManage(false);
+      setError(runError instanceof Error ? runError.message : fallback);
     }
   };
 
@@ -278,17 +290,18 @@ export default function NetworkBaselinesPanel({
     setError(null);
     setInfo(null);
 
+    // The ConfirmDialog stays open on failure, and the page `error` banner
+    // renders behind it (#3531) — runAction's toast is what the operator sees.
+    const fallback = t('networkBaselinesPanel.errors.delete');
     try {
-      const response = await fetchWithAuth(`/network/baselines/${deleteTarget.id}?deleteChanges=true`, {
-        method: 'DELETE'
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/network/baselines/${deleteTarget.id}?deleteChanges=true`, {
+            method: 'DELETE'
+          }),
+        errorFallback: fallback,
+        onUnauthorized: handleSessionExpired,
       });
-
-      if (!response.ok) {
-        if (response.status === 403) {
-          setCanManage(false);
-        }
-        throw new Error(await extractError(response, t('networkBaselinesPanel.errors.delete')));
-      }
 
       setInfo(t('networkBaselinesPanel.messages.deleted', { subnet: deleteTarget.subnet }));
       await fetchBaselines();
@@ -297,7 +310,10 @@ export default function NetworkBaselinesPanel({
       }
       setDeleteTarget(null);
     } catch (deleteError) {
-      setError(deleteError instanceof Error ? deleteError.message : t('networkBaselinesPanel.errors.delete'));
+      handleActionError(deleteError, fallback);
+      if (deleteError instanceof ActionError && deleteError.status === 401) return;
+      if (deleteError instanceof ActionError && deleteError.status === 403) setCanManage(false);
+      setError(deleteError instanceof Error ? deleteError.message : fallback);
     } finally {
       setDeleting(false);
     }
