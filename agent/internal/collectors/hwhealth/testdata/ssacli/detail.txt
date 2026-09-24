@@ -1,0 +1,66 @@
+Smart Array P440ar in Slot 0 (Embedded)
+   Controller Status: OK
+   Cache Status: OK
+   Battery/Capacitor Status: OK
+===
+Smart Array P440ar in Slot 0 (Embedded)
+   Bus Interface: PCI
+   Slot: 0
+   Serial Number: CTRL-TEST
+   Firmware Version: 7.00
+   Controller Status: OK
+   Cache Status: OK
+   Battery/Capacitor Status: OK
+   Array Recovery Scan Priority: Medium
+
+   Array: A
+      Interface Type: SAS
+      Status: OK
+
+      Logical Drive: 1
+         Size: 558.9 GB
+         Fault Tolerance: 1
+         Status: OK
+         Mirror Group 0:
+            physicaldrive 1I:1:1 (port 1I:box 1:bay 1, SAS HDD, 600 GB, OK)
+         Mirror Group 1:
+            physicaldrive 1I:1:2 (port 1I:box 1:bay 2, SAS HDD, 600 GB, OK)
+         Drive Type: Data
+
+      physicaldrive 1I:1:1
+         Port: 1I
+         Box: 1
+         Bay: 1
+         Status: OK
+         Drive Type: Data Drive
+         Serial Number: DISK-A
+         Model: Fixture disk
+         Size: 600 GB
+         Current Temperature (C): 31
+
+      physicaldrive 1I:1:2
+         Port: 1I
+         Box: 1
+         Bay: 2
+         Status: OK
+         Drive Type: Data Drive
+         Serial Number: DISK-B
+         Model: Fixture disk
+         Size: 600 GB
+         Current Temperature (C): 32
+
+   Unassigned
+
+      physicaldrive 1I:1:3
+         Port: 1I
+         Box: 1
+         Bay: 3
+         Status: OK
+         Drive Type: Unassigned Drive
+         Serial Number: DISK-C
+         Model: Fixture disk
+         Size: 600 GB
+
+   Enclosure SEP (Vendor ID HPE, Model Fixture) 377
+      Device Number: 377
+      Model: Fixture SEP
