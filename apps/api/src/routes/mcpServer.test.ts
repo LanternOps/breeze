@@ -1330,6 +1330,60 @@ describe('MCP transport integration', () => {
     );
   });
 
+  it('#6476: an org-less partner-scope key checks the rate limit with the partner fallback', async () => {
+    delete process.env.IS_HOSTED;
+    process.env.NODE_ENV = 'development';
+    setTestApiKey({ id: 'key-partner', orgId: null, partnerId: 'partner-9', scopes: ['ai:read'] });
+    routeMocks.getUserPermissions.mockResolvedValue({
+      ...DEFAULT_PERMISSIONS_BASELINE,
+      orgId: null,
+      partnerId: 'partner-9',
+      scope: 'partner',
+    });
+    let selectCall = 0;
+    testState.db = {
+      select: () => {
+        selectCall += 1;
+        if (selectCall === 1) {
+          return {
+            from: () => ({
+              where: () => ({
+                limit: async () => [{ orgAccess: 'all', orgIds: null }],
+              }),
+            }),
+          };
+        }
+        return {
+          from: () => ({
+            where: async () => [{ id: 'org-1' }],
+          }),
+        };
+      },
+    };
+    routeMocks.executeTool.mockResolvedValue(JSON.stringify({ ok: true }));
+    routeMocks.getToolDefinitions.mockReturnValue([{ name: 'manage_tags', description: '', input_schema: {} }]);
+    routeMocks.getToolTier.mockImplementation((name: string) => (name === 'manage_tags' ? 1 : undefined));
+    routeMocks.checkGuardrails.mockReturnValue({ allowed: true, tier: 1 });
+    testState.redis = { get: vi.fn(async () => null) };
+
+    await mcpServerRoutes.request('/message', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_partner' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'manage_tags', arguments: { action: 'list' } },
+      }),
+    });
+
+    expect(routeMocks.checkToolRateLimit).toHaveBeenCalledWith(
+      'manage_tags',
+      expect.any(String),
+      { orgId: null, partnerId: 'partner-9' },
+    );
+  });
+
   // -------------------------------------------------------------------------
   // Task A10 — tenant (BYO MCP) tools over the MCP HTTP server.
   // -------------------------------------------------------------------------
