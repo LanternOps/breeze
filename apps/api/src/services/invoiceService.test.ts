@@ -2010,6 +2010,49 @@ describe('invoiceService currency representability guard (W6-G1-1)', () => {
     ).resolves.toMatchObject({ id: 'l1' });
   });
 
+  // #6227 (M18): draft recompute resolves org → partner on the locked tx and fails closed.
+  it('draft recompute persists the PARTNER rate when the org has none', async () => {
+    queueResult([draft('USD')]);
+    queueResult([{ max: 0 }]);
+    queueResult([{ id: 'l1', unitPrice: '100.00' }]);
+    queueResult([draft('USD')]);
+    queueResult([{ lineTotal: '100.00', taxable: true, customerVisible: true }]);
+    queueResult([{ taxExempt: false, taxRate: null }]);
+    queueResult([{ defaultTaxRate: '0.07000' }]);
+    queueResult([]);
+    await svc.addManualLine('i1', { description: 'x', quantity: 1, unitPrice: 100, taxable: true }, actor);
+    const set = (db as unknown as { update: Mock }).update.mock.results.at(-1)!.value.set as Mock;
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ taxRate: '0.07000', taxTotal: '7.00', total: '107.00' }));
+  });
+
+  it('draft recompute maps an invisible org to a 404, never a 0% rate', async () => {
+    queueResult([draft('USD')]);
+    queueResult([{ max: 0 }]);
+    queueResult([{ id: 'l1', unitPrice: '100.00' }]);
+    queueResult([draft('USD')]);
+    queueResult([{ lineTotal: '100.00', taxable: true, customerVisible: true }]);
+    queueResult([]); // org hidden by RLS
+    await expect(
+      svc.addManualLine('i1', { description: 'x', quantity: 1, unitPrice: 100, taxable: true }, actor)
+    ).rejects.toMatchObject({ code: 'ORG_NOT_FOUND', status: 404 });
+  });
+
+  it('draft recompute fails loudly (logged, rethrown) on an invisible partner, never the org-only rate', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    queueResult([draft('USD')]);
+    queueResult([{ max: 0 }]);
+    queueResult([{ id: 'l1', unitPrice: '100.00' }]);
+    queueResult([draft('USD')]);
+    queueResult([{ lineTotal: '100.00', taxable: true, customerVisible: true }]);
+    queueResult([{ taxExempt: false, taxRate: null }]);
+    queueResult([]); // partner hidden by RLS
+    await expect(
+      svc.addManualLine('i1', { description: 'x', quantity: 1, unitPrice: 100, taxable: true }, actor)
+    ).rejects.toThrow(/not visible for tax resolution/);
+    expect(errSpy).toHaveBeenCalledWith('[invoiceService] DRAFT_TAX_PARTNER_NOT_VISIBLE', expect.objectContaining({ partnerId: expect.any(String) }));
+    errSpy.mockRestore();
+  });
+
   it('updateLine rejects a patch that would make an existing JPY line fractional', async () => {
     queueResult([draft('JPY')]);
     queueResult([{ id: 'l1', quantity: '1', unitPrice: '100.00' }]); // existing line

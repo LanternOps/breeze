@@ -17,7 +17,7 @@ import { snapshotCost } from './catalogPricing';
 import { formatInvoiceNumber } from './invoiceNumbers';
 import { emitInvoiceEvent } from './invoiceEvents';
 import { resolveInvoiceFooter, resolveDraftBillTo } from './invoicePdf';
-import { resolveOrgTaxRate, resolveOrgTaxRateOn, OrgNotVisibleForTaxError } from './taxRateResolver';
+import { resolveOrgTaxRate, resolveOrgTaxRateOn, OrgNotVisibleForTaxError, PartnerNotVisibleForTaxError } from './taxRateResolver';
 import { stampedPresentation } from './invoicePresentation';
 import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
 import {
@@ -205,6 +205,11 @@ async function effectiveRateForOrg(inv: { orgId: string; partnerId: string }, db
   } catch (err) {
     if (err instanceof OrgNotVisibleForTaxError) {
       throw new InvoiceServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+    }
+    if (err instanceof PartnerNotVisibleForTaxError) {
+      // Unreachable from today's partner/system-scoped callers — if it fires, a
+      // new caller broke that assumption. Log the context so the 500 is traceable.
+      console.error('[invoiceService] DRAFT_TAX_PARTNER_NOT_VISIBLE', { orgId: inv.orgId, partnerId: inv.partnerId });
     }
     throw err;
   }
