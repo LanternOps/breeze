@@ -6,7 +6,7 @@
 // never the live registry" in the W06 plan. Key/Handle and the in-memory
 // Fake are untagged so the edit logic built on top of them (Part C:
 // RewriteMountedDevices, ForceBootStartStorage, SetComputerName, ...) is
-// testable on macOS/Linux; load.go (Part C, windows-tagged) is the only
+// testable on macOS/Linux; load_windows.go is the only
 // file that talks to RegLoadKeyW for real.
 package winhive
 
