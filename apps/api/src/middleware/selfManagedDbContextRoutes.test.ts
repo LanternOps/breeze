@@ -185,11 +185,19 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/configuration-policies/policy-1/patch-job'],
     ['POST', '/api/v1/configuration-policies/policy-1/patch-job/'],
     ['post', '/api/v1/configuration-policies/policy-1/patch-job'], // method is case-insensitive
+    // #6593 — Gmail inbound connect makes a DWD Google probe between short DB
+    // contexts; it must own its context so that probe isn't inside a held tx.
+    ['POST', '/api/v1/tickets/mailbox/connect/gmail'],
+    ['POST', '/api/v1/tickets/mailbox/connect/gmail/'],
   ];
 
   const NO_MATCH: ReadonlyArray<[string, string, string]> = [
     ['GET', '/api/v1/configuration-policies/policy-1/patch-job', 'wrong method (only POST opts out)'],
     ['POST', '/api/v1/configuration-policies/policy-1/patch-settings', 'sibling route keeps the ambient tx'],
+    // #6593 — the Microsoft mailbox /connect builds a consent URL with no
+    // server-side Graph call, so it keeps the ambient tx; only the Gmail sibling
+    // (which probes Google at connect time) opts out.
+    ['POST', '/api/v1/tickets/mailbox/connect', 'M365 connect makes no outbound call at connect time'],
     ['POST', '/api/v1/devices/abc-123/filesystem/cleanup-preview', 'preview keeps ambient tx'],
     ['GET', '/api/v1/devices/abc-123/filesystem/cleanup-runs', 'history keeps ambient tx'],
     // #3905 — the /send pattern must not swallow its siblings. Losing the

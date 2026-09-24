@@ -992,6 +992,35 @@
     "namePlaceholder": "Soutien",
     "connect": "Connecter"
   },
+  "gmailMailbox": {
+    "title": "Google Workspace support mailbox",
+    "description": "Connect a Google Workspace mailbox so customer email becomes tickets. Domain-wide delegation is used, so there are no MX or forwarding changes and no OAuth redirect.",
+    "connectHint": "The selected organization needs a Google Workspace service-account connection already configured. Enter the shared support mailbox to connect it.",
+    "status": {
+      "pending_consent": "Pending",
+      "connected": "Connected",
+      "error": "Needs attention",
+      "reauth_required": "Re-auth required",
+      "disabled": "Disabled"
+    },
+    "reauthRequired": "Gmail polling is paused for this mailbox. Reconnect it to resume: the service account may need re-authorization, its Google Workspace connection may be inactive, or the mailbox may now resolve to a different Google account.",
+    "reconnect": "Reconnect",
+    "reconnectNoOrg": "This connection is missing its organization and cannot be reconnected from here.",
+    "disconnect": "Disconnect",
+    "disconnected": "Mailbox disconnected",
+    "disconnectFailed": "Disconnect failed.",
+    "connected": "Mailbox connected",
+    "connectFailed": "Could not connect the Gmail mailbox.",
+    "empty": "No Gmail mailbox connected yet.",
+    "loadError": "Could not load Gmail mailbox connections. Refresh to try again.",
+    "organization": "Organization",
+    "selectOrg": "Select an organization",
+    "address": "Mailbox address",
+    "addressPlaceholder": "support@customerdomain.com",
+    "displayName": "Display name (optional)",
+    "namePlaceholder": "Support",
+    "connect": "Connect"
+  },
   "orgApprovalSecurityTab": {
     "title": "Sécurité de l’approbation",
     "description": "Exigez que les techniciens vérifient avec un appareil enregistré lors de l’approbation. Vous ne pouvez augmenter le niveau d’assurance que au-dessus du défaut Breeze — ne jamais le baisser.",

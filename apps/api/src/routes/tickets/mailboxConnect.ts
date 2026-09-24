@@ -28,6 +28,7 @@ import {
 } from '../../services/ticketMailbox/consentSessionService';
 import {
   bindVerifiedTenant,
+  createGmailConnection,
   createPendingConnection,
   disableConnection,
   getMailboxConnection,
@@ -70,6 +71,11 @@ type CallbackPhase = ConsentSession['phase'];
 type BrowserBinding = { phase: CallbackPhase; tenantHint: string | null };
 
 const connectBody = z.object({
+  mailboxAddress: z.string().email(),
+  displayName: z.string().max(120).optional(),
+});
+const gmailConnectBody = z.object({
+  orgId: z.string().uuid(),
   mailboxAddress: z.string().email(),
   displayName: z.string().max(120).optional(),
 });
@@ -349,6 +355,54 @@ mailboxRoutes.post(
       }),
       connectionId: connection.id,
     });
+  },
+);
+
+// Gmail (Google Workspace) connect. Domain-wide delegation means there is no
+// OAuth redirect: the org's google_workspace_connections credential is verified
+// against the mailbox (a real read) and a CONNECTED gmail row is provisioned in
+// one call — the production path #6593 asked for.
+mailboxRoutes.post(
+  '/connect/gmail',
+  authMiddleware,
+  partnerScopes,
+  requireMailboxAdmin,
+  requireMfa(),
+  zValidator('json', gmailConnectBody),
+  async (c) => {
+    const auth = c.get('auth');
+    if (!canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
+    const resolved = resolvePartnerId(auth);
+    if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
+
+    const { orgId, mailboxAddress, displayName } = c.req.valid('json');
+    const result = await createGmailConnection({
+      partnerId: resolved.partnerId,
+      orgId,
+      mailboxAddress,
+      displayName: displayName ?? null,
+      createdBy: auth.user.id,
+    });
+    if (!result.ok) {
+      const status = result.code === 'org_not_in_partner' ? 404
+        : result.code === 'no_google_connection' ? 400
+        : result.code === 'org_unavailable' ? 409
+        : result.code === 'connection_changed' ? 409
+        : 422;
+      return c.json({ error: result.error }, status);
+    }
+
+    writeRouteAudit(c, {
+      orgId,
+      action: 'ticket_mailbox.gmail_connected',
+      resourceType: 'ticket_mailbox_connection',
+      resourceId: result.id,
+      resourceName: mailboxAddress,
+      details: { provider: 'gmail' },
+    });
+    return c.json({ connectionId: result.id, status: 'connected' });
   },
 );
 

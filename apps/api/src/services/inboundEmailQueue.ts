@@ -4,21 +4,38 @@ import type { NormalizedInboundEmail } from './inboundEmail/types';
 
 export const INBOUND_EMAIL_QUEUE = 'inbound-email';
 
-export interface M365MailboxGenerationContext {
+/** Providers whose mail is PULLED from a connected mailbox (vs pushed by a
+ * signed webhook). These jobs MUST carry a generation context and acquire the
+ * mailbox-lifecycle lock before writing; webhook providers (mailgun/resend) do
+ * not. Kept here so the producer and the consumer agree on the exact set. */
+export const POLLED_MAILBOX_PROVIDERS = ['m365', 'gmail'] as const;
+export type PolledMailboxProvider = (typeof POLLED_MAILBOX_PROVIDERS)[number];
+
+/** Lifecycle-generation context for a polled mailbox job. `tenantId` is
+ * Microsoft-only (null for Gmail); the durable generation key is
+ * (connectionId, partnerId, consentAttemptId), which both providers carry and
+ * which rotates on re-consent. `provider` binds the job to the connection's
+ * provider so a job cannot be locked against a connection of another provider. */
+export interface MailboxGenerationContext {
+  provider: PolledMailboxProvider;
   connectionId: string;
   partnerId: string;
-  tenantId: string;
+  tenantId: string | null;
   consentAttemptId: string;
 }
 
+/** @deprecated Use MailboxGenerationContext. Retained as an alias so existing
+ * M365 call sites keep compiling during the transition. */
+export type M365MailboxGenerationContext = MailboxGenerationContext;
+
 export interface InboundEmailJobData {
   email: NormalizedInboundEmail;
-  mailboxGeneration?: M365MailboxGenerationContext;
+  mailboxGeneration?: MailboxGenerationContext;
 }
 
 /** Generic providers retain the raw-email shape for rolling compatibility.
- * Generation-bound M365 jobs use the wrapped contract; old consumers fail
- * closed on that unfamiliar shape instead of ingesting it without a lock. */
+ * Generation-bound polled-mailbox jobs use the wrapped contract; old consumers
+ * fail closed on that unfamiliar shape instead of ingesting it without a lock. */
 export type InboundEmailQueueJob = InboundEmailJobData | NormalizedInboundEmail;
 
 let queue: Queue<InboundEmailQueueJob> | null = null;
@@ -39,7 +56,7 @@ export function getInboundEmailQueue(): Queue<InboundEmailQueueJob> {
  */
 export async function enqueueInboundEmail(
   email: NormalizedInboundEmail,
-  mailboxGeneration?: M365MailboxGenerationContext,
+  mailboxGeneration?: MailboxGenerationContext,
 ): Promise<void> {
   const data: InboundEmailQueueJob = mailboxGeneration
     ? { email, mailboxGeneration }

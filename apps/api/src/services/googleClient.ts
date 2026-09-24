@@ -37,6 +37,33 @@ export const GMAIL_USER_SCOPES = [
   'https://www.googleapis.com/auth/gmail.settings.sharing', // forwarding addresses + auto-forwarding
 ] as const;
 
+// Inbound ticket connector scope, deliberately separate from GMAIL_USER_SCOPES
+// (the settings scopes) so each caller requests only what it needs. Uses
+// gmail.modify: it grants read plus label/read-state changes, and is the scope
+// operators already authorize for Gmail mailbox integrations. The connector
+// currently only READS (the historyId cursor is the incremental mechanism); the
+// modify grant leaves room to mark messages processed/labeled in a later phase
+// without a second DWD authorization. gmail.readonly would be stricter but is a
+// separate grant; modify is the operational default here.
+// Explicit per-request deadline for every Gmail/UserInfo call. gaxios has no
+// finite default, so a hung Google connection would never settle — and the ticket
+// mailbox poll worker sweeps mailboxes serially, so one hung request would stall
+// every later mailbox. With a timeout the request rejects, the per-mailbox catch in
+// runMailboxSweep records it, and the sweep moves on.
+export const GMAIL_REQUEST_TIMEOUT_MS = 30_000;
+
+export const GMAIL_INBOUND_SCOPES = [
+  'https://www.googleapis.com/auth/gmail.modify',
+  // Identity: `openid` yields the impersonated mailbox's immutable Google account
+  // `sub` (stable across email/alias changes, never reused), and userinfo.email
+  // lets us cross-check the returned principal is the address we impersonated.
+  // The sub is the connector's dedup namespace AND the same-account proof used to
+  // decide, on reconnect, whether a preserved history cursor still belongs to the
+  // same mailbox (org merge safety).
+  'openid',
+  'https://www.googleapis.com/auth/userinfo.email',
+] as const;
+
 export const CALENDAR_SCOPES = [
   'https://www.googleapis.com/auth/calendar.acls', // share a calendar (ACL insert), nothing more
 ] as const;
@@ -49,6 +76,7 @@ export const LICENSING_SCOPES = [
 export const ALL_DWD_SCOPES_CSV = [
   ...DIRECTORY_SCOPES,
   ...GMAIL_USER_SCOPES,
+  ...GMAIL_INBOUND_SCOPES,
   ...CALENDAR_SCOPES,
   ...LICENSING_SCOPES,
 ].join(',');
@@ -118,7 +146,73 @@ export function getGmailClient(
     scopes: [...GMAIL_USER_SCOPES],
     subject: targetUserEmail, // DWD: impersonate the end user
   });
-  return gmail({ version: 'v1', auth });
+  return gmail({ version: 'v1', auth, timeout: GMAIL_REQUEST_TIMEOUT_MS });
+}
+
+/**
+ * Gmail client for the inbound ticket connector, impersonating the target
+ * mailbox via DWD. Requests only GMAIL_INBOUND_SCOPES (gmail.modify) — not the
+ * settings scopes getGmailClient uses. The connector reads only today; the
+ * modify grant is the operational scope and leaves room for mark-processed later.
+ */
+export interface MailboxIdentity {
+  /** The impersonated account's immutable Google `sub` (opaque string; NEVER a
+   *  number). Stable across email/alias changes and never reused. */
+  sub: string;
+  /** The account's primary email as Google reports it (cross-check only). */
+  email: string | null;
+}
+
+/**
+ * ONE inbound DWD session for a mailbox: a single JWT (one impersonation subject,
+ * one token) that serves BOTH the Gmail client and the OpenID identity read. Using
+ * one session is the point — the history cursor and the immutable `sub` are then
+ * bound to the SAME credential/token and cannot straddle an address reassignment
+ * between two separately-minted requests.
+ */
+export interface InboundMailboxSession {
+  gmail: gmail_v1.Gmail;
+  /** Read the impersonated account's immutable identity via this session's token. */
+  identity(): Promise<MailboxIdentity>;
+}
+
+export function getInboundMailboxSession(
+  decryptedKeyJson: string,
+  targetMailboxEmail: string,
+): InboundMailboxSession {
+  const key = parseServiceAccountKey(decryptedKeyJson);
+  const auth = new gmailAuth.JWT({
+    email: key.client_email,
+    key: key.private_key,
+    scopes: [...GMAIL_INBOUND_SCOPES],
+    subject: targetMailboxEmail, // DWD: impersonate the mailbox
+  });
+  return {
+    gmail: gmail({ version: 'v1', auth, timeout: GMAIL_REQUEST_TIMEOUT_MS }),
+    async identity(): Promise<MailboxIdentity> {
+      // `openid` makes the DWD token carry the impersonated user's identity; the
+      // OpenID UserInfo endpoint returns that account's immutable `sub`. Uses the
+      // JWT auth client's own authenticated request (it extends OAuth2Client) so no
+      // extra @googleapis package is pulled in.
+      const res = await auth.request<{ sub?: unknown; email?: unknown }>({
+        url: 'https://openidconnect.googleapis.com/v1/userinfo',
+        timeout: GMAIL_REQUEST_TIMEOUT_MS,
+      });
+      const sub = res.data?.sub;
+      if (typeof sub !== 'string' || sub.length === 0) {
+        throw new Error('Google UserInfo returned no immutable account sub');
+      }
+      const email = typeof res.data?.email === 'string' ? res.data.email : null;
+      return { sub, email };
+    },
+  };
+}
+
+export function getInboundGmailClient(
+  decryptedKeyJson: string,
+  targetMailboxEmail: string,
+): gmail_v1.Gmail {
+  return getInboundMailboxSession(decryptedKeyJson, targetMailboxEmail).gmail;
 }
 
 /**

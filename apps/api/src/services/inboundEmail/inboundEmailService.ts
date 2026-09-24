@@ -1,4 +1,4 @@
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
 import {
@@ -18,7 +18,17 @@ import { hasStoredAttachments, persistInboundAttachments, withInboundAttachmentN
 import { captureException, captureMessage } from '../sentry';
 import { getConfig } from '../../config/validate';
 import type { NormalizedInboundEmail, InboundParseStatus } from './types';
-import type { M365MailboxGenerationContext } from '../inboundEmailQueue';
+import {
+  POLLED_MAILBOX_PROVIDERS,
+  type MailboxGenerationContext,
+  type PolledMailboxProvider,
+} from '../inboundEmailQueue';
+
+/** Type guard: is this normalized-email provider a PULLED mailbox provider
+ * (so it must carry a generation and acquire the lifecycle lock)? */
+function isPolledProvider(p: string): p is PolledMailboxProvider {
+  return (POLLED_MAILBOX_PROVIDERS as readonly string[]).includes(p);
+}
 import { TICKET_TOKEN_RE, findTicketInPartner, findClosedTicketInPartner, type SenderResolver } from './threadMatcher';
 import { claimMessageLink, findLinkByMessageId, normalizeMessageId } from '../ticketEmailLinks';
 import { ownOutboundReason, ticketCreationLoopReason } from './loopPrevention';
@@ -126,7 +136,7 @@ async function logInboundFailedDurable(
 }
 
 async function lockActiveMailboxGeneration(
-  generation: M365MailboxGenerationContext,
+  generation: MailboxGenerationContext,
 ): Promise<boolean> {
   const rows = await db
     .select({ id: ticketMailboxConnections.id })
@@ -134,7 +144,13 @@ async function lockActiveMailboxGeneration(
     .where(and(
       eq(ticketMailboxConnections.id, generation.connectionId),
       eq(ticketMailboxConnections.partnerId, generation.partnerId),
-      eq(ticketMailboxConnections.tenantId, generation.tenantId),
+      // The job's provider must match the LIVE connection's provider — a job can
+      // never lock against a connection of a different provider.
+      eq(ticketMailboxConnections.provider, generation.provider),
+      // tenant_id is Microsoft-only. IS NOT DISTINCT FROM so a Gmail generation
+      // (tenantId null) matches the live null, while a Microsoft generation still
+      // requires the exact tenant.
+      sql`${ticketMailboxConnections.tenantId} IS NOT DISTINCT FROM ${generation.tenantId}`,
       eq(ticketMailboxConnections.consentAttemptId, generation.consentAttemptId),
       // The consentAttemptId (generation) match above is the "same live binding"
       // proof: a DISABLE rotates it, so a retired/rotated connection already fails
@@ -166,29 +182,46 @@ export interface ProcessInboundEmailDependencies {
 
 export async function processInboundEmail(
   n: NormalizedInboundEmail,
-  mailboxGeneration?: M365MailboxGenerationContext,
+  mailboxGeneration?: MailboxGenerationContext,
   dependencies: ProcessInboundEmailDependencies = {},
 ): Promise<void> {
   // partnerId is tracked outside the try so the durable-failed log records whatever
   // tenant was resolved before the failure (may be null if resolution itself failed).
   let partnerId: string | null = null;
+  // Backward-compat: a mailbox generation enqueued BEFORE the `provider` field
+  // existed is definitionally m365 (Gmail post-dates that field). Default it so a
+  // legacy in-flight BullMQ job is not silently dropped at the provider-equality
+  // gate during a rolling upgrade (its Graph delta cursor may already have
+  // advanced, so the message would be lost, not redelivered).
+  const generation: MailboxGenerationContext | undefined = mailboxGeneration
+    ? { ...mailboxGeneration, provider: ((mailboxGeneration as { provider?: PolledMailboxProvider }).provider ?? 'm365') as PolledMailboxProvider }
+    : undefined;
   try {
     // A legacy raw BullMQ job cannot prove which mailbox lifecycle generation
-    // produced it. Keep generic providers backward-compatible, but fail closed
-    // for M365 rather than letting a pre-deploy job bypass the connection lock.
-    if (n.provider === 'm365' && !mailboxGeneration) return;
+    // produced it. Keep webhook providers backward-compatible, but fail closed
+    // for any PULLED-mailbox provider (m365, gmail) rather than letting a
+    // pre-deploy job bypass the connection lock.
+    if (isPolledProvider(n.provider) && !generation) return;
 
     // (1) Tenant identity is established ONLY from the recipient. Sender data is untrusted.
     // Resolution runs INSIDE the try so a failure here still routes to the durable
     // failed-log instead of escaping (and being silently retried / lost).
-    if (mailboxGeneration) {
+    if (generation) {
       // The queue payload's resolvedPartnerId is not authority. Lock and compare
       // every server-issued mailbox-generation field against the live row in the
       // same transaction that performs ticket/comment writes. A disable that won
       // first rotates the generation; a lock acquired here first makes disable wait.
-      if (n.provider !== 'm365' || !await lockActiveMailboxGeneration(mailboxGeneration)) return;
+      // Exact provider equality: the message's provider must be a polled provider
+      // AND match the generation's provider (the lock then verifies that against
+      // the live connection). This stops a job of one provider being validated
+      // against another provider's connection.
+      if (
+        !isPolledProvider(n.provider)
+        || n.provider !== generation.provider
+        || !await lockActiveMailboxGeneration(generation)
+      ) return;
       await dependencies.afterMailboxGenerationLock?.();
-      partnerId = mailboxGeneration.partnerId;
+      partnerId = generation.partnerId;
     } else {
       partnerId = n.resolvedPartnerId ?? await resolvePartnerByRecipient(n.to);
     }

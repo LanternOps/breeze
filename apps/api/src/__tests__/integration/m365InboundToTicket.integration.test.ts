@@ -26,6 +26,7 @@ import { createPartner, createOrganization } from './db-utils';
 import { getTestDb } from './setup';
 import { normalizeGraphMessage } from '../../services/ticketMailbox/normalizeGraphMessage';
 import { processInboundEmail } from '../../services/inboundEmail/inboundEmailService';
+import type { MailboxGenerationContext } from '../../services/inboundEmailQueue';
 import { disableConnection } from '../../services/ticketMailbox/connectionService';
 import type { GraphMessage } from '../../services/ticketMailbox/graphMailClient';
 
@@ -126,6 +127,7 @@ describe('M365 inbound → ticket (real DB)', () => {
     const normalized = normalizeGraphMessage(msg, seeded.partnerId, mailboxAddress);
 
     await withSystemDbAccessContext(() => processInboundEmail(normalized, {
+      provider: 'm365' as const,
       connectionId: seeded.connection.id,
       partnerId: seeded.partnerId,
       tenantId,
@@ -217,6 +219,62 @@ describe('M365 inbound → ticket (real DB)', () => {
     });
   }
 
+  // Regression (upgrade compat): a mailbox generation enqueued BEFORE the
+  // provider field existed has NO provider. Such a legacy in-flight job must
+  // still ingest (definitionally m365), not be dropped at the provider-equality
+  // gate. Without the consumer's legacy default this asserts 0 rows.
+  runDb('ingests a LEGACY generation that has no provider field (treated as m365)', async () => {
+    const db = getTestDb() as any;
+    const suffix = `${Date.now()}-${Math.floor(performance.now())}`;
+    const tenantId = randomUUID();
+    const microsoftOid = randomUUID();
+    const customerEmail = `legacy-${suffix}@known.test`;
+    const mailboxAddress = `support-legacy-${suffix}@example.com`;
+
+    const seeded = await withSystemDbAccessContext(async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      await db.insert(portalUsers).values({ orgId: org.id, email: customerEmail, name: 'Customer' });
+      await db.insert(ticketMailboxTenantOwnerships).values({ tenantId, partnerId: partner.id, verifiedMicrosoftOid: microsoftOid });
+      const [connection] = await db.insert(ticketMailboxConnections).values({
+        partnerId: partner.id, tenantId, mailboxAddress, status: 'connected',
+      }).returning({ id: ticketMailboxConnections.id, consentAttemptId: ticketMailboxConnections.consentAttemptId });
+      return { partnerId: partner.id, connection: connection! };
+    });
+
+    const msg: GraphMessage = {
+      id: `legacy-${suffix}`,
+      internetMessageId: `<legacy-${suffix}@known.test>`,
+      subject: `Legacy generation ${suffix}`,
+      from: { emailAddress: { address: customerEmail, name: 'Customer' } },
+      toRecipients: [{ emailAddress: { address: mailboxAddress } }],
+      body: { contentType: 'text', content: 'legacy generation' },
+      bodyPreview: 'legacy generation',
+      hasAttachments: false,
+      internetMessageHeaders: [
+        { name: 'Authentication-Results', value: 'example.com; spf=pass; dkim=pass; dmarc=pass' },
+      ],
+    };
+    const normalized = normalizeGraphMessage(msg, seeded.partnerId, mailboxAddress);
+
+    // The legacy envelope: no `provider` key (an old producer never set it).
+    const legacyGeneration = {
+      connectionId: seeded.connection.id,
+      partnerId: seeded.partnerId,
+      tenantId,
+      consentAttemptId: seeded.connection.consentAttemptId,
+    } as unknown as MailboxGenerationContext;
+
+    await withSystemDbAccessContext(() => processInboundEmail(normalized, legacyGeneration));
+
+    const rows = await db.select().from(ticketEmailInbound).where(and(
+      eq(ticketEmailInbound.partnerId, seeded.partnerId),
+      eq(ticketEmailInbound.providerMessageId, msg.id),
+    ));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.parseStatus).toBe('created');
+  });
+
   runDb('holds the generation row lock in the ingestion transaction until ticket creation commits', async () => {
     const db = getTestDb() as any;
     const suffix = `${Date.now()}-${Math.floor(performance.now())}`;
@@ -261,6 +319,7 @@ describe('M365 inbound → ticket (real DB)', () => {
     };
     const normalized = normalizeGraphMessage(msg, seeded.partnerId, mailboxAddress);
     const generation = {
+      provider: 'm365' as const,
       connectionId: seeded.connection.id,
       partnerId: seeded.partnerId,
       tenantId,
@@ -358,6 +417,7 @@ describe('M365 inbound → ticket (real DB)', () => {
     });
 
     const queuedGeneration = {
+      provider: 'm365' as const,
       connectionId: seeded.connection.id,
       partnerId: seeded.partnerId,
       tenantId,

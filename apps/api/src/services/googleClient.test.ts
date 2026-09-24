@@ -6,6 +6,7 @@ import {
   ALL_DWD_SCOPES_CSV,
   DIRECTORY_SCOPES,
   GMAIL_USER_SCOPES,
+  GMAIL_INBOUND_SCOPES,
   CALENDAR_SCOPES,
   LICENSING_SCOPES,
   getDirectoryClient,
@@ -52,12 +53,15 @@ describe('normalizeGoogleError', () => {
 });
 
 describe('scopes', () => {
-  it('CSV is the union of directory + gmail + calendar + licensing scopes', () => {
+  it('CSV is the union of directory + gmail (user + inbound) + calendar + licensing scopes', () => {
     expect(ALL_DWD_SCOPES_CSV).toBe(
-      [...DIRECTORY_SCOPES, ...GMAIL_USER_SCOPES, ...CALENDAR_SCOPES, ...LICENSING_SCOPES].join(','),
+      [...DIRECTORY_SCOPES, ...GMAIL_USER_SCOPES, ...GMAIL_INBOUND_SCOPES, ...CALENDAR_SCOPES, ...LICENSING_SCOPES].join(','),
     );
     expect(ALL_DWD_SCOPES_CSV).toContain('admin.directory.user');
     expect(ALL_DWD_SCOPES_CSV).toContain('gmail.settings.sharing');
+    expect(ALL_DWD_SCOPES_CSV).toContain('gmail.modify'); // inbound connector read scope
+    expect(ALL_DWD_SCOPES_CSV).toContain('openid'); // inbound connector identity
+    expect(ALL_DWD_SCOPES_CSV).toContain('userinfo.email');
     expect(ALL_DWD_SCOPES_CSV).toContain('apps.licensing');
     expect(ALL_DWD_SCOPES_CSV).toContain('calendar.acls');
   });
