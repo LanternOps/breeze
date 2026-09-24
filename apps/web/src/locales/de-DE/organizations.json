@@ -88,7 +88,8 @@
         "viewAll": "Alle Warnungen anzeigen"
       },
       "lastActivity": "Letzte Aktivität {{date}}",
-      "noSummary": "Zusammenfassende Zahlen sind derzeit nicht verfügbar."
+      "noSummary": "Zusammenfassende Zahlen sind derzeit nicht verfügbar.",
+      "archivedNotice": "Übersichtsdaten werden für archivierte Organisationen nicht angezeigt."
     },
     "archived": {
       "banner": "Diese Organisation ist archiviert und schreibgeschützt. Stellen Sie sie wieder her, um Änderungen vorzunehmen.",

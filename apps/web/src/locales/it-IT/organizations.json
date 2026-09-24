@@ -88,7 +88,8 @@
         "viewAll": "Visualizza tutti gli avvisi"
       },
       "lastActivity": "Ultima attività {{date}}",
-      "noSummary": "I totali di riepilogo non sono al momento disponibili."
+      "noSummary": "I totali di riepilogo non sono al momento disponibili.",
+      "archivedNotice": "I dati di riepilogo non vengono mostrati per le organizzazioni archiviate."
     },
     "archived": {
       "banner": "Questa organizzazione è archiviata ed è di sola lettura. Ripristinala per apportare modifiche.",

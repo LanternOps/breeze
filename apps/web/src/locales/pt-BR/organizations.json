@@ -88,7 +88,8 @@
         "viewAll": "Ver todos os alertas"
       },
       "lastActivity": "Última atividade {{date}}",
-      "noSummary": "Os totais de resumo não estão disponíveis no momento."
+      "noSummary": "Os totais de resumo não estão disponíveis no momento.",
+      "archivedNotice": "Os dados de visão geral não são exibidos para organizações arquivadas."
     },
     "archived": {
       "banner": "Esta organização está arquivada e é somente leitura. Restaure-a para fazer alterações.",

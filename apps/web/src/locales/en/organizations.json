@@ -88,7 +88,8 @@
         "viewAll": "View all alerts"
       },
       "lastActivity": "Last activity {{date}}",
-      "noSummary": "Summary counts are unavailable right now."
+      "noSummary": "Summary counts are unavailable right now.",
+      "archivedNotice": "Overview data isn't shown for archived organizations."
     },
     "archived": {
       "banner": "This organization is archived and read only. Restore it to make changes.",
