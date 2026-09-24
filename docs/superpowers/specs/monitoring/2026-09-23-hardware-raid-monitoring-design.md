@@ -19,10 +19,12 @@ or sensor state at all — `DiskInfo.Health` is hard-coded to `"healthy"` (`agen
 
 Success looks like:
 
-1. **Zero-config alerting on the common stacks.** A server running any of the tools in §5 with the
-   vendor CLI installed raises a "virtual disk degraded" / "physical disk failed" alert within two
-   polls (≤ 20 min at the default interval) of the fault, and the alert resolves itself once the
-   array is optimal again.
+1. **One-attachment alerting on the common stacks.** Once the MSP attaches the four built-in
+   hardware monitors to a configuration policy (built-ins are never attached by default, D9), a
+   server running any of the tools in §5 with the vendor CLI installed raises a "virtual disk
+   degraded" / "physical disk failed" alert within two RAID-tier polls plus jitter and sweep lag
+   (≈ 25 min at the default 10-min interval; disk-tier-only signals such as SMART within two
+   60-min polls), and the alert resolves itself once the array is optimal again.
 2. **Coverage without vendor tools.** Windows Storage Spaces, Linux md and ZFS, plain Windows disk
    health, and SMART (when smartmontools is installed) work with nothing else on the box.
 3. **The tech can see what to order.** The device Hardware tab shows controller → virtual disks →
@@ -123,8 +125,9 @@ the vendor's own state strings; the server derives health from state plus the pe
 | `stateDetail` | text, nullable | The vendor's own string, verbatim ("Interim Recovery Mode"). |
 | `progressPercent` | smallint 0–100, nullable | Rebuild / resync / init / scrub progress when the tool reports it. |
 | `temperatureC` | smallint, nullable | |
-| `predictiveFailure` | boolean | Controller or drive flagged predictive failure / SMART tripped. |
-| `attributes` | jsonb, ≤ 8 KB | Vendor extras: `raidLevel`, `stripeSize`, `cachePolicy`, `enclosure`, `slot`, `interface`, `mediaType`, `mediaErrors`, `otherErrors`, `powerOnHours`, `wearPercent`, `smart: {...}`, `memberKeys: [...]`, `osDevice`, `learnCycleActive`, `nextLearnAt`, `ip`, `mac`. Agent truncates to the cap. |
+| `predictiveFailure` | boolean | Controller or drive flagged predictive failure / SMART self-assessment failed / NVMe critical warning. |
+| `alertExempt` | boolean | Agent-set. True for OS-visible rows that duplicate a vendor-reported virtual disk (§6.5). Excluded by the alert handler (§9.3), still shown in the UI. |
+| `attributes` | jsonb, ≤ 8 KB | Vendor extras: `raidLevel`, `stripeSize`, `cachePolicy`, `enclosure`, `slot`, `interface`, `mediaType`, `mediaErrors`, `otherErrors`, `powerOnHours`, `wearPercent`, `smart: { observedAt, … }`, `memberKeys: [...]`, `osDevice`, `learnCycleActive`, `nextLearnAt`, `ip`, `mac`. Agent truncates to the cap. |
 
 ### 4.2 Component keys
 
@@ -136,7 +139,7 @@ the vendor's own state strings; the server derives health from state plus the pe
 | physical_disk (slotted) | `<controllerKey>:e<enclosure>:s<slot>` (`e-` when the tool reports no enclosure) | `ssacli:c0:e1:s3` |
 | physical_disk (mdadm / zfs member) | `<vdKey>:m:<stable dev id>` (by-id / GUID, never `/dev/sdX`) | `zfs:pool:tank:m:ata-ST4000_Z1Z5` |
 | physical_disk (windows_physical_disk) | `winpd:<UniqueId>` | |
-| physical_disk (smartctl standalone) | `smart:<serial>` (rows with blank serial: `smart:dev:<device path>`) | |
+| physical_disk (smartctl standalone) | `smart:<serial>` when the serial is non-blank and unique within this scan; otherwise `smart:dev:<device path>` | |
 | cache_battery | `<controllerKey>:bbu` or `:cv` | `perccli:c0:cv` |
 | enclosure | `<controllerKey>:enc<id>` | |
 | bmc | `bmc:<source>` | `bmc:ipmi` |
@@ -144,9 +147,13 @@ the vendor's own state strings; the server derives health from state plus the pe
 
 ### 4.3 State vocabularies and health derivation
 
-Health is `f(state)` from the table, then raised by flags: `predictiveFailure` → at least `warning`;
-mdadm/zfs member with non-zero read/write/checksum errors → at least `warning`; smartctl
-`smart_status.passed == false` → `critical`.
+Health is `f(state)` from the table, then raised by flags (never lowered): `predictiveFailure` → at
+least `warning`; mdadm/zfs member with non-zero read/write/checksum errors → at least `warning`;
+Windows `HealthStatus = Warning` → at least `warning`, `Unhealthy` → `critical`; smartctl
+`smart_status.passed == false` → `critical`. These flag rules are the complete list; a parser may not
+raise health for any other reason. Rank for comparisons and rollups: `critical > warning > ok >
+unknown` — `unknown` never outranks an observed value, so a device with all-ok components and one
+unknown rolls up `ok`, and rolls up `unknown` only when nothing observed is left.
 
 | Type | State → health |
 |---|---|
@@ -154,9 +161,12 @@ mdadm/zfs member with non-zero read/write/checksum errors → at least `warning`
 | virtual_disk | `optimal`→ok · `rebuilding` `initializing` `checking` `migrating`→warning · `degraded` `partially_degraded`→**critical** · `failed` `offline`→critical · `unknown`→unknown |
 | physical_disk | `online` `hotspare` `ready` `jbod` `unconfigured`→ok · `rebuilding` `copyback` `foreign` `shielded` `predictive_failure` `degraded`→warning · `failed` `missing` `offline`→critical · `unknown`→unknown |
 | cache_battery | `ok` `charging` `learning`→ok · `degraded`→warning · `failed` `missing`→critical · `unknown`→unknown |
-| enclosure | `ok`→ok · `degraded`→warning · `failed`→critical |
+| enclosure | `ok`→ok · `degraded`→warning · `failed`→critical · `unknown`→unknown |
 | bmc | `ok`→ok · `unknown`→unknown (informational) |
-| collector | `ok` `unavailable` `disabled`→ok · `failed` `backing_off`→warning |
+| collector | `ok`→ok · `failed` `backing_off`→warning (the agent owns this vocabulary; no `unknown`) |
+
+Every vocabulary except `collector` includes `unknown`, and `unknown` is the only legal fallback for an
+unrecognized vendor string.
 
 `degraded` on a virtual disk is critical on purpose: the array is one failure from data loss and that
 is the actionable moment. Rebuilding is warning so the critical default (§9.5) does not fire during a
@@ -181,7 +191,7 @@ Vendor → normalized mapping tables are in §5.2; the plan carries them into ea
 | storage_spaces | Win | any non-primordial pool | PowerShell `Get-StoragePool -IsPrimordial $false`, `Get-VirtualDisk`, `Get-PhysicalDisk` (pooled), `ConvertTo-Json -Depth 3` | JSON | synthetic controller, pools as enclosures, virtual disks, member disks | RAID | 60 s (one PowerShell) |
 | windows_physical_disk | Win | always | PowerShell `Get-PhysicalDisk` + `Get-StorageReliabilityCounter` | JSON | OS-visible disks with HealthStatus / OperationalStatus, temperature, wear, error counters | disk | 60 s |
 | smartctl | Win, Linux | `smartctl` | `--scan-open -j`; per device `-a -j <dev> -d <type>` (≤ 64 devices, 15 s each; Linux adds `-d megaraid,N` / `-d cciss,N` entries from `--scan-open`) | JSON | SMART overall status, temperature, power-on hours, key ATA attributes (5, 9, 187, 188, 194, 197, 198, 199), NVMe health log; **enriches** vendor-reported PDs by serial, standalone rows otherwise | disk | 15 s per device, 3 min total |
-| ipmi / racadm / hponcfg (W05) | Win, Linux | `ipmitool`, `racadm`, `hponcfg` | `ipmitool lan print 1`, `ipmitool mc info`; `racadm getniccfg`, `racadm getversion`; `hponcfg -g` | text | one `bmc` component: ip, mac, firmware, vendor | RAID tier, daily | 20 s |
+| ipmi / racadm / hponcfg (W05) | Win, Linux | `ipmitool`, `racadm`, `hponcfg` | `ipmitool lan print 1`, `ipmitool mc info`; `racadm getniccfg`, `racadm getversion`; `hponcfg -w <tmpfile>` (RIBCL config export — `-g` prints host name/serial only, not iLO network settings) | text / XML | one `bmc` component: ip, mac, firmware, vendor | RAID tier, daily | 20 s |
 
 Both tiers run inside the same cycle when both are due; a device with no RAID source and only the
 disk tier still reports on the 60-min cadence. A device where nothing but `windows_physical_disk`
@@ -193,7 +203,7 @@ only universal Windows disk-health signal.
 | Source | Vendor value | Normalized |
 |---|---|---|
 | storcli / perccli VD `State` | `Optl` · `Dgrd` · `Pdgd` · `OfLn` · `Rec` | optimal · degraded · partially_degraded · offline · rebuilding |
-| storcli / perccli PD `State` | `Onln` · `GHS` `DHS` · `UGood` · `UBad` · `Rbld` · `CpyBck` · `JBOD` · `Offln` · `Msng` · `UGShld` `UGUnsp` | online · hotspare · ready · failed · rebuilding · copyback · jbod · offline · missing · shielded |
+| storcli / perccli PD `State` | `Onln` · `GHS` `DHS` · `UGood` · `UBad` · `Rbld` · `CpyBck` · `JBOD` · `Offln` · `Msng` · `UGShld` · `UGUnsp` (unsupported drive) | online · hotspare · ready · failed · rebuilding · copyback · jbod · offline · missing · shielded · unknown |
 | storcli / perccli PD flags | `Predictive Failure Count > 0` or `S.M.A.R.T alert flagged by drive: Yes` | `predictiveFailure = true` |
 | storcli / perccli CV / BBU `State` | `Optimal` · `Learning` `Learn cycle active` · `Charging` · `Degraded` `Needs Attention` · `Failed` · absent | ok · learning · charging · degraded · failed · missing |
 | storcli / perccli controller `Controller Status` | `Optimal` · `Needs Attention` · `Failed` | ok · degraded · failed |
@@ -214,10 +224,12 @@ only universal Windows disk-health signal.
 | mdadm member | `active sync` · `faulty` · `spare` · `spare rebuilding` · `removed` · `writemostly` | online · failed · hotspare · rebuilding · missing · online |
 | zpool pool `health` | `ONLINE` · `DEGRADED` · `FAULTED` · `OFFLINE` · `UNAVAIL` `REMOVED`; scrub/resilver in progress | optimal · degraded · failed · offline · failed; checking / rebuilding with % |
 | zpool vdev member | `ONLINE` · `DEGRADED` · `FAULTED` · `OFFLINE` · `UNAVAIL` · `REMOVED`; read/write/cksum > 0 | online · degraded · failed · offline · missing · missing; health ≥ warning |
-| Storage Spaces pool / VD | `HealthStatus` Healthy · Warning · Unhealthy · Unknown; `OperationalStatus` `InService` `Degraded` `Detached` `Incomplete` `No Redundancy` | optimal · degraded · failed · unknown; rebuilding · degraded · offline · degraded · degraded |
+| Storage Spaces pool (→ `enclosure`) | `HealthStatus` Healthy · Warning · Unhealthy · Unknown | ok · degraded · failed · unknown |
+| Storage Spaces virtual disk | `OperationalStatus` `OK` · `InService` · `Degraded` · `Detached` · `Incomplete` · `No Redundancy`; then `HealthStatus` Healthy · Warning · Unhealthy · Unknown | optimal · rebuilding · degraded · offline · degraded · degraded; HealthStatus raises health only (§4.3 flag rules) |
 | Storage Spaces / Windows physical disk | `OperationalStatus` `OK` · `Predictive Failure` · `Lost Communication` · `Transient Error` · `Starting`; `Usage: HotSpare` · `Retired`; then `HealthStatus` Healthy · Warning · Unhealthy | online · predictive_failure · missing · degraded · online; hotspare · offline; HealthStatus only raises health (Warning → at least warning, Unhealthy → state `failed`) |
-| smartctl | `smart_status.passed: false` or exit bit 3 | state `predictive_failure`, health **critical** |
-| smartctl | ATA attr 5 / 197 / 198 raw > 0, 187 > 0; NVMe `critical_warning != 0` or `percentage_used ≥ 90` | `predictiveFailure = true` (health warning) |
+| smartctl | `smart_status.passed: false` or exit bit 3 | state `predictive_failure`, `predictiveFailure = true`, health **critical** |
+| smartctl | NVMe `critical_warning != 0` (the drive's own flag) | `predictiveFailure = true` (health warning) |
+| smartctl | ATA attributes 5 / 9 / 187 / 188 / 194 / 197 / 198 / 199 raw values, NVMe `percentage_used`, `media_errors`, `unsafe_shutdowns` | **data only** in `attributes.smart` — no health effect in v1 (prediction is #3866's job) |
 
 Anything not in the table maps to `unknown` with `stateDetail` carrying the raw string, and the
 parser test suite includes one "unrecognized state" fixture per source.
@@ -260,8 +272,11 @@ type Result struct {
 ```
 
 `Collect` never returns a partial `Complete: true`. If `/call/eall/sall show all J` fails after
-`/call show all J` succeeded, the result is `Complete: false` with the controllers it did parse, and
-the server treats the source as incomplete (no stale-marking, §7.3).
+`/call show all J` succeeded, the result is `Complete: false` with the controllers it did parse.
+**Contract:** whatever a source did parse is upserted as an observation (it is real state); `Complete:
+false` only withholds the right to stale-mark that source's components (§7.3). For smartctl,
+`Complete` is false whenever any device from `--scan-open` failed to open or timed out — a disk that
+merely went unreadable must not stale its own row.
 
 ### 6.2 Runner
 
@@ -293,7 +308,8 @@ checksum) → probe failure for that device (no row). Bits 3–7 → parse the J
 - Jitter: ± 10 % of the interval, seeded per device, so 10 000 agents do not hit the API in lockstep.
 - Cycle budget: 4 min total; sources run sequentially (vendor CLIs contend for the controller), each
   under its own timeout from §5.1; the cycle context is cancelled at the budget and remaining sources
-  report `failed: budget exceeded`.
+  report `failed: budget exceeded`. Fairness: when a cycle hits the budget, the next cycle starts
+  from the first source that did not run, so one slow tool cannot starve the same sources every time.
 - Tracked by the existing `inventoryWg` for graceful shutdown.
 - First run: 60 s after start (after the hardware-identity collector), so a freshly enrolled server
   shows RAID state within a minute.
@@ -308,12 +324,21 @@ installed) never trips the breaker.
 ### 6.5 Identity merging and suppression
 
 - smartctl enrichment attaches to a vendor-reported PD **only** when the serial is non-blank and
-  matches exactly one vendor PD in this snapshot; otherwise smartctl emits its own `smart:<serial>`
-  row. Enrichment copies `temperatureC`, `predictiveFailure` (OR), and `attributes.smart`.
+  matches exactly one vendor PD in this snapshot; otherwise smartctl emits its own row (§4.2 key).
+  Enrichment copies `temperatureC`, `predictiveFailure` (OR), and `attributes.smart` (with
+  `observedAt`).
+- **Tier replay.** smartctl runs on the 60-min tier but vendor PD rows are re-sent every 10 min. The
+  agent caches the last smartctl result per serial for up to 2 × `diskHealthIntervalMinutes` and
+  replays it into every RAID-tier snapshot, so a RAID-only snapshot never clears SMART-derived
+  fields. Consequence, accepted: a SMART flag observed once reaches `consecutiveSnapshots = 2` on
+  the next RAID snapshot — a drive's own failed self-assessment does not need a second observation.
+  When the cache expires without a fresh SMART result the enrichment fields are sent as `null` and
+  `attributes.smart` is dropped (the server overwrites; SMART evidence is never older than 2 h).
 - `windows_physical_disk` rows whose serial matches a vendor PD are dropped (the vendor row wins);
   rows whose model matches a RAID virtual-disk pattern (`PERC`, `LOGICAL VOLUME`, `Virtual Disk`,
-  `MR9`, `Smart Array`, `RAID`) when a vendor source reported ≥ 1 VD get `attributes.backedByVd =
-  true` and are shown under "OS-visible disks", never alerted on separately.
+  `MR9`, `Smart Array`, `RAID`) when a vendor source reported ≥ 1 VD are sent with `alertExempt:
+  true` and `attributes.backedByVd = true`, shown under "OS-visible disks", and skipped by the alert
+  handler (§9.3).
 - Blank or duplicate serials never merge (Codex: "blank or duplicate serials are insufficient").
 - Broadcom-family precedence (D12) is applied at detection: if storcli is available, perccli and
   MegaCli are marked `superseded` and omreport's storage commands are skipped (its battery output is
@@ -334,6 +359,8 @@ PUT /api/v1/agents/:agentId/hardware-health         // requireAgentRole (main ag
   "sequence": 1287,                 // monotonic, persisted in the agent state dir
   "collectedAt": "2026-09-23T18:40:12Z",
   "agentVersion": "0.117.0",
+  "pollIntervalMinutes": 10,        // effective RAID-tier interval (policy-resolved) — drives freshness windows server-side
+  "diskHealthIntervalMinutes": 60,  // effective disk-tier interval
   "tiersRun": ["raid", "disk"],     // or ["none"] for the daily nothing-detected snapshot, ["disabled"] when policy-disabled
   "sources": [
     { "source": "storcli", "status": "ok", "complete": true, "toolVersion": "007.2807.0000.0000", "path": "/opt/MegaRAID/storcli/storcli64", "durationMs": 812 },
@@ -359,13 +386,15 @@ of interleaving.
 
 ### 7.1 Ordering
 
-Accept when `sequence > last_sequence`. When `sequence <= last_sequence` (agent state dir wiped):
-accept **only if** `collectedAt > last_snapshot_at + 1 h` and reset the stored sequence; otherwise
-`409 {error: 'stale_snapshot'}` and the agent discards (no retry — the next cycle sends a newer one).
+Accept when `sequence > last_agent_sequence`. When `sequence <= last_agent_sequence` (agent state dir
+wiped): accept **only if** the server's receipt time is more than 1 h after `last_received_at` (server
+clock on both sides — the agent's `collectedAt` is stored for display but never trusted for ordering)
+and reset the stored sequence; otherwise `409 {error: 'stale_snapshot'}` and the agent discards (no
+retry — the next cycle sends a newer one).
 
 ### 7.2 Upsert and events
 
-For each component in the snapshot (only from sources with `status: ok`):
+For each component in the snapshot (from every source with `status: ok`, whether or not `complete`):
 
 - Upsert `ON CONFLICT (device_id, component_key)`. Compare against the previous row:
   - first insert → event `first_seen`
@@ -373,21 +402,29 @@ For each component in the snapshot (only from sources with `status: ok`):
   - `state` changed → `state_changed`
   - `physical_disk` serial changed (both non-blank) → `disk_replaced` (detail: old/new serial, model)
   - `predictiveFailure` false→true / true→false → `predictive_failure_set` / `_cleared`
-- Streaks (D5): `unhealthy_streak = health ∈ {warning, critical} ? (prev unhealthy ? +1 : 1) : 0`;
-  `healthy_streak` symmetric; `unknown` leaves both unchanged. `last_seen_at = collectedAt`,
-  `stale = false`, `stale_since = NULL`.
+- Streaks (D5) — five counters, each "consecutive accepted snapshots in which the predicate held",
+  reset to 0 the first snapshot it does not hold, all left unchanged when `health = unknown`:
+  `unhealthy_streak` (health ≥ warning), `critical_streak` (health = critical), `healthy_streak`
+  (health = ok), `below_critical_streak` (health < critical, i.e. ok or warning),
+  `predictive_streak` (`predictiveFailure`). §9.3 reads them per rule threshold so a warning history
+  never satisfies a critical rule's count. `last_seen_at = server receipt time`, `stale = false`,
+  `stale_since = NULL`.
 
 ### 7.3 Staleness (D4)
 
 For each source with `status: ok` **and** `complete: true`: components of that source not present in
-the snapshot → `stale = true`, `stale_since = collectedAt` (first time only), event `stale`. Stale rows
-are excluded from alert evaluation and rollup, shown greyed in the UI, and deleted by the reaper after
+the snapshot → `stale = true`, `stale_since = now` (first time only), event `stale`. Stale rows are
+excluded from alert evaluation and rollup, shown greyed in the UI, and deleted by the reaper after
 7 days stale (event `removed`). Sources reporting `failed`, `backing_off`, `unavailable`, `superseded`,
-`disabled`, or `complete: false` leave their existing components exactly as they were.
+`disabled`, or `complete: false` never stale-mark anything; the components a `complete: false` source
+did parse are still upserted (§7.2), everything else of that source stays exactly as it was.
 
-A whole device that stops reporting (agent offline) is not staled either — the alert handler reports
-`unknown` when the last snapshot is older than 3 × the effective poll interval, and the UI shows
-"last collected 3 days ago".
+**Freshness is per component, not per device.** A component whose `last_seen_at` is older than
+3 × its tier's effective interval (`poll_interval_minutes` for RAID-tier sources,
+`disk_health_interval_minutes` for `windows_physical_disk` / standalone `smartctl`; both stored on
+`device_hardware_health` from the payload) is `unknown` to the alert handler (§9.3) and shown as
+"not seen since …" in the UI. A failing source therefore goes unknown on its own schedule while the
+other sources stay fresh, and a whole device that stops reporting goes unknown without being staled.
 
 ### 7.4 Collector components
 
@@ -399,15 +436,18 @@ collector row if present (an uninstalled tool is not a fault). The "collector fa
 
 ### 7.5 Rollup
 
-`device_hardware_health` gets: `health` = worst of non-stale components **excluding** `collector` and
-`bmc` rows (`unknown` only when there are no other components); `collector_health` = worst collector
-row; `summary` jsonb = counts by `(componentType, health)` plus controller names, for the device-list
-tooltip; `sources` jsonb = the snapshot's `sources` array verbatim (excludedOpen); `last_sequence`,
-`last_snapshot_id`, `last_snapshot_at`, `tiers_run`, `agent_version`, `updated_at`.
+`device_hardware_health` gets: `health` = worst (§4.3 rank) of non-stale components **excluding**
+`collector` and `bmc` rows; `collector_health` = worst collector row (`ok` when none); `summary` jsonb =
+counts by `(componentType, health)` plus controller names, for the device-list tooltip; `sources`
+jsonb = the snapshot's `sources` array verbatim (excludedOpen); `last_agent_sequence`,
+`last_snapshot_id`, `last_collected_at` (agent clock, display only), `last_received_at` (server
+clock), `last_raid_received_at` / `last_disk_received_at` (per tier, from `tiersRun`),
+`poll_interval_minutes`, `disk_health_interval_minutes`, `tiers_run`, `agent_version`, `updated_at`.
 
 ### 7.6 BMC component
 
-A `bmc` component with `attributes.mac` triggers §12's auto-link inside the same transaction (idempotent).
+W01 stores `bmc` components like any other. W05 adds the ingest hook that hands a `bmc` component
+with `attributes.mac` to §12's auto-link inside the same transaction (idempotent).
 
 ## 8. Schema and tenancy
 
@@ -424,8 +464,9 @@ CLAUDE.md, not that file's `INITIALLY DEFERRED`).
 `model text null`, `serial text null`, `firmware text null`, `size_bytes bigint null`,
 `health hardware_health`, `state text`, `state_detail text null`, `progress_percent smallint null`,
 `temperature_c smallint null`, `predictive_failure boolean not null default false`,
-`attributes jsonb not null default '{}'`, `unhealthy_streak int not null default 0`,
-`healthy_streak int not null default 0`, `stale boolean not null default false`,
+`alert_exempt boolean not null default false`, `attributes jsonb not null default '{}'`,
+`unhealthy_streak`, `critical_streak`, `healthy_streak`, `below_critical_streak`,
+`predictive_streak` (all `int not null default 0`), `stale boolean not null default false`,
 `stale_since timestamptz null`, `first_seen_at`, `last_seen_at`, `created_at`, `updated_at`.
 UNIQUE `(device_id, component_key)`; index `(device_id, component_type) WHERE NOT stale`;
 index `(org_id, health) WHERE NOT stale AND health IN ('warning','critical')`.
@@ -440,10 +481,11 @@ past 180 days), so it does **not** join `AUDIT_ADMIN_REQUIRED_TABLES`.
 
 **`device_hardware_health`** — `device_id uuid pk`, `org_id`, `health hardware_health not null default
 'unknown'`, `collector_health hardware_health not null default 'ok'`, `summary jsonb`, `sources jsonb`,
-`last_sequence bigint not null default 0`, `last_snapshot_id uuid null`, `last_snapshot_at timestamptz
-null`, `tiers_run text[] not null default '{}'`, `agent_version text null`, `poll_interval_minutes int
-null` (the effective interval the agent reported, for the staleness window), `created_at`, `updated_at`.
-Index `(org_id, health)`.
+`last_agent_sequence bigint not null default 0`, `last_snapshot_id uuid null`, `last_collected_at
+timestamptz null`, `last_received_at timestamptz null`, `last_raid_received_at timestamptz null`,
+`last_disk_received_at timestamptz null`, `poll_interval_minutes int null`,
+`disk_health_interval_minutes int null`, `tiers_run text[] not null default '{}'`, `agent_version
+text null`, `created_at`, `updated_at`. Index `(org_id, health)`.
 
 Enums: `hardware_component_type`, `hardware_source`, `hardware_health`, `hardware_event_type` (§4).
 
@@ -472,7 +514,7 @@ creation). All files idempotent, no inner `BEGIN`, system scope elected before a
 | `device_hardware_components` | yes (`localeCompare` order: `device_hardware_components` < `device_hardware_events` < `device_hardware_health`) | yes | yes | `repoint` | `included` for typed columns; `attributes` **excludedOpen** |
 | `device_hardware_events` | yes | yes | yes | `repoint` | `detail` **excludedOpen** |
 | `device_hardware_health` | yes | yes | yes | `repoint` | `summary`, `sources` **excludedOpen** |
-| `config_policy_hardware_monitoring_settings` | no `org_id` (FK to feature link) — no entry, mirrors `config_policy_event_log_settings` | — | — | — | — |
+| `config_policy_hardware_monitoring_settings` | no `org_id` — not in the cascade/export/merge lists (deleted through the feature-link FK cascade, like `config_policy_event_log_settings`) — **but it still needs parent-chain RLS**: enable + force + policies through `config_policy_feature_links → configuration_policies` exactly as `2026-07-26-a-normalized-policy-tenant-integrity.sql` (~302) does for the event-log settings table, and a `['config_policy_hardware_monitoring_settings', ['configuration_policies']]` entry next to the event-log one in `rls-coverage.integration.test.ts` (~920) | — | — | — | — |
 | `alerts.subject_key` (new column on a registered table) | — | — | — | — | `included` |
 
 No FK between the three new tables (events reference `component_key` textually) so alphabetical order
@@ -489,9 +531,10 @@ Extend the existing scheduled retention job (plan locates it; the alert-suppress
 
 BMC-sourced components (`source ∈ redfish | snmp`) will be written against the **server** device
 (`device_id` = the linked agent device), keyed `redfish:<…>`, by a server-side poller rather than the
-agent. The ingest service therefore takes a `writer: 'agent' | 'server'` argument from day one and the
-per-source staleness rule already isolates sources from each other. Nothing else in this spec needs to
-change for the follow-on.
+agent. The ingest service therefore takes a `writer: 'agent' | 'server'` argument from day one, the
+per-source staleness rule already isolates sources from each other, and ordering is per writer: the
+agent owns `last_agent_sequence`; the follow-on adds its own `last_server_sequence` column and never
+touches the agent's. Nothing else in this spec needs to change for the follow-on.
 
 ## 9. Alerting
 
@@ -505,19 +548,27 @@ CREATE UNIQUE INDEX IF NOT EXISTS alerts_open_rule_device_subject_uidx
   WHERE rule_id IS NOT NULL AND status IN ('active', 'acknowledged', 'suppressed');
 ```
 
+`subject_key` carries `CHECK (subject_key <> '')` — empty is never a legal value, so the index's
+`COALESCE(subject_key, '')` maps exactly one value (NULL) to `''`, and the dedupe lookup below uses the
+same identity.
+
 Before creating the index the migration resolves pre-existing duplicate open alerts per
-`(rule_id, device_id)` (keep newest, resolve older with note `deduplicated by migration`), inside a
-`DO $$ … GET DIAGNOSTICS … RAISE WARNING 'resolved % duplicate open alerts' $$` block, system scope
-elected first. Sourced alerts (`rule_id IS NULL`) are outside the index.
+`(rule_id, device_id)` **among rows with `subject_key IS NULL` only** (keep newest, resolve older with
+note `deduplicated by migration`) inside a `DO $$ … GET DIAGNOSTICS … RAISE WARNING 'resolved %
+duplicate open alerts' $$` block, system scope elected first. Restricting to NULL subjects keeps the
+file idempotent after subject alerts exist. Sourced alerts (`rule_id IS NULL`) are outside the index.
 
 Service changes (`apps/api/src/services/alertService.ts`):
 
 - `createAlert(params)` takes optional `subjectKey`. Dedupe query adds `subject_key IS NOT DISTINCT FROM
   $subjectKey`; the insert uses index inference on the partial index —
   `ON CONFLICT (rule_id, device_id, COALESCE(subject_key, '')) WHERE rule_id IS NOT NULL AND status IN (…) DO NOTHING`
-  — and treats "no row inserted" as the dedupe outcome (read-then-insert alone is not enough under concurrency). Cooldown, flapping and
-  `recordStateTransition` keys become `${ruleId}:${deviceId}` + (`:${subjectKey}` when present) —
-  the Redis key helpers gain the optional segment; existing keys are unchanged when it is absent.
+  — and treats "no row inserted" as the dedupe outcome (read-then-insert alone is not enough under
+  concurrency). Postgres infers the partial index from that exact expression + predicate; Drizzle's
+  `onConflictDoNothing` accepts column targets only, so this one insert is written with the `sql`
+  template. Cooldown, flapping and `recordStateTransition` keys become `${ruleId}:${deviceId}` +
+  (`:${subjectKey}` when present) — the Redis key helpers gain the optional segment; existing keys
+  are unchanged when it is absent.
 - `ConditionResult` gains `subjects?: SubjectEvidence[]` with
   `SubjectEvidence = { subjectKey: string; status: 'breaching' | 'recovered' | 'unknown'; description: string; actualValue?: number; context?: Record<string, unknown> }`.
   `evaluateConditions` (`alertConditions/index.ts`) propagates `subjects` **only** when the root is a
@@ -525,21 +576,39 @@ Service changes (`apps/api/src/services/alertService.ts`):
   so it cannot be a composite child).
 - In `evaluateDeviceAlerts` (the `alert_rules` sweep — monitors compile into `alert_rules` via
   `managedByMonitorId`, so the config-policy path `evaluateDeviceAlertsFromPolicy` is **not** made
-  subject-aware; it is being retired by alerting-consolidation W05d anyway): when `subjects` is
-  present, for each `breaching` subject → `createAlert({…, subjectKey})`; for each open alert of
-  `(rule, device)` with `subject_key` set → `recovered` → `resolveAlert` when status ∈
-  `RESOLVABLE_ALERT_STATUSES` and not `requiresHuman`; `unknown` or absent → untouched; `breaching`
-  → untouched. `checkAutoResolve(alertId)` returns early for alerts with a `subject_key` (they are
-  resolved only by this path), so a device-level `passed: false` can never resolve a subject alert.
+  subject-aware; alerting-consolidation W05d retires it anyway), when `subjects` is present:
+  1. for each `breaching` subject → `createAlert({…, subjectKey})`;
+  2. for each open alert of `(rule, device)` with `subject_key` set: its subject `recovered` →
+     `resolveAlert` when the rule's `autoResolve` is on (the existing override/template flag at
+     ~482 is honoured; custom `autoResolveConditions` are ignored for subject alerts — the monitor
+     editor does not offer them for this kind), status ∈ `RESOLVABLE_ALERT_STATUSES`, and not
+     `requiresHuman`; `unknown` or absent → untouched; `breaching` → untouched;
+  3. the **episode observation** is computed after steps 1–2, not from `result.triggered`: `breach`
+     when any subject alert for `(rule, device)` is still open; else `unknown` when any in-scope
+     subject was `unknown` or `dataAvailable` was false; else `ok`. This is what closes the episode
+     (`episodeService.ts` ~144 closes on `ok`), so an episode can never close while a subject alert
+     is open.
+  `checkAutoResolve(alertId)` returns early for alerts with a `subject_key` (they are resolved only
+  by this path), so a device-level `passed: false` can never resolve a subject alert.
 - Episodes: the open episode for `(monitor, device)` is reused; `episode.alert_id` is set by the first
   alert and **not overwritten** by later subject alerts (`episodeService.ts` ~367 gains a guard);
   later alerts carry `episode_id` only. Recurrence counting and `requiresHuman` escalation stay
   per episode.
-- Responses (D7): when creating a subject alert and another open alert already exists for `(rule,
-  device)`, set `context.responsesSuppressed = true`; the response dispatcher (compiled from
-  `monitorCompiler.ts` ~198) skips automations/scripts for such alerts. Notification delivery is
-  unaffected.
-- Alert `context` for subject alerts: `{ source: 'hardware_health', subjectKey, componentType, componentKey, name, model, serial, state, stateDetail, health, slot, controller, predictiveFailure }`.
+- Responses (D7) are owned by the episode, the one atomic seam that already exists
+  (`monitor_episodes_open_uidx`): automations/scripts compiled for the rule run only for the alert
+  whose id equals `episode.alert_id`. Two subjects created in the same sweep, or by two concurrent
+  sweeps, cannot both own it. Transport: the `alert.triggered` event payload (~272) gains
+  `subjectKey` and `responsesOwner: boolean`; `jobs/automationWorker.ts` (~576, where it already
+  reads `monitorDeviceState.responsesPaused`) skips a monitor-managed automation when
+  `responsesOwner === false`. Notification delivery is unaffected — every subject alert notifies.
+- Retirement: while a subject is merely stale or unknown its alert stays open. When the reaper
+  removes a component (7 days stale, §7.3) or the device is deleted, open subject alerts for that
+  `component_key` are resolved with note `component no longer reported`.
+- Alert `context` for subject alerts: `{ source: 'hardware_health', subjectKey, componentType,
+  componentKey, componentLabel, stateLabel, name, model, serial, state, stateDetail, health, slot,
+  controller, predictiveFailure }` — `componentLabel` ("Physical disk 252:3 (ST4000NM0023
+  Z1Z5ABCD)") and `stateLabel` ("failed") are the two the templates in §9.2 use;
+  `packages/shared/src/utils/alertTemplate.ts` already resolves arbitrary context keys.
 
 ### 9.2 `hardware_health` monitor kind
 
@@ -560,25 +629,34 @@ hardware_health: z.object({
 `agentDelivered: false`, `alertCategory: 'hardware'`, `titleTemplate: '{{componentLabel}} {{stateLabel}} on {{deviceName}}'`,
 `messageTemplate: '{{ruleName}}: {{componentLabel}} is {{stateLabel}} ({{stateDetail}})'`,
 `toAlertCondition → { type: 'hardware_health', componentTypes, minHealth, includePredictiveFailure, consecutiveSnapshots }`.
-The plan verifies the template interpolator accepts subject `context` keys; if it only knows the fixed
-set, extend it (the fix benefits every kind).
-
-Registered in `kinds/index.ts`, the DB enum (§8.2 file 3), and
-`apps/web/src/components/monitoring/monitorKindFields.ts` (multi-select for component types, select
-for min health, boolean, number) + `defaultConditionFor`.
+Registered in `kinds/index.ts`, the DB enum (§8.2 file 3, labels appended in database order), and
+`apps/web/src/components/monitoring/monitorKindFields.ts` + `defaultConditionFor`. `FieldKind` there
+has no multi-select today (`number | text | select | operator | script | boolean`); this kind adds a
+`multiselect` field kind rendered as a checkbox group for `componentTypes`, plus a select for
+`minHealth`, a boolean and a number.
 
 ### 9.3 Handler
 
-`apps/api/src/services/alertConditions/handlers/hardwareHealth.ts`, registered in `registry.ts`:
+`apps/api/src/services/alertConditions/handlers/hardwareHealth.ts`, registered in
+`alertConditions/index.ts` (~34, where every handler is registered):
 
-1. Load `device_hardware_health`; if absent, or `last_snapshot_at < now() - 3 × poll_interval_minutes`
-   (fallback 30 min) → `{ passed: false, dataAvailable: false, subjects: [] }`.
-2. Load non-stale components with `component_type ∈ componentTypes`.
-3. Per component: `breaching` when `(rank(health) ≥ rank(minHealth) OR (includePredictiveFailure AND
-   predictive_failure)) AND unhealthy_streak ≥ consecutiveSnapshots`; `recovered` when `health = ok`;
-   `unknown` when `health = unknown`; a component that is unhealthy but has not reached the streak yet
-   is reported as `unknown` (so an existing alert is not resolved by a one-poll blip either way).
-4. `passed = any breaching`; `description` summarizes counts; `subjects` lists every component in scope.
+1. Load `device_hardware_health`; if absent → `{ passed: false, dataAvailable: false, subjects: [] }`.
+2. Load non-stale, non-`alert_exempt` components with `component_type ∈ componentTypes`.
+3. Per component, with `N = consecutiveSnapshots` and freshness per §7.3 (a component whose
+   `last_seen_at` is older than 3 × its tier's interval is `unknown` regardless of the rest):
+   - `minHealth = warning`: `breaching` when `unhealthy_streak ≥ N` or (`includePredictiveFailure`
+     and `predictive_streak ≥ N`); `recovered` when `healthy_streak ≥ N` and not `predictive_failure`;
+     otherwise `unknown`.
+   - `minHealth = critical`: `breaching` when `critical_streak ≥ N` or (`includePredictiveFailure`
+     and `predictive_streak ≥ N`); `recovered` when `below_critical_streak ≥ N` and not
+     `predictive_failure` — so a degraded array that moved to `rebuilding` resolves the critical alert
+     after N snapshots, and a rebuilding array under a critical rule is simply never breaching;
+     otherwise `unknown`.
+   - `health = unknown` → `unknown`.
+   `unknown` therefore also covers "unhealthy but the streak is not there yet" and "healthy but not
+   yet for N snapshots", so neither a one-poll blip nor a one-poll recovery moves an alert.
+4. `passed = any breaching`; `dataAvailable = false` when there were no components in scope at all;
+   `description` summarizes counts; `subjects` lists every component in scope.
 
 ### 9.4 Web
 
@@ -615,12 +693,17 @@ Pattern B, mirroring `event_log` end-to-end:
   (~875, 1167, 1215, 1422) plus the reference-validation switch (~2973). Shared Zod inline schema
   `hardwareMonitoringInlineSettingsSchema`.
 - Agent delivery: `resolveDeviceHardwareMonitoringSettings` + Redis-cached
-  `getDeviceHardwareMonitoringSettings` (`hwmon:settings:device:${deviceId}`, same TTL and invalidation
-  hooks as event log) and `buildHardwareMonitoringConfigUpdate` in `routes/agents/helpers.ts`, merged
-  into `mergedConfigUpdate` in `heartbeat.ts` **inside the same DB context as the other builders** (no
-  extra pool connection per heartbeat — see the 09-22 US pool deadlock). No policy link → defaults
-  are still sent (so a removed policy resets the agent); resolver failure → key omitted (agent keeps
-  its last config).
+  `getDeviceHardwareMonitoringSettings` (`hwmon:settings:device:${deviceId}`, same 120 s TTL as
+  `EVENT_LOG_CACHE_TTL_SECONDS`; event log has no write-side invalidation and neither does this — a
+  change reaches the agent within TTL + one heartbeat and takes effect at its next tick gate, worst
+  case ≈ 2 min + one poll interval, accepted) and `buildHardwareMonitoringConfigUpdate` in
+  `routes/agents/helpers.ts`, resolved inside the existing post-scoped `withSystemDbAccessContext`
+  block in `heartbeat.ts` (~2054, where event-log / monitoring / PAM / patch-source settings are
+  built) and merged into the final `configUpdate` assembly (~2150) — **not** into
+  `mergedConfigUpdate` (~1702), which deliberately excludes policy readers (#1105 / #2930). No extra
+  pool connection per heartbeat (see the 09-22 US pool deadlock). No policy link → defaults are
+  still sent (so a removed policy resets the agent); resolver failure → key omitted (agent keeps its
+  last config).
 - Agent: `applyHardwareMonitoringConfig` under key `hardware_monitoring` in `applyConfigUpdate`
   (snake_case and camelCase accepted like the others).
 - Web: `HardwareMonitoringTab.tsx` (`FeatureTabShell` + `useFeatureLink`), `FEATURE_META`,
@@ -682,19 +765,22 @@ rebuild = warning), and the agent-local `tool_dirs` override.
 
 - Agent source `bmc` (RAID tier, but only once per 24 h): tries `ipmitool lan print 1` + `ipmitool mc
   info` (Linux and Windows when installed), then Dell `racadm getniccfg` + `racadm getversion`, then
-  HPE `hponcfg -g`. Emits one `bmc` component: `name` "iDRAC" / "iLO" / "XClarity Controller" /
+  HPE `hponcfg -w <tmpfile>` (RIBCL export; `-g` prints host info only). Emits one `bmc` component: `name` "iDRAC" / "iLO" / "XClarity Controller" /
   "BMC", `firmware`, `source` = `ipmi` / `racadm` / `hponcfg`, `attributes: { ip, mac, vendor }`, health `ok`. No credentials involved
   (in-band IPMI over the KCS interface needs none).
-- API: on ingest of a `bmc` component with a MAC, call the discovery auto-linker
-  (`jobs/discoveryWorker.ts` ~1124) with `linkSource = 'agent_report'` (new enum value on
-  `discovered_asset_link_source`): link the `discovered_assets` row in the **same org** whose MAC
-  matches, unless it is already linked to another device or `auto_link_suppressed_at` is set. Site is
-  not required to match (BMCs sit on management VLANs). When no asset exists yet, nothing is stored
-  beyond the component; the auto-linker's existing MAC match gains the device's reported BMC MAC as an
-  additional identity so a later discovery reconciles.
-- Gates the plan must verify (Codex finding): the `agent_report` path must **not** auto-approve the
-  asset, must **not** propagate the asset's classification onto the host device, and must **not** feed
-  the topology alias-cluster merge (`services/topology/aliasClusters.ts` ~63) — a BMC is its own node.
+- API (the W05 ingest hook, §7.6): link the `discovered_assets` row in the **same org** whose MAC
+  matches and whose `site_id` equals the device's site or is NULL — `jobs/discoveryWorker.ts` ~1077
+  clears cross-site links on every scan, so a cross-site link would not survive; the card instead
+  says "management controller found in site X". Skip when the asset is already linked to another
+  device or `auto_link_suppressed_at` is set. `linkSource = 'agent_report'` (new enum value). When no
+  asset exists yet, nothing is stored beyond the component; the auto-linker's existing MAC match
+  gains the device's reported BMC MAC as an additional identity so a later discovery reconciles.
+- Gates the plan must verify (Codex findings, both passes): (a) `agent_report` links must **not**
+  auto-approve the asset — `discoveryWorker.ts` ~1201 approves any already-linked asset on the next
+  scan, so that branch must check `link_source`; (b) must **not** propagate the asset's
+  classification onto the host device; (c) must **not** feed topology identity merging —
+  `services/topology/aliasClusters.ts` ~63 and `services/topology/publish.ts` ~195 both treat a
+  linked asset as the device's identity; a BMC is its own node.
 - UI: Management controller card (§11.1); the network-device page's existing back-link shows the
   server.
 
@@ -788,6 +874,19 @@ AGREE-WITH-CHANGES on all four decisions. Changes adopted:
   added; agent auth, main-agent role restriction and body limits kept; runner extracted so stdout and
   exit status survive non-zero exit (smartctl exit bits are data); merge only on unambiguous serial;
   unavailable vs failed distinguished, breaker visible; BMC linking gated (D14).
+
+Second Codex pass (same model/effort, 2026-09-23 evening) on the committed spec: 17 findings, all
+folded in — parent-chain RLS for the settings table; partial-snapshot upsert vs stale contract;
+SMART tier replay; episode observation computed from open subject alerts (not `result.triggered`);
+response ownership = `episode.alert_id` with `responsesOwner` on the `alert.triggered` payload;
+BMC link gates against the cross-site clear (~1077) and auto-approve (~1201) branches; `autoResolve`
+honoured; five per-rank streak counters; vocabulary closure (pools are enclosures, `UGUnsp` →
+unknown, Windows HealthStatus as a flag rule); `alert_exempt` typed column; per-component freshness
+from a payload-carried interval; migration dedupe restricted to NULL subjects + non-empty CHECK;
+Drizzle `onConflict` needs raw SQL for an expression target; heartbeat insertion point corrected to
+the post-scoped block; per-writer sequence; success criteria reworded (one attachment, ≈ 25 min);
+SMART raw attributes demoted to data-only; `hponcfg -w` export instead of `-g`; handler registration
+in `alertConditions/index.ts`; `multiselect` field kind; templates use `componentLabel`/`stateLabel`.
 
 Rejected: none. Owner approvals: Q1 detect-only, Q2 per-component, Q3 BMC separate spec, and the
 defaults list — Todd, 2026-09-23 ("Yes as recommended"); design sections — Todd, 2026-09-23 ("approve").
