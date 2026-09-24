@@ -1103,14 +1103,6 @@
         "hpCmslTermsChangedSaveAgain": "HP ha modificato le condizioni di licenza dopo questa accettazione. Salva di nuovo per accettare nuovamente.",
         "hpCmslInheritanceReplacesTheWholeLink": "Questo criterio sostituisce per intero le impostazioni di garanzia ereditate, senza alcuna unione campo per campo. Salvandolo con la raccolta sul dispositivo disattivata si interrompe la raccolta della garanzia HP su ogni dispositivo che raggiunge."
       },
-      "rationale": {
-        "label": "Motivazione",
-        "edit": "Modifica motivazione",
-        "placeholder": "Perché esiste questo elemento…",
-        "save": "Salva",
-        "cancel": "Annulla",
-        "none": "Nessuna motivazione registrata."
-      },
       "legacyFreeze": {
         "title": "Le nuove regole vengono create come monitor",
         "body": "Le regole esistenti restano modificabili qui e verranno convertite in monitor nella prossima versione.",

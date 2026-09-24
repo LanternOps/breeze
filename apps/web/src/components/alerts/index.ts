@@ -6,21 +6,8 @@ export type { Alert, AlertSeverity, AlertStatus } from './AlertList';
 export { default as AlertDetails } from './AlertDetails';
 export type { NotificationHistory, StatusChange } from './AlertDetails';
 
-// Alert Rules
-//
-// AlertRuleList / AlertRulesPage were removed with #3988: /alerts/rules/* has
-// been a 301 to /configuration-policies since d8a6bc833 (2026-02-22), so both
-// components — and the "Test" verdict fix #3923 landed in them six months
-// later — were unreachable from any route. Alert rules are edited in the
-// Configuration Policy Alerts tab
-// (components/configurationPolicies/featureTabs/AlertRuleTab.tsx), and the Test
-// verdict now lives beside it in AlertRuleTestModal.tsx.
-
-// Alert Templates: AlertTemplateList / AlertTemplateEditor were removed
-// (alerting consolidation W05c2, #6367) — /settings/alert-templates and
-// /settings/alert-templates/:id now 301 to /alerts/monitors.
-
-// Alert Rule Editor
+// Alert conditions are authored as monitors at /alerts/monitors.
+// Retired alert rule and template routes redirect there.
 
 // Alert Correlation
 export { default as AlertCorrelationView } from './AlertCorrelationView';

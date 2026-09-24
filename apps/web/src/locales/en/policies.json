@@ -1103,14 +1103,6 @@
         "hpCmslTermsChangedSaveAgain": "HP has changed its licence terms since this acceptance. Save again to re-accept.",
         "hpCmslInheritanceReplacesTheWholeLink": "This policy replaces the inherited warranty settings as a whole, with no field-by-field merge. Saving it with device collection switched off stops HP warranty collection on every device this policy reaches."
       },
-      "rationale": {
-        "label": "Rationale",
-        "edit": "Edit rationale",
-        "placeholder": "Why this item exists…",
-        "save": "Save",
-        "cancel": "Cancel",
-        "none": "No rationale recorded."
-      },
       "legacyFreeze": {
         "title": "New rules are created as monitors",
         "body": "Existing rules stay editable here and convert to monitors in the next release.",

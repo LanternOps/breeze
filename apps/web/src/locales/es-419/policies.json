@@ -1103,14 +1103,6 @@
         "hpCmslTermsChangedSaveAgain": "HP cambió sus términos de licencia desde esta aceptación. Guarde de nuevo para volver a aceptar.",
         "hpCmslInheritanceReplacesTheWholeLink": "Esta política reemplaza por completo la configuración de garantía heredada, sin combinación campo por campo. Si la guarda con la recopilación en el dispositivo desactivada, se detiene la recopilación de garantía HP en todos los dispositivos que alcanza."
       },
-      "rationale": {
-        "label": "Justificación",
-        "edit": "Editar justificación",
-        "placeholder": "Por qué existe este elemento…",
-        "save": "Guardar",
-        "cancel": "Cancelar",
-        "none": "No hay justificación registrada."
-      },
       "legacyFreeze": {
         "title": "Las reglas nuevas se crean como monitores",
         "body": "Las reglas existentes siguen siendo editables aquí y se convertirán en monitores en la próxima versión.",

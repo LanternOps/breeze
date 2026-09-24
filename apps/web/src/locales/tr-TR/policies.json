@@ -1103,14 +1103,6 @@
         "hpCmslTermsChangedSaveAgain": "HP, bu kabulden bu yana lisans koşullarını değiştirdi. Yeniden kabul etmek için tekrar kaydedin.",
         "hpCmslInheritanceReplacesTheWholeLink": "Bu ilke, devralınan garanti ayarlarının tamamını değiştirir; alan alan birleştirme yoktur. Cihaz üzerinde toplama kapalıyken kaydedilmesi, bu ilkenin ulaştığı her cihazda HP garanti toplamayı durdurur."
       },
-      "rationale": {
-        "label": "Gerekçe",
-        "edit": "Gerekçeyi düzenle",
-        "placeholder": "Bu öğe neden var…",
-        "save": "Kaydet",
-        "cancel": "İptal",
-        "none": "Kayıtlı gerekçe yok."
-      },
       "legacyFreeze": {
         "title": "Yeni kurallar monitör olarak oluşturulur",
         "body": "Mevcut kurallar burada düzenlenebilir kalır ve bir sonraki sürümde monitörlere dönüştürülür.",
