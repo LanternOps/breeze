@@ -1,4 +1,3 @@
-// W04: Retire this pre-conversion dry-run query test when its legacy pricing columns are dropped.
 // apps/api/src/__tests__/integration/labourPricingDryRunQuery.integration.test.ts
 /**
  * The SQL half of the W02 labour-pricing dry run.
@@ -16,13 +15,18 @@
  * `breeze_current_scope()` defaults to 'none' and these tables are FORCE ROW
  * LEVEL SECURITY, so a contextless run returns ZERO ROWS SILENTLY and the
  * report prints a confident "nothing to convert".
+ *
+ * #4628 W04b dropped the legacy columns; the script still runs against a
+ * not-yet-upgraded database (see its header), so this suite restores them for
+ * its duration.
  */
 import './setup';
-import { describe, expect, it, afterAll } from 'vitest';
+import { describe, expect, it, afterAll, beforeAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { buildDryRunReport, formatReport } from '../../../scripts/labour-pricing-dry-run.lib';
+import { dropLegacyLabourPricingColumns, restoreLegacyLabourPricingColumns } from './fixtures/legacyLabourPricingColumns';
 
 const partnerId = randomUUID();
 
@@ -89,6 +93,7 @@ describe('labour-pricing dry run: the org/90-day query against real Postgres', (
   // The shared setup truncates core tenant tables before every test, so each
   // case re-seeds from scratch. Only the trailing cleanup is ours, and it has
   // to run children-before-parents: every FK here is NO ACTION.
+  beforeAll(restoreLegacyLabourPricingColumns);
   afterAll(async () => {
     for (const statement of [
       sql`DELETE FROM time_entries WHERE partner_id = ${partnerId}`,
@@ -101,6 +106,7 @@ describe('labour-pricing dry run: the org/90-day query against real Postgres', (
     ]) {
       await withSystemDbAccessContext(() => db.execute(statement));
     }
+    await dropLegacyLabourPricingColumns();
   });
 
   it('an org with NULL billable and a matching-currency rate lands under WILL START BILLING', async () => {
