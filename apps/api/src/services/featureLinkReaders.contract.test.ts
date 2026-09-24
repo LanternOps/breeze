@@ -33,12 +33,16 @@ const DIRECT_READ_ALLOWLIST = new Set([
   'routes/monitorDefinitions.ts',
   // #5289 — AI-tool mirror of routes/monitorDefinitions.ts above: every read
   // here is either reporting a monitor's own (authored) policy attachments
-  // (get_monitor) or the attach/detach read-modify-write path over the same
-  // authored rows (currentAttachmentItems, mirroring that file's currentItems).
+  // (get_monitor) or the attach/detach path over the same authored rows.
   // None of these resolve a policy's EFFECTIVE monitor set — that's
   // services/monitors/monitorResolver.ts's job — so there is no call site here
   // that should switch to the view.
   'services/aiToolsMonitors.ts',
+  // #6371 — the attach/detach read-modify-write shared by the two files above.
+  // It rewrites the policy's OWN link (items + its `inheritance`), so it must
+  // read that authored row; an inherited projection would write a parent's
+  // settings back onto the child.
+  'services/monitors/monitorAttachments.ts',
 
   // #6370 W05c1 — conversion operates on the policy's OWN authored rows: it
   // retires them and re-homes their alerts. The effective view would hand back
