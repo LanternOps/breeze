@@ -42,7 +42,7 @@ import {
   deleteBackupObjectKeys,
   fetchBackupObjectText,
   isBackupObjectNotFound,
-  listBackupObjectsUnderPrefix,
+  iterateBackupObjectsUnderPrefix,
   type BackupObjectListing,
 } from '../services/backupSnapshotStorage';
 import { asRecord, getStringValue } from '../services/recoveryBootstrap';
@@ -1011,36 +1011,102 @@ function detectSuspiciousStorageIdentityCollisions(
   return suspicious;
 }
 
-// ── Listing grouped by snapshot-ID prefix ─────────────────────────────────────
+// ── Listing summarised by snapshot-ID prefix ──────────────────────────────────
+//
+// #6834: the sweep never holds a destination's full listing. The root pass
+// streams it page by page and folds each key into a per-snapshot SUMMARY —
+// just what the mark phase and the per-group decisions need (manifest item,
+// newest/oldest mtime, whether any mtime is unknown) — and drops the key.
+// Keys are only ever needed for deletion candidates, and those are gathered
+// per group by re-listing that one snapshot's prefix at sweep time (see
+// sweepStorageIdentity). Memory is O(snapshots) for the summaries plus
+// O(min(cap, one group)) for candidates, instead of O(objects in bucket).
 
-type BackupGcSnapshotGroup = {
-  items: BackupObjectListing[];
+type BackupGcSnapshotSummary = {
   manifestItem: BackupObjectListing | null;
+  newestMs: number | null; // over items WITH a known last-modified
+  oldestMs: number | null; // over items WITH a known last-modified
+  hasUnknownAge: boolean; // any item without a last-modified
 };
 
-function groupListingBySnapshotId(listing: BackupObjectListing[]): Map<string, BackupGcSnapshotGroup> {
+function emptySnapshotSummary(): BackupGcSnapshotSummary {
+  return { manifestItem: null, newestMs: null, oldestMs: null, hasUnknownAge: false };
+}
+
+/**
+ * The snapshot id a listed key is grouped under — the first path segment
+ * below `snapshots/` — or null for a key outside that namespace (defense in
+ * depth; see iterateS3ObjectsWithLastModified) or with an empty segment.
+ */
+function snapshotIdOfKey(key: string): string | null {
   const rootWithSlash = `${BACKUP_SNAPSHOT_ROOT_DIR}/`;
-  const groups = new Map<string, BackupGcSnapshotGroup>();
+  if (!key.startsWith(rootWithSlash)) return null;
+  const rest = key.slice(rootWithSlash.length);
+  const slashIdx = rest.indexOf('/');
+  const snapshotId = slashIdx === -1 ? rest : rest.slice(0, slashIdx);
+  return snapshotId || null;
+}
 
-  for (const item of listing) {
-    if (!item.key.startsWith(rootWithSlash)) continue; // defense-in-depth; see listS3ObjectsWithLastModified
-    const rest = item.key.slice(rootWithSlash.length);
-    const slashIdx = rest.indexOf('/');
-    const snapshotId = slashIdx === -1 ? rest : rest.slice(0, slashIdx);
-    if (!snapshotId) continue;
+function foldIntoSnapshotSummary(summary: BackupGcSnapshotSummary, snapshotId: string, item: BackupObjectListing): void {
+  if (item.key === `${BACKUP_SNAPSHOT_ROOT_DIR}/${snapshotId}/${BACKUP_SNAPSHOT_MANIFEST_KEY}`) {
+    summary.manifestItem = item;
+  }
+  if (!item.lastModified) {
+    summary.hasUnknownAge = true;
+    return;
+  }
+  const ms = item.lastModified.getTime();
+  if (summary.newestMs === null || ms > summary.newestMs) summary.newestMs = ms;
+  if (summary.oldestMs === null || ms < summary.oldestMs) summary.oldestMs = ms;
+}
 
-    let group = groups.get(snapshotId);
-    if (!group) {
-      group = { items: [], manifestItem: null };
-      groups.set(snapshotId, group);
-    }
-    group.items.push(item);
-    if (item.key === `${rootWithSlash}${snapshotId}/${BACKUP_SNAPSHOT_MANIFEST_KEY}`) {
-      group.manifestItem = item;
+/**
+ * Map iteration order is first-seen order, i.e. the same group order the
+ * pre-#6834 groupListingBySnapshotId produced from the materialised array —
+ * which is the order the per-run delete cap is spent across groups.
+ */
+async function summarizeListingBySnapshotId(
+  pages: AsyncIterable<BackupObjectListing[]>,
+): Promise<Map<string, BackupGcSnapshotSummary>> {
+  const groups = new Map<string, BackupGcSnapshotSummary>();
+  for await (const page of pages) {
+    for (const item of page) {
+      const snapshotId = snapshotIdOfKey(item.key);
+      if (!snapshotId) continue;
+      let summary = groups.get(snapshotId);
+      if (!summary) {
+        summary = emptySnapshotSummary();
+        groups.set(snapshotId, summary);
+      }
+      foldIntoSnapshotSummary(summary, snapshotId, item);
     }
   }
-
   return groups;
+}
+
+/**
+ * The re-list a group's candidates come from is a SECOND read of the bucket,
+ * so it can observe changes made since the root pass (a manifest published
+ * or re-written, a partial upload resuming). The mark set and every
+ * per-group decision were made from the root pass, so a group whose manifest
+ * no longer matches it is skipped this run — never swept on a mixed view.
+ */
+function sameManifestState(a: BackupObjectListing | null, b: BackupObjectListing | null): boolean {
+  if (a === null || b === null) return a === b;
+  return (a.lastModified?.getTime() ?? null) === (b.lastModified?.getTime() ?? null);
+}
+
+/** Pre-#6834 manifest-less rule: every object known-aged and the newest past the window. */
+function manifestlessPrefixExpired(summary: BackupGcSnapshotSummary, manifestlessThreshold: number): boolean {
+  return !summary.hasUnknownAge && summary.newestMs !== null && summary.newestMs <= manifestlessThreshold;
+}
+
+/** Thrown only by a per-group re-list, so the sweep can stop cleanly (see sweepStorageIdentity). */
+class BackupGcGroupRelistError extends Error {
+  constructor(readonly snapshotId: string, cause: unknown) {
+    super(`re-list of snapshot prefix ${snapshotId} failed`, { cause });
+    this.name = 'BackupGcGroupRelistError';
+  }
 }
 
 /**
@@ -1061,7 +1127,7 @@ function groupListingBySnapshotId(listing: BackupObjectListing[]): Map<string, B
  * past the window really is garbage (or a retirement will already exist).
  */
 export function orphanManifestSnapshotIds(
-  groups: Map<string, BackupGcSnapshotGroup>,
+  groups: Map<string, { manifestItem: BackupObjectListing | null }>,
   retainedSnapshotIds: Set<string>,
   retiredSnapshotIds: Map<string, string>,
   nowMs: number,
@@ -1288,16 +1354,46 @@ async function recordGcFailedKeys(
   }
 }
 
-async function deleteCandidatesWithCap(
+/**
+ * Streaming equivalent of the pre-#6834 "filter out the skip set, sort
+ * oldest-first, take the first `cap`" over a fully materialised candidate
+ * array: selects the IDENTICAL keys (ties keep offer order, as the stable
+ * sort did) while holding at most 2×cap candidates at a time.
+ */
+class OldestFirstCandidates {
+  private buffer: { item: BackupObjectListing; seq: number }[] = [];
+  private nextSeq = 0;
+  private readonly limit: number;
+
+  constructor(cap: number, private readonly skipSet: Set<string>) {
+    // Array.prototype.slice truncated a fractional cap the same way.
+    this.limit = cap > 0 ? Math.floor(cap) : 0;
+  }
+
+  offer(item: BackupObjectListing): void {
+    if (this.limit === 0 || this.skipSet.has(item.key)) return;
+    this.buffer.push({ item, seq: this.nextSeq++ });
+    if (this.buffer.length >= this.limit * 2) this.truncate();
+  }
+
+  selected(): BackupObjectListing[] {
+    this.truncate();
+    return this.buffer.map((entry) => entry.item);
+  }
+
+  private truncate(): void {
+    this.buffer.sort((a, b) =>
+      ((a.item.lastModified?.getTime() ?? 0) - (b.item.lastModified?.getTime() ?? 0)) || (a.seq - b.seq));
+    if (this.buffer.length > this.limit) this.buffer.length = this.limit;
+  }
+}
+
+async function deleteSelectedCandidates(
   identity: { provider: string; providerConfig: unknown },
-  candidates: BackupObjectListing[],
-  cap: number,
-  skipSet: Set<string>,
+  selected: BackupObjectListing[],
 ): Promise<{ deletedKeys: string[]; failedKeys: { key: string; error: string }[]; attempted: number }> {
-  const eligible = candidates.filter((c) => !skipSet.has(c.key));
-  if (eligible.length === 0 || cap <= 0) return { deletedKeys: [], failedKeys: [], attempted: 0 };
-  eligible.sort((a, b) => (a.lastModified?.getTime() ?? 0) - (b.lastModified?.getTime() ?? 0));
-  const toDelete = eligible.slice(0, cap).map((c) => c.key);
+  if (selected.length === 0) return { deletedKeys: [], failedKeys: [], attempted: 0 };
+  const toDelete = selected.map((c) => c.key);
   const result = await deleteBackupObjectKeys({ provider: identity.provider, providerConfig: identity.providerConfig, keys: toDelete });
   // `attempted` (not `deletedKeys.length`) is what the caller charges against
   // the per-run cap — a failed attempt still cost a real provider call this
@@ -1315,6 +1411,24 @@ function manifestOlderThanWindow(item: BackupObjectListing, nowMs: number, windo
  * the caller in a short DB context BEFORE this runs; every DB write this
  * produces (self-heal, retirement-swept) is applied by the caller in a short
  * DB context AFTER this returns. Never touches `db` itself.
+ *
+ * #6834 — two storage passes, neither holding the full listing:
+ *   1. ROOT pass: stream `snapshots/` into per-snapshot summaries
+ *      (summarizeListingBySnapshotId). Every decision that the pre-#6834 code
+ *      made from the listing — root set, NULL-row resolution, deferral,
+ *      orphan ages, manifest-less expiry, retirement swept-confirmation — is
+ *      made from these summaries, i.e. from THIS run's fresh root listing.
+ *   2. Per-group RE-LIST: for each group the sweep acts on, stream that one
+ *      snapshot's prefix and keep only its deletion candidates (bounded by
+ *      the remaining cap, OldestFirstCandidates). A group whose re-list no
+ *      longer matches the root pass (manifest appeared/vanished/rewritten,
+ *      or a manifest-less prefix gained a fresh object) is skipped this run.
+ *      Objects that appear between the two passes can only be deletion
+ *      candidates if they also satisfy the same age rules as before.
+ * A bare key directly under the root with no trailing path (`snapshots/<x>`)
+ * still forms a group in pass 1 but is never returned by a
+ * `snapshots/<x>/`-scoped re-list, so it is no longer ever deleted — the
+ * one intended behavior change, strictly more conservative.
  */
 async function sweepStorageIdentity(
   identity: { key: string; provider: string; providerConfig: unknown },
@@ -1338,15 +1452,19 @@ async function sweepStorageIdentity(
   // actionable (`SELECT * FROM backup_snapshots WHERE snapshot_id IN (...)`).
   unresolvedSnapshotIds: string[];
   deletesUsed: number;
+  // #6834: a per-group re-list failed. The sweep stopped at that group (no
+  // later group was touched); everything above is still accurate — in
+  // particular deletesUsed, so the per-run cap stays honest — and the caller
+  // reports the identity as failed.
+  relistFailure: BackupGcGroupRelistError | null;
 }> {
   assertOutsideHeldDbContext('backupGC.sweepStorageIdentity');
 
-  const listing = await listBackupObjectsUnderPrefix({
+  const groups = await summarizeListingBySnapshotId(iterateBackupObjectsUnderPrefix({
     provider: identity.provider,
     providerConfig: identity.providerConfig,
     prefix: backupSnapshotRootPrefix(),
-  });
-  const groups = groupListingBySnapshotId(listing);
+  }));
 
   // §3.4/§3.6 P1: a NULL-identity row mapped to this identity is a root of I
   // the moment it's RESOLVED (its manifest is found in THIS run's fresh
@@ -1379,54 +1497,130 @@ async function sweepStorageIdentity(
   let orphansSwept = 0;
   let remaining = deletesRemaining;
 
-  async function sweepRootedLoose(group: BackupGcSnapshotGroup, liveSet: Set<string>): Promise<void> {
-    const candidates = group.items.filter(
-      (item) => !liveSet.has(item.key) && item.lastModified && item.lastModified.getTime() <= graceThreshold,
-    );
-    const result = await deleteCandidatesWithCap(identity, candidates, remaining, skipSet);
-    deleted += result.deletedKeys.length;
-    remaining -= result.attempted;
-    if (result.failedKeys.length > 0) await recordGcFailedKeys(identity.key, result.failedKeys);
+  // Streams one snapshot's own prefix, handing each member key to `onItem`
+  // and returning a fresh summary of the group for the caller to compare
+  // against the root pass. Membership is re-checked with the SAME grouping
+  // rule as the root pass, so a provider that ignores or widens the prefix
+  // can never leak another group's key in.
+  async function relistGroup(
+    snapshotId: string,
+    onItem: (item: BackupObjectListing) => void,
+  ): Promise<BackupGcSnapshotSummary> {
+    const summary = emptySnapshotSummary();
+    try {
+      for await (const page of iterateBackupObjectsUnderPrefix({
+        provider: identity.provider,
+        providerConfig: identity.providerConfig,
+        prefix: `${BACKUP_SNAPSHOT_ROOT_DIR}/${snapshotId}`,
+      })) {
+        for (const item of page) {
+          if (snapshotIdOfKey(item.key) !== snapshotId) continue;
+          foldIntoSnapshotSummary(summary, snapshotId, item);
+          onItem(item);
+        }
+      }
+    } catch (error) {
+      throw new BackupGcGroupRelistError(snapshotId, error);
+    }
+    return summary;
   }
 
-  async function sweepManifestless(group: BackupGcSnapshotGroup, liveSet: Set<string>): Promise<void> {
-    let newestMs: number | null = null;
-    let hasUnknownAge = false;
-    for (const item of group.items) {
-      if (!item.lastModified) { hasUnknownAge = true; break; }
-      const ms = item.lastModified.getTime();
-      if (newestMs === null || ms > newestMs) newestMs = ms;
-    }
-    if (hasUnknownAge || newestMs === null || newestMs > manifestlessThreshold) return;
-    const candidates = group.items.filter((item) => !liveSet.has(item.key));
-    const result = await deleteCandidatesWithCap(identity, candidates, remaining, skipSet);
+  function logGroupChanged(snapshotId: string, what: string): void {
+    console.warn(`[BackupGC] identity ${identity.key}: snapshot ${snapshotId} ${what} between listing passes — skipped this run`);
+  }
+
+  async function deleteAndCharge(selected: BackupObjectListing[]): Promise<string[]> {
+    const result = await deleteSelectedCandidates(identity, selected);
     deleted += result.deletedKeys.length;
     remaining -= result.attempted;
     if (result.failedKeys.length > 0) await recordGcFailedKeys(identity.key, result.failedKeys);
+    return result.deletedKeys;
+  }
+
+  async function sweepRootedLoose(snapshotId: string, summary: BackupGcSnapshotSummary, liveSet: Set<string>): Promise<void> {
+    // A candidate needs a known last-modified at/before the grace threshold;
+    // if no object in the root pass was that old, there is none to find.
+    if (summary.oldestMs === null || summary.oldestMs > graceThreshold) return;
+    const candidates = new OldestFirstCandidates(remaining, skipSet);
+    const current = await relistGroup(snapshotId, (item) => {
+      if (!liveSet.has(item.key) && item.lastModified && item.lastModified.getTime() <= graceThreshold) {
+        candidates.offer(item);
+      }
+    });
+    if (!sameManifestState(summary.manifestItem, current.manifestItem)) {
+      logGroupChanged(snapshotId, 'manifest changed');
+      return;
+    }
+    await deleteAndCharge(candidates.selected());
+  }
+
+  async function sweepManifestless(snapshotId: string, summary: BackupGcSnapshotSummary, liveSet: Set<string>): Promise<void> {
+    if (!manifestlessPrefixExpired(summary, manifestlessThreshold)) return;
+    const candidates = new OldestFirstCandidates(remaining, skipSet);
+    const current = await relistGroup(snapshotId, (item) => {
+      if (!liveSet.has(item.key)) candidates.offer(item);
+    });
+    if (current.manifestItem !== null) {
+      logGroupChanged(snapshotId, 'gained a manifest');
+      return;
+    }
+    if (!manifestlessPrefixExpired(current, manifestlessThreshold)) {
+      logGroupChanged(snapshotId, 'gained a recent or unknown-age object');
+      return;
+    }
+    await deleteAndCharge(candidates.selected());
   }
 
   // Retired (any age) OR old-orphan two-phase reclaim. Also handles a
   // "manifest-less retired remnant" (manifest already gone from a prior run)
   // — in that case there is no manifest-gating to do, just delete everything
   // non-live in one phase. Never sets swept_at itself.
-  async function reclaimUnrooted(group: BackupGcSnapshotGroup, liveSet: Set<string>): Promise<void> {
-    const manifestKey = group.manifestItem?.key;
-    const nonManifestNonLive = group.items.filter((item) => !liveSet.has(item.key) && item.key !== manifestKey);
-    const nonManifestResult = await deleteCandidatesWithCap(identity, nonManifestNonLive, remaining, skipSet);
-    deleted += nonManifestResult.deletedKeys.length;
-    remaining -= nonManifestResult.attempted;
-    if (nonManifestResult.failedKeys.length > 0) await recordGcFailedKeys(identity.key, nonManifestResult.failedKeys);
+  async function reclaimUnrooted(snapshotId: string, summary: BackupGcSnapshotSummary, liveSet: Set<string>): Promise<void> {
+    const manifestKey = backupSnapshotManifestKey(snapshotId);
+    const candidates = new OldestFirstCandidates(remaining, skipSet);
+    let nonManifestNonLiveCount = 0;
+    const current = await relistGroup(snapshotId, (item) => {
+      if (liveSet.has(item.key) || item.key === manifestKey) return;
+      nonManifestNonLiveCount++;
+      candidates.offer(item);
+    });
+    if (!sameManifestState(summary.manifestItem, current.manifestItem)) {
+      logGroupChanged(snapshotId, 'manifest changed');
+      return;
+    }
 
-    if (!group.manifestItem) return; // manifest-less remnant — nothing further to gate
+    const selected = candidates.selected();
+    const deletedKeys = await deleteAndCharge(selected);
+
+    if (!current.manifestItem) return; // manifest-less remnant — nothing further to gate
 
     // v3 manifest-last rule: candidate only when NO deletable non-manifest
-    // key remains — none failed, none capped, none skip-set-excluded.
-    const remainingNonManifest = nonManifestNonLive.filter((item) => !nonManifestResult.deletedKeys.includes(item.key));
-    if (remainingNonManifest.length === 0 && !liveSet.has(manifestKey!) && remaining > 0) {
-      const manifestResult = await deleteCandidatesWithCap(identity, [group.manifestItem], remaining, skipSet);
-      deleted += manifestResult.deletedKeys.length;
-      remaining -= manifestResult.attempted;
-      if (manifestResult.failedKeys.length > 0) await recordGcFailedKeys(identity.key, manifestResult.failedKeys);
+    // key remains — none failed, none capped, none skip-set-excluded. The
+    // count covers EVERY non-manifest non-live key (skip-set and over-cap
+    // ones included), so only a fully deleted set reaches zero.
+    const selectedKeys = new Set(selected.map((c) => c.key));
+    const deletedFromSelected = new Set(deletedKeys.filter((key) => selectedKeys.has(key))).size;
+    const remainingNonManifest = nonManifestNonLiveCount - deletedFromSelected;
+    if (remainingNonManifest === 0 && !liveSet.has(manifestKey) && remaining > 0) {
+      const manifestCandidate = new OldestFirstCandidates(remaining, skipSet);
+      manifestCandidate.offer(current.manifestItem);
+      await deleteAndCharge(manifestCandidate.selected());
+    }
+  }
+
+  let relistFailure: BackupGcGroupRelistError | null = null;
+  // Runs one group's sweep; returns false (stop the loop) after a re-list
+  // failure. Delete/other errors propagate exactly as before.
+  async function runGroup(step: () => Promise<void>): Promise<boolean> {
+    try {
+      await step();
+      return true;
+    } catch (error) {
+      if (error instanceof BackupGcGroupRelistError) {
+        relistFailure = error;
+        return false;
+      }
+      throw error;
     }
   }
 
@@ -1439,10 +1633,12 @@ async function sweepStorageIdentity(
     const liveSet = await markLiveBackupObjects(identity, rootsForMark);
     if (liveSet === null) throw new Error('mark phase failed — see prior log line for the specific snapshot/manifest');
 
-    for (const [, group] of groups) {
+    for (const [snapshotId, group] of groups) {
       if (remaining <= 0) break;
-      if (group.manifestItem) await sweepRootedLoose(group, liveSet);
-      else await sweepManifestless(group, liveSet);
+      const ok = await runGroup(() => (group.manifestItem
+        ? sweepRootedLoose(snapshotId, group, liveSet)
+        : sweepManifestless(snapshotId, group, liveSet)));
+      if (!ok) break;
     }
   } else {
     const orphanIds = orphanManifestSnapshotIds(groups, alwaysRootedIds, retiredSnapshotIds, nowMs, orphanWindowMs);
@@ -1453,7 +1649,7 @@ async function sweepStorageIdentity(
     // Review round 1 (suggestion, accepted as a known limitation rather than
     // fixed): the per-run cap is spent in LISTING order across groups here
     // (each group's own candidates are sorted oldest-first internally, via
-    // deleteCandidatesWithCap, but there is no global oldest-first ordering
+    // OldestFirstCandidates, but there is no global oldest-first ordering
     // ACROSS groups within this identity, unlike the pre-D18 implementation
     // which collected every deletable item for the whole identity before
     // sorting once). A busy, recently-modified retired/orphan prefix
@@ -1467,19 +1663,28 @@ async function sweepStorageIdentity(
     // later run (the sweep is resumable by construction either way).
     for (const [snapshotId, group] of groups) {
       if (remaining <= 0) break;
-      if (rootsForMark.has(snapshotId)) { await sweepRootedLoose(group, liveSet); continue; }
-      if (retiredSnapshotIds.has(snapshotId)) { await reclaimUnrooted(group, liveSet); continue; }
-      if (!group.manifestItem) { await sweepManifestless(group, liveSet); continue; }
-      if (!manifestOlderThanWindow(group.manifestItem, nowMs, orphanWindowMs)) continue; // defensive; unreachable given rootsForMark
+      let step: (() => Promise<void>) | null = null;
+      let countsAsOrphan = false;
+      if (rootsForMark.has(snapshotId)) step = () => sweepRootedLoose(snapshotId, group, liveSet);
+      else if (retiredSnapshotIds.has(snapshotId)) step = () => reclaimUnrooted(snapshotId, group, liveSet);
+      else if (!group.manifestItem) step = () => sweepManifestless(snapshotId, group, liveSet);
+      else if (manifestOlderThanWindow(group.manifestItem, nowMs, orphanWindowMs)) {
+        step = () => reclaimUnrooted(snapshotId, group, liveSet);
+        countsAsOrphan = true;
+      }
+      // else: defensive; unreachable given rootsForMark (a young orphan is a root)
+      if (!step) continue;
       const before = deleted;
-      await reclaimUnrooted(group, liveSet);
-      if (deleted > before) orphansSwept++; // best-effort metric — see accepted approximation
+      const ok = await runGroup(step);
+      if (countsAsOrphan && deleted > before) orphansSwept++; // best-effort metric — see accepted approximation
+      if (!ok) break;
     }
   }
 
   // swept_at confirmation — independent of `deferred`, and independent of
   // whatever this run deleted: a retirement is confirmed gone ONLY when
-  // THIS run's fresh listing has NO group at all for its snapshotId.
+  // THIS run's fresh (root-pass) listing has NO group at all for its
+  // snapshotId. Deliberately NOT informed by the per-group re-lists.
   const retiredSweptIds: string[] = [];
   for (const [snapshotId, retirementId] of retiredSnapshotIds) {
     if (!groups.has(snapshotId)) retiredSweptIds.push(retirementId);
@@ -1489,6 +1694,7 @@ async function sweepStorageIdentity(
     deleted, retiredSweptIds, orphansSwept, selfHealRowIds,
     unresolvedNullIdentityCount, unresolvedSnapshotIds,
     deletesUsed: deletesRemaining - remaining,
+    relistFailure,
   };
 }
 
@@ -1846,6 +2052,21 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
         console.log(`[BackupGC] Identity ${identity.key}: deleted ${identityResult.deleted} object(s)`);
       } else {
         console.debug(`[BackupGC] Identity ${identity.key}: 0 objects deleted`);
+      }
+
+      // #6834: a per-group re-list failed mid-sweep. The sweep already
+      // stopped at that group; its deletions, cap usage and write-backs
+      // above are accurate, so they are kept — but the identity is reported
+      // exactly like any other failed sweep (the catch below).
+      if (identityResult.relistFailure) {
+        const failure = identityResult.relistFailure;
+        skippedIdentities++;
+        blockedIdentities++;
+        console.error(
+          `[BackupGC] Identity ${identity.key}: sweep stopped — ${failure.message}; later snapshot prefixes were not swept this run:`,
+          failure.cause,
+        );
+        captureException(failure);
       }
     } catch (error) {
       // A sweep abort here is the fail-closed mark/list failure path (an

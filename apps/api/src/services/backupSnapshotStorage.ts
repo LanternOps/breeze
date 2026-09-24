@@ -188,11 +188,18 @@ export function backupLayoutManifestKey(snapshotId: string): string {
 }
 
 // ── GC support: list objects with last-modified ──────────────────────────────
+//
+// #6834: listing is STREAMED page by page. A single customer bucket can hold
+// millions of keys under `snapshots/`; materialising them into one array (the
+// pre-#6834 shape) drove US prod API RSS from ~0.85 GB to 2.7 GB on every GC
+// run and got the process OOM-killed. Callers that genuinely need the whole
+// listing at once use listBackupObjectsUnderPrefix (a thin collector over the
+// iterator) and must only do so for bounded namespaces.
 
-async function listS3ObjectsWithLastModified(
+async function* iterateS3ObjectsWithLastModified(
   providerConfig: Record<string, unknown>,
   prefix: string,
-): Promise<BackupObjectListing[]> {
+): AsyncGenerator<BackupObjectListing[]> {
   const { bucket, client } = buildS3StorageClient(providerConfig);
   // A bare "snapshots" Prefix string-matches
   // ANY key that merely starts with those characters — e.g. "snapshots-old/db.dump"
@@ -202,7 +209,6 @@ async function listS3ObjectsWithLastModified(
   // namespace, same guard `keyMatchesSnapshotPrefix` (above) applies for
   // per-snapshot prefixes elsewhere in this file.
   const normalizedPrefix = `${normalizeObjectPrefix(prefix)}/`;
-  const results: BackupObjectListing[] = [];
 
   let continuationToken: string | undefined;
   do {
@@ -212,6 +218,7 @@ async function listS3ObjectsWithLastModified(
       ContinuationToken: continuationToken,
     }));
 
+    const page: BackupObjectListing[] = [];
     for (const item of listed.Contents ?? []) {
       // Defense-in-depth: AWS's own Prefix filtering is authoritative, but
       // don't rely on it exclusively — a misbehaving or (in tests) mocked
@@ -222,7 +229,7 @@ async function listS3ObjectsWithLastModified(
         item.Key.length > 0 &&
         item.Key.startsWith(normalizedPrefix)
       ) {
-        results.push({
+        page.push({
           key: item.Key,
           lastModified: item.LastModified instanceof Date ? item.LastModified : null,
         });
@@ -230,15 +237,17 @@ async function listS3ObjectsWithLastModified(
     }
 
     continuationToken = listed.IsTruncated ? listed.NextContinuationToken : undefined;
+    if (page.length > 0) yield page;
   } while (continuationToken);
-
-  return results;
 }
 
-async function listLocalObjectsWithLastModified(
+// Matches S3 ListObjectsV2's default MaxKeys so both providers page alike.
+const LOCAL_LISTING_PAGE_SIZE = 1000;
+
+async function* iterateLocalObjectsWithLastModified(
   providerConfig: Record<string, unknown>,
   prefix: string,
-): Promise<BackupObjectListing[]> {
+): AsyncGenerator<BackupObjectListing[]> {
   const rootPath = getStringValue(providerConfig, 'path') || getStringValue(providerConfig, 'basePath');
   if (!rootPath) {
     throw new Error('Local backup storage is misconfigured');
@@ -246,9 +255,11 @@ async function listLocalObjectsWithLastModified(
 
   const normalizedPrefix = pathPosix.normalize(prefix).replace(/^\/+/, '');
   const targetPath = ensureContainedLocalPath(rootPath, normalizedPrefix);
-  const results: BackupObjectListing[] = [];
 
-  async function walk(dirPath: string, keyPrefix: string): Promise<void> {
+  // Depth-first, in readdir order (the same key order the pre-#6834 array
+  // walk produced): consecutive files are batched into one page, flushed
+  // before descending into a subdirectory.
+  async function* walk(dirPath: string, keyPrefix: string): AsyncGenerator<BackupObjectListing[]> {
     let entries;
     try {
       entries = await readdir(dirPath, { withFileTypes: true });
@@ -257,38 +268,67 @@ async function listLocalObjectsWithLastModified(
       throw error;
     }
 
+    let files: BackupObjectListing[] = [];
     for (const entry of entries) {
       const childKey = keyPrefix ? `${keyPrefix}/${entry.name}` : entry.name;
       const childPath = joinLocalPath(dirPath, entry.name);
       if (entry.isDirectory()) {
-        await walk(childPath, childKey);
+        if (files.length > 0) { yield files; files = []; }
+        yield* walk(childPath, childKey);
       } else if (entry.isFile()) {
         const info = await stat(childPath);
-        results.push({ key: childKey, lastModified: info.mtime });
+        files.push({ key: childKey, lastModified: info.mtime });
+        if (files.length >= LOCAL_LISTING_PAGE_SIZE) { yield files; files = []; }
       }
     }
+    if (files.length > 0) yield files;
   }
 
-  await walk(targetPath, normalizedPrefix);
-  return results;
+  yield* walk(targetPath, normalizedPrefix);
 }
 
 /**
- * Lists every object under a destination's snapshot root, including
- * last-modified so GC can enforce the grace window. Throws for providers
- * this GC path doesn't support — callers must treat that as "skip this
- * destination" (fail-closed: no age data means no safe sweep decision).
+ * Streams every object under a destination prefix, one page at a time,
+ * including last-modified so GC can enforce the grace window. Page
+ * boundaries and ordering are provider-defined — callers must not assume
+ * all keys of one snapshot arrive contiguously. Throws (on first iteration)
+ * for providers this GC path doesn't support — callers must treat that as
+ * "skip this destination" (fail-closed: no age data means no safe sweep
+ * decision).
+ */
+export async function* iterateBackupObjectsUnderPrefix(input: {
+  provider: string | null | undefined;
+  providerConfig: unknown;
+  prefix: string;
+}): AsyncGenerator<BackupObjectListing[]> {
+  const provider = input.provider ?? null;
+  const providerConfig = asRecord(input.providerConfig);
+  if (provider === 's3') {
+    yield* iterateS3ObjectsWithLastModified(providerConfig, input.prefix);
+    return;
+  }
+  if (provider === 'local') {
+    yield* iterateLocalObjectsWithLastModified(providerConfig, input.prefix);
+    return;
+  }
+  throw new Error(`Provider ${provider ?? 'unknown'} does not support object listing for GC`);
+}
+
+/**
+ * Collects iterateBackupObjectsUnderPrefix into one array. Holds the whole
+ * listing in memory — use the iterator for anything that can be large (the
+ * GC sweep over a destination's `snapshots/` root streams it, #6834).
  */
 export async function listBackupObjectsUnderPrefix(input: {
   provider: string | null | undefined;
   providerConfig: unknown;
   prefix: string;
 }): Promise<BackupObjectListing[]> {
-  const provider = input.provider ?? null;
-  const providerConfig = asRecord(input.providerConfig);
-  if (provider === 's3') return listS3ObjectsWithLastModified(providerConfig, input.prefix);
-  if (provider === 'local') return listLocalObjectsWithLastModified(providerConfig, input.prefix);
-  throw new Error(`Provider ${provider ?? 'unknown'} does not support object listing for GC`);
+  const results: BackupObjectListing[] = [];
+  for await (const page of iterateBackupObjectsUnderPrefix(input)) {
+    for (const item of page) results.push(item);
+  }
+  return results;
 }
 
 // ── GC support: fetch a single object's text (manifest fetch) ────────────────
