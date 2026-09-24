@@ -2209,7 +2209,7 @@
       "addressInherited": "Igual aos dados da empresa",
       "addressLine1": "Endereço - linha 1",
       "addressLine2": "Endereço - linha 2",
-      "addressTitle": "Endereco",
+      "addressTitle": "Endereço",
       "city": "Cidade",
       "country": "País",
       "defaultTerms": "Termos e condições padrão",
@@ -2221,7 +2221,7 @@
       "postal": "CEP",
       "region": "Estado / região",
       "title": "Contato da empresa",
-      "useCompanyAddress": "Usar o endereco da empresa",
+      "useCompanyAddress": "Usar o endereço da empresa",
       "website": "Site"
     },
     "defaults": {

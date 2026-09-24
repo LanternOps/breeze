@@ -2209,7 +2209,7 @@
       "addressInherited": "Igual que en los detalles de la empresa",
       "addressLine1": "Dirección Línea 1",
       "addressLine2": "Línea de dirección 2",
-      "addressTitle": "Direccion",
+      "addressTitle": "Dirección",
       "city": "Ciudad",
       "country": "País",
       "defaultTerms": "Términos y condiciones predeterminados",
@@ -2221,7 +2221,7 @@
       "postal": "Código Postal",
       "region": "Estado / región",
       "title": "Contacto de la empresa",
-      "useCompanyAddress": "Usar la direccion de la empresa",
+      "useCompanyAddress": "Usar la dirección de la empresa",
       "website": "Sitio web"
     },
     "defaults": {

@@ -2206,7 +2206,7 @@
   },
   "partnerBillingSettings": {
     "company": {
-      "addressInherited": "Sirket bilgileriyle ayni",
+      "addressInherited": "Şirket bilgileriyle aynı",
       "addressLine1": "Adres satırı 1",
       "addressLine2": "Adres satırı 2",
       "addressTitle": "Adres",
@@ -2215,13 +2215,13 @@
       "defaultTerms": "Varsayılan şartlar ve koşullar",
       "defaultTermsPlaceholder": "Ödeme koşulları, sorumluluk reddi beyanları, garanti dili vb.",
       "description": "Tekliflerde ve faturalarda satıcı olarak gösterilir.",
-      "inheritedFromCompanyDetails": "Sirket bilgileri",
+      "inheritedFromCompanyDetails": "Şirket bilgileri",
       "name": "Şirket adı",
       "phone": "Telefon",
       "postal": "Posta kodu",
       "region": "Eyalet / bölge",
       "title": "Şirket iletişim bilgileri",
-      "useCompanyAddress": "Sirket adresini kullan",
+      "useCompanyAddress": "Şirket adresini kullan",
       "website": "Web sitesi"
     },
     "defaults": {

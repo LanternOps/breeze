@@ -115,6 +115,17 @@ describe('resolveQuoteBranding', () => {
     expect(b.seller).toEqual(frozen);
   });
 
+  it('#6228 regression: a frozen seller snapshot is untouched even when the live partner has DIFFERENT company-details fallback data', async () => {
+    // The partner's company details (settings.contact) now differ from what's
+    // frozen on the quote — if resolveQuoteBranding ever started re-running
+    // buildSellerSnapshot for an already-sent quote, this would silently change
+    // an issued document's seller phone/website out from under it.
+    queue({ ...basePartner, settings: { contact: { phone: '555-LIVE', website: 'https://live.example' } } }, baseBrand);
+    const frozen = { name: 'Frozen Co', address: null, phone: '555-FROZEN', email: null, website: 'https://frozen.example' };
+    const b = await resolveQuoteBranding(source({ sellerSnapshot: frozen }));
+    expect(b.seller).toEqual(frozen);
+  });
+
   it('no frozen snapshot but partner present → seller synthesized from partner billing', async () => {
     queue(basePartner, baseBrand);
     const b = await resolveQuoteBranding(source({ sellerSnapshot: null }));
