@@ -809,6 +809,21 @@ const USER_OWNED_RELEASE_ACTIONS: ReadonlySet<string> = new Set([
   // Same FK, same 23503; only the approval scope differs, and the approver
   // substitution is scope-independent.
   'manage_patches:rollback',
+  // #6907: the alert-triage agent's Tier-2 supervised lane (P2-1 —
+  // `intentService.ts`'s `agentTier2`, NOT a tier-3 entry) mints these as
+  // action intents, released here under the rebuilt agent auth. Each one
+  // writes `auth.user.id` into a users FK: `alerts.resolved_by` /
+  // `alerts.acknowledged_by` (db/schema/alerts.ts) on the row itself, and —
+  // for all three, suppress included — `ml_feedback_events.actor_user_id`
+  // via `emitAlertStateFeedback`. That feedback write is caught, but a caught
+  // 23503 inside `withAuthDbAccessContext` still aborts the release
+  // transaction, so `suppress` is not safe under the agent id either. Both
+  // approved `resolve` intents on US prod (2026-09-22, 2026-09-24) failed as
+  // `execution_error` with the resolved_by FK violation.
+  // `services/aiToolsAlerts.userOwnedRelease.contract.test.ts` pins these.
+  'manage_alerts:acknowledge',
+  'manage_alerts:resolve',
+  'manage_alerts:suppress',
 ]);
 
 function userOwnedReleaseKey(intent: ActionIntent): string | null {
