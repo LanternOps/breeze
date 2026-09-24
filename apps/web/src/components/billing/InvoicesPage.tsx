@@ -34,6 +34,7 @@ import { StatCard } from './shared/StatCard';
 import { ROW_LINK_CLASS, writeHashFilters } from './shared/listChrome';
 import { INVOICE_STATUSES, BULK_ID_LIMIT } from '@breeze/shared';
 import { currencyLabel, currencyOptions } from '../../lib/currencies';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 interface Organization {
   id: string;
@@ -111,6 +112,7 @@ export interface InvoicesPageProps {
 
 export function InvoicesPage({ lockedOrgId }: InvoicesPageProps = {}) {
   const { t, i18n } = useTranslation('billing');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { can } = usePermissions();
   // POST /accounting/quickbooks/invoices/push-bulk is `requireScope('partner',
   // 'system')`, so an organization-scoped session can only ever get a 403 —
@@ -184,7 +186,7 @@ export function InvoicesPage({ lockedOrgId }: InvoicesPageProps = {}) {
       list = await fetchAllOrganizationsFrom<Organization>('/orgs/organizations');
     } catch (err) {
       if (err instanceof ListFetchError && err.status === 401) return UNAUTHORIZED();
-      handleActionError(err, t('invoicesPage.errors.loadOrganizations'));
+      handleActionError(err, stableT('invoicesPage.errors.loadOrganizations'));
       return;
     }
     // Now pages through every organization the caller can see, but a
@@ -200,7 +202,7 @@ export function InvoicesPage({ lockedOrgId }: InvoicesPageProps = {}) {
       if (lockedOrg?.id) list.unshift(lockedOrg);
     }
     setOrgs(list);
-  }, [t, lockedOrgId]);
+  }, [stableT, lockedOrgId]);
 
   const loadInvoices = useCallback(async (f: Filters) => {
     // Latest-request-wins. A deep-linked load (`/invoices#status=paid`) fires
@@ -222,17 +224,17 @@ export function InvoicesPage({ lockedOrgId }: InvoicesPageProps = {}) {
       if (seq !== fetchSeq.current) return;
       if (res.status === 401) return UNAUTHORIZED();
       if (res.status === 403) { setForbidden(true); return; }
-      if (!res.ok) throw new Error(t('invoicesPage.errors.loadInvoices'));
+      if (!res.ok) throw new Error(stableT('invoicesPage.errors.loadInvoices'));
       const body = (await res.json()) as { data: InvoiceSummary[] };
       if (seq !== fetchSeq.current) return;
       setInvoices(body.data ?? []);
     } catch (err) {
       if (seq !== fetchSeq.current) return;
-      setError(err instanceof Error ? err.message : t('invoicesPage.errors.loadInvoices'));
+      setError(err instanceof Error ? err.message : stableT('invoicesPage.errors.loadInvoices'));
     } finally {
       if (seq === fetchSeq.current) setLoading(false);
     }
-  }, [t, lockedOrgId]);
+  }, [stableT, lockedOrgId]);
 
   useEffect(() => { void loadOrgs(); }, [loadOrgs]);
   useEffect(() => { void loadInvoices(filters); }, [loadInvoices, filters]);

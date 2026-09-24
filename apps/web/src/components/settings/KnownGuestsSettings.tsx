@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { Plus, Trash2 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type KnownGuest = {
   id: string;
@@ -16,6 +17,7 @@ const macRegex = /^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$/;
 
 export default function KnownGuestsSettings() {
   const { t } = useTranslation('settings');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [guests, setGuests] = useState<KnownGuest[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -29,17 +31,17 @@ export default function KnownGuestsSettings() {
     try {
       const response = await fetchWithAuth('/partner/known-guests');
       if (!response.ok) {
-        setError(t('knownGuestsSettings.errors.load'));
+        setError(stableT('knownGuestsSettings.errors.load'));
         return;
       }
       const data = await response.json();
       setGuests(data.data ?? []);
     } catch {
-      setError(t('knownGuestsSettings.errors.load'));
+      setError(stableT('knownGuestsSettings.errors.load'));
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [stableT]);
 
   useEffect(() => { fetchGuests(); }, [fetchGuests]);
 

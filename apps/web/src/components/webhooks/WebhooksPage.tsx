@@ -13,6 +13,7 @@ import { Trans, useTranslation } from 'react-i18next';
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type ModalMode = 'closed' | 'create' | 'edit' | 'delete';
 
@@ -38,6 +39,7 @@ const formatPayloadPreview = (payload: string | null | undefined, t: (key: strin
 
 export default function WebhooksPage() {
   const { t } = useTranslation('common');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { currentOrgId } = useOrgStore();
   const [webhooks, setWebhooks] = useState<Webhook[]>([]);
   const [loading, setLoading] = useState(true);
@@ -57,16 +59,16 @@ export default function WebhooksPage() {
       setError(undefined);
       const response = await fetchWithAuth('/webhooks');
       if (!response.ok) {
-        throw new Error(t('longTail.webhooks.WebhooksPage.errors.fetchWebhooks'));
+        throw new Error(stableT('longTail.webhooks.WebhooksPage.errors.fetchWebhooks'));
       }
       const data = await response.json();
       setWebhooks(data.data ?? data.webhooks ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('longTail.webhooks.WebhooksPage.errors.generic'));
+      setError(err instanceof Error ? err.message : stableT('longTail.webhooks.WebhooksPage.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [stableT]);
 
   const fetchDeliveries = useCallback(async (webhookId: string) => {
     try {
@@ -74,17 +76,17 @@ export default function WebhooksPage() {
       setDeliveriesError(undefined);
       const response = await fetchWithAuth(`/webhooks/${webhookId}/deliveries`);
       if (!response.ok) {
-        throw new Error(t('longTail.webhooks.WebhooksPage.errors.fetchDeliveries'));
+        throw new Error(stableT('longTail.webhooks.WebhooksPage.errors.fetchDeliveries'));
       }
       const data = await response.json();
       setDeliveries(data.data ?? data.deliveries ?? []);
     } catch (err) {
-      setDeliveriesError(err instanceof Error ? err.message : t('longTail.webhooks.WebhooksPage.errors.loadDeliveries'));
+      setDeliveriesError(err instanceof Error ? err.message : stableT('longTail.webhooks.WebhooksPage.errors.loadDeliveries'));
       setDeliveries([]);
     } finally {
       setDeliveriesLoading(false);
     }
-  }, [t]);
+  }, [stableT]);
 
   useEffect(() => {
     fetchWebhooks();

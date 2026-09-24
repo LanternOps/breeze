@@ -12,6 +12,7 @@ import {
   type NetworkEventType
 } from './networkTypes';
 import { useDeviceOptions } from '../../hooks/useDeviceOptions';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type SiteOption = {
   id: string;
@@ -71,6 +72,7 @@ export default function NetworkChangesPanel({
   timezone
 }: NetworkChangesPanelProps) {
   const { t } = useTranslation('discovery');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [changes, setChanges] = useState<NetworkChangeEvent[]>([]);
   const [profiles, setProfiles] = useState<ProfileOption[]>([]);
   const [profilesLoaded, setProfilesLoaded] = useState(false);
@@ -105,7 +107,7 @@ export default function NetworkChangesPanel({
     try {
       const response = await fetchWithAuth(`/discovery/profiles${query ? `?${query}` : ''}`);
       if (!response.ok) {
-        throw new Error(await extractError(response, t('networkChangesPanel.errors.loadProfileFilters')));
+        throw new Error(await extractError(response, stableT('networkChangesPanel.errors.loadProfileFilters')));
       }
 
       const payload = await response.json();
@@ -146,7 +148,7 @@ export default function NetworkChangesPanel({
       setProfilesError(true);
       throw profilesFetchError;
     }
-  }, [currentOrgId, t]);
+  }, [currentOrgId, stableT]);
 
   const fetchChanges = useCallback(async () => {
     setLoading(true);
@@ -169,7 +171,7 @@ export default function NetworkChangesPanel({
 
       const response = await fetchWithAuth(`/network/changes?${params.toString()}`);
       if (!response.ok) {
-        throw new Error(await extractError(response, t('networkChangesPanel.errors.loadChanges')));
+        throw new Error(await extractError(response, stableT('networkChangesPanel.errors.loadChanges')));
       }
 
       const payload = await response.json();
@@ -189,11 +191,11 @@ export default function NetworkChangesPanel({
         return new Set([...previous].filter((id) => valid.has(id)));
       });
     } catch (fetchError) {
-      setError(fetchError instanceof Error ? fetchError.message : t('networkChangesPanel.errors.loadChanges'));
+      setError(fetchError instanceof Error ? fetchError.message : stableT('networkChangesPanel.errors.loadChanges'));
     } finally {
       setLoading(false);
     }
-  }, [currentOrgId, filters, t]);
+  }, [currentOrgId, filters, stableT]);
 
   useEffect(() => {
     fetchProfiles().catch((fetchError) => {

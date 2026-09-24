@@ -8,6 +8,7 @@ import { formatAbsolute, formatRelative } from '../account/relativeTime';
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 interface MobileDevice {
   id: string;
@@ -58,6 +59,7 @@ function deviceTitle(d: MobileDevice, unknownLabel: string): string {
 
 export default function UserDevicesPage({ userId }: UserDevicesPageProps) {
   const { t } = useTranslation('admin');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const currentUser = useAuthStore((s) => s.user);
   const [state, setState] = useState<LoadState>({ kind: 'loading' });
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
@@ -65,7 +67,7 @@ export default function UserDevicesPage({ userId }: UserDevicesPageProps) {
 
   const load = useCallback(async () => {
     if (!userId) {
-      setState({ kind: 'error', message: t('admin.userDevicesPage.errors.missingUserId') });
+      setState({ kind: 'error', message: stableT('admin.userDevicesPage.errors.missingUserId') });
       return;
     }
     setState({ kind: 'loading' });
@@ -82,7 +84,7 @@ export default function UserDevicesPage({ userId }: UserDevicesPageProps) {
 
       if (!devicesRes.ok) {
         const body = (await devicesRes.json().catch(() => ({}))) as { error?: string };
-        setState({ kind: 'error', message: body.error ?? t('admin.userDevicesPage.errors.requestFailed', { status: devicesRes.status }) });
+        setState({ kind: 'error', message: body.error ?? stableT('admin.userDevicesPage.errors.requestFailed', { status: devicesRes.status }) });
         return;
       }
 
@@ -100,9 +102,9 @@ export default function UserDevicesPage({ userId }: UserDevicesPageProps) {
 
       setState({ kind: 'ready', user, devices: devicesBody.devices ?? [] });
     } catch (err) {
-      setState({ kind: 'error', message: err instanceof Error ? err.message : t('admin.userDevicesPage.errors.network') });
+      setState({ kind: 'error', message: err instanceof Error ? err.message : stableT('admin.userDevicesPage.errors.network') });
     }
-  }, [userId, t]);
+  }, [userId, stableT]);
 
   useEffect(() => {
     void load();

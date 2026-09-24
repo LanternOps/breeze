@@ -6,6 +6,7 @@ import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 interface StatusInfo {
   status: string;
@@ -25,19 +26,22 @@ function isSafeUrl(url: string): boolean {
 
 export default function AccountInactiveScreen() {
   const { t } = useTranslation('auth');
+  // Effects use the stable translator so a locale change does not re-run them
+  // (#3632); JSX keeps the plain `t` so rendered text still re-translates.
+  const stableT = useStableT(t);
   const [info, setInfo] = useState<StatusInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const logout = useAuthStore((s) => s.logout);
 
   useEffect(() => {
     const defaultMessages: Record<string, string> = {
-      pending: t('accountInactive.defaultMessages.pending', {
+      pending: stableT('accountInactive.defaultMessages.pending', {
         defaultValue: 'Your account is being set up. Please check back shortly.',
       }),
-      suspended: t('accountInactive.defaultMessages.suspended', {
+      suspended: stableT('accountInactive.defaultMessages.suspended', {
         defaultValue: 'Your account has been suspended. Please contact your administrator.',
       }),
-      churned: t('accountInactive.defaultMessages.churned', {
+      churned: stableT('accountInactive.defaultMessages.churned', {
         defaultValue: 'Your account is no longer active. Please contact support.',
       }),
     };
@@ -51,7 +55,7 @@ export default function AccountInactiveScreen() {
         }
         setInfo({
           status: data.status,
-          message: data.statusMessage ?? defaultMessages[data.status] ?? t('accountInactive.defaultMessages.generic', { defaultValue: 'Your account is not active.' }),
+          message: data.statusMessage ?? defaultMessages[data.status] ?? stableT('accountInactive.defaultMessages.generic', { defaultValue: 'Your account is not active.' }),
           actionUrl: data.statusActionUrl,
           actionLabel: data.statusActionLabel,
           meetingUrl: data.statusMeetingUrl,
@@ -61,7 +65,7 @@ export default function AccountInactiveScreen() {
       .catch(() => {
         setInfo({
           status: 'unknown',
-          message: t('accountInactive.defaultMessages.loadFailed', { defaultValue: 'Unable to load account status. Please try again later.' }),
+          message: stableT('accountInactive.defaultMessages.loadFailed', { defaultValue: 'Unable to load account status. Please try again later.' }),
           actionUrl: null,
           actionLabel: null,
           meetingUrl: null,
@@ -69,7 +73,7 @@ export default function AccountInactiveScreen() {
         });
       })
       .finally(() => setLoading(false));
-  }, [t]);
+  }, [stableT]);
 
   const handleLogout = () => {
     logout();

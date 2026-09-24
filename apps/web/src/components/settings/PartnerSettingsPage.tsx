@@ -68,6 +68,7 @@ import { normalizeLocale } from '@/lib/appearance';
 import { PARTNER_SETTINGS_SAVED_EVENT } from '../auth/MfaPolicyOffBanner';
 import { fetchSendingDomains } from '@/lib/api/sendingDomains';
 import { isTabVisible } from './sendingDomains/domainView';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'loginBranding' | 'aiBudgets' | 'aiApprovals' | 'aiProvider' | 'remoteAccess' | 'ticketing' | 'emailTemplates' | 'sendingDomains' | 'modules';
 
@@ -193,6 +194,7 @@ export async function runPartnerSave(
 
 export default function PartnerSettingsPage() {
   const { t } = useTranslation('settings');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { currentPartnerId, isLoading: contextLoading, adoptPartnerId } = useOrgStore();
   const [partner, setPartner] = useState<Partner | null>(null);
   const [loading, setLoading] = useState(true);
@@ -298,8 +300,8 @@ export default function PartnerSettingsPage() {
       const response = await fetchWithAuth('/orgs/partners/me');
       if (!response.ok) {
         if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
-        if (response.status === 403) { setError(t('partnerSettingsPage.permissionDenied')); return; }
-        throw new Error(t('partnerSettingsPage.fetchFailed'));
+        if (response.status === 403) { setError(stableT('partnerSettingsPage.permissionDenied')); return; }
+        throw new Error(stableT('partnerSettingsPage.fetchFailed'));
       }
       const data: Partner = await response.json();
       setPartner(data);
@@ -359,11 +361,11 @@ export default function PartnerSettingsPage() {
         .catch(() => setSendingDomainsCapability(null))
         .finally(() => setSendingDomainsChecked(true));
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('partnerSettingsPage.genericError'));
+      setError(err instanceof Error ? err.message : stableT('partnerSettingsPage.genericError'));
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [stableT]);
 
   useEffect(() => {
     if (currentPartnerId) {

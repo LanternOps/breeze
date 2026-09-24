@@ -17,6 +17,7 @@ import { showToast } from '../shared/Toast';
 import { mintStepUpGrant, StepUpMintError, type StepUpReauth } from '../../lib/mfaStepUp';
 import StepUpPrompt, { pickReauthTier, type ReauthTier } from './StepUpPrompt';
 import { listField, numberField } from './aiAgents/agentFields';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 /**
  * Classes the unattended lane only executes on Windows (a restore checkpoint
@@ -164,6 +165,7 @@ async function discoverReauthTier(): Promise<ReauthTier | null> {
 
 export default function ScriptAuthoringPage() {
   const { t } = useTranslation('settings');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const orgScope = useOrgScope();
   const orgId = orgScope.scope === 'org' ? orgScope.orgId : null;
 
@@ -212,7 +214,7 @@ export default function ScriptAuthoringPage() {
         setLaneState(body.laneState);
         setOrgDraft(orgDraftFromPolicy(body.policy, body.effective));
       } else if (orgRes) {
-        setError(t('scriptAuthoringPage.loadFailed'));
+        setError(stableT('scriptAuthoringPage.loadFailed'));
       }
 
       // A 403 here is EXPECTED for an org-scoped token — it never means
@@ -232,11 +234,11 @@ export default function ScriptAuthoringPage() {
         setPartnerDraft(null);
       }
     } catch {
-      setError(t('scriptAuthoringPage.loadFailed'));
+      setError(stableT('scriptAuthoringPage.loadFailed'));
     } finally {
       setLoading(false);
     }
-  }, [orgId, orgScope.scope, t]);
+  }, [orgId, orgScope.scope, stableT]);
 
   useEffect(() => {
     void load();

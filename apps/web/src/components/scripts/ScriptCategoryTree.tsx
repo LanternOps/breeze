@@ -13,6 +13,7 @@ import { cn, leftPxClass, paddingLeftPxClass, topPxClass } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { fetchAllScripts } from '@/lib/scriptsFetch';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type ScriptCategory = {
   id: string;
@@ -153,6 +154,7 @@ export default function ScriptCategoryTree({
   onSelectCategory
 }: ScriptCategoryTreeProps) {
   const { t } = useTranslation('scripts');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [internalCategories, setInternalCategories] = useState<ScriptCategory[]>([]);
   const [scripts, setScripts] = useState<ScriptItem[]>(externalScripts ?? []);
   const [loading, setLoading] = useState(!externalCategories && !externalScripts);
@@ -211,14 +213,14 @@ export default function ScriptCategoryTree({
           void navigateTo('/login', { replace: true });
           return;
         }
-        setError(t('scriptCategoryTree.errors.fetch'));
+        setError(stableT('scriptCategoryTree.errors.fetch'));
         return;
       }
-      setError(err instanceof Error ? err.message : t('scriptCategoryTree.errors.generic'));
+      setError(err instanceof Error ? err.message : stableT('scriptCategoryTree.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [externalCategories, externalScripts, t]);
+  }, [externalCategories, externalScripts, stableT]);
 
   useEffect(() => {
     fetchData();

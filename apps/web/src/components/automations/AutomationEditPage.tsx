@@ -15,6 +15,7 @@ import Breadcrumbs from '../layout/Breadcrumbs';
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type Site = { id: string; name: string };
 type Group = { id: string; name: string };
@@ -161,6 +162,7 @@ function buildActionPayload(action: ActionFormValues) {
 
 export default function AutomationEditPage({ automationId, isNew = false }: AutomationEditPageProps) {
   const { t } = useTranslation('scripts');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
@@ -193,7 +195,7 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
       setError(undefined);
       const response = await fetchWithAuth(`/automations/${automationId}`);
       if (!response.ok) {
-        throw new Error(t('automationEditPage.errors.fetch'));
+        throw new Error(stableT('automationEditPage.errors.fetch'));
       }
       const data = await response.json();
       const automation = data.automation ?? data;
@@ -250,11 +252,11 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
 
       setWebhookUrl(asString(trigger.webhookUrl));
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('automationEditPage.errors.generic'));
+      setError(err instanceof Error ? err.message : stableT('automationEditPage.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [automationId, isNew, t]);
+  }, [automationId, isNew, stableT]);
 
   const fetchSites = useCallback(async () => {
     try {

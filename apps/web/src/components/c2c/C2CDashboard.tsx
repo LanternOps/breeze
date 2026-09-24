@@ -22,6 +22,7 @@ import { formatNumber } from '@/lib/i18n/format';
 import C2CConnectionWizard from './C2CConnectionWizard';
 import C2CRestoreDialog from './C2CRestoreDialog';
 import AlphaBadge from '../shared/AlphaBadge';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type C2CTab = 'connections' | 'configs' | 'jobs' | 'items';
 
@@ -119,6 +120,7 @@ function formatDate(d: string | null): string {
 
 function C2CDashboardInner() {
   const { t } = useTranslation('common');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [activeTab, setActiveTab] = useState<C2CTab>('connections');
   const [connections, setConnections] = useState<C2CConnection[]>([]);
   const [configs, setConfigs] = useState<C2CConfig[]>([]);
@@ -138,7 +140,7 @@ function C2CDashboardInner() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get('c2c_connected') === 'true') {
-      setConsentSuccess(t('longTail.c2c.C2CDashboard.consentSuccess'));
+      setConsentSuccess(stableT('longTail.c2c.C2CDashboard.consentSuccess'));
       // Clean URL params
       const url = new URL(window.location.href);
       url.searchParams.delete('c2c_connected');
@@ -152,40 +154,40 @@ function C2CDashboardInner() {
       url.searchParams.delete('c2c_error');
       window.history.replaceState({}, '', url.pathname);
     }
-  }, [t]);
+  }, [stableT]);
 
   const fetchConnections = useCallback(async () => {
     try {
       const res = await fetchWithAuth('/c2c/connections');
-      if (!res.ok) throw new Error(t('longTail.c2c.C2CDashboard.errors.fetchConnections'));
+      if (!res.ok) throw new Error(stableT('longTail.c2c.C2CDashboard.errors.fetchConnections'));
       const data = await res.json();
       setConnections(data?.data ?? data?.connections ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('longTail.c2c.C2CDashboard.errors.loadConnections'));
+      setError(err instanceof Error ? err.message : stableT('longTail.c2c.C2CDashboard.errors.loadConnections'));
     }
-  }, [t]);
+  }, [stableT]);
 
   const fetchConfigs = useCallback(async () => {
     try {
       const res = await fetchWithAuth('/c2c/configs');
-      if (!res.ok) throw new Error(t('longTail.c2c.C2CDashboard.errors.fetchConfigs'));
+      if (!res.ok) throw new Error(stableT('longTail.c2c.C2CDashboard.errors.fetchConfigs'));
       const data = await res.json();
       setConfigs(data?.data ?? data?.configs ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('longTail.c2c.C2CDashboard.errors.loadConfigs'));
+      setError(err instanceof Error ? err.message : stableT('longTail.c2c.C2CDashboard.errors.loadConfigs'));
     }
-  }, [t]);
+  }, [stableT]);
 
   const fetchJobs = useCallback(async () => {
     try {
       const res = await fetchWithAuth('/c2c/jobs');
-      if (!res.ok) throw new Error(t('longTail.c2c.C2CDashboard.errors.fetchJobs'));
+      if (!res.ok) throw new Error(stableT('longTail.c2c.C2CDashboard.errors.fetchJobs'));
       const data = await res.json();
       setJobs(data?.data ?? data?.jobs ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('longTail.c2c.C2CDashboard.errors.loadJobs'));
+      setError(err instanceof Error ? err.message : stableT('longTail.c2c.C2CDashboard.errors.loadJobs'));
     }
-  }, [t]);
+  }, [stableT]);
 
   const fetchItems = useCallback(async () => {
     try {
@@ -195,13 +197,13 @@ function C2CDashboardInner() {
       if (itemUserFilter) params.set('userEmail', itemUserFilter);
       const qs = params.toString();
       const res = await fetchWithAuth(`/c2c/items${qs ? `?${qs}` : ''}`);
-      if (!res.ok) throw new Error(t('longTail.c2c.C2CDashboard.errors.fetchItems'));
+      if (!res.ok) throw new Error(stableT('longTail.c2c.C2CDashboard.errors.fetchItems'));
       const data = await res.json();
       setItems(data?.data ?? data?.items ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('longTail.c2c.C2CDashboard.errors.loadItems'));
+      setError(err instanceof Error ? err.message : stableT('longTail.c2c.C2CDashboard.errors.loadItems'));
     }
-  }, [itemSearch, itemTypeFilter, itemUserFilter, t]);
+  }, [itemSearch, itemTypeFilter, itemUserFilter, stableT]);
 
   useEffect(() => {
     setLoading(true);

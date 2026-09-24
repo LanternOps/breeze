@@ -7,6 +7,7 @@ import { navigateTo } from '@/lib/navigation';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { showToast } from '../shared/Toast';
 import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type TemplateRow = {
   id: string;
@@ -71,6 +72,7 @@ export default function SNMPTemplateList({
   refreshToken = 0
 }: Props = {}) {
   const { t } = useTranslation('common');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { currentOrgId } = useOrgStore();
   const [templates, setTemplates] = useState<TemplateRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -98,7 +100,7 @@ export default function SNMPTemplateList({
       }
 
       if (!templatesResponse.ok) {
-        throw new Error(t('longTail.snmp.SNMPTemplateList.errors.fetchTemplates'));
+        throw new Error(stableT('longTail.snmp.SNMPTemplateList.errors.fetchTemplates'));
       }
 
       const templatesPayload = await templatesResponse.json();
@@ -120,11 +122,11 @@ export default function SNMPTemplateList({
       setTemplates(mappedTemplates);
     } catch (err) {
       setTemplates([]);
-      setError(err instanceof Error ? err.message : t('longTail.snmp.SNMPTemplateList.errors.loadTemplates'));
+      setError(err instanceof Error ? err.message : stableT('longTail.snmp.SNMPTemplateList.errors.loadTemplates'));
     } finally {
       setLoading(false);
     }
-  }, [currentOrgId, t]);
+  }, [currentOrgId, stableT]);
 
   useEffect(() => {
     void fetchTemplates();

@@ -4,6 +4,7 @@ import '@/lib/i18n';
 import type { Organization } from '@/components/settings/organizationTypes';
 import { fetchWithAuth, handleSessionExpired } from '@/stores/auth';
 import { fetchAllOrganizations } from '@/lib/fetchAllOrganizations';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 /** Debounce for the search-driven refetch: a full page walk is real network
  *  work, slow enough to still be in flight when the next keystroke fires. */
@@ -32,6 +33,7 @@ export interface ArchivedOrganizationsApi {
  */
 export function useArchivedOrganizations({ enabled, search }: { enabled: boolean; search: string }): ArchivedOrganizationsApi {
   const { t } = useTranslation('organizations');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [archivedOrgs, setArchivedOrgs] = useState<Organization[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
@@ -54,7 +56,7 @@ export function useArchivedOrganizations({ enabled, search }: { enabled: boolean
               handleSessionExpired();
               return null;
             }
-            throw new Error(t('orgBoard.archived.fetchError'));
+            throw new Error(stableT('orgBoard.archived.fetchError'));
           }
           const body = await response.json();
           // Present only on the page that carries the archived block; a page
@@ -68,12 +70,12 @@ export function useArchivedOrganizations({ enabled, search }: { enabled: boolean
         setLoaded(true);
       } catch (err) {
         if (requestId !== requestIdRef.current) return;
-        setError(err instanceof Error ? err.message : t('orgBoard.errors.generic'));
+        setError(err instanceof Error ? err.message : stableT('orgBoard.errors.generic'));
       } finally {
         if (requestId === requestIdRef.current) setLoading(false);
       }
     },
-    [t],
+    [stableT],
   );
 
   useEffect(() => {

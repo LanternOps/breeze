@@ -20,6 +20,7 @@ import { usePermissions } from '@/lib/permissions';
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type ScriptExecutionsPageProps = {
   scriptId: string;
@@ -37,6 +38,7 @@ const POLL_INTERVAL_MS = 2000;
 
 export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageProps) {
   const { t } = useTranslation('scripts');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { permissions } = usePermissions();
   const [script, setScript] = useState<ScriptWithDetails | null>(null);
   const [executions, setExecutions] = useState<ScriptExecution[]>([]);
@@ -62,14 +64,14 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error(t('scriptExecutionsPage.errors.fetchScript'));
+        throw new Error(stableT('scriptExecutionsPage.errors.fetchScript'));
       }
       const data = await response.json();
       setScript(data.script ?? data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('scriptExecutionsPage.errors.generic'));
+      setError(err instanceof Error ? err.message : stableT('scriptExecutionsPage.errors.generic'));
     }
-  }, [scriptId, t]);
+  }, [scriptId, stableT]);
 
   const fetchExecutions = useCallback(async () => {
     try {
@@ -81,7 +83,7 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error(t('scriptExecutionsPage.errors.fetchExecutions'));
+        throw new Error(stableT('scriptExecutionsPage.errors.fetchExecutions'));
       }
       const data = await response.json();
       const list = asList(data, 'executions') as ScriptExecution[];
@@ -97,11 +99,11 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
         return updated ? { ...prev, ...updated } : prev;
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('scriptExecutionsPage.errors.generic'));
+      setError(err instanceof Error ? err.message : stableT('scriptExecutionsPage.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [scriptId, t]);
+  }, [scriptId, stableT]);
 
   const fetchSites = useCallback(async () => {
     try {

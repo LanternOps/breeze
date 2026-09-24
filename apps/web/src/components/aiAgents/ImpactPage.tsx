@@ -50,6 +50,7 @@ import type {
   AiAgentImpactWindow,
   ImpactWeights,
 } from '@breeze/shared';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 const DEFAULT_WINDOW: AiAgentImpactWindow = 30;
 const POLL_INTERVAL_MS = 5_000;
@@ -254,6 +255,7 @@ export function buildImpactPdfRows(
  */
 export default function ImpactPage() {
   const { t } = useTranslation('settings');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   // Honour the global Current/All-organizations toggle: fetchWithAuth injects
   // `?orgId=` whenever one org is selected, so a scope change must refetch or
   // the page keeps showing the previous scope's totals (same as RunsListPage).
@@ -307,7 +309,7 @@ export default function ImpactPage() {
         setDto(fresh);
       } catch {
         if (cancelled) return;
-        setError(t('aiAgentsPage.impact.errors.load'));
+        setError(stableT('aiAgentsPage.impact.errors.load'));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -315,7 +317,7 @@ export default function ImpactPage() {
     return () => {
       cancelled = true;
     };
-  }, [requestImpact, reloadToken, t]);
+  }, [requestImpact, reloadToken, stableT]);
 
   // Rebuild poll. The interval is owned by this effect so React clears it on
   // unmount (and whenever the window changes, which re-creates requestImpact).
@@ -330,7 +332,7 @@ export default function ImpactPage() {
           setDto(fresh);
           if (hasRebuildAdvanced(fresh.rebuiltAt, poll.rebuiltAt)) {
             setPoll(null);
-            showToast({ message: t('aiAgentsPage.impact.toasts.rebuildComplete'), type: 'success' });
+            showToast({ message: stableT('aiAgentsPage.impact.toasts.rebuildComplete'), type: 'success' });
             return;
           }
         } catch {
@@ -341,7 +343,7 @@ export default function ImpactPage() {
         if (Date.now() - poll.startedAt >= POLL_TIMEOUT_MS) {
           setPoll(null);
           showToast({
-            message: t('aiAgentsPage.impact.toasts.rebuildStillRunning'),
+            message: stableT('aiAgentsPage.impact.toasts.rebuildStillRunning'),
             type: 'warning',
           });
         }
@@ -351,7 +353,7 @@ export default function ImpactPage() {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [poll, requestImpact, t]);
+  }, [poll, requestImpact, stableT]);
 
   const handleRefresh = useCallback(async () => {
     try {

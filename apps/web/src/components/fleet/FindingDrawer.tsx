@@ -12,6 +12,7 @@ import {
   RESOLUTION_REASON_LABEL_KEYS,
   RUN_STATUS_CHIP_CLASSES, RUN_STATUS_LABEL_KEYS, STATUS_CHIP_CLASSES, STATUS_LABEL_KEYS,
 } from './findingLabels';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 /** Evidence blobs are producer-authored JSON of unbounded shape; render them
  *  preformatted and capped rather than trying to pretty-print every variant. */
@@ -40,6 +41,7 @@ export default function FindingDrawer({
   findingId, onClose, onStatusChange, onRemediate,
 }: FindingDrawerProps) {
   const { t } = useTranslation('common');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [finding, setFinding] = useState<FleetFindingDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -71,7 +73,7 @@ export default function FindingDrawer({
         setError(
           err instanceof Error && err.message
             ? err.message
-            : t('longTail.fleet.FindingDrawer.errors.loadFailed')
+            : stableT('longTail.fleet.FindingDrawer.errors.loadFailed')
         );
       })
       .finally(() => {
@@ -79,7 +81,7 @@ export default function FindingDrawer({
       });
 
     return () => { cancelled = true; };
-  }, [findingId, t]);
+  }, [findingId, stableT]);
 
   const drawerRef = useRef<HTMLElement | null>(null);
 

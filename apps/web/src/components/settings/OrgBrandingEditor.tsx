@@ -8,6 +8,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 // customCss is intentionally NOT part of BrandingData: as of #5952 it is
 // persisted via portal_branding (orgPortalSettings.ts), not
@@ -60,6 +61,7 @@ const portalDomain = (() => {
 
 export default function OrgBrandingEditor({ organizationName, orgId, branding, onDirty, onSave, locked }: OrgBrandingEditorProps) {
   const { t } = useTranslation('settings');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const isLocked = (field: string) => locked?.includes(`branding.${field}`) ?? false;
   const initialData = { ...defaultBranding, ...branding };
   const [logoPreview, setLogoPreview] = useState(initialData.logoUrl || '');
@@ -125,12 +127,12 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
         console.warn('[OrgBrandingEditor] failed to load portal custom CSS', err);
         if (!cancelled) {
           setCustomCssLoadFailed(true);
-          showToast({ message: t('orgBrandingEditor.customCss.loadError'), type: 'error' });
+          showToast({ message: stableT('orgBrandingEditor.customCss.loadError'), type: 'error' });
         }
       }
     })();
     return () => { cancelled = true; };
-  }, [orgId, t]);
+  }, [orgId, stableT]);
 
   const markDirty = () => {
     onDirty?.();

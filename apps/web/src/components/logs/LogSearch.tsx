@@ -9,6 +9,7 @@ import { toCsv } from '@/lib/csvExport';
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type EventLogRow = {
   log: {
@@ -52,6 +53,7 @@ function toDatetimeLocalInput(date: Date): string {
 
 export default function LogSearch() {
   const { t } = useTranslation('common');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [query, setQuery] = useState('');
   const [source, setSource] = useState('');
   const [selectedLevels, setSelectedLevels] = useState<Array<EventLogRow['log']['level']>>([]);
@@ -78,7 +80,7 @@ export default function LogSearch() {
 
   const fetchLogs = useCallback(async (nextOffset = 0) => {
     if (!canSearch) {
-      setError(t('longTail.logs.LogSearch.errors.invalidTimeRange'));
+      setError(stableT('longTail.logs.LogSearch.errors.invalidTimeRange'));
       return;
     }
 
@@ -108,7 +110,7 @@ export default function LogSearch() {
 
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
-        throw new Error(typeof body.error === 'string' ? body.error : t('longTail.logs.LogSearch.errors.searchFailed'));
+        throw new Error(typeof body.error === 'string' ? body.error : stableT('longTail.logs.LogSearch.errors.searchFailed'));
       }
 
       const data: SearchResponse = await response.json();
@@ -116,11 +118,11 @@ export default function LogSearch() {
       setTotal(Number(data.total ?? 0));
       setOffset(nextOffset);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('longTail.logs.LogSearch.errors.searchFailed'));
+      setError(err instanceof Error ? err.message : stableT('longTail.logs.LogSearch.errors.searchFailed'));
     } finally {
       setLoading(false);
     }
-  }, [canSearch, query, source, selectedLevels, startTime, endTime, limit, t]);
+  }, [canSearch, query, source, selectedLevels, startTime, endTime, limit, stableT]);
 
   useEffect(() => {
     fetchLogs(0);

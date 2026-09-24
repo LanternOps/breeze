@@ -4,6 +4,7 @@ import { fetchWithAuth } from '@/stores/auth';
 import { extractApiError } from '@/lib/apiError';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 interface Props {
   tunnelId: string;
@@ -53,6 +54,7 @@ function buildProxyUrl(tunnelId: string, ticket: string): string {
 
 export default function ProxyTunnelPage({ tunnelId, target, assetId }: Props) {
   const { t } = useTranslation('remote');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [status, setStatus] = useState<TunnelStatus>('connecting');
   const [proxyUrl, setProxyUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -88,14 +90,14 @@ export default function ProxyTunnelPage({ tunnelId, target, assetId }: Props) {
           if (data.status === 'failed') {
             setError(
               data.errorMessage === 'tls_cert_untrusted'
-                ? t('proxyTunnelPage.errors.tlsUntrusted')
-                : extractApiError(data, t('proxyTunnelPage.errors.tunnelFailed')),
+                ? stableT('proxyTunnelPage.errors.tlsUntrusted')
+                : extractApiError(data, stableT('proxyTunnelPage.errors.tunnelFailed')),
             );
           }
         }
       }
     } catch { /* ignore */ }
-  }, [tunnelId, t]);
+  }, [tunnelId, stableT]);
 
   useEffect(() => {
     pollStatus();
@@ -113,21 +115,21 @@ export default function ProxyTunnelPage({ tunnelId, target, assetId }: Props) {
       const res = await fetchWithAuth(`/tunnels/${tunnelId}/http-ticket`, { method: 'POST' });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || t('proxyTunnelPage.errors.obtainTicket'));
+        throw new Error(body.error || stableT('proxyTunnelPage.errors.obtainTicket'));
       }
       const body = await res.json();
       // The mint endpoint wraps the ticket: `{ ticket: { ticket, expiresInSeconds } }`.
       const ticket = typeof body.ticket === 'string' ? body.ticket : body.ticket?.ticket;
       if (!ticket) {
-        throw new Error(t('proxyTunnelPage.errors.invalidTicket'));
+        throw new Error(stableT('proxyTunnelPage.errors.invalidTicket'));
       }
       setProxyUrl(buildProxyUrl(tunnelId, ticket));
       return true;
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('proxyTunnelPage.errors.prepareConnection'));
+      setError(err instanceof Error ? err.message : stableT('proxyTunnelPage.errors.prepareConnection'));
       return false;
     }
-  }, [tunnelId, t]);
+  }, [tunnelId, stableT]);
 
   useEffect(() => {
     mintTicket();

@@ -5,6 +5,7 @@ import '@/lib/i18n';
 
 import { Dialog } from '../shared/Dialog';
 import { fetchLiveSessions, type LiveSession } from '../../services/deviceActions';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type Props = {
   isOpen: boolean;
@@ -21,6 +22,7 @@ type Props = {
 
 export default function SessionPickerModal({ isOpen, deviceId, purpose, onSelect, onClose }: Props) {
   const { t } = useTranslation('devices');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [sessions, setSessions] = useState<LiveSession[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -35,7 +37,7 @@ export default function SessionPickerModal({ isOpen, deviceId, purpose, onSelect
         if (!cancelled) setSessions(result);
       })
       .catch((err: unknown) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : t('sessionPicker.fetchFailed'));
+        if (!cancelled) setError(err instanceof Error ? err.message : stableT('sessionPicker.fetchFailed'));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -43,7 +45,7 @@ export default function SessionPickerModal({ isOpen, deviceId, purpose, onSelect
     return () => {
       cancelled = true;
     };
-  }, [isOpen, deviceId, t]);
+  }, [isOpen, deviceId, stableT]);
 
   const title = purpose === 'desktop' ? t('sessionPicker.titleDesktop') : t('sessionPicker.titleScript');
 

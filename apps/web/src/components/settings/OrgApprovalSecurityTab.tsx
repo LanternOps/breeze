@@ -10,6 +10,7 @@ import {
 } from '../../stores/authenticatorPolicy';
 import { runAction, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 const TIERS: RiskTier[] = ['low', 'medium', 'high', 'critical'];
 const TIER_LABEL_KEYS: Record<RiskTier, string> = {
@@ -31,6 +32,7 @@ const LEVEL_LABEL_KEYS: Record<AssuranceLevel, string> = {
  */
 export function OrgApprovalSecurityTab() {
   const { t } = useTranslation('settings');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [policy, setPolicy] = useState<AuthenticatorPolicy | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | undefined>();
@@ -43,7 +45,7 @@ export function OrgApprovalSecurityTab() {
         const p = await getAuthenticatorPolicy();
         if (active) setPolicy(p);
       } catch {
-        if (active) setLoadError(t('orgApprovalSecurityTab.errors.load'));
+        if (active) setLoadError(stableT('orgApprovalSecurityTab.errors.load'));
       } finally {
         if (active) setIsLoading(false);
       }
@@ -51,7 +53,7 @@ export function OrgApprovalSecurityTab() {
     return () => {
       active = false;
     };
-  }, [t]);
+  }, [stableT]);
 
   function setTierLevel(tier: RiskTier, level: AssuranceLevel) {
     setPolicy((prev) =>

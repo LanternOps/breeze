@@ -14,6 +14,7 @@ import {
   type SoftwareGroup,
   type VulnFleetFilters,
 } from '../../lib/api/vulnerabilities';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 // Keyboard path into the drawer: the whole row stays mouse-clickable, but the
 // primary cell carries a real <button> so keyboard/screen-reader users can
@@ -53,6 +54,7 @@ export function SoftwareGroupTable({
   onClearFilters: () => void;
 }) {
   const { t } = useTranslation('vulnerabilities');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [items, setItems] = useState<SoftwareGroup[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -74,7 +76,7 @@ export function SoftwareGroupTable({
         setHasMore(res.hasMore);
       })
       .catch((err: unknown) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : t('softwareGroupTable.errors.load'));
+        if (!cancelled) setError(err instanceof Error ? err.message : stableT('softwareGroupTable.errors.load'));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -82,7 +84,7 @@ export function SoftwareGroupTable({
     return () => {
       cancelled = true;
     };
-  }, [filters, refreshKey, retryKey, t]);
+  }, [filters, refreshKey, retryKey, stableT]);
 
   // Skeleton only on empty loads (first paint / after an error retry). A
   // filter-change refetch keeps the previous rows on screen instead of flashing.

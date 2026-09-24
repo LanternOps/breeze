@@ -19,6 +19,7 @@ import {
   type EffectiveAiBudget,
 } from '@/lib/aiBudget';
 import AiBudgetThresholdsInput from './AiBudgetThresholdsInput';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 /** Where the partner-wide copies of these fields are edited. */
 const PARTNER_AI_BUDGETS_HREF = '/settings/partner#ai-budgets';
@@ -83,6 +84,7 @@ const centsToDollars = (cents: number | null): string => (cents == null ? '' : (
  */
 export default function OrgAiBudgetSettings({ orgId }: Props) {
   const { t } = useTranslation('settings');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { isPartnerScope } = useDefaultOwnerScope();
   const canManagePartnerWide = useAuthStore((s) => s.user?.canManagePartnerWide) !== false;
   const showPartnerLink = isPartnerScope && canManagePartnerWide;
@@ -110,7 +112,7 @@ export default function OrgAiBudgetSettings({ orgId }: Props) {
     setLoading(true);
     try {
       const res = await fetchWithAuth(`/orgs/organizations/${orgId}/effective-settings`);
-      if (!res.ok) throw new Error(t('aiUsagePage.failedToLoadData'));
+      if (!res.ok) throw new Error(stableT('aiUsagePage.failedToLoadData'));
       const data = await res.json();
       const lockedList: string[] = data.locked ?? [];
       const merged = withAiBudgetDefaults(data.effective?.aiBudgets ?? data.aiBudgets);
@@ -140,11 +142,11 @@ export default function OrgAiBudgetSettings({ orgId }: Props) {
       setError(null);
     } catch (err) {
       setLoadFailed(true);
-      setError(err instanceof Error ? err.message : t('aiUsagePage.failedToLoadData'));
+      setError(err instanceof Error ? err.message : stableT('aiUsagePage.failedToLoadData'));
     } finally {
       setLoading(false);
     }
-  }, [orgId, t]);
+  }, [orgId, stableT]);
 
   useEffect(() => { void load(); }, [load]);
 

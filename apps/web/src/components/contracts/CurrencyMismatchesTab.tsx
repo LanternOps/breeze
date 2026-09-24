@@ -11,6 +11,7 @@ import {
   type ContractCurrencyMismatch,
   type ContractCurrencyMismatchReport,
 } from '../../lib/api/contracts';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -33,6 +34,7 @@ const PAGE_SIZE = 50;
  */
 export default function CurrencyMismatchesTab() {
   const { t } = useTranslation('billing');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
 
   const [items, setItems] = useState<ContractCurrencyMismatch[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -43,11 +45,11 @@ export default function CurrencyMismatchesTab() {
   const fetchPage = useCallback(async (cursor?: string): Promise<ContractCurrencyMismatchReport | null> => {
     const res = await listContractCurrencyMismatches({ limit: PAGE_SIZE, cursor });
     if (res.status === 401) { UNAUTHORIZED(); return null; }
-    if (!res.ok) throw new Error(t('contracts.currencyMismatches.loadError'));
+    if (!res.ok) throw new Error(stableT('contracts.currencyMismatches.loadError'));
     const body = (await res.json().catch(() => null)) as { data?: ContractCurrencyMismatchReport } | null;
-    if (!body?.data) throw new Error(t('contracts.currencyMismatches.loadError'));
+    if (!body?.data) throw new Error(stableT('contracts.currencyMismatches.loadError'));
     return body.data;
-  }, [t]);
+  }, [stableT]);
 
   const load = useCallback(async () => {
     try {
@@ -58,11 +60,11 @@ export default function CurrencyMismatchesTab() {
       setItems(data.items);
       setNextCursor(data.nextCursor);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('contracts.currencyMismatches.loadError'));
+      setError(err instanceof Error ? err.message : stableT('contracts.currencyMismatches.loadError'));
     } finally {
       setLoading(false);
     }
-  }, [fetchPage, t]);
+  }, [fetchPage, stableT]);
 
   useEffect(() => { void load(); }, [load]);
 

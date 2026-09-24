@@ -12,6 +12,7 @@ import { Trans, useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { formatDate } from '@/lib/dateTimeFormat';
 import { PRODUCT_DEFAULT_ENROLLMENT_DEVICE_COUNT } from '@breeze/shared';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 interface EnrollmentKey {
   id: string;
@@ -79,6 +80,7 @@ type ModalMode = 'closed' | 'create' | 'delete';
 
 export default function EnrollmentKeyManager() {
   const { t } = useTranslation('settings');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { currentOrgId, organizations } = useOrgStore();
   const [keys, setKeys] = useState<EnrollmentKey[]>([]);
   const [loading, setLoading] = useState(true);
@@ -128,7 +130,7 @@ export default function EnrollmentKeyManager() {
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error(t('enrollmentKeys.fetchFailed'));
+        throw new Error(stableT('enrollmentKeys.fetchFailed'));
       }
       const data = await response.json();
       setKeys(data.data ?? []);
@@ -137,11 +139,11 @@ export default function EnrollmentKeyManager() {
       setTotalPages(Math.max(1, Math.ceil(total / limit)));
       setCurrentPage(data.pagination?.page ?? page);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('enrollmentKeys.genericError'));
+      setError(err instanceof Error ? err.message : stableT('enrollmentKeys.genericError'));
     } finally {
       setLoading(false);
     }
-  }, [hideExpired, t]);
+  }, [hideExpired, stableT]);
 
   useEffect(() => {
     fetchKeys();

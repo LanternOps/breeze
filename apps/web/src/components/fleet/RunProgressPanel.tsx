@@ -9,6 +9,7 @@ import {
   RUN_STATUS_CHIP_CLASSES, RUN_STATUS_LABEL_KEYS,
   TARGET_STATUS_CHIP_CLASSES, TARGET_STATUS_LABEL_KEYS, skipReasonLabelKey,
 } from './findingLabels';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 /** Poll cadence while the run is `queued` or `running`. Exported so the test
  *  advances the exact interval rather than a magic number that can silently
@@ -31,6 +32,7 @@ interface RunProgressPanelProps {
 
 export default function RunProgressPanel({ runId, onClose }: RunProgressPanelProps) {
   const { t } = useTranslation('common');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [run, setRun] = useState<FleetRemediationRunDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -75,7 +77,7 @@ export default function RunProgressPanel({ runId, onClose }: RunProgressPanelPro
         setError(
           err instanceof Error && err.message
             ? err.message
-            : t('longTail.fleet.RunProgress.errors.loadFailed')
+            : stableT('longTail.fleet.RunProgress.errors.loadFailed')
         );
       } finally {
         if (!cancelled) setIsLoading(false);
@@ -89,7 +91,7 @@ export default function RunProgressPanel({ runId, onClose }: RunProgressPanelPro
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [runId, retryToken, t]);
+  }, [runId, retryToken, stableT]);
 
   const terminal = run ? isTerminalRunStatus(run.status) : false;
 

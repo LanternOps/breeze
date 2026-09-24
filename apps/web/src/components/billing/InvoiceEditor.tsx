@@ -22,6 +22,7 @@ import CatalogItemPicker from '../catalog/CatalogItemPicker';
 import PolishButton from '../catalog/PolishButton';
 import { listCatalog, type CatalogItem } from '../../lib/api/catalog';
 import { formatPercent } from '@/lib/i18n/format';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -69,6 +70,7 @@ type PendingDelete = { memberIds: string[]; timer: ReturnType<typeof setTimeout>
 
 export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange, onUnsavedEditsChange, onSaveFailure, onRegisterPendingDeleteFlush, showMargin }: Props) {
   const { t } = useTranslation('billing');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { can } = usePermissions();
   const canWrite = can('invoices', 'write');
   // Cost/margin is a read affordance (mirrors InvoiceDetail + the quote rails'
@@ -342,10 +344,10 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
       setCatalog(body.data);
       setCatalogFailed(false);
     } catch (err) {
-      handleActionError(err, t('invoiceEditor.errors.loadCatalog'));
+      handleActionError(err, stableT('invoiceEditor.errors.loadCatalog'));
       setCatalogFailed(true);
     }
-  }, [t]);
+  }, [stableT]);
 
   useEffect(() => { void loadCatalog(); }, [loadCatalog]);
 
@@ -459,12 +461,12 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
     runScoped(`remove-${lineId}`, async () => {
       await runAction({
         request: () => fetchWithAuth(`/invoices/${invoice.id}/lines/${lineId}`, { method: 'DELETE', keepalive: true }),
-        errorFallback: t('invoiceEditor.errors.removeLine'),
+        errorFallback: stableT('invoiceEditor.errors.removeLine'),
         onUnauthorized: UNAUTHORIZED,
       });
       refresh();
-    }, t('invoiceEditor.errors.removeLine')),
-  [runScoped, invoice.id, refresh, t]);
+    }, stableT('invoiceEditor.errors.removeLine')),
+  [runScoped, invoice.id, refresh, stableT]);
 
   // undo → cancel the timer, unhide (nothing was ever sent).
   const undoLineDelete = useCallback((lineId: string) => {
@@ -550,11 +552,11 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
       if (failed > 0 && failed < results.length) {
         showToast({
           type: 'warning',
-          message: t('invoiceEditor.undo.partialFlush', { applied: results.length - failed, failed }),
+          message: stableT('invoiceEditor.undo.partialFlush', { applied: results.length - failed, failed }),
         });
       }
     })();
-  }, [flushLineDelete, t]);
+  }, [flushLineDelete, stableT]);
   const flushAllRef = useRef(flushAllPendingDeletes);
   useEffect(() => { flushAllRef.current = flushAllPendingDeletes; }, [flushAllPendingDeletes]);
   useEffect(() => {

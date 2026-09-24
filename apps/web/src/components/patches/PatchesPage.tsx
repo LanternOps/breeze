@@ -26,6 +26,7 @@ import { asList } from '@/lib/asList';
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type TabKey = 'rings' | 'patches' | 'compliance';
 const validTabs: TabKey[] = ['rings', 'patches', 'compliance'];
@@ -84,6 +85,7 @@ const BULK_APPROVE_BATCH_SIZE = 200;
 
 export default function PatchesPage() {
   const { t } = useTranslation('patches');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { organizations, currentOrgId } = useOrgStore();
   const currentOrg = organizations.find(o => o.id === currentOrgId) ?? null;
   // Reactive claims, not the one-shot getJwtClaims(): access tokens are never
@@ -130,7 +132,9 @@ export default function PatchesPage() {
   const setActiveTab = useCallback((tab: TabKey) => {
     setActiveTabState(tab);
     setTabInHash(tab);
-  }, [t]);
+    // No `t` dependency: this never translates, and a `t` dep re-ran the hash
+    // sync effect below on every locale change (#3632).
+  }, []);
 
   // Sync the active tab from the hash on mount and on every hashchange — browser
   // back/forward and manual hash edits re-select the tab, mirroring DiscoveryPage.
@@ -298,7 +302,7 @@ export default function PatchesPage() {
         if (isStale()) return;
         if (!response.ok) {
           if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
-          throw new Error(t('patchesPage.errors.fetchPatches'));
+          throw new Error(stableT('patchesPage.errors.fetchPatches'));
         }
         const data = await response.json();
         const patchData = asList(data, 'patches', 'items');
@@ -356,12 +360,12 @@ export default function PatchesPage() {
       );
     } catch (err) {
       if (isStale()) return;
-      setPatchesError(err instanceof Error ? err.message : t('patchesPage.errors.fetchPatches'));
+      setPatchesError(err instanceof Error ? err.message : stableT('patchesPage.errors.fetchPatches'));
     } finally {
       // A superseded walk must not clear the spinner the newer walk turned on.
       if (!isStale()) setPatchesLoading(false);
     }
-  }, [selectedRingId, t]);
+  }, [selectedRingId, stableT]);
 
   useEffect(() => {
     fetchRings();

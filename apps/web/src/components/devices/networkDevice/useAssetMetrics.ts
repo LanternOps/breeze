@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../../stores/auth';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 export type MetricRange = '24h' | '7d' | '30d';
 export type MetricBucket = '5m' | '1h' | '1d';
@@ -42,6 +43,7 @@ export function useAssetMetrics({
   bucket,
 }: UseAssetMetricsArgs) {
   const { t } = useTranslation('devices');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [series, setSeries] = useState<MetricSeries[]>([]);
   const [truncatedSeries, setTruncatedSeries] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -84,7 +86,7 @@ export function useAssetMetrics({
         if (!response.ok) {
           // The 400 carries the cap in its message (§14) — showing it is the
           // whole point; a silent empty chart reads as "no data".
-          setError(typeof body?.error === 'string' ? body.error : t('networkDeviceDetailPage.charts.loadFailed'));
+          setError(typeof body?.error === 'string' ? body.error : stableT('networkDeviceDetailPage.charts.loadFailed'));
           setSeries([]);
           return;
         }
@@ -92,7 +94,7 @@ export function useAssetMetrics({
         setTruncatedSeries(body?.truncatedSeries === true);
       } catch {
         if (seq !== seqRef.current) return;
-        setError(t('networkDeviceDetailPage.charts.loadFailed'));
+        setError(stableT('networkDeviceDetailPage.charts.loadFailed'));
         setSeries([]);
       } finally {
         if (seq === seqRef.current) setLoading(false);
@@ -101,7 +103,7 @@ export function useAssetMetrics({
 
     // Invalidate pending responses on suspension, request changes and unmount.
     return () => { ++seqRef.current; };
-  }, [assetId, oid, range, delta, windowMs, bucket, nonce, t]);
+  }, [assetId, oid, range, delta, windowMs, bucket, nonce, stableT]);
 
   return { series, truncatedSeries, loading, error, reload: () => setNonce((n) => n + 1) };
 }

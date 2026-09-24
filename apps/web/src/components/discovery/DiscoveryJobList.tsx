@@ -8,6 +8,7 @@ import { extractApiError } from '@/lib/apiError';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
 import { asList } from '@/lib/asList';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 export type DiscoveryJobStatus = 'scheduled' | 'running' | 'completed' | 'failed' | 'cancelled' | 'pending';
 
@@ -156,6 +157,7 @@ const STATUS_FILTERS: DiscoveryJobStatus[] = ['running', 'scheduled', 'completed
 
 export default function DiscoveryJobList({ timezone, profileFilter, profileSubnets, onClearFilter, onViewProfile, onViewAssets }: DiscoveryJobListProps) {
   const { t } = useTranslation('discovery');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [jobs, setJobs] = useState<DiscoveryJob[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -171,19 +173,19 @@ export default function DiscoveryJobList({ timezone, profileFilter, profileSubne
       setError(undefined);
       const response = await fetchWithAuth('/discovery/jobs');
       if (!response.ok) {
-        throw new Error(t('discoveryJobList.errors.fetch'));
+        throw new Error(stableT('discoveryJobList.errors.fetch'));
       }
       const data = await response.json();
       const items = asList(data, 'jobs');
-      setJobs(items.map((job: ApiDiscoveryJob) => mapJob(job, t)));
+      setJobs(items.map((job: ApiDiscoveryJob) => mapJob(job, stableT)));
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('discoveryJobList.errors.generic'));
+      setError(err instanceof Error ? err.message : stableT('discoveryJobList.errors.generic'));
     } finally {
       if (showLoading) {
         setLoading(false);
       }
     }
-  }, [t]);
+  }, [stableT]);
 
   const cancelJob = useCallback(async (jobId: string) => {
     setCancellingId(jobId);

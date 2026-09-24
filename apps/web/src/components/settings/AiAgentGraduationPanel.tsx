@@ -45,6 +45,7 @@ import { handleActionError, runAction } from '@/lib/runAction';
 import { loginPathWithNext } from '@/lib/authScope';
 import { navigateTo } from '@/lib/navigation';
 import { formatDateTime } from '@/lib/dateTimeFormat';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
@@ -166,6 +167,7 @@ function normalize(payload: unknown): Loaded {
 
 export default function AiAgentGraduationPanel({ orgId, kind, isPartnerScope }: Props) {
   const { t } = useTranslation('settings');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -224,7 +226,7 @@ export default function AiAgentGraduationPanel({ orgId, kind, isPartnerScope }: 
         // point of this surface is that "no evidence" is a finding.
         if (!cancelled) {
           setLoaded(null);
-          setError(t('aiAgentsPage.graduation.error'));
+          setError(stableT('aiAgentsPage.graduation.error'));
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -233,7 +235,7 @@ export default function AiAgentGraduationPanel({ orgId, kind, isPartnerScope }: 
     return () => {
       cancelled = true;
     };
-  }, [canRead, kind, orgId, reloadToken, t]);
+  }, [canRead, kind, orgId, reloadToken, stableT]);
 
   const promote = useCallback(async () => {
     if (!pending || promoting) return;

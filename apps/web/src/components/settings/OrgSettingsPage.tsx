@@ -49,6 +49,7 @@ import { formatDate, formatTime as formatUserTime } from '@/lib/dateTimeFormat';
 import { isArchiveLifecycleOrg } from '@/lib/archiveLifecycle';
 import Pax8OrgTab from '../organizations/Pax8OrgTab';
 import ExtensionSlotHost from '../extensions/ExtensionSlotHost';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type TabKey =
   | 'general' | 'contacts' | 'branding' | 'portal' | 'notifications' | 'security'
@@ -241,6 +242,7 @@ export async function runOrgNameSave(
 
 export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPageProps) {
   const { t } = useTranslation('settings');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   // Seeded SSR-safe with the default tab; the hash is applied client-side in
   // the effect below to avoid a hydration mismatch (same pattern as
   // PartnerSettingsPage). Also tracks back/forward via hashchange.
@@ -363,7 +365,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error(t('orgSettingsPage.errors.fetchDetails'));
+        throw new Error(stableT('orgSettingsPage.errors.fetchDetails'));
       }
       const data = await response.json();
       setOrgDetails(data);
@@ -416,11 +418,11 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
           setPinnableVersions(null);
         });
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('orgSettingsPage.errors.generic'));
+      setError(err instanceof Error ? err.message : stableT('orgSettingsPage.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [effectiveOrgId, t]);
+  }, [effectiveOrgId, stableT]);
 
   useEffect(() => {
     fetchOrgDetails();

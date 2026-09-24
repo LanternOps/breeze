@@ -21,6 +21,7 @@ import { navigateTo } from '@/lib/navigation';
 import { ActionError } from '@/lib/runAction';
 import { useNetworkAssetMutations } from '../devices/networkDevice/settings/useNetworkAssetMutations';
 import { buildDetailHash } from '../devices/networkDevice/settings/settingsHash';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 /** W01 (spec §4.2). Absent on a pre-W01 API — treat every field as optional. */
 type Reachability = {
@@ -131,6 +132,7 @@ type Props = {
 
 export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks }: Props) {
   const { t } = useTranslation('common');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
   // Monitoring assets are scoped to a single org; the API returns 400
   // ("orgId is required when partner has multiple organizations") for a
@@ -165,15 +167,15 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
       params.set('orgId', currentOrgId);
       const qs = params.toString() ? `?${params.toString()}` : '';
       const res = await fetchWithAuth(`/monitoring/assets${qs}`);
-      if (!res.ok) throw new Error(t('longTail.monitoring.MonitoringAssetsDashboard.errors.fetchAssets'));
+      if (!res.ok) throw new Error(stableT('longTail.monitoring.MonitoringAssetsDashboard.errors.fetchAssets'));
       const data = await res.json();
       setAssets(data.data ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('longTail.monitoring.MonitoringAssetsDashboard.errors.generic'));
+      setError(err instanceof Error ? err.message : stableT('longTail.monitoring.MonitoringAssetsDashboard.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [showAll, currentOrgId, t]);
+  }, [showAll, currentOrgId, stableT]);
 
   useEffect(() => {
     fetchAssets();

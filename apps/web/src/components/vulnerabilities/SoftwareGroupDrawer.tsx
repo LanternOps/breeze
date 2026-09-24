@@ -21,6 +21,7 @@ import {
   reopenVuln,
   type SoftwareGroupDetail,
 } from '../../lib/api/vulnerabilities';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 const ACTION_BTN =
   'inline-flex items-center rounded-md border px-3 py-1.5 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50';
@@ -41,6 +42,7 @@ export function SoftwareGroupDrawer({
   onSelectCve: (cveId: string) => void;
 }) {
   const { t } = useTranslation('vulnerabilities');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [detail, setDetail] = useState<SoftwareGroupDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -69,9 +71,9 @@ export function SoftwareGroupDrawer({
       setSelected(new Set(d.findings.filter((f) => f.status === 'open').map((f) => f.deviceVulnerabilityId)));
     } catch (err) {
       setDetail(null);
-      setError(err instanceof Error ? err.message : t('softwareGroupDrawer.errors.load'));
+      setError(err instanceof Error ? err.message : stableT('softwareGroupDrawer.errors.load'));
     }
-  }, [groupKey, t]);
+  }, [groupKey, stableT]);
 
   useEffect(() => {
     void load();

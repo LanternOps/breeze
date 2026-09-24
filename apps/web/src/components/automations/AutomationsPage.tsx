@@ -17,6 +17,7 @@ import type { TriggerFilter } from './AutomationList';
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type ModalMode = 'closed' | 'delete' | 'history' | 'run';
 
@@ -207,6 +208,7 @@ function toDeviceRunResult(raw: unknown): DeviceRunResult | null {
 
 export default function AutomationsPage() {
   const { t } = useTranslation('scripts');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { permissions } = usePermissions();
   // #3262 — mirrors canManagePartnerWidePolicies(auth) server-side. UX only;
   // the cancel route re-checks this on every request.
@@ -230,7 +232,7 @@ export default function AutomationsPage() {
       setError(undefined);
       const response = await fetchWithAuth('/automations');
       if (!response.ok) {
-        throw new Error(t('automationsPage.errors.fetch'));
+        throw new Error(stableT('automationsPage.errors.fetch'));
       }
       const data = await response.json();
       const rows = data.data ?? data.automations ?? [];
@@ -240,15 +242,15 @@ export default function AutomationsPage() {
       // ones, which render read-only inline instead of being hidden — #3824.)
       setAutomations(
         Array.isArray(rows)
-          ? rows.map((row: unknown) => toListAutomation(row, t)).filter((automation) => !automation.managedByMonitorId)
+          ? rows.map((row: unknown) => toListAutomation(row, stableT)).filter((automation) => !automation.managedByMonitorId)
           : []
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('automationsPage.errors.generic'));
+      setError(err instanceof Error ? err.message : stableT('automationsPage.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [stableT]);
 
   const fetchRunHistory = useCallback(async (automation: Automation) => {
     try {

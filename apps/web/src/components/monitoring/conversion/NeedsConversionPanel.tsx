@@ -8,6 +8,7 @@ import {
   conversionPaths, convertBody, fetchPolicyPreview, readConvertResult, readRetireResult, retireBody,
   type ConversionPreviewItem, type ConvertResult, type PolicyConversionPreview, type PreviewProgress,
 } from './conversionApi';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 export interface NeedsConversionPanelProps {
   policyId: string;
@@ -21,6 +22,7 @@ type Load = { status: 'idle' | 'loading' | 'ready' | 'error'; error?: string };
 
 export default function NeedsConversionPanel({ policyId, hasLegacyRows, onChanged }: NeedsConversionPanelProps) {
   const { t } = useTranslation(['monitoring', 'common']);
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [preview, setPreview] = useState<PolicyConversionPreview | null>(null);
   const [load, setLoad] = useState<Load>({ status: 'idle' });
   const [busy, setBusy] = useState<string | null>(null);
@@ -45,10 +47,10 @@ export default function NeedsConversionPanel({ policyId, hasLegacyRows, onChange
       }
     } catch (err) {
       if (!controller.signal.aborted) {
-        setLoad({ status: 'error', error: err instanceof Error ? err.message : t('monitoring:conversion.errors.preview') });
+        setLoad({ status: 'error', error: err instanceof Error ? err.message : stableT('monitoring:conversion.errors.preview') });
       }
     }
-  }, [policyId, t]);
+  }, [policyId, stableT]);
 
   useEffect(() => {
     if (hasLegacyRows) void reload();

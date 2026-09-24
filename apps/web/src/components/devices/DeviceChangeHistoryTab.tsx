@@ -4,6 +4,7 @@ import { formatDateTime as formatUserDateTime } from "@/lib/dateTimeFormat";
 import { fetchWithAuth } from "../../stores/auth";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type ChangeItem = {
   id: string;
@@ -199,6 +200,7 @@ export default function DeviceChangeHistoryTab({
   deviceId,
 }: DeviceChangeHistoryTabProps) {
   const { t } = useTranslation("devices");
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [items, setItems] = useState<ChangeItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -256,13 +258,13 @@ export default function DeviceChangeHistoryTab({
           // inline, non-destructive message instead of the full error card.
           if (append) {
             setLoadMoreError(
-              t("deviceChangeHistoryTab.loadMoreError", {
+              stableT("deviceChangeHistoryTab.loadMoreError", {
                 status: response.status,
               }),
             );
           } else {
             setError(
-              t("deviceChangeHistoryTab.loadError", { status: response.status }),
+              stableT("deviceChangeHistoryTab.loadError", { status: response.status }),
             );
           }
           return;
@@ -278,7 +280,7 @@ export default function DeviceChangeHistoryTab({
         const message =
           err instanceof Error
             ? err.message
-            : t("deviceChangeHistoryTab.loadError", { status: 0 });
+            : stableT("deviceChangeHistoryTab.loadError", { status: 0 });
         if (append) {
           setLoadMoreError(message);
         } else {
@@ -295,7 +297,7 @@ export default function DeviceChangeHistoryTab({
         }
       }
     },
-    [deviceId, typeFilter, actionFilter, t],
+    [deviceId, typeFilter, actionFilter, stableT],
   );
 
   useEffect(() => {

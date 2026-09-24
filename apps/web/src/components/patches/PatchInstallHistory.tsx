@@ -22,6 +22,7 @@ import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { formatDateTime } from '@/lib/dateTimeFormat';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type PatchResult = {
   id?: string;
@@ -202,6 +203,7 @@ function getPatchResultKb(patch: PatchResult): string | null {
 
 export default function PatchInstallHistory({ deviceId }: PatchInstallHistoryProps) {
   const { t } = useTranslation('patches');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [history, setHistory] = useState<PatchHistoryEntry[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -238,7 +240,7 @@ export default function PatchInstallHistory({ deviceId }: PatchInstallHistoryPro
             void navigateTo('/login', { replace: true });
             return;
           }
-          throw new Error(t('patchInstallHistory.errors.fetchHistory'));
+          throw new Error(stableT('patchInstallHistory.errors.fetchHistory'));
         }
         const json = await response.json();
         const data = json?.data ?? json;
@@ -248,12 +250,12 @@ export default function PatchInstallHistory({ deviceId }: PatchInstallHistoryPro
         setHistory(entries);
         setTotal(typeof data?.total === 'number' ? data.total : entries.length);
       } catch (err) {
-        if (!silent) setError(err instanceof Error ? err.message : t('patchInstallHistory.errors.fetchHistory'));
+        if (!silent) setError(err instanceof Error ? err.message : stableT('patchInstallHistory.errors.fetchHistory'));
       } finally {
         if (!silent) setLoading(false);
       }
     },
-    [deviceId, currentPage, typeFilter, statusFilter, t]
+    [deviceId, currentPage, typeFilter, statusFilter, stableT]
   );
 
   useEffect(() => {

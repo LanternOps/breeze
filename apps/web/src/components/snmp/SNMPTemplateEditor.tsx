@@ -3,6 +3,7 @@ import { FileUp, Loader2, PlusCircle, Trash2, CheckCircle2, Layers, Search, Copy
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { asList } from '@/lib/asList';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type OidRow = {
   id: string;
@@ -128,6 +129,7 @@ function parseOidValidation(payload: unknown): OidValidationResult[] {
 
 export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 0, onTemplateSaved }: Props = {}) {
   const { t } = useTranslation('common');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
@@ -174,7 +176,7 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
       const response = await fetchWithAuth('/snmp/templates');
 
       if (!response.ok) {
-        throw new Error(t('longTail.snmp.SNMPTemplateEditor.errors.fetchTemplates'));
+        throw new Error(stableT('longTail.snmp.SNMPTemplateEditor.errors.fetchTemplates'));
       }
 
       const payload = await response.json();
@@ -204,11 +206,11 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
         applyTemplate(normalizedTemplates[0]);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('longTail.snmp.SNMPTemplateEditor.errors.loadTemplates'));
+      setError(err instanceof Error ? err.message : stableT('longTail.snmp.SNMPTemplateEditor.errors.loadTemplates'));
     } finally {
       setLoading(false);
     }
-  }, [applyTemplate, handleNewTemplate, selectedTemplateId, t]);
+  }, [applyTemplate, handleNewTemplate, selectedTemplateId, stableT]);
 
   useEffect(() => {
     void fetchTemplates();
@@ -240,18 +242,18 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
 
       const response = await fetchWithAuth(`/snmp/oids/browse?${params.toString()}`);
       if (!response.ok) {
-        throw new Error(t('longTail.snmp.SNMPTemplateEditor.errors.loadOidBrowser'));
+        throw new Error(stableT('longTail.snmp.SNMPTemplateEditor.errors.loadOidBrowser'));
       }
 
       const payload = await response.json();
       setOidSearchResults(parseOidLookup(payload));
     } catch (err) {
       setOidSearchResults([]);
-      setOidSearchError(err instanceof Error ? err.message : t('longTail.snmp.SNMPTemplateEditor.errors.loadOidBrowser'));
+      setOidSearchError(err instanceof Error ? err.message : stableT('longTail.snmp.SNMPTemplateEditor.errors.loadOidBrowser'));
     } finally {
       setOidSearchLoading(false);
     }
-  }, [t]);
+  }, [stableT]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {

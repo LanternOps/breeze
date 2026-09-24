@@ -7,6 +7,7 @@ import { navigateTo } from '@/lib/navigation';
 import Breadcrumbs from '../layout/Breadcrumbs';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type Device = {
   id: string;
@@ -23,6 +24,9 @@ type RemoteFilesPageProps = {
 
 export default function RemoteFilesPage({ deviceId }: RemoteFilesPageProps) {
   const { t } = useTranslation('remote');
+  // Effects use the stable translator so a locale change does not re-run them
+  // (#3632); JSX keeps the plain `t` so rendered text still re-translates.
+  const stableT = useStableT(t);
   const [device, setDevice] = useState<Device | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -34,22 +38,22 @@ export default function RemoteFilesPage({ deviceId }: RemoteFilesPageProps) {
 
         if (!response.ok) {
           if (response.status === 404) {
-            throw new Error(t('remoteFilesPage.errors.deviceNotFound'));
+            throw new Error(stableT('remoteFilesPage.errors.deviceNotFound'));
           }
-          throw new Error(t('remoteFilesPage.errors.fetchDevice'));
+          throw new Error(stableT('remoteFilesPage.errors.fetchDevice'));
         }
 
         const data = await response.json();
         setDevice(data);
       } catch (err) {
-        setError(err instanceof Error ? err.message : t('remoteFilesPage.errors.generic'));
+        setError(err instanceof Error ? err.message : stableT('remoteFilesPage.errors.generic'));
       } finally {
         setLoading(false);
       }
     };
 
     fetchDevice();
-  }, [deviceId, t]);
+  }, [deviceId, stableT]);
 
   const handleBack = () => {
     // Always return to this device's detail page. This page can be opened from

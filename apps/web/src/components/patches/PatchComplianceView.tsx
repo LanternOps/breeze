@@ -26,6 +26,7 @@ import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { useOrgStore } from '../../stores/orgStore';
 import { runAction, ActionError } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type ComplianceSummary = {
   totalDevices: number;
@@ -82,6 +83,7 @@ function formatLastActivity(installed: string | undefined, scanned: string | und
 
 export default function PatchComplianceView({ ringId }: PatchComplianceViewProps) {
   const { t } = useTranslation('patches');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { organizations, currentOrgId } = useOrgStore();
   // Compliance export resolves a single target org server-side
   // (resolvePatchReportOrgId), which 400s for a partner with >1 accessible org
@@ -115,7 +117,7 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error(t('patchComplianceView.errors.fetchData'));
+        throw new Error(stableT('patchComplianceView.errors.fetchData'));
       }
 
       const complianceData = (await complianceRes.json()).data ?? {};
@@ -143,7 +145,7 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
           const orgId = raw.orgId ? String(raw.orgId) : (raw.org_id ? String(raw.org_id) : undefined);
           merged.push({
             id,
-            hostname: String(n?.name ?? n?.hostname ?? raw.hostname ?? t('patchComplianceView.unknownDevice')),
+            hostname: String(n?.name ?? n?.hostname ?? raw.hostname ?? stableT('patchComplianceView.unknownDevice')),
             osType: String(n?.os ?? n?.osType ?? raw.osType ?? raw.os_type ?? 'unknown'),
             lastSeenAt: (n?.lastSeen ?? raw.lastSeenAt) ? String(n?.lastSeen ?? raw.lastSeenAt) : undefined,
             pendingPatches,
@@ -177,11 +179,11 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
         rebootPending: merged.filter(d => d.pendingReboot).length,
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('patchComplianceView.errors.fetchData'));
+      setError(err instanceof Error ? err.message : stableT('patchComplianceView.errors.fetchData'));
     } finally {
       setLoading(false);
     }
-  }, [ringId, t]);
+  }, [ringId, stableT]);
 
   useEffect(() => {
     fetchData();

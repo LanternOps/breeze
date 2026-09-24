@@ -35,6 +35,7 @@ import {
   theadRowClass,
   rowClass,
 } from './ui';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 const STATUS_OPTIONS: Array<ElevationStatus | ''> = [
   '',
@@ -115,6 +116,7 @@ export function buildAuditCsv(rows: ElevationRequest[]): string {
 
 export default function PamAuditTab({ liveTick }: { liveTick: number }) {
   const { t } = useTranslation('security');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [rows, setRows] = useState<ElevationRequest[]>([]);
   const [pagination, setPagination] = useState<Pagination>({ page: 1, limit: 50, total: 0 });
   const [status, setStatus] = useState<ElevationStatus | ''>('');
@@ -154,7 +156,7 @@ export default function PamAuditTab({ liveTick }: { liveTick: number }) {
             return;
           }
           throw new Error(
-            t('pamPamAuditTab.errors.loadWithStatus', {
+            stableT('pamPamAuditTab.errors.loadWithStatus', {
               defaultValue: 'Failed to load audit history (HTTP {{status}})',
               status: res.status,
             }),
@@ -168,13 +170,13 @@ export default function PamAuditTab({ liveTick }: { liveTick: number }) {
         setError(
           err instanceof Error
             ? err.message
-            : t('pamPamAuditTab.errors.load', { defaultValue: 'Failed to load audit history' }),
+            : stableT('pamPamAuditTab.errors.load', { defaultValue: 'Failed to load audit history' }),
         );
       } finally {
         if (!signal?.aborted) setLoading(false);
       }
     },
-    [buildParams, page, t],
+    [buildParams, page, stableT],
   );
 
   // liveTick-driven refreshes are silent (rows stay rendered, same contract as

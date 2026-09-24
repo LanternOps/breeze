@@ -30,6 +30,7 @@ import {
   rowClass,
 } from './ui';
 import { asList } from '@/lib/asList';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 function ruleCriteriaSummary(rule: PamRule, signerGroupNames: Record<string, string> = {}): string {
   const parts: string[] = [];
@@ -51,6 +52,7 @@ function ruleCriteriaSummary(rule: PamRule, signerGroupNames: Record<string, str
 
 export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
   const { t } = useTranslation('security');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { can } = usePermissions();
   const canManage = can('pam', 'manage_policy');
   const [rules, setRules] = useState<PamRule[]>([]);
@@ -149,7 +151,7 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
           return;
         }
           throw new Error(
-            t('pamPamRulesTab.errors.loadWithStatus', {
+            stableT('pamPamRulesTab.errors.loadWithStatus', {
               defaultValue: 'Failed to load rules (HTTP {{status}})',
               status: res.status,
             }),
@@ -164,12 +166,12 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
       setError(
         err instanceof Error
           ? err.message
-          : t('pamPamRulesTab.errors.load', { defaultValue: 'Failed to load rules' }),
+          : stableT('pamPamRulesTab.errors.load', { defaultValue: 'Failed to load rules' }),
       );
     } finally {
       if (!signal?.aborted) setLoading(false);
     }
-  }, [t]);
+  }, [stableT]);
 
   useEffect(() => {
     const controller = new AbortController();

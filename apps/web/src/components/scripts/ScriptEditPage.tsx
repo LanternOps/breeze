@@ -17,6 +17,7 @@ import Breadcrumbs from '../layout/Breadcrumbs';
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type ScriptEditPageProps = {
   scriptId?: string;
@@ -30,6 +31,7 @@ type ScriptScope = {
 
 export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
   const { t } = useTranslation('scripts');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [script, setScript] = useState<ScriptFormValues | null>(null);
   const [scriptScope, setScriptScope] = useState<ScriptScope | null>(null);
   const [loading, setLoading] = useState(!!scriptId);
@@ -53,7 +55,7 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error(t('scriptEditPage.errors.fetch'));
+        throw new Error(stableT('scriptEditPage.errors.fetch'));
       }
       const data = await response.json();
       const scriptData = data.script ?? data;
@@ -86,11 +88,11 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
         isSystem: scriptData.isSystem ?? false,
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('scriptEditPage.errors.generic'));
+      setError(err instanceof Error ? err.message : stableT('scriptEditPage.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [scriptId, t]);
+  }, [scriptId, stableT]);
 
   useEffect(() => {
     fetchScript();

@@ -7,6 +7,7 @@ import { formatDateTime } from '@/lib/dateTimeFormat';
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type IncidentSeverity = 'p1' | 'p2' | 'p3' | 'p4';
 type IncidentStatus = 'detected' | 'analyzing' | 'contained' | 'recovering' | 'closed';
@@ -65,6 +66,7 @@ const fallbackStatusBadge = 'bg-gray-100 text-gray-800 dark:bg-gray-700/40 dark:
 
 export default function IncidentsPage() {
   const { t } = useTranslation('common');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [rows, setRows] = useState<IncidentFeedRow[]>([]);
   const [pagination, setPagination] = useState<Pagination>({ page: 1, limit: 25, total: 0 });
   const [loading, setLoading] = useState(true);
@@ -84,17 +86,17 @@ export default function IncidentsPage() {
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error(t('longTail.incidents.IncidentsPage.errors.fetchFailed'));
+        throw new Error(stableT('longTail.incidents.IncidentsPage.errors.fetchFailed'));
       }
       const data = await response.json();
       setRows(data.data ?? []);
       setPagination(data.pagination ?? { page: 1, limit: 25, total: 0 });
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('common:states.error'));
+      setError(err instanceof Error ? err.message : stableT('common:states.error'));
     } finally {
       setLoading(false);
     }
-  }, [kindFilter, t]);
+  }, [kindFilter, stableT]);
 
   useEffect(() => {
     fetchFeed();

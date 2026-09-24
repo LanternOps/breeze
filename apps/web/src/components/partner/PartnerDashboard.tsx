@@ -16,6 +16,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { formatNumber as formatLocaleNumber } from '@/lib/i18n/format';
 import { ApproximateMoneyLine } from '@/components/billing/shared/ApproximateMoneyLine';
 import { formatMoney, sumByCurrency } from '@/components/billing/shared/format';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type Device = {
   id?: string | number;
@@ -311,6 +312,7 @@ function normalizeDeviceData(customers: CustomerOverview[], fallbackDeviceName: 
 
 export default function PartnerDashboard() {
   const { t } = useTranslation('common');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -324,7 +326,7 @@ export default function PartnerDashboard() {
       setError(undefined);
       const response = await fetchWithAuth('/partner/dashboard');
       if (!response.ok) {
-        throw new Error(t('longTail.partner.PartnerDashboard.errors.fetchFailed'));
+        throw new Error(stableT('longTail.partner.PartnerDashboard.errors.fetchFailed'));
       }
       const payload = await response.json();
       const data = payload?.data ?? payload ?? {};
@@ -333,11 +335,11 @@ export default function PartnerDashboard() {
         : data.customers ?? data.organizations ?? data.items ?? data.results ?? [];
       setCustomers(Array.isArray(list) ? list : []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('longTail.partner.PartnerDashboard.errors.fetchFailed'));
+      setError(err instanceof Error ? err.message : stableT('longTail.partner.PartnerDashboard.errors.fetchFailed'));
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [stableT]);
 
   useEffect(() => {
     fetchCustomers();

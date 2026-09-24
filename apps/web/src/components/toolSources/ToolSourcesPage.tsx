@@ -9,6 +9,7 @@ import { ScopeBadge } from '../shared/ScopeBadge';
 import { listToolSources, type ToolSourceDto } from './api';
 import { ToolSourceForm } from './ToolSourceForm';
 import { StatusChip, formatDiscoveredAt } from './statusChip';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 /**
  * Tool sources list (#5216 W01 PR C). Read-only apart from "Add source"; a
@@ -16,6 +17,7 @@ import { StatusChip, formatDiscoveredAt } from './statusChip';
  */
 export default function ToolSourcesPage() {
   const { t } = useTranslation('toolSources');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [sources, setSources] = useState<ToolSourceDto[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -27,10 +29,10 @@ export default function ToolSourcesPage() {
     } catch {
       // A failed LIST is not a mutation, so it does not go through runAction —
       // but it must still be visible rather than an eternal empty state.
-      setLoadError(t('list.loadFailed'));
+      setLoadError(stableT('list.loadFailed'));
       setSources([]);
     }
-  }, [t]);
+  }, [stableT]);
 
   useEffect(() => {
     void load();

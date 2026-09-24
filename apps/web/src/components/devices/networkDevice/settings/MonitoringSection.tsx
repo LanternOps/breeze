@@ -13,6 +13,7 @@ import { fetchWithAuth } from '@/stores/auth';
 import { SettingsSectionShell } from './SettingsSectionShell';
 import { SnmpConfigForm, type SnmpDraft, type SnmpTemplateOption } from './SnmpConfigForm';
 import { useNetworkAssetMutations, type SnmpUpsertInput, type TemplateSuggestion } from './useNetworkAssetMutations';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type SnmpDevice = Partial<SnmpUpsertInput> & {
   id: string;
@@ -64,6 +65,7 @@ export function MonitoringSection({ asset, assetId, onSaved, onAnnounce }: {
   onAnnounce: (message: string) => void;
 }) {
   const { t } = useTranslation('devices');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { putSnmp, patchSnmp, disableMonitoring, deleteCheck } = useNetworkAssetMutations();
   const [detail, setDetail] = useState<AssetMonitoringDetail | null>(null);
   const [checks, setChecks] = useState<AssetNetworkCheck[]>([]);
@@ -92,7 +94,7 @@ export function MonitoringSection({ asset, assetId, onSaved, onAnnounce }: {
       const response = await fetchWithAuth(url);
       if (!response.ok) {
         const body: unknown = await response.json().catch(() => null);
-        throw Object.assign(new Error(extractApiError(body, t('networkDeviceDetailPage.settings.monitoring.loadFailed'))), { status: response.status });
+        throw Object.assign(new Error(extractApiError(body, stableT('networkDeviceDetailPage.settings.monitoring.loadFailed'))), { status: response.status });
       }
       return response.json();
     };
@@ -110,7 +112,7 @@ export function MonitoringSection({ asset, assetId, onSaved, onAnnounce }: {
       setDetailError(undefined);
     } else {
       setDetailError(detailResult.status === 'rejected' && detailResult.reason instanceof Error
-        ? detailResult.reason.message : t('networkDeviceDetailPage.settings.monitoring.loadFailed'));
+        ? detailResult.reason.message : stableT('networkDeviceDetailPage.settings.monitoring.loadFailed'));
     }
     setChecks(checksResult.status === 'fulfilled' ? asList<AssetNetworkCheck>(checksResult.value) : []);
     setChecksError(checksResult.status === 'rejected');
@@ -126,7 +128,7 @@ export function MonitoringSection({ asset, assetId, onSaved, onAnnounce }: {
       ? (suggestResult.value as SuggestTemplateEnvelope | null)?.suggestion ?? null
       : null);
     setLoading(false);
-  }, [assetId, t]);
+  }, [assetId, stableT]);
 
   useEffect(() => {
     setLoading(true);

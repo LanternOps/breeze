@@ -12,6 +12,7 @@ import { EmptyState } from '../shared/EmptyState';
 import { PageHeader } from '../shared/PageHeader';
 import type { AiAgentRunListItemDto, AiAgentRunStatus } from '@breeze/shared';
 import { AI_AGENT_RUN_STATUSES } from '@breeze/shared';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 // SSR-safe: reading `window` inside an effect (not a `useState` initializer)
 // avoids the hydration-mismatch class useHashState.ts documents — this page
@@ -436,6 +437,7 @@ function RunCard({
  */
 export default function RunsListPage() {
   const { t } = useTranslation('settings');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   // Honor the global Current/All-orgs scope toggle, same as AlertsPage:
   // `fetchWithAuth` auto-injects `?orgId=<currentOrgId>` whenever one org is
   // selected, so a scope change must trigger a refetch or the list keeps
@@ -594,8 +596,8 @@ export default function RunsListPage() {
           // UI critique finding #6 — a "Load more" failure gets its own
           // copy, distinct from the page-1 load error it used to reuse.
           const message = append
-            ? t('aiAgentsPage.runs.errors.loadMore')
-            : t('aiAgentsPage.runs.errors.load', { status: response.status });
+            ? stableT('aiAgentsPage.runs.errors.loadMore')
+            : stableT('aiAgentsPage.runs.errors.load', { status: response.status });
           if (append) setLoadMoreError(message);
           else setError(message);
           return;
@@ -606,8 +608,8 @@ export default function RunsListPage() {
           // A body we cannot read is an error, not zero runs — same lesson as
           // AiAgentsPage's `?? []` regression.
           const message = append
-            ? t('aiAgentsPage.runs.errors.loadMore')
-            : t('aiAgentsPage.runs.errors.load', { status: response.status });
+            ? stableT('aiAgentsPage.runs.errors.loadMore')
+            : stableT('aiAgentsPage.runs.errors.load', { status: response.status });
           if (append) setLoadMoreError(message);
           else setError(message);
           return;
@@ -618,10 +620,10 @@ export default function RunsListPage() {
       } catch (err) {
         if (requestId !== requestIdRef.current) return;
         const message = append
-          ? t('aiAgentsPage.runs.errors.loadMore')
+          ? stableT('aiAgentsPage.runs.errors.loadMore')
           : err instanceof Error
             ? err.message
-            : t('aiAgentsPage.runs.errors.load', { status: 0 });
+            : stableT('aiAgentsPage.runs.errors.load', { status: 0 });
         if (append) setLoadMoreError(message);
         else setError(message);
       } finally {
@@ -632,7 +634,7 @@ export default function RunsListPage() {
         }
       }
     },
-    [agentFilter, statusFilter, currentOrgId, t],
+    [agentFilter, statusFilter, currentOrgId, stableT],
   );
 
   useEffect(() => {

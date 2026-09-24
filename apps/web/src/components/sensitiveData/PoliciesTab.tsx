@@ -8,6 +8,7 @@ import { useDefaultOwnerScope } from '@/hooks/useDefaultOwnerScope';
 import { DETECTION_CLASSES, DATA_TYPE_COLORS } from './constants';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { showToast } from '../shared/Toast';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type Policy = {
   id: string;
@@ -43,6 +44,7 @@ const defaultForm: FormState = {
 
 export default function PoliciesTab() {
   const { t } = useTranslation('security');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [policies, setPolicies] = useState<Policy[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -69,7 +71,7 @@ export default function PoliciesTab() {
       const res = await fetchWithAuth('/sensitive-data/policies');
       if (!res.ok) {
         throw new Error(
-          t('sensitiveDataPoliciesTab.errors.fetchPolicies', {
+          stableT('sensitiveDataPoliciesTab.errors.fetchPolicies', {
             defaultValue: 'Failed to fetch policies',
           }),
         );
@@ -80,12 +82,12 @@ export default function PoliciesTab() {
       setError(
         err instanceof Error
           ? err.message
-          : t('sensitiveDataPoliciesTab.errors.generic', { defaultValue: 'An error occurred' }),
+          : stableT('sensitiveDataPoliciesTab.errors.generic', { defaultValue: 'An error occurred' }),
       );
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [stableT]);
 
   useEffect(() => {
     fetchPolicies();

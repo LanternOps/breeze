@@ -6,6 +6,7 @@ import { extractApiError } from '@/lib/apiError';
 import { fallbackInstallerFilename, filenameFromContentDisposition } from '@/lib/downloadFilename';
 import { buildInstallCommands } from '@/lib/installCommands';
 import { showToast } from '../shared/Toast';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type Platform = 'windows' | 'macos' | 'linux';
 
@@ -26,6 +27,7 @@ function detectPlatform(): Platform {
 
 export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onFinish }: EnrollDeviceStepProps) {
   const { t } = useTranslation('auth');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const userPlatform = detectPlatform();
 
   // Tab state
@@ -71,22 +73,22 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
       const res = await fetchWithAuth('/devices/onboarding-token', { method: 'POST' });
       if (!res.ok) {
         const data = await res.json().catch(() => null);
-        setTokenError(extractApiError(data, t('setup.enroll.errors.generateTokenFailed')));
+        setTokenError(extractApiError(data, stableT('setup.enroll.errors.generateTokenFailed')));
         return;
       }
       const data = await res.json();
       if (!data.token) {
-        setTokenError(t('setup.enroll.errors.emptyToken'));
+        setTokenError(stableT('setup.enroll.errors.emptyToken'));
         return;
       }
       setOnboardingToken(data.token);
       if (data.enrollmentSecret) setEnrollmentSecret(data.enrollmentSecret);
     } catch {
-      setTokenError(t('setup.enroll.errors.tokenConnectionFailed'));
+      setTokenError(stableT('setup.enroll.errors.tokenConnectionFailed'));
     } finally {
       setTokenLoading(false);
     }
-  }, [cliInitialized, t]);
+  }, [cliInitialized, stableT]);
 
   // Auto-init CLI if that's the default tab
   useEffect(() => {

@@ -16,6 +16,7 @@ import { useTranslation } from 'react-i18next';
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type ModalMode = 'closed' | 'add' | 'edit' | 'delete' | 'test' | 'import';
 
@@ -100,6 +101,7 @@ function toConnectionPayload(values: PsaConnectionFormValues) {
 
 export default function PsaConnectionsPage() {
   const { t } = useTranslation('common');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [connections, setConnections] = useState<PsaConnection[]>([]);
   const [tickets, setTickets] = useState<PsaTicket[]>([]);
   const [loading, setLoading] = useState(true);
@@ -143,16 +145,16 @@ export default function PsaConnectionsPage() {
       setError(undefined);
       const response = await fetchWithAuth('/psa/connections');
       if (!response.ok) {
-        throw new Error(t('longTail.psa.PsaConnectionsPage.errors.fetchConnections'));
+        throw new Error(stableT('longTail.psa.PsaConnectionsPage.errors.fetchConnections'));
       }
       const data = await response.json();
       setConnections(data.data ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('longTail.psa.PsaConnectionsPage.errors.generic'));
+      setError(err instanceof Error ? err.message : stableT('longTail.psa.PsaConnectionsPage.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [stableT]);
 
   const fetchTickets = useCallback(async () => {
     try {

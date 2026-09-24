@@ -31,6 +31,7 @@ import { useBulkSelection } from '../billing/bulk/useBulkSelection';
 import { BulkActionBar } from '../billing/bulk/BulkActionBar';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import AccessDenied from '../shared/AccessDenied';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 interface Organization {
   id: string;
@@ -94,6 +95,7 @@ interface Props {
 
 export function ContractsList({ lockedOrgId }: Props = {}) {
   const { t } = useTranslation('billing');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { can } = usePermissions();
   const bulk = useBulkSelection();
   const [contracts, setContracts] = useState<ContractSummary[]>([]);
@@ -133,9 +135,9 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
       setOrgs(await fetchAllOrganizationsFrom<Organization>('/orgs/organizations'));
     } catch (err) {
       if (err instanceof ListFetchError && err.status === 401) return UNAUTHORIZED();
-      handleActionError(err, t('contracts.contractsList.errors.loadOrganizations'));
+      handleActionError(err, stableT('contracts.contractsList.errors.loadOrganizations'));
     }
-  }, [t]);
+  }, [stableT]);
 
   const loadContracts = useCallback(async (f: Filters) => {
     // Latest-request-wins. A deep-linked load (`/contracts#status=active`) fires
@@ -151,18 +153,18 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
       if (seq !== fetchSeq.current) return;
       if (res.status === 401) return UNAUTHORIZED();
       if (res.status === 403) { setForbidden(true); return; }
-      if (!res.ok) throw new Error(t('contracts.contractsList.errors.loadContracts'));
+      if (!res.ok) throw new Error(stableT('contracts.contractsList.errors.loadContracts'));
       const body = (await res.json().catch(() => null)) as { data: ContractSummary[] } | null;
       if (seq !== fetchSeq.current) return;
-      if (!body) throw new Error(t('contracts.contractsList.errors.loadContracts'));
+      if (!body) throw new Error(stableT('contracts.contractsList.errors.loadContracts'));
       setContracts(body.data ?? []);
     } catch (err) {
       if (seq !== fetchSeq.current) return;
-      setError(err instanceof Error ? err.message : t('contracts.contractsList.errors.loadContracts'));
+      setError(err instanceof Error ? err.message : stableT('contracts.contractsList.errors.loadContracts'));
     } finally {
       if (seq === fetchSeq.current) setLoading(false);
     }
-  }, [t]);
+  }, [stableT]);
 
   useEffect(() => { void loadOrgs(); }, [loadOrgs]);
   useEffect(() => { void loadContracts(filters); }, [loadContracts, filters]);

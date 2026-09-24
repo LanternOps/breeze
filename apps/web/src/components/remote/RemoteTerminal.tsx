@@ -15,6 +15,7 @@ import { fetchWithAuth } from '@/stores/auth';
 import { formatNumber } from '@/lib/i18n/format';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 // xterm.js will be loaded dynamically
 type XTermInstance = {
@@ -88,6 +89,7 @@ export default function RemoteTerminal({
   className
 }: RemoteTerminalProps) {
   const { t } = useTranslation('remote');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const terminalContainerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<XTermInstance | null>(null);
   const fitAddonRef = useRef<FitAddonInstance | null>(null);
@@ -302,7 +304,7 @@ export default function RemoteTerminal({
 
         if (!response.ok) {
           const error = await response.json();
-          throw new Error(error.error || t('remoteTerminal.errors.createSession'));
+          throw new Error(error.error || stableT('remoteTerminal.errors.createSession'));
         }
 
         const session = await response.json();
@@ -315,12 +317,12 @@ export default function RemoteTerminal({
         method: 'POST'
       });
       if (!ticketResponse.ok) {
-        const error = await ticketResponse.json().catch(() => ({ error: t('remoteTerminal.errors.createTicket') }));
-        throw new Error(error.error || t('remoteTerminal.errors.createTicket'));
+        const error = await ticketResponse.json().catch(() => ({ error: stableT('remoteTerminal.errors.createTicket') }));
+        throw new Error(error.error || stableT('remoteTerminal.errors.createTicket'));
       }
       const { ticket } = await ticketResponse.json() as { ticket?: string };
       if (!ticket) {
-        throw new Error(t('remoteTerminal.errors.invalidTicket'));
+        throw new Error(stableT('remoteTerminal.errors.invalidTicket'));
       }
 
       // Establish WebSocket connection for terminal data
@@ -393,7 +395,7 @@ export default function RemoteTerminal({
         }
         opened = true;
         setStatus('connecting');
-        terminalRef.current?.writeln(`\x1b[1;32m${t('remoteTerminal.connectedBang')}\x1b[0m`);
+        terminalRef.current?.writeln(`\x1b[1;32m${stableT('remoteTerminal.connectedBang')}\x1b[0m`);
         terminalRef.current?.writeln('');
         terminalRef.current?.focus();
 
@@ -424,7 +426,7 @@ export default function RemoteTerminal({
           disposeAttempt();
           setStatus('failed');
           setSessionId(null);
-          terminalRef.current?.writeln(`\x1b[1;31m${t('remoteTerminal.errors.closedUnexpectedly')}\x1b[0m`);
+          terminalRef.current?.writeln(`\x1b[1;31m${stableT('remoteTerminal.errors.closedUnexpectedly')}\x1b[0m`);
           callOnDisconnect();
         }, LIVENESS_CHECK_INTERVAL_MS);
       };
@@ -442,7 +444,7 @@ export default function RemoteTerminal({
                 received: prev.received + message.data.length
               }));
             } else if (message.type === 'error') {
-              terminalRef.current.writeln(`\x1b[1;31m${t('remoteTerminal.errorMessage', { message: message.message })}\x1b[0m`);
+              terminalRef.current.writeln(`\x1b[1;31m${stableT('remoteTerminal.errorMessage', { message: message.message })}\x1b[0m`);
             } else if (message.type === 'ping') {
               // Respond to server ping to keep connection alive
               if (ws.readyState === WebSocket.OPEN) {
@@ -492,8 +494,8 @@ export default function RemoteTerminal({
         disposeAttempt();
         setStatus('failed');
         setSessionId(null);
-        terminalRef.current?.writeln(`\x1b[1;31m${t('remoteTerminal.errors.connection')}\x1b[0m`);
-        onError?.(t('remoteTerminal.errors.webSocket'));
+        terminalRef.current?.writeln(`\x1b[1;31m${stableT('remoteTerminal.errors.connection')}\x1b[0m`);
+        onError?.(stableT('remoteTerminal.errors.webSocket'));
         callOnDisconnect();
       };
 
@@ -509,8 +511,8 @@ export default function RemoteTerminal({
         clearKeepaliveTimers();
         setStatus('failed');
         setSessionId(null);
-        terminalRef.current?.writeln(`\x1b[1;31m${t('remoteTerminal.errors.connection')}\x1b[0m`);
-        onError?.(t('remoteTerminal.errors.webSocket'));
+        terminalRef.current?.writeln(`\x1b[1;31m${stableT('remoteTerminal.errors.connection')}\x1b[0m`);
+        onError?.(stableT('remoteTerminal.errors.webSocket'));
         callOnDisconnect();
       };
 
@@ -527,12 +529,12 @@ export default function RemoteTerminal({
         if (event.code !== 1000) {
           setStatus('failed');
           setSessionId(null);
-          terminalRef.current?.writeln(`\x1b[1;31m${t('remoteTerminal.errors.closedUnexpectedly')}\x1b[0m`);
+          terminalRef.current?.writeln(`\x1b[1;31m${stableT('remoteTerminal.errors.closedUnexpectedly')}\x1b[0m`);
           callOnDisconnect();
         } else {
           setStatus('disconnected');
           setSessionId(null);
-          terminalRef.current?.writeln(`\x1b[90m${t('remoteTerminal.sessionEnded')}\x1b[0m`);
+          terminalRef.current?.writeln(`\x1b[90m${stableT('remoteTerminal.sessionEnded')}\x1b[0m`);
           callOnDisconnect();
         }
       };
@@ -573,11 +575,11 @@ export default function RemoteTerminal({
     } catch (error) {
       if (isStale()) return;
       setStatus('failed');
-      const message = error instanceof Error ? error.message : t('remoteTerminal.errors.failed');
-      terminalRef.current?.writeln(`\x1b[1;31m${t('remoteTerminal.errorMessage', { message })}\x1b[0m`);
+      const message = error instanceof Error ? error.message : stableT('remoteTerminal.errors.failed');
+      terminalRef.current?.writeln(`\x1b[1;31m${stableT('remoteTerminal.errorMessage', { message })}\x1b[0m`);
       onError?.(message);
     }
-  }, [deviceId, sessionId, onSessionCreated, onDisconnect, onError, t]);
+  }, [deviceId, sessionId, onSessionCreated, onDisconnect, onError, stableT]);
 
   // Disconnect from session
   const disconnect = useCallback(async () => {
