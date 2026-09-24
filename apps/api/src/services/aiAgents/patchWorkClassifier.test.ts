@@ -114,12 +114,25 @@ describe('classifyAlertAsPatchWork', () => {
 
 describe('resolveAlertCategory', () => {
   it('returns the template category and the monitor kind for the trigger filter', async () => {
-    results = [[{ rule_id: 'r', monitor_id: 'm', template_category: 'monitor', monitor_kind: 'patch_compliance' }]];
-    expect(await resolveAlertCategory(ALERT, ORG)).toEqual({ category: 'monitor', monitorKind: 'patch_compliance', isPatchWork: true });
+    results = [[{ rule_id: 'r', monitor_id: 'm', template_category: 'monitor', monitor_kind: 'patch_compliance', alert_source: null }]];
+    expect(await resolveAlertCategory(ALERT, ORG)).toEqual({
+      category: 'monitor', monitorKind: 'patch_compliance', isPatchWork: true, source: null,
+    });
   });
 
   it('returns nulls (not patch work) when nothing resolves', async () => {
     results = [[]];
-    expect(await resolveAlertCategory(ALERT, ORG)).toEqual({ category: null, monitorKind: null, isPatchWork: false });
+    expect(await resolveAlertCategory(ALERT, ORG)).toEqual({
+      category: null, monitorKind: null, isPatchWork: false, source: null,
+    });
+  });
+
+  // #6749 — the same read surfaces the alert's lifecycle source so the
+  // `ai_triage` admission path can exclude warranty/lifecycle alerts.
+  it('returns the alert context.source for the lifecycle exclusion', async () => {
+    results = [[{ rule_id: null, monitor_id: null, template_category: null, monitor_kind: null, alert_source: 'warranty_evaluator' }]];
+    expect(await resolveAlertCategory(ALERT, ORG)).toEqual({
+      category: null, monitorKind: null, isPatchWork: false, source: 'warranty_evaluator',
+    });
   });
 });

@@ -57,7 +57,7 @@
  * directly with `reason: 'ungrouped'`, without going through this module's
  * event-shaped entry point.
  */
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import * as dbModule from '../../db';
 import { alerts } from '../../db/schema/alerts';
 import { devices } from '../../db/schema/devices';
@@ -104,6 +104,8 @@ interface AlertVerdictContextRow {
   resolvedAt: Date | null;
   resolvedBy: string | null;
   triggeredAt: Date;
+  /** #6749 — `context->>'source'`, fed to `alertContext.source` below. */
+  source: string | null;
 }
 
 /**
@@ -122,6 +124,7 @@ async function loadAlertForVerdict(alertId: string, orgId: string): Promise<Aler
       resolvedAt: alerts.resolvedAt,
       resolvedBy: alerts.resolvedBy,
       triggeredAt: alerts.triggeredAt,
+      source: sql<string | null>`${alerts.context} ->> 'source'`,
     })
     .from(alerts)
     .where(and(eq(alerts.id, alertId), eq(alerts.orgId, orgId)))
@@ -148,7 +151,7 @@ async function loadDeviceContext(deviceId: string, orgId: string): Promise<{ sit
 }
 
 function buildAlertContext(
-  alert: Pick<AlertVerdictContextRow, 'severity' | 'ruleId'>,
+  alert: Pick<AlertVerdictContextRow, 'severity' | 'ruleId' | 'source'>,
   deviceCtx: { siteId: string | null; tags: string[] },
 ): NonNullable<CreateAgentRunInput['alertContext']> {
   return {
@@ -156,6 +159,7 @@ function buildAlertContext(
     ruleId: alert.ruleId,
     siteId: deviceCtx.siteId,
     deviceTags: deviceCtx.tags,
+    source: alert.source,
   };
 }
 
