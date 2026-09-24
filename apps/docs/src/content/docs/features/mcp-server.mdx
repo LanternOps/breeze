@@ -328,6 +328,7 @@ List tools return `hasMore` and `nextCursor` in their result; when `hasMore` is 
 | Tool | Tier | Description |
 |---|---|---|
 | `manage_tickets` | 1/2/3 | Full ticket lifecycle. List/get are Tier 1. Create, comment, assign, update status, update fields (subject, description, category, priority, due date, tags, device, submitter), link/unlink alerts, create a ticket from an alert, edit/delete comments, and time tracking (log time entry, start/stop timer) are Tier 2. Moving a ticket to a different organization is Tier 3. |
+| `manage_ticket_checklist` | 1/2 | Ticket checklist steps and checklist templates. Listing steps and listing or reading templates are Tier 1. Adding, editing (label and detail), deleting and reordering steps, and applying a template, are Tier 2. Requires partner or system scope. Ticking a step done is not available to tools, and a step that is already ticked cannot be edited or deleted through the tool. |
 | `list_time_entries` | 1 | List logged work by ticket, user, organization, dates, billing status, or approval. Requires partner or system scope; non-admins see their own entries. |
 | `get_running_timer` | 1 | Retrieve the caller's running time entry, or null when no timer is running. Requires partner or system scope and a user principal. |
 | `get_timesheet` | 1 | Retrieve a weekly timesheet. Requires partner or system scope and a user principal; another user's timesheet requires admin access. |

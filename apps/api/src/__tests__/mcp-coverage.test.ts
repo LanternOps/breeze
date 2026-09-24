@@ -112,7 +112,6 @@ const FROZEN_GAPS: ReadonlySet<string> = new Set([
   'systemTools/eventLogs.ts',
   'tenantVariables.ts',
   'ticketCategories.ts',
-  'ticketChecklistTemplates.ts',
   'ticketConfig.ts',
   'tickets/attachments.ts',
   'tickets/bulk.ts',

@@ -77,6 +77,9 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
     'link_device',
     'draft'
   ],
+  // #6930: ticket-scoped checklist step edits, same family as update_fields.
+  // Ticking a step is not a tool action at all (see aiToolsTicketing.ts).
+  manage_ticket_checklist: ['add_item', 'update_item', 'delete_item', 'reorder', 'apply_template'],
   manage_services: ['list'],
   // SR5-01 partial relaxation (2026-07-20): directory LISTING is recon-only —
   // filenames leak far less than contents — so it auto-executes with audit.
@@ -796,6 +799,18 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     // caller of these two actions needs a real permission grant added first.
     link_device: { resource: 'tickets', action: 'update' },
     draft: { resource: 'tickets', action: 'update' },
+  },
+  // #6930 — same grants as routes/tickets/checklist.ts (TICKETS_READ/WRITE)
+  // and the templates route (reads are TICKETS_READ).
+  manage_ticket_checklist: {
+    list: { resource: 'tickets', action: 'read' },
+    list_templates: { resource: 'tickets', action: 'read' },
+    get_template: { resource: 'tickets', action: 'read' },
+    add_item: { resource: 'tickets', action: 'write' },
+    update_item: { resource: 'tickets', action: 'write' },
+    delete_item: { resource: 'tickets', action: 'write' },
+    reorder: { resource: 'tickets', action: 'write' },
+    apply_template: { resource: 'tickets', action: 'write' },
   },
   list_invoices: { resource: 'invoices', action: 'read' },
   get_invoice: { resource: 'invoices', action: 'read' },
