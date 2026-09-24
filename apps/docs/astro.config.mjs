@@ -127,6 +127,7 @@ export default defineConfig({
                 { slug: 'features/alerts' },
                 { slug: 'features/monitors' },
                 { slug: 'features/network-monitors' },
+                { slug: 'features/hardware-monitoring' },
                 { slug: 'features/performance-metrics' },
                 { slug: 'features/network-connections' },
                 { slug: 'features/snmp' },
