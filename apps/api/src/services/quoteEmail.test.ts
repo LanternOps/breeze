@@ -55,8 +55,8 @@ describe('buildQuoteTemplate', () => {
       expiryDate: '2026-07-01',
       custom: null,
     });
-    expect(t.html).toContain('Hi there,');
-    expect(t.html).toContain('has sent you proposal');
+    expect(t.html).toContain('Hello,');
+    expect(t.html).toContain('proposal <strong>Q-2026-0001</strong>');
     expect(t.html).toContain('Q-2026-0001');
     expect(t.html).toContain('This proposal is valid until');
     expect(t.html).toContain(`href="${acceptUrl}"`);
@@ -79,6 +79,62 @@ describe('buildQuoteTemplate', () => {
     });
     expect(t.html.match(/A PDF copy is attached\./g)).toHaveLength(1);
     expect(t.html.match(/This proposal is valid until/g)).toHaveLength(1);
+  });
+
+  it('uses the proposal title and customer name when the quote has them', () => {
+    const t = buildQuoteTemplate({
+      quoteNumber: 'Q-2026-0001', partnerName: 'Acme MSP', total: '$1,200.00',
+      acceptUrl: 'https://portal.example.com/quote/TOKEN',
+      quoteTitle: 'Office Network Refresh', customerName: 'Contoso & Co',
+    });
+    expect(t.subject).toBe('Office Network Refresh — proposal from Acme MSP');
+    expect(t.html).toMatch(/<h1[^>]*>Office Network Refresh<\/h1>/);
+    expect(t.html).toContain('<strong>Office Network Refresh</strong> (proposal Q-2026-0001)');
+    expect(t.html).toContain('work with Contoso &amp; Co.');
+    expect(t.text).toContain('Office Network Refresh (proposal Q-2026-0001)');
+    expect(t.text).toContain('work with Contoso & Co.');
+  });
+
+  it('falls back to the proposal number and "you" when title and customer are blank', () => {
+    const t = buildQuoteTemplate({
+      quoteNumber: 'Q-1', partnerName: 'Acme', total: '$1', acceptUrl: 'https://x.example/q/t',
+      quoteTitle: '  ', customerName: '',
+    });
+    expect(t.subject).toBe('Proposal Q-1 from Acme');
+    expect(t.html).toMatch(/<h1[^>]*>Proposal Q-1<\/h1>/);
+    expect(t.html).toContain('proposal <strong>Q-1</strong>');
+    expect(t.html).toContain('work with you.');
+    expect(t.html).not.toContain('<strong></strong>');
+    expect(t.text).toContain('work with you.');
+  });
+
+  it('escapes a markup title exactly once in heading and body', () => {
+    const t = buildQuoteTemplate({
+      quoteNumber: 'Q-1', partnerName: 'Acme', total: '$1', acceptUrl: 'https://x.example/q/t',
+      quoteTitle: '<b>R&D</b> Refresh',
+    });
+    expect(t.html).toMatch(/<h1[^>]*>&lt;b&gt;R&amp;D&lt;\/b&gt; Refresh<\/h1>/);
+    expect(t.html).not.toContain('<b>R&D');
+    expect(t.html).not.toContain('&amp;amp;');
+  });
+
+  it('keeps a multi-line title on one subject line', () => {
+    const t = buildQuoteTemplate({
+      quoteNumber: 'Q-1', partnerName: 'Acme', total: '$1', acceptUrl: 'https://x.example/q/t',
+      quoteTitle: 'Line1\nLine2',
+    });
+    expect(t.subject).not.toMatch(/[\r\n]/);
+    expect(t.subject).toBe('Line1 Line2 — proposal from Acme');
+  });
+
+  it('exposes quote_title and org_name to custom templates', () => {
+    const t = buildQuoteTemplate({
+      quoteNumber: 'Q-1', partnerName: 'Acme', total: '$1', acceptUrl: 'https://x.example/q/t',
+      quoteTitle: 'New Laptops', customerName: 'Contoso',
+      custom: { subject: '{{quote_title}} for {{org_name}}', heading: null, buttonLabel: null, html: '<p>{{quote_title}} / {{org_name}}</p>' },
+    });
+    expect(t.subject).toBe('New Laptops for Contoso');
+    expect(t.html).toContain('New Laptops / Contoso');
   });
 
   it('custom html substitutes quote_number and keeps the server accept URL', () => {

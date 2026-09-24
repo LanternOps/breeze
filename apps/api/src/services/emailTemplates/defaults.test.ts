@@ -10,6 +10,7 @@ describe('email template defaults', () => {
       org_name: 'Acme',
       due_date: '2026-09-01',
       expiry_date: '2026-07-01',
+      quote_title: 'New Laptops',
       email_only_hint: 'Reply to this email instead.',
     };
     for (const id of EMAIL_TEMPLATE_IDS) {
@@ -18,6 +19,10 @@ describe('email template defaults', () => {
       expect(defaultButtonLabel(id)).toBe(shared.buttonLabel);
       expect(defaultHtml(id, filled)).toBe(shared.html);
     }
+  });
+
+  it('falls back to a number-only quote heading when the title is blank', () => {
+    expect(defaultHeading('quote_send', { quote_title: '  ' })).toBe('Proposal {{quote_number}}');
   });
 
   it('falls back to a generic portal heading when org name is empty', () => {
@@ -39,6 +44,9 @@ describe('email template defaults', () => {
     expect(defaultSubject('quote_send', {
       vars: { quote_number: 'Q-1', partner_name: 'Acme' },
     })).toBe('Proposal Q-1 from Acme');
+    expect(defaultSubject('quote_send', {
+      vars: { quote_number: 'Q-1', quote_title: 'New Laptops', partner_name: 'Acme' },
+    })).toBe('New Laptops — proposal from Acme');
   });
 
   it('omits the ticket-number prefix on autoresponse when the number is missing', () => {

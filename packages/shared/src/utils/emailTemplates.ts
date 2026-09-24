@@ -23,6 +23,7 @@ export type EmailTemplateVarKey =
   | 'email_only_hint'
   | 'resolution_note'
   | 'quote_number'
+  | 'quote_title'
   | 'total'
   | 'expiry_date'
   | 'accept_url'
@@ -54,6 +55,8 @@ const AUTORESPONSE_VARS = [
 
 const QUOTE_SEND_VARS = [
   'quote_number',
+  'quote_title',
+  'org_name',
   'partner_name',
   'total',
   'expiry_date',
@@ -156,14 +159,19 @@ const FIELD_DEFAULTS_BY_ID: Record<EmailTemplateId, EmailTemplateFieldDefaults> 
 <p>{{cta_button}}</p>`,
   },
   quote_send: {
-    subject: 'Proposal {{quote_number}} from {{partner_name}}',
-    heading: 'Proposal {{quote_number}}',
+    // quote_title / org_name are blank when the quote has no title or the
+    // customer has no name; apps/api emailTemplates/defaults.ts swaps these
+    // lines for number-only / "you" wording in that case.
+    subject: '{{quote_title}} — proposal from {{partner_name}}',
+    heading: '{{quote_title}}',
     buttonLabel: 'Review & accept',
     html:
-      `<p>Hi there,</p>
-<p>{{partner_name}} has sent you proposal <strong>{{quote_number}}</strong> for <strong>{{total}}</strong>. A PDF copy is attached.</p>
+      `<p>Hello,</p>
+<p>Thank you for the opportunity to work with {{org_name}}. We've prepared <strong>{{quote_title}}</strong> (proposal {{quote_number}}) for your review, with a total of <strong>{{total}}</strong>. A PDF copy is attached.</p>
 <p>{{cta_button}}</p>
-<p>This proposal is valid until <strong>{{expiry_date}}</strong>.</p>`,
+<p>Use the button above to review the full proposal and accept it online.</p>
+<p>This proposal is valid until <strong>{{expiry_date}}</strong>.</p>
+<p>If you have any questions or would like to adjust anything, we're happy to help. We look forward to working with you.</p>`,
   },
   invoice_send: {
     subject: 'Invoice {{invoice_number}} from {{partner_name}}',

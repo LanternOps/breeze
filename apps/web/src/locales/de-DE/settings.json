@@ -892,6 +892,7 @@
       "email_only_hint": "Hinweis nur per E-Mail",
       "resolution_note": "Lösungshinweis",
       "quote_number": "Angebotsnummer",
+      "quote_title": "Angebotstitel",
       "total": "Gesamtbetrag",
       "expiry_date": "Ablaufdatum",
       "accept_url": "Annahme-URL",

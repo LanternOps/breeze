@@ -892,6 +892,7 @@
       "email_only_hint": "Email-only hint",
       "resolution_note": "Resolution note",
       "quote_number": "Quote number",
+      "quote_title": "Proposal title",
       "total": "Total",
       "expiry_date": "Expiry date",
       "accept_url": "Accept URL",
