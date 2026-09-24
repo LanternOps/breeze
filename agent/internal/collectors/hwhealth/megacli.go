@@ -3,6 +3,7 @@ package hwhealth
 import (
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -119,7 +120,9 @@ func parseMegaCLI(outputs []commandOutput) Result {
 					c.PredictiveFailure = textInt(p["predictive failure count"]) > 0 || strings.EqualFold(p["drive has flagged a s.m.a.r.t alert"], "yes")
 					c.Attributes["enclosure"] = e
 					c.Attributes["slot"] = p["slot number"]
-					c.Attributes["mediaErrors"] = textInt(p["media error count"])
+					if n, err := strconv.Atoi(strings.TrimSpace(p["media error count"])); err == nil {
+						c.Attributes["mediaErrors"] = n
+					}
 					c.TemperatureC = textTemperature(p["drive temperature"])
 					rows[key] = c
 				}
@@ -141,15 +144,18 @@ func parseMegaCLI(outputs []commandOutput) Result {
 				if strings.EqualFold(f["battery pack missing"], "yes") {
 					raw = "Battery Pack Missing"
 				}
-				if raw != "" {
-					valid = true
-					rows[ck+":bbu"] = textComponent("megacli", "cache_battery", ck+":bbu", ck, "BBU", raw)
-				}
-				if strings.Contains(adapter[1], "BBU is not present") {
+				switch {
+				case strings.Contains(adapter[1], "BBU is not present"):
 					valid = true
 					c := textComponent("megacli", "cache_battery", ck+":bbu", ck, "BBU", "BBU is not present")
 					c.State = "missing"
 					rows[c.ComponentKey] = c
+				case raw != "":
+					valid = true
+					rows[ck+":bbu"] = textComponent("megacli", "cache_battery", ck+":bbu", ck, "BBU", raw)
+				default:
+					// Neither a state nor an explicit absence: this adapter's battery was not observed.
+					invalid = true
 				}
 			case "-LDPDInfo":
 				for _, vd := range textBlocks(megaVD, adapter[1]) {

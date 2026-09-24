@@ -51,6 +51,8 @@ func collectCLI(ctx context.Context, s *cliSource, a Availability) (Result, erro
 				break
 			}
 			out, err := run(ctx, s.timeout, a.Path, args...)
+			// MegaCli exits nonzero after successful queries (its exit code carries a count or
+			// status, not failure), so for it only structural parsing decides completeness.
 			if err != nil || out.Truncated || (out.ExitCode != 0 && s.kind != "megacli") {
 				complete = false
 				warnings = append(warnings, fmt.Sprintf("%s: exit=%d truncated=%t error=%v", strings.Join(args, " "), out.ExitCode, out.Truncated, err))
