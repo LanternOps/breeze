@@ -1,6 +1,8 @@
 package hwhealth
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -155,6 +157,57 @@ func TestSpacesMemberMemoryPrunesDepartedMembers(t *testing.T) {
 	if len(remembered) != 2 || remembered["{00000000-0000-0000-0000-000000000000}"] != "" {
 		t.Fatalf("%v", remembered)
 	}
+}
+
+func TestSpacesMemberMemoryCap(t *testing.T) {
+	remembered := map[string]string{}
+	for i := 0; len(remembered) < maxSpacesMembers-1; i++ {
+		remembered[fmt.Sprintf("{%08x-0000-0000-0000-000000000000}", i)] = "x"
+	}
+	remembered["{4b771da6-b897-a0e5-4f0b-60f9608f390a}"] = "stale-uid" // member A, already tracked
+	r, e := parseSpaces(fixture(t, "storage_spaces", "lab-6895-healthy.json"), remembered)
+	if e != nil {
+		t.Fatal(e)
+	}
+	// Recording happens before the (complete-answer) prune drops the filler.
+	if remembered["{4b771da6-b897-a0e5-4f0b-60f9608f390a}"] != "60022480B4C7526392E9530DABDCE67F" {
+		t.Fatalf("tracked member not refreshed: %v", remembered["{4b771da6-b897-a0e5-4f0b-60f9608f390a}"])
+	}
+	if remembered["{97978214-4542-a5b2-308f-43ed169c97b9}"] != "" {
+		t.Fatal("new member recorded past the cap")
+	}
+	if !hasWarning(r.Warnings, "identity map full") {
+		t.Fatalf("cap overflow must warn: %v", r.Warnings)
+	}
+}
+
+func TestSpacesPartialAnswerKeepsMemory(t *testing.T) {
+	remembered := map[string]string{"{11111111-1111-1111-1111-111111111111}": "KEEP"}
+	doc := `{"Pools":[{"ObjectId":"P","FriendlyName":"p","HealthStatus":"Healthy"}],"VirtualDisks":[],"PhysicalDisks":[{"FriendlyName":"no id"}],"Warnings":[]}`
+	r, e := parseSpaces([]byte(doc), remembered)
+	if e != nil || r.Complete {
+		t.Fatalf("%+v %v", r, e)
+	}
+	if remembered["{11111111-1111-1111-1111-111111111111}"] != "KEEP" {
+		t.Fatal("partial answer pruned a remembered member")
+	}
+}
+
+func TestSpacesUnparseableLostCommunicationWarns(t *testing.T) {
+	doc := `{"Pools":[{"ObjectId":"P","FriendlyName":"p","HealthStatus":"Warning"}],"VirtualDisks":[],"PhysicalDisks":[{"UniqueId":"U","ObjectId":"no-guid-here","OperationalStatus":["Lost Communication"]}],"Warnings":[]}`
+	r, e := parseSpaces([]byte(doc), map[string]string{})
+	if e != nil || !hasWarning(r.Warnings, "identity unavailable") {
+		t.Fatalf("%v %v", r.Warnings, e)
+	}
+}
+
+func hasWarning(ws []string, part string) bool {
+	for _, w := range ws {
+		if strings.Contains(w, part) {
+			return true
+		}
+	}
+	return false
 }
 
 // windows_physical_disk lists the same stand-in; once Storage Spaces has

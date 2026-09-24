@@ -38,7 +38,8 @@ export class InvalidHardwareSnapshotError extends Error{
  * 7-day reaper retires it. When the snapshot itself proves the fault is over,
  * retire it now through the same path the reaper uses: the row's parent was
  * reported by a complete answer from the same source, and that parent plus
- * every live same-source row beneath it has been healthy for
+ * every live same-source row beneath it has been healthy (health ok, which
+ * also rules out predictive failure) for
  * STALE_RECOVERY_SNAPSHOTS consecutive snapshots (the built-in rules' default
  * `consecutiveSnapshots`, so the retirement lands with the array's own
  * recovery). A stale row with no parent is never retired early: a standalone
@@ -55,7 +56,7 @@ function staleKeysUnderRecoveredParent(rows:Map<string,ComponentRow>,live:Compon
   const seen=new Set<string>(),stack=[root];let healthy=true;
   while(stack.length&&healthy){
    const r=stack.pop()!;if(seen.has(r.componentKey))continue;seen.add(r.componentKey);
-   if(r.health!=='ok'||r.healthyStreak<STALE_RECOVERY_SNAPSHOTS||r.predictiveFailure){healthy=false;break;}
+   if(r.health!=='ok'||r.healthyStreak<STALE_RECOVERY_SNAPSHOTS){healthy=false;break;}
    for(const child of children.get(r.componentKey)??[])if(child.source===root.source)stack.push(child);
   }
   verdicts.set(root.componentKey,healthy);return healthy;
@@ -63,7 +64,7 @@ function staleKeysUnderRecoveredParent(rows:Map<string,ComponentRow>,live:Compon
  const keys:string[]=[];
  for(const r of rows.values()){
   if(!r.stale||r.componentType==='collector'||!r.parentKey||!completeSources.has(r.source))continue;
-  if(r.health!=='warning'&&r.health!=='critical'&&!r.predictiveFailure)continue;
+  if(r.health!=='warning'&&r.health!=='critical')continue; // predictive failure derives to warning
   const parent=liveByKey.get(r.parentKey);
   if(parent&&parent.source===r.source&&subtreeHealthy(parent))keys.push(r.componentKey);
  }

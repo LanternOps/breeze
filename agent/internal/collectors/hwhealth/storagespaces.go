@@ -176,11 +176,25 @@ func parseSpaces(b []byte, remembered map[string]string) (Result, error) {
 	// disk row uses.
 	byUniqueID := map[string]string{}
 	seen := map[string]bool{}
+	mapFullWarned := false
 	for _, d := range doc.PhysicalDisks {
 		if d.UniqueId == "" {
 			r.Complete = false
 			r.Warnings = append(r.Warnings, "PD UniqueId missing")
 			continue
+		}
+		// Surface the two cases where a missing member would still land on a
+		// new key: an ObjectId without a PD:{guid} segment, and a full map.
+		if g := memberGUID(d.ObjectId); g == "" {
+			for _, s := range d.OperationalStatus {
+				if s == "Lost Communication" {
+					r.Warnings = append(r.Warnings, "pool member identity unavailable for a lost-communication disk; it may appear under a new key")
+					break
+				}
+			}
+		} else if !strings.EqualFold(strings.TrimSpace(d.UniqueId), g) && remembered != nil && remembered[g] == "" && len(remembered) >= maxSpacesMembers && !mapFullWarned {
+			mapFullWarned = true
+			r.Warnings = append(r.Warnings, fmt.Sprintf("pool member identity map full (%d); new members are not tracked", maxSpacesMembers))
 		}
 		key := slotKey(ck, "-", objectHash(memberUniqueID(d, remembered, true)))
 		byUniqueID[d.UniqueId] = key

@@ -61,6 +61,41 @@ describe('stale subjects under a recovered parent (#6895)', () => {
     expect(r.retiredStaleKeys).toEqual([]);
   });
 
+  it('a live predictive-failure sibling blocks retirement; a stale predictive row is eligible', () => {
+    const predictiveB = { ...disk('storage_spaces:B', 'online'), predictiveFailure: true };
+    let r = step([], faulted);
+    r = step(r.rows, faulted);
+    for (let i = 0; i < 3; i++) r = step(r.rows, [ctrl, vd('optimal'), disk('A', 'online'), predictiveB]);
+    expect(r.retiredStaleKeys).toEqual([]);
+    let p = step([], [ctrl, vd('optimal'), disk('A', 'online'), { ...disk('P', 'online'), predictiveFailure: true }]);
+    for (let i = 0; i < 2; i++) p = step(p.rows, [ctrl, vd('optimal'), disk('A', 'online')]);
+    expect(p.retiredStaleKeys).toEqual(['P']);
+  });
+
+  it('never retires when the parent is from another source or is itself stale', () => {
+    const src = [{ source: 'storage_spaces', status: 'ok', complete: true }, { source: 'windows_physical_disk', status: 'ok', complete: true }];
+    const foreignParent = { ...winpd('winpd:H', 'online') };
+    const child = (state: string) => ({ ...disk('C', state), parentKey: 'winpd:H' });
+    let r = step([], [foreignParent, child('failed')], src);
+    for (let i = 0; i < 3; i++) r = step(r.rows, [foreignParent], src);
+    expect(r.rows.find(x => x.componentKey === 'C')?.stale).toBe(true);
+    expect(r.retiredStaleKeys).toEqual([]);
+
+    let s = step([], faulted);
+    s = step(s.rows, faulted);
+    for (let i = 0; i < 3; i++) s = step(s.rows, [vd('optimal'), disk('A', 'online')]); // ctrl gone too
+    expect(s.rows.find(x => x.componentKey === 'storage_spaces:ctrl')?.stale).toBe(true);
+    expect(s.retiredStaleKeys).toEqual([]);
+  });
+
+  it('terminates on a parent_key cycle', () => {
+    const a = { ...disk('LOOP-A', 'ok'), componentType: 'enclosure', parentKey: 'LOOP-B' } as const;
+    const b = { ...disk('LOOP-B', 'ok'), componentType: 'enclosure', parentKey: 'LOOP-A' } as const;
+    let r = step([], [a, b, { ...disk('X', 'failed'), parentKey: 'LOOP-A' }]);
+    for (let i = 0; i < 3; i++) r = step(r.rows, [a, b]);
+    expect(r.retiredStaleKeys).toEqual(['X']);
+  });
+
   it('only acts on a complete answer from the stale row\'s own source', () => {
     let r = step([], healthy);
     r = step(r.rows, faulted);
