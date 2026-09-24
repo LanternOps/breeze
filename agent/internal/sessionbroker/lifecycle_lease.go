@@ -169,6 +169,63 @@ func leaseRoleEligible(s DetectedSession, role ipc.HelperRole) bool {
 	}
 }
 
+// ErrSessionUsernameUnknown is returned by HelperRoleAvailable when the
+// session is active but its username could not be read, so whether a user is
+// signed in is unknown.
+var ErrSessionUsernameUnknown = errors.New("session username could not be read")
+
+// HelperRoleAvailable reports whether key's session can host a helper of
+// key.Role right now, from a fresh detector snapshot. It answers the question
+// a caller must ask before waiting on WaitForHelperReady: a helper the
+// reconciler will never spawn cannot become ready, so waiting for it only
+// burns the caller's budget (#6812 — a logged-off RDS console has no signed-in
+// user, so no user-role helper, and the 30 s consent wait outlived the
+// viewer's answer timeout).
+//
+// A user-role helper needs an active session AND a signed-in user: it runs
+// under that user's token, which a Winlogon session (WTSConnected, no
+// username) does not have. The system role follows leaseRoleEligible.
+//
+// Returns ErrLeaseSessionNotFound when the session is not in the snapshot and
+// ErrLeaseRoleNotSpawnable for a role this manager never launches, and
+// ErrSessionUsernameUnknown when an active session's username query failed.
+// A helper already connected for key counts as available regardless of the
+// snapshot.
+func (m *HelperLifecycleManager) HelperRoleAvailable(key HelperKey) (bool, error) {
+	if !helperRoleSpawnable(key.Role) {
+		return false, ErrLeaseRoleNotSpawnable
+	}
+	if m.broker != nil && m.broker.HelperSessionByKey(key) != nil {
+		return true, nil
+	}
+	if m.detector == nil {
+		return false, ErrLeaseSessionNotFound
+	}
+	sessions, err := m.detector.ListSessions()
+	if err != nil {
+		return false, err
+	}
+	target := strconv.FormatUint(uint64(key.WindowsSessionID), 10)
+	for _, s := range sessions {
+		if s.Session != target {
+			continue
+		}
+		if !leaseRoleEligible(s, key.Role) {
+			return false, nil
+		}
+		if key.Role == ipc.HelperRoleUser && s.Username == "" {
+			if s.UsernameUnknown {
+				// A failed username query is not evidence that nobody is
+				// signed in; let the caller fall back to waiting.
+				return false, ErrSessionUsernameUnknown
+			}
+			return false, nil
+		}
+		return true, nil
+	}
+	return false, ErrLeaseSessionNotFound
+}
+
 // leasedDesired is the on-demand desired-set: leases intersected with a fresh
 // WTS snapshot. Mutates lease.idleSince (stamping when owners empty out) and
 // returns keys whose lease is dead (session gone, session-ID reused by a

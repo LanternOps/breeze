@@ -47,6 +47,10 @@ func (l *blockingLifecycleShutdown) RenewLease(uint32, ipc.HelperRole, string, t
 
 func (l *blockingLifecycleShutdown) ReleaseLease(uint32, ipc.HelperRole, string) {}
 
+func (l *blockingLifecycleShutdown) HelperRoleAvailable(sessionbroker.HelperKey) (bool, error) {
+	return true, nil
+}
+
 func (l *blockingLifecycleShutdown) WaitForHelperReady(context.Context, sessionbroker.HelperKey) sessionbroker.HelperWaitResult {
 	return sessionbroker.HelperWaitResult{Status: sessionbroker.HelperWaitTimeout}
 }

@@ -27,6 +27,14 @@ type fakeLifecycle struct {
 	acquireErr    error
 	renewErr      error
 	modeOverrides []string
+	// unavailable marks keys whose session cannot host that helper role
+	// (HelperRoleAvailable -> false); availableErr makes the check fail.
+	unavailable  map[sessionbroker.HelperKey]bool
+	availableErr error
+	checked      []sessionbroker.HelperKey
+	// blockWait makes WaitForHelperReady behave like the real manager for a
+	// helper that never comes up: it returns only when ctx ends.
+	blockWait bool
 }
 
 func (f *fakeLifecycle) Stop()                 {}
@@ -62,10 +70,27 @@ func (f *fakeLifecycle) ReleaseLease(id uint32, role ipc.HelperRole, opID string
 	f.released = append(f.released, sessionbroker.HelperKey{WindowsSessionID: id, Role: role})
 }
 
-func (f *fakeLifecycle) WaitForHelperReady(ctx context.Context, key sessionbroker.HelperKey) sessionbroker.HelperWaitResult {
+func (f *fakeLifecycle) HelperRoleAvailable(key sessionbroker.HelperKey) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.checked = append(f.checked, key)
+	if f.availableErr != nil {
+		return false, f.availableErr
+	}
+	return !f.unavailable[key], nil
+}
+
+func (f *fakeLifecycle) WaitForHelperReady(ctx context.Context, key sessionbroker.HelperKey) sessionbroker.HelperWaitResult {
+	f.mu.Lock()
 	f.waited = append(f.waited, key)
+	block := f.blockWait
+	f.mu.Unlock()
+	if block {
+		<-ctx.Done()
+		return sessionbroker.HelperWaitResult{Status: sessionbroker.HelperWaitTimeout}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if r, ok := f.waitResults[key]; ok {
 		return r
 	}

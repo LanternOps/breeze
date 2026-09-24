@@ -262,6 +262,17 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 			return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 		}
 		wantConsentUI := prompt != nil && prompt.Mode != "off"
+		if wantConsentUI && !h.consentHelperPossible(sessionID, winID) {
+			// Nobody is signed in to the target session (a logged-off console
+			// at Winlogon), so no user-role helper can ever start there and no
+			// prompt, notice or banner can render. Do not lease or wait for
+			// one: the wait (consentHelperWait) outlived the viewer's answer
+			// timeout and the connect fell back to a black screen (#6812).
+			// Consent mode still goes through the gate below, where
+			// requestConsent finds no helper and consentUnavailableBehavior
+			// decides — "block" denies at once, it never becomes an allow.
+			wantConsentUI = false
+		}
 		if failure := h.acquireDesktopLeases(sessionID, winID, wantConsentUI); failure != nil {
 			h.takeDesktopTarget(sessionID)
 			failure.DurationMs = time.Since(start).Milliseconds()
