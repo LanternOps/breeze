@@ -33,7 +33,9 @@ import type {
   RemoteAccessPolicy,
   VpnPresence,
   FilterConditionGroup,
+  HardwareHealth,
 } from "@breeze/shared";
+import ComponentStatePill from "./hardware/ComponentStatePill";
 import {
   matchesMergedListFilters,
   sortByDisplayName,
@@ -327,6 +329,12 @@ export type Device = {
   /** Reliability trend from the same subsystem; drives the small arrow indicator. */
   reliabilityTrend?: "improving" | "stable" | "degrading" | null;
   /**
+   * Hardware & RAID health rollup (#6854 W04). Null/undefined when no report
+   * has been received yet — the Hardware column renders a dash.
+   */
+  hardwareHealth?: HardwareHealth | null;
+  hardwareHealthSummary?: Record<string, number> | null;
+  /**
    * Current-state power/battery snapshot (#2142). null/undefined = no data
    * reported yet (old agent or network device) → the Power column renders a
    * dash. { present: false } = a real no-battery desktop → also a dash.
@@ -429,6 +437,7 @@ const AGENT_ONLY_COLUMNS: ReadonlySet<ColumnId> = new Set<ColumnId>([
   "enrolled",
   "desktopAccess",
   "reliability",
+  "hardwareHealth",
   "vpn",
 ]);
 
@@ -750,6 +759,7 @@ const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
   // sorts as a blank-last null to match the dash the cell renders (#1284).
   reliability: (d) =>
     typeof d.reliabilityScore === "number" ? d.reliabilityScore : null,
+  hardwareHealth: (d) => d.hardwareHealth ?? null,
   // Sort by the first badge's provider label — active VPNs sort ahead of
   // running-but-disconnected ones because vpnList orders them first. Devices
   // with no VPN at all sort blanks-last (null) to match the dash the cell
@@ -2241,6 +2251,31 @@ export default function DeviceList({
           </td>
         );
       },
+    },
+    hardwareHealth: {
+      header: () => sortHeader("hardwareHealth", t("hardwareHealth.hardware"), "Sort by hardware health"),
+      cell: (device) => (
+        <td
+          key="hardwareHealth"
+          className="px-3 py-3 text-sm"
+          data-testid={`device-${device.id}-hardware-health`}
+        >
+          {agentCell(
+            device,
+            device.hardwareHealth ? (
+              <ComponentStatePill
+                health={device.hardwareHealth}
+                title={Object.entries(device.hardwareHealthSummary ?? {})
+                  .filter(([, count]) => typeof count === "number" && Number.isFinite(count))
+                  .map(([label, count]) => `${label}: ${count}`)
+                  .join(" · ")}
+              />
+            ) : (
+              dash
+            ),
+          )}
+        </td>
+      ),
     },
     vpn: {
       header: () => sortHeader("vpn", "VPN", "Sort by VPN provider"),
