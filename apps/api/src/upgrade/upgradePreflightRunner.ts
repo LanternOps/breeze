@@ -74,6 +74,18 @@ async function tableExists(query: PreflightQuery, table: string): Promise<boolea
   return rows[0]?.present === true;
 }
 
+/**
+ * The boot client parses timestamptz into a Date; the request path goes through
+ * Drizzle's postgres-js driver, which disables that parser and returns text.
+ */
+function toDate(value: Date | string): Date {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    throw new Error(`unparseable first_seen_at ${JSON.stringify(String(value))}`);
+  }
+  return date;
+}
+
 async function readHistory(query: PreflightQuery): Promise<DeploymentState['history']> {
   try {
     if (!(await tableExists(query, BREEZE_VERSION_HISTORY_TABLE))) {
@@ -82,10 +94,10 @@ async function readHistory(query: PreflightQuery): Promise<DeploymentState['hist
         reason: `${BREEZE_VERSION_HISTORY_TABLE} does not exist yet — this deployment predates version recording`,
       };
     }
-    const rows = await query<{ version: string; first_seen_at: Date }>(
+    const rows = await query<{ version: string; first_seen_at: Date | string }>(
       `SELECT version, first_seen_at FROM ${BREEZE_VERSION_HISTORY_TABLE} ORDER BY first_seen_at`,
     );
-    return { status: 'ok', versions: rows.map((r) => ({ version: r.version, firstSeenAt: r.first_seen_at })) };
+    return { status: 'ok', versions: rows.map((r) => ({ version: r.version, firstSeenAt: toDate(r.first_seen_at) })) };
   } catch (err) {
     return { status: 'missing', reason: `could not read ${BREEZE_VERSION_HISTORY_TABLE}: ${describeError(err)}` };
   }
