@@ -1016,7 +1016,7 @@
     "organization": "Organization",
     "selectOrg": "Select an organization",
     "address": "Mailbox address",
-    "addressPlaceholder": "support@customerdomain.com",
+    "addressPlaceholder": "support@example.com",
     "displayName": "Display name (optional)",
     "namePlaceholder": "Support",
     "connect": "Connect",

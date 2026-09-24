@@ -218,7 +218,7 @@ export function isAddressedToMailbox(
 
 function parseEmail(raw: string | undefined): { address: string; name?: string } {
   if (!raw) return { address: '' };
-  // Strip RFC 5322 CFWS comments FIRST so a valid `user@dom.com (Display)` does
+  // Strip RFC 5322 CFWS comments FIRST so a valid `user@example.com (Display)` does
   // not leave "(display)" glued to the address — resolveOrg does an exact domain
   // compare and would otherwise drop a known customer.
   const cleaned = stripComments(raw).trim();

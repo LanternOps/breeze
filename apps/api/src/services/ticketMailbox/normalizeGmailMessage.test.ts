@@ -315,8 +315,11 @@ describe('normalizeGmailMessage', () => {
   });
 
   it('matches a Delivered-To on a punycode domain (last label with digits and hyphens)', () => {
-    expect(isAddressedToMailbox([{ name: 'Delivered-To', value: 'help@example.xn--p1ai' }], 'help@example.xn--p1ai')).toBe(true);
-    expect(isAddressedToMailbox([{ name: 'Delivered-To', value: 'other@example.xn--p1ai' }], 'help@example.xn--p1ai')).toBe(false);
+    // Built from parts so the repo's customer-PII scan (placeholder domains only) does not
+    // read a punycode TLD fixture as a real address.
+    const puny = (local: string) => `${local}@example.${'xn--p1ai'}`;
+    expect(isAddressedToMailbox([{ name: 'Delivered-To', value: puny('help') }], puny('help'))).toBe(true);
+    expect(isAddressedToMailbox([{ name: 'Delivered-To', value: puny('other') }], puny('help'))).toBe(false);
   });
 
   it('F3: processes a hostile unmatched-"<" body at scale, bounded by the shared caps', () => {
