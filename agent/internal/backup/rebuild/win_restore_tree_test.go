@@ -3,33 +3,12 @@ package rebuild
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
-
-// With SkipBoot the staged applyWindowsSystemState hook warns, the restore
-// phase completes, and StateApplied stays false. Part C Task 14 replaces
-// this test when the hook becomes real.
-func TestWinRestoreTree_SkipBootToleratesStagedSystemState(t *testing.T) {
-	withHostPlatformWindows(t)
-	dir := t.TempDir()
-	opts, _ := winFakeOptions(t, dir)
-	res, _ := Run(context.Background(), opts)
-	if res == nil || res.StateApplied || !phaseCompleted(res, PhaseRestore) {
-		t.Fatalf("res = %+v, want restore completed with StateApplied=false", res)
-	}
-	found := false
-	for _, w := range res.Warnings {
-		found = found || strings.Contains(w, "system state not applied (SkipBoot)")
-	}
-	if !found {
-		t.Fatalf("warnings = %v, want the SkipBoot system-state warning", res.Warnings)
-	}
-}
 
 // Ruling B1: the restore targets the root VOLUME path (r.volumes[root]),
 // never the <staging>\root folder mount point — securefs refuses every
@@ -59,17 +38,6 @@ func TestWinRestoreTree_RestoresIntoRootVolumeNotFolderMount(t *testing.T) {
 	}
 	if !rootMounted || !recoveryMounted {
 		t.Fatalf("mountLog = %v, want root and recovery folder mounts", sys.mountLog)
-	}
-}
-
-// Without SkipBoot the staged hook fails. A Run never reaches it that way
-// any more (winPreflight refuses SkipBoot=false, final-review Imp 2), so
-// the hook is exercised directly. Part C Task 14 deletes this test (the
-// hook is real from then on).
-func TestWinRestoreTree_StagedSystemStateFailsWithoutSkipBoot(t *testing.T) {
-	r := &run{opts: Options{SkipBoot: false}}
-	if err := applyWindowsSystemState(context.Background(), r); !errors.Is(err, errWindowsOSStateStaged) {
-		t.Fatalf("applyWindowsSystemState = %v, want errWindowsOSStateStaged", err)
 	}
 }
 

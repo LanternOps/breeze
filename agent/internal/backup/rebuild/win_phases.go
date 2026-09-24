@@ -3,13 +3,12 @@
 // The real validate/convert phases live in win_validate.go and
 // win_convert.go.
 //
-// Staged for W06c (these five stay in this file when this PR merges; Part C
-// deletes each one from here and adds the real one): applyWindowsSystemState
-// (Part C Task 14, win_system_state.go), winIdentity and winEncryption
-// (Task 15, win_identity.go / win_encryption.go), winBoot (Task 16,
-// win_boot.go), validateOSState (Task 17, win_validate_os.go). Each is
-// honest: a hard error unless Options.SkipBoot (test/CI mode) — never a
-// silent no-op.
+// Staged for W06c (Part C deletes each one from here and adds the real
+// one; applyWindowsSystemState is already real, win_system_state.go, Task
+// 14): winIdentity and winEncryption (Task 15, win_identity.go /
+// win_encryption.go), winBoot (Task 16, win_boot.go), validateOSState
+// (Task 17, win_validate_os.go). Each is honest: a hard error unless
+// Options.SkipBoot (test/CI mode) — never a silent no-op.
 package rebuild
 
 import (
@@ -25,16 +24,6 @@ var errWindowsOSStateStaged = errors.New("windows offline system-state, boot, id
 
 // A Windows run in this PR therefore reaches "completed" only with
 // SkipBoot set — exactly what the Task 13 tests and CI VHDX gate use.
-
-// applyWindowsSystemState is winRestoreTree's offline system-state hook
-// (hives, MountedDevices, boot-start drivers). Part C replaces it.
-func applyWindowsSystemState(_ context.Context, r *run) error {
-	if r.opts.SkipBoot {
-		r.warn("system state not applied (SkipBoot): %v", errWindowsOSStateStaged)
-		return nil
-	}
-	return errWindowsOSStateStaged
-}
 
 func winBoot(_ context.Context, r *run) error {
 	if r.opts.SkipBoot {

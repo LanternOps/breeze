@@ -82,8 +82,8 @@ func (r *run) plannedPartition(number int) *PlannedPartition {
 // winReattach already did), restores the whole-machine file snapshot into
 // the root VOLUME path r.rootVolume — not the r.rootDir folder mount point,
 // which securefs would refuse as a reparse point (Ruling B1) — then runs
-// the offline system-state hook (applyWindowsSystemState — staged in
-// win_phases.go until W06c), which alone decides Result.StateApplied.
+// the offline system-state step (applyWindowsSystemState,
+// win_system_state.go), which alone decides Result.StateApplied.
 func winRestoreTree(ctx context.Context, r *run) error {
 	if r.rootDir == "" {
 		if err := r.winMountTree(ctx); err != nil {

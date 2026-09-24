@@ -6,8 +6,12 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/breeze-rmm/agent/internal/backup"
+	"github.com/breeze-rmm/agent/internal/backup/systemstate"
 )
 
 // TestRun_WindowsVhdxRealSystem is the Windows twin of
@@ -38,22 +42,31 @@ func TestRun_WindowsVhdxRealSystem(t *testing.T) {
 	d.Partitions[2].UsedBytes = 256 * MiB
 	d.Partitions[3].SizeBytes = 300 * MiB // Recovery
 	p := seedWindowsSnapshot(t, "win-vhdx-real", lay)
+	// Real hives: the state apply loads SYSTEM/SOFTWARE with RegLoadKeyW
+	// and the preflight DC check loads the system-state SYSTEM artifact.
+	for _, hive := range []string{"SYSTEM", "SOFTWARE"} {
+		data := regSaveForTest(t, hive)
+		replaceSnapshotFileForTest(t, p, "win-vhdx-real", "Windows/System32/config/"+hive, data)
+		if hive == "SYSTEM" {
+			p.files["snapshots/win-vhdx-real/system-state/registry/SYSTEM"] = data
+			reseedStateManifestForTest(t, p, "win-vhdx-real", data)
+		}
+	}
 	out := filepath.Join(dir, "disk.vhdx")
 
 	res, err := Run(context.Background(), Options{
 		SnapshotID: "win-vhdx-real", Provider: p, Identity: IdentityNew,
 		Target:   Target{Kind: TargetVHDX, Path: out, ImageSizeBytes: 2 * GiB},
 		StateDir: dir, StagingRoot: filepath.Join(dir, "mnt"), SkipBoot: true,
-		// The fixture's system-state registry/SYSTEM artifact is stub bytes,
-		// not a hive, so the preflight DC check cannot load it; W06c
-		// (Part C Task 14) seeds real hives and drops this.
-		AllowDomainController: true,
 	})
 	if err != nil {
 		t.Fatalf("run: %v\n%s", err, mustJSON(res))
 	}
 	if res.Status != "completed" {
 		t.Fatalf("res = %s", mustJSON(res))
+	}
+	if !res.StateApplied {
+		t.Fatalf("StateApplied = false: the offline state apply did not run against the real hives\n%s", mustJSON(res))
 	}
 	if res.Platform != "windows" {
 		t.Fatalf("res.Platform = %q, want windows", res.Platform)
@@ -129,3 +142,44 @@ func TestRun_WindowsVhdxRealSystem(t *testing.T) {
 }
 
 func mustJSON(v any) string { b, _ := json.MarshalIndent(v, "", "  "); return string(b) }
+
+// regSaveForTest captures a live HKLM hive (the Windows CI runner is
+// elevated) as real hive bytes.
+func regSaveForTest(t *testing.T, hive string) []byte {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), hive)
+	if out, err := exec.Command("reg", "save", `HKLM\`+hive, path, "/y").CombinedOutput(); err != nil {
+		t.Fatalf("reg save HKLM\\%s: %v: %s", hive, err, out)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+// replaceSnapshotFileForTest swaps one file's content in a seeded snapshot
+// and fixes its manifest entry's size and checksum.
+func replaceSnapshotFileForTest(t *testing.T, p *memProvider, id, rel string, data []byte) {
+	t.Helper()
+	p.files["snapshots/"+id+"/files/path_0/"+rel] = data
+	var man backup.Snapshot
+	if err := json.Unmarshal(p.files["snapshots/"+id+"/manifest.json"], &man); err != nil {
+		t.Fatal(err)
+	}
+	for i := range man.Files {
+		if man.Files[i].OriginalPath == "C:/"+rel {
+			man.Files[i].Size, man.Files[i].Checksum = int64(len(data)), sum(data)
+		}
+	}
+	b, _ := json.Marshal(man)
+	p.files["snapshots/"+id+"/manifest.json"] = b
+}
+
+func reseedStateManifestForTest(t *testing.T, p *memProvider, id string, system []byte) {
+	t.Helper()
+	sm, _ := json.Marshal(systemstate.SystemStateManifest{Platform: "windows", SchemaVersion: 1, Artifacts: []systemstate.Artifact{
+		{Name: "registry_SYSTEM", Category: "registry", Path: "registry/SYSTEM", SizeBytes: int64(len(system)), Checksum: sum(system)},
+	}})
+	p.files["snapshots/"+id+"/system-state/manifest.json"] = sm
+}

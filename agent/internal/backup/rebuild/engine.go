@@ -70,6 +70,7 @@ type run struct {
 	rootDir     string                    // Windows root folder mount (<staging>\root) for external tools (bcdboot, DISM); Linux uses rootMount instead
 	recoveryDir string                    // Windows Recovery folder mount (<staging>\recovery), "" if the layout has none
 	hives       map[string]winhive.Handle // W06c: loaded SYSTEM/SOFTWARE hives, kept open from restore until validate closes them
+	controlSets []string                  // W06c: ControlSet00N names identity edits (Select\Default first, then Current)
 	// espLetterRelease releases the ESP's temporary drive letter (W06c
 	// winBoot assigns it for bcdboot /s and releases it itself; teardown is
 	// the failure-path backstop).
