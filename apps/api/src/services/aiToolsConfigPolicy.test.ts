@@ -1704,6 +1704,8 @@ describe('manage_policy_feature_link compliance validation + rejection hints (#6
     const out = JSON.parse(await tools.get('manage_policy_feature_link')!.handler({ action: 'describe', featureType: 'compliance' }, {} as never));
     expect(out.inlineSettings).toContain('softwareName');
     expect(out.example.items[0].rules.map((r: { type: string }) => r.type)).toContain('required_software');
+  });
+});
 
 // ─── #6667 / #6668 — owner-org authority on create and update ───────────────
 // #6667: org-scoped create used `auth.orgId ?? accessibleOrgIds[0]`, so a
