@@ -422,6 +422,12 @@ excluded from alert evaluation and rollup, shown greyed in the UI, and deleted b
 `disabled`, or `complete: false` never stale-mark anything; the components a `complete: false` source
 did parse are still upserted (§7.2), everything else of that source stays exactly as it was.
 
+**Early retirement (#6895).** A stale row whose health is warning/critical (or predictive) has its
+open alerts retired at ingest, through the reaper's retirement path, without waiting 7 days, when a
+complete answer from the same source shows the row's `parent_key` component and every live
+same-source row beneath that parent healthy (`healthy_streak ≥ 2`, no predictive failure). A stale
+row with no parent is never retired early — a standalone disk that vanished is itself a fault.
+
 **Freshness is per component, not per device.** A component whose `last_seen_at` is older than
 3 × its tier's effective interval (`poll_interval_minutes` for RAID-tier sources,
 `disk_health_interval_minutes` for `windows_physical_disk` / standalone `smartctl`; both stored on
