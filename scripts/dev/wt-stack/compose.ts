@@ -34,10 +34,28 @@ function docker(args: string[], opts: { input?: string } = {}): string {
   });
 }
 
+/**
+ * #6443 — keys wt-stack pins in `.env.stack`. Compose lets an exported shell
+ * variable beat every --env-file, and a shell value can never match this
+ * stack's random caddy port, so container-creating calls drop them.
+ */
+export const STACK_PINNED_ENV_KEYS = ['WEBAUTHN_ORIGIN', 'WEBAUTHN_RP_ID'] as const;
+
+export function stackProcessEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const out = { ...env };
+  for (const k of STACK_PINNED_ENV_KEYS) delete out[k];
+  return out;
+}
+
 export function composeUp(project: string, opts: { rebuild: boolean }): void {
   const args = [...composeArgs(project), 'up', '-d'];
   if (opts.rebuild) args.push('--build');
-  execFileSync('docker', args, { cwd: ROOT, stdio: 'inherit' });
+  execFileSync('docker', args, { cwd: ROOT, stdio: 'inherit', env: stackProcessEnv() });
+}
+
+/** Recreate one service so it re-reads the env files (a restart does not). */
+export function recreateService(project: string, service: string): void {
+  execFileSync('docker', [...composeArgs(project), 'up', '-d', '--no-deps', service], { cwd: ROOT, stdio: 'inherit', env: stackProcessEnv() });
 }
 
 export function containerName(project: string, service: string): string {
