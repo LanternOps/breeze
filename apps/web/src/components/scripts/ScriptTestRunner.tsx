@@ -622,7 +622,13 @@ export default function ScriptTestRunner({
           {t('testRunner.requiredParams', { params: missingRequiredParams.join(', ') })}
         </p>
       )}
-      {scriptId && selectedDevice && selectedDevice.status !== 'online' && !busy && (
+      {/* sweep E5: this "will wait until it reconnects" notice must not
+          survive the wait — once a completed/failed/timed-out/cancelled
+          result is showing below, the device's now-stale online/offline
+          status (it can, and often does, go back offline right after the
+          run) is no longer relevant to what's on screen. */}
+      {scriptId && selectedDevice && selectedDevice.status !== 'online' && !busy &&
+        !(execution && TERMINAL_STATUSES.includes(execution.status)) && (
         <p className="flex items-center gap-1.5 border-t px-3 py-2 text-xs text-warning">
           <Clock className="h-3 w-3" />
           {t('testRunner.offlineWarning')}
