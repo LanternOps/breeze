@@ -98,4 +98,17 @@ describe('product terminology quality', () => {
       expect(valueAt(catalog(locale, 'alerts'), 'alertVerdict.feedbackThanks')).toBe(expected[locale]);
     }
   });
+
+  it('de-DE names the alerts page the same term in the browser tab title and the page h1 (sweep A4)', () => {
+    // pages.json titles.alerts drove the <title>/tab text; alerts.json
+    // alertsPage.alerts drives the on-page <h1>. They had drifted to two
+    // different German words for "alerts" ("Warnmeldungen" vs "Warnungen").
+    // "Warnungen" is the term the de-DE alerts namespace actually uses
+    // throughout (38 occurrences vs 1), so that's the one both must match.
+    const tabTitle = valueAt(catalog('de-DE', 'pages'), 'titles.alerts');
+    const pageHeading = valueAt(catalog('de-DE', 'alerts'), 'alertsPage.alerts');
+    expect(tabTitle).toBe('Warnungen');
+    expect(pageHeading).toBe('Warnungen');
+    expect(tabTitle).toBe(pageHeading);
+  });
 });
