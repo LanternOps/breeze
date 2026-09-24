@@ -809,8 +809,8 @@ const USER_OWNED_RELEASE_ACTIONS: ReadonlySet<string> = new Set([
   // Same FK, same 23503; only the approval scope differs, and the approver
   // substitution is scope-independent.
   'manage_patches:rollback',
-  // #6907: the alert-triage agent's Tier-2 supervised lane (P2-1 —
-  // `intentService.ts`'s `agentTier2`, NOT a tier-3 entry) mints these as
+  // #6907: the Tier-2 supervised lane of the alert-triage agent (P2-1,
+  // `agentTier2` in `intentService.ts` — NOT a tier-3 entry) mints these as
   // action intents, released here under the rebuilt agent auth. Each one
   // writes `auth.user.id` into a users FK: `alerts.resolved_by` /
   // `alerts.acknowledged_by` (db/schema/alerts.ts) on the row itself, and —

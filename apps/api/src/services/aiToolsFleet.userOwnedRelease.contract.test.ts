@@ -210,7 +210,9 @@ function fleetWriteSites(): WriteSite[] {
 function workerAllowlist(): ReadonlySet<string> {
   const start = WORKER_SRC.indexOf('const USER_OWNED_RELEASE_ACTIONS');
   expect(start, 'USER_OWNED_RELEASE_ACTIONS not found in jobs/intentReleaseWorker.ts').toBeGreaterThan(-1);
-  const body = WORKER_SRC.slice(start, WORKER_SRC.indexOf(']);', start));
+  // Strip line comments first: an apostrophe in a comment (`the agent's`)
+  // would otherwise pair with a real quote and swallow an entry (#6907).
+  const body = WORKER_SRC.slice(start, WORKER_SRC.indexOf(']);', start)).replace(/\/\/.*$/gm, '');
   return new Set([...body.matchAll(/'([^']+:[^']*)'/g)].map((m) => m[1]!));
 }
 
