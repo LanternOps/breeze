@@ -993,7 +993,11 @@ async function handleJsonRpc(
 // ============================================
 //
 // User decision, 2026-08-02: ALL Tier 3 tools require interactive approval —
-// full stop, no exceptions for tools that predate this change. The MCP
+// no exceptions for tools that predate this change. The ONLY exception is the
+// operator opt-in MCP_UNATTENDED_TIER3_PRINCIPALS: principals named there may
+// call core-registry Tier 3 (never Tier 4, tenant or bootstrap tools) without
+// approval; see isUnattendedTier3PrincipalOverMcp. Everything below describes
+// the default for every other principal. The MCP
 // server has NO interactive approval surface (the durable action_intents
 // Tier 3 approval workflow is an interactive-web-app-only construct), so
 // rather than continue trusting the API key holder at the scope level (the
