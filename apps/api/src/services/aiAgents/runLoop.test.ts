@@ -840,6 +840,32 @@ describe('executeAgentRun', () => {
     expect(outcome.proposedActions).toEqual([]);
   });
 
+  // #6909 review fix — the distinguishing case for the exposure/authority
+  // separation `fullRunToolExposure`'s docstring calls out: `manage_patches`
+  // is a MIXED tool (its `list`/`compliance` actions are read-only, so the
+  // new exposure floor exposes the bare tool even with an empty allowlist)
+  // but its `install` action is Tier 3 and NOT in this allowlist. If
+  // `guardrailPolicy.toolAllowlist` were ever accidentally built from the
+  // exposure floor instead of `effective.toolAllowlist` (the bug this test
+  // guards against — `isToolAllowlisted` treats a bare-tool floor entry as
+  // "every action admitted"), this call would be wrongly ALLOWED. It must
+  // still be denied.
+  it('a mixed tool exposed for its read-only actions still denies a non-allowlisted mutating action', async () => {
+    seedRows({ effective: policy({ toolAllowlist: [] }) });
+    scriptQuery({
+      toolCalls: [{ tool: 'manage_patches', input: { action: 'install', deviceId: DEVICE_ID, updateIds: ['kb1'] } }],
+      assistantText: 'Could not install; recorded the finding.',
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(createActionIntent).not.toHaveBeenCalled();
+    expect(preVerdicts[0]!.allowed).toBe(false);
+    expect(preVerdicts[0]!.error).toMatch(/allowlist/i);
+    const outcome = finalTransition()!.patch.outcome as { deniedActions: unknown[] };
+    expect(outcome.deniedActions).toHaveLength(1);
+  });
+
   describe('act disposition (Task 3 revalidation + Task 4 verification)', () => {
     function seedActRun() {
       return seedRows({
