@@ -115,20 +115,6 @@ const providerNameExpr = sql<string>`${backupProviderDevices.vendorDeviceName}`;
 const providerKeyExpr = sql<string>`('provider:' || ${backupProviderDevices.id}::text)`;
 
 /**
- * D11: a device linked to a provider device must be represented by exactly
- * ONE row — the provider leg row already carries the linked device's id,
- * site and online state (toProviderHealthRow), so it alone satisfies the
- * "every active device is a row" contract. Without this exclusion the same
- * device appeared twice in `/backup` — once from each leg — and was double
- * counted in both status buckets. A raw correlated `sql` fragment rather than
- * `notExists(db.select(...))`: the latter issues its own `db.select()` call,
- * which this file's other subqueries reserve for joined, `.as()`-aliased
- * subqueries (latestJobSubquery/latestSuccessSubquery) — this one is neither
- * joined nor awaited, only referenced inside the WHERE clause.
- */
-const notLinkedToProviderDevice = sql`not exists (select 1 from ${backupProviderDevices} where ${backupProviderDevices.breezeDeviceId} = ${devices.id})`;
-
-/**
  * `ORDER BY lower(name) COLLATE "C", key COLLATE "C"` — byte order, which is
  * exactly what the JS comparator in backupHealthCursor does. Without the
  * explicit collation the database sorts under its own locale and the merge
@@ -218,9 +204,6 @@ function buildBreezeLeg(
     // `devices` carries no deleted_at — offboarding retires a device via
     // status='decommissioned' (see aiToolsTicketing.ts:849-853).
     ne(devices.status, 'decommissioned'),
-    // D11: a device linked to a provider device is already represented by
-    // that provider leg row — see notLinkedToProviderDevice.
-    notLinkedToProviderDevice,
   ];
 
   if (scope.siteIds) conditions.push(inArray(devices.siteId, scope.siteIds));
