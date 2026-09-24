@@ -116,7 +116,7 @@ func TestExecBareMetalRebuild_UnsupportedHostMessage(t *testing.T) {
 	fake := &fakeRebuild{}
 	fake.push(nil, rebuild.ErrUnsupportedHost)
 	res := execBareMetalRebuild(context.Background(), testBareMetalRebuildPayload(t, server.URL), fake.fn)
-	if res.Success || res.Stderr != "the rebuild engine runs on Linux only in this release" {
+	if res.Success || res.Stderr != "the rebuild engine has no implementation for this host platform" {
 		t.Fatalf("res = %+v", res)
 	}
 	if got := statuses(); strings.Join(got, ",") != "failed" {
