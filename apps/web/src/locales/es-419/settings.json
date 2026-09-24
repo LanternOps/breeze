@@ -99,6 +99,7 @@
     "name": "Nombre",
     "principalDescription": "Descripción",
     "scopes": "Alcances",
+    "noScopes": "Sin alcances otorgados",
     "sourceCidrs": "IPs o CIDRs de origen (uno por línea)",
     "writeScopeRestrictionsRequired": "El alcance enrollment-keys:write requiere una fecha de vencimiento y al menos una IP o CIDR de origen.",
     "expiresAt": "Expira el",

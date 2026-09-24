@@ -213,7 +213,14 @@ export default function PartnerServicePrincipalsPage() {
     {principals.length === 0 && <p className="rounded border p-6 text-center text-muted-foreground">{t('partnerServicePrincipals.empty')}</p>}
     {principals.map((principal) => <section key={principal.id} className="rounded-lg border bg-card p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div><h2 className="font-semibold">{principal.name}</h2><p className="text-sm text-muted-foreground">{principal.description}</p><span className="text-xs uppercase">{principal.status}</span></div>
+        <div><h2 className="font-semibold">{principal.name}</h2><p className="text-sm text-muted-foreground">{principal.description}</p><span className="text-xs uppercase">{principal.status}</span>
+          <div className="mt-2 flex flex-wrap items-center gap-1" data-testid={`principal-scopes-${principal.id}`}>
+            <span className="text-xs text-muted-foreground">{t('partnerServicePrincipals.scopes')}:</span>
+            {principal.scopes.length === 0
+              ? <span className="text-xs text-muted-foreground">{t('partnerServicePrincipals.noScopes')}</span>
+              : principal.scopes.map((scope) => <span key={scope} className="rounded-full border bg-muted px-2 py-0.5 font-mono text-xs">{scope}</span>)}
+          </div>
+        </div>
         <div className="flex gap-2">
           <button className="rounded border px-3 py-1.5 text-sm" onClick={() => openEdit(principal)}>{t('partnerServicePrincipals.edit')}</button>
           {principal.status === 'active' && <button data-testid={`disable-principal-${principal.id}`} className="rounded border px-3 py-1.5 text-sm" onClick={() => void disablePrincipal(principal)}>{t('partnerServicePrincipals.disable')}</button>}
