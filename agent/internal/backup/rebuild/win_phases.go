@@ -4,10 +4,10 @@
 // win_convert.go.
 //
 // Staged for W06c (Part C deletes each one from here and adds the real
-// one; applyWindowsSystemState is already real, win_system_state.go, Task
-// 14): winIdentity and winEncryption (Task 15, win_identity.go /
-// win_encryption.go), winBoot (Task 16, win_boot.go), validateOSState
-// (Task 17, win_validate_os.go). Each is honest: a hard error unless
+// one; applyWindowsSystemState (Task 14, win_system_state.go), winIdentity
+// and winEncryption (Task 15, win_identity.go / win_encryption.go) are
+// already real): winBoot (Task 16, win_boot.go), validateOSState (Task 17,
+// win_validate_os.go). Each is honest: a hard error unless
 // Options.SkipBoot (test/CI mode) — never a silent no-op.
 package rebuild
 
@@ -28,22 +28,6 @@ var errWindowsOSStateStaged = errors.New("windows offline system-state, boot, id
 func winBoot(_ context.Context, r *run) error {
 	if r.opts.SkipBoot {
 		r.recordSkipped(PhaseBoot, "skipped: Options.SkipBoot")
-		return nil
-	}
-	return errWindowsOSStateStaged
-}
-
-func winIdentity(_ context.Context, r *run) error {
-	if r.opts.SkipBoot {
-		r.recordSkipped(PhaseIdentity, "not implemented until W06c")
-		return nil
-	}
-	return errWindowsOSStateStaged
-}
-
-func winEncryption(_ context.Context, r *run) error {
-	if r.opts.SkipBoot {
-		r.recordSkipped(PhaseEncryption, "not implemented until W06c")
 		return nil
 	}
 	return errWindowsOSStateStaged

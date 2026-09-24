@@ -199,18 +199,32 @@ const (
 	restoredSuffix = "-RESTORED"
 )
 
-// NewComputerName: upper-cased, "-RESTORED" appended, the base truncated so
-// the whole name is ≤ 15 characters (NetBIOS); a name already ending in
-// -RESTORED is returned (upper-cased) unchanged.
+// NewComputerName: upper-cased, "-RESTORED" appended, the base truncated BY
+// RUNE so the whole name is at most 15 characters (the NetBIOS limit) and a
+// multibyte character is never cut in half.
+//
+// A name already ending in -RESTORED is returned upper-cased and otherwise
+// unchanged, even when it is longer than 15: it did not come from this
+// function (an operator or DNS-only host named it), so shortening it would
+// rename a machine that is already marked restored.
+//
+// An empty (or blank) current name yields the bare "RESTORED", never
+// "-RESTORED" (a leading hyphen is invalid in NetBIOS and DNS names).
+// Callers with a better fallback base (winIdentity uses the layout
+// manifest's hostname) pass that instead of "".
 func NewComputerName(current string) string {
 	upper := strings.ToUpper(strings.TrimSpace(current))
+	if upper == "" {
+		return strings.TrimPrefix(restoredSuffix, "-")
+	}
 	if strings.HasSuffix(upper, restoredSuffix) {
 		return upper
 	}
-	if maxBase := netbiosMaxLen - len(restoredSuffix); len(upper) > maxBase {
-		upper = upper[:maxBase]
+	base := []rune(upper)
+	if maxBase := netbiosMaxLen - len(restoredSuffix); len(base) > maxBase {
+		base = base[:maxBase]
 	}
-	return upper + restoredSuffix
+	return string(base) + restoredSuffix
 }
 
 // NewMachineGuid writes a fresh lower-case v4 GUID to

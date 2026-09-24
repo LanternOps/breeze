@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // seedSystem builds a Fake SYSTEM hive: Select\Default=1, Select\Current,
@@ -285,5 +286,41 @@ func TestHasNTDS_ChecksCurrentSetToo(t *testing.T) {
 	}
 	if isDC, err := HasNTDS(seedSystem(t, 2, "ControlSet002")); err != nil || isDC {
 		t.Fatalf("no NTDS: HasNTDS = %v, %v", isDC, err)
+	}
+}
+
+// Ruling C8 / F13: the edge cases Task 14 deferred.
+func TestNewComputerName_EdgeCases(t *testing.T) {
+	for _, tc := range []struct {
+		name, in, want string
+	}{
+		// Never a leading hyphen: an empty (or blank) current name yields the
+		// bare literal RESTORED.
+		{"empty", "", "RESTORED"},
+		{"blank", "   ", "RESTORED"},
+		// 12-char base: truncated to 6 so the whole name is 15.
+		{"12-char base", "ABCDEFGHIJKL", "ABCDEF-RESTORED"},
+		// Exactly 15 characters in: still truncated to a 6-char base.
+		{"exactly 15", "ABCDEFGHIJKLMNO", "ABCDEF-RESTORED"},
+		// A 6-char base fits exactly.
+		{"6-char base", "abcdef", "ABCDEF-RESTORED"},
+		// Truncation is by rune: a multibyte character is never cut.
+		{"non-ASCII base", "SERVERÄÖÜ", "SERVER-RESTORED"},
+		{"non-ASCII kept whole", "äbcdéfgh", "ÄBCDÉF-RESTORED"},
+		// Already suffixed: unchanged (upper-cased) even when over 15.
+		{"already suffixed over 15", "longservername-restored", "LONGSERVERNAME-RESTORED"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := NewComputerName(tc.in)
+			if got != tc.want {
+				t.Fatalf("NewComputerName(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+			if !strings.HasSuffix(tc.in, "restored") && utf8.RuneCountInString(got) > 15 {
+				t.Fatalf("NewComputerName(%q) = %q is over 15 runes", tc.in, got)
+			}
+			if !utf8.ValidString(got) {
+				t.Fatalf("NewComputerName(%q) = %q is not valid UTF-8", tc.in, got)
+			}
+		})
 	}
 }
