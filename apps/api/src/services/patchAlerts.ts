@@ -26,6 +26,7 @@ import { alertRules, alertTemplates, devices, patchJobResults, patchJobs } from 
 import { createAlert } from './alertService';
 import { checkDeviceMaintenanceWindow } from './featureConfigResolver';
 import { captureException } from './sentry';
+import { sqlTimestamp } from './portal/sqlTimestamp';
 import { PATCH_ALERT_CATEGORY } from '@breeze/shared';
 
 export { PATCH_ALERT_CATEGORY };
@@ -330,7 +331,7 @@ export async function loadOldestRebootRequiredSince(
   orgId: string,
 ): Promise<Date | null> {
   const [row] = await db
-    .select({ oldest: sql<Date | null>`MIN(${patchJobResults.completedAt})` })
+    .select({ oldest: sql<Date | string | null>`MIN(${patchJobResults.completedAt})` })
     .from(patchJobResults)
     .innerJoin(patchJobs, and(eq(patchJobs.id, patchJobResults.jobId), eq(patchJobs.orgId, orgId)))
     .where(
@@ -341,14 +342,11 @@ export async function loadOldestRebootRequiredSince(
       ),
     );
 
-  // `sql<Date | null>` is a type annotation only: postgres.js returns an
-  // aggregate over a timestamptz as a string (e.g. '2026-09-01 12:00:00+00'),
-  // not a Date (#6835). Coerce explicitly; an unparseable value yields null
-  // (treated like "no reboot-required result") rather than an Invalid Date.
-  const oldest: unknown = row?.oldest ?? null;
-  if (oldest === null || oldest === undefined) return null;
-  const parsed = oldest instanceof Date ? oldest : new Date(String(oldest));
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
+  // `sql<Date | null>` is a type annotation only: postgres-js hands a raw
+  // aggregate back as text (#6835), and `completed_at` is `timestamp` WITHOUT
+  // time zone, so the text carries no offset. `sqlTimestamp` reads it as UTC
+  // and throws on junk (the sweep catches and reports per device).
+  return sqlTimestamp(row?.oldest);
 }
 
 export type EmitRebootPendingAlertInput = {

@@ -495,8 +495,16 @@ describe('loadOldestRebootRequiredSince', () => {
     expect(await loadOldestRebootRequiredSince(DEVICE_ID, ORG_ID)).toBeNull();
   });
 
-  it('returns null rather than an Invalid Date for an unparseable value', async () => {
+  it('reads the zone-less text of a `timestamp` column as UTC, not server-local time', async () => {
+    // patch_job_results.completed_at is `timestamp` WITHOUT time zone, so the
+    // real driver hands back '2026-09-01 12:00:00' with no offset.
+    mockMinRow('2026-09-01 12:00:00');
+    const oldest = await loadOldestRebootRequiredSince(DEVICE_ID, ORG_ID);
+    expect(oldest?.toISOString()).toBe('2026-09-01T12:00:00.000Z');
+  });
+
+  it('throws on an unparseable value instead of silently dropping the reboot flag', async () => {
     mockMinRow('not-a-timestamp');
-    expect(await loadOldestRebootRequiredSince(DEVICE_ID, ORG_ID)).toBeNull();
+    await expect(loadOldestRebootRequiredSince(DEVICE_ID, ORG_ID)).rejects.toThrow(TypeError);
   });
 });
