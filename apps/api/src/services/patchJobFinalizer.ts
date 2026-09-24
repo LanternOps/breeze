@@ -170,9 +170,14 @@ type ParsedAgentSummary = {
     patchId?: string;
     externalId?: string;
     success?: boolean;
-    /** Agent's per-patch outcome: 'installed' | 'failed' | 'rolled_back'. */
+    /** Agent's per-patch outcome: 'installed' | 'failed' | 'rolled_back' |
+     *  'skipped' (#6910: nothing to do — already current / no longer offered). */
     status?: string;
     error?: string;
+    /** The agent's explanation; for a 'skipped' entry, why it was skipped. */
+    message?: string;
+    /** 'already_current' | 'already_installed' | 'not_offered' on a 'skipped' entry. */
+    skipReason?: string;
     rebootRequired?: boolean;
   }>;
   rebootRequired?: boolean;
@@ -566,6 +571,21 @@ function buildRowWrites(
     // failure among twelve successes records twelve `completed` rows and one
     // `failed` row, not thirteen `failed` rows.
     const patchSuccess = isPatchResultSuccessful(perPatch, overallSuccess);
+
+    // #6910: the agent had nothing to do (winget 0x8A15002B "no applicable
+    // upgrade", or a WUA update superseded between scan and install). Not a
+    // failure — it never feeds the alert's failedCount — but recorded as a
+    // visible `skipped` row carrying the agent's reason, never dropped.
+    if (commandResult && perPatch?.status === 'skipped') {
+      return {
+        patchId: patch.patchId,
+        status: 'skipped' as const,
+        exitCode: commandResult.exitCode ?? null,
+        output: perPatch.message ?? null,
+        errorMessage: perPatch.message ?? `Skipped (${perPatch.skipReason ?? 'nothing to install'})`,
+        rebootRequired: false,
+      };
+    }
 
     return {
       patchId: patch.patchId,
