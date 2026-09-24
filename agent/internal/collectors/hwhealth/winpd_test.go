@@ -4,7 +4,7 @@ import "testing"
 
 func TestWinPDFixtures(t *testing.T) {
 	for _, name := range []string{"optimal", "degraded", "failed", "rebuilding-with-progress", "predictive", "missing-member", "multi-controller", "unrecognized-state", "truncated"} {
-		r, e := parseWinPD(fixture(t, "windows_physical_disk", name+".json"))
+		r, e := parseWinPD(fixture(t, "windows_physical_disk", name+".json"), map[string]string{})
 		if name == "truncated" {
 			if e == nil {
 				t.Fatal("truncation accepted")
@@ -26,7 +26,7 @@ func TestWinPDFixtures(t *testing.T) {
 }
 
 func TestWinPDIncompleteIdentity(t *testing.T) {
-	r, e := parseWinPD([]byte(`{"Disks":[{"FriendlyName":"no id"}],"Warnings":[]}`))
+	r, e := parseWinPD([]byte(`{"Disks":[{"FriendlyName":"no id"}],"Warnings":[]}`), map[string]string{})
 	if e != nil || r.Complete || len(r.Components) != 0 {
 		t.Fatalf("%+v %v", r, e)
 	}

@@ -26,26 +26,29 @@ func memberGUID(objectID string) string {
 	return strings.ToLower(m[1])
 }
 
-// spacesDiskKey returns the component key for a pooled disk and records the
-// member identity in remembered (the persisted GUID -> UniqueId-hash map).
-// A disk that reports its real UniqueId keeps the pre-#6895 key, so healthy
-// members never change key on upgrade. A Lost Communication stand-in (UniqueId
-// equal to the member GUID) is mapped back to the key its member last reported
-// under; without a remembered entry it falls back to the old UniqueId hash.
-func spacesDiskKey(ck string, d windowsDisk, remembered map[string]string) string {
-	hash := objectHash(d.UniqueId)
+// memberUniqueID returns the UniqueId a disk's component key is derived from.
+// A disk reporting its real UniqueId keeps it, so healthy members never change
+// key on upgrade. A Lost Communication stand-in (UniqueId equal to its pool
+// member GUID) is mapped back to the UniqueId its member last reported, read
+// from remembered (the persisted GUID -> UniqueId map); without an entry it
+// falls back to the stand-in's own UniqueId, the pre-#6895 behaviour. When
+// record is set (the Storage Spaces source, which owns the map) a real
+// UniqueId is remembered for its member GUID.
+func memberUniqueID(d windowsDisk, remembered map[string]string, record bool) string {
 	guid := memberGUID(d.ObjectId)
 	if guid == "" {
-		return slotKey(ck, "-", hash)
+		return d.UniqueId
 	}
 	if strings.EqualFold(strings.TrimSpace(d.UniqueId), guid) {
 		if known := remembered[guid]; known != "" {
-			hash = known
+			return known
 		}
-	} else if remembered != nil && (len(remembered) < maxSpacesMembers || remembered[guid] != "") {
-		remembered[guid] = hash
+		return d.UniqueId
 	}
-	return slotKey(ck, "-", hash)
+	if record && remembered != nil && (len(remembered) < maxSpacesMembers || remembered[guid] != "") {
+		remembered[guid] = d.UniqueId
+	}
+	return d.UniqueId
 }
 
 type windowsDisk struct {
@@ -179,7 +182,7 @@ func parseSpaces(b []byte, remembered map[string]string) (Result, error) {
 			r.Warnings = append(r.Warnings, "PD UniqueId missing")
 			continue
 		}
-		key := spacesDiskKey(ck, d, remembered)
+		key := slotKey(ck, "-", objectHash(memberUniqueID(d, remembered, true)))
 		byUniqueID[d.UniqueId] = key
 		if g := memberGUID(d.ObjectId); g != "" {
 			seen[g] = true

@@ -156,3 +156,30 @@ func TestSpacesMemberMemoryPrunesDepartedMembers(t *testing.T) {
 		t.Fatalf("%v", remembered)
 	}
 }
+
+// windows_physical_disk lists the same stand-in; once Storage Spaces has
+// recorded the member, it must stay on winpd:<real UniqueId> too.
+func TestWinPDLostCommunicationKeepsMemberKey(t *testing.T) {
+	remembered := map[string]string{}
+	if _, e := parseSpaces(fixture(t, "storage_spaces", "lab-6895-healthy.json"), remembered); e != nil {
+		t.Fatal(e)
+	}
+	for _, tc := range []struct{ state, wantB string }{{"healthy", "online"}, {"missing", "missing"}, {"recovered", "online"}} {
+		r, e := parseWinPD(fixture(t, "windows_physical_disk", "lab-6895-"+tc.state+".json"), remembered)
+		if e != nil || !r.Complete {
+			t.Fatalf("%s: %+v %v", tc.state, r, e)
+		}
+		keys := map[string]string{}
+		for _, c := range r.Components {
+			keys[c.ComponentKey] = c.State
+		}
+		// OS disk + the two pool members, never a third member row.
+		if len(keys) != 3 || keys["winpd:{166803cd-a32c-11f1-97df-806e6f6e6963}"] != "online" ||
+			keys["winpd:60022480B4C7526392E9530DABDCE67F"] != "online" || keys["winpd:60022480CFCA9CD7995F7E79FEF2B2F9"] != tc.wantB {
+			t.Fatalf("%s: %v", tc.state, keys)
+		}
+	}
+	if len(remembered) != 2 {
+		t.Fatalf("winpd must not record members: %v", remembered)
+	}
+}

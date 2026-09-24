@@ -17,7 +17,7 @@ func TestLiveWindowsSources(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	pd := newWinPD()
+	pd := newWinPD(map[string]string{})
 	r, e := pd.Collect(ctx, pd.Detect(ctx))
 	if e != nil {
 		t.Fatalf("windows_physical_disk collect: %v", e)
