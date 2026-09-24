@@ -1095,6 +1095,7 @@ const orgBillingProjection = () => ({
   billingAddressCity: organizations.billingAddressCity, billingAddressRegion: organizations.billingAddressRegion,
   billingAddressPostalCode: organizations.billingAddressPostalCode, billingAddressCountry: organizations.billingAddressCountry,
   currencyCode: organizations.currencyCode,
+  invoiceTermsDays: organizations.invoiceTermsDays,
 });
 
 export async function updateOrgBillingSettings(
@@ -1102,6 +1103,7 @@ export async function updateOrgBillingSettings(
   patch: {
     billingProfileId?: string | null;
     taxId?: string | null; taxExempt?: boolean; taxRate?: number | null;
+    invoiceTermsDays?: number | null;
     billingContactEmail?: string | null; billingContactName?: string | null;
     billingAddressLine1?: string | null; billingAddressLine2?: string | null;
     billingAddressCity?: string | null; billingAddressRegion?: string | null;
@@ -1151,6 +1153,8 @@ export async function updateOrgBillingSettings(
   if (patch.taxId !== undefined) set.taxId = patch.taxId;
   if (patch.taxExempt !== undefined) set.taxExempt = patch.taxExempt;
   if (patch.taxRate !== undefined) set.taxRate = patch.taxRate === null ? null : Number(patch.taxRate).toFixed(5);
+  // #6229: null = inherit the partner default; 0 is a real value (due on receipt).
+  if (patch.invoiceTermsDays !== undefined) set.invoiceTermsDays = patch.invoiceTermsDays;
   // billingContact is a jsonb bag other importers (e.g. QuickBooks) also write.
   // It is written by the contacts compat service rather than here (#3258), so
   // the `contacts` row stays in step with the blob. `mergeBillingContact` keeps

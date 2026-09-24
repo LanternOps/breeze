@@ -2054,18 +2054,21 @@ orgRoutes.get('/organizations/:id', requireScope('partner', 'system'), requireOr
   // request context — no escalation: this route already requires `partner` or
   // `system` scope, and `partners` RLS grants a partner-scoped actor its own
   // partner row, so `readWithPartnerAxisVisibility` would buy nothing here.
+  // #6229 adds the partner's payment terms the same way, for the org's
+  // payment-terms InheritedField (org `invoiceTermsDays` NULL = inherit this).
   const [partnerRow] = await db
-    .select({ defaultTaxRate: partners.defaultTaxRate })
+    .select({ defaultTaxRate: partners.defaultTaxRate, invoiceTermsDays: partners.invoiceTermsDays })
     .from(partners)
     .where(eq(partners.id, organization.partnerId))
     .limit(1);
   const partnerDefaultTaxRate = partnerRow?.defaultTaxRate ?? null;
+  const partnerDefaultInvoiceTermsDays = partnerRow?.invoiceTermsDays ?? null;
 
   if (isArchiveLifecycleRow(organization)) {
-    return c.json({ ...organization, archived: true as const, partnerDefaultTaxRate });
+    return c.json({ ...organization, archived: true as const, partnerDefaultTaxRate, partnerDefaultInvoiceTermsDays });
   }
 
-  return c.json({ ...organization, partnerDefaultTaxRate });
+  return c.json({ ...organization, partnerDefaultTaxRate, partnerDefaultInvoiceTermsDays });
 });
 
 orgRoutes.get('/organizations/:id/effective-settings',

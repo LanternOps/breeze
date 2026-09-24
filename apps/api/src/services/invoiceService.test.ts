@@ -752,6 +752,36 @@ describe('invoiceService guards', () => {
     ).rejects.toMatchObject({ code: 'ORG_DENIED', status: 403 });
   });
 
+  // Settings consolidation W06 (#6229): the org payment-terms override.
+  it('writes the org payment-terms override and returns it in the projection', async () => {
+    queueResult([{ id: 'org1', invoiceTermsDays: 14 }]);
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+    const out = await svc.updateOrgBillingSettings('org1', { invoiceTermsDays: 14 }, actor);
+    const setMock = (db as unknown as { set: { mock: { calls: unknown[][] } } }).set;
+    expect(setMock.mock.calls.at(-1)![0]).toEqual({ invoiceTermsDays: 14 });
+    const returning = (db as unknown as { returning: { mock: { calls: unknown[][] } } }).returning;
+    expect(returning.mock.calls.at(-1)![0]).toHaveProperty('invoiceTermsDays');
+    expect(out).toMatchObject({ invoiceTermsDays: 14 });
+  });
+
+  it('writes 0 (due on receipt) and null (clear → inherit) verbatim', async () => {
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+    const setMock = (db as unknown as { set: { mock: { calls: unknown[][] } } }).set;
+    queueResult([{ id: 'org1', invoiceTermsDays: 0 }]);
+    await svc.updateOrgBillingSettings('org1', { invoiceTermsDays: 0 }, actor);
+    expect(setMock.mock.calls.at(-1)![0]).toEqual({ invoiceTermsDays: 0 });
+    queueResult([{ id: 'org1', invoiceTermsDays: null }]);
+    await svc.updateOrgBillingSettings('org1', { invoiceTermsDays: null }, actor);
+    expect(setMock.mock.calls.at(-1)![0]).toEqual({ invoiceTermsDays: null });
+  });
+
+  it('denies a payment-terms write to an org outside the actor (ORG_DENIED, no write)', async () => {
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['other-org'] };
+    await expect(svc.updateOrgBillingSettings('org1', { invoiceTermsDays: 7 }, actor))
+      .rejects.toMatchObject({ code: 'ORG_DENIED', status: 403 });
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
   it.each(['profile1', null])('saves profile %s and billing fields in the same transaction', async billingProfileId => {
     queueResult([{ id: 'org1' }]); // org UPDATE lock
     queueResult([{ id: 'org1' }]);

@@ -3347,6 +3347,39 @@ describe('org routes', () => {
       expect(body.partnerDefaultTaxRate).toBe('0.07250');
     });
 
+    // Settings consolidation W06 (#6229): the org Billing tab's payment-terms
+    // InheritedField shows the partner default when the org override is blank.
+    it('includes the partner default payment terms alongside the org override', async () => {
+      const orgId = '33333333-3333-3333-3333-333333333333';
+      setAuthContext({
+        scope: 'partner',
+        partnerId: 'partner-123',
+        accessibleOrgIds: [orgId]
+      });
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: orgId, name: 'Org', partnerId: 'partner-123', invoiceTermsDays: null }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ defaultTaxRate: null, invoiceTermsDays: 45 }])
+            })
+          })
+        } as any);
+
+      const res = await app.request(`/orgs/organizations/${orgId}`);
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.invoiceTermsDays).toBeNull();
+      expect(body.partnerDefaultInvoiceTermsDays).toBe(45);
+    });
+
     it('should return 404 when organization not found', async () => {
       // In the caller's accessible set AND uuid-shaped, so this reaches the
       // real lookup and 404s on an empty result — not on the scope check or
