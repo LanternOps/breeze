@@ -44,6 +44,7 @@ import { captureException } from './sentry';
 import { scriptNeedsVariableScope } from './sourcedParameters';
 import { deviceScopeCondition, siteScopeCondition } from './aiToolsSiteScope';
 import { shrinkToJsonBudget } from './aiToolOutput';
+import { sha256Content } from './scriptVersions';
 
 // Fix 4b: headroom under MAX_TOOL_RESULT_CHARS (8000) for the rest of the
 // get_script_execution envelope once stdout/stderr are counted at their
@@ -115,6 +116,17 @@ async function verifyDeviceAccess(
       error: `Device ${device.hostname} is not online (status: ${device.status}). This tool needs a live connection; to run when the device reconnects use the Run Script / deployment tools instead.`,
     };
   return { device };
+}
+
+/**
+ * A partner-wide script (org_id NULL) owned by the caller's own partner: the
+ * same predicate as the scripts table's partner-wide SELECT branch, so the
+ * read tools show exactly the partner-wide rows run_script can execute and
+ * never another partner's. `breeze_current_partner_id()` is the session's own
+ * partner (empty, so no match, for a context without one).
+ */
+function ownPartnerWideScript(): SQL {
+  return and(isNull(scripts.orgId), sql`${scripts.partnerId} = public.breeze_current_partner_id()`)!;
 }
 
 /**
@@ -378,6 +390,14 @@ const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
 
   if (!script || !script.content) {
     return JSON.stringify({ error: 'Script not found or has no content' });
+  }
+
+  // Optional content pin. Hashed from THIS row, the one whose content is
+  // dispatched below, so a library edit between the caller's
+  // get_script_details and this call can never run unverified code.
+  if (typeof input.expectedContentSha256 === 'string'
+    && sha256Content(script.content) !== input.expectedContentSha256) {
+    return JSON.stringify({ error: 'script_content_mismatch' });
   }
 
   // This guard is NOT here because the intent-release worker runs under a
@@ -685,6 +705,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
           proposalId: { type: 'string', description: 'UUID of a reviewed AI-authored proposal to run. Mutually exclusive with scriptId; takes no parameters.' },
           deviceIds: { type: 'array', items: { type: 'string' }, description: 'Device UUIDs to run on' },
           parameters: { type: 'object', description: 'Script parameters (library scripts only)' },
+          expectedContentSha256: { type: 'string', description: 'Optional pin (library scripts only): the contentSha256 from get_script_details. If the script content changed since, nothing is dispatched and the call returns {"error":"script_content_mismatch"}.' },
           // #4888 — see services/scriptRunRequest.ts. Shared with the three
           // other declarations of this tool's input shape so the model can
           // express a run context on every surface, not just some of them.
@@ -937,7 +958,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
 
       const conditions: SQL[] = [isNull(scripts.deletedAt)];
       const orgCondition = auth.orgCondition(scripts.orgId);
-      if (orgCondition) conditions.push(orgCondition);
+      if (orgCondition) conditions.push(or(orgCondition, ownPartnerWideScript())!);
 
       if (input.search) {
         const searchPattern = '%' + escapeLike(input.search as string) + '%';
@@ -999,7 +1020,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       // Query script with org scoping
       const conditions: SQL[] = [eq(scripts.id, scriptId), isNull(scripts.deletedAt)];
       const orgCond = auth.orgCondition(scripts.orgId);
-      if (orgCond) conditions.push(orgCond);
+      if (orgCond) conditions.push(or(orgCond, ownPartnerWideScript())!);
 
       const [script] = await db
         .select()
@@ -1010,6 +1031,12 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       if (!script) {
         return JSON.stringify({ error: 'Script not found or access denied' });
       }
+
+      const [headDigest] = await db
+        .select({ contentDigest: scriptVersions.contentDigest })
+        .from(scriptVersions)
+        .where(and(eq(scriptVersions.scriptId, script.id), eq(scriptVersions.version, script.version)))
+        .limit(1);
 
       const result: Record<string, unknown> = {
         id: script.id,
@@ -1023,6 +1050,11 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
         runAs: script.runAs,
         isSystem: script.isSystem,
         version: script.version,
+        // Digest of the head version's content (sha256 of NFC, CRLF->LF text;
+        // scriptVersions.sha256Content). Content itself is omitted over MCP, so
+        // this is how a caller pins exactly what run_script will execute. Null
+        // only for a legacy script with no version row.
+        contentSha256: headDigest?.contentDigest ?? null,
         createdBy: script.createdBy,
         createdAt: script.createdAt,
         updatedAt: script.updatedAt,
