@@ -3,7 +3,7 @@ import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { eq, inArray } from 'drizzle-orm';
 import type { AuthContext } from '../../middleware/auth';
-import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
+import { requireMfa, requirePermission, requireScope, withAuthDbAccessContext } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { captureException } from '../../services/sentry';
 import { db } from '../../db';
@@ -81,189 +81,229 @@ patchJobRoutes.post(
     const { id: configPolicyId } = c.req.valid('param');
     const data = c.req.valid('json');
 
-    const policy = await getConfigPolicy(configPolicyId, auth);
-    if (!policy) {
-      return c.json({ error: 'Configuration policy not found' }, 404);
-    }
+    // #6849 — this route is registered in SELF_MANAGED_DB_CONTEXT_ROUTES, so
+    // the auth middleware opens NO ambient request transaction here. All the
+    // reads and the patch_jobs insert(s) run in one short
+    // withAuthDbAccessContext block that COMMITS before returning; the
+    // enqueuePatchJob (BullMQ) calls below run strictly after that commit, so
+    // the execute-patch-job worker can never read a job id before its row
+    // exists. Same shape as the SNMP immediate-poll fix (#6337).
+    const outcome = await withAuthDbAccessContext(auth, async () => {
+      const policy = await getConfigPolicy(configPolicyId, auth);
+      if (!policy) {
+        return c.json({ error: 'Configuration policy not found' }, 404);
+      }
 
-    if (policy.status !== 'active') {
-      return c.json({ error: 'Configuration policy is not active' }, 400);
-    }
+      if (policy.status !== 'active') {
+        return c.json({ error: 'Configuration policy is not active' }, 400);
+      }
 
-    const policyLocal = await loadPolicyLocalPatchConfig(configPolicyId);
-    if (!policyLocal) {
-      return c.json({ error: 'Configuration policy does not have patch settings configured' }, 400);
-    }
+      const policyLocal = await loadPolicyLocalPatchConfig(configPolicyId);
+      if (!policyLocal) {
+        return c.json({ error: 'Configuration policy does not have patch settings configured' }, 400);
+      }
 
-    if (!policyLocal.ring.valid) {
-      return c.json({
-        error: 'Configuration policy references an invalid update ring',
-        ringValidation: buildApprovalRing(policyLocal.ring),
-      }, 400);
-    }
-
-    const targetDevices = await db
-      .select({
-        id: devices.id,
-        orgId: devices.orgId,
-        siteId: devices.siteId,
-        hostname: devices.hostname,
-      })
-      .from(devices)
-      .where(inArray(devices.id, data.deviceIds));
-
-    const foundDeviceIds = new Set(targetDevices.map((d) => d.id));
-    const missingDeviceIds = data.deviceIds.filter((id) => !foundDeviceIds.has(id));
-
-    // Site-scope gate: `requirePatchExecute` populated permissions in context;
-    // enforce `allowedSiteIds` BEFORE any patch_jobs insert / enqueuePatchJob
-    // since RLS does not defend the site axis (it is intra-org). Mirrors the
-    // sibling GET /:id/resolve-patch-config/:deviceId and resolution.ts.
-    if (userPerms?.allowedSiteIds) {
-      const siteDeniedDeviceIds = targetDevices
-        .filter(
-          (d) =>
-            auth.canAccessOrg(d.orgId) &&
-            (typeof d.siteId !== 'string' || !canAccessSite(userPerms, d.siteId))
-        )
-        .map((d) => d.id);
-      if (siteDeniedDeviceIds.length > 0) {
+      if (!policyLocal.ring.valid) {
         return c.json({
-          error: 'Access to one or more device sites denied',
-          skipped: { missingDeviceIds, siteDeniedDeviceIds },
+          error: 'Configuration policy references an invalid update ring',
+          ringValidation: buildApprovalRing(policyLocal.ring),
+        }, 400);
+      }
+
+      const targetDevices = await db
+        .select({
+          id: devices.id,
+          orgId: devices.orgId,
+          siteId: devices.siteId,
+          hostname: devices.hostname,
+        })
+        .from(devices)
+        .where(inArray(devices.id, data.deviceIds));
+
+      const foundDeviceIds = new Set(targetDevices.map((d) => d.id));
+      const missingDeviceIds = data.deviceIds.filter((id) => !foundDeviceIds.has(id));
+
+      // Site-scope gate: `requirePatchExecute` populated permissions in context;
+      // enforce `allowedSiteIds` BEFORE any patch_jobs insert / enqueuePatchJob
+      // since RLS does not defend the site axis (it is intra-org). Mirrors the
+      // sibling GET /:id/resolve-patch-config/:deviceId and resolution.ts.
+      if (userPerms?.allowedSiteIds) {
+        const siteDeniedDeviceIds = targetDevices
+          .filter(
+            (d) =>
+              auth.canAccessOrg(d.orgId) &&
+              (typeof d.siteId !== 'string' || !canAccessSite(userPerms, d.siteId))
+          )
+          .map((d) => d.id);
+        if (siteDeniedDeviceIds.length > 0) {
+          return c.json({
+            error: 'Access to one or more device sites denied',
+            skipped: { missingDeviceIds, siteDeniedDeviceIds },
+          }, 403);
+        }
+      }
+
+      const accessibleDevices = targetDevices.filter((d) => auth.canAccessOrg(d.orgId));
+      const inaccessibleDeviceIds = targetDevices
+        .filter((d) => !auth.canAccessOrg(d.orgId))
+        .map((d) => d.id);
+
+      if (accessibleDevices.length === 0) {
+        return c.json({
+          error: 'No accessible devices found for patch job',
+          skipped: { missingDeviceIds, inaccessibleDeviceIds },
+        }, 404);
+      }
+
+      // Scope guard: an org-owned policy can only patch devices in its own org. A
+      // partner-wide policy (org_id NULL, #1724) may patch devices across every
+      // org under its partner, but never another partner's — so each device's org
+      // must resolve to policy.partnerId. This is the partner-axis equivalent of
+      // the org check, layered on top of auth.canAccessOrg + RLS above.
+      let crossOrgDeviceIds: string[];
+      if (policy.orgId === null) {
+        const uniqueOrgIds = [...new Set(accessibleDevices.map((d) => d.orgId))];
+        const orgRows = await db
+          .select({ id: organizations.id, partnerId: organizations.partnerId })
+          .from(organizations)
+          .where(inArray(organizations.id, uniqueOrgIds));
+        const orgPartner = new Map(orgRows.map((r) => [r.id, r.partnerId]));
+        crossOrgDeviceIds = accessibleDevices
+          .filter((d) => orgPartner.get(d.orgId) !== policy.partnerId)
+          .map((d) => d.id);
+      } else {
+        crossOrgDeviceIds = accessibleDevices
+          .filter((d) => d.orgId !== policy.orgId)
+          .map((d) => d.id);
+      }
+
+      if (crossOrgDeviceIds.length > 0) {
+        return c.json({
+          error:
+            policy.orgId === null
+              ? 'Configuration policy patch jobs can only target devices belonging to the policy partner'
+              : 'Configuration policy patch jobs can only target devices in the policy organization',
+          skipped: { missingDeviceIds, inaccessibleDeviceIds, crossOrgDeviceIds },
         }, 403);
       }
-    }
 
-    const accessibleDevices = targetDevices.filter((d) => auth.canAccessOrg(d.orgId));
-    const inaccessibleDeviceIds = targetDevices
-      .filter((d) => !auth.canAccessOrg(d.orgId))
-      .map((d) => d.id);
+      const maintenanceSuppressedDeviceIds: string[] = [];
+      const devicePatchConfigs: Array<{ deviceId: string; orgId: string }> = [];
 
-    if (accessibleDevices.length === 0) {
-      return c.json({
-        error: 'No accessible devices found for patch job',
-        skipped: { missingDeviceIds, inaccessibleDeviceIds },
-      }, 404);
-    }
+      for (const device of accessibleDevices) {
+        const maintenanceStatus = await checkDeviceMaintenanceWindow(device.id);
+        if (maintenanceStatus.active && maintenanceStatus.suppressPatching) {
+          maintenanceSuppressedDeviceIds.push(device.id);
+          continue;
+        }
 
-    // Scope guard: an org-owned policy can only patch devices in its own org. A
-    // partner-wide policy (org_id NULL, #1724) may patch devices across every
-    // org under its partner, but never another partner's — so each device's org
-    // must resolve to policy.partnerId. This is the partner-axis equivalent of
-    // the org check, layered on top of auth.canAccessOrg + RLS above.
-    let crossOrgDeviceIds: string[];
-    if (policy.orgId === null) {
-      const uniqueOrgIds = [...new Set(accessibleDevices.map((d) => d.orgId))];
-      const orgRows = await db
-        .select({ id: organizations.id, partnerId: organizations.partnerId })
-        .from(organizations)
-        .where(inArray(organizations.id, uniqueOrgIds));
-      const orgPartner = new Map(orgRows.map((r) => [r.id, r.partnerId]));
-      crossOrgDeviceIds = accessibleDevices
-        .filter((d) => orgPartner.get(d.orgId) !== policy.partnerId)
-        .map((d) => d.id);
-    } else {
-      crossOrgDeviceIds = accessibleDevices
-        .filter((d) => d.orgId !== policy.orgId)
-        .map((d) => d.id);
-    }
-
-    if (crossOrgDeviceIds.length > 0) {
-      return c.json({
-        error:
-          policy.orgId === null
-            ? 'Configuration policy patch jobs can only target devices belonging to the policy partner'
-            : 'Configuration policy patch jobs can only target devices in the policy organization',
-        skipped: { missingDeviceIds, inaccessibleDeviceIds, crossOrgDeviceIds },
-      }, 403);
-    }
-
-    const maintenanceSuppressedDeviceIds: string[] = [];
-    const devicePatchConfigs: Array<{ deviceId: string; orgId: string }> = [];
-
-    for (const device of accessibleDevices) {
-      const maintenanceStatus = await checkDeviceMaintenanceWindow(device.id);
-      if (maintenanceStatus.active && maintenanceStatus.suppressPatching) {
-        maintenanceSuppressedDeviceIds.push(device.id);
-        continue;
+        devicePatchConfigs.push({
+          deviceId: device.id,
+          orgId: device.orgId,
+        });
       }
 
-      devicePatchConfigs.push({
-        deviceId: device.id,
-        orgId: device.orgId,
-      });
-    }
+      if (devicePatchConfigs.length === 0) {
+        return c.json({
+          error: 'All devices are currently in a maintenance window with patching suppressed',
+          skipped: { missingDeviceIds, inaccessibleDeviceIds, maintenanceSuppressedDeviceIds },
+        }, 409);
+      }
 
-    if (devicePatchConfigs.length === 0) {
-      return c.json({
-        error: 'All devices are currently in a maintenance window with patching suppressed',
-        skipped: { missingDeviceIds, inaccessibleDeviceIds, maintenanceSuppressedDeviceIds },
-      }, 409);
-    }
+      const orgGroups = new Map<string, string[]>();
+      for (const config of devicePatchConfigs) {
+        const existing = orgGroups.get(config.orgId) ?? [];
+        existing.push(config.deviceId);
+        orgGroups.set(config.orgId, existing);
+      }
 
-    const orgGroups = new Map<string, string[]>();
-    for (const config of devicePatchConfigs) {
-      const existing = orgGroups.get(config.orgId) ?? [];
-      existing.push(config.deviceId);
-      orgGroups.set(config.orgId, existing);
-    }
+      const createdJobs: Array<{ jobId: string; orgId: string; deviceCount: number; delayMs: number }> = [];
 
-    const createdJobs: Array<{ jobId: string; orgId: string; deviceCount: number }> = [];
+      for (const [orgId, deviceIds] of orgGroups) {
+        const jobName = data.name ?? `Config Policy Patch Job - ${policy.name}`;
+
+        const [job] = await db
+          .insert(patchJobs)
+          .values({
+            orgId,
+            policyId: null,
+            configPolicyId,
+            ringId: policyLocal.ring.ringId,
+            name: jobName,
+            patches: buildPatchesSnapshot(policyLocal),
+            targets: {
+              deviceIds,
+              configPolicyId,
+              configPolicyName: policy.name,
+              deployment: policyLocal.settings,
+            },
+            status: 'scheduled',
+            scheduledAt: data.scheduledAt ? new Date(data.scheduledAt) : new Date(),
+            devicesTotal: deviceIds.length,
+            devicesPending: deviceIds.length,
+            createdBy: auth.user.id,
+          })
+          .returning();
+
+        if (job) {
+          const delayMs = data.scheduledAt
+            ? Math.max(0, new Date(data.scheduledAt).getTime() - Date.now())
+            : 0;
+          createdJobs.push({
+            jobId: job.id,
+            orgId,
+            deviceCount: deviceIds.length,
+            delayMs,
+          });
+        }
+      }
+
+      return {
+        policy,
+        policyLocal,
+        missingDeviceIds,
+        inaccessibleDeviceIds,
+        maintenanceSuppressedDeviceIds,
+        devicePatchConfigs,
+        createdJobs,
+      } as const;
+    });
+
+    if (outcome instanceof Response) return outcome;
+
+    const {
+      policy,
+      policyLocal,
+      missingDeviceIds,
+      inaccessibleDeviceIds,
+      maintenanceSuppressedDeviceIds,
+      devicePatchConfigs,
+      createdJobs: createdJobsWithDelay,
+    } = outcome;
+
+    // Enqueue strictly AFTER the withAuthDbAccessContext block above committed
+    // the patch_jobs row(s) — see the #6849 comment on the block. We are
+    // outside any DB context here (this route carries no ambient one), so the
+    // Redis round-trips pin no pooled connection either.
+    const createdJobs = createdJobsWithDelay.map(({ delayMs: _delayMs, ...job }) => job);
     const enqueueFailures: Array<{ jobId: string; orgId: string; error: string }> = [];
 
-    for (const [orgId, deviceIds] of orgGroups) {
-      const jobName = data.name ?? `Config Policy Patch Job - ${policy.name}`;
-
-      const [job] = await db
-        .insert(patchJobs)
-        .values({
-          orgId,
-          policyId: null,
-          configPolicyId,
-          ringId: policyLocal.ring.ringId,
-          name: jobName,
-          patches: buildPatchesSnapshot(policyLocal),
-          targets: {
-            deviceIds,
-            configPolicyId,
-            configPolicyName: policy.name,
-            deployment: policyLocal.settings,
-          },
-          status: 'scheduled',
-          scheduledAt: data.scheduledAt ? new Date(data.scheduledAt) : new Date(),
-          devicesTotal: deviceIds.length,
-          devicesPending: deviceIds.length,
-          createdBy: auth.user.id,
-        })
-        .returning();
-
-      if (job) {
-        createdJobs.push({
-          jobId: job.id,
-          orgId,
-          deviceCount: deviceIds.length,
-        });
-
-        const delayMs = data.scheduledAt
-          ? Math.max(0, new Date(data.scheduledAt).getTime() - Date.now())
-          : 0;
-        // #3945: this used to be fire-and-forget (`.catch(console.error)`),
-        // so the route always returned 200/201 with `createdJobs` populated
-        // even when nothing was actually queued to run — e.g. a wedged
-        // BullMQ job id that #3912 made `enqueuePatchJob` throw on instead of
-        // swallowing. The reconcile sweep deliberately skips a wedged id
-        // (see patchJobExecutor.ts), so there is no backstop: awaiting here
-        // and surfacing the failure in the response is the only place left
-        // that can report it.
-        try {
-          await enqueuePatchJob(job.id, delayMs || undefined);
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          console.error(`[PatchJobs] Failed to enqueue job ${job.id}:`, err);
-          captureException(err, c);
-          enqueueFailures.push({ jobId: job.id, orgId, error: message });
-        }
+    for (const { jobId, orgId, delayMs } of createdJobsWithDelay) {
+      // #3945: this used to be fire-and-forget (`.catch(console.error)`),
+      // so the route always returned 200/201 with `createdJobs` populated
+      // even when nothing was actually queued to run — e.g. a wedged
+      // BullMQ job id that #3912 made `enqueuePatchJob` throw on instead of
+      // swallowing. The reconcile sweep deliberately skips a wedged id
+      // (see patchJobExecutor.ts), so there is no backstop: awaiting here
+      // and surfacing the failure in the response is the only place left
+      // that can report it.
+      try {
+        await enqueuePatchJob(jobId, delayMs || undefined);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[PatchJobs] Failed to enqueue job ${jobId}:`, err);
+        captureException(err, c);
+        enqueueFailures.push({ jobId, orgId, error: message });
       }
     }
 
