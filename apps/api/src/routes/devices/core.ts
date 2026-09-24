@@ -10,6 +10,7 @@ import {
   devices,
   deviceCommands,
   deviceHardware,
+  deviceHardwareHealth,
   deviceReliability,
   deviceNetwork,
   deviceMetrics,
@@ -947,6 +948,9 @@ coreRoutes.get(
     if (query.search) {
       conditions.push(like(devices.hostname, `%${query.search}%`));
     }
+    if (query.hardwareHealth) {
+      conditions.push(eq(deviceHardwareHealth.health, query.hardwareHealth));
+    }
 
     // Exclude decommissioned by default unless explicitly requested.
     if (!query.status && query.includeDecommissioned !== 'true') {
@@ -972,6 +976,7 @@ coreRoutes.get(
       const countResult = await db
         .select({ count: sql<number>`count(*)` })
         .from(devices)
+        .leftJoin(deviceHardwareHealth, eq(devices.id, deviceHardwareHealth.deviceId))
         .where(whereCondition);
       total = Number(countResult[0]?.count ?? 0);
     }
@@ -1061,6 +1066,9 @@ coreRoutes.get(
         // leftJoin stays tenant-safe; null when no score computed yet.
         reliabilityScore: deviceReliability.reliabilityScore,
         reliabilityTrend: deviceReliability.trendDirection,
+        // Hardware & RAID rollup (#6854 W04) — null when no report yet.
+        hardwareHealth: deviceHardwareHealth.health,
+        hardwareHealthSummary: deviceHardwareHealth.summary,
         // RDS per-session helpers (plan 2 heartbeat ingest) — UI hint only,
         // see the truthy-guard comment in heartbeat.ts. Tasks 13/14 gate the
         // session picker on this being 'on-demand' at the list-row level.
@@ -1069,6 +1077,7 @@ coreRoutes.get(
       .from(devices)
       .leftJoin(deviceHardware, eq(devices.id, deviceHardware.deviceId))
       .leftJoin(deviceReliability, eq(devices.id, deviceReliability.deviceId))
+      .leftJoin(deviceHardwareHealth, eq(devices.id, deviceHardwareHealth.deviceId))
       .where(whereCondition)
       .orderBy(...orderBy)
       .limit(fetchLimit)
@@ -1262,6 +1271,8 @@ coreRoutes.get(
         // score yet (no device_reliability row) — the list renders a dash.
         reliabilityScore: d.reliabilityScore ?? null,
         reliabilityTrend: d.reliabilityTrend ?? null,
+        hardwareHealth: d.hardwareHealth ?? null,
+        hardwareHealthSummary: d.hardwareHealthSummary ?? null,
         helperLifecycleMode: d.helperLifecycleMode ?? null,
         metrics: latestMetrics
           ? {

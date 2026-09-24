@@ -40,6 +40,7 @@ export const COLUMN_IDS = [
   'enrolled',
   'desktopAccess',
   'reliability',
+  'hardwareHealth',
   'vpn',
   // Manual-asset inventory fields (#4622 W04). `serial` is opt-in for agent
   // rows too (via device_hardware); `assetTag`/`location` are manual-only.
@@ -88,6 +89,7 @@ export const COLUMN_LABELS: Record<ColumnId, string> = {
   enrolled: 'Enrolled',
   desktopAccess: 'Desktop Access',
   reliability: 'Reliability',
+  hardwareHealth: 'Hardware',
   vpn: 'VPN',
   serial: 'Serial',
   assetTag: 'Asset Tag',

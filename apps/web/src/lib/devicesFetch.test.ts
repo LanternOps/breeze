@@ -104,6 +104,22 @@ describe('fetchAllDevices', () => {
     expect(fetcher.mock.calls[0][0]).not.toContain('includeDecommissioned');
   });
 
+  it('carries hardwareHealth through every cursor page', async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(jsonResponse({
+      data: [{ id: 'a' }], pagination: { nextCursor: 'page-2', total: 2 },
+    })).mockResolvedValueOnce(jsonResponse({ data: [{ id: 'b' }], pagination: { nextCursor: null } }));
+    await fetchAllDevices({ fetcher, hardwareHealth: 'warning' });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    for (const [url] of fetcher.mock.calls) {
+      expect(new URL(url, 'https://example.com').searchParams.get('hardwareHealth')).toBe('warning');
+    }
+  });
+  it('omits an unselected hardware filter', async () => {
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse({ data: [], pagination: { nextCursor: null } }));
+    await fetchAllDevices({ fetcher });
+    expect(fetcher.mock.calls[0][0]).not.toContain('hardwareHealth');
+  });
+
   describe('MAX_PAGES safety ceiling (#778 review)', () => {
     it('stops walking at MAX_PAGES=200 and returns total=undefined to signal "not the full fleet"', async () => {
       // Server returns nextCursor forever. The walker must stop at the
