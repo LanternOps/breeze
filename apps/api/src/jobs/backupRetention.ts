@@ -1507,20 +1507,28 @@ async function sweepStorageIdentity(
     onItem: (item: BackupObjectListing) => void,
   ): Promise<BackupGcSnapshotSummary> {
     const summary = emptySnapshotSummary();
-    try {
-      for await (const page of iterateBackupObjectsUnderPrefix({
-        provider: identity.provider,
-        providerConfig: identity.providerConfig,
-        prefix: `${BACKUP_SNAPSHOT_ROOT_DIR}/${snapshotId}`,
-      })) {
-        for (const item of page) {
-          if (snapshotIdOfKey(item.key) !== snapshotId) continue;
-          foldIntoSnapshotSummary(summary, snapshotId, item);
-          onItem(item);
-        }
+    const pages = iterateBackupObjectsUnderPrefix({
+      provider: identity.provider,
+      providerConfig: identity.providerConfig,
+      prefix: `${BACKUP_SNAPSHOT_ROOT_DIR}/${snapshotId}`,
+    });
+    for (;;) {
+      // Only the storage read is classified as a re-list failure; an error
+      // from the per-item logic below propagates unwrapped (and fails the
+      // identity like any other sweep error) so it is never misreported as
+      // a provider outage.
+      let next: IteratorResult<BackupObjectListing[]>;
+      try {
+        next = await pages.next();
+      } catch (error) {
+        throw new BackupGcGroupRelistError(snapshotId, error);
       }
-    } catch (error) {
-      throw new BackupGcGroupRelistError(snapshotId, error);
+      if (next.done) break;
+      for (const item of next.value) {
+        if (snapshotIdOfKey(item.key) !== snapshotId) continue;
+        foldIntoSnapshotSummary(summary, snapshotId, item);
+        onItem(item);
+      }
     }
     return summary;
   }
