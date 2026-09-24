@@ -140,6 +140,7 @@ Each row is a shape reference, not literal JSON: `?` marks optional fields, alte
 | `software_policy` | `Link-only: featurePolicyId → existing software policy UUID; no inlineSettings.` |
 | `peripheral_control` | `Link-only: featurePolicyId → existing peripheral policy UUID; no inlineSettings.` |
 | `monitors` | `{ items: [{ monitorId: "existing monitor definition UUID", enabled: true, overrides?: {}, sortOrder?: 0 }], inheritance: "cumulative"\|"replace" (default "cumulative") }. Up to 200 attachments; create monitor definitions with manage_monitor_definitions before linking.` |
+| `hardware_monitoring` | `{ enabled: true, pollIntervalMinutes: 10, diskHealthIntervalMinutes: 60 } — inline-only RAID and disk-health collection settings. All fields are optional; these are the defaults. enabled is boolean; pollIntervalMinutes is an integer in 5..60; diskHealthIntervalMinutes is an integer in 15..1440. Collection is enabled without a policy link. Attach hardware monitors separately for alerts.` |
 
 ## Backup & recovery
 
