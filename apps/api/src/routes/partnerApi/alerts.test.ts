@@ -209,7 +209,10 @@ describe('partner alerts feed', () => {
     selectResults = [[]];
     const first = partnerAlertFeedEnvelopeSchema.parse(await (await request('/alerts')).json());
     const [payload, sig] = first.checkpoint!.split('.');
-    const tampered = `${payload}.${sig!.slice(0, -2)}AA`;
+    // Flip the first signature character to a guaranteed-different value (the
+    // signature varies per run, so a fixed overwrite could be a no-op).
+    const tampered = `${payload}.${sig![0] === 'A' ? 'B' : 'A'}${sig!.slice(1)}`;
+    expect(tampered).not.toBe(first.checkpoint);
     const res = await request(`/alerts?since=${encodeURIComponent(tampered)}`);
     expect(res.status).toBe(400);
   });
