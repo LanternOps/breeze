@@ -214,6 +214,9 @@ export default defineConfig({
       'src/routes/installerRotationRevocation.integration.test.ts',
       // One-time legacy token/child cutover and replay proof.
       'src/db/installerBootstrapCredentialGeneration.migration.integration.test.ts',
+      // Hardware & RAID monitoring (W03): disposable-database replay proof for
+      // the monitor-kind enum and alert subject-identity migrations.
+      'src/db/hardwareAlertMigrations.integration.test.ts',
       // Co-located real-DB end-to-end coverage for the tier3-supervised-four-eyes
       // split (Task 10): four_eyes fan-out ownership (both admins, never the
       // requester), a t+30min approve/release proving the new 60-minute
