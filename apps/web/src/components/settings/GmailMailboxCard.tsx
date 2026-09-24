@@ -22,6 +22,7 @@ interface GmailMailboxConnectionDTO {
   id: string;
   provider: 'm365' | 'gmail';
   orgId: string | null;
+  orgName: string | null;
   mailboxAddress: string;
   displayName: string | null;
   status: 'pending_consent' | 'connected' | 'error' | 'reauth_required' | 'disabled';
@@ -69,6 +70,8 @@ function parseMailboxConnection(value: unknown): GmailMailboxConnectionDTO | nul
   if (!isNullableString(verificationError)) return null;
   const orgId = 'orgId' in value ? value.orgId : null;
   if (!isNullableString(orgId)) return null;
+  const orgName = 'orgName' in value ? value.orgName : null;
+  if (!isNullableString(orgName)) return null;
   // Provider defaults to m365 when absent (older API responses); this card keeps
   // only gmail rows — an m365 row belongs to the Microsoft card.
   const provider = value.provider === 'gmail' ? 'gmail' : 'm365';
@@ -77,6 +80,7 @@ function parseMailboxConnection(value: unknown): GmailMailboxConnectionDTO | nul
     id: value.id,
     provider,
     orgId,
+    orgName,
     mailboxAddress: value.mailboxAddress,
     displayName: value.displayName,
     status: value.status,
@@ -129,9 +133,11 @@ function GmailMailboxCardContent({ canAdminMailbox }: { canAdminMailbox: boolean
     }
   }, []);
 
-  // Loaded for read-only users too: every connection line names the organization
-  // whose Google Workspace credential it uses. The picker stays admin-only.
+  // Only the admin connect picker needs the org list. Connection lines name their
+  // credential org from the list API's orgName, so read-only users see it without
+  // organizations:read.
   const loadOrgs = useCallback(async () => {
+    if (!canAdminMailbox) return;
     setOrgsLoadError(false);
     try {
       const list = await fetchAllOrganizationsFrom<OrgOption>('/orgs/organizations');
@@ -141,7 +147,7 @@ function GmailMailboxCardContent({ canAdminMailbox }: { canAdminMailbox: boolean
       // connections still render and manage. No toast: non-mutating read.
       setOrgsLoadError(true);
     }
-  }, []);
+  }, [canAdminMailbox]);
 
   useEffect(() => {
     void refresh();
@@ -262,7 +268,8 @@ function GmailMailboxCardContent({ canAdminMailbox }: { canAdminMailbox: boolean
                 {t('gmailMailbox.credentialOrg', {
                   // A failed org lookup proves nothing about access, so show the id
                   // rather than claiming the org cannot be viewed.
-                  org: orgs.find((o) => o.id === c.orgId)?.name
+                  org: c.orgName
+                    ?? orgs.find((o) => o.id === c.orgId)?.name
                     ?? (orgsLoadError ? c.orgId : t('gmailMailbox.credentialOrgUnknown')),
                 })}
               </p>

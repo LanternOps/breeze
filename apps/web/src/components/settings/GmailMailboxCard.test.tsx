@@ -134,7 +134,10 @@ describe('GmailMailboxCard', () => {
 
   it('shows status but no mutation controls with read-only permission', async () => {
     grantedActions.delete('ticket_mailbox:admin');
-    fetchWithAuth.mockResolvedValueOnce(jsonRes({ connections: [{ ...GROW, status: 'reauth_required' }] }));
+    // No organizations:read either: the org list is never fetched for this user,
+    // and the name comes from the connection row itself.
+    fetchAllOrganizationsFrom.mockRejectedValue(new Error('403'));
+    fetchWithAuth.mockResolvedValueOnce(jsonRes({ connections: [{ ...GROW, orgName: 'Acme', status: 'reauth_required' }] }));
     render(<GmailMailboxCard />);
     expect(await screen.findByText('help@client.example')).toBeInTheDocument();
     expect(screen.queryByTestId('gmail-connect')).not.toBeInTheDocument();
@@ -142,6 +145,7 @@ describe('GmailMailboxCard', () => {
     expect(screen.queryByRole('button', { name: /disconnect/i })).not.toBeInTheDocument();
     // Read-only users still see which organization's credential the mailbox uses.
     expect(screen.getByTestId('gmail-credential-org').textContent).toContain('Acme');
+    expect(fetchAllOrganizationsFrom).not.toHaveBeenCalled();
   });
 
   it('connects a new gmail mailbox via the DWD route with the selected org', async () => {

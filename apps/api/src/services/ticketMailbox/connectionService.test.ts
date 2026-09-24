@@ -50,7 +50,7 @@ vi.mock('../../db', () => {
           innerJoin: vi.fn((table: unknown, condition: unknown) => {
             dbMocks.innerJoins.push({ table, condition });
             return joined;
-          }),
+          }),          leftJoin: vi.fn(() => joined),
         };
       }),
     };
@@ -409,6 +409,7 @@ describe('ticket mailbox connection service', () => {
       id: CONNECTION_ID,
       provider: 'm365',
       orgId: null,
+      orgName: null,
       mailboxAddress: 'support@example.com',
       displayName: 'Support',
       status: 'connected',
@@ -421,10 +422,10 @@ describe('ticket mailbox connection service', () => {
 
     expect(result).toEqual([{ ...publicRow, verificationError: null }]);
     expect(Object.keys(result[0]!)).toEqual([
-      'id', 'provider', 'orgId', 'mailboxAddress', 'displayName', 'status', 'lastPolledAt', 'lastMessageAt', 'verificationError',
+      'id', 'provider', 'orgId', 'orgName', 'mailboxAddress', 'displayName', 'status', 'lastPolledAt', 'lastMessageAt', 'verificationError',
     ]);
     expect(Object.keys(dbMocks.selectedFields[0] ?? {})).toEqual([
-      'id', 'provider', 'orgId', 'mailboxAddress', 'displayName', 'status', 'lastPolledAt', 'lastMessageAt', 'lastError',
+      'id', 'provider', 'orgId', 'orgName', 'mailboxAddress', 'displayName', 'status', 'lastPolledAt', 'lastMessageAt', 'lastError',
     ]);
   });
 

@@ -42,6 +42,10 @@ export interface MailboxConnectionListItem {
    * (partner-scoped). The Gmail management surface needs it to reconnect a row
    * against the same org's Google Workspace credential. */
   orgId: string | null;
+  /** Name of the credential org, resolved under the caller's own RLS context, so
+   * a ticket_mailbox:read user sees it without organizations:read. Null for an
+   * m365 row or an org the caller cannot see. */
+  orgName: string | null;
   mailboxAddress: string;
   displayName: string | null;
   status: MailboxConnectionStatus;
@@ -74,6 +78,7 @@ export async function listMailboxConnections(partnerId: string): Promise<Mailbox
     id: ticketMailboxConnections.id,
     provider: ticketMailboxConnections.provider,
     orgId: ticketMailboxConnections.orgId,
+    orgName: organizations.name,
     mailboxAddress: ticketMailboxConnections.mailboxAddress,
     displayName: ticketMailboxConnections.displayName,
     status: ticketMailboxConnections.status,
@@ -81,11 +86,19 @@ export async function listMailboxConnections(partnerId: string): Promise<Mailbox
     lastMessageAt: ticketMailboxConnections.lastMessageAt,
     lastError: ticketMailboxConnections.lastError,
   }).from(ticketMailboxConnections)
+    // Same partner only: a row's org always belongs to its partner, and the
+    // extra predicate keeps a stale cross-partner org_id from naming another
+    // partner's organization.
+    .leftJoin(organizations, and(
+      eq(organizations.id, ticketMailboxConnections.orgId),
+      eq(organizations.partnerId, ticketMailboxConnections.partnerId),
+    ))
     .where(eq(ticketMailboxConnections.partnerId, partnerId));
   return rows.map((row) => ({
     id: row.id,
     provider: row.provider === 'gmail' ? 'gmail' : 'm365',
     orgId: row.orgId,
+    orgName: row.orgName ?? null,
     mailboxAddress: row.mailboxAddress,
     displayName: row.displayName,
     status: row.status as MailboxConnectionStatus,
