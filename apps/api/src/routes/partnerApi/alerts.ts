@@ -87,7 +87,11 @@ function invalidQuery(c: Context) {
 export const PARTNER_ALERT_MESSAGE_MAX = 12_000;
 function truncateMessage(message: string | null): string | null {
   if (message === null || message.length <= PARTNER_ALERT_MESSAGE_MAX) return message;
-  return `${message.slice(0, PARTNER_ALERT_MESSAGE_MAX - 1)}…`;
+  let cut = PARTNER_ALERT_MESSAGE_MAX - 1;
+  // Never split a surrogate pair: back off if the cut lands after a high surrogate.
+  const last = message.charCodeAt(cut - 1);
+  if (last >= 0xd800 && last <= 0xdbff) cut -= 1;
+  return `${message.slice(0, cut)}…`;
 }
 
 function iso(value: Date | string | null): string | null {

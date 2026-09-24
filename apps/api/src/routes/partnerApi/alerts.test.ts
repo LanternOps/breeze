@@ -190,6 +190,15 @@ describe('partner alerts feed', () => {
     expect(body.checkpoint).toEqual(expect.any(String));
   });
 
+  it('never splits a surrogate pair when truncating a message', async () => {
+    // 'a' shifts the pairs so the 11,999-unit cut would land mid-emoji.
+    selectResults = [[alertRow(ALERT_A, '900', { message: `a${'🔥 '.repeat(6_000)}` })]];
+    const body = partnerAlertFeedEnvelopeSchema.parse(await (await request('/alerts')).json());
+    const message = body.data[0]?.message ?? '';
+    expect(message.length).toBeLessThanOrEqual(12_000);
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(message)).toBe(false);
+  });
+
   it('revision ignores the hostname enrichment', async () => {
     selectResults = [[alertRow(ALERT_A, '900', { deviceHostname: 'old-name' })]];
     const a = partnerAlertFeedEnvelopeSchema.parse(await (await request('/alerts')).json());
