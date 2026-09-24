@@ -74,10 +74,15 @@ import {
   reserveAiBudget,
 } from '../aiBudgetReservations';
 import {
+  AGENT_HUMAN_ONLY_TOOLS,
+  BLOCKED_TOOLS,
   checkAgentGuardrails,
+  checkGuardrails,
+  isReadOnlyResolution,
   TOOL_ACTION_INPUT_KEYS,
   type AgentGuardrailPolicy,
 } from '../aiGuardrails';
+import { isSecretBearingTool } from '../actionIntents/secretBearingTools';
 import { loadProposalGuardrailContext } from '../scriptProposals';
 import { publishEvent } from '../eventBus';
 import { resolveLlmConfigForOrg } from '../llm/llmConfigResolver';
@@ -147,6 +152,9 @@ import { isDesignProfile, designLimits, designToolAllowlist } from './designProf
 import { AI_AGENT_LIMIT_DEFAULTS } from '@breeze/shared';
 import { isPatchProfile, patchLimits, patchToolAllowlist } from './patchProfile';
 import { analysisLimits, analysisToolAllowlist, isAnalysisProfile } from './analysisProfile';
+import { isToolAllowlisted } from './toolAllowlist';
+import { aiTools } from '../aiToolNames';
+import { toolActionEnum } from '../aiToolActions';
 import { getSandboxBackend, type SandboxUsage } from '../workspace/sandboxBackend';
 import { WorkspaceService } from '../workspace/workspaceService';
 import { WORKSPACE_MEMORY_GB } from '../workspace/workspacePaths';
@@ -1566,6 +1574,86 @@ function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromp
   };
 }
 
+/**
+ * #6909 Task A — a `full`-profile run's SDK-EXPOSURE floor. Before this, a
+ * `full` run's `profileAllowlist` was `null` ("nothing to narrow"), so
+ * `exposedNames`/`onlyTools` below fell through to `BREEZE_MCP_TOOL_NAMES` /
+ * `undefined` and the SDK registered and exposed the ENTIRE tool catalog
+ * regardless of the agent's own `toolAllowlist`. In production (US, OliveTech,
+ * 51 alert-triage runs 09-22->09-24) the model then spent a full turn calling
+ * a tool it was never going to be allowed to use, only to have
+ * `checkAgentGuardrails` deny it at dispatch — `set_device_context` alone 21
+ * times over 3 days, several repeated on the very next turn.
+ *
+ * A tool is exposed when EITHER: (a) at least one of its operations is
+ * read-only (`isReadOnlyResolution`, applied to `checkGuardrails`'s
+ * resolution for that operation — the SAME formula `agentToolCatalog.ts`'s
+ * picker uses and `checkAgentGuardrails` itself applies) — the model may
+ * always freely inspect state, same floor every other profile grants; or (b)
+ * the operation is admitted by the agent's OWN `effective.toolAllowlist`
+ * under `isToolAllowlisted` (again, the exact rule `checkAgentGuardrails`
+ * applies). A tool with NO admitted operation at all — neither read-only nor
+ * allowlisted — is not exposed. A mixed tool (some read-only ops, some
+ * allowlist-gated mutating ops — e.g. `manage_patches`'s `list`/`compliance`
+ * reads alongside `install`) stays exposed for its read-only surface even
+ * when none of its mutating actions are allowlisted; the existing "Tool
+ * contract" system-prompt section already tells the model a denial is a
+ * policy refusal, not a transient failure, and not to retry it — so no
+ * per-tool prompt addition is needed to cover that case.
+ *
+ * Deliberately NOT built on `agentToolCatalog.ts`'s `buildAgentToolCatalog()`
+ * (which would be the more obvious reuse): that module's `listAgentReachableTools`
+ * reads `TOOL_TIERS` from `aiAgentSdkTools.ts` — the ~3,400-line MCP-server
+ * module every run-loop test mocks wholesale (it drags in the SDK tool
+ * handlers, DB-touching imports, and the worker's socket-local route graph;
+ * see `aiToolNames.ts`'s header). This function instead walks the lighter
+ * `aiTools` registry (`aiToolNames.ts`) directly with `checkGuardrails`/
+ * `isReadOnlyResolution` (`aiGuardrails.ts`) and `toolActionEnum`
+ * (`aiToolActions.ts`) — the same three modules `agentToolCatalog.ts` itself
+ * derives its per-operation tier/readOnly answers from, just without going
+ * through the `TOOL_TIERS`-keyed reachability filter. The human-only/blocked/
+ * secret-bearing exclusions are reproduced directly (`AGENT_HUMAN_ONLY_TOOLS`,
+ * `BLOCKED_TOOLS`, `isSecretBearingTool`); the session-only (M365/Google)
+ * exclusion is NOT needed — `aiToolNames.ts`'s own header states those tools
+ * are session-aware and are never added to the `aiTools` map in the first
+ * place, so iterating `aiTools.keys()` already excludes them structurally.
+ *
+ * EXPOSURE ONLY, same discipline as every other profile's
+ * `*ToolAllowlist` — this must NEVER be used to build
+ * `guardrailPolicy.toolAllowlist` for a full run. That stays
+ * `effective.toolAllowlist` (via `profileAllowlist ?? effective.toolAllowlist`
+ * below, where `profileAllowlist` stays `null` for `full`), because
+ * `isToolAllowlisted` only ever ADMITS a bare-tool entry to mean "every
+ * action" — folding this function's bare-tool-name output back into the
+ * authority list would silently widen what a `full` run may actually CALL
+ * (e.g. an allowlist entry of `manage_alerts:resolve` alone would authorize
+ * `acknowledge`/`suppress` too, since this function's output only ever
+ * carries bare tool names). `checkAgentGuardrails` remains the sole
+ * authority; this can only ever narrow what the SDK shows the model, never
+ * widen what it may call.
+ */
+export function fullRunToolExposure(agentAllowlist: readonly string[]): string[] {
+  const names = new Set<string>();
+  for (const name of aiTools.keys()) {
+    if (AGENT_HUMAN_ONLY_TOOLS.has(name) || BLOCKED_TOOLS.has(name) || isSecretBearingTool(name)) continue;
+    const actions = toolActionEnum(name);
+    const operations: Array<string | null> = actions ?? [null];
+    const admitted = operations.some((action) => {
+      const key = TOOL_ACTION_INPUT_KEYS[name] ?? 'action';
+      const input: Record<string, unknown> = action === null ? {} : { [key]: action };
+      const check = checkGuardrails(name, input);
+      // Blocked/unknown — never expose. Reachability filtering above already
+      // excludes BLOCKED_TOOLS; an unknown tool cannot occur since `name`
+      // comes from the same `aiTools` map `checkGuardrails`/`getToolTier`
+      // itself reads.
+      if (check.tier === 4) return false;
+      return isReadOnlyResolution(name, check) || isToolAllowlisted(agentAllowlist, name, action);
+    });
+    if (admitted) names.add(name);
+  }
+  return [...names];
+}
+
 async function driveSdkLoop(
   ctx: RunContext,
   effective: AiAgentPolicy,
@@ -1868,8 +1956,17 @@ async function driveSdkLoop(
   // computed at the top of this function — the SAME list that narrowed
   // `guardrailPolicy.toolAllowlist` above, so exposure and authority can
   // never drift apart.
-  const exposedNames = profileAllowlist
-    ? profileAllowlist.map((name) => (
+  //
+  // #6909 Task A — `exposureList` adds a SEPARATE, exposure-only source for
+  // `full`: `fullRunToolExposure`'s bare-tool-name floor (see its own
+  // docstring for why this must never reach `guardrailPolicy.toolAllowlist`
+  // above, which stays built from `effective.toolAllowlist` unchanged).
+  // `profileAllowlist` itself is untouched — still `null` for `full` — so
+  // authority for a full run is exactly what it was before this task.
+  const fullExposure = run.profile === 'full' ? fullRunToolExposure(effective.toolAllowlist) : null;
+  const exposureList = profileAllowlist ?? fullExposure;
+  const exposedNames = exposureList
+    ? exposureList.map((name) => (
       isOutcomeTool(name) ? OUTCOME_MCP_TOOL_NAMES[name] : `mcp__breeze__${name.split(':')[0]}`
     ))
     : BREEZE_MCP_TOOL_NAMES;
@@ -1878,17 +1975,16 @@ async function driveSdkLoop(
   // PERMISSION to call a tool — the MCP server still sends every REGISTERED
   // tool's full schema to the model on every turn regardless of
   // `allowedTools`. `onlyTools` (createBreezeMcpServer's 6th param) narrows
-  // what gets registered in the first place. Reuses `profileAllowlist` again
+  // what gets registered in the first place. Reuses `exposureList` again
   // — same source of truth as `exposedNames`/`guardrailPolicy.toolAllowlist`
-  // above — collapsed to bare tool names (`manage_alerts:list` and
-  // `manage_alerts:get` both collapse to `manage_alerts`) with the outcome
-  // tool excluded: an outcome tool is never in the registry `tools`
-  // array to begin with (see outcomeTools.ts) — it rides on `extraTools`
-  // below instead, which `createBreezeMcpServer` always includes regardless
-  // of `onlyTools`. Full runs pass no `onlyTools` and keep registering the
-  // whole registry, unchanged.
-  const onlyTools = profileAllowlist
-    ? new Set(profileAllowlist.map((name) => name.split(':')[0]!).filter((name) => !isOutcomeTool(name)))
+  // (or, for `full`, `fullRunToolExposure`) above — collapsed to bare tool
+  // names (`manage_alerts:list` and `manage_alerts:get` both collapse to
+  // `manage_alerts`) with the outcome tool excluded: an outcome tool is
+  // never in the registry `tools` array to begin with (see outcomeTools.ts)
+  // — it rides on `extraTools` below instead, which `createBreezeMcpServer`
+  // always includes regardless of `onlyTools`.
+  const onlyTools = exposureList
+    ? new Set(exposureList.map((name) => name.split(':')[0]!).filter((name) => !isOutcomeTool(name)))
     : undefined;
 
   // No getActiveSession: a headless run has no ActiveSession, and the
