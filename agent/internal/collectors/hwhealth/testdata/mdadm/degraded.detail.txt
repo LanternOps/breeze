@@ -1,0 +1,7 @@
+/dev/md0:
+        Raid Level : raid1
+        Array Size : 1000000
+             State : clean, degraded
+              UUID : array-uuid
+    Number   Major   Minor   RaidDevice State
+       0       8       1        0      active sync /dev/sda1
