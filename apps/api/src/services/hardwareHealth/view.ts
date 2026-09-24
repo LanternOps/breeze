@@ -1,6 +1,6 @@
 import { desc,eq } from 'drizzle-orm';
 import type { HardwareHealth,HardwareSourceReport } from '@breeze/shared';
-import { db } from '../../db';
+import { db,withDbTransaction } from '../../db';
 import { deviceHardwareComponents,deviceHardwareEvents,deviceHardwareHealth,devices } from '../../db/schema';
 import { resolveDeviceHardwareMonitoringPolicy } from '../../routes/agents/helpers';
 import { isComponentFresh } from './freshness';
@@ -21,14 +21,22 @@ export async function getDeviceHardwareHealthView(deviceId:string,opts?:{eventLi
  const rows=await db.select().from(deviceHardwareComponents).where(eq(deviceHardwareComponents.deviceId,deviceId)).orderBy(deviceHardwareComponents.componentKey);
  if(rows.some(row=>row.componentType==='bmc')){
   try{
-   const [device]=await db.select({siteId:devices.siteId}).from(devices).where(eq(devices.id,deviceId)).limit(1);
-   for(const row of rows){
-    if(row.componentType!=='bmc')continue;
-    row.attributes=await bmcViewAttributes({deviceId,orgId:row.orgId,siteId:device?.siteId??null,
-     mac:typeof row.attributes.mac==='string'?row.attributes.mac:'',
-     ip:typeof row.attributes.ip==='string'?row.attributes.ip:null,
-    },row.attributes);
-   }
+   // Run in a savepoint (db.transaction nests as one inside the request's own
+   // withDbTransaction, same pattern proven in ingest.ts): bmcViewAttributes
+   // issues its own queries against the ambient `db`, and without a savepoint
+   // a real SQL-level failure in here would leave the OUTER request
+   // transaction aborted, failing every later statement in this same
+   // function (the events query, the policy read) even though we catch here.
+   await withDbTransaction(async()=>{
+    const [device]=await db.select({siteId:devices.siteId}).from(devices).where(eq(devices.id,deviceId)).limit(1);
+    for(const row of rows){
+     if(row.componentType!=='bmc')continue;
+     row.attributes=await bmcViewAttributes({deviceId,orgId:row.orgId,siteId:device?.siteId??null,
+      mac:typeof row.attributes.mac==='string'?row.attributes.mac:'',
+      ip:typeof row.attributes.ip==='string'?row.attributes.ip:null,
+     },row.attributes);
+    }
+   });
   }catch(error){
    console.warn('[hardware-health] bmc decoration unavailable',error);captureException(error);
    // Defensive: the persisted value never carries bmcLink (ingest already strips

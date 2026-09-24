@@ -85,13 +85,19 @@ func writeJSON(path string, value any) error {
 	return fmt.Errorf("replace hardware state after 4 attempts: %w", e)
 }
 
+// writeStateFile is a package-level seam over writeJSON for the hardware
+// state file specifically, so tests can inject a transient write failure on
+// just the first call (e.g. the BMC attempt-gate persist) while leaving a
+// later call (e.g. the end-of-Run persist) to hit the real filesystem.
+var writeStateFile = writeJSON
+
 func reserveSequence(dir string, state *diskState) error {
 	if state.Sequence == ^uint64(0) {
 		return fmt.Errorf("hardware sequence exhausted")
 	}
 	next := *state
 	next.Sequence++
-	if e := writeJSON(filepath.Join(dir, "hwhealth_state.json"), next); e != nil {
+	if e := writeStateFile(filepath.Join(dir, "hwhealth_state.json"), next); e != nil {
 		return e
 	}
 	*state = next

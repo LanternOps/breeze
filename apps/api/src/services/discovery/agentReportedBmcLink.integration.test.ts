@@ -94,6 +94,36 @@ it('commits the hardware snapshot even when the BMC link savepoint throws', asyn
     spy.mockRestore();
   }
 });
+it('recovers the hardware view when BMC decoration hits a real SQL error mid-request-transaction', async () => {
+  const f = await bmcFixture();
+  const snapshot = bmcSnapshot(f);
+  await f.scoped(() => ingestHardwareHealthSnapshot({ device: f.device, snapshot, writer: 'agent', receivedAt: new Date() }));
+  const bmcLinkModule = await import('./agentReportedBmcLink');
+  const spy = vi.spyOn(bmcLinkModule, 'bmcViewAttributes').mockImplementation(async () => {
+    // A genuine SQL-level error (not just a thrown JS error) leaves an
+    // un-savepointed Postgres transaction in "current transaction is
+    // aborted" state for every later statement on the same connection —
+    // exactly the failure mode the view.ts savepoint wrap must contain.
+    await db.execute(sql`SELECT 1/0`);
+    return {};
+  });
+  try {
+    // getDeviceHardwareHealthView must run inside the same ambient request
+    // transaction the real route uses (withDbAccessContext), the same way
+    // f.scoped already drives it elsewhere in this file, so this exercises
+    // the actual "one broken statement poisons the whole request" hazard.
+    const view = await f.scoped(() => getDeviceHardwareHealthView(f.device.id));
+    expect(view).not.toBeNull();
+    expect(view!.components.find(c => c.componentType === 'bmc')).toBeDefined();
+    // The policy resolution runs on the same ambient transaction AFTER the
+    // BMC decoration block. If the SQL error above weren't contained in its
+    // own savepoint, this later statement would itself fail with "current
+    // transaction is aborted", not just return a fallback policy value.
+    expect(view!.policy).not.toBeNull();
+  } finally {
+    spy.mockRestore();
+  }
+});
 function bmcSnapshot(f: Awaited<ReturnType<typeof bmcFixture>>) {
   return hardwareHealthSnapshotSchema.parse({ snapshotId: crypto.randomUUID(), sequence: 1,
     collectedAt: new Date().toISOString(), agentVersion: 'test', pollIntervalMinutes: 10, diskHealthIntervalMinutes: 60,

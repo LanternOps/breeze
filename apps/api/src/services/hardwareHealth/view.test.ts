@@ -1,6 +1,6 @@
 import { beforeEach,expect,it,vi } from 'vitest';
 const m=vi.hoisted(()=>({rows:[] as any[][],policy:vi.fn(),bmc:vi.fn(),captureException:vi.fn()}));
-vi.mock('../../db',()=>({db:{select:()=>{const rows=m.rows.shift()??[];const q:any={then:(a:any,b:any)=>Promise.resolve(rows).then(a,b)};for(const k of ['from','where','limit','orderBy'])q[k]=()=>q;return q;}}}));
+vi.mock('../../db',()=>({db:{select:()=>{const rows=m.rows.shift()??[];const q:any={then:(a:any,b:any)=>Promise.resolve(rows).then(a,b)};for(const k of ['from','where','limit','orderBy'])q[k]=()=>q;return q;}},withDbTransaction:(fn:()=>Promise<unknown>)=>fn()}));
 vi.mock('../../routes/agents/helpers',()=>({resolveDeviceHardwareMonitoringPolicy:m.policy}));
 vi.mock('../discovery/agentReportedBmcLink',()=>({bmcViewAttributes:m.bmc}));
 vi.mock('../sentry',()=>({captureException:m.captureException}));

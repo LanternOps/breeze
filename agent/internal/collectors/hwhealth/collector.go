@@ -353,17 +353,11 @@ func (c *Collector) Run(parent context.Context, tiers []Tier) (*Snapshot, error)
 	if e := writeJSON(filepath.Join(c.dir, "hwhealth_smart_cache.json"), c.cache); e != nil {
 		return nil, fmt.Errorf("persist hardware SMART cache: %w", e)
 	}
-	if bmcGateFailed {
-		// The BMC attempt gate already failed to persist this cycle, writing to
-		// this same state file. Retrying the identical write for the full state
-		// moments later would fail the same way -- and unlike the mid-cycle gate
-		// failure, this path has always discarded the whole snapshot on error.
-		// Skip the retry and return what was already safely collected rather
-		// than turning one recoverable BMC-gate failure into a lost cycle for
-		// every other source.
-		snapshot.Sequence = c.state.Sequence
-		return snapshot, nil
-	}
+	// Unconditional, exactly as before the BMC gate-persist handling above: if
+	// the earlier BMC gate write failed here transiently, this second write to
+	// the same state file gets a fresh chance to succeed and the snapshot
+	// ships with an advanced sequence; if the state file is persistently
+	// unwritable, Run fails here as it always has.
 	if e := reserveSequence(c.dir, &pending); e != nil {
 		return nil, e
 	}
