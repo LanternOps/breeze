@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, notExists, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   ticketChecklistItems,
@@ -7,6 +7,7 @@ import {
   type TicketChecklistTemplateRow,
   type TicketChecklistTemplateItemRow,
 } from '../db/schema';
+import { aiOperatorTaskSteps } from '../db/schema/aiOperatorTaskGraph';
 import type { AuthContext } from '../middleware/auth';
 import type {
   ApplyChecklistTemplateInput,
@@ -598,12 +599,28 @@ export async function applyChecklistTemplateToTicket(
       // ONLY unticked rows. A ticked item carries done_at/done_by_user_id — a
       // human attestation that the step was performed — and applying a template
       // must never destroy one. There is no destructive mode by design.
+      //
+      // The pre-check above is a plain read, so it cannot see an Operator
+      // item committed after it runs. The NOT EXISTS below is what ENFORCES
+      // the rule: it is evaluated against the DELETE's own snapshot, so an
+      // item whose step is waiting is never removed by this statement, however
+      // the two transactions interleave. The pre-check stays for the readable
+      // 409 in the common case.
       await tx
         .delete(ticketChecklistItems)
         .where(
           and(
             eq(ticketChecklistItems.ticketId, ticket.id),
             isNull(ticketChecklistItems.doneAt),
+            notExists(
+              tx
+                .select({ one: sql`1` })
+                .from(aiOperatorTaskSteps)
+                .where(and(
+                  eq(aiOperatorTaskSteps.checklistItemId, ticketChecklistItems.id),
+                  eq(aiOperatorTaskSteps.state, 'waiting'),
+                )),
+            ),
           ),
         );
     }
