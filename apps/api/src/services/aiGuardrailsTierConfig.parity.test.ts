@@ -31,6 +31,7 @@ import {
   TIER2_ACTIONS,
   TIER3_ACTIONS,
 } from './aiGuardrails';
+import { TOOL_RATE_LIMITS } from './aiToolRateLimits';
 import {
   driftMessage,
   findTierMismatches,
@@ -101,6 +102,25 @@ describe('tierConfig.ts ↔ aiGuardrails tier tables parity (#2686)', () => {
       `RATE_LIMIT_CONFIGS in apps/web/src/components/ai-risk/tierConfig.ts ` +
       `has drifted from the guardrail tiers:\n` +
       mismatches.map((m) => `  • ${m}`).join('\n'),
+    ).toEqual([]);
+  });
+
+  it('every rate-limited tool has a RATE_LIMIT_CONFIGS row (sweep E3, #6932)', () => {
+    // GET /ai/tool-rate-limits returns every key in TOOL_RATE_LIMITS. A tool
+    // missing from RATE_LIMIT_CONFIGS still renders on the AI Risk → Rate
+    // Limits tab — just grouped under "Other" with tier and permission both
+    // "—", even though the tool IS registered and DOES have a real tier and
+    // permission. This is a completeness check, not a correctness one; the
+    // sibling test above already checks that a PRESENT row's tier is real.
+    const configured = new Set(RATE_LIMIT_CONFIGS.map((c) => c.toolName));
+    const missing = Object.keys(TOOL_RATE_LIMITS).filter((tool) => !configured.has(tool));
+
+    expect(
+      missing,
+      `RATE_LIMIT_CONFIGS in apps/web/src/components/ai-risk/tierConfig.ts is ` +
+      `missing a row for these rate-limited tools — they render under "Other" ` +
+      `with no tier/permission on the Rate Limits tab:\n` +
+      missing.map((m) => `  • ${m}`).join('\n'),
     ).toEqual([]);
   });
 });

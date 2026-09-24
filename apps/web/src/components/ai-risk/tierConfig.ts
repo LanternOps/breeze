@@ -383,6 +383,54 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'manage_automations', tier: 1, permission: 'automations.write', category: 'Fleet Operations' },
   { toolName: 'manage_alert_rules', tier: 1, permission: 'alerts.write', category: 'Alerts & Notifications' },
   { toolName: 'generate_report', tier: 1, permission: 'reports.read', category: 'Fleet Operations' },
+  // The 33 entries below were missing outright (sweep E3, #6932): every
+  // rate-limited tool the API returns from GET /ai/tool-rate-limits that has
+  // no row here renders under "Other" with tier/permission "—", even though
+  // the tool IS registered. tier/permission sourced from the tool's own
+  // `registerTool({ tier })` call in services/aiTools*.ts and its entry in
+  // services/aiGuardrails.ts's TOOL_PERMISSIONS — completeness (every
+  // TOOL_RATE_LIMITS key present) and tier correctness are both enforced by
+  // aiGuardrailsTierConfig.parity.test.ts.
+  { toolName: 'cancel_script_execution', tier: 3, permission: 'scripts.execute', category: 'Remote Access & Control' },
+  // Security & Compliance
+  { toolName: 'apply_cis_remediation', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
+  { toolName: 'get_cis_compliance', tier: 1, permission: 'devices.read', category: 'Security & Compliance' },
+  { toolName: 'get_cis_device_report', tier: 1, permission: 'devices.read', category: 'Security & Compliance' },
+  { toolName: 'assign_security_training', tier: 2, permission: 'users.write', category: 'Security & Compliance' },
+  { toolName: 'collect_evidence', tier: 2, permission: 'devices.execute', category: 'Security & Compliance' },
+  { toolName: 'execute_containment', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
+  { toolName: 's1_isolate_device', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
+  { toolName: 's1_threat_action', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
+  { toolName: 'sync_huntress_data', tier: 2, permission: 'organizations.write', category: 'Security & Compliance' },
+  { toolName: 'remediate_software_violation', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
+  // Backup & Recovery
+  { toolName: 'configure_backup_sla', tier: 2, permission: 'organizations.write', category: 'Backup & Recovery' },
+  { toolName: 'configure_vault', tier: 2, permission: 'organizations.write', category: 'Backup & Recovery' },
+  { toolName: 'trigger_vault_sync', tier: 2, permission: 'devices.execute', category: 'Backup & Recovery' },
+  { toolName: 'execute_dr_plan', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
+  { toolName: 'manage_dr_plan', tier: 2, permission: 'organizations.write', category: 'Backup & Recovery' },
+  { toolName: 'instant_boot_vm', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
+  { toolName: 'restore_as_vm', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
+  { toolName: 'manage_hyperv_vm', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
+  { toolName: 'trigger_hyperv_backup', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
+  { toolName: 'restore_hyperv_vm', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
+  { toolName: 'manage_hyperv_checkpoints', tier: 2, permission: 'devices.execute', category: 'Backup & Recovery' },
+  { toolName: 'trigger_mssql_backup', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
+  { toolName: 'restore_mssql_database', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
+  { toolName: 'verify_mssql_backup', tier: 2, permission: 'devices.execute', category: 'Backup & Recovery' },
+  // Monitoring & Analytics
+  { toolName: 'query_monitors', tier: 1, permission: 'devices.read', category: 'Monitoring & Analytics' },
+  { toolName: 'manage_service_monitors', tier: 1, permission: 'devices.read', category: 'Monitoring & Analytics' },
+  { toolName: 'get_service_monitoring_status', tier: 1, permission: 'devices.read', category: 'Monitoring & Analytics' },
+  // Integrations
+  { toolName: 'trigger_c2c_sync', tier: 2, permission: 'organizations.write', category: 'Integrations' },
+  { toolName: 'restore_c2c_items', tier: 3, permission: 'organizations.write', category: 'Integrations' },
+  // Alerts & Notifications
+  { toolName: 'manage_delivery', tier: 1, permission: 'alerts.read', category: 'Alerts & Notifications' },
+  // AI Governance
+  { toolName: 'manage_ai_agents', tier: 3, permission: 'ai_agents.write', category: 'AI Governance' },
+  // Other
+  { toolName: 'export_dataset', tier: 1, permission: 'devices.read', category: 'Other' },
 ];
 
 // ── RBAC mappings (flat reference, not rendered in grouped UI) ───────────────
