@@ -2,6 +2,7 @@ package helper
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -675,5 +676,78 @@ func TestApplySpawnsWithConfigWhenOnlyOnDiskVersionKnown(t *testing.T) {
 	}
 	if len(spawnArgs[0]) < 2 || spawnArgs[0][0] != "--config" {
 		t.Fatalf("spawn args = %v, want --config <session path>", spawnArgs[0])
+	}
+}
+
+// newNotInstalledManager builds a manager whose binaryPath does not exist
+// and whose spawnFunc records every call — the #6872 fixture.
+func newNotInstalledManager(t *testing.T) (*Manager, *int) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	origRemove := removeAutoStartFunc
+	origStopLegacy := stopHelperLegacyFunc
+	t.Cleanup(func() {
+		removeAutoStartFunc = origRemove
+		stopHelperLegacyFunc = origStopLegacy
+	})
+	removeAutoStartFunc = func() error { return nil }
+	stopHelperLegacyFunc = func() {}
+
+	spawns := 0
+	mgr := New(context.Background(), nil, nil, "")
+	mgr.baseDir = tmpDir
+	mgr.binaryPath = filepath.Join(tmpDir, "breeze-helper") // never written
+	mgr.sessionEnumerator = &mockEnumerator{sessions: []SessionInfo{{Key: "1", Username: "kit", UID: 1}}}
+	mgr.isOurProcessFunc = func(pid int, binaryPath string) bool { return false }
+	mgr.spawnFunc = func(sessionKey, binaryPath string, args ...string) (int, error) {
+		spawns++
+		return 4242, nil
+	}
+	return mgr, &spawns
+}
+
+func TestEnsureRunningSessionReturnsErrNotInstalled(t *testing.T) {
+	mgr, spawns := newNotInstalledManager(t)
+	state := newSessionState("1", mgr.baseDir)
+
+	mgr.mu.Lock()
+	err := mgr.ensureRunningSession(state)
+	mgr.mu.Unlock()
+
+	if !errors.Is(err, ErrNotInstalled) {
+		t.Fatalf("err = %v, want ErrNotInstalled", err)
+	}
+	if *spawns != 0 {
+		t.Fatalf("spawnFunc called %d times for a missing binary", *spawns)
+	}
+}
+
+// A device that hit the watcher's give-up state must recover the moment the
+// binary is installed: the not-installed check comes BEFORE watcherGaveUp.
+func TestEnsureRunningSessionNotInstalledBeatsWatcherGaveUp(t *testing.T) {
+	mgr, spawns := newNotInstalledManager(t)
+	state := newSessionState("1", mgr.baseDir)
+	state.watcherGaveUp = true
+
+	mgr.mu.Lock()
+	err := mgr.ensureRunningSession(state)
+	mgr.mu.Unlock()
+	if !errors.Is(err, ErrNotInstalled) {
+		t.Fatalf("err = %v, want ErrNotInstalled while missing", err)
+	}
+
+	// Install it: the stale give-up flag must not block the first spawn.
+	if err := os.WriteFile(mgr.binaryPath, []byte("bin"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	state.watcherGaveUp = false // applyPendingUpdate resets session state on install; mirror that
+	mgr.mu.Lock()
+	err = mgr.ensureRunningSession(state)
+	mgr.mu.Unlock()
+	if err != nil {
+		t.Fatalf("post-install ensureRunningSession: %v", err)
+	}
+	if *spawns != 1 {
+		t.Fatalf("spawnFunc called %d times after install, want 1", *spawns)
 	}
 }

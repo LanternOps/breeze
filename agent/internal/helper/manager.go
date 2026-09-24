@@ -63,6 +63,13 @@ type SpawnFunc func(sessionKey string, binaryPath string, args ...string) (pid i
 // ErrNoActiveSession is returned by SpawnFunc when no user session is available.
 var ErrNoActiveSession = fmt.Errorf("no active user session")
 
+// ErrNotInstalled: Breeze Assist is enabled by policy but the helper binary is
+// not on disk (never installed, or a failed in-place update removed it).
+// Callers must not spawn, must not count it as a crash, and must not log it
+// as an error on every heartbeat — the server's HelperUpgradeTo bootstrap
+// offer is the only thing that resolves it (#6872).
+var ErrNotInstalled = errors.New("breeze assist is not installed")
+
 // Option configures a Manager.
 type Option func(*Manager)
 
@@ -579,6 +586,11 @@ func (m *Manager) ensureRunningSession(state *sessionState) error {
 	}
 	if state.pid > 0 && state.pid != state.spawnedPID && m.isOurProcessFunc(state.pid, m.binaryPath) {
 		return nil
+	}
+	// #6872: nothing to spawn. Checked BEFORE watcherGaveUp so a device that
+	// burned its retries against a missing binary recovers on install.
+	if !m.isInstalled() {
+		return ErrNotInstalled
 	}
 	if state.watcherGaveUp {
 		return fmt.Errorf("helper keeps crashing, not respawning until next update")
