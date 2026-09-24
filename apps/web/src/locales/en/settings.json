@@ -5898,7 +5898,6 @@
   "partnerAiApprovals": {
     "timeoutLabel": "Interactive approval timeout",
     "productDefault": "Product default ({{minutes}} minutes)",
-    "minutesOption": "{{minutes}} minutes",
     "range": "Choose {{min}}-{{max}} minutes.",
     "description": "How long a live AI chat turn waits for someone to approve a gated (Tier 2/3) action before giving up on it.",
     "orgOverrideNote": "Organizations can override this value from their own AI settings; the org value wins when set.",
@@ -5912,7 +5911,6 @@
     "inheritLabel": "Inherit ({{minutes}} minutes, {{source}})",
     "sourcePartner": "partner default",
     "sourceDefault": "product default",
-    "minutesOption": "{{minutes}} minutes",
     "range": "Choose {{min}}-{{max}} minutes.",
     "save": "Save"
   }

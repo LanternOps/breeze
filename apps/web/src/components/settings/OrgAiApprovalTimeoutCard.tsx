@@ -89,7 +89,7 @@ export default function OrgAiApprovalTimeoutCard({ initialData, effective, onSav
           <option value="">{inheritLabel}</option>
           {options.map((minutes) => (
             <option key={minutes} value={minutes}>
-              {t('orgAiApprovalTimeout.minutesOption', { minutes })}
+              {t('orgDefaultsEditor.enrollment.capMinutes', { minutes })}
             </option>
           ))}
         </select>

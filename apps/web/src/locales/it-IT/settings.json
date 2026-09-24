@@ -5898,7 +5898,6 @@
   "partnerAiApprovals": {
     "timeoutLabel": "Timeout di approvazione interattiva",
     "productDefault": "Predefinito del prodotto ({{minutes}} minuti)",
-    "minutesOption": "{{minutes}} minuti",
     "range": "Scegli tra {{min}} e {{max}} minuti.",
     "description": "Per quanto tempo un turno di chat IA in corso attende che qualcuno approvi un'azione controllata (Livello 2/3) prima di rinunciare.",
     "orgOverrideNote": "Le organizzazioni possono sovrascrivere questo valore dalle proprie impostazioni IA; il valore dell'organizzazione prevale se impostato.",
@@ -5912,7 +5911,6 @@
     "inheritLabel": "Eredita ({{minutes}} minuti, {{source}})",
     "sourcePartner": "predefinito del partner",
     "sourceDefault": "predefinito del prodotto",
-    "minutesOption": "{{minutes}} minuti",
     "range": "Scegli tra {{min}} e {{max}} minuti.",
     "save": "Salva"
   }

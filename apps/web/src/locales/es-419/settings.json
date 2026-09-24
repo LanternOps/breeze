@@ -5898,7 +5898,6 @@
   "partnerAiApprovals": {
     "timeoutLabel": "Tiempo de espera de aprobación interactiva",
     "productDefault": "Predeterminado del producto ({{minutes}} minutos)",
-    "minutesOption": "{{minutes}} minutos",
     "range": "Elija entre {{min}} y {{max}} minutos.",
     "description": "Cuánto tiempo espera un turno de chat de IA en vivo a que alguien apruebe una acción restringida (Nivel 2/3) antes de desistir.",
     "orgOverrideNote": "Las organizaciones pueden anular este valor desde su propia configuración de IA; el valor de la organización prevalece cuando está establecido.",
@@ -5912,7 +5911,6 @@
     "inheritLabel": "Heredar ({{minutes}} minutos, {{source}})",
     "sourcePartner": "predeterminado del socio",
     "sourceDefault": "predeterminado del producto",
-    "minutesOption": "{{minutes}} minutos",
     "range": "Elija entre {{min}} y {{max}} minutos.",
     "save": "Guardar"
   }

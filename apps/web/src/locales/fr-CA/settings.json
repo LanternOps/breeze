@@ -5898,7 +5898,6 @@
   "partnerAiApprovals": {
     "timeoutLabel": "Délai d'approbation interactive",
     "productDefault": "Valeur par défaut du produit ({{minutes}} minutes)",
-    "minutesOption": "{{minutes}} minutes",
     "range": "Choisissez {{min}}-{{max}} minutes.",
     "description": "Durée pendant laquelle un tour de clavardage IA en cours attend qu'une personne approuve une action contrôlée (niveau 2/3) avant d'abandonner.",
     "orgOverrideNote": "Les organisations peuvent remplacer cette valeur depuis leurs propres paramètres IA ; la valeur de l'organisation prévaut si elle est définie.",
@@ -5912,7 +5911,6 @@
     "inheritLabel": "Hériter ({{minutes}} minutes, {{source}})",
     "sourcePartner": "valeur par défaut du partenaire",
     "sourceDefault": "valeur par défaut du produit",
-    "minutesOption": "{{minutes}} minutes",
     "range": "Choisissez {{min}}-{{max}} minutes.",
     "save": "Enregistrer"
   }

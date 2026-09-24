@@ -5898,7 +5898,6 @@
   "partnerAiApprovals": {
     "timeoutLabel": "Zeitüberschreitung für interaktive Genehmigung",
     "productDefault": "Produktstandard ({{minutes}} Minuten)",
-    "minutesOption": "{{minutes}} Minuten",
     "range": "Wählen Sie {{min}}-{{max}} Minuten.",
     "description": "Wie lange ein laufender KI-Chat-Zug darauf wartet, dass jemand eine gesperrte (Stufe 2/3) Aktion genehmigt, bevor er aufgibt.",
     "orgOverrideNote": "Organisationen können diesen Wert in ihren eigenen KI-Einstellungen überschreiben; der Organisationswert gewinnt, wenn er gesetzt ist.",
@@ -5912,7 +5911,6 @@
     "inheritLabel": "Übernehmen ({{minutes}} Minuten, {{source}})",
     "sourcePartner": "Partnerstandard",
     "sourceDefault": "Produktstandard",
-    "minutesOption": "{{minutes}} Minuten",
     "range": "Wählen Sie {{min}}-{{max}} Minuten.",
     "save": "Speichern"
   }

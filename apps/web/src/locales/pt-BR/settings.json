@@ -5898,7 +5898,6 @@
   "partnerAiApprovals": {
     "timeoutLabel": "Tempo limite de aprovação interativa",
     "productDefault": "Padrão do produto ({{minutes}} minutos)",
-    "minutesOption": "{{minutes}} minutos",
     "range": "Escolha entre {{min}} e {{max}} minutos.",
     "description": "Por quanto tempo uma conversa de IA em andamento aguarda que alguém aprove uma ação restrita (Nível 2/3) antes de desistir.",
     "orgOverrideNote": "As organizações podem substituir esse valor em suas próprias configurações de IA; o valor da organização prevalece quando definido.",
@@ -5912,7 +5911,6 @@
     "inheritLabel": "Herdar ({{minutes}} minutos, {{source}})",
     "sourcePartner": "padrão do parceiro",
     "sourceDefault": "padrão do produto",
-    "minutesOption": "{{minutes}} minutos",
     "range": "Escolha entre {{min}} e {{max}} minutos.",
     "save": "Salvar"
   }

@@ -47,7 +47,7 @@ export default function PartnerAiApprovalsTab({ data, onChange }: Props) {
           </option>
           {options.map((minutes) => (
             <option key={minutes} value={minutes}>
-              {t('partnerAiApprovals.minutesOption', { minutes })}
+              {t('orgDefaultsEditor.enrollment.capMinutes', { minutes })}
             </option>
           ))}
         </select>
