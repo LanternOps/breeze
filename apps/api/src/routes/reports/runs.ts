@@ -34,6 +34,7 @@ import {
   systemPartnerWideListArm,
   PORTAL_SELF_SERVICE_REPORT,
   REPORT_TENANT_INACTIVE,
+  resolveOrgReportAuthority,
 } from './helpers';
 import { downloadQuerySchema, listRunsSchema } from './schemas';
 // Execution plane W05 (spec §6.3) — attach an analysis artifact by reference.
@@ -320,6 +321,10 @@ runsRoutes.get(
       if (!auth.orgId) {
         return c.json({ error: 'Organization context required' }, 403);
       }
+      // #6771: an org token may only name its own org.
+      if (query.orgId && query.orgId !== auth.orgId) {
+        return c.json({ error: 'Access to this organization denied' }, 403);
+      }
       // #6699 decision B: listing runs is read-only history.
       const result = await resolveRequestReportAuthority(auth, auth.orgId, 'read_history');
       if (!result.ok || result.authority.scope.kind === 'legacy_unscoped') {
@@ -333,6 +338,17 @@ runsRoutes.get(
         reportRuns,
         result.authority.scope,
       );
+    } else if (auth.scope === 'partner' && query.orgId) {
+      // #6771: a single-org run listing — the ONLY way a partner lists an
+      // out-of-service org's runs (served from the verified report-history
+      // reach by resolveOrgReportAuthority; the unfiltered listing below stays
+      // active-only). Org-owned runs only, like GET /reports?orgId=.
+      const result = await resolveOrgReportAuthority(auth, query.orgId, 'read_history');
+      if (!result.ok || result.authority.scope.kind === 'legacy_unscoped') {
+        return c.json({ error: 'Access to this organization denied' }, 403);
+      }
+      conditions.push(eq(reports.orgId, query.orgId));
+      runScopePredicate = reportRunScopeSqlPredicate(reportRuns, result.authority.scope);
     } else if (auth.scope === 'partner') {
       const orgIds = auth.accessibleOrgIds ?? [];
       const authorityMap = await resolveRequestReportAuthorityMap(
@@ -365,6 +381,10 @@ runsRoutes.get(
         // exactly the pre-W01 three-argument call.
         ...(partnerWide ? [partnerWide] : []),
       );
+    } else if (query.orgId) {
+      // System scope, single org (#6771 parity with GET /reports?orgId=).
+      conditions.push(eq(reports.orgId, query.orgId));
+      runScopePredicate = unrestrictedReportRunScopeSqlPredicate(reportRuns);
     } else {
       // System scope. #3198 W02 (addendum B7, ruling P9): partner-owned runs
       // with a well-formed partner_wide envelope list too (the run carries its
