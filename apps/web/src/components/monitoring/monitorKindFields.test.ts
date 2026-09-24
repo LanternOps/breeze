@@ -131,7 +131,7 @@ describe('monitorKindFields locale coverage (sweep pass-3 G1-2)', () => {
     const missing: string[] = [];
     for (const kind of MONITOR_KINDS) {
       for (const field of MONITOR_KIND_FIELDS[kind as MonitorKind]) {
-        if (field.kind !== 'select') continue;
+        if (field.kind !== 'select' && field.kind !== 'multiselect') continue;
         const ns = SELECT_OPTION_NAMESPACE[`${kind}:${field.key}`] ?? SELECT_OPTION_NAMESPACE[field.key];
         for (const opt of field.options ?? []) {
           if (!ns || typeof resolve(`${ns}.${opt}`) !== 'string') missing.push(`${kind}.${field.key}=${opt} (ns=${ns ?? 'none'})`);

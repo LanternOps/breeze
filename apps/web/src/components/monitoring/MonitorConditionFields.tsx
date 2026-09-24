@@ -24,6 +24,8 @@ export const SELECT_OPTION_NAMESPACE: Record<string, string> = {
   checkType: 'checkTypes',
   'antivirus:check': 'antivirusChecks',
   'backup_continuity:check': 'backupChecks',
+  'hardware_health:componentTypes': 'monitors.fields.hardware_health.componentTypeOptions',
+  'hardware_health:minHealth': 'monitors.fields.hardware_health.minHealthOptions',
 };
 
 interface FetchedScript {
@@ -128,6 +130,43 @@ function ScalarConditionFields({ kind, name }: MonitorConditionFieldsProps) {
         const path = `${name}.${field.key}`;
         const label = t(/* i18n-dynamic */ field.labelKey) + (field.unit ? ` (${field.unit})` : '');
         const fieldError = conditionErrors[field.key]?.message;
+
+        if (field.kind === 'multiselect') {
+          const ns = SELECT_OPTION_NAMESPACE[`${kind}:${field.key}`] ?? SELECT_OPTION_NAMESPACE[field.key];
+          return (
+            <fieldset
+              key={field.key}
+              data-testid={`condition-field-${field.key}`}
+              className="space-y-2 sm:col-span-2"
+              aria-describedby={fieldError ? `condition-error-${field.key}` : undefined}
+            >
+              <legend className="text-xs font-medium text-muted-foreground">{label}</legend>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {(field.options ?? []).map((option) => {
+                  const id = `condition-field-${field.key}-${option}`;
+                  return (
+                    <label key={option} htmlFor={id} className="flex items-center gap-2 text-sm">
+                      <input
+                        id={id}
+                        data-testid={id}
+                        type="checkbox"
+                        value={option}
+                        className="h-4 w-4 rounded border"
+                        {...register(path)}
+                      />
+                      {t(/* i18n-dynamic */ `${ns}.${option}`, { defaultValue: option })}
+                    </label>
+                  );
+                })}
+              </div>
+              {fieldError && (
+                <p id={`condition-error-${field.key}`} className="text-xs text-destructive">
+                  {fieldError}
+                </p>
+              )}
+            </fieldset>
+          );
+        }
 
         if (field.kind === 'boolean') {
           return (

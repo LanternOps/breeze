@@ -180,7 +180,8 @@
     "software_presence": "Yazılım varlığı",
     "backup_continuity": "Yedekleme sürekliliği",
     "script": "Betik denetimi",
-    "network_check": "Ağ denetimi"
+    "network_check": "Ağ denetimi",
+    "hardware_health": "Donanım sağlığı"
   },
   "fields": {
     "operator": "Karşılaştırma",
@@ -513,5 +514,27 @@
     "state": "Durum",
     "episode": "Açık olay",
     "escalation": "Yükseltme"
+  },
+  "monitors": {
+    "fields": {
+      "hardware_health": {
+        "componentTypes": "Bileşenler",
+        "minHealth": "En düşük sağlık düzeyi",
+        "includePredictiveFailure": "Öngörülen arızaları dahil et",
+        "consecutiveSnapshots": "Ardışık anlık görüntüler",
+        "componentTypeOptions": {
+          "controller": "Denetleyiciler",
+          "virtual_disk": "Sanal diskler",
+          "physical_disk": "Fiziksel diskler",
+          "cache_battery": "Önbellek pilleri",
+          "enclosure": "Kasalar",
+          "collector": "İzleme araçları"
+        },
+        "minHealthOptions": {
+          "warning": "Uyarı",
+          "critical": "Kritik"
+        }
+      }
+    }
   }
 }
