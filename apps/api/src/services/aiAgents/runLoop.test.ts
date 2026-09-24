@@ -2708,6 +2708,7 @@ describe('verdict profile in the run loop (P2-1)', () => {
     expect(lastQueryOptions?.allowedTools).toEqual([
       'mcp__breeze__manage_alerts',
       'mcp__breeze__get_device_details',
+      'mcp__breeze__get_device_hardware_health',
       'mcp__breeze__analyze_metrics',
       'mcp__breeze__query_monitors',
       'mcp__breeze__submit_alert_verdict',
@@ -2720,7 +2721,7 @@ describe('verdict profile in the run loop (P2-1)', () => {
     expect(extraTools!.length).toBeGreaterThan(0);
 
     // F2 fix (Task 16c): createBreezeMcpServer's 6th param (options.onlyTools)
-    // must narrow the REGISTRY, not just allowedTools — same four bare names
+    // must narrow the REGISTRY, not just allowedTools — same five bare names
     // as the allowedTools assertion above, minus the mcp__breeze__ prefix and
     // the outcome tool (which is never in the registry — it rides on
     // extraTools instead, asserted separately above).
@@ -2728,7 +2729,7 @@ describe('verdict profile in the run loop (P2-1)', () => {
       | { onlyTools?: ReadonlySet<string> }
       | undefined;
     expect(mcpServerOptions?.onlyTools).toEqual(
-      new Set(['manage_alerts', 'get_device_details', 'analyze_metrics', 'query_monitors']),
+      new Set(['manage_alerts', 'get_device_details', 'get_device_hardware_health', 'analyze_metrics', 'query_monitors']),
     );
   });
 
