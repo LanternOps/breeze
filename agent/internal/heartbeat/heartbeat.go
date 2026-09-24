@@ -27,6 +27,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/authstate"
 	"github.com/breeze-rmm/agent/internal/backupipc"
 	"github.com/breeze-rmm/agent/internal/collectors"
+	"github.com/breeze-rmm/agent/internal/collectors/hwhealth"
 	"github.com/breeze-rmm/agent/internal/collectors/networkcontext"
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/desktopfence"
@@ -404,6 +405,20 @@ type Heartbeat struct {
 	lastReliabilityUpdate time.Time
 	lastHardwareUpdate    time.Time // stamped at startup; gate then re-runs every 24 h
 	lastPatchUpdate       time.Time // stamped at startup; gate then re-runs every PatchScanIntervalHours
+	// Hardware health (RAID/disk) collection state. hwContext/hwCancel bound
+	// in-flight collect/upload work so shutdown can cancel it; hwStarted /
+	// hwRunning / hwStopping / hwDisabled* gate dispatch (see hardware_health.go).
+	hwhealthCol        *hwhealth.Collector
+	hwConfig           hwhealth.Config
+	lastHwRaidRun      time.Time
+	lastHwDiskRun      time.Time
+	hwContext          context.Context
+	hwCancel           context.CancelFunc
+	hwStarted          bool
+	hwRunning          bool
+	hwStopping         bool
+	hwDisabledQueued   bool
+	hwDisabledSnapshot *hwhealth.Snapshot
 	// #2728 — a patch submission that fails (e.g. a fleet-wide 429 from the
 	// per-org rate limiter) used to leave posture stale for a full scan
 	// interval, because lastPatchUpdate was stamped at dispatch time whether or
@@ -939,7 +954,10 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		pamReconciliationBlocked:       make(map[string]struct{}),
 		pamReconciliationWake:          make(chan struct{}, 1),
 		desktopTargets:                 make(map[string]string),
+		hwhealthCol:                    hwhealth.New(hwhealth.Options{DataDir: config.GetDataDir(), ExtraToolDirs: cfg.Hardware.ToolDirs}),
+		hwConfig:                       hwhealth.Config{Enabled: true, PollInterval: 10 * time.Minute, DiskHealthInterval: time.Hour},
 	}
+	h.hwContext, h.hwCancel = context.WithCancel(context.Background())
 	h.accepting.Store(true)
 	h.isService = cfg.IsService
 	h.isHeadless = cfg.IsHeadless
@@ -1766,6 +1784,7 @@ func bootstrapThenListenWithRetry(ctx context.Context, bootstrap func() error, l
 }
 
 func (h *Heartbeat) Start() {
+	h.startHardwareHealth()
 	h.startPamReconciliationRetryLoop()
 
 	// Issue #2621 — before the first heartbeat, finish any credential rotation
@@ -1974,6 +1993,7 @@ func (h *Heartbeat) Start() {
 			patchIntervalHours := clampPatchScanIntervalHours(h.config.PatchScanIntervalHours)
 			patchInterval := time.Duration(patchIntervalHours) * time.Hour
 			shouldSendPatch := h.claimPatchScanLocked(now, patchInterval)
+			hwTiers := h.hardwareTiersLocked(now, false)
 			h.mu.Unlock()
 
 			// Check for recent boot every few minutes (not every heartbeat tick).
@@ -2057,6 +2077,9 @@ func (h *Heartbeat) Start() {
 			if shouldSendPatch {
 				go h.sendPatchInventory()
 			}
+			if hwTiers != nil {
+				h.dispatchHardwareHealth(hwTiers)
+			}
 		case <-h.stopChan:
 			return
 		}
@@ -2072,6 +2095,7 @@ func (h *Heartbeat) StopAcceptingCommands() {
 // DrainAndWait waits for all in-flight commands and inventory goroutines to complete,
 // respecting the context deadline.
 func (h *Heartbeat) DrainAndWait(ctx context.Context) {
+	h.stopHardwareHealth()
 	log.Info("draining in-flight commands and inventory goroutines")
 	h.pool.Drain(ctx)
 	h.wg.Wait()
@@ -2092,6 +2116,7 @@ func (h *Heartbeat) DrainAndWait(ctx context.Context) {
 
 func (h *Heartbeat) Stop() {
 	h.stopOnce.Do(func() {
+		h.stopHardwareHealth()
 		shutdownTimeout := h.shutdownTimeout
 		if shutdownTimeout <= 0 {
 			shutdownTimeout = 5 * time.Second
@@ -2257,7 +2282,11 @@ func (h *Heartbeat) sendInventoryData(endpoint string, payload any, label string
 		"Authorization": {h.authHeader()},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	parent := context.Background()
+	if endpoint == "hardware-health" && h.hwContext != nil {
+		parent = h.hwContext
+	}
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
 
 	resp, err := httputil.Do(ctx, h.httpClient(), "PUT", url, body, headers, h.retryCfg)
@@ -2272,6 +2301,9 @@ func (h *Heartbeat) sendInventoryData(endpoint string, payload any, label string
 		return nil
 	} else {
 		log.Warn("inventory send failed", "label", label, "status", resp.StatusCode)
+	}
+	if endpoint == "hardware-health" {
+		return &hardwareSubmissionError{status: resp.StatusCode}
 	}
 	return fmt.Errorf("inventory send failed for %s: status %d", label, resp.StatusCode)
 }
@@ -2947,6 +2979,14 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 
 	if raw, ok := update["networkContext"]; ok {
 		h.applyNetworkContextConfig(raw)
+	}
+
+	hwRaw, hasHW := update["hardware_monitoring_settings"]
+	if !hasHW {
+		hwRaw, hasHW = update["hardwareMonitoringSettings"]
+	}
+	if hasHW {
+		h.applyHardwareMonitoringConfig(hwRaw)
 	}
 
 	// Apply event_log_settings if present
