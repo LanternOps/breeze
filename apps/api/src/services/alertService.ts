@@ -8,8 +8,9 @@
  * - Interpolate template strings
  */
 
+import { randomUUID } from 'node:crypto';
 import type { MonitorKind } from '@breeze/shared';
-import { db } from '../db';
+import { db, withDbTransaction } from '../db';
 import {
   alerts,
   alertRules,
@@ -64,6 +65,39 @@ export interface CreateAlertParams {
    * auto-resolved and never auto-suppressed by an AI verdict.
    */
   requiresHuman?: boolean;
+  /**
+   * W03 — component (subject) identity within the rule/device pair. A subject
+   * alert is inserted atomically with `ON CONFLICT ... DO NOTHING`, staged for
+   * outbox dispatch rather than published synchronously, and never runs the
+   * device-level noise controls (cooldown/flapping) — those are subject-scoped
+   * via Task 6's helpers, called above before the insert. Empty string is
+   * invalid: it would collide with the NULL (legacy) identity under the
+   * `COALESCE(subject_key, '')` uniqueness predicate.
+   */
+  subjectKey?: string;
+  /**
+   * W03 — lazily allocates (or adopts) the subject's episode. Called only
+   * AFTER the subject wins its insert, never before — an episode must never
+   * be opened for a subject that was suppressed or deduped.
+   */
+  allocateSubjectEpisode?: () => Promise<string>;
+}
+
+/**
+ * W03 — the transactional outbox envelope staged on a subject alert's own row.
+ * `alerts.context._subjectDispatch` (or `_subjectResolutionDispatch` for a
+ * recovery) IS the outbox: no separate table, no in-memory callback list. Task
+ * 10's drain reads it back only after the writing transaction has committed.
+ */
+export interface SubjectAlertDispatch {
+  eventId: string;
+  eventType: 'alert.triggered' | 'alert.resolved';
+  publisher?: string;
+  siteId: string | null | undefined;
+  cooldownMinutes: number;
+  payload: Record<string, unknown>;
+  leaseToken?: string;
+  leaseUntil?: string;
 }
 
 // Rule with template info for evaluation
@@ -167,8 +201,12 @@ async function monitorEventFields(monitorId: string | null | undefined, kind?: M
 export async function createAlert(params: CreateAlertParams): Promise<string | null> {
   const {
     ruleId, deviceId, orgId, severity, title, message, context, monitorId,
-    episodeId, requiresHuman,
+    episodeId, requiresHuman, subjectKey, allocateSubjectEpisode,
   } = params;
+
+  if (subjectKey === '') {
+    throw new Error('subjectKey must not be empty');
+  }
 
   // Get the rule to check cooldown settings
   const [rule] = await db
@@ -195,15 +233,17 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
     template?.cooldownMinutes ?? 5;
 
   // Check cooldown
-  const cooldownActive = await isCooldownActive(ruleId, deviceId);
+  const cooldownActive = await isCooldownActive(ruleId, deviceId, subjectKey);
   if (cooldownActive) {
-    console.log(`[AlertService] Cooldown active for rule=${ruleId} device=${deviceId}`);
+    console.log(`[AlertService] Cooldown active for rule=${ruleId} device=${deviceId} subject=${subjectKey ?? 'null'}`);
     return null;
   }
 
-  // Check for existing open alert (dedupe)
-  // Skip if there's any non-resolved alert — active, acknowledged, or suppressed
-  // all mean the user is already aware of / managing this condition
+  // Check for existing open alert (dedupe). Skip if there's any non-resolved
+  // alert for the SAME identity — active, acknowledged, or suppressed all mean
+  // the user is already aware of / managing this condition. `IS NOT DISTINCT
+  // FROM` treats NULL subjectKey (legacy) as its own identity, matching the
+  // `COALESCE(subject_key, '')` uniqueness predicate the insert below uses.
   const [existingAlert] = await db
     .select()
     .from(alerts)
@@ -211,49 +251,74 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
       and(
         eq(alerts.ruleId, ruleId),
         eq(alerts.deviceId, deviceId),
+        sql`${alerts.subjectKey} IS NOT DISTINCT FROM ${subjectKey ?? null}`,
         inArray(alerts.status, ['active', 'acknowledged', 'suppressed'])
       )
     )
     .limit(1);
 
   if (existingAlert) {
-    console.log(`[AlertService] Open alert (${existingAlert.status}) already exists for rule=${ruleId} device=${deviceId}`);
+    console.log(`[AlertService] Open alert (${existingAlert.status}) already exists for rule=${ruleId} device=${deviceId} subject=${subjectKey ?? 'null'}`);
     return null;
   }
 
   // Phase 6a: Flapping detection — suppress if rapid state changes detected
-  const flapping = await isFlapping(ruleId, deviceId);
+  const flapping = await isFlapping(ruleId, deviceId, undefined, undefined, subjectKey);
   if (flapping) {
-    console.log(`[AlertService] Flapping detected for rule=${ruleId} device=${deviceId}, suppressing alert`);
-    // Still set cooldown to prevent immediate re-evaluation
-    await setCooldown(ruleId, deviceId, cooldownMinutes);
+    console.log(`[AlertService] Flapping detected for rule=${ruleId} device=${deviceId} subject=${subjectKey ?? 'null'}, suppressing alert`);
+    // Still set cooldown to prevent immediate re-evaluation — only for the
+    // legacy (NULL-subject) path. A subject path burns no Redis writes at all
+    // (see the module doc on SubjectAlertDispatch): its own noise controls
+    // already ran above, and every effect from here belongs to the winning
+    // insert's committed transaction, not to a suppressed evaluation.
+    if (subjectKey === undefined) {
+      await setCooldown(ruleId, deviceId, cooldownMinutes);
+    }
     return null;
   }
 
-  // Record state transition for flapping detection
-  await recordStateTransition(ruleId, deviceId, 'triggered');
-
   const monitorFields = await monitorEventFields(monitorId ?? rule.managedByMonitorId, params.kind);
 
-  // Create the alert
-  const [newAlert] = await db
-    .insert(alerts)
-    .values({
-      ruleId,
-      deviceId,
-      orgId,
-      severity,
-      title,
-      message,
-      context: context ?? {},
-      monitorId: monitorFields.monitorId,
-      episodeId: episodeId ?? null,
-      requiresHuman: requiresHuman ?? false,
-      status: 'active',
-      triggeredAt: new Date()
-    })
-    .returning();
+  const insert = async (): Promise<{ id: string } | undefined> => {
+    const [row] = await db.execute<{ id: string }>(sql`
+      INSERT INTO alerts (rule_id, device_id, org_id, severity, title, message, context,
+        monitor_id, episode_id, requires_human, subject_key, status, triggered_at)
+      VALUES (${ruleId}, ${deviceId}, ${orgId}, ${severity}, ${title}, ${message},
+        ${JSON.stringify(context ?? {})}::jsonb, ${monitorFields.monitorId}, ${episodeId ?? null},
+        ${requiresHuman ?? false}, ${subjectKey ?? null}, 'active', now())
+      ON CONFLICT (rule_id, device_id, COALESCE(subject_key, ''))
+        WHERE rule_id IS NOT NULL AND status IN ('active', 'acknowledged', 'suppressed')
+      DO NOTHING RETURNING id`);
+    return row;
+  };
 
+  if (subjectKey !== undefined) {
+    // All three writes share a savepoint AND the caller's outer commit. No
+    // event or Redis write may escape before that outer transaction commits —
+    // Task 10 drains `_subjectDispatch` only after the outer commit lands.
+    return withDbTransaction(async () => {
+      const newAlert = await insert();
+      if (!newAlert) return null;
+      const subjectEpisodeId = episodeId ?? (allocateSubjectEpisode ? await allocateSubjectEpisode() : null);
+      const responsesOwner = subjectEpisodeId ? (await linkEpisodeAlert(subjectEpisodeId, newAlert.id)).owner : false;
+      const pending: SubjectAlertDispatch = {
+        eventId: newAlert.id,
+        eventType: 'alert.triggered',
+        siteId: await resolveDeviceSiteId(deviceId),
+        cooldownMinutes,
+        payload: {
+          alertId: newAlert.id, ruleId, deviceId, severity, title, message,
+          ...monitorFields, episodeId: subjectEpisodeId, subjectKey, responsesOwner,
+        },
+      };
+      await db.update(alerts)
+        .set({ episodeId: subjectEpisodeId, context: { ...context, _subjectDispatch: pending } })
+        .where(eq(alerts.id, newAlert.id));
+      return newAlert.id;
+    });
+  }
+
+  const newAlert = await insert();
   if (!newAlert) {
     console.error('[AlertService] Failed to create alert');
     return null;
@@ -276,7 +341,9 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
       severity,
       title,
       message,
-      ...monitorFields
+      ...monitorFields,
+      subjectKey: null,
+      responsesOwner: true,
     },
     publisher: 'alert-service',
     siteId
@@ -286,8 +353,10 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
     return null;
   }
 
+  await recordStateTransition(ruleId, deviceId, 'triggered');
+
   // Set cooldown
-  await setCooldown(ruleId, deviceId, cooldownMinutes);
+  await setCooldown(ruleId, deviceId, cooldownMinutes, undefined);
 
   enqueueAlertCorrelationForDevice(orgId, deviceId);
 
@@ -444,6 +513,12 @@ export async function checkAutoResolve(alertId: string): Promise<boolean> {
     .limit(1);
 
   if (!alert || alert.status !== 'active') {
+    return false;
+  }
+
+  // W03 — a subject (component) alert reconciles through evaluateSubjectAlerts
+  // under the sweep's own lock, never through this device-level path.
+  if (alert.subjectKey) {
     return false;
   }
 
@@ -715,7 +790,8 @@ function buildAlertStatusCas(alertId: string, statuses: readonly AlertStatus[]) 
 export async function resolveAlert(
   alertId: string,
   resolutionNote?: string,
-  resolvedBy?: string
+  resolvedBy?: string,
+  deferSubjectEffects = false,
 ): Promise<boolean> {
   // Winner-takes-all. The status predicate IS the concurrency control: reading
   // the row first and then updating by id unconditionally lets two callers
@@ -745,10 +821,42 @@ export async function resolveAlert(
   // Already resolved by someone else (or gone). Not an error — just not ours.
   if (!alert) return false;
 
+  // W03 — a subject recovery under the locked sweep commits its resolution and
+  // pending `alert.resolved` event TOGETHER (in the SAME outer transaction as
+  // the caller's other subject writes) and does no Redis write or publication
+  // here. `deferSubjectEffects` defaults to false so every OTHER caller —
+  // manual resolution, checkAutoResolve, the config-policy sweep — keeps
+  // today's synchronous behaviour unchanged; only Tasks 9 and 12 opt in.
+  if (deferSubjectEffects && alert.subjectKey) {
+    const [rule] = alert.ruleId
+      ? await db.select().from(alertRules).where(eq(alertRules.id, alert.ruleId)).limit(1)
+      : [];
+    const [template] = rule
+      ? await db.select().from(alertTemplates).where(eq(alertTemplates.id, rule.templateId)).limit(1)
+      : [];
+    const overrides = rule?.overrideSettings as Record<string, unknown> | null;
+    const pending: SubjectAlertDispatch = {
+      eventId: randomUUID(),
+      eventType: 'alert.resolved',
+      siteId: await resolveDeviceSiteId(alert.deviceId),
+      cooldownMinutes: (overrides?.cooldownMinutes as number) ?? template?.cooldownMinutes ?? 15,
+      payload: {
+        alertId, ruleId: alert.ruleId, deviceId: alert.deviceId, subjectKey: alert.subjectKey, resolutionNote,
+        resolvedAt: alert.resolvedAt!.toISOString(), resolvedBy: alert.resolvedBy,
+        triggeredAt: alert.triggeredAt.toISOString(),
+      },
+    };
+    await db.update(alerts).set({
+      context: sql`jsonb_set(
+    COALESCE(${alerts.context}, '{}'::jsonb) - '_subjectDispatch', '{_subjectResolutionDispatch}', ${JSON.stringify(pending)}::jsonb)`,
+    }).where(eq(alerts.id, alertId));
+    return true;
+  }
+
   // Phase 6a: Record resolution state transition for flapping detection
   try {
     if (alert.ruleId) {
-      await recordStateTransition(alert.ruleId, alert.deviceId, 'resolved');
+      await recordStateTransition(alert.ruleId, alert.deviceId, 'resolved', alert.subjectKey ?? undefined);
     } else if (alert.configPolicyId) {
       await recordStateTransition(alert.configPolicyId, alert.deviceId, 'resolved');
     }
@@ -788,7 +896,7 @@ export async function resolveAlert(
       const overrides = rule.overrideSettings as Record<string, unknown> | null;
       const cooldownMinutes = (overrides?.cooldownMinutes as number) ??
         template?.cooldownMinutes ?? 15;
-      await setCooldown(alert.ruleId, alert.deviceId, cooldownMinutes);
+      await setCooldown(alert.ruleId, alert.deviceId, cooldownMinutes, alert.subjectKey ?? undefined);
     }
   }
 
