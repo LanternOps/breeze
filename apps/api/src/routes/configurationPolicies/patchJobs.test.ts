@@ -383,7 +383,16 @@ describe('configurationPolicies patchJob routes', () => {
         values: insertValuesMock,
       } as any);
 
-      enqueuePatchJobMock.mockRejectedValueOnce(new Error('queue wedged'));
+      // mockImplementationOnce (not mockRejectedValueOnce) so the #6849
+      // depth-capture in the hoisted default implementation still runs before
+      // this call rejects — otherwise this test couldn't assert the enqueue
+      // was attempted post-commit (depth 0) on the exact path where a future
+      // regression is most likely to re-nest it (right next to the
+      // try/catch this test exercises).
+      enqueuePatchJobMock.mockImplementationOnce(async () => {
+        dbContextState.enqueueDepths.push(dbContextState.depth);
+        throw new Error('queue wedged');
+      });
 
       const res = await app.request(`/${POLICY_ID}/patch-job`, {
         method: 'POST',
@@ -401,6 +410,9 @@ describe('configurationPolicies patchJob routes', () => {
         { jobId: 'job-1', orgId: ORG_ID, error: 'queue wedged' },
       ]);
       expect(captureExceptionMock).toHaveBeenCalled();
+      // #6849 — the failing enqueue attempt itself still ran after the write
+      // committed (depth 0), not from inside withAuthDbAccessContext.
+      expect(dbContextState.enqueueDepths).toEqual([0]);
     });
 
     it('returns 404 when no accessible devices found', async () => {
@@ -620,6 +632,12 @@ describe('configurationPolicies patchJob routes', () => {
       expect(json.totalDevices).toBe(2);
       // One patch_jobs row per device org (job insert grouped by org).
       expect(insertValuesMock).toHaveBeenCalledTimes(2);
+      // #6849 — both per-org enqueue calls ran after the single
+      // withAuthDbAccessContext block (that inserted both rows) had
+      // returned, not from inside the per-org insert loop.
+      expect(withAuthDbAccessContextMock).toHaveBeenCalledTimes(1);
+      expect(enqueuePatchJobMock).toHaveBeenCalledTimes(2);
+      expect(dbContextState.enqueueDepths).toEqual([0, 0]);
     });
 
     it('reports only the failing org while still creating jobs for every org in a partner-wide request (#3945)', async () => {
