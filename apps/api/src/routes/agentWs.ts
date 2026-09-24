@@ -1636,7 +1636,9 @@ export async function processOrphanedCommandResult(
           })
           .where(eq(discoveryJobs.id, discoveryJob.id));
       } catch (dbErr) {
+        // #3530: the orphaned-result twin of the registry handler's fallback.
         console.error(`[AgentWs] Additionally failed to mark discovery job ${discoveryJob.id} as failed:`, dbErr);
+        captureException(dbErr, undefined, { command_result_phase: 'discovery_mark_failed' });
       }
     }
     return;
