@@ -88,6 +88,14 @@ export const invoices = pgTable('invoices', {
   // reads ONLY this column afterwards, so a later partner-default change cannot
   // alter what a sanctioned re-render produces.
   deviceAppendix: boolean('device_appendix'),
+  // #6227 presentation snapshot. NULL on a draft = preview the partner's live
+  // document_theme / document_page_size; both issue writers (issueInvoice and
+  // the quote-accept direct issue) freeze the RESOLVED values here, and every
+  // renderer reads them through resolveInvoicePresentation afterwards.
+  // CHECK-constrained to the documentThemes vocabulary (migration
+  // 2026-10-29-100100-invoice-presentation-snapshot).
+  documentTheme: varchar('document_theme', { length: 16 }),
+  documentPageSize: varchar('document_page_size', { length: 8 }),
   // #3205 W07: 1 = billing evidence captured at generation or interactive
   // contract-line materialization. NULL = no evidence capture recorded. Invoice-level `recorded` flag — never
   // derived from an evidence row count.

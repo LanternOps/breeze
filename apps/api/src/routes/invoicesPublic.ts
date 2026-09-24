@@ -15,7 +15,7 @@ import { CUSTOMER_SAFE_CURRENCY_UNSUPPORTED_MESSAGE } from '../services/stripeCh
 import { settleCheckoutSession } from '../services/stripeSettle';
 import { InvoiceServiceError } from '../services/invoiceTypes';
 import { safeContentDispositionFilename } from '../utils/httpHeaders';
-import { resolveThemeId, resolvePageSize } from '../services/documentThemes';
+import { resolveInvoicePresentation } from '../services/invoicePresentation';
 import { portalBase } from '../services/portalUrl';
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
@@ -121,7 +121,7 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
           replaced: inv.replacedByInvoiceId != null,
         },
         lines: [], chargeNow: null, payable: false,
-        branding: brandingBlock(partner, brand),
+        branding: brandingBlock(inv, partner, brand),
       };
     }
 
@@ -161,13 +161,14 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
       lines: rows.map(toCustomerInvoiceLine),
       chargeNow,
       payable: PAYABLE.has(inv.status) && Number(inv.balance) > 0,
-      branding: brandingBlock(partner, brand),
+      branding: brandingBlock(inv, partner, brand),
     };
   }));
   return c.json({ data });
 });
 
 function brandingBlock(
+  inv: { documentTheme: string | null; documentPageSize: string | null },
   partner: { name: string; billingEmail: string | null; documentTheme: string | null; documentPageSize: string | null } | undefined,
   brand: { logoUrl: string | null; primaryColor: string | null } | undefined,
 ) {
@@ -176,8 +177,9 @@ function brandingBlock(
     contactEmail: partner?.billingEmail ?? null,
     logoUrl: brand?.logoUrl ?? null,
     primaryColor: brand?.primaryColor ?? null,
-    theme: resolveThemeId(partner?.documentTheme),
-    pageSize: resolvePageSize(partner?.documentPageSize),
+    // #6227: the invoice's issue-time snapshot (every non-draft invoice carries
+    // one since 2026-10-29-100100), partner live values only as the fallback.
+    ...resolveInvoicePresentation(inv, partner),
   };
 }
 
