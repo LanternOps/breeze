@@ -23,8 +23,19 @@ var (
 
 // regKey adapts registry.Key to Key. Every Key it hands out owns a real
 // handle the caller must Close — an open handle under a loaded hive makes
-// RegUnLoadKeyW fail with ERROR_ACCESS_DENIED.
-type regKey struct{ k registry.Key }
+// RegUnLoadKeyW fail with ERROR_ACCESS_DENIED. access is the mask every
+// descendant OpenKey uses: registry.ALL_ACCESS for Load,
+// registry.READ for LoadReadOnly.
+type regKey struct {
+	k      registry.Key
+	access uint32
+}
+
+// errReadOnly is what CreateKey/DeleteKey return on a LoadReadOnly hive
+// (Set*/DeleteValue fail in the OS: the handle has no write access).
+var errReadOnly = errors.New("winhive: hive was loaded read-only")
+
+func (a regKey) readOnly() bool { return a.access&registry.SET_VALUE == 0 }
 
 var (
 	_ Key    = regKey{}
@@ -39,24 +50,30 @@ func notExist(err error) error {
 }
 
 func (a regKey) OpenKey(path string) (Key, error) {
-	k, err := registry.OpenKey(a.k, path, registry.ALL_ACCESS)
+	k, err := registry.OpenKey(a.k, path, a.access)
 	if err != nil {
 		return nil, notExist(err)
 	}
-	return regKey{k}, nil
+	return regKey{k, a.access}, nil
 }
 
 func (a regKey) CreateKey(path string) (Key, error) {
+	if a.readOnly() {
+		return nil, errReadOnly
+	}
 	k, _, err := registry.CreateKey(a.k, path, registry.ALL_ACCESS)
 	if err != nil {
 		return nil, err
 	}
-	return regKey{k}, nil
+	return regKey{k, registry.ALL_ACCESS}, nil
 }
 
 // DeleteKey removes path and its whole subtree (registry.DeleteKey only
 // deletes a leaf). Absent → nil.
 func (a regKey) DeleteKey(path string) error {
+	if a.readOnly() {
+		return errReadOnly
+	}
 	child, err := registry.OpenKey(a.k, path, registry.ENUMERATE_SUB_KEYS)
 	if err != nil {
 		if errors.Is(err, registry.ErrNotExist) {
@@ -160,6 +177,20 @@ func unload(mountName string) error {
 // fresh, empty hive at that path and loads it (lab-proven), which would
 // turn "no SYSTEM hive" into a silently empty edit.
 func Load(hiveFile, mountName string) (Handle, error) {
+	return load(hiveFile, mountName, registry.ALL_ACCESS)
+}
+
+// LoadReadOnly is Load with every key handle opened KEY_READ, for a hive
+// that is only inspected — validate's BCD check. A BCD store bcdboot
+// builds from BCD-Template grants BUILTIN\Administrators only ReadKey +
+// WRITE_DAC, so Load's KEY_ALL_ACCESS root open is denied there even with
+// SeBackup/SeRestore held (lab-proven). The caller holds the same
+// privileges as for Load; Close still flushes and unloads.
+func LoadReadOnly(hiveFile, mountName string) (Handle, error) {
+	return load(hiveFile, mountName, registry.READ)
+}
+
+func load(hiveFile, mountName string, access uint32) (Handle, error) {
 	if _, err := os.Stat(hiveFile); err != nil {
 		return nil, fmt.Errorf("RegLoadKeyW %s -> HKLM\\%s: hive file: %w", hiveFile, mountName, err)
 	}
@@ -174,14 +205,14 @@ func Load(hiveFile, mountName string) (Handle, error) {
 	if r1, _, _ := procRegLoadKeyW.Call(uintptr(windows.HKEY_LOCAL_MACHINE), uintptr(unsafe.Pointer(namePtr)), uintptr(unsafe.Pointer(filePtr))); r1 != 0 {
 		return nil, fmt.Errorf("RegLoadKeyW %s -> HKLM\\%s: %w", hiveFile, mountName, windows.Errno(r1))
 	}
-	k, err := registry.OpenKey(registry.LOCAL_MACHINE, mountName, registry.ALL_ACCESS)
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, mountName, access)
 	if err != nil {
 		if uerr := unload(mountName); uerr != nil {
 			return nil, errors.Join(fmt.Errorf("open HKLM\\%s: %w", mountName, err), uerr)
 		}
 		return nil, fmt.Errorf("open HKLM\\%s: %w", mountName, err)
 	}
-	return &loadedHive{root: regKey{k}, mountName: mountName}, nil
+	return &loadedHive{root: regKey{k, access}, mountName: mountName}, nil
 }
 
 // UnloadStale unloads every HKLM subkey whose name starts with prefix —
