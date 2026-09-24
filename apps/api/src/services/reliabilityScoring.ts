@@ -167,6 +167,12 @@ export interface ReliabilityListFilter {
   scoreRange?: ReliabilityScoreRange;
   trendDirection?: ReliabilityTrendDirection;
   issueType?: 'crashes' | 'hangs' | 'hardware' | 'services' | 'uptime';
+  /**
+   * Exact-device narrowing (#6745): a caller bound to a frozen device set
+   * (e.g. an AI analysis run) reads only these devices. `[]` matches nothing.
+   * App-layer authz — RLS does not enforce it.
+   */
+  deviceIds?: string[];
   limit?: number;
   offset?: number;
 }
@@ -1638,7 +1644,7 @@ export async function computeAndPersistOrgReliability(
   return { orgId, devicesComputed: succeeded, devicesFailed: failed };
 }
 
-export async function listReliabilityDevices(filter: ReliabilityListFilter): Promise<{ total: number; rows: ReliabilityListItem[] }> {
+function reliabilityListWhere(filter: ReliabilityListFilter): SQL | undefined {
   const conditions: SQL[] = [];
   if (filter.orgId) {
     conditions.push(eq(deviceReliability.orgId, filter.orgId));
@@ -1677,7 +1683,15 @@ export async function listReliabilityDevices(filter: ReliabilityListFilter): Pro
     conditions.push(lte(deviceReliability.uptime30d, 95));
   }
 
-  const where = conditions.length > 0 ? and(...conditions) : undefined;
+  if (filter.deviceIds) {
+    conditions.push(filter.deviceIds.length > 0 ? inArray(deviceReliability.deviceId, filter.deviceIds) : sql`false`);
+  }
+
+  return conditions.length > 0 ? and(...conditions) : undefined;
+}
+
+export async function listReliabilityDevices(filter: ReliabilityListFilter): Promise<{ total: number; rows: ReliabilityListItem[] }> {
+  const where = reliabilityListWhere(filter);
   const limit = Math.min(Math.max(Number(filter.limit ?? 25), 1), 100);
   const offset = Math.max(Number(filter.offset ?? 0), 0);
 
@@ -1746,6 +1760,48 @@ export async function listReliabilityDevices(filter: ReliabilityListFilter): Pro
   }));
 
   return { total, rows };
+}
+
+export interface ReliabilityFleetSummary {
+  total: number;
+  averageScore: number;
+  criticalDevices: number;
+  poorDevices: number;
+  fairDevices: number;
+  goodDevices: number;
+  degradingDevices: number;
+}
+
+/**
+ * Band counts + average over the WHOLE filtered set (same WHERE as
+ * listReliabilityDevices), so a paged caller's summary describes the fleet,
+ * not the page it happens to be reading (#6745). Band edges match scoreBand().
+ */
+export async function summarizeReliabilityDevices(filter: ReliabilityListFilter): Promise<ReliabilityFleetSummary> {
+  const [row] = await db
+    .select({
+      total: sql<number | string>`count(*)`,
+      averageScore: sql<number | string | null>`avg(${deviceReliability.reliabilityScore})`,
+      criticalDevices: sql<number | string>`count(*) filter (where ${deviceReliability.reliabilityScore} <= 50)`,
+      poorDevices: sql<number | string>`count(*) filter (where ${deviceReliability.reliabilityScore} between 51 and 70)`,
+      fairDevices: sql<number | string>`count(*) filter (where ${deviceReliability.reliabilityScore} between 71 and 85)`,
+      goodDevices: sql<number | string>`count(*) filter (where ${deviceReliability.reliabilityScore} >= 86)`,
+      degradingDevices: sql<number | string>`count(*) filter (where ${deviceReliability.trendDirection} = 'degrading')`,
+    })
+    .from(deviceReliability)
+    .innerJoin(devices, eq(deviceReliability.deviceId, devices.id))
+    .where(reliabilityListWhere(filter));
+
+  const n = (v: number | string | null | undefined) => Number(v ?? 0) || 0;
+  return {
+    total: n(row?.total),
+    averageScore: Math.round(n(row?.averageScore)),
+    criticalDevices: n(row?.criticalDevices),
+    poorDevices: n(row?.poorDevices),
+    fairDevices: n(row?.fairDevices),
+    goodDevices: n(row?.goodDevices),
+    degradingDevices: n(row?.degradingDevices),
+  };
 }
 
 export async function getDeviceReliability(deviceId: string): Promise<ReliabilityListItem | null> {

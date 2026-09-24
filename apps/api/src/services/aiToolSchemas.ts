@@ -234,6 +234,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     metric: z.enum(['cpu', 'ram', 'disk', 'network', 'all']).optional(),
     hoursBack: z.number().int().min(1).max(168).optional(),
     aggregation: z.enum(['raw', 'hourly', 'daily']).optional(),
+    limit: z.number().int().min(1).max(500).optional(),
   }),
 
   // Fleet hygiene findings (Task 8) — read-only fleet-wide aggregation tools.
@@ -1051,7 +1052,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     scoreRange: z.enum(['critical', 'poor', 'fair', 'good']).optional(),
     trendDirection: z.enum(['improving', 'stable', 'degrading']).optional(),
     issueType: z.enum(['crashes', 'hangs', 'hardware', 'services', 'uptime']).optional(),
-    limit: z.number().int().min(1).max(100).optional(),
+    includeTopIssues: z.boolean().optional(),
+    ...pageZodShape(15, 100),
   }),
 
   // Fleet hygiene findings (Task 8) — deduplicated fleet-wide findings feed.
@@ -1126,6 +1128,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     // The handler enforces the latter because it is process-local state.
     cleanupRunId: uuid.optional(),
     maxCandidates: z.number().int().min(1).max(200).optional(),
+    includeReasons: z.boolean().optional(),
   }).refine(
     (data) => data.action === 'preview' || (data.action === 'execute' && Array.isArray(data.paths) && data.paths.length > 0),
     { message: 'paths are required for execute action' }
@@ -1295,6 +1298,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     deviceId: uuid,
     bootsBack: z.number().int().min(1).max(30).optional(),
     triggerCollection: z.boolean().optional(),
+    includePaths: z.boolean().optional(),
   }),
 
   manage_startup_items: z.object({
@@ -1432,6 +1436,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     countMode: z.enum(['exact', 'estimated', 'none']).optional(),
     sortBy: z.enum(['timestamp', 'level', 'device']).optional(),
     sortOrder: z.enum(['asc', 'desc']).optional(),
+    includeFullMessage: z.boolean().optional(),
   }),
 
   // A-W05 (D13a): read_artifact pages a stored tool-result artifact by byte
@@ -1485,6 +1490,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     deviceIds: z.array(uuid).max(500).optional(),
     siteIds: z.array(uuid).max(500).optional(),
     limit: z.number().int().min(1).max(100).optional(),
+    includeTimeline: z.boolean().optional(),
   }),
 
   detect_log_correlations: z.object({
@@ -1504,6 +1510,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
 
   get_effective_configuration: z.object({
     deviceId: uuid,
+    featureType: z.enum(CONFIG_FEATURE_TYPES).optional(),
+    includeSettings: z.boolean().optional(),
   }),
 
   preview_configuration_change: z.object({

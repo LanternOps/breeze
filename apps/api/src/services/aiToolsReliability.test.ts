@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockListReliabilityDevices = vi.fn();
+const mockSummarizeReliabilityDevices = vi.fn();
 const mockListUserRiskScores = vi.fn();
 const mockGetUserRiskDetail = vi.fn();
 const mockAssignSecurityTraining = vi.fn();
@@ -86,6 +87,7 @@ vi.mock('./securityPosture', () => ({
 
 vi.mock('./reliabilityScoring', () => ({
   listReliabilityDevices: (...args: unknown[]) => mockListReliabilityDevices(...args),
+  summarizeReliabilityDevices: (...args: unknown[]) => mockSummarizeReliabilityDevices(...args),
 }));
 
 vi.mock('./userRiskScoring', () => ({
@@ -97,10 +99,13 @@ vi.mock('./userRiskScoring', () => ({
 
 import { executeTool } from './aiTools';
 
+const EMPTY_SUMMARY = { total: 0, averageScore: 0, criticalDevices: 0, poorDevices: 0, fairDevices: 0, goodDevices: 0, degradingDevices: 0 };
+
 describe('aiTools get_fleet_health org scoping', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockListReliabilityDevices.mockResolvedValue({ total: 0, rows: [] });
+    mockSummarizeReliabilityDevices.mockResolvedValue(EMPTY_SUMMARY);
     mockListUserRiskScores.mockResolvedValue({ total: 0, rows: [] });
   });
 
@@ -124,8 +129,10 @@ describe('aiTools get_fleet_health org scoping', () => {
   it('passes accessible orgIds to reliability query when present', async () => {
     mockListReliabilityDevices.mockResolvedValue({
       total: 1,
-      rows: [{ reliabilityScore: 44, trendDirection: 'degrading' }],
+      rows: [{ reliabilityScore: 44, trendDirection: 'degrading', topIssues: [] }],
     });
+    // #6745: the summary is a SQL aggregate over the filtered set, scoped the same way.
+    mockSummarizeReliabilityDevices.mockResolvedValue({ ...EMPTY_SUMMARY, total: 1, averageScore: 44, criticalDevices: 1, degradingDevices: 1 });
 
     const auth = {
       user: { id: 'user-1' },
@@ -140,6 +147,11 @@ describe('aiTools get_fleet_health org scoping', () => {
     const parsed = JSON.parse(result);
 
     expect(mockListReliabilityDevices).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orgIds: ['org-1'],
+      }),
+    );
+    expect(mockSummarizeReliabilityDevices).toHaveBeenCalledWith(
       expect.objectContaining({
         orgIds: ['org-1'],
       }),
@@ -164,6 +176,12 @@ describe('aiTools get_fleet_health org scoping', () => {
     const parsed = JSON.parse(result);
 
     expect(mockListReliabilityDevices).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orgIds: ['org-1'],
+        siteIds: ['site-1', 'site-2'],
+      }),
+    );
+    expect(mockSummarizeReliabilityDevices).toHaveBeenCalledWith(
       expect.objectContaining({
         orgIds: ['org-1'],
         siteIds: ['site-1', 'site-2'],

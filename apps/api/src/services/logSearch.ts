@@ -725,8 +725,9 @@ export async function getLogTrends(auth: AuthContext, input: LogTrendsInput) {
       .leftJoin(devices, eq(deviceEventLogs.deviceId, devices.id))
       .where(whereCondition)
       .groupBy(deviceEventLogs.source)
-      .orderBy(desc(sql`count(*)`))
-      .limit(limit),
+      .orderBy(desc(sql`count(*)`), asc(deviceEventLogs.source))
+      // One extra row tells the caller whether the top-N list was cut.
+      .limit(limit + 1),
     db
       .select({
         deviceId: deviceEventLogs.deviceId,
@@ -739,8 +740,8 @@ export async function getLogTrends(auth: AuthContext, input: LogTrendsInput) {
       .leftJoin(devices, eq(deviceEventLogs.deviceId, devices.id))
       .where(whereCondition)
       .groupBy(deviceEventLogs.deviceId, devices.hostname)
-      .orderBy(desc(sql`count(*)`))
-      .limit(limit),
+      .orderBy(desc(sql`count(*)`), asc(deviceEventLogs.deviceId))
+      .limit(limit + 1),
     db
       .select({
         bucket: sql<string>`date_trunc('hour', ${deviceEventLogs.timestamp})::text`,
@@ -780,19 +781,21 @@ export async function getLogTrends(auth: AuthContext, input: LogTrendsInput) {
       level: row.level,
       count: Number(row.count ?? 0),
     })),
-    topSources: topSources.map((row) => ({
+    topSources: topSources.slice(0, limit).map((row) => ({
       source: row.source,
       count: Number(row.count ?? 0),
       errorCount: Number(row.errorCount ?? 0),
       criticalCount: Number(row.criticalCount ?? 0),
     })),
-    topDevices: topDevices.map((row) => ({
+    topDevices: topDevices.slice(0, limit).map((row) => ({
       deviceId: row.deviceId,
       hostname: row.hostname,
       count: Number(row.count ?? 0),
       errorCount: Number(row.errorCount ?? 0),
       criticalCount: Number(row.criticalCount ?? 0),
     })),
+    topSourcesHasMore: topSources.length > limit,
+    topDevicesHasMore: topDevices.length > limit,
     errorTimeline: errorTimeline.map((point) => ({
       timestamp: toBucketIso(point.bucket),
       count: Number(point.count ?? 0),

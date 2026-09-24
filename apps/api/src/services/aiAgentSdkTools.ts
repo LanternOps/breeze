@@ -1454,6 +1454,7 @@ export function buildBreezeSdkTools(
         metric: z.enum(['cpu', 'ram', 'disk', 'network', 'all']).optional(),
         hoursBack: z.number().int().min(1).max(168).optional(),
         aggregation: z.enum(['raw', 'hourly', 'daily']).optional(),
+        limit: z.number().int().min(1).max(500).optional(),
       },
       makeHandler('analyze_metrics', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -1763,7 +1764,8 @@ export function buildBreezeSdkTools(
         scoreRange: z.enum(['critical', 'poor', 'fair', 'good']).optional(),
         trendDirection: z.enum(['improving', 'stable', 'degrading']).optional(),
         issueType: z.enum(['crashes', 'hangs', 'hardware', 'services', 'uptime']).optional(),
-        limit: z.number().int().min(1).max(100).optional(),
+        includeTopIssues: z.boolean().optional(),
+        ...pageZodShape(15, 100),
       },
       makeHandler('get_fleet_health', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -1855,6 +1857,7 @@ export function buildBreezeSdkTools(
         categories: z.array(z.string()).max(10).optional(),
         paths: z.array(z.string().max(4096)).min(1).max(200).optional(),
         maxCandidates: z.number().int().min(1).max(200).optional(),
+        includeReasons: z.boolean().optional(),
       },
       makeHandler('disk_cleanup', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -2195,6 +2198,7 @@ export function buildBreezeSdkTools(
         deviceId: uuid,
         bootsBack: z.number().int().min(1).max(30).optional(),
         triggerCollection: z.boolean().optional(),
+        includePaths: z.boolean().optional(),
       },
       makeHandler('analyze_boot_performance', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -2275,6 +2279,7 @@ export function buildBreezeSdkTools(
         countMode: z.enum(['exact', 'estimated', 'none']).optional(),
         sortBy: z.enum(['timestamp', 'level', 'device']).optional(),
         sortOrder: z.enum(['asc', 'desc']).optional(),
+        includeFullMessage: z.boolean().optional(),
       },
       makeHandler('search_logs', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -2346,6 +2351,7 @@ export function buildBreezeSdkTools(
         deviceIds: z.array(uuid).max(500).optional(),
         siteIds: z.array(uuid).max(500).optional(),
         limit: z.number().int().min(1).max(100).optional(),
+        includeTimeline: z.boolean().optional(),
       },
       makeHandler('get_log_trends', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -2381,6 +2387,8 @@ export function buildBreezeSdkTools(
       registryDescription('get_effective_configuration'),
       {
         deviceId: uuid,
+        featureType: z.enum(CONFIG_FEATURE_TYPES).optional(),
+        includeSettings: z.boolean().optional(),
       },
       makeHandler('get_effective_configuration', getAuth, onPreToolUse, onPostToolUse)
     ),

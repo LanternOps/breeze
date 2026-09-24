@@ -267,6 +267,6 @@ describe('disk_cleanup execute dispatches a permanent, guarded delete', () => {
     // Explicit run ids coexist with volume selection and the remembered preview.
     expect(properties).toHaveProperty('path', expect.objectContaining({ type: 'string' }));
     expect(properties).toHaveProperty('cleanupRunId', expect.objectContaining({ type: 'string', format: 'uuid' }));
-    expect(Object.keys(properties).sort()).toEqual(['action', 'categories', 'cleanupRunId', 'deviceId', 'maxCandidates', 'path', 'paths']);
+    expect(Object.keys(properties).sort()).toEqual(['action', 'categories', 'cleanupRunId', 'deviceId', 'includeReasons', 'maxCandidates', 'path', 'paths']);
   });
 });
