@@ -35,9 +35,16 @@ func TestRun_RefusesPlatformHostMismatch_LinuxOnWindows(t *testing.T) {
 	dir := t.TempDir()
 	sys := newFakeSystem(dir, 100*GiB)
 	p := seedSnapshot(t, "lin-1", testLayout())
-	res, err := Run(context.Background(), Options{SnapshotID: "lin-1", Provider: p, Target: Target{Kind: TargetDisk, Path: "/dev/sdb"}, Identity: IdentityNew, StateDir: dir, StagingRoot: dir + "/mnt", System: sys})
+	// A fake WinSystem, never nil: with WinSystem unset, Run on the real
+	// Windows CI runner would build the real NewWinSystem and sweep the
+	// runner's own HKLM\BRZ_* mounts before refusing.
+	winSys := newFakeWinSystem(dir)
+	res, err := Run(context.Background(), Options{SnapshotID: "lin-1", Provider: p, Target: Target{Kind: TargetDisk, Path: "/dev/sdb"}, Identity: IdentityNew, StateDir: dir, StagingRoot: dir + "/mnt", System: sys, WinSystem: winSys})
 	if err == nil || res == nil || res.Status != "refused" {
 		t.Fatalf("res=%+v err=%v", res, err)
+	}
+	if len(winSys.staleHivesUnloaded) == 0 {
+		t.Fatalf("cleanupLeftovers did not reach the injected fake WinSystem")
 	}
 	if !strings.Contains(res.Refusal, `snapshot platform "linux" cannot be rebuilt on a windows host`) {
 		t.Fatalf("refusal = %q", res.Refusal)

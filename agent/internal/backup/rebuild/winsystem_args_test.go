@@ -1,0 +1,176 @@
+package rebuild
+
+import (
+	"encoding/binary"
+	"errors"
+	"testing"
+	"unsafe"
+
+	"github.com/breeze-rmm/agent/internal/backup/wingpt"
+	"github.com/breeze-rmm/agent/internal/backup/winhive"
+)
+
+func TestLetterCandidates_DescendsZToD(t *testing.T) {
+	got := letterCandidates()
+	if len(got) != 23 || got[0] != 'Z' || got[len(got)-1] != 'D' {
+		t.Fatalf("letterCandidates = %q, want Z..D", string(got))
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i] != got[i-1]-1 {
+			t.Fatalf("not strictly descending at %d: %q", i, string(got))
+		}
+	}
+}
+
+// format.com argument order: <volume> /FS:<fs> /Q /Y [/V:<label>].
+func TestFormatComArgs(t *testing.T) {
+	check := func(got, want []string) {
+		t.Helper()
+		if len(got) != len(want) {
+			t.Fatalf("args = %q, want %q", got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("args = %q, want %q", got, want)
+			}
+		}
+	}
+	check(formatComArgs(`\\?\Volume{x}\`, "ntfs", "WINDOWS"), []string{`\\?\Volume{x}\`, "/FS:NTFS", "/Q", "/Y", "/V:WINDOWS"})
+	check(formatComArgs(`\\?\Volume{y}\`, "fat32", ""), []string{`\\?\Volume{y}\`, "/FS:FAT32", "/Q", "/Y"})
+	check(formatComArgs(`\\?\Volume{z}\`, "vfat", "SYSTEM"), []string{`\\?\Volume{z}\`, "/FS:FAT32", "/Q", "/Y", "/V:SYSTEM"})
+}
+
+func TestVolumeDevicePath(t *testing.T) {
+	if got := volumeDevicePath(`\\?\Volume{3f2504e0-4f89-11d3-9a0c-0305e82c3301}\`); got != `\\.\Volume{3f2504e0-4f89-11d3-9a0c-0305e82c3301}` {
+		t.Fatalf("volumeDevicePath = %q", got)
+	}
+}
+
+// GetVirtualDiskPhysicalPath returns \\.\PhysicalDriveN; accept its case
+// and \\?\ variants, reject anything else.
+func TestPhysicalDriveNumber(t *testing.T) {
+	for in, want := range map[string]int{`\\.\PhysicalDrive3`: 3, `\\.\PHYSICALDRIVE12`: 12, `\\?\PhysicalDrive0`: 0} {
+		if got, err := physicalDriveNumber(in); err != nil || got != want {
+			t.Errorf("physicalDriveNumber(%q) = %d, %v; want %d", in, got, err, want)
+		}
+	}
+	for _, bad := range []string{`\\.\PhysicalDrive`, `\\.\CdRom0`, `/dev/sdb`, `\\.\PhysicalDrive1x`} {
+		if _, err := physicalDriveNumber(bad); err == nil {
+			t.Errorf("physicalDriveNumber(%q) = nil error", bad)
+		}
+	}
+}
+
+func TestDriveGeometryIoctl(t *testing.T) {
+	if ioctlDiskGetDriveGeometryEx != wingpt.CtlCode(7, 0x28, 0, 0) || ioctlDiskGetDriveGeometryEx != 0x000700A0 {
+		t.Fatalf("IOCTL_DISK_GET_DRIVE_GEOMETRY_EX = %#x, want 0x700A0", ioctlDiskGetDriveGeometryEx)
+	}
+}
+
+// The virtdisk.h structs cross the syscall boundary as raw memory; a layout
+// drift is ERROR_INVALID_PARAMETER at runtime, not a compile error. Offsets
+// are for 64-bit Windows (amd64/arm64), the only Windows agent targets.
+func TestVirtdiskStructLayouts(t *testing.T) {
+	if unsafe.Sizeof(uintptr(0)) != 8 {
+		t.Skip("layouts pinned for 64-bit targets")
+	}
+	var c createVirtualDiskParametersV2
+	for name, got := range map[string]uintptr{
+		"UniqueID": unsafe.Offsetof(c.UniqueID), "MaximumSize": unsafe.Offsetof(c.MaximumSize),
+		"BlockSizeInBytes": unsafe.Offsetof(c.BlockSizeInBytes), "SectorSizeInBytes": unsafe.Offsetof(c.SectorSizeInBytes),
+		"PhysicalSectorSizeInBytes": unsafe.Offsetof(c.PhysicalSectorSizeInBytes), "ParentPath": unsafe.Offsetof(c.ParentPath),
+		"SourcePath": unsafe.Offsetof(c.SourcePath), "OpenFlags": unsafe.Offsetof(c.OpenFlags),
+		"ParentVirtualStorageType": unsafe.Offsetof(c.ParentVirtualStorageType), "SourceVirtualStorageType": unsafe.Offsetof(c.SourceVirtualStorageType),
+		"ResiliencyGUID": unsafe.Offsetof(c.ResiliencyGUID),
+	} {
+		want := map[string]uintptr{"UniqueID": 8, "MaximumSize": 24, "BlockSizeInBytes": 32, "SectorSizeInBytes": 36,
+			"PhysicalSectorSizeInBytes": 40, "ParentPath": 48, "SourcePath": 56, "OpenFlags": 64,
+			"ParentVirtualStorageType": 68, "SourceVirtualStorageType": 88, "ResiliencyGUID": 108}[name]
+		if got != want {
+			t.Errorf("CREATE_VIRTUAL_DISK_PARAMETERS.Version2.%s @%d, want @%d", name, got, want)
+		}
+	}
+	if s := unsafe.Sizeof(c); s != 128 {
+		t.Errorf("sizeof(createVirtualDiskParametersV2) = %d, want 128", s)
+	}
+	if s := unsafe.Sizeof(virtualStorageType{}); s != 20 {
+		t.Errorf("sizeof(VIRTUAL_STORAGE_TYPE) = %d, want 20", s)
+	}
+	var o openVirtualDiskParametersV2
+	if unsafe.Offsetof(o.GetInfoOnly) != 4 || unsafe.Offsetof(o.ReadOnly) != 8 || unsafe.Offsetof(o.ResiliencyGUID) != 12 || unsafe.Sizeof(o) != 28 {
+		t.Errorf("OPEN_VIRTUAL_DISK_PARAMETERS V2 layout: %d/%d/%d size %d, want 4/8/12 size 28",
+			unsafe.Offsetof(o.GetInfoOnly), unsafe.Offsetof(o.ReadOnly), unsafe.Offsetof(o.ResiliencyGUID), unsafe.Sizeof(o))
+	}
+	var a attachVirtualDiskParametersV2
+	if unsafe.Offsetof(a.RestrictedOffset) != 8 || unsafe.Offsetof(a.RestrictedLength) != 16 || unsafe.Sizeof(a) != 24 {
+		t.Errorf("ATTACH_VIRTUAL_DISK_PARAMETERS V2 layout wrong: size %d", unsafe.Sizeof(a))
+	}
+	// VIRTUAL_STORAGE_TYPE_VENDOR_MICROSOFT {EC984AEC-A0F9-47E9-901F-71415A66345B}, mixed-endian.
+	if virtualStorageTypeVHDX.DeviceID != 3 || wingpt.BytesToGUID(virtualStorageTypeVHDX.VendorID) != "ec984aec-a0f9-47e9-901f-71415a66345b" {
+		t.Errorf("virtualStorageTypeVHDX = %+v", virtualStorageTypeVHDX)
+	}
+}
+
+// IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS = CTL_CODE(IOCTL_VOLUME_BASE=0x56, 0,
+// METHOD_BUFFERED, FILE_ANY_ACCESS) — SystemDiskNumber's source.
+func TestVolumeDiskExtentsIoctl(t *testing.T) {
+	if ioctlVolumeGetVolumeDiskExtents != wingpt.CtlCode(0x56, 0, 0, 0) || ioctlVolumeGetVolumeDiskExtents != 0x00560000 {
+		t.Fatalf("IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS = %#x, want 0x560000", ioctlVolumeGetVolumeDiskExtents)
+	}
+}
+
+// VOLUME_DISK_EXTENTS: NumberOfDiskExtents u32@0 (+4 pad), then 24-byte
+// DISK_EXTENTs {DiskNumber u32@0 (+4 pad), StartingOffset i64@8,
+// ExtentLength i64@16} from offset 8.
+func TestParseVolumeDiskExtents(t *testing.T) {
+	buf := make([]byte, 8+2*24)
+	binary.LittleEndian.PutUint32(buf[0:4], 2)
+	binary.LittleEndian.PutUint32(buf[8:12], 3)
+	binary.LittleEndian.PutUint64(buf[16:24], 1<<20)
+	binary.LittleEndian.PutUint32(buf[32:36], 5)
+	got, err := parseVolumeDiskExtents(buf)
+	if err != nil || len(got) != 2 || got[0] != 3 || got[1] != 5 {
+		t.Fatalf("parseVolumeDiskExtents = %v, %v; want [3 5]", got, err)
+	}
+	if _, err := parseVolumeDiskExtents(buf[:4]); err == nil {
+		t.Error("short header accepted")
+	}
+	if _, err := parseVolumeDiskExtents(buf[:8+24]); err == nil {
+		t.Error("count 2 with room for 1 extent accepted")
+	}
+	zero := make([]byte, 8)
+	if got, err := parseVolumeDiskExtents(zero); err != nil || len(got) != 0 {
+		t.Errorf("zero extents = %v, %v", got, err)
+	}
+}
+
+type recordingHandle struct {
+	log      *[]string
+	closeErr error
+}
+
+func (h recordingHandle) Root() winhive.Key { return nil }
+func (h recordingHandle) Close() error {
+	*h.log = append(*h.log, "unload")
+	return h.closeErr
+}
+
+// LoadHive's privilege scope must outlive the hive: Close unloads FIRST
+// (RegUnLoadKeyW needs SeBackup+SeRestore) and releases after — once, even
+// when the unload fails or Close is called again (winTeardown's backstop
+// after validateOSState's explicit Close).
+func TestHiveWithRelease_UnloadsThenReleasesOnce(t *testing.T) {
+	for _, unloadErr := range []error{nil, errors.New("RegUnLoadKeyW: access denied")} {
+		var log []string
+		h := &hiveWithRelease{Handle: recordingHandle{log: &log, closeErr: unloadErr}, release: func() { log = append(log, "release") }}
+		if err := h.Close(); !errors.Is(err, unloadErr) {
+			t.Fatalf("Close = %v, want %v", err, unloadErr)
+		}
+		if err := h.Close(); err != nil {
+			t.Fatalf("second Close = %v, want nil", err)
+		}
+		if len(log) != 2 || log[0] != "unload" || log[1] != "release" {
+			t.Fatalf("call order = %v, want [unload release]", log)
+		}
+	}
+}
