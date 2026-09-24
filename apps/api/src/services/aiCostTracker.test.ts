@@ -2023,6 +2023,7 @@ describe('updateBudget', () => {
       messagesPerHourPerOrg: 60,
       approvalMode: 'hybrid_plan',
       alertThresholdPercents: [50, 90],
+      toolRateLimitMultiplier: 3,
     });
 
     expect(capture.insertValues).toMatchObject({
@@ -2035,6 +2036,7 @@ describe('updateBudget', () => {
       messagesPerHourPerOrg: 60,
       approvalMode: 'hybrid_plan',
       alertThresholdPercents: [50, 90],
+      toolRateLimitMultiplier: 3,
     });
   });
 

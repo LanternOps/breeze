@@ -770,6 +770,26 @@ describe('createSessionPreToolUse', () => {
     expect(waitForApproval).not.toHaveBeenCalled();
   });
 
+  // #6476: the chat SESSION's org picks the per-tool rate-limit multiplier.
+  it('checks the per-tool rate limit against the session org', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 2,
+      requiresApproval: false,
+      description: 'Take screenshot',
+    } as any);
+    mockInsertValues();
+    const session = makeActiveSession({ approvalMode: 'auto_approve' });
+
+    await createSessionPreToolUse(session)('take_screenshot', { deviceId: 'device-1' });
+
+    expect(checkToolRateLimit).toHaveBeenCalledWith(
+      'take_screenshot',
+      session.auth.user.id,
+      expect.objectContaining({ orgId: session.orgId }),
+    );
+  });
+
   describe('Task A10: tenant (BYO MCP) tools', () => {
     beforeEach(() => {
       vi.mocked(checkPermissionRequirements).mockResolvedValue(null);

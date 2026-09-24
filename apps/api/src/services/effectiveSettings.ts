@@ -41,6 +41,13 @@ export interface EffectiveAiBudget {
   approvalMode: string;
   /** #4388 — pre-cap alert rungs (1-99). Empty = pre-cap warnings off; 100 is always implicit. */
   alertThresholdPercents: number[];
+  /**
+   * #6476 — raises every per-tool AI/MCP rate limit (TOOL_RATE_LIMITS) to
+   * ceil(limit × this). Integer 1–10; 1 = the shipped limits. Consumers must
+   * go through normalizeToolRateLimitMultiplier (services/aiToolRateLimits.ts),
+   * which treats anything out of range as 1 — it can never lower a limit.
+   */
+  toolRateLimitMultiplier: number;
 }
 
 const AI_BUDGET_DEFAULTS: EffectiveAiBudget = {
@@ -56,6 +63,7 @@ const AI_BUDGET_DEFAULTS: EffectiveAiBudget = {
   // in place (e.g. .push()) throws in strict mode instead of silently
   // corrupting the default thresholds for every other org, process-wide.
   alertThresholdPercents: Object.freeze([...DEFAULT_AI_ALERT_THRESHOLD_PERCENTS]) as number[],
+  toolRateLimitMultiplier: 1,
 };
 
 const AI_BUDGET_FIELDS = [
@@ -67,6 +75,7 @@ const AI_BUDGET_FIELDS = [
   'messagesPerHourPerOrg',
   'approvalMode',
   'alertThresholdPercents',
+  'toolRateLimitMultiplier',
 ] as const;
 
 // ---------------------------------------------------------------------------

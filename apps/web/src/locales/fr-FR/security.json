@@ -54,8 +54,11 @@
     "wait": "Attends : {{duration}}"
   },
   "aiRiskRateLimitStatus": {
+    "defaultLimit": "(par défaut {{limit}})",
+    "failedToLoad": "Impossible de charger les limites de débit en vigueur. Réessayez plus tard.",
     "filterRateLimits": "Limites de débit de filtre...",
     "limit": "Limite",
+    "multiplierApplied": "Les limites incluent un multiplicateur de limites par outil de {{multiplier}}×, défini dans les paramètres de budget IA.",
     "noRateLimitsMatchYourSearch": "Aucune limite de taux ne correspond à votre recherche.",
     "permission": "Autorisation",
     "rateLimitConfiguration": "Configuration de la limite de débit",

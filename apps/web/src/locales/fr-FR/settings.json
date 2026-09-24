@@ -1667,6 +1667,8 @@
     "maxTurnsPerSession": "Nombre maximal de tours par session",
     "msgsMinPerUser": "Messages par Min par utilisateur",
     "msgsHrPerOrg": "Messages et RH par organisation",
+    "toolRateLimitMultiplier": "Multiplicateur des limites de débit par outil",
+    "toolRateLimitMultiplierHelp": "Augmente chaque limite de débit IA et MCP par outil selon ce facteur (1–10). Ne réduit ni ne supprime jamais une limite.",
     "saveBudget": "Économiser le budget",
     "savedSuccessfully": "Enregistré avec succès",
     "allBudgetSettingsAreManagedByYourPartner": "Tous les réglages budgétaires sont gérés par votre partenaire",

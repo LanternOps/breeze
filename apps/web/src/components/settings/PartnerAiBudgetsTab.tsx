@@ -2,6 +2,7 @@ import type { InheritableAiBudgetSettings } from '@breeze/shared';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import AiBudgetThresholdsInput from './AiBudgetThresholdsInput';
+import { TOOL_RATE_LIMIT_MULTIPLIER_MAX, TOOL_RATE_LIMIT_MULTIPLIER_MIN } from '@/lib/aiBudget';
 
 type Props = {
   /** Internal representation uses cents for budgets; this component displays dollars */
@@ -121,6 +122,22 @@ export default function PartnerAiBudgetsTab({ data, onChange, onValidityChange }
                 min={1}
                 max={10000}
               />
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium">{t('aiUsagePage.toolRateLimitMultiplier')}</label>
+              <input
+                type="number"
+                data-testid="partner-ai-budget-tool-rate-limit-multiplier"
+                value={data.toolRateLimitMultiplier ?? ''}
+                onChange={e => set({ toolRateLimitMultiplier: e.target.value ? Number(e.target.value) : undefined })}
+                placeholder={t('partnerAiBudgets.notSet')}
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                step={1}
+                min={TOOL_RATE_LIMIT_MULTIPLIER_MIN}
+                max={TOOL_RATE_LIMIT_MULTIPLIER_MAX}
+              />
+              <p className="text-xs text-muted-foreground">{t('aiUsagePage.toolRateLimitMultiplierHelp')}</p>
             </div>
 
             <div className="space-y-2 sm:col-span-2">

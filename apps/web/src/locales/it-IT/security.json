@@ -54,8 +54,11 @@
     "tempPasswordTitle": "Password temporanea"
   },
   "aiRiskRateLimitStatus": {
+    "defaultLimit": "(predefinito {{limit}})",
+    "failedToLoad": "Impossibile caricare i limiti di frequenza in vigore. Riprova più tardi.",
     "filterRateLimits": "Filtra limiti di frequenza...",
     "limit": "Limite",
+    "multiplierApplied": "I limiti includono un moltiplicatore dei limiti per strumento di {{multiplier}}×, impostato nelle impostazioni del budget IA.",
     "noRateLimitsMatchYourSearch": "Nessun limite di frequenza corrisponde alla ricerca.",
     "permission": "Permesso",
     "rateLimitConfiguration": "Configurazione limiti di frequenza",

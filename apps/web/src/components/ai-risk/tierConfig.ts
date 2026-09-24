@@ -308,10 +308,15 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
 
 // ── Rate limit configuration ────────────────────────────────────────────────
 
+/**
+ * Display metadata for the AI Risk → Rate Limits tab. The NUMBERS (limit,
+ * window) are not here: since #6476 the tab reads the effective limits from
+ * `GET /ai/tool-rate-limits`, which applies the org's toolRateLimitMultiplier
+ * to TOOL_RATE_LIMITS (apps/api/src/services/aiToolRateLimits.ts). A tool the
+ * API returns without a row here still renders, under "Other" with no tier.
+ */
 export interface RateLimitConfig {
   toolName: string;
-  limit: number;
-  windowSeconds: number;
   tier: 1 | 2 | 3;
   permission: string;
   category: ToolCategory;
@@ -319,64 +324,64 @@ export interface RateLimitConfig {
 
 export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   // Remote Access & Control
-  { toolName: 'execute_command', limit: 10, windowSeconds: 300, tier: 3, permission: 'devices.execute', category: 'Remote Access & Control' },
-  { toolName: 'run_script', limit: 5, windowSeconds: 300, tier: 3, permission: 'scripts.execute', category: 'Remote Access & Control' },
-  { toolName: 'computer_control', limit: 20, windowSeconds: 300, tier: 3, permission: 'devices.execute + remote.access', category: 'Remote Access & Control' },
-  { toolName: 'take_screenshot', limit: 10, windowSeconds: 300, tier: 3, permission: 'devices.execute', category: 'Remote Access & Control' },
-  { toolName: 'analyze_screen', limit: 10, windowSeconds: 300, tier: 3, permission: 'devices.execute', category: 'Remote Access & Control' },
-  { toolName: 'create_remote_session', limit: 10, windowSeconds: 300, tier: 3, permission: 'devices.execute + remote.access', category: 'Remote Access & Control' },
-  { toolName: 'set_device_context', limit: 20, windowSeconds: 300, tier: 2, permission: 'devices.write', category: 'Devices & Hardware' },
-  { toolName: 'resolve_device_context', limit: 20, windowSeconds: 300, tier: 2, permission: 'devices.write', category: 'Devices & Hardware' },
+  { toolName: 'execute_command', tier: 3, permission: 'devices.execute', category: 'Remote Access & Control' },
+  { toolName: 'run_script', tier: 3, permission: 'scripts.execute', category: 'Remote Access & Control' },
+  { toolName: 'computer_control', tier: 3, permission: 'devices.execute + remote.access', category: 'Remote Access & Control' },
+  { toolName: 'take_screenshot', tier: 3, permission: 'devices.execute', category: 'Remote Access & Control' },
+  { toolName: 'analyze_screen', tier: 3, permission: 'devices.execute', category: 'Remote Access & Control' },
+  { toolName: 'create_remote_session', tier: 3, permission: 'devices.execute + remote.access', category: 'Remote Access & Control' },
+  { toolName: 'set_device_context', tier: 2, permission: 'devices.write', category: 'Devices & Hardware' },
+  { toolName: 'resolve_device_context', tier: 2, permission: 'devices.write', category: 'Devices & Hardware' },
   // Services & Processes
-  { toolName: 'manage_services', limit: 10, windowSeconds: 300, tier: 3, permission: 'devices.execute', category: 'Services & Processes' },
-  { toolName: 'manage_processes', limit: 15, windowSeconds: 300, tier: 1, permission: 'devices.read', category: 'Services & Processes' },
-  { toolName: 'manage_startup_items', limit: 5, windowSeconds: 600, tier: 3, permission: 'devices.execute', category: 'Services & Processes' },
-  { toolName: 'manage_scheduled_tasks', limit: 10, windowSeconds: 300, tier: 1, permission: 'devices.read', category: 'Services & Processes' },
+  { toolName: 'manage_services', tier: 3, permission: 'devices.execute', category: 'Services & Processes' },
+  { toolName: 'manage_processes', tier: 1, permission: 'devices.read', category: 'Services & Processes' },
+  { toolName: 'manage_startup_items', tier: 3, permission: 'devices.execute', category: 'Services & Processes' },
+  { toolName: 'manage_scheduled_tasks', tier: 1, permission: 'devices.read', category: 'Services & Processes' },
   // Security & Compliance
-  { toolName: 'security_scan', limit: 3, windowSeconds: 600, tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
+  { toolName: 'security_scan', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   // Files, Disk & Registry
-  { toolName: 'file_operations', limit: 20, windowSeconds: 300, tier: 3, permission: 'devices.execute', category: 'Files, Disk & Registry' },
-  { toolName: 'analyze_disk_usage', limit: 10, windowSeconds: 300, tier: 1, permission: 'devices.read', category: 'Files, Disk & Registry' },
-  { toolName: 'disk_cleanup', limit: 3, windowSeconds: 600, tier: 3, permission: 'devices.execute', category: 'Files, Disk & Registry' },
-  { toolName: 'system_cleanup', limit: 30, windowSeconds: 3600, tier: 3, permission: 'devices.execute', category: 'Files, Disk & Registry' },
-  { toolName: 'registry_operations', limit: 15, windowSeconds: 300, tier: 2, permission: 'devices.execute', category: 'Files, Disk & Registry' },
+  { toolName: 'file_operations', tier: 3, permission: 'devices.execute', category: 'Files, Disk & Registry' },
+  { toolName: 'analyze_disk_usage', tier: 1, permission: 'devices.read', category: 'Files, Disk & Registry' },
+  { toolName: 'disk_cleanup', tier: 3, permission: 'devices.execute', category: 'Files, Disk & Registry' },
+  { toolName: 'system_cleanup', tier: 3, permission: 'devices.execute', category: 'Files, Disk & Registry' },
+  { toolName: 'registry_operations', tier: 2, permission: 'devices.execute', category: 'Files, Disk & Registry' },
   // Network & DNS
-  { toolName: 'network_discovery', limit: 2, windowSeconds: 600, tier: 3, permission: 'devices.execute', category: 'Network & DNS' },
+  { toolName: 'network_discovery', tier: 3, permission: 'devices.execute', category: 'Network & DNS' },
   // Logs & Audit
-  { toolName: 'search_logs', limit: 30, windowSeconds: 300, tier: 1, permission: 'devices.read', category: 'Logs & Audit' },
-  { toolName: 'get_log_trends', limit: 20, windowSeconds: 300, tier: 1, permission: 'devices.read', category: 'Logs & Audit' },
-  { toolName: 'detect_log_correlations', limit: 10, windowSeconds: 300, tier: 2, permission: 'devices.read', category: 'Logs & Audit' },
-  { toolName: 'set_agent_log_level', limit: 5, windowSeconds: 600, tier: 2, permission: 'devices.execute', category: 'Logs & Audit' },
-  { toolName: 'capture_agent_pprof', limit: 3, windowSeconds: 600, tier: 2, permission: 'devices.execute', category: 'Logs & Audit' },
+  { toolName: 'search_logs', tier: 1, permission: 'devices.read', category: 'Logs & Audit' },
+  { toolName: 'get_log_trends', tier: 1, permission: 'devices.read', category: 'Logs & Audit' },
+  { toolName: 'detect_log_correlations', tier: 2, permission: 'devices.read', category: 'Logs & Audit' },
+  { toolName: 'set_agent_log_level', tier: 2, permission: 'devices.execute', category: 'Logs & Audit' },
+  { toolName: 'capture_agent_pprof', tier: 2, permission: 'devices.execute', category: 'Logs & Audit' },
   // Configuration Policies
-  { toolName: 'get_configuration_policy', limit: 30, windowSeconds: 300, tier: 1, permission: 'devices.read', category: 'Configuration Policies' },
-  { toolName: 'manage_configuration_policy', limit: 20, windowSeconds: 300, tier: 1, permission: 'devices.write', category: 'Configuration Policies' },
-  { toolName: 'configuration_policy_compliance', limit: 30, windowSeconds: 300, tier: 1, permission: 'devices.read', category: 'Configuration Policies' },
-  { toolName: 'apply_configuration_policy', limit: 10, windowSeconds: 300, tier: 2, permission: 'devices.write', category: 'Configuration Policies' },
-  { toolName: 'remove_configuration_policy_assignment', limit: 10, windowSeconds: 300, tier: 2, permission: 'devices.write', category: 'Configuration Policies' },
+  { toolName: 'get_configuration_policy', tier: 1, permission: 'devices.read', category: 'Configuration Policies' },
+  { toolName: 'manage_configuration_policy', tier: 1, permission: 'devices.write', category: 'Configuration Policies' },
+  { toolName: 'configuration_policy_compliance', tier: 1, permission: 'devices.read', category: 'Configuration Policies' },
+  { toolName: 'apply_configuration_policy', tier: 2, permission: 'devices.write', category: 'Configuration Policies' },
+  { toolName: 'remove_configuration_policy_assignment', tier: 2, permission: 'devices.write', category: 'Configuration Policies' },
   // Scripts & Automation
-  { toolName: 'execute_playbook', limit: 5, windowSeconds: 600, tier: 3, permission: 'devices.execute', category: 'Scripts & Automation' },
+  { toolName: 'execute_playbook', tier: 3, permission: 'devices.execute', category: 'Scripts & Automation' },
   // Other
-  { toolName: 'manage_tags', limit: 20, windowSeconds: 300, tier: 2, permission: 'devices.write', category: 'Other' },
+  { toolName: 'manage_tags', tier: 2, permission: 'devices.write', category: 'Other' },
   // Backup & Recovery
-  { toolName: 'trigger_backup', limit: 5, windowSeconds: 600, tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
-  { toolName: 'restore_snapshot', limit: 3, windowSeconds: 600, tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
+  { toolName: 'trigger_backup', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
+  { toolName: 'restore_snapshot', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
   // Monitoring & Analytics
-  { toolName: 'manage_monitors', limit: 10, windowSeconds: 300, tier: 1, permission: 'devices.write', category: 'Monitoring & Analytics' },
+  { toolName: 'manage_monitors', tier: 1, permission: 'devices.write', category: 'Monitoring & Analytics' },
   // Integrations
-  { toolName: 'test_webhook', limit: 5, windowSeconds: 300, tier: 2, permission: 'devices.write', category: 'Integrations' },
-  { toolName: 'trigger_agent_upgrade', limit: 5, windowSeconds: 600, tier: 3, permission: 'devices.execute', category: 'Integrations' },
-  { toolName: 'trigger_agent_restart', limit: 5, windowSeconds: 600, tier: 3, permission: 'devices.execute', category: 'Integrations' },
-  { toolName: 'manage_notification_channels', limit: 10, windowSeconds: 300, tier: 1, permission: 'alerts.read', category: 'Alerts & Notifications' },
-  { toolName: 'manage_saved_filters', limit: 15, windowSeconds: 300, tier: 1, permission: 'devices.read', category: 'Other' },
+  { toolName: 'test_webhook', tier: 2, permission: 'devices.write', category: 'Integrations' },
+  { toolName: 'trigger_agent_upgrade', tier: 3, permission: 'devices.execute', category: 'Integrations' },
+  { toolName: 'trigger_agent_restart', tier: 3, permission: 'devices.execute', category: 'Integrations' },
+  { toolName: 'manage_notification_channels', tier: 1, permission: 'alerts.read', category: 'Alerts & Notifications' },
+  { toolName: 'manage_saved_filters', tier: 1, permission: 'devices.read', category: 'Other' },
   // Fleet Operations
-  { toolName: 'manage_deployments', limit: 10, windowSeconds: 600, tier: 1, permission: 'devices.write', category: 'Fleet Operations' },
-  { toolName: 'manage_patches', limit: 15, windowSeconds: 300, tier: 1, permission: 'devices.read', category: 'Fleet Operations' },
-  { toolName: 'manage_groups', limit: 20, windowSeconds: 300, tier: 1, permission: 'devices.write', category: 'Fleet Operations' },
-  { toolName: 'manage_maintenance_windows', limit: 15, windowSeconds: 300, tier: 1, permission: 'devices.write', category: 'Fleet Operations' },
-  { toolName: 'manage_automations', limit: 10, windowSeconds: 600, tier: 1, permission: 'automations.write', category: 'Fleet Operations' },
-  { toolName: 'manage_alert_rules', limit: 15, windowSeconds: 300, tier: 1, permission: 'alerts.write', category: 'Alerts & Notifications' },
-  { toolName: 'generate_report', limit: 10, windowSeconds: 300, tier: 1, permission: 'reports.read', category: 'Fleet Operations' },
+  { toolName: 'manage_deployments', tier: 1, permission: 'devices.write', category: 'Fleet Operations' },
+  { toolName: 'manage_patches', tier: 1, permission: 'devices.read', category: 'Fleet Operations' },
+  { toolName: 'manage_groups', tier: 1, permission: 'devices.write', category: 'Fleet Operations' },
+  { toolName: 'manage_maintenance_windows', tier: 1, permission: 'devices.write', category: 'Fleet Operations' },
+  { toolName: 'manage_automations', tier: 1, permission: 'automations.write', category: 'Fleet Operations' },
+  { toolName: 'manage_alert_rules', tier: 1, permission: 'alerts.write', category: 'Alerts & Notifications' },
+  { toolName: 'generate_report', tier: 1, permission: 'reports.read', category: 'Fleet Operations' },
 ];
 
 // ── RBAC mappings (flat reference, not rendered in grouped UI) ───────────────

@@ -791,7 +791,12 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
     try {
       const rateLimitErr = tenant
         ? await checkTenantToolRateLimit(tenant, session.auth.user.id)
-        : await checkToolRateLimit(toolName, session.auth.user.id);
+        // #6476: the session's org picks the toolRateLimitMultiplier; the
+        // counter itself stays per user per tool across orgs.
+        : await checkToolRateLimit(toolName, session.auth.user.id, {
+          orgId: session.orgId,
+          partnerId: session.auth.partnerId ?? null,
+        });
       if (rateLimitErr) {
         return { allowed: false, error: rateLimitErr };
       }

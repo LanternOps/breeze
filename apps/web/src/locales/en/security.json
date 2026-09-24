@@ -54,8 +54,11 @@
     "wait": "Wait: {{duration}}"
   },
   "aiRiskRateLimitStatus": {
+    "defaultLimit": "(default {{limit}})",
+    "failedToLoad": "Could not load the rate limits in effect. Try again later.",
     "filterRateLimits": "Filter rate limits...",
     "limit": "Limit",
+    "multiplierApplied": "Limits include a per-tool rate limit multiplier of {{multiplier}}×, set in the AI budget settings.",
     "noRateLimitsMatchYourSearch": "No rate limits match your search.",
     "permission": "Permission",
     "rateLimitConfiguration": "Rate Limit Configuration",

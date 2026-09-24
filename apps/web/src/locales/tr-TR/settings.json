@@ -1667,6 +1667,8 @@
     "maxTurnsPerSession": "Oturum Başına Maksimum Dönüş Sayısı",
     "msgsMinPerUser": "Mesaj/Kullanıcı Başına Min",
     "msgsHrPerOrg": "Kuruluş Başına Mesaj/Saat",
+    "toolRateLimitMultiplier": "Araç başına hız limiti çarpanı",
+    "toolRateLimitMultiplierHelp": "Araç başına her yapay zekâ ve MCP hız limitini bu katsayı kadar artırır (1–10). Bir limiti asla düşürmez veya kaldırmaz.",
     "saveBudget": "Bütçeden Tasarruf Edin",
     "savedSuccessfully": "Başarıyla kaydedildi",
     "allBudgetSettingsAreManagedByYourPartner": "Tüm bütçe ayarları ortağınız tarafından yönetilir",

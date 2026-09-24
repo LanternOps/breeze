@@ -706,6 +706,8 @@ export interface InheritableAiBudgetSettings {
   approvalMode?: 'per_step' | 'action_plan' | 'auto_approve' | 'hybrid_plan';
   /** #4388 — pre-cap alert rungs (1–99). Empty = off. Omit = inherit. */
   alertThresholdPercents?: number[];
+  /** #6476 — per-tool AI/MCP rate-limit multiplier, integer 1–10. Omit = inherit. */
+  toolRateLimitMultiplier?: number;
 }
 
 // A pluggable remote-desktop launcher (e.g. RustDesk, ScreenConnect, TeamViewer).

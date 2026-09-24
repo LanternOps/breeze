@@ -1667,6 +1667,8 @@
     "maxTurnsPerSession": "Max Turns Per Session",
     "msgsMinPerUser": "Msgs/Min Per User",
     "msgsHrPerOrg": "Msgs/Hr Per Org",
+    "toolRateLimitMultiplier": "Per-tool rate limit multiplier",
+    "toolRateLimitMultiplierHelp": "Raises every per-tool AI and MCP rate limit by this factor (1–10). It never lowers or removes a limit.",
     "saveBudget": "Save Budget",
     "savedSuccessfully": "Saved successfully",
     "allBudgetSettingsAreManagedByYourPartner": "All budget settings are managed by your partner",

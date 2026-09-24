@@ -294,3 +294,56 @@ describe('getEffectiveAiBudget alertThresholdPercents (#4388)', () => {
     expect(second.alertThresholdPercents).toEqual([50, 80, 95]);
   });
 });
+
+describe('getEffectiveAiBudget toolRateLimitMultiplier (#6476)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('defaults to 1 when neither org row nor partner sets it', async () => {
+    primeSelectSeq(mockOrg({ partnerId: 'p1' }), mockPartnerSettings({}), []);
+    const budget = await getEffectiveAiBudget('org1');
+    expect(budget.toolRateLimitMultiplier).toBe(1);
+  });
+
+  it('uses the org row value when the partner does not set it', async () => {
+    primeSelectSeq(
+      mockOrg({ partnerId: 'p1' }),
+      mockPartnerSettings({ aiBudgets: {} }),
+      mockOrgBudgetRow({ toolRateLimitMultiplier: 4 }),
+    );
+    const budget = await getEffectiveAiBudget('org1');
+    expect(budget.toolRateLimitMultiplier).toBe(4);
+  });
+
+  it('partner value wins over the org row (runtime helper)', async () => {
+    primeSelectSeq(
+      mockOrg({ partnerId: 'p1' }),
+      mockPartnerSettings({ aiBudgets: { toolRateLimitMultiplier: 2 } }),
+      mockOrgBudgetRow({ toolRateLimitMultiplier: 8 }),
+    );
+    const budget = await getEffectiveAiBudget('org1');
+    expect(budget.toolRateLimitMultiplier).toBe(2);
+  });
+
+  it('partner value wins and locks the field (effective settings)', async () => {
+    primeSelectSeq(
+      mockOrg({ partnerId: 'p1' }),
+      mockPartnerSettings({ aiBudgets: { toolRateLimitMultiplier: 2 } }),
+      mockOrgBudgetRow({ toolRateLimitMultiplier: 8 }),
+    );
+    const { effective, locked } = await getEffectiveOrgSettings('org1');
+    expect((effective.aiBudgets as Record<string, unknown>).toolRateLimitMultiplier).toBe(2);
+    expect(locked).toContain('aiBudgets.toolRateLimitMultiplier');
+  });
+
+  it('assertNotLocked 403s an org trying to change a partner-set multiplier', async () => {
+    primeSelect(
+      [{ partnerId: 'p1' }],
+      [{ settings: { aiBudgets: { toolRateLimitMultiplier: 2 } } }],
+    );
+    await expect(
+      assertNotLocked('org1', 'aiBudgets', { toolRateLimitMultiplier: 10 }),
+    ).rejects.toBeInstanceOf(HTTPException);
+  });
+});

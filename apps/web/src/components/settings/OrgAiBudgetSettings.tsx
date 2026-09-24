@@ -10,6 +10,8 @@ import { showToast } from '../shared/Toast';
 import {
   AI_BUDGET_DEFAULTS,
   AI_BUDGET_FIELDS,
+  TOOL_RATE_LIMIT_MULTIPLIER_MAX,
+  TOOL_RATE_LIMIT_MULTIPLIER_MIN,
   aiBudgetSource,
   isAiBudgetFieldLocked,
   withAiBudgetDefaults,
@@ -38,6 +40,7 @@ const EMPTY_DRAFT: Draft = {
   messagesPerHourPerOrg: '',
   approvalMode: '',
   alertThresholdPercents: '',
+  toolRateLimitMultiplier: '',
 };
 
 const APPROVAL_MODE_LABEL_KEYS = {
@@ -57,7 +60,8 @@ const APPROVAL_MODE_HELP_KEYS = {
 const centsToDollars = (cents: number | null): string => (cents == null ? '' : (cents / 100).toFixed(2));
 
 /**
- * Org-side editor for the eight AI budget fields (#6004).
+ * Org-side editor for the AI budget fields (#6004; #6476 added the per-tool
+ * rate-limit multiplier).
  *
  * Moved here from `AiUsagePage` so it sits beside every other partner-enforced
  * org setting (Security, Event Logs, Notifications) and so the usage page can
@@ -426,6 +430,24 @@ export default function OrgAiBudgetSettings({ orgId }: Props) {
             className={inputClass('messagesPerHourPerOrg')}
           />
           {lockedNote('messagesPerHourPerOrg')}
+        </label>
+
+        <label className="block">
+          <span className="text-sm text-muted-foreground">{t('aiUsagePage.toolRateLimitMultiplier')}</span>
+          <input
+            data-testid="org-ai-budget-tool-rate-limit-multiplier"
+            type="number"
+            step={1}
+            min={TOOL_RATE_LIMIT_MULTIPLIER_MIN}
+            max={TOOL_RATE_LIMIT_MULTIPLIER_MAX}
+            value={draft.toolRateLimitMultiplier}
+            onChange={(e) => setField('toolRateLimitMultiplier', e.target.value)}
+            placeholder={placeholderFor('toolRateLimitMultiplier')}
+            disabled={isLocked('toolRateLimitMultiplier')}
+            className={inputClass('toolRateLimitMultiplier')}
+          />
+          {lockedNote('toolRateLimitMultiplier')}
+          <span className="mt-1 block text-xs text-muted-foreground">{t('aiUsagePage.toolRateLimitMultiplierHelp')}</span>
         </label>
       </div>
 
