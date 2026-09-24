@@ -107,12 +107,24 @@ export const updateTicketPartSchema = ticketPartSchema
   .partial()
   .refine((v) => Object.keys(v).length > 0, { message: 'At least one field is required' });
 
+const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
 export const billablesExportQuerySchema = z.object({
   from: z.coerce.date(),
-  to: z.coerce.date(),
+  // A date-only `to` covers that whole UTC day — the same inclusive-end rule
+  // invoice assembly applies to its period end (`${to}T23:59:59Z`,
+  // invoiceService.assembleDraftFromOrg). Without it `to` coerced to UTC
+  // midnight and listBillables' lte(startedAt, to) dropped the last day (sweep C2).
+  // A full timestamp is taken as given.
+  to: z.preprocess(
+    (v) => (typeof v === 'string' && DATE_ONLY_RE.test(v) ? `${v}T23:59:59Z` : v),
+    z.coerce.date()
+  ),
   orgId: z.string().guid().optional()
 }).refine((v) => v.to.getTime() >= v.from.getTime(), { message: 'to must be on/after from', path: ['to'] })
-  .refine((v) => v.to.getTime() - v.from.getTime() <= 366 * 24 * 60 * 60 * 1000, { message: 'Export window cannot exceed 366 days', path: ['to'] });
+  // Strictly under 366 × 24h: with an end-of-day `to`, that allows at most 366
+  // calendar days inclusive — the same data span the midnight-`to` rule allowed.
+  .refine((v) => v.to.getTime() - v.from.getTime() < 366 * 24 * 60 * 60 * 1000, { message: 'Export window cannot exceed 366 days', path: ['to'] });
 
 export type CreateTimeEntryInput = z.infer<typeof createTimeEntrySchema>;
 export type UpdateTimeEntryInput = z.infer<typeof updateTimeEntrySchema>;
