@@ -133,8 +133,25 @@ const getTargetId = (raw: RawNotification) =>
   getString(raw.targetId) ||
   getString(raw.target_id);
 
+// The `metadata` jsonb column producers stash ids in (runId, intentId,
+// proposalId, alertId, agentId, …) — see the producer table on #4461. Not
+// every notification carries a raw column for its id (an intent's run id, for
+// instance, has no top-level column), so `buildHref` must look here before
+// falling back to a type-generic list page.
+const getMetadata = (raw: RawNotification): Record<string, unknown> => {
+  const metadata = raw.metadata;
+  return metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+    ? (metadata as Record<string, unknown>)
+    : {};
+};
+
 const buildHref = (type: NotificationDisplayType, raw: RawNotification) => {
   const targetId = getTargetId(raw);
+  const metadata = getMetadata(raw);
+  const runId = getString(metadata.runId) || getString(metadata.agentRunId);
+  const intentId = getString(metadata.intentId);
+  const proposalId = getString(metadata.proposalId);
+  const alertId = targetId || getString(metadata.alertId);
 
   switch (type) {
     case 'device':
@@ -142,7 +159,7 @@ const buildHref = (type: NotificationDisplayType, raw: RawNotification) => {
     case 'script':
       return targetId ? `/scripts/${targetId}` : '/scripts';
     case 'alert':
-      return '/alerts';
+      return alertId ? `/alerts/${alertId}` : '/alerts';
     case 'automation':
       return '/jobs';
     case 'user':
@@ -152,9 +169,16 @@ const buildHref = (type: NotificationDisplayType, raw: RawNotification) => {
     case 'ticket':
       return '/tickets';
     case 'approval':
+      if (intentId) return `/approvals#intent-${intentId}`;
+      if (proposalId) return `/approvals#proposal-${proposalId}`;
       return '/approvals';
     case 'ai':
-      return '/ai-risk';
+      // No stored link and no id to deep-link with: `/ai-risk` is a dead end
+      // for a specific run/agent notification, so surface nothing rather than
+      // send the user somewhere unrelated (#4461).
+      if (runId) return `/ai-agents/runs/${runId}`;
+      if (metadata.agentId) return `/ai-agents/runs#agent=${getString(metadata.agentId)}`;
+      return undefined;
     case 'system':
       return '/settings/organization';
     case 'unknown':

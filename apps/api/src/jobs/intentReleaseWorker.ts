@@ -1768,7 +1768,7 @@ async function notifyRequesterOfOutcome(
             priority,
             title,
             message: `${intent.requestingClientLabel ?? 'AI agent'}: ${message}`,
-            link: '/approvals',
+            link: `/ai-agents/runs/${run.id}`,
             metadata: { intentId: intent.id, agentId: agent.id, agentRunId: run.id, status: intent.status },
             // Outcome-CLASS scoped, never status-scoped (#4465): a later,
             // materially different outcome (granted -> failed) must not be
@@ -1845,7 +1845,7 @@ async function notifyRequesterOfOutcome(
       type: 'approval',
       title: copy.title,
       message: copy.message,
-      link: '/approvals',
+      link: `/approvals#intent-${intent.id}`,
       metadata: { intentId: intent.id, outcome: eventType, status: intent.status },
       // Scoped to the outcome CLASS, not to the intent alone and not to the raw
       // status (#4465). A per-intent key meant that once a premature "is now

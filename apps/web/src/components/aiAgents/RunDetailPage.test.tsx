@@ -314,7 +314,7 @@ describe('RunDetailPage', () => {
 
     await waitFor(() => expect(screen.getByTestId('run-detail-trace-entry-1')).toBeInTheDocument());
     const link = screen.getByTestId('run-detail-intent-link-intent-1');
-    expect(link).toHaveAttribute('href', '/approvals');
+    expect(link).toHaveAttribute('href', '/approvals#intent-intent-1');
   });
 
   it('renders the ledger', async () => {
@@ -451,7 +451,7 @@ describe('RunDetailPage sweep findings', () => {
 
     await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-0')).toBeInTheDocument());
     const link = screen.getByTestId('ai-agent-run-sweep-proposal-link-0');
-    expect(link).toHaveAttribute('href', '/approvals');
+    expect(link).toHaveAttribute('href', '/approvals#intent-intent-9');
     expect(link).toHaveTextContent('Approval requested');
   });
 
@@ -1713,7 +1713,7 @@ describe('RunDetailPage findings at narrow widths', () => {
     expect(card).toHaveTextContent('Print Spooler is stopped');
     expect(card).toHaveTextContent('The watched Spooler service has been stopped since 09:12.');
     expect(screen.getByTestId('ai-agent-run-sweep-finding-card-0-evidence')).toBeInTheDocument();
-    expect(screen.getByTestId('ai-agent-run-sweep-card-proposal-link-0')).toHaveAttribute('href', '/approvals');
+    expect(screen.getByTestId('ai-agent-run-sweep-card-proposal-link-0')).toHaveAttribute('href', '/approvals#intent-intent-9');
   });
 
   // Review finding — the card's proposal line rendered as a bare, unlabelled

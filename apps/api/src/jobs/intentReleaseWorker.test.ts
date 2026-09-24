@@ -4289,7 +4289,7 @@ describe('processIntentReleaseJob', () => {
       expect.objectContaining({
         userId: 'requester-1',
         type: 'approval',
-        link: '/approvals',
+        link: '/approvals#intent-intent-1',
         dedupeKey: 'intent-outcome:intent-1:rejected',
       }),
     );
@@ -4318,7 +4318,7 @@ describe('processIntentReleaseJob', () => {
       expect.objectContaining({
         userId: 'requester-1',
         type: 'approval',
-        link: '/approvals',
+        link: '/approvals#intent-intent-1',
         dedupeKey: 'intent-outcome:intent-1:cancelled',
       }),
     );
@@ -4455,7 +4455,7 @@ describe('agent-originated outcome notifications', () => {
         userId: 'user-a',
         orgId: 'org-1',
         type: 'ai',
-        link: '/approvals',
+        link: '/ai-agents/runs/run-1',
         title: 'Agent proposal denied',
         message: 'Patch triage: run_script(deviceId=d-1) was denied and will not run.',
         metadata: { intentId: 'intent-1', agentId: 'agent-1', agentRunId: 'run-1', status: 'rejected' },

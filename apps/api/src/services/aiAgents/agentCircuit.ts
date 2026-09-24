@@ -534,7 +534,7 @@ export async function recordRunTerminal(
               `${justOpened.agentName} hit ${justOpened.consecutiveFailures} consecutive failed/needs-attention `
               + `runs (threshold ${justOpened.threshold}) and has been paused for this organization. `
               + 'A human must reset it before it runs again.',
-            link: `/ai-agents/${run.agentId}`,
+            link: `/ai-agents/runs#agent=${run.agentId}`,
             priority: 'high',
             metadata: {
               agentId: run.agentId,

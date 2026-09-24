@@ -1140,7 +1140,7 @@ describe('createActionIntent — ai_agent branch (wave 3b)', () => {
       expect.objectContaining({
         userId: APPROVER_1,
         type: 'approval',
-        link: '/approvals',
+        link: '/approvals#intent-intent-agent-notify',
         message: expect.stringContaining('Patch agent'),
         dedupeKey: 'intent-approval:intent-agent-notify',
       }),
@@ -2013,7 +2013,7 @@ describe('createActionIntent — supervised/four_eyes scope', () => {
       expect.objectContaining({
         userId: 'approver-1',
         type: 'approval',
-        link: '/approvals',
+        link: '/approvals#intent-intent-fe-notify',
         // Idempotent across outbox/BullMQ redelivery.
         dedupeKey: 'intent-approval:intent-fe-notify',
       }),
