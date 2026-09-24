@@ -38,7 +38,6 @@ type Collector struct {
 	breakers         map[Kind]*breaker
 	state            diskState
 	cache            map[string]smartCacheEntry
-	initErr          error
 	budget           time.Duration
 }
 
@@ -55,9 +54,10 @@ func New(opts Options) *Collector {
 		cache:    map[string]smartCacheEntry{},
 		budget:   4 * time.Minute,
 	}
-	c.initErr = readJSON(filepath.Join(c.dir, "hwhealth_state.json"), &c.state)
-	if c.state.MDMembers == nil {
-		c.state.MDMembers = map[string]string{}
+	var recovered error
+	c.state, recovered = loadState(c.dir, opts.Now())
+	if recovered != nil {
+		slog.Warn("hardware state unreadable; quarantined and sequence re-seeded", "error", recovered, "sequence", c.state.Sequence)
 	}
 	if e := readJSON(filepath.Join(c.dir, "hwhealth_smart_cache.json"), &c.cache); e != nil {
 		slog.Warn("hardware SMART cache discarded", "error", e)
@@ -111,9 +111,6 @@ func (c *Collector) Run(parent context.Context, tiers []Tier) (*Snapshot, error)
 		return nil, nil
 	}
 	defer c.flight.Unlock()
-	if c.initErr != nil {
-		return nil, c.initErr
-	}
 	ctx, cancel := context.WithTimeout(parent, c.budget)
 	defer cancel()
 	c.mu.Lock()
