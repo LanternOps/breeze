@@ -231,7 +231,6 @@ describe('processAlertNotifications monitor delivery (#5290, on resolveDelivery 
     selectQueue.push(
       [makeAlert({ ruleId: 'rule-1', monitorId: 'monitor-1' })],
       [{ id: 'device-1', displayName: 'Server-1' }],
-      [{ overrideSettings: { notificationChannelIds: ['stale-compiled'] }, managedByMonitorId: 'monitor-1' }], // 3 rule (managed)
       ORG_LOOKUP, ORG_LOOKUP,
       [{ kind: 'cpu', deliveryMode: 'channels', deliveryChannelIds: ['aaaaaaaa-0000-4000-8000-000000000011'], escalationPolicyId: null }],
       [{ id: 'aaaaaaaa-0000-4000-8000-000000000011' }]
@@ -242,18 +241,35 @@ describe('processAlertNotifications monitor delivery (#5290, on resolveDelivery 
     expect(bulkJobs.map((j) => j.data.channelId)).toEqual(['aaaaaaaa-0000-4000-8000-000000000011']);
   });
 
-  it('an UNMANAGED rule keeps its overrideSettings (transitional legacy override, W05b → W05d)', async () => {
+  it('a rule-only alert recovers its compiled monitor identity', async () => {
+    selectQueue.push(
+      [makeAlert({ ruleId: 'rule-1', monitorId: null })],
+      [{ id: 'device-1', displayName: 'Server-1' }],
+      [{ managedByMonitorId: 'monitor-1' }],
+      ORG_LOOKUP, ORG_LOOKUP,
+      [{ kind: 'cpu', deliveryMode: 'channels', deliveryChannelIds: ['aaaaaaaa-0000-4000-8000-000000000011'], escalationPolicyId: null }],
+      [{ id: 'aaaaaaaa-0000-4000-8000-000000000011' }]
+    );
+    const result = await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
+    expect(result.queued).toBe(1);
+    const bulkJobs = queueAddBulkMock.mock.calls[0]![0] as Array<{ data: { channelId: string } }>;
+    expect(bulkJobs.map((j) => j.data.channelId)).toEqual(['aaaaaaaa-0000-4000-8000-000000000011']);
+  });
+
+  it('an unmanaged rule uses current routing instead of its old overrides', async () => {
     selectQueue.push(
       [makeAlert({ ruleId: 'rule-1', monitorId: null })],
       [{ id: 'device-1', displayName: 'Server-1' }],
       [{ overrideSettings: { notificationChannelIds: ['aaaaaaaa-0000-4000-8000-000000000013'] }, managedByMonitorId: null }],
       ORG_LOOKUP, ORG_LOOKUP,
-      [{ id: 'aaaaaaaa-0000-4000-8000-000000000013' }] // validChannels — no monitor read, no routing read
+      [DEFAULT_ROW],
+      [{ id: 'aaaaaaaa-0000-4000-8000-000000000014' }] // Current routing channels
     );
     const result = await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
     expect(result.queued).toBe(1);
     expect(queueAddMock).not.toHaveBeenCalled();
     expect(selectQueue).toHaveLength(0);
+    expect(queueAddBulkMock.mock.calls[0]![0][0].data.channelId).toBe('aaaaaaaa-0000-4000-8000-000000000014');
   });
 
   it('inherit escalation survives filtering all disabled baseline channels', async () => {
