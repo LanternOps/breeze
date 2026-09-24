@@ -3,6 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import { verifyToken, TokenPayload } from '../services/jwt';
 import { getBoundMobileDeviceBlock, mobileDeviceBlockedResponse } from './mobileDeviceBlocked';
 import { getUserPermissions, hasPermission, canAccessOrg, canAccessSite, UserPermissions } from '../services/permissions';
+import { normalizeSiteAllowlist } from '../services/siteAllowlist';
 import { isTokenIssuedBeforePasswordChange, isUserTokenRevoked } from '../services/tokenRevocation';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext, type DbAccessScope } from '../db';
 import { users, partnerUsers, organizations } from '../db/schema';
@@ -253,10 +254,12 @@ declare module 'hono' {
 export function siteAccessCheck(
   allowedSiteIds?: string[]
 ): (siteId: string | null | undefined) => boolean {
+  // A malformed (non-array, e.g. null) allowlist denies every site (#6790).
+  const allowed = normalizeSiteAllowlist(allowedSiteIds);
   return (siteId) => {
-    if (!allowedSiteIds) return true;
+    if (allowed === undefined) return true;
     if (!siteId) return false;
-    return allowedSiteIds.includes(siteId);
+    return allowed.includes(siteId);
   };
 }
 

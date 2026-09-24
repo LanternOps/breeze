@@ -123,10 +123,14 @@ it('emits the canonical org filter and access decision for every allowlist shape
   expect([many.canAccessOrg('o'), many.canAccessOrg('b'), many.canAccessOrg('other')]).toEqual([true, true, false]);
 });
 
-it('treats a null site allowlist as unrestricted, matching the request path', () => {
-  // A restored snapshot whose allowedSiteIds arrived as null (not undefined)
-  // must stay allow-all rather than flipping to deny-all.
+it('fails a null site allowlist closed, matching the request path (#6790)', () => {
+  // `allowedSiteIds` is `string[] | undefined`; the JSON boundary omits an
+  // undefined field, so a restored null is an invariant breach. It must deny
+  // every site, exactly as the request path's `siteAccessCheck` does.
   const snapshot = snapshotPreviewAccess(auth);
   const restored = restorePreviewAuth({ ...snapshot, auth: { ...snapshot.auth, allowedSiteIds: null as unknown as undefined } });
-  expect(restored.canAccessSite!('s')).toBe(true);
+  expect(restored.canAccessSite!('s')).toBe(false);
+  expect(restored.canAccessSite!('s')).toBe(siteAccessCheck(null as unknown as undefined)('s'));
+  // An omitted allowlist (the real undefined case after the JSON round trip) stays unrestricted.
+  expect(restorePreviewAuth(snapshot).canAccessSite!('s')).toBe(true);
 });

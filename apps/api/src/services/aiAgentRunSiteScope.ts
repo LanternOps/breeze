@@ -1,6 +1,7 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { aiAgentRuns } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
+import { normalizeSiteAllowlist } from './siteAllowlist';
 
 /**
  * Site-axis visibility for historical run data. Organization RLS does not
@@ -18,7 +19,7 @@ import type { AuthContext } from '../middleware/auth';
 export function runSiteScopeCondition(
   auth: Pick<AuthContext, 'allowedSiteIds'>,
 ): SQL | undefined {
-  const allowed = auth.allowedSiteIds;
+  const allowed = normalizeSiteAllowlist(auth.allowedSiteIds);
   if (allowed === undefined) return undefined;
   if (allowed.length === 0) return sql`false`;
   const allowedSql = sql.join(allowed.map((siteId) => sql`${siteId}`), sql`, `);
