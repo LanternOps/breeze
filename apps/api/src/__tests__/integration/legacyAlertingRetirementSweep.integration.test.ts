@@ -10,6 +10,7 @@ import { eq } from 'drizzle-orm';
 import { db, withDbAccessContext, SYSTEM_DB_ACCESS_CONTEXT } from '../../db';
 import { configPolicyAlertRules, configPolicyMonitoringSettings, configPolicyMonitoringWatches, configPolicyFeatureLinks, configPolicyMonitors, configurationPolicies, monitorDefinitions, monitorConversions, partners, users } from '../../db/schema';
 import { runLegacyAlertingRetirement, checkLegacyAlertingRetired } from '../../services/monitors/conversion/retirementSweep';
+import { revertConversion } from '../../services/monitors/conversion/convert';
 import { readRetirementReport } from '../../services/monitors/conversion/loadSources';
 import { createSystemAuthContext } from '../../services/featureConfigResolver';
 import type { AuthContext } from '../../middleware/auth';
@@ -70,7 +71,7 @@ describe('legacy alerting retirement sweep', () => {
     expect(run.converted).toBeGreaterThanOrEqual(1);
     expect(run.retired).toBeGreaterThanOrEqual(1);
 
-    await withDbAccessContext(SYSTEM_CTX, async () => {
+    const original = await withDbAccessContext(SYSTEM_CTX, async () => {
       const [conv] = await db.select().from(configPolicyAlertRules).where(eq(configPolicyAlertRules.id, convertibleId));
       expect(conv!.retiredAt).not.toBeNull();
       // C1 records successful conversion as operator retirement plus monitor provenance.
@@ -96,6 +97,17 @@ describe('legacy alerting retirement sweep', () => {
       const marker = (p!.settings as { legacyAlertingRetirement: { version: number; unconvertible: unknown[] } }).legacyAlertingRetirement;
       expect(marker.version).toBe(1);
       expect(marker.unconvertible).toEqual([expect.objectContaining({ sourceId: customId })]);
+      return { source: conv, definition: def, ledger: ledgers[0], attachment: attach };
+    });
+    // Revert owns its serializable transaction; never nest it in the snapshot context.
+    await expect(revertConversion(original.ledger!.id, createSystemAuthContext()))
+      .rejects.toMatchObject({ code: 'conversion_revert_unavailable' });
+    await withDbAccessContext(SYSTEM_CTX, async () => {
+      const [source] = await db.select().from(configPolicyAlertRules).where(eq(configPolicyAlertRules.id, convertibleId));
+      const [definition] = await db.select().from(monitorDefinitions).where(eq(monitorDefinitions.id, original.definition!.id));
+      const [ledger] = await db.select().from(monitorConversions).where(eq(monitorConversions.id, original.ledger!.id));
+      const [attachment] = await db.select().from(configPolicyMonitors).where(eq(configPolicyMonitors.id, original.attachment!.id));
+      expect({ source, definition, ledger, attachment }).toEqual(original);
     });
 
     expect(await checkLegacyAlertingRetired()).toEqual({ configPolicyAlertRules: 0, configPolicyMonitoringWatches: 0 });
