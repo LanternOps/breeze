@@ -88,7 +88,8 @@
         "viewAll": "Voir toutes les alertes"
       },
       "lastActivity": "Dernière activité {{date}}",
-      "noSummary": "Les totaux récapitulatifs ne sont pas disponibles pour le moment."
+      "noSummary": "Les totaux récapitulatifs ne sont pas disponibles pour le moment.",
+      "archivedNotice": "Les données de synthèse ne sont pas affichées pour les organisations archivées."
     },
     "archived": {
       "banner": "Cette organisation est archivée et en lecture seule. Restaurez-la pour apporter des modifications.",

@@ -367,6 +367,15 @@ const defaultTemplates: ReportTemplate[] = [
   },
 ];
 
+// `reports.reportTemplates.templates.<id>.{name,description}` only exists for
+// these curated ids. A server-synced template (a saved report, `extras` in
+// `mergeTemplates`, or one that matched a curated card by name but kept its
+// own saved-report id) has no such key, so looking it up unconditionally
+// fires i18next's `missingKeyHandler` on every render — console noise
+// locally, a Sentry warning in prod (sweep B2). Gate the lookup on the id
+// actually being curated.
+const defaultTemplateIds = new Set(defaultTemplates.map(template => template.id));
+
 const typeAliases: Record<string, TemplateReportType> = {
   device_health: 'performance',
   alert_summary: 'alert_summary'
@@ -837,9 +846,13 @@ export default function ReportTemplates() {
   const getScheduleLabel = (schedule: ReportSchedule) => t(/* i18n-dynamic */ `reports.reportTemplates.schedules.${schedule}`);
   const getFormatLabel = (format: ReportFormat) => t(/* i18n-dynamic */ `reports.reportTemplates.formats.${format}`);
   const getTemplateDisplayName = (template: ReportTemplate) =>
-    t(/* i18n-dynamic */ `reports.reportTemplates.templates.${template.id}.name`, { defaultValue: template.name });
+    defaultTemplateIds.has(template.id)
+      ? t(/* i18n-dynamic */ `reports.reportTemplates.templates.${template.id}.name`, { defaultValue: template.name })
+      : template.name;
   const getTemplateDescription = (template: ReportTemplate) =>
-    t(/* i18n-dynamic */ `reports.reportTemplates.templates.${template.id}.description`, { defaultValue: template.description });
+    defaultTemplateIds.has(template.id)
+      ? t(/* i18n-dynamic */ `reports.reportTemplates.templates.${template.id}.description`, { defaultValue: template.description })
+      : template.description;
 
   // The Business group is MSP-internal (audience: msp_staff) and every type in
   // it 403s for an org-scope caller — so hide the section entirely unless the

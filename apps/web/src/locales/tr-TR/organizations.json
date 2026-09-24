@@ -88,7 +88,8 @@
         "viewAll": "Tüm uyarıları görüntüle"
       },
       "lastActivity": "Son etkinlik {{date}}",
-      "noSummary": "Özet sayılar şu anda kullanılamıyor."
+      "noSummary": "Özet sayılar şu anda kullanılamıyor.",
+      "archivedNotice": "Arşivlenmiş kuruluşlar için genel bakış verileri gösterilmez."
     },
     "archived": {
       "banner": "Bu kuruluş arşivlendi ve salt okunur. Değişiklik yapmak için geri yükleyin.",

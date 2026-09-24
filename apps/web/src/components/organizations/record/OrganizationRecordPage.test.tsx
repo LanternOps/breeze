@@ -321,6 +321,22 @@ describe('OrganizationRecordPage — lifecycle states', () => {
     await waitFor(() => expect(screen.getByTestId('org-report-history')).toBeTruthy());
   });
 
+  it('shows one read-only overview notice for an archived org instead of the summary/alerts/activity error panels (sweep B3)', async () => {
+    routeFetch({
+      '/summary': () => json(SUMMARY_BODY, 404),
+      [`/orgs/organizations/${RECORD_ORG}`]: () => json({ ...ORG_BODY, status: 'archived', archived: true }),
+    });
+    render(<OrganizationRecordPage orgId={RECORD_ORG} />);
+    await waitFor(() => expect(screen.getByTestId('org-record-archived-banner')).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId('org-overview-archived-notice')).toBeTruthy());
+    expect(screen.queryByTestId('org-overview-summary-error')).toBeNull();
+    expect(screen.queryByTestId('org-overview-critical-alerts-failed')).toBeNull();
+    expect(screen.queryByTestId('org-overview-activity-failed')).toBeNull();
+    // The feed requests never fire for an archived org — they 404 by design.
+    expect(requestedUrls.some((u) => u.includes('/audit-logs'))).toBe(false);
+    expect(requestedUrls.some((u) => u.includes('/alerts?'))).toBe(false);
+  });
+
   it('does not render report history for an active org (#6771)', async () => {
     routeFetch({
       '/summary': () => json(SUMMARY_BODY),

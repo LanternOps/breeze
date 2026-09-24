@@ -209,6 +209,21 @@ describe('ReportEditPage — business report save path (#3198 W03)', () => {
     expect(screen.getByTestId('report-builder-submit')).toBeEnabled();
   });
 
+  it('hides the generic builder sections (report type/data source/columns/filters/grouping/chart) for a business type (sweep B1)', async () => {
+    loaded = {
+      ...baseReport,
+      name: 'AR',
+      type: 'ar_aging',
+      orgId: 'org-1',
+      partnerId: null,
+      config: { asOf: '2026-08-31', groupBy: 'currency' },
+    };
+    render(<ReportEditPage reportId="rep-1" />);
+
+    await screen.findByTestId('ar-aging-as-of');
+    expect(screen.queryByTestId('report-builder-generic-sections')).toBeNull();
+  });
+
   it('renders a not-found state when GET /reports/:id is a 404 (hidden type or missing permission)', async () => {
     loaded = null;
     render(<ReportEditPage reportId="rep-1" />);
