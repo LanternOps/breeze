@@ -80,6 +80,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('userRiskRetention'),
   consumers('backupVerificationJobs', ['backupVerificationWorker']),
   consumers('eventLogRetention'),
+  consumers('hardwareHealthRetention'),
   consumers('logCorrelationWorker'),
   consumers('agentLogRetention'),
   consumers('ipHistoryRetention'),
