@@ -106,7 +106,7 @@ func TestRun_CleanupLeftovers_UnloadsStaleHivesAndDetachesVHDX(t *testing.T) {
 	if _, _, err := sys.AttachVHDX(opts.Target.Path); err != nil {
 		t.Fatal(err)
 	}
-	res, _ := Run(context.Background(), opts) // at this task's commit the run stops at the staged winPreflight; only cleanup is under test
+	res, _ := Run(context.Background(), opts) // only cleanupLeftovers is under test; whatever the run does after it is not
 	if res == nil {
 		t.Fatalf("expected a Result even on later failure, got nil")
 	}

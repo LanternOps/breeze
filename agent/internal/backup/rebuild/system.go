@@ -7,9 +7,10 @@ import (
 	"strings"
 )
 
-// ErrUnsupportedHost is returned by Run when no System was supplied and the
-// host has no real implementation to fall back to (system_other.go's
-// NewSystem returns nil off Linux).
+// ErrUnsupportedHost is returned by Run when this host has no engine for
+// the snapshot: hostPlatform() is "" (neither Linux nor Windows), or the
+// resolved platform's seam is nil — no System on a Linux run (NewSystem
+// returns nil off Linux) or no WinSystem on a Windows run.
 var ErrUnsupportedHost = errors.New("the rebuild engine has no implementation for this host platform")
 
 // System is every interaction with the machine the engine needs. The real

@@ -8290,6 +8290,18 @@ var rebuildWinSystemForTest rebuild.WinSystem
 
 ## Part C — W06c (PR 3, "Part of #5499")
 
+**Part B as built — deviations Part C must follow (2026-09-24)**
+
+- Every file read or write on the restored tree (the hives under `Windows\System32\config`, `agent.yaml`, the marker, `post-restore-actions.json`) goes through `r.rootVolume`, the root partition's volume path. The `r.rootDir` and `r.espDir` folder mounts are only for external tool arguments (bcdboot, DISM). The fake's folder mounts do not alias the volume, so a read through `rootDir` finds nothing on the fake.
+- `run.espLetterRelease` exists, and `winTeardown` releases it. `winBoot` sets it through `AssignLetter`.
+- `(*Plan).partitionVolumesForTest` does not exist. Use `fakeWinSystem.volumePathsForDisk`.
+- `winPreflight` refuses `SkipBoot=false` ("Windows system-state apply is not available in this build; pass --skip-boot for a files-only rehearsal") before any disk or VHDX inspection. Task 17 deletes that refusal together with the last staged function.
+- `hasNTDS` stats the staged SYSTEM artifact first and fails closed. Only `fs.ErrNotExist` means "no artifact"; any other Stat error, an empty `r.stateStaging` and a failed hive unload (`Close`) are errors.
+- The real `Format` takes a temporary drive letter inside the seam (format.com refuses a `\\?\Volume{GUID}\` path) and releases it on every path. A release failure is joined to the format error.
+- A non-permanent VHDX attach cannot be detached from another process. `DetachVHDXByPath` detaches this process's own attaches and returns an error for a live foreign holder; `cleanupLeftovers` turns that into a warning.
+- `backup.AcquireHivePrivileges()` is the only way to hold SeBackup/SeRestore. `winhive` does no privilege work.
+- Multi-volume snapshots are refused in preflight (manifest entries whose volume, `backup.RestoreVolume`, is a drive letter other than the root's). A data partition on the system disk is recreated empty with a warning. Multi-volume support is a W06d follow-up.
+
 **Scope:** the offline hive edit functions (`winhive`, pure logic over `winhive.Key`, tested everywhere against `winhive.Fake`), the Windows offline state apply (`bmr.RestoreSystemStateOfflineWindows`, untagged), and the real `applyWindowsSystemState`, `winIdentity`, `winEncryption`, `winBoot` and `validateOSState`. Part B (W06b) leaves exactly these five functions staged in `agent/internal/backup/rebuild/win_phases.go` (each a hard error unless `Options.SkipBoot`; `validateOSState` a no-op because nothing is loaded yet). Each task below **deletes one staged function from `win_phases.go`** and adds the real one, same signature, in its own file:
 
 | Staged in `win_phases.go` (Part B Task 8) | Replaced by | New file |

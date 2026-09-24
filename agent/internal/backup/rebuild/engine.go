@@ -21,12 +21,15 @@ import (
 // completed destructively (provision, restore) so a re-run after a failure
 // does not repeat them.
 type runState struct {
-	SnapshotID   string         `json:"snapshotId"`
-	TargetKey    string         `json:"targetKey"`
-	Plan         *Plan          `json:"plan"`
-	Completed    map[Phase]bool `json:"completed"`
-	UpdatedAt    time.Time      `json:"updatedAt"`
-	StateApplied bool           `json:"stateApplied,omitempty"`
+	SnapshotID string         `json:"snapshotId"`
+	TargetKey  string         `json:"targetKey"`
+	Plan       *Plan          `json:"plan"`
+	Completed  map[Phase]bool `json:"completed"`
+	UpdatedAt  time.Time      `json:"updatedAt"`
+	// StateApplied records that a completed restore phase applied the
+	// snapshot's system state, so a resumed run (which skips restore) can
+	// still satisfy Options.ExpectSystemState in validate (#5412).
+	StateApplied bool `json:"stateApplied,omitempty"`
 	// Platform/HostOS record what wrote this state file (Global Constraint
 	// "Platform table, not a second engine" — a resume from a different
 	// platform/host is refused, never silently reinterpreted).
@@ -50,9 +53,9 @@ type run struct {
 	statePath string
 	platform  string // "linux" | "windows", set by resolvePlatform
 
-	disk       string
-	diskNumber int // Windows: the disk number under provisioning (vhdx: from AttachVHDX, disk: parsed from \\.\PhysicalDriveN)
-	detach     func() error
+	disk       string       // Linux: block device under provisioning (/dev/sdb or /dev/loopN)
+	diskNumber int          // Windows: the disk number under provisioning (vhdx: from AttachVHDX, disk: parsed from \\.\PhysicalDriveN)
+	detach     func() error // image (Linux loop device) and vhdx (Windows AttachVHDX) targets
 
 	winAttached bool           // Windows: r.diskNumber is valid for this process (disk number 0 is a real disk, so the number alone cannot say)
 	volumes     map[int]string // partition number -> volume path (WinVolume.GUIDPath), Windows only

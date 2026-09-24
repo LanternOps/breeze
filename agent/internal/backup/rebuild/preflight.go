@@ -147,6 +147,10 @@ func preflight(ctx context.Context, r *run) error {
 // r.result.StateManifestFound, and appends to r.warnings — never writes to
 // the rebuild target itself.
 func preflightVerify(ctx context.Context, r *run) error {
+	// Belt to bmr.ApplyManifestScope's braces: if the provider tracks its
+	// own admissible set (token-mode recovery), refuse here — before any
+	// target write — rather than letting an unadmitted entry surface as a
+	// download failure mid-restore.
 	if admitter, ok := r.opts.Provider.(ObjectAdmission); ok {
 		var n int
 		var first string
@@ -170,6 +174,12 @@ func preflightVerify(ctx context.Context, r *run) error {
 		return err
 	}
 	r.stateStaging = staging
+	// #5412 gate: when the caller says the snapshot carries system state
+	// (a system_image backup / a bootstrap advertising a state manifest), a
+	// confirmed-absent or artifact-less manifest is a refusal, not the
+	// "files only" warning below — that warning is exactly how a
+	// system_image restore once reported completed/validated while
+	// applying no OS state. Nothing has been written yet at this point.
 	if _, warnings, err := bmr.DownloadSystemState(ctx, r.opts.Provider, r.opts.SnapshotID, r.opts.ExpectSystemState, staging); err != nil {
 		switch {
 		case r.opts.ExpectSystemState && (errors.Is(err, bmr.ErrNoSystemState) || errors.Is(err, providers.ErrObjectNotFound)):
