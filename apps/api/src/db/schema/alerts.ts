@@ -165,7 +165,7 @@ export const alerts = pgTable('alerts', {
   // auto-suppressed by an AI verdict, always its own correlation root.
   requiresHuman: boolean('requires_human').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull(),
-  // Partner API alerts feed change marker (2026-10-28-130000): stamped with
+  // Partner API alerts feed change marker (2026-10-28-150000): stamped with
   // pg_current_xact_id() by a BEFORE INSERT OR UPDATE trigger on every write.
   // Never set it from application code.
   partnerFeedXid: xid8('partner_feed_xid').notNull().default(sql`'1'::xid8`)
@@ -183,7 +183,7 @@ export const alerts = pgTable('alerts', {
   openRuleDeviceSubjectUidx: uniqueIndex('alerts_open_rule_device_subject_uidx')
     .on(table.ruleId, table.deviceId, sql`COALESCE(${table.subjectKey}, '')`)
     .where(sql`${table.ruleId} IS NOT NULL AND ${table.status} IN ('active', 'acknowledged', 'suppressed')`),
-  // Partner alerts feed keyset (2026-10-28-130100, built CONCURRENTLY).
+  // Partner alerts feed keyset (2026-10-28-150100, built CONCURRENTLY).
   partnerFeedXidIdx: index('idx_alerts_partner_feed_xid').on(table.partnerFeedXid, table.id)
 }));
 
