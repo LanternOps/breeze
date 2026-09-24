@@ -79,6 +79,30 @@ describe('StorageHealthSection', () => {
     expect(await screen.findByTestId('hardware-empty-state')).toHaveTextContent('No storage components reported.');
     expect(screen.queryByText(/No RAID or disk-health tooling detected/)).toBeNull();
   });
+  it('renders one newest BMC card from the existing hardware-health response', async () => {
+    const bmc = component({ componentType: 'bmc', componentKey: 'bmc:racadm', source: 'racadm', name: 'iDRAC',
+      firmware: '7.10', lastSeenAt: '2026-09-23T12:00:00.000Z', attributes: { vendor: 'Dell', ip: '192.0.2.10', mac: '02:00:00:00:00:10',
+        bmcLink: { status: 'already_linked', assetId: '44444444-4444-4444-8444-444444444444' } } });
+    const old = component({ ...bmc, componentKey: 'bmc:ipmi', source: 'ipmi', lastSeenAt: '2026-09-22T12:00:00.000Z', firmware: 'old' });
+    vi.mocked(fetchWithAuth).mockResolvedValue(response(view({ components: [component(), old, bmc] })));
+    render(<StorageHealthSection deviceId="device-a" />);
+    expect(await screen.findByTestId('hardware-management-controller-card')).toHaveTextContent('7.10');
+    expect(screen.getAllByTestId('hardware-management-controller-card')).toHaveLength(1);
+    expect(screen.getByTestId('hardware-controller-card')).toBeInTheDocument();
+    expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+  });
+  it('shows BMC-only inventory without presenting a storage empty-state contradiction', async () => {
+    vi.mocked(fetchWithAuth).mockResolvedValue(response(view({ components: [component({ componentType: 'bmc', componentKey: 'bmc:ipmi', source: 'ipmi', name: 'BMC' })] })));
+    render(<StorageHealthSection deviceId="device-a" />);
+    expect(await screen.findByTestId('hardware-management-controller-card')).toBeInTheDocument();
+    expect(screen.queryByTestId('hardware-empty-state')).not.toBeInTheDocument();
+  });
+  it('does not render a management card when no BMC component exists', async () => {
+    vi.mocked(fetchWithAuth).mockResolvedValue(response(view()));
+    render(<StorageHealthSection deviceId="device-a" />);
+    await screen.findByTestId('hardware-controller-card');
+    expect(screen.queryByTestId('hardware-management-controller-card')).not.toBeInTheDocument();
+  });
   it('ignores a late response for the previous device and aborts on unmount', async () => {
     let finish!: (value: Response) => void;
     vi.mocked(fetchWithAuth).mockReturnValueOnce(new Promise(resolve => { finish = resolve; }))
