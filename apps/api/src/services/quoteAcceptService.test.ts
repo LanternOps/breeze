@@ -58,6 +58,8 @@ vi.mock('../db', () => {
 
 import { acceptQuote } from './quoteAcceptService';
 import { db } from '../db';
+import { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { computeQuoteSha256 } from './quoteContentHash';
 import { buildContractHashParts } from './contractDocumentService';
 import type { ContractBlockRenderData } from './contractTemplateRender';
@@ -194,7 +196,15 @@ describe('acceptQuote deposit snapshot', () => {
     it('joins the quote org onto the partner read (scoped to the same partner)', async () => {
       queueAcceptHappyPath({}, {}, { termsDays: 30, orgTermsDays: 5 });
       await acceptQuote(baseParams);
-      expect((db as unknown as Chain).leftJoin).toHaveBeenCalledTimes(1);
+      const leftJoin = (db as unknown as Chain).leftJoin;
+      expect(leftJoin).toHaveBeenCalledTimes(1);
+      // The ON clause must pin the org to the quote's org AND to the same
+      // partner — dropping the partner predicate is the cross-tenant leak the
+      // join comment rules out, and the positional mock can't see it otherwise.
+      const { sql, params } = new PgDialect().sqlToQuery(leftJoin.mock.calls[0]![1] as SQL);
+      expect(sql).toContain('"organizations"."id" = $');
+      expect(sql).toContain('"organizations"."partner_id" = "partners"."id"');
+      expect(params).toContain('org1');
     });
   });
 
