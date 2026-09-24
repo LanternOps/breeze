@@ -2541,7 +2541,7 @@ async function resolvePolicyCheckInterval(deviceId: string): Promise<PolicyCheck
   }
 
   // #4673 W03: read in the CALLER'S OWN context. The partner-wide SELECT
-  // branch on config_policy_feature_links and the settings table, plus the
+  // branch on the feature-link table and the settings table, plus the
   // agent's breeze.current_partner_id GUC, grant this read without a system
   // escape or a second pooled connection. Keep it pinned to this hierarchy.
   // 5. assignments → active policies → monitors feature link → settings

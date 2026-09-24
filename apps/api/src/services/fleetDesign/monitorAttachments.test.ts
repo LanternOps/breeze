@@ -55,6 +55,7 @@ describe('Fleet Design monitor attachments', () => {
     ], {} as AuthContext, tx);
     expect(mocks.add).not.toHaveBeenCalled();
     expect(mocks.update).toHaveBeenCalledWith('existing-link', { inlineSettings: {
+      checkIntervalSeconds: 60,
       inheritance: 'replace',
       items: [
         { monitorId: EXISTING, enabled: false, sortOrder: 0 },

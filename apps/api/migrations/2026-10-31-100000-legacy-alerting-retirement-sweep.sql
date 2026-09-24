@@ -17,6 +17,38 @@
 -- and a 'none'-scope UPDATE matches zero rows silently.
 SELECT set_config('breeze.scope', 'system', true);
 
+-- Configuration-family partner-export pre-locks (#5912): partners exclusive,
+-- then their orgs, before the first write. The set is every owner of a policy
+-- carrying a `monitoring` or `monitors` link — a superset of what 1a/1b/2 touch.
+SELECT public.breeze_partner_export_lock_partners_exclusive(ARRAY(
+  SELECT DISTINCT COALESCE(cp.partner_id, o.partner_id)
+    FROM configuration_policies cp
+    LEFT JOIN organizations o ON o.id = cp.org_id
+   WHERE EXISTS (SELECT 1 FROM config_policy_feature_links l
+                  WHERE l.config_policy_id = cp.id AND l.feature_type IN ('monitoring', 'monitors'))
+     AND COALESCE(cp.partner_id, o.partner_id) IS NOT NULL
+   ORDER BY 1
+)::uuid[]);
+SELECT public.breeze_partner_export_lock_orgs_under_exclusive_partners(
+  ARRAY(
+    SELECT DISTINCT cp.org_id
+      FROM configuration_policies cp
+     WHERE cp.org_id IS NOT NULL
+       AND EXISTS (SELECT 1 FROM config_policy_feature_links l
+                    WHERE l.config_policy_id = cp.id AND l.feature_type IN ('monitoring', 'monitors'))
+     ORDER BY 1
+  )::uuid[],
+  ARRAY(
+    SELECT DISTINCT COALESCE(cp.partner_id, o.partner_id)
+      FROM configuration_policies cp
+      LEFT JOIN organizations o ON o.id = cp.org_id
+     WHERE EXISTS (SELECT 1 FROM config_policy_feature_links l
+                    WHERE l.config_policy_id = cp.id AND l.feature_type IN ('monitoring', 'monitors'))
+       AND COALESCE(cp.partner_id, o.partner_id) IS NOT NULL
+     ORDER BY 1
+  )::uuid[]
+);
+
 -- 1a. A `monitors` link for every policy that owns a settings row through a
 --     `monitoring` link and has no `monitors` link. `items: []` is the W02
 --     empty attachment set; `inheritance: 'cumulative'` is W05c1's default.
