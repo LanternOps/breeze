@@ -1762,7 +1762,14 @@ export default function ReportBuilder({
           )}
         </div>
 
-        <div className="rounded-lg border bg-card p-6 shadow-xs space-y-4">
+        {/* Dead for a business type: its own options form owns period/groupBy/etc,
+            and the submit path (handleFormSubmit above) never includes this
+            builder's dataSource/columns/filters/groupBy/chartType state in the
+            payload for isBusiness — see the businessConfig() comment on
+            ReportEditPage. Rendering these anyway is misleading (sweep #B1). */}
+        {!businessType && (
+        <>
+        <div data-testid="report-builder-generic-sections" className="rounded-lg border bg-card p-6 shadow-xs space-y-4">
           <div className="flex items-center gap-2">
             <Monitor className="h-4 w-4 text-muted-foreground" />
             <div>
@@ -2153,6 +2160,8 @@ export default function ReportBuilder({
             })}
           </div>
         </div>
+        </>
+        )}
 
         {showDelivery && (
           <div className="rounded-lg border bg-card p-6 shadow-xs space-y-5">
