@@ -5,6 +5,7 @@ package winhive
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"unsafe"
 
@@ -153,7 +154,15 @@ func unload(mountName string) error {
 // after the returned Handle's Close, or RegLoadKeyW/RegUnLoadKeyW fail with
 // ERROR_PRIVILEGE_NOT_HELD. rebuild's WinSystem.LoadHive does exactly that
 // via backup.AcquireHivePrivileges.
+//
+// A missing hiveFile is refused up front with an error wrapping
+// fs.ErrNotExist: RegLoadKeyW itself does not refuse one — it creates a
+// fresh, empty hive at that path and loads it (lab-proven), which would
+// turn "no SYSTEM hive" into a silently empty edit.
 func Load(hiveFile, mountName string) (Handle, error) {
+	if _, err := os.Stat(hiveFile); err != nil {
+		return nil, fmt.Errorf("RegLoadKeyW %s -> HKLM\\%s: hive file: %w", hiveFile, mountName, err)
+	}
 	namePtr, err := windows.UTF16PtrFromString(mountName)
 	if err != nil {
 		return nil, err
