@@ -531,7 +531,13 @@
       },
       "inheritanceNote": "Änderungen gelten für jede Organisation, die keine eigene Überschreibung festgelegt hat.",
       "saved": "Gespeichert",
-      "saveFailed": "Diese Einstellung konnte nicht geändert werden"
+      "saveFailed": "Diese Einstellung konnte nicht geändert werden",
+      "remediation": {
+        "title": "Vorgeschlagene Korrekturen",
+        "description": "KI-generierte Korrekturvorschläge auf der Alarm-Detailseite. Dies ist der Standardwert für jede Organisation; eine Organisation kann ihn auf ihrer eigenen KI-Registerkarte überschreiben.",
+        "enabled": "Korrekturvorschläge erzeugen",
+        "enabledDescription": "Techniker dürfen auf der Detailseite eines Alarms Korrekturvorschläge erzeugen."
+      }
     },
     "tabs": {
       "company": {
@@ -585,7 +591,7 @@
       },
       "aiFeatures": {
         "label": "KI-Funktionen",
-        "description": "Standardwerte für Anomalieerkennung"
+        "description": "Standardwerte für Anomalieerkennung und Korrekturvorschläge"
       },
       "branding": {
         "label": "Branding",
@@ -4673,7 +4679,14 @@
         "off": "Aus",
         "saved": "Gespeichert",
         "saveFailed": "Diese Einstellung konnte nicht geändert werden",
-        "killSwitch": "Die Anomalieerkennung ist für die gesamte Plattform vom Betreiber deaktiviert. Diese Einstellungen werden wirksam, sobald sie wieder aktiviert wird."
+        "killSwitch": "Die Anomalieerkennung ist für die gesamte Plattform vom Betreiber deaktiviert. Diese Einstellungen werden wirksam, sobald sie wieder aktiviert wird.",
+        "remediation": {
+          "title": "Vorgeschlagene Korrekturen",
+          "description": "KI-generierte Korrekturvorschläge für die Alarme dieser Organisation. Leer bedeutet, dass der Partner-Standardwert gilt.",
+          "enabled": "Korrekturvorschläge erzeugen",
+          "enabledDescription": "Techniker dürfen auf der Detailseite eines Alarms Korrekturvorschläge erzeugen.",
+          "killSwitch": "Vorgeschlagene Korrekturen sind vom Betreiber für die gesamte Plattform deaktiviert. Diese Einstellung wird wirksam, sobald sie wieder aktiviert werden."
+        }
       }
     },
     "breadcrumbs": {

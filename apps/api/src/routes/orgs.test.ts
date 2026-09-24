@@ -1730,6 +1730,42 @@ describe('org routes', () => {
       expect(getCaptured().settings.security).toEqual({ requireMfa: true });
     });
 
+    it('persists settings.ml.remediation_suggestions without clobbering ml.anomalies (#6934)', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({ ml: { anomalies: { enabled: true, create_alerts: true } } });
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { ml: { remediation_suggestions: { enabled: true } } } });
+
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings.ml).toEqual({
+        anomalies: { enabled: true, create_alerts: true },
+        remediation_suggestions: { enabled: true },
+      });
+    });
+
+    it('keeps ml.remediation_suggestions when the anomalies card saves (#6934)', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({ ml: { remediation_suggestions: { enabled: true } } });
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { ml: { anomalies: { enabled: false, create_alerts: false } } } });
+
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings.ml).toEqual({
+        remediation_suggestions: { enabled: true },
+        anomalies: { enabled: false, create_alerts: false },
+      });
+    });
+
+    it('rejects a non-boolean ml.remediation_suggestions.enabled', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({});
+      mockUpdateCapture();
+      const res = await patchMe({ settings: { ml: { remediation_suggestions: { enabled: 'yes' } } } });
+      expect(res.status).toBe(400);
+    });
+
     it('rejects a non-boolean ml.anomalies.enabled', async () => {
       setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
       mockCurrentPartnerSelect({});

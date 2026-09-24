@@ -531,7 +531,13 @@
       },
       "inheritanceNote": "Changes apply to every organization that has not set its own override.",
       "saved": "Saved",
-      "saveFailed": "Could not change this setting"
+      "saveFailed": "Could not change this setting",
+      "remediation": {
+        "title": "Suggested fixes",
+        "description": "AI-generated fix suggestions on the alert detail page. This is the default for every organization; an organization can override it on its own AI tab.",
+        "enabled": "Generate suggested fixes",
+        "enabledDescription": "Allow technicians to generate suggested fixes for an alert from its detail page."
+      }
     },
     "tabs": {
       "company": {
@@ -585,7 +591,7 @@
       },
       "aiFeatures": {
         "label": "AI Features",
-        "description": "Anomaly detection defaults"
+        "description": "Anomaly detection and suggested fixes defaults"
       },
       "branding": {
         "label": "Branding",
@@ -4721,7 +4727,14 @@
         "off": "Off",
         "saved": "Saved",
         "saveFailed": "Could not change this setting",
-        "killSwitch": "Anomaly detection is switched off for the whole platform by the operator. These settings take effect when it is turned back on."
+        "killSwitch": "Anomaly detection is switched off for the whole platform by the operator. These settings take effect when it is turned back on.",
+        "remediation": {
+          "title": "Suggested fixes",
+          "description": "AI-generated fix suggestions on this organization's alerts. Blank means the partner default applies.",
+          "enabled": "Generate suggested fixes",
+          "enabledDescription": "Allow technicians to generate suggested fixes for an alert from its detail page.",
+          "killSwitch": "Suggested fixes are switched off for the whole platform by the operator. This setting takes effect when they are turned back on."
+        }
       }
     },
     "breadcrumbs": {

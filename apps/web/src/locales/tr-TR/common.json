@@ -2453,7 +2453,7 @@
         },
         "title": "Önerilen Düzeltmeler",
         "refresh": "Önerilen düzeltmeleri yenileyin",
-        "disabledTitle": "Bu kuruluş için önerilen düzeltmeler devre dışı bırakıldı",
+        "disabledTitle": "Bu kuruluş için önerilen düzeltmeler kapalı. Ayarlar → İş Ortağı → Yapay Zekâ Özellikleri bölümünden veya tek bir kuruluş için o kuruluşun Yapay Zekâ sekmesinden açın.",
         "suggestionsDisabled": "Öneriler devre dışı bırakıldı",
         "generate": "Oluştur",
         "empty": "Henüz önerilen bir düzeltme yok.",
