@@ -50,7 +50,7 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, hasDbAccessContext } from '../db';
 import { remoteSessions } from '../db/schema';
-import type { SessionPromptMode } from '../routes/remote/helpers';
+import type { ConsentUnavailableBehavior, SessionPromptMode } from '../routes/remote/helpers';
 
 /** Statuses a start may be published from. A terminal row is never resurrected. */
 export const LIVE_START_STATUSES = ['pending', 'connecting', 'active'] as const;
@@ -163,11 +163,32 @@ function classifyLocked(
   return { ok: true, locked };
 }
 
+/**
+ * The consentUnavailableBehavior to bind to a start, read from the prompt
+ * block that start ships to the agent. Only a consent-mode prompt binds one;
+ * anything else — no prompt, notify mode, or a value outside the closed set —
+ * binds null, which the answer path treats as "not proceed" (#6819).
+ */
+export function boundConsentUnavailableBehavior(
+  prompt: Record<string, unknown> | undefined,
+): ConsentUnavailableBehavior | null {
+  if (prompt?.mode !== 'consent') return null;
+  const behavior = prompt.consentUnavailableBehavior;
+  return behavior === 'proceed' || behavior === 'block' ? behavior : null;
+}
+
 export interface CommitDesktopStartIntentInput {
   sessionId: string;
   /** The one-off command identity this exact start is bound to. */
   startCommandId: string;
   promptMode: SessionPromptMode;
+  /**
+   * The consentUnavailableBehavior shipped to the agent with this start, or
+   * null when the start carried no prompt block. Bound to the generation so a
+   * consent-mode answer reporting helper_absent/timeout can be checked against
+   * what this start actually allowed (#6819).
+   */
+  consentUnavailableBehavior: ConsentUnavailableBehavior | null;
   /** The viewer's SDP offer. */
   offer: string;
 }
@@ -195,6 +216,7 @@ export async function commitDesktopStartIntent(
       webrtcAnswer: null,
       desktopStartCommandId: input.startCommandId,
       desktopPromptMode: input.promptMode,
+      desktopConsentUnavailableBehavior: input.consentUnavailableBehavior,
       desktopStartGeneration: sql`${remoteSessions.desktopStartGeneration} + 1`,
       status: 'connecting',
       ...(previousStatus === 'active' ? { endedAt: null } : {}),

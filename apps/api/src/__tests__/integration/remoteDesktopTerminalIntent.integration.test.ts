@@ -700,6 +700,7 @@ describe('SEC-038 W03 — one terminal-intent contract for every terminal writer
       sessionId: fx.sessionId,
       startCommandId: `desk-start-${fx.sessionId}-${randomUUID()}`,
       promptMode: 'off',
+      consentUnavailableBehavior: null,
       offer: OFFER,
     }));
     expect(start).toEqual({ ok: false, reason: 'terminal' });

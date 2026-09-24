@@ -59,6 +59,7 @@ import {
   buildRemoteSessionPromptPayload,
   buildTechnicianDisplay,
   classifyConsentDenyAction,
+  isUnsolicitedConsentReason,
   createDesktopStartCommandId,
   generateTurnCredentials,
   getIceServers,
@@ -166,6 +167,22 @@ describe('buildRemoteSessionPromptPayload', () => {
       orgName: null,
     });
     expect(captureException).toHaveBeenCalled();
+  });
+});
+
+describe('isUnsolicitedConsentReason', () => {
+  // #6819: only these two reasons may activate a consent-mode start without a
+  // user grant, and only under a bound `proceed` fallback. no_user fails closed
+  // on the agent and must never be accepted as an activation reason.
+  it('accepts helper_absent and timeout', () => {
+    expect(isUnsolicitedConsentReason('helper_absent')).toBe(true);
+    expect(isUnsolicitedConsentReason('timeout')).toBe(true);
+  });
+
+  it('rejects user, no_user, unknown and non-string values', () => {
+    for (const v of ['user', 'no_user', 'policy_proceed', '', undefined, null, 1]) {
+      expect(isUnsolicitedConsentReason(v)).toBe(false);
+    }
   });
 });
 

@@ -503,6 +503,36 @@ describe('validateViewerSessionAccess (via /:id/viewer/offer)', () => {
     expect((command as { payload: Record<string, unknown> }).payload.prompt).toEqual(prompt);
   });
 
+  // #6819: the viewer-token offer binds the consent-unavailable fallback to
+  // the start generation exactly like the JWT offer route.
+  it.each([
+    { mode: 'consent', behavior: 'proceed', bound: 'proceed' },
+    { mode: 'consent', behavior: 'block', bound: 'block' },
+    { mode: 'notify', behavior: 'proceed', bound: null },
+  ] as const)('binds consentUnavailableBehavior=$bound for a $mode/$behavior prompt', async ({ mode, behavior, bound }) => {
+    primeHappyPath();
+    const { buildRemoteSessionPromptPayload } = await import('./remote/helpers');
+    vi.mocked(buildRemoteSessionPromptPayload).mockResolvedValueOnce({
+      mode,
+      technicianName: null,
+      technicianEmail: null,
+      orgName: null,
+      consentUnavailableBehavior: behavior,
+      consentTimeoutMs: 30000,
+      notifyOnEnd: true,
+      showIndicator: true,
+    } as never);
+
+    const res = await offerRequest();
+    expect(res.status).toBe(200);
+
+    const set = (vi.mocked(db.update).mock.results[0]!.value as { set: ReturnType<typeof vi.fn> }).set;
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({
+      desktopPromptMode: mode,
+      desktopConsentUnavailableBehavior: bound,
+    }));
+  });
+
   it('on valid + active + allowed: submits offer and sends start_desktop with the policy payload', async () => {
     primeHappyPath();
 

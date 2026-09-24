@@ -292,9 +292,16 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 		}
 	}
 
+	// Why a consent-mode start was allowed to proceed, reported to the API as
+	// consentReason: "user" (the end user allowed it) or "helper_absent" /
+	// "timeout" (nobody could be asked and consentUnavailableBehavior is
+	// "proceed"). Never collapse the latter two into "user" — the API audits
+	// "user" as the end user granting the session (#6819).
+	consentReason := ""
 	if prompt != nil && prompt.Mode == "consent" {
 		verdict, helperPresent, timedOut := h.requestConsent(sessionID, prompt, targetSession)
 		proceed, reason := decideConsent(verdict, helperPresent, timedOut, prompt.ConsentUnavailableBehavior)
+		consentReason = reason
 		if !proceed {
 			log.Info("remote session denied by consent gate",
 				"sessionId", sessionID, "reason", reason)
@@ -324,7 +331,7 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 		}
 		if result.Status == "completed" && prompt != nil {
 			h.afterDesktopStart(sessionID, prompt, targetSession)
-			result = withConsentGranted(result, prompt)
+			result = withConsentGranted(result, prompt, consentReason)
 		} else if result.Status != "completed" {
 			// Helper start failed — no live session, so no disconnect event
 			// will come to release the target or the leases. Clear both now.
@@ -367,7 +374,7 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	if prompt != nil {
 		h.afterDesktopStart(sessionID, prompt, targetSession)
 		if prompt.Mode == "consent" {
-			resultData["consentReason"] = "user"
+			resultData["consentReason"] = consentReason
 		}
 	}
 	return tools.NewSuccessResult(resultData, time.Since(start).Milliseconds())

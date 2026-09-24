@@ -394,9 +394,8 @@ function rigDesktopStartIntent(options: {
 
   // (c) commit: generation-bump update — update().set().where().returning()
   const returning = vi.fn().mockResolvedValue([{ generation: committedGeneration }]);
-  vi.mocked(db.update).mockReturnValueOnce({
-    set: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning }) }),
-  } as never);
+  const set = vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning }) });
+  vi.mocked(db.update).mockReturnValueOnce({ set } as never);
 
   // (d) pre-send re-read — select().from().where().limit()
   vi.mocked(db.select).mockReturnValueOnce({
@@ -409,7 +408,7 @@ function rigDesktopStartIntent(options: {
     }),
   } as never);
 
-  return { returning };
+  return { returning, set };
 }
 
 function rigLockedCleanupDevice(siteId: string | null, orgId = ORG_ID) {
@@ -1163,6 +1162,42 @@ describe('remote sessions — site-scope enforcement', () => {
       );
       const call = vi.mocked(sendCommandToAgent).mock.calls.at(-1) as unknown as [string, { payload: Record<string, unknown> }];
       expect(call[1].payload.prompt).toEqual(prompt);
+    });
+    // #6819: the consent-unavailable fallback shipped to the agent is bound to
+    // the start generation, so the answer path can refuse a helper_absent /
+    // timeout activation the policy did not allow. Only consent mode binds it.
+    it.each([
+      { mode: 'consent', behavior: 'proceed', bound: 'proceed' },
+      { mode: 'consent', behavior: 'block', bound: 'block' },
+      { mode: 'notify', behavior: 'proceed', bound: null },
+    ] as const)('binds consentUnavailableBehavior=$bound for a $mode/$behavior prompt', async ({ mode, behavior, bound }) => {
+      getSessionWithOrgCheck.mockResolvedValue({
+        session: { id: SESSION_ID, userId: 'user-1', type: 'desktop', status: 'pending', deviceId: DEVICE_IN_ALLOWED },
+        device: { id: DEVICE_IN_ALLOWED, orgId: ORG_ID, siteId: ALLOWED_SITE, agentId: 'agent-1' },
+      });
+      const { set } = rigOfferUpdate();
+      vi.mocked(buildRemoteSessionPromptPayload).mockResolvedValueOnce({
+        mode,
+        technicianName: null,
+        technicianEmail: null,
+        orgName: null,
+        consentUnavailableBehavior: behavior,
+        consentTimeoutMs: 30000,
+        notifyOnEnd: true,
+        showIndicator: true,
+      } as never);
+
+      const res = await app.request(`/remote/sessions/${SESSION_ID}/offer`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json', 'x-restrict-site': ALLOWED_SITE },
+        body: offerBody,
+      });
+
+      expect(res.status).toBe(200);
+      expect(set).toHaveBeenCalledWith(expect.objectContaining({
+        desktopPromptMode: mode,
+        desktopConsentUnavailableBehavior: bound,
+      }));
     });
   });
 

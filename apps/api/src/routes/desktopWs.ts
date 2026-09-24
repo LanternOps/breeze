@@ -26,6 +26,7 @@ import {
 } from './remote/helpers';
 import {
   assertDesktopStartIntentCurrent,
+  boundConsentUnavailableBehavior,
   commitDesktopStartIntent,
   commitDesktopStreamStartIntent,
   formatDesktopGeneration,
@@ -1664,6 +1665,9 @@ export function createDesktopWsRoutes(
           sessionId,
           startCommandId,
           promptMode,
+          // Bound with the generation so the answer path can refuse an
+          // unsolicited-consent start this policy did not allow (#6819).
+          consentUnavailableBehavior: boundConsentUnavailableBehavior(prompt),
           offer: data.offer,
         })
       );
