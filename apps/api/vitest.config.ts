@@ -51,6 +51,11 @@ export default defineConfig({
       // imports `__tests__/integration/setup` (real postgres pool + autoMigrate).
       // Belongs to vitest.integration.config.ts.
       'src/services/hardwareHealth/**/*.integration.test.ts',
+      // Hardware & RAID monitoring (W05 BMC in-band): use real PostgreSQL and
+      // the integration setup.
+      'src/services/discovery/agentReportedBmcLink.integration.test.ts',
+      'src/jobs/discoveryWorker.bmc.integration.test.ts',
+      'src/services/topology/bmc.integration.test.ts',
       // Suppression-expiry reaper real-DB test: imports `__tests__/integration/setup`
       // (real postgres pool + autoMigrate in its beforeAll), so the unit runner's
       // no-DB environment fails the suite on connect. Belongs to vitest.integration.config.ts.

@@ -57,7 +57,20 @@ describe('LinkSection — linked asset', () => {
     expect(screen.getByTestId('network-settings-link-provenance')).toHaveTextContent('set manually');
   });
 
-  it.each(['manual', 'auto'] as const)('confirms before unlinking a %s link, then DELETEs and reloads', async (linkSource) => {
+  it('describes the agent-reported management controller as a separate associated device', () => {
+    render(<LinkSection {...props} asset={{ ...linked, linkSource: 'agent_report' }} />);
+    expect(screen.getByTestId('network-settings-link-device')).toHaveTextContent('Management controller for WS-FRONTDESK');
+    expect(screen.getByTestId('network-settings-link-device')).toHaveAttribute('href', '/devices/dev-9');
+    expect(screen.getByTestId('network-settings-link-provenance')).toHaveTextContent('reported by host agent');
+    expect(screen.getByText('This management controller is associated with its host and remains a separate network device.')).toBeInTheDocument();
+    expect(screen.queryByText(/same (device|machine)/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/auto-detected/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('network-settings-link-unlink'));
+    expect(screen.getByText('Remove the management-controller association? Auto-linking stays off for this asset until you link it again.')).toBeInTheDocument();
+    expect(writes()).toHaveLength(0);
+  });
+
+  it.each(['manual', 'auto', 'agent_report'] as const)('confirms before unlinking a %s link, then DELETEs and reloads', async (linkSource) => {
     render(<LinkSection {...props} asset={{ ...linked, linkSource }} />);
 
     fireEvent.click(screen.getByTestId('network-settings-link-unlink'));

@@ -3442,6 +3442,17 @@
     "events": "Événements matériels",
     "noEvents": "Aucun événement matériel enregistré.",
     "noComponents": "Aucun composant signalé. Vérifiez les sources.",
-    "all": "Tous les états matériels"
+    "all": "Tous les états matériels",
+    "managementController": "Contrôleur de gestion",
+    "bmcVendor": "Fabricant",
+    "bmcFirmware": "Version du micrologiciel",
+    "bmcIp": "Adresse IP",
+    "bmcMac": "Adresse MAC",
+    "bmcOtherSite": "Contrôleur de gestion trouvé sur le site {{site}}",
+    "bmcObserved": "Dernier rapport : {{time}} ; collecte quotidienne.",
+    "bmcHost": "Contrôleur de gestion de {{name}}",
+    "bmcAgentReport": "— signalé par l’agent de l’hôte",
+    "bmcAssociation": "Ce contrôleur de gestion est associé à son hôte et reste un équipement réseau distinct.",
+    "bmcConfirmUnlink": "Supprimer l’association du contrôleur de gestion ? La liaison automatique reste désactivée pour cet équipement jusqu’à ce que vous le liiez à nouveau."
   }
 }

@@ -4,6 +4,7 @@ import { fetchWithAuth } from '../../../stores/auth';
 import { formatLastSeen } from '@/lib/formatTime';
 import ComponentStatePill from './ComponentStatePill';
 import ControllerCard, { PhysicalDisksTable } from './ControllerCard';
+import ManagementControllerCard from './ManagementControllerCard';
 import SourcesFooter, { HARDWARE_DOCS_URL } from './SourcesFooter';
 import HardwareEventsList from './HardwareEventsList';
 import type { HardwareHealthView } from './types';
@@ -42,6 +43,8 @@ export default function StorageHealthSection({ deviceId }: { deviceId: string })
   const backed = osDisks.filter(c => c.attributes.backedByVd === true);
   const standalone = osDisks.filter(c => c.attributes.backedByVd !== true);
   const storage = data?.components.filter(c => !['collector', 'bmc'].includes(c.componentType)) ?? [];
+  const bmc = data?.components.filter(c => c.componentType === 'bmc')
+    .sort((a, b) => Date.parse(b.lastSeenAt) - Date.parse(a.lastSeenAt) || a.componentKey.localeCompare(b.componentKey))[0];
   const noTools = data && (data.tiersRun.includes('none') || (data.sources.length > 0
     && data.sources.every(s => s.status === 'unavailable')));
   const docs = <a className="underline text-primary" href={HARDWARE_DOCS_URL}>{t('hardwareHealth.docs')}</a>;
@@ -61,7 +64,7 @@ export default function StorageHealthSection({ deviceId }: { deviceId: string })
     {data && <>
       {disabled ? <p data-testid="hardware-empty-state">{t('hardwareHealth.disabled', {
         policy: data.policy?.policyName ?? '—',
-      })}</p> : storage.length === 0 && <p data-testid="hardware-empty-state">
+      })}</p> : storage.length === 0 && !bmc && <p data-testid="hardware-empty-state">
         {noTools ? t('hardwareHealth.noTools', { sources: data.sources.map(s => s.source).join(', ') })
           : t('hardwareHealth.noComponents')} {docs}
       </p>}
@@ -77,6 +80,7 @@ export default function StorageHealthSection({ deviceId }: { deviceId: string })
           <PhysicalDisksTable disks={backed} />
         </details>}
       </div>}
+      {bmc && <ManagementControllerCard component={bmc} />}
       <SourcesFooter sources={data.sources} lastCollectedAt={data.lastCollectedAt} />
       <HardwareEventsList events={data.events} />
     </>}

@@ -37,7 +37,15 @@ vi.mock('../db/schema', () => ({
     assetType: 'discoveredAssets.assetType',
     detectedAssetType: 'discoveredAssets.detectedAssetType',
     detectedTypeSource: 'discoveredAssets.detectedTypeSource',
-    autoLinkSuppressedAt: 'discoveredAssets.autoLinkSuppressedAt'
+    autoLinkSuppressedAt: 'discoveredAssets.autoLinkSuppressedAt',
+    approvalStatus: 'discoveredAssets.approvalStatus'
+  },
+  deviceHardwareComponents: {
+    deviceId: 'deviceHardwareComponents.deviceId',
+    orgId: 'deviceHardwareComponents.orgId',
+    componentType: 'deviceHardwareComponents.componentType',
+    stale: 'deviceHardwareComponents.stale',
+    attributes: 'deviceHardwareComponents.attributes',
   },
   networkTopology: {
     id: 'networkTopology.id',
@@ -110,7 +118,7 @@ vi.mock('./networkBaselineWorker', () => ({
 import { db } from '../db';
 import { buildApprovalDecision } from '../services/assetApproval';
 import { inferAssetTypeFromVendor, lookupMacVendor } from '../services/macVendorLookup';
-import { devices, discoveredAssets } from '../db/schema';
+import { devices, discoveredAssets, deviceHardwareComponents } from '../db/schema';
 import type { DiscoveredHostResult } from './discoveryWorker';
 
 const { cleanupSpeculativeTopologyLinks, processResults, buildScanUpdateSet, __testables } = await import('./discoveryWorker') as typeof import('./discoveryWorker');
@@ -138,6 +146,21 @@ function makeSelectChain(
   chain.then = (resolve: (v: unknown) => void, reject: (e: unknown) => void) =>
     Promise.resolve(currentValue).then(resolve, reject);
   return chain;
+}
+
+// True for the BMC-identity projection (`{deviceId: deviceHardwareComponents.deviceId}`)
+// so a mock `select` implementation can special-case it without consuming the
+// pre-existing FIFO NIC-query fixtures.
+function isBmcProjection(selection: unknown): boolean {
+  return typeof selection === 'object' && selection !== null && 'deviceId' in selection
+    && (selection as { deviceId: unknown }).deviceId === deviceHardwareComponents.deviceId;
+}
+
+// A conditional-returning UPDATE result: awaitable directly (empty array,
+// matching the old unconditional-update mocks) and also supports `.returning()`
+// for the new gated auto-link write.
+function updateResult() {
+  return Object.assign(Promise.resolve([]), { returning: () => Promise.resolve([{ id: 'asset-1' }]) });
 }
 
 function collectSqlLeafStrings(node: unknown, seen = new Set<unknown>(), acc: string[] = []): string[] {
@@ -266,11 +289,12 @@ describe('processResults — type_source', () => {
 
     vi.mocked(buildApprovalDecision).mockReturnValue({ approvalStatus: 'pending', shouldAlert: false });
 
-    vi.mocked(mockDb.select).mockImplementation(() =>
-      makeSelectChain(selectQueue[selectCallIndex++] ?? [], (condition) => {
+    vi.mocked(mockDb.select).mockImplementation((selection?: unknown) => {
+      if (isBmcProjection(selection)) return makeSelectChain([]);
+      return makeSelectChain(selectQueue[selectCallIndex++] ?? [], (condition) => {
         capturedWherePredicates.push(condition);
-      })
-    );
+      });
+    });
 
     vi.mocked(mockDb.update).mockImplementation(() => {
       const chain: Record<string, unknown> = {};
@@ -280,7 +304,7 @@ describe('processResults — type_source', () => {
         if (capturedUpdateSet === null) capturedUpdateSet = args;
         return chain;
       };
-      chain.where = () => Promise.resolve([]);
+      chain.where = () => updateResult();
       return chain;
     });
 
@@ -466,7 +490,7 @@ describe('processResults — type_source', () => {
       chain.set = (a: Record<string, unknown>) => { args = a; return chain; };
       chain.where = (w: unknown) => {
         updateCalls.push({ table, args, where: w });
-        return Promise.resolve([]);
+        return updateResult();
       };
       return chain;
     });
@@ -507,11 +531,12 @@ describe('processResults — type_source', () => {
         updatePayloads.push(args);
         return chain;
       };
-      chain.where = () => Promise.resolve([]);
+      chain.where = () => updateResult();
       return chain;
     });
 
-    vi.mocked(mockDb.select).mockImplementation(() => {
+    vi.mocked(mockDb.select).mockImplementation((selection?: unknown) => {
+      if (isBmcProjection(selection)) return makeSelectChain([]);
       const callIndex = selectCallIndex++;
       const initialRows = callIndex === 7
         ? [{ deviceId: 'sibling-site-device' }]
@@ -558,7 +583,7 @@ describe('processResults — type_source', () => {
         updatePayloads.push(args);
         return chain;
       };
-      chain.where = () => Promise.resolve([]);
+      chain.where = () => updateResult();
       return chain;
     });
 
@@ -585,7 +610,7 @@ describe('processResults — type_source', () => {
         updatesByPhase[phase]!.push(args);
         return chain;
       };
-      chain.where = () => Promise.resolve([]);
+      chain.where = () => updateResult();
       return chain;
     });
 
@@ -767,7 +792,7 @@ describe('processResults — type_source', () => {
           updateCalls.push({ table, args });
           return chain;
         };
-        chain.where = () => Promise.resolve([]);
+        chain.where = () => updateResult();
         return chain;
       });
 
@@ -819,7 +844,7 @@ describe('processResults — type_source', () => {
           updateCalls.push({ table, args });
           return chain;
         };
-        chain.where = () => Promise.resolve([]);
+        chain.where = () => updateResult();
         return chain;
       });
 

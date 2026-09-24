@@ -3,6 +3,7 @@ package hwhealth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -77,6 +78,7 @@ func New(opts Options) *Collector {
 			newSMART(opts.ExtraToolDirs, runTool, opts.Now),
 		}
 		c.sources = append(c.sources, remainingSources(opts.ExtraToolDirs)...)
+		c.sources = append(c.sources, newBMC("ipmi", opts.ExtraToolDirs, runTool), newBMC("racadm", opts.ExtraToolDirs, runTool), newBMC("hponcfg", opts.ExtraToolDirs, runTool))
 	}
 	for _, s := range c.sources {
 		c.detect[s.Name()] = &detection{}
@@ -180,6 +182,13 @@ func (c *Collector) Run(parent context.Context, tiers []Tier) (*Snapshot, error)
 			break
 		}
 	}
+	order = orderBMC(order)
+	// BMC in-band probes (ipmitool/racadm/hponcfg) run at most once per 24h,
+	// gated on the RAID tier being requested. bmcAnswered stops the IPMI ->
+	// Dell -> HPE fallback the moment one adapter reports facts, so only one
+	// BMC component is ever produced per cycle.
+	bmcDue := c.state.BMCLastRun.IsZero() || now.Sub(c.state.BMCLastRun) >= 24*time.Hour
+	bmcStarted, bmcAnswered, bmcGateFailed := false, false, false
 	ranTiers := map[Tier]bool{}
 	next := Kind("")
 	for _, s := range order {
@@ -191,6 +200,9 @@ func (c *Collector) Run(parent context.Context, tiers []Tier) (*Snapshot, error)
 			snapshot.Sources = append(snapshot.Sources, report)
 			continue
 		}
+		if isBMCSource(k) && (!requested[TierRAID] || !bmcDue) {
+			continue
+		}
 		if !a.Available {
 			report.Status = "unavailable"
 			snapshot.Sources = append(snapshot.Sources, report)
@@ -199,6 +211,11 @@ func (c *Collector) Run(parent context.Context, tiers []Tier) (*Snapshot, error)
 		if winner, ok := superseded[k]; ok {
 			report.Status = "superseded"
 			report.Warnings = []string{"superseded by " + string(winner)}
+			snapshot.Sources = append(snapshot.Sources, report)
+			continue
+		}
+		if isBMCSource(k) && bmcAnswered {
+			report.Status = "superseded"
 			snapshot.Sources = append(snapshot.Sources, report)
 			continue
 		}
@@ -223,6 +240,42 @@ func (c *Collector) Run(parent context.Context, tiers []Tier) (*Snapshot, error)
 			snapshot.Sources = append(snapshot.Sources, report)
 			continue
 		}
+		if isBMCSource(k) && bmcGateFailed {
+			// The attempt gate could not be persisted earlier this cycle. Never
+			// run a BMC tool without a recorded gate, so every remaining BMC
+			// source is skipped outright (no report entry) rather than retried.
+			continue
+		}
+		if isBMCSource(k) && !bmcStarted {
+			// Persist the daily attempt before the first BMC tool invocation,
+			// under the same lock and through the same sequence-reserving
+			// helper the end-of-Run persistence uses, so a crash between this
+			// write and the final one still leaves the gate recorded (an
+			// attempt, successful or not, consumes the day) and never
+			// fabricates a completed observation on restart.
+			c.mu.Lock()
+			pending := c.state
+			pending.BMCLastRun = now
+			persistErr := reserveSequence(c.dir, &pending)
+			if persistErr == nil {
+				c.state = pending
+			}
+			c.mu.Unlock()
+			if persistErr != nil {
+				// c.state is left unchanged: reserveSequence failed before
+				// writing, so this is not treated as a consumed daily attempt
+				// and will be retried on the next cycle. The BMC tool for `k`
+				// never runs; the non-BMC components already collected above
+				// (and any collected below) still make it into the snapshot.
+				slog.Warn("hardware BMC attempt gate not persisted; skipping BMC collection this cycle", "error", persistErr)
+				report.Status = "failed"
+				report.Error = persistErr.Error()
+				snapshot.Sources = append(snapshot.Sources, report)
+				bmcGateFailed = true
+				continue
+			}
+			bmcStarted = true
+		}
 		start := time.Now()
 		r, e := collectors.Guard("hwhealth."+string(k), func() (Result, error) { return s.Collect(ctx, a) })
 		report.DurationMs = time.Since(start).Milliseconds()
@@ -230,7 +283,9 @@ func (c *Collector) Run(parent context.Context, tiers []Tier) (*Snapshot, error)
 		if r.ToolVersion != "" {
 			report.ToolVersion = r.ToolVersion
 		}
-		if e != nil && len(r.Components) == 0 {
+		if isBMCSource(k) && errors.Is(e, errNoBMC) {
+			report.Status = "unavailable"
+		} else if e != nil && len(r.Components) == 0 {
 			report.Status = "failed"
 			report.Error = e.Error()
 			b.finish(now, e)
@@ -242,6 +297,9 @@ func (c *Collector) Run(parent context.Context, tiers []Tier) (*Snapshot, error)
 			}
 			snapshot.Components = append(snapshot.Components, r.Components...)
 			b.finish(now, nil)
+			if isBMCSource(k) && len(r.Components) > 0 {
+				bmcAnswered = true
+			}
 		}
 		snapshot.Sources = append(snapshot.Sources, report)
 	}
@@ -295,6 +353,11 @@ func (c *Collector) Run(parent context.Context, tiers []Tier) (*Snapshot, error)
 	if e := writeJSON(filepath.Join(c.dir, "hwhealth_smart_cache.json"), c.cache); e != nil {
 		return nil, fmt.Errorf("persist hardware SMART cache: %w", e)
 	}
+	// Unconditional, exactly as before the BMC gate-persist handling above: if
+	// the earlier BMC gate write failed here transiently, this second write to
+	// the same state file gets a fresh chance to succeed and the snapshot
+	// ships with an advanced sequence; if the state file is persistently
+	// unwritable, Run fails here as it always has.
 	if e := reserveSequence(c.dir, &pending); e != nil {
 		return nil, e
 	}

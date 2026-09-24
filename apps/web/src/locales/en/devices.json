@@ -3442,6 +3442,17 @@
     "events": "Hardware events",
     "noEvents": "No hardware events recorded.",
     "noComponents": "No storage components reported. Check source status below.",
-    "all": "All hardware health"
+    "all": "All hardware health",
+    "managementController": "Management controller",
+    "bmcVendor": "Vendor",
+    "bmcFirmware": "Firmware",
+    "bmcIp": "IP address",
+    "bmcMac": "MAC address",
+    "bmcOtherSite": "Management controller found in site {{site}}",
+    "bmcObserved": "Last reported {{time}}; collected daily.",
+    "bmcHost": "Management controller for {{name}}",
+    "bmcAgentReport": "— reported by host agent",
+    "bmcAssociation": "This management controller is associated with its host and remains a separate network device.",
+    "bmcConfirmUnlink": "Remove the management-controller association? Auto-linking stays off for this asset until you link it again."
   }
 }

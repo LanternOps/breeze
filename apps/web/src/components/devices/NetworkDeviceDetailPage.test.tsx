@@ -1821,6 +1821,18 @@ describe('NetworkDeviceDetailPage', () => {
     });
   });
 
+  it('shows BMC host association and agent provenance on the read-only overview', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({
+      data: { ...baseAsset, linkedDeviceId: 'dev-9', linkedDeviceName: 'agent-host', linkSource: 'agent_report' },
+    }));
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    const link = await screen.findByTestId('network-detail-linked-device');
+    expect(link).toHaveAttribute('href', '/devices/dev-9');
+    expect(link).toHaveTextContent('Management controller for agent-host');
+    expect(link).not.toHaveTextContent('Same device as');
+    expect(screen.getByTestId('network-detail-link-provenance')).toHaveTextContent('reported by host agent');
+  });
+
   it('opens #topology with passive reads and resolves the canonical inventory binding', async () => {
     window.location.hash = '#topology';
     vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
