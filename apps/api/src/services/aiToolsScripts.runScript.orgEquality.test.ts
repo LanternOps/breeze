@@ -110,6 +110,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { devices, organizations, scripts } from '../db/schema';
 import { registerScriptTools } from './aiToolsScripts';
 import { loadTenantVariableScope } from './tenantVariableResolution';
+import { sha256Content } from './scriptVersions';
 import type { AiTool } from './aiTools';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import type { AuthContext } from '../middleware/auth';
@@ -744,5 +745,51 @@ describe('run_script consumes a verified release snapshot instead of re-querying
 
     expect(selectedTables).toContain(scripts);
     expect(loadTenantVariableScope).toHaveBeenCalledWith([ORG_B]);
+  });
+});
+
+// expectedContentSha256: the pin is decided on the exact row handed to
+// dispatch, on both the query path and the verified-release path.
+describe('run_script expectedContentSha256 content pin', () => {
+  const deviceRow = { id: DEVICE_B, orgId: ORG_B, hostname: 'devB', siteId: null, status: 'online' };
+  const row = { id: SCRIPT_ID, orgId: ORG_B, partnerId: null, isSystem: false, language: 'powershell', content: 'Write-Output $env:BREEZE_PARAM_MODE\r\n', timeoutSeconds: 60, runAs: 'system', parameters: null };
+
+  it('a matching pin dispatches exactly once, with content whose digest equals the pin', async () => {
+    mockDb(row, deviceRow);
+    const pin = sha256Content(row.content);
+    const out = JSON.parse(await runScriptTool().handler({ scriptId: SCRIPT_ID, deviceIds: [DEVICE_B], expectedContentSha256: pin }, makeAuth()));
+
+    expect(dispatchScriptToDevice).toHaveBeenCalledTimes(1);
+    const dispatched = dispatchScriptToDevice.mock.calls[0]![0].source.script;
+    expect(sha256Content(dispatched.content)).toBe(pin);
+    expect(out.results[DEVICE_B].status).toBe('completed');
+  });
+
+  it('a stale pin dispatches nothing and returns exactly {error: script_content_mismatch}', async () => {
+    mockDb(row, deviceRow);
+    const out = JSON.parse(await runScriptTool().handler({ scriptId: SCRIPT_ID, deviceIds: [DEVICE_B], expectedContentSha256: 'b'.repeat(64) }, makeAuth()));
+
+    expect(dispatchScriptToDevice).not.toHaveBeenCalled();
+    expect(out).toEqual({ error: 'script_content_mismatch' });
+  });
+
+  it('no pin keeps the existing behaviour', async () => {
+    mockDb(row, deviceRow);
+    await runScriptTool().handler({ scriptId: SCRIPT_ID, deviceIds: [DEVICE_B] }, makeAuth());
+    expect(dispatchScriptToDevice).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies to the verified-release row too: stale pin refuses, matching pin dispatches that row', async () => {
+    const context = { verifiedRunScript: { snapshot: { script: { id: row.id, orgId: row.orgId, language: row.language, content: row.content, timeoutSeconds: row.timeoutSeconds, runAs: row.runAs }, parameterDefinitions: '[]', deviceOrgIds: [ORG_B], variableReferences: [] }, scriptRow: row, scope: { orgIds: new Set([ORG_B]) } } } as unknown as ToolExecutionContext;
+
+    mockDb(null, deviceRow);
+    const stale = JSON.parse(await runScriptTool().handler({ scriptId: SCRIPT_ID, deviceIds: [DEVICE_B], expectedContentSha256: 'c'.repeat(64) }, makeAuth(), context));
+    expect(stale).toEqual({ error: 'script_content_mismatch' });
+    expect(dispatchScriptToDevice).not.toHaveBeenCalled();
+
+    mockDb(null, deviceRow);
+    await runScriptTool().handler({ scriptId: SCRIPT_ID, deviceIds: [DEVICE_B], expectedContentSha256: sha256Content(row.content) }, makeAuth(), context);
+    expect(dispatchScriptToDevice).toHaveBeenCalledTimes(1);
+    expect(dispatchScriptToDevice).toHaveBeenCalledWith(expect.objectContaining({ source: { kind: 'saved', script: row } }));
   });
 });
