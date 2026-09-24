@@ -735,6 +735,23 @@ func (h *Heartbeat) executeScriptInSession(cmd Command, script executor.ScriptEx
 	// through the lock-guarded accessor (handlers_desktop_lease.go), not the
 	// raw field, to match every other lifecycle read in this package.
 	if lc := h.lifecycleController(); lc != nil && lc.Mode() == "on-demand" {
+		// A session nobody is signed in to (logged-off console at Winlogon)
+		// or a disconnected one can never host a user-role helper, so a
+		// lease + wait would only burn the full helperReadyBudget before
+		// reporting "did not become ready in time" (#6820, same shape as the
+		// desktop path's #6812). Fail fast only on a positive "cannot host";
+		// a failed check (including an unreadable username or a session the
+		// detector cannot see) keeps the lease + bounded wait below, which
+		// reports its own typed failure.
+		available, err := lc.HelperRoleAvailable(sessionbroker.HelperKey{WindowsSessionID: winID, Role: ipc.HelperRoleUser})
+		if err != nil {
+			log.Warn("could not check whether the target session can host a user helper; waiting for it",
+				"commandId", cmd.ID, "winSession", winID, "error", err.Error())
+		} else if !available {
+			return fail(fmt.Sprintf("cannot run in session %d: no user is signed in to session %d, or it is disconnected; eligible sessions: %s",
+				winID, winID, eligibleSessionsSummary()))
+		}
+
 		ttl := time.Duration(script.Timeout)*time.Second + time.Minute
 		if ttl < 5*time.Minute {
 			ttl = 5 * time.Minute
