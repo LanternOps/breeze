@@ -159,6 +159,37 @@ describe('runLegacyAlertingRetirement (W05d)', () => {
   });
 });
 
+describe('runLegacyAlertingRetirement retries (W05d)', () => {
+  it('retries a failed pass after the given delays and counts only once, at the end', async () => {
+    h.execute.mockReset();
+    h.execute.mockRejectedValueOnce(new Error('prologue timeout')).mockResolvedValue([]);
+    const result = await runLegacyAlertingRetirement({ retryDelaysMs: [0, 0] });
+    expect(h.execute).toHaveBeenCalledTimes(2);
+    expect(h.captureException).toHaveBeenCalledWith(expect.any(Error), undefined, expect.objectContaining({ area: 'legacy_alerting_sweep' }));
+    expect(result).toMatchObject({ failed: 0, attempts: 2 });
+    const { db } = await import('../../../db');
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives up after the last delay without throwing and still runs the count check', async () => {
+    h.execute.mockReset();
+    h.execute.mockRejectedValue(new Error('down'));
+    const result = await runLegacyAlertingRetirement({ retryDelaysMs: [0] });
+    expect(h.execute).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ failed: 1, attempts: 2 });
+    const { db } = await import('../../../db');
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('LegacyAlertingUnretiredError message', () => {
+  it('names no internal wave and tells the operator how to re-run the sweep', () => {
+    const msg = new LegacyAlertingUnretiredError({ configPolicyAlertRules: 1, configPolicyMonitoringWatches: 0 }).message;
+    expect(msg).not.toMatch(/W05/);
+    expect(msg).toMatch(/restart/i);
+  });
+});
+
 describe('retirePreviewRefusals', () => {
   const item = { sourceTable: 'config_policy_alert_rules' as const, sourceId: 'r1', name: 'Custom',
     reason: 'unconvertible:custom_condition', policyId: null, policyName: null };

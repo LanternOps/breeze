@@ -170,7 +170,7 @@ import { playbookRoutes } from './routes/playbooks';
 import { remediationSuggestionRoutes } from './routes/remediationSuggestions';
 import { seedBuiltInPlaybooks } from './services/builtInPlaybooks';
 import { ensureSystemLibraryScripts } from './services/systemScriptLibrary';
-import { runLegacyAlertingRetirement } from './services/monitors/conversion/retirementSweep';
+import { runLegacyAlertingRetirement, LEGACY_ALERTING_RETRY_DELAYS_MS } from './services/monitors/conversion/retirementSweep';
 import { ensureBuiltInMonitorsForAllPartners } from './services/monitors/builtInMonitors';
 import { seedDefaultAuditBaselines } from './services/auditBaselineService';
 import { changesRoutes } from './routes/changes';
@@ -1899,7 +1899,7 @@ async function bootstrap(): Promise<void> {
   // is still unretired. Detached after serve() for the same reason as the
   // built-ins above; chained so the count runs AFTER the sweep and cannot fire
   // spuriously on the first boot after upgrade. Never refuses boot.
-  void runLegacyAlertingRetirement()
+  void runLegacyAlertingRetirement({ retryDelaysMs: LEGACY_ALERTING_RETRY_DELAYS_MS })
     .then((r) => {
       console.log(
         `[startup] Legacy alerting retirement: ${r.partners} partner(s) swept, ${r.converted} converted, ` +

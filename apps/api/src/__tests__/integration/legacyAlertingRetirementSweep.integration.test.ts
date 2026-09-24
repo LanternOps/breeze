@@ -125,7 +125,7 @@ describe('legacy alerting retirement sweep', () => {
       await db.insert(configPolicyMonitoringWatches).values({ settingsId: settings!.id, watchType: 'service', name: 'example-service' });
     });
     vi.stubEnv('BREEZE_LEGACY_ALERTING_SWEEP', 'false');
-    expect(await runLegacyAlertingRetirement()).toEqual({ partners: 0, converted: 0, retired: 0, failed: 0,
+    expect(await runLegacyAlertingRetirement()).toEqual({ partners: 0, converted: 0, retired: 0, failed: 0, attempts: 0,
       remaining: { configPolicyAlertRules: 0, configPolicyMonitoringWatches: 1 } });
   });
   it('converts, retires with reason, writes the marker, and the count check is zero', async () => {

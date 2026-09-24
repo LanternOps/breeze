@@ -29,16 +29,20 @@ const RETIRED_RUNTIME_SOURCE_TABLES: ReadonlySet<ConversionSourceTable> = new Se
 ]);
 
 export interface LegacyAlertingRemaining { configPolicyAlertRules: number; configPolicyMonitoringWatches: number }
-export interface RetirementRunResult { partners: number; converted: number; retired: number; failed: number; remaining: LegacyAlertingRemaining }
+export interface RetirementRunResult { partners: number; converted: number; retired: number; failed: number; attempts: number; remaining: LegacyAlertingRemaining }
+
+/** Boot retry schedule: a transient DB failure must not leave rules dead until the next restart. */
+export const LEGACY_ALERTING_RETRY_DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000] as const;
 
 export class LegacyAlertingUnretiredError extends Error {
   constructor(readonly remaining: LegacyAlertingRemaining) {
     super(
-      `Legacy alerting rows are still unretired after the W05d sweep: ` +
+      `Legacy alerting rows are still unretired after the startup retirement sweep: ` +
       `${remaining.configPolicyAlertRules} config_policy_alert_rules, ` +
       `${remaining.configPolicyMonitoringWatches} config_policy_monitoring_watches. ` +
-      `Nothing evaluates them any more. Open Alerts → Monitors for the list, or run the ` +
-      `partner "Convert everything" action; set BREEZE_LEGACY_ALERTING_SWEEP=true if it was disabled.`,
+      `Nothing evaluates them any more. Check the earlier [legacy-alerting-retirement] errors, ` +
+      `then restart the API to re-run the sweep (unset BREEZE_LEGACY_ALERTING_SWEEP if it was ` +
+      `set to false), or run the partner "Convert everything" action.`,
     );
     this.name = 'LegacyAlertingUnretiredError';
   }
@@ -216,23 +220,52 @@ export async function checkLegacyAlertingRetired(): Promise<LegacyAlertingRemain
   return remaining;
 }
 
-export async function runLegacyAlertingRetirement(): Promise<RetirementRunResult> {
+async function sweepAllPartnersOnce(): Promise<Omit<RetirementRunResult, 'remaining' | 'attempts'>> {
   let swept = 0, converted = 0, retired = 0, failed = 0;
+  let partnerIds: string[];
+  try {
+    partnerIds = await runOutsideDbContext(() => withSystemDbAccessContext(listPartnersWithUnretiredLegacyAlerting));
+  } catch (err) {
+    console.error('[legacy-alerting-retirement] listing partners failed:', err);
+    captureException(err, undefined, { area: 'legacy_alerting_sweep' });
+    return { partners: 0, converted: 0, retired: 0, failed: 1 };
+  }
+  for (const partnerId of partnerIds) {
+    try {
+      const r = await runOutsideDbContext(() => sweepPartnerLegacyAlerting(partnerId));
+      swept += 1; converted += r.converted; retired += r.retired.length;
+    } catch (err) {
+      failed += 1;
+      console.error(`[legacy-alerting-retirement] partner ${partnerId} failed:`, err);
+      captureException(err, undefined, { area: 'legacy_alerting_sweep', partnerId });
+    }
+  }
+  return { partners: swept, converted, retired, failed };
+}
+
+/**
+ * Sweep every partner, re-running the whole pass after each delay while any
+ * partner (or the partner listing) failed, then run the count check ONCE so
+ * an intermediate transient failure never raises the unretired alarm.
+ * Totals accumulate across passes; `failed` is the last pass's count.
+ */
+export async function runLegacyAlertingRetirement(
+  options: { retryDelaysMs?: readonly number[] } = {},
+): Promise<RetirementRunResult> {
+  const delays = options.retryDelaysMs ?? [];
+  let partners = 0, converted = 0, retired = 0, failed = 0, attempts = 0;
   if (!sweepEnabled()) {
     console.warn('[legacy-alerting-retirement] sweep disabled by BREEZE_LEGACY_ALERTING_SWEEP=false; only counting');
   } else {
-    const partnerIds = await runOutsideDbContext(() => withSystemDbAccessContext(listPartnersWithUnretiredLegacyAlerting));
-    for (const partnerId of partnerIds) {
-      try {
-        const r = await runOutsideDbContext(() => sweepPartnerLegacyAlerting(partnerId));
-        swept += 1; converted += r.converted; retired += r.retired.length;
-      } catch (err) {
-        failed += 1;
-        console.error(`[legacy-alerting-retirement] partner ${partnerId} failed:`, err);
-        captureException(err, undefined, { area: 'legacy_alerting_sweep', partnerId });
-      }
+    for (let i = 0; ; i++) {
+      attempts += 1;
+      const pass = await sweepAllPartnersOnce();
+      partners += pass.partners; converted += pass.converted; retired += pass.retired; failed = pass.failed;
+      if (failed === 0 || i >= delays.length) break;
+      console.warn(`[legacy-alerting-retirement] ${failed} failure(s); retrying in ${Math.round(delays[i]! / 1000)}s`);
+      await new Promise((resolve) => setTimeout(resolve, delays[i]));
     }
   }
   const remaining = await checkLegacyAlertingRetired();
-  return { partners: swept, converted, retired, failed, remaining };
+  return { partners, converted, retired, failed, attempts, remaining };
 }
