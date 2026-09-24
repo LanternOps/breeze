@@ -63,6 +63,7 @@ import { enforceIpAllowlist, IP_NOT_ALLOWED_BODY, isBlocked } from '../services/
 import { captureException, captureMessage } from '../services/sentry';
 import type { BootstrapTool } from '../modules/mcpInvites/types';
 import { BootstrapError } from '../modules/mcpInvites/types';
+import { canonicalPrincipalRef, parseUnattendedPrincipals } from '../services/mcpUnattendedPrincipals';
 
 export const mcpServerRoutes = new Hono();
 
@@ -116,17 +117,18 @@ function shouldRequireExecuteAdminInProd(): boolean {
 function mcpPrincipalRef(apiKey: McpApiKeyContext | undefined | null): string | null {
   if (!apiKey) return null;
   if (apiKey.oauthClientId) {
-    return apiKey.createdBy ? `oauth_client_user:${apiKey.oauthClientId}/${apiKey.createdBy}` : null;
+    return apiKey.createdBy ? canonicalPrincipalRef('oauth_client_user', apiKey.oauthClientId, apiKey.createdBy) : null;
   }
   // OAuth bearers use a synthetic `oauth:<jti>` id; never treat it as a key id.
   if (apiKey.oauthGrantId || apiKey.id.startsWith('oauth:')) return null;
-  return `api_key:${apiKey.id}`;
+  return canonicalPrincipalRef('api_key', apiKey.id);
 }
 
 function isUnattendedTier3PrincipalOverMcp(apiKey: McpApiKeyContext | undefined | null): boolean {
   const ref = mcpPrincipalRef(apiKey);
   if (!ref) return false;
-  return parseCsvSet(process.env.MCP_UNATTENDED_TIER3_PRINCIPALS).has(ref);
+  // Same parser as the boot warning (config/validate.ts), so the log and the gate agree.
+  return parseUnattendedPrincipals(process.env.MCP_UNATTENDED_TIER3_PRINCIPALS).principals.has(ref);
 }
 
 const MCP_MESSAGE_MAX_BODY_BYTES = envInt('MCP_MESSAGE_MAX_BODY_BYTES', 64 * 1024);

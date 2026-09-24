@@ -732,6 +732,13 @@ describe('MCP_UNATTENDED_TIER3_PRINCIPALS operator opt-in', () => {
       expect(audit.details.approvalBypassPrincipal).toBeUndefined();
     });
 
+    it('matches an uppercase-UUID entry at runtime, exactly as the boot warning reports it', async () => {
+      vi.stubEnv('MCP_UNATTENDED_TIER3_PRINCIPALS', 'api_key:11111111-1111-4111-8111-111111111111'.toUpperCase().replace('API_KEY', 'api_key'));
+      const body = await (await callTool('execute_command', { deviceId: 'dev-1', commandType: 'list_processes' })).json();
+      expect(body.result.isError).toBeFalsy();
+      expect(mocks.executeTool).toHaveBeenCalledTimes(1);
+    });
+
     it('records the OAuth client+user ref for a bypassed OAuth call', async () => {
       testState.apiKeyExtra = { id: 'oauth:jti-9', oauthGrantId: 'grant-9', oauthClientId: 'someone', createdBy: '99999999-9999-4999-8999-999999999999' };
       await callTool('execute_command', { deviceId: 'dev-1', commandType: 'list_processes' });

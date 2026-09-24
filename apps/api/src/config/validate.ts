@@ -1,4 +1,5 @@
 import { isIP } from 'net';
+import { parseUnattendedPrincipals } from '../services/mcpUnattendedPrincipals';
 import { z } from 'zod';
 import { validateM365CustomerGraphReadRuntimeConfigAtBoot } from '../services/m365ControlPlane/runtimeConfig';
 import { validateM365CustomerGraphActionsRuntimeConfigAtBoot } from '../services/m365ControlPlane/writeActionRuntimeConfig';
@@ -2403,18 +2404,9 @@ function collectWarnings(env: Record<string, string | undefined>): ConfigWarning
   // MCP_UNATTENDED_TIER3_PRINCIPALS lifts interactive approval for the named
   // principals, so a deploy that sets it must say so at boot, and an entry
   // that can never match (a typo) must not look like a working allowlist.
-  const unattendedEntries = (env.MCP_UNATTENDED_TIER3_PRINCIPALS ?? '')
-    .split(',')
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0);
-  if (unattendedEntries.length > 0) {
-    // API key ids and user ids are UUIDs (api_keys.id, users.id); the OAuth
-    // client_id is free-form. Anything else can never match a principal ref.
-    const uuid = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
-    const apiKeyEntry = new RegExp(`^api_key:${uuid}$`, 'iu');
-    const oauthEntry = new RegExp(`^oauth_client_user:[^\\s/]+/${uuid}$`, 'iu');
-    const wellFormed = unattendedEntries.filter((entry) => apiKeyEntry.test(entry) || oauthEntry.test(entry));
-    const malformed = unattendedEntries.filter((entry) => !wellFormed.includes(entry));
+  const { principals: unattendedPrincipals, malformed } = parseUnattendedPrincipals(env.MCP_UNATTENDED_TIER3_PRINCIPALS);
+  {
+    const wellFormed = [...unattendedPrincipals];
     if (wellFormed.length > 0) {
       warnings.push({
         key: 'MCP_UNATTENDED_TIER3_PRINCIPALS',
