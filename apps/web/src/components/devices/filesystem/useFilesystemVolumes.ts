@@ -78,9 +78,10 @@ export function useFilesystemVolumes(deviceId: string): {
     } finally {
       if (!controller.signal.aborted) setLoading(false);
     }
-    // `t` IS a dependency: the callback closes over it, and leaving it out is
-    // what leaves a stale English fallback behind after a locale switch
-    // (defect 9).
+    // Translate through `stableT`, not a captured `t`: a captured `t` left a
+    // stale English fallback after a locale switch (defect 9), while listing
+    // `t` as a dependency re-ran this load on every locale change (#3632).
+    // `stableT` never changes identity and always calls the current `t`.
   }, [deviceId, stableT]);
 
   useEffect(() => {

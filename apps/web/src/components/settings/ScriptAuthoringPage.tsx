@@ -242,8 +242,9 @@ export default function ScriptAuthoringPage() {
 
   useEffect(() => {
     void load();
-    // `load` is itself memoized on [orgId, orgScope.scope, t], so depending on
-    // it alone re-runs exactly when either input actually changes.
+    // `load` is itself memoized on [orgId, orgScope.scope, stableT], and
+    // `stableT` never changes identity (#3632), so this re-runs only when the
+    // org or scope actually changes, not on a locale switch.
   }, [load]);
 
   const ensureReauthTier = useCallback(async (): Promise<ReauthTier | null> => {
