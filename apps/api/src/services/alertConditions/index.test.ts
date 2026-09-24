@@ -338,3 +338,80 @@ describe('evaluateConditions context for non-threshold kinds (issue #6932)', () 
     expect(message).not.toContain('{{');
   });
 });
+
+describe('evaluateConditions primary actualValue is deterministic, not a race (follow-up to #6932)', () => {
+  // Two synthetic handlers whose resolution order the test controls
+  // explicitly (via `pendingResolvers`), independent of their position in
+  // the conditions array — sibling leaves under a group run through
+  // `Promise.all`, so "whichever settles first" and "array order" are two
+  // different things, and only array (tree) order is allowed to matter.
+  let pendingResolvers: Array<() => void>;
+
+  function registerControlledHandler(type: string, actualValue: number) {
+    conditionRegistry.register({
+      type,
+      evaluate: () =>
+        new Promise((resolve) => {
+          pendingResolvers.push(() =>
+            resolve({ passed: true, description: `${type} fired`, actualValue }),
+          );
+        }),
+      validate: () => [],
+    });
+  }
+
+  beforeEach(() => {
+    pendingResolvers = [];
+    registerControlledHandler('test_order_leaf_a', 111);
+    registerControlledHandler('test_order_leaf_b', 222);
+  });
+
+  it('picks the FIRST-IN-ARRAY leaf even when it is the LAST to resolve (no threshold/metric leaf present)', async () => {
+    const resultPromise = evaluateConditions(
+      {
+        logic: 'or',
+        conditions: [
+          { type: 'test_order_leaf_a' }, // array position 0 — must win
+          { type: 'test_order_leaf_b' }, // array position 1 — resolves first in time
+        ],
+      },
+      'device-1',
+    );
+
+    // Resolve out of array order: b (index 1) completes before a (index 0).
+    pendingResolvers[1]!();
+    await Promise.resolve();
+    pendingResolvers[0]!();
+
+    const result = await resultPromise;
+    expect(result.context.actualValue).toBe(111);
+  });
+
+  it('still prefers a threshold/metric leaf over a non-threshold leaf that resolves first', async () => {
+    // A real macrotask delay (not just an extra microtask hop) so the
+    // non-threshold leaf UNAMBIGUOUSLY finishes first in wall-clock time —
+    // this is what makes the test a genuine red-first guard for the
+    // preference rule itself, not just for tree order (test above).
+    getRecentMetricsMock.mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve([{ ramPercent: 92 }]), 5)),
+    );
+    getLatestMetricMock.mockResolvedValue({ ramPercent: 92 });
+
+    const resultPromise = evaluateConditions(
+      {
+        logic: 'or',
+        conditions: [
+          { type: 'metric', metric: 'ram', operator: 'gt', value: 50 }, // array position 0, real threshold handler — settles LAST
+          { type: 'test_order_leaf_a' }, // array position 1, non-threshold — settles FIRST
+        ],
+      },
+      'device-1',
+    );
+
+    // Resolved on the next microtask, long before the real handler's 5ms timer.
+    pendingResolvers[0]!();
+
+    const result = await resultPromise;
+    expect(result.context.actualValue).toBe(92);
+  });
+});

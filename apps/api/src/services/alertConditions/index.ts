@@ -100,13 +100,52 @@ function isConditionGroup(condition: RootCondition): condition is ConditionGroup
   return 'logic' in condition && 'conditions' in condition;
 }
 
+/**
+ * A leaf's contribution toward `context.actualValue`, recorded in TREE ORDER
+ * (left-to-right, depth-first) — never completion order. Sibling leaves under
+ * a group are evaluated via `Promise.all`, so whichever settles first is not
+ * a stable choice; the slot for each leaf is reserved SYNCHRONOUSLY, before
+ * its `await`, so array position always matches the condition tree's own
+ * left-to-right order regardless of which leaf's async work finishes first.
+ */
+type LeafActualValueCandidate = {
+  /** The leaf condition's own `type`, e.g. 'threshold' | 'patch_compliance'. */
+  type?: string;
+  actualValue?: number;
+};
+
 type EvaluationAccumulator = {
   met: string[];
   notMet: string[];
+  /** Filled in by pickPrimaryActualValue() after the whole tree resolves. */
   primaryActualValue?: number;
+  leafActualValues: LeafActualValueCandidate[];
   sawUnknown?: boolean;
   subjects?: SubjectEvidence[];
 };
+
+/**
+ * Deterministically picks the leaf whose actualValue should drive
+ * `context.actualValue`, from candidates recorded in tree order (#6932
+ * follow-up: `results.primaryActualValue` used to be set by whichever
+ * sibling leaf's Promise settled FIRST under `Promise.all`, which is
+ * non-deterministic for a composite mixing e.g. hardware_health with a
+ * threshold leaf). Threshold/metric leaves win when present — that is the
+ * shape every pre-existing composite alert's template was written against
+ * (#1980) — so this must render identically to before this whole class of
+ * kind ever existed. Otherwise, first leaf in tree order wins.
+ */
+function pickPrimaryActualValue(candidates: LeafActualValueCandidate[]): number | undefined {
+  for (const c of candidates) {
+    if ((c.type === 'threshold' || c.type === 'metric') && typeof c.actualValue === 'number') {
+      return c.actualValue;
+    }
+  }
+  for (const c of candidates) {
+    if (typeof c.actualValue === 'number') return c.actualValue;
+  }
+  return undefined;
+}
 
 async function evaluateConditionRecursive(
   condition: RootCondition,
@@ -124,6 +163,12 @@ async function evaluateConditionRecursive(
       return evaluations.some(e => e);
     }
   } else {
+    // Reserve this leaf's ordered slot BEFORE the await below — see
+    // LeafActualValueCandidate's doc comment for why this must happen
+    // synchronously rather than after the evaluation resolves.
+    const slot: LeafActualValueCandidate = { type: (condition as { type?: string }).type };
+    results.leafActualValues.push(slot);
+
     // Evaluate via registry
     const result = await conditionRegistry.evaluate(
       condition as { type: string },
@@ -144,20 +189,13 @@ async function evaluateConditionRecursive(
       results.notMet.push(result.description);
     }
 
-    // Capture the value the FIRST evaluated leaf actually reported (the
-    // threshold/metric handler's window average, or the equivalent computed
-    // value from any other handler — patch compliance %, bandwidth Mbps,
-    // consecutive-failure count, …) so context.actualValue reflects what
-    // drove the decision rather than the latest raw sample — which can be
-    // sub-threshold once the window is averaged (#1980). Every handler that
-    // populates a template's {{actualValue}} placeholder returns a numeric
-    // `actualValue` on its ConditionResult (#6932), so this is not limited
-    // to threshold/metric conditions.
-    if (
-      results.primaryActualValue === undefined &&
-      typeof result.actualValue === 'number'
-    ) {
-      results.primaryActualValue = result.actualValue;
+    // Every handler that populates a template's {{actualValue}} placeholder
+    // returns a numeric `actualValue` on its ConditionResult (#6932), so this
+    // is not limited to threshold/metric conditions — pickPrimaryActualValue
+    // (called once the whole tree has resolved) is what prefers a
+    // threshold/metric leaf among these candidates.
+    if (typeof result.actualValue === 'number') {
+      slot.actualValue = result.actualValue;
     }
 
     return result.passed;
@@ -206,8 +244,11 @@ export async function evaluateConditions(
     };
   }
 
-  const results: EvaluationAccumulator = { met: [], notMet: [] };
+  const results: EvaluationAccumulator = { met: [], notMet: [], leafActualValues: [] };
   const triggered = await evaluateConditionRecursive(rootCondition, deviceId, results);
+  // Deterministic: chosen from leaf candidates recorded in tree order, never
+  // from whichever sibling's Promise happened to settle first.
+  results.primaryActualValue = pickPrimaryActualValue(results.leafActualValues);
 
   // Get latest metric for context
   const latestMetric = await getLatestMetric(deviceId);
