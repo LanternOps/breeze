@@ -2279,7 +2279,7 @@ export const SAFE_DEVICE_RESOURCE_FIELDS = [
   'architecture', 'agentVersion', 'status', 'lastSeenAt', 'enrolledAt',
   'enrolledBy', 'tags', 'customFields', 'managementPosture', 'tccPermissions',
   'desktopAccess', 'lastUser', 'uptimeSeconds', 'isHeadless', 'watchdogStatus',
-  'watchdogLastSeen', 'watchdogVersion', 'quarantinedAt', 'quarantinedReason',
+  'watchdogLastSeen', 'watchdogVersion', 'helperVersion', 'quarantinedAt', 'quarantinedReason',
   'createdAt', 'updatedAt',
 ] as const;
 

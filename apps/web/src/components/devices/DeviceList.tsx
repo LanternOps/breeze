@@ -193,6 +193,8 @@ export type Device = {
   siteName: string;
   agentVersion: string;
   watchdogVersion?: string | null;
+  /** Installed Breeze Assist helper version (devices.helper_version, #6751). */
+  helperVersion?: string | null;
   /**
    * Control-plane URL the agent last heartbeated to (devices.agent_server_url,
    * #2288). The opt-in Server column renders only its hostname. Any current
@@ -419,6 +421,7 @@ const AGENT_ONLY_COLUMNS: ReadonlySet<ColumnId> = new Set<ColumnId>([
   "diskTotal",
   "agentVersion",
   "watchdogVersion",
+  "helperVersion",
   "serverUrl",
   "wanIp",
   "lastUser",
@@ -728,6 +731,7 @@ const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
   lastSeen: (d) => new Date(d.lastSeen).getTime() || null,
   agentVersion: (d) => d.agentVersion || null,
   watchdogVersion: (d) => d.watchdogVersion?.trim() || null,
+  helperVersion: (d) => d.helperVersion?.trim() || null,
   // IP columns (#2503) sort as strings through the shared numeric collator,
   // which happens to give correct dotted-quad ordering: it compares digit runs
   // numerically, so 192.168.1.9 < 192.168.1.10 and 10.x < 192.x. Missing
@@ -1406,7 +1410,7 @@ export default function DeviceList({
     const d = new Date(iso);
     return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString();
   };
-  const fmtWatchdogVersion = (raw: string | null | undefined) => {
+  const fmtOptionalVersion = (raw: string | null | undefined) => {
     const version = raw?.trim();
     return version ? version : t("deviceList.nA");
   };
@@ -2013,7 +2017,24 @@ export default function DeviceList({
           key="watchdogVersion"
           className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap"
         >
-          {agentCell(device, fmtWatchdogVersion(device.watchdogVersion))}
+          {agentCell(device, fmtOptionalVersion(device.watchdogVersion))}
+        </td>
+      ),
+    },
+    helperVersion: {
+      header: () =>
+        sortHeader(
+          "helperVersion",
+          "Helper Version",
+          "Sort by helper version",
+        ),
+      cell: (device) => (
+        <td
+          key="helperVersion"
+          data-testid={`device-${device.id}-helper-version`}
+          className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap"
+        >
+          {agentCell(device, fmtOptionalVersion(device.helperVersion))}
         </td>
       ),
     },

@@ -74,6 +74,8 @@ describe('columnVisibility', () => {
       }
       expect(got.size).toBe(DEFAULT_VISIBLE_COLUMNS.length);
       expect(got.has('watchdogVersion')).toBe(false);
+      // #6751: helper version is opt-in, like watchdog version.
+      expect(got.has('helperVersion')).toBe(false);
     });
 
     it('returns the stored visible flags', () => {

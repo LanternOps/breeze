@@ -951,6 +951,16 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     deviceUpdates.backupVersion = data.backupVersion;
   }
 
+  // Persist the installed Breeze Assist helper version (#6751) — it was read
+  // for helperUpgradeTo below and then discarded, so a helper stuck behind the
+  // promoted release was invisible. Written only on change: helperVersion is a
+  // filter field, and an unconditional write would make every heartbeat look
+  // like a filterable change (dynamic-group re-evaluation below). Absent (old
+  // agent, or helper not installed) leaves the stored value untouched.
+  if (data.helperVersion && data.helperVersion !== device.helperVersion) {
+    deviceUpdates.helperVersion = data.helperVersion;
+  }
+
   // Rollback protocol v1 agents must replace this as a complete snapshot on
   // every heartbeat. Missing inventory from a claiming agent clears prior
   // truth so authorization fails closed instead of trusting stale components.
@@ -1252,7 +1262,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // group in the org, plus a peripheral-policy enqueue per membership flip),
     // so it belongs on the queue — see jobs/deviceGroupJobs.ts for the full
     // rationale. `requestDeviceGroupReevaluation` never rejects.
-    const filterableChangedFields = (['hostname', 'osVersion', 'osBuild', 'deviceRole'] as const)
+    const filterableChangedFields = (['hostname', 'osVersion', 'osBuild', 'deviceRole', 'helperVersion'] as const)
       .filter((field) => deviceUpdates[field] !== undefined);
     if (filterableChangedFields.length > 0) {
       void requestDeviceGroupReevaluation({

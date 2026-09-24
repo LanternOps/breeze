@@ -1164,6 +1164,7 @@
     "agent": "Agent",
     "agentVersion": "Versione agent",
     "watchdogVersion": "Versione watchdog",
+    "helperVersion": "Versione helper",
     "status": "Stato",
     "lastSeen": "Ultima attività",
     "enrolled": "Registrato",

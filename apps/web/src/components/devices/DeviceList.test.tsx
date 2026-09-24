@@ -644,6 +644,26 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
     expect(rowOrder(container)).toEqual(['host-ten', 'host-nine', 'host-none']);
   });
 
+  it('renders helper version as an opt-in column, sorted version-aware with missing reports last (#6751)', () => {
+    seedColumns('helperVersion');
+    const devices: Device[] = [
+      { ...baseDevice, id: 'e2e2e2e2-0000-0000-0000-000000000001', hostname: 'host-ten', helperVersion: '0.10.0' },
+      { ...baseDevice, id: 'e2e2e2e2-0000-0000-0000-000000000002', hostname: 'host-nine', helperVersion: '0.9.0' },
+      { ...baseDevice, id: 'e2e2e2e2-0000-0000-0000-000000000003', hostname: 'host-none', helperVersion: null },
+    ];
+
+    const { container } = render(<DeviceList devices={devices} />);
+
+    expect(screen.getByTestId('device-e2e2e2e2-0000-0000-0000-000000000002-helper-version')).toHaveTextContent('0.9.0');
+    expect(screen.getByTestId('device-e2e2e2e2-0000-0000-0000-000000000003-helper-version')).toHaveTextContent('N/A');
+
+    clickHeader('Sort by helper version');
+    expect(rowOrder(container)).toEqual(['host-nine', 'host-ten', 'host-none']);
+
+    clickHeader('Sort by helper version');
+    expect(rowOrder(container)).toEqual(['host-ten', 'host-nine', 'host-none']);
+  });
+
   it('sorts tags by the joined displayed list with untagged rows last in both directions', () => {
     seedColumns('tags');
     const devices: Device[] = [

@@ -104,7 +104,7 @@ function toDto(r: typeof manualAssets.$inferSelect) {
     purchaseDateSource: r.purchaseDateSource ?? null,
     // Everything an agent or a scanner supplies is null here.
     ipAddress: null, macAddress: null, agentId: null, agentVersion: null,
-    watchdogVersion: null, osType: null, osVersion: null, osBuild: null,
+    watchdogVersion: null, helperVersion: null, osType: null, osVersion: null, osBuild: null,
     architecture: null, cpuPercent: null, ramPercent: null, hardware: null,
     metrics: null, responseTimeMs: null, openPorts: null,
     monitoringEnabled: false, snmpMonitoringEnabled: false, networkMonitoringEnabled: false,

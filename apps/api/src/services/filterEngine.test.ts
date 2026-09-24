@@ -96,6 +96,18 @@ describe('filterEngine deviceFunction field (Fleet Designer W02, #5652)', () => 
   });
 });
 
+describe('filterEngine helperVersion field (#6751)', () => {
+  it('validates helperVersion as a core string field', () => {
+    const res = validateFilter({ field: 'helperVersion', operator: 'notEquals', value: '0.70.0' } as FilterCondition);
+    expect(res.valid).toBe(true);
+  });
+
+  it('resolves to the devices.helper_version column', () => {
+    const sql = render({ field: 'helperVersion', operator: 'equals', value: '0.70.0' });
+    expect(sql).toMatch(/"helper_version" = /);
+  });
+});
+
 describe('filterEngine virtual EXISTS fields (#968)', () => {
   describe('boolean predicates', () => {
     it('patches.pending equals yes → EXISTS against device_patches WHERE status pending', () => {

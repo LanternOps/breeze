@@ -729,6 +729,7 @@ export default function DevicesPage() {
           siteName: '', // Will be resolved from sites
           agentVersion: (d.agentVersion ?? '') as string,
           watchdogVersion: (d.watchdogVersion ?? null) as string | null,
+          helperVersion: (d.helperVersion ?? null) as string | null,
           agentServerUrl: (d.agentServerUrl ?? null) as string | null,
           // Opt-in WAN/LAN IP columns (#2503). Both are string-or-null on the
           // wire; anything else degrades to null so a malformed value renders
@@ -821,6 +822,7 @@ export default function DevicesPage() {
         siteName: '',
         agentVersion: '',
         watchdogVersion: null,
+        helperVersion: null,
         // A discovered asset never authenticates to the control plane, so it
         // has no WAN address; its discovered `ipAddress` IS its LAN address,
         // which is exactly what the LAN IP column wants (#2503).
@@ -864,6 +866,7 @@ export default function DevicesPage() {
         siteName: '',
         agentVersion: '',
         watchdogVersion: null,
+        helperVersion: null,
         wanIp: null,
         lanIp: null,
         macAddress: null,

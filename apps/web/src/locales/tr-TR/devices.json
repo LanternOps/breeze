@@ -1164,6 +1164,7 @@
     "agent": "Temsilci",
     "agentVersion": "Temsilci Sürümü",
     "watchdogVersion": "Watchdog Sürümü",
+    "helperVersion": "Yardımcı Sürümü",
     "status": "Durum",
     "lastSeen": "Son Görülme",
     "enrolled": "Kayıtlı",
