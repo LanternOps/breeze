@@ -1,9 +1,11 @@
-import type { NetworkOverviewDto } from '@breeze/shared';
+import type { NetworkOverviewDto, NetworkAssetsDto } from '@breeze/shared';
 import { eq } from 'drizzle-orm';
+import { zValidator } from '../../lib/validation';
 import { Hono } from 'hono';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { portalBranding } from '../../db/schema';
-import { networkOverview } from '../../services/portal/networkVisibilityReadModel';
+import { networkAssets, networkOverview } from '../../services/portal/networkVisibilityReadModel';
+import { networkAssetsQuerySchema } from './schemas';
 import {
   applyPortalCacheHeaders,
   buildWeakEtag,
@@ -37,7 +39,7 @@ function portalOrgContext(
 
 function cached(
   c: Parameters<typeof applyPortalCacheHeaders>[0],
-  payload: NetworkOverviewDto,
+  payload: NetworkOverviewDto | NetworkAssetsDto,
 ) {
   applyPortalCacheHeaders(c, {
     scope: 'private',
@@ -105,3 +107,69 @@ portalNetworkRoutes.get('/network/overview', async (c) => {
     },
   );
 });
+
+/**
+ * not_enabled must echo the requested page/limit (clamped the same way
+ * networkAssets() defaults them), not a fixed placeholder -- a client that
+ * reads pagination.limit to size its next request should see the same
+ * shape whether the feature is off or the data is simply empty.
+ */
+function notEnabledAssets(page?: number, limit?: number): NetworkAssetsDto {
+  return {
+    dataStatus: 'not_enabled',
+    data: [],
+    pagination: {
+      page: Math.max(1, page ?? 1),
+      limit: Math.min(500, Math.max(1, limit ?? 50)),
+      total: 0,
+    },
+  };
+}
+
+portalNetworkRoutes.get(
+  '/network/assets',
+  zValidator('query', networkAssetsQuerySchema),
+  async (c) => {
+    const auth = c.get('portalAuth');
+
+    if (!auth) {
+      return c.json({ error: 'Authentication required' }, 401);
+    }
+
+    const orgId = auth.user.orgId;
+    const partnerId = auth.partnerId;
+
+    if (!partnerId) {
+      return c.json({ error: 'Organization is not available' }, 403);
+    }
+
+    const query = c.req.valid('query');
+
+    return withDbAccessContext(
+      portalOrgContext(orgId, partnerId),
+      async () => {
+        const [settings] = await db
+          .select({
+            enableNetworkVisibility: portalBranding.enableNetworkVisibility,
+          })
+          .from(portalBranding)
+          .where(eq(portalBranding.orgId, orgId))
+          .limit(1);
+
+        if (settings?.enableNetworkVisibility !== true) {
+          return cached(c, notEnabledAssets(query.page, query.limit));
+        }
+
+        const result = await networkAssets(orgId, {
+          siteId: query.siteId,
+          assetType: query.assetType,
+          status: query.status,
+          page: query.page,
+          limit: query.limit,
+        });
+
+        return cached(c, result);
+      },
+    );
+  },
+);

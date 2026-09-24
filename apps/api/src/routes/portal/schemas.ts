@@ -282,3 +282,30 @@ export const changePasswordSchema = z.object({
   currentPassword: z.string().min(1),
   newPassword: z.string().min(8)
 });
+
+// Network Visibility -- GET /network/assets query params (#5861, PR 2 review).
+// assetType espelha os valores do discoveredAssetTypeEnum do pg; mantido como
+// lista literal aqui (schemas.ts nao importa db/schema em nenhum outro lugar)
+// para seguir o estilo auto-contido ja usado neste arquivo.
+export const networkAssetsQuerySchema = z.object({
+  siteId: z.string().guid().optional(),
+  assetType: z.enum([
+    'workstation',
+    'server',
+    'printer',
+    'router',
+    'switch',
+    'firewall',
+    'access_point',
+    'phone',
+    'iot',
+    'camera',
+    'nas',
+    'unknown',
+    'website',
+    'service',
+  ]).optional(),
+  status: z.enum(['online', 'offline', 'unverified']).optional(),
+  page: z.coerce.number().int().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional(),
+});

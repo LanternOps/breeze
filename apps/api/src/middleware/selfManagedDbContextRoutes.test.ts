@@ -26,6 +26,8 @@ describe('isSelfManagedDbContextRoute', () => {
     ['GET', '/api/v1/portal/network/overview'],
     ['GET', '/api/v1/portal/network/overview/'],
     ['get', '/api/v1/portal/network/overview'], // method is case-insensitive
+    ['GET', '/api/v1/portal/network/assets'],
+    ['GET', '/api/v1/portal/network/assets/'],
     ['POST', '/api/v1/partner/stripe-connect/key'],
     ['POST', '/api/v1/partner/stripe-connect/key/'],
     ['GET', '/api/v1/partner/stripe-connect'],
@@ -219,6 +221,8 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/portal/network/overview', 'network overview is GET-only'],
     ['GET', '/api/v1/portal/network', 'only the overview endpoint is self-managed'],
     ['GET', '/api/v1/portal/network/overview/extra', 'extra path segment must not match'],
+    ['POST', '/api/v1/portal/network/assets', 'network assets is GET-only'],
+    ['GET', '/api/v1/portal/network/assets/extra', 'extra path segment must not match'],
     ['POST', '/api/v1/portal/quotes/def-456/pay/confirm', 'deeper portal quote path must not match'],
     ['POST', '/api/v1/invoices', 'collection route'],
     ['DELETE', '/api/v1/partner/stripe-connect', 'disconnect is DB-only and keeps the ambient transaction'],
