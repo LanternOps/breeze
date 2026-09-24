@@ -40,6 +40,7 @@ import type { discoveredAssetTypeEnum } from '../db/schema';
 import type { PgUpdateSetSource } from 'drizzle-orm/pg-core';
 import { buildEventFingerprint, normalizeBaselineScanSchedule } from '../services/networkBaseline';
 import { linkBmcAssetFromAgentReport, normalizeBmcMac } from '../services/discovery/agentReportedBmcLink';
+import { captureException } from '../services/sentry';
 import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
 import { decryptSnmpCommunities, decryptSnmpCredentials } from '../services/snmpSecrets';
@@ -1153,16 +1154,26 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
               sql`lower(regexp_replace(${deviceHardwareComponents.attributes}->>'mac', '[:.\-]', '', 'g')) = ${normalizedBmcMac}`,
             ));
           const candidates = [...new Set(bmcMatches.map((row) => row.deviceId))];
+          // bmcIdentityMatched is set as soon as ANY host reports this MAC as its
+          // BMC, independent of whether the link write below runs or succeeds —
+          // a MAC a host claims as its own BMC must never fall through to NIC
+          // identity matching, ambiguous (candidates.length > 1) or not, and
+          // that must hold even if the write throws (see the catch below).
           if (candidates.length) {
             bmcIdentityMatched = true;
             if (candidates.length === 1) {
-              await db.transaction((tx) => linkBmcAssetFromAgentReport(tx, {
-                deviceId: candidates[0]!,
-                orgId: data.orgId,
-                siteId: data.siteId,
-                mac: assetData.macAddress!,
-                ip: assetData.ipAddress,
-              }));
+              try {
+                await db.transaction((tx) => linkBmcAssetFromAgentReport(tx, {
+                  deviceId: candidates[0]!,
+                  orgId: data.orgId,
+                  siteId: data.siteId,
+                  mac: assetData.macAddress!,
+                  ip: assetData.ipAddress,
+                }));
+              } catch (bmcLinkErr) {
+                console.warn(`[DiscoveryWorker] BMC link failed for ${host.ip}`, bmcLinkErr);
+                captureException(bmcLinkErr instanceof Error ? bmcLinkErr : new Error(String(bmcLinkErr)));
+              }
             }
           }
         }

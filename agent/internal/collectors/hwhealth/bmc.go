@@ -195,7 +195,7 @@ func newBMC(kind Kind, extra []string, run toolRunner) Source {
 				if err == nil {
 					f, openErr := os.Open(path)
 					if openErr != nil {
-						return Result{}, errors.New("BMC export not readable")
+						return Result{}, fmt.Errorf("BMC export not readable: %w", openErr)
 					}
 					network, err = io.ReadAll(io.LimitReader(f, 4*1024*1024+1))
 					if closeErr := f.Close(); closeErr != nil && err == nil {

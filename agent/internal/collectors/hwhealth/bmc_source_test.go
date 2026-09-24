@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -66,11 +67,11 @@ func TestBMCCommands(t *testing.T) {
 }
 
 func TestBMCCommandFailures(t *testing.T) {
-	for _, variant := range []string{"driver", "exit", "truncated", "timeout", "export-failed"} {
+	for _, variant := range []string{"driver", "exit", "truncated", "timeout", "export-failed", "open-failed"} {
 		t.Run(variant, func(t *testing.T) {
 			path := ""
 			kind := Kind("ipmi")
-			if variant == "export-failed" {
+			if variant == "export-failed" || variant == "open-failed" {
 				kind = "hponcfg"
 			}
 			src := newBMC(kind, nil, func(_ context.Context, _ time.Duration, _ string, args ...string) (execResult, error) {
@@ -83,6 +84,14 @@ func TestBMCCommandFailures(t *testing.T) {
 					return execResult{Truncated: true}, nil
 				case "timeout":
 					return execResult{}, context.DeadlineExceeded
+				case "open-failed":
+					// The export command reports success, but nothing was ever
+					// written to the path hponcfg was told to use (e.g. a
+					// permissions problem on the exact export file). The
+					// subsequent os.Open must fail with a wrapped, visible
+					// error rather than a hardcoded string discarding openErr.
+					path = args[1]
+					return execResult{}, nil
 				default:
 					path = args[1]
 					return execResult{}, errors.New("failure")
@@ -94,6 +103,11 @@ func TestBMCCommandFailures(t *testing.T) {
 			}
 			if variant == "driver" && !errors.Is(err, errNoBMC) {
 				t.Fatal(err)
+			}
+			if variant == "open-failed" {
+				if !strings.Contains(err.Error(), "BMC export not readable") || !strings.Contains(err.Error(), path) {
+					t.Fatal("expected wrapped open error naming the path", err)
+				}
 			}
 			if path != "" {
 				if _, err := os.Stat(filepath.Dir(path)); !os.IsNotExist(err) {

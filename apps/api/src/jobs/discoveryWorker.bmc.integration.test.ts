@@ -60,3 +60,28 @@ it('ordinary same-site NIC matching still links and approves', async () => {
   await getTestDb().insert(deviceNetwork).values({ deviceId: f.device.id, orgId: f.orgId, interfaceName: 'fixture0', macAddress: f.input.mac });
   expect(await scan(f)).toMatchObject({ linkedDeviceId: f.device.id, linkSource: 'auto', approvalStatus: 'approved' });
 });
+
+it('never falls through to NIC identity for an ambiguous BMC MAC, even when one candidate also matches by IP', async () => {
+  const f = await bmcFixture();
+  await reportMac(f);
+  const [otherDevice] = await getTestDb().insert(devices).values({
+    ...f.scope, agentId: crypto.randomUUID(), hostname: 'other BMC host',
+    osType: 'linux', osVersion: '1', architecture: 'amd64', agentVersion: '1',
+    deviceRole: 'server', deviceRoleSource: 'auto',
+  }).returning();
+  // Two devices both report the same BMC MAC, so the match is ambiguous
+  // (candidates.length > 1) and no link is even attempted. One of the two
+  // ALSO happens to have a deviceNetwork row matching the scanned IP — that
+  // must not let the scan fall through to ordinary NIC identity matching,
+  // because bmcIdentityMatched was already latched true by the ambiguous BMC
+  // match above, independent of whether any link write ran or succeeded.
+  await getTestDb().insert(deviceHardwareComponents).values({
+    deviceId: otherDevice!.id, orgId: f.orgId,
+    componentKey: 'bmc:ipmi', componentType: 'bmc', source: 'ipmi', name: 'BMC', state: 'ok', health: 'ok',
+    attributes: { mac: f.input.mac, ip: f.input.ip, vendor: 'fixture' }, firstSeenAt: new Date(), lastSeenAt: new Date(),
+  });
+  await getTestDb().insert(deviceNetwork).values({ deviceId: f.device.id, orgId: f.orgId, interfaceName: 'fixture0', macAddress: '02:00:00:00:00:30', ipAddress: f.input.ip });
+  expect(await scan(f)).toMatchObject({ linkedDeviceId: null, approvalStatus: 'pending' });
+  const [host] = await getTestDb().select().from(devices).where(eq(devices.id, f.device.id));
+  expect(host).toMatchObject({ deviceRole: 'server', deviceRoleSource: 'auto' });
+});

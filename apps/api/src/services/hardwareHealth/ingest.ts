@@ -5,6 +5,7 @@ import { db,withDbTransaction } from '../../db';
 import { deviceHardwareComponents,deviceHardwareEvents,deviceHardwareHealth,devices } from '../../db/schema';
 import { resolveAlertsForRemovedComponents } from './retire';
 import { linkBmcAssetFromAgentReport, type BmcLinkTx } from '../discovery/agentReportedBmcLink';
+import { captureException } from '../sentry';
 export type ComponentRow=typeof deviceHardwareComponents.$inferSelect;
 type EventRow=typeof deviceHardwareEvents.$inferInsert;
 export type ComponentInput=Omit<HardwareComponentReport,'componentType'> & {componentType:HardwareComponentType};
@@ -106,10 +107,18 @@ export async function ingestHardwareHealthSnapshot(input:{device:{id:string;orgI
    const successfulSources=new Set(snapshot.sources.filter(source=>source.status==='ok').map(source=>source.source));
    for(const component of change.upserts){
     if(component.componentType!=='bmc'||component.stale||!successfulSources.has(component.source)||typeof component.attributes.mac!=='string')continue;
-    await linkBmcAssetFromAgentReport(tx,{
-     deviceId:device.id,orgId:device.orgId,siteId:owner.siteId,mac:component.attributes.mac,
-     ip:typeof component.attributes.ip==='string'?component.attributes.ip:null,
-    });
+    try{
+     // Run in its own savepoint (db.transaction nests as a SAVEPOINT inside the
+     // ambient withDbTransaction here) so a BMC-link failure can be caught and
+     // rolled back on its own without poisoning the outer transaction that
+     // must still commit the hardware snapshot itself.
+     await db.transaction(sp=>linkBmcAssetFromAgentReport(sp,{
+      deviceId:device.id,orgId:device.orgId,siteId:owner.siteId,mac:component.attributes.mac as string,
+      ip:typeof component.attributes.ip==='string'?component.attributes.ip:null,
+     }));
+    }catch(error){
+     console.warn('[hardware-health] BMC link failed',error);captureException(error);
+    }
    }
   }
   if(change.deletedKeys.length){

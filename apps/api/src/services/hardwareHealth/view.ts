@@ -20,13 +20,25 @@ export async function getDeviceHardwareHealthView(deviceId:string,opts?:{eventLi
  if(!health)return null;
  const rows=await db.select().from(deviceHardwareComponents).where(eq(deviceHardwareComponents.deviceId,deviceId)).orderBy(deviceHardwareComponents.componentKey);
  if(rows.some(row=>row.componentType==='bmc')){
-  const [device]=await db.select({siteId:devices.siteId}).from(devices).where(eq(devices.id,deviceId)).limit(1);
-  for(const row of rows){
-   if(row.componentType!=='bmc')continue;
-   row.attributes=await bmcViewAttributes({deviceId,orgId:row.orgId,siteId:device?.siteId??null,
-    mac:typeof row.attributes.mac==='string'?row.attributes.mac:'',
-    ip:typeof row.attributes.ip==='string'?row.attributes.ip:null,
-   },row.attributes);
+  try{
+   const [device]=await db.select({siteId:devices.siteId}).from(devices).where(eq(devices.id,deviceId)).limit(1);
+   for(const row of rows){
+    if(row.componentType!=='bmc')continue;
+    row.attributes=await bmcViewAttributes({deviceId,orgId:row.orgId,siteId:device?.siteId??null,
+     mac:typeof row.attributes.mac==='string'?row.attributes.mac:'',
+     ip:typeof row.attributes.ip==='string'?row.attributes.ip:null,
+    },row.attributes);
+   }
+  }catch(error){
+   console.warn('[hardware-health] bmc decoration unavailable',error);captureException(error);
+   // Defensive: the persisted value never carries bmcLink (ingest already strips
+   // it), but a partial decoration failure must never let an agent-supplied
+   // bmcLink reach the view either.
+   for(const row of rows){
+    if(row.componentType!=='bmc')continue;
+    const {bmcLink:_untrusted,...rest}=row.attributes;
+    row.attributes=rest;
+   }
   }
  }
  const limit=Math.max(0,Math.min(50,Math.floor(opts?.eventLimit??50)));

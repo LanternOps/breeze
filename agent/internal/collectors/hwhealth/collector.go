@@ -188,7 +188,7 @@ func (c *Collector) Run(parent context.Context, tiers []Tier) (*Snapshot, error)
 	// Dell -> HPE fallback the moment one adapter reports facts, so only one
 	// BMC component is ever produced per cycle.
 	bmcDue := c.state.BMCLastRun.IsZero() || now.Sub(c.state.BMCLastRun) >= 24*time.Hour
-	bmcStarted, bmcAnswered := false, false
+	bmcStarted, bmcAnswered, bmcGateFailed := false, false, false
 	ranTiers := map[Tier]bool{}
 	next := Kind("")
 	for _, s := range order {
@@ -240,6 +240,12 @@ func (c *Collector) Run(parent context.Context, tiers []Tier) (*Snapshot, error)
 			snapshot.Sources = append(snapshot.Sources, report)
 			continue
 		}
+		if isBMCSource(k) && bmcGateFailed {
+			// The attempt gate could not be persisted earlier this cycle. Never
+			// run a BMC tool without a recorded gate, so every remaining BMC
+			// source is skipped outright (no report entry) rather than retried.
+			continue
+		}
 		if isBMCSource(k) && !bmcStarted {
 			// Persist the daily attempt before the first BMC tool invocation,
 			// under the same lock and through the same sequence-reserving
@@ -256,7 +262,17 @@ func (c *Collector) Run(parent context.Context, tiers []Tier) (*Snapshot, error)
 			}
 			c.mu.Unlock()
 			if persistErr != nil {
-				return nil, fmt.Errorf("persist BMC attempt: %w", persistErr)
+				// c.state is left unchanged: reserveSequence failed before
+				// writing, so this is not treated as a consumed daily attempt
+				// and will be retried on the next cycle. The BMC tool for `k`
+				// never runs; the non-BMC components already collected above
+				// (and any collected below) still make it into the snapshot.
+				slog.Warn("hardware BMC attempt gate not persisted; skipping BMC collection this cycle", "error", persistErr)
+				report.Status = "failed"
+				report.Error = persistErr.Error()
+				snapshot.Sources = append(snapshot.Sources, report)
+				bmcGateFailed = true
+				continue
 			}
 			bmcStarted = true
 		}
@@ -336,6 +352,17 @@ func (c *Collector) Run(parent context.Context, tiers []Tier) (*Snapshot, error)
 	}
 	if e := writeJSON(filepath.Join(c.dir, "hwhealth_smart_cache.json"), c.cache); e != nil {
 		return nil, fmt.Errorf("persist hardware SMART cache: %w", e)
+	}
+	if bmcGateFailed {
+		// The BMC attempt gate already failed to persist this cycle, writing to
+		// this same state file. Retrying the identical write for the full state
+		// moments later would fail the same way -- and unlike the mid-cycle gate
+		// failure, this path has always discarded the whole snapshot on error.
+		// Skip the retry and return what was already safely collected rather
+		// than turning one recoverable BMC-gate failure into a lost cycle for
+		// every other source.
+		snapshot.Sequence = c.state.Sequence
+		return snapshot, nil
 	}
 	if e := reserveSequence(c.dir, &pending); e != nil {
 		return nil, e

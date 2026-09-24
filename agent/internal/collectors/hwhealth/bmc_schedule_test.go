@@ -86,16 +86,38 @@ func TestBMCFailureConsumesDailyAttempt(t *testing.T) {
 func TestBMCStateFailureNeverRunsTool(t *testing.T) {
 	dir := t.TempDir()
 	calls := 0
-	c := New(Options{DataDir: dir, Sources: []Source{fakeSource("ipmi", TierRAID, true, func(context.Context) (Result, error) {
-		calls++
-		return good(context.Background())
-	})}})
+	sources := []Source{
+		fakeSource("mdadm", TierRAID, true, func(context.Context) (Result, error) {
+			return Result{Complete: true, Components: []Component{{ComponentKey: "mdadm:md0", ComponentType: "raid_array", Source: "mdadm", Name: "md0", State: "ok"}}}, nil
+		}),
+		fakeSource("ipmi", TierRAID, true, func(context.Context) (Result, error) {
+			calls++
+			return good(context.Background())
+		}),
+	}
+	c := New(Options{DataDir: dir, Sources: sources})
 	blocker := filepath.Join(dir, "hwhealth_state.json.tmp")
 	if err := os.Mkdir(blocker, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if snap, err := c.Run(context.Background(), []Tier{TierRAID}); err == nil || snap != nil || calls != 0 || !c.state.BMCLastRun.IsZero() {
+	// A gate-persist failure must never run the BMC tool, but it also must not
+	// discard the snapshot: non-BMC components collected this cycle still come
+	// back, and the BMC source is reported as failed (visible, not silent).
+	snap, err := c.Run(context.Background(), []Tier{TierRAID})
+	if err != nil || snap == nil || calls != 0 || !c.state.BMCLastRun.IsZero() {
 		t.Fatal(snap, err, calls)
+	}
+	if len(snap.Components) != 1 || snap.Components[0].Source != "mdadm" {
+		t.Fatal("expected non-BMC component in snapshot despite BMC gate failure", snap.Components)
+	}
+	var bmcReport *SourceReport
+	for i := range snap.Sources {
+		if snap.Sources[i].Source == "ipmi" {
+			bmcReport = &snap.Sources[i]
+		}
+	}
+	if bmcReport == nil || bmcReport.Status != "failed" || bmcReport.Error == "" {
+		t.Fatal("expected a failed BMC source report", snap.Sources)
 	}
 	if err := os.Remove(blocker); err != nil {
 		t.Fatal(err)

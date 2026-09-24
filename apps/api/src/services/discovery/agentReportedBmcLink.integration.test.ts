@@ -1,6 +1,6 @@
 import '../../__tests__/integration/setup';
 import { readFileSync } from 'node:fs';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { hardwareHealthSnapshotSchema } from '@breeze/shared';
 import { getTestDb } from '../../__tests__/integration/setup';
@@ -76,6 +76,23 @@ it('links accepted BMC observations, rejects stale side effects, and reads unlin
   expect((await read())!.components[0]!.attributes.bmcLink).toEqual({ status: 'suppressed' });
   const [stored] = await getTestDb().select().from(deviceHardwareComponents).where(eq(deviceHardwareComponents.deviceId, f.device.id));
   expect(stored!.attributes).not.toHaveProperty('bmcLink');
+});
+it('commits the hardware snapshot even when the BMC link savepoint throws', async () => {
+  const f = await bmcFixture();
+  const bmcLinkModule = await import('./agentReportedBmcLink');
+  const spy = vi.spyOn(bmcLinkModule, 'linkBmcAssetFromAgentReport').mockRejectedValue(new Error('link boom'));
+  try {
+    const snapshot = bmcSnapshot(f);
+    expect(await f.scoped(() => ingestHardwareHealthSnapshot({ device: f.device, snapshot, writer: 'agent', receivedAt: new Date() })))
+      .toMatchObject({ accepted: true });
+    expect(spy).toHaveBeenCalled();
+    const rows = await getTestDb().select().from(deviceHardwareComponents).where(eq(deviceHardwareComponents.deviceId, f.device.id));
+    expect(rows.find(c => c.componentType === 'bmc')).toMatchObject({ componentKey: 'bmc:ipmi', stale: false });
+    const [asset] = await getTestDb().select().from(discoveredAssets).where(eq(discoveredAssets.id, f.asset.id));
+    expect(asset!.linkedDeviceId).toBeNull();
+  } finally {
+    spy.mockRestore();
+  }
 });
 function bmcSnapshot(f: Awaited<ReturnType<typeof bmcFixture>>) {
   return hardwareHealthSnapshotSchema.parse({ snapshotId: crypto.randomUUID(), sequence: 1,
