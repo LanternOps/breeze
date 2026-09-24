@@ -87,6 +87,7 @@ import {
   emitRebootPendingAlert,
   rebootPendingSince,
   rebootPendingDays,
+  loadOldestRebootRequiredSince,
 } from './patchAlerts';
 
 const ORG_ID = 'org-1';
@@ -445,5 +446,65 @@ describe('emitRebootPendingAlert', () => {
 
     expect(result).toBeNull();
     expect(vi.mocked(createAlert)).not.toHaveBeenCalled();
+  });
+});
+
+// #6835: postgres.js returns an aggregate (MIN over a timestamptz) as a raw
+// string — drizzle's `sql<Date>` generic is type-only and does not map it. The
+// loader must hand back a real Date, or `rebootPendingSince` throws
+// `oldestRebootRequiredSince.getTime is not a function` in the sweep.
+describe('loadOldestRebootRequiredSince', () => {
+  function mockMinRow(oldest: unknown) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ oldest }]),
+        }),
+      }),
+    } as never);
+  }
+
+  it('coerces the string form postgres.js returns for MIN() into a Date', async () => {
+    mockMinRow('2026-09-01 12:00:00+00');
+    const oldest = await loadOldestRebootRequiredSince(DEVICE_ID, ORG_ID);
+    expect(oldest).toBeInstanceOf(Date);
+    expect(oldest?.toISOString()).toBe('2026-09-01T12:00:00.000Z');
+  });
+
+  it('feeds a usable Date into rebootPendingSince (the sweep path that threw)', async () => {
+    mockMinRow('2026-09-10 08:30:00+00');
+    const oldest = await loadOldestRebootRequiredSince(DEVICE_ID, ORG_ID);
+    const now = new Date('2026-09-20T08:30:00.000Z');
+    const since = rebootPendingSince({
+      uptimeSeconds: 30 * 24 * 60 * 60,
+      oldestRebootRequiredSince: oldest,
+      now,
+    });
+    expect(since?.toISOString()).toBe('2026-09-10T08:30:00.000Z');
+    expect(rebootPendingDays(since!, now)).toBe(10);
+  });
+
+  it('passes a Date through unchanged', async () => {
+    const d = new Date('2026-09-01T12:00:00.000Z');
+    mockMinRow(d);
+    expect((await loadOldestRebootRequiredSince(DEVICE_ID, ORG_ID))?.getTime()).toBe(d.getTime());
+  });
+
+  it('returns null when no row matched (MIN over zero rows is NULL)', async () => {
+    mockMinRow(null);
+    expect(await loadOldestRebootRequiredSince(DEVICE_ID, ORG_ID)).toBeNull();
+  });
+
+  it('reads the zone-less text of a `timestamp` column as UTC, not server-local time', async () => {
+    // patch_job_results.completed_at is `timestamp` WITHOUT time zone, so the
+    // real driver hands back '2026-09-01 12:00:00' with no offset.
+    mockMinRow('2026-09-01 12:00:00');
+    const oldest = await loadOldestRebootRequiredSince(DEVICE_ID, ORG_ID);
+    expect(oldest?.toISOString()).toBe('2026-09-01T12:00:00.000Z');
+  });
+
+  it('throws on an unparseable value instead of silently dropping the reboot flag', async () => {
+    mockMinRow('not-a-timestamp');
+    await expect(loadOldestRebootRequiredSince(DEVICE_ID, ORG_ID)).rejects.toThrow(TypeError);
   });
 });
