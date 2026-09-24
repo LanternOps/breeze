@@ -13,8 +13,11 @@ import (
 
 // ControlSets returns the control sets identity/driver edits go to:
 // ControlSet<Select\Default> first, then ControlSet<Select\Current> when it
-// differs (Global Constraint "Control set"). A named set that is absent is
-// skipped; none present is an error.
+// differs (Global Constraint "Control set"). Windows boots Select\Default,
+// so every named set must exist: an absent set is an error (edits landing
+// only on the other set would report success on a hive that does not boot),
+// and so is any read or open error — never "absent". A missing
+// Select\Current value means Default alone.
 func ControlSets(system Key) ([]string, error) {
 	sel, err := system.OpenKey(`Select`)
 	if err != nil {
@@ -26,25 +29,31 @@ func ControlSets(system Key) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf(`read Select\Default: %w`, err)
 	}
+	if curErr != nil && !errors.Is(curErr, ErrNotExist) {
+		return nil, fmt.Errorf(`read Select\Current: %w`, curErr)
+	}
+	selected := []struct {
+		value string
+		n     uint32
+	}{{"Default", def}}
+	if curErr == nil && cur != def {
+		selected = append(selected, struct {
+			value string
+			n     uint32
+		}{"Current", cur})
+	}
 	var names []string
-	add := func(n uint32) {
-		name := controlSetName(n)
-		for _, have := range names {
-			if have == name {
-				return
-			}
+	for _, s := range selected {
+		name := controlSetName(s.n)
+		k, err := system.OpenKey(name)
+		if errors.Is(err, ErrNotExist) {
+			return nil, fmt.Errorf(`control set %s named by Select\%s does not exist in this hive`, name, s.value)
 		}
-		if k, err := system.OpenKey(name); err == nil {
-			_ = k.Close()
-			names = append(names, name)
+		if err != nil {
+			return nil, fmt.Errorf("open %s: %w", name, err)
 		}
-	}
-	add(def)
-	if curErr == nil {
-		add(cur)
-	}
-	if len(names) == 0 {
-		return nil, fmt.Errorf(`no control set named by Select\Default (%d) exists in this hive`, def)
+		_ = k.Close()
+		names = append(names, name)
 	}
 	return names, nil
 }

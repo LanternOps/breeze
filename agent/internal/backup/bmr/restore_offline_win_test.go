@@ -169,3 +169,85 @@ func TestSelectOfflineHives_TreeHiveWithoutArtifact(t *testing.T) {
 		t.Fatalf("SAM was overwritten before every artifact was confirmed: %q", b)
 	}
 }
+
+// systemFakeTwoSets: Select\Default=1, Select\Current=2, both sets present.
+func systemFakeTwoSets() *winhive.Fake {
+	f := winhive.NewFake()
+	sel, _ := f.CreateKey("Select")
+	_ = sel.SetDWORD("Default", 1)
+	_ = sel.SetDWORD("Current", 2)
+	_, _ = f.CreateKey(`ControlSet001\Services`)
+	_, _ = f.CreateKey(`ControlSet002\Services`)
+	return f
+}
+
+// Fix round 1: boot-start storage edits land in EVERY selected control set.
+func TestRestoreSystemStateOfflineWindows_BootStartInEachControlSet(t *testing.T) {
+	root := seedTree(t, "SYSTEM", "SOFTWARE", "SAM", "SECURITY")
+	sys := systemFakeTwoSets()
+	for _, cs := range []string{"ControlSet001", "ControlSet002"} {
+		k, _ := sys.CreateKey(cs + `\Services\storahci`)
+		_ = k.SetDWORD("Start", 3)
+		_, _ = k.CreateKey("StartOverride")
+	}
+	var calls []string
+	load := fakeLoad(map[string]*winhive.Fake{"SYSTEM": sys, "SOFTWARE": winhive.NewFake()}, &calls)
+	st, _, err := RestoreSystemStateOfflineWindows(context.Background(), root, "", testRootGUID, []string{testRootGUID}, "k1", false, load)
+	if err != nil || len(st.ControlSets) != 2 {
+		t.Fatalf("st=%+v err=%v", st, err)
+	}
+	for _, cs := range []string{"ControlSet001", "ControlSet002"} {
+		k, err := sys.OpenKey(cs + `\Services\storahci`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v, _ := k.GetDWORD("Start"); v != 0 {
+			t.Errorf("%s storahci Start = %d, want 0", cs, v)
+		}
+		if _, err := k.OpenKey("StartOverride"); err == nil {
+			t.Errorf("%s storahci StartOverride must be deleted", cs)
+		}
+	}
+}
+
+// Fix round 1: a DC whose NTDS key is only under Select\Current is refused.
+func TestRestoreSystemStateOfflineWindows_RefusesNTDSUnderCurrentOnly(t *testing.T) {
+	root := seedTree(t, "SYSTEM", "SOFTWARE", "SAM", "SECURITY")
+	sys := systemFakeTwoSets()
+	_, _ = sys.CreateKey(`ControlSet002\Services\NTDS`)
+	var calls []string
+	load := fakeLoad(map[string]*winhive.Fake{"SYSTEM": sys, "SOFTWARE": winhive.NewFake()}, &calls)
+	_, _, err := RestoreSystemStateOfflineWindows(context.Background(), root, "", testRootGUID, nil, "k1", false, load)
+	if err == nil || !strings.Contains(err.Error(), "source is a domain controller") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// Fix round 1: a copy failure on the 3rd hive leaves the tree untouched —
+// no mix of artifact and tree hives, logs kept, no temp files left.
+func TestSelectOfflineHives_CopyFailureLeavesTreeUntouched(t *testing.T) {
+	root := seedTree(t, "SYSTEM", "SOFTWARE") // SAM, SECURITY missing
+	cfg := filepath.Join(root, "Windows", "System32", "config")
+	_ = os.WriteFile(filepath.Join(cfg, "SYSTEM.LOG1"), []byte("log"), 0o600)
+	staging := seedArtifacts(t, "SYSTEM", "SOFTWARE", "SECURITY")
+	// SAM (the 3rd hive copied) is a directory: present, but unreadable as a file.
+	if err := os.MkdirAll(filepath.Join(staging, "registry", "SAM"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := selectOfflineHives(root, staging); err == nil || !strings.Contains(err.Error(), "SAM") {
+		t.Fatalf("err = %v, want a SAM copy failure", err)
+	}
+	entries, _ := os.ReadDir(cfg)
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	if strings.Join(names, ",") != "SOFTWARE,SYSTEM,SYSTEM.LOG1" {
+		t.Fatalf("config dir = %v, want the untouched tree", names)
+	}
+	for _, h := range []string{"SYSTEM", "SOFTWARE"} {
+		if b, _ := os.ReadFile(filepath.Join(cfg, h)); string(b) != "tree-"+h {
+			t.Errorf("%s = %q, want the tree hive", h, b)
+		}
+	}
+}

@@ -212,3 +212,22 @@ func (w loadWrapper) LoadHive(file, mount string) (winhive.Handle, error) {
 	}
 	return w.wrap(h), nil
 }
+
+// Fix round 1: winTeardown unloads through closeWinHives — every hive is
+// closed, the failure is a warning, and r.hives is cleared.
+func TestWinTeardown_ClosesHivesThroughCloseWinHives(t *testing.T) {
+	r, _, _ := hiveRun(t)
+	closes := 0
+	r.hives = map[string]winhive.Handle{
+		"SOFTWARE": countingHandle{Fake: winhive.NewFake(), closes: &closes},
+		"SYSTEM":   countingHandle{Fake: winhive.NewFake(), closes: &closes, err: errors.New("leaked handle")},
+	}
+	r.rootDir = ""
+	r.winTeardown()
+	if closes != 2 || r.hives != nil {
+		t.Fatalf("closes = %d, hives = %v", closes, r.hives)
+	}
+	if len(r.warnings) != 1 || !strings.Contains(r.warnings[0], "unload SYSTEM hive: leaked handle") {
+		t.Fatalf("warnings = %v", r.warnings)
+	}
+}

@@ -67,14 +67,35 @@ func selectOfflineHives(root, stagingDir string) (warning string, err error) {
 	if err := os.MkdirAll(cfg, 0o755); err != nil {
 		return "", err
 	}
+	// Copy all four artifacts to temp names first; the tree is touched only
+	// once every copy succeeded, so a failed copy can never leave a mix of
+	// artifact and tree hives (which a retry would then see as "complete").
+	tmp := func(h string) string { return filepath.Join(cfg, h+".brz-fallback-tmp") }
+	removeTemps := func() {
+		for _, h := range offlineRequiredHives {
+			_ = os.Remove(tmp(h))
+		}
+	}
 	for _, h := range offlineRequiredHives {
-		if err := copyHiveFile(filepath.Join(stagingDir, "registry", h), filepath.Join(cfg, h)); err != nil {
+		if err := copyHiveFile(filepath.Join(stagingDir, "registry", h), tmp(h)); err != nil {
+			removeTemps()
 			return "", fmt.Errorf("replace %s from the system-state artifact: %w", h, err)
 		}
+	}
+	// Stale transaction logs go before the swap: a tree log left next to an
+	// artifact hive would be replayed against the wrong hive.
+	for _, h := range offlineRequiredHives {
 		for _, ext := range []string{".LOG1", ".LOG2"} {
-			if err := os.Remove(filepath.Join(cfg, h+ext)); err != nil && !os.IsNotExist(err) {
-				return "", err
+			if err := os.Remove(filepath.Join(cfg, h+ext)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				removeTemps()
+				return "", fmt.Errorf("delete %s%s before the artifact fallback: %w", h, ext, err)
 			}
+		}
+	}
+	for _, h := range offlineRequiredHives {
+		if err := os.Rename(tmp(h), filepath.Join(cfg, h)); err != nil {
+			removeTemps()
+			return "", fmt.Errorf("replace %s from the system-state artifact: %w", h, err)
 		}
 	}
 	return "registry hives restored from the system-state artifacts, not the file tree", nil

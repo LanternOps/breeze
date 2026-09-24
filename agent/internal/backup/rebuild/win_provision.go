@@ -239,12 +239,9 @@ func (r *run) winTeardown() {
 	// Loaded hives first (W06c loads them; a hive mount outlives the
 	// process, so every exit path must unload it). validateOSState closes
 	// them explicitly on success; this is the failure-path backstop.
-	for name, h := range r.hives {
-		if err := h.Close(); err != nil {
-			r.warn("unload %s hive: %v", name, err)
-		}
+	if err := r.closeWinHives(); err != nil {
+		r.warn("%v", err)
 	}
-	r.hives = nil
 	if r.espLetterRelease != nil {
 		if err := r.espLetterRelease(); err != nil {
 			r.warn("release ESP drive letter: %v", err)

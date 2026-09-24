@@ -58,6 +58,13 @@ func TestRun_WindowsVhdxRealSystem(t *testing.T) {
 		SnapshotID: "win-vhdx-real", Provider: p, Identity: IdentityNew,
 		Target:   Target{Kind: TargetVHDX, Path: out, ImageSizeBytes: 2 * GiB},
 		StateDir: dir, StagingRoot: filepath.Join(dir, "mnt"), SkipBoot: true,
+		// The hives are the HOST's own (reg save), and a lab host may be a
+		// domain controller: this test proves the real-seam plumbing, not
+		// DC policy. The DC refusal itself is proven on the fake
+		// (TestWinPreflight_RefusesDomainControllerUnlessAllowed,
+		// TestWinRestoreTree_DomainControllerInTreeFails, bmr's
+		// TestRestoreSystemStateOfflineWindows_Refuses*).
+		AllowDomainController: true,
 	})
 	if err != nil {
 		t.Fatalf("run: %v\n%s", err, mustJSON(res))
