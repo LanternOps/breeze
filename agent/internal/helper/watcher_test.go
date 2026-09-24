@@ -20,6 +20,7 @@ func TestWatcherExitsOnNotInstalled(t *testing.T) {
 	state := newSessionState("1", mgr.baseDir)
 	mgr.sessions["1"] = state
 	w := newSessionWatcher(context.Background(), mgr, state)
+	t.Cleanup(func() { w.cancel(); <-w.done })
 	state.watcher = w
 	go w.run()
 
@@ -50,6 +51,7 @@ func TestWatcherStillCountsRealFailures(t *testing.T) {
 	state := newSessionState("1", mgr.baseDir)
 	mgr.sessions["1"] = state
 	w := newSessionWatcher(context.Background(), mgr, state)
+	t.Cleanup(func() { w.cancel(); <-w.done })
 	go w.run()
 
 	select {

@@ -359,6 +359,9 @@ func (m *Manager) Apply(settings *Settings) {
 			log.Error("failed to install breeze assist", key, value)
 			return
 		}
+		for _, state := range m.sessions {
+			state.watcherGaveUp = false // new binary — give it a fresh chance (#6872)
+		}
 	}
 	if !settings.Enabled || m.isInstalled() {
 		m.notInstalledWarned = false
@@ -989,7 +992,8 @@ func (m *Manager) startSessionWatcher(state *sessionState) {
 	if state.watcher != nil {
 		select {
 		case <-state.watcher.done:
-			// Exited on its own (ErrNotInstalled, #6872): replace it.
+			// Exited on its own — ErrNotInstalled (#6872) or gave up — so a
+			// fresh one can take over.
 			state.watcher = nil
 		default:
 			return
