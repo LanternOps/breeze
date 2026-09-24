@@ -517,7 +517,7 @@ function TraceEntryRow({
           {entry.intentError && <span className="text-destructive">{entry.intentError}</span>}
           {entry.intentId && (
             <a
-              href="/approvals"
+              href={`/approvals#intent-${entry.intentId}`}
               data-testid={`run-detail-intent-link-${entry.intentId}`}
               className="text-primary hover:underline"
             >
@@ -1136,7 +1136,11 @@ function SweepProposalContent({
       : undefined;
     return (
       <>
-        <a href="/approvals" data-testid={ids.proposalLink(index)} className="text-primary hover:underline">
+        <a
+          href={proposal.intentId ? `/approvals#intent-${proposal.intentId}` : '/approvals'}
+          data-testid={ids.proposalLink(index)}
+          className="text-primary hover:underline"
+        >
           {t('aiAgentsPage.runs.sweep.proposalCreated')}
         </a>
         {stoppedByKey && (
@@ -2340,7 +2344,7 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
               <li key={intent.id} className="flex flex-wrap items-center gap-2">
                 <span className="font-medium">{intent.actionName}</span>
                 <span className="text-xs text-muted-foreground">{intentStatusLabel(t, intent.status)}</span>
-                <a href="/approvals" className="text-primary hover:underline">
+                <a href={`/approvals#intent-${intent.id}`} className="text-primary hover:underline">
                   {t('aiAgentsPage.runs.detail.intents.viewAll')}
                 </a>
               </li>

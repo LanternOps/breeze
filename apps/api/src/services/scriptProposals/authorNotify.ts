@@ -89,7 +89,7 @@ export async function postProposalOutcomeToAuthor(
           priority: event.kind === 'verification_failed' ? 'high' : 'normal',
           title: TITLES[event.kind],
           message: body.slice(0, 500),
-          link: '/approvals',
+          link: `/approvals#proposal-${proposal.id}`,
           metadata: { proposalId: proposal.id, outcome: event.kind },
           dedupeKey: `script-proposal:${proposal.id}:${event.kind}`,
         }),

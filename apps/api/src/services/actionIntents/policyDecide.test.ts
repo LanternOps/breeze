@@ -846,11 +846,11 @@ describe('attemptPolicyDecision', () => {
         details: expect.objectContaining({ decidedVia: 'policy', policyAuthorizationKey: 'manage_services:restart' }),
       }),
     );
-    // Notification to recipients. Review fix (#3827): `link: null`, not
-    // '/approvals' — a policy-decided intent has no approval_requests row for
-    // that link to point at; no run-detail page exists yet (wave 6).
+    // Notification to recipients. Review fix (#3827): never '/approvals' — a
+    // policy-decided intent has no approval_requests row for that link to
+    // point at. #4461: deep-links to the run detail page instead of `null`.
     expect(notifyMock.createNotification).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 'recipient-1', orgId: ORG_ID, link: null }),
+      expect.objectContaining({ userId: 'recipient-1', orgId: ORG_ID, link: `/ai-agents/runs/${RUN_ID}` }),
     );
   });
 

@@ -1060,7 +1060,7 @@ async function notifyFannedOutApprovers(args: NotifyFannedOutApproversArgs): Pro
           priority: 'high',
           title: 'Approval requested',
           message: `${requestingClientLabel}: ${actionLabel}`,
-          link: '/approvals',
+          link: `/approvals#intent-${intentId}`,
           metadata: { approvalId, intentId },
           // Survives outbox/BullMQ redelivery: one approver, one intent, one
           // row in the bell.
