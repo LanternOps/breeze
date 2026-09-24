@@ -29,10 +29,9 @@ import { DeviceClassSegment } from './DeviceClassSegment';
 import {
   filterDevicesByClass,
   countDevicesByClass,
-  readDeviceClassFromHash,
-  writeDeviceClassToHash,
   type DeviceClassFilter,
 } from './deviceClassFilter';
+import { useDeviceClassFilter } from './useDeviceClassFilter';
 import { fetchWithAuth, handleSessionExpired } from '../../stores/auth';
 import { runAction } from '../../lib/runAction';
 import { fetchAllDevices, fetchAllNetworkDevices, fetchAllManualAssets } from '../../lib/devicesFetch';
@@ -385,15 +384,12 @@ export default function DevicesPage() {
   // v2 chip bar seeds its filter from the URL hash so a filtered view is
   // shareable; the legacy DeviceFilterBar owns its own state and ignores it.
   const [advancedFilter, setAdvancedFilter] = useHashState<FilterConditionGroup | null>(null, (h) => decodeFilterFromHash(h) ?? undefined);
-  // [ All | Agent | Network ] class segment (#1424). Seeded from the hash so a
-  // chosen class is shareable; a pure client-side narrowing of the merged list.
+  // [ All | Agent | Network ] class segment (#1424). Hash-seeded so a chosen
+  // class is shareable; with no hash key it opens on the user's last choice,
+  // else Agent (#5874). See useDeviceClassFilter for why it isn't useHashState.
   // Only meaningful when the network arm is enabled (otherwise the list is
   // agent-only and the segment is hidden).
-  const [deviceClassFilter, setDeviceClassFilter] = useHashState<DeviceClassFilter>('all', (h) => readDeviceClassFromHash(h));
-  const handleDeviceClassChange = useCallback((next: DeviceClassFilter) => {
-    setDeviceClassFilter(next);
-    writeDeviceClassToHash(next);
-  }, []);
+  const [deviceClassFilter, handleDeviceClassChange] = useDeviceClassFilter();
   // Inline ("instant") client-side filters — shared between DeviceFilterToolbar
   // (the controls) and DeviceList (the filtering) so each dimension has a single
   // source of truth. This is the hybrid model's client half; the group above is
@@ -558,9 +554,14 @@ export default function DevicesPage() {
   // The merged list narrowed by class only — what the table receives.
   // DeviceList applies the shared predicate itself (it owns paging), while the
   // grid below applies it here; both start from the same class-narrowed set.
+  // The segment only renders when the list carries a non-agent arm. When it is
+  // hidden, a remembered/deep-linked Network or Manual choice would empty the
+  // list with no control to undo it, so the class filter stands down.
+  const showDeviceClassSegment = ENABLE_NETWORK_DEVICES_IN_LIST || deviceClassCounts.manual > 0;
+  const effectiveDeviceClass: DeviceClassFilter = showDeviceClassSegment ? deviceClassFilter : 'all';
   const classFilteredDevices = useMemo(
-    () => filterDevicesByClass(devices, deviceClassFilter),
-    [devices, deviceClassFilter]
+    () => filterDevicesByClass(devices, effectiveDeviceClass),
+    [devices, effectiveDeviceClass]
   );
   // Non-agent rows (network OR manual, #4622) the active filters hide only
   // because they ask about agent-only things (filter fields like
@@ -2300,7 +2301,7 @@ export default function DevicesPage() {
           its count) on an org that has manual assets but the network arm off.
           Narrows both views: the table via classFilteredDevices, the grid via
           gridDevices (same class rule over the filtered fleet). */}
-      {(ENABLE_NETWORK_DEVICES_IN_LIST || deviceClassCounts.manual > 0) && (
+      {showDeviceClassSegment && (
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
           <DeviceClassSegment
             value={deviceClassFilter}
