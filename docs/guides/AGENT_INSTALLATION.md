@@ -531,6 +531,22 @@ metrics_collectors:
   windows_events: true  # Windows only
   smart: false          # Requires smartctl
 
+# Hardware monitoring tool discovery (agent-local)
+# ----------------------------------------------
+hardware:
+  tool_dirs: []
+  # Extra directories, searched after PATH and platform well-known directories.
+  # Windows example: tool_dirs: ['D:\tools']
+  # Linux example: tool_dirs: ['/opt/vendor-tools']
+  # Install vendor tools yourself; Breeze does not download or bundle them.
+  # Restart the agent after editing this local file. Discovery is cached for 1 hour.
+  # This setting is agent-local, not delivered by configuration policy.
+  # storcli > perccli > MegaCli; any installed Broadcom CLI suppresses omreport.
+  # ssacli (including hpssacli and hpacucli) and arcconf run independently.
+  # Collection is read-only. ssacli and omreport allow 60 seconds per command.
+  # These vendor parsers are fixture-only until real hardware captures are verified.
+  # Linux ZFS uses zpool and requires at least one pool for initial detection.
+
 # Logging
 # -------
 log_level: "info"

@@ -1,0 +1,23 @@
+Smart Array P440 in Slot 0
+   Controller Status: OK
+   Cache Status: OK
+   Battery/Capacitor Status: OK
+===
+Smart Array P440 in Slot 0
+   Serial Number: CTRL-TEST
+   Firmware Version: 7.00
+   Controller Status: OK
+   Cache Status: OK
+   Battery/Capacitor Status: OK
+   array A
+      logicaldrive 1 (100 GB, RAID 1, OK)
+         Status: OK
+         Size: 100 GB
+         Fault Tolerance: 1
+      physicaldrive 1I:1:3
+         Status: OK
+         Drive Type: Data Drive
+         Serial Number: DISK-TEST
+         Model: Fixture disk
+         Size: 100 GB
+         Current Temperature (C): 31

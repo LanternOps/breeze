@@ -1,0 +1,37 @@
+List of Controllers in the system
+
+Controllers
+ID;Status;Name;Slot ID;State;Firmware Version
+0;Ok;PERC H730P Mini;Embedded;Ready;25.5.9.0001
+1;Ok;BOSS-S1;PCI Slot 4;Ready;2.5.13.3024
+===
+List of Virtual Disks in the System
+
+Controller PERC H730P Mini (Embedded)
+ID;Status;Name;State;Layout;Size
+0;Ok;Data;Ready;RAID-5;1,116.25 GB (1198562263040 bytes)
+
+Controller BOSS-S1 (Slot 4)
+ID;Status;Name;State;Layout;Size
+0;Ok;OS;Ready;RAID-1;223.51 GB (239990276096 bytes)
+===
+List of Batteries in the System
+
+Controller PERC H730P Mini (Embedded)
+ID;Status;Name;State
+0;Ok;Battery 0;Ready
+
+Controller BOSS-S1 (Slot 4)
+No batteries found
+===
+List of Physical Disks on Controller PERC H730P Mini (Embedded)
+
+Controller PERC H730P Mini (Embedded)
+ID;Status;Name;State;Failure Predicted;Serial No.;Capacity;Product ID
+0:1:0;Ok;Physical Disk 0:1:0;Online;No;DISK-A;558.38 GB (599550590976 bytes);Fixture disk
+===
+List of Physical Disks on Controller BOSS-S1 (Slot 4)
+
+Controller BOSS-S1 (Slot 4)
+ID;Status;Name;State;Failure Predicted;Serial No.;Capacity;Product ID
+0:1:0;Ok;Physical Disk 0:1:0;Online;No;DISK-B;223.57 GB (240057409536 bytes);Fixture M.2

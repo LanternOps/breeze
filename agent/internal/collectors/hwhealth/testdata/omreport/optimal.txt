@@ -1,0 +1,14 @@
+List of Controllers in the system
+ID;Status;Name;State;Firmware Version
+0;Ok;PERC fixture;Ready;1.0
+===
+Controller PERC fixture (Slot 0)
+ID;Status;Name;State;Layout;Size
+0;Ok;mirror;Ready;RAID-1;100 GB
+===
+Controller PERC fixture (Slot 0)
+ID;Status;Name;State
+0;Ok;Battery;Ready
+===
+ID;Status;Name;State;Failure Predicted;Serial No.;Capacity;Product ID
+0:1:3;Ok;Disk 3;Online;No;DISK-TEST;100 GB;Fixture disk

@@ -1,0 +1,290 @@
+[
+  {
+    "Name": "optimal",
+    "Captures": [
+      {
+        "Args": [
+          "GETVERSION"
+        ],
+        "Text": "Controllers found: 1\nController #1\nFirmware: 1.0",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "GETCONFIG",
+          "1",
+          "AL"
+        ],
+        "Text": "Controller information\nController Status: Optimal\nController Model: SmartRAID fixture\nController Serial Number: CTRL-TEST\nFirmware: 1.0\nLogical device number 0\n   Logical device name: mirror\n   Status of logical device: Optimal\n   RAID level: 1\n   Size: 102400 MB\n   Segment 0: Present (Controller:1,Channel:0,Device:3)\nDevice #0\n   Device is a Hard drive\n   State: Online\n   Reported Channel,Device(T:L): 0,3(3:0)\n   Serial number: DISK-TEST\n   Model: Fixture disk\n   Total Size: 102400 MB\n   S.M.A.R.T. warnings: 0\nBattery Information\n   Status: Optimal\nCommand completed successfully.\n",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "arcconf:c1:v0",
+        "State": "optimal"
+      },
+      {
+        "Key": "arcconf:c1:e-:s0-3",
+        "State": "online"
+      }
+    ],
+    "Complete": true,
+    "Error": false
+  },
+  {
+    "Name": "degraded",
+    "Captures": [
+      {
+        "Args": [
+          "GETVERSION"
+        ],
+        "Text": "Controllers found: 1\nController #1\nFirmware: 1.0",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "GETCONFIG",
+          "1",
+          "AL"
+        ],
+        "Text": "Controller information\nController Status: Optimal\nController Model: SmartRAID fixture\nController Serial Number: CTRL-TEST\nFirmware: 1.0\nLogical device number 0\n   Logical device name: mirror\n   Status of logical device: Degraded\n   RAID level: 1\n   Size: 102400 MB\n   Segment 0: Present (Controller:1,Channel:0,Device:3)\nDevice #0\n   Device is a Hard drive\n   State: Online\n   Reported Channel,Device(T:L): 0,3(3:0)\n   Serial number: DISK-TEST\n   Model: Fixture disk\n   Total Size: 102400 MB\n   S.M.A.R.T. warnings: 0\nBattery Information\n   Status: Optimal\nCommand completed successfully.\n",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "arcconf:c1:v0",
+        "State": "degraded"
+      }
+    ],
+    "Complete": true,
+    "Error": false
+  },
+  {
+    "Name": "failed",
+    "Captures": [
+      {
+        "Args": [
+          "GETVERSION"
+        ],
+        "Text": "Controllers found: 1\nController #1\nFirmware: 1.0",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "GETCONFIG",
+          "1",
+          "AL"
+        ],
+        "Text": "Controller information\nController Status: Optimal\nController Model: SmartRAID fixture\nController Serial Number: CTRL-TEST\nFirmware: 1.0\nLogical device number 0\n   Logical device name: mirror\n   Status of logical device: Optimal\n   RAID level: 1\n   Size: 102400 MB\n   Segment 0: Present (Controller:1,Channel:0,Device:3)\nDevice #0\n   Device is a Hard drive\n   State: Failed\n   Reported Channel,Device(T:L): 0,3(3:0)\n   Serial number: DISK-TEST\n   Model: Fixture disk\n   Total Size: 102400 MB\n   S.M.A.R.T. warnings: 0\nBattery Information\n   Status: Optimal\nCommand completed successfully.\n",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "arcconf:c1:e-:s0-3",
+        "State": "failed"
+      }
+    ],
+    "Complete": true,
+    "Error": false
+  },
+  {
+    "Name": "rebuilding",
+    "Captures": [
+      {
+        "Args": [
+          "GETVERSION"
+        ],
+        "Text": "Controllers found: 1\nController #1\nFirmware: 1.0",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "GETCONFIG",
+          "1",
+          "AL"
+        ],
+        "Text": "Controller information\nController Status: Optimal\nController Model: SmartRAID fixture\nController Serial Number: CTRL-TEST\nFirmware: 1.0\nLogical device number 0\n   Logical device name: mirror\n   Status of logical device: Rebuilding\n   Rebuild progress: 42%\n   RAID level: 1\n   Size: 102400 MB\n   Segment 0: Present (Controller:1,Channel:0,Device:3)\nDevice #0\n   Device is a Hard drive\n   State: Online\n   Reported Channel,Device(T:L): 0,3(3:0)\n   Serial number: DISK-TEST\n   Model: Fixture disk\n   Total Size: 102400 MB\n   S.M.A.R.T. warnings: 0\nBattery Information\n   Status: Optimal\nCommand completed successfully.\n",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "arcconf:c1:v0",
+        "State": "rebuilding",
+        "Progress": 42
+      }
+    ],
+    "Complete": true,
+    "Error": false
+  },
+  {
+    "Name": "predictive_failure",
+    "Captures": [
+      {
+        "Args": [
+          "GETVERSION"
+        ],
+        "Text": "Controllers found: 1\nController #1\nFirmware: 1.0",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "GETCONFIG",
+          "1",
+          "AL"
+        ],
+        "Text": "Controller information\nController Status: Optimal\nController Model: SmartRAID fixture\nController Serial Number: CTRL-TEST\nFirmware: 1.0\nLogical device number 0\n   Logical device name: mirror\n   Status of logical device: Optimal\n   RAID level: 1\n   Size: 102400 MB\n   Segment 0: Present (Controller:1,Channel:0,Device:3)\nDevice #0\n   Device is a Hard drive\n   State: Online\n   Reported Channel,Device(T:L): 0,3(3:0)\n   Serial number: DISK-TEST\n   Model: Fixture disk\n   Total Size: 102400 MB\n   S.M.A.R.T. warnings: 1\nBattery Information\n   Status: Optimal\nCommand completed successfully.\n",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "arcconf:c1:e-:s0-3",
+        "State": "online",
+        "Predictive": true
+      }
+    ],
+    "Complete": true,
+    "Error": false
+  },
+  {
+    "Name": "missing_member",
+    "Captures": [
+      {
+        "Args": [
+          "GETVERSION"
+        ],
+        "Text": "Controllers found: 1\nController #1\nFirmware: 1.0",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "GETCONFIG",
+          "1",
+          "AL"
+        ],
+        "Text": "Controller information\nController Status: Optimal\nController Model: SmartRAID fixture\nController Serial Number: CTRL-TEST\nFirmware: 1.0\nLogical device number 0\n   Logical device name: mirror\n   Status of logical device: Optimal\n   RAID level: 1\n   Size: 102400 MB\n   Segment 0: Present (Controller:1,Channel:0,Device:3)\nBattery Information\n   Status: Optimal\nCommand completed successfully.\n",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [],
+    "Complete": true,
+    "Error": false,
+    "PhysicalCount": 0
+  },
+  {
+    "Name": "multi_controller",
+    "Captures": [
+      {
+        "Args": [
+          "GETVERSION"
+        ],
+        "Text": "Controllers found: 2\nController #1\nFirmware: 1.0\nController #2\n",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "GETCONFIG",
+          "1",
+          "AL"
+        ],
+        "Text": "Controller information\nController Status: Optimal\nController Model: SmartRAID fixture\nController Serial Number: CTRL-TEST\nFirmware: 1.0\nLogical device number 0\n   Logical device name: mirror\n   Status of logical device: Optimal\n   RAID level: 1\n   Size: 102400 MB\n   Segment 0: Present (Controller:1,Channel:0,Device:3)\nDevice #0\n   Device is a Hard drive\n   State: Online\n   Reported Channel,Device(T:L): 0,3(3:0)\n   Serial number: DISK-TEST\n   Model: Fixture disk\n   Total Size: 102400 MB\n   S.M.A.R.T. warnings: 0\nBattery Information\n   Status: Optimal\nCommand completed successfully.\n",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "GETCONFIG",
+          "2",
+          "AL"
+        ],
+        "Text": "Controller information\nController Status: Optimal\nController Model: SmartRAID fixture\nController Serial Number: CTRL-TEST\nFirmware: 1.0\nLogical device number 0\n   Logical device name: mirror\n   Status of logical device: Optimal\n   RAID level: 1\n   Size: 102400 MB\n   Segment 0: Present (Controller:2,Channel:0,Device:3)\nDevice #0\n   Device is a Hard drive\n   State: Online\n   Reported Channel,Device(T:L): 0,3(3:0)\n   Serial number: DISK-TEST\n   Model: Fixture disk\n   Total Size: 102400 MB\n   S.M.A.R.T. warnings: 0\nBattery Information\n   Status: Optimal\nCommand completed successfully.\n",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "arcconf:c2:v0",
+        "State": "optimal"
+      }
+    ],
+    "Complete": true,
+    "Error": false,
+    "PhysicalCount": 2
+  },
+  {
+    "Name": "unrecognized",
+    "Captures": [
+      {
+        "Args": [
+          "GETVERSION"
+        ],
+        "Text": "Controllers found: 1\nController #1\nFirmware: 1.0",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "GETCONFIG",
+          "1",
+          "AL"
+        ],
+        "Text": "Controller information\nController Status: Optimal\nController Model: SmartRAID fixture\nController Serial Number: CTRL-TEST\nFirmware: 1.0\nLogical device number 0\n   Logical device name: mirror\n   Status of logical device: Optimal\n   RAID level: 1\n   Size: 102400 MB\n   Segment 0: Present (Controller:1,Channel:0,Device:3)\nDevice #0\n   Device is a Hard drive\n   State: Future State\n   Reported Channel,Device(T:L): 0,3(3:0)\n   Serial number: DISK-TEST\n   Model: Fixture disk\n   Total Size: 102400 MB\n   S.M.A.R.T. warnings: 0\nBattery Information\n   Status: Optimal\nCommand completed successfully.\n",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "arcconf:c1:e-:s0-3",
+        "State": "unknown",
+        "Detail": "Future State"
+      }
+    ],
+    "Complete": true,
+    "Error": false
+  },
+  {
+    "Name": "truncated",
+    "Captures": [
+      {
+        "Args": [
+          "GETVERSION"
+        ],
+        "Text": "Controllers found: 1\nController #1\nFirmware: 1.0",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "GETCONFIG",
+          "1",
+          "AL"
+        ],
+        "Text": "Controller information\nController Status: Optimal\nController Model: SmartRAID fixture\nController Serial Number: CTRL-TEST\nFirmware: 1.0\nLogical device number 0\n   Logical device name: mirror\n   Status of logical device: Optimal\n   RAID level: 1\n   Size: 102400 MB\n   Segment 0: Present (Controller:1,Channel:0,Device:3)\nDevice #0\n   Device is a Hard drive\n   State: Online\n   Reported Channel,Device(T:L): 0,3(3:0)\n   Serial number: DISK-TEST\n   Model: Fixture disk\n   Total Size: 102400 MB\n   S.M.A.R.T. warnings: 0\nBattery Information\n   Status: Optimal\nCommand completed successfully.\n",
+        "ExitCode": 0,
+        "Truncated": true
+      }
+    ],
+    "Want": [],
+    "Complete": false,
+    "Error": true
+  }
+]

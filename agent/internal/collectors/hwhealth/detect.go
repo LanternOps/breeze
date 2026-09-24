@@ -39,3 +39,32 @@ func (d *detection) get(now time.Time, probe func() Availability) Availability {
 	}
 	return d.value
 }
+
+func broadcomSuperseded(available map[Kind]Availability) map[Kind]Kind {
+	suppressed := map[Kind]Kind{}
+	winner := Kind("")
+	family := []Kind{"storcli", "perccli", "megacli"}
+	for _, kind := range family {
+		if available[kind].Available {
+			winner = kind
+			break
+		}
+	}
+	if winner == "" {
+		return suppressed
+	}
+	found := false
+	for _, kind := range family {
+		if kind == winner {
+			found = true
+			continue
+		}
+		if found && available[kind].Available {
+			suppressed[kind] = winner
+		}
+	}
+	if available["omreport"].Available {
+		suppressed["omreport"] = winner
+	}
+	return suppressed
+}

@@ -1,0 +1,26 @@
+Controllers found: 1
+Controller #1
+Firmware: 1.0
+===
+Controller information
+Controller Status: Optimal
+Controller Model: SmartRAID fixture
+Controller Serial Number: CTRL-TEST
+Firmware: 1.0
+Logical device number 0
+   Logical device name: mirror
+   Status of logical device: Optimal
+   RAID level: 1
+   Size: 102400 MB
+   Segment 0: Present (Controller:1,Channel:0,Device:3)
+Device #0
+   Device is a Hard drive
+   State: Online
+   Reported Channel,Device(T:L): 0,3(3:0)
+   Serial number: DISK-TEST
+   Model: Fixture disk
+   Total Size: 102400 MB
+   S.M.A.R.T. warnings: 0
+Battery Information
+   Status: Optimal
+Command completed successfully.

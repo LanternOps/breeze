@@ -1,0 +1,541 @@
+[
+  {
+    "Name": "optimal",
+    "Captures": [
+      {
+        "Args": [
+          "-AdpAllInfo",
+          "-aALL"
+        ],
+        "Text": "Adapter #0\nProduct Name: MegaRAID fixture adapter\nSerial No: CTRL-TEST\nFW Package Build: 1.0\nController Status: Optimal",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-LDInfo",
+          "-Lall",
+          "-aALL"
+        ],
+        "Text": "Adapter 0 -- Virtual Drive Information:\nVirtual Drive: 0 (Target Id: 0)\nName: mirror\nRAID Level: Primary-1, Secondary-0, RAID Level Qualifier-0\nSize: 100 GB\nState: Optimal",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-PDList",
+          "-aALL"
+        ],
+        "Text": "Adapter #0\nEnclosure Device ID: 252\nSlot Number: 3\nFirmware state: Online, Spun Up\nInquiry Data: Fixture disk\nSerial Number: DISK-TEST\nRaw Size: 100 GB\nDrive Temperature: 35C\nPredictive Failure Count: 0\nDrive has flagged a S.M.A.R.T alert: No",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-AdpBbuCmd",
+          "-GetBbuStatus",
+          "-aALL"
+        ],
+        "Text": "BBU status for Adapter: 0\nBattery State: Optimal\nLearn Cycle Active: No\nBattery Replacement required: No",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-LDPDInfo",
+          "-aALL"
+        ],
+        "Text": "Adapter #0\nVirtual Drive: 0 (Target Id: 0)\nEnclosure Device ID: 252\nSlot Number: 3\n",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "megacli:c0:v0",
+        "State": "optimal"
+      },
+      {
+        "Key": "megacli:c0:e252:s3",
+        "State": "online"
+      }
+    ],
+    "Complete": true,
+    "Error": false
+  },
+  {
+    "Name": "degraded",
+    "Captures": [
+      {
+        "Args": [
+          "-AdpAllInfo",
+          "-aALL"
+        ],
+        "Text": "Adapter #0\nProduct Name: MegaRAID fixture adapter\nSerial No: CTRL-TEST\nFW Package Build: 1.0\nController Status: Optimal",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-LDInfo",
+          "-Lall",
+          "-aALL"
+        ],
+        "Text": "Adapter 0 -- Virtual Drive Information:\nVirtual Drive: 0 (Target Id: 0)\nName: mirror\nRAID Level: Primary-1, Secondary-0, RAID Level Qualifier-0\nSize: 100 GB\nState: Degraded",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-PDList",
+          "-aALL"
+        ],
+        "Text": "Adapter #0\nEnclosure Device ID: 252\nSlot Number: 3\nFirmware state: Online, Spun Up\nInquiry Data: Fixture disk\nSerial Number: DISK-TEST\nRaw Size: 100 GB\nDrive Temperature: 35C\nPredictive Failure Count: 0\nDrive has flagged a S.M.A.R.T alert: No",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-AdpBbuCmd",
+          "-GetBbuStatus",
+          "-aALL"
+        ],
+        "Text": "BBU status for Adapter: 0\nBattery State: Optimal\nLearn Cycle Active: No\nBattery Replacement required: No",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-LDPDInfo",
+          "-aALL"
+        ],
+        "Text": "Adapter #0\nVirtual Drive: 0 (Target Id: 0)\nEnclosure Device ID: 252\nSlot Number: 3\n",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "megacli:c0:v0",
+        "State": "degraded"
+      }
+    ],
+    "Complete": true,
+    "Error": false
+  },
+  {
+    "Name": "failed",
+    "Captures": [
+      {
+        "Args": [
+          "-AdpAllInfo",
+          "-aALL"
+        ],
+        "Text": "Adapter #0\nProduct Name: MegaRAID fixture adapter\nSerial No: CTRL-TEST\nFW Package Build: 1.0\nController Status: Optimal",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-LDInfo",
+          "-Lall",
+          "-aALL"
+        ],
+        "Text": "Adapter 0 -- Virtual Drive Information:\nVirtual Drive: 0 (Target Id: 0)\nName: mirror\nRAID Level: Primary-1, Secondary-0, RAID Level Qualifier-0\nSize: 100 GB\nState: Optimal",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-PDList",
+          "-aALL"
+        ],
+        "Text": "Adapter #0\nEnclosure Device ID: 252\nSlot Number: 3\nFirmware state: Failed\nInquiry Data: Fixture disk\nSerial Number: DISK-TEST\nRaw Size: 100 GB\nDrive Temperature: 35C\nPredictive Failure Count: 0\nDrive has flagged a S.M.A.R.T alert: No",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-AdpBbuCmd",
+          "-GetBbuStatus",
+          "-aALL"
+        ],
+        "Text": "BBU status for Adapter: 0\nBattery State: Optimal\nLearn Cycle Active: No\nBattery Replacement required: No",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-LDPDInfo",
+          "-aALL"
+        ],
+        "Text": "Adapter #0\nVirtual Drive: 0 (Target Id: 0)\nEnclosure Device ID: 252\nSlot Number: 3\n",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "megacli:c0:e252:s3",
+        "State": "failed"
+      }
+    ],
+    "Complete": true,
+    "Error": false
+  },
+  {
+    "Name": "rebuilding",
+    "Captures": [
+      {
+        "Args": [
+          "-AdpAllInfo",
+          "-aALL"
+        ],
+        "Text": "Adapter #0\nProduct Name: MegaRAID fixture adapter\nSerial No: CTRL-TEST\nFW Package Build: 1.0\nController Status: Optimal",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-LDInfo",
+          "-Lall",
+          "-aALL"
+        ],
+        "Text": "Adapter 0 -- Virtual Drive Information:\nVirtual Drive: 0 (Target Id: 0)\nName: mirror\nRAID Level: Primary-1, Secondary-0, RAID Level Qualifier-0\nSize: 100 GB\nState: Optimal\nOngoing Progresses:\nRebuild: 42%\n",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-PDList",
+          "-aALL"
+        ],
+        "Text": "Adapter #0\nEnclosure Device ID: 252\nSlot Number: 3\nFirmware state: Online, Spun Up\nInquiry Data: Fixture disk\nSerial Number: DISK-TEST\nRaw Size: 100 GB\nDrive Temperature: 35C\nPredictive Failure Count: 0\nDrive has flagged a S.M.A.R.T alert: No",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-AdpBbuCmd",
+          "-GetBbuStatus",
+          "-aALL"
+        ],
+        "Text": "BBU status for Adapter: 0\nBattery State: Optimal\nLearn Cycle Active: No\nBattery Replacement required: No",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-LDPDInfo",
+          "-aALL"
+        ],
+        "Text": "Adapter #0\nVirtual Drive: 0 (Target Id: 0)\nEnclosure Device ID: 252\nSlot Number: 3\n",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "megacli:c0:v0",
+        "State": "rebuilding",
+        "Progress": 42
+      }
+    ],
+    "Complete": true,
+    "Error": false
+  },
+  {
+    "Name": "predictive_failure",
+    "Captures": [
+      {
+        "Args": [
+          "-AdpAllInfo",
+          "-aALL"
+        ],
+        "Text": "Adapter #0\nProduct Name: MegaRAID fixture adapter\nSerial No: CTRL-TEST\nFW Package Build: 1.0\nController Status: Optimal",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-LDInfo",
+          "-Lall",
+          "-aALL"
+        ],
+        "Text": "Adapter 0 -- Virtual Drive Information:\nVirtual Drive: 0 (Target Id: 0)\nName: mirror\nRAID Level: Primary-1, Secondary-0, RAID Level Qualifier-0\nSize: 100 GB\nState: Optimal",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-PDList",
+          "-aALL"
+        ],
+        "Text": "Adapter #0\nEnclosure Device ID: 252\nSlot Number: 3\nFirmware state: Online, Spun Up\nInquiry Data: Fixture disk\nSerial Number: DISK-TEST\nRaw Size: 100 GB\nDrive Temperature: 35C\nPredictive Failure Count: 1\nDrive has flagged a S.M.A.R.T alert: No",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-AdpBbuCmd",
+          "-GetBbuStatus",
+          "-aALL"
+        ],
+        "Text": "BBU status for Adapter: 0\nBattery State: Optimal\nLearn Cycle Active: No\nBattery Replacement required: No",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-LDPDInfo",
+          "-aALL"
+        ],
+        "Text": "Adapter #0\nVirtual Drive: 0 (Target Id: 0)\nEnclosure Device ID: 252\nSlot Number: 3\n",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "megacli:c0:e252:s3",
+        "State": "online",
+        "Predictive": true
+      }
+    ],
+    "Complete": true,
+    "Error": false
+  },
+  {
+    "Name": "missing_member",
+    "Captures": [
+      {
+        "Args": [
+          "-AdpAllInfo",
+          "-aALL"
+        ],
+        "Text": "Adapter #0\nProduct Name: MegaRAID fixture adapter\nSerial No: CTRL-TEST\nFW Package Build: 1.0\nController Status: Optimal",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-LDInfo",
+          "-Lall",
+          "-aALL"
+        ],
+        "Text": "Adapter 0 -- Virtual Drive Information:\nVirtual Drive: 0 (Target Id: 0)\nName: mirror\nRAID Level: Primary-1, Secondary-0, RAID Level Qualifier-0\nSize: 100 GB\nState: Optimal",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-PDList",
+          "-aALL"
+        ],
+        "Text": "Adapter #0\nNo Physical Drive\n",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-AdpBbuCmd",
+          "-GetBbuStatus",
+          "-aALL"
+        ],
+        "Text": "BBU status for Adapter: 0\nBattery State: Optimal\nLearn Cycle Active: No\nBattery Replacement required: No",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-LDPDInfo",
+          "-aALL"
+        ],
+        "Text": "Adapter #0\nVirtual Drive: 0 (Target Id: 0)\n",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [],
+    "Complete": true,
+    "Error": false,
+    "PhysicalCount": 0
+  },
+  {
+    "Name": "multi_controller",
+    "Captures": [
+      {
+        "Args": [
+          "-AdpAllInfo",
+          "-aALL"
+        ],
+        "Text": "Adapter #0\nProduct Name: MegaRAID fixture adapter\nSerial No: CTRL-TEST\nFW Package Build: 1.0\nController Status: Optimal\nAdapter #1\nProduct Name: MegaRAID fixture adapter\nSerial No: CTRL-TEST\nFW Package Build: 1.0\nController Status: Optimal",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-LDInfo",
+          "-Lall",
+          "-aALL"
+        ],
+        "Text": "Adapter 0 -- Virtual Drive Information:\nVirtual Drive: 0 (Target Id: 0)\nName: mirror\nRAID Level: Primary-1, Secondary-0, RAID Level Qualifier-0\nSize: 100 GB\nState: Optimal\nAdapter 1 -- Virtual Drive Information:\nVirtual Drive: 0 (Target Id: 0)\nName: mirror\nRAID Level: Primary-1, Secondary-0, RAID Level Qualifier-0\nSize: 100 GB\nState: Optimal",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-PDList",
+          "-aALL"
+        ],
+        "Text": "Adapter #0\nEnclosure Device ID: 252\nSlot Number: 3\nFirmware state: Online, Spun Up\nInquiry Data: Fixture disk\nSerial Number: DISK-TEST\nRaw Size: 100 GB\nDrive Temperature: 35C\nPredictive Failure Count: 0\nDrive has flagged a S.M.A.R.T alert: No\nAdapter #1\nEnclosure Device ID: 252\nSlot Number: 3\nFirmware state: Online, Spun Up\nInquiry Data: Fixture disk\nSerial Number: DISK-TEST\nRaw Size: 100 GB\nDrive Temperature: 35C\nPredictive Failure Count: 0\nDrive has flagged a S.M.A.R.T alert: No",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-AdpBbuCmd",
+          "-GetBbuStatus",
+          "-aALL"
+        ],
+        "Text": "BBU status for Adapter: 0\nBattery State: Optimal\nLearn Cycle Active: No\nBattery Replacement required: No\nBBU status for Adapter: 1\nBattery State: Optimal\nLearn Cycle Active: No\nBattery Replacement required: No",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-LDPDInfo",
+          "-aALL"
+        ],
+        "Text": "Adapter #0\nVirtual Drive: 0 (Target Id: 0)\nEnclosure Device ID: 252\nSlot Number: 3\n\nAdapter #1\nVirtual Drive: 0 (Target Id: 0)\nEnclosure Device ID: 252\nSlot Number: 3\n",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "megacli:c1:v0",
+        "State": "optimal"
+      }
+    ],
+    "Complete": true,
+    "Error": false,
+    "PhysicalCount": 2
+  },
+  {
+    "Name": "unrecognized",
+    "Captures": [
+      {
+        "Args": [
+          "-AdpAllInfo",
+          "-aALL"
+        ],
+        "Text": "Adapter #0\nProduct Name: MegaRAID fixture adapter\nSerial No: CTRL-TEST\nFW Package Build: 1.0\nController Status: Optimal",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-LDInfo",
+          "-Lall",
+          "-aALL"
+        ],
+        "Text": "Adapter 0 -- Virtual Drive Information:\nVirtual Drive: 0 (Target Id: 0)\nName: mirror\nRAID Level: Primary-1, Secondary-0, RAID Level Qualifier-0\nSize: 100 GB\nState: Optimal",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-PDList",
+          "-aALL"
+        ],
+        "Text": "Adapter #0\nEnclosure Device ID: 252\nSlot Number: 3\nFirmware state: Future State\nInquiry Data: Fixture disk\nSerial Number: DISK-TEST\nRaw Size: 100 GB\nDrive Temperature: 35C\nPredictive Failure Count: 0\nDrive has flagged a S.M.A.R.T alert: No",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-AdpBbuCmd",
+          "-GetBbuStatus",
+          "-aALL"
+        ],
+        "Text": "BBU status for Adapter: 0\nBattery State: Optimal\nLearn Cycle Active: No\nBattery Replacement required: No",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-LDPDInfo",
+          "-aALL"
+        ],
+        "Text": "Adapter #0\nVirtual Drive: 0 (Target Id: 0)\nEnclosure Device ID: 252\nSlot Number: 3\n",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "megacli:c0:e252:s3",
+        "State": "unknown",
+        "Detail": "Future State"
+      }
+    ],
+    "Complete": true,
+    "Error": false
+  },
+  {
+    "Name": "truncated",
+    "Captures": [
+      {
+        "Args": [
+          "-AdpAllInfo",
+          "-aALL"
+        ],
+        "Text": "Adapter #0\nProduct Name: MegaRAID fixture adapter\nSerial No: CTRL-TEST\nFW Package Build: 1.0\nController Status: Optimal",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-LDInfo",
+          "-Lall",
+          "-aALL"
+        ],
+        "Text": "Adapter 0 -- Virtual Drive Information:\nVirtual Drive: 0 (Target Id: 0)\nName: mirror\nRAID Level: Primary-1, Secondary-0, RAID Level Qualifier-0\nSize: 100 GB\nState: Optimal",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-PDList",
+          "-aALL"
+        ],
+        "Text": "Adapter #0\nEnclosure Device ID: 252\nSlot Number: 3\nFirmware state: Online, Spun Up\nInquiry Data: Fixture disk\nSerial Number: DISK-TEST\nRaw Size: 100 GB\nDrive Temperature: 35C\nPredictive Failure Count: 0\nDrive has flagged a S.M.A.R.T alert: No",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-AdpBbuCmd",
+          "-GetBbuStatus",
+          "-aALL"
+        ],
+        "Text": "BBU status for Adapter: 0\nBattery State: Optimal\nLearn Cycle Active: No\nBattery Replacement required: No",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "-LDPDInfo",
+          "-aALL"
+        ],
+        "Text": "Adapter #0\nVirtual Drive: 0 (Target Id: 0)\nEnclosure Device ID: 252\nSlot Number: 3\n",
+        "ExitCode": 0,
+        "Truncated": true
+      }
+    ],
+    "Want": [],
+    "Complete": false,
+    "Error": false
+  }
+]

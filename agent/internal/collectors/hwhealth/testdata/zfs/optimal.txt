@@ -1,0 +1,12 @@
+tank	ONLINE	100G	20G	80G
+===
+  pool: tank
+ state: ONLINE
+  scan: none requested
+config:
+        NAME                         STATE     READ WRITE CKSUM
+        tank                         ONLINE       0     0     0
+          mirror-0                   ONLINE       0     0     0
+            /dev/disk/by-id/ata-A     ONLINE       0     0     0
+            /dev/disk/by-id/ata-B     ONLINE       0     0     0
+errors: No known data errors
