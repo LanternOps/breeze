@@ -142,4 +142,91 @@ describe('NotificationCenter deep links (#4461)', () => {
 
     await waitFor(() => expect(navigateMock).not.toHaveBeenCalledWith('/ai-risk'));
   });
+
+  it('routes an alert notification to metadata.alertId when there is no top-level alertId column', async () => {
+    fetchMock.mockResolvedValue(
+      json({
+        notifications: [
+          {
+            id: 'n5',
+            type: 'alert',
+            title: 'Disk space critical',
+            message: 'C: drive at 98%',
+            createdAt: '2026-09-10T00:00:00.000Z',
+            read: true,
+            metadata: { alertId: 'alert-xyz' }
+          }
+        ]
+      })
+    );
+
+    render(<NotificationCenter />);
+
+    const user = userEvent.setup();
+    const trigger = await screen.findByRole('button', { name: /notifications/i });
+    await user.click(trigger);
+
+    const row = await screen.findByText('Disk space critical');
+    await user.click(row);
+
+    await waitFor(() => expect(navigateMock).toHaveBeenCalledWith('/alerts/alert-xyz'));
+  });
+
+  it('does not throw on a malformed (non-object) metadata field', async () => {
+    fetchMock.mockResolvedValue(
+      json({
+        notifications: [
+          {
+            id: 'n6',
+            type: 'approval',
+            title: 'Approval requested',
+            message: 'Something needs approval',
+            createdAt: '2026-09-10T00:00:00.000Z',
+            read: true,
+            metadata: 'not-an-object'
+          }
+        ]
+      })
+    );
+
+    render(<NotificationCenter />);
+
+    const user = userEvent.setup();
+    const trigger = await screen.findByRole('button', { name: /notifications/i });
+    await user.click(trigger);
+
+    const row = await screen.findByText('Approval requested');
+    await user.click(row);
+
+    await waitFor(() => expect(navigateMock).toHaveBeenCalledWith('/approvals'));
+  });
+
+  it('does not render a literal "undefined" agent hash when metadata.agentId is not a string', async () => {
+    fetchMock.mockResolvedValue(
+      json({
+        notifications: [
+          {
+            id: 'n7',
+            type: 'ai',
+            title: 'Agent circuit breaker opened',
+            message: 'Paused',
+            createdAt: '2026-09-10T00:00:00.000Z',
+            read: true,
+            metadata: { agentId: 12345 }
+          }
+        ]
+      })
+    );
+
+    render(<NotificationCenter />);
+
+    const user = userEvent.setup();
+    const trigger = await screen.findByRole('button', { name: /notifications/i });
+    await user.click(trigger);
+
+    const row = await screen.findByText('Agent circuit breaker opened');
+    await user.click(row);
+
+    await waitFor(() => expect(navigateMock).not.toHaveBeenCalledWith(expect.stringContaining('undefined')));
+  });
 });

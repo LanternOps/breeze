@@ -1541,6 +1541,17 @@ describe('RunDetailPage evidence rendering', () => {
     expect(list).toHaveTextContent('Awaiting approval');
     expect(list.textContent).not.toContain('pending_approval');
   });
+
+  // #4461: this "view all" link used to be a bare `/approvals`.
+  it('deep-links the intents-list "view all" link to the specific intent', async () => {
+    mockEndpoints();
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-intents')).toBeInTheDocument());
+    const list = screen.getByTestId('run-detail-intents');
+    const link = list.querySelector('a');
+    expect(link).toHaveAttribute('href', '/approvals#intent-intent-1');
+  });
 });
 
 // Critique finding #3 — the one actionable finding must not be a dead end.

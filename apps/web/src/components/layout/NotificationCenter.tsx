@@ -152,6 +152,7 @@ const buildHref = (type: NotificationDisplayType, raw: RawNotification) => {
   const intentId = getString(metadata.intentId);
   const proposalId = getString(metadata.proposalId);
   const alertId = targetId || getString(metadata.alertId);
+  const agentId = getString(metadata.agentId);
 
   switch (type) {
     case 'device':
@@ -177,7 +178,7 @@ const buildHref = (type: NotificationDisplayType, raw: RawNotification) => {
       // for a specific run/agent notification, so surface nothing rather than
       // send the user somewhere unrelated (#4461).
       if (runId) return `/ai-agents/runs/${runId}`;
-      if (metadata.agentId) return `/ai-agents/runs#agent=${getString(metadata.agentId)}`;
+      if (agentId) return `/ai-agents/runs#agent=${agentId}`;
       return undefined;
     case 'system':
       return '/settings/organization';
