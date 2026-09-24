@@ -483,6 +483,7 @@ describe('scrubEvent', () => {
         backup_dispatch_issue: 'redelivery-refused',
         worker: 'patchScheduler',
         worker_failure_reason: 'desktop_stop_pending',
+        command_result_phase: 'cis_result',
         patch_reconcile_stage: 'enqueue_failed',
         patch_reconcile_repeat: '2-4',
         jobId: 'bull-job-918273',
@@ -574,6 +575,7 @@ describe('scrubEvent', () => {
       // #3912's tags. Inert until that PR lands, but asserted now so a future
       // edit to ALLOWED_TAG_NAMES cannot quietly un-allowlist them.
       worker_failure_reason: 'desktop_stop_pending',
+      command_result_phase: 'cis_result',
       patch_reconcile_stage: 'enqueue_failed',
       patch_reconcile_repeat: '2-4',
       // NB: `jobId` was in the input bag and is deliberately absent here — a

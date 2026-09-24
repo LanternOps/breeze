@@ -374,7 +374,7 @@ vi.mock('../services/sentry', async (importOriginal) => {
 });
 
 import { db, runOutsideDbContext, withSystemDbAccessContext, withDbAccessContext } from '../db';
-import { devices, deviceCommands, scriptExecutions, supportSessions } from '../db/schema';
+import { devices, deviceCommands, discoveryJobs, scriptExecutions, supportSessions } from '../db/schema';
 import { captureException, captureMessage } from '../services/sentry';
 import {
   createAgentWsHandlers,
@@ -2111,6 +2111,41 @@ describe('agent websocket command results', () => {
 
     expect(vi.mocked(enqueueDiscoveryResults)).not.toHaveBeenCalled();
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  // #3530: the orphaned discovery path's mark-job-failed fallback used to only
+  // console.error; a failure there left the job 'running' with nothing reported.
+  it('reports an orphaned discovery result whose job cannot be marked failed', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
+    const { handlers, ws } = await connectedAgent('agent-123', preValidatedAgent);
+    const jobId = '66666666-6666-4666-8666-666666666666';
+
+    // Every lookup misses except the discovery job, so the result is orphaned
+    // and lands on the discovery branch.
+    vi.mocked(db.select).mockImplementation((() => ({
+      from: (table: unknown) => {
+        const rows = table === discoveryJobs
+          ? [{ id: jobId, orgId: 'org-123', siteId: 'site-1', agentId: 'agent-123' }]
+          : [];
+        const tail: any = {
+          where: () => tail, innerJoin: () => tail, leftJoin: () => tail, orderBy: () => tail,
+          limit: () => Promise.resolve(rows),
+          then: (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) => Promise.resolve(rows).then(res, rej),
+        };
+        return tail;
+      },
+    })) as any);
+    const writeErr = new Error('db unavailable');
+    vi.mocked(db.update).mockReturnValue({
+      set: () => ({ where: () => Promise.reject(writeErr), returning: () => Promise.reject(writeErr) }),
+    } as any);
+
+    await handlers.onMessage({
+      data: JSON.stringify({ type: 'command_result', commandId: jobId, status: 'failed', error: 'scan aborted' })
+    } as any, ws as any);
+
+    expect(vi.mocked(captureException)).toHaveBeenCalledWith(writeErr, undefined,
+      { command_result_phase: 'discovery_mark_failed' });
   });
 
   it('skips downstream processing when the command row was already completed by another result', async () => {

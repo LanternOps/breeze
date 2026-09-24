@@ -188,7 +188,9 @@ async function handleDiscoveryResult({ agentId, command, result, commandId }: Pa
           })
           .where(eq(discoveryJobs.id, expectedJobId));
       } catch (dbErr) {
+        // #3530: without this the job stays 'running' with nothing reported.
         console.error(`[AgentWs] Additionally failed to mark discovery job ${expectedJobId} as failed:`, dbErr);
+        captureException(dbErr, undefined, { command_result_phase: 'discovery_mark_failed' });
       }
     }
   }
@@ -889,7 +891,10 @@ async function handleSensitiveDataResult({ agentId, command, result, stdout }: P
       error: result.error,
     } as any);
   } catch (err) {
+    // #3530: the command is already terminal, so a swallowed failure here loses
+    // the result with no trace outside the container log. Report it.
     console.error(`[AgentWs] Failed to process sensitive data result for ${agentId}:`, err);
+    captureException(err, undefined, { command_result_phase: 'sensitive_data_result' });
   }
 }
 
@@ -905,7 +910,10 @@ async function handleCisResult({ agentId, command, result, stdout }: Parameters<
       error: result.error,
     } as any);
   } catch (err) {
+    // #3530: the command is already terminal, so a swallowed failure here loses
+    // the result with no trace outside the container log. Report it.
     console.error(`[AgentWs] Failed to process CIS result for ${agentId}:`, err);
+    captureException(err, undefined, { command_result_phase: 'cis_result' });
   }
 }
 

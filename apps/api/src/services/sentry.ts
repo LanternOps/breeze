@@ -254,6 +254,11 @@ const ALLOWED_TAG_NAMES = new Set([
   // ingestion path reported the result. Not redundant with `event_code`: the
   // same drop can arrive from either path and they fail for different reasons.
   'backup_result_source',
+  // #3530: which command-result handler swallowed a failure after its command
+  // row was already terminal. Closed set of literals from
+  // services/commandResultHandlers.ts ('sensitive_data_result', 'cis_result',
+  // 'discovery_mark_failed'); command/agent IDs stay out by design.
+  'command_result_phase',
   // BREEZE-A/#3218: the derived `${file}.${fn}` attribution for a held DB
   // context. Structurally bounded — parseOpenerFrame builds it from a matched
   // stack frame's source basename and stripped function name, and deliberately
