@@ -1,7 +1,7 @@
 import { expect,it,vi } from 'vitest';
-vi.mock('../../db',()=>({db:{transaction:vi.fn()}}));
+vi.mock('../../db',()=>({db:{transaction:vi.fn()},withDbTransaction:vi.fn()}));
 import { hardwareHealthSnapshotSchema,HARDWARE_SOURCE_STATUSES } from '@breeze/shared';
-import { componentChange,reduceSnapshot,InvalidHardwareSnapshotError,type ComponentInput } from './ingest';
+import { componentChange,reduceSnapshot,InvalidHardwareSnapshotError,acceptsAgentSequence,type ComponentInput } from './ingest';
 const device={id:'11111111-1111-4111-8111-111111111111',orgId:'22222222-2222-4222-8222-222222222222'};
 const now=new Date('2026-09-23T12:00:00Z');
 const snapshot=hardwareHealthSnapshotSchema.parse({snapshotId:'33333333-3333-4333-8333-333333333333',sequence:1,collectedAt:'2020-01-01T00:00:00Z',agentVersion:'1',pollIntervalMinutes:10,diskHealthIntervalMinutes:60,tiersRun:['raid'],sources:[],components:[]});
@@ -86,4 +86,10 @@ it('rejects invalid state, oversized UTF-8 attributes and duplicate identities',
  for(const c of [{...disk,state:'optimal'},{...disk,attributes:{x:'é'.repeat(4096)}}])expect(()=>reduceSnapshot([],device,{...snapshot,components:[c]},now)).toThrow(InvalidHardwareSnapshotError);
  expect(()=>reduceSnapshot([],device,{...snapshot,components:[disk,disk]},now)).toThrow('components.1.componentKey');
  expect(()=>reduceSnapshot([],device,{...snapshot,sources:[{source:'storcli',status:'failed'},{source:'storcli',status:'ok',complete:true}]},now)).toThrow('sources.1.source');
+});
+it.each([
+ [null,0,0,true],[now,10,11,true],[now,10,10,false],[now,10,0,false],
+ [new Date(+now-3_600_000),10,0,false],[new Date(+now-3_600_001),10,0,true],
+] as const)('sequence reset boundary %j %s %s', (lastReceivedAt,lastAgentSequence,sequence,accepted)=>{
+ expect(acceptsAgentSequence({lastReceivedAt,lastAgentSequence},sequence,now)).toBe(accepted);
 });

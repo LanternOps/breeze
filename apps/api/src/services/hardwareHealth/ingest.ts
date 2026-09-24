@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import { and,eq,inArray } from 'drizzle-orm';
 import { deriveHardwareHealth,HARDWARE_STATES,worstHardwareHealth,type HardwareComponentType,type HardwareComponentReport,type HardwareHealthSnapshot,type HardwareHealth } from '@breeze/shared';
-import { deviceHardwareComponents,deviceHardwareEvents,deviceHardwareHealth } from '../../db/schema';
+import { db,withDbTransaction } from '../../db';
+import { deviceHardwareComponents,deviceHardwareEvents,deviceHardwareHealth,devices } from '../../db/schema';
+import { resolveAlertsForRemovedComponents } from './retire';
 export type ComponentRow=typeof deviceHardwareComponents.$inferSelect;
 type EventRow=typeof deviceHardwareEvents.$inferInsert;
 export type ComponentInput=Omit<HardwareComponentReport,'componentType'> & {componentType:HardwareComponentType};
@@ -73,4 +76,35 @@ export function reduceSnapshot(previous:ComponentRow[],device:{id:string;orgId:s
   health:worstHardwareHealth(hardware.map(r=>r.health)),collectorHealth:collectors.length?worstHardwareHealth(collectors.map(r=>r.health)):'ok' as HardwareHealth,
   summary:{counts,controllerNames:hardware.filter(r=>r.componentType==='controller').map(r=>r.name)},
  };
+}
+export type IngestResult={accepted:true;events:number;health:HardwareHealth}|{accepted:false;reason:'stale_snapshot'};
+export function acceptsAgentSequence(health:{lastReceivedAt:Date|null;lastAgentSequence:number},sequence:number,receivedAt:Date):boolean{
+ return health.lastReceivedAt===null||sequence>health.lastAgentSequence||receivedAt.getTime()-health.lastReceivedAt.getTime()>3_600_000;
+}
+export async function ingestHardwareHealthSnapshot(input:{device:{id:string;orgId:string};snapshot:HardwareHealthSnapshot;writer:'agent'|'server';receivedAt:Date}):Promise<IngestResult>{
+ const {device,snapshot,receivedAt,writer}=input;
+ return withDbTransaction(async()=>{
+  const tx=db;
+  const [owner]=await tx.select({id:devices.id}).from(devices).where(and(eq(devices.id,device.id),eq(devices.orgId,device.orgId))).for('key share');
+  if(!owner)throw new Error('Hardware device missing or ownership changed');
+  await tx.insert(deviceHardwareHealth).values({deviceId:device.id,orgId:device.orgId}).onConflictDoNothing({target:deviceHardwareHealth.deviceId});
+  const [health]=await tx.select().from(deviceHardwareHealth).where(and(eq(deviceHardwareHealth.deviceId,device.id),eq(deviceHardwareHealth.orgId,device.orgId))).for('update');
+  if(!health)throw new Error('Hardware health ownership mismatch');
+  if(writer==='agent'&&!acceptsAgentSequence(health,snapshot.sequence,receivedAt))return {accepted:false,reason:'stale_snapshot'};
+  const previous=await tx.select().from(deviceHardwareComponents).where(eq(deviceHardwareComponents.deviceId,device.id));
+  const change=reduceSnapshot(previous,device,snapshot,receivedAt);
+  for(const row of change.upserts){
+   const {id,createdAt,firstSeenAt,...update}=row;
+   await tx.insert(deviceHardwareComponents).values(row).onConflictDoUpdate({target:[deviceHardwareComponents.deviceId,deviceHardwareComponents.componentKey],set:update});
+  }
+  if(change.deletedKeys.length){
+   await resolveAlertsForRemovedComponents(device.id,change.deletedKeys);
+   await tx.delete(deviceHardwareComponents).where(and(eq(deviceHardwareComponents.deviceId,device.id),inArray(deviceHardwareComponents.componentKey,change.deletedKeys)));
+  }
+  for(let i=0;i<change.events.length;i+=500)await tx.insert(deviceHardwareEvents).values(change.events.slice(i,i+500));
+  await tx.update(deviceHardwareHealth).set({health:change.health,collectorHealth:change.collectorHealth,summary:change.summary,updatedAt:receivedAt,
+   ...(writer==='agent'?{sources:snapshot.sources,lastAgentSequence:snapshot.sequence,lastSnapshotId:snapshot.snapshotId,lastCollectedAt:new Date(snapshot.collectedAt),lastReceivedAt:receivedAt,lastRaidReceivedAt:snapshot.tiersRun.includes('raid')?receivedAt:health.lastRaidReceivedAt,lastDiskReceivedAt:snapshot.tiersRun.includes('disk')?receivedAt:health.lastDiskReceivedAt,pollIntervalMinutes:snapshot.pollIntervalMinutes,diskHealthIntervalMinutes:snapshot.diskHealthIntervalMinutes,tiersRun:snapshot.tiersRun,agentVersion:snapshot.agentVersion}:{}),
+  }).where(eq(deviceHardwareHealth.deviceId,device.id));
+  return {accepted:true,events:change.events.length,health:change.health};
+ });
 }
