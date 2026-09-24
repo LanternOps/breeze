@@ -166,7 +166,7 @@ export default function MonitorsListPage() {
         </button>
       </div>
 
-      <ConversionPendingBanner orgId={currentOrgId} onReview={() => showView('needs-conversion')} onConverted={() => void fetchMonitors()} />
+      <ConversionPendingBanner orgId={currentOrgId} onReview={() => showView('needs-conversion')} onConverted={() => void fetchMonitors()} revision={ledgerRevision} />
       <div className="flex gap-2" role="tablist" aria-label={t('monitoring:list.views.ariaLabel')}>
         {(['all', 'needs-conversion'] as const).map((v) => (
           <button
@@ -184,8 +184,14 @@ export default function MonitorsListPage() {
       </div>
       {view === 'needs-conversion' ? (
         <div className="space-y-6" data-testid="monitors-list-needs-conversion">
-          <PendingPoliciesList orgId={currentOrgId} />
-          <LegacyRulesTable onConverted={() => void fetchMonitors()} />
+          <PendingPoliciesList orgId={currentOrgId} revision={ledgerRevision} />
+          <div>
+            <h2 className="text-sm font-semibold">{t('monitoring:legacy.title')}</h2>
+            <p className="mt-1 text-xs text-muted-foreground">{t('monitoring:legacy.description')}</p>
+            <div className="mt-2">
+              <LegacyRulesTable onConverted={() => void fetchMonitors()} />
+            </div>
+          </div>
         </div>
       ) : (
         <>

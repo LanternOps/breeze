@@ -82,6 +82,12 @@ describe('ConversionPendingBanner', () => {
     expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
     expect(onConverted).not.toHaveBeenCalled();
   });
+  it('refetches counts when revision changes externally (e.g. an Undo elsewhere on the page)', async () => {
+    const { rerender } = render(<ConversionPendingBanner orgId="org-1" onReview={vi.fn()} revision={0} />);
+    await waitFor(() => expect(fetchPendingCounts).toHaveBeenCalledTimes(1));
+    rerender(<ConversionPendingBanner orgId="org-1" onReview={vi.fn()} revision={1} />);
+    await waitFor(() => expect(fetchPendingCounts).toHaveBeenCalledTimes(2));
+  });
   it('hides Convert everything for an org-scoped caller and for a partner user without partner-wide rights', async () => {
     claims.scope = 'organization';
     const { unmount } = render(<ConversionPendingBanner orgId="org-1" onReview={vi.fn()} />);
