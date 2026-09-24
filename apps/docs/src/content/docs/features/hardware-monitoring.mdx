@@ -25,19 +25,24 @@ The device list has an optional **Hardware** column. Enable it in the column pic
 | `ssacli` | Windows, Linux | `ssacli`, `hpssacli` or `hpacucli`; `ctrl all show status`, `ctrl all show config detail` | HPE controllers, cache/battery, logical and physical drives | RAID; 60 seconds | fixture-only |
 | `arcconf` | Windows, Linux | `GETVERSION`, then `GETCONFIG` with controller number and `AL` | Controllers, logical/physical devices, battery/ZMM | RAID; 30 seconds | fixture-only |
 | `omreport` | Windows, Linux | `storage controller -fmt ssv`, `storage vdisk -fmt ssv`, `storage pdisk controller=` with controller ID and `-fmt ssv`, `storage battery -fmt ssv` | Dell controllers, disks, predictive flags and batteries | RAID; 60 seconds | fixture-only |
-| `mdadm` | Linux | Arrays listed in `/proc/mdstat`; `mdadm --detail` for each array | Arrays, members, recovery/resync/check progress | RAID; 15 seconds | Fixture coverage; lab validation pending |
-| `zfs` | Linux | `zpool list` nonempty; `zpool list -H -o name,health,size,alloc,free`, `zpool status -pP`; JSON when supported | Pools, members, scrub/resilver progress and error counters | RAID; 30 seconds | Fixture coverage; lab validation pending |
-| `storage_spaces` | Windows | Non-primordial pool; `Get-StoragePool`, `Get-VirtualDisk`, pooled `Get-PhysicalDisk` | Pools, virtual disks and member disks | RAID; 60 seconds | Fixture coverage; lab validation pending |
-| `windows_physical_disk` | Windows | `Get-PhysicalDisk`, `Get-StorageReliabilityCounter` | OS-visible health, temperature, wear and counters | Disk health; 60 seconds | Fixture coverage; lab validation pending |
-| `smartctl` | Windows, Linux | `--scan-open -j`, then `-a -j` per device with its detected type | SMART overall status, ATA attributes and NVMe log; enriches an unambiguous vendor disk serial | Disk health; 15 seconds per disk, 3 minutes total, at most 64 devices | Fixture coverage; lab validation pending |
+| `mdadm` | Linux | Arrays listed in `/proc/mdstat`; `mdadm --detail` for each array | Arrays, members, recovery/resync/check progress | RAID; 15 seconds | Live lab: mirror fault, rebuild and recovery |
+| `zfs` | Linux | `zpool list` nonempty; `zpool list -H -o name,health,size,alloc,free`, `zpool status -pP`; JSON when supported | Pools, members, scrub/resilver progress and error counters | RAID; 30 seconds | fixture-only |
+| `storage_spaces` | Windows | Non-primordial pool; `Get-StoragePool`, `Get-VirtualDisk`, pooled `Get-PhysicalDisk` | Pools, virtual disks and member disks | RAID; 60 seconds | Live lab: mirror fault and recovery (see note) |
+| `windows_physical_disk` | Windows | `Get-PhysicalDisk`, `Get-StorageReliabilityCounter` | OS-visible health, temperature, wear and counters | Disk health; 60 seconds | Live lab: disk inventory |
+| `smartctl` | Windows, Linux | `--scan-open -j`, then `-a -j` per device with its detected type | SMART overall status, ATA attributes and NVMe log; enriches an unambiguous vendor disk serial | Disk health; 15 seconds per disk, 3 minutes total, at most 64 devices | Live lab: standalone disk inventory (emulated NVMe) |
+| `ipmi` | Windows, Linux | `ipmitool lan print 1`; `ipmitool mc info` | In-band management-controller address, MAC, firmware and vendor | RAID tier, at most daily; 20 seconds per command | fixture-only |
+| `racadm` | Windows, Linux | `racadm getniccfg`; `racadm getversion` | In-band management-controller address, MAC, firmware and vendor | RAID tier, at most daily; 20 seconds per command | fixture-only |
+| `hponcfg` | Windows, Linux | `hponcfg -w` with a temporary output file (RIBCL export) | In-band management-controller address, MAC, firmware and vendor | RAID tier, at most daily; 20 seconds | fixture-only |
 
 <Aside type="note">
+  “Live lab” means the source was exercised end to end on a lab machine running a real agent: collection, the Hardware tab and, where stated, fault injection with per-component alerts and recovery. The Storage Spaces and mdadm lab runs used file-backed and loop-backed virtual disks, not physical drives or a hardware controller. On Storage Spaces, a disconnected member can currently leave its physical-disk alert open after the member returns (issue #6895).
+
   “fixture-only” means parser behavior has been checked against samples, without a verified capture from a live deployment of that vendor source. A supported parser is not a claim of hardware lab validation. These markers change only when a real capture and its validation are recorded.
 </Aside>
 
 The Broadcom-family preference is **storcli → perccli → MegaCli**. Dell OMSA storage is used only when none of those is installed. HPE ssacli and Microchip arcconf run independently when present. The footer identifies superseded tools so installed-but-unused does not look like a failure.
 
-Management-controller address/firmware collection through `ipmi` / `racadm` / `hponcfg` belongs to the BMC follow-on wave. This page does not claim chassis sensors, SEL ingestion or out-of-band Redfish/SNMP monitoring are available.
+Management-controller address/firmware collection is available through installed `ipmitool`, `racadm` or `hponcfg` tools. The Hardware tab’s **Management controller** card shows the in-band address, MAC, vendor and firmware, collected at most daily, and links to the matching discovered asset when there is one. Chassis sensors, SEL ingestion and out-of-band Redfish/SNMP monitoring remain outside this feature.
 
 ## Install the tools
 
