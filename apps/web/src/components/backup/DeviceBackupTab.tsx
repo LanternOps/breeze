@@ -16,6 +16,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { friendlyFetchError } from '../../lib/utils';
 import { useScrollToError } from '../../lib/scrollToError';
 import BackupVerificationTab from './BackupVerificationTab';
+import ExternalBackupCard from './ExternalBackupCard';
 import { formatNumber } from '@/lib/i18n/format';
 import DeviceVaultStatus from './DeviceVaultStatus';
 import AlphaBadge from '../shared/AlphaBadge';
@@ -199,6 +200,9 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
   const [actionMessage, setActionMessage] = useState<string>();
   const [actionInfo, setActionInfo] = useState<string>();
   const [runningBackup, setRunningBackup] = useState(false);
+  // Reported by ExternalBackupCard so the empty state below can be accurate
+  // without a second fetch. `null` = not answered yet.
+  const [hasExternalBackup, setHasExternalBackup] = useState<boolean | null>(null);
 
   const fetchData = useCallback(async () => {
     setError(undefined);
@@ -380,13 +384,18 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
   }
 
   // Empty state
-  if (!error && !status?.protected && !status?.lastJob && jobs.length === 0) {
+  if (!error && !status?.protected && !status?.lastJob && jobs.length === 0 && hasExternalBackup !== true) {
     return (
       <div className="flex flex-col items-center justify-center py-20 text-center">
         <Database className="h-12 w-12 text-muted-foreground/40" />
         <h3 className="mt-4 text-base font-semibold text-foreground">{t('deviceBackupTab.noBackupConfigured')}</h3>
         <p className="mt-1 text-sm text-muted-foreground">
           {t('deviceBackupTab.assignABackupPolicyToProtectThisDevice')} </p>
+        <p data-testid="device-backup-empty-external-hint" className="mt-1 text-sm text-muted-foreground">
+          {t('backupHealth.external.alsoCheck')} </p>
+        {/* Still mounted: it is what answers hasExternalBackup, and if it finds
+            a row this branch stops rendering on the next commit. */}
+        <ExternalBackupCard deviceId={deviceId} onPresenceChange={setHasExternalBackup} />
       </div>
     );
   }
@@ -420,6 +429,13 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
 
   return (
     <div className="space-y-6">
+      {/* Above the first-party sections: a technician opening this tab for a
+          Cove-protected machine must not scroll past "no backup" to find it. */}
+      <ExternalBackupCard
+        deviceId={deviceId}
+        onPresenceChange={setHasExternalBackup}
+        onUnlinked={() => void fetchData()}
+      />
       {(error || actionError) && (
         <div ref={errorBannerRef} className="space-y-6">
           {error && (

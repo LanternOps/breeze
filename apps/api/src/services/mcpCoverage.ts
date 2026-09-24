@@ -230,6 +230,12 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'backup/configs.ts': { tools: ['manage_backup_configs'] },
   'backup/dashboard.ts': { tools: ['query_backups', 'get_backup_status'] },
   'backup/encryption.ts': { gap: '#6793' },
+  // #6008 W03 — unified breeze+provider backup-health read model for the
+  // Integrations tab (GET /backup/health/devices). No MCP tool queries this
+  // read model yet; `get_backup_status` (backup/dashboard.ts) reads
+  // Breeze-native backup_jobs directly and does not cover provider-sourced
+  // rows, so it is not real coverage for this surface.
+  'backup/health.ts': { gap: '#6141' },
   'backup/hyperv.ts': { tools: ['query_hyperv_vms', 'get_hyperv_vm_details', 'manage_hyperv_vm', 'trigger_hyperv_backup', 'restore_hyperv_vm', 'manage_hyperv_checkpoints'] },
   'backup/jobs.ts': { tools: ['query_backups', 'trigger_backup'] },
   'backup/mssql.ts': { tools: ['query_mssql_instances', 'get_mssql_backup_status', 'trigger_mssql_backup', 'restore_mssql_database', 'verify_mssql_backup'] },

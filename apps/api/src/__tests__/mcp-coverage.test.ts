@@ -37,6 +37,7 @@ const FROZEN_GAPS: ReadonlySet<string> = new Set([
   'backup/bmr.ts',
   'backup/bmrRecoveries.ts',
   'backup/encryption.ts',
+  'backup/health.ts',
   'backup/reconcile.ts',
   'backup/verification.ts',
   'backup/vss.ts',

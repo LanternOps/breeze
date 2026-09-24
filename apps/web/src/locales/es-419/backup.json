@@ -961,5 +961,69 @@
       "rebooted": "Reiniciada",
       "checked_in": "Confirmada"
     }
+  },
+  "backupHealth": {
+    "title": "Estado de las copias de seguridad",
+    "subtitle": "Todos los dispositivos que administra Breeze, más todo lo que informa su proveedor de copias de seguridad.",
+    "staleBanner": "Algunos datos del proveedor están desactualizados. Se muestra lo último que se vio.",
+    "unmappedNotice": "{{value}} dispositivos pertenecen a clientes del proveedor que todavía no están asignados a una organización de Breeze.",
+    "statusTitle": "Estado",
+    "recencyTitle": "Última copia de seguridad correcta",
+    "coverage": "{{covered}} de {{total}} endpoints tienen una copia de seguridad reciente",
+    "providerOnly": "{{value}} endpoints solo del proveedor",
+    "m365Accounts": "{{value}} cuentas de Microsoft 365",
+    "status": {
+      "no_backups": "Sin copias de seguridad",
+      "completed": "Completado",
+      "completed_with_errors": "Completado con errores",
+      "in_progress": "En proceso",
+      "unsuccessful": "Sin éxito",
+      "other": "Otros"
+    },
+    "recency": {
+      "never": "Nunca",
+      "under_24h": "Menos de 24 horas",
+      "under_48h": "Menos de 48 horas",
+      "over_48h": "Más de 48 horas"
+    },
+    "health": {
+      "healthy": "Correcto",
+      "warning": "Requiere atención",
+      "critical": "Crítico",
+      "unknown": "Desconocido"
+    },
+    "sourceAll": "Todas las fuentes",
+    "healthAll": "Cualquier estado",
+    "sourceBreeze": "Breeze",
+    "searchPlaceholder": "Buscar dispositivo u organización",
+    "includeWithoutBackup": "Incluir dispositivos sin ninguna copia de seguridad",
+    "table": {
+      "device": "Dispositivo",
+      "computerName": "Nombre del equipo",
+      "source": "Fuente",
+      "dataSources": "Orígenes de datos",
+      "selected": "Seleccionado",
+      "used": "Usado",
+      "history": "Últimos 28 días",
+      "errors": "Errores",
+      "agent": "Agente"
+    },
+    "noObservation": "Sin observación",
+    "openDevice": "Abrir dispositivo",
+    "empty": "Ningún dispositivo coincide con estos filtros.",
+    "loadMore": "Cargar más",
+    "error": "No se pudo cargar el estado de las copias de seguridad",
+    "external": {
+      "title": "Copia de seguridad externa",
+      "customer": "Cliente del proveedor",
+      "lastSuccess": "Última copia de seguridad correcta",
+      "lastSession": "Última sesión",
+      "unlink": "Desvincular",
+      "unlinkConfirm": "¿Desvincular este dispositivo del proveedor del dispositivo de Breeze? Permanece en el producto de copia de seguridad y se puede volver a vincular.",
+      "unlinkedToast": "Dispositivo del proveedor desvinculado",
+      "errorUnlink": "No se pudo desvincular el dispositivo del proveedor",
+      "error": "No se pudo cargar el estado de la copia de seguridad externa",
+      "alsoCheck": "Revise también las conexiones de copia de seguridad de terceros en Integraciones."
+    }
   }
 }

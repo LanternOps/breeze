@@ -961,5 +961,69 @@
       "rebooted": "Reiniciada",
       "checked_in": "Confirmada"
     }
+  },
+  "backupHealth": {
+    "title": "Integridade dos backups",
+    "subtitle": "Todos os dispositivos que o Breeze gerencia, além de tudo o que o provedor de backup informa.",
+    "staleBanner": "Alguns dados do provedor estão desatualizados. Mostrando o último estado visto.",
+    "unmappedNotice": "{{value}} dispositivos pertencem a clientes do provedor que ainda não estão mapeados para uma organização do Breeze.",
+    "statusTitle": "Status",
+    "recencyTitle": "Último backup bem-sucedido",
+    "coverage": "{{covered}} de {{total}} endpoints têm um backup recente",
+    "providerOnly": "{{value}} endpoints apenas do provedor",
+    "m365Accounts": "{{value}} contas do Microsoft 365",
+    "status": {
+      "no_backups": "Sem backups",
+      "completed": "Concluído",
+      "completed_with_errors": "Concluído com erros",
+      "in_progress": "Em andamento",
+      "unsuccessful": "Sem sucesso",
+      "other": "Outros"
+    },
+    "recency": {
+      "never": "Nunca",
+      "under_24h": "Menos de 24 horas",
+      "under_48h": "Menos de 48 horas",
+      "over_48h": "Mais de 48 horas"
+    },
+    "health": {
+      "healthy": "Saudável",
+      "warning": "Requer atenção",
+      "critical": "Crítico",
+      "unknown": "Desconhecido"
+    },
+    "sourceAll": "Todas as origens",
+    "healthAll": "Qualquer estado",
+    "sourceBreeze": "Breeze",
+    "searchPlaceholder": "Pesquisar dispositivo ou organização",
+    "includeWithoutBackup": "Incluir dispositivos sem nenhum backup",
+    "table": {
+      "device": "Dispositivo",
+      "computerName": "Nome do computador",
+      "source": "Origem",
+      "dataSources": "Fontes de dados",
+      "selected": "Selecionado",
+      "used": "Usado",
+      "history": "Últimos 28 dias",
+      "errors": "Erros",
+      "agent": "Agente"
+    },
+    "noObservation": "Sem observação",
+    "openDevice": "Abrir dispositivo",
+    "empty": "Nenhum dispositivo corresponde a esses filtros.",
+    "loadMore": "Carregar mais",
+    "error": "Não foi possível carregar a integridade dos backups",
+    "external": {
+      "title": "Backup externo",
+      "customer": "Cliente do provedor",
+      "lastSuccess": "Último backup bem-sucedido",
+      "lastSession": "Última sessão",
+      "unlink": "Desvincular",
+      "unlinkConfirm": "Desvincular este dispositivo do provedor do dispositivo do Breeze? Ele permanece no produto de backup e pode ser vinculado de novo.",
+      "unlinkedToast": "Dispositivo do provedor desvinculado",
+      "errorUnlink": "Não foi possível desvincular o dispositivo do provedor",
+      "error": "Não foi possível carregar o status do backup externo",
+      "alsoCheck": "Verifique também as conexões de backup de terceiros em Integrações."
+    }
   }
 }

@@ -961,5 +961,69 @@
       "rebooted": "Neu gestartet",
       "checked_in": "Angemeldet"
     }
+  },
+  "backupHealth": {
+    "title": "Backup-Zustand",
+    "subtitle": "Jedes von Breeze verwaltete Gerät, plus alles, was Ihr Backup-Anbieter meldet.",
+    "staleBanner": "Einige Anbieterdaten sind veraltet. Angezeigt wird der zuletzt bekannte Stand.",
+    "unmappedNotice": "{{value}} Geräte gehören zu Anbieterkunden, die noch keiner Breeze-Organisation zugeordnet sind.",
+    "statusTitle": "Status",
+    "recencyTitle": "Letzte erfolgreiche Sicherung",
+    "coverage": "{{covered}} von {{total}} Endgeräten haben eine aktuelle Sicherung",
+    "providerOnly": "{{value}} Endgeräte nur beim Anbieter",
+    "m365Accounts": "{{value}} Microsoft 365 Konten",
+    "status": {
+      "no_backups": "Keine Sicherungen",
+      "completed": "Abgeschlossen",
+      "completed_with_errors": "Mit Fehlern abgeschlossen",
+      "in_progress": "In Bearbeitung",
+      "unsuccessful": "Nicht erfolgreich",
+      "other": "Sonstige"
+    },
+    "recency": {
+      "never": "Nie",
+      "under_24h": "Weniger als 24 Stunden",
+      "under_48h": "Weniger als 48 Stunden",
+      "over_48h": "Mehr als 48 Stunden"
+    },
+    "health": {
+      "healthy": "In Ordnung",
+      "warning": "Prüfen",
+      "critical": "Kritisch",
+      "unknown": "Unbekannt"
+    },
+    "sourceAll": "Alle Quellen",
+    "healthAll": "Jeder Zustand",
+    "sourceBreeze": "Breeze",
+    "searchPlaceholder": "Gerät oder Organisation suchen",
+    "includeWithoutBackup": "Geräte ohne jede Sicherung einbeziehen",
+    "table": {
+      "device": "Gerät",
+      "computerName": "Computername",
+      "source": "Quelle",
+      "dataSources": "Datenquellen",
+      "selected": "Ausgewählt",
+      "used": "Belegt",
+      "history": "Letzte 28 Tage",
+      "errors": "Fehler",
+      "agent": "Agent"
+    },
+    "noObservation": "Keine Beobachtung",
+    "openDevice": "Gerät öffnen",
+    "empty": "Kein Gerät passt zu diesen Filtern.",
+    "loadMore": "Mehr laden",
+    "error": "Backup-Zustand konnte nicht geladen werden",
+    "external": {
+      "title": "Externe Sicherung",
+      "customer": "Anbieterkunde",
+      "lastSuccess": "Letzte erfolgreiche Sicherung",
+      "lastSession": "Letzte Sitzung",
+      "unlink": "Verknüpfung lösen",
+      "unlinkConfirm": "Verknüpfung dieses Anbietergeräts mit dem Breeze-Gerät lösen? Es bleibt im Backup-Produkt und kann erneut verknüpft werden.",
+      "unlinkedToast": "Verknüpfung des Anbietergeräts gelöst",
+      "errorUnlink": "Verknüpfung des Anbietergeräts konnte nicht gelöst werden",
+      "error": "Externer Sicherungsstatus konnte nicht geladen werden",
+      "alsoCheck": "Prüfen Sie auch die Verbindungen zu externen Backup-Produkten unter \"Integrationen\"."
+    }
   }
 }
