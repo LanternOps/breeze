@@ -33,3 +33,16 @@ func (s *source) Name() Kind                                                { re
 func (s *source) Tier() Tier                                                { return s.tier }
 func (s *source) Detect(c context.Context) Availability                     { return s.detect(c) }
 func (s *source) Collect(c context.Context, a Availability) (Result, error) { return s.collect(c, a) }
+
+func unavailableSource(k Kind, t Tier) Source {
+	return &source{
+		kind: k,
+		tier: t,
+		detect: func(context.Context) Availability {
+			return Availability{}
+		},
+		collect: func(context.Context, Availability) (Result, error) {
+			return Result{}, nil
+		},
+	}
+}

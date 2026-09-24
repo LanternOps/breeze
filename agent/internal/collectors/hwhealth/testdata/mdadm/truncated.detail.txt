@@ -1,0 +1,2 @@
+/dev/md0:
+ State :
