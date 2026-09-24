@@ -20,7 +20,10 @@ const { state } = vi.hoisted(() => ({
     // #6689: where-conditions of the reopen re-read, and an optional override
     // of the rows it returns (null = serve selectRows like any other select).
     reopenRereads: [] as unknown[],
-    reopenRereadRows: null as unknown[] | null
+    reopenRereadRows: null as unknown[] | null,
+    // Test hook: force an insert into `table` to throw (optionally with a pg `code`),
+    // to exercise the durable-failed-row insert itself failing.
+    failInsert: null as { table: string; code?: string; message?: string; wrapped?: boolean } | null
   }
 }));
 
@@ -150,6 +153,19 @@ vi.mock('../../db', () => {
     const table = tableName(tbl);
     return {
       values(values: Record<string, unknown>) {
+        if (state.failInsert && state.failInsert.table === table) {
+          const e = new Error(state.failInsert.message ?? 'insert failed') as Error & { code?: string; cause?: unknown };
+          if (state.failInsert.code) {
+            if (state.failInsert.wrapped) {
+              // Production shape: postgres-js error wrapped by DrizzleQueryError — the
+              // SQLSTATE is on `.cause.code`, and the top-level error has no `.code`.
+              e.cause = { code: state.failInsert.code };
+            } else {
+              e.code = state.failInsert.code;
+            }
+          }
+          throw e;
+        }
         state.inserts.push({ table, values });
         return {
           returning() {
@@ -287,7 +303,7 @@ vi.mock('../ticketEmailLinks', async () => {
   };
 });
 
-import { processInboundEmail } from './inboundEmailService';
+import { processInboundEmail, InboundEmailProcessingRecorded } from './inboundEmailService';
 import type { NormalizedInboundEmail } from './types';
 
 function email(overrides: Partial<NormalizedInboundEmail> = {}): NormalizedInboundEmail {
@@ -324,6 +340,7 @@ beforeEach(() => {
   state.insertedCommentId = 'c-1';
   state.reopenRereads = [];
   state.reopenRereadRows = null;
+  state.failInsert = null;
   resolveMock.mockReset();
   createTicketMock.mockReset();
   changeStatusMock.mockReset();
@@ -348,6 +365,7 @@ beforeEach(() => {
 
 describe('processInboundEmail', () => {
   const mailboxGeneration = {
+    provider: 'm365' as const,
     connectionId: '44444444-4444-4444-8444-444444444444',
     partnerId: '22222222-2222-4222-8222-222222222222',
     tenantId: '11111111-1111-4111-8111-111111111111',
@@ -358,7 +376,7 @@ describe('processInboundEmail', () => {
     state.selectRows['ticket_mailbox_connections'] = [];
 
     await processInboundEmail(
-      email({ provider: 'm365', resolvedPartnerId: mailboxGeneration.partnerId }),
+      email({ provider: 'm365' as const, resolvedPartnerId: mailboxGeneration.partnerId }),
       mailboxGeneration,
     );
 
@@ -369,7 +387,7 @@ describe('processInboundEmail', () => {
 
   it('fails closed for an M365 job with no mailbox generation', async () => {
     await processInboundEmail(email({
-      provider: 'm365',
+      provider: 'm365' as const,
       resolvedPartnerId: mailboxGeneration.partnerId,
     }));
 
@@ -385,7 +403,7 @@ describe('processInboundEmail', () => {
     state.selectRows['portal_users'] = [];
 
     await processInboundEmail(
-      email({ provider: 'm365', resolvedPartnerId: 'untrusted-payload-partner' }),
+      email({ provider: 'm365' as const, resolvedPartnerId: 'untrusted-payload-partner' }),
       mailboxGeneration,
     );
 
@@ -638,7 +656,10 @@ describe('processInboundEmail', () => {
       emailThreadKey: '<msg-1@tickets.example.com>', internalNumber: 'T-2026-0001'
     }];
 
-    await processInboundEmail(email({ inReplyTo: '<msg-1@tickets.example.com>' }));
+    // The error path now THROWS the recorded-failure sentinel (after writing the
+    // durable failed row) so the outer work tx rolls back; the worker swallows it.
+    await expect(processInboundEmail(email({ inReplyTo: '<msg-1@tickets.example.com>' })))
+      .rejects.toBeInstanceOf(InboundEmailProcessingRecorded);
 
     // NO comment appended, NO reopen
     expect(state.inserts.filter((i) => i.table === 'ticket_comments')).toHaveLength(0);
@@ -945,7 +966,7 @@ describe('processInboundEmail', () => {
 
   // TEST 2 — durable failed-log path: when a WORK write throws, logInboundFailedDurable
   // still commits a `failed` row in a fresh transaction (the prior commit's key fix).
-  it('durable-fail: when createTicket throws, a failed row is still written, sentry is called, and the function resolves', async () => {
+  it('durable-fail: when createTicket throws, a failed row is still written, sentry is called, and it throws the recorded-failure sentinel (rolls back partial work)', async () => {
     resolveMock.mockResolvedValue('p-1');
     state.selectRows['ticket_email_inbound'] = []; // no dup
     state.selectRows['tickets'] = []; // no thread match
@@ -957,8 +978,11 @@ describe('processInboundEmail', () => {
     const dbError = new Error('deadlock detected');
     createTicketMock.mockRejectedValue(dbError);
 
-    // (c) Must NOT rethrow — processInboundEmail resolves even when work throws.
-    await expect(processInboundEmail(email({ subject: 'Will fail' }))).resolves.toBeUndefined();
+    // (c) Throws the recorded-failure sentinel so the outer tx rolls back the
+    // partial work; the durable failed row (below) is the terminal record and the
+    // worker swallows this so BullMQ does not retry.
+    await expect(processInboundEmail(email({ subject: 'Will fail' })))
+      .rejects.toBeInstanceOf(InboundEmailProcessingRecorded);
 
     // (a) A ticket_email_inbound insert with parseStatus: 'failed' was still captured
     // (the durable path ran — logInboundFailedDurable opens a fresh context via the
@@ -975,6 +999,39 @@ describe('processInboundEmail', () => {
     expect((captureExceptionMock.mock.calls[0]![0] as Error).message).toContain('deadlock');
   });
 
+  it('when the durable failed-row insert ALSO fails, it throws the ORIGINAL error (not the sentinel) so BullMQ retries — no silent ack', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [];
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
+    state.selectRows['organizations'] = [{ id: 'o-1' }];
+    createTicketMock.mockRejectedValue(new Error('deadlock detected'));
+    // The terminal failed-row insert itself fails (e.g. DB down) — not a 23505.
+    state.failInsert = { table: 'ticket_email_inbound', message: 'connection refused' };
+
+    // Must NOT throw the swallow-me sentinel (that would make the worker ack the job
+    // and drop the message unrecorded). Throws the original processing error instead.
+    await expect(processInboundEmail(email({ subject: 'double fault' })))
+      .rejects.not.toBeInstanceOf(InboundEmailProcessingRecorded);
+    await expect(processInboundEmail(email({ subject: 'double fault' })))
+      .rejects.toThrow('deadlock detected');
+  });
+
+  it('treats a 23505 on the failed-row insert as already-recorded (throws the sentinel — a concurrent retry logged it)', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [];
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
+    state.selectRows['organizations'] = [{ id: 'o-1' }];
+    createTicketMock.mockRejectedValue(new Error('deadlock detected'));
+    // Production shape: the 23505 is WRAPPED by DrizzleQueryError (code on .cause.code,
+    // none on the top-level error). isPgUniqueViolation must still recognize it.
+    state.failInsert = { table: 'ticket_email_inbound', code: '23505', message: 'duplicate key', wrapped: true };
+
+    await expect(processInboundEmail(email({ subject: 'concurrent retry' })))
+      .rejects.toBeInstanceOf(InboundEmailProcessingRecorded);
+  });
+
   // TEST 3 — org-not-in-partner guard: when the portal-user's org is not in the
   // resolved partner, createFromEmail throws and the outcome is a durable `failed` row.
   it('org-not-in-partner guard: returns failed with "not in partner" error and no ticket created', async () => {
@@ -986,7 +1043,8 @@ describe('processInboundEmail', () => {
     // The org guard in createFromEmail: organizations select returns [] (org not in partner).
     state.selectRows['organizations'] = [];
 
-    await expect(processInboundEmail(email({ subject: 'Org mismatch test' }))).resolves.toBeUndefined();
+    await expect(processInboundEmail(email({ subject: 'Org mismatch test' })))
+      .rejects.toBeInstanceOf(InboundEmailProcessingRecorded);
 
     // No ticket was created.
     expect(createTicketMock).not.toHaveBeenCalled();
@@ -1576,6 +1634,7 @@ describe('processInboundEmail — inbound enabled master switch (#3597)', () => 
 
   it('gates the M365 poll path too (the flag is per-partner, not per-transport)', async () => {
     const mailboxGeneration = {
+      provider: 'm365' as const,
       connectionId: '44444444-4444-4444-8444-444444444444',
       partnerId: '22222222-2222-4222-8222-222222222222',
       tenantId: '11111111-1111-4111-8111-111111111111',
@@ -1585,7 +1644,7 @@ describe('processInboundEmail — inbound enabled master switch (#3597)', () => 
     loadPolicyMock.mockResolvedValue(disabled);
 
     await processInboundEmail(
-      email({ provider: 'm365', resolvedPartnerId: mailboxGeneration.partnerId }),
+      email({ provider: 'm365' as const, resolvedPartnerId: mailboxGeneration.partnerId }),
       mailboxGeneration,
     );
 
