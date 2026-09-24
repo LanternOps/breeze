@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup/providers"
@@ -65,7 +68,9 @@ func setVerifyConcurrencyForTest(n int) (restore func()) {
 // download deadline the same way uploadDeadline sizes uploads: assume at
 // least 64 KiB/s, never less than the floor. A transfer that exceeds it is a
 // stall — that FILE fails and the run moves on, instead of one hung object
-// holding the whole run until the command's 2 h ceiling (#6598).
+// holding the whole run until the command's 2 h ceiling (#6598). The floor
+// is also the no-progress window for downloads whose size is not known in
+// advance (downloadWithStallTimeout), which get no total deadline.
 const downloadMinThroughputBps = 64 * 1024
 
 var downloadTimeoutFloor = 5 * time.Minute
@@ -110,6 +115,118 @@ func downloadWithDeadline(ctx context.Context, provider providers.BackupProvider
 		return fmt.Errorf("download stalled: no completion within the %s per-file deadline: %w", deadline, err)
 	}
 	return err
+}
+
+// errDownloadStalled is matched (errors.Is) by a downloadStallError.
+var errDownloadStalled = errors.New("download stalled")
+
+// downloadStallError reports a download cancelled because no bytes arrived
+// for a whole no-progress window.
+type downloadStallError struct {
+	window   time.Duration
+	received int64
+	err      error
+}
+
+func (e *downloadStallError) Error() string {
+	return fmt.Sprintf("download stalled: no data received for %s (%d bytes received before it stopped): %v", e.window, e.received, e.err)
+}
+
+func (e *downloadStallError) Unwrap() []error { return []error{errDownloadStalled, e.err} }
+
+// downloadStallWindow is how long a download whose size is not known in
+// advance may go without receiving a byte before it is cancelled as stalled.
+// It is the per-file deadline floor: the least time any single transfer is
+// ever given.
+func downloadStallWindow() time.Duration { return downloadTimeoutFloor }
+
+// downloadWithStallTimeout downloads remotePath to localPath, bounded by ctx
+// and by a NO-PROGRESS window instead of a total deadline. It is for objects
+// whose size is not known before they download, the snapshot manifest in
+// particular: a fixed total deadline there fails a large manifest on a slow
+// link that is still delivering (a 46 MiB manifest at 100 KB/s failed every
+// run at exactly 5 m, #6929), while a genuine stall must still end in bounded
+// time. The transfer is cancelled only when no byte has arrived for
+// downloadStallWindow().
+//
+// Progress comes from the provider's WithDownloadProgress callback (every
+// production provider reports it), backed up by growth of localPath, so a
+// provider that writes the destination without reporting is still seen as
+// progressing. File growth is sampled only when the window is about to
+// expire, so a transfer seen only that way fails at most two windows after
+// its last byte. A provider without providers.ContextDownloader (test fakes)
+// gets the plain, uncancellable Download, as in downloadWithDeadline.
+//
+// A stall is returned as a *downloadStallError (errors.Is errDownloadStalled).
+// A cancellation of ctx itself is returned unwrapped from the provider, and
+// callers must check ctx.Err() to tell the two apart.
+func downloadWithStallTimeout(ctx context.Context, provider providers.BackupProvider, remotePath, localPath string) error {
+	d, ok := provider.(providers.ContextDownloader)
+	if !ok {
+		return provider.Download(remotePath, localPath)
+	}
+	window := downloadStallWindow()
+
+	var received atomic.Int64
+	var lastProgress atomic.Int64 // UnixNano of the last observed progress
+	lastProgress.Store(time.Now().UnixNano())
+
+	fileCtx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	fileCtx = providers.WithDownloadProgress(fileCtx, func(n int64) {
+		received.Add(n)
+		lastProgress.Store(time.Now().UnixNano())
+	})
+
+	done := make(chan struct{})
+	watcherDone := make(chan struct{})
+	go func() {
+		defer close(watcherDone)
+		lastSize := localFileSize(localPath)
+		timer := time.NewTimer(window)
+		defer timer.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-fileCtx.Done():
+				return
+			case <-timer.C:
+			}
+			now := time.Now()
+			if size := localFileSize(localPath); size != lastSize {
+				lastSize = size
+				lastProgress.Store(now.UnixNano())
+			}
+			idle := now.Sub(time.Unix(0, lastProgress.Load()))
+			if idle >= window {
+				cancel(errDownloadStalled)
+				return
+			}
+			timer.Reset(window - idle)
+		}
+	}()
+
+	err := d.DownloadContext(fileCtx, remotePath, localPath)
+	close(done)
+	<-watcherDone
+	if err != nil && ctx.Err() == nil && errors.Is(context.Cause(fileCtx), errDownloadStalled) {
+		got := received.Load()
+		if size := localFileSize(localPath); size > got {
+			got = size
+		}
+		return &downloadStallError{window: window, received: got, err: err}
+	}
+	return err
+}
+
+// localFileSize returns the size of path, or -1 when it cannot be stat'ed.
+func localFileSize(path string) int64 {
+	info, err := os.Stat(path)
+	if err != nil {
+		return -1
+	}
+	return info.Size()
 }
 
 // runFileChecks calls check(i) for every i in [0, n) on up to
@@ -215,14 +332,22 @@ func countContentFiles(files []SnapshotFile) int {
 	return n
 }
 
-// manifestDownloadError explains a failed manifest download. A download cut
-// short by the run's own time budget is not evidence the manifest is missing,
-// so it is not reported as "not found".
+// manifestDownloadError explains a failed manifest download. Only a provider
+// that positively reports the object missing makes it "not found": a download
+// cut short by the run's time budget or by a stall, or any other transport
+// error, is not evidence the manifest is missing (#6929).
 func manifestDownloadError(runCtx context.Context, opts VerifyOptions, err error) string {
-	if errors.Is(context.Cause(runCtx), errVerifyTimeBudget) {
+	var stall *downloadStallError
+	switch {
+	case errors.Is(context.Cause(runCtx), errVerifyTimeBudget):
 		return fmt.Sprintf("time budget of %s exhausted before the snapshot manifest finished downloading: %v", opts.TimeBudget.Round(time.Second), err)
+	case errors.As(err, &stall):
+		return fmt.Sprintf("snapshot manifest download stalled: no data received for %s (%d bytes received before it stopped): %v", stall.window, stall.received, stall.err)
+	case errors.Is(err, providers.ErrObjectNotFound), errors.Is(err, fs.ErrNotExist):
+		return fmt.Sprintf("manifest not found: %v", err)
+	default:
+		return fmt.Sprintf("failed to download snapshot manifest: %v", err)
 	}
-	return fmt.Sprintf("manifest not found: %v", err)
 }
 
 // logInterruptedDownload records the provider error of a download that was

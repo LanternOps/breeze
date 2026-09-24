@@ -178,7 +178,7 @@ func (s *S3Provider) DownloadContext(ctx context.Context, remotePath, localPath 
 	if err != nil {
 		return fmt.Errorf("failed to create local destination file: %w", err)
 	}
-	_, copyErr := io.Copy(file, resp.Body)
+	_, copyErr := io.Copy(DownloadProgressWriter(ctx, file), resp.Body)
 	closeErr := file.Close()
 	if copyErr != nil {
 		return fmt.Errorf("failed to write s3 object to local file: %w", copyErr)
