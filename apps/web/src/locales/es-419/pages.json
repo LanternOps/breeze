@@ -1,5 +1,6 @@
 {
   "titles": {
+    "adminMonitorConversion": "Conversión de alertas heredadas",
     "notFound": "Página no encontrada",
     "serverError": "Algo salió mal",
     "acceptInvite": "Aceptar invitación",

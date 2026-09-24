@@ -8,6 +8,11 @@
     "monitorLabel": "Monitor"
   },
   "list": {
+    "views": {
+      "ariaLabel": "Visualizações de monitores",
+      "all": "Todos os monitores",
+      "needsConversion": "Precisa de conversão"
+    },
     "title": "Monitores",
     "description": "Observe uma condição, responda no dispositivo, notifique e escalone quando ela continuar ocorrendo.",
     "new": "Novo monitor",
@@ -384,6 +389,102 @@
         "skippedPaused": "Ignorado (respostas pausadas)",
         "skippedNoResponse": "Ignorado (nenhuma resposta configurada)"
       }
+    }
+  },
+  "conversion": {
+    "banner": {
+      "text": "{{rows}} regras legadas em {{policies}} políticas ainda não foram convertidas em monitores.",
+      "review": "Revisar",
+      "convertEverything": "Converter tudo…",
+      "confirmTitle": "Converter todas as regras legadas, monitoramentos e automações acionadas por alerta em todas as suas políticas?",
+      "confirmBody": "{{rows}} regras legadas em {{policies}} políticas de todo o parceiro. Linhas convertidas são aposentadas no lugar. As demais ficam para revisão ou aposentadoria manual em W05c; W05d converte as restantes e aposenta as não convertíveis.",
+      "confirmRun": "Converter tudo",
+      "convertedAll": "{{converted}} linhas convertidas em {{policies}} políticas; {{unconvertible}} não puderam ser convertidas.",
+      "errors": {
+        "convertAll": "Falha ao converter tudo"
+      }
+    },
+    "pendingPolicies": {
+      "title": "Políticas com regras legadas",
+      "loading": "Carregando políticas…",
+      "empty": "Nenhuma política tem regras de alerta embutidas, monitoramentos ou automações acionadas por alerta.",
+      "error": "Não foi possível carregar as políticas com regras legadas. Atualize para tentar novamente."
+    },
+    "title": "Precisa de conversão",
+    "description": "Regras de alerta embutidas, monitoramentos de serviços/processos e automações acionadas por alerta desta política ainda não foram convertidos em monitores. A conversão aposenta a linha de origem no lugar; nada é excluído.",
+    "checking": "Verificando dispositivos…",
+    "devicesChecked_one": "{{count}} dispositivo verificado para comportamento idêntico.",
+    "devicesChecked_other": "{{count}} dispositivos verificados para comportamento idêntico.",
+    "blocked": {
+      "parent_unconverted": "Converta primeiro a política superior — as regras embutidas dela decidem o que esta política herda.",
+      "prerequisite_missing": "Uma correção pré-requisito ainda não foi implantada neste servidor. A conversão fica desabilitada até lá."
+    },
+    "refusedTitle_one": "Conversão recusada: {{count}} dispositivo mudaria de comportamento.",
+    "refusedTitle_other": "Conversão recusada: {{count}} dispositivos mudariam de comportamento.",
+    "convert": "Converter",
+    "convertAll_one": "Converter {{count}} convertível",
+    "convertAll_other": "Converter todos os {{count}} convertíveis",
+    "retire": "Aposentar",
+    "converted": "{{rows}} linhas legadas convertidas em {{monitors}} monitores.",
+    "retired": "{{name}} aposentado.",
+    "undone_one": "{{count}} conversão revertida.",
+    "undone_other": "{{count}} conversões revertidas.",
+    "openAlerts_one": "{{count}} alerta aberto passa para o monitor",
+    "openAlerts_other": "{{count}} alertas abertos passam para o monitor",
+    "sourceTables": {
+      "config_policy_alert_rules": "Regra de alerta embutida",
+      "config_policy_monitoring_watches": "Monitoramento de serviço/processo",
+      "alert_templates": "Modelo de alerta",
+      "automations": "Automação acionada por alerta",
+      "config_policy_automations": "Automação da política",
+      "network_monitors": "Verificação de rede"
+    },
+    "outcomes": {
+      "convertible": "Convertível",
+      "unconvertible": "Não pode ser convertido"
+    },
+    "roles": {
+      "primary": "Monitor principal",
+      "resource_cpu": "Monitor de CPU",
+      "resource_memory": "Monitor de memória",
+      "response": "Resposta"
+    },
+    "reasons": {
+      "unknown": "Não pode ser convertido ({{code}}).",
+      "nested_group": "A regra aninha grupos de condições; um monitor composto é um único grupo plano.",
+      "no_condition": "O modelo não tem condição avaliável e nunca disparou.",
+      "escalation_policy_axis": "A política de escalonamento pertence a uma organização, mas a política é de todo o parceiro.",
+      "custom": "Condições personalizadas não têm tipo de monitor.",
+      "process_count": "Condições de contagem de processos não têm tipo de monitor."
+    },
+    "errors": {
+      "preview": "Falha ao carregar a prévia da conversão",
+      "convert": "Falha ao converter",
+      "retire": "Falha ao aposentar",
+      "revert": "Falha ao reverter a conversão"
+    },
+    "ledger": {
+      "title": "Histórico de conversão",
+      "undo": "Desfazer",
+      "more": "Carregar mais",
+      "empty": "Nenhum histórico de conversão.",
+      "system": "Sistema",
+      "deadline": "Desfazer fica indisponível após W05d remover o avaliador de origem."
+    },
+    "errorCodes": {
+      "preview_stale": "A política mudou desde esta pré-visualização. Gere uma nova pré-visualização antes de converter.",
+      "preview_failed": "Não foi possível gerar a pré-visualização. Tente novamente mais tarde.",
+      "equivalence_delta": "Os monitores convertidos não se comportariam como as regras legadas em todos os dispositivos. Revise a pré-visualização antes de converter.",
+      "CONVERSION_PREREQUISITE_MISSING": "Uma atualização necessária da plataforma ainda não foi implantada, então a conversão não é possível.",
+      "blocked": "Esta conversão está bloqueada. Converta primeiro a política principal e tente novamente.",
+      "already_converted": "Estas regras já foram convertidas. Atualize para ver o estado atual.",
+      "partner_wide_denied": "É necessário acesso completo de parceiro para converter políticas de todo o parceiro.",
+      "policy_not_found": "A política não foi encontrada. Ela pode ter sido excluída.",
+      "source_not_found": "A regra legada não foi encontrada. Ela pode já ter sido convertida ou excluída.",
+      "conversion_not_found": "Essa conversão não foi encontrada.",
+      "conversion_revert_unavailable": "Esta conversão não pode mais ser desfeita.",
+      "invalid_reason": "Esse motivo de desativação não é válido.",
+      "unknown": "A conversão falhou. Tente novamente."
     }
   }
 }

@@ -1,3 +1,9 @@
+import { useHashState } from '@/lib/useHashState';
+import { useOrgStore } from '../../stores/orgStore';
+import ConversionLedger from './conversion/ConversionLedger';
+import ConversionPendingBanner from './conversion/ConversionPendingBanner';
+import PendingPoliciesList from './conversion/PendingPoliciesList';
+import LegacyRulesTable from './LegacyRulesTable';
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Plus, Trash2 } from 'lucide-react';
@@ -30,8 +36,14 @@ type MonitorRow = {
   attachmentCount?: number;
 };
 
+type ListView = 'all' | 'needs-conversion';
+
 export default function MonitorsListPage() {
   const { t } = useTranslation(['monitoring', 'common']);
+  const [view] = useHashState<ListView>('all', (hash) => (hash === 'needs-conversion' ? 'needs-conversion' : undefined));
+  const currentOrgId = useOrgStore((s) => s.currentOrgId);
+  const showView = (next: ListView) => { window.location.hash = next === 'all' ? '' : next; };
+  const [ledgerRevision, setLedgerRevision] = useState(0);
   const [rows, setRows] = useState<MonitorRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -46,6 +58,7 @@ export default function MonitorsListPage() {
       if (!response.ok) throw new Error(t('monitoring:list.errors.fetch'));
       const data = await response.json();
       setRows(Array.isArray(data?.data) ? data.data : []);
+      setLedgerRevision((n) => n + 1);
     } catch (err) {
       setError(err instanceof Error ? err.message : t('monitoring:list.errors.fetch'));
     } finally {
@@ -150,83 +163,111 @@ export default function MonitorsListPage() {
         </button>
       </div>
 
-      {error && (
-        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {error}
+      <ConversionPendingBanner orgId={currentOrgId} onReview={() => showView('needs-conversion')} onConverted={() => void fetchMonitors()} />
+      <div className="flex gap-2" role="tablist" aria-label={t('monitoring:list.views.ariaLabel')}>
+        {(['all', 'needs-conversion'] as const).map((v) => (
+          <button
+            key={v}
+            type="button"
+            role="tab"
+            aria-selected={view === v}
+            data-testid={`monitors-list-view-${v}`}
+            onClick={() => showView(v)}
+            className={`rounded-md border px-3 py-1.5 text-sm ${view === v ? 'bg-muted font-medium' : 'hover:bg-muted/50'}`}
+          >
+            {v === 'all' ? t('monitoring:list.views.all') : t('monitoring:list.views.needsConversion')}
+          </button>
+        ))}
+      </div>
+      {view === 'needs-conversion' ? (
+        <div className="space-y-6" data-testid="monitors-list-needs-conversion">
+          <PendingPoliciesList orgId={currentOrgId} />
+          <LegacyRulesTable onConverted={() => void fetchMonitors()} />
         </div>
+      ) : (
+        <>
+          {error && (
+            <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {error}
+            </div>
+          )}
+
+          {!loading && rows.length === 0 && !error && (
+            <div className="rounded-md border border-dashed p-6 text-center">
+              <p className="text-sm text-muted-foreground">{t('monitoring:list.empty')}</p>
+            </div>
+          )}
+
+          {rows.length > 0 && (
+            <ResponsiveTable
+              table={
+                <table className="w-full text-sm">
+                  <thead className="border-b bg-muted/40 text-left text-xs font-medium uppercase text-muted-foreground">
+                    <tr>
+                      <th className="px-4 py-3">{t('monitoring:list.columns.name')}</th>
+                      <th className="px-4 py-3">{t('monitoring:list.columns.kind')}</th>
+                      <th className="px-4 py-3">{t('monitoring:list.columns.severity')}</th>
+                      <th className="px-4 py-3">{t('monitoring:list.columns.deployedTo')}</th>
+                      <th className="px-4 py-3">{t('monitoring:list.columns.owner')}</th>
+                      <th className="px-4 py-3">{t('monitoring:list.columns.enabled')}</th>
+                      <th className="px-4 py-3" />
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {rows.map((row) => (
+                      <tr key={row.id} data-testid={`monitors-list-row-${row.id}`}>
+                        <td className="px-4 py-3">{renderName(row)}</td>
+                        <td className="px-4 py-3">{t(/* i18n-dynamic */ `monitoring:kinds.${row.kind}`)}</td>
+                        <td className="px-4 py-3">{t(/* i18n-dynamic */ `monitoring:severities.${row.severity}`)}</td>
+                        <td className="px-4 py-3">{deployedToLabel(row)}</td>
+                        <td className="px-4 py-3">
+                          <span className="inline-flex items-center gap-1.5">
+                            <ScopeBadge orgId={row.orgId} partnerId={row.partnerId} isSystem={false} />
+                            {row.builtinKey && <BuiltInBadge label={t('monitoring:list.builtIn')} hint={t('monitoring:list.builtInHint')} />}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3">{renderEnabledToggle(row)}</td>
+                        <td className="px-4 py-3 text-right">{renderActions(row)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              }
+              cards={
+                <>
+                  {rows.map((row) => (
+                    <DataCard key={row.id}>
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          {renderName(row)}
+                          <span className="inline-flex items-center gap-1.5">
+                            <ScopeBadge orgId={row.orgId} partnerId={row.partnerId} isSystem={false} />
+                            {row.builtinKey && <BuiltInBadge label={t('monitoring:list.builtIn')} hint={t('monitoring:list.builtInHint')} />}
+                          </span>
+                        </div>
+                        <CardField label={t('monitoring:list.columns.kind')}>
+                          {t(/* i18n-dynamic */ `monitoring:kinds.${row.kind}`)}
+                        </CardField>
+                        <CardField label={t('monitoring:list.columns.severity')}>
+                          {t(/* i18n-dynamic */ `monitoring:severities.${row.severity}`)}
+                        </CardField>
+                        <CardField label={t('monitoring:list.columns.deployedTo')}>{deployedToLabel(row)}</CardField>
+                        <CardActions>
+                          {renderEnabledToggle(row)}
+                          {renderActions(row)}
+                        </CardActions>
+                      </div>
+                    </DataCard>
+                  ))}
+                </>
+              }
+            />
+          )}
+
+        </>
       )}
 
-      {!loading && rows.length === 0 && !error && (
-        <div className="rounded-md border border-dashed p-6 text-center">
-          <p className="text-sm text-muted-foreground">{t('monitoring:list.empty')}</p>
-        </div>
-      )}
-
-      {rows.length > 0 && (
-        <ResponsiveTable
-          table={
-            <table className="w-full text-sm">
-              <thead className="border-b bg-muted/40 text-left text-xs font-medium uppercase text-muted-foreground">
-                <tr>
-                  <th className="px-4 py-3">{t('monitoring:list.columns.name')}</th>
-                  <th className="px-4 py-3">{t('monitoring:list.columns.kind')}</th>
-                  <th className="px-4 py-3">{t('monitoring:list.columns.severity')}</th>
-                  <th className="px-4 py-3">{t('monitoring:list.columns.deployedTo')}</th>
-                  <th className="px-4 py-3">{t('monitoring:list.columns.owner')}</th>
-                  <th className="px-4 py-3">{t('monitoring:list.columns.enabled')}</th>
-                  <th className="px-4 py-3" />
-                </tr>
-              </thead>
-              <tbody className="divide-y">
-                {rows.map((row) => (
-                  <tr key={row.id} data-testid={`monitors-list-row-${row.id}`}>
-                    <td className="px-4 py-3">{renderName(row)}</td>
-                    <td className="px-4 py-3">{t(/* i18n-dynamic */ `monitoring:kinds.${row.kind}`)}</td>
-                    <td className="px-4 py-3">{t(/* i18n-dynamic */ `monitoring:severities.${row.severity}`)}</td>
-                    <td className="px-4 py-3">{deployedToLabel(row)}</td>
-                    <td className="px-4 py-3">
-                      <span className="inline-flex items-center gap-1.5">
-                        <ScopeBadge orgId={row.orgId} partnerId={row.partnerId} isSystem={false} />
-                        {row.builtinKey && <BuiltInBadge label={t('monitoring:list.builtIn')} hint={t('monitoring:list.builtInHint')} />}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3">{renderEnabledToggle(row)}</td>
-                    <td className="px-4 py-3 text-right">{renderActions(row)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          }
-          cards={
-            <>
-              {rows.map((row) => (
-                <DataCard key={row.id}>
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between gap-2">
-                      {renderName(row)}
-                      <span className="inline-flex items-center gap-1.5">
-                        <ScopeBadge orgId={row.orgId} partnerId={row.partnerId} isSystem={false} />
-                        {row.builtinKey && <BuiltInBadge label={t('monitoring:list.builtIn')} hint={t('monitoring:list.builtInHint')} />}
-                      </span>
-                    </div>
-                    <CardField label={t('monitoring:list.columns.kind')}>
-                      {t(/* i18n-dynamic */ `monitoring:kinds.${row.kind}`)}
-                    </CardField>
-                    <CardField label={t('monitoring:list.columns.severity')}>
-                      {t(/* i18n-dynamic */ `monitoring:severities.${row.severity}`)}
-                    </CardField>
-                    <CardField label={t('monitoring:list.columns.deployedTo')}>{deployedToLabel(row)}</CardField>
-                    <CardActions>
-                      {renderEnabledToggle(row)}
-                      {renderActions(row)}
-                    </CardActions>
-                  </div>
-                </DataCard>
-              ))}
-            </>
-          }
-        />
-      )}
+      <ConversionLedger orgId={currentOrgId ?? undefined} revision={ledgerRevision} onChanged={() => void fetchMonitors()} />
 
       <ConfirmDialog
         open={!!pendingDelete}

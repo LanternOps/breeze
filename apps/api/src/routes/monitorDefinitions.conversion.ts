@@ -74,7 +74,7 @@ monitorConversionRoutes.get('/pending', read,
       orgId, partnerId: auth.partnerId,
       includePartnerWide: canManagePartnerWidePolicies(auth),
     });
-    return c.json({ data: { policies: counts.policies, rows: counts.rows } });
+    return c.json({ data: { policies: counts.policies, rows: counts.rows, pendingPolicies: counts.pendingPolicies } });
   });
 monitorConversionRoutes.get('/policies/:policyId/preview', read,
   zValidator('param', policyParam), async (c) => {

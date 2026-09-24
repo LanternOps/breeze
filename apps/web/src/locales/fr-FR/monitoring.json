@@ -8,6 +8,11 @@
     "monitorLabel": "Moniteur"
   },
   "list": {
+    "views": {
+      "ariaLabel": "Vues des moniteurs",
+      "all": "Tous les moniteurs",
+      "needsConversion": "Conversion requise"
+    },
     "title": "Moniteurs",
     "description": "Surveillez une condition, réagissez sur l’appareil, notifiez et escaladez lorsqu’elle persiste.",
     "new": "Nouveau moniteur",
@@ -384,6 +389,102 @@
         "skippedPaused": "Ignoré (réponses suspendues)",
         "skippedNoResponse": "Ignoré (aucune réponse configurée)"
       }
+    }
+  },
+  "conversion": {
+    "banner": {
+      "text": "{{rows}} règles héritées dans {{policies}} politiques n'ont pas encore été converties en moniteurs.",
+      "review": "Examiner",
+      "convertEverything": "Tout convertir…",
+      "confirmTitle": "Convertir toutes les règles héritées, surveillances et automatisations déclenchées par alerte de toutes vos politiques ?",
+      "confirmBody": "{{rows}} règles héritées dans {{policies}} politiques de tout le partenaire. Les lignes converties sont retirées sur place. Les autres restent à examiner ou retirer manuellement en W05c ; W05d convertit les restantes et retire celles non convertibles.",
+      "confirmRun": "Tout convertir",
+      "convertedAll": "{{converted}} lignes converties dans {{policies}} politiques ; {{unconvertible}} n'ont pas pu l'être.",
+      "errors": {
+        "convertAll": "Échec de la conversion globale"
+      }
+    },
+    "pendingPolicies": {
+      "title": "Politiques avec règles héritées",
+      "loading": "Chargement des politiques…",
+      "empty": "Aucune politique ne porte de règles d'alerte intégrées, de surveillances ou d'automatisations déclenchées par alerte.",
+      "error": "Impossible de charger les stratégies comportant des règles héritées. Actualisez pour réessayer."
+    },
+    "title": "Conversion requise",
+    "description": "Les règles d'alerte intégrées, les surveillances de services/processus et les automatisations déclenchées par alerte de cette politique n'ont pas encore été converties en moniteurs. La conversion retire la ligne source sur place ; rien n'est supprimé.",
+    "checking": "Vérification des appareils…",
+    "devicesChecked_one": "{{count}} appareil vérifié pour un comportement identique.",
+    "devicesChecked_other": "{{count}} appareils vérifiés pour un comportement identique.",
+    "blocked": {
+      "parent_unconverted": "Convertissez d'abord la politique parente : ses règles intégrées déterminent ce que cette politique hérite.",
+      "prerequisite_missing": "Un correctif prérequis n'est pas encore déployé sur ce serveur. La conversion est désactivée jusque-là."
+    },
+    "refusedTitle_one": "Conversion refusée : {{count}} appareil changerait de comportement.",
+    "refusedTitle_other": "Conversion refusée : {{count}} appareils changeraient de comportement.",
+    "convert": "Convertir",
+    "convertAll_one": "Convertir {{count}} convertible",
+    "convertAll_other": "Convertir les {{count}} convertibles",
+    "retire": "Retirer",
+    "converted": "{{rows}} lignes héritées converties en {{monitors}} moniteurs.",
+    "retired": "{{name}} retiré.",
+    "undone_one": "{{count}} conversion annulée.",
+    "undone_other": "{{count}} conversions annulées.",
+    "openAlerts_one": "{{count}} alerte ouverte passe au moniteur",
+    "openAlerts_other": "{{count}} alertes ouvertes passent au moniteur",
+    "sourceTables": {
+      "config_policy_alert_rules": "Règle d'alerte intégrée",
+      "config_policy_monitoring_watches": "Surveillance de service/processus",
+      "alert_templates": "Modèle d'alerte",
+      "automations": "Automatisation déclenchée par alerte",
+      "config_policy_automations": "Automatisation de politique",
+      "network_monitors": "Vérification réseau"
+    },
+    "outcomes": {
+      "convertible": "Conversion possible",
+      "unconvertible": "Non convertible"
+    },
+    "roles": {
+      "primary": "Moniteur",
+      "resource_cpu": "Moniteur CPU",
+      "resource_memory": "Moniteur mémoire",
+      "response": "Réponse"
+    },
+    "reasons": {
+      "unknown": "Non convertible ({{code}}).",
+      "nested_group": "La règle imbrique des groupes de conditions ; un moniteur composite est un seul groupe plat.",
+      "no_condition": "Le modèle n'a aucune condition évaluable et ne s'est jamais déclenché.",
+      "escalation_policy_axis": "La politique d'escalade appartient à une organisation alors que la politique est à l'échelle du partenaire.",
+      "custom": "Les conditions personnalisées n'ont pas de type de moniteur.",
+      "process_count": "Les conditions de nombre de processus n'ont pas de type de moniteur."
+    },
+    "errors": {
+      "preview": "Impossible de charger l'aperçu de conversion",
+      "convert": "Échec de la conversion",
+      "retire": "Échec du retrait",
+      "revert": "Impossible d'annuler la conversion"
+    },
+    "ledger": {
+      "title": "Historique des conversions",
+      "undo": "Annuler",
+      "more": "Charger plus",
+      "empty": "Aucun historique de conversion.",
+      "system": "Système",
+      "deadline": "L'annulation est indisponible après la suppression du moteur source par W05d."
+    },
+    "errorCodes": {
+      "preview_stale": "La stratégie a changé depuis cet aperçu. Générez un nouvel aperçu avant de convertir.",
+      "preview_failed": "L'aperçu n'a pas pu être généré. Réessayez plus tard.",
+      "equivalence_delta": "Les moniteurs convertis ne se comporteraient pas comme les règles héritées sur tous les appareils. Vérifiez l'aperçu avant de convertir.",
+      "CONVERSION_PREREQUISITE_MISSING": "Une mise à jour requise de la plateforme n'a pas encore été déployée ; la conversion est donc impossible.",
+      "blocked": "Cette conversion est bloquée. Convertissez d'abord la stratégie parente, puis réessayez.",
+      "already_converted": "Ces règles ont déjà été converties. Actualisez pour voir l'état actuel.",
+      "partner_wide_denied": "Un accès partenaire complet est requis pour convertir les stratégies à l'échelle du partenaire.",
+      "policy_not_found": "La stratégie est introuvable. Elle a peut-être été supprimée.",
+      "source_not_found": "La règle héritée est introuvable. Elle a peut-être déjà été convertie ou supprimée.",
+      "conversion_not_found": "Cette conversion est introuvable.",
+      "conversion_revert_unavailable": "Cette conversion ne peut plus être annulée.",
+      "invalid_reason": "Ce motif de retrait n'est pas valide.",
+      "unknown": "La conversion a échoué. Réessayez."
     }
   }
 }

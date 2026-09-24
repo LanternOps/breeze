@@ -838,6 +838,10 @@
         "legacyAlertRulesMovedToAlerts": "{{count}} ältere Alarmregel(n) von diesem Tab wurden in die Alarm-Funktion dieser Richtlinie verschoben. Die Überwachung speichert sie nicht mehr."
       },
       "monitorsTab": {
+        "agentCollectionTitle": "Agent-Erfassung",
+        "checkIntervalLabel": "Prüfintervall (Sekunden)",
+        "checkIntervalHint": "Wie oft Agenten unter dieser Richtlinie Dienst- und Prozessmonitore prüfen (10–3600).",
+        "checkIntervalInvalid": "Das Prüfintervall muss zwischen 10 und 3600 Sekunden liegen.",
         "attachMonitor": "Überwachung hinzufügen",
         "loadingMonitors": "Überwachungen werden geladen…",
         "noMoreMonitorsToAttach": "Keine weiteren Überwachungen zum Hinzufügen verfügbar",
@@ -853,7 +857,16 @@
           "title": "Empfohlene Monitore",
           "body": "Breeze liefert integrierte Monitore für CPU, Arbeitsspeicher, Datenträger und Patch-Compliance. Keiner ist dieser Richtlinie bisher zugeordnet.",
           "action": "Alle integrierten Monitore anhängen"
-        }
+        },
+        "inheritanceTitle": "Vererbte Monitore",
+        "inheritance": {
+          "cumulative": "Zu vererbten Monitoren hinzufügen",
+          "cumulativeHint": "Geräte erhalten die Monitore der übergeordneten Richtlinien plus diese.",
+          "replace": "Vererbte Monitore ersetzen",
+          "replaceHint": "Nur die Monitore dieser Richtlinie gelten; übergeordnete Zuordnungen werden ignoriert. Wird bei der Konvertierung gesetzt, um das Verhalten von Inline-Regeln zu erhalten."
+        },
+        "ignoredInherited_one": "{{count}} vererbter Monitor wird beim Ersetzen ignoriert:",
+        "ignoredInherited_other": "{{count}} vererbte Monitore werden beim Ersetzen ignoriert:"
       },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Windows-UAC-Aufforderungen zur Rechteerhöhung erfassen",

@@ -8,6 +8,11 @@
     "monitorLabel": "Monitor"
   },
   "list": {
+    "views": {
+      "ariaLabel": "Viste dei monitor",
+      "all": "Tutti i monitor",
+      "needsConversion": "Conversione necessaria"
+    },
     "title": "Monitor",
     "description": "Osserva una condizione, rispondi sul dispositivo, notifica ed esegui l'escalation quando continua a verificarsi.",
     "new": "Nuovo monitor",
@@ -384,6 +389,102 @@
         "skippedPaused": "Ignorato (risposte sospese)",
         "skippedNoResponse": "Ignorato (nessuna risposta configurata)"
       }
+    }
+  },
+  "conversion": {
+    "banner": {
+      "text": "{{rows}} regole legacy in {{policies}} policy non sono ancora state convertite in monitor.",
+      "review": "Esamina",
+      "convertEverything": "Converti tutto…",
+      "confirmTitle": "Convertire tutte le regole legacy, i controlli e le automazioni attivate da avvisi in tutte le policy?",
+      "confirmBody": "{{rows}} regole legacy in {{policies}} policy dell’intero partner. Le righe convertite vengono ritirate sul posto. Le altre restano da esaminare o ritirare manualmente in W05c; W05d converte le rimanenti e ritira quelle non convertibili.",
+      "confirmRun": "Converti tutto",
+      "convertedAll": "Convertite {{converted}} righe in {{policies}} policy; {{unconvertible}} non convertibili.",
+      "errors": {
+        "convertAll": "Conversione completa non riuscita"
+      }
+    },
+    "pendingPolicies": {
+      "title": "Policy con regole legacy",
+      "loading": "Caricamento delle policy…",
+      "empty": "Nessuna policy contiene regole di avviso inline, controlli o automazioni attivate da avvisi.",
+      "error": "Impossibile caricare i criteri con regole legacy. Aggiorna per riprovare."
+    },
+    "title": "Conversione necessaria",
+    "description": "Le regole di avviso inline, i controlli di servizi/processi e le automazioni attivate da avvisi di questa policy non sono ancora stati convertiti in monitor. La conversione ritira la riga di origine sul posto; nulla viene eliminato.",
+    "checking": "Verifica dei dispositivi…",
+    "devicesChecked_one": "{{count}} dispositivo verificato per un comportamento identico.",
+    "devicesChecked_other": "{{count}} dispositivi verificati per un comportamento identico.",
+    "blocked": {
+      "parent_unconverted": "Converti prima la policy superiore: le sue regole inline decidono cosa eredita questa policy.",
+      "prerequisite_missing": "Una correzione prerequisita non è ancora distribuita su questo server. La conversione è disabilitata fino ad allora."
+    },
+    "refusedTitle_one": "Conversione rifiutata: {{count}} dispositivo cambierebbe comportamento.",
+    "refusedTitle_other": "Conversione rifiutata: {{count}} dispositivi cambierebbero comportamento.",
+    "convert": "Converti",
+    "convertAll_one": "Converti {{count}} convertibile",
+    "convertAll_other": "Converti tutti i {{count}} convertibili",
+    "retire": "Ritira",
+    "converted": "Convertite {{rows}} righe legacy in {{monitors}} monitor.",
+    "retired": "{{name}} ritirato.",
+    "undone_one": "Annullata {{count}} conversione.",
+    "undone_other": "Annullate {{count}} conversioni.",
+    "openAlerts_one": "{{count}} avviso aperto passa al monitor",
+    "openAlerts_other": "{{count}} avvisi aperti passano al monitor",
+    "sourceTables": {
+      "config_policy_alert_rules": "Regola di avviso inline",
+      "config_policy_monitoring_watches": "Controllo servizio/processo",
+      "alert_templates": "Modello di avviso",
+      "automations": "Automazione attivata da avviso",
+      "config_policy_automations": "Automazione della policy",
+      "network_monitors": "Controllo di rete"
+    },
+    "outcomes": {
+      "convertible": "Convertibile",
+      "unconvertible": "Non convertibile"
+    },
+    "roles": {
+      "primary": "Monitor principale",
+      "resource_cpu": "Monitor CPU",
+      "resource_memory": "Monitor memoria",
+      "response": "Risposta"
+    },
+    "reasons": {
+      "unknown": "Non convertibile ({{code}}).",
+      "nested_group": "La regola annida gruppi di condizioni; un monitor composito è un unico gruppo piatto.",
+      "no_condition": "Il modello non ha una condizione valutabile e non si è mai attivato.",
+      "escalation_policy_axis": "La policy di escalation appartiene a un'organizzazione ma la policy è a livello di partner.",
+      "custom": "Le condizioni personalizzate non hanno un tipo di monitor.",
+      "process_count": "Le condizioni sul numero di processi non hanno un tipo di monitor."
+    },
+    "errors": {
+      "preview": "Impossibile caricare l'anteprima della conversione",
+      "convert": "Conversione non riuscita",
+      "retire": "Ritiro non riuscito",
+      "revert": "Impossibile annullare la conversione"
+    },
+    "ledger": {
+      "title": "Cronologia conversioni",
+      "undo": "Annulla",
+      "more": "Carica altro",
+      "empty": "Nessuna conversione precedente.",
+      "system": "Sistema",
+      "deadline": "Annullamento non disponibile dopo la rimozione del motore di origine in W05d."
+    },
+    "errorCodes": {
+      "preview_stale": "Il criterio è cambiato dopo questa anteprima. Genera una nuova anteprima prima di convertire.",
+      "preview_failed": "Impossibile generare l'anteprima. Riprova più tardi.",
+      "equivalence_delta": "I monitor convertiti non si comporterebbero come le regole legacy su tutti i dispositivi. Controlla l'anteprima prima di convertire.",
+      "CONVERSION_PREREQUISITE_MISSING": "Un aggiornamento necessario della piattaforma non è ancora stato distribuito, quindi la conversione non è possibile.",
+      "blocked": "Questa conversione è bloccata. Converti prima il criterio padre, poi riprova.",
+      "already_converted": "Queste regole sono già state convertite. Aggiorna per vedere lo stato attuale.",
+      "partner_wide_denied": "Per convertire i criteri a livello di partner è necessario l'accesso completo al partner.",
+      "policy_not_found": "Criterio non trovato. Potrebbe essere stato eliminato.",
+      "source_not_found": "Regola legacy non trovata. Potrebbe essere già stata convertita o eliminata.",
+      "conversion_not_found": "Conversione non trovata.",
+      "conversion_revert_unavailable": "Questa conversione non può più essere annullata.",
+      "invalid_reason": "Il motivo di ritiro non è valido.",
+      "unknown": "Conversione non riuscita. Riprova."
     }
   }
 }

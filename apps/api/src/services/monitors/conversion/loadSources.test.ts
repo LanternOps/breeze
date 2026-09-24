@@ -84,8 +84,12 @@ describe('loadPolicySources', () => {
 
 describe('countPendingConversions', () => {
   it('deduplicates policies and sums the three grouped row counts and standalone rules', async () => {
-    reset([[{ policyId: 'p1', count: 2 }], [{ policyId: 'p1', count: 3 }, { policyId: 'p2', count: 1 }], [{ policyId: 'p2', count: 4 }], [{ count: 5 }]]);
-    expect(await countPendingConversions({ orgId: 'o1', partnerId: 'p1', includePartnerWide: true })).toEqual({ policies: 2, rows: 10, standaloneRules: 5 });
+    reset([[{ policyId: 'p1', policyName: 'Zulu', count: 2 }], [{ policyId: 'p1', policyName: 'Zulu', count: 3 }, { policyId: 'p2', policyName: 'Alpha', count: 1 }], [{ policyId: 'p2', policyName: 'Alpha', count: 4 }], [{ count: 5 }]]);
+    expect(await countPendingConversions({ orgId: 'o1', partnerId: 'p1', includePartnerWide: true })).toEqual({
+      policies: 2, rows: 10, standaloneRules: 5,
+      // Same rows as the count, deduplicated and sorted by name (#6644 review 5).
+      pendingPolicies: [{ id: 'p2', name: 'Alpha' }, { id: 'p1', name: 'Zulu' }],
+    });
     for (const index of [0, 1, 2, 3]) {
       const predicate = predicates(index).at(-1)!;
       expect(predicate.sql).toContain('"retired_at" is null');
@@ -98,7 +102,7 @@ describe('countPendingConversions', () => {
   });
   it('does not include partner-wide rows for org scope without opt-in', async () => {
     reset([[], [], [], []]);
-    expect(await countPendingConversions({ orgId: 'o1', partnerId: 'p1', includePartnerWide: false })).toEqual({ policies: 0, rows: 0, standaloneRules: 0 });
+    expect(await countPendingConversions({ orgId: 'o1', partnerId: 'p1', includePartnerWide: false })).toEqual({ policies: 0, rows: 0, standaloneRules: 0, pendingPolicies: [] });
     for (const query of queries) {
       const compiled = dialect.sqlToQuery(query.predicates.at(-1) as SQL);
       expect(compiled.params).not.toContain('p1');
@@ -117,7 +121,7 @@ describe('countPendingConversions', () => {
   });
   it('fails closed when neither owner axis is provided', async () => {
     reset([[], [], [], []]);
-    expect(await countPendingConversions({ orgId: null, partnerId: null, includePartnerWide: true })).toEqual({ policies: 0, rows: 0, standaloneRules: 0 });
+    expect(await countPendingConversions({ orgId: null, partnerId: null, includePartnerWide: true })).toEqual({ policies: 0, rows: 0, standaloneRules: 0, pendingPolicies: [] });
     for (const query of queries) expect(dialect.sqlToQuery(query.predicates.at(-1) as SQL).sql).toContain('false');
   });
 });

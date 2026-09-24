@@ -102,7 +102,7 @@ export async function loadPolicySources(policyId: string, executor: DbExecutor =
 export async function countPendingConversions(
   scope: { orgId: string | null; partnerId: string | null; includePartnerWide: boolean },
   executor: DbExecutor = db,
-): Promise<PendingConversionCounts & { standaloneRules: number }> {
+): Promise<PendingConversionCounts & { standaloneRules: number; pendingPolicies: Array<{ id: string; name: string }> }> {
   const ownership = (table: typeof configurationPolicies | typeof alertRules) => {
     const orgCondition = scope.orgId
       ? eq(table.orgId, scope.orgId)
@@ -114,29 +114,35 @@ export async function countPendingConversions(
       : orgCondition;
   };
   const policyCondition = and(ownership(configurationPolicies), eq(configurationPolicies.status, 'active'));
-  const selection = { policyId: configurationPolicies.id, count: sql<number>`count(*)::int` };
+  const selection = { policyId: configurationPolicies.id, policyName: configurationPolicies.name, count: sql<number>`count(*)::int` };
   const ruleCounts = await executor.select(selection).from(configPolicyAlertRules)
     .innerJoin(configPolicyFeatureLinks, eq(configPolicyAlertRules.featureLinkId, configPolicyFeatureLinks.id))
     .innerJoin(configurationPolicies, eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id))
     .where(and(policyCondition, isNull(configPolicyAlertRules.retiredAt)))
-    .groupBy(configurationPolicies.id);
+    .groupBy(configurationPolicies.id, configurationPolicies.name);
   const watchCounts = await executor.select(selection).from(configPolicyMonitoringWatches)
     .innerJoin(configPolicyMonitoringSettings, eq(configPolicyMonitoringWatches.settingsId, configPolicyMonitoringSettings.id))
     .innerJoin(configPolicyFeatureLinks, eq(configPolicyMonitoringSettings.featureLinkId, configPolicyFeatureLinks.id))
     .innerJoin(configurationPolicies, eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id))
     .where(and(policyCondition, isNull(configPolicyMonitoringWatches.retiredAt)))
-    .groupBy(configurationPolicies.id);
+    .groupBy(configurationPolicies.id, configurationPolicies.name);
   const automationCounts = await executor.select(selection).from(configPolicyAutomations)
     .innerJoin(configPolicyFeatureLinks, eq(configPolicyAutomations.featureLinkId, configPolicyFeatureLinks.id))
     .innerJoin(configurationPolicies, eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id))
     .where(and(policyCondition, isNull(configPolicyAutomations.retiredAt),
       eq(configPolicyAutomations.triggerType, 'event'), eq(configPolicyAutomations.eventType, 'alert.triggered')))
-    .groupBy(configurationPolicies.id);
+    .groupBy(configurationPolicies.id, configurationPolicies.name);
   const [standalone] = await executor.select({ count: sql<number>`count(*)::int` }).from(alertRules)
     .where(and(ownership(alertRules), isNull(alertRules.managedByMonitorId), isNull(alertRules.retiredAt)));
   const counts = [...ruleCounts, ...watchCounts, ...automationCounts];
+  // The list comes from the same rows as the count, so a surface that shows
+  // both (banner + pending-policies list) can never disagree.
+  const names = new Map(counts.map((row) => [row.policyId, row.policyName] as const));
+  const pendingPolicies = [...names].map(([id, name]) => ({ id, name }))
+    .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
   return {
-    policies: new Set(counts.map((row) => row.policyId)).size,
+    policies: names.size,
+    pendingPolicies,
     rows: counts.reduce((sum, row) => sum + row.count, 0),
     standaloneRules: standalone?.count ?? 0,
   };

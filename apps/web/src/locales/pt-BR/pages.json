@@ -1,5 +1,6 @@
 {
   "titles": {
+    "adminMonitorConversion": "Conversão de alertas legados",
     "notFound": "Página não encontrada",
     "serverError": "Algo deu errado",
     "acceptInvite": "Aceitar convite",

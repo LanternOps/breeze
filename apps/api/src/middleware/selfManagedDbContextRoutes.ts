@@ -50,6 +50,14 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // second pooled connection. With the request's ambient transaction still
   // held that deadlocks the pool at concurrency >= pool size, so these routes
   // own their context and write their audit after the conversion commits.
+  // Platform-admin hosted conversion sweep (#6371): previewPartnerConversion /
+  // convertPartnerLegacy open their own serializable transaction through
+  // inCallerTransaction, which takes a second pooled connection. runOutsideDbContext
+  // only silences the held-context tripwire — it does NOT release the request's
+  // connection — so without this the admin sweep reproduces the #1105 / #2417
+  // double-hold that D30 closed for the tenant-facing routes.
+  { method: 'POST', pattern: /^\/api\/v1\/admin\/monitor-conversion\/partners\/[^/]+\/(preview|convert)\/?$/ },
+
   // Only the entry points that open their OWN isolated transaction. /ledger and
   // /pending are ordinary reads and must keep the request's context.
   { method: 'GET', pattern: /^\/api\/v1\/monitor-definitions\/conversion\/policies\/[^/]+\/preview\/?$/ },

@@ -30,6 +30,11 @@ vi.mock('./featureTabs/OneDriveHelperTab', () => ({
 vi.mock('./featureTabs/BackupTab', () => ({
   default: () => <div data-testid="backup-tab-editor">Backup editor</div>,
 }));
+vi.mock('./featureTabs/MonitorsTab', () => ({
+  default: (props: { siblingLinks?: Array<{ featureType: string }> }) => (
+    <div data-testid="monitors-tab-editor" data-sibling-types={(props.siblingLinks ?? []).map((l) => l.featureType).join(',')} />
+  ),
+}));
 vi.mock('./AssignmentsTab', () => ({ default: () => <div data-testid="assignments-tab" /> }));
 
 import ConfigPolicyDetailPage from './ConfigPolicyDetailPage';
@@ -240,6 +245,17 @@ describe('ConfigPolicyDetailPage — URL hash deep-linking', () => {
   });
   afterEach(() => {
     window.location.hash = '';
+  });
+
+  it('passes every feature link on the policy to the Monitors tab as siblingLinks (W05c2)', async () => {
+    mockPolicy({ orgId: 'org-1', partnerId: null }, [
+      { id: 'l-mon', featureType: 'monitors', featurePolicyId: null, inlineSettings: { items: [] } },
+      { id: 'l-svc', featureType: 'monitoring', featurePolicyId: null, inlineSettings: { checkIntervalSeconds: 60, watches: [] } },
+    ]);
+    window.location.hash = '#monitors';
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    const tab = await screen.findByTestId('monitors-tab-editor');
+    expect(tab.getAttribute('data-sibling-types')).toBe('monitors,monitoring');
   });
 
   it('selects a feature tab from the initial hash (#patch)', async () => {

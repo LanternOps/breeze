@@ -8,6 +8,11 @@
     "monitorLabel": "Monitor"
   },
   "list": {
+    "views": {
+      "ariaLabel": "Vistas de monitores",
+      "all": "Todos los monitores",
+      "needsConversion": "Requiere conversión"
+    },
     "title": "Monitores",
     "description": "Observe una condición, responda en el dispositivo, notifique y escale cuando siga ocurriendo.",
     "new": "Nuevo monitor",
@@ -384,6 +389,102 @@
         "skippedPaused": "Omitido (respuestas en pausa)",
         "skippedNoResponse": "Omitido (sin respuesta configurada)"
       }
+    }
+  },
+  "conversion": {
+    "banner": {
+      "text": "{{rows}} reglas heredadas en {{policies}} políticas aún no se convirtieron en monitores.",
+      "review": "Revisar",
+      "convertEverything": "Convertir todo…",
+      "confirmTitle": "¿Convertir todas las reglas heredadas, vigilancias y automatizaciones activadas por alertas de todas sus políticas?",
+      "confirmBody": "{{rows}} reglas heredadas en {{policies}} políticas de todo el partner. Las filas convertidas se retiran en su lugar. Las demás quedan para revisión o retiro manual en W05c; W05d convierte las restantes y retira las que no puede convertir.",
+      "confirmRun": "Convertir todo",
+      "convertedAll": "Se convirtieron {{converted}} filas en {{policies}} políticas; {{unconvertible}} no se pudieron convertir.",
+      "errors": {
+        "convertAll": "No se pudo convertir todo"
+      }
+    },
+    "pendingPolicies": {
+      "title": "Políticas con reglas heredadas",
+      "loading": "Cargando políticas…",
+      "empty": "Ninguna política tiene reglas de alerta en línea, vigilancias ni automatizaciones activadas por alertas.",
+      "error": "No se pudieron cargar las políticas con reglas heredadas. Actualiza para volver a intentarlo."
+    },
+    "title": "Requiere conversión",
+    "description": "Las reglas de alerta en línea, las vigilancias de servicios/procesos y las automatizaciones activadas por alertas de esta política aún no se convirtieron en monitores. Convertir retira la fila de origen en su lugar; no se elimina nada.",
+    "checking": "Comprobando dispositivos…",
+    "devicesChecked_one": "{{count}} dispositivo comprobado para un comportamiento idéntico.",
+    "devicesChecked_other": "{{count}} dispositivos comprobados para un comportamiento idéntico.",
+    "blocked": {
+      "parent_unconverted": "Convierta primero la política superior: sus reglas en línea deciden lo que hereda esta política.",
+      "prerequisite_missing": "Una corrección previa aún no está implementada en este servidor. La conversión está deshabilitada hasta entonces."
+    },
+    "refusedTitle_one": "Conversión rechazada: {{count}} dispositivo cambiaría de comportamiento.",
+    "refusedTitle_other": "Conversión rechazada: {{count}} dispositivos cambiarían de comportamiento.",
+    "convert": "Convertir",
+    "convertAll_one": "Convertir {{count}} convertible",
+    "convertAll_other": "Convertir los {{count}} convertibles",
+    "retire": "Retirar",
+    "converted": "Se convirtieron {{rows}} filas heredadas en {{monitors}} monitores.",
+    "retired": "Se retiró {{name}}.",
+    "undone_one": "Se revirtió {{count}} conversión.",
+    "undone_other": "Se revirtieron {{count}} conversiones.",
+    "openAlerts_one": "{{count}} alerta abierta pasa al monitor",
+    "openAlerts_other": "{{count}} alertas abiertas pasan al monitor",
+    "sourceTables": {
+      "config_policy_alert_rules": "Regla de alerta en línea",
+      "config_policy_monitoring_watches": "Vigilancia de servicio/proceso",
+      "alert_templates": "Plantilla de alerta",
+      "automations": "Automatización activada por alerta",
+      "config_policy_automations": "Automatización de política",
+      "network_monitors": "Comprobación de red"
+    },
+    "outcomes": {
+      "convertible": "Se puede convertir",
+      "unconvertible": "No se puede convertir"
+    },
+    "roles": {
+      "primary": "Monitor principal",
+      "resource_cpu": "Monitor de CPU",
+      "resource_memory": "Monitor de memoria",
+      "response": "Respuesta"
+    },
+    "reasons": {
+      "unknown": "No se puede convertir ({{code}}).",
+      "nested_group": "La regla anida grupos de condiciones; un monitor compuesto es un solo grupo plano.",
+      "no_condition": "La plantilla no tiene una condición evaluable y nunca se activó.",
+      "escalation_policy_axis": "La política de escalamiento pertenece a una organización, pero la política es de todo el partner.",
+      "custom": "Las condiciones personalizadas no tienen tipo de monitor.",
+      "process_count": "Las condiciones de cantidad de procesos no tienen tipo de monitor."
+    },
+    "errors": {
+      "preview": "No se pudo cargar la vista previa de conversión",
+      "convert": "No se pudo convertir",
+      "retire": "No se pudo retirar",
+      "revert": "No se pudo revertir la conversión"
+    },
+    "ledger": {
+      "title": "Historial de conversión",
+      "undo": "Deshacer",
+      "more": "Cargar más",
+      "empty": "No hay historial de conversión.",
+      "system": "Sistema",
+      "deadline": "Deshacer no está disponible cuando W05d elimina el evaluador de origen."
+    },
+    "errorCodes": {
+      "preview_stale": "La política cambió desde esta vista previa. Genera otra vista previa antes de convertir.",
+      "preview_failed": "No se pudo generar la vista previa. Inténtalo más tarde.",
+      "equivalence_delta": "Los monitores convertidos no se comportarían como las reglas heredadas en todos los dispositivos. Revisa la vista previa antes de convertir.",
+      "CONVERSION_PREREQUISITE_MISSING": "Aún no se implementó una actualización necesaria de la plataforma, así que no se puede convertir.",
+      "blocked": "Esta conversión está bloqueada. Convierte primero la política principal y vuelve a intentarlo.",
+      "already_converted": "Estas reglas ya se convirtieron. Actualiza para ver el estado actual.",
+      "partner_wide_denied": "Se requiere acceso completo de partner para convertir políticas de todo el partner.",
+      "policy_not_found": "No se encontró la política. Es posible que se haya eliminado.",
+      "source_not_found": "No se encontró la regla heredada. Es posible que ya se haya convertido o eliminado.",
+      "conversion_not_found": "No se encontró esa conversión.",
+      "conversion_revert_unavailable": "Esta conversión ya no se puede deshacer.",
+      "invalid_reason": "Ese motivo de retiro no es válido.",
+      "unknown": "La conversión falló. Vuelve a intentarlo."
     }
   }
 }
