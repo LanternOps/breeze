@@ -8,7 +8,12 @@ const TICKET_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const ENTRY_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const PRIOR_ENTRY_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 
-type AuthState = { accessibleOrgIds: string[] | null; manageBilling?: boolean };
+type AuthState = {
+  accessibleOrgIds: string[] | null;
+  manageBilling?: boolean;
+  billingProfilesRead?: boolean;
+  deniedCapabilities?: string[];
+};
 
 const { authRef, hoisted } = vi.hoisted(() => ({
   authRef: { current: { accessibleOrgIds: null as string[] | null } as AuthState },
@@ -17,6 +22,7 @@ const { authRef, hoisted } = vi.hoisted(() => ({
     startTimer: vi.fn(),
     stopTimer: vi.fn(),
     createTimeEntry: vi.fn(),
+    listWorkTypes: vi.fn(),
   },
 }));
 
@@ -31,13 +37,21 @@ vi.mock('../../middleware/officeAddinTechAuth', () => ({
       user: { email: 'tech@partner.example', name: 'Tech Person' },
       accessibleOrgIds,
       partnerOrgAccess: accessibleOrgIds === null ? 'all' : 'selected',
-      permissions: { permissions: authRef.current.manageBilling ? [{ resource: 'time_entries', action: 'manage_billing' }] : [] },
+      permissions: {
+        permissions: [
+          ...(authRef.current.manageBilling ? [{ resource: 'time_entries', action: 'manage_billing' }] : []),
+          ...(authRef.current.billingProfilesRead ? [{ resource: 'billing_profiles', action: 'read' }] : []),
+        ],
+      },
       canAccessOrg: (orgId: string) => accessibleOrgIds === null || accessibleOrgIds.includes(orgId),
       canAccessSite: () => true,
     });
     return next();
   }),
-  requireAddinCapability: vi.fn(() => async (_c: any, next: any) => next()),
+  // Honours `deniedCapabilities` so a test can prove WHICH capability a route
+  // is registered behind, not merely that some middleware ran.
+  requireAddinCapability: vi.fn((cap: string) => async (c: any, next: any) =>
+    authRef.current.deniedCapabilities?.includes(cap) ? c.json({ error: 'Forbidden' }, 403) : next()),
 }));
 
 vi.mock('../../services/timeEntryService', async () => {
@@ -52,6 +66,10 @@ vi.mock('../../services/timeEntryService', async () => {
     createTimeEntry: hoisted.createTimeEntry,
   };
 });
+
+vi.mock('../../services/workTypeService', () => ({
+  listWorkTypes: hoisted.listWorkTypes,
+}));
 
 import { officeAddinTimeRoutes } from './time';
 import { TimeEntryServiceError } from '../../services/timeEntryService';
@@ -329,5 +347,90 @@ describe('billing override actor plumbing', () => {
     expect(res.status).toBe(201);
     expect(hoisted.createTimeEntry.mock.calls[0]?.[0]).not.toHaveProperty('hourlyRate');
     expect(hoisted.createTimeEntry.mock.calls[0]?.[1]).toMatchObject({ manageBilling: false, manageAll: false });
+  });
+});
+
+describe('work type on add-in time writes (#4628 W04)', () => {
+  const WORK_TYPE_ID = '44444444-4444-4444-8444-444444444444';
+  const LOG_BASE = {
+    ticketId: TICKET_ID,
+    startedAt: '2026-06-11T09:00:00Z',
+    endedAt: '2026-06-11T09:30:00Z',
+    description: 'On-site fix',
+  };
+  const post = (path: string, body: unknown) =>
+    makeApp().request(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  it('POST /time/log passes workTypeId through to createTimeEntry', async () => {
+    hoisted.createTimeEntry.mockResolvedValue({ id: ENTRY_ID, ticketId: TICKET_ID });
+    const res = await post('/time/log', { ...LOG_BASE, workTypeId: WORK_TYPE_ID });
+    expect(res.status).toBe(201);
+    expect(hoisted.createTimeEntry.mock.calls[0]?.[0]).toMatchObject({ workTypeId: WORK_TYPE_ID });
+  });
+
+  it('omitting workTypeId leaves the field OFF the service input, so the category default applies (§3.1)', async () => {
+    hoisted.createTimeEntry.mockResolvedValue({ id: ENTRY_ID, ticketId: TICKET_ID });
+    await post('/time/log', LOG_BASE);
+    expect(hoisted.createTimeEntry.mock.calls[0]?.[0]).not.toHaveProperty('workTypeId');
+  });
+
+  it('a non-uuid workTypeId is a 400, not a silently dropped field', async () => {
+    const res = await post('/time/log', { ...LOG_BASE, workTypeId: 'Remote' });
+    expect(res.status).toBe(400);
+    expect(hoisted.createTimeEntry).not.toHaveBeenCalled();
+  });
+
+  it('a null workTypeId is a 400: the add-in offers a work type or the default, never "none"', async () => {
+    const res = await post('/time/log', { ...LOG_BASE, workTypeId: null });
+    expect(res.status).toBe(400);
+  });
+
+  it('POST /time/start passes workTypeId through; timers are priced at START (section 3.7)', async () => {
+    hoisted.getRunningTimer.mockResolvedValue(null);
+    hoisted.startTimer.mockResolvedValue({ id: ENTRY_ID, ticketId: TICKET_ID });
+    const res = await post('/time/start', { ticketId: TICKET_ID, workTypeId: WORK_TYPE_ID });
+    expect(res.status).toBe(201);
+    expect(hoisted.startTimer.mock.calls[0]?.[0]).toMatchObject({ workTypeId: WORK_TYPE_ID });
+    expect(hoisted.startTimer.mock.calls[0]?.[1]).toMatchObject({ manageBilling: false, manageAll: false });
+  });
+
+  it('POST /time/start without a workTypeId leaves it off the service input', async () => {
+    hoisted.getRunningTimer.mockResolvedValue(null);
+    hoisted.startTimer.mockResolvedValue({ id: ENTRY_ID, ticketId: TICKET_ID });
+    await post('/time/start', { ticketId: TICKET_ID });
+    expect(hoisted.startTimer.mock.calls[0]?.[0]).not.toHaveProperty('workTypeId');
+  });
+});
+
+describe('GET /time/work-types (#4628 W04)', () => {
+  it("returns the partner's active work types as id + name only", async () => {
+    authRef.current.billingProfilesRead = true;
+    hoisted.listWorkTypes.mockResolvedValue([
+      { id: 'wt-1', name: 'Remote', isActive: true, sortOrder: 1, partnerId: PARTNER_ID },
+    ]);
+    const res = await makeApp().request('/time/work-types');
+    expect(res.status).toBe(200);
+    // Narrow projection on purpose: the add-in needs a label, not the card.
+    expect(await res.json()).toEqual({ workTypes: [{ id: 'wt-1', name: 'Remote' }] });
+    // The principal's own partner, active only; never a caller-supplied partner.
+    expect(hoisted.listWorkTypes).toHaveBeenCalledWith(PARTNER_ID);
+  });
+
+  it('is registered behind the time-read capability', async () => {
+    authRef.current.billingProfilesRead = true;
+    authRef.current.deniedCapabilities = ['time-read'];
+    const res = await makeApp().request('/time/work-types');
+    expect(res.status).toBe(403);
+    expect(hoisted.listWorkTypes).not.toHaveBeenCalled();
+  });
+
+  it('403s a technician without billing_profiles:read, the same gate as the web picker', async () => {
+    const res = await makeApp().request('/time/work-types');
+    expect(res.status).toBe(403);
+    expect(hoisted.listWorkTypes).not.toHaveBeenCalled();
   });
 });

@@ -329,6 +329,7 @@
     "exportFailed": "Falha na exportação",
     "title": "Exportação de faturáveis",
     "description": "Lançamentos de tempo e peças faturáveis em CSV (até 366 dias). Inclui o status de aprovação.",
+    "columnsNote": "Inclui o tipo de trabalho e os minutos cobertos pelo contrato de cada lançamento de tempo.",
     "from": "De",
     "to": "Até",
     "allOrganizations": "Todas as organizações",

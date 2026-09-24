@@ -105,6 +105,7 @@ export default defineConfig({
               label: 'Billing & Invoicing',
               items: [
                 { slug: 'features/product-catalog' },
+                { slug: 'features/rates' },
                 { slug: 'features/invoices' },
                 { slug: 'features/quotes' },
                 { slug: 'features/contracts' },

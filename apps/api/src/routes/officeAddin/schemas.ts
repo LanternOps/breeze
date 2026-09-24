@@ -87,6 +87,13 @@ export const draftSchema = z.object({
 export const addinStartTimerSchema = z.object({
   ticketId: z.string().uuid(),
   description: z.string().max(10_000).optional(),
+  /**
+   * #4628 W04. OMIT to let the server apply the ticket category's default
+   * work type at stamp time (§3.1) — what kept pre-W04 add-in builds priced
+   * correctly and still the right behaviour for "I didn't say". No `null`:
+   * the add-in offers a work type or the default, never "explicitly none".
+   */
+  workTypeId: z.string().uuid().optional(),
 });
 
 /** Body of POST /office-addin/time/stop (Task 18). Same shape as the web `stopTimerSchema`. */
@@ -108,6 +115,13 @@ export const addinLogTimeSchema = z
     endedAt: z.coerce.date(),
     description: z.string().min(1).max(10_000),
     isBillable: z.boolean().optional(),
+    /**
+     * #4628 W04. OMIT to let the server apply the ticket category's default
+     * work type at stamp time (§3.1) — what kept pre-W04 add-in builds priced
+     * correctly and still the right behaviour for "I didn't say". No `null`:
+     * the add-in offers a work type or the default, never "explicitly none".
+     */
+    workTypeId: z.string().uuid().optional(),
   })
   .refine((v) => v.endedAt.getTime() > v.startedAt.getTime(), {
     message: 'endedAt must be after startedAt',

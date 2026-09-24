@@ -60,6 +60,10 @@ Line items can come from several sources: catalog items, bundles, tracked time e
   If your catalog is empty, the editor links straight to **Product Catalog** so you can add the items you sell.
 </Aside>
 
+### Time-entry line quantities
+
+A line pulled in from a time entry bills the entry's **billed** quantity, not necessarily the time actually worked -- the entry's [billing profile](/features/rates/) can apply a minimum or round up to a billing increment first. When the two differ, the line's description states both, for example "On-site -- 0.50 h worked, 1.00 h billed." There is still exactly one invoice line per time entry.
+
 ### Line grouping by ticket and category
 
 Wherever an invoice is rendered -- the web editor and document view, the generated PDF, the authenticated customer portal, and the public invoice link -- line items are grouped under the ticket they came from, then by category within that ticket (Labour, Materials, Recurring, and so on), instead of a flat list. This makes it clear to the customer which charges belong to which piece of work. Lines with no ticket are grouped together at the top.

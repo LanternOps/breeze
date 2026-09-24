@@ -329,6 +329,7 @@
     "exportFailed": "Exportación fallida",
     "title": "Exportación de facturas",
     "description": "Entradas de tiempos y piezas facturables como CSV (hasta 366 días). Incluye estado de aprobación.",
+    "columnsNote": "Incluye el tipo de trabajo y los minutos cubiertos por el contrato de cada registro de tiempo.",
     "from": "De",
     "to": "A",
     "allOrganizations": "Todas las organizaciones",

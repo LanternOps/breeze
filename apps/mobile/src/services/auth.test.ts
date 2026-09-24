@@ -50,7 +50,17 @@ vi.mock('./localTimer', () => ({
   clearLocalTimer: (...a: unknown[]) => localTimer.clearLocalTimer(...a),
 }));
 
+// Work types are partner-owned labels cached in memory (#4628 W04). The next
+// account on this device must not be offered the previous partner's list.
+const workTypes = {
+  clearWorkTypeCache: vi.fn(),
+};
+vi.mock('./workTypes', () => ({
+  clearWorkTypeCache: (...a: unknown[]) => workTypes.clearWorkTypeCache(...a),
+}));
+
 beforeEach(() => {
+  workTypes.clearWorkTypeCache.mockReset();
   secureStore.deleteItemAsync.mockReset().mockResolvedValue(undefined);
   timeQueue.clearQueueForSignOut.mockReset().mockResolvedValue(undefined);
   localTimer.clearLocalTimer.mockReset().mockResolvedValue(undefined);
@@ -60,6 +70,11 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe('clearAuthData', () => {
+  it('drops the in-memory work-type list, so the next account never sees the previous partner\'s labels (#4628 W04)', async () => {
+    await clearAuthData();
+    expect(workTypes.clearWorkTypeCache).toHaveBeenCalledTimes(1);
+  });
+
   it('removes the app-lock record, so no stale unlock outlives the session', async () => {
     // The record is a standing assertion that THIS device is currently
     // unlocked. If the token delete below fails, the surviving token restores

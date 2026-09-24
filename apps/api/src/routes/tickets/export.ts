@@ -9,7 +9,9 @@ import { auditSensitiveRead } from '../../services/sensitiveReadAudit';
 
 export const ticketExportRoutes = new Hono();
 
-const CSV_HEADERS = ['type', 'date', 'organization', 'ticket', 'description', 'technician', 'quantity', 'rate', 'amount', 'currency', 'billing_status', 'approved'];
+const CSV_HEADERS = ['type', 'date', 'organization', 'ticket', 'description', 'technician', 'quantity', 'rate', 'amount', 'currency', 'billing_status', 'approved',
+  // #4628 W04 — APPENDED, never inserted: existing importers map by column index.
+  'work_type', 'included_minutes'];
 
 ticketExportRoutes.get(
   '/export/billables.csv',
@@ -36,7 +38,10 @@ ticketExportRoutes.get(
         // real $0.00 line (#6461). MISSING_RATE is an explicit, greppable
         // marker rather than a blank cell that could be read as "unset".
         r.missingRate ? 'MISSING_RATE' : (r.amount ?? ''), r.currencyCode ?? '', r.billingStatus,
-        r.isApproved === null ? '' : String(r.isApproved)
+        r.isApproved === null ? '' : String(r.isApproved),
+        r.workTypeName ?? '',
+        // Worked minutes covered by the contract; empty for a part (no labour).
+        r.kind === 'time' ? String(r.includedMinutes) : ''
       ]));
     }
     const body = lines.join('\n');

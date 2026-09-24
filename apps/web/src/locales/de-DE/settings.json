@@ -329,6 +329,7 @@
     "exportFailed": "Der Export ist fehlgeschlagen",
     "title": "Export abrechenbarer Assets",
     "description": "Abzurechnende Zeiteinträge und Teile ab CSV (bis zu 366 Tage). Beinhaltet den Genehmigungsstatus.",
+    "columnsNote": "Enthält für jeden Zeiteintrag die Tätigkeitsart und die vertraglich enthaltenen Minuten.",
     "from": "Von",
     "to": "Zu",
     "allOrganizations": "Alle Organisationen",

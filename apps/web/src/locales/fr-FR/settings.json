@@ -329,6 +329,7 @@
     "exportFailed": "Échec de l’exportation",
     "title": "Exportation de comptes facturables",
     "description": "Les entrées et parties en temps facturable sont CSV (jusqu’à 366 jours). Inclut le statut d’approbation.",
+    "columnsNote": "Comprend le type de travail et les minutes incluses au contrat pour chaque saisie de temps.",
     "from": "De",
     "to": "À",
     "allOrganizations": "Toutes les organisations",

@@ -148,6 +148,12 @@ describe('getDocsForPath', () => {
       expect(result.url).toContain('/features/online-payments/');
     });
 
+    it('/settings/billing#rates maps to Rates docs', () => {
+      const result = getDocsForPath('/settings/billing', '#rates');
+      expect(result.label).toBe('Rates');
+      expect(result.url).toContain('/features/rates/');
+    });
+
     it('/billing/invoices maps to invoices docs, not generic billing', () => {
       const result = getDocsForPath('/billing/invoices');
       expect(result.label).toBe('Invoices');

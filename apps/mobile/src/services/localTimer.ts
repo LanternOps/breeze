@@ -30,6 +30,13 @@ export interface LocalTimer {
    */
   startConfirmed: boolean;
   description: string | null;
+  /**
+   * #4628 W04 — the work type picked at START. Tri-state, like the request
+   * field it feeds: ABSENT means "let the server apply the ticket category's
+   * default" (and is what every timer written by an older build reads back
+   * as), `null` means the technician explicitly chose none.
+   */
+  workTypeId?: string | null;
 }
 
 /**
@@ -81,6 +88,9 @@ function asLocalTimer(value: unknown): LocalTimer | null {
     // server timer running forever.
     startConfirmed: candidate.startConfirmed === true,
     description: typeof candidate.description === 'string' ? candidate.description : null,
+    ...(typeof candidate.workTypeId === 'string' || candidate.workTypeId === null
+      ? { workTypeId: candidate.workTypeId }
+      : {}),
   };
 }
 

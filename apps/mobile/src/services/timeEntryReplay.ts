@@ -71,6 +71,11 @@ function optionalBoolean(payload: Record<string, unknown>, key: string): boolean
   return typeof value === 'boolean' ? value : undefined;
 }
 
+function optionalWorkTypeId(payload: Record<string, unknown>): string | null | undefined {
+  const value = payload.workTypeId;
+  return typeof value === 'string' || value === null ? value : undefined;
+}
+
 function compact<T extends object>(input: T): T {
   return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined)) as T;
 }
@@ -101,6 +106,9 @@ export function makeReplaySender(senders: ReplaySenders): (write: QueuedWrite) =
             ticketId: optionalString(write.payload, 'ticketId'),
             description: optionalString(write.payload, 'description'),
             isBillable: optionalBoolean(write.payload, 'isBillable'),
+            // #4628 W04: tri-state. Absent stays absent (server applies the
+            // category default); an explicit null is replayed as null.
+            workTypeId: optionalWorkTypeId(write.payload),
           }) as CreateTimeEntryInput
         );
         return;

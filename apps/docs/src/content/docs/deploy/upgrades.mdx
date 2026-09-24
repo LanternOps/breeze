@@ -154,9 +154,24 @@ Breeze's own web, mobile and add-in clients never send them.
   deprecation policy: LanternOps/breeze#6472.
 </Aside>
 
-The six underlying database columns are still present in v0.116.0; the
-release that drops them will carry its own rollback note. **Back up your
-database before upgrading** all the same.
+The six underlying database columns are still present in v0.116.0, so v0.116.0
+can still be rolled back to v0.115.0. Nothing reads or writes them any more,
+and **they will be dropped in v0.117**, which will carry its own rollback note.
+Repoint any report, BI query or integration that reads
+`ticket_categories.default_billable`, `default_hourly_rate` or `rate_currency`,
+or the same three columns on `org_ticket_settings`, directly from the database
+before upgrading to v0.117. Read pricing from the billing-profile tables
+(`billing_profiles`, `billing_profile_rules`,
+`org_billing_profile_assignments`) or from the values stamped on each time
+entry (`time_entries.hourly_rate`, `coverage`, `work_type_id`,
+`billable_minutes`). The legacy columns hold only the pre-conversion values.
+**Back up your database before upgrading** all the same.
+
+**Billables CSV: two new columns at the end.** The billables export
+(`GET /tickets/export/billables.csv`) appends `work_type` and
+`included_minutes` (worked minutes of contract-included time, `0` on other
+time rows, empty on parts). Existing columns keep their positions. An importer
+that rejects unknown trailing columns needs updating.
 
 ### v0.115.0 — billing profiles replace per-organization labour rates
 
