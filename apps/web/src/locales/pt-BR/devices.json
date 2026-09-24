@@ -3442,6 +3442,17 @@
     "events": "Eventos de hardware",
     "noEvents": "Nenhum evento de hardware registrado.",
     "noComponents": "Nenhum componente informado. Verifique as fontes.",
-    "all": "Todos os estados de hardware"
+    "all": "Todos os estados de hardware",
+    "managementController": "Controlador de gerenciamento",
+    "bmcVendor": "Fabricante",
+    "bmcFirmware": "Versão do firmware",
+    "bmcIp": "Endereço IP",
+    "bmcMac": "Endereço MAC",
+    "bmcOtherSite": "Controlador de gerenciamento encontrado no site {{site}}",
+    "bmcObserved": "Último relatório: {{time}}; coleta diária.",
+    "bmcHost": "Controlador de gerenciamento de {{name}}",
+    "bmcAgentReport": "— informado pelo agente do host",
+    "bmcAssociation": "Este controlador de gerenciamento está associado ao host e continua sendo um dispositivo de rede separado.",
+    "bmcConfirmUnlink": "Remover a associação do controlador de gerenciamento? A vinculação automática permanece desativada para este ativo até que você o vincule novamente."
   }
 }

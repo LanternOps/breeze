@@ -3442,6 +3442,17 @@
     "events": "Eventos de hardware",
     "noEvents": "No hay eventos de hardware.",
     "noComponents": "No se informaron componentes. Revise las fuentes.",
-    "all": "Todos los estados de hardware"
+    "all": "Todos los estados de hardware",
+    "managementController": "Controlador de administración",
+    "bmcVendor": "Fabricante",
+    "bmcFirmware": "Versión del firmware",
+    "bmcIp": "Dirección IP",
+    "bmcMac": "Dirección MAC",
+    "bmcOtherSite": "Controlador de administración encontrado en el sitio {{site}}",
+    "bmcObserved": "Último reporte: {{time}}; recopilación diaria.",
+    "bmcHost": "Controlador de administración de {{name}}",
+    "bmcAgentReport": "— reportado por el agente del host",
+    "bmcAssociation": "Este controlador de administración está asociado con su host y sigue siendo un dispositivo de red independiente.",
+    "bmcConfirmUnlink": "¿Eliminar la asociación del controlador de administración? La vinculación automática seguirá desactivada para este activo hasta que lo vincules de nuevo."
   }
 }

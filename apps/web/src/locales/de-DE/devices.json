@@ -3442,6 +3442,17 @@
     "events": "Hardwareereignisse",
     "noEvents": "Keine Hardwareereignisse erfasst.",
     "noComponents": "Keine Speicherkomponenten gemeldet. Quellen prüfen.",
-    "all": "Alle Hardwarezustände"
+    "all": "Alle Hardwarezustände",
+    "managementController": "Management-Controller",
+    "bmcVendor": "Hersteller",
+    "bmcFirmware": "Firmwareversion",
+    "bmcIp": "IP-Adresse",
+    "bmcMac": "MAC-Adresse",
+    "bmcOtherSite": "Management-Controller am Standort {{site}} gefunden",
+    "bmcObserved": "Zuletzt gemeldet: {{time}}; tägliche Erfassung.",
+    "bmcHost": "Management-Controller für {{name}}",
+    "bmcAgentReport": "— vom Agenten des Hosts gemeldet",
+    "bmcAssociation": "Dieser Management-Controller ist seinem Host zugeordnet und bleibt ein eigenständiges Netzwerkgerät.",
+    "bmcConfirmUnlink": "Zuordnung des Management-Controllers entfernen? Die automatische Verknüpfung bleibt für dieses Gerät deaktiviert, bis Sie es erneut verknüpfen."
   }
 }

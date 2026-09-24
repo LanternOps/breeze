@@ -3442,6 +3442,17 @@
     "events": "Donanım olayları",
     "noEvents": "Donanım olayı kaydedilmedi.",
     "noComponents": "Bileşen bildirilmedi. Kaynakları kontrol edin.",
-    "all": "Tüm donanım durumları"
+    "all": "Tüm donanım durumları",
+    "managementController": "Yönetim denetleyicisi",
+    "bmcVendor": "Üretici",
+    "bmcFirmware": "Donanım yazılımı",
+    "bmcIp": "IP adresi",
+    "bmcMac": "MAC adresi",
+    "bmcOtherSite": "{{site}} sitesinde yönetim denetleyicisi bulundu",
+    "bmcObserved": "Son bildirim: {{time}}; günlük toplanır.",
+    "bmcHost": "{{name}} için yönetim denetleyicisi",
+    "bmcAgentReport": "— ana makine aracısı tarafından bildirildi",
+    "bmcAssociation": "Bu yönetim denetleyicisi ana makinesiyle ilişkilidir ve ayrı bir ağ cihazı olarak kalır.",
+    "bmcConfirmUnlink": "Yönetim denetleyicisi ilişkisi kaldırılsın mı? Bu varlığı yeniden bağlayana kadar otomatik bağlantı kapalı kalır."
   }
 }

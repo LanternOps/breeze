@@ -61,7 +61,9 @@ export function LinkSection({
     <SettingsSectionShell
       section="link"
       title={t('networkDeviceDetailPage.settings.sections.link')}
-      description={t('networkDeviceDetailPage.settings.link.description')}
+      description={asset.linkSource === 'agent_report'
+        ? t('hardwareHealth.bmcAssociation')
+        : t('networkDeviceDetailPage.settings.link.description')}
     >
       {asset.linkedDeviceId ? (
         <div className="space-y-4 text-sm">
@@ -71,14 +73,18 @@ export function LinkSection({
               data-testid="network-settings-link-device"
               className="text-primary hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
             >
-              {t('networkDeviceDetailPage.sameDeviceAs', {
-                name: asset.linkedDeviceName || t('common:states.unknown'),
-              })}
+              {asset.linkSource === 'agent_report'
+                ? t('hardwareHealth.bmcHost', { name: asset.linkedDeviceName || t('common:states.unknown') })
+                : t('networkDeviceDetailPage.sameDeviceAs', {
+                    name: asset.linkedDeviceName || t('common:states.unknown'),
+                  })}
             </a>
             <span className="text-xs text-muted-foreground" data-testid="network-settings-link-provenance">
-              {isManualLink(asset.linkSource)
-                ? t('networkDeviceDetailPage.provenance.manual')
-                : t('networkDeviceDetailPage.provenance.auto')}
+              {asset.linkSource === 'agent_report'
+                ? t('hardwareHealth.bmcAgentReport')
+                : isManualLink(asset.linkSource)
+                  ? t('networkDeviceDetailPage.provenance.manual')
+                  : t('networkDeviceDetailPage.provenance.auto')}
             </span>
           </p>
           <p className="text-xs text-muted-foreground">{t('networkDeviceDetailPage.settings.link.unlinkHint')}</p>
@@ -115,7 +121,9 @@ export function LinkSection({
         onClose={() => setConfirmOpen(false)}
         onConfirm={() => void handleUnlink()}
         title={t('networkDeviceDetailPage.confirmUnlink')}
-        message={t('networkDeviceDetailPage.confirmUnlinkMessage')}
+        message={asset.linkSource === 'agent_report'
+          ? t('hardwareHealth.bmcConfirmUnlink')
+          : t('networkDeviceDetailPage.confirmUnlinkMessage')}
         confirmLabel={t('networkDeviceDetailPage.unlink')}
         variant="destructive"
         isLoading={unlinking}
