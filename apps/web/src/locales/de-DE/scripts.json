@@ -1064,9 +1064,9 @@
       "elevatedHint": "Verwendet sudo unter macOS/Linux, runas unter Windows."
     },
     "exitCodeSeverity": {
-      "emptyPrefix": "Ordnen Sie spezifische Exit-Codes den Schweregraden von Warnungen zu. Wenn das Skript einen dieser Codes zurückgibt, wird eine Warnung mit dem konfigurierten Schweregrad ausgelöst. Wählen Sie",
+      "emptyPrefix": "Ordnen Sie spezifische Exit-Codes den Schweregraden von Warnungen zu. Wenn ein unbeaufsichtigter Lauf (geplant, Automatisierung, Richtlinie oder durch eine Warnung ausgelöst) einen dieser Codes zurückgibt, wird eine Warnung mit dem konfigurierten Schweregrad ausgelöst; manuelle Läufe lösen nie eine aus. Ein späterer Lauf, der sauber endet, löst sie auf. Wählen Sie",
       "suppressAlert": "Alarm unterdrücken",
-      "emptySuffix": "um einen Code als informativ zu markieren (kein Vorfall gemeldet). Exit-Codes, die Sie hier nicht auflisten, verwenden die Standard-Ergebnisbehandlung.",
+      "emptySuffix": "um einen Code als informativ zu markieren (keine Warnung). Ein nicht aufgeführter Exit-Code ungleich null verwendet den nächstniedrigeren aufgeführten Schweregrad oder „Mittel“.",
       "suppressHint": "Warnung unterdrücken – Der Exit-Code wird als Information behandelt, es wird kein Vorfall ausgelöst."
     },
     "keyboardSave": "{{shortcut}} zum Speichern",

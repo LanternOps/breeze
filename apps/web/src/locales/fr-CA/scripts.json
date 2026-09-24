@@ -1064,9 +1064,9 @@
       "elevatedHint": "Utilisez sudo sur macOS/Linux, runas sur Windows."
     },
     "exitCodeSeverity": {
-      "emptyPrefix": "Associez des codes de sortie spécifiques à des sévérités d’alerte. Lorsque le script renvoie l’un de ces codes, une alerte est créée avec la sévérité configurée. Choisissez",
+      "emptyPrefix": "Associez des codes de sortie spécifiques à des sévérités d’alerte. Lorsqu’une exécution sans surveillance (planifiée, automatisation, politique ou déclenchée par une alerte) renvoie l’un de ces codes, une alerte est créée avec la sévérité configurée; les exécutions manuelles n’en créent jamais. Une exécution ultérieure qui se termine sans erreur la résout. Choisissez",
       "suppressAlert": "Masquer l’alerte",
-      "emptySuffix": "pour marquer un code comme informatif (aucun incident créé). Les codes de sortie non listés ici utilisent le traitement par défaut.",
+      "emptySuffix": "pour marquer un code comme informatif (aucune alerte). Un code non nul non listé utilise la sévérité du code inférieur listé le plus proche, ou moyenne.",
       "suppressHint": "Masquer l’alerte : le code de sortie est considéré comme informatif et aucun incident n’est créé."
     },
     "keyboardSave": "{{shortcut}} pour enregistrer",

@@ -54,6 +54,7 @@ import { PG_UUID_REGEX, UUID_REGEX } from '../utils/uuid';
 // while the REST path rejected at 1 MB. The byte-accurate one wins.
 import { commandResultSchema } from '../routes/agents/schemas';
 import { applyAutomationActionTerminal } from './automationActionResults';
+import { evaluateScriptExitCodeAlert, type ScriptTriggerType } from './scriptExitCodeAlerts';
 import { enqueueScriptVerify } from './scriptProposals/verify';
 import { handlePeripheralPolicyResultV2 } from './peripheralPolicyState';
 import {
@@ -425,8 +426,19 @@ function terminalExecutionProjection() {
     id: scriptExecutions.id,
     scriptId: scriptExecutions.scriptId,
     proposalId: scriptExecutions.proposalId,
+    // #6690: the exit-code alert needs the execution's own org and trigger lane.
+    orgId: scriptExecutions.orgId,
+    triggerType: scriptExecutions.triggerType,
   } as const;
 }
+
+type TerminalExecution = {
+  id: string;
+  scriptId: string | null;
+  proposalId: string | null;
+  orgId: string;
+  triggerType: ScriptTriggerType;
+};
 
 function isCustomFieldWritesEnvelope(value: unknown): boolean {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -562,7 +574,7 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
       const markerCommandId = typeof rawMarkerCommandId === 'string' ? rawMarkerCommandId : null;
 
       phase = 'cancel-confirm-cas';
-      let cancelClosed: Array<{ id: string; scriptId: string | null; proposalId: string | null }> = [];
+      let cancelClosed: TerminalExecution[] = [];
       let cancelConfirmed = false;
       if (cancelledMarker && markerCommandId) {
         cancelClosed = await db
@@ -590,7 +602,7 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
           .returning(terminalExecutionProjection());
       }
 
-      let updatedExecutions: Array<{ id: string; scriptId: string | null; proposalId: string | null }> = [];
+      let updatedExecutions: TerminalExecution[] = [];
       let effectiveExecution = cancelClosed[0] ?? null;
 
       if (cancelClosed.length === 0) {
@@ -771,6 +783,22 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
           error: executionValues.errorMessage ?? executionValues.stderr,
           completedAt: executionValues.completedAt,
         });
+
+        // #6690 — the script's opt-in exit-code → alert mapping. Runs after the
+        // execution row above is written; never throws (own savepoint + catch).
+        // Only a real exit code is a verdict: a proven cancel, a timeout or a
+        // failure to run neither raises nor clears the alert.
+        if (!cancelConfirmed && result.status === 'completed' && typeof result.exitCode === 'number') {
+          await evaluateScriptExitCodeAlert({
+            executionId: effectiveExecution.id,
+            scriptId: effectiveExecution.scriptId,
+            orgId: effectiveExecution.orgId,
+            deviceId: resolvedDeviceId,
+            triggerType: effectiveExecution.triggerType,
+            exitCode: result.exitCode,
+            stderr: executionValues.stderr,
+          });
+        }
 
         if (effectiveExecution.proposalId) {
           // W03 (#5612, spec §4.9): the proposal's verification claim is
