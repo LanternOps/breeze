@@ -1471,6 +1471,12 @@
           "editTitle": "Editar webhook"
         },
         "subtitle": "Entregue eventos a sistemas externos.",
+        "success": {
+          "created": "Webhook criado",
+          "disabled": "Webhook desativado",
+          "enabled": "Webhook ativado",
+          "updated": "Webhook atualizado"
+        },
         "title": "Webhooks"
       }
     },

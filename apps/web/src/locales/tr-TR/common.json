@@ -1471,6 +1471,12 @@
           "editTitle": "Web Kancasını Düzenle"
         },
         "subtitle": "Olayları harici sistemlere iletin.",
+        "success": {
+          "created": "Web kancası oluşturuldu",
+          "disabled": "Web kancası devre dışı bırakıldı",
+          "enabled": "Web kancası etkinleştirildi",
+          "updated": "Web kancası güncellendi"
+        },
         "title": "Web kancaları"
       }
     },

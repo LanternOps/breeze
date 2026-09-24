@@ -188,6 +188,9 @@ export default function WebhooksPage() {
           body: JSON.stringify({ status: enabled ? 'active' : 'paused' })
         }),
         errorFallback,
+        successMessage: enabled
+          ? t('longTail.webhooks.WebhooksPage.success.enabled')
+          : t('longTail.webhooks.WebhooksPage.success.disabled'),
         onUnauthorized: handleSessionExpired,
       });
 
@@ -280,6 +283,9 @@ export default function WebhooksPage() {
             body: JSON.stringify(requestPayload)
           }),
         errorFallback: t('longTail.webhooks.WebhooksPage.errors.saveWebhook'),
+        successMessage: modalMode === 'create'
+          ? t('longTail.webhooks.WebhooksPage.success.created')
+          : t('longTail.webhooks.WebhooksPage.success.updated'),
         onUnauthorized: handleSessionExpired,
       });
 
