@@ -1,0 +1,1 @@
+{"serial_number": "SATA0", "model_name": "Fixture HDD", "firmware_version": "1", "user_capacity": {"bytes": 0}, "smart_status": {"passed": true}, "temperature": {"current": 32}, "power_on_time": {"hours": 20}, "ata_smart_attributes": {"table": [{"id": 5, "raw": {"value": 999}}, {"id": 197, "raw": {"value": 100}}]}}

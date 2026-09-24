@@ -37,6 +37,36 @@ func TestSMARTFixtures(t *testing.T) {
 	}
 }
 
+func TestSMARTCapacityFallback(t *testing.T) {
+	cases := []struct {
+		fixture  string
+		wantSize *int64
+	}{
+		{"optimal", ptr(int64(1000))},
+		{"nvme-no-capacity", nil},
+		{"nvme-no-capacity-with-namespaces", ptr(int64(4294967296))},
+		{"nvme-total-capacity-fallback", ptr(int64(4294967296))},
+		{"user-capacity-zero", nil},
+		{"nvme-total-capacity-zero", ptr(int64(2147483648))},
+		{"nvme-total-capacity-precedence", ptr(int64(8589934592))},
+		{"nvme-namespaces-zero", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.fixture, func(t *testing.T) {
+			c, e := parseSMART(fixture(t, "smartctl", tc.fixture+".json"), 0, smartDevice{Name: "/dev/nvme0", Type: "nvme"}, time.Unix(10, 0))
+			if e != nil {
+				t.Fatal(e)
+			}
+			switch {
+			case tc.wantSize == nil && c.SizeBytes != nil:
+				t.Fatalf("expected nil SizeBytes, got %d", *c.SizeBytes)
+			case tc.wantSize != nil && (c.SizeBytes == nil || *c.SizeBytes != *tc.wantSize):
+				t.Fatalf("expected SizeBytes %d, got %+v", *tc.wantSize, c.SizeBytes)
+			}
+		})
+	}
+}
+
 func TestSMARTExitBits(t *testing.T) {
 	for bit := 0; bit < 8; bit++ {
 		c, e := parseSMART(fixture(t, "smartctl", "optimal.json"), 1<<bit, smartDevice{Name: "/dev/sda", Type: "sat"}, time.Unix(1, 0))
