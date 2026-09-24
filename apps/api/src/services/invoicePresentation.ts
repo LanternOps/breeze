@@ -48,3 +48,26 @@ export function resolveInvoicePresentation(
     pageSize: resolvePageSize(invoice.documentPageSize ?? partner?.documentPageSize),
   };
 }
+
+/** Map a quote's frozen `presentation_snapshot` jsonb ({ theme, pageSize },
+ *  stamped at send — quoteLifecycle.ts) onto the invoice-source shape, so the
+ *  quote-accept issue writer freezes what the customer signed. Anything that
+ *  is not a string reads as absent (→ partner fallback in the resolver). */
+export function quotePresentationAsInvoiceSource(snapshot: unknown): InvoicePresentationSource {
+  const snap = (snapshot && typeof snapshot === 'object' ? snapshot : {}) as { theme?: unknown; pageSize?: unknown };
+  return {
+    documentTheme: typeof snap.theme === 'string' ? snap.theme : null,
+    documentPageSize: typeof snap.pageSize === 'string' ? snap.pageSize : null,
+  };
+}
+
+/** The column values an issue writer freezes: the resolved presentation in
+ *  invoice-row shape. Always concrete (never NULL), so the CHECK constraints
+ *  hold even when the partner row carries an unknown legacy value. */
+export function stampedPresentation(
+  invoice: InvoicePresentationSource,
+  partner: PartnerPresentationSource | null | undefined,
+): { documentTheme: DocumentThemeId; documentPageSize: DocumentPageSize } {
+  const resolved = resolveInvoicePresentation(invoice, partner);
+  return { documentTheme: resolved.theme, documentPageSize: resolved.pageSize };
+}

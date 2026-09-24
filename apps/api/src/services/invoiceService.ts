@@ -17,7 +17,8 @@ import { snapshotCost } from './catalogPricing';
 import { formatInvoiceNumber } from './invoiceNumbers';
 import { emitInvoiceEvent } from './invoiceEvents';
 import { resolveInvoiceFooter, resolveDraftBillTo } from './invoicePdf';
-import { resolveOrgTaxRate, OrgNotVisibleForTaxError } from './taxRateResolver';
+import { resolveOrgTaxRate, resolveOrgTaxRateOn, OrgNotVisibleForTaxError } from './taxRateResolver';
+import { stampedPresentation } from './invoicePresentation';
 import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
 import {
   enqueueAccountingInvoicePush, enqueueAccountingInvoiceVoid,
@@ -186,16 +187,32 @@ export async function createManualInvoice(input: { orgId: string; siteId?: strin
   return rows[0]!;
 }
 
-/** Draft-time effective tax rate: org rate or 0. The partner default is applied
- *  authoritatively at issue (system context, where the partner row is readable). */
-async function effectiveRateForOrg(orgId: string, dbc: DbExecutor = db): Promise<string> {
-  const [org] = await dbc.select({ taxExempt: organizations.taxExempt, taxRate: organizations.taxRate })
-    .from(organizations).where(eq(organizations.id, orgId)).limit(1);
-  return resolveEffectiveTaxRate({ taxExempt: org?.taxExempt ?? false, orgRate: org?.taxRate ?? null, partnerRate: null });
+/** Draft-time effective tax rate, org → partner → 0 (#6227, settings audit M18) —
+ *  the SAME precedence issue applies, through the shared resolver core, so a
+ *  draft's persisted totals match what issue will charge (until a rate changes;
+ *  issue still re-resolves and stamps the rate current at issue).
+ *
+ *  resolveOrgTaxRateOn reads on `dbc` — the caller's locked transaction — and
+ *  never escalates: resolveOrgTaxRate's partner-axis escape would open a second
+ *  pooled transaction while this one holds the invoice row lock (quorum
+ *  amendment 6). An invisible org maps to the usual 404; an invisible partner
+ *  (PartnerNotVisibleForTaxError — a caller without partner/system scope, which
+ *  no current path is) propagates as a 500 rather than silently dropping the
+ *  partner rate. Returns the persisted numeric(8,5) fraction, never null. */
+async function effectiveRateForOrg(inv: { orgId: string; partnerId: string }, dbc: DbExecutor = db): Promise<string> {
+  try {
+    return (await resolveOrgTaxRateOn(dbc, { orgId: inv.orgId, partnerId: inv.partnerId })) ?? NO_TAX_RATE;
+  } catch (err) {
+    if (err instanceof OrgNotVisibleForTaxError) {
+      throw new InvoiceServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+    }
+    throw err;
+  }
 }
+const NO_TAX_RATE = resolveEffectiveTaxRate({ taxExempt: true, orgRate: null, partnerRate: null });
 
 /** Recompute subtotal/tax/total/balance from the invoice's current lines. Draft-time
- *  uses the org's effective rate; on issue the snapshotted tax_rate is passed instead.
+ *  uses the org → partner effective rate; on issue the snapshotted tax_rate is passed instead.
  *  Writers holding the invoice row lock pass their `tx` so the recompute stays inside
  *  the same transaction (a global-db call here would escape the lock scope). */
 export async function recomputeInvoiceTotals(invoiceId: string, taxRateOverride?: string | null, dbc: DbExecutor = db) {
@@ -207,7 +224,7 @@ export async function recomputeInvoiceTotals(invoiceId: string, taxRateOverride?
   const lines = await dbc.select({
     lineTotal: invoiceLines.lineTotal, taxable: invoiceLines.taxable, customerVisible: invoiceLines.customerVisible
   }).from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId));
-  const taxRate = taxRateOverride !== undefined ? taxRateOverride : await effectiveRateForOrg(inv.orgId, dbc);
+  const taxRate = taxRateOverride !== undefined ? taxRateOverride : await effectiveRateForOrg(inv, dbc);
   const totals = computeInvoiceTotals(lines, taxRate, inv.currencyCode);
   const balance = fromCents(toCents(totals.total) - toCents(inv.amountPaid));
   await dbc.update(invoices).set({
@@ -786,14 +803,12 @@ export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
     displayInvoice = { ...inv, billToName: resolved.billToName };
     billToEmail = resolved.billToEmail;
   }
-  // #6338: a DRAFT's committed tax_rate is ORG-level only (effectiveRateForOrg
-  // passes partnerRate: null), so a draft for an org whose own rate is blank
-  // shows $0.00 tax while issueInvoice applies the PARTNER default — the tech
-  // approves $200.00 and issues $215.00, and the summary meanwhile claims "no
-  // tax rate is set" when one plainly is. Surface the rate that WILL apply at
-  // issue, READ-ONLY: `invoice.taxRate`, recomputeInvoiceTotals and the
-  // issue-time math are all untouched (routing draft totals through the shared
-  // resolver is still M18's job — see taxRateResolver's docstring).
+  // #6338: surface the rate that WILL apply at issue, READ-ONLY. Since #6227
+  // (M18) a draft's committed tax_rate already resolves org → partner at every
+  // recompute, but it is only as fresh as the draft's LAST mutation: a partner
+  // or org rate changed since then is not on the row until the next line edit,
+  // while issueInvoice re-resolves at issue. This preview is the live value, so
+  // the editor can flag the difference before the tech issues.
   //
   // Resolved by the ONE shared resolver, so tax_exempt and an org-level rate
   // win over the partner default exactly as they will at issue. Drafts only:
@@ -1507,6 +1522,12 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
       // sanctioned re-render produces. Same two-writer rule document_locale
       // follows, for the same reason.
       deviceAppendix: inv.deviceAppendix ?? partner?.invoiceDeviceAppendix ?? false,
+      // #6227 presentation snapshot (settings audit rule 6): freeze the theme
+      // and page size the customer will see, through the ONE resolver. A draft
+      // carries NULL (live partner preview), so this resolves the partner's
+      // current values; `inv` first keeps the same `??` two-writer rule as
+      // documentLocale. Same `partner` row read above — no new read or lock.
+      ...stampedPresentation(inv, partner),
       updatedAt: issueDate
     }).where(and(eq(invoices.id, invoiceId), eq(invoices.status, 'draft'))).returning({ id: invoices.id });
     // Guarded write: impossible to miss while we hold the row lock and asserted

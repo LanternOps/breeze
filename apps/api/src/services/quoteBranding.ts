@@ -17,6 +17,7 @@ import { portalBranding } from '../db/schema/portal';
 import { buildSellerSnapshot, type SellerSnapshot } from './sellerSnapshot';
 import { resolveThemeId, resolvePageSize, type DocumentThemeId, type DocumentPageSize } from './documentThemes';
 import { resolvePartnerDocumentLocale } from './documentLocale';
+import { resolveInvoicePresentation, type InvoicePresentationSource } from './invoicePresentation';
 
 export interface QuoteBranding {
   /** Partner display name. Falls back to the document's frozen seller name when
@@ -35,9 +36,9 @@ export interface QuoteBranding {
   locale: string;
   /** Seller "From" block — the quote's frozen snapshot, or synthesized live for drafts. */
   seller: SellerSnapshot | null;
-  /** Document theme. Precedence: quote.presentationSnapshot → partner.documentTheme → 'classic'. */
+  /** Document theme. Quotes: presentationSnapshot → partner.documentTheme → 'classic'. Invoices: resolveInvoicePresentation (frozen column → partner → 'classic'). */
   theme: DocumentThemeId;
-  /** Document page size. Precedence: quote.presentationSnapshot → partner.documentPageSize → 'a4'. */
+  /** Document page size. Quotes: presentationSnapshot → partner.documentPageSize → 'a4'. Invoices: resolveInvoicePresentation (frozen column → partner → 'a4'). */
   pageSize: DocumentPageSize;
 }
 
@@ -64,10 +65,37 @@ export interface QuoteBrandingSource {
 }
 
 export async function resolveQuoteBranding(quote: QuoteBrandingSource): Promise<QuoteBranding> {
+  const snap = quote.presentationSnapshot as { theme?: string; pageSize?: string } | null;
+  return resolveDocumentBranding(quote, (partner) => ({
+    theme: resolveThemeId(snap?.theme ?? partner?.documentTheme),
+    pageSize: resolvePageSize(snap?.pageSize ?? partner?.documentPageSize),
+  }));
+}
+
+/** Branding-relevant subset of an invoice row: the quote fields minus the
+ *  quote-only jsonb presentation snapshot, plus the invoice's own typed
+ *  presentation columns (#6227). */
+export type InvoiceBrandingSource = Omit<QuoteBrandingSource, 'presentationSnapshot'> & InvoicePresentationSource;
+
+/**
+ * Invoice sibling of resolveQuoteBranding (#6227), used by the in-app invoice
+ * preview. Identical partner / portal / seller / footer / locale resolution;
+ * theme and page size come from the ONE invoice presentation resolver — the
+ * invoice's frozen issue-time columns, or the partner's live values for a
+ * draft — so the in-app preview and the public customer view cannot disagree.
+ */
+export async function resolveInvoiceBranding(invoice: InvoiceBrandingSource): Promise<QuoteBranding> {
+  return resolveDocumentBranding(invoice, (partner) => resolveInvoicePresentation(invoice, partner));
+}
+
+async function resolveDocumentBranding(
+  doc: Omit<QuoteBrandingSource, 'presentationSnapshot'>,
+  presentation: (partner: typeof partners.$inferSelect | undefined) => { theme: DocumentThemeId; pageSize: DocumentPageSize },
+): Promise<QuoteBranding> {
   const [partner] = await db
     .select()
     .from(partners)
-    .where(eq(partners.id, quote.partnerId))
+    .where(eq(partners.id, doc.partnerId))
     .limit(1);
   const [brand] = await db
     .select({
@@ -76,12 +104,10 @@ export async function resolveQuoteBranding(quote: QuoteBrandingSource): Promise<
       footerText: portalBranding.footerText,
     })
     .from(portalBranding)
-    .where(eq(portalBranding.orgId, quote.orgId))
+    .where(eq(portalBranding.orgId, doc.orgId))
     .limit(1);
 
-  const snap = quote.presentationSnapshot as { theme?: string; pageSize?: string } | null;
-
-  const seller = (quote.sellerSnapshot as SellerSnapshot | null) ?? (partner ? buildSellerSnapshot(partner) : null);
+  const seller = (doc.sellerSnapshot as SellerSnapshot | null) ?? (partner ? buildSellerSnapshot(partner) : null);
 
   return {
     // Seller-snapshot fallback before the document-type literal (#2151). The
@@ -98,11 +124,10 @@ export async function resolveQuoteBranding(quote: QuoteBrandingSource): Promise<
     partnerName: partner?.name || seller?.name || 'Proposal',
     logoUrl: brand?.logoUrl ?? null,
     primaryColor: brand?.primaryColor ?? null,
-    footer: quote.terms ?? partner?.invoiceFooter ?? brand?.footerText ?? null,
-    currencyCode: quote.currencyCode ?? partner?.currencyCode ?? 'USD',
-    locale: quote.documentLocale ?? resolvePartnerDocumentLocale(partner),
+    footer: doc.terms ?? partner?.invoiceFooter ?? brand?.footerText ?? null,
+    currencyCode: doc.currencyCode ?? partner?.currencyCode ?? 'USD',
+    locale: doc.documentLocale ?? resolvePartnerDocumentLocale(partner),
     seller,
-    theme: resolveThemeId(snap?.theme ?? partner?.documentTheme),
-    pageSize: resolvePageSize(snap?.pageSize ?? partner?.documentPageSize),
+    ...presentation(partner),
   };
 }
