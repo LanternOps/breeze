@@ -1,8 +1,7 @@
 // win_phases.go holds the Windows platform table's entry points.
 //
 // Staged until later in THIS PR (each task deletes its function here and
-// adds the real one in its own file): winPreflight (Task 10,
-// win_preflight.go), winProvision + (*run).winReattach (Task 11,
+// adds the real one in its own file): winProvision + (*run).winReattach (Task 11,
 // win_provision.go), winRestoreTree (Task 11, win_restore_tree.go),
 // winValidate (Task 13, win_validate.go), winConvert (Task 13,
 // win_convert.go).
@@ -27,9 +26,6 @@ import (
 // SkipBoot in this PR.
 var errWindowsOSStateStaged = errors.New("windows offline system-state, boot, identity and encryption phases arrive in W06c")
 
-func winPreflight(_ context.Context, _ *run) error {
-	return errors.New("winPreflight: not yet implemented (Task 10)")
-}
 func winProvision(_ context.Context, _ *run) error {
 	return errors.New("winProvision: not yet implemented (Task 11)")
 }
