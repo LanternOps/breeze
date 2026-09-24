@@ -15,6 +15,7 @@ import {
   configPolicyMonitoringWatches,
   configurationPolicies,
 } from '../../db/schema';
+import { updateFeatureLink, removeFeatureLink } from '../../services/configurationPolicy';
 import { replayMigration } from './replayMigration';
 import { createOrganization, createPartner } from './db-utils';
 
@@ -174,6 +175,36 @@ describe('2026-10-31-100000-legacy-alerting-retirement-sweep.sql', () => {
     await withDbAccessContext(SYSTEM_CTX, async () => {
       expect(await db.select().from(configPolicyMonitoringWatches).where(eq(configPolicyMonitoringWatches.id, watch!.id))).toEqual([watch]);
       expect(await db.select().from(configPolicyFeatureLinks).where(eq(configPolicyFeatureLinks.id, monitoringLinkId))).toHaveLength(1);
+    });
+  });
+
+  it.each(['cumulative', 'replace'] as const)('empty %s Save and removal retain retired watch history', async (inheritance) => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const { policyId } = await policyWithMonitoringLink(org.id, 60, false);
+    await replayMigration(MIGRATION);
+    await withDbAccessContext(SYSTEM_CTX, async () => {
+      const [link] = await db.select().from(configPolicyFeatureLinks).where(and(
+        eq(configPolicyFeatureLinks.configPolicyId, policyId),
+        eq(configPolicyFeatureLinks.featureType, 'monitors')));
+      const [settings] = await db.select().from(configPolicyMonitoringSettings)
+        .where(eq(configPolicyMonitoringSettings.featureLinkId, link!.id));
+      const [watch] = await db.insert(configPolicyMonitoringWatches).values({
+        settingsId: settings!.id, watchType: 'service', name: 'Spooler',
+        retiredAt: new Date(), retiredReason: 'operator',
+      }).returning();
+      await updateFeatureLink(link!.id, {
+        inlineSettings: { items: [], inheritance, checkIntervalSeconds: 45 },
+      }, policyId);
+      await removeFeatureLink(link!.id, policyId);
+      expect(await db.select().from(configPolicyMonitoringWatches)
+        .where(eq(configPolicyMonitoringWatches.id, watch!.id))).toEqual([watch]);
+      expect(await db.select().from(configPolicyMonitoringSettings)
+        .where(eq(configPolicyMonitoringSettings.id, settings!.id)))
+        .toEqual([expect.objectContaining({ id: settings!.id, checkIntervalSeconds: 45 })]);
+      const [saved] = await db.select().from(configPolicyFeatureLinks)
+        .where(eq(configPolicyFeatureLinks.id, link!.id));
+      expect(saved!.inlineSettings).toMatchObject({ items: [], inheritance, checkIntervalSeconds: 45 });
     });
   });
 });

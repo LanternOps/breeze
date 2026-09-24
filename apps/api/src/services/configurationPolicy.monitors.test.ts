@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mirrors the mocking preamble in configurationPolicy.test.ts. Kept in a
 // separate file (Task 7, #5289) so the 'monitors' feature type gets its own
@@ -34,11 +34,14 @@ vi.mock('../db', () => ({
 import {
   addFeatureLink,
   updateFeatureLink,
+  removeFeatureLink,
   listFeatureLinks,
   validateFeaturePolicyExists,
 } from './configurationPolicy';
 import { db } from '../db';
-import { configPolicyAlertRules, configPolicyMonitors } from '../db/schema';
+import { configPolicyAlertRules, configPolicyMonitors, configPolicyMonitoringSettings, configPolicyFeatureLinks } from '../db/schema';
+
+beforeEach(() => { vi.mocked(db.select).mockReset(); });
 
 const MONITOR_ID_1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const MONITOR_ID_2 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -73,7 +76,7 @@ describe("addFeatureLink — 'monitors' inlineSettings decompose", () => {
     let normalizedRowValues: any;
     let insertCall = 0;
     const tx = {
-      insert: vi.fn(() => ({
+      insert: vi.fn((table: unknown) => ({
         values: vi.fn((v: any) => {
           insertCall += 1;
           if (insertCall === 1) {
@@ -94,6 +97,7 @@ describe("addFeatureLink — 'monitors' inlineSettings decompose", () => {
             };
           }
           // config_policy_monitors insert (decomposeInlineSettings)
+          if (table === configPolicyMonitoringSettings) return { onConflictDoUpdate: vi.fn(async () => []) };
           normalizedRowValues = v;
           return Promise.resolve([]);
         }),
@@ -120,7 +124,7 @@ describe("addFeatureLink — 'monitors' inlineSettings decompose", () => {
     let normalizedRowValues: any;
     let insertCall = 0;
     const tx = {
-      insert: vi.fn(() => ({
+      insert: vi.fn((table: unknown) => ({
         values: vi.fn((v: any) => {
           insertCall += 1;
           if (insertCall === 1) {
@@ -134,6 +138,7 @@ describe("addFeatureLink — 'monitors' inlineSettings decompose", () => {
               })),
             };
           }
+          if (table === configPolicyMonitoringSettings) return { onConflictDoUpdate: vi.fn(async () => []) };
           normalizedRowValues = v;
           return Promise.resolve([]);
         }),
@@ -155,7 +160,7 @@ describe("addFeatureLink — 'monitors' inlineSettings decompose", () => {
 
   it('rejects a non-uuid monitorId before any insert', async () => {
     const tx = {
-      insert: vi.fn(() => ({
+      insert: vi.fn((table: unknown) => ({
         values: vi.fn(() => ({
           onConflictDoNothing: vi.fn(() => ({
             returning: vi.fn(() => Promise.resolve([{ id: 'link-mon', configPolicyId: 'policy-1', featureType: 'monitors', featurePolicyId: null, inlineSettings: {} }])),
@@ -194,7 +199,9 @@ describe("updateFeatureLink — 'monitors' normalized row replacement", () => {
       insert: vi.fn((table: unknown) => ({
         values: vi.fn((values: any) => {
           calls.push({ op: 'insert', table, values });
-          return Promise.resolve([]);
+          return table === configPolicyMonitoringSettings
+            ? { onConflictDoUpdate: vi.fn(async () => []) }
+            : Promise.resolve([]);
         }),
       })),
     };
@@ -212,7 +219,7 @@ describe("updateFeatureLink — 'monitors' normalized row replacement", () => {
       inlineSettings: { items: [{ monitorId: MONITOR_ID_1, enabled: true, sortOrder: 3 }] },
     }, 'policy-1');
 
-    expect(calls.map((c) => c.op)).toEqual(['delete', 'insert']);
+    expect(calls.map((c) => c.op)).toEqual(['delete', 'insert', 'insert']);
     expect(calls[0]!.table).toBe(configPolicyMonitors);
     expect(calls[1]!.table).toBe(configPolicyMonitors);
 
@@ -223,6 +230,20 @@ describe("updateFeatureLink — 'monitors' normalized row replacement", () => {
       enabled: true,
       sortOrder: 3,
     });
+  });
+
+  it('upserts interval and never deletes settings during last detachment', async () => {
+    const { tx, calls } = updateTx({
+      id: 'link-mon', configPolicyId: 'policy-1', featureType: 'monitors',
+      featurePolicyId: null, inlineSettings: { items: [{ monitorId: MONITOR_ID_1 }] },
+    });
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+    await updateFeatureLink('link-mon', {
+      inlineSettings: { items: [], inheritance: 'replace', checkIntervalSeconds: 60 },
+    }, 'policy-1');
+    expect(calls.filter(c => c.op === 'delete').map(c => c.table)).toEqual([configPolicyMonitors]);
+    expect(calls).toContainEqual({ op: 'insert', table: configPolicyMonitoringSettings,
+      values: { featureLinkId: 'link-mon', checkIntervalSeconds: 60 } });
   });
 
   it('does not touch config_policy_alert_rules when a monitors link is updated', async () => {
@@ -260,7 +281,8 @@ describe("assembleInlineSettings via listFeatureLinks — 'monitors'", () => {
           { id: 'row-1', featureLinkId: 'link-mon', monitorId: MONITOR_ID_1, enabled: false, overrides: { value: 95 }, sortOrder: 1 },
         ]) as any
       ) // config_policy_monitors — already returned in sortOrder order by the mocked orderBy
-      .mockReturnValueOnce(selectLimitRows([link]) as any);
+      .mockReturnValueOnce(selectLimitRows([link]) as any)
+      .mockReturnValueOnce(selectLimitRows([]) as any);
 
     const result = await listFeatureLinks('policy-1');
     const settings = result[0]!.inlineSettings as { items: Array<Record<string, unknown>> };
@@ -283,13 +305,26 @@ describe("assembleInlineSettings via listFeatureLinks — 'monitors'", () => {
     vi.mocked(db.select)
       .mockReturnValueOnce(selectWhereRows([link]) as any)
       .mockReturnValueOnce(selectOrderByRows([]) as any)
-      .mockReturnValueOnce(selectLimitRows([link]) as any);
+      .mockReturnValueOnce(selectLimitRows([link]) as any)
+      .mockReturnValueOnce(selectLimitRows([]) as any);
 
     const result = await listFeatureLinks('policy-1');
     // No normalized rows → assembleInlineSettings assembles straight from
     // config_policy_monitors (empty) rather than falling back to the link's
     // JSONB mirror.
-    expect(result[0]!.inlineSettings).toEqual({ items: [], inheritance: 'cumulative' });
+    expect(result[0]!.inlineSettings).toEqual({ items: [], inheritance: 'cumulative', checkIntervalSeconds: 60 });
+  });
+
+  it('assembles the interval and replace mode with no attachments', async () => {
+    const link = { id: 'link-mon', configPolicyId: 'policy-1', featureType: 'monitors',
+      featurePolicyId: null, inlineSettings: { items: [], inheritance: 'replace' } };
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWhereRows([link]) as any)
+      .mockReturnValueOnce(selectOrderByRows([]) as any)
+      .mockReturnValueOnce(selectLimitRows([link]) as any)
+      .mockReturnValueOnce(selectLimitRows([{ checkIntervalSeconds: 45 }]) as any);
+    const [saved] = await listFeatureLinks('policy-1');
+    expect(saved!.inlineSettings).toEqual({ items: [], inheritance: 'replace', checkIntervalSeconds: 45 });
   });
 
   // Regression for #6493: deleting a monitor definition cascades (ON DELETE
@@ -316,12 +351,13 @@ describe("assembleInlineSettings via listFeatureLinks — 'monitors'", () => {
     vi.mocked(db.select)
       .mockReturnValueOnce(selectWhereRows([link]) as any) // links query
       .mockReturnValueOnce(selectOrderByRows([]) as any) // config_policy_monitors — cascade-emptied
-      .mockReturnValueOnce(selectLimitRows([link]) as any); // link.inlineSettings re-read for `inheritance`
+      .mockReturnValueOnce(selectLimitRows([link]) as any) // link.inlineSettings re-read for `inheritance`
+      .mockReturnValueOnce(selectLimitRows([]) as any); // missing normalized settings default to 60
 
     const result = await listFeatureLinks('policy-1');
     const settings = result[0]!.inlineSettings as { items: unknown[] };
 
-    expect(settings).toEqual({ items: [], inheritance: 'cumulative' });
+    expect(settings).toEqual({ items: [], inheritance: 'cumulative', checkIntervalSeconds: 60 });
     expect(JSON.stringify(settings)).not.toContain(deletedMonitorId);
   });
 });
@@ -469,5 +505,38 @@ describe("addFeatureLink/updateFeatureLink — alert_rule delivery parity fields
       escalationPolicyId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       notificationChannelIds: ['dddddddd-dddd-4ddd-8ddd-dddddddddddd'],
     });
+  });
+});
+
+describe('removeFeatureLink — settings owner retention', () => {
+  it.each([
+    ['monitors', 'cumulative', 45],
+    ['monitors', 'replace', null],
+    ['monitoring', 'cumulative', 120],
+  ] as const)('retains %s %s settings=%s', async (featureType, inheritance, interval) => {
+    const link = { id: 'link-mon', configPolicyId: 'policy-1', featureType,
+      inlineSettings: { items: [{ monitorId: MONITOR_ID_1 }], inheritance } };
+    const lock = { from: vi.fn(), where: vi.fn(), for: vi.fn(async () => [link]) };
+    lock.from.mockReturnValue(lock);
+    lock.where.mockReturnValue(lock);
+    const tx = {
+      select: vi.fn().mockReturnValueOnce(lock).mockReturnValueOnce(
+        selectLimitRows(interval === null ? [] : [{ checkIntervalSeconds: interval }])),
+      delete: vi.fn(() => ({ where: vi.fn(async () => []) })),
+      update: vi.fn(() => ({ set: vi.fn((values) => ({
+        where: vi.fn(() => ({ returning: vi.fn(async () => [{ ...link, ...values }]) })),
+      })) })),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+    const result = await removeFeatureLink('link-mon', 'policy-1');
+    expect(tx.delete).not.toHaveBeenCalledWith(configPolicyFeatureLinks);
+    if (featureType === 'monitors') {
+      expect(tx.delete).toHaveBeenCalledWith(configPolicyMonitors);
+      expect(result!.inlineSettings).toEqual({ items: [], inheritance, checkIntervalSeconds: interval ?? 60 });
+    } else {
+      expect(tx.delete).not.toHaveBeenCalled();
+      expect(tx.update).not.toHaveBeenCalled();
+    }
+    expect(result).toMatchObject({ id: 'link-mon', kept: true });
   });
 });

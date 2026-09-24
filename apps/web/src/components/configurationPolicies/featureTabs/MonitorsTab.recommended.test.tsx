@@ -47,7 +47,7 @@ describe('MonitorsTab policy affordances', () => {
     await waitFor(() => expect(saveMock).toHaveBeenCalledWith('l', expect.objectContaining({
       // W05c2 Task 4 added the inheritance switch, so the monitors link now
       // carries its mode; 'cumulative' is the default (add to inherited).
-      featureType: 'monitors', inlineSettings: { inheritance: 'cumulative', items: [
+      featureType: 'monitors', inlineSettings: { inheritance: 'cumulative', checkIntervalSeconds: 60, items: [
         { monitorId: CPU, enabled: true, overrides: undefined, sortOrder: 0 },
         { monitorId: DISK, enabled: true, overrides: undefined, sortOrder: 1 },
       ] },
