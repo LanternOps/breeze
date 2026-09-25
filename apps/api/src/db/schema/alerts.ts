@@ -248,9 +248,15 @@ export const notificationChannels = pgTable('notification_channels', {
   partnerId: uuid('partner_id').references(() => partners.id),
   name: varchar('name', { length: 255 }).notNull(),
   type: notificationChannelTypeEnum('type').notNull(),
-  // `config` (destination + secrets) lives in notificationChannelConfigs below,
-  // NOT on this row (#6379): an org session can read a partner-wide channel row
-  // through the SELECT-only partner-wide branch, and RLS cannot hide a column.
+  // `config` (destination + secrets) is READ from notificationChannelConfigs
+  // below, NOT from this row (#6379): an org session can read a partner-wide
+  // channel row through the SELECT-only partner-wide branch, and RLS cannot hide
+  // a column. The legacy `config` column still exists in the database (nullable)
+  // for one release so an image rollback keeps delivering; it is deliberately
+  // NOT declared here so no select()/returning() on this table can read it. It
+  // is written only through a module-private view in
+  // services/notificationChannelConfig.ts and is dropped by the contract step
+  // (follow-up to #6379). Guard: notificationChannelLegacyConfig.test.ts.
   templates: jsonb('templates').default({}),
   enabled: boolean('enabled').notNull().default(true),
   lastTestedAt: timestamp('last_tested_at', { withTimezone: true }),
@@ -275,7 +281,7 @@ export const notificationChannels = pgTable('notification_channels', {
  *
  * Split off `notification_channels` so config confidentiality is enforced by
  * the database, not only by API redaction. The RLS policy
- * (2026-10-31-100500-notification-channel-configs.sql) is parent OWNERSHIP —
+ * (2026-10-31-101100-notification-channel-configs.sql) is parent OWNERSHIP —
  * system, OR org access to the parent's org_id, OR partner access to the
  * parent's partner_id — and deliberately does NOT mirror the parent's
  * SELECT-only partner-wide branch. So an org session sees an inherited
@@ -286,7 +292,8 @@ export const notificationChannels = pgTable('notification_channels', {
  * notificationChannelSecrets.ts and encryptedColumnRegistry.ts.
  *
  * Every channel is written with its config row in the same transaction
- * (services/notificationChannelConfig.ts). No org_id: it reaches its tenant
+ * (services/notificationChannelConfig.ts), which also mirrors the value into the
+ * legacy parent column until the contract step drops it. No org_id: it reaches its tenant
  * through the parent and is removed by the parent's ON DELETE CASCADE.
  */
 export const notificationChannelConfigs = pgTable('notification_channel_configs', {

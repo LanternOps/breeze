@@ -133,6 +133,9 @@ describe('manage_notification_channels — create action', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     handler = getHandler('manage_notification_channels');
+    // writeNotificationChannelConfig also mirrors config into the legacy
+    // notification_channels.config column (#6379 expand step) via db.update().
+    mocks.dbUpdate.mockReturnValue({ set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })) });
   });
 
   it('validates config before insert and returns error on invalid config', async () => {
@@ -239,6 +242,9 @@ describe('manage_notification_channels — create write-org resolution (#6667)',
     handler = getHandler('manage_notification_channels');
     mocks.validateNotificationChannelConfig.mockReturnValue([]);
     mocks.encryptNotificationChannelConfig.mockReturnValue(ENCRYPTED_CONFIG);
+    // writeNotificationChannelConfig also mirrors config into the legacy
+    // notification_channels.config column (#6379 expand step) via db.update().
+    mocks.dbUpdate.mockReturnValue({ set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })) });
   });
 
   it('refuses with the ambiguous-org error and inserts nothing when orgId is omitted', async () => {
@@ -318,9 +324,14 @@ describe('manage_notification_channels — update action', () => {
   // writeNotificationChannelConfig's insert (#6379) — queue this whenever a
   // test's patch includes `config`, since the update action now writes it via
   // a separate insert into notification_channel_configs, not db.update().set().
+  // It then mirrors the value into the legacy notification_channels.config
+  // column (#6379 expand step) through a second db.update(); `legacySet`
+  // records that write.
+  const legacySet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
   function mockConfigInsertChain() {
     const values = vi.fn(() => ({ onConflictDoUpdate: vi.fn().mockResolvedValue(undefined) }));
     mocks.dbInsert.mockReturnValueOnce({ values });
+    mocks.dbUpdate.mockReturnValueOnce({ set: legacySet });
     return values;
   }
 
@@ -456,6 +467,8 @@ describe('manage_notification_channels — update action', () => {
     // The new config lands in notification_channel_configs (#6379), not in the
     // notificationChannels row itself.
     expect(configValues).toHaveBeenCalledWith({ channelId: 'chan-1', config: { encrypted: true } });
+    // ...and is mirrored into the legacy column so a rolled-back image delivers.
+    expect(legacySet).toHaveBeenCalledWith({ config: { encrypted: true } });
   });
 
   it('rejects a channel type change before any crypto runs (would corrupt the row)', async () => {
@@ -487,8 +500,10 @@ describe('manage_notification_channels — update action', () => {
     mocks.decryptNotificationChannelConfig.mockReturnValue(decryptedForValidation);
     mocks.validateNotificationChannelConfig.mockReturnValue([]);
 
+    // First db.update() = the channel row; mockConfigInsertChain queues the
+    // second (legacy column mirror) behind it.
     const setMock = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
-    mocks.dbUpdate.mockReturnValue({ set: setMock });
+    mocks.dbUpdate.mockReturnValueOnce({ set: setMock });
     const configValues = mockConfigInsertChain();
 
     const result = JSON.parse(
@@ -519,6 +534,7 @@ describe('manage_notification_channels — update action', () => {
     // the value passed to writeNotificationChannelConfig's insert must store
     // the ENCRYPTED merged config
     expect(configValues).toHaveBeenCalledWith({ channelId: 'chan-1', config: mergedEncrypted });
+    expect(legacySet).toHaveBeenCalledWith({ config: mergedEncrypted });
     // plaintext must NOT appear in the persisted value
     expect(JSON.stringify(mergedEncrypted)).not.toContain('NEW_TOKEN');
 

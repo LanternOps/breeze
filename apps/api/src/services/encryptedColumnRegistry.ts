@@ -91,6 +91,9 @@ export const encryptedColumnRegistry: EncryptedColumnSpec[] = [
   // Moved off notification_channels (#6379); the AAD tag keeps its old
   // location so existing ciphertext decrypts (notificationChannelSecrets.ts).
   { table: 'notification_channel_configs', column: 'config', kind: 'json', idColumn: 'channel_id', aadTag: 'notification_channels.config', description: 'notification channel secret config' },
+  // Legacy copy kept for one release (expand step of #6379) so an image rollback
+  // still decrypts; key rotation must re-seal it too. Remove with the column.
+  { table: 'notification_channels', column: 'config', kind: 'json', description: 'notification channel secret config (legacy write-only mirror, #6379)' },
   { table: 'discovery_profiles', column: 'snmp_communities', kind: 'text-array', description: 'SNMP community strings' },
   { table: 'discovery_profiles', column: 'snmp_credentials', kind: 'json', description: 'SNMP credential secrets' },
   { table: 'snmp_devices', column: 'community', kind: 'text', description: 'SNMP v1/v2c community string' },

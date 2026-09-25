@@ -213,7 +213,12 @@ describe('encryptedColumnRegistry', () => {
       expect(spec).toBeDefined();
       expect(spec!.idColumn).toBe('channel_id');
       expect(columnAad(spec!)).toBe('notification_channels.config');
-      expect(encryptedColumnRegistry.some((s) => s.table === 'notification_channels')).toBe(false);
+      // Expand step: the legacy write-only mirror stays registered (key rotation
+      // must re-seal it for an image rollback) under the SAME tag, so the two
+      // copies are interchangeable byte-for-byte. Removed by the contract step.
+      const legacy = encryptedColumnRegistry.filter((s) => s.table === 'notification_channels');
+      expect(legacy.map((s) => s.column)).toEqual(['config']);
+      expect(columnAad(legacy[0]!)).toBe(columnAad(spec!));
     });
 
     it('a value rotated by the walker under the moved spec decrypts on the read path', () => {

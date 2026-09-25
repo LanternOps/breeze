@@ -33,11 +33,25 @@
 -- that tag is kept as the logical identity of the column (encryptedColumnRegistry
 -- `aadTag`, notificationChannelSecrets), so every existing value still decrypts.
 --
+-- EXPAND / CONTRACT (the legacy column is NOT dropped here)
+-- This is the EXPAND step. notification_channels.config stays so an image
+-- rollback to the previous release keeps delivering alerts:
+--   * the new image READS config only from notification_channel_configs and
+--     WRITES both (services/notificationChannelConfig.ts), so the legacy column
+--     stays current for an old image;
+--   * NOT NULL is dropped from the legacy column: the new image inserts the
+--     channel row first and writes its config in the same transaction;
+--   * a sync trigger mirrors any write of the legacy column into the child
+--     table, so channels created or edited by an OLD image during a rollback
+--     are delivered correctly once the new image is rolled forward again.
+-- The DB-layer confidentiality fix is therefore only complete once the
+-- CONTRACT step drops the column and this trigger (follow-up to #6379).
+--
 -- ORDER / REPLAY
 -- System scope is elected before the backfill INSERT: the table is FORCE RLS,
--- which binds the owner the migration runs as. The backfill and the column
--- drop only run while the parent column still exists, so re-applying the file
--- is a no-op. ON CONFLICT DO NOTHING keeps a partial replay safe.
+-- which binds the owner the migration runs as. ON CONFLICT DO NOTHING makes a
+-- replay a no-op for rows already copied; the trigger and NOT NULL changes are
+-- idempotent.
 --
 -- No org_id column on the new table: it reaches its tenant through the parent
 -- (PARENT_FK_JOIN_POLICY_TABLES in rls-coverage.integration.test.ts), is
@@ -89,27 +103,43 @@ BEGIN
   END IF;
 END $$;
 
--- Backfill + drop the parent column, once.
+-- Backfill from the legacy column.
 DO $$
 DECLARE
   n integer;
 BEGIN
   PERFORM set_config('breeze.scope', 'system', true);
 
-  IF EXISTS (
-    SELECT 1 FROM information_schema.columns
-    WHERE table_schema = 'public'
-      AND table_name = 'notification_channels'
-      AND column_name = 'config'
-  ) THEN
-    EXECUTE $sql$
-      INSERT INTO public.notification_channel_configs (channel_id, config)
-      SELECT id, config FROM public.notification_channels
-      ON CONFLICT (channel_id) DO NOTHING
-    $sql$;
-    GET DIAGNOSTICS n = ROW_COUNT;
-    RAISE NOTICE 'notification_channel_configs: backfilled % channel config row(s)', n;
-
-    EXECUTE 'ALTER TABLE public.notification_channels DROP COLUMN config';
-  END IF;
+  INSERT INTO public.notification_channel_configs (channel_id, config)
+  SELECT id, config FROM public.notification_channels
+  WHERE config IS NOT NULL
+  ON CONFLICT (channel_id) DO NOTHING;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  RAISE NOTICE 'notification_channel_configs: backfilled % channel config row(s)', n;
 END $$;
+
+ALTER TABLE public.notification_channels ALTER COLUMN config DROP NOT NULL;
+
+-- Rollback safety: mirror legacy-column writes (an old image only writes the
+-- parent) into the child table. SECURITY INVOKER — the upsert runs under the
+-- writer's own RLS, and a writer that can write the parent row owns it, which is
+-- exactly what the child policy's WITH CHECK requires. Dropped by the contract
+-- step together with the column.
+CREATE OR REPLACE FUNCTION public.notification_channels_sync_legacy_config()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $fn$
+BEGIN
+  IF NEW.config IS NOT NULL THEN
+    INSERT INTO public.notification_channel_configs (channel_id, config)
+    VALUES (NEW.id, NEW.config)
+    ON CONFLICT (channel_id) DO UPDATE SET config = EXCLUDED.config;
+  END IF;
+  RETURN NULL;
+END
+$fn$;
+
+DROP TRIGGER IF EXISTS notification_channels_sync_legacy_config ON public.notification_channels;
+CREATE TRIGGER notification_channels_sync_legacy_config
+  AFTER INSERT OR UPDATE OF config ON public.notification_channels
+  FOR EACH ROW EXECUTE FUNCTION public.notification_channels_sync_legacy_config();
