@@ -49,8 +49,19 @@ type DRExecution = {
   createdAt: string;
 };
 
+// #6496: `formatDateTime` with no style options falls back to the runtime's
+// default `toLocaleString`, which on en-US renders the short numeric date
+// (9/20/2026, 8:15:17 PM) — not the app's own long format used everywhere
+// else (Sep 20, 2026, 02:08 PM).
 function formatDate(value: string | null): string {
-  return formatDateTime(value, { fallback: '-' });
+  return formatDateTime(value, {
+    fallback: '-',
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }
 
 function formatDuration(startedAt: string | null, completedAt: string | null): string {

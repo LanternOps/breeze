@@ -39,6 +39,7 @@ type Snapshot = {
   id: string;
   label: string;
   size?: string;
+  sizeBytes?: number | null;
   status?: string;
   files?: SnapshotFile[];
 };
@@ -91,7 +92,7 @@ function flattenSnapshotTree(nodes: SnapshotTreeItem[]): SnapshotFile[] {
           id: entry.path,
           path: entry.path,
           name: entry.name,
-          size: typeof entry.sizeBytes === 'number' ? `${entry.sizeBytes} B` : undefined,
+          size: typeof entry.sizeBytes === 'number' ? formatBytes(entry.sizeBytes) : undefined,
         });
         continue;
       }
@@ -465,7 +466,11 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                       )}
                     >
                       <div className="flex items-center justify-between text-xs text-muted-foreground">
-                        <span>{snapshot.size ?? '--'}</span>
+                        <span>
+                          {typeof snapshot.sizeBytes === 'number'
+                            ? formatBytes(snapshot.sizeBytes)
+                            : snapshot.size ?? '--'}
+                        </span>
                         <span>{snapshot.status ?? 'Ready'}</span>
                       </div>
                       <div className="mt-2 text-sm font-semibold text-foreground">
@@ -643,7 +648,9 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                     <MapPin className="h-4 w-4 text-primary" />
                     {t('restoreWizard.destination')} </div>
                   <p className="mt-2 text-xs text-muted-foreground">
-                    {destination === 'original' ? 'Original path' : 'Alternate path'}
+                    {destination === 'original'
+                      ? 'Original path'
+                      : `Alternate path: ${alternatePath.trim() || '(none entered)'}`}
                   </p>
                 </div>
                 <div className="rounded-md border border-dashed bg-muted/30 p-4">

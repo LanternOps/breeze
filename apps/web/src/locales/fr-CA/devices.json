@@ -955,7 +955,10 @@
     "historyKindFiles": "Nettoyage de fichiers",
     "historyKindSystem": "Nettoyage système",
     "historyReclaimed": "{{size}} récupérés",
-    "historyCandidates": "{{count}} candidats",
+    "historyCandidates_one": "{{count}} candidat",
+    "historyCandidates_other": "{{count}} candidats",
+    "historyActions_one": "{{count}} action",
+    "historyActions_other": "{{count}} actions",
     "status": {
       "previewed": "Aperçu",
       "running": "En cours",

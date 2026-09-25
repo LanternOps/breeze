@@ -390,7 +390,9 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 7,
     // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
     // +1 (network asset site move, #6766): networkSettings.details.site "Site" is the identical cognate in fr-FR.
-    'devices.json': 155,
+    // +2 (#6496, backup UI raw values): cleanupHistory.historyActions_one/_other
+    // — "action"/"actions" are identical cognates in fr-FR.
+    'devices.json': 157,
     'discovery.json': 15,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.
@@ -557,7 +559,9 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 7,
     // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
     // +1 (network asset site move, #6766): networkSettings.details.site "Site" is the identical cognate in fr-CA.
-    'devices.json': 155,
+    // +2 (#6496, backup UI raw values): cleanupHistory.historyActions_one/_other
+    // — "action"/"actions" are identical cognates in fr-CA.
+    'devices.json': 157,
     'discovery.json': 15,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.

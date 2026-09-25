@@ -955,7 +955,10 @@
     "historyKindFiles": "File cleanup",
     "historyKindSystem": "System cleanup",
     "historyReclaimed": "{{size}} reclaimed",
-    "historyCandidates": "{{count}} candidates",
+    "historyCandidates_one": "{{count}} candidate",
+    "historyCandidates_other": "{{count}} candidates",
+    "historyActions_one": "{{count}} action",
+    "historyActions_other": "{{count}} actions",
     "status": {
       "previewed": "Previewed",
       "running": "Running",
