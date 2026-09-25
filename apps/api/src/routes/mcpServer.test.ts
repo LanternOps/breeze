@@ -1457,7 +1457,7 @@ describe('MCP transport integration', () => {
       expect(body.result.content[0].text).toBe(JSON.stringify({ ok: true, asset: 'a-1' }));
       expect(body.result.structuredContent).toEqual(JSON.parse(body.result.content[0].text));
       expect(body.result.isError).toBeUndefined();
-      expect(routeMocks.resolveTenantToolByName).toHaveBeenCalledWith(expect.anything(), 'hudu__get_asset');
+      expect(routeMocks.resolveTenantToolByName).toHaveBeenCalledWith(expect.anything(), 'hudu__get_asset', 'org-1');
       expect(routeMocks.executeTenantToolDetailed).toHaveBeenCalledWith(
         descriptor,
         { id: 'a-1' },
@@ -1601,6 +1601,138 @@ describe('MCP transport integration', () => {
       expect(body.error?.message).toBe('Insufficient permissions: requires external_tools.use');
       expect(routeMocks.executeTenantTool).not.toHaveBeenCalled();
       expect(routeMocks.executeTenantToolDetailed).not.toHaveBeenCalled();
+    });
+
+    // #6046: a partner-scoped MCP session must be able to reach an ORG-owned
+    // tenant tool — the resolver only matches org-owned rows when it is handed
+    // an explicit, access-checked `targetOrgId` (#6043 contract). Before the
+    // fix both tools/list and tools/call resolved with no target org, so an
+    // org-owned tool was silently absent / "Unknown tool".
+    describe('#6046: access-checked target org for tenant tool resolution', () => {
+      function setPartnerKeyWithOrgs(accessibleOrgIds: string[]) {
+        setTestApiKey({ id: 'key-partner', orgId: null, partnerId: 'partner-9', scopes: ['ai:read'] });
+        routeMocks.getUserPermissions.mockResolvedValue({
+          ...DEFAULT_PERMISSIONS_BASELINE,
+          orgId: null,
+          partnerId: 'partner-9',
+          scope: 'partner',
+        });
+        let selectCall = 0;
+        testState.db = {
+          select: () => {
+            selectCall += 1;
+            if (selectCall === 1) {
+              return {
+                from: () => ({
+                  where: () => ({
+                    limit: async () => [{ orgAccess: 'selected', orgIds: accessibleOrgIds }],
+                  }),
+                }),
+              };
+            }
+            return {
+              from: () => ({
+                where: async () => accessibleOrgIds.map((orgId) => ({ id: orgId })),
+              }),
+            };
+          },
+        };
+      }
+
+      async function callTenantTool(name: string, args: Record<string, unknown>) {
+        const res = await mcpServerRoutes.request('/message', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_partner' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+        });
+        expect(res.status).toBe(200);
+        return res.json();
+      }
+
+      it('tools/list resolves an org-scoped key against its pinned org', async () => {
+        delete process.env.IS_HOSTED;
+        setTestApiKey({ scopes: ['ai:read'] });
+        routeMocks.resolveTenantTools.mockResolvedValue([]);
+
+        await mcpServerRoutes.request('/message', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+        });
+
+        expect(routeMocks.resolveTenantTools).toHaveBeenCalledWith(expect.anything(), 'org-1');
+      });
+
+      it('tools/list resolves a partner-scoped key against its first accessible org', async () => {
+        delete process.env.IS_HOSTED;
+        setPartnerKeyWithOrgs(['org-a', 'org-b']);
+        routeMocks.resolveTenantTools.mockResolvedValue([
+          makeTenantToolDescriptor({ qualifiedName: 'hudu__get_asset', tier: 1 }),
+        ]);
+
+        const res = await mcpServerRoutes.request('/message', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_partner' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+        });
+        const body = await res.json();
+
+        expect(routeMocks.resolveTenantTools).toHaveBeenCalledWith(expect.anything(), 'org-a');
+        expect(body.result.tools.map((t: { name: string }) => t.name)).toContain('hudu__get_asset');
+      });
+
+      it('tools/call from a partner-scoped key threads an accessible arguments.orgId into resolution and execution', async () => {
+        delete process.env.IS_HOSTED;
+        setPartnerKeyWithOrgs(['org-a', 'org-b']);
+        const descriptor = makeTenantToolDescriptor({ qualifiedName: 'hudu__get_asset', tier: 1 });
+        routeMocks.resolveTenantToolByName.mockResolvedValue(descriptor);
+        routeMocks.executeTenantToolDetailed.mockResolvedValue({ isError: false, text: JSON.stringify({ ok: true }) });
+
+        const body = await callTenantTool('hudu__get_asset', { orgId: 'org-b', id: 'a-1' });
+
+        expect(body.error).toBeUndefined();
+        expect(routeMocks.resolveTenantToolByName).toHaveBeenCalledWith(expect.anything(), 'hudu__get_asset', 'org-b');
+        expect(routeMocks.executeTenantToolDetailed).toHaveBeenCalledWith(
+          descriptor,
+          { orgId: 'org-b', id: 'a-1' },
+          expect.anything(),
+          expect.objectContaining({ surface: 'mcp', orgId: 'org-b' }),
+        );
+      });
+
+      it('tools/call never hands the resolver a caller-supplied orgId outside the caller\'s accessible set (cross-tenant)', async () => {
+        delete process.env.IS_HOSTED;
+        setPartnerKeyWithOrgs(['org-a', 'org-b']);
+        routeMocks.resolveTenantToolByName.mockResolvedValue(null);
+        routeMocks.resolveTenantToolHealthByName.mockResolvedValue({ found: false });
+
+        const body = await callTenantTool('hudu__get_asset', { orgId: 'org-foreign' });
+
+        expect(body.error.code).toBe(-32602);
+        expect(body.error.message).toBe('Unknown tool: hudu__get_asset');
+        // Discarded and replaced by the caller's own default org — never the
+        // foreign one, on either the resolve or the health-check lookup.
+        expect(routeMocks.resolveTenantToolByName).toHaveBeenCalledWith(expect.anything(), 'hudu__get_asset', 'org-a');
+        expect(routeMocks.resolveTenantToolHealthByName).toHaveBeenCalledWith(expect.anything(), 'hudu__get_asset', 'org-a');
+        const everyArg = [
+          ...routeMocks.resolveTenantToolByName.mock.calls,
+          ...routeMocks.resolveTenantToolHealthByName.mock.calls,
+        ].flat();
+        expect(everyArg).not.toContain('org-foreign');
+        expect(routeMocks.executeTenantToolDetailed).not.toHaveBeenCalled();
+      });
+
+      it('tools/call from an org-scoped key stays pinned to the key org even when arguments.orgId names another org', async () => {
+        delete process.env.IS_HOSTED;
+        setTestApiKey({ scopes: ['ai:read'] });
+        routeMocks.resolveTenantToolByName.mockResolvedValue(null);
+        routeMocks.resolveTenantToolHealthByName.mockResolvedValue({ found: false });
+
+        await callTenantTool('hudu__get_asset', { orgId: 'org-foreign' });
+
+        expect(routeMocks.resolveTenantToolByName).toHaveBeenCalledWith(expect.anything(), 'hudu__get_asset', 'org-1');
+        expect(routeMocks.resolveTenantToolHealthByName).toHaveBeenCalledWith(expect.anything(), 'hudu__get_asset', 'org-1');
+      });
     });
 
     // #6401: tools/list used to advertise tier-3 tenant descriptors for a key
