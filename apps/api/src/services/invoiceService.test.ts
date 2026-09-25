@@ -959,6 +959,7 @@ describe('issueInvoice document_locale stamp', () => {
     queueResult(branding); // 5. portal branding for the invoice's org (W02-API: the shared footer chain's last resort)
     queueResult([{ counter: 1 }]); // 6. counter upsert
     queueResult([{ id: 'inv1' }]); // 7. guarded update ... returning
+    queueResult([]); // 7b. ticket-label snapshot update (sweep C4)
     queueResult([{ ...inv, status: 'sent' }]); // 8. final re-select
   }
 

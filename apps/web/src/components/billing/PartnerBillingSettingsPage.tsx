@@ -20,6 +20,9 @@ interface PartnerBilling {
   currencyCode: string; defaultTaxRate: string | null; invoiceNumberPrefix: string; invoiceTermsDays: number;
   autoEmailInvoiceOnQuoteAccept: boolean; notifyCustomerOnBehalfAcceptance?: boolean; invoiceDeviceAppendix: boolean; invoiceFooter: string | null;
   documentTheme: 'classic' | 'condensed'; documentPageSize: 'letter' | 'a4';
+  // partners.name — the seller name documents print when billingCompanyName is
+  // blank (sellerSnapshot: nonBlank(billingCompanyName) ?? nonBlank(name)).
+  name?: string | null;
   billingCompanyName: string | null; billingPhone: string | null; billingWebsite: string | null;
   billingAddressLine1: string | null; billingAddressLine2: string | null; billingAddressCity: string | null;
   billingAddressRegion: string | null; billingAddressPostalCode: string | null; billingAddressCountry: string | null;
@@ -58,6 +61,7 @@ export default function PartnerBillingSettingsPage() {
   const [terms, setTerms] = useState('');
   // Resolved "company details" values, read straight off the same GET response —
   // the InheritedField placeholder/source for the letterhead override fields (#6228).
+  const [inheritedCompanyName, setInheritedCompanyName] = useState<string | null>(null);
   const [inheritedPhone, setInheritedPhone] = useState<string | null>(null);
   const [inheritedWebsite, setInheritedWebsite] = useState<string | null>(null);
   const [inheritedAddress, setInheritedAddress] = useState<ReturnType<typeof parseCompanyAddress> | null>(null);
@@ -93,6 +97,7 @@ export default function PartnerBillingSettingsPage() {
       setTerms(p.billingTermsAndConditions ?? '');
       const companyContact = parseCompanyContact(p.settings?.contact);
       const companyAddress = parseCompanyAddress(p.settings?.address);
+      setInheritedCompanyName(p.name?.trim() || null);
       setInheritedPhone(companyContact.phone);
       setInheritedWebsite(companyContact.website);
       setInheritedAddress(isCompanyAddressBlank(companyAddress) ? null : companyAddress);
@@ -211,6 +216,7 @@ export default function PartnerBillingSettingsPage() {
           city={city} setCity={setCity} region={region} setRegion={setRegion}
           postal={postal} setPostal={setPostal} country={country} setCountry={setCountry}
           terms={terms} setTerms={setTerms}
+          inheritedCompanyName={inheritedCompanyName}
           inheritedPhone={inheritedPhone} inheritedWebsite={inheritedWebsite} inheritedAddress={inheritedAddress}
         />
       )}

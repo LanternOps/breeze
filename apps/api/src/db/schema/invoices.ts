@@ -156,6 +156,10 @@ export const invoiceLines = pgTable('invoice_lines', {
   catalogItemId: uuid('catalog_item_id'),
   parentLineId: uuid('parent_line_id').references((): AnyPgColumn => invoiceLines.id, { onDelete: 'cascade' }),
   ticketId: uuid('ticket_id'),
+  // The "Ticket #…" label frozen at issue (settings audit rule 6, sweep C4).
+  // NULL on a draft — renderers read the ticket's live number instead
+  // (invoiceTicketNumberSql). Stamped once by issueInvoice; never restamped.
+  ticketLabel: varchar('ticket_label', { length: 50 }),
   // Title (mirrors catalog name). Nullable for legacy lines created before the
   // split, where `description` holds the title and the renderer falls back to it.
   name: varchar('name', { length: 255 }),

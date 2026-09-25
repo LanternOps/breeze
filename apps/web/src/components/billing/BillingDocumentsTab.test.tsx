@@ -58,6 +58,12 @@ describe('BillingDocumentsTab', () => {
   });
 
   describe('company-details fallback (#6228)', () => {
+    it('shows the inherited company name (partner name) and its source when the override is blank (sweep C3)', () => {
+      renderTab({ inheritedCompanyName: 'Default Partner' });
+      expect(screen.getByTestId('partner-billing-company-name')).toHaveAttribute('placeholder', 'Default Partner');
+      expect(screen.getByTestId('partner-billing-company-name').parentElement?.textContent).toMatch(/company details/i);
+    });
+
     it('shows the inherited phone/website as placeholders when the override is blank', () => {
       renderTab({ inheritedPhone: '555-0100', inheritedWebsite: 'https://acme.test' });
       expect(screen.getByTestId('partner-billing-phone')).toHaveAttribute('placeholder', '555-0100');

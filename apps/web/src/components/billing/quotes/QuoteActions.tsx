@@ -273,6 +273,11 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
   // Partner-scope support data, loaded when the composer opens: the partner's
   // email signature (preview only — the server appends it). null = unknown.
   const [signature, setSignature] = useState<string | null>(null);
+  // Same partner fetch: the name the default subject renders ("… from
+  // <partner>") and whether a saved quote_send template overrides that
+  // default subject. null / false = unknown → generic placeholder wording.
+  const [partnerName, setPartnerName] = useState<string | null>(null);
+  const [hasCustomSubject, setHasCustomSubject] = useState(false);
   // Stripe-connect status (drives the deposit-can't-be-paid warning) and the
   // warn-don't-block currency warning come PRECOMPUTED on the detail payload
   // (GET /quotes/:id). Never fetched from /partner/stripe-connect here: that
@@ -422,8 +427,16 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
         try {
           const res = await fetchWithAuth('/orgs/partners/me');
           if (!res.ok) return;
-          const partner = (await res.json()) as { emailSignature?: string | null };
+          const partner = (await res.json()) as {
+            name?: string | null;
+            emailSignature?: string | null;
+            settings?: { emailTemplates?: { quote_send?: { subject?: unknown } } } | null;
+          };
           setSignature(partner.emailSignature?.trim() || null);
+          setPartnerName(partner.name?.trim() || null);
+          // Mirrors renderPartnerEmail: a non-blank saved subject wins over the default.
+          const customSubject = partner.settings?.emailTemplates?.quote_send?.subject;
+          setHasCustomSubject(typeof customSubject === 'string' && customSubject.trim() !== '');
         } catch { /* no preview — the server still appends the signature */ }
       })();
     }
@@ -1340,11 +1353,18 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
               disabled={sending}
               // The placeholder mirrors the server default so leaving the field
               // blank is a visible, deliberate choice — not a missing subject.
-              placeholder={
-                quote.quoteNumber
-                  ? t('quotes.actions.sendConfirm.subjectPlaceholder', { number: quote.quoteNumber })
-                  : t('quotes.actions.sendConfirm.subjectPlaceholderNoNumber')
-              }
+              // Same branches as the API's defaultSubject('quote_send'): a saved
+              // template subject wins; else "<title> — proposal from <partner>",
+              // or "Proposal <number> from <partner>" for an untitled quote.
+              placeholder={(() => {
+                if (hasCustomSubject) return t('quotes.actions.sendConfirm.subjectPlaceholderTemplate');
+                const partner = partnerName ?? t('quotes.actions.sendConfirm.subjectPartnerFallback');
+                const title = quote.title?.trim();
+                if (title) return t('quotes.actions.sendConfirm.subjectPlaceholderTitled', { title, partner });
+                return quote.quoteNumber
+                  ? t('quotes.actions.sendConfirm.subjectPlaceholder', { number: quote.quoteNumber, partner })
+                  : t('quotes.actions.sendConfirm.subjectPlaceholderNoNumber', { partner });
+              })()}
               data-testid="quote-send-subject"
               className="min-w-0 flex-1 rounded-sm border-0 bg-transparent py-2 text-sm focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
             />

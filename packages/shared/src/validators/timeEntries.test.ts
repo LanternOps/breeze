@@ -155,6 +155,42 @@ describe('billablesExportQuerySchema', () => {
   it('accepts an 11-month range (within 366-day cap)', () => {
     expect(billablesExportQuerySchema.safeParse({ from: '2026-01-01', to: '2026-12-01' }).success).toBe(true);
   });
+
+  // Sweep C2: a date-only `to` is inclusive of that whole UTC day, the same
+  // rule invoice assembly uses (`${to}T23:59:59Z`, invoiceService.assembleDraftFromOrg).
+  // listBillables filters startedAt with gte(from) / lte(to), mirrored here.
+  it('includes an entry at 15:00 on the `to` day and excludes the next day', () => {
+    const parsed = billablesExportQuerySchema.parse({ from: '2026-06-01', to: '2026-06-30' });
+    const inRange = (iso: string) => {
+      const t = new Date(iso).getTime();
+      return t >= parsed.from.getTime() && t <= parsed.to.getTime();
+    };
+    expect(parsed.from.toISOString()).toBe('2026-06-01T00:00:00.000Z');
+    expect(parsed.to.toISOString()).toBe('2026-06-30T23:59:59.000Z');
+    expect(inRange('2026-06-30T15:00:00Z')).toBe(true);
+    expect(inRange('2026-07-01T00:00:00Z')).toBe(false);
+    expect(inRange('2026-07-01T15:00:00Z')).toBe(false);
+  });
+
+  it('accepts a single-day range (from = to)', () => {
+    expect(billablesExportQuerySchema.safeParse({ from: '2026-06-30', to: '2026-06-30' }).success).toBe(true);
+  });
+
+  it('keeps the 366-day cap on whole calendar days', () => {
+    // 366 inclusive days (non-leap year + 1 day) is allowed; 367 is not.
+    expect(billablesExportQuerySchema.safeParse({ from: '2026-01-01', to: '2027-01-01' }).success).toBe(true);
+    expect(billablesExportQuerySchema.safeParse({ from: '2026-01-01', to: '2027-01-02' }).success).toBe(false);
+  });
+
+  it('full timestamps: a `to` exactly 366×24h after `from` is still accepted, one second more is not', () => {
+    expect(billablesExportQuerySchema.safeParse({ from: '2026-01-01T00:00:00Z', to: '2027-01-02T00:00:00Z' }).success).toBe(true);
+    expect(billablesExportQuerySchema.safeParse({ from: '2026-01-01T00:00:00Z', to: '2027-01-02T00:00:01Z' }).success).toBe(false);
+  });
+
+  it('leaves a full timestamp `to` untouched', () => {
+    const parsed = billablesExportQuerySchema.parse({ from: '2026-06-01', to: '2026-06-30T12:00:00Z' });
+    expect(parsed.to.toISOString()).toBe('2026-06-30T12:00:00.000Z');
+  });
 });
 
 // ── W06 (#3900): provenance vocabulary + suggestion routes ───────────────────

@@ -44,6 +44,7 @@ interface BillingDocumentsTabProps {
   /** Resolved "company details" values (partners.name / settings.contact / settings.address)
    *  — shown as the InheritedField placeholder/source when the corresponding letterhead
    *  override is blank (#6228). Undefined/null when no company-details value is set either. */
+  inheritedCompanyName?: string | null;
   inheritedPhone?: string | null;
   inheritedWebsite?: string | null;
   inheritedAddress?: InheritedAddress | null;
@@ -60,7 +61,7 @@ export default function BillingDocumentsTab({
   companyName, setCompanyName, phone, setPhone, website, setWebsite, websiteInvalid,
   addr1, setAddr1, addr2, setAddr2, city, setCity, region, setRegion, postal, setPostal,
   country, setCountry, terms, setTerms,
-  inheritedPhone = null, inheritedWebsite = null, inheritedAddress = null,
+  inheritedCompanyName = null, inheritedPhone = null, inheritedWebsite = null, inheritedAddress = null,
 }: BillingDocumentsTabProps) {
   const { t } = useTranslation('billing');
   const inheritedSource = t('partnerBillingSettings.company.inheritedFromCompanyDetails');
@@ -162,12 +163,14 @@ export default function BillingDocumentsTab({
           {t('partnerBillingSettings.company.description')}
         </p>
         <div className="mt-4">
-          <label className="text-sm font-medium" htmlFor="pb-company">{t('partnerBillingSettings.company.name')}</label>
-          <input
-            id="pb-company" type="text" value={companyName}
-            onChange={(e) => setCompanyName(e.target.value)}
+          <InheritedField
+            id="pb-company"
+            label={t('partnerBillingSettings.company.name')}
+            value={companyName}
+            onChange={setCompanyName}
+            inheritedValue={inheritedCompanyName}
+            inheritedSource={inheritedSource}
             data-testid="partner-billing-company-name"
-            className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
           />
         </div>
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
