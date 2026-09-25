@@ -104,6 +104,7 @@ import {
   renderRunCsv,
   renderRunPdf,
 } from './reportsSelfService';
+import { MSP_STAFF_REPORT_TYPES } from '../reportRegistry';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const USER_ID = '22222222-2222-4222-8222-222222222222';
@@ -348,6 +349,22 @@ describe('portal report SQL scope', () => {
     expect(query.sql).toContain('"reports"."org_id" = $');
     expect(query.sql).toContain('"reports"."portal_self_service" = $');
     expect(query.params).toEqual(expect.arrayContaining([ORG_ID, true]));
+  });
+
+  // #6941: portal_self_service alone must not admit a run into the portal.
+  // An msp_staff-audience type (margin, AR aging, SLA attainment) stays
+  // invisible even if a definition of that type ever carried the marker.
+  it.each([
+    ['listing', () => portalRunListPredicate(ORG_ID, true)],
+    ['rendering', () => portalRunPredicate(RUN_ID, ORG_ID, true)],
+    ['listing (lifecycle off)', () => portalRunListPredicate(ORG_ID, false)],
+    ['rendering (lifecycle off)', () => portalRunPredicate(RUN_ID, ORG_ID, false)],
+  ])('excludes msp_staff-audience types from run %s (#6941)', (_label, build) => {
+    const query = new PgDialect().sqlToQuery(build());
+
+    expect(query.sql).toContain('"reports"."type" not in (');
+    expect(MSP_STAFF_REPORT_TYPES.length).toBeGreaterThan(0);
+    expect(query.params).toEqual(expect.arrayContaining([...MSP_STAFF_REPORT_TYPES]));
   });
 
   it('gates run listing on delivery (#5784 OD-12): unreferenced runs stay visible, referenced runs need a delivered occurrence', () => {

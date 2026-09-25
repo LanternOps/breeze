@@ -51,7 +51,8 @@ export const PORTAL_SELF_SERVICE_REPORT = {
  *
  * While `portal_branding.enable_reports` is on, the portal lists EVERY
  * completed run of the definition and downloads it as the customer's own
- * report (`portalRunListPredicate` keys on org + marker + status only), so
+ * report (`portalRunListPredicate` keys on org + marker + status, minus
+ * msp_staff-audience types and undelivered evidence — #6941, #5784), so
  * the MSP must not rewrite its customer-safe config (PUT), generate a run
  * under a tech's — possibly site-restricted — authority (POST /:id/generate),
  * or delete it (DELETE). Once the flag is off the definition is an ordinary
