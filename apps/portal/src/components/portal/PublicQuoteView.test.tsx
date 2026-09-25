@@ -9,6 +9,7 @@ import { PublicQuoteView } from './PublicQuoteView';
 
 afterEach(() => {
   cleanup();
+  window.location.hash = '';
   vi.restoreAllMocks();
 });
 
@@ -94,6 +95,62 @@ describe('PublicQuoteView exact public quote contract', () => {
     expect(document.textContent).toContain('Net 30');
     expect(screen.getByTestId('public-quote-terms-conditions').textContent)
       .toContain('Customer-facing terms and conditions.');
+  });
+
+  it('collapses Terms & Conditions by default and summarises sections + read time', () => {
+    const withSections = { ...DETAIL, quote: { ...DETAIL.quote, termsAndConditions: '1. Payment\nNet 30.\n2. Term\nOne year.' } };
+    render(<PublicQuoteView token="public-token" initial={withSections} />);
+    const el = screen.getByTestId('public-quote-terms-conditions') as HTMLDetailsElement;
+    expect(el.tagName).toBe('DETAILS');
+    expect(el.open).toBe(false);
+    expect(el.querySelector('summary')!.textContent).toMatch(/Terms & Conditions · 2 sections · ~1 min read/);
+  });
+
+  it('opens the T&C when location.hash is #terms', async () => {
+    window.location.hash = '#terms';
+    render(<PublicQuoteView token="public-token" initial={DETAIL} />);
+    await waitFor(() => expect((screen.getByTestId('public-quote-terms-conditions') as HTMLDetailsElement).open).toBe(true));
+    window.location.hash = '';
+  });
+
+  it('clicking the checkbox T&C link reopens a manually collapsed block', () => {
+    render(<PublicQuoteView token="public-token" initial={DETAIL} />);
+    const el = screen.getByTestId('public-quote-terms-conditions') as HTMLDetailsElement;
+    const link = screen.getByTestId('public-quote-agree').closest('label')!.querySelector('a')!;
+    fireEvent.click(link);
+    expect(el.open).toBe(true);
+    el.open = false;
+    fireEvent(el, new Event('toggle'));
+    expect(el.open).toBe(false);
+    fireEvent.click(link);
+    expect(el.open).toBe(true);
+  });
+
+  it('expands the T&C for print and restores after', () => {
+    render(<PublicQuoteView token="public-token" initial={DETAIL} />);
+    const el = screen.getByTestId('public-quote-terms-conditions') as HTMLDetailsElement;
+    fireEvent(window, new Event('beforeprint'));
+    expect(el.open).toBe(true);
+    fireEvent(window, new Event('afterprint'));
+    expect(el.open).toBe(false);
+  });
+
+  it('renders the sign panel after the totals and before the T&C', () => {
+    render(<PublicQuoteView token="public-token" initial={DETAIL} />);
+    const sign = screen.getByTestId('public-quote-agree');
+    const terms = screen.getByTestId('public-quote-terms-conditions');
+    expect(sign.compareDocumentPosition(terms) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('links the signature checkbox to #terms only when T&C exist', () => {
+    const { unmount } = render(<PublicQuoteView token="public-token" initial={DETAIL} />);
+    const link = screen.getByTestId('public-quote-agree').closest('label')!.querySelector('a');
+    expect(link?.getAttribute('href')).toBe('#terms');
+    unmount();
+    render(
+      <PublicQuoteView token="public-token" initial={{ ...DETAIL, quote: { ...DETAIL.quote, termsAndConditions: null } }} />
+    );
+    expect(screen.getByTestId('public-quote-agree').closest('label')!.querySelector('a')).toBeNull();
   });
 
   it('stamps data-doc-theme="condensed" when the DTO resolves the condensed theme', () => {

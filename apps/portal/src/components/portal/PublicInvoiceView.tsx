@@ -4,7 +4,7 @@ import { withBase } from '@/lib/basePath';
 import { portalApi, buildPortalApiUrl, type PublicInvoiceDetail, lineWorkedVsBilledNote } from '@/lib/api';
 import { groupInvoiceLinesByTicket } from '@/lib/invoiceLineGroups';
 import { STATUS_LABELS, statusTone } from '@/lib/invoiceStatus';
-import { DocumentPaper, DocumentHeader, DocumentTerms, type DocSeller } from './documentShell';
+import { DocumentPaper, DocumentHeader, DocumentTerms, DocumentTermsCollapsible, type DocSeller } from './documentShell';
 import { money } from '@/lib/money';
 
 /**
@@ -335,7 +335,7 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
 
         {invoice.notes && <DocumentTerms label="Notes">{invoice.notes}</DocumentTerms>}
         {invoice.termsAndConditions && (
-          <DocumentTerms label="Terms & Conditions" testId="public-invoice-terms">{invoice.termsAndConditions}</DocumentTerms>
+          <DocumentTermsCollapsible text={invoice.termsAndConditions} testId="public-invoice-terms" />
         )}
       </DocumentPaper>
 
