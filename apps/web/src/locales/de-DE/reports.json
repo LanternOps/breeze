@@ -127,28 +127,13 @@
         "timeRange": "Zeitbereich"
       },
       "metricNames": {
-        "activeDevices": "Aktive Geräte",
-        "automationRuns": "Automatisierungsläufe",
         "cpuUtilization": "CPU Auslastung",
         "diskUsage": "Festplattennutzung",
-        "incidentCount": "Anzahl der Vorfälle",
-        "loginVolume": "Anmeldevolumen",
         "memoryUtilization": "Arbeitsspeicherauslastung",
-        "mfaAdoption": "MFA Annahme",
-        "networkThroughput": "Netzwerkdurchsatz",
-        "patchCompliance": "Patch-Konformität",
-        "remoteSessions": "Remote-Sitzungen",
-        "responseTime": "Reaktionszeit",
-        "slaCompliance": "SLA Compliance",
-        "threatAlerts": "Bedrohungswarnungen",
-        "uptime": "Betriebszeit",
-        "vulnerabilityScore": "Schwachstellenbewertung"
+        "networkThroughput": "Netzwerkdurchsatz"
       },
       "metricTypes": {
-        "availability": "Verfügbarkeit",
-        "performance": "Leistung",
-        "security": "Sicherheit",
-        "usage": "Nutzung"
+        "performance": "Leistung"
       },
       "runQuery": "Abfrage ausführen",
       "running": "Wird ausgeführt...",
