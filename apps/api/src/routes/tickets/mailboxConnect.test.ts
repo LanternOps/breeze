@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { createHmac } from 'crypto';
 
@@ -24,7 +24,10 @@ type AuthState = {
   permissions: Set<PermissionName>;
 };
 
-const { authRef, mocks } = vi.hoisted(() => ({
+const { authRef, mocks, IdentityError } = vi.hoisted(() => ({
+  IdentityError: class MicrosoftIdentityVerificationError extends Error {
+    override readonly name = 'MicrosoftIdentityVerificationError';
+  },
   authRef: { current: null as AuthState | null },
   mocks: {
     createPendingConnection: vi.fn(),
@@ -117,6 +120,7 @@ vi.mock('../../services/ticketMailbox/consentSessionService', () => ({
   hashTenantHint: mocks.hashTenantHint,
 }));
 vi.mock('../../services/ticketMailbox/microsoftIdentity', () => ({
+  MicrosoftIdentityVerificationError: IdentityError,
   buildMicrosoftAuthorizationUrl: vi.fn((input: Record<string, string>) => {
     const url = new URL(`https://login.microsoftonline.com/${input.tenantHint}/oauth2/v2.0/authorize`);
     Object.entries(input).forEach(([key, value]) => url.searchParams.set(key, value));
@@ -1024,6 +1028,148 @@ describe('M365 mailbox lifecycle routes', () => {
       expect(mocks.bindVerifiedTenant).not.toHaveBeenCalled();
     },
   );
+  // Self-hosters have no Sentry DSN: every consent-callback failure must leave
+  // one sanitized `[ticketMailbox]` line in stdout (`docker logs`), and never
+  // tokens, codes, state, cookies, query tenant hints or raw Microsoft text.
+  describe('stdout diagnostics for callback failures', () => {
+    const SECRET_BITS = ['admin-state', 'identity-state', 'authorization-code', 'stored-nonce', 'stored-code-verifier'];
+
+    function warnCalls(): string {
+      return JSON.stringify(vi.mocked(console.warn).mock.calls);
+    }
+
+    beforeEach(() => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+    });
+    afterEach(() => {
+      vi.mocked(console.warn).mockRestore();
+    });
+
+    it('logs a provider error with only its validated code and AADSTS number, never the raw description', async () => {
+      const response = await app.request(
+        '/callback?state=identity-state&error=invalid_client&error_description=AADSTS7000215%3A+Invalid+client+secret+provided+for+app+xyz-SECRET-HINT',
+        { headers: { cookie: `ticket_mailbox_oauth_state=${cookieFor('identity_verification', 'identity-state')}` } },
+      );
+      expect(response.status).toBe(302);
+      expect(console.warn).toHaveBeenCalledWith('[ticketMailbox] consent callback failed', expect.objectContaining({
+        connectionId: CONNECTION_ID,
+        phase: 'identity_verification',
+        outcome: 'invalid_identity',
+        step: 'provider_error',
+        providerError: 'invalid_client',
+        aadsts: 'AADSTS7000215',
+      }));
+      const logged = warnCalls();
+      expect(logged).not.toContain('Invalid client secret');
+      expect(logged).not.toContain('SECRET-HINT');
+      for (const bit of SECRET_BITS) expect(logged).not.toContain(bit);
+    });
+
+    it('replaces an unexpected provider error code rather than echoing it', async () => {
+      await app.request(
+        '/callback?state=identity-state&error=Evil%20Code%3Cscript%3E',
+        { headers: { cookie: `ticket_mailbox_oauth_state=${cookieFor('identity_verification', 'identity-state')}` } },
+      );
+      expect(console.warn).toHaveBeenCalledWith('[ticketMailbox] consent callback failed', expect.objectContaining({
+        outcome: 'invalid_identity', providerError: 'unrecognized',
+      }));
+      expect(warnCalls()).not.toContain('Evil');
+      expect(warnCalls()).not.toContain('aadsts');
+    });
+
+    it.each([
+      ['an ownership conflict', new Error(`Mailbox tenant is already owned by another partner: ${OTHER_PARTNER_ID}`), 'ownership_conflict'],
+      ['any other bind failure', new Error('connection reset'), 'invalid_identity'],
+    ])('logs %s at tenant binding with its outcome', async (_label, error, outcome) => {
+      mocks.bindVerifiedTenant.mockRejectedValue(error);
+      await app.request('/callback?state=identity-state&code=authorization-code', {
+        headers: { cookie: `ticket_mailbox_oauth_state=${cookieFor('identity_verification', 'identity-state')}` },
+      });
+      expect(console.warn).toHaveBeenCalledWith('[ticketMailbox] consent callback failed', expect.objectContaining({
+        connectionId: CONNECTION_ID, outcome, step: 'tenant_binding',
+      }));
+      expect(warnCalls()).not.toContain(OTHER_PARTNER_ID);
+      expect(warnCalls()).not.toContain('connection reset');
+    });
+
+    it('logs a non-identity exception during verification with its error class only', async () => {
+      mocks.exchangeMicrosoftAuthorizationCode.mockRejectedValue(new TypeError('fetch failed: raw socket detail'));
+      await app.request('/callback?state=identity-state&code=authorization-code', {
+        headers: { cookie: `ticket_mailbox_oauth_state=${cookieFor('identity_verification', 'identity-state')}` },
+      });
+      expect(console.warn).toHaveBeenCalledWith('[ticketMailbox] consent callback failed', expect.objectContaining({
+        outcome: 'invalid_identity', step: 'unexpected_error', errorName: 'TypeError',
+      }));
+      expect(warnCalls()).not.toContain('raw socket detail');
+    });
+
+    it('logs an identity-check rejection as identity_verification (the check itself is logged by the service)', async () => {
+      mocks.verifyMicrosoftAdminIdToken.mockRejectedValue(new IdentityError('Microsoft identity verification failed'));
+      await app.request('/callback?state=identity-state&code=authorization-code', {
+        headers: { cookie: `ticket_mailbox_oauth_state=${cookieFor('identity_verification', 'identity-state')}` },
+      });
+      expect(console.warn).toHaveBeenCalledTimes(1);
+      expect(console.warn).toHaveBeenCalledWith('[ticketMailbox] consent callback failed', expect.objectContaining({
+        outcome: 'invalid_identity', step: 'identity_verification',
+      }));
+    });
+
+    it('logs a replaced consent attempt as stale_attempt', async () => {
+      mocks.getMailboxConnection.mockResolvedValue(connection({ consentAttemptId: '12121212-1212-4212-8212-121212121212' }));
+      await app.request('/callback?state=identity-state&code=authorization-code', {
+        headers: { cookie: `ticket_mailbox_oauth_state=${cookieFor('identity_verification', 'identity-state')}` },
+      });
+      expect(console.warn).toHaveBeenCalledWith('[ticketMailbox] consent callback failed', expect.objectContaining({
+        connectionId: CONNECTION_ID, outcome: 'stale_attempt', step: 'attempt_replaced',
+      }));
+    });
+
+    it('logs an unconfigured platform app', async () => {
+      mocks.platformConfig.mockReturnValue(null);
+      await app.request('/callback?state=identity-state&code=authorization-code', {
+        headers: { cookie: `ticket_mailbox_oauth_state=${cookieFor('identity_verification', 'identity-state')}` },
+      });
+      expect(console.warn).toHaveBeenCalledWith('[ticketMailbox] consent callback failed', expect.objectContaining({
+        outcome: 'invalid_identity', step: 'platform_not_configured',
+      }));
+    });
+
+    it('logs a failed identity-session setup after admin consent', async () => {
+      mocks.createIdentityVerificationSession.mockRejectedValue(new Error('db down'));
+      await app.request(`/callback?state=admin-state&tenant=${TENANT_ID}&admin_consent=True`, {
+        headers: { cookie: `ticket_mailbox_oauth_state=${cookieFor('admin_consent', 'admin-state')}` },
+      });
+      expect(console.warn).toHaveBeenCalledWith('[ticketMailbox] consent callback failed', expect.objectContaining({
+        phase: 'admin_consent', outcome: 'invalid_identity', step: 'identity_session_setup',
+      }));
+      expect(warnCalls()).not.toContain(TENANT_ID);
+    });
+
+    it('logs a failed connection lookup', async () => {
+      mocks.getMailboxConnection.mockRejectedValue(new Error('db down'));
+      await app.request('/callback?state=identity-state&code=authorization-code', {
+        headers: { cookie: `ticket_mailbox_oauth_state=${cookieFor('identity_verification', 'identity-state')}` },
+      });
+      expect(console.warn).toHaveBeenCalledWith('[ticketMailbox] consent callback failed', expect.objectContaining({
+        outcome: 'invalid_identity', step: 'connection_lookup',
+      }));
+    });
+
+    it.each([
+      ['binding_mismatch', '/callback?state=admin-state&tenant=11111111-1111-4111-8111-111111111111&admin_consent=True', undefined],
+      ['invalid_callback', '/callback?state=identity-state&code=authorization-code&tenant=' + ATTACKER_TENANT, cookieFor('identity_verification', 'identity-state')],
+      ['expired', '/callback?state=identity-state&code=authorization-code', cookieFor('identity_verification', 'identity-state')],
+    ])('logs a pre-session %s rejection with its reason and no connection id or query data', async (reason, path, cookie) => {
+      if (reason === 'expired') mocks.consumeConsentSession.mockResolvedValue(null);
+      await app.request(path, { headers: cookie ? { cookie: `ticket_mailbox_oauth_state=${cookie}` } : undefined });
+      expect(console.warn).toHaveBeenCalledWith('[ticketMailbox] consent callback rejected', expect.objectContaining({ reason }));
+      const logged = warnCalls();
+      expect(logged).not.toContain('connectionId');
+      expect(logged).not.toContain(ATTACKER_TENANT);
+      expect(logged).not.toContain(TENANT_ID);
+      for (const bit of SECRET_BITS) expect(logged).not.toContain(bit);
+    });
+  });
 });
 
 describe('POST /connect/gmail (production Gmail connect route, #6593)', () => {
