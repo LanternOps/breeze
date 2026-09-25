@@ -2210,6 +2210,99 @@ describe('POST /agents/:id/heartbeat — artifact-edition offer gate (#4072)', (
     }
   });
 
+  describe('persisted withheld state (#6449)', () => {
+    function primeWithRow(row: Record<string, unknown>) {
+      selectMock.mockReturnValueOnce(selectChainResolving([{ ...agentDeviceRow, ...row }]));
+      selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
+    }
+    function captureSet() {
+      const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+      updateMock.mockReturnValue({ set: setSpy });
+      return setSpy;
+    }
+    const setCalls = (spy: ReturnType<typeof captureSet>) =>
+      spy.mock.calls.map((c) => (c as unknown[])[0] as Record<string, unknown>);
+
+    it('stamps reason + since on the device row when the offer is first withheld', async () => {
+      const { agentAcceptsServedEdition } = await import('./helpers');
+      vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+      const setSpy = captureSet();
+      primeWithRow({ updateOfferWithheldReason: null, updateOfferWithheldSince: null });
+
+      expect((await beat()).status).toBe(200);
+      const withheld = setCalls(setSpy).find((s) => 'updateOfferWithheldReason' in s);
+      expect(withheld?.updateOfferWithheldReason).toBe('edition_unconfirmed');
+      expect(withheld?.updateOfferWithheldSince).toBeInstanceOf(Date);
+    });
+
+    it('does NOT rewrite the columns while the state is unchanged (no hot-path write amplification)', async () => {
+      const { agentAcceptsServedEdition } = await import('./helpers');
+      vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+      const setSpy = captureSet();
+      primeWithRow({
+        updateOfferWithheldReason: 'edition_unconfirmed',
+        updateOfferWithheldSince: new Date('2026-10-01T00:00:00Z'),
+      });
+
+      expect((await beat()).status).toBe(200);
+      for (const s of setCalls(setSpy)) {
+        expect(s).not.toHaveProperty('updateOfferWithheldReason');
+        expect(s).not.toHaveProperty('updateOfferWithheldSince');
+      }
+    });
+
+    it('clears both columns once the device accepts the served edition again', async () => {
+      const setSpy = captureSet(); // gate is permissive (true) by default
+      primeWithRow({
+        updateOfferWithheldReason: 'edition_unconfirmed',
+        updateOfferWithheldSince: new Date('2026-10-01T00:00:00Z'),
+      });
+
+      expect((await beat()).status).toBe(200);
+      const cleared = setCalls(setSpy).find((s) => 'updateOfferWithheldReason' in s);
+      expect(cleared?.updateOfferWithheldReason).toBeNull();
+      expect(cleared?.updateOfferWithheldSince).toBeNull();
+    });
+
+    it('does not flag a device with no resolvable architecture (no build to offer, gate never applied)', async () => {
+      const { agentAcceptsServedEdition, normalizeAgentArchitecture } = await import('./helpers');
+      vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+      vi.mocked(normalizeAgentArchitecture).mockImplementation((() => null) as never);
+      const setSpy = captureSet();
+      try {
+        primeWithRow({ updateOfferWithheldReason: null, updateOfferWithheldSince: null });
+        expect((await beat()).status).toBe(200);
+        for (const s of setCalls(setSpy)) {
+          expect(s).not.toHaveProperty('updateOfferWithheldReason');
+        }
+      } finally {
+        vi.mocked(normalizeAgentArchitecture).mockImplementation(((s: string) => s) as never);
+      }
+    });
+
+    it('feeds the persisted verdict from THIS beat’s payload edition + version', async () => {
+      const { agentAcceptsServedEdition } = await import('./helpers');
+      captureSet();
+      primeWithRow({ updateOfferWithheldReason: null, agentEdition: 'stale-stored' });
+      await beat({ agentEdition: 'self-host' });
+      const calls = vi.mocked(agentAcceptsServedEdition).mock.calls;
+      expect(calls.length).toBeGreaterThan(0);
+      for (const [arg] of calls) {
+        expect(arg).toEqual({ reportedEdition: 'self-host', agentVersion: '0.105.1' });
+      }
+    });
+
+    it('writes nothing for a healthy device that was never withheld', async () => {
+      const setSpy = captureSet();
+      primeWithRow({ updateOfferWithheldReason: null, updateOfferWithheldSince: null });
+
+      expect((await beat()).status).toBe(200);
+      for (const s of setCalls(setSpy)) {
+        expect(s).not.toHaveProperty('updateOfferWithheldReason');
+      }
+    });
+  });
+
   describe('watchdog failover branch', () => {
     const sixteenMinutesAgo = new Date(Date.now() - 16 * 60 * 1000);
 

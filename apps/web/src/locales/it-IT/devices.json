@@ -1093,6 +1093,7 @@
     "linkSpeed": "Velocità del collegamento"
   },
   "deviceInfoTab": {
+    "updateOfferWithheld": "Le offerte di aggiornamento sono sospese per questo dispositivo (dal {{since}}): non è possibile confermare che la build del suo agente accetti l'edizione servita da questo server, quindi resta alla versione attuale. Ripristinalo con un programma di installazione dell'edizione servita o con una release dell'agente che segnali la propria edizione.",
     "gpu": "GPU",
     "text": "—",
     "failedToFetchDeviceDetails": "Impossibile recuperare i dettagli del dispositivo",
@@ -1433,6 +1434,8 @@
       "unifi": "UniFi",
       "manual": "Manuale"
     },
+    "updateWithheld": "Aggiornamenti sospesi",
+    "updateWithheldTooltip": "Il server non offre aggiornamenti a questo dispositivo perché non è possibile confermare che la build del suo agente accetti l'edizione servita. Resta alla versione attuale fino al ripristino.",
     "agentVersionRelation": {
       "equalTooltip": "Corrisponde alla versione effettiva {{version}}",
       "aheadTooltip": "In anticipo rispetto al pin {{version}}",

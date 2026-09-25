@@ -1093,6 +1093,7 @@
     "linkSpeed": "Link Speed"
   },
   "deviceInfoTab": {
+    "updateOfferWithheld": "Update offers are withheld from this device (since {{since}}): its agent build cannot be confirmed to accept the edition this server serves, so it stays on its current version. Recover it with an installer of the served edition or an agent release that reports its edition.",
     "gpu": "GPU",
     "text": "—",
     "failedToFetchDeviceDetails": "Failed to fetch device details",
@@ -1433,6 +1434,8 @@
       "unifi": "UniFi",
       "manual": "Manual"
     },
+    "updateWithheld": "Updates withheld",
+    "updateWithheldTooltip": "The server is not offering updates to this device because its agent build cannot be confirmed to accept the served edition. It stays on its current version until recovered.",
     "agentVersionRelation": {
       "equalTooltip": "Matches the effective version {{version}}",
       "aheadTooltip": "Ahead of pin {{version}}",

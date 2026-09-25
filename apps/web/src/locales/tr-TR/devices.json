@@ -1093,6 +1093,7 @@
     "linkSpeed": "Bağlantı Hızı"
   },
   "deviceInfoTab": {
+    "updateOfferWithheld": "Bu cihaz için güncelleme teklifleri durduruldu ({{since}} tarihinden beri): aracı sürümünün bu sunucunun sunduğu sürümü kabul ettiği doğrulanamıyor, bu nedenle mevcut sürümünde kalıyor. Sunulan sürümün yükleyicisiyle veya sürümünü bildiren bir aracı sürümüyle kurtarın.",
     "gpu": "GPU",
     "text": "—",
     "failedToFetchDeviceDetails": "Cihaz ayrıntıları getirilemedi",
@@ -1433,6 +1434,8 @@
       "unifi": "UniFi",
       "manual": "Manuel"
     },
+    "updateWithheld": "Güncellemeler durduruldu",
+    "updateWithheldTooltip": "Sunucu, aracı sürümünün sunulan sürümü kabul ettiği doğrulanamadığı için bu cihaza güncelleme sunmuyor. Kurtarılana kadar mevcut sürümünde kalır.",
     "agentVersionRelation": {
       "equalTooltip": "Etkin sürümle eşleşiyor: {{version}}",
       "aheadTooltip": "{{version}} sabitlemesinin ilerisinde",

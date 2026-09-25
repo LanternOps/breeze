@@ -1093,6 +1093,7 @@
     "linkSpeed": "Velocidade do link"
   },
   "deviceInfoTab": {
+    "updateOfferWithheld": "As ofertas de atualização estão retidas para este dispositivo (desde {{since}}): não é possível confirmar que a build do agente aceita a edição servida por este servidor, então ele permanece na versão atual. Recupere-o com um instalador da edição servida ou uma versão do agente que informe sua edição.",
     "gpu": "GPU",
     "text": "—",
     "failedToFetchDeviceDetails": "Falha ao buscar os detalhes do dispositivo",
@@ -1433,6 +1434,8 @@
       "unifi": "UniFi",
       "manual": "Manual"
     },
+    "updateWithheld": "Atualizações retidas",
+    "updateWithheldTooltip": "O servidor não está oferecendo atualizações a este dispositivo porque não é possível confirmar que a build do agente aceita a edição servida. Ele permanece na versão atual até ser recuperado.",
     "agentVersionRelation": {
       "equalTooltip": "Corresponde à versão efetiva {{version}}",
       "aheadTooltip": "À frente do pin {{version}}",

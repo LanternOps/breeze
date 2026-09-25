@@ -1093,6 +1093,7 @@
     "linkSpeed": "Vitesse de liaison"
   },
   "deviceInfoTab": {
+    "updateOfferWithheld": "Les offres de mise à jour sont retenues pour cet appareil (depuis {{since}}) : il n'est pas possible de confirmer que la version de son agent accepte l'édition proposée par ce serveur, il reste donc à sa version actuelle. Récupérez-le avec un programme d'installation de l'édition proposée ou une version de l'agent qui signale son édition.",
     "gpu": "GPU",
     "text": "—",
     "failedToFetchDeviceDetails": "Impossible de récupérer les détails de l’appareil",
@@ -1433,6 +1434,8 @@
       "unifi": "UniFi",
       "manual": "Manuel"
     },
+    "updateWithheld": "Mises à jour retenues",
+    "updateWithheldTooltip": "Le serveur ne propose pas de mises à jour à cet appareil, car il n'est pas possible de confirmer que la version de son agent accepte l'édition proposée. Il reste à sa version actuelle jusqu'à sa récupération.",
     "agentVersionRelation": {
       "equalTooltip": "Correspond à la version effective {{version}}",
       "aheadTooltip": "En avance sur l'épinglage {{version}}",
