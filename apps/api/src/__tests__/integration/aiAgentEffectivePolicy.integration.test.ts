@@ -18,9 +18,9 @@ import { createOrganization, createPartner, createUser } from './db-utils';
 // Historically the baseline was invisible to an org-scoped RLS context
 // (breeze.accessible_partner_ids is [] for scope='organization') and the
 // resolver bought the read with a partner-axis escalation. Since #4942 the
-// `ai_agents_partner_wide_select` branch makes it readable through RLS itself;
-// the resolver's escalation is now redundant but is left in place deliberately
-// (removing it is a separate follow-up).
+// `ai_agents_partner_wide_select` branch makes it readable through RLS itself,
+// and since #5199 the resolver reads it in the caller's context with no
+// escalation — so the org-context cases below exercise the RLS branch directly.
 
 const createdAgents: string[] = [];
 const SYSTEM_CTX: DbAccessContext = {
@@ -90,8 +90,8 @@ describe('resolveEffectiveAgent under real RLS', () => {
     // it the resolver saw zero rows — no error — and every agent silently
     // resolved to "no baseline". `ai_agents_partner_wide_select`
     // (2026-10-11-150000-ai-partner-wide-select.sql) now grants that read
-    // through RLS directly, so the escalation is redundant for this table.
-    // Removing it is a deliberate follow-up, not part of this change.
+    // through RLS directly, and #5199 removed the escalation — the resolver
+    // below now reads the baseline in this org context.
     const directlyVisible = await withDbAccessContext(orgContext(org.id, partner.id), () =>
       db.select().from(aiAgents),
     );
