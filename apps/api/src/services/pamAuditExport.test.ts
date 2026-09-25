@@ -22,12 +22,18 @@ function record(over: Partial<ExportRecord> = {}): ExportRecord {
 
 describe('export cursor (#4910)', () => {
   it('round-trips Postgres timestamptz text at full microsecond precision', () => {
-    const ts = '2026-09-25 04:10:00.123456+00';
-    expect(decodeExportCursor(encodeExportCursor(ts, ID))).toEqual({ recordedAt: ts, id: ID });
+    for (const ts of ['2026-09-25 04:10:00.123456+00', '2026-09-25 04:10:00+05:30', '2028-02-29 23:59:59.5-08']) {
+      expect(decodeExportCursor(encodeExportCursor(ts, ID))).toEqual({ recordedAt: ts, id: ID });
+    }
   });
 
   it('rejects anything that is not a timestamp|uuid pair', () => {
-    for (const raw of ['', 'x', `now()|${ID}`, '2026-09-25 04:10:00+00|not-a-uuid', "2026-09-25 04:10:00+00|' OR 1=1 --"]) {
+    for (const raw of [
+      '', 'x', `now()|${ID}`, '2026-09-25 04:10:00+00|not-a-uuid', "2026-09-25 04:10:00+00|' OR 1=1 --",
+      // Pattern-shaped but not castable: each would 500 at ::timestamptz / ::uuid.
+      `2026-13-01 00:00:00+00|${ID}`, `2026-02-30 00:00:00+00|${ID}`, `2026-09-25 25:00:00+00|${ID}`,
+      `2026-09-25 04:10:00+99|${ID}`, '2026-09-25 04:10:00+00|------------------------------------',
+    ]) {
       expect(decodeExportCursor(Buffer.from(raw, 'utf8').toString('base64url'))).toBeNull();
     }
     expect(decodeExportCursor('%%%not-base64%%%')).toBeNull();

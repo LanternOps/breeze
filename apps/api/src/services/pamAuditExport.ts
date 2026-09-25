@@ -140,7 +140,19 @@ export function projectAuditDetails(details: unknown): Record<string, string | n
 // Cursor: base64url of `<created_at as Postgres text>|<id>`. It carries no
 // authority — filters and scope come from the query and the caller on every
 // page — so a tampered cursor can only move the starting key.
-const CURSOR_PATTERN = /^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:.]+[+-][0-9:]+\|[0-9a-f-]{36}$/i;
+// Validated here, not by Postgres: anything that reaches the ::timestamptz or
+// ::uuid casts must parse, or a tampered cursor would surface as a 500.
+const CURSOR_PATTERN =
+  /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})(\.\d{1,6})?([+-]\d{2})(?::?(\d{2}))?\|([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+
+function isRealTimestamp(m: RegExpExecArray): boolean {
+  const [year, month, day, hour, minute, second] = m.slice(1, 7).map(Number) as [number, number, number, number, number, number];
+  const offsetHours = Math.abs(Number(m[8]));
+  const offsetMinutes = m[9] === undefined ? 0 : Number(m[9]);
+  if (hour > 23 || minute > 59 || second > 59 || offsetHours > 15 || offsetMinutes > 59) return false;
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
 
 export function encodeExportCursor(recordedAtText: string, id: string): string {
   return Buffer.from(`${recordedAtText}|${id}`, 'utf8').toString('base64url');
@@ -153,7 +165,8 @@ export function decodeExportCursor(cursor: string): { recordedAt: string; id: st
   } catch {
     return null;
   }
-  if (!CURSOR_PATTERN.test(raw)) return null;
+  const m = CURSOR_PATTERN.exec(raw);
+  if (!m || !isRealTimestamp(m)) return null;
   const sep = raw.lastIndexOf('|');
   return { recordedAt: raw.slice(0, sep), id: raw.slice(sep + 1) };
 }
