@@ -60,7 +60,7 @@ representative at an online or offline event.
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the community leaders responsible for enforcement at
-[security@lanternops.io](mailto:security@lanternops.io).
+[security@breezermm.com](mailto:security@breezermm.com).
 
 All complaints will be reviewed and investigated promptly and fairly.
 
