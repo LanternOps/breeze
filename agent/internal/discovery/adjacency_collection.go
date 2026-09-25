@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"log/slog"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -31,9 +30,11 @@ var (
 var physicalSectionLimits = map[string]int{SectionLLDP: 4096, SectionCDP: 4096, SectionFDB: AdjacencyV2FDBMaxRows, SectionInterfaces: 4096}
 
 // PhysicalWalker walks one subtree on an already-authenticated session. It must
-// honour ctx and never return credentials in results.
+// honour ctx and never return credentials in results. WalkBounded stops after
+// maxRows PDUs, before buffering the rest, and reports whether it truncated.
 type PhysicalWalker interface {
 	Walk(ctx context.Context, oid string) ([]gosnmp.SnmpPDU, error)
+	WalkBounded(ctx context.Context, oid string, maxRows int) ([]gosnmp.SnmpPDU, bool, error)
 }
 
 // PhysicalRequest declares the authorized scope of one target collection.
@@ -360,44 +361,59 @@ func (r *physicalRun) collectCDPSection() PhysicalSection {
 	return s.finish(port.err != nil || typ.err != nil || addr.err != nil, malformed)
 }
 
-// collectFDBSection (bounded adapter): BRIDGE-MIB positives only, with no FDB
-// id and unknown VLAN mapping. Q-BRIDGE coverage is not claimed, so a section
-// with rows is partial. Replaced by the tuple-based assembler.
+// fdbColumn walks one FDB/mapping table with the row bound applied during the
+// walk, and records how the walk ended.
+func (r *physicalRun) fdbColumn(oid string) snmppoll.FdbColumn {
+	if err := r.ctx.Err(); err != nil {
+		return snmppoll.FdbColumn{Outcome: OutcomeFailed, ReasonCode: walkReason(err)}
+	}
+	pdus, truncated, err := r.w.WalkBounded(r.ctx, oid, AdjacencyV2FDBMaxRows)
+	if err != nil {
+		return snmppoll.FdbColumn{Outcome: OutcomeFailed, ReasonCode: walkReason(err)}
+	}
+	noSuch := false
+	kept := pdus[:0:0]
+	for _, p := range pdus {
+		switch p.Type {
+		case gosnmp.NoSuchObject, gosnmp.NoSuchInstance, gosnmp.EndOfMibView:
+			noSuch = true
+		default:
+			kept = append(kept, p)
+		}
+	}
+	switch {
+	case truncated:
+		return snmppoll.NewFdbColumn(oid, kept, OutcomePartial, "limit_exceeded")
+	case noSuch && len(kept) == 0:
+		return snmppoll.FdbColumn{Outcome: OutcomeUnsupported, ReasonCode: "not_supported"}
+	}
+	return snmppoll.NewFdbColumn(oid, kept, OutcomeComplete, "")
+}
+
+// collectFDBSection walks BRIDGE and Q-BRIDGE FDB, their status columns and the
+// FDB-id→VLAN mapping independently and assembles (context, FDB id, MAC, port)
+// tuples. It runs even when LLDP/CDP are empty, unsupported or failed.
 func (r *physicalRun) collectFDBSection() PhysicalSection {
 	s := newSection(SectionFDB, r.req.ContextKey)
-	fdb := walkColumn(r.ctx, r.w, snmppoll.Dot1dTpFdbPortOID)
-	if fdb.err != nil {
-		return s.withOutcome(OutcomeFailed, walkReason(fdb.err))
-	}
-	if len(fdb.pdus) == 0 && (fdb.noSuch || len(r.ifCols.BasePortIfIndex) == 0) {
-		return s.withOutcome(OutcomeUnsupported, "not_supported")
-	}
-	ifIndexOf := map[uint32]uint32{}
+	names := map[uint32]string{}
 	for _, i := range r.inv {
-		if i.BridgePort != nil {
-			ifIndexOf[*i.BridgePort] = i.IfIndex
+		if i.Name != "" {
+			names[i.IfIndex] = i.Name
 		}
 	}
-	for _, e := range snmppoll.AssembleFdbEntries(fdb.pdus, r.ifCols.BasePortIfIndex, r.ifCols.IfName, nil) {
-		port := uint32(e.BridgePort)
-		row := FdbRow{BridgeContext: r.req.ContextKey, MAC: e.MAC, BridgePort: port, Status: snmppoll.FdbStatusOther,
-			VLANs: []uint16{}, VLANMapping: snmppoll.VLANMappingUnknown, IfName: e.IfName}
-		if idx, ok := ifIndexOf[port]; ok {
-			idx := idx
-			row.IfIndex = &idx
-		}
-		if !validKey(row.IfName) {
-			row.IfName = ""
-		}
-		row.RowKey = snmppoll.FdbV2RowKey(row.BridgeContext, nil, row.MAC, row.BridgePort)
-		s.Fdb = append(s.Fdb, row)
-	}
-	sort.Slice(s.Fdb, func(a, b int) bool { return s.Fdb[a].RowKey < s.Fdb[b].RowKey })
-	s = s.finish(false, 0)
-	if s.Outcome == OutcomeComplete {
-		s = s.withOutcome(OutcomePartial, "qbridge_not_collected")
-	}
-	return s
+	asm := snmppoll.AssembleFdbV2(snmppoll.FdbTables{
+		BridgeContext:        r.req.ContextKey,
+		Dot1dTpFdbPort:       r.fdbColumn(snmppoll.Dot1dTpFdbPortOID),
+		Dot1dTpFdbStatus:     r.fdbColumn(snmppoll.Dot1dTpFdbStatusOID),
+		Dot1qTpFdbPort:       r.fdbColumn(snmppoll.Dot1qTpFdbPortOID),
+		Dot1qTpFdbStatus:     r.fdbColumn(snmppoll.Dot1qTpFdbStatusOID),
+		Dot1qVlanFdbID:       r.fdbColumn(snmppoll.Dot1qVlanFdbIDOID),
+		Dot1dBasePortIfIndex: snmppoll.NewFdbColumn(snmppoll.Dot1dBasePortIfIndexOID, r.ifCols.BasePortIfIndex, OutcomeComplete, ""),
+		IfNames:              names,
+		MaxRows:              AdjacencyV2FDBMaxRows,
+	})
+	s.Fdb, s.OmittedRowCount = asm.Rows, asm.OmittedRowCount
+	return s.withOutcome(asm.Outcome, asm.ReasonCode)
 }
 
 func (r *physicalRun) collectInterfaceSection() PhysicalSection {

@@ -82,8 +82,12 @@ const IfNameOID = "1.3.6.1.2.1.31.1.1.1.1"
 
 // Interface inventory and bridge-port mapping columns.
 const (
-	IfAliasOID              = "1.3.6.1.2.1.31.1.1.1.18" // ifAlias
-	IfPhysAddressOID        = "1.3.6.1.2.1.2.2.1.6"     // ifPhysAddress
-	Dot1dBasePortIfIndexOID = "1.3.6.1.2.1.17.1.4.1.2"  // dot1dBasePortIfIndex (bridge port → ifIndex)
-	Dot1dTpFdbPortOID       = "1.3.6.1.2.1.17.4.3.1.2"  // dot1dTpFdbPort
+	IfAliasOID              = "1.3.6.1.2.1.31.1.1.1.18"    // ifAlias
+	IfPhysAddressOID        = "1.3.6.1.2.1.2.2.1.6"        // ifPhysAddress
+	Dot1dBasePortIfIndexOID = "1.3.6.1.2.1.17.1.4.1.2"     // dot1dBasePortIfIndex (bridge port → ifIndex)
+	Dot1dTpFdbPortOID       = "1.3.6.1.2.1.17.4.3.1.2"     // dot1dTpFdbPort
+	Dot1dTpFdbStatusOID     = "1.3.6.1.2.1.17.4.3.1.3"     // dot1dTpFdbStatus
+	Dot1qTpFdbPortOID       = "1.3.6.1.2.1.17.7.1.2.2.1.2" // dot1qTpFdbPort: .<fdbId>.<6 mac octets>
+	Dot1qTpFdbStatusOID     = "1.3.6.1.2.1.17.7.1.2.2.1.3" // dot1qTpFdbStatus
+	Dot1qVlanFdbIDOID       = "1.3.6.1.2.1.17.7.1.4.2.1.3" // dot1qVlanFdbId: .<timeMark>.<vlan> = fdbId
 )

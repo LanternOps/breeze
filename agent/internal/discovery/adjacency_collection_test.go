@@ -22,6 +22,7 @@ type fakeWalker struct {
 	mu     sync.Mutex
 	resp   map[string]fakeResp
 	calls  []string
+	bounds map[string]int
 	block  bool // block until ctx is done
 	closed bool
 }
@@ -39,6 +40,12 @@ func (f *fakeWalker) Walk(ctx context.Context, oid string) ([]gosnmp.SnmpPDU, er
 }
 
 func (f *fakeWalker) WalkBounded(ctx context.Context, oid string, maxRows int) ([]gosnmp.SnmpPDU, bool, error) {
+	f.mu.Lock()
+	if f.bounds == nil {
+		f.bounds = map[string]int{}
+	}
+	f.bounds[oid] = maxRows
+	f.mu.Unlock()
 	pdus, err := f.Walk(ctx, oid)
 	if err == nil && len(pdus) > maxRows {
 		return pdus[:maxRows], true, nil
@@ -317,5 +324,47 @@ func TestLegacyAdjacencyIsProjectedFromV2(t *testing.T) {
 	}
 	if len(legacy.Cdp) != 0 || len(legacy.Fdb) != 2 || legacy.Fdb[0].IfName != "ge-0/0/7" || legacy.Fdb[0].VLAN != 0 {
 		t.Fatalf("legacy CDP/FDB: %#v %#v", legacy.Cdp, legacy.Fdb)
+	}
+}
+
+func TestCollectPhysicalFDBUsesQBridgeTuplesAndBoundedWalks(t *testing.T) {
+	w := switchWalker()
+	w.resp[snmppoll.Dot1dTpFdbPortOID] = fakeResp{} // legacy BRIDGE table empty
+	w.resp[snmppoll.Dot1qTpFdbPortOID] = fakeResp{pdus: []gosnmp.SnmpPDU{
+		integer(snmppoll.Dot1qTpFdbPortOID+".700.2.0.0.0.0.16", 7),
+		integer(snmppoll.Dot1qTpFdbPortOID+".701.2.0.0.0.0.16", 8),
+	}}
+	w.resp[snmppoll.Dot1qTpFdbStatusOID] = fakeResp{pdus: []gosnmp.SnmpPDU{integer(snmppoll.Dot1qTpFdbStatusOID+".700.2.0.0.0.0.16", 3)}}
+	w.resp[snmppoll.Dot1qVlanFdbIDOID] = fakeResp{pdus: []gosnmp.SnmpPDU{
+		integer(snmppoll.Dot1qVlanFdbIDOID+".0.10", 700), integer(snmppoll.Dot1qVlanFdbIDOID+".0.20", 700),
+	}}
+	s := sectionsByKind(t, CollectPhysicalSections(context.Background(), w, PhysicalRequest{Target: "192.0.2.10", ContextKey: "default", Protocols: []string{SectionFDB}}))[SectionFDB]
+	if s.Outcome != OutcomeComplete || len(s.Fdb) != 2 || s.RowCount != 2 {
+		t.Fatalf("Q-BRIDGE-only switch: %#v", s)
+	}
+	r := s.Fdb[0]
+	if r.FDBID == nil || *r.FDBID != 700 || len(r.VLANs) != 2 || r.VLANMapping != snmppoll.VLANMappingComplete || r.Status != snmppoll.FdbStatusLearned || r.IfName != "ge-0/0/7" {
+		t.Fatalf("tuple: %#v", r)
+	}
+	if s.Fdb[1].VLANMapping != snmppoll.VLANMappingUnknown {
+		t.Fatalf("unmapped FDB id must stay unknown: %#v", s.Fdb[1])
+	}
+	for _, oid := range []string{snmppoll.Dot1dTpFdbPortOID, snmppoll.Dot1qTpFdbPortOID, snmppoll.Dot1dTpFdbStatusOID, snmppoll.Dot1qTpFdbStatusOID, snmppoll.Dot1qVlanFdbIDOID} {
+		if w.bounds[oid] != AdjacencyV2FDBMaxRows {
+			t.Fatalf("%s must be walked with a pre-allocation bound, got %d", oid, w.bounds[oid])
+		}
+	}
+}
+
+func TestCollectPhysicalFDBTruncationIsPartialLimit(t *testing.T) {
+	w := switchWalker()
+	var many []gosnmp.SnmpPDU
+	for i := 0; i < AdjacencyV2FDBMaxRows+5; i++ {
+		many = append(many, integer(snmppoll.Dot1dTpFdbPortOID+".2.0."+itoa((i>>16)&255)+"."+itoa((i>>8)&255)+"."+itoa(i&255)+".1", 7))
+	}
+	w.resp[snmppoll.Dot1dTpFdbPortOID] = fakeResp{pdus: many}
+	s := sectionsByKind(t, CollectPhysicalSections(context.Background(), w, PhysicalRequest{Target: "192.0.2.10", ContextKey: "default", Protocols: []string{SectionFDB}}))[SectionFDB]
+	if s.Outcome != OutcomePartial || s.ReasonCode != "limit_exceeded" || len(s.Fdb) > AdjacencyV2FDBMaxRows {
+		t.Fatalf("truncation must be partial/limit_exceeded within the bound: %s/%s rows=%d", s.Outcome, s.ReasonCode, len(s.Fdb))
 	}
 }

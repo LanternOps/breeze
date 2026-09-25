@@ -1,0 +1,35 @@
+{
+  "bridgeContext": "default",
+  "dot1dTpFdbPort": { "outcome": "complete", "cells": [] },
+  "dot1dTpFdbStatus": { "outcome": "complete", "cells": [] },
+  "dot1qTpFdbPort": {
+    "outcome": "complete",
+    "cells": [
+      { "oid": "1.3.6.1.2.1.17.7.1.2.2.1.2.701.2.0.0.0.0.16", "value": 8 },
+      { "oid": "1.3.6.1.2.1.17.7.1.2.2.1.2.700.2.0.0.0.0.16", "value": 7 }
+    ]
+  },
+  "dot1qTpFdbStatus": {
+    "outcome": "complete",
+    "cells": [
+      { "oid": "1.3.6.1.2.1.17.7.1.2.2.1.3.700.2.0.0.0.0.16", "value": 3 },
+      { "oid": "1.3.6.1.2.1.17.7.1.2.2.1.3.701.2.0.0.0.0.16", "value": 3 }
+    ]
+  },
+  "dot1qVlanFdbId": {
+    "outcome": "complete",
+    "cells": [
+      { "oid": "1.3.6.1.2.1.17.7.1.4.2.1.3.0.20", "value": 700 },
+      { "oid": "1.3.6.1.2.1.17.7.1.4.2.1.3.0.10", "value": 700 },
+      { "oid": "1.3.6.1.2.1.17.7.1.4.2.1.3.0.30", "value": 701 }
+    ]
+  },
+  "dot1dBasePortIfIndex": {
+    "outcome": "complete",
+    "cells": [
+      { "oid": "1.3.6.1.2.1.17.1.4.1.2.7", "value": 101 },
+      { "oid": "1.3.6.1.2.1.17.1.4.1.2.8", "value": 102 }
+    ]
+  },
+  "ifNames": { "101": "ge-0/0/7", "102": "ge-0/0/8" }
+}

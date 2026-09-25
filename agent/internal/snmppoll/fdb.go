@@ -5,14 +5,14 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/breeze-rmm/agent/internal/topologycanon"
 	"github.com/gosnmp/gosnmp"
 )
 
 const (
-	oidFdbPortColumn     = ".1.3.6.1.2.1.17.4.3.1.2."     // dot1dTpFdbPort
-	oidBridgePortIfIndex = ".1.3.6.1.2.1.17.1.4.1.2."     // dot1dBasePortIfIndex
-	oidIfName            = ".1.3.6.1.2.1.31.1.1.1.1."     // ifName
-	oidQBridgeFdbPort    = ".1.3.6.1.2.1.17.7.1.2.2.1.2." // dot1qTpFdbPort: .<vlan>.<6 mac>
+	oidFdbPortColumn     = ".1.3.6.1.2.1.17.4.3.1.2." // dot1dTpFdbPort
+	oidBridgePortIfIndex = ".1.3.6.1.2.1.17.1.4.1.2." // dot1dBasePortIfIndex
+	oidIfName            = ".1.3.6.1.2.1.31.1.1.1.1." // ifName
 )
 
 type FdbRow struct {
@@ -149,42 +149,6 @@ func buildPortIfNameMap(portIfIndex map[int]int, ifNames map[int]string) map[int
 	return out
 }
 
-// parseQBridgeVlanByMac walks dot1qTpFdbPort PDUs (suffix .<vlan>.<6 mac
-// octets>) into MAC→vlan. Best-effort: many switches expose no Q-BRIDGE table,
-// in which case the result is empty and FDB rows keep a nil VLAN. If the same
-// MAC appears under multiple VLANs, the first encountered wins deterministically.
-func parseQBridgeVlanByMac(pdus []gosnmp.SnmpPDU) map[string]int {
-	out := make(map[string]int)
-	for _, pdu := range pdus {
-		norm := pdu.Name
-		if !strings.HasPrefix(norm, ".") {
-			norm = "." + norm
-		}
-		if !strings.HasPrefix(norm, oidQBridgeFdbPort) {
-			continue
-		}
-		suffix := strings.TrimPrefix(norm, oidQBridgeFdbPort)
-		parts := strings.SplitN(suffix, ".", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		vlan, err := strconv.Atoi(parts[0])
-		if err != nil || vlan <= 0 {
-			continue
-		}
-		// Reconstruct a column-prefixed OID so the 6-octet MAC parser handles
-		// the trailing MAC component.
-		mac, ok := macFromOIDSuffix("."+oidQBridgeFdbPort[1:]+parts[1], oidQBridgeFdbPort)
-		if !ok {
-			continue
-		}
-		if _, exists := out[mac]; !exists { // first-wins
-			out[mac] = vlan
-		}
-	}
-	return out
-}
-
 // FdbEntry is one assembled bridge-FDB row ready to ride in a DeviceAdjacency.
 // Field names/JSON tags map 1:1 onto the locked cross-phase
 // FdbEntry { mac; bridgePort; ifName?; vlan? } contract.
@@ -195,25 +159,39 @@ type FdbEntry struct {
 	VLAN       int    `json:"vlan,omitempty"`
 }
 
-// AssembleFdbEntries combines the four already-walked SNMP subtrees into the
-// per-device []FdbEntry. It is a pure function over fetched PDU slices so it is
-// fully unit-testable with golden fixtures (no socket). IfName is resolved where
-// the bridge port maps; VLAN is set only where the Q-BRIDGE table supplied one.
-// An FDB row whose bridge port has no ifIndex/ifName mapping is still emitted
-// (with an empty IfName) so host attachment can fall back to the port number.
+// AssembleFdbEntries is the legacy scalar-VLAN FDB view, kept as a lossy
+// projection of AssembleFdbV2. Q-BRIDGE rows are now included even when the
+// BRIDGE table is empty, and because the leading dot1qTpFdbPort index is an FDB
+// id (not a VLAN) and this signature carries no dot1qVlanFdbId table, VLAN is
+// never set here. Invalid/self rows and port zero are dropped, as before.
 func AssembleFdbEntries(fdbPortPDUs, basePortPDUs, ifNamePDUs, qBridgePDUs []gosnmp.SnmpPDU) []FdbEntry {
-	rows := parseFdbPortColumn(fdbPortPDUs)
-	portIfName := buildPortIfNameMap(parseBridgePortIfIndex(basePortPDUs), parseIfName(ifNamePDUs))
-	vlanByMac := parseQBridgeVlanByMac(qBridgePDUs)
+	names := map[uint32]string{}
+	for ifIndex, name := range parseIfName(ifNamePDUs) {
+		if ifIndex >= 0 {
+			names[uint32(ifIndex)] = name
+		}
+	}
+	asm := AssembleFdbV2(FdbTables{
+		BridgeContext:        "default",
+		Dot1dTpFdbPort:       NewFdbColumn(Dot1dTpFdbPortOID, fdbPortPDUs, topologycanon.Complete, ""),
+		Dot1qTpFdbPort:       NewFdbColumn(Dot1qTpFdbPortOID, qBridgePDUs, topologycanon.Complete, ""),
+		Dot1dBasePortIfIndex: NewFdbColumn(Dot1dBasePortIfIndexOID, basePortPDUs, topologycanon.Complete, ""),
+		IfNames:              names,
+	})
+	return LegacyFdbEntries(asm.Rows)
+}
 
+// LegacyFdbEntries projects V2 rows onto the legacy contract. A scalar VLAN is
+// emitted only when the mapping is complete and names exactly one VLAN.
+func LegacyFdbEntries(rows []FdbV2Row) []FdbEntry {
 	entries := make([]FdbEntry, 0, len(rows))
 	for _, r := range rows {
-		e := FdbEntry{MAC: r.MAC, BridgePort: r.BridgePort}
-		if name, ok := portIfName[r.BridgePort]; ok {
-			e.IfName = name
+		if r.Status == FdbStatusInvalid || r.Status == FdbStatusSelf || r.BridgePort == 0 {
+			continue
 		}
-		if vlan, ok := vlanByMac[r.MAC]; ok {
-			e.VLAN = vlan
+		e := FdbEntry{MAC: r.MAC, BridgePort: int(r.BridgePort), IfName: r.IfName}
+		if r.VLANMapping == VLANMappingComplete && len(r.VLANs) == 1 {
+			e.VLAN = int(r.VLANs[0])
 		}
 		entries = append(entries, e)
 	}
