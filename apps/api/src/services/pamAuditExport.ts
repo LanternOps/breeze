@@ -9,15 +9,16 @@
  * observation clock, so a late-arriving event can carry an occurred_at the
  * walk has already passed; keyed on recorded time it lands after the cursor.
  *
- * Settle delay: a page only returns rows recorded more than
- * PAM_AUDIT_EXPORT_SETTLE_SECONDS before the database clock. `created_at` is
- * the inserting transaction's start time, and a row is only visible once
- * that transaction commits, so a walk that ran right up to now() could step
- * past a row still being committed. A window that closed before the settle
- * point is therefore exported exactly once; a row whose inserting
- * transaction stays open longer than the settle delay can still land behind
- * a cursor. `X-Next-Cursor` is always the resume position, so a SIEM can tail
- * the ledger by resuming from it later.
+ * Watermark: `created_at` is the inserting transaction's START time, and a
+ * row only becomes visible when that transaction commits, so a walk that ran
+ * up to now() could step past a row still being committed. A page therefore
+ * stops before the earlier of (a) PAM_AUDIT_EXPORT_SETTLE_SECONDS before the
+ * database clock and (b) the start of the oldest transaction that has written
+ * and not yet finished, as pg_stat_activity shows it. (b) closes the gap for
+ * every writer running as the same database role as the API (every
+ * elevation_audit writer does); pg_stat_activity hides other roles'
+ * transaction times, and (a) is the bound for those. `X-Next-Cursor` is always
+ * the resume position, so a SIEM can tail the ledger by resuming later.
  *
  * Paged rather than streamed: a streamed body would outlive the request's
  * RLS transaction (authMiddleware → withDbAccessContext awaits the handler,
@@ -42,7 +43,7 @@ export const PAM_AUDIT_EXPORT_SETTLE_SECONDS = 300;
 
 /**
  * Every `details` key each elevation_audit writer sets, by writer file. The
- * test suite freezes the set of files that insert into elevation_audit, so a
+ * test suite freezes the set of files that write elevation_audit rows, so a
  * new writer fails it until its keys are reviewed and listed here.
  */
 export const PAM_AUDIT_WRITER_DETAIL_KEYS = {
@@ -57,6 +58,8 @@ export const PAM_AUDIT_WRITER_DETAIL_KEYS = {
   'services/aiToolsPam.ts': ['subjectUsername', 'reason', 'triggerSource', 'pamRuleId', 'pamRuleName', 'durationMinutes'],
   'services/approvals/decideApprovalRequest.ts': ['source', 'approval_request_id', 'reason'],
   'services/pamToolActionGovernance.ts': ['tool_name', 'risk_tier', 'execution_id', 'pam_rule_id', 'pam_rule_name'],
+  // Writes via raw SQL, not Drizzle: session_started / session_ended.
+  'services/pamActuationResult.ts': ['actuationId', 'generation'],
 } as const satisfies Record<string, readonly string[]>;
 
 /**
@@ -172,6 +175,8 @@ export interface ElevationAuditExportPageInput {
   filters: ElevationAuditExportFilters;
   after: { recordedAt: string; id: string } | null;
   limit: number;
+  /** Test seam; production always uses PAM_AUDIT_EXPORT_SETTLE_SECONDS. */
+  settleSeconds?: number;
 }
 
 export interface ElevationAuditExportPage {
@@ -210,10 +215,17 @@ export async function fetchElevationAuditExportPage(
   if (f.eventType) conditions.push(sql`${elevationAudit.eventType}::text = ${f.eventType}`);
   conditions.push(gte(elevationAudit.createdAt, f.from));
   conditions.push(lt(elevationAudit.createdAt, f.to));
-  // Settle bound, on the database clock (see the module comment).
-  conditions.push(
-    sql`${elevationAudit.createdAt} < now() - make_interval(secs => ${PAM_AUDIT_EXPORT_SETTLE_SECONDS})`,
-  );
+  // Watermark, on the database clock (see the module comment). `now()` is
+  // this transaction's start; the subquery excludes this session itself.
+  const settleSeconds = input.settleSeconds ?? PAM_AUDIT_EXPORT_SETTLE_SECONDS;
+  conditions.push(sql`${elevationAudit.createdAt} < LEAST(
+    now() - make_interval(secs => ${settleSeconds}),
+    COALESCE(
+      (SELECT min(xact_start) FROM pg_stat_activity
+        WHERE backend_xid IS NOT NULL AND pid <> pg_backend_pid()),
+      'infinity'::timestamptz
+    )
+  )`);
   if (input.after) {
     // Compare at full Postgres precision: the cursor carries the text form of
     // created_at, never a millisecond-rounded JS Date.
