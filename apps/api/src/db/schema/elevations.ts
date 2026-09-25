@@ -13,6 +13,7 @@ import {
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { organizations, partners, sites } from './orgs';
 import { users } from './users';
 import { devices } from './devices';
@@ -311,7 +312,9 @@ export const elevationAudit = pgTable(
     details: jsonb('details').$type<Record<string, unknown>>().notNull().default({}),
 
     occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    // clock_timestamp(), not now(): the insert's own time, so the ledger
+    // export's (created_at, id) walk never sees a late insert sort behind it (#4910).
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(sql`clock_timestamp()`),
   },
   (table) => ({
     requestOccurredIdx: index('elevation_audit_request_id_occurred_at_idx').on(
