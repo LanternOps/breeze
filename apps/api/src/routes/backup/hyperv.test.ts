@@ -9,6 +9,7 @@ const VM_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 vi.mock('../../services', () => ({}));
 
 const executeCommandMock = vi.fn();
+const queueCommandForExecutionMock = vi.fn();
 const authorizeResilienceResourcesMock = vi.fn();
 const resolveAllBackupAssignedDevicesMock = vi.fn();
 
@@ -135,6 +136,7 @@ vi.mock('../../services/backupProgress', async (importOriginal) => {
 
 vi.mock('../../services/commandQueue', () => ({
   executeCommand: (...args: unknown[]) => executeCommandMock(...(args as [])),
+  queueCommandForExecution: (...args: unknown[]) => queueCommandForExecutionMock(...(args as [])),
   CommandTypes: {
     HYPERV_DISCOVER: 'HYPERV_DISCOVER',
     HYPERV_BACKUP: 'HYPERV_BACKUP',
@@ -473,7 +475,12 @@ describe('hyperv routes', () => {
     expect(applyBackupStartedAckMock).toHaveBeenCalledWith({ jobId, deviceId: DEVICE_ID, queued: true });
   });
 
-  it('dispatches Hyper-V restore using a backup_snapshots UUID', async () => {
+  // #6437: a real Hyper-V VM restore can run well past 10 minutes, so the
+  // route must dispatch async (queueCommandForExecution) and return as soon
+  // as the command is queued, instead of blocking the HTTP request on
+  // executeCommand's 10-minute waitForCommandResult poll — which terminalised
+  // any longer-running restore as failed regardless of the reaper's ceiling.
+  it('dispatches Hyper-V restore asynchronously instead of blocking on executeCommand', async () => {
     selectMock.mockReturnValueOnce(
       chainMock([
           {
@@ -489,9 +496,8 @@ describe('hyperv routes', () => {
     // already does — resolveBackupProviderConfig looks up the destination
     // config the BACKUP wrote this snapshot to.
     queueDestinationConfigSelect();
-    executeCommandMock.mockResolvedValueOnce({
-      status: 'completed',
-      stdout: JSON.stringify({ status: 'completed' }),
+    queueCommandForExecutionMock.mockResolvedValueOnce({
+      command: { id: 'command-1', status: 'sent' },
     });
 
     const res = await app.request('/backup/hyperv/restore', {
@@ -505,8 +511,18 @@ describe('hyperv routes', () => {
       }),
     });
 
-    expect(res.status).toBe(200);
-    expect(executeCommandMock).toHaveBeenCalledWith(
+    expect(res.status).toBe(202);
+    const body = await res.json();
+    expect(body.data).toEqual(expect.objectContaining({
+      commandId: 'command-1',
+      status: 'sent',
+      deviceId: DEVICE_ID,
+      vmName: 'Recovered VM',
+    }));
+    // executeCommand must NOT be used for restore dispatch any more — it is
+    // the synchronous, 10-minute-bounded path this fix removes.
+    expect(executeCommandMock).not.toHaveBeenCalled();
+    expect(queueCommandForExecutionMock).toHaveBeenCalledWith(
       DEVICE_ID,
       'HYPERV_RESTORE',
       {
@@ -518,6 +534,38 @@ describe('hyperv routes', () => {
       },
       expect.objectContaining({ userId: 'user-123' })
     );
+    // No timeoutMs must be forwarded — the reaper (not this route) owns the
+    // deadline now.
+    expect(queueCommandForExecutionMock.mock.lastCall?.[3]).not.toHaveProperty('timeoutMs');
+  });
+
+  it('reports a 502 when Hyper-V restore fails to dispatch', async () => {
+    selectMock.mockReturnValueOnce(
+      chainMock([
+          {
+            id: '55555555-5555-4555-8555-555555555555',
+            providerSnapshotId: 'hyperv-accounting-1',
+            metadata: { backupKind: 'hyperv_export' },
+            configId: 'config-1',
+          },
+      ])
+    );
+    queueDestinationConfigSelect();
+    queueCommandForExecutionMock.mockResolvedValueOnce({ error: 'Device is offline' });
+
+    const res = await app.request('/backup/hyperv/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        deviceId: DEVICE_ID,
+        snapshotId: '55555555-5555-4555-8555-555555555555',
+        vmName: 'Recovered VM',
+        generateNewId: true,
+      }),
+    });
+
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: 'Device is offline' });
   });
 
   // D20b item D: a snapshot that predates destination tracking (configId

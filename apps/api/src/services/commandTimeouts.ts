@@ -126,10 +126,12 @@ export const NETWORK_DIAGNOSTIC_TIMEOUT_MS = 150 * 1000;
  * trade — a disconnect mid-restore is not evidence of failure here, and the
  * previous setting produced a false "failed" on every real recovery.
  *
- * NOT in scope of this constant: `/mssql/restore` and `/hyperv/restore` also
- * wait synchronously on `executeCommand(..., { timeoutMs: 600000 })`, which
- * terminalises those two REST flows after 10 minutes regardless of what the
- * reaper does. Making them asynchronous is separate work.
+ * #6437: `/mssql/restore` and `/hyperv/restore` used to wait synchronously on
+ * `executeCommand(..., { timeoutMs: 600000 })`, which terminalised those two
+ * REST flows after 10 minutes regardless of this ceiling. Both now dispatch
+ * async via `queueCommandForExecution` (the D20 queued-ack pattern from
+ * #5447/PR #5461), so this reaper ceiling is what actually owns their
+ * deadline too.
  */
 export const WHOLE_MACHINE_RESTORE_TIMEOUT_MS = TWENTY_FOUR_HOURS;
 
