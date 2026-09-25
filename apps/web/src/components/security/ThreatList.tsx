@@ -237,7 +237,7 @@ export default function ThreatList({ timezone, onSelectThreat }: ThreatListProps
         severityBadge[threat.severity],
       )}
     >
-      {t(`securityThreatList.${threat.severity}`)}
+      {t(/* i18n-dynamic */ `securityThreatList.${threat.severity}`)}
     </span>
   );
   const renderStatusBadge = (threat: Threat) => (
@@ -247,7 +247,7 @@ export default function ThreatList({ timezone, onSelectThreat }: ThreatListProps
         statusBadge[threat.status],
       )}
     >
-      {t(`securityThreatList.${threat.status}`)}
+      {t(/* i18n-dynamic */ `securityThreatList.${threat.status}`)}
     </span>
   );
   return (

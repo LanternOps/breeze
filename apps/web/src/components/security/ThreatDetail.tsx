@@ -238,7 +238,7 @@ export default function ThreatDetail({
               <span
                 className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-semibold ${severityBadge[threat.severity]}`}
               >
-                {t(`securityThreatList.${threat.severity}`)}
+                {t(/* i18n-dynamic */ `securityThreatList.${threat.severity}`)}
               </span>
             </div>
             <div className="mt-4 grid gap-4 sm:grid-cols-2">
@@ -269,7 +269,7 @@ export default function ThreatDetail({
                   {t("securityThreatDetail.status")}
                 </p>
                 <p className="text-sm font-medium">
-                  {t(`securityThreatList.${threat.status}`)}
+                  {t(/* i18n-dynamic */ `securityThreatList.${threat.status}`)}
                 </p>
               </div>
               <div className="sm:col-span-2">
@@ -364,14 +364,14 @@ export default function ThreatDetail({
                 <span className="text-muted-foreground">
                   {t("securityThreatDetail.threatStatus")}
                 </span>
-                <span className="font-medium">{t(`securityThreatList.${threat.status}`)}</span>
+                <span className="font-medium">{t(/* i18n-dynamic */ `securityThreatList.${threat.status}`)}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-muted-foreground">
                   {t("securityThreatDetail.severity")}
                 </span>
                 <span className="font-medium">
-                  {t(`securityThreatList.${threat.severity}`)}
+                  {t(/* i18n-dynamic */ `securityThreatList.${threat.severity}`)}
                 </span>
               </div>
             </div>
