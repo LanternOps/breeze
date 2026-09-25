@@ -1780,8 +1780,15 @@ describe('enforcePublicRateLimit — unresolved client IP (#5409)', () => {
     expect(result).toBeNull();
     const [, key, limit, window] = rateLimiterMock.mock.calls[0] as unknown as [unknown, string, number, number];
     expect(key).toBe('bmr:authenticate:unresolved');
-    expect(limit).toBeGreaterThan(10);
+    expect(limit).toBe(200);
     expect(window).toBe(60);
+  });
+
+  it('uses only a small multiplier for exchange (no effective per-token bound)', async () => {
+    await enforcePublicRateLimit(fakeCtx(), 'exchange', 10);
+    const [, key, limit] = rateLimiterMock.mock.calls[0] as unknown as [unknown, string, number];
+    expect(key).toBe('bmr:exchange:unresolved');
+    expect(limit).toBe(30);
   });
 
   it('keeps the strict per-IP limit when the IP resolves', async () => {
