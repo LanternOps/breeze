@@ -13,9 +13,27 @@ const changes = job('mobile-native-changes');
 const build = job('build-mobile-ios');
 const summary = job('ci-success');
 
+test('packages/** stays out of the native trigger only while mobile has no workspace dependency', () => {
+  // breeze-mobile deliberately has no @breeze/* dependency (Metro bundling; see
+  // the MIRROR notes in apps/mobile/src). While that holds, a packages/ change
+  // cannot affect the iOS build, so it must not allocate a macOS runner. The
+  // moment mobile takes a workspace dependency, packages/** must come back.
+  const pkg = JSON.parse(readFileSync(new URL('../../apps/mobile/package.json', import.meta.url), 'utf8'));
+  const deps = { ...pkg.dependencies, ...pkg.devDependencies, ...pkg.peerDependencies, ...pkg.optionalDependencies };
+  const workspaceDeps = Object.entries(deps)
+    .filter(([name, spec]) => name.startsWith('@breeze/') || String(spec).startsWith('workspace:'))
+    .map(([name]) => name);
+  const watchesPackages = changes.includes("- 'packages/**'");
+  if (workspaceDeps.length > 0) {
+    assert.ok(watchesPackages, `breeze-mobile depends on ${workspaceDeps.join(', ')}: add 'packages/**' back to the mobile filter`);
+  } else {
+    assert.ok(!watchesPackages, "breeze-mobile has no workspace dependency: 'packages/**' must not trigger the iOS build");
+  }
+});
+
 test('mobile compilation watches all native and workspace dependency inputs', () => {
   for (const input of [
-    'apps/mobile/**', 'packages/**',
+    'apps/mobile/**',
     'pnpm-workspace.yaml', '.npmrc', '.node-version', '.nvmrc', 'patches/**',
     '.github/workflows/ci.yml', '.github/scripts/mobile-native-ci.test.mjs',
     '.github/scripts/mobile-lockfile-closure.mjs',
