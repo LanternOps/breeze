@@ -865,13 +865,21 @@ export default function DeviceList({
   // (see customFieldColumnVisibility.ts for why). Definitions come from the
   // same store the advanced filter picker uses; visibility is a separate,
   // independently persisted set of fieldKeys.
-  const customFieldDefinitions = useCustomFieldDefinitionsStore((s) => s.definitions);
+  // The catalog is fetched under the AMBIENT org scope, so it must never be
+  // read or requested from a pinned single-org surface (the org record's
+  // Devices tab): that would leak the switcher's org into a page pinned to a
+  // different one. Custom-field columns are simply unavailable there.
+  const storedCustomFieldDefinitions = useCustomFieldDefinitionsStore((s) => s.definitions);
+  const customFieldDefinitions = useMemo(
+    () => (forceSingleOrg ? [] : storedCustomFieldDefinitions),
+    [forceSingleOrg, storedCustomFieldDefinitions],
+  );
   const fetchCustomFieldDefinitions = useCustomFieldDefinitionsStore(
     (s) => s.fetchCustomFieldDefinitions,
   );
   useEffect(() => {
-    void fetchCustomFieldDefinitions();
-  }, [fetchCustomFieldDefinitions]);
+    if (!forceSingleOrg) void fetchCustomFieldDefinitions();
+  }, [fetchCustomFieldDefinitions, forceSingleOrg]);
   const [visibleCustomFieldKeys, setVisibleCustomFieldKeys] = useState<
     ReadonlySet<string>
   >(() => readVisibleCustomFieldKeys());
