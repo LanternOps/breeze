@@ -9,18 +9,21 @@
  * observation clock, so a late-arriving event can carry an occurred_at the
  * walk has already passed; keyed on recorded time it lands after the cursor.
  *
- * Watermark: `created_at` is the inserting transaction's START time, and a
- * row only becomes visible when that transaction commits, so a walk that ran
- * up to now() could step past a row still being committed. A page therefore
- * stops before the earlier of (a) PAM_AUDIT_EXPORT_SETTLE_SECONDS before the
- * database clock and (b) the start of the oldest still-open transaction that
- * holds a write lock (RowExclusiveLock) on elevation_audit, from pg_locks
- * joined to pg_stat_activity. An insert holds that lock until its transaction
- * ends, and writes to any other table do not count, so (b) only waits for the
- * transactions that can still commit a ledger row. It covers every writer
- * running as the same database role as the API (every elevation_audit writer
- * does); pg_stat_activity hides other roles' transaction times, and (a) is the
- * bound for those.
+ * Watermark: `created_at` defaults to clock_timestamp(), the moment of the
+ * INSERT, so a row inserted later always sorts later, even from a transaction
+ * that began before the walk. A row only becomes visible when its transaction
+ * commits, so a walk that ran up to now() could still step past a row that is
+ * inserted but not yet committed. A page therefore stops before the earlier of
+ * (a) PAM_AUDIT_EXPORT_SETTLE_SECONDS before the database clock and (b) the
+ * start of the oldest still-open transaction that holds a write lock
+ * (RowExclusiveLock) on elevation_audit, from pg_locks joined to
+ * pg_stat_activity. A transaction's start precedes every created_at it
+ * writes, so (b) is a conservative bound; an insert holds that lock until its
+ * transaction ends, and writes to other tables do not count. (b) sees every
+ * writer running as the API's database role, which is every writer in this
+ * codebase. pg_stat_activity hides other roles' transaction times: a row
+ * written by another role (for example a manual admin session) inside a
+ * transaction held open longer than (a) can still land behind a cursor.
  *
  * Paging contract: page again while `X-Has-More` is true. The window is fully
  * exported only when `X-Window-Complete` is true; if it is false with

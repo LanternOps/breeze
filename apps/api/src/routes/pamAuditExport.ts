@@ -12,8 +12,8 @@
  *
  * Gates are the audit-log export's (routes/auditLogs.ts): a permission plus
  * requireMfa(), whose contract is the caller's EFFECTIVE MFA policy, not an
- * unconditional factor check. Machine principals that hold both permissions
- * are admitted on purpose, so a SIEM can pull the ledger. The per-page audit
+ * unconditional factor check. Mounted behind authMiddleware, it takes user
+ * access tokens only; API keys are not accepted here. The per-page audit
  * record is best-effort, like every writeRouteAudit call.
  */
 import { Hono } from 'hono';
