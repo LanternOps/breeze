@@ -8,6 +8,7 @@ import {
   TrendingUp
 } from 'lucide-react';
 import { cn, widthPercentClass } from '@/lib/utils';
+import { formatDate } from '@/lib/dateTimeFormat';
 import BackupHealthOverview from './BackupHealthOverview';
 import BackupJobList from './BackupJobList';
 import {
@@ -117,9 +118,9 @@ function UsageHistoryChart({ points }: { points: UsageHistoryPoint[] }) {
             {t('backupOverviewContent.total')} </span>
         </div>
         <div className="flex items-center justify-between text-muted-foreground">
-          <span>{new Date(first.timestamp).toLocaleDateString()}</span>
+          <span>{formatDate(first.timestamp, { year: 'numeric', month: 'short', day: 'numeric' })}</span>
           <span className="font-medium text-foreground">{formatBytes(last.totalBytes)}</span>
-          <span>{new Date(last.timestamp).toLocaleDateString()}</span>
+          <span>{formatDate(last.timestamp, { year: 'numeric', month: 'short', day: 'numeric' })}</span>
         </div>
       </div>
     </div>

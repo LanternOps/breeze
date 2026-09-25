@@ -109,6 +109,41 @@ describe('DRDashboard', () => {
     expect(await screen.findByText('Primary Site Failover')).toBeTruthy();
   });
 
+  it('formats the plan table Updated column with the app long date format, not a raw US locale string (#6496)', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/dr/plans') {
+        return makeJsonResponse({
+          data: [
+            {
+              id: 'plan-1',
+              name: 'Primary Site Failover',
+              description: 'Recover critical workloads',
+              status: 'active',
+              rpoTargetMinutes: 15,
+              rtoTargetMinutes: 60,
+              createdAt: '2026-09-20T20:15:17.000Z',
+              updatedAt: '2026-09-20T20:15:17.000Z',
+            },
+          ],
+        });
+      }
+      if (url === '/dr/plans/plan-1') {
+        return makeJsonResponse({ data: { groups: [] } });
+      }
+      if (url === '/dr/executions?limit=100') {
+        return makeJsonResponse({ data: [] });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<DRDashboard />);
+    await screen.findByText('Primary Site Failover');
+
+    expect(screen.queryByText(/9\/20\/2026/)).toBeNull();
+    expect(screen.getByText(/Sep 20, 2026/)).toBeTruthy();
+  });
+
   it('shows error state on fetch failure', async () => {
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);

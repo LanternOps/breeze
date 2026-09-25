@@ -626,6 +626,22 @@ export default function RecoveryBootstrapTab() {
     () => catalog.find((token) => token.id === selectedTokenId) ?? null,
     [catalog, selectedTokenId]
   );
+  // #6496: the snapshot picker's own `snapshots` list already carries the
+  // human label (fetched for the create-token dropdown) — reuse it in the
+  // detail panel and the tokens table instead of printing the bare snapshot
+  // UUID.
+  const snapshotLabelById = useMemo(
+    () => new Map(snapshots.map((snapshot) => [snapshot.id, snapshot.label ?? null])),
+    [snapshots]
+  );
+  const snapshotLabelFor = useCallback(
+    (snapshotId?: string | null) => (snapshotId ? snapshotLabelById.get(snapshotId) ?? null : null),
+    [snapshotLabelById]
+  );
+  const selectedTokenSnapshotLabel = useMemo(
+    () => snapshotLabelFor(selectedToken?.snapshotId),
+    [selectedToken, snapshotLabelFor]
+  );
   const selectedMedia = useMemo(
     () => mediaCatalog.filter((artifact) => artifact.tokenId === selectedTokenId),
     [mediaCatalog, selectedTokenId]
@@ -1185,7 +1201,7 @@ export default function RecoveryBootstrapTab() {
                   <DetailLine label="Status" value={<span className={cn('inline-flex rounded-full px-2 py-0.5 text-xs font-medium', statusClassName(selectedToken.status))}>{formatStatusLabel(selectedToken.status)}</span>} />
                   <DetailLine label="Session" value={selectedToken.sessionStatus ? formatStatusLabel(selectedToken.sessionStatus) : '-'} />
                   <DetailLine label="Restore type" value={restoreTypeLabel(selectedToken.restoreType)} />
-                  <DetailLine label="Snapshot" value={<span className="font-mono text-xs">{selectedToken.snapshotId ?? '-'}</span>} />
+                  <DetailLine label="Snapshot" value={<span className="text-xs">{selectedTokenSnapshotLabel ?? <span className="font-mono">{selectedToken.snapshotId ?? '-'}</span>}</span>} />
                   <DetailLine label="Device" value={<span className="font-mono text-xs">{selectedToken.deviceName ?? selectedToken.deviceId ?? '-'}</span>} />
                   <DetailLine label="Expiry" value={selectedToken.expiresAt ? formatTime(selectedToken.expiresAt) : '-'} />
                   <DetailLine label="Authenticated" value={selectedToken.authenticatedAt ? formatTime(selectedToken.authenticatedAt) : '-'} />
@@ -1460,7 +1476,14 @@ export default function RecoveryBootstrapTab() {
                       <DetailLine label="Restore job ID" value={selectedToken.restoreJobId ?? '-'} />
                       <DetailLine label="Restore status" value={selectedToken.linkedRestoreJob?.status ? formatStatusLabel(selectedToken.linkedRestoreJob.status) : '-'} />
                       <DetailLine label="Restored files" value={selectedToken.linkedRestoreJob?.restoredFiles ?? '-'} />
-                      <DetailLine label="Restored size" value={selectedToken.linkedRestoreJob?.restoredSize ?? '-'} />
+                      <DetailLine
+                        label="Restored size"
+                        value={
+                          typeof selectedToken.linkedRestoreJob?.restoredSize === 'number'
+                            ? formatBytes(selectedToken.linkedRestoreJob.restoredSize)
+                            : '-'
+                        }
+                      />
                       <DetailLine label="Completed" value={selectedToken.linkedRestoreJob?.completedAt ? formatTime(selectedToken.linkedRestoreJob.completedAt) : '-'} />
                       <DetailLine label="Restore result" value={<pre className="whitespace-pre-wrap wrap-break-word text-xs text-foreground">{renderJson(selectedToken.restoreResult)}</pre>} />
                     </div>
@@ -1668,7 +1691,11 @@ export default function RecoveryBootstrapTab() {
                           </td>
                           <td className="py-3 pr-4 text-muted-foreground">
                             <div className="space-y-1">
-                              <p className="font-mono text-xs text-foreground">{token.snapshotId ?? '-'}</p>
+                              {snapshotLabelFor(token.snapshotId) ? (
+                                <p className="text-xs text-foreground">{snapshotLabelFor(token.snapshotId)}</p>
+                              ) : (
+                                <p className="font-mono text-xs text-foreground">{token.snapshotId ?? '-'}</p>
+                              )}
                               <p className="chart-legend-xs">{token.createdAt ? formatTime(token.createdAt) : '-'}</p>
                             </div>
                           </td>
