@@ -302,6 +302,34 @@ describe("IntegrationsPage — Customer Graph Read callback fragment", () => {
     expect(window.location.hash).toBe("#m365");
   });
 
+  // #6684: a real return from Microsoft is a full page LOAD at the callback
+  // hash — the org store hasn't hydrated yet, so callbackOrgId is null on the
+  // very first render and only resolves a tick later. The hash-consuming
+  // effect must not permanently drop the captured result just because it ran
+  // once before the org id was known.
+  it("keeps the captured result when the org id resolves after the first render (cold load)", () => {
+    orgState.currentOrgId = null;
+    window.history.replaceState(
+      {},
+      "",
+      "/integrations?org=org-1#m365/customer-graph-read/active",
+    );
+
+    const view = render(<IntegrationsPage />);
+
+    // The hash is consumed (rewritten) immediately, before the org id is known.
+    expect(window.location.hash).toBe("#m365");
+
+    // Org id resolves on a later render (e.g. the org store hydrates).
+    orgState.currentOrgId = "11111111-1111-4111-8111-111111111111";
+    view.rerender(<IntegrationsPage />);
+
+    expect(screen.getByTestId("stub-customer-graph-read")).toHaveAttribute(
+      "data-callback-result",
+      "active",
+    );
+  });
+
   it("uses the JWT organization fallback only for an organization-scoped session", () => {
     orgState.currentOrgId = null;
     scope = "organization";
