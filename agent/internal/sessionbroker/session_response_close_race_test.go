@@ -85,3 +85,37 @@ func TestSendCommandWithQuiescence_DeliveredResponseBeatsLaterSessionClose(t *te
 		}
 	}
 }
+
+// The negative half: a close with NOTHING delivered must still fail the command
+// and hand back the quiescence channel, closed empty ("unproven"), so callers
+// run their bounded recovery rather than treating the command as finished.
+func TestSendCommandWithQuiescence_CloseWithoutResponse_ReturnsUnprovenQuiescence(t *testing.T) {
+	session, clientIPC := createTestSession(t)
+	defer clientIPC.Close()
+
+	go func() {
+		if _, err := clientIPC.Recv(); err != nil {
+			return
+		}
+		_ = session.Close()
+	}()
+
+	resp, quiesced, err := session.sendCommandWithQuiescence("cmd-close", "race_cmd", nil, 2*time.Second)
+	if err == nil {
+		t.Fatal("expected an error when the session closed with no response")
+	}
+	if resp != nil {
+		t.Fatalf("expected no response, got %+v", resp)
+	}
+	if quiesced == nil {
+		t.Fatal("expected a quiescence channel for an unproven command")
+	}
+	select {
+	case env, ok := <-quiesced:
+		if ok {
+			t.Fatalf("quiescence channel must close empty on session death, got %+v", env)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("quiescence channel never closed")
+	}
+}
