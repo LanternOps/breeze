@@ -46,8 +46,11 @@ const { getPdfMock, renderPdfMock } = vi.hoisted(() => ({ getPdfMock: vi.fn(), r
 vi.mock('../services/invoicePdf', () => ({
   getInvoicePdf: getPdfMock, renderInvoicePdf: renderPdfMock,
   // The db is mocked, so the ticket-label expression is never compiled here;
-  // the snapshot semantics are covered by invoiceTicketLabelSnapshot.integration.
+  // the snapshot semantics are covered by invoiceTicketLabelSnapshot.integration
+  // and invoiceTicketHeaderSnapshot.integration.
   invoiceLineTicketNumberSql: vi.fn(() => 'ticket_label_sql'),
+  invoiceLineTicketSubjectSql: vi.fn(() => 'ticket_subject_sql'),
+  invoiceLineTicketCategorySql: vi.fn(() => 'ticket_category_sql'),
 }));
 
 vi.mock('../services/portalUrl', () => ({ portalBase: () => 'https://portal.example.test/portal' }));

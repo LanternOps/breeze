@@ -367,7 +367,9 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // worked-vs-billed disclosure) — included, same bucket as quantity.
   // ticket_label (sweep C4): the "Ticket #…" text frozen at issue — a plain
   // varchar ticket number, customer-visible on the document. Ordinary data.
-  "invoice_lines": tablePolicy("org_id", {"included":["id","invoice_id","org_id","source_type","source_id","source_contract_id","catalog_item_id","parent_line_id","ticket_id","ticket_label","name","description","quantity","unit_price","cost_basis","revenue_allocation","taxable","customer_visible","line_total","is_unapproved_time","worked_minutes","sort_order","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  // ticket_subject / ticket_category (#6955): the group-header text frozen at
+  // issue — plain varchar, customer-visible on the document. Ordinary data.
+  "invoice_lines": tablePolicy("org_id", {"included":["id","invoice_id","org_id","source_type","source_id","source_contract_id","catalog_item_id","parent_line_id","ticket_id","ticket_label","ticket_subject","ticket_category","name","description","quantity","unit_price","cost_basis","revenue_allocation","taxable","customer_visible","line_total","is_unapproved_time","worked_minutes","sort_order","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "invoice_payments": tablePolicy("org_id", {"included":["id","invoice_id","org_id","amount","method","reference","received_at","recorded_by","note","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // SEC-150 revocation columns. All scalars (enum/text/timestamptz/int/uuid) —
   // no open container, so none is forced into excludedOpen.
