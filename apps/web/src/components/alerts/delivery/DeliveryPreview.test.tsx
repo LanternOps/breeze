@@ -60,6 +60,13 @@ describe('DeliveryPreview', () => {
     await act(async () => finishOld(json({ ...answer, routingRuleName: 'Old org' })));
     expect(screen.getByTestId('delivery-preview-result')).not.toHaveTextContent('Old org');
   });
+  it('re-resolves when refreshToken changes, e.g. after a routing rule is created/edited (G1-3)', async () => {
+    const view = render(<DeliveryPreview orgId="org-1" severity="high" refreshToken={0} />);
+    await screen.findByTestId('delivery-preview-result');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    view.rerender(<DeliveryPreview orgId="org-1" severity="high" refreshToken={1} />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+  });
   it('stores rule-set preview selection in the hash, not the page query', async () => {
     fetchMock.mockImplementation(async url => url.startsWith('/orgs/sites') ? json({ data: [] }) : json(answer));
     render(<DeliveryRuleSetPreview orgId="org-1" />);

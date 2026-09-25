@@ -46,6 +46,22 @@ describe('createTimeEntrySchema', () => {
     const futureEnd = new Date(Date.now() + 40 * 60_000).toISOString();
     expect(createTimeEntrySchema.safeParse({ startedAt: future, endedAt: futureEnd }).success).toBe(false);
   });
+
+  // Paper cut G2-4 (#6497): a missing startedAt/endedAt previously coerced
+  // `undefined` into an Invalid Date and reported the confusing/self-contradictory
+  // zod v4 message "Expected date, received Date". Missing fields must instead
+  // say plainly that they are required.
+  it('reports a clear "required" message when startedAt/endedAt are missing, not a coercion error', () => {
+    const r = createTimeEntrySchema.safeParse({});
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      const messages = r.error.issues.map((i) => i.message).join(' | ');
+      expect(messages).not.toMatch(/received Date/i);
+      expect(messages).not.toMatch(/expected date/i);
+      expect(messages).toMatch(/startedAt is required/i);
+      expect(messages).toMatch(/endedAt is required/i);
+    }
+  });
 });
 
 describe('startTimerSchema', () => {

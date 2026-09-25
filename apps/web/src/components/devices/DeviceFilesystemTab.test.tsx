@@ -63,6 +63,29 @@ describe('DeviceFilesystemTab', () => {
     expect(banner).toHaveAttribute('role', 'alert');
   });
 
+  it('disables Analyze Now and Cleanup Preview with an offline hint when the device is offline', async () => {
+    routeFetch((url) => {
+      if (url.includes('/filesystem')) return jsonResponse({ data: SNAPSHOT });
+      return jsonResponse({ data: [] });
+    });
+
+    render(<DeviceFilesystemTab deviceId={DEVICE_ID} osType="linux" deviceStatus="offline" />);
+
+    const analyzeButton = await screen.findByTestId('filesystem-analyze-button');
+    expect(analyzeButton).toBeDisabled();
+    expect(analyzeButton).toHaveAttribute(
+      'title',
+      'Device is offline. Scans require a connected agent.',
+    );
+
+    const previewButton = screen.getByTestId('filesystem-preview-button');
+    expect(previewButton).toBeDisabled();
+    expect(previewButton).toHaveAttribute(
+      'title',
+      'Device is offline. Scans require a connected agent.',
+    );
+  });
+
   it('toasts through runAction when the scan POST fails instead of failing silently', async () => {
     routeFetch((url, init) => {
       if (init?.method === 'POST' && url.includes('/filesystem/scan')) {

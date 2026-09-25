@@ -277,6 +277,20 @@ describe('POST /time/log', () => {
     expect(hoisted.createTimeEntry).not.toHaveBeenCalled();
   });
 
+  it('400s with a clear "required" message (not a coercion error) when startedAt/endedAt are missing', async () => {
+    const res = await makeApp().request('/time/log', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ticketId: TICKET_ID, description: 'x' }),
+    });
+    expect(res.status).toBe(400);
+    expect(hoisted.createTimeEntry).not.toHaveBeenCalled();
+    const body = await res.json();
+    expect(body.error).not.toMatch(/received Date/i);
+    expect(body.error).toMatch(/startedAt is required/i);
+    expect(body.error).toMatch(/endedAt is required/i);
+  });
+
   it('maps a generic TimeEntryServiceError status/code through to JSON', async () => {
     hoisted.createTimeEntry.mockRejectedValue(
       new TimeEntryServiceError('Ticket must belong to the same partner', 400, 'TICKET_WRONG_PARTNER')

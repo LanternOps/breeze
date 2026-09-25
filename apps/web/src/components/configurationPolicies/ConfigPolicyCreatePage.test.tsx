@@ -4,6 +4,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
+// #6497 G1-5: a successful create must show a toast, same pattern as sibling
+// create flows (e.g. BulkOrgImport) — mock the shared toast module.
+const showToastMock = vi.fn();
+vi.mock('../shared/Toast', () => ({
+  showToast: (...a: unknown[]) => showToastMock(...a),
+}));
+
 // Partner scope is detected from the JWT claims (same pattern as AlertTemplateEditor —
 // useOrgStore().partners is system-scope-only and empty for real partner users). The
 // owner picker also reads currentOrgId/allOrgs/organizations from the org store, so the
@@ -157,7 +164,8 @@ describe('ConfigPolicyCreatePage — owner scope (#1724)', () => {
     // Enter inside a field submits the form regardless of the disabled button.
     fireEvent.submit(container.querySelector('form')!);
 
-    await waitFor(() => expect(screen.getByText(/select an organization/i)).toBeInTheDocument());
+    // The inline hint (#6497 G1-4) plus the submit-time error banner both match.
+    await waitFor(() => expect(screen.getAllByText(/select an organization/i).length).toBeGreaterThanOrEqual(1));
     expect(
       fetchMock.mock.calls.some((c) => c[0] === '/configuration-policies' && (c[1] as RequestInit)?.method === 'POST')
     ).toBe(false);
@@ -204,6 +212,47 @@ describe('ConfigPolicyCreatePage — owner scope (#1724)', () => {
       expect(body.orgId).toBe('org-9');
       expect('ownerScope' in body).toBe(false);
     });
+  });
+});
+
+describe('ConfigPolicyCreatePage — paper cuts (#6497)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getJwtClaimsMock.mockReturnValue({ scope: 'partner', partnerId: 'p-1', orgId: null });
+    orgState.current = {
+      currentOrgId: null,
+      allOrgs: true,
+      organizations: [{ id: 'org-1', name: 'Acme' }, { id: 'org-2', name: 'Beta' }],
+    };
+    fetchMock.mockResolvedValue(json({ id: 'pol-1' }, true));
+  });
+
+  it('G1-4: shows a visible inline hint near the org select when no org is chosen, and a title on the disabled button', () => {
+    startNewPolicy();
+    fireEvent.click(screen.getByTestId('policy-owner-org'));
+
+    // Visible hint text near the select, not just a title attribute.
+    const hints = screen.getAllByText('Select an organization for this policy.');
+    expect(hints.length).toBeGreaterThan(0);
+
+    const submitButton = screen.getByText('Create Policy').closest('button')!;
+    expect(submitButton).toBeDisabled();
+    expect(submitButton).toHaveAttribute('title', 'Select an organization for this policy.');
+  });
+
+  it('G1-5: shows a success toast after creating a policy', async () => {
+    startNewPolicy();
+    fireEvent.change(screen.getByPlaceholderText('e.g. Standard Workstation Policy'), {
+      target: { value: 'Fleet-wide PAM' },
+    });
+    fireEvent.click(screen.getByText('Create Policy'));
+
+    await waitFor(() => {
+      expect(navMock).toHaveBeenCalledWith('/configuration-policies/pol-1');
+    });
+    expect(showToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' })
+    );
   });
 });
 
@@ -301,7 +350,9 @@ describe('ConfigPolicyCreatePage — linked mode posts parentPolicyId (#5080)', 
         String(c[0]).startsWith('/configuration-policies/eligible-parents?ownerScope=organization')
       )
     ).toBe(false);
-    expect(screen.getByText('Select an organization for this policy.')).toBeInTheDocument();
+    // Two instances now: the inline hint next to the org select (#6497 G1-4) and
+    // the "link to existing" picker's fallback hint in place of the selector.
+    expect(screen.getAllByText('Select an organization for this policy.').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('Create Policy').closest('button')).toBeDisabled();
   });
 
