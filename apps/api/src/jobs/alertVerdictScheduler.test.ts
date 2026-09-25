@@ -72,6 +72,10 @@ vi.mock('../db/schema/alerts', () => ({
   alertCorrelationMembers: { id: 'id', orgId: 'org_id', alertId: 'alert_id' },
 }));
 
+vi.mock('../db/schema/aiAgents', () => ({
+  aiAgentRuns: { id: 'id', orgId: 'org_id', alertId: 'alert_id', profile: 'profile', status: 'status' },
+}));
+
 const latestVerdictsForAlerts = vi.hoisted(() => vi.fn());
 vi.mock('../services/aiAgents/alertVerdicts', () => ({ latestVerdictsForAlerts }));
 
@@ -166,9 +170,10 @@ describe('scheduleUngroupedVerdict', () => {
 });
 
 describe('processUngroupedVerdictJob', () => {
-  it('enqueues a verdict run when the alert is active, ungrouped, and unverdicted', async () => {
+  it('enqueues a verdict run when the alert is active, ungrouped, has no full run, and unverdicted', async () => {
     queueSelect([{ id: ALERT_ID, status: 'active' }]); // alert lookup
     queueSelect([]); // no correlation-member row
+    queueSelect([]); // no completed/in-flight full triage run
     latestVerdictsForAlerts.mockResolvedValue(new Map());
 
     await processUngroupedVerdictJob({ orgId: ORG_ID, alertId: ALERT_ID });
@@ -202,9 +207,31 @@ describe('processUngroupedVerdictJob', () => {
     expect(latestVerdictsForAlerts).not.toHaveBeenCalled();
   });
 
+  it('skips when a completed full triage run already exists for the alert (#6750)', async () => {
+    queueSelect([{ id: ALERT_ID, status: 'active' }]);
+    queueSelect([]); // no membership
+    queueSelect([{ id: 'run-1' }]); // completed full-profile run row
+
+    await processUngroupedVerdictJob({ orgId: ORG_ID, alertId: ALERT_ID });
+
+    expect(enqueueVerdictRunForAlert).not.toHaveBeenCalled();
+    expect(latestVerdictsForAlerts).not.toHaveBeenCalled();
+  });
+
+  it('skips when an in-flight (running) full triage run already exists for the alert (#6750)', async () => {
+    queueSelect([{ id: ALERT_ID, status: 'active' }]);
+    queueSelect([]); // no membership
+    queueSelect([{ id: 'run-2' }]); // in-flight full-profile run row
+
+    await processUngroupedVerdictJob({ orgId: ORG_ID, alertId: ALERT_ID });
+
+    expect(enqueueVerdictRunForAlert).not.toHaveBeenCalled();
+  });
+
   it('skips when the alert already carries a live verdict', async () => {
     queueSelect([{ id: ALERT_ID, status: 'active' }]);
     queueSelect([]); // no membership
+    queueSelect([]); // no full run
     latestVerdictsForAlerts.mockResolvedValue(new Map([[ALERT_ID, { id: 'verdict-1' }]]));
 
     await processUngroupedVerdictJob({ orgId: ORG_ID, alertId: ALERT_ID });
@@ -215,6 +242,7 @@ describe('processUngroupedVerdictJob', () => {
   it('propagates a rejection from enqueueVerdictRunForAlert so BullMQ retries the job', async () => {
     queueSelect([{ id: ALERT_ID, status: 'active' }]);
     queueSelect([]);
+    queueSelect([]); // no full run
     latestVerdictsForAlerts.mockResolvedValue(new Map());
     enqueueVerdictRunForAlert.mockRejectedValue(new Error('enqueue boom'));
 
@@ -226,6 +254,7 @@ describe('worker wiring', () => {
   it('createUngroupedVerdictWorker wires its processor to processUngroupedVerdictJob', async () => {
     queueSelect([{ id: ALERT_ID, status: 'active' }]);
     queueSelect([]);
+    queueSelect([]); // no full run
     latestVerdictsForAlerts.mockResolvedValue(new Map());
 
     createUngroupedVerdictWorker();
