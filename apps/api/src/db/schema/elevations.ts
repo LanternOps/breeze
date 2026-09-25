@@ -319,10 +319,10 @@ export const elevationAudit = pgTable(
       table.occurredAt,
     ),
     orgIdIdx: index('elevation_audit_org_id_idx').on(table.orgId),
-    // #4910: per-org keyset traversal for the ledger export.
-    orgOccurredIdIdx: index('elevation_audit_org_occurred_id_idx').on(
+    // #4910: per-org keyset traversal for the ledger export, in recorded order.
+    orgCreatedIdIdx: index('elevation_audit_org_created_id_idx').on(
       table.orgId,
-      table.occurredAt,
+      table.createdAt,
       table.id,
     ),
     eventTypeIdx: index('elevation_audit_event_type_idx').on(table.eventType),

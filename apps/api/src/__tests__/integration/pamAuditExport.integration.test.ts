@@ -1,9 +1,11 @@
 /**
  * fetchElevationAuditExportPage against real Postgres (#4910): RLS bounds the
- * export to the caller's org even with no app-layer condition, the site
- * allowlist narrows it, the (occurred_at, id) keyset cursor walks every event
- * exactly once at microsecond precision (including exact timestamp ties), the
- * [from, to) window is half-open, and raw `details` never leaks.
+ * export to the caller's org whatever org is asked for, the site allowlist
+ * narrows it, the recorded-time (created_at, id) keyset walks every event
+ * exactly once at microsecond precision (including exact ties), a late event
+ * with a backdated occurred_at is still exported, rows inside the settle
+ * delay wait for a later resume, the [from, to) window is half-open, and raw
+ * `details` never leaks.
  */
 import './setup';
 import { randomUUID } from 'node:crypto';
@@ -11,7 +13,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { eq, inArray, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { devices, elevationAudit, elevationRequests, sites } from '../../db/schema';
-import { fetchElevationAuditExportPage } from '../../services/pamAuditExport';
+import { decodeExportCursor, fetchElevationAuditExportPage } from '../../services/pamAuditExport';
 import { createOrganization, createPartner } from './db-utils';
 
 const SYSTEM_CTX: DbAccessContext = {
@@ -64,11 +66,13 @@ async function seedRequest(orgId: string, partnerId: string) {
   });
 }
 
+/** `recordedAt` becomes created_at; occurred_at defaults to the same instant. */
 async function seedEvent(
   orgId: string,
   requestId: string,
-  occurredAt: string,
+  recordedAt: string,
   details: Record<string, unknown> = {},
+  occurredAt: string = recordedAt,
 ) {
   return withDbAccessContext(SYSTEM_CTX, async () => {
     const [row] = await db
@@ -80,6 +84,7 @@ async function seedEvent(
         actor: 'technician',
         details,
         occurredAt: sql`${occurredAt}::timestamptz` as unknown as Date,
+        createdAt: sql`${recordedAt}::timestamptz` as unknown as Date,
       })
       .returning({ id: elevationAudit.id });
     return row!.id;
@@ -99,26 +104,37 @@ async function fixture() {
 
 const WINDOW = { from: new Date('2026-09-01T00:00:00Z'), to: new Date('2026-10-01T00:00:00Z') };
 
-async function exportAll(orgId: string, opts: { limit: number; allowedSiteIds?: readonly string[]; orgCondition?: boolean }) {
+type After = { recordedAt: string; id: string } | null;
+
+function fetchPage(
+  orgId: string,
+  opts: { limit: number; after?: After; allowedSiteIds?: readonly string[]; askOrgId?: string },
+) {
+  return withDbAccessContext(orgContext(orgId), () =>
+    fetchElevationAuditExportPage({
+      orgCondition: undefined,
+      allowedSiteIds: opts.allowedSiteIds,
+      filters: { ...WINDOW, orgId: opts.askOrgId ?? orgId },
+      after: opts.after ?? null,
+      limit: opts.limit,
+    }),
+  );
+}
+
+/** Pages until hasMore is false; returns the ids seen and the final resume cursor. */
+async function exportAll(
+  orgId: string,
+  opts: { limit: number; after?: After; allowedSiteIds?: readonly string[]; askOrgId?: string },
+) {
   const ids: string[] = [];
-  let after: { occurredAt: string; id: string } | null = null;
+  let after: After = opts.after ?? null;
   for (let i = 0; i < 50; i++) {
-    const page = await withDbAccessContext(orgContext(orgId), () =>
-      fetchElevationAuditExportPage({
-        orgCondition: opts.orgCondition === false ? undefined : eq(elevationAudit.orgId, orgId),
-        allowedSiteIds: opts.allowedSiteIds,
-        filters: WINDOW,
-        after,
-        limit: opts.limit,
-      }),
-    );
+    const page = await fetchPage(orgId, { ...opts, after });
     ids.push(...page.records.map((r) => String(r.id)));
-    if (!page.nextCursor) break;
-    const raw = Buffer.from(page.nextCursor, 'base64url').toString('utf8');
-    const sep = raw.lastIndexOf('|');
-    after = { occurredAt: raw.slice(0, sep), id: raw.slice(sep + 1) };
+    after = page.nextCursor ? decodeExportCursor(page.nextCursor) : after;
+    if (!page.hasMore) break;
   }
-  return ids;
+  return { ids, after };
 }
 
 describe('fetchElevationAuditExportPage (real Postgres, #4910)', () => {
@@ -134,7 +150,7 @@ describe('fetchElevationAuditExportPage (real Postgres, #4910)', () => {
     ];
     await seedEvent(f.orgB, f.reqB.id, tie);
 
-    const seen = await exportAll(f.orgA, { limit: 2 });
+    const { ids: seen } = await exportAll(f.orgA, { limit: 2 });
     expect(seen).toHaveLength(5);
     expect(new Set(seen)).toEqual(new Set(expected));
     // Ties at the same instant are ordered by id; later instants follow.
@@ -143,12 +159,66 @@ describe('fetchElevationAuditExportPage (real Postgres, #4910)', () => {
     expect(seen.slice(3)).toEqual(expected.slice(3));
   });
 
-  it('RLS alone keeps another org out even with no app-layer org condition', async () => {
+  it('RLS keeps another org out even when that org is the one asked for', async () => {
     const f = await fixture();
     await seedEvent(f.orgA, f.reqA1.id, '2026-09-11 00:00:00+00');
     await seedEvent(f.orgB, f.reqB.id, '2026-09-11 00:00:00+00');
-    const seen = await exportAll(f.orgA, { limit: 10, orgCondition: false });
-    expect(seen).toHaveLength(1);
+    expect((await exportAll(f.orgA, { limit: 10 })).ids).toHaveLength(1);
+    expect((await exportAll(f.orgA, { limit: 10, askOrgId: f.orgB })).ids).toEqual([]);
+  });
+
+  it('a late event whose occurred_at the walk already passed is still exported (keyed on recorded time)', async () => {
+    const f = await fixture();
+    const first = await seedEvent(f.orgA, f.reqA1.id, '2026-09-15 12:00:10+00');
+    const page1 = await exportAll(f.orgA, { limit: 10 });
+    expect(page1.ids).toEqual([first]);
+
+    // An agent reports an observation from before the cursor's instant, and
+    // Breeze records it later.
+    const late = await seedEvent(f.orgA, f.reqA1.id, '2026-09-15 12:05:00+00', {}, '2026-09-15 12:00:05+00');
+    const resumed = await exportAll(f.orgA, { limit: 10, after: page1.after });
+    expect(resumed.ids).toEqual([late]);
+  });
+
+  it('rows inside the settle delay wait; resuming from the cursor picks them up once settled', async () => {
+    const f = await fixture();
+    const settled = await seedEvent(f.orgA, f.reqA1.id, '2026-09-16 00:00:00+00');
+    const fresh = await withDbAccessContext(SYSTEM_CTX, async () => {
+      const [row] = await db
+        .insert(elevationAudit)
+        .values({ orgId: f.orgA, elevationRequestId: f.reqA1.id, eventType: 'approved', actor: 'technician', details: {}, occurredAt: new Date() })
+        .returning({ id: elevationAudit.id });
+      return row!.id;
+    });
+    const window = { from: new Date('2026-09-01T00:00:00Z'), to: new Date(Date.now() + 60_000) };
+    const page = await withDbAccessContext(orgContext(f.orgA), () =>
+      fetchElevationAuditExportPage({ orgCondition: undefined, allowedSiteIds: undefined, filters: { ...window, orgId: f.orgA }, after: null, limit: 10 }),
+    );
+    expect(page.records.map((r) => r.id)).toEqual([settled]);
+    expect(page.hasMore).toBe(false);
+    expect(page.nextCursor).not.toBe('');
+
+    // Time passes: the fresh row is now older than the settle delay.
+    await withDbAccessContext(SYSTEM_CTX, () =>
+      db.update(elevationAudit).set({ createdAt: sql`now() - interval '10 minutes'` as unknown as Date }).where(eq(elevationAudit.id, fresh)),
+    );
+    const resumed = await withDbAccessContext(orgContext(f.orgA), () =>
+      fetchElevationAuditExportPage({
+        orgCondition: undefined, allowedSiteIds: undefined, filters: { ...window, orgId: f.orgA },
+        after: decodeExportCursor(page.nextCursor), limit: 10,
+      }),
+    );
+    expect(resumed.records.map((r) => r.id)).toEqual([fresh]);
+
+    // An empty page keeps the resume position instead of dropping it.
+    const empty = await withDbAccessContext(orgContext(f.orgA), () =>
+      fetchElevationAuditExportPage({
+        orgCondition: undefined, allowedSiteIds: undefined, filters: { ...window, orgId: f.orgA },
+        after: decodeExportCursor(resumed.nextCursor), limit: 10,
+      }),
+    );
+    expect(empty.records).toEqual([]);
+    expect(empty.nextCursor).toBe(resumed.nextCursor);
   });
 
   it('the site allowlist narrows the export, and an empty allowlist returns nothing', async () => {
@@ -156,15 +226,15 @@ describe('fetchElevationAuditExportPage (real Postgres, #4910)', () => {
     const inSite1 = await seedEvent(f.orgA, f.reqA1.id, '2026-09-12 00:00:00+00');
     await seedEvent(f.orgA, f.reqA2.id, '2026-09-12 00:00:01+00');
 
-    expect(await exportAll(f.orgA, { limit: 10, allowedSiteIds: [f.reqA1.site_id] })).toEqual([inSite1]);
-    expect(await exportAll(f.orgA, { limit: 10, allowedSiteIds: [] })).toEqual([]);
+    expect((await exportAll(f.orgA, { limit: 10, allowedSiteIds: [f.reqA1.site_id] })).ids).toEqual([inSite1]);
+    expect((await exportAll(f.orgA, { limit: 10, allowedSiteIds: [] })).ids).toEqual([]);
   });
 
-  it('the window is half-open [from, to)', async () => {
+  it('the recorded-time window is half-open [from, to)', async () => {
     const f = await fixture();
     const atFrom = await seedEvent(f.orgA, f.reqA1.id, '2026-09-01 00:00:00+00');
     await seedEvent(f.orgA, f.reqA1.id, '2026-10-01 00:00:00+00');
-    expect(await exportAll(f.orgA, { limit: 10 })).toEqual([atFrom]);
+    expect((await exportAll(f.orgA, { limit: 10 })).ids).toEqual([atFrom]);
   });
 
   it('exports only allowlisted detail keys and the request context', async () => {
@@ -179,7 +249,7 @@ describe('fetchElevationAuditExportPage (real Postgres, #4910)', () => {
       fetchElevationAuditExportPage({
         orgCondition: eq(elevationAudit.orgId, f.orgA),
         allowedSiteIds: undefined,
-        filters: WINDOW,
+        filters: { ...WINDOW, orgId: f.orgA },
         after: null,
         limit: 10,
       }),
@@ -200,7 +270,6 @@ describe('fetchElevationAuditExportPage (real Postgres, #4910)', () => {
       request_status: 'pending',
     });
     expect(page.hasMore).toBe(false);
-    expect(page.nextCursor).toBe('');
   });
 
   it('filters by request and event type', async () => {
@@ -211,7 +280,7 @@ describe('fetchElevationAuditExportPage (real Postgres, #4910)', () => {
       fetchElevationAuditExportPage({
         orgCondition: eq(elevationAudit.orgId, f.orgA),
         allowedSiteIds: undefined,
-        filters: { ...WINDOW, elevationRequestId: f.reqA1.id, eventType: 'approved' },
+        filters: { ...WINDOW, orgId: f.orgA, elevationRequestId: f.reqA1.id, eventType: 'approved' },
         after: null,
         limit: 10,
       }),
@@ -222,7 +291,7 @@ describe('fetchElevationAuditExportPage (real Postgres, #4910)', () => {
       fetchElevationAuditExportPage({
         orgCondition: eq(elevationAudit.orgId, f.orgA),
         allowedSiteIds: undefined,
-        filters: { ...WINDOW, eventType: 'denied' },
+        filters: { ...WINDOW, orgId: f.orgA, eventType: 'denied' },
         after: null,
         limit: 10,
       }),

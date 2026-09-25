@@ -6,7 +6,14 @@
  * Paged, not streamed: a streamed body would outlive the request's RLS
  * transaction (authMiddleware → withDbAccessContext awaits the handler, not
  * the body), and every page here re-runs the caller's authorization. The
- * caller follows `X-Next-Cursor` until it is empty.
+ * caller pages with `X-Next-Cursor` while `X-Has-More` is true; the cursor is
+ * also the resume position for tailing the ledger later.
+ *
+ * Gates are the audit-log export's (routes/auditLogs.ts): a permission plus
+ * requireMfa(), whose contract is the caller's EFFECTIVE MFA policy, not an
+ * unconditional factor check. Machine principals that hold both permissions
+ * are admitted on purpose, so a SIEM can pull the ledger. The per-page audit
+ * record is best-effort, like every writeRouteAudit call.
  */
 import { Hono } from 'hono';
 import { z } from 'zod';
@@ -32,6 +39,7 @@ export const exportQuerySchema = z
     format: z.enum(['csv', 'jsonl']).optional().default('csv'),
     from: isoDateTime,
     to: isoDateTime,
+    // Required for partner and system callers; an organization caller's own org by default.
     orgId: z.string().guid().optional(),
     siteId: z.string().guid().optional(),
     deviceId: z.string().guid().optional(),
@@ -75,13 +83,19 @@ pamAuditExportRoutes.get(
     const perms = c.get('permissions') as UserPermissions | undefined;
     const q = c.req.valid('query');
 
-    if (q.orgId && !auth.canAccessOrg(q.orgId)) {
+    // One organization per export: the keyset walk is served by the
+    // (org_id, created_at, id) index only when org_id is fixed.
+    const orgId = q.orgId ?? (auth.scope === 'organization' ? auth.orgId : null);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for partner and system callers' }, 400);
+    }
+    if (!auth.canAccessOrg(orgId)) {
       return c.json({ error: 'Organization access denied' }, 403);
     }
     if (q.siteId && perms && !canAccessSite(perms, q.siteId)) {
       return c.json({ error: 'Site access denied' }, 403);
     }
-    let after: { occurredAt: string; id: string } | null = null;
+    let after: { recordedAt: string; id: string } | null = null;
     if (q.cursor) {
       after = decodeExportCursor(q.cursor);
       if (!after) return c.json({ error: 'Invalid cursor' }, 400);
@@ -93,7 +107,7 @@ pamAuditExportRoutes.get(
       filters: {
         from: new Date(q.from),
         to: new Date(q.to),
-        orgId: q.orgId,
+        orgId,
         siteId: q.siteId,
         deviceId: q.deviceId,
         elevationRequestId: q.elevationRequestId,
@@ -105,7 +119,7 @@ pamAuditExportRoutes.get(
     const body = serializeElevationAuditPage(page.records, q.format);
 
     writeRouteAudit(c, {
-      orgId: q.orgId ?? (auth.scope === 'organization' ? auth.orgId : null),
+      orgId,
       action: 'pam.elevation_audit.export',
       resourceType: 'elevation_audit',
       details: {
@@ -119,7 +133,7 @@ pamAuditExportRoutes.get(
         filters: {
           from: q.from,
           to: q.to,
-          orgId: q.orgId ?? null,
+          orgId,
           siteId: q.siteId ?? null,
           deviceId: q.deviceId ?? null,
           elevationRequestId: q.elevationRequestId ?? null,
@@ -133,6 +147,7 @@ pamAuditExportRoutes.get(
     c.header('Cache-Control', 'no-store');
     c.header('X-Export-Schema-Version', String(PAM_AUDIT_EXPORT_SCHEMA_VERSION));
     c.header('X-Row-Count', String(page.records.length));
+    c.header('X-Has-More', String(page.hasMore));
     c.header('X-Next-Cursor', page.nextCursor);
     return c.body(body);
   },

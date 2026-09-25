@@ -2,8 +2,23 @@
  * Query + serialization for GET /pam/elevation-audit/export — server-side
  * export of the PAM `elevation_audit` event ledger (#4910).
  *
- * One row per ledger event, ascending (occurred_at, id), CSV or JSONL, paged
- * by an opaque keyset cursor the caller follows until `X-Next-Cursor` is empty.
+ * One row per ledger event, in the order Breeze RECORDED them — ascending
+ * (created_at, id) — CSV or JSONL, one organization per request, paged by an
+ * opaque keyset cursor. The window [from, to) is over recorded time too.
+ * Recorded time, not occurred_at: an agent reports `occurred_at` from its own
+ * observation clock, so a late-arriving event can carry an occurred_at the
+ * walk has already passed; keyed on recorded time it lands after the cursor.
+ *
+ * Settle delay: a page only returns rows recorded more than
+ * PAM_AUDIT_EXPORT_SETTLE_SECONDS before the database clock. `created_at` is
+ * the inserting transaction's start time, and a row is only visible once
+ * that transaction commits, so a walk that ran right up to now() could step
+ * past a row still being committed. A window that closed before the settle
+ * point is therefore exported exactly once; a row whose inserting
+ * transaction stays open longer than the settle delay can still land behind
+ * a cursor. `X-Next-Cursor` is always the resume position, so a SIEM can tail
+ * the ledger by resuming from it later.
+ *
  * Paged rather than streamed: a streamed body would outlive the request's
  * RLS transaction (authMiddleware → withDbAccessContext awaits the handler,
  * not the body), and every page here re-runs the caller's authorization.
@@ -23,30 +38,37 @@ import { elevationAudit, elevationRequests } from '../db/schema';
 export const PAM_AUDIT_EXPORT_SCHEMA_VERSION = 1;
 export const PAM_AUDIT_EXPORT_MAX_LIMIT = 1000;
 export const PAM_AUDIT_EXPORT_MAX_WINDOW_DAYS = 366;
+export const PAM_AUDIT_EXPORT_SETTLE_SECONDS = 300;
+
+/**
+ * Every `details` key each elevation_audit writer sets, by writer file. The
+ * test suite freezes the set of files that insert into elevation_audit, so a
+ * new writer fails it until its keys are reviewed and listed here.
+ */
+export const PAM_AUDIT_WRITER_DETAIL_KEYS = {
+  'jobs/pamJobs.ts': ['cause', 'prior_status'],
+  'routes/agents/elevationRequests.ts': [
+    'subject_username', 'target_executable_path', 'software_policy_id', 'default_unmatched_verdict',
+    'pam_rule_id', 'pam_rule_name', 'rule_name', 'matched_field',
+  ],
+  'routes/devices/actuateElevation.ts': ['deviceId', 'outcome', 'actualStatus', 'commandId', 'timeoutMs'],
+  'routes/pam.ts': ['reason', 'duration_minutes', 'assurance_level', 'factor'],
+  'routes/remediationSuggestions.ts': ['triggerSource', 'remediationSuggestionId', 'sourceType', 'sourceId', 'scriptId'],
+  'services/aiToolsPam.ts': ['subjectUsername', 'reason', 'triggerSource', 'pamRuleId', 'pamRuleName', 'durationMinutes'],
+  'services/approvals/decideApprovalRequest.ts': ['source', 'approval_request_id', 'reason'],
+  'services/pamToolActionGovernance.ts': ['tool_name', 'risk_tier', 'execution_id', 'pam_rule_id', 'pam_rule_name'],
+} as const satisfies Record<string, readonly string[]>;
 
 /**
  * `details` is an open jsonb container (excludedOpen in the tenant-export
- * policy), so it is never exported raw. Only these reviewed, scalar keys —
- * the ones PAM's own writers set — pass through; anything else is dropped.
+ * policy), so it is never exported raw. Only the keys PAM's writers set pass
+ * through, and only scalar values; anything else is dropped. Every writer key
+ * is an identifier, status, rule/policy reference or free-text reason the
+ * request row already exports in its own columns — none is credential material.
  */
-export const PAM_AUDIT_DETAIL_ALLOWLIST = [
-  'reason',
-  'duration_minutes',
-  'cause',
-  'prior_status',
-  'outcome',
-  'actualStatus',
-  'timeoutMs',
-  'ingest_status',
-  'tool_name',
-  'risk_tier',
-  'execution_id',
-  'pam_rule_id',
-  'pam_rule_name',
-  'source',
-  'approval_request_id',
-  'triggerSource',
-] as const;
+export const PAM_AUDIT_DETAIL_ALLOWLIST: readonly string[] = [
+  ...new Set(Object.values(PAM_AUDIT_WRITER_DETAIL_KEYS).flat()),
+].sort();
 
 export const PAM_AUDIT_EXPORT_COLUMNS = [
   'id',
@@ -103,16 +125,16 @@ export function projectAuditDetails(details: unknown): Record<string, string | n
   return out;
 }
 
-// Cursor: base64url of `<occurred_at as Postgres text>|<id>`. It carries no
+// Cursor: base64url of `<created_at as Postgres text>|<id>`. It carries no
 // authority — filters and scope come from the query and the caller on every
 // page — so a tampered cursor can only move the starting key.
 const CURSOR_PATTERN = /^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:.]+[+-][0-9:]+\|[0-9a-f-]{36}$/i;
 
-export function encodeExportCursor(occurredAtText: string, id: string): string {
-  return Buffer.from(`${occurredAtText}|${id}`, 'utf8').toString('base64url');
+export function encodeExportCursor(recordedAtText: string, id: string): string {
+  return Buffer.from(`${recordedAtText}|${id}`, 'utf8').toString('base64url');
 }
 
-export function decodeExportCursor(cursor: string): { occurredAt: string; id: string } | null {
+export function decodeExportCursor(cursor: string): { recordedAt: string; id: string } | null {
   let raw: string;
   try {
     raw = Buffer.from(cursor, 'base64url').toString('utf8');
@@ -121,7 +143,7 @@ export function decodeExportCursor(cursor: string): { occurredAt: string; id: st
   }
   if (!CURSOR_PATTERN.test(raw)) return null;
   const sep = raw.lastIndexOf('|');
-  return { occurredAt: raw.slice(0, sep), id: raw.slice(sep + 1) };
+  return { recordedAt: raw.slice(0, sep), id: raw.slice(sep + 1) };
 }
 
 
@@ -131,10 +153,11 @@ function toIso(value: Date | string | null | undefined): string | null {
 }
 
 export interface ElevationAuditExportFilters {
-  /** Half-open event window [from, to). */
+  /** Half-open window [from, to) over recorded time (created_at). */
   from: Date;
   to: Date;
-  orgId?: string;
+  /** Required: one organization per export, which the (org_id, created_at, id) index serves. */
+  orgId: string;
   siteId?: string;
   deviceId?: string;
   elevationRequestId?: string;
@@ -147,19 +170,23 @@ export interface ElevationAuditExportPageInput {
   /** normalizeSiteAllowlist(perms.allowedSiteIds): undefined = unrestricted. */
   allowedSiteIds: readonly string[] | undefined;
   filters: ElevationAuditExportFilters;
-  after: { occurredAt: string; id: string } | null;
+  after: { recordedAt: string; id: string } | null;
   limit: number;
 }
 
 export interface ElevationAuditExportPage {
   records: ExportRecord[];
+  /** More settled rows exist after this page. */
   hasMore: boolean;
-  /** Empty string when this is the last page. */
+  /**
+   * The resume position: the last row returned, or the incoming cursor when
+   * the page is empty (empty string only when nothing has been returned yet).
+   */
   nextCursor: string;
 }
 
 /**
- * One page of the ledger, ascending (occurred_at, id). Must run inside the
+ * One page of one organization's ledger, ascending (created_at, id). Must run inside the
  * caller's request DB context: it adds no system escalation, so RLS on both
  * tables bounds it to what the caller may read.
  */
@@ -169,7 +196,7 @@ export async function fetchElevationAuditExportPage(
   const { filters: f } = input;
   const conditions: SQL[] = [];
   if (input.orgCondition) conditions.push(input.orgCondition);
-  if (f.orgId) conditions.push(eq(elevationAudit.orgId, f.orgId));
+  conditions.push(eq(elevationAudit.orgId, f.orgId));
   // Site-restricted technicians see only their sites; a request with no site
   // does not pass a restricted allowlist (matches the PAM list route).
   if (input.allowedSiteIds !== undefined) {
@@ -181,20 +208,24 @@ export async function fetchElevationAuditExportPage(
   if (f.deviceId) conditions.push(eq(elevationRequests.deviceId, f.deviceId));
   if (f.elevationRequestId) conditions.push(eq(elevationAudit.elevationRequestId, f.elevationRequestId));
   if (f.eventType) conditions.push(sql`${elevationAudit.eventType}::text = ${f.eventType}`);
-  conditions.push(gte(elevationAudit.occurredAt, f.from));
-  conditions.push(lt(elevationAudit.occurredAt, f.to));
+  conditions.push(gte(elevationAudit.createdAt, f.from));
+  conditions.push(lt(elevationAudit.createdAt, f.to));
+  // Settle bound, on the database clock (see the module comment).
+  conditions.push(
+    sql`${elevationAudit.createdAt} < now() - make_interval(secs => ${PAM_AUDIT_EXPORT_SETTLE_SECONDS})`,
+  );
   if (input.after) {
     // Compare at full Postgres precision: the cursor carries the text form of
-    // occurred_at, never a millisecond-rounded JS Date.
+    // created_at, never a millisecond-rounded JS Date.
     conditions.push(
-      sql`(${elevationAudit.occurredAt}, ${elevationAudit.id}) > (${input.after.occurredAt}::timestamptz, ${input.after.id}::uuid)`,
+      sql`(${elevationAudit.createdAt}, ${elevationAudit.id}) > (${input.after.recordedAt}::timestamptz, ${input.after.id}::uuid)`,
     );
   }
 
   const rows = await db
     .select({
       audit: elevationAudit,
-      occurredAtText: sql<string>`${elevationAudit.occurredAt}::text`,
+      recordedAtText: sql<string>`${elevationAudit.createdAt}::text`,
       request: {
         deviceId: elevationRequests.deviceId,
         siteId: elevationRequests.siteId,
@@ -235,13 +266,17 @@ export async function fetchElevationAuditExportPage(
       ),
     )
     .where(and(...conditions))
-    .orderBy(asc(elevationAudit.occurredAt), asc(elevationAudit.id))
+    .orderBy(asc(elevationAudit.createdAt), asc(elevationAudit.id))
     .limit(input.limit + 1);
 
   const hasMore = rows.length > input.limit;
   const page = hasMore ? rows.slice(0, input.limit) : rows;
   const last = page[page.length - 1];
-  const nextCursor = hasMore && last ? encodeExportCursor(last.occurredAtText, last.audit.id) : '';
+  const nextCursor = last
+    ? encodeExportCursor(last.recordedAtText, last.audit.id)
+    : input.after
+      ? encodeExportCursor(input.after.recordedAt, input.after.id)
+      : '';
 
   const records: ExportRecord[] = page.map(({ audit, request: r }) => ({
     id: audit.id,
