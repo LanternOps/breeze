@@ -37,12 +37,14 @@ describe('ExternalBackupCard', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/backup/providers/devices?deviceId=device-1'));
   });
 
+  // D10: raw enum values must not reach the UI — status and data sources are
+  // translated labels, not the wire values ('completed', 'files', 'mssql').
   it('renders status, health, sizes, data sources and the customer name', async () => {
     render(<ExternalBackupCard deviceId="device-1" />);
     const card = await screen.findByTestId('external-backup-card');
-    expect(card.textContent).toContain('completed');
+    expect(card.textContent).toContain('Completed');
     expect(card.textContent).toContain('Acme North');
-    expect(card.textContent).toContain('files, mssql');
+    expect(card.textContent).toContain('Files & folders, SQL Server');
     expect(screen.getByTestId('external-backup-selected').textContent).toContain('2.00 KB');
     expect(screen.getByTestId('external-backup-used').textContent).toContain('4.00 KB');
     expect(screen.getByTestId('external-backup-health-dot')).toBeInTheDocument();

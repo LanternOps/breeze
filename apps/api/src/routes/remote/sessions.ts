@@ -425,7 +425,11 @@ sessionRoutes.get(
       }
       const allowedDeviceIds = await resolveSiteAllowedDeviceIds(auth.orgId, perms);
       if (query.deviceId && !allowedDeviceIds!.includes(query.deviceId)) {
-        return jsonError(c, 403, ERROR_CODES.NOT_FOUND, 'Device not found or access denied');
+        // D13: 403 must pair with ACCESS_DENIED, not NOT_FOUND — the prose is
+        // deliberately ambiguous about whether the device exists (info-hiding),
+        // but the CODE has to agree with the STATUS or a client mapping errors
+        // by code alone renders a 403 as a 404-shaped "not found" state.
+        return jsonError(c, 403, ERROR_CODES.ACCESS_DENIED, 'Device not found or access denied');
       }
       if (!allowedDeviceIds || allowedDeviceIds.length === 0) {
         return c.json({
@@ -564,7 +568,11 @@ sessionRoutes.get(
       }
       const allowedDeviceIds = await resolveSiteAllowedDeviceIds(auth.orgId, perms);
       if (query.deviceId && !allowedDeviceIds!.includes(query.deviceId)) {
-        return jsonError(c, 403, ERROR_CODES.NOT_FOUND, 'Device not found or access denied');
+        // D13: 403 must pair with ACCESS_DENIED, not NOT_FOUND — the prose is
+        // deliberately ambiguous about whether the device exists (info-hiding),
+        // but the CODE has to agree with the STATUS or a client mapping errors
+        // by code alone renders a 403 as a 404-shaped "not found" state.
+        return jsonError(c, 403, ERROR_CODES.ACCESS_DENIED, 'Device not found or access denied');
       }
       if (!allowedDeviceIds || allowedDeviceIds.length === 0) {
         return c.json({

@@ -88,11 +88,17 @@ export default function BackupHealthDeviceTable({ rows }: { rows: BackupHealthRo
                 </span>
               </td>
               <td className="py-2 pr-3 text-muted-foreground">{row.osType}</td>
-              <td className="py-2 pr-3 text-muted-foreground">{row.dataSources.join(', ') || '--'}</td>
+              <td className="py-2 pr-3 text-muted-foreground">
+                {row.dataSources
+                  .map((source) => t(/* i18n-dynamic */ `backupHealth.dataSource.${source}`, { defaultValue: source }))
+                  .join(', ') || '--'}
+              </td>
               <td className="py-2 pr-3 text-muted-foreground">{row.selectedBytes == null ? '--' : formatBytes(row.selectedBytes)}</td>
               <td className="py-2 pr-3 text-muted-foreground">{row.usedBytes == null ? '--' : formatBytes(row.usedBytes)}</td>
               <td className="py-2 pr-3"><HistoryBar row={row} /></td>
-              <td className="py-2 pr-3 text-muted-foreground">{row.status}</td>
+              <td className="py-2 pr-3 text-muted-foreground">
+                {t(/* i18n-dynamic */ `backupHealth.status.${row.status}`, { defaultValue: row.status })}
+              </td>
               <td className="py-2 pr-3 text-muted-foreground">{row.errorsCount}</td>
               <td className="py-2 text-muted-foreground">
                 {row.agentOnline == null

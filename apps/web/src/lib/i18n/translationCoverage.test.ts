@@ -33,7 +33,11 @@ const namespaceDuplicateBaselines = {
     // +2 (W03 #6011): backupHealth keys that are protected proper nouns or
     // pt-BR cognates of the English wording — localeParity requires
     // backupHealth.sourceBreeze to stay byte-identical ("Breeze").
-    'backup.json': 55,
+    // +8 (sweep D10): backupHealth.dataSource product/protocol names —
+    // "SQL Server", "Hyper-V", "VMware", "Bare metal", "SharePoint",
+    // "Exchange", "OneDrive", "Teams" — are vendor proper nouns, identical in
+    // every locale.
+    'backup.json': 63,
     // +4: contract-template format strings + Portuguese cognate ("v{{number}} ·
     // {{status}}", "v{{number}}", "{{name}} — v{{number}}", "Status")
     // legitimately identical to English.
@@ -182,7 +186,11 @@ const namespaceDuplicateBaselines = {
     'auth.json': 14,
     // +1 (W03 #6011): backupHealth.sourceBreeze is a protected proper noun
     // pinned byte-identical by localeParity.
-    'backup.json': 31,
+    // +8 (sweep D10): backupHealth.dataSource product/protocol names —
+    // "SQL Server", "Hyper-V", "VMware", "Bare metal", "SharePoint",
+    // "Exchange", "OneDrive", "Teams" — are vendor proper nouns, identical in
+    // every locale.
+    'backup.json': 39,
     // +3: contract-template format strings ("v{{number}} · {{status}}",
     // "v{{number}}", "{{name}} — v{{number}}") that are legitimately identical
     // to English in es-419.
@@ -322,7 +330,11 @@ const namespaceDuplicateBaselines = {
     'auth.json': 13,
     // +3 (W03 #6011): backupHealth.sourceBreeze (protected proper noun) and
     // backupHealth status/health labels that are identical French cognates.
-    'backup.json': 62,
+    // +8 (sweep D10): backupHealth.dataSource product/protocol names —
+    // "SQL Server", "Hyper-V", "VMware", "Bare metal", "SharePoint",
+    // "Exchange", "OneDrive", "Teams" — are vendor proper nouns, identical in
+    // every locale.
+    'backup.json': 70,
     // +7: contract-template format strings + French cognates ("v{{number}} ·
     // {{status}}", "v{{number}}", "{{name}} — v{{number}}", "Description",
     // "Versions", "Documents" ×2) that are legitimately identical to English
@@ -491,7 +503,11 @@ const namespaceDuplicateBaselines = {
     'auth.json': 13,
     // +3 (W03 #6011): backupHealth.sourceBreeze (protected proper noun) and
     // backupHealth status/health labels that are identical French cognates.
-    'backup.json': 63,
+    // +8 (sweep D10): backupHealth.dataSource product/protocol names —
+    // "SQL Server", "Hyper-V", "VMware", "Bare metal", "SharePoint",
+    // "Exchange", "OneDrive", "Teams" — are vendor proper nouns, identical in
+    // every locale.
+    'backup.json': 71,
     // Contract-template format strings, French cognates, and locale-invariant
     // quote composer fields are intentionally identical to English.
     // +2: liveTotals "Total" is the identical French cognate (already accepted
@@ -659,7 +675,12 @@ const namespaceDuplicateBaselines = {
     // strings already use it unchanged.
     // +3 (W03 #6011): backupHealth.sourceBreeze (protected proper noun) and
     // backupHealth status/table labels that are identical German cognates.
-    'backup.json': 67,
+    // +7 (sweep D10): backupHealth.dataSource product/protocol names —
+    // "SQL Server", "Hyper-V", "VMware", "SharePoint", "Exchange", "OneDrive",
+    // "Teams" — are vendor proper nouns, identical in every locale
+    // ("Bare Metal" is capitalized per German noun rules, so it is NOT an
+    // exact duplicate here).
+    'backup.json': 74,
     // +6: contract-template format strings + German cognates ("v{{number}} ·
     // {{status}}", "v{{number}}", "{{name}} — v{{number}}", "Name", "Status")
     // that are legitimately identical to English in de-DE.
@@ -817,7 +838,11 @@ const namespaceDuplicateBaselines = {
     'auth.json': 21,
     // +1 (W03 #6011): backupHealth.sourceBreeze is a protected proper noun
     // pinned byte-identical by localeParity.
-    'backup.json': 46,
+    // +8 (sweep D10): backupHealth.dataSource product/protocol names —
+    // "SQL Server", "Hyper-V", "VMware", "Bare metal", "SharePoint",
+    // "Exchange", "OneDrive", "Teams" — are vendor proper nouns, identical in
+    // every locale.
+    'backup.json': 54,
     // +1: unassigned.qtyPrice "{{qty}} × {{price}}" is two interpolations plus a
     // multiplication sign with no wording to translate.
     // +1: order breakdown — "SKU" is a locale-invariant acronym.
@@ -934,7 +959,11 @@ const namespaceDuplicateBaselines = {
     'auth.json': 14,
     // +1 (W03 #6011): backupHealth.sourceBreeze is a protected proper noun
     // pinned byte-identical by localeParity.
-    'backup.json': 26,
+    // +8 (sweep D10): backupHealth.dataSource product/protocol names —
+    // "SQL Server", "Hyper-V", "VMware", "Bare metal", "SharePoint",
+    // "Exchange", "OneDrive", "Teams" — are vendor proper nouns, identical in
+    // every locale.
+    'backup.json': 34,
     // +1: the quote/invoice bulk-result strings ("{{succeeded}} {{verb}}") are
     // pure interpolation with no prose to translate, so they are necessarily
     // identical to English. They arrived from #3501 after tr-TR (#3497) forked,

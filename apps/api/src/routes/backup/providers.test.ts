@@ -600,6 +600,29 @@ describe('backup provider connection routes', () => {
       expect(res.status).toBe(200);
       expect(dbState.updated[0]?.status).not.toBe('reauth_required');
     });
+
+    // D9: the test route must never write `lastSyncError`/`lastSyncStatus` —
+    // those columns describe the most recent SYNC, not a one-off credential
+    // test. Writing the test's error there is what made the connection card
+    // show a stale "Active" badge with a "Last sync failed" line carrying the
+    // TEST error while `last_sync_status` was still `success`.
+    it('does not write lastSyncError on a reauth-triggering test failure', async () => {
+      adapterState.test = { ok: false, error: 'Cove login was rejected', reauth: true };
+      await app.request(`/backup/providers/connections/${CONNECTION_ID}/test`, { method: 'POST' });
+      expect(dbState.updated[0]).not.toHaveProperty('lastSyncError');
+      expect(dbState.updated[0]).not.toHaveProperty('lastSyncStatus');
+    });
+
+    it('does not write lastSyncError on a transient test failure', async () => {
+      adapterState.test = { ok: false, error: 'HTTP 503', reauth: false };
+      await app.request(`/backup/providers/connections/${CONNECTION_ID}/test`, { method: 'POST' });
+      expect(dbState.updated.some((v) => 'lastSyncError' in v)).toBe(false);
+    });
+
+    it('does not write lastSyncError on a successful test', async () => {
+      await app.request(`/backup/providers/connections/${CONNECTION_ID}/test`, { method: 'POST' });
+      expect(dbState.updated[0]).not.toHaveProperty('lastSyncError');
+    });
   });
 
   describe('POST /backup/providers/connections/:id/sync', () => {

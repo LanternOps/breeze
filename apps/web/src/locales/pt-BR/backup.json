@@ -978,7 +978,13 @@
       "completed_with_errors": "Concluído com erros",
       "in_progress": "Em andamento",
       "unsuccessful": "Sem sucesso",
-      "other": "Outros"
+      "other": "Outros",
+      "failed": "Falhou",
+      "interrupted": "Interrompido",
+      "over_quota": "Cota excedida",
+      "no_selection": "Nada selecionado",
+      "not_started": "Não iniciado",
+      "unknown": "Desconhecido"
     },
     "recency": {
       "never": "Nunca",
@@ -1007,6 +1013,19 @@
       "history": "Últimos 28 dias",
       "errors": "Erros",
       "agent": "Agente"
+    },
+    "dataSource": {
+      "files": "Arquivos e pastas",
+      "system_state": "Estado do sistema",
+      "mssql": "SQL Server",
+      "hyperv": "Hyper-V",
+      "vmware": "VMware",
+      "bare_metal": "Bare metal",
+      "m365_sharepoint": "SharePoint",
+      "m365_exchange": "Exchange",
+      "m365_onedrive": "OneDrive",
+      "m365_teams": "Teams",
+      "other": "Outros"
     },
     "noObservation": "Sem observação",
     "openDevice": "Abrir dispositivo",
