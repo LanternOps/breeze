@@ -2121,7 +2121,7 @@ const envSchema = envObjectSchema
         message: 'BREEZE_AI_ARTIFACT_CAPTURE_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (large tool results are truncated, not stored).',
       });
     }
-    if (['true', '1', 'yes', 'on'].includes(captureRaw) && !workspaceOn) {
+    if (['true', '1', 'yes', 'on'].includes(captureRaw) && !(workspaceOn && hostedOn)) {
       const capRegion = regionRaw === 'eu' ? 'EU' : 'US';
       const capBucket = (data[`ARTIFACT_S3_BUCKET_${capRegion}` as 'ARTIFACT_S3_BUCKET_EU' | 'ARTIFACT_S3_BUCKET_US'] ?? '').trim() || (data.S3_BUCKET ?? '').trim();
       const capAccess = (data.ARTIFACT_S3_ACCESS_KEY ?? '').trim() || (data.S3_ACCESS_KEY ?? '').trim();

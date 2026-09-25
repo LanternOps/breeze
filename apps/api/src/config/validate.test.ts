@@ -88,6 +88,11 @@ describe('validateConfig', () => {
         expect(() => validateConfig()).toThrow(/requires an artifact blob store/);
       });
     });
+    it('still refuses self-hosted when both flags are true and no blob store (workspace flag is inert there)', () => {
+      withEnv({ ...validEnv, IS_HOSTED: 'false', BREEZE_AI_WORKSPACE_ENABLED: 'true', BREEZE_AI_ARTIFACT_CAPTURE_ENABLED: 'true' }, () => {
+        expect(() => validateConfig()).toThrow(/artifact blob store/);
+      });
+    });
     it('accepts true with a blob store configured', () => {
       withEnv({ ...validEnv, IS_HOSTED: 'false', BREEZE_AI_ARTIFACT_CAPTURE_ENABLED: 'true', ...blob }, () => {
         expect(() => validateConfig()).not.toThrow();

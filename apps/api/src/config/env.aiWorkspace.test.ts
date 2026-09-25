@@ -46,9 +46,11 @@ describe('aiArtifactCaptureEnabled() — independent of the workspace flag (#673
 
   it('stays on wherever the workspace lane is on (hosted behaviour unchanged)', () => {
     delete process.env.BREEZE_AI_ARTIFACT_CAPTURE_ENABLED;
+    process.env.BREEZE_AI_AGENTS_ENABLED = 'true';
     process.env.BREEZE_AI_WORKSPACE_ENABLED = 'true';
     process.env.IS_HOSTED = 'true';
-    expect(aiArtifactCaptureEnabled()).toBe(aiWorkspaceEnabled());
+    expect(aiWorkspaceEnabled()).toBe(true);
+    expect(aiArtifactCaptureEnabled()).toBe(true);
   });
 });
 
