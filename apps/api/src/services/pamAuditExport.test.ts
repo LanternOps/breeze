@@ -34,6 +34,37 @@ describe('export cursor (#4910)', () => {
   });
 });
 
+/**
+ * The source text of every `details:` value whose next sibling key is
+ * `occurredAt:` — the shape of an elevation_audit row. The value ends at the
+ * first depth-0 `,` or closing bracket, skipping string literals.
+ */
+function elevationAuditDetailsValues(text: string): string[] {
+  const values: string[] = [];
+  for (const m of text.matchAll(/\bdetails:/g)) {
+    let i = m.index! + m[0].length;
+    const start = i;
+    let depth = 0;
+    let quote: string | null = null;
+    for (; i < text.length; i++) {
+      const ch = text[i]!;
+      if (quote) {
+        if (ch === '\\') i++;
+        else if (ch === quote) quote = null;
+        continue;
+      }
+      if (ch === "'" || ch === '"' || ch === '`') quote = ch;
+      else if ('({['.includes(ch)) depth++;
+      else if (')}]'.includes(ch)) {
+        if (depth === 0) break;
+        depth--;
+      } else if (ch === ',' && depth === 0) break;
+    }
+    if (/^,\s*occurredAt:/.test(text.slice(i))) values.push(text.slice(start, i));
+  }
+  return values;
+}
+
 describe('elevation_audit writer inventory (#4910)', () => {
   const SRC = join(__dirname, '..');
   function walk(dir: string): string[] {
@@ -53,6 +84,26 @@ describe('elevation_audit writer inventory (#4910)', () => {
       .map((path) => relative(SRC, path).split('\\').join('/'))
       .sort();
     expect(writers).toEqual(Object.keys(PAM_AUDIT_WRITER_DETAIL_KEYS).sort());
+  });
+
+  it("every key an inventoried writer puts in details is in that writer's inventory (a new key fails here)", () => {
+    // Keys sit in key position of a `details: { ... }` literal (after `{` or
+    // `,`), or as quoted names in a raw-SQL jsonb_build_object(...).
+    const missing: string[] = [];
+    for (const [file, keys] of Object.entries(PAM_AUDIT_WRITER_DETAIL_KEYS)) {
+      const text = readFileSync(join(SRC, file), 'utf8');
+      const found = new Set<string>();
+      for (const value of elevationAuditDetailsValues(text)) {
+        const literal = value.replace(/'[^']*'|"[^"]*"|`[^`]*`/g, "''");
+        for (const k of literal.matchAll(/[{,]\s*([A-Za-z_]\w*)\s*(?=[:,}])/g)) found.add(k[1]!);
+      }
+      for (const m of text.matchAll(/jsonb_build_object\(([^)]*)\)/g)) {
+        for (const k of m[1]!.matchAll(/'([A-Za-z_]\w*)'/g)) found.add(k[1]!);
+      }
+      expect(found.size, `${file}: no details keys found; the scan no longer understands this writer`).toBeGreaterThan(0);
+      for (const key of found) if (!(keys as readonly string[]).includes(key)) missing.push(`${file}: ${key}`);
+    }
+    expect(missing).toEqual([]);
   });
 
   it('the export allowlist is exactly the inventoried writer keys', () => {

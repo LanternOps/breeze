@@ -236,6 +236,44 @@ describe('fetchElevationAuditExportPage (real Postgres, #4910)', () => {
     }
   });
 
+  it('an open write transaction on an unrelated table does not stall the export', async () => {
+    const f = await fixture();
+    const other = postgres(process.env.DATABASE_URL_APP ?? 'postgresql://breeze_app:breeze_test@localhost:5433/breeze_test', { max: 1 });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let wrote!: () => void;
+    const didWrite = new Promise<void>((resolve) => { wrote = resolve; });
+    const tx = other.begin(async (sqlTx) => {
+      await sqlTx`SELECT set_config('breeze.scope', 'system', true)`;
+      // Takes a transaction id by writing somewhere other than elevation_audit.
+      await sqlTx`UPDATE organizations SET updated_at = now() WHERE id = ${f.orgB}`;
+      wrote();
+      await held;
+    });
+    try {
+      await didWrite;
+      const recent = await withDbAccessContext(SYSTEM_CTX, async () => {
+        const [row] = await db
+          .insert(elevationAudit)
+          .values({ orgId: f.orgA, elevationRequestId: f.reqA1.id, eventType: 'approved', actor: 'technician', details: {}, occurredAt: new Date() })
+          .returning({ id: elevationAudit.id });
+        return row!.id;
+      });
+      const page = await withDbAccessContext(orgContext(f.orgA), () =>
+        fetchElevationAuditExportPage({
+          orgCondition: undefined, allowedSiteIds: undefined,
+          filters: { from: new Date('2026-09-01T00:00:00Z'), to: new Date(Date.now() + 60_000), orgId: f.orgA },
+          after: null, limit: 10, settleSeconds: 0,
+        }),
+      );
+      expect(page.records.map((r) => r.id)).toContain(recent);
+    } finally {
+      release();
+      await tx.catch(() => undefined);
+      await other.end();
+    }
+  });
+
   it('rows inside the settle delay wait; resuming from the cursor picks them up once settled', async () => {
     const f = await fixture();
     const settled = await seedEvent(f.orgA, f.reqA1.id, '2026-09-16 00:00:00+00');
