@@ -342,6 +342,18 @@ describe('OrgAiBudgetSettings — per-tool rate-limit multiplier (#6476)', () =>
       'Too big: expected number to be <=10',
     );
 
+    // sweep F8: the toast must not lead with the raw field-path key either.
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error', message: 'Too big: expected number to be <=10' }),
+      ),
+    );
+    expect(
+      (vi.mocked(showToast).mock.calls as Array<[{ message: string }]>).some(([arg]) =>
+        arg.message.startsWith('toolRateLimitMultiplier:'),
+      ),
+    ).toBe(false);
+
     // Editing the field again clears the highlight.
     fireEvent.change(input, { target: { value: '5' } });
     expect(input.getAttribute('aria-invalid')).toBeNull();

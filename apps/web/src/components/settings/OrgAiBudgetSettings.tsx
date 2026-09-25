@@ -251,6 +251,16 @@ export default function OrgAiBudgetSettings({ orgId }: Props) {
         errorFallback: t('aiUsagePage.failedToSaveBudget'),
         successMessage: t('aiUsagePage.savedSuccessfully'),
         onUnauthorized: () => void navigateTo('/login', { replace: true }),
+        // Reuses the same fieldErrors extraction as the inline highlight below
+        // so the toast reads the field's own message, not the raw
+        // `toolRateLimitMultiplier: …` key extractApiError falls back to
+        // (sweep F8). Only substitutes when exactly one field failed — a
+        // multi-field 400 still gets the joined message.
+        friendly: (_code, _message, body) => {
+          const fe = extractFieldErrors(body);
+          const values = fe ? Object.values(fe) : [];
+          return values.length === 1 ? values[0] : undefined;
+        },
       });
       await load();
     } catch (err) {
