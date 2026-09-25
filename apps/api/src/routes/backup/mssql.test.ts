@@ -221,6 +221,7 @@ describe('mssql routes', () => {
     expect(selectMock).not.toHaveBeenCalled();
     expect(insertMock).not.toHaveBeenCalled();
     expect(executeCommandMock).not.toHaveBeenCalled();
+    expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
   });
 
   it('returns an empty MSSQL instance list', async () => {
@@ -649,7 +650,7 @@ describe('mssql routes', () => {
     expect(queueCommandForExecutionMock.mock.lastCall?.[3]).not.toHaveProperty('timeoutMs');
   });
 
-  it('reports a 502 when MSSQL restore fails to dispatch', async () => {
+  it('reports a 502 when MSSQL restore fails to dispatch for a non-offline reason', async () => {
     selectMock.mockReturnValueOnce(chainMock([{
         id: 'snapshot-db-1',
         providerSnapshotId: 'provider-snapshot-1',
@@ -661,7 +662,7 @@ describe('mssql routes', () => {
         configId: 'config-1',
     }]));
     queueDestinationConfigSelect();
-    queueCommandForExecutionMock.mockResolvedValueOnce({ error: 'Device is offline' });
+    queueCommandForExecutionMock.mockResolvedValueOnce({ error: 'Failed to enqueue command' });
 
     const res = await app.request('/backup/mssql/restore', {
       method: 'POST',
@@ -674,7 +675,40 @@ describe('mssql routes', () => {
     });
 
     expect(res.status).toBe(502);
-    expect(await res.json()).toEqual({ error: 'Device is offline' });
+    expect(await res.json()).toEqual({ error: 'Failed to enqueue command' });
+  });
+
+  // Mirrors routes/backup/restore.ts / vmrestore.ts: a device that is offline
+  // is a routine, expected dispatch outcome — not the same as a genuine
+  // enqueue/infra failure — so it must map to 409, not the blanket 502.
+  it('reports a 409 when the target device is offline', async () => {
+    selectMock.mockReturnValueOnce(chainMock([{
+        id: 'snapshot-db-1',
+        providerSnapshotId: 'provider-snapshot-1',
+        metadata: {
+          backupKind: 'mssql_database',
+          instance: 'MSSQLSERVER',
+          backupFileName: 'AppDb_full_20260331.bak',
+        },
+        configId: 'config-1',
+    }]));
+    queueDestinationConfigSelect();
+    queueCommandForExecutionMock.mockResolvedValueOnce({
+      error: 'Device is offline, cannot execute command',
+    });
+
+    const res = await app.request('/backup/mssql/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        deviceId: DEVICE_ID,
+        snapshotId: SNAPSHOT_DB_ID,
+        targetDatabase: 'AppDb_Restore',
+      }),
+    });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Device is offline, cannot execute command' });
   });
 
   // D20b item D: a snapshot that predates destination tracking (configId

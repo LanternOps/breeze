@@ -445,6 +445,14 @@ mssqlRoutes.get('/mssql/chains', requirePermission(PERMISSIONS.ORGS_READ.resourc
   return c.json({ data: chains });
 });
 
+// Mirrors routes/backup/restore.ts and routes/backup/vmrestore.ts: a device
+// that is offline is a routine, expected dispatch outcome for a
+// reject-on-offline restore command, not an infra failure — surface it as
+// 409 so callers/monitoring can distinguish it from a genuine enqueue error.
+function mapDispatchErrorStatus(error: string): number {
+  return error.startsWith('Device is ') ? 409 : 502;
+}
+
 // ── POST /mssql/restore — trigger MSSQL restore ──
 
 mssqlRoutes.post(
@@ -555,7 +563,8 @@ mssqlRoutes.post(
     );
 
     if (!queued.command) {
-      return c.json({ error: queued.error || 'Failed to dispatch MSSQL restore' }, 502);
+      const error = queued.error || 'Failed to dispatch MSSQL restore';
+      return c.json({ error }, mapDispatchErrorStatus(error) as any);
     }
 
     return c.json({

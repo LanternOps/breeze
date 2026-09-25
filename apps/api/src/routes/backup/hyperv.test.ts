@@ -222,6 +222,7 @@ describe('hyperv routes', () => {
     expect(selectMock).not.toHaveBeenCalled();
     expect(insertMock).not.toHaveBeenCalled();
     expect(executeCommandMock).not.toHaveBeenCalled();
+    expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
   });
 
   it('returns an empty Hyper-V VM list', async () => {
@@ -539,7 +540,7 @@ describe('hyperv routes', () => {
     expect(queueCommandForExecutionMock.mock.lastCall?.[3]).not.toHaveProperty('timeoutMs');
   });
 
-  it('reports a 502 when Hyper-V restore fails to dispatch', async () => {
+  it('reports a 502 when Hyper-V restore fails to dispatch for a non-offline reason', async () => {
     selectMock.mockReturnValueOnce(
       chainMock([
           {
@@ -551,7 +552,7 @@ describe('hyperv routes', () => {
       ])
     );
     queueDestinationConfigSelect();
-    queueCommandForExecutionMock.mockResolvedValueOnce({ error: 'Device is offline' });
+    queueCommandForExecutionMock.mockResolvedValueOnce({ error: 'Failed to enqueue command' });
 
     const res = await app.request('/backup/hyperv/restore', {
       method: 'POST',
@@ -565,7 +566,41 @@ describe('hyperv routes', () => {
     });
 
     expect(res.status).toBe(502);
-    expect(await res.json()).toEqual({ error: 'Device is offline' });
+    expect(await res.json()).toEqual({ error: 'Failed to enqueue command' });
+  });
+
+  // Mirrors routes/backup/restore.ts / vmrestore.ts: a device that is offline
+  // is a routine, expected dispatch outcome — not the same as a genuine
+  // enqueue/infra failure — so it must map to 409, not the blanket 502.
+  it('reports a 409 when the target device is offline', async () => {
+    selectMock.mockReturnValueOnce(
+      chainMock([
+          {
+            id: '55555555-5555-4555-8555-555555555555',
+            providerSnapshotId: 'hyperv-accounting-1',
+            metadata: { backupKind: 'hyperv_export' },
+            configId: 'config-1',
+          },
+      ])
+    );
+    queueDestinationConfigSelect();
+    queueCommandForExecutionMock.mockResolvedValueOnce({
+      error: 'Device is offline, cannot execute command',
+    });
+
+    const res = await app.request('/backup/hyperv/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        deviceId: DEVICE_ID,
+        snapshotId: '55555555-5555-4555-8555-555555555555',
+        vmName: 'Recovered VM',
+        generateNewId: true,
+      }),
+    });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Device is offline, cannot execute command' });
   });
 
   // D20b item D: a snapshot that predates destination tracking (configId

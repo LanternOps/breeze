@@ -441,6 +441,14 @@ hypervRoutes.post(
   }
 );
 
+// Mirrors routes/backup/restore.ts and routes/backup/vmrestore.ts: a device
+// that is offline is a routine, expected dispatch outcome for a
+// reject-on-offline restore command, not an infra failure — surface it as
+// 409 so callers/monitoring can distinguish it from a genuine enqueue error.
+function mapDispatchErrorStatus(error: string): number {
+  return error.startsWith('Device is ') ? 409 : 502;
+}
+
 // ── POST /hyperv/restore — Trigger VM restore (import) ──────────────
 
 hypervRoutes.post(
@@ -532,7 +540,8 @@ hypervRoutes.post(
     );
 
     if (!queued.command) {
-      return c.json({ error: queued.error || 'Failed to dispatch Hyper-V restore' }, 502);
+      const error = queued.error || 'Failed to dispatch Hyper-V restore';
+      return c.json({ error }, mapDispatchErrorStatus(error) as any);
     }
 
     writeRouteAudit(c, {
