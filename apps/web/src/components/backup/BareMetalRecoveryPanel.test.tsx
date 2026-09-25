@@ -93,6 +93,10 @@ describe('BareMetalRecoveryPanel', () => {
 
     const option = screen.getByText(/Nightly Snapshot —/);
     expect(option.textContent).not.toMatch(/\d{1,2}\/\d{1,2}\/\d{4}/);
+    // Positive check too: prove the long format actually rendered, not just
+    // that the old short-numeric format is absent (e.g. a blank/undefined
+    // timestamp would also pass the negative-only assertion above).
+    expect(option.textContent).toMatch(/[A-Z][a-z]{2} \d{1,2}, 2026/);
   });
 
   it("renders a refused create's reasons", async () => {

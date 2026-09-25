@@ -955,7 +955,10 @@
     "historyKindFiles": "Limpieza de archivos",
     "historyKindSystem": "Limpieza del sistema",
     "historyReclaimed": "{{size}} recuperados",
-    "historyCandidates": "{{count}} candidatos",
+    "historyCandidates_one": "{{count}} candidato",
+    "historyCandidates_other": "{{count}} candidatos",
+    "historyActions_one": "{{count}} acción",
+    "historyActions_other": "{{count}} acciones",
     "status": {
       "previewed": "Vista previa",
       "running": "En ejecución",

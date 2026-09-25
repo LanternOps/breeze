@@ -11,7 +11,7 @@ import { runAction, handleActionError, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
 import { cn } from '@/lib/utils';
-import { formatDateTime } from '@/lib/dateTimeFormat';
+import { formatDateTime, formatTime } from '@/lib/dateTimeFormat';
 
 type RecoveryIdentity = 'original' | 'new';
 
@@ -342,7 +342,9 @@ export default function BareMetalRecoveryPanel({ orgId }: BareMetalRecoveryPanel
             {created.code}
           </div>
           <p className="text-xs text-muted-foreground">
-            {t('bareMetalRecovery.codeExpires', { time: new Date(created.codeExpiresAt).toLocaleTimeString() })}
+            {t('bareMetalRecovery.codeExpires', {
+              time: formatTime(created.codeExpiresAt, { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+            })}
           </p>
         </div>
       )}

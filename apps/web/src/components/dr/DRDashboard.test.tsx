@@ -140,8 +140,11 @@ describe('DRDashboard', () => {
     render(<DRDashboard />);
     await screen.findByText('Primary Site Failover');
 
-    expect(screen.queryByText(/9\/20\/2026/)).toBeNull();
-    expect(screen.getByText(/Sep 20, 2026/)).toBeTruthy();
+    // Assert the shape, not an exact calendar day: `formatDateTime` renders
+    // in the test runner's local timezone, so a UTC timestamp near a day
+    // boundary can land on Sep 20 or Sep 21 depending on the runner/shard.
+    expect(screen.queryByText(/\d{1,2}\/\d{1,2}\/2026/)).toBeNull();
+    expect(screen.getByText(/^[A-Z][a-z]{2} \d{1,2}, 2026,/)).toBeTruthy();
   });
 
   it('shows error state on fetch failure', async () => {
