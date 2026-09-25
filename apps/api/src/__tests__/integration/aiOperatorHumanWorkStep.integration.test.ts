@@ -22,7 +22,7 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { and, eq, sql } from 'drizzle-orm';
 import { taskCheckpointSchema, type TaskCheckpoint } from '@breeze/shared';
-import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import {
   aiAgents,
   aiOperatorTaskEvents,
@@ -69,11 +69,22 @@ vi.mock('../../services/aiOperator/recipes', async (importOriginal) => {
   };
 });
 
+// #6930: a pass-through spy, so one case can simulate the race where the
+// replace_unticked pre-check ran BEFORE a concurrent Operator item committed.
+vi.mock('../../services/aiOperator/humanWorkService', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/aiOperator/humanWorkService')>();
+  return {
+    ...actual,
+    assertTicketUntickedChecklistItemsDeletable: vi.fn(actual.assertTicketUntickedChecklistItemsDeletable),
+  };
+});
+
 // Imported AFTER the mock so the coordinator binds the extended registry.
 import { advanceHumanWork, advanceTask, advanceWait, claimTaskLease } from '../../services/aiOperator/taskCoordinator';
-import { sendHumanWorkReminders } from '../../services/aiOperator/humanWorkService';
+import { assertTicketUntickedChecklistItemsDeletable, ensureTaskTicket, sendHumanWorkReminders } from '../../services/aiOperator/humanWorkService';
 import { openStep } from '../../services/aiOperator/stepService';
-import { deleteChecklistItem, listChecklist, patchChecklistItem } from '../../services/ticketChecklistService';
+import { addChecklistItem, deleteChecklistItem, listChecklist, patchChecklistItem } from '../../services/ticketChecklistService';
+import { applyChecklistTemplateToTicket, createChecklistTemplate } from '../../services/ticketChecklistTemplateService';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -398,6 +409,92 @@ describe('AI Operator human-work + wait steps against real Postgres (E3, #6168)'
       db.select().from(aiOperatorTaskSteps).where(eq(aiOperatorTaskSteps.id, step.id)));
     expect(after?.checklistItemId).toBeNull();
     expect(after?.state).toBe('succeeded');
+  });
+
+  // (6b) #6930 — the bulk delete in a template's replace_unticked mode takes the
+  // same guard. Without it the FK's ON DELETE SET NULL strands the task.
+  runDb('applying a template with replace_unticked over a waiting item is a 409 and removes nothing', async () => {
+    const org = await seedOrg();
+    const taskId = await seedTask(org, { currentStepKey: 'confirm_identity' });
+    const { itemId, step } = await openHumanWork(org, taskId);
+    const [item] = await withSystemDbAccessContext(() =>
+      db.select({ ticketId: ticketChecklistItems.ticketId }).from(ticketChecklistItems).where(eq(ticketChecklistItems.id, itemId)));
+    const ticket = { id: item!.ticketId, orgId: org.orgId };
+    const actor = {
+      userId: org.userId, scope: 'organization' as const, partnerId: org.partnerId,
+      partnerOrgAccess: null, accessibleOrgIds: [org.orgId],
+    };
+    const template = await withDbAccessContext(org.ctx, () => createChecklistTemplate({
+      ownerScope: 'organization', orgId: org.orgId, name: `tpl-${randomUUID().slice(0, 8)}`,
+      items: [{ label: 'From template', detail: null, sortOrder: 0 }],
+    }, actor));
+
+    await expect(withDbAccessContext(org.ctx, () =>
+      applyChecklistTemplateToTicket(ticket, { templateId: template.id, mode: 'replace_unticked' }, actor)))
+      .rejects.toMatchObject({ status: 409, code: 'CHECKLIST_OPERATOR_STEP_WAITING' });
+    const afterRefusal = await withDbAccessContext(org.ctx, () => listChecklist(ticket.id));
+    expect(afterRefusal.items.map((i) => i.id)).toEqual([itemId]);
+    const [link] = await withSystemDbAccessContext(() =>
+      db.select().from(aiOperatorTaskSteps).where(eq(aiOperatorTaskSteps.id, step.id)));
+    expect(link?.checklistItemId).toBe(itemId);
+
+    // Positive control: append never deletes, so it is not refused.
+    const appended = await withDbAccessContext(org.ctx, () =>
+      applyChecklistTemplateToTicket(ticket, { templateId: template.id, mode: 'append' }, actor));
+    expect(appended.items.map((i) => i.label)).toContain('From template');
+    expect(appended.items.map((i) => i.id)).toContain(itemId);
+  });
+
+  // (6c) #6930 — a REAL interleaving, two connections. Transaction A applies a
+  // template with replace_unticked. Its pre-check runs and passes (nothing is
+  // waiting yet); then, before A's DELETE statement starts, a SECOND pooled
+  // connection opens a human-work step on the same ticket and COMMITS its item
+  // and waiting link. A must neither delete that item (the DELETE's own
+  // NOT EXISTS) nor half-replace (the post-delete re-check refuses, rolling A
+  // back). The other ordering, a commit after A's DELETE statement starts, is
+  // invisible to that statement by READ COMMITTED snapshot and is not staged.
+  runDb('replace_unticked never deletes, or half-replaces around, an Operator item committed by another connection after the pre-check', async () => {
+    const org = await seedOrg();
+    const taskId = await seedTask(org, { currentStepKey: 'confirm_identity' });
+    // The task's ticket, created up front so A can target it before the
+    // human-work step exists; opening the step later reuses this ticket.
+    const { ticketId } = await withSystemDbAccessContext(() =>
+      ensureTaskTicket(db, { id: taskId, orgId: org.orgId, objective: 'Offboard Dana Example' }));
+    const ticket = { id: ticketId, orgId: org.orgId };
+    const manual = await withDbAccessContext(org.ctx, () =>
+      addChecklistItem(ticket, { label: 'Manual step' }, { userId: org.userId }));
+    const actor = {
+      userId: org.userId, scope: 'organization' as const, partnerId: org.partnerId,
+      partnerOrgAccess: null, accessibleOrgIds: [org.orgId],
+    };
+    const template = await withDbAccessContext(org.ctx, () => createChecklistTemplate({
+      ownerScope: 'organization', orgId: org.orgId, name: `tpl-${randomUUID().slice(0, 8)}`,
+      items: [{ label: 'From template', detail: null, sortOrder: 0 }],
+    }, actor));
+
+    const actual = await vi.importActual<typeof import('../../services/aiOperator/humanWorkService')>(
+      '../../services/aiOperator/humanWorkService');
+    let concurrent: { itemId: string; stepId: string } | undefined;
+    vi.mocked(assertTicketUntickedChecklistItemsDeletable).mockImplementationOnce(async (id, dbh) => {
+      await actual.assertTicketUntickedChecklistItemsDeletable(id, dbh); // passes: nothing waits yet
+      // Second connection, its own transaction, committed before we return.
+      const opened = await runOutsideDbContext(() => openHumanWork(org, taskId));
+      concurrent = { itemId: opened.itemId, stepId: opened.step.id };
+    });
+
+    await expect(withDbAccessContext(org.ctx, () =>
+      applyChecklistTemplateToTicket(ticket, { templateId: template.id, mode: 'replace_unticked' }, actor)))
+      .rejects.toMatchObject({ status: 409, code: 'CHECKLIST_OPERATOR_STEP_WAITING' });
+    expect(concurrent).toBeDefined();
+
+    // A rolled back entirely: the manual step it had deleted is back, the
+    // concurrent Operator item was never removed, nothing was appended.
+    const after = await withDbAccessContext(org.ctx, () => listChecklist(ticket.id));
+    expect(after.items.map((i) => i.id).sort()).toEqual([manual.id, concurrent!.itemId].sort());
+    const [link] = await withSystemDbAccessContext(() =>
+      db.select().from(aiOperatorTaskSteps).where(eq(aiOperatorTaskSteps.id, concurrent!.stepId)));
+    expect(link?.checklistItemId).toBe(concurrent!.itemId);
+    expect(link?.state).toBe('waiting');
   });
 
   // (7) advanceWait with a future waitUntil.

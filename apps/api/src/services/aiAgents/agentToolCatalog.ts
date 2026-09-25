@@ -158,6 +158,7 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
 
   // ---- tickets ----
   manage_tickets: 'tickets',
+  manage_ticket_checklist: 'tickets',
   list_time_entries: 'tickets',
   get_running_timer: 'tickets',
   get_timesheet: 'tickets',

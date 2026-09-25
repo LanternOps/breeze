@@ -52,7 +52,22 @@ import { findStatusByName, listActiveStatusNames } from './ticketConfigService';
 import { TicketMoveCurrencyBlockedError } from './ticketMoveCurrencyGuard';
 import { getUserPermissions, hasPermission, PERMISSIONS } from './permissions';
 import { canManageTimeEntryBilling } from './timeEntryBillingPermission';
-import { listChecklist } from './ticketChecklistService';
+import {
+  addChecklistItem,
+  deleteChecklistItem,
+  getChecklistItemOr404,
+  isChecklistItemTickedForUpdate,
+  listChecklist,
+  patchChecklistItem,
+  reorderChecklist,
+} from './ticketChecklistService';
+import {
+  applyChecklistTemplateToTicket,
+  getChecklistTemplate,
+  listChecklistTemplates,
+  type ChecklistTemplateActor,
+} from './ticketChecklistTemplateService';
+import { PartnerWideWriteDeniedError, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from './partnerWideAccess';
 import { listWorkTypes } from './workTypeService';
 
 type ParseResult<T> = { value: T } | { error: string };
@@ -353,6 +368,80 @@ const orgAllowlist = (auth: AuthContext): string[] | null => (auth.scope === 'sy
 
 function jsonError(error: string): string {
   return JSON.stringify({ error });
+}
+
+const CHECKLIST_ACTIONS = [
+  'list',
+  'add_item',
+  'update_item',
+  'delete_item',
+  'reorder',
+  'apply_template',
+  'list_templates',
+  'get_template',
+] as const;
+
+/** Mirrors routes/ticketChecklistTemplates.ts templateActorFrom — the service needs scope AND partnerOrgAccess. */
+function checklistTemplateActorFrom(auth: AuthContext): ChecklistTemplateActor {
+  return {
+    userId: auth.user?.id ?? null,
+    scope: auth.scope,
+    partnerId: auth.partnerId ?? null,
+    partnerOrgAccess: auth.partnerOrgAccess ?? null,
+    accessibleOrgIds: auth.accessibleOrgIds,
+  };
+}
+
+/**
+ * The ONE error envelope this tool returns: `{ error }` and nothing else.
+ * routes/mcpServer.ts pureReturnedToolError classifies a returned payload as a
+ * failed call (isError: true, failure audit outcome) only when `error` is its
+ * sole key, so a `{ error, code }` refusal would be recorded as a SUCCESS. The
+ * stable code and any details ride inside the message instead.
+ */
+function checklistError(message: string, code?: string, details?: unknown): string {
+  const suffix = [code ? `[${code}]` : '', details !== undefined ? JSON.stringify(details) : '']
+    .filter(Boolean)
+    .join(' ');
+  return JSON.stringify({ error: suffix ? `${message} ${suffix}` : message });
+}
+
+/**
+ * The checklist and template services throw ChecklistServiceError,
+ * ChecklistTemplateServiceError and (delete of an Operator-bound step)
+ * HumanWorkStepWaitingError — all `{ status, code, message }`. Matched
+ * STRUCTURALLY, like handleChecklistTemplateError in the templates route, so
+ * this module does not import the aiOperator tree (the route file explains the
+ * cycle that would close).
+ */
+function checklistErrorToJson(err: unknown): string | null {
+  if (err instanceof PartnerWideWriteDeniedError) {
+    return checklistError(PARTNER_WIDE_WRITE_DENIED_MESSAGE, 'PARTNER_WIDE_WRITE_DENIED');
+  }
+  if (
+    err && typeof err === 'object' &&
+    typeof (err as { status?: unknown }).status === 'number' &&
+    typeof (err as { code?: unknown }).code === 'string'
+  ) {
+    const e = err as { code: string; message?: string; details?: unknown };
+    return checklistError(e.message || e.code, e.code, e.details);
+  }
+  return null;
+}
+
+/**
+ * A ticked step is a human attestation (spec #5783 §4.1). The HTTP route gates
+ * the `done` branch on isInteractiveUserSession; this tool never offers `done`
+ * at all. It ALSO refuses to edit or delete a step that is already ticked:
+ * patchChecklistItem's RULE 3 clears the attestation on any text edit of a done
+ * item, and a delete removes it outright, so either would let an agent withdraw
+ * a person's sign-off. A human does that from the ticket page.
+ */
+function refuseTickedItem(action: string): string {
+  return checklistError(
+    `Checklist step is ticked; ${action} of a ticked step requires a signed-in user on the ticket page`,
+    'CHECKLIST_TICKED_ITEM_REQUIRES_USER',
+  );
 }
 
 export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
@@ -1236,5 +1325,146 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
 
       throw new Error(`Unknown action: ${action}`);
     }
+  });
+
+  // #6930 — the MCP/AI surface for routes/tickets/checklist.ts and the
+  // read side of routes/ticketChecklistTemplates.ts. Same services, same
+  // partner/system-only posture (checklists are internal MSP procedure).
+  //
+  // There is deliberately NO way to tick or untick a step here (spec #5783
+  // §6.5, OD-7 A): `done` is not in the schema, and editing or deleting an
+  // already-ticked step is refused (refuseTickedItem). The route's
+  // isInteractiveUserSession gate stays the enforcing control for `done`.
+  aiTools.set('manage_ticket_checklist', {
+    tier: 1 as AiToolTier,
+    deviceArgs: [],
+    domain: 'tickets',
+    searchHint: 'ticket checklist steps: list, add, edit, delete, reorder, apply a checklist template, list templates',
+    definition: {
+      name: 'manage_ticket_checklist',
+      description:
+        'Ticket checklist steps and templates. Actions: list, add_item, update_item (label/detail), delete_item, reorder, apply_template, list_templates, get_template. ' +
+        'Ticking a step done needs a signed-in user on the ticket page; ticked steps cannot be edited or deleted here.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          action: { type: 'string', enum: [...CHECKLIST_ACTIONS], description: 'The action to perform' },
+          ticketId: { type: 'string', description: 'Ticket UUID (required for list/add_item/reorder/apply_template)' },
+          itemId: { type: 'string', description: 'Checklist item UUID (required for update_item/delete_item)' },
+          label: { type: 'string', description: 'Step text, 1-500 chars (add_item required; update_item optional)' },
+          detail: { type: ['string', 'null'], description: 'Optional step note, up to 2000 chars; null clears it (add_item/update_item)' },
+          itemIds: {
+            type: 'array',
+            items: { type: 'string' },
+            description: "reorder: the ticket's COMPLETE checklist item id list in the new order, each exactly once",
+          },
+          templateId: { type: 'string', description: 'Checklist template UUID (apply_template/get_template)' },
+          mode: {
+            type: 'string',
+            enum: ['append', 'replace_unticked'],
+            description: 'apply_template: append after existing steps (default) or replace only the unticked steps. Ticked steps are never removed.',
+          },
+          orgId: { type: 'string', description: 'list_templates: limit to templates usable for this organization' },
+          includeInactive: { type: 'boolean', description: 'list_templates: include inactive templates (default false)' },
+        },
+        required: ['action'],
+        additionalProperties: false,
+      },
+    },
+
+    handler: async (input, auth) => {
+      const action = input.action as (typeof CHECKLIST_ACTIONS)[number];
+
+      // routes/tickets/checklist.ts and ticketChecklistTemplates.ts are both
+      // requireScope('partner', 'system').
+      if (auth.scope !== 'partner' && auth.scope !== 'system') {
+        return checklistError('Ticket checklists require a partner or system token', 'PARTNER_SCOPE_REQUIRED');
+      }
+
+      const reads = new Set<string>(['list', 'list_templates', 'get_template']);
+      // Writes stamp created_by / template actor ids with auth.user.id, which
+      // for an ai_agent principal is an aiAgents id, not a users row (see
+      // refuseAgentPrincipal). No agent attribution design exists for these.
+      if (!reads.has(action) && agentRunIdFrom(auth)) return refuseAgentPrincipal(action);
+
+      try {
+        // ── template reads ──────────────────────────────────────────────────
+        if (action === 'list_templates') {
+          const templates = await listChecklistTemplates(checklistTemplateActorFrom(auth), {
+            orgId: typeof input.orgId === 'string' ? input.orgId : undefined,
+            includeInactive: input.includeInactive === true,
+          });
+          return JSON.stringify({ templates });
+        }
+        if (action === 'get_template') {
+          if (typeof input.templateId !== 'string') return jsonError('templateId is required for get_template');
+          return JSON.stringify({ template: await getChecklistTemplate(input.templateId, checklistTemplateActorFrom(auth)) });
+        }
+
+        // ── by-item actions: scope through the item's OWN ticket ────────────
+        if (action === 'update_item' || action === 'delete_item') {
+          if (typeof input.itemId !== 'string') return jsonError(`itemId is required for ${action}`);
+          // The schema is strict and has no `done`; this is the handler-level
+          // backstop for a caller that skips validation.
+          if (hasOwn(input, 'done')) return refuseTickedItem('ticking');
+          const item = await getChecklistItemOr404(input.itemId);
+          if (!(await findTicketWithAccess(item.ticketId, auth))) return jsonError('Checklist item not found');
+
+          // Row-locked read, so a concurrent human tick cannot land between
+          // this check and the write below and then be cleared by it.
+          const ticked = await isChecklistItemTickedForUpdate(item.id);
+          if (ticked === null) return jsonError('Checklist item not found');
+          if (ticked) return refuseTickedItem(action);
+
+          if (action === 'delete_item') {
+            await deleteChecklistItem(item.id);
+            return JSON.stringify({ deleted: true, itemId: item.id });
+          }
+
+          const patch: { label?: string; detail?: string | null } = {};
+          if (typeof input.label === 'string') patch.label = input.label;
+          if (hasOwn(input, 'detail')) patch.detail = (input.detail as string | null);
+          if (Object.keys(patch).length === 0) return jsonError('update_item needs label and/or detail');
+          return JSON.stringify({ item: await patchChecklistItem(item.id, patch, { userId: auth.user.id }) });
+        }
+
+        // ── by-ticket actions ───────────────────────────────────────────────
+        if (typeof input.ticketId !== 'string') return jsonError(`ticketId is required for ${action}`);
+        const ticket = await findTicketWithAccess(input.ticketId, auth);
+        if (!ticket) return jsonError('Ticket not found');
+
+        if (action === 'list') {
+          return JSON.stringify({ checklist: await listChecklist(ticket.id) });
+        }
+        if (action === 'add_item') {
+          if (typeof input.label !== 'string') return jsonError('label is required for add_item');
+          const item = await addChecklistItem(
+            { id: ticket.id, orgId: ticket.orgId },
+            { label: input.label, ...(hasOwn(input, 'detail') ? { detail: input.detail as string | null } : {}) },
+            { userId: auth.user.id },
+          );
+          return JSON.stringify({ item });
+        }
+        if (action === 'reorder') {
+          if (!Array.isArray(input.itemIds)) return jsonError('itemIds is required for reorder');
+          return JSON.stringify({ checklist: await reorderChecklist(ticket.id, input.itemIds as string[]) });
+        }
+        if (action === 'apply_template') {
+          if (typeof input.templateId !== 'string') return jsonError('templateId is required for apply_template');
+          const checklist = await applyChecklistTemplateToTicket(
+            { id: ticket.id, orgId: ticket.orgId },
+            { templateId: input.templateId, mode: input.mode === 'replace_unticked' ? 'replace_unticked' : 'append' },
+            checklistTemplateActorFrom(auth),
+          );
+          return JSON.stringify({ checklist });
+        }
+      } catch (err) {
+        const mapped = checklistErrorToJson(err);
+        if (mapped) return mapped;
+        throw err;
+      }
+
+      throw new Error(`Unknown action: ${action}`);
+    },
   });
 }

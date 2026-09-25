@@ -259,6 +259,31 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     limit: z.number().int().min(1).max(500).optional(),
   }),
 
+  // #6930. Strict and with NO `done`: ticking a step is a human attestation
+  // (routes/tickets/checklist.ts isInteractiveUserSession gate), never a tool.
+  manage_ticket_checklist: z.object({
+    action: z.enum([
+      'list',
+      'add_item',
+      'update_item',
+      'delete_item',
+      'reorder',
+      'apply_template',
+      'list_templates',
+      'get_template',
+    ]),
+    ticketId: uuid.optional(),
+    itemId: uuid.optional(),
+    // Bounds mirror packages/shared/src/validators/ticketChecklists.ts.
+    label: z.string().min(1).max(500).optional(),
+    detail: z.string().max(2000).nullable().optional(),
+    itemIds: z.array(uuid).min(1).max(500).optional(),
+    templateId: uuid.optional(),
+    mode: z.enum(['append', 'replace_unticked']).optional(),
+    orgId: uuid.optional(),
+    includeInactive: z.boolean().optional(),
+  }).strict(),
+
   manage_tickets: z.object({
     action: z.enum([
       'list',

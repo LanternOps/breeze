@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, notExists, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   ticketChecklistItems,
@@ -7,6 +7,7 @@ import {
   type TicketChecklistTemplateRow,
   type TicketChecklistTemplateItemRow,
 } from '../db/schema';
+import { aiOperatorTaskSteps } from '../db/schema/aiOperatorTaskGraph';
 import type { AuthContext } from '../middleware/auth';
 import type {
   ApplyChecklistTemplateInput,
@@ -19,6 +20,7 @@ import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './par
 import { isPgUniqueViolation, pgErrorConstraint } from '../utils/pgErrors';
 import { listChecklist, type ChecklistSummary } from './ticketChecklistService';
 import { assertChecklistTemplateNotInUse } from './checklistTemplateReference';
+import { assertTicketUntickedChecklistItemsDeletable } from './aiOperator/humanWorkService';
 
 /**
  * Ticket checklist templates (spec #5783 §4.2, §4.3, §6.2). Dual ownership per
@@ -590,17 +592,45 @@ export async function applyChecklistTemplateToTicket(
 
   await db.transaction(async (tx) => {
     if (input.mode === 'replace_unticked') {
+      // An unticked item a running Operator step waits on is guarded exactly
+      // as a single delete is (assertChecklistItemDeletable): the FK is ON
+      // DELETE SET NULL, so nothing below would refuse it.
+      await assertTicketUntickedChecklistItemsDeletable(ticket.id, tx);
       // ONLY unticked rows. A ticked item carries done_at/done_by_user_id — a
       // human attestation that the step was performed — and applying a template
       // must never destroy one. There is no destructive mode by design.
+      //
+      // The pre-check above is a plain read, so it cannot see an Operator
+      // item committed after it runs. The NOT EXISTS below is what ENFORCES
+      // the rule, against the DELETE statement's own snapshot (READ
+      // COMMITTED). A human-work item and its waiting link are committed
+      // together (humanWorkService opens both in one transaction), so an
+      // item committed BEFORE this statement starts is visible together with
+      // its waiting step and is excluded here, and one committed AFTER it
+      // starts is not visible to this statement at all. The pre-check stays
+      // for the readable 409 in the common case.
       await tx
         .delete(ticketChecklistItems)
         .where(
           and(
             eq(ticketChecklistItems.ticketId, ticket.id),
             isNull(ticketChecklistItems.doneAt),
+            notExists(
+              tx
+                .select({ one: sql`1` })
+                .from(aiOperatorTaskSteps)
+                .where(and(
+                  eq(aiOperatorTaskSteps.checklistItemId, ticketChecklistItems.id),
+                  eq(aiOperatorTaskSteps.state, 'waiting'),
+                )),
+            ),
           ),
         );
+      // The NOT EXISTS can leave a waited-on item in place (the race above).
+      // A replace that quietly kept an old step would be a partial replace,
+      // so re-check on this statement's fresh snapshot and refuse: the
+      // throw rolls the whole apply back, delete included.
+      await assertTicketUntickedChecklistItemsDeletable(ticket.id, tx);
     }
 
     const [agg] = (await tx

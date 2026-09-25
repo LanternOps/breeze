@@ -167,6 +167,8 @@ export const TOOL_TIERS = {
   list_time_entries: 1,
   get_running_timer: 1,
   get_timesheet: 1,
+  // #6930. Base tier; the mutating actions are Tier 2 in aiGuardrails.
+  manage_ticket_checklist: 1,
 
   query_devices: 1,
   search_documentation: 1,
@@ -1488,6 +1490,28 @@ export function buildBreezeSdkTools(
       registryDescription('manage_delivery'),
       deliveryToolShape,
       makeHandler('manage_delivery', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // #6930. No `done`: ticking a checklist step is a human attestation.
+    tool(
+      'manage_ticket_checklist',
+      registryDescription('manage_ticket_checklist'),
+      {
+        action: z.enum([
+          'list', 'add_item', 'update_item', 'delete_item', 'reorder',
+          'apply_template', 'list_templates', 'get_template',
+        ]),
+        ticketId: uuid.optional(),
+        itemId: uuid.optional(),
+        label: z.string().min(1).max(500).optional(),
+        detail: z.string().max(2000).nullable().optional(),
+        itemIds: z.array(uuid).min(1).max(500).optional(),
+        templateId: uuid.optional(),
+        mode: z.enum(['append', 'replace_unticked']).optional(),
+        orgId: uuid.optional(),
+        includeInactive: z.boolean().optional(),
+      },
+      makeHandler('manage_ticket_checklist', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
