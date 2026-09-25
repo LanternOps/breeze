@@ -102,7 +102,11 @@ async function fixture() {
   return { partnerA: partnerA.id, partnerB: partnerB.id, orgA: orgA.id };
 }
 
-const TODAY = new Date().toISOString().slice(0, 10);
+// One clock for the whole file. The seeded `day` values and the loader's
+// window must come from the same instant, or a run that crosses UTC midnight
+// shifts the loader's window a day past the seeded rows (#6953).
+const NOW = new Date();
+const TODAY = NOW.toISOString().slice(0, 10);
 
 describe('partner_sending_daily_stats — RLS (shape 3)', () => {
   let f: Awaited<ReturnType<typeof fixture>>;
@@ -338,7 +342,7 @@ describe('loadSendingDomainAggregates — the abuse loader against real Postgres
 
     const { aggregates, scannedPartnerIds } = await withDbAccessContext(
       SYSTEM_CTX,
-      () => loadSendingDomainAggregates(new Date()),
+      () => loadSendingDomainAggregates(NOW),
     );
 
     const a = aggregates.find((row) => row.partnerId === f.partnerA);
@@ -369,7 +373,7 @@ describe('loadSendingDomainAggregates — the abuse loader against real Postgres
 
     const { aggregates } = await withDbAccessContext(
       SYSTEM_CTX,
-      () => loadSendingDomainAggregates(new Date()),
+      () => loadSendingDomainAggregates(NOW),
     );
 
     const a = aggregates.find((row) => row.partnerId === f.partnerA);
