@@ -313,6 +313,56 @@ func TestConsole_OldMediaRefused(t *testing.T) {
 	if len(deps.rebuildCalls) != 0 {
 		t.Errorf("rebuild calls = %d, want 0", len(deps.rebuildCalls))
 	}
+	// #5629: by the time this gate trips the server has already claimed the
+	// one-time code and moved the recovery to media_booted, so the console
+	// must post a terminal `failed` or the recovery is wedged forever (and
+	// blocks POST /bmr/recoveries for the device with recovery_in_progress).
+	if got := statusesOf(deps.progressCalls); strings.Join(got, ",") != "failed" {
+		t.Fatalf("progress statuses = %v, want [failed]", got)
+	}
+	reason := deps.progressCalls[0].Reason
+	if !strings.HasPrefix(reason, "media_too_old") || !strings.Contains(reason, "0.111.1") || !strings.Contains(reason, "0.120.0") {
+		t.Errorf("progress reason = %q, want media_too_old with both versions", reason)
+	}
+}
+
+// TestConsole_ServerRefusesOldMediaBeforeClaim pins the #5629 happy path of
+// the fix: a server that knows the floor refuses the exchange with a 409
+// helper_version_too_old BEFORE the code is claimed. The console must print
+// the server's message, stop without re-prompting for another code (the
+// code is still good — re-prompting would only confuse the operator), and
+// post no progress (it holds no token).
+func TestConsole_ServerRefusesOldMediaBeforeClaim(t *testing.T) {
+	io := &fakeIO{Answers: []string{"https://breeze.example", "abc-def-ghj", "abc-def-ghj"}}
+	var exchangeCalls int
+	deps := &fakeDeps{
+		exchangeFn: func(ctx context.Context, server, code string) (string, *bmr.BootstrapResponse, error) {
+			exchangeCalls++
+			return "", nil, &bmr.RecoveryNegotiationError{
+				Code:    "helper_version_too_old",
+				Message: "This recovery media (v0.111.1) is older than the server requires (v0.120.0); download the current ISO. The recovery code was not used.",
+			}
+		},
+	}
+	c := &Console{IO: io, Deps: deps.build("0.111.1"), Cmdline: "breeze.media=1"}
+
+	err := c.Run(context.Background())
+	if err == nil {
+		t.Fatal("Run() error = nil, want the server's version refusal")
+	}
+	var negErr *bmr.RecoveryNegotiationError
+	if !errors.As(err, &negErr) || negErr.Code != "helper_version_too_old" {
+		t.Errorf("Run() error = %v, want wrapping RecoveryNegotiationError{helper_version_too_old}", err)
+	}
+	if exchangeCalls != 1 {
+		t.Errorf("exchange calls = %d, want 1 (no re-prompt on a terminal refusal)", exchangeCalls)
+	}
+	if !strings.Contains(io.transcript.String(), "The recovery code was not used") {
+		t.Errorf("transcript missing the server's message; got:\n%s", io.transcript.String())
+	}
+	if len(deps.progressCalls) != 0 {
+		t.Errorf("progress calls = %v, want none (no token was minted)", statusesOf(deps.progressCalls))
+	}
 }
 
 func TestConsole_CIModeAnswersEverything(t *testing.T) {

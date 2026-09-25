@@ -17,6 +17,36 @@ export const BMR_MIN_HELPER_VERSION =
   process.env.BREEZE_VERSION ||
   process.env.BINARY_VERSION ||
   '0.5.0';
+
+// Parse a helper version exactly like the recovery console's parseVersion
+// (agent/internal/recoveryconsole/console.go): strip one leading "v", split
+// on ".", and treat any non-integer component (e.g. "1-rc1", "dev") as 0.
+function parseHelperVersion(value: string): number[] {
+  return value
+    .trim()
+    .replace(/^v/, '')
+    .split('.')
+    .map((part) => {
+      const trimmed = part.trim();
+      return /^[+-]?\d+$/.test(trimmed) ? Number.parseInt(trimmed, 10) : 0;
+    });
+}
+
+// #5629: the exchange route refuses a too-old helper BEFORE claiming the
+// one-time code. This must agree case-for-case with the console's own
+// post-exchange versionAtLeast check — if the server let through a helper
+// the console then refuses, the code would be spent for nothing again.
+export function isHelperVersionAtLeast(have: string, want: string): boolean {
+  const h = parseHelperVersion(have);
+  const w = parseHelperVersion(want);
+  for (let i = 0; i < h.length || i < w.length; i++) {
+    const hv = h[i] ?? 0;
+    const wv = w[i] ?? 0;
+    if (hv !== wv) return hv > wv;
+  }
+  return true;
+}
+
 export const RECOVERY_DOWNLOAD_SESSION_TTL_MS = 60 * 60 * 1000;
 export const RECOVERY_TOKEN_REGEX = /^brz_rec_[a-f0-9]{64}$/;
 

@@ -146,10 +146,14 @@ var ErrCodeInvalid = fmt.Errorf("bmr: recovery code invalid or already used")
 type exchangeCodeRequest struct {
 	Code         string   `json:"code"`
 	Capabilities []string `json:"capabilities,omitempty"`
+	// HelperVersion lets the server refuse too-old recovery media with a
+	// 409 helper_version_too_old BEFORE it claims the one-time code
+	// (#5629). Omitted when empty; older servers ignore it.
+	HelperVersion string `json:"helperVersion,omitempty"`
 }
 
-func ExchangeRecoveryCode(ctx context.Context, serverURL, code string) (string, *BootstrapResponse, error) {
-	payload, err := json.Marshal(exchangeCodeRequest{Code: code, Capabilities: ClientCapabilities()})
+func ExchangeRecoveryCode(ctx context.Context, serverURL, code, helperVersion string) (string, *BootstrapResponse, error) {
+	payload, err := json.Marshal(exchangeCodeRequest{Code: code, Capabilities: ClientCapabilities(), HelperVersion: helperVersion})
 	if err != nil {
 		return "", nil, fmt.Errorf("bmr: marshal exchange request: %w", err)
 	}
