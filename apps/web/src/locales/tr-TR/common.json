@@ -220,7 +220,7 @@
     "mcp": {
       "connecting": "Bir yapay zeka temsilcisine mi bağlanıyorsunuz?",
       "title": "AI temsilcinizi buraya yönlendirin",
-      "description": "Bu URL'yi MCP istemcinize (Claude.ai, ChatGPT, Cursor,…) yapıştırın. Bağlantıyı OAuth aracılığıyla yetkilendirmek için buraya geri gönderileceksiniz."
+      "description": "Bu URL'yi MCP istemcinize (Claude.ai, ChatGPT, Cursor,…) yapıştırın. Bağlantıyı OAuth aracılığıyla yetkilendirmek için buraya geri gönderileceksiniz. Bir API anahtarını mı tercih edersiniz? ai:read/ai:write kapsamıyla bir X-API-Key başlığı gönderin."
     },
     "progress": {
       "count": "{{current}} / {{total}}",

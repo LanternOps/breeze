@@ -220,7 +220,7 @@
     "mcp": {
       "connecting": "Connecter un agent IA ?",
       "title": "Adressez votre agent IA ici",
-      "description": "Collez ce URL dans votre client MCP (Claude.ai, ChatGPT, Cursor, ...). Vous serez renvoyé ici pour autoriser la connexion via OAuth."
+      "description": "Collez ce URL dans votre client MCP (Claude.ai, ChatGPT, Cursor, ...). Vous serez renvoyé ici pour autoriser la connexion via OAuth. Vous préférez une clé API? Envoyez un en-tête X-API-Key avec la portée ai:read/ai:write."
     },
     "progress": {
       "count": "{{current}} de {{total}}",

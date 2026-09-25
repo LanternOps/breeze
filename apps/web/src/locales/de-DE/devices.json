@@ -846,6 +846,7 @@
     }
   },
   "deviceFilesystemTab": {
+    "deviceIsOfflineScansRequireAConnectedAgent": "Gerät ist offline. Scans erfordern einen verbundenen Agenten.",
     "resultPartial": "Teilweise abgeschlossen",
     "resultSkippedLinks": "Übersprungene Links: {{count}}",
     "errorAgentUpdateRequired": "Aktualisieren Sie den Agenten auf Version {{minAgentVersion}} oder neuer, um die Bereinigung auszuführen.",
