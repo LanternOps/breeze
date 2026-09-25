@@ -866,7 +866,10 @@ jobs:
           filters: |
             mobile:
               - 'apps/mobile/**'
-              - 'packages/**'
+              # No 'packages/**': breeze-mobile has no workspace dependency
+              # (it mirrors shared constants on purpose for Metro), so a
+              # packages/ change cannot alter the native build. Pinned both
+              # ways by mobile-native-ci.test.mjs.
               - 'pnpm-workspace.yaml'
               - '.npmrc'
               - '.node-version'
