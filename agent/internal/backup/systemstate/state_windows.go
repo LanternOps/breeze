@@ -55,11 +55,7 @@ func (c *WindowsCollector) CollectState(stagingDir string) (*SystemStateManifest
 	hostname, _ := os.Hostname()
 	manifest := newWindowsManifestSkeleton(hostname)
 
-	type step struct {
-		name string
-		fn   func(string) ([]Artifact, error)
-	}
-	steps := []step{
+	steps := []collectionStep{
 		{"registry", c.collectRegistry},
 		{"boot", c.collectBootConfig},
 		{"drivers", c.collectDrivers},
@@ -71,26 +67,12 @@ func (c *WindowsCollector) CollectState(stagingDir string) (*SystemStateManifest
 		{"iis", c.collectIIS},
 	}
 
-	for _, s := range steps {
-		arts, err := s.fn(stagingDir)
-		if err != nil {
-			slog.Warn("systemstate: step failed", "step", s.name, "error", err.Error())
-			manifest.IncompleteSteps = append(manifest.IncompleteSteps, s.name)
-			continue
-		}
-		manifest.Artifacts = append(manifest.Artifacts, arts...)
-	}
-
-	if len(manifest.Artifacts) == 0 {
-		return manifest, fmt.Errorf("system state collection produced no artifacts - all %d steps failed", len(steps))
-	}
-
 	// Registry hives and boot config are required for a bootable bare-metal
 	// restore; a system_image missing either is not restorable, so fail hard
 	// rather than shipping a partial that looks complete. Other steps (certs,
 	// iis, firewall, ...) are best-effort and only warn (see IncompleteSteps).
-	if missing := missingRequired(manifest.IncompleteSteps, windowsRequiredSteps); len(missing) > 0 {
-		return manifest, fmt.Errorf("system state collection missing required artifact(s) %v - image would not be restorable", missing)
+	if err := runCollectionSteps(manifest, steps, stagingDir, windowsRequiredSteps); err != nil {
+		return manifest, err
 	}
 
 	// Attach hardware profile (best-effort).

@@ -43,6 +43,42 @@ func CollectSystemState() (manifest *SystemStateManifest, stagingDir string, err
 	return manifest, stagingDir, nil
 }
 
+// collectionStep is one named system-state collection step.
+type collectionStep struct {
+	name string
+	fn   func(stagingDir string) ([]Artifact, error)
+}
+
+// runCollectionSteps runs each step into stagingDir, appending artifacts to
+// manifest and recording failed steps in manifest.IncompleteSteps. Individual
+// step failures are logged and do not abort the run. It returns an error when
+// no step produced an artifact, or when a step in required failed.
+//
+// A failed step's artifacts are still recorded: a step may return the pieces
+// it did capture alongside its error (collectRegistryHives returns the hives
+// that saved with a *registrySaveError), and those files are already in
+// stagingDir, so the manifest lists them rather than silently omitting them
+// (#7001). This does not soften the pass/fail decision — the step is still in
+// IncompleteSteps, and a required step's failure still returns an error.
+func runCollectionSteps(manifest *SystemStateManifest, steps []collectionStep, stagingDir string, required map[string]bool) error {
+	for _, s := range steps {
+		arts, err := s.fn(stagingDir)
+		manifest.Artifacts = append(manifest.Artifacts, arts...)
+		if err != nil {
+			slog.Warn("systemstate: step failed", "step", s.name, "error", err.Error(), "partialArtifacts", len(arts))
+			manifest.IncompleteSteps = append(manifest.IncompleteSteps, s.name)
+		}
+	}
+
+	if len(manifest.Artifacts) == 0 {
+		return fmt.Errorf("system state collection produced no artifacts - all %d steps failed", len(steps))
+	}
+	if missing := missingRequired(manifest.IncompleteSteps, required); len(missing) > 0 {
+		return fmt.Errorf("system state collection missing required artifact(s) %v - image would not be restorable", missing)
+	}
+	return nil
+}
+
 // missingRequired returns the subset of failed (incomplete) collection steps
 // that are required for a restorable system image. A non-empty result means the
 // collection must be treated as a hard failure rather than a best-effort
