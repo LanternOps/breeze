@@ -24,6 +24,22 @@
   "aiTools": [],
   "tenancy": {
     "orgCascadeDeleteTables": ["memory_blocks", "workspace_content_chunks", "workspace_content_entities", "workspace_crawl_runs", "workspace_email_filings", "workspace_file_activity", "workspace_file_content", "workspace_file_enrichment", "workspace_file_index", "workspace_ingest_jobs", "workspace_org_settings", "workspace_project_crosswalk", "workspace_projects", "workspace_sources"],
+    "orgMergePolicies": {
+      "memory_blocks": { "kind": "repoint" },
+      "workspace_content_chunks": { "kind": "repoint" },
+      "workspace_content_entities": { "kind": "repoint" },
+      "workspace_crawl_runs": { "kind": "repoint" },
+      "workspace_email_filings": { "kind": "repoint" },
+      "workspace_file_activity": { "kind": "repoint" },
+      "workspace_file_content": { "kind": "repoint" },
+      "workspace_file_enrichment": { "kind": "repoint" },
+      "workspace_file_index": { "kind": "repoint" },
+      "workspace_ingest_jobs": { "kind": "repoint-dedupe", "key": ["source_id"] },
+      "workspace_org_settings": { "kind": "keep-survivor" },
+      "workspace_project_crosswalk": { "kind": "repoint-dedupe", "key": ["entity_type", "value_norm", "project_key"] },
+      "workspace_projects": { "kind": "repoint-dedupe", "key": ["project_key"] },
+      "workspace_sources": { "kind": "repoint" }
+    },
     "deviceCascadeDeleteTables": ["workspace_file_index"],
     "deviceOrgDenormalizedTables": ["workspace_file_activity"],
     "deviceOrgMoveDeleteTables": ["workspace_file_index"],
