@@ -8,6 +8,7 @@ import { requireMfa, requirePermission, requireScope } from '../../middleware/au
 import { sqlInstances, backupChains } from '../../db/schema/applicationBackup';
 import {
   executeCommand,
+  queueCommandForExecution,
   CommandTypes,
 } from '../../services/commandQueue';
 import { PERMISSIONS } from '../../services/permissions';
@@ -444,6 +445,14 @@ mssqlRoutes.get('/mssql/chains', requirePermission(PERMISSIONS.ORGS_READ.resourc
   return c.json({ data: chains });
 });
 
+// Mirrors routes/backup/restore.ts and routes/backup/vmrestore.ts: a device
+// that is offline is a routine, expected dispatch outcome for a
+// reject-on-offline restore command, not an infra failure — surface it as
+// 409 so callers/monitoring can distinguish it from a genuine enqueue error.
+function mapDispatchErrorStatus(error: string): number {
+  return error.startsWith('Device is ') ? 409 : 502;
+}
+
 // ── POST /mssql/restore — trigger MSSQL restore ──
 
 mssqlRoutes.post(
@@ -518,7 +527,19 @@ mssqlRoutes.post(
       return c.json({ error: message, reason }, 422);
     }
 
-    const result = await executeCommand(
+    // #6437: a real MSSQL restore commonly runs well past 10 minutes — the
+    // same shape of long-running restore that #6415/PR #6434 gave a 24h
+    // ceiling to for whole-machine restores. `executeCommand` blocks the HTTP
+    // request on `waitForCommandResult(commandId, timeoutMs)` and terminalises
+    // the response as failed once `timeoutMs` elapses, independent of and much
+    // shorter than that ceiling — so a healthy restore was reported failed
+    // while the agent kept working. Dispatch async instead (the same D20
+    // queued-ack + job-correlation pattern PR #5461 established for
+    // MSSQL_BACKUP/HYPERV_BACKUP): return as soon as the command is queued and
+    // let the stale command reaper own the deadline. The agent already reports
+    // its terminal result asynchronously over the command-result WS path —
+    // nothing on the agent side needs to change.
+    const queued = await queueCommandForExecution(
       payload.deviceId,
       CommandTypes.MSSQL_RESTORE,
       {
@@ -538,19 +559,23 @@ mssqlRoutes.post(
         provider: backupProviderConfig.provider,
         providerConfig: backupProviderConfig.providerConfig,
       },
-      { userId: auth?.user?.id, timeoutMs: 600000 }
+      { userId: auth?.user?.id }
     );
 
-    if (result.status === 'failed') {
-      return c.json({ error: result.error || 'MSSQL restore failed' }, 500);
+    if (!queued.command) {
+      const error = queued.error || 'Failed to dispatch MSSQL restore';
+      return c.json({ error }, mapDispatchErrorStatus(error) as any);
     }
 
-    try {
-      const data = result.stdout ? parseAgentJsonStdout(result.stdout) : null;
-      return c.json({ data });
-    } catch {
-      return c.json({ data: result.stdout });
-    }
+    return c.json({
+      data: {
+        commandId: queued.command.id,
+        status: queued.command.status,
+        deviceId: payload.deviceId,
+        snapshotId: snapshot.id,
+        targetDatabase: payload.targetDatabase,
+      },
+    }, 202);
   }
 );
 
