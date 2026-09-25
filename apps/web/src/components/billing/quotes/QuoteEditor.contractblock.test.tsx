@@ -197,6 +197,19 @@ describe('QuoteEditor — existing contract block', () => {
     await waitFor(() => expect(screen.getByTestId('quote-block-contract-content-blk-c')).toBeInTheDocument());
     expect(screen.getByTestId('quote-block-contract-content-blk-c')).toHaveTextContent('MSA');
   });
+
+  // The customer sees agreements after the totals, whatever their position in
+  // the builder (#7040) — say so where the author places one.
+  it('tells the author where the customer will see the agreement', async () => {
+    const contractBlock: QuoteBlock = {
+      id: 'blk-c', quoteId: 'q-1', orgId: 'org-1', blockType: 'contract',
+      content: { templateName: 'MSA', versionNumber: 2, sourceType: 'authored', renderedHtml: '<p>Acme</p>', fileUrl: null },
+      sortOrder: 0, createdAt: '2026-06-01T00:00:00Z',
+    };
+    render(<QuoteEditor detail={{ ...detail, blocks: [contractBlock] }} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-block-contract-placement-blk-c')).toBeInTheDocument());
+    expect(screen.getByTestId('quote-block-contract-placement-blk-c')).toHaveTextContent('after the totals');
+  });
 });
 
 const updateBlockMock = vi.mocked(updateBlock);

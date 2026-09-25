@@ -949,13 +949,17 @@ export async function renderQuotePdf(
   // Shared by the 'table' and 'callout' branches below — both need the richer
   // {y, didBreak} contract (table redraws its header on break; callout needs
   // to know whether its chrome landed on a fresh page), unlike the plain
-  // y-only ensureRoom closures the 'rich_text'/'contract' branches use.
+  // y-only ensureRoom closures the 'rich_text' branch and the agreements use.
   const ensureRoomRich: EnsureRoomRich = (needed) => {
     const before = doc.y;
     y = ensureSpace(doc, doc.y, needed);
     return { y, didBreak: doc.y !== before };
   };
   for (const b of sorted) {
+    // Contract blocks are agreements, drawn after the price (below), not in
+    // block order — an agreement placed before the pricing used to push the
+    // totals pages down the document (#7040).
+    if (b.blockType === 'contract') continue;
     y = ensureSpace(doc, y, 50);
     if (b.blockType === 'heading') {
       const level = Number((b.content as { level?: number }).level ?? 1);
@@ -1035,36 +1039,6 @@ export async function renderQuotePdf(
         const showSubtotal = (b.content as { showSubtotal?: boolean }).showSubtotal === true;
         y = await renderLineTable(doc, blockLines, currency, locale, y, loadCatalogImage, loadImage, fonts, taxRate, showTax, showSubtotal, label);
       }
-    } else if (b.blockType === 'contract') {
-      // contractRenderData[b.id] is pre-fetched by the route (Task 14's
-      // loadContractPdfInputs) — never a DB read here, keeping the renderer pure.
-      // A missing entry (render data load failed upstream, or an injected-empty
-      // Map in a caller that doesn't pass one) degrades to the uploaded-marker
-      // branch below rather than throwing.
-      const raw = b.content && typeof b.content === 'object' && !Array.isArray(b.content) ? (b.content as Record<string, unknown>) : {};
-      const label = typeof raw.label === 'string' && raw.label.trim() ? raw.label.trim() : undefined;
-      const data = contractRenderData.get(b.id);
-      const templateName = data?.templateName || 'Contract';
-      if (data?.html) {
-        // Authored: heading (template name, unless a block-level label overrides
-        // it) + the substituted rich text, via the SAME renderer/pagination
-        // discipline the rich_text block branch above uses.
-        y = ensureSpace(doc, y, 40);
-        doc.fillColor('#111827').fontSize(13).font(fonts.heading.bold).text(label ?? templateName, c.left, y, { width: c.contentWidth });
-        y = doc.y + 8;
-        const ensureRoom = (needed: number): number => {
-          y = ensureSpace(doc, doc.y, needed);
-          return y;
-        };
-        y = renderRichTextIntoPdf(doc, data.html, { x: c.left, width: c.contentWidth, startY: y, ensureRoom, fonts: fonts.body });
-      } else {
-        // Uploaded: pdfkit can't draw an existing PDF's pages (see pdfMerge.ts) —
-        // draw a one-line marker; the route appends the uploaded PDF's own pages
-        // after this document via mergeUploadedContractPdfs.
-        y = ensureSpace(doc, y, 30);
-        doc.fillColor('#111827').fontSize(11).font(fonts.heading.bold).text(contractUploadedMarker(templateName), c.left, y, { width: c.contentWidth });
-        y = doc.y + 8;
-      }
     } else if (b.blockType === 'table') {
       const model = parseTable(b.content, c.contentWidth);
       if (model) {
@@ -1086,20 +1060,61 @@ export async function renderQuotePdf(
     annual: lines.some((line) => line.recurrence === 'annual'),
   }, lines);
 
+  // ---- Closing terms (content, not chrome) ----------------------------------
+  // Ends the proposal proper, right under the price — the portal shows it in
+  // the same place, above the sign panel. The branding footer is no longer
+  // drawn inline — it lives in the per-page footer band below, on EVERY page.
+  if (quote.terms) {
+    y = ensureSpace(doc, y + 14, 60);
+    doc.fillColor('#9ca3af').fontSize(9).font(fonts.body.regular).text(quote.terms, c.left, y, { width: c.contentWidth });
+    y = doc.y;
+  }
+
+  // ---- Agreements: contract blocks in block order ----------------------------
+  // contractRenderData[b.id] is pre-fetched by the route (Task 14's
+  // loadContractPdfInputs) — never a DB read here, keeping the renderer pure.
+  // A missing entry (render data load failed upstream, or an injected-empty Map
+  // in a caller that doesn't pass one) degrades to the uploaded-marker branch
+  // rather than throwing.
+  for (const b of sorted) {
+    if (b.blockType !== 'contract') continue;
+    const raw = b.content && typeof b.content === 'object' && !Array.isArray(b.content) ? (b.content as Record<string, unknown>) : {};
+    const label = typeof raw.label === 'string' && raw.label.trim() ? raw.label.trim() : undefined;
+    const data = contractRenderData.get(b.id);
+    const templateName = data?.templateName || 'Contract';
+    if (data?.html) {
+      // Authored: an agreement is its own document, so it opens a fresh page
+      // (the proposal and its price stay together ahead of it). Heading =
+      // template name unless a block-level label overrides it, then the
+      // substituted rich text via the same renderer/pagination discipline the
+      // rich_text block branch uses.
+      doc.addPage();
+      y = doc.page.margins.top;
+      doc.fillColor(primary).fontSize(9).font(fonts.heading.bold).text('AGREEMENT', c.left, y, { width: c.contentWidth, characterSpacing: 1.5 });
+      y = doc.y + 4;
+      doc.fillColor('#111827').fontSize(15).font(fonts.heading.bold).text(label ?? templateName, c.left, y, { width: c.contentWidth });
+      y = doc.y + 10;
+      const ensureRoom = (needed: number): number => {
+        y = ensureSpace(doc, doc.y, needed);
+        return y;
+      };
+      y = renderRichTextIntoPdf(doc, data.html, { x: c.left, width: c.contentWidth, startY: y, ensureRoom, fonts: fonts.body });
+    } else {
+      // Uploaded: pdfkit can't draw an existing PDF's pages (see pdfMerge.ts) —
+      // draw a one-line marker; the route appends the uploaded PDF's own pages
+      // after this document via mergeUploadedContractPdfs.
+      y = ensureSpace(doc, y + 14, 30);
+      doc.fillColor('#111827').fontSize(11).font(fonts.heading.bold).text(contractUploadedMarker(templateName), c.left, y, { width: c.contentWidth });
+      y = doc.y;
+    }
+  }
+
   // ---- Terms & Conditions --------------------------------------------------
   if (quote.termsAndConditions) {
     y = ensureSpace(doc, y + 14, 60);
     doc.fillColor('#9ca3af').fontSize(9).font(fonts.heading.bold).text('TERMS & CONDITIONS', c.left, y); y = doc.y + 4;
     doc.fillColor('#6b7280').fontSize(9).font(fonts.body.regular).text(quote.termsAndConditions, c.left, y, { width: c.contentWidth });
     y = doc.y;
-  }
-
-  // ---- Inline terms (content, not chrome) -----------------------------------
-  // The branding footer is no longer drawn inline — it now lives in the per-page
-  // footer band below, on EVERY page.
-  if (quote.terms) {
-    y = ensureSpace(doc, y + 14, 60);
-    doc.fillColor('#9ca3af').fontSize(9).font(fonts.body.regular).text(quote.terms, c.left, y, { width: c.contentWidth });
   }
 
   // ---- Per-page footer band: branding footer + quote number + page X of Y ---

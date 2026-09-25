@@ -10,6 +10,7 @@ export * from './alertTemplate';
 export * from './emailTemplates';
 export * from './hrefSafety';
 export * from './quoteMath';
+export * from './documentTerms';
 export * from './quoteFulfillment';
 export * from './depositMath';
 export * from './csvExport';

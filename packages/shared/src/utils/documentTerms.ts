@@ -1,4 +1,8 @@
 /**
+ * Reading helpers for the long-form legal text on customer documents (a quote's
+ * Terms & Conditions and its contract blocks), shared so the portal and the
+ * staff Preview summarise an agreement identically.
+ *
  * Line-based section detection for free-text Terms & Conditions. No markdown
  * dependency: a line that starts with a number ("1.", "2.1", "3)") or an
  * ALL-CAPS label ("CONFIDENTIALITY:") is a heading; everything else is body.
@@ -28,7 +32,13 @@ export function parseTermsSections(text: string): { blocks: TermsBlock[]; sectio
 }
 
 /** Reading time at 200 wpm, never below one minute. */
-export function readMinutes(text: string): number {
+export function textReadMinutes(text: string): number {
   const words = text.split(/\s+/).filter(Boolean).length;
   return Math.max(1, Math.ceil(words / 200));
+}
+
+/** Reading time of sanitized rich-text HTML (a rendered contract template).
+ *  Tags become spaces so `</p><p>` never glues two words into one. */
+export function htmlReadMinutes(html: string): number {
+  return textReadMinutes(html.replace(/<[^>]*>/g, ' '));
 }
