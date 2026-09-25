@@ -49,7 +49,7 @@ import { resolveDeprecatedToolAlias } from '../services/aiToolAliases';
 import { MCP_SERVER_INSTRUCTIONS, listMcpPrompts, getMcpPrompt, hasMcpPrompt } from '../services/mcpGuidance';
 import { API_VERSION } from '../version';
 import { buildMcpToolPresentation } from '../services/mcpToolPresentation';
-import { decodeToolsListCursor, encodeToolsListCursor, mcpToolsListPageSize, negotiateMcpProtocolVersion, parseMcpProtocolVersionHeader } from '../services/mcpProtocol';
+import { computeToolsListCatalogFingerprint, decodeToolsListCursor, encodeToolsListCursor, mcpToolsListPageSize, negotiateMcpProtocolVersion, parseMcpProtocolVersionHeader } from '../services/mcpProtocol';
 import {
   beginMcpToolExecutionLedger,
   completeMcpToolExecutionLedger,
@@ -1308,12 +1308,32 @@ async function handleToolsList(
   const all = [...result.sort(byName), ...tenantResult.sort(byName)];
   const pageSize = mcpToolsListPageSize();
   if (pageSize <= 0) return jsonRpcResult(id, { tools: all });
-  // Offsets are best-effort across changes to the principal's visible tools,
-  // including tenant-tool resolution failures that temporarily omit those tools.
-  const offset = params?.cursor === undefined ? 0 : decodeToolsListCursor(params.cursor);
-  if (offset === null) return jsonRpcError(id, -32602, 'Invalid cursor');
+
+  // #6407: the catalog above is per-principal and can shift between pages
+  // (tenant-tool resolution failure, a scope/tenant-tool change mid-session).
+  // Bind the cursor to a fingerprint of THIS response's catalog + principal so
+  // a page-2 request can prove its offset still indexes the same list.
+  const principalRef = apiKey?.id ?? 'unauthenticated';
+  const catalogFingerprint = computeToolsListCatalogFingerprint(principalRef, all.map((tool) => tool.name));
+
+  let offset = 0;
+  if (params?.cursor !== undefined) {
+    const decoded = decodeToolsListCursor(params.cursor);
+    if (decoded === null) return jsonRpcError(id, -32602, 'Invalid cursor');
+    if (decoded.catalogFingerprint !== catalogFingerprint) {
+      return jsonRpcError(
+        id,
+        -32602,
+        'Tools list changed since this cursor was issued; call tools/list again without a cursor to restart enumeration',
+      );
+    }
+    offset = decoded.offset;
+  }
+
   const page = all.slice(offset, offset + pageSize);
-  const next = offset + pageSize < all.length ? encodeToolsListCursor(offset + pageSize) : undefined;
+  const next = offset + pageSize < all.length
+    ? encodeToolsListCursor(offset + pageSize, catalogFingerprint)
+    : undefined;
   return jsonRpcResult(id, next ? { tools: page, nextCursor: next } : { tools: page });
 }
 

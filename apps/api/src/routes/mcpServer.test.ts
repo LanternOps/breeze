@@ -1771,6 +1771,148 @@ describe('MCP transport integration', () => {
   });
 
   // -------------------------------------------------------------------------
+  // #6407 — tools/list pagination cursor is bound to a per-principal catalog
+  // fingerprint (dormant unless MCP_TOOLS_LIST_PAGE_SIZE is set).
+  // -------------------------------------------------------------------------
+  describe('#6407: tools/list pagination cursor fingerprint', () => {
+    const originalPageSize = process.env.MCP_TOOLS_LIST_PAGE_SIZE;
+
+    afterEach(() => {
+      if (originalPageSize === undefined) delete process.env.MCP_TOOLS_LIST_PAGE_SIZE;
+      else process.env.MCP_TOOLS_LIST_PAGE_SIZE = originalPageSize;
+    });
+
+    it('paginates and a same-catalog cursor from page 1 walks to page 2', async () => {
+      delete process.env.IS_HOSTED;
+      process.env.MCP_TOOLS_LIST_PAGE_SIZE = '1';
+      setTestApiKey({ scopes: ['ai:read'] });
+      routeMocks.getToolDefinitions.mockReturnValue(
+        ['query_devices', 'get_backup_status'].map((name) => ({ name, description: '', input_schema: {} })),
+      );
+      routeMocks.getToolTier.mockReturnValue(1);
+
+      const page1Res = await mcpServerRoutes.request('/message', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+      });
+      const page1 = await page1Res.json();
+      expect(page1.result.tools.map((t: { name: string }) => t.name)).toEqual(['get_backup_status']);
+      expect(typeof page1.result.nextCursor).toBe('string');
+
+      const page2Res = await mcpServerRoutes.request('/message', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: { cursor: page1.result.nextCursor } }),
+      });
+      const page2 = await page2Res.json();
+      expect(page2.result.tools.map((t: { name: string }) => t.name)).toEqual(['query_devices']);
+      expect(page2.result.nextCursor).toBeUndefined();
+    });
+
+    it('rejects a page-1 cursor with a JSON-RPC error once the resolved catalog changes before page 2', async () => {
+      delete process.env.IS_HOSTED;
+      process.env.MCP_TOOLS_LIST_PAGE_SIZE = '1';
+      setTestApiKey({ scopes: ['ai:read'] });
+      routeMocks.getToolDefinitions.mockReturnValue(
+        ['query_devices', 'get_backup_status'].map((name) => ({ name, description: '', input_schema: {} })),
+      );
+      routeMocks.getToolTier.mockReturnValue(1);
+      routeMocks.resolveTenantTools.mockResolvedValue([]);
+
+      const page1Res = await mcpServerRoutes.request('/message', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+      });
+      const page1 = await page1Res.json();
+      const staleCursor = page1.result.nextCursor;
+      expect(typeof staleCursor).toBe('string');
+
+      // Catalog shifts between page 1 and page 2 — a tenant tool now resolves.
+      routeMocks.resolveTenantTools.mockResolvedValue([
+        makeTenantToolDescriptor({ qualifiedName: 'hudu__get_asset', tier: 1 }),
+      ]);
+
+      const page2Res = await mcpServerRoutes.request('/message', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: { cursor: staleCursor } }),
+      });
+      expect(page2Res.status).toBe(200);
+      const page2 = await page2Res.json();
+      expect(page2.error).toEqual({ code: -32602, message: expect.stringContaining('changed since this cursor was issued') });
+      expect(page2.result).toBeUndefined();
+    });
+
+    it('rejects a cursor issued to a different principal', async () => {
+      delete process.env.IS_HOSTED;
+      process.env.MCP_TOOLS_LIST_PAGE_SIZE = '1';
+      routeMocks.getToolDefinitions.mockReturnValue(
+        ['query_devices', 'get_backup_status'].map((name) => ({ name, description: '', input_schema: {} })),
+      );
+      routeMocks.getToolTier.mockReturnValue(1);
+      routeMocks.resolveTenantTools.mockResolvedValue([]);
+
+      setTestApiKey({ id: 'key-a', scopes: ['ai:read'] });
+      const page1Res = await mcpServerRoutes.request('/message', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+      });
+      const stolenCursor = (await page1Res.json()).result.nextCursor;
+
+      setTestApiKey({ id: 'key-b', scopes: ['ai:read'] });
+      const page2Res = await mcpServerRoutes.request('/message', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: { cursor: stolenCursor } }),
+      });
+      const page2 = await page2Res.json();
+      expect(page2.error?.code).toBe(-32602);
+      expect(page2.result).toBeUndefined();
+    });
+
+    it('rejects a well-formed but garbage cursor with -32602', async () => {
+      delete process.env.IS_HOSTED;
+      process.env.MCP_TOOLS_LIST_PAGE_SIZE = '1';
+      setTestApiKey({ scopes: ['ai:read'] });
+      routeMocks.getToolDefinitions.mockReturnValue([{ name: 'query_devices', description: '', input_schema: {} }]);
+      routeMocks.getToolTier.mockReturnValue(1);
+      routeMocks.resolveTenantTools.mockResolvedValue([]);
+
+      const res = await mcpServerRoutes.request('/message', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: { cursor: 'not-a-real-cursor' } }),
+      });
+      const body = await res.json();
+      expect(body.error).toEqual({ code: -32602, message: 'Invalid cursor' });
+    });
+
+    it('ignores any cursor and returns the full list when pagination is off (default)', async () => {
+      delete process.env.IS_HOSTED;
+      delete process.env.MCP_TOOLS_LIST_PAGE_SIZE;
+      setTestApiKey({ scopes: ['ai:read'] });
+      routeMocks.getToolDefinitions.mockReturnValue(
+        ['query_devices', 'get_backup_status'].map((name) => ({ name, description: '', input_schema: {} })),
+      );
+      routeMocks.getToolTier.mockReturnValue(1);
+      routeMocks.resolveTenantTools.mockResolvedValue([]);
+
+      const res = await mcpServerRoutes.request('/message', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: { cursor: 'garbage' } }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.result.tools.map((t: { name: string }) => t.name)).toEqual(['get_backup_status', 'query_devices']);
+      expect(body.result.nextCursor).toBeUndefined();
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Task 7 — wire-level integration test for MCP instructions + prompts.
   //
   // Earlier tasks added an `instructions` field on the `initialize` result, a
