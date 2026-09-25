@@ -17,15 +17,21 @@ describe('heartbeatSchema — Layer A tolerance', () => {
     expect(result.success).toBe(true);
   });
 
-  it('keeps a well-formed helperInstallIssue code and drops a malformed one (#6925)', () => {
+  it('keeps a well-formed helperInstallIssue code; a malformed one still reports an issue (#6925)', () => {
     const ok = heartbeatSchema.safeParse({ ...minimal, helperInstallIssue: 'awaiting_server_offer' });
     expect(ok.success).toBe(true);
     if (ok.success) expect(ok.data.helperInstallIssue).toBe('awaiting_server_offer');
 
+    const absent = heartbeatSchema.safeParse(minimal);
+    expect(absent.success).toBe(true);
+    if (absent.success) expect(absent.data.helperInstallIssue).toBeUndefined();
+
+    // Present but malformed must NOT collapse to "no issue": the route treats
+    // absence as healthy and would clear a real stored issue.
     for (const bad of ['x'.repeat(51), 'Has Spaces', '<script>', 42]) {
       const r = heartbeatSchema.safeParse({ ...minimal, helperInstallIssue: bad });
       expect(r.success).toBe(true);
-      if (r.success) expect(r.data.helperInstallIssue).toBeUndefined();
+      if (r.success) expect(r.data.helperInstallIssue).toBe('unrecognized');
     }
   });
 
