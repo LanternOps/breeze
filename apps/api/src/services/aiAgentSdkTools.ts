@@ -14,7 +14,7 @@ import { dbAccessContextFromAuth } from '../middleware/auth';
 import { db, withDbAccessContext, runOutsideDbContext } from '../db';
 import type { DbAccessContext } from '../db';
 import { eq } from 'drizzle-orm';
-import { executeTool, aiTools, getAllRegisteredToolNames, getToolAlwaysLoad, getToolSearchHint, type ExecuteToolOptions } from './aiTools';
+import { executeTool, enforceDeviceArgs, aiTools, getAllRegisteredToolNames, getToolAlwaysLoad, getToolSearchHint, type ExecuteToolOptions } from './aiTools';
 import { WORKSPACE_MCP_SHAPES } from './workspace/workspaceTools';
 import type { CaptureScope } from './artifacts/toolResultCapture';
 import type { ToolExecutionContext } from './toolExecutionContext';
@@ -94,6 +94,34 @@ const SECRET_ACTION_REFUSED_TEXT =
  * and the handler executes from it instead of reading the same rows again.
  * Absent for every other caller, and the handler must behave identically then.
  */
+
+/**
+ * Proposal-time device gate for a device-PINNED chat session (#6675).
+ *
+ * A Tier 2+ call is approved (and, for Tier 3, persisted as a durable intent)
+ * BEFORE `executeTool` runs its own `enforceDeviceArgs`. The durable Tier-3
+ * release rebuilds the requester's auth from the intent row without the pin
+ * (#7002), so a pinned session must be refused up front when it names a
+ * device outside its pin -- otherwise it could propose an action on a sibling
+ * device and have it run unpinned once approved. Runs the same declarative
+ * `deviceArgs` gate under the session's pinned `toolAuth`, in that auth's RLS
+ * context (the preToolUse callback runs outside any request DB context).
+ *
+ * Core tools only: extension tools are gated at execution. Device-less
+ * fan-out tools declare no `deviceArgs` and are not narrowed here (#7002).
+ */
+export async function enforceProposalDeviceArgs(
+  toolName: string,
+  input: Record<string, unknown>,
+  toolAuth: AuthContext,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const tool = aiTools.get(toolName);
+  if (!tool) return { ok: true };
+  return withDbAccessContext(dbAccessContextFromAuth(toolAuth), () =>
+    enforceDeviceArgs(tool, input, toolAuth),
+  );
+}
+
 export type PreToolUseCallback = (
   toolName: string,
   input: Record<string, unknown>,

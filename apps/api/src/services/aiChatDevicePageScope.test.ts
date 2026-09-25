@@ -89,6 +89,25 @@ describe('device-page chat tool auth (#6675)', () => {
     expect(toolAuth.accessibleOrgIds).toEqual([ORG]);
   });
 
+  // Tier 2+ calls are approved (Tier 3: persisted as a durable intent) before
+  // executeTool's gate runs, so the pinned session is refused at PROPOSAL time
+  // against the real tool registry (`set_agent_log_level` is Tier 2 and
+  // declares `deviceArgs: ['deviceId']`).
+  it('refuses to PROPOSE a Tier 2 action on a sibling device, allows the page device', async () => {
+    const { enforceProposalDeviceArgs } = await import('./aiAgentSdkTools');
+    const toolAuth = buildDeviceBoundSessionAuth(partnerAuth(), ORG, [PAGE_DEVICE]);
+
+    mockDeviceFound(SIBLING_DEVICE);
+    expect(
+      (await enforceProposalDeviceArgs('set_agent_log_level', { deviceId: SIBLING_DEVICE, level: 'debug' }, toolAuth)).ok,
+    ).toBe(false);
+
+    mockDeviceFound(PAGE_DEVICE);
+    expect(
+      await enforceProposalDeviceArgs('set_agent_log_level', { deviceId: PAGE_DEVICE, level: 'debug' }, toolAuth),
+    ).toEqual({ ok: true });
+  }, 60_000);
+
   it('control: without the device pin the same sibling IS reachable (the DB alone does not deny it)', async () => {
     const orgOnly = buildDeviceBoundSessionAuth(partnerAuth(), ORG);
     mockDeviceFound(SIBLING_DEVICE);

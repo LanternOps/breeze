@@ -26,7 +26,7 @@ import { ensureLaneCheckpointBeforeRelease } from './actionIntents/laneCheckpoin
 import { checkBudget, checkAiRateLimit } from './aiCostTracker';
 import { sanitizeUserMessage, sanitizePageContext } from './aiInputSanitizer';
 import { getSession, buildSystemPrompt, resolvePageContextDeviceScope, waitForApproval } from './aiAgent';
-import { TOOL_TIERS, type PreToolUseCallback, type PostToolUseCallback } from './aiAgentSdkTools';
+import { TOOL_TIERS, enforceProposalDeviceArgs, type PreToolUseCallback, type PostToolUseCallback } from './aiAgentSdkTools';
 import { isAllowedForSession, stripMcpPrefix } from './mcpToolNames';
 import {
   resolveScriptRunContextForApproval,
@@ -834,6 +834,22 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
     } catch (err) {
       console.error('[AI-SDK] Tool rate limit check failed for:', toolName, err);
       return { allowed: false, error: 'Unable to verify rate limits. Please try again.' };
+    }
+
+    // #6675: a device-pinned session (device page, or device-bound) may not
+    // PROPOSE a Tier 2+ action on a device outside its pin. Approval -- and a
+    // Tier-3 durable intent -- happen before executeTool's own device gate,
+    // and the durable release runs without the pin (#7002). Tier 1 executes
+    // immediately under the pinned toolAuth, so it needs no extra check.
+    if (!tenant && guardrailCheck.tier >= 2 && session.toolAuth?.allowedDeviceIds) {
+      try {
+        const gate = await enforceProposalDeviceArgs(toolName, input, session.toolAuth);
+        if (!gate.ok) return { allowed: false, error: gate.error };
+      } catch (err) {
+        console.error('[AI-SDK] Device-pin check failed for tool:', toolName, err);
+        captureException(err, undefined, { service: 'aiAgentSdk', orgId: session.orgId });
+        return { allowed: false, error: 'Unable to verify device access. Please try again.' };
+      }
     }
 
     // Tier 2+: Requires user approval (mutating and destructive tools)

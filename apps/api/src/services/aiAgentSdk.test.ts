@@ -63,6 +63,7 @@ vi.mock('drizzle-orm', async (importOriginal) => ({
 const mockGetSession = vi.fn();
 const mockBuildSystemPrompt = vi.fn();
 const mockResolvePageContextDeviceScope = vi.fn();
+const mockEnforceProposalDeviceArgs = vi.fn();
 vi.mock('./aiAgent', () => ({
   getSession: (...args: unknown[]) => mockGetSession(...args),
   buildSystemPrompt: (...args: unknown[]) => mockBuildSystemPrompt(...args),
@@ -127,6 +128,7 @@ vi.mock('./aiAgentSdkTools', () => ({
     run_script: 3,
   },
   BREEZE_MCP_TOOL_NAMES: [],
+  enforceProposalDeviceArgs: (...args: unknown[]) => mockEnforceProposalDeviceArgs(...args),
 }));
 
 const mockGetUserPushTokens = vi.fn();
@@ -809,6 +811,40 @@ describe('createSessionPreToolUse', () => {
       status: 'executing',
     }));
     expect(waitForApproval).not.toHaveBeenCalled();
+  });
+
+  // #6675: a device-pinned session (device page / device-bound) must not even
+  // PROPOSE a Tier 2+ action on a device outside its pin — the durable Tier-3
+  // release rebuilds auth without the pin (#7002), so this is the gate.
+  it('refuses a Tier 2+ proposal on a device outside the session device pin (#6675)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true, tier: 3, requiresApproval: true, description: 'Run script',
+    } as any);
+    mockEnforceProposalDeviceArgs.mockResolvedValue({ ok: false, error: 'Device not found or access denied' });
+    const pinnedToolAuth = { ...makeAuth({ scope: 'organization' }), allowedDeviceIds: ['page-device'] };
+    const session = makeActiveSession({ toolAuth: pinnedToolAuth });
+
+    const result = await createSessionPreToolUse(session)('run_script', { deviceIds: ['sibling-device'] });
+
+    expect(result).toEqual({ allowed: false, error: 'Device not found or access denied' });
+    expect(mockEnforceProposalDeviceArgs).toHaveBeenCalledWith(
+      'run_script', { deviceIds: ['sibling-device'] }, pinnedToolAuth,
+    );
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(waitForApproval).not.toHaveBeenCalled();
+  });
+
+  it('does not run the proposal device gate for an unpinned session (#6675)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true, tier: 2, requiresApproval: false, description: 'Take screenshot',
+    } as any);
+    mockInsertValues();
+    const session = makeActiveSession({ approvalMode: 'auto_approve' });
+
+    const result = await createSessionPreToolUse(session)('take_screenshot', { deviceId: 'device-1' });
+
+    expect(result).toEqual({ allowed: true });
+    expect(mockEnforceProposalDeviceArgs).not.toHaveBeenCalled();
   });
 
   // #6476: the chat SESSION's org picks the per-tool rate-limit multiplier.
