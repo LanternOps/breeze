@@ -15,8 +15,10 @@
 -- COALESCE(ticket_number, internal_number), the same join predicate the old
 -- readers used (ticket org = invoice org, not soft-deleted) — so documents
 -- customers already received keep their label. Lines whose ticket did not join
--- printed no label and stay NULL. Batched (5000 rows per UPDATE) and counted;
--- idempotent — a re-run finds nothing left to stamp and reports nothing.
+-- printed no label and stay NULL. The UPDATE runs in 5000-row chunks, which
+-- bounds each statement's size only: autoMigrate wraps this file in ONE
+-- transaction, so every updated row stays locked until the file commits.
+-- Counted; idempotent — a re-run finds nothing left to stamp and reports nothing.
 
 -- Elect system scope BEFORE any tenant-row write: invoice_lines is FORCE ROW
 -- LEVEL SECURITY, and without this the UPDATE matches zero rows silently (#4518).
