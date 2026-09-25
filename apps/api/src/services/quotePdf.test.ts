@@ -988,13 +988,32 @@ describe('renderQuotePdf', () => {
         expect(pages[agreementPage]).not.toContain('Onboarding work');
       });
 
-      it('draws the uploaded-agreement marker and the T&C after the authored agreement', async () => {
-        const text = extractPdfText(await render());
-        const at = (needle: string) => text.indexOf(needle);
-        expect(at('Due on acceptance')).toBeLessThan(at('Agreement body clause.'));
-        expect(at('Agreement body clause.')).toBeLessThan(at('attached below'));
-        expect(at('attached below')).toBeLessThan(at('Standard conditions text.'));
-        expect(at('Closing note from the MSP.')).toBeLessThan(at('Standard conditions text.'));
+      // The uploaded agreement's pages are appended after the whole document,
+      // so its marker is a pointer that belongs with the proposal, not under
+      // another agreement's heading.
+      it('lists an uploaded agreement on the price page, after the closing terms', async () => {
+        const buf = await render();
+        const pages = pagesOf(buf);
+        expect(pageOf(pages, 'attached below')).toBe(pageOf(pages, 'Due on acceptance'));
+        const text = extractPdfText(buf);
+        expect(text.indexOf('Closing note from the MSP.')).toBeLessThan(text.indexOf('attached below'));
+      });
+
+      // T&C drawn on an agreement's last page read as part of that agreement.
+      it('starts the T&C on its own page after an authored agreement', async () => {
+        const pages = pagesOf(await render());
+        const termsPage = pageOf(pages, 'Standard conditions text.');
+        expect(termsPage).toBeGreaterThan(pageOf(pages, 'Agreement body clause.'));
+        expect(pages[termsPage]).not.toContain('Master Services Agreement');
+      });
+
+      it('keeps the T&C on the price page when there is no authored agreement', async () => {
+        const buf = await renderQuotePdf(
+          quote as never, blocks.filter((b) => b.id !== 'k1') as never, lines as never,
+          async () => null, {}, async () => null, contractRenderData as never,
+        );
+        const pages = pagesOf(buf);
+        expect(pageOf(pages, 'Standard conditions text.')).toBe(pageOf(pages, 'Due on acceptance'));
       });
 
       it('adds no page break when the only agreement is an uploaded one', async () => {

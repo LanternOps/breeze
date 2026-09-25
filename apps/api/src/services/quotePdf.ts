@@ -1074,43 +1074,63 @@ export async function renderQuotePdf(
   // contractRenderData[b.id] is pre-fetched by the route (Task 14's
   // loadContractPdfInputs) — never a DB read here, keeping the renderer pure.
   // A missing entry (render data load failed upstream, or an injected-empty Map
-  // in a caller that doesn't pass one) degrades to the uploaded-marker branch
-  // rather than throwing.
-  for (const b of sorted) {
-    if (b.blockType !== 'contract') continue;
-    const raw = b.content && typeof b.content === 'object' && !Array.isArray(b.content) ? (b.content as Record<string, unknown>) : {};
-    const label = typeof raw.label === 'string' && raw.label.trim() ? raw.label.trim() : undefined;
-    const data = contractRenderData.get(b.id);
-    const templateName = data?.templateName || 'Contract';
-    if (data?.html) {
-      // Authored: an agreement is its own document, so it opens a fresh page
-      // (the proposal and its price stay together ahead of it). Heading =
-      // template name unless a block-level label overrides it, then the
-      // substituted rich text via the same renderer/pagination discipline the
-      // rich_text block branch uses.
-      doc.addPage();
-      y = doc.page.margins.top;
-      doc.fillColor(primary).fontSize(9).font(fonts.heading.bold).text('AGREEMENT', c.left, y, { width: c.contentWidth, characterSpacing: 1.5 });
-      y = doc.y + 4;
-      doc.fillColor('#111827').fontSize(15).font(fonts.heading.bold).text(label ?? templateName, c.left, y, { width: c.contentWidth });
-      y = doc.y + 10;
-      const ensureRoom = (needed: number): number => {
-        y = ensureSpace(doc, doc.y, needed);
-        return y;
-      };
-      y = renderRichTextIntoPdf(doc, data.html, { x: c.left, width: c.contentWidth, startY: y, ensureRoom, fonts: fonts.body });
-    } else {
-      // Uploaded: pdfkit can't draw an existing PDF's pages (see pdfMerge.ts) —
-      // draw a one-line marker; the route appends the uploaded PDF's own pages
-      // after this document via mergeUploadedContractPdfs.
-      y = ensureSpace(doc, y + 14, 30);
-      doc.fillColor('#111827').fontSize(11).font(fonts.heading.bold).text(contractUploadedMarker(templateName), c.left, y, { width: c.contentWidth });
-      y = doc.y;
-    }
+  // in a caller that doesn't pass one) degrades to the uploaded marker rather
+  // than throwing.
+  const agreements = sorted
+    .filter((b) => b.blockType === 'contract')
+    .map((b) => {
+      const raw = b.content && typeof b.content === 'object' && !Array.isArray(b.content) ? (b.content as Record<string, unknown>) : {};
+      const label = typeof raw.label === 'string' && raw.label.trim() ? raw.label.trim() : undefined;
+      const data = contractRenderData.get(b.id);
+      return { label, templateName: data?.templateName || 'Contract', html: data?.html || null };
+    });
+
+  // Uploaded: pdfkit can't draw an existing PDF's pages (see pdfMerge.ts), and
+  // the route appends them after this whole document via
+  // mergeUploadedContractPdfs. The one-line marker is a pointer, so it closes
+  // the proposal here rather than sitting under another agreement's heading.
+  for (const a of agreements) {
+    if (a.html) continue;
+    y = ensureSpace(doc, y + 14, 30);
+    doc.fillColor('#111827').fontSize(11).font(fonts.heading.bold).text(contractUploadedMarker(a.templateName), c.left, y, { width: c.contentWidth });
+    y = doc.y;
+  }
+
+  // Authored: an agreement is its own document, so each opens a fresh page (the
+  // proposal and its price stay together ahead of it). Heading = template name
+  // unless a block-level label overrides it, then the substituted rich text via
+  // the same renderer/pagination discipline the rich_text block branch uses.
+  let onAgreementPage = false;
+  for (const a of agreements) {
+    if (!a.html) continue;
+    doc.addPage();
+    y = doc.page.margins.top;
+    doc.fillColor(primary).fontSize(9).font(fonts.heading.bold).text('AGREEMENT', c.left, y, { width: c.contentWidth, characterSpacing: 1.5 });
+    y = doc.y + 4;
+    doc.fillColor('#111827').fontSize(15).font(fonts.heading.bold).text(a.label ?? a.templateName, c.left, y, { width: c.contentWidth });
+    y = doc.y + 10;
+    const ensureRoom = (needed: number): number => {
+      y = ensureSpace(doc, doc.y, needed);
+      return y;
+    };
+    y = renderRichTextIntoPdf(doc, a.html, { x: c.left, width: c.contentWidth, startY: y, ensureRoom, fonts: fonts.body });
+    onAgreementPage = true;
   }
 
   // ---- Terms & Conditions --------------------------------------------------
-  if (quote.termsAndConditions) {
+  // After an authored agreement the T&C gets its own page — on the agreement's
+  // last page it would read as part of that agreement.
+  if (quote.termsAndConditions && onAgreementPage) {
+    // Its own page, headed like the agreement pages before it.
+    doc.addPage();
+    y = doc.page.margins.top;
+    doc.fillColor(primary).fontSize(9).font(fonts.heading.bold).text('TERMS', c.left, y, { width: c.contentWidth, characterSpacing: 1.5 });
+    y = doc.y + 4;
+    doc.fillColor('#111827').fontSize(15).font(fonts.heading.bold).text('Terms & Conditions', c.left, y, { width: c.contentWidth });
+    y = doc.y + 10;
+    doc.fillColor('#374151').fontSize(10).font(fonts.body.regular).text(quote.termsAndConditions, c.left, y, { width: c.contentWidth });
+    y = doc.y;
+  } else if (quote.termsAndConditions) {
     y = ensureSpace(doc, y + 14, 60);
     doc.fillColor('#9ca3af').fontSize(9).font(fonts.heading.bold).text('TERMS & CONDITIONS', c.left, y); y = doc.y + 4;
     doc.fillColor('#6b7280').fontSize(9).font(fonts.body.regular).text(quote.termsAndConditions, c.left, y, { width: c.contentWidth });

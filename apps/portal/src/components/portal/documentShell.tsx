@@ -6,6 +6,7 @@
 // staff preview and customer view match.
 import { markChipClass, type MarkTone } from './ui';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { flushSync } from 'react-dom';
 import { ChevronDown, FileText } from 'lucide-react';
 import { parseTermsSections, textReadMinutes as readMinutes } from '@breeze/shared';
 import { sellerLines } from '@/lib/sellerLines';
@@ -191,15 +192,18 @@ function useDeepLinkedDisclosure(id: string): [boolean, (open: boolean) => void]
     const syncHash = () => {
       if (window.location.hash === `#${id}`) setOpen(true);
     };
+    // flushSync: the browser snapshots the page for print as soon as
+    // beforeprint returns, and React would otherwise commit this update on a
+    // later task — printing every agreement collapsed.
     const beforePrint = () => {
       if (printingRef.current) return; // duplicate beforeprint must not overwrite the saved state
       printingRef.current = true;
       wasOpenRef.current = openRef.current;
-      setOpen(true);
+      flushSync(() => setOpen(true));
     };
     const afterPrint = () => {
       printingRef.current = false;
-      setOpen(wasOpenRef.current);
+      flushSync(() => setOpen(wasOpenRef.current));
     };
     const onLinkClick = (e: MouseEvent) => {
       const a = (e.target as Element | null)?.closest?.(`a[href="#${id}"]`);

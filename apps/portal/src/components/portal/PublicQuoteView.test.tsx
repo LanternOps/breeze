@@ -364,6 +364,22 @@ describe('PublicQuoteView — agreements come after the price (#7040)', () => {
     expect(rows.some((r) => r.open)).toBe(false);
   });
 
+  // The browser snapshots the page for print right after `beforeprint`
+  // returns. A plain dispatch (no act()) is how the browser fires it: React
+  // must have committed the open rows by the time the handler returns, not on
+  // a later task (fireEvent's act() wrapper would hide exactly that delay).
+  it('opens every row synchronously inside beforeprint', () => {
+    render(<PublicQuoteView token="public-token" initial={WITH_AGREEMENTS} />);
+    const rows = [
+      ...screen.getAllByTestId('contract-block'),
+      screen.getByTestId('public-quote-terms-conditions'),
+    ] as HTMLDetailsElement[];
+    window.dispatchEvent(new Event('beforeprint'));
+    expect(rows.map((r) => r.open)).toEqual([true, true, true]);
+    window.dispatchEvent(new Event('afterprint'));
+    expect(rows.map((r) => r.open)).toEqual([false, false, false]);
+  });
+
   it('keeps contract blocks out of the proposal body', () => {
     render(<PublicQuoteView token="public-token" initial={WITH_AGREEMENTS} />);
     const agreements = screen.getByTestId('public-quote-agreements');
