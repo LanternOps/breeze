@@ -31,12 +31,12 @@ const OTHER_ORG = '22222222-2222-4222-8222-222222222222';
 const SITE = '33333333-3333-4333-8333-333333333333';
 const REQ_ID = '44444444-4444-4444-8444-444444444444';
 
-function app(opts: { allowedSiteIds?: string[] } = {}) {
+function app(opts: { allowedSiteIds?: string[]; scope?: 'organization' | 'partner' } = {}) {
   const a = new Hono();
   a.use('*', async (c, next) => {
     c.set('auth', {
-      scope: 'organization',
-      orgId: ORG,
+      scope: opts.scope ?? 'organization',
+      orgId: opts.scope === 'partner' ? null : ORG,
       canAccessOrg: (id: string) => id === ORG,
       orgCondition: () => undefined,
       user: { id: 'u1' },
@@ -74,6 +74,20 @@ describe('GET /pam/elevation-audit/export (#4910)', () => {
     expect(mocks.fetchPage).not.toHaveBeenCalled();
   });
 
+  it('a partner or system caller must name one org; an org caller defaults to its own', async () => {
+    const res = await app({ scope: 'partner' }).request(`/pam/elevation-audit/export?${Q}`);
+    expect(res.status).toBe(400);
+    expect(mocks.fetchPage).not.toHaveBeenCalled();
+
+    const named = await app({ scope: 'partner' }).request(`/pam/elevation-audit/export?${Q}&orgId=${ORG}`);
+    expect(named.status).toBe(200);
+    expect(mocks.fetchPage.mock.calls[0]![0].filters.orgId).toBe(ORG);
+
+    const own = await app().request(`/pam/elevation-audit/export?${Q}`);
+    expect(own.status).toBe(200);
+    expect(mocks.fetchPage.mock.calls[1]![0].filters.orgId).toBe(ORG);
+  });
+
   it('400s a malformed cursor', async () => {
     const res = await app().request(`/pam/elevation-audit/export?${Q}&cursor=not-a-cursor`);
     expect(res.status).toBe(400);
@@ -90,11 +104,12 @@ describe('GET /pam/elevation-audit/export (#4910)', () => {
     expect(res.headers.get('content-type')).toContain('text/csv');
     expect(res.headers.get('cache-control')).toBe('no-store');
     expect(res.headers.get('x-next-cursor')).toBe('NEXT');
+    expect(res.headers.get('x-has-more')).toBe('true');
     expect(res.headers.get('x-row-count')).toBe('0');
     const input = mocks.fetchPage.mock.calls[0]![0];
     expect(input).toMatchObject({
       allowedSiteIds: [SITE],
-      after: { occurredAt: '2026-09-10 12:00:00.000001+00', id: REQ_ID },
+      after: { recordedAt: '2026-09-10 12:00:00.000001+00', id: REQ_ID },
       limit: 50,
       filters: { eventType: 'approved' },
     });

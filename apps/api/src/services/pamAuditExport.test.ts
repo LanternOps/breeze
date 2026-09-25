@@ -1,6 +1,10 @@
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  PAM_AUDIT_DETAIL_ALLOWLIST,
   PAM_AUDIT_EXPORT_COLUMNS,
+  PAM_AUDIT_WRITER_DETAIL_KEYS,
   decodeExportCursor,
   encodeExportCursor,
   projectAuditDetails,
@@ -19,7 +23,7 @@ function record(over: Partial<ExportRecord> = {}): ExportRecord {
 describe('export cursor (#4910)', () => {
   it('round-trips Postgres timestamptz text at full microsecond precision', () => {
     const ts = '2026-09-25 04:10:00.123456+00';
-    expect(decodeExportCursor(encodeExportCursor(ts, ID))).toEqual({ occurredAt: ts, id: ID });
+    expect(decodeExportCursor(encodeExportCursor(ts, ID))).toEqual({ recordedAt: ts, id: ID });
   });
 
   it('rejects anything that is not a timestamp|uuid pair', () => {
@@ -27,6 +31,34 @@ describe('export cursor (#4910)', () => {
       expect(decodeExportCursor(Buffer.from(raw, 'utf8').toString('base64url'))).toBeNull();
     }
     expect(decodeExportCursor('%%%not-base64%%%')).toBeNull();
+  });
+});
+
+describe('elevation_audit writer inventory (#4910)', () => {
+  const SRC = join(__dirname, '..');
+  function walk(dir: string): string[] {
+    return readdirSync(dir).flatMap((name) => {
+      const path = join(dir, name);
+      if (statSync(path).isDirectory()) return name === '__tests__' ? [] : walk(path);
+      return path.endsWith('.ts') && !path.endsWith('.test.ts') ? [path] : [];
+    });
+  }
+
+  it('every file that inserts into elevation_audit has its details keys inventoried (a new writer fails here until reviewed)', () => {
+    const writers = walk(SRC)
+      .filter((path) => readFileSync(path, 'utf8').includes('insert(elevationAudit)'))
+      .map((path) => relative(SRC, path).split('\\').join('/'))
+      .sort();
+    expect(writers).toEqual(Object.keys(PAM_AUDIT_WRITER_DETAIL_KEYS).sort());
+  });
+
+  it('the export allowlist is exactly the inventoried writer keys', () => {
+    expect([...PAM_AUDIT_DETAIL_ALLOWLIST].sort()).toEqual(
+      [...new Set(Object.values(PAM_AUDIT_WRITER_DETAIL_KEYS).flat())].sort(),
+    );
+    expect(PAM_AUDIT_DETAIL_ALLOWLIST).toEqual(
+      expect.arrayContaining(['assurance_level', 'factor', 'software_policy_id', 'matched_field', 'commandId', 'pamRuleId']),
+    );
   });
 });
 
