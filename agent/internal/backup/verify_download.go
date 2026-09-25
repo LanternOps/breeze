@@ -153,8 +153,11 @@ func downloadStallWindow() time.Duration { return downloadTimeoutFloor }
 // largest size seen so far, so a
 // provider that writes the destination without reporting is still seen as
 // progressing. File growth is sampled only when the window is about to
-// expire, so a transfer seen only that way fails at most two windows after
-// its last byte. A provider without providers.ContextDownloader (test fakes)
+// expire, and is credited at the file's modification time (clamped to the
+// interval since the previous sample), not at the moment it was sampled:
+// crediting the sample time pushed the deadline out by up to a whole window
+// after the last byte, so a stall took about two windows to detect (#6952).
+// A provider without providers.ContextDownloader (test fakes)
 // gets the plain, uncancellable Download, as in downloadWithDeadline.
 //
 // A stall is returned as a *downloadStallError (errors.Is errDownloadStalled).
@@ -186,6 +189,7 @@ func downloadWithStallTimeout(ctx context.Context, provider providers.BackupProv
 		// shrinks (re-created by a retry or by FallbackProvider's next
 		// candidate) and regrows to an old size delivered no new data.
 		maxSize := max(localFileSize(localPath), 0)
+		lastSample := time.Now()
 		timer := time.NewTimer(window)
 		defer timer.Stop()
 		for {
@@ -197,10 +201,22 @@ func downloadWithStallTimeout(ctx context.Context, provider providers.BackupProv
 			case <-timer.C:
 			}
 			now := time.Now()
-			if size := localFileSize(localPath); size > maxSize {
-				maxSize = size
-				lastProgress.Store(now.UnixNano())
+			if info, err := os.Stat(localPath); err == nil && info.Size() > maxSize {
+				maxSize = info.Size()
+				// The growth happened after the previous sample and no later
+				// than now. Credit it when the file was last written, not
+				// when it was noticed: noticing it up to a window late must
+				// not extend the deadline by that much (#6952).
+				at := info.ModTime()
+				if at.Before(lastSample) {
+					at = lastSample
+				}
+				if at.After(now) {
+					at = now
+				}
+				advanceProgress(&lastProgress, at.UnixNano())
 			}
+			lastSample = now
 			idle := now.Sub(time.Unix(0, lastProgress.Load()))
 			if idle >= window {
 				cancel(errDownloadStalled)
@@ -221,6 +237,17 @@ func downloadWithStallTimeout(ctx context.Context, provider providers.BackupProv
 		return &downloadStallError{window: window, received: got, err: err}
 	}
 	return err
+}
+
+// advanceProgress moves *last forward to at, never backward: the progress
+// callback may record a later byte concurrently with a file-growth sample.
+func advanceProgress(last *atomic.Int64, at int64) {
+	for {
+		cur := last.Load()
+		if at <= cur || last.CompareAndSwap(cur, at) {
+			return
+		}
+	}
 }
 
 // localFileSize returns the size of path, or -1 when it cannot be stat'ed.
