@@ -33,6 +33,19 @@ import {
   getActiveS1IntegrationForOrg,
 } from './sentinelOne/actions';
 import { isThreatAction } from '../jobs/s1Sync';
+import type { ToolExecutionContext } from './toolExecutionContext';
+
+/**
+ * #6911: `s1_isolate_device` and `s1_threat_action` are user-owned on release
+ * (`USER_OWNED_RELEASE_ACTIONS` in `jobs/intentReleaseWorker.ts`) — both
+ * write `auth.user.id` into `s1_actions.requested_by`, a `users` FK. Under
+ * the rebuilt agent auth that id is an `aiAgents.id`, so refuse rather than
+ * write a row whose owner the worker and this handler's auth disagree about.
+ * Mirrors `aiToolsFleet.ts`'s `approverReleaseMismatch`.
+ */
+function approverReleaseMismatch(auth: AuthContext, context: ToolExecutionContext | undefined): boolean {
+  return !!context?.approverRelease && context.approverRelease.approverUserId !== auth.user.id;
+}
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -341,7 +354,11 @@ export function registerSentinelOneTools(aiTools: Map<string, AiTool>): void {
         required: []
       }
     },
-    handler: async (input, auth) => {
+    handler: async (input, auth, context) => {
+      // #6911: user-owned on release — see approverReleaseMismatch.
+      if (approverReleaseMismatch(auth, context)) {
+        return JSON.stringify({ error: 'approver_auth_mismatch' });
+      }
       const orgResolution = resolveWritableToolOrgId(auth, input.orgId as string | undefined);
       if (orgResolution.error || !orgResolution.orgId) {
         return JSON.stringify({ error: orgResolution.error ?? 'orgId is required' });
@@ -408,7 +425,11 @@ export function registerSentinelOneTools(aiTools: Map<string, AiTool>): void {
         required: ['action', 'threatIds']
       }
     },
-    handler: async (input, auth) => {
+    handler: async (input, auth, context) => {
+      // #6911: user-owned on release — see approverReleaseMismatch.
+      if (approverReleaseMismatch(auth, context)) {
+        return JSON.stringify({ error: 'approver_auth_mismatch' });
+      }
       const orgResolution = resolveWritableToolOrgId(auth, input.orgId as string | undefined);
       if (orgResolution.error || !orgResolution.orgId) {
         return JSON.stringify({ error: orgResolution.error ?? 'orgId is required' });

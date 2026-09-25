@@ -32,8 +32,21 @@ import {
   resolveSiteAllowedDeviceIds,
   SITE_SCOPE_EMPTY_NOTE,
 } from './aiToolsSiteScope';
+import type { ToolExecutionContext } from './toolExecutionContext';
 
 type AiToolTier = 1 | 2 | 3 | 4;
+
+/**
+ * #6911: `manage_peripheral_policy:create` is user-owned on release
+ * (`USER_OWNED_RELEASE_ACTIONS` in `jobs/intentReleaseWorker.ts`) — it writes
+ * `auth.user.id` into `peripheral_policies.created_by`, a `users` FK. Under
+ * the rebuilt agent auth that id is an `aiAgents.id`, so refuse rather than
+ * write a row whose owner the worker and this handler's auth disagree about.
+ * Mirrors `aiToolsFleet.ts`'s `approverReleaseMismatch`.
+ */
+function approverReleaseMismatch(auth: AuthContext, context: ToolExecutionContext | undefined): boolean {
+  return !!context?.approverRelease && context.approverRelease.approverUserId !== auth.user.id;
+}
 
 function normalizePeripheralException(input: Record<string, unknown>): PeripheralExceptionRule {
   return {
@@ -238,7 +251,7 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
         required: ['action']
       }
     },
-    handler: async (input, auth) => {
+    handler: async (input, auth, context) => {
       if (!canMutateOrgWideGovernance(auth)) {
         return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
       }
@@ -343,6 +356,10 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
       };
 
       if (action === 'create') {
+        // #6911: user-owned on release — see approverReleaseMismatch.
+        if (approverReleaseMismatch(auth, context)) {
+          return JSON.stringify({ error: 'approver_auth_mismatch', action });
+        }
         const orgResolved = resolveWritableToolOrgId(
           auth,
           typeof input.org_id === 'string' ? input.org_id : undefined
