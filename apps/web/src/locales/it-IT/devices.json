@@ -1097,6 +1097,11 @@
   },
   "deviceInfoTab": {
     "updateOfferWithheld": "Le offerte di aggiornamento sono sospese per questo dispositivo (dal {{since}}): non è possibile confermare che la build del suo agente accetti l'edizione servita da questo server, quindi resta alla versione attuale. Ripristinalo con un programma di installazione dell'edizione servita o con una release dell'agente che segnali la propria edizione.",
+    "helperInstallIssue": {
+      "awaitingServerOffer": "Breeze Assist è abilitato ma non installato (dal {{since}}): il server non ha offerto una versione di Breeze Assist da installare su questo dispositivo, che quindi resta senza installazione. Verifica che sia pubblicata una build di Breeze Assist per la piattaforma di questo dispositivo.",
+      "installAbandoned": "Breeze Assist è abilitato ma non installato (dal {{since}}): l’installazione della versione offerta non è riuscita più volte, quindi l’agente ha sospeso i tentativi. Riproverà dopo alcune ore o quando verrà offerta una versione più recente; il log dell’agente contiene l’errore di installazione.",
+      "unknown": "Breeze Assist è abilitato ma non installato (dal {{since}})."
+    },
     "gpu": "GPU",
     "text": "—",
     "failedToFetchDeviceDetails": "Impossibile recuperare i dettagli del dispositivo",
@@ -1439,6 +1444,12 @@
     },
     "updateWithheld": "Aggiornamenti sospesi",
     "updateWithheldTooltip": "Il server non offre aggiornamenti a questo dispositivo perché non è possibile confermare che la build del suo agente accetti l'edizione servita. Resta alla versione attuale fino al ripristino.",
+    "helperNotInstalled": "Non installato",
+    "helperInstallIssueTooltip": {
+      "awaitingServerOffer": "Breeze Assist è abilitato ma non installato: il server non ha offerto alcuna versione di Breeze Assist da installare su questo dispositivo.",
+      "installAbandoned": "Breeze Assist è abilitato ma non installato: l’installazione della versione offerta non è riuscita più volte e i tentativi sono sospesi.",
+      "unknown": "Breeze Assist è abilitato ma non installato."
+    },
     "agentVersionRelation": {
       "equalTooltip": "Corrisponde alla versione effettiva {{version}}",
       "aheadTooltip": "In anticipo rispetto al pin {{version}}",

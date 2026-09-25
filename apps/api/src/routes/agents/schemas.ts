@@ -190,6 +190,11 @@ export const heartbeatSchema = z.object({
   status: z.enum(['ok', 'warning', 'error']),
   agentVersion: z.string(),
   helperVersion: z.string().max(20).optional().catch(undefined),
+  // #6925 — Breeze Assist install problem the agent is stuck on (e.g.
+  // 'awaiting_server_offer'). Omitted when there is none. A short snake_case
+  // code; anything else is dropped rather than rejecting the heartbeat, so a
+  // newer agent's code or a malformed value never costs the whole beat.
+  helperInstallIssue: z.string().max(50).regex(/^[a-z][a-z0-9_]*$/).optional().catch(undefined),
   // Installed watchdog version, reported by the MAIN agent in its normal
   // heartbeat (#1802) so devices.watchdog_version stays fresh after a watchdog
   // recovers to monitoring — previously only watchdog FAILOVER heartbeats wrote

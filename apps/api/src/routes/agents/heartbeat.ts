@@ -937,6 +937,18 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     deviceUpdates.updateOfferWithheldSince = withholdReason ? new Date() : null;
   }
 
+  // #6925 — persist the agent's Breeze Assist install problem ("enabled but
+  // not installed, no server offer", or an abandoned install) so it shows on
+  // the device page and device list instead of one agent-side log line.
+  // Absent = no problem (the agent omits the field when healthy, and older
+  // agents never send it), so a stale value self-clears. Same state-change-only
+  // write as #6449 above: steady-state beats add no column write.
+  const helperInstallIssue = data.helperInstallIssue ?? null;
+  if ((device.helperInstallIssue ?? null) !== helperInstallIssue) {
+    deviceUpdates.helperInstallIssue = helperInstallIssue;
+    deviceUpdates.helperInstallIssueSince = helperInstallIssue ? new Date() : null;
+  }
+
   // #800 Layer C — recovery side. If the asymmetry detector previously
   // set mainAgentSilentSince (watchdog kept reporting while we went
   // dark), clear it now that the main agent is heartbeating again. No

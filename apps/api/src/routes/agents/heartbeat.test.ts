@@ -2303,6 +2303,80 @@ describe('POST /agents/:id/heartbeat — artifact-edition offer gate (#4072)', (
     });
   });
 
+  describe('persisted Breeze Assist install issue (#6925)', () => {
+    function primeWithRow(row: Record<string, unknown>) {
+      selectMock.mockReturnValueOnce(selectChainResolving([{ ...agentDeviceRow, ...row }]));
+      selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
+    }
+    function captureSet() {
+      const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+      updateMock.mockReturnValue({ set: setSpy });
+      return setSpy;
+    }
+    const setCalls = (spy: ReturnType<typeof captureSet>) =>
+      spy.mock.calls.map((c) => (c as unknown[])[0] as Record<string, unknown>);
+
+    it('stamps issue + since when the agent first reports it is waiting for a helper offer', async () => {
+      const setSpy = captureSet();
+      primeWithRow({ helperInstallIssue: null, helperInstallIssueSince: null });
+
+      expect((await beat({ helperInstallIssue: 'awaiting_server_offer' })).status).toBe(200);
+      const stamped = setCalls(setSpy).find((s) => 'helperInstallIssue' in s);
+      expect(stamped?.helperInstallIssue).toBe('awaiting_server_offer');
+      expect(stamped?.helperInstallIssueSince).toBeInstanceOf(Date);
+    });
+
+    it('does NOT rewrite the columns while the reported issue is unchanged', async () => {
+      const setSpy = captureSet();
+      primeWithRow({
+        helperInstallIssue: 'awaiting_server_offer',
+        helperInstallIssueSince: new Date('2026-10-01T00:00:00Z'),
+      });
+
+      expect((await beat({ helperInstallIssue: 'awaiting_server_offer' })).status).toBe(200);
+      for (const s of setCalls(setSpy)) {
+        expect(s).not.toHaveProperty('helperInstallIssue');
+        expect(s).not.toHaveProperty('helperInstallIssueSince');
+      }
+    });
+
+    it('restarts the episode when the issue changes (offer wait → install abandoned)', async () => {
+      const setSpy = captureSet();
+      primeWithRow({
+        helperInstallIssue: 'awaiting_server_offer',
+        helperInstallIssueSince: new Date('2026-10-01T00:00:00Z'),
+      });
+
+      await beat({ helperInstallIssue: 'install_abandoned' });
+      const changed = setCalls(setSpy).find((s) => 'helperInstallIssue' in s);
+      expect(changed?.helperInstallIssue).toBe('install_abandoned');
+      expect(changed?.helperInstallIssueSince).toBeInstanceOf(Date);
+    });
+
+    it('clears both columns when the agent stops reporting an issue', async () => {
+      const setSpy = captureSet();
+      primeWithRow({
+        helperInstallIssue: 'awaiting_server_offer',
+        helperInstallIssueSince: new Date('2026-10-01T00:00:00Z'),
+      });
+
+      expect((await beat()).status).toBe(200);
+      const cleared = setCalls(setSpy).find((s) => 'helperInstallIssue' in s);
+      expect(cleared?.helperInstallIssue).toBeNull();
+      expect(cleared?.helperInstallIssueSince).toBeNull();
+    });
+
+    it('writes nothing for a healthy device (or an agent too old to report the field)', async () => {
+      const setSpy = captureSet();
+      primeWithRow({ helperInstallIssue: null, helperInstallIssueSince: null });
+
+      expect((await beat()).status).toBe(200);
+      for (const s of setCalls(setSpy)) {
+        expect(s).not.toHaveProperty('helperInstallIssue');
+      }
+    });
+  });
+
   describe('watchdog failover branch', () => {
     const sixteenMinutesAgo = new Date(Date.now() - 16 * 60 * 1000);
 

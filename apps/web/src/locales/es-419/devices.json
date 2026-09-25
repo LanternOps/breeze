@@ -1097,6 +1097,11 @@
   },
   "deviceInfoTab": {
     "updateOfferWithheld": "Las ofertas de actualización están retenidas para este dispositivo (desde {{since}}): no se puede confirmar que la compilación de su agente acepte la edición que sirve este servidor, por lo que permanece en su versión actual. Recupérelo con un instalador de la edición servida o con una versión del agente que informe su edición.",
+    "helperInstallIssue": {
+      "awaitingServerOffer": "Breeze Assist está habilitado pero no instalado (desde {{since}}): el servidor no ha ofrecido una versión de Breeze Assist para instalar en este dispositivo, así que sigue sin instalarse. Verifica que haya una compilación de Breeze Assist publicada para la plataforma de este dispositivo.",
+      "installAbandoned": "Breeze Assist está habilitado pero no instalado (desde {{since}}): la instalación de la versión ofrecida falló repetidamente, así que el agente pausó los reintentos. Volverá a intentarlo en unas horas o cuando se ofrezca una versión más reciente; el registro del agente contiene el error de instalación.",
+      "unknown": "Breeze Assist está habilitado pero no instalado (desde {{since}})."
+    },
     "gpu": "GPU",
     "text": "—",
     "failedToFetchDeviceDetails": "No se pudieron recuperar los detalles del dispositivo",
@@ -1439,6 +1444,12 @@
     },
     "updateWithheld": "Actualizaciones retenidas",
     "updateWithheldTooltip": "El servidor no ofrece actualizaciones a este dispositivo porque no se puede confirmar que la compilación de su agente acepte la edición servida. Permanece en su versión actual hasta que se recupere.",
+    "helperNotInstalled": "No instalado",
+    "helperInstallIssueTooltip": {
+      "awaitingServerOffer": "Breeze Assist está habilitado pero no instalado: el servidor no ha ofrecido ninguna versión de Breeze Assist para instalar en este dispositivo.",
+      "installAbandoned": "Breeze Assist está habilitado pero no instalado: la instalación de la versión ofrecida falló repetidamente y los reintentos están en pausa.",
+      "unknown": "Breeze Assist está habilitado pero no instalado."
+    },
     "agentVersionRelation": {
       "equalTooltip": "Coincide con la versión efectiva {{version}}",
       "aheadTooltip": "Por delante del pin {{version}}",

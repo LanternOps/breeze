@@ -1097,6 +1097,11 @@
   },
   "deviceInfoTab": {
     "updateOfferWithheld": "Update offers are withheld from this device (since {{since}}): its agent build cannot be confirmed to accept the edition this server serves, so it stays on its current version. Recover it with an installer of the served edition or an agent release that reports its edition.",
+    "helperInstallIssue": {
+      "awaitingServerOffer": "Breeze Assist is enabled but not installed (since {{since}}): the server has not offered a Breeze Assist version for this device to install, so it stays uninstalled. Check that a Breeze Assist build is published for this device's platform.",
+      "installAbandoned": "Breeze Assist is enabled but not installed (since {{since}}): installing the offered version failed repeatedly, so the agent paused retries. It tries again after a few hours or when a newer version is offered; the agent log has the install error.",
+      "unknown": "Breeze Assist is enabled but not installed (since {{since}})."
+    },
     "gpu": "GPU",
     "text": "—",
     "failedToFetchDeviceDetails": "Failed to fetch device details",
@@ -1439,6 +1444,12 @@
     },
     "updateWithheld": "Updates withheld",
     "updateWithheldTooltip": "The server is not offering updates to this device because its agent build cannot be confirmed to accept the served edition. It stays on its current version until recovered.",
+    "helperNotInstalled": "Not installed",
+    "helperInstallIssueTooltip": {
+      "awaitingServerOffer": "Breeze Assist is enabled but not installed: the server has offered no Breeze Assist version for this device to install.",
+      "installAbandoned": "Breeze Assist is enabled but not installed: installing the offered version failed repeatedly and retries are paused.",
+      "unknown": "Breeze Assist is enabled but not installed."
+    },
     "agentVersionRelation": {
       "equalTooltip": "Matches the effective version {{version}}",
       "aheadTooltip": "Ahead of pin {{version}}",

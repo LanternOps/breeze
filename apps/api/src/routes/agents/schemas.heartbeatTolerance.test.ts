@@ -17,6 +17,18 @@ describe('heartbeatSchema — Layer A tolerance', () => {
     expect(result.success).toBe(true);
   });
 
+  it('keeps a well-formed helperInstallIssue code and drops a malformed one (#6925)', () => {
+    const ok = heartbeatSchema.safeParse({ ...minimal, helperInstallIssue: 'awaiting_server_offer' });
+    expect(ok.success).toBe(true);
+    if (ok.success) expect(ok.data.helperInstallIssue).toBe('awaiting_server_offer');
+
+    for (const bad of ['x'.repeat(51), 'Has Spaces', '<script>', 42]) {
+      const r = heartbeatSchema.safeParse({ ...minimal, helperInstallIssue: bad });
+      expect(r.success).toBe(true);
+      if (r.success) expect(r.data.helperInstallIssue).toBeUndefined();
+    }
+  });
+
   it('drops malformed PAM reconciliation telemetry independently', () => {
     const result = heartbeatSchema.safeParse({
       ...minimal,
