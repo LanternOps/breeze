@@ -335,6 +335,7 @@
     "metricAnomalies": "Metrik Anomaliler",
     "anomalyDetectionIsDisabledForThis": "Bu kuruluş için anormallik algılama devre dışı bırakıldı.",
     "anomalyDetectionDisabled": "Anormallik algılama devre dışı",
+    "anomalyDetectionDisabledHint": "Bunu <orgLink>organizasyon ayarları</orgLink> → Yapay Zeka bölümünden açabilirsiniz.",
     "showingTheLinkedAnomalyAndRecent": "Bağlantılı anormalliği ve yakın zamandaki anormallik geçmişini gösterme",
     "openSignalsDetectedFromMetricRollups": "Metrik toplamalardan açık sinyaller algılandı",
     "refreshAnomalies": "Anormallikleri yenile",

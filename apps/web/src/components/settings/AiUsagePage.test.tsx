@@ -321,3 +321,55 @@ describe('AiUsagePage when effective settings cannot be read (#6004)', () => {
     expect(queryByTestId('ai-effective-budget')).toBeNull();
   });
 });
+
+describe('AiUsagePage fired-alert badge vs the current effective budget (sweep E8)', () => {
+  const EFFECTIVE_DEFAULTS = {
+    enabled: true,
+    monthlyBudgetCents: null,
+    dailyBudgetCents: null,
+    maxTurnsPerSession: 50,
+    messagesPerMinutePerUser: 20,
+    messagesPerHourPerOrg: 200,
+    approvalMode: 'per_step',
+    alertThresholdPercents: [50, 80, 95],
+  };
+
+  function usageWithFired(fired: Array<{ period: string; periodKey: string; thresholdPct: number; createdAt: string; deliveredAt: string | null }>) {
+    return { ...usageBody('platform'), alerts: { fired } };
+  }
+
+  function mockOrg(aiBudgets: Record<string, unknown>, fired: Array<{ period: string; periodKey: string; thresholdPct: number; createdAt: string; deliveredAt: string | null }>) {
+    fetchWithAuth.mockImplementation((url: string) => {
+      if (url === '/ai/usage') return Promise.resolve(jsonRes(usageWithFired(fired)));
+      if (url.startsWith('/ai/admin/sessions')) return Promise.resolve(jsonRes({ data: [] }));
+      if (url === '/orgs/organizations/org-1/effective-settings') {
+        return Promise.resolve(jsonRes({ effective: { aiBudgets }, locked: [] }));
+      }
+      return Promise.resolve(jsonRes({}));
+    });
+  }
+
+  const MONTHLY_80 = { period: 'monthly', periodKey: '2026-09', thresholdPct: 80, createdAt: '2026-09-24T00:00:00.000Z', deliveredAt: null };
+
+  beforeEach(() => { orgState.currentOrgId = 'org-1'; });
+  afterEach(() => { orgState.currentOrgId = null; });
+
+  it('hides a fired monthly badge once the effective monthly budget reads "No limit"', async () => {
+    mockOrg(EFFECTIVE_DEFAULTS, [MONTHLY_80]);
+    const { findByTestId, queryByTestId } = renderPage();
+
+    // Wait for the effective-budget panel (confirms the "No limit" fetch
+    // resolved) before asserting the badge is gone — otherwise this could
+    // pass on the pre-fix render before effectiveBudget ever loads.
+    await findByTestId('ai-effective-budget-value-monthlyBudgetCents');
+    expect(queryByTestId('ai-budget-fired-rungs')).toBeNull();
+  });
+
+  it('still shows a fired monthly badge when the effective monthly budget is set', async () => {
+    mockOrg({ ...EFFECTIVE_DEFAULTS, monthlyBudgetCents: 9900 }, [MONTHLY_80]);
+    const { findByTestId } = renderPage();
+
+    const badge = await findByTestId('ai-budget-fired-rungs');
+    expect(badge.textContent).toContain('80% monthly alert sent');
+  });
+});

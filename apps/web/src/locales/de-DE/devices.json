@@ -335,6 +335,7 @@
     "metricAnomalies": "Metrische Anomalien",
     "anomalyDetectionIsDisabledForThis": "Die Anomalieerkennung ist für diese Organisation deaktiviert.",
     "anomalyDetectionDisabled": "Anomalieerkennung deaktiviert",
+    "anomalyDetectionDisabledHint": "Aktiviere sie in den <orgLink>Organisationseinstellungen</orgLink> → KI.",
     "showingTheLinkedAnomalyAndRecent": "Zeigt die verknüpfte Anomalie und den aktuellen Anomalieverlauf an",
     "openSignalsDetectedFromMetricRollups": "Aus Metrik-Rollups erkannte offene Signale",
     "refreshAnomalies": "Anomalien aktualisieren",

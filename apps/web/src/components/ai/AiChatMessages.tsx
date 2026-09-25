@@ -344,10 +344,20 @@ export default function AiChatMessages({
               </p>
             );
           }
+          // sweep E6: the completed card renders through the SAME
+          // aiToolLabel() as its tool_use sibling and as history replay, but
+          // that needs `input` (specifically `input.action`) to tell a read
+          // from a write — pull it from the matching tool_use row rather
+          // than leaving it undefined, which always fell back to the tool
+          // name's own verb ("Updated alerts" for a read-only lookup).
+          const matchingToolUse = messages.find(
+            (m) => m.role === "tool_use" && m.toolUseId === msg.toolUseId,
+          );
           return (
             <AiToolCallCard
               key={msg.id}
               toolName={msg.toolName ?? t("aiChatMessages.toolResult")}
+              input={matchingToolUse?.toolInput}
               output={msg.toolOutput ?? msg.content}
               isError={msg.isError}
               handoff={msg.handoff}

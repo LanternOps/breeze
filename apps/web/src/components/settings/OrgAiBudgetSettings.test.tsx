@@ -314,4 +314,36 @@ describe('OrgAiBudgetSettings — per-tool rate-limit multiplier (#6476)', () =>
     expect(input.value).toBe('2');
     expect(getByTestId('org-ai-budget-locked-toolRateLimitMultiplier').textContent).toContain('Managed by partner');
   });
+
+  it('highlights the field and shows its readable message on an out-of-range 400 (sweep E2)', async () => {
+    fetchWithAuth.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/orgs/organizations/org-1/effective-settings' && !init) {
+        return Promise.resolve(jsonRes({ effective: { aiBudgets: { ...DEFAULT_BUDGET, toolRateLimitMultiplier: 1 } }, locked: [] }));
+      }
+      return Promise.resolve(jsonRes({
+        error: 'toolRateLimitMultiplier: Too big: expected number to be <=10',
+        details: {
+          formErrors: [],
+          fieldErrors: { toolRateLimitMultiplier: ['Too big: expected number to be <=10'] },
+        },
+      }, 400));
+    });
+    const { findByTestId, getByTestId } = renderTab();
+
+    const input = (await findByTestId('org-ai-budget-tool-rate-limit-multiplier')) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '15' } });
+    fireEvent.click(getByTestId('org-ai-budget-save'));
+
+    // The field itself is marked invalid and carries its own readable text —
+    // not the raw `toolRateLimitMultiplier: …` key.
+    await waitFor(() => expect(input.getAttribute('aria-invalid')).toBe('true'));
+    expect(input.className).toContain('border-destructive');
+    expect(getByTestId('org-ai-budget-error-toolRateLimitMultiplier').textContent).toBe(
+      'Too big: expected number to be <=10',
+    );
+
+    // Editing the field again clears the highlight.
+    fireEvent.change(input, { target: { value: '5' } });
+    expect(input.getAttribute('aria-invalid')).toBeNull();
+  });
 });

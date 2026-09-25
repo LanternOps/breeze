@@ -688,8 +688,19 @@ export default function AiAgentsPage() {
 
       {live.length > 0 && (
         <>
-        <span id={allOrgsHintId} className="sr-only">{t('aiAgentsPage.allOrgsHint')}</span>
-        <span id={inertHintId} className="sr-only">{t('aiAgentsPage.inertBadge.hint')}</span>
+        {/* Sweep E7: these two sr-only nodes used to render unconditionally,
+            so a screen reader stepping through the page linearly (not by
+            following an individual badge's aria-describedby) hit "No
+            partner-wide baseline exists yet for this kind" right above the
+            very first row even when that row WAS the partner-wide baseline —
+            reading as a contradiction. Only emit each hint when some row in
+            the list actually references it. */}
+        {live.some((agent) => agent.allOrgs) && (
+          <span id={allOrgsHintId} className="sr-only">{t('aiAgentsPage.allOrgsHint')}</span>
+        )}
+        {live.some((agent) => !agent.allOrgs && agent.hasPartnerBaseline === false) && (
+          <span id={inertHintId} className="sr-only">{t('aiAgentsPage.inertBadge.hint')}</span>
+        )}
         <ul className="divide-y rounded-lg border" data-testid="ai-agents-list">
           {live.map((agent) => (
             <li

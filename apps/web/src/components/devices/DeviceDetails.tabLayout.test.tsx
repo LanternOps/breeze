@@ -9,6 +9,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import DeviceDetails from './DeviceDetails';
 import type { Device } from './DeviceList';
+import { useOrgStore } from '../../stores/orgStore';
 
 const fetchWithAuthMock = vi.hoisted(() => vi.fn());
 vi.mock('../../stores/auth', async (importOriginal) => {
@@ -51,16 +52,29 @@ const originalOffsetWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototyp
 const originalClientWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth');
 
 let counts: Record<string, number> | null;
+// Sweep E1: undefined ⇒ no org context / hook not exercised by a given test
+// (the default — matches every pre-existing test in this file, which never
+// set an org and so never called GET /config/ml-feature-flags at all).
+let mlAnomaliesEnabled: boolean | undefined;
 
 beforeEach(() => {
   window.location.hash = '';
   Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, value: 60 });
   Object.defineProperty(HTMLElement.prototype, 'clientWidth', { configurable: true, value: 4000 });
   counts = { alerts: 0, anomalies: 0, tickets: 0, operatorTasks: 0, monitoring: 0, compliance: 0 };
+  mlAnomaliesEnabled = undefined;
+  useOrgStore.setState({ currentOrgId: null });
   fetchWithAuthMock.mockImplementation((url: string) => {
     const href = String(url);
     if (href.includes('/tab-counts')) {
       return Promise.resolve(counts ? jsonResponse({ data: counts }) : notFound());
+    }
+    if (href.includes('/config/ml-feature-flags')) {
+      return Promise.resolve(jsonResponse({
+        mlFeatureFlags: {
+          'ml.anomalies.enabled': { flag: 'ml.anomalies.enabled', enabled: mlAnomaliesEnabled ?? true, defaultEnabled: true },
+        },
+      }));
     }
     return Promise.resolve(notFound());
   });
@@ -72,6 +86,7 @@ afterEach(() => {
   if (originalClientWidth) Object.defineProperty(HTMLElement.prototype, 'clientWidth', originalClientWidth);
   else delete (HTMLElement.prototype as any).clientWidth;
   window.location.hash = '';
+  useOrgStore.setState({ currentOrgId: null });
 });
 
 const visibleTabNames = () => screen.getAllByRole('tab').map((t) => t.textContent?.replace(/\d+$/, ''));
@@ -120,5 +135,33 @@ describe('DeviceDetails tab layout', () => {
     await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledWith(expect.stringContaining('/tab-counts')));
     expect(screen.getByRole('tab', { name: /overview/i })).toBeInTheDocument();
     expect(screen.queryByTestId('overflow-tabs-hidden-dot')).toBeNull();
+  });
+
+  // Sweep E1: a stale open metric_anomalies count (server-side, device-scoped)
+  // must not badge or promote Anomalies once detection is confirmed OFF for
+  // this org — the panel behind that badge would just say "disabled".
+  it('never badges or promotes Anomalies once org detection is confirmed off, even with open episodes counted', async () => {
+    counts = { alerts: 0, anomalies: 2, tickets: 0, operatorTasks: 0, monitoring: 0, compliance: 0 };
+    mlAnomaliesEnabled = false;
+    useOrgStore.setState({ currentOrgId: 'org-1' });
+    render(<DeviceDetails device={device} />);
+
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledWith(expect.stringContaining('/config/ml-feature-flags')));
+    // Not promoted into the primary row (an enabled org would show it there,
+    // badged "2" — see the sibling Tickets-promotion test above).
+    expect(screen.queryByRole('tab', { name: /anomalies/i })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /more/i }));
+    expect(screen.getByRole('menuitem', { name: /anomalies/i })).toHaveTextContent('Anomalies');
+    expect(screen.getByRole('menuitem', { name: /anomalies/i })).not.toHaveTextContent('Anomalies2');
+  });
+
+  it('still badges/promotes Anomalies normally when org detection is on', async () => {
+    counts = { alerts: 0, anomalies: 2, tickets: 0, operatorTasks: 0, monitoring: 0, compliance: 0 };
+    mlAnomaliesEnabled = true;
+    useOrgStore.setState({ currentOrgId: 'org-1' });
+    render(<DeviceDetails device={device} />);
+
+    const anomalies = await screen.findByRole('tab', { name: /anomalies/i });
+    expect(anomalies).toHaveTextContent('Anomalies2');
   });
 });

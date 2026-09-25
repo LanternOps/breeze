@@ -525,6 +525,55 @@ describe('execution-plane run events (spec §5.5)', () => {
   });
 });
 
+/**
+ * Sweep E6 — `tool_use_start`'s `input` is always `{}` (the SDK hasn't
+ * finished streaming the tool's real arguments at content_block_start).
+ * `tool_use_input` arrives once they're known and must patch the SAME
+ * message row in place, not append a new one — the label/verb computation
+ * (`aiToolLabel`) reads `toolInput` off that row.
+ */
+describe('tool_use_input backfills the tool_use row (sweep E6)', () => {
+  function run(events: Parameters<typeof processStreamEvent>[0][]) {
+    const state = makeState();
+    let patch: Partial<StreamableState> = {};
+    let current: string | null = null;
+    for (const ev of events) {
+      current = processStreamEvent(
+        ev,
+        (fn) => { patch = { ...patch, ...fn({ ...state, ...patch }) }; },
+        () => ({ ...state, ...patch }),
+        current,
+      );
+    }
+    return patch;
+  }
+
+  it('fills in the real input on the matching tool_use message, without adding a row', () => {
+    const patch = run([
+      { type: 'tool_use_start', toolUseId: 'tu-1', toolName: 'manage_alerts', input: {} },
+      { type: 'tool_use_input', toolUseId: 'tu-1', input: { action: 'list' } },
+    ]);
+
+    expect(patch.messages).toHaveLength(1);
+    expect(patch.messages?.[0]).toMatchObject({
+      role: 'tool_use',
+      toolUseId: 'tu-1',
+      toolInput: { action: 'list' },
+    });
+  });
+
+  it('does not touch an unrelated tool_use row', () => {
+    const patch = run([
+      { type: 'tool_use_start', toolUseId: 'tu-1', toolName: 'manage_alerts', input: {} },
+      { type: 'tool_use_start', toolUseId: 'tu-2', toolName: 'get_device_context', input: {} },
+      { type: 'tool_use_input', toolUseId: 'tu-1', input: { action: 'list' } },
+    ]);
+
+    const other = patch.messages?.find((m) => m.toolUseId === 'tu-2');
+    expect(other?.toolInput).toBeUndefined();
+  });
+});
+
 describe('processStreamEvent exhaustiveness', () => {
   it('has a default arm that type-errors on an unhandled event type', () => {
     // The switch had no `default:` before this wave, so an event type added to
