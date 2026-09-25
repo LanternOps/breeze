@@ -51,7 +51,22 @@ vi.mock('../db', () => ({
         where: (w: unknown) => {
           selectWheres.push(w);
           return { limit: () => Promise.resolve(selectResults.shift() ?? []) };
-        }
+        },
+        // getNotificationChannelWithConfig (services/notificationChannelConfig.ts,
+        // #6379) chains .leftJoin().where().orderBy().$dynamic().limit(1)
+        // instead of the bare .where().limit() the alert/org selects use above.
+        leftJoin: () => ({
+          where: (w: unknown) => {
+            selectWheres.push(w);
+            return {
+              orderBy: () => ({
+                $dynamic: () => ({
+                  limit: () => Promise.resolve(selectResults.shift() ?? [])
+                })
+              })
+            };
+          }
+        })
       })
     })),
     insert: vi.fn(() => ({

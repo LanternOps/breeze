@@ -104,13 +104,14 @@ async function seedAlertAndChannel() {
     })
     .returning({ id: alerts.id });
 
+  // `config` lives in notification_channel_configs now (#6379); this fixture
+  // never reads it back, so no config row is needed.
   const [channel] = await db
     .insert(notificationChannels)
     .values({
       orgId: org!.id,
       name: 'Send-identity fixture channel',
       type: 'email',
-      config: {},
     })
     .returning({ id: notificationChannels.id });
 

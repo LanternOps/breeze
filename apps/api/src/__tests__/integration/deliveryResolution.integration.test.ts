@@ -70,8 +70,11 @@ export async function seedFixture(): Promise<DeliveryFixture> {
     osType: 'windows', osVersion: '10.0', architecture: 'x64', agentVersion: '1.0.0',
   }).returning());
   created.devices.push(device!.id);
-  const [pc] = await sys(() => db.insert(notificationChannels).values({ orgId: null, partnerId: partner.id, name: 'Partner NOC', type: 'slack', config: { webhookUrl: 'https://hooks.slack.example/p' }, enabled: true }).returning());
-  const [oc] = await sys(() => db.insert(notificationChannels).values({ orgId: org.id, partnerId: null, name: 'Org email', type: 'slack', config: { webhookUrl: 'https://hooks.slack.example/o' }, enabled: true }).returning());
+  // `config` lives in notification_channel_configs now (#6379); every actual
+  // send in this file's dispatch tests is mocked out via capturedDispatch's
+  // queue spies, so no test ever reads the config value back.
+  const [pc] = await sys(() => db.insert(notificationChannels).values({ orgId: null, partnerId: partner.id, name: 'Partner NOC', type: 'slack', enabled: true }).returning());
+  const [oc] = await sys(() => db.insert(notificationChannels).values({ orgId: org.id, partnerId: null, name: 'Org email', type: 'slack', enabled: true }).returning());
   created.channels.push(pc!.id, oc!.id);
   return { partnerId: partner.id, orgId: org.id, siteId: site!.id, deviceId: device!.id, partnerChannel: pc!.id, orgChannel: oc!.id };
 }
@@ -187,7 +190,7 @@ describe('delivery resolution gate — dispatcher ⇄ resolver', () => {
     const f = await seedFixture();
     const attempts: Array<() => Promise<unknown>> = [
       () => db.insert(notificationChannels).values({ orgId: null, partnerId: f.partnerId,
-        name: 'Forbidden', type: 'slack', config: {}, enabled: true }).returning(),
+        name: 'Forbidden', type: 'slack', enabled: true }).returning(),
       () => db.insert(notificationRoutingRules).values({ orgId: null, partnerId: f.partnerId,
         name: 'Forbidden', priority: 10, conditions: {}, channelIds: [], enabled: true }).returning(),
       () => db.insert(escalationPolicies).values({ orgId: null, partnerId: f.partnerId,

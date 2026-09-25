@@ -10,7 +10,7 @@ import { Hono } from 'hono';
 // partnerWideAccess.ts is a dependency-free leaf and intentionally NOT mocked
 // (per CLAUDE.md / the repo's app-layer-gate testing convention).
 
-const { authRef, insertedRef, existingRowRef, updateSetRef } = vi.hoisted(() => ({
+const { authRef, insertedRef, insertedConfigRef, existingRowRef, updateSetRef, configTableMarker } = vi.hoisted(() => ({
   authRef: {
     current: {
       scope: 'organization' as string,
@@ -23,8 +23,15 @@ const { authRef, insertedRef, existingRowRef, updateSetRef } = vi.hoisted(() => 
     },
   },
   insertedRef: { current: undefined as Record<string, unknown> | undefined },
+  // notification_channel_configs (#6379) writes land here, separately from
+  // the notificationChannels row above — writeNotificationChannelConfig does
+  // its own db.insert(notificationChannelConfigs).values({channelId, config}).
+  insertedConfigRef: { current: undefined as Record<string, unknown> | undefined },
   existingRowRef: { current: undefined as Record<string, unknown> | undefined },
   updateSetRef: { current: undefined as Record<string, unknown> | undefined },
+  // Identity marker so the shared db mock can tell `db.insert(notificationChannels)`
+  // apart from `db.insert(notificationChannelConfigs)`.
+  configTableMarker: { __table: 'notification_channel_configs' },
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -63,6 +70,13 @@ vi.mock('../../db', () => {
     },
     from: () => builder,
     where: () => builder,
+    // getNotificationChannelWithConfig (services/notificationChannelConfig.ts)
+    // chains .leftJoin().orderBy().$dynamic() before the terminal .limit();
+    // the GET list route also chains .offset() after .limit().
+    leftJoin: () => builder,
+    orderBy: () => builder,
+    offset: () => builder,
+    $dynamic: () => builder,
     limit: () => Promise.resolve(existingRowRef.current ? [existingRowRef.current] : []),
     returning: () => {
       if (insertedRef.current) {
@@ -80,13 +94,28 @@ vi.mock('../../db', () => {
       return Promise.resolve([{ ...(existingRowRef.current ?? {}), ...(updateSetRef.current ?? {}) }]);
     },
   };
-  return {
-    db: {
-      insert: () => builder,
-      update: () => builder,
-      delete: () => ({ where: () => Promise.resolve(undefined) }),
-      select: () => builder,
+  // notification_channel_configs (#6379): a channel/config row commit
+  // together inside db.transaction, so db.insert(notificationChannelConfigs)
+  // must be distinguishable from db.insert(notificationChannels) — the
+  // config write never carries the channel's own fields.
+  const configBuilder: any = {
+    values: (vals: Record<string, unknown>) => {
+      insertedConfigRef.current = vals;
+      return configBuilder;
     },
+    onConflictDoUpdate: () => Promise.resolve(undefined),
+  };
+  const dbMock: any = {
+    insert: (table: unknown) => (table === configTableMarker ? configBuilder : builder),
+    update: () => builder,
+    delete: () => ({ where: () => Promise.resolve(undefined) }),
+    select: () => builder,
+    // Tests run the callback synchronously against the same mock — there is
+    // no real pool/connection here for tx to isolate.
+    transaction: (fn: (tx: unknown) => unknown) => fn(dbMock),
+  };
+  return {
+    db: dbMock,
     runOutsideDbContext: (fn: () => unknown) => fn(),
     withSystemDbAccessContext: (fn: () => unknown) => fn(),
     withDbAccessContext: (_ctx: unknown, fn: () => unknown) => fn(),
@@ -105,6 +134,7 @@ vi.mock('../../db/schema', () => ({
     updatedAt: { name: 'updated_at' },
     createdAt: { name: 'created_at' },
   },
+  notificationChannelConfigs: configTableMarker,
   organizations: { id: { name: 'id' }, partnerId: { name: 'partner_id' } },
   partners: { id: { name: 'id' }, settings: { name: 'settings' } },
   // Referenced (unused) by ./helpers' unrelated exports; not exercised here.
@@ -180,6 +210,7 @@ describe('notification channels — partner-wide gating (#2130)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     insertedRef.current = undefined;
+    insertedConfigRef.current = undefined;
     existingRowRef.current = undefined;
     updateSetRef.current = undefined;
   });
@@ -274,7 +305,7 @@ describe('notification channels — partner-wide gating (#2130)', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(updateSetRef.current?.config).toMatchObject({
+      expect(insertedConfigRef.current?.config).toMatchObject({
         url: 'https://replacement.example/notify',
         authToken: 'replacement-token',
         headers: { Authorization: 'replacement-header' },
@@ -309,7 +340,7 @@ describe('notification channels — partner-wide gating (#2130)', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(updateSetRef.current?.config).toMatchObject({
+      expect(insertedConfigRef.current?.config).toMatchObject({
         url: 'https://replacement.example/notify',
         authType: 'none',
         authToken: null,

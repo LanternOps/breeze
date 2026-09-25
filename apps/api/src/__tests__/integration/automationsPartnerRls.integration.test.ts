@@ -557,7 +557,9 @@ describe('executeAutomationRun — partner-wide child-row org attribution (#2133
           partnerId: partner.id,
           name: 'Runtime failure fixture',
           type: 'pagerduty',
-          config: { routingKey: 'not-used-by-automation-runtime' },
+          // `config` lives in notification_channel_configs now (#6379); this
+          // fixture never reads it back — the pagerduty branch of
+          // sendChannelNotification returns {success:false} regardless of config.
           enabled: true,
         })
         .returning({ id: notificationChannels.id }),

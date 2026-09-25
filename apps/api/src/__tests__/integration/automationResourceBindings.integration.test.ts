@@ -111,12 +111,13 @@ async function seedFixture() {
       },
     ]).returning({ id: scripts.id });
 
+  // `config` lives in notification_channel_configs now (#6379); this fixture
+  // never reads it back.
   const [orgChannelA] = await getTestDb().insert(notificationChannels).values({
     orgId: orgA1.id,
     partnerId: null,
     name: 'Org A notification channel',
     type: 'webhook',
-    config: { url: 'https://example.invalid/hook' },
   }).returning({ id: notificationChannels.id });
 
   return {

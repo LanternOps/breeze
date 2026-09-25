@@ -37,6 +37,9 @@ vi.mock('../db', () => {
       where: (predicate: SQL) => { predicates.push(predicate); return chain; },
       orderBy: () => chain,
       limit: () => chain,
+      // notificationChannels + notificationChannelConfigs reads (#6379) chain
+      // .leftJoin() right after .from().
+      leftJoin: () => chain,
       then: (resolve: (value: unknown) => unknown, reject?: (e: unknown) => unknown) =>
         Promise.resolve(selectQueue.shift() ?? []).then(resolve, reject)
     };

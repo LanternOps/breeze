@@ -128,12 +128,13 @@ async function seedPartnerChannel(partnerId: string): Promise<string> {
   const rows = await withDbAccessContext(partnerContext(partnerId, []), () =>
     db
       .insert(notificationChannels)
+      // `config` lives in notification_channel_configs now (#6379); this
+      // fixture only exercises id/ownership, never reads config back.
       .values({
         orgId: null,
         partnerId,
         name: 'Partner NOC Slack',
         type: 'slack',
-        config: { webhookUrl: 'https://hooks.slack.example/noc' },
         enabled: true,
       })
       .returning(),
@@ -153,7 +154,6 @@ const RAIL_CASES = [
         ...owner,
         name: 'Rail case channel',
         type: 'slack',
-        config: { webhookUrl: 'https://hooks.slack.example/x' },
         enabled: true,
       }).returning({ id: notificationChannels.id, orgId: notificationChannels.orgId, partnerId: notificationChannels.partnerId }),
     selectById: (id: string) =>
