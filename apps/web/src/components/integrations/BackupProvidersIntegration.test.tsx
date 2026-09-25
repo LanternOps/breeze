@@ -100,6 +100,13 @@ describe("BackupProvidersIntegration", () => {
     expect((screen.getByTestId("backup-add-password") as HTMLInputElement).type).toBe("text");
   });
 
+  it("D12: never lets the browser autofill the Cove username/password with the Breeze login", async () => {
+    render(<BackupProvidersIntegration />);
+    fireEvent.click(await screen.findByTestId("backup-providers-add"));
+    expect(screen.getByTestId("backup-add-username")).toHaveAttribute("autoComplete", "off");
+    expect(screen.getByTestId("backup-add-password")).toHaveAttribute("autoComplete", "new-password");
+  });
+
   it("shows the dedicated-user help text on the add form", async () => {
     render(<BackupProvidersIntegration />);
     fireEvent.click(await screen.findByTestId("backup-providers-add"));

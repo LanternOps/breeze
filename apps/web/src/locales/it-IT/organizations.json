@@ -97,6 +97,9 @@
     },
     "lifecycle": {
       "inaccessible": "Questa organizzazione è {{status}}, quindi i suoi dati in tempo reale non sono disponibili. Puoi comunque vederla nell'elenco delle organizzazioni.",
+      "unknownTitle": "Organizzazione",
+      "inaccessibleHistoryOnly": "Questa organizzazione è inattiva, quindi i suoi dati in tempo reale non sono disponibili. La cronologia dei report è comunque consultabile qui sotto.",
+      "genericStatusLabel": "inattiva",
       "backToList": "Torna alle organizzazioni"
     },
     "reportHistory": {

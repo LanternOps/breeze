@@ -162,6 +162,7 @@ export default function BackupProvidersIntegration() {
               <span className="text-xs text-muted-foreground">{t("backupProviders.usernameLabel")}</span>
               <input
                 data-testid="backup-add-username"
+                autoComplete="off"
                 value={form.username}
                 onChange={(e) => setForm((f) => ({ ...f, username: e.target.value }))}
                 className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm"
@@ -173,6 +174,7 @@ export default function BackupProvidersIntegration() {
                 <input
                   data-testid="backup-add-password"
                   type={showPassword ? "text" : "password"}
+                  autoComplete="new-password"
                   value={form.password}
                   onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
                   className="h-9 w-full rounded-md border bg-background px-2 text-sm"

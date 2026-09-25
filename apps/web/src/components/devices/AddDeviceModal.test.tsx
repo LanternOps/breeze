@@ -145,6 +145,15 @@ describe('AddDeviceModal', () => {
     expect(screen.queryByText('Add New Device')).toBeNull();
   });
 
+  it('D14: top-aligns and scrolls the backdrop so the Done button is always reachable', () => {
+    render(<AddDeviceModal isOpen onClose={vi.fn()} />);
+
+    const backdrop = document.querySelector('.dialog-backdrop');
+    expect(backdrop).not.toBeNull();
+    expect(backdrop).toHaveClass('items-start', 'overflow-y-auto');
+    expect(backdrop).not.toHaveClass('items-center');
+  });
+
   it('links to one public uninstall script and shows platform-specific verify commands', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
       new Response('abc123  uninstall.sh\n', {

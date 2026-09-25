@@ -131,6 +131,23 @@ const monitorFormSchema = z
     if (!condition.success) ctx.addIssue({ code: 'custom', path: ['condition'], message: 'Invalid condition' });
     const responses = monitorResponsesSchema.safeParse(value.responses);
     if (!responses.success) ctx.addIssue({ code: 'custom', path: ['responses'], message: 'Invalid responses' });
+    // D1: a `restart_service` response carries no service name of its own — it
+    // compiles to `auto_restart: true` on the delivered watch, which only ever
+    // targets the service named on the monitor's own `service`-kind condition
+    // (see automationActions.ts). Without this check the editor happily saves a
+    // restart response on a monitor with no service name at all (any non-service
+    // kind, or a service monitor whose name is still blank mid-edit), and at
+    // runtime automationRuntime.executeCommandAction reports it "succeeded" while
+    // doing nothing (~L1615). Block Save instead of shipping an inert action.
+    const hasRestartServiceResponse = value.responses.some(
+      (response) => (response as { kind?: unknown }).kind === 'restart_service',
+    );
+    const conditionServiceName = (value.condition as { serviceName?: unknown })?.serviceName;
+    const hasServiceName =
+      typeof conditionServiceName === 'string' && conditionServiceName.trim().length > 0;
+    if (hasRestartServiceResponse && !hasServiceName) {
+      ctx.addIssue({ code: 'custom', path: ['responses'], message: 'Restart service requires a service name' });
+    }
   });
 
 const DEFAULT_VALUES: MonitorFormValues = {

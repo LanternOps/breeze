@@ -281,11 +281,36 @@ describe('OrganizationRecordPage — lifecycle states', () => {
     expect(screen.queryByTestId('org-record-not-found')).toBeNull();
   });
 
-  it('falls back to not-found when a 404 has no matching lifecycle row', async () => {
+  it('falls back to not-found when a 404 has no matching lifecycle row and no report-history reach', async () => {
     seedStore([{ id: OTHER_ORG, name: 'Beta Legal' }], OTHER_ORG);
-    routeFetch({ [`/orgs/organizations/${RECORD_ORG}`]: () => json({ error: 'Organization not found' }, 404) });
+    routeFetch({
+      [`/orgs/organizations/${RECORD_ORG}`]: () => json({ error: 'Organization not found' }, 404),
+      '/reports?': () => json({ error: 'Access to this organization denied' }, 403),
+    });
     render(<OrganizationRecordPage orgId={RECORD_ORG} />);
     await waitFor(() => expect(screen.getByTestId('org-record-not-found')).toBeTruthy());
+  });
+
+  // #6850: a suspended (or churned) org is excluded from `GET
+  // /orgs/organizations` for partner scope BY DESIGN (computeAccessibleOrgIds
+  // only admits active/trial), so the org store never holds its row after a
+  // fresh page load — unlike this suite's other suspended-org test above,
+  // which seeds the store to stand in for a same-session cache hit. A reload
+  // starts with an empty store, and the record GET still 404s (the org is
+  // genuinely outside accessibleOrgIds), so the page must fall back to the
+  // report-history reach itself (#6771's already-granted read) rather than
+  // silently landing on "Organization not found".
+  it('renders read-only report history for a suspended org with no cached store row (#6850)', async () => {
+    seedStore([{ id: OTHER_ORG, name: 'Beta Legal' }], OTHER_ORG);
+    routeFetch({
+      [`/orgs/organizations/${RECORD_ORG}`]: () => json({ error: 'Organization not found' }, 404),
+      '/reports?': () => json({ data: [] }),
+      '/reports/runs?': () => json({ data: [] }),
+    });
+    render(<OrganizationRecordPage orgId={RECORD_ORG} />);
+    await waitFor(() => expect(screen.getByTestId('org-record-lifecycle')).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId('org-report-history')).toBeTruthy());
+    expect(screen.queryByTestId('org-record-not-found')).toBeNull();
   });
 
   it('renders read-only report history for a suspended org whose record 404s (#6771)', async () => {
