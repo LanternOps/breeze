@@ -46,7 +46,10 @@ describe('elevation_audit writer inventory (#4910)', () => {
 
   it('every file that inserts into elevation_audit has its details keys inventoried (a new writer fails here until reviewed)', () => {
     const writers = walk(SRC)
-      .filter((path) => readFileSync(path, 'utf8').includes('insert(elevationAudit)'))
+      .filter((path) => {
+        const text = readFileSync(path, 'utf8');
+        return text.includes('insert(elevationAudit)') || /INSERT\s+INTO\s+elevation_audit\b/i.test(text);
+      })
       .map((path) => relative(SRC, path).split('\\').join('/'))
       .sort();
     expect(writers).toEqual(Object.keys(PAM_AUDIT_WRITER_DETAIL_KEYS).sort());
@@ -57,7 +60,7 @@ describe('elevation_audit writer inventory (#4910)', () => {
       [...new Set(Object.values(PAM_AUDIT_WRITER_DETAIL_KEYS).flat())].sort(),
     );
     expect(PAM_AUDIT_DETAIL_ALLOWLIST).toEqual(
-      expect.arrayContaining(['assurance_level', 'factor', 'software_policy_id', 'matched_field', 'commandId', 'pamRuleId']),
+      expect.arrayContaining(['assurance_level', 'factor', 'software_policy_id', 'matched_field', 'commandId', 'pamRuleId', 'actuationId', 'generation']),
     );
   });
 });

@@ -10,6 +10,7 @@
 import './setup';
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
+import postgres from 'postgres';
 import { eq, inArray, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { devices, elevationAudit, elevationRequests, sites } from '../../db/schema';
@@ -178,6 +179,61 @@ describe('fetchElevationAuditExportPage (real Postgres, #4910)', () => {
     const late = await seedEvent(f.orgA, f.reqA1.id, '2026-09-15 12:05:00+00', {}, '2026-09-15 12:00:05+00');
     const resumed = await exportAll(f.orgA, { limit: 10, after: page1.after });
     expect(resumed.ids).toEqual([late]);
+  });
+
+  it('a writer transaction still open holds the walk before its start, so its row is not skipped when it commits', async () => {
+    const f = await fixture();
+    // A second connection as the SAME role as the API (breeze_app), holding an
+    // elevation_audit insert open, the way a slow request transaction would.
+    const writer = postgres(process.env.DATABASE_URL_APP ?? 'postgresql://breeze_app:breeze_test@localhost:5433/breeze_test', { max: 1 });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let inserted!: () => void;
+    const didInsert = new Promise<void>((resolve) => { inserted = resolve; });
+    let slowId = '';
+    const tx = writer.begin(async (sqlTx) => {
+      await sqlTx`SELECT set_config('breeze.scope', 'system', true)`;
+      const [row] = await sqlTx`
+        INSERT INTO elevation_audit (org_id, elevation_request_id, event_type, actor, details, occurred_at)
+        VALUES (${f.orgA}, ${f.reqA1.id}, 'approved', 'technician', '{}'::jsonb, now())
+        RETURNING id`;
+      slowId = String(row!.id);
+      inserted();
+      await held;
+    });
+    try {
+      await didInsert;
+      // A later, already-committed event: recorded after the open transaction began.
+      const fast = await withDbAccessContext(SYSTEM_CTX, async () => {
+        const [row] = await db
+          .insert(elevationAudit)
+          .values({ orgId: f.orgA, elevationRequestId: f.reqA1.id, eventType: 'approved', actor: 'technician', details: {}, occurredAt: new Date() })
+          .returning({ id: elevationAudit.id });
+        return row!.id;
+      });
+      const window = { from: new Date('2026-09-01T00:00:00Z'), to: new Date(Date.now() + 60_000) };
+      const page = (after: { recordedAt: string; id: string } | null) =>
+        withDbAccessContext(orgContext(f.orgA), () =>
+          fetchElevationAuditExportPage({
+            orgCondition: undefined, allowedSiteIds: undefined, filters: { ...window, orgId: f.orgA },
+            after, limit: 10, settleSeconds: 0,
+          }),
+        );
+
+      // Without the watermark this page would return `fast` and move the
+      // cursor past the open transaction's start, skipping `slow` for good.
+      const blocked = await page(null);
+      expect(blocked.records.map((r) => r.id)).not.toContain(fast);
+
+      release();
+      await tx;
+      const resumed = await page(blocked.nextCursor ? decodeExportCursor(blocked.nextCursor) : null);
+      expect(resumed.records.map((r) => r.id)).toEqual([slowId, fast]);
+    } finally {
+      release();
+      await tx.catch(() => undefined);
+      await writer.end();
+    }
   });
 
   it('rows inside the settle delay wait; resuming from the cursor picks them up once settled', async () => {
