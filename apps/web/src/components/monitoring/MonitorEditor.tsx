@@ -101,6 +101,10 @@ export interface MonitorFormValues {
 // for the business rules (delivery channels required, ai_triage needs an
 // agent, recurrence threshold/window set together); this schema only catches
 // shape errors early.
+// Marks the specific "restart service needs a name" zod issue so the error
+// rendering (below) can show it instead of the generic invalidResponses copy.
+const RESTART_SERVICE_NAME_ISSUE = 'restartServiceRequiresName';
+
 const monitorFormSchema = z
   .object({
     name: z.string().min(1),
@@ -146,7 +150,9 @@ const monitorFormSchema = z
     const hasServiceName =
       typeof conditionServiceName === 'string' && conditionServiceName.trim().length > 0;
     if (hasRestartServiceResponse && !hasServiceName) {
-      ctx.addIssue({ code: 'custom', path: ['responses'], message: 'Restart service requires a service name' });
+      // Sentinel picked up by the error rendering below (sweep F2) so the
+      // specific reason reaches the user instead of the generic fallback.
+      ctx.addIssue({ code: 'custom', path: ['responses'], message: RESTART_SERVICE_NAME_ISSUE });
     }
   });
 
@@ -851,7 +857,9 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
             <RestartResponseFields />
             {errors.responses && (
               <p role="alert" data-testid="monitor-editor-responses-error" className="text-sm text-destructive">
-                {t('monitoring:editor.errors.invalidResponses')}
+                {(errors.responses.root?.message ?? errors.responses.message) === RESTART_SERVICE_NAME_ISSUE
+                  ? t('monitoring:editor.errors.restartServiceRequiresName')
+                  : t('monitoring:editor.errors.invalidResponses')}
               </p>
             )}
           </section>

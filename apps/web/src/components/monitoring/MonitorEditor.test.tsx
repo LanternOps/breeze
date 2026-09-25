@@ -260,8 +260,9 @@ describe('MonitorEditor (#5289)', () => {
 
     fireEvent.submit(screen.getByTestId('monitor-editor-save').closest('form')!);
 
+    // sweep F2: the specific reason, not the generic "missing or out of range" fallback.
     expect(await screen.findByTestId('monitor-editor-responses-error')).toHaveTextContent(
-      'Some response settings are missing or out of range',
+      'Restart service requires a service name',
     );
     expect(
       fetchMock.mock.calls.some(([, init]) => ['POST', 'PATCH'].includes(String((init as RequestInit)?.method))),

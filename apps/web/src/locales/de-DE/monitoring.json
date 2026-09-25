@@ -106,7 +106,8 @@
       "test": "Test fehlgeschlagen",
       "generic": "Ein Fehler ist aufgetreten",
       "invalidCondition": "Einige Bedingungswerte fehlen oder liegen außerhalb des zulässigen Bereichs. Es wurde nichts gespeichert.",
-      "invalidResponses": "Einige Reaktionseinstellungen fehlen oder liegen außerhalb des zulässigen Bereichs. Es wurde nichts gespeichert."
+      "invalidResponses": "Einige Reaktionseinstellungen fehlen oder liegen außerhalb des zulässigen Bereichs. Es wurde nichts gespeichert.",
+      "restartServiceRequiresName": "Der Dienstneustart erfordert einen Dienstnamen."
     },
     "saved": "Monitor gespeichert",
     "deleted": "Monitor gelöscht",

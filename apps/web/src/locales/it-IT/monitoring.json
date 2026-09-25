@@ -106,7 +106,8 @@
       "test": "Prova fallita",
       "generic": "Qualcosa è andato storto",
       "invalidCondition": "Alcuni valori della condizione mancano o sono fuori intervallo. Non è stato salvato nulla.",
-      "invalidResponses": "Alcune impostazioni di risposta mancano o sono fuori intervallo. Non è stato salvato nulla."
+      "invalidResponses": "Alcune impostazioni di risposta mancano o sono fuori intervallo. Non è stato salvato nulla.",
+      "restartServiceRequiresName": "Il riavvio del servizio richiede un nome di servizio."
     },
     "saved": "Monitor salvato",
     "deleted": "Monitor eliminato",

@@ -106,7 +106,8 @@
       "test": "Test échoué",
       "generic": "Quelque chose a mal tourné",
       "invalidCondition": "Certaines valeurs de la condition sont manquantes ou hors limites. Rien n'a été enregistré.",
-      "invalidResponses": "Certains paramètres de réponse sont manquants ou hors limites. Rien n'a été enregistré."
+      "invalidResponses": "Certains paramètres de réponse sont manquants ou hors limites. Rien n'a été enregistré.",
+      "restartServiceRequiresName": "Le redémarrage du service nécessite un nom de service."
     },
     "saved": "Moniteur enregistré",
     "deleted": "Moniteur supprimé",

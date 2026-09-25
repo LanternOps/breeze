@@ -106,7 +106,8 @@
       "test": "Test failed",
       "generic": "Something went wrong",
       "invalidCondition": "Some condition values are missing or out of range. Nothing was saved.",
-      "invalidResponses": "Some response settings are missing or out of range. Nothing was saved."
+      "invalidResponses": "Some response settings are missing or out of range. Nothing was saved.",
+      "restartServiceRequiresName": "Restart service requires a service name."
     },
     "saved": "Monitor saved",
     "deleted": "Monitor deleted",

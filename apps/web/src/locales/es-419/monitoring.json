@@ -106,7 +106,8 @@
       "test": "Prueba fallida",
       "generic": "Algo salió mal",
       "invalidCondition": "Faltan valores de la condición o están fuera de rango. No se guardó nada.",
-      "invalidResponses": "Faltan ajustes de respuesta o están fuera de rango. No se guardó nada."
+      "invalidResponses": "Faltan ajustes de respuesta o están fuera de rango. No se guardó nada.",
+      "restartServiceRequiresName": "Reiniciar el servicio requiere un nombre de servicio."
     },
     "saved": "Monitor guardado",
     "deleted": "Monitor eliminado",

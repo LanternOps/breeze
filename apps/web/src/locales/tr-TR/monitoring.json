@@ -106,7 +106,8 @@
       "test": "Test başarısız oldu",
       "generic": "Bir şeyler ters gitti",
       "invalidCondition": "Bazı koşul değerleri eksik veya aralık dışında. Hiçbir şey kaydedilmedi.",
-      "invalidResponses": "Bazı yanıt ayarları eksik veya aralık dışında. Hiçbir şey kaydedilmedi."
+      "invalidResponses": "Bazı yanıt ayarları eksik veya aralık dışında. Hiçbir şey kaydedilmedi.",
+      "restartServiceRequiresName": "Hizmeti yeniden başlatmak bir hizmet adı gerektirir."
     },
     "saved": "Monitör kaydedildi",
     "deleted": "Monitör silindi",

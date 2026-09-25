@@ -106,7 +106,8 @@
       "test": "Teste falhou",
       "generic": "Algo deu errado",
       "invalidCondition": "Alguns valores da condição estão ausentes ou fora do intervalo. Nada foi salvo.",
-      "invalidResponses": "Algumas configurações de resposta estão ausentes ou fora do intervalo. Nada foi salvo."
+      "invalidResponses": "Algumas configurações de resposta estão ausentes ou fora do intervalo. Nada foi salvo.",
+      "restartServiceRequiresName": "Reiniciar o serviço exige um nome de serviço."
     },
     "saved": "Monitor salvo",
     "deleted": "Monitor excluído",
