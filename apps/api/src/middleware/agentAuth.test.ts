@@ -470,6 +470,63 @@ describe('agentAuthMiddleware - tenant-status gate', () => {
     expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
   });
 
+  // #6260 — the pam/reconciliation-bindings ingest route's per-device
+  // consumePamReconciliationRateLimit Redis round-trip ran inside the
+  // request-long wrap (same #1105 shape as elevation-requests above). The
+  // handler now opens its own org-scoped context after the limiter decides
+  // (routes/agents/pamReconciliation.ts), so the middleware must NOT open one
+  // for it. This is a TWO-segment action (`pam/reconciliation-bindings`),
+  // unlike the single-segment actions in SELF_MANAGED_DB_CONTEXT_ACTIONS.
+  it('skips the request-long org wrap for the self-managed pam-reconciliation-bindings route', async () => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+
+    const c = createContext({
+      token: VALID_TOKEN,
+      path: '/api/v1/agents/agent-1/pam/reconciliation-bindings',
+    });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
+  });
+
+  // Negative control for the anchoring: a same-named segment under an
+  // extension mount must still get the request-long wrap.
+  it('a crafted pam/reconciliation-bindings TAIL under an extension mount keeps the request DB context', async () => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+
+    const c = createContext({
+      token: VALID_TOKEN,
+      path: '/api/v1/ext/acme/agent/agent-1/agents/agent-1/pam/reconciliation-bindings',
+    });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledTimes(1);
+  });
+
+  // A single-segment `pam` action (no second segment) must still get the
+  // request-long wrap — only the exact two-segment `pam/reconciliation-bindings`
+  // shape opts out.
+  it('keeps the request-long org wrap for a bare `pam` single-segment path', async () => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/pam' });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledTimes(1);
+  });
+
   // Negative control for the anchoring: a same-named segment under an
   // extension mount must still get the request-long wrap.
   it('a crafted elevation-requests TAIL under an extension mount keeps the request DB context', async () => {
