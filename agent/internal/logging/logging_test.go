@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -198,5 +199,34 @@ func TestShippingHandlerShipsErrorText(t *testing.T) {
 	}
 	if strings.Contains(string(raw), "{}") {
 		t.Fatalf("shipped fields still contain an empty object: %s", raw)
+	}
+}
+
+// countingNilError's Error method is safe on a nil receiver and records that it
+// was called, so the test can prove errorText never invokes Error on a typed-nil
+// error (#6943: the old path relied on recovering a real nil-pointer fault).
+type countingNilError struct{}
+
+var countingNilErrorCalls atomic.Int32
+
+func (*countingNilError) Error() string {
+	countingNilErrorCalls.Add(1)
+	return "called"
+}
+
+func TestErrorTextNeverCallsErrorOnTypedNil(t *testing.T) {
+	countingNilErrorCalls.Store(0)
+	var typedNil *countingNilError
+	if got := errorText(typedNil); got != "<nil>" {
+		t.Fatalf("errorText(typed nil) = %q, want %q", got, "<nil>")
+	}
+	if n := countingNilErrorCalls.Load(); n != 0 {
+		t.Fatalf("Error() called %d times on a typed-nil error; want 0", n)
+	}
+	if got := errorText(errors.New("real")); got != "real" {
+		t.Fatalf("errorText(real) = %q, want %q", got, "real")
+	}
+	if got := errorText(nil); got != "<nil>" {
+		t.Fatalf("errorText(nil) = %q, want %q", got, "<nil>")
 	}
 }
