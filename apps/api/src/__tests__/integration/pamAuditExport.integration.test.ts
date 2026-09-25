@@ -290,6 +290,8 @@ describe('fetchElevationAuditExportPage (real Postgres, #4910)', () => {
     );
     expect(page.records.map((r) => r.id)).toEqual([settled]);
     expect(page.hasMore).toBe(false);
+    // A row in the window is still withheld: the window is NOT complete.
+    expect(page.windowComplete).toBe(false);
     expect(page.nextCursor).not.toBe('');
 
     // Time passes: the fresh row is now older than the settle delay.
@@ -329,6 +331,26 @@ describe('fetchElevationAuditExportPage (real Postgres, #4910)', () => {
     const atFrom = await seedEvent(f.orgA, f.reqA1.id, '2026-09-01 00:00:00+00');
     await seedEvent(f.orgA, f.reqA1.id, '2026-10-01 00:00:00+00');
     expect((await exportAll(f.orgA, { limit: 10 })).ids).toEqual([atFrom]);
+  });
+
+  it('a window wholly behind the watermark reports complete on its last page; one reaching past it does not', async () => {
+    const f = await fixture();
+    await seedEvent(f.orgA, f.reqA1.id, '2026-09-02 00:00:00+00');
+    const run = (to: Date) =>
+      withDbAccessContext(orgContext(f.orgA), () =>
+        fetchElevationAuditExportPage({
+          orgCondition: undefined, allowedSiteIds: undefined,
+          filters: { from: new Date('2026-09-01T00:00:00Z'), to, orgId: f.orgA }, after: null, limit: 10,
+        }),
+      );
+    const closed = await run(new Date('2026-09-03T00:00:00Z'));
+    expect(closed.hasMore).toBe(false);
+    expect(closed.windowComplete).toBe(true);
+    expect(closed.settledThrough).toMatch(/^\d{4}-\d{2}-\d{2} /);
+
+    const open = await run(new Date(Date.now() + 60_000));
+    expect(open.hasMore).toBe(false);
+    expect(open.windowComplete).toBe(false);
   });
 
   it('exports only allowlisted detail keys and the request context', async () => {

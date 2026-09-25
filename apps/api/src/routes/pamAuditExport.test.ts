@@ -52,7 +52,7 @@ const Q = 'from=2026-09-01T00:00:00Z&to=2026-09-25T00:00:00Z';
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.fetchPage.mockResolvedValue({ records: [], hasMore: false, nextCursor: '' });
+  mocks.fetchPage.mockResolvedValue({ records: [], hasMore: false, nextCursor: '', windowComplete: true, settledThrough: '2026-09-25 00:00:00+00' });
 });
 
 describe('GET /pam/elevation-audit/export (#4910)', () => {
@@ -95,7 +95,7 @@ describe('GET /pam/elevation-audit/export (#4910)', () => {
   });
 
   it('passes the decoded cursor, site allowlist and filters through, and returns CSV with paging headers', async () => {
-    mocks.fetchPage.mockResolvedValue({ records: [], hasMore: true, nextCursor: 'NEXT' });
+    mocks.fetchPage.mockResolvedValue({ records: [], hasMore: true, nextCursor: 'NEXT', windowComplete: false, settledThrough: '2026-09-25 00:00:00+00' });
     const cursor = encodeExportCursor('2026-09-10 12:00:00.000001+00', REQ_ID);
     const res = await app({ allowedSiteIds: [SITE] })
       .request(`/pam/elevation-audit/export?${Q}&limit=50&eventType=approved&cursor=${cursor}`);
@@ -105,6 +105,8 @@ describe('GET /pam/elevation-audit/export (#4910)', () => {
     expect(res.headers.get('cache-control')).toBe('no-store');
     expect(res.headers.get('x-next-cursor')).toBe('NEXT');
     expect(res.headers.get('x-has-more')).toBe('true');
+    expect(res.headers.get('x-window-complete')).toBe('false');
+    expect(res.headers.get('x-settled-through')).toBe('2026-09-25 00:00:00+00');
     expect(res.headers.get('x-row-count')).toBe('0');
     const input = mocks.fetchPage.mock.calls[0]![0];
     expect(input).toMatchObject({
@@ -126,7 +128,7 @@ describe('GET /pam/elevation-audit/export (#4910)', () => {
       orgId: ORG,
       action: 'pam.elevation_audit.export',
       resourceType: 'elevation_audit',
-      details: { format: 'jsonl', rowCount: 0, hasMore: false, continuation: false },
+      details: { format: 'jsonl', rowCount: 0, hasMore: false, windowComplete: true, continuation: false },
     });
     expect(event.details).not.toHaveProperty('records');
   });

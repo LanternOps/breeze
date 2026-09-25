@@ -20,8 +20,14 @@
  * transactions that can still commit a ledger row. It covers every writer
  * running as the same database role as the API (every elevation_audit writer
  * does); pg_stat_activity hides other roles' transaction times, and (a) is the
- * bound for those. `X-Next-Cursor` is always
- * the resume position, so a SIEM can tail the ledger by resuming later.
+ * bound for those.
+ *
+ * Paging contract: page again while `X-Has-More` is true. The window is fully
+ * exported only when `X-Window-Complete` is true; if it is false with
+ * `X-Has-More` false, rows in the window may still be withheld by the
+ * watermark (`X-Settled-Through`), so resume from `X-Next-Cursor` later.
+ * `X-Next-Cursor` is always the resume position, so a SIEM can also tail the
+ * ledger this way.
  *
  * Paged rather than streamed: a streamed body would outlive the request's
  * RLS transaction (authMiddleware → withDbAccessContext awaits the handler,
@@ -184,8 +190,16 @@ export interface ElevationAuditExportPageInput {
 
 export interface ElevationAuditExportPage {
   records: ExportRecord[];
-  /** More settled rows exist after this page. */
+  /** More settled rows exist after this page; page again now. */
   hasMore: boolean;
+  /**
+   * The window is fully exported: no settled row is left and `to` is behind
+   * the watermark. When false with hasMore false, rows may still be withheld;
+   * resume from nextCursor later.
+   */
+  windowComplete: boolean;
+  /** The watermark this page used (Postgres timestamptz text). */
+  settledThrough: string;
   /**
    * The resume position: the last row returned, or the incoming cursor when
    * the page is empty (empty string only when nothing has been returned yet).
@@ -218,24 +232,31 @@ export async function fetchElevationAuditExportPage(
   if (f.eventType) conditions.push(sql`${elevationAudit.eventType}::text = ${f.eventType}`);
   conditions.push(gte(elevationAudit.createdAt, f.from));
   conditions.push(lt(elevationAudit.createdAt, f.to));
-  // Watermark, on the database clock (see the module comment). `now()` is
-  // this transaction's start; the subquery excludes this session itself.
+  // Watermark, on the database clock (see the module comment), computed once
+  // so the page and the completion signal agree. `now()` is this
+  // transaction's start; the subquery excludes this session itself.
   const settleSeconds = input.settleSeconds ?? PAM_AUDIT_EXPORT_SETTLE_SECONDS;
-  conditions.push(sql`${elevationAudit.createdAt} < LEAST(
-    now() - make_interval(secs => ${settleSeconds}),
-    COALESCE(
-      (SELECT min(a.xact_start)
-         FROM pg_locks l
-         JOIN pg_stat_activity a ON a.pid = l.pid
-        WHERE l.locktype = 'relation'
-          AND l.relation = 'public.elevation_audit'::regclass
-          AND l.mode = 'RowExclusiveLock'
-          AND l.granted
-          AND a.backend_xid IS NOT NULL
-          AND l.pid <> pg_backend_pid()),
-      'infinity'::timestamptz
+  const [mark] = (await db.execute(sql`
+    WITH w AS (
+      SELECT LEAST(
+        now() - make_interval(secs => ${settleSeconds}),
+        COALESCE(
+          (SELECT min(a.xact_start)
+             FROM pg_locks l
+             JOIN pg_stat_activity a ON a.pid = l.pid
+            WHERE l.locktype = 'relation'
+              AND l.relation = 'public.elevation_audit'::regclass
+              AND l.mode = 'RowExclusiveLock'
+              AND l.granted
+              AND a.backend_xid IS NOT NULL
+              AND l.pid <> pg_backend_pid()),
+          'infinity'::timestamptz
+        )
+      ) AS t
     )
-  )`);
+    SELECT t::text AS watermark, ${f.to.toISOString()}::timestamptz <= t AS window_settled FROM w
+  `)) as unknown as Array<{ watermark: string; window_settled: boolean }>;
+  conditions.push(sql`${elevationAudit.createdAt} < ${mark!.watermark}::timestamptz`);
   if (input.after) {
     // Compare at full Postgres precision: the cursor carries the text form of
     // created_at, never a millisecond-rounded JS Date.
@@ -292,6 +313,10 @@ export async function fetchElevationAuditExportPage(
     .limit(input.limit + 1);
 
   const hasMore = rows.length > input.limit;
+  // Complete only when no settled row is left AND the whole window is behind
+  // the watermark; otherwise rows may still be withheld and the caller must
+  // resume from nextCursor later.
+  const windowComplete = !hasMore && mark!.window_settled === true;
   const page = hasMore ? rows.slice(0, input.limit) : rows;
   const last = page[page.length - 1];
   const nextCursor = last
@@ -339,7 +364,7 @@ export async function fetchElevationAuditExportPage(
     request_decided_via: r.decidedVia ?? null,
   }));
 
-  return { records, hasMore, nextCursor };
+  return { records, hasMore, nextCursor, windowComplete, settledThrough: mark!.watermark };
 }
 
 /**
