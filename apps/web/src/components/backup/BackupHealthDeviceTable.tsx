@@ -87,7 +87,9 @@ export default function BackupHealthDeviceTable({ rows }: { rows: BackupHealthRo
                   {row.source === 'breeze' ? t('backupHealth.sourceBreeze') : (row.providerLabel ?? row.providerKey)}
                 </span>
               </td>
-              <td className="py-2 pr-3 text-muted-foreground">{row.osType}</td>
+              <td className="py-2 pr-3 text-muted-foreground">
+                {t(/* i18n-dynamic */ `backupHealth.osType.${row.osType}`, { defaultValue: row.osType })}
+              </td>
               <td className="py-2 pr-3 text-muted-foreground">
                 {row.dataSources
                   .map((source) => t(/* i18n-dynamic */ `backupHealth.dataSource.${source}`, { defaultValue: source }))
