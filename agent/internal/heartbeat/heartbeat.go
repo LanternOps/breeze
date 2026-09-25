@@ -5058,26 +5058,11 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 		go h.reconcilePendingRotation()
 	}
 
-	// Handle helper upgrade if requested
-	if !rollbackActive && response.HelperUpgradeTo != "" {
-		installedHelper := h.helperMgr.InstalledVersion()
-		installedOnDisk := h.helperMgr.IsInstalled()
-		if allowed, reason := helperUpgradeAllowed(response.HelperUpgradeTo, installedHelper, installedOnDisk); !allowed {
-			// SECURITY: never auto-downgrade the helper. The signed manifest
-			// only binds manifest.Release == requested version, so a
-			// compromised/MITM'd control plane could replay an older,
-			// validly-signed, known-vulnerable helper release.
-			// installedOnDisk distinguishes a genuine downgrade directive from
-			// "binary present but its version unreadable" (#6252), which
-			// otherwise looks identical in the log.
-			log.Error("SECURITY: refusing server-directed helper update",
-				"installedVersion", installedHelper,
-				"installedOnDisk", installedOnDisk,
-				"targetVersion", response.HelperUpgradeTo,
-				"reason", reason)
-		} else {
-			h.helperMgr.CheckUpdate(response.HelperUpgradeTo)
-		}
+	// Handle helper upgrade if requested, or its withdrawal (#6927).
+	// Nil-checked here, not in applyHelperOffer: a nil *helper.Manager in the
+	// interface would not compare equal to nil there.
+	if !rollbackActive && h.helperMgr != nil {
+		applyHelperOffer(h.helperMgr, response.HelperUpgradeTo)
 	}
 
 	// Handle watchdog upgrade if requested. The server only sets
