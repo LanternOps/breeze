@@ -2,6 +2,7 @@ import './setup';
 
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
+import { eq } from 'drizzle-orm';
 
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import {
@@ -22,7 +23,9 @@ import { listBackupHealthRows, summarizeBackupHealth } from '../../services/back
 //   2. a site-restricted caller loses unlinked provider rows entirely;
 //   3. a device that is both first-party backed up and provider-linked yields
 //      two rows and ONE endpoint in the summary; the unlinked provider device
-//      counts as providerOnly; a device with no jobs is never dropped.
+//      counts as providerOnly; a device with no jobs is never dropped — but a
+//      provider-linked device with no jobs is represented by its provider row
+//      alone, not also by a `no_backups` placeholder (sweep D11).
 //
 // Everything above is a LEFT JOIN interacting with RLS, which a Drizzle mock
 // asserts the shape of but can never actually exercise.
@@ -203,6 +206,42 @@ describe('backupHealthReadModel against real policies', () => {
       const summary = await summarizeBackupHealth({ orgIds: [fx.org.id] });
       expect(summary.endpoints.total).toBe(2); // two devices, not three rows
       expect(summary.providerOnly).toBe(1); // the unlinked vendor endpoint
+    });
+  });
+
+  // D11 (sweep v0.116.0): a provider-linked device with NO first-party jobs
+  // must not also surface a Breeze-leg `no_backups` placeholder row — the
+  // provider row already represents it. Contrast with the dual-source test
+  // above, where the first-party job is real evidence and keeps its own row.
+  runDb('a provider-linked device without first-party jobs yields only its provider row', async () => {
+    const fx = await seedFixture();
+    await withSystemDbAccessContext(async () => {
+      const [connection] = await db
+        .select({ id: backupProviderDevices.connectionId, customerId: backupProviderDevices.customerId })
+        .from(backupProviderDevices)
+        .where(eq(backupProviderDevices.breezeDeviceId, fx.deviceOneId));
+      await db.insert(backupProviderDevices).values({
+        connectionId: connection!.id,
+        partnerId: fx.partner.id,
+        orgId: fx.org.id,
+        customerId: connection!.customerId,
+        provider: 'cove',
+        vendorDeviceId: `vd-linked-two-${randomUUID().slice(0, 8)}`,
+        vendorDeviceName: 'BH-RM-LINKED-TWO',
+        breezeDeviceId: fx.deviceTwoId,
+        status: 'completed',
+        lastSuccessAt: new Date(),
+        lastSessionAt: new Date(),
+      });
+    });
+    await withDbAccessContext(fx.partnerContext, async () => {
+      const { rows } = await listBackupHealthRows({ orgIds: [fx.org.id] }, { page: { limit: 50 } });
+      const forTwo = rows.filter((r) => r.deviceId === fx.deviceTwoId);
+      expect(forTwo).toHaveLength(1);
+      expect(forTwo[0]!.source).toBe('provider');
+      const summary = await summarizeBackupHealth({ orgIds: [fx.org.id] });
+      expect(summary.byStatus.no_backups).toBe(0);
+      expect(summary.endpoints.total).toBe(2);
     });
   });
 

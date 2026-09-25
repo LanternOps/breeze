@@ -250,27 +250,28 @@ describe('listBackupHealthRows — the all-devices contract', () => {
     expect(conditions).toContainEqual(expect.objectContaining({ op: 'ne', column: 'devices.status', value: 'decommissioned' }));
   });
 
-  // D11: a device linked to a provider device must not double-count. The
-  // Breeze leg's own SQL excludes it (notLinkedToProviderDevice below); the
-  // mocked DB here ignores WHERE conditions and always returns whatever is
-  // queued, so this test instead verifies the exclusion condition itself is
-  // present on the Breeze leg's query — the real Postgres WHERE clause is
-  // what actually keeps a linked device out of the fetched batch.
-  it('excludes a provider-linked device from the Breeze leg query', async () => {
-    queue([], [providerRow({ breezeDeviceId: DEVICE_1, deviceStatus: 'online', deviceSiteId: SITE_A })]);
-    await listBackupHealthRows({ orgIds: [ORG_A] }, { page: { limit: 10 }, now: NOW });
-    expect(flatConditions(whereArg(0))).toContainEqual(
-      expect.objectContaining({ op: 'sql' }),
-    );
+  it('emits TWO rows for a device that is both first-party backed up and provider-linked', async () => {
+    queue([breezeRow()], [providerRow({ breezeDeviceId: DEVICE_1, deviceStatus: 'online', deviceSiteId: SITE_A })]);
+    const { rows } = await listBackupHealthRows({ orgIds: [ORG_A] }, { page: { limit: 10 }, now: NOW });
+    expect(rows).toHaveLength(2);
+    expect(rows.filter((r) => r.deviceId === DEVICE_1)).toHaveLength(2);
   });
 
-  it('emits ONE row (the provider leg) for a device that is both first-party backed up and provider-linked, once the Breeze leg is filtered', async () => {
-    // Simulates what real Postgres does once notLinkedToProviderDevice excludes
-    // the linked device from the Breeze leg's result set.
-    queue([], [providerRow({ breezeDeviceId: DEVICE_1, deviceStatus: 'online', deviceSiteId: SITE_A })]);
-    const { rows } = await listBackupHealthRows({ orgIds: [ORG_A] }, { page: { limit: 10 }, now: NOW });
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ source: 'provider', deviceId: DEVICE_1 });
+  // D11: the mocked DB ignores WHERE, so pin the SQL shape here; the row-level
+  // behaviour (linked + no jobs => provider row only; linked + jobs => both
+  // rows) is proven against real Postgres in
+  // backupHealthReadModel.integration.test.ts.
+  it('drops only the no-jobs placeholder of a provider-linked device from the Breeze leg', async () => {
+    queue([], []);
+    await listBackupHealthRows({ orgIds: [ORG_A] }, { page: { limit: 10 }, now: NOW });
+    const top = whereArg(0);
+    const topConditions: any[] = top?.op === 'and' ? top.conditions : [top];
+    const exclusion = topConditions.find(
+      (c) => c?.op === 'or' && JSON.stringify(c).includes('not exists (select 1 from '),
+    );
+    expect(exclusion).toBeDefined();
+    // One branch keeps any device that has a first-party job.
+    expect(JSON.stringify(exclusion)).toContain(' is not null');
   });
 
   it('merges the two legs into one (lower(name), key) order', async () => {
