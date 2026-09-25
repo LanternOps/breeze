@@ -17,8 +17,10 @@ vi.mock('../../jobs/accountingSyncWorker', () => ({
 
 import { eq } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
-import { partners, organizations, users, invoiceLines, tickets } from '../../db/schema';
+import { partners, organizations, users, invoices, invoiceLines, tickets } from '../../db/schema';
 import * as invoiceSvc from '../../services/invoiceService';
+import { getOrMintInvoiceLink } from '../../services/invoiceLinkToken';
+import { invoicesPublicRoutes } from '../../routes/invoicesPublic';
 import type { InvoiceActor } from '../../services/invoiceTypes';
 
 // Sweep C4 + settings audit rule 6: the "Ticket #…" label on an invoice line is
@@ -85,6 +87,15 @@ async function portalLabel(f: Fixture, id: string) {
   const res = await sys(() => invoiceSvc.getCustomerInvoice(id, f.orgId));
   return res.lines[0]?.ticketNumber ?? null;
 }
+/** The customer's tokenised pay page (GET /invoices/public/:token). */
+async function publicLabel(id: string) {
+  const [row] = await sys(() => db.select().from(invoices).where(eq(invoices.id, id)));
+  const { token } = await sys(() => getOrMintInvoiceLink(row!));
+  const res = await invoicesPublicRoutes.request(`/${token}`);
+  expect(res.status).toBe(200);
+  const body = (await res.json()) as { data: { lines: Array<{ ticketNumber: string | null }> } };
+  return body.data.lines[0]?.ticketNumber ?? null;
+}
 async function lineLabel(id: string) {
   const [row] = await sys(() => db.select({ ticketLabel: invoiceLines.ticketLabel }).from(invoiceLines).where(eq(invoiceLines.invoiceId, id)));
   return row?.ticketLabel ?? null;
@@ -110,6 +121,7 @@ describe.runIf(RUN)('invoice line ticket label (sweep C4, settings rule 6)', () 
     await sys(() => db.update(tickets).set({ internalNumber: 'T-2026-9999' }).where(eq(tickets.id, t.id)));
     expect(await webLabel(f, id)).toBe('T-2026-0102');
     expect(await portalLabel(f, id)).toBe('T-2026-0102');
+    expect(await publicLabel(id)).toBe('T-2026-0102');
   });
 
   it('a ticket with no internal_number falls back to the legacy ticket_number at issue', async () => {

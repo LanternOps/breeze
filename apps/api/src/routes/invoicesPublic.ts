@@ -9,7 +9,7 @@ import { partners } from '../db/schema/orgs';
 import { portalBranding } from '../db/schema/portal';
 import { resolveInvoiceByLinkToken, getOrMintInvoiceLink, buildPublicInvoiceUrl } from '../services/invoiceLinkToken';
 import { toCustomerInvoiceHeader, toCustomerInvoiceLine, markViewed } from '../services/invoiceService';
-import { getInvoicePdf, renderInvoicePdf } from '../services/invoicePdf';
+import { getInvoicePdf, renderInvoicePdf, invoiceLineTicketNumberSql } from '../services/invoicePdf';
 import { createInvoicePayLink } from '../services/invoiceCheckout';
 import { CUSTOMER_SAFE_CURRENCY_UNSUPPORTED_MESSAGE } from '../services/stripeCheckoutErrors';
 import { settleCheckoutSession } from '../services/stripeSettle';
@@ -127,7 +127,7 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
 
     const rows = await db.select({
       ticketId: invoiceLines.ticketId,
-      ticketNumber: sql<string | null>`COALESCE(${tickets.ticketNumber}, ${tickets.internalNumber})`,
+      ticketNumber: invoiceLineTicketNumberSql(inv.status),
       ticketSubject: tickets.subject,
       ticketCategory: sql<string | null>`COALESCE(${ticketCategories.name}, ${tickets.category})`,
       name: invoiceLines.name,
