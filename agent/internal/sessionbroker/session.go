@@ -146,6 +146,9 @@ func (s *Session) SendCommand(id, cmdType string, payload any, timeout time.Dura
 		}
 		return resp, nil
 	case <-done:
+		if resp := deliveredResponse(ch); resp != nil {
+			return resp, nil
+		}
 		return nil, fmt.Errorf("session closed while waiting for response")
 	case <-time.After(timeout):
 		return nil, ErrCommandTimeout
@@ -219,12 +222,7 @@ func (s *Session) sendCommandWithQuiescence(id, cmdType string, payload any, tim
 				finish(resp)
 			case <-done:
 				// Prefer a response already delivered concurrently with teardown.
-				select {
-				case resp := <-ch:
-					finish(resp)
-				default:
-					finish(nil)
-				}
+				finish(deliveredResponse(ch))
 			}
 		}()
 	}
@@ -245,11 +243,34 @@ func (s *Session) sendCommandWithQuiescence(id, cmdType string, payload any, tim
 		finish(resp)
 		return resp, nil, nil
 	case <-done:
+		if resp := deliveredResponse(ch); resp != nil {
+			finish(resp)
+			return resp, nil, nil
+		}
 		finish(nil)
 		return nil, quiesced, fmt.Errorf("session closed while waiting for response")
 	case <-timer.C:
 		waitForLateResponse()
 		return nil, quiesced, ErrCommandTimeout
+	}
+}
+
+// deliveredResponse returns a response RecvLoop already placed in ch, or nil.
+//
+// Callers use it after observing session close. RecvLoop delivers a helper's
+// reply into the buffered channel before it can see the helper's EOF, so when
+// the helper answers and then exits (a backup helper acking a run, sending its
+// terminal result and closing), BOTH the response channel and done are ready
+// by the time the waiting goroutine is scheduled. select chooses among ready
+// cases at random, so without this check a command the helper actually
+// answered is reported as "session closed while waiting for response" — which
+// for an async backup run turns a completed job into a failure (#6918).
+func deliveredResponse(ch <-chan *ipc.Envelope) *ipc.Envelope {
+	select {
+	case resp := <-ch:
+		return resp
+	default:
+		return nil
 	}
 }
 
