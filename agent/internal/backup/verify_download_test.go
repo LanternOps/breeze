@@ -1,10 +1,13 @@
 package backup
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -13,6 +16,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
 
 // scriptedDownloadProvider is a BackupProvider + providers.ContextDownloader
@@ -31,6 +36,22 @@ type scriptedDownloadProvider struct {
 	// stallManifest makes the manifest download itself stall (context-aware
 	// path only).
 	stallManifest bool
+	// manifestChunks > 0 delivers the manifest in that many pieces,
+	// manifestChunkDelay apart, written straight into the destination file
+	// the way a provider's io.Copy does: a slow but progressing transfer.
+	// With manifestStallAfterFirstChunk the first piece arrives and then
+	// nothing more: a mid-body stall.
+	manifestChunks               int
+	manifestChunkDelay           time.Duration
+	manifestStallAfterFirstChunk bool
+	// manifestHookOnly buffers the trickled manifest in memory and writes
+	// the file only at the end, so the ONLY progress signal is the
+	// providers.WithDownloadProgress callback (no file growth to observe).
+	manifestHookOnly bool
+	// manifestShrinkAfterFirstChunk writes the first piece and then keeps
+	// SHRINKING the destination file one byte at a time without ever
+	// delivering more: size changes, but no new data arrives.
+	manifestShrinkAfterFirstChunk bool
 
 	inflight  atomic.Int32
 	peak      atomic.Int32
@@ -97,6 +118,9 @@ func (p *scriptedDownloadProvider) download(ctx context.Context, remotePath, loc
 				return errors.New("released at test end")
 			}
 		}
+		if p.manifestChunks > 0 {
+			return p.trickleManifest(ctx, localPath)
+		}
 		return os.WriteFile(localPath, p.manifest, 0o644)
 	}
 	p.mu.Lock()
@@ -139,6 +163,64 @@ func (p *scriptedDownloadProvider) download(ctx context.Context, remotePath, loc
 		return err
 	}
 	return os.WriteFile(localPath, data, 0o644)
+}
+
+// trickleManifest writes the manifest to localPath in p.manifestChunks
+// pieces, p.manifestChunkDelay apart, honouring ctx between pieces.
+func (p *scriptedDownloadProvider) trickleManifest(ctx context.Context, localPath string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	f, err := os.Create(localPath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	var w io.Writer = f
+	var buf bytes.Buffer
+	if p.manifestHookOnly {
+		w = providers.DownloadProgressWriter(ctx, &buf)
+		defer func() { _, _ = f.Write(buf.Bytes()) }()
+	}
+	chunk := (len(p.manifest) + p.manifestChunks - 1) / p.manifestChunks
+	for off := 0; off < len(p.manifest); off += chunk {
+		if off > 0 {
+			if p.manifestShrinkAfterFirstChunk {
+				for size := int64(off); ; size-- {
+					if size > 0 {
+						if err := f.Truncate(size - 1); err != nil {
+							return err
+						}
+					}
+					select {
+					case <-ctx.Done():
+						return fmt.Errorf("read body: %w", ctx.Err())
+					case <-p.release:
+						return errors.New("released at test end")
+					case <-time.After(20 * time.Millisecond):
+					}
+				}
+			}
+			if p.manifestStallAfterFirstChunk {
+				select {
+				case <-ctx.Done():
+					return fmt.Errorf("read body: %w", ctx.Err())
+				case <-p.release:
+					return errors.New("released at test end")
+				}
+			}
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("read body: %w", ctx.Err())
+			case <-time.After(p.manifestChunkDelay):
+			}
+		}
+		end := min(off+chunk, len(p.manifest))
+		if _, err := w.Write(p.manifest[off:end]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // runWithWatchdog fails the test (instead of hanging the package) when fn
@@ -489,5 +571,170 @@ func TestVerifyIntegrity_BudgetDuringManifestIsNotReportedAsMissing(t *testing.T
 	}
 	if result.Status != "failed" || strings.Contains(result.Error, "not found") || !strings.Contains(result.Error, "time budget") {
 		t.Fatalf("status=%q error=%q, want failed with a time-budget reason, not 'not found'", result.Status, result.Error)
+	}
+}
+
+// A manifest's size is unknown until it has downloaded, so it cannot get a
+// size-sized deadline. A large manifest on a slow link that keeps delivering
+// bytes must NOT be cut off by the per-file floor: before this fix a 46 MiB
+// manifest at 100 KB/s failed the whole run at exactly 5 m (#6929 lab).
+//
+// Both progress signals are covered: the destination file growing (what an
+// io.Copy into it looks like) and the provider's progress callback alone.
+func TestVerifyIntegrity_SlowButProgressingManifestSucceeds(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		hookOnly bool
+	}{
+		{"file growth", false},
+		{"progress callback only", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			defer setDownloadTimeoutFloorForTest(150 * time.Millisecond)()
+			p := newScriptedDownloadProvider(t, "verify-slow-manifest", 3)
+			p.manifestChunks = 12
+			p.manifestChunkDelay = 50 * time.Millisecond // ~550 ms in total, well past the floor
+			p.manifestHookOnly = tc.hookOnly
+
+			var result *VerifyResult
+			var err error
+			runWithWatchdog(t, 10*time.Second, func() {
+				result, err = VerifyIntegrityWithOptions(context.Background(), p, "verify-slow-manifest", VerifyOptions{})
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Status != "passed" || result.FilesVerified != 3 {
+				t.Fatalf("status=%q verified=%d error=%q, want passed with 3 verified", result.Status, result.FilesVerified, result.Error)
+			}
+		})
+	}
+}
+
+// A provider that reports no progress at all past the first chunk (no
+// callback, no file growth) is a stall even with the callback path in use.
+func TestVerifyIntegrity_StalledManifestHookOnlyFails(t *testing.T) {
+	defer setDownloadTimeoutFloorForTest(150 * time.Millisecond)()
+	p := newScriptedDownloadProvider(t, "verify-stalled-hook", 3)
+	p.manifestChunks = 4
+	p.manifestStallAfterFirstChunk = true
+	p.manifestHookOnly = true
+
+	var result *VerifyResult
+	var err error
+	runWithWatchdog(t, 10*time.Second, func() {
+		result, err = VerifyIntegrityWithOptions(context.Background(), p, "verify-stalled-hook", VerifyOptions{})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "failed" || !strings.Contains(result.Error, "manifest download stalled") {
+		t.Fatalf("status=%q error=%q, want failed with a manifest-stall reason", result.Status, result.Error)
+	}
+}
+
+// A destination file that changes size by SHRINKING (a provider, or
+// FallbackProvider's next candidate, re-creating it) delivered no new data
+// and must not keep the stall window open forever.
+func TestVerifyIntegrity_ShrinkingManifestFileIsNotProgress(t *testing.T) {
+	defer setDownloadTimeoutFloorForTest(150 * time.Millisecond)()
+	p := newScriptedDownloadProvider(t, "verify-shrinking-manifest", 3)
+	p.manifestChunks = 2
+	p.manifestShrinkAfterFirstChunk = true
+
+	var result *VerifyResult
+	var err error
+	runWithWatchdog(t, 5*time.Second, func() {
+		result, err = VerifyIntegrityWithOptions(context.Background(), p, "verify-shrinking-manifest", VerifyOptions{})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "failed" || !strings.Contains(result.Error, "manifest download stalled") {
+		t.Fatalf("status=%q error=%q, want failed with a manifest-stall reason", result.Status, result.Error)
+	}
+}
+
+// A manifest the provider positively reports missing is still "not found";
+// any other transport failure is not.
+func TestManifestDownloadError_OnlyMissingObjectIsNotFound(t *testing.T) {
+	ctx := context.Background()
+	if got := manifestDownloadError(ctx, VerifyOptions{}, fmt.Errorf("get: %w", providers.ErrObjectNotFound)); !strings.HasPrefix(got, "manifest not found") {
+		t.Fatalf("ErrObjectNotFound => %q, want 'manifest not found' prefix", got)
+	}
+	if got := manifestDownloadError(ctx, VerifyOptions{}, errors.New("403 AccessDenied")); strings.Contains(got, "not found") {
+		t.Fatalf("access error => %q, must not claim the manifest is missing", got)
+	}
+	// A DESTINATION-side ENOENT (the temp dir vanished) says nothing about
+	// the remote object; providers map a missing source to ErrObjectNotFound.
+	destErr := fmt.Errorf("failed to create local destination file: %w",
+		&fs.PathError{Op: "open", Path: "/tmp/gone/verify-manifest.json", Err: fs.ErrNotExist})
+	if got := manifestDownloadError(ctx, VerifyOptions{}, destErr); strings.Contains(got, "not found") {
+		t.Fatalf("destination ENOENT => %q, must not claim the manifest is missing", got)
+	}
+}
+
+func TestTestRestore_SlowButProgressingManifestSucceeds(t *testing.T) {
+	defer setDownloadTimeoutFloorForTest(150 * time.Millisecond)()
+	p := newScriptedDownloadProvider(t, "restore-slow-manifest", 3)
+	p.manifestChunks = 12
+	p.manifestChunkDelay = 50 * time.Millisecond
+
+	var result *TestRestoreResult
+	var err error
+	runWithWatchdog(t, 10*time.Second, func() {
+		result, err = TestRestoreWithOptions(context.Background(), p, "restore-slow-manifest", t.TempDir(), VerifyOptions{})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "passed" || result.FilesVerified != 3 {
+		t.Fatalf("status=%q verified=%d error=%q, want passed with 3 verified", result.Status, result.FilesVerified, result.Error)
+	}
+}
+
+// A manifest that stops delivering bytes must still fail in bounded time,
+// and the reason must say it stalled, not that the manifest is missing.
+func TestVerifyIntegrity_StalledManifestFailsWithStallReason(t *testing.T) {
+	defer setDownloadTimeoutFloorForTest(150 * time.Millisecond)()
+	p := newScriptedDownloadProvider(t, "verify-stalled-manifest", 3)
+	p.manifestChunks = 4
+	p.manifestStallAfterFirstChunk = true
+
+	var result *VerifyResult
+	var err error
+	began := time.Now()
+	runWithWatchdog(t, 10*time.Second, func() {
+		result, err = VerifyIntegrityWithOptions(context.Background(), p, "verify-stalled-manifest", VerifyOptions{})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(began); elapsed > 3*time.Second {
+		t.Fatalf("stalled manifest took %v to fail, want about the 150ms no-progress window", elapsed)
+	}
+	if result.Status != "failed" || strings.Contains(result.Error, "not found") ||
+		!strings.Contains(result.Error, "manifest download stalled") {
+		t.Fatalf("status=%q error=%q, want failed with a manifest-stall reason, not 'not found'", result.Status, result.Error)
+	}
+}
+
+func TestTestRestore_StalledManifestFailsWithStallReason(t *testing.T) {
+	defer setDownloadTimeoutFloorForTest(150 * time.Millisecond)()
+	p := newScriptedDownloadProvider(t, "restore-stalled-manifest", 3)
+	p.manifestChunks = 4
+	p.manifestStallAfterFirstChunk = true
+
+	var result *TestRestoreResult
+	var err error
+	runWithWatchdog(t, 10*time.Second, func() {
+		result, err = TestRestoreWithOptions(context.Background(), p, "restore-stalled-manifest", t.TempDir(), VerifyOptions{})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "failed" || strings.Contains(result.Error, "not found") ||
+		!strings.Contains(result.Error, "manifest download stalled") {
+		t.Fatalf("status=%q error=%q, want failed with a manifest-stall reason, not 'not found'", result.Status, result.Error)
 	}
 }

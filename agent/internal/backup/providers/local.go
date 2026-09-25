@@ -244,7 +244,7 @@ func copyFileContext(ctx context.Context, srcPath, destPath string) error {
 		return fmt.Errorf("failed to create destination file: %w", err)
 	}
 
-	_, err = io.Copy(destFile, &contextReader{ctx: ctx, reader: srcFile})
+	_, err = io.Copy(DownloadProgressWriter(ctx, destFile), &contextReader{ctx: ctx, reader: srcFile})
 	closeErr := destFile.Close()
 	if err == nil {
 		err = closeErr
@@ -356,7 +356,7 @@ func decompressFileContext(ctx context.Context, srcPath, destPath string) error 
 		return fmt.Errorf("failed to create destination file: %w", err)
 	}
 
-	_, err = io.Copy(destFile, io.LimitReader(gzipReader, maxDecompressSize))
+	_, err = io.Copy(DownloadProgressWriter(ctx, destFile), io.LimitReader(gzipReader, maxDecompressSize))
 	closeErr := destFile.Close()
 	if err == nil {
 		err = closeErr

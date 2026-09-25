@@ -128,7 +128,7 @@ func (g *GCSProvider) DownloadContext(ctx context.Context, remotePath, localPath
 		return fmt.Errorf("failed to create local destination file: %w", err)
 	}
 
-	if _, err := io.Copy(file, reader); err != nil {
+	if _, err := io.Copy(DownloadProgressWriter(ctx, file), reader); err != nil {
 		_ = file.Close()
 		return fmt.Errorf("failed to download file from gcs: %w", err)
 	}

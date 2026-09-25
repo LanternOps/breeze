@@ -105,7 +105,7 @@ func VerifyIntegrityWithOptions(ctx context.Context, provider providers.BackupPr
 	_ = tempManifest.Close()
 	defer os.Remove(tempManifestPath)
 
-	if err := downloadWithDeadline(runCtx, provider, manifestKey, tempManifestPath, downloadDeadline(0)); err != nil {
+	if err := downloadWithStallTimeout(runCtx, provider, manifestKey, tempManifestPath); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			result.DurationMs = time.Since(start).Milliseconds()
 			return result, ctxErr
@@ -385,7 +385,7 @@ func TestRestoreWithOptions(ctx context.Context, provider providers.BackupProvid
 	_ = tempManifest.Close()
 	defer os.Remove(tempManifestPath)
 
-	if err := downloadWithDeadline(runCtx, provider, manifestKey, tempManifestPath, downloadDeadline(0)); err != nil {
+	if err := downloadWithStallTimeout(runCtx, provider, manifestKey, tempManifestPath); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return result, ctxErr
 		}
