@@ -955,7 +955,10 @@
     "historyKindFiles": "Dosya temizliği",
     "historyKindSystem": "Sistem temizliği",
     "historyReclaimed": "{{size}} geri kazanıldı",
-    "historyCandidates": "{{count}} aday",
+    "historyCandidates_one": "{{count}} aday",
+    "historyCandidates_other": "{{count}} aday",
+    "historyActions_one": "{{count}} işlem",
+    "historyActions_other": "{{count}} işlem",
     "status": {
       "previewed": "Önizlendi",
       "running": "Çalışıyor",

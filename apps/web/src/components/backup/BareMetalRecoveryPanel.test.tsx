@@ -75,6 +75,30 @@ describe('BareMetalRecoveryPanel', () => {
     expect(screen.getByTestId('bare-metal-recovery-code')).toHaveTextContent('ABC-DEF-GHJ');
   });
 
+  it('formats the snapshot option timestamp with the app date format, not a raw US locale string (#6496)', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (url.startsWith('/backup/snapshots?') && method === 'GET') {
+        return makeJsonResponse({ data: [{ id: SNAPSHOT_ID, deviceId: 'device-1', label: 'Nightly Snapshot', createdAt: '2026-09-20T20:08:10.000Z' }] });
+      }
+      if (url.startsWith('/backup/bmr/recoveries?') && method === 'GET') {
+        return makeJsonResponse({ data: [] });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<BareMetalRecoveryPanel />);
+    await flush();
+
+    const option = screen.getByText(/Nightly Snapshot —/);
+    expect(option.textContent).not.toMatch(/\d{1,2}\/\d{1,2}\/\d{4}/);
+    // Positive check too: prove the long format actually rendered, not just
+    // that the old short-numeric format is absent (e.g. a blank/undefined
+    // timestamp would also pass the negative-only assertion above).
+    expect(option.textContent).toMatch(/[A-Z][a-z]{2} \d{1,2}, 2026/);
+  });
+
   it("renders a refused create's reasons", async () => {
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);

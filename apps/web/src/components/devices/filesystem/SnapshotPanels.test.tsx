@@ -101,4 +101,13 @@ describe('SnapshotPanels', () => {
     );
     expect(screen.getByRole('status')).toHaveTextContent('max entries reached');
   });
+
+  it('gives the partial-scan banner dark-mode text/background variants (#6496)', () => {
+    render(
+      <SnapshotPanels snapshot={snapshot({ partial: true, reason: 'max entries reached' })} thresholdEvents={[]} />,
+    );
+    const banner = screen.getByRole('status');
+    expect(banner.className).toMatch(/dark:text-amber-\d{3}/);
+    expect(banner.className).toMatch(/dark:bg-amber-\d{3}/);
+  });
 });

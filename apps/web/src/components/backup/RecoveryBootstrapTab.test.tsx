@@ -300,6 +300,74 @@ describe('RecoveryBootstrapTab', () => {
     expect(screen.getByText('breeze-recovery-linux-amd64.iso')).toBeTruthy();
   });
 
+  it('shows the snapshot label instead of the bare UUID in the bootstrap detail panel (#6496)', async () => {
+    render(<RecoveryBootstrapTab />);
+
+    await screen.findByText('Manual recovery environment');
+    fireEvent.click(screen.getByRole('button', { name: /Create token/i }));
+
+    const expectedCommand = `breeze-backup bmr-recover --token brz_rec_123 --server ${window.location.origin}`;
+    await screen.findByText(expectedCommand);
+
+    expect(screen.getAllByText('Nightly Snapshot').length).toBeGreaterThan(0);
+    expect(screen.queryByText('snapshot-1')).toBeNull();
+  });
+
+  it('formats a linked restore job\'s restored size instead of printing raw bytes (#6496)', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+
+      if (url === '/backup/snapshots') {
+        return makeJsonResponse({
+          data: [{ id: 'snapshot-1', label: 'Nightly Snapshot', timestamp: '2026-03-28T10:00:00Z', size: 2147483648 }],
+        });
+      }
+      if (url === '/backup/bmr/tokens?limit=100' && method === 'GET') return makeJsonResponse({ data: [] });
+      if (url === '/backup/bmr/media?limit=100' && method === 'GET') return makeJsonResponse({ data: [] });
+      if (url === '/backup/bmr/boot-media?limit=100' && method === 'GET') return makeJsonResponse({ data: [] });
+
+      if (url === '/backup/bmr/tokens' && method === 'POST') {
+        return makeJsonResponse({
+          id: 'token-1',
+          token: 'brz_rec_123',
+          deviceId: 'device-1',
+          snapshotId: 'snapshot-1',
+          restoreType: 'bare_metal',
+          status: 'active',
+          sessionStatus: 'pending',
+          createdAt: '2026-03-31T10:00:00Z',
+          expiresAt: '2026-04-01T10:00:00Z',
+          restoreJobId: 'restore-9',
+          linkedRestoreJob: {
+            id: 'restore-9',
+            status: 'completed',
+            completedAt: '2026-03-31T10:20:00Z',
+            restoredFiles: 12,
+            restoredSize: 402653184,
+          },
+          bootstrap: {
+            version: 1,
+            minHelperVersion: '0.5.0',
+            serverUrl: window.location.origin,
+            releaseUrl: 'https://github.com/lanternops/breeze/releases/latest',
+            commandTemplate: `breeze-backup bmr-recover --token <recovery-token> --server "${window.location.origin}"`,
+            prerequisites: ['Boot into a recovery environment.'],
+          },
+        }, true, 201);
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<RecoveryBootstrapTab />);
+    await screen.findByText('Manual recovery environment');
+    fireEvent.click(screen.getByRole('button', { name: /Create token/i }));
+
+    await screen.findByText('384 MB');
+    expect(screen.queryByText('402653184')).toBeNull();
+  });
+
   // DBT-7: the API refuses `POST /backup/bmr/tokens` with 409
   // `{"error":"snapshot_not_bare_metal_restorable","reasons":[...]}` when the
   // snapshot wasn't assessed as bare-metal restorable. The raw machine code

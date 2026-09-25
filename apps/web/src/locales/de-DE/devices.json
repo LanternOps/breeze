@@ -955,7 +955,10 @@
     "historyKindFiles": "Dateibereinigung",
     "historyKindSystem": "Systembereinigung",
     "historyReclaimed": "{{size}} freigegeben",
-    "historyCandidates": "{{count}} Kandidaten",
+    "historyCandidates_one": "{{count}} Kandidat",
+    "historyCandidates_other": "{{count}} Kandidaten",
+    "historyActions_one": "{{count}} Aktion",
+    "historyActions_other": "{{count}} Aktionen",
     "status": {
       "previewed": "Vorschau",
       "running": "Läuft",
