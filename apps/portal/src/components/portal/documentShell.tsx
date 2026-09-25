@@ -5,7 +5,8 @@
 // with the app primary as the fallback. Mirrors the dashboard's QuoteDocument so
 // staff preview and customer view match.
 import { markChipClass, type MarkTone } from './ui';
-import type { ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { parseTermsSections, readMinutes } from './termsSections';
 import { sellerLines } from '@/lib/sellerLines';
 import type { DocumentThemeId } from '@breeze/shared';
 
@@ -168,6 +169,97 @@ export function DocumentTerms({ label, children, testId }: { label: string; chil
       <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</h3>
       <p className="max-w-prose whitespace-pre-wrap text-pretty text-xs leading-relaxed text-muted-foreground">{children}</p>
     </section>
+  );
+}
+
+/**
+ * Long-form legal text (Terms & Conditions), collapsed by default so it never
+ * sits between the price and the sign button. Native <details>: `#terms` opens
+ * it (deep link from the signature checkbox), and it is force-expanded while
+ * printing. Open state is only touched after mount so SSR and first client
+ * paint agree.
+ */
+export function DocumentTermsCollapsible({
+  label = 'Terms & Conditions',
+  text,
+  testId,
+  id = 'terms',
+}: {
+  label?: string;
+  text: string;
+  testId?: string;
+  id?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const wasOpenRef = useRef(false);
+  const { blocks, sectionCount } = useMemo(() => parseTermsSections(text), [text]);
+  const minutes = readMinutes(text);
+
+  useEffect(() => {
+    const syncHash = () => {
+      if (window.location.hash === `#${id}`) setOpen(true);
+    };
+    const beforePrint = () => {
+      setOpen((cur) => {
+        wasOpenRef.current = cur;
+        return true;
+      });
+    };
+    const afterPrint = () => setOpen(wasOpenRef.current);
+    syncHash();
+    window.addEventListener('hashchange', syncHash);
+    window.addEventListener('beforeprint', beforePrint);
+    window.addEventListener('afterprint', afterPrint);
+    return () => {
+      window.removeEventListener('hashchange', syncHash);
+      window.removeEventListener('beforeprint', beforePrint);
+      window.removeEventListener('afterprint', afterPrint);
+    };
+  }, [id]);
+
+  const summary =
+    sectionCount > 0
+      ? `${label} · ${sectionCount} section${sectionCount === 1 ? '' : 's'} · ~${minutes} min read`
+      : `${label} · ~${minutes} min read`;
+
+  return (
+    <details
+      id={id}
+      open={open}
+      onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}
+      className="scroll-mt-4 border-t pt-6"
+      data-testid={testId}
+    >
+      <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        {summary}
+      </summary>
+      {sectionCount === 0 ? (
+        <p className="mt-3 max-w-prose whitespace-pre-wrap text-pretty text-xs leading-relaxed text-muted-foreground">{text}</p>
+      ) : (
+        <div className="mt-3 max-w-prose space-y-2 text-xs leading-relaxed text-muted-foreground">
+          {sectionCount >= 4 && (
+            <nav aria-label={`${label} contents`} className="space-y-1 pb-2">
+              {blocks.map((b) =>
+                b.kind === 'heading' ? (
+                  <a key={b.id} href={`#${b.id}`} className="block underline underline-offset-2">
+                    {b.text}
+                  </a>
+                ) : null
+              )}
+            </nav>
+          )}
+          {blocks.map((b, i) =>
+            b.kind === 'heading' ? (
+              <h4 key={b.id} id={b.id} className="pt-2 text-xs font-semibold text-foreground">
+                {b.text}
+              </h4>
+            ) : (
+              <p key={i} className="text-pretty">{b.text}</p>
+            )
+          )}
+        </div>
+      )}
+    </details>
   );
 }
 

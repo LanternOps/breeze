@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { portalApi, publicApiPath, type PublicQuoteDetail } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { QuoteBlocks, money } from './quoteBlocks';
-import { DocumentCover, DocumentPaper, DocumentHeader, DocumentTerms, type DocSeller } from './documentShell';
+import { DocumentCover, DocumentPaper, DocumentHeader, DocumentTerms, DocumentTermsCollapsible, type DocSeller } from './documentShell';
 import { SignaturePanel } from './SignaturePanel';
 
 interface PublicQuoteViewProps {
@@ -275,8 +275,19 @@ export function PublicQuoteView({ token, initial, error, superseded }: PublicQuo
         </section>
 
         {quote.terms && <DocumentTerms label="Terms">{quote.terms}</DocumentTerms>}
+        {/* The sign panel sits directly after the price and short terms; the
+            (collapsed) agreement never comes between the totals and the button. */}
+        {open && (
+          <SignaturePanel
+            onAccept={(signerName) => void accept(signerName)}
+            onDecline={(reason) => void decline(reason)}
+            busy={busy}
+            testIdPrefix="public-quote"
+            termsHref={quote.termsAndConditions ? '#terms' : undefined}
+          />
+        )}
         {quote.termsAndConditions && (
-          <DocumentTerms label="Terms & Conditions" testId="public-quote-terms-conditions">{quote.termsAndConditions}</DocumentTerms>
+          <DocumentTermsCollapsible text={quote.termsAndConditions} testId="public-quote-terms-conditions" />
         )}
       </DocumentPaper>
 
@@ -300,14 +311,6 @@ export function PublicQuoteView({ token, initial, error, superseded }: PublicQuo
         </div>
       )}
 
-      {open && (
-        <SignaturePanel
-          onAccept={(signerName) => void accept(signerName)}
-          onDecline={(reason) => void decline(reason)}
-          busy={busy}
-          testIdPrefix="public-quote"
-        />
-      )}
     </div>
   );
 }

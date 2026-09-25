@@ -17,6 +17,8 @@ interface SignaturePanelProps {
   busy: boolean;
   /** Prefixes the data-testids so existing public/authed selectors keep working. */
   testIdPrefix: string;
+  /** When set, "Terms & Conditions" in the agreement copy links here (e.g. `#terms`). */
+  termsHref?: string;
 }
 
 /**
@@ -32,7 +34,7 @@ interface SignaturePanelProps {
  * backing out of the prompt still declined the proposal irreversibly. The
  * confirm block below is the only path to onDecline().
  */
-export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix }: SignaturePanelProps) {
+export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix, termsHref }: SignaturePanelProps) {
   const [name, setName] = useState('');
   const [agreed, setAgreed] = useState(false);
   const [touched, setTouched] = useState(false);
@@ -116,7 +118,15 @@ export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix }: Sign
           className="mt-0.5 h-4 w-4 shrink-0 rounded border border-muted-foreground/50 text-primary focus:ring-primary/40"
         />
         <span className="leading-relaxed text-muted-foreground">
-          I have reviewed this proposal and agree to its terms. Typing my name above is my electronic signature.
+          I have reviewed this proposal and the{' '}
+          {termsHref ? (
+            <a href={termsHref} className="font-medium text-foreground underline underline-offset-2">
+              Terms &amp; Conditions
+            </a>
+          ) : (
+            'terms'
+          )}
+          . Typing my name above is my electronic signature.
         </span>
       </label>
 

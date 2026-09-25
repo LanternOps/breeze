@@ -6,7 +6,7 @@ import { type QuoteDetail, publicApiPath, portalApi } from '@/lib/api';
 import { shortDate } from '@/lib/format';
 import { computeChargeNow } from '@/lib/invoiceDeposit';
 import { QuoteBlocks, money } from './quoteBlocks';
-import { DocumentCover, DocumentPaper, DocumentHeader, DocumentTerms, type DocSeller } from './documentShell';
+import { DocumentCover, DocumentPaper, DocumentHeader, DocumentTerms, DocumentTermsCollapsible, type DocSeller } from './documentShell';
 import { BTN_PRIMARY, BTN_SECONDARY } from './ui';
 import { SignaturePanel } from './SignaturePanel';
 
@@ -355,8 +355,17 @@ export function QuoteDetailView({ detail, error, statusCode }: QuoteDetailViewPr
             writes. The quote's notes live in `introNotes`, elsewhere on the page.
             Spec 2026-09-14 §3 checked this and left both labels as-is. */}
         {quote.terms && <DocumentTerms label="Terms">{quote.terms}</DocumentTerms>}
+        {open && (
+          <SignaturePanel
+            onAccept={(signerName) => void accept(signerName)}
+            onDecline={(reason) => void decline(reason)}
+            busy={busy}
+            testIdPrefix="quote"
+            termsHref={quote.termsAndConditions ? '#terms' : undefined}
+          />
+        )}
         {quote.termsAndConditions && (
-          <DocumentTerms label="Terms & Conditions" testId="quote-terms-conditions">{quote.termsAndConditions}</DocumentTerms>
+          <DocumentTermsCollapsible text={quote.termsAndConditions} testId="quote-terms-conditions" />
         )}
       </DocumentPaper>
 
@@ -417,14 +426,6 @@ export function QuoteDetailView({ detail, error, statusCode }: QuoteDetailViewPr
         </div>
       )}
 
-      {open && (
-        <SignaturePanel
-          onAccept={(signerName) => void accept(signerName)}
-          onDecline={(reason) => void decline(reason)}
-          busy={busy}
-          testIdPrefix="quote"
-        />
-      )}
     </div>
   );
 }
