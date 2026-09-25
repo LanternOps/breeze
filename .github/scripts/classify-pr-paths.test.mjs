@@ -780,6 +780,8 @@ test('classifier: agent_code is true for agent/**, ci.yml and the classifier, fa
     [['apps/api/src/index.ts'], 'false'],
     [['docs/guide.md'], 'false'],
     [['.github/workflows/release.yml'], 'false'],
+    // agent markdown is documentation (no Go changed), even alongside code
+    [['apps/api/x.ts', 'agent/README.md'], 'false'],
     [[], 'true'], // fail-closed on an empty list
   ]) {
     const run = classify(paths);
@@ -800,6 +802,9 @@ for (const IS_PR of ['true', 'false']) {
     ['Windows failure waived when agent_code=false', { TEST_AGENT_WINDOWS_RESULT: 'failure', AGENT_CODE_CHANGED: 'false' }, true],
     ['Windows failure blocks when agent_code=true', { TEST_AGENT_WINDOWS_RESULT: 'failure', AGENT_CODE_CHANGED: 'true' }, false],
     ['Windows failure blocks when agent_code is empty', { TEST_AGENT_WINDOWS_RESULT: 'failure', AGENT_CODE_CHANGED: '' }, false],
+    ['Windows failure blocks when agent_code is not a boolean', { TEST_AGENT_WINDOWS_RESULT: 'failure', AGENT_CODE_CHANGED: 'maybe' }, false],
+    ['waiver is Windows-only: windows-runtime-smoke failure still blocks', { WINDOWS_RUNTIME_SMOKE_RESULT: 'failure', AGENT_CODE_CHANGED: 'false' }, false],
+    ['waiver is Windows-only: Linux test-agent failure still blocks', { TEST_AGENT_RESULT: 'failure', AGENT_CODE_CHANGED: 'false' }, false],
     ['Windows cancelled still blocks when agent_code=false', { TEST_AGENT_WINDOWS_RESULT: 'cancelled', AGENT_CODE_CHANGED: 'false' }, false],
     ['Windows skipped still blocks when agent_code=false', { TEST_AGENT_WINDOWS_RESULT: 'skipped', AGENT_CODE_CHANGED: 'false' }, false],
     ['Windows success passes', { TEST_AGENT_WINDOWS_RESULT: 'success', AGENT_CODE_CHANGED: 'false' }, true],
