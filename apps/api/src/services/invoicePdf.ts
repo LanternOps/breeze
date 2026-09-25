@@ -34,6 +34,7 @@ import { computeChargeNow, formatMoney, isSupportedLocale } from '@breeze/shared
 import { formatMoneyForPdf } from './pdfMoney';
 import { fitFontSize } from './pdfFitText';
 import { resolvePartnerDocumentLocale } from './documentLocale';
+import { resolveDocumentFooter } from './documentFooter';
 import { tApi } from '../i18n';
 
 type InvoiceRow = typeof invoices.$inferSelect;
@@ -648,29 +649,6 @@ async function loadDeviceAppendix(invoiceId: string): Promise<InvoiceDeviceAppen
   return { lines: [...byLine.values()], omitted };
 }
 
-/** Load the invoice, its lines, and branding (partner name + portal logo/colors). */
-/**
- * The ONE footer/terms resolver (settings audit rule 5, finding 22).
- * `invoiceTerms` is the invoice's own stamped `terms` column (set once, at
- * issue — see invoiceService.issueInvoice); `partnerFooter` is
- * `partners.invoiceFooter`; `brandingFooter` is `portal_branding.footerText`
- * for the invoice's org.
- *
- * Pure — no DB access — so both DB-backed readers (this file's
- * `loadInvoiceForRender` and `invoiceService.issueInvoice`, which runs inside
- * its own locked system transaction) can share it without either opening a
- * transaction on the other's behalf. Precedence matches the render-time chain
- * that already existed at `loadInvoiceForRender` before this extraction —
- * issue time is the side being brought into line with it.
- */
-export function resolveInvoiceFooter(input: {
-  invoiceTerms: string | null;
-  partnerFooter: string | null;
-  brandingFooter: string | null;
-}): string | null {
-  return input.invoiceTerms ?? input.partnerFooter ?? input.brandingFooter ?? null;
-}
-
 /**
  * DRAFT-ONLY bill-to display fallback (sweep paper cut #16). A draft invoice
  * has no bill-to snapshot yet — billToName/billToAddress/billToTaxId are
@@ -683,7 +661,7 @@ export function resolveInvoiceFooter(input: {
  * is always returned untouched — the "one snapshot moment" rule.
  *
  * Pure — no DB access — so loadInvoiceForRender (which does the org read) can
- * be exercised without a database, mirroring resolveInvoiceFooter above.
+ * be exercised without a database, mirroring resolveDocumentFooter (documentFooter.ts).
  */
 export function resolveDraftBillTo(input: {
   status: string;
@@ -716,6 +694,7 @@ export function invoiceLineTicketNumberSql(invoiceStatus: string) {
     : sql<string | null>`${invoiceLines.ticketLabel}`;
 }
 
+/** Load the invoice, its lines, and branding (partner name + portal logo/colors). */
 async function loadInvoiceForRender(invoiceId: string): Promise<{
   invoice: InvoiceRow;
   lines: InvoiceLineRow[];
@@ -790,8 +769,8 @@ async function loadInvoiceForRender(invoiceId: string): Promise<{
       partnerName: partner?.name || (invoice.sellerSnapshot as SellerSnapshot | null)?.name || 'Invoice',
       logoUrl: branding?.logoUrl ?? null,
       primaryColor: branding?.primaryColor ?? null,
-      footerText: resolveInvoiceFooter({
-        invoiceTerms: invoice.terms,
+      footerText: resolveDocumentFooter({
+        documentTerms: invoice.terms,
         partnerFooter: partner?.invoiceFooter ?? null,
         brandingFooter: branding?.footerText ?? null,
       }),

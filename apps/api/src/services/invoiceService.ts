@@ -17,7 +17,8 @@ import { snapshotCost } from './catalogPricing';
 // to keep allocation atomic with the number write inside its single transaction.
 import { formatInvoiceNumber } from './invoiceNumbers';
 import { emitInvoiceEvent } from './invoiceEvents';
-import { resolveInvoiceFooter, resolveDraftBillTo, invoiceTicketNumberSql, invoiceLineTicketNumberSql } from './invoicePdf';
+import { resolveDraftBillTo, invoiceTicketNumberSql, invoiceLineTicketNumberSql } from './invoicePdf';
+import { resolveDocumentFooter } from './documentFooter';
 import { resolveOrgTaxRate, resolveOrgTaxRateOn, OrgNotVisibleForTaxError, PartnerNotVisibleForTaxError } from './taxRateResolver';
 import { stampedPresentation } from './invoicePresentation';
 import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
@@ -1470,7 +1471,7 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
     const [org] = await db.select().from(organizations).where(eq(organizations.id, inv.orgId)).limit(1);
     const [partner] = await db.select().from(partners).where(eq(partners.id, inv.partnerId)).limit(1);
     // Portal-branding footer for the invoice's org — the last resort of the
-    // shared footer chain (resolveInvoiceFooter, invoicePdf.ts). Read here,
+    // shared footer chain (resolveDocumentFooter, documentFooter.ts). Read here,
     // after all locks, alongside the org/partner snapshot reads: a pure
     // additional SELECT on a read-only table, no new lock class.
     const [issueBranding] = await db.select({ footerText: portalBranding.footerText })
@@ -1514,10 +1515,10 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
       // is the labeled Terms & Conditions block (from partner.billingTermsAndConditions).
       // Resolved through the SHARED chain (settings audit rule 5, finding 22)
       // so issue time sees the portal-branding fallback the render path always
-      // had. `invoiceTerms: null` because a draft's `terms` is not yet
+      // had. `documentTerms: null` because a draft's `terms` is not yet
       // stamped — this call is what establishes it.
-      terms: resolveInvoiceFooter({
-        invoiceTerms: null,
+      terms: resolveDocumentFooter({
+        documentTerms: null,
         partnerFooter: partner?.invoiceFooter ?? null,
         brandingFooter: issueBranding?.footerText ?? null,
       }),
