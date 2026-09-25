@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,8 +22,12 @@ type chunkedStallProvider struct {
 	interval time.Duration
 	growFile bool // write chunks into localPath (what io.Copy does)
 	// callbackChunks is how many leading chunks are reported to the
-	// WithDownloadProgress callback; later chunks land without a report.
+	// WithDownloadProgress callback.
 	callbackChunks int
+	// sparseFirst writes the first chunk at a high offset, as a ranged
+	// parallel writer (Azure's SDK) can: the destination's size then runs
+	// far ahead of the bytes that have actually arrived.
+	sparseFirst bool
 	// staleModTime resets the file's modification time to the distant past
 	// after every write, as a provider or filesystem that preserves or never
 	// refreshes it would.
@@ -58,12 +63,23 @@ func (p *chunkedStallProvider) DownloadContext(ctx context.Context, _, localPath
 		if p.growFile {
 			sink = f
 		}
-		w := sink
-		if i < p.callbackChunks {
-			w = providers.DownloadProgressWriter(ctx, sink)
-		}
-		if _, err := w.Write(chunk); err != nil {
-			return err
+		if p.sparseFirst && i == 0 {
+			if _, err := f.WriteAt(chunk, 1<<20); err != nil {
+				return err
+			}
+			if i < p.callbackChunks {
+				if _, err := providers.DownloadProgressWriter(ctx, io.Discard).Write(chunk); err != nil {
+					return err
+				}
+			}
+		} else {
+			w := sink
+			if i < p.callbackChunks {
+				w = providers.DownloadProgressWriter(ctx, sink)
+			}
+			if _, err := w.Write(chunk); err != nil {
+				return err
+			}
 		}
 		if p.staleModTime {
 			if err := os.Chtimes(localPath, past, past); err != nil {
@@ -90,15 +106,17 @@ func TestDownloadWithStallTimeout_DetectionTimeAfterLastByte(t *testing.T) {
 		name           string
 		growFile       bool
 		callbackChunks int
+		sparseFirst    bool
 		max            time.Duration
 	}{
-		{"callback and file growth", true, 1, window + window/2},
-		{"callback only", false, 1, window + window/2},
-		{"file growth only", true, 0, 2*window + window/2},
+		{"callback and file growth", true, 1, false, window + window/2},
+		{"callback and a ranged write past what arrived", true, 1, true, window + window/2},
+		{"callback only", false, 1, false, window + window/2},
+		{"file growth only", true, 0, false, 2*window + window/2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			defer setDownloadTimeoutFloorForTest(window)()
-			p := &chunkedStallProvider{chunks: 1, growFile: tc.growFile, callbackChunks: tc.callbackChunks, stallAtEnd: true}
+			p := &chunkedStallProvider{chunks: 1, growFile: tc.growFile, callbackChunks: tc.callbackChunks, sparseFirst: tc.sparseFirst, stallAtEnd: true}
 			dest := filepath.Join(t.TempDir(), "manifest.json")
 
 			var err error
@@ -121,8 +139,9 @@ func TestDownloadWithStallTimeout_DetectionTimeAfterLastByte(t *testing.T) {
 	}
 }
 
-// A transfer that is still delivering must never be cut off, whatever its
-// file timestamps say and even when the callback reports only some writes.
+// A transfer that is still delivering must never be cut off: a growth-only
+// provider whatever its file timestamps say, and a reporting provider that
+// trickles chunks more than a window apart in total.
 func TestDownloadWithStallTimeout_ActiveTransferIsNotCutOff(t *testing.T) {
 	const window = 300 * time.Millisecond
 	for _, tc := range []struct {
@@ -131,7 +150,7 @@ func TestDownloadWithStallTimeout_ActiveTransferIsNotCutOff(t *testing.T) {
 		staleModTime   bool
 	}{
 		{"file growth only, stale modification time", 0, true},
-		{"callback reports only the first chunk", 1, false},
+		{"callback on every chunk", 6, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			defer setDownloadTimeoutFloorForTest(window)()
@@ -152,5 +171,54 @@ func TestDownloadWithStallTimeout_ActiveTransferIsNotCutOff(t *testing.T) {
 				t.Fatalf("an actively delivering transfer failed: %v", err)
 			}
 		})
+	}
+}
+
+// advanceProgress must never move the timestamp backward, however the
+// callback goroutines and the sampler interleave.
+func TestAdvanceProgress_NeverMovesBackward(t *testing.T) {
+	var last atomic.Int64
+	var observedBackward atomic.Bool
+	done := make(chan struct{})
+	go func() {
+		prev := last.Load()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			cur := last.Load()
+			if cur < prev {
+				observedBackward.Store(true)
+			}
+			prev = cur
+		}
+	}()
+	var wg sync.WaitGroup
+	const writers, perWriter = 8, 5000
+	for w := 0; w < writers; w++ {
+		wg.Add(1)
+		go func(seed int64) {
+			defer wg.Done()
+			for i := int64(0); i < perWriter; i++ {
+				// Interleave high and low values so a plain Store would regress.
+				advanceProgress(&last, (i*7919+seed*104729)%100000)
+			}
+		}(int64(w))
+	}
+	wg.Wait()
+	close(done)
+	var want int64
+	for w := int64(0); w < writers; w++ {
+		for i := int64(0); i < perWriter; i++ {
+			want = max(want, (i*7919+w*104729)%100000)
+		}
+	}
+	if got := last.Load(); got != want {
+		t.Fatalf("final = %d, want the maximum written, %d", got, want)
+	}
+	if observedBackward.Load() {
+		t.Fatal("the timestamp moved backward")
 	}
 }
