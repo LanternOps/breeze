@@ -187,6 +187,14 @@ function inferRestoreCommandType(restoreJob: {
   if (restoreJob.restoreType === 'bare_metal') {
     return 'bmr_recover';
   }
+  // #6974: application-level restores (routes/backup/{mssql,hyperv}.ts) stamp
+  // `targetConfig.engine`; check it before the `hypervisor` heuristic below.
+  if (targetConfig.engine === 'mssql') {
+    return 'mssql_restore';
+  }
+  if (targetConfig.engine === 'hyperv') {
+    return 'hyperv_restore';
+  }
   if (targetConfig.mode === 'instant_boot') {
     return 'vm_instant_boot';
   }

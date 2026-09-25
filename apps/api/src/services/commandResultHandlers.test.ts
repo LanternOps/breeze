@@ -106,6 +106,37 @@ describe('PAM v2 command result handlers', () => {
   );
 });
 
+// #6974: mssql_restore / hyperv_restore are dispatched async (#6437) with the
+// restore_jobs row linked by command id — the terminal result must close it.
+describe.each(['mssql_restore', 'hyperv_restore'] as const)('%s result handler (#6974)', (type) => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const COMMAND_ID = '55555555-5555-4555-8555-555555555555';
+  const DEVICE_ID = '66666666-6666-4666-8666-666666666666';
+
+  it('is registered', () => {
+    expect(commandResultHandlers[type]).toBeTypeOf('function');
+  });
+
+  it('closes the restore job by the transport-authorized command id', async () => {
+    const result = { status: 'completed', result: { status: 'completed', databaseName: 'AppDb' } };
+    await commandResultHandlers[type]!({
+      agentId: 'agent-1',
+      commandId: COMMAND_ID,
+      resolvedDeviceId: DEVICE_ID,
+      command: { id: COMMAND_ID, type, payload: {} } as never,
+      result: result as never,
+      stdout: undefined,
+    });
+    expect(updateRestoreJobByCommandIdMock).toHaveBeenCalledWith({
+      commandId: COMMAND_ID,
+      deviceId: DEVICE_ID,
+      commandType: type,
+      result,
+    });
+  });
+});
+
 describe('bare_metal_rebuild command result handler (W05a)', () => {
   beforeEach(() => vi.clearAllMocks());
 

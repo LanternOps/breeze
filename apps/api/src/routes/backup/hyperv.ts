@@ -5,9 +5,10 @@ import { eq, and, inArray } from 'drizzle-orm';
 import { db } from '../../db';
 import { backupJobs, backupSnapshots, devices, hypervVms } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
-import { executeCommand, queueCommandForExecution, CommandTypes } from '../../services/commandQueue';
+import { executeCommand, CommandTypes } from '../../services/commandQueue';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
+import { dispatchTrackedDbRestore } from './dbRestoreJob';
 import { resolveScopedOrgId } from './helpers';
 import { resolveAllBackupAssignedDevices, resolveBackupConfigForDevice, effectiveBackupModes } from '../../services/featureConfigResolver';
 import { backupCommandResultSchema } from './resultSchemas';
@@ -526,22 +527,28 @@ hypervRoutes.post(
     // deadline. The agent already reports its terminal result asynchronously
     // over the command-result WS path — nothing on the agent side needs to
     // change.
-    const queued = await queueCommandForExecution(
-      payload.deviceId,
-      CommandTypes.HYPERV_RESTORE,
-      {
+    // #6974: track the restore in a restore_jobs row (linked by command id) so
+    // the terminal result is persisted by commandResultHandlers.hyperv_restore.
+    const queued = await dispatchTrackedDbRestore({
+      orgId,
+      snapshotId: snapshot.id,
+      deviceId: payload.deviceId,
+      userId: auth?.user?.id,
+      commandType: CommandTypes.HYPERV_RESTORE,
+      engine: 'hyperv',
+      targetConfig: { vmName: payload.vmName, generateNewId: payload.generateNewId },
+      buildPayload: (restoreJobId) => ({
+        restoreJobId,
         snapshotId: snapshot.providerSnapshotId,
         vmName: payload.vmName,
         generateNewId: payload.generateNewId,
         provider: backupProviderConfig.provider,
         providerConfig: backupProviderConfig.providerConfig,
-      },
-      { userId: auth?.user?.id }
-    );
+      }),
+    });
 
-    if (!queued.command) {
-      const error = queued.error || 'Failed to dispatch Hyper-V restore';
-      return c.json({ error }, mapDispatchErrorStatus(error) as any);
+    if (!queued.ok) {
+      return c.json({ error: queued.error }, mapDispatchErrorStatus(queued.error) as any);
     }
 
     writeRouteAudit(c, {
@@ -553,12 +560,14 @@ hypervRoutes.post(
         snapshotId: snapshot.id,
         vmName: payload.vmName,
         commandId: queued.command.id,
+        restoreJobId: queued.restoreJobId,
       },
     });
 
     return c.json({
       data: {
         commandId: queued.command.id,
+        restoreJobId: queued.restoreJobId,
         status: queued.command.status,
         deviceId: payload.deviceId,
         snapshotId: snapshot.id,

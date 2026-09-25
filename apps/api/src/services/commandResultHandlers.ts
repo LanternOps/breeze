@@ -1207,6 +1207,9 @@ export const commandResultHandlers: Record<string, CommandResultHandler> = {
   vm_restore_from_backup: handleVmRestoreResult,
   vm_instant_boot: handleVmRestoreResult,
   bmr_recover: handleVmRestoreResult,
+  // #6974: async-dispatched (#6437); the restore_jobs row is linked by command id.
+  mssql_restore: handleVmRestoreResult,
+  hyperv_restore: handleVmRestoreResult,
   bare_metal_rebuild: handleBareMetalRebuildResult,
   hyperv_backup: handleProviderBackedBackupResult,
   mssql_backup: handleProviderBackedBackupResult,
