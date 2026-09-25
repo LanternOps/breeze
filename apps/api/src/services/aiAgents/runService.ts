@@ -185,18 +185,27 @@ import { closeAgentRunSession, reconcileHungExecutions } from './executionLedger
  *                            admitServiceRecoveryTask via taskDeadline.ts,
  *                            recipe library E2 #6167): caps the recipe's
  *                            deadline and any requested one. Merged with min.
- *  - taskMaxReasoningRuns  — DEFERRED to Operator P3-3 (#6590): the
- *                            coordinator's admitReasoningRun caps on the
- *                            recipe's bounds.maxReasoningRuns only today.
- *  - taskMaxMutationAttemptsPerTarget — DEFERRED to P3-3 (#6590): same, via
- *                            the recipe's bounds.maxMutationAttempts.
- *  - taskMaxBudgetCents    — DEFERRED to P3-3 (#6590): the per-task budget
- *                            rollup does not exist yet; per-run and per-day
- *                            caps above still bound every run a task admits.
- *  - taskMaxActiveTargets  — DEFERRED to the fleet waves (#6590): admission
- *                            writes exactly one target today.
- *  - taskMaxPendingPerOrg  — DEFERRED to P3-3 (#6590): admission capacity
- *                            (spec §12's 429) is not built yet.
+ *  - taskMaxReasoningRuns  — AI Operator dispatch (taskCoordinator.ts
+ *                            admitReasoningRun via taskLimits.ts, #6590):
+ *                            the narrower of this and the recipe's
+ *                            bounds.maxReasoningRuns. Merged with min.
+ *  - taskMaxMutationAttemptsPerTarget — AI Operator dispatch (taskCoordinator
+ *                            advanceVerify via taskLimits.ts, #6590): the
+ *                            narrower of this and bounds.maxMutationAttempts
+ *                            gates every retry after a mutation. Merged with min.
+ *  - taskMaxBudgetCents    — AI Operator dispatch (admitReasoningRun via
+ *                            taskLimits.ts, #6590): sum of cost_cents over
+ *                            the task's runs; a new run is refused once it
+ *                            reaches the ceiling. A run in flight is not cut
+ *                            short — per-run and per-day caps above still
+ *                            bound each run. Merged with min.
+ *  - taskMaxActiveTargets  — AI Operator admission (taskService.ts via
+ *                            taskLimits.ts, #6590): the targets a task is
+ *                            admitted with (exactly one today). Merged with min.
+ *  - taskMaxPendingPerOrg  — AI Operator admission (taskService.ts via
+ *                            taskLimits.ts, #6590): non-terminal tasks in the
+ *                            org, counted under a per-org advisory lock;
+ *                            refusal is the route's 429. Merged with min.
  */
 
 export interface CreateAgentRunInput {

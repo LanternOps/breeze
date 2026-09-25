@@ -467,10 +467,9 @@ describe('POST /ai/operator/tasks (W08 admission)', () => {
   const deviceRow = { id: DEVICE_ID, orgId: ORG_ID, siteId: SITE_ID, hostname: 'WS-01' };
 
   /** device row, then agent row, then the pending-cap count. */
-  function happyPathSelects(pendingCount = 0) {
+  function happyPathSelects() {
     selectMock.mockReturnValueOnce(selectChain([deviceRow]));
     selectMock.mockReturnValueOnce(selectChain([{ id: AGENT_ID }]));
-    selectMock.mockReturnValueOnce(selectChain([{ count: pendingCount }]));
   }
 
   beforeEach(() => {
@@ -661,31 +660,40 @@ describe('POST /ai/operator/tasks (W08 admission)', () => {
     expect(await res.json()).toEqual({ error: 'Device not found' });
   });
 
-  // ---- Capacity (spec §7.2: pending cap 100 per org) ----
+  // ---- Capacity (spec §7.2 / §12; #6590) ----
+  // The cap is the effective agent policy's `taskMaxPendingPerOrg`, enforced
+  // by ADMISSION under a per-org lock (taskService.taskLimits.test.ts). The
+  // route only turns that refusal into spec §12's visible 429.
 
-  it('429s when the org is already at the pending-task cap', async () => {
-    happyPathSelects(100);
+  it('429s when admission refuses for pending capacity, carrying the named reason', async () => {
+    happyPathSelects();
+    admitMock.mockResolvedValue({
+      ok: false, refusal: 'pending_cap_reached',
+      detail: 'org already has 100 pending Operator tasks (limit 100, agent policy taskMaxPendingPerOrg)',
+    });
     const res = await post(body());
     expect(res.status).toBe(429);
-    expect(await res.json()).toMatchObject({ code: 'OPERATOR_PENDING_CAP_REACHED' });
-    expect(admitMock).not.toHaveBeenCalled();
+    const json = await res.json() as { code: string; error: string };
+    expect(json.code).toBe('OPERATOR_PENDING_CAP_REACHED');
+    expect(json.error).toContain('taskMaxPendingPerOrg');
   });
 
-  it('admits at one below the cap', async () => {
-    happyPathSelects(99);
+  it('does not count pending tasks itself — no hardcoded cap at the route', async () => {
+    happyPathSelects();
     const res = await post(body());
     expect(res.status).toBe(202);
+    // Device + agent only; a third select would be a route-level count.
+    expect(selectMock).toHaveBeenCalledTimes(2);
   });
 
-  it('counts the cap over non-terminal states for the ONE named org', async () => {
-    let capturedPredicate: unknown;
-    selectMock.mockReturnValueOnce(selectChain([deviceRow]));
-    selectMock.mockReturnValueOnce(selectChain([{ id: AGENT_ID }]));
-    selectMock.mockReturnValueOnce(selectChain([{ count: 0 }], (p) => { capturedPredicate = p; }));
-    await post(body());
-    const text = sqlText(capturedPredicate).toLowerCase();
-    expect(text).toContain('org_id');
-    expect(text).toContain('not in');
+  it('422s a non-capacity task-limit refusal with its reason', async () => {
+    happyPathSelects();
+    admitMock.mockResolvedValue({
+      ok: false, refusal: 'task_limit_exceeded', detail: 'task would hold 2 active targets (taskMaxActiveTargets)',
+    });
+    const res = await post(body());
+    expect(res.status).toBe(422);
+    expect(await res.json()).toMatchObject({ code: 'TASK_LIMIT_EXCEEDED' });
   });
 
   // ---- Recipe Library spec §6.1 (wave E1): registry-backed recipeKey ----
