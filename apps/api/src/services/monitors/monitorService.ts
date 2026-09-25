@@ -282,10 +282,14 @@ export async function listMonitorDefinitionsPage(
   const first = rows[0];
   if (first) return { rows: rows.map((r) => r.row), total: Number(first.total) };
   // No row carries a window total: nothing is visible, or the offset is past
-  // the end. At offset 0 the set is empty; otherwise count it. With an empty
-  // page there are no returned rows the count could disagree with.
+  // the end. At offset 0 the set is empty; otherwise count it. The count is a
+  // second statement and can see rows inserted after the page ran, so it is
+  // clamped to the offset: the empty page already shows nothing sat at or past
+  // it, and a total above the offset would report hasMore with a cursor that
+  // cannot advance.
   if (page.offset === 0) return { rows: [], total: 0 };
-  return { rows: [], total: await countMonitorDefinitions(auth, filters) };
+  const count = await countMonitorDefinitions(auth, filters);
+  return { rows: [], total: Math.min(count, page.offset) };
 }
 
 /** COUNT(*) over the same visibility + filters as listMonitorDefinitions. */

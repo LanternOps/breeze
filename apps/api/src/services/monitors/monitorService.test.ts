@@ -621,6 +621,18 @@ describe('listMonitorDefinitions / listMonitorDefinitionsPage paging (#6735)', (
     expect(count.calls.where[0]![0]).toBeDefined();
   });
 
+  it('a fallback count that grew past the offset after the empty page is clamped, so hasMore cannot be true on an empty page', async () => {
+    // The page (statement 1) found nothing at offset 20; a concurrent insert
+    // lands before the count (statement 2) sees 23 rows.
+    dbMock.select
+      .mockReturnValueOnce(recordingChain([]).chain)
+      .mockReturnValueOnce(recordingChain([{ count: 23 }]).chain);
+
+    const out = await listMonitorDefinitionsPage(auth(), undefined, { limit: 10, offset: 20 });
+
+    expect(out).toEqual({ rows: [], total: 20 });
+  });
+
   it('count of an empty visible set is 0, not NaN', async () => {
     dbMock.select.mockReturnValue(recordingChain([]).chain);
     expect(await countMonitorDefinitions(auth())).toBe(0);

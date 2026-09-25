@@ -134,11 +134,15 @@ describe('list_monitors', () => {
         return {
           from: () => ({
             where: () => ({
-              orderBy: () =>
-                Promise.resolve([
-                  { id: 'm1', name: 'CPU high', kind: 'cpu', severity: 'high', enabled: true, orgId: ORG, partnerId: null },
-                  { id: 'm2', name: 'Disk full', kind: 'disk', severity: 'critical', enabled: true, orgId: null, partnerId: PARTNER },
-                ]),
+              orderBy: () => ({
+                limit: () => ({
+                  offset: () =>
+                    Promise.resolve([
+                      { row: { id: 'm1', name: 'CPU high', kind: 'cpu', severity: 'high', enabled: true, orgId: ORG, partnerId: null }, total: 2 },
+                      { row: { id: 'm2', name: 'Disk full', kind: 'disk', severity: 'critical', enabled: true, orgId: null, partnerId: PARTNER }, total: 2 },
+                    ]),
+                }),
+              }),
             }),
           }),
         };
@@ -157,7 +161,9 @@ describe('list_monitors', () => {
   });
 
   it('returns an empty list without querying attachment counts', async () => {
-    mockDb.select.mockReturnValue({ from: () => ({ where: () => ({ orderBy: () => Promise.resolve([]) }) }) });
+    mockDb.select.mockReturnValue({
+      from: () => ({ where: () => ({ orderBy: () => ({ limit: () => ({ offset: () => Promise.resolve([]) }) }) }) }),
+    });
     const result = await call('list_monitors', { kind: 'cpu' });
     expect(result).toEqual({
       monitors: [], total: 0, totalMode: 'exact', showing: 0,
