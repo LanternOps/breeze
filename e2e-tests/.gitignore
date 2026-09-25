@@ -6,6 +6,7 @@ playwright-report/
 test-results/
 results/
 blob-report/
+ui-audit-out/
 
 # Auth state (generated at runtime by globalSetup)
 .auth/

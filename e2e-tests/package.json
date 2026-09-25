@@ -9,17 +9,22 @@
     "test:headed": "playwright test --headed",
     "test:debug": "PWDEBUG=1 playwright test",
     "test:report": "playwright show-report",
-    "monitor": "tsx live-signup/monitor.ts"
+    "monitor": "tsx live-signup/monitor.ts",
+    "ui-audit": "tsx ui-audit/run.ts"
   },
   "dependencies": {
     "dotenv": "^18.0.0"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
     "@playwright/test": "^1.63.0",
     "@types/node": "^26.6.1",
     "@types/pg": "^8.23.1",
+    "@types/pngjs": "^6.0.5",
     "pg": "^8.23.0",
+    "pixelmatch": "^7.2.0",
     "playwright": "^1.63.0",
+    "pngjs": "^7.0.0",
     "tsx": "^4.23.13",
     "typescript": "^7.0.2",
     "vitest": "^5.0.1",
