@@ -19,6 +19,7 @@ import {
   parseUsageHistory,
   statIconMap
 } from './backupDashboardHelpers';
+import { parseRestoreHash, type RestoreHashParams } from './restoreHash';
 import { useTranslation } from 'react-i18next';
 import { OrgRequiredGate } from '../shared/OrgRequiredGate';
 import '../../lib/i18n';
@@ -57,6 +58,13 @@ function isValidTab(hash: string): hash is BackupTab {
   return ALL_TABS.includes(hash as BackupTab);
 }
 
+// The restore tab's hash can carry a `?snapshot=…&paths=…` query (#6456), so
+// the tab match has to look only at the segment before it.
+function tabFromHash(hash: string): BackupTab | undefined {
+  const base = hash.split('?')[0];
+  return isValidTab(base) ? base : undefined;
+}
+
 function TabFallback() {
   const { t } = useTranslation('backup');
   return (
@@ -73,7 +81,11 @@ function BackupDashboardInner() {
   const { t } = useTranslation('backup');
   const orgScope = useOrgScope();
   // SSR-safe hash tab (#2421): starts at the default, adopts the hash post-mount.
-  const [activeTab, setActiveTab] = useHashState<BackupTab>('overview', (h) => (isValidTab(h) ? h : undefined));
+  const [activeTab, setActiveTab] = useHashState<BackupTab>('overview', tabFromHash);
+  const [restoreHashParams] = useHashState<RestoreHashParams | null>(
+    null,
+    (h) => parseRestoreHash(h)
+  );
   const [stats, setStats] = useState<BackupStat[]>([]);
   const [recentJobs, setRecentJobs] = useState<BackupJob[]>([]);
   const [overdueDevices, setOverdueDevices] = useState<OverdueDevice[]>([]);
@@ -433,7 +445,10 @@ function BackupDashboardInner() {
 
       {activeTab === 'restore' && (
         <Suspense fallback={<TabFallback />}>
-          <RestoreWizard />
+          <RestoreWizard
+            initialSnapshotId={restoreHashParams?.snapshotId}
+            initialSelectedPaths={restoreHashParams?.paths}
+          />
         </Suspense>
       )}
 
