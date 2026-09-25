@@ -673,6 +673,8 @@
     "threat": "Tehdit",
     "threats": "Tehditler",
     "threatsMatchYourFilters": "{{count}} tehditler filtrelerinizle eşleşiyor",
+    "threatsMatchYourFilters_one": "{{count}} tehdit filtrelerinizle eşleşiyor",
+    "threatsMatchYourFilters_other": "{{count}} tehditler filtrelerinizle eşleşiyor",
     "type": "Tür",
     "actionFailed": "İşlem başarısız oldu",
     "actionQueuedCount": "{{count}} tehdit sıraya alındı",

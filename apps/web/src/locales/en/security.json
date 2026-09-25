@@ -673,6 +673,8 @@
     "threat": "Threat",
     "threats": "Threats",
     "threatsMatchYourFilters": "{{count}} threats match your filters",
+    "threatsMatchYourFilters_one": "{{count}} threat matches your filters",
+    "threatsMatchYourFilters_other": "{{count}} threats match your filters",
     "type": "Type",
     "actionFailed": "Action failed",
     "actionQueuedCount": "{{count}} threat queued",

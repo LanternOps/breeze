@@ -673,6 +673,8 @@
     "threat": "Amenaza",
     "threats": "Amenazas",
     "threatsMatchYourFilters": "Las amenazas {{count}} coinciden con sus filtros.",
+    "threatsMatchYourFilters_one": "Las amenazas {{count}} coinciden con sus filtros.",
+    "threatsMatchYourFilters_other": "Las amenazas {{count}} coinciden con sus filtros.",
     "type": "Tipo",
     "actionFailed": "La acción falló",
     "actionQueuedCount": "{{count}} amenaza en cola",

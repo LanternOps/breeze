@@ -673,6 +673,8 @@
     "threat": "Menace",
     "threats": "Menaces",
     "threatsMatchYourFilters": "{{count}} les menaces correspondent à vos filtres",
+    "threatsMatchYourFilters_one": "{{count}} les menaces correspondent à vos filtres",
+    "threatsMatchYourFilters_other": "{{count}} les menaces correspondent à vos filtres",
     "type": "Type",
     "actionFailed": "Échec de l'action",
     "actionQueuedCount": "{{count}} menace mise en file d'attente",
