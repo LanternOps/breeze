@@ -1414,6 +1414,10 @@
         "enableNetworkVisibility": {
           "label": "Ağ görünürlüğü",
           "description": "Müşteri portalında ağ durumunu ve keşfedilen varlıkları salt okunur olarak gösterir."
+        },
+        "enableNetworkAlerts": {
+          "label": "Ağ uyarıları",
+          "description": "Müşteri portalında ağ varlıklarındaki etkin uyarı sayısını ve bağlı açık talepleri gösterir."
         }
       }
     },

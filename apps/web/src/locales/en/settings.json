@@ -1414,6 +1414,10 @@
         "enableNetworkVisibility": {
           "label": "Network visibility",
           "description": "Show read-only network health and discovered assets in the customer portal."
+        },
+        "enableNetworkAlerts": {
+          "label": "Network alerts",
+          "description": "Show active alert counts and linked open tickets on network assets in the customer portal."
         }
       }
     },

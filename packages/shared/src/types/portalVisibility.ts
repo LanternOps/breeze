@@ -320,6 +320,9 @@ export type NetworkOverviewDto =
       monitorsDown: null;
     };
 
+/** Mirrors alert_severity (apps/api/src/db/schema/alerts.ts); ranked critical > high > medium > low > info. */
+export type NetworkAssetAlertSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
+
 export interface NetworkAssetRowDto {
   id: string;
   hostname: string | null;
@@ -335,6 +338,17 @@ export interface NetworkAssetRowDto {
   manufacturer: string | null;
   model: string | null;
   siteName: string;
+  /**
+   * Alert/ticket enrichment (#5861 PR 3). Present -- zero-filled when the
+   * asset has no active alerts -- whenever the org's enable_network_alerts
+   * flag is on; omitted entirely (never null-filled) when the flag is off,
+   * mirroring the optional `service?` pattern on DashboardDto.
+   */
+  activeAlertCount?: number;
+  /** Highest severity among this asset's active network-monitor alerts; null when activeAlertCount is 0. */
+  highestAlertSeverity?: NetworkAssetAlertSeverity | null;
+  /** Distinct non-terminal tickets linked (via ticket_alert_links) to this asset's active alerts. */
+  openTicketCount?: number;
 }
 
 /**

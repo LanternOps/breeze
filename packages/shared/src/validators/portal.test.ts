@@ -98,6 +98,11 @@ describe('updatePortalSettingsSchema', () => {
       .toEqual({ enableNetworkVisibility });
   });
 
+  it.each([true, false])('accepts the Network Alerts flag=%s', (enableNetworkAlerts) => {
+    expect(updatePortalSettingsSchema.parse({ enableNetworkAlerts }))
+      .toEqual({ enableNetworkAlerts });
+  });
+
   it('rejects non-boolean portal visibility flags', () => {
     expect(updatePortalSettingsSchema.safeParse({
       enableDashboard: 'true',

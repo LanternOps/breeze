@@ -1414,6 +1414,10 @@
         "enableNetworkVisibility": {
           "label": "Visibilidade de rede",
           "description": "Exibe no portal do cliente a integridade da rede e os ativos descobertos em modo somente leitura."
+        },
+        "enableNetworkAlerts": {
+          "label": "Alertas de rede",
+          "description": "Exibe no portal do cliente a contagem de alertas ativos e os chamados abertos vinculados aos ativos de rede."
         }
       }
     },

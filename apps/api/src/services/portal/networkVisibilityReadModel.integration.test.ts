@@ -1,11 +1,16 @@
 import '../../__tests__/integration/setup';
 import { describe, expect, it } from 'vitest';
+import { randomUUID } from 'crypto';
 import { withDbAccessContext, type DbAccessContext } from '../../db';
 import {
+  alerts,
+  devices,
   discoveredAssets,
   networkMonitorResults,
   networkMonitors,
   snmpDevices,
+  ticketAlertLinks,
+  tickets,
 } from '../../db/schema';
 import {
   createOrganization,
@@ -558,5 +563,298 @@ describe('networkAssets (#5861, PR 2)', () => {
     expect(result.dataStatus).toBe('no_data');
     expect(result.data).toEqual([]);
     expect(result.pagination).toEqual({ page: 2, limit: 10, total: 0 });
+  });
+});
+
+describe('networkAssets alert/ticket enrichment (#5861 PR 3)', () => {
+  it('enriches assets with active alert count, highest severity, and open ticket count when enrichWithAlerts is true', async () => {
+    const testDb = getTestDb();
+
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+
+    const [assetWithAlerts, assetWithoutAlerts] = await testDb
+      .insert(discoveredAssets)
+      .values([
+        {
+          orgId: org.id,
+          siteId: site.id,
+          ipAddress: '10.70.1.10',
+          hostname: 'enriched-switch-01',
+          assetType: 'switch',
+          source: 'manual',
+          isOnline: false,
+          statusObservedAt: new Date('2026-09-17T11:59:00.000Z'),
+          statusSource: 'scan',
+          lastSeenAt: new Date('2026-09-17T11:00:00.000Z'),
+        },
+        {
+          orgId: org.id,
+          siteId: site.id,
+          ipAddress: '10.70.1.11',
+          hostname: 'quiet-switch-01',
+          assetType: 'switch',
+          source: 'manual',
+          isOnline: true,
+          statusObservedAt: new Date('2026-09-17T11:59:00.000Z'),
+          statusSource: 'scan',
+          lastSeenAt: new Date('2026-09-17T11:59:00.000Z'),
+        },
+      ])
+      .returning();
+
+    const [monitor] = await testDb
+      .insert(networkMonitors)
+      .values({
+        orgId: org.id,
+        assetId: assetWithAlerts!.id,
+        name: 'Enriched switch monitor',
+        monitorType: 'icmp_ping',
+        target: '10.70.1.10',
+        isActive: true,
+        lastStatus: 'offline',
+      })
+      .returning();
+
+    const [device] = await testDb
+      .insert(devices)
+      .values({
+        orgId: org.id,
+        siteId: site.id,
+        agentId: randomUUID(),
+        hostname: 'fixture-device-01',
+        osType: 'windows',
+        osVersion: '11',
+        architecture: 'x86_64',
+        agentVersion: '0.0.0-test',
+      })
+      .returning();
+
+    const [mediumAlert, criticalAlert] = await testDb
+      .insert(alerts)
+      .values([
+        {
+          deviceId: device!.id,
+          orgId: org.id,
+          severity: 'medium',
+          status: 'active',
+          title: 'Enrichment fixture — medium',
+          context: { source: 'network_monitor', monitorId: monitor!.id },
+        },
+        {
+          deviceId: device!.id,
+          orgId: org.id,
+          severity: 'critical',
+          status: 'active',
+          title: 'Enrichment fixture — critical',
+          context: { source: 'network_monitor', monitorId: monitor!.id },
+        },
+      ])
+      .returning();
+
+    const [openTicket, resolvedTicket] = await testDb
+      .insert(tickets)
+      .values([
+        {
+          orgId: org.id,
+          ticketNumber: `ENR-${randomUUID().slice(0, 12)}`,
+          subject: 'Open ticket for enrichment fixture',
+          source: 'manual',
+        },
+        {
+          orgId: org.id,
+          ticketNumber: `ENR-${randomUUID().slice(0, 12)}`,
+          subject: 'Resolved ticket for enrichment fixture',
+          source: 'manual',
+          status: 'resolved',
+        },
+      ])
+      .returning();
+
+    await testDb.insert(ticketAlertLinks).values([
+      { ticketId: openTicket!.id, orgId: org.id, alertId: mediumAlert!.id },
+      // Both tickets attach to the SAME alert-severity fixture; the resolved
+      // one must NOT count, proving TERMINAL_TICKET_STATUSES is honored.
+      { ticketId: resolvedTicket!.id, orgId: org.id, alertId: criticalAlert!.id },
+    ]);
+
+    const result = await withDbAccessContext(
+      orgContext(org.id, partner.id),
+      () => networkAssets(org.id, {}, NOW, true),
+    );
+
+    expect(result.dataStatus).toBe('ok');
+    if (result.dataStatus !== 'ok') throw new Error('expected ok');
+
+    const enriched = result.data.find((row) => row.hostname === 'enriched-switch-01');
+    expect(enriched).toMatchObject({
+      activeAlertCount: 2,
+      // The critical alert outranks the medium one.
+      highestAlertSeverity: 'critical',
+      // Only the open (non-terminal) ticket counts.
+      openTicketCount: 1,
+    });
+
+    // An asset with no linked alerts still gets the enrichment fields when
+    // the flag is on -- zero-filled, not omitted -- so a client can tell
+    // "flag off" (fields absent) apart from "flag on, zero alerts" (#5861
+    // PR 3 review).
+    const quiet = result.data.find((row) => row.hostname === 'quiet-switch-01');
+    expect(quiet?.activeAlertCount).toBe(0);
+    expect(quiet?.highestAlertSeverity).toBeNull();
+    expect(quiet?.openTicketCount).toBe(0);
+  });
+
+  it('omits alert enrichment fields when enrichWithAlerts is false, even with active alerts present', async () => {
+    const testDb = getTestDb();
+
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+
+    const [asset] = await testDb
+      .insert(discoveredAssets)
+      .values({
+        orgId: org.id,
+        siteId: site.id,
+        ipAddress: '10.71.1.10',
+        hostname: 'flag-off-switch-01',
+        assetType: 'switch',
+        source: 'manual',
+        isOnline: false,
+        statusObservedAt: new Date('2026-09-17T11:59:00.000Z'),
+        statusSource: 'scan',
+        lastSeenAt: new Date('2026-09-17T11:00:00.000Z'),
+      })
+      .returning();
+
+    const [monitor] = await testDb
+      .insert(networkMonitors)
+      .values({
+        orgId: org.id,
+        assetId: asset!.id,
+        name: 'Flag-off switch monitor',
+        monitorType: 'icmp_ping',
+        target: '10.71.1.10',
+        isActive: true,
+        lastStatus: 'offline',
+      })
+      .returning();
+
+    const [device] = await testDb
+      .insert(devices)
+      .values({
+        orgId: org.id,
+        siteId: site.id,
+        agentId: randomUUID(),
+        hostname: 'fixture-device-02',
+        osType: 'windows',
+        osVersion: '11',
+        architecture: 'x86_64',
+        agentVersion: '0.0.0-test',
+      })
+      .returning();
+
+    await testDb.insert(alerts).values({
+      deviceId: device!.id,
+      orgId: org.id,
+      severity: 'critical',
+      status: 'active',
+      title: 'Flag-off fixture alert',
+      context: { source: 'network_monitor', monitorId: monitor!.id },
+    });
+
+    // Default call (no 4th argument) must behave exactly like enrichWithAlerts: false.
+    const result = await withDbAccessContext(
+      orgContext(org.id, partner.id),
+      () => networkAssets(org.id, {}, NOW),
+    );
+
+    expect(result.dataStatus).toBe('ok');
+    if (result.dataStatus !== 'ok') throw new Error('expected ok');
+
+    const row = result.data.find((r) => r.hostname === 'flag-off-switch-01');
+    expect(row?.activeAlertCount).toBeUndefined();
+    expect(row?.highestAlertSeverity).toBeUndefined();
+    expect(row?.openTicketCount).toBeUndefined();
+  });
+
+  it('enriches the JS-filtered (status filter) code path the same way as the SQL path', async () => {
+    const testDb = getTestDb();
+
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+
+    const [asset] = await testDb
+      .insert(discoveredAssets)
+      .values({
+        orgId: org.id,
+        siteId: site.id,
+        ipAddress: '10.72.1.10',
+        hostname: 'filtered-switch-01',
+        assetType: 'switch',
+        source: 'manual',
+        isOnline: false,
+        statusObservedAt: new Date('2026-09-17T11:59:00.000Z'),
+        statusSource: 'scan',
+        lastSeenAt: new Date('2026-09-17T11:00:00.000Z'),
+      })
+      .returning();
+
+    const [monitor] = await testDb
+      .insert(networkMonitors)
+      .values({
+        orgId: org.id,
+        assetId: asset!.id,
+        name: 'Filtered switch monitor',
+        monitorType: 'icmp_ping',
+        target: '10.72.1.10',
+        isActive: true,
+        lastStatus: 'offline',
+      })
+      .returning();
+
+    const [device] = await testDb
+      .insert(devices)
+      .values({
+        orgId: org.id,
+        siteId: site.id,
+        agentId: randomUUID(),
+        hostname: 'fixture-device-03',
+        osType: 'windows',
+        osVersion: '11',
+        architecture: 'x86_64',
+        agentVersion: '0.0.0-test',
+      })
+      .returning();
+
+    await testDb.insert(alerts).values({
+      deviceId: device!.id,
+      orgId: org.id,
+      severity: 'high',
+      status: 'active',
+      title: 'Filtered-path fixture alert',
+      context: { source: 'network_monitor', monitorId: monitor!.id },
+    });
+
+    // filter.status forces the JS-filter branch (pagination happens after the
+    // query, so enrichment there runs on `pageData`, not `rows`) — this must
+    // enrich exactly like the unfiltered SQL branch above.
+    const result = await withDbAccessContext(
+      orgContext(org.id, partner.id),
+      () => networkAssets(org.id, { status: 'offline' }, NOW, true),
+    );
+
+    expect(result.dataStatus).toBe('ok');
+    if (result.dataStatus !== 'ok') throw new Error('expected ok');
+
+    expect(result.data).toHaveLength(1);
+    expect(result.data[0]).toMatchObject({
+      activeAlertCount: 1,
+      highestAlertSeverity: 'high',
+      openTicketCount: 0,
+    });
   });
 });

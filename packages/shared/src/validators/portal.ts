@@ -108,6 +108,7 @@ export const updatePortalSettingsSchema = z.object({
   enableLifecycle: z.boolean().optional(),
   // Customer Portal Network Visibility (#5861): fail closed by default.
   enableNetworkVisibility: z.boolean().optional(),
+  enableNetworkAlerts: z.boolean().optional(),
   supportEmail: z.string().email().max(255).nullable().optional(),
   supportPhone: z.string().max(50).nullable().optional(),
   welcomeMessage: z.string().max(2000).nullable().optional(),
