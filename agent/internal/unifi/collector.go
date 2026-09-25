@@ -18,6 +18,21 @@ type CollectorConfig struct {
 	ControllerURL       string `json:"controllerUrl"`
 	APIKey              string `json:"apiKey"`
 	PollIntervalSeconds int    `json:"pollIntervalSeconds"`
+	// Optional topology negotiation (Collection §8). The companion is attached
+	// only when the server lists version 1 AND issues the epoch + source
+	// identity its digests are bound to; otherwise the upload is legacy-only.
+	AcceptedUnifiTopologyVersions []int  `json:"acceptedUnifiTopologyVersions,omitempty"`
+	TopologyProducerEpoch         string `json:"topologyProducerEpoch,omitempty"`
+	TopologySourceIdentity        string `json:"topologySourceIdentity,omitempty"`
+}
+
+func (c CollectorConfig) acceptsTopologyV1() bool {
+	for _, v := range c.AcceptedUnifiTopologyVersions {
+		if v == 1 {
+			return true
+		}
+	}
+	return false
 }
 
 type CollectorDeps struct {
@@ -31,6 +46,9 @@ type CollectorDeps struct {
 	AgentID    string       // this agent's id; agent telemetry endpoints live under /api/v1/agents/<AgentID>/
 	HTTP       *http.Client // authed transport to the Breeze API (agent token attached)
 	Logf       func(format string, args ...any)
+	// StateDir holds per-collector topology state (sequence, acknowledged
+	// digests). Empty disables the topology companion.
+	StateDir string
 }
 
 // agentBase builds the per-agent endpoint prefix the API mounts under
@@ -124,6 +142,8 @@ type telemetryPayload struct {
 	Clients     []uploadClient `json:"clients"`
 	Sites       []uploadSite   `json:"sites,omitempty"`
 	Error       string         `json:"error,omitempty"`
+	// TopologyV1 is the additive typed companion; absent unless negotiated.
+	TopologyV1 *TopologyV1 `json:"topologyV1,omitempty"`
 }
 
 func toUploadDevices(in []Device) []uploadDevice {
@@ -157,7 +177,13 @@ func toUploadClients(in []Client) []uploadClient {
 // failures are reported in the payload (FirmwareOK / Error).
 func RunOnce(ctx context.Context, deps CollectorDeps, cfg CollectorConfig, controllerHTTP *http.Client) error {
 	api := NewAPIClient(cfg.ControllerURL, cfg.APIKey, controllerHTTP)
-	snap, pollErr := api.Poll(ctx)
+	topo := prepareTopology(deps, cfg)
+	opts := PollOptions{}
+	if topo != nil {
+		opts = PollOptions{DetailBudget: MaxDetailsPerPoll, DetailCursor: topo.state.Snapshot().DetailCursor}
+	}
+	capturedAt := time.Now()
+	snap, pollErr := api.PollWith(ctx, opts)
 	sites := make([]uploadSite, len(snap.Sites))
 	for i, s := range snap.Sites {
 		sites[i] = uploadSite{ID: s.ID, Name: s.Name}
@@ -172,6 +198,12 @@ func RunOnce(ctx context.Context, deps CollectorDeps, cfg CollectorConfig, contr
 	}
 	if pollErr != nil {
 		payload.Error = pollErr.Error()
+	}
+	if topo != nil {
+		if err := topo.state.SetDetailCursor(snap.NextDetailCursor); err != nil {
+			deps.logf("[unifi] collector %s: topology state: %v", cfg.CollectorID, err)
+		}
+		payload.TopologyV1 = topo.build(deps, cfg, snap, capturedAt)
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -194,7 +226,67 @@ func RunOnce(ctx context.Context, deps CollectorDeps, cfg CollectorConfig, contr
 	if resp.StatusCode != http.StatusAccepted {
 		return fmt.Errorf("telemetry upload: status %d", resp.StatusCode)
 	}
+	if payload.TopologyV1 != nil {
+		digests := make(map[string]string, len(payload.TopologyV1.Resources))
+		for _, r := range payload.TopologyV1.Resources {
+			digests[ResourceKey(r)] = r.ContentDigest
+		}
+		if err := topo.state.Acknowledge(payload.TopologyV1.Sequence, digests); err != nil {
+			deps.logf("[unifi] collector %s: topology state: %v", cfg.CollectorID, err)
+		}
+	}
 	return nil
+}
+
+type topologyRun struct {
+	state    *TopologyState
+	sequence uint64
+}
+
+// prepareTopology opens state, installs the server epoch and allocates the
+// sequence BEFORE collection. Any failure degrades to the legacy-only upload.
+func prepareTopology(deps CollectorDeps, cfg CollectorConfig) *topologyRun {
+	if !cfg.acceptsTopologyV1() {
+		return nil
+	}
+	if deps.StateDir == "" || !validKey(cfg.TopologyProducerEpoch) || !validKey(cfg.TopologySourceIdentity) {
+		deps.logf("[unifi] collector %s: topology v1 advertised without epoch/source identity/state dir; sending legacy telemetry only", cfg.CollectorID)
+		return nil
+	}
+	st, err := OpenTopologyState(topologyStatePath(deps.StateDir, cfg.CollectorID))
+	if err != nil {
+		// Recovery-flagged handle: the epoch install below jumps the sequence.
+		deps.logf("[unifi] collector %s: %v; restarting topology sequence from a time floor", cfg.CollectorID, err)
+	}
+	if err := st.InstallEpoch(cfg.TopologySourceIdentity, cfg.TopologyProducerEpoch); err != nil {
+		deps.logf("[unifi] collector %s: topology epoch: %v", cfg.CollectorID, err)
+		return nil
+	}
+	seq, err := st.AllocateSequence()
+	if err != nil {
+		deps.logf("[unifi] collector %s: topology sequence: %v", cfg.CollectorID, err)
+		return nil
+	}
+	return &topologyRun{state: st, sequence: seq}
+}
+
+func (t *topologyRun) build(deps CollectorDeps, cfg CollectorConfig, snap Snapshot, capturedAt time.Time) *TopologyV1 {
+	if !snap.FirmwareOK {
+		return nil
+	}
+	report, err := BuildTopologyV1(snap, TopologyIdentity{SourceIdentity: cfg.TopologySourceIdentity, ProducerEpoch: cfg.TopologyProducerEpoch},
+		t.sequence, capturedAt, time.Now(), maxInt(cfg.PollIntervalSeconds, 15))
+	if err == nil {
+		var b []byte
+		if b, err = json.Marshal(report); err == nil && len(b) > UnifiTopologyV1MaxBytes {
+			err = fmt.Errorf("companion is %d bytes (limit %d)", len(b), UnifiTopologyV1MaxBytes)
+		}
+	}
+	if err != nil {
+		deps.logf("[unifi] collector %s: topology v1 omitted: %v", cfg.CollectorID, err)
+		return nil
+	}
+	return report
 }
 
 // StartCollectorLoop periodically fetches this agent's collector configs from
