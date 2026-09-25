@@ -48,6 +48,11 @@ vi.mock('../../config/env', async (importOriginal) => ({
 vi.mock('../aiAgents/runService', () => ({
   createAndEnqueueAgentRun: vi.fn(async () => ({ created: true, run: { id: 'run-2' } })),
 }));
+// Task-wide budgets (#6590) are covered in taskCoordinatorLimits.test.ts;
+// here they resolve to the defaults with nothing spent.
+vi.mock('./taskLimitsLoader', () => ({
+  loadTaskLimitContext: vi.fn(async () => ({ policyLimits: null, spentCents: 0 })),
+}));
 
 import { markStepWaiting, openStep, settleStep } from './stepService';
 import { appendTaskEvent } from './eventService';
