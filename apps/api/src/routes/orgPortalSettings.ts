@@ -51,6 +51,7 @@ const PORTAL_SETTINGS_DEFAULTS = {
   enableDocuments: false,
   enableLifecycle: false,
   enableNetworkVisibility: false,
+  enableNetworkAlerts: false,
   chromeAccent: null,
   supportEmail: null,
   supportPhone: null,
@@ -74,6 +75,7 @@ type PortalSettingsRow = {
   enableDocuments: boolean;
   enableLifecycle: boolean;
   enableNetworkVisibility: boolean;
+  enableNetworkAlerts: boolean;
   chromeAccent: string | null;
   supportEmail: string | null;
   supportPhone: string | null;
@@ -105,6 +107,7 @@ const portalSettingsColumns = () => ({
   enableDocuments: portalBranding.enableDocuments,
   enableLifecycle: portalBranding.enableLifecycle,
   enableNetworkVisibility: portalBranding.enableNetworkVisibility,
+  enableNetworkAlerts: portalBranding.enableNetworkAlerts,
   chromeAccent: portalBranding.chromeAccent,
   supportEmail: portalBranding.supportEmail,
   supportPhone: portalBranding.supportPhone,
@@ -131,6 +134,7 @@ function toResponse(orgId: string, row?: PortalSettingsRow) {
     enableDocuments: row.enableDocuments,
     enableLifecycle: row.enableLifecycle,
     enableNetworkVisibility: row.enableNetworkVisibility,
+    enableNetworkAlerts: row.enableNetworkAlerts,
     chromeAccent: row.chromeAccent,
     supportEmail: row.supportEmail,
     supportPhone: row.supportPhone,

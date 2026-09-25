@@ -1365,6 +1365,10 @@
         "enableNetworkVisibility": {
           "label": "Visibilité réseau",
           "description": "Affiche dans le portail client l’état du réseau et les actifs découverts en lecture seule."
+        },
+        "enableNetworkAlerts": {
+          "label": "Alertes réseau",
+          "description": "Affiche dans le portail client le nombre d'alertes actives et les tickets ouverts liés aux actifs réseau."
         }
       }
     },

@@ -214,6 +214,7 @@ describe('GET /organizations/:id/portal-settings', () => {
       enableDocuments: false,
       enableLifecycle: false,
       enableNetworkVisibility: false,
+      enableNetworkAlerts: false,
       chromeAccent: null,
       supportEmail: null,
       supportPhone: null,

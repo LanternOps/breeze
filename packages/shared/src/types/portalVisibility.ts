@@ -339,9 +339,10 @@ export interface NetworkAssetRowDto {
   model: string | null;
   siteName: string;
   /**
-   * Alert/ticket enrichment (#5861 PR 3). Present only when the org's
-   * enable_network_alerts flag is on; omitted entirely when off, mirroring
-   * the optional `service?` pattern on DashboardDto -- never null-filled.
+   * Alert/ticket enrichment (#5861 PR 3). Present -- zero-filled when the
+   * asset has no active alerts -- whenever the org's enable_network_alerts
+   * flag is on; omitted entirely (never null-filled) when the flag is off,
+   * mirroring the optional `service?` pattern on DashboardDto.
    */
   activeAlertCount?: number;
   /** Highest severity among this asset's active network-monitor alerts; null when activeAlertCount is 0. */

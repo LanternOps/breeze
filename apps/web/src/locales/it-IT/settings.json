@@ -1365,6 +1365,10 @@
         "enableNetworkVisibility": {
           "label": "Visibilità di rete",
           "description": "Mostra nel portale cliente lo stato della rete e gli asset rilevati in sola lettura."
+        },
+        "enableNetworkAlerts": {
+          "label": "Avvisi di rete",
+          "description": "Mostra nel portale cliente il numero di avvisi attivi e i ticket aperti collegati agli asset di rete."
         }
       }
     },

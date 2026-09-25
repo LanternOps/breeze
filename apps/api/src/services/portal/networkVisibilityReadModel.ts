@@ -256,7 +256,10 @@ export async function loadNetworkAssetAlertEnrichment(
       status: tickets.status,
     })
     .from(ticketAlertLinks)
-    .innerJoin(tickets, eq(ticketAlertLinks.ticketId, tickets.id))
+    .innerJoin(
+      tickets,
+      and(eq(ticketAlertLinks.ticketId, tickets.id), eq(tickets.orgId, orgId)),
+    )
     .where(inArray(ticketAlertLinks.alertId, alertIds));
 
   const openTicketIdsByAsset = new Map<string, Set<string>>();
@@ -275,6 +278,15 @@ export async function loadNetworkAssetAlertEnrichment(
 
   return result;
 }
+
+// Returned for every asset when enrichWithAlerts is on, whether or not that
+// asset has any active alerts -- so absence of the three enrichment fields
+// on a row means "flag off", never "flag on, zero alerts" (#5861 PR 3 review).
+const ZERO_ALERT_ENRICHMENT: NetworkAssetAlertEnrichment = {
+  activeAlertCount: 0,
+  highestAlertSeverity: null,
+  openTicketCount: 0,
+};
 
 export async function networkAssets(
   orgId: string,
@@ -351,7 +363,11 @@ export async function networkAssets(
 
     return {
       dataStatus: 'ok',
-      data: rows.map((row) => toAssetRow(row, reachabilityByAsset.get(row.id), alertEnrichmentByAsset?.get(row.id))),
+      data: rows.map((row) => toAssetRow(
+        row,
+        reachabilityByAsset.get(row.id),
+        enrichWithAlerts ? (alertEnrichmentByAsset?.get(row.id) ?? ZERO_ALERT_ENRICHMENT) : undefined,
+      )),
       pagination: { page, limit, total },
     };
   }
@@ -392,12 +408,10 @@ export async function networkAssets(
   if (enrichWithAlerts) {
     const alertEnrichmentByAsset = await loadNetworkAssetAlertEnrichment(orgId, pageData.map((row) => row.id));
     for (const row of pageData) {
-      const enrichment = alertEnrichmentByAsset.get(row.id);
-      if (enrichment) {
-        row.activeAlertCount = enrichment.activeAlertCount;
-        row.highestAlertSeverity = enrichment.highestAlertSeverity as NetworkAssetRowDto['highestAlertSeverity'];
-        row.openTicketCount = enrichment.openTicketCount;
-      }
+      const enrichment = alertEnrichmentByAsset.get(row.id) ?? ZERO_ALERT_ENRICHMENT;
+      row.activeAlertCount = enrichment.activeAlertCount;
+      row.highestAlertSeverity = enrichment.highestAlertSeverity as NetworkAssetRowDto['highestAlertSeverity'];
+      row.openTicketCount = enrichment.openTicketCount;
     }
   }
 

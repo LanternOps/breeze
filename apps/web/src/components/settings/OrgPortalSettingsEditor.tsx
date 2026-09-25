@@ -27,6 +27,7 @@ type PortalSettings = {
   enableDocuments: boolean;
   enableLifecycle: boolean;
   enableNetworkVisibility: boolean;
+  enableNetworkAlerts: boolean;
   supportEmail: string | null;
   supportPhone: string | null;
   welcomeMessage: string | null;
@@ -69,7 +70,8 @@ type VisibilityToggleKey =
   | 'enableService'
   | 'enableDocuments'
   | 'enableLifecycle'
-  | 'enableNetworkVisibility';
+  | 'enableNetworkVisibility'
+  | 'enableNetworkAlerts';
 
 const VISIBILITY_TOGGLES: Array<{
   key: VisibilityToggleKey;
@@ -125,6 +127,15 @@ const VISIBILITY_TOGGLES: Array<{
     key: 'enableNetworkVisibility',
     labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableNetworkVisibility.label',
     descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableNetworkVisibility.description',
+  },
+  // Distinct sensitivity tier from asset inventory (enableNetworkVisibility
+  // above), gated by its own flag -- listed here so an org admin can toggle
+  // it individually, but deliberately left out of enableAllVisibility()
+  // below (same reasoning as the enable_network_alerts migration comment).
+  {
+    key: 'enableNetworkAlerts',
+    labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableNetworkAlerts.label',
+    descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableNetworkAlerts.description',
   },
 ];
 
@@ -212,6 +223,7 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
             enableDocuments: draft.enableDocuments,
             enableLifecycle: draft.enableLifecycle,
             enableNetworkVisibility: draft.enableNetworkVisibility,
+            enableNetworkAlerts: draft.enableNetworkAlerts,
             supportEmail: draft.supportEmail?.trim() || null,
             supportPhone: draft.supportPhone?.trim() || null,
             welcomeMessage: draft.welcomeMessage?.trim() || null,

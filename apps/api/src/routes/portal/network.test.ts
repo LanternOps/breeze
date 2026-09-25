@@ -267,7 +267,22 @@ describe('GET /network/assets (#5861, PR 2)', () => {
       status: undefined,
       page: undefined,
       limit: undefined,
-    });
+    }, undefined, false);
+  });
+
+  it('forwards enrichWithAlerts=true when enableNetworkAlerts is on', async () => {
+    dbState.rows = [{ enableNetworkVisibility: true, enableNetworkAlerts: true, partnerId: PARTNER_ID }];
+
+    const response = await makeApp().request('/network/assets');
+
+    expect(response.status).toBe(200);
+    expect(networkAssetsMock).toHaveBeenCalledWith(ORG_ID, {
+      siteId: undefined,
+      assetType: undefined,
+      status: undefined,
+      page: undefined,
+      limit: undefined,
+    }, undefined, true);
   });
 
   it('forwards siteId, assetType, status, page and limit query params', async () => {
@@ -284,7 +299,7 @@ describe('GET /network/assets (#5861, PR 2)', () => {
       status: 'online',
       page: 2,
       limit: 10,
-    });
+    }, undefined, false);
   });
 
   it('rejects an invalid status value with 400', async () => {

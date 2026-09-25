@@ -696,12 +696,14 @@ describe('networkAssets alert/ticket enrichment (#5861 PR 3)', () => {
       openTicketCount: 1,
     });
 
-    // An asset with no linked alerts gets no enrichment fields at all — not
-    // zeroed-out ones — so a plain page render never has to special-case it.
+    // An asset with no linked alerts still gets the enrichment fields when
+    // the flag is on -- zero-filled, not omitted -- so a client can tell
+    // "flag off" (fields absent) apart from "flag on, zero alerts" (#5861
+    // PR 3 review).
     const quiet = result.data.find((row) => row.hostname === 'quiet-switch-01');
-    expect(quiet?.activeAlertCount).toBeUndefined();
-    expect(quiet?.highestAlertSeverity).toBeUndefined();
-    expect(quiet?.openTicketCount).toBeUndefined();
+    expect(quiet?.activeAlertCount).toBe(0);
+    expect(quiet?.highestAlertSeverity).toBeNull();
+    expect(quiet?.openTicketCount).toBe(0);
   });
 
   it('omits alert enrichment fields when enrichWithAlerts is false, even with active alerts present', async () => {

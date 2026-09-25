@@ -1365,6 +1365,10 @@
         "enableNetworkVisibility": {
           "label": "Netzwerksichtbarkeit",
           "description": "Zeigt im Kundenportal den Netzwerkzustand und erkannte Assets schreibgeschützt an."
+        },
+        "enableNetworkAlerts": {
+          "label": "Netzwerkwarnungen",
+          "description": "Zeigt im Kundenportal die Anzahl aktiver Warnungen und verknüpfter offener Tickets für Netzwerk-Assets an."
         }
       }
     },
