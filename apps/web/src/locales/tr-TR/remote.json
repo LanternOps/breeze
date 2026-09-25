@@ -36,6 +36,8 @@
     },
     "errors": {
       "agentUpgradeRequired": "Uzak masaüstü için bu cihazda aracı güncellemesi gerekiyor (oturum iptal kirası ve başlatma çiti desteği). Aracı kendini otomatik olarak günceller; bu genellikle bir dakika içinde çözülür. Terminal ve dosya aktarımı etkilenmez.",
+      "deviceNotFoundOrAccessDenied": "Cihaz bulunamadı veya erişim reddedildi",
+      "siteAccessDenied": "Bu siteye erişim reddedildi",
       "connectionFailed": "Bağlantı başarısız oldu",
       "createDesktopCode": "Masaüstü bağlantı kodu oluşturulamadı",
       "createDesktopSession": "Masaüstü oturumu oluşturulamadı",

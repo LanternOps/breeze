@@ -116,6 +116,10 @@ async function verifyDeviceAccess(
   return { device };
 }
 
+// #6745 (A-W05 follow-up): the largest preview page of realistic candidates
+// that fits the chat budget uncompacted (aiToolsFilesystem.diskCleanup.outputShape.test.ts).
+const DISK_CLEANUP_DEFAULT_CANDIDATES = 35;
+
 export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
   function registerTool(tool: AiTool): void {
     aiTools.set(tool.definition.name, tool);
@@ -367,7 +371,8 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
           categories: { type: 'array', items: { type: 'string' }, description: 'Optional cleanup categories filter for preview' },
           cleanupRunId: { type: 'string', format: 'uuid', description: 'Preview run to execute; defaults to the run remembered from this tool’s own preview' },
           paths: { type: 'array', items: { type: 'string' }, description: 'Selected paths to delete (required for execute)' },
-          maxCandidates: { type: 'number', description: 'Max preview candidates returned in chat (1-200, default 100)' }
+          maxCandidates: { type: 'number', description: `Max preview candidates returned in chat, largest first (1-200, default ${DISK_CLEANUP_DEFAULT_CANDIDATES})` },
+          includeReasons: { type: 'boolean', description: 'Include each preview candidate\'s reason text (default false)' },
         },
         required: ['deviceId', 'action']
       }
@@ -422,8 +427,10 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
           : undefined;
         const preview = buildCleanupPreview(snapshot, requestedCategories);
 
-        const maxCandidates = Math.min(Math.max(1, Number(input.maxCandidates) || 100), 200);
+        const maxCandidates = Math.min(Math.max(1, Number(input.maxCandidates) || DISK_CLEANUP_DEFAULT_CANDIDATES), 200);
         const returnedCandidates = preview.candidates.slice(0, maxCandidates);
+        const truncatedCandidateCount = Math.max(0, preview.candidates.length - returnedCandidates.length);
+        const includeReasons = input.includeReasons === true;
         const [cleanupRun] = await inCleanupContext(async () => db
           .insert(deviceFilesystemCleanupRuns)
           .values({
@@ -451,10 +458,19 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
           estimatedBytes: preview.estimatedBytes,
           candidateCount: preview.candidateCount,
           returnedCandidateCount: returnedCandidates.length,
-          truncatedCandidateCount: Math.max(0, preview.candidates.length - returnedCandidates.length),
+          truncatedCandidateCount,
+          hasMore: truncatedCandidateCount > 0,
           maxCandidates,
           categories: preview.categories,
-          candidates: returnedCandidates
+          // #6745: every previewed candidate is safe by construction (the
+          // preview filters on it), so `safe` carried no information; `reason`
+          // repeats per category and is opt-in. Execute accepts any path in the
+          // pinned run, including ones not shown here.
+          candidates: returnedCandidates.map(({ safe: _safe, reason, ...candidate }) =>
+            (includeReasons && reason !== undefined ? { ...candidate, reason } : candidate)),
+          ...(truncatedCandidateCount > 0
+            ? { note: `Showing the ${returnedCandidates.length} largest of ${preview.candidateCount} candidates (estimatedBytes covers all of them). Pass a larger maxCandidates or filter by categories to see more.` }
+            : {}),
         });
       }
 

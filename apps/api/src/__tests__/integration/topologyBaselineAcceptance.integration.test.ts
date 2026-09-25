@@ -80,7 +80,7 @@ async function baseline(options: FixtureOptions = {}) {
     scope,
     auth: {
       user: env.user, scope: 'organization', orgId, partnerId: env.partner.id,
-      accessibleOrgIds: [orgId], allowedSiteIds: null, token: { mfa: true },
+      accessibleOrgIds: [orgId], allowedSiteIds: undefined, token: { mfa: true },
       canAccessOrg: (candidate: string) => candidate === orgId,
     } as unknown as AuthContext,
     permissions: {

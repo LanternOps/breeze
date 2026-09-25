@@ -135,6 +135,47 @@ describe.runIf(RUN)('issueInvoice', () => {
     ).rejects.toMatchObject({ code: 'NOT_A_DRAFT' });
   });
 
+  // Settings consolidation W06 (#6229): real-Postgres proof of the org override
+  // column, the resolver precedence, the 0 edge, the CHECK bounds, and that an
+  // issued invoice's due date is frozen (later override edits never restamp it).
+  it('due date resolves org override ?? partner default, 0 honoured, frozen after issue', async () => {
+    const days = (inv: { issueDate: string | null; dueDate: string | null }) =>
+      Math.round((new Date(inv.dueDate + 'T00:00:00Z').getTime() - new Date(inv.issueDate + 'T00:00:00Z').getTime()) / 86400000);
+    const f = await seedFixture({ entries: [{ durationMinutes: 60, hourlyRate: '100.00' }] });
+    await withSystemDbAccessContext(async () => {
+      await db.update(partners).set({ invoiceTermsDays: 21 }).where(eq(partners.id, f.partnerId));
+      await db.update(organizations).set({ invoiceTermsDays: 7 }).where(eq(organizations.id, f.orgId));
+    });
+    const { invoice } = await withDbAccessContext(ctx(f), () =>
+      svc.assembleDraftFromOrg({ orgId: f.orgId, from: dayBefore(), to: dayAfter() }, actor(f)));
+    const issued = await withDbAccessContext(ctx(f), () => svc.issueInvoice(invoice.id, actor(f)));
+    expect(days(issued)).toBe(7); // org wins over partner 21
+
+    // Later override edits apply to the NEXT issue only: 0 = due on receipt,
+    // null = inherit the partner default. The first invoice is re-checked below.
+    await withDbAccessContext(ctx(f), () => svc.updateOrgBillingSettings(f.orgId, { invoiceTermsDays: 0 }, actor(f)));
+    const manual0 = await withDbAccessContext(ctx(f), () => svc.createManualInvoice({ orgId: f.orgId }, actor(f)));
+    await withDbAccessContext(ctx(f), () => svc.addManualLine(manual0.id, { description: 'x', quantity: 1, unitPrice: 5, taxable: false }, actor(f)));
+    const issued0 = await withDbAccessContext(ctx(f), () => svc.issueInvoice(manual0.id, actor(f)));
+    expect(days(issued0)).toBe(0); // 0 = due on receipt, not "blank"
+
+    await withDbAccessContext(ctx(f), () => svc.updateOrgBillingSettings(f.orgId, { invoiceTermsDays: null }, actor(f)));
+    const manualInherit = await withDbAccessContext(ctx(f), () => svc.createManualInvoice({ orgId: f.orgId }, actor(f)));
+    await withDbAccessContext(ctx(f), () => svc.addManualLine(manualInherit.id, { description: 'y', quantity: 1, unitPrice: 5, taxable: false }, actor(f)));
+    const issuedInherit = await withDbAccessContext(ctx(f), () => svc.issueInvoice(manualInherit.id, actor(f)));
+    expect(days(issuedInherit)).toBe(21);
+
+    const [first] = await withSystemDbAccessContext(() =>
+      db.select({ issueDate: invoices.issueDate, dueDate: invoices.dueDate }).from(invoices).where(eq(invoices.id, invoice.id)));
+    expect(days(first!)).toBe(7); // frozen at issue
+
+    // DB CHECK backs the validator: 366 and -1 are rejected.
+    for (const bad of [366, -1]) {
+      await expect(withSystemDbAccessContext(() =>
+        db.update(organizations).set({ invoiceTermsDays: bad }).where(eq(organizations.id, f.orgId)))).rejects.toThrow();
+    }
+  });
+
   it('double-bill guard: re-issuing source rows already billed throws SOURCE_ALREADY_BILLED', async () => {
     const f = await seedFixture();
     // Assemble + issue once (flips rows to billed).

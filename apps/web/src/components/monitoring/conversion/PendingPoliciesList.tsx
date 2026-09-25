@@ -7,7 +7,7 @@ import { fetchPendingCounts, type PendingCounts } from './conversionApi';
  * org-scoped `/conversion/pending` endpoint as the banner, whose list and count
  * come from one query (countPendingConversions), so the two always agree.
  */
-export default function PendingPoliciesList({ orgId }: { orgId: string | null }) {
+export default function PendingPoliciesList({ orgId, revision }: { orgId: string | null; revision?: number }) {
   const { t } = useTranslation(['monitoring']);
   const [state, setState] = useState<{ status: 'loading' } | { status: 'error' } | { status: 'ready'; data: PendingCounts }>({ status: 'loading' });
   useEffect(() => {
@@ -17,7 +17,7 @@ export default function PendingPoliciesList({ orgId }: { orgId: string | null })
       .then((data) => { if (!cancelled) setState({ status: 'ready', data }); })
       .catch(() => { if (!cancelled) setState({ status: 'error' }); });
     return () => { cancelled = true; };
-  }, [orgId]);
+  }, [orgId, revision]);
   if (state.status === 'loading') return <p className="text-sm text-muted-foreground">{t('monitoring:conversion.pendingPolicies.loading')}</p>;
   if (state.status === 'error') return <p className="text-sm text-destructive" role="alert" data-testid="pending-policies-error">{t('monitoring:conversion.pendingPolicies.error')}</p>;
   const pending = state.data.pendingPolicies ?? [];

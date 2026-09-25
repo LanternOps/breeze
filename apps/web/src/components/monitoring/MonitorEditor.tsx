@@ -46,6 +46,7 @@ import Breadcrumbs from '../layout/Breadcrumbs';
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import { i18n } from '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -130,6 +131,23 @@ const monitorFormSchema = z
     if (!condition.success) ctx.addIssue({ code: 'custom', path: ['condition'], message: 'Invalid condition' });
     const responses = monitorResponsesSchema.safeParse(value.responses);
     if (!responses.success) ctx.addIssue({ code: 'custom', path: ['responses'], message: 'Invalid responses' });
+    // D1: a `restart_service` response carries no service name of its own — it
+    // compiles to `auto_restart: true` on the delivered watch, which only ever
+    // targets the service named on the monitor's own `service`-kind condition
+    // (see automationActions.ts). Without this check the editor happily saves a
+    // restart response on a monitor with no service name at all (any non-service
+    // kind, or a service monitor whose name is still blank mid-edit), and at
+    // runtime automationRuntime.executeCommandAction reports it "succeeded" while
+    // doing nothing (~L1615). Block Save instead of shipping an inert action.
+    const hasRestartServiceResponse = value.responses.some(
+      (response) => (response as { kind?: unknown }).kind === 'restart_service',
+    );
+    const conditionServiceName = (value.condition as { serviceName?: unknown })?.serviceName;
+    const hasServiceName =
+      typeof conditionServiceName === 'string' && conditionServiceName.trim().length > 0;
+    if (hasRestartServiceResponse && !hasServiceName) {
+      ctx.addIssue({ code: 'custom', path: ['responses'], message: 'Restart service requires a service name' });
+    }
   });
 
 const DEFAULT_VALUES: MonitorFormValues = {
@@ -201,6 +219,7 @@ export async function attachAfterCreate(
 
 export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
   const { t } = useTranslation(['monitoring', 'common']);
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const isNew = !monitorId;
   const jwt = useJwtClaims();
   const currentPartnerId = jwt.status === 'resolved' ? jwt.claims.partnerId : null;
@@ -353,7 +372,7 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
       setLoading(true);
       setError(undefined);
       const response = await fetchWithAuth(`/monitor-definitions/${monitorId}`);
-      if (!response.ok) throw new Error(t('monitoring:editor.errors.load'));
+      if (!response.ok) throw new Error(stableT('monitoring:editor.errors.load'));
       const data = await response.json();
       const monitor = data?.data ?? data;
       setAttachments(Array.isArray(monitor.attachments) ? monitor.attachments : []);
@@ -381,11 +400,11 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
         aiAgentId: monitor.aiAgentId ?? null,
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('monitoring:editor.errors.load'));
+      setError(err instanceof Error ? err.message : stableT('monitoring:editor.errors.load'));
     } finally {
       setLoading(false);
     }
-  }, [isNew, monitorId, reset, t]);
+  }, [isNew, monitorId, reset, stableT]);
 
   useEffect(() => {
     void fetchKinds();

@@ -6,6 +6,7 @@ import { resolveUiColorToken, sanitizeHexColor } from '@/lib/utils';
 import { navigateTo } from '@/lib/navigation';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type BrandingEditorProps = {
   organizationId?: string;
@@ -182,6 +183,7 @@ function UploadDropzone({
 
 export default function BrandingEditor({ organizationId, onDirty, onSave }: BrandingEditorProps) {
   const { t } = useTranslation('settings');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [branding, setBranding] = useState<BrandingData>(defaultBranding);
   const [loading, setLoading] = useState(true);
   const [logoLightPreview, setLogoLightPreview] = useState('');
@@ -230,7 +232,7 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
           setLoading(false);
           return;
         }
-        throw new Error(t('brandingEditor.fetchFailed'));
+        throw new Error(stableT('brandingEditor.fetchFailed'));
       }
       const data = await response.json();
       const brandingData = { ...defaultBranding, ...data };
@@ -255,12 +257,12 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
     } catch (error) {
       setStatusMessage({
         type: 'error',
-        message: error instanceof Error ? error.message : t('brandingEditor.loadFailed')
+        message: error instanceof Error ? error.message : stableT('brandingEditor.loadFailed')
       });
     } finally {
       setLoading(false);
     }
-  }, [organizationId, t]);
+  }, [organizationId, stableT]);
 
   useEffect(() => {
     fetchBranding();

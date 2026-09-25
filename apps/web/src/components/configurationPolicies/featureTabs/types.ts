@@ -88,4 +88,5 @@ export const FEATURE_META: Record<FeatureType, {
   vulnerability: { label: 'Vulnerability Scanning', fetchUrl: null,       description: 'Enable per-device CVE correlation (vulnerability detection)' },
   onedrive_helper: { label: 'OneDrive Helper', fetchUrl: null, description: 'Silently sign in OneDrive, enforce Files On-Demand and Known Folder Move, and auto-mount SharePoint libraries per user.' },
   device_lifecycle: { label: 'Device Lifecycle', fetchUrl: null, description: 'Permanently delete removed devices after a retention window' },
+  hardware_monitoring: { label: 'Hardware Monitoring', fetchUrl: null, description: 'RAID and disk health collection intervals' },
 };

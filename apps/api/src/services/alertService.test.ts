@@ -29,6 +29,7 @@ const {
       })),
       _table: table,
     })),
+    execute: vi.fn(() => Promise.resolve(insertReturnResults.shift() ?? [])),
     delete: vi.fn(() => ({
       where: vi.fn(() => Promise.resolve(undefined)),
     })),
@@ -141,7 +142,7 @@ describe('createAlert correlation enqueue boundary', () => {
 
     expect(alertId).toBe('alert-1');
     expect(enqueueAlertCorrelationMock).toHaveBeenCalledWith({ orgId: 'org-1', deviceId: 'device-1' });
-    expect(insertCalls).toHaveBeenCalledTimes(1);
+    expect(dbMock.execute).toHaveBeenCalledTimes(1);
     expect(insertCalls).not.toHaveBeenCalledWith(alertCorrelationsTable);
   });
 });
@@ -289,7 +290,7 @@ describe('createAlert publish rollback (#5325)', () => {
 
     expect(alertId).toBe('alert-1');
     expect(deleteCalls).not.toHaveBeenCalled();
-    expect(vi.mocked(setCooldown)).toHaveBeenCalledWith('rule-1', 'device-1', 5);
+    expect(vi.mocked(setCooldown)).toHaveBeenCalledWith('rule-1', 'device-1', 5, undefined);
     expect(enqueueAlertCorrelationMock).toHaveBeenCalledWith({ orgId: 'org-1', deviceId: 'device-1' });
   });
 });

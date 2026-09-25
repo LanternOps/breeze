@@ -99,7 +99,8 @@
     "ticketing": "Tickets",
     "deliverableTemplates": "Modelos de entregáveis",
     "securityScans": "Varreduras de IOC",
-    "system": "Sistema"
+    "system": "Sistema",
+    "monitorConversion": "Conversão de monitores"
   },
   "documentTitles": {
     "dashboard": "Painel",
@@ -1471,6 +1472,12 @@
           "editTitle": "Editar webhook"
         },
         "subtitle": "Entregue eventos a sistemas externos.",
+        "success": {
+          "created": "Webhook criado",
+          "disabled": "Webhook desativado",
+          "enabled": "Webhook ativado",
+          "updated": "Webhook atualizado"
+        },
         "title": "Webhooks"
       }
     },
@@ -2446,7 +2453,7 @@
         },
         "title": "Correções Sugeridas",
         "refresh": "Atualizar correções sugeridas",
-        "disabledTitle": "Correções sugeridas estão desativadas para esta organização",
+        "disabledTitle": "As correções sugeridas estão desativadas para esta organização. Ative-as em Configurações → Parceiro → Recursos de IA, ou para uma única organização na aba de IA dela.",
         "suggestionsDisabled": "Sugestões desativadas",
         "generate": "Gerar",
         "empty": "Ainda não há correções sugeridas.",

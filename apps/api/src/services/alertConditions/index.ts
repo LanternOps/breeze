@@ -30,6 +30,7 @@ import { softwarePresenceHandler } from './handlers/softwarePresence';
 import { backupContinuityHandler } from './handlers/backupContinuity';
 import { scriptMonitorHandler } from './handlers/scriptMonitor';
 import { networkCheckHandler } from './handlers/networkCheck';
+import { hardwareHealthHandler } from './handlers/hardwareHealth';
 
 conditionRegistry.register(thresholdHandler);
 conditionRegistry.register(offlineHandler);
@@ -48,9 +49,14 @@ conditionRegistry.register(softwarePresenceHandler);
 conditionRegistry.register(backupContinuityHandler);
 conditionRegistry.register(scriptMonitorHandler);
 conditionRegistry.register(networkCheckHandler);
+conditionRegistry.register(hardwareHealthHandler);
 
 // Re-export types for backward compatibility
 export type {
+  SubjectEvidence,
+  SubjectStatus,
+  HardwareHealthCondition,
+  HardwareHealthComponentFilter,
   ComparisonOperator,
   MetricName,
   ThresholdCondition,
@@ -87,16 +93,64 @@ import type {
   RootCondition,
   EvaluationResult,
   ThresholdCondition,
+  SubjectEvidence,
 } from './types';
 
 function isConditionGroup(condition: RootCondition): condition is ConditionGroup {
   return 'logic' in condition && 'conditions' in condition;
 }
 
+/**
+ * A leaf's contribution toward `context.actualValue`, recorded in TREE ORDER
+ * (left-to-right, depth-first) — never completion order. Sibling leaves under
+ * a group are evaluated via `Promise.all`, so whichever settles first is not
+ * a stable choice; the slot for each leaf is reserved SYNCHRONOUSLY, before
+ * its `await`, so array position always matches the condition tree's own
+ * left-to-right order regardless of which leaf's async work finishes first.
+ */
+type LeafActualValueCandidate = {
+  /** The leaf condition's own `type`, e.g. 'threshold' | 'patch_compliance'. */
+  type?: string;
+  actualValue?: number;
+};
+
+type EvaluationAccumulator = {
+  met: string[];
+  notMet: string[];
+  /** Filled in by pickPrimaryActualValue() after the whole tree resolves. */
+  primaryActualValue?: number;
+  leafActualValues: LeafActualValueCandidate[];
+  sawUnknown?: boolean;
+  subjects?: SubjectEvidence[];
+};
+
+/**
+ * Deterministically picks the leaf whose actualValue should drive
+ * `context.actualValue`, from candidates recorded in tree order (#6932
+ * follow-up: `results.primaryActualValue` used to be set by whichever
+ * sibling leaf's Promise settled FIRST under `Promise.all`, which is
+ * non-deterministic for a composite mixing e.g. hardware_health with a
+ * threshold leaf). Threshold/metric leaves win when present — that is the
+ * shape every pre-existing composite alert's template was written against
+ * (#1980) — so this must render identically to before this whole class of
+ * kind ever existed. Otherwise, first leaf in tree order wins.
+ */
+function pickPrimaryActualValue(candidates: LeafActualValueCandidate[]): number | undefined {
+  for (const c of candidates) {
+    if ((c.type === 'threshold' || c.type === 'metric') && typeof c.actualValue === 'number') {
+      return c.actualValue;
+    }
+  }
+  for (const c of candidates) {
+    if (typeof c.actualValue === 'number') return c.actualValue;
+  }
+  return undefined;
+}
+
 async function evaluateConditionRecursive(
   condition: RootCondition,
   deviceId: string,
-  results: { met: string[]; notMet: string[]; primaryActualValue?: number; sawUnknown?: boolean }
+  results: EvaluationAccumulator
 ): Promise<boolean> {
   if (isConditionGroup(condition)) {
     const evaluations = await Promise.all(
@@ -109,11 +163,21 @@ async function evaluateConditionRecursive(
       return evaluations.some(e => e);
     }
   } else {
+    // Reserve this leaf's ordered slot BEFORE the await below — see
+    // LeafActualValueCandidate's doc comment for why this must happen
+    // synchronously rather than after the evaluation resolves.
+    const slot: LeafActualValueCandidate = { type: (condition as { type?: string }).type };
+    results.leafActualValues.push(slot);
+
     // Evaluate via registry
     const result = await conditionRegistry.evaluate(
       condition as { type: string },
       deviceId
     );
+
+    // W03 — carry per-subject evidence, but only a single leaf's is ever
+    // surfaced on the root result (see evaluateConditions below).
+    results.subjects = result.subjects;
 
     if (result.dataAvailable === false) {
       results.sawUnknown = true;
@@ -125,17 +189,13 @@ async function evaluateConditionRecursive(
       results.notMet.push(result.description);
     }
 
-    // Capture the value the threshold/metric handler actually evaluated (the
-    // window average) so context.actualValue reflects what drove the decision
-    // rather than the latest raw sample — which can be sub-threshold once the
-    // window is averaged (#1980).
-    const condType = (condition as { type?: string }).type;
-    if (
-      (condType === 'threshold' || condType === 'metric') &&
-      results.primaryActualValue === undefined &&
-      typeof result.actualValue === 'number'
-    ) {
-      results.primaryActualValue = result.actualValue;
+    // Every handler that populates a template's {{actualValue}} placeholder
+    // returns a numeric `actualValue` on its ConditionResult (#6932), so this
+    // is not limited to threshold/metric conditions — pickPrimaryActualValue
+    // (called once the whole tree has resolved) is what prefers a
+    // threshold/metric leaf among these candidates.
+    if (typeof result.actualValue === 'number') {
+      slot.actualValue = result.actualValue;
     }
 
     return result.passed;
@@ -184,44 +244,58 @@ export async function evaluateConditions(
     };
   }
 
-  const results = { met: [] as string[], notMet: [] as string[] } as {
-    met: string[];
-    notMet: string[];
-    primaryActualValue?: number;
-    sawUnknown?: boolean;
-  };
+  const results: EvaluationAccumulator = { met: [], notMet: [], leafActualValues: [] };
   const triggered = await evaluateConditionRecursive(rootCondition, deviceId, results);
+  // Deterministic: chosen from leaf candidates recorded in tree order, never
+  // from whichever sibling's Promise happened to settle first.
+  results.primaryActualValue = pickPrimaryActualValue(results.leafActualValues);
 
   // Get latest metric for context
   const latestMetric = await getLatestMetric(deviceId);
 
   const context: EvaluationResult['context'] = { deviceId, evaluatedAt };
 
-  // Find first threshold condition to include in context
-  const findFirstThreshold = (cond: RootCondition): ThresholdCondition | undefined => {
+  // Find the first condition carrying operator/value (threshold-shaped)
+  // fields to include in context. `ThresholdCondition` is one such shape,
+  // but several other kinds (bandwidth_high, disk_io_high,
+  // process_cpu_high/process_memory_high, network_errors, patch_compliance)
+  // also compare an `operator`/`value` pair and their templates reference
+  // {{operator}}/{{threshold}} — those were left unfilled before #6932.
+  type ThresholdLikeCondition = { operator: ThresholdCondition['operator']; value: number; metric?: string; durationMinutes?: number };
+  const isThresholdLike = (cond: AlertCondition): cond is AlertCondition & ThresholdLikeCondition =>
+    'operator' in cond && typeof (cond as { value?: unknown }).value === 'number';
+
+  const findFirstThreshold = (cond: RootCondition): ThresholdLikeCondition | undefined => {
     if (isConditionGroup(cond)) {
       for (const c of cond.conditions) {
         const found = findFirstThreshold(c);
         if (found) return found;
       }
       return undefined;
-    } else if (cond.type === 'threshold' || cond.type === 'metric') {
-      return cond as ThresholdCondition;
+    } else if (isThresholdLike(cond)) {
+      return cond;
     }
     return undefined;
   };
 
   const primaryThreshold = findFirstThreshold(rootCondition);
   if (primaryThreshold) {
-    const normalizedMetric = normalizeMetricName(primaryThreshold.metric);
+    const normalizedMetric = primaryThreshold.metric ? normalizeMetricName(primaryThreshold.metric) : undefined;
     const latestValue = normalizedMetric ? latestMetric?.[normalizedMetric] ?? undefined : undefined;
-    context.metric = primaryThreshold.metric;
+    if (primaryThreshold.metric) {
+      context.metric = primaryThreshold.metric;
+    }
     // Prefer the averaged value the handler evaluated; fall back to the latest
     // raw sample only when no handler value was captured (e.g. window empty).
+    // The raw-sample fallback only applies to real device metrics.
     context.actualValue = results.primaryActualValue ?? latestValue;
     context.threshold = primaryThreshold.value;
     context.operator = getOperatorDisplay(primaryThreshold.operator);
     context.durationMinutes = primaryThreshold.durationMinutes;
+  } else if (results.primaryActualValue !== undefined) {
+    // No threshold-shaped condition, but a leaf handler (e.g. network_check,
+    // antivirus) still reported a numeric actualValue its template uses.
+    context.actualValue = results.primaryActualValue;
   }
 
   return {
@@ -229,7 +303,8 @@ export async function evaluateConditions(
     conditionsMet: results.met,
     conditionsNotMet: results.notMet,
     dataState: results.sawUnknown ? 'unknown' : 'ok',
-    context
+    context,
+    ...(!isConditionGroup(rootCondition) && results.subjects !== undefined ? { subjects: results.subjects } : {}),
   };
 }
 

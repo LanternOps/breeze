@@ -73,7 +73,8 @@
     "errors": {
       "loadFailed": "Impossible de charger les modèles de liste de vérification.",
       "saveFailed": "Impossible d'enregistrer le modèle de liste de vérification.",
-      "applyFailed": "Impossible d'appliquer le modèle de liste de vérification."
+      "applyFailed": "Impossible d'appliquer le modèle de liste de vérification.",
+      "operatorStepWaiting": "Une tâche de l'Opérateur attend une étape non cochée de ce billet : le modèle ne peut donc pas les remplacer. Choisissez plutôt « Ajouter ces étapes à la liste de vérification existante », cochez l'étape une fois le travail fait, ou arrêtez d'abord la tâche."
     }
   }
 }

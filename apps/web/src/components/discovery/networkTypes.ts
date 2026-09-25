@@ -57,7 +57,7 @@ export type DeviceOption = {
   label: string;
 };
 
-export type DiscoveredAssetLinkSource = 'manual' | 'auto';
+export type DiscoveredAssetLinkSource = 'manual' | 'auto' | 'agent_report';
 export type DiscoveredAssetTypeSource = 'manual' | 'auto';
 
 // A discovered asset can only be unlinked when it was linked manually. Auto
@@ -90,7 +90,7 @@ function asBoolean(value: unknown): boolean | null {
 }
 
 export function parseDiscoveredAssetLinkSource(value: unknown): DiscoveredAssetLinkSource | null {
-  return value === 'manual' || value === 'auto' ? value : null;
+  return value === 'manual' || value === 'auto' || value === 'agent_report' ? value : null;
 }
 
 // Unlike linkSource (nullable), typeSource always resolves to a concrete value:

@@ -39,6 +39,9 @@ export default defineConfig({
       // Real-DB backup queue lifecycle proof (#4923); runs under the
       // integration config's setup (truncating), never the unit runner.
       'src/services/backupProgress.integration.test.ts',
+      // Discovered-asset site move real-DB proof: imports `__tests__/integration/setup`
+      // (real postgres pool); belongs to vitest.integration.config.ts.
+      'src/services/discoveredAssetSiteMove.integration.test.ts',
       'src/services/cpeMap.integration.test.ts',
       'src/services/cpeResolution.integration.test.ts',
       'src/services/exploitFeeds.integration.test.ts',
@@ -47,6 +50,15 @@ export default defineConfig({
       // (real postgres + autoMigrate). Belongs to vitest.integration.config.ts;
       // the no-DB unit runner would fail it on connect.
       'src/services/warrantyAlertEvaluator.integration.test.ts',
+      // Hardware & RAID monitoring real-DB migration/RLS proof (W01 #6856):
+      // imports `__tests__/integration/setup` (real postgres pool + autoMigrate).
+      // Belongs to vitest.integration.config.ts.
+      'src/services/hardwareHealth/**/*.integration.test.ts',
+      // Hardware & RAID monitoring (W05 BMC in-band): use real PostgreSQL and
+      // the integration setup.
+      'src/services/discovery/agentReportedBmcLink.integration.test.ts',
+      'src/jobs/discoveryWorker.bmc.integration.test.ts',
+      'src/services/topology/bmc.integration.test.ts',
       // Suppression-expiry reaper real-DB test: imports `__tests__/integration/setup`
       // (real postgres pool + autoMigrate in its beforeAll), so the unit runner's
       // no-DB environment fails the suite on connect. Belongs to vitest.integration.config.ts.
@@ -181,6 +193,13 @@ export default defineConfig({
       'src/routes/installerRotationRevocation.integration.test.ts',
       // Disposable-database credential cutover proof uses the integration runner.
       'src/db/installerBootstrapCredentialGeneration.migration.integration.test.ts',
+      // Hardware & RAID monitoring (W03): disposable-database replay proof for
+      // the monitor-kind enum and alert subject-identity migrations. Belongs to
+      // vitest.integration.config.ts (registered in its include list).
+      'src/db/hardwareAlertMigrations.integration.test.ts',
+      // Hardware & RAID monitoring (W03 Task 10/11): real-Postgres subject
+      // outbox/response-owner suite. Belongs to vitest.integration.config.ts.
+      'src/services/alertSubjects.integration.test.ts',
       // Enrollment-key list-filter real-DB test (#3191 live-installer-token
       // carve-out on ?expired=): same story as the two above — imports
       // `__tests__/integration/setup` and lives outside the

@@ -1,0 +1,2 @@
+md0 : active raid1 sda1[0]
+      1000000 blocks [2/2] [UU]

@@ -26,6 +26,7 @@ import {
   patchPolicies,
   devicePatches,
   patchJobs,
+  patchJobResults,
   patchRollbacks,
   patchComplianceSnapshots,
 } from '../db/schema/patches';
@@ -46,11 +47,12 @@ import {
 } from '../db/schema/alerts';
 import {
   configurationPolicies,
-  configPolicyAssignments,
   configPolicyFeatureLinks,
-  configPolicyMonitoringSettings,
-  configPolicyMonitoringWatches,
 } from '../db/schema/configurationPolicies';
+import {
+  listEffectiveServiceMonitors,
+  SERVICE_MONITOR_LIST_DEVICE_CAP,
+} from './monitors/listServiceMonitors';
 import {
   addFeatureLink,
   updateFeatureLink,
@@ -124,6 +126,7 @@ import {
 } from './siteScope';
 import { upsertPatchApproval, resolvePartnerIdForOrg, declineAllRingApprovals } from '../routes/patches/helpers';
 import { sanitizeThrownToolError } from './aiToolErrors';
+import { resolveWritableToolOrgId } from './aiToolWriteOrg';
 import { listFleetFindings } from './fleetFindings/query';
 import {
   AI_TRIAGE_SYSTEM_MANAGED_ERROR_CODE,
@@ -606,102 +609,6 @@ async function alertRuleTargetDenied(
   }
 }
 
-/**
- * Narrow a list of rows carrying a `policyId` to the configuration policies
- * that actually reach this caller. No-op for a caller restricted on neither
- * app-layer axis (and no query is issued for one).
- *
- * Lookups are lazy and batched: the device/group SITE maps are only read when
- * the caller has no exact-device allowlist (with one, membership in it settles
- * the question and the device's site is the run's own by construction), and
- * group MEMBERSHIPS are only read when it does.
- */
-async function narrowMonitorsToCallerReach<T extends { policyId: string | null }>(
-  auth: AuthContext,
-  rows: T[],
-): Promise<T[]> {
-  if (!auth.allowedSiteIds && !auth.allowedDeviceIds) return rows;
-  const policyIds = [...new Set(rows.map((r) => r.policyId).filter((id): id is string => !!id))];
-  if (policyIds.length === 0) return [];
-
-  const assignments = await db
-    .select({
-      configPolicyId: configPolicyAssignments.configPolicyId,
-      level: configPolicyAssignments.level,
-      targetId: configPolicyAssignments.targetId,
-    })
-    .from(configPolicyAssignments)
-    .where(inArray(configPolicyAssignments.configPolicyId, policyIds));
-
-  const exactDevices = auth.allowedDeviceIds ? new Set(auth.allowedDeviceIds) : null;
-  const targetsAt = (level: string) =>
-    [...new Set(assignments.filter((a) => a.level === level).map((a) => a.targetId))];
-
-  const deviceSite = new Map<string, string | null>();
-  const groupSite = new Map<string, string | null>();
-  const groupMembers = new Map<string, string[]>();
-
-  if (!exactDevices) {
-    const deviceTargets = targetsAt('device');
-    if (deviceTargets.length > 0) {
-      for (const row of await db.select({ id: devices.id, siteId: devices.siteId })
-        .from(devices).where(inArray(devices.id, deviceTargets))) {
-        deviceSite.set(row.id, row.siteId);
-      }
-    }
-    const groupTargets = targetsAt('device_group');
-    if (groupTargets.length > 0) {
-      for (const row of await db.select({ id: deviceGroups.id, siteId: deviceGroups.siteId })
-        .from(deviceGroups).where(inArray(deviceGroups.id, groupTargets))) {
-        groupSite.set(row.id, row.siteId);
-      }
-    }
-  } else {
-    const groupTargets = targetsAt('device_group');
-    if (groupTargets.length > 0) {
-      for (const row of await db.select({
-        groupId: deviceGroupMemberships.groupId,
-        deviceId: deviceGroupMemberships.deviceId,
-      }).from(deviceGroupMemberships).where(inArray(deviceGroupMemberships.groupId, groupTargets))) {
-        groupMembers.set(row.groupId, [...(groupMembers.get(row.groupId) ?? []), row.deviceId]);
-      }
-    }
-  }
-
-  // Site-shaped assignment targets — a `site` assignment, or a device group's
-  // own site — have no device to name, so only the site axis applies. Funnelled
-  // through ONE call so the exact-device contract test
-  // (aiToolsDeviceGuard.contract.test.ts) has a single site-only entry to carry.
-  const assignmentSiteDenied = (siteId: string | null): boolean => deviceSiteDenied(auth, siteId);
-
-  const reaches = (a: { level: string; targetId: string }): boolean => {
-    switch (a.level) {
-      // Partner/org-wide policies apply to the caller's own device as well, so
-      // they are not a disclosure of anyone else's configuration.
-      case 'partner':
-      case 'organization':
-        return true;
-      case 'site':
-        return !assignmentSiteDenied(a.targetId);
-      case 'device':
-        return exactDevices
-          ? exactDevices.has(a.targetId)
-          : !deviceSiteDenied(auth, deviceSite.get(a.targetId) ?? null, a.targetId);
-      case 'device_group':
-        return exactDevices
-          ? (groupMembers.get(a.targetId) ?? []).some((id) => exactDevices.has(id))
-          : !assignmentSiteDenied(groupSite.get(a.targetId) ?? null);
-      default:
-        return false;
-    }
-  };
-
-  const reachable = new Set(
-    assignments.filter(reaches).map((a) => a.configPolicyId),
-  );
-  return rows.filter((r) => !!r.policyId && reachable.has(r.policyId));
-}
-
 /** Wrap handler in try-catch so DB/runtime errors return JSON instead of crashing.
  *
  *  #6200: the third `context` argument is FORWARDED, not dropped. It used to
@@ -817,13 +724,16 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           rolloutConfig: { type: 'object', description: 'Rollout configuration: batch size, failure threshold (for create)' },
           schedule: { type: 'object', description: 'Schedule configuration (for create)' },
           limit: { type: 'number', description: 'Max results (default 25, max 100)' },
+          orgId: {
+            type: 'string',
+            description: 'Organization UUID that will own the new deployment (create only). Required unless you can access exactly one organization.',
+          },
         },
         required: ['action'],
       },
     },
     handler: safeHandler('manage_deployments', async (input, auth, context) => {
       const action = input.action as string;
-      const orgId = getOrgId(auth);
 
       // Deployments have no siteId column — gate site-restricted callers via
       // their member devices (mirrors routes/deployments.ts:760-766). Control
@@ -989,7 +899,9 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (approverReleaseMismatch(auth, context)) {
           return JSON.stringify({ error: 'approver_auth_mismatch', action });
         }
-        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+        const resolvedOrg = resolveWritableToolOrgId(auth, typeof input.orgId === 'string' && input.orgId ? input.orgId : undefined);
+        if (!resolvedOrg.orgId) return JSON.stringify({ error: resolvedOrg.error ?? 'Organization context required' });
+        const orgId = resolvedOrg.orgId;
         const [dep] = await db.insert(deployments).values({
           orgId,
           name: input.name as string,
@@ -1151,21 +1063,24 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceIds', 'deviceId'],
     definition: {
       name: 'manage_patches',
-      description: 'CVEs: get_vulnerability_report. Install requires BOTH patchIds and deviceIds. Approvals default partner-wide. Schedules/auto-approval: manage_policy_feature_link featureType "patch". Actions: list, compliance, scan, approve, decline, defer, bulk_approve, install, rollback.',
+      description: 'CVEs: get_vulnerability_report. Install requires BOTH patchIds and deviceIds. Approvals default partner-wide. Auto-approval: manage_policy_feature_link featureType "patch". Actions: list, compliance, scan, approve, decline, defer, bulk_approve, install, rollback, device_history.',
       input_schema: {
         type: 'object' as const,
         properties: {
-          action: { type: 'string', enum: ['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback'], description: "Install needs patchIds AND deviceIds; scan: deviceIds; bulk_approve: patchIds; approve/decline/defer: patchId or patchName; rollback: patchId+deviceIds." },
+          action: { type: 'string', enum: ['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback', 'device_history'], description: 'Install needs patchIds AND deviceIds; scan: deviceIds; bulk_approve: patchIds; approve/decline/defer: patchId/patchName; rollback: patchId+deviceIds' },
           patchId: { type: 'string', description: 'Patch UUID. Required for approve/decline/defer/rollback unless patchName is given (rollback always needs the UUID).' },
           patchName: { type: 'string', description: "Patch title or KB/external ID on this org's fleet (approve/decline/defer). Ambiguous matches return candidates." },
           patchIds: { type: 'array', items: { type: 'string' }, description: 'Patch UUIDs. Required for bulk_approve and install.' },
           deviceIds: { type: 'array', items: { type: 'string' }, description: 'Device UUIDs. Required for scan, install, and rollback.' },
-          deviceId: { type: 'string', description: 'Single device UUID to scope the patch list to one device (for list); returns per-device install status' },
+          deviceId: { type: 'string', description: "Single device UUID. list: scopes to one device w/ install status. device_history (required): scheduled+user job history, incl. jobs the audit log misses." },
           ringId: { type: 'string', description: 'Update ring UUID for approve/decline/defer. Omit for partner-wide approval; mutually exclusive with allRings.' },
           allRings: { type: 'boolean', description: "Decline only: revoke approval in every update ring for the partner. Mutually exclusive with ringId." },
           source: { type: 'string', enum: ['microsoft', 'apple', 'linux', 'third_party', 'custom'], description: 'Filter by source' },
           severity: { type: 'string', enum: ['critical', 'important', 'moderate', 'low', 'unknown'], description: 'Filter by severity' },
           status: { type: 'string', enum: ['pending', 'approved', 'rejected', 'deferred'], description: 'Filter by approval status' },
+          resultStatus: { type: 'string', enum: ['pending', 'running', 'queued', 'completed', 'failed', 'skipped'], description: 'device_history only: filter by patch job result status.' },
+          since: { type: 'string', description: 'device_history only: ISO timestamp, start of the window. Default: 14 days ago.' },
+          until: { type: 'string', description: 'device_history only: ISO timestamp, end of the window. Default: now.' },
           deferUntil: { type: 'string', description: 'ISO date to defer until (for defer)' },
           notes: { type: 'string', description: 'Approval/decline notes' },
           configPolicyId: { type: 'string', description: 'Configuration policy UUID to attach patch settings to (for setup_auto_approval). If omitted, creates a new policy.' },
@@ -1176,6 +1091,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           rebootPolicy: { type: 'string', enum: ['if_required', 'always', 'never'], description: 'Reboot policy after patching (for setup_auto_approval, default: if_required)' },
           sources: { type: 'array', items: { type: 'string', enum: ['os', 'third_party', 'custom'] }, description: 'Patch sources to include (for setup_auto_approval, default: ["os"])' },
           ...pageParamSchema(25, 100),
+          orgId: {
+            type: 'string',
+            description: 'Organization UUID that owns the target devices (install only). Required unless you can access exactly one organization.',
+          },
         },
         required: ['action'],
       },
@@ -1483,7 +1402,9 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'approver_auth_mismatch', action });
         }
         if (!Array.isArray(input.patchIds) || !Array.isArray(input.deviceIds)) return JSON.stringify({ error: 'patchIds and deviceIds are required' });
-        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+        const resolvedInstallOrg = resolveWritableToolOrgId(auth, typeof input.orgId === 'string' && input.orgId ? input.orgId : undefined);
+        if (!resolvedInstallOrg.orgId) return JSON.stringify({ error: resolvedInstallOrg.error ?? 'Organization context required' });
+        const installOrgId = resolvedInstallOrg.orgId;
 
         // Validate devices belong to this org AND the caller's site scope. Site
         // is an app-layer axis (RLS does NOT enforce it), so a site-restricted
@@ -1491,7 +1412,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const ownedDevices = await db.select({ id: devices.id, siteId: devices.siteId })
           .from(devices)
           .where(and(
-            eq(devices.orgId, orgId),
+            eq(devices.orgId, installOrgId),
             inArray(devices.id, input.deviceIds as string[]),
           ));
         const ownedIds = new Set(
@@ -1503,7 +1424,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         }
 
         const [job] = await db.insert(patchJobs).values({
-          orgId,
+          orgId: installOrgId,
           name: `AI-initiated patch install - ${new Date().toISOString()}`,
           patches: { patchIds: input.patchIds },
           targets: { deviceIds: input.deviceIds },
@@ -1544,6 +1465,102 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         }).returning();
 
         return JSON.stringify({ success: true, rollbackId: rollback?.id, message: 'Rollback initiated' });
+      }
+
+      if (action === 'device_history') {
+        // #6665: scheduled patch jobs (`patch_jobs.created_by IS NULL`) write no
+        // `audit_logs` row for the device, so `query_audit_log` is blind to them.
+        // This is the read path that closes that gap — join patch_job_results
+        // (one row per patch per device per job) back to the parent job and the
+        // vendor catalog, scoped to one device.
+        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+        const deviceId = typeof input.deviceId === 'string' ? input.deviceId : undefined;
+        if (!deviceId) return JSON.stringify({ error: 'deviceId is required for device_history' });
+
+        const [device] = await db.select({ id: devices.id, siteId: devices.siteId })
+          .from(devices)
+          .where(and(eq(devices.orgId, orgId), eq(devices.id, deviceId)))
+          .limit(1);
+        if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
+        // Site axis (app-layer only; RLS does NOT enforce it) — same check as rollback above.
+        if (deviceSiteDenied(auth, device.siteId, device.id)) return JSON.stringify({ error: 'Device not found or access denied' });
+
+        const now = new Date();
+        const DEFAULT_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
+        const since = typeof input.since === 'string' && !Number.isNaN(Date.parse(input.since))
+          ? new Date(input.since)
+          : new Date(now.getTime() - DEFAULT_WINDOW_MS);
+        const until = typeof input.until === 'string' && !Number.isNaN(Date.parse(input.until))
+          ? new Date(input.until)
+          : now;
+        const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
+
+        const historyConds: SQL[] = [
+          eq(patchJobs.orgId, orgId),
+          eq(patchJobResults.deviceId, deviceId),
+          gte(patchJobResults.createdAt, since),
+          lte(patchJobResults.createdAt, until),
+        ];
+        if (typeof input.resultStatus === 'string') {
+          historyConds.push(eq(patchJobResults.status, input.resultStatus as any));
+        }
+
+        const rows = await db.select({
+          jobId: patchJobs.id,
+          jobName: patchJobs.name,
+          createdBy: patchJobs.createdBy,
+          scheduledAt: patchJobs.scheduledAt,
+          jobStartedAt: patchJobs.startedAt,
+          jobCompletedAt: patchJobs.completedAt,
+          patchTitle: patches.title,
+          patchSource: patches.source,
+          patchExternalId: patches.externalId,
+          resultStatus: patchJobResults.status,
+          exitCode: patchJobResults.exitCode,
+          errorMessage: patchJobResults.errorMessage,
+          resultStartedAt: patchJobResults.startedAt,
+          resultCompletedAt: patchJobResults.completedAt,
+        })
+          .from(patchJobResults)
+          .innerJoin(patchJobs, eq(patchJobResults.jobId, patchJobs.id))
+          .leftJoin(patches, eq(patchJobResults.patchId, patches.id))
+          .where(and(...historyConds))
+          .orderBy(desc(patchJobResults.createdAt))
+          .limit(limit);
+
+        // Never echo the raw `output` column here — it duplicates the whole
+        // batch's stdout/stderr JSON per row. errorMessage is the targeted
+        // failure signal; truncate it too so one giant installer log can't
+        // blow the tool result budget.
+        const ERROR_MESSAGE_TRUNCATE_LEN = 300;
+        const history = rows.map((r) => ({
+          jobId: r.jobId,
+          jobName: r.jobName,
+          initiator: r.createdBy ? 'user' : 'scheduled',
+          scheduledAt: r.scheduledAt,
+          jobStartedAt: r.jobStartedAt,
+          jobCompletedAt: r.jobCompletedAt,
+          patchTitle: r.patchTitle,
+          patchSource: r.patchSource,
+          patchExternalId: r.patchExternalId,
+          resultStatus: r.resultStatus,
+          exitCode: r.exitCode,
+          errorMessage: r.errorMessage
+            ? (r.errorMessage.length > ERROR_MESSAGE_TRUNCATE_LEN
+              ? `${r.errorMessage.slice(0, ERROR_MESSAGE_TRUNCATE_LEN)}… (truncated)`
+              : r.errorMessage)
+            : null,
+          startedAt: r.resultStartedAt,
+          completedAt: r.resultCompletedAt,
+        }));
+
+        return JSON.stringify({
+          deviceId,
+          since: since.toISOString(),
+          until: until.toISOString(),
+          history,
+          showing: history.length,
+        });
       }
 
       if (action === 'setup_auto_approval') {
@@ -1683,6 +1700,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           filterConditions: { type: 'object', description: 'Dynamic filter conditions (for create/update/preview)' },
           deviceIds: { type: 'array', items: { type: 'string' }, description: 'Device UUIDs (for add_devices/remove_devices)' },
           limit: { type: 'number', description: 'Max results (default 25, max 200)' },
+          orgId: {
+            type: 'string',
+            description: 'Organization UUID that will own the new group (create only). Required unless you can access exactly one organization.',
+          },
         },
         required: ['action'],
       },
@@ -1838,7 +1859,9 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'create') {
-        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+        const resolvedGroupOrg = resolveWritableToolOrgId(auth, typeof input.orgId === 'string' && input.orgId ? input.orgId : undefined);
+        if (!resolvedGroupOrg.orgId) return JSON.stringify({ error: resolvedGroupOrg.error ?? 'Organization context required' });
+        const groupOrgId = resolvedGroupOrg.orgId;
         // Site axis (app-layer only; RLS does NOT enforce it): a site-restricted
         // caller may only create a group scoped to a site they can access. A
         // null/omitted siteId (org-wide group) fails closed for restricted callers.
@@ -1846,7 +1869,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Access denied: cannot create a group in a site outside your access' });
         }
         const [group] = await db.insert(deviceGroups).values({
-          orgId,
+          orgId: groupOrgId,
           name: input.name as string,
           type: (input.type as 'static' | 'dynamic') ?? 'static',
           siteId: (input.siteId as string) ?? null,
@@ -2857,6 +2880,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           schedule: { type: 'string', enum: ['one_time', 'daily', 'weekly', 'monthly'], description: 'Schedule (for create/update)' },
           format: { type: 'string', enum: ['csv', 'pdf', 'excel'], description: 'Output format (for create/update)' },
           limit: { type: 'number', description: 'Max results (default 25, max 100)' },
+          orgId: {
+            type: 'string',
+            description: 'Organization UUID that will own the new report definition (create only). Required unless you can access exactly one organization.',
+          },
         },
         required: ['action'],
       },
@@ -3169,8 +3196,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'create') {
-        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
-        const authority = await aiLiveReportAuthority(auth, orgId, 'write');
+        const resolvedReportOrg = resolveWritableToolOrgId(auth, typeof input.orgId === 'string' && input.orgId ? input.orgId : undefined);
+        if (!resolvedReportOrg.orgId) return JSON.stringify({ error: resolvedReportOrg.error ?? 'Organization context required' });
+        const reportOrgId = resolvedReportOrg.orgId;
+        const authority = await aiLiveReportAuthority(auth, reportOrgId, 'write');
         if (
           !authority
           || (authority.scope.kind === 'restricted' && authority.scope.siteIds.length === 0)
@@ -3178,7 +3207,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Access to report scope denied' });
         }
         const [report] = await db.insert(reports).values({
-          orgId,
+          orgId: reportOrgId,
           name: input.name as string,
           type: input.reportType as 'device_inventory' | 'software_inventory' | 'alert_summary' | 'compliance' | 'performance' | 'executive_summary',
           config: (input.config as Record<string, unknown>) ?? {},
@@ -3377,78 +3406,41 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
   registerTool({
     tier: 1,
     domain: 'monitoring',
-    searchHint: 'service and process monitoring watches: list',
+    searchHint: 'effective service and process monitors per device: list',
     definition: {
       name: 'manage_service_monitors',
-      description: 'Query service and process monitoring watches. Actions: list, add (disabled), remove (disabled). For writes, use manage_policy_feature_link with featureType "monitoring" and action "update".',
+      description: 'Read effective service/process monitors per accessible device via the monitor resolver. Actions: list. Optional configPolicyId filters the winning source policy. Use manage_monitor_definitions to author monitors, then attach them with manage_policy_feature_link featureType "monitors".',
       input_schema: {
         type: 'object' as const,
         properties: {
-          action: { type: 'string', enum: ['list'], description: 'The action to perform. To add/remove monitors, use manage_policy_feature_link with featureType "monitoring".' },
-          configPolicyId: { type: 'string', description: 'Configuration policy UUID. For list, shows all monitors across policies if omitted.' },
+          action: { type: 'string', enum: ['list'], description: 'The action to perform. Read-only: author monitors with manage_monitor_definitions.' },
+          configPolicyId: { type: 'string', description: 'Configuration policy UUID. Keeps only monitors whose winning attachment comes from this policy.' },
         },
         required: ['action'],
       },
     },
     handler: safeHandler('manage_service_monitors', async (input, auth) => {
       const action = input.action as string;
-      const orgId = getOrgId(auth);
 
       if (action === 'list') {
-        // List all monitoring watches, optionally filtered by policy.
-        //
-        // `policyAccessCondition`, not a bare `orgWhere` on
-        // configurationPolicies.orgId (#3493): a partner-wide policy stores
-        // `org_id NULL`, so the org-equality form silently omits every
-        // partner-owned monitoring policy — including from the partner-scoped
-        // techs who authored them. The helper adds the dual-axis branch and is
-        // gated on partner scope so the app layer never claims more than RLS
-        // grants.
-        const conditions: SQL[] = [];
-        const oc = policyAccessCondition(auth);
-        if (oc) conditions.push(oc);
-        if (typeof input.configPolicyId === 'string') {
-          conditions.push(eq(configPolicyFeatureLinks.configPolicyId, input.configPolicyId as string));
-        }
-        conditions.push(eq(configPolicyFeatureLinks.featureType, 'monitoring'));
-
-        const rows = await db.select({
-          watchId: configPolicyMonitoringWatches.id,
-          watchType: configPolicyMonitoringWatches.watchType,
-          name: configPolicyMonitoringWatches.name,
-          displayName: configPolicyMonitoringWatches.displayName,
-          enabled: configPolicyMonitoringWatches.enabled,
-          alertOnStop: configPolicyMonitoringWatches.alertOnStop,
-          alertSeverity: configPolicyMonitoringWatches.alertSeverity,
-          cpuThresholdPercent: configPolicyMonitoringWatches.cpuThresholdPercent,
-          memoryThresholdMb: configPolicyMonitoringWatches.memoryThresholdMb,
-          autoRestart: configPolicyMonitoringWatches.autoRestart,
-          policyId: configurationPolicies.id,
-          policyName: configurationPolicies.name,
-          checkIntervalSeconds: configPolicyMonitoringSettings.checkIntervalSeconds,
-        }).from(configPolicyMonitoringWatches)
-          .innerJoin(configPolicyMonitoringSettings, eq(configPolicyMonitoringWatches.settingsId, configPolicyMonitoringSettings.id))
-          .innerJoin(configPolicyFeatureLinks, eq(configPolicyMonitoringSettings.featureLinkId, configPolicyFeatureLinks.id))
-          .innerJoin(configurationPolicies, eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id))
-          .where(conditions.length > 0 ? and(...conditions) : undefined)
-          .orderBy(configurationPolicies.name, configPolicyMonitoringWatches.sortOrder);
-
-        // Site + exact-device axes (#6096). `policyAccessCondition` is org/
-        // partner only, so this listing is otherwise ORG-WIDE config: a run
-        // pinned to one device could enumerate the monitoring watches of
-        // policies that only ever reach OTHER sites and OTHER devices.
-        //
-        // A policy is visible when at least one of its assignments REACHES the
-        // caller. Partner/organization assignments reach every device under
-        // them — including the run's own — so they stay visible; site, device
-        // and group assignments must name something the caller can see. A
-        // policy with no assignment at all reaches nothing and drops out.
-        const visibleMonitors = await narrowMonitorsToCallerReach(auth, rows);
-
-        return JSON.stringify({ monitors: visibleMonitors, showing: visibleMonitors.length });
+        // W05c2 (#6371): effective per-device monitors from the resolver, not
+        // the legacy watch rows. Device reach (org, site, exact-device axes) is
+        // enforced per device inside listEffectiveServiceMonitors.
+        const { monitors, truncated } = await listEffectiveServiceMonitors(
+          auth,
+          typeof input.configPolicyId === 'string' ? input.configPolicyId : undefined,
+        );
+        return JSON.stringify({
+          monitors,
+          showing: monitors.length,
+          ...(truncated ? {
+            truncated: true,
+            note: `Resolved the first ${SERVICE_MONITOR_LIST_DEVICE_CAP} accessible devices only; results for other devices are not included.`,
+          } : {}),
+        });
       }
 
-      return JSON.stringify({ error: `Unknown action: ${action}. Only "list" is supported. Use manage_policy_feature_link to add/update/remove monitors.` });
+      return JSON.stringify({ error: `Unknown action: ${action}. Only "list" is supported. Use manage_monitor_definitions to author monitors.` });
     }),
   });
 

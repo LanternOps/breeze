@@ -88,7 +88,8 @@
         "viewAll": "Ver todas las alertas"
       },
       "lastActivity": "Última actividad {{date}}",
-      "noSummary": "Los totales de resumen no están disponibles en este momento."
+      "noSummary": "Los totales de resumen no están disponibles en este momento.",
+      "archivedNotice": "Los datos de resumen no se muestran para organizaciones archivadas."
     },
     "archived": {
       "banner": "Esta organización está archivada y es de solo lectura. Restáurela para realizar cambios.",
@@ -96,6 +97,9 @@
     },
     "lifecycle": {
       "inaccessible": "Esta organización está {{status}}, por lo que sus datos en vivo no están disponibles. Aún puede verla en la lista de organizaciones.",
+      "unknownTitle": "Organización",
+      "inaccessibleHistoryOnly": "Esta organización está inactiva, por lo que sus datos en vivo no están disponibles. Su historial de informes aún se puede consultar a continuación.",
+      "genericStatusLabel": "inactiva",
       "backToList": "Volver a organizaciones"
     },
     "reportHistory": {

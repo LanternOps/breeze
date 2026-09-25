@@ -14,6 +14,29 @@ vi.mock('./deviceGroupDelete', async (importOriginal) => {
   return { ...actual, deleteDeviceGroup: mockDeleteDeviceGroup };
 });
 
+// Stub the report-authority resolver so generate_report:create write-org
+// tests (#6667) exercise resolveWritableToolOrgId without needing real role
+// grant rows behind resolveRequestReportAuthority.
+vi.mock('./siteScope', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./siteScope')>();
+  return {
+    ...actual,
+    resolveRequestReportAuthority: vi.fn(async (_auth: unknown, orgId: string) => {
+      const scope = { version: 1 as const, kind: 'unrestricted' as const, orgId };
+      return {
+        ok: true,
+        authority: {
+          principalKind: 'user' as const,
+          scope,
+          principalUserId: 'u1',
+          capturedAt: new Date(),
+          fingerprint: actual.siteScopeFingerprint(scope),
+        },
+      };
+    }),
+  };
+});
+
 // Mock all DB and service dependencies so we can test registration without a database
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
@@ -203,7 +226,6 @@ vi.mock('../routes/patches/helpers', () => ({
   MAX_PAGE_LIMIT: 200,
 }));
 
-import { policyAccessCondition } from './configurationPolicy';
 import { db } from '../db';
 import { registerFleetTools, requireOrgOwnedReportRow } from './aiToolsFleet';
 import type { AiTool } from './aiTools';
@@ -421,10 +443,8 @@ describe('manage_groups peripheral reconciliation', () => {
   });
 });
 
-// ============================================
-// Handler-level tests for new actions
-// ============================================
-
+// =====================================// Handler-level tests for new actions
+// =====================================
 describe('manage_automations managed-row protection', () => {
   const toolMap = new Map<string, AiTool>();
   registerFleetTools(toolMap);
@@ -987,12 +1007,12 @@ describe('manage_service_monitors handler', () => {
     expect(typeof result).toBe('object');
   });
 
-  it('unknown actions return error with redirect to manage_policy_feature_link', async () => {
+  it('unknown actions return error with redirect to manage_monitor_definitions', async () => {
     const result = JSON.parse(await tool.handler({
       action: 'add', name: 'wuauserv',
     }, mockAuth));
     expect(result.error).toContain('Only "list" is supported');
-    expect(result.error).toContain('manage_policy_feature_link');
+    expect(result.error).toContain('manage_monitor_definitions');
   });
 
   it('returns error for unknown action', async () => {
@@ -1138,43 +1158,6 @@ describe('get_fleet_findings handler', () => {
     expect(result.findings).toEqual([]);
     expect(result.total).toBe(0);
   });
-});
-
-// Partner-wide config-policy visibility in the AI fleet tools (#3493).
-//
-// A partner-wide ("All orgs") configuration policy stores `org_id NULL`, so
-// every reader filtering with a bare `orgWhere(auth, configurationPolicies.orgId)`
-// silently excludes it — including from the partner-scoped tech who authored it.
-// This pins the one REACHABLE reader in this file to the dual-axis condition.
-// (`setup_auto_approval` carries the same fix, but its action early-returns as
-// disabled, so there is no live path to assert against.)
-describe('partner-wide config-policy access in fleet tools (#3493)', () => {
-  const toolMap = new Map<string, AiTool>();
-  registerFleetTools(toolMap);
-
-  const partnerAuth = {
-    user: { id: 'u1', email: 'test@test.com', name: 'Test' },
-    orgId: 'org-1',
-    partnerId: 'partner-1',
-    scope: 'partner',
-    accessibleOrgIds: ['org-1'],
-    canAccessOrg: () => true,
-    orgCondition: () => undefined,
-  } as never;
-
-  beforeEach(() => {
-    vi.mocked(policyAccessCondition).mockClear();
-  });
-
-  it('manage_service_monitors list filters with the dual-axis policy condition', async () => {
-    await toolMap.get('manage_service_monitors')!.handler({ action: 'list' }, partnerAuth);
-
-    // A regression back to `orgWhere(auth, configurationPolicies.orgId)` never
-    // reaches this helper, so the call count — not just the argument — is the
-    // assertion that matters.
-    expect(policyAccessCondition).toHaveBeenCalledWith(partnerAuth);
-  });
-
 });
 
 describe('exported builders for export_dataset reuse', () => {
@@ -1329,6 +1312,218 @@ describe('user-owned release attribution (#6200)', () => {
   });
 });
 
+// #6665: an AI chat had no way to see a scheduled patch job that removed an
+// app on a device, so it wrongly told a tech "not initiated by Breeze at
+// all". device_history closes that read gap.
+describe('manage_patches:device_history (#6665)', () => {
+  const toolMap = new Map<string, AiTool>();
+  registerFleetTools(toolMap);
+  const tool = toolMap.get('manage_patches')!;
+
+  const deviceId = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+  const otherOrgAuth = {
+    user: { id: 'u1', email: 'test@test.com', name: 'Test' },
+    orgId: 'org-1',
+    partnerId: 'partner-1',
+    scope: 'organization',
+    accessibleOrgIds: ['org-1'],
+    canAccessOrg: (id: string) => id === 'org-1',
+    orgCondition: () => undefined,
+  } as any;
+
+  afterEach(() => {
+    vi.mocked(db.select).mockClear();
+  });
+
+  function mockDeviceLookup(rows: Array<{ id: string; siteId: string | null }>) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue(rows),
+        }),
+      }),
+    } as never);
+  }
+
+  function mockHistoryQuery(rows: Array<Record<string, unknown>>) {
+    const limitSpy = vi.fn().mockResolvedValue(rows);
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: limitSpy,
+              }),
+            }),
+          }),
+        }),
+      }),
+    } as never);
+    return { limitSpy };
+  }
+
+  it('requires a deviceId', async () => {
+    const result = JSON.parse(await tool.handler({ action: 'device_history' }, otherOrgAuth));
+    expect(result.error).toMatch(/deviceId is required/i);
+  });
+
+  it('requires org context', async () => {
+    const noOrgAuth = { ...otherOrgAuth, orgId: null, accessibleOrgIds: null };
+    const result = JSON.parse(await tool.handler({ action: 'device_history', deviceId }, noOrgAuth));
+    expect(result.error).toMatch(/Organization context required/i);
+  });
+
+  it('denies a device the caller cannot access (cross-org)', async () => {
+    mockDeviceLookup([]); // no device row found scoped to this org
+    const result = JSON.parse(await tool.handler({ action: 'device_history', deviceId }, otherOrgAuth));
+    expect(result.error).toMatch(/not found or access denied/i);
+  });
+
+  // Site is an app-layer-only axis (RLS does not enforce it) — the device row
+  // itself resolves, but a site-restricted caller must still be denied.
+  it('denies a device outside the caller\'s allowed sites', async () => {
+    const siteRestrictedAuth = {
+      ...otherOrgAuth,
+      allowedSiteIds: ['site-allowed'],
+      canAccessSite: (id: string | null) => id === 'site-allowed',
+    };
+    mockDeviceLookup([{ id: deviceId, siteId: 'site-other' }]);
+    const result = JSON.parse(await tool.handler({ action: 'device_history', deviceId }, siteRestrictedAuth));
+    expect(result.error).toMatch(/not found or access denied/i);
+  });
+
+  it('returns per-device patch job history, distinguishing scheduled from user-initiated jobs', async () => {
+    mockDeviceLookup([{ id: deviceId, siteId: null }]);
+    mockHistoryQuery([
+      {
+        jobId: 'job-scheduled',
+        jobName: 'Scheduled Patch Job - Default Workstation Policy',
+        createdBy: null, // scheduled dispatch: no user
+        scheduledAt: new Date('2026-09-22T02:00:00.000Z'),
+        jobStartedAt: new Date('2026-09-22T02:00:05.000Z'),
+        jobCompletedAt: new Date('2026-09-22T02:05:00.000Z'),
+        patchTitle: 'DYMO Connect',
+        patchSource: 'third_party',
+        patchExternalId: 'DYMO.DYMOConnect',
+        resultStatus: 'failed',
+        exitCode: 1,
+        errorMessage: 'winget install failed (exit 1)',
+        // The handler's SELECT never asks for `output` in the first place, but
+        // if a row happened to carry one (e.g. a future column-list change),
+        // it must not be echoed back — assert on a fixture that actually has one.
+        output: '{"stdout":"...huge batch json...","stderr":""}',
+        resultStartedAt: new Date('2026-09-22T02:01:00.000Z'),
+        resultCompletedAt: new Date('2026-09-22T02:02:00.000Z'),
+      },
+      {
+        jobId: 'job-user',
+        jobName: 'AI-initiated patch install - 2026-09-20T00:00:00.000Z',
+        createdBy: 'user-1', // AI/human-initiated install: a real user id
+        scheduledAt: new Date('2026-09-20T00:00:00.000Z'),
+        jobStartedAt: new Date('2026-09-20T00:00:05.000Z'),
+        jobCompletedAt: new Date('2026-09-20T00:05:00.000Z'),
+        patchTitle: 'Some Other Patch',
+        patchSource: 'microsoft',
+        patchExternalId: 'KB123456',
+        resultStatus: 'completed',
+        exitCode: 0,
+        errorMessage: null,
+        resultStartedAt: new Date('2026-09-20T00:01:00.000Z'),
+        resultCompletedAt: new Date('2026-09-20T00:02:00.000Z'),
+      },
+    ]);
+
+    const result = JSON.parse(await tool.handler({ action: 'device_history', deviceId }, otherOrgAuth));
+
+    expect(result.deviceId).toBe(deviceId);
+    expect(result.showing).toBe(2);
+    expect(result.history).toHaveLength(2);
+    expect(result.history[0]).toMatchObject({ jobId: 'job-scheduled', initiator: 'scheduled', patchTitle: 'DYMO Connect', resultStatus: 'failed' });
+    expect(result.history[1]).toMatchObject({ jobId: 'job-user', initiator: 'user', patchTitle: 'Some Other Patch', resultStatus: 'completed' });
+    // Never echoes the raw `output` column.
+    expect(result.history[0].output).toBeUndefined();
+    expect(result.history[1].output).toBeUndefined();
+  });
+
+  it('truncates a long errorMessage rather than returning it in full', async () => {
+    mockDeviceLookup([{ id: deviceId, siteId: null }]);
+    const longMessage = 'x'.repeat(500);
+    mockHistoryQuery([
+      {
+        jobId: 'job-1',
+        jobName: 'Scheduled Patch Job',
+        createdBy: null,
+        scheduledAt: new Date(),
+        jobStartedAt: null,
+        jobCompletedAt: null,
+        patchTitle: 'Some Patch',
+        patchSource: 'third_party',
+        patchExternalId: 'ext-1',
+        resultStatus: 'failed',
+        exitCode: 1,
+        errorMessage: longMessage,
+        resultStartedAt: null,
+        resultCompletedAt: null,
+      },
+    ]);
+
+    const result = JSON.parse(await tool.handler({ action: 'device_history', deviceId }, otherOrgAuth));
+
+    expect(result.history[0].errorMessage.length).toBeLessThan(longMessage.length);
+    expect(result.history[0].errorMessage).toMatch(/truncated/);
+  });
+
+  it.each([
+    [undefined, 25],   // default
+    // 0 is falsy, so `Number(input.limit) || 25` falls through to the
+    // default — same quirk as every other `limit` in this file (e.g. the
+    // `list` action a few hundred lines up). Documented here, not "fixed",
+    // to keep device_history's clamping consistent with its siblings.
+    [0, 25],
+    [-5, 1],           // negative clamped up to the floor
+    [101, 100],        // clamped down to the ceiling
+    [40, 40],          // in-range value passed through unchanged
+  ])('clamps limit=%s to %i', async (inputLimit, expected) => {
+    mockDeviceLookup([{ id: deviceId, siteId: null }]);
+    const { limitSpy } = mockHistoryQuery([]);
+
+    const input: Record<string, unknown> = { action: 'device_history', deviceId };
+    if (inputLimit !== undefined) input.limit = inputLimit;
+    await tool.handler(input, otherOrgAuth);
+
+    expect(limitSpy).toHaveBeenCalledWith(expected);
+  });
+
+  it('defaults the window to the last 14 days when since/until are omitted', async () => {
+    mockDeviceLookup([{ id: deviceId, siteId: null }]);
+    mockHistoryQuery([]);
+
+    const before = Date.now();
+    const result = JSON.parse(await tool.handler({ action: 'device_history', deviceId }, otherOrgAuth));
+    const after = Date.now();
+
+    const since = Date.parse(result.since);
+    const until = Date.parse(result.until);
+    expect(until).toBeGreaterThanOrEqual(before);
+    expect(until).toBeLessThanOrEqual(after);
+    const FOURTEEN_DAYS_MS = 14 * 24 * 60 * 60 * 1000;
+    expect(until - since).toBeCloseTo(FOURTEEN_DAYS_MS, -3);
+  });
+
+  it('honors an explicit since/until window in the response', async () => {
+    mockDeviceLookup([{ id: deviceId, siteId: null }]);
+    mockHistoryQuery([]);
+
+    const since = '2026-09-01T00:00:00.000Z';
+    const until = '2026-09-10T00:00:00.000Z';
+    const result = JSON.parse(await tool.handler({ action: 'device_history', deviceId, since, until }, otherOrgAuth));
+
+    expect(result.since).toBe(since);
+    expect(result.until).toBe(until);
+  });
+});
+
 describe('tier-2 fleet writes refuse an ai_agent principal (#6206)', () => {
   const toolMap = new Map<string, AiTool>();
   registerFleetTools(toolMap);
@@ -1468,5 +1663,124 @@ describe('requireOrgOwnedReportRow (#3198 W01)', () => {
     const result = requireOrgOwnedReportRow(row, 'test-context');
 
     expect(result).toEqual(row);
+  });
+});
+
+describe('write-org resolution for org-owning creates (#6667)', () => {
+  const toolMap = new Map<string, AiTool>();
+  registerFleetTools(toolMap);
+
+  // A partner tech reachable to TWO orgs with no anchored auth.orgId — the
+  // shape that silently picked accessibleOrgIds[0] before the fix.
+  const multiOrgAuth = {
+    user: { id: 'u1', email: 'tech@test.com', name: 'Tech' },
+    orgId: null,
+    partnerId: 'partner-1',
+    scope: 'partner',
+    accessibleOrgIds: ['org-1', 'org-2'],
+    canAccessOrg: (id: string) => id === 'org-1' || id === 'org-2',
+    orgCondition: () => undefined,
+  } as any;
+
+  afterEach(() => {
+    vi.mocked(db.insert).mockClear();
+    vi.mocked(db.select).mockClear();
+  });
+
+  describe('manage_deployments:create', () => {
+    const tool = () => toolMap.get('manage_deployments')!;
+    const baseInput = {
+      action: 'create',
+      name: 'Rollout',
+      type: 'agent_update',
+      payload: { version: '1.2.3' },
+      targetType: 'device',
+      targetConfig: {},
+      rolloutConfig: {},
+    };
+
+    it('refuses with the ambiguous-org error and inserts nothing when orgId is omitted', async () => {
+      const result = JSON.parse(await tool().handler(baseInput, multiOrgAuth));
+      expect(result.error).toBe('orgId is required: you have access to multiple organizations');
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('uses the explicit accessible orgId for the insert', async () => {
+      const insertValuesSpy = vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id: 'd1', name: 'Rollout' }]) }));
+      vi.mocked(db.insert).mockReturnValueOnce({ values: insertValuesSpy } as never);
+
+      const result = JSON.parse(await tool().handler({ ...baseInput, orgId: 'org-2' }, multiOrgAuth));
+      expect(result.success).toBe(true);
+      expect(insertValuesSpy).toHaveBeenCalledWith(expect.objectContaining({ orgId: 'org-2' }));
+    });
+  });
+
+  describe('manage_patches:install', () => {
+    const tool = () => toolMap.get('manage_patches')!;
+    const patchId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+    const deviceId = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+    const baseInput = { action: 'install', patchIds: [patchId], deviceIds: [deviceId] };
+
+    function mockOwnedDeviceLookup(rows: Array<{ id: string; siteId: string | null }>) {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(rows) }),
+      } as never);
+    }
+
+    it('refuses with the ambiguous-org error and inserts nothing when orgId is omitted', async () => {
+      const result = JSON.parse(await tool().handler(baseInput, multiOrgAuth));
+      expect(result.error).toBe('orgId is required: you have access to multiple organizations');
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('uses the explicit accessible orgId for the device filter and the insert', async () => {
+      mockOwnedDeviceLookup([{ id: deviceId, siteId: null }]);
+      const insertValuesSpy = vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id: 'job-1' }]) }));
+      vi.mocked(db.insert).mockReturnValueOnce({ values: insertValuesSpy } as never);
+
+      const result = JSON.parse(await tool().handler({ ...baseInput, orgId: 'org-2' }, multiOrgAuth));
+      expect(result.success).toBe(true);
+      expect(insertValuesSpy).toHaveBeenCalledWith(expect.objectContaining({ orgId: 'org-2' }));
+    });
+  });
+
+  describe('manage_groups:create', () => {
+    const tool = () => toolMap.get('manage_groups')!;
+    const baseInput = { action: 'create', name: 'Group' };
+
+    it('refuses with the ambiguous-org error and inserts nothing when orgId is omitted', async () => {
+      const result = JSON.parse(await tool().handler(baseInput, multiOrgAuth));
+      expect(result.error).toBe('orgId is required: you have access to multiple organizations');
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('uses the explicit accessible orgId for the insert', async () => {
+      const insertValuesSpy = vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id: 'g1', name: 'Group' }]) }));
+      vi.mocked(db.insert).mockReturnValueOnce({ values: insertValuesSpy } as never);
+
+      const result = JSON.parse(await tool().handler({ ...baseInput, orgId: 'org-2' }, multiOrgAuth));
+      expect(result.success).toBe(true);
+      expect(insertValuesSpy).toHaveBeenCalledWith(expect.objectContaining({ orgId: 'org-2' }));
+    });
+  });
+
+  describe('generate_report:create', () => {
+    const tool = () => toolMap.get('generate_report')!;
+    const baseInput = { action: 'create', name: 'Report', reportType: 'device_inventory' };
+
+    it('refuses with the ambiguous-org error and inserts nothing when orgId is omitted', async () => {
+      const result = JSON.parse(await tool().handler(baseInput, multiOrgAuth));
+      expect(result.error).toBe('orgId is required: you have access to multiple organizations');
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('uses the explicit accessible orgId for the insert', async () => {
+      const insertValuesSpy = vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id: 'r1', name: 'Report' }]) }));
+      vi.mocked(db.insert).mockReturnValueOnce({ values: insertValuesSpy } as never);
+
+      const result = JSON.parse(await tool().handler({ ...baseInput, orgId: 'org-2' }, multiOrgAuth));
+      expect(result.success).toBe(true);
+      expect(insertValuesSpy).toHaveBeenCalledWith(expect.objectContaining({ orgId: 'org-2' }));
+    });
   });
 });

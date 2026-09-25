@@ -10,21 +10,41 @@ const {
   summarizePatchInventoryMock,
   enqueuePatchJobMock,
   captureExceptionMock,
-} = vi.hoisted(() => ({
-  getConfigPolicyMock: vi.fn(),
-  checkDeviceMaintenanceWindowMock: vi.fn(),
-  resolvePatchConfigDetailsForDeviceMock: vi.fn(),
-  loadPolicyLocalPatchConfigMock: vi.fn(),
-  listPatchInventoryMock: vi.fn(),
-  summarizePatchInventoryMock: vi.fn((rows: any[]) => ({
-    total: rows.length,
-    ok: rows.filter((row) => row.effectiveStatus === 'ok').length,
-    needsRepair: rows.filter((row) => row.effectiveStatus === 'needs_repair').length,
-    invalidReference: rows.filter((row) => row.effectiveStatus === 'invalid_reference').length,
-  })),
-  enqueuePatchJobMock: vi.fn(async (_jobId?: string, _delayMs?: number) => undefined),
-  captureExceptionMock: vi.fn(),
-}));
+  dbContextState,
+  withAuthDbAccessContextMock,
+} = vi.hoisted(() => {
+  // #6849 — tracks whether we are currently inside the short
+  // withAuthDbAccessContext block the route opens for its DB work, so tests
+  // can assert enqueuePatchJob is only ever called AFTER that block has
+  // returned (i.e. after the write committed), not from inside it.
+  const state = { depth: 0, enqueueDepths: [] as number[] };
+  return {
+    getConfigPolicyMock: vi.fn(),
+    checkDeviceMaintenanceWindowMock: vi.fn(),
+    resolvePatchConfigDetailsForDeviceMock: vi.fn(),
+    loadPolicyLocalPatchConfigMock: vi.fn(),
+    listPatchInventoryMock: vi.fn(),
+    summarizePatchInventoryMock: vi.fn((rows: any[]) => ({
+      total: rows.length,
+      ok: rows.filter((row) => row.effectiveStatus === 'ok').length,
+      needsRepair: rows.filter((row) => row.effectiveStatus === 'needs_repair').length,
+      invalidReference: rows.filter((row) => row.effectiveStatus === 'invalid_reference').length,
+    })),
+    enqueuePatchJobMock: vi.fn(async (_jobId?: string, _delayMs?: number) => {
+      state.enqueueDepths.push(state.depth);
+    }),
+    captureExceptionMock: vi.fn(),
+    dbContextState: state,
+    withAuthDbAccessContextMock: vi.fn(async (_auth: unknown, fn: () => Promise<unknown>) => {
+      state.depth += 1;
+      try {
+        return await fn();
+      } finally {
+        state.depth -= 1;
+      }
+    }),
+  };
+});
 
 vi.mock('../../services/configurationPolicy', () => ({
   getConfigPolicy: getConfigPolicyMock,
@@ -58,6 +78,7 @@ vi.mock('../../middleware/auth', () => ({
   requireScope: vi.fn(() => (c: any, next: any) => next()),
   requirePermission: vi.fn(() => (c: any, next: any) => next()),
   requireMfa: vi.fn(() => (c: any, next: any) => next()),
+  withAuthDbAccessContext: withAuthDbAccessContextMock,
 }));
 
 vi.mock('../../db', () => ({
@@ -199,6 +220,8 @@ describe('configurationPolicies patchJob routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    dbContextState.depth = 0;
+    dbContextState.enqueueDepths = [];
     app = new Hono();
     app.use('*', async (c, next) => {
       c.set('auth', makeAuth());
@@ -317,6 +340,15 @@ describe('configurationPolicies patchJob routes', () => {
       });
       expect(writeRouteAudit).toHaveBeenCalled();
       expect(json.enqueueFailures).toEqual([]);
+
+      // #6849 — the DB write ran inside withAuthDbAccessContext, and
+      // enqueuePatchJob must only ever be called after that block returned
+      // (depth back to 0), i.e. after the write committed — never from
+      // inside it, which is what let the worker read the job before the
+      // request's insert was durable.
+      expect(withAuthDbAccessContextMock).toHaveBeenCalledTimes(1);
+      expect(enqueuePatchJobMock).toHaveBeenCalledTimes(1);
+      expect(dbContextState.enqueueDepths).toEqual([0]);
     });
 
     it('surfaces the failure instead of reporting success when enqueue fails (#3945)', async () => {
@@ -351,7 +383,16 @@ describe('configurationPolicies patchJob routes', () => {
         values: insertValuesMock,
       } as any);
 
-      enqueuePatchJobMock.mockRejectedValueOnce(new Error('queue wedged'));
+      // mockImplementationOnce (not mockRejectedValueOnce) so the #6849
+      // depth-capture in the hoisted default implementation still runs before
+      // this call rejects — otherwise this test couldn't assert the enqueue
+      // was attempted post-commit (depth 0) on the exact path where a future
+      // regression is most likely to re-nest it (right next to the
+      // try/catch this test exercises).
+      enqueuePatchJobMock.mockImplementationOnce(async () => {
+        dbContextState.enqueueDepths.push(dbContextState.depth);
+        throw new Error('queue wedged');
+      });
 
       const res = await app.request(`/${POLICY_ID}/patch-job`, {
         method: 'POST',
@@ -369,6 +410,9 @@ describe('configurationPolicies patchJob routes', () => {
         { jobId: 'job-1', orgId: ORG_ID, error: 'queue wedged' },
       ]);
       expect(captureExceptionMock).toHaveBeenCalled();
+      // #6849 — the failing enqueue attempt itself still ran after the write
+      // committed (depth 0), not from inside withAuthDbAccessContext.
+      expect(dbContextState.enqueueDepths).toEqual([0]);
     });
 
     it('returns 404 when no accessible devices found', async () => {
@@ -588,6 +632,12 @@ describe('configurationPolicies patchJob routes', () => {
       expect(json.totalDevices).toBe(2);
       // One patch_jobs row per device org (job insert grouped by org).
       expect(insertValuesMock).toHaveBeenCalledTimes(2);
+      // #6849 — both per-org enqueue calls ran after the single
+      // withAuthDbAccessContext block (that inserted both rows) had
+      // returned, not from inside the per-org insert loop.
+      expect(withAuthDbAccessContextMock).toHaveBeenCalledTimes(1);
+      expect(enqueuePatchJobMock).toHaveBeenCalledTimes(2);
+      expect(dbContextState.enqueueDepths).toEqual([0, 0]);
     });
 
     it('reports only the failing org while still creating jobs for every org in a partner-wide request (#3945)', async () => {

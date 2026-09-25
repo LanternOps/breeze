@@ -216,6 +216,8 @@ const shortWindowFor = (t: Tenant): MeasuredWindow => ({
   windowDays: 30,
 });
 
+let seededAlertCount = 0;
+
 /** One alert, optionally exposed to the AI within the cohort-formation age. */
 async function seedAlert(t: Tenant, opts: {
   ruleId: string;
@@ -230,6 +232,9 @@ async function seedAlert(t: Tenant, opts: {
     ruleId: opts.ruleId,
     severity: 'medium',
     title: 'Signals fixture alert',
+    // W03 (#6854): alerts_open_rule_device_subject_uidx allows one open alert per
+    // (rule, device, subject); these fixtures seed many per rule, so each gets its own.
+    subjectKey: `signals-fixture-${++seededAlertCount}`,
     status: opts.status ?? (opts.resolvedAt ? 'resolved' : 'active'),
     triggeredAt: opts.triggeredAt,
     resolvedAt: opts.resolvedAt ?? null,

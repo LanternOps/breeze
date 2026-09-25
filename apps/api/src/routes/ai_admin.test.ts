@@ -557,6 +557,55 @@ describe('AI routes', () => {
       expect(body.data[0].action).toContain('ai.security');
     });
 
+    it('redacts secrets persisted in audit details before serialising (#6577)', async () => {
+      // Historical rows (pre write-side sanitiser) and direct createAuditLog
+      // writers can hold raw tool input in details.
+      const planted = 'ghp_PLANTEDsecretTOKENvalue6577abcdef';
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([
+                {
+                  id: 'event-2',
+                  timestamp: new Date(),
+                  action: 'ai.tool.manage_backup_configs',
+                  actorType: 'user',
+                  actorEmail: 'test@example.com',
+                  resourceType: 'ai_session',
+                  resourceId: SESSION_ID,
+                  result: 'success',
+                  errorMessage: null,
+                  details: {
+                    toolInput: {
+                      providerConfig: { accessKey: planted, secretKey: planted },
+                      apiToken: planted,
+                      note: `Authorization: Bearer ${planted}`,
+                    },
+                    durationMs: 12,
+                  },
+                },
+              ]),
+            }),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/ai/admin/security-events?orgId=${ORG_ID}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const text = await res.text();
+      expect(text).not.toContain(planted);
+      const body = JSON.parse(text);
+      expect(body.data[0].details.toolInput.providerConfig.secretKey).toBe('[REDACTED]');
+      expect(body.data[0].details.toolInput.apiToken).toBe('[REDACTED]');
+      // Non-secret fields survive.
+      expect(body.data[0].details.durationMs).toBe(12);
+    });
+
     it('returns 403 for unauthorized org access', async () => {
       const res = await app.request('/ai/admin/security-events?orgId=other-org', {
         method: 'GET',

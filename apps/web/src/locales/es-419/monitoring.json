@@ -180,7 +180,8 @@
     "software_presence": "Presencia de software",
     "backup_continuity": "Continuidad de respaldo",
     "script": "Verificación de script",
-    "network_check": "Verificación de red"
+    "network_check": "Verificación de red",
+    "hardware_health": "Estado del hardware"
   },
   "fields": {
     "operator": "Comparación",
@@ -295,6 +296,7 @@
       "device_group": "un grupo de dispositivos"
     },
     "selectPolicy": "Política de configuración",
+    "attachToPolicy": "Adjuntar a una política…",
     "selectTarget": "Destino",
     "noOrgSelected": "Selecciona una organización para desplegar.",
     "policyName": "Nombre de la política",
@@ -485,6 +487,7 @@
       "more": "Cargar más",
       "empty": "No hay historial de conversión.",
       "system": "Sistema",
+      "reverted": "Revertido",
       "deadline": "Deshacer no está disponible cuando W05d elimina el evaluador de origen."
     },
     "errorCodes": {
@@ -513,5 +516,27 @@
     "state": "Estado",
     "episode": "Episodio abierto",
     "escalation": "Escalamiento"
+  },
+  "monitors": {
+    "fields": {
+      "hardware_health": {
+        "componentTypes": "Componentes",
+        "minHealth": "Estado mínimo",
+        "includePredictiveFailure": "Incluir fallas previstas",
+        "consecutiveSnapshots": "Instantáneas consecutivas",
+        "componentTypeOptions": {
+          "controller": "Controladoras",
+          "virtual_disk": "Discos virtuales",
+          "physical_disk": "Discos físicos",
+          "cache_battery": "Baterías de caché",
+          "enclosure": "Gabinetes",
+          "collector": "Herramientas de monitoreo"
+        },
+        "minHealthOptions": {
+          "warning": "Advertencia",
+          "critical": "Crítico"
+        }
+      }
+    }
   }
 }

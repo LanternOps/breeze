@@ -1,0 +1,535 @@
+[
+  {
+    "Name": "optimal",
+    "Captures": [
+      {
+        "Args": [
+          "storage",
+          "controller",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "List of Controllers in the system\nID;Status;Name;State;Firmware Version\n0;Ok;PERC fixture;Ready;1.0",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "storage",
+          "vdisk",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "Controller PERC fixture (Slot 0)\nID;Status;Name;State;Layout;Size\n0;Ok;mirror;Ready;RAID-1;100 GB",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "storage",
+          "battery",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "Controller PERC fixture (Slot 0)\nID;Status;Name;State\n0;Ok;Battery;Ready",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "storage",
+          "pdisk",
+          "controller=0",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "ID;Status;Name;State;Failure Predicted;Serial No.;Capacity;Product ID\n0:1:3;Ok;Disk 3;Online;No;DISK-TEST;100 GB;Fixture disk\n",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "omreport:c0:v0",
+        "State": "optimal"
+      },
+      {
+        "Key": "omreport:c0:e0-1:s3",
+        "State": "online"
+      }
+    ],
+    "Complete": true,
+    "Error": false
+  },
+  {
+    "Name": "degraded",
+    "Captures": [
+      {
+        "Args": [
+          "storage",
+          "controller",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "List of Controllers in the system\nID;Status;Name;State;Firmware Version\n0;Ok;PERC fixture;Ready;1.0",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "storage",
+          "vdisk",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "Controller PERC fixture (Slot 0)\nID;Status;Name;State;Layout;Size\n0;Ok;mirror;Degraded;RAID-1;100 GB",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "storage",
+          "battery",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "Controller PERC fixture (Slot 0)\nID;Status;Name;State\n0;Ok;Battery;Ready",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "storage",
+          "pdisk",
+          "controller=0",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "ID;Status;Name;State;Failure Predicted;Serial No.;Capacity;Product ID\n0:1:3;Ok;Disk 3;Online;No;DISK-TEST;100 GB;Fixture disk\n",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "omreport:c0:v0",
+        "State": "degraded"
+      }
+    ],
+    "Complete": true,
+    "Error": false
+  },
+  {
+    "Name": "failed",
+    "Captures": [
+      {
+        "Args": [
+          "storage",
+          "controller",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "List of Controllers in the system\nID;Status;Name;State;Firmware Version\n0;Ok;PERC fixture;Ready;1.0",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "storage",
+          "vdisk",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "Controller PERC fixture (Slot 0)\nID;Status;Name;State;Layout;Size\n0;Ok;mirror;Ready;RAID-1;100 GB",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "storage",
+          "battery",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "Controller PERC fixture (Slot 0)\nID;Status;Name;State\n0;Ok;Battery;Ready",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "storage",
+          "pdisk",
+          "controller=0",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "ID;Status;Name;State;Failure Predicted;Serial No.;Capacity;Product ID\n0:1:3;Ok;Disk 3;Failed;No;DISK-TEST;100 GB;Fixture disk\n",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "omreport:c0:e0-1:s3",
+        "State": "failed"
+      }
+    ],
+    "Complete": true,
+    "Error": false
+  },
+  {
+    "Name": "rebuilding",
+    "Captures": [
+      {
+        "Args": [
+          "storage",
+          "controller",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "List of Controllers in the system\nID;Status;Name;State;Firmware Version\n0;Ok;PERC fixture;Ready;1.0",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "storage",
+          "vdisk",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "Controller PERC fixture (Slot 0)\nID;Status;Name;State;Layout;Size;Progress\n0;Ok;mirror;Resynching;RAID-1;100 GB;42%",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "storage",
+          "battery",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "Controller PERC fixture (Slot 0)\nID;Status;Name;State\n0;Ok;Battery;Ready",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "storage",
+          "pdisk",
+          "controller=0",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "ID;Status;Name;State;Failure Predicted;Serial No.;Capacity;Product ID\n0:1:3;Ok;Disk 3;Online;No;DISK-TEST;100 GB;Fixture disk\n",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "omreport:c0:v0",
+        "State": "rebuilding",
+        "Progress": 42
+      }
+    ],
+    "Complete": true,
+    "Error": false
+  },
+  {
+    "Name": "predictive_failure",
+    "Captures": [
+      {
+        "Args": [
+          "storage",
+          "controller",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "List of Controllers in the system\nID;Status;Name;State;Firmware Version\n0;Ok;PERC fixture;Ready;1.0",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "storage",
+          "vdisk",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "Controller PERC fixture (Slot 0)\nID;Status;Name;State;Layout;Size\n0;Ok;mirror;Ready;RAID-1;100 GB",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "storage",
+          "battery",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "Controller PERC fixture (Slot 0)\nID;Status;Name;State\n0;Ok;Battery;Ready",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "storage",
+          "pdisk",
+          "controller=0",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "ID;Status;Name;State;Failure Predicted;Serial No.;Capacity;Product ID\n0:1:3;Ok;Disk 3;Online;Yes;DISK-TEST;100 GB;Fixture disk\n",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "omreport:c0:e0-1:s3",
+        "State": "online",
+        "Predictive": true
+      }
+    ],
+    "Complete": true,
+    "Error": false
+  },
+  {
+    "Name": "missing_member",
+    "Captures": [
+      {
+        "Args": [
+          "storage",
+          "controller",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "List of Controllers in the system\nID;Status;Name;State;Firmware Version\n0;Ok;PERC fixture;Ready;1.0",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "storage",
+          "vdisk",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "Controller PERC fixture (Slot 0)\nID;Status;Name;State;Layout;Size\n0;Ok;mirror;Ready;RAID-1;100 GB",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "storage",
+          "battery",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "Controller PERC fixture (Slot 0)\nID;Status;Name;State\n0;Ok;Battery;Ready",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "storage",
+          "pdisk",
+          "controller=0",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "ID;Status;Name;State;Failure Predicted;Serial No.;Capacity;Product ID\n",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [],
+    "Complete": true,
+    "Error": false,
+    "PhysicalCount": 0
+  },
+  {
+    "Name": "multi_controller",
+    "Captures": [
+      {
+        "Args": [
+          "storage",
+          "controller",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "List of Controllers in the system\nID;Status;Name;State;Firmware Version\n0;Ok;PERC fixture;Ready;1.0\n1;Ok;Second controller;Ready;1.0\n",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "storage",
+          "vdisk",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "Controller PERC fixture (Slot 0)\nID;Status;Name;State;Layout;Size\n0;Ok;mirror;Ready;RAID-1;100 GB\nController Second controller (Slot 1)\nID;Status;Name;State;Layout;Size\n0;Ok;mirror;Ready;RAID-1;100 GB",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "storage",
+          "battery",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "Controller PERC fixture (Slot 0)\nID;Status;Name;State\n0;Ok;Battery;Ready\nController Second controller (Slot 1)\nID;Status;Name;State\n0;Ok;Battery;Ready",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "storage",
+          "pdisk",
+          "controller=0",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "ID;Status;Name;State;Failure Predicted;Serial No.;Capacity;Product ID\n0:1:3;Ok;Disk 3;Online;No;DISK-TEST;100 GB;Fixture disk\n",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "storage",
+          "pdisk",
+          "controller=1",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "ID;Status;Name;State;Failure Predicted;Serial No.;Capacity;Product ID\n0:1:3;Ok;Disk 3;Online;No;DISK-TEST;100 GB;Fixture disk\n",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "omreport:c1:v0",
+        "State": "optimal"
+      }
+    ],
+    "Complete": true,
+    "Error": false,
+    "PhysicalCount": 2
+  },
+  {
+    "Name": "unrecognized",
+    "Captures": [
+      {
+        "Args": [
+          "storage",
+          "controller",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "List of Controllers in the system\nID;Status;Name;State;Firmware Version\n0;Ok;PERC fixture;Ready;1.0",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "storage",
+          "vdisk",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "Controller PERC fixture (Slot 0)\nID;Status;Name;State;Layout;Size\n0;Ok;mirror;Ready;RAID-1;100 GB",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "storage",
+          "battery",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "Controller PERC fixture (Slot 0)\nID;Status;Name;State\n0;Ok;Battery;Ready",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "storage",
+          "pdisk",
+          "controller=0",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "ID;Status;Name;State;Failure Predicted;Serial No.;Capacity;Product ID\n0:1:3;Ok;Disk 3;Future State;No;DISK-TEST;100 GB;Fixture disk\n",
+        "ExitCode": 0,
+        "Truncated": false
+      }
+    ],
+    "Want": [
+      {
+        "Key": "omreport:c0:e0-1:s3",
+        "State": "unknown",
+        "Detail": "Future State"
+      }
+    ],
+    "Complete": true,
+    "Error": false
+  },
+  {
+    "Name": "truncated",
+    "Captures": [
+      {
+        "Args": [
+          "storage",
+          "controller",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "List of Controllers in the system\nID;Status;Name;State;Firmware Version\n0;Ok;PERC fixture;Ready;1.0",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "storage",
+          "vdisk",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "Controller PERC fixture (Slot 0)\nID;Status;Name;State;Layout;Size\n0;Ok;mirror;Ready;RAID-1;100 GB",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "storage",
+          "battery",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "Controller PERC fixture (Slot 0)\nID;Status;Name;State\n0;Ok;Battery;Ready",
+        "ExitCode": 0,
+        "Truncated": false
+      },
+      {
+        "Args": [
+          "storage",
+          "pdisk",
+          "controller=0",
+          "-fmt",
+          "ssv"
+        ],
+        "Text": "ID;Status;Name;State;Failure Predicted;Serial No.;Capacity;Product ID\n0:1:3;Ok;Disk 3;Online;No;DISK-TEST;100 GB;Fixture disk\n",
+        "ExitCode": 0,
+        "Truncated": true
+      }
+    ],
+    "Want": [],
+    "Complete": false,
+    "Error": false
+  }
+]

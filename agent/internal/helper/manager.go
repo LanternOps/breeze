@@ -63,6 +63,13 @@ type SpawnFunc func(sessionKey string, binaryPath string, args ...string) (pid i
 // ErrNoActiveSession is returned by SpawnFunc when no user session is available.
 var ErrNoActiveSession = fmt.Errorf("no active user session")
 
+// ErrNotInstalled: Breeze Assist is enabled by policy but the helper binary is
+// not on disk (never installed, or a failed in-place update removed it).
+// Callers must not spawn, must not count it as a crash, and must not log it
+// as an error on every heartbeat — the server's HelperUpgradeTo bootstrap
+// offer is the only thing that resolves it (#6872).
+var ErrNotInstalled = errors.New("breeze assist is not installed")
+
 // Option configures a Manager.
 type Option func(*Manager)
 
@@ -181,11 +188,24 @@ type Manager struct {
 
 	requireManifestSigningKeyID func() bool
 
+	// now is the clock for the abandon cooldown; nil means time.Now (tests inject).
+	now func() time.Time
+
+	// Install/update failure accounting, shared by the first-install branch of
+	// Apply and applyPendingUpdate — see install_retry.go (#6927).
 	pendingHelperVersion string
 	updateFailures       int
-	abandonedVersion     string // version we gave up updating to
+	failuresVersion      string    // version updateFailures counts against
+	abandonedVersion     string    // version we gave up installing/updating to
+	abandonedAt          time.Time // when abandonedVersion was set; retried after helperAbandonRetryAfter
 
 	legacyAutoStartCleaned bool
+
+	// notInstalledWarned: the "enabled but not installed, waiting for the
+	// server" warning has fired for the current not-installed episode. Reset
+	// when the binary appears or the policy turns off, so the log carries one
+	// line per transition instead of one per heartbeat (#6872).
+	notInstalledWarned bool
 }
 
 // New creates a new helper Manager. serverURL is a provider (func() string) so
@@ -326,16 +346,39 @@ func (m *Manager) Apply(settings *Settings) {
 		// supplies one when bootstrapping a first install, and it is processed
 		// before this Apply call within the same heartbeat. Without it we fail
 		// closed rather than fetch unverified bytes.
+		// #6927: the install shares the update path's failure budget. Once the
+		// pending version has failed maxHelperInstallFailures times it is
+		// abandoned (pending cleared) and we fall through to the waiting branch.
+		m.abandonIfExhaustedLocked()
 		if m.pendingHelperVersion == "" {
-			log.Debug("breeze assist enabled but no signed target version yet; deferring install")
-		} else if err := m.downloadAndInstall(m.pendingHelperVersion); err != nil {
+			if !m.notInstalledWarned {
+				log.Warn(m.notInstalledReasonLocked())
+				m.notInstalledWarned = true
+			}
+			// #6872: nothing to configure, spawn, or watch. A watcher left over
+			// from an installed state must not keep respawning a missing binary.
+			for _, state := range m.sessions {
+				m.stopSessionWatcher(state)
+			}
+			return
+		}
+		if err := m.downloadAndInstall(m.pendingHelperVersion); err != nil {
+			m.recordInstallFailureLocked(m.pendingHelperVersion)
 			// downloadAndInstall wraps the verified downloader's error, which for
 			// any transport failure is a *url.Error carrying the presigned
 			// helper-asset URL. This log line ships, so it must be redacted.
 			key, value := updater.SafeDownloadErrorFields(err)
-			log.Error("failed to install breeze assist", key, value)
+			log.Error("failed to install breeze assist", key, value,
+				"targetVersion", m.pendingHelperVersion, "failures", m.updateFailures)
 			return
 		}
+		m.clearInstallFailuresLocked()
+		for _, state := range m.sessions {
+			state.watcherGaveUp = false // new binary — give it a fresh chance (#6872)
+		}
+	}
+	if !settings.Enabled || m.isInstalled() {
+		m.notInstalledWarned = false
 	}
 
 	activeSessions := m.sessionEnumerator.ActiveSessions()
@@ -394,7 +437,11 @@ func (m *Manager) Apply(settings *Settings) {
 			}
 
 			if err := m.ensureRunningSession(state); err != nil {
-				log.Error("failed to start breeze assist", "session", si.Key, "error", err.Error())
+				if errors.Is(err, ErrNotInstalled) {
+					log.Debug("breeze assist not installed; skipping spawn", "session", si.Key)
+				} else {
+					log.Error("failed to start breeze assist", "session", si.Key, "error", err.Error())
+				}
 			} else {
 				m.reapDuplicateHelpersLocked(state)
 				m.startSessionWatcher(state)
@@ -481,7 +528,8 @@ func (m *Manager) uninstallLocked() {
 
 	m.pendingHelperVersion = ""
 	m.abandonedVersion = ""
-	m.updateFailures = 0
+	m.abandonedAt = time.Time{}
+	m.clearInstallFailuresLocked()
 
 	log.Info("breeze assist uninstalled")
 }
@@ -579,6 +627,11 @@ func (m *Manager) ensureRunningSession(state *sessionState) error {
 	}
 	if state.pid > 0 && state.pid != state.spawnedPID && m.isOurProcessFunc(state.pid, m.binaryPath) {
 		return nil
+	}
+	// #6872: nothing to spawn. Checked BEFORE watcherGaveUp so a device that
+	// burned its retries against a missing binary recovers on install.
+	if !m.isInstalled() {
+		return ErrNotInstalled
 	}
 	if state.watcherGaveUp {
 		return fmt.Errorf("helper keeps crashing, not respawning until next update")
@@ -771,17 +824,24 @@ func (m *Manager) readBinaryVersion() (string, error) {
 func (m *Manager) CheckUpdate(targetVersion string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if targetVersion == m.abandonedVersion {
-		return // already failed for this version, don't retry
+	if m.isAbandonedLocked(targetVersion) {
+		return // already failed for this version; retried after the cooldown
 	}
 	if m.pendingHelperVersion != targetVersion {
 		log.Info("helper update pending", "targetVersion", targetVersion)
 		m.pendingHelperVersion = targetVersion
-		m.updateFailures = 0
+		// The failure count follows its version (see recordInstallFailureLocked):
+		// a different version starts fresh, but the same version re-offered
+		// after a withdrawal keeps its count so a flapping offer cannot
+		// defeat the cap.
+		if m.failuresVersion != targetVersion {
+			m.clearInstallFailuresLocked()
+		}
 		// Only clear abandonedVersion when a genuinely different version is
 		// requested. This prevents re-triggering a failed update.
 		if m.abandonedVersion != "" && targetVersion != m.abandonedVersion {
 			m.abandonedVersion = ""
+			m.abandonedAt = time.Time{}
 		}
 	}
 }
@@ -851,19 +911,11 @@ func (m *Manager) applyPendingUpdate() {
 	if installed := m.installedVersionLocked(); installed == m.pendingHelperVersion || helperVersionsMatch(installed, m.pendingHelperVersion) {
 		log.Info("helper already at target version, clearing pending update", "version", installed)
 		m.pendingHelperVersion = ""
-		m.updateFailures = 0
+		m.clearInstallFailuresLocked()
 		return
 	}
 
-	const maxUpdateFailures = 3
-	if m.updateFailures >= maxUpdateFailures {
-		log.Warn("helper update abandoned after repeated failures, clearing pending update",
-			"targetVersion", m.pendingHelperVersion,
-			"failures", m.updateFailures,
-		)
-		m.abandonedVersion = m.pendingHelperVersion
-		m.pendingHelperVersion = ""
-		m.updateFailures = 0
+	if m.abandonIfExhaustedLocked() {
 		return
 	}
 
@@ -897,10 +949,11 @@ func (m *Manager) applyPendingUpdate() {
 	}
 
 	if err := m.downloadAndInstall(m.pendingHelperVersion); err != nil {
-		m.updateFailures++
+		m.recordInstallFailureLocked(m.pendingHelperVersion)
 		// Same presigned-URL hazard as the install path above.
 		key, value := updater.SafeDownloadErrorFields(err)
-		log.Error("failed to install helper update", key, value, "failures", m.updateFailures)
+		log.Error("failed to install helper update", key, value,
+			"targetVersion", m.pendingHelperVersion, "failures", m.updateFailures)
 		if restoreErr := restoreBackup(backupPath, m.binaryPath); restoreErr != nil {
 			log.Error("failed to rollback helper", "error", restoreErr.Error())
 		}
@@ -934,6 +987,7 @@ func (m *Manager) applyPendingUpdate() {
 
 	log.Info("helper updated successfully", "requestedVersion", m.pendingHelperVersion)
 	m.pendingHelperVersion = ""
+	m.clearInstallFailuresLocked()
 	_ = os.Remove(backupPath)
 }
 
@@ -952,7 +1006,14 @@ func (m *Manager) Shutdown() {
 
 func (m *Manager) startSessionWatcher(state *sessionState) {
 	if state.watcher != nil {
-		return
+		select {
+		case <-state.watcher.done:
+			// Exited on its own — ErrNotInstalled (#6872) or gave up — so a
+			// fresh one can take over.
+			state.watcher = nil
+		default:
+			return
+		}
 	}
 	w := newSessionWatcher(m.ctx, m, state)
 	state.watcher = w

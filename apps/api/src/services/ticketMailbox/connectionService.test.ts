@@ -50,7 +50,7 @@ vi.mock('../../db', () => {
           innerJoin: vi.fn((table: unknown, condition: unknown) => {
             dbMocks.innerJoins.push({ table, condition });
             return joined;
-          }),
+          }),          leftJoin: vi.fn(() => joined),
         };
       }),
     };
@@ -404,26 +404,39 @@ describe('ticket mailbox connection service', () => {
     );
   });
 
-  it('returns an exact public list DTO with no tenant or processing internals', async () => {
+  it('returns an exact public list DTO (incl. provider) with no tenant or processing internals', async () => {
     const publicRow = {
       id: CONNECTION_ID,
+      provider: 'm365',
+      orgId: null,
+      orgName: null,
       mailboxAddress: 'support@example.com',
       displayName: 'Support',
       status: 'connected',
       lastPolledAt: fullRow.lastPolledAt,
       lastMessageAt: fullRow.lastMessageAt,
     };
-    dbMocks.selectResults.push([{ ...publicRow, lastError: null }]);
+    dbMocks.selectResults.push([{ ...publicRow, lastError: null, consentSessionLive: false }]);
 
     const result = await listMailboxConnections(PARTNER_ID);
 
-    expect(result).toEqual([{ ...publicRow, verificationError: null }]);
+    expect(result).toEqual([{ ...publicRow, verificationError: null, consentExpired: false }]);
     expect(Object.keys(result[0]!)).toEqual([
-      'id', 'mailboxAddress', 'displayName', 'status', 'lastPolledAt', 'lastMessageAt', 'verificationError',
+      'id', 'provider', 'orgId', 'orgName', 'mailboxAddress', 'displayName', 'status', 'lastPolledAt', 'lastMessageAt', 'verificationError', 'consentExpired',
     ]);
     expect(Object.keys(dbMocks.selectedFields[0] ?? {})).toEqual([
-      'id', 'mailboxAddress', 'displayName', 'status', 'lastPolledAt', 'lastMessageAt', 'lastError',
+      'id', 'provider', 'orgId', 'orgName', 'mailboxAddress', 'displayName', 'status', 'lastPolledAt', 'lastMessageAt', 'lastError', 'consentSessionLive',
     ]);
+  });
+
+  it('surfaces the provider discriminator so a client can keep gmail rows out of the Microsoft card', async () => {
+    const base = { mailboxAddress: 'help@example.com', displayName: null, status: 'connected', lastPolledAt: null, lastMessageAt: null, lastError: null };
+    dbMocks.selectResults.push([
+      { ...base, id: 'm', provider: 'm365' },
+      { ...base, id: 'g', provider: 'gmail' },
+    ]);
+    const result = await listMailboxConnections(PARTNER_ID);
+    expect(result.map((r) => [r.id, r.provider])).toEqual([['m', 'm365'], ['g', 'gmail']]);
   });
 
   it('exposes lastError only when it is our sanitized verification reason, never poller error text', async () => {
@@ -438,6 +451,26 @@ describe('ticket mailbox connection service', () => {
     expect(result.map((r) => r.verificationError)).toEqual([
       'Mailbox verification failed: Graph 403 (ErrorAccessDenied)',
       null,
+    ]);
+  });
+
+  // #6936: a pending_consent row whose consent attempt has no live (unexpired)
+  // state left can never complete — the user abandoned the flow, Microsoft never
+  // redirected back, or the callback was turned away before touching the row.
+  // The card renders it as "Consent not completed" instead of pending forever.
+  it('flags a pending row as consentExpired only when no live consent session remains', async () => {
+    const base = {
+      mailboxAddress: 'support@example.com', displayName: null, lastPolledAt: null, lastMessageAt: null, lastError: null,
+    };
+    dbMocks.selectResults.push([
+      { ...base, id: 'live', status: 'pending_consent', consentSessionLive: true },
+      { ...base, id: 'dead', status: 'pending_consent', consentSessionLive: false },
+      { ...base, id: 'conn', status: 'connected', consentSessionLive: false },
+      { ...base, id: 'err', status: 'error', consentSessionLive: false },
+    ]);
+    const result = await listMailboxConnections(PARTNER_ID);
+    expect(result.map((r) => [r.id, r.consentExpired])).toEqual([
+      ['live', false], ['dead', true], ['conn', false], ['err', false],
     ]);
   });
 
@@ -496,7 +529,13 @@ describe('ticket mailbox connection service', () => {
       },
     }]);
     expect(dbMocks.selectWheres).toEqual([
-      { op: 'eq', column: ticketMailboxConnections.status, value: 'connected' },
+      {
+        op: 'and',
+        conditions: [
+          { op: 'eq', column: ticketMailboxConnections.provider, value: 'm365' },
+          { op: 'eq', column: ticketMailboxConnections.status, value: 'connected' },
+        ],
+      },
     ]);
     expect(Object.keys(dbMocks.selectedFields[0] ?? {})).toEqual([
       'id', 'partnerId', 'tenantId', 'mailboxAddress', 'deltaLink',

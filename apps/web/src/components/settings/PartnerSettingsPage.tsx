@@ -5,6 +5,7 @@ import {
   Blocks,
   Building2,
   Globe,
+  Activity,
   Hourglass,
   KeyRound,
   Loader2,
@@ -34,6 +35,7 @@ import PartnerBrandingTab from './PartnerBrandingTab';
 import PartnerAiBudgetsTab from './PartnerAiBudgetsTab';
 import PartnerAiApprovalsTab from './PartnerAiApprovalsTab';
 import PartnerAiProviderTab from './PartnerAiProviderTab';
+import PartnerMlFeaturesCard from './PartnerMlFeaturesCard';
 import PartnerRemoteAccessTab from './PartnerRemoteAccessTab';
 import PartnerSendingDomainTab from './PartnerSendingDomainTab';
 import PartnerCompanyTab from './PartnerCompanyTab';
@@ -68,8 +70,9 @@ import { normalizeLocale } from '@/lib/appearance';
 import { PARTNER_SETTINGS_SAVED_EVENT } from '../auth/MfaPolicyOffBanner';
 import { fetchSendingDomains } from '@/lib/api/sendingDomains';
 import { isTabVisible } from './sendingDomains/domainView';
+import { useStableT } from '@/lib/i18n/useStableT';
 
-type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'loginBranding' | 'aiBudgets' | 'aiApprovals' | 'aiProvider' | 'remoteAccess' | 'ticketing' | 'emailTemplates' | 'sendingDomains' | 'modules';
+type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'loginBranding' | 'aiBudgets' | 'aiApprovals' | 'aiProvider' | 'aiFeatures' | 'remoteAccess' | 'ticketing' | 'emailTemplates' | 'sendingDomains' | 'modules';
 
 type Partner = {
   id: string;
@@ -135,6 +138,7 @@ const TAB_GROUPS: { label: string; tabs: TabDef[] }[] = [
       // the aiBudgets tab's partner-locks model — see aiApprovalSettings.ts.
       { key: 'aiApprovals', hash: 'ai-approvals', label: 'partnerSettingsPage.tabs.aiApprovals.label', description: 'partnerSettingsPage.tabs.aiApprovals.description', icon: Hourglass },
       { key: 'aiProvider', hash: 'ai-provider', label: 'partnerSettingsPage.tabs.aiProvider.label', description: 'partnerSettingsPage.tabs.aiProvider.description', icon: KeyRound, selfSaving: true },
+      { key: 'aiFeatures', hash: 'ai-features', label: 'partnerSettingsPage.tabs.aiFeatures.label', description: 'partnerSettingsPage.tabs.aiFeatures.description', icon: Activity, selfSaving: true },
     ],
   },
   {
@@ -175,7 +179,7 @@ function getTabFromHash(): TabKey | null {
 // tabs (Ticketing, Email templates, Login Branding, AI Provider, Sender
 // Addresses, Modules) persist independently and are never "dirty" from this
 // page's perspective.
-type SnapshotKey = Exclude<TabKey, 'ticketing' | 'emailTemplates' | 'loginBranding' | 'aiProvider' | 'sendingDomains' | 'modules'>;
+type SnapshotKey = Exclude<TabKey, 'ticketing' | 'emailTemplates' | 'loginBranding' | 'aiProvider' | 'aiFeatures' | 'sendingDomains' | 'modules'>;
 type Snapshot = Record<SnapshotKey, string>;
 
 // Exported for unit-testing without mounting the full component.
@@ -193,6 +197,7 @@ export async function runPartnerSave(
 
 export default function PartnerSettingsPage() {
   const { t } = useTranslation('settings');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { currentPartnerId, isLoading: contextLoading, adoptPartnerId } = useOrgStore();
   const [partner, setPartner] = useState<Partner | null>(null);
   const [loading, setLoading] = useState(true);
@@ -298,8 +303,8 @@ export default function PartnerSettingsPage() {
       const response = await fetchWithAuth('/orgs/partners/me');
       if (!response.ok) {
         if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
-        if (response.status === 403) { setError(t('partnerSettingsPage.permissionDenied')); return; }
-        throw new Error(t('partnerSettingsPage.fetchFailed'));
+        if (response.status === 403) { setError(stableT('partnerSettingsPage.permissionDenied')); return; }
+        throw new Error(stableT('partnerSettingsPage.fetchFailed'));
       }
       const data: Partner = await response.json();
       setPartner(data);
@@ -359,11 +364,11 @@ export default function PartnerSettingsPage() {
         .catch(() => setSendingDomainsCapability(null))
         .finally(() => setSendingDomainsChecked(true));
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('partnerSettingsPage.genericError'));
+      setError(err instanceof Error ? err.message : stableT('partnerSettingsPage.genericError'));
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [stableT]);
 
   useEffect(() => {
     if (currentPartnerId) {
@@ -746,6 +751,13 @@ export default function PartnerSettingsPage() {
           {activeTab === 'aiProvider' && (
             <section className="rounded-lg border bg-card p-6 shadow-xs">
               <PartnerAiProviderTab />
+            </section>
+          )}
+
+          {/* AI Features: self-contained card with its own autosave switches. */}
+          {activeTab === 'aiFeatures' && (
+            <section className="rounded-lg border bg-card p-6 shadow-xs">
+              <PartnerMlFeaturesCard value={partner?.settings?.ml} onSaved={() => void fetchPartner()} />
             </section>
           )}
 

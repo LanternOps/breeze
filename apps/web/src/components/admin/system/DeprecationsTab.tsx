@@ -4,6 +4,7 @@ import { AlertTriangle, History, Lock, RefreshCw } from 'lucide-react';
 import { fetchWithAuth } from '@/stores/auth';
 // Initializes the shared i18next singleton before any island renders translated text.
 import '../../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 /**
  * System → Deprecations tab (#6605 wave 2; moved from Settings by the
@@ -55,6 +56,7 @@ const STATUS_CLASSES: Record<EntryStatus, string> = {
 
 export default function DeprecationsTab() {
   const { t } = useTranslation('settings');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [report, setReport] = useState<DeprecationsReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [forbidden, setForbidden] = useState(false);
@@ -70,17 +72,17 @@ export default function DeprecationsTab() {
         setReport(null);
         return;
       }
-      if (!response.ok) throw new Error(t('systemDeprecations.errors.load'));
+      if (!response.ok) throw new Error(stableT('systemDeprecations.errors.load'));
       const body = await response.json();
       setForbidden(false);
       setReport(body.data as DeprecationsReport);
     } catch (err) {
       setReport(null);
-      setError(err instanceof Error ? err.message : t('systemDeprecations.errors.load'));
+      setError(err instanceof Error ? err.message : stableT('systemDeprecations.errors.load'));
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [stableT]);
 
   useEffect(() => {
     void load();

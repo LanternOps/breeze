@@ -198,6 +198,63 @@ describe('manage_notification_channels — create action', () => {
   });
 });
 
+// ---- tests: write-org resolution (#6667) -----------------------------------
+
+describe('manage_notification_channels — create write-org resolution (#6667)', () => {
+  let handler: AiTool['handler'];
+
+  // A partner tech reachable to TWO orgs with no anchored auth.orgId — the
+  // shape that silently picked accessibleOrgIds[0] before the fix.
+  function multiOrgAuth(): AuthContext {
+    return {
+      user: { id: 'u1', email: 'tech@test.com', name: 'Tech', isPlatformAdmin: false },
+      token: {} as never,
+      partnerId: 'partner-1',
+      orgId: null,
+      scope: 'partner',
+      accessibleOrgIds: ['org-1', 'org-2'],
+      orgCondition: () => undefined,
+      canAccessOrg: (id: string) => id === 'org-1' || id === 'org-2',
+    } as unknown as AuthContext;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    handler = getHandler('manage_notification_channels');
+    mocks.validateNotificationChannelConfig.mockReturnValue([]);
+    mocks.encryptNotificationChannelConfig.mockReturnValue(ENCRYPTED_CONFIG);
+  });
+
+  it('refuses with the ambiguous-org error and inserts nothing when orgId is omitted', async () => {
+    const result = JSON.parse(
+      await handler(
+        { action: 'create', name: 'My Slack', type: 'slack', config: SLACK_CONFIG, enabled: true },
+        multiOrgAuth(),
+      ) as string,
+    );
+
+    expect(result.error).toBe('orgId is required: you have access to multiple organizations');
+    expect(mocks.dbInsert).not.toHaveBeenCalled();
+  });
+
+  it('uses the explicit accessible orgId for the insert', async () => {
+    const insertReturningMock = vi.fn().mockResolvedValue([{ id: 'chan-1', name: 'My Slack', type: 'slack' }]);
+    const insertValuesMock = vi.fn(() => ({ returning: insertReturningMock }));
+    mocks.dbInsert.mockReturnValue({ values: insertValuesMock });
+
+    const result = JSON.parse(
+      await handler(
+        { action: 'create', name: 'My Slack', type: 'slack', config: SLACK_CONFIG, enabled: true, orgId: 'org-2' },
+        multiOrgAuth(),
+      ) as string,
+    );
+
+    expect(result.success).toBe(true);
+    const insertedValues = (insertValuesMock.mock.calls[0] as any)[0] as Record<string, unknown>;
+    expect(insertedValues.orgId).toBe('org-2');
+  });
+});
+
 // ---- tests: update ----------------------------------------------------------
 
 describe('manage_notification_channels — update action', () => {

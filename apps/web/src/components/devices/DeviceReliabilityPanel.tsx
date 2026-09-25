@@ -10,6 +10,7 @@ import { useAiStore } from '../../stores/aiStore';
 import { usePermissions } from '../../lib/permissions';
 import HelpTooltip from '../shared/HelpTooltip';
 import { formatNumber, formatPercent } from '@/lib/i18n/format';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type ReliabilityTopIssue = {
   type: 'crashes' | 'hangs' | 'services' | 'hardware' | 'uptime';
@@ -287,6 +288,7 @@ function OffenderGroup({
 
 export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPanelProps) {
   const { t } = useTranslation('devices');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const mlFlags = useMlFeatureFlags();
   const [snapshot, setSnapshot] = useState<ReliabilitySnapshot | null>(null);
   const [loading, setLoading] = useState(true);
@@ -297,20 +299,19 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
     setLoading(true);
     setError(undefined);
     try {
+      // sweep D15: no snapshot yet is an expected empty state, so the API
+      // answers 200 with snapshot: null (not 404) — a 404 here would now
+      // also wrongly mask a genuine "device not found".
       const response = await fetchWithAuth(`/reliability/${deviceId}`);
-      if (response.status === 404) {
-        setSnapshot(null);
-        return;
-      }
-      if (!response.ok) throw new Error(t('deviceReliabilityPanel.errors.loadScore'));
+      if (!response.ok) throw new Error(stableT('deviceReliabilityPanel.errors.loadScore'));
       const json = await response.json();
       setSnapshot(json?.snapshot ?? null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('deviceReliabilityPanel.errors.loadScore'));
+      setError(err instanceof Error ? err.message : stableT('deviceReliabilityPanel.errors.loadScore'));
     } finally {
       setLoading(false);
     }
-  }, [deviceId, t]);
+  }, [deviceId, stableT]);
 
   useEffect(() => {
     if (!mlFlags.loaded) return;

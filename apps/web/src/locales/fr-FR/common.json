@@ -99,7 +99,8 @@
     "ticketing": "Tickets",
     "deliverableTemplates": "Modèles de livrables",
     "securityScans": "Analyses IOC",
-    "system": "Système"
+    "system": "Système",
+    "monitorConversion": "Conversion des moniteurs"
   },
   "documentTitles": {
     "dashboard": "Tableau de bord",
@@ -1471,6 +1472,12 @@
           "editTitle": "Modifier le webhook"
         },
         "subtitle": "Livrez des événements vers des systèmes externes.",
+        "success": {
+          "created": "Webhook créé",
+          "disabled": "Webhook désactivé",
+          "enabled": "Webhook activé",
+          "updated": "Webhook mis à jour"
+        },
         "title": "Webhooks"
       }
     },
@@ -2446,7 +2453,7 @@
         },
         "title": "Suggestions de solutions",
         "refresh": "Actualiser les solutions suggérées",
-        "disabledTitle": "Les solutions proposées sont désactivées pour cette organisation",
+        "disabledTitle": "Les solutions proposées sont désactivées pour cette organisation. Activez-les dans Paramètres → Partenaire → Fonctionnalités IA, ou pour une seule organisation dans son onglet IA.",
         "suggestionsDisabled": "Suggestions désactivées",
         "generate": "Générer",
         "empty": "Aucune solution suggérée pour l’instant.",

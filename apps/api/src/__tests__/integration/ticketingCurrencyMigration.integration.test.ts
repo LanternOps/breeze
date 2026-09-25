@@ -1,4 +1,6 @@
-// W04: Remove legacy-column constraint/snapshot assertions when the six pricing columns are dropped; retain time-entry currency coverage.
+// #4628 W04b dropped org_ticket_settings.rate_currency and ticket_categories.rate_currency
+// (with default_hourly_rate / default_billable); this suite keeps the time-entry and
+// part currency coverage and proves the two legacy columns and their guards are gone.
 import './setup';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -87,7 +89,7 @@ async function expectSqlstate(operation: Promise<unknown>, expected: string): Pr
 }
 
 describe.runIf(RUN)('ticketing currency migration (wave 4 #3776)', () => {
-  it('installs the four columns with the required nullability and all named constraints', async () => {
+  it('keeps the two money columns with the required nullability; the legacy rate_currency pair is gone (#4628 W04b)', async () => {
     const columns = await withSystemDbAccessContext(() => db.execute(sql`
       SELECT table_name, column_name, is_nullable
       FROM information_schema.columns
@@ -101,8 +103,6 @@ describe.runIf(RUN)('ticketing currency migration (wave 4 #3776)', () => {
     `)) as unknown as Array<{ table_name: string; column_name: string; is_nullable: string }>;
 
     expect(columns).toEqual([
-      { table_name: 'org_ticket_settings', column_name: 'rate_currency', is_nullable: 'NO' },
-      { table_name: 'ticket_categories', column_name: 'rate_currency', is_nullable: 'YES' },
       { table_name: 'ticket_parts', column_name: 'currency_code', is_nullable: 'NO' },
       { table_name: 'time_entries', column_name: 'currency_code', is_nullable: 'YES' },
     ]);
@@ -122,10 +122,8 @@ describe.runIf(RUN)('ticketing currency migration (wave 4 #3776)', () => {
       ORDER BY conname
     `)) as unknown as Array<{ name: string }>;
 
+    // The three legacy guards fell with their columns.
     expect(constraints.map((constraint) => constraint.name)).toEqual([
-      'org_ticket_settings_rate_currency_fkey',
-      'ticket_categories_rate_currency_chk',
-      'ticket_categories_rate_currency_fkey',
       'ticket_parts_currency_code_fkey',
       'time_entries_currency_code_fkey',
       'time_entries_currency_required_when_org_chk',
@@ -178,19 +176,6 @@ describe.runIf(RUN)('ticketing currency migration (wave 4 #3776)', () => {
     `)), '23503');
   });
 
-  it('requires category rate currency only when a default hourly rate is present', async () => {
-    const fixture = await seedFixture();
-
-    await expectSqlstate(withSystemDbAccessContext(() => db.execute(sql`
-      INSERT INTO ticket_categories (partner_id, name, default_hourly_rate)
-      VALUES (${fixture.partnerId}, 'Rated without currency', '100.00')
-    `)), '23514');
-
-    await expect(withSystemDbAccessContext(() => db.execute(sql`
-      INSERT INTO ticket_categories (partner_id, name, default_hourly_rate)
-      VALUES (${fixture.partnerId}, 'No rate or currency', NULL)
-    `))).resolves.toBeDefined();
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -228,9 +213,7 @@ async function seedMoneyRows(f: Fixture): Promise<{ linkedEntryId: string; stand
       ticketId: f.ticketId, orgId: f.orgId, description: 'SSD', quantity: '1.00', unitPrice: '120.00',
       currencyCode: 'USD', isBillable: true, billingStatus: 'not_billed', addedBy: f.userId,
     }).returning({ id: ticketParts.id });
-    await db.insert(orgTicketSettings).values({
-      orgId: f.orgId, defaultHourlyRate: '80.00', defaultBillable: true, rateCurrency: 'USD',
-    });
+    await db.insert(orgTicketSettings).values({ orgId: f.orgId });
     return { linkedEntryId: linked!.id, standaloneEntryId: standalone!.id, partId: part!.id };
   });
 }
@@ -244,12 +227,7 @@ async function readEntry(id: string) {
 
 async function readSettings(orgId: string) {
   const [row] = await withSystemDbAccessContext(() => db
-    .select({
-      defaultHourlyRate: orgTicketSettings.defaultHourlyRate,
-      rateCurrency: orgTicketSettings.rateCurrency,
-      defaultBillable: orgTicketSettings.defaultBillable,
-      slaOverrides: orgTicketSettings.slaOverrides,
-    })
+    .select({ slaOverrides: orgTicketSettings.slaOverrides })
     .from(orgTicketSettings).where(eq(orgTicketSettings.orgId, orgId)));
   return row;
 }
@@ -282,7 +260,7 @@ describe.runIf(RUN)('ticketing currency snapshot permanence (wave 4 #3776)', () 
     expect(stamp).toEqual({ isBillable: true, coverage: 'billable', billingOverridden: true, billingStatus: 'not_billed' });
   });
 
-  it('(b) flipping organizations.currency_code leaves every existing entry, part and org-settings row untouched', async () => {
+  it('(b) flipping organizations.currency_code leaves every existing entry and part untouched', async () => {
     const f = await seedFixture();
     const rows = await seedMoneyRows(f);
 
@@ -294,10 +272,9 @@ describe.runIf(RUN)('ticketing currency snapshot permanence (wave 4 #3776)', () 
       .select({ unitPrice: ticketParts.unitPrice, currencyCode: ticketParts.currencyCode })
       .from(ticketParts).where(eq(ticketParts.id, rows.partId)));
     expect(part).toEqual({ unitPrice: '120.00', currencyCode: 'USD' });
-    expect(await readSettings(f.orgId)).toMatchObject({ defaultHourlyRate: '80.00', rateCurrency: 'USD' });
   });
 
-  it('(c) retired settings input is rejected while SLA edits preserve the historical rate and currency', async () => {
+  it('(c) retired settings input is rejected while SLA-only edits still save', async () => {
     const f = await seedFixture();
     await seedMoneyRows(f);
     await flipOrgCurrency(f.orgId, 'GBP');
@@ -317,17 +294,14 @@ describe.runIf(RUN)('ticketing currency snapshot permanence (wave 4 #3776)', () 
         expect(result.error.issues.some((issue) => /billing profile/.test(issue.message))).toBe(true);
       }
     }
-    expect(await readSettings(f.orgId)).toMatchObject({
-      defaultHourlyRate: '80.00', rateCurrency: 'USD', defaultBillable: true,
-    });
+    expect(await readSettings(f.orgId)).toEqual({ slaOverrides: {} });
 
-    // A clean SLA-only save still leaves the historical money columns untouched.
+    // A clean SLA-only save still lands.
     const parsed = orgTicketSettingsSchema.parse({
       slaOverrides: { high: { responseMinutes: 30, resolutionMinutes: 240 } },
     });
     await withDbAccessContext(partnerCtx(f), () => upsertOrgTicketSettings(f.orgId, parsed));
-    expect(await readSettings(f.orgId)).toMatchObject({
-      defaultHourlyRate: '80.00', rateCurrency: 'USD', defaultBillable: true,
+    expect(await readSettings(f.orgId)).toEqual({
       slaOverrides: { high: { responseMinutes: 30, resolutionMinutes: 240 } },
     });
   });
@@ -339,7 +313,7 @@ describe.runIf(RUN)('ticketing currency snapshot permanence (wave 4 #3776)', () 
     const env = await setupTestEnvironment({ scope: 'partner' });
     await adminDb.update(partners).set({ currencyCode: 'USD' }).where(eq(partners.id, env.partner.id));
     const [category] = await adminDb.insert(ticketCategories).values({
-      partnerId: env.partner.id, name: 'Snapshot category', defaultHourlyRate: '100.00', rateCurrency: 'USD',
+      partnerId: env.partner.id, name: 'Snapshot category',
     }).returning({ id: ticketCategories.id });
 
     const app = new Hono();
@@ -351,7 +325,7 @@ describe.runIf(RUN)('ticketing currency snapshot permanence (wave 4 #3776)', () 
     });
     const read = async () => {
       const [row] = await adminDb
-        .select({ name: ticketCategories.name, defaultHourlyRate: ticketCategories.defaultHourlyRate, rateCurrency: ticketCategories.rateCurrency })
+        .select({ name: ticketCategories.name })
         .from(ticketCategories).where(eq(ticketCategories.id, category!.id));
       return row;
     };
@@ -359,29 +333,29 @@ describe.runIf(RUN)('ticketing currency snapshot permanence (wave 4 #3776)', () 
     await adminDb.update(partners).set({ currencyCode: 'GBP' }).where(eq(partners.id, env.partner.id));
 
     // #6472: a retired field is rejected whole-request — the rename riding
-    // along with it does not land either, and the stored snapshot is untouched.
+    // along with it does not land either.
     const renamed = await patch({ name: 'renamed', defaultHourlyRate: 100 });
     expect(renamed.status).toBe(400);
     const renamedBody = await renamed.json();
     expect(renamedBody.error).toContain('defaultHourlyRate');
     expect(renamedBody.error).toContain('billing profile');
     expect(renamedBody).not.toHaveProperty('deprecationWarnings');
-    expect(await read()).toEqual({ name: 'Snapshot category', defaultHourlyRate: '100.00', rateCurrency: 'USD' });
+    expect(await read()).toEqual({ name: 'Snapshot category' });
 
     // Changed and malformed legacy rates are both rejected, never applied.
     for (const rate of [125, 'invalid']) {
       const repriced = await patch({ defaultHourlyRate: rate });
       expect(repriced.status).toBe(400);
       expect((await repriced.json()).error).toContain('defaultHourlyRate');
-      expect(await read()).toEqual({ name: 'Snapshot category', defaultHourlyRate: '100.00', rateCurrency: 'USD' });
+      expect(await read()).toEqual({ name: 'Snapshot category' });
     }
 
-    // A clean rename still works and still leaves the historical pricing alone.
+    // A clean rename still works.
     const clean = await patch({ name: 'renamed' });
     expect(clean.status).toBe(200);
     const cleanBody = await clean.json();
     expect(cleanBody.data).not.toHaveProperty('defaultHourlyRate');
     expect(cleanBody.data).not.toHaveProperty('rateCurrency');
-    expect(await read()).toEqual({ name: 'renamed', defaultHourlyRate: '100.00', rateCurrency: 'USD' });
+    expect(await read()).toEqual({ name: 'renamed' });
   });
 });

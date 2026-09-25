@@ -157,7 +157,7 @@ describe('restore_snapshot — cross-site snapshot authorization (source device 
 
   it('allows a same-site restore (Site-A target + Site-A snapshot) and inserts a restore job', async () => {
     seqSelect([
-      [{ id: 'd1', siteId: 'site-A' }],   // target device (allowed)
+      [{ id: 'd1', orgId: 'org-1', siteId: 'site-A' }],   // target device (allowed)
       [snapshotRow],                      // snapshot row
       [{ siteId: 'site-A' }],             // snapshot source device → same site, allowed
       [{ id: 'd1', status: 'online' }],   // target device online check
@@ -180,7 +180,7 @@ describe('restore_snapshot — cross-site snapshot authorization (source device 
   it('unrestricted caller restores without a source-device query (no regression)', async () => {
     // Unrestricted: loader skips the source-device gate. Selects: target, snapshot, target-online.
     seqSelect([
-      [{ id: 'd1', siteId: 'site-Z' }], // target device
+      [{ id: 'd1', orgId: 'org-1', siteId: 'site-Z' }], // target device
       [snapshotRow],                    // snapshot row
       [{ id: 'd1', status: 'online' }], // target device online check
       [providerConfigRow],              // backup destination config lookup

@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react';
 import { ShieldAlert, AlertTriangle, CheckCircle, Activity } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
+import { useStableT } from '@/lib/i18n/useStableT';
 import { RISK_CHART_COLORS, DATA_TYPE_CHART_COLORS } from './constants';
 
 type DashboardData = {
@@ -115,6 +116,9 @@ function PieChart({ data, colorMap, title }: { data: Record<string, number>; col
 
 export default function DashboardTab() {
   const { t } = useTranslation('security');
+  // Effects use the stable translator so a locale change does not re-run them
+  // (#3632); JSX keeps the plain `t` so rendered text still re-translates.
+  const stableT = useStableT(t);
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -127,7 +131,7 @@ export default function DashboardTab() {
         const res = await fetchWithAuth('/sensitive-data/dashboard');
         if (!res.ok) {
           throw new Error(
-            t('sensitiveDataDashboardTab.errors.fetchDashboard', {
+            stableT('sensitiveDataDashboardTab.errors.fetchDashboard', {
               defaultValue: 'Failed to fetch dashboard',
             }),
           );
@@ -139,7 +143,7 @@ export default function DashboardTab() {
           setError(
             err instanceof Error
               ? err.message
-              : t('sensitiveDataDashboardTab.errors.generic', { defaultValue: 'An error occurred' }),
+              : stableT('sensitiveDataDashboardTab.errors.generic', { defaultValue: 'An error occurred' }),
           );
         }
       } finally {
@@ -148,7 +152,7 @@ export default function DashboardTab() {
     }
     fetch();
     return () => { cancelled = true; };
-  }, [t]);
+  }, [stableT]);
 
   if (loading) {
     return (

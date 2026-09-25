@@ -31,6 +31,7 @@ import {
   type FleetDesignFiledDocument,
   type FleetDesignListItem,
 } from "@/lib/api/fleetDesign";
+import { useStableT } from '@/lib/i18n/useStableT';
 
 /**
  * Fleet Designer W03 (#5653) — the Fleet Design page: an org (+ optional
@@ -82,6 +83,7 @@ const DESIGN_RUN_POLL_INTERVAL_MS = 5_000;
 
 export default function FleetDesignPage() {
   const { t } = useTranslation("fleetDesign");
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const organizations = useOrgStore((s) => s.organizations);
   const globalOrgId = useOrgStore((s) => s.currentOrgId);
 
@@ -134,11 +136,11 @@ export default function FleetDesignPage() {
     try {
       setItems(await listDesigns(selectedOrgId));
     } catch {
-      setListError(t("page.loadError"));
+      setListError(stableT("page.loadError"));
     } finally {
       setListLoading(false);
     }
-  }, [selectedOrgId, t]);
+  }, [selectedOrgId, stableT]);
 
   useEffect(() => {
     void loadList();
@@ -371,6 +373,12 @@ export default function FleetDesignPage() {
   const drift = detail?.summary.fleetDesign?.drift ?? null;
   const unavailable = detail?.summary.fleetDesign?.unavailable;
   const hasAppliedRows = ledger.some((i) => i.status === "applied");
+  // The apply preview carries no confidence field of its own (#D8) — the
+  // drawer reads it from the same report data FleetDesignViewer does.
+  const functionConfidence: Record<string, number> = {};
+  for (const f of [...(outcome?.sections.functions ?? []), ...(outcome?.sections.unsure.lowConfidenceFunctions ?? [])]) {
+    functionConfidence[f.functionKey] = f.confidence;
+  }
 
   return (
     <div className="space-y-6" data-testid="fleet-design-page">
@@ -602,6 +610,7 @@ export default function FleetDesignPage() {
             onClose={() => setDrawerOpen(false)}
             reportRunId={selectedRunId}
             approvalBase={selection.toApproval()}
+            functionConfidence={functionConfidence}
             onApplied={() => {
               void loadDetail(selectedRunId);
               void loadList();

@@ -39,6 +39,7 @@ import {
   type ReportType as SharedReportType
 } from '@breeze/shared';
 import { useTranslation } from 'react-i18next';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 // Derived from the canonical tuple in `@breeze/shared`
 // (`packages/shared/src/reportTypes.ts`) rather than hand-listed. The
@@ -132,6 +133,7 @@ function recipientCountOf(config: Record<string, unknown> | undefined): number {
 
 export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: ReportsListProps) {
   const { t } = useTranslation('reports');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const effectiveTimezone = timezone || getBrowserTimezone();
   const [reports, setReports] = useState<Report[]>([]);
   const [recentRuns, setRecentRuns] = useState<ReportRun[]>([]);
@@ -218,7 +220,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
           : Promise.resolve<PartnerWideFetch>({ rows: [], complete: true }),
       ]);
       if (!response.ok) {
-        throw new Error(t('reports.reportsList.errors.fetchReports'));
+        throw new Error(stableT('reports.reportsList.errors.fetchReports'));
       }
       const data = await response.json();
       if (!isCurrent()) return;
@@ -228,11 +230,11 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
       setPartnerWideIncomplete(!partnerWide.complete);
     } catch (err) {
       if (!isCurrent()) return;
-      setError(err instanceof Error ? err.message : t('reports.reportsList.errors.generic'));
+      setError(err instanceof Error ? err.message : stableT('reports.reportsList.errors.generic'));
     } finally {
       if (isCurrent()) setLoading(false);
     }
-  }, [t, mergePartnerWide, fetchPartnerWideReports]);
+  }, [stableT, mergePartnerWide, fetchPartnerWideReports]);
 
   const fetchRecentRuns = useCallback(async () => {
     try {

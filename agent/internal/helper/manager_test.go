@@ -2,6 +2,7 @@ package helper
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -90,6 +91,7 @@ func TestApplyRestartsHelperOnConfigChangeWhenIdle(t *testing.T) {
 	stopped := 0
 	spawned := 0
 	mgr := New(context.Background(), nil, nil, "")
+	t.Cleanup(mgr.Shutdown) // stop the watcher this test spawns (#6872: avoid leaking it into later tests)
 	mgr.baseDir = tmpDir
 	mgr.sessionEnumerator = &mockEnumerator{
 		sessions: []SessionInfo{{Key: "501", Username: "alice", UID: 501}},
@@ -150,6 +152,7 @@ func TestApplyDefersRestartWhileChatActive(t *testing.T) {
 	stopped := 0
 	spawned := 0
 	mgr := New(context.Background(), nil, nil, "")
+	t.Cleanup(mgr.Shutdown) // the already-running session still gets a watcher (#6872: avoid leaking it into later tests)
 	mgr.baseDir = tmpDir
 	mgr.sessionEnumerator = &mockEnumerator{
 		sessions: []SessionInfo{{Key: "501", Username: "alice", UID: 501}},
@@ -197,6 +200,7 @@ func TestApplyEnabledSpawnsPerSession(t *testing.T) {
 	stopHelperLegacyFunc = func() {}
 
 	mgr := New(context.Background(), nil, nil, "")
+	t.Cleanup(mgr.Shutdown) // stop the watchers this test spawns (#6872: avoid leaking them into later tests)
 	mgr.baseDir = tmpDir
 	mgr.sessionEnumerator = &mockEnumerator{
 		sessions: []SessionInfo{
@@ -404,6 +408,7 @@ func TestApplyReapsOnDiskSessionNotSurfacedByEnumerator(t *testing.T) {
 
 	var stoppedPIDs []int
 	mgr := New(context.Background(), nil, nil, "")
+	t.Cleanup(mgr.Shutdown) // stop the watcher this test spawns (#6872: avoid leaking it into later tests)
 	mgr.baseDir = tmpDir
 	// Console-only enumerator: only the interactive console session surfaces,
 	// never the RDP session 999 that owns the stale on-disk state.
@@ -675,5 +680,210 @@ func TestApplySpawnsWithConfigWhenOnlyOnDiskVersionKnown(t *testing.T) {
 	}
 	if len(spawnArgs[0]) < 2 || spawnArgs[0][0] != "--config" {
 		t.Fatalf("spawn args = %v, want --config <session path>", spawnArgs[0])
+	}
+}
+
+// newNotInstalledManager builds a manager whose binaryPath does not exist
+// and whose spawnFunc records every call — the #6872 fixture.
+func newNotInstalledManager(t *testing.T) (*Manager, *int) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	origRemove := removeAutoStartFunc
+	origStopLegacy := stopHelperLegacyFunc
+	t.Cleanup(func() {
+		removeAutoStartFunc = origRemove
+		stopHelperLegacyFunc = origStopLegacy
+	})
+	removeAutoStartFunc = func() error { return nil }
+	stopHelperLegacyFunc = func() {}
+
+	spawns := 0
+	mgr := New(context.Background(), nil, nil, "")
+	mgr.baseDir = tmpDir
+	mgr.binaryPath = filepath.Join(tmpDir, "breeze-helper") // never written
+	mgr.sessionEnumerator = &mockEnumerator{sessions: []SessionInfo{{Key: "1", Username: "kit", UID: 1}}}
+	mgr.isOurProcessFunc = func(pid int, binaryPath string) bool { return false }
+	mgr.spawnFunc = func(sessionKey, binaryPath string, args ...string) (int, error) {
+		spawns++
+		return 4242, nil
+	}
+	return mgr, &spawns
+}
+
+func TestEnsureRunningSessionReturnsErrNotInstalled(t *testing.T) {
+	mgr, spawns := newNotInstalledManager(t)
+	state := newSessionState("1", mgr.baseDir)
+
+	mgr.mu.Lock()
+	err := mgr.ensureRunningSession(state)
+	mgr.mu.Unlock()
+
+	if !errors.Is(err, ErrNotInstalled) {
+		t.Fatalf("err = %v, want ErrNotInstalled", err)
+	}
+	if *spawns != 0 {
+		t.Fatalf("spawnFunc called %d times for a missing binary", *spawns)
+	}
+}
+
+// A device that hit the watcher's give-up state must still refuse to spawn
+// while the binary is missing: the not-installed check comes BEFORE
+// watcherGaveUp, so ErrNotInstalled — not the "keeps crashing" error — is
+// what a not-installed session reports even with a stale give-up flag.
+func TestEnsureRunningSessionNotInstalledBeatsWatcherGaveUp(t *testing.T) {
+	mgr, spawns := newNotInstalledManager(t)
+	state := newSessionState("1", mgr.baseDir)
+	state.watcherGaveUp = true
+
+	mgr.mu.Lock()
+	err := mgr.ensureRunningSession(state)
+	mgr.mu.Unlock()
+	if !errors.Is(err, ErrNotInstalled) {
+		t.Fatalf("err = %v, want ErrNotInstalled while missing", err)
+	}
+	if *spawns != 0 {
+		t.Fatalf("spawnFunc called %d times for a missing binary", *spawns)
+	}
+}
+
+// #6872 final-review F1: a session whose watcher gave up before the helper
+// binary vanished must recover once Apply's bootstrap-install path
+// (downloadAndInstall, not applyPendingUpdate's "new binary" reset) lands a
+// fresh binary — not keep reporting "helper keeps crashing" forever. Drives
+// the real flow through Apply/CheckUpdate rather than hand-clearing the
+// flag, so the assertion cannot pass vacuously.
+func TestApplyResetsWatcherGaveUpAfterBootstrapInstall(t *testing.T) {
+	tmpDir := t.TempDir()
+	rec := withInstallRecorder(t)
+
+	origRemove := removeAutoStartFunc
+	origStopLegacy := stopHelperLegacyFunc
+	t.Cleanup(func() {
+		removeAutoStartFunc = origRemove
+		stopHelperLegacyFunc = origStopLegacy
+	})
+	removeAutoStartFunc = func() error { return nil }
+	stopHelperLegacyFunc = func() {}
+
+	mgr := newInstallTestManager(t, tmpDir)
+	// Report the on-disk version as already matching the pending target so
+	// applyPendingUpdate's installed==pending short-circuit (manager.go
+	// ~line 886) clears pendingHelperVersion without a second install —
+	// otherwise that second (unrelated) "new binary" reset would mask
+	// whether the bootstrap-install path under test resets watcherGaveUp.
+	mgr.binaryVersionFunc = func(string) (string, error) { return "0.99.0", nil }
+	mgr.sessionEnumerator = &mockEnumerator{sessions: []SessionInfo{{Key: "1", Username: "kit", UID: 1}}}
+	mgr.isOurProcessFunc = func(int, string) bool { return false }
+	mgr.stopIfOursFunc = func(int, string) (bool, error) { return false, nil }
+
+	spawns := 0
+	mgr.spawnFunc = func(sessionKey, binaryPath string, args ...string) (int, error) {
+		spawns++
+		return 4242, nil
+	}
+
+	// A session that hit the watcher's give-up state before the binary went
+	// missing — the exact #6872 starting condition.
+	state := newSessionState("1", mgr.baseDir)
+	state.watcherGaveUp = true
+	mgr.sessions["1"] = state
+
+	verifiedPkg := filepath.Join(tmpDir, "verified"+packageExtension())
+	if err := os.WriteFile(verifiedPkg, []byte("VERIFIED"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	mgr.downloadFunc = func(version string) (string, error) {
+		// Simulate the install landing the binary, same as
+		// TestApplyEnabledInstallUsesPendingVersion.
+		if err := os.WriteFile(mgr.binaryPath, []byte("bin"), 0755); err != nil {
+			return "", err
+		}
+		return verifiedPkg, nil
+	}
+
+	mgr.CheckUpdate("0.99.0")
+	mgr.Apply(&Settings{Enabled: true})
+	mgr.Shutdown()
+
+	if rec.called < 1 {
+		t.Fatalf("installPackage called %d times, want >= 1", rec.called)
+	}
+	if spawns != 1 {
+		t.Fatalf("spawnFunc called %d times after bootstrap install, want 1", spawns)
+	}
+	if mgr.sessions["1"].watcherGaveUp {
+		t.Fatal("watcherGaveUp still true after a successful bootstrap install (#6872)")
+	}
+}
+
+func TestApplyEnabledNotInstalledNoPendingDoesNotSpawn(t *testing.T) {
+	mgr, spawns := newNotInstalledManager(t)
+
+	mgr.Apply(&Settings{Enabled: true})
+	mgr.Apply(&Settings{Enabled: true})
+
+	if *spawns != 0 {
+		t.Fatalf("spawnFunc called %d times with no helper installed", *spawns)
+	}
+	for key, st := range mgr.sessions {
+		if st.watcher != nil {
+			t.Fatalf("session %s has a watcher with no helper installed", key)
+		}
+	}
+	if !mgr.notInstalledWarned {
+		t.Fatal("expected the not-installed warning to have fired once")
+	}
+}
+
+func TestApplyNotInstalledWarnResetsWhenInstalledOrDisabled(t *testing.T) {
+	mgr, _ := newNotInstalledManager(t)
+	t.Cleanup(mgr.Shutdown) // installing the binary mid-test starts a watcher (#6872: avoid leaking it into later tests)
+	mgr.Apply(&Settings{Enabled: true})
+	if !mgr.notInstalledWarned {
+		t.Fatal("warn flag not set")
+	}
+
+	mgr.Apply(&Settings{Enabled: false})
+	if mgr.notInstalledWarned {
+		t.Fatal("warn flag must reset when the policy turns off")
+	}
+
+	mgr.Apply(&Settings{Enabled: true})
+	if !mgr.notInstalledWarned {
+		t.Fatal("warn flag not set on re-enable")
+	}
+	if err := os.WriteFile(mgr.binaryPath, []byte("bin"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	mgr.Apply(&Settings{Enabled: true})
+	if mgr.notInstalledWarned {
+		t.Fatal("warn flag must reset once the binary is installed")
+	}
+}
+
+// Binary removed while a session watcher is running: the next Apply must stop
+// that watcher and spawn nothing.
+func TestApplyNotInstalledStopsExistingWatcher(t *testing.T) {
+	mgr, spawns := newNotInstalledManager(t)
+	if err := os.WriteFile(mgr.binaryPath, []byte("bin"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	mgr.Apply(&Settings{Enabled: true})
+	if *spawns != 1 {
+		t.Fatalf("installed: spawnFunc called %d times, want 1", *spawns)
+	}
+	if mgr.sessions["1"] == nil || mgr.sessions["1"].watcher == nil {
+		t.Fatal("expected a watcher for session 1 while installed")
+	}
+
+	if err := os.Remove(mgr.binaryPath); err != nil {
+		t.Fatal(err)
+	}
+	mgr.Apply(&Settings{Enabled: true})
+	if mgr.sessions["1"].watcher != nil {
+		t.Fatal("watcher still running after the binary vanished")
+	}
+	if *spawns != 1 {
+		t.Fatalf("spawnFunc called %d times after the binary vanished, want still 1", *spawns)
 	}
 }

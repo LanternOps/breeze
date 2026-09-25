@@ -961,5 +961,88 @@
       "rebooted": "Yeniden başlatıldı",
       "checked_in": "Giriş yapıldı"
     }
+  },
+  "backupHealth": {
+    "title": "Yedekleme durumu",
+    "subtitle": "Breeze'in yönettiği her cihaz ve yedekleme sağlayıcınızın bildirdiği her şey.",
+    "staleBanner": "Bazı sağlayıcı verileri güncel değil. En son görülen durum gösteriliyor.",
+    "unmappedNotice": "{{value}} cihaz, henüz bir Breeze kuruluşuyla eşlenmemiş sağlayıcı müşterilerine ait.",
+    "statusTitle": "Durum",
+    "recencyTitle": "Son başarılı yedekleme",
+    "coverage": "{{total}} uç noktadan {{covered}} tanesinin güncel yedeği var",
+    "providerOnly": "Yalnızca sağlayıcıda olan {{value}} uç nokta",
+    "m365Accounts": "{{value}} Microsoft 365 hesabı",
+    "status": {
+      "no_backups": "Yedek yok",
+      "completed": "Tamamlandı",
+      "completed_with_errors": "Hatalarla tamamlandı",
+      "in_progress": "İşleniyor",
+      "unsuccessful": "Başarısız",
+      "other": "Diğer",
+      "failed": "Başarısız",
+      "interrupted": "Kesildi",
+      "over_quota": "Kota aşıldı",
+      "no_selection": "Seçim yok",
+      "not_started": "Başlamadı",
+      "unknown": "Bilinmiyor"
+    },
+    "recency": {
+      "never": "Hiç",
+      "under_24h": "24 saatten az",
+      "under_48h": "48 saatten az",
+      "over_48h": "48 saatten fazla"
+    },
+    "health": {
+      "healthy": "Sağlıklı",
+      "warning": "İlgi gerekiyor",
+      "critical": "Kritik",
+      "unknown": "Bilinmiyor"
+    },
+    "sourceAll": "Tüm kaynaklar",
+    "healthAll": "Tüm durumlar",
+    "sourceBreeze": "Breeze",
+    "searchPlaceholder": "Cihaz veya kuruluş ara",
+    "includeWithoutBackup": "Hiç yedeği olmayan cihazları da göster",
+    "table": {
+      "device": "Cihaz",
+      "computerName": "Bilgisayar adı",
+      "source": "Kaynak",
+      "dataSources": "Veri kaynakları",
+      "selected": "Seçilen",
+      "used": "Kullanılan",
+      "history": "Son 28 gün",
+      "errors": "Hatalar",
+      "agent": "Aracı"
+    },
+    "dataSource": {
+      "files": "Dosyalar ve klasörler",
+      "system_state": "Sistem durumu",
+      "mssql": "SQL Server",
+      "hyperv": "Hyper-V",
+      "vmware": "VMware",
+      "bare_metal": "Bare metal",
+      "m365_sharepoint": "SharePoint",
+      "m365_exchange": "Exchange",
+      "m365_onedrive": "OneDrive",
+      "m365_teams": "Teams",
+      "other": "Diğer"
+    },
+    "noObservation": "Gözlem yok",
+    "openDevice": "Cihazı aç",
+    "empty": "Bu filtrelere uyan cihaz yok.",
+    "loadMore": "Daha fazla yükle",
+    "error": "Yedekleme durumu yüklenemedi",
+    "external": {
+      "title": "Dış yedekleme",
+      "customer": "Sağlayıcı müşterisi",
+      "lastSuccess": "Son başarılı yedekleme",
+      "lastSession": "Son oturum",
+      "unlink": "Bağlantıyı kaldır",
+      "unlinkConfirm": "Bu sağlayıcı cihazının Breeze cihazıyla bağlantısı kaldırılsın mı? Yedekleme ürününde kalır ve yeniden bağlanabilir.",
+      "unlinkedToast": "Sağlayıcı cihazının bağlantısı kaldırıldı",
+      "errorUnlink": "Sağlayıcı cihazının bağlantısı kaldırılamadı",
+      "error": "Dış yedekleme durumu yüklenemedi",
+      "alsoCheck": "Üçüncü taraf yedekleme bağlantılarını Entegrasyonlar bölümünde de kontrol edin."
+    }
   }
 }

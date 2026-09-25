@@ -248,6 +248,10 @@ const CUSTOM_EXECUTORS_THAT_NEVER_WRITE_ORG_ID: Readonly<Record<string, string>>
 
 /** BENIGN = fires on the repoint but does not obstruct it. Reason per entry. */
 const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
+  // Partner alerts feed (2026-10-30-130000): BEFORE INSERT OR UPDATE, only sets
+  // NEW.partner_feed_xid := pg_current_xact_id(). Never reads or blocks org_id;
+  // an org repoint restamps the row, which correctly re-delivers it in the feed.
+  'alerts.breeze_alerts_partner_feed_xid': 'only stamps partner_feed_xid; never reads or reverts org_id',
   // Recipe library E2 (2026-10-26-160000): fires only on UPDATE OF
   // device_id/ticket_id/contact_id and only stamps detached_at/_reason/state
   // when the last pointer goes null. Never reads or writes org_id; the table is

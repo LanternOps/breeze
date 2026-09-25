@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -177,6 +178,19 @@ func (c *Config) ValidateTiered() ValidationResult {
 	} else if c.MetricsIntervalSeconds > 3600 {
 		result.Warnings = append(result.Warnings, fmt.Errorf("metrics_interval_seconds %d exceeds maximum 3600, clamped to 3600", c.MetricsIntervalSeconds))
 		c.MetricsIntervalSeconds = 3600
+	}
+
+	// Fatals: hardware.tool_dirs must be absolute local directories without control characters
+	for _, dir := range c.Hardware.ToolDirs {
+		invalid := strings.TrimSpace(dir) == "" || !filepath.IsAbs(dir)
+		for _, r := range dir {
+			if unicode.IsControl(r) {
+				invalid = true
+			}
+		}
+		if invalid {
+			result.Fatals = append(result.Fatals, fmt.Errorf("hardware.tool_dirs requires absolute paths without control characters"))
+		}
 	}
 
 	// Warnings: unknown collectors

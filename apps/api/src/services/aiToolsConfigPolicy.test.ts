@@ -137,6 +137,7 @@ import {
   getConfigPolicy,
   listFeatureLinks,
   removeFeatureLink,
+  updateConfigPolicy,
   updateFeatureLink,
 } from './configurationPolicy';
 import { onedriveHelperInlineSettingsSchema } from '@breeze/shared/validators';
@@ -1211,6 +1212,49 @@ describe('configuration policy AI tools', () => {
     expect(JSON.parse(output).error).toContain('full partner org access');
     expect(createConfigPolicyMock).not.toHaveBeenCalled();
   });
+
+  // W05c2 Task 14: legacy alert_rule / monitoring writes still succeed during
+  // W05c, but every successful write points the model at monitors (W05d
+  // replaces the warning with a refusal).
+  it.each(['alert_rule', 'monitoring'])('warns while preserving authorized %s writes', async (featureType) => {
+    vi.mocked(getConfigPolicy).mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Policy' } as any);
+    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1' } as any);
+    const registry = new Map<string, any>();
+    registerConfigPolicyTools(registry);
+    const body = JSON.parse(await registry.get('manage_policy_feature_link').handler({
+      action: 'add', configPolicyId: POLICY_ID, featureType,
+    }, makeAuth()));
+    expect(body).toMatchObject({ success: true, useTool: 'manage_monitor_definitions' });
+    expect(body.warning).toContain(featureType);
+    expect(addFeatureLink).toHaveBeenCalled();
+  });
+
+  it('warns from the stored link type on update, not a caller-supplied replacement', async () => {
+    vi.mocked(getConfigPolicy).mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Policy' } as any);
+    mockSelectRows([{ featureType: 'monitoring' }]);
+    vi.mocked(updateFeatureLink).mockResolvedValue({ id: 'link-1' } as any);
+    const registry = new Map<string, any>();
+    registerConfigPolicyTools(registry);
+    const body = JSON.parse(await registry.get('manage_policy_feature_link').handler({
+      action: 'update', configPolicyId: POLICY_ID, featureLinkId: 'link-1', featureType: 'patch',
+    }, makeAuth()));
+    expect(body.success).toBe(true);
+    expect(body.warning).toContain('monitoring');
+    expect(body.useTool).toBe('manage_monitor_definitions');
+  });
+
+  it('adds no legacy warning to a monitors write', async () => {
+    vi.mocked(getConfigPolicy).mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Policy' } as any);
+    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1' } as any);
+    const registry = new Map<string, any>();
+    registerConfigPolicyTools(registry);
+    const body = JSON.parse(await registry.get('manage_policy_feature_link').handler({
+      action: 'add', configPolicyId: POLICY_ID, featureType: 'monitors', inlineSettings: { items: [] },
+    }, makeAuth()));
+    expect(body.success).toBe(true);
+    expect(body).not.toHaveProperty('warning');
+    expect(body).not.toHaveProperty('useTool');
+  });
 });
 
 // ─── RMM-QA-176 D9.3 ────────────────────────────────────────────────────────
@@ -1422,6 +1466,14 @@ describe('manage_policy_feature_link describe action (A-W03)', () => {
     expect(getConfigPolicy).not.toHaveBeenCalled();
   });
 
+  it('describes hardware collection defaults and bounds without reading a policy',async()=>{
+   vi.clearAllMocks();
+   const out=JSON.parse(await tool().handler({action:'describe',featureType:'hardware_monitoring'},{} as never));
+   expect(out).toMatchObject({featureType:'hardware_monitoring',linkOnly:false});
+   for(const text of ['enabled: true','pollIntervalMinutes: 10','diskHealthIntervalMinutes: 60','5..60','15..1440'])expect(out.inlineSettings).toContain(text);
+   expect(db.select).not.toHaveBeenCalled();expect(getConfigPolicy).not.toHaveBeenCalled();
+  });
+
   it.each(['nope', 'toString', '__proto__', undefined])('rejects invalid feature type %s', async (featureType) => {
     const out = JSON.parse(await tool().handler({ action: 'describe', featureType }, {} as never));
     expect(out.error).toMatch(/featureType/);
@@ -1522,5 +1574,246 @@ describe('manage_policy_feature_link maintenance inlineSettings validation (#631
         notifyBeforeMinutes: 15,
       }),
     );
+  });
+});
+
+describe('manage_policy_feature_link compliance validation + rejection hints (#6669)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    vi.mocked(getConfigPolicy).mockReset();
+    vi.mocked(addFeatureLink).mockReset();
+    vi.mocked(updateFeatureLink).mockReset();
+    canManagePartnerWidePoliciesMock.mockReset().mockReturnValue(true);
+    policyAccessConditionMock.mockReset().mockReturnValue(undefined);
+    enable2faState.value = true;
+  });
+
+  function toolsWithPolicy() {
+    vi.mocked(getConfigPolicy).mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Org policy' } as any);
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+    return tools;
+  }
+
+  async function add(featureType: string, inlineSettings: unknown) {
+    // Armed so an ungated tool would complete the write — the not.toHaveBeenCalled
+    // assertions below are then meaningful.
+    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType } as any);
+    const output = await toolsWithPolicy().get('manage_policy_feature_link')!.handler({
+      action: 'add',
+      configPolicyId: POLICY_ID,
+      featureType,
+      inlineSettings,
+    }, makeAuth());
+    return JSON.parse(output);
+  }
+
+  it('rejects a compliance required_software rule built from the old reference (`name`, no softwareName)', async () => {
+    const out = await add('compliance', {
+      items: [{ name: 'App present', enforcementLevel: 'warn', rules: [{ type: 'required_software', name: 'Contoso Agent' }] }],
+    });
+    expect(out.error).toContain('compliance');
+    expect(out.error).toContain('items.0.rules.0.softwareName');
+    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it('rejects the `config_file_check` rule type and names the accepted types', async () => {
+    const out = await add('compliance', {
+      items: [{ name: 'Cfg', rules: [{ type: 'config_file_check', configFilePath: '/etc/x', configKey: 'k' }] }],
+    });
+    expect(out.error).toContain('config_check');
+    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it('saves a well-formed compliance payload unnormalized (UI-only keys such as remediation survive)', async () => {
+    const raw = {
+      items: [{
+        name: 'App present',
+        enforcementLevel: 'warn',
+        checkIntervalMinutes: 60,
+        rules: [{ type: 'required_software', softwareName: 'Contoso Agent', remediation: { type: 'none' } }],
+      }],
+    };
+    const out = await add('compliance', raw);
+    expect(out.success).toBe(true);
+    expect(vi.mocked(addFeatureLink)).toHaveBeenCalledWith(POLICY_ID, 'compliance', null, raw);
+  });
+
+  it('points an app-presence alert_rule guess at the compliance required_software rule and lists the valid condition types', async () => {
+    const out = await add('alert_rule', {
+      items: [{ name: 'App removed', conditions: [{ type: 'software_presence', softwareName: 'Contoso Agent' }] }],
+    });
+    expect(out.error).toContain('items.0.conditions.0.type');
+    for (const type of ['metric', 'offline', 'event_log']) expect(out.error).toContain(type);
+    expect(out.error).toContain('required_software');
+    expect(out.error).toContain('compliance');
+    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it('on a rejected event_log level lists the valid levels and says Information events are not collected', async () => {
+    const out = await add('alert_rule', {
+      items: [{ name: 'Uninstall', conditions: [{ type: 'event_log', category: 'application', level: 'info', sourcePattern: 'MsiInstaller' }] }],
+    });
+    expect(out.error).toContain('items.0.conditions.0.level');
+    for (const level of ['warning', 'error', 'critical']) expect(out.error).toContain(level);
+    expect(out.error).toMatch(/Information-level events can never match/);
+    expect(out.error).toContain('required_software');
+    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it('attaches the hint to a bad type inside autoResolveConditions too', async () => {
+    const out = await add('alert_rule', {
+      items: [{
+        name: 'CPU',
+        conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 80 }],
+        autoResolveConditions: [{ type: 'software_presence' }],
+      }],
+    });
+    expect(out.error).toContain('items.0.autoResolveConditions.0.type');
+    expect(out.error).toContain('required_software');
+    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it('validates compliance on the UPDATE action (featureType re-derived from the stored link)', async () => {
+    vi.mocked(updateFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'compliance' } as any);
+    mockSelectRows([{ featureType: 'compliance' }]);
+    const output = await toolsWithPolicy().get('manage_policy_feature_link')!.handler({
+      action: 'update',
+      configPolicyId: POLICY_ID,
+      featureLinkId: 'link-1',
+      inlineSettings: { items: [{ name: 'App present', rules: [{ type: 'required_software', name: 'Contoso Agent' }] }] },
+    }, makeAuth());
+    const { error } = JSON.parse(output);
+    expect(error).toContain('compliance');
+    expect(error).toContain('items.0.rules.0.softwareName');
+    expect(vi.mocked(updateFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it('does not attach the app-presence hint to an unrelated alert_rule error', async () => {
+    const out = await add('alert_rule', {
+      items: [{ name: 'CPU', conditions: [{ type: 'metric', metric: 'bogus', operator: 'gt', value: 80 }] }],
+    });
+    expect(out.error).toContain('items.0.conditions.0.metric');
+    expect(out.error).not.toContain('required_software');
+  });
+
+  it('describe returns a validated example alongside the compliance reference', async () => {
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+    const out = JSON.parse(await tools.get('manage_policy_feature_link')!.handler({ action: 'describe', featureType: 'compliance' }, {} as never));
+    expect(out.inlineSettings).toContain('softwareName');
+    expect(out.example.items[0].rules.map((r: { type: string }) => r.type)).toContain('required_software');
+  });
+});
+
+// ─── #6667 / #6668 — owner-org authority on create and update ───────────────
+// #6667: org-scoped create used `auth.orgId ?? accessibleOrgIds[0]`, so a
+// partner tech with several orgs who omitted orgId got the policy written into
+// whichever customer org sorted first. #6668: update silently dropped `orgId`
+// and reported success for a call that changed nothing.
+describe('manage_configuration_policy owner-org authority (#6667, #6668)', () => {
+  const ORG_B = '55555555-5555-5555-5555-555555555555';
+  const OWNER_CHANGE_ERROR =
+    'A policy owner cannot be changed; create a new policy in the target organization instead.';
+
+  function makeMultiOrgPartnerAuth() {
+    return {
+      ...makePartnerAuth(),
+      accessibleOrgIds: [ORG_ID, ORG_B],
+      canAccessOrg: (orgId: string) => orgId === ORG_ID || orgId === ORG_B,
+    } as any;
+  }
+
+  function tool() {
+    const map = new Map<string, any>();
+    registerConfigPolicyTools(map);
+    return map.get('manage_configuration_policy')!;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    enable2faState.value = true;
+    createConfigPolicyMock.mockImplementation(async (owner: { orgId?: string }) => ({ id: POLICY_ID, ...owner }));
+  });
+
+  it('refuses an org-scoped create with no orgId when the caller can reach several orgs', async () => {
+    const output = await tool().handler({ action: 'create', name: 'Stray' }, makeMultiOrgPartnerAuth());
+
+    expect(JSON.parse(output).error).toBe('orgId is required: you have access to multiple organizations');
+    expect(createConfigPolicyMock).not.toHaveBeenCalled();
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('refuses an org-scoped create with no orgId for an unrestricted (accessibleOrgIds=null) caller', async () => {
+    const auth = { ...makeMultiOrgPartnerAuth(), accessibleOrgIds: null, canAccessOrg: () => true } as any;
+    const output = await tool().handler({ action: 'create', name: 'Stray' }, auth);
+
+    expect(JSON.parse(output).error).toBe('orgId is required: you have access to multiple organizations');
+    expect(createConfigPolicyMock).not.toHaveBeenCalled();
+  });
+
+  it('uses the explicit orgId for a multi-org partner caller', async () => {
+    mockSelectRows([]); // duplicate-name check
+    const output = await tool().handler({ action: 'create', name: 'Scoped', orgId: ORG_B }, makeMultiOrgPartnerAuth());
+
+    expect(JSON.parse(output).success).toBe(true);
+    expect(createConfigPolicyMock).toHaveBeenCalledWith({ orgId: ORG_B }, expect.any(Object), 'user-1');
+  });
+
+  it('uses the only org when a partner caller can reach exactly one', async () => {
+    mockSelectRows([]);
+    const output = await tool().handler({ action: 'create', name: 'Single' }, makePartnerAuth());
+
+    expect(JSON.parse(output).success).toBe(true);
+    expect(createConfigPolicyMock).toHaveBeenCalledWith({ orgId: ORG_ID }, expect.any(Object), 'user-1');
+  });
+
+  it('uses auth.orgId for an org-scoped token (incl. the narrowed auth of a device-bound session)', async () => {
+    mockSelectRows([]);
+    const output = await tool().handler({ action: 'create', name: 'Org' }, makeAuth());
+
+    expect(JSON.parse(output).success).toBe(true);
+    expect(createConfigPolicyMock).toHaveBeenCalledWith({ orgId: ORG_ID }, expect.any(Object), 'user-1');
+  });
+
+  it('refuses an org-scoped token naming a different org', async () => {
+    const output = await tool().handler({ action: 'create', name: 'Other', orgId: ORG_B }, makeAuth());
+
+    expect(JSON.parse(output).error).toBe('Cannot access another organization');
+    expect(createConfigPolicyMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a partner caller naming an org it cannot reach', async () => {
+    const output = await tool().handler({ action: 'create', name: 'Other', orgId: ORG_B }, makePartnerAuth());
+
+    expect(JSON.parse(output).error).toBe('Access denied to this organization');
+    expect(createConfigPolicyMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['orgId', { orgId: ORG_B }],
+    ['ownerScope', { ownerScope: 'partner' }],
+    ['orgId alongside a real change', { orgId: ORG_B, name: 'Renamed' }],
+  ])('update rejects %s instead of silently ignoring it', async (_label, extra) => {
+    const output = await tool().handler({ action: 'update', policyId: POLICY_ID, ...extra }, makePartnerAuth());
+
+    expect(JSON.parse(output).error).toBe(OWNER_CHANGE_ERROR);
+    expect(vi.mocked(updateConfigPolicy)).not.toHaveBeenCalled();
+  });
+
+  it('update with no updatable field is an error, not a success', async () => {
+    const output = await tool().handler({ action: 'update', policyId: POLICY_ID }, makePartnerAuth());
+
+    expect(JSON.parse(output).error).toBe('Nothing to update: supply at least one of name, description, status.');
+    expect(vi.mocked(updateConfigPolicy)).not.toHaveBeenCalled();
+  });
+
+  it('update applies a real field change', async () => {
+    vi.mocked(updateConfigPolicy).mockResolvedValue({ id: POLICY_ID, name: 'Renamed' } as any);
+    const output = await tool().handler({ action: 'update', policyId: POLICY_ID, name: 'Renamed' }, makePartnerAuth());
+
+    expect(JSON.parse(output).success).toBe(true);
+    expect(vi.mocked(updateConfigPolicy)).toHaveBeenCalledWith(POLICY_ID, { name: 'Renamed' }, expect.any(Object));
   });
 });

@@ -175,9 +175,9 @@ export const DEFAULT_PERMISSIONS = [
   { resource: 'billing_profiles', action: 'read', description: 'View work types and billing profiles (rate cards)' },
   { resource: 'billing_profiles', action: 'write', description: 'Create and manage work types and billing profiles' },
 
-  // Microsoft 365 partner-global ticket mailbox administration
-  { resource: 'ticket_mailbox', action: 'read', description: 'View Microsoft 365 ticket mailbox connection status' },
-  { resource: 'ticket_mailbox', action: 'admin', description: 'Connect, verify, retest, and disable Microsoft 365 ticket mailboxes' },
+  // Partner-global ticket mailbox administration (Microsoft 365 and Google Workspace)
+  { resource: 'ticket_mailbox', action: 'read', description: 'View Microsoft 365 and Google Workspace ticket mailbox connection status' },
+  { resource: 'ticket_mailbox', action: 'admin', description: 'Connect, verify, retest, and disconnect Microsoft 365 and Google Workspace ticket mailboxes' },
 
   // Catalog (billing/invoicing program)
   { resource: 'catalog', action: 'read', description: 'View product catalog items and pricing' },

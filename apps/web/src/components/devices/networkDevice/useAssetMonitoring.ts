@@ -11,6 +11,7 @@ import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../../stores/auth';
 import { asList } from '@/lib/asList';
 import type { Collection } from './types';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 export type SnmpDeviceSummary = {
   id: string;
@@ -54,6 +55,7 @@ async function readJson(response: Response): Promise<unknown> {
 
 export function useAssetMonitoring(assetId: string) {
   const { t } = useTranslation('devices');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [collection, setCollection] = useState<Collection | null>(null);
   const [snmpDevice, setSnmpDevice] = useState<SnmpDeviceSummary | null>(null);
   const [templateName, setTemplateName] = useState<string | null>(null);
@@ -82,7 +84,7 @@ export function useAssetMonitoring(assetId: string) {
     // The asset call is the only one whose failure means the tab has nothing
     // to say — the other three each own a single panel.
     if (assetResult.status !== 'fulfilled' || !assetResult.value.ok) {
-      setError(t('networkDeviceDetailPage.errors.monitoringLoad'));
+      setError(stableT('networkDeviceDetailPage.errors.monitoringLoad'));
       setCollection(null);
       setSnmpDevice(null);
       setTemplateName(null);
@@ -135,7 +137,7 @@ export function useAssetMonitoring(assetId: string) {
     }
 
     setLoading(false);
-  }, [assetId, t]);
+  }, [assetId, stableT]);
 
   useEffect(() => {
     void load();

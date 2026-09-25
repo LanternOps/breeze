@@ -9,6 +9,7 @@ import { formatAbsolute, formatRelative } from '../account/relativeTime';
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 interface OrgClient {
   clientId: string;
@@ -42,6 +43,7 @@ interface UnblockDialogState {
 
 export default function OrgConnectedAppsPage() {
   const { t } = useTranslation('admin');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const orgId = useOrgStore((s) => s.currentOrgId);
   const orgs = useOrgStore((s) => s.organizations);
   const orgName = useMemo(
@@ -68,15 +70,15 @@ export default function OrgConnectedAppsPage() {
       }
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as { error?: string };
-        setState({ kind: 'error', message: body.error ?? t('admin.orgConnectedAppsPage.errors.requestFailed', { status: res.status }) });
+        setState({ kind: 'error', message: body.error ?? stableT('admin.orgConnectedAppsPage.errors.requestFailed', { status: res.status }) });
         return;
       }
       const body = (await res.json()) as { clients: OrgClient[] };
       setState({ kind: 'ready', clients: body.clients ?? [] });
     } catch (err) {
-      setState({ kind: 'error', message: err instanceof Error ? err.message : t('admin.orgConnectedAppsPage.errors.network') });
+      setState({ kind: 'error', message: err instanceof Error ? err.message : stableT('admin.orgConnectedAppsPage.errors.network') });
     }
-  }, [orgId, t]);
+  }, [orgId, stableT]);
 
   useEffect(() => {
     void load();

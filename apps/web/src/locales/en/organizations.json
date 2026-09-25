@@ -88,7 +88,8 @@
         "viewAll": "View all alerts"
       },
       "lastActivity": "Last activity {{date}}",
-      "noSummary": "Summary counts are unavailable right now."
+      "noSummary": "Summary counts are unavailable right now.",
+      "archivedNotice": "Overview data isn't shown for archived organizations."
     },
     "archived": {
       "banner": "This organization is archived and read only. Restore it to make changes.",
@@ -96,6 +97,9 @@
     },
     "lifecycle": {
       "inaccessible": "This organization is {{status}}, so its live data is not available. You can still see it in the organizations list.",
+      "unknownTitle": "Organization",
+      "inaccessibleHistoryOnly": "This organization is inactive, so its live data is not available. Its report history can still be read below.",
+      "genericStatusLabel": "inactive",
       "backToList": "Back to organizations"
     },
     "reportHistory": {

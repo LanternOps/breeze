@@ -1125,8 +1125,11 @@
         "recipientRequired": "Geben Sie mindestens einen Empfänger ein, um zu senden.",
         "signaturePreviewLabel": "Signatur (festgelegt unter Einstellungen → Branding):",
         "subjectLabel": "Betreff",
-        "subjectPlaceholder": "Angebot {{number}} von Ihrem Unternehmen",
-        "subjectPlaceholderNoNumber": "Angebot von Ihrem Unternehmen",
+        "subjectPartnerFallback": "Ihrem Unternehmen",
+        "subjectPlaceholder": "Angebot {{number}} von {{partner}}",
+        "subjectPlaceholderNoNumber": "Angebot von {{partner}}",
+        "subjectPlaceholderTemplate": "Verwendet den Betreff aus Ihrer Angebots-E-Mail-Vorlage",
+        "subjectPlaceholderTitled": "{{title}} — Angebot von {{partner}}",
         "title": "Dieses Angebot senden?",
         "toLabel": "An",
         "toPlaceholder": "Empfänger hinzufügen…",
@@ -2202,22 +2205,33 @@
       "taxId": "Steuer-ID",
       "taxRate": "Steuersatz (%)",
       "title": "Steuer"
+    },
+    "terms": {
+      "description": "Tage ab Rechnungsstellung, bis die Rechnungen dieser Organisation fällig sind. Leer lassen, um den Partnerstandard zu verwenden. Änderungen gelten für ab jetzt ausgestellte Rechnungen; ausgestellte Rechnungen behalten ihr Fälligkeitsdatum.",
+      "invalid": "Geben Sie eine ganze Zahl von 0 bis 365 Tagen ein.",
+      "partnerDefault": "Partnerstandard",
+      "paymentTermsDays": "Zahlungsbedingungen (Tage)",
+      "title": "Zahlungsbedingungen"
     }
   },
   "partnerBillingSettings": {
     "company": {
+      "addressInherited": "Wie in den Unternehmensdetails",
       "addressLine1": "Adresszeile 1",
       "addressLine2": "Adresszeile 2",
+      "addressTitle": "Adresse",
       "city": "Stadt",
       "country": "Land",
       "defaultTerms": "Standard-Geschäftsbedingungen",
       "defaultTermsPlaceholder": "Zahlungsbedingungen, Haftungsausschlüsse, Garantiebedingungen usw.",
       "description": "Wird in Angeboten und Rechnungen als Verkäufer angezeigt.",
+      "inheritedFromCompanyDetails": "Unternehmensdetails",
       "name": "Firmenname",
       "phone": "Telefon",
       "postal": "Postleitzahl",
       "region": "Bundesland/Region",
       "title": "Firmenkontakt",
+      "useCompanyAddress": "Unternehmensadresse verwenden",
       "website": "Website"
     },
     "defaults": {

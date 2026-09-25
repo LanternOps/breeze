@@ -13,6 +13,7 @@ import { alerts, devices, notificationChannels } from '../db/schema';
 import { eq, and, desc, sql, inArray, ne, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+import type { ToolExecutionContext } from './toolExecutionContext';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 import { publishEvent } from './eventBus';
 import {
@@ -33,8 +34,25 @@ import {
 import { webhookOriginChangeWouldRetainAuthorization } from './credentialOriginBinding';
 import { validateNotificationChannelConfig } from '../routes/alerts/helpers';
 import { sanitizeThrownToolError } from './aiToolErrors';
+import { resolveWritableToolOrgId } from './aiToolWriteOrg';
 
 type AiToolTier = 1 | 2 | 3 | 4;
+
+/**
+ * #6907: `manage_alerts:{acknowledge,resolve,suppress}` are user-owned on
+ * release (`USER_OWNED_RELEASE_ACTIONS` in `jobs/intentReleaseWorker.ts`).
+ * Each writes `auth.user.id` into a `users` FK — `alerts.acknowledged_by` /
+ * `alerts.resolved_by`, and `ml_feedback_events.actor_user_id` through
+ * `emitAlertStateFeedback` — so an agent-originated intent is released as its
+ * APPROVER, never the agent. When the worker names that approver, the auth
+ * this handler runs under must be them: refuse rather than write a row whose
+ * owner the two disagree about. Mirrors `aiToolsFleet.ts`'s
+ * `approverReleaseMismatch` and `aiToolsTicketing.ts`'s `log_time_entry`
+ * guard.
+ */
+function approverReleaseMismatch(auth: AuthContext, context: ToolExecutionContext | undefined): boolean {
+  return !!context?.approverRelease && context.approverRelease.approverUserId !== auth.user.id;
+}
 
 function getOrgId(auth: AuthContext): string | null {
   return auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
@@ -103,7 +121,7 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         required: ['action']
       }
     },
-    handler: async (input, auth) => {
+    handler: async (input, auth, context?: ToolExecutionContext) => {
       const action = input.action as string;
 
       if (action === 'list') {
@@ -229,6 +247,10 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'acknowledge') {
+        // #6907: user-owned on release — see approverReleaseMismatch.
+        if (approverReleaseMismatch(auth, context)) {
+          return JSON.stringify({ error: 'approver_auth_mismatch', action });
+        }
         if (!input.alertId) return JSON.stringify({ error: 'alertId is required' });
 
         const alert = await findAlertWithAccess(input.alertId as string, auth);
@@ -299,6 +321,10 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'resolve') {
+        // #6907: user-owned on release — see approverReleaseMismatch.
+        if (approverReleaseMismatch(auth, context)) {
+          return JSON.stringify({ error: 'approver_auth_mismatch', action });
+        }
         if (!input.alertId) return JSON.stringify({ error: 'alertId is required' });
 
         const alert = await findAlertWithAccess(input.alertId as string, auth);
@@ -379,6 +405,10 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'suppress') {
+        // #6907: user-owned on release — see approverReleaseMismatch.
+        if (approverReleaseMismatch(auth, context)) {
+          return JSON.stringify({ error: 'approver_auth_mismatch', action });
+        }
         if (!input.alertId) return JSON.stringify({ error: 'alertId is required' });
 
         const alert = await findAlertWithAccess(input.alertId as string, auth);
@@ -512,6 +542,10 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
             type: 'boolean',
             description: 'Whether channel is active (default: true)',
           },
+          orgId: {
+            type: 'string',
+            description: 'Organization UUID that will own the new channel (create only). Required unless you can access exactly one organization.',
+          },
           limit: {
             type: 'number',
             description: 'Max results (default 25, max 50)',
@@ -603,8 +637,9 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'create') {
-        const orgId = auth.orgId ?? auth.accessibleOrgIds?.[0];
-        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+        const resolvedOrg = resolveWritableToolOrgId(auth, typeof input.orgId === 'string' && input.orgId ? input.orgId : undefined);
+        if (!resolvedOrg.orgId) return JSON.stringify({ error: resolvedOrg.error ?? 'Organization context required' });
+        const orgId = resolvedOrg.orgId;
         if (!input.name) return JSON.stringify({ error: 'name is required' });
         if (!input.type) return JSON.stringify({ error: 'type is required (email, slack, teams, webhook, pagerduty, sms)' });
         if (!input.config) return JSON.stringify({ error: 'config is required (channel-specific settings)' });

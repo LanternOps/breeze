@@ -83,8 +83,10 @@ type BackupCommandResult struct {
 //
 // Current/Total are bytes for backup_run; restore keeps its existing meaning
 // (see RestoreFromSnapshotContext's progress callback). FilesDone/FilesTotal
-// are populated for backup_run only — restore progress doesn't report a file
-// count, hence omitempty.
+// are populated for backup_run, backup_verify and backup_test_restore;
+// restore progress doesn't report a file count, hence omitempty. Verify and
+// test-restore progress (phase "verifying" / "test_restore") carry manifest
+// entries finished in both Current/Total and FilesDone/FilesTotal.
 type BackupProgress struct {
 	CommandID  string `json:"commandId"`
 	Phase      string `json:"phase"`
@@ -101,6 +103,23 @@ type BackupProgress struct {
 	// stranding the uploaded objects with no restore point.
 	SnapshotID string `json:"snapshotId,omitempty"`
 }
+
+// VerifyCommandTimeout is how long the agent waits for the helper to answer a
+// backup_verify or backup_test_restore, matching the API's two-hour
+// LONG_TIMEOUT_TYPES tier for both commands.
+//
+// VerifyRunBudget is how long the helper lets one of those runs work before
+// it stops and reports the counts it has so far. It MUST stay below
+// VerifyCommandTimeout with room for in-flight downloads to unwind, the
+// test-restore directory (possibly hundreds of thousands of files) to be
+// removed and the result to cross IPC. Otherwise the agent's wait expires
+// first, the late result is discarded, and the server records "command timed
+// out" with 0 files ok and 0 failed however much was checked (#6598).
+// Pinned by types_test.go.
+const (
+	VerifyCommandTimeout = 2 * time.Hour
+	VerifyRunBudget      = VerifyCommandTimeout - 10*time.Minute
+)
 
 // BackupStopForwardTimeout is how long the agent waits for the helper's
 // backup_stop reply. BackupStopDrainTimeout is how long the helper may block

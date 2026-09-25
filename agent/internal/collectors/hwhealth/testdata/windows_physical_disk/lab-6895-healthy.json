@@ -1,0 +1,47 @@
+{
+ "Disks": [
+  {
+   "UniqueId": "60022480B4C7526392E9530DABDCE67F",
+   "ObjectId": "{1}\\\\HOST\\root/Microsoft/Windows/Storage/Providers_v2\\SPACES_PhysicalDisk.ObjectId=\"{51d89d4d-36bf-11f1-97ce-806e6f6e6963}:PD:{4b771da6-b897-a0e5-4f0b-60f9608f390a}\"",
+   "SerialNumber": null,
+   "FriendlyName": "Msft Virtual Disk",
+   "Model": "Virtual Disk",
+   "FirmwareVersion": "1.0",
+   "HealthStatus": "Healthy",
+   "OperationalStatus": [
+    "OK"
+   ],
+   "Usage": "Auto-Select",
+   "Size": 6442450944
+  },
+  {
+   "UniqueId": "60022480CFCA9CD7995F7E79FEF2B2F9",
+   "ObjectId": "{1}\\\\HOST\\root/Microsoft/Windows/Storage/Providers_v2\\SPACES_PhysicalDisk.ObjectId=\"{51d89d4d-36bf-11f1-97ce-806e6f6e6963}:PD:{97978214-4542-a5b2-308f-43ed169c97b9}\"",
+   "SerialNumber": null,
+   "FriendlyName": "Msft Virtual Disk",
+   "Model": "Virtual Disk",
+   "FirmwareVersion": "1.0",
+   "HealthStatus": "Healthy",
+   "OperationalStatus": [
+    "OK"
+   ],
+   "Usage": "Auto-Select",
+   "Size": 6442450944
+  },
+  {
+   "UniqueId": "{166803cd-a32c-11f1-97df-806e6f6e6963}",
+   "ObjectId": "{1}\\\\HOST\\root/Microsoft/Windows/Storage/Providers_v2\\SPACES_PhysicalDisk.ObjectId=\"{51d89d4d-36bf-11f1-97ce-806e6f6e6963}:PD:{166803cd-a32c-11f1-97df-806e6f6e6963}\"",
+   "SerialNumber": null,
+   "FriendlyName": "Virtual HD",
+   "Model": "Virtual HD",
+   "FirmwareVersion": "1.1.0",
+   "HealthStatus": "Healthy",
+   "OperationalStatus": [
+    "OK"
+   ],
+   "Usage": "Auto-Select",
+   "Size": 136365211648
+  }
+ ],
+ "Warnings": []
+}

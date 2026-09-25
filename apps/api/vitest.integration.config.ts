@@ -26,6 +26,15 @@ export default defineConfig({
       // Co-located real-DB integration test for the contract renewal sweep
       // service. Follows the same pattern as the inboundEmail test above.
       'src/services/contractRenewal.integration.test.ts',
+      // Hardware & RAID monitoring real-DB migration/RLS proof (W01 #6856).
+      'src/services/hardwareHealth/**/*.integration.test.ts',
+      // Hardware & RAID monitoring (W05 BMC in-band): real-DB migration/enum
+      // proof and BMC discovery-worker/topology-publish suites. Import
+      // `__tests__/integration/setup` (real postgres pool + autoMigrate).
+      // Belong to vitest.integration.config.ts (excluded from the unit runner).
+      'src/services/discovery/agentReportedBmcLink.integration.test.ts',
+      'src/jobs/discoveryWorker.bmc.integration.test.ts',
+      'src/services/topology/bmc.integration.test.ts',
       // #5861 Customer Portal Network Visibility: real-Postgres proof of
       // org isolation and partner-wide monitor result scoping.
       'src/services/portal/networkVisibilityReadModel.integration.test.ts',
@@ -212,6 +221,13 @@ export default defineConfig({
       'src/routes/installerRotationRevocation.integration.test.ts',
       // One-time legacy token/child cutover and replay proof.
       'src/db/installerBootstrapCredentialGeneration.migration.integration.test.ts',
+      // Hardware & RAID monitoring (W03): disposable-database replay proof for
+      // the monitor-kind enum and alert subject-identity migrations.
+      'src/db/hardwareAlertMigrations.integration.test.ts',
+      // Hardware & RAID monitoring (W03 Task 10/11): real-Postgres subject
+      // reconciliation, transactional outbox commit boundaries, and the
+      // single-response-owner contract.
+      'src/services/alertSubjects.integration.test.ts',
       // Co-located real-DB end-to-end coverage for the tier3-supervised-four-eyes
       // split (Task 10): four_eyes fan-out ownership (both admins, never the
       // requester), a t+30min approve/release proving the new 60-minute
@@ -297,6 +313,11 @@ export default defineConfig({
       // the shared glob above; named here for discoverability only (same
       // pattern staleBackupReaper.integration.test.ts uses).
       'src/__tests__/integration/agentCommandRelay.integration.test.ts',
+      // Real-Postgres proof for the discovered-asset site move service: the two
+      // BEFORE UPDATE triggers on discovered_assets (topology binding lifecycle +
+      // monitor-authority detach) and the network_monitors site guard the
+      // re-attach must pass. The mocked unit suite never executes any of them.
+      'src/services/discoveredAssetSiteMove.integration.test.ts',
     ],
     exclude: [
       // Uses fresh request-pool modules and manages its own temporary role;

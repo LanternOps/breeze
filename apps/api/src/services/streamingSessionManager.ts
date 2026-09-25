@@ -1541,6 +1541,12 @@ export class StreamingSessionManager {
                 const bareName = block.name.startsWith(session.mcpPrefix)
                   ? block.name.slice(session.mcpPrefix.length)
                   : block.name;
+                // SR5-16: mask known-sensitive keys (accessKey, secretKey,
+                // password, token, apiKey, clientSecret, privateKey,
+                // connectionString, …) before persisting OR publishing.
+                // Unconditional — this runs even for tool calls the user
+                // later denies, and for the live SSE copy below.
+                const redactedInput = redactSensitiveToolInput(block.input as Record<string, unknown>);
 
                 try {
                   await withDbAccessContext(
@@ -1550,11 +1556,7 @@ export class StreamingSessionManager {
                         sessionId: session.breezeSessionId,
                         role: 'tool_use',
                         toolName: bareName,
-                        // SR5-16: mask known-sensitive keys (accessKey, secretKey,
-                        // password, token, apiKey, clientSecret, privateKey,
-                        // connectionString, …) before persisting. Unconditional —
-                        // this runs even for tool calls the user later denies.
-                        toolInput: redactSensitiveToolInput(block.input as Record<string, unknown>),
+                        toolInput: redactedInput,
                         toolUseId: block.id,
                       })
                   );
@@ -1562,6 +1564,17 @@ export class StreamingSessionManager {
                   captureException(err);
                   console.error('[StreamingSessionManager] Failed to save tool_use message:', err);
                 }
+
+                // Sweep E6: the `tool_use_start` published earlier for this
+                // same block carried `input: {}` (real args aren't known at
+                // content_block_start) — now that they are, tell the live
+                // client so its tool row's label/preview matches what a
+                // history reload of the row just persisted above would show.
+                session.eventBus.publish({
+                  type: 'tool_use_input',
+                  toolUseId: block.id,
+                  input: redactedInput,
+                });
               }
             }
             break;

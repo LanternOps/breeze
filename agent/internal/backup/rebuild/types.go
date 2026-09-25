@@ -117,7 +117,8 @@ type PlannedPartition struct {
 	FSUUID     string `json:"fsUuid,omitempty"`
 	Label      string `json:"label,omitempty"`
 	MountPoint string `json:"mountPoint,omitempty"`
-	Grown      bool   `json:"grown"` // absorbed the target's extra (or short) space
+	Grown      bool   `json:"grown"`                // absorbed the target's extra (or short) space
+	Attributes uint64 `json:"attributes,omitempty"` // GPT attribute bits (Windows only; 0 on Linux plans)
 }
 
 // Plan is PlanPartitions' output: the partition table the engine will
@@ -172,6 +173,12 @@ type Options struct {
 
 	System   System // nil → real system (system_linux.go)
 	Progress func(phase Phase, message string, current, total int64)
+
+	WinSystem             WinSystem // nil → NewWinSystem() (real on windows, nil elsewhere)
+	WorkRoot              string    // restore scratch; "" → platform default (Windows vhdx: only — see Run's defaulting)
+	DriverDirs            []string  // DISM /Add-Driver sources (Part C)
+	ForceDisk             bool      // Windows disk targets: overwrite a disk holding a Windows installation (CLI only)
+	AllowDomainController bool      // Windows: allow a source whose SYSTEM hive has Services\NTDS (CLI only)
 }
 
 // Result is Run's structured outcome.
@@ -206,6 +213,9 @@ type Result struct {
 	// "completed" while StateApplied is false (#5412).
 	StateManifestFound bool `json:"stateManifestFound"`
 	StateApplied       bool `json:"stateApplied"`
+
+	Platform  string `json:"platform"`
+	VMCreated bool   `json:"vmCreated,omitempty"`
 }
 
 // FailedFilesLen and CloneWithTrimmedFailedFiles satisfy bmr's

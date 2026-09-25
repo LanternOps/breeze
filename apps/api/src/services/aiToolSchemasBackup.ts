@@ -264,6 +264,7 @@ export const backupToolSchemas: Record<string, z.ZodType> = {
     targetGroups: z.array(uuid).max(5000).optional(),
     alertOnBreach: z.boolean().optional(),
     isActive: z.boolean().optional(),
+    orgId: uuid.optional(),
   }).superRefine((data, ctx) => {
     if (data.action === 'create') {
       if (!data.name) {
@@ -316,6 +317,7 @@ export const backupToolSchemas: Record<string, z.ZodType> = {
     devices: z.array(uuid).max(5000).optional(),
     restoreConfig: z.record(z.string(), z.unknown()).optional(),
     estimatedDurationMinutes: z.number().int().min(0).optional(),
+    orgId: uuid.optional(),
   }).superRefine((data, ctx) => {
     if ((data.action === 'update_plan' || data.action === 'add_group' || data.action === 'update_group' || data.action === 'delete_group') && !data.planId) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['planId'], message: 'planId is required for this action' });

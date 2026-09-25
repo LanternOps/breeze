@@ -9,10 +9,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup"
 	"github.com/breeze-rmm/agent/internal/backup/layout"
+	"github.com/breeze-rmm/agent/internal/backup/winhive"
 )
 
 // runState is the engine's resumable on-disk state: which phases already
@@ -28,18 +30,53 @@ type runState struct {
 	// snapshot's system state, so a resumed run (which skips restore) can
 	// still satisfy Options.ExpectSystemState in validate (#5412).
 	StateApplied bool `json:"stateApplied,omitempty"`
+	// Platform/HostOS record what wrote this state file (Global Constraint
+	// "Platform table, not a second engine" — a resume from a different
+	// platform/host is refused, never silently reinterpreted).
+	Platform string `json:"platform,omitempty"`
+	HostOS   string `json:"hostOs,omitempty"`
+	// Volumes is the Windows provision phase's partition number -> volume
+	// GUID path map, persisted so a resumed run remounts without
+	// re-running WriteGPT/Format (Task 11), and so cleanupLeftovers (below)
+	// can tell a crashed vhdx: run apart from one that never reached
+	// provision.
+	Volumes map[int]string `json:"volumes,omitempty"`
 }
 
 // run carries one Run call's working state across its phase functions.
 type run struct {
 	opts      Options
-	sys       System
+	sys       System    // Linux seam; nil on a Windows run
+	winSys    WinSystem // Windows seam; nil on a Linux run
 	result    *Result
 	state     *runState
 	statePath string
-	disk      string       // block device under provisioning (/dev/sdb or /dev/loopN)
-	detach    func() error // image targets
-	staging   string
+	platform  string // "linux" | "windows", set by resolvePlatform
+
+	disk       string       // Linux: block device under provisioning (/dev/sdb or /dev/loopN)
+	diskNumber int          // Windows: the disk number under provisioning (vhdx: from AttachVHDX, disk: parsed from \\.\PhysicalDriveN)
+	detach     func() error // image (Linux loop device) and vhdx (Windows AttachVHDX) targets
+
+	winAttached bool           // Windows: r.diskNumber is valid for this process (disk number 0 is a real disk, so the number alone cannot say)
+	volumes     map[int]string // partition number -> volume path (WinVolume.GUIDPath), Windows only
+	// rootVolume is the root (C:) partition's volume path, r.volumes[root]:
+	// the restore target, the disk: work dir's parent and Task 13's
+	// validate sampling base (Ruling B1) — securefs opens only a volume
+	// root by path and refuses every reparse point below it, and rootDir's
+	// folder mount point IS one.
+	rootVolume  string
+	espVolume   string                    // the ESP's volume path (W06c boot/validate)
+	espDir      string                    // W06c: folder mount point of the ESP (<staging>\esp) while mounted
+	rootDir     string                    // Windows root folder mount (<staging>\root) for external tools (bcdboot, DISM); Linux uses rootMount instead
+	recoveryDir string                    // Windows Recovery folder mount (<staging>\recovery), "" if the layout has none
+	hives       map[string]winhive.Handle // W06c: loaded SYSTEM/SOFTWARE hives, kept open from restore until validate closes them
+	controlSets []string                  // W06c: ControlSet00N names identity edits (Select\Default first, then Current)
+	// espLetterRelease releases the ESP's temporary drive letter. W06c
+	// winBoot assigns it for bcdboot /s and stores the release here without
+	// calling it (ruling F9); winTeardown is the releaser on every path.
+	espLetterRelease func() error
+
+	staging string
 	// Mounts are tracked in three groups so teardown can unmount safely
 	// AND deterministically: rootMount (the disk's root partition, mounted
 	// at r.staging itself) must always be the very LAST thing unmounted —
@@ -72,6 +109,48 @@ func targetKey(t Target) string {
 	return hex.EncodeToString(h[:])[:12]
 }
 
+// phaseFn pairs one phase with the function that implements it for a given
+// platform.
+type phaseFn struct {
+	phase Phase
+	fn    func(context.Context, *run) error
+}
+
+// platformPhases is the one phase loop's per-platform table: same eight
+// phases, same order, for every platform (Global Constraint "One engine").
+var platformPhases = map[string][]phaseFn{
+	"linux": {
+		{PhasePreflight, preflight}, {PhaseProvision, provision}, {PhaseRestore, restoreTree},
+		{PhaseBoot, boot}, {PhaseIdentity, identity}, {PhaseEncryption, encryption}, {PhaseValidate, validate},
+		{PhaseConvert, convert},
+	},
+	"windows": {
+		{PhasePreflight, winPreflight}, {PhaseProvision, winProvision}, {PhaseRestore, winRestoreTree},
+		{PhaseBoot, winBoot}, {PhaseIdentity, winIdentity}, {PhaseEncryption, winEncryption}, {PhaseValidate, winValidate},
+		{PhaseConvert, winConvert},
+	},
+}
+
+// hostPlatform maps runtime.GOOS onto layout.Platform values; "" = no
+// engine for this host. A var so tests can pin it (engine_test.go TestMain).
+var hostPlatform = func() string {
+	switch runtime.GOOS {
+	case "linux", "windows":
+		return runtime.GOOS
+	}
+	return ""
+}
+
+// SetHostPlatformForTest pins the platform Run believes it runs on and
+// returns the undo. Test-only by convention (like
+// backup.SetVolumeNameForTest): other packages' tests (cmd/breeze-backup)
+// drive the Linux engine through a fake System on macOS dev hosts.
+func SetHostPlatformForTest(p string) (restore func()) {
+	prev := hostPlatform
+	hostPlatform = func() string { return p }
+	return func() { hostPlatform = prev }
+}
+
 // Run executes the eight phases (preflight, provision, restore, boot,
 // identity, encryption, validate, convert). It returns (result, nil) on success and
 // (result, err) on refusal or failure — result is never nil once options
@@ -88,34 +167,78 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		opts.Identity = IdentityOriginal
 	}
 	if opts.StateDir == "" {
-		opts.StateDir = "/var/lib/breeze/rebuild"
+		if hostPlatform() == "windows" {
+			pd := os.Getenv("ProgramData")
+			if pd == "" {
+				pd = `C:\ProgramData`
+			}
+			opts.StateDir = filepath.Join(pd, "Breeze", "rebuild")
+		} else {
+			opts.StateDir = "/var/lib/breeze/rebuild"
+		}
 	}
 	if opts.StagingRoot == "" {
 		opts.StagingRoot = filepath.Join(opts.StateDir, "mnt", opts.SnapshotID)
 	}
-	if opts.System == nil {
-		opts.System = NewSystem()
-		if opts.System == nil {
-			return nil, ErrUnsupportedHost
-		}
+	if opts.WorkRoot == "" && hostPlatform() == "windows" && opts.Target.Kind == TargetVHDX {
+		// disk: (WinPE) targets compute WorkRoot lazily once the staging
+		// root is mounted (Global Constraint "Work dir") — winRestoreTree,
+		// Task 11.
+		opts.WorkRoot = filepath.Join(opts.StateDir, "work", opts.SnapshotID)
 	}
-	r := &run{opts: opts, sys: opts.System, staging: opts.StagingRoot,
+	if opts.System == nil {
+		opts.System = NewSystem() // nil off Linux
+	}
+	if opts.WinSystem == nil && hostPlatform() == "windows" {
+		opts.WinSystem = NewWinSystem()
+	}
+	r := &run{opts: opts, sys: opts.System, winSys: opts.WinSystem, staging: opts.StagingRoot,
 		result: &Result{SnapshotID: opts.SnapshotID, Target: opts.Target, Identity: opts.Identity, Status: "failed"}}
 	r.statePath = filepath.Join(opts.StateDir, fmt.Sprintf("rebuild-%s-%s.json", opts.SnapshotID, targetKey(opts.Target)))
+	// cleanupLeftovers reads the state file to find a VHDX a crashed run
+	// left attached, so it must run before ForceReprovision discards it.
+	cleanupLeftovers(r)
 	if opts.ForceReprovision {
 		_ = os.Remove(r.statePath)
 	}
 	r.loadState()
 	defer r.teardown()
 
-	type phaseFn struct {
-		phase Phase
-		fn    func(context.Context, *run) error
+	if err := resolvePlatform(ctx, r); err != nil {
+		if errors.Is(err, ErrUnsupportedHost) {
+			return nil, err
+		}
+		// Layout fetch and platform checks were preflight's first step
+		// before this refactor; they still report as the preflight phase.
+		r.result.PhaseReached = PhasePreflight
+		pr := PhaseResult{Phase: PhasePreflight, StartedAt: time.Now().UTC()}
+		var ref *RefusalError
+		if errors.As(err, &ref) {
+			pr.Status, pr.Message, pr.CompletedAt = PhaseRefused, ref.Reason, time.Now().UTC()
+			r.result.Phases = append(r.result.Phases, pr)
+			r.result.Status, r.result.Refusal = "refused", ref.Reason
+			r.result.Warnings = r.warnings
+			r.result.DurationMs = time.Since(start).Milliseconds()
+			return r.result, err
+		}
+		return r.fail(start, pr, err)
 	}
-	phases := []phaseFn{
-		{PhasePreflight, preflight}, {PhaseProvision, provision}, {PhaseRestore, restoreTree},
-		{PhaseBoot, boot}, {PhaseIdentity, identity}, {PhaseEncryption, encryption}, {PhaseValidate, validate},
-		{PhaseConvert, convert},
+	r.result.Platform = r.platform
+
+	switch r.platform {
+	case "linux":
+		if r.sys == nil {
+			return nil, ErrUnsupportedHost
+		}
+	case "windows":
+		if r.winSys == nil {
+			return nil, ErrUnsupportedHost
+		}
+	}
+
+	phases, ok := platformPhases[r.platform]
+	if !ok {
+		return nil, fmt.Errorf("rebuild: no phase table for platform %q", r.platform)
 	}
 	for _, p := range phases {
 		r.result.PhaseReached = p.phase
@@ -125,7 +248,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			r.result.Phases = append(r.result.Phases, pr)
 			r.result.Resumed = true
 			if p.phase == PhaseProvision || p.phase == PhaseRestore {
-				if err := r.reattach(ctx); err != nil { // mounts the already-provisioned partitions
+				if err := r.reattachForResume(ctx); err != nil {
 					return r.fail(start, pr, err)
 				}
 			}
@@ -140,6 +263,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 				pr.Status, pr.Message = PhaseRefused, ref.Reason
 				r.result.Phases = append(r.result.Phases, pr)
 				r.result.Status, r.result.Refusal = "refused", ref.Reason
+				r.result.Warnings = r.warnings
 				r.result.DurationMs = time.Since(start).Milliseconds()
 				return r.result, err
 			}
@@ -165,6 +289,50 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		_ = os.RemoveAll(restoreWorkRoot(opts.StateDir))
 	}
 	return r.result, nil
+}
+
+// reattachForResume dispatches a resumed run's re-mount step to the right
+// platform twin: reattach (provision.go, Linux) or winReattach
+// (win_provision.go).
+func (r *run) reattachForResume(ctx context.Context) error {
+	if r.platform == "windows" {
+		return r.winReattach(ctx)
+	}
+	return r.reattach(ctx)
+}
+
+// resolvePlatform fetches and schema-checks the layout (moved out of
+// preflight.go's old inline block, which both platform preflights used to
+// duplicate), refuses a platform/host mismatch, and refuses a resume state
+// file written on a different platform/host — all BEFORE any phase runs,
+// so a wrong-platform snapshot never triggers a manifest download.
+// layout.Assess is deliberately NOT called here — it stays inside each
+// platform's own preflight (preflight.go's preflight, win_preflight.go's
+// winPreflight), each with a platform-specific refusal message.
+func resolvePlatform(ctx context.Context, r *run) error {
+	host := hostPlatform()
+	if host == "" {
+		return ErrUnsupportedHost
+	}
+	lay := r.opts.Layout
+	if lay == nil {
+		var err error
+		if lay, err = fetchLayout(ctx, r.opts.Provider, r.opts.SnapshotID); err != nil {
+			return err
+		}
+	} else if lay.SchemaVersion != layout.SchemaVersion {
+		return &RefusalError{Reason: fmt.Sprintf("layout schema version %d is not supported by this helper (supports %d)", lay.SchemaVersion, layout.SchemaVersion)}
+	}
+	if lay.Platform != host {
+		return &RefusalError{Reason: fmt.Sprintf("snapshot platform %q cannot be rebuilt on a %s host", lay.Platform, host)}
+	}
+	if len(r.state.Completed) > 0 && r.state.Platform != "" && (r.state.Platform != lay.Platform || r.state.HostOS != host) {
+		return &RefusalError{Reason: fmt.Sprintf("resume state was written on a %s host for platform %q", r.state.HostOS, r.state.Platform)}
+	}
+	r.layout = lay
+	r.platform = host
+	r.state.Platform, r.state.HostOS = lay.Platform, host
+	return nil
 }
 
 func (r *run) fail(start time.Time, pr PhaseResult, err error) (*Result, error) {
@@ -246,6 +414,7 @@ func (r *run) saveState() {
 // and removes the system-state staging dir. Errors are warnings: the
 // result already carries the outcome.
 func (r *run) teardown() {
+	r.winTeardown() // Windows hives/letters/folder mounts; r.detach below releases the VHDX
 	ctx := context.Background()
 	for i := len(r.treeMounts) - 1; i >= 0; i-- {
 		if err := r.sys.Unmount(ctx, r.treeMounts[i]); err != nil {

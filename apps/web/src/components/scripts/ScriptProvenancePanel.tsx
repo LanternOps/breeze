@@ -4,6 +4,7 @@ import { ShieldCheck, PencilLine } from 'lucide-react';
 import type { ScriptOrigin, ScriptVersionDto } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type ScriptProvenancePanelProps = {
   scriptId: string;
@@ -20,6 +21,7 @@ const ORIGIN_KEY_SUFFIX: Record<ScriptOrigin, string> = {
 
 export default function ScriptProvenancePanel({ scriptId }: ScriptProvenancePanelProps) {
   const { t } = useTranslation(['scripts', 'common']);
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [versions, setVersions] = useState<ScriptVersionDto[] | null>(null);
   const [error, setError] = useState<string>();
 
@@ -34,14 +36,14 @@ export default function ScriptProvenancePanel({ scriptId }: ScriptProvenancePane
         }
         // Reuses ScriptVersionHistory's existing error copy — this panel reads
         // the same underlying version history, just shaped for provenance.
-        throw new Error(t('scriptVersionHistory.errors.fetch'));
+        throw new Error(stableT('scriptVersionHistory.errors.fetch'));
       }
       const data = await response.json();
       setVersions(Array.isArray(data.versions) ? data.versions : []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('scriptVersionHistory.errors.generic'));
+      setError(err instanceof Error ? err.message : stableT('scriptVersionHistory.errors.generic'));
     }
-  }, [scriptId, t]);
+  }, [scriptId, stableT]);
 
   useEffect(() => {
     void fetchVersions();

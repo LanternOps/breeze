@@ -1,0 +1,1 @@
+{"devices": [{"name": "/dev/sda", "type": "sat"}, {"name": "/dev/bus/0", "type": "megaraid,1"}, {"name": "/dev/sg0", "type": "cciss,0"}]}

@@ -57,6 +57,16 @@ const {
           };
         },
       })),
+      execute: vi.fn(async (statement: { values: unknown[] }) => {
+        callOrder.push('createAlert.insert');
+        const [ruleId, deviceId, orgId, severity, title, message, context, monitorId, episodeId, requiresHuman, subjectKey] = statement.values;
+        insertedAlerts.push({
+          ruleId, deviceId, orgId, severity, title, message,
+          context: JSON.parse(context as string), monitorId, episodeId, requiresHuman, subjectKey,
+        });
+        return [{ id: 'alert-1' }];
+      }),
+      update: vi.fn(() => ({ set: () => ({ where: () => Promise.resolve(undefined) }) })),
       delete: vi.fn(() => ({ where: () => Promise.resolve([]) })),
     },
     captureExceptionMock: vi.fn(),
@@ -266,7 +276,7 @@ beforeEach(() => {
     };
   });
   fireEscalationLatchMock.mockResolvedValue({ escalationAlertId: 'alert-esc', recurrenceActionsPending: 0 });
-  linkEpisodeAlertMock.mockResolvedValue(undefined);
+  linkEpisodeAlertMock.mockResolvedValue({ owner: true });
   detachMonitorFromDeviceMock.mockResolvedValue(undefined);
   evaluateConditionsMock.mockResolvedValue({
     triggered: true,
@@ -350,6 +360,15 @@ describe('evaluateDeviceAlerts — monitor episodes (#5290)', () => {
     await evaluateDeviceAlerts(DEVICE_ID);
 
     expect(insertedAlerts[0]).toMatchObject({ episodeId: 'episode-1', monitorId: MONITOR_ID });
+    expect(linkEpisodeAlertMock).toHaveBeenCalledWith('episode-1', 'alert-1');
+  });
+
+  it('keeps a published legacy alert when episode linking fails', async () => {
+    pushSweepQueue({ triggered: true });
+    linkEpisodeAlertMock.mockRejectedValueOnce(new Error('episode bookkeeping unavailable'));
+
+    expect(await evaluateDeviceAlerts(DEVICE_ID)).toContain('alert-1');
+    expect(insertedAlerts).toHaveLength(1);
     expect(linkEpisodeAlertMock).toHaveBeenCalledWith('episode-1', 'alert-1');
   });
 

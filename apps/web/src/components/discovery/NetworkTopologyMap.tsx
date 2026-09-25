@@ -12,6 +12,7 @@ import {
   parseProfileSubnets,
   UNGROUPED_LABEL
 } from './topologySubnets';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 // Register the fcose layout once at module scope (guarded — re-registering on a
 // hot-reload throws). Used for Auto-arrange of never-placed nodes only.
@@ -597,6 +598,7 @@ export default function NetworkTopologyMap({
   onEditApiReady
 }: NetworkTopologyMapProps) {
   const { t } = useTranslation('discovery');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [nodes, setNodes] = useState<TopologyNode[]>([]);
   const [links, setLinks] = useState<TopologyLink[]>([]);
   const [layout, setLayout] = useState<TopologyLayoutRow[]>([]);
@@ -659,7 +661,7 @@ export default function NetworkTopologyMap({
       setError(undefined);
       const response = await fetchWithAuth('/discovery/topology');
       if (!response.ok) {
-        throw new Error(t('networkTopologyMap.errors.fetch'));
+        throw new Error(stableT('networkTopologyMap.errors.fetch'));
       }
       const data = await response.json();
       const rawNodes = data.nodes ?? data.data?.nodes ?? [];
@@ -686,11 +688,11 @@ export default function NetworkTopologyMap({
       );
       setProfileSubnets(rawSubnets);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('networkTopologyMap.errors.generic'));
+      setError(err instanceof Error ? err.message : stableT('networkTopologyMap.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [stableT]);
 
   useEffect(() => {
     fetchTopology();
@@ -812,8 +814,8 @@ export default function NetworkTopologyMap({
               method: 'POST',
               body: JSON.stringify({ siteId: activeSiteId, source, target })
             }),
-          errorFallback: t('networkTopologyMap.errors.connectNodes'),
-          successMessage: t('networkTopologyMap.messages.connectionAdded'),
+          errorFallback: stableT('networkTopologyMap.errors.connectNodes'),
+          successMessage: stableT('networkTopologyMap.messages.connectionAdded'),
           onUnauthorized: () => {
             /* let the auth redirect handle it */
           }
@@ -828,10 +830,10 @@ export default function NetworkTopologyMap({
           }
         });
       } catch (err) {
-        handleActionError(err, t('networkTopologyMap.errors.connectNodesSentence'));
+        handleActionError(err, stableT('networkTopologyMap.errors.connectNodesSentence'));
       }
     },
-    [activeSiteId, endpointFor, t]
+    [activeSiteId, endpointFor, stableT]
   );
 
   // Delete a manual edge (#1728 phase 4). The API only removes `method='manual'`
@@ -930,8 +932,8 @@ export default function NetworkTopologyMap({
               positions: [{ nodeType, nodeId, x, y }]
             })
           }),
-        errorFallback: t('networkTopologyMap.errors.savePosition'),
-        successMessage: t('networkTopologyMap.messages.layoutSaved'),
+        errorFallback: stableT('networkTopologyMap.errors.savePosition'),
+        successMessage: stableT('networkTopologyMap.messages.layoutSaved'),
         onUnauthorized: () => {
           /* let the auth redirect handle it */
         }
@@ -941,7 +943,7 @@ export default function NetworkTopologyMap({
       // runAction already surfaced the error toast; nothing else to do here.
     }
     },
-    [t]
+    [stableT]
   );
 
   // (Re)build the Cytoscape graph whenever the data changes.

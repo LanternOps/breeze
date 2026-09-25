@@ -13,7 +13,7 @@ import {
   ShieldOff
 } from 'lucide-react';
 import * as Sentry from '@sentry/astro';
-import { fetchWithAuth } from '@/stores/auth';
+import { fetchWithAuth, handleSessionExpired } from '@/stores/auth';
 import { extractApiError } from '@/lib/apiError';
 import { runAction } from '@/lib/runAction';
 import { navigateTo } from '@/lib/navigation';
@@ -630,13 +630,17 @@ export default function RemoteToolsPage({
   }, [deviceId]);
 
   const handleKillProcess = useCallback(async (pid: number) => {
-    const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/processes/${pid}/kill`, {
-      method: 'POST'
+    // Kill / task run-enable-disable / registry writes: runAction toasts the
+    // failure (ScheduledTasks only console.error'd it, and the other panels'
+    // inline errors can sit behind their confirm dialogs), and the rejection
+    // still propagates so the calling panel keeps its dialog open (#3531).
+    await runAction({
+      request: () => fetchWithAuth(`/system-tools/devices/${deviceId}/processes/${pid}/kill`, {
+        method: 'POST'
+      }),
+      errorFallback: t('remoteToolsPage.errors.killProcess'),
+      onUnauthorized: handleSessionExpired,
     });
-    if (!res.ok) {
-      const json = await res.json();
-      throw new Error(json.error || t('remoteToolsPage.errors.killProcess'));
-    }
     await fetchProcesses();
   }, [deviceId, fetchProcesses]);
 
@@ -704,6 +708,7 @@ export default function RemoteToolsPage({
         }),
         errorFallback: t('remoteToolsPage.errors.startService'),
         friendly: keepServiceActionErrorMessage,
+        onUnauthorized: handleSessionExpired,
       });
     } finally {
       // Re-sync from the server whether the command succeeded or failed, so
@@ -721,6 +726,7 @@ export default function RemoteToolsPage({
         }),
         errorFallback: t('remoteToolsPage.errors.stopService'),
         friendly: keepServiceActionErrorMessage,
+        onUnauthorized: handleSessionExpired,
       });
     } finally {
       await fetchServices();
@@ -738,6 +744,7 @@ export default function RemoteToolsPage({
         ),
         errorFallback: t('remoteToolsPage.errors.restartService'),
         friendly: keepServiceActionErrorMessage,
+        onUnauthorized: handleSessionExpired,
       });
     } catch (err) {
       // Same re-sync-on-failure rule as start/stop above (#5088).
@@ -856,13 +863,13 @@ export default function RemoteToolsPage({
   }, [deviceId]);
 
   const handleRunTask = useCallback(async (path: string) => {
-    const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/tasks/${encodeURIComponent(path)}/run`, {
-      method: 'POST'
+    await runAction({
+      request: () => fetchWithAuth(`/system-tools/devices/${deviceId}/tasks/${encodeURIComponent(path)}/run`, {
+        method: 'POST'
+      }),
+      errorFallback: t('remoteToolsPage.errors.runTask'),
+      onUnauthorized: handleSessionExpired,
     });
-    if (!res.ok) {
-      const json = await res.json();
-      throw new Error(json.error || t('remoteToolsPage.errors.runTask'));
-    }
     await fetchTasks();
   }, [deviceId, fetchTasks]);
 
@@ -888,24 +895,24 @@ export default function RemoteToolsPage({
   }, [deviceId]);
 
   const handleEnableTask = useCallback(async (path: string) => {
-    const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/tasks/${encodeURIComponent(path)}/enable`, {
-      method: 'POST'
+    await runAction({
+      request: () => fetchWithAuth(`/system-tools/devices/${deviceId}/tasks/${encodeURIComponent(path)}/enable`, {
+        method: 'POST'
+      }),
+      errorFallback: t('remoteToolsPage.errors.enableTask'),
+      onUnauthorized: handleSessionExpired,
     });
-    if (!res.ok) {
-      const json = await res.json();
-      throw new Error(json.error || t('remoteToolsPage.errors.enableTask'));
-    }
     await fetchTasks();
   }, [deviceId, fetchTasks]);
 
   const handleDisableTask = useCallback(async (path: string) => {
-    const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/tasks/${encodeURIComponent(path)}/disable`, {
-      method: 'POST'
+    await runAction({
+      request: () => fetchWithAuth(`/system-tools/devices/${deviceId}/tasks/${encodeURIComponent(path)}/disable`, {
+        method: 'POST'
+      }),
+      errorFallback: t('remoteToolsPage.errors.disableTask'),
+      onUnauthorized: handleSessionExpired,
     });
-    if (!res.ok) {
-      const json = await res.json();
-      throw new Error(json.error || t('remoteToolsPage.errors.disableTask'));
-    }
     await fetchTasks();
   }, [deviceId, fetchTasks]);
 
@@ -942,47 +949,47 @@ export default function RemoteToolsPage({
   }, [deviceId]);
 
   const handleSetRegistryValue = useCallback(async (hive: string, path: string, name: string, type: string, data: unknown) => {
-    const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/registry/value`, {
-      method: 'PUT',
-      body: JSON.stringify({ hive, path, name, type, data })
+    await runAction({
+      request: () => fetchWithAuth(`/system-tools/devices/${deviceId}/registry/value`, {
+        method: 'PUT',
+        body: JSON.stringify({ hive, path, name, type, data })
+      }),
+      errorFallback: t('remoteToolsPage.errors.setRegistryValue'),
+      onUnauthorized: handleSessionExpired,
     });
-    if (!res.ok) {
-      const json = await res.json();
-      throw new Error(json.error || t('remoteToolsPage.errors.setRegistryValue'));
-    }
   }, [deviceId]);
 
   const handleDeleteRegistryValue = useCallback(async (hive: string, path: string, name: string) => {
     const params = new URLSearchParams({ hive, path, name });
-    const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/registry/value?${params}`, {
-      method: 'DELETE'
+    await runAction({
+      request: () => fetchWithAuth(`/system-tools/devices/${deviceId}/registry/value?${params}`, {
+        method: 'DELETE'
+      }),
+      errorFallback: t('remoteToolsPage.errors.deleteRegistryValue'),
+      onUnauthorized: handleSessionExpired,
     });
-    if (!res.ok) {
-      const json = await res.json();
-      throw new Error(json.error || t('remoteToolsPage.errors.deleteRegistryValue'));
-    }
   }, [deviceId]);
 
   const handleCreateRegistryKey = useCallback(async (hive: string, path: string) => {
-    const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/registry/key`, {
-      method: 'POST',
-      body: JSON.stringify({ hive, path })
+    await runAction({
+      request: () => fetchWithAuth(`/system-tools/devices/${deviceId}/registry/key`, {
+        method: 'POST',
+        body: JSON.stringify({ hive, path })
+      }),
+      errorFallback: t('remoteToolsPage.errors.createRegistryKey'),
+      onUnauthorized: handleSessionExpired,
     });
-    if (!res.ok) {
-      const json = await res.json();
-      throw new Error(json.error || t('remoteToolsPage.errors.createRegistryKey'));
-    }
   }, [deviceId]);
 
   const handleDeleteRegistryKey = useCallback(async (hive: string, path: string) => {
     const params = new URLSearchParams({ hive, path });
-    const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/registry/key?${params}`, {
-      method: 'DELETE'
+    await runAction({
+      request: () => fetchWithAuth(`/system-tools/devices/${deviceId}/registry/key?${params}`, {
+        method: 'DELETE'
+      }),
+      errorFallback: t('remoteToolsPage.errors.deleteRegistryKey'),
+      onUnauthorized: handleSessionExpired,
     });
-    if (!res.ok) {
-      const json = await res.json();
-      throw new Error(json.error || t('remoteToolsPage.errors.deleteRegistryKey'));
-    }
   }, [deviceId]);
 
   // Load data on tab change

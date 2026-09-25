@@ -58,6 +58,8 @@ export type Collection = {
 export type NetworkAssetExtras = {
   model?: string | null;
   netbiosName?: string | null;
+  // Needed by the Change-site dialog to list the org's sites.
+  orgId?: string | null;
   siteId?: string | null;
   siteName?: string | null;
   // The site's IANA zone (`sites.timezone`, always set, defaults to 'UTC').

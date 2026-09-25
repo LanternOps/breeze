@@ -1693,6 +1693,88 @@ describe('org routes', () => {
     });
   });
 
+  describe('PATCH /orgs/partners/me — ml feature settings', () => {
+    function mockCurrentPartnerSelect(settings: Record<string, unknown>) {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+            limit: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings }])
+          })
+        })
+      } as any);
+    }
+    function mockUpdateCapture() {
+      let captured: any;
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockImplementation((data: any) => {
+          captured = data;
+          return { where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings: data.settings }]) }) };
+        })
+      } as any);
+      return () => captured;
+    }
+    function patchMe(body: unknown) {
+      return app.request('/orgs/partners/me', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    }
+
+    it('persists settings.ml.anomalies (the schema must not strip it) and keeps sibling ml keys', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({ ml: { rca: { enabled: true } }, security: { requireMfa: true } });
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { ml: { anomalies: { enabled: true, create_alerts: false } } } });
+
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings.ml).toEqual({ rca: { enabled: true }, anomalies: { enabled: true, create_alerts: false } });
+      expect(getCaptured().settings.security).toEqual({ requireMfa: true });
+    });
+
+    it('persists settings.ml.remediation_suggestions without clobbering ml.anomalies (#6934)', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({ ml: { anomalies: { enabled: true, create_alerts: true } } });
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { ml: { remediation_suggestions: { enabled: true } } } });
+
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings.ml).toEqual({
+        anomalies: { enabled: true, create_alerts: true },
+        remediation_suggestions: { enabled: true },
+      });
+    });
+
+    it('keeps ml.remediation_suggestions when the anomalies card saves (#6934)', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({ ml: { remediation_suggestions: { enabled: true } } });
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { ml: { anomalies: { enabled: false, create_alerts: false } } } });
+
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings.ml).toEqual({
+        remediation_suggestions: { enabled: true },
+        anomalies: { enabled: false, create_alerts: false },
+      });
+    });
+
+    it('rejects a non-boolean ml.remediation_suggestions.enabled', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({});
+      mockUpdateCapture();
+      const res = await patchMe({ settings: { ml: { remediation_suggestions: { enabled: 'yes' } } } });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects a non-boolean ml.anomalies.enabled', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({});
+      mockUpdateCapture();
+      const res = await patchMe({ settings: { ml: { anomalies: { enabled: 'yes' } } } });
+      expect(res.status).toBe(400);
+    });
+  });
+
   describe('PATCH /orgs/partners/me — emailTemplates', () => {
     function mockCurrentPartnerSelect(settings: Record<string, unknown>) {
       vi.mocked(db.select).mockReturnValue({
@@ -3345,6 +3427,39 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.partnerDefaultTaxRate).toBe('0.07250');
+    });
+
+    // Settings consolidation W06 (#6229): the org Billing tab's payment-terms
+    // InheritedField shows the partner default when the org override is blank.
+    it('includes the partner default payment terms alongside the org override', async () => {
+      const orgId = '33333333-3333-3333-3333-333333333333';
+      setAuthContext({
+        scope: 'partner',
+        partnerId: 'partner-123',
+        accessibleOrgIds: [orgId]
+      });
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: orgId, name: 'Org', partnerId: 'partner-123', invoiceTermsDays: null }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ defaultTaxRate: null, invoiceTermsDays: 45 }])
+            })
+          })
+        } as any);
+
+      const res = await app.request(`/orgs/organizations/${orgId}`);
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.invoiceTermsDays).toBeNull();
+      expect(body.partnerDefaultInvoiceTermsDays).toBe(45);
     });
 
     it('should return 404 when organization not found', async () => {

@@ -200,7 +200,18 @@
     },
     "title": "Descoberta de rede",
     "toasts": {
-      "scanQueued": "Varredura de descoberta enfileirada para \"{{name}}\""
+      "scanQueued": "Varredura de descoberta enfileirada para \"{{name}}\"",
+      "profileCreated": "Perfil de descoberta \"{{name}}\" criado",
+      "profileUpdated": "Perfil de descoberta \"{{name}}\" atualizado",
+      "profileMoved": "Perfil movido para {{site}}.",
+      "assetsMoved_one": "{{count}} dispositivo de rede movido",
+      "assetsMoved_other": "{{count}} dispositivos de rede movidos",
+      "agentLinksRemoved_one": "{{count}} vínculo de agente removido",
+      "agentLinksRemoved_other": "{{count}} vínculos de agente removidos",
+      "monitorsReattached_one": "{{count}} monitor reanexado",
+      "monitorsReattached_other": "{{count}} monitores reanexados",
+      "topologyPoliciesDisabled_one": "{{count}} política de topologia desativada",
+      "topologyPoliciesDisabled_other": "{{count}} políticas de topologia desativadas"
     },
     "days": {
       "monday": "Segunda-feira",
@@ -295,6 +306,12 @@
       "arp": "Varredura ARP",
       "snmp": "Sondagem SNMP",
       "portScan": "Varredura de portas TCP"
+    },
+    "siteMove": {
+      "notice": "A partir de agora este perfil fará a varredura a partir do novo site. Os dispositivos já descobertos permanecem no site atual, a menos que você os mova.",
+      "moveAssets_one": "Mover também o {{count}} dispositivo de rede descoberto por este perfil para o novo site",
+      "moveAssets_other": "Mover também os {{count}} dispositivos de rede descobertos por este perfil para o novo site",
+      "moveAssetsUnknown": "Mover também os dispositivos de rede descobertos por este perfil para o novo site"
     }
   },
   "discoveryProfileList": {

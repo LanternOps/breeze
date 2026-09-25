@@ -77,6 +77,9 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
     'link_device',
     'draft'
   ],
+  // #6930: ticket-scoped checklist step edits, same family as update_fields.
+  // Ticking a step is not a tool action at all (see aiToolsTicketing.ts).
+  manage_ticket_checklist: ['add_item', 'update_item', 'delete_item', 'reorder', 'apply_template'],
   manage_services: ['list'],
   // SR5-01 partial relaxation (2026-07-20): directory LISTING is recon-only —
   // filenames leak far less than contents — so it auto-executes with audit.
@@ -736,6 +739,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   get_timesheet: { resource: 'time_entries', action: 'read' },
   query_devices: { resource: 'devices', action: 'read' },
   get_device_details: { resource: 'devices', action: 'read' },
+  get_device_hardware_health: { resource: 'devices', action: 'read' },
   get_vulnerability_report: { resource: 'devices', action: 'read' },
   get_device_vulnerabilities: { resource: 'devices', action: 'read' },
   // routes/patches/operations.ts:29 (/scan) and :171 (/:id/rollback) both
@@ -795,6 +799,18 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     // caller of these two actions needs a real permission grant added first.
     link_device: { resource: 'tickets', action: 'update' },
     draft: { resource: 'tickets', action: 'update' },
+  },
+  // #6930 — same grants as routes/tickets/checklist.ts (TICKETS_READ/WRITE)
+  // and the templates route (reads are TICKETS_READ).
+  manage_ticket_checklist: {
+    list: { resource: 'tickets', action: 'read' },
+    list_templates: { resource: 'tickets', action: 'read' },
+    get_template: { resource: 'tickets', action: 'read' },
+    add_item: { resource: 'tickets', action: 'write' },
+    update_item: { resource: 'tickets', action: 'write' },
+    delete_item: { resource: 'tickets', action: 'write' },
+    reorder: { resource: 'tickets', action: 'write' },
+    apply_template: { resource: 'tickets', action: 'write' },
   },
   list_invoices: { resource: 'invoices', action: 'read' },
   get_invoice: { resource: 'invoices', action: 'read' },
@@ -993,6 +1009,9 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   manage_patches: {
     list: { resource: 'devices', action: 'read' },
     compliance: { resource: 'devices', action: 'read' },
+    // #6665: read-only per-device patch job history (scheduled + user
+    // initiated) — same DEVICES_READ tier as list/compliance above.
+    device_history: { resource: 'devices', action: 'read' },
     scan: { resource: 'devices', action: 'execute' },
     approve: { resource: 'devices', action: 'execute' },
     decline: { resource: 'devices', action: 'execute' },
@@ -2399,7 +2418,7 @@ function resolveToolPermissionRequirements(
     // Unknown action for a mapped tool — deny (fail-closed)
     // Include redirect hints for tools that have been replaced by policy-based management
     const redirectHints: Record<string, string> = {
-      manage_service_monitors: 'To add, update, or remove monitoring watches, use manage_policy_feature_link with the existing policy\'s featureLinkId and action "update". First call get_configuration_policy to find the monitoring featureLinkId and current inlineSettings.watches array, then update it with the new watch appended.',
+      manage_service_monitors: 'Use manage_monitor_definitions to author service/process monitors, then manage_policy_feature_link with featureType "monitors" to attach them to a policy.',
     };
     const hint = redirectHints[toolName];
     return {

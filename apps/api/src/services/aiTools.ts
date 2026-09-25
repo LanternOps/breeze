@@ -254,35 +254,9 @@ export async function enforceDeviceArgs(
  */
 export { findAlertWithAccess } from './aiToolsAlerts';
 
-export function resolveWritableToolOrgId(
-  auth: AuthContext,
-  inputOrgId?: string
-): { orgId?: string; error?: string } {
-  if (auth.scope === 'organization') {
-    if (!auth.orgId) return { error: 'Organization context required' };
-    if (inputOrgId && inputOrgId !== auth.orgId) {
-      return { error: 'Cannot access another organization' };
-    }
-    return { orgId: auth.orgId };
-  }
-
-  if (inputOrgId) {
-    if (!auth.canAccessOrg(inputOrgId)) {
-      return { error: 'Access denied to this organization' };
-    }
-    return { orgId: inputOrgId };
-  }
-
-  if (auth.orgId) {
-    return { orgId: auth.orgId };
-  }
-
-  if (Array.isArray(auth.accessibleOrgIds) && auth.accessibleOrgIds.length === 1) {
-    return { orgId: auth.accessibleOrgIds[0] };
-  }
-
-  return { error: 'orgId is required for this operation' };
-}
+// Moved to a leaf module so domain tool files this hub imports can use it
+// without an ESM cycle (#6667); re-exported so existing importers keep working.
+export { resolveWritableToolOrgId } from './aiToolWriteOrg';
 
 // ============================================
 // Tool Registry
@@ -509,6 +483,7 @@ export function requiresLiveSession(
 export const HELPER_TOOL_SCOPING: Record<string, 'deviceId' | 'deviceIds'> = {
   // Read-only (Phase 0 `basic` set).
   get_device_details: 'deviceId',
+  get_device_hardware_health: 'deviceId',
   analyze_metrics: 'deviceId',
   analyze_disk_usage: 'deviceId',
   get_cis_device_report: 'deviceId',

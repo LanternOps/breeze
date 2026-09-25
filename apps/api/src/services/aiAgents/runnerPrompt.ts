@@ -645,6 +645,19 @@ function buildVerdictTaskPrompt(ctx: AgentRunPromptContext): string {
     + 'suppress (hours, at least 1) for recurring_pattern.',
   );
   lines.push('Finish by calling submit_alert_verdict exactly once. Your rationale is shown to technicians; ≤ 2 sentences.');
+  // #6909 (US prod, OliveTech, 09-22 -> 09-24): KB2267602 (a Defender
+  // definition-update package, superseded several times a day) reported "not
+  // found" was classified actionable/investigate-WSUS 8 of 9 times — only
+  // transient_self_healed was correct. Named, not generic, because the model
+  // otherwise treats "not found" as evidence of a broken update pipeline
+  // rather than of a routinely-replaced daily package.
+  lines.push(
+    'Known transient patterns — do not classify these actionable: (1) a Windows/Defender definition-update '
+    + 'package (e.g. KB2267602) reported "not found" is routinely superseded several times a day; classify '
+    + 'transient_self_healed. (2) a winget install/upgrade failing with exit code 2316632107 (hex '
+    + '0x8A15002B, "no applicable upgrade found") means the device is already current, not that the update '
+    + 'failed; treat it as a false positive, not something to investigate.',
+  );
 
   lines.push('');
   if (ctx.alert) {

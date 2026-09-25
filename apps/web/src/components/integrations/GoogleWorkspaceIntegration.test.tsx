@@ -1,6 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import GoogleWorkspaceIntegration from "./GoogleWorkspaceIntegration";
+import { GOOGLE_DWD_SCOPES_CSV } from "@breeze/shared";
 import { fetchWithAuth } from "../../stores/auth";
 
 vi.mock("../../stores/auth", () => ({
@@ -101,5 +102,21 @@ describe("GoogleWorkspaceIntegration", () => {
     expect(
       screen.queryByTestId("google-workspace-not-enabled"),
     ).not.toBeInTheDocument();
+  });
+  it("lists every DWD scope the API requests, including the Gmail inbound connector scopes", async () => {
+    fetchWithAuthMock.mockResolvedValue(makeResponse({ connected: false }));
+
+    render(<GoogleWorkspaceIntegration />);
+
+    // The setup instructions render the one shared list, so the scopes an admin
+    // pastes into Google Admin cannot drift from what the API requests.
+    const scopes = await screen.findByText(
+      (_, el) => el?.tagName === "PRE" && el.textContent === GOOGLE_DWD_SCOPES_CSV,
+    );
+    const rendered = scopes.textContent ?? "";
+    expect(rendered).toContain("https://www.googleapis.com/auth/gmail.readonly");
+    expect(rendered.split(",")).toContain("openid");
+    expect(rendered).toContain("https://www.googleapis.com/auth/userinfo.email");
+    expect(rendered).not.toContain("gmail.modify");
   });
 });

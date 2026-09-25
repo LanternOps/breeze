@@ -1,247 +1,54 @@
 ---
 title: Alerts
-description: Manage the alert inbox, author monitors, and configure delivery in Breeze RMM.
-sidebar:
-  label: "Alerts"
+description: Use the inbox to act on problems, monitors to define conditions and responses, and delivery to decide who is notified.
 ---
 
-import { Aside, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
-
-Alerts is the home for the conditions you monitor, the problems that need attention, and the people who get told.
-
-| Facet | Purpose | Console route |
-|---|---|---|
-| Inbox | Review and acknowledge active alerts | `/alerts` |
-| Monitors | Define a condition, automated response, and Notify choice | `/alerts/monitors` |
-| Delivery | Configure channels, routing, defaults, and escalation | `/alerts/delivery` |
-
-Create new conditions as [Monitors](/features/monitors/). Existing legacy rules remain available during the conversion period. The delivery changes below do not retire those rules or change their explicit notification overrides.
-
-<Aside type="tip">
-  If a condition also needs to run a script or another automated response when it fires, author it as a [Monitor](/features/monitors/) instead of a standalone alert rule plus a separately-wired automation -- a monitor bundles the condition, severity, delivery, and response into one object and deploys through Configuration Policies.
-</Aside>
-
-## Viewing Alerts
-
-Open **Alerts** from the left sidebar to see all active alerts across your organization. The page has three main sections:
-
-- **Summary bar** -- counts of active alerts grouped by severity, with trend indicators showing whether alert volume is rising or falling.
-- **Filter bar** -- narrow the list by severity, status, device, or date range.
-- **Alert list** -- every alert with its severity badge, title, affected device, triggering rule, and timestamp.
-
-Click any alert to open its detail view, which shows:
-
-- Full alert message and context data
-- The device that triggered it (with a link to the device page)
-- The rule that fired (with a link to the rule editor)
-- Status timeline (when it was triggered, acknowledged, resolved)
-- Notification delivery history (which channels were notified and whether delivery succeeded)
-
-<Aside>
-  The home dashboard also surfaces alerts in its **Needs attention** feed — the most recent active and acknowledged alerts (resolved ones drop out), refreshed every 60 seconds, with critical/warning counts in the header. Rows link to the alert's device, and the dashboard's KPI tiles show exact fleet-wide critical and warning counts that follow your organization selector.
-</Aside>
-
-## Severity Levels
-
-Every alert has a severity that controls how it appears in the dashboard and how notification routing handles it:
-
-| Severity | Use for | Color |
-|---|---|---|
-| **Critical** | Service-down conditions, security events, data loss risk | Red |
-| **High** | Degraded performance, failed backups, disk nearly full | Orange |
-| **Medium** | Threshold warnings, unusual patterns | Yellow |
-| **Low** | Informational issues that may need attention | Blue |
-| **Info** | Audit events, status changes, non-actionable notices | Gray |
-
-## Alert Statuses
-
-Alerts move through a lifecycle:
-
-| Status | Meaning |
-|---|---|
-| **Active** | The condition is still true and no one has responded yet |
-| **Acknowledged** | A technician has seen the alert and is investigating |
-| **Resolved** | The issue is fixed (manually or auto-resolved by the rule) |
-| **Suppressed** | Silenced until a specified time, or indefinitely if suppressed **Forever** |
-| **Dismissed** | Permanently closed and hidden from the list -- and never raised again for the same condition. A terminal state |
-
-## Responding to Alerts
-
-### Acknowledge an Alert
-
-Acknowledging tells the team you are aware and working on it. From the alert list or detail page, click **Acknowledge**. The alert moves to "acknowledged" status and records who acknowledged it and when.
-
-### Resolve an Alert
-
-Once the underlying issue is fixed, click **Resolve**. You can optionally add a **resolution note** describing what was done. Resolving an alert sets a cooldown period (configured on the rule) to prevent the same condition from immediately re-firing.
-
-### Suppress an Alert
-
-If you need to silence a noisy alert during planned maintenance, click **Suppress** and choose how long it should stay silenced:
-
-- **1 hour**
-- **8 hours**
-- **24 hours**
-- **7 days**
-- **Forever** -- suppresses the alert indefinitely, with no automatic expiration
-
-The alert moves to "suppressed" status and stops sending notifications. Timed suppressions are cleared automatically once the window elapses -- the alert quietly returns to **Active** status on its own (so don't be surprised if a suppressed alert reappears in the active list later without anyone touching it). **Forever** suppressions are the exception: they are never auto-expired and stay suppressed until you manually un-suppress the alert.
-
-<Aside>
-  Resolved alerts can't be suppressed. Once an alert is marked **Resolved**, the **Suppress** control is no longer shown for it -- suppression only makes sense for alerts that are still open.
-</Aside>
-
-### Dismiss an Alert
-
-**Dismiss** permanently closes an alert and takes it out of your way for good. Click **Dismiss** on any alert -- from **any** status, including one that's already **Resolved** -- and it moves to the **Dismissed** state, disappears from the list, and cannot be brought back (dismissal is terminal). Dismissed alerts are hidden from the list by default; filter to the **Dismissed** status if you need to see them.
-
-Dismiss differs from the other closing actions:
-
-- **Resolve** marks the current issue fixed, but the rule can fire again the next time the condition recurs.
-- **Suppress Forever** silences notifications while the condition is still live; the alert can return to **Active** if you un-suppress it.
-- **Dismiss** is final -- the alert is gone and won't be raised again for the same condition.
-
-<Aside type="note">
-  Dismiss is especially useful for **warranty-expiry** alerts. A dismissed warranty alert is honored by the evaluator that raises it, so it will never re-alert for that expiry -- handy when you've deliberately decided not to renew. (If the device's warranty is later renewed to a new expiry date, a fresh alert can still be raised for the new date.)
-</Aside>
-
-### Bulk Actions
-
-Select multiple alerts using the checkboxes, then choose **Acknowledge Selected**, **Resolve Selected**, **Suppress Selected**, or **Dismiss Selected** from the bulk action menu. Bulk suppressing prompts for the same duration options as a single alert, including **Forever**. You can act on up to 100 alerts at once.
-
-## Alert Correlation
-
-When multiple related alerts fire at once (for example, a network outage causing many devices to go offline), Breeze automatically groups them using **alert correlation**. The correlation view shows:
-
-- **Root cause** -- the alert most likely to be the underlying problem, with a confidence score
-- **Related alerts** -- child alerts classified as causal, symptom, or duplicate
-- **Timeline** -- chronological view of when each related alert fired
-
-Open the correlation view from the alert detail page when the "Related Alerts" badge appears, or go to **Alerts → Correlations** for a fleet-wide list of incidents with grouping and noise-reduction statistics. From an incident you can run on-demand **Root Cause Analysis** to gather evidence and propose a likely cause.
-
-Alert Correlation and Root Cause Analysis are part of the AI Insights suite and may need to be enabled for your organization. See [AI Insights](/features/ml-insights/) for what they do, how to act on incidents, and how to turn them on.
-
-## Creating Alert Rules
-
-Alert rules define what conditions to watch for and which devices to monitor.
-
-<Steps>
-
-1. Open a [Configuration Policy](/features/configuration-policies/) and go to its **Alert Rules** tab, then click **Add Alert Rule**. (The **Alerts > Rules** nav item redirects here -- rules are managed on the policy, not on a standalone rules page.)
-
-2. Give the rule a **name** and choose a **severity** level.
-
-3. Add one to ten **conditions**. A rule fires when its conditions are met; each condition is one of three types.
-
-   **Metric threshold** -- compares a collected device metric against a number:
-   - **Metric** -- CPU usage, memory usage, disk usage (all percentages), or process count (a raw count).
-   - **Operator** -- greater than, greater or equal, less than, less or equal, equals, not equals.
-   - **Value** -- the number that triggers the alert. `0`--`100` for the percentage metrics; unbounded for process count.
-   - **Duration** -- the sliding window, in minutes, over which samples are evaluated. The alert fires when the **average** of all samples within this window breaches the threshold (previously every individual sample had to breach). This makes rules more tolerant of momentary spikes; if you had rules tuned for a single-sample breach, consider shortening the duration or lowering the threshold to preserve the same effective sensitivity.
-
-   **Device offline** -- fires when a device has been continuously unreachable for the configured number of minutes. See [Offline Duration](#offline-duration-for-configuration-policy-rules) below for the 24-hour cap.
-
-   **Event log** -- fires on entries the agent collects from the Windows Event Log, macOS unified log, or Linux journal:
-   - **Category** -- security, hardware, application, or system.
-   - **Minimum level** -- warning, error, or critical. The condition matches this level **and above**, so "warning" also matches errors and criticals.
-   - **Source pattern** and **message pattern** (both optional) -- plain text matched as a **case-insensitive substring**, not a regular expression. `login fail` matches "Login Failed for user"; `^Login` matches nothing.
-   - **Count threshold** and **window** -- how many matching events must occur (1--10,000) within how many minutes (1--1,440) before the alert fires. The default, 1 event in 15 minutes, fires on the first match.
-
-4. Choose the **target scope**:
-   - **All Devices** -- applies to every device in the organization
-   - **Specific Sites** -- applies to all devices at selected sites
-   - **Specific Groups** -- applies to devices in selected device groups
-   - **Specific Devices** -- applies to individually selected devices
-
-5. Select one or more **notification channels** to route the alert through.
-
-6. Set the **cooldown** (1--1440 minutes) to prevent rapid re-firing after resolution.
-
-7. Optionally enable **auto-resolve** so the alert resolves itself when the condition clears.
-
-8. Click **Save**.
-
-</Steps>
-
-<Aside type="caution">
-  Older rules may still carry condition types Breeze no longer evaluates -- `custom`, and a "network usage" metric that never had a metric to compare against. Those are shown read-only with a warning on the rule, and the rule cannot be saved until you remove or replace the condition. The retired `custom` **type** is also rejected by the API on write, so a rule using one can't be created through the AI assistant or a direct API call either, and a rule that was disabled because it only contained one can't be re-enabled until it's replaced. Agent-side service and process watches are configured separately, on the policy's **Monitoring** tab -- see [Service & Process Monitoring](/features/service-monitoring/).
-</Aside>
-
-### Testing a Rule
-
-Before deploying a rule to production, you can test it against a specific device. On the rule's card in the **Alert Rules** tab, click the **Test** button, select a target device, and Breeze will simulate condition evaluation and show you whether the rule would trigger.
-
-The verdict is the rule's real evaluation result against that device's current data — not an approximation — and it reflects the rule **as you have it open in the editor**, including unsaved edits. Previously the test could report on the last saved version, so a threshold you had just changed appeared to behave in a way it no longer would.
-
-### Partner-wide Rules
-
-A partner-scoped user with access to every organization can create the **Configuration Policy** itself as **partner-wide** ("All organizations") instead of scoping it to one org, so every Alert Rule on that policy applies fleet-wide across every organization the partner manages. The owner scope is chosen when the Configuration Policy is created -- it applies to the whole policy, not to individual rules, and can't be changed afterward. Alert Rules on a partner-wide policy show an **All orgs** badge.
-
-## Migrating a whole policy's legacy rules at once
-
-Converting one rule at a time from the **Legacy rules** tab (see [Converting a legacy alert rule](/features/monitors/#converting-a-legacy-alert-rule)) works well for a handful of rules, but a policy with dozens of legacy rules -- or a partner managing the same legacy rules across every organization -- needs a way to move them all together without guessing whether anything will behave differently afterward. Breeze has a policy-wide conversion path built for that:
-
-1. **Preview.** Request a preview for a policy (or, for partner-wide legacy rules, for the whole partner). Breeze proposes the monitor each eligible rule would become, without changing anything yet.
-2. **Equivalence check.** Before anything converts, Breeze checks the proposed monitors against the current rules across every device in scope, so you know up front whether the conversion would change what fires and where -- not just that it compiled successfully.
-3. **Convert.** Once the preview looks right, convert the policy (or, for a partner, every organization's legacy rules at once). The original rules stop firing on their own, the same way a single-rule conversion works, and Breeze keeps a record of every conversion so it can be reviewed or undone later.
-4. **Revert or retire.** A conversion can be reverted, which restores the original rule to active duty and removes the monitor it produced. A source that isn't going to be converted (for example, one judged not worth converting) can instead be retired on its own, which stops it from showing up as pending without converting it. Any alerts already open against a retired or converted source keep their notification channels and escalation policy -- migrating a rule never drops an in-flight alert's delivery.
-
-<Aside type="note">
-  As of v0.115.0 this whole-policy path is available through the API -- converting, reverting, and retiring each require MFA, the same as a single-rule conversion, though requesting a preview does not; a guided console workflow for it is planned for a later release. Converting one rule at a time from the **Legacy rules** tab is fully available in the console today.
-</Aside>
-
-## Notification Channels
-
-Notification channels are the delivery endpoints where alert notifications are sent. Each channel belongs to an organization.
-
-### Supported Channel Types
-
-| Type | Configuration Required |
-|---|---|
-| **Email** | Recipient email addresses |
-| **Slack** | Incoming webhook URL |
-| **Microsoft Teams** | Incoming webhook URL |
-| **Webhook** | URL, HTTP method, headers, payload template |
-| **PagerDuty** | Service/integration key |
-| **SMS** | Phone numbers (requires Twilio configuration) |
-| **Pushover** | Application token and user key (or inherit the partner default) |
-
-### Setting Up a Channel
-
-<Steps>
-1. Go to **Alerts > Delivery**, then **Channels**, and click **New channel**.
-2. Enter a name, choose a type, and fill in its connection settings.
-3. Choose **This organization only** or, with partner-wide management access, **All organizations**. Ownership cannot change later.
-4. Save, then use **Test** to verify the destination.
-5. Add the channel to a routing row, **Everything else**, or a monitor's explicit Notify choice. Creating a channel alone does not subscribe it to alerts.
-</Steps>
-
-## Notification Routing Rules
-
-Open **Alerts > Delivery > Routing**. Add a rule with a name, priority, optional severities, monitor kinds, and sites, plus notification channels and an optional escalation policy. Save in the row drawer.
-
-The monitor's Notify override wins. Otherwise the first matching enabled ordinary row wins: priority ascending, organization before partner at equal priority. If none matches, the optional organization **Everything else** row wins over the partner default. A default with empty channels means inbox only initially; independent escalation still runs; neither default can be reordered. The partner default is permanent; the optional org default can be removed with **Use partner default** to inherit again. During conversion an unretired legacy rule's explicit delivery override also retains precedence.
-
-Use **Test this rule set** to inspect the decision for one organization, severity, kind, and site without sending a notification. The monitor's **Notify > Inherit** card uses the same resolver and shows the inherited destinations and their source.
-
-## Escalation Policies
-
-Create and edit policies in **Alerts > Delivery > Escalation policies**, then select one on a routing row or in the monitor's Notify card. Escalation is independent of initial channels: an explicit monitor escalation wins except in Inbox-only mode, followed by an unretired legacy source’s explicit escalation, then the winning routing row’s escalation, then none. Acknowledging or resolving an alert cancels pending escalation jobs.
-
-See [Notifications](/features/notifications/#notification-routing) for the complete precedence, API preview, and upgrade note. Existing bookmarks to the Channels and Routing Rules console pages redirect permanently to Delivery; the channel API URLs remain unchanged.
-
----
-
-## Offline Duration for Configuration Policy Rules
-
-Alert rules that detect when a device goes offline — configured via a [Configuration Policy](/features/configuration-policies/) — include an **Offline Duration** field. This sets how long a device must be continuously unreachable before the alert fires.
-
-| Field | Description |
-|-------|-------------|
-| **Offline Duration** | Minutes the device must be offline before triggering (1–1440, maximum 24 hours) |
-
-Setting a longer offline duration reduces noise from brief network hiccups or scheduled reboots. Setting a shorter duration catches devices that drop off unexpectedly. The field defaults to a sensible value for most environments; adjust it per-policy to match your SLA expectations for different device classes.
-
----
-
-For infrastructure-level alerting (monitoring the Breeze platform itself with Prometheus and Alertmanager), see [Infrastructure Alerts](/monitoring/alerts/).
+Alerts is one domain with three facets: **Inbox**, **Monitors**, and **Delivery**.
+Configuration policies select the devices a monitor reaches.
+
+## Inbox
+
+Open **Alerts** to review active problems. Filter by severity, device, status or
+time, then open an alert to see its context and history. Acknowledge an alert
+when someone takes responsibility; resolve it when the problem is fixed.
+Suppression and maintenance windows affect notification/evaluation behavior
+according to their configured scope. Correlations remain available when enabled.
+
+Condition-based alerts trace to a monitor. Feature engines such as compliance,
+warranty, security, patching and backup also raise alerts; their configuration
+remains with those features.
+
+## Monitors
+
+Open **Alerts → Monitors** to create a condition, choose its severity and noise
+settings, add device-bound responses, and choose delivery and escalation.
+Attach the monitor to a configuration policy and assign that policy to devices.
+See [Monitors](/features/monitors/) for kinds, deployment and conversion.
+
+Per-monitor responses run on the device whose alert triggered them. For a broad
+workflow such as “any critical CPU alert → triage,” open **Jobs → Alert workflows**.
+Optional severity and monitor-kind filters narrow which alerts start that workflow.
+Compiler-managed automations are hidden from the Jobs list.
+
+## Delivery
+
+Open **Alerts → Delivery** for **Channels**, **Routing**, and **Escalation policies**.
+A monitor's Notify setting takes precedence; otherwise routing selects the first
+matching row. The explicit **Everything else** row supplies the default. New
+channels receive no alerts until added to a routing row or monitor override.
+See [Notifications and delivery](/features/notifications/).
+
+## Converting existing configuration
+
+Open **Alerts → Monitors → Needs conversion**, or a policy's **Monitors** tab.
+Preview the proposed monitors and the device equivalence result. Convert only
+when the preview has no differences or blockers. Unconvertible items show their
+reason; replace their behavior deliberately or use **Retire** with a reason.
+Successful conversion preserves source rows and alert history. The persistent
+**Conversion history → Undo** reverses an available ledger entry, including manual retirement, after revisiting the page. Undo becomes unavailable for legacy runtimes removed by W05d.
+
+Authorized partner managers can use **Convert everything** after reviewing the
+affected policies. Resolve unconvertible rows before the W05d retirement release,
+which ships at least one release after W05c. Legacy policy tabs remain available
+during this conversion release; the Alert Templates settings screens redirect
+to Monitors now.

@@ -501,7 +501,7 @@ func TestConsentGate_WithConsentGranted_AddsMarker(t *testing.T) {
 		"answer":    "sdp-answer",
 	}, 10)
 
-	annotated := withConsentGranted(base, prompt)
+	annotated := withConsentGranted(base, prompt, "user")
 
 	var payload map[string]any
 	if err := json.Unmarshal([]byte(annotated.Stdout), &payload); err != nil {
@@ -519,7 +519,7 @@ func TestConsentGate_WithConsentGranted_NotifyModeNoMarker(t *testing.T) {
 	prompt := &ipc.DesktopPrompt{Mode: "notify"}
 	base := tools.NewSuccessResult(map[string]any{"sessionId": "s2", "answer": "sdp"}, 5)
 
-	result := withConsentGranted(base, prompt)
+	result := withConsentGranted(base, prompt, "user")
 
 	if result.Stdout != base.Stdout {
 		t.Fatalf("notify mode should not modify the result")

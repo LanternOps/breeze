@@ -32,6 +32,7 @@ agent/internal/backup/rebuild/
 agent/internal/backup/systemstate/
 agent/internal/backup/vss/
 agent/internal/backup/wingpt/
+agent/internal/backup/winhive/
 agent/internal/backupipc/
 agent/internal/config/
 agent/internal/hostpolicy/

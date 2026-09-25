@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { listReliabilityDevicesMock } = vi.hoisted(() => ({
+const { listReliabilityDevicesMock, summarizeReliabilityDevicesMock } = vi.hoisted(() => ({
   listReliabilityDevicesMock: vi.fn(),
+  summarizeReliabilityDevicesMock: vi.fn(),
 }));
 
 vi.mock('../db', () => ({
@@ -12,6 +13,7 @@ vi.mock('../db', () => ({
 }));
 vi.mock('./reliabilityScoring', () => ({
   listReliabilityDevices: (...args: unknown[]) => listReliabilityDevicesMock(...args),
+  summarizeReliabilityDevices: (...args: unknown[]) => summarizeReliabilityDevicesMock(...args),
 }));
 vi.mock('./userRiskScoring', () => ({
   assignSecurityTraining: vi.fn(),
@@ -67,12 +69,35 @@ function row(deviceId: string, score: number) {
   };
 }
 
+const ALL_ROWS = [row('dev-2', 20), row('dev-1', 60)];
+
+/**
+ * Models the SQL: `deviceIds` (#6745) narrows the WHERE, so `total`, the page
+ * and the summary are all computed over the caller's own devices.
+ */
+function sqlLike(filter: { deviceIds?: string[] }) {
+  const rows = filter.deviceIds ? ALL_ROWS.filter((r) => filter.deviceIds!.includes(r.deviceId)) : ALL_ROWS;
+  return rows;
+}
+
 describe('get_fleet_health — exact-device axis (finding 8)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    listReliabilityDevicesMock.mockResolvedValue({
-      total: 2,
-      rows: [row('dev-2', 20), row('dev-1', 60)],
+    listReliabilityDevicesMock.mockImplementation(async (filter: { deviceIds?: string[] }) => {
+      const rows = sqlLike(filter);
+      return { total: rows.length, rows };
+    });
+    summarizeReliabilityDevicesMock.mockImplementation(async (filter: { deviceIds?: string[] }) => {
+      const rows = sqlLike(filter);
+      return {
+        total: rows.length,
+        averageScore: rows.length ? Math.round(rows.reduce((s, r) => s + r.reliabilityScore, 0) / rows.length) : 0,
+        criticalDevices: rows.filter((r) => r.reliabilityScore <= 50).length,
+        poorDevices: rows.filter((r) => r.reliabilityScore >= 51 && r.reliabilityScore <= 70).length,
+        fairDevices: 0,
+        goodDevices: 0,
+        degradingDevices: rows.filter((r) => r.trendDirection === 'degrading').length,
+      };
     });
   });
 
@@ -83,6 +108,8 @@ describe('get_fleet_health — exact-device axis (finding 8)', () => {
     );
     const parsed = JSON.parse(raw);
     expect(parsed.error).toBeUndefined();
+    expect(listReliabilityDevicesMock).toHaveBeenCalledWith(expect.objectContaining({ deviceIds: ['dev-1'] }));
+    expect(summarizeReliabilityDevicesMock).toHaveBeenCalledWith(expect.objectContaining({ deviceIds: ['dev-1'] }));
     expect(parsed.devices.map((d: any) => d.deviceId)).toEqual(['dev-1']);
     expect(parsed.total).toBe(1);
     expect(parsed.summary.criticalDevices).toBe(0);
@@ -102,13 +129,21 @@ describe('get_fleet_health — exact-device axis (finding 8)', () => {
   it('device-LESS analysis shape (no site axis) also cannot see the sibling device', async () => {
     const raw = await handlerFor('get_fleet_health')({}, makeAuth({ allowedDeviceIds: ['dev-1'] }));
     const parsed = JSON.parse(raw);
+    expect(listReliabilityDevicesMock).toHaveBeenCalledWith(expect.objectContaining({ deviceIds: ['dev-1'] }));
     expect(parsed.devices.map((d: any) => d.deviceId)).toEqual(['dev-1']);
     expect(parsed.total).toBe(1);
+  });
+
+  it('defense in depth: a sibling row that slips past the SQL filter is still dropped', async () => {
+    listReliabilityDevicesMock.mockResolvedValue({ total: 1, rows: ALL_ROWS });
+    const raw = await handlerFor('get_fleet_health')({}, makeAuth({ allowedDeviceIds: ['dev-1'] }));
+    expect(JSON.parse(raw).devices.map((d: any) => d.deviceId)).toEqual(['dev-1']);
   });
 
   it('unrestricted caller sees the whole fleet (no narrowing)', async () => {
     const raw = await handlerFor('get_fleet_health')({}, makeAuth({}));
     const parsed = JSON.parse(raw);
+    expect(listReliabilityDevicesMock.mock.calls[0]![0].deviceIds).toBeUndefined();
     expect(parsed.devices.map((d: any) => d.deviceId)).toEqual(['dev-2', 'dev-1']);
     expect(parsed.total).toBe(2);
     expect(parsed.summary.criticalDevices).toBe(1);

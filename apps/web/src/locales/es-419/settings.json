@@ -99,6 +99,7 @@
     "name": "Nombre",
     "principalDescription": "Descripción",
     "scopes": "Alcances",
+    "noScopes": "Sin alcances otorgados",
     "sourceCidrs": "IPs o CIDRs de origen (uno por línea)",
     "writeScopeRestrictionsRequired": "El alcance enrollment-keys:write requiere una fecha de vencimiento y al menos una IP o CIDR de origen.",
     "expiresAt": "Expira el",
@@ -519,6 +520,25 @@
       "communications": "Comunicaciones",
       "branding": "Marca"
     },
+    "aiFeatures": {
+      "anomalies": {
+        "title": "Detección de anomalías",
+        "description": "Detección estadística de comportamiento inusual de CPU, memoria, disco y red en los dispositivos administrados. Estos son los valores predeterminados para todas las organizaciones; una organización puede anularlos en su propia pestaña de IA.",
+        "enabled": "Detectar anomalías",
+        "enabledDescription": "Ejecuta el detector de anomalías cada 10 minutos y muestra los hallazgos en la pestaña Anomalías de cada dispositivo.",
+        "createAlerts": "Crear alertas a partir de anomalías",
+        "createAlertsDescription": "Convierte las anomalías confirmadas en alertas para que lleguen a tus rutas de notificación."
+      },
+      "inheritanceNote": "Los cambios se aplican a toda organización que no haya definido su propia anulación.",
+      "saved": "Guardado",
+      "saveFailed": "No se pudo cambiar esta configuración",
+      "remediation": {
+        "title": "Correcciones sugeridas",
+        "description": "Sugerencias de corrección generadas por IA en la página de detalle de la alerta. Es el valor predeterminado para cada organización; una organización puede anularlo en su propia pestaña de IA.",
+        "enabled": "Generar correcciones sugeridas",
+        "enabledDescription": "Permite a los técnicos generar correcciones sugeridas para una alerta desde su página de detalle."
+      }
+    },
     "tabs": {
       "company": {
         "label": "Compañía",
@@ -568,6 +588,10 @@
       "aiProvider": {
         "label": "Proveedor de IA",
         "description": "Usa tu propia clave de Anthropic"
+      },
+      "aiFeatures": {
+        "label": "Funciones de IA",
+        "description": "Valores predeterminados de detección de anomalías y correcciones sugeridas"
       },
       "branding": {
         "label": "Marca",
@@ -963,6 +987,16 @@
     }
   },
   "m365Mailbox": {
+    "consentNotCompleted": "Consentimiento no completado",
+    "consentNotCompletedHint": "El inicio de sesión de Microsoft para este buzón no se terminó a tiempo, por lo que no se conectará por sí solo. Vuelve a intentar el consentimiento o desconéctalo.",
+    "retryConsent": "Reintentar consentimiento",
+    "redirectUriLabel": "URI de redirección que debes registrar en la app de Microsoft Entra",
+    "redirectUriHint": "Debe coincidir exactamente, y debes abrir Breeze con este mismo esquema y host al conectar; de lo contrario, el inicio de sesión no puede completarse.",
+    "callbackReason": {
+      "binding_mismatch": "Falló la conexión con Microsoft 365: el navegador regresó sin su cookie de inicio de sesión. Abre Breeze en la misma dirección que el URI de redirección (el esquema y el host deben coincidir), permite las cookies e inténtalo de nuevo.",
+      "invalid_callback": "Falló la conexión con Microsoft 365: Microsoft devolvió una respuesta inesperada. Intenta conectarte de nuevo.",
+      "expired": "Falló la conexión con Microsoft 365: el enlace de inicio de sesión caducó o ya se usó. Intenta conectarte de nuevo."
+    },
     "connected": "Buzón conectado",
     "consentGranted": "Consentimiento otorgado: alcance el buzón con la Política de acceso a aplicaciones a continuación y luego vuelva a realizar la prueba.",
     "consentAttention": "El consentimiento del buzón requiere la atención del administrador.",
@@ -991,6 +1025,38 @@
     "displayName": "Nombre para mostrar (opcional)",
     "namePlaceholder": "Soporte",
     "connect": "Conectar"
+  },
+  "gmailMailbox": {
+    "title": "Buzón de soporte de Google Workspace",
+    "description": "Conecta un buzón de Google Workspace para que los correos de los clientes se conviertan en tickets. Se usa la delegación en todo el dominio, así que no hay cambios de MX ni de reenvío, ni redirección OAuth.",
+    "connectHint": "El buzón se lee con la conexión de cuenta de servicio de Google Workspace de la organización seleccionada, que conserva su credencial. Para un buzón del partner (como tu propio help@), elige la organización cuyo Workspace contiene el buzón. Ingresa el buzón de soporte compartido para conectarlo.",
+    "status": {
+      "pending_consent": "Pendiente",
+      "connected": "Conectado",
+      "error": "necesita atencion",
+      "reauth_required": "Se requiere nueva autenticación",
+      "disabled": "Desactivado"
+    },
+    "reauthRequired": "La lectura de Gmail está en pausa para este buzón. Vuelve a conectarlo para reanudar: puede que la cuenta de servicio necesite una nueva autorización, que su conexión de Google Workspace esté inactiva o que el buzón ahora corresponda a otra cuenta de Google.",
+    "reconnect": "Reconectar",
+    "reconnectNoOrg": "A esta conexión le falta su organización y no se puede volver a conectar desde aquí.",
+    "disconnect": "Desconectar",
+    "disconnected": "Buzón desconectado",
+    "disconnectFailed": "Falló la desconexión.",
+    "connected": "Buzón conectado",
+    "connectFailed": "No se pudo conectar el buzón de Gmail.",
+    "empty": "Todavía no hay ningún buzón de Gmail conectado.",
+    "loadError": "No se pudieron cargar las conexiones de buzones de Gmail. Actualiza para intentarlo de nuevo.",
+    "orgsLoadError": "No se pudieron cargar las organizaciones. Actualiza para intentarlo de nuevo.",
+    "organization": "Organización",
+    "selectOrg": "Selecciona una organización",
+    "address": "dirección del buzón",
+    "addressPlaceholder": "soporte@example.com",
+    "displayName": "Nombre para mostrar (opcional)",
+    "namePlaceholder": "Soporte",
+    "connect": "Conectar",
+    "credentialOrg": "Credencial: conexión de Google Workspace de {{org}}",
+    "credentialOrgUnknown": "una organización que no puedes ver"
   },
   "orgApprovalSecurityTab": {
     "title": "Seguridad de aprobación",
@@ -4606,7 +4672,32 @@
       "externalProcessing": "Permitir análisis de IA en entorno aislado",
       "externalProcessingDescription": "Permite que las ejecuciones de análisis de IA ejecuten código para esta organización en un entorno aislado sin acceso a la red, alojado en la región de esta organización. Desactivado de forma predeterminada.",
       "externalProcessingSaved": "Guardado",
-      "externalProcessingSaveFailed": "No se pudo cambiar esta configuración"
+      "externalProcessingSaveFailed": "No se pudo cambiar esta configuración",
+      "mlFeatures": {
+        "title": "Detección de anomalías",
+        "description": "Detección estadística de comportamiento inusual de CPU, memoria, disco y red en los dispositivos de esta organización. Si se deja en blanco, se aplica el valor predeterminado del partner.",
+        "anomaliesEnabled": "Detectar anomalías",
+        "anomaliesEnabledDescription": "Ejecuta el detector de anomalías cada 10 minutos y muestra los hallazgos en la pestaña Anomalías de cada dispositivo.",
+        "createAlerts": "Crear alertas a partir de anomalías",
+        "createAlertsDescription": "Convierte las anomalías confirmadas en alertas para que lleguen a tus rutas de notificación.",
+        "inherit": "Heredar",
+        "inheritOn": "Heredar (activado, {{from}})",
+        "inheritOff": "Heredar (desactivado, {{from}})",
+        "fromPartner": "configuración del partner",
+        "fromDefault": "valor predeterminado de la plataforma",
+        "on": "Activado",
+        "off": "Desactivado",
+        "saved": "Guardado",
+        "saveFailed": "No se pudo cambiar esta configuración",
+        "killSwitch": "El operador desactivó la detección de anomalías para toda la plataforma. Esta configuración tendrá efecto cuando se vuelva a activar.",
+        "remediation": {
+          "title": "Correcciones sugeridas",
+          "description": "Sugerencias de corrección generadas por IA para las alertas de esta organización. En blanco significa que se aplica el valor predeterminado del partner.",
+          "enabled": "Generar correcciones sugeridas",
+          "enabledDescription": "Permite a los técnicos generar correcciones sugeridas para una alerta desde su página de detalle.",
+          "killSwitch": "El operador desactivó las correcciones sugeridas para toda la plataforma. Esta configuración entrará en vigor cuando se vuelvan a activar."
+        }
+      }
     },
     "breadcrumbs": {
       "settings": "Configuración",

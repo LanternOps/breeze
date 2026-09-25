@@ -27,6 +27,8 @@ export const CONFIG_FEATURE_TYPES = [
   // #5289 — monitor definitions attached to a policy. Deliberately the plural:
   // 'monitoring' above is the service/process watch feature.
   'monitors',
+  // #6856 — inherited RAID/disk-health collection settings, inline-only.
+  'hardware_monitoring',
 ] as const;
 
 export type ConfigFeatureType = typeof CONFIG_FEATURE_TYPES[number];

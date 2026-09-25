@@ -10,8 +10,8 @@ import { previewPolicyConversion, convertPolicy } from '../../services/monitors/
 import { resolveDeviceIdsForPolicy } from '../../services/monitors/conversion/legacyBaseline';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 
-// Task 18 supplies the shared conversionFixture; this scope-only fixture keeps
-// the inherited-consumer regression executable before that task lands.
+// Scope-only fixture for the inherited-consumer regression. The ledger's live
+// RLS proofs live in monitorConversionsPartnerRls.integration.test.ts.
 async function inheritedScopeFixture() {
   const partner = await createPartner();
   const org = await createOrganization({ partnerId: partner.id });

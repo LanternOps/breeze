@@ -1125,8 +1125,11 @@
         "recipientRequired": "Enter at least one recipient to send.",
         "signaturePreviewLabel": "Signature (set in Settings → Branding):",
         "subjectLabel": "Subject",
-        "subjectPlaceholder": "Proposal {{number}} from your company",
-        "subjectPlaceholderNoNumber": "Proposal from your company",
+        "subjectPartnerFallback": "your company",
+        "subjectPlaceholder": "Proposal {{number}} from {{partner}}",
+        "subjectPlaceholderNoNumber": "Proposal from {{partner}}",
+        "subjectPlaceholderTemplate": "Uses the subject from your proposal email template",
+        "subjectPlaceholderTitled": "{{title}} — proposal from {{partner}}",
         "title": "Send this proposal?",
         "toLabel": "To",
         "toPlaceholder": "Add recipient…",
@@ -2202,22 +2205,33 @@
       "taxId": "Tax ID",
       "taxRate": "Tax rate (%)",
       "title": "Tax"
+    },
+    "terms": {
+      "description": "Days from issue until this organization's invoices are due. Leave blank to use the partner default. Changes apply to invoices issued from now on; issued invoices keep their due date.",
+      "invalid": "Enter a whole number of days from 0 to 365.",
+      "partnerDefault": "Partner default",
+      "paymentTermsDays": "Payment terms (days)",
+      "title": "Payment terms"
     }
   },
   "partnerBillingSettings": {
     "company": {
+      "addressInherited": "Same as company details",
       "addressLine1": "Address line 1",
       "addressLine2": "Address line 2",
+      "addressTitle": "Address",
       "city": "City",
       "country": "Country",
       "defaultTerms": "Default terms & conditions",
       "defaultTermsPlaceholder": "Payment terms, disclaimers, warranty language, etc.",
       "description": "Shown as the seller on quotes and invoices.",
+      "inheritedFromCompanyDetails": "Company details",
       "name": "Company name",
       "phone": "Phone",
       "postal": "Postal code",
       "region": "State / region",
       "title": "Company contact",
+      "useCompanyAddress": "Use company address",
       "website": "Website"
     },
     "defaults": {

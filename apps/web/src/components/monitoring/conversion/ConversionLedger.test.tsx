@@ -41,6 +41,20 @@ it('disables response-only Undo while its target conversion is live', async () =
   fireEvent.click(undo);
   expect(request.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
 });
+it('formats timestamps, shows converter and monitor names, and labels reverted rows', async () => {
+  request.mockResolvedValueOnce(json({ items: [
+    { ...entry, convertedBy: 'u1', convertedByName: 'Jamie Lee',
+      outputs: [{ monitorId: 'm1', monitorName: 'High CPU', role: 'primary', reused: false }] },
+    { ...entry, id: 'c2', revertedAt: '2026-09-20T00:00:00Z', revertable: false },
+  ], nextCursor: null }));
+  render(<ConversionLedger />);
+  await screen.findByTestId('ledger-undo-c1');
+  const section = screen.getByTestId('conversion-ledger');
+  expect(section.textContent).toContain('Jamie Lee');
+  expect(section.textContent).toContain('High CPU');
+  expect(section.textContent).not.toContain('2026-09-19T00:00:00Z');
+  expect(screen.getByTestId('ledger-reverted-c2')).toHaveTextContent('Reverted');
+});
 it('refreshes lifecycle state after a 409 and never reports successful Undo', async () => {
   request.mockResolvedValueOnce(json({ items: [entry], nextCursor: null }))
     .mockResolvedValueOnce(json({ error: 'conversion_revert_unavailable' }, 409))

@@ -174,6 +174,21 @@ describe('export_dataset', () => {
     expect(createArtifact.mock.calls[0]![0]).toMatchObject({ runId: 'run-1', orgId: 'org-1' });
   });
 
+  it('never owns the artifact by accessibleOrgIds[0] when the run carries no org (#6667)', async () => {
+    createPager.mockResolvedValue(pagesOf([{ rows: [{ id: 1 }], nextCursor: null }]));
+    const tool = getTool();
+    const orglessRun = {
+      ...(auth as Record<string, unknown>),
+      orgId: null,
+      accessibleOrgIds: ['org-1', 'org-2'],
+    } as never;
+    const parsed = JSON.parse(await tool.handler(
+      { dataset: 'event_logs' }, orglessRun, { runTargets: [], stagedBytesRemaining: 1_000_000 },
+    ));
+    expect(parsed.error).toBe('orgId is required: you have access to multiple organizations');
+    expect(createArtifact).not.toHaveBeenCalled();
+  });
+
   it('refuses a direct chat/MCP call with export_requires_run — an artifact needs an owning run', async () => {
     createPager.mockResolvedValue(pagesOf([{ rows: [{ id: 1 }], nextCursor: null }]));
     const tool = getTool();

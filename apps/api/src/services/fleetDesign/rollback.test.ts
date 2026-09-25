@@ -42,6 +42,10 @@ const auditMock = vi.hoisted(() => ({
 }));
 vi.mock('../auditEvents', () => auditMock);
 
+const monitorAttachMock = vi.hoisted(() => ({ snapshotFleetMonitors: vi.fn() }));
+vi.mock('./monitorAttachments', () => monitorAttachMock);
+vi.mock('../monitors/monitorService', () => ({ getMonitorDefinition: vi.fn(), updateMonitorDefinition: vi.fn() }));
+
 // --- Table-routed fake db ---------------------------------------------------
 type Row = Record<string, unknown>;
 const dbHolder = vi.hoisted(() => ({
@@ -237,6 +241,55 @@ describe('rollbackFleetDesign — policy row', () => {
     expect(ledgerMock.markRolledBack).toHaveBeenCalledWith(['policy-1'], ORG, USER);
     expect(result.rolledBack).toEqual(['policy:file_server']);
     expect(result.refused).toEqual([]);
+  });
+
+  // W05c2: a policy applied as monitor attachments also compares the created
+  // definitions' author fields against the apply-time snapshot.
+  describe('monitor-attachment policies (W05c2)', () => {
+    const monitorLinks = [{ id: 'link-m', featureType: 'monitors', featurePolicyId: null, inlineSettings: { inheritance: 'cumulative', items: [{ monitorId: 'mon-1', enabled: true }] } }];
+    const snap = { 'mon-1': { name: 'Disk', condition: { operator: 'gt', value: 85 } } };
+    const monitorPolicyRow = () => row({ id: 'policy-1', itemRef: 'policy:file_server', itemKind: 'policy', step: 3, createdRefs: {
+      policyId: 'p1', groupId: 'g1', assignmentId: 'assign-1', linksSnapshot: snapshotLinks(monitorLinks),
+      monitorIdsByItemRef: { 'monitoring:file_server:rule:0': 'mon-1' }, monitorSnapshots: snap,
+    } });
+
+    it('rolls back when links and definitions are unchanged, and never deletes the definitions', async () => {
+      ledgerMock.loadLedger.mockResolvedValue([monitorPolicyRow()]);
+      selectSeed(configurationPolicies, [{ id: 'p1', orgId: ORG, status: 'active' }]);
+      configPolicyMock.listFeatureLinks.mockResolvedValue(monitorLinks);
+      configPolicyMock.updateConfigPolicy.mockResolvedValue({ id: 'p1', status: 'archived' });
+      monitorAttachMock.snapshotFleetMonitors.mockResolvedValue({ 'mon-1': { condition: { value: 85, operator: 'gt' }, name: 'Disk' } });
+
+      const result = await rollbackFleetDesign(makeAuth(), RUN);
+
+      expect(monitorAttachMock.snapshotFleetMonitors).toHaveBeenCalledWith(['mon-1']);
+      expect(result.rolledBack).toEqual(['policy:file_server']);
+      expect(dbHolder.deletes.map((d) => d.table)).toEqual([configPolicyAssignments]);
+    });
+
+    it('refuses modified_since_apply when a created definition was edited after apply', async () => {
+      ledgerMock.loadLedger.mockResolvedValue([monitorPolicyRow()]);
+      selectSeed(configurationPolicies, [{ id: 'p1', orgId: ORG, status: 'active' }]);
+      configPolicyMock.listFeatureLinks.mockResolvedValue(monitorLinks);
+      monitorAttachMock.snapshotFleetMonitors.mockResolvedValue({ 'mon-1': { name: 'Disk', condition: { operator: 'gt', value: 92 } } });
+
+      const result = await rollbackFleetDesign(makeAuth(), RUN);
+
+      expect(result.refused).toEqual([{ itemRef: 'policy:file_server', reason: 'modified_since_apply' }]);
+      expect(dbHolder.deletes).toEqual([]);
+      expect(configPolicyMock.updateConfigPolicy).not.toHaveBeenCalled();
+    });
+
+    it('refuses when a created definition was deleted', async () => {
+      ledgerMock.loadLedger.mockResolvedValue([monitorPolicyRow()]);
+      selectSeed(configurationPolicies, [{ id: 'p1', orgId: ORG, status: 'active' }]);
+      configPolicyMock.listFeatureLinks.mockResolvedValue(monitorLinks);
+      monitorAttachMock.snapshotFleetMonitors.mockResolvedValue({});
+
+      const result = await rollbackFleetDesign(makeAuth(), RUN);
+
+      expect(result.refused).toEqual([{ itemRef: 'policy:file_server', reason: 'modified_since_apply' }]);
+    });
   });
 });
 

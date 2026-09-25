@@ -1,0 +1,3 @@
+NIC Enabled = 1
+IP Address = 192.0.2.11
+MAC Address = 02-00-00-00-00-11

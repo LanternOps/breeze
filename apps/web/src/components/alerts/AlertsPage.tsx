@@ -10,6 +10,7 @@ import AlertsTabStrip from './AlertsTabStrip';
 import type { AlertSeverity } from './alertConfig';
 import { fetchWithAuth, AuthSessionExpiredError } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { useOrgScope } from '@/hooks/useOrgScope';
 import { fillDevicePlaceholders, type FilterConditionGroup } from '@breeze/shared';
 import { DeviceFilterBar } from '../filters/DeviceFilterBar';
 import { navigateTo } from '@/lib/navigation';
@@ -21,6 +22,7 @@ import { asList } from '@/lib/asList';
 import { useDeviceOptions } from '../../hooks/useDeviceOptions';
 import { useAdvancedFilterIds } from '../../hooks/useAdvancedFilterIds';
 import { useHashState } from '@/lib/useHashState';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 // Past-tense verbs for bulk-action success toasts. Without this, `${action}d`
 // produces "suppressd".
@@ -65,6 +67,7 @@ function normalizeAlertRows(rows: Record<string, unknown>[], unknownDevice: stri
 
 export default function AlertsPage() {
   const { t } = useTranslation('alerts');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const mlFlags = useMlFeatureFlags();
   const [alerts, setAlerts] = useState<Alert[]>([]);
   // Tracked separately from `loading` (which only follows the alerts fetch):
@@ -101,6 +104,12 @@ export default function AlertsPage() {
   // the previous scope.
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
   const allOrgs = useOrgStore((s) => s.allOrgs);
+  // Gates the mount fetch below (#4147, same fix as DevicesPage). Without this,
+  // a fresh page load fires an unscoped /alerts fetch in the sub-second window
+  // before the shell's OrgSwitcher resolves the org list, then fires it again
+  // once currentOrgId lands — two identical GETs at nearly the same instant
+  // (sweep A3).
+  const orgScopeResolving = useOrgScope().status === 'loading';
   const fleetDeviceOptions = useDeviceOptions({ orgId: currentOrgId ?? undefined });
   const deviceStatus = fleetDeviceOptions.state === 'error'
     ? 'error'
@@ -148,19 +157,19 @@ export default function AlertsPage() {
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error(t('alertsPage.failedToFetchAlerts'));
+        throw new Error(stableT('alertsPage.failedToFetchAlerts'));
       }
       const data = await response.json();
       if (fetchId !== alertsFetchId.current) return;
       const raw: Record<string, unknown>[] = asList(data, 'alerts');
-      setAlerts(normalizeAlertRows(raw, t('alertsPage.unknownDevice')));
+      setAlerts(normalizeAlertRows(raw, stableT('alertsPage.unknownDevice')));
     } catch (err) {
       if (fetchId !== alertsFetchId.current) return;
-      setError(err instanceof Error ? err.message : t('alertsPage.genericError'));
+      setError(err instanceof Error ? err.message : stableT('alertsPage.genericError'));
     } finally {
       if (fetchId === alertsFetchId.current) setLoading(false);
     }
-  }, [currentOrgId, hideAiNoise, t]);
+  }, [currentOrgId, hideAiNoise, stableT]);
 
   const fetchAlertDetails = useCallback(async (alertId: string) => {
     try {
@@ -178,9 +187,12 @@ export default function AlertsPage() {
   useEffect(() => {
     // fetchAlerts changes identity when currentOrgId changes, so
     // this re-runs on org switch; each fetch's monotonic token drops any
-    // superseded in-flight response.
+    // superseded in-flight response. Skip while the org scope is still
+    // resolving (#4147/sweep A3) — firing now would go out unscoped, then
+    // fire again the instant currentOrgId lands.
+    if (orgScopeResolving) return;
     fetchAlerts();
-  }, [fetchAlerts]);
+  }, [fetchAlerts, orgScopeResolving]);
 
   const { ids: deviceFilterIds, loading: deviceFilterLoading, state: deviceFilterState, refetch: retryDeviceFilter } = useAdvancedFilterIds(deviceFilter, `${currentOrgId}:${allOrgs}`);
   const deviceFilterBlocked = deviceFilterLoading || deviceFilterState === 'error';

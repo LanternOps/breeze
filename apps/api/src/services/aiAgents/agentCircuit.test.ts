@@ -520,6 +520,8 @@ describe('recordRunTerminal', () => {
       orgId: ORG_ID,
       dedupeKey: `circuit-open-${ORG_ID}-${AGENT_ID}-${RUN_ID}`,
       priority: 'high',
+      // #4461: was `/ai-agents/${agentId}` — no such page exists.
+      link: `/ai-agents/runs#agent=${AGENT_ID}`,
     }));
     expect(createAuditLogAsyncMock).toHaveBeenCalledTimes(1);
     expect(createAuditLogAsyncMock).toHaveBeenCalledWith(expect.objectContaining({

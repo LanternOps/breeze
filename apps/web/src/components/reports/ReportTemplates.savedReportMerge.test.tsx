@@ -132,4 +132,29 @@ describe('ReportTemplates — saved reports merged into curated cards', () => {
     expect(await screen.findByText('Quarterly board pack')).toBeTruthy();
     expect(screen.getAllByText('Hardware Lifecycle Report')).toHaveLength(1);
   });
+
+  it('does not warn about a missing i18n key for a server-synced template (sweep B2)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockSavedReports([
+      {
+        // A unique id — the missing-key handler dedupes by `${ns}:${key}` for
+        // the lifetime of the module, so reusing an id another test in this
+        // file already rendered would mask a regression here.
+        id: 'b2c3d4e5-1122-4a6b-8c7d-000000000001',
+        name: 'Quarterly board pack',
+        description: 'A custom quarterly summary.',
+        type: 'executive_summary',
+        schedule: 'quarterly',
+        format: 'pdf',
+        config: { dateRange: { preset: 'last_90_days' } }
+      }
+    ]);
+    render(<ReportTemplates />);
+
+    expect(await screen.findByText('Quarterly board pack')).toBeTruthy();
+    expect(await screen.findByText('A custom quarterly summary.')).toBeTruthy();
+    const i18nWarnings = warn.mock.calls.filter(([msg]) => typeof msg === 'string' && msg.includes('[i18n] missing key'));
+    expect(i18nWarnings).toEqual([]);
+    warn.mockRestore();
+  });
 });

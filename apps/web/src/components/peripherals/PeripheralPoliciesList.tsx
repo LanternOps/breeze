@@ -3,6 +3,7 @@ import { Layers, Plus, RefreshCw, Globe } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
 import PeripheralPolicyForm from "./PeripheralPolicyForm";
 import { useTranslation } from "react-i18next";
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type PeripheralPolicy = {
   id: string;
@@ -32,6 +33,7 @@ const actionBadge: Record<string, string> = {
 
 export default function PeripheralPoliciesList() {
   const { t } = useTranslation("peripherals");
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [policies, setPolicies] = useState<PeripheralPolicy[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -57,7 +59,7 @@ export default function PeripheralPoliciesList() {
         `/peripherals/policies${qs ? `?${qs}` : ""}`,
       );
       if (!response.ok)
-        throw new Error(t("peripheralPoliciesList.errors.fetch"));
+        throw new Error(stableT("peripheralPoliciesList.errors.fetch"));
       const json = await response.json();
       setPolicies(
         Array.isArray(json.data) ? json.data : Array.isArray(json) ? json : [],
@@ -66,12 +68,12 @@ export default function PeripheralPoliciesList() {
       setError(
         err instanceof Error
           ? err.message
-          : t("peripheralPoliciesList.errors.generic"),
+          : stableT("peripheralPoliciesList.errors.generic"),
       );
     } finally {
       setLoading(false);
     }
-  }, [filterClass, filterAction, filterActive, t]);
+  }, [filterClass, filterAction, filterActive, stableT]);
 
   useEffect(() => {
     fetchPolicies();

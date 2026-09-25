@@ -10,6 +10,7 @@ import {
   uniqueIndex,
   foreignKey,
   check,
+  jsonb,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { devices } from './devices';
@@ -60,6 +61,11 @@ export const monitorEpisodes = pgTable(
     endReason: monitorEpisodeEndReasonEnum('end_reason'),
     alertId: uuid('alert_id'),
     responseRunId: uuid('response_run_id'),
+    // W03 Task 10 — durable response admission (transactional outbox). Never
+    // reset once set; the CAS predicate in `subjectResponseOutbox.ts` is what
+    // guarantees exactly one automation run per episode.
+    responsesAdmittedAt: timestamp('responses_admitted_at', { withTimezone: true }),
+    responseDispatch: jsonb('response_dispatch'),
     responseOutcome: monitorResponseOutcomeEnum('response_outcome'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),

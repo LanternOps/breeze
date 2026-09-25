@@ -49,6 +49,10 @@ vi.mock('../services/alertService', () => ({
   checkAutoResolveFromConfigPolicy: vi.fn(),
 }));
 
+vi.mock('../services/subjectAlertOutbox', () => ({
+  drainSubjectAlertOutbox: vi.fn(async () => undefined),
+}));
+
 import {
   shutdownAlertWorkers,
   triggerDeviceEvaluation,

@@ -233,3 +233,9 @@ it('preserves API reachability through the list-to-peek transform', () => {
   const reachability = { state: 'responding', source: 'snmp', observedAt: '2026-09-15T10:00:00Z', lastKnown: null } as const;
   expect(toDetail(mapAsset({ ...apiAsset, reachability })).reachability).toEqual(reachability);
 });
+
+it('preserves agent-reported BMC provenance through both asset transforms', () => {
+  const mapped = mapAsset({ id: 'bmc-1', ipAddress: '192.0.2.10', linkedDeviceId: 'dev-9', linkSource: 'agent_report' });
+  expect(mapped.linkSource).toBe('agent_report');
+  expect(toDetail(mapped).linkSource).toBe('agent_report');
+});

@@ -8,9 +8,8 @@ import { db } from '../../db';
 import {
   devices,
   deviceHardware,
-  deviceDisks,
-  deviceNetwork,
 } from '../../db/schema';
+import { syncDeviceDisks, syncDeviceNetwork } from '../../services/inventoryChildSync';
 import {
   agentWarrantyInfoSchema,
   updateHardwareSchema,
@@ -166,30 +165,9 @@ inventoryRoutes.put('/:id/disks', bodyLimit({ maxSize: 5 * 1024 * 1024, onError:
     return c.json({ error: 'Device not found' }, 404);
   }
 
-  await db.transaction(async (tx) => {
-    await tx
-      .delete(deviceDisks)
-      .where(eq(deviceDisks.deviceId, device.id));
-
-    if (data.disks.length > 0) {
-      const now = new Date();
-      await tx.insert(deviceDisks).values(
-        data.disks.map((disk) => ({
-          deviceId: device.id,
-          orgId: device.orgId,
-          mountPoint: disk.mountPoint,
-          device: disk.device || null,
-          fsType: disk.fsType || null,
-          totalGb: disk.totalGb,
-          usedGb: disk.usedGb,
-          freeGb: disk.freeGb,
-          usedPercent: disk.usedPercent,
-          health: disk.health || 'healthy',
-          updatedAt: now
-        }))
-      );
-    }
-  });
+  // Diff + upsert, not delete + re-insert: an unchanged report must not take
+  // the partner-export org lock (#6698, services/inventoryChildSync.ts).
+  await db.transaction((tx) => syncDeviceDisks(tx, device, data.disks, new Date()));
 
   return c.json({ success: true, count: data.disks.length });
 });
@@ -271,24 +249,7 @@ inventoryRoutes.put('/:id/network', bodyLimit({ maxSize: 5 * 1024 * 1024, onErro
         .where(eq(devices.id, device.id));
     }
 
-    await tx
-      .delete(deviceNetwork)
-      .where(eq(deviceNetwork.deviceId, device.id));
-
-    if (data.adapters.length > 0) {
-      await tx.insert(deviceNetwork).values(
-        data.adapters.map((adapter) => ({
-          deviceId: device.id,
-          orgId: device.orgId,
-          interfaceName: adapter.interfaceName,
-          macAddress: adapter.macAddress || null,
-          ipAddress: adapter.ipAddress || null,
-          ipType: adapter.ipType || 'ipv4',
-          isPrimary: adapter.isPrimary || false,
-          updatedAt: now
-        }))
-      );
-    }
+    await syncDeviceNetwork(tx, device, data.adapters, now);
   });
 
   return c.json({

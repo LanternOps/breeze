@@ -27,6 +27,10 @@ export const MONITOR_KINDS = [
   // monitorCompiler.ts), so a composite child of those kinds would never
   // receive evidence.
   'composite',
+  // W03 (hardware & RAID monitoring): root-only, evaluates fresh component
+  // evidence supplied by the hardware health leaf handler. Not a legal
+  // composite child — see `compositeChildSchema` below.
+  'hardware_health',
 ] as const;
 export type MonitorKind = (typeof MONITOR_KINDS)[number];
 export const monitorKindSchema = z.enum(MONITOR_KINDS);
@@ -189,6 +193,16 @@ const leafConditionSchemas = {
       message: 'port required for tcp_port',
       path: ['port'],
     }),
+  hardware_health: z
+    .object({
+      componentTypes: z
+        .array(z.enum(['controller', 'virtual_disk', 'physical_disk', 'cache_battery', 'enclosure', 'collector']))
+        .min(1),
+      minHealth: z.enum(['warning', 'critical']),
+      includePredictiveFailure: z.boolean().default(true),
+      consecutiveSnapshots: z.number().int().min(1).max(10).default(2),
+    })
+    .strict(),
 } satisfies Record<Exclude<MonitorKind, 'composite'>, z.ZodTypeAny>;
 
 const compositeChildSchema = z

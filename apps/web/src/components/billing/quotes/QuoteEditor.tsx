@@ -65,6 +65,7 @@ import {
   pctFromFraction,
   lineTitle,
 } from './quoteTypes';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 // Phase 2: the add-block menu now offers `image` as well. An image block is
 // created with its uploaded `imageId` already in `content` — the editor uploads
@@ -158,6 +159,7 @@ interface Props {
 
 export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, onSaveFailure, onUnsavedEditsChange, onRegisterPendingDeleteFlush, showInternal: showInternalProp, onToggleInternal }: Props) {
   const { t } = useTranslation('billing');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { can } = usePermissions();
   const canWrite = can('quotes', 'write');
   // Block writes answer with a `warnings` array when the rich-text subset had to
@@ -1123,13 +1125,13 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
     setContractTemplatesLoaded(true);
     void runAction<ContractTemplateWithLatest[]>({
       request: () => listContractTemplates(),
-      errorFallback: t('quotes.editor.errors.loadContractTemplates'),
+      errorFallback: stableT('quotes.editor.errors.loadContractTemplates'),
       onUnauthorized: UNAUTHORIZED,
       parseSuccess: (d) => (d as { data: ContractTemplateWithLatest[] }).data,
     })
       .then((list) => setContractTemplates(list))
       .catch(() => { /* toast already shown; keep the empty picker */ });
-  }, [addType, contractTemplatesLoaded, t]);
+  }, [addType, contractTemplatesLoaded, stableT]);
 
   // Pick a template → resolve its latest PUBLISHED version (fetch the detail so a
   // newer unpublished draft never gets pinned) and seed the manual variable form.
@@ -1490,12 +1492,12 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
     runScoped(pendingKey.block(blockId), async () => {
       await runAction({
         request: () => deleteBlock(quote.id, blockId),
-        errorFallback: t('quotes.editor.errors.removeSection'),
+        errorFallback: stableT('quotes.editor.errors.removeSection'),
         onUnauthorized: UNAUTHORIZED,
       });
       refresh();
-    }, t('quotes.editor.errors.removeSection')),
-  [quote.id, refresh, runScoped, t]);
+    }, stableT('quotes.editor.errors.removeSection')),
+  [quote.id, refresh, runScoped, stableT]);
 
   // ---- line mutations (scoped to a line_items block) ----------------------
   /**
@@ -1735,12 +1737,12 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
     runScoped(pendingKey.line(lineId), async () => {
       await runAction({
         request: () => removeLine(quote.id, lineId),
-        errorFallback: t('quotes.editor.errors.removeLine'),
+        errorFallback: stableT('quotes.editor.errors.removeLine'),
         onUnauthorized: UNAUTHORIZED,
       });
       refresh();
-    }, t('quotes.editor.errors.removeLine')),
-  [quote.id, refresh, runScoped, t]);
+    }, stableT('quotes.editor.errors.removeLine')),
+  [quote.id, refresh, runScoped, stableT]);
 
   // ---- deferred-deletion lifecycle (undo grace window) --------------------
   // undo → cancel the timer, unhide (nothing was ever sent).

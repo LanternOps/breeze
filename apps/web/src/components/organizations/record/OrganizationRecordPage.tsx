@@ -86,8 +86,20 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
   const [summaryFailed, setSummaryFailed] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [modal, setModal] = useState<'archive' | 'merge' | null>(null);
+  // #6850: a suspended/churned org's GET 404s, and — unlike an archived org —
+  // it never rides in `GET /orgs/organizations` for partner scope
+  // (`computeAccessibleOrgIds` admits only active/trial; #4166 deliberately
+  // keeps suspended/churned out of the archived door too), so the store below
+  // can supply the lifecycle identity only when it happens to have been
+  // populated before the status changed — never on a fresh page load. When
+  // the store comes up empty, fall back to the #6771 report-history reach
+  // itself: it is already an authorized read for exactly these orgs, so a 200
+  // here is proof the org is readable read-only, with no new capability and
+  // no widened `accessibleOrgIds`.
+  const [historyProbe, setHistoryProbe] = useState<'idle' | 'checking' | 'reachable' | 'unreachable'>('idle');
   const orgLatest = useLatest<LoadState>();
   const summaryLatest = useLatest<OrgSummary | null>();
+  const historyProbeLatest = useLatest<'reachable' | 'unreachable'>();
 
   // The org store is the record's fallback identity source: a suspended or
   // churned org is outside `computeAccessibleOrgIds`, so its GET 404s while the
@@ -141,6 +153,35 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
     if (isOrgScoped) return;
     void loadOrg();
   }, [loadOrg, isOrgScoped]);
+
+  // The store-backed lifecycle identity (see `storeOrg` above): present only
+  // when the org happened to be cached before its status flipped.
+  const storeLifecycleOrg =
+    storeOrg && (storeOrg.status === 'suspended' || storeOrg.status === 'churned') ? storeOrg : null;
+
+  useEffect(() => {
+    if (state.kind !== 'not-found' || storeLifecycleOrg) {
+      if (historyProbe !== 'idle') setHistoryProbe('idle');
+      return;
+    }
+    setHistoryProbe('checking');
+    void historyProbeLatest
+      .run(
+        // #6771's own read surface: a report-history-eligible org answers 200
+        // here (even with zero reports), an inaccessible one 403s. `orgFetch`
+        // pins the request to THIS org regardless of what the switcher points
+        // at, same as every other request this page makes.
+        orgFetch('/reports?limit=1')
+          .then((res) => (res.ok ? ('reachable' as const) : ('unreachable' as const)))
+          .catch(() => 'unreachable' as const),
+      )
+      .then((result) => {
+        if (result !== undefined) setHistoryProbe(result);
+      });
+    // `historyProbe`/`historyProbeLatest` are intentionally excluded from the
+    // deps below: including them would re-fire the probe on its own state
+    // update.
+  }, [state.kind, storeLifecycleOrg, orgFetch]);
 
   const tabs = useMemo(() => visibleTabs(permissions, mode), [permissions, mode]);
   const [activeTab, setActiveTab] = useHashState<OrgRecordTab>('overview', tabFromHash);
@@ -228,19 +269,17 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
     // A partner token cannot reach a suspended/churned org through the record
     // GET, but it is still their customer — name it from the list's cached row
     // rather than claiming the org does not exist.
-    const lifecycleOrg =
-      storeOrg && (storeOrg.status === 'suspended' || storeOrg.status === 'churned') ? storeOrg : null;
-    if (lifecycleOrg) {
-      const statusLabelKey = statusLabelKeys[lifecycleOrg.status];
-      const lifecycleStatusLabel = statusLabelKey ? tSettings(/* i18n-dynamic */ statusLabelKey) : lifecycleOrg.status;
+    if (storeLifecycleOrg) {
+      const statusLabelKey = statusLabelKeys[storeLifecycleOrg.status];
+      const lifecycleStatusLabel = statusLabelKey ? tSettings(/* i18n-dynamic */ statusLabelKey) : storeLifecycleOrg.status;
       return (
         <div className="space-y-4">
           <Centered
             testId="org-record-lifecycle"
             icon={<Building2 className="h-7 w-7" aria-hidden="true" />}
-            title={lifecycleOrg.name}
+            title={storeLifecycleOrg.name}
             description={t('orgRecord.lifecycle.inaccessible', { status: lifecycleStatusLabel })}
-            detail={lifecycleOrg.createdAt ? t('orgRecord.header.created', { date: formatDate(lifecycleOrg.createdAt) }) : undefined}
+            detail={storeLifecycleOrg.createdAt ? t('orgRecord.header.created', { date: formatDate(storeLifecycleOrg.createdAt) }) : undefined}
             actionLabel={t('orgRecord.lifecycle.backToList')}
             actionHref="/organizations"
           />
@@ -248,6 +287,40 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
         </div>
       );
     }
+
+    // The store had no cached row (the common case after a fresh load — see
+    // the `historyProbe` effect above), but the org is still readable
+    // read-only through the #6771 report-history reach. Wait for that probe
+    // before committing to "not found", so a genuinely inaccessible org
+    // doesn't flash the lifecycle card and a reachable one doesn't flash
+    // "not found".
+    if (historyProbe === 'checking') {
+      return (
+        <div data-testid="org-record-loading" className="space-y-4" aria-busy="true">
+          <span className="sr-only">{t('orgRecord.loading')}</span>
+          <div className="h-8 w-64 animate-pulse rounded bg-muted" />
+          <div className="h-4 w-96 animate-pulse rounded bg-muted" />
+        </div>
+      );
+    }
+
+    if (historyProbe === 'reachable') {
+      return (
+        <div className="space-y-4">
+          <Centered
+            testId="org-record-lifecycle"
+            icon={<Building2 className="h-7 w-7" aria-hidden="true" />}
+            title={t('orgRecord.lifecycle.unknownTitle')}
+            description={t('orgRecord.lifecycle.inaccessibleHistoryOnly')}
+            detail={orgId}
+            actionLabel={t('orgRecord.lifecycle.backToList')}
+            actionHref="/organizations"
+          />
+          <OrgReportHistory orgId={orgId} orgFetch={orgFetch} statusLabel={t('orgRecord.lifecycle.genericStatusLabel')} />
+        </div>
+      );
+    }
+
     return (
       <Centered
         testId="org-record-not-found"
@@ -315,7 +388,7 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
       <OverflowTabs tabs={overflowTabs} activeTab={effectiveTab} onTabChange={switchTab} />
 
       {effectiveTab === 'overview' && (
-        <OrgOverviewTab orgId={orgId} orgFetch={orgFetch} summary={summary} summaryFailed={summaryFailed} mode={mode} />
+        <OrgOverviewTab orgId={orgId} orgFetch={orgFetch} summary={summary} summaryFailed={summaryFailed} mode={mode} archived={archived} />
       )}
       {effectiveTab === 'contacts' && <ContactsCard orgId={orgId} />}
       {effectiveTab === 'sites' && <OrgSitesTab orgId={orgId} orgName={loadedOrg.name} />}

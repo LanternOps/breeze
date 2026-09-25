@@ -3,7 +3,8 @@ import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import UserList, { type User } from './UserList';
 import UserInviteForm, { type RoleOption } from './UserInviteForm';
-import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { fetchWithAuth, handleSessionExpired, useAuthStore } from '../../stores/auth';
+import { runAction, handleActionError } from '@/lib/runAction';
 import { useOrgStore } from '../../stores/orgStore';
 import { navigateTo } from '@/lib/navigation';
 import AccessDenied from '../shared/AccessDenied';
@@ -138,20 +139,21 @@ export default function UsersPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetchWithAuth(`/users/${selectedUser.id}/mfa/reset`, {
-        method: 'POST'
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/users/${selectedUser.id}/mfa/reset`, {
+            method: 'POST'
+          }),
+        errorFallback: t('usersPage.errors.resetMfa'),
+        onUnauthorized: handleSessionExpired,
       });
-
-      if (!response.ok) {
-        const body = await response.json().catch(() => null);
-        throw new Error(body?.error || t('usersPage.errors.resetMfa'));
-      }
 
       await fetchUsers();
       handleCloseModal();
       addToast('success', t('usersPage.toasts.mfaReset', { email: selectedUser.email }));
     } catch (err) {
-      addToast('error', err instanceof Error ? err.message : t('usersPage.errors.resetMfa'));
+      // runAction toasted the failure; the confirmation modal stays open.
+      handleActionError(err, t('usersPage.errors.resetMfa'));
     } finally {
       setSubmitting(false);
     }
@@ -159,17 +161,15 @@ export default function UsersPage() {
 
   const handleResendInvite = async (user: User) => {
     try {
-      const response = await fetchWithAuth('/users/resend-invite', {
-        method: 'POST',
-        body: JSON.stringify({ userId: user.id })
+      const body = await runAction<{ inviteEmailSent?: boolean; inviteUrl?: string } | null>({
+        request: () =>
+          fetchWithAuth('/users/resend-invite', {
+            method: 'POST',
+            body: JSON.stringify({ userId: user.id })
+          }),
+        errorFallback: t('usersPage.errors.resendInvite'),
+        onUnauthorized: handleSessionExpired,
       });
-
-      if (!response.ok) {
-        const body = await response.json().catch(() => null);
-        throw new Error(body?.error || t('usersPage.errors.resendInvite'));
-      }
-
-      const body = await response.json().catch(() => null);
 
       if (body?.inviteEmailSent === false) {
         addToast(
@@ -181,7 +181,7 @@ export default function UsersPage() {
         addToast('success', t('usersPage.toasts.resent', { email: user.email }));
       }
     } catch (err) {
-      addToast('error', err instanceof Error ? err.message : t('usersPage.errors.resendInvite'));
+      handleActionError(err, t('usersPage.errors.resendInvite'));
     }
   };
 
@@ -210,17 +210,15 @@ export default function UsersPage() {
           .filter(Boolean);
       }
 
-      const response = await fetchWithAuth('/users/invite', {
-        method: 'POST',
-        body: JSON.stringify(payload)
+      const body = await runAction<{ inviteEmailSent?: boolean; inviteUrl?: string } | null>({
+        request: () =>
+          fetchWithAuth('/users/invite', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+          }),
+        errorFallback: t('usersPage.errors.sendInvite'),
+        onUnauthorized: handleSessionExpired,
       });
-
-      if (!response.ok) {
-        const body = await response.json().catch(() => null);
-        throw new Error(body?.error || t('usersPage.errors.sendInvite'));
-      }
-
-      const body = await response.json().catch(() => null);
 
       await fetchUsers();
       handleCloseModal();
@@ -235,7 +233,7 @@ export default function UsersPage() {
         addToast('success', t('usersPage.toasts.inviteSent', { email: values.email }));
       }
     } catch (err) {
-      addToast('error', err instanceof Error ? err.message : t('usersPage.errors.sendInvite'));
+      handleActionError(err, t('usersPage.errors.sendInvite'));
     } finally {
       setSubmitting(false);
     }
@@ -255,19 +253,23 @@ export default function UsersPage() {
       // audit-log entry on no-op saves.
       const currentRoleId = roles.find(r => r.name === selectedUser.role)?.id;
       if (values.roleId && values.roleId !== currentRoleId) {
-        const roleRes = await fetchWithAuth(`/users/${selectedUser.id}/role`, {
-          method: 'POST',
-          body: JSON.stringify({ roleId: values.roleId })
+        await runAction({
+          request: () =>
+            fetchWithAuth(`/users/${selectedUser.id}/role`, {
+              method: 'POST',
+              body: JSON.stringify({ roleId: values.roleId })
+            }),
+          errorFallback: t('usersPage.errors.updateRole'),
+          onUnauthorized: handleSessionExpired,
         });
-        if (!roleRes.ok) {
-          throw new Error(t('usersPage.errors.updateRole'));
-        }
       }
 
       await fetchUsers();
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('usersPage.errors.generic'));
+      // The page `error` banner renders behind this z-50 modal (#3531), so the
+      // failure is toasted by runAction and the edit modal stays open.
+      handleActionError(err, t('usersPage.errors.updateRole'));
     } finally {
       setSubmitting(false);
     }
@@ -278,18 +280,21 @@ export default function UsersPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetchWithAuth(`/users/${selectedUser.id}`, {
-        method: 'DELETE'
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/users/${selectedUser.id}`, {
+            method: 'DELETE'
+          }),
+        errorFallback: t('usersPage.errors.removeUser'),
+        onUnauthorized: handleSessionExpired,
       });
-
-      if (!response.ok) {
-        throw new Error(t('usersPage.errors.removeUser'));
-      }
 
       await fetchUsers();
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('usersPage.errors.generic'));
+      // The page `error` banner renders behind the remove modal's z-50 scrim
+      // (#3531): runAction toasts instead, and the modal stays open to retry.
+      handleActionError(err, t('usersPage.errors.removeUser'));
     } finally {
       setSubmitting(false);
     }

@@ -18,6 +18,7 @@ const REASON_TEXT: Record<InboundAttachmentSkipReason, string> = {
   too_many: `more than ${TICKET_ATTACHMENT_LIMITS.maxPerComment} attachments`,
   fetch_failed: 'could not be retrieved',
   storage_failed: 'could not be stored',
+  provider_unsupported: 'attachment import is not available for this mailbox yet',
 };
 
 export function hasStoredAttachments(n: NormalizedInboundEmail): boolean {

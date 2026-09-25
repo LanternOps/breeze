@@ -94,6 +94,15 @@ func (p *B2Provider) UploadContext(ctx context.Context, localPath, remotePath st
 
 // Download retrieves a file from Backblaze B2.
 func (p *B2Provider) Download(remotePath, localPath string) error {
+	return p.DownloadContext(context.Background(), remotePath, localPath)
+}
+
+// DownloadContext retrieves a file from Backblaze B2. Cancelling ctx aborts
+// the in-progress read.
+func (p *B2Provider) DownloadContext(ctx context.Context, remotePath, localPath string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if remotePath == "" {
 		return errors.New("remote path is required")
 	}
@@ -115,7 +124,6 @@ func (p *B2Provider) Download(remotePath, localPath string) error {
 		"object", remotePath,
 	)
 
-	ctx := context.Background()
 	reader := bucket.Object(remotePath).NewReader(ctx)
 
 	file, err := os.Create(localPath)
@@ -124,7 +132,11 @@ func (p *B2Provider) Download(remotePath, localPath string) error {
 		return fmt.Errorf("failed to create local destination file: %w", err)
 	}
 
-	if _, err := io.Copy(file, reader); err != nil {
+	// Progress granularity caveat: blazer buffers ~10 MB chunks before Read
+	// returns, so below ~33 KB/s a chunk that IS progressing can report
+	// nothing for a whole 5 min stall window. Verify/test-restore only build
+	// S3 and Local providers today (cmd/breeze-backup/exec_backup.go).
+	if _, err := io.Copy(DownloadProgressWriter(ctx, file), reader); err != nil {
 		_ = file.Close()
 		_ = reader.Close()
 		return fmt.Errorf("failed to download file from b2: %w", err)

@@ -180,7 +180,8 @@
     "software_presence": "Presenza software",
     "backup_continuity": "Continuità dei backup",
     "script": "Verifica script",
-    "network_check": "Verifica di rete"
+    "network_check": "Verifica di rete",
+    "hardware_health": "Stato hardware"
   },
   "fields": {
     "operator": "Confronto",
@@ -295,6 +296,7 @@
       "device_group": "un gruppo di dispositivi"
     },
     "selectPolicy": "Criterio di configurazione",
+    "attachToPolicy": "Collega a un criterio…",
     "selectTarget": "Destinazione",
     "noOrgSelected": "Seleziona un'organizzazione per la distribuzione.",
     "policyName": "Nome del criterio",
@@ -485,6 +487,7 @@
       "more": "Carica altro",
       "empty": "Nessuna conversione precedente.",
       "system": "Sistema",
+      "reverted": "Annullato",
       "deadline": "Annullamento non disponibile dopo la rimozione del motore di origine in W05d."
     },
     "errorCodes": {
@@ -513,5 +516,27 @@
     "state": "Stato",
     "episode": "Episodio aperto",
     "escalation": "Stato di escalation"
+  },
+  "monitors": {
+    "fields": {
+      "hardware_health": {
+        "componentTypes": "Componenti",
+        "minHealth": "Stato minimo",
+        "includePredictiveFailure": "Includi guasti previsti",
+        "consecutiveSnapshots": "Istantanee consecutive",
+        "componentTypeOptions": {
+          "controller": "Controller",
+          "virtual_disk": "Dischi virtuali",
+          "physical_disk": "Dischi fisici",
+          "cache_battery": "Batterie della cache",
+          "enclosure": "Alloggiamenti",
+          "collector": "Strumenti di monitoraggio"
+        },
+        "minHealthOptions": {
+          "warning": "Avviso",
+          "critical": "Critico"
+        }
+      }
+    }
   }
 }

@@ -123,6 +123,12 @@ const ALLOWED_WITHOUT_LITERAL_ID: ReadonlyArray<{
     orderByContains: 'rankedResults.resultId',
     reason: 'cis_baseline_results.id, aliased to resultId inside the window-function subquery',
   },
+  {
+    file: 'services/portal/networkVisibilityReadModel.ts',
+    orderByContains: '...STABLE_ASSET_ORDER',
+    reason:
+      'STABLE_ASSET_ORDER (same file) always ends in asc(discoveredAssets.id) as the final tiebreaker, after hostname NULLS LAST and ip_address, so the offset walk over customer-facing network assets is deterministic (#5861 PR 2)',
+  },
 ];
 
 function collectTsFiles(dir: string, acc: string[] = []): string[] {

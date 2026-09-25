@@ -180,7 +180,8 @@
     "software_presence": "Présence logicielle",
     "backup_continuity": "Continuité des sauvegardes",
     "script": "Vérification de script",
-    "network_check": "Vérification réseau"
+    "network_check": "Vérification réseau",
+    "hardware_health": "État du matériel"
   },
   "fields": {
     "operator": "Comparaison",
@@ -295,6 +296,7 @@
       "device_group": "un groupe de dispositifs"
     },
     "selectPolicy": "Politique de configuration",
+    "attachToPolicy": "Attacher à une politique…",
     "selectTarget": "Cible",
     "noOrgSelected": "Sélectionnez une organisation pour le déploiement.",
     "policyName": "Nom de la politique",
@@ -485,6 +487,7 @@
       "more": "Charger plus",
       "empty": "Aucun historique de conversion.",
       "system": "Système",
+      "reverted": "Annulée",
       "deadline": "L'annulation est indisponible après la suppression du moteur source par W05d."
     },
     "errorCodes": {
@@ -513,5 +516,27 @@
     "state": "État",
     "episode": "Épisode ouvert",
     "escalation": "Escalade"
+  },
+  "monitors": {
+    "fields": {
+      "hardware_health": {
+        "componentTypes": "Composants",
+        "minHealth": "État minimal",
+        "includePredictiveFailure": "Inclure les défaillances prédites",
+        "consecutiveSnapshots": "Instantanés consécutifs",
+        "componentTypeOptions": {
+          "controller": "Contrôleurs",
+          "virtual_disk": "Disques virtuels",
+          "physical_disk": "Disques physiques",
+          "cache_battery": "Batteries de cache",
+          "enclosure": "Boîtiers",
+          "collector": "Outils de surveillance"
+        },
+        "minHealthOptions": {
+          "warning": "Avertissement",
+          "critical": "Critique"
+        }
+      }
+    }
   }
 }

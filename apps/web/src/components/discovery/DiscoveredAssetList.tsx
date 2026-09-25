@@ -16,6 +16,7 @@ import {
   type DiscoveredAssetTypeSource,
 } from './networkTypes';
 import { asList } from '@/lib/asList';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 // Re-exported so existing consumers importing it from './DiscoveredAssetList'
 // keep working; the canonical declaration now lives in ./networkTypes.
@@ -257,6 +258,7 @@ interface DiscoveredAssetListProps {
 
 export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListProps) {
   const { t } = useTranslation('discovery');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { approve, dismiss } = useNetworkAssetMutations();
   const [assets, setAssets] = useState<DiscoveredAsset[]>([]);
   const [loading, setLoading] = useState(true);
@@ -275,7 +277,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
       setError(undefined);
       const response = await fetchWithAuth('/discovery/assets');
       if (!response.ok) {
-        throw new Error(t('discoveredAssetList.errors.fetch'));
+        throw new Error(stableT('discoveredAssetList.errors.fetch'));
       }
       const data = await response.json();
       const items = asList(data, 'assets');
@@ -284,11 +286,11 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
       const validIds = new Set(mappedAssets.map((asset: DiscoveredAsset) => asset.id));
       setSelectedAssetIds(prev => new Set([...prev].filter(id => validIds.has(id))));
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('discoveredAssetList.errors.generic'));
+      setError(err instanceof Error ? err.message : stableT('discoveredAssetList.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [stableT]);
 
   const filteredAssets = useMemo(() => {
     let result = assets;

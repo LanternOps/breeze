@@ -23,6 +23,7 @@ import MonitorDetailModal from './MonitorDetailModal';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { showToast } from '../shared/Toast';
 import { useTranslation } from 'react-i18next';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type NetworkMonitor = {
   id: string;
@@ -92,6 +93,7 @@ type NetworkMonitorListProps = {
 
 export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps) {
   const { t } = useTranslation('common');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { currentOrgId } = useOrgStore();
   const [monitors, setMonitors] = useState<NetworkMonitor[]>([]);
   const [loading, setLoading] = useState(true);
@@ -119,15 +121,15 @@ export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps)
       if (filterStatus) params.set('status', filterStatus);
       const qs = params.toString();
       const response = await fetchWithAuth(`/monitors${qs ? `?${qs}` : ''}`);
-      if (!response.ok) throw new Error(t('longTail.monitors.NetworkMonitorList.errors.fetchMonitors'));
+      if (!response.ok) throw new Error(stableT('longTail.monitors.NetworkMonitorList.errors.fetchMonitors'));
       const data = await response.json();
       setMonitors(data.data ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('longTail.monitors.NetworkMonitorList.errors.generic'));
+      setError(err instanceof Error ? err.message : stableT('longTail.monitors.NetworkMonitorList.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [filterAssetId, currentOrgId, filterType, filterStatus, t]);
+  }, [filterAssetId, currentOrgId, filterType, filterStatus, stableT]);
 
   useEffect(() => {
     fetchMonitors();

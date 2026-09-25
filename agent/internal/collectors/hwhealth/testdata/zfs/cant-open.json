@@ -1,0 +1,44 @@
+{
+  "pools": {
+    "tank": {
+      "name": "tank",
+      "state": "DEGRADED",
+      "vdevs": {
+        "tank": {
+          "name": "tank",
+          "vdev_type": "root",
+          "state": "DEGRADED",
+          "vdevs": {
+            "mirror-0": {
+              "name": "mirror-0",
+              "vdev_type": "mirror",
+              "state": "DEGRADED",
+              "vdevs": {
+                "/dev/disk/by-id/ata-A": {
+                  "name": "/dev/disk/by-id/ata-A",
+                  "vdev_type": "disk",
+                  "guid": 12345,
+                  "path": "/dev/disk/by-id/ata-A",
+                  "state": "ONLINE",
+                  "read_errors": 0,
+                  "write_errors": 0,
+                  "checksum_errors": 0
+                },
+                "/dev/disk/by-id/ata-B": {
+                  "name": "/dev/disk/by-id/ata-B",
+                  "vdev_type": "disk",
+                  "guid": 67890,
+                  "path": "/dev/disk/by-id/ata-B",
+                  "state": "CANT_OPEN",
+                  "read_errors": 0,
+                  "write_errors": 0,
+                  "checksum_errors": 0
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

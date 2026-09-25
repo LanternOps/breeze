@@ -14,6 +14,7 @@ import {
   type ContractTemplateWithLatest,
   type TemplateOwnerScope,
 } from '../../lib/api/contractTemplates';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -33,6 +34,7 @@ const STATUS_ROLE = { active: 'success', archived: 'neutral' } as const;
  *  create dialog already open. */
 export default function TemplatesPage({ openCreate = false }: { openCreate?: boolean }) {
   const { t } = useTranslation('billing');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { scope, partnerId } = getJwtClaims();
   const isPartnerScope = scope === 'partner' && !!partnerId;
 
@@ -60,16 +62,16 @@ export default function TemplatesPage({ openCreate = false }: { openCreate?: boo
       setError(undefined);
       const res = await listContractTemplates({ includeArchived });
       if (res.status === 401) return UNAUTHORIZED();
-      if (!res.ok) throw new Error(t('contracts.templatesTab.loadError'));
+      if (!res.ok) throw new Error(stableT('contracts.templatesTab.loadError'));
       const body = (await res.json().catch(() => null)) as { data: ContractTemplateWithLatest[] } | null;
-      if (!body) throw new Error(t('contracts.templatesTab.loadError'));
+      if (!body) throw new Error(stableT('contracts.templatesTab.loadError'));
       setTemplates(body.data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('contracts.templatesTab.loadError'));
+      setError(err instanceof Error ? err.message : stableT('contracts.templatesTab.loadError'));
     } finally {
       setLoading(false);
     }
-  }, [includeArchived, t]);
+  }, [includeArchived, stableT]);
 
   useEffect(() => {
     void load();

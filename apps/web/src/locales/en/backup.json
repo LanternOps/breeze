@@ -961,5 +961,88 @@
       "rebooted": "Rebooted",
       "checked_in": "Checked in"
     }
+  },
+  "backupHealth": {
+    "title": "Backup health",
+    "subtitle": "Every device Breeze manages, plus everything your backup provider reports.",
+    "staleBanner": "Some provider data is out of date. Showing what was last seen.",
+    "unmappedNotice": "{{value}} devices sit under provider customers that are not mapped to a Breeze organization yet.",
+    "statusTitle": "Status",
+    "recencyTitle": "Last successful backup",
+    "coverage": "{{covered}} of {{total}} endpoints have a recent backup",
+    "providerOnly": "{{value}} provider-only endpoints",
+    "m365Accounts": "{{value}} Microsoft 365 accounts",
+    "status": {
+      "no_backups": "No backups",
+      "completed": "Completed",
+      "completed_with_errors": "Completed with errors",
+      "in_progress": "In process",
+      "unsuccessful": "Unsuccessful",
+      "other": "Other",
+      "failed": "Failed",
+      "interrupted": "Interrupted",
+      "over_quota": "Over quota",
+      "no_selection": "Nothing selected",
+      "not_started": "Not started",
+      "unknown": "Unknown"
+    },
+    "recency": {
+      "never": "Never",
+      "under_24h": "Less than 24 hours",
+      "under_48h": "Less than 48 hours",
+      "over_48h": "More than 48 hours"
+    },
+    "health": {
+      "healthy": "Healthy",
+      "warning": "Needs attention",
+      "critical": "Critical",
+      "unknown": "Unknown"
+    },
+    "sourceAll": "All sources",
+    "healthAll": "All health",
+    "sourceBreeze": "Breeze",
+    "searchPlaceholder": "Search device or organization",
+    "includeWithoutBackup": "Include devices without any backup",
+    "table": {
+      "device": "Device",
+      "computerName": "Computer name",
+      "source": "Source",
+      "dataSources": "Data sources",
+      "selected": "Selected",
+      "used": "Used",
+      "history": "Last 28 days",
+      "errors": "Errors",
+      "agent": "Agent"
+    },
+    "dataSource": {
+      "files": "Files & folders",
+      "system_state": "System state",
+      "mssql": "SQL Server",
+      "hyperv": "Hyper-V",
+      "vmware": "VMware",
+      "bare_metal": "Bare metal",
+      "m365_sharepoint": "SharePoint",
+      "m365_exchange": "Exchange",
+      "m365_onedrive": "OneDrive",
+      "m365_teams": "Teams",
+      "other": "Other"
+    },
+    "noObservation": "No observation",
+    "openDevice": "Open device",
+    "empty": "No devices match these filters.",
+    "loadMore": "Load more",
+    "error": "Could not load backup health",
+    "external": {
+      "title": "External backup",
+      "customer": "Provider customer",
+      "lastSuccess": "Last successful backup",
+      "lastSession": "Last session",
+      "unlink": "Unlink",
+      "unlinkConfirm": "Unlink this provider device from the Breeze device? It stays in the backup product and can be linked again.",
+      "unlinkedToast": "Provider device unlinked",
+      "errorUnlink": "Could not unlink the provider device",
+      "error": "Could not load external backup status",
+      "alsoCheck": "Also check third-party backup connections under Integrations."
+    }
   }
 }

@@ -11,6 +11,7 @@ import InvoiceDetail from './InvoiceDetail';
 import InvoiceDocumentPreview from './InvoiceDocument';
 import InvoiceActions from './InvoiceActions';
 import { type InvoiceDetail as InvoiceDetailData, STATUS_ROLES } from './invoiceTypes';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -46,6 +47,7 @@ function readTab(isDraft: boolean): Tab {
 
 export default function InvoiceWorkspace({ id }: Props) {
   const { t } = useTranslation('billing');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [detail, setDetail] = useState<InvoiceDetailData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -86,24 +88,24 @@ export default function InvoiceWorkspace({ id }: Props) {
   // discard the user's in-progress local state and cursor position. Only the
   // initial load shows the spinner / replaces the view on error.
   const fetchDetail = useCallback(async (quiet = false) => {
-    if (!id) { setError(t('invoiceWorkspace.errors.missingId')); setLoading(false); return; }
+    if (!id) { setError(stableT('invoiceWorkspace.errors.missingId')); setLoading(false); return; }
     try {
       if (!quiet) setLoading(true);
       setError(undefined);
       const res = await fetchWithAuth(`/invoices/${id}`);
       if (res.status === 401) return UNAUTHORIZED();
-      if (res.status === 404) { if (!quiet) setError(t('invoiceWorkspace.errors.notFound')); return; }
-      if (!res.ok) throw new Error(t('invoiceWorkspace.errors.loadFailed'));
+      if (res.status === 404) { if (!quiet) setError(stableT('invoiceWorkspace.errors.notFound')); return; }
+      if (!res.ok) throw new Error(stableT('invoiceWorkspace.errors.loadFailed'));
       const body = (await res.json()) as { data: InvoiceDetailData };
       setDetail(body.data);
     } catch (err) {
       // A failed quiet reload leaves the editor intact; the inline action's own
       // runAction toast already surfaced the failure.
-      if (!quiet) setError(err instanceof Error ? err.message : t('invoiceWorkspace.errors.loadFailed'));
+      if (!quiet) setError(err instanceof Error ? err.message : stableT('invoiceWorkspace.errors.loadFailed'));
     } finally {
       if (!quiet) setLoading(false);
     }
-  }, [id, t]);
+  }, [id, stableT]);
 
   const load = useCallback(() => fetchDetail(false), [fetchDetail]);
   const reload = useCallback(() => fetchDetail(true), [fetchDetail]);

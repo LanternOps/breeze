@@ -28,6 +28,7 @@ import type { Device, DeviceStatus, OSType } from "./DeviceList";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
 import { useDeviceOptions } from '../../hooks/useDeviceOptions';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type SoftwareItem = {
   name: string;
@@ -659,6 +660,7 @@ function buildPdfHtml(
 
 export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
   const { t } = useTranslation("devices");
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const unknownLabel = t("deviceCompare.values.unknown");
   const statusLabels: Record<DeviceStatus, string> = {
     online: t("deviceCompare.status.online"),
@@ -743,6 +745,9 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
 
   const fetchDeviceDetails = useCallback(
     async (ids: string[]) => {
+      // Read at call time, not as a dep: a translated string changes on every
+      // locale change and would re-run the fetch (#3632).
+      const unknownLabel = stableT("deviceCompare.values.unknown");
       if (ids.length === 0) return;
       setLoadingDetails(true);
       setDetailsError(undefined);
@@ -755,11 +760,11 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
             try {
               const response = await fetchWithAuth(`/devices/${id}`);
               if (!response.ok)
-                throw new Error(t("deviceCompare.errors.fetchDevice"));
+                throw new Error(stableT("deviceCompare.errors.fetchDevice"));
               const data = await response.json();
               const baseFallback: Device = fallback ?? {
                 id,
-                hostname: `${t("deviceCompare.values.device")} ${id}`,
+                hostname: `${stableT("deviceCompare.values.device")} ${id}`,
                 os: "windows",
                 osVersion: unknownLabel,
                 status: "offline",
@@ -777,7 +782,7 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
                 data as Record<string, unknown>,
                 baseFallback,
                 {
-                  patch: t("deviceCompare.values.patch"),
+                  patch: stableT("deviceCompare.values.patch"),
                   unknown: unknownLabel,
                 },
               );
@@ -808,7 +813,7 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
         });
         if (failedIds.length > 0) {
           setDetailsError(
-            t("deviceCompare.errors.detailsCount", {
+            stableT("deviceCompare.errors.detailsCount", {
               count: failedIds.length,
             }),
           );
@@ -817,13 +822,13 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
         setDetailsError(
           err instanceof Error
             ? err.message
-            : t("deviceCompare.failedToLoadDeviceDetails"),
+            : stableT("deviceCompare.failedToLoadDeviceDetails"),
         );
       } finally {
         setLoadingDetails(false);
       }
     },
-    [deviceMap, t, unknownLabel],
+    [deviceMap, stableT],
   );
 
   useEffect(() => {

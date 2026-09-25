@@ -68,6 +68,23 @@ func (w *WindowsUpdateProvider) Install(patchID string) (InstallResult, error) {
 
 	err := w.withSession(func(session *ole.IDispatch) error {
 		update, err := w.findUpdate(session, "IsInstalled=0", patchID)
+		if isUpdateNotFound(err) {
+			// The update was in the scan set but this fresh search no longer
+			// offers it: installed meanwhile, or superseded/expired (Defender
+			// definitions, KB2267602). Skipped, not failed (#6910).
+			alreadyInstalled := false
+			installed, instErr := w.findUpdate(session, "IsInstalled=1", patchID)
+			if instErr == nil && installed != nil {
+				installed.Release()
+				alreadyInstalled = true
+			} else if instErr != nil && !isUpdateNotFound(instErr) {
+				log.Warn("installed-update lookup failed; reporting as not offered", "patchId", patchID, "error", instErr)
+			}
+			result = notOfferedInstallResult(patchID, alreadyInstalled)
+			log.Info("update no longer offered at install time; skipping",
+				"patchId", patchID, "reason", result.SkipReason)
+			return nil
+		}
 		if err != nil {
 			return err
 		}
@@ -525,31 +542,42 @@ func (w *WindowsUpdateProvider) findUpdate(session *ole.IDispatch, criteria, pat
 	defer countVar.Clear()
 
 	count := int(countVar.Val)
+	// Results this loop could not read. A miss is only a trustworthy
+	// "not offered" (skippable, #6910) when every result was inspected;
+	// otherwise the target may be one of the unreadable items.
+	unreadable := 0
 	for i := 0; i < count; i++ {
 		itemVar, err := getCollectionItem(updates, i)
 		if err != nil {
+			unreadable++
 			continue
 		}
 
 		update := itemVar.ToIDispatch()
 		if update == nil {
+			unreadable++
 			continue
 		}
 
 		identityVar, err := oleutil.GetProperty(update, "Identity")
 		if err != nil {
+			unreadable++
 			update.Release()
 			continue
 		}
 
 		identity := identityVar.ToIDispatch()
 		if identity == nil {
+			unreadable++
 			update.Release()
 			continue
 		}
 
-		updateID, _ := w.getStringProperty(identity, "UpdateID")
+		updateID, idErr := w.getStringProperty(identity, "UpdateID")
 		identity.Release()
+		if idErr != nil || updateID == "" {
+			unreadable++
+		}
 
 		if updateID == patchID {
 			return update, nil
@@ -566,7 +594,7 @@ func (w *WindowsUpdateProvider) findUpdate(session *ole.IDispatch, criteria, pat
 		update.Release()
 	}
 
-	return nil, fmt.Errorf("update %s not found", patchID)
+	return nil, updateNotFoundError(patchID, unreadable, count)
 }
 
 func (w *WindowsUpdateProvider) createInstaller(session *ole.IDispatch, update *ole.IDispatch) (*ole.IDispatch, error) {

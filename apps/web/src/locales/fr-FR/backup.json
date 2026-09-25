@@ -961,5 +961,88 @@
       "rebooted": "Redémarrée",
       "checked_in": "Confirmée"
     }
+  },
+  "backupHealth": {
+    "title": "État des sauvegardes",
+    "subtitle": "Tous les appareils gérés par Breeze, ainsi que tout ce que remonte votre fournisseur de sauvegarde.",
+    "staleBanner": "Certaines données du fournisseur ne sont plus à jour. Voici le dernier état connu.",
+    "unmappedNotice": "{{value}} appareils appartiennent à des clients du fournisseur qui ne sont pas encore associés à une organisation Breeze.",
+    "statusTitle": "Statut",
+    "recencyTitle": "Dernière sauvegarde réussie",
+    "coverage": "{{covered}} des {{total}} postes ont une sauvegarde récente",
+    "providerOnly": "{{value}} postes connus du seul fournisseur",
+    "m365Accounts": "{{value}} comptes Microsoft 365",
+    "status": {
+      "no_backups": "Aucune sauvegarde",
+      "completed": "Terminée",
+      "completed_with_errors": "Terminée avec des erreurs",
+      "in_progress": "En cours",
+      "unsuccessful": "Sans succès",
+      "other": "Autre",
+      "failed": "Échec",
+      "interrupted": "Interrompue",
+      "over_quota": "Quota dépassé",
+      "no_selection": "Aucune sélection",
+      "not_started": "Non démarrée",
+      "unknown": "Inconnu"
+    },
+    "recency": {
+      "never": "Jamais",
+      "under_24h": "Moins de 24 heures",
+      "under_48h": "Moins de 48 heures",
+      "over_48h": "Plus de 48 heures"
+    },
+    "health": {
+      "healthy": "Correct",
+      "warning": "À surveiller",
+      "critical": "Critique",
+      "unknown": "Inconnu"
+    },
+    "sourceAll": "Toutes les sources",
+    "healthAll": "Tous les états",
+    "sourceBreeze": "Breeze",
+    "searchPlaceholder": "Rechercher un appareil ou une organisation",
+    "includeWithoutBackup": "Inclure les appareils sans aucune sauvegarde",
+    "table": {
+      "device": "Appareil",
+      "computerName": "Nom de l'ordinateur",
+      "source": "Source",
+      "dataSources": "Sources de données",
+      "selected": "Sélectionné",
+      "used": "Utilisé",
+      "history": "28 derniers jours",
+      "errors": "Erreurs",
+      "agent": "Agent"
+    },
+    "dataSource": {
+      "files": "Fichiers et dossiers",
+      "system_state": "État du système",
+      "mssql": "SQL Server",
+      "hyperv": "Hyper-V",
+      "vmware": "VMware",
+      "bare_metal": "Bare metal",
+      "m365_sharepoint": "SharePoint",
+      "m365_exchange": "Exchange",
+      "m365_onedrive": "OneDrive",
+      "m365_teams": "Teams",
+      "other": "Autre"
+    },
+    "noObservation": "Aucune observation",
+    "openDevice": "Ouvrir l'appareil",
+    "empty": "Aucun appareil ne correspond à ces filtres.",
+    "loadMore": "Charger plus",
+    "error": "Impossible de charger l'état des sauvegardes",
+    "external": {
+      "title": "Sauvegarde externe",
+      "customer": "Client du fournisseur",
+      "lastSuccess": "Dernière sauvegarde réussie",
+      "lastSession": "Dernière session",
+      "unlink": "Dissocier",
+      "unlinkConfirm": "Dissocier cet appareil du fournisseur de l'appareil Breeze ? Il reste dans le produit de sauvegarde et peut être réassocié.",
+      "unlinkedToast": "Appareil du fournisseur dissocié",
+      "errorUnlink": "Impossible de dissocier l'appareil du fournisseur",
+      "error": "Impossible de charger l'état de la sauvegarde externe",
+      "alsoCheck": "Vérifiez aussi les connexions de sauvegarde tierces dans Intégrations."
+    }
   }
 }

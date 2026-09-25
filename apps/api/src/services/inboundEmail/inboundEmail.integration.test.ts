@@ -24,7 +24,7 @@
  * `breeze_app` pool that `processInboundEmail` runs against.
  */
 import '../../__tests__/integration/setup';
-import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { and, eq, sql } from 'drizzle-orm';
 import { withSystemDbAccessContext } from '../../db';
 import {
@@ -40,10 +40,28 @@ import {
 } from '../../db/schema';
 import { createOrganization, createPartner, createUser } from '../../__tests__/integration/db-utils';
 import { getTestDb } from '../../__tests__/integration/setup';
-import { processInboundEmail } from './inboundEmailService';
+import { processInboundEmail, InboundEmailProcessingRecorded } from './inboundEmailService';
 import { moveTicketOrg } from '../ticketService';
 import { fourDigitSuffix } from './fixtureNumbering';
 import type { NormalizedInboundEmail } from './types';
+
+// Lets one test make message-link bookkeeping fail with an ORDINARY JavaScript
+// error after the ticket row was written (not a database error, so the
+// transaction is not poisoned). Every other call passes through to the real code.
+const linkFailure = vi.hoisted(() => ({ armed: false }));
+vi.mock('../ticketEmailLinks', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../ticketEmailLinks')>();
+  return {
+    ...actual,
+    claimMessageLink: async (...args: Parameters<typeof actual.claimMessageLink>) => {
+      if (linkFailure.armed) {
+        linkFailure.armed = false;
+        throw new Error('link bookkeeping failed');
+      }
+      return actual.claimMessageLink(...args);
+    },
+  };
+});
 
 const uniqueSuffix = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -317,6 +335,36 @@ describe('processInboundEmail — cross-partner isolation (real driver, system c
     expect(created.partnerId).toBe(fx.partnerA.id);
     expect(created.source).toBe('email');
     expect(created.submitterEmail).toBe(fx.janeEmail);
+  });
+
+  it('CASE 2b: an ordinary JS error AFTER the ticket write rolls the ticket back and leaves only the failed row', async () => {
+    const providerMessageId = `<rollback-${uniqueSuffix()}@known.test>`;
+    const subject = `Rollback probe ${uniqueSuffix()}`;
+    const email = buildEmail({
+      to: `support@${fx.domainA}`,
+      from: fx.janeEmail,
+      fromName: 'Jane Known',
+      subject,
+      text: 'This ticket must not survive the failure.',
+      providerMessageId
+    });
+    // The Message-ID link is claimed only when the email carries one.
+    email.messageId = providerMessageId;
+
+    linkFailure.armed = true;
+    await expect(withSystemDbAccessContext(() => processInboundEmail(email)))
+      .rejects.toBeInstanceOf(InboundEmailProcessingRecorded);
+    expect(linkFailure.armed).toBe(false); // the failure really fired, after createTicket
+
+    // The half-done ticket was rolled back...
+    const leftover = await admin().select().from(tickets)
+      .where(and(eq(tickets.partnerId, fx.partnerA.id), eq(tickets.subject, subject)));
+    expect(leftover).toHaveLength(0);
+    // ...and the durable failed row is the only record, under the resolved partner.
+    const rows = await inboundRowsFor(fx.partnerA.id, providerMessageId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].parseStatus).toBe('failed');
+    expect(rows[0].ticketId).toBeNull();
   });
 
   it('CASE 3: quarantine path — unmatched email from an unknown sender creates no ticket', async () => {

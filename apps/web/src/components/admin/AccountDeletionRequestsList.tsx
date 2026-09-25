@@ -7,6 +7,7 @@ import { formatAbsolute, formatRelative } from '../account/relativeTime';
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 interface AdminDeletionRequest {
   requestId: string;
@@ -36,6 +37,7 @@ const PAGE_SIZE = 50;
 
 export default function AccountDeletionRequestsList() {
   const { t } = useTranslation('admin');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [state, setState] = useState<LoadState>({ kind: 'loading' });
   const [offset, setOffset] = useState(0);
   const [statusFilter, setStatusFilter] = useState<'pending' | 'processing' | 'cancelled' | 'completed'>('pending');
@@ -57,15 +59,15 @@ export default function AccountDeletionRequestsList() {
       }
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as { error?: string };
-        setState({ kind: 'error', message: body.error ?? t('admin.accountDeletionRequestsList.errors.requestFailed', { status: res.status }) });
+        setState({ kind: 'error', message: body.error ?? stableT('admin.accountDeletionRequestsList.errors.requestFailed', { status: res.status }) });
         return;
       }
       const body = (await res.json()) as { requests: AdminDeletionRequest[]; limit: number; offset: number };
       setState({ kind: 'ready', requests: body.requests ?? [], limit: body.limit, offset: body.offset });
     } catch (err) {
-      setState({ kind: 'error', message: err instanceof Error ? err.message : t('admin.accountDeletionRequestsList.errors.network') });
+      setState({ kind: 'error', message: err instanceof Error ? err.message : stableT('admin.accountDeletionRequestsList.errors.network') });
     }
-  }, [statusFilter, offset, t]);
+  }, [statusFilter, offset, stableT]);
 
   useEffect(() => {
     void load();

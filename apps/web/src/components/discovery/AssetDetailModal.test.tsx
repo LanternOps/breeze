@@ -97,6 +97,17 @@ describe('AssetDetailModal — read-only link state (#3261)', () => {
       fetchMock.mock.calls.some(([url]) => typeof url === 'string' && url.endsWith('/link'))
     ).toBe(false);
   });
+
+  it('keeps the discovery preview BMC association distinct from a same-device link', () => {
+    render(<AssetDetailModal open asset={{ ...asset, linkedDeviceId: 'dev-1',
+      linkedDeviceName: 'agent-host', linkSource: 'agent_report' }} onClose={() => {}} />);
+    const link = screen.getByTestId('asset-modal-same-device-link');
+    expect(link).toHaveAttribute('href', '/devices/dev-1');
+    expect(link).toHaveTextContent('Management controller for agent-host');
+    expect(link).not.toHaveTextContent('Same device as');
+    expect(screen.getByTestId('asset-modal-link-provenance')).toHaveTextContent('reported by host agent');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('AssetDetailModal — SNMP data card', () => {

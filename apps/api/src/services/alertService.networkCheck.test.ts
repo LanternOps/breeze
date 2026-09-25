@@ -54,6 +54,16 @@ const {
           };
         },
       })),
+      execute: vi.fn(async (statement: { values: unknown[] }) => {
+        callOrder.push('createAlert.insert');
+        const [ruleId, deviceId, orgId, severity, title, message, context, monitorId, episodeId, requiresHuman, subjectKey] = statement.values;
+        insertedAlerts.push({
+          ruleId, deviceId, orgId, severity, title, message,
+          context: JSON.parse(context as string), monitorId, episodeId, requiresHuman, subjectKey,
+        });
+        return [{ id: 'alert-1' }];
+      }),
+      update: vi.fn(() => ({ set: () => ({ where: () => Promise.resolve(undefined) }) })),
       delete: vi.fn(() => ({ where: () => Promise.resolve([]) })),
     },
     captureExceptionMock: vi.fn(),
@@ -256,7 +266,7 @@ beforeEach(() => {
     needsEscalationAlert: false,
     responsesPaused: false,
   });
-  linkEpisodeAlertMock.mockResolvedValue(undefined);
+  linkEpisodeAlertMock.mockResolvedValue({ owner: true });
   detachMonitorFromDeviceMock.mockResolvedValue(undefined);
   // The handler would breach for whichever device it is asked about — that is
   // exactly the shape of the #6353 bug, so the split under test must not lean

@@ -13,6 +13,7 @@ import {
 } from '../../lib/api/contracts';
 import { listContractDocuments, type ContractDocument } from '../../lib/api/contractDocuments';
 import { StatusPill } from '../billing/shared/StatusPill';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -23,6 +24,7 @@ interface Props {
 
 export default function ContractWorkspace({ contractId }: Props) {
   const { t } = useTranslation('billing');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const isNew = contractId === 'new';
   const { can } = usePermissions();
   const canWrite = can('contracts', 'write');
@@ -43,23 +45,23 @@ export default function ContractWorkspace({ contractId }: Props) {
 
   const load = useCallback(async () => {
     if (isNew) { setLoading(false); return; }
-    if (!contractId) { setError(t('contracts.contractWorkspace.errors.missingContractId')); setLoading(false); return; }
+    if (!contractId) { setError(stableT('contracts.contractWorkspace.errors.missingContractId')); setLoading(false); return; }
     try {
       setLoading(true);
       setError(undefined);
       const res = await getContract(contractId);
       if (res.status === 401) return UNAUTHORIZED();
-      if (res.status === 404) { setError(t('contracts.contractWorkspace.errors.notFound')); return; }
-      if (!res.ok) throw new Error(t('contracts.contractWorkspace.errors.loadContract'));
+      if (res.status === 404) { setError(stableT('contracts.contractWorkspace.errors.notFound')); return; }
+      if (!res.ok) throw new Error(stableT('contracts.contractWorkspace.errors.loadContract'));
       const body = (await res.json().catch(() => null)) as { data: ContractDetailData } | null;
-      if (!body) throw new Error(t('contracts.contractWorkspace.errors.loadContract'));
+      if (!body) throw new Error(stableT('contracts.contractWorkspace.errors.loadContract'));
       setDetail(body.data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('contracts.contractWorkspace.errors.loadContract'));
+      setError(err instanceof Error ? err.message : stableT('contracts.contractWorkspace.errors.loadContract'));
     } finally {
       setLoading(false);
     }
-  }, [isNew, contractId, t]);
+  }, [isNew, contractId, stableT]);
 
   useEffect(() => { void load(); }, [load]);
 

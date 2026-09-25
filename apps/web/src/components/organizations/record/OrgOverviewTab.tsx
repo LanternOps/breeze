@@ -31,6 +31,15 @@ export interface OrgOverviewTabProps {
    * existing test) keeps today's behaviour.
    */
   mode?: ServiceManagementMode;
+  /**
+   * An archived org's summary, alerts and activity reads all 404 by design
+   * (sweep B3): the API scopes those endpoints to accessible orgs, and
+   * archived is deliberately outside that set. Rendering the tiles and the
+   * two feeds anyway produced a wall of "Couldn't load…" error panels
+   * instead of the read-only state the banner above already announces. When
+   * true, skip the fetches entirely and show one quiet notice instead.
+   */
+  archived?: boolean;
 }
 
 /** Tiles owned by the Service Management module; hidden unless mode is `native`. */
@@ -89,7 +98,14 @@ async function loadFeed<T>(
  * would be a confident lie about a customer's fleet. The two feeds below hold
  * the same line: a failed load says so, rather than rendering the empty state.
  */
-export default function OrgOverviewTab({ orgId, orgFetch, summary, summaryFailed, mode = 'native' }: OrgOverviewTabProps) {
+export default function OrgOverviewTab({
+  orgId,
+  orgFetch,
+  summary,
+  summaryFailed,
+  mode = 'native',
+  archived = false,
+}: OrgOverviewTabProps) {
   const { t } = useTranslation('organizations');
   const formatAuditAction = useAuditActionFormatter();
   const [activity, setActivity] = useState<FeedState<AuditLogEntry>>(null);
@@ -120,8 +136,9 @@ export default function OrgOverviewTab({ orgId, orgFetch, summary, summaryFailed
   }, [orgFetch, activityLatest, alertsLatest]);
 
   useEffect(() => {
+    if (archived) return;
     void loadFeeds();
-  }, [loadFeeds, orgId]);
+  }, [loadFeeds, orgId, archived]);
 
   const tiles: Tile[] = [];
   if (summary?.devices) {
@@ -209,6 +226,16 @@ export default function OrgOverviewTab({ orgId, orgFetch, summary, summaryFailed
   // added later cannot slip past the module gate by forgetting the condition —
   // it only has to be named in SERVICE_MANAGEMENT_TILE_KEYS to be covered.
   const visibleTiles = mode === 'native' ? tiles : tiles.filter((tile) => !SERVICE_MANAGEMENT_TILE_KEYS.has(tile.key));
+
+  if (archived) {
+    return (
+      <div data-testid="org-overview-tab" className="space-y-6">
+        <p data-testid="org-overview-archived-notice" className="text-sm text-muted-foreground">
+          {t('orgRecord.overview.archivedNotice')}
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div data-testid="org-overview-tab" className="space-y-6">

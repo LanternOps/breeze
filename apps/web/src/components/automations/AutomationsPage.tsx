@@ -8,7 +8,8 @@ import AutomationRunHistory, {
   type DeviceRunResult,
   type DeviceScriptResult,
 } from './AutomationRunHistory';
-import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { fetchWithAuth, handleSessionExpired, useAuthStore } from '../../stores/auth';
+import { runAction, handleActionError } from '@/lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { usePermissions } from '@/lib/permissions';
 import { useHashTab } from '@/lib/useHashState';
@@ -17,6 +18,7 @@ import type { TriggerFilter } from './AutomationList';
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type ModalMode = 'closed' | 'delete' | 'history' | 'run';
 
@@ -207,6 +209,7 @@ function toDeviceRunResult(raw: unknown): DeviceRunResult | null {
 
 export default function AutomationsPage() {
   const { t } = useTranslation('scripts');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { permissions } = usePermissions();
   // #3262 — mirrors canManagePartnerWidePolicies(auth) server-side. UX only;
   // the cancel route re-checks this on every request.
@@ -230,7 +233,7 @@ export default function AutomationsPage() {
       setError(undefined);
       const response = await fetchWithAuth('/automations');
       if (!response.ok) {
-        throw new Error(t('automationsPage.errors.fetch'));
+        throw new Error(stableT('automationsPage.errors.fetch'));
       }
       const data = await response.json();
       const rows = data.data ?? data.automations ?? [];
@@ -240,15 +243,15 @@ export default function AutomationsPage() {
       // ones, which render read-only inline instead of being hidden — #3824.)
       setAutomations(
         Array.isArray(rows)
-          ? rows.map((row: unknown) => toListAutomation(row, t)).filter((automation) => !automation.managedByMonitorId)
+          ? rows.map((row: unknown) => toListAutomation(row, stableT)).filter((automation) => !automation.managedByMonitorId)
           : []
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('automationsPage.errors.generic'));
+      setError(err instanceof Error ? err.message : stableT('automationsPage.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [stableT]);
 
   const fetchRunHistory = useCallback(async (automation: Automation) => {
     try {
@@ -308,41 +311,45 @@ export default function AutomationsPage() {
     setModalMode('delete');
   };
 
+  // Run / toggle / delete go through runAction so every failure is toasted
+  // (#3531). The page-level `error` banner renders behind the delete modal's
+  // fixed z-50 scrim, so a failed delete used to be invisible.
   const handleRun = async (automation: Automation) => {
     setSubmitting(true);
     try {
-      const response = await fetchWithAuth(`/automations/${automation.id}/trigger`, {
-        method: 'POST'
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/automations/${automation.id}/trigger`, {
+            method: 'POST'
+          }),
+        errorFallback: t('automationsPage.errors.run'),
+        onUnauthorized: handleSessionExpired,
       });
-
-      if (!response.ok) {
-        throw new Error(t('automationsPage.errors.run'));
-      }
-
       await fetchAutomations();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('automationsPage.errors.generic'));
+      handleActionError(err, t('automationsPage.errors.run'));
     } finally {
       setSubmitting(false);
     }
   };
 
   const handleToggle = async (automation: Automation, enabled: boolean) => {
+    const fallback = enabled ? t('automationsPage.errors.enable') : t('automationsPage.errors.disable');
     try {
-      const response = await fetchWithAuth(`/automations/${automation.id}`, {
-        method: 'PUT',
-        body: JSON.stringify({ enabled })
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/automations/${automation.id}`, {
+            method: 'PUT',
+            body: JSON.stringify({ enabled })
+          }),
+        errorFallback: fallback,
+        onUnauthorized: handleSessionExpired,
       });
-
-      if (!response.ok) {
-        throw new Error(enabled ? t('automationsPage.errors.enable') : t('automationsPage.errors.disable'));
-      }
-
       setAutomations(prev =>
         prev.map(a => (a.id === automation.id ? { ...a, enabled } : a))
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('automationsPage.errors.generic'));
+      handleActionError(err, fallback);
     }
   };
 
@@ -363,18 +370,20 @@ export default function AutomationsPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetchWithAuth(`/automations/${selectedAutomation.id}`, {
-        method: 'DELETE'
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/automations/${selectedAutomation.id}`, {
+            method: 'DELETE'
+          }),
+        errorFallback: t('automationsPage.errors.delete'),
+        onUnauthorized: handleSessionExpired,
       });
-
-      if (!response.ok) {
-        throw new Error(t('automationsPage.errors.delete'));
-      }
-
       await fetchAutomations();
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('automationsPage.errors.generic'));
+      // runAction already toasted; keep the confirmation modal open so the
+      // operator can retry or cancel, and do not refetch as if it succeeded.
+      handleActionError(err, t('automationsPage.errors.delete'));
     } finally {
       setSubmitting(false);
     }

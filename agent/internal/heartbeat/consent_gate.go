@@ -286,9 +286,13 @@ func consentDeniedResult(sessionID, reason string, durationMs int64) tools.Comma
 }
 
 // withConsentGranted re-marshals a successful helper start result to add the
-// consentReason marker when the session was gated by a consent prompt that the
-// user allowed. For notify/off modes it returns the result unchanged.
-func withConsentGranted(result tools.CommandResult, prompt *ipc.DesktopPrompt) tools.CommandResult {
+// consentReason marker when the session passed a consent-mode gate. reason is
+// decideConsent's reason for proceeding: "user" when the end user allowed it,
+// or "helper_absent"/"timeout" when consent could not be solicited and
+// consentUnavailableBehavior "proceed" let the start through (#6819). The API
+// audits "user" as a user grant, so it must never stand in for the other two.
+// For notify/off modes it returns the result unchanged.
+func withConsentGranted(result tools.CommandResult, prompt *ipc.DesktopPrompt, reason string) tools.CommandResult {
 	if prompt == nil || prompt.Mode != "consent" || result.Status != "completed" || result.Stdout == "" {
 		return result
 	}
@@ -297,7 +301,7 @@ func withConsentGranted(result tools.CommandResult, prompt *ipc.DesktopPrompt) t
 		log.Warn("failed to decode start result for consent marker", "error", errString(err))
 		return result
 	}
-	data["consentReason"] = "user"
+	data["consentReason"] = reason
 	return tools.NewSuccessResult(data, result.DurationMs)
 }
 

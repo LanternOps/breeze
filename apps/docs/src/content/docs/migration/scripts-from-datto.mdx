@@ -139,6 +139,6 @@ A Datto monitor that fires a response component becomes an automation: trigger *
 - **Component categories.** Bundles carry a category and tags by name and create them on import. Datto's category tree is flatter than most Breeze libraries end up, so review them after the first batch.
 - **Datto-only environment variables** (`$env:CS_PROFILE_UID`, `$env:CS_DOMAIN`, `$env:CS_*`). There is no equivalent. For hostname, OS or similar, add a parameter with source **From a device property**.
 - **The result-marker convention.** `<-Start Result->` lines are plain output in Breeze. Replace them with the custom-fields marker.
-- **Monitors.** Components ported; monitors are re-authored as Breeze monitors and alert rules.
+- **Monitors.** Components ported; monitoring conditions are re-authored as Breeze [monitors](/features/monitors/) and attached to configuration policies.
 - **ComStore entitlements.** Check the system script library for the equivalent.
 - **Job schedules.** Bundles never carry schedules or automations. Recreate them as Breeze schedules once the scripts are in.

@@ -22,6 +22,7 @@ export const fleetToolInputSchemas: Record<string, z.ZodType> = {
     rolloutConfig: z.record(z.string(), z.unknown()).optional(),
     schedule: z.record(z.string(), z.unknown()).optional(),
     limit: z.number().int().min(1).max(100).optional(),
+    orgId: uuid.optional(),
   }).refine(
     (d) => {
       const needsId = ['get', 'device_status', 'start', 'pause', 'resume', 'cancel'];
@@ -34,16 +35,20 @@ export const fleetToolInputSchemas: Record<string, z.ZodType> = {
   ),
 
   manage_patches: z.object({
-    action: z.enum(['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback', 'setup_auto_approval']),
+    action: z.enum(['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback', 'setup_auto_approval', 'device_history']),
     patchId: uuid.optional(),
     patchName: z.string().min(1).max(300).optional(),
     patchIds: z.array(uuid).max(50).optional(),
     deviceIds: z.array(uuid).max(50).optional(),
+    deviceId: uuid.optional(),
     ringId: uuid.optional(),
     allRings: z.boolean().optional(),
     source: z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom']).optional(),
     severity: z.enum(['critical', 'important', 'moderate', 'low', 'unknown']).optional(),
     status: z.enum(['pending', 'approved', 'rejected', 'deferred']).optional(),
+    resultStatus: z.enum(['pending', 'running', 'queued', 'completed', 'failed', 'skipped']).optional(),
+    since: z.string().datetime({ offset: true }).optional(),
+    until: z.string().datetime({ offset: true }).optional(),
     deferUntil: z.string().datetime({ offset: true }).optional(),
     notes: z.string().max(1000).optional(),
     configPolicyId: uuid.optional(),
@@ -54,6 +59,7 @@ export const fleetToolInputSchemas: Record<string, z.ZodType> = {
     rebootPolicy: z.enum(['if_required', 'always', 'never']).optional(),
     sources: z.array(z.enum(['os', 'third_party', 'custom'])).optional(),
     ...pageZodShape(25, 100),
+    orgId: uuid.optional(),
   }).refine(
     (d) => {
       // rollback keeps a hard patchId requirement (it also needs deviceIds, a
@@ -82,6 +88,9 @@ export const fleetToolInputSchemas: Record<string, z.ZodType> = {
   ).refine(
     (d) => !d.allRings || d.action === 'decline',
     { message: 'allRings is only valid for the decline action' },
+  ).refine(
+    (d) => d.action !== 'device_history' || !!d.deviceId,
+    { message: 'deviceId is required for device_history' },
   ),
 
   manage_groups: z.object({
@@ -93,6 +102,7 @@ export const fleetToolInputSchemas: Record<string, z.ZodType> = {
     filterConditions: z.record(z.string(), z.unknown()).optional(),
     deviceIds: z.array(uuid).max(100).optional(),
     limit: z.number().int().min(1).max(200).optional(),
+    orgId: uuid.optional(),
   }).refine(
     (d) => {
       const needsId = ['get', 'membership_log', 'update', 'delete', 'add_devices', 'remove_devices'];
@@ -195,6 +205,7 @@ export const fleetToolInputSchemas: Record<string, z.ZodType> = {
     schedule: z.enum(['one_time', 'daily', 'weekly', 'monthly']).optional(),
     format: z.enum(['csv', 'pdf', 'excel']).optional(),
     limit: z.number().int().min(1).max(100).optional(),
+    orgId: uuid.optional(),
   }).refine(
     (d) => {
       const needsId = ['update', 'delete', 'history'];

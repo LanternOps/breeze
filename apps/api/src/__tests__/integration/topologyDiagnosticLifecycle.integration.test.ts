@@ -158,7 +158,7 @@ async function fixture(options: { permissions?: typeof GRANTS } = {}) {
       orgId,
       partnerId: env.partner.id,
       accessibleOrgIds: [orgId],
-      allowedSiteIds: null,
+      allowedSiteIds: undefined,
       // Diagnostics are execution: the planner requires a satisfied MFA claim.
       token: { mfa: true },
       canAccessOrg: (candidate: string) => candidate === orgId,

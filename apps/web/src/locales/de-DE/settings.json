@@ -99,6 +99,7 @@
     "name": "Name",
     "principalDescription": "Beschreibung",
     "scopes": "Berechtigungsbereiche",
+    "noScopes": "Keine Berechtigungsbereiche gewährt",
     "sourceCidrs": "Quell-IPs oder CIDRs (eine pro Zeile)",
     "writeScopeRestrictionsRequired": "Der Bereich enrollment-keys:write erfordert ein Ablaufdatum und mindestens eine Quell-IP oder CIDR.",
     "expiresAt": "Läuft ab am",
@@ -519,6 +520,25 @@
       "communications": "Kommunikation",
       "branding": "Branding"
     },
+    "aiFeatures": {
+      "anomalies": {
+        "title": "Anomalieerkennung",
+        "description": "Statistische Erkennung von ungewöhnlichem CPU-, Arbeitsspeicher-, Festplatten- und Netzwerkverhalten auf verwalteten Geräten. Dies sind die Standardwerte für jede Organisation; eine Organisation kann sie auf ihrer eigenen KI-Registerkarte überschreiben.",
+        "enabled": "Anomalien erkennen",
+        "enabledDescription": "Führt den Anomalie-Detektor alle 10 Minuten aus und zeigt Ergebnisse auf der Registerkarte „Anomalien“ jedes Geräts an.",
+        "createAlerts": "Alarme aus Anomalien erstellen",
+        "createAlertsDescription": "Wandelt bestätigte Anomalien in Alarme um, damit sie Ihre Benachrichtigungsrouten erreichen."
+      },
+      "inheritanceNote": "Änderungen gelten für jede Organisation, die keine eigene Überschreibung festgelegt hat.",
+      "saved": "Gespeichert",
+      "saveFailed": "Diese Einstellung konnte nicht geändert werden",
+      "remediation": {
+        "title": "Vorgeschlagene Korrekturen",
+        "description": "KI-generierte Korrekturvorschläge auf der Alarm-Detailseite. Dies ist der Standardwert für jede Organisation; eine Organisation kann ihn auf ihrer eigenen KI-Registerkarte überschreiben.",
+        "enabled": "Korrekturvorschläge erzeugen",
+        "enabledDescription": "Techniker dürfen auf der Detailseite eines Alarms Korrekturvorschläge erzeugen."
+      }
+    },
     "tabs": {
       "company": {
         "label": "Unternehmen",
@@ -568,6 +588,10 @@
       "aiProvider": {
         "label": "KI-Anbieter",
         "description": "Eigenen Anthropic-Schlüssel verwenden"
+      },
+      "aiFeatures": {
+        "label": "KI-Funktionen",
+        "description": "Standardwerte für Anomalieerkennung und Korrekturvorschläge"
       },
       "branding": {
         "label": "Branding",
@@ -963,6 +987,16 @@
     }
   },
   "m365Mailbox": {
+    "consentNotCompleted": "Zustimmung nicht abgeschlossen",
+    "consentNotCompletedHint": "Die Microsoft-Anmeldung für dieses Postfach wurde nicht rechtzeitig abgeschlossen, daher wird es nicht von selbst verbunden. Wiederholen Sie die Zustimmung oder trennen Sie das Postfach.",
+    "retryConsent": "Zustimmung wiederholen",
+    "redirectUriLabel": "Umleitungs-URI zur Registrierung in der Microsoft Entra-App",
+    "redirectUriHint": "Sie muss exakt übereinstimmen, und Sie müssen Breeze beim Verbinden unter demselben Schema und Host öffnen, sonst kann die Anmeldung nicht abgeschlossen werden.",
+    "callbackReason": {
+      "binding_mismatch": "Microsoft 365-Verbindung fehlgeschlagen: Der Browser kam ohne sein Anmelde-Cookie zurück. Öffnen Sie Breeze unter derselben Adresse wie die Umleitungs-URI (Schema und Host müssen übereinstimmen), erlauben Sie Cookies und versuchen Sie es erneut.",
+      "invalid_callback": "Microsoft 365-Verbindung fehlgeschlagen: Microsoft hat eine unerwartete Antwort zurückgegeben. Versuchen Sie erneut, die Verbindung herzustellen.",
+      "expired": "Microsoft 365-Verbindung fehlgeschlagen: Der Anmeldelink ist abgelaufen oder wurde bereits verwendet. Versuchen Sie erneut, die Verbindung herzustellen."
+    },
     "connected": "Postfach verbunden",
     "consentGranted": "Zustimmung erteilt – Erweitern Sie das Postfach mit der Anwendungszugriffsrichtlinie unten und führen Sie dann einen erneuten Test durch",
     "consentAttention": "Die Zustimmung zum Postfach erfordert die Aufmerksamkeit des Administrators.",
@@ -991,6 +1025,38 @@
     "displayName": "Anzeigename (optional)",
     "namePlaceholder": "Unterstützung",
     "connect": "Verbinden"
+  },
+  "gmailMailbox": {
+    "title": "Google Workspace-Support-Postfach",
+    "description": "Verbinden Sie ein Google Workspace-Postfach, damit Kunden-E-Mails zu Tickets werden. Es wird die domänenweite Delegierung verwendet, daher sind keine MX- oder Weiterleitungsänderungen und keine OAuth-Weiterleitung nötig.",
+    "connectHint": "Das Postfach wird über die Google Workspace-Dienstkontoverbindung der ausgewählten Organisation gelesen, die damit die Anmeldedaten hält. Wählen Sie für ein Partner-Postfach (etwa Ihr eigenes help@) die Organisation, deren Workspace das Postfach enthält. Geben Sie das gemeinsame Support-Postfach ein, um es zu verbinden.",
+    "status": {
+      "pending_consent": "Ausstehend",
+      "connected": "Verbunden",
+      "error": "Aktion erforderlich",
+      "reauth_required": "Erneute Authentifizierung erforderlich",
+      "disabled": "Deaktiviert"
+    },
+    "reauthRequired": "Der Gmail-Abruf für dieses Postfach ist pausiert. Verbinden Sie es erneut, um fortzufahren: Das Dienstkonto muss eventuell neu autorisiert werden, seine Google Workspace-Verbindung ist möglicherweise inaktiv, oder das Postfach gehört jetzt zu einem anderen Google-Konto.",
+    "reconnect": "Wieder verbinden",
+    "reconnectNoOrg": "Dieser Verbindung fehlt ihre Organisation; sie kann hier nicht erneut verbunden werden.",
+    "disconnect": "Trennen",
+    "disconnected": "Postfach getrennt",
+    "disconnectFailed": "Verbindungstrennung fehlgeschlagen.",
+    "connected": "Postfach verbunden",
+    "connectFailed": "Das Gmail-Postfach konnte nicht verbunden werden.",
+    "empty": "Noch kein Gmail-Postfach verbunden.",
+    "loadError": "Gmail-Postfachverbindungen konnten nicht geladen werden. Aktualisieren Sie, um es erneut zu versuchen.",
+    "orgsLoadError": "Organisationen konnten nicht geladen werden. Aktualisieren Sie, um es erneut zu versuchen.",
+    "organization": "Organisation",
+    "selectOrg": "Organisation auswählen",
+    "address": "Postfachadresse",
+    "addressPlaceholder": "hilfe@example.com",
+    "displayName": "Anzeigename (optional)",
+    "namePlaceholder": "Unterstützung",
+    "connect": "Verbinden",
+    "credentialOrg": "Anmeldedaten: Google Workspace-Verbindung von {{org}}",
+    "credentialOrgUnknown": "eine Organisation, die Sie nicht sehen können"
   },
   "orgApprovalSecurityTab": {
     "title": "Genehmigungssicherheit",
@@ -4606,7 +4672,32 @@
       "externalProcessing": "Sandbox-KI-Analyse zulassen",
       "externalProcessingDescription": "Ermöglicht es KI-Analyseläufen, für diese Organisation Code in einer isolierten Sandbox ohne Netzwerkzugriff auszuführen, gehostet in der Region dieser Organisation. Standardmäßig deaktiviert.",
       "externalProcessingSaved": "Gespeichert",
-      "externalProcessingSaveFailed": "Diese Einstellung konnte nicht geändert werden"
+      "externalProcessingSaveFailed": "Diese Einstellung konnte nicht geändert werden",
+      "mlFeatures": {
+        "title": "Anomalieerkennung",
+        "description": "Statistische Erkennung von ungewöhnlichem CPU-, Arbeitsspeicher-, Festplatten- und Netzwerkverhalten auf den Geräten dieser Organisation. Leer bedeutet, dass der Partner-Standardwert gilt.",
+        "anomaliesEnabled": "Anomalien erkennen",
+        "anomaliesEnabledDescription": "Führt den Anomalie-Detektor alle 10 Minuten aus und zeigt Ergebnisse auf der Registerkarte „Anomalien“ jedes Geräts an.",
+        "createAlerts": "Alarme aus Anomalien erstellen",
+        "createAlertsDescription": "Wandelt bestätigte Anomalien in Alarme um, damit sie Ihre Benachrichtigungsrouten erreichen.",
+        "inherit": "Erben",
+        "inheritOn": "Erben (an, {{from}})",
+        "inheritOff": "Erben (aus, {{from}})",
+        "fromPartner": "Partnereinstellung",
+        "fromDefault": "Plattform-Standardwert",
+        "on": "An",
+        "off": "Aus",
+        "saved": "Gespeichert",
+        "saveFailed": "Diese Einstellung konnte nicht geändert werden",
+        "killSwitch": "Die Anomalieerkennung ist für die gesamte Plattform vom Betreiber deaktiviert. Diese Einstellungen werden wirksam, sobald sie wieder aktiviert wird.",
+        "remediation": {
+          "title": "Vorgeschlagene Korrekturen",
+          "description": "KI-generierte Korrekturvorschläge für die Alarme dieser Organisation. Leer bedeutet, dass der Partner-Standardwert gilt.",
+          "enabled": "Korrekturvorschläge erzeugen",
+          "enabledDescription": "Techniker dürfen auf der Detailseite eines Alarms Korrekturvorschläge erzeugen.",
+          "killSwitch": "Vorgeschlagene Korrekturen sind vom Betreiber für die gesamte Plattform deaktiviert. Diese Einstellung wird wirksam, sobald sie wieder aktiviert werden."
+        }
+      }
     },
     "breadcrumbs": {
       "settings": "Einstellungen",

@@ -21,6 +21,7 @@ import { formatDate } from '../billing/shared/format';
 import { Drawer } from '../shared/Drawer';
 import { runClientAction } from '../../lib/runClientAction';
 import TicketChecklistCard from '../tickets/TicketChecklistCard';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 export interface OccurrenceDrawerProps {
   fetcher: Fetcher;
@@ -75,6 +76,7 @@ function evidenceRef(ev: OccurrenceEvidence): string {
 
 export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose, onChanged }: OccurrenceDrawerProps) {
   const { t } = useTranslation('deliverables');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const uid = useId();
   const [rows, setRows] = useState<Occurrence[]>([]);
   const [evidenceFiles, setEvidenceFiles] = useState<Record<string, File | null>>({});
@@ -101,7 +103,7 @@ export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose,
         const data = await listOccurrences(fetcher, orgId, deliverable.id, 24);
         if (!cancelled) setRows(data);
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error && err.message ? err.message : t('errors.loadFailed'));
+        if (!cancelled) setError(err instanceof Error && err.message ? err.message : stableT('errors.loadFailed'));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -109,7 +111,7 @@ export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose,
     return () => {
       cancelled = true;
     };
-  }, [fetcher, orgId, deliverable.id, t]);
+  }, [fetcher, orgId, deliverable.id, stableT]);
 
   const openAction = (id: string, kind: ActionKind, current?: Occurrence) => {
     setAction({ id, kind });

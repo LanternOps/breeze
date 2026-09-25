@@ -230,6 +230,18 @@ describe('PATCH /:id and DELETE /:id', () => {
     expect(res.status).toBe(404);
     expect(await res.json()).toMatchObject({ code: 'ENTRY_NOT_FOUND' });
   });
+
+  // #6620 — the service now refuses a zero-row delete; the route must surface
+  // that as a 409 rather than its usual `{ deleted: true }`.
+  it('DELETE /:id surfaces a lost-delete race as 409 ENTRY_DELETE_LOST', async () => {
+    const { TimeEntryServiceError } = await vi.importActual<typeof import('../../services/timeEntryService')>('../../services/timeEntryService');
+    serviceMocks.deleteTimeEntry.mockRejectedValue(
+      new TimeEntryServiceError('Entry could not be deleted — reload and retry', 409, 'ENTRY_DELETE_LOST')
+    );
+    const res = await timeEntriesRoutes.request(`/${TIME_ENTRY_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'ENTRY_DELETE_LOST' });
+  });
 });
 
 describe('POST /time-entries billed-state admission', () => {

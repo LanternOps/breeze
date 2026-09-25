@@ -248,6 +248,11 @@ describe('DeviceAnomaliesPanel', () => {
     render(<DeviceAnomaliesPanel deviceId="dev-1" />);
     await screen.findByText('Anomaly detection disabled');
     expect(fetchWithAuthMock).not.toHaveBeenCalledWith(expect.stringContaining('/anomaly-episodes'));
+
+    // sweep E1: the disabled panel must point at where detection is turned
+    // off, not just say it's off.
+    const link = screen.getByRole('link', { name: /organization settings/i });
+    expect(link).toHaveAttribute('href', '/settings/organizations/org-1#ai');
   });
 
   it('splices an updated episode out of the open list after a resolve', async () => {

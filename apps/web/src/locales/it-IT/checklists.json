@@ -73,7 +73,8 @@
     "errors": {
       "loadFailed": "Impossibile caricare i modelli di checklist.",
       "saveFailed": "Impossibile salvare il modello di checklist.",
-      "applyFailed": "Impossibile applicare il modello di checklist."
+      "applyFailed": "Impossibile applicare il modello di checklist.",
+      "operatorStepWaiting": "Un'attività dell'Operatore sta aspettando un passaggio non spuntato di questo ticket, quindi il modello non può sostituirli. Scegli “Aggiungi questi passaggi alla checklist esistente”, spunta il passaggio quando hai finito, oppure ferma prima l'attività."
     }
   }
 }

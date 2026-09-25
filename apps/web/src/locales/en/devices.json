@@ -133,7 +133,8 @@
     "thisOrganizationOnlyHasOneSite": "This organization only has one site. Add more sites from Settings → Organizations to enable moves.",
     "current": "(current)",
     "cancel": "Cancel",
-    "moving": "Moving..."
+    "moving": "Moving...",
+    "toADifferentSite": "to a different site."
   },
   "createGroupModal": {
     "failedToCreateGroup": "Failed to create group",
@@ -334,6 +335,7 @@
     "metricAnomalies": "Metric Anomalies",
     "anomalyDetectionIsDisabledForThis": "Anomaly detection is disabled for this organization.",
     "anomalyDetectionDisabled": "Anomaly detection disabled",
+    "anomalyDetectionDisabledHint": "Turn it on in <orgLink>organization settings</orgLink> → AI.",
     "showingTheLinkedAnomalyAndRecent": "Showing the linked anomaly and recent anomaly history",
     "openSignalsDetectedFromMetricRollups": "Open signals detected from metric rollups",
     "refreshAnomalies": "Refresh anomalies",
@@ -2609,7 +2611,12 @@
         "checkCreated": "Network check added",
         "checkCreateFailed": "Couldn't add the network check",
         "checkRemoved": "Network check removed",
-        "checkRemoveFailed": "Couldn't remove the network check"
+        "checkRemoveFailed": "Couldn't remove the network check",
+        "siteChanged": "Moved to {{site}}.",
+        "siteChangeFailed": "Couldn't move the asset to the new site",
+        "siteChangedUnlinked": "The link to its agent device was removed because that device is in a different site.",
+        "siteChangedPolicies_one": "{{count}} topology monitoring policy was disabled.",
+        "siteChangedPolicies_other": "{{count}} topology monitoring policies were disabled."
       },
       "title": "{{name}} settings",
       "subtitle": "Manage each section independently.",
@@ -2639,7 +2646,9 @@
           "networkGear": "Network gear",
           "peripherals": "Peripherals",
           "other": "Other"
-        }
+        },
+        "site": "Site",
+        "changeSite": "Change site…"
       },
       "monitoring": {
         "description": "Configure SNMP collection and network checks.",
@@ -3402,5 +3411,57 @@
       "created": "Network asset created",
       "createFailed": "Failed to create network asset"
     }
+  },
+  "hardwareHealth": {
+    "title": "Storage & RAID",
+    "hardware": "Hardware",
+    "ok": "Healthy",
+    "warning": "Warning",
+    "critical": "Critical",
+    "unknown": "Unknown",
+    "loading": "Loading hardware health…",
+    "error": "Unable to load hardware health.",
+    "retry": "Retry",
+    "noReport": "No hardware health report received yet.",
+    "noTools": "No RAID or disk-health tooling detected — probed: {{sources}}",
+    "disabled": "Hardware monitoring is disabled by policy {{policy}}",
+    "collected": "Collected {{time}}",
+    "notSeen": "Not seen since {{time}}",
+    "predictive": "Predictive failure",
+    "virtualDisks": "Virtual disks",
+    "physicalDisks": "Physical disks",
+    "osDisks": "OS-visible disks",
+    "backed": "Backed by RAID virtual disk",
+    "enclosures": "Enclosures: {{total}}",
+    "identity": "Model / serial / firmware",
+    "diskIdentity": "Slot / model / serial / media / interface",
+    "size": "Size",
+    "state": "State",
+    "telemetry": "Temperature / media errors / other errors / power-on hours",
+    "progress": "{{name}} progress",
+    "sources": "Sources",
+    "unavailable": "Not installed",
+    "failed": "Failing: {{error}}",
+    "backingOff": "Backing off until {{time}}",
+    "superseded": "Superseded by {{winner}}",
+    "sourceSuperseded": "Superseded",
+    "sourceDisabled": "Disabled",
+    "partial": "Partial report",
+    "docs": "Installation guidance",
+    "events": "Hardware events",
+    "noEvents": "No hardware events recorded.",
+    "noComponents": "No storage components reported. Check source status below.",
+    "all": "All hardware health",
+    "managementController": "Management controller",
+    "bmcVendor": "Vendor",
+    "bmcFirmware": "Firmware",
+    "bmcIp": "IP address",
+    "bmcMac": "MAC address",
+    "bmcOtherSite": "Management controller found in site {{site}}",
+    "bmcObserved": "Last reported {{time}}; collected daily.",
+    "bmcHost": "Management controller for {{name}}",
+    "bmcAgentReport": "— reported by host agent",
+    "bmcAssociation": "This management controller is associated with its host and remains a separate network device.",
+    "bmcConfirmUnlink": "Remove the management-controller association? Auto-linking stays off for this asset until you link it again."
   }
 }

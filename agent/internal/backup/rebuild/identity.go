@@ -26,20 +26,31 @@ func identity(ctx context.Context, r *run) error {
 			r.warn("no recovery marker given; the server will not auto-complete this recovery")
 			return nil
 		}
-		dir := filepath.Join(r.staging, "var", "lib", "breeze")
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return err
-		}
-		data, _ := json.MarshalIndent(map[string]string{
-			"recoveryId": r.opts.Marker.RecoveryID, "nonce": r.opts.Marker.Nonce,
-			"snapshotId": r.opts.SnapshotID, "completedAt": time.Now().UTC().Format(time.RFC3339),
-		}, "", "  ")
-		return os.WriteFile(filepath.Join(dir, "recovery-marker.json"), data, 0o600)
+		return writeRecoveryMarker(r, filepath.Join(r.staging, "var", "lib", "breeze"))
 	case IdentityNew:
 		return applyNewIdentity(r.staging)
 	default:
 		return fmt.Errorf("unknown identity mode %q", r.opts.Identity)
 	}
+}
+
+// writeRecoveryMarker writes r.opts.Marker (non-nil) as recovery-marker.json
+// in dir, the restored agent's data dir that its heartbeat reads
+// (heartbeat.LoadRecoveryMarker(config.GetDataDir())): /var/lib/breeze on
+// Linux, <root volume>\ProgramData\Breeze\data on Windows. Used by both
+// engines.
+func writeRecoveryMarker(r *run, dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(map[string]string{
+		"recoveryId": r.opts.Marker.RecoveryID, "nonce": r.opts.Marker.Nonce,
+		"snapshotId": r.opts.SnapshotID, "completedAt": time.Now().UTC().Format(time.RFC3339),
+	}, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "recovery-marker.json"), data, 0o600)
 }
 
 // applyNewIdentity makes the tree boot as a fresh machine: empty machine-id

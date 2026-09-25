@@ -24,6 +24,7 @@ import {
 import { cn, paddingLeftPxClass } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 // ============================================================================
 // Types
@@ -634,6 +635,7 @@ export default function RegistryEditor({
   className,
 }: RegistryEditorProps) {
   const { t } = useTranslation('remote');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   // State
   const [currentHive, setCurrentHive] = useState<string>('HKEY_LOCAL_MACHINE');
   const [currentPath, setCurrentPath] = useState<string>('');
@@ -723,20 +725,20 @@ export default function RegistryEditor({
     setLoading(true);
     try {
       if (!onGetValues) {
-        throw new Error(t('registryEditor.errors.valueProvider'));
+        throw new Error(stableT('registryEditor.errors.valueProvider'));
       }
       const vals = await onGetValues(currentHive, currentPath);
       setValues(vals);
       setLoadError(null);
     } catch (error) {
-      const message = error instanceof Error ? error.message : t('registryEditor.errors.loadValues');
-      setLoadError(t('registryEditor.errors.loadValuesDetail', { message }));
+      const message = error instanceof Error ? error.message : stableT('registryEditor.errors.loadValues');
+      setLoadError(stableT('registryEditor.errors.loadValuesDetail', { message }));
       console.error('Failed to load values:', error);
       setValues([]);
     } finally {
       setLoading(false);
     }
-  }, [currentHive, currentPath, onGetValues, t]);
+  }, [currentHive, currentPath, onGetValues, stableT]);
 
   // Load values when path changes
   useEffect(() => {

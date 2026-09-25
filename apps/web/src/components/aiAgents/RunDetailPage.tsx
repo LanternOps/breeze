@@ -39,6 +39,7 @@ import type {
   SweepProposalReason,
 } from '@breeze/shared';
 import { TicketProposalCard } from './TicketProposalCard';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 interface RunDetailPageProps {
   runId: string;
@@ -516,7 +517,7 @@ function TraceEntryRow({
           {entry.intentError && <span className="text-destructive">{entry.intentError}</span>}
           {entry.intentId && (
             <a
-              href="/approvals"
+              href={`/approvals#intent-${entry.intentId}`}
               data-testid={`run-detail-intent-link-${entry.intentId}`}
               className="text-primary hover:underline"
             >
@@ -1135,7 +1136,11 @@ function SweepProposalContent({
       : undefined;
     return (
       <>
-        <a href="/approvals" data-testid={ids.proposalLink(index)} className="text-primary hover:underline">
+        <a
+          href={proposal.intentId ? `/approvals#intent-${proposal.intentId}` : '/approvals'}
+          data-testid={ids.proposalLink(index)}
+          className="text-primary hover:underline"
+        >
           {t('aiAgentsPage.runs.sweep.proposalCreated')}
         </a>
         {stoppedByKey && (
@@ -1452,6 +1457,7 @@ function ExposureBudgetCard({ orgId, kind, t }: { orgId: string; kind: string; t
  */
 export default function RunDetailPage({ runId }: RunDetailPageProps) {
   const { t } = useTranslation('settings');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [run, setRun] = useState<AiAgentRunDetailDto | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -1491,23 +1497,23 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
         return;
       }
       if (!response.ok) {
-        setError(t('aiAgentsPage.runs.detail.errors.load'));
+        setError(stableT('aiAgentsPage.runs.detail.errors.load'));
         return;
       }
       const body = (await response.json()) as { data?: AiAgentRunDetailDto };
       if (!mountedRef.current || requestId !== requestIdRef.current) return;
       if (!body.data) {
-        setError(t('aiAgentsPage.runs.detail.errors.load'));
+        setError(stableT('aiAgentsPage.runs.detail.errors.load'));
         return;
       }
       setRun(body.data);
     } catch {
       if (!mountedRef.current || requestId !== requestIdRef.current) return;
-      setError(t('aiAgentsPage.runs.detail.errors.load'));
+      setError(stableT('aiAgentsPage.runs.detail.errors.load'));
     } finally {
       if (mountedRef.current && requestId === requestIdRef.current) setLoading(false);
     }
-  }, [runId, t]);
+  }, [runId, stableT]);
 
   useEffect(() => {
     void load();
@@ -2338,7 +2344,7 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
               <li key={intent.id} className="flex flex-wrap items-center gap-2">
                 <span className="font-medium">{intent.actionName}</span>
                 <span className="text-xs text-muted-foreground">{intentStatusLabel(t, intent.status)}</span>
-                <a href="/approvals" className="text-primary hover:underline">
+                <a href={`/approvals#intent-${intent.id}`} className="text-primary hover:underline">
                   {t('aiAgentsPage.runs.detail.intents.viewAll')}
                 </a>
               </li>

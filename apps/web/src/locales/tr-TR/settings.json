@@ -99,6 +99,7 @@
     "name": "Ad",
     "principalDescription": "Açıklama",
     "scopes": "Kapsamlar",
+    "noScopes": "Verilmiş kapsam yok",
     "sourceCidrs": "Kaynak IP'leri veya CIDR'ler (satır başına bir tane)",
     "writeScopeRestrictionsRequired": "enrollment-keys:write kapsamı bir son kullanma tarihi ve en az bir kaynak IP veya CIDR gerektirir.",
     "expiresAt": "Süresi doluyor",
@@ -519,6 +520,25 @@
       "communications": "İletişim",
       "branding": "Markalama"
     },
+    "aiFeatures": {
+      "anomalies": {
+        "title": "Anomali tespiti",
+        "description": "Yönetilen cihazlarda olağan dışı CPU, bellek, disk ve ağ davranışının istatistiksel tespiti. Bunlar her kuruluş için varsayılan değerlerdir; bir kuruluş bunları kendi Yapay Zeka sekmesinde geçersiz kılabilir.",
+        "enabled": "Anomalileri tespit et",
+        "enabledDescription": "Anomali dedektörünü her 10 dakikada bir çalıştırır ve bulguları her cihazın Anomaliler sekmesinde gösterir.",
+        "createAlerts": "Anomalilerden uyarı oluştur",
+        "createAlertsDescription": "Onaylanan anomalileri, bildirim rotalarınıza ulaşmaları için uyarılara dönüştürür."
+      },
+      "inheritanceNote": "Değişiklikler, kendi geçersiz kılmasını ayarlamamış her kuruluş için geçerlidir.",
+      "saved": "Kaydedildi",
+      "saveFailed": "Bu ayar değiştirilemedi",
+      "remediation": {
+        "title": "Önerilen düzeltmeler",
+        "description": "Uyarı ayrıntı sayfasında yapay zekâ tarafından oluşturulan düzeltme önerileri. Bu, her kuruluş için varsayılandır; bir kuruluş bunu kendi Yapay Zekâ sekmesinde geçersiz kılabilir.",
+        "enabled": "Önerilen düzeltmeleri oluştur",
+        "enabledDescription": "Teknisyenlerin bir uyarı için ayrıntı sayfasından önerilen düzeltmeler oluşturmasına izin verin."
+      }
+    },
     "tabs": {
       "company": {
         "label": "Şirket",
@@ -568,6 +588,10 @@
       "aiProvider": {
         "label": "Yapay Zeka Sağlayıcısı",
         "description": "Kendi Anthropic anahtarınızı kullanın"
+      },
+      "aiFeatures": {
+        "label": "Yapay Zeka Özellikleri",
+        "description": "Anomali algılama ve önerilen düzeltme varsayılanları"
       },
       "branding": {
         "label": "Markalama",
@@ -963,6 +987,16 @@
     }
   },
   "m365Mailbox": {
+    "consentNotCompleted": "Onay tamamlanmadı",
+    "consentNotCompletedHint": "Bu posta kutusu için Microsoft oturum açma işlemi zamanında tamamlanmadı, bu yüzden kendiliğinden bağlanmayacak. Onayı yeniden deneyin veya bağlantısını kesin.",
+    "retryConsent": "Onayı yeniden dene",
+    "redirectUriLabel": "Microsoft Entra uygulamasına kaydedilecek yönlendirme URI’si",
+    "redirectUriHint": "Tam olarak eşleşmelidir ve bağlanırken Breeze’i aynı şema ve ana bilgisayarla açmalısınız; aksi takdirde oturum açma tamamlanamaz.",
+    "callbackReason": {
+      "binding_mismatch": "Microsoft 365 bağlantısı başarısız oldu: tarayıcı oturum açma çerezi olmadan geri döndü. Breeze’i yönlendirme URI’si ile aynı adreste açın (şema ve ana bilgisayar eşleşmelidir), çerezlere izin verin ve yeniden deneyin.",
+      "invalid_callback": "Microsoft 365 bağlantısı başarısız oldu: Microsoft beklenmeyen bir yanıt döndürdü. Yeniden bağlanmayı deneyin.",
+      "expired": "Microsoft 365 bağlantısı başarısız oldu: oturum açma bağlantısının süresi doldu veya zaten kullanıldı. Yeniden bağlanmayı deneyin."
+    },
     "connected": "Posta kutusu bağlandı",
     "consentGranted": "Onay verildi — posta kutusunun kapsamını aşağıdaki Uygulama Erişim Politikasıyla belirleyin, ardından Yeniden Test Edin",
     "consentAttention": "Posta kutusu onayı yöneticinin dikkatini gerektirir.",
@@ -991,6 +1025,38 @@
     "displayName": "Görünen ad (isteğe bağlı)",
     "namePlaceholder": "Destek",
     "connect": "Bağlan"
+  },
+  "gmailMailbox": {
+    "title": "Google Workspace destek posta kutusu",
+    "description": "Müşteri e-postalarının talebe dönüşmesi için bir Google Workspace posta kutusu bağlayın. Alan genelinde yetki devri kullanılır; MX veya yönlendirme değişikliği ve OAuth yönlendirmesi gerekmez.",
+    "connectHint": "Posta kutusu, seçilen kuruluşun Google Workspace hizmet hesabı bağlantısıyla okunur; kimlik bilgisi bu kuruluşta tutulur. İş ortağına ait bir posta kutusu için (kendi help@ adresiniz gibi) Workspace'i bu posta kutusunu içeren kuruluşu seçin. Bağlamak için paylaşılan destek posta kutusunu girin.",
+    "status": {
+      "pending_consent": "Beklemede",
+      "connected": "Bağlandı",
+      "error": "İlgilenmesi gerekiyor",
+      "reauth_required": "Yeniden kimlik doğrulama gerekli",
+      "disabled": "Devre Dışı"
+    },
+    "reauthRequired": "Bu posta kutusu için Gmail okuması duraklatıldı. Devam etmek için yeniden bağlayın: hizmet hesabının yeniden yetkilendirilmesi gerekebilir, Google Workspace bağlantısı devre dışı olabilir veya posta kutusu artık başka bir Google hesabına çözümleniyor olabilir.",
+    "reconnect": "Yeniden bağlan",
+    "reconnectNoOrg": "Bu bağlantının kuruluşu eksik ve buradan yeniden bağlanamaz.",
+    "disconnect": "Bağlantıyı kes",
+    "disconnected": "Posta kutusunun bağlantısı kesildi",
+    "disconnectFailed": "Bağlantı kesilemedi.",
+    "connected": "Posta kutusu bağlandı",
+    "connectFailed": "Gmail posta kutusu bağlanamadı.",
+    "empty": "Henüz bağlı Gmail posta kutusu yok.",
+    "loadError": "Gmail posta kutusu bağlantıları yüklenemedi. Tekrar denemek için yenileyin.",
+    "orgsLoadError": "Kuruluşlar yüklenemedi. Tekrar denemek için yenileyin.",
+    "organization": "Organizasyon",
+    "selectOrg": "Bir kuruluş seçin",
+    "address": "Posta kutusu adresi",
+    "addressPlaceholder": "destek@example.com",
+    "displayName": "Görünen ad (isteğe bağlı)",
+    "namePlaceholder": "Destek",
+    "connect": "Bağlan",
+    "credentialOrg": "Kimlik bilgisi: {{org}} kuruluşunun Google Workspace bağlantısı",
+    "credentialOrgUnknown": "göremediğiniz bir kuruluş"
   },
   "orgApprovalSecurityTab": {
     "title": "Onay Güvenliği",
@@ -4659,7 +4725,32 @@
       "externalProcessing": "Korumalı alanda yapay zeka analizine izin ver",
       "externalProcessingDescription": "Yapay zeka analiz çalıştırmalarının bu kuruluş için kodu, ağ erişimi olmayan ve bu kuruluşun bölgesinde barındırılan izole bir korumalı alanda çalıştırmasına olanak tanır. Varsayılan olarak kapalıdır.",
       "externalProcessingSaved": "Kaydedildi",
-      "externalProcessingSaveFailed": "Bu ayar değiştirilemedi"
+      "externalProcessingSaveFailed": "Bu ayar değiştirilemedi",
+      "mlFeatures": {
+        "title": "Anomali tespiti",
+        "description": "Bu kuruluşun cihazlarında olağan dışı CPU, bellek, disk ve ağ davranışının istatistiksel tespiti. Boş bırakılırsa iş ortağı varsayılanı uygulanır.",
+        "anomaliesEnabled": "Anomalileri tespit et",
+        "anomaliesEnabledDescription": "Anomali dedektörünü her 10 dakikada bir çalıştırır ve bulguları her cihazın Anomaliler sekmesinde gösterir.",
+        "createAlerts": "Anomalilerden uyarı oluştur",
+        "createAlertsDescription": "Onaylanan anomalileri, bildirim rotalarınıza ulaşmaları için uyarılara dönüştürür.",
+        "inherit": "Devral",
+        "inheritOn": "Devral (açık, {{from}})",
+        "inheritOff": "Devral (kapalı, {{from}})",
+        "fromPartner": "iş ortağı ayarı",
+        "fromDefault": "platform varsayılanı",
+        "on": "Açık",
+        "off": "Kapalı",
+        "saved": "Kaydedildi",
+        "saveFailed": "Bu ayar değiştirilemedi",
+        "killSwitch": "Anomali tespiti, operatör tarafından tüm platform için kapatıldı. Bu ayarlar yeniden açıldığında geçerli olacaktır.",
+        "remediation": {
+          "title": "Önerilen düzeltmeler",
+          "description": "Bu kuruluşun uyarıları için yapay zekâ tarafından oluşturulan düzeltme önerileri. Boş bırakılırsa iş ortağı varsayılanı uygulanır.",
+          "enabled": "Önerilen düzeltmeleri oluştur",
+          "enabledDescription": "Teknisyenlerin bir uyarı için ayrıntı sayfasından önerilen düzeltmeler oluşturmasına izin verin.",
+          "killSwitch": "Önerilen düzeltmeler operatör tarafından tüm platformda kapatıldı. Bu ayar yeniden açıldıklarında geçerli olur."
+        }
+      }
     },
     "breadcrumbs": {
       "settings": "Ayarlar",

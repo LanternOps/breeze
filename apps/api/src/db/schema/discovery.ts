@@ -59,7 +59,8 @@ export const discoveredAssetApprovalStatusEnum = pgEnum('discovered_asset_approv
 
 export const discoveredAssetLinkSourceEnum = pgEnum('discovered_asset_link_source', [
   'manual',
-  'auto'
+  'auto',
+  'agent_report'
 ]);
 
 export const discoveredAssetTypeSourceEnum = pgEnum('discovered_asset_type_source', [

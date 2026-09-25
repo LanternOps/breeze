@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ShieldAlert, CheckCircle, XCircle, RefreshCw, AlertTriangle, X } from 'lucide-react';
-import { fetchWithAuth } from '@/stores/auth';
+import { fetchWithAuth, handleSessionExpired } from '@/stores/auth';
+import { runAction, handleActionError } from '@/lib/runAction';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type QuarantinedDevice = {
   id: string;
@@ -42,6 +44,7 @@ function formatDate(dateString: string): string {
 
 export default function QuarantinedDevices() {
   const { t } = useTranslation('admin');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [devices, setDevices] = useState<QuarantinedDevice[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -54,54 +57,62 @@ export default function QuarantinedDevices() {
       setError(undefined);
       const response = await fetchWithAuth('/agents/quarantined');
       if (!response.ok) {
-        throw new Error(t('admin.quarantinedDevices.errors.fetch'));
+        throw new Error(stableT('admin.quarantinedDevices.errors.fetch'));
       }
       const data = await response.json();
       setDevices(data.devices ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('admin.quarantinedDevices.errors.generic'));
+      setError(err instanceof Error ? err.message : stableT('admin.quarantinedDevices.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [stableT]);
 
   useEffect(() => {
     fetchDevices();
   }, [fetchDevices]);
 
+  // Approve and deny both go through runAction so a failure is toasted (#3531).
+  // Deny runs inside a fixed z-50 confirmation modal, so the page-level `error`
+  // banner would render behind the scrim — a rogue enrollment would look
+  // denied while still pending. On failure the modal stays open for a retry or
+  // cancel and the list is not refetched as if the action succeeded.
   const handleApprove = async (device: QuarantinedDevice) => {
     setActionLoading(device.id);
-    setError(undefined);
     try {
-      const response = await fetchWithAuth(`/agents/${device.id}/approve`, {
-        method: 'POST'
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/agents/${device.id}/approve`, {
+            method: 'POST'
+          }),
+        errorFallback: t('admin.quarantinedDevices.errors.approve'),
+        onUnauthorized: handleSessionExpired,
       });
-      if (!response.ok) {
-        throw new Error(t('admin.quarantinedDevices.errors.approve'));
-      }
       await fetchDevices();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('admin.quarantinedDevices.errors.approve'));
+      handleActionError(err, t('admin.quarantinedDevices.errors.approve'));
     } finally {
       setActionLoading(null);
     }
   };
 
   const handleDenyConfirm = async () => {
-    if (!modal.device) return;
-    setActionLoading(modal.device.id);
-    setError(undefined);
+    const device = modal.device;
+    if (!device) return;
+    setActionLoading(device.id);
     try {
-      const response = await fetchWithAuth(`/agents/${modal.device.id}/deny`, {
-        method: 'POST'
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/agents/${device.id}/deny`, {
+            method: 'POST'
+          }),
+        errorFallback: t('admin.quarantinedDevices.errors.deny'),
+        onUnauthorized: handleSessionExpired,
       });
-      if (!response.ok) {
-        throw new Error(t('admin.quarantinedDevices.errors.deny'));
-      }
       setModal({ type: 'none', device: null });
       await fetchDevices();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('admin.quarantinedDevices.errors.deny'));
+      handleActionError(err, t('admin.quarantinedDevices.errors.deny'));
     } finally {
       setActionLoading(null);
     }

@@ -6,6 +6,7 @@ import { ActionError, runAction } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
 import { ScopeBadge } from '../shared/ScopeBadge';
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -25,6 +26,7 @@ type LegacyRule = {
 
 export default function LegacyRulesTable({ onConverted }: { onConverted?: () => void }) {
   const { t } = useTranslation(['monitoring', 'common']);
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [rows, setRows] = useState<LegacyRule[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -36,16 +38,16 @@ export default function LegacyRulesTable({ onConverted }: { onConverted?: () => 
       setLoading(true);
       setError(undefined);
       const response = await fetchWithAuth('/alerts/rules?limit=200');
-      if (!response.ok) throw new Error(t('monitoring:legacy.errors.fetch'));
+      if (!response.ok) throw new Error(stableT('monitoring:legacy.errors.fetch'));
       const data = await response.json();
       const all: LegacyRule[] = Array.isArray(data?.data) ? data.data : [];
       setRows(all.filter((rule) => rule.managedByMonitorId == null));
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('monitoring:legacy.errors.fetch'));
+      setError(err instanceof Error ? err.message : stableT('monitoring:legacy.errors.fetch'));
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [stableT]);
 
   useEffect(() => {
     void fetchRules();

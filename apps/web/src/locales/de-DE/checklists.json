@@ -73,7 +73,8 @@
     "errors": {
       "loadFailed": "Checklisten-Vorlagen konnten nicht geladen werden.",
       "saveFailed": "Checklisten-Vorlage konnte nicht gespeichert werden.",
-      "applyFailed": "Checklisten-Vorlage konnte nicht angewendet werden."
+      "applyFailed": "Checklisten-Vorlage konnte nicht angewendet werden.",
+      "operatorStepWaiting": "Eine Operator-Aufgabe wartet auf einen nicht erledigten Schritt dieses Tickets – die Vorlage kann die Schritte daher nicht ersetzen. Wählen Sie stattdessen „Diese Schritte zur bestehenden Checkliste hinzufügen“, haken Sie den Schritt ab, wenn die Arbeit erledigt ist, oder stoppen Sie zuerst die Aufgabe."
     }
   }
 }

@@ -2,12 +2,14 @@ import '@/lib/i18n';
 import { useState, useEffect, useCallback } from 'react';
 import { Layers, Plus, Pencil, Trash2, Globe } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, handleSessionExpired } from '../../stores/auth';
+import { runAction, handleActionError, ActionError } from '@/lib/runAction';
 import { useOrgStore } from '../../stores/orgStore';
 import { useDefaultOwnerScope } from '@/hooks/useDefaultOwnerScope';
 import { DETECTION_CLASSES, DATA_TYPE_COLORS } from './constants';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { showToast } from '../shared/Toast';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type Policy = {
   id: string;
@@ -43,6 +45,7 @@ const defaultForm: FormState = {
 
 export default function PoliciesTab() {
   const { t } = useTranslation('security');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [policies, setPolicies] = useState<Policy[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -69,7 +72,7 @@ export default function PoliciesTab() {
       const res = await fetchWithAuth('/sensitive-data/policies');
       if (!res.ok) {
         throw new Error(
-          t('sensitiveDataPoliciesTab.errors.fetchPolicies', {
+          stableT('sensitiveDataPoliciesTab.errors.fetchPolicies', {
             defaultValue: 'Failed to fetch policies',
           }),
         );
@@ -80,12 +83,12 @@ export default function PoliciesTab() {
       setError(
         err instanceof Error
           ? err.message
-          : t('sensitiveDataPoliciesTab.errors.generic', { defaultValue: 'An error occurred' }),
+          : stableT('sensitiveDataPoliciesTab.errors.generic', { defaultValue: 'An error occurred' }),
       );
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [stableT]);
 
   useEffect(() => {
     fetchPolicies();
@@ -123,10 +126,22 @@ export default function PoliciesTab() {
     });
   };
 
+  // Every mutation goes through runAction so a failure is always toasted
+  // (#3531); the delete ConfirmDialog stays open on failure and the page
+  // `error` banner would otherwise render behind it.
+  const reportFailure = (err: unknown, fallback: string) => {
+    handleActionError(err, fallback);
+    if (err instanceof ActionError && err.status === 401) return;
+    setError(err instanceof Error ? err.message : fallback);
+  };
+
   const handleSave = async () => {
     if (!form.name.trim()) return;
     setSaving(true);
     setError(undefined);
+    const saveFallback = t('sensitiveDataPoliciesTab.errors.savePolicy', {
+      defaultValue: 'Failed to save policy',
+    });
     try {
       const schedule: Record<string, unknown> = { type: form.scheduleType };
       if (form.scheduleType === 'interval') schedule.intervalMinutes = form.intervalMinutes;
@@ -144,16 +159,11 @@ export default function PoliciesTab() {
       const url = editingId ? `/sensitive-data/policies/${editingId}` : '/sensitive-data/policies';
       const method = editingId ? 'PUT' : 'POST';
 
-      const res = await fetchWithAuth(url, { method, body: JSON.stringify(body) });
-      if (!res.ok) {
-        const json = await res.json().catch(() => ({}));
-        throw new Error(
-          json.error ||
-            t('sensitiveDataPoliciesTab.errors.savePolicy', {
-              defaultValue: 'Failed to save policy',
-            }),
-        );
-      }
+      await runAction({
+        request: () => fetchWithAuth(url, { method, body: JSON.stringify(body) }),
+        errorFallback: saveFallback,
+        onUnauthorized: handleSessionExpired,
+      });
 
       setShowForm(false);
       await fetchPolicies();
@@ -164,11 +174,7 @@ export default function PoliciesTab() {
         type: 'success',
       });
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : t('sensitiveDataPoliciesTab.errors.saveFailed', { defaultValue: 'Save failed' }),
-      );
+      reportFailure(err, saveFallback);
     } finally {
       setSaving(false);
     }
@@ -181,15 +187,15 @@ export default function PoliciesTab() {
   const handleConfirmDelete = async () => {
     if (!deleteTarget) return;
     setDeleting(true);
+    const fallback = t('sensitiveDataPoliciesTab.errors.deletePolicy', {
+      defaultValue: 'Failed to delete policy',
+    });
     try {
-      const res = await fetchWithAuth(`/sensitive-data/policies/${deleteTarget.id}`, { method: 'DELETE' });
-      if (!res.ok) {
-        throw new Error(
-          t('sensitiveDataPoliciesTab.errors.deletePolicy', {
-            defaultValue: 'Failed to delete policy',
-          }),
-        );
-      }
+      await runAction({
+        request: () => fetchWithAuth(`/sensitive-data/policies/${deleteTarget.id}`, { method: 'DELETE' }),
+        errorFallback: fallback,
+        onUnauthorized: handleSessionExpired,
+      });
       const deletedName = deleteTarget.name;
       setDeleteTarget(null);
       await fetchPolicies();
@@ -201,36 +207,29 @@ export default function PoliciesTab() {
         type: 'success',
       });
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : t('sensitiveDataPoliciesTab.errors.deleteFailed', { defaultValue: 'Delete failed' }),
-      );
+      reportFailure(err, fallback);
     } finally {
       setDeleting(false);
     }
   };
 
   const handleToggleActive = async (policy: Policy) => {
+    const fallback = t('sensitiveDataPoliciesTab.errors.updatePolicy', {
+      defaultValue: 'Failed to update policy',
+    });
     try {
-      const res = await fetchWithAuth(`/sensitive-data/policies/${policy.id}`, {
-        method: 'PUT',
-        body: JSON.stringify({ isActive: !policy.isActive }),
-      });
-      if (!res.ok) {
-        throw new Error(
-          t('sensitiveDataPoliciesTab.errors.updatePolicy', {
-            defaultValue: 'Failed to update policy',
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/sensitive-data/policies/${policy.id}`, {
+            method: 'PUT',
+            body: JSON.stringify({ isActive: !policy.isActive }),
           }),
-        );
-      }
+        errorFallback: fallback,
+        onUnauthorized: handleSessionExpired,
+      });
       await fetchPolicies();
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : t('sensitiveDataPoliciesTab.errors.updateFailed', { defaultValue: 'Update failed' }),
-      );
+      reportFailure(err, fallback);
     }
   };
 

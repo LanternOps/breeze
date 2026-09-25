@@ -133,7 +133,8 @@
     "thisOrganizationOnlyHasOneSite": "Questa organizzazione ha un solo sito. Aggiungi altri siti da Impostazioni → Organizzazioni per abilitare gli spostamenti.",
     "current": "(corrente)",
     "cancel": "Annulla",
-    "moving": "Spostamento..."
+    "moving": "Spostamento...",
+    "toADifferentSite": "in un sito diverso."
   },
   "createGroupModal": {
     "failedToCreateGroup": "Impossibile creare il gruppo",
@@ -334,6 +335,7 @@
     "metricAnomalies": "Anomalie delle metriche",
     "anomalyDetectionIsDisabledForThis": "Il rilevamento delle anomalie è disabilitato per questa organizzazione.",
     "anomalyDetectionDisabled": "Rilevamento anomalie disabilitato",
+    "anomalyDetectionDisabledHint": "Attivalo nelle <orgLink>impostazioni dell’organizzazione</orgLink> → IA.",
     "showingTheLinkedAnomalyAndRecent": "Visualizzazione dell'anomalia collegata e della cronologia recente delle anomalie",
     "openSignalsDetectedFromMetricRollups": "Segnali aperti rilevati dai rollup delle metriche",
     "refreshAnomalies": "Aggiorna anomalie",
@@ -2702,7 +2704,9 @@
           "networkGear": "Apparati di rete",
           "peripherals": "Periferiche",
           "other": "Altro"
-        }
+        },
+        "site": "Sito",
+        "changeSite": "Cambia sito…"
       },
       "monitoring": {
         "description": "Configura la raccolta SNMP e i controlli di rete.",
@@ -2814,7 +2818,12 @@
         "checkCreated": "Controllo di rete aggiunto",
         "checkCreateFailed": "Impossibile aggiungere il controllo di rete",
         "checkRemoved": "Controllo di rete rimosso",
-        "checkRemoveFailed": "Impossibile rimuovere il controllo di rete"
+        "checkRemoveFailed": "Impossibile rimuovere il controllo di rete",
+        "siteChanged": "Spostato in {{site}}.",
+        "siteChangeFailed": "Impossibile spostare l'asset nel nuovo sito",
+        "siteChangedUnlinked": "Il collegamento al dispositivo con agente è stato rimosso perché quel dispositivo si trova in un altro sito.",
+        "siteChangedPolicies_one": "{{count}} criterio di monitoraggio della topologia è stato disattivato.",
+        "siteChangedPolicies_other": "{{count}} criteri di monitoraggio della topologia sono stati disattivati."
       }
     },
     "header": {
@@ -3402,5 +3411,57 @@
       "created": "Asset di rete creato",
       "createFailed": "Impossibile creare l’asset di rete"
     }
+  },
+  "hardwareHealth": {
+    "title": "Archiviazione e RAID",
+    "hardware": "Dispositivi",
+    "ok": "Integro",
+    "warning": "Avviso",
+    "critical": "Critico",
+    "unknown": "Sconosciuto",
+    "loading": "Caricamento stato hardware…",
+    "error": "Impossibile caricare lo stato hardware.",
+    "retry": "Riprova",
+    "noReport": "Nessun rapporto hardware ricevuto.",
+    "noTools": "Nessuno strumento RAID o dischi rilevato — verificati: {{sources}}",
+    "disabled": "Monitoraggio hardware disabilitato dal criterio {{policy}}",
+    "collected": "Raccolto {{time}}",
+    "notSeen": "Non rilevato da {{time}}",
+    "predictive": "Guasto previsto",
+    "virtualDisks": "Dischi virtuali",
+    "physicalDisks": "Dischi fisici",
+    "osDisks": "Dischi visibili al sistema",
+    "backed": "Basato su disco virtuale RAID",
+    "enclosures": "Enclosure: {{total}}",
+    "identity": "Modello / seriale / firmware",
+    "diskIdentity": "Slot / modello / seriale / supporto / interfaccia",
+    "size": "Dimensione",
+    "state": "Stato",
+    "telemetry": "Temperatura / errori supporto / altri errori / ore di utilizzo",
+    "progress": "Avanzamento di {{name}}",
+    "sources": "Origini",
+    "unavailable": "Non installato",
+    "failed": "Errore: {{error}}",
+    "backingOff": "In pausa fino a {{time}}",
+    "superseded": "Sostituito da {{winner}}",
+    "sourceSuperseded": "Sostituito",
+    "sourceDisabled": "Disabilitato",
+    "partial": "Rapporto parziale",
+    "docs": "Guida all’installazione",
+    "events": "Eventi hardware",
+    "noEvents": "Nessun evento hardware registrato.",
+    "noComponents": "Nessun componente segnalato. Verifica le origini.",
+    "all": "Tutti gli stati hardware",
+    "managementController": "Controller di gestione",
+    "bmcVendor": "Produttore",
+    "bmcFirmware": "Versione firmware",
+    "bmcIp": "Indirizzo IP",
+    "bmcMac": "Indirizzo MAC",
+    "bmcOtherSite": "Controller di gestione trovato nel sito {{site}}",
+    "bmcObserved": "Ultima segnalazione: {{time}}; raccolta giornaliera.",
+    "bmcHost": "Controller di gestione di {{name}}",
+    "bmcAgentReport": "— segnalato dall’agente dell’host",
+    "bmcAssociation": "Questo controller di gestione è associato al proprio host e rimane un dispositivo di rete separato.",
+    "bmcConfirmUnlink": "Rimuovere l’associazione del controller di gestione? Il collegamento automatico rimane disattivato per questa risorsa finché non viene collegata di nuovo."
   }
 }

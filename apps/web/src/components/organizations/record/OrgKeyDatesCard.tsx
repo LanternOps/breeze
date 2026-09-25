@@ -14,6 +14,7 @@ import { formatDate } from '@/components/billing/shared/format';
 import { ActionError, handleActionError } from '@/lib/runAction';
 import { runClientAction } from '@/lib/runClientAction';
 import { useLatest, type OrgFetch } from './orgRecordFetch';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 const KINDS: readonly KeyDateKind[] = [
   'insurance_renewal',
@@ -94,6 +95,7 @@ function byDate(a: KeyDate, b: KeyDate): number {
  */
 export default function OrgKeyDatesCard({ orgId, orgFetch }: { orgId: string; orgFetch: OrgFetch }) {
   const { t } = useTranslation('deliverables');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [rows, setRows] = useState<KeyDate[] | LoadFailure | null>(null);
   // `'new'` = the add form; a row id = editing that row; null = closed.
   const [editing, setEditing] = useState<'new' | string | null>(null);
@@ -105,7 +107,7 @@ export default function OrgKeyDatesCard({ orgId, orgFetch }: { orgId: string; or
   const formId = useId();
 
   const load = useCallback(async () => {
-    const fallback = t('keyDates.errors.loadFailed');
+    const fallback = stableT('keyDates.errors.loadFailed');
     const result = await latest.run(
       listKeyDates(orgFetch, orgId)
         .then((list): KeyDate[] | LoadFailure => {
@@ -120,7 +122,7 @@ export default function OrgKeyDatesCard({ orgId, orgFetch }: { orgId: string; or
     );
     if (result === undefined) return;
     setRows(result);
-  }, [latest, orgFetch, orgId, t]);
+  }, [latest, orgFetch, orgId, stableT]);
 
   useEffect(() => {
     void load();

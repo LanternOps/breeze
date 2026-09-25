@@ -8,6 +8,7 @@ import { showToast } from '@/components/shared/Toast';
 
 vi.mock('@/stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+  handleSessionExpired: vi.fn(),
 }));
 
 // This suite is about tabs/processes/services, not live events. The real hook
@@ -490,5 +491,86 @@ describe('RemoteToolsPage Scheduled Tasks tab surfaces an unavailable device (sw
       await screen.findByText('No scheduled tasks have been loaded for this device'),
     ).toBeInTheDocument();
     expect(screen.queryByText('The device is offline.')).not.toBeInTheDocument();
+  });
+});
+
+describe('RemoteToolsPage mutations surface failures (#3531)', () => {
+  const statusResponse = (payload: unknown, status: number): Response =>
+    ({ ok: status < 400, status, json: vi.fn().mockResolvedValue(payload) } as unknown as Response);
+
+  const PROCESS = { pid: 4242, name: 'rogue.exe', user: 'SYSTEM', cpuPercent: 1, memoryMb: 10, status: 'running' };
+  const TASK = { path: '\\Nightly Backup', name: 'Nightly Backup', state: 'ready' };
+
+  const processListFetches = () =>
+    fetchMock.mock.calls.filter(
+      ([url, init]) => String(url).includes('/processes?') && !(init as RequestInit | undefined)?.method,
+    ).length;
+  const taskListFetches = () =>
+    fetchMock.mock.calls.filter(
+      ([url, init]) => String(url).endsWith('/tasks') && !(init as RequestInit | undefined)?.method,
+    ).length;
+
+  function route(mutationSuffix: string, mutation: Response) {
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (init?.method === 'POST' && url.endsWith(mutationSuffix)) return mutation;
+      if (url.includes('/processes?')) return statusResponse({ data: [PROCESS] }, 200);
+      if (url.endsWith('/tasks')) return statusResponse({ data: [TASK] }, 200);
+      return makeResponse();
+    });
+  }
+
+  async function confirmKill() {
+    renderPage();
+    await screen.findByText('rogue.exe');
+    await userEvent.click(screen.getByTitle('Kill Process'));
+    const heading = await screen.findByRole('heading', { name: 'Kill Process' });
+    const dialog = heading.closest('div.fixed') as HTMLElement;
+    const confirm = Array.from(dialog.querySelectorAll('button')).filter((b) => b.textContent?.includes('Kill Process')).pop()!;
+    await userEvent.click(confirm);
+  }
+
+  it('kill failure toasts the server reason, keeps the confirm dialog open, and does not refetch', async () => {
+    route('/processes/4242/kill', statusResponse({ error: 'Access is denied' }, 500));
+    await confirmKill();
+
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: 'Access is denied' })),
+    );
+    expect(screen.getByRole('heading', { name: 'Kill Process' })).toBeInTheDocument();
+    expect(processListFetches()).toBe(1);
+  });
+
+  it('kill with an expired session (401) hands off to the session-expired redirect', async () => {
+    const { handleSessionExpired } = await import('@/stores/auth');
+    route('/processes/4242/kill', statusResponse({ error: 'Unauthorized' }, 401));
+    await confirmKill();
+
+    await waitFor(() => expect(handleSessionExpired).toHaveBeenCalled());
+    expect(processListFetches()).toBe(1);
+  });
+
+  it('kill success closes the confirm dialog and refetches', async () => {
+    route('/processes/4242/kill', statusResponse({ success: true }, 200));
+    await confirmKill();
+
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Kill Process' })).toBeNull());
+    expect(processListFetches()).toBe(2);
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+  });
+
+  it('scheduled-task run failure is toasted (previously console-only)', async () => {
+    window.location.hash = '#tasks';
+    route('/run', statusResponse({ error: 'Task scheduler refused' }, 403));
+    renderPage();
+    await screen.findByText('Nightly Backup');
+
+    await userEvent.click(screen.getByTitle('Run Now'));
+
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error', message: 'Task scheduler refused' }),
+      ),
+    );
+    expect(taskListFetches()).toBe(1);
   });
 });

@@ -29,6 +29,7 @@ import {
 } from '../../lib/api/pax8Orders';
 import Pax8OrderBuilder from './Pax8OrderBuilder';
 import { PAX8_ORDER_STATUS_I18N_KEYS, displayQuantity } from './pax8OrderUi';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 const onUnauthorized = () => void navigateTo('/login', { replace: true });
 const mutableStatuses = new Set(['draft', 'awaiting_details']);
@@ -83,6 +84,7 @@ export function Pax8SubscriptionTable({
 
 export default function Pax8OrgTab({ orgId }: { orgId: string }) {
   const { t } = useTranslation('settings');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [integrationId, setIntegrationId] = useState<string | null>(null);
@@ -106,12 +108,12 @@ export default function Pax8OrgTab({ orgId }: { orgId: string }) {
         listPax8Companies(), listPax8Subscriptions(orgId), listPax8Orders(orgId), listPax8Products(),
       ]);
       const companyPayload = await companiesResponse.json().catch(() => null) as { data?: Pax8Company[]; integrationId?: string | null; error?: string } | null;
-      if (!companiesResponse.ok) throw new Error(companyPayload?.error || t('pax8.errors.load'));
+      if (!companiesResponse.ok) throw new Error(companyPayload?.error || stableT('pax8.errors.load'));
       const subscriptionPayload = await subscriptionsResponse.json().catch(() => null) as { data?: Pax8Subscription[]; integrationId?: string | null; error?: string } | null;
-      if (!subscriptionsResponse.ok) throw new Error(subscriptionPayload?.error || t('pax8.errors.load'));
+      if (!subscriptionsResponse.ok) throw new Error(subscriptionPayload?.error || stableT('pax8.errors.load'));
       const [nextOrders, nextProducts] = await Promise.all([
-        readData<Pax8Order[]>(ordersResponse, t('pax8.errors.load')),
-        readData<Pax8ProductOption[]>(productsResponse, t('pax8.errors.load')),
+        readData<Pax8Order[]>(ordersResponse, stableT('pax8.errors.load')),
+        readData<Pax8ProductOption[]>(productsResponse, stableT('pax8.errors.load')),
       ]);
       setCompanies(Array.isArray(companyPayload?.data) ? companyPayload.data : []);
       setIntegrationId(companyPayload?.integrationId ?? subscriptionPayload?.integrationId ?? null);
@@ -119,25 +121,25 @@ export default function Pax8OrgTab({ orgId }: { orgId: string }) {
       setOrders(nextOrders.slice(0, 100));
       setProducts(nextProducts.slice(0, 200));
     } catch (error) {
-      setLoadError(error instanceof Error ? error.message : t('pax8.errors.load'));
+      setLoadError(error instanceof Error ? error.message : stableT('pax8.errors.load'));
     } finally {
       setLoading(false);
     }
-  }, [orgId, t]);
+  }, [orgId, stableT]);
 
   const loadBundle = useCallback(async () => {
     if (!selectedOrderId) { setBundle(null); return; }
     setBundleLoading(true);
     try {
       const loaded = await getPax8Order(selectedOrderId)
-        .then((response) => readData<Pax8OrderBundle>(response, t('pax8.errors.loadOrder')));
-      if (loaded.order.orgId !== orgId) throw new Error(t('pax8.errors.foreignOrder'));
+        .then((response) => readData<Pax8OrderBundle>(response, stableT('pax8.errors.loadOrder')));
+      if (loaded.order.orgId !== orgId) throw new Error(stableT('pax8.errors.foreignOrder'));
       setBundle(loaded);
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : t('pax8.errors.loadOrder'));
+      setActionError(error instanceof Error ? error.message : stableT('pax8.errors.loadOrder'));
       setBundle(null);
     } finally { setBundleLoading(false); }
-  }, [orgId, selectedOrderId, t]);
+  }, [orgId, selectedOrderId, stableT]);
 
   useEffect(() => { void load(); }, [load]);
   useEffect(() => { void loadBundle(); }, [loadBundle]);

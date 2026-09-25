@@ -1,4 +1,4 @@
-import { randomBytes } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 import { automationActionSchema, scriptParametersSchema, alertTriggerKey, buildTriggerKey, interpolateAlertTemplate, type RemediationTrigger, type DeploymentTargetConfig } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
@@ -1864,9 +1864,17 @@ async function executeCreateAlertAction(
   );
   const message = interpolateAlertTemplate(action.alertMessage, templateContext);
 
+  // Every create_alert action shares ONE synthetic per-org rule, so several can
+  // be open on one device at once. Each alert is its own subject: the open-alert
+  // identity index (one open alert per rule, device, subject — W03 #6854) must
+  // never merge distinct automation alerts. The 110300 migration keys existing
+  // rows with the same `automation-alert:<id>` form.
+  const alertId = randomUUID();
   const [createdAlert] = await db
     .insert(alerts)
     .values({
+      id: alertId,
+      subjectKey: `automation-alert:${alertId}`,
       ruleId,
       deviceId: context.device.id,
       orgId: context.device.orgId,
@@ -2015,6 +2023,9 @@ async function executeAiTriageAction(
       siteId: context.device.siteId,
       deviceTags: deviceRow?.tags ?? [],
       category: classification?.category ?? null,
+      // #6749 — lifecycle-source exclusion (e.g. warranty_evaluator), same
+      // read as `classification` above (see patchWorkClassifier.ts).
+      source: classification?.source ?? null,
     };
   }
 
@@ -3001,6 +3012,13 @@ export async function createAutomationRunRecord(options: {
   /** Event-target binding (#3824): when set, the run targets EXACTLY these
    * devices and resolveAutomationTargetDeviceIds is NOT consulted. */
   boundDeviceIds?: string[];
+  /**
+   * W03 Task 10 — the caller (subjectResponseOutbox's `admitSubjectResponse`)
+   * owns publishing `automation.started` itself, only after ITS OWN outer
+   * transaction commits. Skips the publish loop below entirely; the default
+   * path (every other caller) is unchanged byte-for-byte.
+   */
+  deferStartedEvent?: boolean;
 }): Promise<{ run: AutomationRunRow; targetDeviceIds: string[] }> {
   const normalized = normalizeAutomationInput({
     trigger: options.automation.trigger,
@@ -3049,6 +3067,8 @@ export async function createAutomationRunRecord(options: {
       .where(eq(automations.id, options.automation.id));
     return created;
   });
+
+  if (options.deferStartedEvent) return { run, targetDeviceIds };
 
   // Lifecycle events carry an org. An org-owned automation publishes to its
   // own org (unchanged); a partner-wide automation (orgId NULL, #2133) has no

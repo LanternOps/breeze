@@ -2,7 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // utils.ts (transitively imported by the handlers) pulls in the db module at
 // import time; stub it so importing the registry doesn't open a connection.
-vi.mock('../../db', () => ({ db: {} }));
+// `select` is a real mock (not `{}`) so handlers that query the db directly
+// (e.g. patchComplianceHandler) can be driven per-test.
+const { mockDbSelect } = vi.hoisted(() => ({ mockDbSelect: vi.fn() }));
+vi.mock('../../db', () => ({ db: { select: mockDbSelect } }));
 
 const { getRecentMetricsMock, getLatestMetricMock } = vi.hoisted(() => ({
   getRecentMetricsMock: vi.fn(),
@@ -19,6 +22,10 @@ import './index';
 import { conditionPayloadsFrom, evaluateConditions, findRetiredConditionTypes, interpolateTemplate, retiredConditionTypeError } from './index';
 import { conditionRegistry } from './registry';
 import { offlineHandler } from './handlers/offline';
+import { interpolateAlertTemplate } from '@breeze/shared';
+import { patchComplianceKind } from '../monitors/kinds/patchCompliance';
+import { bandwidthKind } from '../monitors/kinds/bandwidth';
+import { networkErrorsKind } from '../monitors/kinds/networkErrors';
 
 describe('condition registry wiring (issue #1857)', () => {
   it('resolves the legacy "status" condition type to the offline handler', () => {
@@ -238,5 +245,173 @@ describe('interpolateTemplate', () => {
     expect(interpolateTemplate('{{device}} offline', { deviceName: 'DESKTOP-8UG65K6' })).toBe(
       'DESKTOP-8UG65K6 offline',
     );
+  });
+});
+
+describe('evaluateConditions context for non-threshold kinds (issue #6932)', () => {
+  beforeEach(() => {
+    mockDbSelect.mockReset();
+    getRecentMetricsMock.mockReset();
+    getLatestMetricMock.mockReset();
+  });
+
+  it('fills actualValue/operator/threshold for a patch_compliance condition, so the built-in template renders with no {{ left', async () => {
+    // Drives db.select({...}).from(...).where(...).orderBy(...).limit(1).
+    mockDbSelect.mockReturnValue({
+      from: () => ({
+        where: () => ({
+          orderBy: () => ({
+            limit: () => Promise.resolve([{ patchComplianceScore: 50 }]),
+          }),
+        }),
+      }),
+    });
+
+    const result = await evaluateConditions(
+      { type: 'patch_compliance', operator: 'lt', value: 80 },
+      'device-1'
+    );
+
+    expect(result.triggered).toBe(true);
+    expect(result.context.actualValue).toBe(50);
+    expect(result.context.threshold).toBe(80);
+    expect(result.context.operator).toBe('<');
+
+    const title = interpolateAlertTemplate(patchComplianceKind.titleTemplate, {
+      ...result.context,
+      ruleName: 'Low patch compliance',
+      deviceName: 'DESKTOP-8UG65K6',
+    });
+    const message = interpolateAlertTemplate(patchComplianceKind.messageTemplate, {
+      ...result.context,
+      ruleName: 'Low patch compliance',
+      deviceName: 'DESKTOP-8UG65K6',
+    });
+
+    expect(title).not.toContain('{{');
+    expect(message).toBe('Low patch compliance: patch compliance 50% (< 80%)');
+  });
+
+  it('fills actualValue/operator/threshold for a bandwidth_high condition', async () => {
+    getRecentMetricsMock.mockResolvedValue([
+      { bandwidthInBps: 120_000_000, bandwidthOutBps: 0 },
+    ] as never);
+
+    const result = await evaluateConditions(
+      { type: 'bandwidth_high', direction: 'in', operator: 'gt', value: 100 },
+      'device-1'
+    );
+
+    expect(result.triggered).toBe(true);
+    expect(result.context.actualValue).toBe(120_000_000);
+    expect(result.context.threshold).toBe(100);
+    expect(result.context.operator).toBe('>');
+
+    const message = interpolateAlertTemplate(bandwidthKind.messageTemplate, {
+      ...result.context,
+      ruleName: 'High bandwidth',
+      direction: 'in',
+    });
+    expect(message).not.toContain('{{');
+  });
+
+  it('fills actualValue/operator/threshold for a network_errors condition', async () => {
+    getRecentMetricsMock.mockResolvedValue([
+      { interfaceStats: [{ name: 'eth0', inErrors: 12, outErrors: 0 }] },
+    ] as never);
+
+    const result = await evaluateConditions(
+      { type: 'network_errors', errorType: 'in', operator: 'gt', value: 5 },
+      'device-1'
+    );
+
+    expect(result.triggered).toBe(true);
+    expect(result.context.actualValue).toBe(12);
+    expect(result.context.threshold).toBe(5);
+    expect(result.context.operator).toBe('>');
+
+    const message = interpolateAlertTemplate(networkErrorsKind.messageTemplate, {
+      ...result.context,
+      ruleName: 'Network errors',
+      errorType: 'in',
+    });
+    expect(message).not.toContain('{{');
+  });
+});
+
+describe('evaluateConditions primary actualValue is deterministic, not a race (follow-up to #6932)', () => {
+  // Two synthetic handlers whose resolution order the test controls
+  // explicitly (via `pendingResolvers`), independent of their position in
+  // the conditions array — sibling leaves under a group run through
+  // `Promise.all`, so "whichever settles first" and "array order" are two
+  // different things, and only array (tree) order is allowed to matter.
+  let pendingResolvers: Array<() => void>;
+
+  function registerControlledHandler(type: string, actualValue: number) {
+    conditionRegistry.register({
+      type,
+      evaluate: () =>
+        new Promise((resolve) => {
+          pendingResolvers.push(() =>
+            resolve({ passed: true, description: `${type} fired`, actualValue }),
+          );
+        }),
+      validate: () => [],
+    });
+  }
+
+  beforeEach(() => {
+    pendingResolvers = [];
+    registerControlledHandler('test_order_leaf_a', 111);
+    registerControlledHandler('test_order_leaf_b', 222);
+  });
+
+  it('picks the FIRST-IN-ARRAY leaf even when it is the LAST to resolve (no threshold/metric leaf present)', async () => {
+    const resultPromise = evaluateConditions(
+      {
+        logic: 'or',
+        conditions: [
+          { type: 'test_order_leaf_a' }, // array position 0 — must win
+          { type: 'test_order_leaf_b' }, // array position 1 — resolves first in time
+        ],
+      },
+      'device-1',
+    );
+
+    // Resolve out of array order: b (index 1) completes before a (index 0).
+    pendingResolvers[1]!();
+    await Promise.resolve();
+    pendingResolvers[0]!();
+
+    const result = await resultPromise;
+    expect(result.context.actualValue).toBe(111);
+  });
+
+  it('still prefers a threshold/metric leaf over a non-threshold leaf that resolves first', async () => {
+    // A real macrotask delay (not just an extra microtask hop) so the
+    // non-threshold leaf UNAMBIGUOUSLY finishes first in wall-clock time —
+    // this is what makes the test a genuine red-first guard for the
+    // preference rule itself, not just for tree order (test above).
+    getRecentMetricsMock.mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve([{ ramPercent: 92 }]), 5)),
+    );
+    getLatestMetricMock.mockResolvedValue({ ramPercent: 92 });
+
+    const resultPromise = evaluateConditions(
+      {
+        logic: 'or',
+        conditions: [
+          { type: 'metric', metric: 'ram', operator: 'gt', value: 50 }, // array position 0, real threshold handler — settles LAST
+          { type: 'test_order_leaf_a' }, // array position 1, non-threshold — settles FIRST
+        ],
+      },
+      'device-1',
+    );
+
+    // Resolved on the next microtask, long before the real handler's 5ms timer.
+    pendingResolvers[0]!();
+
+    const result = await resultPromise;
+    expect(result.context.actualValue).toBe(92);
   });
 });

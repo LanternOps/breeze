@@ -1125,8 +1125,11 @@
         "recipientRequired": "Saisissez au moins un destinataire pour envoyer.",
         "signaturePreviewLabel": "Signature (définie dans Paramètres → Image de marque) :",
         "subjectLabel": "Objet",
-        "subjectPlaceholder": "Proposition {{number}} de votre entreprise",
-        "subjectPlaceholderNoNumber": "Proposition de votre entreprise",
+        "subjectPartnerFallback": "votre entreprise",
+        "subjectPlaceholder": "Proposition {{number}} de {{partner}}",
+        "subjectPlaceholderNoNumber": "Proposition de {{partner}}",
+        "subjectPlaceholderTemplate": "Utilise l'objet de votre modèle d'e-mail de proposition",
+        "subjectPlaceholderTitled": "{{title}} — proposition de {{partner}}",
         "title": "Envoyer cette proposition ?",
         "toLabel": "À",
         "toPlaceholder": "Ajouter un destinataire…",
@@ -2202,22 +2205,33 @@
       "taxId": "Identifiant fiscal",
       "taxRate": "Taux de taxe (%)",
       "title": "Taxe"
+    },
+    "terms": {
+      "description": "Nombre de jours entre l'émission et l'échéance des factures de cette organisation. Laissez vide pour utiliser la valeur par défaut du partenaire. Les modifications s'appliquent aux factures émises à partir de maintenant ; les factures émises conservent leur date d'échéance.",
+      "invalid": "Saisissez un nombre entier de jours entre 0 et 365.",
+      "partnerDefault": "Valeur par défaut du partenaire",
+      "paymentTermsDays": "Délai de paiement (jours)",
+      "title": "Délai de paiement"
     }
   },
   "partnerBillingSettings": {
     "company": {
+      "addressInherited": "Identique aux coordonnées de l'entreprise",
       "addressLine1": "Adresse ligne 1",
       "addressLine2": "Adresse ligne 2",
+      "addressTitle": "Adresse",
       "city": "Ville",
       "country": "Pays",
       "defaultTerms": "Conditions générales par défaut",
       "defaultTermsPlaceholder": "Conditions de paiement, clauses de non-responsabilité, garantie, etc.",
       "description": "Affiché comme vendeur sur les devis et factures.",
+      "inheritedFromCompanyDetails": "Coordonnées de l'entreprise",
       "name": "Nom de l'entreprise",
       "phone": "Téléphone",
       "postal": "Code postal",
       "region": "État / région",
       "title": "Contact entreprise",
+      "useCompanyAddress": "Utiliser l'adresse de l'entreprise",
       "website": "Site web"
     },
     "defaults": {

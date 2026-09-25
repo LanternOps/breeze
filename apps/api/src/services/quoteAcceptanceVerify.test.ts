@@ -8,7 +8,7 @@ const { results, capturedValues } = vi.hoisted(() => ({
 
 vi.mock('../db', () => {
   const chain: Record<string, unknown> = {};
-  const passthrough = ['select', 'from', 'where', 'limit', 'orderBy', 'insert', 'returning', 'update', 'set', 'delete', 'for', 'innerJoin'];
+  const passthrough = ['select', 'from', 'where', 'limit', 'orderBy', 'insert', 'returning', 'update', 'set', 'delete', 'for', 'innerJoin', 'leftJoin'];
   for (const method of passthrough) chain[method] = vi.fn(() => chain);
   chain.values = vi.fn((value: unknown) => {
     capturedValues.push(value);

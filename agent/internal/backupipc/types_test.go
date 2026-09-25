@@ -126,6 +126,20 @@ func TestBackupCapabilitiesRoundTrip(t *testing.T) {
 	}
 }
 
+// #6598: the helper's verify/test-restore budget must expire before the
+// agent's forward wait, with room to unwind, or the partial counts are lost.
+func TestVerifyRunBudgetStaysUnderCommandTimeout(t *testing.T) {
+	if VerifyCommandTimeout != 2*time.Hour {
+		t.Fatalf("verify command timeout = %v, want the API's 2h LONG_TIMEOUT_TYPES tier", VerifyCommandTimeout)
+	}
+	if VerifyRunBudget <= 0 || VerifyRunBudget >= VerifyCommandTimeout {
+		t.Fatalf("run budget %v must be positive and shorter than the command timeout %v", VerifyRunBudget, VerifyCommandTimeout)
+	}
+	if VerifyCommandTimeout-VerifyRunBudget < 5*time.Minute {
+		t.Fatalf("keep >=5m between run budget %v and command timeout %v for unwind + cleanup + IPC", VerifyRunBudget, VerifyCommandTimeout)
+	}
+}
+
 func TestBackupStopDrainStaysUnderForwardTimeout(t *testing.T) {
 	if BackupStopDrainTimeout >= BackupStopForwardTimeout {
 		t.Fatalf("drain %v must be shorter than forward %v or a drained stop times out at the agent", BackupStopDrainTimeout, BackupStopForwardTimeout)

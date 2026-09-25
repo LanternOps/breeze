@@ -1,8 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, handleSessionExpired } from '../../stores/auth';
 import { useOrgStore, type Site } from '../../stores/orgStore';
 import { fallbackInstallerFilename, filenameFromContentDisposition } from '@/lib/downloadFilename';
-import { extractApiError } from '@/lib/apiError';
 import { navigateTo } from '@/lib/navigation';
 import { fetchAllSites } from '@/lib/fetchAllSites';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
@@ -12,6 +11,7 @@ import { Trans, useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { formatDate } from '@/lib/dateTimeFormat';
 import { PRODUCT_DEFAULT_ENROLLMENT_DEVICE_COUNT } from '@breeze/shared';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 interface EnrollmentKey {
   id: string;
@@ -79,6 +79,7 @@ type ModalMode = 'closed' | 'create' | 'delete';
 
 export default function EnrollmentKeyManager() {
   const { t } = useTranslation('settings');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { currentOrgId, organizations } = useOrgStore();
   const [keys, setKeys] = useState<EnrollmentKey[]>([]);
   const [loading, setLoading] = useState(true);
@@ -128,7 +129,7 @@ export default function EnrollmentKeyManager() {
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error(t('enrollmentKeys.fetchFailed'));
+        throw new Error(stableT('enrollmentKeys.fetchFailed'));
       }
       const data = await response.json();
       setKeys(data.data ?? []);
@@ -137,11 +138,11 @@ export default function EnrollmentKeyManager() {
       setTotalPages(Math.max(1, Math.ceil(total / limit)));
       setCurrentPage(data.pagination?.page ?? page);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('enrollmentKeys.genericError'));
+      setError(err instanceof Error ? err.message : stableT('enrollmentKeys.genericError'));
     } finally {
       setLoading(false);
     }
-  }, [hideExpired, t]);
+  }, [hideExpired, stableT]);
 
   useEffect(() => {
     fetchKeys();
@@ -223,6 +224,15 @@ export default function EnrollmentKeyManager() {
     setSelectedKey(null);
   };
 
+  // Standard runAction catch: 401 is the session-expiry redirect, a non-401
+  // ActionError was already toasted, anything else gets the fallback toast.
+  const reportActionFailure = (err: unknown, fallback: string) => {
+    if (err instanceof ActionError && err.status === 401) return;
+    if (!(err instanceof ActionError)) {
+      showToast({ type: 'error', message: err instanceof Error ? err.message : fallback });
+    }
+  };
+
   const handleCreateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formSiteId) return;
@@ -256,25 +266,24 @@ export default function EnrollmentKeyManager() {
         body.expiresAt = new Date(formExpiresAt).toISOString();
       }
 
-      const response = await fetchWithAuth('/enrollment-keys', {
-        method: 'POST',
-        body: JSON.stringify(body)
+      const created = await runAction<Record<string, unknown> | null>({
+        request: () =>
+          fetchWithAuth('/enrollment-keys', {
+            method: 'POST',
+            body: JSON.stringify(body)
+          }),
+        errorFallback: t('enrollmentKeys.createFailed'),
+        onUnauthorized: handleSessionExpired,
       });
-
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(extractApiError(data, t('enrollmentKeys.createFailed')));
-      }
-
-      const created = await response.json().catch(() => ({} as Record<string, unknown>));
-      if (typeof created.key === 'string' && created.key.length > 0) {
+      if (created && typeof created.key === 'string' && created.key.length > 0) {
         setNewlyCreatedKey(created.key);
       }
 
       await fetchKeys(currentPage);
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('enrollmentKeys.genericError'));
+      // runAction toasted; the create modal stays open for a retry (#3531).
+      reportActionFailure(err, t('enrollmentKeys.createFailed'));
     } finally {
       setSubmitting(false);
     }
@@ -284,20 +293,24 @@ export default function EnrollmentKeyManager() {
     if (!selectedKey) return;
     setSubmitting(true);
     try {
-      const response = await fetchWithAuth(`/enrollment-keys/${selectedKey.id}`, {
-        method: 'DELETE'
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/enrollment-keys/${selectedKey.id}`, {
+            method: 'DELETE'
+          }),
+        errorFallback: t('enrollmentKeys.deleteFailed'),
+        onUnauthorized: handleSessionExpired,
       });
-
-      if (!response.ok) {
-        throw new Error(t('enrollmentKeys.deleteFailed'));
-      }
 
       const deletedName = selectedKey.name;
       await fetchKeys(currentPage);
       handleCloseModal();
       showToast({ message: t('enrollmentKeys.deleted', { name: deletedName }), type: 'success' });
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('enrollmentKeys.genericError'));
+      // The delete modal is a fixed z-50 overlay and stays open on failure, so
+      // the page `error` banner would render behind it (#3531); runAction's
+      // toast is the visible outcome, and the list is not refetched.
+      reportActionFailure(err, t('enrollmentKeys.deleteFailed'));
     } finally {
       setSubmitting(false);
     }
@@ -313,23 +326,26 @@ export default function EnrollmentKeyManager() {
     setRotateTarget(null);
     setSubmitting(true);
     try {
-      const response = await fetchWithAuth(`/enrollment-keys/${rotateTarget.id}/rotate`, {
-        method: 'POST',
-        body: JSON.stringify({})
+      const rotated = await runAction<Record<string, unknown> | null>({
+        request: () =>
+          fetchWithAuth(`/enrollment-keys/${rotateTarget.id}/rotate`, {
+            method: 'POST',
+            body: JSON.stringify({})
+          }),
+        errorFallback: t('enrollmentKeys.rotateFailed'),
+        onUnauthorized: handleSessionExpired,
       });
-
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(extractApiError(data, t('enrollmentKeys.rotateFailed')));
-      }
-
-      const rotated = await response.json().catch(() => ({} as Record<string, unknown>));
-      if (typeof rotated.key === 'string' && rotated.key.length > 0) {
+      if (rotated && typeof rotated.key === 'string' && rotated.key.length > 0) {
         setNewlyCreatedKey(rotated.key);
       }
       await fetchKeys(currentPage);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('enrollmentKeys.genericError'));
+      // The rotate dialog has already closed, so the page banner is visible
+      // here; keep it alongside runAction's toast.
+      reportActionFailure(err, t('enrollmentKeys.rotateFailed'));
+      if (!(err instanceof ActionError && err.status === 401)) {
+        setError(err instanceof Error ? err.message : t('enrollmentKeys.rotateFailed'));
+      }
     } finally {
       setSubmitting(false);
     }

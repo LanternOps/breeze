@@ -391,10 +391,16 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
             body: JSON.stringify({ deviceId, type: 'desktop' }),
           }),
         errorFallback: t('connectDesktopButton.errors.createDesktopSession'),
-        friendly: (code) =>
-          code === 'agent_upgrade_required'
-            ? t('connectDesktopButton.errors.agentUpgradeRequired')
-            : undefined,
+        // D13: runAction swaps in the generic errors:<CODE> catalog text
+        // (e.g. "Not found", "Access denied") whenever one exists, which
+        // would otherwise bury the specific server prose this route already
+        // carries. Restore it for the two coded failures this endpoint sends.
+        friendly: (code) => {
+          if (code === 'agent_upgrade_required') return t('connectDesktopButton.errors.agentUpgradeRequired');
+          if (code === 'NOT_FOUND') return t('connectDesktopButton.errors.deviceNotFoundOrAccessDenied');
+          if (code === 'ACCESS_DENIED') return t('connectDesktopButton.errors.siteAccessDenied');
+          return undefined;
+        },
         parseSuccess: (data) => data as { id: string },
       });
       sessionIdRef.current = session.id;

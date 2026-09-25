@@ -36,6 +36,7 @@ import {
   alertVerdictOutcomeSchema,
   fleetDesignOutcomeFromSubmission,
   fleetDesignSubmissionSchema,
+  fleetDesignRuleFields,
   narrativeOutcomeFromSubmission,
   narrativeSubmissionSchema,
   patchPlanOutcomeFromSubmission,
@@ -561,24 +562,34 @@ const FLEET_DESIGN_WATCH_SHAPE = z.object({
   rationale: z.string().describe('Why THIS fleet needs this watch. REQUIRED — never leave blank.'),
 });
 
+// W05c2 (#6371): a rule proposal IS a monitor definition. The field map comes
+// from @breeze/shared so the model-facing shape cannot drift from the validator
+// that parses the submission (which also runs the kind/condition cross-checks).
 const FLEET_DESIGN_RULE_SHAPE = z.object({
-  name: z.string().max(200).describe('A short, human-readable rule name.'),
-  severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).describe('How urgent a firing of this rule is.'),
-  conditions: z.array(z.record(z.string(), z.unknown())).describe(
-    'One or more alert-rule conditions, in the shape the alert rule system already uses.',
+  ...fleetDesignRuleFields,
+  name: fleetDesignRuleFields.name.describe('A short, human-readable monitor name.'),
+  kind: fleetDesignRuleFields.kind.describe(
+    'The monitor kind (cpu, memory, disk, offline, event_log, service, process, ...). kind and condition must match.',
   ),
-  cooldownMinutes: z.number().int().min(1).max(1440).describe('Minutes to wait before re-alerting on the same condition.'),
-  rationale: z.string().describe('Why THIS fleet needs this rule. REQUIRED — never leave blank.'),
-  action: z.union([
-    z.literal('none').describe('Alert only, no automated response.'),
-    z.object({
-      kind: z.enum(['playbook', 'script']),
-      ref: z.string().max(200).describe('The playbook or script name/id this rule runs.'),
-    }),
-  ]).describe('An automated response to run when this rule fires, or "none".'),
-  paging: z.enum(['none', 'business_hours', 'always']).describe('When a technician should be paged for this rule.'),
-  sourceTemplateId: z.string().uuid().optional().describe('The alert template id this rule was adapted from, if any.'),
-});
+  condition: fleetDesignRuleFields.condition.describe(
+    'The monitor condition in the monitor-definition shape for this kind, e.g. disk: { operator: "gt", value: 85, durationMinutes: 15 }.',
+  ),
+  severity: fleetDesignRuleFields.severity.describe('How urgent a firing of this monitor is.'),
+  cooldownMinutes: fleetDesignRuleFields.cooldownMinutes.describe('Minutes to wait before re-alerting on the same condition.'),
+  responses: fleetDesignRuleFields.responses.describe(
+    'Device-bound responses that execute when the monitor fires. Usually []. Allowed: { type: "execute_command", kind: "restart_service" } on service monitors, send_notification, create_alert. Scripts and commands are refused; recommend them via action instead.',
+  ),
+  deliveryMode: fleetDesignRuleFields.deliveryMode.describe(
+    'Notification delivery: "inherit" (routing decides; the default), "channels" (needs deliveryChannelIds) or "none" (inbox only).',
+  ),
+  rationale: fleetDesignRuleFields.rationale.describe('Why THIS fleet needs this monitor. REQUIRED — never leave blank.'),
+  action: fleetDesignRuleFields.action.describe(
+    'A recommended playbook or script for a technician, or "none". Recommendation only — it is not executed.',
+  ),
+  paging: fleetDesignRuleFields.paging.describe('Recommended paging for this monitor. Recommendation only.'),
+}).describe(
+  'A monitor definition. kind and condition must match. Only responses execute; action and paging are recommendation notes. Delivery inherits routing unless explicitly overridden.',
+);
 
 const SUBMIT_FLEET_DESIGN_SHAPE = {
   found: z.object({
@@ -596,7 +607,7 @@ const SUBMIT_FLEET_DESIGN_SHAPE = {
   monitoring: z.array(z.object({
     functionKey: FLEET_DESIGN_FUNCTION_KEY_SHAPE,
     watches: z.array(FLEET_DESIGN_WATCH_SHAPE).describe('Service/process watches for this function.'),
-    alertRules: z.array(FLEET_DESIGN_RULE_SHAPE).describe('Alert rules for this function.'),
+    alertRules: z.array(FLEET_DESIGN_RULE_SHAPE).describe('Monitor-definition proposals for this function; the collection name is retained for stable approval references.'),
   })).describe('What to watch, and why — one entry per function key named in `functions`.'),
   retired: z.array(z.object({
     kind: z.enum(['watch', 'rule']).describe('Whether the retired item was a watch or an alert rule.'),

@@ -146,6 +146,23 @@ export async function getChecklistItemOr404(itemId: string): Promise<TicketCheck
   return row;
 }
 
+/**
+ * Whether the item is ticked, read under a row lock (#6930). Callers that must
+ * not touch a ticked step (the AI tool refuses to edit or delete one) take the
+ * lock so a concurrent human tick cannot land between their check and their
+ * write. Inside the request transaction the lock holds until commit. Returns
+ * null when the item does not exist.
+ */
+export async function isChecklistItemTickedForUpdate(itemId: string): Promise<boolean | null> {
+  const [row] = (await db
+    .select({ doneAt: ticketChecklistItems.doneAt })
+    .from(ticketChecklistItems)
+    .where(eq(ticketChecklistItems.id, itemId))
+    .for('update')) as Array<{ doneAt: Date | null }>;
+  if (!row) return null;
+  return row.doneAt !== null;
+}
+
 export async function addChecklistItem(
   ticket: { id: string; orgId: string },
   input: ChecklistItemCreateInput,

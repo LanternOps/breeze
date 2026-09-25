@@ -200,7 +200,18 @@
     },
     "title": "Rilevamento rete",
     "toasts": {
-      "scanQueued": "Scansione di rilevamento accodata per \"{{name}}\""
+      "scanQueued": "Scansione di rilevamento accodata per \"{{name}}\"",
+      "profileCreated": "Profilo di rilevamento \"{{name}}\" creato",
+      "profileUpdated": "Profilo di rilevamento \"{{name}}\" aggiornato",
+      "profileMoved": "Profilo spostato in {{site}}.",
+      "assetsMoved_one": "{{count}} dispositivo di rete spostato",
+      "assetsMoved_other": "{{count}} dispositivi di rete spostati",
+      "agentLinksRemoved_one": "{{count}} collegamento agente rimosso",
+      "agentLinksRemoved_other": "{{count}} collegamenti agente rimossi",
+      "monitorsReattached_one": "{{count}} monitor ricollegato",
+      "monitorsReattached_other": "{{count}} monitor ricollegati",
+      "topologyPoliciesDisabled_one": "{{count}} criterio di topologia disattivato",
+      "topologyPoliciesDisabled_other": "{{count}} criteri di topologia disattivati"
     },
     "days": {
       "monday": "Lunedì",
@@ -295,6 +306,12 @@
       "arp": "Scansione ARP",
       "snmp": "Sonda SNMP",
       "portScan": "Scansione porte TCP"
+    },
+    "siteMove": {
+      "notice": "D'ora in poi questo profilo eseguirà la scansione dal nuovo sito. I dispositivi già rilevati restano nel sito attuale a meno che non li sposti.",
+      "moveAssets_one": "Sposta anche il {{count}} dispositivo di rete rilevato da questo profilo nel nuovo sito",
+      "moveAssets_other": "Sposta anche i {{count}} dispositivi di rete rilevati da questo profilo nel nuovo sito",
+      "moveAssetsUnknown": "Sposta anche i dispositivi di rete rilevati da questo profilo nel nuovo sito"
     }
   },
   "discoveryProfileList": {

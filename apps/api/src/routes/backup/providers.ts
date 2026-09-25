@@ -426,21 +426,26 @@ connectionRoutes.post(
 
     // Persist the outcome best-effort in a second short context. Only a REAUTH
     // failure changes `status`: a 503 must not disable a healthy connection.
-    await withAuthDbAccessContext(auth, async () => {
-      await db
-        .update(backupProviderConnections)
-        .set(result.ok
-          ? { status: 'connected', vendorRootId: result.rootId, vendorRootName: result.rootName, lastSyncError: null, updatedAt: new Date() }
-          : result.reauth
-            ? { status: 'reauth_required', lastSyncError: result.error.slice(0, 2000), updatedAt: new Date() }
-            : { lastSyncError: result.error.slice(0, 2000), updatedAt: new Date() })
-        .where(and(
-          eq(backupProviderConnections.id, id),
-          eq(backupProviderConnections.partnerId, gate.partnerId),
-        ));
-    }).catch((error) => {
-      console.error('[backupProvider] failed to persist a connection test outcome:', error);
-    });
+    // `lastSyncError`/`lastSyncStatus` describe the most recent SYNC job, not a
+    // one-off credential test — a test's error must never land there (D9): it
+    // made the connection card show a stale "Active" badge with a "Last sync
+    // failed" line carrying the TEST error while `last_sync_status` stayed
+    // `success`. A transient (non-reauth) failure persists nothing at all.
+    if (result.ok || result.reauth) {
+      await withAuthDbAccessContext(auth, async () => {
+        await db
+          .update(backupProviderConnections)
+          .set(result.ok
+            ? { status: 'connected', vendorRootId: result.rootId, vendorRootName: result.rootName, updatedAt: new Date() }
+            : { status: 'reauth_required', updatedAt: new Date() })
+          .where(and(
+            eq(backupProviderConnections.id, id),
+            eq(backupProviderConnections.partnerId, gate.partnerId),
+          ));
+      }).catch((error) => {
+        console.error('[backupProvider] failed to persist a connection test outcome:', error);
+      });
+    }
 
     writeRouteAudit(c, {
       orgId: null,

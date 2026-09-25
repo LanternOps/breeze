@@ -281,11 +281,36 @@ describe('OrganizationRecordPage — lifecycle states', () => {
     expect(screen.queryByTestId('org-record-not-found')).toBeNull();
   });
 
-  it('falls back to not-found when a 404 has no matching lifecycle row', async () => {
+  it('falls back to not-found when a 404 has no matching lifecycle row and no report-history reach', async () => {
     seedStore([{ id: OTHER_ORG, name: 'Beta Legal' }], OTHER_ORG);
-    routeFetch({ [`/orgs/organizations/${RECORD_ORG}`]: () => json({ error: 'Organization not found' }, 404) });
+    routeFetch({
+      [`/orgs/organizations/${RECORD_ORG}`]: () => json({ error: 'Organization not found' }, 404),
+      '/reports?': () => json({ error: 'Access to this organization denied' }, 403),
+    });
     render(<OrganizationRecordPage orgId={RECORD_ORG} />);
     await waitFor(() => expect(screen.getByTestId('org-record-not-found')).toBeTruthy());
+  });
+
+  // #6850: a suspended (or churned) org is excluded from `GET
+  // /orgs/organizations` for partner scope BY DESIGN (computeAccessibleOrgIds
+  // only admits active/trial), so the org store never holds its row after a
+  // fresh page load — unlike this suite's other suspended-org test above,
+  // which seeds the store to stand in for a same-session cache hit. A reload
+  // starts with an empty store, and the record GET still 404s (the org is
+  // genuinely outside accessibleOrgIds), so the page must fall back to the
+  // report-history reach itself (#6771's already-granted read) rather than
+  // silently landing on "Organization not found".
+  it('renders read-only report history for a suspended org with no cached store row (#6850)', async () => {
+    seedStore([{ id: OTHER_ORG, name: 'Beta Legal' }], OTHER_ORG);
+    routeFetch({
+      [`/orgs/organizations/${RECORD_ORG}`]: () => json({ error: 'Organization not found' }, 404),
+      '/reports?': () => json({ data: [] }),
+      '/reports/runs?': () => json({ data: [] }),
+    });
+    render(<OrganizationRecordPage orgId={RECORD_ORG} />);
+    await waitFor(() => expect(screen.getByTestId('org-record-lifecycle')).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId('org-report-history')).toBeTruthy());
+    expect(screen.queryByTestId('org-record-not-found')).toBeNull();
   });
 
   it('renders read-only report history for a suspended org whose record 404s (#6771)', async () => {
@@ -319,6 +344,22 @@ describe('OrganizationRecordPage — lifecycle states', () => {
     render(<OrganizationRecordPage orgId={RECORD_ORG} />);
     await waitFor(() => expect(screen.getByTestId('org-record-archived-banner')).toBeTruthy());
     await waitFor(() => expect(screen.getByTestId('org-report-history')).toBeTruthy());
+  });
+
+  it('shows one read-only overview notice for an archived org instead of the summary/alerts/activity error panels (sweep B3)', async () => {
+    routeFetch({
+      '/summary': () => json(SUMMARY_BODY, 404),
+      [`/orgs/organizations/${RECORD_ORG}`]: () => json({ ...ORG_BODY, status: 'archived', archived: true }),
+    });
+    render(<OrganizationRecordPage orgId={RECORD_ORG} />);
+    await waitFor(() => expect(screen.getByTestId('org-record-archived-banner')).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId('org-overview-archived-notice')).toBeTruthy());
+    expect(screen.queryByTestId('org-overview-summary-error')).toBeNull();
+    expect(screen.queryByTestId('org-overview-critical-alerts-failed')).toBeNull();
+    expect(screen.queryByTestId('org-overview-activity-failed')).toBeNull();
+    // The feed requests never fire for an archived org — they 404 by design.
+    expect(requestedUrls.some((u) => u.includes('/audit-logs'))).toBe(false);
+    expect(requestedUrls.some((u) => u.includes('/alerts?'))).toBe(false);
   });
 
   it('does not render report history for an active org (#6771)', async () => {

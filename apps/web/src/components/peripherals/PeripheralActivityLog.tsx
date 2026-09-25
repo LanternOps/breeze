@@ -3,6 +3,7 @@ import { RefreshCw, ChevronLeft, ChevronRight } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
 import { formatDateTime as formatUserDateTime } from "@/lib/dateTimeFormat";
 import { useTranslation } from "react-i18next";
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type PeripheralEvent = {
   id: string;
@@ -41,6 +42,7 @@ export default function PeripheralActivityLog({
   limit: propLimit,
 }: PeripheralActivityLogProps) {
   const { t } = useTranslation("peripherals");
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [events, setEvents] = useState<PeripheralEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -74,7 +76,7 @@ export default function PeripheralActivityLog({
         `/peripherals/activity?${params.toString()}`,
       );
       if (!response.ok)
-        throw new Error(t("peripheralActivityLog.errors.fetch"));
+        throw new Error(stableT("peripheralActivityLog.errors.fetch"));
       const json = await response.json();
       const data = Array.isArray(json.data)
         ? json.data
@@ -87,7 +89,7 @@ export default function PeripheralActivityLog({
       setError(
         err instanceof Error
           ? err.message
-          : t("peripheralActivityLog.errors.generic"),
+          : stableT("peripheralActivityLog.errors.generic"),
       );
     } finally {
       setLoading(false);
@@ -101,7 +103,7 @@ export default function PeripheralActivityLog({
     filterTo,
     limit,
     offset,
-    t,
+    stableT,
   ]);
 
   useEffect(() => {

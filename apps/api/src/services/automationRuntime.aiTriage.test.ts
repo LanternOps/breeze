@@ -5,10 +5,14 @@ const {
   createAndEnqueueAgentRunMock,
   publishEventMock,
   selectMock,
+  resolveAlertCategoryMock,
 } = vi.hoisted(() => ({
   createAndEnqueueAgentRunMock: vi.fn(),
   publishEventMock: vi.fn(),
   selectMock: vi.fn(),
+  resolveAlertCategoryMock: vi.fn().mockResolvedValue({
+    category: null, monitorKind: null, isPatchWork: false, source: null,
+  }),
 }));
 
 vi.mock('../db', () => ({
@@ -32,7 +36,7 @@ vi.mock('./aiAgents/runService', () => ({
 // AI patch agent W04 (#5750): the routing classifier answers "not patch work"
 // here; the patch route itself is covered by automationRuntime.patchRouting.test.ts.
 vi.mock('./aiAgents/patchWorkClassifier', () => ({
-  resolveAlertCategory: vi.fn().mockResolvedValue({ category: null, monitorKind: null, isPatchWork: false }),
+  resolveAlertCategory: resolveAlertCategoryMock,
   classifyAlertAsPatchWork: vi.fn().mockResolvedValue(false),
 }));
 
@@ -190,6 +194,7 @@ describe('executeAiTriageAction', () => {
         siteId: 'site-1',
         deviceTags: [],
         category: null,
+        source: null,
       },
       dedupeKey: 'alert:alert-1',
     });
@@ -432,6 +437,7 @@ describe('executeAiTriageAction', () => {
       siteId: 'site-1',
       deviceTags: ['prod', 'db'],
       category: null,
+      source: null,
     });
 
     mockDeviceTags([]);
@@ -444,7 +450,21 @@ describe('executeAiTriageAction', () => {
       siteId: 'site-1',
       deviceTags: [],
       category: null,
+      source: null,
     });
+  });
+
+  // #6749 — a warranty/lifecycle-sourced alert's context.source is carried
+  // into alertContext so the trigger-filter gate excludes it unconditionally.
+  it('carries the alert context.source (e.g. warranty_evaluator) into alertContext', async () => {
+    mockDeviceTags([{ tags: [] }]);
+    resolveAlertCategoryMock.mockResolvedValueOnce({
+      category: null, monitorKind: null, isPatchWork: false, source: 'warranty_evaluator',
+    });
+
+    await __testOnly.executeAiTriageAction({ type: 'ai_triage' }, 0, makeContext());
+
+    expect(gateInput().alertContext).toMatchObject({ source: 'warranty_evaluator' });
   });
 
   it("executeAction dispatches ai_triage with the run's trigger context", async () => {

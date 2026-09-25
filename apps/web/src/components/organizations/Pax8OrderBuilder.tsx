@@ -32,6 +32,7 @@ import {
   extractPax8PreflightErrors,
   type PreflightErrors,
 } from './pax8OrderUi';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 const onUnauthorized = () => void navigateTo('/login', { replace: true });
 const authoringStatuses = new Set(['draft', 'awaiting_details']);
@@ -61,6 +62,7 @@ export default function Pax8OrderBuilder({
   onBack: () => void;
 }) {
   const { t } = useTranslation('settings');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { order, lines } = bundle;
   const mutable = authoringStatuses.has(order.status);
   const directMutable = mutable && order.source === 'direct';
@@ -106,8 +108,8 @@ export default function Pax8OrderBuilder({
     setMetadataLoading(true);
     setMetadataError(false);
     Promise.all([
-      getProvisionDetails(selectedProductId).then((response) => readData<Pax8ProvisionField[]>(response, t('pax8.errors.loadProduct'))),
-      getProductDependencies(selectedProductId).then((response) => readData<Pax8ProductDependencies>(response, t('pax8.errors.loadProduct'))),
+      getProvisionDetails(selectedProductId).then((response) => readData<Pax8ProvisionField[]>(response, stableT('pax8.errors.loadProduct'))),
+      getProductDependencies(selectedProductId).then((response) => readData<Pax8ProductDependencies>(response, stableT('pax8.errors.loadProduct'))),
     ]).then(([nextFields, nextDependencies]) => {
       if (!active) return;
       setFields(nextFields);
@@ -120,7 +122,7 @@ export default function Pax8OrderBuilder({
       setMetadataError(true);
     }).finally(() => { if (active) setMetadataLoading(false); });
     return () => { active = false; };
-  }, [selectedProductId, metadataVersion, t]);
+  }, [selectedProductId, metadataVersion, stableT]);
 
   const mutation = async <T,>(key: string, options: Parameters<typeof runAction<T>>[0], after = true): Promise<T | null> => {
     setBusy(key);

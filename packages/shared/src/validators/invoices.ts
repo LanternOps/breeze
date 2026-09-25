@@ -148,6 +148,10 @@ export const orgBillingSettingsSchema = z.object({
   taxId: z.string().max(100).nullable().optional(),
   taxExempt: z.boolean().optional(),
   taxRate: taxRate.nullable().optional(),
+  // Settings consolidation W06 (#6229): org override of the partner's payment
+  // terms. null clears it (= inherit partners.invoiceTermsDays). Same 0–365
+  // bounds as the partner default and the DB CHECK. Frozen as due_date at issue.
+  invoiceTermsDays: z.number().int().min(0).max(365).nullable().optional(),
   // Billing contact — the recipient quotes/invoices are actually emailed to
   // (org.billingContact jsonb). Kept here, alongside the address, so the whole
   // "who + where we bill" lives on one form. Clearing the field must send null,

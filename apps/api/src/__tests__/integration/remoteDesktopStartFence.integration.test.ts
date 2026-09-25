@@ -358,6 +358,7 @@ describe('SEC-038 W02 — desktop start-intent generation fence', () => {
       sessionId,
       startCommandId: `desk-start-${sessionId}-11111111-1111-4111-8111-111111111111`,
       promptMode: 'off',
+      consentUnavailableBehavior: null,
       offer: OFFER,
     }));
     expect(first).toMatchObject({ ok: true, generation: 1n });
@@ -366,6 +367,7 @@ describe('SEC-038 W02 — desktop start-intent generation fence', () => {
       sessionId,
       startCommandId: `desk-start-${sessionId}-22222222-2222-4222-8222-222222222222`,
       promptMode: 'off',
+      consentUnavailableBehavior: null,
       offer: 'v=0\r\nDIFFERENT\r\n',
     }));
     expect(second).toMatchObject({ ok: true, generation: 2n });

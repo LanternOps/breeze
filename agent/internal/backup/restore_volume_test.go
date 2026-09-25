@@ -93,3 +93,22 @@ func TestResolveTargetPathStripsEmbeddedDrive(t *testing.T) {
 		t.Fatalf("embedded drive not stripped: %q contains the full source path", got)
 	}
 }
+
+// RestoreVolume is the volume RestoreKey strips: the drive of OriginalPath
+// for a VSS entry (never the shadow-copy device of SourcePath), else of
+// SourcePath; "" when the recorded path carries none.
+func TestRestoreVolume(t *testing.T) {
+	withWindowsVolumeName(t)
+	for _, tc := range []struct {
+		f    SnapshotFile
+		want string
+	}{
+		{SnapshotFile{SourcePath: `D:\data\x.txt`}, "D:"},
+		{SnapshotFile{SourcePath: `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1\x`, OriginalPath: `E:\x`}, "E:"},
+		{SnapshotFile{SourcePath: `path_0/x`}, ""},
+	} {
+		if got := RestoreVolume(tc.f); got != tc.want {
+			t.Errorf("RestoreVolume(%+v) = %q, want %q", tc.f, got, tc.want)
+		}
+	}
+}

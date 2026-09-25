@@ -99,7 +99,8 @@
     "ticketing": "Ticket",
     "deliverableTemplates": "Modelli di consegna",
     "securityScans": "Scansioni IOC",
-    "system": "Sistema"
+    "system": "Sistema",
+    "monitorConversion": "Conversione monitor"
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -1471,6 +1472,12 @@
           "editTitle": "Modifica webhook"
         },
         "subtitle": "Invia eventi a sistemi esterni.",
+        "success": {
+          "created": "Webhook creato",
+          "disabled": "Webhook disabilitato",
+          "enabled": "Webhook abilitato",
+          "updated": "Webhook aggiornato"
+        },
         "title": "Webhook"
       }
     },
@@ -2446,7 +2453,7 @@
         },
         "title": "Correzioni suggerite",
         "refresh": "Aggiorna le correzioni suggerite",
-        "disabledTitle": "Le correzioni suggerite sono disabilitate per questa organizzazione",
+        "disabledTitle": "Le correzioni suggerite sono disattivate per questa organizzazione. Attivale in Impostazioni → Partner → Funzionalità IA, oppure per una singola organizzazione nella sua scheda IA.",
         "suggestionsDisabled": "Suggerimenti disabilitati",
         "generate": "Genera",
         "empty": "Nessuna soluzione suggerita ancora.",

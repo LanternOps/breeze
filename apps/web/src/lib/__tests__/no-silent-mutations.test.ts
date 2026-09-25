@@ -250,6 +250,20 @@ const TARGET_GLOBS = [
   // page-level error banner was painted behind the scrim — an unrecoverable
   // silent failure, not merely an unguarded one.
   'src/components/configurationPolicies/ConfigurationPoliciesPage.tsx',
+  // #3531: destructive confirmations whose failures rendered behind the z-50 modal.
+  'src/components/settings/ApiKeysPage.tsx',
+  'src/components/admin/QuarantinedDevices.tsx',
+  'src/components/automations/AutomationsPage.tsx',
+  'src/components/automations/PoliciesPage.tsx',
+  // #3531 sweep: the same hidden-failure pattern (destructive action behind an
+  // open overlay, or console-only failure) found outside the original four.
+  'src/components/auditBaselines/BaselineList.tsx',
+  'src/components/remote/RemoteToolsPage.tsx',
+  'src/components/discovery/NetworkBaselinesPanel.tsx',
+  'src/components/sensitiveData/PoliciesTab.tsx',
+  'src/components/settings/EnrollmentKeyManager.tsx',
+  'src/components/settings/UsersPage.tsx',
+  'src/components/webhooks/WebhooksPage.tsx',
   // Quick Support: the create/end mutations mint and revoke live remote-access
   // codes, so a silent failure would leave a tech reading out a dead code or
   // believing a session was torn down when it wasn't.
@@ -414,6 +428,17 @@ const TARGET_GLOBS = [
   // Library Recommended strip (#6367 W05c2 Task 13): the feature-link write
   // that attaches built-ins to a policy.
   'src/components/monitoring/RecommendedMonitors.tsx',
+  // Backup provider integration (W03, #6011): these three write partner-level
+  // connector credentials and the customer→org mapping that decides whose
+  // backup data lands in whose tenant. A silent failure here is invisible until
+  // a customer's devices quietly stop appearing.
+  'src/components/integrations/BackupProvidersIntegration.tsx',
+  'src/components/integrations/BackupProviderConnectionCard.tsx',
+  'src/components/integrations/BackupProviderCustomerMapping.tsx',
+  // Device-tab external backup (W03, #6011): Unlink detaches a provider row
+  // from a Breeze device; a silent failure leaves the tech believing the link
+  // is gone while alerts keep firing against it.
+  'src/components/backup/ExternalBackupCard.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -781,7 +806,12 @@ describe('no silent mutations in targeted set', () => {
     // LegacyRulesTable (per-rule convert) joins the guard: 170 → 171.
     // Alert workflows typed filter (W05c2 Task 9) adds automations/AutomationEditPage.tsx: 171 → 172.
     // W05c2 Tasks 10 + 13 add devices/DeviceMonitoringTab.tsx and monitoring/RecommendedMonitors.tsx: 172 → 174.
-    expect(absoluteFiles.length).toBe(174);
+    // #3531 adds ApiKeysPage, QuarantinedDevices, AutomationsPage, PoliciesPage: 174 → 178.
+    // #3531 sweep adds BaselineList, RemoteToolsPage, NetworkBaselinesPanel,
+    // sensitiveData/PoliciesTab, EnrollmentKeyManager, UsersPage, WebhooksPage: 178 → 185.
+    // Backup provider integration (W03 #6011) adds three adopters: 185 → 188.
+    // 188 -> 189: ExternalBackupCard.tsx (W03 Task 12, #6011) added to TARGET_GLOBS.
+    expect(absoluteFiles.length).toBe(189);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

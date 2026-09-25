@@ -1,0 +1,33 @@
+Adapter #0
+Product Name: MegaRAID fixture adapter
+Serial No: CTRL-TEST
+FW Package Build: 1.0
+Controller Status: Optimal
+===
+Adapter 0 -- Virtual Drive Information:
+Virtual Drive: 0 (Target Id: 0)
+Name: mirror
+RAID Level: Primary-1, Secondary-0, RAID Level Qualifier-0
+Size: 100 GB
+State: Optimal
+===
+Adapter #0
+Enclosure Device ID: 252
+Slot Number: 3
+Firmware state: Online, Spun Up
+Inquiry Data: Fixture disk
+Serial Number: DISK-TEST
+Raw Size: 100 GB
+Drive Temperature: 35C
+Predictive Failure Count: 0
+Drive has flagged a S.M.A.R.T alert: No
+===
+BBU status for Adapter: 0
+Battery State: Optimal
+Learn Cycle Active: No
+Battery Replacement required: No
+===
+Adapter #0
+Virtual Drive: 0 (Target Id: 0)
+Enclosure Device ID: 252
+Slot Number: 3

@@ -61,6 +61,7 @@ import {
   mobileHwKeyProofSchema,
   elevationRiskTierToName,
 } from '@breeze/shared';
+import { normalizeSiteAllowlist } from '../services/siteAllowlist';
 import { resolveOrgIdForWrite } from './softwarePolicies';
 import {
   createPamDecisionIntent,
@@ -229,12 +230,14 @@ async function safePublish(
 
 /** Site narrowing for site-restricted technicians (allowedSiteIds). */
 function siteScopeCondition(perms: UserPermissions | undefined): SQL | undefined {
-  if (!perms?.allowedSiteIds) return undefined;
-  if (perms.allowedSiteIds.length === 0) {
+  // A malformed (non-array, e.g. null) allowlist is treated as no sites (#6790).
+  const allowed = normalizeSiteAllowlist(perms?.allowedSiteIds);
+  if (allowed === undefined) return undefined;
+  if (allowed.length === 0) {
     // Restricted to zero sites — match nothing.
     return sql`false`;
   }
-  return inArray(elevationRequests.siteId, perms.allowedSiteIds);
+  return inArray(elevationRequests.siteId, [...allowed]);
 }
 
 function getPagination(query: { page?: string; limit?: string }) {

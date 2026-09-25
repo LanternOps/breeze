@@ -414,6 +414,7 @@ async function notifyRecipientsOfPolicyAuthorization(args: {
   agentName: string;
   intentId: string;
   targetSummary: string;
+  runId: string;
 }): Promise<void> {
   try {
     const userIds = await resolveRecipientUserIds(
@@ -430,9 +431,9 @@ async function notifyRecipientsOfPolicyAuthorization(args: {
           message: `${args.targetSummary} — executing`,
           // Review fix (#3827): a policy-decided intent has NO approval_requests
           // row (that's the whole point — no human ever reviewed it), so
-          // `/approvals` is a dead end for this notification. No run-detail
-          // page exists yet to link to instead — that lands in wave 6.
-          link: null,
+          // `/approvals` is a dead end for this notification. Deep-link to the
+          // run detail page instead (#4461).
+          link: `/ai-agents/runs/${args.runId}`,
           metadata: { intentId: args.intentId, decidedVia: 'policy' },
           dedupeKey: `intent-policy-authorized:${args.intentId}`,
         });
@@ -682,6 +683,7 @@ export async function attemptPolicyDecision(intentId: string): Promise<void> {
       agentName: agent.name,
       intentId: intent.id,
       targetSummary: intent.targetSummary,
+      runId: run.id,
     });
   } catch (err) {
     if (err instanceof PolicyDecisionRaceLostError) {

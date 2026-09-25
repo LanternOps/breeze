@@ -19,6 +19,7 @@ import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { formatNumber } from '@/lib/i18n/format';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type TrashViewProps = {
   deviceId: string;
@@ -51,6 +52,7 @@ function formatSize(bytes?: number): string {
 
 export default function TrashView({ deviceId, onRestore }: TrashViewProps) {
   const { t } = useTranslation('remote');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [items, setItems] = useState<TrashItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -71,13 +73,13 @@ export default function TrashView({ deviceId, onRestore }: TrashViewProps) {
       setSelected(new Set());
     } catch (err) {
       const message =
-        err instanceof Error ? err.message : t('trashView.errors.load');
+        err instanceof Error ? err.message : stableT('trashView.errors.load');
       setError(message);
       setItems([]);
     } finally {
       setLoading(false);
     }
-  }, [deviceId, t]);
+  }, [deviceId, stableT]);
 
   useEffect(() => {
     fetchTrash();

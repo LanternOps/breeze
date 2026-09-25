@@ -4,6 +4,7 @@ import {
   BookOpen,
   Boxes,
   DollarSign,
+  HardDrive,
   MessageSquare,
   Network,
   Plug,
@@ -35,6 +36,7 @@ import TdSynnexSftpPanel from "../settings/TdSynnexSftpPanel";
 import QuickbooksIntegration from "./QuickbooksIntegration";
 import StripePaymentsIntegration from "./StripePaymentsIntegration";
 import UnifiIntegration from "./UnifiIntegration";
+import BackupProvidersIntegration from "./BackupProvidersIntegration";
 import AccessDenied from "../shared/AccessDenied";
 import { usePermissions } from "../../lib/permissions";
 import { getJwtClaims } from "../../lib/authScope";
@@ -52,7 +54,8 @@ type TabId =
   | "identity"
   | "distributors"
   | "accounting"
-  | "unifi";
+  | "unifi"
+  | "backup";
 type SecuritySubTab = "sentinelone" | "huntress";
 type IdentitySubTab = "google" | "m365";
 type DistributorSubTab = "pax8" | "tdsynnex" | "tdsynnex-ec" | "tdsynnex-sftp";
@@ -80,6 +83,7 @@ const tabs: { id: TabId; labelKey: string; icon: typeof Activity }[] = [
     icon: DollarSign,
   },
   { id: "unifi", labelKey: "integrationsPage.unifi", icon: Network },
+  { id: "backup", labelKey: "integrationsPage.backup", icon: HardDrive },
 ];
 
 const securitySubTabs: { id: SecuritySubTab; labelKey: string }[] = [
@@ -121,6 +125,7 @@ const tabDocsPaths: Record<TabId, string> = {
   distributors: "/features/distributor-integrations/",
   accounting: "/features/accounting-integrations/",
   unifi: "/features/unifi-integration/",
+  backup: "/features/backup-provider-integrations/",
 };
 
 // Parse the URL hash into the tab — and, for a sub-tab hash like #huntress, its
@@ -567,6 +572,9 @@ export default function IntegrationsPage({
         </p>
       )}
       {activeTab === "unifi" && !isOrgScoped && <UnifiIntegration />}
+      {/* The panel owns its own partner-scope gate, so no isOrgScoped branch is
+          needed here — see BackupProvidersIntegration. */}
+      {activeTab === "backup" && <BackupProvidersIntegration />}
     </div>
   );
 }

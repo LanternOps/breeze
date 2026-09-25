@@ -21,6 +21,7 @@ import { DiscoveredToolsTable } from './DiscoveredToolsTable';
 import { ToolSourceForm } from './ToolSourceForm';
 import { ToolTestDrawer } from './ToolTestDrawer';
 import { StatusChip, formatDiscoveredAt } from './statusChip';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 /**
  * One tool source: its connection facts, its discovered tools, and the
@@ -31,6 +32,7 @@ import { StatusChip, formatDiscoveredAt } from './statusChip';
  */
 export default function ToolSourceDetail({ sourceId }: { sourceId: string }) {
   const { t } = useTranslation('toolSources');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [source, setSource] = useState<ToolSourceDto | null>(null);
   const [tools, setTools] = useState<ToolSourceToolDto[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -56,10 +58,10 @@ export default function ToolSourceDetail({ sourceId }: { sourceId: string }) {
       setLoadError(null);
       return loadedSource;
     } catch {
-      if (mounted.current) setLoadError(t('detail.loadFailed'));
+      if (mounted.current) setLoadError(stableT('detail.loadFailed'));
       return null;
     }
-  }, [sourceId, t]);
+  }, [sourceId, stableT]);
 
   useEffect(() => {
     void load();

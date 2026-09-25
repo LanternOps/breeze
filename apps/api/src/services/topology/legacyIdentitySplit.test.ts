@@ -52,4 +52,14 @@ describe('explicit retained-source identity splits', () => {
     expect(() => planLegacyIdentitySplits(scope, { ...base, nodes: [{ ...device, siteId: deviceId }] })).toThrow(/scope/);
     expect(() => planLegacyIdentitySplits(scope, { ...base, nodes: [{ ...device, aliasTargetId: asset.id }, { ...asset, aliasTargetId: device.id }] })).toThrow(/cycle/);
   });
+  it('separates retained BMC identity despite an agent_report association', () => {
+    const plan = planLegacyIdentitySplits(scope, {
+      nodes: [device, { ...asset, aliasTargetId: device.id }],
+      bindings: [binding(deviceId, device.id, { deviceId }), binding(assetId, device.id, { discoveredAssetId: assetId })],
+      liveDeviceIds: new Set([deviceId]),
+      liveAssets: [{ ...assetRef(assetId, deviceId), linkSource: 'agent_report' }],
+    });
+    expect(plan.nodeChanges).toEqual([{ id: asset.id, aliasTargetId: null }]);
+    expect(plan.bindingMoves).toEqual([{ id: assetId, fromNodeId: device.id, toNodeId: asset.id, deviceId: null, discoveredAssetId: assetId }]);
+  });
 });

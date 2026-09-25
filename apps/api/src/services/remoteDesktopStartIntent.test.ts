@@ -54,6 +54,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 import {
+  boundConsentUnavailableBehavior,
   commitDesktopStartIntent,
   commitDesktopStreamStartIntent,
   formatDesktopGeneration,
@@ -63,8 +64,23 @@ const INPUT = {
   sessionId: '11111111-1111-4111-8111-111111111111',
   startCommandId: 'desk-start-11111111-1111-4111-8111-111111111111-22222222-2222-4222-8222-222222222222',
   promptMode: 'off' as const,
+  consentUnavailableBehavior: null,
   offer: 'v=0\r\n',
 };
+
+describe('boundConsentUnavailableBehavior (#6819)', () => {
+  it('binds the fallback only for a consent-mode prompt with a known value', () => {
+    expect(boundConsentUnavailableBehavior({ mode: 'consent', consentUnavailableBehavior: 'proceed' })).toBe('proceed');
+    expect(boundConsentUnavailableBehavior({ mode: 'consent', consentUnavailableBehavior: 'block' })).toBe('block');
+  });
+
+  it('binds null for no prompt, a non-consent mode, or an unknown value', () => {
+    expect(boundConsentUnavailableBehavior(undefined)).toBeNull();
+    expect(boundConsentUnavailableBehavior({ mode: 'notify', consentUnavailableBehavior: 'proceed' })).toBeNull();
+    expect(boundConsentUnavailableBehavior({ mode: 'consent', consentUnavailableBehavior: 'allow' })).toBeNull();
+    expect(boundConsentUnavailableBehavior({ mode: 'consent' })).toBeNull();
+  });
+});
 
 describe('remoteDesktopStartIntent', () => {
   beforeEach(() => {

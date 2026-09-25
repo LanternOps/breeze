@@ -697,6 +697,25 @@ export function resolveDraftBillTo(input: {
   return { billToName: input.orgName ?? null, billToEmail: resolveBillingEmail(input.orgBillingContact) };
 }
 
+/** The LIVE ticket label ("Ticket #…"): the human number the ticket UI and
+ *  customer emails use (`tickets.internal_number`, T-2026-0001), falling back
+ *  to the legacy random `ticket_number` for tickets created before internal
+ *  numbering (sweep C4: the order was reversed, and ticket_number is NOT NULL,
+ *  so the legacy id always won). Used for drafts and by issueInvoice to stamp
+ *  `invoice_lines.ticket_label`. Requires `tickets` in the FROM/JOIN. */
+export function invoiceTicketNumberSql() {
+  return sql<string | null>`COALESCE(${tickets.internalNumber}, ${tickets.ticketNumber})`;
+}
+
+/** What an invoice line prints as its ticket label, for every invoice reader
+ *  (PDF, web, portal). Settings audit rule 6: a draft previews the live number;
+ *  once issued the document shows only the label frozen at issue. */
+export function invoiceLineTicketNumberSql(invoiceStatus: string) {
+  return invoiceStatus === 'draft'
+    ? invoiceTicketNumberSql()
+    : sql<string | null>`${invoiceLines.ticketLabel}`;
+}
+
 async function loadInvoiceForRender(invoiceId: string): Promise<{
   invoice: InvoiceRow;
   lines: InvoiceLineRow[];
@@ -707,7 +726,7 @@ async function loadInvoiceForRender(invoiceId: string): Promise<{
   if (!invoice) return null;
   const lines = await db.select({
     ...getTableColumns(invoiceLines),
-    ticketNumber: sql<string | null>`COALESCE(${tickets.ticketNumber}, ${tickets.internalNumber})`,
+    ticketNumber: invoiceLineTicketNumberSql(invoice.status),
     ticketSubject: tickets.subject,
     ticketCategory: sql<string | null>`COALESCE(${ticketCategories.name}, ${tickets.category})`,
   }).from(invoiceLines)

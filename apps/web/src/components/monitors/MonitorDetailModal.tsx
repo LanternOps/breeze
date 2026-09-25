@@ -14,6 +14,7 @@ import { ActionError, runAction } from '../../lib/runAction';
 import { formatDate } from '../../lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import { useTranslation } from 'react-i18next';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type MonitorDetail = {
   id: string;
@@ -98,6 +99,7 @@ type MonitorDetailModalProps = {
 
 export default function MonitorDetailModal({ monitorId, onClose, onDeleted, onUpdated }: MonitorDetailModalProps) {
   const { t } = useTranslation('common');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [monitor, setMonitor] = useState<MonitorDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -115,7 +117,7 @@ export default function MonitorDetailModal({ monitorId, onClose, onDeleted, onUp
     try {
       setLoading(true);
       const res = await fetchWithAuth(`/monitors/${monitorId}`);
-      if (!res.ok) throw new Error(t('longTail.monitors.MonitorDetailModal.errors.loadDetails'));
+      if (!res.ok) throw new Error(stableT('longTail.monitors.MonitorDetailModal.errors.loadDetails'));
       const data = await res.json();
       const m = data.data;
       setMonitor(m);
@@ -125,11 +127,11 @@ export default function MonitorDetailModal({ monitorId, onClose, onDeleted, onUp
       setEditTimeout(m.timeout);
       setEditActive(m.isActive);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('longTail.monitors.MonitorDetailModal.errors.generic'));
+      setError(err instanceof Error ? err.message : stableT('longTail.monitors.MonitorDetailModal.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [monitorId, t]);
+  }, [monitorId, stableT]);
 
   useEffect(() => {
     fetchDetail();

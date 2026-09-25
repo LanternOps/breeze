@@ -3,16 +3,16 @@ import { Plus, Send } from 'lucide-react';
 import WebhookList, { type Webhook, isWebhookActive } from './WebhookList';
 import WebhookForm, { type WebhookFormValues, webhookEventOptions } from './WebhookForm';
 import WebhookDeliveryHistory, { type WebhookDelivery } from './WebhookDeliveryHistory';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, handleSessionExpired } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
-import { extractApiError } from '@/lib/apiError';
-import { handleActionError, runAction } from '@/lib/runAction';
+import { ActionError, handleActionError, runAction } from '@/lib/runAction';
 import { formSecretValue, MASKED_SECRET } from '@/lib/redactedSecret';
 import { Trans, useTranslation } from 'react-i18next';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type ModalMode = 'closed' | 'create' | 'edit' | 'delete';
 
@@ -38,6 +38,7 @@ const formatPayloadPreview = (payload: string | null | undefined, t: (key: strin
 
 export default function WebhooksPage() {
   const { t } = useTranslation('common');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { currentOrgId } = useOrgStore();
   const [webhooks, setWebhooks] = useState<Webhook[]>([]);
   const [loading, setLoading] = useState(true);
@@ -57,16 +58,16 @@ export default function WebhooksPage() {
       setError(undefined);
       const response = await fetchWithAuth('/webhooks');
       if (!response.ok) {
-        throw new Error(t('longTail.webhooks.WebhooksPage.errors.fetchWebhooks'));
+        throw new Error(stableT('longTail.webhooks.WebhooksPage.errors.fetchWebhooks'));
       }
       const data = await response.json();
       setWebhooks(data.data ?? data.webhooks ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('longTail.webhooks.WebhooksPage.errors.generic'));
+      setError(err instanceof Error ? err.message : stableT('longTail.webhooks.WebhooksPage.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [stableT]);
 
   const fetchDeliveries = useCallback(async (webhookId: string) => {
     try {
@@ -74,17 +75,17 @@ export default function WebhooksPage() {
       setDeliveriesError(undefined);
       const response = await fetchWithAuth(`/webhooks/${webhookId}/deliveries`);
       if (!response.ok) {
-        throw new Error(t('longTail.webhooks.WebhooksPage.errors.fetchDeliveries'));
+        throw new Error(stableT('longTail.webhooks.WebhooksPage.errors.fetchDeliveries'));
       }
       const data = await response.json();
       setDeliveries(data.data ?? data.deliveries ?? []);
     } catch (err) {
-      setDeliveriesError(err instanceof Error ? err.message : t('longTail.webhooks.WebhooksPage.errors.loadDeliveries'));
+      setDeliveriesError(err instanceof Error ? err.message : stableT('longTail.webhooks.WebhooksPage.errors.loadDeliveries'));
       setDeliveries([]);
     } finally {
       setDeliveriesLoading(false);
     }
-  }, [t]);
+  }, [stableT]);
 
   useEffect(() => {
     fetchWebhooks();
@@ -152,24 +153,25 @@ export default function WebhooksPage() {
 
   const handleTest = async (webhook: Webhook, eventType?: string) => {
     try {
-      const response = await fetchWithAuth(`/webhooks/${webhook.id}/test`, {
-        method: 'POST',
-        body: JSON.stringify({
-          event: eventType ?? webhook.events?.[0] ?? defaultEventType,
-          payloadTemplate: webhook.payloadTemplate
-        })
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/webhooks/${webhook.id}/test`, {
+            method: 'POST',
+            body: JSON.stringify({
+              event: eventType ?? webhook.events?.[0] ?? defaultEventType,
+              payloadTemplate: webhook.payloadTemplate
+            })
+          }),
+        errorFallback: t('longTail.webhooks.WebhooksPage.errors.testFailed'),
+        onUnauthorized: handleSessionExpired,
       });
-
-      if (!response.ok) {
-        throw new Error(t('longTail.webhooks.WebhooksPage.errors.testFailed'));
-      }
 
       await fetchWebhooks();
       if (activeWebhookId === webhook.id) {
         await fetchDeliveries(webhook.id);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('longTail.webhooks.WebhooksPage.errors.testFailed'));
+      handleActionError(err, t('longTail.webhooks.WebhooksPage.errors.testFailed'));
     }
   };
 
@@ -185,7 +187,11 @@ export default function WebhooksPage() {
           method: 'PATCH',
           body: JSON.stringify({ status: enabled ? 'active' : 'paused' })
         }),
-        errorFallback
+        errorFallback,
+        successMessage: enabled
+          ? t('longTail.webhooks.WebhooksPage.success.enabled')
+          : t('longTail.webhooks.WebhooksPage.success.disabled'),
+        onUnauthorized: handleSessionExpired,
       });
 
       // Render what the server saved, not what we asked for.
@@ -270,20 +276,29 @@ export default function WebhooksPage() {
         ? { ...payload, orgId: currentOrgId }
         : payload;
 
-      const response = await fetchWithAuth(url, {
-        method,
-        body: JSON.stringify(requestPayload)
+      await runAction({
+        request: () =>
+          fetchWithAuth(url, {
+            method,
+            body: JSON.stringify(requestPayload)
+          }),
+        errorFallback: t('longTail.webhooks.WebhooksPage.errors.saveWebhook'),
+        successMessage: modalMode === 'create'
+          ? t('longTail.webhooks.WebhooksPage.success.created')
+          : t('longTail.webhooks.WebhooksPage.success.updated'),
+        onUnauthorized: handleSessionExpired,
       });
-
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(extractApiError(data, t('longTail.webhooks.WebhooksPage.errors.saveWebhook')));
-      }
 
       await fetchWebhooks();
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('longTail.webhooks.WebhooksPage.errors.generic'));
+      // runAction toasted the failure; also keep the inline message inside the
+      // still-open form modal so it sits next to the fields being edited.
+      if (err instanceof ActionError) {
+        if (err.status !== 401) setError(err.message);
+      } else {
+        handleActionError(err, t('longTail.webhooks.WebhooksPage.errors.saveWebhook'));
+      }
     } finally {
       setSubmitting(false);
     }
@@ -294,18 +309,29 @@ export default function WebhooksPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetchWithAuth(`/webhooks/${selectedWebhook.id}`, {
-        method: 'DELETE'
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/webhooks/${selectedWebhook.id}`, {
+            method: 'DELETE'
+          }),
+        errorFallback: t('longTail.webhooks.WebhooksPage.errors.deleteWebhook'),
+        onUnauthorized: handleSessionExpired,
       });
-
-      if (!response.ok) {
-        throw new Error(t('longTail.webhooks.WebhooksPage.errors.deleteWebhook'));
-      }
 
       await fetchWebhooks();
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('longTail.webhooks.WebhooksPage.errors.generic'));
+      // The page error banner is hidden while any modal is open (#3531), so
+      // runAction's toast is the feedback; the delete modal stays open on a
+      // real failure so the operator can retry or cancel. A 404 means the row
+      // is already gone (deleted elsewhere) — retrying can't help, so close
+      // the modal and refetch instead of leaving a stale row on screen (sweep A2).
+      if (err instanceof ActionError && err.status === 404) {
+        await fetchWebhooks();
+        handleCloseModal();
+        return;
+      }
+      handleActionError(err, t('longTail.webhooks.WebhooksPage.errors.deleteWebhook'));
     } finally {
       setSubmitting(false);
     }
@@ -315,18 +341,21 @@ export default function WebhooksPage() {
     if (!activeWebhookId) return;
 
     try {
-      const response = await fetchWithAuth(
-        `/webhooks/${activeWebhookId}/deliveries/${delivery.id}/retry`,
-        { method: 'POST' }
-      );
-
-      if (!response.ok) {
-        throw new Error(t('longTail.webhooks.WebhooksPage.errors.retryDelivery'));
-      }
+      await runAction({
+        request: () =>
+          fetchWithAuth(
+            `/webhooks/${activeWebhookId}/deliveries/${delivery.id}/retry`,
+            { method: 'POST' }
+          ),
+        errorFallback: t('longTail.webhooks.WebhooksPage.errors.retryDelivery'),
+        onUnauthorized: handleSessionExpired,
+      });
 
       await fetchDeliveries(activeWebhookId);
     } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
       setDeliveriesError(err instanceof Error ? err.message : t('longTail.webhooks.WebhooksPage.errors.retryDelivery'));
+      handleActionError(err, t('longTail.webhooks.WebhooksPage.errors.retryDelivery'));
     }
   };
 

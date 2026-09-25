@@ -66,6 +66,7 @@ vi.mock('../db/schema', () => ({
   backupSlaEvents: {},
   backupVerifications: {},
   devices: {},
+  discoveredAssets: {},
   // networkBaseline.ts (pulled in transitively by the portal route graph) reads
   // discoveredAssetTypeEnum.enumValues at module load — required for the mock.
   discoveredAssetTypeEnum: { enumValues: [] },

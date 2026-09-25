@@ -10,6 +10,7 @@ import {
   devices,
   deviceCommands,
   deviceHardware,
+  deviceHardwareHealth,
   deviceReliability,
   deviceNetwork,
   deviceMetrics,
@@ -299,7 +300,9 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'device_filesystem_cleanup_runs', 'device_filesystem_scan_state',
   'device_filesystem_snapshots',
   'device_function_assessments',
-  'device_group_memberships', 'device_hardware', 'device_ip_history',
+  'device_group_memberships', 'device_hardware',
+  'device_hardware_components', 'device_hardware_events', 'device_hardware_health',
+  'device_ip_history',
   'device_metrics', 'device_mtls_certificates', 'device_network', 'device_patches',
   'device_process_samples', 'device_recovery_keys', 'device_registry_state',
   'agent_rollback_events', 'agent_rollback_directives',
@@ -535,7 +538,11 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'monitor_device_state', 'monitor_episodes',
   'agent_health_observations', 'software_inventory_observations',
   'device_group_memberships', 'group_membership_log',
-  'device_hardware', 'device_network', 'device_ip_history', 'device_disks',
+  'device_hardware',
+  'device_hardware_components',
+  'device_hardware_events',
+  'device_hardware_health',
+  'device_network', 'device_ip_history', 'device_disks',
   'device_metrics', 'device_software', 'device_registry_state', 'device_config_state',
   'device_commands', 'device_connections', 'device_boot_metrics',
   'device_sessions', 'device_change_log', 'device_warranty', 'device_vulnerabilities',
@@ -941,6 +948,9 @@ coreRoutes.get(
     if (query.search) {
       conditions.push(like(devices.hostname, `%${query.search}%`));
     }
+    if (query.hardwareHealth) {
+      conditions.push(eq(deviceHardwareHealth.health, query.hardwareHealth));
+    }
 
     // Exclude decommissioned by default unless explicitly requested.
     if (!query.status && query.includeDecommissioned !== 'true') {
@@ -966,6 +976,7 @@ coreRoutes.get(
       const countResult = await db
         .select({ count: sql<number>`count(*)` })
         .from(devices)
+        .leftJoin(deviceHardwareHealth, eq(devices.id, deviceHardwareHealth.deviceId))
         .where(whereCondition);
       total = Number(countResult[0]?.count ?? 0);
     }
@@ -1055,6 +1066,9 @@ coreRoutes.get(
         // leftJoin stays tenant-safe; null when no score computed yet.
         reliabilityScore: deviceReliability.reliabilityScore,
         reliabilityTrend: deviceReliability.trendDirection,
+        // Hardware & RAID rollup (#6854 W04) — null when no report yet.
+        hardwareHealth: deviceHardwareHealth.health,
+        hardwareHealthSummary: deviceHardwareHealth.summary,
         // RDS per-session helpers (plan 2 heartbeat ingest) — UI hint only,
         // see the truthy-guard comment in heartbeat.ts. Tasks 13/14 gate the
         // session picker on this being 'on-demand' at the list-row level.
@@ -1063,6 +1077,7 @@ coreRoutes.get(
       .from(devices)
       .leftJoin(deviceHardware, eq(devices.id, deviceHardware.deviceId))
       .leftJoin(deviceReliability, eq(devices.id, deviceReliability.deviceId))
+      .leftJoin(deviceHardwareHealth, eq(devices.id, deviceHardwareHealth.deviceId))
       .where(whereCondition)
       .orderBy(...orderBy)
       .limit(fetchLimit)
@@ -1256,6 +1271,8 @@ coreRoutes.get(
         // score yet (no device_reliability row) — the list renders a dash.
         reliabilityScore: d.reliabilityScore ?? null,
         reliabilityTrend: d.reliabilityTrend ?? null,
+        hardwareHealth: d.hardwareHealth ?? null,
+        hardwareHealthSummary: d.hardwareHealthSummary ?? null,
         helperLifecycleMode: d.helperLifecycleMode ?? null,
         metrics: latestMetrics
           ? {

@@ -75,7 +75,14 @@ describe('postProposalOutcomeToAuthor', () => {
     );
     expect(insertValues).not.toHaveBeenCalled();
     expect(createNotification).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'approval', orgId: proposal.orgId, userId: proposal.requestedByUserId, priority: 'high' }),
+      expect.objectContaining({
+        type: 'approval',
+        orgId: proposal.orgId,
+        userId: proposal.requestedByUserId,
+        priority: 'high',
+        // #4461: deep-link to the specific proposal card, not the bare inbox.
+        link: `/approvals#proposal-${proposal.id}`,
+      }),
     );
   });
 

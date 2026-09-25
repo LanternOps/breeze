@@ -795,6 +795,19 @@ export interface PartnerSettings {
     buttonLabel?: string | null;
     html?: string | null;
   }>>;
+  ml?: MlFeatureSettings;
+}
+
+/** ML feature switches (`settings.ml`), same shape on partners and organizations. */
+export interface MlFeatureSettings {
+  anomalies?: {
+    enabled?: boolean;
+    create_alerts?: boolean;
+  };
+  /** Suggested fixes on alert detail (`ml.remediation_suggestions.enabled`). */
+  remediation_suggestions?: {
+    enabled?: boolean;
+  };
 }
 
 // ============================================

@@ -2,13 +2,14 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { quotes, quoteBlocks, quoteLines, quoteAcceptances, quoteRecipients } from '../db/schema/quotes';
 import { invoices, invoiceLines } from '../db/schema/invoices';
-import { partners, sites } from '../db/schema/orgs';
+import { organizations, partners, sites } from '../db/schema/orgs';
 import { deviceGroups } from '../db/schema/devices';
 import { resolvePartnerDocumentLocale } from './documentLocale';
 import { QuoteServiceError } from './quoteTypes';
 import { computeQuoteSha256 } from './quoteContentHash';
 import { getAcceptanceProvider } from './acceptanceProvider';
 import { computeLineTotal, computeInvoiceTotals } from './invoiceMath';
+import { computeDueDate, resolveInvoiceTermsDays } from './invoiceTerms';
 import { formatInvoiceNumber } from './invoiceNumbers';
 import { isQuoteExpired } from './quoteExpiry';
 import { emitInvoiceEvent } from './invoiceEvents';
@@ -345,8 +346,15 @@ export async function acceptQuote(
       // #6227: fallback for the invoice presentation stamp when the quote
       // carries no presentation snapshot (legacy pre-snapshot quotes).
       documentTheme: partners.documentTheme, documentPageSize: partners.documentPageSize,
+      // #6229: the quote org's payment-terms override rides on this read (NULL
+      // = inherit the partner's), resolved below by resolveInvoiceTermsDays.
+      // The join is pinned to the same partner, so a mismatched org can only
+      // yield NULL (inherit), never another tenant's value.
+      orgTermsDays: organizations.invoiceTermsDays,
     })
-    .from(partners).where(eq(partners.id, quote.partnerId)).limit(1);
+    .from(partners)
+    .leftJoin(organizations, and(eq(organizations.id, quote.orgId), eq(organizations.partnerId, partners.id)))
+    .where(eq(partners.id, quote.partnerId)).limit(1);
   // Render locale for the contract parts + executed PDF: the quote's send-time
   // snapshot (every non-draft quote carries one since 2026-09-01-b), falling
   // back to the PARTNER's language for an unstamped row — the same fallback the
@@ -513,11 +521,11 @@ export async function acceptQuote(
     if (!Number.isFinite(counter) || counter < 1) {
       throw new QuoteServiceError('Failed to allocate invoice number', 500, 'INVALID_STATE');
     }
-    const dueDate = new Date(now.getTime() + (partner?.termsDays ?? 30) * 86400000);
+    const dueDate = computeDueDate(now, resolveInvoiceTermsDays(partner?.orgTermsDays, partner?.termsDays));
     issueFields.status = 'sent';
     issueFields.invoiceNumber = formatInvoiceNumber(partner?.prefix ?? 'INV', year, counter);
     issueFields.issueDate = now.toISOString().slice(0, 10);
-    issueFields.dueDate = dueDate.toISOString().slice(0, 10);
+    issueFields.dueDate = dueDate;
     issueFields.billToName = quote.billToName ?? null;
     issueFields.billToAddress = quote.billToAddress ?? null;
     issueFields.billToTaxId = quote.billToTaxId ?? null;

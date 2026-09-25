@@ -47,6 +47,9 @@ function captureTx(lockedRowCount = 1) {
     execute: vi.fn().mockImplementation((query: unknown) => {
       const text = JSON.stringify(query);
       statements.push(text);
+      if (text.includes('SELECT component_key FROM device_hardware_components')) {
+        return Promise.resolve([]);
+      }
       if (text.includes('FOR UPDATE')) {
         return Promise.resolve(pgResult(lockedRowCount));
       }
@@ -160,6 +163,9 @@ describe('deleteDeviceCascade lock ordering', () => {
       execute: vi.fn().mockImplementation((query: unknown) => {
         const text = JSON.stringify(query);
         statements.push(text);
+        if (text.includes('SELECT component_key FROM device_hardware_components')) {
+          return Promise.resolve([]);
+        }
         // A result the decoder genuinely cannot read: it is neither a
         // postgres-js array nor a node-postgres `{rows}`.
         //
@@ -204,6 +210,9 @@ describe('deleteDeviceCascade lock ordering', () => {
       execute: vi.fn().mockImplementation((query: unknown) => {
         const text = JSON.stringify(query);
         statements.push(text);
+        if (text.includes('SELECT component_key FROM device_hardware_components')) {
+          return Promise.resolve([]);
+        }
         if (text.includes('pg_settings')) {
           const row: Record<string, unknown>[] = [{ prior_ms: '500' }];
           Object.defineProperty(row, 'count', { value: 1, enumerable: false });

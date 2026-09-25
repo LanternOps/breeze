@@ -5,6 +5,7 @@ import { Dialog } from '../shared/Dialog';
 import LinkSubscriptionPicker from '../integrations/LinkSubscriptionPicker';
 import { formatNumber } from '@/lib/i18n/format';
 import '@/lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 interface Pax8Subscription {
   id: string;
@@ -53,6 +54,9 @@ interface Props {
  */
 export default function ContractPax8Drawer({ open, orgId, integrationId, onClose, onLinked }: Props) {
   const { t } = useTranslation('billing');
+  // Effects use the stable translator so a locale change does not re-run them
+  // (#3632); JSX keeps the plain `t` so rendered text still re-translates.
+  const stableT = useStableT(t);
   const [subs, setSubs] = useState<Pax8Subscription[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [picked, setPicked] = useState<Pax8Subscription | null>(null);
@@ -62,18 +66,18 @@ export default function ContractPax8Drawer({ open, orgId, integrationId, onClose
     void (async () => {
       try {
         const res = await fetchWithAuth(`/pax8/subscriptions?orgId=${encodeURIComponent(orgId)}&limit=100`);
-        if (!res.ok) { setError(t('contracts.contractPax8Drawer.errors.loadSubscriptions')); setSubs([]); return; }
+        if (!res.ok) { setError(stableT('contracts.contractPax8Drawer.errors.loadSubscriptions')); setSubs([]); return; }
         const body = (await res.json().catch(() => null)) as { data?: Pax8Subscription[] } | null;
         setSubs(body?.data ?? []);
       } catch (err) {
         // A thrown fetch (network failure) must fail loud, not strand the drawer on
         // "Loading subscriptions…" forever. Auth expiry self-redirects, so skip it.
         if (err instanceof AuthSessionExpiredError) return;
-        setError(t('contracts.contractPax8Drawer.errors.loadSubscriptions'));
+        setError(stableT('contracts.contractPax8Drawer.errors.loadSubscriptions'));
         setSubs([]);
       }
     })();
-  }, [open, orgId, t]);
+  }, [open, orgId, stableT]);
 
   const onDone = useCallback(() => { onLinked(); onClose(); }, [onLinked, onClose]);
 

@@ -101,11 +101,66 @@ const DEV_ENV: Record<string, string> = {
   // values already present in the developer's root .env via compose interpolation.
 };
 
+/** Keys set after compose runs (see setStackEnvValues); a rewrite keeps them. */
+const RUNTIME_KEYS = ['WEBAUTHN_ORIGIN', 'WEBAUTHN_RP_ID'] as const;
+
 export function writeEnvStack(worktreePath: string): string {
   const p = envStackPath(worktreePath);
-  const body = Object.entries(DEV_ENV).map(([k, v]) => `${k}=${v}`).join('\n') + '\n';
+  // Carry runtime keys across a re-`up` so an unchanged stack is not recreated
+  // twice (drop, then re-add); `up` still corrects a value that went stale.
+  // Read .env.stack alone: a value in the root .env must not be copied here.
+  const previous = existsSync(p) ? readFileSync(p, 'utf8').split('\n') : [];
+  const kept = previous.filter((line) =>
+    RUNTIME_KEYS.some((k) => new RegExp(`^\\s*${k}\\s*=`).test(line)));
+  const body = [...Object.entries(DEV_ENV).map(([k, v]) => `${k}=${v}`), ...kept].join('\n') + '\n';
   writeFileSync(p, body, 'utf8');
   return p;
+}
+
+/**
+ * #6443 — upsert keys into `.env.stack` once their values are known. The
+ * WebAuthn origin is the caddy port compose publishes (`0:80`, random), which
+ * exists only after `composeUp`, so it cannot live in DEV_ENV. Existing lines
+ * for a key are replaced in place, never duplicated.
+ */
+export function setStackEnvValues(worktreePath: string, values: Record<string, string>): string {
+  const p = envStackPath(worktreePath);
+  const pending = new Map(Object.entries(values));
+  const lines = existsSync(p) ? readFileSync(p, 'utf8').replace(/\n$/, '').split('\n') : [];
+  const out: string[] = [];
+  for (const line of lines) {
+    const key = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=/.exec(line)?.[1];
+    if (key !== undefined && values[key] !== undefined) {
+      if (pending.has(key)) { out.push(`${key}=${values[key]}`); pending.delete(key); }
+      continue;
+    }
+    out.push(line);
+  }
+  for (const [k, v] of pending) out.push(`${k}=${v}`);
+  writeFileSync(p, out.join('\n') + '\n', 'utf8');
+  return p;
+}
+
+/**
+ * #6443 — make passkeys work on this stack. The API verifies the browser origin
+ * against WEBAUTHN_ORIGIN and the RP ID against WEBAUTHN_RP_ID, each falling
+ * back to root-.env values that never describe a local stack on a random caddy
+ * port. Pin both in `.env.stack` (which compose reads last, so it wins) and
+ * recreate api when either differs from what compose would resolve. Returns
+ * whether api was recreated.
+ */
+export function pinWebAuthnForStack(
+  worktreePath: string,
+  baseUrl: string,
+  deps: { recreateApi: () => void; waitApiHealthy: () => void },
+): boolean {
+  const wanted = { WEBAUTHN_ORIGIN: baseUrl, WEBAUTHN_RP_ID: new URL(baseUrl).hostname };
+  const stale = Object.entries(wanted).some(([k, v]) => readStackEnvValue(worktreePath, k) !== v);
+  if (!stale) return false;
+  setStackEnvValues(worktreePath, wanted);
+  deps.recreateApi();
+  deps.waitApiHealthy();
+  return true;
 }
 
 /**

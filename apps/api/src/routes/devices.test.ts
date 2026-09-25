@@ -217,6 +217,7 @@ vi.mock('../db/schema', async (importOriginal) => ({
   devices: { id: 'id', orgId: 'orgId', siteId: 'siteId', status: 'status', hostname: 'hostname', displayName: 'displayName', osType: 'osType', lastSeenAt: 'lastSeenAt', createdAt: 'createdAt', updatedAt: 'updatedAt', tags: 'tags', agentVersion: 'agentVersion' },
   deviceHardware: { deviceId: 'deviceId' },
   deviceReliability: { deviceId: 'deviceId', reliabilityScore: 'reliabilityScore', trendDirection: 'trendDirection' },
+  deviceHardwareHealth: { deviceId: 'hardwareDeviceId', health: 'hardwareHealth', summary: 'hardwareHealthSummary' },
   deviceNetwork: { deviceId: 'deviceId' },
   deviceMetrics: { deviceId: 'deviceId', timestamp: 'timestamp' },
   deviceSoftware: { deviceId: 'deviceId' },
@@ -915,7 +916,9 @@ describe('device routes', () => {
         // 1st: count query
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue([{ count: 2 }])
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([{ count: 2 }])
+            })
           })
         } as any)
         // 2nd: device list query — two chained leftJoins now (deviceHardware,

@@ -198,7 +198,10 @@ export async function publishTopologyBuild(scope: TopologyScope, input: Publicat
       for (const group of sharedIdentities) {
         const managed = group.filter(b => b.deviceId);
         if (managed.length !== 1 || group.some(b => b.manualNodeId)
-          || group.filter(b => b.discoveredAssetId).some(b => !assets.some(a => a.id === b.discoveredAssetId && a.linkedDeviceId === managed[0]!.deviceId && !a.autoLinkSuppressedAt))) throw new Error('Shared endpoint bindings require an accepted inventory link');
+          || group.filter(b => b.discoveredAssetId).some(b => !assets.some(a =>
+            a.id === b.discoveredAssetId && a.linkedDeviceId === managed[0]!.deviceId
+            && !a.autoLinkSuppressedAt && a.linkSource !== 'agent_report'
+          ))) throw new Error('Shared endpoint bindings require an accepted inventory link');
       }
     }
     for (const old of nodes.filter(n => n.aliasTargetId && resolve(n.aliasTargetId) !== n.aliasTargetId)) {

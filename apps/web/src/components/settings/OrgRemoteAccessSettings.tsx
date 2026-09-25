@@ -9,6 +9,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { formatNumber } from '@/lib/i18n/format';
 import { asList } from '@/lib/asList';
 import { buildRemoteProxyPageUrl } from '@/lib/remoteTunnelUrls';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type AllowlistRule = {
   id: string; siteId: string; pattern: string; description: string;
@@ -43,6 +44,7 @@ function fmtBytes(b: number, units: { bytes: string; kilobytes: string; megabyte
 
 export default function OrgRemoteAccessSettings({ orgId, sites: propSites }: Props) {
   const { t } = useTranslation('settings');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [fetchedSites, setFetchedSites] = useState<Array<{ id: string; name: string }>>([]);
   const sites = propSites ?? fetchedSites;
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -91,13 +93,13 @@ export default function OrgRemoteAccessSettings({ orgId, sites: propSites }: Pro
     setTunnelsLoading(true);
     try {
       const res = await fetchWithAuth('/tunnels?status=active');
-      if (!res.ok) throw new Error(t('orgRemoteAccessSettings.errors.loadActiveTunnels'));
+      if (!res.ok) throw new Error(stableT('orgRemoteAccessSettings.errors.loadActiveTunnels'));
       const data = await res.json();
       setTunnels(asList(data, 'tunnels'));
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('orgRemoteAccessSettings.errors.loadTunnels'));
+      setError(err instanceof Error ? err.message : stableT('orgRemoteAccessSettings.errors.loadTunnels'));
     } finally { setTunnelsLoading(false); }
-  }, [t]);
+  }, [stableT]);
 
   useEffect(() => { fetchTunnels(); }, [fetchTunnels]);
 

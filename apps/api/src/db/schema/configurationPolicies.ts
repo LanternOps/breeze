@@ -13,6 +13,7 @@ import {
   index,
   uniqueIndex,
   primaryKey,
+  check,
   type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
@@ -54,6 +55,8 @@ export const configFeatureTypeEnum = pgEnum('config_feature_type', [
   // Deliberately the plural: 'monitoring' above is the service/process watch
   // feature and the two must never be confusable.
   'monitors',
+  // #6856. APPENDED, matching the migration's ADD VALUE order.
+  'hardware_monitoring',
 ]);
 
 export const configAssignmentLevelEnum = pgEnum('config_assignment_level', [
@@ -336,6 +339,21 @@ export const configPolicyEventLogSettings = pgTable('config_policy_event_log_set
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
+
+// Single-item: one row per feature link (inherited RAID/disk-health
+// collection settings, #6856). Inline-only — no linked-policy variant.
+export const configPolicyHardwareMonitoringSettings = pgTable('config_policy_hardware_monitoring_settings', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  featureLinkId: uuid('feature_link_id').notNull().unique().references(() => configPolicyFeatureLinks.id, { onDelete: 'cascade' }),
+  enabled: boolean('enabled').notNull().default(true),
+  pollIntervalMinutes: integer('poll_interval_minutes').notNull().default(10),
+  diskHealthIntervalMinutes: integer('disk_health_interval_minutes').notNull().default(60),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (t) => [
+  check('config_policy_hardware_monitoring_poll_interval_chk', sql`${t.pollIntervalMinutes} BETWEEN 5 AND 60`),
+  check('config_policy_hardware_monitoring_disk_interval_chk', sql`${t.diskHealthIntervalMinutes} BETWEEN 15 AND 1440`),
+]);
 
 // Single-item: one row per feature link (sensitive data scan settings)
 export const configPolicySensitiveDataSettings = pgTable('config_policy_sensitive_data_settings', {

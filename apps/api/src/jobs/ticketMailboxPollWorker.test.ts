@@ -39,6 +39,9 @@ vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})) }))
 vi.mock('../services/ticketMailbox/connectionService', () => ({
   isConnectedMailboxSnapshotCurrent: vi.fn(async () => true),
   listConnectedMailboxes: vi.fn(),
+  // The sweep also enumerates Gmail mailboxes now; this suite covers the M365
+  // path, so return none (its own suites cover the Gmail sweep).
+  listConnectedGmailMailboxes: vi.fn(async () => []),
   updateDeltaCursor: vi.fn(async () => {}),
   resetDeltaCursor: vi.fn(async () => {}),
   setConnectedMailboxStatus: vi.fn(async () => {}),
@@ -103,6 +106,7 @@ describe('runMailboxSweep', () => {
       1,
       expect.objectContaining({ providerMessageId: 'm1' }),
       {
+        provider: 'm365',
         connectionId: 'c1',
         partnerId: 'p1',
         tenantId: conn().tenantId,

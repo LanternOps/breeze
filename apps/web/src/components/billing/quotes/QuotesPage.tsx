@@ -32,6 +32,7 @@ import { StatCard } from '../shared/StatCard';
 import { ROW_LINK_CLASS, writeHashFilters } from '../shared/listChrome';
 import AccessDenied from '../../shared/AccessDenied';
 import { BULK_ID_LIMIT } from '@breeze/shared';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 interface Organization {
   id: string;
@@ -109,6 +110,7 @@ export interface QuotesPageProps {
 
 export function QuotesPage({ lockedOrgId }: QuotesPageProps = {}) {
   const { t } = useTranslation('billing');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { can } = usePermissions();
   const canWrite = can('quotes', 'write');
   const bulk = useBulkSelection();
@@ -164,7 +166,7 @@ export function QuotesPage({ lockedOrgId }: QuotesPageProps = {}) {
       list = await fetchAllOrganizationsFrom<Organization>('/orgs/organizations');
     } catch (err) {
       if (err instanceof ListFetchError && err.status === 401) return UNAUTHORIZED();
-      handleActionError(err, t('quotes.page.errors.loadOrganizations'));
+      handleActionError(err, stableT('quotes.page.errors.loadOrganizations'));
       return;
     }
     // Now pages through every organization the caller can see, but a
@@ -180,7 +182,7 @@ export function QuotesPage({ lockedOrgId }: QuotesPageProps = {}) {
       if (lockedOrg?.id) list.unshift(lockedOrg);
     }
     setOrgs(list);
-  }, [t, lockedOrgId]);
+  }, [stableT, lockedOrgId]);
 
   const loadQuotes = useCallback(async (f: Filters) => {
     // Latest-request-wins. A deep-linked load (`/quotes#status=sent`) fires this
@@ -196,17 +198,17 @@ export function QuotesPage({ lockedOrgId }: QuotesPageProps = {}) {
       if (seq !== fetchSeq.current) return;
       if (res.status === 401) return UNAUTHORIZED();
       if (res.status === 403) { setForbidden(true); return; }
-      if (!res.ok) throw new Error(t('quotes.page.errors.loadQuotes'));
+      if (!res.ok) throw new Error(stableT('quotes.page.errors.loadQuotes'));
       const body = (await res.json()) as { data: Quote[] };
       if (seq !== fetchSeq.current) return;
       setQuotes(body.data ?? []);
     } catch (err) {
       if (seq !== fetchSeq.current) return;
-      setError(err instanceof Error ? err.message : t('quotes.page.errors.loadQuotes'));
+      setError(err instanceof Error ? err.message : stableT('quotes.page.errors.loadQuotes'));
     } finally {
       if (seq === fetchSeq.current) setLoading(false);
     }
-  }, [t, lockedOrgId]);
+  }, [stableT, lockedOrgId]);
 
   useEffect(() => { void loadOrgs(); }, [loadOrgs]);
   useEffect(() => { void loadQuotes(filters); }, [loadQuotes, filters]);

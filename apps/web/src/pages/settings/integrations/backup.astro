@@ -1,0 +1,6 @@
+---
+// Backup provider config lives in the /integrations hub (tab-based UI). Keep
+// this route as a permanent alias so existing bookmarks / in-app links land on
+// the right tab instead of an orphaned standalone page. Copy of huntress.astro.
+return Astro.redirect('/integrations#backup', 301);
+---

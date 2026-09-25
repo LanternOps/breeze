@@ -38,6 +38,17 @@ vi.mock('../db', () => {
 const refMocks = vi.hoisted(() => ({ assertChecklistTemplateNotInUse: vi.fn() }));
 vi.mock('./checklistTemplateReference', () => refMocks);
 
+// #6930 — the waiting-Operator-step RULE has its own suite (humanWork tests);
+// mocked here so these cases assert only that replace_unticked consults it,
+// inside the transaction, before the delete.
+const humanWorkMocks = vi.hoisted(() => ({ assertTicketUntickedChecklistItemsDeletable: vi.fn() }));
+vi.mock('./aiOperator/humanWorkService', () => ({
+  ...humanWorkMocks,
+  assertChecklistItemDeletable: vi.fn(),
+  onChecklistItemDone: vi.fn(),
+  onChecklistItemUnticked: vi.fn(),
+}));
+
 import { db as mockedDb } from '../db';
 import {
   addChecklistTemplateItem,
@@ -492,7 +503,43 @@ describe('applyChecklistTemplateToTicket', () => {
     expect(db.transaction).toHaveBeenCalledTimes(1);
   });
 
+  it('replace_unticked checks for waiting Operator steps inside the transaction, before deleting', async () => {
+    humanWorkMocks.assertTicketUntickedChecklistItemsDeletable.mockClear();
+    queueApply({ id: 't-1', orgId: 'o-1', partnerId: null }, [
+      { id: 'ti-1', label: 'A', detail: null, sortOrder: 0 },
+    ]);
+    await applyChecklistTemplateToTicket(
+      { id: 'tk-1', orgId: 'o-1' },
+      { templateId: 't-1', mode: 'replace_unticked' },
+      PARTNER_TECH,
+    );
+    // The chain mock's transaction hands back the same object as its tx.
+    expect(humanWorkMocks.assertTicketUntickedChecklistItemsDeletable).toHaveBeenCalledWith('tk-1', mockedDb);
+    expect(humanWorkMocks.assertTicketUntickedChecklistItemsDeletable.mock.invocationCallOrder[0])
+      .toBeLessThan(db.delete.mock.invocationCallOrder[0]!);
+  });
+
+  it('replace_unticked deletes nothing when a waiting Operator step is on the ticket', async () => {
+    humanWorkMocks.assertTicketUntickedChecklistItemsDeletable.mockClear();
+    queueApply({ id: 't-1', orgId: 'o-1', partnerId: null }, [
+      { id: 'ti-1', label: 'A', detail: null, sortOrder: 0 },
+    ]);
+    humanWorkMocks.assertTicketUntickedChecklistItemsDeletable.mockRejectedValueOnce(
+      Object.assign(new Error('waiting'), { status: 409, code: 'CHECKLIST_OPERATOR_STEP_WAITING' }),
+    );
+    await expect(
+      applyChecklistTemplateToTicket(
+        { id: 'tk-1', orgId: 'o-1' },
+        { templateId: 't-1', mode: 'replace_unticked' },
+        PARTNER_TECH,
+      ),
+    ).rejects.toMatchObject({ status: 409, code: 'CHECKLIST_OPERATOR_STEP_WAITING' });
+    expect(db.delete).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
   it('append does NOT delete anything', async () => {
+    humanWorkMocks.assertTicketUntickedChecklistItemsDeletable.mockClear();
     queueApply({ id: 't-1', orgId: 'o-1', partnerId: null }, [
       { id: 'ti-1', label: 'A', detail: null, sortOrder: 0 },
     ]);
@@ -502,6 +549,7 @@ describe('applyChecklistTemplateToTicket', () => {
       PARTNER_TECH,
     );
     expect(db.delete).not.toHaveBeenCalled();
+    expect(humanWorkMocks.assertTicketUntickedChecklistItemsDeletable).not.toHaveBeenCalled();
   });
 
   it('404s on a template outside the caller’s org and partner', async () => {

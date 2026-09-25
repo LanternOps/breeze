@@ -200,7 +200,18 @@
     },
     "title": "Ağ Keşfi",
     "toasts": {
-      "scanQueued": "\"{{name}}\" için keşif taraması sıraya alındı"
+      "scanQueued": "\"{{name}}\" için keşif taraması sıraya alındı",
+      "profileCreated": "\"{{name}}\" keşif profili oluşturuldu",
+      "profileUpdated": "\"{{name}}\" keşif profili güncellendi",
+      "profileMoved": "Profil {{site}} sitesine taşındı.",
+      "assetsMoved_one": "{{count}} ağ cihazı taşındı",
+      "assetsMoved_other": "{{count}} ağ cihazı taşındı",
+      "agentLinksRemoved_one": "{{count}} aracı bağlantısı kaldırıldı",
+      "agentLinksRemoved_other": "{{count}} aracı bağlantısı kaldırıldı",
+      "monitorsReattached_one": "{{count}} izleyici yeniden bağlandı",
+      "monitorsReattached_other": "{{count}} izleyici yeniden bağlandı",
+      "topologyPoliciesDisabled_one": "{{count}} topoloji ilkesi devre dışı bırakıldı",
+      "topologyPoliciesDisabled_other": "{{count}} topoloji ilkesi devre dışı bırakıldı"
     },
     "days": {
       "monday": "Pazartesi",
@@ -295,6 +306,12 @@
       "arp": "ARP Taraması",
       "snmp": "SNMP Sonda",
       "portScan": "TCP Bağlantı Noktası Taraması"
+    },
+    "siteMove": {
+      "notice": "Bu profil artık yeni siteden tarama yapacak. Daha önce keşfedilen cihazlar, siz taşımadıkça mevcut sitede kalır.",
+      "moveAssets_one": "Bu profilin keşfettiği {{count}} ağ cihazını da yeni siteye taşı",
+      "moveAssets_other": "Bu profilin keşfettiği {{count}} ağ cihazını da yeni siteye taşı",
+      "moveAssetsUnknown": "Bu profilin keşfettiği ağ cihazlarını da yeni siteye taşı"
     }
   },
   "discoveryProfileList": {

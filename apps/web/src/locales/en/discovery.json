@@ -200,7 +200,18 @@
     },
     "title": "Network Discovery",
     "toasts": {
-      "scanQueued": "Discovery scan queued for \"{{name}}\""
+      "scanQueued": "Discovery scan queued for \"{{name}}\"",
+      "profileCreated": "Discovery profile \"{{name}}\" created",
+      "profileUpdated": "Discovery profile \"{{name}}\" updated",
+      "profileMoved": "Profile moved to {{site}}.",
+      "assetsMoved_one": "{{count}} network device moved",
+      "assetsMoved_other": "{{count}} network devices moved",
+      "agentLinksRemoved_one": "{{count}} agent link removed",
+      "agentLinksRemoved_other": "{{count}} agent links removed",
+      "monitorsReattached_one": "{{count}} monitor re-attached",
+      "monitorsReattached_other": "{{count}} monitors re-attached",
+      "topologyPoliciesDisabled_one": "{{count}} topology policy disabled",
+      "topologyPoliciesDisabled_other": "{{count}} topology policies disabled"
     },
     "days": {
       "monday": "Monday",
@@ -295,6 +306,12 @@
       "arp": "ARP Sweep",
       "snmp": "SNMP Probe",
       "portScan": "TCP Port Scan"
+    },
+    "siteMove": {
+      "notice": "This profile will scan from the new site from now on. Devices it already discovered stay in the current site unless you move them.",
+      "moveAssets_one": "Also move the {{count}} network device this profile discovered to the new site",
+      "moveAssets_other": "Also move the {{count}} network devices this profile discovered to the new site",
+      "moveAssetsUnknown": "Also move the network devices this profile discovered to the new site"
     }
   },
   "discoveryProfileList": {

@@ -41,6 +41,7 @@ import {
   theadRowClass,
   rowClass,
 } from './ui';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 const STATUS_OPTIONS: Array<ElevationStatus | ''> = [
   '',
@@ -56,6 +57,7 @@ const FLOW_OPTIONS: Array<ElevationFlowType | ''> = ['', 'uac_intercept', 'tech_
 
 export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
   const { t } = useTranslation('security');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { can } = usePermissions();
   const canApprove = can('pam', 'approve');
   const canManage = can('pam', 'manage_policy');
@@ -87,7 +89,7 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
             return;
           }
           throw new Error(
-            t('pamPamRequestsTab.errors.loadWithStatus', {
+            stableT('pamPamRequestsTab.errors.loadWithStatus', {
               defaultValue: 'Failed to load requests (HTTP {{status}})',
               status: res.status,
             }),
@@ -101,13 +103,13 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
         setError(
           err instanceof Error
             ? err.message
-            : t('pamPamRequestsTab.errors.load', { defaultValue: 'Failed to load requests' }),
+            : stableT('pamPamRequestsTab.errors.load', { defaultValue: 'Failed to load requests' }),
         );
       } finally {
         if (!signal?.aborted) setLoading(false);
       }
     },
-    [status, flowType, page, t],
+    [status, flowType, page, stableT],
   );
 
   useEffect(() => {

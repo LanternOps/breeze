@@ -292,9 +292,16 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 		}
 	}
 
+	// Why a consent-mode start was allowed to proceed, reported to the API as
+	// consentReason: "user" (the end user allowed it) or "helper_absent" /
+	// "timeout" (nobody could be asked and consentUnavailableBehavior is
+	// "proceed"). Never collapse the latter two into "user" — the API audits
+	// "user" as the end user granting the session (#6819).
+	consentReason := ""
 	if prompt != nil && prompt.Mode == "consent" {
 		verdict, helperPresent, timedOut := h.requestConsent(sessionID, prompt, targetSession)
 		proceed, reason := decideConsent(verdict, helperPresent, timedOut, prompt.ConsentUnavailableBehavior)
+		consentReason = reason
 		if !proceed {
 			log.Info("remote session denied by consent gate",
 				"sessionId", sessionID, "reason", reason)
@@ -324,7 +331,7 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 		}
 		if result.Status == "completed" && prompt != nil {
 			h.afterDesktopStart(sessionID, prompt, targetSession)
-			result = withConsentGranted(result, prompt)
+			result = withConsentGranted(result, prompt, consentReason)
 		} else if result.Status != "completed" {
 			// Helper start failed — no live session, so no disconnect event
 			// will come to release the target or the leases. Clear both now.
@@ -360,17 +367,25 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 		// either renewed or released — never left to silently expire.
 		h.startDesktopLeaseRenewal(sessionID)
 	}
+	if prompt != nil {
+		h.afterDesktopStart(sessionID, prompt, targetSession)
+	}
+	return directStartResult(sessionID, answer, prompt, consentReason, time.Since(start).Milliseconds())
+}
+
+// directStartResult builds the direct-mode start result. In consent mode it
+// carries the gate's consentReason (#6819) exactly as the helper path does via
+// withConsentGranted. Split out so the marker is unit-testable on linux, where
+// handleStartDesktop always takes this path and capture cannot run in tests.
+func directStartResult(sessionID, answer string, prompt *ipc.DesktopPrompt, consentReason string, durationMs int64) tools.CommandResult {
 	resultData := map[string]any{
 		"sessionId": sessionID,
 		"answer":    answer,
 	}
-	if prompt != nil {
-		h.afterDesktopStart(sessionID, prompt, targetSession)
-		if prompt.Mode == "consent" {
-			resultData["consentReason"] = "user"
-		}
+	if prompt != nil && prompt.Mode == "consent" {
+		resultData["consentReason"] = consentReason
 	}
-	return tools.NewSuccessResult(resultData, time.Since(start).Milliseconds())
+	return tools.NewSuccessResult(resultData, durationMs)
 }
 
 // parseDesktopSessionPolicy extracts the agent-enforced session policy from a

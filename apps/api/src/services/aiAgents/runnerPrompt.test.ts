@@ -584,6 +584,16 @@ describe('buildAgentRunTaskPrompt', () => {
     expect(text).not.toMatch(/run_script|execute_playbook/);
   });
 
+  // #6909 — the verdict rubric names KB2267602/winget as known transient
+  // patterns so the model stops classifying a superseded-definition-package
+  // "not found" as actionable (8/9 real runs got this wrong, 09-22 -> 09-24).
+  it('verdict rubric names KB2267602 and the winget "no applicable upgrade" exit code as transient, not actionable', () => {
+    const text = buildAgentRunTaskPrompt(ctx({ profile: 'verdict' }));
+    expect(text).toContain('KB2267602');
+    expect(text).toMatch(/transient_self_healed/);
+    expect(text).toContain('2316632107');
+  });
+
   // Review fix (fix round 1, MINOR 11) — same leak check the full-profile
   // "device-less, alert-less manual run" case above runs, applied to the
   // verdict rubric: a null alert/device/correlationGroup must render as

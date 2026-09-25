@@ -167,10 +167,13 @@ export const TOOL_TIERS = {
   list_time_entries: 1,
   get_running_timer: 1,
   get_timesheet: 1,
+  // #6930. Base tier; the mutating actions are Tier 2 in aiGuardrails.
+  manage_ticket_checklist: 1,
 
   query_devices: 1,
   search_documentation: 1,
   get_device_details: 1,
+  get_device_hardware_health: 1,
   analyze_metrics: 1,
   get_active_users: 1,
   get_user_experience_metrics: 1,
@@ -1439,6 +1442,13 @@ export function buildBreezeSdkTools(
     ),
 
     tool(
+      'get_device_hardware_health',
+      registryDescription('get_device_hardware_health'),
+      { deviceId: uuid, includeEvents: z.boolean().optional() },
+      makeHandler('get_device_hardware_health', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
       'analyze_metrics',
       registryDescription('analyze_metrics'),
       {
@@ -1446,6 +1456,7 @@ export function buildBreezeSdkTools(
         metric: z.enum(['cpu', 'ram', 'disk', 'network', 'all']).optional(),
         hoursBack: z.number().int().min(1).max(168).optional(),
         aggregation: z.enum(['raw', 'hourly', 'daily']).optional(),
+        limit: z.number().int().min(1).max(500).optional(),
       },
       makeHandler('analyze_metrics', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -1479,6 +1490,28 @@ export function buildBreezeSdkTools(
       registryDescription('manage_delivery'),
       deliveryToolShape,
       makeHandler('manage_delivery', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // #6930. No `done`: ticking a checklist step is a human attestation.
+    tool(
+      'manage_ticket_checklist',
+      registryDescription('manage_ticket_checklist'),
+      {
+        action: z.enum([
+          'list', 'add_item', 'update_item', 'delete_item', 'reorder',
+          'apply_template', 'list_templates', 'get_template',
+        ]),
+        ticketId: uuid.optional(),
+        itemId: uuid.optional(),
+        label: z.string().min(1).max(500).optional(),
+        detail: z.string().max(2000).nullable().optional(),
+        itemIds: z.array(uuid).min(1).max(500).optional(),
+        templateId: uuid.optional(),
+        mode: z.enum(['append', 'replace_unticked']).optional(),
+        orgId: uuid.optional(),
+        includeInactive: z.boolean().optional(),
+      },
+      makeHandler('manage_ticket_checklist', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -1755,7 +1788,8 @@ export function buildBreezeSdkTools(
         scoreRange: z.enum(['critical', 'poor', 'fair', 'good']).optional(),
         trendDirection: z.enum(['improving', 'stable', 'degrading']).optional(),
         issueType: z.enum(['crashes', 'hangs', 'hardware', 'services', 'uptime']).optional(),
-        limit: z.number().int().min(1).max(100).optional(),
+        includeTopIssues: z.boolean().optional(),
+        ...pageZodShape(15, 100),
       },
       makeHandler('get_fleet_health', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -1847,6 +1881,7 @@ export function buildBreezeSdkTools(
         categories: z.array(z.string()).max(10).optional(),
         paths: z.array(z.string().max(4096)).min(1).max(200).optional(),
         maxCandidates: z.number().int().min(1).max(200).optional(),
+        includeReasons: z.boolean().optional(),
       },
       makeHandler('disk_cleanup', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -1978,16 +2013,24 @@ export function buildBreezeSdkTools(
       'manage_patches',
       registryDescription('manage_patches'),
       {
-        action: z.enum(['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback']),
+        action: z.enum(['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback', 'device_history']),
         patchId: uuid.optional(),
         patchName: z.string().min(1).max(300).optional(),
         patchIds: z.array(uuid).max(50).optional(),
         deviceIds: z.array(uuid).max(50).optional(),
+        // #6665: also scopes `list` to one device (pre-existing gap — the
+        // handler has read `input.deviceId` for `list` since #2112, but this
+        // SDK-chat schema never declared the field, so the chat path silently
+        // stripped it before device_history needed it too).
+        deviceId: uuid.optional(),
         ringId: uuid.optional(),
         allRings: z.boolean().optional(),
         source: z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom']).optional(),
         severity: z.enum(['critical', 'important', 'moderate', 'low', 'unknown']).optional(),
         status: z.enum(['pending', 'approved', 'rejected', 'deferred']).optional(),
+        resultStatus: z.enum(['pending', 'running', 'queued', 'completed', 'failed', 'skipped']).optional(),
+        since: z.string().optional(),
+        until: z.string().optional(),
         deferUntil: z.string().optional(),
         notes: z.string().max(1000).optional(),
         configPolicyId: uuid.optional(),
@@ -2122,19 +2165,8 @@ export function buildBreezeSdkTools(
       'manage_service_monitors',
       registryDescription('manage_service_monitors'),
       {
-        action: z.enum(['list', 'add', 'remove']),
+        action: z.enum(['list']),
         configPolicyId: uuid.optional(),
-        watchId: uuid.optional(),
-        watchType: z.enum(['service', 'process']).optional(),
-        name: z.string().max(255).optional(),
-        displayName: z.string().max(255).optional(),
-        alertOnStop: z.boolean().optional(),
-        alertSeverity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
-        cpuThresholdPercent: z.number().min(0).max(100).optional(),
-        memoryThresholdMb: z.number().min(0).optional(),
-        autoRestart: z.boolean().optional(),
-        maxRestartAttempts: z.number().int().min(1).max(10).optional(),
-        checkIntervalSeconds: z.number().int().min(10).max(3600).optional(),
       },
       makeHandler('manage_service_monitors', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -2198,6 +2230,7 @@ export function buildBreezeSdkTools(
         deviceId: uuid,
         bootsBack: z.number().int().min(1).max(30).optional(),
         triggerCollection: z.boolean().optional(),
+        includePaths: z.boolean().optional(),
       },
       makeHandler('analyze_boot_performance', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -2278,6 +2311,7 @@ export function buildBreezeSdkTools(
         countMode: z.enum(['exact', 'estimated', 'none']).optional(),
         sortBy: z.enum(['timestamp', 'level', 'device']).optional(),
         sortOrder: z.enum(['asc', 'desc']).optional(),
+        includeFullMessage: z.boolean().optional(),
       },
       makeHandler('search_logs', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -2349,6 +2383,7 @@ export function buildBreezeSdkTools(
         deviceIds: z.array(uuid).max(500).optional(),
         siteIds: z.array(uuid).max(500).optional(),
         limit: z.number().int().min(1).max(100).optional(),
+        includeTimeline: z.boolean().optional(),
       },
       makeHandler('get_log_trends', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -2384,6 +2419,8 @@ export function buildBreezeSdkTools(
       registryDescription('get_effective_configuration'),
       {
         deviceId: uuid,
+        featureType: z.enum(CONFIG_FEATURE_TYPES).optional(),
+        includeSettings: z.boolean().optional(),
       },
       makeHandler('get_effective_configuration', getAuth, onPreToolUse, onPostToolUse)
     ),

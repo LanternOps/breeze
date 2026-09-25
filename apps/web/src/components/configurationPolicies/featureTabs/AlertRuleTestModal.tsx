@@ -5,6 +5,7 @@ import { navigateTo } from '@/lib/navigation';
 import { extractApiError } from '@/lib/apiError';
 import { asList } from '@/lib/asList';
 import type { Condition } from './AlertRuleTab';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type TestConditionResult = { condition: string; result: boolean; reason: string };
 
@@ -68,6 +69,7 @@ export default function AlertRuleTestModal({
   onClose,
 }: AlertRuleTestModalProps) {
   const { t } = useTranslation('alerts');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [devices, setDevices] = useState<TestDevice[]>([]);
   const [devicesLoading, setDevicesLoading] = useState(true);
   const [devicesError, setDevicesError] = useState<string>();
@@ -90,7 +92,7 @@ export default function AlertRuleTestModal({
             return;
           }
           const errData = await response.json().catch(() => null);
-          throw new Error(extractApiError(errData, t('alertRulesPage.failedToLoadDevices')));
+          throw new Error(extractApiError(errData, stableT('alertRulesPage.failedToLoadDevices')));
         }
         const data = await response.json();
         if (cancelled) return;
@@ -105,7 +107,7 @@ export default function AlertRuleTestModal({
       } catch (err) {
         if (cancelled) return;
         setDevicesError(
-          err instanceof Error ? err.message : t('alertRulesPage.failedToLoadDevices')
+          err instanceof Error ? err.message : stableT('alertRulesPage.failedToLoadDevices')
         );
       } finally {
         if (!cancelled) setDevicesLoading(false);
@@ -116,7 +118,7 @@ export default function AlertRuleTestModal({
     return () => {
       cancelled = true;
     };
-  }, [t]);
+  }, [stableT]);
 
   const handleRunTest = async () => {
     if (!deviceId) return;

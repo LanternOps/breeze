@@ -1942,7 +1942,25 @@ describe('releaseApprovedIntent', () => {
       canAccessOrg: () => true,
     };
 
-    it('releaseApprovedIntent executes a Tier-2 manage_alerts intent through executeTool with the agent auth', async () => {
+    // #6907: this test used to assert the release ran under the rebuilt AGENT
+    // auth. That was the bug — every mutating `manage_alerts` action writes a
+    // `users` FK (`ml_feedback_events.actor_user_id` for suppress), so under
+    // the agent id the write is a 23503 on a real database. The Tier-2 release
+    // mechanics this test exists for are unchanged; only the executing
+    // principal is now the approver (USER_OWNED_RELEASE_ACTIONS).
+    const approverAuth = {
+      principal: { kind: 'user_session' as const },
+      user: { id: 'approver-1', email: 'tech@example.com', name: 'Tess Tech', isPlatformAdmin: false },
+      token: {},
+      partnerId: 'partner-1',
+      orgId: 'org-1',
+      scope: 'organization' as const,
+      accessibleOrgIds: ['org-1'],
+      orgCondition: () => undefined,
+      canAccessOrg: () => true,
+    };
+
+    it('releaseApprovedIntent executes a Tier-2 manage_alerts intent through executeTool as the approver (#6907)', async () => {
       const args = { action: 'suppress', alertId: 'alert-1', suppressDuration: 24 };
       const intent = baseIntent({
         actionName: 'manage_alerts',
@@ -1984,19 +2002,29 @@ describe('releaseApprovedIntent', () => {
       killStateMock.readAiKillState.mockReset();
       killStateMock.readAiKillState.mockResolvedValue({ killed: false, epoch: 0 });
       toolTimeoutsMock.getToolTimeout.mockReturnValue(60_000);
+      actorContextMock.buildApproverAuthContextForIntent.mockResolvedValueOnce(approverAuth);
+      aiGuardrailsMock.checkToolPermission.mockResolvedValueOnce(null);
       aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
       intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
 
       await releaseApprovedIntent(intent.id);
 
+      // The agent's release authority is still what gates the release…
       expect(agentReleaseAuthorityMock.checkAgentReleaseAuthority).toHaveBeenCalledWith(
         expect.objectContaining({ id: intent.id, requestingAgentRunId: 'run-1' }),
       );
+      // …but the write runs as the human who approved it.
       expect(aiToolsMock.executeTool).toHaveBeenCalledWith(
         'manage_alerts',
         expect.objectContaining({ action: 'suppress', alertId: 'alert-1' }),
-        agentAuth,
-        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia } } },
+        approverAuth,
+        {
+          context: {
+            actionIntentId: intent.id,
+            releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia },
+            approverRelease: { approverUserId: 'approver-1' },
+          },
+        },
       );
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id, 'executing', 'completed', expect.anything(),
@@ -2351,13 +2379,41 @@ describe('releaseApprovedIntent', () => {
           deviceIds: ['77777777-7777-4777-8777-777777777777'],
         },
       },
-    ])('$label', ({ tool, scope, args: releaseArgs }) => {
+      // #6907: the alert-triage agent's Tier-2 supervised lane (P2-1). All
+      // three write a `users` FK with `auth.user.id` — `alerts.resolved_by` /
+      // `alerts.acknowledged_by` on the row, and `ml_feedback_events.
+      // actor_user_id` via `emitAlertStateFeedback` for all three, suppress
+      // included. Two approved `resolve` intents failed exactly this way on
+      // US prod (2026-09-22, 2026-09-24).
+      {
+        label: 'manage_alerts:resolve (supervised Tier-2 lane, alerts.resolved_by)',
+        tool: 'manage_alerts',
+        scope: 'supervised' as const,
+        riskTier: 2,
+        args: { action: 'resolve', alertId: '88888888-8888-4888-8888-888888888888' },
+      },
+      {
+        label: 'manage_alerts:acknowledge (supervised Tier-2 lane, alerts.acknowledged_by)',
+        tool: 'manage_alerts',
+        scope: 'supervised' as const,
+        riskTier: 2,
+        args: { action: 'acknowledge', alertId: '88888888-8888-4888-8888-888888888888' },
+      },
+      {
+        label: 'manage_alerts:suppress (supervised Tier-2 lane, ml_feedback_events.actor_user_id)',
+        tool: 'manage_alerts',
+        scope: 'supervised' as const,
+        riskTier: 2,
+        args: { action: 'suppress', alertId: '88888888-8888-4888-8888-888888888888', suppressDuration: 24 },
+      },
+    ])('$label', ({ tool, scope, args: releaseArgs, ...rest }) => {
+      const releaseRiskTier = 'riskTier' in rest ? rest.riskTier : 3;
       function siblingIntent(overrides: Partial<ActionIntent> = {}): ActionIntent {
         return baseIntent({
           actionName: tool,
           arguments: releaseArgs,
           argumentDigest: computeArgumentDigest(canonicalizeArguments(releaseArgs)),
-          riskTier: 3,
+          riskTier: releaseRiskTier,
           approvalScope: scope,
           requestedByUserId: null,
           requestingAgentRunId: 'run-1',
@@ -4289,7 +4345,7 @@ describe('processIntentReleaseJob', () => {
       expect.objectContaining({
         userId: 'requester-1',
         type: 'approval',
-        link: '/approvals',
+        link: '/approvals#intent-intent-1',
         dedupeKey: 'intent-outcome:intent-1:rejected',
       }),
     );
@@ -4318,7 +4374,7 @@ describe('processIntentReleaseJob', () => {
       expect.objectContaining({
         userId: 'requester-1',
         type: 'approval',
-        link: '/approvals',
+        link: '/approvals#intent-intent-1',
         dedupeKey: 'intent-outcome:intent-1:cancelled',
       }),
     );
@@ -4455,7 +4511,7 @@ describe('agent-originated outcome notifications', () => {
         userId: 'user-a',
         orgId: 'org-1',
         type: 'ai',
-        link: '/approvals',
+        link: '/ai-agents/runs/run-1',
         title: 'Agent proposal denied',
         message: 'Patch triage: run_script(deviceId=d-1) was denied and will not run.',
         metadata: { intentId: 'intent-1', agentId: 'agent-1', agentRunId: 'run-1', status: 'rejected' },

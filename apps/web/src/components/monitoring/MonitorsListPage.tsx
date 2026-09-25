@@ -22,6 +22,7 @@ import type { MonitorKind } from '@breeze/shared';
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -41,6 +42,7 @@ type ListView = 'all' | 'needs-conversion';
 
 export default function MonitorsListPage() {
   const { t } = useTranslation(['monitoring', 'common']);
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [view] = useHashState<ListView>('all', (hash) => (hash === 'needs-conversion' ? 'needs-conversion' : undefined));
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
   const showView = (next: ListView) => { window.location.hash = next === 'all' ? '' : next; };
@@ -56,16 +58,16 @@ export default function MonitorsListPage() {
       setLoading(true);
       setError(undefined);
       const response = await fetchWithAuth('/monitor-definitions');
-      if (!response.ok) throw new Error(t('monitoring:list.errors.fetch'));
+      if (!response.ok) throw new Error(stableT('monitoring:list.errors.fetch'));
       const data = await response.json();
       setRows(Array.isArray(data?.data) ? data.data : []);
       setLedgerRevision((n) => n + 1);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('monitoring:list.errors.fetch'));
+      setError(err instanceof Error ? err.message : stableT('monitoring:list.errors.fetch'));
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [stableT]);
 
   useEffect(() => {
     void fetchMonitors();
@@ -164,7 +166,7 @@ export default function MonitorsListPage() {
         </button>
       </div>
 
-      <ConversionPendingBanner orgId={currentOrgId} onReview={() => showView('needs-conversion')} onConverted={() => void fetchMonitors()} />
+      <ConversionPendingBanner orgId={currentOrgId} onReview={() => showView('needs-conversion')} onConverted={() => void fetchMonitors()} revision={ledgerRevision} />
       <div className="flex gap-2" role="tablist" aria-label={t('monitoring:list.views.ariaLabel')}>
         {(['all', 'needs-conversion'] as const).map((v) => (
           <button
@@ -182,8 +184,14 @@ export default function MonitorsListPage() {
       </div>
       {view === 'needs-conversion' ? (
         <div className="space-y-6" data-testid="monitors-list-needs-conversion">
-          <PendingPoliciesList orgId={currentOrgId} />
-          <LegacyRulesTable onConverted={() => void fetchMonitors()} />
+          <PendingPoliciesList orgId={currentOrgId} revision={ledgerRevision} />
+          <div>
+            <h2 className="text-sm font-semibold">{t('monitoring:legacy.title')}</h2>
+            <p className="mt-1 text-xs text-muted-foreground">{t('monitoring:legacy.description')}</p>
+            <div className="mt-2">
+              <LegacyRulesTable onConverted={() => void fetchMonitors()} />
+            </div>
+          </div>
         </div>
       ) : (
         <>

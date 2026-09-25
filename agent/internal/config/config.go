@@ -96,8 +96,11 @@ type Config struct {
 	ProcessSampleIntervalSeconds int    `mapstructure:"process_sample_interval_seconds"`
 	// PatchScanIntervalHours is the cadence of the (expensive) patch scan, in
 	// hours. Clamped to [1, 168] at the use site; defaults to DefaultPatchScanIntervalHours.
-	PatchScanIntervalHours   int      `mapstructure:"patch_scan_interval_hours"`
-	EnabledCollectors        []string `mapstructure:"enabled_collectors"`
+	PatchScanIntervalHours int      `mapstructure:"patch_scan_interval_hours"`
+	EnabledCollectors      []string `mapstructure:"enabled_collectors"`
+	Hardware               struct {
+		ToolDirs []string `mapstructure:"tool_dirs" yaml:"tool_dirs"`
+	} `mapstructure:"hardware" yaml:"hardware"`
 	BackupEnabled            bool     `mapstructure:"backup_enabled"`
 	BackupPaths              []string `mapstructure:"backup_paths"`
 	BackupRetention          int      `mapstructure:"backup_retention"`
@@ -725,6 +728,7 @@ func saveToLocked(cfg *Config, cfgFile string) error {
 	viper.Set("heartbeat_interval_seconds", cfg.HeartbeatIntervalSeconds)
 	viper.Set("metrics_interval_seconds", cfg.MetricsIntervalSeconds)
 	viper.Set("enabled_collectors", cfg.EnabledCollectors)
+	viper.Set("hardware.tool_dirs", cfg.Hardware.ToolDirs)
 	viper.Set("policy_registry_state_probes", cfg.PolicyRegistryStateProbes)
 	viper.Set("policy_config_state_probes", cfg.PolicyConfigStateProbes)
 	viper.Set("log_level", cfg.LogLevel)

@@ -157,8 +157,19 @@ async function enableDesignerInner(auth: AuthContext, orgId: string): Promise<Fl
       enabled: true,
       recipients: { userIds: [auth.user.id] },
     });
-    await createAgent(auth, { orgId: null, partnerId: auth.partnerId }, input);
-    return describeDesignerSetup(auth, orgId);
+    const created = await createAgent(auth, { orgId: null, partnerId: auth.partnerId }, input);
+    // Do NOT re-describe here. describeDesignerSetup's partner-baseline read
+    // (resolveEffectiveAgent → readWithPartnerAxisVisibility) escapes to a
+    // second pooled connection whenever the ambient scope isn't already
+    // 'system' — see partnerAxisRead.ts. That connection cannot see the row
+    // `createAgent` just wrote inside THIS request's still-open
+    // withDbAccessContext transaction, so a re-read here raced the commit and
+    // reported {status: "missing", agentId: null} right after creating the
+    // agent (sweep D7). We already know exactly what we wrote — there is no
+    // org override yet (this branch only runs when resolveEffectiveAgent
+    // found neither row) and the kill switch was checked above — so report
+    // state from the created row directly.
+    return { status: 'ready', agentId: created.id, canEnable: false };
   }
 
   // Two rows may need a change. The org override goes FIRST: the route

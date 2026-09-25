@@ -26,6 +26,8 @@ describe('isSelfManagedDbContextRoute', () => {
     ['GET', '/api/v1/portal/network/overview'],
     ['GET', '/api/v1/portal/network/overview/'],
     ['get', '/api/v1/portal/network/overview'], // method is case-insensitive
+    ['GET', '/api/v1/portal/network/assets'],
+    ['GET', '/api/v1/portal/network/assets/'],
     ['POST', '/api/v1/partner/stripe-connect/key'],
     ['POST', '/api/v1/partner/stripe-connect/key/'],
     ['GET', '/api/v1/partner/stripe-connect'],
@@ -175,9 +177,29 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/backup/providers/connections/conn-1/test'],
     ['POST', '/api/v1/backup/providers/connections/conn-1/test/'],
     ['post', '/api/v1/backup/providers/connections/conn-1/test'], // method is case-insensitive
+    // #6849 — policy "run now" patch-job creation calls enqueuePatchJob
+    // (BullMQ) inside the handler. Under the ambient request transaction the
+    // execute-patch-job worker can read the new patch_jobs row before this
+    // request commits, log "not found", and leave it stranded until the
+    // #1733 reconcile sweep re-enqueues it ~2 minutes later. The handler now
+    // writes the row(s) in a short withAuthDbAccessContext block and enqueues
+    // strictly after it commits.
+    ['POST', '/api/v1/configuration-policies/policy-1/patch-job'],
+    ['POST', '/api/v1/configuration-policies/policy-1/patch-job/'],
+    ['post', '/api/v1/configuration-policies/policy-1/patch-job'], // method is case-insensitive
+    // #6593 — Gmail inbound connect makes a DWD Google probe between short DB
+    // contexts; it must own its context so that probe isn't inside a held tx.
+    ['POST', '/api/v1/tickets/mailbox/connect/gmail'],
+    ['POST', '/api/v1/tickets/mailbox/connect/gmail/'],
   ];
 
   const NO_MATCH: ReadonlyArray<[string, string, string]> = [
+    ['GET', '/api/v1/configuration-policies/policy-1/patch-job', 'wrong method (only POST opts out)'],
+    ['POST', '/api/v1/configuration-policies/policy-1/patch-settings', 'sibling route keeps the ambient tx'],
+    // #6593 — the Microsoft mailbox /connect builds a consent URL with no
+    // server-side Graph call, so it keeps the ambient tx; only the Gmail sibling
+    // (which probes Google at connect time) opts out.
+    ['POST', '/api/v1/tickets/mailbox/connect', 'M365 connect makes no outbound call at connect time'],
     ['POST', '/api/v1/devices/abc-123/filesystem/cleanup-preview', 'preview keeps ambient tx'],
     ['GET', '/api/v1/devices/abc-123/filesystem/cleanup-runs', 'history keeps ambient tx'],
     // #3905 — the /send pattern must not swallow its siblings. Losing the
@@ -207,6 +229,8 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/portal/network/overview', 'network overview is GET-only'],
     ['GET', '/api/v1/portal/network', 'only the overview endpoint is self-managed'],
     ['GET', '/api/v1/portal/network/overview/extra', 'extra path segment must not match'],
+    ['POST', '/api/v1/portal/network/assets', 'network assets is GET-only'],
+    ['GET', '/api/v1/portal/network/assets/extra', 'extra path segment must not match'],
     ['POST', '/api/v1/portal/quotes/def-456/pay/confirm', 'deeper portal quote path must not match'],
     ['POST', '/api/v1/invoices', 'collection route'],
     ['DELETE', '/api/v1/partner/stripe-connect', 'disconnect is DB-only and keeps the ambient transaction'],

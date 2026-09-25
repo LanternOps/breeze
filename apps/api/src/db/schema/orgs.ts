@@ -209,6 +209,11 @@ export const organizations = pgTable('organizations', {
   // stamp it explicitly, so a missed path is a loud insert failure, never a
   // silent USD document. Editing is NOT exposed until wave 6.
   currencyCode: char('currency_code', { length: 3 }).notNull(),
+  // Settings consolidation W06 (#6229): org override of the partner's invoice
+  // payment terms. NULL = inherit `partners.invoice_terms_days`; deliberately
+  // no default and no backfill. DB CHECK bounds it to 0–365. Resolved ONLY by
+  // services/invoiceTerms.ts#resolveInvoiceTermsDays and frozen as due_date at issue.
+  invoiceTermsDays: integer('invoice_terms_days'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   partnerExportUpdatedAt: timestamp('partner_export_updated_at', { precision: 3 }).defaultNow().notNull(),

@@ -14,9 +14,11 @@ import {
   type DiscoveredAsset,
 } from '../../discovery/DiscoveredAssetList';
 import type { DeviceOption, NetworkAssetExtras } from './types';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 export function useNetworkAsset(assetId: string) {
   const { t } = useTranslation('devices');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [asset, setAsset] = useState<DiscoveredAsset | null>(null);
   const [extras, setExtras] = useState<NetworkAssetExtras>({});
   const [loading, setLoading] = useState(true);
@@ -54,9 +56,9 @@ export function useNetworkAsset(assetId: string) {
       const response = await fetchWithAuth(`/discovery/assets/${assetId}`);
       if (!response.ok) {
         if (response.status === 404) {
-          throw new Error(t('networkDeviceDetailPage.errors.notFound'));
+          throw new Error(stableT('networkDeviceDetailPage.errors.notFound'));
         }
-        throw new Error(t('networkDeviceDetailPage.errors.load'));
+        throw new Error(stableT('networkDeviceDetailPage.errors.load'));
       }
 
       const body = await response.json();
@@ -66,12 +68,13 @@ export function useNetworkAsset(assetId: string) {
       // `mapAsset` (which never returns null) and render a blank "—" shell with
       // an `asset=undefined` deep-link. Treat a missing id as a load failure.
       if (!raw || typeof raw !== 'object' || typeof raw.id !== 'string') {
-        throw new Error(t('networkDeviceDetailPage.errors.malformed'));
+        throw new Error(stableT('networkDeviceDetailPage.errors.malformed'));
       }
       setAsset(mapAsset(raw));
       setExtras({
         model: raw.model ?? null,
         netbiosName: raw.netbiosName ?? null,
+        orgId: raw.orgId ?? null,
         siteId: raw.siteId ?? null,
         siteName: raw.siteName ?? null,
         siteTimezone: raw.siteTimezone ?? null,
@@ -88,12 +91,12 @@ export function useNetworkAsset(assetId: string) {
       // initial load already has a visible loading state, and any manual
       // "Try again" click follows an error the operator was already looking at.
       if (background) {
-        announce(t('networkDeviceDetailPage.live.refreshed'));
+        announce(stableT('networkDeviceDetailPage.live.refreshed'));
       }
       return true;
     } catch (err) {
       if (!background) {
-        setError(err instanceof Error ? err.message : t('networkDeviceDetailPage.errors.load'));
+        setError(err instanceof Error ? err.message : stableT('networkDeviceDetailPage.errors.load'));
       } else {
         // Keep the working page as-is, but leave a trail: a 404 here means the
         // asset was removed while the tab was hidden and every later refresh
@@ -104,7 +107,7 @@ export function useNetworkAsset(assetId: string) {
     } finally {
       if (!background) setLoading(false);
     }
-  }, [assetId, t, announce]);
+  }, [assetId, stableT, announce]);
 
   useEffect(() => {
     void fetchAsset();

@@ -1125,8 +1125,11 @@
         "recipientRequired": "Inserisci almeno un destinatario per l'invio.",
         "signaturePreviewLabel": "Firma (impostata in Impostazioni → Branding):",
         "subjectLabel": "Oggetto",
-        "subjectPlaceholder": "Proposta {{number}} dalla tua azienda",
-        "subjectPlaceholderNoNumber": "Proposta dalla tua azienda",
+        "subjectPartnerFallback": "parte della tua azienda",
+        "subjectPlaceholder": "Proposta {{number}} da {{partner}}",
+        "subjectPlaceholderNoNumber": "Proposta da {{partner}}",
+        "subjectPlaceholderTemplate": "Usa l'oggetto del tuo modello email della proposta",
+        "subjectPlaceholderTitled": "{{title}} — proposta da {{partner}}",
         "title": "Inviare questa proposta?",
         "toLabel": "A",
         "toPlaceholder": "Aggiungi destinatario…",
@@ -2202,22 +2205,33 @@
       "taxId": "ID fiscale",
       "taxRate": "Aliquota fiscale (%)",
       "title": "Imposta"
+    },
+    "terms": {
+      "description": "Giorni dall'emissione alla scadenza delle fatture di questa organizzazione. Lascia vuoto per usare il valore predefinito del partner. Le modifiche si applicano alle fatture emesse da ora in poi; le fatture già emesse mantengono la loro data di scadenza.",
+      "invalid": "Inserisci un numero intero di giorni da 0 a 365.",
+      "partnerDefault": "Predefinito partner",
+      "paymentTermsDays": "Termini di pagamento (giorni)",
+      "title": "Termini di pagamento"
     }
   },
   "partnerBillingSettings": {
     "company": {
+      "addressInherited": "Uguale ai dettagli dell'azienda",
       "addressLine1": "Indirizzo riga 1",
       "addressLine2": "Indirizzo riga 2",
+      "addressTitle": "Indirizzo",
       "city": "Città",
       "country": "Paese",
       "defaultTerms": "Termini e condizioni predefiniti",
       "defaultTermsPlaceholder": "Termini di pagamento, liberatorie, testo di garanzia, ecc.",
       "description": "Mostrato come venditore su preventivi e fatture.",
+      "inheritedFromCompanyDetails": "Dettagli dell'azienda",
       "name": "Nome azienda",
       "phone": "Telefono",
       "postal": "Codice postale",
       "region": "Stato / regione",
       "title": "Contatto aziendale",
+      "useCompanyAddress": "Usa l'indirizzo dell'azienda",
       "website": "Sito web"
     },
     "defaults": {

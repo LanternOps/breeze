@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Controllable Drizzle chain mock: every builder method returns the same
 // chain; a query is resolved when it is awaited (the chain is a thenable that
@@ -752,6 +752,36 @@ describe('invoiceService guards', () => {
     ).rejects.toMatchObject({ code: 'ORG_DENIED', status: 403 });
   });
 
+  // Settings consolidation W06 (#6229): the org payment-terms override.
+  it('writes the org payment-terms override and returns it in the projection', async () => {
+    queueResult([{ id: 'org1', invoiceTermsDays: 14 }]);
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+    const out = await svc.updateOrgBillingSettings('org1', { invoiceTermsDays: 14 }, actor);
+    const setMock = (db as unknown as { set: { mock: { calls: unknown[][] } } }).set;
+    expect(setMock.mock.calls.at(-1)![0]).toEqual({ invoiceTermsDays: 14 });
+    const returning = (db as unknown as { returning: { mock: { calls: unknown[][] } } }).returning;
+    expect(returning.mock.calls.at(-1)![0]).toHaveProperty('invoiceTermsDays');
+    expect(out).toMatchObject({ invoiceTermsDays: 14 });
+  });
+
+  it('writes 0 (due on receipt) and null (clear → inherit) verbatim', async () => {
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+    const setMock = (db as unknown as { set: { mock: { calls: unknown[][] } } }).set;
+    queueResult([{ id: 'org1', invoiceTermsDays: 0 }]);
+    await svc.updateOrgBillingSettings('org1', { invoiceTermsDays: 0 }, actor);
+    expect(setMock.mock.calls.at(-1)![0]).toEqual({ invoiceTermsDays: 0 });
+    queueResult([{ id: 'org1', invoiceTermsDays: null }]);
+    await svc.updateOrgBillingSettings('org1', { invoiceTermsDays: null }, actor);
+    expect(setMock.mock.calls.at(-1)![0]).toEqual({ invoiceTermsDays: null });
+  });
+
+  it('denies a payment-terms write to an org outside the actor (ORG_DENIED, no write)', async () => {
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['other-org'] };
+    await expect(svc.updateOrgBillingSettings('org1', { invoiceTermsDays: 7 }, actor))
+      .rejects.toMatchObject({ code: 'ORG_DENIED', status: 403 });
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
   it.each(['profile1', null])('saves profile %s and billing fields in the same transaction', async billingProfileId => {
     queueResult([{ id: 'org1' }]); // org UPDATE lock
     queueResult([{ id: 'org1' }]);
@@ -919,15 +949,17 @@ describe('issueInvoice document_locale stamp', () => {
     inv: Record<string, unknown>,
     partner: Record<string, unknown>,
     branding: Record<string, unknown>[] = [],
+    orgOverrides: Record<string, unknown> = {},
   ) {
     queueResult([inv]); // 0. pre-tx fast-fail read (RLS-scoped, non-authoritative)
     queueResult([inv]); // 1. invoice row lock
     queueResult([{ id: 'l1', invoiceId: 'inv1', sourceType: 'manual', sourceId: null, lineTotal: '100.00', taxable: false, customerVisible: true }]); // 2. lines lock
-    queueResult([{ id: 'org1', name: 'Customer', taxExempt: false, taxRate: null, taxId: null }]); // 3. org
+    queueResult([{ id: 'org1', name: 'Customer', taxExempt: false, taxRate: null, taxId: null, invoiceTermsDays: null, ...orgOverrides }]); // 3. org
     queueResult([partner]); // 4. partner (read inside the tx, after all locks)
     queueResult(branding); // 5. portal branding for the invoice's org (W02-API: the shared footer chain's last resort)
     queueResult([{ counter: 1 }]); // 6. counter upsert
     queueResult([{ id: 'inv1' }]); // 7. guarded update ... returning
+    queueResult([]); // 7b. ticket-label snapshot update (sweep C4)
     queueResult([{ ...inv, status: 'sent' }]); // 8. final re-select
   }
 
@@ -937,6 +969,33 @@ describe('issueInvoice document_locale stamp', () => {
     expect(found, 'issue should write the guarded status=sent update').toBeDefined();
     return found!;
   }
+
+  // Settings consolidation W06 (#6229): due date = issue date + the RESOLVED
+  // terms (org override ?? partner default ?? 30), frozen at issue.
+  describe('due date from resolved payment terms', () => {
+    const NOW = new Date('2026-09-23T12:00:00Z');
+    beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(NOW); });
+    afterEach(() => { vi.useRealTimers(); });
+
+    it('uses the org override over the partner default', async () => {
+      queueIssuePath(draft(), { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: {} }, [], { invoiceTermsDays: 7 });
+      await svc.issueInvoice('inv1', actor);
+      expect(issueSet().issueDate).toBe('2026-09-23');
+      expect(issueSet().dueDate).toBe('2026-09-30');
+    });
+
+    it('an org override of 0 makes the invoice due on the issue date', async () => {
+      queueIssuePath(draft(), { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: {} }, [], { invoiceTermsDays: 0 });
+      await svc.issueInvoice('inv1', actor);
+      expect(issueSet().dueDate).toBe('2026-09-23');
+    });
+
+    it('a blank org override inherits the partner default', async () => {
+      queueIssuePath(draft(), { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 14, settings: {} }, [], { invoiceTermsDays: null });
+      await svc.issueInvoice('inv1', actor);
+      expect(issueSet().dueDate).toBe('2026-10-07');
+    });
+  });
 
   it('stamps documentLocale from the partner language when the draft has none', async () => {
     queueIssuePath(draft(), { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: { language: 'fr-CA' } });

@@ -29,6 +29,7 @@ import { TopologyError } from '../services/topology/access';
 import { limitTopologyMutationBody } from './topology/mutations';
 import { isCronDue } from '../services/automationRuntime';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
+import { DiscoveredAssetSiteMoveError, moveDiscoveredAssetsToSite } from '../services/discoveredAssetSiteMove';
 import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
 import { maskOidShapedModel, nicVendorFromMac } from '../services/assetIdentity';
 import { reachabilityToListStatus } from '../services/assetReachability';
@@ -215,6 +216,36 @@ async function authorizeRequestedSite(
   return { ok: true } as const;
 }
 
+/**
+ * The assets a profile "owns" for a site move: rows in the profile's org that
+ * still sit in the profile's CURRENT site and whose `last_job_id` belongs to a
+ * job of this profile. Assets already in another site, or last seen by a
+ * different profile, stay where they are. Shared by the PATCH move and the
+ * pre-commit count endpoint so the UI's "N devices" matches what moves.
+ */
+function selectMovableProfileAssets(
+  executor: Pick<typeof db, 'select'>,
+  profile: { id: string; orgId: string; siteId: string },
+) {
+  return executor
+    .select({ id: discoveredAssets.id })
+    .from(discoveredAssets)
+    .innerJoin(discoveryJobs, eq(discoveryJobs.id, discoveredAssets.lastJobId))
+    .where(and(
+      eq(discoveredAssets.orgId, profile.orgId),
+      eq(discoveredAssets.siteId, profile.siteId),
+      eq(discoveryJobs.profileId, profile.id),
+    ));
+}
+
+type ProfileAssetMoveSummary = {
+  candidates: number;
+  moved: number;
+  unlinkedDevices: number;
+  monitorsReattached: number;
+  topologyPoliciesDisabled: number;
+};
+
 async function authorizeAssetSet(
   orgId: string | null,
   assetIds: string[],
@@ -324,6 +355,12 @@ const createProfileSchema = z.object({
 
 const updateProfileSchema = z.object({
   name: z.string().min(1).max(255).optional(),
+  // Changing the site only re-homes the profile (future jobs copy the new site).
+  // `moveDiscoveredAssets` additionally moves the assets this profile discovered
+  // that still sit in the OLD site (see selectMovableProfileAssets). Ignored
+  // when `siteId` is absent or equals the current site.
+  siteId: z.string().guid().optional(),
+  moveDiscoveredAssets: z.boolean().optional(),
   description: z.string().optional(),
   subnets: z.array(z.string().min(1)).min(1).optional(),
   excludeIps: z.array(z.string()).optional(),
@@ -452,7 +489,10 @@ const updateAssetSchema = z.object({
     'workstation', 'server', 'printer', 'router', 'switch', 'firewall',
     'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown'
   ]).optional(),
-  resetTypeToAuto: z.boolean().optional()
+  resetTypeToAuto: z.boolean().optional(),
+  // Move the asset to another site of the same org. Runs through
+  // services/discoveredAssetSiteMove.ts (device link + monitors + topology).
+  siteId: z.string().guid().optional()
 }).refine(
   (v) => !(v.assetType !== undefined && v.resetTypeToAuto === true),
   { message: 'assetType and resetTypeToAuto are mutually exclusive' }
@@ -598,6 +638,39 @@ discoveryRoutes.get(
   }
 );
 
+// GET /profiles/:id/movable-assets — how many assets a site change WITH
+// `moveDiscoveredAssets` would move, so the UI can show the count before the
+// user commits. Same selection as the PATCH path.
+discoveryRoutes.get(
+  '/profiles/:id/movable-assets',
+  requireScope('organization', 'partner', 'system'),
+  requireDiscoveryRead,
+  async (c) => {
+    const auth = c.get('auth');
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    const profileId = c.req.param('id')!;
+    const orgResult = resolveOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    const conditions: ReturnType<typeof eq>[] = [eq(discoveryProfiles.id, profileId)];
+    if (orgResult.orgId) conditions.push(eq(discoveryProfiles.orgId, orgResult.orgId));
+
+    const [profile] = await db.select({
+      id: discoveryProfiles.id,
+      orgId: discoveryProfiles.orgId,
+      siteId: discoveryProfiles.siteId,
+    }).from(discoveryProfiles)
+      .where(and(...conditions)).limit(1);
+    if (!profile) return c.json({ error: 'Profile not found' }, 404);
+    if (!canAccessRecordSite(permissions, profile.siteId)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
+    const candidates = await selectMovableProfileAssets(db, profile);
+    return c.json({ count: candidates.length, siteId: profile.siteId });
+  }
+);
+
 discoveryRoutes.patch(
   '/profiles/:id',
   requireScope('organization', 'partner', 'system'),
@@ -621,6 +694,7 @@ discoveryRoutes.patch(
 
     const [existing] = await db.select({
       id: discoveryProfiles.id,
+      orgId: discoveryProfiles.orgId,
       siteId: discoveryProfiles.siteId,
       snmpCommunities: discoveryProfiles.snmpCommunities,
       snmpCredentials: discoveryProfiles.snmpCredentials,
@@ -631,7 +705,29 @@ discoveryRoutes.patch(
       return c.json({ error: 'Access to this site denied' }, 403);
     }
 
+    // Site change gate, mirroring PATCH /assets/:id: the target site must
+    // exist in the profile's org, and a site-restricted caller must be allowed
+    // to place the profile INTO it — the source-site check above does not
+    // cover the destination.
+    let siteMoveTarget: { fromSiteId: string; toSiteId: string } | null = null;
+    if (updates.siteId !== undefined && updates.siteId !== existing.siteId) {
+      const [targetSite] = await db
+        .select({ id: sites.id })
+        .from(sites)
+        .where(and(eq(sites.id, updates.siteId), eq(sites.orgId, existing.orgId)))
+        .limit(1);
+      if (!targetSite) {
+        return c.json({ error: 'Target site not found or belongs to a different organization' }, 400);
+      }
+      if (permissions?.allowedSiteIds && !canAccessSite(permissions, updates.siteId)) {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
+      siteMoveTarget = { fromSiteId: existing.siteId, toSiteId: updates.siteId };
+    }
+    const moveAssets = siteMoveTarget !== null && updates.moveDiscoveredAssets === true;
+
     const setValues: Record<string, unknown> = { updatedAt: new Date() };
+    if (siteMoveTarget) setValues.siteId = siteMoveTarget.toSiteId;
     if (updates.name !== undefined) setValues.name = updates.name;
     if (updates.description !== undefined) setValues.description = updates.description;
     if (updates.subnets !== undefined) setValues.subnets = updates.subnets;
@@ -649,10 +745,52 @@ discoveryRoutes.patch(
     if (updates.concurrency !== undefined) setValues.concurrency = updates.concurrency;
     if (updates.alertSettings !== undefined) setValues.alertSettings = updates.alertSettings;
 
-    const [updated] = await db.update(discoveryProfiles)
+    const applyProfileUpdate = (executor: Pick<typeof db, 'update'>) => executor
+      .update(discoveryProfiles)
       .set(setValues)
       .where(eq(discoveryProfiles.id, profileId))
       .returning();
+
+    let updated: typeof discoveryProfiles.$inferSelect | undefined;
+    let assetMove: ProfileAssetMoveSummary | null = null;
+    if (moveAssets && siteMoveTarget) {
+      // One transaction: the asset moves (device links, monitors, topology
+      // triggers) and the profile's new site stand or fall together. The
+      // candidates are selected on the tx so a concurrent scan cannot slip an
+      // asset between the count and the move.
+      const moveOrgId = existing.orgId;
+      const moveTarget = siteMoveTarget;
+      const source = { id: existing.id, orgId: existing.orgId, siteId: existing.siteId };
+      try {
+        ({ updated, assetMove } = await db.transaction(async (tx) => {
+          const candidates = await selectMovableProfileAssets(tx, source);
+          const results = candidates.length > 0
+            ? await moveDiscoveredAssetsToSite({
+              tx, orgId: moveOrgId, assetIds: candidates.map((row) => row.id), targetSiteId: moveTarget.toSiteId,
+            })
+            : [];
+          const [row] = await applyProfileUpdate(tx);
+          return {
+            updated: row,
+            assetMove: {
+              candidates: candidates.length,
+              moved: results.filter((r) => r.moved).length,
+              unlinkedDevices: results.filter((r) => r.unlinkedDeviceId !== null).length,
+              monitorsReattached: results.reduce((sum, r) => sum + r.monitorsReattached, 0),
+              topologyPoliciesDisabled: results.reduce((sum, r) => sum + r.topologyPoliciesDisabled, 0),
+            },
+          };
+        }));
+      } catch (err) {
+        if (err instanceof DiscoveredAssetSiteMoveError) {
+          if (err.code === 'site_not_found') return c.json({ error: err.message }, 400);
+          return c.json({ error: 'Failed to move discovered assets to the new site' }, 500);
+        }
+        throw err;
+      }
+    } else {
+      [updated] = await applyProfileUpdate(db);
+    }
 
     // 0-row write despite the prior access-checked SELECT => RLS rejection or a
     // race. Surface it rather than returning 200 + null (a silent failure).
@@ -666,10 +804,16 @@ discoveryRoutes.patch(
       resourceType: 'discovery_profile',
       resourceId: updated.id,
       resourceName: updated.name,
-      details: { changedFields: Object.keys(updates) }
+      details: {
+        changedFields: Object.keys(updates),
+        ...(siteMoveTarget ? { siteMove: { ...siteMoveTarget, assetMove } } : {}),
+      }
     });
 
-    return c.json(serializeDiscoveryProfile(updated));
+    return c.json({
+      ...serializeDiscoveryProfile(updated),
+      ...(assetMove ? { assetMove } : {}),
+    });
   }
 );
 
@@ -1406,13 +1550,37 @@ discoveryRoutes.patch(
     const orgResult = await resolveOrgIdForAsset(auth, assetId);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
-    if (permissions?.allowedSiteIds) {
+    // A site move needs the current row (org + site) for its gate; a
+    // site-restricted caller needs it for the source-site check.
+    let current: { id: string; orgId: string; siteId: string | null } | null = null;
+    if (permissions?.allowedSiteIds || updates.siteId !== undefined) {
       const authorization = await loadAuthorizedAsset(assetId, orgResult.orgId, permissions);
       if (!authorization.ok) return c.json({ error: authorization.error }, authorization.status);
+      current = authorization.asset;
     }
 
     if (Object.keys(updates).length === 0) {
       return c.json({ error: 'No updates provided' }, 400);
+    }
+
+    // Mirrors the device PATCH gate (routes/devices/core.ts): the target site
+    // must exist in the asset's org, and a site-restricted caller must also be
+    // allowed to place the asset INTO the target site — the source-site check
+    // above does not cover the destination.
+    let siteMoveTarget: { fromSiteId: string | null; toSiteId: string } | null = null;
+    if (current && updates.siteId !== undefined && updates.siteId !== current.siteId) {
+      const [targetSite] = await db
+        .select({ id: sites.id })
+        .from(sites)
+        .where(and(eq(sites.id, updates.siteId), eq(sites.orgId, current.orgId)))
+        .limit(1);
+      if (!targetSite) {
+        return c.json({ error: 'Target site not found or belongs to a different organization' }, 400);
+      }
+      if (permissions?.allowedSiteIds && !canAccessSite(permissions, updates.siteId)) {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
+      siteMoveTarget = { fromSiteId: current.siteId, toSiteId: updates.siteId };
     }
 
     const conditions: SQL[] = [eq(discoveredAssets.id, assetId)];
@@ -1433,14 +1601,49 @@ discoveryRoutes.patch(
       setValues.typeSource = 'auto';
     }
 
-    if (Object.keys(setValues).length === 1) {
+    if (Object.keys(setValues).length === 1 && !siteMoveTarget) {
       return c.json({ error: 'No updates provided' }, 400);
     }
 
-    const [updated] = await db.update(discoveredAssets)
+    const applyFieldUpdate = (executor: Pick<typeof db, 'update'>) => executor
+      .update(discoveredAssets)
       .set(setValues)
       .where(and(...conditions))
       .returning();
+
+    let updated: typeof discoveredAssets.$inferSelect | undefined;
+    let siteMove: { unlinkedDevice: boolean; monitorsReattached: number; topologyPoliciesDisabled: number } | null = null;
+    if (siteMoveTarget && current) {
+      // One transaction: the site move (asset + device link + monitors +
+      // topology triggers) and the remaining field edits stand or fall together.
+      const moveOrgId = current.orgId;
+      const moveTarget = siteMoveTarget;
+      try {
+        ({ updated, siteMove } = await db.transaction(async (tx) => {
+          const [moved] = await moveDiscoveredAssetsToSite({
+            tx, orgId: moveOrgId, assetIds: [assetId], targetSiteId: moveTarget.toSiteId,
+          });
+          const [row] = await applyFieldUpdate(tx);
+          return {
+            updated: row,
+            siteMove: {
+              unlinkedDevice: moved?.unlinkedDeviceId !== null && moved?.unlinkedDeviceId !== undefined,
+              monitorsReattached: moved?.monitorsReattached ?? 0,
+              topologyPoliciesDisabled: moved?.topologyPoliciesDisabled ?? 0,
+            },
+          };
+        }));
+      } catch (err) {
+        if (err instanceof DiscoveredAssetSiteMoveError) {
+          if (err.code === 'site_not_found') return c.json({ error: err.message }, 400);
+          if (err.code === 'asset_not_found') return c.json({ error: 'Asset not found' }, 404);
+          return c.json({ error: 'Failed to move asset to the new site' }, 500);
+        }
+        throw err;
+      }
+    } else {
+      [updated] = await applyFieldUpdate(db);
+    }
 
     if (!updated) return c.json({ error: 'Asset not found' }, 404);
 
@@ -1450,7 +1653,10 @@ discoveryRoutes.patch(
       resourceType: 'discovered_asset',
       resourceId: updated.id,
       resourceName: updated.label ?? updated.hostname ?? updated.ipAddress ?? undefined,
-      details: { changedFields: Object.keys(updates) }
+      details: {
+        changedFields: Object.keys(updates),
+        ...(siteMoveTarget && siteMove ? { siteMove: { ...siteMoveTarget, ...siteMove } } : {}),
+      }
     });
 
     let verifiedLinkedDeviceId: string | null = null;
@@ -1467,7 +1673,10 @@ discoveryRoutes.patch(
       verifiedLinkedDeviceId = linkedDevice?.id ?? null;
     }
 
-    return c.json(withVerifiedAssetLink(updated, verifiedLinkedDeviceId));
+    return c.json({
+      ...withVerifiedAssetLink(updated, verifiedLinkedDeviceId),
+      ...(siteMove ? { siteMove } : {}),
+    });
   }
 );
 

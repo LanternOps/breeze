@@ -99,6 +99,7 @@
     "name": "Nome",
     "principalDescription": "Descrizione",
     "scopes": "Ambiti",
+    "noScopes": "Nessun ambito concesso",
     "sourceCidrs": "IP di origine o CIDR (uno per riga)",
     "writeScopeRestrictionsRequired": "L'ambito enrollment-keys:write richiede una data di scadenza e almeno un IP o CIDR di origine.",
     "expiresAt": "Scade il",
@@ -519,6 +520,25 @@
       "communications": "Comunicazioni",
       "branding": "Branding"
     },
+    "aiFeatures": {
+      "anomalies": {
+        "title": "Rilevamento delle anomalie",
+        "description": "Rilevamento statistico di comportamenti anomali di CPU, memoria, disco e rete sui dispositivi gestiti. Questi sono i valori predefiniti per ogni organizzazione; un'organizzazione può sovrascriverli nella propria scheda IA.",
+        "enabled": "Rileva anomalie",
+        "enabledDescription": "Esegue il rilevatore di anomalie ogni 10 minuti e mostra i risultati nella scheda Anomalie di ogni dispositivo.",
+        "createAlerts": "Crea avvisi dalle anomalie",
+        "createAlertsDescription": "Converte le anomalie confermate in avvisi in modo che raggiungano i tuoi percorsi di notifica."
+      },
+      "inheritanceNote": "Le modifiche si applicano a ogni organizzazione che non ha impostato una propria sovrascrittura.",
+      "saved": "Salvato",
+      "saveFailed": "Impossibile modificare questa impostazione",
+      "remediation": {
+        "title": "Correzioni suggerite",
+        "description": "Suggerimenti di correzione generati dall'IA nella pagina di dettaglio dell'avviso. È il valore predefinito per ogni organizzazione; un'organizzazione può sovrascriverlo nella propria scheda IA.",
+        "enabled": "Genera correzioni suggerite",
+        "enabledDescription": "Consenti ai tecnici di generare correzioni suggerite per un avviso dalla sua pagina di dettaglio."
+      }
+    },
     "tabs": {
       "company": {
         "label": "Azienda",
@@ -568,6 +588,10 @@
       "aiProvider": {
         "label": "Provider IA",
         "description": "Usa la tua chiave Anthropic"
+      },
+      "aiFeatures": {
+        "label": "Funzionalità IA",
+        "description": "Valori predefiniti per rilevamento anomalie e correzioni suggerite"
       },
       "branding": {
         "label": "Branding",
@@ -963,6 +987,16 @@
     }
   },
   "m365Mailbox": {
+    "consentNotCompleted": "Consenso non completato",
+    "consentNotCompletedHint": "L’accesso Microsoft per questa casella di posta non è stato completato in tempo, quindi non si collegherà da solo. Riprova il consenso oppure scollegala.",
+    "retryConsent": "Riprova consenso",
+    "redirectUriLabel": "URI di reindirizzamento da registrare nell’app Microsoft Entra",
+    "redirectUriHint": "Deve corrispondere esattamente e, durante il collegamento, devi aprire Breeze con lo stesso schema e host, altrimenti l’accesso non può essere completato.",
+    "callbackReason": {
+      "binding_mismatch": "Connessione a Microsoft 365 non riuscita: il browser è tornato senza il cookie di accesso. Apri Breeze allo stesso indirizzo dell’URI di reindirizzamento (schema e host devono corrispondere), consenti i cookie e riprova.",
+      "invalid_callback": "Connessione a Microsoft 365 non riuscita: Microsoft ha restituito una risposta imprevista. Riprova a collegarti.",
+      "expired": "Connessione a Microsoft 365 non riuscita: il link di accesso è scaduto o è già stato usato. Riprova a collegarti."
+    },
     "connected": "Cassetta postale connessa",
     "consentGranted": "Consenso concesso - limita l'ambito della cassetta postale con l'Application Access Policy qui sotto, quindi riesegui il test",
     "consentAttention": "Il consenso della cassetta postale richiede l'attenzione di un amministratore.",
@@ -991,6 +1025,38 @@
     "displayName": "Nome visualizzato (opzionale)",
     "namePlaceholder": "Assistenza",
     "connect": "Connetti"
+  },
+  "gmailMailbox": {
+    "title": "Casella di assistenza Google Workspace",
+    "description": "Collega una casella Google Workspace per trasformare le email dei clienti in ticket. Viene usata la delega a livello di dominio, quindi non servono modifiche MX o di inoltro né reindirizzamenti OAuth.",
+    "connectHint": "La casella viene letta con la connessione dell'account di servizio Google Workspace dell'organizzazione selezionata, che ne conserva le credenziali. Per una casella del partner (come il tuo help@), scegli l'organizzazione il cui Workspace contiene la casella. Inserisci la casella di assistenza condivisa per collegarla.",
+    "status": {
+      "pending_consent": "In sospeso",
+      "connected": "Connesso",
+      "error": "Richiede attenzione",
+      "reauth_required": "Nuova autenticazione richiesta",
+      "disabled": "Disabilitato"
+    },
+    "reauthRequired": "La lettura Gmail è sospesa per questa casella. Ricollegala per riprendere: l'account di servizio potrebbe richiedere una nuova autorizzazione, la sua connessione Google Workspace potrebbe essere inattiva oppure la casella ora corrisponde a un altro account Google.",
+    "reconnect": "Riconnetti",
+    "reconnectNoOrg": "A questa connessione manca l'organizzazione e non può essere ricollegata da qui.",
+    "disconnect": "Disconnetti",
+    "disconnected": "Cassetta postale disconnessa",
+    "disconnectFailed": "Disconnessione non riuscita.",
+    "connected": "Cassetta postale connessa",
+    "connectFailed": "Impossibile collegare la casella Gmail.",
+    "empty": "Nessuna casella Gmail collegata.",
+    "loadError": "Impossibile caricare le connessioni delle caselle Gmail. Aggiorna per riprovare.",
+    "orgsLoadError": "Impossibile caricare le organizzazioni. Aggiorna per riprovare.",
+    "organization": "Organizzazione",
+    "selectOrg": "Seleziona un'organizzazione",
+    "address": "Indirizzo cassetta postale",
+    "addressPlaceholder": "assistenza@example.com",
+    "displayName": "Nome visualizzato (opzionale)",
+    "namePlaceholder": "Assistenza",
+    "connect": "Connetti",
+    "credentialOrg": "Credenziali: connessione Google Workspace di {{org}}",
+    "credentialOrgUnknown": "un'organizzazione che non puoi vedere"
   },
   "orgApprovalSecurityTab": {
     "title": "Sicurezza approvazioni",
@@ -4654,7 +4720,32 @@
       "externalProcessing": "Consenti analisi IA in sandbox",
       "externalProcessingDescription": "Consente alle esecuzioni di analisi IA di eseguire codice per questa organizzazione in una sandbox isolata senza accesso alla rete, ospitata nella regione di questa organizzazione. Disattivato per impostazione predefinita.",
       "externalProcessingSaved": "Salvato",
-      "externalProcessingSaveFailed": "Impossibile modificare questa impostazione"
+      "externalProcessingSaveFailed": "Impossibile modificare questa impostazione",
+      "mlFeatures": {
+        "title": "Rilevamento delle anomalie",
+        "description": "Rilevamento statistico di comportamenti anomali di CPU, memoria, disco e rete sui dispositivi di questa organizzazione. Se vuoto, si applica il valore predefinito del partner.",
+        "anomaliesEnabled": "Rileva anomalie",
+        "anomaliesEnabledDescription": "Esegue il rilevatore di anomalie ogni 10 minuti e mostra i risultati nella scheda Anomalie di ogni dispositivo.",
+        "createAlerts": "Crea avvisi dalle anomalie",
+        "createAlertsDescription": "Converte le anomalie confermate in avvisi in modo che raggiungano i tuoi percorsi di notifica.",
+        "inherit": "Eredita",
+        "inheritOn": "Eredita (attivo, {{from}})",
+        "inheritOff": "Eredita (disattivato, {{from}})",
+        "fromPartner": "impostazione del partner",
+        "fromDefault": "valore predefinito della piattaforma",
+        "on": "Attivo",
+        "off": "Disattivato",
+        "saved": "Salvato",
+        "saveFailed": "Impossibile modificare questa impostazione",
+        "killSwitch": "Il rilevamento delle anomalie è disattivato per l'intera piattaforma dall'operatore. Queste impostazioni avranno effetto quando verrà riattivato.",
+        "remediation": {
+          "title": "Correzioni suggerite",
+          "description": "Suggerimenti di correzione generati dall'IA per gli avvisi di questa organizzazione. Vuoto significa che si applica il valore predefinito del partner.",
+          "enabled": "Genera correzioni suggerite",
+          "enabledDescription": "Consenti ai tecnici di generare correzioni suggerite per un avviso dalla sua pagina di dettaglio.",
+          "killSwitch": "Le correzioni suggerite sono disattivate per l'intera piattaforma dall'operatore. Questa impostazione avrà effetto quando verranno riattivate."
+        }
+      }
     },
     "breadcrumbs": {
       "settings": "Impostazioni",

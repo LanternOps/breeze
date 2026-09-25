@@ -36,7 +36,7 @@
  * re-enqueue loop here.
  */
 import { and, eq } from 'drizzle-orm';
-import type { AgentRunVerdict, AiAgentPolicySnapshot } from '@breeze/shared';
+import type { AgentRunVerdict, AiAgentPolicySnapshot, AiAgentTriggerKind } from '@breeze/shared';
 import {
   db,
   getCurrentDbAccessContext,
@@ -400,6 +400,11 @@ interface FinishedRunRow {
    *  `profile: 'triage'` run; `null` for every other profile (and for an
    *  older row read back through a fixture that predates this column). */
   ticketId?: string | null;
+  /** #6908 — gates the alert-triggered no-action suppression below. Optional
+   *  because it can be absent on a row read back through an older mock/
+   *  fixture; an absent value simply never matches `'alert'` and keeps the
+   *  existing notify behavior. */
+  triggerKind?: AiAgentTriggerKind;
 }
 
 interface NotifyAgentRow {
@@ -436,6 +441,7 @@ async function loadFinishedRun(
         intentIds: aiAgentRuns.intentIds,
         policySnapshot: aiAgentRuns.policySnapshot,
         ticketId: aiAgentRuns.ticketId,
+        triggerKind: aiAgentRuns.triggerKind,
       })
       .from(aiAgentRuns)
       .where(eq(aiAgentRuns.id, runId))
@@ -546,6 +552,43 @@ export async function deliverRunFinishedNotifications(runId: string): Promise<vo
       });
       return;
     }
+  }
+
+  // #6908 — an alert-triggered `full`-profile run that proposed/executed
+  // nothing has no notification-worthy content: its surface is the alert
+  // badge/run page a technician is already looking at, not a bell item to
+  // open and dismiss. `runLoop.ts` already exempts VERDICT-profile runs on
+  // exactly this rationale (`notifies = !isVerdictProfile(ctx.run)`, ~line
+  // 2660) — this is the same decision for a `full`-profile run, made here
+  // because only this module reads the run's OWN outcome (`runVerdict`),
+  // not the profile alone.
+  //
+  // Narrow on purpose, same posture as the sweep/triage suppressions above:
+  // - `profile === 'full'` — every other profile (sweep, narrative, design,
+  //   patch, triage) already has its own dedicated empty-outcome suppression
+  //   or notifies unconditionally; this must not touch them.
+  // - `triggerKind === 'alert'` — a manual/schedule/ticket/anomaly-triggered
+  //   full run keeps notifying: an operator who kicked off a run, or a
+  //   scheduled full-profile occurrence, is not already looking at a badge.
+  // - `status === 'completed'` — `awaiting_approval`/`failed` are never
+  //   `no_action` (see `computeRunVerdict`), but gating on status directly
+  //   keeps this suppression from ever depending on that invariant holding.
+  // - `verdict === 'no_action'` — the ONLY verdict this suppresses;
+  //   `needs_attention`/`partial`/`remediated` (and `null`, the pre-Part-B/
+  //   non-act-mode default) all keep notifying exactly as today.
+  // - `intentIds.length === 0` — a run that proposed even one intent left
+  //   something for a human to decide and must not be silenced.
+  if (
+    run.profile === 'full'
+    && run.triggerKind === 'alert'
+    && run.status === 'completed'
+    && run.intentIds.length === 0
+    && readRunVerdict(run.outcome ?? {}) === 'no_action'
+  ) {
+    console.info('[runFinishedNotify] alert-triggered full run ended no_action with nothing proposed — no notification', {
+      runId, orgId: run.orgId, status: run.status,
+    });
+    return;
   }
 
   // The run's immutable snapshot, NOT the agent row's raw `recipients`

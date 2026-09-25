@@ -961,5 +961,88 @@
       "rebooted": "Riavviato",
       "checked_in": "Check-in effettuato"
     }
+  },
+  "backupHealth": {
+    "title": "Stato dei backup",
+    "subtitle": "Ogni dispositivo gestito da Breeze, più tutto ciò che segnala il provider di backup.",
+    "staleBanner": "Alcuni dati del provider non sono aggiornati. Viene mostrato l'ultimo stato rilevato.",
+    "unmappedNotice": "{{value}} dispositivi appartengono a clienti del provider non ancora associati a un'organizzazione Breeze.",
+    "statusTitle": "Stato",
+    "recencyTitle": "Ultimo backup riuscito",
+    "coverage": "{{covered}} endpoint su {{total}} hanno un backup recente",
+    "providerOnly": "{{value}} endpoint solo del provider",
+    "m365Accounts": "{{value}} account Microsoft 365",
+    "status": {
+      "no_backups": "Nessun backup",
+      "completed": "Completato",
+      "completed_with_errors": "Completato con errori",
+      "in_progress": "In corso",
+      "unsuccessful": "Non riuscito",
+      "other": "Altro",
+      "failed": "Non riuscito",
+      "interrupted": "Interrotto",
+      "over_quota": "Quota superata",
+      "no_selection": "Nessuna selezione",
+      "not_started": "Non avviato",
+      "unknown": "Sconosciuto"
+    },
+    "recency": {
+      "never": "Mai",
+      "under_24h": "Meno di 24 ore",
+      "under_48h": "Meno di 48 ore",
+      "over_48h": "Più di 48 ore"
+    },
+    "health": {
+      "healthy": "Integro",
+      "warning": "Da verificare",
+      "critical": "Critico",
+      "unknown": "Sconosciuto"
+    },
+    "sourceAll": "Tutte le origini",
+    "healthAll": "Qualsiasi stato",
+    "sourceBreeze": "Breeze",
+    "searchPlaceholder": "Cerca un dispositivo o un'organizzazione",
+    "includeWithoutBackup": "Includi i dispositivi senza alcun backup",
+    "table": {
+      "device": "Dispositivo",
+      "computerName": "Nome del computer",
+      "source": "Origine",
+      "dataSources": "Origini dati",
+      "selected": "Selezionato",
+      "used": "Utilizzato",
+      "history": "Ultimi 28 giorni",
+      "errors": "Errori",
+      "agent": "Agente"
+    },
+    "dataSource": {
+      "files": "File e cartelle",
+      "system_state": "Stato del sistema",
+      "mssql": "SQL Server",
+      "hyperv": "Hyper-V",
+      "vmware": "VMware",
+      "bare_metal": "Bare metal",
+      "m365_sharepoint": "SharePoint",
+      "m365_exchange": "Exchange",
+      "m365_onedrive": "OneDrive",
+      "m365_teams": "Teams",
+      "other": "Altro"
+    },
+    "noObservation": "Nessuna osservazione",
+    "openDevice": "Apri il dispositivo",
+    "empty": "Nessun dispositivo corrisponde a questi filtri.",
+    "loadMore": "Carica altri",
+    "error": "Impossibile caricare lo stato dei backup",
+    "external": {
+      "title": "Backup esterno",
+      "customer": "Cliente del provider",
+      "lastSuccess": "Ultimo backup riuscito",
+      "lastSession": "Ultima sessione",
+      "unlink": "Scollega",
+      "unlinkConfirm": "Scollegare questo dispositivo del provider dal dispositivo Breeze? Rimane nel prodotto di backup e può essere ricollegato.",
+      "unlinkedToast": "Dispositivo del provider scollegato",
+      "errorUnlink": "Impossibile scollegare il dispositivo del provider",
+      "error": "Impossibile caricare lo stato del backup esterno",
+      "alsoCheck": "Controlla anche le connessioni di backup di terze parti in Integrazioni."
+    }
   }
 }

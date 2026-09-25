@@ -362,7 +362,7 @@ vi.mock('../aiBudgetReservations', () => ({
 // asserting on the guardrail path it DOES take.
 import {
   computeRunVerdict, createAgentRunPostToolUse, createAgentRunPreToolUse, executeAgentRun,
-  PROPOSAL_RECORDED_TEXT, __setResourceScopeRecheckClockForTests,
+  fullRunToolExposure, PROPOSAL_RECORDED_TEXT, __setResourceScopeRecheckClockForTests,
 } from './runLoop';
 import type { AgentRunOutcome } from './runLoop';
 import { VERIFY_READ_TIMEOUT_MS } from './actVerify';
@@ -838,6 +838,32 @@ describe('executeAgentRun', () => {
     // A denial is neither an execution nor a proposal.
     expect(outcome.executedActions).toEqual([]);
     expect(outcome.proposedActions).toEqual([]);
+  });
+
+  // #6909 review fix — the distinguishing case for the exposure/authority
+  // separation `fullRunToolExposure`'s docstring calls out: `manage_patches`
+  // is a MIXED tool (its `list`/`compliance` actions are read-only, so the
+  // new exposure floor exposes the bare tool even with an empty allowlist)
+  // but its `install` action is Tier 3 and NOT in this allowlist. If
+  // `guardrailPolicy.toolAllowlist` were ever accidentally built from the
+  // exposure floor instead of `effective.toolAllowlist` (the bug this test
+  // guards against — `isToolAllowlisted` treats a bare-tool floor entry as
+  // "every action admitted"), this call would be wrongly ALLOWED. It must
+  // still be denied.
+  it('a mixed tool exposed for its read-only actions still denies a non-allowlisted mutating action', async () => {
+    seedRows({ effective: policy({ toolAllowlist: [] }) });
+    scriptQuery({
+      toolCalls: [{ tool: 'manage_patches', input: { action: 'install', deviceId: DEVICE_ID, updateIds: ['kb1'] } }],
+      assistantText: 'Could not install; recorded the finding.',
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(createActionIntent).not.toHaveBeenCalled();
+    expect(preVerdicts[0]!.allowed).toBe(false);
+    expect(preVerdicts[0]!.error).toMatch(/allowlist/i);
+    const outcome = finalTransition()!.patch.outcome as { deniedActions: unknown[] };
+    expect(outcome.deniedActions).toHaveLength(1);
   });
 
   describe('act disposition (Task 3 revalidation + Task 4 verification)', () => {
@@ -1467,7 +1493,7 @@ describe('executeAgentRun', () => {
     expect(startToolExecution).toHaveBeenCalledTimes(1);
   });
 
-  it('resource scope does not narrow the profile tool allowlist or the MCP registry', async () => {
+  it('resource scope does not narrow the full-run tool exposure floor', async () => {
     const scoped = policy();
     scoped.triggers.siteIds = [SITE_ID];
     seedRows({ effective: scoped });
@@ -1479,9 +1505,13 @@ describe('executeAgentRun', () => {
 
     expect(preVerdicts[0]).toMatchObject({ allowed: true });
     // Identical to the unscoped full-profile negative control below: the
-    // profile allowlist decides exposure, scope does not touch it.
-    expect(lastQueryOptions?.allowedTools).toEqual(BREEZE_MCP_TOOL_NAMES);
-    expect(createBreezeMcpServer.mock.calls[0]?.[5]).toBeUndefined();
+    // full-run exposure floor (#6909) decides exposure, scope does not touch it.
+    const expectedExposure = fullRunToolExposure(scoped.toolAllowlist);
+    expect(lastQueryOptions?.allowedTools).toEqual(
+      expect.arrayContaining(expectedExposure.map((name) => `mcp__breeze__${name}`)),
+    );
+    expect(lastQueryOptions?.allowedTools).toHaveLength(expectedExposure.length);
+    expect(createBreezeMcpServer.mock.calls[0]?.[5]).toEqual({ onlyTools: new Set(expectedExposure) });
   });
 
   it('a newly scoped org-wide queued run is skipped before invoking the model', async () => {
@@ -1727,7 +1757,9 @@ describe('executeAgentRun', () => {
   });
 
   it('recipients are notified once with dedupeKey agent-run:<id>', async () => {
-    seedRows({ recipients: { userIds: [USER_A, USER_B], roleIds: [] } });
+    // #6908: not alert-triggered, so this exercises notify plumbing without
+    // hitting the alert/no_action suppression covered in runFinishedNotify.test.ts.
+    seedRows({ triggerKind: 'manual', recipients: { userIds: [USER_A, USER_B], roleIds: [] } });
     resolveRecipientUserIds.mockResolvedValue([USER_A, USER_B]);
     scriptQuery({ assistantText: 'Nothing actionable found.' });
 
@@ -1751,7 +1783,8 @@ describe('executeAgentRun', () => {
   // -------------------------------------------------------------------------
 
   it('a notify failure enqueues exactly one durable retry job and does not fail the run', async () => {
-    seedRows({ recipients: { userIds: [], roleIds: [] } });
+    // #6908: not alert-triggered, so notify actually runs (and can fail) here.
+    seedRows({ triggerKind: 'manual', recipients: { userIds: [], roleIds: [] } });
     resolveRecipientUserIds.mockResolvedValue([USER_A]);
     createNotification.mockRejectedValueOnce(new Error('notifications db down'));
     vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -2212,7 +2245,9 @@ describe('executeAgentRun', () => {
   it('notifies the MERGED recipient set from the run snapshot, not the baseline row', async () => {
     // Partner baseline row lists only USER_A; the org override added USER_B, so
     // the run's immutable snapshot carries the union.
+    // #6908: not alert-triggered, so notify actually runs and resolveRecipientUserIds is called.
     seedRows({
+      triggerKind: 'manual',
       effective: policy({ recipients: { userIds: [USER_A, USER_B], roleIds: [] } }),
       recipients: { userIds: [USER_A], roleIds: [] },
     });
@@ -2708,6 +2743,7 @@ describe('verdict profile in the run loop (P2-1)', () => {
     expect(lastQueryOptions?.allowedTools).toEqual([
       'mcp__breeze__manage_alerts',
       'mcp__breeze__get_device_details',
+      'mcp__breeze__get_device_hardware_health',
       'mcp__breeze__analyze_metrics',
       'mcp__breeze__query_monitors',
       'mcp__breeze__submit_alert_verdict',
@@ -2720,7 +2756,7 @@ describe('verdict profile in the run loop (P2-1)', () => {
     expect(extraTools!.length).toBeGreaterThan(0);
 
     // F2 fix (Task 16c): createBreezeMcpServer's 6th param (options.onlyTools)
-    // must narrow the REGISTRY, not just allowedTools — same four bare names
+    // must narrow the REGISTRY, not just allowedTools — same five bare names
     // as the allowedTools assertion above, minus the mcp__breeze__ prefix and
     // the outcome tool (which is never in the registry — it rides on
     // extraTools instead, asserted separately above).
@@ -2728,7 +2764,7 @@ describe('verdict profile in the run loop (P2-1)', () => {
       | { onlyTools?: ReadonlySet<string> }
       | undefined;
     expect(mcpServerOptions?.onlyTools).toEqual(
-      new Set(['manage_alerts', 'get_device_details', 'analyze_metrics', 'query_monitors']),
+      new Set(['manage_alerts', 'get_device_details', 'get_device_hardware_health', 'analyze_metrics', 'query_monitors']),
     );
   });
 
@@ -2757,21 +2793,50 @@ describe('verdict profile in the run loop (P2-1)', () => {
     expect(outcome.budgetExceeded).toBeFalsy();
   });
 
-  it('a full-profile run gets the unrestricted registry tool set and no extraTools (negative control)', async () => {
-    seedRows({ effective: policy({ toolAllowlist: ['manage_services'] }) }); // profile defaults to 'full'
+  // #6909 Task A — supersedes the old "unrestricted registry tool set"
+  // negative control: a full run no longer gets the whole catalog. It gets
+  // every read-only tool plus whatever the agent's OWN toolAllowlist admits
+  // (`fullRunToolExposure`), and passes that as `onlyTools` too. `extraTools`
+  // (the outcome-tool slot) stays empty — `full` has no outcome tool.
+  it('a full-profile run is exposed read-only tools plus its own allowlisted tools, not the whole registry', async () => {
+    const allowlist = ['manage_services'];
+    seedRows({ effective: policy({ toolAllowlist: allowlist }) }); // profile defaults to 'full'
     scriptQuery({ assistantText: 'All good.' });
 
     await executeAgentRun(RUN_ID);
 
-    expect(lastQueryOptions?.allowedTools).toEqual(BREEZE_MCP_TOOL_NAMES);
+    const expectedExposure = fullRunToolExposure(allowlist);
+    // Read-only tools are always in the floor; an allowlisted mutating tool
+    // (manage_services) is too; a non-allowlisted mutating tool is not.
+    expect(expectedExposure).toEqual(expect.arrayContaining(['manage_services']));
+    expect(expectedExposure).not.toContain('run_script');
+    expect(expectedExposure).not.toContain('manage_startup_items');
+    expect(lastQueryOptions?.allowedTools).toEqual(
+      expect.arrayContaining(expectedExposure.map((name) => `mcp__breeze__${name}`)),
+    );
+    expect(lastQueryOptions?.allowedTools).toHaveLength(expectedExposure.length);
+    expect(lastQueryOptions?.allowedTools).not.toEqual(BREEZE_MCP_TOOL_NAMES);
     const extraTools = createBreezeMcpServer.mock.calls[0]?.[4] as unknown[] | undefined;
     expect(extraTools ?? []).toEqual([]);
 
-    // F2 fix (Task 16c) negative control: a full-profile run must pass NO
-    // onlyTools — it keeps registering (and therefore exposing) the whole
-    // tool registry, unchanged.
+    // A full run now DOES pass onlyTools — the exposure floor above, not
+    // undefined/the whole registry.
     const mcpServerOptions = createBreezeMcpServer.mock.calls[0]?.[5];
-    expect(mcpServerOptions).toBeUndefined();
+    expect(mcpServerOptions).toEqual({ onlyTools: new Set(expectedExposure) });
+  });
+
+  it('a full-profile run with an empty allowlist still exposes the read-only floor', async () => {
+    seedRows({ effective: policy({ toolAllowlist: [] }) });
+    scriptQuery({ assistantText: 'All good.' });
+
+    await executeAgentRun(RUN_ID);
+
+    const expectedExposure = fullRunToolExposure([]);
+    expect(expectedExposure.length).toBeGreaterThan(0);
+    expect(lastQueryOptions?.allowedTools).toEqual(
+      expect.arrayContaining(expectedExposure.map((name) => `mcp__breeze__${name}`)),
+    );
+    expect(lastQueryOptions?.allowedTools).toHaveLength(expectedExposure.length);
   });
 
   // Review fix (fix round 1, IMPORTANT 3): a verdict run that submitted its
@@ -2811,7 +2876,10 @@ describe('verdict profile in the run loop (P2-1)', () => {
   });
 
   it('finishRun still notifies and schedules fix-watch for a full-profile run (contrast)', async () => {
-    seedRows({ effective: policy({ toolAllowlist: [] }) }); // profile defaults to 'full'
+    // #6908: not alert-triggered here — this test is about the verdict-profile
+    // contrast, not the (separate) alert/no_action suppression covered in
+    // runFinishedNotify.test.ts, so keep it off that narrower path.
+    seedRows({ triggerKind: 'manual', effective: policy({ toolAllowlist: [] }) }); // profile defaults to 'full'
     scriptQuery({ assistantText: 'All good.' });
 
     await executeAgentRun(RUN_ID);
@@ -2819,6 +2887,40 @@ describe('verdict profile in the run loop (P2-1)', () => {
     expect(finalTransition()?.to).toBe('completed');
     expect(resolveRecipientUserIds).toHaveBeenCalled();
     expect(scheduleFixWatch).toHaveBeenCalled();
+  });
+});
+
+// #6909 Task A — `fullRunToolExposure` unit coverage, independent of the
+// run-loop plumbing above. Pure function: given an agent's OWN
+// `toolAllowlist`, it must expose every read-only tool plus any mutating
+// tool/action that allowlist admits, and nothing else.
+describe('fullRunToolExposure (#6909)', () => {
+  it('exposes an allowlisted mutating tool, the read-only floor, and NOT an un-allowlisted mutating tool', () => {
+    const exposure = fullRunToolExposure(['disk_cleanup:execute', 'manage_alerts:resolve']);
+
+    // The two allowlisted tools (bare names — SDK exposure is tool-level only).
+    expect(exposure).toEqual(expect.arrayContaining(['disk_cleanup', 'manage_alerts']));
+    // A read-only tool with no allowlist entry at all is still exposed.
+    expect(exposure).toEqual(expect.arrayContaining(['query_devices', 'get_device_details']));
+    // A mutating tool the allowlist never names is NOT exposed.
+    expect(exposure).not.toContain('run_script');
+    expect(exposure).not.toContain('manage_startup_items');
+  });
+
+  it('exposes only the read-only floor for an empty allowlist', () => {
+    const exposure = fullRunToolExposure([]);
+    expect(exposure.length).toBeGreaterThan(0);
+    expect(exposure).toContain('query_devices');
+    // Wholly-mutating tools (no read-only action at all) stay unexposed.
+    expect(exposure).not.toContain('run_script');
+    expect(exposure).not.toContain('manage_startup_items');
+  });
+
+  it('keeps a mixed-action tool exposed for its read-only actions even when its mutating actions are not allowlisted', () => {
+    // manage_patches: list/compliance are read-only; install/approve/scan are
+    // not — none of those mutating actions are in this allowlist.
+    const exposure = fullRunToolExposure(['manage_alerts:acknowledge']);
+    expect(exposure).toContain('manage_patches');
   });
 });
 

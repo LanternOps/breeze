@@ -676,6 +676,20 @@ describe('convertEmailInbound', () => {
     expect(row.ticketId).toBe('t-9');
     expect(row.parseStatus).toBe('created');
   });
+  it('converts a GMAIL row from its neutral raw keys (bodyText/fromName), not the Mailgun keys', async () => {
+    // A Gmail row's raw has no stripped-text/body-plain/from; it carries neutral
+    // bodyText + fromName (normalizeGmailMessage). Reading only the Mailgun keys
+    // produced an empty description and no submitter name for every Gmail convert.
+    dbMocks.selectResults.push([{ id: 'g-1', partnerId: 'p-1', parseStatus: 'quarantined', fromAddress: 'cust@client.example', subject: 'printer down', toAddress: 'help@client.example', raw: { gmailMessageId: 'gm-1', bodyText: 'the printer is on fire', fromName: 'Chris Customer' } }]);
+    dbMocks.selectResults.push([{ id: 'o-1' }]);
+    dbMocks.updateResult = [{ id: 'g-1', fromAddress: 'cust@client.example', toAddress: 'help@client.example', subject: 'printer down', parseStatus: 'created', error: null, ticketId: 't-9', createdAt: new Date() }];
+    createTicketMock.mockResolvedValue({ id: 't-9' });
+    await convertEmailInbound('p-1', 'g-1', 'o-1', ACTOR);
+    expect(createTicketMock).toHaveBeenCalledWith(
+      expect.objectContaining({ description: 'the printer is on fire', submitterName: 'Chris Customer', submitterEmail: 'cust@client.example' }),
+      ACTOR,
+    );
+  });
   it('falls back to body-plain when stripped-text is absent', async () => {
     dbMocks.selectResults.push([{ id: 'r-1', partnerId: 'p-1', parseStatus: 'quarantined', fromAddress: 'jane@x.com', subject: 'printer', toAddress: 'acme@tickets.example.com', raw: { 'body-plain': 'plain body only', from: 'jane@x.com' } }]);
     dbMocks.selectResults.push([{ id: 'o-1' }]);

@@ -37,6 +37,9 @@ const NOT_CASCADE_SCOPED: ReadonlySet<string> = new Set<string>([
   'partner_export_site_material_state',
   'third_party_package_catalog', // system-wide curated catalog
   'third_party_release_tests', // system-wide release test results
+  // NOTE: ticket_mailbox_connections is NOT exempt any more — its Gmail rows
+  // carry org_id and are now in CORE_ORG_CASCADE_DELETE_ORDER so an org merge
+  // repoints them to the survivor instead of the FK cascade-deleting them (#6592).
 ]);
 
 const cascadeOrder = getOrgCascadeDeleteOrder();

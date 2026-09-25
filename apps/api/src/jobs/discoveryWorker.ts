@@ -17,7 +17,8 @@ import {
   networkChangeEvents,
   organizations,
   devices,
-  deviceNetwork
+  deviceNetwork,
+  deviceHardwareComponents
 } from '../db/schema';
 import type { DiscoveryProfileAlertSettings } from '../db/schema';
 import { eq, and, or, sql, inArray, type SQL } from 'drizzle-orm';
@@ -38,6 +39,8 @@ import {
 import type { discoveredAssetTypeEnum } from '../db/schema';
 import type { PgUpdateSetSource } from 'drizzle-orm/pg-core';
 import { buildEventFingerprint, normalizeBaselineScanSchedule } from '../services/networkBaseline';
+import { linkBmcAssetFromAgentReport, normalizeBmcMac } from '../services/discovery/agentReportedBmcLink';
+import { captureException } from '../services/sentry';
 import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
 import { decryptSnmpCommunities, decryptSnmpCredentials } from '../services/snmpSecrets';
@@ -791,6 +794,12 @@ export function buildScanUpdateSet(
  * belt and braces — but it is the condition that states the intent, and it
  * survives someone "helpfully" defaulting `is_online` to true later. The create
  * route must never set `is_online`; the route test (W02) asserts that.
+ *
+ * Site-scoped on purpose, unlike the identity lookups in processResults (which
+ * match on org + ip, the unique key): the sweep flips every monitored asset
+ * this scan did NOT see to offline, and a scan of site A has no evidence about
+ * site B's hosts. Widening it to the org would let each site's scan mark every
+ * other site's assets offline.
  */
 export function buildMonitoredAssetConditions(
   orgId: string,
@@ -882,6 +891,13 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
   const knownGuestMacs = new Set(knownGuests.map(g => g.macAddress));
 
   // ── Load existing assets for approval comparison ──────────────────────
+  // Asset identity is (org, ip) — `discovered_assets_org_ip_unique` — NOT
+  // (org, site, ip). An asset can be moved between sites of the same org by
+  // hand, so a scan from one site may re-find an asset whose stored site is
+  // another. Filtering on the job's site here would miss that row, the
+  // per-host INSERT below would then hit 23505, and the host error would be
+  // swallowed — freezing the asset forever. Match on org + ip only; the map is
+  // keyed by ip alone for the same reason (one row per ip per org).
   const scannedIps = data.hosts.map(h => h.ip).filter(Boolean);
   const scannedExistingAssets = scannedIps.length > 0
     ? await db.select({
@@ -894,13 +910,17 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
       }).from(discoveredAssets).where(
         and(
           eq(discoveredAssets.orgId, data.orgId),
-          eq(discoveredAssets.siteId, data.siteId),
           inArray(discoveredAssets.ipAddress, scannedIps),
         )
       )
     : [];
   const existingByIp = new Map(scannedExistingAssets.map(a => [a.ipAddress, a]));
 
+  // The "went offline" sweep, by contrast, MUST stay scoped to the job's site:
+  // it marks every monitored asset this scan did not see as offline, and a
+  // scan of site A knows nothing about site B's hosts. (Consequence: an asset
+  // moved to site B that site A's profile still scans is kept fresh by A's
+  // scans but is only ever swept offline by B's — accepted.)
   const monitoredAssetConditions = buildMonitoredAssetConditions(
     data.orgId,
     data.siteId,
@@ -981,23 +1001,33 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
     if (!host.ip) continue;
 
     try {
-    // Check if asset already exists (by org + IP)
+    // Check if asset already exists (by org + IP — the unique key; see the
+    // approval pre-load above for why the job's site is deliberately NOT a
+    // predicate here). The stored site is read back because link decisions
+    // below are made relative to where the asset LIVES, not where the scan
+    // came from.
     const [existing] = await db
       .select({
         id: discoveredAssets.id,
+        siteId: discoveredAssets.siteId,
         typeSource: discoveredAssets.typeSource,
         detectedTypeSource: discoveredAssets.detectedTypeSource,
-        autoLinkSuppressedAt: discoveredAssets.autoLinkSuppressedAt
+        autoLinkSuppressedAt: discoveredAssets.autoLinkSuppressedAt,
+        linkSource: discoveredAssets.linkSource
       })
       .from(discoveredAssets)
       .where(
         and(
           eq(discoveredAssets.orgId, data.orgId),
-          eq(discoveredAssets.siteId, data.siteId),
           sql`${discoveredAssets.ipAddress} = ${host.ip}`
         )
       )
       .limit(1);
+
+    // The site an auto-link must be same-site WITH: the stored site for a row
+    // that already exists (it may have been moved), the job's site for a row
+    // this scan is about to create.
+    const assetSiteId = existing?.siteId ?? data.siteId;
 
     // Identity is resolved SERVER-side now (spec §9): the IANA enterprise arc
     // of the sysObjectID outranks the NIC OUI, and the raw sysObjectID can no
@@ -1051,6 +1081,7 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
     let upsertedAssetId: string | null = null;
     let alreadyLinked = false;
     let autoLinkedDeviceId: string | null = null;
+    let bmcIdentityMatched = existing?.linkSource === 'agent_report';
 
     if (existing) {
       // A scan with no opinion writes neither type column, leaving whatever a
@@ -1066,6 +1097,9 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
       // not constrain the source's keys to the target's).
       // #5213: hostname/manufacturer/model are additionally guarded against
       // clobbering an operator's manual row. See buildScanUpdateSet.
+      // `site_id` is deliberately NOT in the update set: the site is owned by
+      // the first insert and by manual moves. A scan re-finding an asset that
+      // was moved to a sibling site must not drag it back.
       const updateSet = buildScanUpdateSet(assetData, classification);
       await db
         .update(discoveredAssets)
@@ -1076,6 +1110,9 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
 
       // Preserve only same-site links. Older code could auto-link an asset to
       // an org-sibling site's device when private IPs or MACs collided.
+      // "Same site" is judged against the asset's STORED site (`existing.siteId`),
+      // not the scanning job's: a scan from site A re-finding an asset that
+      // lives in site B must keep its link to a site-B device.
       const [currentAsset] = await db
         .select({
           linkedDeviceId: discoveredAssets.linkedDeviceId,
@@ -1086,15 +1123,15 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
         .where(eq(discoveredAssets.id, existing.id))
         .limit(1);
       alreadyLinked = !!currentAsset?.linkedDeviceId
-        && currentAsset.linkedDeviceSiteId === data.siteId;
+        && currentAsset.linkedDeviceSiteId === existing.siteId;
       if (currentAsset?.linkedDeviceId && !alreadyLinked) {
+        // Keyed by id alone: a site predicate pinned to the job's site would
+        // silently match zero rows for a moved asset and leave the stale
+        // cross-site link in place.
         await db
           .update(discoveredAssets)
           .set({ linkedDeviceId: null, linkSource: null })
-          .where(and(
-            eq(discoveredAssets.id, existing.id),
-            eq(discoveredAssets.siteId, data.siteId),
-          ));
+          .where(eq(discoveredAssets.id, existing.id));
       }
     } else {
       // Net-new row, so there is nothing to outrank — write the classification
@@ -1128,63 +1165,129 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
     const autoLinkSuppressed = !!existing?.autoLinkSuppressedAt;
     if (upsertedAssetId && !alreadyLinked && !autoLinkSuppressed && (assetData.macAddress || assetData.ipAddress)) {
       try {
+        // Reconcile against agent-reported BMC MACs BEFORE ordinary NIC
+        // identity. This is an additional identity source, not an OR with the
+        // device NICs check below — mixing them would lose the agent_report
+        // provenance a direct linkBmcAssetFromAgentReport call would have set.
+        // Multiple hosts reporting the same controller MAC are deliberately
+        // not guessed at (ambiguous — no safe single-device association).
+        const normalizedBmcMac = assetData.macAddress ? normalizeBmcMac(assetData.macAddress) : null;
+        if (normalizedBmcMac) {
+          const bmcMatches = await db
+            .select({ deviceId: deviceHardwareComponents.deviceId })
+            .from(deviceHardwareComponents)
+            .innerJoin(devices, eq(devices.id, deviceHardwareComponents.deviceId))
+            .where(and(
+              eq(devices.orgId, data.orgId),
+              eq(devices.siteId, data.siteId),
+              eq(deviceHardwareComponents.orgId, data.orgId),
+              eq(deviceHardwareComponents.componentType, 'bmc'),
+              eq(deviceHardwareComponents.stale, false),
+              sql`lower(regexp_replace(${deviceHardwareComponents.attributes}->>'mac', '[:.\-]', '', 'g')) = ${normalizedBmcMac}`,
+            ));
+          const candidates = [...new Set(bmcMatches.map((row) => row.deviceId))];
+          // bmcIdentityMatched is set as soon as ANY host reports this MAC as its
+          // BMC, independent of whether the link write below runs or succeeds —
+          // a MAC a host claims as its own BMC must never fall through to NIC
+          // identity matching, ambiguous (candidates.length > 1) or not, and
+          // that must hold even if the write throws (see the catch below).
+          if (candidates.length) {
+            bmcIdentityMatched = true;
+            if (candidates.length === 1) {
+              try {
+                await db.transaction((tx) => linkBmcAssetFromAgentReport(tx, {
+                  deviceId: candidates[0]!,
+                  orgId: data.orgId,
+                  siteId: data.siteId,
+                  mac: assetData.macAddress!,
+                  ip: assetData.ipAddress,
+                }));
+              } catch (bmcLinkErr) {
+                console.warn(`[DiscoveryWorker] BMC link failed for ${host.ip}`, bmcLinkErr);
+                captureException(bmcLinkErr instanceof Error ? bmcLinkErr : new Error(String(bmcLinkErr)));
+              }
+            }
+          }
+        }
+
         const conditions = [];
         if (assetData.macAddress) conditions.push(eq(deviceNetwork.macAddress, assetData.macAddress));
         if (assetData.ipAddress) conditions.push(eq(deviceNetwork.ipAddress, assetData.ipAddress));
 
-        if (conditions.length > 0) {
+        if (!bmcIdentityMatched && conditions.length > 0) {
           const [match] = await db
             .select({ deviceId: deviceNetwork.deviceId })
             .from(deviceNetwork)
             .innerJoin(devices, eq(devices.id, deviceNetwork.deviceId))
             .where(and(
               eq(devices.orgId, data.orgId),
-              eq(devices.siteId, data.siteId),
+              // Same-site relative to where the asset lives (see assetSiteId).
+              eq(devices.siteId, assetSiteId),
               or(...conditions),
             ))
             .limit(1);
 
           if (match) {
-            await db
+            // Conditional-returning write: never reassign a link an
+            // agent_report association (or an earlier auto-link, or a
+            // suppressed asset) already occupies. Only a row this update
+            // actually touched may go on to flip approval / propagate
+            // classification below.
+            const linked = await db
               .update(discoveredAssets)
               .set({ linkedDeviceId: match.deviceId, approvalStatus: 'approved', linkSource: 'auto' })
-              .where(eq(discoveredAssets.id, upsertedAssetId));
-            autoLinkedDeviceId = match.deviceId;
+              .where(and(
+                eq(discoveredAssets.id, upsertedAssetId),
+                sql`${discoveredAssets.linkSource} IS DISTINCT FROM 'agent_report'`,
+                sql`${discoveredAssets.linkedDeviceId} IS NULL`,
+                sql`${discoveredAssets.autoLinkSuppressedAt} IS NULL`,
+              ))
+              .returning({ id: discoveredAssets.id });
 
-            // Mirror the asset's type onto the linked device (discovery > auto,
-            // but never > manual).
-            //
-            // The value is read back OUT OF THE ASSET ROW inside this statement
-            // rather than taken from `classification`. The asset write above is
-            // precedence-guarded in SQL, so the type that actually landed may not
-            // be the one this scan proposed — propagating our own guess would put
-            // the rejected value on the device and reintroduce the flap one table
-            // over (#3187). Reading the settled value instead means every scan
-            // re-converges device_role on the asset, so a device can never be
-            // stranded on a stale role by a classifier that is now outranked.
-            //
-            // Both guards are in the statement too, for the same reason the asset
-            // write's are: `existing` was read before the asset UPDATE and a user
-            // can pin a type in between. This also replaces the separate SELECT
-            // that used to fetch device_role_source, so the whole propagation is
-            // now one statement. IS DISTINCT FROM rather than <>: the column is
-            // NOT NULL DEFAULT 'auto' today, but a null-safe comparison keeps the
-            // carve-out correct if that ever relaxes.
-            if (classification) {
-              await db.update(devices)
-                .set({
-                  deviceRole: sql`(select ${discoveredAssets.assetType} from ${discoveredAssets} where ${discoveredAssets.id} = ${upsertedAssetId})`,
-                  deviceRoleSource: 'discovery',
-                  updatedAt: new Date(),
-                })
-                .where(and(
-                  eq(devices.id, match.deviceId),
-                  // Neither a technician's ('manual') nor a Fleet Design
-                  // correction the technician approved ('ai', W03 #5653) is
-                  // overwritten by a discovery guess.
-                  sql`coalesce(${devices.deviceRoleSource}, 'auto') not in ('manual', 'ai')`,
-                  sql`exists (select 1 from ${discoveredAssets} where ${discoveredAssets.id} = ${upsertedAssetId} and ${discoveredAssets.typeSource} <> 'manual' and ${discoveredAssets.assetType} <> 'unknown')`,
-                ));
+            if (linked.length) {
+              autoLinkedDeviceId = match.deviceId;
+
+              // Mirror the asset's type onto the linked device (discovery > auto,
+              // but never > manual).
+              //
+              // The value is read back OUT OF THE ASSET ROW inside this statement
+              // rather than taken from `classification`. The asset write above is
+              // precedence-guarded in SQL, so the type that actually landed may not
+              // be the one this scan proposed — propagating our own guess would put
+              // the rejected value on the device and reintroduce the flap one table
+              // over (#3187). Reading the settled value instead means every scan
+              // re-converges device_role on the asset, so a device can never be
+              // stranded on a stale role by a classifier that is now outranked.
+              //
+              // Both guards are in the statement too, for the same reason the asset
+              // write's are: `existing` was read before the asset UPDATE and a user
+              // can pin a type in between. This also replaces the separate SELECT
+              // that used to fetch device_role_source, so the whole propagation is
+              // now one statement. IS DISTINCT FROM rather than <>: the column is
+              // NOT NULL DEFAULT 'auto' today, but a null-safe comparison keeps the
+              // carve-out correct if that ever relaxes.
+              if (classification) {
+                await db.update(devices)
+                  .set({
+                    deviceRole: sql`(select ${discoveredAssets.assetType} from ${discoveredAssets} where ${discoveredAssets.id} = ${upsertedAssetId})`,
+                    deviceRoleSource: 'discovery',
+                    updatedAt: new Date(),
+                  })
+                  .where(and(
+                    eq(devices.id, match.deviceId),
+                    // Neither a technician's ('manual') nor a Fleet Design
+                    // correction the technician approved ('ai', W03 #5653) is
+                    // overwritten by a discovery guess.
+                    sql`coalesce(${devices.deviceRoleSource}, 'auto') not in ('manual', 'ai')`,
+                    // D14: never propagate a BMC association's classification
+                    // onto the host device — the SQL guard is load-bearing,
+                    // not just the JS-side branch above.
+                    sql`exists (select 1 from ${discoveredAssets} where ${discoveredAssets.id} = ${upsertedAssetId}
+                      and ${discoveredAssets.linkedDeviceId} = ${match.deviceId}
+                      and ${discoveredAssets.linkSource} IS DISTINCT FROM 'agent_report'
+                      and ${discoveredAssets.typeSource} <> 'manual' and ${discoveredAssets.assetType} <> 'unknown')`,
+                  ));
+              }
             }
           }
         }
@@ -1198,7 +1301,7 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
     const guestMac = normalizeMac(host.mac);
     const isGuest = !!guestMac && knownGuestMacs.has(guestMac);
 
-    const decision = autoLinkedDeviceId || alreadyLinked
+    const decision = !bmcIdentityMatched && existing?.linkSource !== 'agent_report' && (autoLinkedDeviceId || alreadyLinked)
       ? { approvalStatus: 'approved' as const, shouldAlert: false }
       : buildApprovalDecision({
           existingAsset: existingForApproval
@@ -1213,7 +1316,12 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
     if (upsertedAssetId) {
       await db.update(discoveredAssets)
         .set({
-          approvalStatus: decision.approvalStatus,
+          // Guards against a concurrent agent_report ingest link made after
+          // this worker's earlier SELECTs (those reads are not locked): a
+          // pending BMC association stays pending, an operator-approved one
+          // stays approved, regardless of what this scan's own decision was.
+          approvalStatus: sql`CASE WHEN ${discoveredAssets.linkSource} = 'agent_report'
+            THEN ${discoveredAssets.approvalStatus} ELSE ${decision.approvalStatus}::discovered_asset_approval_status END`,
           isOnline: true,
           // Spec §4.3 — this is the second place a scan writes is_online, and
           // it runs AFTER buildScanUpdateSet's upsert, so it would otherwise

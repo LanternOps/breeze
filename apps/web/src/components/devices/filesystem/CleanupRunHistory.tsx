@@ -19,6 +19,7 @@ import { formatNumber } from '@/lib/i18n/format';
 import { fetchWithAuth } from '@/stores/auth';
 import '@/lib/i18n';
 import { formatBytes, formatDateTime } from './filesystemTabUtils';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 const PAGE_LIMIT = 20;
 // #6485 F-6: a run started elsewhere (the AI lane, another tech's tab) never
@@ -56,6 +57,7 @@ type Props = { deviceId: string; refreshToken: number };
 
 export default function CleanupRunHistory({ deviceId, refreshToken }: Props) {
   const { t } = useTranslation('devices');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [runs, setRuns] = useState<CleanupRunListItem[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -87,7 +89,7 @@ export default function CleanupRunHistory({ deviceId, refreshToken }: Props) {
           { signal: controller.signal },
         );
         if (controller.signal.aborted) return;
-        if (!response.ok) throw new Error(t('deviceFilesystemTab.historyFailed'));
+        if (!response.ok) throw new Error(stableT('deviceFilesystemTab.historyFailed'));
 
         const body = await response.json();
         const page = (body?.data?.runs ?? []) as CleanupRunListItem[];
@@ -96,12 +98,12 @@ export default function CleanupRunHistory({ deviceId, refreshToken }: Props) {
         setNextCursor((body?.data?.nextCursor ?? null) as string | null);
       } catch (err) {
         if (isAbort(err) || controller.signal.aborted) return;
-        setError(t('deviceFilesystemTab.historyFailed'));
+        setError(stableT('deviceFilesystemTab.historyFailed'));
       } finally {
         if (!controller.signal.aborted) setLoading(false);
       }
     },
-    [deviceId, t],
+    [deviceId, stableT],
   );
 
   useEffect(() => {

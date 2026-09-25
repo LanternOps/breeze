@@ -134,6 +134,7 @@ const FEATURE_META: Record<FeatureType, { label: string; Icon: LucideIcon }> = {
   onedrive_helper: { label: "OneDrive Helper", Icon: Cloud },
   vulnerability: { label: "Vulnerability Scanning", Icon: ShieldAlert },
   device_lifecycle: { label: "Device Lifecycle", Icon: Trash2 },
+  hardware_monitoring: { label: "Hardware Monitoring", Icon: HardDrive },
 };
 
 // Display order = FEATURE_META insertion order. Derived (not hand-listed) so the
@@ -248,7 +249,9 @@ export default function DeviceEffectiveConfigTab({
   // ── Empty state ────────────────────────────────────────────────────
 
   const hasRealFeatures = data
-    ? Object.values(data.features).some((f) => f.sourceLevel !== "default")
+    ? Object.values(data.features).some(
+        (f) => f.sourceLevel !== "default" || f.featureType === "hardware_monitoring",
+      )
     : false;
   if (!data || !hasRealFeatures) {
     return (
@@ -289,11 +292,12 @@ export default function DeviceEffectiveConfigTab({
   // Split enforced (a real assigned policy wins) from baseline fall-through.
   // Every type in ALL_FEATURE_TYPES is "not enforced when unassigned", so a
   // 'default' source unambiguously means baseline here (see the constant's note).
+  // Hardware collection is applied even when its source is Breeze Defaults.
   const enforcedTypes = configuredTypes.filter(
-    (ft) => features[ft]!.sourceLevel !== "default",
+    (ft) => features[ft]!.sourceLevel !== "default" || ft === "hardware_monitoring",
   );
   const baselineTypes = configuredTypes.filter(
-    (ft) => features[ft]!.sourceLevel === "default",
+    (ft) => features[ft]!.sourceLevel === "default" && ft !== "hardware_monitoring",
   );
 
   return (

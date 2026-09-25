@@ -48,7 +48,7 @@ Set expectations with your team and your customers before you start. Nothing bel
 | Performance / metric history | **Lost** | Starts from zero at enrollment. Keep the incumbent read-only if you need historical charts. |
 | Alert history | **Lost** | Open alerts should be triaged out before cutover, not migrated. |
 | Scripts | **Sometimes** | Portable if the source engine is PowerShell/bash-based. Not portable from step-based engines — see below. Datto RMM components have [their own guide](/migration/scripts-from-datto/). |
-| Monitors & alert thresholds | **You rebuild them** | Re-author as Breeze [monitors](/features/service-monitoring/) and [alert rules](/features/alerts/). Treat as an opportunity to prune. |
+| Monitors & alert thresholds | **You rebuild them** | Re-author as Breeze [monitors](/features/monitors/) with [Delivery](/features/notifications/). Treat as an opportunity to prune. |
 | Patch policies | **You rebuild them** | Map to Breeze [patch policies](/features/patch-management/) and update rings. |
 | Custom fields / UDFs / EDFs | **Scriptable** | Export from source, re-create as Breeze [custom fields](/features/custom-fields/), then backfill values with the **Import from another RMM** wizard — its own pass, described below. |
 | Documentation / passwords | **Out of scope** | Usually lives in IT Glue / Hudu / a PSA, not the RMM. Verify before assuming. |
@@ -89,7 +89,7 @@ Seven phases take you from decision to decommission. The custom-field backfill i
 
    Doing this now is the difference between configuring one policy and configuring it eighty times. Set your scope selector to **All orgs** and define:
 
-   - Alert rules and [alert templates](/features/alert-templates/)
+   - [Monitors](/features/monitors/) and [Delivery](/features/notifications/)
    - [Patch policies](/features/patch-management/) and update rings
    - [Maintenance windows](/features/maintenance-windows/)
    - [Configuration policies](/features/configuration-policies/)

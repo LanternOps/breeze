@@ -180,7 +180,8 @@
     "software_presence": "Presença de software",
     "backup_continuity": "Continuidade do backup",
     "script": "Verificação de script",
-    "network_check": "Verificação de rede"
+    "network_check": "Verificação de rede",
+    "hardware_health": "Integridade do hardware"
   },
   "fields": {
     "operator": "Comparação",
@@ -295,6 +296,7 @@
       "device_group": "um grupo de dispositivos"
     },
     "selectPolicy": "Política de configuração",
+    "attachToPolicy": "Anexar a uma política…",
     "selectTarget": "Destino",
     "noOrgSelected": "Selecione uma organização para implantar.",
     "policyName": "Nome da política",
@@ -485,6 +487,7 @@
       "more": "Carregar mais",
       "empty": "Nenhum histórico de conversão.",
       "system": "Sistema",
+      "reverted": "Revertido",
       "deadline": "Desfazer fica indisponível após W05d remover o avaliador de origem."
     },
     "errorCodes": {
@@ -513,5 +516,27 @@
     "state": "Estado",
     "episode": "Episódio aberto",
     "escalation": "Escalonamento"
+  },
+  "monitors": {
+    "fields": {
+      "hardware_health": {
+        "componentTypes": "Componentes",
+        "minHealth": "Integridade mínima",
+        "includePredictiveFailure": "Incluir falhas previstas",
+        "consecutiveSnapshots": "Instantâneos consecutivos",
+        "componentTypeOptions": {
+          "controller": "Controladoras",
+          "virtual_disk": "Discos virtuais",
+          "physical_disk": "Discos físicos",
+          "cache_battery": "Baterias de cache",
+          "enclosure": "Gabinetes",
+          "collector": "Ferramentas de monitoramento"
+        },
+        "minHealthOptions": {
+          "warning": "Aviso",
+          "critical": "Crítico"
+        }
+      }
+    }
   }
 }

@@ -433,6 +433,16 @@ describe('parts routes', () => {
 describe('GET /export/billables.csv', () => {
   beforeEach(resetMocks);
 
+  it('passes an end-of-day `to` so entries on the last day are exported (sweep C2)', async () => {
+    timeServiceMocks.listBillables.mockResolvedValue({ rows: [], totalsByCurrency: [] });
+    const res = await ticketsRoutes.request('/export/billables.csv?from=2026-06-01&to=2026-06-30');
+    expect(res.status).toBe(200);
+    const [from, to] = timeServiceMocks.listBillables.mock.calls[0]!;
+    expect((from as Date).toISOString()).toBe('2026-06-01T00:00:00.000Z');
+    // Same inclusive end as invoice assembly (`${to}T23:59:59Z`).
+    expect((to as Date).toISOString()).toBe('2026-06-30T23:59:59.000Z');
+  });
+
   it('returns CSV with headers and no cost_basis column', async () => {
     timeServiceMocks.listBillables.mockResolvedValue({
       rows: [{

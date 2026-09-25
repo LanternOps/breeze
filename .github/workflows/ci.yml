@@ -1868,11 +1868,23 @@ jobs:
       # and ipc: with GOOS=windows GOARCH=amd64 CGO_ENABLED=0 the package vets,
       # its test binary compiles, and its Windows dependency graph contains no
       # remote/desktop, no cgo, and no other first-party package.
+      # ./internal/backup/rebuild and ./internal/backup/winhive carry the W06
+      # Windows bare-metal engine (#5499): the real WinSystem (virtdisk VHDX,
+      # disk/volume IOCTLs, format/mount, hives) and its engine phases. Both
+      # were run natively on a Windows Server 2022 host before being added:
+      # rebuild green with 12 skips — the 11 TestRun_* Linux-engine round trips
+      # (they need bmr.RestoreSystemStateOffline, which is Linux-only) and
+      # TestRun_WindowsVhdxRealSystem, which runs in its own must-not-skip step
+      # below; winhive green with no skips. ./internal/backup/bmr is NOT added:
+      # natively it has one pre-existing red on main,
+      # TestApplySystemState_SymlinkArtifact_NoDownloadCreatesSymlink (asserts
+      # a POSIX symlink target; Windows returns backslashes) — outside the W06
+      # engine and left for #2523.
       - name: Run Windows Go tests
         working-directory: agent
         env:
           CGO_ENABLED: "0"
-        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./internal/backup/wingpt ./internal/backup/layout ./internal/executor ./internal/securefs ./internal/winsvcinstall ./cmd/breeze-watchdog
+        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./internal/backup/wingpt ./internal/backup/layout ./internal/backup/rebuild ./internal/backup/winhive ./internal/executor ./internal/securefs ./internal/winsvcinstall ./cmd/breeze-watchdog
 
       # The step above runs without -v, so a t.Skip is indistinguishable from a
       # pass in its output. That matters here more than usual: elevaccount's two
@@ -1940,20 +1952,86 @@ jobs:
       # not excluded — no separate step needed for those. Same must-not-skip
       # pattern as the elevaccount/securefs steps above: assert PASS count
       # and zero skips, not just a zero exit code.
+      # The two hive-privilege tests (W06, #5499) prove AcquireHivePrivileges
+      # enables SeBackup/SeRestore only inside its scope and that a partial
+      # AcquirePrivileges failure releases what it already enabled — the
+      # scope every offline hive load in the rebuild engine runs under.
       - name: Run Windows security-descriptor capture/apply tests (must not skip)
         working-directory: agent
         env:
           CGO_ENABLED: "0"
         shell: pwsh
         run: |
-          $out = go test ./internal/backup -run '^Test(FileSecurityReturnsSelfRelativeSD|FileSecurityRoundTrip|ApplySecurityRefusesMalformedDescriptor|SDPrivilegeScopesRelease|Restore_AppliesSecurityDescriptor|Restore_AppliesDirectorySecurityDescriptor|Restore_SecurityDescriptorApplyFailureIsWarningNotFailure)$' -v 2>&1
+          $out = go test ./internal/backup -run '^Test(FileSecurityReturnsSelfRelativeSD|FileSecurityRoundTrip|ApplySecurityRefusesMalformedDescriptor|SDPrivilegeScopesRelease|Restore_AppliesSecurityDescriptor|Restore_AppliesDirectorySecurityDescriptor|Restore_SecurityDescriptorApplyFailureIsWarningNotFailure|AcquireHivePrivileges_ScopesRelease|AcquirePrivileges_PartialFailureReleasesEarlier)$' -v 2>&1
           $exit = $LASTEXITCODE
           $out | ForEach-Object { Write-Host $_ }
           if ($exit -ne 0) { throw "go test failed (exit $exit)" }
           $skips = @($out | Select-String -Pattern '^\s*--- SKIP: Test').Count
-          if ($skips -ne 0) { throw "$skips of the security-descriptor tests SKIPPED - the HiveNightmare-class fix has no live coverage here" }
+          if ($skips -ne 0) { throw "$skips of the security-descriptor / hive-privilege tests SKIPPED - the HiveNightmare-class fix or the hive privilege scope has no live coverage here" }
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
-          if ($passes -ne 7) { throw "expected exactly 7 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+          if ($passes -ne 9) { throw "expected exactly 9 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+
+      # The real WinSystem (internal/backup/rebuild/winsystem_windows.go) and
+      # winhive's RegLoadKeyW/RegUnLoadKeyW are the W06 Windows engine's only
+      # contact with the host: VHDX create/attach/detach, GPT write/read,
+      # format.com, folder mounts, drive letters, hive load/unload. Every one
+      # of these tests skips loudly when the token is not elevated (the
+      # assertions would be vacuous), and the bare package run above has no
+      # -v, so a skip there reads as a pass. windows-latest runners are
+      # elevated; assert all eleven actually PASSED.
+      # W06c (#5499) adds two: TestControlSetsAndMountedDevices_RealHive
+      # proves winhive's offline edits (control sets, MountedDevices) round-
+      # trip through a real reg-save SYSTEM hive load/unload, and
+      # TestLoadReadOnly_ReadsAnAdminReadOnlyBCDStore proves
+      # WinSystem.LoadHiveReadOnly can read a BCD-Template-derived store,
+      # which denies KEY_ALL_ACCESS to Administrators even with
+      # SeBackup/SeRestore held (a lab-found production defect, see the W06c
+      # PR).
+      - name: Run Windows rebuild-engine host seam tests (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/backup/rebuild ./internal/backup/winhive -run '^Test(WinSystem_VolumesOnDiskSystemDisk|WinSystem_FreeSpaceWalksUpToAnExistingDir|WinSystem_CreateAttachVHDXSectorSizes|WinSystem_VHDXProvisionRoundTrip|WinSystem_DetachVHDXByPathFromAnotherInstance|WinSystem_DetachVHDXByPathForeignAttaches|WinSystem_LoadHiveRoundTripAndStaleSweep|UnloadStale_NoMatches|Load_MissingFileFailsWithoutMount|ControlSetsAndMountedDevices_RealHive|LoadReadOnly_ReadsAnAdminReadOnlyBCDStore)$' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $skips = @($out | Select-String -Pattern '^\s*--- SKIP: Test').Count
+          if ($skips -ne 0) { throw "$skips of the rebuild-engine host seam tests SKIPPED - the real WinSystem/winhive have no live coverage on this runner (not elevated?)" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          if ($passes -ne 11) { throw "expected exactly 11 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+
+      # TestRun_WindowsVhdxRealSystem (internal/backup/rebuild) is the W06
+      # Windows engine's one end-to-end real-hardware proof: create/attach a
+      # 2 GiB dynamic VHDX, provision GPT partitions with the recorded GUIDs,
+      # format, restore files (including real SYSTEM/SOFTWARE/BCD hives)
+      # through the root volume's \\?\Volume{GUID}\ path, apply the offline
+      # system-state edits, run with SkipBoot:false so it drives the host's
+      # own bcdboot.exe to regenerate the ESP (/f UEFI /v /p) and identity
+      # (-RESTORED, MachineGuid, enrollment strip), validate (BCD default
+      # entry read back through a read-only hive load, checksum sample,
+      # flush, unmount, no-letter bit cleared, GUIDs read back), detach —
+      # then re-attach and read the restored bytes back. windows-latest
+      # runners are elevated and ship virtdisk.dll (no Hyper-V role needed —
+      # VHDX create/attach works without it), so this has no reason to skip
+      # here; a skip must fail the job, exactly like the Linux loopback
+      # step's own must-not-skip assertion.
+      - name: Run Windows real-VHDX rebuild engine test — bcdboot + identity (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+          BREEZE_REBUILD_VHDX_TEST: "1"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/backup/rebuild -run '^TestRun_WindowsVhdxRealSystem$' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $skips = @($out | Select-String -Pattern '^\s*--- SKIP: Test').Count
+          if ($skips -ne 0) { throw "TestRun_WindowsVhdxRealSystem SKIPPED - the W06 Windows engine has no real-VHDX coverage on this runner" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          if ($passes -ne 1) { throw "expected exactly 1 PASS line, got $passes - the test was renamed or another test matched the -run filter" }
 
       # The policy-state registry collector decides whether a batch uploads with
       # `replace: true` — which deletes every prior row for the device. That

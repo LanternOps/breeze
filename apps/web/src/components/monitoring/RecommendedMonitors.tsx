@@ -142,7 +142,7 @@ export default function RecommendedMonitors({
           disabled={loading || busy}
           className="h-9 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
         >
-          {t('monitoring:deploy.selectPolicy')}
+          {t('monitoring:deploy.attachToPolicy')}
         </button>
       </div>
       {open && (

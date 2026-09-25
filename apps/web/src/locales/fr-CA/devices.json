@@ -133,7 +133,8 @@
     "thisOrganizationOnlyHasOneSite": "Cette organisation ne possède qu’un seul site. Ajoutez plus de sites depuis Paramètres → Organisations pour permettre les déplacements.",
     "current": "(actuel)",
     "cancel": "Annuler",
-    "moving": "En mouvement..."
+    "moving": "En mouvement...",
+    "toADifferentSite": "vers un autre site."
   },
   "createGroupModal": {
     "failedToCreateGroup": "Impossible de créer un groupe",
@@ -334,6 +335,7 @@
     "metricAnomalies": "Anomalies métriques",
     "anomalyDetectionIsDisabledForThis": "La détection d’anomalies est désactivée pour cette organisation.",
     "anomalyDetectionDisabled": "Détection d’anomalie désactivée",
+    "anomalyDetectionDisabledHint": "Activez-la dans les <orgLink>paramètres de l’organisation</orgLink> → IA.",
     "showingTheLinkedAnomalyAndRecent": "Affichage de l’anomalie associée et de l’historique récent des anomalies",
     "openSignalsDetectedFromMetricRollups": "Signaux ouverts détectés à partir des rollups métriques",
     "refreshAnomalies": "Anomalies de rafraîchissement",
@@ -2702,7 +2704,9 @@
           "networkGear": "Équipements réseau",
           "peripherals": "Périphériques",
           "other": "Autres"
-        }
+        },
+        "site": "Site",
+        "changeSite": "Changer de site…"
       },
       "monitoring": {
         "description": "Configurez la collecte SNMP et les vérifications réseau.",
@@ -2814,7 +2818,12 @@
         "checkCreated": "Vérification réseau ajoutée",
         "checkCreateFailed": "Impossible d’ajouter la vérification réseau",
         "checkRemoved": "Vérification réseau supprimée",
-        "checkRemoveFailed": "Impossible de supprimer la vérification réseau"
+        "checkRemoveFailed": "Impossible de supprimer la vérification réseau",
+        "siteChanged": "Déplacé vers {{site}}.",
+        "siteChangeFailed": "Impossible de déplacer l’actif vers le nouveau site",
+        "siteChangedUnlinked": "Le lien avec son appareil agent a été retiré, car cet appareil se trouve dans un autre site.",
+        "siteChangedPolicies_one": "{{count}} politique de surveillance de topologie a été désactivée.",
+        "siteChangedPolicies_other": "{{count}} politiques de surveillance de topologie ont été désactivées."
       }
     },
     "header": {
@@ -3402,5 +3411,57 @@
       "created": "Actif réseau créé",
       "createFailed": "Échec de la création de l'actif réseau"
     }
+  },
+  "hardwareHealth": {
+    "title": "Stockage et RAID",
+    "hardware": "Matériel",
+    "ok": "Sain",
+    "warning": "Avertissement",
+    "critical": "Critique",
+    "unknown": "Inconnu",
+    "loading": "Chargement de l’état du matériel…",
+    "error": "Impossible de charger l’état du matériel.",
+    "retry": "Réessayer",
+    "noReport": "Aucun rapport matériel reçu.",
+    "noTools": "Aucun outil RAID ou disque détecté — sondés : {{sources}}",
+    "disabled": "La surveillance matérielle est désactivée par la politique {{policy}}",
+    "collected": "Collecté {{time}}",
+    "notSeen": "Non vu depuis {{time}}",
+    "predictive": "Défaillance prédictive",
+    "virtualDisks": "Disques virtuels",
+    "physicalDisks": "Disques physiques",
+    "osDisks": "Disques visibles par le système",
+    "backed": "Adossé à un disque virtuel RAID",
+    "enclosures": "Boîtiers : {{total}}",
+    "identity": "Modèle / série / micrologiciel",
+    "diskIdentity": "Emplacement / modèle / série / support / interface",
+    "size": "Taille",
+    "state": "État",
+    "telemetry": "Température / erreurs support / autres erreurs / heures de fonctionnement",
+    "progress": "Progression de {{name}}",
+    "sources": "Sources de collecte",
+    "unavailable": "Non installé",
+    "failed": "En échec : {{error}}",
+    "backingOff": "En pause jusqu’à {{time}}",
+    "superseded": "Remplacé par {{winner}}",
+    "sourceSuperseded": "Remplacé",
+    "sourceDisabled": "Désactivé",
+    "partial": "Rapport partiel",
+    "docs": "Guide d’installation",
+    "events": "Événements matériels",
+    "noEvents": "Aucun événement matériel enregistré.",
+    "noComponents": "Aucun composant signalé. Vérifiez les sources.",
+    "all": "Tous les états matériels",
+    "managementController": "Contrôleur de gestion",
+    "bmcVendor": "Fabricant",
+    "bmcFirmware": "Version du micrologiciel",
+    "bmcIp": "Adresse IP",
+    "bmcMac": "Adresse MAC",
+    "bmcOtherSite": "Contrôleur de gestion trouvé sur le site {{site}}",
+    "bmcObserved": "Dernier rapport : {{time}}; collecte quotidienne.",
+    "bmcHost": "Contrôleur de gestion de {{name}}",
+    "bmcAgentReport": "— signalé par l’agent de l’hôte",
+    "bmcAssociation": "Ce contrôleur de gestion est associé à son hôte et demeure un appareil réseau distinct.",
+    "bmcConfirmUnlink": "Supprimer l’association du contrôleur de gestion? La liaison automatique demeure désactivée pour cet appareil jusqu’à ce que vous le liiez de nouveau."
   }
 }

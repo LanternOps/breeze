@@ -136,6 +136,10 @@ const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
   'time_entries',
   // Partner-axis: org metadata must not hide suspended customers' assignments.
   'org_billing_profile_assignments',
+  // #4628 W04b: snapshot of the dropped legacy labour-pricing columns. Partner
+  // prices, partner-axis like its sibling above; org_id is set only on the
+  // org_ticket_settings rows and is metadata for cascade/merge/export.
+  'legacy_labour_pricing_archive',
   // Huntress credentials and discovered-org mappings are partner-scoped.
   // org_id is retained only as legacy/mapping metadata and may be NULL for
   // quarantined Huntress orgs.
@@ -185,6 +189,14 @@ const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
   // (Shape 1) and is deliberately NOT excluded — it is auto-discovered and
   // must carry breeze_has_org_access(org_id) on all four commands.
   'backup_provider_customers',
+  // ticket_mailbox_connections (2026-10-24, Gmail inbound): partner-axis (Shape
+  // 3, in PARTNER_TENANT_TABLES). Its new org_id is NOT the tenancy axis -- it
+  // names which org's google_workspace_connections holds the DWD service-account
+  // key used to impersonate the Gmail mailbox, and is bound to the connection's
+  // partner by the composite (org_id, partner_id) FK. RLS axis stays partner_id.
+  // Cross-partner forge proof: gmailInboundToTicket.integration.test.ts (composite
+  // FK rejects an org owned by a different partner).
+  'ticket_mailbox_connections',
 ]);
 
 // Tables whose own `id` column is the tenant identifier (no `org_id`).
@@ -213,6 +225,7 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['billing_profiles', 'partner_id'],
   ['billing_profile_rules', 'partner_id'],
   ['org_billing_profile_assignments', 'partner_id'],
+  ['legacy_labour_pricing_archive', 'partner_id'],
   ['ticket_response_templates', 'partner_id'],
   ['ticket_mailbox_connections', 'partner_id'],
   ['ticket_mailbox_tenant_ownerships', 'partner_id'],
@@ -939,6 +952,7 @@ const PARENT_FK_JOIN_POLICY_TABLES: ReadonlyMap<string, readonly string[]> = new
   ['config_policy_patch_settings', ['configuration_policies']],
   ['config_policy_maintenance_settings', ['configuration_policies']],
   ['config_policy_event_log_settings', ['configuration_policies']],
+  ['config_policy_hardware_monitoring_settings', ['configuration_policies']],
   ['dashboard_widgets', ['analytics_dashboards']],
   ['backup_snapshot_files', ['backup_snapshots']],
   ['backup_snapshot_origins', ['backup_snapshots']],

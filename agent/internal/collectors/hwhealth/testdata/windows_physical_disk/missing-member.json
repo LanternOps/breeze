@@ -1,0 +1,1 @@
+{"Disks": [{"UniqueId": "D1", "SerialNumber": "S1", "FriendlyName": "Disk", "Model": "Fixture SSD", "HealthStatus": "Healthy", "OperationalStatus": ["Lost Communication"], "Size": 1000, "Temperature": 31, "Wear": 5, "ReadErrorsTotal": 0, "WriteErrorsTotal": 0}], "Warnings": []}

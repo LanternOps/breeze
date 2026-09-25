@@ -5,6 +5,7 @@ import { fetchWithAuth } from '@/stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type Device = {
   id: string;
@@ -21,6 +22,9 @@ type RemoteTerminalPageProps = {
 
 export default function RemoteTerminalPage({ deviceId }: RemoteTerminalPageProps) {
   const { t } = useTranslation('remote');
+  // Effects use the stable translator so a locale change does not re-run them
+  // (#3632); JSX keeps the plain `t` so rendered text still re-translates.
+  const stableT = useStableT(t);
   const [device, setDevice] = useState<Device | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -33,22 +37,22 @@ export default function RemoteTerminalPage({ deviceId }: RemoteTerminalPageProps
 
         if (!response.ok) {
           if (response.status === 404) {
-            throw new Error(t('remoteTerminalPage.errors.deviceNotFound'));
+            throw new Error(stableT('remoteTerminalPage.errors.deviceNotFound'));
           }
-          throw new Error(t('remoteTerminalPage.errors.fetchDevice'));
+          throw new Error(stableT('remoteTerminalPage.errors.fetchDevice'));
         }
 
         const data = await response.json();
         setDevice(data);
       } catch (err) {
-        setError(err instanceof Error ? err.message : t('remoteTerminalPage.errors.generic'));
+        setError(err instanceof Error ? err.message : stableT('remoteTerminalPage.errors.generic'));
       } finally {
         setLoading(false);
       }
     };
 
     fetchDevice();
-  }, [deviceId, t]);
+  }, [deviceId, stableT]);
 
   const handleBack = () => {
     // Always return to this device's detail page. This page can be opened from

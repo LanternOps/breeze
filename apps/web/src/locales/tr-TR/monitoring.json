@@ -180,7 +180,8 @@
     "software_presence": "Yazılım varlığı",
     "backup_continuity": "Yedekleme sürekliliği",
     "script": "Betik denetimi",
-    "network_check": "Ağ denetimi"
+    "network_check": "Ağ denetimi",
+    "hardware_health": "Donanım sağlığı"
   },
   "fields": {
     "operator": "Karşılaştırma",
@@ -295,6 +296,7 @@
       "device_group": "bir cihaz grubu"
     },
     "selectPolicy": "Yapılandırma politikası",
+    "attachToPolicy": "Politikaya ekle…",
     "selectTarget": "Hedef",
     "noOrgSelected": "Dağıtılacak bir kuruluş seçin.",
     "policyName": "Politika adı",
@@ -485,6 +487,7 @@
       "more": "Daha fazla yükle",
       "empty": "Dönüştürme geçmişi yok.",
       "system": "Sistem",
+      "reverted": "Geri alındı",
       "deadline": "W05d kaynak değerlendiriciyi kaldırdıktan sonra geri alma kullanılamaz."
     },
     "errorCodes": {
@@ -513,5 +516,27 @@
     "state": "Durum",
     "episode": "Açık olay",
     "escalation": "Yükseltme"
+  },
+  "monitors": {
+    "fields": {
+      "hardware_health": {
+        "componentTypes": "Bileşenler",
+        "minHealth": "En düşük sağlık düzeyi",
+        "includePredictiveFailure": "Öngörülen arızaları dahil et",
+        "consecutiveSnapshots": "Ardışık anlık görüntüler",
+        "componentTypeOptions": {
+          "controller": "Denetleyiciler",
+          "virtual_disk": "Sanal diskler",
+          "physical_disk": "Fiziksel diskler",
+          "cache_battery": "Önbellek pilleri",
+          "enclosure": "Kasalar",
+          "collector": "İzleme araçları"
+        },
+        "minHealthOptions": {
+          "warning": "Uyarı",
+          "critical": "Kritik"
+        }
+      }
+    }
   }
 }

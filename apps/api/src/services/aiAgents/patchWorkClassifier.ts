@@ -35,27 +35,40 @@ export interface AlertCategoryResolution {
   monitorKind: string | null;
   /** The fail-closed verdict. */
   isPatchWork: boolean;
+  /**
+   * #6749 — `alerts.context ->> 'source'`, fed to `alertContext.source` for
+   * the unconditional lifecycle-source exclusion in
+   * `runService.ts`'s `evaluateAgentTriggerFilters`. Read here (rather than
+   * a second query) since this is already the one org-pinned read of the
+   * alert row on the `ai_triage` admission path.
+   */
+  source: string | null;
 }
 
-const NOT_RESOLVED: AlertCategoryResolution = { category: null, monitorKind: null, isPatchWork: false };
+const NOT_RESOLVED: AlertCategoryResolution = {
+  category: null, monitorKind: null, isPatchWork: false, source: null,
+};
 
 type Row = {
   rule_id: unknown;
   monitor_id: unknown;
   template_category: unknown;
   monitor_kind: unknown;
+  alert_source: unknown;
 };
 
 /**
  * Resolve the alert's template category and monitor kind in one org-pinned
  * read. Both fields feed `alertContext` for the `alertCategories` trigger
- * filter; `isPatchWork` is the routing verdict. Never throws.
+ * filter; `isPatchWork` is the routing verdict; `source` feeds the
+ * lifecycle-source exclusion (#6749). Never throws.
  */
 export async function resolveAlertCategory(alertId: string, orgId: string): Promise<AlertCategoryResolution> {
   let rows: Row[];
   try {
     rows = [...await db.execute<Row>(sql`
-      SELECT a.rule_id, a.monitor_id, t.category AS template_category, m.kind AS monitor_kind
+      SELECT a.rule_id, a.monitor_id, t.category AS template_category, m.kind AS monitor_kind,
+             a.context ->> 'source' AS alert_source
       FROM alerts a
       LEFT JOIN alert_rules r ON r.id = a.rule_id AND (r.org_id = ${orgId} OR r.org_id IS NULL)
       LEFT JOIN alert_templates t ON t.id = r.template_id AND (t.org_id = ${orgId} OR t.org_id IS NULL)
@@ -76,6 +89,7 @@ export async function resolveAlertCategory(alertId: string, orgId: string): Prom
 
   const category = typeof row.template_category === 'string' ? row.template_category : null;
   const monitorKind = typeof row.monitor_kind === 'string' ? row.monitor_kind : null;
+  const source = typeof row.alert_source === 'string' ? row.alert_source : null;
   if (row.rule_id === null && row.monitor_id === null) {
     console.debug(`[patchWorkClassifier] alert ${alertId} has neither rule_id nor monitor_id; not patch work`);
   } else if (category === null && monitorKind === null) {
@@ -83,7 +97,7 @@ export async function resolveAlertCategory(alertId: string, orgId: string): Prom
   }
 
   const isPatchWork = category === PATCH_ALERT_CATEGORY || monitorKind === PATCH_WORK_MONITOR_KIND;
-  return { category, monitorKind, isPatchWork };
+  return { category, monitorKind, isPatchWork, source };
 }
 
 /** The routing verdict alone. Fail-closed; never throws. */

@@ -20,6 +20,7 @@ import { formatPercent } from '@/lib/i18n/format';
 import AccessDenied from '../shared/AccessDenied';
 import { formatTime } from '@/lib/dateTimeFormat';
 import { useTranslation } from 'react-i18next';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type DeviceStatusData = {
   total: number;
@@ -80,6 +81,7 @@ export default function DashboardWidgets({
   timezone
 }: DashboardWidgetsProps) {
   const { t } = useTranslation('reports');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const effectiveTimezone = timezone || getBrowserTimezone();
   const [deviceStatus, setDeviceStatus] = useState<DeviceStatusData | null>(null);
   const [alertCounts, setAlertCounts] = useState<AlertCountsData | null>(null);
@@ -222,11 +224,11 @@ export default function DashboardWidgets({
       if (sawForbidden) setForbidden(true);
       setLastUpdated(new Date());
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('reports.dashboardWidgets.errors.loadDashboardData'));
+      setError(err instanceof Error ? err.message : stableT('reports.dashboardWidgets.errors.loadDashboardData'));
     } finally {
       setLoading(false);
     }
-  }, [showDeviceStatus, showAlertCounts, showCompliance, showResources, t]);
+  }, [showDeviceStatus, showAlertCounts, showCompliance, showResources, stableT]);
 
   useEffect(() => {
     fetchData();

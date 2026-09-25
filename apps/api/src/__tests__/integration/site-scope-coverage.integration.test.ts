@@ -147,6 +147,10 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   // (requirePartnerApiScope) — no user permissions context; results are
   // clamped to the principal's partner-accessible orgs by the export query.
   'routes/partnerApi/devices.ts:GET /devices',
+  // Partner alerts feed (alerts:read): same machine service-principal auth, no
+  // user permissions/allowedSiteIds context; rows clamped to the principal's
+  // accessible orgs, device/rule/monitor/episode ids ownership-checked.
+  'routes/partnerApi/alerts.ts:GET /alerts',
   // Helper-token path (helperAuth on all helperRoutes): no user permissions
   // context, and the session lookup is pinned to the token's own device row
   // (eq(aiSessions.deviceId, device.id)) before any write. (W7 #2637.)
@@ -166,9 +170,7 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   'routes/agents/connections.ts:PUT /:id/connections',
   'routes/agents/elevationRequests.ts:POST /:id/elevation-requests',
   'routes/agents/enrollment.ts:POST /enroll',
-  'routes/agents/inventory.ts:PUT /:id/disks',
   'routes/agents/inventory.ts:PUT /:id/hardware',
-  'routes/agents/inventory.ts:PUT /:id/network',
   'routes/agents/inventory.ts:PUT /:id/warranty-info',
   // Agent-token mTLS renewal confirm (Wave 5 Task 4/6). The atomic
   // activate+demote writes device_mtls_certificates and devices.mtls_cert_*

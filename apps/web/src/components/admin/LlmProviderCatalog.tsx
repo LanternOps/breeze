@@ -18,6 +18,7 @@ import { showToast } from '../shared/Toast';
 // Initializes the shared i18next singleton — see ThirdPartyCatalog.tsx for why
 // this import must run before any island renders translated text.
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 // Selectable models for the catalog's per-revision model map. Mirrors
 // OFFERABLE_AI_MODELS in apps/api/src/services/aiCostTracker.ts — the API
@@ -127,6 +128,7 @@ function emptyModelMapDraft(): Record<string, ModelMapDraftRow> {
 
 export default function LlmProviderCatalog() {
   const { t } = useTranslation('admin');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [entries, setEntries] = useState<CatalogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [requiresPlatformAdmin, setRequiresPlatformAdmin] = useState(false);
@@ -169,17 +171,17 @@ export default function LlmProviderCatalog() {
           setEntries([]);
           return;
         }
-        throw new Error(t('admin.llmProviderCatalog.errors.load'));
+        throw new Error(stableT('admin.llmProviderCatalog.errors.load'));
       }
       setRequiresPlatformAdmin(false);
       const data = await response.json();
       setEntries(Array.isArray(data) ? data : []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('admin.llmProviderCatalog.errors.generic'));
+      setError(err instanceof Error ? err.message : stableT('admin.llmProviderCatalog.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [stableT]);
 
   useEffect(() => {
     void fetchCatalog();

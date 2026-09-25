@@ -2,11 +2,11 @@
 import { execFileSync } from 'node:child_process';
 import { deriveProjectName, descriptorPath } from './project';
 import { writeDescriptor, readDescriptor, type StackDescriptor } from './descriptor';
-import { writeEnvStack, readStackEnvValue } from './env';
-import { composeUp, waitHealthy, publishedPort, containerName, seedDatabase, composeDown } from './compose';
+import { writeEnvStack, readStackEnvValue, pinWebAuthnForStack } from './env';
+import { composeUp, waitHealthy, publishedPort, containerName, seedDatabase, composeDown, recreateService } from './compose';
+import { upStack } from './up';
 
 const ADMIN = { email: 'admin@breeze.local', password: 'BreezeAdmin123!' };
-const HEALTH_SERVICES = ['postgres', 'redis', 'api', 'web', 'portal', 'caddy'];
 
 function currentBranch(): string | undefined {
   try {
@@ -19,23 +19,10 @@ function up(shared: boolean, rebuild: boolean): void {
   const worktreePath = process.cwd();
   const project = deriveProjectName({ worktreePath, branch: currentBranch(), shared });
   console.log(`[wt-stack] project=${project} engine=${dockerContext()}`);
-  writeEnvStack(worktreePath);
-  composeUp(project, { rebuild });
-  waitHealthy(project, HEALTH_SERVICES, 5 * 60_000);
-  seedDatabase(project);
-  const caddyPort = publishedPort(project, 'caddy', 80);
-  const baseUrl = `http://localhost:${caddyPort}`;
-  const descriptor: StackDescriptor = {
-    project,
-    baseUrl,
-    apiUrl: `${baseUrl}/api`,
-    portalUrl: `${baseUrl}/portal`,
-    webPort: caddyPort,
-    pgContainer: containerName(project, 'postgres'),
-    redisContainer: containerName(project, 'redis'),
-    admin: ADMIN,
-  };
-  writeDescriptor(worktreePath, descriptor);
+  const descriptor = upStack({ worktreePath, project, rebuild, admin: ADMIN }, {
+    writeEnvStack, composeUp, waitHealthy, seedDatabase, publishedPort,
+    pinWebAuthnForStack, recreateService, containerName, writeDescriptor,
+  });
   console.log(JSON.stringify(descriptor, null, 2));
 }
 

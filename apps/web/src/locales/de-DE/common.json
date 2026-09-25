@@ -99,7 +99,8 @@
     "ticketing": "Ticketing",
     "deliverableTemplates": "Liefervorlagen",
     "securityScans": "IOC-Scans",
-    "system": "System"
+    "system": "System",
+    "monitorConversion": "Monitor-Konvertierung"
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -1471,6 +1472,12 @@
           "editTitle": "Webhook bearbeiten"
         },
         "subtitle": "Übermitteln Sie Ereignisse an externe Systeme.",
+        "success": {
+          "created": "Webhook erstellt",
+          "disabled": "Webhook deaktiviert",
+          "enabled": "Webhook aktiviert",
+          "updated": "Webhook aktualisiert"
+        },
         "title": "Webhooks"
       }
     },
@@ -2446,7 +2453,7 @@
         },
         "title": "Vorgeschlagene Korrekturen",
         "refresh": "Aktualisieren Sie die vorgeschlagenen Korrekturen",
-        "disabledTitle": "Vorgeschlagene Korrekturen sind für diese Organisation deaktiviert",
+        "disabledTitle": "Vorgeschlagene Korrekturen sind für diese Organisation deaktiviert. Aktivieren Sie sie unter Einstellungen → Partner → KI-Funktionen oder für eine einzelne Organisation auf ihrer KI-Registerkarte.",
         "suggestionsDisabled": "Vorschläge deaktiviert",
         "generate": "Generieren",
         "empty": "Noch keine Lösungsvorschläge.",

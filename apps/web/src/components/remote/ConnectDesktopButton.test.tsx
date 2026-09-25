@@ -448,3 +448,57 @@ describe('ConnectDesktopButton — agent upgrade required', () => {
     expect(calledPaths.some((path) => path.includes('desktop-connect-code'))).toBe(false);
   });
 });
+
+// D13: runAction swaps in the generic errors:<CODE> catalog text whenever one
+// exists (runAction.ts), which would otherwise replace this route's specific
+// prose ("Device not found or access denied" -> "Not found",
+// "Access to this site denied" -> "Access denied"). The per-call `friendly`
+// hook must restore the specific text for these two coded POST
+// /remote/sessions failures.
+describe('ConnectDesktopButton — session creation errors keep specific prose (sweep D13)', () => {
+  beforeEach(() => {
+    _resetToastQueueForTests();
+    fetchMock.mockReset();
+    toastMock.mockReset();
+  });
+
+  function rigSessionCreateFailure(status: number, code: string, error: string) {
+    fetchMock.mockResolvedValueOnce(jsonRes({
+      desktopAccess: null,
+      hasRemoteAccessLauncher: false,
+      remoteAccessLaunchSkipReason: null,
+    }));
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status,
+      statusText: 'Error',
+      json: vi.fn().mockResolvedValue({ error, code }),
+    } as unknown as Response);
+  }
+
+  it('shows the specific device-not-found prose, not the generic "Not found" catalog text', async () => {
+    rigSessionCreateFailure(404, 'NOT_FOUND', 'Device not found or access denied');
+
+    render(<ConnectDesktopButton deviceId="dev-1" />);
+    fireEvent.click(screen.getByRole('button', { name: /connect desktop/i }));
+
+    await waitFor(() => {
+      expect(toastMock).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error', message: expect.stringContaining('Device not found or access denied') }),
+      );
+    });
+  });
+
+  it('shows the specific site-access-denied prose, not the generic "Access denied" catalog text', async () => {
+    rigSessionCreateFailure(403, 'ACCESS_DENIED', 'Access to this site denied');
+
+    render(<ConnectDesktopButton deviceId="dev-1" />);
+    fireEvent.click(screen.getByRole('button', { name: /connect desktop/i }));
+
+    await waitFor(() => {
+      expect(toastMock).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error', message: expect.stringContaining('Access to this site denied') }),
+      );
+    });
+  });
+});

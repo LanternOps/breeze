@@ -88,7 +88,8 @@
         "viewAll": "Alle Warnungen anzeigen"
       },
       "lastActivity": "Letzte Aktivität {{date}}",
-      "noSummary": "Zusammenfassende Zahlen sind derzeit nicht verfügbar."
+      "noSummary": "Zusammenfassende Zahlen sind derzeit nicht verfügbar.",
+      "archivedNotice": "Übersichtsdaten werden für archivierte Organisationen nicht angezeigt."
     },
     "archived": {
       "banner": "Diese Organisation ist archiviert und schreibgeschützt. Stellen Sie sie wieder her, um Änderungen vorzunehmen.",
@@ -96,6 +97,9 @@
     },
     "lifecycle": {
       "inaccessible": "Diese Organisation ist {{status}}, daher sind ihre Live-Daten nicht verfügbar. Sie können sie weiterhin in der Organisationsliste sehen.",
+      "unknownTitle": "Organisation",
+      "inaccessibleHistoryOnly": "Diese Organisation ist inaktiv, daher sind ihre Live-Daten nicht verfügbar. Ihr Berichtsverlauf kann weiterhin unten eingesehen werden.",
+      "genericStatusLabel": "inaktiv",
       "backToList": "Zurück zu den Organisationen"
     },
     "reportHistory": {

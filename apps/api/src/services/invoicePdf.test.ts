@@ -563,3 +563,27 @@ describe('BILL TO email fallback rendering (sweep paper cut #16)', () => {
     expect(text).toContain('ap@sweeporgb.example');
   });
 });
+
+// Sweep C4: an invoice's ticket label must be the human number the ticket UI
+// shows (tickets.internal_number, e.g. T-2026-0001). The legacy
+// tickets.ticket_number is NOT NULL, so COALESCE(ticket_number, internal_number)
+// always printed the random legacy id ("Ticket #QIMK3YNBYR").
+describe('invoiceTicketNumberSql', () => {
+  it('prefers internal_number and falls back to the legacy ticket_number', async () => {
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    const { invoiceTicketNumberSql } = await import('./invoicePdf');
+    const { sql: text } = new PgDialect().sqlToQuery(invoiceTicketNumberSql());
+    expect(text).toBe('COALESCE("tickets"."internal_number", "tickets"."ticket_number")');
+  });
+
+  it('invoiceLineTicketNumberSql: a draft reads live, any issued status reads the frozen ticket_label', async () => {
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    const { invoiceLineTicketNumberSql } = await import('./invoicePdf');
+    const dialect = new PgDialect();
+    expect(dialect.sqlToQuery(invoiceLineTicketNumberSql('draft')).sql)
+      .toBe('COALESCE("tickets"."internal_number", "tickets"."ticket_number")');
+    for (const status of ['sent', 'partially_paid', 'overdue', 'paid', 'void']) {
+      expect(dialect.sqlToQuery(invoiceLineTicketNumberSql(status)).sql).toBe('"invoice_lines"."ticket_label"');
+    }
+  });
+});

@@ -80,6 +80,9 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // currentPartnerId populated for SELECT-only partner-wide network_monitors
   // access. No outer portal request transaction is held.
   { method: 'GET', pattern: /^\/api\/v1\/portal\/network\/overview\/?$/ },
+  // #5861 PR 2: the per-asset list opens the same org-scoped context as the
+  // overview, so it must opt out of the portal request transaction too.
+  { method: 'GET', pattern: /^\/api\/v1\/portal\/network\/assets\/?$/ },
   // Stripe key verification — savePartnerStripeKey calls accounts.retrieve.
   { method: 'POST', pattern: /^\/api\/v1\/partner\/stripe-connect\/key\/?$/ },
   // Stripe cache lazy refresh — getPartnerStripeAccountSnapshot may call accounts.retrieve.
@@ -365,6 +368,29 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   { method: 'GET', pattern: /^\/api\/v1\/orgs\/[^/]+\/caller-verification-directory-users\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/orgs\/[^/]+\/caller-verification-directory-sync\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/orgs\/[^/]+\/contacts\/[^/]+\/caller-verification-bindings\/?$/ },
+  // #6849 — configuration-policy "run now" patch-job creation calls
+  // enqueuePatchJob (BullMQ `Queue.add`, a Redis round-trip) inside the
+  // handler. Under the ambient request transaction that enqueue could START
+  // before the new patch_jobs row committed: the execute-patch-job worker
+  // reads its own transaction, still sees no row, logs "not found", and
+  // finishes. The row is stranded `scheduled` until the #1733 reconcile sweep
+  // re-enqueues it ~2 minutes later (a same-shape, lower-impact race than
+  // #6632/#6848, filed separately rather than widen that PR). The handler
+  // writes the job row(s) in a short withAuthDbAccessContext block and
+  // enqueues each one strictly after that block commits.
+  { method: 'POST', pattern: /^\/api\/v1\/configuration-policies\/[^/]+\/patch-job\/?$/ },
+  // #6593 — Gmail inbound connect. createGmailConnection reads the org + Google
+  // Workspace credential in short withSystemDbAccessContext blocks, then makes a
+  // domain-wide-delegation probe to Google (Gmail history + OpenID identity, a
+  // multi-hundred-ms round trip) BETWEEN those blocks, then writes the connected
+  // row in a final short block. Under the auth middleware's ambient request
+  // transaction that Google probe runs inside a held pooled connection — the #1105
+  // pool-poison class (a hang at concurrency >= pool size). runOutsideDbContext in
+  // the service only swaps the ALS proxy; it cannot close the outer transaction, so
+  // the route must own its context. (Only the Gmail connect makes an outbound call
+  // at connect time; the Microsoft /connect builds a consent URL with no server-side
+  // Graph call, so it is not listed.)
+  { method: 'POST', pattern: /^\/api\/v1\/tickets\/mailbox\/connect\/gmail\/?$/ },
 ];
 
 /**

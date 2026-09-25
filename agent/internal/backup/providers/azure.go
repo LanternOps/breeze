@@ -88,6 +88,15 @@ func (a *AzureProvider) UploadContext(ctx context.Context, localPath, remotePath
 
 // Download retrieves a file from Azure Blob Storage.
 func (a *AzureProvider) Download(remotePath, localPath string) error {
+	return a.DownloadContext(context.Background(), remotePath, localPath)
+}
+
+// DownloadContext retrieves a file from Azure Blob Storage. Cancelling ctx
+// aborts the in-progress transfer.
+func (a *AzureProvider) DownloadContext(ctx context.Context, remotePath, localPath string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if remotePath == "" {
 		return errors.New("remote path is required")
 	}
@@ -114,8 +123,7 @@ func (a *AzureProvider) Download(remotePath, localPath string) error {
 		"blob", remotePath,
 	)
 
-	ctx := context.Background()
-	if _, err := client.DownloadFile(ctx, a.containerName, remotePath, file, nil); err != nil {
+	if _, err := client.DownloadFile(ctx, a.containerName, remotePath, file, azureDownloadFileOptions(ctx)); err != nil {
 		closeErr := file.Close()
 		if closeErr != nil {
 			slog.Warn("failed to close file after download error", "error", closeErr.Error())
@@ -260,4 +268,30 @@ func (a *AzureProvider) getClient() (*azblob.Client, error) {
 
 	a.client = client
 	return a.client, nil
+}
+
+// azureDownloadFileOptions forwards a download-progress callback on ctx (see
+// WithDownloadProgress) to the Azure SDK, which reports a running total
+// across its parallel range downloads. It returns nil, the SDK default, when
+// nobody is watching.
+func azureDownloadFileOptions(ctx context.Context) *azblob.DownloadFileOptions {
+	fn := downloadProgressFunc(ctx)
+	if fn == nil {
+		return nil
+	}
+	var mu sync.Mutex
+	var reported int64
+	return &azblob.DownloadFileOptions{
+		Progress: func(total int64) {
+			mu.Lock()
+			delta := total - reported
+			if delta > 0 {
+				reported = total
+			}
+			mu.Unlock()
+			if delta > 0 {
+				fn(delta)
+			}
+		},
+	}
 }

@@ -71,7 +71,6 @@ const ROOT_ALLOWLIST: Record<string, string> = {
   // on a pulled image. Threading them into the web `environment:` block would be
   // misleading, not functional.
   PUBLIC_RELEASE_VERSION: 'web build-time (baked into the prebuilt web image)',
-  PUBLIC_TICKET_MAILBOX_APP_ID: 'web build-time PUBLIC_ var (baked into the prebuilt web image)',
   PUBLIC_DOCS_URL: 'web build-time PUBLIC_ var (apps/web/astro.config.mjs — baked into the prebuilt web image)',
   ENABLE_SENTRY_SMOKE: 'web build/SSR smoke flag (baked into the prebuilt web image)',
   SENTRY_DSN_WEB_SERVER: 'web SSR Sentry DSN (baked into the prebuilt web image)',

@@ -48,6 +48,41 @@ describe('ApplyDrawer', () => {
     expect((screen.getByTestId('fleet-design-apply-drawer-confirm') as HTMLButtonElement).disabled).toBe(true);
   });
 
+  // D8 (v0.116.0 sweep): the drawer hardcoded pct:100 for every function
+  // instead of reading the report's actual confidence, and "1 rules"/"1
+  // watches" was not pluralized.
+  it('shows the real confidence from the report and pluralizes watch/rule counts (sweep D8)', async () => {
+    const preview: FleetDesignApplyPreview = {
+      ...EMPTY_PREVIEW,
+      functions: [
+        { functionKey: 'workstation', label: 'Workstation', groupId: null, groupName: 'Workstation', deviceCount: 3, devicesAdded: [], devicesRemoved: [], keptManual: 0, missingDevices: [] },
+      ],
+      policies: [
+        { functionKey: 'workstation', policyName: 'Fleet Design: Workstation', watchCount: 1, ruleCount: 1, displaces: [] },
+      ],
+    };
+    previewApplyMock.mockResolvedValue(jsonResponse(preview));
+    const base = { ...EMPTY_BASE, functions: ['workstation'] };
+    render(
+      <ApplyDrawer
+        open
+        reportRunId="run-1"
+        approvalBase={base}
+        onClose={vi.fn()}
+        onApplied={vi.fn()}
+        functionConfidence={{ workstation: 0.62 }}
+      />,
+    );
+
+    await waitFor(() => expect(previewApplyMock).toHaveBeenCalled());
+    expect(screen.getByText(/62% confidence/)).toBeTruthy();
+    expect(screen.queryByText(/100% confidence/)).toBeNull();
+    expect(screen.getByText(/1 watch\b/)).toBeTruthy();
+    expect(screen.getByText(/1 rule\b/)).toBeTruthy();
+    expect(screen.queryByText(/1 rules/)).toBeNull();
+    expect(screen.queryByText(/1 watches/)).toBeNull();
+  });
+
   it('shows displacements and keeps Confirm disabled until every one is accepted', async () => {
     const preview: FleetDesignApplyPreview = {
       ...EMPTY_PREVIEW,

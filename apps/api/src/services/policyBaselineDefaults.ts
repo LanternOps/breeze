@@ -14,6 +14,7 @@
 // service into pamSettings/helpers test suites (#1725 PR review).
 import { CONFIG_FEATURE_TYPES, type ConfigFeatureType } from './configFeatureTypes';
 import type { RemoteAccessSettings } from './remoteAccessPolicy';
+import { HARDWARE_MONITORING_DEFAULTS } from '@breeze/shared';
 
 export interface BaselineEntry {
   featureType: ConfigFeatureType;
@@ -59,7 +60,7 @@ export function getPamBaseline(): { uacInterceptionEnabled: boolean } {
 // label + behavior + applied/inlineSettings for every feature type. Order
 // follows CONFIG_FEATURE_TYPES. "Not enforced" entries describe the real-world
 // effect of having no policy.
-const NOT_ENFORCED: Record<Exclude<ConfigFeatureType, 'remote_access' | 'pam'>, { label: string; behavior: string }> = {
+const NOT_ENFORCED: Record<Exclude<ConfigFeatureType, 'remote_access' | 'pam' | 'hardware_monitoring'>, { label: string; behavior: string }> = {
   patch:             { label: 'Patches',            behavior: 'Not enforced — no patch deployments are created from policy.' },
   alert_rule:        { label: 'Alerts',             behavior: 'Not enforced — no policy alert rules fire.' },
   backup:            { label: 'Backup',             behavior: 'Not enforced — no backups are scheduled.' },
@@ -98,6 +99,15 @@ export function getPolicyBaselineDefaults(): BaselineEntry[] {
         applied: true,
         inlineSettings: getPamBaseline(),
         behavior: 'UAC elevation capture is OFF by default (opt-in via a policy).',
+      };
+    }
+    if (ft === 'hardware_monitoring') {
+      return {
+        featureType: ft,
+        label: 'Hardware Monitoring',
+        applied: true,
+        inlineSettings: { ...HARDWARE_MONITORING_DEFAULTS },
+        behavior: 'Hardware collection is ON by default: RAID every 10 minutes and disk health every 60 minutes.',
       };
     }
     const meta = NOT_ENFORCED[ft];

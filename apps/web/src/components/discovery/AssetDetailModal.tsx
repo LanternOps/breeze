@@ -280,8 +280,13 @@ export default function AssetDetailModal({ open, asset, loading = false, onClose
                   data-testid="asset-modal-same-device-link"
                   className="text-sm text-primary hover:underline"
                 >
-                  {t('assetDetailModal.sameDeviceAs', { name: asset.linkedDeviceName || t('common:states.unknown') })}
+                  {asset.linkSource === 'agent_report'
+                    ? t('devices:hardwareHealth.bmcHost', { name: asset.linkedDeviceName || t('common:states.unknown') })
+                    : t('assetDetailModal.sameDeviceAs', { name: asset.linkedDeviceName || t('common:states.unknown') })}
                 </a>
+                {asset.linkSource === 'agent_report' && <p className="text-xs text-muted-foreground" data-testid="asset-modal-link-provenance">
+                  {t('devices:hardwareHealth.bmcAgentReport')}
+                </p>}
               </div>
             )}
 

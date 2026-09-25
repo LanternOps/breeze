@@ -24,6 +24,7 @@ import {
   theadRowClass,
   rowClass,
 } from './ui';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 interface OverviewData {
   active: ElevationRequest[];
@@ -33,6 +34,7 @@ interface OverviewData {
 
 export default function PamOverviewTab({ liveTick }: { liveTick: number }) {
   const { t } = useTranslation('security');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [data, setData] = useState<OverviewData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -52,7 +54,7 @@ export default function PamOverviewTab({ liveTick }: { liveTick: number }) {
             return;
           }
           throw new Error(
-            t('pamPamOverviewTab.errors.loadWithStatus', {
+            stableT('pamPamOverviewTab.errors.loadWithStatus', {
               defaultValue: 'Failed to load overview (HTTP {{status}})',
               status: res.status,
             }),
@@ -74,12 +76,12 @@ export default function PamOverviewTab({ liveTick }: { liveTick: number }) {
       setError(
         err instanceof Error
           ? err.message
-          : t('pamPamOverviewTab.errors.load', { defaultValue: 'Failed to load overview' }),
+          : stableT('pamPamOverviewTab.errors.load', { defaultValue: 'Failed to load overview' }),
       );
     } finally {
       if (!signal?.aborted) setLoading(false);
     }
-  }, [t]);
+  }, [stableT]);
 
   useEffect(() => {
     const controller = new AbortController();

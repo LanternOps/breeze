@@ -762,6 +762,7 @@ function compactFleetPayload(payload: Record<string, unknown>, stats: CompactSta
     'policies', 'deployments', 'patches', 'groups', 'windows',
     'automations', 'rules', 'channels', 'reports', 'runs',
     'devices', 'members', 'log', 'data', 'activeWindows',
+    'history',
   ];
   for (const key of listKeys) {
     if (Array.isArray(output[key])) {

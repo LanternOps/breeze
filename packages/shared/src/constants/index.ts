@@ -16,6 +16,10 @@ export * from './agentFileTransfer';
 // consent is compared against (#5511 D2). Leaf module, no imports.
 export * from './hpCmsl';
 
+// Google Workspace DWD OAuth scopes, shared by the API and the web integration
+// page so the list an admin authorizes cannot drift. Leaf module, no imports.
+export * from './googleDwdScopes';
+
 // OS Types
 export const OS_TYPES = ['windows', 'macos', 'linux'] as const;
 
@@ -164,3 +168,6 @@ export const SESSION_EXPIRY_HOURS = 24;
 
 // Ticket comment attachments (W08 #3902)
 export * from './ticketAttachments';
+
+// Hardware & RAID monitoring (W01 #6856)
+export * from './hardwareHealth';

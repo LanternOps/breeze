@@ -43,6 +43,7 @@ export const SCRIPT_BUILDER_TOOL_TIERS: Record<string, AiToolTier> = {
   apply_script_metadata: 1,
   query_devices: 1,
   get_device_details: 1,
+  get_device_hardware_health: 1,
   manage_alerts: 1,
   list_scripts: 1,
   get_script_details: 1,
@@ -306,6 +307,13 @@ export function buildScriptBuilderTools(
       'Get device details including hardware, OS, network, and installed software.',
       { deviceId: uuid },
       makeExistingHandler('get_device_details', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_device_hardware_health',
+      'Get current hardware health, components, collectors and optional recent events.',
+      { deviceId: uuid, includeEvents: z.boolean().optional() },
+      makeExistingHandler('get_device_hardware_health', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

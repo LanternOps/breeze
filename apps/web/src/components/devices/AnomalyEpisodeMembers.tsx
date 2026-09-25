@@ -5,11 +5,13 @@ import { fetchWithAuth } from '../../stores/auth';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { formatMetricValue } from './anomalyEpisodeSentence';
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type AnomalyEpisodeMembersProps = { deviceId: string; episodeId: string };
 
 export default function AnomalyEpisodeMembers({ deviceId, episodeId }: AnomalyEpisodeMembersProps) {
   const { t } = useTranslation('devices');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [members, setMembers] = useState<MetricAnomalyEpisodeMemberDto[] | null>(null);
   const [truncated, setTruncated] = useState(false);
   const [error, setError] = useState<string>();
@@ -27,11 +29,11 @@ export default function AnomalyEpisodeMembers({ deviceId, episodeId }: AnomalyEp
         setTruncated(json?.data?.membersTruncated === true);
       } catch (err) {
         console.warn('[AnomalyEpisodeMembers] could not load episode members', err);
-        if (!cancelled) setError(t('deviceAnomaliesPanel.failedToLoadDetections'));
+        if (!cancelled) setError(stableT('deviceAnomaliesPanel.failedToLoadDetections'));
       }
     })();
     return () => { cancelled = true; };
-  }, [deviceId, episodeId, t]);
+  }, [deviceId, episodeId, stableT]);
 
   if (error) {
     return (

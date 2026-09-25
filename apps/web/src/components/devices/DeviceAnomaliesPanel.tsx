@@ -3,11 +3,13 @@ import { RefreshCw, TrendingUp } from 'lucide-react';
 import type { MetricAnomalyEpisodeDto, MetricAnomalyEpisodeListResponse } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
-import { useTranslation } from 'react-i18next';
+import { useOrgStore } from '../../stores/orgStore';
+import { Trans, useTranslation } from 'react-i18next';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import AnomalyEpisodeCard from './AnomalyEpisodeCard';
 import { formatMetricValue } from './anomalyEpisodeSentence';
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type DeviceAnomaliesPanelProps = {
   deviceId: string;
@@ -34,7 +36,9 @@ export default function DeviceAnomaliesPanel({
   deviceId, compact = false, focusedAnomalyId,
 }: DeviceAnomaliesPanelProps) {
   const { t } = useTranslation('devices');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const mlFlags = useMlFeatureFlags();
+  const currentOrgId = useOrgStore((state) => state.currentOrgId);
   const [filter, setFilter] = useState<Filter>('open');
   const [episodes, setEpisodes] = useState<MetricAnomalyEpisodeDto[]>([]);
   // W02 resolves `ref` (episode id OR member anomaly id) to the episode to ring.
@@ -77,7 +81,7 @@ export default function DeviceAnomaliesPanel({
       const params = new URLSearchParams({ status: effectiveFilter, limit: String(limit) });
       if (focusedAnomalyId) params.set('ref', focusedAnomalyId);
       const response = await fetchWithAuth(`/devices/${deviceId}/anomaly-episodes?${params.toString()}`);
-      if (!response.ok) throw new Error(t('deviceAnomaliesPanel.failedToLoadMetricAnomalies'));
+      if (!response.ok) throw new Error(stableT('deviceAnomaliesPanel.failedToLoadMetricAnomalies'));
       const json = (await response.json()) as Partial<MetricAnomalyEpisodeListResponse>;
       const resolved = typeof json?.focusedEpisodeId === 'string' ? json.focusedEpisodeId : null;
       setEpisodes(Array.isArray(json?.data) ? json.data : []);
@@ -90,12 +94,12 @@ export default function DeviceAnomaliesPanel({
     } catch (err) {
       console.warn('[DeviceAnomaliesPanel] episode list fetch failed', { silent: !!options.silent }, err);
       if (!options.silent) {
-        setError(err instanceof Error ? err.message : t('deviceAnomaliesPanel.failedToLoadMetricAnomalies'));
+        setError(err instanceof Error ? err.message : stableT('deviceAnomaliesPanel.failedToLoadMetricAnomalies'));
       }
     } finally {
       if (!options.silent) setLoading(false);
     }
-  }, [deviceId, effectiveFilter, limit, focusedAnomalyId, loadLegacyRow, t]);
+  }, [deviceId, effectiveFilter, limit, focusedAnomalyId, loadLegacyRow, stableT]);
 
   const checkHasClosed = useCallback(async () => {
     try {
@@ -193,6 +197,22 @@ export default function DeviceAnomaliesPanel({
         </div>
         <div className="mt-5 rounded-md border border-dashed p-6 text-center">
           <p className="text-sm font-medium">{t('deviceAnomaliesPanel.anomalyDetectionDisabled')}</p>
+          {currentOrgId && (
+            <p className="mt-1 text-sm text-muted-foreground">
+              <Trans
+                i18nKey="deviceAnomaliesPanel.anomalyDetectionDisabledHint"
+                t={t}
+                components={{
+                  orgLink: (
+                    <a
+                      href={`/settings/organizations/${currentOrgId}#ai`}
+                      className="underline hover:text-foreground"
+                    />
+                  ),
+                }}
+              />
+            </p>
+          )}
         </div>
       </div>
     );

@@ -171,6 +171,23 @@ export function processStreamEvent(
       return currentAssistantId;
     }
 
+    // Sweep E6: `tool_use_start`'s `input` is always `{}` (the SDK hasn't
+    // finished streaming the tool's arguments yet at that point). This event
+    // arrives once they're known and fills in the SAME message row, so the
+    // live tool card's label (aiToolLabel, which needs `input.action` to
+    // tell a read from a write) matches what a history reload of this exact
+    // row would compute.
+    case 'tool_use_input': {
+      set((s) => ({
+        messages: s.messages.map((m) =>
+          m.role === 'tool_use' && m.toolUseId === event.toolUseId
+            ? { ...m, toolInput: Object.keys(event.input).length > 0 ? event.input : undefined }
+            : m
+        )
+      }));
+      return currentAssistantId;
+    }
+
     case 'tool_result': {
       const resultMsg: AiMessage = {
         id: `result-${event.toolUseId}`,

@@ -201,6 +201,19 @@ func (p *SystemWingetProvider) isUserScopeOnly(patchID string) bool {
 	return ok
 }
 
+// wingetExitUpdateNotApplicable is APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE
+// (0x8A15002B): `winget install` found the package already installed and no
+// newer version in the configured sources.
+const wingetExitUpdateNotApplicable uint32 = 0x8A15002B
+
+// isWingetUpdateNotApplicable reports whether a winget exit code is
+// UPDATE_NOT_APPLICABLE. Compared as uint32 because the Windows exit code is a
+// DWORD that surfaces as 2316632107 or, if narrowed through int32 anywhere,
+// -1978335189. The exit code — not stdout text — is the contract (#6910).
+func isWingetUpdateNotApplicable(code int) bool {
+	return uint32(code) == wingetExitUpdateNotApplicable
+}
+
 func (p *SystemWingetProvider) Install(patchID string) (InstallResult, error) {
 	if !validWingetPkgID.MatchString(patchID) {
 		return InstallResult{}, fmt.Errorf("invalid winget package ID: %q", patchID)
@@ -213,6 +226,16 @@ func (p *SystemWingetProvider) Install(patchID string) (InstallResult, error) {
 		return InstallResult{}, fmt.Errorf("winget install failed: %w", err)
 	}
 	combined := strings.TrimSpace(stdout + "\n" + stderr)
+	if isWingetUpdateNotApplicable(code) {
+		// Already at the newest available version: nothing to do (#6910).
+		return InstallResult{
+			PatchID:    patchID,
+			Provider:   "winget",
+			Message:    combined,
+			Skipped:    true,
+			SkipReason: SkipReasonAlreadyCurrent,
+		}, nil
+	}
 	if code != 0 {
 		return InstallResult{}, fmt.Errorf("winget install failed (exit %d): %s", code, combined)
 	}

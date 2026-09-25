@@ -88,7 +88,8 @@
         "viewAll": "Visualizza tutti gli avvisi"
       },
       "lastActivity": "Ultima attività {{date}}",
-      "noSummary": "I totali di riepilogo non sono al momento disponibili."
+      "noSummary": "I totali di riepilogo non sono al momento disponibili.",
+      "archivedNotice": "I dati di riepilogo non vengono mostrati per le organizzazioni archiviate."
     },
     "archived": {
       "banner": "Questa organizzazione è archiviata ed è di sola lettura. Ripristinala per apportare modifiche.",
@@ -96,6 +97,9 @@
     },
     "lifecycle": {
       "inaccessible": "Questa organizzazione è {{status}}, quindi i suoi dati in tempo reale non sono disponibili. Puoi comunque vederla nell'elenco delle organizzazioni.",
+      "unknownTitle": "Organizzazione",
+      "inaccessibleHistoryOnly": "Questa organizzazione è inattiva, quindi i suoi dati in tempo reale non sono disponibili. La cronologia dei report è comunque consultabile qui sotto.",
+      "genericStatusLabel": "inattiva",
       "backToList": "Torna alle organizzazioni"
     },
     "reportHistory": {

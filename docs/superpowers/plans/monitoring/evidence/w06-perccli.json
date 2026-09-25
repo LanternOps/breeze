@@ -1,0 +1,24 @@
+{
+  "source": "perccli",
+  "status": "fixture-only",
+  "parserSuite": "passed",
+  "parserSuiteRuns": [
+    "go test -race ./internal/collectors/hwhealth/... on darwin/arm64 (ok)",
+    "go test -race ./internal/collectors/hwhealth/... on the linux/arm64 lab VM (ok)",
+    "go test ./internal/collectors/hwhealth/... native windows/amd64 on the lab VM (ok, no -race: no cgo toolchain)"
+  ],
+  "files": [],
+  "syntheticFixtures": [
+    "agent/internal/collectors/hwhealth/testdata/perccli/64-drive.json",
+    "agent/internal/collectors/hwhealth/testdata/perccli/degraded.json",
+    "agent/internal/collectors/hwhealth/testdata/perccli/failed.json",
+    "agent/internal/collectors/hwhealth/testdata/perccli/missing-member.json",
+    "agent/internal/collectors/hwhealth/testdata/perccli/multi-controller.json",
+    "agent/internal/collectors/hwhealth/testdata/perccli/optimal.json",
+    "agent/internal/collectors/hwhealth/testdata/perccli/predictive.json",
+    "agent/internal/collectors/hwhealth/testdata/perccli/rebuilding-with-progress.json",
+    "agent/internal/collectors/hwhealth/testdata/perccli/truncated.json",
+    "agent/internal/collectors/hwhealth/testdata/perccli/unrecognized-state.json"
+  ],
+  "reason": "No authorized capture target with this vendor controller/tool existed for the W06 lab run; no vendor tool was installed and no transcript was fabricated. Coverage stays fixture-only until a real sanitized capture lands."
+}

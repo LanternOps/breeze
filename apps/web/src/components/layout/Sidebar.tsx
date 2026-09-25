@@ -44,6 +44,7 @@ import {
   Download,
   ClipboardCheck,
   ScanSearch,
+  ArrowRightLeft,
   Usb,
   MessagesSquare,
   Ticket,
@@ -413,6 +414,9 @@ export const navSections: NavSection[] = [
       // as tabs. Replaces the standalone Deprecations entry; its old settings
       // URL now 301-redirects to the Deprecations tab.
       { name: 'System', labelKey: 'nav.system', href: '/admin/system', icon: ServerCog, platformAdminOnly: true },
+      // D4 (v0.116.0 sweep): the page existed (routes/admin/monitorConversion.ts,
+      // platform-admin-gated) with no nav entry to reach it.
+      { name: 'Monitor Conversion', labelKey: 'nav.monitorConversion', href: '/admin/monitor-conversion', icon: ArrowRightLeft, platformAdminOnly: true },
     ],
   },
 ];

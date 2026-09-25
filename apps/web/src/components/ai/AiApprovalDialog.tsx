@@ -16,6 +16,7 @@ import { navigateTo } from "@/lib/navigation";
 import { useRunContextLabel } from "../common/RunContext";
 import ScriptProposalApprovalCard from "./ScriptProposalApprovalCard";
 import type { AiApprovalScope, AiScriptRunContext } from "@breeze/shared";
+import { useStableT } from '@/lib/i18n/useStableT';
 
 // Fallback only: the product default (also `AI_APPROVAL_TIMEOUT_DEFAULT_MINUTES`
 // in @breeze/shared) for an approval card whose server didn't send
@@ -276,6 +277,7 @@ export default function AiApprovalDialog({
   onIntentDecided,
 }: AiApprovalDialogProps) {
   const { t } = useTranslation("ai");
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   // #6475: the org's configured window replaces the hard-coded 5 minutes when
   // the server sends one; an older API build that doesn't send it yet keeps
   // the AUTO_DENY_MS fallback.
@@ -443,7 +445,7 @@ export default function AiApprovalDialog({
           decideStateRef.current === "idle" ||
           decideStateRef.current === "needs_device"
         ) {
-          setIntentError(t("aiApprovalDialog.expired"));
+          setIntentError(stableT("aiApprovalDialog.expired"));
           setIntentDecideState("unavailable");
         }
       } else {
@@ -451,7 +453,7 @@ export default function AiApprovalDialog({
       }
     }, 1000);
     return () => clearInterval(interval);
-  }, [onReject, intentBacked, canSelfDecide, t, intentExpiresAt, approvalExpiresAt, windowMs]);
+  }, [onReject, intentBacked, canSelfDecide, stableT, intentExpiresAt, approvalExpiresAt, windowMs]);
 
   const minutes = Math.floor(remainingMs / 60000);
   const seconds = Math.floor((remainingMs % 60000) / 1000);

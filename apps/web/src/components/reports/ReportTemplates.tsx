@@ -79,6 +79,7 @@ import { isBusinessReportType, useCanUseBusinessReportType } from './businessRep
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 type TemplateTone = {
   iconBg: string;
@@ -366,6 +367,15 @@ const defaultTemplates: ReportTemplate[] = [
   },
 ];
 
+// `reports.reportTemplates.templates.<id>.{name,description}` only exists for
+// these curated ids. A server-synced template (a saved report, `extras` in
+// `mergeTemplates`, or one that matched a curated card by name but kept its
+// own saved-report id) has no such key, so looking it up unconditionally
+// fires i18next's `missingKeyHandler` on every render — console noise
+// locally, a Sentry warning in prod (sweep B2). Gate the lookup on the id
+// actually being curated.
+const defaultTemplateIds = new Set(defaultTemplates.map(template => template.id));
+
 const typeAliases: Record<string, TemplateReportType> = {
   device_health: 'performance',
   alert_summary: 'alert_summary'
@@ -568,6 +578,7 @@ const TemplateSection = ({
 
 export default function ReportTemplates() {
   const { t } = useTranslation('reports');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { currentOrgId } = useOrgStore();
   const jwtClaims = useJwtClaims();
   const canUseBusinessReportType = useCanUseBusinessReportType();
@@ -616,7 +627,7 @@ export default function ReportTemplates() {
     try {
       const response = await fetchWithAuth('/reports/templates');
       if (!response.ok) {
-        throw new Error(t('reports.reportTemplates.errors.fetchTemplates'));
+        throw new Error(stableT('reports.reportTemplates.errors.fetchTemplates'));
       }
       const data = await response.json();
       const items = asList<TemplateApiItem>(data, 'templates');
@@ -624,11 +635,11 @@ export default function ReportTemplates() {
         setTemplates(mergeTemplates(items));
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('reports.reportTemplates.errors.loadTemplates'));
+      setError(err instanceof Error ? err.message : stableT('reports.reportTemplates.errors.loadTemplates'));
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [stableT]);
 
   useEffect(() => {
     fetchTemplates();
@@ -835,9 +846,13 @@ export default function ReportTemplates() {
   const getScheduleLabel = (schedule: ReportSchedule) => t(/* i18n-dynamic */ `reports.reportTemplates.schedules.${schedule}`);
   const getFormatLabel = (format: ReportFormat) => t(/* i18n-dynamic */ `reports.reportTemplates.formats.${format}`);
   const getTemplateDisplayName = (template: ReportTemplate) =>
-    t(/* i18n-dynamic */ `reports.reportTemplates.templates.${template.id}.name`, { defaultValue: template.name });
+    defaultTemplateIds.has(template.id)
+      ? t(/* i18n-dynamic */ `reports.reportTemplates.templates.${template.id}.name`, { defaultValue: template.name })
+      : template.name;
   const getTemplateDescription = (template: ReportTemplate) =>
-    t(/* i18n-dynamic */ `reports.reportTemplates.templates.${template.id}.description`, { defaultValue: template.description });
+    defaultTemplateIds.has(template.id)
+      ? t(/* i18n-dynamic */ `reports.reportTemplates.templates.${template.id}.description`, { defaultValue: template.description })
+      : template.description;
 
   // The Business group is MSP-internal (audience: msp_staff) and every type in
   // it 403s for an org-scope caller — so hide the section entirely unless the

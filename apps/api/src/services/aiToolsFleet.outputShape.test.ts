@@ -37,7 +37,7 @@ const PATCH_ROW = {
 } as const;
 const auth = () => ({
   scope: 'organization', partnerId: null, orgId: 'o1', accessibleOrgIds: ['o1'],
-  orgCondition: () => undefined, allowedSiteIds: null, allowedDeviceIds: null,
+  orgCondition: () => undefined, allowedSiteIds: undefined, allowedDeviceIds: null,
   user: { id: 'u1' },
 }) as never;
 

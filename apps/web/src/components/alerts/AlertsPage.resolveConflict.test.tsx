@@ -38,9 +38,25 @@ vi.mock('../filters/DeviceFilterBar', () => ({
 }));
 
 // Pin the org-scope selector so the page doesn't try to read a real store.
+// Fields beyond orgScope/currentOrgId satisfy useOrgScope() (#4147 gate): a
+// non-null currentOrgId alone resolves its `status` to 'resolved' immediately.
 vi.mock('../../stores/orgStore', () => ({
-  useOrgStore: (selector: (s: { orgScope: string; currentOrgId: string | null }) => unknown) =>
-    selector({ orgScope: 'current', currentOrgId: 'org-1' })
+  useOrgStore: (selector: (s: {
+    orgScope: string;
+    currentOrgId: string | null;
+    allOrgs: boolean;
+    error: string | null;
+    organizationsLoaded: boolean;
+    organizations: unknown[];
+  }) => unknown) =>
+    selector({
+      orgScope: 'current',
+      currentOrgId: 'org-1',
+      allOrgs: false,
+      error: null,
+      organizationsLoaded: true,
+      organizations: [],
+    })
 }));
 
 // AlertDetails renders this panel, which fires its own remediation-suggestions

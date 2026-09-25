@@ -200,7 +200,18 @@
     },
     "title": "Netzwerkerkennung",
     "toasts": {
-      "scanQueued": "Erkennungsscan für „{{name}}“ in der Warteschlange"
+      "scanQueued": "Erkennungsscan für „{{name}}“ in der Warteschlange",
+      "profileCreated": "Erkennungsprofil „{{name}}“ erstellt",
+      "profileUpdated": "Erkennungsprofil „{{name}}“ aktualisiert",
+      "profileMoved": "Profil nach {{site}} verschoben.",
+      "assetsMoved_one": "{{count}} Netzwerkgerät verschoben",
+      "assetsMoved_other": "{{count}} Netzwerkgeräte verschoben",
+      "agentLinksRemoved_one": "{{count}} Agent-Verknüpfung entfernt",
+      "agentLinksRemoved_other": "{{count}} Agent-Verknüpfungen entfernt",
+      "monitorsReattached_one": "{{count}} Monitor wieder verbunden",
+      "monitorsReattached_other": "{{count}} Monitore wieder verbunden",
+      "topologyPoliciesDisabled_one": "{{count}} Topologie-Richtlinie deaktiviert",
+      "topologyPoliciesDisabled_other": "{{count}} Topologie-Richtlinien deaktiviert"
     },
     "days": {
       "monday": "Montag",
@@ -295,6 +306,12 @@
       "arp": "ARP-Suche",
       "snmp": "SNMP Sonde",
       "portScan": "TCP Port-Scan"
+    },
+    "siteMove": {
+      "notice": "Dieses Profil scannt ab jetzt vom neuen Standort aus. Bereits erkannte Geräte bleiben am aktuellen Standort, sofern Sie sie nicht verschieben.",
+      "moveAssets_one": "Auch das {{count}} von diesem Profil erkannte Netzwerkgerät an den neuen Standort verschieben",
+      "moveAssets_other": "Auch die {{count}} von diesem Profil erkannten Netzwerkgeräte an den neuen Standort verschieben",
+      "moveAssetsUnknown": "Auch die von diesem Profil erkannten Netzwerkgeräte an den neuen Standort verschieben"
     }
   },
   "discoveryProfileList": {

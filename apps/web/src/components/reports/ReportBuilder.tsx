@@ -34,6 +34,7 @@ import { FilterBuilder, DEFAULT_FILTER_FIELDS } from '../filters/FilterBuilder';
 import { FilterPreview } from '../filters/FilterPreview';
 import { useFilterPreview } from '../../hooks/useFilterPreview';
 import { useTranslation } from 'react-i18next';
+import { useStableT } from '@/lib/i18n/useStableT';
 import { isBusinessReportType } from './businessReportAccess';
 import { BUSINESS_REFUSED_CONFIG_KEYS, omitConfigKeys } from './businessReportConfig';
 
@@ -764,6 +765,9 @@ export default function ReportBuilder({
   onCancel
 }: ReportBuilderProps) {
   const { t } = useTranslation('reports');
+  // Effects use the stable translator so a locale change does not re-run them
+  // (#3632); JSX keeps the plain `t` so rendered text still re-translates.
+  const stableT = useStableT(t);
   const { currentOrgId } = useOrgStore();
   const defaultsAppliedRef = useRef(false);
   const initialType = normalizeBuilderType(defaultValues?.builderType ?? defaultValues?.type);
@@ -872,9 +876,9 @@ export default function ReportBuilder({
         )
       );
     }).catch(() => {
-      setError(t('reports.reportBuilder.recipients.loadFailed'));
+      setError(stableT('reports.reportBuilder.recipients.loadFailed'));
     });
-  }, [currentOrgId, reportId, schedule, contactRecipientsRefused, t]);
+  }, [currentOrgId, reportId, schedule, contactRecipientsRefused, stableT]);
 
   const fieldDefinitions = fieldDefinitionsByType[builderType];
   const dataSourceFields = dataSourceFieldsByType[builderType];
@@ -1011,7 +1015,7 @@ export default function ReportBuilder({
         };
 
         if (!response.ok) {
-          throw new Error(payload.error || t('reports.reportBuilder.errors.loadLivePreview'));
+          throw new Error(payload.error || stableT('reports.reportBuilder.errors.loadLivePreview'));
         }
 
         if (!mounted || previewRequestIdRef.current !== requestId) return;
@@ -1030,7 +1034,7 @@ export default function ReportBuilder({
         if (!mounted || previewRequestIdRef.current !== requestId) return;
         setLivePreviewRows([]);
         setLivePreviewSummary(null);
-        setLivePreviewError(err instanceof Error ? err.message : t('reports.reportBuilder.errors.loadLivePreview'));
+        setLivePreviewError(err instanceof Error ? err.message : stableT('reports.reportBuilder.errors.loadLivePreview'));
       } finally {
         if (!mounted || previewRequestIdRef.current !== requestId) return;
         setLivePreviewLoading(false);
@@ -1041,7 +1045,7 @@ export default function ReportBuilder({
       mounted = false;
       window.clearTimeout(timer);
     };
-  }, [builderType, currentOrgId, dataSource, defaultValues?.dateRange, defaultValues?.filters, exportFormats, filterConditions, mode, t]);
+  }, [builderType, currentOrgId, dataSource, defaultValues?.dateRange, defaultValues?.filters, exportFormats, filterConditions, mode, stableT]);
 
   const normalizedPreviewRows = useMemo(
     () => livePreviewRows.map(row => normalizePreviewRow(builderType, row)),
@@ -1758,7 +1762,14 @@ export default function ReportBuilder({
           )}
         </div>
 
-        <div className="rounded-lg border bg-card p-6 shadow-xs space-y-4">
+        {/* Dead for a business type: its own options form owns period/groupBy/etc,
+            and the submit path (handleFormSubmit above) never includes this
+            builder's dataSource/columns/filters/groupBy/chartType state in the
+            payload for isBusiness — see the businessConfig() comment on
+            ReportEditPage. Rendering these anyway is misleading (sweep #B1). */}
+        {!businessType && (
+        <>
+        <div data-testid="report-builder-generic-sections" className="rounded-lg border bg-card p-6 shadow-xs space-y-4">
           <div className="flex items-center gap-2">
             <Monitor className="h-4 w-4 text-muted-foreground" />
             <div>
@@ -2149,6 +2160,8 @@ export default function ReportBuilder({
             })}
           </div>
         </div>
+        </>
+        )}
 
         {showDelivery && (
           <div className="rounded-lg border bg-card p-6 shadow-xs space-y-5">

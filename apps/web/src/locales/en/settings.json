@@ -99,6 +99,7 @@
     "name": "Name",
     "principalDescription": "Description",
     "scopes": "Scopes",
+    "noScopes": "No scopes granted",
     "sourceCidrs": "Source IPs or CIDRs (one per line)",
     "writeScopeRestrictionsRequired": "The enrollment-keys:write scope requires an expiry date and at least one source IP or CIDR.",
     "expiresAt": "Expires at",
@@ -519,6 +520,25 @@
       "communications": "Communications",
       "branding": "Branding"
     },
+    "aiFeatures": {
+      "anomalies": {
+        "title": "Anomaly detection",
+        "description": "Statistical detection of unusual CPU, memory, disk and network behaviour on managed devices. These are the defaults for every organization; an organization can override them on its own AI tab.",
+        "enabled": "Detect anomalies",
+        "enabledDescription": "Run the anomaly detector every 10 minutes and show findings on each device's Anomalies tab.",
+        "createAlerts": "Create alerts from anomalies",
+        "createAlertsDescription": "Promote confirmed anomalies into alerts so they reach your notification routes."
+      },
+      "inheritanceNote": "Changes apply to every organization that has not set its own override.",
+      "saved": "Saved",
+      "saveFailed": "Could not change this setting",
+      "remediation": {
+        "title": "Suggested fixes",
+        "description": "AI-generated fix suggestions on the alert detail page. This is the default for every organization; an organization can override it on its own AI tab.",
+        "enabled": "Generate suggested fixes",
+        "enabledDescription": "Allow technicians to generate suggested fixes for an alert from its detail page."
+      }
+    },
     "tabs": {
       "company": {
         "label": "Company",
@@ -568,6 +588,10 @@
       "aiProvider": {
         "label": "AI Provider",
         "description": "Bring your own Anthropic key"
+      },
+      "aiFeatures": {
+        "label": "AI Features",
+        "description": "Anomaly detection and suggested fixes defaults"
       },
       "branding": {
         "label": "Branding",
@@ -963,6 +987,16 @@
     }
   },
   "m365Mailbox": {
+    "consentNotCompleted": "Consent not completed",
+    "consentNotCompletedHint": "The Microsoft sign-in for this mailbox was not finished in time, so it will not connect on its own. Retry consent, or disconnect it.",
+    "retryConsent": "Retry consent",
+    "redirectUriLabel": "Redirect URI to register on the Microsoft Entra app",
+    "redirectUriHint": "It must match exactly, and you must open Breeze at this same scheme and host when you connect, or the sign-in cannot complete.",
+    "callbackReason": {
+      "binding_mismatch": "Microsoft 365 connection failed: the browser came back without its sign-in cookie. Open Breeze at the same address as the redirect URI (scheme and host must match), allow cookies, and try again.",
+      "invalid_callback": "Microsoft 365 connection failed: Microsoft returned an unexpected response. Try connecting again.",
+      "expired": "Microsoft 365 connection failed: the sign-in link expired or was already used. Try connecting again."
+    },
     "connected": "Mailbox connected",
     "consentGranted": "Consent granted — scope the mailbox with the Application Access Policy below, then Re-test",
     "consentAttention": "Mailbox consent requires administrator attention.",
@@ -991,6 +1025,38 @@
     "displayName": "Display name (optional)",
     "namePlaceholder": "Support",
     "connect": "Connect"
+  },
+  "gmailMailbox": {
+    "title": "Google Workspace support mailbox",
+    "description": "Connect a Google Workspace mailbox so customer email becomes tickets. Domain-wide delegation is used, so there are no MX or forwarding changes and no OAuth redirect.",
+    "connectHint": "The mailbox is read with the selected organization's Google Workspace service-account connection, so that organization holds its credential. For a partner-owned mailbox (such as your own help@), pick the organization whose Workspace contains the mailbox. Enter the shared support mailbox to connect it.",
+    "status": {
+      "pending_consent": "Pending",
+      "connected": "Connected",
+      "error": "Needs attention",
+      "reauth_required": "Re-auth required",
+      "disabled": "Disabled"
+    },
+    "reauthRequired": "Gmail polling is paused for this mailbox. Reconnect it to resume: the service account may need re-authorization, its Google Workspace connection may be inactive, or the mailbox may now resolve to a different Google account.",
+    "reconnect": "Reconnect",
+    "reconnectNoOrg": "This connection is missing its organization and cannot be reconnected from here.",
+    "disconnect": "Disconnect",
+    "disconnected": "Mailbox disconnected",
+    "disconnectFailed": "Disconnect failed.",
+    "connected": "Mailbox connected",
+    "connectFailed": "Could not connect the Gmail mailbox.",
+    "empty": "No Gmail mailbox connected yet.",
+    "loadError": "Could not load Gmail mailbox connections. Refresh to try again.",
+    "orgsLoadError": "Could not load organizations. Refresh to try again.",
+    "organization": "Organization",
+    "selectOrg": "Select an organization",
+    "address": "Mailbox address",
+    "addressPlaceholder": "support@example.com",
+    "displayName": "Display name (optional)",
+    "namePlaceholder": "Support",
+    "connect": "Connect",
+    "credentialOrg": "Credential: {{org}}'s Google Workspace connection",
+    "credentialOrgUnknown": "an organization you cannot view"
   },
   "orgApprovalSecurityTab": {
     "title": "Approval Security",
@@ -4654,7 +4720,32 @@
       "externalProcessing": "Allow sandboxed AI analysis",
       "externalProcessingDescription": "Lets AI analysis runs execute code for this organization in an isolated sandbox with no network access, hosted in this organization's region. Off by default.",
       "externalProcessingSaved": "Saved",
-      "externalProcessingSaveFailed": "Could not change this setting"
+      "externalProcessingSaveFailed": "Could not change this setting",
+      "mlFeatures": {
+        "title": "Anomaly detection",
+        "description": "Statistical detection of unusual CPU, memory, disk and network behaviour on this organization's devices. Blank means the partner default applies.",
+        "anomaliesEnabled": "Detect anomalies",
+        "anomaliesEnabledDescription": "Run the anomaly detector every 10 minutes and show findings on each device's Anomalies tab.",
+        "createAlerts": "Create alerts from anomalies",
+        "createAlertsDescription": "Promote confirmed anomalies into alerts so they reach your notification routes.",
+        "inherit": "Inherit",
+        "inheritOn": "Inherit (on, {{from}})",
+        "inheritOff": "Inherit (off, {{from}})",
+        "fromPartner": "partner setting",
+        "fromDefault": "platform default",
+        "on": "On",
+        "off": "Off",
+        "saved": "Saved",
+        "saveFailed": "Could not change this setting",
+        "killSwitch": "Anomaly detection is switched off for the whole platform by the operator. These settings take effect when it is turned back on.",
+        "remediation": {
+          "title": "Suggested fixes",
+          "description": "AI-generated fix suggestions on this organization's alerts. Blank means the partner default applies.",
+          "enabled": "Generate suggested fixes",
+          "enabledDescription": "Allow technicians to generate suggested fixes for an alert from its detail page.",
+          "killSwitch": "Suggested fixes are switched off for the whole platform by the operator. This setting takes effect when they are turned back on."
+        }
+      }
     },
     "breadcrumbs": {
       "settings": "Settings",

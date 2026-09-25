@@ -124,14 +124,18 @@ export function IdentityCard({
                   data-testid="network-detail-linked-device"
                   className="text-primary hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                 >
-                  {t('networkDeviceDetailPage.sameDeviceAs', {
-                    name: asset.linkedDeviceName || t('common:states.unknown'),
-                  })}
+                  {asset.linkSource === 'agent_report'
+                    ? t('hardwareHealth.bmcHost', { name: asset.linkedDeviceName || t('common:states.unknown') })
+                    : t('networkDeviceDetailPage.sameDeviceAs', {
+                        name: asset.linkedDeviceName || t('common:states.unknown'),
+                      })}
                 </a>
                 <span className="text-xs text-muted-foreground" data-testid="network-detail-link-provenance">
-                  {isManualLink(asset.linkSource)
-                    ? t('networkDeviceDetailPage.provenance.manual')
-                    : t('networkDeviceDetailPage.provenance.auto')}
+                  {asset.linkSource === 'agent_report'
+                    ? t('hardwareHealth.bmcAgentReport')
+                    : isManualLink(asset.linkSource)
+                      ? t('networkDeviceDetailPage.provenance.manual')
+                      : t('networkDeviceDetailPage.provenance.auto')}
                 </span>
               </span>
             ) : (

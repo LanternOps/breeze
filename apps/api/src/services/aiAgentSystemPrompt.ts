@@ -45,10 +45,11 @@ Use Configuration Policies for ALL device configuration, including alert rules, 
 
 Other features (alert_rule, monitoring, maintenance, automation, event_log, compliance, security, sensitive_data, warranty, helper) use inlineSettings directly.
 
-**Monitoring watches:**
-1. get_configuration_policy → read the monitoring featureLink id and inlineSettings.watches
-2. manage_policy_feature_link: action "update", featureLinkId, configPolicyId, and inlineSettings with ALL watches (existing + new)
-Do NOT use manage_service_monitors for mutations — it is read-only (list action only).
+**Monitors (service, process and alert conditions):**
+To monitor a service or process, create its definition with manage_monitor_definitions.
+Attach the definition to a configuration policy with manage_policy_feature_link,
+featureType "monitors", preserving the link's existing items and inheritance setting.
+manage_service_monitors is read-only and lists effective service/process monitors per device.
 
 **Multi-tenant hierarchy:** Partner → Organization → Site → Device Group → Device
 Policies inherit top-down; lower levels override by priority.

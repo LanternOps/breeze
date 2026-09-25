@@ -449,4 +449,42 @@ describe('operator_task items (recipe spec §6.5)', () => {
     // The item must still be present — the delete was refused, not silently dropped.
     expect(screen.getByTestId('ticket-checklist-item-it-op')).toBeInTheDocument();
   });
+
+  it('surfaces the 409 refusal when replacing unticked steps an Operator task is waiting on', async () => {
+    // #6931: apply with replace_unticked returns the same code as delete, with
+    // apply-specific wording, and the checklist is left as it was.
+    const items = [item({ id: 'it-op', source: 'operator_task', operatorTaskId: 'task-9' })];
+    fetchWithAuth.mockImplementation(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      if (url.startsWith('/ticket-checklist-templates') && method === 'GET') {
+        return jsonRes([template()]);
+      }
+      if (url === checklistUrl() && method === 'GET') {
+        return jsonRes({ items, done: 0, total: items.length });
+      }
+      if (url === `${checklistUrl()}/apply-template` && method === 'POST') {
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({ error: 'server prose', code: 'CHECKLIST_OPERATOR_STEP_WAITING' }),
+        } as Response;
+      }
+      return jsonRes({});
+    });
+    render(<TicketChecklistCard ticketId="tk-1" />);
+    fireEvent.click(await screen.findByTestId('ticket-checklist-apply-template'));
+    fireEvent.change(await screen.findByTestId('ticket-checklist-template-select'), {
+      target: { value: 'tpl-1' },
+    });
+    fireEvent.click(screen.getByTestId('ticket-checklist-apply-mode-replace'));
+    fireEvent.click(screen.getByTestId('ticket-checklist-apply-submit'));
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: 'An Operator task is waiting on one of this ticket\'s unticked steps, so the template can\'t replace them. Choose \u201cAdd these steps to the existing checklist\u201d instead, tick the step when the work is done, or stop the task first.',
+        }),
+      );
+    });
+    expect(screen.getByTestId('ticket-checklist-item-it-op')).toBeInTheDocument();
+  });
 });

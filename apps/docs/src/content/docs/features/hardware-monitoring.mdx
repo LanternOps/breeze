@@ -1,0 +1,124 @@
+---
+title: Hardware & RAID Monitoring
+description: See controller, array, physical disk and cache-battery health, and attach hardware monitors to configuration policies.
+sidebar:
+  label: Hardware & RAID
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+## What Breeze monitors
+
+Open a device's **Hardware** tab and find **Storage & RAID**. It shows controller identity, virtual disks and RAID level, physical disk model and serial, slot, size, temperature, error counters and rebuild progress when the source reports them. The **OS-visible disks** group separates operating-system observations; disks backed by a RAID virtual disk are collapsed beneath that note and do not create duplicate alerts.
+
+Breeze detects installed tools and reads their output. It never downloads or bundles vendor utilities, changes controller configuration, starts a rebuild or clears a foreign configuration. Collection works on supported Windows and Linux hosts with an agent; it is capability-detected rather than restricted to devices classified as servers. macOS and agentless hypervisors are outside this feature.
+
+The device list has an optional **Hardware** column. Enable it in the column picker for the rollup pill and component-count tooltip. The hardware filter accepts Warning, Critical or Unknown. A dash means no rollup has been received; it is distinct from an observed Unknown rollup.
+
+## Supported tools
+
+| Source | OS | Detection / read commands | Data | Cadence / timeout | Validation |
+|---|---|---|---|---|---|
+| `storcli` | Windows, Linux | `storcli64` or `storcli`; `/call show all J`, `/call/vall show all J`, `/call/eall/sall show all J`, `/call/cv show all J`, `/call/bbu show all J` | Controllers, virtual and physical disks, cache/battery, enclosures, progress | RAID; 30 seconds per command | fixture-only |
+| `perccli` | Windows, Linux | `perccli64` or `perccli`; same read syntax as storcli | Same controller family data | RAID; 30 seconds | fixture-only |
+| `megacli` | Windows, Linux | `MegaCli64`, `MegaCli` or `megacli`; `-AdpAllInfo -aALL`, `-LDInfo -Lall -aALL`, `-PDList -aALL`, `-AdpBbuCmd -GetBbuStatus -aALL`, `-LDPDInfo -aALL` | Controllers, virtual/physical disks, BBU and membership | RAID; 30 seconds | fixture-only |
+| `ssacli` | Windows, Linux | `ssacli`, `hpssacli` or `hpacucli`; `ctrl all show status`, `ctrl all show config detail` | HPE controllers, cache/battery, logical and physical drives | RAID; 60 seconds | fixture-only |
+| `arcconf` | Windows, Linux | `GETVERSION`, then `GETCONFIG` with controller number and `AL` | Controllers, logical/physical devices, battery/ZMM | RAID; 30 seconds | fixture-only |
+| `omreport` | Windows, Linux | `storage controller -fmt ssv`, `storage vdisk -fmt ssv`, `storage pdisk controller=` with controller ID and `-fmt ssv`, `storage battery -fmt ssv` | Dell controllers, disks, predictive flags and batteries | RAID; 60 seconds | fixture-only |
+| `mdadm` | Linux | Arrays listed in `/proc/mdstat`; `mdadm --detail` for each array | Arrays, members, recovery/resync/check progress | RAID; 15 seconds | Live lab: mirror fault, rebuild and recovery |
+| `zfs` | Linux | `zpool list` nonempty; `zpool list -H -o name,health,size,alloc,free`, `zpool status -pP`; JSON when supported | Pools, members, scrub/resilver progress and error counters | RAID; 30 seconds | fixture-only |
+| `storage_spaces` | Windows | Non-primordial pool; `Get-StoragePool`, `Get-VirtualDisk`, pooled `Get-PhysicalDisk` | Pools, virtual disks and member disks | RAID; 60 seconds | Live lab: mirror fault and recovery (see note) |
+| `windows_physical_disk` | Windows | `Get-PhysicalDisk`, `Get-StorageReliabilityCounter` | OS-visible health, temperature, wear and counters | Disk health; 60 seconds | Live lab: disk inventory |
+| `smartctl` | Windows, Linux | `--scan-open -j`, then `-a -j` per device with its detected type | SMART overall status, ATA attributes and NVMe log; enriches an unambiguous vendor disk serial | Disk health; 15 seconds per disk, 3 minutes total, at most 64 devices | Live lab: standalone disk inventory (emulated NVMe) |
+| `ipmi` | Windows, Linux | `ipmitool lan print 1`; `ipmitool mc info` | In-band management-controller address, MAC, firmware and vendor | RAID tier, at most daily; 20 seconds per command | fixture-only |
+| `racadm` | Windows, Linux | `racadm getniccfg`; `racadm getversion` | In-band management-controller address, MAC, firmware and vendor | RAID tier, at most daily; 20 seconds per command | fixture-only |
+| `hponcfg` | Windows, Linux | `hponcfg -w` with a temporary output file (RIBCL export) | In-band management-controller address, MAC, firmware and vendor | RAID tier, at most daily; 20 seconds | fixture-only |
+
+<Aside type="note">
+  “Live lab” means the source was exercised end to end on a lab machine running a real agent: collection, the Hardware tab and, where stated, fault injection with per-component alerts and recovery. The Storage Spaces and mdadm lab runs used file-backed and loop-backed virtual disks, not physical drives or a hardware controller. On Storage Spaces, a disconnected member can currently leave its physical-disk alert open after the member returns (issue #6895).
+
+  “fixture-only” means parser behavior has been checked against samples, without a verified capture from a live deployment of that vendor source. A supported parser is not a claim of hardware lab validation. These markers change only when a real capture and its validation are recorded.
+</Aside>
+
+The Broadcom-family preference is **storcli → perccli → MegaCli**. Dell OMSA storage is used only when none of those is installed. HPE ssacli and Microchip arcconf run independently when present. The footer identifies superseded tools so installed-but-unused does not look like a failure.
+
+Management-controller address/firmware collection is available through installed `ipmitool`, `racadm` or `hponcfg` tools. The Hardware tab’s **Management controller** card shows the in-band address, MAC, vendor and firmware, collected at most daily, and links to the matching discovered asset when there is one. Chassis sensors, SEL ingestion and out-of-band Redfish/SNMP monitoring remain outside this feature.
+
+## Install the tools
+
+Use the controller or server vendor's supported package for the machine's model and operating system:
+
+- **Lenovo/Broadcom:** obtain StorCLI from the [Lenovo server guidance](https://datacentersupport.lenovo.com/us/en/products/servers/thinksystem/da240-enclosure/solutions/ht512617-how-to-collect-log-files-for-lenovo-servers-using-storcli) or the controller's [Broadcom support downloads](https://www.broadcom.com/products/storage/raid-controllers/megaraid-9580-8i8e). Use the legacy MegaCli package only for hardware requiring it.
+- **Dell:** use [PERCCLI](https://www.dell.com/support/home/en-us/drivers/driversdetails?driverid=1p7r9) matched to your PERC and OS, or install OpenManage Server Administrator for `omreport`. Dell provides [OpenManage Linux installation guidance](https://linux.dell.com/repo/community/openmanage/). Breeze does not install either package.
+- **HPE:** install the **SSA CLI** package containing `ssacli`, not only the graphical SSA application. Consult [HPE's SSA CLI guidance](https://www.hpe.com/jp/ja/collaterals/collateral.a50013828jpn.html) and select the appropriate OS package for your server.
+- **Adaptec/Microchip:** use the [maxView / ARCCONF installation instructions](https://onlinedocs.microchip.com/oxy/GUID-A735A5E3-4456-4763-9EA6-B7AE0E5FE7E8-en-US-19/GUID-486273E7-5D76-4507-9B57-6E71242D83D8.html) for the controller family.
+- **SMART:** install `smartmontools` from the OS package repository or the [upstream releases](https://github.com/smartmontools/smartmontools/releases). The executable Breeze detects is `smartctl`.
+- **Linux software RAID:** install the distribution's `mdadm` package for existing md arrays; see the [Linux md documentation](https://kernel.org/doc/html/v6.7/admin-guide/md.html). For ZFS, follow [OpenZFS's distribution-specific setup](https://openzfs.github.io/openzfs-docs/Getting%20Started/index.html). Do not create an array merely to enable monitoring.
+- **Windows built-ins:** Storage Spaces and physical disk collection use the existing Windows storage PowerShell cmdlets and require no vendor CLI.
+
+Breeze searches `PATH`, known vendor installation directories and your agent-local additions. Detection is cached for one hour, so an installation may not appear immediately. The source footer links here when a tool is not installed.
+
+## Configure collection
+
+The configuration-policy feature **Hardware Monitoring** (`hardware_monitoring`) controls collection independently of alert attachments. It supports partner-wide policies and normal policy inheritance.
+
+<Steps>
+
+1. Open the configuration policy that applies to the device and select **Hardware Monitoring**.
+2. Keep collection enabled, or disable it to stop probing the applicable devices.
+3. Set the RAID interval: **10 minutes** by default, allowed **5–60 minutes**. Set disk health: **60 minutes** by default, allowed **15–1440 minutes**.
+4. Save, then check the device's **Effective Config** and **Hardware** tabs. Without a policy setting, collection uses the enabled defaults. A policy change reaches the agent after the configuration cache and heartbeat refresh, then takes effect at the next collection gate.
+
+</Steps>
+
+A disabled collector preserves its previous evidence; it does not mean the disk recovered. No detected tooling produces an explicit report, normally once daily. Failed tools retain their last observations. After three failed collection cycles a tool backs off for six hours; the footer shows its error and retry time.
+
+## Attach the four built-in monitors
+
+These defaults are provisioned but **not attached** to policies. Collection alone does not opt devices into alerts.
+
+| Built-in name / key | Components | Threshold | Consecutive snapshots | Predictive flag | Severity / cooldown |
+|---|---|---|---|---|---|
+| RAID array degraded or failed (`raid_array_degraded`) | Virtual disk, controller | Critical | 2 | Excluded | Critical / 60 minutes |
+| Physical disk failed or predicted to fail (`physical_disk_failed`) | Physical disk | Critical | 2 | Included | High / 60 minutes |
+| Controller cache battery problem (`cache_battery_problem`) | Cache battery | Warning | 3 | Excluded | Medium / 240 minutes |
+| Hardware monitoring tool failing (`hardware_collector_failing`) | Collector | Warning | 3 | Excluded | Low / 1440 minutes |
+
+<Steps>
+
+1. Open **Alerts → Monitors** and locate the four hardware defaults.
+2. Open the configuration policy assigned to the intended devices, select its **Monitors** tab, and attach the desired defaults.
+3. Save the policy and confirm its assignment covers the organization, site, group or device you intend.
+4. Inspect the device after its next collection. An array failure normally needs two RAID snapshots plus sweep time, approximately 25 minutes at the default interval. A disk-health-only signal follows the longer disk interval.
+
+</Steps>
+
+The editor also offers the `hardware_health` kind for custom monitors. A rebuilding-only notification can use virtual disks with Warning; it is deliberately not a built-in default.
+
+## Understand the evidence and alerts
+
+Alerts are **per component**: two failing disk slots produce two alerts and notifications. Recovery resolves each subject independently when auto-resolve is enabled and enough recovery snapshots have arrived. Device automation responses run at most once for the shared monitor/device incident.
+
+A degraded virtual disk is critical; **rebuilding is warning**. A critical array alert may therefore recover after enough rebuilding observations rather than waiting for optimal. Unknown, stale, disabled or unavailable evidence is not recovery: **unknown does not resolve** an existing alert. Brief one-poll failures or recoveries do not satisfy the consecutive-snapshot threshold.
+
+Rows absent from a complete successful source report turn stale. Rows older than three times their source tier's interval also show “not seen since”, even when the source never produced a complete report proving removal. Both are greyed in the Hardware tab. Stale component rows remain for seven days; event history is retained for 180 days, with the latest 50 shown on the tab.
+
+SMART counters are observations, not a prediction model. Alerts use the controller's predictive-failure flag or the drive's own failed self-assessment. Breeze does not calculate “days until failure”.
+
+## Agent-local tool directories
+
+For tools unpacked outside standard directories, add directories to the agent configuration file. This setting is local to the agent and has no web policy control:
+
+```yaml
+hardware:
+  tool_dirs:
+    - 'D:\tools'
+```
+
+On Linux, a directory such as `/opt/vendor-tools` can be listed instead. Provide directories, not executable command strings. Keep the vendor package maintained using your normal software-management process.
+
+## Related
+
+- [Monitors](/features/monitors/)
+- [Configuration policies](/features/configuration-policies/)
+- [Devices](/features/devices/)

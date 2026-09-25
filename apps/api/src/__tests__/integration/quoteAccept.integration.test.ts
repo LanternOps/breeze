@@ -117,6 +117,32 @@ describe('quote accept → convert', () => {
     expect(inv!.dueDate).toBeTruthy();
   });
 
+  // Settings consolidation W06 (#6229): the direct accept issue applies the org's
+  // payment-terms override (joined onto the partner read) under the caller's own
+  // org-scoped RLS context, and inherits the partner default when it is blank.
+  runDb('auto-issued invoice due date uses the org payment-terms override, else the partner default', async () => {
+    const days = (inv: { issueDate: string | null; dueDate: string | null }) =>
+      Math.round((new Date(inv.dueDate + 'T00:00:00Z').getTime() - new Date(inv.issueDate + 'T00:00:00Z').getTime()) / 86400000);
+    const { partner, org } = await seed();
+    const ctx = ctxFor(org.id, partner.id); const actor = actorFor(org.id, partner.id);
+    const { partners } = await import('../../db/schema/orgs');
+    await withSystemDbAccessContext(async () => {
+      await db.update(partners).set({ invoiceTermsDays: 21 }).where(eq(partners.id, partner.id));
+      await db.update(organizations).set({ invoiceTermsDays: 9 }).where(eq(organizations.id, org.id));
+    });
+    const acceptOne = async () => {
+      const created = await withDbAccessContext(ctx, () => createQuote({ orgId: org.id, currencyCode: 'USD' }, actor));
+      await withDbAccessContext(ctx, () => addManualLine(created.id, { sourceType: 'manual', description: 'Onboarding', quantity: 1, unitPrice: 250, taxable: false, customerVisible: true, recurrence: 'one_time' } as any, actor));
+      await withDbAccessContext(ctx, () => sendQuote(created.id, actor));
+      const res = await withDbAccessContext(ctx, () => acceptQuote({ quoteId: created.id, signerName: 'Jane Buyer' }));
+      const [inv] = await withSystemDbAccessContext(() => db.select().from(invoices).where(eq(invoices.id, res.invoiceId)));
+      return inv!;
+    };
+    expect(days(await acceptOne())).toBe(9);
+    await withSystemDbAccessContext(() => db.update(organizations).set({ invoiceTermsDays: null }).where(eq(organizations.id, org.id)));
+    expect(days(await acceptOne())).toBe(21);
+  });
+
   // The whole point of "lock the quote total" (Phase 3 decision): the auto-issued
   // invoice keeps the quote's snapshotted tax rate — it must NOT re-resolve the org's
   // current rate like issueInvoice does, or the customer would be charged differently

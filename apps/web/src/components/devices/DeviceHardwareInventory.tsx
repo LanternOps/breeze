@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Cpu, HardDrive, MemoryStick, Network } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
 import DeviceWarrantyCard from "./DeviceWarrantyCard";
+import StorageHealthSection from "./hardware/StorageHealthSection";
 import { formatNumber } from "@/lib/i18n/format";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
@@ -284,6 +285,8 @@ export default function DeviceHardwareInventory({
           </p>
         </div>
       </div>
+
+      <StorageHealthSection deviceId={deviceId} />
 
       <div className="grid gap-6 lg:grid-cols-2">
         <div className="rounded-lg border bg-card p-6 shadow-xs">

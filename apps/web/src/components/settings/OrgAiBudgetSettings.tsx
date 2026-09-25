@@ -1,4 +1,4 @@
-import '@/lib/i18n';
+import { i18n } from '@/lib/i18n';
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Loader2, Lock, Save, Wallet } from 'lucide-react';
@@ -19,9 +19,34 @@ import {
   type EffectiveAiBudget,
 } from '@/lib/aiBudget';
 import AiBudgetThresholdsInput from './AiBudgetThresholdsInput';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 /** Where the partner-wide copies of these fields are edited. */
 const PARTNER_AI_BUDGETS_HREF = '/settings/partner#ai-budgets';
+
+/**
+ * Pulls the per-field zod messages out of a PUT /ai/budget 400 body (the
+ * shared zValidator `{error, details: {formErrors, fieldErrors}}` shape) so
+ * the offending input can be highlighted and given its own readable text
+ * instead of leaving the user to parse `toolRateLimitMultiplier: Too big…`
+ * out of a toast (sweep E2).
+ */
+function extractFieldErrors(body: unknown): Partial<Record<AiBudgetField, string>> | null {
+  if (!body || typeof body !== 'object') return null;
+  const details = (body as Record<string, unknown>).details;
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return null;
+  const fieldErrors = (details as Record<string, unknown>).fieldErrors;
+  if (!fieldErrors || typeof fieldErrors !== 'object' || Array.isArray(fieldErrors)) return null;
+
+  const out: Partial<Record<AiBudgetField, string>> = {};
+  for (const [field, messages] of Object.entries(fieldErrors as Record<string, unknown>)) {
+    if (!AI_BUDGET_FIELDS.includes(field as AiBudgetField)) continue;
+    if (Array.isArray(messages) && typeof messages[0] === 'string' && messages[0].length > 0) {
+      out[field as AiBudgetField] = messages[0];
+    }
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
 
 type Props = {
   /** The organization being edited. `null` while the page has no org context. */
@@ -83,6 +108,7 @@ const centsToDollars = (cents: number | null): string => (cents == null ? '' : (
  */
 export default function OrgAiBudgetSettings({ orgId }: Props) {
   const { t } = useTranslation('settings');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { isPartnerScope } = useDefaultOwnerScope();
   const canManagePartnerWide = useAuthStore((s) => s.user?.canManagePartnerWide) !== false;
   const showPartnerLink = isPartnerScope && canManagePartnerWide;
@@ -101,6 +127,7 @@ export default function OrgAiBudgetSettings({ orgId }: Props) {
   const [loadFailed, setLoadFailed] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Partial<Record<AiBudgetField, string>> | null>(null);
 
   const load = useCallback(async () => {
     if (!orgId) {
@@ -110,7 +137,7 @@ export default function OrgAiBudgetSettings({ orgId }: Props) {
     setLoading(true);
     try {
       const res = await fetchWithAuth(`/orgs/organizations/${orgId}/effective-settings`);
-      if (!res.ok) throw new Error(t('aiUsagePage.failedToLoadData'));
+      if (!res.ok) throw new Error(stableT('aiUsagePage.failedToLoadData'));
       const data = await res.json();
       const lockedList: string[] = data.locked ?? [];
       const merged = withAiBudgetDefaults(data.effective?.aiBudgets ?? data.aiBudgets);
@@ -140,11 +167,11 @@ export default function OrgAiBudgetSettings({ orgId }: Props) {
       setError(null);
     } catch (err) {
       setLoadFailed(true);
-      setError(err instanceof Error ? err.message : t('aiUsagePage.failedToLoadData'));
+      setError(err instanceof Error ? err.message : stableT('aiUsagePage.failedToLoadData'));
     } finally {
       setLoading(false);
     }
-  }, [orgId, t]);
+  }, [orgId, stableT]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -157,6 +184,14 @@ export default function OrgAiBudgetSettings({ orgId }: Props) {
   const setField = (field: AiBudgetField, value: string) => {
     markTouched(field);
     setDraft((prev) => ({ ...prev, [field]: value }));
+    // Editing a field that failed validation clears its highlight — the user
+    // is actively addressing it, and a stale red border past that point is
+    // just noise.
+    setFieldErrors((prev) => {
+      if (!prev || !(field in prev)) return prev;
+      const { [field]: _removed, ...rest } = prev;
+      return Object.keys(rest).length > 0 ? rest : null;
+    });
   };
 
   /**
@@ -197,6 +232,7 @@ export default function OrgAiBudgetSettings({ orgId }: Props) {
     if (!orgId) return;
     setSaving(true);
     setError(null);
+    setFieldErrors(null);
     try {
       const payload: Record<string, unknown> = {};
       for (const field of AI_BUDGET_FIELDS) {
@@ -222,7 +258,17 @@ export default function OrgAiBudgetSettings({ orgId }: Props) {
       if (!(err instanceof ActionError)) {
         showToast({ type: 'error', message: t('aiUsagePage.failedToSaveBudget') });
       }
-      setError(err instanceof Error ? err.message : t('aiUsagePage.failedToSaveBudget'));
+      const fe = err instanceof ActionError ? extractFieldErrors(err.body) : null;
+      if (fe) {
+        // The toast already showed the specific "field: message" text; the
+        // inline banner here would just repeat it in raw form, so replace it
+        // with the same "check the fields" headline the toast's detail line
+        // uses — the highlighted inputs below carry the actual reason.
+        setFieldErrors(fe);
+        setError(i18n.exists('errors:VALIDATION_FAILED') ? i18n.t('errors:VALIDATION_FAILED') : null);
+      } else {
+        setError(err instanceof Error ? err.message : t('aiUsagePage.failedToSaveBudget'));
+      }
     } finally {
       setSaving(false);
     }
@@ -251,7 +297,19 @@ export default function OrgAiBudgetSettings({ orgId }: Props) {
     ) : null;
 
   const inputClass = (field: AiBudgetField) =>
-    `mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm ${isLocked(field) ? 'opacity-60 cursor-not-allowed' : ''}`;
+    `mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm ${isLocked(field) ? 'opacity-60 cursor-not-allowed' : ''} ${
+      fieldErrors?.[field] ? 'border-destructive focus-visible:ring-destructive' : ''
+    }`;
+
+  const fieldErrorNote = (field: AiBudgetField) =>
+    fieldErrors?.[field] ? (
+      <p
+        data-testid={`org-ai-budget-error-${field}`}
+        className="mt-1 text-xs text-destructive"
+      >
+        {fieldErrors[field]}
+      </p>
+    ) : null;
 
   if (!orgId) {
     return (
@@ -445,8 +503,10 @@ export default function OrgAiBudgetSettings({ orgId }: Props) {
             placeholder={placeholderFor('toolRateLimitMultiplier')}
             disabled={isLocked('toolRateLimitMultiplier')}
             className={inputClass('toolRateLimitMultiplier')}
+            aria-invalid={fieldErrors?.toolRateLimitMultiplier ? true : undefined}
           />
           {lockedNote('toolRateLimitMultiplier')}
+          {fieldErrorNote('toolRateLimitMultiplier')}
           <span className="mt-1 block text-xs text-muted-foreground">{t('aiUsagePage.toolRateLimitMultiplierHelp')}</span>
         </label>
       </div>

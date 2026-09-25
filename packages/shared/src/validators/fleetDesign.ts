@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { alertRuleConditionSchema } from './alertRuleConditions';
+import { monitorConditionSchemas, monitorDeliveryModeSchema, monitorKindSchema, monitorResponsesSchema } from './monitors';
 import { parseFunctionKey } from './deviceFunctions';
 import {
   FLEET_DESIGN_CONFIDENCE_THRESHOLD, FLEET_DESIGN_DEVICE_IDS_MAX, FLEET_DESIGN_LIST_MAX,
@@ -59,16 +59,61 @@ const watch = z.object({
   rationale: fleetDesignText(),
 }).strict();
 
-const rule = z.object({
+/**
+ * A Fleet Design rule proposal is a monitor definition (W05c2, #6371): `kind` +
+ * `condition` use the monitor-definition contract, `responses` and
+ * `deliveryMode`/`deliveryChannelIds` are the only EXECUTABLE fields. `action`
+ * and `paging` are retained recommendation notes (the viewer and markdown show
+ * them) — apply never turns them into a script run or a paging schedule.
+ *
+ * The unrefined field map is exported for the model-facing tool schema
+ * (`outcomeTools.ts`), which must stay a plain object; the cross-field checks
+ * below run when the full submission is parsed.
+ */
+/** Responses a model-written proposal may carry: agent-local service restart, notification, alert. */
+export function isFleetDesignProposalResponseAllowed(response: { type: string; kind?: unknown; command?: unknown }): boolean {
+  if (response.type === 'send_notification' || response.type === 'create_alert') return true;
+  return response.type === 'execute_command' && response.kind === 'restart_service'
+    && (typeof response.command !== 'string' || response.command.trim() === '');
+}
+
+export const fleetDesignRuleFields = {
   name: z.string().trim().min(1).max(200),
+  kind: monitorKindSchema,
+  condition: z.record(z.string(), z.unknown()),
   severity: z.enum(['critical', 'high', 'medium', 'low', 'info']),
-  conditions: z.array(alertRuleConditionSchema).min(1).max(10),
-  cooldownMinutes: z.number().int().min(1).max(1440),
+  cooldownMinutes: z.number().int().min(0).max(1440),
+  responses: monitorResponsesSchema.default([]),
+  deliveryMode: monitorDeliveryModeSchema.default('inherit'),
+  deliveryChannelIds: z.array(uuid).max(20).default([]),
   rationale: fleetDesignText(),
   action: z.union([z.literal('none'), z.object({ kind: z.enum(['playbook', 'script']), ref: z.string().min(1).max(200) }).strict()]),
   paging: z.enum(['none', 'business_hours', 'always']),
-  sourceTemplateId: uuid.optional(),
-}).strict();
+};
+
+export const fleetDesignRuleSchema = z.object(fleetDesignRuleFields).strict().superRefine((value, ctx) => {
+  if (!monitorConditionSchemas[value.kind].safeParse(value.condition).success) {
+    ctx.addIssue({ code: 'custom', path: ['condition'], message: `condition does not match kind ${value.kind}` });
+  }
+  if (value.deliveryMode === 'channels' && value.deliveryChannelIds.length === 0) {
+    ctx.addIssue({ code: 'custom', path: ['deliveryChannelIds'], message: 'deliveryChannelIds required when deliveryMode is channels' });
+  }
+  // A proposal is written by a model reading fleet evidence, and the approval
+  // UI shows its name and rationale — not its responses. So a proposal may not
+  // carry a response that runs arbitrary code on devices (a shell command, a
+  // script, a software deploy); a technician adds those to the monitor after
+  // apply. ai_triage needs an aiAgentId a proposal has no field for.
+  value.responses.forEach((response, index) => {
+    if (!isFleetDesignProposalResponseAllowed(response)) {
+      ctx.addIssue({
+        code: 'custom', path: ['responses', index, 'type'],
+        message: `${response.type} responses are not supported in Fleet Design proposals; add them to the monitor after apply`,
+      });
+    }
+  });
+});
+
+const rule = fleetDesignRuleSchema;
 
 export const fleetDesignSubmissionSchema = z.object({
   found: z.object({

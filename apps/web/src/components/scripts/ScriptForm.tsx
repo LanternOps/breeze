@@ -42,6 +42,7 @@ import {
   rowsToMapping, parameterBindingKey, parameterSource, stripSecretParameterValueFields,
   type ScriptFormDefaults, type ScriptFormValues, type ScriptSubmitValues,
 } from './ScriptFormSchema';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 export type { ScriptFormValues, ScriptParameter, ScriptSubmitValues } from './ScriptFormSchema';
 
@@ -191,6 +192,7 @@ export default function ScriptForm({
   scriptId,
 }: ScriptFormProps) {
   const { t } = useTranslation('scripts');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   // Resolved after mount, never during render. Reading `navigator` inline made
   // SSR emit "Ctrl+S" while the client's first render produced "⌘S" on macOS,
   // which React reports as a hydration mismatch on every Mac visit. Starting
@@ -247,7 +249,7 @@ export default function ScriptForm({
         .catch((err) => {
           if (!cancelled) {
             console.error('Failed to load script editor:', err);
-            setEditorLoadError(t('scriptForm.editor.loadError'));
+            setEditorLoadError(stableT('scriptForm.editor.loadError'));
           }
         });
     };
@@ -258,7 +260,7 @@ export default function ScriptForm({
       document.removeEventListener('astro:after-swap', loadEditor);
       disposeEditor();
     };
-  }, [disposeEditor, t]);
+  }, [disposeEditor, stableT]);
 
   // Force editor relayout after View Transition navigation completes
   useEffect(() => {
@@ -383,7 +385,7 @@ export default function ScriptForm({
     };
     const onAstroNav = (e: Event) => {
       if (skipGuardRef.current) { skipGuardRef.current = false; return; }
-      if (isDirtyRef.current && !window.confirm(t('scriptForm.unsavedConfirm'))) {
+      if (isDirtyRef.current && !window.confirm(stableT('scriptForm.unsavedConfirm'))) {
         e.preventDefault();
       }
     };
@@ -393,7 +395,7 @@ export default function ScriptForm({
       window.removeEventListener('beforeunload', onBeforeUnload);
       document.removeEventListener('astro:before-preparation', onAstroNav);
     };
-  }, [t]);
+  }, [stableT]);
 
   const formRef = useRef<HTMLFormElement>(null);
 

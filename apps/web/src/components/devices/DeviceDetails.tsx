@@ -78,6 +78,7 @@ import DeviceBackupTab from "../backup/DeviceBackupTab";
 import DeviceTicketsTab from "../tickets/DeviceTicketsTab";
 import OperatorTaskActivityFeed from "../aiOperator/OperatorTaskActivityFeed";
 import DeviceAnomaliesPanel from "./DeviceAnomaliesPanel";
+import { useMlFeatureFlags } from "@/hooks/useMlFeatureFlags";
 import type { DeviceTabCounts } from "./deviceTabCounts";
 import DeviceReliabilityPanel from "./DeviceReliabilityPanel";
 import DeviceMonitoringTab from "./DeviceMonitoringTab";
@@ -413,6 +414,17 @@ export default function DeviceDetails({
   // closing a ticket) is reflected on the next navigation without a reload;
   // the previous counts are kept meanwhile so the row does not flicker.
   const [tabCounts, setTabCounts] = useState<DeviceTabCounts | null>(null);
+  // Sweep E1: the API count is device-scoped and does not know whether
+  // anomaly detection is on for the org — going through
+  // isMlFeatureEnabledForOrg on the tab-counts route would open a second
+  // pooled connection (readWithPartnerAxisVisibility's system-context
+  // escalation) inside the request's own transaction on every device-page
+  // load, the same double-hold pattern that wedged US prod (#6671). Zero the
+  // badge here instead, using the SAME client-side signal
+  // DeviceAnomaliesPanel already uses to render "Anomaly detection
+  // disabled".
+  const mlFlags = useMlFeatureFlags();
+  const anomaliesDisabled = mlFlags.isDisabled("ml.anomalies.enabled");
   useEffect(() => {
     setTabCounts(null);
   }, [device.id]);
@@ -498,9 +510,12 @@ export default function DeviceDetails({
     },
     {
       id: "anomalies",
-      primary: promoted(tabCounts?.anomalies),
+      // sweep E1: never promote/badge on a stale open-episode count once
+      // detection is confirmed off for this org — the panel itself would
+      // just say "disabled" under it.
+      primary: !anomaliesDisabled && promoted(tabCounts?.anomalies),
       group: groups.monitoring,
-      count: tabCounts?.anomalies,
+      count: anomaliesDisabled ? 0 : tabCounts?.anomalies,
       label: t("deviceDetails.anomalies"),
       icon: <TrendingUp className="h-4 w-4" />,
       title: t("deviceDetails.metricAnomalySignalsForThisDevice"),
@@ -1029,6 +1044,7 @@ export default function DeviceDetails({
       {activeTab === "monitoring" && (
         <DeviceMonitoringTab
           deviceId={device.id}
+          deviceName={device.displayName || device.hostname}
           timezone={effectiveTimezone}
         />
       )}

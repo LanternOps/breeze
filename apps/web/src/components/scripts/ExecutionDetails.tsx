@@ -116,7 +116,11 @@ export function OutputSection({
           )}>
             {title}
           </span>
-          {isEmpty && (
+          {/* sweep E5: with defaultOpen the body already renders "No output"
+              a few lines down — showing this header marker too duplicated
+              the same fact twice at once. Reserve it for the collapsed
+              header, where it is the only signal the section is empty. */}
+          {isEmpty && !isOpen && (
             <span className="text-xs text-muted-foreground">{t('executionDetails.output.emptyMarker')}</span>
           )}
         </div>

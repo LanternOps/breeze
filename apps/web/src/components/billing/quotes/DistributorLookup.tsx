@@ -18,6 +18,7 @@ import {
   warehouseSummary,
   type Freshness,
 } from './nightlyProduct';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 /**
  * `ec_express` is the live, exact-match lookup (one SKU or mfg part number at a
@@ -57,6 +58,7 @@ interface DistributorLookupProps {
 
 export default function DistributorLookup({ blockId, busy, currencyCode, onImportAdd }: DistributorLookupProps) {
   const { t } = useTranslation('billing');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [source, setSource] = useState<LookupSource>('ec_express');
   const [query, setQuery] = useState('');
   const [inStockOnly, setInStockOnly] = useState(false);
@@ -111,7 +113,7 @@ export default function DistributorLookup({ blockId, busy, currencyCode, onImpor
       if (!res.ok) {
         const body = (await res.json().catch(() => null)) as { error?: string } | null;
         if (id !== requestId.current) return;
-        setError(body?.error ?? t('quotes.distributorLookup.lookupFailed'));
+        setError(body?.error ?? stableT('quotes.distributorLookup.lookupFailed'));
         applyResults([]);
         return;
       }
@@ -120,7 +122,7 @@ export default function DistributorLookup({ blockId, busy, currencyCode, onImpor
       // A null body means the response wasn't valid JSON — a failure, not an
       // empty catalog. Never render "no matches" for a broken response.
       if (body === null) {
-        setError(t('quotes.distributorLookup.lookupFailed'));
+        setError(stableT('quotes.distributorLookup.lookupFailed'));
         applyResults([]);
         return;
       }
@@ -130,7 +132,7 @@ export default function DistributorLookup({ blockId, busy, currencyCode, onImpor
         : (rows as EcProduct[]).map((product) => ({ product, nightly: null })));
     } catch {
       if (id !== requestId.current) return;
-      setError(t('quotes.distributorLookup.lookupFailed'));
+      setError(stableT('quotes.distributorLookup.lookupFailed'));
       applyResults([]);
     } finally {
       if (id === requestId.current) {
@@ -138,7 +140,7 @@ export default function DistributorLookup({ blockId, busy, currencyCode, onImpor
         setSearched(true);
       }
     }
-  }, [applyResults, t]);
+  }, [applyResults, stableT]);
 
   // Nightly only: debounced keyword search. EC Express stays a deliberate,
   // explicit lookup (Enter / button) — it hits TD SYNNEX live, per keystroke

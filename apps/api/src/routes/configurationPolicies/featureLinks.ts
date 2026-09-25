@@ -8,6 +8,7 @@ import {
   backupInlineSettingsSchema,
   backupProfileLinkedInlineSettingsSchema,
   clientSuppliedWarrantyHpCmslConsent,
+  hardwareMonitoringInlineSettingsSchema,
   maintenanceInlineSettingsSchema,
   monitoringInlineSettingsSchema,
   monitorsInlineSettingsSchema,
@@ -345,6 +346,17 @@ featureLinkRoutes.post(
       data.inlineSettings = parsed.data;
     }
 
+    if (data.featureType === 'hardware_monitoring' && data.inlineSettings) {
+      const parsed = hardwareMonitoringInlineSettingsSchema.safeParse(data.inlineSettings);
+      if (!parsed.success) {
+        return c.json(
+          zodValidationErrorBody('Invalid hardware monitoring settings', parsed.error),
+          400
+        );
+      }
+      data.inlineSettings = parsed.data;
+    }
+
     // addFeatureLink returns null (instead of throwing) on a duplicate — see the
     // comment on its onConflictDoNothing insert in configurationPolicy.ts for
     // why the raised-violation catch pattern doesn't work inside this route's
@@ -583,6 +595,16 @@ featureLinkRoutes.patch(
           if (!(await isMonitorAttachableToPolicy(item.monitorId, id))) {
             return c.json({ error: 'MONITOR_NOT_ATTACHABLE' }, 400);
           }
+        }
+        data.inlineSettings = parsed.data;
+      }
+      if (existingLink.featureType === 'hardware_monitoring') {
+        const parsed = hardwareMonitoringInlineSettingsSchema.safeParse(data.inlineSettings);
+        if (!parsed.success) {
+          return c.json(
+            zodValidationErrorBody('Invalid hardware monitoring settings', parsed.error),
+            400
+          );
         }
         data.inlineSettings = parsed.data;
       }

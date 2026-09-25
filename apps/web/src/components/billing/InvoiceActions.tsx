@@ -11,6 +11,7 @@ import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { usePdfDownload } from './shared/usePdfDownload';
 import InvoiceSendComposer, { type ComposedInvoiceEmail } from './InvoiceSendComposer';
 import { type InvoiceDetail as InvoiceDetailData, formatMoney } from './invoiceTypes';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -64,6 +65,7 @@ interface Props {
  */
 export default function InvoiceActions({ detail, onChanged, variant, savePending = false, unsavedFieldLabel = null, saveFailureNonce = 0, onIssueWhilePending }: Props) {
   const { t } = useTranslation('billing');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { can } = usePermissions();
   const { invoice, lines } = detail;
   const currency = invoice.currencyCode;
@@ -139,24 +141,24 @@ export default function InvoiceActions({ detail, onChanged, variant, savePending
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(opts ?? {}),
           }),
-          errorFallback: t('invoiceActions.issueSendError'),
+          errorFallback: stableT('invoiceActions.issueSendError'),
           onUnauthorized: UNAUTHORIZED,
         });
         if (result?.data?.emailed) {
-          showToast({ type: 'success', message: t('invoiceActions.issueSentSuccess') });
+          showToast({ type: 'success', message: stableT('invoiceActions.issueSentSuccess') });
         } else {
-          showToast({ type: 'warning', message: t('invoiceActions.issueNoEmailWarning') });
+          showToast({ type: 'warning', message: stableT('invoiceActions.issueNoEmailWarning') });
         }
       } else {
         await runAction({
           request: () => fetchWithAuth(`/invoices/${invoice.id}/issue`, { method: 'POST' }),
-          errorFallback: t('invoiceActions.issueError'),
-          successMessage: t('invoiceActions.issueSuccess'),
+          errorFallback: stableT('invoiceActions.issueError'),
+          successMessage: stableT('invoiceActions.issueSuccess'),
           onUnauthorized: UNAUTHORIZED,
         });
       }
     } catch (err) {
-      handleActionError(err, t('invoiceActions.issueError'));
+      handleActionError(err, stableT('invoiceActions.issueError'));
     } finally {
       // Always refresh: if issue succeeded but send threw, we still need to leave
       // the draft editor so a second click doesn't re-issue and hit 409 NOT_A_DRAFT.
@@ -164,7 +166,7 @@ export default function InvoiceActions({ detail, onChanged, variant, savePending
       setIssuing(false);
       setIssueSendOpen(false);
     }
-  }, [issuing, invoice.id, refresh, t]);
+  }, [issuing, invoice.id, refresh, stableT]);
 
   // Refuse a click (or a queued click reaching quiescence) that can only ever
   // wait on a save that isn't coming — name the field instead. Hoisted above
@@ -190,7 +192,7 @@ export default function InvoiceActions({ detail, onChanged, variant, savePending
     if (!queued) return;
     if (saveFailureNonce !== queued.atFailureNonce) {
       setQueued(null);
-      showToast({ type: 'error', message: t('invoiceActions.issueCanceledSaveFailed') });
+      showToast({ type: 'error', message: stableT('invoiceActions.issueCanceledSaveFailed') });
       return;
     }
     if (savePending) return;
@@ -209,14 +211,14 @@ export default function InvoiceActions({ detail, onChanged, variant, savePending
     // last customer-visible line may have been sitting in its undo window, and
     // the flush this very click triggered is what deleted it for good.
     if (!hasVisibleLines) {
-      showToast({ type: 'warning', message: t('invoiceActions.noVisibleLineHint') });
+      showToast({ type: 'warning', message: stableT('invoiceActions.noVisibleLineHint') });
       return;
     }
     // Plain Issue runs directly (it's reversible via Void); Issue & Send opens
     // its confirm dialog — the user still confirms the email before it sends.
     if (queued.kind === 'issue') void issue(false);
     else void openIssueSendComposer();
-  }, [queued, saveFailureNonce, savePending, unsavedFieldLabel, refuseForUnsaved, hasVisibleLines, issue, openIssueSendComposer, t]);
+  }, [queued, saveFailureNonce, savePending, unsavedFieldLabel, refuseForUnsaved, hasVisibleLines, issue, openIssueSendComposer, stableT]);
 
   // Slow-save backstop: with failures handled above, the only way a queue waits
   // this long is a save that is genuinely still in flight (or a pending-state
@@ -227,10 +229,10 @@ export default function InvoiceActions({ detail, onChanged, variant, savePending
     if (!queued) return;
     const timer = setTimeout(() => {
       setQueued(null);
-      showToast({ type: 'warning', message: t('invoiceActions.issueCanceledStillSaving') });
+      showToast({ type: 'warning', message: stableT('invoiceActions.issueCanceledStillSaving') });
     }, 15_000);
     return () => clearTimeout(timer);
-  }, [queued, t]);
+  }, [queued, stableT]);
 
   // Whether this invoice has ever been emailed. `issueInvoice` deliberately
   // leaves sent_at null (a plain Issue reads "Issued", not "Sent"), so the first

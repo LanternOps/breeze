@@ -528,7 +528,9 @@ describe('apiKeyAuth middleware', () => {
         orgId: 'org-2',
         accessibleOrgIds: ['org-2'],
         accessiblePartnerIds: [],
-        currentPartnerId: null
+        // Own partner for read-visibility of partner-wide rows, as an org JWT
+        // session gets; no partner-axis grant (accessiblePartnerIds empty).
+        currentPartnerId: 'partner-1'
       },
       expect.any(Function)
     );
@@ -583,7 +585,7 @@ describe('apiKeyAuth middleware', () => {
     );
   });
 
-  it('keeps accessiblePartnerIds empty for non-MCP keys and skips the org→partner lookup', async () => {
+  it('keeps accessiblePartnerIds empty for non-MCP keys but sets currentPartnerId to the owning partner', async () => {
     // Two select calls expected: the api_keys lookup and the creator-status
     // lookup (SR2-15 subset). Owner-tenant status is delegated to
     // tenantStatus, so no third select happens for that.
@@ -627,7 +629,9 @@ describe('apiKeyAuth middleware', () => {
         orgId: 'org-4',
         accessibleOrgIds: ['org-4'],
         accessiblePartnerIds: [],
-        currentPartnerId: null
+        // Own partner for read-visibility of partner-wide rows, as an org JWT
+        // session gets; no partner-axis grant (accessiblePartnerIds empty).
+        currentPartnerId: 'partner-1'
       },
       expect.any(Function)
     );

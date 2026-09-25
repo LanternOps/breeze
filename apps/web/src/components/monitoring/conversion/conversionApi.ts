@@ -27,9 +27,9 @@ export type PolicyConversionPreview = {
 };
 export type ConversionLedgerEntry = {
   id: string; sourceTable: ConversionSourceTable; sourceId: string; sourceName: string;
-  policyId: string | null; convertedBy: string | null; convertedAt: string;
+  policyId: string | null; convertedBy: string | null; convertedByName: string | null; convertedAt: string;
   revertedAt: string | null; revertable: boolean;
-  outputs: Array<{ monitorId: string; role: string; reused: boolean }>;
+  outputs: Array<{ monitorId: string; monitorName: string | null; role: string; reused: boolean }>;
 };
 export type LedgerPage = { items: ConversionLedgerEntry[]; nextCursor: string | null };
 export type PartnerConversionPreview = {

@@ -3,7 +3,8 @@ import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { Plus, Pencil, Trash2, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, handleSessionExpired } from '../../stores/auth';
+import { runAction, handleActionError } from '@/lib/runAction';
 import { useOrgStore } from '../../stores/orgStore';
 import BaselineFormModal, { type Baseline } from './BaselineFormModal';
 
@@ -46,46 +47,58 @@ export default function BaselineList() {
     fetchBaselines();
   }, [fetchBaselines]);
 
+  // Delete runs inside a fixed z-50 confirmation modal, so the page `error`
+  // banner renders behind the scrim and a failed delete was invisible (#3531).
+  // runAction toasts the failure; the modal stays open for retry or cancel and
+  // the list is only refetched after a confirmed success.
   const handleDelete = async () => {
     if (!deleteTarget) return;
     setDeleting(true);
     try {
-      const response = await fetchWithAuth(`/audit-baselines/${deleteTarget.id}`, {
-        method: 'DELETE',
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/audit-baselines/${deleteTarget.id}`, {
+            method: 'DELETE',
+          }),
+        errorFallback: t('auditBaselinesBaselineList.messages.deleteFailed'),
+        onUnauthorized: handleSessionExpired,
       });
-      if (!response.ok) throw new Error(t('auditBaselinesBaselineList.messages.deleteFailed'));
       await fetchBaselines();
       setDeleteTarget(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('auditBaselinesBaselineList.messages.genericError'));
+      handleActionError(err, t('auditBaselinesBaselineList.messages.deleteFailed'));
     } finally {
       setDeleting(false);
     }
   };
 
   const handleToggleActive = async (baseline: Baseline) => {
-    try {
-      const body: Record<string, unknown> = {
-        id: baseline.id,
-        name: baseline.name,
-        osType: baseline.osType,
-        profile: baseline.profile,
-        isActive: !baseline.isActive,
-      };
-      // Toggling always takes the update path (`id` is set), and that path
-      // matches on (id, orgId) — so send the baseline's own org, not whatever
-      // the header currently has selected.
-      const targetOrgId = baseline.orgId ?? currentOrgId;
-      if (targetOrgId) body.orgId = targetOrgId;
+    const body: Record<string, unknown> = {
+      id: baseline.id,
+      name: baseline.name,
+      osType: baseline.osType,
+      profile: baseline.profile,
+      isActive: !baseline.isActive,
+    };
+    // Toggling always takes the update path (`id` is set), and that path
+    // matches on (id, orgId) — so send the baseline's own org, not whatever
+    // the header currently has selected.
+    const targetOrgId = baseline.orgId ?? currentOrgId;
+    if (targetOrgId) body.orgId = targetOrgId;
 
-      const response = await fetchWithAuth('/audit-baselines', {
-        method: 'POST',
-        body: JSON.stringify(body),
+    try {
+      await runAction({
+        request: () =>
+          fetchWithAuth('/audit-baselines', {
+            method: 'POST',
+            body: JSON.stringify(body),
+          }),
+        errorFallback: t('auditBaselinesBaselineList.messages.toggleFailed'),
+        onUnauthorized: handleSessionExpired,
       });
-      if (!response.ok) throw new Error(t('auditBaselinesBaselineList.messages.toggleFailed'));
       await fetchBaselines();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('auditBaselinesBaselineList.messages.genericError'));
+      handleActionError(err, t('auditBaselinesBaselineList.messages.toggleFailed'));
     }
   };
 

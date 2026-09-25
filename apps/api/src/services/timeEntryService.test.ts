@@ -595,6 +595,7 @@ describe('deleteTimeEntry', () => {
         id: 'te-1', userId: 'u-1', isApproved: false, partnerId: 'p-1',
         ticketId: null, billingStatus,
       }]);
+      dbMocks.deleteResult = [{ id: 'te-1', orgId: null }];
       await deleteTimeEntry('te-1', ACTOR);
       expect(dbMocks.deleteCalls).toBe(1);
       expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -873,7 +874,8 @@ describe('time-entry audit mutation recording', () => {
     expect(failed.recordAuditMutation).not.toHaveBeenCalled();
   });
 
-  it('does not record delete when a concurrent delete leaves no returned row', async () => {
+  // #6620 — same zero-row race class as #6568/#6588/#6589, on the time entry delete path.
+  it('rejects with 409 ENTRY_DELETE_LOST when a concurrent delete leaves no returned row, and emits no side effects', async () => {
     const raced = actorWithRecorder();
     dbMocks.selectResults.push([{
       id: 'te-raced-delete',
@@ -886,9 +888,12 @@ describe('time-entry audit mutation recording', () => {
     }]);
     dbMocks.deleteResult = [];
 
-    await deleteTimeEntry('te-raced-delete', raced.actor);
+    await expect(deleteTimeEntry('te-raced-delete', raced.actor))
+      .rejects.toMatchObject({ status: 409, code: 'ENTRY_DELETE_LOST' });
 
     expect(raced.recordAuditMutation).not.toHaveBeenCalled();
+    expect(dbMocks.insertedValues).toHaveLength(0);
+    expect(emitMock).not.toHaveBeenCalled();
   });
 
   it('records only returned mixed-org bulk rows, preserving a NULL partner-level org', async () => {
@@ -1414,6 +1419,7 @@ describe('time_entry feed comments', () => {
 
   it('deleteTimeEntry on a ticket-linked entry inserts a ticketComments row with removed wording', async () => {
     dbMocks.selectResults.push([{ id: 'te-4', userId: 'u-1', isApproved: false, partnerId: 'p-1', ticketId: 't-3', durationMinutes: 45 }]);
+    dbMocks.deleteResult = [{ id: 'te-4', orgId: null }];
     await deleteTimeEntry('te-4', ACTOR);
     const commentVals = dbMocks.insertedValues[0]!;
     expect(commentVals.ticketId).toBe('t-3');
@@ -1425,6 +1431,7 @@ describe('time_entry feed comments', () => {
 
   it('deleting a running (null-duration) entry produces "removed a time entry" with no duration', async () => {
     dbMocks.selectResults.push([{ id: 'te-5', userId: 'u-1', isApproved: false, partnerId: 'p-1', ticketId: 't-4', durationMinutes: null }]);
+    dbMocks.deleteResult = [{ id: 'te-5', orgId: null }];
     await deleteTimeEntry('te-5', ACTOR);
     const commentVals = dbMocks.insertedValues[0]!;
     expect(String(commentVals.content)).toBe('Tess removed a time entry');

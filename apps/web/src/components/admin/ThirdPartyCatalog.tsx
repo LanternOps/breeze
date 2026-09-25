@@ -8,6 +8,7 @@ import ThirdPartyCatalogEditor, { type CatalogEditorInitial } from './ThirdParty
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+import { useStableT } from '@/lib/i18n/useStableT';
 
 const testResultStyles: Record<string, string> = {
   pass: 'bg-green-100 text-green-800',
@@ -53,6 +54,7 @@ type PendingTest = {
 
 export default function ThirdPartyCatalog() {
   const { t } = useTranslation('admin');
+  const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [items, setItems] = useState<CatalogEntry[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -89,18 +91,18 @@ export default function ThirdPartyCatalog() {
           setTotal(0);
           return;
         }
-        throw new Error(t('admin.thirdPartyCatalog.errors.load'));
+        throw new Error(stableT('admin.thirdPartyCatalog.errors.load'));
       }
       setRequiresPlatformAdmin(false);
       const data = await response.json();
       setItems(data.items ?? []);
       setTotal(data.total ?? 0);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('admin.thirdPartyCatalog.errors.generic'));
+      setError(err instanceof Error ? err.message : stableT('admin.thirdPartyCatalog.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [search, showOnlyTested, t]);
+  }, [search, showOnlyTested, stableT]);
 
   useEffect(() => {
     const timer = setTimeout(fetchCatalog, search ? 250 : 0);

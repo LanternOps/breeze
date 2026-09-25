@@ -284,6 +284,7 @@ describe('Device routes — permission / site / MFA gates (security-launch-fixes
       `/devices/${ACCESSIBLE_DEVICE.id}/sessions/active`,
       `/devices/${ACCESSIBLE_DEVICE.id}/eventlogs`,
       `/devices/${ACCESSIBLE_DEVICE.id}/management-posture`,
+      '/devices?hardwareHealth=critical',
     ];
     for (const path of readPaths) {
       it(`denies a role without devices:read on GET ${path}`, async () => {

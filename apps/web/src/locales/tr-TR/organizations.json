@@ -88,7 +88,8 @@
         "viewAll": "Tüm uyarıları görüntüle"
       },
       "lastActivity": "Son etkinlik {{date}}",
-      "noSummary": "Özet sayılar şu anda kullanılamıyor."
+      "noSummary": "Özet sayılar şu anda kullanılamıyor.",
+      "archivedNotice": "Arşivlenmiş kuruluşlar için genel bakış verileri gösterilmez."
     },
     "archived": {
       "banner": "Bu kuruluş arşivlendi ve salt okunur. Değişiklik yapmak için geri yükleyin.",
@@ -96,6 +97,9 @@
     },
     "lifecycle": {
       "inaccessible": "Bu kuruluş {{status}} durumunda, bu nedenle canlı verileri kullanılamıyor. Yine de kuruluşlar listesinde görebilirsiniz.",
+      "unknownTitle": "Kuruluş",
+      "inaccessibleHistoryOnly": "Bu kuruluş etkin değil, bu nedenle canlı verileri kullanılamıyor. Rapor geçmişi aşağıda hâlâ görüntülenebilir.",
+      "genericStatusLabel": "etkin değil",
       "backToList": "Kuruluşlara dön"
     },
     "reportHistory": {

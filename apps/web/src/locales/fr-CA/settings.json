@@ -99,6 +99,7 @@
     "name": "Nom",
     "principalDescription": "Description",
     "scopes": "Portées",
+    "noScopes": "Aucune portée accordée",
     "sourceCidrs": "IP ou CIDR sources (une par ligne)",
     "writeScopeRestrictionsRequired": "La portée enrollment-keys:write exige une date d'expiration et au moins une IP ou un CIDR source.",
     "expiresAt": "Expire le",
@@ -519,6 +520,25 @@
       "communications": "Communications",
       "branding": "Image de marque"
     },
+    "aiFeatures": {
+      "anomalies": {
+        "title": "Détection des anomalies",
+        "description": "Détection statistique de comportements inhabituels du CPU, de la mémoire, du disque et du réseau sur les appareils gérés. Il s'agit des valeurs par défaut pour chaque organisation ; une organisation peut les remplacer depuis son propre onglet IA.",
+        "enabled": "Détecter les anomalies",
+        "enabledDescription": "Exécute le détecteur d'anomalies toutes les 10 minutes et affiche les résultats dans l'onglet Anomalies de chaque appareil.",
+        "createAlerts": "Créer des alertes à partir des anomalies",
+        "createAlertsDescription": "Transforme les anomalies confirmées en alertes afin qu'elles atteignent vos itinéraires de notification."
+      },
+      "inheritanceNote": "Les modifications s'appliquent à chaque organisation qui n'a pas défini son propre remplacement.",
+      "saved": "Enregistré",
+      "saveFailed": "Impossible de modifier ce paramètre",
+      "remediation": {
+        "title": "Solutions proposées",
+        "description": "Suggestions de correction générées par l'IA sur la page de détail de l'alerte. C'est la valeur par défaut pour chaque organisation; une organisation peut la remplacer dans son propre onglet IA.",
+        "enabled": "Générer des solutions proposées",
+        "enabledDescription": "Permettre aux techniciens de générer des solutions proposées pour une alerte depuis sa page de détail."
+      }
+    },
     "tabs": {
       "company": {
         "label": "Entreprise",
@@ -568,6 +588,10 @@
       "aiProvider": {
         "label": "Fournisseur d'IA",
         "description": "Utilisez votre propre clé Anthropic"
+      },
+      "aiFeatures": {
+        "label": "Fonctionnalités IA",
+        "description": "Valeurs par défaut de la détection d'anomalies et des solutions proposées"
       },
       "branding": {
         "label": "Image de marque",
@@ -963,6 +987,16 @@
     }
   },
   "m365Mailbox": {
+    "consentNotCompleted": "Consentement non terminé",
+    "consentNotCompletedHint": "La connexion Microsoft pour cette boîte aux lettres n’a pas été terminée à temps; elle ne se connectera donc pas d’elle-même. Relancez le consentement ou déconnectez-la.",
+    "retryConsent": "Relancer le consentement",
+    "redirectUriLabel": "URI de redirection à inscrire dans l’application Microsoft Entra",
+    "redirectUriHint": "Elle doit correspondre exactement, et vous devez ouvrir Breeze avec le même schéma et le même hôte lors de la connexion, sinon la connexion ne peut pas aboutir.",
+    "callbackReason": {
+      "binding_mismatch": "Échec de la connexion à Microsoft 365 : le navigateur est revenu sans son témoin de connexion. Ouvrez Breeze à la même adresse que l’URI de redirection (le schéma et l’hôte doivent correspondre), autorisez les témoins et réessayez.",
+      "invalid_callback": "Échec de la connexion à Microsoft 365 : Microsoft a renvoyé une réponse inattendue. Réessayez la connexion.",
+      "expired": "Échec de la connexion à Microsoft 365 : le lien de connexion a expiré ou a déjà été utilisé. Réessayez la connexion."
+    },
     "connected": "Boîte aux lettres connectée",
     "consentGranted": "Consentement accordé — repérez la boîte aux lettres avec la politique d’accès à l’application ci-dessous, puis retestez",
     "consentAttention": "Le consentement de la boîte aux lettres nécessite l’attention de l’administrateur.",
@@ -991,6 +1025,38 @@
     "displayName": "Nom d’affichage (optionnel)",
     "namePlaceholder": "Soutien",
     "connect": "Connecter"
+  },
+  "gmailMailbox": {
+    "title": "Boîte aux lettres d'assistance Google Workspace",
+    "description": "Connectez une boîte aux lettres Google Workspace pour que les courriels des clients deviennent des tickets. La délégation à l'échelle du domaine est utilisée : aucune modification MX ou de transfert, et aucune redirection OAuth.",
+    "connectHint": "La boîte aux lettres est lue avec la connexion par compte de service Google Workspace de l'organisation sélectionnée, qui détient donc ses identifiants. Pour une boîte aux lettres appartenant au partenaire (comme votre propre help@), choisissez l'organisation dont l'espace Workspace contient la boîte. Saisissez la boîte aux lettres d'assistance partagée pour la connecter.",
+    "status": {
+      "pending_consent": "En attente",
+      "connected": "Connectée",
+      "error": "Besoin d’attention",
+      "reauth_required": "Réauthentification requise",
+      "disabled": "Désactivée"
+    },
+    "reauthRequired": "La relève Gmail est suspendue pour cette boîte aux lettres. Reconnectez-la pour reprendre : le compte de service doit peut-être être réautorisé, sa connexion Google Workspace est peut-être inactive, ou la boîte correspond désormais à un autre compte Google.",
+    "reconnect": "Reconnecter",
+    "reconnectNoOrg": "Cette connexion n'a plus d'organisation et ne peut pas être reconnectée ici.",
+    "disconnect": "Déconnecter",
+    "disconnected": "Boîte aux lettres déconnectée",
+    "disconnectFailed": "Échec de la déconnexion.",
+    "connected": "Boîte aux lettres connectée",
+    "connectFailed": "Impossible de connecter la boîte aux lettres Gmail.",
+    "empty": "Aucune boîte aux lettres Gmail connectée pour l'instant.",
+    "loadError": "Impossible de charger les connexions de boîtes aux lettres Gmail. Actualisez pour réessayer.",
+    "orgsLoadError": "Impossible de charger les organisations. Actualisez pour réessayer.",
+    "organization": "Organisation",
+    "selectOrg": "Sélectionnez une organisation",
+    "address": "Adresse de boîte aux lettres",
+    "addressPlaceholder": "assistance@example.com",
+    "displayName": "Nom d’affichage (optionnel)",
+    "namePlaceholder": "Soutien",
+    "connect": "Connecter",
+    "credentialOrg": "Identifiants : connexion Google Workspace de {{org}}",
+    "credentialOrgUnknown": "une organisation que vous ne pouvez pas voir"
   },
   "orgApprovalSecurityTab": {
     "title": "Sécurité de l’approbation",
@@ -4654,7 +4720,32 @@
       "externalProcessing": "Autoriser l’analyse IA en bac à sable",
       "externalProcessingDescription": "Permet aux exécutions d’analyse IA d’exécuter du code pour cette organisation dans un bac à sable isolé, sans accès réseau, hébergé dans la région de cette organisation. Désactivé par défaut.",
       "externalProcessingSaved": "Enregistré",
-      "externalProcessingSaveFailed": "Impossible de modifier ce paramètre"
+      "externalProcessingSaveFailed": "Impossible de modifier ce paramètre",
+      "mlFeatures": {
+        "title": "Détection des anomalies",
+        "description": "Détection statistique de comportements inhabituels du CPU, de la mémoire, du disque et du réseau sur les appareils de cette organisation. Laisser vide applique la valeur par défaut du partenaire.",
+        "anomaliesEnabled": "Détecter les anomalies",
+        "anomaliesEnabledDescription": "Exécute le détecteur d'anomalies toutes les 10 minutes et affiche les résultats dans l'onglet Anomalies de chaque appareil.",
+        "createAlerts": "Créer des alertes à partir des anomalies",
+        "createAlertsDescription": "Transforme les anomalies confirmées en alertes afin qu'elles atteignent vos itinéraires de notification.",
+        "inherit": "Hériter",
+        "inheritOn": "Hériter (activé, {{from}})",
+        "inheritOff": "Hériter (désactivé, {{from}})",
+        "fromPartner": "paramètre du partenaire",
+        "fromDefault": "valeur par défaut de la plateforme",
+        "on": "Activé",
+        "off": "Désactivé",
+        "saved": "Enregistré",
+        "saveFailed": "Impossible de modifier ce paramètre",
+        "killSwitch": "La détection des anomalies est désactivée pour toute la plateforme par l'opérateur. Ces paramètres prendront effet lorsqu'elle sera réactivée.",
+        "remediation": {
+          "title": "Solutions proposées",
+          "description": "Suggestions de correction générées par l'IA pour les alertes de cette organisation. Vide signifie que la valeur par défaut du partenaire s'applique.",
+          "enabled": "Générer des solutions proposées",
+          "enabledDescription": "Permettre aux techniciens de générer des solutions proposées pour une alerte depuis sa page de détail.",
+          "killSwitch": "Les solutions proposées sont désactivées pour toute la plateforme par l'opérateur. Ce paramètre prendra effet lorsqu'elles seront réactivées."
+        }
+      }
     },
     "breadcrumbs": {
       "settings": "Paramètres",

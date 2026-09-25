@@ -64,6 +64,7 @@ import PamTab from './featureTabs/PamTab';
 import VulnerabilityTab from './featureTabs/VulnerabilityTab';
 import DeviceLifecycleTab from './featureTabs/DeviceLifecycleTab';
 import OneDriveHelperTab from './featureTabs/OneDriveHelperTab';
+import HardwareMonitoringTab from './featureTabs/HardwareMonitoringTab';
 import ComplianceStatusTab from './ComplianceStatusTab';
 
 type Tab = 'overview' | FeatureType | 'assignments' | 'compliance_status';
@@ -128,6 +129,7 @@ const featureTabIcons: Record<FeatureType, React.ReactNode> = {
   vulnerability: <ShieldAlert className="h-4 w-4" />,
   device_lifecycle: <Trash2 className="h-4 w-4" />,
   onedrive_helper: <Cloud className="h-4 w-4" />,
+  hardware_monitoring: <HardDrive className="h-4 w-4" />,
 };
 // Which feature tabs the editor renders, in display order. Derived from
 // FEATURE_META keys (not a hand-listed subset) so it stays in lockstep with the
@@ -457,6 +459,7 @@ export default function ConfigPolicyDetailPage({
       case 'vulnerability': return <VulnerabilityTab {...props} />;
       case 'device_lifecycle': return <DeviceLifecycleTab {...props} />;
       case 'onedrive_helper': return <OneDriveHelperTab {...props} />;
+      case 'hardware_monitoring': return <HardwareMonitoringTab {...props} />;
     }
   };
   return (

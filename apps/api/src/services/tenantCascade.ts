@@ -479,6 +479,9 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'device_group_memberships',
   'device_groups',
   'device_hardware',
+  'device_hardware_components',
+  'device_hardware_events',
+  'device_hardware_health',
   'device_ip_history',
   // #2138 — linked multi-boot profiles. The topo-sort deletes `devices` before
   // this (devices carries the FK to device_link_groups), so members are cleared
@@ -530,6 +533,9 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'fleet_remediation_runs',
   'google_workspace_connections',
   'group_membership_log',
+  // W03 Task 12 (#6859): org-scoped, no device_id — the retirement recovery
+  // outbox survives device-delete cascades by design; see hardwareHealth/retirementOutbox.ts.
+  'hardware_alert_retirement_outbox',
   'huntress_agents',
   'huntress_incidents',
   'huntress_integrations',
@@ -549,6 +555,8 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'invoice_payments',
   'invoice_stripe_payments',
   'invoices',
+  // #4628 W04b: snapshot of the dropped labour-pricing columns (org rows carry org_id).
+  'legacy_labour_pricing_archive',
   'llm_egress_events',
   'local_vaults',
   'log_correlation_rules',
@@ -820,6 +828,13 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // partner_id sweep (information_schema-driven), not a static list; this
   // entry only covers the org-owned axis of the GDPR org cascade.
   'ticket_forms',
+  // ticket_mailbox_connections: Gmail rows carry org_id (Microsoft rows are
+  // partner-scoped, org_id NULL and not matched by the org cascade). In the org
+  // cascade so a merge repoints the Gmail row (REPOINT_TABLES) instead of the FK
+  // cascade-deleting it with the loser org (#6592). localeCompare: 'ticket_forms'
+  // < 'ticket_mailbox_connections' < 'ticket_outbox' ('f' < 'm' < 'o'); it
+  // precedes its FK parent 'organizations'.
+  'ticket_mailbox_connections',
   // ticket_outbox (wave 6 PR 3, #3828): transactional outbox for ticket
   // lifecycle events. Shape 1 (direct org_id, RLS-scoped — unlike
   // intent_outbox, which is intentionally unscoped). ticket_id FK is ON
