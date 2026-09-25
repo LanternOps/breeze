@@ -5612,3 +5612,59 @@ describe('#6607 — onOpen survives a markOnline DB failure', () => {
     }
   });
 });
+
+// #6836: same shape as #6607, but for onClose's markOffline path. The inner
+// try/catch there only covers the query/transition body — when the context
+// PROLOGUE itself fails (a `DbAccessContextPrologueTimeoutError`), the
+// rejection used to escape the whole `runWithAgentDbAccess` call, the WS
+// adapter drops the promise onClose returns, and it surfaced as a
+// process-level unhandled rejection while the device was never marked
+// offline here (left for the offline detector, which is the intended
+// fallback — just not via an unhandled rejection).
+describe('#6836 — onClose survives a markOffline context-prologue failure', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(withDbAccessContext).mockImplementation((async (_ctx: any, fn: any) => fn()) as never);
+    vi.mocked(publishEvent).mockResolvedValue('event-id');
+  });
+
+  afterEach(() => {
+    vi.mocked(withDbAccessContext).mockImplementation((async (_ctx: any, fn: any) => fn()) as never);
+  });
+
+  it('resolves (does not reject) and reports the failure, leaving the row for the offline detector', async () => {
+    const markOfflineFailure = new Error(
+      'RLS GUC prologue for withDbAccessContext(agentWs.onClose.markOffline) did not complete within 15000ms',
+    );
+
+    // onOpen must succeed normally so the connection is registered as
+    // active — onClose's markOffline branch only runs for the current
+    // connection.
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) } as never);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as never);
+
+    const handlers = createAgentWsHandlers('agent-6836', {
+      deviceId: 'device-6836', orgId: 'org-6836', partnerId: 'partner-6836',
+    });
+    const ws = wsMock();
+    await handlers.onOpen({}, ws as never);
+
+    // Now make only the onClose markOffline context prologue reject.
+    vi.mocked(withDbAccessContext).mockImplementation((async (ctx: any, fn: any) => {
+      if (ctx?.label === 'agentWs.onClose.markOffline') throw markOfflineFailure;
+      return fn();
+    }) as never);
+    transitionDeviceOfflineMock.mockClear();
+
+    // The bug: this rejected instead of resolving, which the WS adapter
+    // drops as a process-level unhandled rejection.
+    await expect(handlers.onClose({}, ws as never)).resolves.toBeUndefined();
+
+    // The offline detector remains the fallback — no transition attempted
+    // here since the context never opened to run the body.
+    expect(transitionDeviceOfflineMock).not.toHaveBeenCalled();
+
+    // The failure is reported, not swallowed.
+    expect(captureException).toHaveBeenCalledWith(markOfflineFailure);
+  });
+});
