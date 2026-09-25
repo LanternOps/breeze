@@ -30,8 +30,8 @@ const createSsoProviderSchema = (t: TFunction) => z.object({
   defaultRoleId: z.string().optional(),
   allowedDomains: z.string().optional(),
   enforceSSO: z.boolean(),
-  // #4018: whether Breeze accepts the IdP's own MFA assertion (`amr: mfa` in
-  // the id_token) as satisfying MFA-gated routes. Off by default — the API
+  // #4018: whether Breeze accepts the IdP's own MFA assertion (`amr: mfa` or
+  // `amr: phr` in the id_token) as satisfying MFA-gated routes. Off by default — the API
   // schemas (createProviderSchema/updateProviderSchema) already mark it
   // optional and default it to false; this mirrors that on the client.
   trustsIdpMfa: z.boolean()

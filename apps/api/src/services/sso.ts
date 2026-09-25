@@ -252,7 +252,8 @@ export interface IDTokenClaims {
   email_verified?: boolean | string;
   name?: string;
   // OIDC authentication context (RFC 8176 / OIDC Core §2). `amr` lists the
-  // authentication methods the IdP used; `mfa` means multi-factor was performed.
+  // authentication methods the IdP used; `mfa` means multi-factor was performed
+  // and `phr` means phishing-resistant authentication (e.g. a passkey).
   amr?: string[];
   acr?: string;
   /** OIDC Core §2: seconds since epoch of the END-USER's authentication.
@@ -262,14 +263,23 @@ export interface IDTokenClaims {
 }
 
 /**
- * True when the IdP's id_token attests that multi-factor authentication was
- * performed — `amr` contains the RFC 8176 `mfa` method reference. This is only
- * trusted when the provider opts in via `trustsIdpMfa`; an org that does not
- * opt in always gets `mfa:false` (fail-safe). Never used to satisfy the L4
- * step-up, which independently re-verifies a Breeze-held factor.
+ * RFC 8176 method references accepted as satisfying trusted upstream MFA:
+ * `mfa` (multiple-factor authentication) and `phr` (phishing-resistant
+ * authentication, e.g. a passkey / WebAuthn login — #6137). Exact,
+ * case-sensitive matches only; deliberately closed. Single-factor references
+ * (`hwk`, `swk`, `otp`, `pwd`, …) never qualify on their own.
+ */
+const IDP_MFA_AMR_VALUES: readonly string[] = ['mfa', 'phr'];
+
+/**
+ * True when the IdP's id_token attests strong authentication — `amr` contains
+ * one of `IDP_MFA_AMR_VALUES`. This is only trusted when the provider opts in
+ * via `trustsIdpMfa`; an org that does not opt in always gets `mfa:false`
+ * (fail-safe). Never used to satisfy the L4 step-up, which independently
+ * re-verifies a Breeze-held factor.
  */
 export function idpAssertedMfa(claims: Pick<IDTokenClaims, 'amr'>): boolean {
-  return Array.isArray(claims.amr) && claims.amr.includes('mfa');
+  return Array.isArray(claims.amr) && claims.amr.some((v) => IDP_MFA_AMR_VALUES.includes(v));
 }
 
 /** Tolerance for an IdP clock running ahead of ours. */

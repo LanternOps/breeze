@@ -3485,10 +3485,11 @@ ssoRoutes.get('/callback', async (c) => {
     // IdP-asserted MFA — axis-independent, so it is
     // computed here (above the membership branch) and shared by both the org
     // and partner token payloads. When the provider opts in via `trustsIdpMfa`
-    // AND the verified id_token's `amr` attests multi-factor, propagate
+    // AND the verified id_token's `amr` attests multi-factor (`mfa`) or
+    // phishing-resistant (`phr`, #6137) authentication, propagate
     // mfa:true so the tenant can satisfy Breeze's MFA-gated routes via their
     // IdP. Fail-safe: any provider that hasn't opted in, or an assertion
-    // without the `mfa` amr, yields mfa:false. This claim never satisfies the
+    // without an `mfa`/`phr` amr, yields mfa:false. This claim never satisfies the
     // L4 step-up (requireFreshMfaStepUp re-verifies a Breeze-held TOTP).
     //
     // BUT: trusting an IdP's MFA assertion is NOT the same as the user holding

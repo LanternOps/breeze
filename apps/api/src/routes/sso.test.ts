@@ -106,7 +106,7 @@ vi.mock('../services/ssoBrowserTransition', () => ({
   withLockedSsoProviderAuthority: ssoTransitionMocks.withLockedSsoProviderAuthority,
 }));
 
-vi.mock('../services/sso', () => ({
+vi.mock('../services/sso', async () => ({
   generateState: vi.fn().mockReturnValue('state'),
   generateNonce: vi.fn().mockReturnValue('nonce'),
   generatePKCEChallenge: vi.fn().mockReturnValue({
@@ -128,8 +128,9 @@ vi.mock('../services/sso', () => ({
     if (ev === false || ev === 'false') return 'false';
     return 'absent';
   },
-  // Real logic (not a stub) so the IdP-MFA tests exercise the amr check.
-  idpAssertedMfa: (claims: { amr?: unknown }) => Array.isArray(claims?.amr) && claims.amr.includes('mfa'),
+  // The REAL implementation (not a hand-copied mirror) so the IdP-MFA tests
+  // exercise the actual amr check and cannot drift from it (#6137).
+  idpAssertedMfa: (await vi.importActual<typeof import('../services/sso')>('../services/sso')).idpAssertedMfa,
   mapUserAttributes: vi.fn(),
   discoverOIDCConfig: vi.fn(),
   // SR2-14: getOIDCConfig (defined in the route file, NOT mocked) now calls this
@@ -2454,6 +2455,36 @@ describe('sso routes', () => {
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ mfa: true, mfaSrc: 'idp' }), expect.any(Object));
+    });
+
+    // #6137: a phishing-resistant passkey login (`amr: ["phr"]`, e.g. Pocket ID)
+    // satisfies trusted upstream MFA the same way `mfa` does.
+    it('mints mfa:true when the provider trusts IdP MFA and amr attests phr (#6137)', async () => {
+      wireLinkedLogin({ trustsIdpMfa: true, amr: ['phr'] });
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ mfa: true, mfaSrc: 'idp' }), expect.any(Object));
+    });
+
+    it('mints mfa:false for amr phr when the provider does NOT trust IdP MFA (#6137)', async () => {
+      wireLinkedLogin({ trustsIdpMfa: false, amr: ['phr'] });
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ mfa: false }), expect.any(Object));
+    });
+
+    it('mints mfa:false for a trusted provider asserting only a single-factor hardware key (#6137)', async () => {
+      wireLinkedLogin({ trustsIdpMfa: true, amr: ['hwk'] });
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ mfa: false }), expect.any(Object));
+    });
+
+    it('mints mfa:false for an UNENROLLED user under a required policy, even with a trusted amr:phr assertion (#6137)', async () => {
+      wireLinkedLogin({ trustsIdpMfa: true, amr: ['phr'], policyRequiresMfa: true, userMfaEnabled: false });
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ mfa: false }), expect.any(Object));
     });
 
     it('denies an org-axis SSO identity outside its owning partner allowlist before minting', async () => {
