@@ -51,10 +51,34 @@ import {
   generateRecoveryToken,
   getStringValue,
   hashRecoveryToken,
+  isHelperVersionAtLeast,
   RECOVERY_DOWNLOAD_SESSION_TTL_MS,
   resolveServerUrl,
   toIsoString,
 } from './recoveryBootstrap';
+
+// ── isHelperVersionAtLeast (#5629) ───────────────────────────────────────────
+// Must agree case-for-case with the recovery console's own versionAtLeast
+// (agent/internal/recoveryconsole/console.go, TestVersionAtLeast): if the
+// server's pre-claim gate passed a helper the console then refuses, the
+// one-time code would be burned again.
+
+describe('isHelperVersionAtLeast', () => {
+  it.each([
+    ['0.111.1', '0.100.0', true],
+    ['0.111.1', '0.120.0', false],
+    ['0.100.0', '0.100.0', true],
+    ['1.0.0', '0.999.0', true],
+    ['', '0.1.0', false],
+    ['v0.111.1', '0.111.1', true],
+    ['0.111', '0.111.0', true],
+    ['dev', '0.5.0', false],
+    ['0.111.1-rc1', '0.111.1', false],
+    ['99999999999999999999.0.0', '0.5.0', false],
+  ])('isHelperVersionAtLeast(%j, %j) = %s', (have, want, expected) => {
+    expect(isHelperVersionAtLeast(have, want)).toBe(expected);
+  });
+});
 
 // ── hashRecoveryToken ────────────────────────────────────────────────────────
 

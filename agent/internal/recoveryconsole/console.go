@@ -215,9 +215,17 @@ func (c *Console) Run(ctx context.Context) error {
 		return err
 	}
 
+	// Servers that know the floor refuse too-old media inside the exchange,
+	// before the code is claimed (helper_version_too_old, #5629). This
+	// post-exchange check is the fallback for a server that does not gate
+	// there: the code is already spent and the recovery is media_booted, so
+	// post a terminal `failed` — without it the recovery never leaves
+	// media_booted and blocks every new recovery for the device.
 	if bs.MinHelperVersion != "" && !versionAtLeast(c.Deps.Version, bs.MinHelperVersion) {
+		gateErr := fmt.Errorf("recovery media v%s is older than the server requires (v%s)", c.Deps.Version, bs.MinHelperVersion)
+		c.postProgress(ctx, server, token, bmr.ProgressUpdate{Status: "failed", Reason: "media_too_old: " + gateErr.Error()})
 		c.IO.Print("This recovery media (v%s) is older than the server requires (v%s); download the current ISO.\n", c.Deps.Version, bs.MinHelperVersion)
-		return fmt.Errorf("recovery media v%s is older than the server requires (v%s)", c.Deps.Version, bs.MinHelperVersion)
+		return gateErr
 	}
 
 	disk, err := c.chooseDisk(ctx, ci, answers)
