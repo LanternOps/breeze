@@ -92,7 +92,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   selectMock.mockImplementation(() => chainMock([]));
   insertMock.mockImplementation(() => chainMock([]));
-  updateMock.mockImplementation(() => chainMock([snapshotRow({ fileIndexStatus: 'hydrating' })]));
+  // The claim's RETURNING (#6488) echoes the row the test's first select
+  // loaded, as the real UPDATE would; a test that simulates a concurrent move
+  // overrides the claim result explicitly.
+  updateMock.mockImplementation(() => chainMock([{ id: SNAPSHOT_DB_ID }]));
   deleteMock.mockImplementation(() => chainMock([]));
   transactionMock.mockImplementation(async (cb: any) => cb({
     select: selectMock, insert: insertMock, update: updateMock, delete: deleteMock,
@@ -247,6 +250,34 @@ describe('hydrateSnapshotFileIndex', () => {
     };
     const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
     expect(outcome).toMatchObject({ status: 'complete', entryCount: 2, externalCount: 1, originSnapshotIds: ['snap-older'] });
+  });
+
+  it('pins origins to the org/device the CLAIM returned, not the pre-claim read (#6488: concurrent org-move)', async () => {
+    const MOVED_ORG_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    selectMock
+      .mockReturnValueOnce(chainMock([snapshotRow()])) // pre-claim read: source org
+      .mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]))
+      .mockReturnValueOnce(chainMock([{
+        id: 'origin-db-id', orgId: MOVED_ORG_ID, deviceId: DEVICE_ID, storageIdentity: STORAGE_IDENTITY,
+        metadata: { storagePrefix: null },
+      }]));
+    // The claim waited out a move and re-evaluated against the moved row.
+    updateMock.mockReturnValueOnce(chainMock([{
+      id: SNAPSHOT_DB_ID, orgId: MOVED_ORG_ID, deviceId: DEVICE_ID, snapshotId: 'snap-current', storageIdentity: STORAGE_IDENTITY,
+    }]));
+    const deps = {
+      fetchManifestBytes: vi.fn().mockResolvedValue(
+        manifestBytes([{ sourcePath: '/a', backupPath: 'snapshots/snap-older/files/a.gz', size: 10 }]),
+      ),
+    };
+    const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
+    expect(outcome).toMatchObject({ status: 'complete', originSnapshotIds: ['snap-older'] });
+    const originInsert = insertMock.mock.results
+      .map((r) => (r.value as { values: ReturnType<typeof vi.fn> }).values.mock.calls[0]?.[0])
+      .find((v) => Array.isArray(v) && v.some((row: Record<string, unknown>) => 'originOrgId' in row)) as
+      | Array<Record<string, unknown>>
+      | undefined;
+    expect(originInsert).toEqual([expect.objectContaining({ originSnapshotId: 'snap-older', originOrgId: MOVED_ORG_ID, originDeviceId: DEVICE_ID })]);
   });
 
   it('verifies an origin against a RETIREMENT record when the live row is gone (provenance: retired)', async () => {
