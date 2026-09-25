@@ -91,7 +91,7 @@ func TestSendCommandWithQuiescence_DeliveredResponseBeatsLaterSessionClose(t *te
 // run their bounded recovery rather than treating the command as finished.
 func TestSendCommandWithQuiescence_CloseWithoutResponse_ReturnsUnprovenQuiescence(t *testing.T) {
 	session, clientIPC := createTestSession(t)
-	defer clientIPC.Close()
+	defer func() { _ = clientIPC.Close() }()
 
 	go func() {
 		if _, err := clientIPC.Recv(); err != nil {
