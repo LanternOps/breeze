@@ -808,6 +808,25 @@ it('rechecks retirement after a serialization race and reports already_converted
   await expect(retireSource('alert_templates','source','operator',auth)).rejects.toMatchObject({code:'already_converted'});
   expect(tx.insert).not.toHaveBeenCalled();
 });
+it('a partial sourceIds conversion is re-validated against its own equivalence proof, not the full-set preview', async () => {
+  // Two convertible inline rules. The full-set preview (used to mint
+  // previewHash) is equivalence-clean, but converting only 'r' alone would
+  // leave 'second' live as a legacy source — a real behavior delta that the
+  // full-set proof never checked.
+  m.sources.mockResolvedValue({ ...sources, inlineRules: [rule, { ...rule, id: 'second' }] });
+  m.equivalence.mockImplementation(async (proposal: { bySource: unknown[] }) => (
+    proposal.bySource.length >= 2
+      ? { devicesChecked: 1, deltas: [] }
+      : { devicesChecked: 1, deltas: [{ deviceId: 'd', detail: 'unselected legacy source remains live' }] }
+  ));
+  const preview = await buildPolicyConversionPreview('policy', { userId: 'u', auth });
+  expect(preview.equivalence.deltas).toEqual([]); // full-set proof is clean
+  const { tx } = mutationTx([[{ partnerId: 'p' }], [sources.policy], [], [], [], []]);
+  m.transaction.mockImplementationOnce(async fn => fn(tx));
+  await expect(convertPolicy('policy', preview.previewHash, auth, { sourceIds: ['r'] }))
+    .rejects.toMatchObject({ code: 'equivalence_delta' });
+  expect(m.apply).not.toHaveBeenCalled();
+});
 it('a repeated policy confirmation checks visible completed sources before another ledger write',async()=>{
   const preview=await buildPolicyConversionPreview('policy',{userId:'u',auth});
   const completed={id:'ledger',sourceTable:'config_policy_alert_rules',sourceId:'r',previewHash:preview.previewHash};
