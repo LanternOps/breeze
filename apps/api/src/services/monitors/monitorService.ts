@@ -239,34 +239,50 @@ function listConditions(auth: AuthContext, filters?: MonitorListFilters): SQL | 
   return conditions.length > 0 ? and(...conditions) : undefined;
 }
 
-/**
- * List the caller's visible monitor definitions, ordered by name.
- *
- * `page` is optional: omitted, every visible row is returned (the REST list
- * route relies on this). Supplied, the page is applied in SQL with LIMIT/OFFSET
- * and `id` is added as a tiebreaker so equal names cannot shift between pages.
- */
+/** List the caller's visible monitor definitions, ordered by name (unpaged; the REST list route). */
 export async function listMonitorDefinitions(
   auth: AuthContext,
   filters?: MonitorListFilters,
-  page?: { limit: number; offset: number },
 ): Promise<MonitorDefinitionRow[]> {
-  const where = listConditions(auth, filters);
-  if (!page) {
-    return db
-      .select()
-      .from(monitorDefinitions)
-      .where(where)
-      .orderBy(asc(monitorDefinitions.name));
-  }
-
   return db
     .select()
+    .from(monitorDefinitions)
+    .where(listConditions(auth, filters))
+    .orderBy(asc(monitorDefinitions.name));
+}
+
+/**
+ * One page of the caller's visible monitor definitions, paged in SQL (#6735),
+ * with the total of the whole filtered set.
+ *
+ * The total is a window `count(*) OVER ()` in the SAME statement as the page,
+ * so both come from one snapshot: two separate statements run under READ
+ * COMMITTED can each see a different set, and a concurrent insert or delete
+ * between them would make `total`/`hasMore` disagree with the rows returned.
+ * The window is computed before LIMIT/OFFSET, so it counts the full set.
+ * `id` breaks name ties so rows cannot shift between pages.
+ */
+export async function listMonitorDefinitionsPage(
+  auth: AuthContext,
+  filters: MonitorListFilters | undefined,
+  page: { limit: number; offset: number },
+): Promise<{ rows: MonitorDefinitionRow[]; total: number }> {
+  const where = listConditions(auth, filters);
+  const rows = await db
+    .select({ row: monitorDefinitions, total: sql<number>`count(*) over ()::int` })
     .from(monitorDefinitions)
     .where(where)
     .orderBy(asc(monitorDefinitions.name), asc(monitorDefinitions.id))
     .limit(page.limit)
     .offset(page.offset);
+
+  const first = rows[0];
+  if (first) return { rows: rows.map((r) => r.row), total: Number(first.total) };
+  // No row carries a window total: nothing is visible, or the offset is past
+  // the end. At offset 0 the set is empty; otherwise count it. With an empty
+  // page there are no returned rows the count could disagree with.
+  if (page.offset === 0) return { rows: [], total: 0 };
+  return { rows: [], total: await countMonitorDefinitions(auth, filters) };
 }
 
 /** COUNT(*) over the same visibility + filters as listMonitorDefinitions. */

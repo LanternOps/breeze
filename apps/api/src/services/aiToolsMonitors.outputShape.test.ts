@@ -15,8 +15,7 @@ vi.mock('../db', () => ({
 }));
 
 const monitorsMock = vi.hoisted(() => ({
-  listMonitorDefinitions: vi.fn(),
-  countMonitorDefinitions: vi.fn(),
+  listMonitorDefinitionsPage: vi.fn(),
 }));
 vi.mock('./monitors/monitorService', () => monitorsMock);
 
@@ -27,16 +26,17 @@ const MONITOR_ROW = {
   id: 'id', name: 'medium', kind: 'short', severity: 'short', enabled: 'bool', orgId: 'id',
 } as const;
 /**
- * Stand in for the DB: `count` answers COUNT(*) over the whole visible set and
- * `list` honours the SQL LIMIT/OFFSET it is handed (#6735), so the handler can
- * only report a correct envelope if it passes the page to the service.
+ * Stand in for the DB: the page query honours the SQL LIMIT/OFFSET it is
+ * handed and reports the whole visible set's total from the same call, as the
+ * single window-count statement does (#6735).
  */
 function seedMonitors(n: number): void {
   const all = Array.from({ length: n }, (_, i) => fixtureRow(i, MONITOR_ROW));
-  monitorsMock.countMonitorDefinitions.mockResolvedValue(n);
-  monitorsMock.listMonitorDefinitions.mockImplementation(
-    async (_auth: unknown, _filters: unknown, page?: { limit: number; offset: number }) =>
-      page ? all.slice(page.offset, page.offset + page.limit) : all,
+  monitorsMock.listMonitorDefinitionsPage.mockImplementation(
+    async (_auth: unknown, _filters: unknown, page: { limit: number; offset: number }) => ({
+      rows: all.slice(page.offset, page.offset + page.limit),
+      total: n,
+    }),
   );
 }
 
@@ -83,16 +83,14 @@ describe('list_monitors pages in SQL, not in memory (#6735)', () => {
   type Envelope = { monitors: unknown[]; total: number; showing: number; hasMore: boolean; nextCursor: string | null };
   const call = async (input: Record<string, unknown>) => JSON.parse(await tool.handler(input, auth())) as Envelope;
 
-  it('hands limit/offset and the filters to the service, and counts with the same filters', async () => {
+  it('hands limit/offset and the filters to ONE page call that also returns the total', async () => {
     seedMonitors(60);
-    await call({ kind: 'cpu', enabled: true, limit: 10, offset: 20 });
-    expect(monitorsMock.listMonitorDefinitions).toHaveBeenCalledTimes(1);
-    expect(monitorsMock.listMonitorDefinitions).toHaveBeenCalledWith(
+    const out = await call({ kind: 'cpu', enabled: true, limit: 10, offset: 20 });
+    expect(monitorsMock.listMonitorDefinitionsPage).toHaveBeenCalledTimes(1);
+    expect(monitorsMock.listMonitorDefinitionsPage).toHaveBeenCalledWith(
       expect.anything(), { kind: 'cpu', enabled: true }, { limit: 10, offset: 20 },
     );
-    expect(monitorsMock.countMonitorDefinitions).toHaveBeenCalledWith(
-      expect.anything(), { kind: 'cpu', enabled: true },
-    );
+    expect(out).toMatchObject({ showing: 10, total: 60, hasMore: true });
   });
 
   it('total is the COUNT, not the length of the page', async () => {

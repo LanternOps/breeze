@@ -33,6 +33,7 @@ import {
   deleteMonitorDefinition,
   getMonitorDefinition,
   listMonitorDefinitions,
+  listMonitorDefinitionsPage,
   countMonitorDefinitions,
   MonitorHasDependentsError,
   MonitorOwnershipError,
@@ -551,7 +552,7 @@ describe('Fleet Design savepoint executor propagation (W05c2 Task 16)', () => {
   });
 });
 
-describe('listMonitorDefinitions / countMonitorDefinitions paging (#6735)', () => {
+describe('listMonitorDefinitions / listMonitorDefinitionsPage paging (#6735)', () => {
   /** A select chain that records every builder call and resolves to `rows`. */
   function recordingChain(rows: unknown[]) {
     type Method = 'from' | 'where' | 'orderBy' | 'limit' | 'offset';
@@ -578,28 +579,42 @@ describe('listMonitorDefinitions / countMonitorDefinitions paging (#6735)', () =
     expect(calls.orderBy[0]).toHaveLength(1);
   });
 
-  it('with a page argument applies LIMIT/OFFSET in SQL and a unique id tiebreaker', async () => {
-    const { chain, calls } = recordingChain([]);
+  it('the page applies LIMIT/OFFSET in SQL, a unique id tiebreaker, and a same-statement window total', async () => {
+    const { chain, calls } = recordingChain([
+      { row: { id: 'a' }, total: 60 },
+      { row: { id: 'b' }, total: 60 },
+    ]);
     dbMock.select.mockReturnValue(chain);
 
-    await listMonitorDefinitions(auth(), { kind: 'cpu', enabled: true }, { limit: 25, offset: 50 });
+    const out = await listMonitorDefinitionsPage(auth(), { kind: 'cpu', enabled: true }, { limit: 25, offset: 50 });
 
+    expect(out).toEqual({ rows: [{ id: 'a' }, { id: 'b' }], total: 60 });
+    // One statement: the page and its total cannot come from different snapshots.
+    expect(dbMock.select).toHaveBeenCalledTimes(1);
+    const projection = dbMock.select.mock.calls[0]![0] as Record<string, unknown>;
+    expect(Object.keys(projection).sort()).toEqual(['row', 'total']);
     expect(calls.limit).toEqual([[25]]);
     expect(calls.offset).toEqual([[50]]);
     expect(calls.orderBy[0]).toHaveLength(2);
   });
 
-  it('count uses exactly the page query WHERE and returns a number', async () => {
+  it('an empty first page reports total 0 without a second query', async () => {
+    dbMock.select.mockReturnValue(recordingChain([]).chain);
+    const out = await listMonitorDefinitionsPage(auth(), undefined, { limit: 25, offset: 0 });
+    expect(out).toEqual({ rows: [], total: 0 });
+    expect(dbMock.select).toHaveBeenCalledTimes(1);
+  });
+
+  it('an empty page past the end falls back to a count over exactly the page WHERE', async () => {
     const page = recordingChain([]);
     const count = recordingChain([{ count: 42 }]);
     dbMock.select.mockReturnValueOnce(page.chain).mockReturnValueOnce(count.chain);
     const filters = { kind: 'cpu' as const, enabled: false };
     const caller = auth({ scope: 'partner', orgCondition: () => undefined });
 
-    await listMonitorDefinitions(caller, filters, { limit: 10, offset: 0 });
-    const total = await countMonitorDefinitions(caller, filters);
+    const out = await listMonitorDefinitionsPage(caller, filters, { limit: 10, offset: 500 });
 
-    expect(total).toBe(42);
+    expect(out).toEqual({ rows: [], total: 42 });
     expect(count.calls.limit).toHaveLength(0);
     expect(count.calls.offset).toHaveLength(0);
     expect(count.calls.where[0]).toEqual(page.calls.where[0]);
