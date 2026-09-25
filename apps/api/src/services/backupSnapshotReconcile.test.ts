@@ -95,6 +95,15 @@ vi.mock('../jobs/backupRetention', () => ({
 
 const listBackupObjectsUnderPrefixMock = vi.fn();
 const fetchBackupObjectTextMock = vi.fn();
+// #6843: reconcile must stream the destination listing (iterateBackupObjectsUnderPrefix)
+// rather than collect it into one array (listBackupObjectsUnderPrefix) — the same
+// full-bucket materialization #6834 removed from the GC sweep. By default this
+// adapter delegates to listBackupObjectsUnderPrefixMock and re-yields its
+// resolved array as a single page, so the large existing body of
+// `listBackupObjectsUnderPrefixMock.mockResolvedValue([...])` fixtures below
+// keeps working unchanged. Tests that need to prove genuine multi-page
+// streaming set their own `iterateBackupObjectsUnderPrefixMock.mockImplementation`.
+const iterateBackupObjectsUnderPrefixMock = vi.fn();
 vi.mock('./backupSnapshotStorage', () => ({
   BACKUP_SNAPSHOT_ROOT_DIR: 'snapshots',
   BACKUP_SNAPSHOT_MANIFEST_KEY: 'manifest.json',
@@ -102,6 +111,14 @@ vi.mock('./backupSnapshotStorage', () => ({
   backupSnapshotManifestKey: (id: string) => `snapshots/${id}/manifest.json`,
   listBackupObjectsUnderPrefix: (...args: unknown[]) =>
     listBackupObjectsUnderPrefixMock(...(args as [])),
+  iterateBackupObjectsUnderPrefix: (...args: unknown[]) => {
+    const override = iterateBackupObjectsUnderPrefixMock.getMockImplementation();
+    if (override) return override(...(args as []));
+    return (async function* () {
+      const items = await listBackupObjectsUnderPrefixMock(...(args as []));
+      if (items && items.length > 0) yield items;
+    })();
+  },
   fetchBackupObjectText: (...args: unknown[]) => fetchBackupObjectTextMock(...(args as [])),
 }));
 
@@ -200,6 +217,7 @@ describe('reconcileOrphanedBackupSnapshots', () => {
     vi.clearAllMocks();
     whereArgs.length = 0;
     listBackupObjectsUnderPrefixMock.mockReset();
+    iterateBackupObjectsUnderPrefixMock.mockReset();
     fetchBackupObjectTextMock.mockReset();
     applyBackupCommandResultToJobMock.mockReset();
     applyBackupCommandResultToJobMock.mockResolvedValue({
@@ -276,6 +294,33 @@ describe('reconcileOrphanedBackupSnapshots', () => {
     });
     expect(call.result.snapshot.files).toHaveLength(2);
     expect(call.result.metadata.storagePrefix).toBe('snapshots/snap-1');
+  });
+
+  // #6843: reconcile must never materialize the whole destination listing —
+  // it has to fold a MULTI-PAGE stream (as the real S3/local listers page)
+  // directly into the manifest-bearing-snapshot map, never assuming a single
+  // array. Before the fix, reconcile called listBackupObjectsUnderPrefix (the
+  // array collector) and this test's second page would simply never be
+  // fetched/considered by the production code path under test.
+  it('folds a multi-page listing stream without materializing it as one array', async () => {
+    listBackupObjectsUnderPrefixMock.mockRejectedValue(
+      new Error('reconcile must not call the array-collecting listBackupObjectsUnderPrefix'),
+    );
+    iterateBackupObjectsUnderPrefixMock.mockImplementation(async function* () {
+      yield [{ key: 'snapshots/snap-1/manifest.json', lastModified: new Date('2026-08-01T10:20:00Z') }];
+      yield [{ key: 'snapshots/snap-2/manifest.json', lastModified: new Date('2026-08-01T10:21:00Z') }];
+    });
+    fetchBackupObjectTextMock.mockImplementation((input: { key: string }) => {
+      const id = input.key.includes('snap-1') ? 'snap-1' : 'snap-2';
+      return Promise.resolve(manifest(id));
+    });
+    queueSelects(baseSelects());
+
+    const result = await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+
+    expect(listBackupObjectsUnderPrefixMock).not.toHaveBeenCalled();
+    expect(result.snapshotsInStorage).toBe(2);
+    expect(result.candidates.map((c) => c.snapshotId).sort()).toEqual(['snap-1', 'snap-2']);
   });
 
   // --- cross-tenant negatives ------------------------------------------------
