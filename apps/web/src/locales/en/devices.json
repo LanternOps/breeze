@@ -1374,6 +1374,7 @@
     "moveUp": "Move up",
     "moveDown": "Move down",
     "hidden": "Hidden",
+    "customFields": "Custom Fields",
     "resetToDefaults": "Reset to defaults",
     "selected": "selected",
     "bulkActions": "Bulk Actions",

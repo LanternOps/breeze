@@ -86,6 +86,11 @@ import {
   type ColumnId,
 } from "./columnVisibility";
 import {
+  readVisibleCustomFieldKeys,
+  writeVisibleCustomFieldKeys,
+} from "./customFieldColumnVisibility";
+import { useCustomFieldDefinitionsStore } from "../../stores/customFieldDefinitions";
+import {
   densityTableClasses,
   readDensity,
   subscribeDensity,
@@ -227,6 +232,12 @@ export type Device = {
    */
   maintenanceUntil?: string | null;
   tags: string[];
+  /**
+   * Custom field values (#6594), agent rows only — keyed by fieldKey, same
+   * shape DeviceInfoTab reads for the device-detail "Custom fields" section.
+   * Powers the opt-in custom field columns; undefined for network/manual rows.
+   */
+  customFields?: Record<string, unknown> | null;
   lastUser?: string;
   uptimeSeconds?: number;
   enrolledAt?: string;
@@ -850,6 +861,34 @@ export default function DeviceList({
   );
   const [columnsMenuOpen, setColumnsMenuOpen] = useState(false);
   const columnsMenuRef = useRef<HTMLDivElement>(null);
+  // Custom field columns (#6594) — additive, NOT part of ColumnId/COLUMN_IDS
+  // (see customFieldColumnVisibility.ts for why). Definitions come from the
+  // same store the advanced filter picker uses; visibility is a separate,
+  // independently persisted set of fieldKeys.
+  const customFieldDefinitions = useCustomFieldDefinitionsStore((s) => s.definitions);
+  const fetchCustomFieldDefinitions = useCustomFieldDefinitionsStore(
+    (s) => s.fetchCustomFieldDefinitions,
+  );
+  useEffect(() => {
+    void fetchCustomFieldDefinitions();
+  }, [fetchCustomFieldDefinitions]);
+  const [visibleCustomFieldKeys, setVisibleCustomFieldKeys] = useState<
+    ReadonlySet<string>
+  >(() => readVisibleCustomFieldKeys());
+  const toggleCustomFieldColumn = (fieldKey: string) => {
+    setVisibleCustomFieldKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(fieldKey)) next.delete(fieldKey);
+      else next.add(fieldKey);
+      writeVisibleCustomFieldKeys(next);
+      return next;
+    });
+  };
+  // Definitions currently both known to the org/partner AND toggled on —
+  // a stale key from localStorage (field deleted since) silently drops.
+  const visibleCustomFieldDefs = customFieldDefinitions.filter((d) =>
+    visibleCustomFieldKeys.has(d.fieldKey),
+  );
   // Table density reflects the account-wide preference (breeze.density),
   // which is now set from the top-bar theme/display menu. Subscribe so the
   // table re-renders when it changes, without a reload.
@@ -2385,6 +2424,36 @@ export default function DeviceList({
     },
   };
 
+  // Custom field columns (#6594) — additive, rendered after the static
+  // columns (see customFieldColumnVisibility.ts for why they're not folded
+  // into columnDefs above). No sort support in this slice: sortField/
+  // sortValue are keyed by the closed ColumnId union, and threading a
+  // per-org dynamic key through them is the same exhaustive-Record problem
+  // this design sidesteps.
+  const formatCustomFieldValue = (value: unknown): React.ReactNode => {
+    if (value === null || value === undefined || value === "") return dash;
+    if (typeof value === "boolean") return value ? t("common:labels.yes") : t("common:labels.no");
+    if (Array.isArray(value)) return value.length > 0 ? value.join(", ") : dash;
+    return String(value);
+  };
+  const customColumnHeader = (def: (typeof visibleCustomFieldDefs)[number]) => (
+    <th key={`custom.${def.fieldKey}`} className="px-3 py-3 text-left text-xs font-medium text-muted-foreground">
+      {def.name}
+    </th>
+  );
+  const customColumnCell = (def: (typeof visibleCustomFieldDefs)[number], device: Device) => {
+    const value = device.customFields?.[def.fieldKey];
+    return (
+      <td
+        key={`custom.${def.fieldKey}`}
+        className="max-w-[200px] px-3 py-3 text-sm text-muted-foreground"
+        data-testid={`device-${device.id}-custom-${def.fieldKey}`}
+      >
+        <span className="block truncate">{formatCustomFieldValue(value)}</span>
+      </td>
+    );
+  };
+
   // Bulk-menu Compare item. DeviceCompare accepts at most COMPARE_MAX_DEVICES,
   // so above that the item renders disabled with the cap as its label + title
   // instead of disappearing (#5023 paper cut). Shared by the active and the
@@ -2583,6 +2652,29 @@ export default function DeviceList({
                         <span>{COLUMN_LABELS[id]}</span>
                       </label>
                     ))}
+                  {customFieldDefinitions.length > 0 && (
+                    <>
+                      <hr className="my-1" />
+                      <p className="px-2 pt-0.5 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                        {t("deviceList.customFields")}{" "}
+                      </p>
+                      {customFieldDefinitions.map((def) => (
+                        <label
+                          key={def.id}
+                          className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted"
+                        >
+                          <input
+                            type="checkbox"
+                            data-testid={`custom-column-toggle-${def.fieldKey}`}
+                            checked={visibleCustomFieldKeys.has(def.fieldKey)}
+                            onChange={() => toggleCustomFieldColumn(def.fieldKey)}
+                            className="h-4 w-4 rounded border-border"
+                          />
+                          <span>{def.name}</span>
+                        </label>
+                      ))}
+                    </>
+                  )}
                   <hr className="my-1" />
                   <button
                     type="button"
@@ -2803,6 +2895,7 @@ export default function DeviceList({
                 />
               </th>
               {renderedColumns.map((id) => columnDefs[id].header())}
+              {visibleCustomFieldDefs.map((def) => customColumnHeader(def))}
               <th className="px-3 py-3 text-right">
                 {t("deviceList.actions")}
               </th>
@@ -2814,6 +2907,7 @@ export default function DeviceList({
                 <td
                   colSpan={
                     renderedColumns.length +
+                    visibleCustomFieldDefs.length +
                     2 /* checkbox + Actions; renderedColumns already drops flag-gated columns */
                   }
                   className="px-3 py-6 text-center text-sm text-muted-foreground"
@@ -2920,6 +3014,7 @@ export default function DeviceList({
                       </div>
                     </td>
                     {renderedColumns.map((id) => columnDefs[id].cell(device))}
+                    {visibleCustomFieldDefs.map((def) => customColumnCell(def, device))}
                     <td
                       className="px-3 py-3 text-sm"
                       onClick={(e) => e.stopPropagation()}
@@ -3272,7 +3367,7 @@ export default function DeviceList({
                       >
                         <td
                           colSpan={
-                            renderedColumns.length + 2 /* checkbox + Actions */
+                            renderedColumns.length + visibleCustomFieldDefs.length + 2 /* checkbox + Actions */
                           }
                           className="border-l-2 border-l-primary/40 px-3 py-1.5"
                         >
@@ -3305,7 +3400,7 @@ export default function DeviceList({
                     >
                       <td
                         colSpan={
-                          renderedColumns.length + 2 /* checkbox + Actions */
+                          renderedColumns.length + visibleCustomFieldDefs.length + 2 /* checkbox + Actions */
                         }
                         className="px-3 py-1.5"
                       >
