@@ -1443,22 +1443,39 @@ describe('analytics routes', () => {
 // (apps/web/src/components/analytics/QueryBuilder.tsx `metricNamesByType`)
 // must never offer a metric name with no `metricColumnMap` entry here —
 // selecting one silently returns a series with no data (see the `warning`
-// branch in the `/analytics/query` handler above). `apps/web` must not
-// import `@breeze/api` (apps/web/src/lib/packageIdValidation.ts), so this
-// is a deliberately DUPLICATED copy of the picker's offered metric values —
-// keep it in sync with QueryBuilder.tsx's `metricNamesByType` by hand.
-const QUERY_BUILDER_OFFERED_METRICS = [
-  'CPU Utilization',
-  'Memory Utilization',
-  'Disk Usage',
-  'Network Throughput',
-];
-
+// branch in the `/analytics/query` handler above).
+//
+// `apps/web` must not import `@breeze/api` (apps/web/src/lib/
+// packageIdValidation.ts), so this test can't import QueryBuilder.tsx's
+// metric list directly either. Rather than hand-duplicating that list as a
+// literal here (which would go stale silently — a future edit to
+// QueryBuilder.tsx's `metricNamesByType` with no matching edit to this file
+// would leave this test green), it reads QueryBuilder.tsx's source text and
+// extracts the `value: '...'` entries itself, so the check stays live
+// against whatever the picker actually offers.
 describe('QueryBuilder metric picker vs metricColumnMap (#6832)', () => {
-  it('every metric the web picker offers has a metricColumnMap entry', () => {
-    const missing = QUERY_BUILDER_OFFERED_METRICS.filter(
-      (metric) => !(metric in metricColumnMap)
+  it('every metric the web picker offers has a metricColumnMap entry', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const queryBuilderPath = fileURLToPath(
+      new URL('../../../web/src/components/analytics/QueryBuilder.tsx', import.meta.url)
     );
+    const source = readFileSync(queryBuilderPath, 'utf8');
+
+    const metricNamesByTypeMatch = source.match(
+      /const metricNamesByType[^=]*=\s*{([\s\S]*?)\n};/
+    );
+    expect(metricNamesByTypeMatch, 'metricNamesByType block not found in QueryBuilder.tsx — update the extraction regex').toBeTruthy();
+    const metricNamesByTypeBlock = metricNamesByTypeMatch?.[1] ?? '';
+
+    const offeredMetrics = Array.from(
+      metricNamesByTypeBlock.matchAll(/value:\s*'([^']+)'/g)
+    ).map((m) => m[1] ?? '');
+    // Sanity check the extraction itself found something — an empty result
+    // would make the assertion below vacuously pass.
+    expect(offeredMetrics.length).toBeGreaterThan(0);
+
+    const missing = offeredMetrics.filter((metric) => !(metric in metricColumnMap));
     expect(missing).toEqual([]);
   });
 });
