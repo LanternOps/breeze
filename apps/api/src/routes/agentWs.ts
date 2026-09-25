@@ -3534,36 +3534,49 @@ onClose: async (_event: unknown, ws: WSContext) => {
         // Update device status to offline (but preserve 'updating' — let
         // the offline detector handle the timeout for stale updating devices)
         if (agentDb) {
-          await runWithAgentDbAccess('agentWs.onClose.markOffline', async () => {
-            try {
-              const [current] = await db
-                .select({ id: devices.id, siteId: devices.siteId, status: devices.status, hostname: devices.hostname })
-                .from(devices)
-                .where(eq(devices.agentId, agentId))
-                .limit(1);
-              if (!current) {
-                console.warn(`[AgentWs] Device not found for agent ${agentId} on disconnect, skipping status update`);
-                return;
+          // #6836: the inner try/catch below only covers the query/transition
+          // body. When the context PROLOGUE itself fails (observed: a
+          // `DbAccessContextPrologueTimeoutError` during a Postgres stall),
+          // the rejection escapes this whole `runWithAgentDbAccess` call, the
+          // WS adapter drops the promise onClose returns, and it surfaces as
+          // a process-level unhandled rejection — while the device is never
+          // marked offline here. Wrap the entire call: log, report, and fall
+          // back to the offline detector rather than let the rejection escape.
+          try {
+            await runWithAgentDbAccess('agentWs.onClose.markOffline', async () => {
+              try {
+                const [current] = await db
+                  .select({ id: devices.id, siteId: devices.siteId, status: devices.status, hostname: devices.hostname })
+                  .from(devices)
+                  .where(eq(devices.agentId, agentId))
+                  .limit(1);
+                if (!current) {
+                  console.warn(`[AgentWs] Device not found for agent ${agentId} on disconnect, skipping status update`);
+                  return;
+                }
+                if (current.status === 'updating') {
+                  console.log(`[AgentWs] Preserving 'updating' status for agent ${agentId} on disconnect`);
+                  return;
+                }
+                // No publishEvent('device.offline') here: when the row actually
+                // flips, transitionDeviceOffline persists an 'offline-event'
+                // effect whose worker publishes it (offlineTransitionEffects.ts).
+                // Publishing here too fired webhooks/automations twice (#6566).
+                await transitionDeviceOffline(agentId, ['online']);
+              } catch (err) {
+                console.error(`[AgentWs] Failed to check status for ${agentId} on disconnect, falling back to offline:`, err);
+                captureException(err instanceof Error ? err : new Error(String(err)));
+                // The effect path publishes device.offline (see above).
+                await transitionDeviceOffline(agentId, ['online']).catch(fallbackErr => {
+                  console.error(`[AgentWs] Failed to transition ${agentId} offline on fallback:`, fallbackErr);
+                  captureException(fallbackErr instanceof Error ? fallbackErr : new Error(String(fallbackErr)));
+                });
               }
-              if (current.status === 'updating') {
-                console.log(`[AgentWs] Preserving 'updating' status for agent ${agentId} on disconnect`);
-                return;
-              }
-              // No publishEvent('device.offline') here: when the row actually
-              // flips, transitionDeviceOffline persists an 'offline-event'
-              // effect whose worker publishes it (offlineTransitionEffects.ts).
-              // Publishing here too fired webhooks/automations twice (#6566).
-              await transitionDeviceOffline(agentId, ['online']);
-            } catch (err) {
-              console.error(`[AgentWs] Failed to check status for ${agentId} on disconnect, falling back to offline:`, err);
-              captureException(err instanceof Error ? err : new Error(String(err)));
-              // The effect path publishes device.offline (see above).
-              await transitionDeviceOffline(agentId, ['online']).catch(fallbackErr => {
-                console.error(`[AgentWs] Failed to transition ${agentId} offline on fallback:`, fallbackErr);
-                captureException(fallbackErr instanceof Error ? fallbackErr : new Error(String(fallbackErr)));
-              });
-            }
-          });
+            });
+          } catch (err) {
+            console.error(`[AgentWs] agentWs.onClose.markOffline failed for agent ${agentId}; offline detector will correct status:`, err);
+            captureException(err instanceof Error ? err : new Error(String(err)));
+          }
         }
       } else {
         console.log(`Agent ${agentId} stale connection closed (newer connection active). Active connections: ${activeConnections.size}`);
