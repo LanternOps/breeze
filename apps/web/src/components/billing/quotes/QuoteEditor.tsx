@@ -119,6 +119,10 @@ function unresolvedNamesFromMessage(message: string, knownNames: string[]): stri
   return knownNames.filter((name) => message.includes(name));
 }
 
+/** The PDF footer is a single ellipsized line on every page; longer text prints
+ *  truncated and can spill a near-empty last page (#6648). */
+const QUOTE_FOOTER_MAX = 160;
+
 interface Props {
   detail: QuoteDetailData;
   /** Ask the parent to refetch the quote. May report whether the refetch
@@ -190,6 +194,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   const showInternal = showInternalProp ?? fallbackShowInternal;
   const toggleShowInternal = onToggleInternal ?? toggleFallbackShowInternal;
   const { quote, blocks: serverBlocks, lines: serverLines } = detail;
+  const inheritedFooter = detail.branding?.inheritedFooter ?? null;
   const currency = quote.currencyCode;
   useEffect(() => {
     const onDeviceCountsRefreshed = (event: Event) => {
@@ -329,6 +334,11 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   const [pax8Active, setPax8Active] = useState(false);
   const [terms, setTerms] = useState(quote.termsAndConditions ?? '');
   const [termsDirty, setTermsDirty] = useState(false);
+  // Per-quote footer line (`quotes.terms`) — distinct from Terms & Conditions
+  // above (#6648). Blank = inherit the partner/brand footer.
+  const [footer, setFooter] = useState(quote.terms ?? '');
+  const [footerDirty, setFooterDirty] = useState(false);
+  const [footerSaved, flashFooterSaved] = useSavedFlash();
   // Quiet "Saved" cue for the blur-to-save terms field (title moved to the
   // workspace header — see QuoteHeaderMeta).
   const [termsSaved, flashTermsSaved] = useSavedFlash();
@@ -441,6 +451,14 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
     setTerms(termsSeed);
     setTermsDirty(false);
   }
+  // Same render-phase reseed for the footer line (see the #4807 note above).
+  const footerSeed = quote.terms ?? '';
+  const [footerSeededFrom, setFooterSeededFrom] = useState(footerSeed);
+  if (footerSeededFrom !== footerSeed) {
+    setFooterSeededFrom(footerSeed);
+    setFooter(footerSeed);
+    setFooterDirty(false);
+  }
 
   // ---- deposit controls ----------------------------------------------------
   // Local mirrors of the persisted deposit config so the type select + percent
@@ -534,6 +552,25 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
     }, t('quotes.editor.errors.saveTerms'));
     if (ok) flashTermsSaved();
   }, [termsDirty, terms, quote.id, refresh, runScoped, flashTermsSaved, t]);
+
+  // Blank → null, not '': the resolver uses `??`, so an empty string would WIN
+  // over the partner/brand footer and print a blank footer instead of inheriting.
+  const saveFooter = useCallback(async () => {
+    if (!footerDirty) return;
+    const value = footer.trim() === '' ? null : footer.trim();
+    const ok = await runScoped('footer', async () => {
+      await runAction({
+        request: () => fetchWithAuth(`/quotes/${quote.id}`, {
+          method: 'PATCH', body: JSON.stringify({ terms: value }),
+        }),
+        errorFallback: t('quotes.editor.errors.saveFooter'),
+        onUnauthorized: UNAUTHORIZED,
+      });
+      setFooterDirty(false);
+      refresh();
+    }, t('quotes.editor.errors.saveFooter'));
+    if (ok) flashFooterSaved();
+  }, [footerDirty, footer, quote.id, refresh, runScoped, flashFooterSaved, t]);
 
   // Persist a deposit-config change via the quote-header PATCH. runAction surfaces
   // the API's 400 DEPOSIT_* validation message (e.g. "Deposit must be less than the
@@ -740,11 +777,12 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   const unsavedFieldLabel = useMemo(() => {
     if (pending.size > 0) return null;
     if (failedKeys.has('terms') && termsDirty) return t('quotes.editor.terms.title');
+    if (failedKeys.has('footer') && footerDirty) return t('quotes.editor.footer.title');
     for (const id of Object.keys(lineDrafts)) {
       if (failedKeys.has(pendingKey.line(id))) return t('quotes.editor.unsavedField.lines');
     }
     return null;
-  }, [pending.size, failedKeys, termsDirty, lineDrafts, t]);
+  }, [pending.size, failedKeys, termsDirty, footerDirty, lineDrafts, t]);
   useEffect(() => { onUnsavedEditsChange?.(unsavedFieldLabel); }, [unsavedFieldLabel, onUnsavedEditsChange]);
   useEffect(() => () => onUnsavedEditsChange?.(null), [onUnsavedEditsChange]);
 
@@ -3081,6 +3119,41 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
               placeholder={t('quotes.editor.terms.placeholder')}
             />
             <SrSaved show={termsSaved} testId="quote-terms-saved" />
+          </div>
+
+          <div className="rounded-lg border bg-card p-4 shadow-xs">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <label htmlFor="quote-footer" className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.editor.footer.title')}</label>
+              <span className="flex items-center gap-2">
+                <UnsavedBadge show={footerDirty} />
+              </span>
+            </div>
+            <p className="mb-2 text-xs text-muted-foreground" data-testid="quote-footer-helper">
+              {t('quotes.editor.footer.helper')}
+            </p>
+            <input
+              id="quote-footer"
+              type="text"
+              value={footer}
+              maxLength={QUOTE_FOOTER_MAX}
+              onChange={(e) => { setFooter(e.target.value); setFooterDirty(true); }}
+              onBlur={() => { if (canWrite) void saveFooter(); }}
+              disabled={!canWrite || isPending('footer')}
+              data-testid="quote-footer"
+              className={`w-full rounded-md border bg-background px-3 py-2 text-sm transition-colors focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(footerDirty, footerSaved)}`}
+              placeholder={t('quotes.editor.footer.placeholder')}
+            />
+            <div className="mt-1 flex items-start justify-between gap-2 text-xs text-muted-foreground">
+              <p data-testid="quote-footer-inherited">
+                {footer.trim() !== ''
+                  ? null
+                  : inheritedFooter && inheritedFooter.text.trim() !== ''
+                    ? t(inheritedFooter.source === 'partner' ? 'quotes.editor.footer.inheritedPartner' : 'quotes.editor.footer.inheritedBrand', { text: inheritedFooter.text })
+                    : t('quotes.editor.footer.inheritedNone')}
+              </p>
+              <span className="shrink-0 tabular-nums">{t('quotes.editor.footer.counter', { count: footer.length, max: QUOTE_FOOTER_MAX })}</span>
+            </div>
+            <SrSaved show={footerSaved} testId="quote-footer-saved" />
           </div>
         </div>
       </div>

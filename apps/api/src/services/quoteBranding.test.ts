@@ -52,6 +52,20 @@ describe('resolveQuoteBranding', () => {
     expect(b.footer).toBe('portal footer');
   });
 
+  it('inheritedFooter reports the partner footer + source even when quote.terms overrides (#6648)', async () => {
+    queue(basePartner, baseBrand);
+    const b = await resolveQuoteBranding(source({ terms: 'quote terms' }));
+    expect(b.footer).toBe('quote terms');
+    expect(b.inheritedFooter).toEqual({ text: 'partner footer', source: 'partner' });
+  });
+
+  it('inheritedFooter falls to the portal footer, then null (#6648)', async () => {
+    queue({ ...basePartner, invoiceFooter: null }, baseBrand);
+    expect((await resolveQuoteBranding(source())).inheritedFooter).toEqual({ text: 'portal footer', source: 'brand' });
+    queue({ ...basePartner, invoiceFooter: null }, { ...baseBrand, footerText: null });
+    expect((await resolveQuoteBranding(source())).inheritedFooter).toBeNull();
+  });
+
   it('currency: quote → partner → USD fallback', async () => {
     queue(basePartner, baseBrand);
     expect((await resolveQuoteBranding(source({ currencyCode: 'GBP' }))).currencyCode).toBe('GBP');
