@@ -142,7 +142,35 @@ describe('QuoteEditor', () => {
       const input = screen.getByTestId('quote-footer') as HTMLInputElement;
       expect(input.value).toBe('');
       expect(screen.getByTestId('quote-footer-inherited')).toHaveTextContent('Partner footer line');
-      expect(screen.getByTestId('quote-footer-inherited')).toHaveTextContent(/partner/i);
+      expect(screen.getByTestId('quote-footer-inherited')).toHaveTextContent('Using the partner invoice footer');
+    });
+
+    it('labels a brand-kit source, and says so when no default footer exists', async () => {
+      const brand: QuoteDetailData = { ...withInherited(), branding: { ...withInherited().branding!, inheritedFooter: { text: 'Footer X', source: 'brand' } } };
+      const view = render(<QuoteEditor detail={brand} onChanged={vi.fn()} />);
+      expect(screen.getByTestId('quote-footer-inherited')).toHaveTextContent('Using the brand kit footer text');
+      view.unmount();
+      const none: QuoteDetailData = { ...withInherited(), branding: { ...withInherited().branding!, inheritedFooter: null } };
+      render(<QuoteEditor detail={none} onChanged={vi.fn()} />);
+      expect(screen.getByTestId('quote-footer-inherited')).toHaveTextContent('No default footer is set');
+    });
+
+    it('hides the inherited hint once an override is typed, and reseeds from a refetch', async () => {
+      const view = render(<QuoteEditor detail={withInherited()} onChanged={vi.fn()} />);
+      fireEvent.change(screen.getByTestId('quote-footer'), { target: { value: 'Mine' } });
+      expect(screen.getByTestId('quote-footer-inherited')).toBeEmptyDOMElement();
+      view.rerender(<QuoteEditor detail={withInherited({ terms: 'From server' })} onChanged={vi.fn()} />);
+      expect((screen.getByTestId('quote-footer') as HTMLInputElement).value).toBe('From server');
+    });
+
+    it('a failed save keeps the draft and toasts', async () => {
+      fetchMock.mockImplementation(async () => json({ error: 'boom' }, false, 500));
+      render(<QuoteEditor detail={withInherited()} onChanged={vi.fn()} />);
+      const input = screen.getByTestId('quote-footer') as HTMLInputElement;
+      fireEvent.change(input, { target: { value: 'Draft' } });
+      fireEvent.blur(input);
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+      expect(input.value).toBe('Draft');
     });
 
     it('pre-fills an existing override, distinct from Terms & Conditions', async () => {
