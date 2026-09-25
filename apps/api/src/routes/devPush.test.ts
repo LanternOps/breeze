@@ -76,6 +76,8 @@ vi.mock('fs/promises', () => ({
   mkdir: vi.fn().mockResolvedValue(undefined),
   unlink: vi.fn().mockResolvedValue(undefined),
   stat: vi.fn().mockResolvedValue({ size: 1024 }),
+  readdir: vi.fn().mockResolvedValue([]),
+  statfs: vi.fn().mockResolvedValue({ bavail: 1_000_000, bsize: 4096 }),
 }));
 
 vi.mock('fs', () => ({
@@ -98,7 +100,8 @@ vi.mock('fs', () => ({
   }),
 }));
 
-import { mkdir } from 'fs/promises';
+import { mkdir, statfs, unlink } from 'fs/promises';
+import { tmpdir } from 'os';
 import { createWriteStream } from 'fs';
 import { authMiddleware } from '../middleware/auth';
 import { devPushRoutes } from './devPush';
@@ -490,6 +493,73 @@ describe('devPush routes', () => {
   // ------------------------------------------------------------------
   // Multi-tenant isolation
   // ------------------------------------------------------------------
+
+  describe('staging directory (#6621)', () => {
+    const push = (binary = 'test-binary-content') => {
+      mockGetDeviceWithOrgCheck.mockResolvedValue({ id: DEVICE_ID, agentId: AGENT_ID, orgId: ORG_ID });
+      mockSendCommandToAgent.mockReturnValue(true);
+      const formData = new FormData();
+      formData.append('agentId', DEVICE_ID);
+      formData.append('binary', new File([binary], 'agent.bin'));
+      return app.request('/dev/push', { method: 'POST', body: formData, headers: { Authorization: 'Bearer token' } });
+    };
+
+    it('stages under DEV_PUSH_WORK_DIR, never os.tmpdir()', async () => {
+      process.env.DEV_PUSH_WORK_DIR = '/var/lib/breeze/dev-push';
+      const res = await push();
+      expect(res.status).toBe(200);
+      expect(mkdir).toHaveBeenCalledWith('/var/lib/breeze/dev-push', { recursive: true });
+      const target = vi.mocked(createWriteStream).mock.calls[0]![0] as string;
+      expect(target.startsWith('/var/lib/breeze/dev-push/')).toBe(true);
+    });
+
+    it('defaults to a directory beside the durable data dir, not os.tmpdir()', async () => {
+      delete process.env.DEV_PUSH_WORK_DIR;
+      process.env.PATCH_REPORT_STORAGE_PATH = '/data/patch-reports';
+      const res = await push();
+      expect(res.status).toBe(200);
+      const target = vi.mocked(createWriteStream).mock.calls[0]![0] as string;
+      expect(target.startsWith('/data/dev-push/')).toBe(true);
+      expect(target.startsWith(tmpdir())).toBe(false);
+    });
+
+    it('rejects with 507 naming the dir when free space is below the upload size', async () => {
+      process.env.DEV_PUSH_WORK_DIR = '/var/lib/breeze/dev-push';
+      vi.mocked(statfs).mockResolvedValueOnce({ bavail: 1, bsize: 1024 } as any);
+      const res = await push('x'.repeat(4096));
+      expect(res.status).toBe(507);
+      expect((await res.json()).error).toContain('/var/lib/breeze/dev-push');
+      expect(createWriteStream).not.toHaveBeenCalled();
+      expect(mockSendCommandToAgent).not.toHaveBeenCalled();
+    });
+
+    it('reports the sha256 of the streamed bytes and writes them unchanged', async () => {
+      process.env.DEV_PUSH_WORK_DIR = '/var/lib/breeze/dev-push';
+      const written: Buffer[] = [];
+      vi.mocked(createWriteStream).mockImplementationOnce((() => {
+        const { Writable } = require('stream');
+        return new Writable({ write(chunk: Buffer, _e: any, cb: any) { written.push(chunk); cb(); } });
+      }) as any);
+      const res = await push('known-bytes');
+      const { createHash } = await import('crypto');
+      expect((await res.json()).checksum).toBe(createHash('sha256').update('known-bytes').digest('hex'));
+      expect(Buffer.concat(written).toString()).toBe('known-bytes');
+    });
+
+    it('returns 507 and removes the partial file on a mid-write ENOSPC', async () => {
+      process.env.DEV_PUSH_WORK_DIR = '/var/lib/breeze/dev-push';
+      vi.mocked(createWriteStream).mockImplementationOnce((() => {
+        const { Writable } = require('stream');
+        return new Writable({
+          write(_c: any, _e: any, cb: any) { cb(Object.assign(new Error('no space'), { code: 'ENOSPC' })); },
+        });
+      }) as any);
+      const res = await push();
+      expect(res.status).toBe(507);
+      expect(unlink).toHaveBeenCalledWith(expect.stringMatching(/^\/var\/lib\/breeze\/dev-push\/.+\.bin$/));
+      expect(mockSendCommandToAgent).not.toHaveBeenCalled();
+    });
+  });
 
   describe('multi-tenant isolation', () => {
     it('should deny push when user cannot access the device org', async () => {

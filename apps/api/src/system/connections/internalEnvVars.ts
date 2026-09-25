@@ -137,6 +137,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   DEVICE_UNINSTALL_DRAIN_WINDOW_HOURS: 'timing knob',
   // DEV_*
   DEV_PUSH_ENABLED: 'developer agent push toggle',
+  DEV_PUSH_WORK_DIR: 'filesystem path',
   // E2E_*
   E2E_MODE: 'E2E test mode',
   // EMAIL_*

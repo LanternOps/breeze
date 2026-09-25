@@ -2,9 +2,10 @@ import { Hono, type Context, type Next } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { randomUUID, createHash } from 'crypto';
 import { createReadStream, createWriteStream } from 'fs';
-import { mkdir, unlink, stat } from 'fs/promises';
-import { join } from 'path';
-import { tmpdir } from 'os';
+import { mkdir, unlink, stat, statfs, readdir } from 'fs/promises';
+import { pipeline } from 'stream/promises';
+import { Readable, Transform } from 'stream';
+import { dirname, join } from 'path';
 import { and, eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { devices } from '../db/schema';
@@ -15,7 +16,21 @@ import { sendCommandToAgent, type AgentCommand } from './agentWs';
 import { PERMISSIONS } from '../services/permissions';
 import { canAccessDeviceSite, resolvePrincipalSitePermissions, type DeviceSitePermissions } from '../services/deviceSiteAccess';
 
-const TEMP_DIR = join(tmpdir(), 'breeze-dev-push');
+// #6621: staged uploads must never live under os.tmpdir() — the container's
+// /tmp is a small tmpfs shared with tsx's compile cache, so a ~34 MB Windows
+// agent upload hit ENOSPC. Same class as RECOVERY_MEDIA_WORK_DIR (D7): default
+// to a sibling of the durable data dir (PATCH_REPORT_STORAGE_PATH → /data),
+// overridable with DEV_PUSH_WORK_DIR. Resolved per request so env changes apply.
+function resolveWorkDir(): string {
+  const override = process.env.DEV_PUSH_WORK_DIR?.trim();
+  if (override) return override;
+  const patchReportPath = process.env.PATCH_REPORT_STORAGE_PATH || './data/patch-reports';
+  return join(dirname(patchReportPath), 'dev-push');
+}
+
+function isEnospc(err: unknown): boolean {
+  return (err as NodeJS.ErrnoException | undefined)?.code === 'ENOSPC';
+}
 const TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 // In-memory map: token → { filePath, timer, agentId }
@@ -34,6 +49,30 @@ function cleanupDownload(token: string) {
       }
     });
     pendingDownloads.delete(token);
+  }
+}
+
+// Files orphaned by a process restart (the token map is in-memory) are swept
+// once past the TTL. Best-effort; never blocks a push.
+const warnUnlink = (path: string) => (err: NodeJS.ErrnoException) => {
+  if (err?.code !== 'ENOENT') console.warn(`[DevPush] failed to remove staged file ${path}:`, err);
+};
+
+async function sweepStaleFiles(dir: string): Promise<void> {
+  try {
+    const names = await readdir(dir);
+    const cutoff = Date.now() - 2 * TTL_MS;
+    await Promise.all(
+      names
+        .filter((n) => n.endsWith('.bin'))
+        .map(async (n) => {
+          const full = join(dir, n);
+          const st = await stat(full).catch(() => null);
+          if (st && 'mtimeMs' in st && st.mtimeMs < cutoff) await unlink(full).catch(warnUnlink(full));
+        }),
+    );
+  } catch (err) {
+    console.warn(`[DevPush] stale-file sweep of ${dir} failed:`, err);
   }
 }
 
@@ -144,24 +183,51 @@ devPushRoutes.post('/push', bodyLimit({ maxSize: 150 * 1024 * 1024, onError: (c)
     return c.json({ error: 'Device not found or access denied' }, 404);
   }
 
-  // Save binary to temp dir
-  await mkdir(TEMP_DIR, { recursive: true });
+  // Stage the binary under the work dir (never os.tmpdir()).
+  const workDir = resolveWorkDir();
+  await mkdir(workDir, { recursive: true });
+
+  // Preflight: fail with a clear 507 instead of a mid-write ENOSPC.
+  try {
+    const fs = await statfs(workDir);
+    const free = Number(fs.bavail) * Number(fs.bsize);
+    if (free < file.size) {
+      return c.json(
+        {
+          error:
+            `Insufficient space in dev-push staging directory ${workDir}: ` +
+            `need ${file.size} bytes, ${free} available. Set DEV_PUSH_WORK_DIR to a larger volume.`,
+        },
+        507,
+      );
+    }
+  } catch (err) {
+    // statfs unsupported/failed: don't block the push; a real ENOSPC is still caught below.
+    console.warn(`[DevPush] free-space preflight skipped for ${workDir}:`, err);
+  }
+  void sweepStaleFiles(workDir);
+
   const downloadToken = randomUUID();
-  const filePath = join(TEMP_DIR, `${downloadToken}.bin`);
+  const filePath = join(workDir, `${downloadToken}.bin`);
 
-  const arrayBuffer = await file.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
-
-  // Write file and compute checksum
-  const writeStream = createWriteStream(filePath);
+  // Stream to disk (no second in-memory copy), hashing as we go.
   const hash = createHash('sha256');
-
-  await new Promise<void>((resolve, reject) => {
-    writeStream.on('finish', resolve);
-    writeStream.on('error', reject);
-    hash.update(buffer);
-    writeStream.end(buffer);
+  const hasher = new Transform({
+    transform(chunk, _enc, cb) {
+      hash.update(chunk);
+      cb(null, chunk);
+    },
   });
+  try {
+    await pipeline(Readable.fromWeb(file.stream() as any), hasher, createWriteStream(filePath));
+  } catch (err) {
+    await unlink(filePath).catch(warnUnlink(filePath));
+    if (isEnospc(err)) {
+      return c.json({ error: `Ran out of space writing to dev-push staging directory ${workDir}. Set DEV_PUSH_WORK_DIR to a larger volume.` }, 507);
+    }
+    console.error(`[DevPush] failed staging ${file.size} bytes to ${workDir}:`, err);
+    throw err;
+  }
 
   const checksum = hash.digest('hex');
 
