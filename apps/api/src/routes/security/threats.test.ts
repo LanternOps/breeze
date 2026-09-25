@@ -203,13 +203,26 @@ describe('security threats action routes (site-scope enforcement)', () => {
     expect(queueCommandMock).not.toHaveBeenCalled();
   });
 
+  // #6685 -- same premature-flip bug applies to remove/restore, which share
+  // queueThreatAction with quarantine.
+  it('does not write a terminal status to the DB when queuing a remove', async () => {
+    mockThreatSelect(SITE_ALLOWED);
+    const app = buildApp();
+
+    const res = await app.request(`/security/threats/${THREAT_ID}/remove`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.status).toBe('active');
+    expect(db.update).not.toHaveBeenCalled();
+    expect(queueCommandMock).toHaveBeenCalledTimes(1);
+  });
+
   it('allows restore when the caller has no site restriction', async () => {
     mockThreatSelect(SITE_FORBIDDEN);
-    vi.mocked(db.update).mockReturnValue({
-      set: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined),
-      }),
-    } as any);
     // No allowedSiteIds → unrestricted; SITE_FORBIDDEN is allowed.
     getUserPermissionsMock.mockResolvedValue({
       permissions: [{ resource: 'devices', action: 'execute' }],
@@ -224,6 +237,27 @@ describe('security threats action routes (site-scope enforcement)', () => {
 
     expect(res.status).toBe(200);
     expect(queueCommandMock).toHaveBeenCalledTimes(1);
+  });
+
+  // #6685 -- restore shares the same premature-flip bug; assert no DB write
+  // and that the response reflects the unchanged (pending) status.
+  it('does not write a terminal status to the DB when queuing a restore', async () => {
+    mockThreatSelect(SITE_FORBIDDEN);
+    getUserPermissionsMock.mockResolvedValue({
+      permissions: [{ resource: 'devices', action: 'execute' }],
+      allowedSiteIds: undefined,
+    });
+    const app = buildApp();
+
+    const res = await app.request(`/security/threats/${THREAT_ID}/restore`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.status).toBe('active');
+    expect(db.update).not.toHaveBeenCalled();
   });
 });
 

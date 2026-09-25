@@ -182,3 +182,39 @@ it('still ingests a result from an agent that sends none of the new keys', async
     status: 'completed', itemsScanned: null,
   }));
 });
+
+// #6685 -- updateThreatStatusForAction is now the SOLE place a threat's
+// status becomes terminal (the enqueue-time route handler no longer writes
+// it optimistically). These prove the agent-result path still flips status
+// correctly for each action once the agent actually reports back.
+describe('quarantine/remove/restore command results (#6685)', () => {
+  const THREAT_ID = '00000000-0000-4000-8000-000000000006';
+
+  it.each([
+    ['quarantine' as const, 'security_threat_quarantine', 'quarantined'],
+    ['remove' as const, 'security_threat_remove', 'removed'],
+    ['restore' as const, 'security_threat_restore', 'allowed'],
+  ])('flips the threat to %s only after the agent reports a completed result', async (_label, type, expectedStatus) => {
+    // handleSecurityCommandResult: device org lookup only (updateThreatStatusForAction
+    // resolves the threat directly via payload.threatId, no extra select).
+    selectQueue.push([{ orgId: ORG_ID }]);
+
+    const command = makeCommand(type, { threatId: THREAT_ID, path: 'C:\\tmp\\evil.exe' });
+
+    await handleSecurityCommandResult(command, makeResult({ status: 'completed' }));
+
+    expect(updateSetMock).toHaveBeenCalledWith(
+      expect.objectContaining({ status: expectedStatus }),
+    );
+  });
+
+  it('does not flip the threat status when the agent reports a failed result', async () => {
+    selectQueue.push([{ orgId: ORG_ID }]);
+
+    const command = makeCommand('security_threat_quarantine', { threatId: THREAT_ID, path: 'C:\\tmp\\evil.exe' });
+
+    await handleSecurityCommandResult(command, makeResult({ status: 'failed' }));
+
+    expect(updateSetMock).not.toHaveBeenCalled();
+  });
+});
