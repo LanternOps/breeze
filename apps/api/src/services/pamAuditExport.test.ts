@@ -101,6 +101,12 @@ describe('elevation_audit writer inventory (#4910)', () => {
       const found = new Set<string>();
       for (const value of elevationAuditDetailsValues(text)) {
         const literal = value.replace(/'[^']*'|"[^"]*"|`[^`]*`/g, "''");
+        // Only inline object literals can be read: a spread of a variable
+        // (`...extra`) or a non-literal value (`details: payload`) could carry
+        // keys this scan never sees, so it fails until rewritten inline.
+        if (/\.\.\.\s*[A-Za-z_$]/.test(literal) || !/^\s*[{(]|\?/.test(literal)) {
+          missing.push(`${file}: unscannable details value \`${value.trim().slice(0, 60)}\``);
+        }
         for (const k of literal.matchAll(/[{,]\s*([A-Za-z_]\w*)\s*(?=[:,}])/g)) found.add(k[1]!);
       }
       for (const m of text.matchAll(/jsonb_build_object\(([^)]*)\)/g)) {
