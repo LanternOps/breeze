@@ -1,4 +1,4 @@
-import { aiWorkspaceEnabled, breezeRegion } from '../../config/env';
+import { aiArtifactCaptureEnabled, breezeRegion } from '../../config/env';
 import type { AuthContext } from '../../middleware/auth';
 import { MAX_TOOL_RESULT_CHARS } from '../aiToolOutput';
 import { captureException } from '../sentry';
@@ -128,7 +128,7 @@ export async function captureLargeToolResult(
   // large-but-redactable payload dodge capture depending on how much of it
   // happened to be wiped.
   if (raw.length <= MAX_TOOL_RESULT_CHARS) return raw;
-  if (!aiWorkspaceEnabled()) return raw;
+  if (!aiArtifactCaptureEnabled()) return raw;
 
   // A-W05 (D13b / Q5): the artifact store receives the REDACTED payload —
   // never the raw one — so the org-downloadable blob never holds credential

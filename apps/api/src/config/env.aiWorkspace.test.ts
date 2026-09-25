@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { AI_AGENTS_ENABLED, aiWorkspaceEnabled, breezeRegion } from './env';
+import { AI_AGENTS_ENABLED, aiArtifactCaptureEnabled, aiWorkspaceEnabled, breezeRegion } from './env';
 
 const ORIGINAL = { ...process.env };
 afterEach(() => { process.env = { ...ORIGINAL }; });
@@ -24,6 +24,31 @@ describe('aiWorkspaceEnabled() — hosted-only sub-flag of BREEZE_AI_AGENTS_ENAB
     // rather than flipping it: with the parent off the result must be false,
     // with the parent on it must be true.
     expect(aiWorkspaceEnabled()).toBe(AI_AGENTS_ENABLED);
+  });
+});
+
+describe('aiArtifactCaptureEnabled() — independent of the workspace flag (#6732)', () => {
+  it('is false by default, hosted or not', () => {
+    delete process.env.BREEZE_AI_ARTIFACT_CAPTURE_ENABLED;
+    delete process.env.BREEZE_AI_WORKSPACE_ENABLED;
+    for (const hosted of ['true', 'false']) {
+      process.env.IS_HOSTED = hosted;
+      expect(aiArtifactCaptureEnabled()).toBe(false);
+    }
+  });
+
+  it('is true on a self-hosted deployment when its own flag is on, without the workspace flag', () => {
+    process.env.IS_HOSTED = 'false';
+    delete process.env.BREEZE_AI_WORKSPACE_ENABLED;
+    process.env.BREEZE_AI_ARTIFACT_CAPTURE_ENABLED = 'true';
+    expect(aiArtifactCaptureEnabled()).toBe(true);
+  });
+
+  it('stays on wherever the workspace lane is on (hosted behaviour unchanged)', () => {
+    delete process.env.BREEZE_AI_ARTIFACT_CAPTURE_ENABLED;
+    process.env.BREEZE_AI_WORKSPACE_ENABLED = 'true';
+    process.env.IS_HOSTED = 'true';
+    expect(aiArtifactCaptureEnabled()).toBe(aiWorkspaceEnabled());
   });
 });
 

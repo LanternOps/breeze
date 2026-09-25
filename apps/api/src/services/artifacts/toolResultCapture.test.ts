@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   createArtifact: vi.fn(),
-  aiWorkspaceEnabled: vi.fn(() => true),
+  aiArtifactCaptureEnabled: vi.fn(() => true),
   breezeRegion: vi.fn(() => 'us' as const),
 }));
 
@@ -22,7 +22,7 @@ vi.mock('./artifactService', async (orig) => ({
   createArtifact: mocks.createArtifact,
 }));
 vi.mock('../../config/env', () => ({
-  aiWorkspaceEnabled: mocks.aiWorkspaceEnabled,
+  aiArtifactCaptureEnabled: mocks.aiArtifactCaptureEnabled,
   breezeRegion: mocks.breezeRegion,
 }));
 
@@ -58,7 +58,7 @@ beforeEach(() => {
   mocks.createArtifact.mockReset().mockResolvedValue({
     id: HANDLE, bytes: 30_000, contentType: 'application/json',
   });
-  mocks.aiWorkspaceEnabled.mockReturnValue(true);
+  mocks.aiArtifactCaptureEnabled.mockReturnValue(true);
   mocks.breezeRegion.mockReturnValue('us');
 });
 afterEach(() => vi.clearAllMocks());
@@ -134,8 +134,8 @@ describe('captureLargeToolResult — passthrough cases', () => {
     expect(mocks.createArtifact).not.toHaveBeenCalled();
   });
 
-  it("returns raw when the workspace flag is off — self-hosters see today's bytes exactly", async () => {
-    mocks.aiWorkspaceEnabled.mockReturnValue(false);
+  it("returns raw when the capture flag is off — self-hosters see today's bytes exactly", async () => {
+    mocks.aiArtifactCaptureEnabled.mockReturnValue(false);
     const raw = big(30_000);
     expect(await captureLargeToolResult(raw, ctx())).toBe(raw);
     expect(mocks.createArtifact).not.toHaveBeenCalled();

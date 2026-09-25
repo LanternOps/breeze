@@ -664,6 +664,7 @@ const envObjectSchema = z
     // at runtime by aiWorkspaceEnabled() in env.ts. Validated here for boolean
     // format only — the production coupling rule is in the superRefine below.
     BREEZE_AI_WORKSPACE_ENABLED: z.string().optional(),
+    BREEZE_AI_ARTIFACT_CAPTURE_ENABLED: z.string().optional(),
     // 'vercel' | 'fake'. Resolved at runtime by resolveSandboxBackendName()
     // (services/workspace/sandboxBackend.ts), which refuses an unset value in
     // production; the superRefine below additionally refuses 'fake' there.
@@ -2104,6 +2105,32 @@ const envSchema = envObjectSchema
           code: z.ZodIssueCode.custom,
           path: [`ARTIFACT_S3_BUCKET_${region}`],
           message: `BREEZE_AI_WORKSPACE_ENABLED=true on a hosted deployment requires an artifact blob store for region ${region.toLowerCase()}: set ARTIFACT_S3_BUCKET_${region} (or S3_BUCKET) plus ARTIFACT_S3_ACCESS_KEY/ARTIFACT_S3_SECRET_KEY (or S3_ACCESS_KEY/S3_SECRET_KEY).`,
+        });
+      }
+    }
+
+    // BREEZE_AI_ARTIFACT_CAPTURE_ENABLED (#6732): large-tool-result capture
+    // independent of the workspace lane. Typo must fail at boot (reads as off
+    // otherwise), and `true` needs a reachable blob store on ANY deployment —
+    // otherwise every oversized tool result becomes artifact_store_unavailable.
+    const captureRaw = (data.BREEZE_AI_ARTIFACT_CAPTURE_ENABLED ?? '').trim().toLowerCase();
+    if (captureRaw && !boolValues.has(captureRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['BREEZE_AI_ARTIFACT_CAPTURE_ENABLED'],
+        message: 'BREEZE_AI_ARTIFACT_CAPTURE_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (large tool results are truncated, not stored).',
+      });
+    }
+    if (['true', '1', 'yes', 'on'].includes(captureRaw) && !workspaceOn) {
+      const capRegion = regionRaw === 'eu' ? 'EU' : 'US';
+      const capBucket = (data[`ARTIFACT_S3_BUCKET_${capRegion}` as 'ARTIFACT_S3_BUCKET_EU' | 'ARTIFACT_S3_BUCKET_US'] ?? '').trim() || (data.S3_BUCKET ?? '').trim();
+      const capAccess = (data.ARTIFACT_S3_ACCESS_KEY ?? '').trim() || (data.S3_ACCESS_KEY ?? '').trim();
+      const capSecret = (data.ARTIFACT_S3_SECRET_KEY ?? '').trim() || (data.S3_SECRET_KEY ?? '').trim();
+      if (!capBucket || !capAccess || !capSecret) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['BREEZE_AI_ARTIFACT_CAPTURE_ENABLED'],
+          message: `BREEZE_AI_ARTIFACT_CAPTURE_ENABLED=true requires an artifact blob store: set ARTIFACT_S3_BUCKET_${capRegion} (or S3_BUCKET) plus ARTIFACT_S3_ACCESS_KEY/ARTIFACT_S3_SECRET_KEY (or S3_ACCESS_KEY/S3_SECRET_KEY).`,
         });
       }
     }
