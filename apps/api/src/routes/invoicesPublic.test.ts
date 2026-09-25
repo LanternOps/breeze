@@ -43,7 +43,12 @@ const { settleMock } = vi.hoisted(() => ({ settleMock: vi.fn() }));
 vi.mock('../services/stripeSettle', () => ({ settleCheckoutSession: settleMock }));
 
 const { getPdfMock, renderPdfMock } = vi.hoisted(() => ({ getPdfMock: vi.fn(), renderPdfMock: vi.fn() }));
-vi.mock('../services/invoicePdf', () => ({ getInvoicePdf: getPdfMock, renderInvoicePdf: renderPdfMock }));
+vi.mock('../services/invoicePdf', () => ({
+  getInvoicePdf: getPdfMock, renderInvoicePdf: renderPdfMock,
+  // The db is mocked, so the ticket-label expression is never compiled here;
+  // the snapshot semantics are covered by invoiceTicketLabelSnapshot.integration.
+  invoiceLineTicketNumberSql: vi.fn(() => 'ticket_label_sql'),
+}));
 
 vi.mock('../services/portalUrl', () => ({ portalBase: () => 'https://portal.example.test/portal' }));
 vi.mock('../services/redis', () => ({ getRedis: () => null })); // limiter fails open
