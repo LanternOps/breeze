@@ -106,7 +106,8 @@
       "test": "Test başarısız oldu",
       "generic": "Bir şeyler ters gitti",
       "invalidCondition": "Bazı koşul değerleri eksik veya aralık dışında. Hiçbir şey kaydedilmedi.",
-      "invalidResponses": "Bazı yanıt ayarları eksik veya aralık dışında. Hiçbir şey kaydedilmedi."
+      "invalidResponses": "Bazı yanıt ayarları eksik veya aralık dışında. Hiçbir şey kaydedilmedi.",
+      "restartServiceRequiresName": "Hizmeti yeniden başlatmak bir hizmet adı gerektirir."
     },
     "saved": "Monitör kaydedildi",
     "deleted": "Monitör silindi",
@@ -411,11 +412,15 @@
   },
   "conversion": {
     "banner": {
-      "text": "{{policies}} ilkedeki {{rows}} eski kural henüz monitöre dönüştürülmedi.",
+      "rowsCount_one": "{{count}} eski kural",
+      "rowsCount_other": "{{count}} eski kural",
+      "policiesCount_one": "{{count}} ilke",
+      "policiesCount_other": "{{count}} ilke",
+      "text": "{{policies}}deki {{rows}} henüz monitöre dönüştürülmedi.",
       "review": "İncele",
       "convertEverything": "Tümünü dönüştür…",
       "confirmTitle": "Tüm ilkelerinizdeki her eski kural, izleme ve uyarıyla tetiklenen otomasyon dönüştürülsün mü?",
-      "confirmBody": "İş ortağının tümünde {{policies}} ilkede {{rows}} eski kural. Dönüştürülen satırlar yerinde emekliye ayrılır. Diğerleri W05c’de inceleme veya elle emekliye ayırma için kalır; W05d kalanları dönüştürür ve dönüştürülemeyenleri emekliye ayırır.",
+      "confirmBody": "İş ortağının tümünde {{policies}}de {{rows}}. Dönüştürülen satırlar yerinde emekliye ayrılır. Diğerleri W05c’de inceleme veya elle emekliye ayırma için kalır; W05d kalanları dönüştürür ve dönüştürülemeyenleri emekliye ayırır.",
       "confirmRun": "Tümünü dönüştür",
       "convertedAll": "{{policies}} ilkede {{converted}} satır dönüştürüldü; {{unconvertible}} dönüştürülemedi.",
       "errors": {

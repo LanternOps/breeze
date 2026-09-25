@@ -680,7 +680,8 @@ const namespaceDuplicateBaselines = {
     // "Teams" — are vendor proper nouns, identical in every locale
     // ("Bare Metal" is capitalized per German noun rules, so it is NOT an
     // exact duplicate here).
-    'backup.json': 74,
+    // +1 (sweep F3): backupHealth.osType.server — "Server" is the identical German term.
+    'backup.json': 75,
     // +6: contract-template format strings + German cognates ("v{{number}} ·
     // {{status}}", "v{{number}}", "{{name}} — v{{number}}", "Name", "Status")
     // that are legitimately identical to English in de-DE.
@@ -842,7 +843,8 @@ const namespaceDuplicateBaselines = {
     // "SQL Server", "Hyper-V", "VMware", "Bare metal", "SharePoint",
     // "Exchange", "OneDrive", "Teams" — are vendor proper nouns, identical in
     // every locale.
-    'backup.json': 54,
+    // +2 (sweep F3): backupHealth.osType.workstation/server — "Workstation"/"Server" are the standard Italian IT terms.
+    'backup.json': 56,
     // +1: unassigned.qtyPrice "{{qty}} × {{price}}" is two interpolations plus a
     // multiplication sign with no wording to translate.
     // +1: order breakdown — "SKU" is a locale-invariant acronym.
@@ -894,7 +896,8 @@ const namespaceDuplicateBaselines = {
     // "Monitor" (policy-tab column), "Info" (severity), "Hardware"
     // (event-log category), "CPU" (resource select) are identical
     // cognates/loanwords in it-IT.
-    'monitoring.json': 5,
+    // +1 (sweep F5): conversion.banner.policiesCount_one — "{{count}} policy" matches English; "policy" is the loanword this locale already uses.
+    'monitoring.json': 6,
     'organizations.json': 6, // W01 #5075: "Workspace: {{orgName}}" — Workspace is the Italian UI term; +2 W02: device status "Online"/"Offline" are identical cognates in it-IT
     // +3 W03 account board: "PSA" is a locale-invariant acronym; orgBoard.integrations.badgeLabel /
     // badgeLabelWithReason are pure-interpolation literals ("{{orgName}}: {{system}}, {{state}}").

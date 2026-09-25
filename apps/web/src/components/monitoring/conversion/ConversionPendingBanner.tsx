@@ -31,6 +31,18 @@ export default function ConversionPendingBanner({ orgId, onReview, onConverted, 
 
   if (!counts || counts.rows === 0) return null;
 
+  // Two independent counts in one sentence: i18next only pluralizes a single
+  // `count`, so each is pluralized on its own and composed into the template
+  // (sweep F5 — "1 policies" before this).
+  const rowsText = t('monitoring:conversion.banner.rowsCount', { count: counts.rows });
+  const policiesText = t('monitoring:conversion.banner.policiesCount', { count: counts.policies });
+  const confirmRowsText = partnerPreview
+    ? t('monitoring:conversion.banner.rowsCount', { count: partnerPreview.rows })
+    : '';
+  const confirmPoliciesText = partnerPreview
+    ? t('monitoring:conversion.banner.policiesCount', { count: partnerPreview.policies })
+    : '';
+
   const previewEverything = async () => {
     setRunning(true); setPartnerPreview(null); setConfirming(false);
     try {
@@ -69,7 +81,7 @@ export default function ConversionPendingBanner({ orgId, onReview, onConverted, 
   return (
     <div className="rounded-md border border-warning/40 bg-warning/10 px-4 py-3 text-sm" data-testid="conversion-pending-banner">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <p>{t('monitoring:conversion.banner.text', { rows: counts.rows, policies: counts.policies })}</p>
+        <p>{t('monitoring:conversion.banner.text', { rows: rowsText, policies: policiesText })}</p>
         <div className="flex gap-2">
           <button type="button" data-testid="conversion-pending-review" onClick={onReview} className="rounded-md border px-3 py-1.5 font-medium hover:bg-muted">
             {t('monitoring:conversion.banner.review')}
@@ -84,7 +96,9 @@ export default function ConversionPendingBanner({ orgId, onReview, onConverted, 
       {confirming && partnerPreview && (
         <div className="mt-3 rounded-md border bg-background p-3" data-testid="conversion-convert-everything-confirm">
           <p className="font-medium">{t('monitoring:conversion.banner.confirmTitle')}</p>
-          <p className="mt-1 text-xs text-muted-foreground">{t('monitoring:conversion.banner.confirmBody', partnerPreview)}</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {t('monitoring:conversion.banner.confirmBody', { rows: confirmRowsText, policies: confirmPoliciesText })}
+          </p>
           <ul>{partnerPreview.unconvertible.map((item) => <li key={`${item.sourceTable}:${item.sourceId}`}>
             {item.policyName ?? item.policyId ?? '—'} · {item.name} · {item.reason}
           </li>)}</ul>

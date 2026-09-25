@@ -106,7 +106,8 @@
       "test": "Prueba fallida",
       "generic": "Algo salió mal",
       "invalidCondition": "Faltan valores de la condición o están fuera de rango. No se guardó nada.",
-      "invalidResponses": "Faltan ajustes de respuesta o están fuera de rango. No se guardó nada."
+      "invalidResponses": "Faltan ajustes de respuesta o están fuera de rango. No se guardó nada.",
+      "restartServiceRequiresName": "Reiniciar el servicio requiere un nombre de servicio."
     },
     "saved": "Monitor guardado",
     "deleted": "Monitor eliminado",
@@ -411,11 +412,15 @@
   },
   "conversion": {
     "banner": {
-      "text": "{{rows}} reglas heredadas en {{policies}} políticas aún no se convirtieron en monitores.",
+      "rowsCount_one": "{{count}} regla heredada",
+      "rowsCount_other": "{{count}} reglas heredadas",
+      "policiesCount_one": "{{count}} política",
+      "policiesCount_other": "{{count}} políticas",
+      "text": "{{rows}} en {{policies}} aún no se convirtieron en monitores.",
       "review": "Revisar",
       "convertEverything": "Convertir todo…",
       "confirmTitle": "¿Convertir todas las reglas heredadas, vigilancias y automatizaciones activadas por alertas de todas sus políticas?",
-      "confirmBody": "{{rows}} reglas heredadas en {{policies}} políticas de todo el partner. Las filas convertidas se retiran en su lugar. Las demás quedan para revisión o retiro manual en W05c; W05d convierte las restantes y retira las que no puede convertir.",
+      "confirmBody": "{{rows}} en {{policies}} de todo el partner. Las filas convertidas se retiran en su lugar. Las demás quedan para revisión o retiro manual en W05c; W05d convierte las restantes y retira las que no puede convertir.",
       "confirmRun": "Convertir todo",
       "convertedAll": "Se convirtieron {{converted}} filas en {{policies}} políticas; {{unconvertible}} no se pudieron convertir.",
       "errors": {

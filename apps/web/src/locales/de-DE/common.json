@@ -15,7 +15,7 @@
     "fleetPosture": "Flottenstatus",
     "dashboard": "Dashboard",
     "devices": "Geräte & Assets",
-    "alerts": "Warnmeldungen",
+    "alerts": "Warnungen",
     "approvals": "Genehmigungen",
     "pendingApprovals": "{{count}} ausstehende Genehmigungen",
     "pendingApprovals_one": "{{count}} ausstehende Genehmigung",

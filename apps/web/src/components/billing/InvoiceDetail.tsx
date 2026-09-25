@@ -424,6 +424,20 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                     className={`border-t ${l.parentLineId ? 'bg-muted/20 text-xs text-muted-foreground' : ''}`}
                   >
                     <td className={`px-3 py-2 ${l.parentLineId ? 'pl-8' : ''}`}>
+                      {/* sweep F9: Preview/PDF/portal already show the frozen
+                          `ticketLabel` (#6940) via this same `ticketNumber`
+                          API field — the default view was the one surface
+                          still silent about it. */}
+                      {l.ticketNumber && (
+                        <div className="mb-1 text-xs">
+                          <span
+                            data-testid={`invoice-detail-line-ticket-${l.id}`}
+                            className="inline-flex items-center rounded bg-primary/10 px-1.5 py-0.5 font-medium text-primary"
+                          >
+                            {t('invoiceDocument.ticketHeader', { number: l.ticketNumber })}
+                          </span>
+                        </div>
+                      )}
                       <span className={l.parentLineId ? '' : 'font-medium text-foreground'}>
                         {l.parentLineId ? <span aria-hidden="true">↳ </span> : ''}{lineTitle(l)}
                       </span>
