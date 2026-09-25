@@ -5,7 +5,7 @@ import { topologyCollectionRuns, topologyCollectionSources, topologyInterfaces, 
 import type { BindingPublication, NodePublication, RelationshipPublication } from './publish';
 import { readTopologyAbsence } from './collectionState';
 import { projectTopology } from './projectors';
-import type { NormalizedTopologySnapshot } from './collectionTypes';
+import { isPhysicalTopologySection, type NormalizedTopologySnapshot } from './collectionTypes';
 import { emptyProjection, type CollectionPublication, type CollectionEvent, type SupportPublication } from './reconciliationTypes';
 
 type Tx=Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -73,10 +73,13 @@ export async function prepareCollectionPublication(tx:Tx,scope:TopologyScope,thr
       checkpoint.set(source.id,{sourceId:source.id,epoch:source.producerEpoch,sequence:event.miss.qualifyingSequence!,digest:previous?.digest??source.publishedDigest??event.miss.digest,baseline});
       continue;
     }
-    const origin=originByDevice.get(source.producerId);
-    if(!origin||!nodes.has(origin)||nodes.get(origin)?.deletedAt)throw new Error('Topology producer inventory is not published');
     const snapshot=event.run.snapshot as unknown as NormalizedTopologySnapshot;
-    const delta=projectTopology({scope,source,run:event.run,snapshot,originNodeId:origin,nodes:[...nodes.values()],relationships:[...relationships.values()],interfaces:[...interfaceMap.values()]});
+    // OS context is about the reporting device; physical families name their
+    // subject per row (D3), so a physical collector need not be a graph node.
+    const origin=originByDevice.get(source.producerId);
+    const originPublished=!!origin&&nodes.has(origin)&&!nodes.get(origin)?.deletedAt;
+    if(!originPublished&&!isPhysicalTopologySection(snapshot.section))throw new Error('Topology producer inventory is not published');
+    const delta=projectTopology({scope,source,run:event.run,snapshot,originNodeId:originPublished?origin!:null,nodes:[...nodes.values()],relationships:[...relationships.values()],interfaces:[...interfaceMap.values()]});
     for(const row of delta.nodes){nodes.set(row.id,row);result.nodes.push(row);}
     for(const row of delta.interfaces){interfaceMap.set(row.id,row);result.interfaces.push(row);}
     for(const row of delta.relationships)relationships.set(row.id,row);

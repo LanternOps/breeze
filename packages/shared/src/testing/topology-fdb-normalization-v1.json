@@ -1,0 +1,1572 @@
+{
+ "version": 1,
+ "description": "D13 FDB normalization: a (bridgeContext, bridgePort) with more than 16 distinct eligible (learned, unicast, non-zero) MACs collapses to one shared_port row. Rows sorted by rowKey (UTF-8 byte order). Go mirror: agent adjacency FDB normalizer.",
+ "threshold": 16,
+ "buckets": [
+  [
+   17,
+   "17-64"
+  ],
+  [
+   64,
+   "17-64"
+  ],
+  [
+   65,
+   "65-256"
+  ],
+  [
+   256,
+   "65-256"
+  ],
+  [
+   257,
+   "257+"
+  ],
+  [
+   100000,
+   "257+"
+  ]
+ ],
+ "vectors": [
+  {
+   "name": "thresholds-and-ineligible",
+   "input": {
+    "kind": "fdb",
+    "contextKey": "default",
+    "contentDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "outcome": "complete",
+    "rowCount": 74,
+    "rows": [
+     {
+      "rowKey": "default|700|02:00:00:07:00:00|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:00",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:00:01|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:01",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:00:02|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:02",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:00:03|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:03",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:00:04|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:04",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:00:05|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:05",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:00:06|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:06",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:00:07|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:07",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:00:08|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:08",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:00:09|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:09",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:00:0a|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:0a",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:00:0b|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:0b",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:00:0c|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:0c",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:00:0d|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:0d",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:00:0e|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:0e",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:00:0f|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:0f",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:08:00:00|8",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:08:00:00",
+      "bridgePort": 8,
+      "ifIndex": 108,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:08:00:01|8",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:08:00:01",
+      "bridgePort": 8,
+      "ifIndex": 108,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:08:00:02|8",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:08:00:02",
+      "bridgePort": 8,
+      "ifIndex": 108,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:08:00:03|8",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:08:00:03",
+      "bridgePort": 8,
+      "ifIndex": 108,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:08:00:04|8",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:08:00:04",
+      "bridgePort": 8,
+      "ifIndex": 108,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:08:00:05|8",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:08:00:05",
+      "bridgePort": 8,
+      "ifIndex": 108,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:08:00:06|8",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:08:00:06",
+      "bridgePort": 8,
+      "ifIndex": 108,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:08:00:07|8",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:08:00:07",
+      "bridgePort": 8,
+      "ifIndex": 108,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:08:00:08|8",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:08:00:08",
+      "bridgePort": 8,
+      "ifIndex": 108,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:08:00:09|8",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:08:00:09",
+      "bridgePort": 8,
+      "ifIndex": 108,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:08:00:0a|8",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:08:00:0a",
+      "bridgePort": 8,
+      "ifIndex": 108,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:08:00:0b|8",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:08:00:0b",
+      "bridgePort": 8,
+      "ifIndex": 108,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:08:00:0c|8",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:08:00:0c",
+      "bridgePort": 8,
+      "ifIndex": 108,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:08:00:0d|8",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:08:00:0d",
+      "bridgePort": 8,
+      "ifIndex": 108,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:08:00:0e|8",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:08:00:0e",
+      "bridgePort": 8,
+      "ifIndex": 108,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:08:00:0f|8",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:08:00:0f",
+      "bridgePort": 8,
+      "ifIndex": 108,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:08:00:10|8",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:08:00:10",
+      "bridgePort": 8,
+      "ifIndex": 108,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:09:00:00|9",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:09:00:00",
+      "bridgePort": 9,
+      "ifIndex": 109,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:09:00:01|9",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:09:00:01",
+      "bridgePort": 9,
+      "ifIndex": 109,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:09:00:02|9",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:09:00:02",
+      "bridgePort": 9,
+      "ifIndex": 109,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:09:00:03|9",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:09:00:03",
+      "bridgePort": 9,
+      "ifIndex": 109,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:09:00:04|9",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:09:00:04",
+      "bridgePort": 9,
+      "ifIndex": 109,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:09:00:05|9",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:09:00:05",
+      "bridgePort": 9,
+      "ifIndex": 109,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:09:00:06|9",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:09:00:06",
+      "bridgePort": 9,
+      "ifIndex": 109,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:09:00:07|9",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:09:00:07",
+      "bridgePort": 9,
+      "ifIndex": 109,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:09:00:08|9",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:09:00:08",
+      "bridgePort": 9,
+      "ifIndex": 109,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:09:00:09|9",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:09:00:09",
+      "bridgePort": 9,
+      "ifIndex": 109,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:09:00:0a|9",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:09:00:0a",
+      "bridgePort": 9,
+      "ifIndex": 109,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:09:00:0b|9",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:09:00:0b",
+      "bridgePort": 9,
+      "ifIndex": 109,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:09:00:0c|9",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:09:00:0c",
+      "bridgePort": 9,
+      "ifIndex": 109,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:09:00:0d|9",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:09:00:0d",
+      "bridgePort": 9,
+      "ifIndex": 109,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:09:00:0e|9",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:09:00:0e",
+      "bridgePort": 9,
+      "ifIndex": 109,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:09:00:0f|9",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:09:00:0f",
+      "bridgePort": 9,
+      "ifIndex": 109,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|701|02:00:00:09:00:00|9",
+      "bridgeContext": "default",
+      "fdbId": 701,
+      "mac": "02:00:00:09:00:00",
+      "bridgePort": 9,
+      "ifIndex": 109,
+      "status": "learned",
+      "vlans": [
+       20
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:ff:01|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:ff:01",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "self",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:ff:02|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:ff:02",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "management",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:ff:03|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:ff:03",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "invalid",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:ff:04|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:ff:04",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "other",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|01:00:5e:00:00:01|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "01:00:5e:00:00:01",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|ff:ff:ff:ff:ff:ff|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "ff:ff:ff:ff:ff:ff",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|00:00:00:00:00:00|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "00:00:00:00:00:00",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "vlan-20|700|02:00:00:0a:00:00|10",
+      "bridgeContext": "vlan-20",
+      "fdbId": 700,
+      "mac": "02:00:00:0a:00:00",
+      "bridgePort": 10,
+      "ifIndex": 999,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "vlan-20|700|02:00:00:0a:00:01|10",
+      "bridgeContext": "vlan-20",
+      "fdbId": 700,
+      "mac": "02:00:00:0a:00:01",
+      "bridgePort": 10,
+      "ifIndex": 110,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "vlan-20|700|02:00:00:0a:00:02|10",
+      "bridgeContext": "vlan-20",
+      "fdbId": 700,
+      "mac": "02:00:00:0a:00:02",
+      "bridgePort": 10,
+      "ifIndex": 110,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "vlan-20|700|02:00:00:0a:00:03|10",
+      "bridgeContext": "vlan-20",
+      "fdbId": 700,
+      "mac": "02:00:00:0a:00:03",
+      "bridgePort": 10,
+      "ifIndex": 110,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "vlan-20|700|02:00:00:0a:00:04|10",
+      "bridgeContext": "vlan-20",
+      "fdbId": 700,
+      "mac": "02:00:00:0a:00:04",
+      "bridgePort": 10,
+      "ifIndex": 110,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "vlan-20|700|02:00:00:0a:00:05|10",
+      "bridgeContext": "vlan-20",
+      "fdbId": 700,
+      "mac": "02:00:00:0a:00:05",
+      "bridgePort": 10,
+      "ifIndex": 110,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "vlan-20|700|02:00:00:0a:00:06|10",
+      "bridgeContext": "vlan-20",
+      "fdbId": 700,
+      "mac": "02:00:00:0a:00:06",
+      "bridgePort": 10,
+      "ifIndex": 110,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "vlan-20|700|02:00:00:0a:00:07|10",
+      "bridgeContext": "vlan-20",
+      "fdbId": 700,
+      "mac": "02:00:00:0a:00:07",
+      "bridgePort": 10,
+      "ifIndex": 110,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "vlan-20|700|02:00:00:0a:00:08|10",
+      "bridgeContext": "vlan-20",
+      "fdbId": 700,
+      "mac": "02:00:00:0a:00:08",
+      "bridgePort": 10,
+      "ifIndex": 110,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "vlan-20|700|02:00:00:0a:00:09|10",
+      "bridgeContext": "vlan-20",
+      "fdbId": 700,
+      "mac": "02:00:00:0a:00:09",
+      "bridgePort": 10,
+      "ifIndex": 110,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "vlan-20|700|02:00:00:0a:00:0a|10",
+      "bridgeContext": "vlan-20",
+      "fdbId": 700,
+      "mac": "02:00:00:0a:00:0a",
+      "bridgePort": 10,
+      "ifIndex": 110,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "vlan-20|700|02:00:00:0a:00:0b|10",
+      "bridgeContext": "vlan-20",
+      "fdbId": 700,
+      "mac": "02:00:00:0a:00:0b",
+      "bridgePort": 10,
+      "ifIndex": 110,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "vlan-20|700|02:00:00:0a:00:0c|10",
+      "bridgeContext": "vlan-20",
+      "fdbId": 700,
+      "mac": "02:00:00:0a:00:0c",
+      "bridgePort": 10,
+      "ifIndex": 110,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "vlan-20|700|02:00:00:0a:00:0d|10",
+      "bridgeContext": "vlan-20",
+      "fdbId": 700,
+      "mac": "02:00:00:0a:00:0d",
+      "bridgePort": 10,
+      "ifIndex": 110,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "vlan-20|700|02:00:00:0a:00:0e|10",
+      "bridgeContext": "vlan-20",
+      "fdbId": 700,
+      "mac": "02:00:00:0a:00:0e",
+      "bridgePort": 10,
+      "ifIndex": 110,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "vlan-20|700|02:00:00:0a:00:0f|10",
+      "bridgeContext": "vlan-20",
+      "fdbId": 700,
+      "mac": "02:00:00:0a:00:0f",
+      "bridgePort": 10,
+      "ifIndex": 110,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "vlan-20|700|02:00:00:0a:00:10|10",
+      "bridgeContext": "vlan-20",
+      "fdbId": 700,
+      "mac": "02:00:00:0a:00:10",
+      "bridgePort": 10,
+      "ifIndex": 110,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     }
+    ]
+   },
+   "expected": {
+    "kind": "fdb",
+    "contextKey": "default",
+    "contentDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "outcome": "complete",
+    "rowCount": 35,
+    "rows": [
+     {
+      "rowKey": "default|700|02:00:00:07:00:00|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:00",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:00:01|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:01",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:00:02|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:02",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:00:03|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:03",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:00:04|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:04",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:00:05|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:05",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:00:06|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:06",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:00:07|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:07",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:00:08|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:08",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:00:09|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:09",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:00:0a|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:0a",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:00:0b|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:0b",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:00:0c|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:0c",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:00:0d|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:0d",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:00:0e|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:0e",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:00:0f|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:0f",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:09:00:00|9",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:09:00:00",
+      "bridgePort": 9,
+      "ifIndex": 109,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:09:00:01|9",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:09:00:01",
+      "bridgePort": 9,
+      "ifIndex": 109,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:09:00:02|9",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:09:00:02",
+      "bridgePort": 9,
+      "ifIndex": 109,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:09:00:03|9",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:09:00:03",
+      "bridgePort": 9,
+      "ifIndex": 109,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:09:00:04|9",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:09:00:04",
+      "bridgePort": 9,
+      "ifIndex": 109,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:09:00:05|9",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:09:00:05",
+      "bridgePort": 9,
+      "ifIndex": 109,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:09:00:06|9",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:09:00:06",
+      "bridgePort": 9,
+      "ifIndex": 109,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:09:00:07|9",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:09:00:07",
+      "bridgePort": 9,
+      "ifIndex": 109,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:09:00:08|9",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:09:00:08",
+      "bridgePort": 9,
+      "ifIndex": 109,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:09:00:09|9",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:09:00:09",
+      "bridgePort": 9,
+      "ifIndex": 109,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:09:00:0a|9",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:09:00:0a",
+      "bridgePort": 9,
+      "ifIndex": 109,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:09:00:0b|9",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:09:00:0b",
+      "bridgePort": 9,
+      "ifIndex": 109,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:09:00:0c|9",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:09:00:0c",
+      "bridgePort": 9,
+      "ifIndex": 109,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:09:00:0d|9",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:09:00:0d",
+      "bridgePort": 9,
+      "ifIndex": 109,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:09:00:0e|9",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:09:00:0e",
+      "bridgePort": 9,
+      "ifIndex": 109,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:09:00:0f|9",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:09:00:0f",
+      "bridgePort": 9,
+      "ifIndex": 109,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|701|02:00:00:09:00:00|9",
+      "bridgeContext": "default",
+      "fdbId": 701,
+      "mac": "02:00:00:09:00:00",
+      "bridgePort": 9,
+      "ifIndex": 109,
+      "status": "learned",
+      "vlans": [
+       20
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowType": "shared_port",
+      "rowKey": "shared_port|default|8",
+      "bridgeContext": "default",
+      "bridgePort": 8,
+      "ifIndex": 108,
+      "sizeBucket": "17-64"
+     },
+     {
+      "rowType": "shared_port",
+      "rowKey": "shared_port|vlan-20|10",
+      "bridgeContext": "vlan-20",
+      "bridgePort": 10,
+      "ifIndex": null,
+      "sizeBucket": "17-64"
+     }
+    ],
+    "metadata": {
+     "ineligibleRowCount": 7,
+     "sharedPortCount": 2,
+     "collapsedRowCount": 34
+    }
+   }
+  },
+  {
+   "name": "partial-preserved",
+   "input": {
+    "kind": "fdb",
+    "contextKey": "default",
+    "contentDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "outcome": "partial",
+    "rowCount": 2,
+    "rows": [
+     {
+      "rowKey": "default|700|02:00:00:07:00:01|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:01",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:00:02|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:02",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     }
+    ],
+    "reasonCode": "limit_exceeded",
+    "omittedRowCount": 5
+   },
+   "expected": {
+    "kind": "fdb",
+    "contextKey": "default",
+    "contentDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "outcome": "partial",
+    "rowCount": 2,
+    "rows": [
+     {
+      "rowKey": "default|700|02:00:00:07:00:01|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:01",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     },
+     {
+      "rowKey": "default|700|02:00:00:07:00:02|7",
+      "bridgeContext": "default",
+      "fdbId": 700,
+      "mac": "02:00:00:07:00:02",
+      "bridgePort": 7,
+      "ifIndex": 107,
+      "status": "learned",
+      "vlans": [
+       10
+      ],
+      "vlanMapping": "complete"
+     }
+    ],
+    "reasonCode": "limit_exceeded",
+    "omittedRowCount": 5,
+    "metadata": {
+     "ineligibleRowCount": 0,
+     "sharedPortCount": 0,
+     "collapsedRowCount": 0
+    }
+   }
+  },
+  {
+   "name": "complete-empty",
+   "input": {
+    "kind": "fdb",
+    "contextKey": "default",
+    "contentDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "outcome": "complete",
+    "rowCount": 0,
+    "rows": []
+   },
+   "expected": {
+    "kind": "fdb",
+    "contextKey": "default",
+    "contentDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "outcome": "complete",
+    "rowCount": 0,
+    "rows": [],
+    "metadata": {
+     "ineligibleRowCount": 0,
+     "sharedPortCount": 0,
+     "collapsedRowCount": 0
+    }
+   }
+  }
+ ]
+}

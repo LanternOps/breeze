@@ -1,7 +1,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
-import { nodeKindSchema, relationshipKindSchema, lifecycleSchema, confidenceSchema, evidenceClassSchema, directnessSchema, type TopologyScope } from '@breeze/shared';
+import { nodeKindSchema, relationshipKindSchema, lifecycleSchema, confidenceSchema, evidenceClassSchema, directnessSchema, PORT_REF_NAMESPACES, type TopologyScope } from '@breeze/shared';
 import { db, assertInTransaction } from '../../db';
 import { topologyNodes, topologyRelationships, topologyNodeBindings, topologyNodePositions, topologyLayouts, topologySiteState, auditLogs, discoveredAssets } from '../../db/schema';
 import { canonicalIdentityKey, normalizedTopologyScope, planAliasClusterPosition } from './identity';
@@ -26,13 +26,38 @@ const nodeSchema = z.object({ ...scoped, identityKey: z.string().max(256), ident
   attributes: z.object({ label: z.string().max(255).optional(), notes: z.string().max(8192).optional(), prefix: z.string().max(128).optional(), addressFamily: z.union([z.literal(4), z.literal(6)]).optional() }).strict().default({}),
   firstObservedAt: z.date().nullable().optional(), lastObservedAt: z.date().nullable().optional(), lifecycle: lifecycleSchema.default('active'), aliasTargetId: uuid.nullable().optional(), ...legacy,
 }).strict();
+const PHYSICAL_METHODS = ['lldp', 'cdp', 'fdb', 'unifi'] as const;
+const boundedKey = z.string().min(1).max(255);
+const vlanIds = z.array(z.number().int().min(1).max(4094)).max(64);
+/** Physical resolution material (D15): typed ids and tagged ports only, all bounded. */
+const physicalTypedId = z.object({ subtype: z.string().regex(/^[a-z][a-z0-9_]*$/).max(64), value: boundedKey }).strict();
+const physicalPortRef = z.object({ namespace: z.enum(PORT_REF_NAMESPACES), value: boundedKey, resolvedInterfaceKey: boundedKey.nullable() }).strict();
+const physicalAttributes = z.object({
+  resolution: z.enum(['resolved', 'unresolved']).optional(),
+  remoteChassis: physicalTypedId.optional(), remotePort: physicalTypedId.optional(),
+  localPort: physicalPortRef.optional(), remotePortRef: physicalPortRef.optional(),
+  bridgeContext: boundedKey.optional(), fdbId: z.number().int().min(0).max(4294967295).nullable().optional(), vlanIds: vlanIds.optional(),
+  controllerSiteId: boundedKey.optional(), controllerDeviceId: boundedKey.optional(), uplinkPortIndex: z.number().int().min(0).max(4294967295).optional(),
+  fdbSelection: z.enum(['selected', 'competing', 'excluded', 'none']).optional(),
+  alternativeRelationshipIds: z.array(uuid).max(64).optional(),
+}).strict();
 const relationshipSchema = z.object({ ...scoped, canonicalKey: z.string().max(256), identityMaterial, kind: relationshipKindSchema,
   sourceNodeId: uuid, targetNodeId: uuid, sourceInterfaceId: uuid.nullable().optional(), targetInterfaceId: uuid.nullable().optional(),
-  logicalContext: z.object({ routingDomainId: uuid.optional(), interfaceId: uuid.optional(), addressFamily: z.union([z.literal(4), z.literal(6)]).optional(), destinationPrefix: z.string().max(128).optional(), contextKey: z.string().max(8192).optional() }).strict().default({}),
+  logicalContext: z.object({ routingDomainId: uuid.optional(), interfaceId: uuid.optional(), addressFamily: z.union([z.literal(4), z.literal(6)]).optional(), destinationPrefix: z.string().max(128).optional(), contextKey: z.string().max(8192).optional(),
+    bridgeContext: boundedKey.optional(), vlanIds: vlanIds.optional(), controllerSiteId: boundedKey.optional() }).strict().default({}),
   directness: directnessSchema.default('unknown'), confidence: confidenceSchema.default('asserted'), evidenceClass: evidenceClassSchema.default('manual'), lifecycle: lifecycleSchema.default('active'),
   firstSupportedAt: z.date().nullable().optional(), lastSupportedAt: z.date().nullable().optional(), supportCount: counter.default(0n),
-  attributes: z.object({ label: z.string().max(255).optional(), notes: z.string().max(8192).optional(), method: z.enum(['manual', 'legacy', 'os_network_context']).optional(), createdBy: uuid.optional() }).strict().default({}), ...legacy,
-}).strict().refine(row => (row.evidenceClass === 'manual') === (row.confidence === 'asserted'), 'Manual evidence requires asserted confidence');
+  attributes: z.object({ label: z.string().max(255).optional(), notes: z.string().max(8192).optional(), method: z.enum(['manual', 'legacy', 'os_network_context', ...PHYSICAL_METHODS]).optional(), createdBy: uuid.optional(),
+    physical: physicalAttributes.optional() }).strict().default({}), ...legacy,
+}).strict().refine(row => (row.evidenceClass === 'manual') === (row.confidence === 'asserted'), 'Manual evidence requires asserted confidence')
+  .superRefine((row, ctx) => {
+    const method = row.attributes.method;
+    const physicalMethod = (PHYSICAL_METHODS as readonly string[]).includes(method ?? '');
+    if (physicalMethod && row.kind !== 'physical_link' && row.kind !== 'attachment') ctx.addIssue({ code: 'custom', message: 'Physical evidence only publishes physical relationships' });
+    // FDB membership is inference: it never mints a physical link or claims observation.
+    if (method === 'fdb' && (row.kind !== 'attachment' || row.evidenceClass !== 'inferred')) ctx.addIssue({ code: 'custom', message: 'FDB evidence publishes inferred attachments only' });
+    if (row.attributes.physical && !physicalMethod && method !== 'manual') ctx.addIssue({ code: 'custom', message: 'Physical attributes require a physical method' });
+  });
 const bindingSchema = z.object({ ...scoped, nodeId: uuid, deviceId: uuid.nullable().optional(), discoveredAssetId: uuid.nullable().optional(), manualNodeId: uuid.nullable().optional(),
   provenance: z.object({ method: z.enum(['inventory', 'accepted_link', 'manual', 'legacy']).optional(), sourceId: uuid.optional(), createdBy: uuid.optional() }).strict().default({}),
 }).strict().refine(row => [row.deviceId, row.discoveredAssetId, row.manualNodeId].filter(Boolean).length === 1, 'Inventory binding requires exactly one reference');

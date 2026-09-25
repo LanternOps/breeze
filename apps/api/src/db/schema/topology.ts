@@ -14,7 +14,17 @@ export interface TopologyIdentityMaterial {
   sourceKey: string;
 }
 export interface TopologyNodeAttributes { label?: string; notes?: string; prefix?: string; addressFamily?: 4 | 6; }
-export interface TopologyRelationshipAttributes { label?: string; notes?: string; method?: 'manual' | 'legacy' | 'os_network_context'; createdBy?: string; }
+/** Physical (M2) resolution/selection material; bounded and strict in publish.ts. */
+export interface TopologyPhysicalRelationshipAttributes {
+  resolution?: 'resolved' | 'unresolved';
+  remoteChassis?: { subtype: string; value: string }; remotePort?: { subtype: string; value: string };
+  localPort?: { namespace: 'if_index' | 'if_name' | 'bridge_port' | 'lldp_local' | 'controller_port'; value: string; resolvedInterfaceKey: string | null };
+  remotePortRef?: { namespace: 'if_index' | 'if_name' | 'bridge_port' | 'lldp_local' | 'controller_port'; value: string; resolvedInterfaceKey: string | null };
+  bridgeContext?: string; fdbId?: number | null; vlanIds?: number[];
+  controllerSiteId?: string; controllerDeviceId?: string; uplinkPortIndex?: number;
+  fdbSelection?: 'selected' | 'competing' | 'excluded' | 'none'; alternativeRelationshipIds?: string[];
+}
+export interface TopologyRelationshipAttributes { label?: string; notes?: string; method?: 'manual' | 'legacy' | 'os_network_context' | 'lldp' | 'cdp' | 'fdb' | 'unifi'; createdBy?: string; physical?: TopologyPhysicalRelationshipAttributes; }
 export interface TopologyBindingProvenance { method?: 'inventory' | 'accepted_link' | 'manual' | 'legacy'; sourceId?: string; createdBy?: string; }
 
 // SQL owns DEFERRABLE INITIALLY IMMEDIATE; Drizzle does not expose that option.

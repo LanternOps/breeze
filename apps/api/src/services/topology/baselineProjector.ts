@@ -4,11 +4,11 @@ import { topologyCidrSchema, type NodeKind, type RelationshipKind } from '@breez
 import { canonicalIdentityKey } from './identity';
 import { stableLegacyId } from './legacyProjection';
 import { outcomeHasPositives } from './collectionTypes';
-import { emptyProjection, type TopologyProjectionInput, type TopologyProjectionDelta } from './reconciliationTypes';
+import { emptyProjection, type BaselineProjectionInput, type TopologyProjectionDelta } from './reconciliationTypes';
 
 const opaque = (value:unknown)=>createHash('sha256').update(JSON.stringify(canonicalFactValue(value))).digest('hex');
 /** Pure OS evidence projection. Prefixes and routes imply no physical link. */
-export function projectBaselineTopology(input:TopologyProjectionInput):TopologyProjectionDelta {
+export function projectBaselineTopology(input:BaselineProjectionInput):TopologyProjectionDelta {
   const delta=emptyProjection();
   const {scope,source,run,snapshot,originNodeId}=input;
   if (!outcomeHasPositives(snapshot.section.outcome)) return delta;

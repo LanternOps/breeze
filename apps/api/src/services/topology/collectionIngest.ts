@@ -2,14 +2,14 @@ import { planConfirmedRevivals } from './collectionAging';
 import { topologyPositiveKeys } from './collectionFactKeys';
 import { createHash, randomUUID } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
-import { networkContextV1Schema, type NetworkContextFull, type NetworkContextUnchanged } from '@breeze/shared';
+import { networkContextV1Schema, physicalSourceSectionSchema, type NetworkContextUnchanged } from '@breeze/shared';
 import { db, assertInTransaction } from '../../db';
 import { topologyCollectionRuns, topologyCollectionSources, topologySiteState } from '../../db/schema';
 import { requireCurrentTopologyProducer } from './collectionAuthority';
 import { normalizeNetworkContext } from './collectionDigest';
-import { effectiveTopologyCapture, advanceTopologyAbsence, readTopologyAbsence, retainTopologyKnownKeys } from './collectionState';
+import { effectiveTopologyCapture, advanceTopologyAbsence, assessTopologyRetainedCapacity, readTopologyAbsence, retainTopologyKnownKeys } from './collectionState';
 import { compareTopologySequences } from './sequence';
-import { outcomeHasPositives, sourceKey, sourceKeyString, type AuthenticatedTopologyProducer, type NormalizedTopologyReport, type NormalizedTopologySnapshot, type TopologyIngestReceipt, type TopologySourceReceipt } from './collectionTypes';
+import { assertTopologyProducerFamily, isWithinTopologyAuthority, outcomeHasPositives, sourceKey, sourceKeyString, type AuthenticatedTopologyProducer, type NormalizedTopologyReport, type NormalizedTopologySnapshot, type OsTopologySnapshot, type TopologyIngestReceipt, type TopologySourceConfirmation, type TopologySourceKey, type TopologySourceReceipt } from './collectionTypes';
 
 type Source = typeof topologyCollectionSources.$inferSelect;
 const scopeWhere = (p: AuthenticatedTopologyProducer) => and(eq(topologySiteState.orgId,p.scope.orgId),eq(topologySiteState.siteId,p.scope.siteId));
@@ -54,35 +54,65 @@ async function confirm(p: AuthenticatedTopologyProducer,source: Source,input: {
     confirmedThroughAt:outcomeHasPositives(source.lastOutcome)?timing.effectiveAt:source.confirmedThroughAt,
     freshUntil:outcomeHasPositives(source.lastOutcome)?timing.freshUntil:source.freshUntil,
     currentBaseline:{...source.currentBaseline,_lastCapture:{snapshotId:input.snapshotId,capturedAt:input.capturedAt},
-      ...(Array.isArray(source.currentBaseline._knownKeys)?{_knownKeys:retainTopologyKnownKeys(source.currentBaseline._knownKeys as string[],[],absence.newTransitions)}:{})},
+      ...(Array.isArray(source.currentBaseline._knownKeys)?{_knownKeys:retainTopologyKnownKeys(source.currentBaseline._knownKeys as string[],[],absence.newTransitions).keys}:{})},
     pendingMisses:{...absence.state},lastReceivedAt:new Date(),updatedAt:new Date()}).where(eq(topologyCollectionSources.id,source.id)).returning();
   return receipt(updated!);
 }
+/** Device-level throttle for physical producers, additional to the per-authority
+ * quota (Collection §4 owns quota per target/controller-site, not per device). */
+export const TOPOLOGY_DEVICE_PHYSICAL_DAILY_SNAPSHOTS=10_000;
+export const TOPOLOGY_DEVICE_PHYSICAL_DAILY_BYTES=256n*1024n*1024n;
+const PRODUCER_DAILY_BYTES=8n*1024n*1024n, ORG_DAILY_BYTES=16n*1024n*1024n*1024n;
 async function budget(p: AuthenticatedTopologyProducer,source: Source,bytes:number): Promise<boolean> {
   // The site-state lock serializes this site's admission. The org advisory lock
   // also serializes producer/org budgets across sites and credential epochs.
   await db.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${p.scope.orgId},73191))`);
+  const physical=p.producerKind!=='agent';
+  // Quota owner: the agent itself (M1), or the authorized target/controller site.
+  // Runs carry no producer kind, so ownership is resolved through their source.
+  const owner=physical
+    ? sql`SELECT id FROM topology_collection_sources WHERE org_id=${p.scope.orgId}::uuid AND producer_id=${p.producerId}::uuid AND producer_kind=${p.producerKind}
+        AND (context_key=${p.authorityKey!} OR starts_with(context_key,${`${p.authorityKey!}/`}))`
+    : sql`SELECT id FROM topology_collection_sources WHERE org_id=${p.scope.orgId}::uuid AND producer_id=${p.producerId}::uuid AND producer_kind='agent'`;
+  const devicePhysical=sql`SELECT id FROM topology_collection_sources WHERE org_id=${p.scope.orgId}::uuid AND producer_id=${p.producerId}::uuid AND producer_kind<>'agent'`;
   const [counts]=await db.execute(sql`SELECT
-    count(*) FILTER (WHERE producer_id=${p.producerId}::uuid AND received_at>now()-interval '1 hour' AND completion_scope->>'initialBaseline' IS DISTINCT FROM 'true')::int AS hourly,
-    count(*) FILTER (WHERE producer_id=${p.producerId}::uuid AND completion_scope->>'initialBaseline' IS DISTINCT FROM 'true')::int AS daily,
-    COALESCE(sum(normalized_bytes) FILTER (WHERE producer_id=${p.producerId}::uuid),0)::text AS bytes,
+    count(*) FILTER (WHERE producer_id=${p.producerId}::uuid AND source_id IN (${owner}) AND received_at>now()-interval '1 hour' AND completion_scope->>'initialBaseline' IS DISTINCT FROM 'true')::int AS hourly,
+    count(*) FILTER (WHERE producer_id=${p.producerId}::uuid AND source_id IN (${owner}) AND completion_scope->>'initialBaseline' IS DISTINCT FROM 'true')::int AS daily,
+    COALESCE(sum(normalized_bytes) FILTER (WHERE producer_id=${p.producerId}::uuid AND source_id IN (${owner})),0)::text AS bytes,
+    count(*) FILTER (WHERE producer_id=${p.producerId}::uuid AND source_id IN (${devicePhysical}))::int AS device_daily,
+    COALESCE(sum(normalized_bytes) FILTER (WHERE producer_id=${p.producerId}::uuid AND source_id IN (${devicePhysical})),0)::text AS device_bytes,
     count(*)::int AS org_daily,COALESCE(sum(normalized_bytes),0)::text AS org_bytes
     FROM topology_collection_runs WHERE org_id=${p.scope.orgId}::uuid AND received_at>now()-interval '1 day'`);
-  const [initial]=await db.execute(sql`SELECT count(*)::int AS scopes FROM topology_collection_sources
-    WHERE producer_id=${p.producerId}::uuid AND producer_kind=${p.producerKind} AND protocol<>'envelope'`);
+  const [initial]=await db.execute(sql`SELECT count(*)::int AS scopes FROM topology_collection_sources WHERE id IN (${owner}) AND protocol<>'envelope'`);
   const initialAllowance=source.firstBaselineAt===null && Number(initial?.scopes)<=128;
-  const [root]=await db.select().from(topologyCollectionSources).where(sourceWhere(p,{protocol:'envelope',contextKey:'root',addressFamily:'any'})).for('update');
-  const tokens=Math.min(2,root!.admissionTokens+(Date.now()-root!.admissionRefillAt.getTime())/600000);
+  // Token bucket: the device root (looked up by producer, never by the report's
+  // scope) for the agent; the source's own row for a physical scope.
+  const [bucket]=physical
+    ? await db.select().from(topologyCollectionSources).where(eq(topologyCollectionSources.id,source.id)).for('update')
+    : await db.select().from(topologyCollectionSources).where(and(eq(topologyCollectionSources.orgId,p.scope.orgId),eq(topologyCollectionSources.producerId,p.producerId),
+      eq(topologyCollectionSources.producerKind,'agent'),eq(topologyCollectionSources.protocol,'envelope'),eq(topologyCollectionSources.contextKey,'root'),eq(topologyCollectionSources.addressFamily,'any'))).for('update');
+  if (!bucket) return false;
+  const tokens=Math.min(2,bucket.admissionTokens+(Date.now()-bucket.admissionRefillAt.getTime())/600000);
   const allowed=(initialAllowance || (tokens>=1 && Number(counts?.hourly)<6 && Number(counts?.daily)<48))
-    && BigInt(String(counts?.bytes ?? 0))+BigInt(bytes)<=8n*1024n*1024n
-    && Number(counts?.org_daily)<250000 && BigInt(String(counts?.org_bytes ?? 0))+BigInt(bytes)<=16n*1024n*1024n*1024n;
-  if (allowed && !initialAllowance) await db.update(topologyCollectionSources).set({admissionTokens:tokens-1,admissionRefillAt:new Date()}).where(eq(topologyCollectionSources.id,root!.id));
+    && BigInt(String(counts?.bytes ?? 0))+BigInt(bytes)<=PRODUCER_DAILY_BYTES
+    && (!physical || (Number(counts?.device_daily)<TOPOLOGY_DEVICE_PHYSICAL_DAILY_SNAPSHOTS && BigInt(String(counts?.device_bytes ?? 0))+BigInt(bytes)<=TOPOLOGY_DEVICE_PHYSICAL_DAILY_BYTES))
+    && Number(counts?.org_daily)<250000 && BigInt(String(counts?.org_bytes ?? 0))+BigInt(bytes)<=ORG_DAILY_BYTES;
+  if (allowed && !initialAllowance) await db.update(topologyCollectionSources).set({admissionTokens:tokens-1,admissionRefillAt:new Date()}).where(eq(topologyCollectionSources.id,bucket.id));
   return allowed;
+}
+/** Over quota or over retained capacity: a coverage gap. Nothing accepted is
+ * evicted or renewed; only the unresolved miss streak is broken (Collection §4). */
+async function rejectForCapacity(source: Source,key: TopologySourceKey): Promise<TopologySourceReceipt> {
+  await db.update(topologyCollectionSources).set({quotaRejectedCount:sql`quota_rejected_count+1`,pendingMisses:{...readTopologyAbsence(source.pendingMisses),active:[]},updatedAt:new Date()}).where(eq(topologyCollectionSources.id,source.id));
+  return {key,accepted:false,reason:'snapshot_budget_exceeded'};
 }
 async function admit(p: AuthenticatedTopologyProducer,snapshot: NormalizedTopologySnapshot): Promise<TopologySourceReceipt> {
   let [source]=await db.select().from(topologyCollectionSources).where(sourceWhere(p,snapshot.key)).for('update');
   if (!source) [source]=await db.insert(topologyCollectionSources).values({...p.scope,...snapshot.key,producerId:p.producerId,
     producerKind:p.producerKind,producerEpoch:p.producerEpoch,configurationRevision:p.configurationRevision}).returning();
+  // A physical source fenced under its current epoch stays fenced: only a new
+  // authority generation/epoch (re-authorization) may re-baseline it.
+  if (p.producerKind!=='agent' && source!.revokedAt && source!.producerEpoch===p.producerEpoch) return {key:snapshot.key,accepted:false,reason:'source_revoked'};
   if (source!.producerEpoch!==p.producerEpoch || source!.revokedAt) {
     [source]=await db.update(topologyCollectionSources).set({producerEpoch:p.producerEpoch,configurationRevision:p.configurationRevision,
       epochIssuedAt:new Date(),acceptedSequence:'0',materializedSequence:'0',confirmedSequence:'0',contentDigest:null,publishedDigest:null,
@@ -96,10 +126,18 @@ async function admit(p: AuthenticatedTopologyProducer,snapshot: NormalizedTopolo
     eq(topologyCollectionRuns.sourceId,source!.id),eq(topologyCollectionRuns.snapshotId,snapshot.snapshotId))).limit(1);
   if (previousSnapshot.length) return {key:snapshot.key,accepted:false,reason:'snapshot_conflict'};
   const bytes=Buffer.byteLength(JSON.stringify(snapshot));
-  if (!await budget(p,source!,bytes)) {
-    await db.update(topologyCollectionSources).set({quotaRejectedCount:sql`quota_rejected_count+1`,pendingMisses:{...readTopologyAbsence(source!.pendingMisses),active:[]},updatedAt:new Date()}).where(eq(topologyCollectionSources.id,source!.id));
-    return {key:snapshot.key,accepted:false,reason:'snapshot_budget_exceeded'};
-  }
+  const old=source!.currentBaseline.section as NormalizedTopologySnapshot['section']|undefined;
+  const knownKeys=(source!.currentBaseline._knownKeys as string[]|undefined)??(old?topologyPositiveKeys(old):[]);
+  const positives=topologyPositiveKeys(snapshot.section);
+  const absence=advanceTopologyAbsence(readTopologyAbsence(source!.pendingMisses),{digest:snapshot.contentDigest,sequence:snapshot.sequence,effectiveAt:timing.effectiveAt,
+    outcome:snapshot.section.outcome,positiveKeys:outcomeHasPositives(snapshot.section.outcome)?positives:[],
+    previousKeys:knownKeys,generation:randomUUID()});
+  const retained=retainTopologyKnownKeys(knownKeys,positives,absence.newTransitions);
+  // D13: budget the whole retained state before admission. Physical families
+  // never truncate withdrawable keys; M1 OS context keeps its bounded list.
+  if (p.producerKind!=='agent' && retained.capacity==='exceeded') return rejectForCapacity(source!,snapshot.key);
+  if (!assessTopologyRetainedCapacity({snapshot,knownKeys:retained.keys,pendingMisses:absence.state,newTransitions:absence.newTransitions.length}).ok) return rejectForCapacity(source!,snapshot.key);
+  if (!await budget(p,source!,bytes)) return rejectForCapacity(source!,snapshot.key);
   const inputRevision=await dirty(p);
   // Keep accepted snapshots immutable and in order; no unaccepted candidate can
   // replace a pending run. A noisy neighbor cannot block confirmed route scopes.
@@ -107,34 +145,62 @@ async function admit(p: AuthenticatedTopologyProducer,snapshot: NormalizedTopolo
     sequence:snapshot.sequence,snapshotId:snapshot.snapshotId,contentDigest:snapshot.contentDigest,parentJobId:p.parentJobId,parentCommandId:p.parentCommandId,
     observedAt:new Date(snapshot.capturedAt),effectiveAt:timing.effectiveAt,outcome:snapshot.section.outcome,completionScope:{...snapshot.key,inputRevision,initialBaseline:source!.firstBaselineAt===null},
     snapshot:{...snapshot},rowCount:snapshot.section.rowCount,omittedRowCount:snapshot.section.omittedRowCount??0,normalizedBytes:bytes,expectedIntervalSeconds:snapshot.expectedIntervalSeconds});
-  const old=source!.currentBaseline.section as NormalizedTopologySnapshot['section']|undefined;
-  const knownKeys=(source!.currentBaseline._knownKeys as string[]|undefined)??(old?topologyPositiveKeys(old):[]);
-  const absence=advanceTopologyAbsence(readTopologyAbsence(source!.pendingMisses),{digest:snapshot.contentDigest,sequence:snapshot.sequence,effectiveAt:timing.effectiveAt,
-    outcome:snapshot.section.outcome,positiveKeys:outcomeHasPositives(snapshot.section.outcome)?topologyPositiveKeys(snapshot.section):[],
-    previousKeys:knownKeys,generation:randomUUID()});
   for (const transition of absence.newTransitions) transition.inputRevision=inputRevision;
   const [updated]=await db.update(topologyCollectionSources).set({acceptedSequence:snapshot.sequence,confirmedSequence:snapshot.sequence,
-    contentDigest:snapshot.contentDigest,baseSnapshotId:snapshot.snapshotId,currentBaseline:{...snapshot,_knownKeys:retainTopologyKnownKeys(knownKeys,topologyPositiveKeys(snapshot.section),absence.newTransitions)},firstBaselineAt:source!.firstBaselineAt??new Date(),
+    contentDigest:snapshot.contentDigest,baseSnapshotId:snapshot.snapshotId,currentBaseline:{...snapshot,_knownKeys:retained.keys},firstBaselineAt:source!.firstBaselineAt??new Date(),
     pendingMisses:{...absence.state},lastOutcome:snapshot.section.outcome,lastFullValidationAt:new Date(),lastReceivedAt:new Date(),
     expectedIntervalSeconds:snapshot.expectedIntervalSeconds,confirmedThroughAt:outcomeHasPositives(snapshot.section.outcome)?timing.effectiveAt:source!.confirmedThroughAt,
     freshUntil:outcomeHasPositives(snapshot.section.outcome)?timing.freshUntil:source!.freshUntil,updatedAt:new Date()}).where(eq(topologyCollectionSources.id,source!.id)).returning();
   return receipt(updated!);
 }
 
-/** Normalized source ingress for authorized adapters. Heartbeat uses the full
- * envelope function below so an acknowledgement never spans rejected scopes. */
+/** Rejections that name the adapter's input rather than a stale producer. */
+function assertSourceScope(p: AuthenticatedTopologyProducer,key: TopologySourceKey,sectionKind: string) {
+  assertTopologyProducerFamily(p.producerKind,sectionKind);
+  if (p.producerKind!=='agent' && (!p.authorityKey || key.addressFamily!=='any' || !isWithinTopologyAuthority(p.authorityKey,key.contextKey))) throw new Error('source_outside_authority');
+}
+/** D2: a source-level unchanged report must name the exact retained baseline —
+ * base snapshot, digest, source key, epoch and configuration — before it may
+ * reuse `confirm()` (partial-positive renewal, replay suppression, compact
+ * second-miss transitions). It never creates a run. */
+async function confirmSource(p: AuthenticatedTopologyProducer,confirmation: TopologySourceConfirmation): Promise<TopologySourceReceipt> {
+  const [source]=await db.select().from(topologyCollectionSources).where(sourceWhere(p,confirmation.key)).for('update');
+  const required={key:confirmation.key,accepted:false,reason:'full_snapshot_required' as const};
+  if (!source) return required;
+  if (source.revokedAt) return {...receipt(source),accepted:false,reason:p.producerKind==='agent'?'full_snapshot_required':'source_revoked'};
+  if (confirmation.producerEpoch!==p.producerEpoch || source.producerEpoch!==p.producerEpoch || source.configurationRevision!==p.configurationRevision
+    || !source.baseSnapshotId || source.baseSnapshotId!==confirmation.baseSnapshotId || !source.contentDigest || source.contentDigest!==confirmation.contentDigest) return {...receipt(source),...required};
+  return confirm(p,source,confirmation);
+}
+
+/** Normalized source ingress for authorized adapters (4b discovery, 5 UniFi).
+ * Build the producer with `resolveTopologyPhysicalProducer`; authority, family,
+ * authority namespace and section shape are all re-verified here. Heartbeat
+ * uses the envelope function below so an acknowledgement never spans rejected scopes. */
 export async function ingestTopologySourceReport(p: AuthenticatedTopologyProducer,report: NormalizedTopologyReport): Promise<TopologyIngestReceipt> {
   assertInTransaction('ingestTopologySourceReport');
   return db.transaction(async () => {
     await requireCurrentTopologyProducer(p);
-    if (report.reportKind!=='full') throw new Error('Use envelope confirmation for unchanged network context');
-    const result=await admit(p,report.snapshot);
-    return {producerEpoch:p.producerEpoch,accepted:result.accepted,sourceReceipts:[result],reason:result.reason};
+    let result:TopologySourceReceipt;
+    if (report.reportKind==='unchanged') {
+      assertSourceScope(p,report.confirmation.key,report.confirmation.key.protocol);
+      result=await confirmSource(p,report.confirmation);
+    } else {
+      const {snapshot}=report;
+      assertSourceScope(p,snapshot.key,snapshot.section.kind);
+      if (sourceKeyString(snapshot.key)!==sourceKeyString(sourceKey(snapshot.section)) || snapshot.producerEpoch!==p.producerEpoch) throw new Error('source_key_mismatch');
+      if (p.producerKind!=='agent' && !physicalSourceSectionSchema.safeParse(snapshot.section).success) throw new Error('invalid_source_section');
+      result=await admit(p,snapshot);
+    }
+    return {producerEpoch:p.producerEpoch,accepted:result.accepted,sourceReceipts:[result],reason:result.reason,
+      ...(result.accepted?{acceptedSequence:result.acceptedSequence,contentDigest:result.contentDigest,baseSnapshotId:result.baseSnapshotId}:{}),
+      ...(result.reason==='snapshot_budget_exceeded'?{retryAfterSeconds:300}:{})};
   });
 }
 
 export async function ingestTopologyNetworkContext(p: AuthenticatedTopologyProducer,payload: unknown): Promise<TopologyIngestReceipt> {
   assertInTransaction('ingestTopologyNetworkContext');
+  if (p.producerKind!=='agent') throw new Error('unsupported_producer');
   const report=networkContextV1Schema.parse(payload);
   const normalized=normalizeNetworkContext(p,report);
   return db.transaction(async () => {
@@ -156,10 +222,13 @@ export async function ingestTopologyNetworkContext(p: AuthenticatedTopologyProdu
     // A complete vanished-context manifest is a real empty collection for its
     // retained scopes; omission of a section in a present context is never one.
     if (report.contextManifest.outcome==='complete') {
-      const sources=await db.select().from(topologyCollectionSources).where(and(eq(topologyCollectionSources.orgId,p.scope.orgId),eq(topologyCollectionSources.siteId,p.scope.siteId),eq(topologyCollectionSources.producerId,p.producerId)));
+      // Only this agent's OS context scopes: physical sources share the device's
+      // producerId but are never withdrawn by a heartbeat context manifest.
+      const sources=await db.select().from(topologyCollectionSources).where(and(eq(topologyCollectionSources.orgId,p.scope.orgId),eq(topologyCollectionSources.siteId,p.scope.siteId),
+        eq(topologyCollectionSources.producerId,p.producerId),eq(topologyCollectionSources.producerKind,'agent')));
       for (const source of sources) {
         if (source.protocol==='envelope' || source.revokedAt || report.contextManifest.contexts.some(c=>c.contextKey===source.contextKey)) continue;
-        const old=source.currentBaseline as unknown as NormalizedTopologySnapshot;
+        const old=source.currentBaseline as unknown as OsTopologySnapshot;
         if (!old.section) continue;
         const section={...old.section,rows:[],rowCount:0,omittedRowCount:0,outcome:'complete' as const};
         const digest=createHash('sha256').update(JSON.stringify({kind:section.kind,context:section.contextKey,absent:true,epoch:p.producerEpoch})).digest('hex');
