@@ -1089,7 +1089,8 @@ describe('alert routes', () => {
       vi.mocked(db.select).mockReturnValueOnce(channelLookupChain([{
         id: channelId,
         orgId: '11111111-1111-1111-1111-111111111111',
-        type: 'webhook'
+        type: 'webhook',
+        config: { url: 'https://hooks.example.com/existing' }
       }]));
 
       const res = await app.request(`/alerts/channels/${channelId}`, {

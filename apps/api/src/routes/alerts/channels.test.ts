@@ -379,6 +379,27 @@ describe('notification channels — partner-wide gating (#2130)', () => {
       expect(body.name).toBe('Renamed Fleet Webhook');
       expect(updateSetRef.current?.name).toBe('Renamed Fleet Webhook');
     });
+
+    it('409s a config update when the channel has no notification_channel_configs row (#6379) instead of dropping masked secrets', async () => {
+      setPartnerAuth('all');
+      existingRowRef.current = { ...PARTNER_WIDE_CHANNEL, config: null };
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const res = await makeApp().request(`/alerts/channels/${CHANNEL_ID}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ config: { url: 'https://hooks.example.com/new', authToken: '********' } }),
+        });
+
+        expect(res.status).toBe(409);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toBe('Notification channel has no stored configuration');
+        expect(updateSetRef.current).toBeUndefined();
+        expect(insertedConfigRef.current).toBeUndefined();
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
   });
 
   describe('DELETE /alerts/channels/:id', () => {
@@ -415,6 +436,22 @@ describe('notification channels — partner-wide gating (#2130)', () => {
       expect(res.status).toBe(403);
       const body = (await res.json()) as { error: string };
       expect(body.error).toBe(PARTNER_WIDE_WRITE_DENIED_MESSAGE);
+    });
+
+    it('409s a test-send when the channel has no notification_channel_configs row (#6379)', async () => {
+      setPartnerAuth('all');
+      existingRowRef.current = { ...PARTNER_WIDE_CHANNEL, config: null };
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const res = await makeApp().request(`/alerts/channels/${CHANNEL_ID}/test`, { method: 'POST' });
+
+        expect(res.status).toBe(409);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toBe('Notification channel has no stored configuration');
+        expect(updateSetRef.current).toBeUndefined();
+      } finally {
+        errorSpy.mockRestore();
+      }
     });
   });
 

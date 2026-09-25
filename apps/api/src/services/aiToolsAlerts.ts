@@ -709,6 +709,13 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         let nextConfig: unknown;
         if (typeof input.name === 'string') updates.name = input.name;
         if (input.config !== undefined && input.config !== null) {
+          // Merging needs the stored config (masked secrets resolve against
+          // it); a missing notification_channel_configs row (#6379) would
+          // silently drop them.
+          if (existing.config === null || existing.config === undefined) {
+            console.error(`[aiToolsAlerts] Channel ${existing.id} has no config row (notification_channel_configs) — config update refused`);
+            return JSON.stringify({ error: 'Notification channel has no stored configuration' });
+          }
           if (
             existing.type === 'webhook'
             && webhookOriginChangeWouldRetainAuthorization(

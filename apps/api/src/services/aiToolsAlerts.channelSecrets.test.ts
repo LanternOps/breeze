@@ -541,6 +541,25 @@ describe('manage_notification_channels — update action', () => {
     expect(result.success).toBe(true);
   });
 
+  it('refuses a config update when the channel has no notification_channel_configs row (#6379)', async () => {
+    mockChannelLookup({ ...EXISTING_CHANNEL, config: null });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = JSON.parse(
+        await handler(
+          { action: 'update', channelId: 'chan-1', config: SLACK_CONFIG },
+          makeAuth(),
+        ) as string,
+      );
+
+      expect(result.error).toBe('Notification channel has no stored configuration');
+      expect(mocks.encryptNotificationChannelConfig).not.toHaveBeenCalled();
+      expect(mocks.dbUpdate).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it('returns error when channel not found', async () => {
     mockChannelLookup(null);
 

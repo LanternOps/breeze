@@ -1701,6 +1701,12 @@ async function sendChannelNotification(
     deviceName: string;
   },
 ): Promise<{ success: boolean; error?: string }> {
+  // Sends run under system scope, so null means the channel's
+  // notification_channel_configs row is missing (#6379) — refuse loudly.
+  if (channel.config === null || channel.config === undefined) {
+    console.error(`[AutomationRuntime] Channel ${channel.id} has no config row (notification_channel_configs) — send refused`);
+    return { success: false, error: 'Notification channel has no stored configuration' };
+  }
   const channelConfig = parseNotificationChannelConfig(channel.config);
 
   if (channel.type === 'email') {

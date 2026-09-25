@@ -303,6 +303,13 @@ channelsRoutes.put(
     }
 
     if (data.config !== undefined) {
+      // Merging needs the stored config: masked secrets resolve against it. A
+      // null here means the notification_channel_configs row is missing
+      // (#6379) — refuse rather than silently drop the stored secrets.
+      if (channel.config === null || channel.config === undefined) {
+        console.error(`[AlertChannels] Channel ${channel.id} has no config row (notification_channel_configs) — config update refused`);
+        return c.json({ error: 'Notification channel has no stored configuration' }, 409);
+      }
       if (channel.type === 'webhook') {
         const existingConfig = decryptNotificationChannelConfig(channel.type, channel.config);
         if (webhookOriginChangeWouldRetainAuthorization(
@@ -454,7 +461,13 @@ channelsRoutes.post(
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
-    const storedConfig = channel.config ?? {};
+    if (channel.config === null || channel.config === undefined) {
+      // Missing notification_channel_configs row (#6379): a data bug, not a
+      // misconfigured destination — say so instead of test-sending to nothing.
+      console.error(`[AlertChannels] Channel ${channel.id} has no config row (notification_channel_configs) — test send refused`);
+      return c.json({ error: 'Notification channel has no stored configuration' }, 409);
+    }
+    const storedConfig = channel.config;
     const channelConfig = decryptNotificationChannelConfig(channel.type, storedConfig);
     const redactedChannelConfig = redactNotificationChannelConfig(channel.type, storedConfig);
 
