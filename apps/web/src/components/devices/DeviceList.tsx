@@ -195,6 +195,8 @@ export type Device = {
   siteId: string;
   siteName: string;
   agentVersion: string;
+  /** Why the server withholds update offers from this device (#6449); null/absent = offers flowing. */
+  updateOfferWithheldReason?: string | null;
   watchdogVersion?: string | null;
   /** Installed Breeze Assist helper version (devices.helper_version, #6751). */
   helperVersion?: string | null;
@@ -1985,6 +1987,17 @@ export default function DeviceList({
           device.agentVersion,
           effectiveVersion,
         );
+        // #6449: the server is withholding update offers from this device
+        // (edition gate) — it will idle on this version, so say so.
+        const withheldBadge = device.updateOfferWithheldReason ? (
+          <span
+            data-testid={`device-${device.id}-update-withheld`}
+            title={t("deviceList.updateWithheldTooltip")}
+            className="ml-1.5 rounded bg-warning/15 px-1.5 py-0.5 text-xs font-medium text-warning"
+          >
+            {t("deviceList.updateWithheld")}
+          </span>
+        ) : null;
         if (relation === "unknown") {
           return (
             <td
@@ -1993,6 +2006,7 @@ export default function DeviceList({
               className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap"
             >
               {device.agentVersion || dash}
+              {withheldBadge}
             </td>
           );
         }
@@ -2015,6 +2029,7 @@ export default function DeviceList({
             >
               {device.agentVersion}
             </span>
+            {withheldBadge}
           </td>
         );
       },

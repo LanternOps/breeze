@@ -116,6 +116,40 @@ describe('DeviceInfoTab — OS version display', () => {
   });
 });
 
+describe('DeviceInfoTab — update offers withheld (#6449)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function load(extra: Record<string, unknown>) {
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === `/devices/${deviceId}` && method === 'GET') {
+        return makeJsonResponse({ ...baseDeviceInfoPayload, agentVersion: '0.106.0', ...extra });
+      }
+      if (url === '/custom-fields') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+  }
+
+  it('shows the withheld notice with the since-date when offers are withheld', async () => {
+    load({
+      updateOfferWithheldReason: 'edition_unconfirmed',
+      updateOfferWithheldSince: '2026-10-01T00:00:00.000Z',
+    });
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    expect(await screen.findByTestId('update-offer-withheld')).toBeInTheDocument();
+  });
+
+  it('shows no notice for a healthy device', async () => {
+    load({ updateOfferWithheldReason: null, updateOfferWithheldSince: null });
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    await screen.findByText('Operating System');
+    expect(screen.queryByTestId('update-offer-withheld')).toBeNull();
+  });
+});
+
 describe('DeviceInfoTab — hardware summary display', () => {
   beforeEach(() => {
     vi.clearAllMocks();
