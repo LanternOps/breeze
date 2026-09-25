@@ -1100,6 +1100,30 @@ describe('reconcileOrphanedBackupSnapshots', () => {
     ).rejects.toMatchObject({ code: 'destination_unreadable' });
   });
 
+  // #6843: the listing is now a MULTI-PAGE stream — a failure partway
+  // through (page 1 succeeds, page 2's continuation fetch/directory read
+  // fails) must surface exactly like an immediate listing failure, not leak
+  // a partial manifest-bearing-snapshot map forward into the DB comparison.
+  it('surfaces a listing failure that occurs mid-stream (after an earlier page already yielded) as the same typed error', async () => {
+    iterateBackupObjectsUnderPrefixMock.mockImplementation(async function* () {
+      yield [{ key: 'snapshots/snap-1/manifest.json', lastModified: new Date('2026-08-01T10:20:00Z') }];
+      throw new Error('connection reset mid-listing');
+    });
+    queueSelects([[CONFIG_ROW]]);
+
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(
+        reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID })
+      ).rejects.toMatchObject({ code: 'destination_unreadable' });
+    } finally {
+      error.mockRestore();
+    }
+    expect(captureExceptionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'connection reset mid-listing' }),
+    );
+  });
+
   describe('D18 W01 -- retired/orphan-age/base-missing/late-result-fenced refusals', () => {
     it('refuses to adopt a retired snapshot id', async () => {
       oneManifest('RETIRED-1');

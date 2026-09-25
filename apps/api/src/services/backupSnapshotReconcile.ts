@@ -349,15 +349,14 @@ function coarseStorageIdentity(provider: string, providerConfig: Record<string, 
  * an in-flight or abandoned upload, never an adoptable snapshot — the manifest
  * is written last, so its presence is the agent's own completion marker (the
  * same signal the GC mark phase keys on).
- */
-/**
- * #6843: folds a STREAMED destination listing directly into the
- * manifest-bearing-snapshot map, one page at a time — never materializes the
- * whole `snapshots/` root into an array. A customer bucket can hold millions
- * of objects (only a tiny fraction of which are `manifest.json` keys), and
- * the pre-#6843 shape (`listBackupObjectsUnderPrefix`, the array collector)
- * held that full listing in memory on this operator-triggered path — the
- * same class of allocation GC's sweep removed in #6834.
+ *
+ * #6843: folds a STREAMED destination listing directly into this map, one
+ * page at a time — never materializes the whole `snapshots/` root into an
+ * array. A customer bucket can hold millions of objects (only a tiny fraction
+ * of which are `manifest.json` keys), and the pre-#6843 shape
+ * (`listBackupObjectsUnderPrefix`, the array collector) held that full
+ * listing in memory on this operator-triggered path — the same class of
+ * allocation GC's sweep removed in #6834.
  */
 async function extractManifestBearingSnapshots(
   pages: AsyncIterable<{ key: string; lastModified: Date | null }[]>

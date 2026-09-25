@@ -931,6 +931,33 @@ describe('sweepUnreferencedBackupObjects', () => {
       expect(result.deleted).toBe(3); // manifest NOT deleted — 11 non-manifest keys remain
     });
 
+    // #6843 review: the ORDINARY per-run cap truncating a group's candidates
+    // (this test's cap=3 far below its 14 candidates) is pre-existing,
+    // expected behavior — never worth a warning. Only the NEW hard per-group
+    // buffer cap (BACKUP_GC_MAX_CANDIDATE_BUFFER_PER_GROUP, see the dedicated
+    // test below) gets one, since that one is otherwise invisible to an
+    // operator watching GC logs.
+    it('does not warn about the candidate buffer cap when the ordinary per-run cap is what truncated the group', async () => {
+      process.env.BACKUP_GC_MAX_DELETES_PER_RUN = '3';
+      pushRunLevel([destination]);
+      pushIdentity({ retirements: [{ id: 'retirement-big2', snapshotId: 'BIG2' }] });
+      const items = Array.from({ length: 14 }, (_, i) => ({
+        key: `snapshots/BIG2/files/f${String(i).padStart(2, '0')}`,
+        lastModified: new Date(Date.UTC(2026, 0, 1) - (i + 1) * DAY_MS),
+      }));
+      rootListingMock.mockResolvedValueOnce([{ key: 'snapshots/BIG2/manifest.json', lastModified: new Date(Date.UTC(2026, 0, 1)) }, ...items]);
+      deleteBackupObjectKeysMock.mockImplementation(async ({ keys }: { keys: string[] }) => ({ deletedKeys: keys, failedKeys: [] }));
+
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await sweepUnreferencedBackupObjects();
+      } finally {
+        warn.mockRestore();
+      }
+
+      expect(warn.mock.calls.some(([msg]) => String(msg).includes('candidate buffer capped'))).toBe(false);
+    });
+
     // #6843 gap 5: BACKUP_GC_MAX_DELETES_PER_RUN=0 ("unlimited") used to pass
     // Number.MAX_SAFE_INTEGER straight into OldestFirstCandidates as the
     // group's buffer cap, so a single snapshot's re-list buffered EVERY
@@ -951,7 +978,15 @@ describe('sweepUnreferencedBackupObjects', () => {
       ]);
       deleteBackupObjectKeysMock.mockImplementation(async ({ keys }: { keys: string[] }) => ({ deletedKeys: keys, failedKeys: [] }));
 
-      const result = await sweepUnreferencedBackupObjects();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      let result;
+      let warnings: string[];
+      try {
+        result = await sweepUnreferencedBackupObjects();
+        warnings = warn.mock.calls.map(([msg]) => String(msg));
+      } finally {
+        warn.mockRestore();
+      }
 
       // Bounded to the hard per-group cap this run, not all TOTAL candidates —
       // the rest are picked up by a later run (the sweep is resumable by
@@ -960,6 +995,10 @@ describe('sweepUnreferencedBackupObjects', () => {
       const deletedKeys = (deleteBackupObjectKeysMock.mock.calls[0]![0] as { keys: string[] }).keys;
       expect(deletedKeys.length).toBe(BACKUP_GC_MAX_CANDIDATE_BUFFER_PER_GROUP);
       expect(result.deleted).toBe(BACKUP_GC_MAX_CANDIDATE_BUFFER_PER_GROUP);
+      // #6843 review: this truncation is otherwise invisible to an operator —
+      // it must be logged, naming the deferred count, so a group whose junk
+      // grows faster than the cap doesn't silently plateau with no signal.
+      expect(warnings.some((m) => m.includes('candidate buffer capped') && m.includes('snapshot HUGE') && m.includes('50 object'))).toBe(true);
     });
   });
 
