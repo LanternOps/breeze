@@ -1152,7 +1152,11 @@ async function advanceVerify(
         task, leaseEpoch, event: 'hand_off', outcome: 'unresolved',
         detail: `verification failed and no further attempt could be admitted: ${admitted.detail}`,
         checkpoint: next,
-        handoffSummary: `The service is still not running. ${evaluation.detail}`,
+        // The summary is the technician-facing field, so it must carry the
+        // limit that stopped the retry (#6590) — otherwise a policy ceiling
+        // reads as an unexplained failure.
+        handoffSummary: `The service is still not running. ${evaluation.detail} `
+          + `Operator did not retry: ${admitted.detail}.`,
       });
       return 'handed off: verification failed, no attempts left';
     }
@@ -1161,7 +1165,7 @@ async function advanceVerify(
       detail: `verification failed after ${checkpoint.mutationAttempts} attempts: ${mutationCheck.detail}`,
       checkpoint: next,
       handoffSummary: `The service is still not running after ${checkpoint.mutationAttempts} restart `
-        + `attempt(s). ${evaluation.detail}`,
+        + `attempt(s). ${evaluation.detail} Operator did not retry: ${mutationCheck.detail}.`,
     });
     return 'handed off: mutation attempts exhausted';
   }

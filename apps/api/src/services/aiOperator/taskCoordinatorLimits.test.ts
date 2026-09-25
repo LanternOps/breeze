@@ -128,6 +128,24 @@ describe('admitReasoningRun enforces taskMaxReasoningRuns', () => {
     expect((await admit(2)).admitted).toBe(false);
     expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
   });
+  // advanceInvestigate's call shape: the attempt ordinal is NOT bumped.
+  it('gates the unbumped first-attempt path too (bumpPlanRevision: false)', async () => {
+    limitsMock.mockResolvedValue({ policyLimits: { taskMaxReasoningRuns: 1 }, spentCents: 0 });
+    const first = await __testOnly.admitReasoningRun({
+      task: task({ attemptOrdinal: 0, currentStepKey: 'investigate' }), leaseEpoch: 4,
+      checkpoint: checkpoint(0), stepKey: 'investigate', bumpPlanRevision: false, recipe,
+    });
+    expect(first.admitted).toBe(true); // ordinal 0 < 1
+
+    vi.mocked(createAndEnqueueAgentRun).mockClear();
+    const atCap = await __testOnly.admitReasoningRun({
+      task: task({ attemptOrdinal: 1, currentStepKey: 'investigate' }), leaseEpoch: 4,
+      checkpoint: checkpoint(0), stepKey: 'investigate', bumpPlanRevision: false, recipe,
+    });
+    expect(atCap.admitted).toBe(false);
+    expect(atCap.detail).toContain('taskMaxReasoningRuns');
+    expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
+  });
 });
 
 describe('admitReasoningRun enforces taskMaxBudgetCents', () => {
@@ -179,6 +197,21 @@ describe('advanceVerify enforces taskMaxMutationAttemptsPerTarget on a failed cr
       eventType: 'task_settled',
       detail: expect.stringContaining('taskMaxMutationAttemptsPerTarget'),
     }));
+  });
+
+  it('names the mutation ceiling in the technician-facing handoff summary', async () => {
+    limitsMock.mockResolvedValue({ policyLimits: { taskMaxMutationAttemptsPerTarget: 1 }, spentCents: 0 });
+    await verify(1);
+    const summary = dbState.taskPatches.map((p) => p.handoffSummary).find(Boolean);
+    expect(summary).toContain('taskMaxMutationAttemptsPerTarget');
+  });
+
+  it('names a budget ceiling in the handoff summary when it stops the retry', async () => {
+    limitsMock.mockResolvedValue({ policyLimits: { taskMaxBudgetCents: 50 }, spentCents: 50 });
+    const outcome = await verify(0);
+    expect(outcome).toBe('handed off: verification failed, no attempts left');
+    const summary = dbState.taskPatches.map((p) => p.handoffSummary).find(Boolean);
+    expect(summary).toContain('taskMaxBudgetCents');
   });
 
   it('hands off OVER the ceiling', async () => {
