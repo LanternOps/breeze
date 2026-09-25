@@ -26,6 +26,15 @@ function runInOrg<T>(orgId: string, fn: () => Promise<T>): Promise<T> {
   );
 }
 
+async function markRestoreJobFailedSafe(orgId: string, restoreJobId: string, error: string): Promise<void> {
+  try {
+    await markRestoreJobFailed(orgId, restoreJobId, error);
+  } catch (err) {
+    // Never let a bookkeeping failure mask the real dispatch error.
+    console.error(`[BackupRestore] Failed to mark restore job ${restoreJobId} failed:`, err);
+  }
+}
+
 async function markRestoreJobFailed(orgId: string, restoreJobId: string, error: string): Promise<void> {
   const now = new Date();
   await runInOrg(orgId, async () => {
@@ -94,7 +103,7 @@ export async function dispatchTrackedDbRestore(opts: {
     const error = err instanceof Error ? err.message : 'Failed to dispatch restore command to agent';
     console.error(`[BackupRestore] Failed to dispatch ${opts.commandType}:`, err);
     recordBackupDispatchFailure('manual_restore', 'enqueue_failed');
-    await markRestoreJobFailed(orgId, job.id, error);
+    await markRestoreJobFailedSafe(orgId, job.id, error);
     return { ok: false, error };
   }
 
@@ -106,23 +115,33 @@ export async function dispatchTrackedDbRestore(opts: {
         ? (error.startsWith('Device is ') ? 'device_offline' : 'enqueue_failed')
         : 'missing_command_id',
     );
-    await markRestoreJobFailed(orgId, job.id, error);
+    await markRestoreJobFailedSafe(orgId, job.id, error);
     return { ok: false, error };
   }
 
   const command = queued.command;
-  await runInOrg(orgId, async () =>
-    db
-      .update(restoreJobs)
-      .set({
-        commandId: command.id,
-        status: command.status === 'sent' ? 'running' : 'pending',
-        startedAt: command.status === 'sent' ? new Date() : null,
-        updatedAt: new Date(),
-      })
-      .where(eq(restoreJobs.id, job.id))
-      .returning()
-  );
+  // The command is already dispatched: a failed link must not become a failed
+  // request (the restore is running). Log both ids so the row can be
+  // correlated by hand — its terminal result would otherwise be dropped.
+  try {
+    const linked = await runInOrg(orgId, async () =>
+      db
+        .update(restoreJobs)
+        .set({
+          commandId: command.id,
+          status: command.status === 'sent' ? 'running' : 'pending',
+          startedAt: command.status === 'sent' ? new Date() : null,
+          updatedAt: new Date(),
+        })
+        .where(eq(restoreJobs.id, job.id))
+        .returning({ id: restoreJobs.id })
+    );
+    if (!linked?.length) {
+      console.error(`[BackupRestore] restore job ${job.id} not linked to command ${command.id}: update matched no row`);
+    }
+  } catch (err) {
+    console.error(`[BackupRestore] Failed to link restore job ${job.id} to command ${command.id}:`, err);
+  }
 
   return { ok: true, command: { id: command.id, status: command.status }, restoreJobId: job.id };
 }

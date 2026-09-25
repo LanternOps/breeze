@@ -114,6 +114,44 @@ describe('dispatchTrackedDbRestore (#6974)', () => {
     expect(failed.set).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed' }));
   });
 
+  it('still reports success when linking the command id fails after dispatch', async () => {
+    insertMock.mockReturnValueOnce(chain([{ id: JOB_ID, status: 'pending' }]));
+    updateMock.mockImplementationOnce(() => { throw new Error('pool exhausted'); });
+    queueMock.mockResolvedValueOnce({ command: { id: 'cmd-1', status: 'sent' } });
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const res = await dispatchTrackedDbRestore(base);
+
+    expect(res).toEqual({ ok: true, command: { id: 'cmd-1', status: 'sent' }, restoreJobId: JOB_ID });
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining(`${JOB_ID} to command cmd-1`), expect.anything());
+    errSpy.mockRestore();
+  });
+
+  it('returns the original dispatch error even if marking the job failed throws', async () => {
+    insertMock.mockReturnValueOnce(chain([{ id: JOB_ID, status: 'pending' }]));
+    updateMock.mockImplementationOnce(() => { throw new Error('db down'); });
+    queueMock.mockResolvedValueOnce({ error: 'Device is offline, cannot execute command' });
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const res = await dispatchTrackedDbRestore(base);
+
+    expect(res).toEqual({ ok: false, error: 'Device is offline, cannot execute command' });
+    errSpy.mockRestore();
+  });
+
+  it('keeps the job pending (no startedAt) when the command is queued but not yet sent', async () => {
+    insertMock.mockReturnValueOnce(chain([{ id: JOB_ID, status: 'pending' }]));
+    const linked = chain([{ id: JOB_ID }]);
+    updateMock.mockReturnValueOnce(linked);
+    queueMock.mockResolvedValueOnce({ command: { id: 'cmd-2', status: 'pending' } });
+
+    await dispatchTrackedDbRestore(base);
+
+    expect(linked.set).toHaveBeenCalledWith(expect.objectContaining({
+      commandId: 'cmd-2', status: 'pending', startedAt: null,
+    }));
+  });
+
   it('fails without dispatching when the restore job row cannot be created', async () => {
     insertMock.mockReturnValueOnce(chain([]));
 
