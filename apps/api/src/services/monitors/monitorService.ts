@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { monitorDefinitions } from '../../db/schema/monitorDefinitions';
 import type { MonitorDefinitionRow } from '../../db/schema/monitorDefinitions';
@@ -225,8 +225,8 @@ type MonitorListFilters = { kind?: MonitorKind; enabled?: boolean };
 
 /**
  * The visibility + filter predicate shared by listMonitorDefinitions and
- * countMonitorDefinitions, so a paged list's `total` is counted over exactly
- * the rows the page query can return.
+ * listMonitorDefinitionsPage. The page applies it to both its count and its
+ * rows, so `total` is counted over exactly the rows the page can return.
  */
 function listConditions(auth: AuthContext, filters?: MonitorListFilters): SQL | undefined {
   const conditions: SQL[] = [];
@@ -255,11 +255,12 @@ export async function listMonitorDefinitions(
  * One page of the caller's visible monitor definitions, paged in SQL (#6735),
  * with the total of the whole filtered set.
  *
- * The total is a window `count(*) OVER ()` in the SAME statement as the page,
- * so both come from one snapshot: two separate statements run under READ
- * COMMITTED can each see a different set, and a concurrent insert or delete
- * between them would make `total`/`hasMore` disagree with the rows returned.
- * The window is computed before LIMIT/OFFSET, so it counts the full set.
+ * The page and the total come from ONE statement, so they share one snapshot:
+ * separate statements under READ COMMITTED can each see a different set, and
+ * a concurrent insert or delete between them would make `total`/`hasMore`
+ * disagree with the rows returned. The statement reads a one-row count and
+ * LEFT JOINs the page onto it, so an empty page (nothing visible, or an
+ * offset past the end) still carries the real total with no second query.
  * `id` breaks name ties so the order is deterministic for an unchanged set.
  * This is offset paging (the shared AI-tool cursor carries only an offset):
  * a monitor added or removed between two page requests can still make a
@@ -271,37 +272,28 @@ export async function listMonitorDefinitionsPage(
   page: { limit: number; offset: number },
 ): Promise<{ rows: MonitorDefinitionRow[]; total: number }> {
   const where = listConditions(auth, filters);
-  const rows = await db
-    .select({ row: monitorDefinitions, total: sql<number>`count(*) over ()::int` })
+  const counted = db
+    .select({ total: sql<number>`count(*)::int`.as('total') })
+    .from(monitorDefinitions)
+    .where(where)
+    .as('counted');
+  const pageIds = db
+    .select({ id: monitorDefinitions.id })
     .from(monitorDefinitions)
     .where(where)
     .orderBy(asc(monitorDefinitions.name), asc(monitorDefinitions.id))
     .limit(page.limit)
     .offset(page.offset);
+  const rows = await db
+    .select({ total: counted.total, row: monitorDefinitions })
+    .from(counted)
+    .leftJoin(monitorDefinitions, inArray(monitorDefinitions.id, pageIds))
+    .orderBy(asc(monitorDefinitions.name), asc(monitorDefinitions.id));
 
-  const first = rows[0];
-  if (first) return { rows: rows.map((r) => r.row), total: Number(first.total) };
-  // No row carries a window total: nothing is visible, or the offset is past
-  // the end. At offset 0 the set is empty; otherwise count it. The count is a
-  // second statement and can see rows inserted after the page ran, so it is
-  // clamped to the offset: the empty page already shows nothing sat at or past
-  // it, and a total above the offset would report hasMore with a cursor that
-  // cannot advance.
-  if (page.offset === 0) return { rows: [], total: 0 };
-  const count = await countMonitorDefinitions(auth, filters);
-  return { rows: [], total: Math.min(count, page.offset) };
-}
-
-/** COUNT(*) over the same visibility + filters as listMonitorDefinitions. */
-export async function countMonitorDefinitions(
-  auth: AuthContext,
-  filters?: MonitorListFilters,
-): Promise<number> {
-  const [row] = await db
-    .select({ count: sql<number>`count(*)::int` })
-    .from(monitorDefinitions)
-    .where(listConditions(auth, filters));
-  return Number(row?.count ?? 0);
+  return {
+    rows: rows.flatMap((r) => (r.row ? [r.row] : [])),
+    total: Number(rows[0]?.total ?? 0),
+  };
 }
 
 export async function getMonitorDefinition(

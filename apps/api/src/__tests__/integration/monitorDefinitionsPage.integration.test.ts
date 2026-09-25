@@ -1,11 +1,11 @@
 /**
  * listMonitorDefinitionsPage against real Postgres (#6735): the page is cut in
- * SQL and its total is a same-statement window count, so the envelope can only
- * describe the rows actually returned. The unit tests mock the query builder;
- * this proves the SQL itself (window before LIMIT/OFFSET, RLS-bounded total,
- * deterministic (name, id) order over an unchanged set, the empty-page
- * fallback). Offset paging under concurrent inserts/deletes is not stable and
- * is not claimed here.
+ * SQL and its total comes from the same statement (a count LEFT JOINed to the
+ * page), so the envelope can only describe the rows actually returned. The
+ * unit tests mock the query builder; this proves the SQL itself (RLS-bounded
+ * total, deterministic (name, id) order over an unchanged set, an empty page
+ * past the end still carrying the real total). Offset paging under concurrent
+ * inserts/deletes is not stable and is not claimed here.
  */
 import './setup';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -84,7 +84,7 @@ async function seedOrg(count: number, name: (i: number) => string) {
 }
 
 describe('listMonitorDefinitionsPage (real Postgres, #6735)', () => {
-  it('returns the page and the whole visible total from one statement, bounded to the caller', async () => {
+  it('returns the page and the whole visible total, bounded to the caller', async () => {
     const a = await seedOrg(7, (i) => `a-${String(i).padStart(2, '0')}`);
     await seedOrg(5, (i) => `b-${i}`); // another tenant: must not count
 
