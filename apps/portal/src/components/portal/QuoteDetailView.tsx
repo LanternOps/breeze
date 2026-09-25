@@ -364,6 +364,21 @@ export function QuoteDetailView({ detail, error, statusCode }: QuoteDetailViewPr
             termsHref={quote.termsAndConditions ? '#terms' : undefined}
           />
         )}
+        {/* While signing is open, feedback stays adjacent to the button (below the
+            paper it would land under the expanded agreement). */}
+        {open && msg && (
+          <div
+            data-testid="quote-msg"
+            role={msgError ? 'alert' : 'status'}
+            className={
+              msgError
+                ? 'rounded-md bg-destructive/10 p-3 text-sm text-destructive-on-tint'
+                : 'rounded-md bg-muted p-3 text-sm'
+            }
+          >
+            {msg}
+          </div>
+        )}
         {quote.termsAndConditions && (
           <DocumentTermsCollapsible text={quote.termsAndConditions} testId="quote-terms-conditions" />
         )}
@@ -371,12 +386,12 @@ export function QuoteDetailView({ detail, error, statusCode }: QuoteDetailViewPr
 
       {/* Failures render on their own, outside the accepted panel, so a failed pay
           attempt is never dressed up in success styling. */}
-      {msg && msgError && (
+      {!open && msg && msgError && (
         <div data-testid="quote-msg" role="alert" className="rounded-md bg-destructive/10 p-3 text-sm text-destructive-on-tint">
           {msg}
         </div>
       )}
-      {msg && !msgError && status !== 'converted' && (
+      {!open && msg && !msgError && status !== 'converted' && (
         <div data-testid="quote-msg" role="status" className="rounded-md bg-muted p-3 text-sm">
           {msg}
         </div>

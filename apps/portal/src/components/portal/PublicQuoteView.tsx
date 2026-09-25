@@ -286,6 +286,18 @@ export function PublicQuoteView({ token, initial, error, superseded }: PublicQuo
             termsHref={quote.termsAndConditions ? '#terms' : undefined}
           />
         )}
+        {/* Accept/decline feedback stays adjacent to the button, not below the agreement. */}
+        {open && msg && (
+          <div
+            role={msgError ? 'alert' : 'status'}
+            className={cn(
+              'rounded-md p-3 text-sm',
+              msgError ? 'bg-destructive/10 text-destructive-on-tint' : 'bg-muted'
+            )}
+          >
+            {msg}
+          </div>
+        )}
         {quote.termsAndConditions && (
           <DocumentTermsCollapsible text={quote.termsAndConditions} testId="public-quote-terms-conditions" />
         )}
@@ -299,18 +311,6 @@ export function PublicQuoteView({ token, initial, error, superseded }: PublicQuo
       {status === 'declined' && msg && (
         <div role="status" className="rounded-md bg-muted p-3 text-sm">{msg}</div>
       )}
-      {open && msg && (
-        <div
-          role={msgError ? 'alert' : 'status'}
-          className={cn(
-            'rounded-md p-3 text-sm',
-            msgError ? 'bg-destructive/10 text-destructive-on-tint' : 'bg-muted'
-          )}
-        >
-          {msg}
-        </div>
-      )}
-
     </div>
   );
 }

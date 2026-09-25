@@ -9,6 +9,7 @@ import { PublicQuoteView } from './PublicQuoteView';
 
 afterEach(() => {
   cleanup();
+  window.location.hash = '';
   vi.restoreAllMocks();
 });
 
@@ -110,6 +111,19 @@ describe('PublicQuoteView exact public quote contract', () => {
     render(<PublicQuoteView token="public-token" initial={DETAIL} />);
     await waitFor(() => expect((screen.getByTestId('public-quote-terms-conditions') as HTMLDetailsElement).open).toBe(true));
     window.location.hash = '';
+  });
+
+  it('clicking the checkbox T&C link reopens a manually collapsed block', () => {
+    render(<PublicQuoteView token="public-token" initial={DETAIL} />);
+    const el = screen.getByTestId('public-quote-terms-conditions') as HTMLDetailsElement;
+    const link = screen.getByTestId('public-quote-agree').closest('label')!.querySelector('a')!;
+    fireEvent.click(link);
+    expect(el.open).toBe(true);
+    el.open = false;
+    fireEvent(el, new Event('toggle'));
+    expect(el.open).toBe(false);
+    fireEvent.click(link);
+    expect(el.open).toBe(true);
   });
 
   it('expands the T&C for print and restores after', () => {

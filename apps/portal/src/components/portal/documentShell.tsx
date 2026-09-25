@@ -192,6 +192,9 @@ export function DocumentTermsCollapsible({
 }) {
   const [open, setOpen] = useState(false);
   const wasOpenRef = useRef(false);
+  const printingRef = useRef(false);
+  const openRef = useRef(false);
+  openRef.current = open;
   const { blocks, sectionCount } = useMemo(() => parseTermsSections(text), [text]);
   const minutes = readMinutes(text);
 
@@ -200,17 +203,28 @@ export function DocumentTermsCollapsible({
       if (window.location.hash === `#${id}`) setOpen(true);
     };
     const beforePrint = () => {
-      setOpen((cur) => {
-        wasOpenRef.current = cur;
-        return true;
-      });
+      if (printingRef.current) return; // duplicate beforeprint must not overwrite the saved state
+      printingRef.current = true;
+      wasOpenRef.current = openRef.current;
+      setOpen(true);
     };
-    const afterPrint = () => setOpen(wasOpenRef.current);
+    const afterPrint = () => {
+      printingRef.current = false;
+      setOpen(wasOpenRef.current);
+    };
+    // Re-clicking a `#terms` link when the hash is already `#terms` fires no
+    // hashchange, so a manually collapsed block would stay shut.
+    const onLinkClick = (e: MouseEvent) => {
+      const a = (e.target as Element | null)?.closest?.(`a[href="#${id}"]`);
+      if (a) setOpen(true);
+    };
     syncHash();
     window.addEventListener('hashchange', syncHash);
     window.addEventListener('beforeprint', beforePrint);
     window.addEventListener('afterprint', afterPrint);
+    document.addEventListener('click', onLinkClick);
     return () => {
+      document.removeEventListener('click', onLinkClick);
       window.removeEventListener('hashchange', syncHash);
       window.removeEventListener('beforeprint', beforePrint);
       window.removeEventListener('afterprint', afterPrint);
