@@ -15,6 +15,7 @@ import { cn, marginLeftPxClass } from '@/lib/utils';
 import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import HashLink from '../shared/HashLink';
+import { buildRestoreHash } from './restoreHash';
 import { formatNumber } from '@/lib/i18n/format';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
@@ -309,6 +310,14 @@ export default function SnapshotBrowser() {
     [selectedSnapshotId, snapshots]
   );
   const selectedSnapshotDisplayLabel = selectedSnapshot?.label ?? selectedSnapshot?.id ?? 'Snapshot';
+  // The "auto-select the first snapshot" effect below only fires (and commits
+  // `selectedSnapshotId`) on the render AFTER the fetch resolves — so on the
+  // fetch-resolution render itself `selectedSnapshotId` is still `''` even
+  // though a snapshot is about to be selected. Falling back to
+  // `snapshots[0]?.id` here (rather than reading `selectedSnapshotId` alone)
+  // keeps the restore link correct on that first render instead of briefly
+  // carrying no snapshot at all (#6456 review).
+  const restoreLinkSnapshotId = selectedSnapshotId || snapshots[0]?.id || '';
 
   useEffect(() => {
     if (selectedSnapshot?.tree?.id) {
@@ -689,10 +698,11 @@ export default function SnapshotBrowser() {
               {/* #6349: this sentence used to be dead copy — the restore
                   workflow it points at was never mounted. It is now the
                   Restore tab on this same dashboard, so the pointer is a real
-                  link. The wizard is self-fetching, so no selection state is
-                  handed across (see the follow-up on #6349). */}
+                  link. #6456: the selected snapshot + checked files are now
+                  carried into the wizard via the hash, so the operator isn't
+                  made to re-select them there. */}
               <HashLink
-                hash="restore"
+                hash={restoreLinkSnapshotId ? buildRestoreHash(restoreLinkSnapshotId, Array.from(selectedFiles)) : 'restore'}
                 data-testid="snapshot-browser-restore-link"
                 className="text-xs font-medium text-primary underline-offset-2 hover:underline"
               >

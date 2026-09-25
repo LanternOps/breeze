@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -139,13 +139,33 @@ async function readApiError(response: Response, fallback: string): Promise<strin
   }
 }
 
-export default function RestoreWizard() {
+type RestoreWizardProps = {
+  /**
+   * Carried from `SnapshotBrowser` via the `#restore?snapshot=…&paths=…` hash
+   * (#6456) — pre-populates the snapshot + selection instead of making the
+   * operator re-pick the same files they already checked off there.
+   */
+  initialSnapshotId?: string;
+  initialSelectedPaths?: string[];
+};
+
+export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths }: RestoreWizardProps = {}) {
   const { t } = useTranslation('backup');
   const [step, setStep] = useState(0);
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
-  const [snapshotId, setSnapshotId] = useState('');
-  const [restoreType, setRestoreType] = useState<RestoreType>('full');
-  const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
+  const [snapshotId, setSnapshotId] = useState(initialSnapshotId ?? '');
+  const [restoreType, setRestoreType] = useState<RestoreType>(
+    initialSelectedPaths && initialSelectedPaths.length > 0 ? 'selective' : 'full'
+  );
+  const [selectedFiles, setSelectedFiles] = useState<Set<string>>(
+    () => new Set(initialSelectedPaths ?? [])
+  );
+  // The snapshot-change effect below clears the selection on every
+  // `snapshotId` change so a user picking a *different* snapshot in step 0
+  // doesn't drag a stale selection along. That would also fire on mount and
+  // wipe out the selection carried in via `initialSelectedPaths` the instant
+  // the wizard renders — skip its first run.
+  const isFirstSnapshotChange = useRef(true);
   const [destination, setDestination] = useState<DestinationType>('original');
   // #6349: this defaulted to the demo path '/restore/nyc-db-14'. The wizard
   // was unreachable, so nobody saw it; now that it is mounted, a pre-filled
@@ -223,6 +243,10 @@ export default function RestoreWizard() {
   }, [snapshotId, snapshots]);
 
   useEffect(() => {
+    if (isFirstSnapshotChange.current) {
+      isFirstSnapshotChange.current = false;
+      return;
+    }
     setSelectedFiles(new Set());
   }, [snapshotId]);
 
