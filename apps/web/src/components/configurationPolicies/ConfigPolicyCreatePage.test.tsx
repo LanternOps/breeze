@@ -238,6 +238,14 @@ describe('ConfigPolicyCreatePage — paper cuts (#6497)', () => {
     const submitButton = screen.getByText('Create Policy').closest('button')!;
     expect(submitButton).toBeDisabled();
     expect(submitButton).toHaveAttribute('title', 'Select an organization for this policy.');
+
+    // Choosing an org clears both the inline hint and the button's title
+    // (review finding on #6497 G1-4 — an inverted condition would otherwise
+    // still pass without this assertion).
+    fireEvent.change(screen.getByTestId('policy-owner-org-select'), { target: { value: 'org-1' } });
+    expect(screen.queryByText('Select an organization for this policy.')).not.toBeInTheDocument();
+    expect(submitButton).not.toHaveAttribute('title');
+    expect(submitButton).not.toBeDisabled();
   });
 
   it('G1-5: shows a success toast after creating a policy', async () => {

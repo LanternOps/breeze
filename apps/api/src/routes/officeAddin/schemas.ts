@@ -10,7 +10,21 @@ import { z } from 'zod';
  */
 function requiredDate(fieldName: string) {
   return z.any().transform((val, ctx) => {
-    if (val === undefined) {
+    // `z.coerce.date()` runs `new Date(val)`, and `new Date(null)`,
+    // `new Date(false)`, and `new Date(0)` all evaluate to a "valid"
+    // 1970-01-01 epoch Date rather than throwing — so a `null`/boolean/`0`
+    // sentinel for "not set" would otherwise sail through coercion and
+    // silently create a ~56-year-long time entry instead of being rejected
+    // the same way an omitted field is. Reject every non-date-like input
+    // shape up front; only strings, finite numbers, and Date instances are
+    // allowed to reach coercion.
+    if (
+      val === undefined ||
+      val === null ||
+      typeof val === 'boolean' ||
+      val === 0 ||
+      !(typeof val === 'string' || (typeof val === 'number' && Number.isFinite(val)) || val instanceof Date)
+    ) {
       ctx.addIssue({ code: 'custom', message: `${fieldName} is required` });
       return z.NEVER;
     }

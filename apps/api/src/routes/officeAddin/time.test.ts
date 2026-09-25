@@ -291,6 +291,35 @@ describe('POST /time/log', () => {
     expect(body.error).toMatch(/endedAt is required/i);
   });
 
+  // A `null`/`false`/`0` sentinel must be rejected the same as a missing
+  // field, not silently coerced by `new Date(null|false|0)` into a "valid"
+  // 1970-01-01 epoch date (review finding on #6497 G2-4).
+  it('400s on a null/false/0 startedAt instead of silently coercing to epoch', async () => {
+    for (const bad of [null, false, 0]) {
+      const res = await makeApp().request('/time/log', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ticketId: TICKET_ID, description: 'x', startedAt: bad, endedAt: '2026-08-15T10:00:00Z' }),
+      });
+      expect(res.status, `startedAt=${JSON.stringify(bad)} must 400`).toBe(400);
+      expect(hoisted.createTimeEntry).not.toHaveBeenCalled();
+      const body = await res.json();
+      expect(body.error).not.toMatch(/received Date/i);
+    }
+  });
+
+  it('400s with a clear "must be a valid date" message for a garbage-but-present startedAt', async () => {
+    const res = await makeApp().request('/time/log', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ticketId: TICKET_ID, description: 'x', startedAt: 'not-a-date', endedAt: '2026-08-15T10:00:00Z' }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/startedAt must be a valid date/i);
+    expect(body.error).not.toMatch(/received Date/i);
+  });
+
   it('maps a generic TimeEntryServiceError status/code through to JSON', async () => {
     hoisted.createTimeEntry.mockRejectedValue(
       new TimeEntryServiceError('Ticket must belong to the same partner', 400, 'TICKET_WRONG_PARTNER')
