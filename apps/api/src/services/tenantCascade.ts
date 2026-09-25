@@ -876,6 +876,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'topology_relationships',
   'topology_site_state',
   'topology_site_template_bindings',
+  'topology_view_exclusions',
   'tunnel_allowlists',
   'tunnel_sessions',
   'unifi_clients',

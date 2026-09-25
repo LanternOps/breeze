@@ -243,3 +243,27 @@ export const topologyChangeOutbox = pgTable('topology_change_outbox', {
   index('topology_outbox_pending_idx').on(table.nextAttemptAt, table.createdAt).where(sql`delivered_at IS NULL`),
   foreignKey({ name: 'topology_change_outbox_site_scope_fk', columns: [table.siteId, table.orgId], foreignColumns: [sites.id, sites.orgId] }).onDelete('cascade'),
 ]);
+
+/** M2: scoped, reversible hide of one canonical relationship in one view.
+ * Canonical traversal/evidence ignore it; only view projections apply it. */
+export const topologyViewExclusions = pgTable('topology_view_exclusions', {
+  id: uuid('id').notNull().defaultRandom(),
+  orgId: uuid('org_id').notNull(),
+  siteId: uuid('site_id').notNull(),
+  relationshipId: uuid('relationship_id').notNull(),
+  view: varchar('view', { length: 16 }).$type<TopologyView>().notNull(),
+  reason: varchar('reason', { length: 500 }).notNull(),
+  createdBy: uuid('created_by'),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  revokedBy: uuid('revoked_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  primaryKey({ name: 'topology_view_exclusions_pkey', columns: [table.id] }),
+  check('topology_view_exclusions_view_chk', sql`view IN ('overview','physical','logical')`),
+  check('topology_view_exclusions_reason_chk', sql`char_length(reason) BETWEEN 1 AND 500`),
+  uniqueIndex('topology_view_exclusions_active_uniq').on(table.orgId, table.siteId, table.relationshipId, table.view).where(sql`revoked_at IS NULL`),
+  index('topology_view_exclusions_relationship_idx').on(table.relationshipId, table.orgId, table.siteId),
+  foreignKey({ name: 'topology_view_exclusions_site_scope_fk', columns: [table.siteId, table.orgId], foreignColumns: [sites.id, sites.orgId] }).onDelete('cascade'),
+  foreignKey({ name: 'topology_view_exclusions_relationship_scope_fk', columns: [table.relationshipId, table.orgId, table.siteId], foreignColumns: [topologyRelationships.id, topologyRelationships.orgId, topologyRelationships.siteId] }).onDelete('cascade'),
+]);
