@@ -810,22 +810,40 @@ it('rechecks retirement after a serialization race and reports already_converted
 });
 it('a partial sourceIds conversion is re-validated against its own equivalence proof, not the full-set preview', async () => {
   // Two convertible inline rules. The full-set preview (used to mint
-  // previewHash) is equivalence-clean, but converting only 'r' alone would
-  // leave 'second' live as a legacy source — a real behavior delta that the
-  // full-set proof never checked.
+  // previewHash) is equivalence-clean, but a subset proposal containing only
+  // 'r' produces its own (mocked) equivalence proof with a real delta — the
+  // full-set proof never checked this exact combination of applied sources.
   m.sources.mockResolvedValue({ ...sources, inlineRules: [rule, { ...rule, id: 'second' }] });
   m.equivalence.mockImplementation(async (proposal: { bySource: unknown[] }) => (
     proposal.bySource.length >= 2
       ? { devicesChecked: 1, deltas: [] }
-      : { devicesChecked: 1, deltas: [{ deviceId: 'd', detail: 'unselected legacy source remains live' }] }
+      : { devicesChecked: 1, deltas: [{ deviceId: 'd', detail: 'monitor signature changes when only one source converts' }] }
   ));
   const preview = await buildPolicyConversionPreview('policy', { userId: 'u', auth });
   expect(preview.equivalence.deltas).toEqual([]); // full-set proof is clean
   const { tx } = mutationTx([[{ partnerId: 'p' }], [sources.policy], [], [], [], []]);
   m.transaction.mockImplementationOnce(async fn => fn(tx));
   await expect(convertPolicy('policy', preview.previewHash, auth, { sourceIds: ['r'] }))
-    .rejects.toMatchObject({ code: 'equivalence_delta' });
+    .rejects.toMatchObject({ code: 'equivalence_delta', details: [{ deviceId: 'd', detail: 'monitor signature changes when only one source converts' }] });
   expect(m.apply).not.toHaveBeenCalled();
+});
+it('a partial sourceIds conversion whose own subset proof is clean still commits', async () => {
+  // Same two-rule setup, but this time the subset proof (bySource.length === 1)
+  // is ALSO clean, proving the new re-validation does not block a legitimate
+  // partial conversion — only a subset with a real delta.
+  m.sources.mockResolvedValue({ ...sources, inlineRules: [rule, { ...rule, id: 'second' }] });
+  m.equivalence.mockResolvedValue({ devicesChecked: 1, deltas: [] });
+  const preview = await buildPolicyConversionPreview('policy', { userId: 'u', auth });
+  const { tx } = mutationTx([[{ partnerId: 'p' }], [sources.policy], [], [], [], []]);
+  m.transaction.mockImplementationOnce(async fn => fn(tx));
+  m.apply.mockResolvedValue({ conversionIds: ['ledger'], retired: 1, monitorsCreated: 1 });
+  await expect(convertPolicy('policy', preview.previewHash, auth, { sourceIds: ['r'] }))
+    .resolves.toEqual({ conversionIds: ['ledger'], retired: 1, monitorsCreated: 1 });
+  expect(m.equivalence).toHaveBeenCalledWith(
+    expect.objectContaining({ bySource: [expect.objectContaining({ sourceId: 'r' })] }),
+    expect.anything(), auth, undefined, tx,
+  );
+  expect(m.apply).toHaveBeenCalledWith(tx, expect.objectContaining({ bySource: [expect.objectContaining({ sourceId: 'r' })] }), auth);
 });
 it('a repeated policy confirmation checks visible completed sources before another ledger write',async()=>{
   const preview=await buildPolicyConversionPreview('policy',{userId:'u',auth});

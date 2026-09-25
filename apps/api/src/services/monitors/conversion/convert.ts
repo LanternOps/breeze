@@ -307,10 +307,12 @@ export async function convertPolicy(policyId: string, expectedHash: string, auth
     assertPreview(preview, expectedHash);
     const proposal = proposalFrom(preview, sources.policy, opts?.sourceIds);
     // `preview.equivalence` (validated above) proves the FULL convertible set is
-    // behavior-preserving. When the caller commits only a subset (`sourceIds`),
-    // that proof does not cover it: the unselected sources stay live as legacy
-    // configuration instead of being retired, which is a materially different
-    // resulting state. Re-run the proof against exactly what will be applied.
+    // behavior-preserving; it does not prove a caller-chosen SUBSET (`sourceIds`)
+    // is. Applying fewer sources than were staged can change device signatures
+    // that the full-set proof never exercised (a shared/reused monitor no longer
+    // created, a different inheritance mode landing on the monitors link, merged
+    // response proposals losing a member). Re-run the proof against exactly the
+    // subset that will actually be applied, not the one that was previewed.
     if (opts?.sourceIds) {
       const deviceIds = await resolveDeviceIdsForPolicy(policyId, tx);
       const subsetEquivalence = await computeEquivalence({ ...proposal, previewHash: preview.previewHash }, deviceIds, auth, undefined, tx);
