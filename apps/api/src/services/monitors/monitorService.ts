@@ -260,7 +260,10 @@ export async function listMonitorDefinitions(
  * COMMITTED can each see a different set, and a concurrent insert or delete
  * between them would make `total`/`hasMore` disagree with the rows returned.
  * The window is computed before LIMIT/OFFSET, so it counts the full set.
- * `id` breaks name ties so rows cannot shift between pages.
+ * `id` breaks name ties so the order is deterministic for an unchanged set.
+ * This is offset paging (the shared AI-tool cursor carries only an offset):
+ * a monitor added or removed between two page requests can still make a
+ * later page repeat or skip a row. Each page's own total is consistent.
  */
 export async function listMonitorDefinitionsPage(
   auth: AuthContext,

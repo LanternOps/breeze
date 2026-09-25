@@ -3,7 +3,9 @@
  * SQL and its total is a same-statement window count, so the envelope can only
  * describe the rows actually returned. The unit tests mock the query builder;
  * this proves the SQL itself (window before LIMIT/OFFSET, RLS-bounded total,
- * stable (name, id) paging, the empty-page fallback).
+ * deterministic (name, id) order over an unchanged set, the empty-page
+ * fallback). Offset paging under concurrent inserts/deletes is not stable and
+ * is not claimed here.
  */
 import './setup';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -94,7 +96,7 @@ describe('listMonitorDefinitionsPage (real Postgres, #6735)', () => {
     expect(page.rows.map((r) => r.name)).toEqual(['a-02', 'a-03', 'a-04']);
   });
 
-  it('walks every row exactly once, including an org row and a partner-wide row that share a name', async () => {
+  it('over an unchanged set, walks every row exactly once, including an org and a partner-wide row that share a name', async () => {
     // Names are unique per owner (monitor_definitions_owner_name_uidx), so the
     // only tie one caller can see is an org monitor and a partner-wide one.
     const a = await seedOrg(9, (i) => `e-${i}`);

@@ -124,7 +124,7 @@ describe('list_monitors pages in SQL, not in memory (#6735)', () => {
     expect(out).toMatchObject({ showing: 0, total: 3, hasMore: false, nextCursor: null });
   });
 
-  it('following nextCursor walks every row exactly once', async () => {
+  it('over an unchanged set, following nextCursor walks every row exactly once', async () => {
     seedMonitors(53);
     const seen: unknown[] = [];
     let cursor: string | null = null;
