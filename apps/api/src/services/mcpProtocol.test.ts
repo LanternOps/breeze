@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   ASSUMED_MCP_PROTOCOL_VERSION, LATEST_MCP_PROTOCOL_VERSION, SUPPORTED_MCP_PROTOCOL_VERSIONS,
-  decodeToolsListCursor, encodeToolsListCursor, mcpToolsListPageSize, negotiateMcpProtocolVersion, parseMcpProtocolVersionHeader,
+  computeToolsListCatalogFingerprint, decodeToolsListCursor, encodeToolsListCursor, mcpToolsListPageSize,
+  negotiateMcpProtocolVersion, parseMcpProtocolVersionHeader,
 } from './mcpProtocol';
 
 describe('mcpProtocol', () => {
@@ -23,16 +24,28 @@ describe('mcpProtocol', () => {
     expect(parseMcpProtocolVersionHeader('1999-01-01')).toEqual({ ok: false, value: '1999-01-01' });
     expect(parseMcpProtocolVersionHeader('')).toEqual({ ok: true, version: '2025-03-26', assumed: true });
   });
-  it('round-trips an opaque offset cursor and rejects garbage', () => {
-    expect(decodeToolsListCursor(encodeToolsListCursor(50))).toBe(50);
-    expect(encodeToolsListCursor(50)).not.toContain('=');
+  it('round-trips an opaque offset+fingerprint cursor and rejects garbage', () => {
+    expect(decodeToolsListCursor(encodeToolsListCursor(50, 'fp-1'))).toEqual({ offset: 50, catalogFingerprint: 'fp-1' });
+    expect(encodeToolsListCursor(50, 'fp-1')).not.toContain('=');
     expect(decodeToolsListCursor('not-base64!')).toBeNull();
+    // Old (#6407) single-page-only v1 shape, no fingerprint — must not decode
+    // as valid: it would let a cursor issued before this fix bypass the check.
+    expect(decodeToolsListCursor(Buffer.from('{"v":1,"offset":1}').toString('base64url'))).toBeNull();
+    expect(decodeToolsListCursor(Buffer.from('{"v":2,"offset":-1,"f":"x"}').toString('base64url'))).toBeNull();
     expect(decodeToolsListCursor(Buffer.from('{"v":2,"offset":1}').toString('base64url'))).toBeNull();
-    expect(decodeToolsListCursor(Buffer.from('{"v":1,"offset":-1}').toString('base64url'))).toBeNull();
+    expect(decodeToolsListCursor(Buffer.from('{"v":2,"offset":1,"f":""}').toString('base64url'))).toBeNull();
     expect(decodeToolsListCursor(undefined)).toBeNull();
-    for (const value of [{ v: 1, offset: 1.5 }, { v: 1, offset: '1' }, null, []]) {
+    for (const value of [{ v: 2, offset: 1.5, f: 'x' }, { v: 2, offset: '1', f: 'x' }, null, []]) {
       expect(decodeToolsListCursor(Buffer.from(JSON.stringify(value)).toString('base64url'))).toBeNull();
     }
+  });
+
+  it('catalog fingerprint changes when the principal or the tool set changes, and is stable for the same inputs', () => {
+    const fp = computeToolsListCatalogFingerprint('api_key:key-1', ['a', 'b']);
+    expect(computeToolsListCatalogFingerprint('api_key:key-1', ['a', 'b'])).toBe(fp);
+    expect(computeToolsListCatalogFingerprint('api_key:key-2', ['a', 'b'])).not.toBe(fp);
+    expect(computeToolsListCatalogFingerprint('api_key:key-1', ['a', 'c'])).not.toBe(fp);
+    expect(computeToolsListCatalogFingerprint('api_key:key-1', ['a', 'b', 'c'])).not.toBe(fp);
   });
   it('reads the page size from env, 0 when unset or invalid', () => {
     expect(mcpToolsListPageSize({})).toBe(0);
