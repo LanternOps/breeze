@@ -40,6 +40,7 @@ export default function AiChatSidebar() {
     approvalMode,
     isPaused,
     sessionId,
+    hydratedSessionId,
     showHistory,
     sessions,
     searchResults,
@@ -97,6 +98,12 @@ export default function AiChatSidebar() {
       return;
     }
 
+    // A session this tab created (or already loaded) is authoritative in
+    // memory. Re-fetching it here raced the first send: the restore landed
+    // after the optimistic user message was appended — before the server had
+    // persisted that row — and replaced it with empty history (#6933).
+    if (hydratedSessionId === sessionId) return;
+
     // Prevent fetch loops when a valid session has no messages yet.
     // Load persisted session content at most once per open/session pair.
     if (
@@ -107,7 +114,7 @@ export default function AiChatSidebar() {
       restoredSessionIdRef.current = sessionId;
       void loadSession(sessionId);
     }
-  }, [isOpen, sessionId, messages.length, isLoading, loadSession]);
+  }, [isOpen, sessionId, hydratedSessionId, messages.length, isLoading, loadSession]);
 
   // Load sessions when history panel opens
   useEffect(() => {
