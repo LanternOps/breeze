@@ -323,6 +323,15 @@ describe('the delivery webhook end-to-end, with NO ambient DB context', () => {
 describe('loadSendingDomainAggregates — the abuse loader against real Postgres', () => {
   let f: Awaited<ReturnType<typeof fixture>>;
   beforeEach(async () => { f = await fixture(); });
+  // Run every test here a full day after NOW (Date only; DB and timers stay
+  // real). The seeded days and the loader's window must both come from NOW, so
+  // a loader call that reads the wall clock instead fails on every run, not
+  // just on one that happens to cross UTC midnight (#6953).
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW.getTime() + 24 * 60 * 60 * 1000);
+  });
+  afterEach(() => { vi.useRealTimers(); });
 
   // The loader is a hand-written CTE chain that no mocked database can
   // exercise: a typo in a join or a window bound reads as a permanently clean
