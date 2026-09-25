@@ -234,6 +234,8 @@ export interface QuoteBranding {
   /** Partner brand accent (hex); null → fall back to the app's primary accent. */
   primaryColor: string | null;
   footer: string | null;
+  /** Footer the quote inherits when `terms` is blank, and where it comes from (#6648). */
+  inheritedFooter?: { text: string; source: 'partner' | 'brand' } | null;
   currencyCode: string;
   seller: SellerSnapshot | null;
 }

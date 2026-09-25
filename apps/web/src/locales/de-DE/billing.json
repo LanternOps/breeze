@@ -855,6 +855,7 @@
         "reorderSections": "Abschnitte konnten nicht neu angeordnet werden.",
         "saveCoverPage": "Das Deckblatt konnte nicht gespeichert werden",
         "saveCustomer": "Kunde konnte nicht geändert werden.",
+        "saveFooter": "Die Fußzeile konnte nicht gespeichert werden.",
         "saveTerms": "Die Bedingungen konnten nicht gespeichert werden.",
         "saveTitle": "Der Titel konnte nicht gespeichert werden.",
         "unitPriceZeroOrMore": "Geben Sie einen Stückpreis von 0 oder mehr ein.",
@@ -994,6 +995,15 @@
         "headerStylePlain": "Einfach",
         "headerStyleAccent": "Akzent",
         "reshapedWarning": "Diese Tabelle überschritt das Limit von {{columns}} Spalten x {{rows}} Zeilen und wurde angepasst. Beim Speichern wird die gespeicherte Tabelle durch die hier angezeigte ersetzt."
+      },
+      "footer": {
+        "title": "Fußzeile (jede Seite)",
+        "helper": "Eine kurze Zeile, die unten auf jeder Seite gedruckt wird – z. B. Gültigkeitsdaten. Leer lassen, um die Standard-Fußzeile zu verwenden. Kleingedrucktes gehört in die Allgemeinen Geschäftsbedingungen, nicht hierher.",
+        "placeholder": "Leer = Standard-Fußzeile verwenden",
+        "inheritedPartner": "Verwendet die Partner-Rechnungsfußzeile aus den Einstellungen: „{{text}}“",
+        "inheritedBrand": "Verwendet den Fußzeilentext des Markenkits: „{{text}}“",
+        "inheritedNone": "In den Einstellungen ist keine Standard-Fußzeile festgelegt – die Seitenfußzeile bleibt leer.",
+        "counter": "{{count}} / {{max}}"
       },
       "terms": {
         "placeholder": "Zahlungsbedingungen, Lieferhinweise usw.",

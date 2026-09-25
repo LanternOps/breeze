@@ -835,6 +835,7 @@
         "reorderSections": "Impossible de réordonner les sections.",
         "saveCoverPage": "Impossible d'enregistrer la page de couverture",
         "saveCustomer": "Impossible de changer le client.",
+        "saveFooter": "Impossible d'enregistrer la ligne de pied de page.",
         "saveTerms": "Impossible d'enregistrer les conditions.",
         "saveTitle": "Impossible d'enregistrer le titre.",
         "unitPriceZeroOrMore": "Saisissez un prix unitaire supérieur ou égal à 0.",
@@ -965,6 +966,15 @@
         "headerStylePlain": "Simple",
         "headerStyleAccent": "Accentué",
         "reshapedWarning": "Ce tableau dépassait la limite de {{columns}} colonnes x {{rows}} lignes et a été ajusté. L'enregistrement remplace le tableau stocké par celui affiché ici."
+      },
+      "footer": {
+        "title": "Ligne de pied de page (chaque page)",
+        "helper": "Une courte ligne imprimée en bas de chaque page — par exemple, des dates de validité. Laissez vide pour utiliser le pied de page par défaut. Les mentions légales vont dans Conditions générales, pas ici.",
+        "placeholder": "Vide = utiliser le pied de page par défaut",
+        "inheritedPartner": "Utilise le pied de page de facture du partenaire depuis les Paramètres : « {{text}} »",
+        "inheritedBrand": "Utilise le texte de pied de page de la trousse de marque : « {{text}} »",
+        "inheritedNone": "Aucun pied de page par défaut n'est défini dans les Paramètres — le pied de page de la page sera vide.",
+        "counter": "{{count}} / {{max}}"
       },
       "terms": {
         "placeholder": "Conditions de paiement, notes de livraison, etc.",

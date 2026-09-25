@@ -863,6 +863,7 @@
         "reorderSections": "Bölümler yeniden sıralanamadı.",
         "saveCoverPage": "Kapak sayfası kaydedilemedi",
         "saveCustomer": "Müşteri değiştirilemedi.",
+        "saveFooter": "Altbilgi satırı kaydedilemedi.",
         "saveTerms": "Şartlar kaydedilemedi.",
         "saveTitle": "Başlık kaydedilemedi.",
         "unitPriceZeroOrMore": "0 veya daha fazla birim fiyat girin.",
@@ -1002,6 +1003,15 @@
         "headerStylePlain": "Düz",
         "headerStyleAccent": "Vurgulu",
         "reshapedWarning": "Bu tablo {{columns}} sütun x {{rows}} satır sınırına sığmadığı için yeniden düzenlendi. Kaydetmek, kayıtlı tabloyu burada gördüğünüzle değiştirir."
+      },
+      "footer": {
+        "title": "Altbilgi satırı (her sayfa)",
+        "helper": "Her sayfanın altında yazdırılan kısa bir satır — örn. geçerlilik tarihleri. Varsayılan altbilgiyi kullanmak için boş bırakın. Küçük yazılar buraya değil Şartlar ve Koşullar'a eklenmelidir.",
+        "placeholder": "Boş = varsayılan altbilgiyi kullan",
+        "inheritedPartner": "Ayarlar'daki ortak fatura altbilgisi kullanılıyor: “{{text}}”",
+        "inheritedBrand": "Marka kiti altbilgi metni kullanılıyor: “{{text}}”",
+        "inheritedNone": "Ayarlar'da varsayılan bir altbilgi ayarlanmamış — sayfa altbilgisi boş olacak.",
+        "counter": "{{count}} / {{max}}"
       },
       "terms": {
         "placeholder": "Ödeme koşulları, teslimat notları vb.",

@@ -855,6 +855,7 @@
         "reorderSections": "Não foi possível reordenar as seções.",
         "saveCoverPage": "Não foi possível salvar a página de capa",
         "saveCustomer": "Não foi possível alterar o cliente.",
+        "saveFooter": "Não foi possível salvar o rodapé.",
         "saveTerms": "Não foi possível salvar os termos.",
         "saveTitle": "Não foi possível salvar o título.",
         "unitPriceZeroOrMore": "Informe um preço unitário de 0 ou mais.",
@@ -994,6 +995,15 @@
         "headerStylePlain": "Simples",
         "headerStyleAccent": "Destaque",
         "reshapedWarning": "Esta tabela excedia o limite de {{columns}} colunas x {{rows}} linhas e foi ajustada. Salvar substitui a tabela armazenada pela exibida aqui."
+      },
+      "footer": {
+        "title": "Linha de rodapé (todas as páginas)",
+        "helper": "Uma linha curta impressa na parte inferior de cada página — por exemplo, datas de validade. Deixe em branco para usar o rodapé padrão. Letras miúdas vão em Termos e Condições, não aqui.",
+        "placeholder": "Em branco = usar o rodapé padrão",
+        "inheritedPartner": "Usando o rodapé de fatura do parceiro das Configurações: “{{text}}”",
+        "inheritedBrand": "Usando o texto de rodapé do kit de marca: “{{text}}”",
+        "inheritedNone": "Nenhum rodapé padrão definido nas Configurações — o rodapé da página ficará vazio.",
+        "counter": "{{count}} / {{max}}"
       },
       "terms": {
         "placeholder": "Condições de pagamento, observações de entrega, etc.",

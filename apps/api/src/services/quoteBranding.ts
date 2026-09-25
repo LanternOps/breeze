@@ -29,6 +29,10 @@ export interface QuoteBranding {
   primaryColor: string | null;
   /** Footer / terms line. Precedence: quote.terms → partner footer → portal footer. */
   footer: string | null;
+  /** What the footer would be with NO per-quote override (partner footer → portal
+   *  footer) and which one it came from, so the editor can show the inherited
+   *  value while the override is blank (#6648). Null when neither is set. */
+  inheritedFooter: { text: string; source: 'partner' | 'brand' } | null;
   /** Resolved currency for money formatting. */
   currencyCode: string;
   /** Render locale for money glyphs. Precedence: quote.documentLocale (send-time
@@ -125,6 +129,11 @@ async function resolveDocumentBranding(
     logoUrl: brand?.logoUrl ?? null,
     primaryColor: brand?.primaryColor ?? null,
     footer: doc.terms ?? partner?.invoiceFooter ?? brand?.footerText ?? null,
+    inheritedFooter: partner?.invoiceFooter != null
+      ? { text: partner.invoiceFooter, source: 'partner' }
+      : brand?.footerText != null
+        ? { text: brand.footerText, source: 'brand' }
+        : null,
     currencyCode: doc.currencyCode ?? partner?.currencyCode ?? 'USD',
     locale: doc.documentLocale ?? resolvePartnerDocumentLocale(partner),
     seller,

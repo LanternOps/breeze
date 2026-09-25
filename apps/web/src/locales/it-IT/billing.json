@@ -835,6 +835,7 @@
         "reorderSections": "Impossibile riordinare le sezioni.",
         "saveCoverPage": "Impossibile salvare la copertina",
         "saveCustomer": "Impossibile cambiare il cliente.",
+        "saveFooter": "Impossibile salvare la riga del piè di pagina.",
         "saveTerms": "Impossibile salvare i termini.",
         "saveTitle": "Impossibile salvare il titolo.",
         "unitPriceZeroOrMore": "Inserisci un prezzo unitario pari o superiore a 0.",
@@ -965,6 +966,15 @@
         "headerStylePlain": "Semplice",
         "headerStyleAccent": "Accento",
         "reshapedWarning": "Questa tabella superava il limite di {{columns}} colonne x {{rows}} righe ed è stata adattata. Il salvataggio sostituisce la tabella memorizzata con quella mostrata qui."
+      },
+      "footer": {
+        "title": "Riga del piè di pagina (ogni pagina)",
+        "helper": "Una breve riga stampata in fondo a ogni pagina, ad esempio le date di validità. Lascia vuoto per usare il piè di pagina predefinito. Il testo in piccolo va in Termini e condizioni, non qui.",
+        "placeholder": "Vuoto = usa il piè di pagina predefinito",
+        "inheritedPartner": "Utilizza il piè di pagina della fattura del partner dalle Impostazioni: “{{text}}”",
+        "inheritedBrand": "Utilizza il testo del piè di pagina del kit del marchio: “{{text}}”",
+        "inheritedNone": "Nessun piè di pagina predefinito impostato nelle Impostazioni: il piè di pagina resterà vuoto.",
+        "counter": "{{count}} / {{max}}"
       },
       "terms": {
         "placeholder": "Termini di pagamento, note di consegna, ecc.",

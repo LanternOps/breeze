@@ -856,6 +856,7 @@
         "saveCoverPage": "Couldn't save the cover page",
         "saveCustomer": "Could not change the customer.",
         "saveTerms": "Could not save terms.",
+        "saveFooter": "Could not save the footer line.",
         "saveTitle": "Could not save the title.",
         "unitPriceZeroOrMore": "Enter a unit price of 0 or more.",
         "updateBlock": "Could not update the block.",
@@ -994,6 +995,15 @@
         "headerStylePlain": "Plain",
         "headerStyleAccent": "Accent",
         "reshapedWarning": "This table didn't fit the {{columns}}-column x {{rows}}-row limit, so it was reshaped to fit. Saving replaces the stored table with what you see here."
+      },
+      "footer": {
+        "title": "Footer line (every page)",
+        "helper": "One short line printed at the bottom of every page — e.g. validity dates. Leave blank to use the default footer. Put fine print in Terms & Conditions, not here.",
+        "placeholder": "Blank = use the default footer",
+        "inheritedPartner": "Using the partner invoice footer from Settings: “{{text}}”",
+        "inheritedBrand": "Using the brand kit footer text: “{{text}}”",
+        "inheritedNone": "No default footer is set in Settings — the page footer will be empty.",
+        "counter": "{{count}} / {{max}}"
       },
       "terms": {
         "placeholder": "Payment terms, delivery notes, etc.",
