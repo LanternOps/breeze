@@ -162,8 +162,9 @@ func (r *linuxRestorer) restoreEtcTreeMode(stagingDir, targetEtc string, applyEx
 
 	if len(skipped) > 0 {
 		// Operator-visible: these paths are machine-identity/network config
-		// deliberately left untouched — see etcRestoreExcludes for why each
-		// one is excluded. Do not silently skip.
+		// or the source's own Breeze agent state, deliberately left
+		// untouched — see etcRestoreExcludes and isBreezeAgentEtcPath for
+		// why each one is excluded. Do not silently skip.
 		slog.Warn("bmr: skipped restoring machine-specific /etc paths",
 			"count", len(skipped), "paths", strings.Join(skipped, ", "))
 	}
@@ -411,6 +412,26 @@ func (r *linuxRestorer) restoreServices(stagingDir, root string) error {
 	}
 
 	services := parseSystemdEnabledUnits(data)
+	if root == "" {
+		// Live restore: the source's own breeze-* units were deliberately
+		// not restored (isBreezeAgentEtcPath) — the recovery target runs its
+		// own helper and re-enrolls explicitly (#6436). Enabling them here
+		// would either re-enable the target's own agent units by name or
+		// fail on a unit that doesn't exist, so skip them, and say so.
+		var kept, skippedUnits []string
+		for _, svc := range services {
+			if isBreezeAgentUnit(svc) {
+				skippedUnits = append(skippedUnits, svc)
+				continue
+			}
+			kept = append(kept, svc)
+		}
+		if len(skippedUnits) > 0 {
+			slog.Info("bmr: not enabling the source's Breeze agent units on the recovery target",
+				"count", len(skippedUnits), "units", strings.Join(skippedUnits, ", "))
+		}
+		services = kept
+	}
 	if len(services) == 0 {
 		slog.Info("bmr: service list contained no enabled units, skipping service restore")
 		return nil
