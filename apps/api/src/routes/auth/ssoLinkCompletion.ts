@@ -68,7 +68,8 @@ export interface SsoCompletionParams {
   capability: AuthIssuanceCapability;
   provider: ProviderRow;
   user: UserRow;
-  /** Whether the verified id_token's `amr` attested MFA at assertion time. */
+  /** Whether the verified id_token's `amr` attested MFA (`mfa` or `phr`, see
+   *  `idpAssertedMfa`) at assertion time. */
   idpMfaAsserted: boolean;
   /**
    * True only when the ceremony verified a Breeze-held factor (TOTP / SMS /
@@ -150,9 +151,9 @@ export async function completeSsoLogin(
   // IdP-asserted MFA — axis-independent, so it is computed here (above the
   // membership branch) and shared by both the org and partner token payloads.
   // When the provider opts in via `trustsIdpMfa` AND the verified id_token's
-  // `amr` attested multi-factor, propagate mfa:true so the tenant can satisfy
+  // `amr` attested multi-factor (`mfa`) or phishing-resistant (`phr`) auth, propagate mfa:true so the tenant can satisfy
   // Breeze's MFA-gated routes via their IdP. Fail-safe: any provider that
-  // hasn't opted in, or an assertion without the `mfa` amr, yields mfa:false.
+  // hasn't opted in, or an assertion without an `mfa`/`phr` amr, yields mfa:false.
   // This claim never satisfies the L4 step-up (requireFreshMfaStepUp
   // re-verifies a Breeze-held TOTP).
   //
