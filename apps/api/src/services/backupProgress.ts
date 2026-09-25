@@ -49,7 +49,7 @@ export type ApplyBackupProgressResult =
       reason: 'invalid-command-id' | 'invalid-payload' | 'not-found' | 'agent-mismatch' | 'terminal-status';
       /**
        * A repeat of a `not-found` / `invalid-command-id` drop already reported
-       * within UNMATCHED_PROGRESS_WINDOW_MS. No DB lookup was made; callers
+       * within UNMATCHED_PROGRESS_WINDOW_MS (10s). No DB lookup was made; callers
        * should not log it again (#5393).
        */
       suppressed?: true;
@@ -60,11 +60,11 @@ export type ApplyBackupProgressResult =
  * matches no backup job, and is emitted per file. Without this cache every
  * message cost a DB select plus a log line (10k lines / 3 min, ~85% API CPU in
  * the #5393 lab run). After the first unmatched drop for an (agent, commandId)
- * pair we skip the lookup and let the caller stay quiet for a short window.
+ * pair we skip the lookup and let the caller stay quiet for a short (10s) window.
  * The window is bounded so a job row created after its first ping (or a reused
  * id) is still picked up. Matched jobs are never cached.
  */
-const UNMATCHED_PROGRESS_WINDOW_MS = 30_000;
+const UNMATCHED_PROGRESS_WINDOW_MS = 10_000;
 const UNMATCHED_PROGRESS_MAX_KEYS = 5_000;
 const unmatchedProgress = new Map<string, { reason: 'not-found' | 'invalid-command-id'; until: number }>();
 

@@ -310,7 +310,7 @@ describe('applyBackupProgress', () => {
       await call();
       await call();
       expect(db.select).toHaveBeenCalledTimes(1);
-      vi.advanceTimersByTime(31_000);
+      vi.advanceTimersByTime(11_000);
       await call();
       expect(db.select).toHaveBeenCalledTimes(2);
     });
