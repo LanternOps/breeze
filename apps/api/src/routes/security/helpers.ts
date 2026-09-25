@@ -798,30 +798,15 @@ export async function queueThreatAction(c: any, action: 'quarantine' | 'remove' 
     auth.user.id
   );
 
-  const now = new Date();
-  if (action === 'quarantine') {
-    await db
-      .update(securityThreats)
-      .set({ status: 'quarantined', resolvedAt: null, resolvedBy: null })
-      .where(eq(securityThreats.id, threat.id));
-  }
-
-  if (action === 'remove') {
-    await db
-      .update(securityThreats)
-      .set({ status: 'removed', resolvedAt: now, resolvedBy: auth.user.id })
-      .where(eq(securityThreats.id, threat.id));
-  }
-
-  if (action === 'restore') {
-    await db
-      .update(securityThreats)
-      .set({ status: 'allowed', resolvedAt: now, resolvedBy: auth.user.id })
-      .where(eq(securityThreats.id, threat.id));
-  }
-
-  const updatedStatus = action === 'quarantine' ? 'quarantined' : action === 'remove' ? 'removed' : 'active';
-
+  // #6685 -- this only QUEUES the command; nothing has executed on the device
+  // yet, and an offline device may never claim it. Writing a terminal status
+  // (quarantined/removed/allowed) here optimistically lied about the outcome
+  // and raced the real update. `updateThreatStatusForAction`
+  // (routes/agents/helpers.ts, invoked from handleSecurityCommandResult) is
+  // the single source of truth for the terminal status -- it runs once the
+  // agent actually reports back, mirroring the sensitiveData /remediate
+  // pattern (which only records `remediationAction`/`remediationMetadata` at
+  // enqueue time and leaves `status` for the agent-result handler).
   return c.json({
     data: {
       id: threat.id,
@@ -830,7 +815,7 @@ export async function queueThreatAction(c: any, action: 'quarantine' | 'remove' 
       name: threat.threatName,
       category: threat.threatType?.toLowerCase() ?? 'malware',
       severity: threat.severity,
-      status: updatedStatus
+      status: mapThreatStatus(threat.status)
     }
   });
 }
