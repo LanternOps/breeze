@@ -26,7 +26,7 @@ if (response.statusCode === 401 || assets.statusCode === 401) {
 // "Network visibility" flag comes back as dataStatus: 'not_enabled' in the
 // body, not a 403, so isPortalPageDisabled (which only understands the API's
 // 403 gate codes) cannot catch it. Check the DTO directly instead.
-if (response.data?.dataStatus === 'not_enabled') {
+if (response.data?.dataStatus === 'not_enabled' || assets.data?.dataStatus === 'not_enabled') {
   return redirectToPortalHomeAfterDisabled(Astro);
 }
 ---

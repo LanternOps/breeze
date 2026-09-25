@@ -112,6 +112,19 @@ export function NetworkAssetTable({
       status: (next.status || undefined) as NetworkAssetStatusFilter | undefined,
     });
     if (seq !== requestSeq.current) return; // a newer request superseded this one
+    // A stale/shared #page=99 (or a shrunken total) lands past the last page:
+    // the API answers an empty list with the real total. Clamp to the last page
+    // rather than showing a "no match" message under a bogus page number.
+    if (
+      response.data &&
+      response.data.dataStatus === 'ok' &&
+      response.data.data.length === 0 &&
+      response.data.pagination.total > 0 &&
+      next.page > 1
+    ) {
+      void load({ ...next, page: Math.max(1, Math.ceil(response.data.pagination.total / PAGE_SIZE)) });
+      return;
+    }
     setBusy(false);
     if (response.data && response.data.dataStatus !== 'not_enabled') {
       setResult(response.data);
