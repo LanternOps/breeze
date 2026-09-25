@@ -131,6 +131,7 @@ describe.runIf(RUN)('invoice line ticket subject/category snapshot (#6955, #6674
     const id = await draftForTicket(f, t);
     expect(await lineSnapshot(id)).toEqual({ subject: null, category: null });
     expect(await webHeader(f, id)).toEqual({ subject: 'Printer jam', category: 'Hardware' });
+    expect(await pdfHeader(id)).toEqual({ subject: 'Printer jam', category: 'Hardware' });
     await sys(() => db.update(tickets).set({ subject: 'Printer on fire' }).where(eq(tickets.id, t)));
     expect(await webHeader(f, id)).toEqual({ subject: 'Printer on fire', category: 'Hardware' });
   });
@@ -163,6 +164,16 @@ describe.runIf(RUN)('invoice line ticket subject/category snapshot (#6955, #6674
     expect(await portalCategory(f, id)).toBe('Security');
   });
 
+  it('an issued line with no ticket carries no snapshot and renders no header', async () => {
+    const f = await seedFixture();
+    const invoice = await as(f, () => invoiceSvc.createManualInvoice({ orgId: f.orgId }, invActor(f)));
+    await as(f, () => invoiceSvc.addManualLine(invoice.id, { description: 'Flat fee', quantity: 1, unitPrice: 50, taxable: false }, invActor(f)));
+    await as(f, () => invoiceSvc.issueInvoice(invoice.id, invActor(f)));
+    const none = { subject: null, category: null };
+    expect(await lineSnapshot(invoice.id)).toEqual(none);
+    expect(await allHeaders(f, invoice.id)).toEqual({ web: none, pdf: none, portal: null, public: null });
+  });
+
   it('a ticket with no category row snapshots the legacy free-text category', async () => {
     const f = await seedFixture();
     const t = await seedTicket(f, 'Legacy ticket', null);
@@ -183,12 +194,20 @@ describe.runIf(RUN)('backfill migration ' + MIGRATION, () => {
     // Simulate an invoice issued before these columns existed.
     await sys(() => db.update(invoiceLines).set({ ticketSubject: null, ticketCategory: null }).where(eq(invoiceLines.invoiceId, issued)));
     const draft = await draftForTicket(f, t);
+    // An issued line whose ticket was soft-deleted printed no header before this
+    // change — the backfill's join predicate skips it and it stays NULL.
+    const goneTicket = await seedTicket(f, 'Deleted ticket', cat);
+    const issuedGone = await draftForTicket(f, goneTicket);
+    await as(f, () => invoiceSvc.issueInvoice(issuedGone, invActor(f)));
+    await sys(() => db.update(invoiceLines).set({ ticketSubject: null, ticketCategory: null }).where(eq(invoiceLines.invoiceId, issuedGone)));
+    await sys(() => db.update(tickets).set({ deletedAt: new Date() }).where(eq(tickets.id, goneTicket)));
 
     const warnings = await runMigration();
     const frozen = { subject: 'Restore failed', category: 'Backups' };
     expect(await lineSnapshot(issued)).toEqual(frozen);
     expect(await portalCategory(f, issued)).toBe('Backups');
     expect(await lineSnapshot(draft)).toEqual({ subject: null, category: null });
+    expect(await lineSnapshot(issuedGone)).toEqual({ subject: null, category: null });
     const counted = warnings.find((w) => /backfilled ticket subject\/category on \d+ issued invoice lines/.test(w));
     expect(counted).toBeDefined();
     expect(Number(counted!.match(/on (\d+) issued/)![1])).toBeGreaterThanOrEqual(1);
