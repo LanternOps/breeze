@@ -273,6 +273,8 @@ A request moves through one of the following **statuses**:
 
 </Steps>
 
+**Several pending approvals at once** (v0.117.0+): when more than one request is waiting, the approval screen shows its position in the queue (for example **2 of 5**) with **Prev** and **Next** buttons, plus a **Later** action that sets the current request aside so the next one comes up first. A deferred request is not dismissed; it stays pending, you can return to it with Prev/Next, and it expires on its normal schedule if nobody decides it. With a single pending request the screen is unchanged.
+
 When the request was initiated by the user's *own* mobile app for that same user (a self-approval), the app requires a deliberate 5-second hold-to-confirm instead of a single tap, to prevent an attacker with a momentarily unlocked phone from rubber-stamping a self-issued request.
 
 ### Reporting a Suspicious Request

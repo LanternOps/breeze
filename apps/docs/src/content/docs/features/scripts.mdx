@@ -217,16 +217,22 @@ After the run is dispatched, a single-device re-run takes you to that device's *
 
 ### Severity by Exit Code
 
-When a script finishes, Breeze decides whether to raise an alert and at what severity based on the exit code. The mapping is configurable per script.
+A script can raise an alert based on its exit code. This is **opt-in per script**: set the `exitCodeSeverityMapping` field (in the script form or via the API) to a JSON object mapping exit-code strings to severity levels. A script with no mapping, or an empty mapping `{}`, never raises an exit-code alert.
 
-The defaults are conservative: exit code `0` raises no alert at all, and any non-zero exit raises a `medium`-severity alert unless you override it. To customize, set the `exitCodeSeverityMapping` field on the script — a JSON object mapping exit-code strings to severity levels.
+When a mapping is set, Breeze evaluates it each time the script completes on a device:
 
-| Exit code | Default behavior | Override via `exitCodeSeverityMapping` |
-|---|---|---|
-| `0` | No alert. | Always no alert (cannot be overridden). |
-| `1`, `2`, `3`, … | Single `medium`-severity alert. | Map any specific code to `low`, `medium`, `high`, or `critical`. |
-| Negative values | `critical` (abnormal termination, e.g., killed by signal). | Always `critical` (cannot be overridden). |
-| Unmapped non-zero | Falls back to the next-lower defined entry, else `medium`. | — |
+| Exit code | Result |
+|---|---|
+| `0` | No alert (cannot be overridden). |
+| A mapped code (`1`, `2`, `3`, …) | An alert at the mapped severity: `low`, `medium`, `high`, or `critical`. |
+| Negative values | `critical` (abnormal termination, e.g., killed by signal; cannot be overridden). |
+| Unmapped non-zero | Falls back to the next-lower mapped entry, else `medium`. |
+
+**Which runs raise alerts (v0.117.0+).** Only unattended runs create an alert: scheduled runs, automations, configuration policies, and alert-triggered remediations. A script you run by hand, or one run by a monitor, never creates one. Before v0.117.0 the mapping was saved but no alert was ever raised.
+
+**One alert per script and device.** While an alert for a script on a device is open (active, acknowledged, or suppressed), later failures do not create another. The alert title names the script, the exit code and the device, and the message includes the first line of the script's error output. **Dismissing** the alert is a lasting opt-out: that script no longer raises exit-code alerts on that device.
+
+**Automatic resolution.** The next run of the script on that device, including a manual re-run, that exits without an alert-worthy code resolves the open alert automatically.
 
 Example mapping:
 
@@ -241,7 +247,7 @@ Example mapping:
 }
 ```
 
-An empty mapping `{}` is treated the same as omitting the field (default behavior). Pass the field on both POST `/scripts` and PUT `/scripts/:id`.
+Pass the field on both POST `/scripts` and PUT `/scripts/:id`.
 
 ---
 
