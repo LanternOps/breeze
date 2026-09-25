@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"log/slog"
 	"net"
@@ -425,19 +426,17 @@ func compareIPs(a, b string) bool {
 	return bytes.Compare(ipA.To4(), ipB.To4()) < 0
 }
 
-// CollectAdjacency walks LLDP/CDP for SNMP-credentialed responders and returns
-// adjacency blocks that contain at least one neighbor row.
+// CollectAdjacency returns the legacy adjacency blocks, projected from the V2
+// physical sections, for every SNMP responder that yielded at least one
+// LLDP, CDP or FDB row. FDB is collected even when a target has no neighbours.
 func (s *Scanner) CollectAdjacency(hosts []DiscoveredHost) []DeviceAdjacency {
-	if len(s.config.SNMPCredentials) == 0 {
+	targets := s.CollectPhysical(context.Background(), hosts)
+	if targets == nil {
 		return nil
 	}
-	out := make([]DeviceAdjacency, 0)
-	for _, h := range hosts {
-		if h.SNMPData == nil || !hasMethod(h.Methods, "snmp") {
-			continue
-		}
-		adj := collectAdjacencyFor(h.IP, s.config.SNMPCredentials, s.config.Timeout)
-		if len(adj.Lldp) > 0 || len(adj.Cdp) > 0 {
+	out := make([]DeviceAdjacency, 0, len(targets))
+	for _, t := range targets {
+		if adj := LegacyAdjacencyFromSections(t.Target, t.Sections); adj.hasRows() {
 			out = append(out, adj)
 		}
 	}

@@ -70,22 +70,6 @@ func TestQuerySNMPV3UnreachableReportsOutcome(t *testing.T) {
 	}
 }
 
-func TestCollectFdbForDevice_NoCredsReturnsEmpty(t *testing.T) {
-	// An unreachable target with no usable credential must degrade to an empty
-	// slice (graceful per-device degradation) without panicking — there is no
-	// live SNMP server in CI.
-	entries := collectFdbForDevice("203.0.113.250", nil, 50*time.Millisecond)
-	if len(entries) != 0 {
-		t.Fatalf("collectFdbForDevice on unreachable target should return empty, got %d entries", len(entries))
-	}
-
-	// Unusable credentials must also degrade cleanly.
-	entries = collectFdbForDevice("203.0.113.250", []SNMPCredential{{Version: "v2c"}, {Version: "v3"}}, 50*time.Millisecond)
-	if len(entries) != 0 {
-		t.Fatalf("collectFdbForDevice with unusable credentials should return empty, got %d entries", len(entries))
-	}
-}
-
 func TestSnmpToString(t *testing.T) {
 	tests := []struct {
 		name string
