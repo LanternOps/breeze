@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -397,15 +398,37 @@ func shippableValue(v any) any {
 	return v
 }
 
-// errorText returns err.Error(), tolerating a typed-nil error whose Error method
-// dereferences its nil receiver.
+// errorText returns err.Error(), or "<nil>" for a nil or typed-nil error.
+//
+// A typed-nil error is detected with reflect instead of calling Error and
+// recovering the nil-pointer fault. On Windows a recovered hardware fault can
+// corrupt the heap on AVX-512/AMX hosts (golang/go#81238), which crashed the
+// Windows agent tests (#6943). The recover stays only as a last resort for an
+// Error method that panics on its own.
 func errorText(err error) (text string) {
+	if isNilError(err) {
+		return "<nil>"
+	}
 	defer func() {
 		if recover() != nil {
 			text = "<nil>"
 		}
 	}()
 	return err.Error()
+}
+
+// isNilError reports whether err is nil or wraps a nil pointer, map, slice,
+// func, chan or interface value.
+func isNilError(err error) bool {
+	if err == nil {
+		return true
+	}
+	v := reflect.ValueOf(err)
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan, reflect.Interface, reflect.UnsafePointer:
+		return v.IsNil()
+	}
+	return false
 }
 
 func extractComponent(fields map[string]any) string {
