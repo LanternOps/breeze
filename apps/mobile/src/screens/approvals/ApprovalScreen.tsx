@@ -424,6 +424,7 @@ export function ApprovalScreen() {
 
         <View style={{ paddingBottom: insets.bottom + spacing[5] }}>
           <ApprovalButtons
+            key={focused.id}
             requestId={focused.id}
             isRecursive={isRecursive}
             inFlight={inFlight}
