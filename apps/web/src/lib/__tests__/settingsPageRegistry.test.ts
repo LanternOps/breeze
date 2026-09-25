@@ -12,7 +12,9 @@ const SIDEBAR_PATH = join(WEB_SRC, 'components/layout/Sidebar.tsx');
 // The account-menu links (profile/api-keys/partner-service-principals) live in
 // the header dropdown, not the Settings sidebar section. Both are legitimate,
 // pre-existing reachability sources this guard must also recognize.
-const SETTINGS_INDEX_PATH = join(WEB_SRC, 'pages/settings/index.astro');
+// #6220: the index page renders the settings catalogue, so the catalogue is the
+// source of its links.
+const SETTINGS_INDEX_PATH = join(WEB_SRC, 'lib/settingsCatalog.ts');
 const HEADER_PATH = join(WEB_SRC, 'components/layout/Header.tsx');
 
 // Every entry here is a filed, justified exception — not a place to silence a

@@ -236,8 +236,33 @@
       "ticketChecklistTemplates": {
         "title": "Bilet kontrol listesi şablonları",
         "description": "Teknisyenlerinizin herhangi bir bilete uygulayabileceği yeniden kullanılabilir adım listeleri."
+      },
+      "profile": {
+        "title": "Profilim"
+      },
+      "apiKeys": {
+        "title": "API anahtarları"
+      },
+      "partnerServicePrincipals": {
+        "title": "Hizmet asıları"
+      },
+      "alertTemplates": {
+        "title": "Uyarı şablonları"
       }
-    }
+    },
+    "groups": {
+      "account": "Hesap ve erişim",
+      "billing": "Faturalama ve hizmet masası",
+      "devices": "Cihazlar ve kayıt",
+      "data": "Otomasyon ve veri",
+      "ai": "Yapay zeka",
+      "integrations": "Entegrasyonlar"
+    },
+    "search": {
+      "label": "Ayarlarda ara",
+      "placeholder": "Ayarlarda ara…"
+    },
+    "noResults": "Aramanızla eşleşen ayar yok."
   },
   "settingsBillingPage": {
     "heading": "Faturalandırma ayarları",

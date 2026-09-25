@@ -236,8 +236,33 @@
       "ticketChecklistTemplates": {
         "title": "Modelos de checklist de chamados",
         "description": "Listas de etapas reutilizáveis que seus técnicos podem aplicar a qualquer chamado."
+      },
+      "profile": {
+        "title": "Meu perfil"
+      },
+      "apiKeys": {
+        "title": "Chaves de API"
+      },
+      "partnerServicePrincipals": {
+        "title": "Entidades de serviço"
+      },
+      "alertTemplates": {
+        "title": "Modelos de alerta"
       }
-    }
+    },
+    "groups": {
+      "account": "Conta e acesso",
+      "billing": "Faturamento e service desk",
+      "devices": "Dispositivos e inscrição",
+      "data": "Automação e dados",
+      "ai": "IA",
+      "integrations": "Integrações"
+    },
+    "search": {
+      "label": "Pesquisar configurações",
+      "placeholder": "Pesquisar configurações…"
+    },
+    "noResults": "Nenhuma configuração corresponde à sua pesquisa."
   },
   "settingsBillingPage": {
     "heading": "Configurações de faturamento",

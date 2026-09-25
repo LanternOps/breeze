@@ -11,15 +11,12 @@ import {
   FileText,
   FileSignature,
   Receipt,
-  CreditCard,
   Tags,
   FileSpreadsheet,
   Building,
   Building2,
-  Filter,
+  Settings,
   ListChecks,
-  Braces,
-  Users,
   ChevronLeft,
   ChevronRight,
   ChevronDown,
@@ -48,14 +45,11 @@ import {
   Usb,
   MessagesSquare,
   Ticket,
-  Key,
   X,
   Cloud,
   ShieldEllipsis,
   UserCheck,
   UserX,
-  Fingerprint,
-  FileCheck,
   Clock,
   Ban,
   Boxes,
@@ -75,7 +69,8 @@ import type { PermissionGrant } from '@breeze/shared';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { SERVICE_MANAGEMENT_MODES, useOrgStore, type ServiceManagementMode } from '../../stores/orgStore';
 import { useToolSourcesGate } from '../../stores/featuresStore';
-import { hasPermission } from '../../lib/permissions';
+import { isNavGateVisible } from '../../lib/navGates';
+import { sidebarSettingsEntries } from '../../lib/settingsCatalog';
 import { WEB_VERSION } from '../../lib/version';
 import { semverCompare } from '@breeze/shared';
 import { getJwtClaims } from '../../lib/authScope';
@@ -375,19 +370,11 @@ export const navSections: NavSection[] = [
     labelKey: 'nav.sectionSettings',
     icon: Building,
     items: [
-      { name: 'Partner', labelKey: 'nav.partner', href: '/settings/partner', icon: Building, partnerScopeOnly: true },
-      { name: 'Billing', labelKey: 'nav.billing', href: '/settings/billing', icon: CreditCard, partnerScopeOnly: true, requiredPermission: { resource: 'invoices', action: 'write' } },
-      { name: 'Ticketing', labelKey: 'nav.ticketing', href: '/settings/ticketing', icon: Ticket, partnerScopeOnly: true },
-      // Users + Roles are both served by the users routes (users:read).
-      { name: 'Users', labelKey: 'nav.users', href: '/settings/users', icon: Users, requiredPermission: { resource: 'users', action: 'read' } },
-      { name: 'Roles', labelKey: 'nav.roles', href: '/settings/roles', icon: KeyRound, requiredPermission: { resource: 'users', action: 'read' } },
-      { name: 'SSO', labelKey: 'nav.sso', href: '/settings/sso', icon: Fingerprint, requiredPermission: { resource: 'sso', action: 'admin' } },
-      { name: 'Access Reviews', labelKey: 'nav.accessReviews', href: '/settings/access-reviews', icon: FileCheck, requiredPermission: { resource: 'users', action: 'read' } },
-      { name: 'Enrollment Keys', labelKey: 'nav.enrollmentKeys', href: '/settings/enrollment-keys', icon: Key, requiredPermission: { resource: 'devices', action: 'read' } },
-      { name: 'Integrations', labelKey: 'nav.integrations', href: '/integrations', icon: Plug },
-      { name: 'Custom Fields', labelKey: 'nav.customFields', href: '/settings/custom-fields', icon: ListChecks, requiredPermission: { resource: 'organizations', action: 'read' } },
-      { name: 'Variables', labelKey: 'nav.variables', href: '/settings/variables', icon: Braces, requiredPermission: { resource: 'variables', action: 'read' } },
-      { name: 'Saved Filters', labelKey: 'nav.savedFilters', href: '/settings/filters', icon: Filter },
+      // Daily-use subset of the settings catalogue (lib/settingsCatalog.ts —
+      // gates are defined once there). Everything else lives on /settings, which
+      // is reached through the "More settings" entry below (#6220).
+      ...sidebarSettingsEntries(),
+      { name: 'More settings', labelKey: 'nav.moreSettings', href: '/settings', icon: Settings },
     ],
   },
   {
@@ -826,22 +813,15 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   // `renderNavItem` below so section-header visibility (renderCollapsibleSection)
   // matches what actually renders — a section whose items are all filtered out
   // must not show an empty header that expands to nothing.
-  const isNavItemVisible = (item: NavItem): boolean => {
-    if (item.requiresModule === 'service_management' && serviceManagementMode !== 'native') return false;
-    if (item.requiresAiForOffice && !aiForOfficeEnabled) return false;
-    if (item.requiresToolSources && !toolSourcesEnabled) return false;
-    if (item.platformAdminOnly && !isPlatformAdmin) return false;
-    if (item.partnerScopeOnly) {
-      const { scope } = getJwtClaims();
-      if (scope !== null && scope !== 'partner') return false;
-    }
-    if (item.requiredPermission) {
-      if (!hasPermission(permissions, item.requiredPermission.resource, item.requiredPermission.action)) {
-        return false;
-      }
-    }
-    return true;
-  };
+  const isNavItemVisible = (item: NavItem): boolean =>
+    isNavGateVisible(item, {
+      isPlatformAdmin,
+      permissions,
+      getScope: () => getJwtClaims().scope,
+      toolSourcesEnabled,
+      aiForOfficeEnabled,
+      serviceManagementMode,
+    });
 
   const renderNavItem = (item: NavItem, forMobileOverlay = false) => {
     if (!isNavItemVisible(item)) return null;
