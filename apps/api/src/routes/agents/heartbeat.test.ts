@@ -2264,6 +2264,34 @@ describe('POST /agents/:id/heartbeat — artifact-edition offer gate (#4072)', (
       expect(cleared?.updateOfferWithheldSince).toBeNull();
     });
 
+    it('does not flag a device with no resolvable architecture (no build to offer, gate never applied)', async () => {
+      const { agentAcceptsServedEdition, normalizeAgentArchitecture } = await import('./helpers');
+      vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+      vi.mocked(normalizeAgentArchitecture).mockImplementation((() => null) as never);
+      const setSpy = captureSet();
+      try {
+        primeWithRow({ updateOfferWithheldReason: null, updateOfferWithheldSince: null });
+        expect((await beat()).status).toBe(200);
+        for (const s of setCalls(setSpy)) {
+          expect(s).not.toHaveProperty('updateOfferWithheldReason');
+        }
+      } finally {
+        vi.mocked(normalizeAgentArchitecture).mockImplementation(((s: string) => s) as never);
+      }
+    });
+
+    it('feeds the persisted verdict from THIS beat’s payload edition + version', async () => {
+      const { agentAcceptsServedEdition } = await import('./helpers');
+      captureSet();
+      primeWithRow({ updateOfferWithheldReason: null, agentEdition: 'stale-stored' });
+      await beat({ agentEdition: 'self-host' });
+      const calls = vi.mocked(agentAcceptsServedEdition).mock.calls;
+      expect(calls.length).toBeGreaterThan(0);
+      for (const [arg] of calls) {
+        expect(arg).toEqual({ reportedEdition: 'self-host', agentVersion: '0.105.1' });
+      }
+    });
+
     it('writes nothing for a healthy device that was never withheld', async () => {
       const setSpy = captureSet();
       primeWithRow({ updateOfferWithheldReason: null, updateOfferWithheldSince: null });
