@@ -88,7 +88,11 @@ describe('parseExtensionManifestV1', () => {
         orgMergePolicies: {
           demo_items: { kind: 'repoint' },
           demo_settings: { kind: 'keep-survivor' },
-          demo_jobs: { kind: 'repoint-dedupe', key: ['source_id', 'job_key'] },
+          demo_jobs: {
+            kind: 'repoint-dedupe',
+            key: ['source_id', 'job_key'],
+            where: { column: 'status', in: ['pending', 'running'] },
+          },
           demo_log: { kind: 'leave-for-erasure', note: 'append-only' },
         },
       },
@@ -96,6 +100,7 @@ describe('parseExtensionManifestV1', () => {
     expect(parsed.tenancy.orgMergePolicies?.demo_jobs).toEqual({
       kind: 'repoint-dedupe',
       key: ['source_id', 'job_key'],
+      where: { column: 'status', in: ['pending', 'running'] },
     });
   });
 
@@ -107,6 +112,9 @@ describe('parseExtensionManifestV1', () => {
     ['an empty key', { kind: 'repoint-dedupe', key: [] }],
     ['org_id in the key', { kind: 'repoint-dedupe', key: ['org_id', 'name'] }],
     ['a leave-for-erasure with no note', { kind: 'leave-for-erasure' }],
+    ['a where literal carrying SQL', { kind: 'repoint-dedupe', key: ['name'], where: { column: 'status', in: ["x') OR (1=1"] } }],
+    ['a where column that is an expression', { kind: 'repoint-dedupe', key: ['name'], where: { column: 'lower(status)', in: ['a'] } }],
+    ['an empty where list', { kind: 'repoint-dedupe', key: ['name'], where: { column: 'status', in: [] } }],
   ])('rejects an org-merge policy with %s', (_name, policy) => {
     expect(() => parseExtensionManifestV1({
       ...valid,

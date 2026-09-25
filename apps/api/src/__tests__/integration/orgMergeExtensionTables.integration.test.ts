@@ -102,6 +102,7 @@ interface Fixture {
   crosswalkOnlyL: string;
   jobOrgWideL: string;
   jobSourceL: string;
+  jobDoneOrgWideL: string;
   memoryL: string;
 }
 
@@ -111,7 +112,8 @@ async function seed(): Promise<Fixture> {
     sourceL: randomUUID(), sourceS: randomUUID(), fileL: randomUUID(),
     projectCollideL: randomUUID(), projectOnlyL: randomUUID(),
     crosswalkCollideL: randomUUID(), crosswalkOnlyL: randomUUID(),
-    jobOrgWideL: randomUUID(), jobSourceL: randomUUID(), memoryL: randomUUID(),
+    jobOrgWideL: randomUUID(), jobSourceL: randomUUID(), jobDoneOrgWideL: randomUUID(),
+    memoryL: randomUUID(),
   };
   const sfx = f.loser.slice(0, 8);
   await withSystemDbAccessContext(async () => {
@@ -158,11 +160,15 @@ async function seed(): Promise<Fixture> {
 
     // repoint-dedupe on (source_id): both orgs hold an ACTIVE org-wide job
     // (source_id NULL) — a plain repoint violates wsp_ingest_jobs_one_active_idx.
-    // The loser's per-source job cannot collide and must move.
+    // The loser's per-source job cannot collide and must move. So must the
+    // loser's COMPLETED org-wide job: the index is partial (active statuses
+    // only), so it collides with nothing and dropping it would be silent
+    // history loss.
     await db.execute(sql`
       INSERT INTO workspace_ingest_jobs (id, org_id, source_id, trigger, status) VALUES
         (${f.jobOrgWideL}::uuid, ${f.loser}::uuid,    NULL,               'manual', 'pending'),
         (${f.jobSourceL}::uuid,  ${f.loser}::uuid,    ${f.sourceL}::uuid, 'manual', 'pending'),
+        (${f.jobDoneOrgWideL}::uuid, ${f.loser}::uuid, NULL,              'manual', 'complete'),
         (${randomUUID()}::uuid,  ${f.survivor}::uuid, NULL,               'manual', 'running')`);
   });
   return f;
@@ -198,7 +204,12 @@ describe('executeOrgMerge with extension-owned org tables (#4165)', () => {
     const after = await listPublicBaseTables();
     const leaked = [...after].filter((t) => !publicTablesBefore!.has(t)).sort();
     const removed = [...publicTablesBefore!].filter((t) => !after.has(t)).sort();
-    expect({ leaked, removed }).toEqual({ leaked: [], removed: [] });
+    // WORKSPACE_TYPES is hand-kept; catch a new enum a future migration adds.
+    const types = await withAdmin((admin) => admin<Array<{ typname: string }>>`
+      SELECT t.typname FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
+      WHERE n.nspname = 'public' AND t.typtype = 'e' AND t.typname LIKE 'workspace\_%'`);
+    expect({ leaked, removed, types: types.map((r) => r.typname) })
+      .toEqual({ leaked: [], removed: [], types: [] });
   });
 
   beforeEach(() => {
@@ -255,6 +266,7 @@ describe('executeOrgMerge with extension-owned org tables (#4165)', () => {
     expect(await orgIdOf('workspace_project_crosswalk', f.crosswalkOnlyL)).toBe(f.survivor);
     expect(await orgIdOf('workspace_ingest_jobs', f.jobOrgWideL)).toBeNull();
     expect(await orgIdOf('workspace_ingest_jobs', f.jobSourceL)).toBe(f.survivor);
+    expect(await orgIdOf('workspace_ingest_jobs', f.jobDoneOrgWideL)).toBe(f.survivor);
 
     // Nothing of the extension's is stranded under the dead loser org.
     for (const table of WORKSPACE_TABLES) {

@@ -24,6 +24,7 @@
  * is a plain column name.
  */
 import { __testOnly as tenantCascadeTestOnly } from './tenantCascade';
+import type { ExtensionOrgMergePolicy } from '@breeze/extension-sdk';
 import { getExtensionOrgMergePolicies } from '../extensions/tenancyRegistry';
 
 export type OrgMergePolicy =
@@ -1111,9 +1112,27 @@ export function getOrgMergePolicies(): ReadonlyMap<string, OrgMergePolicy> {
         `orgMergeRegistry: extension merge policy for '${t}' collides with the core registry — an extension cannot reclassify a core table`,
       );
     }
-    map.set(t, policy);
+    map.set(t, fromExtensionPolicy(policy));
   }
   return map;
+}
+
+/**
+ * Translate a manifest-declared policy into the engine's union. The SDK schema
+ * admits only bare column names and `[a-z0-9_]` literals, so the `keyWhere`
+ * built here (which the executors splice with `sql.raw`) can carry no
+ * manifest-supplied SQL.
+ */
+function fromExtensionPolicy(policy: ExtensionOrgMergePolicy): OrgMergePolicy {
+  if (policy.kind !== 'repoint-dedupe' || !policy.where) {
+    return policy.kind === 'repoint-dedupe' ? { kind: 'repoint-dedupe', key: policy.key } : policy;
+  }
+  const literals = policy.where.in.map((v) => `'${v}'`).join(', ');
+  return {
+    kind: 'repoint-dedupe',
+    key: policy.key,
+    keyWhere: `{${policy.where.column}} IN (${literals})`,
+  };
 }
 
 /**

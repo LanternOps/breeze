@@ -34,7 +34,7 @@
       "workspace_file_content": { "kind": "repoint" },
       "workspace_file_enrichment": { "kind": "repoint" },
       "workspace_file_index": { "kind": "repoint" },
-      "workspace_ingest_jobs": { "kind": "repoint-dedupe", "key": ["source_id"] },
+      "workspace_ingest_jobs": { "kind": "repoint-dedupe", "key": ["source_id"], "where": { "column": "status", "in": ["pending", "running"] } },
       "workspace_org_settings": { "kind": "keep-survivor" },
       "workspace_project_crosswalk": { "kind": "repoint-dedupe", "key": ["entity_type", "value_norm", "project_key"] },
       "workspace_projects": { "kind": "repoint-dedupe", "key": ["project_key"] },

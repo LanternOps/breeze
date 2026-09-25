@@ -125,7 +125,8 @@ const SQL_COLUMN_RE = /^[a-z_][a-z0-9_]{0,62}$/;
  *
  * - `repoint`            UPDATE org_id loser → survivor (no org-scoped unique index can collide)
  * - `keep-survivor`      singleton per org (UNIQUE/PK on org_id): the survivor's row wins
- * - `repoint-dedupe`     drop loser rows colliding with a survivor row on `key`, repoint the rest
+ * - `repoint-dedupe`     drop loser rows colliding with a survivor row on `key` (optionally only
+ *                        among rows matching `where`, for a partial unique index), repoint the rest
  * - `leave-for-erasure`  rows stay with the loser shell and are erased with it
  */
 const orgMergePolicySchema = z.discriminatedUnion('kind', [
@@ -137,6 +138,17 @@ const orgMergePolicySchema = z.discriminatedUnion('kind', [
       (key) => new Set(key).size === key.length && !key.includes('org_id'),
       { message: 'key columns must be unique and must not include org_id (the org is implicit)' },
     ),
+    /**
+     * Mirror of a PARTIAL unique index's predicate, restricted to
+     * `column IN (<literals>)` — only rows matching it (on both sides) are
+     * considered colliding. Without it a partial index's out-of-predicate
+     * rows would be dropped instead of repointed. Values are bare lowercase
+     * literals (enum labels / status strings), never SQL.
+     */
+    where: z.object({
+      column: z.string().regex(SQL_COLUMN_RE),
+      in: z.array(z.string().regex(/^[a-z0-9_]{1,63}$/)).min(1),
+    }).strict().optional(),
   }).strict(),
   z.object({ kind: z.literal('leave-for-erasure'), note: nonemptyString }).strict(),
 ]);

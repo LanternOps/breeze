@@ -52,6 +52,24 @@ describe('extension org-merge policies (#4165)', () => {
     expect(getOrgCascadeDeleteOrder().filter((t) => !policies.has(t))).toEqual([]);
   });
 
+  it('translates a partial-index `where` into the engine keyWhere', () => {
+    registerRuntimeExtensionTenancy(declaration({
+      orgMergePolicies: {
+        demo_items: {
+          kind: 'repoint-dedupe',
+          key: ['source_id'],
+          where: { column: 'status', in: ['pending', 'running'] },
+        },
+        demo_settings: { kind: 'keep-survivor' },
+      },
+    }));
+    expect(getOrgMergePolicies().get('demo_items')).toEqual({
+      kind: 'repoint-dedupe',
+      key: ['source_id'],
+      keyWhere: "{status} IN ('pending', 'running')",
+    });
+  });
+
   it('fails closed when an extension cascade table has no merge policy (no default)', () => {
     registerRuntimeExtensionTenancy(declaration({
       orgMergePolicies: { demo_items: { kind: 'repoint' } },
