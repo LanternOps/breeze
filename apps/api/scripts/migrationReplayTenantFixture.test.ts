@@ -95,6 +95,35 @@ describe('migration replay tenant fixture (#5361)', () => {
     await fixture.afterMigration('2026-07-21-anything.sql');
     expect(executed).toHaveLength(before);
     expect(fixture.seededTables()).toEqual(['device_disks', 'discovered_assets']);
+    // check:migrations fails the job on any unseeded template table, so a hook
+    // that stops firing or a trigger scan that stops matching cannot pass as OK.
+    expect(fixture.unseededTemplateTables()).toEqual(
+      Object.keys(FIXTURE_TABLE_TEMPLATES).filter((t) => t !== 'device_disks' && t !== 'discovered_assets').sort(),
+    );
+  });
+
+  it('reports every template table as unseeded when the hook never saw a trigger', async () => {
+    const fixture = createMigrationReplayTenantFixture({
+      listTriggerTables: async () => [],
+      execute: async () => {},
+    });
+    await fixture.afterMigration('0001-baseline.sql');
+    expect(fixture.unseededTemplateTables()).toEqual(Object.keys(FIXTURE_TABLE_TEMPLATES).sort());
+  });
+
+  it('seeds a batch in template declaration order, not alphabetical order', async () => {
+    const executed: string[] = [];
+    const fixture = createMigrationReplayTenantFixture({
+      listTriggerTables: async () => Object.keys(FIXTURE_TABLE_TEMPLATES).sort().reverse(),
+      execute: async (statement) => {
+        executed.push(statement);
+      },
+    });
+    await fixture.afterMigration('2026-07-20-partner-export-reconstruction-material-state.sql');
+    const order = executed
+      .map((s) => s.match(/^INSERT INTO public\.(\w+)/)?.[1])
+      .filter((t): t is string => !!t && t in FIXTURE_TABLE_TEMPLATES);
+    expect(order).toEqual(Object.keys(FIXTURE_TABLE_TEMPLATES));
   });
 
   it('fails loud when a trigger table has no fixture template', async () => {

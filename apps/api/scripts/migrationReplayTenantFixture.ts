@@ -26,7 +26,14 @@
  * pass by accident because the fixture happened to arrive pre-sorted.
  *
  * FAIL LOUD. A trigger table without a template aborts the replay: coverage
- * must not silently lapse when the trigger set grows. Add a template to
+ * must not silently lapse when the trigger set grows. Conversely,
+ * `check:migrations` fails when a template table was never seeded (hook not
+ * firing, trigger renamed, scan query drifted).
+ *
+ * SCOPE. The device/site material family only (#5360's lock family: partners
+ * shared, then orgs exclusive). The configuration family (#5912:
+ * `breeze_partner_export_{configuration_owner,direct_org,policy_child,
+ * assignment,...}_*`) has a different lock order and is not seeded here. Add a template to
  * FIXTURE_TABLE_TEMPLATES, written against the schema of the migration that
  * installs the trigger.
  *
@@ -90,7 +97,8 @@ const siteChild = (table: string, extra: Record<string, (t: FixtureTenant) => st
  * all orgs or none, so no statement ever locks a strict subset of partners —
  * and the hierarchy guard only fires when a LATER statement in the same
  * transaction needs a partner an earlier one did not lock. A uniform fixture
- * replays 2026-10-14-100100 green even with its pre-lock (100050) removed.
+ * replays 2026-10-14-100100 green even with its pre-lock (100050) removed
+ * (verified by hand on PR #7012; this fixture makes that control fail P0001).
  *
  * So tenant 0 alone runs a UniFi-managed switch, the shape of the US outage
  * data: its asset carries `detected_asset_type` and is linked from
@@ -263,8 +271,17 @@ export function createMigrationReplayTenantFixture(ports: FixturePorts, tenants 
   return {
     tenants,
     seededTables: () => [...seeded].sort(),
+    /** Template tables never seeded; the caller fails the replay if any remain. */
+    unseededTemplateTables: () => Object.keys(FIXTURE_TABLE_TEMPLATES).filter((t) => !seeded.has(t)).sort(),
     async afterMigration(filename: string): Promise<void> {
-      const pending = (await ports.listTriggerTables()).filter((table) => !seeded.has(table)).sort();
+      // Declaration order of FIXTURE_TABLE_TEMPLATES, never alphabetical, so a
+      // template may rely on rows an earlier-declared template inserted.
+      // Tables with no template sort last; they fail below anyway.
+      const declared = Object.keys(FIXTURE_TABLE_TEMPLATES);
+      const rank = (table: string) => (declared.includes(table) ? declared.indexOf(table) : declared.length);
+      const pending = (await ports.listTriggerTables())
+        .filter((table) => !seeded.has(table))
+        .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
       if (pending.length === 0) return;
 
       const missing = pending.filter((table) => !FIXTURE_TABLE_TEMPLATES[table]);

@@ -18,11 +18,17 @@ autoMigrate({
   },
 })
   .then(() => {
-    const seeded = fixture?.seededTables() ?? [];
-    if (seeded.length === 0) {
-      // Every migration was already applied (non-empty DB), so the fixture
-      // never ran. CI always starts empty; say so rather than imply coverage.
-      console.log('[check-migrations] note: multi-tenant fixture not seeded (no pending migrations)');
+    // This script is only meaningful against an EMPTY database (CI). If any
+    // fixture table was never seeded — the hook stopped firing, a trigger was
+    // renamed, or the DB was already migrated — the multi-tenant coverage this
+    // job exists for did not happen, so fail rather than report OK.
+    const unseeded = fixture?.unseededTemplateTables() ?? ['<afterMigration hook never ran>'];
+    if (unseeded.length > 0) {
+      console.error(
+        `[check-migrations] FAILED — multi-tenant fixture never seeded: ${unseeded.join(', ')}. ` +
+          'Run against an empty database; see scripts/migrationReplayTenantFixture.ts (#5361).',
+      );
+      process.exit(1);
     }
     console.log('[check-migrations] OK — all migrations applied');
     process.exit(0);
