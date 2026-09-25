@@ -236,8 +236,33 @@
       "ticketChecklistTemplates": {
         "title": "Modèles de liste de contrôle de tickets",
         "description": "Des listes d'étapes réutilisables que vos techniciens peuvent appliquer à n'importe quel ticket."
+      },
+      "profile": {
+        "title": "Mon profil"
+      },
+      "apiKeys": {
+        "title": "Clés API"
+      },
+      "partnerServicePrincipals": {
+        "title": "Principaux de service"
+      },
+      "alertTemplates": {
+        "title": "Modèles d’alertes"
       }
-    }
+    },
+    "groups": {
+      "account": "Compte et accès",
+      "billing": "Facturation et service desk",
+      "devices": "Appareils et inscription",
+      "data": "Automatisation et données",
+      "ai": "IA",
+      "integrations": "Intégrations"
+    },
+    "search": {
+      "label": "Rechercher des paramètres",
+      "placeholder": "Rechercher des paramètres…"
+    },
+    "noResults": "Aucun paramètre ne correspond à votre recherche."
   },
   "settingsBillingPage": {
     "heading": "Paramètres de facturation",

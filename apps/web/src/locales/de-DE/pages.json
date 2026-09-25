@@ -236,8 +236,33 @@
       "ticketChecklistTemplates": {
         "title": "Ticket-Checklisten-Vorlagen",
         "description": "Wiederverwendbare Schrittlisten, die Ihre Techniker auf jedes Ticket anwenden können."
+      },
+      "profile": {
+        "title": "Mein Profil"
+      },
+      "apiKeys": {
+        "title": "API-Schlüssel"
+      },
+      "partnerServicePrincipals": {
+        "title": "Dienstprinzipale"
+      },
+      "alertTemplates": {
+        "title": "Alarmvorlagen"
       }
-    }
+    },
+    "groups": {
+      "account": "Konto & Zugriff",
+      "billing": "Abrechnung & Service Desk",
+      "devices": "Geräte & Registrierung",
+      "data": "Automatisierung & Daten",
+      "ai": "KI",
+      "integrations": "Integrationen"
+    },
+    "search": {
+      "label": "Einstellungen durchsuchen",
+      "placeholder": "Einstellungen durchsuchen…"
+    },
+    "noResults": "Keine Einstellungen entsprechen Ihrer Suche."
   },
   "settingsBillingPage": {
     "heading": "Abrechnungseinstellungen",

@@ -236,8 +236,33 @@
       "ticketChecklistTemplates": {
         "title": "Plantillas de lista de verificación de tickets",
         "description": "Listas de pasos reutilizables que tus técnicos pueden aplicar a cualquier ticket."
+      },
+      "profile": {
+        "title": "Mi perfil"
+      },
+      "apiKeys": {
+        "title": "Claves de API"
+      },
+      "partnerServicePrincipals": {
+        "title": "Entidades de servicio"
+      },
+      "alertTemplates": {
+        "title": "Plantillas de alertas"
       }
-    }
+    },
+    "groups": {
+      "account": "Cuenta y acceso",
+      "billing": "Facturación y mesa de ayuda",
+      "devices": "Dispositivos e inscripción",
+      "data": "Automatización y datos",
+      "ai": "IA",
+      "integrations": "Integraciones"
+    },
+    "search": {
+      "label": "Buscar configuraciones",
+      "placeholder": "Buscar configuraciones…"
+    },
+    "noResults": "Ninguna configuración coincide con tu búsqueda."
   },
   "settingsBillingPage": {
     "heading": "Configuración de facturación",
