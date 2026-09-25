@@ -998,6 +998,11 @@
       "critical": "Critico",
       "unknown": "Sconosciuto"
     },
+    "osType": {
+      "workstation": "Workstation",
+      "server": "Server",
+      "unknown": "Sconosciuto"
+    },
     "sourceAll": "Tutte le origini",
     "healthAll": "Qualsiasi stato",
     "sourceBreeze": "Breeze",

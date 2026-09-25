@@ -106,7 +106,8 @@
       "test": "Test fehlgeschlagen",
       "generic": "Ein Fehler ist aufgetreten",
       "invalidCondition": "Einige Bedingungswerte fehlen oder liegen außerhalb des zulässigen Bereichs. Es wurde nichts gespeichert.",
-      "invalidResponses": "Einige Reaktionseinstellungen fehlen oder liegen außerhalb des zulässigen Bereichs. Es wurde nichts gespeichert."
+      "invalidResponses": "Einige Reaktionseinstellungen fehlen oder liegen außerhalb des zulässigen Bereichs. Es wurde nichts gespeichert.",
+      "restartServiceRequiresName": "Der Dienstneustart erfordert einen Dienstnamen."
     },
     "saved": "Monitor gespeichert",
     "deleted": "Monitor gelöscht",
@@ -411,11 +412,15 @@
   },
   "conversion": {
     "banner": {
-      "text": "{{rows}} Altregeln in {{policies}} Richtlinien wurden noch nicht in Monitore konvertiert.",
+      "rowsCount_one": "{{count}} Altregel",
+      "rowsCount_other": "{{count}} Altregeln",
+      "policiesCount_one": "{{count}} Richtlinie",
+      "policiesCount_other": "{{count}} Richtlinien",
+      "text": "{{rows}} in {{policies}} wurden noch nicht in Monitore konvertiert.",
       "review": "Prüfen",
       "convertEverything": "Alles konvertieren…",
       "confirmTitle": "Alle Altregeln, Überwachungen und alarmausgelösten Automatisierungen in allen Ihren Richtlinien konvertieren?",
-      "confirmBody": "{{rows}} Altregeln in {{policies}} Richtlinien des gesamten Partners. Konvertierte Zeilen werden stillgelegt. Nicht konvertierbare Zeilen bleiben in W05c zur Prüfung oder manuellen Stilllegung; W05d konvertiert Reste und legt nicht konvertierbare still.",
+      "confirmBody": "{{rows}} in {{policies}} des gesamten Partners. Konvertierte Zeilen werden stillgelegt. Nicht konvertierbare Zeilen bleiben in W05c zur Prüfung oder manuellen Stilllegung; W05d konvertiert Reste und legt nicht konvertierbare still.",
       "confirmRun": "Alles konvertieren",
       "convertedAll": "{{converted}} Zeilen in {{policies}} Richtlinien konvertiert; {{unconvertible}} nicht konvertierbar.",
       "errors": {

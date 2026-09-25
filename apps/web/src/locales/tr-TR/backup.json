@@ -998,6 +998,11 @@
       "critical": "Kritik",
       "unknown": "Bilinmiyor"
     },
+    "osType": {
+      "workstation": "İş istasyonu",
+      "server": "Sunucu",
+      "unknown": "Bilinmiyor"
+    },
     "sourceAll": "Tüm kaynaklar",
     "healthAll": "Tüm durumlar",
     "sourceBreeze": "Breeze",

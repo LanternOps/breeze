@@ -137,6 +137,11 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
     setState(next);
 
     if (next.kind !== 'loaded') return;
+    // An archived org's summary read 404s by design (read-only archived door,
+    // see `isArchiveLifecycleOrg`) — OrgOverviewTab already renders its own
+    // notice for `archived` regardless of `summaryFailed`, so the request
+    // itself is dead weight (sweep F6).
+    if (isArchiveLifecycleOrg(next.org)) return;
     const nextSummary = await summaryLatest
       .run(
         orgFetch(`/orgs/organizations/${orgId}/summary`).then(async (res) =>
@@ -312,7 +317,6 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
             icon={<Building2 className="h-7 w-7" aria-hidden="true" />}
             title={t('orgRecord.lifecycle.unknownTitle')}
             description={t('orgRecord.lifecycle.inaccessibleHistoryOnly')}
-            detail={orgId}
             actionLabel={t('orgRecord.lifecycle.backToList')}
             actionHref="/organizations"
           />

@@ -998,6 +998,11 @@
       "critical": "Kritisch",
       "unknown": "Unbekannt"
     },
+    "osType": {
+      "workstation": "Arbeitsplatz",
+      "server": "Server",
+      "unknown": "Unbekannt"
+    },
     "sourceAll": "Alle Quellen",
     "healthAll": "Jeder Zustand",
     "sourceBreeze": "Breeze",

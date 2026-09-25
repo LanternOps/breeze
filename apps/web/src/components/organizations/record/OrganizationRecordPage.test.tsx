@@ -313,6 +313,18 @@ describe('OrganizationRecordPage — lifecycle states', () => {
     expect(screen.queryByTestId('org-record-not-found')).toBeNull();
   });
 
+  it('shows a friendly label, not the raw org UUID, for a suspended org with no cached store row (sweep F6)', async () => {
+    seedStore([{ id: OTHER_ORG, name: 'Beta Legal' }], OTHER_ORG);
+    routeFetch({
+      [`/orgs/organizations/${RECORD_ORG}`]: () => json({ error: 'Organization not found' }, 404),
+      '/reports?': () => json({ data: [] }),
+      '/reports/runs?': () => json({ data: [] }),
+    });
+    render(<OrganizationRecordPage orgId={RECORD_ORG} />);
+    const card = await screen.findByTestId('org-record-lifecycle');
+    expect(card.textContent).not.toContain(RECORD_ORG);
+  });
+
   it('renders read-only report history for a suspended org whose record 404s (#6771)', async () => {
     seedStore(
       [{ id: RECORD_ORG, name: 'Acme Dental', status: 'suspended' }, { id: OTHER_ORG, name: 'Beta Legal' }],
@@ -360,6 +372,9 @@ describe('OrganizationRecordPage — lifecycle states', () => {
     // The feed requests never fire for an archived org — they 404 by design.
     expect(requestedUrls.some((u) => u.includes('/audit-logs'))).toBe(false);
     expect(requestedUrls.some((u) => u.includes('/alerts?'))).toBe(false);
+    // sweep F6: the archived overview never needed the summary either — the
+    // page should not even issue the request that 404s.
+    expect(requestedUrls.some((u) => u.includes('/summary'))).toBe(false);
   });
 
   it('does not render report history for an active org (#6771)', async () => {

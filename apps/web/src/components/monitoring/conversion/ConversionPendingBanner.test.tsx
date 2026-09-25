@@ -39,6 +39,14 @@ describe('ConversionPendingBanner', () => {
     fireEvent.click(screen.getByTestId('conversion-pending-review'));
     expect(onReview).toHaveBeenCalled();
   });
+  it('uses singular forms for one rule and one policy (sweep F5)', async () => {
+    fetchPendingCounts.mockResolvedValue({ policies: 1, rows: 1 });
+    render(<ConversionPendingBanner orgId="org-1" onReview={vi.fn()} />);
+    const banner = await screen.findByTestId('conversion-pending-banner');
+    expect(banner).toHaveTextContent('1 legacy rule across 1 policy');
+    expect(banner).not.toHaveTextContent('1 policies');
+    expect(banner).not.toHaveTextContent('1 legacy rules');
+  });
   it('previews all partner policies even with one org selected, confirms the hash and reports the result', async () => {
     const onConverted = vi.fn();
     fetchWithAuth.mockResolvedValueOnce(json({ data: { partnerId: 'p-1', previewHash: 'partner-h', policies: 9, rows: 40, convertible: 39, unconvertible: [{ sourceTable: 'alert_templates', sourceId: 's1', name: 'Custom', policyId: null, policyName: null, reason: 'unconvertible:custom' }] } }))
