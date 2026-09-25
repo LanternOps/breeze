@@ -19,7 +19,10 @@ import {
 } from '../reportGenerationService';
 import { organizationScope } from '../reportScope';
 import { getReportBranding } from '../reportBranding';
-import { reportAudienceCondition } from '../reportTypePermissions';
+import {
+  reportAudienceCondition,
+  reportTypePermissionCondition,
+} from '../reportTypePermissions';
 import {
   persistedSiteScopeValues,
   portalUserReportAuthority,
@@ -379,9 +382,19 @@ function lifecycleExclusion(lifecycleEnabled: boolean) {
  * routes use for org-scope callers. Neither writer of the marker can set it on
  * an msp_staff type today; this keeps a hand edit or a future writer from
  * turning into a portal disclosure.
+ *
+ * Ruling P8b: every scope applying `reportAudienceCondition` must also apply
+ * the per-type permission filter. A portal customer never has a resolved
+ * report-permission set (`granted: null`), so `reportTypePermissionCondition`
+ * excludes every permission-gated (business) report type here too — those
+ * types are already outside the three fixed portal definitions, so this is
+ * belt-and-suspenders, not a behavior change.
  */
 function customerAudienceOnly() {
-  return reportAudienceCondition({ scope: 'organization' }, reports.type);
+  return and(
+    reportAudienceCondition({ scope: 'organization' }, reports.type),
+    reportTypePermissionCondition(null, reports.type),
+  );
 }
 
 export function deliveredEvidenceOnly() {
