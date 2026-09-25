@@ -28,7 +28,11 @@ function parseHelperVersion(value: string): number[] {
     .split('.')
     .map((part) => {
       const trimmed = part.trim();
-      return /^[+-]?\d+$/.test(trimmed) ? Number.parseInt(trimmed, 10) : 0;
+      if (!/^[+-]?\d+$/.test(trimmed)) return 0;
+      const n = Number.parseInt(trimmed, 10);
+      // Go's Atoi errors (→ 0) on int64 overflow; treat anything past the
+      // safe-integer range the same way rather than as a huge number.
+      return Number.isSafeInteger(n) ? n : 0;
     });
 }
 

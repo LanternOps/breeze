@@ -74,6 +74,7 @@ describe('isHelperVersionAtLeast', () => {
     ['0.111', '0.111.0', true],
     ['dev', '0.5.0', false],
     ['0.111.1-rc1', '0.111.1', false],
+    ['99999999999999999999.0.0', '0.5.0', false],
   ])('isHelperVersionAtLeast(%j, %j) = %s', (have, want, expected) => {
     expect(isHelperVersionAtLeast(have, want)).toBe(expected);
   });
