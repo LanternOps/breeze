@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { Loader2, X } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { runAction, ActionError } from '@/lib/runAction';
+import { showToast } from '../shared/Toast';
 import { useTranslation } from 'react-i18next';
 
 type CreateMonitorFormProps = {
@@ -113,22 +115,25 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, defau
       if (orgId) payload.orgId = orgId;
       if (assetId) payload.assetId = assetId;
 
-      const response = await fetchWithAuth('/monitors', {
-        method: 'POST',
-        body: JSON.stringify(payload)
+      await runAction({
+        request: () => fetchWithAuth('/monitors', {
+          method: 'POST',
+          body: JSON.stringify(payload)
+        }),
+        errorFallback: t('longTail.monitors.CreateMonitorForm.errors.createMonitor'),
+        successMessage: t('states.saved'),
       });
-
-      if (!response.ok) {
-        const data = await response.json().catch(() => null);
-        throw new Error(data?.error ?? t('longTail.monitors.CreateMonitorForm.errors.createMonitor'));
-      }
-
-      onCreated();
     } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
+      if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('longTail.monitors.CreateMonitorForm.errors.generic') });
       setError(err instanceof Error ? err.message : t('longTail.monitors.CreateMonitorForm.errors.generic'));
+      return;
     } finally {
       setSaving(false);
     }
+    // Outside the try: a throwing parent callback must not add an error toast
+    // on top of the success toast for a monitor that was created.
+    onCreated();
   };
 
   return (

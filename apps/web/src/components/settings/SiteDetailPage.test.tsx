@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import SiteDetailPage from './SiteDetailPage';
 import { fetchWithAuth } from '../../stores/auth';
+import { showToast } from '../shared/Toast';
+
+vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn()
@@ -84,6 +87,17 @@ describe('SiteDetailPage — address/contact round-trip', () => {
     expect(screen.getByPlaceholderText('CA')).toHaveValue('CA');
     expect(screen.getByPlaceholderText('Alex Morgan')).toHaveValue('Alex Morgan');
     expect(screen.getByPlaceholderText('alex@company.com')).toHaveValue('alex@company.com');
+  });
+
+  it('confirms a successful save with a toast (#5313)', async () => {
+    mockApi();
+    vi.mocked(showToast).mockClear();
+    render(<SiteDetailPage siteId={SITE_ID} />);
+    fireEvent.change(await screen.findByPlaceholderText('San Francisco'), { target: { value: 'Oakland' } });
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }))
+    );
   });
 
   it('PATCHes a nested address/contact payload (not flat keys) on save', async () => {
