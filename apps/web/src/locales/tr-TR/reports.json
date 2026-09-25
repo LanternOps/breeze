@@ -127,28 +127,13 @@
         "timeRange": "Zaman aralığı"
       },
       "metricNames": {
-        "activeDevices": "Aktif Cihazlar",
-        "automationRuns": "Otomasyon Çalıştırmaları",
         "cpuUtilization": "CPU Kullanımı",
         "diskUsage": "Disk Kullanımı",
-        "incidentCount": "Olay Sayımı",
-        "loginVolume": "Giriş Hacmi",
         "memoryUtilization": "Bellek Kullanımı",
-        "mfaAdoption": "MFA'nın Kabulü",
-        "networkThroughput": "Ağ Verimi",
-        "patchCompliance": "Yama Uyumluluğu",
-        "remoteSessions": "Uzaktan Oturumlar",
-        "responseTime": "Yanıt Süresi",
-        "slaCompliance": "SLA Uyumluluk",
-        "threatAlerts": "Tehdit Uyarıları",
-        "uptime": "Çalışma Süresi",
-        "vulnerabilityScore": "Güvenlik Açığı Puanı"
+        "networkThroughput": "Ağ Verimi"
       },
       "metricTypes": {
-        "availability": "Kullanılabilirlik",
-        "performance": "Performans",
-        "security": "Güvenlik",
-        "usage": "Kullanım"
+        "performance": "Performans"
       },
       "runQuery": "Sorguyu Çalıştır",
       "running": "Koşuyor...",

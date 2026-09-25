@@ -4,7 +4,18 @@ import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 
-type MetricType = 'performance' | 'availability' | 'security' | 'usage';
+// #6832: the picker previously also offered 'availability' | 'security' |
+// 'usage' metric types (Uptime, SLA Compliance, Patch Compliance, Active
+// Devices, ...), but none of those metric names have a
+// `metricColumnMap` entry in the API's `/analytics/query` handler
+// (apps/api/src/routes/analytics.ts) — they belong to other subsystems
+// (SLA, tickets, patch jobs, auth, automations, remote sessions), not the
+// per-device `device_metrics` time series this query builder reads.
+// Selecting one silently returned a report with no data. Only 'performance'
+// metrics (cpu/ram/disk/network) are backed by device_metrics columns, so
+// that's all the picker offers until those other metrics get a real data
+// source wired up here.
+type MetricType = 'performance';
 
 type QueryState = {
   metricType: MetricType;
@@ -29,10 +40,7 @@ type QueryBuilderProps = {
 };
 
 const metricTypeOptions: { value: MetricType; labelKey: string }[] = [
-  { value: 'performance', labelKey: 'analytics.queryBuilder.metricTypes.performance' },
-  { value: 'availability', labelKey: 'analytics.queryBuilder.metricTypes.availability' },
-  { value: 'security', labelKey: 'analytics.queryBuilder.metricTypes.security' },
-  { value: 'usage', labelKey: 'analytics.queryBuilder.metricTypes.usage' }
+  { value: 'performance', labelKey: 'analytics.queryBuilder.metricTypes.performance' }
 ];
 
 const metricNamesByType: Record<MetricType, Array<{ value: string; labelKey: string }>> = {
@@ -41,24 +49,6 @@ const metricNamesByType: Record<MetricType, Array<{ value: string; labelKey: str
     { value: 'Memory Utilization', labelKey: 'analytics.queryBuilder.metricNames.memoryUtilization' },
     { value: 'Disk Usage', labelKey: 'analytics.queryBuilder.metricNames.diskUsage' },
     { value: 'Network Throughput', labelKey: 'analytics.queryBuilder.metricNames.networkThroughput' }
-  ],
-  availability: [
-    { value: 'Uptime', labelKey: 'analytics.queryBuilder.metricNames.uptime' },
-    { value: 'Response Time', labelKey: 'analytics.queryBuilder.metricNames.responseTime' },
-    { value: 'SLA Compliance', labelKey: 'analytics.queryBuilder.metricNames.slaCompliance' },
-    { value: 'Incident Count', labelKey: 'analytics.queryBuilder.metricNames.incidentCount' }
-  ],
-  security: [
-    { value: 'Patch Compliance', labelKey: 'analytics.queryBuilder.metricNames.patchCompliance' },
-    { value: 'Vulnerability Score', labelKey: 'analytics.queryBuilder.metricNames.vulnerabilityScore' },
-    { value: 'MFA Adoption', labelKey: 'analytics.queryBuilder.metricNames.mfaAdoption' },
-    { value: 'Threat Alerts', labelKey: 'analytics.queryBuilder.metricNames.threatAlerts' }
-  ],
-  usage: [
-    { value: 'Active Devices', labelKey: 'analytics.queryBuilder.metricNames.activeDevices' },
-    { value: 'Login Volume', labelKey: 'analytics.queryBuilder.metricNames.loginVolume' },
-    { value: 'Automation Runs', labelKey: 'analytics.queryBuilder.metricNames.automationRuns' },
-    { value: 'Remote Sessions', labelKey: 'analytics.queryBuilder.metricNames.remoteSessions' }
   ]
 };
 
