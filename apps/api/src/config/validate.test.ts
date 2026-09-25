@@ -73,6 +73,33 @@ describe('validateConfig', () => {
     });
   });
 
+  describe('BREEZE_AI_ARTIFACT_CAPTURE_ENABLED (#6732)', () => {
+    const blob = { ARTIFACT_S3_ACCESS_KEY: 'k', ARTIFACT_S3_SECRET_KEY: 's', S3_BUCKET: 'b' };
+    it('is off/valid when unset', () => {
+      withEnv(validEnv, () => { expect(() => validateConfig()).not.toThrow(); });
+    });
+    it('rejects a non-boolean value', () => {
+      withEnv({ ...validEnv, BREEZE_AI_ARTIFACT_CAPTURE_ENABLED: 'maybe' }, () => {
+        expect(() => validateConfig()).toThrow(/BREEZE_AI_ARTIFACT_CAPTURE_ENABLED must be a boolean/);
+      });
+    });
+    it('refuses true with no blob store configured (self-hosted included)', () => {
+      withEnv({ ...validEnv, IS_HOSTED: 'false', BREEZE_AI_ARTIFACT_CAPTURE_ENABLED: 'true' }, () => {
+        expect(() => validateConfig()).toThrow(/requires an artifact blob store/);
+      });
+    });
+    it('still refuses self-hosted when both flags are true and no blob store (workspace flag is inert there)', () => {
+      withEnv({ ...validEnv, IS_HOSTED: 'false', BREEZE_AI_WORKSPACE_ENABLED: 'true', BREEZE_AI_ARTIFACT_CAPTURE_ENABLED: 'true' }, () => {
+        expect(() => validateConfig()).toThrow(/artifact blob store/);
+      });
+    });
+    it('accepts true with a blob store configured', () => {
+      withEnv({ ...validEnv, IS_HOSTED: 'false', BREEZE_AI_ARTIFACT_CAPTURE_ENABLED: 'true', ...blob }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+  });
+
   it('does not require IP classification provider configuration', () => {
     const previousProvider = process.env.IP_CLASSIFY_PROVIDER;
     const previousKey = process.env.IP_CLASSIFY_API_KEY;

@@ -7,10 +7,10 @@ vi.mock('./artifacts/artifactService', async (orig) => ({
   readArtifactWindow: svc.readArtifactWindow,
 }));
 
-const env = vi.hoisted(() => ({ aiWorkspaceEnabled: vi.fn(() => true) }));
+const env = vi.hoisted(() => ({ aiArtifactCaptureEnabled: vi.fn(() => true) }));
 vi.mock('../config/env', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
-  aiWorkspaceEnabled: env.aiWorkspaceEnabled,
+  aiArtifactCaptureEnabled: env.aiArtifactCaptureEnabled,
 }));
 
 import { aiTools } from './aiToolNames';
@@ -38,7 +38,7 @@ describe('read_artifact (A-W05 D13a/D13b)', () => {
   beforeEach(() => {
     svc.findArtifactForCaller.mockReset();
     svc.readArtifactWindow.mockReset();
-    env.aiWorkspaceEnabled.mockReturnValue(true);
+    env.aiArtifactCaptureEnabled.mockReturnValue(true);
   });
 
   it('is a Tier-1 ai-domain read, capture-exempt, with a budgeted description and searchHint', () => {
@@ -54,7 +54,7 @@ describe('read_artifact (A-W05 D13a/D13b)', () => {
   });
 
   it('refuses with a typed error when capture is not enabled on this deployment, without any lookup', async () => {
-    env.aiWorkspaceEnabled.mockReturnValue(false);
+    env.aiArtifactCaptureEnabled.mockReturnValue(false);
     const context: ToolExecutionContext = { captureAnchor: { orgId: 'o1', sessionId: 's1' } };
     const out = JSON.parse(await tool.handler({ handle: HANDLE }, auth(), context));
     expect(out).toMatchObject({ error: 'artifact_store_unavailable' });
@@ -164,7 +164,7 @@ describe('read_artifact anchor threading through executeTool (A-W05 Q4)', () => 
   beforeEach(() => {
     svc.findArtifactForCaller.mockReset();
     svc.readArtifactWindow.mockReset();
-    env.aiWorkspaceEnabled.mockReturnValue(true);
+    env.aiArtifactCaptureEnabled.mockReturnValue(true);
     svc.findArtifactForCaller.mockResolvedValue(record);
     svc.readArtifactWindow.mockResolvedValue({ text: 't', nextOffset: 1, hasMore: false });
   });

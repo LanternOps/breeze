@@ -24,7 +24,7 @@
 import type { AiTool } from './aiTools';
 import type { AuthContext } from '../middleware/auth';
 import type { ToolExecutionContext } from './toolExecutionContext';
-import { aiWorkspaceEnabled } from '../config/env';
+import { aiArtifactCaptureEnabled } from '../config/env';
 import { ARTIFACT_READ_MAX_CHARS, artifactDownloadContentType, findArtifactForCaller, readArtifactWindow } from './artifacts/artifactService';
 import { sanitizeThrownToolError } from './aiToolErrors';
 
@@ -70,7 +70,7 @@ export function registerArtifactTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: async (input: Record<string, unknown>, _auth: AuthContext, context?: ToolExecutionContext) => {
-      if (!aiWorkspaceEnabled()) return storeUnavailable();
+      if (!aiArtifactCaptureEnabled()) return storeUnavailable();
 
       const handle = typeof input.handle === 'string' ? input.handle : '';
       if (!UUID_RE.test(handle)) return NOT_FOUND;

@@ -136,6 +136,7 @@ export const CONNECTION_REGISTRY: readonly ConnectionEntry[] = [
       { name: 'S3_ENDPOINT', secret: false },
       { name: 'S3_REGION', secret: false },
       { name: 'ARTIFACT_BLOB_BACKEND', secret: false },
+      { name: 'BREEZE_AI_ARTIFACT_CAPTURE_ENABLED', secret: false },
       { name: 'ARTIFACT_S3_ACCESS_KEY' },
       { name: 'ARTIFACT_S3_SECRET_KEY' },
       { name: 'ARTIFACT_S3_BUCKET_US', secret: false },
