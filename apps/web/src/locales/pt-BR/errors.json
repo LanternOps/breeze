@@ -10,5 +10,10 @@
   "EXPIRED": "Expirado",
   "AGENT_EXECUTION_FAILED": "Não foi possível acessar o agente do dispositivo",
   "DEVICE_UNREACHABLE": "O agente não está conectado no momento",
+  "DEVICE_OFFLINE": "O dispositivo está offline",
+  "AGENT_TIMEOUT": "O dispositivo não respondeu a tempo",
+  "PATH_NOT_FOUND": "Caminho não encontrado",
+  "PATH_CONFLICT": "O caminho já existe",
+  "AGENT_COMMAND_REJECTED": "O dispositivo recusou o comando",
   "tool_source_unavailable": "A fonte desta ferramenta está indisponível no momento"
 }

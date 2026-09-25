@@ -15,6 +15,7 @@
  */
 
 import { Hono, type Context } from 'hono';
+import { ERROR_CODES } from '@breeze/shared';
 import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
@@ -87,7 +88,7 @@ filesystemSystemCleanupRoutes.post(
       if (queued.status === 409) return agentUpdateRequired(c);
       // 500 rather than 502: Cloudflare replaces an origin 502 body with its
       // own page, which would blank the reason on hosted deployments.
-      return c.json({ success: false, error: queued.error, code: 'agent_execution_failed' }, 500);
+      return c.json({ success: false, error: queued.error, code: ERROR_CODES.AGENT_EXECUTION_FAILED }, 500);
     }
 
     writeRouteAudit(c, {
@@ -185,7 +186,7 @@ filesystemSystemCleanupRoutes.post(
         }, 409);
       }
       if (started.status === 409) return agentUpdateRequired(c);
-      return c.json({ success: false, error: started.error, code: 'agent_execution_failed' }, started.status === 400 ? 400 : 500);
+      return c.json({ success: false, error: started.error, code: ERROR_CODES.AGENT_EXECUTION_FAILED }, started.status === 400 ? 400 : 500);
     }
 
     // The "who asked, and for what" record. The measured-bytes audit

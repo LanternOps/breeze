@@ -83,6 +83,8 @@ const namespaceDuplicateBaselines = {
     'devices.json': 177,
     'discovery.json': 17,
     // errors namespace (Task 3 of #3859): pt-BR fully translated, no cognates.
+    // Wave E2b (DEVICE_OFFLINE, AGENT_TIMEOUT, PATH_NOT_FOUND, PATH_CONFLICT,
+    // AGENT_COMMAND_REJECTED) translated too — still 0 cognates.
     'errors.json': 0,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in pt-BR.
@@ -228,7 +230,9 @@ const namespaceDuplicateBaselines = {
     // native review, so all 9 codes are exact-English cognates for now.
     // +2 (Part of #3859, Wave E2a): AGENT_EXECUTION_FAILED and DEVICE_UNREACHABLE
     // added as English placeholders, same as the rest of this namespace.
-    'errors.json': 11,
+    // +5 (Part of #3859, Wave E2b): DEVICE_OFFLINE, AGENT_TIMEOUT, PATH_NOT_FOUND,
+    // PATH_CONFLICT and AGENT_COMMAND_REJECTED added as English placeholders too.
+    'errors.json': 16,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in es-419.
     'fleetDesign.json': 2,
@@ -371,7 +375,9 @@ const namespaceDuplicateBaselines = {
     // native review, so all 9 codes are exact-English cognates for now.
     // +2 (Part of #3859, Wave E2a): AGENT_EXECUTION_FAILED and DEVICE_UNREACHABLE
     // added as English placeholders, same as the rest of this namespace.
-    'errors.json': 11,
+    // +5 (Part of #3859, Wave E2b): DEVICE_OFFLINE, AGENT_TIMEOUT, PATH_NOT_FOUND,
+    // PATH_CONFLICT and AGENT_COMMAND_REJECTED added as English placeholders too.
+    'errors.json': 16,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +2 W04 (#5654): legacy.columns.script — "Script" — and legacy.columns.notes —
     // "Notes" — both spell identically in fr-FR.
@@ -529,7 +535,9 @@ const namespaceDuplicateBaselines = {
     // native review, so all 9 codes are exact-English cognates for now.
     // +2 (Part of #3859, Wave E2a): AGENT_EXECUTION_FAILED and DEVICE_UNREACHABLE
     // added as English placeholders, same as the rest of this namespace.
-    'errors.json': 11,
+    // +5 (Part of #3859, Wave E2b): DEVICE_OFFLINE, AGENT_TIMEOUT, PATH_NOT_FOUND,
+    // PATH_CONFLICT and AGENT_COMMAND_REJECTED added as English placeholders too.
+    'errors.json': 16,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +2 W04 (#5654): legacy.columns.script — "Script" — and legacy.columns.notes —
     // "Notes" — both spell identically in fr-CA.
@@ -704,7 +712,9 @@ const namespaceDuplicateBaselines = {
     // native review, so all 9 codes are exact-English cognates for now.
     // +2 (Part of #3859, Wave E2a): AGENT_EXECUTION_FAILED and DEVICE_UNREACHABLE
     // added as English placeholders, same as the rest of this namespace.
-    'errors.json': 11,
+    // +5 (Part of #3859, Wave E2b): DEVICE_OFFLINE, AGENT_TIMEOUT, PATH_NOT_FOUND,
+    // PATH_CONFLICT and AGENT_COMMAND_REJECTED added as English placeholders too.
+    'errors.json': 16,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     'fleetDesign.json': 1,
     'integrations.json': 43,
@@ -830,7 +840,9 @@ const namespaceDuplicateBaselines = {
     // native review, so all 9 codes are exact-English cognates for now.
     // +2 (Part of #3859, Wave E2a): AGENT_EXECUTION_FAILED and DEVICE_UNREACHABLE
     // added as English placeholders, same as the rest of this namespace.
-    'errors.json': 11,
+    // +5 (Part of #3859, Wave E2b): DEVICE_OFFLINE, AGENT_TIMEOUT, PATH_NOT_FOUND,
+    // PATH_CONFLICT and AGENT_COMMAND_REJECTED added as English placeholders too.
+    'errors.json': 16,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in it-IT.
     'fleetDesign.json': 2,
@@ -936,7 +948,9 @@ const namespaceDuplicateBaselines = {
     // native review, so all 9 codes are exact-English cognates for now.
     // +2 (Part of #3859, Wave E2a): AGENT_EXECUTION_FAILED and DEVICE_UNREACHABLE
     // added as English placeholders, same as the rest of this namespace.
-    'errors.json': 11,
+    // +5 (Part of #3859, Wave E2b): DEVICE_OFFLINE, AGENT_TIMEOUT, PATH_NOT_FOUND,
+    // PATH_CONFLICT and AGENT_COMMAND_REJECTED added as English placeholders too.
+    'errors.json': 16,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     'fleetDesign.json': 1,
     'integrations.json': 22,

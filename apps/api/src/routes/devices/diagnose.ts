@@ -1,4 +1,6 @@
 import { Hono } from 'hono';
+import { ERROR_CODES } from '@breeze/shared';
+import { jsonError } from '../../lib/jsonError';
 import { db } from '../../db';
 import { deviceHardware, deviceMetrics, alerts } from '../../db/schema';
 import { eq, and, desc } from 'drizzle-orm';
@@ -41,7 +43,7 @@ diagnoseRoutes.post(
       if (screenshotResult.status !== 'completed') {
         // 500, not 502: Cloudflare replaces an origin 502 body with its own
         // branded page, which would blank the agent's reason on hosted deployments.
-        return c.json({ error: screenshotResult.error || 'Screenshot capture failed', code: 'agent_execution_failed' }, 500);
+        return jsonError(c, 500, ERROR_CODES.AGENT_EXECUTION_FAILED, screenshotResult.error || 'Screenshot capture failed');
       }
 
       let screenshotData: { imageBase64?: string; width?: number; height?: number; capturedAt?: string };
