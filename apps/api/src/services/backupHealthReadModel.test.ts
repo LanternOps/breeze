@@ -253,9 +253,25 @@ describe('listBackupHealthRows — the all-devices contract', () => {
   it('emits TWO rows for a device that is both first-party backed up and provider-linked', async () => {
     queue([breezeRow()], [providerRow({ breezeDeviceId: DEVICE_1, deviceStatus: 'online', deviceSiteId: SITE_A })]);
     const { rows } = await listBackupHealthRows({ orgIds: [ORG_A] }, { page: { limit: 10 }, now: NOW });
-    expect(rows.map((r) => r.source)).toEqual(['ACME-SRV02', 'SRV01'].map(() => expect.any(String)));
     expect(rows).toHaveLength(2);
     expect(rows.filter((r) => r.deviceId === DEVICE_1)).toHaveLength(2);
+  });
+
+  // D11: the mocked DB ignores WHERE, so pin the SQL shape here; the row-level
+  // behaviour (linked + no jobs => provider row only; linked + jobs => both
+  // rows) is proven against real Postgres in
+  // backupHealthReadModel.integration.test.ts.
+  it('drops only the no-jobs placeholder of a provider-linked device from the Breeze leg', async () => {
+    queue([], []);
+    await listBackupHealthRows({ orgIds: [ORG_A] }, { page: { limit: 10 }, now: NOW });
+    const top = whereArg(0);
+    const topConditions: any[] = top?.op === 'and' ? top.conditions : [top];
+    const exclusion = topConditions.find(
+      (c) => c?.op === 'or' && JSON.stringify(c).includes('not exists (select 1 from '),
+    );
+    expect(exclusion).toBeDefined();
+    // One branch keeps any device that has a first-party job.
+    expect(JSON.stringify(exclusion)).toContain(' is not null');
   });
 
   it('merges the two legs into one (lower(name), key) order', async () => {

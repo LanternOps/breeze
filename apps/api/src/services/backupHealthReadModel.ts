@@ -115,6 +115,23 @@ const providerNameExpr = sql<string>`${backupProviderDevices.vendorDeviceName}`;
 const providerKeyExpr = sql<string>`('provider:' || ${backupProviderDevices.id}::text)`;
 
 /**
+ * D11: a device linked to a provider device and with NO first-party jobs must
+ * not also appear as a Breeze-leg `no_backups` placeholder — the provider leg
+ * row already carries the linked device's id, site and online state
+ * (toProviderHealthRow), so it alone satisfies the "every active device is a
+ * row" contract. A linked device that DOES have first-party jobs keeps both
+ * rows on purpose: each is a fact a technician can act on, and
+ * foldBackupHealthSummary counts it as one endpoint with OR'd coverage.
+ * Applied in buildBreezeLeg as `hasJobs OR notLinkedToProviderDevice`.
+ * A raw correlated `sql` fragment rather than
+ * `notExists(db.select(...))`: the latter issues its own `db.select()` call,
+ * which this file's other subqueries reserve for joined, `.as()`-aliased
+ * subqueries (latestJobSubquery/latestSuccessSubquery) — this one is neither
+ * joined nor awaited, only referenced inside the WHERE clause.
+ */
+const notLinkedToProviderDevice = sql`not exists (select 1 from ${backupProviderDevices} where ${backupProviderDevices.breezeDeviceId} = ${devices.id})`;
+
+/**
  * `ORDER BY lower(name) COLLATE "C", key COLLATE "C"` — byte order, which is
  * exactly what the JS comparator in backupHealthCursor does. Without the
  * explicit collation the database sorts under its own locale and the merge
@@ -207,6 +224,9 @@ function buildBreezeLeg(
   ];
 
   if (scope.siteIds) conditions.push(inArray(devices.siteId, scope.siteIds));
+  // D11: drop only the no-jobs placeholder for a provider-linked device — see
+  // notLinkedToProviderDevice.
+  conditions.push(or(sql`${latest.deviceId} is not null`, notLinkedToProviderDevice) as SQL);
   if (opts.onlyWithBackup) conditions.push(sql`${latest.deviceId} is not null`);
 
   if (opts.filter?.status?.length) {
