@@ -139,6 +139,17 @@ func TestWatchForAbsenceNeedsContinuousEvidence(t *testing.T) {
 			wantTransient: 1,
 		},
 		{
+			// Deliberate trade-off, pinned so it cannot drift silently: misses
+			// that were only ever sampled sparsely prove nothing about the time
+			// between them, so a sparse run under the ceiling that heals is
+			// transient. It is still charged against transientMissBudget,
+			// which is what catches a systemic per-publish gap.
+			name: "sparse misses spanning most of the ceiling that then heal are transient",
+			script: append(append([]timedStep{{err: miss}},
+				repeatStep(timedStep{stall: 300 * time.Millisecond, err: miss}, 5)...), timedStep{err: nil}, timedStep{err: nil}),
+			wantTransient: 1,
+		},
+		{
 			name:           "an absence that outlasts the ceiling is persistent even when every probe was stalled",
 			script:         append([]timedStep{{err: miss}}, repeatStep(timedStep{stall: 500 * time.Millisecond, err: miss}, 20)...),
 			wantPersistent: true,
