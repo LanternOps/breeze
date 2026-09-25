@@ -73,7 +73,8 @@
     "errors": {
       "loadFailed": "Failed to load checklist templates.",
       "saveFailed": "Failed to save the checklist template.",
-      "applyFailed": "Failed to apply the checklist template."
+      "applyFailed": "Failed to apply the checklist template.",
+      "operatorStepWaiting": "An Operator task is waiting on one of this ticket's unticked steps, so the template can't replace them. Choose “Add these steps to the existing checklist” instead, tick the step when the work is done, or stop the task first."
     }
   }
 }
