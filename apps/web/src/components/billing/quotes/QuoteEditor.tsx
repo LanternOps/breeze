@@ -3148,7 +3148,9 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
                 {footer.trim() !== ''
                   ? null
                   : inheritedFooter && inheritedFooter.text.trim() !== ''
-                    ? t(inheritedFooter.source === 'partner' ? 'quotes.editor.footer.inheritedPartner' : 'quotes.editor.footer.inheritedBrand', { text: inheritedFooter.text })
+                    ? (inheritedFooter.source === 'partner'
+                        ? t('quotes.editor.footer.inheritedPartner', { text: inheritedFooter.text })
+                        : t('quotes.editor.footer.inheritedBrand', { text: inheritedFooter.text }))
                     : t('quotes.editor.footer.inheritedNone')}
               </p>
               <span className="shrink-0 tabular-nums">{t('quotes.editor.footer.counter', { count: footer.length, max: QUOTE_FOOTER_MAX })}</span>

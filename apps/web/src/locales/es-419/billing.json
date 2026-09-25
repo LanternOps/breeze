@@ -855,6 +855,7 @@
         "reorderSections": "No se pudieron reordenar las secciones.",
         "saveCoverPage": "No se pudo guardar la portada",
         "saveCustomer": "No se pudo cambiar el cliente.",
+        "saveFooter": "No se pudo guardar el pie de página.",
         "saveTerms": "No se pudieron guardar los términos.",
         "saveTitle": "No se pudo guardar el título.",
         "unitPriceZeroOrMore": "Introduzca un precio unitario de 0 o más.",
@@ -994,6 +995,15 @@
         "headerStylePlain": "Simple",
         "headerStyleAccent": "Acento",
         "reshapedWarning": "Esta tabla no cabía en el límite de {{columns}} columnas x {{rows}} filas, así que se ajustó. Al guardar, se reemplaza la tabla almacenada por la que ves aquí."
+      },
+      "footer": {
+        "title": "Línea de pie de página (todas las páginas)",
+        "helper": "Una línea corta impresa en la parte inferior de cada página, por ejemplo, fechas de vigencia. Déjelo en blanco para usar el pie de página predeterminado. La letra pequeña va en Términos y condiciones, no aquí.",
+        "placeholder": "En blanco = usar el pie de página predeterminado",
+        "inheritedPartner": "Usando el pie de página de factura del socio desde Configuración: “{{text}}”",
+        "inheritedBrand": "Usando el texto de pie de página del kit de marca: “{{text}}”",
+        "inheritedNone": "No hay un pie de página predeterminado establecido en Configuración; el pie de página quedará vacío.",
+        "counter": "{{count}} / {{max}}"
       },
       "terms": {
         "placeholder": "Condiciones de pago, notas de entrega, etc.",
