@@ -225,6 +225,7 @@ import {
   stopDbPoolHealthMonitor,
 } from './db/dbPoolHealthMonitor';
 import { getWedgedBackendMinAgeMs } from './db/wedgedBackends';
+import { startRedisMemoryMonitor, stopRedisMemoryMonitor } from './services/redisMemoryMonitor';
 import { isBenignRejection, isRecoverablePostgresConnectionTeardown } from './services/rejectionSuppressions';
 import { partnerGuard, isPartnerGuardExemptPath } from './middleware/partnerGuard';
 import { API_VERSION } from './version';
@@ -1369,6 +1370,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
   // shutting down.
   stopDbPoolHealthMonitor();
   stopWedgedBackendMonitor();
+  stopRedisMemoryMonitor();
   if (auditRetryInterval) {
     clearInterval(auditRetryInterval);
     auditRetryInterval = null;
@@ -1727,6 +1729,22 @@ async function bootstrap(): Promise<void> {
   }
 
   await runStartupChecks();
+
+  // #6452 — Redis memory watchdog. Started after runStartupChecks so the
+  // client has had its first connect attempt; the watchdog itself tolerates
+  // Redis being down (a failed tick just counts against
+  // breeze_redis_memory_check_failures) and keeps retrying on its own
+  // interval, same as the other watchdogs below.
+  const redisMemoryIntervalMs = startRedisMemoryMonitor();
+  if (redisMemoryIntervalMs === null) {
+    console.warn(
+      '[redis-memory] Watchdog DISABLED via REDIS_MEMORY_MONITOR_DISABLED — a full '
+      + 'noeviction Redis instance will surface only as a failed login or a stuck '
+      + 'queue (#6452).',
+    );
+  } else {
+    console.log(`[redis-memory] Watchdog started (interval ${redisMemoryIntervalMs}ms)`);
+  }
 
   // #3128: advisory scan for PAM rules pinned to a risk tier no tool resolves
   // to any more. Tool tiers are static code, so a deploy is the only moment a

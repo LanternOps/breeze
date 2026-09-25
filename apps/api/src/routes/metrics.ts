@@ -19,6 +19,11 @@ import {
   initializeRuntimeMetricDefaults,
   updateRuntimeMetrics,
 } from '../services/metricsRuntime';
+// #6452 — importing for its module-load side effect: registers
+// breeze_redis_used_memory_bytes / breeze_redis_maxmemory_bytes / etc onto the
+// shared registry. The watchdog itself is started separately from index.ts;
+// this import guarantees the series exist (seeded) even before the first tick.
+import '../services/redisMemoryMonitor';
 import {
   evaluateMetricsScrapeAuth,
   parseMetricsScrapeIpAllowlist,
