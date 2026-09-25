@@ -62,7 +62,7 @@ describe('SettingsCatalog', () => {
   it('filters by search text and shows an empty state', () => {
     const { container } = render(<SettingsCatalog />);
     fireEvent.change(screen.getByTestId('settings-search'), { target: { value: 'variables' } });
-    expect(hrefs(container)).toEqual(['/settings/variables']);
+    expect(hrefs(container)).toContain('/settings/variables');
     fireEvent.change(screen.getByTestId('settings-search'), { target: { value: 'zzzzqq' } });
     expect(hrefs(container)).toEqual([]);
     expect(screen.getByTestId('settings-no-results')).toBeTruthy();

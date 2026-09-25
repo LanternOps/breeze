@@ -11,7 +11,7 @@ vi.mock('../stores/auth', () => ({
 }));
 
 import { SETTINGS_CATALOG, SETTINGS_GROUPS, SIDEBAR_SETTINGS_IDS } from './settingsCatalog';
-import { navSections } from '../components/layout/Sidebar';
+import { navSections, topLevelNav } from '../components/layout/Sidebar';
 
 import common from '../locales/en/common.json';
 import pages from '../locales/en/pages.json';
@@ -85,6 +85,20 @@ describe('settings catalogue (#6220)', () => {
       expect(entry, `${item.href} missing from catalogue`).toBeDefined();
       expect(gate(item as unknown as Record<string, unknown>)).toEqual(gate(entry as unknown as Record<string, unknown>));
       expect(SIDEBAR_SETTINGS_IDS).toContain(entry!.id);
+    }
+  });
+
+  it('catalogue gates match every other sidebar item that links to the same href', () => {
+    const gate = (x: Record<string, unknown>) => ({
+      p: x.partnerScopeOnly, r: x.requiredPermission, t: x.requiresToolSources, m: x.requiresModule, a: x.platformAdminOnly,
+    });
+    const byHref = new Map(SETTINGS_CATALOG.map((e) => [e.href, e]));
+    const all = [...navSections.flatMap((sec) => sec.items), ...topLevelNav].filter((i) => byHref.has(i.href));
+    expect(all.length).toBeGreaterThan(5);
+    for (const item of all) {
+      expect(gate(item as unknown as Record<string, unknown>), item.href).toEqual(
+        gate(byHref.get(item.href) as unknown as Record<string, unknown>),
+      );
     }
   });
 
