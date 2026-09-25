@@ -13,11 +13,14 @@
  * row only becomes visible when that transaction commits, so a walk that ran
  * up to now() could step past a row still being committed. A page therefore
  * stops before the earlier of (a) PAM_AUDIT_EXPORT_SETTLE_SECONDS before the
- * database clock and (b) the start of the oldest transaction that has written
- * and not yet finished, as pg_stat_activity shows it. (b) closes the gap for
- * every writer running as the same database role as the API (every
- * elevation_audit writer does); pg_stat_activity hides other roles'
- * transaction times, and (a) is the bound for those. `X-Next-Cursor` is always
+ * database clock and (b) the start of the oldest still-open transaction that
+ * holds a write lock (RowExclusiveLock) on elevation_audit, from pg_locks
+ * joined to pg_stat_activity. An insert holds that lock until its transaction
+ * ends, and writes to any other table do not count, so (b) only waits for the
+ * transactions that can still commit a ledger row. It covers every writer
+ * running as the same database role as the API (every elevation_audit writer
+ * does); pg_stat_activity hides other roles' transaction times, and (a) is the
+ * bound for those. `X-Next-Cursor` is always
  * the resume position, so a SIEM can tail the ledger by resuming later.
  *
  * Paged rather than streamed: a streamed body would outlive the request's
@@ -221,8 +224,15 @@ export async function fetchElevationAuditExportPage(
   conditions.push(sql`${elevationAudit.createdAt} < LEAST(
     now() - make_interval(secs => ${settleSeconds}),
     COALESCE(
-      (SELECT min(xact_start) FROM pg_stat_activity
-        WHERE backend_xid IS NOT NULL AND pid <> pg_backend_pid()),
+      (SELECT min(a.xact_start)
+         FROM pg_locks l
+         JOIN pg_stat_activity a ON a.pid = l.pid
+        WHERE l.locktype = 'relation'
+          AND l.relation = 'public.elevation_audit'::regclass
+          AND l.mode = 'RowExclusiveLock'
+          AND l.granted
+          AND a.backend_xid IS NOT NULL
+          AND l.pid <> pg_backend_pid()),
       'infinity'::timestamptz
     )
   )`);
