@@ -26,17 +26,25 @@
  * exactly the case this should no-op on).
  *
  * The processor (fires `UNGROUPED_VERDICT_DELAY_MINUTES` later) re-checks
- * three conditions before admitting a run — the alert may have moved on in
+ * four conditions before admitting a run — the alert may have moved on in
  * the interim:
  *   - still `status === 'active'` (task 12's auto-resolve path already
  *     handles a resolved alert);
  *   - no `alert_correlation_members` row (task 12's group_created path
  *     already handles a since-correlated alert);
+ *   - no completed or in-flight `profile: 'full'` `ai_agent_runs` row for
+ *     this alert (#6750) — the `alert.triggered` automation's own
+ *     `ai_triage` action already ran (or is running) a full triage on this
+ *     alert, which re-derives the same classification the ungrouped verdict
+ *     run would produce. A full run does NOT write an `ai_alert_verdicts`
+ *     row (its `outcome` carries `runVerdict`, not `alertVerdict`), so
+ *     without this check the next condition (`latestVerdictsForAlerts`)
+ *     alone can't see it and a second, redundant run gets admitted;
  *   - no live verdict yet (`latestVerdictsForAlerts`) — belt-and-suspenders
  *     against a race with either of the other two admission paths.
- * All three are skip conditions, logged at debug and never thrown — a skip
- * is the expected, common outcome (most alerts get correlated or resolved
- * inside the delay window), not a failure. Only a genuine
+ * All four are skip conditions, logged at debug and never thrown — a skip
+ * is the expected, common outcome (most alerts get correlated, resolved, or
+ * fully triaged inside the delay window), not a failure. Only a genuine
  * `enqueueVerdictRunForAlert` rejection is allowed to propagate, so BullMQ's
  * job-level retry policy (`attempts: 3`, exponential backoff) applies to
  * real infra failures, not routine skips.
@@ -47,9 +55,10 @@
  * (`services/redis.ts`), same as every sibling job.
  */
 import { Job, Queue, Worker } from 'bullmq';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { alerts, alertCorrelationMembers } from '../db/schema/alerts';
+import { aiAgentRuns } from '../db/schema/aiAgents';
 import { AI_AGENTS_ENABLED } from '../config/env';
 import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
@@ -175,6 +184,31 @@ async function hasCorrelationMembership(alertId: string, orgId: string): Promise
   return !!row;
 }
 
+// #6750: a completed or in-flight `profile: 'full'` run already covers this
+// alert — the ungrouped verdict run would just re-derive the same
+// classification a second time. `queued`/`running`/`awaiting_approval` count
+// as in-flight (the run hasn't finished yet, but admitting a second one now
+// would still double up); `completed` covers the settled case this issue was
+// filed against. `failed`/`cancelled`/`expired`/`skipped` do NOT count — a
+// full run that never produced a result leaves the alert genuinely
+// unassessed, so the ungrouped verdict run should still be allowed to fire.
+const FULL_RUN_ADMISSION_BLOCKING_STATUSES = ['queued', 'running', 'awaiting_approval', 'completed'] as const;
+
+async function hasFullTriageRun(alertId: string, orgId: string): Promise<boolean> {
+  const { db } = dbModule;
+  const [row] = await db
+    .select({ id: aiAgentRuns.id })
+    .from(aiAgentRuns)
+    .where(and(
+      eq(aiAgentRuns.orgId, orgId),
+      eq(aiAgentRuns.alertId, alertId),
+      eq(aiAgentRuns.profile, 'full'),
+      inArray(aiAgentRuns.status, FULL_RUN_ADMISSION_BLOCKING_STATUSES),
+    ))
+    .limit(1);
+  return !!row;
+}
+
 /**
  * Processor for a delayed `ungrouped-verdict` job — see this module's
  * header for the three re-check conditions and the retry/skip contract.
@@ -204,6 +238,14 @@ export async function processUngroupedVerdictJob(data: UngroupedVerdictJobData):
   const hasMember = await runWithSystemDbAccess(() => hasCorrelationMembership(alertId, orgId));
   if (hasMember) {
     console.debug('[AlertVerdictScheduler] skipping ungrouped verdict — alert has a correlation-group membership', {
+      alertId, orgId,
+    });
+    return;
+  }
+
+  const hasFullRun = await runWithSystemDbAccess(() => hasFullTriageRun(alertId, orgId));
+  if (hasFullRun) {
+    console.debug('[AlertVerdictScheduler] skipping ungrouped verdict — a completed/in-flight full triage run already covers this alert', {
       alertId, orgId,
     });
     return;
