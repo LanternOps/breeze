@@ -63,6 +63,13 @@ const populated = device('11111111-1111-1111-1111-111111111111', 'win-box', {
 const empty = device('22222222-2222-2222-2222-222222222222', 'blank-box', {
   customFields: {},
 });
+// A real network/manual row never carries `customFields` at all (undefined,
+// not `{}`) — the API only projects it for agent rows.
+const networkRow = device('33333333-3333-3333-3333-333333333333', 'printer-01', {
+  deviceClass: 'network',
+  assetType: 'printer',
+  customFields: undefined,
+});
 
 describe('DeviceList — custom field columns (#6594)', () => {
   beforeEach(() => {
@@ -105,5 +112,49 @@ describe('DeviceList — custom field columns (#6594)', () => {
     expect(
       screen.getByTestId(`device-${populated.id}-custom-bdr_windows_activation`).textContent
     ).toBe('Notification');
+  });
+
+  it('formats boolean and array custom field values (not just plain strings)', async () => {
+    writeVisibleCustomFieldKeys(['bdr_windows_activation']);
+    const boolTrue = device('44444444-4444-4444-4444-444444444444', 'bool-true', {
+      customFields: { bdr_windows_activation: true },
+    });
+    const arrayVal = device('55555555-5555-5555-5555-555555555555', 'array-box', {
+      customFields: { bdr_windows_activation: ['a', 'b'] },
+    });
+    render(<DeviceList devices={[boolTrue, arrayVal]} pageSize={50} />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId(`device-${boolTrue.id}-custom-bdr_windows_activation`).textContent
+      ).toBe('Yes');
+    });
+    expect(
+      screen.getByTestId(`device-${arrayVal.id}-custom-bdr_windows_activation`).textContent
+    ).toBe('a, b');
+  });
+
+  it('a network row with no customFields at all renders a dash, not a crash', async () => {
+    writeVisibleCustomFieldKeys(['bdr_windows_activation']);
+    render(<DeviceList devices={[networkRow]} pageSize={50} />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId(`device-${networkRow.id}-custom-bdr_windows_activation`).textContent
+      ).toContain('—');
+    });
+  });
+
+  it('a stale visible key for a deleted custom field does not render a phantom column', async () => {
+    // Definition was toggled on, then deleted — localStorage still has the key.
+    writeVisibleCustomFieldKeys(['bdr_windows_activation', 'deleted_field']);
+    render(<DeviceList devices={[populated]} pageSize={50} />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId(`device-${populated.id}-custom-bdr_windows_activation`).textContent
+      ).toBe('Notification');
+    });
+    expect(screen.queryByTestId(`device-${populated.id}-custom-deleted_field`)).toBeNull();
   });
 });
