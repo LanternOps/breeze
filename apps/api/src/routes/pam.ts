@@ -48,6 +48,7 @@ import { writeAuditEvent } from '../services/auditEvents';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import { publishEvent, type EventType } from '../services/eventBus';
 import { mirrorElevationDecisionToExecution } from '../services/pamToolActionGovernance';
+import { pamAuditExportRoutes } from './pamAuditExport';
 import { evaluatePamRules, type PamRuleCandidate } from '../services/pamRuleEngine';
 import {
   describePamRuleTierDrift,
@@ -214,6 +215,7 @@ function enforcementResponse(row: {
 export const pamRoutes = new Hono();
 pamRoutes.use('*', authMiddleware);
 pamRoutes.use('*', requireScope('organization', 'partner', 'system'));
+pamRoutes.route('/', pamAuditExportRoutes);
 
 /** Event emission is best-effort post-commit; never fail the request. */
 async function safePublish(

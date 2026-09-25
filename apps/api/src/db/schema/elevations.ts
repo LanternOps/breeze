@@ -319,6 +319,12 @@ export const elevationAudit = pgTable(
       table.occurredAt,
     ),
     orgIdIdx: index('elevation_audit_org_id_idx').on(table.orgId),
+    // #4910: per-org keyset traversal for the ledger export.
+    orgOccurredIdIdx: index('elevation_audit_org_occurred_id_idx').on(
+      table.orgId,
+      table.occurredAt,
+      table.id,
+    ),
     eventTypeIdx: index('elevation_audit_event_type_idx').on(table.eventType),
     // Composite FK: (elevation_request_id, org_id) →
     // elevation_requests(id, org_id). Structural guarantee that the
