@@ -1,4 +1,4 @@
-import type { ExtensionTenancyDeclaration } from '@breeze/extension-sdk';
+import type { ExtensionOrgMergePolicy, ExtensionTenancyDeclaration } from '@breeze/extension-sdk';
 
 /**
  * Tenancy declarations published by the built-in extension loader. It publishes
@@ -109,6 +109,43 @@ export function getExtensionOrgExportColumns(): Readonly<
         );
       }
       merged[table] ??= policy;
+    }
+  }
+  return merged;
+}
+
+/**
+ * Return the fail-closed union of extension org-MERGE policies (#4165).
+ *
+ * Org merge walks `getOrgCascadeDeleteOrder()`, which already includes every
+ * published extension's `orgCascadeDeleteTables`, and refuses any table with
+ * no policy. So every such table must carry one here: a declaration that
+ * lists a cascade table without an `orgMergePolicies` entry THROWS, rather
+ * than letting the merge engine discover the gap mid-walk. Iterates
+ * `orgCascadeDeleteTables` (not the policy map), so a declaration narrowed by
+ * `filterTenancyDeclaration` publishes policies only for tables that exist.
+ *
+ * Read on every call, like {@link getExtensionOrgExportColumns}, so an
+ * extension registered after boot participates in the next merge.
+ */
+export function getExtensionOrgMergePolicies(): ReadonlyMap<string, ExtensionOrgMergePolicy> {
+  const merged = new Map<string, ExtensionOrgMergePolicy>();
+  for (const declaration of getExtensionTenancy()) {
+    const policies = declaration.orgMergePolicies ?? {};
+    for (const table of declaration.orgCascadeDeleteTables) {
+      const policy = policies[table];
+      if (!policy) {
+        throw new Error(
+          `[orgMerge] extension table "${table}" is missing a merge policy — declare it in the extension manifest's tenancy.orgMergePolicies`,
+        );
+      }
+      const existing = merged.get(table);
+      if (existing && JSON.stringify(existing) !== JSON.stringify(policy)) {
+        throw new Error(
+          `[orgMerge] extension table "${table}" has inconsistent merge policies across extension declarations`,
+        );
+      }
+      merged.set(table, policy);
     }
   }
   return merged;
