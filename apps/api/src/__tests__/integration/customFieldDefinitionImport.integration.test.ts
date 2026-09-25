@@ -26,13 +26,11 @@
  * that request transaction) and RLS all behave exactly as they do in
  * production. Only the token exchange is skipped.
  *
- * The importer's snapshot READ runs in a system context by design — a
- * partner-scoped import spans many of that partner's organizations, and no one
- * request context can see another org's rows (#4944 added a partner-wide SELECT
- * branch to this table, which closes the org-token-can't-see-partner-wide half
- * but not the cross-org half). RLS is therefore NOT the control on that read.
- * Test (d) is an app-layer assertion by necessity, and asserting it here —
- * under a real system-context read — is the only place it can be proven at all.
+ * The importer's snapshot READ runs in the request's own context since #5199
+ * (it used to be a system read). RLS is therefore a second control on it, but
+ * test (d) still asserts the app-layer bound — `ctx.accessibleOrgIds` — which
+ * is what produces `org-not-found` rather than a silent drop. The RLS side is
+ * proven in customFieldRequestContextReads.integration.test.ts.
  */
 import './setup';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -452,7 +450,8 @@ describe('custom-field definition import (integration)', () => {
         [{ fieldKey: shadowed, name: 'Shadowed', type: 'text', ownerScope: 'partner' }],
         ctx,
       );
-      // Preview genuinely could not see it — this is what makes the write real.
+      // Preview genuinely could not see it (outside both the app-layer reach and
+      // the partner context's accessibleOrgIds) — this is what makes the write real.
       expect(preview[0]!.annotation).toBe('create');
 
       return commitCustomFieldDefinitionImport(

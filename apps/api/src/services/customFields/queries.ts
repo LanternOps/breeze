@@ -1,5 +1,5 @@
 import { and, eq, isNull, or, sql } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db } from '../../db';
 import { customFieldDefinitions } from '../../db/schema/customFields';
 import { deviceCustomFieldValues, devices, organizations } from '../../db/schema';
 
@@ -43,78 +43,70 @@ export async function loadDeviceForWriteBack(deviceId: string): Promise<WriteBac
 }
 
 /**
- * SYSTEM context, deliberately — and, since #4944, REDUNDANT rather than
- * load-bearing. Left in place on purpose; removing it is a separate follow-up.
+ * Runs in the CALLER's DB context — no escalation (#5199).
  *
  * `custom_field_definitions` is dual-axis (org OR partner). Every caller of
- * this function — the script write-back path's `runWithAgentOrgDbAccess`
- * context, and the two device-PATCH write paths' ordinary org-scoped request
- * context — sets accessiblePartnerIds: [], so
- * `breeze_has_partner_access(partner_id)` is false. Until
- * `2026-10-13-110000-custom-field-definitions-partner-wide-select.sql` that
- * made every partner-wide definition (org_id IS NULL) INVISIBLE from these
- * paths, and a partner that defined one field for all its orgs would silently
- * have no fields visible from any of them (CLAUDE.md, Partner-Wide First §3).
+ * this function runs inside a tenant context that already sees exactly the rows
+ * it needs:
+ *  - the device-PATCH routes and the value importer: the request's own
+ *    `withDbAccessContext` (org, partner or system scope);
+ *  - script write-back: `runWithAgentOrgDbAccess` (routes/agentWs.ts) or the
+ *    agent HTTP result route's `agentAuthMiddleware` context, both of which set
+ *    `currentPartnerId` to the device org's owning partner (#4673 W02).
+ * Partner-wide rows (org_id IS NULL) reach an org or device context through the
+ * SELECT-only `custom_field_definitions_partner_wide_select` branch
+ * (`2026-10-13-110000-custom-field-definitions-partner-wide-select.sql`, #4944),
+ * keyed on `breeze_current_partner_id()`; a partner context reaches them through
+ * `breeze_has_partner_access`.
  *
- * That branch — `org_id IS NULL AND partner_id =
- * public.breeze_current_partner_id()`, SELECT only — now covers exactly these
- * callers: `buildDbAccessContext` populates `currentPartnerId` for org scope,
- * and `middleware/agentAuth.ts` sets it to `device.partnerId` for the agent
- * path (#4673 W02). The escalation below therefore buys nothing an ordinary
- * request-context read would not already return, and it costs a SECOND pooled
- * connection held under the request's own transaction (#1105). It is kept only
- * so that removing it is a deliberate, separately-verified change rather than a
- * side effect of the migration; do not treat this comment as a claim that RLS
- * still hides these rows.
+ * This used to escalate via `runOutsideDbContext(() =>
+ * withSystemDbAccessContext(...))` (#1105) because that branch did not exist.
+ * The escalation held a SECOND pooled connection under the request's open
+ * transaction, could not see rows the request had itself written, and bypassed
+ * RLS so the predicate below was the whole tenant boundary. Now RLS is the
+ * boundary and the predicate is defence in depth: an `orgId` the context cannot
+ * reach resolves no `organizations` row and no definitions
+ * (customFieldRequestContextReads.integration.test.ts).
  *
- * `runOutsideDbContext(() => withSystemDbAccessContext(...))` is the only form
- * that genuinely opens a second context — a bare nested
- * `withSystemDbAccessContext` early-returns and runs under the ORG context
- * instead. The scope is app-layer: an explicit org/partner predicate, kept
- * narrow, and the context is released immediately (it holds a second pooled
- * connection for its duration — #1105). This now runs on every custom-field
- * PATCH, not just script write-back — if this becomes a per-request cost
- * worth caring about, cache the definition set per org/request rather than
- * re-querying it per PATCH.
+ * Do not call this without a DB context: a contextless read resolves to scope
+ * 'none' and returns nothing, which would reject every write as unknown_field.
+ * This runs on every custom-field PATCH; if that becomes a per-request cost
+ * worth caring about, cache the definition set per org/request.
  */
 export async function loadVisibleCustomFieldDefinitions(
   orgId: string,
 ): Promise<VisibleCustomFieldDefinition[]> {
-  return runOutsideDbContext(() =>
-    withSystemDbAccessContext(async () => {
-      const [org] = await db
-        .select({ partnerId: organizations.partnerId })
-        .from(organizations)
-        .where(eq(organizations.id, orgId))
-        .limit(1);
+  const [org] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
 
-      const ownerCondition = org?.partnerId
-        ? or(
-            eq(customFieldDefinitions.orgId, orgId),
-            and(
-              isNull(customFieldDefinitions.orgId),
-              eq(customFieldDefinitions.partnerId, org.partnerId),
-            ),
-          )
-        : eq(customFieldDefinitions.orgId, orgId);
+  const ownerCondition = org?.partnerId
+    ? or(
+        eq(customFieldDefinitions.orgId, orgId),
+        and(
+          isNull(customFieldDefinitions.orgId),
+          eq(customFieldDefinitions.partnerId, org.partnerId),
+        ),
+      )
+    : eq(customFieldDefinitions.orgId, orgId);
 
-      return db
-        .select({
-          id: customFieldDefinitions.id,
-          fieldKey: customFieldDefinitions.fieldKey,
-          name: customFieldDefinitions.name,
-          type: customFieldDefinitions.type,
-          options: customFieldDefinitions.options,
-          deviceTypes: customFieldDefinitions.deviceTypes,
-          required: customFieldDefinitions.required,
-          scriptWrite: customFieldDefinitions.scriptWrite,
-          orgId: customFieldDefinitions.orgId,
-          partnerId: customFieldDefinitions.partnerId,
-        })
-        .from(customFieldDefinitions)
-        .where(ownerCondition);
-    }, 'customFields.loadVisibleCustomFieldDefinitions'),
-  );
+  return db
+    .select({
+      id: customFieldDefinitions.id,
+      fieldKey: customFieldDefinitions.fieldKey,
+      name: customFieldDefinitions.name,
+      type: customFieldDefinitions.type,
+      options: customFieldDefinitions.options,
+      deviceTypes: customFieldDefinitions.deviceTypes,
+      required: customFieldDefinitions.required,
+      scriptWrite: customFieldDefinitions.scriptWrite,
+      orgId: customFieldDefinitions.orgId,
+      partnerId: customFieldDefinitions.partnerId,
+    })
+    .from(customFieldDefinitions)
+    .where(ownerCondition);
 }
 
 /**

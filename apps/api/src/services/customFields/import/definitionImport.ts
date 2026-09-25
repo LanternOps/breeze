@@ -23,27 +23,28 @@
  *    `field_key` on both axes under one partner, so a cross-axis collision is
  *    `key-shadowed` at preview instead of a P0001 nobody expected at commit.
  *
- * ── Where the snapshot comes from, and why it is a system read ──────────────
- * Historically `custom_field_definitions` had NO partner-wide SELECT branch on
- * its RLS policy (it was the last entry in
- * `PARTNER_WIDE_SELECT_BRANCH_EXEMPT`, `rls-coverage.integration.test.ts`), so
- * an ORGANIZATION-scoped request context could not see partner-wide rows at
- * all and reading the snapshot in the request context would have annotated a
- * shadowed key as `create` for exactly the callers most likely to hit it.
- * #4944 (`custom_field_definitions_partner_wide_select`) closed that half: an
- * org context now reads its OWN partner's partner-wide rows.
+ * ── Where the snapshot comes from ──────────────────────────────────────────
+ * The snapshot is read in the REQUEST's own DB context (#5199). It used to be a
+ * system read (#1105 escalation) for two reasons, and neither holds any more:
  *
- * The system read stays anyway, and its remaining reason is the OTHER half —
- * this importer is a PARTNER-scoped operation that legitimately spans MANY of
- * that partner's organizations, and no single request context can see another
- * org's rows. The snapshot is loaded in ONE system context, bounded by
- * `ctx.partnerId` AND `ctx.accessibleOrgIds` — the same reasoning, and the same
- * bound, as `contacts/import.ts:229`.
+ *  - `custom_field_definitions` had no partner-wide SELECT branch, so an
+ *    ORGANIZATION-scoped context could not see partner-wide rows. #4944
+ *    (`custom_field_definitions_partner_wide_select`) closed that: an org
+ *    context now reads its OWN partner's partner-wide rows.
+ *  - "A partner import spans many orgs no one context can see." It does not
+ *    need to: a partner-scoped context carries the caller's full
+ *    `accessibleOrgIds` and passes `breeze_has_partner_access` for its own
+ *    partner, so it sees exactly the orgs and rows the app-layer bound below
+ *    admits — and an org token's reach is its single org anyway. System scope
+ *    sees everything either way.
  *
- * Because that read has no RLS backstop, the app-layer bound is the WHOLE
- * boundary on it: a row naming an organization absent from the snapshot is
- * refused as `org-not-found`, the same annotation an unreachable org gets, so
- * the response is never an existence oracle.
+ * The app-layer bound (`ctx.partnerId` AND `ctx.accessibleOrgIds`) stays as
+ * defence in depth; RLS is now a real second control on the read. A row naming
+ * an organization absent from the snapshot is refused as `org-not-found`, the
+ * same annotation an unreachable org gets, so the response is never an
+ * existence oracle. Reading in the request transaction also means the snapshot
+ * sees rows written earlier in that same transaction
+ * (customFieldRequestContextReads.integration.test.ts).
  *
  * ── Where the WRITES happen, and why that is different ──────────────────────
  * Writes deliberately do NOT escape to a system context. Each row's insert runs
@@ -59,7 +60,7 @@
  */
 
 import { and, eq, inArray, isNull, or } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../../db';
+import { db } from '../../../db';
 import { customFieldDefinitions, organizations } from '../../../db/schema';
 import { pgErrorCode, pgErrorNode } from '../../../utils/pgErrors';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../partnerWideAccess';
@@ -133,55 +134,48 @@ async function loadSnapshot(ctx: DefinitionImportContext): Promise<Snapshot> {
   // partner-wide rows, so the definition query still runs — but no organization
   // resolves, so every `ownerScope: 'organization'` row is `org-not-found`.
 
-  // ONE escalation for both queries: two would acquire two pooled connections
-  // under the request's own transaction rather than one.
-  const { orgRows, definitionRows } = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(async () => {
-      const orgs = reach !== null && reach.length === 0
-        ? []
-        : ((await db
-            .select({ id: organizations.id })
-            .from(organizations)
-            .where(
-              and(
-                eq(organizations.partnerId, ctx.partnerId),
-                isNull(organizations.deletedAt),
-                ...(reach ? [inArray(organizations.id, reach)] : []),
-              ),
-            )) as Array<{ id: string }>);
-
-      const orgIds = orgs.map((o) => o.id);
-      const definitions = (await db
-        .select({
-          id: customFieldDefinitions.id,
-          orgId: customFieldDefinitions.orgId,
-          partnerId: customFieldDefinitions.partnerId,
-          fieldKey: customFieldDefinitions.fieldKey,
-          type: customFieldDefinitions.type,
-        })
-        .from(customFieldDefinitions)
+  // Request context: RLS bounds both reads in addition to the predicates.
+  const orgs = reach !== null && reach.length === 0
+    ? []
+    : ((await db
+        .select({ id: organizations.id })
+        .from(organizations)
         .where(
-          orgIds.length > 0
-            ? or(
-                eq(customFieldDefinitions.partnerId, ctx.partnerId),
-                inArray(customFieldDefinitions.orgId, orgIds),
-              )
-            : eq(customFieldDefinitions.partnerId, ctx.partnerId),
-        )) as Array<{
-          id: string;
-          orgId: string | null;
-          partnerId: string | null;
-          fieldKey: string;
-          type: CustomFieldType;
-        }>;
+          and(
+            eq(organizations.partnerId, ctx.partnerId),
+            isNull(organizations.deletedAt),
+            ...(reach ? [inArray(organizations.id, reach)] : []),
+          ),
+        )) as Array<{ id: string }>);
 
-      return { orgRows: orgs, definitionRows: definitions };
-    }, 'customFieldDefinitionImport.snapshot'),
-  );
+  const orgIds = orgs.map((o) => o.id);
+  const definitions = (await db
+    .select({
+      id: customFieldDefinitions.id,
+      orgId: customFieldDefinitions.orgId,
+      partnerId: customFieldDefinitions.partnerId,
+      fieldKey: customFieldDefinitions.fieldKey,
+      type: customFieldDefinitions.type,
+    })
+    .from(customFieldDefinitions)
+    .where(
+      orgIds.length > 0
+        ? or(
+            eq(customFieldDefinitions.partnerId, ctx.partnerId),
+            inArray(customFieldDefinitions.orgId, orgIds),
+          )
+        : eq(customFieldDefinitions.partnerId, ctx.partnerId),
+    )) as Array<{
+      id: string;
+      orgId: string | null;
+      partnerId: string | null;
+      fieldKey: string;
+      type: CustomFieldType;
+    }>;
 
-  for (const org of orgRows) snapshot.orgIds.add(org.id);
+  for (const org of orgs) snapshot.orgIds.add(org.id);
 
-  for (const def of definitionRows) {
+  for (const def of definitions) {
     const entry: SnapshotDefinition = { id: def.id, fieldKey: def.fieldKey, type: def.type };
     if (def.orgId) {
       // A definition on an organization outside the caller's reach can only

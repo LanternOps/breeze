@@ -648,13 +648,17 @@ describe('loadPartnerBaselineKinds (#4170)', () => {
     expect(result).toEqual(new Set());
   });
 
-  it('elevates the read the same way the resolver escapes for the partner-row lookup', async () => {
+  it('reads in the caller org context without escaping to system (#5199)', async () => {
     dbMockState.aiAgentRows = [[{ kind: 'triage' }]];
+    dbMockState.ambientContext = { scope: 'organization' };
 
-    await loadPartnerBaselineKinds(PARTNER_ID);
+    const result = await loadPartnerBaselineKinds(PARTNER_ID);
 
-    expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
-    expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+    // ai_agents_partner_wide_select makes the row visible under the org's own
+    // RLS; the real-Postgres proof is aiPartnerWideReadsRequestContext.
+    expect(result).toEqual(new Set(['triage']));
+    expect(runOutsideDbContext).not.toHaveBeenCalled();
+    expect(withSystemDbAccessContext).not.toHaveBeenCalled();
   });
 
   it('skips the escalation when already inside a system context', async () => {
@@ -708,13 +712,14 @@ describe('loadPartnerBaselineCeiling (Task 4, #5049)', () => {
     expect(result).toEqual({ toolAllowlist: [], supervisedActionKeys: [], scriptIds: [] });
   });
 
-  it('elevates the read the same way loadPartnerBaselineKinds does', async () => {
+  it('reads in the caller org context without escaping to system (#5199)', async () => {
     dbMockState.aiAgentRows = [[{ toolAllowlist: [], actAssets: {} }]];
+    dbMockState.ambientContext = { scope: 'organization' };
 
     await loadPartnerBaselineCeiling(PARTNER_ID, 'triage');
 
-    expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
-    expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+    expect(runOutsideDbContext).not.toHaveBeenCalled();
+    expect(withSystemDbAccessContext).not.toHaveBeenCalled();
   });
 
   it('skips the escalation when already inside a system context', async () => {

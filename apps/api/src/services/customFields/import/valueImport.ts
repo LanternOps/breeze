@@ -15,8 +15,8 @@
  * are all per VALUE; only device resolution is per row.
  *
  * ── Where the reads happen ──────────────────────────────────────────────────
- * TWO separate escalations to a SYSTEM db context, for two different reasons.
- * They are easy to conflate and the distinction matters, so:
+ * ONE escalation to a SYSTEM db context, and one read that looks like it but
+ * is not. They are easy to conflate and the distinction matters, so:
  *
  *  1. **Device resolution** — W06's `loadDeviceResolutionSnapshot`. It escalates
  *     because a partner's import legitimately spans that partner's
@@ -26,15 +26,12 @@
  *     read — the organization and site predicates W06 carries IN ITS SQL are
  *     the whole of it, and this module never widens the scope it is handed.
  *  2. **Visible definitions** — W04's `loadVisibleCustomFieldDefinitions`,
- *     called once per resolved organization below. It escalates for an
- *     unrelated reason, and that reason has now EXPIRED:
- *     `custom_field_definitions` used to have no partner-wide RLS SELECT branch
- *     (it was the last entry in `PARTNER_WIDE_SELECT_BRANCH_EXEMPT`), so an
- *     org-scoped request context could not see a partner-wide definition at all
- *     and every value naming one would be annotated `no-definition`. #4944
- *     added that branch, so the escalation inside that function is now
- *     redundant and is retained only pending a separate follow-up. Either way
- *     it says nothing about (1) — do not read (1)'s scope out of it.
+ *     called once per resolved organization below. It used to escalate too,
+ *     because `custom_field_definitions` had no partner-wide RLS SELECT branch.
+ *     #4944 added that branch and #5199 removed the escalation: it now reads in
+ *     the REQUEST's context, which reaches every organization (1) can resolve,
+ *     since (1) is bounded by the same caller reach. Do not read (1)'s scope
+ *     out of it either way.
  *
  * Everything else — the already-stored values, the existing warranty rows — is
  * read in the REQUEST's own context, deliberately. Those reads are bounded to
@@ -254,9 +251,9 @@ async function loadAnnotationState(
   // ONE call per DISTINCT organization, not per row. `loadVisibleCustomFieldDefinitions`
   // (W04) is reused rather than re-implemented as a batched query, because it
   // owns the org-XOR-partner visibility rule and a second copy of that rule is
-  // exactly the kind of drift the partner-wide retrofits cost us. It does open a
-  // system context per call (#1105); a file spanning dozens of organizations
-  // would be worth batching, and this is where that would go.
+  // exactly the kind of drift the partner-wide retrofits cost us. It is one
+  // round trip per org in the request's own transaction; a file spanning dozens
+  // of organizations would be worth batching, and this is where that would go.
   for (const orgId of orgIds) {
     const definitions = await loadVisibleCustomFieldDefinitions(orgId);
     state.definitionsByOrg.set(orgId, new Map(definitions.map((d) => [d.fieldKey, d])));
