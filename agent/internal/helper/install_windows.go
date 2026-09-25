@@ -2,6 +2,7 @@ package helper
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -29,7 +30,12 @@ func uninstallPackage() error {
 	if productCode == "" {
 		return nil // not installed
 	}
+	return uninstallProductCode(productCode)
+}
 
+// uninstallProductCode runs msiexec /x for one ProductCode. Exit 3010 (reboot
+// required) counts as success.
+func uninstallProductCode(productCode string) error {
 	cmd := exec.Command("msiexec", "/x", productCode, "/qn", "/norestart")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -78,9 +84,23 @@ func findHelperProductCode(displayName string) (string, error) {
 	return "", nil
 }
 
-// installPackage runs the MSI installer silently.
+// installPackage installs the helper MSI, removing an orphaned product
+// registration first when the binary is missing (#6927, see installMSI).
+func installPackage(msiPath, binaryPath string) error {
+	return installMSI(msiPath, binaryPath, msiOps{
+		binaryExists: func(path string) bool {
+			_, err := os.Stat(path)
+			return err == nil
+		},
+		findProductCode: func() (string, error) { return findHelperProductCode(helperDisplayName) },
+		uninstall:       uninstallProductCode,
+		install:         runMSIInstall,
+	})
+}
+
+// runMSIInstall runs the MSI installer silently.
 // Exit code 3010 means success but reboot required — treated as success.
-func installPackage(msiPath, _ string) error {
+func runMSIInstall(msiPath string) error {
 	cmd := exec.Command("msiexec", "/i", msiPath, "/qn", "/norestart")
 	out, err := cmd.CombinedOutput()
 	if err != nil {

@@ -188,9 +188,16 @@ type Manager struct {
 
 	requireManifestSigningKeyID func() bool
 
+	// now is the clock for the abandon cooldown; nil means time.Now (tests inject).
+	now func() time.Time
+
+	// Install/update failure accounting, shared by the first-install branch of
+	// Apply and applyPendingUpdate — see install_retry.go (#6927).
 	pendingHelperVersion string
 	updateFailures       int
-	abandonedVersion     string // version we gave up updating to
+	failuresVersion      string    // version updateFailures counts against
+	abandonedVersion     string    // version we gave up installing/updating to
+	abandonedAt          time.Time // when abandonedVersion was set; retried after helperAbandonRetryAfter
 
 	legacyAutoStartCleaned bool
 
@@ -339,6 +346,10 @@ func (m *Manager) Apply(settings *Settings) {
 		// supplies one when bootstrapping a first install, and it is processed
 		// before this Apply call within the same heartbeat. Without it we fail
 		// closed rather than fetch unverified bytes.
+		// #6927: the install shares the update path's failure budget. Once the
+		// pending version has failed maxHelperInstallFailures times it is
+		// abandoned (pending cleared) and we fall through to the waiting branch.
+		m.abandonIfExhaustedLocked()
 		if m.pendingHelperVersion == "" {
 			if !m.notInstalledWarned {
 				log.Warn("breeze assist enabled but not installed; waiting for the server to offer a helper version")
@@ -352,13 +363,16 @@ func (m *Manager) Apply(settings *Settings) {
 			return
 		}
 		if err := m.downloadAndInstall(m.pendingHelperVersion); err != nil {
+			m.recordInstallFailureLocked(m.pendingHelperVersion)
 			// downloadAndInstall wraps the verified downloader's error, which for
 			// any transport failure is a *url.Error carrying the presigned
 			// helper-asset URL. This log line ships, so it must be redacted.
 			key, value := updater.SafeDownloadErrorFields(err)
-			log.Error("failed to install breeze assist", key, value)
+			log.Error("failed to install breeze assist", key, value,
+				"targetVersion", m.pendingHelperVersion, "failures", m.updateFailures)
 			return
 		}
+		m.clearInstallFailuresLocked()
 		for _, state := range m.sessions {
 			state.watcherGaveUp = false // new binary — give it a fresh chance (#6872)
 		}
@@ -514,7 +528,8 @@ func (m *Manager) uninstallLocked() {
 
 	m.pendingHelperVersion = ""
 	m.abandonedVersion = ""
-	m.updateFailures = 0
+	m.abandonedAt = time.Time{}
+	m.clearInstallFailuresLocked()
 
 	log.Info("breeze assist uninstalled")
 }
@@ -809,17 +824,24 @@ func (m *Manager) readBinaryVersion() (string, error) {
 func (m *Manager) CheckUpdate(targetVersion string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if targetVersion == m.abandonedVersion {
-		return // already failed for this version, don't retry
+	if m.isAbandonedLocked(targetVersion) {
+		return // already failed for this version; retried after the cooldown
 	}
 	if m.pendingHelperVersion != targetVersion {
 		log.Info("helper update pending", "targetVersion", targetVersion)
 		m.pendingHelperVersion = targetVersion
-		m.updateFailures = 0
+		// The failure count follows its version (see recordInstallFailureLocked):
+		// a different version starts fresh, but the same version re-offered
+		// after a withdrawal keeps its count so a flapping offer cannot
+		// defeat the cap.
+		if m.failuresVersion != targetVersion {
+			m.clearInstallFailuresLocked()
+		}
 		// Only clear abandonedVersion when a genuinely different version is
 		// requested. This prevents re-triggering a failed update.
 		if m.abandonedVersion != "" && targetVersion != m.abandonedVersion {
 			m.abandonedVersion = ""
+			m.abandonedAt = time.Time{}
 		}
 	}
 }
@@ -889,19 +911,11 @@ func (m *Manager) applyPendingUpdate() {
 	if installed := m.installedVersionLocked(); installed == m.pendingHelperVersion || helperVersionsMatch(installed, m.pendingHelperVersion) {
 		log.Info("helper already at target version, clearing pending update", "version", installed)
 		m.pendingHelperVersion = ""
-		m.updateFailures = 0
+		m.clearInstallFailuresLocked()
 		return
 	}
 
-	const maxUpdateFailures = 3
-	if m.updateFailures >= maxUpdateFailures {
-		log.Warn("helper update abandoned after repeated failures, clearing pending update",
-			"targetVersion", m.pendingHelperVersion,
-			"failures", m.updateFailures,
-		)
-		m.abandonedVersion = m.pendingHelperVersion
-		m.pendingHelperVersion = ""
-		m.updateFailures = 0
+	if m.abandonIfExhaustedLocked() {
 		return
 	}
 
@@ -935,7 +949,7 @@ func (m *Manager) applyPendingUpdate() {
 	}
 
 	if err := m.downloadAndInstall(m.pendingHelperVersion); err != nil {
-		m.updateFailures++
+		m.recordInstallFailureLocked(m.pendingHelperVersion)
 		// Same presigned-URL hazard as the install path above.
 		key, value := updater.SafeDownloadErrorFields(err)
 		log.Error("failed to install helper update", key, value, "failures", m.updateFailures)
@@ -972,6 +986,7 @@ func (m *Manager) applyPendingUpdate() {
 
 	log.Info("helper updated successfully", "requestedVersion", m.pendingHelperVersion)
 	m.pendingHelperVersion = ""
+	m.clearInstallFailuresLocked()
 	_ = os.Remove(backupPath)
 }
 
