@@ -3378,6 +3378,9 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                 progress: progressMessage.progress ?? {},
               });
               if (!applied.applied) {
+                // #5393: a repeat of an already-reported unmatched commandId
+                // (restore progress is emitted per file) is dropped silently.
+                if (applied.suppressed) return;
                 // agent-mismatch is a real anomaly (an agent pinging another
                 // device's job) and stays at warn. invalid-payload joins it:
                 // since #3006 it means an agent is sending progress this server

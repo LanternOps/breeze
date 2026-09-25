@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import { resetUnmatchedBackupProgressCache } from '../services/backupProgress';
 import { createHash } from 'node:crypto';
 
 // #3409 PR4a: sealing a secret envelope requires v3 (AAD-bound) encryption,
@@ -2300,6 +2301,31 @@ describe('agent websocket command results', () => {
 
     expect(vi.mocked(enqueueSnmpPollResults)).not.toHaveBeenCalled();
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  // #5393: restore progress reuses backup_progress with a non-job commandId,
+  // emitted per file. Only the first drop may log; repeats are silent.
+  it('logs an unmatched backup_progress drop once, not per message (#5393)', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
+    const handlers = createAgentWsHandlers('agent-5393', preValidatedAgent);
+    const ws = wsMock();
+    await connectAgentSocket(handlers, ws);
+    resetUnmatchedBackupProgressCache();
+    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+
+    for (let i = 0; i < 5; i++) {
+      await handlers.onMessage({
+        data: JSON.stringify({
+          type: 'backup_progress',
+          commandId: 'restore-5393-not-a-uuid',
+          progress: { filesDone: i },
+        })
+      } as any, ws as any);
+    }
+
+    const dropLogs = debugSpy.mock.calls.filter((c) => String(c[0]).includes('Dropping backup_progress'));
+    expect(dropLogs).toHaveLength(1);
+    debugSpy.mockRestore();
   });
 
   // H5: malformed term-* command_result is dropped without DB call
