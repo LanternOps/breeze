@@ -261,8 +261,26 @@ describe('M365 mailbox lifecycle routes', () => {
       expect(response.status).toBe(200);
       await expect(response.json()).resolves.toEqual({
         connections: [{ id: CONNECTION_ID, mailboxAddress: 'support@example.com' }],
+        appId: 'platform-client-id',
       });
       expect(mocks.listMailboxConnections).toHaveBeenCalledWith(PARTNER_ID);
+    });
+
+    it('returns the public app id at runtime but never the client secret (#6935)', async () => {
+      mocks.listMailboxConnections.mockResolvedValue([]);
+      const response = await app.request('/connections');
+      expect(response.status).toBe(200);
+      const text = await response.text();
+      expect(JSON.parse(text)).toEqual({ connections: [], appId: 'platform-client-id' });
+      expect(text).not.toContain('platform-client-secret');
+    });
+
+    it('returns appId null when the Breeze Ticketing app is not configured (#6935)', async () => {
+      mocks.platformConfig.mockReturnValue(null);
+      mocks.listMailboxConnections.mockResolvedValue([]);
+      const response = await app.request('/connections');
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({ connections: [], appId: null });
     });
 
     it('allows system scope only when auth supplies a server-derived partner', async () => {
