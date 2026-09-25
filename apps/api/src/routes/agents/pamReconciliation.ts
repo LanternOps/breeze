@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 
+import { withDbAccessContext } from '../../db';
 import { zValidator } from '../../lib/validation';
 import { requireAgentRole } from '../../middleware/requireAgentRole';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
@@ -73,13 +74,34 @@ pamReconciliationRoutes.post(
       }, 429);
     }
 
+    // #6260 / #1105 — everything below touches the DB, so it runs inside a
+    // context this handler opens ITSELF. `pam/reconciliation-bindings` is in
+    // SELF_MANAGED_DB_CONTEXT_TWO_SEGMENT_ACTIONS (middleware/agentAuth.ts),
+    // so agentAuthMiddleware no longer wraps the whole request in a
+    // request-long transaction — which is what let the Redis rate-limit
+    // round-trip above run without pinning a pooled connection
+    // idle-in-transaction. Mirrors routes/agents/elevationRequests.ts (#6130):
+    // org scope, no partner-AXIS write access, device org's owning partner on
+    // the read-only `currentPartnerId` axis. `resolvePamReconciliationBindings`
+    // is raw RLS-scoped SQL that relies entirely on this ambient context.
     const request = c.req.valid('json');
-    const dispositions = await resolvePamReconciliationBindings({
-      agentId: agent.agentId,
-      deviceId: agent.deviceId,
-      orgId: agent.orgId,
-      candidates: request.candidates,
-    });
-    return c.json({ protocolVersion: 1 as const, dispositions });
+    return withDbAccessContext(
+      {
+        scope: 'organization' as const,
+        orgId: agent.orgId,
+        accessibleOrgIds: [agent.orgId],
+        accessiblePartnerIds: [],
+        currentPartnerId: agent.partnerId ?? null,
+      },
+      async () => {
+        const dispositions = await resolvePamReconciliationBindings({
+          agentId: agent.agentId,
+          deviceId: agent.deviceId,
+          orgId: agent.orgId,
+          candidates: request.candidates,
+        });
+        return c.json({ protocolVersion: 1 as const, dispositions });
+      },
+    );
   },
 );
