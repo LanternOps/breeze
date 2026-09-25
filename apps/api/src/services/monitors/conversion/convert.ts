@@ -305,7 +305,22 @@ export async function convertPolicy(policyId: string, expectedHash: string, auth
     }
     const preview = await buildPolicyPreviewInTx(policyId, auth, tx);
     assertPreview(preview, expectedHash);
-    const result = await applyProposalInTx(tx, proposalFrom(preview, sources.policy, opts?.sourceIds), auth);
+    const proposal = proposalFrom(preview, sources.policy, opts?.sourceIds);
+    // `preview.equivalence` (validated above) proves the FULL convertible set is
+    // behavior-preserving; it does not prove a caller-chosen SUBSET (`sourceIds`)
+    // is. Applying fewer sources than were staged can change device signatures
+    // that the full-set proof never exercised (a shared/reused monitor no longer
+    // created, a different inheritance mode landing on the monitors link, merged
+    // response proposals losing a member). Re-run the proof against exactly the
+    // subset that will actually be applied, not the one that was previewed.
+    if (opts?.sourceIds) {
+      const deviceIds = await resolveDeviceIdsForPolicy(policyId, tx);
+      const subsetEquivalence = await computeEquivalence({ ...proposal, previewHash: preview.previewHash }, deviceIds, auth, undefined, tx);
+      if (subsetEquivalence.deltas.length) {
+        throw new ConversionError('equivalence_delta', 'Conversion changes effective behavior', subsetEquivalence.deltas);
+      }
+    }
+    const result = await applyProposalInTx(tx, proposal, auth);
     return { result, pairs: await cooldownPairs(tx, result.conversionIds) };
   });
   await rekeyCommittedCooldowns(committed.pairs, 'to_monitor');
