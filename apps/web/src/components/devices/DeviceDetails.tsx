@@ -955,6 +955,7 @@ export default function DeviceDetails({
         <DeviceFilesystemTab
           deviceId={device.id}
           osType={device.os}
+          deviceStatus={device.status === "unknown" ? undefined : device.status}
           onOpenFiles={() => {
             if (onAction) {
               onAction("files", device);

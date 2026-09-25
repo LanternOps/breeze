@@ -104,7 +104,8 @@
       "organization": "organizasyon",
       "policyOwnerOrgSelect": "politika sahibi-kuruluş-seçimi",
       "creating": "Oluşturuluyor...",
-      "createPolicy": "Politika Oluştur"
+      "createPolicy": "Politika Oluştur",
+      "policyCreated": "Politika oluşturuldu"
     },
     "configPolicyDetailPage": {
       "archived": "Arşivlendi",

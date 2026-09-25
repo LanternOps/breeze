@@ -104,7 +104,8 @@
       "organization": "Organisation",
       "policyOwnerOrgSelect": "policy-owner-org-select",
       "creating": "Création…",
-      "createPolicy": "Créer une politique"
+      "createPolicy": "Créer une politique",
+      "policyCreated": "Politique créée"
     },
     "configPolicyDetailPage": {
       "archived": "Archivé",

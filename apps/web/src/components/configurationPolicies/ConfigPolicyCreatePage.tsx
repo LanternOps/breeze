@@ -9,6 +9,7 @@ import { useDefaultOwnerScope } from "@/hooks/useDefaultOwnerScope";
 import PolicyLinkSelector from "./featureTabs/PolicyLinkSelector";
 import { navigateTo } from "@/lib/navigation";
 import { extractApiError } from "@/lib/apiError";
+import { showToast } from "../shared/Toast";
 import Breadcrumbs from "../layout/Breadcrumbs";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
@@ -132,6 +133,12 @@ export default function ConfigPolicyCreatePage() {
         );
       }
       const policy = await response.json();
+      showToast({
+        message: i18n.t(
+          "policies:configurationPolicies.configPolicyCreatePage.policyCreated",
+        ),
+        type: "success",
+      });
       void navigateTo(`/configuration-policies/${policy.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
@@ -414,6 +421,13 @@ export default function ConfigPolicyCreatePage() {
                         </option>
                       ))}
                     </select>
+                    {!orgScopedOrgId && (
+                      <p className="text-xs text-muted-foreground">
+                        {i18n.t(
+                          "policies:configurationPolicies.configPolicyCreatePage.selectAnOrganizationForThisPolicy",
+                        )}
+                      </p>
+                    )}
                   </div>
                 )}
                 {ownerScope === "partner" && (
@@ -452,6 +466,13 @@ export default function ConfigPolicyCreatePage() {
                 isSubmitting ||
                 (mode === "linked" && !linkedPolicyId) ||
                 (!usePartnerOwner && !orgScopedOrgId)
+              }
+              title={
+                !isSubmitting && !usePartnerOwner && !orgScopedOrgId
+                  ? i18n.t(
+                      "policies:configurationPolicies.configPolicyCreatePage.selectAnOrganizationForThisPolicy",
+                    )
+                  : undefined
               }
               className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
             >
