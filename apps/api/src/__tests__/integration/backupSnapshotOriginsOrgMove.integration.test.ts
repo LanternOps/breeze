@@ -303,6 +303,13 @@ describe('backup_snapshot_origins provenance after a device org-move (#6488)', (
     await assertMovedAndRecovers(f);
   });
 
+  it('a device_id-only change resets a hydrating index too (no race involved)', async () => {
+    const f = await seed();
+    await getTestDb().update(backupSnapshots).set({ fileIndexStatus: 'hydrating' }).where(eq(backupSnapshots.id, f.incrDbId));
+    await getTestDb().update(backupSnapshots).set({ deviceId: f.otherDeviceId }).where(eq(backupSnapshots.id, f.incrDbId));
+    expect((await status(f.incrDbId))?.status).toBe('none');
+  });
+
   it('updates that do not change org_id/device_id leave a complete index alone', async () => {
     const f = await seed();
     await hydrateBoth(f);
@@ -336,7 +343,9 @@ describe('backup_snapshot_origins provenance after a device org-move (#6488)', (
     for (;;) {
       const rows = await getTestDb().execute<{ n: number }>(sql`
         SELECT count(*)::int AS n FROM pg_stat_activity
-         WHERE wait_event_type = 'Lock' AND query ILIKE '%file_index_status%'
+         WHERE wait_event_type = 'Lock'
+           AND pid <> pg_backend_pid()
+           AND query ILIKE 'update "backup_snapshots" set "file_index_status"%'
       `);
       if ((rows[0]?.n ?? 0) > 0) break;
       if (Date.now() > deadline) throw new Error('hydration never blocked on the move lock');
