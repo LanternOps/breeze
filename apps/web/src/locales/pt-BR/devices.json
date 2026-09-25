@@ -846,6 +846,7 @@
     }
   },
   "deviceFilesystemTab": {
+    "deviceIsOfflineScansRequireAConnectedAgent": "O dispositivo está offline. As varreduras exigem um agente conectado.",
     "resultPartial": "Parcialmente concluído",
     "resultSkippedLinks": "Links ignorados: {{count}}",
     "errorAgentUpdateRequired": "Atualize o agente para a versão {{minAgentVersion}} ou posterior para executar a limpeza.",

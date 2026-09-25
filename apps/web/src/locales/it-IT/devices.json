@@ -846,6 +846,7 @@
     }
   },
   "deviceFilesystemTab": {
+    "deviceIsOfflineScansRequireAConnectedAgent": "Il dispositivo è offline. Le scansioni richiedono un agente connesso.",
     "resultPartial": "Completato parzialmente",
     "resultSkippedLinks": "Collegamenti ignorati: {{count}}",
     "errorAgentUpdateRequired": "Aggiorna l’agente alla versione {{minAgentVersion}} o successiva per eseguire la pulizia.",

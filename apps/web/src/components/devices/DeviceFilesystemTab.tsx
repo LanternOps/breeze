@@ -30,6 +30,7 @@ import type { FilesystemCleanupPreview } from './filesystem/filesystemTabUtils';
 type DeviceFilesystemTabProps = {
   deviceId: string;
   osType: OSType;
+  deviceStatus?: 'online' | 'offline' | 'maintenance' | 'decommissioned' | 'quarantined' | 'updating' | 'pending';
   onOpenFiles?: () => void;
 };
 
@@ -38,9 +39,12 @@ const SCAN_TIMEOUT_SECONDS = 300;
 export default function DeviceFilesystemTab({
   deviceId,
   osType,
+  deviceStatus,
   onOpenFiles,
 }: DeviceFilesystemTabProps) {
   const { t } = useTranslation('devices');
+  const isOffline = deviceStatus != null && deviceStatus !== 'online';
+  const offlineTitle = isOffline ? t('deviceFilesystemTab.deviceIsOfflineScansRequireAConnectedAgent') : undefined;
   const volumes = useFilesystemVolumes(deviceId);
   // W02's hook is stateless about selection, so the composer owns it — the
   // same shape W02's own mount used before the split.
@@ -198,7 +202,8 @@ export default function DeviceFilesystemTab({
               type="button"
               data-testid="filesystem-analyze-button"
               onClick={() => { void runAnalyze(); }}
-              disabled={busy !== null || !scanPath}
+              disabled={busy !== null || !scanPath || isOffline}
+              title={offlineTitle}
               className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
             >
               {busy === 'scan' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
@@ -208,7 +213,8 @@ export default function DeviceFilesystemTab({
               type="button"
               data-testid="filesystem-preview-button"
               onClick={() => { void runCleanupPreview(); }}
-              disabled={busy !== null || !snapshotState.snapshot}
+              disabled={busy !== null || !snapshotState.snapshot || isOffline}
+              title={offlineTitle}
               className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
             >
               {busy === 'preview' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}

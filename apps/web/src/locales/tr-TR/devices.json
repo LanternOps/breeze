@@ -846,6 +846,7 @@
     }
   },
   "deviceFilesystemTab": {
+    "deviceIsOfflineScansRequireAConnectedAgent": "Cihaz çevrimdışı. Taramalar için bağlı bir aracı gerekir.",
     "resultPartial": "Kısmen tamamlandı",
     "resultSkippedLinks": "Atlanan bağlantılar: {{count}}",
     "errorAgentUpdateRequired": "Temizliği çalıştırmak için aracıyı {{minAgentVersion}} veya sonraki bir sürüme güncelleyin.",

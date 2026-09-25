@@ -220,7 +220,7 @@
     "mcp": {
       "connecting": "Möchten Sie einen KI-Agenten verbinden?",
       "title": "KI-Agenten hierher weiterleiten",
-      "description": "Fügen Sie diese URL in Ihren MCP-Client (Claude.ai, ChatGPT, Cursor, …) ein. Sie werden hierher zurückgeleitet, um die Verbindung über OAuth zu autorisieren."
+      "description": "Fügen Sie diese URL in Ihren MCP-Client (Claude.ai, ChatGPT, Cursor, …) ein. Sie werden hierher zurückgeleitet, um die Verbindung über OAuth zu autorisieren. Bevorzugen Sie einen API-Schlüssel? Senden Sie einen X-API-Key-Header mit dem Bereich ai:read/ai:write."
     },
     "progress": {
       "count": "{{current}} von {{total}}",

@@ -223,7 +223,7 @@ export default function PartnerBillingSettingsPage() {
       {activeTab === 'rates' && <BillingRatesTab currencyCode={currencyCode} />}
       {activeTab === 'connections' && <BillingConnectionsTab />}
 
-      {activeTab !== 'rates' && <div className="flex justify-end">
+      {activeTab !== 'rates' && activeTab !== 'connections' && <div className="flex justify-end">
         <button
           type="button" onClick={() => void save()} disabled={saving || websiteInvalid}
           data-testid="partner-billing-save"

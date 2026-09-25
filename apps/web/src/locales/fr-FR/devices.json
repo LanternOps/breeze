@@ -846,6 +846,7 @@
     }
   },
   "deviceFilesystemTab": {
+    "deviceIsOfflineScansRequireAConnectedAgent": "L'appareil est hors ligne. Les analyses nécessitent un agent connecté.",
     "resultPartial": "Partiellement terminé",
     "resultSkippedLinks": "Liens ignorés : {{count}}",
     "errorAgentUpdateRequired": "Mettez à jour l’agent vers la version {{minAgentVersion}} ou ultérieure pour lancer le nettoyage.",
