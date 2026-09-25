@@ -63,6 +63,13 @@ describe("BackupProvidersIntegration", () => {
     expect(await screen.findByTestId("backup-providers-empty")).toBeInTheDocument();
   });
 
+  it("uses a generic connection-name placeholder, not a real MSP name (sweep F7)", async () => {
+    render(<BackupProvidersIntegration />);
+    await screen.findByTestId("backup-connection-conn-1");
+    fireEvent.click(screen.getByTestId("backup-providers-add"));
+    expect(screen.getByTestId("backup-add-name")).not.toHaveAttribute("placeholder", "OliveTech Cove");
+  });
+
   it("POSTs a new connection with the credentials blob and refetches", async () => {
     render(<BackupProvidersIntegration />);
     await screen.findByTestId("backup-connection-conn-1");
