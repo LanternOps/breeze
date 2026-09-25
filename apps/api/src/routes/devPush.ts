@@ -54,6 +54,10 @@ function cleanupDownload(token: string) {
 
 // Files orphaned by a process restart (the token map is in-memory) are swept
 // once past the TTL. Best-effort; never blocks a push.
+const warnUnlink = (path: string) => (err: NodeJS.ErrnoException) => {
+  if (err?.code !== 'ENOENT') console.warn(`[DevPush] failed to remove staged file ${path}:`, err);
+};
+
 async function sweepStaleFiles(dir: string): Promise<void> {
   try {
     const names = await readdir(dir);
@@ -64,11 +68,11 @@ async function sweepStaleFiles(dir: string): Promise<void> {
         .map(async (n) => {
           const full = join(dir, n);
           const st = await stat(full).catch(() => null);
-          if (st && 'mtimeMs' in st && st.mtimeMs < cutoff) await unlink(full).catch(() => {});
+          if (st && 'mtimeMs' in st && st.mtimeMs < cutoff) await unlink(full).catch(warnUnlink(full));
         }),
     );
-  } catch {
-    // ignore
+  } catch (err) {
+    console.warn(`[DevPush] stale-file sweep of ${dir} failed:`, err);
   }
 }
 
@@ -217,10 +221,11 @@ devPushRoutes.post('/push', bodyLimit({ maxSize: 150 * 1024 * 1024, onError: (c)
   try {
     await pipeline(Readable.fromWeb(file.stream() as any), hasher, createWriteStream(filePath));
   } catch (err) {
-    await unlink(filePath).catch(() => {});
+    await unlink(filePath).catch(warnUnlink(filePath));
     if (isEnospc(err)) {
       return c.json({ error: `Ran out of space writing to dev-push staging directory ${workDir}. Set DEV_PUSH_WORK_DIR to a larger volume.` }, 507);
     }
+    console.error(`[DevPush] failed staging ${file.size} bytes to ${workDir}:`, err);
     throw err;
   }
 

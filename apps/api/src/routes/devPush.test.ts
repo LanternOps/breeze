@@ -533,6 +533,19 @@ describe('devPush routes', () => {
       expect(mockSendCommandToAgent).not.toHaveBeenCalled();
     });
 
+    it('reports the sha256 of the streamed bytes and writes them unchanged', async () => {
+      process.env.DEV_PUSH_WORK_DIR = '/var/lib/breeze/dev-push';
+      const written: Buffer[] = [];
+      vi.mocked(createWriteStream).mockImplementationOnce((() => {
+        const { Writable } = require('stream');
+        return new Writable({ write(chunk: Buffer, _e: any, cb: any) { written.push(chunk); cb(); } });
+      }) as any);
+      const res = await push('known-bytes');
+      const { createHash } = await import('crypto');
+      expect((await res.json()).checksum).toBe(createHash('sha256').update('known-bytes').digest('hex'));
+      expect(Buffer.concat(written).toString()).toBe('known-bytes');
+    });
+
     it('returns 507 and removes the partial file on a mid-write ENOSPC', async () => {
       process.env.DEV_PUSH_WORK_DIR = '/var/lib/breeze/dev-push';
       vi.mocked(createWriteStream).mockImplementationOnce((() => {
@@ -543,7 +556,7 @@ describe('devPush routes', () => {
       }) as any);
       const res = await push();
       expect(res.status).toBe(507);
-      expect(unlink).toHaveBeenCalled();
+      expect(unlink).toHaveBeenCalledWith(expect.stringMatching(/^\/var\/lib\/breeze\/dev-push\/.+\.bin$/));
       expect(mockSendCommandToAgent).not.toHaveBeenCalled();
     });
   });
