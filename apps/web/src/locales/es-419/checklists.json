@@ -73,7 +73,8 @@
     "errors": {
       "loadFailed": "No se pudieron cargar las plantillas de lista de verificación.",
       "saveFailed": "No se pudo guardar la plantilla de lista de verificación.",
-      "applyFailed": "No se pudo aplicar la plantilla de lista de verificación."
+      "applyFailed": "No se pudo aplicar la plantilla de lista de verificación.",
+      "operatorStepWaiting": "Una tarea del Operador está esperando uno de los pasos sin marcar de este ticket, así que la plantilla no puede reemplazarlos. Elige “Agregar estos pasos a la lista de verificación existente”, márcalo cuando termines o detén la tarea primero."
     }
   }
 }

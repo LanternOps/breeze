@@ -73,7 +73,8 @@
     "errors": {
       "loadFailed": "Kontrol listesi şablonları yüklenemedi.",
       "saveFailed": "Kontrol listesi şablonu kaydedilemedi.",
-      "applyFailed": "Kontrol listesi şablonu uygulanamadı."
+      "applyFailed": "Kontrol listesi şablonu uygulanamadı.",
+      "operatorStepWaiting": "Bir Operatör görevi bu biletin işaretlenmemiş adımlarından birini bekliyor, bu yüzden şablon bu adımların yerini alamaz. Bunun yerine “Bu adımları mevcut kontrol listesine ekle” seçeneğini seçin, iş bitince adımı işaretleyin ya da önce görevi durdurun."
     }
   }
 }

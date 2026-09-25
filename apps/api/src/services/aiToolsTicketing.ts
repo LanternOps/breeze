@@ -410,9 +410,10 @@ function checklistError(message: string, code?: string, details?: unknown): stri
  * The checklist and template services throw ChecklistServiceError,
  * ChecklistTemplateServiceError and (delete of an Operator-bound step)
  * HumanWorkStepWaitingError — all `{ status, code, message }`. Matched
- * STRUCTURALLY, like handleChecklistTemplateError in the templates route, so
- * this module does not import the aiOperator tree (the route file explains the
- * cycle that would close).
+ * STRUCTURALLY, like handleChecklistTemplateError in the templates route: one
+ * shape check covers all three, and this file needs no direct import of the
+ * aiOperator error class (it still reaches that tree transitively through
+ * ticketChecklistService -> humanWorkService).
  */
 function checklistErrorToJson(err: unknown): string | null {
   if (err instanceof PartnerWideWriteDeniedError) {

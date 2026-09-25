@@ -63,6 +63,15 @@ export default function TicketChecklistCard({ ticketId, mode = 'full', onCountsC
     (code: string) => (FRIENDLY[code] ? t(/* i18n-dynamic */ FRIENDLY[code]) : undefined),
     [t],
   );
+  // Apply refuses with the same waiting-step code as delete (#6931), but the
+  // delete wording ("can't be deleted") would be wrong for a template apply.
+  const applyFriendly = useCallback(
+    (code: string) =>
+      code === 'CHECKLIST_OPERATOR_STEP_WAITING'
+        ? t('templates.errors.operatorStepWaiting')
+        : friendly(code),
+    [t, friendly],
+  );
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -269,7 +278,7 @@ export default function TicketChecklistCard({ ticketId, mode = 'full', onCountsC
             templateId: pickedTemplateId,
             mode: applyMode,
           }),
-        { errorFallback: t('templates.errors.applyFailed') },
+        { errorFallback: t('templates.errors.applyFailed'), friendly: applyFriendly },
       );
       // Refresh from the returned summary rather than re-fetching.
       setItems(summary.items);

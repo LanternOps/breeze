@@ -73,7 +73,8 @@
     "errors": {
       "loadFailed": "Falha ao carregar os modelos de checklist.",
       "saveFailed": "Falha ao salvar o modelo de checklist.",
-      "applyFailed": "Falha ao aplicar o modelo de checklist."
+      "applyFailed": "Falha ao aplicar o modelo de checklist.",
+      "operatorStepWaiting": "Uma tarefa do Operador depende de uma etapa não marcada deste chamado, então o modelo não pode substituí-las. Escolha “Adicionar estas etapas ao checklist existente”, marque a etapa quando concluir, ou pare a tarefa antes."
     }
   }
 }
