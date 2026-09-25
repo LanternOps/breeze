@@ -460,9 +460,11 @@ describe('getOrCreate — device-page write default org (#6675)', () => {
       undefined,
       PLATFORM_CONFIG,
     );
+    // Follow-up message: the row's org moved, so the fresh value must win
+    // over anything captured at creation.
     const session = await manager.getOrCreate(
       'sess-page-refresh',
-      { ...DB_SESSION, deviceId: null, writeDefaultOrgId: DEVICE_ORG },
+      { ...DB_SESSION, orgId: LOGIN_ORG, deviceId: null, writeDefaultOrgId: LOGIN_ORG },
       makePartnerAuth(),
       undefined,
       'PROMPT',
@@ -470,8 +472,20 @@ describe('getOrCreate — device-page write default org (#6675)', () => {
       PLATFORM_CONFIG,
     );
 
-    expect(session.toolAuth.aiWriteDefaultOrgId).toBe(DEVICE_ORG);
-    expect((capturedMcpArgs[0]!.getAuth() as AuthContext).aiWriteDefaultOrgId).toBe(DEVICE_ORG);
+    expect(session.toolAuth.aiWriteDefaultOrgId).toBe(LOGIN_ORG);
+    expect((capturedMcpArgs[0]!.getAuth() as AuthContext).aiWriteDefaultOrgId).toBe(LOGIN_ORG);
+
+    // And a follow-up with no anchor drops it rather than keeping a stale one.
+    const cleared = await manager.getOrCreate(
+      'sess-page-refresh',
+      { ...DB_SESSION, deviceId: null },
+      makePartnerAuth(),
+      undefined,
+      'PROMPT',
+      undefined,
+      PLATFORM_CONFIG,
+    );
+    expect(cleared.toolAuth.aiWriteDefaultOrgId).toBeUndefined();
   });
 
   it('sets no default for a session without a page anchor', async () => {
