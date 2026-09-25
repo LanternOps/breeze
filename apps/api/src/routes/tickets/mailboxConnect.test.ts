@@ -293,7 +293,7 @@ describe('M365 mailbox lifecycle routes', () => {
       const response = await app.request('/connections');
       expect(response.status).toBe(200);
       const text = await response.text();
-      expect(JSON.parse(text)).toEqual({ connections: [], appId: 'platform-client-id' });
+      expect(JSON.parse(text)).toEqual({ connections: [], appId: 'platform-client-id', redirectUri: 'https://app.example.com/api/v1/tickets/mailbox/callback' });
       expect(text).not.toContain('platform-client-secret');
     });
 
@@ -302,7 +302,7 @@ describe('M365 mailbox lifecycle routes', () => {
       mocks.listMailboxConnections.mockResolvedValue([]);
       const response = await app.request('/connections');
       expect(response.status).toBe(200);
-      await expect(response.json()).resolves.toEqual({ connections: [], appId: null });
+      await expect(response.json()).resolves.toEqual({ connections: [], appId: null, redirectUri: 'https://app.example.com/api/v1/tickets/mailbox/callback' });
     });
 
     it('allows system scope only when auth supplies a server-derived partner', async () => {
