@@ -42,6 +42,7 @@ import {
   deleteMonitorDefinition,
   getMonitorDefinition,
   listMonitorDefinitions,
+  countMonitorDefinitions,
   MonitorNotFoundError,
   MonitorOwnershipError,
   MonitorValidationError,
@@ -179,14 +180,16 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
       if (!pageArgs.ok) return JSON.stringify({ error: pageArgs.error, code: pageArgs.code });
       const { limit, offset, fingerprint } = pageArgs;
 
-      const rows = await listMonitorDefinitions(auth, filters);
-      if (rows.length === 0) {
-        return JSON.stringify(pageEnvelope({ key: 'monitors', items: [], limit, offset, fingerprint, total: 0 }));
+      // Page in SQL (#6735): the count and the page share one filter set, so
+      // `total` is the true visible count, not the length of this page.
+      const [total, pageRows] = await Promise.all([
+        countMonitorDefinitions(auth, filters),
+        listMonitorDefinitions(auth, filters, { limit, offset }),
+      ]);
+      if (pageRows.length === 0) {
+        return JSON.stringify(pageEnvelope({ key: 'monitors', items: [], limit, offset, fingerprint, total }));
       }
 
-      // `rows` is the caller's whole visible set (no DB-side limit today), so
-      // `total` is the true count and the page is sliced from it.
-      const pageRows = rows.slice(offset, offset + limit);
       const counts = await attachmentCountsFor(pageRows.map((r) => r.id));
 
       return JSON.stringify(pageEnvelope({
@@ -201,7 +204,7 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
           attachmentCount: counts.get(r.id) ?? 0,
         })),
         limit, offset, fingerprint,
-        total: rows.length,
+        total,
       }));
     }),
   });

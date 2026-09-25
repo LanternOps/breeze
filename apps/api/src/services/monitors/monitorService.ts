@@ -221,10 +221,14 @@ function validateDefinitionShape(args: {
   return { condition: parsed.data as Record<string, unknown>, responses, recurrenceActions };
 }
 
-export async function listMonitorDefinitions(
-  auth: AuthContext,
-  filters?: { kind?: MonitorKind; enabled?: boolean },
-): Promise<MonitorDefinitionRow[]> {
+type MonitorListFilters = { kind?: MonitorKind; enabled?: boolean };
+
+/**
+ * The visibility + filter predicate shared by listMonitorDefinitions and
+ * countMonitorDefinitions, so a paged list's `total` is counted over exactly
+ * the rows the page query can return.
+ */
+function listConditions(auth: AuthContext, filters?: MonitorListFilters): SQL | undefined {
   const conditions: SQL[] = [];
   const read = monitorReadCondition(auth);
   if (read) conditions.push(read);
@@ -232,12 +236,49 @@ export async function listMonitorDefinitions(
   if (filters?.enabled !== undefined) {
     conditions.push(eq(monitorDefinitions.enabled, filters.enabled));
   }
+  return conditions.length > 0 ? and(...conditions) : undefined;
+}
+
+/**
+ * List the caller's visible monitor definitions, ordered by name.
+ *
+ * `page` is optional: omitted, every visible row is returned (the REST list
+ * route relies on this). Supplied, the page is applied in SQL with LIMIT/OFFSET
+ * and `id` is added as a tiebreaker so equal names cannot shift between pages.
+ */
+export async function listMonitorDefinitions(
+  auth: AuthContext,
+  filters?: MonitorListFilters,
+  page?: { limit: number; offset: number },
+): Promise<MonitorDefinitionRow[]> {
+  const where = listConditions(auth, filters);
+  if (!page) {
+    return db
+      .select()
+      .from(monitorDefinitions)
+      .where(where)
+      .orderBy(asc(monitorDefinitions.name));
+  }
 
   return db
     .select()
     .from(monitorDefinitions)
-    .where(conditions.length > 0 ? and(...conditions) : undefined)
-    .orderBy(asc(monitorDefinitions.name));
+    .where(where)
+    .orderBy(asc(monitorDefinitions.name), asc(monitorDefinitions.id))
+    .limit(page.limit)
+    .offset(page.offset);
+}
+
+/** COUNT(*) over the same visibility + filters as listMonitorDefinitions. */
+export async function countMonitorDefinitions(
+  auth: AuthContext,
+  filters?: MonitorListFilters,
+): Promise<number> {
+  const [row] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(monitorDefinitions)
+    .where(listConditions(auth, filters));
+  return Number(row?.count ?? 0);
 }
 
 export async function getMonitorDefinition(

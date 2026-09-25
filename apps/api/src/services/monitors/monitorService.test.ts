@@ -32,6 +32,8 @@ import {
   updateMonitorDefinition,
   deleteMonitorDefinition,
   getMonitorDefinition,
+  listMonitorDefinitions,
+  countMonitorDefinitions,
   MonitorHasDependentsError,
   MonitorOwnershipError,
   MonitorValidationError,
@@ -546,5 +548,66 @@ describe('Fleet Design savepoint executor propagation (W05c2 Task 16)', () => {
       expect(dbMock.select).not.toHaveBeenCalled();
       expect(dbMock.transaction).not.toHaveBeenCalled();
     } finally { compile.mockRestore(); }
+  });
+});
+
+describe('listMonitorDefinitions / countMonitorDefinitions paging (#6735)', () => {
+  /** A select chain that records every builder call and resolves to `rows`. */
+  function recordingChain(rows: unknown[]) {
+    type Method = 'from' | 'where' | 'orderBy' | 'limit' | 'offset';
+    const calls: Record<Method, unknown[][]> = { from: [], where: [], orderBy: [], limit: [], offset: [] };
+    const chain: Record<string, unknown> = {};
+    for (const method of Object.keys(calls) as Method[]) {
+      chain[method] = vi.fn((...args: unknown[]) => { calls[method].push(args); return chain; });
+    }
+    chain.then = (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
+      Promise.resolve(rows).then(resolve, reject);
+    return { chain, calls };
+  }
+
+  it('without a page argument issues no LIMIT/OFFSET and keeps the name-only ordering', async () => {
+    const { chain, calls } = recordingChain([{ id: 'a' }]);
+    dbMock.select.mockReturnValue(chain);
+
+    const rows = await listMonitorDefinitions(auth(), { kind: 'cpu' });
+
+    expect(rows).toEqual([{ id: 'a' }]);
+    expect(calls.limit).toHaveLength(0);
+    expect(calls.offset).toHaveLength(0);
+    expect(calls.orderBy).toHaveLength(1);
+    expect(calls.orderBy[0]).toHaveLength(1);
+  });
+
+  it('with a page argument applies LIMIT/OFFSET in SQL and a unique id tiebreaker', async () => {
+    const { chain, calls } = recordingChain([]);
+    dbMock.select.mockReturnValue(chain);
+
+    await listMonitorDefinitions(auth(), { kind: 'cpu', enabled: true }, { limit: 25, offset: 50 });
+
+    expect(calls.limit).toEqual([[25]]);
+    expect(calls.offset).toEqual([[50]]);
+    expect(calls.orderBy[0]).toHaveLength(2);
+  });
+
+  it('count uses exactly the page query WHERE and returns a number', async () => {
+    const page = recordingChain([]);
+    const count = recordingChain([{ count: 42 }]);
+    dbMock.select.mockReturnValueOnce(page.chain).mockReturnValueOnce(count.chain);
+    const filters = { kind: 'cpu' as const, enabled: false };
+    const caller = auth({ scope: 'partner', orgCondition: () => undefined });
+
+    await listMonitorDefinitions(caller, filters, { limit: 10, offset: 0 });
+    const total = await countMonitorDefinitions(caller, filters);
+
+    expect(total).toBe(42);
+    expect(count.calls.limit).toHaveLength(0);
+    expect(count.calls.offset).toHaveLength(0);
+    expect(count.calls.where[0]).toEqual(page.calls.where[0]);
+    expect(count.calls.where[0]![0]).toBeDefined();
+  });
+
+  it('count of an empty visible set is 0, not NaN', async () => {
+    dbMock.select.mockReturnValue(recordingChain([]).chain);
+    expect(await countMonitorDefinitions(auth())).toBe(0);
   });
 });
