@@ -44,8 +44,9 @@ var etcRestoreExcludes = []string{
 
 // isExcludedEtcPath reports whether relPath (a path relative to /etc,
 // forward-slash separated) must be skipped by the /etc restore — either an
-// exact match on one of etcRestoreExcludes (a single excluded file) or
-// nested under one of them (an excluded directory).
+// exact match on one of etcRestoreExcludes (a single excluded file), nested
+// under one of them (an excluded directory), or the source machine's own
+// Breeze agent state (isBreezeAgentEtcPath).
 func isExcludedEtcPath(relPath string) bool {
 	relPath = filepath.ToSlash(relPath)
 	for _, excl := range etcRestoreExcludes {
@@ -53,7 +54,60 @@ func isExcludedEtcPath(relPath string) bool {
 			return true
 		}
 	}
+	return isBreezeAgentEtcPath(relPath)
+}
+
+// breezeAgentUnitPrefix is the name prefix every systemd unit the Breeze
+// agent installs carries (breeze-agent, breeze-watchdog, breeze-agent-user,
+// breeze-recovery).
+const breezeAgentUnitPrefix = "breeze-"
+
+// systemdUnitDirs are the /etc-relative systemd unit directories whose
+// breeze-* entries a restore must skip.
+var systemdUnitDirs = []string{"systemd/system/", "systemd/user/"}
+
+// isBreezeAgentEtcPath reports whether relPath (relative to /etc,
+// forward-slash separated) is the SOURCE machine's Breeze agent state, which
+// a live BMR restore must never copy onto the recovery target (#6436):
+//
+//   - breeze, breeze/...: /etc/breeze, the agent's config and enrollment
+//     identity.
+//   - systemd/{system,user}/breeze-*: the agent's unit files and their
+//     .d drop-in directories.
+//   - systemd/{system,user}/<target>.wants|.requires/breeze-*: the
+//     enablement links that start those units at boot.
+//
+// The recovery target runs its own recovery helper and re-enrolls
+// explicitly; inheriting the source's units left a target with no agent
+// binary or /var/lib/breeze restarting breeze-watchdog every 15 s.
+func isBreezeAgentEtcPath(relPath string) bool {
+	relPath = filepath.ToSlash(relPath)
+	if relPath == "breeze" || strings.HasPrefix(relPath, "breeze/") {
+		return true
+	}
+	for _, dir := range systemdUnitDirs {
+		rest, ok := strings.CutPrefix(relPath, dir)
+		if !ok {
+			continue
+		}
+		parts := strings.Split(rest, "/")
+		// systemd/system/breeze-agent.service[.d[/override.conf]]
+		if isBreezeAgentUnit(parts[0]) {
+			return true
+		}
+		// systemd/system/multi-user.target.wants/breeze-agent.service
+		if len(parts) >= 2 && (strings.HasSuffix(parts[0], ".wants") || strings.HasSuffix(parts[0], ".requires")) &&
+			isBreezeAgentUnit(parts[1]) {
+			return true
+		}
+	}
 	return false
+}
+
+// isBreezeAgentUnit reports whether a systemd unit (or unit drop-in
+// directory) name belongs to the Breeze agent — see breezeAgentUnitPrefix.
+func isBreezeAgentUnit(unit string) bool {
+	return strings.HasPrefix(unit, breezeAgentUnitPrefix)
 }
 
 // parseSystemdEnabledUnits extracts unit names from the output of

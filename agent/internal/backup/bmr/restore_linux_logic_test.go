@@ -60,6 +60,80 @@ func TestIsExcludedEtcPathOrdinaryFilesNotExcluded(t *testing.T) {
 	}
 }
 
+// TestIsExcludedEtcPathBreezeAgentState covers #6436: a live BMR restore must
+// never copy the SOURCE machine's Breeze agent units, their enablement links,
+// or /etc/breeze onto the recovery target — the target re-enrolls explicitly,
+// and inheriting the source's units left it looping every 15 s on a
+// watchdog with no binary or /var/lib/breeze behind it.
+func TestIsExcludedEtcPathBreezeAgentState(t *testing.T) {
+	cases := []struct {
+		relPath string
+		want    bool
+	}{
+		// /etc/breeze — agent config/identity, as a directory or its contents.
+		{"breeze", true},
+		{"breeze/agent.yaml", true},
+		{"breeze/secrets.yaml", true},
+		{"breeze/recovery/iptables.rules", true},
+		// Unit files.
+		{"systemd/system/breeze-agent.service", true},
+		{"systemd/system/breeze-watchdog.service", true},
+		{"systemd/system/breeze-recovery.service", true},
+		{"systemd/user/breeze-agent-user.service", true},
+		// Drop-in directories and their contents.
+		{"systemd/system/breeze-agent.service.d", true},
+		{"systemd/system/breeze-agent.service.d/override.conf", true},
+		// Enablement links in .wants / .requires directories.
+		{"systemd/system/multi-user.target.wants/breeze-agent.service", true},
+		{"systemd/system/multi-user.target.wants/breeze-watchdog.service", true},
+		{"systemd/system/default.target.requires/breeze-agent.service", true},
+		{"systemd/user/default.target.wants/breeze-agent-user.service", true},
+
+		// Must NOT over-match.
+		{"breeze.conf", false},
+		{"breezeish/agent.yaml", false},
+		{"systemd/system/multi-user.target.wants", false},
+		{"systemd/system/multi-user.target.wants/sshd.service", false},
+		{"systemd/system/acme-breeze-sync.service", false},
+		{"systemd/system/breeze.service", false},
+		{"systemd/system", false},
+		{"systemd/journald.conf", false},
+		{"default/breeze-agent", false},
+		{"cron.d/breeze-agent", false},
+		{"ssh/sshd_config", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.relPath, func(t *testing.T) {
+			if got := isExcludedEtcPath(tc.relPath); got != tc.want {
+				t.Errorf("isExcludedEtcPath(%q) = %v, want %v", tc.relPath, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsBreezeAgentUnit(t *testing.T) {
+	cases := []struct {
+		unit string
+		want bool
+	}{
+		{"breeze-agent.service", true},
+		{"breeze-watchdog.service", true},
+		{"breeze-recovery.service", true},
+		{"breeze-agent-user.service", true},
+		{"acpid.service", false},
+		{"breeze.service", false},
+		{"acme-breeze-sync.service", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.unit, func(t *testing.T) {
+			if got := isBreezeAgentUnit(tc.unit); got != tc.want {
+				t.Errorf("isBreezeAgentUnit(%q) = %v, want %v", tc.unit, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestParseSystemdEnabledUnitsFiltersByState(t *testing.T) {
 	data := []byte(strings.Join([]string{
 		"UNIT FILE                             STATE",
