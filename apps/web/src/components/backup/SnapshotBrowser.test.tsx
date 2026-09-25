@@ -101,13 +101,67 @@ describe('SnapshotBrowser', () => {
     expect(screen.getByText(/Use the restore workflow to recover or export files from this snapshot/i)).toBeTruthy();
   });
 
-  it('points the restore-workflow copy at the Restore tab (#6349)', async () => {
+  it('points the restore-workflow copy at the Restore tab, carrying the active snapshot (#6349, #6456)', async () => {
     render(<SnapshotBrowser />);
 
     await screen.findByText(/Protection Controls/i);
     const link = screen.getByTestId('snapshot-browser-restore-link');
     expect(link.tagName).toBe('A');
-    expect(link.getAttribute('href')).toBe('#restore');
+    // No files are checked off, but the snapshot currently being browsed is
+    // still carried across (#6456) so the wizard opens on the right snapshot.
+    expect(link.getAttribute('href')).toBe('#restore?snapshot=snap-1');
+  });
+
+  it('carries the selected snapshot id + checked files into the restore-workflow link (#6456)', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+
+      if (url === '/backup/snapshots' && method === 'GET') {
+        return makeJsonResponse({
+          data: [
+            {
+              id: 'snap-1',
+              label: 'Nightly Snapshot',
+              createdAt: '2026-03-31T00:00:00Z',
+              sizeBytes: 1048576,
+              fileCount: 5,
+              location: 'snapshots/provider-snap-1',
+              expiresAt: '2026-04-30T00:00:00Z',
+              legalHold: false,
+              legalHoldReason: null,
+              isImmutable: false,
+              immutableUntil: null,
+              immutabilityEnforcement: null,
+              requestedImmutabilityEnforcement: null,
+              immutabilityFallbackReason: null,
+            },
+          ],
+        });
+      }
+
+      if (url === '/backup/snapshots/snap-1/browse' && method === 'GET') {
+        return makeJsonResponse({
+          data: [
+            { name: 'report.txt', path: '/report.txt', type: 'file', sizeBytes: 1234 },
+          ],
+        });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<SnapshotBrowser />);
+
+    await screen.findByText('report.txt');
+    fireEvent.click(screen.getByLabelText('Select report.txt'));
+
+    const link = screen.getByTestId('snapshot-browser-restore-link');
+    const href = link.getAttribute('href') ?? '';
+    expect(href).toContain('#restore?');
+    expect(href).toContain('snapshot=snap-1');
+    expect(href).toContain('paths=');
+    expect(decodeURIComponent(href)).toContain('/report.txt');
   });
 
   it('applies legal hold for the selected snapshot', async () => {

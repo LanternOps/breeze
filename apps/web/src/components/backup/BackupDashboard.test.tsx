@@ -247,7 +247,9 @@ describe('BackupDashboard usage history chart', () => {
       fireEvent.click(link);
 
       expect(await screen.findByText('File Restore Wizard Stub')).toBeTruthy();
-      expect(window.location.hash).toBe('#restore');
+      // #6456: the snapshot being browsed is carried into the Restore tab's
+      // hash so the wizard doesn't make the operator re-pick it.
+      expect(window.location.hash).toBe('#restore?snapshot=snap-1');
     } finally {
       router.uninstall();
     }
