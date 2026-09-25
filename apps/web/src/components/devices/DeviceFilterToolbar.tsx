@@ -22,6 +22,7 @@ import { type NamedRef } from "./FilterValueEditor";
 import { FilterSentenceBuilder } from "./FilterSentenceBuilder";
 import { FilterAddDropdown } from "./FilterAddDropdown";
 import { Chip, defaultConditionForField } from "./FilterChipBar";
+import { useSyncCustomFilterFields } from "./customFilterFieldsSync";
 import { QUICK_ADD_CHIPS } from "./QuickAddChips";
 import { SavedViewsMenu } from "./SavedViewsMenu";
 import type { ListFilters } from "./deviceListFilters";
@@ -208,6 +209,11 @@ export function DeviceFilterToolbar({
   onCreateGroup,
 }: DeviceFilterToolbarProps) {
   const { t } = useTranslation("devices");
+  // #6594 — this toolbar, not <FilterChipBar>, is the surface actually
+  // mounted on /devices (it composes Chip/FilterSentenceBuilder/
+  // FilterAddDropdown directly). The sync must run here for custom.<key>
+  // fields to be selectable and chip labels to resolve on the real page.
+  useSyncCustomFilterFields();
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
   // Scroll-edge state for the chip row: with the scrollbar hidden, a right/left

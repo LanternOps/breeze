@@ -15,7 +15,8 @@ import type {
   FilterConditionGroup,
   FilterFieldDefinition
 } from '@breeze/shared';
-import { getFieldDef, V2_FILTER_FIELDS } from './filterFields';
+import { getFieldDef } from './filterFields';
+import { useSyncCustomFilterFields } from './customFilterFieldsSync';
 import { FilterAddDropdown } from './FilterAddDropdown';
 import { FilterValueEditor, summarizeCondition, type NamedRef } from './FilterValueEditor';
 import { FilterPreviewFooter } from './FilterPreviewFooter';
@@ -59,6 +60,9 @@ export function FilterChipBar({
   value, onChange, orgs, sites, groups, softwareOptions, softwareOptionCounts, onSoftwareSearch, onSaveRequested
 }: FilterChipBarProps) {
   const { t } = useTranslation('devices');
+  // #6594 — makes org/partner custom fields selectable in the field picker
+  // and resolvable for chip labels (Chip's getFieldDef call below).
+  useSyncCustomFilterFields();
   const group = value ?? EMPTY_GROUP;
   const chips: FilterCondition[] = group.conditions.filter(
     (c): c is FilterCondition => !('conditions' in c)
@@ -276,8 +280,7 @@ export function Chip({ condition, onChange, onRemove, orgs, sites, groups, softw
   const { t } = useTranslation('devices');
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-  const field = getFieldDef(condition.field)
-    ?? V2_FILTER_FIELDS.find(f => f.key === condition.field);
+  const field = getFieldDef(condition.field);
 
   useClickOutside(open, ref, () => setOpen(false));
   // Esc closes the popover when chip focused.

@@ -1375,6 +1375,7 @@
     "moveUp": "Subir",
     "moveDown": "Bajar",
     "hidden": "Oculto",
+    "customFields": "Campos personalizados",
     "resetToDefaults": "Restablecer los valores predeterminados",
     "selected": "seleccionado",
     "bulkActions": "Acciones masivas",

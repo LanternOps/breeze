@@ -1375,6 +1375,7 @@
     "moveUp": "Avancez",
     "moveDown": "Descends",
     "hidden": "Caché",
+    "customFields": "Champs personnalisés",
     "resetToDefaults": "Réinitialisation aux paramètres par défaut",
     "selected": "Sélectionné",
     "bulkActions": "Actions en vrac",

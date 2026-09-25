@@ -825,6 +825,10 @@ export default function DevicesPage() {
             d.helperLifecycleMode === 'always-on' || d.helperLifecycleMode === 'on-demand'
               ? d.helperLifecycleMode
               : null,
+          // Custom field values (#6594) — powers the opt-in custom field
+          // columns. Agent rows only; the API's customFields column is
+          // already selected in the list query (routes/devices/core.ts).
+          customFields: (asRecord(d.customFields) ?? null) as Record<string, unknown> | null,
         };
       });
 
