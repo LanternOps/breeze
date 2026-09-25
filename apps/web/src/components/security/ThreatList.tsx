@@ -237,7 +237,7 @@ export default function ThreatList({ timezone, onSelectThreat }: ThreatListProps
         severityBadge[threat.severity],
       )}
     >
-      {threat.severity}
+      {t(`securityThreatList.${threat.severity}`)}
     </span>
   );
   const renderStatusBadge = (threat: Threat) => (
@@ -247,7 +247,7 @@ export default function ThreatList({ timezone, onSelectThreat }: ThreatListProps
         statusBadge[threat.status],
       )}
     >
-      {threat.status}
+      {t(`securityThreatList.${threat.status}`)}
     </span>
   );
   return (

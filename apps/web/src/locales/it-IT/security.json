@@ -673,6 +673,8 @@
     "threat": "Minaccia",
     "threats": "Minacce",
     "threatsMatchYourFilters": "{{count}} minacce corrispondono ai filtri",
+    "threatsMatchYourFilters_one": "{{count}} minaccia corrisponde ai filtri",
+    "threatsMatchYourFilters_other": "{{count}} minacce corrispondono ai filtri",
     "type": "Tipo",
     "actionFailed": "Azione non riuscita",
     "actionQueuedCount": "{{count}} minaccia in coda",

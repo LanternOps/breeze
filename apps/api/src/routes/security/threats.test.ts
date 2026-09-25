@@ -148,11 +148,6 @@ describe('security threats action routes (site-scope enforcement)', () => {
 
   it('allows quarantine when the threat device is inside the caller site allowlist', async () => {
     mockThreatSelect(SITE_ALLOWED);
-    vi.mocked(db.update).mockReturnValue({
-      set: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined),
-      }),
-    } as any);
     const app = buildApp();
 
     const res = await app.request(`/security/threats/${THREAT_ID}/quarantine`, {
@@ -163,7 +158,30 @@ describe('security threats action routes (site-scope enforcement)', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.id).toBe(THREAT_ID);
-    expect(body.data.status).toBe('quarantined');
+    expect(queueCommandMock).toHaveBeenCalledTimes(1);
+  });
+
+  // #6685 -- quarantine (and remove/restore) only QUEUE a command; nothing has
+  // executed on the device yet, and an offline device may never claim it. The
+  // row must not flip to a terminal status until the agent reports a result
+  // via handleSecurityCommandResult -> updateThreatStatusForAction. Writing
+  // the terminal status here duplicated (and raced) that single source of
+  // truth and lied about offline devices being quarantined instantly.
+  it('does not write a terminal status to the DB when queuing a quarantine (status stays pending until the agent reports back)', async () => {
+    mockThreatSelect(SITE_ALLOWED);
+    const app = buildApp();
+
+    const res = await app.request(`/security/threats/${THREAT_ID}/quarantine`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // The threat was still 'detected' (mapped to 'active') before this call;
+    // enqueuing the command must not optimistically flip it to 'quarantined'.
+    expect(body.data.status).toBe('active');
+    expect(db.update).not.toHaveBeenCalled();
     expect(queueCommandMock).toHaveBeenCalledTimes(1);
   });
 

@@ -211,6 +211,50 @@ describe('ThreatList', () => {
     ));
   });
 
+  // #6685 -- "{{count}} threats match your filters" had no singular form, so
+  // one matching threat read "1 threats match your filters".
+  it('pluralises the match count correctly for exactly one threat', async () => {
+    routeFetch([threatFixture]);
+
+    render(<ThreatList />);
+
+    const desktop = within(await screen.findByTestId('responsive-table-desktop'));
+    await desktop.findByText('Emotet');
+
+    expect(screen.getByText('1 threat matches your filters')).toBeInTheDocument();
+    expect(screen.queryByText('1 threats match your filters')).toBeNull();
+  });
+
+  it('pluralises the match count correctly for multiple threats', async () => {
+    routeFetch([
+      threatFixture,
+      { ...threatFixture, id: 't2', name: 'Blocked script' },
+    ]);
+
+    render(<ThreatList />);
+
+    const desktop = within(await screen.findByTestId('responsive-table-desktop'));
+    await desktop.findByText('Emotet');
+
+    expect(screen.getByText('2 threats match your filters')).toBeInTheDocument();
+  });
+
+  // #6685 -- status/severity rendered the raw lowercase enum value instead of
+  // a human label (translated, not just CSS text-transform).
+  it('renders human-readable status and severity labels, not raw enum values', async () => {
+    routeFetch([threatFixture]);
+
+    render(<ThreatList />);
+
+    const desktop = within(await screen.findByTestId('responsive-table-desktop'));
+    await desktop.findByText('Emotet');
+
+    expect(desktop.getByText('Active')).toBeInTheDocument();
+    expect(desktop.getByText('Critical')).toBeInTheDocument();
+    expect(desktop.queryByText('active')).toBeNull();
+    expect(desktop.queryByText('critical')).toBeNull();
+  });
+
   it('toasts on success', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [threatFixture] }));
     fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: { id: threatFixture.id } }));
