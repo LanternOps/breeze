@@ -57,6 +57,11 @@ export const portalBranding = pgTable('portal_branding', {
   // Customer Portal Network Visibility (#5861): independent, fail-closed
   // visibility gate for the read-only networking surface.
   enableNetworkVisibility: boolean('enable_network_visibility').notNull().default(false),
+  // Customer Portal Network Visibility (#5861 PR 3): independent, fail-closed
+  // gate for asset-level alert/ticket enrichment. Distinct sensitivity tier
+  // from asset inventory (enableNetworkVisibility above), so it is NOT part
+  // of PORTAL_VISIBILITY_FLAG_KEYS / "Enable all".
+  enableNetworkAlerts: boolean('enable_network_alerts').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });

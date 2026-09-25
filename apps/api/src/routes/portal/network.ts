@@ -151,6 +151,7 @@ portalNetworkRoutes.get(
         const [settings] = await db
           .select({
             enableNetworkVisibility: portalBranding.enableNetworkVisibility,
+            enableNetworkAlerts: portalBranding.enableNetworkAlerts,
           })
           .from(portalBranding)
           .where(eq(portalBranding.orgId, orgId))
@@ -160,13 +161,18 @@ portalNetworkRoutes.get(
           return cached(c, notEnabledAssets(query.page, query.limit));
         }
 
-        const result = await networkAssets(orgId, {
-          siteId: query.siteId,
-          assetType: query.assetType,
-          status: query.status,
-          page: query.page,
-          limit: query.limit,
-        });
+        const result = await networkAssets(
+          orgId,
+          {
+            siteId: query.siteId,
+            assetType: query.assetType,
+            status: query.status,
+            page: query.page,
+            limit: query.limit,
+          },
+          undefined,
+          settings.enableNetworkAlerts === true,
+        );
 
         return cached(c, result);
       },
