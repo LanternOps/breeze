@@ -182,6 +182,11 @@ describe('billablesExportQuerySchema', () => {
     expect(billablesExportQuerySchema.safeParse({ from: '2026-01-01', to: '2027-01-02' }).success).toBe(false);
   });
 
+  it('full timestamps: a `to` exactly 366×24h after `from` is still accepted, one second more is not', () => {
+    expect(billablesExportQuerySchema.safeParse({ from: '2026-01-01T00:00:00Z', to: '2027-01-02T00:00:00Z' }).success).toBe(true);
+    expect(billablesExportQuerySchema.safeParse({ from: '2026-01-01T00:00:00Z', to: '2027-01-02T00:00:01Z' }).success).toBe(false);
+  });
+
   it('leaves a full timestamp `to` untouched', () => {
     const parsed = billablesExportQuerySchema.parse({ from: '2026-06-01', to: '2026-06-30T12:00:00Z' });
     expect(parsed.to.toISOString()).toBe('2026-06-30T12:00:00.000Z');

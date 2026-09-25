@@ -122,9 +122,10 @@ export const billablesExportQuerySchema = z.object({
   ),
   orgId: z.string().guid().optional()
 }).refine((v) => v.to.getTime() >= v.from.getTime(), { message: 'to must be on/after from', path: ['to'] })
-  // Strictly under 366 × 24h: with an end-of-day `to`, that allows at most 366
-  // calendar days inclusive — the same data span the midnight-`to` rule allowed.
-  .refine((v) => v.to.getTime() - v.from.getTime() < 366 * 24 * 60 * 60 * 1000, { message: 'Export window cannot exceed 366 days', path: ['to'] });
+  // At most 366 × 24h. A full-timestamp `to` keeps the original boundary; a
+  // date-only `to` (end of day, 23:59:59) therefore allows at most 366 calendar
+  // days inclusive — 367 days reaches 366d 23:59:59 and is rejected.
+  .refine((v) => v.to.getTime() - v.from.getTime() <= 366 * 24 * 60 * 60 * 1000, { message: 'Export window cannot exceed 366 days', path: ['to'] });
 
 export type CreateTimeEntryInput = z.infer<typeof createTimeEntrySchema>;
 export type UpdateTimeEntryInput = z.infer<typeof updateTimeEntrySchema>;
