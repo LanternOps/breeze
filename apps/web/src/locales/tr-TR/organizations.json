@@ -97,7 +97,7 @@
     },
     "lifecycle": {
       "inaccessible": "Bu kuruluş {{status}} durumunda, bu nedenle canlı verileri kullanılamıyor. Yine de kuruluşlar listesinde görebilirsiniz.",
-      "unknownTitle": "Kuruluş",
+      "unknownTitle": "Etkin olmayan kuruluş",
       "inaccessibleHistoryOnly": "Bu kuruluş etkin değil, bu nedenle canlı verileri kullanılamıyor. Rapor geçmişi aşağıda hâlâ görüntülenebilir.",
       "genericStatusLabel": "etkin değil",
       "backToList": "Kuruluşlara dön"
