@@ -160,6 +160,12 @@ export const invoiceLines = pgTable('invoice_lines', {
   // NULL on a draft — renderers read the ticket's live number instead
   // (invoiceTicketNumberSql). Stamped once by issueInvoice; never restamped.
   ticketLabel: varchar('ticket_label', { length: 50 }),
+  // The ticket subject + category name the line's group header prints, frozen
+  // at issue beside ticket_label (#6955 / #6674, same rule 6). NULL on a draft —
+  // renderers read tickets / ticket_categories live instead. Stamped once by
+  // issueInvoice; never restamped.
+  ticketSubject: varchar('ticket_subject', { length: 255 }),
+  ticketCategory: varchar('ticket_category', { length: 100 }),
   // Title (mirrors catalog name). Nullable for legacy lines created before the
   // split, where `description` holds the title and the renderer falls back to it.
   name: varchar('name', { length: 255 }),

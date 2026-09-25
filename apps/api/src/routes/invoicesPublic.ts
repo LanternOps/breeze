@@ -4,12 +4,12 @@ import { zValidator } from '../lib/validation';
 import { and, eq, sql, isNull } from 'drizzle-orm';
 import { computeChargeNow } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { invoices, invoiceLines, invoiceStripePayments, tickets, ticketCategories } from '../db/schema';
+import { invoices, invoiceLines, invoiceStripePayments, tickets } from '../db/schema';
 import { partners } from '../db/schema/orgs';
 import { portalBranding } from '../db/schema/portal';
 import { resolveInvoiceByLinkToken, getOrMintInvoiceLink, buildPublicInvoiceUrl } from '../services/invoiceLinkToken';
 import { toCustomerInvoiceHeader, toCustomerInvoiceLine, markViewed } from '../services/invoiceService';
-import { getInvoicePdf, renderInvoicePdf, invoiceLineTicketNumberSql } from '../services/invoicePdf';
+import { getInvoicePdf, renderInvoicePdf, invoiceLineTicketNumberSql, invoiceLineTicketSubjectSql, invoiceLineTicketCategorySql } from '../services/invoicePdf';
 import { createInvoicePayLink } from '../services/invoiceCheckout';
 import { CUSTOMER_SAFE_CURRENCY_UNSUPPORTED_MESSAGE } from '../services/stripeCheckoutErrors';
 import { settleCheckoutSession } from '../services/stripeSettle';
@@ -128,8 +128,8 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
     const rows = await db.select({
       ticketId: invoiceLines.ticketId,
       ticketNumber: invoiceLineTicketNumberSql(inv.status),
-      ticketSubject: tickets.subject,
-      ticketCategory: sql<string | null>`COALESCE(${ticketCategories.name}, ${tickets.category})`,
+      ticketSubject: invoiceLineTicketSubjectSql(inv.status),
+      ticketCategory: invoiceLineTicketCategorySql(inv.status),
       name: invoiceLines.name,
       description: invoiceLines.description,
       quantity: invoiceLines.quantity,
@@ -143,7 +143,6 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
         eq(tickets.orgId, inv.orgId),
         isNull(tickets.deletedAt),
       ))
-      .leftJoin(ticketCategories, eq(tickets.categoryId, ticketCategories.id))
       .where(and(eq(invoiceLines.invoiceId, inv.id), eq(invoiceLines.customerVisible, true)))
       .orderBy(invoiceLines.sortOrder);
 
