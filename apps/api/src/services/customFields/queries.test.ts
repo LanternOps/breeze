@@ -1,12 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// Generalises the bounded, SYSTEM-context definition lookup so both the
-// script write-back path AND the two device-PATCH write paths (#3257 W04)
-// can see org-owned + partner-wide custom-field definitions from one loader.
+// One loader for the script write-back path AND the two device-PATCH write
+// paths (#3257 W04): org-owned + partner-wide custom-field definitions. Since
+// #5199 it reads in the CALLER's DB context (the #4944 partner-wide SELECT
+// branch makes partner-wide rows visible there), so the mock deliberately
+// omits the escalation helpers — reintroducing one would throw here.
+// Real-RLS proof: customFieldRequestContextReads.integration.test.ts.
 
 vi.mock('../../db', () => ({
-  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
-  withSystemDbAccessContext: vi.fn((fn: () => unknown, _label?: string) => fn()),
   db: {
     select: vi.fn(),
   },

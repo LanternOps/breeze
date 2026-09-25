@@ -9,8 +9,8 @@ const { selectQueue, insertImpl, transactionSpy, insertedValues } = vi.hoisted((
 }));
 
 /**
- * The snapshot loader issues its two SELECTs inside ONE
- * `runOutsideDbContext(() => withSystemDbAccessContext(...))`, and every write
+ * The snapshot loader issues its two SELECTs in the REQUEST's own context
+ * (#5199 — no escalation helpers are mocked, so reintroducing one throws), and every write
  * goes through a NESTED `db.transaction` so a failing row rolls back to its own
  * savepoint. Both shapes are modelled here so a change to either is visible as
  * a test failure rather than as an undetected behaviour change.
@@ -44,8 +44,6 @@ vi.mock('../../../db', () => ({
       return cb(tx);
     },
   },
-  runOutsideDbContext: <T>(fn: () => Promise<T>) => fn(),
-  withSystemDbAccessContext: <T>(fn: () => Promise<T>) => fn(),
 }));
 
 vi.mock('../../../db/schema', () => ({
