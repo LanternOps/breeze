@@ -1,4 +1,4 @@
-import { readFile, readdir, rm, stat } from 'node:fs/promises';
+import { opendir, readFile, rm, stat } from 'node:fs/promises';
 import { join as joinLocalPath, posix as pathPosix, resolve as resolvePath } from 'node:path';
 import {
   DeleteObjectsCommand,
@@ -256,20 +256,26 @@ async function* iterateLocalObjectsWithLastModified(
   const normalizedPrefix = pathPosix.normalize(prefix).replace(/^\/+/, '');
   const targetPath = ensureContainedLocalPath(rootPath, normalizedPrefix);
 
-  // Depth-first, in readdir order (the same key order the pre-#6834 array
-  // walk produced): consecutive files are batched into one page, flushed
-  // before descending into a subdirectory.
+  // #6843: entries are pulled one at a time from fs.opendir's async-iterable
+  // Dir handle, not from fs.readdir({ withFileTypes: true }) — readdir
+  // materializes the ENTIRE directory's entries into one array before
+  // returning, so a single snapshot prefix with millions of files would hold
+  // all of them in memory at once even though this walk only ever needs
+  // LOCAL_LISTING_PAGE_SIZE at a time. Depth-first, in directory-iteration
+  // order (the same key order the pre-#6834 array walk produced): consecutive
+  // files are batched into one page, flushed before descending into a
+  // subdirectory.
   async function* walk(dirPath: string, keyPrefix: string): AsyncGenerator<BackupObjectListing[]> {
-    let entries;
+    let dir;
     try {
-      entries = await readdir(dirPath, { withFileTypes: true });
+      dir = await opendir(dirPath);
     } catch (error) {
       if ((error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') return;
       throw error;
     }
 
     let files: BackupObjectListing[] = [];
-    for (const entry of entries) {
+    for await (const entry of dir) {
       const childKey = keyPrefix ? `${keyPrefix}/${entry.name}` : entry.name;
       const childPath = joinLocalPath(dirPath, entry.name);
       if (entry.isDirectory()) {

@@ -17,6 +17,32 @@ vi.mock('./recoveryMediaService', () => ({
   })),
 }));
 
+// #6843: the local GC walk must read each directory's entries via
+// fs.opendir's async-iterable Dir (entries pulled from the OS incrementally)
+// rather than fs.readdir({ withFileTypes: true }) (the whole directory
+// materialized into one array before any entry is yielded) — the same
+// memory-shape gap #6834 removed from the S3 listing path. Spies delegate to
+// the real implementation so every other test in this file (real-filesystem
+// fixtures) is unaffected; only the two dedicated tests below assert on them.
+const { readdirSpy, opendirSpy } = vi.hoisted(() => ({
+  readdirSpy: vi.fn(),
+  opendirSpy: vi.fn(),
+}));
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    readdir: (...args: Parameters<typeof actual.readdir>) => {
+      readdirSpy(...args);
+      return actual.readdir(...args);
+    },
+    opendir: (...args: Parameters<typeof actual.opendir>) => {
+      opendirSpy(...args);
+      return actual.opendir(...args);
+    },
+  };
+});
+
 import {
   applyBackupSnapshotImmutability,
   backupLayoutManifestKey,
@@ -525,6 +551,21 @@ describe('local-provider GC I/O (real filesystem)', () => {
     expect(keys.length).toBe(2100);
     expect(new Set(keys).size).toBe(2100);
     expect(keys.every((k) => k.startsWith('snapshots/snapB/files/'))).toBe(true);
+  });
+
+  it('streams local directory entries via opendir, never materializing a whole directory via readdir (#6843)', async () => {
+    readdirSpy.mockClear();
+    opendirSpy.mockClear();
+
+    const listing = await listBackupObjectsUnderPrefix({
+      provider: 'local',
+      providerConfig: { path: root },
+      prefix: 'snapshots',
+    });
+
+    expect(listing.length).toBeGreaterThan(0);
+    expect(readdirSpy).not.toHaveBeenCalled();
+    expect(opendirSpy).toHaveBeenCalled();
   });
 
   it('fetches a local object as text', async () => {

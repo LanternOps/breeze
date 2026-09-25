@@ -1373,6 +1373,25 @@ async function recordGcFailedKeys(
 }
 
 /**
+ * #6843 gap 5: OldestFirstCandidates buffers at most 2×cap candidates — fine
+ * for the default per-run cap (2000), but resolveBackupGcMaxDeletesPerRun's
+ * "0 = unlimited" convention passes Number.MAX_SAFE_INTEGER straight through
+ * as `cap`, so a single snapshot's re-list would buffer EVERY non-live
+ * candidate it sees before deleting any of them — unbounded memory for one
+ * group, the same OOM class #6834 removed from the root listing. This bounds
+ * every OldestFirstCandidates construction independently of the per-run cap:
+ * a group with more deletable objects than this in one run has the rest
+ * picked up by a later run (the sweep is resumable by construction either
+ * way), while the overall per-run cap semantics (0 = no OVERALL limit across
+ * groups/identities) are unchanged.
+ */
+export const BACKUP_GC_MAX_CANDIDATE_BUFFER_PER_GROUP = 5000;
+
+function candidateBufferCap(remaining: number): number {
+  return Math.min(remaining, BACKUP_GC_MAX_CANDIDATE_BUFFER_PER_GROUP);
+}
+
+/**
  * Streaming equivalent of the pre-#6834 "filter out the skip set, sort
  * oldest-first, take the first `cap`" over a fully materialised candidate
  * array: selects the IDENTICAL keys (ties keep offer order, as the stable
@@ -1381,6 +1400,7 @@ async function recordGcFailedKeys(
 class OldestFirstCandidates {
   private buffer: { item: BackupObjectListing; seq: number }[] = [];
   private nextSeq = 0;
+  private offered = 0;
   private readonly limit: number;
 
   constructor(cap: number, private readonly skipSet: Set<string>) {
@@ -1390,6 +1410,7 @@ class OldestFirstCandidates {
 
   offer(item: BackupObjectListing): void {
     if (this.limit === 0 || this.skipSet.has(item.key)) return;
+    this.offered++;
     this.buffer.push({ item, seq: this.nextSeq++ });
     if (this.buffer.length >= this.limit * 2) this.truncate();
   }
@@ -1397,6 +1418,14 @@ class OldestFirstCandidates {
   selected(): BackupObjectListing[] {
     this.truncate();
     return this.buffer.map((entry) => entry.item);
+  }
+
+  // #6843 review: how many offered (non-skip-set) candidates this cap
+  // dropped — only meaningful after `selected()` has run (it truncates the
+  // buffer down to `limit`). Used to warn when BACKUP_GC_MAX_CANDIDATE_BUFFER_PER_GROUP,
+  // not the ordinary per-run cap, is what caused the drop.
+  get droppedCount(): number {
+    return this.offered - this.buffer.length;
   }
 
   private truncate(): void {
@@ -1572,6 +1601,27 @@ async function sweepStorageIdentity(
     console.warn(`[BackupGC] identity ${identity.key}: snapshot ${snapshotId} ${what} between listing passes — skipped this run`);
   }
 
+  // #6843 review: BACKUP_GC_MAX_CANDIDATE_BUFFER_PER_GROUP truncating a
+  // group's candidates is otherwise invisible to an operator watching GC
+  // logs — a group whose stale-object count grows faster than the cap could
+  // silently plateau with no signal explaining why. Only warns when the
+  // GROUP cap (not the ordinary, expected per-run cap) is what bound this
+  // group — `groupCap < remaining` is true only when the hard per-group cap
+  // won the Math.min in candidateBufferCap.
+  function warnIfCandidateBufferCapped(
+    snapshotId: string,
+    groupCap: number,
+    remainingAtGroupStart: number,
+    candidates: OldestFirstCandidates,
+  ): void {
+    if (groupCap < remainingAtGroupStart && candidates.droppedCount > 0) {
+      console.warn(
+        `[BackupGC] identity ${identity.key}: snapshot ${snapshotId} candidate buffer capped at ` +
+        `${BACKUP_GC_MAX_CANDIDATE_BUFFER_PER_GROUP} — ${candidates.droppedCount} object(s) deferred to a later run`,
+      );
+    }
+  }
+
   async function deleteAndCharge(selected: BackupObjectListing[]): Promise<string[]> {
     const result = await deleteSelectedCandidates(identity, selected);
     deleted += result.deletedKeys.length;
@@ -1584,7 +1634,9 @@ async function sweepStorageIdentity(
     // A candidate needs a known last-modified at/before the grace threshold;
     // if no object in the root pass was that old, there is none to find.
     if (summary.oldestMs === null || summary.oldestMs > graceThreshold) return;
-    const candidates = new OldestFirstCandidates(remaining, skipSet);
+    const remainingAtGroupStart = remaining;
+    const groupCap = candidateBufferCap(remaining);
+    const candidates = new OldestFirstCandidates(groupCap, skipSet);
     const current = await relistGroup(snapshotId, summary, (item) => {
       if (!liveSet.has(item.key) && item.lastModified && item.lastModified.getTime() <= graceThreshold) {
         candidates.offer(item);
@@ -1595,11 +1647,14 @@ async function sweepStorageIdentity(
       return;
     }
     await deleteAndCharge(candidates.selected());
+    warnIfCandidateBufferCapped(snapshotId, groupCap, remainingAtGroupStart, candidates);
   }
 
   async function sweepManifestless(snapshotId: string, summary: BackupGcSnapshotSummary, liveSet: Set<string>): Promise<void> {
     if (!manifestlessPrefixExpired(summary, manifestlessThreshold)) return;
-    const candidates = new OldestFirstCandidates(remaining, skipSet);
+    const remainingAtGroupStart = remaining;
+    const groupCap = candidateBufferCap(remaining);
+    const candidates = new OldestFirstCandidates(groupCap, skipSet);
     const current = await relistGroup(snapshotId, summary, (item) => {
       if (!liveSet.has(item.key)) candidates.offer(item);
     });
@@ -1612,6 +1667,7 @@ async function sweepStorageIdentity(
       return;
     }
     await deleteAndCharge(candidates.selected());
+    warnIfCandidateBufferCapped(snapshotId, groupCap, remainingAtGroupStart, candidates);
   }
 
   // Retired (any age) OR old-orphan two-phase reclaim. Also handles a
@@ -1620,7 +1676,9 @@ async function sweepStorageIdentity(
   // non-live in one phase. Never sets swept_at itself.
   async function reclaimUnrooted(snapshotId: string, summary: BackupGcSnapshotSummary, liveSet: Set<string>): Promise<void> {
     const manifestKey = backupSnapshotManifestKey(snapshotId);
-    const candidates = new OldestFirstCandidates(remaining, skipSet);
+    const remainingAtGroupStart = remaining;
+    const groupCap = candidateBufferCap(remaining);
+    const candidates = new OldestFirstCandidates(groupCap, skipSet);
     let nonManifestNonLiveCount = 0;
     const current = await relistGroup(snapshotId, summary, (item) => {
       if (liveSet.has(item.key) || item.key === manifestKey) return;
@@ -1634,6 +1692,7 @@ async function sweepStorageIdentity(
 
     const selected = candidates.selected();
     const deletedKeys = await deleteAndCharge(selected);
+    warnIfCandidateBufferCapped(snapshotId, groupCap, remainingAtGroupStart, candidates);
 
     if (!current.manifestItem) return; // manifest-less remnant — nothing further to gate
 
@@ -1645,7 +1704,7 @@ async function sweepStorageIdentity(
     const deletedFromSelected = new Set(deletedKeys.filter((key) => selectedKeys.has(key))).size;
     const remainingNonManifest = nonManifestNonLiveCount - deletedFromSelected;
     if (remainingNonManifest === 0 && !liveSet.has(manifestKey) && remaining > 0) {
-      const manifestCandidate = new OldestFirstCandidates(remaining, skipSet);
+      const manifestCandidate = new OldestFirstCandidates(candidateBufferCap(remaining), skipSet);
       manifestCandidate.offer(current.manifestItem);
       await deleteAndCharge(manifestCandidate.selected());
     }
