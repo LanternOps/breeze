@@ -6,8 +6,9 @@
  * Paged, not streamed: a streamed body would outlive the request's RLS
  * transaction (authMiddleware → withDbAccessContext awaits the handler, not
  * the body), and every page here re-runs the caller's authorization. The
- * caller pages with `X-Next-Cursor` while `X-Has-More` is true; the cursor is
- * also the resume position for tailing the ledger later.
+ * caller pages with `X-Next-Cursor` while `X-Has-More` is true, and the window
+ * is fully exported only once `X-Window-Complete` is true; until then it
+ * resumes from `X-Next-Cursor` later (see services/pamAuditExport.ts).
  *
  * Gates are the audit-log export's (routes/auditLogs.ts): a permission plus
  * requireMfa(), whose contract is the caller's EFFECTIVE MFA policy, not an
@@ -128,6 +129,7 @@ pamAuditExportRoutes.get(
         rowCount: page.records.length,
         byteCount: Buffer.byteLength(body, 'utf8'),
         hasMore: page.hasMore,
+        windowComplete: page.windowComplete,
         continuation: Boolean(q.cursor),
         scope: auth.scope,
         filters: {
@@ -148,6 +150,8 @@ pamAuditExportRoutes.get(
     c.header('X-Export-Schema-Version', String(PAM_AUDIT_EXPORT_SCHEMA_VERSION));
     c.header('X-Row-Count', String(page.records.length));
     c.header('X-Has-More', String(page.hasMore));
+    c.header('X-Window-Complete', String(page.windowComplete));
+    c.header('X-Settled-Through', page.settledThrough);
     c.header('X-Next-Cursor', page.nextCursor);
     return c.body(body);
   },

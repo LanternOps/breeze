@@ -70,7 +70,7 @@ const BOTH: Array<[string, string]> = [['devices', 'read'], ['audit', 'export']]
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.fetchPage.mockResolvedValue({ records: [], hasMore: false, nextCursor: '' });
+  mocks.fetchPage.mockResolvedValue({ records: [], hasMore: false, nextCursor: '', windowComplete: true, settledThrough: '2026-09-25 00:00:00+00' });
 });
 
 describe('GET /pam/elevation-audit/export gates (real middleware, #4910)', () => {
