@@ -94,6 +94,39 @@ vi.mock("./M365CustomerGraphReadCard", () => ({
     />
   ),
 }));
+vi.mock("./M365CustomerGraphActionsCard", () => ({
+  M365_CUSTOMER_GRAPH_ACTIONS_CALLBACK_RESULTS: [
+    "active",
+    "degraded",
+    "consent_expired",
+    "consent_state_mismatch",
+    "consent_cancelled",
+    "admin_role_required",
+    "tenant_mismatch",
+    "tenant_already_bound",
+    "credential_unavailable",
+    "identity_token_invalid",
+    "application_token_invalid",
+    "grant_missing",
+    "grant_unexpected",
+    "manifest_stale",
+    "organization_probe_failed",
+    "executor_unavailable",
+  ],
+  default: ({
+    callbackResult,
+    callbackRefreshKey,
+  }: {
+    callbackResult?: string | null;
+    callbackRefreshKey?: number;
+  }) => (
+    <div
+      data-testid="stub-customer-graph-actions"
+      data-callback-result={callbackResult ?? ""}
+      data-callback-refresh-key={String(callbackRefreshKey ?? 0)}
+    />
+  ),
+}));
 vi.mock("./Pax8Integration", () => ({
   default: () => <div data-testid="stub-pax8" />,
 }));
@@ -325,6 +358,31 @@ describe("IntegrationsPage — Customer Graph Read callback fragment", () => {
     view.rerender(<IntegrationsPage />);
 
     expect(screen.getByTestId("stub-customer-graph-read")).toHaveAttribute(
+      "data-callback-result",
+      "active",
+    );
+  });
+
+  // Same fix, sibling state (customerGraphActionsCallback) and sibling hash
+  // prefix (m365/customer-graph-actions/) — the two blocks in the effects are
+  // hand-duplicated, so this guards against a copy-paste slip in the actions
+  // branch reintroducing #6684 on that path only.
+  it("keeps the captured actions-callback result when the org id resolves after the first render (cold load)", () => {
+    orgState.currentOrgId = null;
+    window.history.replaceState(
+      {},
+      "",
+      "/integrations?org=org-1#m365/customer-graph-actions/active",
+    );
+
+    const view = render(<IntegrationsPage />);
+
+    expect(window.location.hash).toBe("#m365");
+
+    orgState.currentOrgId = "11111111-1111-4111-8111-111111111111";
+    view.rerender(<IntegrationsPage />);
+
+    expect(screen.getByTestId("stub-customer-graph-actions")).toHaveAttribute(
       "data-callback-result",
       "active",
     );
