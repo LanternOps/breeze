@@ -54,11 +54,14 @@ describe('shared hook stays feature-neutral', () => {
     expect(messages).toHaveLength(2);
     for (const message of messages) expect(message).not.toMatch(/monitor/i);
   });
-  it('does not toast success on remove unless the caller opts in', async () => {
+  it('toasts success on remove by default; successMessage overrides and null silences', async () => {
     vi.mocked(fetchWithAuth).mockImplementation(async () => new Response(null, { status: 204 }));
     const { result } = renderHook(() => useFeatureLink(POLICY));
-    await act(async () => { expect(await result.current.remove(LINK)).toBe(true); });
+    await act(async () => { expect(await result.current.remove(LINK, { successMessage: null })).toBe(true); });
     expect(showToast).not.toHaveBeenCalled();
+    await act(async () => { expect(await result.current.remove(LINK)).toBe(true); });
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    vi.mocked(showToast).mockClear();
     await act(async () => { expect(await result.current.remove(LINK, { successMessage: 'Removed' })).toBe(true); });
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Removed' }));
   });
