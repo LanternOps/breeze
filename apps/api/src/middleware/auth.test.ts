@@ -77,7 +77,25 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn())
 }));
 
+// partnerGuard (composed with authMiddleware in the #6627 interplay tests)
+// imports the activation reconciler; its DB-writing internals are irrelevant
+// here — a pending partner with no payment method never reconciles.
+vi.mock('../services/partnerActivation', () => ({
+  shouldActivatePendingPartner: vi.fn(() => false),
+  activatePartnerRow: vi.fn()
+}));
+
 vi.mock('../db/schema', () => ({
+  partners: {
+    id: 'partners.id',
+    status: 'partners.status',
+    trustState: 'partners.trustState',
+    settings: 'partners.settings',
+    emailVerifiedAt: 'partners.emailVerifiedAt',
+    paymentMethodAttachedAt: 'partners.paymentMethodAttachedAt',
+    billingSubscriptionStatus: 'partners.billingSubscriptionStatus',
+    deletedAt: 'partners.deletedAt'
+  },
   users: {
     id: 'id',
     email: 'email',
@@ -120,6 +138,7 @@ import { db, withDbAccessContext } from '../db';
 import { getUserPermissions, hasPermission, canAccessOrg, canAccessSite } from '../services/permissions';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
+import { partnerGuard, isPartnerGuardExemptPath } from './partnerGuard';
 
 const basePayload = {
   sub: 'user-123',
@@ -724,6 +743,110 @@ describe('authMiddleware', () => {
     expect(isMfaEnrollmentExemptPath('/api/v1/auth/cf-access-logout')).toBe(false);
     expect(isMfaEnrollmentExemptPath('/api/v1/auth/cf-access-logout/complete')).toBe(false);
     expect(isMfaEnrollmentExemptPath('/api/v1/auth/cf-access-logout/prepare/extra')).toBe(false);
+  });
+
+  // #6627: a pending hosted partner whose role requires MFA looped between
+  // /account/inactive and the dashboard. The inactive screen's only call,
+  // GET /partner/me, is exempt from partnerGuard but was NOT exempt from the
+  // forced-MFA gate, so it 428'd and the screen had no status to render.
+  // The exemption is method-scoped: only the read-only status lookup.
+  it('#6627: exempts only a READ of /partner/me from forced MFA enrollment', () => {
+    expect(isMfaEnrollmentExemptPath('/api/v1/partner/me', 'GET')).toBe(true);
+    expect(isMfaEnrollmentExemptPath('/partner/me', 'GET')).toBe(true);
+    expect(isMfaEnrollmentExemptPath('/api/v1/partner/me', 'HEAD')).toBe(true);
+    // Any write, sub-path, sibling route, or unknown method stays gated.
+    expect(isMfaEnrollmentExemptPath('/api/v1/partner/me', 'POST')).toBe(false);
+    expect(isMfaEnrollmentExemptPath('/api/v1/partner/me', 'PATCH')).toBe(false);
+    expect(isMfaEnrollmentExemptPath('/api/v1/partner/me')).toBe(false);
+    expect(isMfaEnrollmentExemptPath('/api/v1/partner/me/', 'GET')).toBe(false);
+    expect(isMfaEnrollmentExemptPath('/api/v1/partner/me/settings', 'GET')).toBe(false);
+    expect(isMfaEnrollmentExemptPath('/api/v1/partner/dashboard', 'GET')).toBe(false);
+  });
+
+  describe('#6627: pending partner + MFA-required role (partnerGuard → authMiddleware)', () => {
+    const pendingPartnerRow = {
+      status: 'pending',
+      trustState: 'unverified',
+      settings: { statusActionUrl: 'https://billing.example.com/plans' },
+      emailVerifiedAt: new Date(),
+      paymentMethodAttachedAt: null,
+      billingSubscriptionStatus: null,
+      deletedAt: null
+    };
+
+    // Mirrors the production chain in index.ts: the global partner-status
+    // guard (with its skip list) runs before the route-level authMiddleware.
+    function buildPendingPartnerApp() {
+      const app = new Hono();
+      app.use('*', async (c, next) => {
+        if (isPartnerGuardExemptPath(c.req.path)) return next();
+        return partnerGuard(c, next);
+      });
+      app.use('*', authMiddleware);
+      app.get('/api/v1/partner/me', (c) => c.json({ status: 'pending' }));
+      app.post('/api/v1/partner/me', (c) => c.json({ ok: true }));
+      app.get('/api/v1/devices', (c) => c.json({ data: [] }));
+      app.get('/api/v1/auth/mfa/enrollment-options', (c) => c.json({ allowedMethods: {} }));
+      return app;
+    }
+
+    beforeEach(() => {
+      vi.mocked(verifyToken).mockResolvedValue({ ...basePayload, scope: 'partner', orgId: null });
+      vi.mocked(getEffectiveMfaPolicy).mockResolvedValue(requirePolicy);
+    });
+
+    it('GET /partner/me reaches the handler (no 428, no 403) so the inactive screen can load status', async () => {
+      vi.mocked(db.select)
+        // partnerGuard is skipped for this path → first select is the user lookup
+        .mockReturnValueOnce(selectWithLimit([unenrolledUser]) as any)
+        .mockReturnValueOnce(selectWithLimit([{ orgAccess: 'none', orgIds: null }]) as any);
+
+      const res = await buildPendingPartnerApp().request('/api/v1/partner/me', {
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ status: 'pending' });
+      expect(vi.mocked(getEffectiveMfaPolicy)).not.toHaveBeenCalled();
+    });
+
+    it('a write to /partner/me is still 428 mfa_enrollment_required', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(selectWithLimit([unenrolledUser]) as any);
+
+      const res = await buildPendingPartnerApp().request('/api/v1/partner/me', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(428);
+      expect((await res.json()).error).toBe('mfa_enrollment_required');
+    });
+
+    it('a protected route answers 403 PARTNER_INACTIVE before the MFA gate runs', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(selectWithLimit([pendingPartnerRow]) as any);
+
+      const res = await buildPendingPartnerApp().request('/api/v1/devices', {
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.code).toBe('PARTNER_INACTIVE');
+      expect(body.status).toBe('pending');
+      expect(vi.mocked(getEffectiveMfaPolicy)).not.toHaveBeenCalled();
+    });
+
+    it('the MFA enrollment endpoints pass both guards', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectWithLimit([unenrolledUser]) as any)
+        .mockReturnValueOnce(selectWithLimit([{ orgAccess: 'none', orgIds: null }]) as any);
+
+      const res = await buildPendingPartnerApp().request('/api/v1/auth/mfa/enrollment-options', {
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+    });
   });
 
   it('permits an enrolled user without consulting the resolver at all', async () => {

@@ -226,7 +226,7 @@ import {
 } from './db/dbPoolHealthMonitor';
 import { getWedgedBackendMinAgeMs } from './db/wedgedBackends';
 import { isBenignRejection, isRecoverablePostgresConnectionTeardown } from './services/rejectionSuppressions';
-import { partnerGuard } from './middleware/partnerGuard';
+import { partnerGuard, isPartnerGuardExemptPath } from './middleware/partnerGuard';
 import { API_VERSION } from './version';
 import {
   setWorkerReadinessTransitionHandler,
@@ -748,13 +748,7 @@ async function resolveFallbackOrgId(c: Context, path: string): Promise<string | 
 // propagates back through Hono's compose chain. Discarding the return causes
 // Hono to throw "Context is not finalized" and the request collapses to 500.
 api.use('*', async (c, next) => {
-  const path = c.req.path;
-  if (path.startsWith('/api/v1/auth')) return next();
-  if (path === '/api/v1/config' || path === '/api/v1/config/') return next();
-  if (path.startsWith('/api/v1/users/me')) return next();
-  if (path === '/api/v1/partner/me' || path.startsWith('/api/v1/partner/me/')) return next();
-  if (path.startsWith('/api/v1/agents/')) return next();
-  if (path.startsWith('/api/v1/internal/synthetic/')) return next();   // synthetic test router — self-gated (token + canary latch)
+  if (isPartnerGuardExemptPath(c.req.path)) return next();
   return partnerGuard(c, next);
 });
 

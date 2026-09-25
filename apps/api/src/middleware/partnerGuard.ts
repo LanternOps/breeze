@@ -5,6 +5,24 @@ import { partners } from '../db/schema';
 import { verifyToken } from '../services/jwt';
 import { shouldActivatePendingPartner, activatePartnerRow } from '../services/partnerActivation';
 
+/**
+ * Paths the global partner-status guard skips (mounted in index.ts). They must
+ * stay reachable while the partner is not `active`: sign-in and MFA enrollment
+ * (/auth/*), public config, the caller's own profile, the caller's own partner
+ * status (read by the account-inactive screen), agent traffic, and the
+ * self-gated synthetic router. Adding a path here lets an inactive tenant use
+ * it — keep the list minimal.
+ */
+export function isPartnerGuardExemptPath(path: string): boolean {
+  if (path.startsWith('/api/v1/auth')) return true;
+  if (path === '/api/v1/config' || path === '/api/v1/config/') return true;
+  if (path.startsWith('/api/v1/users/me')) return true;
+  if (path === '/api/v1/partner/me' || path.startsWith('/api/v1/partner/me/')) return true;
+  if (path.startsWith('/api/v1/agents/')) return true;
+  if (path.startsWith('/api/v1/internal/synthetic/')) return true;   // synthetic test router — self-gated (token + canary latch)
+  return false;
+}
+
 export async function partnerGuard(c: Context, next: Next) {
   const authHeader = c.req.header('Authorization');
   if (!authHeader?.startsWith('Bearer ')) {
