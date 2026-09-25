@@ -560,6 +560,15 @@ x-api-env: &api-env
   METRIC_ANOMALY_INCIDENT_RETENTION_DAYS: ${METRIC_ANOMALY_INCIDENT_RETENTION_DAYS:-}
   METRIC_ANOMALY_INCIDENT_RETENTION_BATCH_SIZE: ${METRIC_ANOMALY_INCIDENT_RETENTION_BATCH_SIZE:-}
   METRIC_ANOMALY_INCIDENT_RETENTION_MAX_BATCHES: ${METRIC_ANOMALY_INCIDENT_RETENTION_MAX_BATCHES:-}
+  # Redis memory watchdog (#6452). `global` placement, so it runs in the worker
+  # role — the worker service inherits this same *api-env anchor, so mapping
+  # here reaches both containers. Empty === unset for every reader, so the
+  # `${VAR:-}` form keeps the code defaults (60s interval / 0.80 warn ratio /
+  # 15min capture throttle / monitor enabled).
+  REDIS_MEMORY_MONITOR_DISABLED: ${REDIS_MEMORY_MONITOR_DISABLED:-}
+  REDIS_MEMORY_MONITOR_INTERVAL_MS: ${REDIS_MEMORY_MONITOR_INTERVAL_MS:-}
+  REDIS_MEMORY_WARN_RATIO: ${REDIS_MEMORY_WARN_RATIO:-}
+  REDIS_MEMORY_CAPTURE_THROTTLE_MS: ${REDIS_MEMORY_CAPTURE_THROTTLE_MS:-}
   # Startup + agent-fleet behaviour
   AUTO_MIGRATE: ${AUTO_MIGRATE:-}
   AGENT_AUTO_PROMOTE: ${AGENT_AUTO_PROMOTE:-}

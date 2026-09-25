@@ -337,6 +337,11 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   // RECOVERY_*
   RECOVERY_MEDIA_WORK_DIR: 'filesystem path',
   RECOVERY_MINISIGN_BIN: 'filesystem path',
+  // REDIS_MEMORY_*
+  REDIS_MEMORY_CAPTURE_THROTTLE_MS: 'timing knob',
+  REDIS_MEMORY_MONITOR_DISABLED: 'worker job kill switch',
+  REDIS_MEMORY_MONITOR_INTERVAL_MS: 'timing knob',
+  REDIS_MEMORY_WARN_RATIO: 'alert threshold tuning',
   // REFRESH_*
   REFRESH_FAMILY_ABSOLUTE_TTL_DAYS: 'timing knob',
   REFRESH_ROTATION_GRACE_SECONDS: 'timing knob',
