@@ -68,6 +68,21 @@ describe('legacy notification_channels.config is write-only (#6379 expand step)'
     expect(code.sort()).toEqual([...allowed].sort());
   });
 
+  it('no raw sql`` template in production code touches notification_channels together with config', () => {
+    // Drizzle is not the only way to read a column. The key-rotation walker
+    // reaches the legacy column via sql.identifier(), which carries no literal
+    // and is reviewed separately (encryptedColumnRegistry).
+    const offenders: string[] = [];
+    for (const file of productionSources(SRC)) {
+      const source = readFileSync(file, 'utf8');
+      for (const m of source.matchAll(/\bsql`([^`]*)`/g)) {
+        const body = m[1]!;
+        if (/\bnotification_channels\b(?!_)/.test(body) && /\bconfig\b/.test(body)) offenders.push(rel(file));
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
   it('no other production file references the legacy view', () => {
     const offenders = productionSources(SRC)
       .filter((file) => rel(file) !== SERVICE && readFileSync(file, 'utf8').includes(LEGACY_VIEW))

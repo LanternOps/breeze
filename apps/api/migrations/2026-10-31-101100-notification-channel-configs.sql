@@ -128,6 +128,7 @@ ALTER TABLE public.notification_channels ALTER COLUMN config DROP NOT NULL;
 CREATE OR REPLACE FUNCTION public.notification_channels_sync_legacy_config()
 RETURNS trigger
 LANGUAGE plpgsql
+SECURITY INVOKER
 AS $fn$
 BEGIN
   IF NEW.config IS NOT NULL THEN
