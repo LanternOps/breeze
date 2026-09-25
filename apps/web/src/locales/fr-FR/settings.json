@@ -987,6 +987,16 @@
     }
   },
   "m365Mailbox": {
+    "consentNotCompleted": "Consentement non finalisé",
+    "consentNotCompletedHint": "La connexion Microsoft pour cette boîte aux lettres n’a pas été finalisée à temps ; elle ne se connectera donc pas d’elle-même. Relancez le consentement ou déconnectez-la.",
+    "retryConsent": "Relancer le consentement",
+    "redirectUriLabel": "URI de redirection à enregistrer dans l’application Microsoft Entra",
+    "redirectUriHint": "Elle doit correspondre exactement, et vous devez ouvrir Breeze avec le même schéma et le même hôte lors de la connexion, sinon la connexion ne peut pas aboutir.",
+    "callbackReason": {
+      "binding_mismatch": "Échec de la connexion à Microsoft 365 : le navigateur est revenu sans son cookie de connexion. Ouvrez Breeze à la même adresse que l’URI de redirection (le schéma et l’hôte doivent correspondre), autorisez les cookies et réessayez.",
+      "invalid_callback": "Échec de la connexion à Microsoft 365 : Microsoft a renvoyé une réponse inattendue. Réessayez de vous connecter.",
+      "expired": "Échec de la connexion à Microsoft 365 : le lien de connexion a expiré ou a déjà été utilisé. Réessayez de vous connecter."
+    },
     "connected": "Boîte aux lettres connectée",
     "consentGranted": "Consentement accordé — repérez la boîte aux lettres avec la politique d’accès à l’application ci-dessous, puis retestez",
     "consentAttention": "Le consentement de la boîte aux lettres nécessite l’attention de l’administrateur.",

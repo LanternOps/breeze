@@ -416,16 +416,16 @@ describe('ticket mailbox connection service', () => {
       lastPolledAt: fullRow.lastPolledAt,
       lastMessageAt: fullRow.lastMessageAt,
     };
-    dbMocks.selectResults.push([{ ...publicRow, lastError: null }]);
+    dbMocks.selectResults.push([{ ...publicRow, lastError: null, consentSessionLive: false }]);
 
     const result = await listMailboxConnections(PARTNER_ID);
 
-    expect(result).toEqual([{ ...publicRow, verificationError: null }]);
+    expect(result).toEqual([{ ...publicRow, verificationError: null, consentExpired: false }]);
     expect(Object.keys(result[0]!)).toEqual([
-      'id', 'provider', 'orgId', 'orgName', 'mailboxAddress', 'displayName', 'status', 'lastPolledAt', 'lastMessageAt', 'verificationError',
+      'id', 'provider', 'orgId', 'orgName', 'mailboxAddress', 'displayName', 'status', 'lastPolledAt', 'lastMessageAt', 'verificationError', 'consentExpired',
     ]);
     expect(Object.keys(dbMocks.selectedFields[0] ?? {})).toEqual([
-      'id', 'provider', 'orgId', 'orgName', 'mailboxAddress', 'displayName', 'status', 'lastPolledAt', 'lastMessageAt', 'lastError',
+      'id', 'provider', 'orgId', 'orgName', 'mailboxAddress', 'displayName', 'status', 'lastPolledAt', 'lastMessageAt', 'lastError', 'consentSessionLive',
     ]);
   });
 
@@ -451,6 +451,26 @@ describe('ticket mailbox connection service', () => {
     expect(result.map((r) => r.verificationError)).toEqual([
       'Mailbox verification failed: Graph 403 (ErrorAccessDenied)',
       null,
+    ]);
+  });
+
+  // #6936: a pending_consent row whose consent attempt has no live (unexpired)
+  // state left can never complete — the user abandoned the flow, Microsoft never
+  // redirected back, or the callback was turned away before touching the row.
+  // The card renders it as "Consent not completed" instead of pending forever.
+  it('flags a pending row as consentExpired only when no live consent session remains', async () => {
+    const base = {
+      mailboxAddress: 'support@example.com', displayName: null, lastPolledAt: null, lastMessageAt: null, lastError: null,
+    };
+    dbMocks.selectResults.push([
+      { ...base, id: 'live', status: 'pending_consent', consentSessionLive: true },
+      { ...base, id: 'dead', status: 'pending_consent', consentSessionLive: false },
+      { ...base, id: 'conn', status: 'connected', consentSessionLive: false },
+      { ...base, id: 'err', status: 'error', consentSessionLive: false },
+    ]);
+    const result = await listMailboxConnections(PARTNER_ID);
+    expect(result.map((r) => [r.id, r.consentExpired])).toEqual([
+      ['live', false], ['dead', true], ['conn', false], ['err', false],
     ]);
   });
 

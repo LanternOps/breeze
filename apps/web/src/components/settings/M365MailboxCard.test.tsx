@@ -41,6 +41,7 @@ vi.mock('../../lib/runAction', () => {
 });
 
 import M365MailboxCard from './M365MailboxCard';
+import { showToast } from '../shared/Toast';
 
 function jsonRes(body: any, ok = true, status = 200) {
   return { ok, status, json: async () => body };
@@ -49,6 +50,7 @@ function jsonRes(body: any, ok = true, status = 200) {
 describe('M365MailboxCard', () => {
   beforeEach(() => {
     fetchWithAuth.mockReset();
+    vi.mocked(showToast).mockClear();
     grantedActions.clear();
     grantedActions.add('ticket_mailbox:read');
     grantedActions.add('ticket_mailbox:admin');
@@ -350,6 +352,116 @@ describe('M365MailboxCard', () => {
         expect.stringContaining('/tickets/mailbox/connections/c1'),
         expect.objectContaining({ method: 'DELETE' }),
       ),
+    );
+  });
+  describe('consent callback outcome (#6936)', () => {
+    function landOn(search: string) {
+      Object.defineProperty(window, 'location', {
+        value: { assign: vi.fn(), href: '', search, hash: '#email', pathname: '/settings/ticketing' },
+        writable: true,
+      });
+    }
+
+    it.each([
+      ['binding_mismatch', /same address as the redirect URI/i],
+      ['expired', /expired or was already used/i],
+      ['invalid_callback', /unexpected response/i],
+    ])('names the likely cause for reason=%s and strips both params', async (reason, message) => {
+      const replaceState = vi.spyOn(window.history, 'replaceState').mockImplementation(() => {});
+      landOn(`?ticketMailbox=error&reason=${reason}`);
+      fetchWithAuth.mockResolvedValueOnce(jsonRes({ connections: [] }));
+
+      render(<M365MailboxCard />);
+
+      await waitFor(() =>
+        expect(showToast).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'error', message: expect.stringMatching(message) }),
+        ),
+      );
+      expect(replaceState).toHaveBeenCalledWith({}, '', '/settings/ticketing#email');
+      replaceState.mockRestore();
+    });
+
+    it('falls back to the generic failure for an unknown or absent reason', async () => {
+      const replaceState = vi.spyOn(window.history, 'replaceState').mockImplementation(() => {});
+      landOn('?ticketMailbox=error&reason=%3Cscript%3E');
+      fetchWithAuth.mockResolvedValueOnce(jsonRes({ connections: [] }));
+
+      render(<M365MailboxCard />);
+
+      await waitFor(() =>
+        expect(showToast).toHaveBeenCalledWith({ type: 'error', message: 'M365 connection failed' }),
+      );
+      expect(replaceState).toHaveBeenCalledWith({}, '', '/settings/ticketing#email');
+      replaceState.mockRestore();
+    });
+  });
+
+  it('renders an abandoned pending row as "Consent not completed" with Retry and Disconnect', async () => {
+    fetchWithAuth
+      .mockResolvedValueOnce(
+        jsonRes({
+          connections: [
+            {
+              id: 'c1', provider: 'm365', mailboxAddress: 'support@a.com', displayName: 'Support',
+              status: 'pending_consent', lastPolledAt: null, lastMessageAt: null, consentExpired: true,
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(jsonRes({ authUrl: 'https://login.microsoftonline.com/retry' }));
+    const assign = vi.fn();
+    Object.defineProperty(window, 'location', {
+      value: { assign, href: '', search: '', hash: '', pathname: '/settings/ticketing' },
+      writable: true,
+    });
+
+    render(<M365MailboxCard />);
+
+    expect(await screen.findByTestId('m365-status')).toHaveTextContent('Consent not completed');
+    expect(screen.getByTestId('m365-consent-expired')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /disconnect/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('m365-retry-consent'));
+    await waitFor(() =>
+      expect(fetchWithAuth).toHaveBeenCalledWith(
+        '/tickets/mailbox/connect',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ mailboxAddress: 'support@a.com', displayName: 'Support' }),
+        }),
+      ),
+    );
+    await waitFor(() => expect(assign).toHaveBeenCalledWith('https://login.microsoftonline.com/retry'));
+  });
+
+  it('keeps an in-flight pending row as "Pending consent" with no Retry', async () => {
+    fetchWithAuth.mockResolvedValueOnce(
+      jsonRes({
+        connections: [
+          {
+            id: 'c1', provider: 'm365', mailboxAddress: 'support@a.com', displayName: null,
+            status: 'pending_consent', lastPolledAt: null, lastMessageAt: null, consentExpired: false,
+          },
+        ],
+      }),
+    );
+
+    render(<M365MailboxCard />);
+
+    expect(await screen.findByTestId('m365-status')).toHaveTextContent('Pending consent');
+    expect(screen.queryByTestId('m365-consent-expired')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('m365-retry-consent')).not.toBeInTheDocument();
+  });
+
+  it('shows the exact redirect URI to register, as returned by the API', async () => {
+    fetchWithAuth.mockResolvedValueOnce(
+      jsonRes({ connections: [], redirectUri: 'https://breeze.example.com/api/v1/tickets/mailbox/callback' }),
+    );
+
+    render(<M365MailboxCard />);
+
+    expect(await screen.findByTestId('m365-redirect-uri')).toHaveTextContent(
+      'https://breeze.example.com/api/v1/tickets/mailbox/callback',
     );
   });
 });

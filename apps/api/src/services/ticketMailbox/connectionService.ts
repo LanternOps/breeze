@@ -3,6 +3,7 @@ import { and, eq, sql, isNull } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
   ticketMailboxConnections,
+  ticketMailboxConsentSessions,
   ticketMailboxTenantOwnerships,
 } from '../../db/schema/ticketMailbox';
 import { organizations } from '../../db/schema/orgs';
@@ -53,6 +54,12 @@ export interface MailboxConnectionListItem {
   lastMessageAt: Date | null;
   /** Sanitized probe failure reason ("Mailbox verification failed: Graph 403 (…)"), else null. */
   verificationError: string | null;
+  /** True for a `pending_consent` row whose current consent attempt has no
+   * unexpired consent session left, so it can never complete on its own: the
+   * user abandoned a Microsoft sign-in, Microsoft never redirected back (e.g.
+   * AADSTS50011 redirect URI mismatch), or the callback was turned away before
+   * it could touch the row (#6936). Always false for any other status. */
+  consentExpired: boolean;
 }
 
 export const MAILBOX_VERIFICATION_FAILED = 'Mailbox verification failed';
@@ -85,6 +92,17 @@ export async function listMailboxConnections(partnerId: string): Promise<Mailbox
     lastPolledAt: ticketMailboxConnections.lastPolledAt,
     lastMessageAt: ticketMailboxConnections.lastMessageAt,
     lastError: ticketMailboxConnections.lastError,
+    // Whether the row's CURRENT attempt still has a live state (either phase).
+    // Sessions are single-use and TTL-bound, so none left means the flow is
+    // dead. Read under the caller's RLS context like the rest of this query;
+    // the sessions table carries the same partner-axis policy.
+    consentSessionLive: sql<boolean>`exists (
+      select 1 from ${ticketMailboxConsentSessions}
+      where ${ticketMailboxConsentSessions.connectionId} = ${ticketMailboxConnections.id}
+        and ${ticketMailboxConsentSessions.partnerId} = ${ticketMailboxConnections.partnerId}
+        and ${ticketMailboxConsentSessions.consentAttemptId} = ${ticketMailboxConnections.consentAttemptId}
+        and ${ticketMailboxConsentSessions.expiresAt} > now()
+    )`,
   }).from(ticketMailboxConnections)
     // Same partner only: a row's org always belongs to its partner, and the
     // extra predicate keeps a stale cross-partner org_id from naming another
@@ -107,6 +125,7 @@ export async function listMailboxConnections(partnerId: string): Promise<Mailbox
     // Only our own sanitized reason is exposed; the poll worker also writes
     // lastError with raw upstream error text that must not reach the client.
     verificationError: row.lastError?.startsWith(MAILBOX_VERIFICATION_FAILED) ? row.lastError : null,
+    consentExpired: row.status === 'pending_consent' && row.consentSessionLive !== true,
   }));
 }
 
