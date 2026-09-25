@@ -167,7 +167,7 @@ channelsRoutes.get(
 
     // Get channels
     const channelsList = await db
-      .select(notificationChannelWithConfigColumns)
+      .select(notificationChannelWithConfigColumns())
       .from(notificationChannels)
       .leftJoin(notificationChannelConfigs, eq(notificationChannelConfigs.channelId, notificationChannels.id))
       .where(whereCondition)

@@ -25,11 +25,17 @@ export type NotificationChannelRow = typeof notificationChannels.$inferSelect;
 /** A channel row plus its config, or `config: null` when the context cannot read it. */
 export type NotificationChannelWithConfig = NotificationChannelRow & { config: unknown };
 
-/** Every channel column plus the config from the child table. */
-export const notificationChannelWithConfigColumns = {
-  ...getTableColumns(notificationChannels),
-  config: notificationChannelConfigs.config,
-};
+/**
+ * Every channel column plus the config from the child table. A function, not a
+ * module-level constant, so importing this module never touches the tables
+ * (unit tests partially mock the schema).
+ */
+export function notificationChannelWithConfigColumns() {
+  return {
+    ...getTableColumns(notificationChannels),
+    config: notificationChannelConfigs.config,
+  };
+}
 
 /**
  * SELECT channels (optionally filtered) LEFT JOINed to their config row. A LEFT
@@ -42,7 +48,7 @@ export async function selectNotificationChannelsWithConfig(
 ): Promise<NotificationChannelWithConfig[]> {
   const executor = options.executor ?? db;
   const query = executor
-    .select(notificationChannelWithConfigColumns)
+    .select(notificationChannelWithConfigColumns())
     .from(notificationChannels)
     .leftJoin(
       notificationChannelConfigs,
