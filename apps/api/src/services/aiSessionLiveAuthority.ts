@@ -24,14 +24,23 @@ type LiveAuthoritySession = Pick<ActiveSession, 'auth' | 'toolAuth' | 'orgId' | 
  * device's org, however wide the user's own reach is (#3087). This narrowing is
  * applied to EVERY branch below, including the platform-admin/system branch —
  * a device-bound platform admin is still bound to the device.
+ *
+ * The exact-device pin (#6675) is carried over too: an explicitly bound
+ * session is pinned to its device, and a device-PAGE session (no
+ * `ai_sessions.device_id`) keeps the page-device allowlist that
+ * `StreamingSessionManager` put on the session's current `toolAuth`. Without
+ * this the release rebuild would drop the pin and run the approved tool with
+ * the caller's full scope.
  */
 function deviceBoundToolAuth(auth: AuthContext, session: LiveAuthoritySession): AuthContext {
-  if (!session.deviceId) return auth;
+  const pin = session.deviceId ? [session.deviceId] : session.toolAuth.allowedDeviceIds;
+  if (!pin) return auth;
   return {
     ...auth,
     orgId: session.orgId,
     accessibleOrgIds: [session.orgId],
     ...buildOrgAccessClosures([session.orgId]),
+    allowedDeviceIds: [...pin],
   };
 }
 

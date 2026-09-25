@@ -494,9 +494,10 @@ export interface ActiveSession {
   readonly orgId: string;
   /**
    * Bound device ID from the aiSessions DB row (null when the session is not
-   * device-bound). When set, `toolAuth` is narrowed to the session org via
-   * `buildDeviceBoundSessionAuth` so org-scoped tools query the DEVICE's org,
-   * not the login org (#3087).
+   * device-bound). When set, `toolAuth` is narrowed to the session org and to
+   * this device via `buildDeviceBoundSessionAuth` so tools query the DEVICE's
+   * org, not the login org (#3087), and never a sibling device (#6675). A
+   * device-PAGE chat leaves this null; its pin rides on `toolAuth` instead.
    */
   readonly deviceId: string | null;
   /**
@@ -537,9 +538,11 @@ export interface ActiveSession {
   auth: AuthContext;
   /**
    * Effective AuthContext for TOOL EXECUTION (MCP handlers + their RLS DB
-   * context). For device-bound sessions this is `auth` narrowed to the
-   * session (device) org via `buildDeviceBoundSessionAuth` (#3087); otherwise
-   * it is `auth` itself. Refreshed alongside `auth` on every request.
+   * context). For device-bound sessions — and for any message sent from a
+   * device page (#6675) — this is `auth` narrowed to the session org AND the
+   * device (`allowedDeviceIds`) via `buildDeviceBoundSessionAuth` (#3087);
+   * otherwise it is `auth` itself. Refreshed alongside `auth` on every
+   * request, so a device-page pin follows the page the message came from.
    */
   toolAuth: AuthContext;
   /** Immutable audit data extracted from the latest request (avoids holding stale Hono context) */
@@ -692,22 +695,74 @@ export function withChatAiOrigin(auth: AuthContext, breezeSessionId: string): Au
   return { ...auth, aiOrigin: { kind: 'ai_assistant', sessionId: breezeSessionId } };
 }
 
-export function buildDeviceBoundSessionAuth(auth: AuthContext, sessionOrgId: string): AuthContext {
+/**
+ * Narrow a chat session's TOOL auth to the session org (#3087) and, when
+ * `deviceIds` is given, to exactly those devices (#6675) — the same
+ * `allowedDeviceIds` axis a device-bound agent run carries (#6096), enforced
+ * by `verifyDeviceAccess` and the `aiToolsSiteScope` device-axis helpers.
+ *
+ * The device allowlist is intersected with any the caller already has, so
+ * this only ever narrows. An empty `deviceIds` array means "no device is
+ * reachable" (fail closed), which is not the same as omitting it.
+ */
+export function buildDeviceBoundSessionAuth(
+  auth: AuthContext,
+  sessionOrgId: string,
+  deviceIds?: readonly string[],
+): AuthContext {
   if (!auth.canAccessOrg(sessionOrgId)) {
     throw new Error('Device-bound AI session org is not accessible to the caller');
   }
+  const allowedDeviceIds = deviceIds
+    ? (auth.allowedDeviceIds
+        ? deviceIds.filter((id) => auth.allowedDeviceIds!.includes(id))
+        : [...deviceIds])
+    : auth.allowedDeviceIds;
   const alreadyPinned =
     auth.orgId === sessionOrgId &&
     auth.accessibleOrgIds?.length === 1 &&
     auth.accessibleOrgIds[0] === sessionOrgId;
-  if (alreadyPinned) return auth;
+  if (alreadyPinned && !deviceIds) return auth;
 
   return {
     ...auth,
     orgId: sessionOrgId,
     accessibleOrgIds: [sessionOrgId],
     ...buildOrgAccessClosures([sessionOrgId]),
+    ...(allowedDeviceIds ? { allowedDeviceIds } : {}),
   };
+}
+
+/**
+ * The devices a chat session's tools are pinned to, or `undefined` for an
+ * unpinned session (full caller scope).
+ *
+ * - An explicitly device-bound session (`ai_sessions.device_id`, e.g. a
+ *   "Fix with AI" task or a Helper chat) is pinned to that device for its
+ *   whole life, whatever page the sidebar is on.
+ * - Otherwise the pin follows the CURRENT message's page context (#6675):
+ *   while the sidebar sits on a device page the tools reach only that device;
+ *   once the user navigates away the session widens back to the caller's
+ *   scope. `pageDeviceIds` is resolved (and access-checked against the
+ *   session org) by the route; `[]` means a device page whose device did not
+ *   resolve, which pins to nothing rather than falling open.
+ */
+function sessionDevicePin(
+  boundDeviceId: string | null | undefined,
+  pageDeviceIds: readonly string[] | undefined,
+): readonly string[] | undefined {
+  if (boundDeviceId) return [boundDeviceId];
+  return pageDeviceIds;
+}
+
+function sessionToolAuth(
+  auth: AuthContext,
+  sessionOrgId: string,
+  boundDeviceId: string | null | undefined,
+  pageDeviceIds: readonly string[] | undefined,
+): AuthContext {
+  const pin = sessionDevicePin(boundDeviceId, pageDeviceIds);
+  return pin ? buildDeviceBoundSessionAuth(auth, sessionOrgId, pin) : auth;
 }
 
 // ============================================
@@ -824,6 +879,14 @@ export class StreamingSessionManager {
        * may omit it — narrowing would be a no-op there.
        */
       deviceId?: string | null;
+      /**
+       * Device the CURRENT message's page context points at (#6675), already
+       * resolved and access-checked against the session org by the caller:
+       * `undefined` = not on a device page, `[id]` = the page device,
+       * `[]` = a device page whose device did not resolve (pins to nothing).
+       * Ignored when `deviceId` is set — an explicit binding always wins.
+       */
+      pageDeviceIds?: readonly string[];
     },
     auth: AuthContext,
     requestContext: RequestLike | undefined,
@@ -886,9 +949,14 @@ export class StreamingSessionManager {
         // the request auth handed in here is built fresh per request.
         const refreshedAuthWithOrigin = withChatAiOrigin(auth, breezeSessionId);
         reusable.auth = refreshedAuthWithOrigin;
-        reusable.toolAuth = reusable.deviceId
-          ? buildDeviceBoundSessionAuth(refreshedAuthWithOrigin, dbSession.orgId)
-          : refreshedAuthWithOrigin;
+        // The page-device pin (#6675) is re-derived from THIS message's page
+        // context, so navigating off the device page widens back.
+        reusable.toolAuth = sessionToolAuth(
+          refreshedAuthWithOrigin,
+          dbSession.orgId,
+          reusable.deviceId,
+          dbSession.pageDeviceIds,
+        );
         reusable.auditSnapshot = snapshot;
         reusable.allowedTools = allowedTools;
         // Re-resolve the approval mode so a settings change applies to the NEXT
@@ -947,9 +1015,14 @@ export class StreamingSessionManager {
     // the act/verify bypass lanes read the carrier off `auth`, while every
     // MCP tool handler reads `toolAuth`.
     const authWithOrigin = withChatAiOrigin(auth, breezeSessionId);
-    const toolAuth = deviceId
-      ? buildDeviceBoundSessionAuth(authWithOrigin, dbSession.orgId)
-      : authWithOrigin;
+    // A device-page chat (#6675) is pinned the same way — org AND device —
+    // for as long as its page context stays that device.
+    const toolAuth = sessionToolAuth(
+      authWithOrigin,
+      dbSession.orgId,
+      deviceId,
+      dbSession.pageDeviceIds,
+    );
 
     // Tenant (BYO MCP) tools — Task A10. Script-builder / client-AI sessions
     // supply their own `mcpServerFactory` and keep their own (non-Breeze)

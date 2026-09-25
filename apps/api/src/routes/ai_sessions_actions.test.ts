@@ -346,6 +346,25 @@ describe('AI routes', () => {
       expect(streamingSessionManager.startTurnTimeout).toHaveBeenCalledWith(activeSession);
     });
 
+    it('hands the preflight page-device pin to the session manager (#6675)', async () => {
+      mockPreflightOk();
+      const preflight = await vi.mocked(runPreFlightChecks).getMockImplementation()!('', '', {} as any);
+      vi.mocked(runPreFlightChecks).mockResolvedValue({ ...(preflight as any), pageDeviceIds: ['page-device-1'] });
+      const activeSession = makeActiveSession();
+      vi.mocked(streamingSessionManager.get).mockReturnValue(undefined);
+      vi.mocked(streamingSessionManager.getOrCreate).mockResolvedValue(activeSession);
+      vi.mocked(streamingSessionManager.tryTransitionToProcessing).mockReturnValue(true);
+      vi.mocked(db.insert).mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) } as any);
+
+      const res = await postMessage();
+      expect(res.status).toBe(200);
+      await res.text();
+
+      const [sessionIdArg, dbSessionArg] = vi.mocked(streamingSessionManager.getOrCreate).mock.calls[0]!;
+      expect(sessionIdArg).toBe(SESSION_ID);
+      expect(dbSessionArg).toMatchObject({ orgId: ORG_ID, pageDeviceIds: ['page-device-1'] });
+    });
+
     it('409s with a wrapping-up message when the settled turn does not conclude in time', async () => {
       mockPreflightOk();
       vi.mocked(streamingSessionManager.get).mockReturnValue(makeActiveSession());

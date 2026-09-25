@@ -52,7 +52,7 @@ vi.mock('./llm/llmConfigResolver', () => ({
   resolveLlmConfigForOrg: (...args: unknown[]) => resolveLlmConfigForOrgMock(...args),
 }));
 
-import { createSession } from './aiAgent';
+import { createSession, resolvePageContextDeviceScope } from './aiAgent';
 
 const ORG_A = 'aaaaaaaa-1111-4222-8333-444455556666';
 const ORG_B = 'bbbbbbbb-1111-4222-8333-444455556666';
@@ -212,5 +212,44 @@ describe('createSession page-context org anchoring (#5593)', () => {
 
     expect(selectMock).not.toHaveBeenCalled();
     expect(valuesSpy).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_A }));
+  });
+});
+
+describe('resolvePageContextDeviceScope — tool pin for device-page chats (#6675)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('is undefined (no pin) off a device page', async () => {
+    expect(await resolvePageContextDeviceScope(partnerAuth(), undefined, ORG_B)).toBeUndefined();
+    expect(
+      await resolvePageContextDeviceScope(partnerAuth(), { type: 'alert', id: 'a', title: 't', severity: 'high' } as any, ORG_B),
+    ).toBeUndefined();
+    expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it('pins to the page device when the caller can reach it in the session org', async () => {
+    selectMock.mockReturnValue(devSelect([{ orgId: ORG_B, siteId: null }]));
+    expect(await resolvePageContextDeviceScope(partnerAuth(), devicePageContext, ORG_B)).toEqual([DEVICE_ID]);
+  });
+
+  it('pins to NO device when the page device is in a different org than the session', async () => {
+    selectMock.mockReturnValue(devSelect([{ orgId: ORG_A, siteId: null }]));
+    expect(await resolvePageContextDeviceScope(partnerAuth(), devicePageContext, ORG_B)).toEqual([]);
+  });
+
+  it('pins to NO device when the caller cannot reach the page device (org or site axis)', async () => {
+    selectMock.mockReturnValue(devSelect([{ orgId: 'cccccccc-1111-4222-8333-444455556666', siteId: null }]));
+    expect(await resolvePageContextDeviceScope(partnerAuth(), devicePageContext, ORG_B)).toEqual([]);
+
+    selectMock.mockReturnValue(devSelect([{ orgId: ORG_B, siteId: 'site-OTHER' }]));
+    const siteRestricted = partnerAuth({ canAccessSite: (s: string | null) => s === 'site-1' });
+    expect(await resolvePageContextDeviceScope(siteRestricted, devicePageContext, ORG_B)).toEqual([]);
+  });
+
+  it('pins to NO device for a missing or malformed page device id', async () => {
+    selectMock.mockReturnValue(devSelect([]));
+    expect(await resolvePageContextDeviceScope(partnerAuth(), devicePageContext, ORG_B)).toEqual([]);
+    expect(
+      await resolvePageContextDeviceScope(partnerAuth(), { ...devicePageContext, id: 'not-a-uuid' }, ORG_B),
+    ).toEqual([]);
   });
 });

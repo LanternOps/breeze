@@ -406,3 +406,168 @@ describe('getOrCreate — device-bound sessions narrow the tool-facing auth', ()
     });
   });
 });
+
+/**
+ * #6675 — a chat opened from a device page sends `pageContext` but no
+ * `deviceId`, so the session row is not device-bound. Tools must still be
+ * pinned to the PAGE device (org axis + exact-device axis) while the page
+ * context stays that device, and widen back once the user leaves the page.
+ */
+describe('getOrCreate — device-page sessions pin tools to the page device (#6675)', () => {
+  const OTHER_DEVICE_ID = '99999999-1111-4222-8333-444455556666';
+  let manager: StreamingSessionManager;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedMcpArgs.length = 0;
+    capturedTenantSdkToolArgs.length = 0;
+    queryMock.mockImplementation(() => ({
+      async *[Symbol.asyncIterator]() {
+        await new Promise(() => undefined);
+      },
+      interrupt: vi.fn(),
+      close: vi.fn(),
+    }));
+    manager = new StreamingSessionManager();
+  });
+
+  afterEach(() => {
+    manager.shutdown();
+  });
+
+  it('narrows a non-device-bound session to the page device org AND the page device', async () => {
+    const session = await manager.getOrCreate(
+      'sess-device-page',
+      { ...DB_SESSION, deviceId: null, pageDeviceIds: [DEVICE_ID] },
+      makePartnerAuth(),
+      undefined,
+      'PROMPT',
+      undefined,
+      PLATFORM_CONFIG,
+    );
+
+    const toolAuth = capturedMcpArgs[0]!.getAuth() as AuthContext;
+    expect(toolAuth.orgId).toBe(DEVICE_ORG);
+    expect(toolAuth.accessibleOrgIds).toEqual([DEVICE_ORG]);
+    expect(toolAuth.canAccessOrg(LOGIN_ORG)).toBe(false);
+    expect(toolAuth.allowedDeviceIds).toEqual([DEVICE_ID]);
+    // Session row stays unbound; RBAC/audit keep the raw login auth.
+    expect(session.deviceId).toBeNull();
+    expect(session.auth.allowedDeviceIds).toBeUndefined();
+    expect(session.auth.accessibleOrgIds).toEqual([LOGIN_ORG, DEVICE_ORG]);
+  });
+
+  it('a device-page session cannot act on a different device in the same org', async () => {
+    await manager.getOrCreate(
+      'sess-device-page-negative',
+      { ...DB_SESSION, deviceId: null, pageDeviceIds: [DEVICE_ID] },
+      makePartnerAuth(),
+      undefined,
+      'PROMPT',
+      undefined,
+      PLATFORM_CONFIG,
+    );
+    const toolAuth = capturedMcpArgs[0]!.getAuth() as AuthContext;
+
+    // Device-less listers / fan-out writes (#6096 device-axis helpers). The
+    // per-deviceId chokepoint (`verifyDeviceAccess`) is exercised against a
+    // same-org sibling in aiChatDevicePageScope.test.ts.
+    const { deviceSiteDenied, filterToDeviceScope } = await import('./aiToolsSiteScope');
+    expect(deviceSiteDenied(toolAuth, null, OTHER_DEVICE_ID)).toBe(true);
+    expect(
+      filterToDeviceScope(toolAuth, [{ d: DEVICE_ID }, { d: OTHER_DEVICE_ID }], (r) => r.d),
+    ).toEqual([{ d: DEVICE_ID }]);
+  });
+
+  it('fails closed (no device reachable) when the page device did not resolve', async () => {
+    await manager.getOrCreate(
+      'sess-device-page-unresolved',
+      { ...DB_SESSION, deviceId: null, pageDeviceIds: [] },
+      makePartnerAuth(),
+      undefined,
+      'PROMPT',
+      undefined,
+      PLATFORM_CONFIG,
+    );
+    const toolAuth = capturedMcpArgs[0]!.getAuth() as AuthContext;
+    expect(toolAuth.orgId).toBe(DEVICE_ORG);
+    expect(toolAuth.allowedDeviceIds).toEqual([]);
+  });
+
+  it('re-scopes on reuse as the page changes: device page narrows, leaving the page widens back', async () => {
+    await manager.getOrCreate(
+      'sess-device-page-nav',
+      { ...DB_SESSION, deviceId: null },
+      makePartnerAuth(),
+      undefined,
+      'PROMPT',
+      undefined,
+      PLATFORM_CONFIG,
+    );
+    const getAuth = capturedMcpArgs[0]!.getAuth;
+    expect((getAuth() as AuthContext).allowedDeviceIds).toBeUndefined();
+
+    await manager.getOrCreate(
+      'sess-device-page-nav',
+      { ...DB_SESSION, deviceId: null, pageDeviceIds: [DEVICE_ID] },
+      makePartnerAuth(),
+      undefined,
+      'PROMPT',
+      undefined,
+      PLATFORM_CONFIG,
+    );
+    expect((getAuth() as AuthContext).allowedDeviceIds).toEqual([DEVICE_ID]);
+    expect((getAuth() as AuthContext).accessibleOrgIds).toEqual([DEVICE_ORG]);
+
+    await manager.getOrCreate(
+      'sess-device-page-nav',
+      { ...DB_SESSION, deviceId: null },
+      makePartnerAuth(),
+      undefined,
+      'PROMPT',
+      undefined,
+      PLATFORM_CONFIG,
+    );
+    expect((getAuth() as AuthContext).allowedDeviceIds).toBeUndefined();
+    expect((getAuth() as AuthContext).accessibleOrgIds).toEqual([LOGIN_ORG, DEVICE_ORG]);
+  });
+
+  it('an explicitly device-bound session is pinned to its own device, whatever page it is on', async () => {
+    await manager.getOrCreate(
+      'sess-explicit-device',
+      { ...DB_SESSION, deviceId: DEVICE_ID, pageDeviceIds: [OTHER_DEVICE_ID] },
+      makePartnerAuth(),
+      undefined,
+      'PROMPT',
+      undefined,
+      PLATFORM_CONFIG,
+    );
+    const toolAuth = capturedMcpArgs[0]!.getAuth() as AuthContext;
+    expect(toolAuth.allowedDeviceIds).toEqual([DEVICE_ID]);
+  });
+});
+
+describe('buildDeviceBoundSessionAuth — exact-device axis (#6675)', () => {
+  it('adds the device allowlist even when the org axis is already pinned', () => {
+    const auth = {
+      scope: 'organization',
+      orgId: DEVICE_ORG,
+      partnerId: PARTNER_ID,
+      accessibleOrgIds: [DEVICE_ORG],
+      ...buildOrgAccessClosures([DEVICE_ORG]),
+      user: { id: USER_ID },
+    } as unknown as AuthContext;
+
+    const narrowed = buildDeviceBoundSessionAuth(auth, DEVICE_ORG, [DEVICE_ID]);
+    expect(narrowed).not.toBe(auth);
+    expect(narrowed.allowedDeviceIds).toEqual([DEVICE_ID]);
+  });
+
+  it('intersects with an existing device allowlist (never widens)', () => {
+    const auth = {
+      ...makePartnerAuth(),
+      allowedDeviceIds: ['some-other-device'],
+    } as unknown as AuthContext;
+    expect(buildDeviceBoundSessionAuth(auth, DEVICE_ORG, [DEVICE_ID]).allowedDeviceIds).toEqual([]);
+  });
+});

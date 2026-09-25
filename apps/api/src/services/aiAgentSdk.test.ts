@@ -62,9 +62,11 @@ vi.mock('drizzle-orm', async (importOriginal) => ({
 
 const mockGetSession = vi.fn();
 const mockBuildSystemPrompt = vi.fn();
+const mockResolvePageContextDeviceScope = vi.fn();
 vi.mock('./aiAgent', () => ({
   getSession: (...args: unknown[]) => mockGetSession(...args),
   buildSystemPrompt: (...args: unknown[]) => mockBuildSystemPrompt(...args),
+  resolvePageContextDeviceScope: (...args: unknown[]) => mockResolvePageContextDeviceScope(...args),
   waitForApproval: vi.fn(),
 }));
 
@@ -669,6 +671,45 @@ describe('runPreFlightChecks', () => {
       expect(result.systemPrompt).toBe('contextual prompt');
     }
     expect(mockBuildSystemPrompt).toHaveBeenCalledWith(auth, sanitizedCtx);
+  });
+
+  // --- Page-device tool pin (#6675) ---
+
+  it('returns the resolved page-device pin for a device page (#6675)', async () => {
+    const pageContext = { type: 'device', id: 'dev-1', hostname: 'test' } as any;
+    mockSanitizePageContext.mockReturnValue(pageContext);
+    mockResolvePageContextDeviceScope.mockResolvedValue(['dev-1']);
+
+    const result = await runPreFlightChecks('session-1', 'hello', auth, pageContext);
+
+    expect(result.ok && result.pageDeviceIds).toEqual(['dev-1']);
+    expect(mockResolvePageContextDeviceScope).toHaveBeenCalledWith(auth, pageContext, 'org-1');
+  });
+
+  it('leaves the pin unset off a device page (#6675)', async () => {
+    const result = await runPreFlightChecks('session-1', 'hello', auth);
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.pageDeviceIds).toBeUndefined();
+    expect(mockResolvePageContextDeviceScope).not.toHaveBeenCalled();
+  });
+
+  it('pins to NO device when the device page context fails sanitization (#6675, fail closed)', async () => {
+    const pageContext = { type: 'device', id: 'dev-1', hostname: 'test' } as any;
+    mockSanitizePageContext.mockImplementation(() => { throw new Error('bad context'); });
+
+    const result = await runPreFlightChecks('session-1', 'hello', auth, pageContext);
+
+    expect(result.ok && result.pageDeviceIds).toEqual([]);
+  });
+
+  it('pins to NO device when resolving the page device throws (#6675, fail closed)', async () => {
+    const pageContext = { type: 'device', id: 'dev-1', hostname: 'test' } as any;
+    mockSanitizePageContext.mockReturnValue(pageContext);
+    mockResolvePageContextDeviceScope.mockRejectedValue(new Error('db down'));
+
+    const result = await runPreFlightChecks('session-1', 'hello', auth, pageContext);
+
+    expect(result.ok && result.pageDeviceIds).toEqual([]);
   });
 
   it('falls back to session systemPrompt when no page context', async () => {

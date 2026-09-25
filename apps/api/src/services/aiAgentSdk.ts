@@ -25,7 +25,7 @@ import {
 import { ensureLaneCheckpointBeforeRelease } from './actionIntents/laneCheckpoint';
 import { checkBudget, checkAiRateLimit } from './aiCostTracker';
 import { sanitizeUserMessage, sanitizePageContext } from './aiInputSanitizer';
-import { getSession, buildSystemPrompt, waitForApproval } from './aiAgent';
+import { getSession, buildSystemPrompt, resolvePageContextDeviceScope, waitForApproval } from './aiAgent';
 import { TOOL_TIERS, type PreToolUseCallback, type PostToolUseCallback } from './aiAgentSdkTools';
 import { isAllowedForSession, stripMcpPrefix } from './mcpToolNames';
 import {
@@ -367,6 +367,11 @@ export type PreFlightResult = {
   systemPrompt: string;
   maxBudgetUsd: number | undefined;
   resolved: UsableLlmConfig;
+  /**
+   * Device the tools of THIS message are pinned to (#6675) — see
+   * `resolvePageContextDeviceScope`. `undefined` off a device page.
+   */
+  pageDeviceIds?: string[];
 } | {
   ok: false;
   error: string;
@@ -512,10 +517,36 @@ export async function runPreFlightChecks(
     ? await buildSystemPrompt(auth, sanitizedPageContext)
     : (session.systemPrompt ?? await buildSystemPrompt(auth));
 
+  // Device-page tool pin (#6675). Fails CLOSED: a device page whose context
+  // could not be sanitized or whose device could not be resolved pins the
+  // tools to no device, never to the caller's full scope.
+  let pageDeviceIds: string[] | undefined;
+  if (pageContext?.type === 'device') {
+    if (!sanitizedPageContext) {
+      pageDeviceIds = [];
+    } else {
+      try {
+        pageDeviceIds = await resolvePageContextDeviceScope(auth, sanitizedPageContext, orgId);
+      } catch (err) {
+        captureException(err, undefined, { service: 'aiAgentSdk', orgId });
+        console.error('[AI-SDK] Failed to resolve page-context device; pinning tools to no device:', err);
+        pageDeviceIds = [];
+      }
+    }
+  }
+
   // A durable reservation is acquired immediately before provider dispatch by
   // the route. Returning an advisory remaining-budget snapshot here would
   // recreate the check-then-spend race this preflight must not authorize.
-  return { ok: true, session, sanitizedContent, systemPrompt, maxBudgetUsd: undefined, resolved };
+  return {
+    ok: true,
+    session,
+    sanitizedContent,
+    systemPrompt,
+    maxBudgetUsd: undefined,
+    resolved,
+    ...(pageDeviceIds ? { pageDeviceIds } : {}),
+  };
 }
 
 /**

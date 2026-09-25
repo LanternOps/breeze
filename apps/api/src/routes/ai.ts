@@ -690,7 +690,7 @@ aiRoutes.post(
       return c.json({ error: err }, 400);
     }
 
-    const { session: dbSession, sanitizedContent, systemPrompt, resolved } = preflight;
+    const { session: dbSession, sanitizedContent, systemPrompt, resolved, pageDeviceIds } = preflight;
 
     // ---- OpenAI-compatible path (chat-only, no tool-calling) ----
     const useOpenAICompatibleProvider = isOpenAICompatibleProvider();
@@ -861,6 +861,9 @@ aiRoutes.post(
           // Device-bound sessions narrow tool execution to the device's org
           // (ai_sessions.org_id), not the login org (#3087).
           deviceId: dbSession.deviceId,
+          // A chat sent from a device page pins its tools to that device for
+          // this message (#6675), even though the session row is unbound.
+          pageDeviceIds,
         },
         auth,
         c,

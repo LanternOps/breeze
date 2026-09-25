@@ -289,6 +289,47 @@ describe('resolveLiveSessionToolAuthority', () => {
     }
   });
 
+  it('keeps a device-PAGE session pinned to its page device on delayed release (#6675)', async () => {
+    vi.mocked(computeAccessibleOrgIds).mockResolvedValue({
+      orgIds: ['org-1', 'org-sibling'], partnerOrgAccess: 'all',
+    });
+    vi.mocked(getUserPermissions).mockResolvedValue({
+      permissions: [], partnerId: 'partner-current', orgId: 'org-1', roleId: 'role-new',
+      scope: 'partner', orgAccess: 'all',
+    } as never);
+    const base = session({
+      auth: { ...session().auth, scope: 'partner', partnerId: 'partner-stale', orgId: null },
+    });
+
+    const result = await resolveLiveSessionToolAuthority(
+      // Not device-bound on the row; the pin lives on the current toolAuth.
+      { ...base, deviceId: null, toolAuth: { ...base.auth, allowedDeviceIds: ['page-device'] } },
+      'manage_alerts', { action: 'resolve' },
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.auth.allowedDeviceIds).toBeUndefined();
+      expect(result.toolAuth.allowedDeviceIds).toEqual(['page-device']);
+      expect(result.toolAuth.accessibleOrgIds).toEqual(['org-1']);
+      expect(result.toolAuth.canAccessOrg('org-sibling')).toBe(false);
+    }
+  });
+
+  it('pins an explicitly device-bound session to its device on delayed release (#6675)', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValue({
+      permissions: [], partnerId: null, orgId: 'org-1', roleId: 'role-new',
+      scope: 'organization', orgAccess: 'all',
+    } as never);
+
+    const result = await resolveLiveSessionToolAuthority(
+      session({ deviceId: 'device-9' }), 'manage_alerts', { action: 'resolve' },
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.toolAuth.allowedDeviceIds).toEqual(['device-9']);
+  });
+
   describe('system-scoped (platform admin) sessions', () => {
     function systemSession(overrides: Record<string, unknown> = {}) {
       const base = session(overrides);

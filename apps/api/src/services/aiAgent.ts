@@ -75,6 +75,25 @@ async function resolvePageContextOrgId(
   return (await loadAccessibleDeviceRow(pageContext.id, auth))?.orgId;
 }
 
+/**
+ * Tool pin for a message sent from a device page (#6675).
+ *
+ * `undefined` when the page context is not a device (the session keeps the
+ * caller's scope). Otherwise the page device as a one-element allowlist when
+ * the caller can reach it on both tenancy axes AND it lives in the session's
+ * org, or `[]` — pin to no device — when it cannot be resolved. A device page
+ * never falls open to the caller's full scope.
+ */
+export async function resolvePageContextDeviceScope(
+  auth: AuthContext,
+  pageContext: AiPageContext | undefined,
+  sessionOrgId: string,
+): Promise<string[] | undefined> {
+  if (!pageContext || pageContext.type !== 'device') return undefined;
+  const row = await loadAccessibleDeviceRow(pageContext.id, auth);
+  return row && row.orgId === sessionOrgId ? [pageContext.id] : [];
+}
+
 export async function createSession(
   auth: AuthContext,
   options: {
@@ -648,6 +667,13 @@ export async function buildSystemPrompt(auth: AuthContext, pageContext?: AiPageC
         if (pageContext.status) parts.push(`Status: ${pageContext.status}`);
         if (pageContext.ip) parts.push(`IP: ${pageContext.ip}`);
         parts.push('Prioritize information and actions related to this device.');
+        // #6675: tools sent from a device page are pinned to this device, so
+        // tell the model rather than let it read "access denied" as missing data.
+        parts.push(
+          'While the user is on this device\'s page, your tools can only reach this device. '
+            + 'If they ask about other devices or the wider fleet, tell them to open that device, '
+            + 'or to continue from a page that is not a device page.',
+        );
 
         // Auto-load past device context so brain doesn't start cold. The device
         // id comes from attacker-controllable pageContext, so authorize it
