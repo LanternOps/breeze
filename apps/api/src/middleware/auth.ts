@@ -270,10 +270,20 @@ export function siteAccessCheck(
  *
  * Path is the API path *after* the `/api/v1` mount, e.g. `/auth/mfa/setup`.
  */
-export function isMfaEnrollmentExemptPath(path: string): boolean {
+export function isMfaEnrollmentExemptPath(path: string, method?: string): boolean {
   // Strip the /api/v1 prefix if present so the check works whether Hono
   // gives us the absolute path or a sub-app path.
   const rel = path.startsWith('/api/v1') ? path.slice('/api/v1'.length) : path;
+
+  // READ of the caller's own partner status (#6627). The account-inactive
+  // screen's only call; partnerGuard already skips it so a pending/suspended
+  // partner can learn its status. Without this a pending hosted partner whose
+  // role forces MFA got 428 here, the inactive screen had nothing to render,
+  // and the user bounced /account/inactive → / → 403 PARTNER_INACTIVE →
+  // /account/inactive forever. It returns only id/name/slug/status and the
+  // operator-set status CTA — no tenant data. Exact path and GET/HEAD only:
+  // any write, sub-path or sibling /partner route stays behind the gate.
+  if (rel === '/partner/me' && (method === 'GET' || method === 'HEAD')) return true;
 
   if (rel === '/auth/logout') return true;
   // The CF-Access-fronted twin of /auth/logout: it durably revokes refresh
@@ -710,7 +720,7 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
   // getEffectiveOrgSettings query, and hot polled exempt routes
   // (/users/me, /auth/mfa/*) must not pay that DB cost on every request
   // (the US DB has a ~25-connection ceiling).
-  if (ENABLE_2FA && !user.mfaEnabled && !isMfaEnrollmentExemptPath(c.req.path)) {
+  if (ENABLE_2FA && !user.mfaEnabled && !isMfaEnrollmentExemptPath(c.req.path, c.req.method)) {
     const policy = await getEffectiveMfaPolicy({
       scope: payload.scope,
       userId: user.id,

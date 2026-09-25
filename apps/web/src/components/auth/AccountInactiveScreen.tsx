@@ -46,10 +46,33 @@ export default function AccountInactiveScreen() {
       }),
     };
 
+    // Sentinel for "a navigation is already under way — render nothing".
+    const LEAVING = Symbol('leaving');
+    // Keep the spinner up while a navigation is pending instead of flashing an
+    // empty "Account Inactive" card.
+    let leaving = false;
+
     fetchWithAuth('/partner/me')
-      .then((res) => (res.ok ? res.json() : null))
+      .then(async (res) => {
+        if (res.ok) return res.json();
+        // #6627: never read a non-OK answer as "no data → go home". `/` is
+        // behind partnerGuard, so for an inactive partner every protected call
+        // there 403s PARTNER_INACTIVE straight back to this screen — a loop.
+        if (res.status === 428) {
+          // Forced-MFA gate: enrollment is the only way forward. (fetchWithAuth
+          // also redirects on this 428; setting it here keeps a later `/`
+          // navigation from overriding it.)
+          window.location.href = '/auth/mfa/setup?forced=1';
+          return LEAVING;
+        }
+        // No partner association (e.g. a system user): nothing to show here.
+        if (res.status === 404) return null;
+        throw new Error(`GET /partner/me failed: ${res.status}`);
+      })
       .then((data) => {
+        if (data === LEAVING) { leaving = true; return; }
         if (!data || data.status === 'active') {
+          leaving = true;
           window.location.href = '/';
           return;
         }
@@ -72,7 +95,7 @@ export default function AccountInactiveScreen() {
           meetingLabel: null,
         });
       })
-      .finally(() => setLoading(false));
+      .finally(() => { if (!leaving) setLoading(false); });
   }, [stableT]);
 
   const handleLogout = () => {
