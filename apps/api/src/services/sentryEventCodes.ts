@@ -71,6 +71,12 @@ export const SENTRY_EVENT_CODES = [
   'db_contextless_write',
   /** Slow work ran INSIDE a held DB access context (#1105 tripwire). */
   'db_operation_inside_held_context',
+  // #6452 — Redis memory watchdog. Redis runs `noeviction` by contract, so a
+  // full instance fails writes loudly; these give advance warning instead.
+  /** Redis used_memory crossed the configured warn ratio of maxmemory. */
+  'redis_memory_high',
+  /** Redis memory watchdog itself threw while evaluating (e.g. Redis down). */
+  'redis_memory_check_failed',
   /** A compare-and-set write that expected rows affected zero (BREEZE-X). */
   'db_write_expecting_rows_zero',
 
