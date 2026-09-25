@@ -112,6 +112,13 @@ const ALLOWED_TAG_NAMES = new Set([
   // (DB_POOL_HEALTH_VERDICTS plus the `check-failed` self-report); carries no
   // tenant, device, or host identifier.
   'db_pool_health_verdict',
+  // #6452: the Redis memory watchdog's used_memory/maxmemory ratio, rounded to
+  // a whole percent. `scrubEvent` deletes `message`, `logentry` and `extra`
+  // from every event, so without this the alert would say only "Redis memory
+  // is high" with no number attached — the thing an operator actually needs to
+  // decide how urgent raising REDIS_MAXMEMORY is. Bounded 0-100 (int), carries
+  // no tenant, device, or host identifier.
+  'redis_memory_ratio',
   // #3517: the global body-limit gate's 413s carry the carve-out RULE that
   // matched and its configured byte ceiling. `body_limit_rule` is the closed
   // `BodyLimitRule` union (middleware/bodyLimit.ts) and `body_limit_max_size` is

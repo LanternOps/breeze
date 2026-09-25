@@ -95,28 +95,48 @@ const checkFailuresGauge = new Gauge({
   registers: [register],
 });
 
+// A hung `redis.info()` call (e.g. a wedged connection) leaves every tick
+// after it skipped — with no failure recorded, `checkFailuresGauge` stays
+// flat, and `lastCheckGauge` staying stale is the ONLY other signal. Without
+// this counter, "the watchdog itself is stalled" is indistinguishable on
+// /metrics from "nothing has changed for a while".
+const checkSkippedGauge = new Gauge({
+  name: 'breeze_redis_memory_check_skipped_total',
+  help: 'Ticks skipped because the previous Redis memory check was still in flight, since process start (#6452)',
+  registers: [register],
+});
+
 usedMemoryGauge.set(0);
 maxMemoryGauge.set(0);
 memoryRatioGauge.set(-1);
 lastCheckGauge.set(0);
 checkFailuresGauge.set(0);
+checkSkippedGauge.set(0);
 
 /**
  * Parses the subset of an `INFO memory` reply this module needs. Returns null
- * on a malformed/truncated reply (missing `used_memory`) rather than
- * defaulting to 0 — a parse failure must surface as "not observed", not as a
- * false "empty" reading.
+ * on a malformed/truncated reply — missing `used_memory` OR missing
+ * `maxmemory` — rather than defaulting the missing field to 0.
+ *
+ * Both fields are always present in a real `INFO memory` reply (maxmemory=0
+ * is how Redis reports "unbounded", it never omits the field). Treating a
+ * MISSING maxmemory line the same as a present-and-explicit `maxmemory:0`
+ * would silently reinterpret a truncated/malformed reply as "unbounded, no
+ * ratio to compute" — which reports as a quiet console line instead of the
+ * parse-failure path (thrown, counted, Sentry-throttled). A real
+ * over-threshold instance whose reply happened to drop this one field would
+ * then go unreported.
  */
 export function parseRedisMemoryInfo(
   info: string,
 ): { usedMemoryBytes: number; maxMemoryBytes: number } | null {
   const usedMatch = /^used_memory:(\d+)\s*$/m.exec(info);
   const maxMatch = /^maxmemory:(\d+)\s*$/m.exec(info);
-  if (!usedMatch) return null;
+  if (!usedMatch || !maxMatch) return null;
 
   return {
     usedMemoryBytes: Number.parseInt(usedMatch[1]!, 10),
-    maxMemoryBytes: maxMatch ? Number.parseInt(maxMatch[1]!, 10) : 0,
+    maxMemoryBytes: Number.parseInt(maxMatch[1]!, 10),
   };
 }
 
@@ -135,7 +155,7 @@ export async function assessRedisMemory(
   const info = await deps.readInfo();
   const parsed = parseRedisMemoryInfo(info);
   if (!parsed) {
-    throw new Error('[redis-memory] INFO memory reply missing used_memory');
+    throw new Error('[redis-memory] INFO memory reply missing used_memory or maxmemory');
   }
 
   const { usedMemoryBytes, maxMemoryBytes } = parsed;
@@ -158,6 +178,7 @@ export async function assessRedisMemory(
 
 let lastAssessment: RedisMemoryAssessment | null = null;
 let checkFailures = 0;
+let checksSkipped = 0;
 let timer: NodeJS.Timeout | null = null;
 let activeIntervalMs: number | null = null;
 let checkInFlight = false;
@@ -171,6 +192,11 @@ export function getLastRedisMemoryAssessment(): RedisMemoryAssessment | null {
 /** Checks that threw before producing a reading. Monotonic. */
 export function getRedisMemoryCheckFailures(): number {
   return checkFailures;
+}
+
+/** Ticks skipped because the previous check was still in flight. Monotonic. */
+export function getRedisMemoryChecksSkipped(): number {
+  return checksSkipped;
 }
 
 /**
@@ -266,8 +292,12 @@ export async function runRedisMemoryCheck(
         captureMessage('[redis-memory] watchdog evaluation failed', {
           eventCode: 'redis_memory_check_failed',
         });
-      } catch {
-        // The reporter is what failed; the console line above stands.
+      } catch (captureErr) {
+        // The console line above already recorded the ORIGINAL Redis failure;
+        // this logs the SEPARATE fact that reporting it to Sentry also failed
+        // — dropping that silently would mean a Sentry outage overlapping a
+        // Redis outage is invisible in both places an operator looks.
+        console.error('[redis-memory] failed to report check-failure to Sentry:', captureErr);
       }
     }
     return null;
@@ -285,6 +315,8 @@ export function startRedisMemoryMonitor(): number | null {
   activeIntervalMs = getRedisMemoryIntervalMs();
   timer = setInterval(() => {
     if (checkInFlight) {
+      checksSkipped += 1;
+      checkSkippedGauge.set(checksSkipped);
       console.warn('[redis-memory] skipping tick — the previous check is still in flight.');
       return;
     }
@@ -311,10 +343,12 @@ export function __resetRedisMemoryMonitorForTests(): void {
   checkInFlight = false;
   lastAssessment = null;
   checkFailures = 0;
+  checksSkipped = 0;
   lastCaptureAtByKey.clear();
   usedMemoryGauge.set(0);
   maxMemoryGauge.set(0);
   memoryRatioGauge.set(-1);
   lastCheckGauge.set(0);
   checkFailuresGauge.set(0);
+  checkSkippedGauge.set(0);
 }

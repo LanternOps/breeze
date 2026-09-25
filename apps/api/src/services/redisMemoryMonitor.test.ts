@@ -11,6 +11,7 @@ import {
   claimRedisMemoryCaptureSlot,
   getLastRedisMemoryAssessment,
   getRedisMemoryCheckFailures,
+  getRedisMemoryChecksSkipped,
   parseRedisMemoryInfo,
   runRedisMemoryCheck,
   startRedisMemoryMonitor,
@@ -56,6 +57,19 @@ describe('redisMemoryMonitor (#6452)', () => {
     it('returns null when used_memory is missing (malformed reply)', () => {
       expect(parseRedisMemoryInfo('maxmemory:4194304\r\n')).toBeNull();
     });
+
+    it('returns null when maxmemory is missing entirely — NOT the same as maxmemory:0', () => {
+      // A truncated/malformed reply that drops the maxmemory line must surface
+      // as a parse failure, never be silently reinterpreted as "unbounded".
+      expect(parseRedisMemoryInfo('used_memory:1000000\r\n')).toBeNull();
+    });
+
+    it('treats an explicit maxmemory:0 as unbounded, not a parse failure', () => {
+      expect(parseRedisMemoryInfo('used_memory:1000000\r\nmaxmemory:0\r\n')).toEqual({
+        usedMemoryBytes: 1000000,
+        maxMemoryBytes: 0,
+      });
+    });
   });
 
   describe('assessRedisMemory', () => {
@@ -78,6 +92,16 @@ describe('redisMemoryMonitor (#6452)', () => {
       expect(result.ratio).toBeCloseTo(0.8);
       expect(result.warn).toBe(true);
       expect(result.message).toContain('80');
+    });
+
+    it('does NOT warn just below the threshold', async () => {
+      const result = await assessRedisMemory({
+        readInfo: async () => 'used_memory:3199999\r\nmaxmemory:4000000\r\n',
+        thresholdRatio: 0.8,
+      });
+
+      expect(result.ratio).toBeLessThan(0.8);
+      expect(result.warn).toBe(false);
     });
 
     it('reports ratio null and never warns when maxmemory is unbounded (0)', async () => {
@@ -134,6 +158,68 @@ describe('redisMemoryMonitor (#6452)', () => {
       });
 
       expect(captureMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it('throttles Sentry to at most once per capture window across consecutive warn checks', async () => {
+      process.env.REDIS_MEMORY_CAPTURE_THROTTLE_MS = '1000000';
+      const highUsage = async () => 'used_memory:3900000\r\nmaxmemory:4000000\r\n';
+
+      await runRedisMemoryCheck({ readInfo: highUsage, thresholdRatio: 0.8 });
+      await runRedisMemoryCheck({ readInfo: highUsage, thresholdRatio: 0.8 });
+      await runRedisMemoryCheck({ readInfo: highUsage, thresholdRatio: 0.8 });
+
+      // Three consecutive warn-crossing checks within the throttle window must
+      // reach Sentry exactly once — this is what stops a Sentry storm from a
+      // sustained high-memory condition polled every interval.
+      expect(captureMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it('increments the check-skipped counter when a tick fires while the previous check is still in flight', async () => {
+      vi.useFakeTimers();
+      process.env.REDIS_MEMORY_MONITOR_INTERVAL_MS = '1000';
+      let releaseFirstCheck: (() => void) | undefined;
+      const slowRedis = {
+        info: () => new Promise<string>((resolve) => {
+          releaseFirstCheck = () => resolve('used_memory:1000\r\nmaxmemory:10000\r\n');
+        }),
+      };
+      vi.doMock('./redis', () => ({ getRedis: () => slowRedis }));
+      vi.resetModules();
+      const mod = await import('./redisMemoryMonitor');
+
+      try {
+        mod.startRedisMemoryMonitor();
+        await vi.advanceTimersByTimeAsync(1000); // tick 1: starts the slow check
+        await vi.advanceTimersByTimeAsync(1000); // tick 2: previous check still in flight
+        expect(mod.getRedisMemoryChecksSkipped()).toBe(1);
+      } finally {
+        releaseFirstCheck?.();
+        mod.stopRedisMemoryMonitor();
+        vi.doUnmock('./redis');
+        vi.resetModules();
+        vi.useRealTimers();
+      }
+    });
+
+    it('logs (without throwing) when the Sentry reporter itself fails on the check-failed path', async () => {
+      captureMessage.mockImplementationOnce(() => {
+        throw new Error('Sentry is down');
+      });
+      const errorSpy = vi.spyOn(console, 'error');
+
+      const result = await runRedisMemoryCheck({
+        readInfo: async () => {
+          throw new Error('ECONNREFUSED');
+        },
+        thresholdRatio: 0.8,
+      });
+
+      expect(result).toBeNull();
+      expect(
+        errorSpy.mock.calls.some((call) =>
+          String(call[0]).includes('failed to report check-failure to Sentry'),
+        ),
+      ).toBe(true);
     });
   });
 
