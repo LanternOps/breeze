@@ -945,13 +945,40 @@ func TestRunCollectionSteps_OnlyOptionalFailuresSucceed(t *testing.T) {
 	}
 }
 
+// Every step failing (e.g. an unelevated agent) is the likeliest real-world
+// shape of #6505, so the required steps' reasons must survive the
+// no-artifacts short-circuit too.
 func TestRunCollectionSteps_AllFailNoArtifacts(t *testing.T) {
+	hiveErr := &registrySaveError{FailedHives: []string{"SAM"}, Err: errors.New("Access is denied.")}
 	steps := []collectionStep{
-		{"registry", func(string) ([]Artifact, error) { return nil, errors.New("a") }},
-		{"boot", func(string) ([]Artifact, error) { return nil, errors.New("b") }},
+		{"registry", func(string) ([]Artifact, error) { return nil, hiveErr }},
+		{"drivers", func(string) ([]Artifact, error) { return nil, errors.New("driverquery exploded") }},
 	}
 	err := runCollectionSteps(&SystemStateManifest{}, steps, t.TempDir(), map[string]bool{"registry": true})
-	if err == nil || !strings.Contains(err.Error(), "produced no artifacts - all 2 steps failed") {
+	if err == nil {
+		t.Fatal("all steps failing must fail the collection")
+	}
+	msg := err.Error()
+	for _, want := range []string{"produced no artifacts - all 2 steps failed", "reg save failed for hive(s) [SAM]"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error must contain %q; got %q", want, msg)
+		}
+	}
+	if strings.Contains(msg, "driverquery") {
+		t.Errorf("a best-effort step's failure must not be reported as a required-step reason; got %q", msg)
+	}
+	var rsErr *registrySaveError
+	if !errors.As(err, &rsErr) {
+		t.Errorf("the registry step error must stay reachable via errors.As; got %q", msg)
+	}
+}
+
+func TestRunCollectionSteps_AllOptionalFailNoArtifacts(t *testing.T) {
+	steps := []collectionStep{
+		{"drivers", func(string) ([]Artifact, error) { return nil, errors.New("x") }},
+	}
+	err := runCollectionSteps(&SystemStateManifest{}, steps, t.TempDir(), map[string]bool{"registry": true})
+	if err == nil || err.Error() != "system state collection produced no artifacts - all 1 steps failed" {
 		t.Fatalf("got %v", err)
 	}
 }

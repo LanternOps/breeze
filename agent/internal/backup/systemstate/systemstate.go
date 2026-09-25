@@ -69,10 +69,17 @@ func runCollectionSteps(manifest *SystemStateManifest, steps []collectionStep, s
 		manifest.Artifacts = append(manifest.Artifacts, arts...)
 	}
 
+	missing := missingRequired(manifest.IncompleteSteps, required)
 	if len(manifest.Artifacts) == 0 {
+		if len(missing) > 0 {
+			// Every step failed (e.g. an unelevated agent): still carry the
+			// required steps' reasons so the failed hives reach error_log.
+			return fmt.Errorf("system state collection produced no artifacts - all %d steps failed: %w",
+				len(steps), &requiredStepsError{Missing: missing, StepErrs: requiredErrs})
+		}
 		return fmt.Errorf("system state collection produced no artifacts - all %d steps failed", len(steps))
 	}
-	if missing := missingRequired(manifest.IncompleteSteps, required); len(missing) > 0 {
+	if len(missing) > 0 {
 		// Carry each required step's own error (e.g. the registry step's
 		// "reg save failed for hive(s) [SAM SECURITY]: ...") on the returned
 		// error. This string is what lands in backup_jobs.error_log; naming
