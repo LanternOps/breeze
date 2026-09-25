@@ -3,6 +3,7 @@ package backup
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -12,69 +13,92 @@ import (
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
 
-// oneChunkThenStallProvider writes one chunk into the destination and then
-// delivers nothing until its context ends: a mid-body stall. It records when
-// the last byte landed so a test can time the stall detection from it.
-type oneChunkThenStallProvider struct {
-	growFile   bool // write the chunk into localPath (what io.Copy does)
-	callback   bool // report the chunk to the WithDownloadProgress callback
-	lastByteAt atomic.Int64
+// chunkedStallProvider writes chunks into the destination on a schedule and
+// then either completes or stalls until its context ends. It records when
+// the last byte landed so a test can time stall detection from it.
+type chunkedStallProvider struct {
+	chunks   int
+	interval time.Duration
+	growFile bool // write chunks into localPath (what io.Copy does)
+	// callbackChunks is how many leading chunks are reported to the
+	// WithDownloadProgress callback; later chunks land without a report.
+	callbackChunks int
+	// staleModTime resets the file's modification time to the distant past
+	// after every write, as a provider or filesystem that preserves or never
+	// refreshes it would.
+	staleModTime bool
+	stallAtEnd   bool
+	lastByteAt   atomic.Int64
 }
 
-func (p *oneChunkThenStallProvider) Upload(string, string) error   { return nil }
-func (p *oneChunkThenStallProvider) List(string) ([]string, error) { return nil, nil }
-func (p *oneChunkThenStallProvider) Delete(string) error           { return nil }
-func (p *oneChunkThenStallProvider) Download(string, string) error {
+func (p *chunkedStallProvider) Upload(string, string) error   { return nil }
+func (p *chunkedStallProvider) List(string) ([]string, error) { return nil, nil }
+func (p *chunkedStallProvider) Delete(string) error           { return nil }
+func (p *chunkedStallProvider) Download(string, string) error {
 	panic("the stall path must use DownloadContext")
 }
 
-func (p *oneChunkThenStallProvider) DownloadContext(ctx context.Context, _, localPath string) error {
+func (p *chunkedStallProvider) DownloadContext(ctx context.Context, _, localPath string) error {
 	f, err := os.Create(localPath)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = f.Close() }()
-	chunk := []byte("manifest-chunk")
-	if p.growFile {
-		var w = providers.DownloadProgressWriter(ctx, f)
-		if !p.callback {
-			w = f
+	chunk := []byte("manifest-chunk-")
+	past := time.Unix(1_000_000_000, 0)
+	for i := 0; i < p.chunks; i++ {
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(p.interval):
+			}
+		}
+		sink := io.Discard
+		if p.growFile {
+			sink = f
+		}
+		w := sink
+		if i < p.callbackChunks {
+			w = providers.DownloadProgressWriter(ctx, sink)
 		}
 		if _, err := w.Write(chunk); err != nil {
 			return err
 		}
-	} else if p.callback {
-		// Buffered in memory: the callback is the only progress signal.
-		if _, err := providers.DownloadProgressWriter(ctx, discardWriter{}).Write(chunk); err != nil {
-			return err
+		if p.staleModTime {
+			if err := os.Chtimes(localPath, past, past); err != nil {
+				return err
+			}
 		}
+		p.lastByteAt.Store(time.Now().UnixNano())
 	}
-	p.lastByteAt.Store(time.Now().UnixNano())
+	if !p.stallAtEnd {
+		return nil
+	}
 	<-ctx.Done()
 	return ctx.Err()
 }
 
-type discardWriter struct{}
-
-func (discardWriter) Write(b []byte) (int, error) { return len(b), nil }
-
-// A stall must be detected about ONE no-progress window after the last byte,
-// whichever progress signals the provider gives. Crediting file growth at the
-// time it was sampled detected it after about two windows (#6952).
-func TestDownloadWithStallTimeout_DetectsStallOneWindowAfterLastByte(t *testing.T) {
+// A stall must be detected about ONE no-progress window after the last byte
+// when the provider reports progress through the callback, as every
+// production provider does. Re-crediting that same data when the file growth
+// was sampled detected it after about two windows (#6952). A provider seen
+// only through file growth keeps the documented two-window bound.
+func TestDownloadWithStallTimeout_DetectionTimeAfterLastByte(t *testing.T) {
 	const window = 300 * time.Millisecond
 	for _, tc := range []struct {
-		name     string
-		growFile bool
-		callback bool
+		name           string
+		growFile       bool
+		callbackChunks int
+		max            time.Duration
 	}{
-		{"callback and file growth", true, true},
-		{"file growth only", true, false},
-		{"callback only", false, true},
+		{"callback and file growth", true, 1, window + window/2},
+		{"callback only", false, 1, window + window/2},
+		{"file growth only", true, 0, 2*window + window/2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			defer setDownloadTimeoutFloorForTest(window)()
-			p := &oneChunkThenStallProvider{growFile: tc.growFile, callback: tc.callback}
+			p := &chunkedStallProvider{chunks: 1, growFile: tc.growFile, callbackChunks: tc.callbackChunks, stallAtEnd: true}
 			dest := filepath.Join(t.TempDir(), "manifest.json")
 
 			var err error
@@ -90,8 +114,42 @@ func TestDownloadWithStallTimeout_DetectsStallOneWindowAfterLastByte(t *testing.
 			if since < window-20*time.Millisecond {
 				t.Fatalf("stall declared %v after the last byte, before the %v window", since, window)
 			}
-			if since > window+window/2 {
-				t.Fatalf("stall declared %v after the last byte, want about one %v window (not two)", since, window)
+			if since > tc.max {
+				t.Fatalf("stall declared %v after the last byte, want at most %v", since, tc.max)
+			}
+		})
+	}
+}
+
+// A transfer that is still delivering must never be cut off, whatever its
+// file timestamps say and even when the callback reports only some writes.
+func TestDownloadWithStallTimeout_ActiveTransferIsNotCutOff(t *testing.T) {
+	const window = 300 * time.Millisecond
+	for _, tc := range []struct {
+		name           string
+		callbackChunks int
+		staleModTime   bool
+	}{
+		{"file growth only, stale modification time", 0, true},
+		{"callback reports only the first chunk", 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			defer setDownloadTimeoutFloorForTest(window)()
+			p := &chunkedStallProvider{
+				chunks:         6,
+				interval:       window * 8 / 10, // ~1.2 s in total, four windows
+				growFile:       true,
+				callbackChunks: tc.callbackChunks,
+				staleModTime:   tc.staleModTime,
+			}
+			dest := filepath.Join(t.TempDir(), "manifest.json")
+
+			var err error
+			runWithWatchdog(t, 10*time.Second, func() {
+				err = downloadWithStallTimeout(context.Background(), p, "remote/manifest.json", dest)
+			})
+			if err != nil {
+				t.Fatalf("an actively delivering transfer failed: %v", err)
 			}
 		})
 	}
