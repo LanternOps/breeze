@@ -37,6 +37,21 @@ import {
   schedulePeripheralPolicyDevices,
 } from '../jobs/peripheralJobs';
 import { resolveWritableToolOrgId } from './aiToolWriteOrg';
+import type { ToolExecutionContext } from './toolExecutionContext';
+
+/**
+ * #6911: `manage_update_rings:create`, `manage_software_policies:create` and
+ * `manage_peripheral_policies:create` are user-owned on release
+ * (`USER_OWNED_RELEASE_ACTIONS` in `jobs/intentReleaseWorker.ts`) — each
+ * writes `auth.user.id` into a `created_by` `users` FK
+ * (`patch_policies` / `software_policies` / `peripheral_policies`). Under the
+ * rebuilt agent auth that id is an `aiAgents.id`, so refuse rather than write
+ * a row whose owner the worker and this handler's auth disagree about.
+ * Mirrors `aiToolsFleet.ts`'s `approverReleaseMismatch`.
+ */
+function approverReleaseMismatch(auth: AuthContext, context: ToolExecutionContext | undefined): boolean {
+  return !!context?.approverRelease && context.approverRelease.approverUserId !== auth.user.id;
+}
 
 /**
  * Defense-in-depth (#1317): the manage_update_rings AI tool writes `autoApprove`
@@ -94,7 +109,11 @@ function resolveS3ProviderConfig(
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
-type Handler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
+type Handler = (
+  input: Record<string, unknown>,
+  auth: AuthContext,
+  context?: ToolExecutionContext,
+) => Promise<string>;
 
 function orgWhere(auth: AuthContext, orgIdCol: any): SQL | undefined {
   return auth.orgCondition(orgIdCol) ?? undefined;
@@ -148,9 +167,9 @@ function backupProfileWhere(auth: AuthContext): SQL | undefined {
 }
 
 function safeHandler(toolName: string, fn: Handler): Handler {
-  return async (input, auth) => {
+  return async (input, auth, context) => {
     try {
-      return await fn(input, auth);
+      return await fn(input, auth, context);
     } catch (err: unknown) {
       const code = pgErrorCode(err);
       // Log BEFORE the pg-code early returns — those branches return without
@@ -206,7 +225,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         required: ['action'],
       },
     },
-    handler: safeHandler('manage_update_rings', async (input, auth) => {
+    handler: safeHandler('manage_update_rings', async (input, auth, context) => {
       const action = input.action as string;
 
       if (auth.scope === 'organization') {
@@ -258,6 +277,10 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'create') {
+        // #6911: user-owned on release — see approverReleaseMismatch.
+        if (approverReleaseMismatch(auth, context)) {
+          return JSON.stringify({ error: 'approver_auth_mismatch', action });
+        }
         if (!partnerId) return JSON.stringify({ error: 'Partner context required' });
         // Rings are partner-owned by construction — they govern patching for
         // every org under the partner (security review 2026-08-16 §1.1 #3).
@@ -373,7 +396,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         required: ['action'],
       },
     },
-    handler: safeHandler('manage_software_policies', async (input, auth) => {
+    handler: safeHandler('manage_software_policies', async (input, auth, context) => {
       const action = input.action as string;
       // Reads (list/get) are not gated by the site-ceiling — only create/update/delete.
       if (action !== 'list' && action !== 'get' && !canMutateOrgWideGovernance(auth)) {
@@ -419,6 +442,10 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'create') {
+        // #6911: user-owned on release — see approverReleaseMismatch.
+        if (approverReleaseMismatch(auth, context)) {
+          return JSON.stringify({ error: 'approver_auth_mismatch', action });
+        }
         // Ownership axis (#2126): partner-wide templates apply to every org
         // under the partner, so creation is gated on the same capability as
         // the HTTP route. The partner is derived from the caller's own token.
@@ -569,7 +596,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         required: ['action'],
       },
     },
-    handler: safeHandler('manage_peripheral_policies', async (input, auth) => {
+    handler: safeHandler('manage_peripheral_policies', async (input, auth, context) => {
       const action = input.action as string;
       // Reads (list/get) are not gated by the site-ceiling — only create/update/delete.
       if (action !== 'list' && action !== 'get' && !canMutateOrgWideGovernance(auth)) {
@@ -614,6 +641,10 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'create') {
+        // #6911: user-owned on release — see approverReleaseMismatch.
+        if (approverReleaseMismatch(auth, context)) {
+          return JSON.stringify({ error: 'approver_auth_mismatch', action });
+        }
         const resolvedPeripheralOrg = resolveWritableToolOrgId(auth, typeof input.orgId === 'string' && input.orgId ? input.orgId : undefined);
         if (!resolvedPeripheralOrg.orgId) return JSON.stringify({ error: resolvedPeripheralOrg.error ?? 'Organization context required' });
         const orgId = resolvedPeripheralOrg.orgId;

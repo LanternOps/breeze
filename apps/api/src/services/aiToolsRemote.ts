@@ -23,6 +23,19 @@ import { deviceScopeCondition, resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOT
 import { getToolTimeout } from './toolTimeouts';
 import { createRemoteSession, RemoteSessionDeniedError } from './remoteSessionCreate';
 import { aiExecuteCommand } from './aiDispatch';
+import type { ToolExecutionContext } from './toolExecutionContext';
+
+/**
+ * #6911: `create_remote_session` is user-owned on release
+ * (`USER_OWNED_RELEASE_ACTIONS` in `jobs/intentReleaseWorker.ts`) — it writes
+ * `auth.user.id` into `remote_sessions.user_id`, a `users` FK. Under the
+ * rebuilt agent auth that id is an `aiAgents.id`, so refuse rather than write
+ * a row whose owner the worker and this handler's auth disagree about.
+ * Mirrors `aiToolsFleet.ts`'s `approverReleaseMismatch`.
+ */
+function approverReleaseMismatch(auth: AuthContext, context: ToolExecutionContext | undefined): boolean {
+  return !!context?.approverRelease && context.approverRelease.approverUserId !== auth.user.id;
+}
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -388,7 +401,11 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
         required: ['deviceId', 'type'],
       },
     },
-    handler: async (input, auth) => {
+    handler: async (input, auth, context) => {
+      // #6911: user-owned on release — see approverReleaseMismatch.
+      if (approverReleaseMismatch(auth, context)) {
+        return JSON.stringify({ error: 'approver_auth_mismatch' });
+      }
       const deviceId = input.deviceId as string;
       const sessionType = input.type as string;
 

@@ -127,8 +127,10 @@ export interface AiTool {
    * TRAP — WRAPPERS SILENTLY TRUNCATE IT. A handler produced by a wrapper that
    * returns `async (input, auth) => …` drops the third argument with NO compile
    * error, because a two-parameter function is always assignable here. The
-   * `safeHandler` wrappers in `aiToolsBackupVm.ts`, `aiToolsPolicyPrereqs.ts`,
-   * `aiToolsC2C.ts` and `aiToolsConfigPolicy.ts` are all shaped that way. If a
+   * `safeHandler` wrappers in `aiToolsBackupVm.ts`, `aiToolsC2C.ts` and
+   * `aiToolsConfigPolicy.ts` are all shaped that way (#6911 widened
+   * `aiToolsPolicyPrereqs.ts`'s wrapper to accept and forward `context`, so it
+   * no longer belongs on this list). If a
    * tool registered through one of those ever needs the context, the WRAPPER
    * must accept and forward a third argument too — widening the inner handler
    * alone will read `undefined` forever. (No current consumer is wrapped:

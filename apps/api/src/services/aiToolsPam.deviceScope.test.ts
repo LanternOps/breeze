@@ -32,7 +32,10 @@ function handlerFor(name: string): AiTool['handler'] {
 
 function auth(allowedDeviceIds?: string[], allowedSiteIds?: string[]): AuthContext {
   return {
-    principal: { kind: 'ai_agent' },
+    // #6911: revoke_elevation now refuses any ai_agent-principal caller
+    // outright (no approver to substitute at Tier 2). These tests exercise
+    // exact-device/site scoping for a real user session, not that refusal.
+    principal: { kind: 'user_session' },
     user: { id: 'u1', email: 'a@b.c', name: 'A', isPlatformAdmin: false },
     token: {} as any,
     partnerId: null,

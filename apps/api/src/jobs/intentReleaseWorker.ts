@@ -797,6 +797,11 @@ export async function terminalizeIntent(
  * `services/aiToolsFleet.userOwnedRelease.contract.test.ts` pins this set
  * against the source, so a newly agent-mintable `auth.user.id` write into a
  * users FK cannot be added to that file without landing here too.
+ *
+ * #6911 generalized the sibling alerts contract
+ * (`services/aiTools.userOwnedRelease.contract.test.ts`) to scan every
+ * `aiTools*.ts` module the same way (fleet keeps its own contract above), so
+ * the same guarantee now holds repo-wide, not just for fleet/alerts.
  */
 const USER_OWNED_RELEASE_ACTIONS: ReadonlySet<string> = new Set([
   'manage_tickets:log_time_entry',
@@ -820,10 +825,63 @@ const USER_OWNED_RELEASE_ACTIONS: ReadonlySet<string> = new Set([
   // transaction, so `suppress` is not safe under the agent id either. Both
   // approved `resolve` intents on US prod (2026-09-22, 2026-09-24) failed as
   // `execution_error` with the resolved_by FK violation.
-  // `services/aiToolsAlerts.userOwnedRelease.contract.test.ts` pins these.
+  // `services/aiTools.userOwnedRelease.contract.test.ts` (renamed from
+  // aiToolsAlerts.userOwnedRelease.contract.test.ts when #6911 generalized it
+  // repo-wide) pins these.
   'manage_alerts:acknowledge',
   'manage_alerts:resolve',
   'manage_alerts:suppress',
+  // #6911 — repo-wide sweep (services/aiTools.userOwnedRelease.contract.test.ts,
+  // the alerts contract generalized to every aiTools*.ts module). Each entry
+  // below is tier 3 (base-tier or a TIER3_*_ACTIONS entry), so it has a real
+  // approver to substitute; the paired handler branch checks
+  // approverReleaseMismatch(auth, context) before its write.
+  //
+  // browser_policies.created_by (db/schema/browserPolicies.ts) — tier 3
+  // supervised (manage_browser_policy is a whole-tool TIER3_SUPERVISED_TOOLS
+  // member).
+  'manage_browser_policy:create',
+  // cis_remediation_actions.approved_by / .requested_by
+  // (db/schema/cisBenchmark.ts) — apply_cis_remediation is a whole-tool
+  // TIER3_SUPERVISED_TOOLS member. It has no dispatch multiplexing, but its
+  // OWN input_schema still accepts an `action` field ('apply'/'rollback',
+  // defaulting to 'apply' when omitted) that the worker's release key is
+  // keyed on regardless of dispatch — all three forms reach the same write.
+  'apply_cis_remediation:',
+  'apply_cis_remediation:apply',
+  'apply_cis_remediation:rollback',
+  // software_policies.created_by (db/schema/softwarePolicies.ts) —
+  // manage_software_policy is a whole-tool TIER3_SUPERVISED_TOOLS member.
+  'manage_software_policy:create',
+  // elevation_requests.subject_user_id / elevation_audit_entries.actor_user_id
+  // (db/schema/elevations.ts) — request_elevation is a whole-tool
+  // TIER3_FOUR_EYES_TOOLS member, single-action.
+  'request_elevation:',
+  // peripheral_policies.created_by (db/schema/peripherals.ts) —
+  // manage_peripheral_policy is a whole-tool TIER3_SUPERVISED_TOOLS member.
+  'manage_peripheral_policy:create',
+  // patch_policies.created_by (db/schema/patches.ts) — #3552 policy
+  // prerequisite escalation, TIER3_ACTIONS/TIER3_SUPERVISED_ACTIONS.
+  'manage_update_rings:create',
+  // software_policies.created_by, same table as manage_software_policy above
+  // but via the plural policy-prerequisite tool (aiToolsPolicyPrereqs.ts).
+  'manage_software_policies:create',
+  // peripheral_policies.created_by, same table as manage_peripheral_policy
+  // above but via the plural policy-prerequisite tool.
+  'manage_peripheral_policies:create',
+  // remote_sessions.user_id (db/schema/remote.ts) — create_remote_session is
+  // a whole-tool TIER3_FOUR_EYES_TOOLS member, single-action.
+  'create_remote_session:',
+  // s1_actions.requested_by (db/schema/sentinelOne.ts) — s1_isolate_device is
+  // a whole-tool TIER3_INPUT_AWARE_TOOLS member (its scope depends on the
+  // `isolate` boolean, not an `action` string), single-action.
+  's1_isolate_device:',
+  // Same table, via s1_threat_action (whole-tool TIER3_FOUR_EYES_TOOLS
+  // member; kill/quarantine resolve supervised, rollback four_eyes — all
+  // three write the identical unguarded requestedBy).
+  's1_threat_action:kill',
+  's1_threat_action:quarantine',
+  's1_threat_action:rollback',
 ]);
 
 function userOwnedReleaseKey(intent: ActionIntent): string | null {

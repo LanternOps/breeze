@@ -38,8 +38,21 @@ import {
   runFrozenDeviceIds,
   SITE_SCOPE_EMPTY_NOTE,
 } from './aiToolsSiteScope';
+import type { ToolExecutionContext } from './toolExecutionContext';
 
 type AiToolTier = 1 | 2 | 3 | 4;
+
+/**
+ * #6911: `manage_software_policy:create` is user-owned on release
+ * (`USER_OWNED_RELEASE_ACTIONS` in `jobs/intentReleaseWorker.ts`) — it writes
+ * `auth.user.id` into `software_policies.created_by`, a `users` FK. Under the
+ * rebuilt agent auth that id is an `aiAgents.id`, so refuse rather than write
+ * a row whose owner the worker and this handler's auth disagree about.
+ * Mirrors `aiToolsFleet.ts`'s `approverReleaseMismatch`.
+ */
+function approverReleaseMismatch(auth: AuthContext, context: ToolExecutionContext | undefined): boolean {
+  return !!context?.approverRelease && context.approverRelease.approverUserId !== auth.user.id;
+}
 
 
 function resolveWritableToolOrgId(
@@ -223,7 +236,7 @@ registerTool({
       required: ['action'],
     },
   },
-  handler: async (input, auth) => {
+  handler: async (input, auth, context) => {
     const action = input.action as string;
     // Reads (list/get) are not gated by the site-ceiling — only create/update/delete.
     if (action !== 'list' && action !== 'get' && !canMutateOrgWideGovernance(auth)) {
@@ -277,6 +290,10 @@ registerTool({
     }
 
     if (action === 'create') {
+      // #6911: user-owned on release — see approverReleaseMismatch.
+      if (approverReleaseMismatch(auth, context)) {
+        return JSON.stringify({ error: 'approver_auth_mismatch', action });
+      }
       if (typeof input.name !== 'string' || typeof input.mode !== 'string') {
         return JSON.stringify({ error: 'name and mode are required for create' });
       }
