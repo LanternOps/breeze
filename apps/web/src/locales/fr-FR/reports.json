@@ -127,28 +127,13 @@
         "timeRange": "Plage de temps"
       },
       "metricNames": {
-        "activeDevices": "Appareils actifs",
-        "automationRuns": "Exécutions d’automatisations",
         "cpuUtilization": "Utilisation du processeur",
         "diskUsage": "Utilisation du disque",
-        "incidentCount": "Nombre d’incidents",
-        "loginVolume": "Volume de connexions",
         "memoryUtilization": "Utilisation de la mémoire",
-        "mfaAdoption": "Adoption de la MFA",
-        "networkThroughput": "Débit réseau",
-        "patchCompliance": "Conformité aux correctifs",
-        "remoteSessions": "Sessions distantes",
-        "responseTime": "Temps de réponse",
-        "slaCompliance": "Conformité au SLA",
-        "threatAlerts": "Alertes de menaces",
-        "uptime": "Disponibilité",
-        "vulnerabilityScore": "Score de vulnérabilité"
+        "networkThroughput": "Débit réseau"
       },
       "metricTypes": {
-        "availability": "Disponibilité",
-        "performance": "Performances",
-        "security": "Sécurité",
-        "usage": "Utilisation"
+        "performance": "Performances"
       },
       "runQuery": "Exécuter la requête",
       "running": "En cours…",

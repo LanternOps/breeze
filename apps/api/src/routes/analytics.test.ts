@@ -261,7 +261,7 @@ vi.mock('../middleware/auth', () => ({
 import { db } from '../db';
 import { analyticsDashboards, dashboardWidgets } from '../db/schema';
 import { authMiddleware } from '../middleware/auth';
-import { analyticsRoutes } from './analytics';
+import { analyticsRoutes, metricColumnMap } from './analytics';
 
 function createChain(result: unknown = []) {
   const chain: Record<string, any> = {};
@@ -1436,5 +1436,29 @@ describe('analytics routes', () => {
       });
     });
 
+  });
+});
+
+// Issue #6832: the web report QueryBuilder metric picker
+// (apps/web/src/components/analytics/QueryBuilder.tsx `metricNamesByType`)
+// must never offer a metric name with no `metricColumnMap` entry here —
+// selecting one silently returns a series with no data (see the `warning`
+// branch in the `/analytics/query` handler above). `apps/web` must not
+// import `@breeze/api` (apps/web/src/lib/packageIdValidation.ts), so this
+// is a deliberately DUPLICATED copy of the picker's offered metric values —
+// keep it in sync with QueryBuilder.tsx's `metricNamesByType` by hand.
+const QUERY_BUILDER_OFFERED_METRICS = [
+  'CPU Utilization',
+  'Memory Utilization',
+  'Disk Usage',
+  'Network Throughput',
+];
+
+describe('QueryBuilder metric picker vs metricColumnMap (#6832)', () => {
+  it('every metric the web picker offers has a metricColumnMap entry', () => {
+    const missing = QUERY_BUILDER_OFFERED_METRICS.filter(
+      (metric) => !(metric in metricColumnMap)
+    );
+    expect(missing).toEqual([]);
   });
 });

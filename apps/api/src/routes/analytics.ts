@@ -145,7 +145,12 @@ const timeSeriesQuerySchema = z.object({
   groupBy: z.array(z.string().min(1)).optional()
 });
 
-const metricColumnMap: Record<string, any> = {
+// Exported so tests can assert the web QueryBuilder's metric picker
+// (apps/web/src/components/analytics/QueryBuilder.tsx) never offers a metric
+// name with no entry here — see analytics.metricColumnMap.test.ts. `apps/web`
+// must not import `@breeze/api` (see apps/web/src/lib/packageIdValidation.ts),
+// so that test keeps its own duplicated copy of the picker's metric list.
+export const metricColumnMap: Record<string, any> = {
   cpu_usage: deviceMetrics.cpuPercent,
   cpu: deviceMetrics.cpuPercent,
   'CPU Utilization': deviceMetrics.cpuPercent,
