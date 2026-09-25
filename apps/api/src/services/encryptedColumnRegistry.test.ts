@@ -7,11 +7,13 @@ vi.mock('../db', () => ({
 
 import {
   columnAad,
+  encryptedColumnRegistry,
   encryptColumnValueForWrite,
   reencryptRegisteredSecrets,
   transformEncryptedColumnValue,
 } from './encryptedColumnRegistry';
-import { decryptSecret, encryptSecret } from './secretCrypto';
+import { decryptForColumn, decryptSecret, encryptSecret } from './secretCrypto';
+import { decryptNotificationChannelConfig } from './notificationChannelSecrets';
 
 const ENV_KEYS = [
   'APP_ENCRYPTION_KEY',
@@ -203,6 +205,38 @@ describe('encryptedColumnRegistry', () => {
     expect(stats.changed).toBe(1);
     expect(stats.updated).toBe(0);
     expect(executor.execute).toHaveBeenCalledTimes(3);
+  });
+
+  describe('moved column keeps its AAD tag (#6379)', () => {
+    it('notification channel config is registered on notification_channel_configs under the old notification_channels.config tag', () => {
+      const spec = encryptedColumnRegistry.find((s) => s.table === 'notification_channel_configs' && s.column === 'config');
+      expect(spec).toBeDefined();
+      expect(spec!.idColumn).toBe('channel_id');
+      expect(columnAad(spec!)).toBe('notification_channels.config');
+      expect(encryptedColumnRegistry.some((s) => s.table === 'notification_channels')).toBe(false);
+    });
+
+    it('a value rotated by the walker under the moved spec decrypts on the read path', () => {
+      setEncryptionEnv({
+        APP_ENCRYPTION_KEY: 'current-key-material',
+        APP_ENCRYPTION_KEY_ID: 'current',
+      });
+      const previous = process.env.ENABLE_AAD_V3;
+      process.env.ENABLE_AAD_V3 = 'true';
+      try {
+        const spec = encryptedColumnRegistry.find((s) => s.table === 'notification_channel_configs')!;
+        const rotated = transformEncryptedColumnValue(spec, { webhookUrl: 'https://hooks.slack.example/s3cret' }, 'channel-1') as {
+          webhookUrl: string;
+        };
+        expect(rotated.webhookUrl).toMatch(/^enc:v3:current:/);
+        // The read path (notificationChannelSecrets) decrypts under the old tag.
+        expect(decryptForColumn('notification_channels', 'config', rotated.webhookUrl)).toBe('https://hooks.slack.example/s3cret');
+        expect(decryptNotificationChannelConfig('slack', rotated)).toEqual({ webhookUrl: 'https://hooks.slack.example/s3cret' });
+      } finally {
+        if (previous === undefined) delete process.env.ENABLE_AAD_V3;
+        else process.env.ENABLE_AAD_V3 = previous;
+      }
+    });
   });
 
   describe('row-bound AAD (#3409)', () => {

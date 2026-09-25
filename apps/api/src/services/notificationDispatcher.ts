@@ -11,6 +11,7 @@ import {
   alerts,
   alertRules,
   notificationChannels,
+  notificationChannelConfigs,
   alertNotifications,
   escalationPolicies,
   devices,
@@ -18,6 +19,7 @@ import {
   partners,
   configPolicyAlertRules
 } from '../db/schema';
+import { getNotificationChannelWithConfig, type NotificationChannelWithConfig } from './notificationChannelConfig';
 import { eq, and, ne, inArray, isNull, or, gt, type SQL } from 'drizzle-orm';
 import { getRedis, getBullMQConnection, isRedisAvailable } from './redis';
 import { rateLimiter } from './rate-limit';
@@ -334,8 +336,12 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
     return inboxOnly();
   }
 
-  const channelOptions = await db.select({ id: notificationChannels.id, type: notificationChannels.type, config: notificationChannels.config })
-    .from(notificationChannels).where(inArray(notificationChannels.id, channelIds));
+  // Config lives in notification_channel_configs (#6379); this runs under
+  // system scope, so inherited partner-wide channels get theirs too.
+  const channelOptions = await db.select({ id: notificationChannels.id, type: notificationChannels.type, config: notificationChannelConfigs.config })
+    .from(notificationChannels)
+    .leftJoin(notificationChannelConfigs, eq(notificationChannelConfigs.channelId, notificationChannels.id))
+    .where(inArray(notificationChannels.id, channelIds));
   const optionsById = new Map(channelOptions.map(channel => [channel.id, channel]));
   const missingChannelIds = channelIds.filter(id => !optionsById.has(id));
   if (missingChannelIds.length > 0) {
@@ -407,7 +413,7 @@ type PrepareSendResult =
   | {
       send: true;
       alert: typeof alerts.$inferSelect;
-      channel: typeof notificationChannels.$inferSelect;
+      channel: NotificationChannelWithConfig;
       notificationRecord: typeof alertNotifications.$inferSelect;
       device: typeof devices.$inferSelect | undefined;
       org: typeof organizations.$inferSelect | undefined;
@@ -505,17 +511,14 @@ export async function processSendNotification(data: SendNotificationJobData): Pr
     // Get channel — the alert org's own, or a partner-wide channel owned by
     // that org's partner (#2130).
     const sendOrgPartnerId = await partnerIdForOrg(alert.orgId);
-    const [channel] = await db
-      .select()
-      .from(notificationChannels)
-      .where(
-        and(
-          eq(notificationChannels.id, data.channelId),
-          railOwnershipCondition(notificationChannels.orgId, notificationChannels.partnerId, alert.orgId, sendOrgPartnerId),
-          eq(notificationChannels.enabled, true)
-        )
-      )
-      .limit(1);
+    // Joined with its config row (#6379) — read under system scope, so an
+    // inherited partner-wide channel's config is present.
+    const channel = await getNotificationChannelWithConfig(data.channelId, {
+      where: and(
+        railOwnershipCondition(notificationChannels.orgId, notificationChannels.partnerId, alert.orgId, sendOrgPartnerId),
+        eq(notificationChannels.enabled, true)
+      ),
+    });
 
     if (!channel) {
       // A resolved {success:false} completes the BullMQ job (no 'failed' event)
@@ -529,6 +532,19 @@ export async function processSendNotification(data: SendNotificationJobData): Pr
       return {
         send: false,
         result: { success: false, channelType: 'unknown', error: 'Channel not found for alert organization or its partner' }
+      } satisfies PrepareSendResult;
+    }
+
+    // System scope reads every config row, so a null here means the channel
+    // was written without its notification_channel_configs row (#6379) — a
+    // data bug. Refuse loudly rather than send to an empty destination.
+    if (channel.config === null || channel.config === undefined) {
+      console.error(
+        `[NotificationDispatcher] Channel ${channel.id} has no config row (notification_channel_configs) — send for alert ${data.alertId} dropped`
+      );
+      return {
+        send: false,
+        result: { success: false, channelType: channel.type, error: 'Notification channel has no stored configuration' }
       } satisfies PrepareSendResult;
     }
 
@@ -1240,8 +1256,9 @@ async function scheduleEscalation(alertId: string, policyId: string, orgId: stri
   )];
   const validChannels = requestedChannelIds.length > 0
     ? await db
-      .select({ id: notificationChannels.id, type: notificationChannels.type, config: notificationChannels.config })
+      .select({ id: notificationChannels.id, type: notificationChannels.type, config: notificationChannelConfigs.config })
       .from(notificationChannels)
+      .leftJoin(notificationChannelConfigs, eq(notificationChannelConfigs.channelId, notificationChannels.id))
       .where(
         and(
           railOwnershipCondition(notificationChannels.orgId, notificationChannels.partnerId, orgId, orgPartnerId),

@@ -9,6 +9,7 @@ import {
 } from '../../../db/schema';
 import { writeAuditEvent, requestLikeFromSnapshot } from '../../../services/auditEvents';
 import { encryptColumnValueForWrite } from '../../../services/encryptedColumnRegistry';
+import { writeNotificationChannelConfig } from '../../../services/notificationChannelConfig';
 import type { BootstrapTool, BootstrapContext } from '../types';
 import { applyStandardAlertPolicy } from './configureDefaults.monitors';
 export { applyStandardAlertPolicy } from './configureDefaults.monitors';
@@ -109,12 +110,16 @@ export async function addNotificationChannel(
     .limit(1);
   if (existing.length > 0) return { created: false };
 
-  await db.insert(notificationChannels).values({
-    orgId,
-    name: DEFAULT_CHANNEL_NAME,
-    type: opts.kind,
-    config: { recipients: [opts.target] },
-    enabled: true,
+  // Channel row and its config row (#6379) commit together.
+  await db.transaction(async (tx) => {
+    const [row] = await tx.insert(notificationChannels).values({
+      orgId,
+      name: DEFAULT_CHANNEL_NAME,
+      type: opts.kind,
+      enabled: true,
+    }).returning({ id: notificationChannels.id });
+    if (!row) throw new Error('Failed to create default notification channel');
+    await writeNotificationChannelConfig(row.id, { recipients: [opts.target] }, tx);
   });
   return { created: true };
 }

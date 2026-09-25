@@ -32,6 +32,13 @@ export interface EncryptedColumnSpec {
    * value under the wrong AAD.
    */
   aadBinding?: 'column' | 'row';
+  /**
+   * Override the `table.column` part of the AAD. Only for a column MOVED to a
+   * new table, whose existing ciphertext was sealed under its old location:
+   * the tag stays the column's logical identity so every stored value still
+   * decrypts (notification channel config, #6379).
+   */
+  aadTag?: string;
   description: string;
 }
 
@@ -41,7 +48,7 @@ export interface EncryptedColumnSpec {
  * binding for the same column.
  */
 export function columnAad(spec: EncryptedColumnSpec, rowId?: string): string {
-  const base = `${spec.table}.${spec.column}`;
+  const base = spec.aadTag ?? `${spec.table}.${spec.column}`;
   if (spec.aadBinding !== 'row') return base;
   if (!rowId) {
     throw new Error(`${base} is row-bound: a row id is required to derive its AAD`);
@@ -81,7 +88,9 @@ export const encryptedColumnRegistry: EncryptedColumnSpec[] = [
   { table: 'webhooks', column: 'url', kind: 'text', description: 'outbound webhook delivery URL (may embed credentials in userinfo/query)' },
   { table: 'webhooks', column: 'secret', kind: 'text', description: 'outbound webhook signing secret' },
   { table: 'webhooks', column: 'headers', kind: 'json', description: 'outbound webhook encrypted headers' },
-  { table: 'notification_channels', column: 'config', kind: 'json', description: 'notification channel secret config' },
+  // Moved off notification_channels (#6379); the AAD tag keeps its old
+  // location so existing ciphertext decrypts (notificationChannelSecrets.ts).
+  { table: 'notification_channel_configs', column: 'config', kind: 'json', idColumn: 'channel_id', aadTag: 'notification_channels.config', description: 'notification channel secret config' },
   { table: 'discovery_profiles', column: 'snmp_communities', kind: 'text-array', description: 'SNMP community strings' },
   { table: 'discovery_profiles', column: 'snmp_credentials', kind: 'json', description: 'SNMP credential secrets' },
   { table: 'snmp_devices', column: 'community', kind: 'text', description: 'SNMP v1/v2c community string' },

@@ -10,6 +10,7 @@ import { keysetEnvelope, keysetParamSchema, keysetWhereCondition, readKeysetArgs
 import { db } from '../db';
 import { canManagePartnerWidePolicies } from './partnerWideAccess';
 import { alerts, devices, notificationChannels } from '../db/schema';
+import { selectNotificationChannelsWithConfig, writeNotificationChannelConfig } from './notificationChannelConfig';
 import { eq, and, desc, sql, inArray, ne, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
@@ -651,13 +652,18 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         }
 
         try {
-          const [channel] = await db.insert(notificationChannels).values({
-            orgId,
-            name: input.name as string,
-            type: channelType,
-            config: encryptNotificationChannelConfig(channelType, input.config) as Record<string, unknown>,
-            enabled: input.enabled !== false,
-          }).returning();
+          // Channel row and its config row (#6379) commit together.
+          const channel = await db.transaction(async (tx) => {
+            const [row] = await tx.insert(notificationChannels).values({
+              orgId,
+              name: input.name as string,
+              type: channelType,
+              enabled: input.enabled !== false,
+            }).returning();
+            if (!row) return null;
+            await writeNotificationChannelConfig(row.id, encryptNotificationChannelConfig(channelType, input.config), tx);
+            return row;
+          });
           if (!channel) return JSON.stringify({ error: 'Failed to create notification channel' });
 
           return JSON.stringify({ success: true, channelId: channel.id, name: channel.name, type: channel.type });
@@ -681,7 +687,7 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
           );
         }
 
-        const [existing] = await db.select().from(notificationChannels).where(and(...conditions)).limit(1);
+        const [existing] = await selectNotificationChannelsWithConfig(and(...conditions), { limit: 1 });
         if (!existing) return JSON.stringify({ error: 'Notification channel not found or access denied' });
 
         // Partner-wide channels are administrable only with the partner-wide
@@ -700,6 +706,7 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         }
 
         const updates: Record<string, unknown> = { updatedAt: new Date() };
+        let nextConfig: unknown;
         if (typeof input.name === 'string') updates.name = input.name;
         if (input.config !== undefined && input.config !== null) {
           if (
@@ -723,11 +730,14 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
           if (configErrors.length > 0) {
             return JSON.stringify({ error: `Invalid ${existing.type} channel configuration`, details: configErrors });
           }
-          updates.config = mergedEncrypted;
+          nextConfig = mergedEncrypted;
         }
         if (typeof input.enabled === 'boolean') updates.enabled = input.enabled;
 
-        await db.update(notificationChannels).set(updates).where(eq(notificationChannels.id, existing.id));
+        await db.transaction(async (tx) => {
+          await tx.update(notificationChannels).set(updates).where(eq(notificationChannels.id, existing.id));
+          if (nextConfig !== undefined) await writeNotificationChannelConfig(existing.id, nextConfig, tx);
+        });
         return JSON.stringify({ success: true, message: `Channel "${existing.name}" updated` });
       }
 

@@ -23,6 +23,7 @@ import {
   validatePushoverConfig,
 } from '../../services/notificationSenders';
 import { canReadPartnerWideRows } from '../../services/partnerWideAccess';
+import { getNotificationChannelWithConfig } from '../../services/notificationChannelConfig';
 
 export type AlertRuleRow = typeof alertRules.$inferSelect;
 export type AlertTemplateRow = typeof alertTemplates.$inferSelect;
@@ -152,11 +153,11 @@ export async function getNotificationChannelWithOrgCheck(
   channelId: string,
   auth: { canAccessOrg: (orgId: string) => boolean; scope?: string; partnerId?: string | null }
 ) {
-  const [channel] = await db
-    .select()
-    .from(notificationChannels)
-    .where(eq(notificationChannels.id, channelId))
-    .limit(1);
+  // Joined with its config row (#6379). `config` is null when the DB context
+  // does not OWN the channel (RLS on notification_channel_configs); the access
+  // check below also refuses those callers, so routes never see a null here in
+  // practice.
+  const channel = await getNotificationChannelWithConfig(channelId);
 
   if (!channel) {
     return null;

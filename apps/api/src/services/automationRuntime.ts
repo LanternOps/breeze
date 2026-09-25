@@ -20,6 +20,7 @@ import {
   scriptExecutions,
   scripts,
 } from '../db/schema';
+import type { NotificationChannelWithConfig } from './notificationChannelConfig';
 import { resolveDeploymentTargets } from './deploymentEngine';
 import { canAccessSite, type UserPermissions } from './permissions';
 import { dispatchScriptToDevice } from './scriptDispatch';
@@ -1295,7 +1296,7 @@ type ActionExecutionContext = {
     customFields: (typeof devices.$inferSelect)['customFields'];
   };
   scriptsById: Map<string, typeof scripts.$inferSelect>;
-  channelsById: Map<string, typeof notificationChannels.$inferSelect>;
+  channelsById: Map<string, NotificationChannelWithConfig>;
   /**
    * Preloaded ONCE per run over the run's distinct org set — see
    * {@link loadAutomationRunVariableScope}. Required (not optional) on
@@ -1689,7 +1690,7 @@ export async function executeCommandAction(
 }
 
 async function sendChannelNotification(
-  channel: typeof notificationChannels.$inferSelect,
+  channel: NotificationChannelWithConfig,
   payload: {
     title: string;
     message: string;
@@ -2262,7 +2263,7 @@ async function seedDeviceAutomationActions(
 
 async function sendOnFailureNotifications(
   automation: AutomationRow,
-  channelsById: Map<string, typeof notificationChannels.$inferSelect>,
+  channelsById: Map<string, NotificationChannelWithConfig>,
   notificationTargets: NotificationTargets | undefined,
   details: {
     runId: string;
