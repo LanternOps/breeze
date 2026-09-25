@@ -2400,7 +2400,12 @@ export default function ReportBuilder({
         </div>
       </div>
 
-      <div className="space-y-6 lg:sticky lg:top-6 self-start">
+      {/* Dead for a business type: the preview below reflects builder
+          state (dataSource/columns/chartType) that a business report's own
+          options form doesn't populate, so it renders stale/generic content
+          (sweep F1 — the #B1 fix above hid the input sections but not this). */}
+      {!businessType && (
+      <div data-testid="report-builder-live-preview" className="space-y-6 lg:sticky lg:top-6 self-start">
         <div className="rounded-lg border bg-card p-6 shadow-xs space-y-5">
           <div className="flex items-center justify-between">
             <div>
@@ -2474,6 +2479,7 @@ export default function ReportBuilder({
           </div>
         </div>
       </div>
+      )}
     </form>
   );
 }
