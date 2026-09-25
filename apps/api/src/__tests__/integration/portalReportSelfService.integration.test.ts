@@ -192,6 +192,91 @@ describe('portal report self-service tenancy', () => {
       ),
     ).rejects.toBeInstanceOf(PortalReportNotFoundError);
   });
+
+  // #6941 (defense in depth): the marker alone is not enough either. Neither
+  // writer of portal_self_service can set it on an msp_staff-audience type
+  // today, but if a row ever carried it (hand edit, future writer) an AR aging
+  // run must still be neither listed nor downloadable from the portal. The
+  // executive_summary run in the same org is the control: it proves the list
+  // is not vacuously empty.
+  runDb('hides an msp_staff-audience run even when its definition carries portal_self_service', async () => {
+    const fixture = await withSystemDbAccessContext(async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+
+      const scope = {
+        version: 1,
+        kind: 'unrestricted',
+        orgId: org.id,
+      } as const;
+      const authority: UserReportExecutionAuthority = {
+        principalKind: 'user',
+        principalUserId: crypto.randomUUID(),
+        scope,
+        capturedAt: new Date(),
+        fingerprint: siteScopeFingerprint(scope),
+      };
+
+      const seedRun = async (type: 'ar_aging' | 'executive_summary') => {
+        const [definition] = await db.insert(reports).values({
+          orgId: org.id,
+          name: `Flagged ${type}`,
+          type,
+          schedule: 'one_time',
+          format: 'csv',
+          config: {},
+          portalSelfService: true,
+          ...persistedSiteScopeValues(authority),
+        }).returning({ id: reports.id });
+
+        const [run] = await db.insert(reportRuns).values({
+          reportId: definition!.id,
+          status: 'completed',
+          startedAt: new Date(),
+          completedAt: new Date(),
+          result: { rows: [{ customer: 'Acme', balance: 100 }], summary: {} },
+          rowCount: 1,
+          requestedByKind: 'user',
+          requestedByUserId: null,
+          requestedByPortalUserId: null,
+          ...persistedSiteScopeValues(authority),
+        }).returning({ id: reportRuns.id });
+        return run!.id;
+      };
+
+      return {
+        org,
+        mspStaffRunId: await seedRun('ar_aging'),
+        customerRunId: await seedRun('executive_summary'),
+      };
+    });
+
+    const listed = await withDbAccessContext(orgContext(fixture.org.id), () =>
+      listPortalRuns(fixture.org.id, 'UTC', { page: 1, limit: 50 }),
+    );
+    const listedIds = listed.data.map((row) => row.id);
+    expect(listedIds).toContain(fixture.customerRunId);
+    expect(listedIds).not.toContain(fixture.mspStaffRunId);
+    expect(listed.data.map((row) => row.type)).not.toContain('ar_aging');
+
+    await expect(
+      withDbAccessContext(orgContext(fixture.org.id), () =>
+        renderRunCsv(fixture.customerRunId, fixture.org.id),
+      ),
+    ).resolves.toContain('Acme');
+
+    await expect(
+      withDbAccessContext(orgContext(fixture.org.id), () =>
+        renderRunCsv(fixture.mspStaffRunId, fixture.org.id),
+      ),
+    ).rejects.toBeInstanceOf(PortalReportNotFoundError);
+
+    await expect(
+      withDbAccessContext(orgContext(fixture.org.id), () =>
+        renderRunPdf(fixture.mspStaffRunId, fixture.org.id, 'UTC'),
+      ),
+    ).rejects.toBeInstanceOf(PortalReportNotFoundError);
+  });
 });
 
 // Spec section 4, decision A2: enable_lifecycle gates the hardware lifecycle

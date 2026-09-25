@@ -19,6 +19,7 @@ import {
 } from '../reportGenerationService';
 import { organizationScope } from '../reportScope';
 import { getReportBranding } from '../reportBranding';
+import { reportAudienceCondition } from '../reportTypePermissions';
 import {
   persistedSiteScopeValues,
   portalUserReportAuthority,
@@ -370,6 +371,19 @@ function lifecycleExclusion(lifecycleEnabled: boolean) {
  * Fail-closed: a run referenced only by non-delivered occurrences is hidden.
  * `sd_evidence_report_run_idx` (report_run_id) serves both sub-queries.
  */
+/**
+ * #6941 (defense in depth): `portal_self_service` alone must not admit a run
+ * into the portal. Portal users are customers — the same audience as an
+ * organization-scope caller — so msp_staff-audience types (AR aging, margin,
+ * SLA attainment) are excluded here with the very predicate the staff report
+ * routes use for org-scope callers. Neither writer of the marker can set it on
+ * an msp_staff type today; this keeps a hand edit or a future writer from
+ * turning into a portal disclosure.
+ */
+function customerAudienceOnly() {
+  return reportAudienceCondition({ scope: 'organization' }, reports.type);
+}
+
 export function deliveredEvidenceOnly() {
   return sql`(
     NOT EXISTS (
@@ -394,6 +408,7 @@ export function portalRunPredicate(
     eq(reportRuns.id, runId),
     eq(reports.orgId, orgId),
     eq(reports.portalSelfService, true),
+    customerAudienceOnly(),
     lifecycleExclusion(lifecycleEnabled),
     deliveredEvidenceOnly(),
   )!;
@@ -407,6 +422,7 @@ export function portalRunListPredicate(
     eq(reports.orgId, orgId),
     eq(reports.portalSelfService, true),
     eq(reportRuns.status, 'completed'),
+    customerAudienceOnly(),
     lifecycleExclusion(lifecycleEnabled),
     deliveredEvidenceOnly(),
   )!;
@@ -417,7 +433,8 @@ function toDto(row: {
   reportId: string;
   name: string;
   // The DTO's own union, NOT PortalReportType: portalRunListPredicate has no
-  // type filter, so a managed-evidence run of a type outside the three
+  // portal-type filter (only the msp_staff audience exclusion, #6941), so a
+  // managed-evidence run of a type outside the three
   // self-service ones legitimately flows through here. Typing it as
   // PortalReportType was a lie the compiler could not see, because the value
   // comes from the database (#5784 W02, W03, W04).
