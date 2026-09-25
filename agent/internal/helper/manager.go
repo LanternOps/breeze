@@ -352,7 +352,7 @@ func (m *Manager) Apply(settings *Settings) {
 		m.abandonIfExhaustedLocked()
 		if m.pendingHelperVersion == "" {
 			if !m.notInstalledWarned {
-				log.Warn("breeze assist enabled but not installed; waiting for the server to offer a helper version")
+				log.Warn(m.notInstalledReasonLocked())
 				m.notInstalledWarned = true
 			}
 			// #6872: nothing to configure, spawn, or watch. A watcher left over
@@ -952,7 +952,8 @@ func (m *Manager) applyPendingUpdate() {
 		m.recordInstallFailureLocked(m.pendingHelperVersion)
 		// Same presigned-URL hazard as the install path above.
 		key, value := updater.SafeDownloadErrorFields(err)
-		log.Error("failed to install helper update", key, value, "failures", m.updateFailures)
+		log.Error("failed to install helper update", key, value,
+			"targetVersion", m.pendingHelperVersion, "failures", m.updateFailures)
 		if restoreErr := restoreBackup(backupPath, m.binaryPath); restoreErr != nil {
 			log.Error("failed to rollback helper", "error", restoreErr.Error())
 		}

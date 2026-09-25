@@ -77,6 +77,20 @@ func (m *Manager) clearInstallFailuresLocked() {
 	m.failuresVersion = ""
 }
 
+// notInstalledReasonLocked is the one-per-episode warning Apply logs when
+// Assist is enabled but not installed and nothing is pending. It names an
+// abandoned version so the log does not send an operator to look for a
+// missing server-side offer when the agent gave up on one. Must be called
+// with m.mu held.
+func (m *Manager) notInstalledReasonLocked() string {
+	if m.abandonedVersion != "" {
+		return "breeze assist enabled but not installed; install of " + m.abandonedVersion +
+			" abandoned after repeated failures, retrying after " + helperAbandonRetryAfter.String() +
+			" or when a different version is offered"
+	}
+	return "breeze assist enabled but not installed; waiting for the server to offer a helper version"
+}
+
 // WithdrawOffer is called on a heartbeat that carries no helper version offer.
 // The server stops offering when it has no helper build for this device (for
 // example the helper row was deleted, which otherwise makes every retry fail

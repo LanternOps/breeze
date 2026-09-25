@@ -2,6 +2,9 @@ package helper
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -102,6 +105,57 @@ func TestAbandonedVersionIsRetriedAfterCooldown(t *testing.T) {
 	heartbeatTick(mgr, "0.116.0")
 	if *downloads != before+1 {
 		t.Fatalf("abandoned version not retried after the cooldown: downloads %d -> %d", before, *downloads)
+	}
+
+	// The retry gets a full fresh budget, then re-abandons.
+	for i := 0; i < 10; i++ {
+		heartbeatTick(mgr, "0.116.0")
+	}
+	if *downloads != before+maxHelperInstallFailures {
+		t.Fatalf("post-cooldown attempts = %d, want a fresh budget of %d", *downloads-before, maxHelperInstallFailures)
+	}
+	if _, abandoned := pendingAndAbandoned(mgr); abandoned != "0.116.0" {
+		t.Fatalf("abandoned=%q after the post-cooldown budget, want 0.116.0", abandoned)
+	}
+}
+
+// A successful first install clears the failure count, so a later update to
+// the same version string (e.g. reinstall after removal) starts fresh.
+func TestInstallSuccessClearsFailureCount(t *testing.T) {
+	mgr, downloads, _ := newFailingInstallManager(t)
+	heartbeatTick(mgr, "0.116.0")
+	heartbeatTick(mgr, "0.116.0")
+
+	mgr.downloadFunc = func(string) (string, error) {
+		*downloads++
+		if err := os.WriteFile(mgr.binaryPath, []byte("bin"), 0755); err != nil {
+			return "", err
+		}
+		pkg := filepath.Join(t.TempDir(), "verified"+packageExtension())
+		return pkg, os.WriteFile(pkg, []byte("VERIFIED"), 0600)
+	}
+	heartbeatTick(mgr, "0.116.0")
+
+	mgr.mu.Lock()
+	failures, failuresVersion := mgr.updateFailures, mgr.failuresVersion
+	mgr.mu.Unlock()
+	if failures != 0 || failuresVersion != "" {
+		t.Fatalf("after a successful install: failures=%d failuresVersion=%q, want cleared", failures, failuresVersion)
+	}
+}
+
+// After abandonment the not-installed warning must say why, not claim the
+// server has offered nothing.
+func TestAbandonedInstallIsNotReportedAsWaitingForServer(t *testing.T) {
+	mgr, _, _ := newFailingInstallManager(t)
+	for i := 0; i < 5; i++ {
+		heartbeatTick(mgr, "0.116.0")
+	}
+	mgr.mu.Lock()
+	msg := mgr.notInstalledReasonLocked()
+	mgr.mu.Unlock()
+	if !strings.Contains(msg, "abandoned") || !strings.Contains(msg, "0.116.0") {
+		t.Fatalf("not-installed reason = %q, want it to name the abandoned version", msg)
 	}
 }
 
