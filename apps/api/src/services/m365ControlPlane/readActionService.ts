@@ -347,7 +347,8 @@ export async function executeM365ReadAction(
     };
   }
 
-  const resolved = resolveWritableToolOrgId(auth, inputOrgId);
+  // A read: never answered from the device-page write default (#6675).
+  const resolved = resolveWritableToolOrgId(auth, inputOrgId, { useWriteDefault: false });
   if (!resolved.orgId) {
     return {
       ok: false,

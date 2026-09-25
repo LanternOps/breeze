@@ -263,7 +263,7 @@ describe('AI routes', () => {
   // POST /sessions/:id/messages — concurrent-message guard settle path (#3089)
   // ============================================
   describe('POST /ai/sessions/:id/messages — approval-blocked turn settling', () => {
-    function mockPreflightOk() {
+    function mockPreflightOk(sessionOverrides: Record<string, unknown> = {}) {
       vi.mocked(runPreFlightChecks).mockResolvedValue({
         ok: true,
         session: {
@@ -275,6 +275,7 @@ describe('AI routes', () => {
           turnCount: 0,
           systemPrompt: 'sp',
           title: 'existing title',
+          ...sessionOverrides,
         },
         sanitizedContent: 'hello there',
         systemPrompt: 'sp',
@@ -344,6 +345,33 @@ describe('AI routes', () => {
       expect(settleBlockedTurnForNewMessage).toHaveBeenCalledWith(activeSession);
       expect(activeSession.inputController.pushMessage).toHaveBeenCalledWith('hello there');
       expect(streamingSessionManager.startTurnTimeout).toHaveBeenCalledWith(activeSession);
+    });
+
+    describe('device-page write default org (#6675)', () => {
+      const DEVICE_PAGE = { type: 'device', id: '33333333-3333-4333-8333-333333333333', hostname: 'WS-01' };
+
+      async function sendAndCaptureDbSession() {
+        const activeSession = makeActiveSession();
+        vi.mocked(streamingSessionManager.get).mockReturnValue(undefined);
+        vi.mocked(streamingSessionManager.getOrCreate).mockResolvedValue(activeSession);
+        vi.mocked(streamingSessionManager.tryTransitionToProcessing).mockReturnValue(true);
+        vi.mocked(db.insert).mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) } as any);
+
+        const res = await postMessage();
+        expect(res.status).toBe(200);
+        await res.text();
+        return vi.mocked(streamingSessionManager.getOrCreate).mock.calls[0]![1];
+      }
+
+      it('passes the session org as the write default for a page-anchored session', async () => {
+        mockPreflightOk({ deviceId: null, contextSnapshot: { ...DEVICE_PAGE, orgAnchor: 'page_context' } });
+        expect(await sendAndCaptureDbSession()).toMatchObject({ orgId: ORG_ID, writeDefaultOrgId: ORG_ID });
+      });
+
+      it('passes no write default when the session org was not anchored by the page', async () => {
+        mockPreflightOk({ deviceId: null, contextSnapshot: DEVICE_PAGE });
+        expect((await sendAndCaptureDbSession()).writeDefaultOrgId).toBeUndefined();
+      });
     });
 
     it('409s with a wrapping-up message when the settled turn does not conclude in time', async () => {

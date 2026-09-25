@@ -76,6 +76,7 @@ import { getAnthropicClientForPartner, LlmUnavailableError, resolveWireModel } f
 import { createTicketFromChatSchema, type AiTicketDraft } from '@breeze/shared';
 import { deviceInSiteScope } from './tickets/siteScope';
 import { timeActorFrom } from './timeEntries/timeEntries';
+import { pageContextWriteDefaultOrgId } from '../services/aiSessionOrgAnchor';
 import {
   isAiBudgetLockTimeout,
   markAiBudgetReservationIndeterminate,
@@ -861,6 +862,9 @@ aiRoutes.post(
           // Device-bound sessions narrow tool execution to the device's org
           // (ai_sessions.org_id), not the login org (#3087).
           deviceId: dbSession.deviceId,
+          // A chat opened from a device page defaults its org-scoped WRITES to
+          // the page's org (#6675); reads keep the caller's full scope.
+          writeDefaultOrgId: pageContextWriteDefaultOrgId(dbSession),
         },
         auth,
         c,
