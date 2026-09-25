@@ -412,11 +412,15 @@
   },
   "conversion": {
     "banner": {
-      "text": "{{rows}} legacy rules across {{policies}} policies have not been converted to monitors.",
+      "rowsCount_one": "{{count}} legacy rule",
+      "rowsCount_other": "{{count}} legacy rules",
+      "policiesCount_one": "{{count}} policy",
+      "policiesCount_other": "{{count}} policies",
+      "text": "{{rows}} across {{policies}} have not been converted to monitors.",
       "review": "Review",
       "convertEverything": "Convert everything…",
       "confirmTitle": "Convert every legacy rule, watch and alert-triggered automation across all your policies?",
-      "confirmBody": "{{rows}} legacy rules in {{policies}} policies across the whole partner. Converted rows retire in place. Unconvertible rows remain for review or manual retirement in W05c; W05d converts leftovers and retires those it cannot convert.",
+      "confirmBody": "{{rows}} in {{policies}} across the whole partner. Converted rows retire in place. Unconvertible rows remain for review or manual retirement in W05c; W05d converts leftovers and retires those it cannot convert.",
       "confirmRun": "Convert everything",
       "convertedAll": "Converted {{converted}} rows across {{policies}} policies; {{unconvertible}} could not be converted.",
       "errors": {

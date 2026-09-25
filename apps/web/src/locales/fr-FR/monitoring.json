@@ -412,11 +412,15 @@
   },
   "conversion": {
     "banner": {
-      "text": "{{rows}} règles héritées dans {{policies}} politiques n'ont pas encore été converties en moniteurs.",
+      "rowsCount_one": "{{count}} règle héritée",
+      "rowsCount_other": "{{count}} règles héritées",
+      "policiesCount_one": "{{count}} politique",
+      "policiesCount_other": "{{count}} politiques",
+      "text": "{{rows}} dans {{policies}} n'ont pas encore été converties en moniteurs.",
       "review": "Examiner",
       "convertEverything": "Tout convertir…",
       "confirmTitle": "Convertir toutes les règles héritées, surveillances et automatisations déclenchées par alerte de toutes vos politiques ?",
-      "confirmBody": "{{rows}} règles héritées dans {{policies}} politiques de tout le partenaire. Les lignes converties sont retirées sur place. Les autres restent à examiner ou retirer manuellement en W05c ; W05d convertit les restantes et retire celles non convertibles.",
+      "confirmBody": "{{rows}} dans {{policies}} de tout le partenaire. Les lignes converties sont retirées sur place. Les autres restent à examiner ou retirer manuellement en W05c ; W05d convertit les restantes et retire celles non convertibles.",
       "confirmRun": "Tout convertir",
       "convertedAll": "{{converted}} lignes converties dans {{policies}} politiques ; {{unconvertible}} n'ont pas pu l'être.",
       "errors": {

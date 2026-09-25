@@ -412,11 +412,15 @@
   },
   "conversion": {
     "banner": {
-      "text": "{{rows}} regole legacy in {{policies}} policy non sono ancora state convertite in monitor.",
+      "rowsCount_one": "{{count}} regola legacy",
+      "rowsCount_other": "{{count}} regole legacy",
+      "policiesCount_one": "{{count}} policy",
+      "policiesCount_other": "{{count}} policy",
+      "text": "{{rows}} in {{policies}} non sono ancora state convertite in monitor.",
       "review": "Esamina",
       "convertEverything": "Converti tutto…",
       "confirmTitle": "Convertire tutte le regole legacy, i controlli e le automazioni attivate da avvisi in tutte le policy?",
-      "confirmBody": "{{rows}} regole legacy in {{policies}} policy dell’intero partner. Le righe convertite vengono ritirate sul posto. Le altre restano da esaminare o ritirare manualmente in W05c; W05d converte le rimanenti e ritira quelle non convertibili.",
+      "confirmBody": "{{rows}} in {{policies}} dell’intero partner. Le righe convertite vengono ritirate sul posto. Le altre restano da esaminare o ritirare manualmente in W05c; W05d converte le rimanenti e ritira quelle non convertibili.",
       "confirmRun": "Converti tutto",
       "convertedAll": "Convertite {{converted}} righe in {{policies}} policy; {{unconvertible}} non convertibili.",
       "errors": {
