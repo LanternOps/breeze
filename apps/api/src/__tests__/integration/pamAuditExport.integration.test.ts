@@ -236,6 +236,58 @@ describe('fetchElevationAuditExportPage (real Postgres, #4910)', () => {
     }
   });
 
+  it('a transaction that began before the walk but inserts after it is still exported on resume', async () => {
+    const f = await fixture();
+    const writer = postgres(process.env.DATABASE_URL_APP ?? 'postgresql://breeze_app:breeze_test@localhost:5433/breeze_test', { max: 1 });
+    let goInsert!: () => void;
+    const insertNow = new Promise<void>((resolve) => { goInsert = resolve; });
+    let began!: () => void;
+    const didBegin = new Promise<void>((resolve) => { began = resolve; });
+    let lateId = '';
+    // Starts now, holds no lock on elevation_audit, and only inserts later.
+    const tx = writer.begin(async (sqlTx) => {
+      await sqlTx`SELECT set_config('breeze.scope', 'system', true)`;
+      began();
+      await insertNow;
+      const [row] = await sqlTx`
+        INSERT INTO elevation_audit (org_id, elevation_request_id, event_type, actor, details, occurred_at)
+        VALUES (${f.orgA}, ${f.reqA1.id}, 'approved', 'technician', '{}'::jsonb, now())
+        RETURNING id`;
+      lateId = String(row!.id);
+    });
+    try {
+      await didBegin;
+      const early = await withDbAccessContext(SYSTEM_CTX, async () => {
+        const [row] = await db
+          .insert(elevationAudit)
+          .values({ orgId: f.orgA, elevationRequestId: f.reqA1.id, eventType: 'approved', actor: 'technician', details: {}, occurredAt: new Date() })
+          .returning({ id: elevationAudit.id });
+        return row!.id;
+      });
+      const window = { from: new Date('2026-09-01T00:00:00Z'), to: new Date(Date.now() + 60_000) };
+      const page = (after: { recordedAt: string; id: string } | null) =>
+        withDbAccessContext(orgContext(f.orgA), () =>
+          fetchElevationAuditExportPage({
+            orgCondition: undefined, allowedSiteIds: undefined, filters: { ...window, orgId: f.orgA },
+            after, limit: 10, settleSeconds: 0,
+          }),
+        );
+      const first = await page(null);
+      expect(first.records.map((r) => r.id)).toEqual([early]);
+
+      goInsert();
+      await tx;
+      // With created_at = transaction start (now()), the late row would sort
+      // before the cursor and never be returned.
+      const resumed = await page(decodeExportCursor(first.nextCursor));
+      expect(resumed.records.map((r) => r.id)).toEqual([lateId]);
+    } finally {
+      goInsert();
+      await tx.catch(() => undefined);
+      await writer.end();
+    }
+  });
+
   it('an open write transaction on an unrelated table does not stall the export', async () => {
     const f = await fixture();
     const other = postgres(process.env.DATABASE_URL_APP ?? 'postgresql://breeze_app:breeze_test@localhost:5433/breeze_test', { max: 1 });
