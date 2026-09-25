@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const refreshDispatchedExpectationMock = vi.fn();
 
@@ -38,6 +38,7 @@ import { db } from '../db';
 import {
   applyBackupProgress,
   applyBackupStartedAck,
+  resetUnmatchedBackupProgressCache,
   isBackupStartedAck,
   isBackupQueuedAck,
   isLegacyBackupTimeoutResult,
@@ -70,6 +71,7 @@ function updateChain(rows: unknown[]) {
 describe('applyBackupProgress', () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    resetUnmatchedBackupProgressCache();
     refreshDispatchedExpectationMock.mockResolvedValue(true);
   });
 
@@ -275,6 +277,63 @@ describe('applyBackupProgress', () => {
     expect(db.select).not.toHaveBeenCalled();
     expect(db.update).not.toHaveBeenCalled();
     expect(refreshDispatchedExpectationMock).not.toHaveBeenCalled();
+  });
+
+  describe('unmatched-commandId throttle (#5393)', () => {
+    afterEach(() => vi.useRealTimers());
+
+    it('skips the DB lookup and flags repeats as suppressed after a not-found', async () => {
+      vi.mocked(db.select).mockReturnValue(selectChain([]) as any);
+      const call = () =>
+        applyBackupProgress({ agentId: 'agent-1', commandId: NOT_FOUND_UUID, progress: { current: 1 } });
+
+      const first = await call();
+      expect(first).toEqual({ applied: false, reason: 'not-found' });
+      for (let i = 0; i < 50; i++) {
+        expect(await call()).toEqual({ applied: false, reason: 'not-found', suppressed: true });
+      }
+      expect(db.select).toHaveBeenCalledTimes(1);
+    });
+
+    it('flags repeated non-UUID commandIds as suppressed (first is not)', async () => {
+      const call = () =>
+        applyBackupProgress({ agentId: 'agent-1', commandId: 'restore-cmd-1', progress: {} });
+      expect(await call()).toEqual({ applied: false, reason: 'invalid-command-id' });
+      expect(await call()).toEqual({ applied: false, reason: 'invalid-command-id', suppressed: true });
+    });
+
+    it('re-checks the DB after the window so a job created later is picked up', async () => {
+      vi.useFakeTimers();
+      vi.mocked(db.select).mockReturnValue(selectChain([]) as any);
+      const call = () =>
+        applyBackupProgress({ agentId: 'agent-1', commandId: NOT_FOUND_UUID, progress: { current: 1 } });
+      await call();
+      await call();
+      expect(db.select).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(31_000);
+      await call();
+      expect(db.select).toHaveBeenCalledTimes(2);
+    });
+
+    it('keys per agent + commandId', async () => {
+      vi.mocked(db.select).mockReturnValue(selectChain([]) as any);
+      await applyBackupProgress({ agentId: 'agent-1', commandId: NOT_FOUND_UUID, progress: {} });
+      const other = await applyBackupProgress({ agentId: 'agent-2', commandId: NOT_FOUND_UUID, progress: {} });
+      expect(other).toEqual({ applied: false, reason: 'not-found' });
+      expect(db.select).toHaveBeenCalledTimes(2);
+    });
+
+    it('never negative-caches a matched job', async () => {
+      vi.mocked(db.select).mockReturnValue(selectChain([{
+        id: 'job-1', deviceId: 'dev-1', agentId: 'agent-1', status: 'running',
+      }]) as any);
+      vi.mocked(db.update).mockReturnValue(updateChain([{ id: 'job-1' }]) as any);
+      for (let i = 0; i < 3; i++) {
+        expect(await applyBackupProgress({ agentId: 'agent-1', commandId: JOB_UUID, progress: { current: i } }))
+          .toEqual({ applied: true });
+      }
+      expect(db.select).toHaveBeenCalledTimes(3);
+    });
   });
 
   it('drops an invalid progress payload without throwing', async () => {
