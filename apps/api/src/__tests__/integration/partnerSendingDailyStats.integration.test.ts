@@ -102,7 +102,11 @@ async function fixture() {
   return { partnerA: partnerA.id, partnerB: partnerB.id, orgA: orgA.id };
 }
 
-const TODAY = new Date().toISOString().slice(0, 10);
+// One clock for the whole file. The seeded `day` values and the loader's
+// window must come from the same instant, or a run that crosses UTC midnight
+// shifts the loader's window a day past the seeded rows (#6953).
+const NOW = new Date();
+const TODAY = NOW.toISOString().slice(0, 10);
 
 describe('partner_sending_daily_stats — RLS (shape 3)', () => {
   let f: Awaited<ReturnType<typeof fixture>>;
@@ -319,6 +323,15 @@ describe('the delivery webhook end-to-end, with NO ambient DB context', () => {
 describe('loadSendingDomainAggregates — the abuse loader against real Postgres', () => {
   let f: Awaited<ReturnType<typeof fixture>>;
   beforeEach(async () => { f = await fixture(); });
+  // Run every test here a full day after NOW (Date only; DB and timers stay
+  // real). The seeded days and the loader's window must both come from NOW, so
+  // a loader call that reads the wall clock instead fails on every run, not
+  // just on one that happens to cross UTC midnight (#6953).
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW.getTime() + 24 * 60 * 60 * 1000);
+  });
+  afterEach(() => { vi.useRealTimers(); });
 
   // The loader is a hand-written CTE chain that no mocked database can
   // exercise: a typo in a join or a window bound reads as a permanently clean
@@ -338,7 +351,7 @@ describe('loadSendingDomainAggregates — the abuse loader against real Postgres
 
     const { aggregates, scannedPartnerIds } = await withDbAccessContext(
       SYSTEM_CTX,
-      () => loadSendingDomainAggregates(new Date()),
+      () => loadSendingDomainAggregates(NOW),
     );
 
     const a = aggregates.find((row) => row.partnerId === f.partnerA);
@@ -369,7 +382,7 @@ describe('loadSendingDomainAggregates — the abuse loader against real Postgres
 
     const { aggregates } = await withDbAccessContext(
       SYSTEM_CTX,
-      () => loadSendingDomainAggregates(new Date()),
+      () => loadSendingDomainAggregates(NOW),
     );
 
     const a = aggregates.find((row) => row.partnerId === f.partnerA);
