@@ -575,4 +575,15 @@ describe('invoiceTicketNumberSql', () => {
     const { sql: text } = new PgDialect().sqlToQuery(invoiceTicketNumberSql());
     expect(text).toBe('COALESCE("tickets"."internal_number", "tickets"."ticket_number")');
   });
+
+  it('invoiceLineTicketNumberSql: a draft reads live, any issued status reads the frozen ticket_label', async () => {
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    const { invoiceLineTicketNumberSql } = await import('./invoicePdf');
+    const dialect = new PgDialect();
+    expect(dialect.sqlToQuery(invoiceLineTicketNumberSql('draft')).sql)
+      .toBe('COALESCE("tickets"."internal_number", "tickets"."ticket_number")');
+    for (const status of ['sent', 'partially_paid', 'overdue', 'paid', 'void']) {
+      expect(dialect.sqlToQuery(invoiceLineTicketNumberSql(status)).sql).toBe('"invoice_lines"."ticket_label"');
+    }
+  });
 });
