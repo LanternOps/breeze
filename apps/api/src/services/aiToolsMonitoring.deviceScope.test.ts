@@ -189,38 +189,18 @@ describe('manage_monitors — exact-device axis on the target asset', () => {
       expect(parsed.monitor).toBeUndefined();
     });
 
-    it(`${label} caller cannot update a monitor bound to a sibling device`, async () => {
+    it.each(['create', 'update', 'delete'])(`${label} caller receives retirement guidance for %s without DB access`, async (action) => {
       mockFor({ siteId: SITE, linkedDeviceId: DEV_SIBLING });
-      const parsed = JSON.parse(
-        await handlerFor('manage_monitors')(
-          { action: 'update', monitorId: 'm1', name: 'pwned' },
-          makeAuth(),
-        ),
-      );
-      expect(parsed.error).toBe('Monitor not found or access denied');
-      expect(mockDb.update).not.toHaveBeenCalled();
-    });
-
-    it(`${label} caller cannot delete a monitor bound to a sibling device`, async () => {
-      mockFor({ siteId: SITE, linkedDeviceId: DEV_SIBLING });
-      const parsed = JSON.parse(
-        await handlerFor('manage_monitors')({ action: 'delete', monitorId: 'm1' }, makeAuth()),
-      );
-      expect(parsed.error).toBe('Monitor not found or access denied');
-      expect(mockDb.delete).not.toHaveBeenCalled();
-    });
-
-    it(`${label} caller cannot create an asset-less monitor`, async () => {
-      mockFor(undefined, null);
-      const parsed = JSON.parse(
-        await handlerFor('manage_monitors')(
-          { action: 'create', name: 'n', monitorType: 'icmp_ping', target: 'x' },
-          makeAuth(),
-        ),
-      );
-      expect(parsed.success).toBeUndefined();
-      expect(String(parsed.error)).toMatch(/accessible site|assetId/i);
+      const parsed = JSON.parse(await handlerFor('manage_monitors')(
+        { action, monitorId: 'm1', name: 'n', monitorType: 'icmp_ping', target: 'x' },
+        makeAuth(),
+      ));
+      expect(parsed.error).toBe(action === 'delete'
+        ? 'network_check_cleanup_retired' : 'network_check_authoring_retired');
+      expect(mockDb.select).not.toHaveBeenCalled();
       expect(mockDb.insert).not.toHaveBeenCalled();
+      expect(mockDb.update).not.toHaveBeenCalled();
+      expect(mockDb.delete).not.toHaveBeenCalled();
     });
   }
 
@@ -233,7 +213,7 @@ describe('manage_monitors — exact-device axis on the target asset', () => {
     expect(parsed.monitor.id).toBe('m1');
   });
 
-  it('device-bound caller CAN still update its own device\'s monitor', async () => {
+  it('device-bound caller cannot update even its own device\'s monitor', async () => {
     mockFor({ siteId: SITE, linkedDeviceId: DEV_ALLOWED });
     const parsed = JSON.parse(
       await handlerFor('manage_monitors')(
@@ -241,8 +221,11 @@ describe('manage_monitors — exact-device axis on the target asset', () => {
         deviceBoundAuth(),
       ),
     );
-    expect(parsed.success).toBe(true);
-    expect(mockDb.update).toHaveBeenCalled();
+    expect(parsed.error).toBe('network_check_authoring_retired');
+    expect(mockDb.select).not.toHaveBeenCalled();
+    expect(mockDb.insert).not.toHaveBeenCalled();
+    expect(mockDb.update).not.toHaveBeenCalled();
+    expect(mockDb.delete).not.toHaveBeenCalled();
   });
 
   it('unrestricted caller is unaffected (no asset lookup, no denial)', async () => {

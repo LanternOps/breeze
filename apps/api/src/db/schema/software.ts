@@ -80,6 +80,11 @@ export const softwareVersions = pgTable('software_versions', {
   // present — independent of the installer exit code. Shape validated by
   // detectionRulesSchema in @breeze/shared. Null/empty = exit-code behavior only.
   detectionRules: jsonb('detection_rules'),
+  // Vendor-documented installer success exit codes (issue #7038), stored in
+  // unsigned 32-bit form. They ADD to the agent's built-in success codes;
+  // empty = historical behavior. Validated by successExitCodesSchema in
+  // @breeze/shared.
+  successExitCodes: bigint('success_exit_codes', { mode: 'number' }).array().notNull().default(sql`'{}'::bigint[]`),
   isLatest: boolean('is_latest').notNull().default(false)
 }, (table) => ({
   catalogIdx: index('software_versions_catalog_id_idx').on(table.catalogId),

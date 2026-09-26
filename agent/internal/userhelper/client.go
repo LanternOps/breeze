@@ -144,8 +144,24 @@ func (c *Client) Run() error {
 		return fmt.Errorf("authenticate: %w", err)
 	}
 
-	if err := c.sendCapabilities(); err != nil {
+	caps := c.currentCapabilities()
+	if err := c.sendCapabilitiesMessage(caps); err != nil {
 		log.Warn("failed to send capabilities", "error", err)
+	}
+	// A failed macOS capture probe must not latch CanCapture=false for the
+	// whole connection (#6105): keep re-probing and re-send when it recovers.
+	if needsCaptureReprobe(captureReprobeGOOS, c.binaryKind, caps) {
+		log.Warn("desktop capture probe failed at connect; re-probing in the background",
+			"context", c.context)
+		safeGo("capture_reprobe", func() {
+			runCaptureReprobe(runDone, captureReprobeConfig{
+				initialDelay: captureReprobeInitialDelay,
+				maxDelay:     captureReprobeMaxDelay,
+				canProbe:     func() bool { return !c.desktopMgr.hasActiveSessions() },
+				detect:       c.currentCapabilities,
+				send:         c.sendCapabilitiesMessage,
+			})
+		})
 	}
 
 	// Set SAS callback: route through IPC to the SCM service which can call SendSAS
@@ -346,14 +362,20 @@ func (c *Client) authenticate() error {
 	return nil
 }
 
-func (c *Client) sendCapabilities() error {
-	caps := detectCapabilities(c.binaryKind, c.context)
+// currentCapabilities computes the capabilities this helper would report now.
+// On macOS desktop helpers this runs a real capture probe.
+func (c *Client) currentCapabilities() ipc.Capabilities {
+	caps := detectCapabilitiesFn(c.binaryKind, c.context)
 	// On Windows, user-role helpers cannot capture desktop (no SYSTEM token
 	// for UAC/lock screen). On macOS, the user-role helper is the only process
 	// that CAN capture — the root daemon lacks GUI session access.
 	if c.role == ipc.HelperRoleUser && runtime.GOOS == "windows" {
 		caps.CanCapture = false
 	}
+	return caps
+}
+
+func (c *Client) sendCapabilitiesMessage(caps ipc.Capabilities) error {
 	return c.conn.SendTyped("caps", ipc.TypeCapabilities, caps)
 }
 
@@ -1081,7 +1103,9 @@ func (c *Client) handleNotify(env *ipc.Envelope) {
 			result = ipc.NotifyResult{Delivered: showNotification(req)}
 		}
 	} else {
-		result = ipc.NotifyResult{Delivered: showNotification(req)}
+		// A notice the user must see (FallbackDialog, #6864) becomes a dialog
+		// when the toast fails; any other notice stays toast-only.
+		result = ipc.NotifyResult{Delivered: showNotificationWithFallback(req)}
 	}
 
 	if err := c.conn.SendTyped(env.ID, ipc.TypeNotifyResult, result); err != nil {

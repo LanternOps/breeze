@@ -511,3 +511,47 @@ describe('DeviceInfoTab — role + custom-field mutations also use runAction', (
     });
   });
 });
+
+describe('DeviceInfoTab — Breeze Assist install issue (#6925)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function load(extra: Record<string, unknown>) {
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === `/devices/${deviceId}` && method === 'GET') {
+        return makeJsonResponse({ ...baseDeviceInfoPayload, ...extra });
+      }
+      if (url === '/custom-fields') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+  }
+
+  it('explains a missing helper offer, with the since-date', async () => {
+    load({
+      helperInstallIssue: 'awaiting_server_offer',
+      helperInstallIssueSince: '2026-10-01T00:00:00.000Z',
+    });
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    const notice = await screen.findByTestId('helper-install-issue');
+    expect(notice.textContent).toMatch(/not installed/i);
+    expect(notice.textContent).toMatch(/has not offered/i);
+    expect(notice.textContent).toContain(new Date('2026-10-01T00:00:00.000Z').toLocaleDateString());
+  });
+
+  it('explains an abandoned install differently', async () => {
+    load({ helperInstallIssue: 'install_abandoned', helperInstallIssueSince: '2026-10-01T00:00:00.000Z' });
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    const notice = await screen.findByTestId('helper-install-issue');
+    expect(notice.textContent).toMatch(/failed repeatedly/i);
+  });
+
+  it('shows no notice for a healthy device', async () => {
+    load({ helperInstallIssue: null, helperInstallIssueSince: null });
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    await screen.findByText('Operating System');
+    expect(screen.queryByTestId('helper-install-issue')).toBeNull();
+  });
+});

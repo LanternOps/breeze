@@ -440,7 +440,13 @@ export function BlockCard({
         )}
 
         {block.blockType === 'contract' && (
-          <ContractBlockEditor block={block} canWrite={canWrite} onEditBlock={onEditBlock} />
+          <>
+            <ContractBlockEditor block={block} canWrite={canWrite} onEditBlock={onEditBlock} />
+            {/* Agreements render after the totals wherever they sit here (#7040). */}
+            <p className="mt-2 text-xs text-muted-foreground" data-testid={`quote-block-contract-placement-${block.id}`}>
+              {t('quotes.editor.contract.placementHint')}
+            </p>
+          </>
         )}
 
         {block.blockType === 'table' && (

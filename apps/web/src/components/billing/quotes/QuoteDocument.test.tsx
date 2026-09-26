@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { QuoteDocument } from './QuoteDocument';
@@ -209,6 +209,13 @@ describe('QuoteDocument', () => {
     ];
     render(<QuoteDocument detail={d} customerName="Acme Industries" />);
 
+    // Collapsed by default, and the file is only fetched once the row is opened.
+    const row = screen.getByTestId('contract-block') as HTMLDetailsElement;
+    expect(row.open).toBe(false);
+    expect(fetchWithAuth).not.toHaveBeenCalled();
+    row.open = true;
+    fireEvent(row, new Event('toggle'));
+
     await waitFor(() => expect(document.querySelector('iframe')).not.toBeNull());
     expect(document.querySelector('iframe')?.getAttribute('src')).toBe('blob:mock-contract');
     expect(fetchWithAuth).toHaveBeenCalledWith('/quotes/q-1/contract-file/b-4');
@@ -228,7 +235,10 @@ describe('QuoteDocument', () => {
       },
     ];
     render(<QuoteDocument detail={d} customerName="Acme Industries" />);
-    expect(screen.getByTestId('contract-block')).toHaveTextContent('Agreement file unavailable');
+    const row = screen.getByTestId('contract-block') as HTMLDetailsElement;
+    row.open = true;
+    fireEvent(row, new Event('toggle'));
+    expect(row).toHaveTextContent('Agreement file unavailable');
     expect(document.querySelector('iframe')).toBeNull();
     expect(fetchWithAuth).not.toHaveBeenCalled();
   });
@@ -333,6 +343,59 @@ describe('QuoteDocument', () => {
     const { container } = render(<QuoteDocument detail={detail} customerName="Acme" />);
     expect(container.textContent).not.toMatch(/markup/i);
     expect(container.textContent).not.toContain('100.00'); // the cost value
+  });
+});
+
+// Agreements (contract blocks + T&C) render after the totals, collapsed — the
+// same order as the customer's portal page and the PDF (#7040). They used to
+// render in block order ahead of the totals, fully expanded.
+describe('QuoteDocument — agreements after the price', () => {
+  const follows = (a: Element, b: Element) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+  const withContract = () => {
+    const d = makeDetail({ quote: { ...makeDetail().quote, termsAndConditions: '1. Payment\nNet 30.\n2. Term\nOne year.' } });
+    d.blocks = [
+      {
+        id: 'b-0', quoteId: 'q-1', orgId: 'org-1', blockType: 'contract',
+        content: {
+          label: 'Managed Services Agreement', templateName: 'MSA', versionNumber: 3, sourceType: 'authored',
+          renderedHtml: `<p>${'clause '.repeat(450)}</p>`, fileUrl: null,
+        },
+        // Authored FIRST in the block order: it must still land after the totals.
+        sortOrder: -1, createdAt: '2026-06-01T00:00:00Z',
+      },
+      ...d.blocks,
+    ];
+    return d;
+  };
+
+  it('renders the agreement and the T&C after the totals, in that order', () => {
+    render(<QuoteDocument detail={withContract()} customerName="Acme Industries" />);
+    const contract = screen.getByTestId('contract-block');
+    const terms = screen.getByTestId('quote-document-terms-conditions');
+    expect(follows(screen.getByTestId('quote-document-due'), contract)).toBe(true);
+    expect(follows(screen.getByText('Managed Workstation'), contract)).toBe(true);
+    expect(follows(contract, terms)).toBe(true);
+    expect(screen.getByTestId('quote-document-agreements').contains(contract)).toBe(true);
+  });
+
+  it('collapses each row and summarises it with a reading time', () => {
+    render(<QuoteDocument detail={withContract()} customerName="Acme Industries" />);
+    const contract = screen.getByTestId('contract-block') as HTMLDetailsElement;
+    const terms = screen.getByTestId('quote-document-terms-conditions') as HTMLDetailsElement;
+    expect(contract.tagName).toBe('DETAILS');
+    expect(contract.open).toBe(false);
+    expect(contract.querySelector('summary')).toHaveTextContent('Managed Services Agreement');
+    expect(contract.querySelector('summary')).toHaveTextContent('~3 min read');
+    expect(terms.open).toBe(false);
+    expect(terms.querySelector('summary')).toHaveTextContent('Terms & Conditions');
+    expect(terms.querySelector('summary')).toHaveTextContent('2 sections · ~1 min read');
+  });
+
+  it('renders T&C sections as headings once opened', () => {
+    render(<QuoteDocument detail={withContract()} customerName="Acme Industries" />);
+    const terms = screen.getByTestId('quote-document-terms-conditions') as HTMLDetailsElement;
+    expect(terms.querySelectorAll('h4')).toHaveLength(2);
+    expect(terms.querySelector('h4')).toHaveTextContent('1. Payment');
   });
 });
 

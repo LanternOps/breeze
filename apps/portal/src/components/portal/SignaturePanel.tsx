@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { cn } from '@/lib/utils';
 import { BTN_PRIMARY, BTN_SECONDARY, INPUT } from './ui';
 
@@ -17,8 +17,9 @@ interface SignaturePanelProps {
   busy: boolean;
   /** Prefixes the data-testids so existing public/authed selectors keep working. */
   testIdPrefix: string;
-  /** When set, "Terms & Conditions" in the agreement copy links here (e.g. `#terms`). */
-  termsHref?: string;
+  /** The agreements the signer confirms (contract blocks, then T&C), each named
+   *  and linked to its collapsed row below. Empty = the generic "terms". */
+  agreements?: { label: string; href: string }[];
 }
 
 /**
@@ -34,7 +35,7 @@ interface SignaturePanelProps {
  * backing out of the prompt still declined the proposal irreversibly. The
  * confirm block below is the only path to onDecline().
  */
-export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix, termsHref }: SignaturePanelProps) {
+export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix, agreements = [] }: SignaturePanelProps) {
   const [name, setName] = useState('');
   const [agreed, setAgreed] = useState(false);
   const [touched, setTouched] = useState(false);
@@ -119,13 +120,16 @@ export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix, termsH
         />
         <span className="leading-relaxed text-muted-foreground">
           I have reviewed this proposal and the{' '}
-          {termsHref ? (
-            <a href={termsHref} className="font-medium text-foreground underline underline-offset-2">
-              Terms &amp; Conditions
-            </a>
-          ) : (
-            'terms'
-          )}
+          {agreements.length > 0
+            ? agreements.map((a, i) => (
+                <Fragment key={a.href}>
+                  {i > 0 && (i === agreements.length - 1 ? ' and ' : ', ')}
+                  <a href={a.href} className="font-medium text-foreground underline underline-offset-2">
+                    {a.label}
+                  </a>
+                </Fragment>
+              ))
+            : 'terms'}
           . Typing my name above is my electronic signature.
         </span>
       </label>

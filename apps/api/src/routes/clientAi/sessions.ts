@@ -19,10 +19,11 @@ import { streamSSE } from 'hono/streaming';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { and, asc, count, desc, eq, inArray } from 'drizzle-orm';
-import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { aiMessages, aiSessions } from '../../db/schema';
 import {
   clientAiAuthMiddleware,
+  clientAiDbAccessContext,
   requireClientAiEnabledMiddleware,
 } from '../../middleware/clientAiAuth';
 import {
@@ -565,76 +566,123 @@ clientAiSessionRoutes.post(
     const policy = c.get('clientAiPolicy');
     const sessionId = c.req.param('id')!;
     const body = c.req.valid('json');
+    // #3127: this route is registered in selfManagedDbContextRoutes, so
+    // clientAiAuthMiddleware holds no request transaction across the handler.
+    // Each DB phase re-enters the exact client-ai org context in a short
+    // transaction of its own; the budget reservation (its own system
+    // transaction), the settle wait and the reservation release run between
+    // them with no connection checked out.
+    const inRequestDb = <T>(fn: () => Promise<T>): Promise<T> =>
+      runOutsideDbContext(() => withDbAccessContext(clientAiDbAccessContext(auth.orgId), fn));
 
-    const session = await loadClientSession(sessionId, auth);
-    if (!session) return c.json({ error: 'Session not found' }, 404);
-    if (session.status !== 'active') {
-      return c.json({ error: 'Session is no longer active' }, 410);
-    }
+    // ── Phase 1: read + validate (one short context) ──────────────────────
+    const prepared = await inRequestDb(async (): Promise<
+      | { kind: 'response'; response: Response }
+      | {
+          kind: 'ready';
+          session: ClientSessionRow;
+          resolved: UsableLlmConfig;
+          redactions: DlpRedactionEvent[];
+          contextCells: unknown[][] | undefined;
+          contextText: string | undefined;
+          redactedContent: string;
+          modelContent: string;
+        }
+    > => {
+      const respond = (response: Response) => ({ kind: 'response' as const, response });
 
-    const rateError = await checkClientRateLimits(auth.clientUserId, auth.orgId, policy);
-    if (rateError) return c.json({ error: rateError }, 429);
+      const session = await loadClientSession(sessionId, auth);
+      if (!session) return respond(c.json({ error: 'Session not found' }, 404));
+      if (session.status !== 'active') {
+        return respond(c.json({ error: 'Session is no longer active' }, 410));
+      }
 
-    const resolved = await resolveClientLlmConfig(auth.orgId);
-    if (resolved.source === 'unavailable') {
-      return c.json({ error: 'ai_unavailable' }, 503);
-    }
-    const rejection = await runClientPreflight(c, auth, policy, resolved);
-    if (rejection) return rejection;
+      const rateError = await checkClientRateLimits(auth.clientUserId, auth.orgId, policy);
+      if (rateError) return respond(c.json({ error: rateError }, 429));
 
-    // ── DLP chokepoint (a): the user prompt (templates ride inside it in v1) ──
-    const textResult = await applyDlp({
-      text: body.content,
-      dlpConfig: policy.dlpConfig,
-      orgId: auth.orgId,
+      const resolved = await resolveClientLlmConfig(auth.orgId);
+      if (resolved.source === 'unavailable') {
+        return respond(c.json({ error: 'ai_unavailable' }, 503));
+      }
+      const rejection = await runClientPreflight(c, auth, policy, resolved);
+      if (rejection) return respond(rejection);
+
+      // ── DLP chokepoint (a): the user prompt (templates ride inside it in v1) ──
+      const textResult = await applyDlp({
+        text: body.content,
+        dlpConfig: policy.dlpConfig,
+        orgId: auth.orgId,
+      });
+      if (textResult.action === 'block') {
+        return respond(dlpBlockedResponse(c, auth, sessionId, textResult.blockReason));
+      }
+
+      // ── workbookContext leaves Breeze for the provider too — same chokepoint ──
+      // Grid hosts (Excel) ship `cells`; grid-less hosts (Word/PowerPoint/Outlook)
+      // ship linear `text`. Both must be DLP-scanned before egress.
+      const redactions: DlpRedactionEvent[] = [...textResult.redactions];
+      const wb = body.workbookContext;
+      let contextCells: unknown[][] | undefined;
+      let contextText: string | undefined;
+      if (wb && wb.kind !== 'none' && wb.cells) {
+        const cellsResult = await applyDlp({
+          cells: wb.cells,
+          dlpConfig: policy.dlpConfig,
+          orgId: auth.orgId,
+        });
+        if (cellsResult.action === 'block') {
+          return respond(dlpBlockedResponse(c, auth, sessionId, cellsResult.blockReason));
+        }
+        redactions.push(...cellsResult.redactions);
+        contextCells = cellsResult.cells;
+      } else if (wb && wb.kind !== 'none' && wb.text) {
+        const wbTextResult = await applyDlp({
+          text: wb.text,
+          dlpConfig: policy.dlpConfig,
+          orgId: auth.orgId,
+        });
+        if (wbTextResult.action === 'block') {
+          return respond(dlpBlockedResponse(c, auth, sessionId, wbTextResult.blockReason));
+        }
+        redactions.push(...wbTextResult.redactions);
+        contextText = wbTextResult.text ?? wb.text;
+      }
+
+      const redactedContent = textResult.text ?? body.content;
+      let modelContent = redactedContent;
+      if (wb && wb.kind !== 'none') {
+        const label =
+          wb.kind === 'selection'
+            ? `Current selection${wb.address ? ` (${wb.address})` : ''}`
+            : `Sheet "${wb.sheetName ?? 'unknown'}"`;
+        const contextBody = contextCells
+          ? JSON.stringify(contextCells)
+          : (contextText ?? '(no cell data provided)');
+        modelContent += `\n\n[Workbook context — ${label}]\n${contextBody}`;
+      }
+
+      return {
+        kind: 'ready',
+        session,
+        resolved,
+        redactions,
+        contextCells,
+        contextText,
+        redactedContent,
+        modelContent,
+      };
     });
-    if (textResult.action === 'block') {
-      return dlpBlockedResponse(c, auth, sessionId, textResult.blockReason);
-    }
-
-    // ── workbookContext leaves Breeze for the provider too — same chokepoint ──
-    // Grid hosts (Excel) ship `cells`; grid-less hosts (Word/PowerPoint/Outlook)
-    // ship linear `text`. Both must be DLP-scanned before egress.
-    const redactions: DlpRedactionEvent[] = [...textResult.redactions];
+    if (prepared.kind === 'response') return prepared.response;
+    const {
+      session,
+      resolved,
+      redactions,
+      contextCells,
+      contextText,
+      redactedContent,
+      modelContent,
+    } = prepared;
     const wb = body.workbookContext;
-    let contextCells: unknown[][] | undefined;
-    let contextText: string | undefined;
-    if (wb && wb.kind !== 'none' && wb.cells) {
-      const cellsResult = await applyDlp({
-        cells: wb.cells,
-        dlpConfig: policy.dlpConfig,
-        orgId: auth.orgId,
-      });
-      if (cellsResult.action === 'block') {
-        return dlpBlockedResponse(c, auth, sessionId, cellsResult.blockReason);
-      }
-      redactions.push(...cellsResult.redactions);
-      contextCells = cellsResult.cells;
-    } else if (wb && wb.kind !== 'none' && wb.text) {
-      const wbTextResult = await applyDlp({
-        text: wb.text,
-        dlpConfig: policy.dlpConfig,
-        orgId: auth.orgId,
-      });
-      if (wbTextResult.action === 'block') {
-        return dlpBlockedResponse(c, auth, sessionId, wbTextResult.blockReason);
-      }
-      redactions.push(...wbTextResult.redactions);
-      contextText = wbTextResult.text ?? wb.text;
-    }
-
-    const redactedContent = textResult.text ?? body.content;
-    let modelContent = redactedContent;
-    if (wb && wb.kind !== 'none') {
-      const label =
-        wb.kind === 'selection'
-          ? `Current selection${wb.address ? ` (${wb.address})` : ''}`
-          : `Sheet "${wb.sheetName ?? 'unknown'}"`;
-      const contextBody = contextCells
-        ? JSON.stringify(contextCells)
-        : (contextText ?? '(no cell data provided)');
-      modelContent += `\n\n[Workbook context — ${label}]\n${contextBody}`;
-    }
 
     // ── #5557: atomic admission, immediately before dispatch ──────────────
     // runClientPreflight above is a READ. Two concurrent add-in turns both pass
@@ -678,6 +726,8 @@ clientAiSessionRoutes.post(
     };
     // Proven pre-dispatch failure: nothing was sent to the provider, so the
     // hold is released rather than left to expire holding the org's cap.
+    // Always called with no DB context held, so its own system transaction
+    // never runs beside a held request connection (#3127).
     const releaseTurnBudget = () =>
       releaseUnusedAiBudgetReservation({
         orgId: auth.orgId,
@@ -691,10 +741,21 @@ clientAiSessionRoutes.post(
         console.error('[client-ai] Failed to release unused budget reservation:', err);
       });
 
-    let activeSession: ActiveSession;
-    try {
-      activeSession = await ensureActiveClientSession(c, session, auth, policy, resolved, turnBudget);
-    } catch (err) {
+    // ── Phase 2: materialise the session (short context) ──────────────────
+    const materialised = await inRequestDb(async (): Promise<
+      { kind: 'ok'; activeSession: ActiveSession } | { kind: 'failed'; error: unknown }
+    > => {
+      try {
+        return {
+          kind: 'ok',
+          activeSession: await ensureActiveClientSession(c, session, auth, policy, resolved, turnBudget),
+        };
+      } catch (err) {
+        return { kind: 'failed', error: err };
+      }
+    });
+    if (materialised.kind === 'failed') {
+      const err = materialised.error;
       await releaseTurnBudget();
       if (err instanceof ClientHostUnsupportedError) {
         return c.json({ error: 'unsupported_host' }, 400);
@@ -704,10 +765,12 @@ clientAiSessionRoutes.post(
       }
       throw err;
     }
+    const { activeSession } = materialised;
 
     // Concurrent message guard — atomic check-and-set (ai.ts convention). If
     // the turn is blocked only on pending approval waits, settle them so the
     // assistant can conclude and answer this message (#3089 — shared helper).
+    // #3127: the settle wait runs between the two contexts, with none held.
     if (!streamingSessionManager.tryTransitionToProcessing(activeSession, turnBudget.reservationId)) {
       const settle = await settleBlockedTurnForNewMessage(activeSession);
       if (settle !== 'concluded'
@@ -741,42 +804,49 @@ clientAiSessionRoutes.post(
       });
     }
 
-    try {
-      await db.insert(aiMessages).values({
-        sessionId,
-        role: 'user',
-        content: redactedContent,
-        contentBlocks: contentBlocks.length > 0 ? contentBlocks : null,
+    // ── Phase 3: persist + dispatch (short context) ───────────────────────
+    const saved = await inRequestDb(async (): Promise<boolean> => {
+      try {
+        await db.insert(aiMessages).values({
+          sessionId,
+          role: 'user',
+          content: redactedContent,
+          contentBlocks: contentBlocks.length > 0 ? contentBlocks : null,
+        });
+      } catch (err) {
+        console.error('[client-ai] Failed to save user message:', err);
+        activeSession.state = 'idle';
+        activeSession.budgetReservationId = undefined;
+        return false;
+      }
+
+      if (!session.title) {
+        const title = generateClientSessionTitle(redactedContent);
+        try {
+          await db.update(aiSessions).set({ title }).where(eq(aiSessions.id, sessionId));
+        } catch (err) {
+          console.error('[client-ai] Failed to auto-set session title:', err);
+        }
+      }
+
+      activeSession.inputController.pushMessage(modelContent);
+      streamingSessionManager.startTurnTimeout(activeSession);
+
+      auditClient(c, auth, {
+        action: 'ai.client_session.message',
+        resourceId: sessionId,
+        details: {
+          contentLength: body.content.length,
+          workbookContextKind: wb?.kind ?? 'none',
+          redactionCount: redactions.length,
+        },
       });
-    } catch (err) {
-      console.error('[client-ai] Failed to save user message:', err);
-      activeSession.state = 'idle';
-      activeSession.budgetReservationId = undefined;
+      return true;
+    });
+    if (!saved) {
       await releaseTurnBudget();
       return c.json({ error: 'Failed to save message' }, 500);
     }
-
-    if (!session.title) {
-      const title = generateClientSessionTitle(redactedContent);
-      try {
-        await db.update(aiSessions).set({ title }).where(eq(aiSessions.id, sessionId));
-      } catch (err) {
-        console.error('[client-ai] Failed to auto-set session title:', err);
-      }
-    }
-
-    activeSession.inputController.pushMessage(modelContent);
-    streamingSessionManager.startTurnTimeout(activeSession);
-
-    auditClient(c, auth, {
-      action: 'ai.client_session.message',
-      resourceId: sessionId,
-      details: {
-        contentLength: body.content.length,
-        workbookContextKind: wb?.kind ?? 'none',
-        redactionCount: redactions.length,
-      },
-    });
 
     // The turn streams over GET /:id/events — see sse.ts for the event names.
     return c.json({ accepted: true }, 202);

@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import type { AiPageContext } from '@breeze/shared';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
+import { createCancellableRequest, type CancellableRequest } from '../../lib/cancellableRequest';
 import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
 import { useAiStore } from '../../stores/aiStore';
 import { usePermissions } from '../../lib/permissions';
@@ -295,33 +296,48 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
   const [error, setError] = useState<string>();
   const reliabilityDisabled = mlFlags.isDisabled('ml.device_reliability.enabled');
 
+  // The one in-flight snapshot request. A new load (device change, retry)
+  // cancels the previous one and unmount cancels whatever is left, so a soft
+  // navigation / org switch away from the device page does not leave this
+  // fetch holding a connection, and a late response for a previous device
+  // cannot overwrite the current one (#4513).
+  const snapshotRequestRef = useRef<CancellableRequest | null>(null);
+
   const fetchReliability = useCallback(async () => {
+    snapshotRequestRef.current?.cancel();
+    const request = createCancellableRequest();
+    snapshotRequestRef.current = request;
     setLoading(true);
     setError(undefined);
     try {
       // sweep D15: no snapshot yet is an expected empty state, so the API
       // answers 200 with snapshot: null (not 404) — a 404 here would now
       // also wrongly mask a genuine "device not found".
-      const response = await fetchWithAuth(`/reliability/${deviceId}`);
+      const response = await fetchWithAuth(`/reliability/${deviceId}`, { signal: request.signal });
       if (!response.ok) throw new Error(stableT('deviceReliabilityPanel.errors.loadScore'));
       const json = await response.json();
+      if (request.cancelled) return;
       setSnapshot(json?.snapshot ?? null);
     } catch (err) {
+      if (request.cancelled) return;
       setError(err instanceof Error ? err.message : stableT('deviceReliabilityPanel.errors.loadScore'));
     } finally {
-      setLoading(false);
+      request.settle();
+      if (!request.cancelled) setLoading(false);
     }
   }, [deviceId, stableT]);
 
   useEffect(() => {
     if (!mlFlags.loaded) return;
     if (reliabilityDisabled) {
+      snapshotRequestRef.current?.cancel();
       setSnapshot(null);
       setError(undefined);
       setLoading(false);
       return;
     }
     void fetchReliability();
+    return () => snapshotRequestRef.current?.cancel();
   }, [fetchReliability, mlFlags.loaded, reliabilityDisabled]);
 
   const drivers = useMemo(() => (snapshot?.drivers ?? []).slice(0, 3), [snapshot?.drivers]);
@@ -364,17 +380,22 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
   const [offendersLoading, setOffendersLoading] = useState(false);
   const [offendersError, setOffendersError] = useState<string>();
   const offendersFetchedRef = useRef(false);
+  const offendersRequestRef = useRef<CancellableRequest | null>(null);
 
   const loadOffenders = useCallback(async () => {
+    offendersRequestRef.current?.cancel();
+    const request = createCancellableRequest();
+    offendersRequestRef.current = request;
     offendersFetchedRef.current = true;
     setOffendersLoading(true);
     setOffendersError(undefined);
     try {
-      const response = await fetchWithAuth(`/reliability/${deviceId}/offenders`);
+      const response = await fetchWithAuth(`/reliability/${deviceId}/offenders`, { signal: request.signal });
       if (!response.ok) throw new Error(t('deviceReliabilityPanel.errors.loadDetail'));
       const json = await response.json();
       // A 200 with a missing/malformed body must not render a blank, retry-less
       // panel — treat it as a failure so the existing error+retry path handles it.
+      if (request.cancelled) return;
       const data = json?.offenders;
       if (!data || typeof data !== 'object') {
         throw new Error(t('deviceReliabilityPanel.errors.malformedDetail'));
@@ -385,21 +406,26 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
         hangs: Array.isArray(data.hangs) ? data.hangs : [],
       });
     } catch (err) {
+      if (request.cancelled) return;
       offendersFetchedRef.current = false; // allow a retry on next expand
       setOffendersError(err instanceof Error ? err.message : t('deviceReliabilityPanel.errors.loadDetail'));
     } finally {
-      setOffendersLoading(false);
+      request.settle();
+      if (!request.cancelled) setOffendersLoading(false);
     }
   }, [deviceId, t]);
 
   // Reset the drill-down when the panel is pointed at a different device, so a
   // stale offender list (and the fetched-once guard) can't bleed across devices.
+  // The cleanup cancels an in-flight offenders fetch on device change and on
+  // unmount (#4513).
   useEffect(() => {
     setOffendersOpen(false);
     setOffenders(null);
     setOffendersError(undefined);
     setOffendersLoading(false);
     offendersFetchedRef.current = false;
+    return () => offendersRequestRef.current?.cancel();
   }, [deviceId]);
 
   const toggleOffenders = useCallback(() => {

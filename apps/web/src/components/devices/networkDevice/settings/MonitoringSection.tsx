@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import type { DiscoveredAsset } from '@/components/discovery/DiscoveredAssetList';
-import CreateMonitorForm from '@/components/monitors/CreateMonitorForm';
+import { navigateTo } from '@/lib/navigation';
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
 import { showToast } from '@/components/shared/Toast';
 import { extractApiError } from '@/lib/apiError';
@@ -58,7 +58,7 @@ function draftFrom(snmp?: SnmpDevice | null): SnmpDraft {
 const buttonClass = 'rounded-md border px-3 py-2 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring';
 const collectionStates = new Set(['ok', 'failing', 'no_template', 'no_agent', 'asset_moved', 'never_polled', 'paused', 'warning', 'offline', 'unknown']);
 
-export function MonitoringSection({ asset, assetId, onSaved, onAnnounce }: {
+export function MonitoringSection({ assetId, onSaved, onAnnounce }: {
   asset: DiscoveredAsset;
   assetId: string;
   onSaved: () => void | boolean | Promise<void | boolean>;
@@ -66,7 +66,7 @@ export function MonitoringSection({ asset, assetId, onSaved, onAnnounce }: {
 }) {
   const { t } = useTranslation('devices');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
-  const { putSnmp, patchSnmp, disableMonitoring, deleteCheck } = useNetworkAssetMutations();
+  const { putSnmp, patchSnmp, disableMonitoring } = useNetworkAssetMutations();
   const [detail, setDetail] = useState<AssetMonitoringDetail | null>(null);
   const [checks, setChecks] = useState<AssetNetworkCheck[]>([]);
   const [templates, setTemplates] = useState<SnmpTemplateOption[]>([]);
@@ -80,8 +80,6 @@ export function MonitoringSection({ asset, assetId, onSaved, onAnnounce }: {
   const [error, setError] = useState<string>();
   const [conflict, setConflict] = useState(false);
   const [disableOpen, setDisableOpen] = useState(false);
-  const [removeCheck, setRemoveCheck] = useState<AssetNetworkCheck | null>(null);
-  const [addingCheck, setAddingCheck] = useState(false);
   const [draft, setDraft] = useState<SnmpDraft>(() => draftFrom());
   const generation = useRef(0);
   const actionPending = useRef(false);
@@ -138,8 +136,6 @@ export function MonitoringSection({ asset, assetId, onSaved, onAnnounce }: {
     setError(undefined);
     setConflict(false);
     setDisableOpen(false);
-    setRemoveCheck(null);
-    setAddingCheck(false);
     void refresh();
     return () => { generation.current++; };
   }, [refresh]);
@@ -279,7 +275,7 @@ export function MonitoringSection({ asset, assetId, onSaved, onAnnounce }: {
             </button>
           </>
         )}
-        {!loading && (snmp?.isActive || checks.some((check) => check.isActive) || (detail?.networkMonitors?.activeCount ?? 0) > 0) && (
+        {!loading && snmp?.isActive && (
           <div><button type="button" className={`${buttonClass} text-destructive`} disabled={blocked}
             data-testid="network-settings-monitoring-disable" onClick={() => setDisableOpen(true)}>
             {t('networkDeviceDetailPage.settings.monitoring.disable')}
@@ -300,15 +296,12 @@ export function MonitoringSection({ asset, assetId, onSaved, onAnnounce }: {
                     {t(/* i18n-dynamic */ `networkDeviceDetailPage.settings.monitoring.checkState.${state}`)} · {t(/* i18n-dynamic */ `networkDeviceDetailPage.settings.monitoring.checkSource.${check.monitorType}`, { defaultValue: check.monitorType })} {age(check.lastChecked)}
                   </p>
                 </div>
-                <button type="button" className={buttonClass} disabled={blocked}
-                  data-testid={`network-settings-check-remove-${check.id}`} onClick={() => setRemoveCheck(check)}>
-                  {t('networkDeviceDetailPage.settings.monitoring.removeCheck')}
-                </button>
               </div>
             );
           })}
-          <button type="button" className={buttonClass} disabled={blocked || addingCheck}
-            data-testid="network-settings-check-add" onClick={() => setAddingCheck(true)}>
+          <p className="text-xs text-muted-foreground">{t('networkDeviceDetailPage.settings.monitoring.addCheckHint')}</p>
+          <button type="button" className={buttonClass} disabled={blocked}
+            data-testid="network-settings-check-add" onClick={() => void navigateTo(`/alerts/monitors/new#kind=network_check&assetId=${encodeURIComponent(assetId)}`)}>
             {t('networkDeviceDetailPage.settings.monitoring.addCheck')}
           </button>
         </div>
@@ -324,27 +317,6 @@ export function MonitoringSection({ asset, assetId, onSaved, onAnnounce }: {
           await notifySaved();
           onAnnounce(t('networkDeviceDetailPage.settings.toasts.monitoringDisabled'));
         }, t('networkDeviceDetailPage.settings.toasts.monitoringDisableFailed'))} />
-      <ConfirmDialog open={Boolean(removeCheck)} onClose={() => { if (!saving) setRemoveCheck(null); }} isLoading={saving}
-        title={t('networkDeviceDetailPage.settings.monitoring.removeCheckTitle')}
-        message={t('networkDeviceDetailPage.settings.monitoring.removeCheckMessage', { name: removeCheck?.name })}
-        confirmTestId="network-settings-check-remove-confirm"
-        onConfirm={() => void perform(async () => {
-          if (!removeCheck) return;
-          await deleteCheck(removeCheck.id);
-          setRemoveCheck(null);
-          await refresh();
-          await notifySaved();
-          onAnnounce(t('networkDeviceDetailPage.settings.toasts.checkRemoved'));
-        }, t('networkDeviceDetailPage.settings.toasts.checkRemoveFailed'))} />
-      {addingCheck && <CreateMonitorForm assetId={assetId} defaultTarget={asset.ip}
-        onCancel={() => setAddingCheck(false)} onCreated={() => {
-          setAddingCheck(false);
-          void perform(async () => {
-            await refresh();
-            await notifySaved();
-            onAnnounce(t('networkDeviceDetailPage.settings.toasts.checkCreated'));
-          }, t('networkDeviceDetailPage.settings.toasts.checkCreateFailed'));
-        }} />}
     </SettingsSectionShell>
   );
 }

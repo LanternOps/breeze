@@ -1006,7 +1006,8 @@
         "readOnlyHint": "Supprimez et rajoutez cette section pour changer le modèle, la version ou les variables.",
         "updateToVersion": "Mettre à jour vers v{{version}}",
         "saveVariables": "Enregistrer les variables",
-        "unresolvedWarning": "Variables non résolues (bloqueront l'envoi) : {{names}}"
+        "unresolvedWarning": "Variables non résolues (bloqueront l'envoi) : {{names}}",
+        "placementHint": "Les clients le voient après les totaux, replié jusqu’à ce qu’ils l’ouvrent. Dans le PDF, il suit le prix."
       },
       "coverPage": {
         "title": "Page de couverture",
@@ -1446,6 +1447,18 @@
         "unavailable": "Fichier de l'entente indisponible",
         "versionFooter": "{{name}} — version {{version}}"
       },
+      "agreements": {
+        "heading": "Ententes",
+        "termsTitle": "Modalités et conditions",
+        "read": "Lire",
+        "hide": "Masquer",
+        "readTime": "~{{minutes}} min de lecture",
+        "sectionsReadTime_one": "{{count}} section · ~{{minutes}} min de lecture",
+        "sectionsReadTime_other": "{{count}} sections · ~{{minutes}} min de lecture",
+        "pdfDocument": "Document PDF",
+        "unavailable": "Non disponible",
+        "untitled": "Entente"
+      },
       "draft": "Brouillon",
       "empty": "Cette proposition n'a encore aucun contenu.",
       "imageUnavailable": "Image indisponible",
@@ -1473,7 +1486,6 @@
         "tax": "Taxe",
         "unitPrice": "Prix unitaire"
       },
-      "terms": "Conditions",
       "totals": {
         "annualRecurring": "Récurrent annuel",
         "depositDue": "Acompte dû",

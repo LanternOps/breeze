@@ -206,6 +206,10 @@ type Manager struct {
 	// when the binary appears or the policy turns off, so the log carries one
 	// line per transition instead of one per heartbeat (#6872).
 	notInstalledWarned bool
+
+	// installIssue: the install-issue code (install_retry.go) the last Apply
+	// observed; "" when none. Reported in the heartbeat (#6925). Guarded by mu.
+	installIssue string
 }
 
 // New creates a new helper Manager. serverURL is a provider (func() string) so
@@ -351,6 +355,7 @@ func (m *Manager) Apply(settings *Settings) {
 		// abandoned (pending cleared) and we fall through to the waiting branch.
 		m.abandonIfExhaustedLocked()
 		if m.pendingHelperVersion == "" {
+			m.installIssue = m.notInstalledIssueLocked()
 			if !m.notInstalledWarned {
 				log.Warn(m.notInstalledReasonLocked())
 				m.notInstalledWarned = true
@@ -362,6 +367,10 @@ func (m *Manager) Apply(settings *Settings) {
 			}
 			return
 		}
+		// An offered version is being installed: not stuck, whatever happens
+		// next (a failure is retried; exhausting the budget abandons it and a
+		// later tick reports install_abandoned).
+		m.installIssue = ""
 		if err := m.downloadAndInstall(m.pendingHelperVersion); err != nil {
 			m.recordInstallFailureLocked(m.pendingHelperVersion)
 			// downloadAndInstall wraps the verified downloader's error, which for
@@ -379,6 +388,7 @@ func (m *Manager) Apply(settings *Settings) {
 	}
 	if !settings.Enabled || m.isInstalled() {
 		m.notInstalledWarned = false
+		m.installIssue = ""
 	}
 
 	activeSessions := m.sessionEnumerator.ActiveSessions()
@@ -781,7 +791,7 @@ func (m *Manager) downloadAndInstall(version string) error {
 	}
 	defer os.Remove(verifiedPath)
 
-	if err := installPackageFunc(verifiedPath, m.binaryPath); err != nil {
+	if err := installPackageFunc(verifiedPath, m.binaryPath, version); err != nil {
 		return fmt.Errorf("install helper package: %w", err)
 	}
 
@@ -943,6 +953,12 @@ func (m *Manager) applyPendingUpdate() {
 		stopped = append(stopped, state)
 	}
 
+	// The rollback below restores only the file. On Windows, an msiexec that
+	// succeeded has already registered the product at the target, so a
+	// restored exe sits under a newer registration. That is deliberate (a
+	// working old helper beats a new one that will not start), and the next
+	// retry recovers from it: installMSI forces a file reinstall when the
+	// product is registered at the target (#6868).
 	backupPath := m.binaryPath + ".backup"
 	if err := copyFile(m.binaryPath, backupPath); err != nil {
 		log.Warn("failed to backup helper binary", "error", err.Error())
