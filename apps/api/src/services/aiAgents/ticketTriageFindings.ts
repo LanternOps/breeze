@@ -113,6 +113,7 @@ import type { AuthContext } from '../../middleware/auth';
 import { readAiKillState } from '../aiKillState';
 import { createActionIntent } from '../actionIntents/intentService';
 import { resolveEffectiveAgentSystem } from './effectivePolicy';
+import { isHumanAuthoritativeProvenance } from '../ticketProvenance';
 import { sanitizeSweepText } from './runnerPrompt';
 
 /**
@@ -177,7 +178,7 @@ function filterEligibleFields(
   function consider<T extends string>(key: (typeof TICKET_FIELD_KEYS)[number], field: TicketTriageFieldProposal<T> | undefined): void {
     if (!field) return;
     result.anyProposed = true;
-    if (fieldProvenance[key] === 'user') {
+    if (isHumanAuthoritativeProvenance(fieldProvenance[key])) {
       result.anyHumanSet = true;
       return;
     }

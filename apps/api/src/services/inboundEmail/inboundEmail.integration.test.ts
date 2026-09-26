@@ -673,7 +673,7 @@ describe('processInboundEmail — cross-partner isolation (real driver, system c
         ...(status === 'resolved' ? { resolvedAt: new Date() } : { closedAt: new Date() }),
       }).returning({ id: tickets.id });
 
-      await withSystemDbAccessContext(() => moveTicketOrg(ticket.id, targetOrg.id, { userId: actor.id }));
+      await withSystemDbAccessContext(() => moveTicketOrg(ticket.id, targetOrg.id, { kind: 'user' as const, userId: actor.id }));
       const providerMessageId = `<move-wins-${status}-${suffix}@known.test>`;
       await withSystemDbAccessContext(() => processInboundEmail(buildEmail({
         to: `support@${fx.domainA}`,
@@ -724,7 +724,7 @@ describe('processInboundEmail — cross-partner isolation (real driver, system c
       afterTicketMatchLock: async () => { locked(); await held; },
     }));
     await hasLock;
-    const move = withSystemDbAccessContext(() => moveTicketOrg(ticket.id, targetOrg.id, { userId: actor.id }));
+    const move = withSystemDbAccessContext(() => moveTicketOrg(ticket.id, targetOrg.id, { kind: 'user' as const, userId: actor.id }));
     try {
       await expect.poll(async () => {
         const rows = await admin().execute(sql`
@@ -780,7 +780,7 @@ describe('processInboundEmail — cross-partner isolation (real driver, system c
       afterTicketMatchLock: async () => { locked(); await held; },
     }));
     await hasLock;
-    const move = withSystemDbAccessContext(() => moveTicketOrg(ticket.id, targetOrg.id, { userId: actor.id }));
+    const move = withSystemDbAccessContext(() => moveTicketOrg(ticket.id, targetOrg.id, { kind: 'user' as const, userId: actor.id }));
     try {
       await expect.poll(async () => {
         const rows = await admin().execute(sql`

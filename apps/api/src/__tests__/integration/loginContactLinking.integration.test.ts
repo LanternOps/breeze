@@ -439,7 +439,7 @@ describe('Outlook add-in confirmed requester is a contact (#3258)', () => {
           submitterName: 'New Person',
           requesterContactId: resolved.contactId!,
         },
-        { userId: fx.userId, name: 'Tess Tech' },
+        { kind: 'user' as const, userId: fx.userId, name: 'Tess Tech' },
       );
       return { resolved, ticket };
     });

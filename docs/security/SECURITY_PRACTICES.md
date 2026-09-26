@@ -77,7 +77,7 @@ API keys follow the same security model as agent tokens:
 
 - **Format**: `brz_` prefix for identification
 - **Storage**: SHA-256 hash only — the plaintext key is shown once at creation, never again
-- **Scoping**: JSONB scope array with wildcard support (`*` for full access)
+- **Scoping**: JSONB scope array from a closed allowlist (`services/apiKeyScopes.ts`); wildcards (`*`) are rejected, and a creator can only delegate scopes they hold themselves
 - **Lifecycle**: Configurable expiration, revocable, status tracking (active/revoked/expired)
 - **Rate limiting**: Per-key configurable request limits
 - **Audit trail**: `lastUsedAt` timestamp and `usageCount` updated on every use

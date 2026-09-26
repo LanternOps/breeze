@@ -1082,6 +1082,7 @@ const REPOINT_TABLES: readonly string[] = [
   // whose non-deferrable legs forced a custom executor.
   "ticket_checklist_items",
   "ticket_email_links",
+  "ticket_external_refs",
   "ticket_forms",
   "ticket_outbox",
   "ticket_parts",

@@ -2,6 +2,7 @@ import { and, asc, eq, gte, isNotNull, lt, notInArray, sql } from 'drizzle-orm';
 import type { CreateKeyDateInput, UpdateKeyDateInput } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { addMonthsClamped } from './contractMath';
+import type { TicketActor } from './ticketService';
 import { createPlannedWorkTicket } from './plannedWorkTicket';
 import { captureException } from './sentry';
 import { buildAutomationEligibleOrgPredicate } from './tenantStatus';
@@ -205,7 +206,7 @@ export async function deleteKeyDate(orgId: string, id: string, actor: Deliverabl
  * Synthetic actor: only ever written to audit_logs.actor_id (NOT NULL, no FK
  * to users). createTicket writes no `tickets` column from it.
  */
-const KEY_DATE_SWEEP_ACTOR = { userId: '00000000-0000-0000-0000-000000000000', name: 'Key dates' } as const;
+const KEY_DATE_SWEEP_ACTOR: TicketActor = { kind: 'system', source: 'planned_work', name: 'Key dates' };
 
 /**
  * Spec §5.3 step 5. Runs the annual roll-forward FIRST, so a recurring date

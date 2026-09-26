@@ -655,7 +655,7 @@ describe('listEmailInboundQueue', () => {
 
 // ── convertEmailInbound / dismissEmailInbound ─────────────────────────────
 
-const ACTOR = { userId: 'admin-u-1', name: 'Ada Admin' };
+const ACTOR = { kind: 'user' as const, userId: 'admin-u-1', name: 'Ada Admin' };
 
 describe('convertEmailInbound', () => {
   beforeEach(() => createTicketMock.mockReset());

@@ -53,6 +53,12 @@ Weavestream delegation. They must be granted explicitly, per principal:
 | `sites:write` | Create sites within an accessible organization |
 | `enrollment-keys:write` | Mint device-join enrollment credentials |
 | `contracts:write` | Create a contract, update header fields, add/patch/remove lines, and GET one contract to confirm contents. Does not grant activate/pause/cancel, documents, or the human JWT `/api/v1/contracts` surface. Line removal is contents, not tenancy deletion. |
+| `tickets:write` | Create, update, change status, assign and comment on tickets in any accessible organization (the `/api/v1/partner-api/tickets` surface). Does not grant delete, restore, move-org, bulk actions, attachments, time entries, AI drafts or the mailbox — those stay human, MFA-gated actions on the main API. The principal acts as **itself**: comments and audit rows name the principal, never a person. |
+
+`tickets:read` is a further **opt-in read** scope, like `alerts:read`: ticket
+subjects, descriptions and comments are customer-authored data across every
+organization the principal can reach, so it is never part of any default scope
+set either.
 
 `enrollment-keys:write` is the most sensitive write scope, because the
 credentials it mints let a machine join the tenant. A principal holding it must

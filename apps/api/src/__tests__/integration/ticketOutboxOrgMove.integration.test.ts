@@ -122,7 +122,7 @@ describe('ticket_outbox org re-stamp on move (#4743)', () => {
     const f = await seedSamePartnerOrgsWithDeviceTicket();
     const rowId = await seedOutboxRow({ orgId: f.orgA.id, ticketId: f.ticketA.id });
 
-    await withSystemDbAccessContext(() => moveTicketOrg(f.ticketA.id, f.orgB.id, { userId: f.actor.id }));
+    await withSystemDbAccessContext(() => moveTicketOrg(f.ticketA.id, f.orgB.id, { kind: 'user' as const, userId: f.actor.id }));
 
     const [row] = (await getTestDb().execute(sql`
       SELECT org_id FROM ticket_outbox WHERE id = ${rowId}

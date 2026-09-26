@@ -224,7 +224,7 @@ describe.runIf(RUN)('time entry / part race safety (wave 4, Task 7)', () => {
           ticketId: f.ticketId, hourlyRate: 100, isBillable: true,
           startedAt: new Date(Date.now() - 3_600_000), endedAt: new Date()
         }, timeActor(f))),
-        withDbAccessContext(ctx(f), () => moveTicketOrg(f.ticketId, f.eurOrgId, { userId: f.userId })),
+        withDbAccessContext(ctx(f), () => moveTicketOrg(f.ticketId, f.eurOrgId, { kind: 'user' as const, userId: f.userId })),
       ],
     );
     const [createResult, moveResult] = settled;

@@ -192,7 +192,7 @@ import { createTicket, addTicketComment, changeTicketStatus, updateTicketFields 
 import { handleTicketEvent } from '../jobs/ticketNotifyWorker';
 import type { TicketEvent } from './ticketEvents';
 
-const actor = { userId: 'u-actor', name: 'Actor User' };
+const actor = { kind: 'user' as const, userId: 'u-actor', name: 'Actor User' };
 
 describe('ticket-events producer→consumer contract', () => {
   beforeEach(() => {

@@ -11,10 +11,11 @@ const READ_SCOPES = [
 ] as const;
 // Provisioning write scopes (#3243): opt-in per principal, NEVER part of the
 // default selection — a default-scoped principal must stay read-only.
-const WRITE_SCOPES = ['organizations:write', 'sites:write', 'enrollment-keys:write', 'contracts:write'] as const;
+const WRITE_SCOPES = ['organizations:write', 'sites:write', 'enrollment-keys:write', 'contracts:write', 'tickets:write'] as const;
 // Opt-in read scopes: offered, never pre-selected (alerts:read exposes alert
-// titles/messages across every org the principal reaches).
-const OPT_IN_READ_SCOPES = ['alerts:read'] as const;
+// titles/messages, tickets:read exposes ticket bodies/comments, across every
+// org the principal reaches).
+const OPT_IN_READ_SCOPES = ['alerts:read', 'tickets:read'] as const;
 const AVAILABLE_SCOPES = [...READ_SCOPES, ...OPT_IN_READ_SCOPES, ...WRITE_SCOPES] as const;
 
 type PrincipalKey = {

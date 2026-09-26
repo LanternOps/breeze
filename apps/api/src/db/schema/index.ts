@@ -124,6 +124,7 @@ export * from './officeAddin';
 export * from './ticketConfig';
 export * from './ticketAttachments';
 export * from './ticketEmailLinks';
+export * from './ticketExternalRefs';
 export * from './ticketResponseTemplates';
 export * from './ticketForms';
 export * from './ticketFormOrgLinks';

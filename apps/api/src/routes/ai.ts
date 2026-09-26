@@ -42,7 +42,7 @@ import {
   updateBudget,
   getSessionHistory,
 } from '../services/aiCostTracker';
-import { createTicket, changeTicketStatus, TicketServiceError } from '../services/ticketService';
+import { createTicket, changeTicketStatus, TicketServiceError, type TicketActor } from '../services/ticketService';
 import { createTimeEntry, TimeEntryServiceError } from '../services/timeEntryService';
 import { writeRouteAudit } from '../services/auditEvents';
 import { assertNotLocked } from '../services/effectiveSettings';
@@ -721,7 +721,7 @@ aiRoutes.post(
     let deviceId: string | undefined = session.deviceId ?? undefined;
     if (deviceId && !(await deviceInSiteScope(auth, deviceId))) deviceId = undefined;
 
-    const actor = { userId: auth.user.id, name: auth.user.name, email: auth.user.email };
+    const actor: TicketActor = { kind: 'user', userId: auth.user.id, name: auth.user.name, email: auth.user.email };
 
     let ticket;
     try {

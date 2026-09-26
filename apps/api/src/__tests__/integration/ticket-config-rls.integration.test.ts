@@ -445,7 +445,7 @@ describe('changeTicketStatus end-to-end (real DB)', () => {
     await withDbAccessContext(partnerAContext, async () => {
       ticket = await createTicket(
         { orgId: orgA.id, subject: `cfg-rls-ticket-${unique}`, source: 'manual' },
-        { userId: userA.id }
+        { kind: 'user' as const, userId: userA.id }
       );
     });
 
@@ -458,7 +458,7 @@ describe('changeTicketStatus end-to-end (real DB)', () => {
         ticket.id,
         { statusId: customStatus.id },
         {},
-        { userId: userA.id }
+        { kind: 'user' as const, userId: userA.id }
       );
     });
 
@@ -472,7 +472,7 @@ describe('changeTicketStatus end-to-end (real DB)', () => {
           ticket.id,
           { statusId: partnerBPendingStatus.id }, // belongs to partnerB — must reject
           {},
-          { userId: userA.id }
+          { kind: 'user' as const, userId: userA.id }
         )
       )
     ).rejects.toMatchObject({ code: 'STATUS_NOT_FOUND' });
@@ -512,7 +512,7 @@ describe('SLA chain end-to-end (D7 chain order, real DB)', () => {
           source: 'manual',
           priority: 'urgent',
         },
-        { userId: userA.id }
+        { kind: 'user' as const, userId: userA.id }
       );
     });
 
@@ -545,7 +545,7 @@ describe('SLA chain end-to-end (D7 chain order, real DB)', () => {
           source: 'manual',
           priority: 'urgent',
         },
-        { userId: userA.id }
+        { kind: 'user' as const, userId: userA.id }
       );
     });
 
@@ -602,7 +602,7 @@ describe('time-entry billing-profile resolution end-to-end (real DB)', () => {
           source: 'manual',
           categoryId: categoryA.id,
         },
-        { userId: userA.id }
+        { kind: 'user' as const, userId: userA.id }
       );
     });
 
@@ -655,7 +655,7 @@ describe('time-entry billing-profile resolution end-to-end (real DB)', () => {
           source: 'manual',
           categoryId: categoryB.id,
         },
-        { userId: userA.id }
+        { kind: 'user' as const, userId: userA.id }
       );
     });
 

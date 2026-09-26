@@ -41,9 +41,9 @@ import { ownOutboundReason, ticketCreationLoopReason } from './loopPrevention';
 // to users(id) — ticket_comments.user_id, tickets.closed_by — so the resolved-ticket
 // reopen can go through the service's status-change path (#6689).
 const SYSTEM_ACTOR: TicketActor = {
-  userId: '00000000-0000-0000-0000-000000000000',
+  kind: 'system',
+  source: 'inbound_email',
   name: 'Inbound Email',
-  principalKind: 'system'
 };
 
 // Per-partner ticket display number, e.g. T-2026-0001.

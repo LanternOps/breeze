@@ -165,7 +165,9 @@ export async function moveDeviceOrgInTransaction(
   // referencing row type fails fast instead of silently at COMMIT.
   //
   // #5783 W01 adds ticket_checklist_items_ticket_org_fk — the third
-  // composite (ticket_id, org_id) child FK, same shape and same reason.
+  // composite (ticket_id, org_id) child FK, same shape and same reason —
+  // and the Partner API tickets surface adds the fourth,
+  // ticket_external_refs_ticket_org_fk.
   //
   // The device-org cascade trigger restamps tickets.org_id before the
   // loop below can align partner_id; defer their composite FK too.
@@ -173,7 +175,7 @@ export async function moveDeviceOrgInTransaction(
   // Safe to precede the org lock below: SET CONSTRAINTS takes no table
   // locks, so it does not participate in this transaction's lock order.
   await tx.execute(
-    sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, tickets_org_partner_fk DEFERRED`,
+    sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, tickets_org_partner_fk DEFERRED`,
   );
   // Step-up admission (spec 2026-09-18 D3). FIRST row lock of this
   // transaction, deliberately BEFORE the organisation FOR SHARE reads
@@ -799,7 +801,7 @@ export async function moveDeviceOrgInTransaction(
             WHERE device_id = ${deviceId}::uuid RETURNING id`,
       );
       for (const ticket of movedTickets) {
-        await revalidateTicketAssignee(ticket.id, { userId: input.actor.userId }, tx);
+        await revalidateTicketAssignee(ticket.id, { kind: 'user', userId: input.actor.userId }, tx);
       }
     } else {
       await tx.execute(
@@ -971,6 +973,29 @@ export async function moveDeviceOrgInTransaction(
   // SET CONSTRAINTS … DEFERRED at the top.
   await tx.execute(
     sql`UPDATE ${sql.identifier('ticket_checklist_items')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
+  );
+
+  // ticket_external_refs (Partner API tickets) denormalizes org_id from its
+  // ticket and has no device_id, so it follows via the same tickets join.
+  // Placed AFTER ticket_checklist_items to extend — not reorder — the
+  // documented global lock order; moveTicketOrg's loop and the org-merge
+  // walk (TICKET_CHILD_ORG_REWRITE_LOCK_ORDER) append it last for the same
+  // reason. Its composite (ticket_id, org_id) FK is DEFERRABLE INITIALLY
+  // IMMEDIATE, which is why ticket_external_refs_ticket_org_fk is named in
+  // this transaction's SET CONSTRAINTS … DEFERRED at the top.
+  //
+  // A ref is pinned to ONE partner — its principal's — by the composite
+  // (org_id, partner_id) FK. On a cross-partner move (system scope only) it
+  // cannot follow: the integration that owns it can never read the ticket
+  // again, and the row would otherwise pin its external id forever, so it is
+  // deleted first. Inside one partner this deletes nothing. (Table name
+  // spelled literally: the identifier form is reserved for the one re-stamp
+  // per CUSTOM_ORG_REWRITE_TABLES entry that the lock-order tests pin.)
+  await tx.execute(
+    sql`DELETE FROM ticket_external_refs WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid) AND partner_id IS DISTINCT FROM (SELECT partner_id FROM organizations WHERE id = ${targetOrgId}::uuid)`,
+  );
+  await tx.execute(
+    sql`UPDATE ${sql.identifier('ticket_external_refs')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
   );
 
   // #4867 — the ALERT-axis children (ALERT_CHILD_ORG_REWRITE_TABLES in

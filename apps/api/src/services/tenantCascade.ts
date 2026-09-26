@@ -870,6 +870,10 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // DELETE SET NULL. localeCompare sorts this BEFORE 'ticket_form_org_links'
   // ('e' < 'f').
   'ticket_email_links',
+  // ticket_external_refs (Partner API tickets): a ticket's id in
+  // an external PSA/ITSM, per service principal. FK child of tickets
+  // (ON DELETE CASCADE) with a denormalized org_id; also on both org movers.
+  'ticket_external_refs',
   // ticket_form_org_links (spec 2026-07-11): org allowlist for partner-wide
   // ticket_forms. Own org_id column is a direct FK to organizations (ON
   // DELETE CASCADE already clears rows on org delete; listed here anyway per

@@ -79,7 +79,7 @@ function timeActor(fixture: GateOrgFixture): TimeEntryActor {
 async function seedTicket(fixture: GateOrgFixture, subject: string): Promise<string> {
   const ticket = await withSystemDbAccessContext(() => createTicket(
     { orgId: fixture.orgId, subject, source: 'manual' },
-    { userId: fixture.userId, name: 'Gate Technician' },
+    { kind: 'user' as const, userId: fixture.userId, name: 'Gate Technician' },
   ));
   return ticket.id as string;
 }

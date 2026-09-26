@@ -88,7 +88,7 @@ describe('postProposalNote — live Postgres (#4211)', () => {
     const { ticket, run, technician } = await seedTicketWithProposal();
 
     await withSystemDbAccessContext(() =>
-      postProposalNote(ticket.id, run.id, 'Spooler wedged; restarted the service.', {
+      postProposalNote(ticket.id, run.id, 'Spooler wedged; restarted the service.', { kind: 'user' as const,
         userId: technician.id,
         name: technician.name,
       }),
@@ -106,7 +106,7 @@ describe('postProposalNote — live Postgres (#4211)', () => {
 
   it('#4211 review: a duplicate call for the SAME run recovers via the unique index instead of duplicating the note', async () => {
     const { ticket, run, technician } = await seedTicketWithProposal();
-    const actor = { userId: technician.id, name: technician.name };
+    const actor = { kind: 'user' as const, userId: technician.id, name: technician.name };
 
     const first = await withSystemDbAccessContext(() =>
       postProposalNote(ticket.id, run.id, 'Spooler wedged; restarted the service.', actor),
@@ -126,7 +126,7 @@ describe('postProposalNote — live Postgres (#4211)', () => {
     const { ticket, run, technician } = await seedTicketWithProposal();
 
     await withSystemDbAccessContext(() =>
-      postProposalNote(ticket.id, run.id, 'Spooler wedged; restarted the service.', {
+      postProposalNote(ticket.id, run.id, 'Spooler wedged; restarted the service.', { kind: 'user' as const,
         userId: technician.id,
         name: technician.name,
       }),
@@ -155,7 +155,7 @@ describe('postProposalNote — live Postgres (#4211)', () => {
 
     await expect(
       withSystemDbAccessContext(() =>
-        postProposalNote(ticket.id, otherTicketScenario.run.id, 'x', { userId: technician.id }),
+        postProposalNote(ticket.id, otherTicketScenario.run.id, 'x', { kind: 'user' as const, userId: technician.id }),
       ),
     ).rejects.toMatchObject({ status: 404 });
   });
@@ -165,7 +165,7 @@ describe('postProposalNote — live Postgres (#4211)', () => {
     const targetOrg = await createOrganization({ partnerId: partner.id });
 
     const { comment } = await withSystemDbAccessContext(() =>
-      postProposalNote(ticket.id, run.id, 'Spooler wedged; restarted the service.', {
+      postProposalNote(ticket.id, run.id, 'Spooler wedged; restarted the service.', { kind: 'user' as const,
         userId: technician.id,
         name: technician.name,
       }),
@@ -176,7 +176,7 @@ describe('postProposalNote — live Postgres (#4211)', () => {
     expect(beforeMove.proposedByRunId).toBe(run.id);
 
     await withSystemDbAccessContext(() =>
-      moveTicketOrg(ticket.id, targetOrg.id, { userId: technician.id, name: technician.name }, {}),
+      moveTicketOrg(ticket.id, targetOrg.id, { kind: 'user' as const, userId: technician.id, name: technician.name }, {}),
     );
 
     const [afterMove] = await adminDb.select().from(ticketComments).where(eq(ticketComments.id, comment.id));

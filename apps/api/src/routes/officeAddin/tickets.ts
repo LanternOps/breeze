@@ -681,6 +681,7 @@ officeAddinTicketRoutes.post(
     }
 
     const actor: TicketActor = {
+      kind: 'user',
       userId: auth.userId,
       name: auth.user.name ?? undefined,
       email: auth.user.email,
@@ -830,6 +831,7 @@ officeAddinTicketRoutes.post(
 
     const content = buildQuotedEmail(input);
     const actor: TicketActor = {
+      kind: 'user',
       userId: auth.userId,
       name: auth.user.name ?? undefined,
       email: auth.user.email,

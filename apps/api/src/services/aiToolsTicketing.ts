@@ -37,7 +37,8 @@ import {
   revalidateTicketAssignee,
   type CreateTicketInput,
   type TicketStatus,
-  type UpdateTicketFieldsInput
+  type UpdateTicketFieldsInput,
+  type TicketActor,
 } from './ticketService';
 import {
   listTimeEntries,
@@ -72,8 +73,18 @@ import { listWorkTypes } from './workTypeService';
 
 type ParseResult<T> = { value: T } | { error: string };
 
-function actorFrom(auth: AuthContext) {
-  return { userId: auth.user.id, name: auth.user.name };
+function actorFrom(auth: AuthContext): TicketActor {
+  // An autonomous AI operator agent acts as ITSELF: its `auth.user.id` is the
+  // agent's id (agentAuthContext.ts), never a users row, so it must never be
+  // labelled a person — that is what lets the TicketActor accessors (no users
+  // FK, ai_agent audit identity, humanUserId refusals) apply to it.
+  const principal = auth.principal;
+  if (principal?.kind === 'ai_agent') {
+    return { kind: 'ai_agent', agentId: principal.agentId, runId: principal.runId, name: auth.user.name };
+  }
+  // A human-owned API key (or an attended chat) is delegation: the write is
+  // credited to the key's owner / the session user, never to the credential.
+  return { kind: 'user', userId: auth.user.id, name: auth.user.name };
 }
 
 /**
@@ -94,16 +105,27 @@ function agentRunIdFrom(auth: AuthContext): string | null {
   return isAiAgentPrincipal(auth) && auth.principal.kind === 'ai_agent' ? auth.principal.runId : null;
 }
 
+/** The acting agent (aiAgents.id) — the origin principal of what the run writes. */
+function agentIdFrom(auth: AuthContext): string | null {
+  return isAiAgentPrincipal(auth) && auth.principal.kind === 'ai_agent' ? auth.principal.agentId : null;
+}
+
 /**
  * #4209 (W03): the refusal the three users-FK actions return for an ai_agent
  * principal.
  *
  * `assign` writes `tickets.assigned_to`; `update_status` and `create` write
- * `created_by`/actor columns and emit `actorUserId`. All three go through
- * `actorFrom(auth)`, whose `auth.user.id` for an ai_agent principal is an
- * `aiAgents.id` — attribution only, never a `users` row (agentAuthContext.ts).
- * Writing it into any of those columns forges a foreign key and fails at
- * runtime with a 23503 the agent cannot interpret.
+ * `created_by`/actor columns and emit `actorUserId`. Before `actorFrom`
+ * learned the ai_agent kind, an agent's `auth.user.id` (an `aiAgents.id`,
+ * never a `users` row — agentAuthContext.ts) went into those columns and
+ * failed at runtime with a 23503 the agent could not interpret.
+ *
+ * `link_alert`, `unlink_alert` and `create_from_alert` refuse for the same
+ * reason (Partner API tickets wave 1, #7490 review). They used to fail on the
+ * same users FK (`ticket_alert_links.created_by`, the feed comment's
+ * `user_id`); with a typed ai_agent actor those columns would now be null and
+ * the write would SUCCEED — silently widening what an autonomous agent may
+ * do. Whether it may is the same product decision as the three above.
  *
  * The `comment`, `update_fields` and `draft` branches each got a real
  * agent-principal design (addAiTriageNote, applyAiFieldUpdates, ticket_drafts);
@@ -802,7 +824,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         // synthetic id). Always internal/private, regardless of `isPublic`.
         const agentRunId = agentRunIdFrom(auth);
         if (agentRunId) {
-          const result = await addAiTriageNote(String(input.ticketId), agentRunId, String(input.content), found.orgId);
+          const result = await addAiTriageNote(String(input.ticketId), agentRunId, String(input.content), found.orgId, undefined, agentIdFrom(auth));
           return JSON.stringify({ comment: result.comment });
         }
         // Default private: a customer-visible reply must be explicitly
@@ -943,6 +965,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
 
       // ── link_alert ────────────────────────────────────────────────────────
       if (action === 'link_alert') {
+        if (agentRunIdFrom(auth)) return refuseAgentPrincipal(action);
         if (!input.ticketId) return JSON.stringify({ error: 'ticketId is required for link_alert action' });
         if (!input.alertId) return JSON.stringify({ error: 'alertId is required for link_alert action' });
         const found = await findTicketWithAccess(String(input.ticketId), auth);
@@ -961,6 +984,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
 
       // ── unlink_alert ──────────────────────────────────────────────────────
       if (action === 'unlink_alert') {
+        if (agentRunIdFrom(auth)) return refuseAgentPrincipal(action);
         if (!input.ticketId) return JSON.stringify({ error: 'ticketId is required for unlink_alert action' });
         if (!input.alertId) return JSON.stringify({ error: 'alertId is required for unlink_alert action' });
         const found = await findTicketWithAccess(String(input.ticketId), auth);
@@ -977,6 +1001,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
 
       // ── create_from_alert ─────────────────────────────────────────────────
       if (action === 'create_from_alert') {
+        if (agentRunIdFrom(auth)) return refuseAgentPrincipal(action);
         if (!input.alertId) return JSON.stringify({ error: 'alertId is required for create_from_alert action' });
         const alert = await findAlertWithAccess(String(input.alertId), auth);
         if (!alert) return JSON.stringify({ error: 'Alert not found' });
@@ -1054,10 +1079,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
           // here) go through. The tombstone previously done here covered
           // neither ticket_drafts nor terminal-status intents; both were
           // fixed at the source instead of patched here.
-          const ticket = await moveTicketOrg(String(input.ticketId), String(input.targetOrgId),
-            auth.principal.kind === 'ai_agent'
-              ? { kind: 'ai_agent', agentId: auth.principal.agentId, name: auth.user.name }
-              : actor);
+          const ticket = await moveTicketOrg(String(input.ticketId), String(input.targetOrgId), actor);
           return JSON.stringify({ ticket });
         } catch (err) {
           const json = serviceErrorToJson(err);
@@ -1127,10 +1149,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         if (updated.length === 0) {
           return JSON.stringify({ linked: false, reason: 'already_linked' });
         }
-        await revalidateTicketAssignee(String(input.ticketId), {
-          ...actor,
-          principalKind: isAiAgentPrincipal(auth) ? 'ai_agent' : 'user',
-        });
+        await revalidateTicketAssignee(String(input.ticketId), actor);
         return JSON.stringify({ linked: true, deviceId });
       }
 

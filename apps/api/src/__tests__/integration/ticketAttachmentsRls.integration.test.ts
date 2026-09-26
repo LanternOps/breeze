@@ -379,7 +379,7 @@ describe('ticket_attachments org re-stamp on move', () => {
     const f = await seed();
     const att = await seedAttachment({ orgId: f.orgA, ticketId: f.ticketA, uploadedBy: f.userId });
 
-    await withSystemDbAccessContext(() => moveTicketOrg(f.ticketA, f.orgB, { userId: f.userId }));
+    await withSystemDbAccessContext(() => moveTicketOrg(f.ticketA, f.orgB, { kind: 'user' as const, userId: f.userId }));
 
     const [row] = await getTestDb().execute(sql`
       SELECT org_id FROM ticket_attachments WHERE id = ${att}::uuid
@@ -486,7 +486,7 @@ describe('ticket_attachments db backend round-trip (S3 unconfigured)', () => {
     );
 
     const { attachments } = await withSystemDbAccessContext(() =>
-      addTicketComment(f.ticketA, { content: '', isPublic: true, attachmentIds: [attachmentId] }, { userId: f.userId })
+      addTicketComment(f.ticketA, { content: '', isPublic: true, attachmentIds: [attachmentId] }, { kind: 'user' as const, userId: f.userId })
     );
     expect(attachments.map((a) => a.id)).toEqual([attachmentId]);
     // Meta only — the 10 MiB-capable blob never leaves the claim (spec D10).
