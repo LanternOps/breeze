@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import UserList, { type User } from './UserList';
 import UserInviteForm, { type RoleOption } from './UserInviteForm';
+import OrgAccessFields, { type OrgAccessLevel } from './OrgAccessFields';
 import { fetchWithAuth, handleSessionExpired, useAuthStore } from '../../stores/auth';
 import { runAction, handleActionError } from '@/lib/runAction';
 import { useOrgStore } from '../../stores/orgStore';
@@ -40,6 +41,10 @@ export default function UsersPage() {
   const [modalMode, setModalMode] = useState<ModalMode>('closed');
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // #7034: Edit-modal draft of the selected partner member's organization reach.
+  const [editOrgAccess, setEditOrgAccess] = useState<OrgAccessLevel>('none');
+  const [editOrgIds, setEditOrgIds] = useState<string[]>([]);
+  const [editOrgIdsError, setEditOrgIdsError] = useState<string>();
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   const addToast = useCallback((type: Toast['type'], message: string, inviteUrl?: string) => {
@@ -83,6 +88,9 @@ export default function UsersPage() {
         // mfaStatus field, so UserList hides the column rather than mislabel it.
         mfaStatus: u.mfaStatus as User['mfaStatus'],
         mfaEnrollmentDeadline: (u.mfaEnrollmentDeadline as string | null | undefined) ?? null,
+        // #7034 — present only on partner-scope rows.
+        orgAccess: u.orgAccess as User['orgAccess'],
+        orgIds: (u.orgIds as string[] | null | undefined) ?? null,
       }));
       setUsers(rows);
     } catch (err) {
@@ -121,8 +129,16 @@ export default function UsersPage() {
 
   const handleEdit = (user: User) => {
     setSelectedUser(user);
+    setEditOrgAccess(user.orgAccess ?? 'none');
+    setEditOrgIds(user.orgIds ?? []);
+    setEditOrgIdsError(undefined);
     setModalMode('edit');
   };
+
+  // Organization access is a partner-membership field (absent on org-scope
+  // rows) and the API refuses changing your own, so the section is hidden then.
+  const canEditOrgAccess = (user: User | null): user is User =>
+    Boolean(user && user.orgAccess !== undefined && user.id !== currentUser?.id);
 
   const handleRemove = (user: User) => {
     setSelectedUser(user);
@@ -242,7 +258,21 @@ export default function UsersPage() {
   const handleEditSubmit = async (values: InviteFormValues) => {
     if (!selectedUser) return;
 
+    const orgAccessEditable = canEditOrgAccess(selectedUser);
+    if (orgAccessEditable && editOrgAccess === 'selected' && editOrgIds.length === 0) {
+      setEditOrgIdsError(t('userInviteForm.validation.orgRequired'));
+      return;
+    }
+    const previousOrgIds = selectedUser.orgIds ?? [];
+    const orgAccessChanged =
+      orgAccessEditable &&
+      (editOrgAccess !== selectedUser.orgAccess ||
+        (editOrgAccess === 'selected' &&
+          (editOrgIds.length !== previousOrgIds.length ||
+            editOrgIds.some(id => !previousOrgIds.includes(id)))));
+
     setSubmitting(true);
+    let failureFallback = t('usersPage.errors.updateRole');
     try {
       // Role lives on partner_users / organization_users; the dedicated
       // POST /users/:id/role endpoint writes it. selectedUser.role is the
@@ -264,12 +294,31 @@ export default function UsersPage() {
         });
       }
 
+      // #7034: organization access has its own endpoint (partner scope only),
+      // likewise only called when it actually changed.
+      if (orgAccessChanged) {
+        failureFallback = t('usersPage.errors.updateOrgAccess');
+        await runAction({
+          request: () =>
+            fetchWithAuth(`/users/${selectedUser.id}/org-access`, {
+              method: 'POST',
+              body: JSON.stringify(
+                editOrgAccess === 'selected'
+                  ? { orgAccess: editOrgAccess, orgIds: editOrgIds }
+                  : { orgAccess: editOrgAccess }
+              )
+            }),
+          errorFallback: t('usersPage.errors.updateOrgAccess'),
+          onUnauthorized: handleSessionExpired,
+        });
+      }
+
       await fetchUsers();
       handleCloseModal();
     } catch (err) {
       // The page `error` banner renders behind this z-50 modal (#3531), so the
       // failure is toasted by runAction and the edit modal stays open.
-      handleActionError(err, t('usersPage.errors.updateRole'));
+      handleActionError(err, failureFallback);
     } finally {
       setSubmitting(false);
     }
@@ -421,6 +470,21 @@ export default function UsersPage() {
                   ))}
                 </select>
               </div>
+
+              {canEditOrgAccess(selectedUser) && (
+                <OrgAccessFields
+                  idPrefix="edit"
+                  orgAccess={editOrgAccess}
+                  orgIds={editOrgIds}
+                  organizations={organizations.map(o => ({ id: o.id, name: o.name }))}
+                  onChange={(access, ids) => {
+                    setEditOrgAccess(access);
+                    setEditOrgIds(ids);
+                    setEditOrgIdsError(undefined);
+                  }}
+                  orgIdsError={editOrgIdsError}
+                />
+              )}
 
               <div className="flex flex-wrap items-center justify-end gap-3">
                 <button

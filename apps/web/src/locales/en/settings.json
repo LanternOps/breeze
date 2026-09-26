@@ -5524,6 +5524,7 @@
       "sendInvite": "Failed to send invitation",
       "updateUser": "Failed to update user",
       "updateRole": "Failed to update role",
+      "updateOrgAccess": "Failed to update organization access",
       "removeUser": "Failed to remove user",
       "resetMfa": "Failed to reset MFA"
     },
