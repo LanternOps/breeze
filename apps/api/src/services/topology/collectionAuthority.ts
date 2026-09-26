@@ -144,7 +144,7 @@ export async function resolveTopologyPhysicalProducer(input:{producerKind:Topolo
 
 /** Topology lock order. Every writer takes `topology_site_state` rows in
  * ascending site_id order, and only then source rows of those sites (the home
- * root included): the device source-lifecycle trigger (2026-11-01-100000),
+ * root included): the device source-lifecycle trigger (2026-11-03-080000),
  * the heartbeat handshake and M1 agent ingest (state(H), then root(H)) and
  * source revocation all follow it. A physical ingest can hold several sites in
  * one transaction (a multi-site UniFi upload, and always its home site for the
