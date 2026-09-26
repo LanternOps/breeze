@@ -46,6 +46,14 @@ export const DIAGNOSTIC_FRESHNESS_WINDOW_MS = 5 * 60_000;
 const PROBE_METHODS = new Set<DiagnosticMethod>(['icmp', 'dns', 'tcp', 'tls', 'http']);
 
 /**
+ * Evidence that the target answered on the wire. A resolved neighbor entry is
+ * an answered ARP/NDP exchange — L2 proof the next hop is alive — so it counts
+ * as a working protocol beside the probes. A route lookup does NOT: it only
+ * reads the collector's own table and proves nothing about the target (C2).
+ */
+const WIRE_EVIDENCE_METHODS = new Set<DiagnosticMethod>([...PROBE_METHODS, 'neighbor_lookup']);
+
+/**
  * Methods whose non-success is not a measured failure. A trace that never saw
  * its destination answer proves nothing about the path being down: routers and
  * hosts routinely drop or rate-limit ICMP. Only a confirmed trace is evidence.
@@ -180,15 +188,17 @@ export function assessTopologyDiagnostic(
 
   // "All outbound checks failed from this collector" is a failed check. A single
   // failing protocol alongside a working one is degradation, not a dead path.
-  // Only on-the-wire probes count as a "working protocol": a successful LOCAL
-  // read (route/neighbor lookup) proves nothing about the target, so a route
-  // lookup + TCP timeout is a failed check, not degradation (PR #7117 C2 — the
-  // 'degraded' misclassification reset the recurring failure streak forever).
-  const probes = outcomes.filter((outcome) => PROBE_METHODS.has(outcome.method));
-  const requiredProbes = probes.filter((outcome) => outcome.required);
+  // Only wire evidence counts as a "working protocol": a successful local route
+  // lookup proves nothing about the target, so a route lookup + TCP timeout is a
+  // failed check, not degradation (PR #7117 C2 — the 'degraded'
+  // misclassification reset the recurring failure streak forever). A resolved
+  // neighbor still does: a gateway that answers ARP but drops ICMP is degraded
+  // (icmp_no_response), never a failed node.
+  const requiredProbes = outcomes.filter((outcome) => outcome.required && PROBE_METHODS.has(outcome.method));
   const everyRequiredProbeFailed = requiredProbes.length > 0
     && requiredProbes.every((outcome) => !outcome.succeeded);
-  const status = everyRequiredProbeFailed && probes.every((outcome) => !outcome.succeeded)
+  const wireEvidence = outcomes.filter((outcome) => WIRE_EVIDENCE_METHODS.has(outcome.method));
+  const status = everyRequiredProbeFailed && wireEvidence.every((outcome) => !outcome.succeeded)
     ? 'failed_check'
     : 'degraded';
 

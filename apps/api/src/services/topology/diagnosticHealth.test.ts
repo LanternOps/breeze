@@ -207,6 +207,29 @@ describe('assessTopologyDiagnostic', () => {
     expect(result).toMatchObject({ status: 'failed_check', coverage: 'monitored' });
   });
 
+  // A resolved neighbor entry is an answered ARP/NDP exchange — L2 evidence the
+  // gateway is alive — so a silent ICMP probe beside it stays degraded
+  // (icmp_no_response), while a gateway that answers neither is a failed check.
+  it.each([
+    ['succeeded', 'degraded'],
+    ['failed_check', 'failed_check'],
+  ] as const)('with a %s neighbor lookup and a silent gateway ICMP probe the run is %s', (neighborState, expected) => {
+    const route = identifier();
+    const neighbor = identifier();
+    const icmp = identifier();
+    const result = assessTopologyDiagnostic(
+      plan([{ id: route, method: 'route_lookup' }, { id: neighbor, method: 'neighbor_lookup', required: false }, { id: icmp, method: 'icmp' }]),
+      [
+        step({ id: route, state: 'succeeded', method: 'route_lookup' }),
+        step({ id: neighbor, state: neighborState, method: 'neighbor_lookup' }),
+        step({ id: icmp, state: 'timeout', method: 'icmp' }),
+      ],
+      { now: NOW },
+    );
+
+    expect(result.status).toBe(expected);
+  });
+
   it('is a failed check only when every required probe actually failed', () => {
     const icmp = identifier();
     const tcp = identifier();
