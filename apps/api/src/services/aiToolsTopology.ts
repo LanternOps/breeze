@@ -238,7 +238,7 @@ export function registerTopologyTools(aiTools: Map<string, AiTool>): void {
           measuredFailures: impact.measuredFailures.slice(0, AI_TOPOLOGY_IMPACT_MAX_FAILURES),
           // Labels are collected host names: replaced by the investigation's alias (M4 Task 2).
           potentiallyAffected: impact.potentiallyAffected.slice(0, AI_TOPOLOGY_IMPACT_MAX_AFFECTED)
-            .map((entry) => ('label' in entry ? { ...entry, label: typeof entry.label === 'string' ? aliases.alias('host', entry.label) : null } : entry)),
+            .map((entry) => ('label' in entry ? { ...entry, label: typeof entry.label === 'string' ? aliases.alias('host', entry.id) : null } : entry)),
           alternatives: impact.alternatives.slice(0, AI_TOPOLOGY_IMPACT_MAX_ALTERNATIVES),
           truncatedForModel: truncated,
         });

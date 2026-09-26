@@ -15,7 +15,7 @@
  */
 import type { GraphNode, GraphRelationship, GraphResponse, TopologyDiagnosticRun } from '@breeze/shared';
 import type { TopologyRequestContext } from './access';
-import { createTopologyAiAliasContext, type TopologyAiAliasContext } from './aiEvidence';
+import { createTopologyAiAliasContext, topologyAiAliasScope, type TopologyAiAliasContext } from './aiEvidence';
 import { sanitizeTopologyAiText } from './aiRedaction';
 import { getTopologyDiagnosticRun } from './diagnosticRuns';
 import { getTopologyGraph, getTopologyRelationshipEvidence } from './graph';
@@ -43,7 +43,7 @@ const healthView = (health: GraphNode['health']) => ({
 function nodeView(node: GraphNode, flags: Set<string>, aliases: TopologyAiAliasContext) {
   return {
     // Host identity → per-investigation alias (M4 Task 2); never the collected name.
-    id: node.id, alias: aliases.alias('host', node.label), kind: node.kind, role: sanitizeTopologyAiText(node.role, flags),
+    id: node.id, alias: aliases.alias('host', node.id), kind: node.kind, role: sanitizeTopologyAiText(node.role, flags),
     bindingKinds: [...new Set(node.bindings.map((binding) => binding.type))].sort(),
     lifecycle: node.lifecycle, freshness: node.freshness,
     evidence: { classes: node.evidence.classes, methods: node.evidence.methods, count: node.evidence.count, lastObservedAt: node.evidence.lastObservedAt },
@@ -63,7 +63,7 @@ function relationshipView(rel: GraphRelationship) {
 
 /** Aliases for one tool call: the investigation's scope, or a request-local one. */
 export function topologyAiReadAliases(aliasScope: string | undefined): TopologyAiAliasContext {
-  return createTopologyAiAliasContext(aliasScope ?? `request:${crypto.randomUUID()}`);
+  return createTopologyAiAliasContext(aliasScope ?? topologyAiAliasScope(null));
 }
 
 /** Bounded graph slice for one view (≤150 nodes, ≤250 relationships), with explicit omissions. */

@@ -17,7 +17,8 @@ vi.mock('./secretCrypto', () => ({ getSecretDerivedKeyMaterials: () => ({ active
 import type { AiTool } from './aiTools';
 import { AI_INTERFACE_HISTORY_MAX_BUCKETS, AI_TOPOLOGY_CHANGES_MAX_LIMIT, registerTopologyTools } from './aiToolsTopology';
 import { AI_TOPOLOGY_MAX_NODES, AI_TOPOLOGY_MAX_OBSERVATIONS, AI_TOPOLOGY_MAX_RELATIONSHIPS } from './topology/aiRead';
-import { TOPOLOGY_AI_TOOL_NAMES } from './topology/aiToolGate';
+import { buildTopologyAiEvidence } from './topology/aiEvidence';
+import { TOPOLOGY_AI_TOOL_NAMES, topologyAiAliasScope } from './topology/aiToolGate';
 import type { ToolExecutionContext } from './toolExecutionContext';
 
 const ORG = '10000000-0000-4000-8000-000000000001';
@@ -186,5 +187,36 @@ describe('get_diagnostic_run (M4 Task 1)', () => {
     expect(JSON.stringify(result)).not.toContain('192.0.2.');
     mocks.run.mockResolvedValue(null);
     expect(JSON.parse(await call('get_diagnostic_run', { run_id: RUN }))).toEqual({ error: 'Diagnostic run not found' });
+  });
+});
+
+describe('host alias identity (review C7/C8)', () => {
+  const repository = {
+    loadBuildFence: async () => '1', loadBindings: async () => [], loadSources: async () => [],
+  };
+  const nodeId = (i: number) => graphNode(i).id;
+  const selection = { siteId: SITE, subject: { kind: 'node' as const, id: nodeId(0) }, view: 'physical' as const, graphRevision: '7' };
+
+  it('one topology session aliases a host identically in its evidence snapshot and its tool results', async () => {
+    mocks.graph.mockResolvedValue(graphResponse(3, 0));
+    mocks.changes.mockResolvedValue({ changes: [], cursor: null });
+    const snapshot = await buildTopologyAiEvidence(ctx, selection, new Date('2026-09-26T12:00:00.000Z'), { investigationId: 'sess-1', repository });
+    const viaTool = JSON.parse(await tools.get('get_topology')!.handler({ site_id: SITE, view: 'physical' }, auth, { topologyRequest: ctx, topologyAliasScope: topologyAiAliasScope('sess-1') }));
+    expect(viaTool.nodes.map((n: { id: string; alias: string }) => [n.id, n.alias])).toEqual(snapshot.modelEvidence.nodes.map((n) => [n.id, n.alias]));
+  });
+
+  it('two hosts sharing a label keep distinct aliases, and impact reuses the graph alias of the same node', async () => {
+    mocks.graph.mockResolvedValue(graphResponse(0, 0, { nodes: [graphNode(0, 'printer'), graphNode(1, 'printer')] }));
+    mocks.changes.mockResolvedValue({ changes: [], cursor: null });
+    const snapshot = await buildTopologyAiEvidence(ctx, selection, new Date('2026-09-26T12:00:00.000Z'), { investigationId: 'sess-1', repository });
+    const [a, b] = snapshot.modelEvidence.nodes;
+    expect(a!.alias).not.toBe(b!.alias);
+    const graphAliases = JSON.parse(await call('get_topology', { view: 'physical' })).nodes.map((n: { alias: string }) => n.alias);
+    expect(new Set(graphAliases).size).toBe(2);
+    mocks.impact.mockResolvedValue({ siteId: SITE, graphRevision: '7', subject: { kind: 'node', id: NODE, measured: false }, window: {}, coverage: 'complete', reasons: [],
+      assumptions: [], measuredFailures: [], alternatives: [], routedPaths: [], causeSuggestion: { state: 'not_suggested', corroboratingIds: [], reasons: [] }, counts: { potentiallyAffected: 2 }, evidence: [],
+      potentiallyAffected: [0, 1].map((i) => ({ kind: 'node', id: nodeId(i), label: 'printer', basis: 'dependency_path', hops: 1, reasons: ['no_known_alternative_path'], evidenceIds: [REL] })) });
+    const impact = JSON.parse(await call('get_topology_impact', { subject_kind: 'node', subject_id: NODE }));
+    expect(impact.potentiallyAffected.map((e: { label: string }) => e.label)).toEqual(graphAliases);
   });
 });

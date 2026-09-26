@@ -21,7 +21,7 @@
  * categories each supports), and `scopeStamp` (binding/inventory/source
  * dependencies checked by `assertTopologyAiCurrentScope`) — stay on the server.
  */
-import { createHmac } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import type { GraphNode, GraphRelationship, TopologyAiCitation, TopologyAiSelection, TopologyChange, TopologyScope, TOPOLOGY_AI_CLAIMS } from '@breeze/shared';
 
@@ -64,16 +64,33 @@ export class TopologyAiEvidenceError extends Error {
 
 const ALIAS_DOMAIN = 'topology-ai-alias:v1';
 
-export type TopologyAiAliasContext = { alias(kind: 'host' | 'address', value: string): string };
+/**
+ * `host` aliases are keyed by the STABLE topology node id, never by the
+ * collected label: two hosts sharing a name must stay two identities, and the
+ * snapshot, every tool result and the display alias map must agree on which
+ * node an alias stands for (review C7).
+ */
+export type TopologyAiAliasContext = { alias(kind: 'host' | 'address', stableId: string): string };
 
 /**
- * Per-investigation aliases: HMAC(derived server key ‖ investigation id). The
- * same value maps to the same alias within one investigation and to an
- * unrelated alias in any other; the key never leaves this process.
+ * THE alias scope of a topology investigation — the single derivation every
+ * producer of host aliases goes through (evidence snapshot and tool results
+ * alike, review C8). One topology session is one investigation; a call with
+ * no session gets a request-local scope that nothing else can reproduce.
  */
-export function createTopologyAiAliasContext(investigationId: string): TopologyAiAliasContext {
+export function topologyAiAliasScope(sessionId: string | null): string {
+  return sessionId ? `session:${sessionId}` : `request:${randomUUID()}`;
+}
+
+/**
+ * Per-investigation aliases: HMAC(derived server key ‖ alias scope). The same
+ * value maps to the same alias within one scope and to an unrelated alias in
+ * any other; the key never leaves this process. Callers pass a scope from
+ * `topologyAiAliasScope`, never a hand-built string.
+ */
+export function createTopologyAiAliasContext(aliasScope: string): TopologyAiAliasContext {
   const base = getSecretDerivedKeyMaterials(ALIAS_DOMAIN).active.key;
-  const key = createHmac('sha256', base).update(`investigation\0${investigationId}`).digest();
+  const key = createHmac('sha256', base).update(`investigation\0${aliasScope}`).digest();
   return {
     alias(kind, value) {
       return `${kind}-${createHmac('sha256', key).update(`${kind}\0${value}`).digest('hex').slice(0, 8)}`;
@@ -217,7 +234,11 @@ function earliest(...times: Array<string | null | undefined>): string {
 }
 
 export type BuildTopologyAiEvidenceOptions = {
-  /** Scopes aliases (stable within, unrelated across investigations). */
+  /**
+   * The topology SESSION id (one session = one investigation). Aliases are
+   * scoped through `topologyAiAliasScope(investigationId)` — the same scope
+   * the session's tool calls use.
+   */
   investigationId: string;
   repository?: TopologyAiScopeRepository;
 };
@@ -236,7 +257,7 @@ export async function buildTopologyAiEvidence(
 ): Promise<TopologyAiEvidenceSnapshot> {
   if (selection.siteId !== ctx.scope.siteId) throw new TopologyAiScopeChangedError();
   const repository = options.repository ?? topologyAiScopeRepository;
-  const aliases = createTopologyAiAliasContext(options.investigationId);
+  const aliases = createTopologyAiAliasContext(topologyAiAliasScope(options.investigationId));
 
   const subjectRelationship = selection.subject.kind === 'relationship'
     ? (await getTopologyRelationship(ctx, selection.subject.id)).relationship as GraphRelationship
@@ -269,7 +290,7 @@ export async function buildTopologyAiEvidence(
   const modelNodes = nodes.map((node) => {
     cite({ id: node.id, resourceType: 'node', resourceId: node.id, observedAt: node.evidence.lastObservedAt, inspectorTarget: { kind: 'node', id: node.id }, supports: ['topology', 'health'] });
     return {
-      id: node.id, alias: aliases.alias('host', node.label), kind: node.kind, role: sanitizeTopologyAiText(node.role),
+      id: node.id, alias: aliases.alias('host', node.id), kind: node.kind, role: sanitizeTopologyAiText(node.role),
       bindingKinds: [...new Set(node.bindings.map((binding) => binding.type))].sort(),
       lifecycle: node.lifecycle, freshness: node.freshness, health: modelHealth(node.health),
     };

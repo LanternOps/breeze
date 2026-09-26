@@ -25,7 +25,6 @@
  * `materialization` and `ai` flags plus the server/provider/org AI policy
  * (M4-D4). Every refusal is a fixed, typed message; none echoes input.
  */
-import { randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 
 import { db, withSystemDbAccessContext } from '../../db';
@@ -107,14 +106,8 @@ export function topologyAiAvailable(flags: Pick<TopologyFlags, 'materialization'
   return flags.materialization && flags.ai && readiness.provider && readiness.orgPolicy;
 }
 
-/**
- * Alias scope for host identities (M4 Task 2): one topology session is one
- * investigation, so its tool results and evidence snapshot share aliases; a
- * call without a session gets a request-local scope.
- */
-export function topologyAiAliasScope(sessionId: string | null): string {
-  return sessionId ? `session:${sessionId}` : `request:${randomUUID()}`;
-}
+/** The single alias-scope derivation lives with the alias key (aiEvidence.ts). */
+export { topologyAiAliasScope } from './aiEvidence';
 
 /** The pinned session row, read under the caller's own RLS context and owner-bound. */
 async function loadSessionPin(auth: AuthContext, sessionId: string): Promise<{ orgId: string; siteId: string } | null> {
