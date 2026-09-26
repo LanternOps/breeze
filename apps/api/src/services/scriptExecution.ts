@@ -49,7 +49,7 @@ type ExecuteScriptOnDevicesInput = {
    * caller commits. A fast agent can answer a row the result path cannot see
    * yet. Callers that still omit it are the single-device mobile and
    * remediation routes; they stay exposed to that race until they move to the
-   * self-managed shape too.
+   * self-managed shape too (#7109).
    */
   runInDbContext?: <T>(fn: () => Promise<T>) => Promise<T>;
 };
