@@ -2,7 +2,9 @@ import './topologyZod';
 import { z } from 'zod';
 import { topologyFamilySchema, topologyHostnameSchema, topologyIpSchema, topologyJsonBytes, topologyPortSchema, topologyUtf8KeySchema } from './topologyPrimitives';
 export const topologyStableKeySchema = z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/);
-export const topologyRecipeIdSchema = z.enum(['gateway_basic', 'dns_basic', 'internet_basic', 'target_connectivity']);
+/** Recipes a recurring policy may schedule. A routed trace is on-demand evidence only (M3 Task 9). */
+export const topologyScheduledRecipeIdSchema = z.enum(['gateway_basic', 'dns_basic', 'internet_basic', 'target_connectivity']);
+export const topologyRecipeIdSchema = z.enum([...topologyScheduledRecipeIdSchema.options, 'trace_route']);
 const families = z.array(topologyFamilySchema).min(1).max(2).refine(v => new Set(v).size === v.length, 'Duplicate family');
 const commonTarget = { label: topologyUtf8KeySchema, enabled: z.boolean(), families, provider: topologyUtf8KeySchema.nullable(), independenceLabel: topologyUtf8KeySchema.nullable() };
 export const topologyTargetDefinitionSchema = z.discriminatedUnion('kind', [
@@ -15,7 +17,7 @@ export const topologyTargetDefinitionSchema = z.discriminatedUnion('kind', [
 ]);
 export const topologyTargetTombstoneSchema = z.object({ kind: z.literal('tombstone') }).strict();
 export const topologyPolicyDefinitionSchema = z.object({
-  kind: z.literal('policy'), enabled: z.boolean(), recipeId: topologyRecipeIdSchema, recipeVersion: z.literal(1),
+  kind: z.literal('policy'), enabled: z.boolean(), recipeId: topologyScheduledRecipeIdSchema, recipeVersion: z.literal(1),
   subject: z.enum(['reported_gateway', 'configured_dns', 'configured_target']), targetKeys: z.array(topologyStableKeySchema).max(64).refine(v => new Set(v).size === v.length, 'Duplicate target key'),
   families, origin: z.enum(['original_reporter', 'eligible_collector']), intervalSeconds: z.number().int().min(60).max(3600), jitterPercent: z.literal(10),
   alertsEnabled: z.boolean(), failureThreshold: z.number().int().min(1).max(100), recoveryThreshold: z.number().int().min(1).max(100),

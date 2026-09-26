@@ -58,11 +58,34 @@ describe('topology diagnostic command authority', () => {
     },
   );
 
+  // M3-D7: an unrelated settings write no longer fences every in-flight plan;
+  // only a change to what THIS plan executes does.
   it.each(['http', 'websocket'] as const)(
-    'refuses a changed site configuration on %s',
+    'delivers across an unrelated site configuration change on %s',
     async (transport) => {
-      const f = await seedTopologyCommandFixture();
+      const f = await seedTopologyCommandFixture({ withTarget: true });
       await f.changeSiteConfiguration();
+      expect(await f.claimThrough(transport)).toMatchObject({ delivered: true, status: 'sent' });
+    },
+  );
+
+  it.each(['http', 'websocket'] as const)(
+    'refuses a plan whose pinned target changed on %s',
+    async (transport) => {
+      const f = await seedTopologyCommandFixture({ withTarget: true });
+      await f.changeTarget();
+      expect(await f.claimThrough(transport)).toMatchObject({
+        delivered: false,
+        reason: 'scope_changed',
+      });
+    },
+  );
+
+  it.each(['http', 'websocket'] as const)(
+    'refuses an outbound plan once outbound probing is disabled on %s',
+    async (transport) => {
+      const f = await seedTopologyCommandFixture({ withTarget: true });
+      await f.disableOutbound();
       expect(await f.claimThrough(transport)).toMatchObject({
         delivered: false,
         reason: 'scope_changed',

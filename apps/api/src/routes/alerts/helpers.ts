@@ -1,6 +1,6 @@
 import { ensureOrgAccess } from '../../services/delivery/railContracts';
 export { ensureOrgAccess, resolveWriteOrgId, getEscalationPolicyWithOrgCheck } from '../../services/delivery/railContracts';
-import { and, eq, inArray, isNull, or } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, or, sql, type SQL } from 'drizzle-orm';
 import type { NotificationChannelType } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
@@ -52,12 +52,73 @@ export type AlertRuleOverrides = {
 export { getPagination } from '../../utils/pagination';
 
 /** Device-bound alerts follow current device site; deviceless alerts are org-wide.
- * Callers applying this predicate must left-join devices. */
+ * A topology policy alert (M3-D6) is owned by its TOPOLOGY site — its origin
+ * device is provenance only, so a moved origin never carries it into another
+ * site. Callers applying this predicate must left-join devices. */
 export function alertSiteScopeCondition(allowedSiteIds: string[] | undefined) {
   if (allowedSiteIds === undefined) return undefined;
-  return allowedSiteIds.length === 0
+  const legacy = allowedSiteIds.length === 0
     ? isNull(alerts.deviceId)
     : or(isNull(alerts.deviceId), inArray(devices.siteId, allowedSiteIds));
+  return allowedSiteIds.length === 0
+    ? and(isNull(alerts.topologySiteId), legacy)
+    : or(
+      and(isNotNull(alerts.topologySiteId), inArray(alerts.topologySiteId, allowedSiteIds)),
+      and(isNull(alerts.topologySiteId), legacy),
+    );
+}
+
+export { alertOwningSiteId } from '../../services/alertOwnership';
+
+/**
+ * SQL form of {@link alertOwningSiteId}. The query MUST left-join devices on
+ * alerts.device_id (never inner-join: a site-owned alert's origin device may
+ * have moved to another org and be RLS-invisible, yet the alert stays here).
+ */
+export function alertOwningSiteIdSql(): SQL<string | null> {
+  return sql<string | null>`coalesce(${alerts.topologySiteId}, ${devices.siteId})`;
+}
+
+/**
+ * Join-free site predicate for paths that pre-resolve the caller's in-scope
+ * device ids (mobile, AI tools, report generation). `allowedDeviceIds` null =
+ * no device narrowing; `allowedSiteIds` undefined = no site narrowing; both
+ * unrestricted returns undefined.
+ *
+ *  - device-bound alerts (topology_site_id NULL): device_id IN allowedDeviceIds;
+ *  - site-owned topology alerts: topology_site_id IN allowedSiteIds, and — only
+ *    for an exact-device caller (`deviceAxis`, #6096) — also bound to a device
+ *    in its allowlist. The origin device's site is NEVER the site gate.
+ */
+export function alertSiteScopeByDeviceIds(input: {
+  allowedSiteIds: readonly string[] | undefined;
+  allowedDeviceIds: readonly string[] | null;
+  deviceAxis?: boolean;
+}): SQL | undefined {
+  const { allowedSiteIds, allowedDeviceIds, deviceAxis = false } = input;
+  if (allowedSiteIds === undefined && allowedDeviceIds === null) return undefined;
+  const deviceBound = allowedDeviceIds === null
+    ? isNull(alerts.topologySiteId)
+    : and(isNull(alerts.topologySiteId), inArray(alerts.deviceId, [...allowedDeviceIds]));
+  const siteOwned = and(
+    isNotNull(alerts.topologySiteId),
+    allowedSiteIds === undefined ? undefined : inArray(alerts.topologySiteId, [...allowedSiteIds]),
+    deviceAxis && allowedDeviceIds !== null ? inArray(alerts.deviceId, [...allowedDeviceIds]) : undefined,
+  );
+  return or(deviceBound, siteOwned)!;
+}
+
+/**
+ * Site gate for alerts already narrowed to ONE accessible device (device
+ * alerts tab, tab counts, device diagnose): a site-owned topology alert whose
+ * origin is this device is shown only when its OWNING topology site is
+ * allowed. Undefined for unrestricted callers.
+ */
+export function alertTopologySiteGate(allowedSiteIds: readonly string[] | undefined): SQL | undefined {
+  if (allowedSiteIds === undefined) return undefined;
+  return allowedSiteIds.length === 0
+    ? isNull(alerts.topologySiteId)
+    : or(isNull(alerts.topologySiteId), inArray(alerts.topologySiteId, [...allowedSiteIds]))!;
 }
 
 export async function getAlertRuleWithOrgCheck(
@@ -133,6 +194,11 @@ export async function getAlertWithOrgCheck(
   }
 
   // Site-axis gate. Only restricted callers (allowedSiteIds set) are narrowed.
+  // A topology policy alert follows its owning topology site (M3-D6), never
+  // its origin device's current site.
+  if (auth.allowedSiteIds && alert.topologySiteId) {
+    return siteAccessCheck(auth.allowedSiteIds)(alert.topologySiteId) ? alert : null;
+  }
   // Deviceless alerts are org-wide and not site-bound, so they pass.
   if (auth.allowedSiteIds && alert.deviceId) {
     const [device] = await db

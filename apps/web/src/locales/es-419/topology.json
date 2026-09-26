@@ -85,7 +85,8 @@
     "gateway_basic": "Puerta de enlace reportada",
     "dns_basic": "DNS configurado",
     "internet_basic": "Ruta a internet",
-    "target_connectivity": "Destino configurado"
+    "target_connectivity": "Destino configurado",
+    "trace_route": "Rastreo de ruta enrutada"
   },
   "healthStatus": {
     "healthy": "Saludable",
@@ -142,7 +143,7 @@
     "off": {
       "title": "La topología de red está desactivada",
       "body": "Breeze puede crear un mapa en vivo de la red de este sitio a partir de datos de agentes y SNMP.",
-      "partnerNextStep": "Un administrador del partner puede activarla en Configuración \u2192 Módulos.",
+      "partnerNextStep": "Un administrador del partner puede activarla en Configuración → Módulos.",
       "orgNextStep": "Pídale a su MSP que la active.",
       "openModules": "Abrir configuración de módulos"
     },
@@ -274,5 +275,253 @@
     "hiddenReason": "Motivo",
     "hiddenLoadFailed": "No se pudieron cargar las conexiones ocultas",
     "unknownConnection": "Conexión {{id}}"
+  },
+  "operations": {
+    "heading": "Operaciones",
+    "toggle": "Operaciones",
+    "cancel": "Cancelar",
+    "loadFailed": "No se pudieron cargar los datos operativos",
+    "coverage": {
+      "complete": "Cobertura completa",
+      "partial": "Cobertura parcial",
+      "none": "Sin cobertura"
+    },
+    "stepUp": {
+      "heading": "Confirme que es usted",
+      "intro": "Activar la medición recurrente requiere una verificación reciente de segundo factor para este cambio exacto.",
+      "code": "Código de autenticación",
+      "passkey": "Confirmará con su clave de acceso.",
+      "noFactor": "Agregue una aplicación de autenticación o una clave de acceso a su cuenta antes de activar la medición recurrente.",
+      "confirm": "Confirmar y activar",
+      "failed": "Verificación fallida",
+      "unavailable": "No se pudo iniciar la verificación"
+    },
+    "history": {
+      "heading": "Historial de {{port}}",
+      "metric": "Métrica",
+      "range": "Rango",
+      "metrics": {
+        "throughput": "Rendimiento",
+        "utilization": "Utilización",
+        "errors": "Errores y descartes"
+      },
+      "ranges": {
+        "1h": "Última hora",
+        "24h": "Últimas 24 horas",
+        "7d": "Últimos 7 días"
+      },
+      "series": {
+        "in_bps": "Recibido",
+        "out_bps": "Enviado",
+        "in_utilization_pct": "Utilización de recepción",
+        "out_utilization_pct": "Utilización de envío",
+        "in_errors_per_second": "Errores de recepción",
+        "out_errors_per_second": "Errores de envío",
+        "in_discards_per_second": "Descartes de recepción",
+        "out_discards_per_second": "Descartes de envío"
+      },
+      "units": {
+        "bits_per_second": "Bits por segundo",
+        "percent": "Porcentaje de capacidad",
+        "per_second": "Por segundo"
+      },
+      "source": {
+        "snmp": "Medido por SNMP",
+        "unifi": "Informado por UniFi"
+      },
+      "currentGeneration": "Generación de interfaz actual",
+      "previousGeneration": "Generación de interfaz anterior",
+      "sourceStopped": "Fuente detenida",
+      "generationBreak": "Este puerto cambió de identidad {{count}} veces en este rango. Cada generación se muestra por separado y nunca se combina.",
+      "resolution": "{{resolution}} bloques de {{seconds}} s",
+      "chartSummary": "{{series}}: de {{min}} a {{max}}",
+      "noMeasurements": "Sin mediciones en este rango",
+      "gap": "No medido de {{from}} a {{to}} ({{reason}})",
+      "moreGaps": "{{count}} vacíos más",
+      "table": "Mostrar tabla de datos",
+      "time": "Hora",
+      "seriesColumn": "Serie",
+      "value": "Valor",
+      "direction": "La dirección es relativa a {{port}}."
+    },
+    "link": {
+      "heading": "Salud del enlace",
+      "freshUntil": "Vigente hasta {{time}}",
+      "notApplicable": "La medición de puertos no describe esta conexión",
+      "endpoint": {
+        "source": "Puerto de origen",
+        "target": "Puerto de destino"
+      },
+      "portNotIdentified": "Puerto no identificado",
+      "adminOper": "Administrativo {{admin}} · enlace {{oper}}",
+      "capacity": "Capacidad {{capacity}}",
+      "observed": "Última medición {{time}}",
+      "retired": "Esta generación de puerto fue retirada",
+      "openHistory": "Mostrar historial",
+      "rates": "Tasas más recientes"
+    },
+    "policy": {
+      "heading": "Monitoreo recurrente",
+      "inspectorHeading": "Monitoreo para este elemento",
+      "none": "Todavía no hay ninguna política de monitoreo que cubra este sitio.",
+      "noneForSubject": "Ninguna política de monitoreo se dirige a este elemento.",
+      "status": {
+        "enabled": "Habilitado",
+        "blocked": "Bloqueado: {{reason}}",
+        "requested": "Activación solicitada, no está activo",
+        "off": "No habilitado"
+      },
+      "preview": "Vista previa",
+      "hidePreview": "Ocultar vista previa",
+      "enable": "Habilitar monitoreo",
+      "disable": "Desactivar",
+      "enabled": "Monitoreo habilitado",
+      "blocked": "El monitoreo no se habilitó: {{reason}}",
+      "enableFailed": "No se pudo habilitar el monitoreo",
+      "disabled": "Monitoreo desactivado",
+      "disableFailed": "No se pudo desactivar el monitoreo",
+      "conflict": "Esta política cambió desde que la abrió. Vuelva a cargarla y revísela de nuevo.",
+      "reload": "Volver a cargar",
+      "recipe": "Verificación",
+      "subject": "Sujeto",
+      "subjects": {
+        "reported_gateway": "Puerta de enlace reportada",
+        "configured_dns": "DNS configurado",
+        "configured_target": "Destinos configurados"
+      },
+      "targets": "Destinos",
+      "noTargets": "La puerta de enlace observada o los resolutores",
+      "families": "Familias de direcciones",
+      "originMode": "Medido desde",
+      "origins": {
+        "original_reporter": "El dispositivo que lo reportó",
+        "eligible_collector": "Un recolector elegible en este sitio"
+      },
+      "contexts": "Se seleccionan hasta dos contextos de enrutamiento al habilitarlo; más de eso requiere una elección explícita.",
+      "interval": "Cada {{minutes}} min",
+      "thresholds": "Alertar después de {{failure}} fallos, borrar después de {{recovery}} éxitos",
+      "alertsOff": "Las alertas están desactivadas para esta política",
+      "volume": "Aproximadamente {{runs}} verificaciones por día por contexto",
+      "reuse": "Un monitor existente equivalente puede vincularse después de habilitarlo; se reutiliza en lugar de sondearse dos veces.",
+      "next": "Próxima verificación {{time}}",
+      "last": "Última verificación {{time}}",
+      "streak": "{{context}} ({{family}}): {{failures}} fallos, {{successes}} éxitos consecutivos",
+      "activeAlert": "Alerta abierta",
+      "readOnly": "Puede ver el monitoreo, pero no modificarlo.",
+      "intentRequired": "Activa esta política en la configuración del sitio antes de habilitar el monitoreo."
+    },
+    "telemetry": {
+      "heading": "Medición de puertos",
+      "intro": "Sondea los puertos seleccionados de este dispositivo mediante SNMP. Nada se mide hasta que lo active.",
+      "ports": "Puertos",
+      "noPorts": "Puerto no identificado: todavía no se conocen puertos canónicos de este dispositivo.",
+      "portTo": "Puerto hacia {{peer}}",
+      "collector": "Recolector",
+      "chooseCollector": "Elegir un recolector",
+      "noCollector": "Ningún agente de este sitio puede sondear este dispositivo.",
+      "credential": "Credenciales SNMP",
+      "chooseCredential": "Elegir un perfil de detección",
+      "noCredential": "Ningún perfil de detección habilitado en este sitio tiene credenciales SNMP.",
+      "interval": "Intervalo",
+      "ttl": "Vence después de",
+      "days": "{{count}} días",
+      "preview": "Vista previa",
+      "volume": "Aproximadamente {{samples}} muestras por día",
+      "mapping": "Sondeará {{count}} puertos desde {{collector}} usando {{profile}}",
+      "enable": "Activar medición",
+      "enabled": "Medición de puertos activada",
+      "blocked": "La medición de puertos está bloqueada: {{reason}}",
+      "enableFailed": "No se pudo activar la medición de puertos",
+      "revoke": "Desactivar",
+      "revoked": "Medición de puertos desactivada",
+      "revokeFailed": "No se pudo desactivar la medición de puertos",
+      "armState": {
+        "armed": "Midiendo",
+        "revoked": "Desactivado",
+        "blocked": "Bloqueado"
+      },
+      "armSummary": "{{count}} puertos cada {{interval}} s · vence {{expires}}",
+      "unavailable": "La medición de puertos no está disponible para este sitio."
+    },
+    "trace": {
+      "maxHops": "Saltos máximos",
+      "probes": "Sondeos por salto",
+      "heading": "Ruta enrutada observada",
+      "explanation": "Una ruta enrutada observada desde un origen en un momento dado. No es una conexión de topología.",
+      "reached": "Destino alcanzado",
+      "notReached": "Destino no alcanzado",
+      "hop": "Salto {{ttl}}",
+      "unknownHop": "Desconocido (sin respuesta)",
+      "unreachable": "Inalcanzable, informado por {{address}}",
+      "unsupported": "No compatible con el origen",
+      "alternatives": "Más de un respondedor",
+      "omitted": "{{count}} saltos omitidos",
+      "truncated": "El resultado se truncó",
+      "routeChanged": "La ruta cambió durante el rastreo"
+    },
+    "impact": {
+      "heading": "Posible impacto",
+      "load": "Mostrar posible impacto",
+      "reload": "Actualizar impacto",
+      "measured": "Fallos medidos",
+      "noMeasured": "No hay ningún fallo medido reciente en los últimos {{minutes}} min.",
+      "hypothetical": "Nada se mide como fallido aquí; este es un análisis hipotético.",
+      "potential": "Posiblemente afectado",
+      "noPotential": "No se sabe que nada dependa de esto.",
+      "hops": "A {{count}} saltos de distancia",
+      "basis": {
+        "dependency_path": "Depende de esto a través de una conexión conocida",
+        "group_membership": "Miembro de un grupo afectado (solo posible)"
+      },
+      "pathReason": {
+        "alternative_path_unverified": "Existe otra ruta; no se verificó si transporta tráfico",
+        "no_known_alternative_path": "No se conoce ninguna otra ruta",
+        "group_member_possible": "La pertenencia al grupo no demuestra una dependencia de cableado"
+      },
+      "alternatives": "{{count}} rutas alternativas, disponibilidad no verificada",
+      "routed": "Ruta enrutada observada: {{responding}} saltos que responden, {{gaps}} saltos silenciosos",
+      "cause": {
+        "possible": "Causa posible, corroborada por {{count}} fallos medidos",
+        "not_suggested": "No se sugiere ninguna causa"
+      },
+      "partial": "Análisis parcial: {{reasons}}",
+      "omittedCount": "{{count}} elementos posiblemente afectados más sin mostrar",
+      "changed": "El mapa cambió desde que se cargó esta vista. Actualice para analizar el mapa actual.",
+      "assumptions": "Suposiciones: {{items}}",
+      "noAlerts": "Esto es solo una explicación. Nunca cambia, silencia ni cierra una alerta."
+    },
+    "changes": {
+      "heading": "Cambios recientes",
+      "window": "Ventana",
+      "windows": {
+        "1h": "Última hora",
+        "24h": "Últimas 24 horas"
+      },
+      "load": "Mostrar cambios recientes",
+      "empty": "No hay cambios en esta ventana.",
+      "more": "Cargar más",
+      "expired": "Detalle vencido",
+      "kinds": {
+        "relationship_observed": "Conexión observada",
+        "relationship_withdrawn": "Conexión retirada",
+        "relationship_asserted": "Conexión agregada manualmente",
+        "relationship_removed": "Conexión eliminada",
+        "source_epoch_changed": "Fuente reiniciada",
+        "source_revoked": "Fuente detenida",
+        "collection_gap": "Vacío de recolección",
+        "measurement_result": "Resultado de medición",
+        "configuration_change": "Configuración modificada"
+      },
+      "categories": {
+        "attachment": "Asociación",
+        "physical_link": "Conexión física",
+        "route": "Ruta",
+        "membership": "Pertenencia",
+        "source": "Fuente",
+        "collection": "Recolección",
+        "measurement": "Medición",
+        "configuration": "Configuración"
+      }
+    }
   }
 }

@@ -2261,6 +2261,7 @@ coreRoutes.delete(
     // #2787 review — omits the whole spread while the dissolve ran anyway.
     let linkGroupId: string | null = null;
     let linkGroupDissolved = false;
+    let removedTopologyAlerts = 0;
 
     // Delegated to `purgeRemovedDevice` (services/deviceLifecycle.ts) since
     // #2787 — one implementation shared with POST /devices/bulk/permanent-delete
@@ -2322,6 +2323,7 @@ coreRoutes.delete(
       );
       linkGroupId = purge.linkGroupId;
       linkGroupDissolved = purge.linkGroupDissolved;
+      removedTopologyAlerts = purge.removedTopologyAlerts;
     } catch (err: unknown) {
       if (err instanceof DeviceLifecycleError) {
         return c.json({ error: err.message, code: err.code }, err.status);
@@ -2391,6 +2393,9 @@ coreRoutes.delete(
         // trail would show only "device deleted" while sibling devices
         // silently lost their grouping.
         ...(linkGroupId ? { linkGroupId, linkGroupDissolved } : {}),
+        // Site-owned topology alerts this device originated (M3-D6) — after a
+        // move-org they belong to ANOTHER org, so record that they went.
+        ...(removedTopologyAlerts > 0 ? { removedTopologyAlerts } : {}),
       }
     });
 

@@ -254,6 +254,15 @@ describe('collector eligibility reasons', () => {
     ]);
   });
 
+  it('requires the network_trace capability only for a routed trace', () => {
+    const plain = eligibleInput();
+    expect(collectorEligibilityReasons({ ...plain, recipeId: 'trace_route' })).toEqual(['trace_unsupported']);
+    expect(collectorEligibilityReasons({ ...plain, recipeId: 'gateway_basic' })).toEqual([]);
+    const tracing = eligibleInput();
+    tracing.capabilities = new Set(['network_diagnostic', 'route_lookup', 'network_trace']);
+    expect(collectorEligibilityReasons({ ...tracing, recipeId: 'trace_route' })).toEqual([]);
+  });
+
   it('reuses the negotiation writer definition of configuration authority', () => {
     expect(expectedCollectorConfigurationRevision(TOKEN_HASH, '1')).toBe(
       topologyConfigurationRevision(TOKEN_HASH, 1n),

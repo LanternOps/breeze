@@ -153,6 +153,9 @@ const (
 
 	// SNMP polling
 	CmdSnmpPoll = "snmp_poll"
+	// Server-armed IF-MIB interface state/counter poll (topology M3). The payload
+	// names the exact ifIndex→interface bindings; the result is an if_metrics envelope.
+	CmdTopologyInterfacePoll = "topology_interface_poll"
 
 	// Network monitoring
 	CmdNetworkDiagnostic       = "network_diagnostic"

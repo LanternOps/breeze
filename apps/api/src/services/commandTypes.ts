@@ -196,6 +196,10 @@ export const CommandTypes = {
   // Best-effort stop for an in-flight diagnostic (M1 Task 18). Carries only
   // the run/attempt/command identity, never a new plan.
   NETWORK_DIAGNOSTIC_CANCEL: 'network_diagnostic_cancel',
+  // M3-D2 standing interface telemetry: one bounded SNMP counter poll minted
+  // from a human-armed, site-scoped arm. Credentials ride encrypted
+  // (sensitiveCommandPayload) and delivery revalidates the arm generation.
+  TOPOLOGY_INTERFACE_POLL: 'topology_interface_poll',
 
   // Incident response
   COLLECT_EVIDENCE: 'collect_evidence',

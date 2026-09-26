@@ -77,6 +77,9 @@ type PlanStep struct {
 	QueryType              string   `json:"queryType,omitempty"`
 	ResolverDestinationIDs []string `json:"resolverDestinationIds,omitempty"`
 	ResponseLimitBytes     int      `json:"responseLimitBytes,omitempty"`
+	MaxHops                int      `json:"maxHops,omitempty"`
+	ProbesPerHop           int      `json:"probesPerHop,omitempty"`
+	HopTimeoutMS           int      `json:"hopTimeoutMs,omitempty"`
 }
 type Limits struct {
 	MaxConcurrentSteps      int `json:"maxConcurrentSteps"`
@@ -144,12 +147,13 @@ type Attribution struct {
 	EvidenceRefs    []string `json:"evidenceRefs"`
 }
 type Details struct {
-	LatencyMS         *float64 `json:"latencyMs,omitempty"`
-	PacketsSent       *int     `json:"packetsSent,omitempty"`
-	PacketsReceived   *int     `json:"packetsReceived,omitempty"`
-	StatusCode        *int     `json:"statusCode,omitempty"`
-	ResolvedAddresses []string `json:"resolvedAddresses,omitempty"`
-	ErrorCode         string   `json:"errorCode,omitempty"`
+	LatencyMS         *float64      `json:"latencyMs,omitempty"`
+	PacketsSent       *int          `json:"packetsSent,omitempty"`
+	PacketsReceived   *int          `json:"packetsReceived,omitempty"`
+	StatusCode        *int          `json:"statusCode,omitempty"`
+	ResolvedAddresses []string      `json:"resolvedAddresses,omitempty"`
+	ErrorCode         string        `json:"errorCode,omitempty"`
+	Trace             *TraceDetails `json:"trace,omitempty"`
 }
 type StepResult struct {
 	ID          string      `json:"id"`
@@ -199,6 +203,13 @@ type ProbeIO interface {
 	ICMP(context.Context, netip.Addr, networkcontext.RouteSelection, int, int) (Details, error)
 	TCP(context.Context, netip.Addr, uint16, networkcontext.RouteSelection) (Details, error)
 	HTTPS(context.Context, netip.Addr, TargetDefinition, networkcontext.RouteSelection, string, int) (Details, error)
+}
+
+// TraceIO is implemented by probe I/O that can trace. It is a separate,
+// optional interface: an implementation without it answers a trace step with
+// an explicit `unsupported`, never a fallback.
+type TraceIO interface {
+	TraceTransport() (TraceTransport, error)
 }
 
 func ptr[T any](v T) *T { return &v }

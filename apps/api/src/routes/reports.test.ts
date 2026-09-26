@@ -259,6 +259,7 @@ vi.mock('../db/schema', () => ({
   alerts: {
     orgId: 'alerts.orgId',
     deviceId: 'alerts.deviceId',
+    topologySiteId: 'alerts.topologySiteId',
     ruleId: 'alerts.ruleId',
     title: 'alerts.title',
     severity: 'alerts.severity',
@@ -478,6 +479,8 @@ function mockMetricsQueries(
 type SummaryAlert = {
   orgId: string;
   siteId: string | null;
+  /** A site-owned topology policy alert's OWNING site (M3-D6). */
+  topologySiteId?: string | null;
   severity: string;
   status: string;
   day: string;
@@ -505,6 +508,9 @@ function alertMatches(alert: SummaryAlert, condition: any): boolean {
     if (condition.column === 'devices.siteId') {
       return alert.siteId === condition.value;
     }
+    if (isOwningSite(condition.column)) {
+      return owningSite(alert) === condition.value;
+    }
     return true;
   }
   if (condition.op === 'inArray') {
@@ -514,18 +520,31 @@ function alertMatches(alert: SummaryAlert, condition: any): boolean {
     if (condition.column === 'devices.siteId') {
       return alert.siteId !== null && (condition.values as string[]).includes(alert.siteId);
     }
+    if (isOwningSite(condition.column)) {
+      const site = owningSite(alert);
+      return site !== null && (condition.values as string[]).includes(site);
+    }
     return true;
   }
   return true;
 }
 
-/** The device-scope branch the alerts-summary handler conjoins into every aggregate. */
+/** The mocked `coalesce(alerts.topology_site_id, devices.site_id)` owning-site expression. */
+function isOwningSite(column: any): boolean {
+  return column?.op === 'sql' && column.values?.[0] === 'alerts.topologySiteId' && column.values?.[1] === 'devices.siteId';
+}
+function owningSite(alert: SummaryAlert): string | null {
+  return alert.topologySiteId ?? alert.siteId;
+}
+const OWNING_SITE = expect.objectContaining({ op: 'sql', values: ['alerts.topologySiteId', 'devices.siteId'] });
+
+/** The site-scope branch the alerts-summary handler conjoins into every aggregate. */
 function findDeviceScopeNode(condition: any): any {
   const children = condition?.op === 'and' ? condition.conditions : [condition];
   return children.find(
     (child: any) =>
       child?.op === 'or' ||
-      ((child?.op === 'inArray' || child?.op === 'eq') && child.column === 'devices.siteId')
+      ((child?.op === 'inArray' || child?.op === 'eq') && (child.column === 'devices.siteId' || isOwningSite(child.column)))
   );
 }
 
@@ -572,6 +591,7 @@ function mockAlertsSummaryQueries(rows: SummaryAlert[]) {
           joins[index]!.push(condition);
           return node;
         };
+        node.leftJoin = node.innerJoin;
         node.where = (condition: any) => {
           captured.push(condition);
           const promise: any = Promise.resolve(
@@ -2335,11 +2355,25 @@ describe('reports routes', () => {
       for (const node of scopeNodes) {
         expect(node).toEqual({
           op: 'inArray',
-          column: 'devices.siteId',
+          column: OWNING_SITE,
           values: [SITE_ALLOWED]
         });
         expect(node).toBe(scopeNodes[0]);
       }
+    });
+
+    it('scopes a site-owned topology alert by its TOPOLOGY site, not its origin device site (M3-D6)', async () => {
+      siteScopeState.result = restrictedAuthority(ORG_ID, [SITE_ALLOWED]);
+      mockAlertsSummaryQueries([
+        ...orgAlerts,
+        { orgId: ORG_ID, siteId: SITE_ALLOWED, topologySiteId: SITE_DENIED, severity: 'critical', status: 'open', day: '2026-07-04', ruleId: 'rule-t', ruleName: 'Topology' },
+        { orgId: ORG_ID, siteId: SITE_ALLOWED, topologySiteId: SITE_DENIED, severity: 'critical', status: 'open', day: '2026-07-05', ruleId: 'rule-t', ruleName: 'Topology' },
+        { orgId: ORG_ID, siteId: SITE_DENIED, topologySiteId: SITE_ALLOWED, severity: 'info', status: 'open', day: '2026-07-04', ruleId: 'rule-t', ruleName: 'Topology' },
+      ]);
+
+      const body = await (await app.request('/reports/data/alerts-summary')).json();
+      expect(body.total).toBe(3);
+      expect(body.data.bySeverity).toEqual({ critical: 1, warning: 1, info: 1 });
     });
 
     it('returns 403 for a denied siteId before any query', async () => {
@@ -2404,7 +2438,7 @@ describe('reports routes', () => {
       for (const condition of captured) {
         expect(findDeviceScopeNode(condition)).toEqual({
           op: 'inArray',
-          column: 'devices.siteId',
+          column: OWNING_SITE,
           values: [SITE_B1]
         });
       }
@@ -2446,12 +2480,12 @@ describe('reports routes', () => {
       expect(scopeNodes[0]).toEqual({
         op: 'or',
         conditions: [
-          { op: 'eq', column: 'devices.orgId', value: ORG_ID },
+          { op: 'eq', column: 'alerts.orgId', value: ORG_ID },
           {
             op: 'and',
             conditions: [
-              { op: 'eq', column: 'devices.orgId', value: ORG_B },
-              { op: 'inArray', column: 'devices.siteId', values: [SITE_B1] }
+              { op: 'eq', column: 'alerts.orgId', value: ORG_B },
+              { op: 'inArray', column: OWNING_SITE, values: [SITE_B1] }
             ]
           }
         ]

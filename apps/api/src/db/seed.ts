@@ -144,6 +144,7 @@ export const DEFAULT_PERMISSIONS = [
   // Network topology (discovery topology view + saved layout)
   { resource: 'topology', action: 'read', description: 'View network topology and saved layout' },
   { resource: 'topology', action: 'write', description: 'Persist topology node layout (drag-to-save)' },
+  { resource: 'topology', action: 'execute', description: 'Run topology diagnostics and arm scheduled topology checks' },
 
   // Scripts
   { resource: 'scripts', action: 'read', description: 'View scripts' },
@@ -412,7 +413,7 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
       'reports:read', 'reports:write', 'reports:delete', 'reports:export',
       'users:read', 'users:write', 'users:delete', 'users:invite',
       'sites:read', 'sites:write', 'sites:delete',
-      'topology:read', 'topology:write',
+      'topology:read', 'topology:write', 'topology:execute',
       'remote:access',
       'audit:read',
       'audit:manage',
@@ -468,7 +469,7 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
       'tickets:read',
       'reports:read', 'reports:write',
       'sites:read',
-      'topology:read', 'topology:write',
+      'topology:read', 'topology:write', 'topology:execute',
       'remote:access',
       // AI chat (#6396): a technician can run scripts and manage devices over
       // HTTP; the per-tool map bounds chat to exactly the same permissions.

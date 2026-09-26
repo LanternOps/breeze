@@ -11,6 +11,8 @@ const NON_CONSUMERS = [
   'topologyTemplateApplyWorker',
   'topologyDiagnosticWorker',
   'topologyDiagnosticSweeper',
+  'topologyMonitoringWorker',
+  'topologyTelemetryMaintenance',
   'incidentCorrelationWorker',
   'incidentTimelineEnricher',
   'incidentSlaMonitor',

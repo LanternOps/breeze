@@ -5,6 +5,7 @@ import { physicalDetail, type DetailRow } from './relationshipDetail';
 import { validatePublicationInput, type NodePublication, type RelationshipPublication } from './publish';
 import { FIXTURE_SCOPE } from './physicalFixtures';
 import { unifiEndpointDevicesOf } from './physicalPublication';
+import { unifiControllerPortKey, unifiControllerPortNamespace } from './unifiPorts';
 import type { CollectionRun, CollectionSource, TopologyProjectionDelta, TopologyProjectionInput } from './reconciliationTypes';
 
 /** M2 Task 6b: UniFi normalized rows -> controller endpoint nodes and attachments. */
@@ -139,5 +140,34 @@ describe('UniFi projection (M2 Task 6b, D16)', () => {
       baseline('unifi_device_list', [device('dev-ap-2', { inventoryDeviceId: INVENTORY_DEVICE }), { ...device('dev-ap-1'), inventoryDeviceId: '0d000000-0000-4000-8000-0000000000dd' }]),
     ]);
     expect(map).toEqual({ [key('client', 'c-1')]: '0d000000-0000-4000-8000-0000000000cc', [AP2]: INVENTORY_DEVICE });
+  });
+});
+
+describe('UniFi controller ports (M3 Task 4 prerequisite)', () => {
+  const withPorts = (id: string, ports: NormalizedUnifiDeviceDetailRow['ports']): NormalizedUnifiDeviceDetailRow => ({ ...detail(id, null, null), ports });
+  const port = (portIndex: number, over: Partial<NormalizedUnifiDeviceDetailRow['ports'][number]> = {}) =>
+    ({ portIndex, name: `Port ${portIndex}`, linkUp: true, speedMbps: 1000, poeMode: null, ...over });
+
+  it('publishes one canonical interface per reported port, keyed by a controller port key', () => {
+    const state = fresh();
+    const delta = projectTopology(input('unifi_device_details', [withPorts('dev-switch-1', [port(1), port(2)])], state));
+    apply(state, delta);
+    const owner = nodeByKey(state, SWITCH)!;
+    expect(delta.interfaces).toHaveLength(2);
+    expect(delta.interfaces.map(i => [i.ownerNodeId, i.interfaceKey, i.epoch, i.osIndex, i.name])).toEqual([
+      [owner.id, 'unifi-port:1', 'gen:1', '1', 'Port 1'], [owner.id, 'unifi-port:2', 'gen:1', '2', 'Port 2'],
+    ]);
+    expect(delta.interfaces[0]!.controllerPortKey).toBe(unifiControllerPortKey(SWITCH, 1));
+    expect(unifiControllerPortKey(SWITCH, 1).startsWith(unifiControllerPortNamespace('host:1', 'default'))).toBe(true);
+    expect(unifiControllerPortKey(SWITCH, 1).length).toBeLessThanOrEqual(255);
+  });
+
+  it('keeps the generation across reports and label changes (port index is the identity)', () => {
+    const state = fresh();
+    const first = projectTopology(input('unifi_device_details', [withPorts('dev-switch-1', [port(1)])], state));
+    apply(state, first);
+    const again = projectTopology({ ...input('unifi_device_details', [withPorts('dev-switch-1', [port(1, { name: 'Uplink' })])], state), interfaces: first.interfaces });
+    expect(again.interfaces).toHaveLength(1);
+    expect(again.interfaces[0]).toMatchObject({ id: first.interfaces[0]!.id, epoch: 'gen:1', name: 'Uplink', retiredAt: null });
   });
 });

@@ -6,6 +6,7 @@ import type { PgColumn } from 'drizzle-orm/pg-core';
 import { db } from '../db';
 import { alerts, devices, scripts } from '../db/schema';
 import { authMiddleware, type AuthContext } from '../middleware/auth';
+import { alertSiteScopeCondition } from './alerts/helpers';
 import { getUserPermissions, hasPermission, PERMISSIONS, type UserPermissions } from '../services/permissions';
 
 const searchQuerySchema = z.object({
@@ -105,11 +106,9 @@ searchRoutes.get('/', zValidator('query', searchQuerySchema), async (c) => {
       ? inArray(devices.siteId, allowedSiteIds)
       : sql`false`
     : undefined;
-  const alertSiteCondition = allowedSiteIds
-    ? allowedSiteIds.length > 0
-      ? or(isNull(alerts.deviceId), inArray(devices.siteId, allowedSiteIds))
-      : isNull(alerts.deviceId)
-    : undefined;
+  // Alerts follow their OWNING site (a topology policy alert's topology site,
+  // M3-D6), never only the origin device's — the shared alert predicate.
+  const alertSiteCondition = alertSiteScopeCondition(allowedSiteIds);
 
   const deviceQuery = or(
     ilike(devices.hostname, searchTerm),

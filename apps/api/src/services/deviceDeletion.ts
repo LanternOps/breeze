@@ -10,6 +10,7 @@ import { devices } from '../db/schema';
 // `jobs/`, which would drag BullMQ + ioredis into a plain DELETE's module graph.
 import { extractRowCount } from '../db/rowCount';
 import { resolveAlertsForRemovedComponents } from './hardwareHealth/retire';
+import { deleteOriginDeviceTopologyAlerts } from './siteOwnedAlerts';
 import {
   DEVICE_DETACH_DEVICE_ID_TABLES,
   DEVICE_LINKED_DEVICE_ID_TABLES,
@@ -95,11 +96,15 @@ export interface DeviceDeletionTx {
  *
  * Caller supplies the transaction: the route pairs this with link-group
  * dissolution, and the reaper runs it standalone.
+ *
+ * Returns `removedTopologyAlerts`: site-owned topology alerts (M3-D6) this
+ * device originated, which may belong to ANOTHER org after a move-org — the
+ * caller's audit row records the count.
  */
 export async function deleteDeviceCascade(
   tx: DeviceDeletionTx,
   deviceId: string,
-): Promise<void> {
+): Promise<{ removedTopologyAlerts: number }> {
   // Take the PARENT lock first, before any child table is touched.
   //
   // FK constraints force children-before-parent for the DELETEs themselves, so
@@ -221,6 +226,14 @@ export async function deleteDeviceCascade(
   const componentKeys = (hardwareRows as { component_key: string }[]).map(row => row.component_key);
   if (componentKeys.length) await resolveAlertsForRemovedComponents(deviceId, componentKeys);
 
+  // Site-owned topology alerts this device ORIGINATED (M3-D6). After a
+  // move-org they stay in the site's org (ownership guard) while device_id
+  // still points here, so they are removed explicitly — with their NO ACTION
+  // children — and counted for the caller's audit, rather than left to the
+  // generic device_id sweep below (which only reaches them because every
+  // caller runs this in a SYSTEM context; see the FOR UPDATE note above).
+  const removedTopologyAlerts = await deleteOriginDeviceTopologyAlerts(tx, sql`${deviceId}::uuid`);
+
   const deviceAlertIds = sql`(SELECT id FROM alerts WHERE device_id = ${deviceId})`;
   const deviceAiSessionIds = sql`(SELECT id FROM ai_sessions WHERE device_id = ${deviceId})`;
 
@@ -339,4 +352,5 @@ export async function deleteDeviceCascade(
   }
 
   await tx.delete(devices).where(eq(devices.id, deviceId));
+  return { removedTopologyAlerts };
 }

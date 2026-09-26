@@ -1,4 +1,4 @@
-import { AI_AGENT_RUN_STATUSES } from '@breeze/shared';
+import { AI_AGENT_RUN_STATUSES, TOPOLOGY_INTERFACE_METRIC_SERIES } from '@breeze/shared';
 /**
  * AI Tool Input Schemas
  *
@@ -209,6 +209,37 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   get_network_asset: z.object({ assetId: z.string().guid() }),
   get_network_asset_reachability: z.object({
     asset_id: uuid,
+  }),
+  get_interface_history: z.object({
+    site_id: uuid,
+    interface_id: uuid,
+    series: z.array(z.enum(TOPOLOGY_INTERFACE_METRIC_SERIES)).min(1).max(4),
+    from: z.string().datetime(),
+    to: z.string().datetime(),
+    resolution: z.enum(['auto', 'raw', '5m', '1h']).optional(),
+    max_buckets: z.number().int().min(1).max(120).optional(),
+  }),
+  get_link_health: z.object({
+    site_id: uuid,
+    relationship_id: uuid,
+  }),
+  get_topology_impact: z.object({
+    site_id: uuid,
+    subject_kind: z.enum(['node', 'relationship']),
+    subject_id: uuid,
+    window_minutes: z.number().int().min(1).max(30).optional(),
+    graph_revision: z.string().regex(/^(0|[1-9]\d*)$/).optional(),
+  }),
+  get_recent_network_changes: z.object({
+    site_id: uuid,
+    since: z.string().datetime(),
+    until: z.string().datetime(),
+    limit: z.number().int().min(1).max(100).optional(),
+    cursor: z.string().max(2048).optional(),
+  }),
+  // M3-D12 topology monitoring read tool (one site, bounded response).
+  get_topology_monitoring_status: z.object({
+    site_id: uuid,
   }),
 
   get_ip_history: z.object({

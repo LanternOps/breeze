@@ -141,6 +141,12 @@ const LIVE: readonly string[] = [
   // Cancels work the agent is running RIGHT NOW; a queued one would arrive
   // long after the run it names has expired.
   C.NETWORK_DIAGNOSTIC_CANCEL,
+  // A standing interface poll (M3-D2) is minted per arm interval, carries its
+  // own absolute expiry and is revalidated against the arm's current authority
+  // at delivery. A queued one would deliver a poll for a window that has
+  // already passed; the arm simply mints the next one when the collector is
+  // back, so an offline collector is a rejection, never a queued row.
+  C.TOPOLOGY_INTERFACE_POLL,
   // Non-CommandTypes literals whose only dispatch path is `executeCommand`,
   // which waits for the result synchronously (`waitForCommandResult`) — the one
   // combination the design forbids pairing with `queue` (#5128 §A). The two

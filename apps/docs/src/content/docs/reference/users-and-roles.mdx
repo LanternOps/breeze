@@ -357,7 +357,7 @@ Permissions are stored as `resource:action` pairs in the `permissions` table. Ro
 | `backup` | Backup jobs, vaults, and restore operations |
 | `devices` | Manage and view endpoints |
 | `agent_rollback` | Signed rollback of an agent component on a device |
-| `topology` | Network discovery topology view and saved layout |
+| `topology` | Network topology view and saved layout (`read`, `write`); running topology diagnostics and arming scheduled topology checks (`execute`) |
 | `scripts` | Script library and execution |
 | `variables` | Tenant script variable definitions |
 | `alerts` | Alert rules and acknowledgement |
@@ -438,6 +438,7 @@ The following named permission constants (`packages/shared/src/constants/permiss
 | `AGENT_ROLLBACK_CREATE` | `agent_rollback` | `create` |
 | `TOPOLOGY_READ` | `topology` | `read` |
 | `TOPOLOGY_WRITE` | `topology` | `write` |
+| `TOPOLOGY_EXECUTE` | `topology` | `execute` |
 | `SCRIPTS_READ` | `scripts` | `read` |
 | `SCRIPTS_WRITE` | `scripts` | `write` |
 | `SCRIPTS_DELETE` | `scripts` | `delete` |

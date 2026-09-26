@@ -64,6 +64,7 @@ import {
 import { devices, sites } from '../db/schema';
 import { schedulePeripheralPolicyDevice } from '../jobs/peripheralJobs';
 import { eq, and, desc, sql, inArray, gte, lte, isNull, isNotNull, or, SQL } from 'drizzle-orm';
+import { alertSiteScopeByDeviceIds, alertSiteScopeCondition } from '../routes/alerts/helpers';
 import type { AuthContext } from '../middleware/auth';
 import { isAiAgentPrincipal } from '../middleware/auth';
 
@@ -547,12 +548,10 @@ function siteScopePerms(auth: AuthContext): UserPermissions | undefined {
 // alerts.deviceId; zero-site callers then see only device-less (org-wide) alerts.
 function alertSiteCondition(auth: AuthContext): SQL | null {
   const parts: SQL[] = [];
-  const allowed = auth.allowedSiteIds;
-  if (allowed) {
-    parts.push(allowed.length === 0
-      ? isNull(alerts.deviceId)
-      : (or(isNull(alerts.deviceId), inArray(devices.siteId, allowed)) as SQL));
-  }
+  // Site axis on the alert's OWNING site: a topology policy alert follows its
+  // topology site (M3-D6), never its origin device's current site.
+  const siteScope = alertSiteScopeCondition(auth.allowedSiteIds);
+  if (siteScope) parts.push(siteScope);
   // Exact-device axis (#6096) — ANDed on top, and independent of the site axis
   // (a device-LESS analysis run carries only this one). It also overrides the
   // `isNull(deviceId)` escape hatch above: a device-less org-wide alert is not
@@ -3099,10 +3098,18 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           // scope, which must zero the response rather than widen it.
           {
             const allowed = await aiAuthorityDeviceIds(orgId, executionAuthority, auth);
-            if (allowed && allowed.length === 0) {
+            const allowedSites = executionAuthority.scope.kind === 'restricted' ? executionAuthority.scope.siteIds : undefined;
+            if (allowed && allowed.length === 0 && (allowedSites === undefined || allowedSites.length === 0)) {
               return JSON.stringify({ reportType, data: { total: 0, active: 0, critical: 0, high: 0, resolved24h: 0 } });
             }
-            if (allowed) summaryConditions.push(inArray(alerts.deviceId, allowed));
+            // Device alerts by in-scope device; a site-owned topology alert by
+            // its OWNING topology site (M3-D6) — and, for a device-bound run,
+            // also bound to its allowlisted device.
+            if (allowed) {
+              summaryConditions.push(alertSiteScopeByDeviceIds({
+                allowedSiteIds: allowedSites, allowedDeviceIds: allowed, deviceAxis: auth.allowedDeviceIds !== undefined,
+              })!);
+            }
           }
           const [summary] = await db.select({
             total: sql<number>`count(*)`,

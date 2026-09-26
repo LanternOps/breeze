@@ -34,3 +34,32 @@ describe('site settings physical capability (D9)', () => {
     expect(settings.capabilities.physical).toEqual({ available: false, reason: 'physical_disabled' });
   });
 });
+
+describe('site settings interface-health capability (M3 Task 11)', () => {
+  // Like physical (D9), port measurement is an EXPOSURE capability: the history
+  // and link-health reads gate on `topologyInterfaceHealthExposed`, so the UI
+  // must see the same answer rather than a never-reported agent capability.
+  it('reports interfaceHealth available exactly when history/link health are exposed', async () => {
+    mocks.flags.mockResolvedValue({ ...flags, interfaceHealth: true });
+    const settings = await readTopologySiteSettings(ctx);
+    expect(settings.capabilities.interfaceHealth).toEqual({ available: true, reason: null });
+  });
+  it('stays unavailable when the flag or the physical exposure it depends on is off', async () => {
+    mocks.flags.mockResolvedValue({ ...flags, interfaceHealth: false });
+    expect((await readTopologySiteSettings(ctx)).capabilities.interfaceHealth).toEqual({ available: false, reason: 'interface_health_disabled' });
+    mocks.flags.mockResolvedValue({ ...flags, physical: false, interfaceHealth: true });
+    expect((await readTopologySiteSettings(ctx)).capabilities.interfaceHealth.available).toBe(false);
+  });
+});
+
+describe('site settings diagnostics capability (M3 Task 11)', () => {
+  // On-demand diagnostics are per-origin: the collectors read reports which
+  // agents can run a recipe. The site capability is the flag exposure, so the
+  // Diagnose/trace UI is reachable on a real server whenever the flag is on.
+  it('reports diagnostics available when materialization and the diagnostics flag are on', async () => {
+    mocks.flags.mockResolvedValue({ ...flags, diagnostics: true });
+    expect((await readTopologySiteSettings(ctx)).capabilities.diagnostics).toEqual({ available: true, reason: null });
+    mocks.flags.mockResolvedValue({ ...flags, diagnostics: false });
+    expect((await readTopologySiteSettings(ctx)).capabilities.diagnostics).toEqual({ available: false, reason: 'diagnostics_disabled' });
+  });
+});

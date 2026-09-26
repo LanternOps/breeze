@@ -44,6 +44,7 @@ import { attachWorkerObservability } from '../jobs/workerObservability';
 import { escalationStepSchema, type EscalationStep } from './delivery/escalationSteps';
 import { escalationOccurrences, listEscalationUsers, processUserEscalation, type UserEscalationJob } from './delivery/escalationExecution';
 import { resolveDelivery } from './delivery/resolveDelivery';
+import { alertOwningSiteId } from './alertOwnership';
 import { partnerIdForOrg, railOwnershipCondition } from './delivery/railOwnership';
 
 const { db } = dbModule;
@@ -208,12 +209,15 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
     return { queued: 0, inAppSent: false, durationMs: Date.now() - startTime };
   }
 
-  // Get device info for in-app notification
-  const [device] = await db
+  // Get device info for in-app notification. Only a device in the ALERT's org
+  // is attributable: a site-owned topology alert (M3-D6) stays in its site's
+  // org after its origin device moves org, and must not disclose that device.
+  const [deviceRow] = await db
     .select()
     .from(devices)
     .where(eq(devices.id, alert.deviceId))
     .limit(1);
+  const device = deviceRow && deviceRow.orgId === alert.orgId ? deviceRow : undefined;
 
   // Always send in-app notifications first (baseline notification)
   let inAppSent = false;
@@ -265,7 +269,9 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
     orgId: alert.orgId,
     severity: alert.severity as AlertSeverity,
     monitorId,
-    siteId: device?.siteId ?? null
+    // Route by the alert's OWNING site: a topology policy alert's topology
+    // site (M3-D6), else its device's current site.
+    siteId: alertOwningSiteId(alert, device?.siteId)
   });
 
   // Escalation resolves independently of channels (spec): "inbox now, page
@@ -566,12 +572,14 @@ export async function processSendNotification(data: SendNotificationJobData): Pr
       } satisfies PrepareSendResult;
     }
 
-    // Get device info for context
-    const [device] = await db
+    // Get device info for context — only a device in the ALERT's org (a
+    // site-owned topology alert outlives its origin device's org move, M3-D6).
+    const [deviceRow] = await db
       .select()
       .from(devices)
       .where(eq(devices.id, alert.deviceId))
       .limit(1);
+    const device = deviceRow && deviceRow.orgId === alert.orgId ? deviceRow : undefined;
 
     // Get org info
     const [org] = await db

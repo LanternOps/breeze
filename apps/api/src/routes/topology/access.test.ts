@@ -30,6 +30,9 @@ vi.mock('../../middleware/auth', () => ({
   }),
   siteAccessCheck: (allowedSiteIds?: string[]) => (siteId?: string | null) =>
     allowedSiteIds === undefined || (typeof siteId === 'string' && allowedSiteIds.includes(siteId)),
+  // Route-construction middleware of the M3 arming routes mounted on the same hub.
+  requireInteractiveSession: () => async (_c: any, next: any) => next(),
+  requireMfa: () => async (_c: any, next: any) => next(),
 }));
 
 vi.mock('../../services/permissions', async () => {

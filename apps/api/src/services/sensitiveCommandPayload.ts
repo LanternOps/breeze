@@ -1,4 +1,5 @@
 import { sql, type SQL } from 'drizzle-orm';
+import { TOPOLOGY_INTERFACE_POLL_SECRET_FIELDS } from '@breeze/shared';
 import { deviceCommands } from '../db/schema';
 import { decryptSecret, encryptSecret } from './secretCrypto';
 import {
@@ -35,6 +36,10 @@ const SENSITIVE_PAYLOAD_FIELDS: Record<string, readonly string[]> = {
   // W05a: the payload carries a server-minted recovery token (a bearer
   // credential for the public /bmr/recover/* routes) — never the 9-char code.
   bare_metal_rebuild: ['token'],
+  // M3-D2: the standing interface poll carries the discovery profile's SNMP
+  // community / v3 passphrases as top-level strings (the poll contract's
+  // TOPOLOGY_INTERFACE_POLL_SECRET_FIELDS), encrypted before enqueue.
+  topology_interface_poll: TOPOLOGY_INTERFACE_POLL_SECRET_FIELDS,
 };
 
 /**

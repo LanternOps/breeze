@@ -6,6 +6,7 @@ import { authMiddleware, requireMfa, requireScope, requirePermission } from '../
 import { PERMISSIONS } from '../../services/permissions';
 import { executeCommand } from '../../services/commandQueue';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
+import { alertTopologySiteGate } from '../alerts/helpers';
 
 const diagnoseRoutes = new Hono();
 
@@ -95,7 +96,8 @@ diagnoseRoutes.post(
         }).from(alerts)
           .where(and(
             eq(alerts.deviceId, deviceId),
-            eq(alerts.status, 'active')
+            eq(alerts.status, 'active'),
+            alertTopologySiteGate(auth.allowedSiteIds),
           ))
           .orderBy(desc(alerts.triggeredAt))
           .limit(5),

@@ -713,6 +713,23 @@ commandsRoutes.post(
       }
     }
 
+    if (command.type === 'topology_interface_poll') {
+      try {
+        const { ingestTopologyInterfacePollResult } = await import('../../services/topology/snmpInterfaceMetrics');
+        await ingestTopologyInterfacePollResult({
+          commandType: command.type,
+          commandId,
+          deviceId: command.deviceId,
+          status: normalizedData.status,
+          result: normalizedData.result,
+          stdout: normalizedData.stdout,
+        });
+      } catch (err) {
+        console.error(`[agents] topology interface poll post-processing failed for ${commandId}:`, err);
+        captureException(err);
+      }
+    }
+
     if (DR_COMMAND_TYPES.has(command.type)) {
       try {
         const commandPayload =

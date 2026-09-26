@@ -166,6 +166,9 @@ export const commandRevalidations: Record<string, CommandRevalidation> = {};
  */
 export const REVALIDATION_REQUIRED_TYPES: ReadonlySet<string> = new Set([
   'network_diagnostic',
+  // M3-D2: a standing-arm poll is only deliverable while its arm generation,
+  // collector, credential revision and actor epochs are unchanged.
+  'topology_interface_poll',
 ]);
 
 export function registerCommandRevalidation(

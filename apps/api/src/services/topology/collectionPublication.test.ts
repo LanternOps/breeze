@@ -22,3 +22,17 @@ describe('releaseMissedRows', () => {
     expect(rows).toEqual({ 'addr-1': ['member'] });
   });
 });
+
+describe('structural publication source selection', () => {
+  it('never loads if_metrics telemetry sources (M3-D1)', async () => {
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    const { prepareCollectionPublication } = await import('./collectionPublication');
+    let where: unknown;
+    const tx = { select: () => ({ from: () => ({ where: (clause: unknown) => { where = clause; return Promise.resolve([]); } }) }) };
+    await prepareCollectionPublication(tx as never, { orgId: '00000000-0000-4000-8000-000000000001', siteId: '00000000-0000-4000-8000-000000000002' }, 1n,
+      { nodes: [], relationships: [], bindings: [] });
+    const rendered = new PgDialect().sqlToQuery(where as never);
+    expect(rendered.sql).toMatch(/protocol NOT IN \('envelope', \$\d+\)/);
+    expect(rendered.params).toContain('if_metrics');
+  });
+});

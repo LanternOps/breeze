@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import { TOPOLOGY_COVERAGE_REASON_CODES, type CoverageReason, type CoverageReasonCode, type GraphResponse, type TopologyScope, type TopologyView } from '@breeze/shared';
 import type { db } from '../../db';
 import { scoped } from './graphRead';
+import { TOPOLOGY_TELEMETRY_PROTOCOL } from './interfaceMetricTypes';
 
 /**
  * Physical graph coverage (M2 D11). Computed from AUTHORIZED EXPECTED scopes —
@@ -119,7 +120,7 @@ async function readPhysicalCoverageInput(tx: ReadTx, scope: TopologyScope, now: 
       cs.last_outcome AS "lastOutcome", cs.current_baseline->'section'->>'reasonCode' AS "reasonCode",
       cs.current_baseline->'section'->>'rowCount' AS "rowCount", cs.fresh_until AS "freshUntil", cs.last_received_at AS "lastReceivedAt"
     FROM topology_collection_sources cs WHERE ${scoped(scope, 'cs')}
-      AND cs.producer_kind IN ('discovery','unifi','snmp') AND cs.revoked_at IS NULL
+      AND cs.producer_kind IN ('discovery','unifi','snmp') AND cs.protocol <> ${TOPOLOGY_TELEMETRY_PROTOCOL} AND cs.revoked_at IS NULL
     ORDER BY cs.id LIMIT 2000`);
   const mappings = await tx.execute<{ controllerSiteId: string; collectorIds: string[] | null }>(sql`
     SELECT m.unifi_site_id AS "controllerSiteId",

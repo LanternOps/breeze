@@ -11,8 +11,8 @@ vi.mock('./flags', async (original) => ({ ...await original<object>(), loadTopol
 vi.mock('./exclusions', async (original) => ({ ...await original<object>(), loadActiveExclusions: mocks.exclusions }));
 vi.mock('./physicalCoverage', async (original) => ({ ...await original<object>(), readGraphCoverage: mocks.coverage }));
 vi.mock('../secretCrypto', () => ({ getSecretDerivedKeyMaterials: () => ({ active: { key: Buffer.alloc(32, 7) }, retained: [{ key: Buffer.alloc(32, 7) }] }) }));
-import { getTopologyGraph, listTopologyNodes, expandTopologyGraph, getTopologyRelationship, getTopologyRelationshipEvidence, getTopologyHealth, getTopologyNode, getTopologyGroupMembers } from './graph';
-import { relationshipDetailResponseSchema, relationshipEvidenceResponseSchema } from '@breeze/shared';
+import { getTopologyGraph, listTopologyNodes, expandTopologyGraph, getTopologyRelationship, getTopologyRelationshipEvidence, getTopologyHealth, getTopologyLinkHealth, getTopologyNode, getTopologyGroupMembers } from './graph';
+import { relationshipDetailResponseSchema, relationshipEvidenceResponseSchema, topologyLinkHealthResponseSchema } from '@breeze/shared';
 import { issueGraphToken, verifyGraphToken, GraphReadError } from './graphCursor';
 
 const ORG = '10000000-0000-4000-8000-000000000001';
@@ -118,12 +118,68 @@ describe('attributed health overlay', () => {
   });
 
   it('reports a canonical entity with no bound monitor as unmonitored, not healthy', async () => {
-    mocks.execute.mockResolvedValueOnce(state).mockResolvedValueOnce([{ id: NODE }]).mockResolvedValueOnce([]);
+    mocks.execute.mockResolvedValueOnce(state).mockResolvedValueOnce([{ id: NODE }]).mockResolvedValueOnce([]).mockResolvedValueOnce([]); // bindings, policy health
 
     const health = await getTopologyHealth(ctx, { nodeIds: [NODE], relationshipIds: [] });
 
     expect(health.nodes[0]!.health).toMatchObject({ status: 'unknown', coverage: 'unmonitored', resultId: null });
     expect(health.nodes[0]!.health.reasons[0]!.code).toBe('no_monitor_binding');
+  });
+
+  describe('interface measurement health (M3 Task 6)', () => {
+    const IF = 'b0000000-0000-4000-8000-000000000001';
+    const SOURCE = 'c0000000-0000-4000-8000-000000000001';
+    const physicalRel = { id: REL, kind: 'physical_link', evidenceClass: 'observed', sourceInterfaceId: IF, targetInterfaceId: null };
+    const measurement = (operStatus: string, secondsAgo = 10) => ({ interface_id: IF, epoch: 'gen:1', retired: false, source_id: SOURCE, producer_kind: 'snmp',
+      producer_epoch: 'p1', revoked: false, last_received_at: new Date(Date.now() - secondsAgo * 1000 + 500).toISOString(),
+      sampled_at: new Date(Date.now() - secondsAgo * 1000).toISOString(),
+      readings: { v: 1, expectedIntervalSeconds: 60, adminStatus: 'up', operStatus, counterWidth: 64, inOctets: '0', outOctets: '0' } });
+
+    it('folds a fresh port-down into relationship health and exposes freshUntil, with zero writes or dispatch', async () => {
+      mocks.flags.mockResolvedValue({ ...flagsOn, interfaceHealth: true });
+      mocks.execute.mockResolvedValueOnce(state).mockResolvedValueOnce([{ id: REL }])
+        .mockResolvedValueOnce([]) // monitor bindings
+        .mockResolvedValueOnce([physicalRel]).mockResolvedValueOnce([measurement('down')])
+        .mockResolvedValueOnce([]); // policy health
+      const health = await getTopologyHealth(ctx, { nodeIds: [], relationshipIds: [REL] });
+      expect(health.relationships[0]!.health).toMatchObject({ status: 'failed_check', freshness: 'fresh' });
+      expect(health.relationships[0]!.health.reasons.map((r) => r.code)).toContain('interface_link_down');
+      expect(Date.parse(health.freshUntil!)).toBeGreaterThan(Date.now());
+      for (const call of mocks.execute.mock.calls) {
+        const statement = sqlText(call).sql;
+        expect(statement).not.toMatch(/\b(insert|update|delete)\b/i);
+        expect(statement).not.toMatch(/device_commands/i);
+      }
+    });
+
+    it('reads no interface measurement when the capability is off', async () => {
+      mocks.execute.mockResolvedValueOnce(state).mockResolvedValueOnce([{ id: REL }]).mockResolvedValueOnce([]).mockResolvedValueOnce([]); // bindings, policy health
+      const health = await getTopologyHealth(ctx, { nodeIds: [], relationshipIds: [REL] });
+      expect(health.relationships[0]!.health.status).toBe('unknown');
+      expect(health.freshUntil).toBeNull();
+      expect(mocks.execute.mock.calls.some((call) => /topology_interface_samples/.test(sqlText(call).sql))).toBe(false);
+    });
+
+    it('serves link health with each endpoint as its own view and never a summed rate', async () => {
+      mocks.flags.mockResolvedValue({ ...flagsOn, interfaceHealth: true });
+      const row = { id: REL, kind: 'physical_link', sourceNodeId: NODE, targetNodeId: OTHER, directness: 'direct', confidence: 'high', evidenceClass: 'observed',
+        lifecycle: 'active', lastSupportedAt: null, supportCount: '1', legacy: false, sourceInterfaceId: IF, targetInterfaceId: null, method: 'lldp' };
+      mocks.execute.mockResolvedValueOnce(state).mockResolvedValueOnce([row])
+        .mockResolvedValueOnce([measurement('up'), measurement('up', 70)])
+        .mockResolvedValueOnce([]) // monitor bindings
+        .mockResolvedValueOnce([]); // policy health
+      const link = await getTopologyLinkHealth(ctx, REL);
+      expect(topologyLinkHealthResponseSchema.safeParse(link).success).toBe(true);
+      expect(link).toMatchObject({ relationshipId: REL, interfaceEvidence: { applies: true, reason: null }, endpoints: { target: null } });
+      expect(link.endpoints.source).toMatchObject({ interfaceId: IF, operStatus: 'up', sourceKind: 'snmp' });
+      expect(link.health.scope).toBe('relationship');
+    });
+
+    it('hides link health for a gated physical relationship', async () => {
+      mocks.flags.mockResolvedValue({ ...flagsOn, physical: false });
+      mocks.execute.mockResolvedValueOnce(state).mockResolvedValueOnce([]);
+      await expect(getTopologyLinkHealth(ctx, REL)).rejects.toMatchObject({ status: 404 });
+    });
   });
 });
 
@@ -277,7 +333,9 @@ describe('M2 physical exposure, exclusions and detail (D9, D11, D17)', () => {
   it('serves relationship detail with exclusion state even when the view hides it', async () => {
     mocks.execute.mockResolvedValueOnce(state).mockResolvedValueOnce([relRow])
       .mockResolvedValueOnce([{ id: '90000000-0000-4000-8000-000000000001', view: 'overview', reason: 'Not a real cable', createdAt: '2026-09-26T10:00:00.000Z' }])
-      .mockResolvedValueOnce([{ id: NODE, label: 'Switch' }, { id: OTHER, label: 'Desk' }]);
+      .mockResolvedValueOnce([{ id: NODE, label: 'Switch' }, { id: OTHER, label: 'Desk' }])
+      .mockResolvedValueOnce([]) // monitor bindings for the detail's health
+      .mockResolvedValueOnce([]); // policy health
     const detail = await getTopologyRelationship(ctx, REL);
     expect(relationshipDetailResponseSchema.safeParse(detail).success).toBe(true);
     expect(detail.relationship.excluded).toBe(true);

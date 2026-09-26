@@ -161,7 +161,7 @@ describe('processAlertNotifications legacy delivery retirement', () => {
   it.each(['rule', 'policy'] as const)('queued %s alerts use current routing without legacy delivery reads', async axis => {
     selectQueue.push(
       [makeAlert(axis === 'rule' ? { ruleId: 'old-rule' } : { configPolicyId: 'old-policy-rule' })],
-      [{ id: 'device-1', siteId: 'site-1' }],
+      [{ id: 'device-1', orgId: 'org-1', siteId: 'site-1' }],
       ...(axis === 'rule' ? [[]] : []), // No compiled monitor identity.
       ORG_LOOKUP, ORG_LOOKUP,
       [DEFAULT_ROW],
@@ -183,11 +183,36 @@ describe('processAlertNotifications legacy delivery retirement', () => {
     expect(selectQueue).toHaveLength(0);
   });
 
+  it('routes a site-owned topology alert by its TOPOLOGY site, not its origin device (M3-D6)', async () => {
+    resolveDeliveryMock.mockResolvedValueOnce({ channelIds: [], skippedChannelIds: [], escalationPolicyId: null, source: 'monitor_none' });
+    selectQueue.push(
+      [makeAlert({ topologySiteId: 'topology-site', topologySourceKey: `topology:${'a'.repeat(64)}` })],
+      [{ id: 'device-1', orgId: 'org-1', siteId: 'site-1', hostname: 'collector' }], ORG_LOOKUP,
+    );
+    await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
+    expect(resolveDeliveryMock).toHaveBeenCalledExactlyOnceWith({
+      orgId: 'org-1', severity: 'high', monitorId: null, siteId: 'topology-site',
+    });
+  });
+
+  it('never attributes a site-owned alert to an origin device that has moved to another org', async () => {
+    resolveDeliveryMock.mockResolvedValueOnce({ channelIds: [], skippedChannelIds: [], escalationPolicyId: null, source: 'monitor_none' });
+    selectQueue.push(
+      [makeAlert({ topologySiteId: 'topology-site', topologySourceKey: `topology:${'a'.repeat(64)}` })],
+      [{ id: 'device-1', orgId: 'org-2', siteId: 'foreign-site', hostname: 'foreign-host' }], ORG_LOOKUP,
+    );
+    await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
+    expect(sendInAppNotificationMock.mock.calls[0]![0].deviceName).toBeUndefined();
+    expect(resolveDeliveryMock).toHaveBeenCalledExactlyOnceWith({
+      orgId: 'org-1', severity: 'high', monitorId: null, siteId: 'topology-site',
+    });
+  });
+
   it('uses an existing monitor identity without reading either legacy source', async () => {
     resolveDeliveryMock.mockResolvedValueOnce({ channelIds: [], skippedChannelIds: [], escalationPolicyId: null, source: 'monitor_none' });
     selectQueue.push(
       [makeAlert({ ruleId: 'compiled-rule', configPolicyId: 'old-policy-rule', monitorId: 'monitor-1' })],
-      [{ id: 'device-1', siteId: 'site-1' }], ORG_LOOKUP,
+      [{ id: 'device-1', orgId: 'org-1', siteId: 'site-1' }], ORG_LOOKUP,
     );
     await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
     expect(selectedTables).not.toContain(alertRules);

@@ -85,7 +85,8 @@
     "gateway_basic": "Passerelle signalée",
     "dns_basic": "DNS configuré",
     "internet_basic": "Chemin Internet",
-    "target_connectivity": "Cible configurée"
+    "target_connectivity": "Cible configurée",
+    "trace_route": "Trace du chemin routé"
   },
   "healthStatus": {
     "healthy": "En bonne santé",
@@ -142,7 +143,7 @@
     "off": {
       "title": "La topologie réseau est désactivée",
       "body": "Breeze peut construire une carte en direct du réseau de ce site à partir des données des agents et SNMP.",
-      "partnerNextStep": "Un administrateur partenaire peut l'activer dans Paramètres \u2192 Modules.",
+      "partnerNextStep": "Un administrateur partenaire peut l'activer dans Paramètres → Modules.",
       "orgNextStep": "Demandez à votre MSP de l'activer.",
       "openModules": "Ouvrir les paramètres des modules"
     },
@@ -274,5 +275,253 @@
     "hiddenReason": "Motif",
     "hiddenLoadFailed": "Impossible de charger les connexions masquées",
     "unknownConnection": "Connexion {{id}}"
+  },
+  "operations": {
+    "heading": "Opérations",
+    "toggle": "Opérations",
+    "cancel": "Annuler",
+    "loadFailed": "Impossible de charger les données opérationnelles",
+    "coverage": {
+      "complete": "Couverture complète",
+      "partial": "Couverture partielle",
+      "none": "Aucune couverture"
+    },
+    "stepUp": {
+      "heading": "Confirmez que c'est bien vous",
+      "intro": "L'activation de la mesure récurrente nécessite une nouvelle vérification à deux facteurs pour ce changement précis.",
+      "code": "Code d'authentification",
+      "passkey": "Vous confirmerez avec votre clé d'accès.",
+      "noFactor": "Ajoutez une application d'authentification ou une clé d'accès à votre compte avant d'activer la mesure récurrente.",
+      "confirm": "Confirmer et activer",
+      "failed": "Échec de la vérification",
+      "unavailable": "Impossible de démarrer la vérification"
+    },
+    "history": {
+      "heading": "Historique de {{port}}",
+      "metric": "Mesure",
+      "range": "Plage",
+      "metrics": {
+        "throughput": "Débit",
+        "utilization": "Utilisation",
+        "errors": "Erreurs et rejets"
+      },
+      "ranges": {
+        "1h": "Dernière heure",
+        "24h": "Dernières 24 heures",
+        "7d": "7 derniers jours"
+      },
+      "series": {
+        "in_bps": "Reçu",
+        "out_bps": "Envoyé",
+        "in_utilization_pct": "Utilisation en réception",
+        "out_utilization_pct": "Utilisation en émission",
+        "in_errors_per_second": "Erreurs en réception",
+        "out_errors_per_second": "Erreurs en émission",
+        "in_discards_per_second": "Rejets en réception",
+        "out_discards_per_second": "Rejets en émission"
+      },
+      "units": {
+        "bits_per_second": "Bits par seconde",
+        "percent": "Pourcentage de la capacité",
+        "per_second": "Par seconde"
+      },
+      "source": {
+        "snmp": "Mesuré par SNMP",
+        "unifi": "Signalé par UniFi"
+      },
+      "currentGeneration": "Génération d'interface actuelle",
+      "previousGeneration": "Génération d'interface précédente",
+      "sourceStopped": "Source arrêtée",
+      "generationBreak": "Ce port a changé d'identité {{count}} fois dans cette plage. Chaque génération est affichée séparément et n'est jamais reliée.",
+      "resolution": "{{resolution}} intervalles de {{seconds}} s",
+      "chartSummary": "{{series}} : de {{min}} à {{max}}",
+      "noMeasurements": "Aucune mesure dans cette plage",
+      "gap": "Non mesuré de {{from}} à {{to}} ({{reason}})",
+      "moreGaps": "{{count}} lacunes de plus",
+      "table": "Afficher le tableau de données",
+      "time": "Heure",
+      "seriesColumn": "Série",
+      "value": "Valeur",
+      "direction": "La direction est relative à {{port}}."
+    },
+    "link": {
+      "heading": "Santé de la liaison",
+      "freshUntil": "Récent jusqu'à {{time}}",
+      "notApplicable": "La mesure de port ne décrit pas cette connexion",
+      "endpoint": {
+        "source": "Port source",
+        "target": "Port cible"
+      },
+      "portNotIdentified": "Port non identifié",
+      "adminOper": "Admin {{admin}} · liaison {{oper}}",
+      "capacity": "Capacité {{capacity}}",
+      "observed": "Dernière mesure {{time}}",
+      "retired": "Cette génération de port a été retirée",
+      "openHistory": "Afficher l'historique",
+      "rates": "Derniers débits"
+    },
+    "policy": {
+      "heading": "Surveillance récurrente",
+      "inspectorHeading": "Surveillance de cet élément",
+      "none": "Aucune politique de surveillance ne couvre encore ce site.",
+      "noneForSubject": "Aucune politique de surveillance ne cible cet élément.",
+      "status": {
+        "enabled": "Activée",
+        "blocked": "Bloquée : {{reason}}",
+        "requested": "Activation demandée, non active",
+        "off": "Non activée"
+      },
+      "preview": "Aperçu",
+      "hidePreview": "Masquer l'aperçu",
+      "enable": "Activer la surveillance",
+      "disable": "Désactiver",
+      "enabled": "Surveillance activée",
+      "blocked": "La surveillance n'a pas été activée : {{reason}}",
+      "enableFailed": "Impossible d'activer la surveillance",
+      "disabled": "Surveillance désactivée",
+      "disableFailed": "Impossible de désactiver la surveillance",
+      "conflict": "Cette politique a changé depuis que vous l'avez ouverte. Rechargez-la et vérifiez-la de nouveau.",
+      "reload": "Recharger",
+      "recipe": "Vérification",
+      "subject": "Sujet",
+      "subjects": {
+        "reported_gateway": "Passerelle signalée",
+        "configured_dns": "DNS configuré",
+        "configured_target": "Cibles configurées"
+      },
+      "targets": "Cibles",
+      "noTargets": "La passerelle ou les résolveurs observés",
+      "families": "Familles d'adresses",
+      "originMode": "Mesuré depuis",
+      "origins": {
+        "original_reporter": "L'appareil qui l'a signalé",
+        "eligible_collector": "Un collecteur admissible de ce site"
+      },
+      "contexts": "Jusqu'à deux contextes de routage sont sélectionnés lors de l'activation; au-delà, un choix explicite est nécessaire.",
+      "interval": "Toutes les {{minutes}} min",
+      "thresholds": "Alerte après {{failure}} échecs, résolue après {{recovery}} réussites",
+      "alertsOff": "Les alertes sont désactivées pour cette politique",
+      "volume": "Environ {{runs}} vérifications par jour par contexte",
+      "reuse": "Un moniteur existant équivalent peut être lié après l'activation; il est réutilisé plutôt que sondé deux fois.",
+      "next": "Prochaine vérification {{time}}",
+      "last": "Dernière vérification {{time}}",
+      "streak": "{{context}} ({{family}}) : {{failures}} échecs, {{successes}} réussites consécutives",
+      "activeAlert": "Alerte ouverte",
+      "readOnly": "Vous pouvez consulter la surveillance mais pas la modifier.",
+      "intentRequired": "Activez cette politique dans la configuration du site avant d’activer la surveillance."
+    },
+    "telemetry": {
+      "heading": "Mesure de port",
+      "intro": "Interroge les ports sélectionnés de cet appareil par SNMP. Rien n'est mesuré tant que vous ne l'activez pas.",
+      "ports": "Ports à mesurer",
+      "noPorts": "Port non identifié : aucun port canonique de cet appareil n'est encore connu.",
+      "portTo": "Port vers {{peer}}",
+      "collector": "Collecteur",
+      "chooseCollector": "Choisir un collecteur",
+      "noCollector": "Aucun agent de ce site ne peut interroger cet appareil.",
+      "credential": "Identifiants SNMP",
+      "chooseCredential": "Choisir un profil de détection",
+      "noCredential": "Aucun profil de détection activé de ce site ne possède d'identifiants SNMP.",
+      "interval": "Intervalle",
+      "ttl": "Expire après",
+      "days": "{{count}} jours",
+      "preview": "Aperçu",
+      "volume": "Environ {{samples}} échantillons par jour",
+      "mapping": "Interrogera {{count}} ports depuis {{collector}} avec {{profile}}",
+      "enable": "Activer la mesure",
+      "enabled": "Mesure de port activée",
+      "blocked": "La mesure de port est bloquée : {{reason}}",
+      "enableFailed": "Impossible d'activer la mesure de port",
+      "revoke": "Désactiver",
+      "revoked": "Mesure de port désactivée",
+      "revokeFailed": "Impossible de désactiver la mesure de port",
+      "armState": {
+        "armed": "Mesure en cours",
+        "revoked": "Désactivée",
+        "blocked": "Bloquée"
+      },
+      "armSummary": "{{count}} ports toutes les {{interval}} s · expire {{expires}}",
+      "unavailable": "La mesure de port n'est pas disponible pour ce site."
+    },
+    "trace": {
+      "maxHops": "Sauts maximum",
+      "probes": "Sondes par saut",
+      "heading": "Chemin routé observé",
+      "explanation": "Un chemin routé observé depuis une origine à un instant donné. Ce n'est pas une connexion de topologie.",
+      "reached": "Destination atteinte",
+      "notReached": "Destination non atteinte",
+      "hop": "Saut {{ttl}}",
+      "unknownHop": "Inconnu (aucune réponse)",
+      "unreachable": "Inaccessible signalé par {{address}}",
+      "unsupported": "Non pris en charge par l'origine",
+      "alternatives": "Plusieurs répondants",
+      "omitted": "{{count}} sauts omis",
+      "truncated": "Le résultat a été tronqué",
+      "routeChanged": "L'itinéraire a changé pendant le tracé"
+    },
+    "impact": {
+      "heading": "Impact possible",
+      "load": "Afficher l'impact possible",
+      "reload": "Actualiser l'impact",
+      "measured": "Échecs mesurés",
+      "noMeasured": "Aucun échec mesuré récent au cours des {{minutes}} dernières minutes.",
+      "hypothetical": "Rien n'est mesuré comme étant en échec ici; il s'agit d'une analyse hypothétique.",
+      "potential": "Possiblement affecté",
+      "noPotential": "Rien n'est connu pour en dépendre.",
+      "hops": "à {{count}} sauts",
+      "basis": {
+        "dependency_path": "En dépend par une connexion connue",
+        "group_membership": "Membre d'un groupe affecté (possible seulement)"
+      },
+      "pathReason": {
+        "alternative_path_unverified": "Un autre chemin existe; s'il achemine du trafic n'est pas vérifié",
+        "no_known_alternative_path": "Aucun autre chemin n'est connu",
+        "group_member_possible": "L'appartenance à un groupe ne prouve pas une dépendance câblée"
+      },
+      "alternatives": "{{count}} chemins alternatifs, disponibilité non vérifiée",
+      "routed": "Chemin routé observé : {{responding}} sauts répondants, {{gaps}} sauts silencieux",
+      "cause": {
+        "possible": "Cause possible, corroborée par {{count}} échecs mesurés",
+        "not_suggested": "Aucune cause n'est suggérée"
+      },
+      "partial": "Analyse partielle : {{reasons}}",
+      "omittedCount": "{{count}} éléments possiblement affectés de plus non affichés",
+      "changed": "La carte a changé depuis le chargement de cette vue. Actualisez pour analyser la carte actuelle.",
+      "assumptions": "Hypothèses : {{items}}",
+      "noAlerts": "Ceci est uniquement une explication. Cela ne modifie, ne met en sourdine ni ne ferme jamais une alerte."
+    },
+    "changes": {
+      "heading": "Modifications récentes",
+      "window": "Fenêtre",
+      "windows": {
+        "1h": "Dernière heure",
+        "24h": "Dernières 24 heures"
+      },
+      "load": "Afficher les modifications récentes",
+      "empty": "Aucune modification dans cette fenêtre.",
+      "more": "Charger plus",
+      "expired": "Détail expiré",
+      "kinds": {
+        "relationship_observed": "Connexion observée",
+        "relationship_withdrawn": "Connexion retirée",
+        "relationship_asserted": "Connexion ajoutée manuellement",
+        "relationship_removed": "Connexion supprimée",
+        "source_epoch_changed": "Source redémarrée",
+        "source_revoked": "Source arrêtée",
+        "collection_gap": "Lacune de collecte",
+        "measurement_result": "Résultat de mesure",
+        "configuration_change": "Configuration modifiée"
+      },
+      "categories": {
+        "attachment": "Association",
+        "physical_link": "Connexion physique",
+        "route": "Routage",
+        "membership": "Appartenance",
+        "source": "Source de collecte",
+        "collection": "Collecte",
+        "measurement": "Mesure",
+        "configuration": "Paramétrage"
+      }
+    }
   }
 }

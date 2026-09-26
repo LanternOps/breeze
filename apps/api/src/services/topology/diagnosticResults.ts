@@ -12,7 +12,10 @@ import {
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { topologyDiagnosticRuns, topologyDiagnosticSteps } from '../../db/schema';
+import { recordTopologyDiagnosticResult, type TopologyMetricRecipe } from './metrics';
 import { TopologyOperationError } from './operationErrors';
+import { revalidateTopologyRequesterAuthority, runRequiresRequesterRevalidation } from './diagnosticTraceAuthority';
+import { topologyTraceStepViolation } from './tracerouteResults';
 
 /**
  * The authenticated agent connection a result frame arrived on. Both transports
@@ -180,6 +183,22 @@ export async function acceptTopologyDiagnosticResult(
   producer: AuthenticatedTopologyProducer,
   result: TopologyDiagnosticResult,
 ): Promise<TopologyDiagnosticAcceptance> {
+  let recipe = 'other';
+  try {
+    const acceptance = await acceptTopologyDiagnosticFrame(producer, result, (recipeId) => { recipe = recipeId; });
+    recordTopologyDiagnosticResult(recipe as TopologyMetricRecipe, acceptance.historicalOnly ? 'late' : 'accepted');
+    return acceptance;
+  } catch (error) {
+    if (error instanceof TopologyOperationError) recordTopologyDiagnosticResult(recipe as TopologyMetricRecipe, 'rejected');
+    throw error;
+  }
+}
+
+async function acceptTopologyDiagnosticFrame(
+  producer: AuthenticatedTopologyProducer,
+  result: TopologyDiagnosticResult,
+  identifyRecipe: (recipeId: string) => void,
+): Promise<TopologyDiagnosticAcceptance> {
   const frame = topologyDiagnosticResultSchema.parse(result);
   if (frame.commandId !== producer.commandId) {
     throw unauthorized('Diagnostic result does not answer the delivered command');
@@ -192,6 +211,7 @@ export async function acceptTopologyDiagnosticResult(
         .from(topologyDiagnosticRuns)
         .where(eq(topologyDiagnosticRuns.id, frame.runId))
         .limit(1);
+      if (run) identifyRecipe(run.recipeId);
       if (
         !run ||
         run.commandId !== frame.commandId ||
@@ -219,8 +239,25 @@ export async function acceptTopologyDiagnosticResult(
         throw unauthorized('Diagnostic result step attribution contradicts its accepted run');
       }
 
-      const alreadyTerminal = TERMINAL_RUN_STATES.includes(run.state);
+      if (frame.steps.some((step) => topologyTraceStepViolation(plan, step) !== null)) {
+        throw unauthorized('Diagnostic result trace contradicts its accepted plan');
+      }
+
       const now = new Date();
+      // M3-D13 (trace path): result publication is a live-authority boundary.
+      // Evidence from a run whose requester lost authority mid-flight is kept
+      // as history but never published to current state, whatever the sweeper
+      // has or has not done yet.
+      const fenced = runRequiresRequesterRevalidation(run) && !TERMINAL_RUN_STATES.includes(run.state)
+        ? await revalidateTopologyRequesterAuthority({ reader: db, run, checkTrust: true, requirePartnerFlags: true })
+        : null;
+      if (fenced) {
+        await db
+          .update(topologyDiagnosticRuns)
+          .set({ state: 'cancelled', failureReason: `authority_${fenced}`.slice(0, 64), finishedAt: now, updatedAt: now })
+          .where(and(eq(topologyDiagnosticRuns.id, run.id), eq(topologyDiagnosticRuns.state, run.state)));
+      }
+      const alreadyTerminal = fenced !== null || TERMINAL_RUN_STATES.includes(run.state);
       const stored = await db
         .insert(topologyDiagnosticSteps)
         .values(

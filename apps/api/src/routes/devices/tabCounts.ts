@@ -14,6 +14,7 @@ import {
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
+import { alertTopologySiteGate } from '../alerts/helpers';
 
 /**
  * GET /devices/:id/tab-counts — one "needs attention" count per signal tab on
@@ -72,7 +73,7 @@ tabCountsRoutes.get(
       await Promise.all([
         countRows(
           db.select({ count: countExpr }).from(alerts).where(
-            and(eq(alerts.deviceId, deviceId), inArray(alerts.status, ['active', 'acknowledged'])),
+            and(eq(alerts.deviceId, deviceId), inArray(alerts.status, ['active', 'acknowledged']), alertTopologySiteGate(auth.allowedSiteIds)),
           ),
         ),
         countRows(

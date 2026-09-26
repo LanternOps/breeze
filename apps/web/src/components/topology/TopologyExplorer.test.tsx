@@ -88,3 +88,21 @@ it('lists connections hidden from the view and restores one through runAction', 
   const [url] = vi.mocked(fetchWithAuth).mock.calls.find(([, options]) => options?.method === 'DELETE')!;
   expect(url).toBe(`/topology/sites/${SITE}/relationships/${exclusion.relationshipId}/exclusions/${exclusion.id}`);
 });
+
+it('takes diagnose and monitoring authority from the site settings, not the graph projection (M3 Task 11)', async () => {
+  // The graph read reports canDiagnose/canConfigureMonitoring false by design; the
+  // per-site settings read carries the real execute/configure + MFA answer.
+  vi.mocked(fetchWithAuth).mockImplementation(async () => new Response(JSON.stringify({ ...topologyGraphFixture(), permissions: { canEdit: true, canDiagnose: false, canConfigureMonitoring: false } })));
+  const settings = topologySettingsFixture();
+  render(<TopologyExplorer siteId={SITE} settings={settings} />);
+  await screen.findByTestId('topology-health-internet');
+  fireEvent.click(screen.getByTestId('topology-list-toggle'));
+  fireEvent.click(screen.getByTestId(`topology-node-${NODE}`));
+  expect(await screen.findByTestId('topology-diagnose')).toBeEnabled();
+  cleanup();
+  render(<TopologyExplorer siteId={SITE} settings={{ ...settings, permissions: { ...settings.permissions, canDiagnose: false } }} />);
+  await screen.findByTestId('topology-health-internet');
+  fireEvent.click(screen.getByTestId('topology-list-toggle'));
+  fireEvent.click(screen.getByTestId(`topology-node-${NODE}`));
+  expect(await screen.findByTestId('topology-diagnose')).toBeDisabled();
+});

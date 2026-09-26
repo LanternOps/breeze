@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { graphQuerySchema, type GraphQuery, type GraphResponse, type Position } from '@breeze/shared';
+import { graphQuerySchema, type GraphQuery, type GraphResponse, type Position, type TopologyLinkHealthResponse } from '@breeze/shared';
 import { db } from '../../db';
 import type { TopologyRequestContext } from './access';
 import { GraphReadError, graphAuthority, issueGraphToken, verifyGraphToken, nodeListQuerySchema, topologyReadEtag, type GraphTokenClaims, type NodeListQuery } from './graphCursor';
@@ -11,7 +11,9 @@ import { loadActiveExclusions } from './exclusions';
 import { readGraphCoverage } from './physicalCoverage';
 import { projectPhysicalView } from './physicalProjection';
 import { readRelationshipDetail, readRelationshipEvidence, type DetailRow } from './relationshipDetail';
-import { overlayHealthSummary, readTopologyMonitorOverlays, type TopologyMonitorOverlay, type TopologyOverlaySubject } from './monitorOverlays';
+import { overlayHealthSummary, type TopologyOverlaySubject } from './monitorOverlays';
+import { aggregateTopologySubjectHealth, readTopologySubjectHealth, TOPOLOGY_HEALTH_CONTRIBUTORS, type TopologyHealthContribution } from './subjectHealth';
+import { interfaceMeasurementContributions, readTopologyInterfaceMeasurements, topologyInterfaceEvidenceApplies } from './interfaceHealth';
 
 type ReadTx = Pick<typeof db, 'execute'>;
 type Authority = Awaited<ReturnType<typeof graphAuthority>>;
@@ -42,22 +44,25 @@ async function readState(tx: ReadTx, ctx: TopologyRequestContext, claims?: Graph
 function token(ctx: TopologyRequestContext, authority: Authority, revision: string, claims: Pick<GraphTokenClaims, 'kind' | 'filter' | 'after' | 'edgeAfter' | 'boundaryAfter' | 'boundaryOnly' | 'relationshipId'>): string {
   return issueGraphToken({ ...ctx.scope, authority: authority.digest, graphRevision: revision, ...claims });
 }
+type SubjectHealth = { byKey: Map<string, TopologyHealthContribution[]>; now: Date };
 /**
- * Read the attributed overlays for one projection and key them by subject.
- * Reads never dispatch a probe, create a monitor, or advance a revision: an
- * overlay is only ever a view of monitoring that already ran.
+ * Read every health contribution for one projection, keyed by subject
+ * (subjectHealth.ts). Reads never dispatch a probe, create a monitor, or
+ * advance a revision: health is only ever a view of evidence that exists.
  */
 async function overlaysBySubject(
-  tx: ReadTx, ctx: TopologyRequestContext, subjects: TopologyOverlaySubject[],
-): Promise<Map<string, TopologyMonitorOverlay>> {
-  const overlays = await readTopologyMonitorOverlays(ctx, subjects, { executor: tx as Pick<typeof db, 'execute'> });
-  return new Map(overlays.map((overlay) => [`${overlay.subject.kind}:${overlay.subject.id}`, overlay]));
+  tx: ReadTx, ctx: TopologyRequestContext, subjects: TopologyOverlaySubject[], authority: Authority, now = new Date(),
+): Promise<SubjectHealth> {
+  const byKey = await readTopologySubjectHealth({ executor: tx as Pick<typeof db, 'execute'>, ctx, subjects, now, exposure: { interfaceHealth: authority.interfaceHealth } });
+  return { byKey, now };
 }
-function subjectHealth(
-  overlays: Map<string, TopologyMonitorOverlay> | undefined, scope: 'node' | 'relationship', id: string,
-) {
-  return overlays ? overlayHealthSummary(scope, overlays.get(`${scope}:${id}`)) : undefined;
+function aggregated(overlays: SubjectHealth, scope: 'node' | 'relationship', id: string) {
+  return aggregateTopologySubjectHealth(scope, overlays.byKey.get(`${scope}:${id}`) ?? [], overlays.now);
 }
+function subjectHealth(overlays: SubjectHealth | undefined, scope: 'node' | 'relationship', id: string) {
+  return overlays ? aggregated(overlays, scope, id).health : undefined;
+}
+const earliest = (values: (string | null)[]) => values.filter((value): value is string => !!value).sort()[0] ?? null;
 function emptyGraph(ctx: TopologyRequestContext, query: GraphQuery, authority: Authority): GraphResponse {
   return { schemaVersion: 1, siteId: ctx.scope.siteId, view: query.view, asOf: new Date().toISOString(),
     revisions: { graph: '0', health: '0', layout: '0' }, nodes: [], relationships: [], presentation: { nodes: [], edges: [] },
@@ -128,7 +133,7 @@ async function project(tx: ReadTx, ctx: TopologyRequestContext, query: GraphQuer
     ? await overlaysBySubject(tx, ctx, [
       ...ids.map((id) => ({ kind: 'node' as const, id })),
       ...visibleRelationships.map((row) => ({ kind: 'relationship' as const, id: row.id })),
-    ])
+    ], authority)
     : undefined;
   graph.nodes = rows.map((row) => presentNode(row, authority.canEdit, subjectHealth(overlays, 'node', row.id)));
   graph.relationships = visibleRelationships.map((row) => presentRelationship(row, authority.canEdit, subjectHealth(overlays, 'relationship', row.id)));
@@ -240,6 +245,8 @@ export async function getTopologyRelationship(ctx: TopologyRequestContext, relat
   return db.transaction(async (tx) => {
     const state = await readState(tx, ctx); const row = await relationship(tx, ctx, relationshipId, authority.physical);
     const detail = await readRelationshipDetail(tx, ctx.scope, row, { canEdit: authority.canEdit, physical: authority.physical });
+    // Detail carries the same aggregated current health as the graph overlay.
+    detail.relationship.health = subjectHealth(await overlaysBySubject(tx, ctx, [{ kind: 'relationship', id: row.id }], authority), 'relationship', row.id)!;
     return response({ siteId: ctx.scope.siteId, graphRevision: state?.graph ?? '0', ...detail }, authority, { relationshipId });
   });
 }
@@ -292,9 +299,46 @@ export async function getTopologyHealth(ctx: TopologyRequestContext, query: z.in
       found[key] = rows.map(({ id }) => id);
       present.push(...rows.map(({ id }) => ({ kind, id })));
     }
-    const overlays = present.length ? await overlaysBySubject(tx, ctx, present) : undefined;
-    entities.nodes = found.nodes.map((id) => ({ id, health: subjectHealth(overlays, 'node', id) ?? overlayHealthSummary('node', undefined) }));
-    entities.relationships = found.relationships.map((id) => ({ id, health: subjectHealth(overlays, 'relationship', id) ?? overlayHealthSummary('relationship', undefined) }));
-    return response({ siteId: ctx.scope.siteId, graphRevision: state?.graph ?? '0', healthRevision: state?.health ?? '0', ...entities }, authority, parsed);
+    const overlays = present.length ? await overlaysBySubject(tx, ctx, present, authority) : undefined;
+    const expiries: (string | null)[] = [];
+    const entry = (kind: 'node' | 'relationship', id: string): HealthEntry => {
+      if (!overlays) return { id, health: overlayHealthSummary(kind, undefined) };
+      const result = aggregated(overlays, kind, id); expiries.push(result.freshUntil);
+      return { id, health: result.health };
+    };
+    entities.nodes = found.nodes.map((id) => entry('node', id));
+    entities.relationships = found.relationships.map((id) => entry('relationship', id));
+    // M3-D10: freshness expiry is not a revision write. `freshUntil` is the
+    // earliest moment this projection changes without new evidence; the
+    // content-derived ETag changes with it.
+    return response({ siteId: ctx.scope.siteId, graphRevision: state?.graph ?? '0', healthRevision: state?.health ?? '0', freshUntil: earliest(expiries), ...entities }, authority, parsed);
+  });
+}
+/**
+ * Current health of one link (M3 Task 6): the aggregated subject health plus
+ * each endpoint interface's own measurement. Endpoints are separate views; a
+ * rate is never summed across them. Port evidence applies only to identified
+ * observed/manual physical links. Read-only and bounded to one relationship.
+ */
+export async function getTopologyLinkHealth(ctx: TopologyRequestContext, relationshipId: string): Promise<TopologyLinkHealthResponse> {
+  input(uuid, relationshipId); const authority = await graphAuthority(ctx);
+  return db.transaction(async (tx) => {
+    const state = await readState(tx, ctx); const row = await relationship(tx, ctx, relationshipId, authority.physical);
+    const now = new Date();
+    const subject = { kind: 'relationship' as const, id: row.id };
+    const rel = { id: row.id, kind: row.kind, evidenceClass: row.evidenceClass, sourceInterfaceId: row.sourceInterfaceId ?? null, targetInterfaceId: row.targetInterfaceId ?? null };
+    const evidence = authority.interfaceHealth ? topologyInterfaceEvidenceApplies(rel) : { applies: false, reason: 'interface_health_unavailable' };
+    // Endpoints are read once and shared with the aggregate; every other contributor (monitor, policy) reads as usual.
+    const measurements = evidence.applies
+      ? await readTopologyInterfaceMeasurements(tx as Pick<typeof db, 'execute'>, ctx.scope, [rel.sourceInterfaceId, rel.targetInterfaceId].filter((id): id is string => !!id), now)
+      : new Map();
+    const byKey = await readTopologySubjectHealth({ executor: tx as Pick<typeof db, 'execute'>, ctx, subjects: [subject], now, exposure: { interfaceHealth: authority.interfaceHealth } },
+      TOPOLOGY_HEALTH_CONTRIBUTORS.filter((contributor) => contributor.source !== 'interface'));
+    const contributions = [...(byKey.get(`relationship:${row.id}`) ?? []), ...(evidence.applies ? interfaceMeasurementContributions(rel, measurements) : [])];
+    const result = aggregateTopologySubjectHealth('relationship', contributions, now);
+    const endpoint = (id: string | null) => (evidence.applies && id ? measurements.get(id) ?? null : null);
+    return response({ siteId: ctx.scope.siteId, relationshipId: row.id, graphRevision: state?.graph ?? '0', healthRevision: state?.health ?? '0',
+      health: result.health, freshUntil: result.freshUntil, interfaceEvidence: evidence,
+      endpoints: { source: endpoint(rel.sourceInterfaceId), target: endpoint(rel.targetInterfaceId) }, asOf: now.toISOString() }, authority, { relationshipId, kind: 'link_health' });
   });
 }

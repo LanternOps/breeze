@@ -24,7 +24,7 @@ import {
   buildResolveAlertCas,
   buildSuppressAlertCas,
 } from './alertService';
-import { deviceIdSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { deviceIdSiteDenied, resolveSiteAllowedDeviceIds, siteAllowlistOf } from './aiToolsSiteScope';
 import { emitAlertStateFeedback } from './mlFeedbackEmitters';
 import {
   encryptNotificationChannelConfig,
@@ -32,7 +32,7 @@ import {
   isMaskedIntegrationSecret,
 } from './notificationChannelSecrets';
 import { webhookOriginChangeWouldRetainAuthorization } from './credentialOriginBinding';
-import { validateNotificationChannelConfig } from '../routes/alerts/helpers';
+import { alertSiteScopeByDeviceIds, validateNotificationChannelConfig } from '../routes/alerts/helpers';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { resolveWritableToolOrgId } from './aiToolWriteOrg';
 
@@ -85,6 +85,12 @@ export async function findAlertWithAccess(alertId: string, auth: AuthContext) {
   // all, so this check cannot be folded into the site one.
   if (auth.allowedDeviceIds
     && (!alert.deviceId || !auth.allowedDeviceIds.includes(alert.deviceId))) return null;
+  // A topology policy alert is owned by its topology site (M3-D6): the site
+  // axis follows that site, never the origin device's current one.
+  if (alert.topologySiteId) {
+    const allowedSites = siteAllowlistOf(auth);
+    return allowedSites !== undefined && !allowedSites.includes(alert.topologySiteId) ? null : alert;
+  }
   if (alert.deviceId && (await deviceIdSiteDenied(auth, alert.deviceId))) return null;
   return alert;
 }
@@ -157,14 +163,22 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         // `allowedDeviceIds` and no site axis at all (#6096).
         const listOrgId = getOrgId(auth);
         if ((auth.allowedSiteIds || auth.allowedDeviceIds) && listOrgId) {
-          const allowed = await resolveSiteAllowedDeviceIds(listOrgId, auth);
-          if (!allowed || allowed.length === 0) {
+          const allowed = (await resolveSiteAllowedDeviceIds(listOrgId, auth)) ?? [];
+          const allowedSites = siteAllowlistOf(auth);
+          // Empty only when NOTHING is in scope: a site with no devices can
+          // still own topology policy alerts (M3-D6).
+          if (allowed.length === 0 && (auth.allowedDeviceIds || !allowedSites || allowedSites.length === 0)) {
             return emptyKeysetPage();
           }
           if (input.deviceId && !allowed.includes(input.deviceId as string)) {
             return emptyKeysetPage();
           }
-          conditions.push(inArray(alerts.deviceId, allowed));
+          // A topology policy alert follows its owning topology site (M3-D6),
+          // not the origin device's current site; the device axis still binds a
+          // device-bound run.
+          conditions.push(alertSiteScopeByDeviceIds({
+            allowedSiteIds: allowedSites, allowedDeviceIds: allowed, deviceAxis: auth.allowedDeviceIds !== undefined,
+          })!);
         }
 
         // `total` reflects the whole filtered set, so it must be computed

@@ -1,5 +1,6 @@
 const { ensureDefaultProfile } = vi.hoisted(() => ({ ensureDefaultProfile: vi.fn(async () => ({ id: 'default-profile' })) }));
 vi.mock('../services/billingProfileService', () => ({ ensureDefaultProfile }));
+import { deleteSiteOwnedTopologyAlerts, lockSiteForDelete } from '../services/siteOwnedAlerts';
 import { countMfaPolicyLockouts, lockMfaPolicySettings } from '../services/mfaPolicyActivation';
 vi.mock('../services/mfaPolicyActivation', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../services/mfaPolicyActivation')>()),
@@ -47,6 +48,14 @@ vi.mock('../services/enrollmentDefaults', () => ({
     deviceCount: 25,
     maxTtlMinutes: 43200
   }))
+}));
+
+// PR #7117 T3 — site delete removes the site's owned topology alerts under a
+// site row lock first; the SQL itself is proven against real Postgres in
+// __tests__/integration/siteDeleteTopologyAlerts.integration.test.ts.
+vi.mock('../services/siteOwnedAlerts', () => ({
+  lockSiteForDelete: vi.fn(async () => true),
+  deleteSiteOwnedTopologyAlerts: vi.fn(async () => 0),
 }));
 
 // #6475 — GET /organizations/:id/effective-settings folds in the interactive
@@ -215,7 +224,11 @@ vi.mock('../db', () => ({
           values: vi.fn(() => ({
             returning: vi.fn(() => Promise.resolve([]))
           }))
-        }))
+        })),
+        delete: vi.fn(() => ({
+          where: vi.fn(() => Promise.resolve())
+        })),
+        execute: vi.fn(() => Promise.resolve([]))
       };
       return fn(tx);
     })
@@ -5601,6 +5614,9 @@ describe('org routes', () => {
           })
         })
       } as any);
+      // Earlier suites install a persistent transaction double without
+      // delete; route this one through the db mock.
+      vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn(db));
 
       const res = await app.request('/orgs/sites/site-1', {
         method: 'DELETE'
@@ -5609,6 +5625,9 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
+      // The site's owned topology alerts are removed first, under its row lock.
+      expect(lockSiteForDelete).toHaveBeenCalledWith(expect.anything(), 'site-1');
+      expect(deleteSiteOwnedTopologyAlerts).toHaveBeenCalledWith(expect.anything(), '11111111-1111-1111-1111-111111111111', 'site-1');
     });
   });
 
@@ -5729,6 +5748,7 @@ describe('org routes', () => {
         const deleteSpy = vi.mocked(db.delete).mockReturnValue({
           where: vi.fn().mockResolvedValue(undefined)
         } as any);
+ vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn(db));
 
         const res = await app.request('/orgs/sites/site-y', { method: 'DELETE' });
 
@@ -5742,6 +5762,7 @@ describe('org routes', () => {
         vi.mocked(db.delete).mockReturnValue({
           where: vi.fn().mockResolvedValue(undefined)
         } as any);
+        vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn(db));
 
         const res = await app.request('/orgs/sites/site-x', { method: 'DELETE' });
 
@@ -5754,6 +5775,7 @@ describe('org routes', () => {
         vi.mocked(db.delete).mockReturnValue({
           where: vi.fn().mockResolvedValue(undefined)
         } as any);
+        vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn(db));
 
         const res = await app.request('/orgs/sites/site-y', { method: 'DELETE' });
 
