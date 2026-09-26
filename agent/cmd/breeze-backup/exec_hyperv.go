@@ -246,6 +246,8 @@ func execHypervBackup(payload json.RawMessage, mgr *backup.BackupManager) backup
 			slog.Warn("failed to clean up staging dir", "dir", stagingDir, "error", err.Error())
 		}
 	}()
+	stopHeartbeat := startHypervStagingHeartbeat(stagingDir, hypervStagingHeartbeatInterval)
+	defer stopHeartbeat()
 
 	result, err := exportHypervVM(p.VMName, stagingDir, p.ConsistencyType)
 	if err != nil {
@@ -266,6 +268,9 @@ func execHypervBackup(payload json.RawMessage, mgr *backup.BackupManager) backup
 		relPath, relErr := filepath.Rel(stagingDir, localPath)
 		if relErr != nil {
 			return fmt.Errorf("cannot compute relative path for %s: %w", localPath, relErr)
+		}
+		if relPath == hypervStagingAliveMarker {
+			return nil // our liveness marker, not part of the VM export
 		}
 		normalizedRelPath := filepath.ToSlash(relPath)
 		remotePath := path.Join(prefix, "files", normalizedRelPath)
@@ -353,7 +358,8 @@ func execHypervRestore(payload json.RawMessage, mgr *backup.BackupManager) backu
 
 	// #5460: the download stages a full copy of the export, and Import-VM
 	// -Copy then writes a second one into the host's virtual hard disk path.
-	if err := preflightHypervRestore(manifest, hypervStagingBase(mgr)); err != nil {
+	preflightWarnings, err := preflightHypervRestore(manifest, hypervStagingBase(mgr))
+	if err != nil {
 		return fail(err.Error())
 	}
 
@@ -366,6 +372,8 @@ func execHypervRestore(payload json.RawMessage, mgr *backup.BackupManager) backu
 			slog.Warn("failed to clean up Hyper-V restore staging dir", "dir", restoreDir, "error", err.Error())
 		}
 	}()
+	stopHeartbeat := startHypervStagingHeartbeat(restoreDir, hypervStagingHeartbeatInterval)
+	defer stopHeartbeat()
 
 	if err := restoreHypervSnapshotFiles(provider, manifest, restoreDir); err != nil {
 		return fail("failed to restore Hyper-V snapshot files: " + err.Error())
@@ -377,6 +385,9 @@ func execHypervRestore(payload json.RawMessage, mgr *backup.BackupManager) backu
 	}
 
 	result, err := importHypervVM(importRoot, p.VMName, p.GenerateNewID)
+	if result != nil && len(preflightWarnings) > 0 {
+		result.Warnings = append(preflightWarnings, result.Warnings...)
+	}
 	return marshalResult(result, err)
 }
 

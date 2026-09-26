@@ -379,39 +379,186 @@ func TestResolveBackupStagingDir(t *testing.T) {
 
 // A helper killed mid-export (crash, update, service stop) never runs its
 // deferred cleanup, stranding a VM-sized directory. The startup sweep removes
-// stale Breeze Hyper-V staging dirs and nothing else.
+// stale Breeze Hyper-V staging dirs and nothing else — and never one whose
+// liveness marker is still being refreshed: a directory's own mtime freezes
+// once Export-VM has created its subfolders, so a multi-hour export in an
+// overlapping helper looks "old" by dir mtime alone.
 func TestSweepOrphanedHypervStaging(t *testing.T) {
 	base := t.TempDir()
-	old := time.Now().Add(-2 * time.Hour)
-	mk := func(name string, mod time.Time) string {
+	now := time.Now()
+	mk := func(name string, dirMod time.Time, marker *time.Time) string {
 		p := filepath.Join(base, name)
 		if err := os.MkdirAll(filepath.Join(p, "Accounting VM"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Chtimes(p, mod, mod); err != nil {
+		if marker != nil {
+			m := filepath.Join(p, hypervStagingAliveMarker)
+			if err := os.WriteFile(m, nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chtimes(m, *marker, *marker); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.Chtimes(p, dirMod, dirMod); err != nil {
 			t.Fatal(err)
 		}
 		return p
 	}
-	staleExport := mk("breeze-hyperv-111", old)
-	staleRestore := mk("breeze-hyperv-restore-222", old)
-	fresh := mk("breeze-hyperv-333", time.Now())
-	unrelated := mk("breeze-mssql-444", old)
+	twoHours := now.Add(-2 * time.Hour)
+	twoDays := now.Add(-48 * time.Hour)
+	fresh := now
 
-	removed := sweepOrphanedHypervStaging([]string{base, base}, time.Hour)
+	staleMarker := mk("breeze-hyperv-111", twoHours, &twoHours)
+	staleRestore := mk("breeze-hyperv-restore-222", twoHours, &twoHours)
+	liveLongExport := mk("breeze-hyperv-333", twoDays, &fresh) // old dir, heartbeat fresh
+	legacyRecent := mk("breeze-hyperv-444", twoHours, nil)     // no marker (older helper), < 24h
+	legacyStale := mk("breeze-hyperv-555", twoDays, nil)       // no marker, > 24h
+	unrelated := mk("breeze-mssql-666", twoDays, nil)
 
-	if removed != 2 {
-		t.Fatalf("removed %d dirs, want 2", removed)
+	removed := sweepOrphanedHypervStaging([]string{base, base}, time.Hour, 24*time.Hour)
+
+	if removed != 3 {
+		t.Fatalf("removed %d dirs, want 3", removed)
 	}
-	for _, gone := range []string{staleExport, staleRestore} {
+	for _, gone := range []string{staleMarker, staleRestore, legacyStale} {
 		if _, err := os.Stat(gone); !os.IsNotExist(err) {
 			t.Fatalf("stale staging dir %s was not removed", gone)
 		}
 	}
-	for _, kept := range []string{fresh, unrelated} {
+	for _, kept := range []string{liveLongExport, legacyRecent, unrelated} {
 		if _, err := os.Stat(kept); err != nil {
 			t.Fatalf("%s must be kept: %v", kept, err)
 		}
+	}
+}
+
+func TestHypervStagingHeartbeatRefreshesMarker(t *testing.T) {
+	dir := t.TempDir()
+	stop := startHypervStagingHeartbeat(dir, 10*time.Millisecond)
+	marker := filepath.Join(dir, hypervStagingAliveMarker)
+	first, err := os.Stat(marker)
+	if err != nil {
+		t.Fatalf("marker not written on start: %v", err)
+	}
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(marker, old, old); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		info, err := os.Stat(marker)
+		if err == nil && info.ModTime().After(old.Add(time.Minute)) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("heartbeat never refreshed the marker (first write %v)", first.ModTime())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	stop()
+	stop() // idempotent
+}
+
+// The live export's staging dir carries the marker for the whole run.
+func TestExecHypervBackup_StagingDirCarriesAliveMarkerDuringExport(t *testing.T) {
+	mgr, _, _ := newStagedManager(t)
+	var sawMarker bool
+	stubHypervSeams(t,
+		func(string) (int64, error) { return 1 * gib, nil },
+		constFree(100*gib),
+		nil,
+		func(vmName, exportPath, consistencyType string) (*hyperv.BackupResult, error) {
+			_, err := os.Stat(filepath.Join(exportPath, hypervStagingAliveMarker))
+			sawMarker = err == nil
+			return fakeExport(false)(vmName, exportPath, consistencyType)
+		},
+	)
+	if result := execHypervBackup(hypervBackupPayload(t), mgr); !result.Success {
+		t.Fatalf("backup failed: %s", result.Stderr)
+	}
+	if !sawMarker {
+		t.Fatal("staging dir had no liveness marker while Export-VM ran")
+	}
+}
+
+// The marker must not be uploaded as part of the VM export.
+func TestExecHypervBackup_AliveMarkerIsNotUploaded(t *testing.T) {
+	mgr, _, _ := newStagedManager(t)
+	stubHypervSeams(t,
+		func(string) (int64, error) { return 1 * gib, nil },
+		constFree(100*gib),
+		nil,
+		fakeExport(false),
+	)
+	result := execHypervBackup(hypervBackupPayload(t), mgr)
+	if !result.Success {
+		t.Fatalf("backup failed: %s", result.Stderr)
+	}
+	if strings.Contains(result.Stdout, hypervStagingAliveMarker) {
+		t.Fatalf("liveness marker leaked into the snapshot: %s", result.Stdout)
+	}
+	var out struct {
+		FilesBackedUp int `json:"filesBackedUp"`
+	}
+	if err := json.Unmarshal([]byte(result.Stdout), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.FilesBackedUp != 1 {
+		t.Fatalf("filesBackedUp = %d, want 1 (the VHDX only)", out.FilesBackedUp)
+	}
+}
+
+// When the host's import destination cannot be read the restore still runs
+// (staging is checked alone) and says the import check was skipped.
+func TestExecHypervRestore_ImportTargetLookupFailureFailsOpenWithWarning(t *testing.T) {
+	mgr, _, _ := newStagedManager(t)
+	uploadHypervTestSnapshot(t, mgr.GetProvider(), "hv-restore-noimportdir", 12*gib)
+	rec := stubHypervSeams(t,
+		nil,
+		constFree(20*gib),
+		func() (string, error) { return "", errors.New("Get-VMHost failed") },
+		nil,
+	)
+
+	result := execHypervRestore(hypervRestorePayload(t, "hv-restore-noimportdir"), mgr)
+
+	if !result.Success {
+		t.Fatalf("expected the restore to proceed, got: %s", result.Stderr)
+	}
+	if rec.importCalls != 1 {
+		t.Fatalf("Import-VM ran %d times, want 1", rec.importCalls)
+	}
+	if !strings.Contains(result.Stdout, "import destination") {
+		t.Fatalf("expected a skipped-import-check warning in the result, got: %s", result.Stdout)
+	}
+}
+
+// Manifests without a top-level size fall back to the sum of file sizes.
+func TestExecHypervRestore_ManifestWithoutSizeUsesFileSizes(t *testing.T) {
+	mgr, _, _ := newStagedManager(t)
+	uploadHypervTestSnapshot(t, mgr.GetProvider(), "hv-restore-nosize", 12*gib)
+	// Rewrite the manifest with Size 0 but the file still recording 12 GiB.
+	m, err := downloadHypervSnapshotManifest("hv-restore-nosize", mgr.GetProvider())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Size = 0
+	if err := uploadHypervSnapshotManifest(mgr.GetProvider(), *m); err != nil {
+		t.Fatal(err)
+	}
+	rec := stubHypervSeams(t,
+		nil,
+		constFree(5*gib),
+		func() (string, error) { return t.TempDir(), nil },
+		nil,
+	)
+
+	if result := execHypervRestore(hypervRestorePayload(t, "hv-restore-nosize"), mgr); result.Success {
+		t.Fatal("expected the restore to fail its free-space preflight from the file sizes")
+	}
+	if rec.importCalls != 0 {
+		t.Fatal("Import-VM must not run when the preflight fails")
 	}
 }
 

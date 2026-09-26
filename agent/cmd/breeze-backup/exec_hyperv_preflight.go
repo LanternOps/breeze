@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup"
@@ -151,11 +152,12 @@ func preflightHypervExport(vmName, stagingBase string) ([]string, error) {
 
 // preflightHypervRestore refuses a restore whose download (into stagingBase)
 // and Import-VM -Copy (into the host's virtual hard disk path) cannot both fit.
-// When they share a volume, that volume needs two copies. Warnings are logged
-// only: the restore result has no warnings field.
-func preflightHypervRestore(manifest *hypervSnapshotManifest, stagingBase string) error {
+// When they share a volume, that volume needs two copies. Like the export
+// preflight it fails open, returning a warning for each check it could not
+// make.
+func preflightHypervRestore(manifest *hypervSnapshotManifest, stagingBase string) ([]string, error) {
 	if manifest == nil {
-		return nil
+		return nil, nil
 	}
 	size := manifest.Size
 	if size <= 0 {
@@ -164,8 +166,9 @@ func preflightHypervRestore(manifest *hypervSnapshotManifest, stagingBase string
 		}
 	}
 	if size <= 0 {
-		slog.Warn("hyperv: free-space preflight skipped: snapshot manifest records no size", "snapshotId", manifest.ID)
-		return nil
+		msg := fmt.Sprintf("free-space preflight skipped: snapshot %q records no size", manifest.ID)
+		slog.Warn("hyperv: " + msg)
+		return []string{msg}, nil
 	}
 	operation := fmt.Sprintf("the Hyper-V restore of snapshot %q", manifest.ID)
 	needs := []hypervSpaceNeed{{
@@ -173,9 +176,12 @@ func preflightHypervRestore(manifest *hypervSnapshotManifest, stagingBase string
 		bytes: size,
 		what:  fmt.Sprintf("%s download", formatGiB(size)),
 	}}
+	var warnings []string
 	importDir, err := hypervImportTargetDir()
 	if err != nil {
-		slog.Warn("hyperv: free-space preflight will not check the import destination", "error", err.Error())
+		msg := fmt.Sprintf("free-space preflight skipped for the import destination: %v", err)
+		slog.Warn("hyperv: " + msg)
+		warnings = append(warnings, msg)
 	} else {
 		needs = append(needs, hypervSpaceNeed{
 			dir:   importDir,
@@ -183,24 +189,76 @@ func preflightHypervRestore(manifest *hypervSnapshotManifest, stagingBase string
 			what:  fmt.Sprintf("%s Import-VM copy", formatGiB(size)),
 		})
 	}
-	_, err = checkHypervSpace(operation, needs)
-	return err
+	spaceWarnings, err := checkHypervSpace(operation, needs)
+	return append(warnings, spaceWarnings...), err
 }
 
-// hypervOrphanMinAge keeps the startup sweep away from a staging dir another
-// helper process could still be writing (an update briefly overlapping two
-// helpers). A dir stranded by a crash is removed on the next start after this.
+// hypervStagingAliveMarker is a file at the root of every live Hyper-V staging
+// dir, touched every hypervStagingHeartbeatInterval while its owner runs. The
+// directory's own mtime is no liveness signal: it freezes once Export-VM has
+// created its subfolders, however long the copy then takes.
+const hypervStagingAliveMarker = ".breeze-hyperv-alive"
+
+const hypervStagingHeartbeatInterval = 5 * time.Minute
+
+// hypervOrphanMinAge: a staging dir whose marker has not been touched for this
+// long has no live owner (12 missed heartbeats).
 const hypervOrphanMinAge = time.Hour
+
+// hypervOrphanLegacyMinAge applies to a staging dir with no marker — written
+// by a helper that predates it, which may still be running during an update.
+// Only directories that old are treated as orphans.
+const hypervOrphanLegacyMinAge = 24 * time.Hour
+
+// startHypervStagingHeartbeat writes the liveness marker into dir now and
+// refreshes it every interval until the returned stop func is called (safe to
+// call more than once).
+func startHypervStagingHeartbeat(dir string, interval time.Duration) (stop func()) {
+	marker := filepath.Join(dir, hypervStagingAliveMarker)
+	touch := func() {
+		now := time.Now()
+		if err := os.Chtimes(marker, now, now); err == nil {
+			return
+		}
+		if err := os.WriteFile(marker, nil, 0o600); err != nil {
+			slog.Warn("hyperv: cannot write staging liveness marker", "path", marker, "error", err.Error())
+		}
+	}
+	touch()
+	done := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				touch()
+			}
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			close(done)
+			<-finished
+		})
+	}
+}
 
 // sweepOrphanedHypervStaging removes Breeze Hyper-V staging dirs left behind
 // by a helper that was killed mid-export or mid-restore — its deferred cleanup
 // never ran, and each one is the size of a VM. Only direct children of each
-// base named breeze-hyperv-* and last modified before minAge are touched.
-// Returns how many were removed.
-func sweepOrphanedHypervStaging(bases []string, minAge time.Duration) int {
+// base named breeze-hyperv-* are considered: one whose liveness marker is
+// older than minAge, or, with no marker, whose own mtime is older than
+// legacyMinAge. Returns how many were removed.
+func sweepOrphanedHypervStaging(bases []string, minAge, legacyMinAge time.Duration) int {
 	removed := 0
 	seen := map[string]bool{}
-	cutoff := time.Now().Add(-minAge)
+	now := time.Now()
 	for _, base := range bases {
 		base = strings.TrimSpace(base)
 		if base == "" {
@@ -222,16 +280,25 @@ func sweepOrphanedHypervStaging(bases []string, minAge time.Duration) int {
 			if !entry.IsDir() || !strings.HasPrefix(entry.Name(), hypervStagingDirPrefix) {
 				continue
 			}
-			info, err := entry.Info()
-			if err != nil || !info.ModTime().Before(cutoff) {
+			dir := filepath.Join(base, entry.Name())
+			var lastAlive time.Time
+			maxAge := minAge
+			if info, err := os.Stat(filepath.Join(dir, hypervStagingAliveMarker)); err == nil {
+				lastAlive = info.ModTime()
+			} else if info, err := entry.Info(); err == nil {
+				lastAlive = info.ModTime()
+				maxAge = legacyMinAge
+			} else {
 				continue
 			}
-			dir := filepath.Join(base, entry.Name())
+			if now.Sub(lastAlive) < maxAge {
+				continue
+			}
 			if err := os.RemoveAll(dir); err != nil {
 				slog.Warn("hyperv: failed to remove orphaned staging dir", "dir", dir, "error", err.Error())
 				continue
 			}
-			slog.Info("hyperv: removed orphaned staging dir", "dir", dir)
+			slog.Info("hyperv: removed orphaned staging dir", "dir", dir, "lastAlive", lastAlive)
 			removed++
 		}
 	}

@@ -262,7 +262,7 @@ func runBackupHelper() {
 	helperStagingDir = resolveBackupStagingDir(cfg.BackupStagingDir)
 	// #5460: a helper killed mid-export never ran its deferred cleanup; reclaim
 	// those VM-sized dirs from both places they could have been staged.
-	if n := sweepOrphanedHypervStaging([]string{helperStagingDir, os.TempDir()}, hypervOrphanMinAge); n > 0 {
+	if n := sweepOrphanedHypervStaging([]string{helperStagingDir, os.TempDir()}, hypervOrphanMinAge, hypervOrphanLegacyMinAge); n > 0 {
 		log.Info("removed orphaned Hyper-V staging dirs", "count", n)
 	}
 	log.Info("breeze-backup starting",
