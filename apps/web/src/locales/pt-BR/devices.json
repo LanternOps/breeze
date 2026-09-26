@@ -1106,6 +1106,11 @@
   },
   "deviceInfoTab": {
     "updateOfferWithheld": "As ofertas de atualização estão retidas para este dispositivo (desde {{since}}): não é possível confirmar que a build do agente aceita a edição servida por este servidor, então ele permanece na versão atual. Recupere-o com um instalador da edição servida ou uma versão do agente que informe sua edição.",
+    "helperInstallIssue": {
+      "awaitingServerOffer": "O Breeze Assist está ativado, mas não instalado (desde {{since}}): o servidor não ofereceu uma versão do Breeze Assist para instalar neste dispositivo, então ele continua sem instalação. Verifique se há uma build do Breeze Assist publicada para a plataforma deste dispositivo.",
+      "installAbandoned": "O Breeze Assist está ativado, mas não instalado (desde {{since}}): a instalação da versão oferecida falhou repetidamente, então o agente pausou as novas tentativas. Ele tentará de novo em algumas horas ou quando uma versão mais recente for oferecida; o log do agente contém o erro de instalação.",
+      "unknown": "O Breeze Assist está ativado, mas não instalado (desde {{since}})."
+    },
     "gpu": "GPU",
     "text": "—",
     "failedToFetchDeviceDetails": "Falha ao buscar os detalhes do dispositivo",
@@ -1448,6 +1453,12 @@
     },
     "updateWithheld": "Atualizações retidas",
     "updateWithheldTooltip": "O servidor não está oferecendo atualizações a este dispositivo porque não é possível confirmar que a build do agente aceita a edição servida. Ele permanece na versão atual até ser recuperado.",
+    "helperNotInstalled": "Não instalado",
+    "helperInstallIssueTooltip": {
+      "awaitingServerOffer": "O Breeze Assist está ativado, mas não instalado: o servidor não ofereceu nenhuma versão do Breeze Assist para instalar neste dispositivo.",
+      "installAbandoned": "O Breeze Assist está ativado, mas não instalado: a instalação da versão oferecida falhou repetidamente e as novas tentativas estão pausadas.",
+      "unknown": "O Breeze Assist está ativado, mas não instalado."
+    },
     "agentVersionRelation": {
       "equalTooltip": "Corresponde à versão efetiva {{version}}",
       "aheadTooltip": "À frente do pin {{version}}",

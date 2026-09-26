@@ -472,3 +472,35 @@ it('self-manages POST /remediation-suggestions/:id/execute and no sibling route'
   expect(isSelfManagedDbContextRoute('PATCH', '/api/v1/remediation-suggestions/abc-123')).toBe(false);
   expect(isSelfManagedDbContextRoute('POST', '/api/v1/remediation-suggestions/generate')).toBe(false);
 });
+
+// #3127 — the four chat message-send routes may settle a turn blocked on
+// approval waits and then wait (bounded) for it to conclude. That wait does no
+// DB work, so it must not run inside a held request transaction: each route
+// owns its DB context and runs the wait between two short ones. Only the
+// message-send POST opts out — every sibling chat route keeps the ambient tx.
+describe('#3127 chat message-send routes', () => {
+  const SID = '11111111-1111-4111-8111-111111111111';
+  it.each([
+    ['POST', `/api/v1/ai/sessions/${SID}/messages`],
+    ['POST', `/api/v1/ai/sessions/${SID}/messages/`],
+    ['post', `/api/v1/ai/sessions/${SID}/messages`],
+    ['POST', `/api/v1/ai/script-builder/sessions/${SID}/messages`],
+    ['POST', `/api/v1/client-ai/sessions/${SID}/messages`],
+    ['POST', `/api/v1/helper/chat/sessions/${SID}/messages`],
+  ])('opts out: %s %s', (method, path) => {
+    expect(isSelfManagedDbContextRoute(method, path)).toBe(true);
+  });
+
+  it.each([
+    ['GET', `/api/v1/ai/sessions/${SID}/messages`, 'history read keeps the ambient tx'],
+    ['GET', `/api/v1/client-ai/sessions/${SID}/messages`, 'history read keeps the ambient tx'],
+    ['GET', `/api/v1/helper/chat/sessions/${SID}/messages`, 'history read keeps the ambient tx'],
+    ['POST', `/api/v1/ai/sessions/${SID}/approve/22222222-2222-4222-8222-222222222222`, 'approve keeps the ambient tx'],
+    ['POST', `/api/v1/ai/sessions/${SID}/interrupt`, 'interrupt keeps the ambient tx'],
+    ['POST', `/api/v1/helper/chat/sessions/${SID}/tool-results`, 'tool-results keeps the ambient tx'],
+    ['POST', `/api/v1/ai/sessions/${SID}/messages/extra`, 'extra segment must not match'],
+    ['POST', '/api/v1/ai/sessions//messages', 'empty session id must not match'],
+  ])('keeps ambient tx: %s %s (%s)', (method, path) => {
+    expect(isSelfManagedDbContextRoute(method, path)).toBe(false);
+  });
+});

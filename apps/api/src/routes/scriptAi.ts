@@ -8,7 +8,13 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { streamSSE } from 'hono/streaming';
-import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
+import {
+  authMiddleware,
+  requireMfa,
+  requirePermission,
+  requireScope,
+  withAuthDbAccessContext,
+} from '../middleware/auth';
 import {
   createScriptBuilderSession,
   getScriptBuilderSession,
@@ -185,8 +191,15 @@ scriptAiRoutes.post(
     const sessionId = c.req.param('id')!;
     const { content, editorContext } = c.req.valid('json');
 
+    // #3127: this route is registered in selfManagedDbContextRoutes, so no
+    // request transaction is held across the handler. Each DB phase runs in its
+    // own short context carrying the caller's exact scope, and the settle wait
+    // and the budget reservation (which opens its own system transaction) run
+    // between them with no connection checked out.
+    const inRequestDb = <T>(fn: () => Promise<T>): Promise<T> => withAuthDbAccessContext(auth, fn);
+
     // Run pre-flight checks (rate limits, budget, session status)
-    const preflight = await runPreFlightChecks(sessionId, content, auth, undefined, c);
+    const preflight = await inRequestDb(() => runPreFlightChecks(sessionId, content, auth, undefined, c));
     if (!preflight.ok) {
       const err = preflight.error;
       if (err === 'ai_unavailable') return c.json({ error: 'ai_unavailable' }, 503);
@@ -209,7 +222,7 @@ scriptAiRoutes.post(
     let updatedSystemPrompt: string | undefined;
     if (editorContext) {
       try {
-        updatedSystemPrompt = await updateEditorContext(sessionId, editorContext, auth);
+        updatedSystemPrompt = await inRequestDb(() => updateEditorContext(sessionId, editorContext, auth));
       } catch (err) {
         captureException(err, c);
         console.error('[ScriptAI] Failed to update editor context:', err);
@@ -219,6 +232,7 @@ scriptAiRoutes.post(
 
     const priorSession = streamingSessionManager.get(sessionId);
     if (priorSession?.state === 'processing') {
+      // #3127: runs with no DB context held (see inRequestDb above).
       const settle = await settleBlockedTurnForNewMessage(priorSession);
       if (settle !== 'concluded') {
         return c.json({
@@ -263,85 +277,100 @@ scriptAiRoutes.post(
     // THIS session's model fails closed only here. Same catch shape as
     // ai.ts — otherwise it reaches `app.onError` as a 500, telling the UI "we
     // broke" instead of the documented "reconnect your AI provider".
-    let activeSession;
-    try {
-      activeSession = await streamingSessionManager.getOrCreate(
-        sessionId,
-        {
-          orgId: dbSession.orgId,
-          sdkSessionId: dbSession.sdkSessionId,
-          model: dbSession.model,
-          maxTurns: dbSession.maxTurns,
-          turnCount: dbSession.turnCount,
-          systemPrompt: dbSession.systemPrompt,
-        },
-        auth,
-        c,
-        effectiveSystemPrompt,
-        reservedMaxBudgetUsd,
-        resolved,
-        SCRIPT_BUILDER_MCP_TOOL_NAMES,
-        // Custom MCP server factory for script builder tools
-        (getAuth, onPreToolUse, onPostToolUse) => ({
-          server: createScriptBuilderMcpServer(getAuth, onPreToolUse, onPostToolUse),
-          name: SCRIPT_BUILDER_MCP_SERVER_NAME,
-        }),
-        { budgetReservationId },
-      );
-    } catch (err) {
-      await releaseUnusedAiBudgetReservation({ orgId: dbSession.orgId, reservationId: budgetReservationId });
-      if (err instanceof LlmUnavailableError) return c.json({ error: 'ai_unavailable' }, 503);
-      throw err;
-    }
-
-    // Concurrent message guard - atomic check-and-set. If the turn is blocked
-    // only on pending approval waits, settle them so the assistant can
-    // conclude and answer this message (#3089 — shared helper, see ai.ts).
-    if (!streamingSessionManager.tryTransitionToProcessing(activeSession, budgetReservationId)) {
-      await releaseUnusedAiBudgetReservation({ orgId: dbSession.orgId, reservationId: budgetReservationId });
-      return c.json({ error: 'A message is already being processed for this session' }, 409);
-    }
-
-    writeRouteAudit(c, {
-      orgId: dbSession.orgId,
-      action: 'ai.script_builder.message.send',
-      resourceType: 'ai_session',
-      resourceId: sessionId,
-      details: { contentLength: content.length },
-    });
-
-    // Save user message to DB
-    try {
-      await db.insert(aiMessages).values({
-        sessionId,
-        role: 'user',
-        content: sanitizedContent,
-      });
-    } catch (err) {
-      captureException(err, c);
-      console.error('[ScriptAI] Failed to save user message to DB:', err);
-      activeSession.state = 'idle';
-      await releaseUnusedAiBudgetReservation({ orgId: dbSession.orgId, reservationId: budgetReservationId });
-      return c.json({ error: 'Failed to save message' }, 500);
-    }
-
-    // Auto-generate title from first user message
-    if (!dbSession.title) {
-      const title = generateSessionTitle(sanitizedContent);
+    type ActiveScriptSession = Awaited<ReturnType<typeof streamingSessionManager.getOrCreate>>;
+    const dispatch = await inRequestDb(async (): Promise<
+      | { kind: 'dispatched'; activeSession: ActiveScriptSession }
+      | { kind: 'refused'; response: Response }
+      | { kind: 'failed'; error: unknown }
+    > => {
+      let activeSession: ActiveScriptSession;
       try {
-        await db.update(aiSessions)
-          .set({ title })
-          .where(eq(aiSessions.id, sessionId));
-        activeSession.eventBus.publish({ type: 'title_updated', title });
+        activeSession = await streamingSessionManager.getOrCreate(
+          sessionId,
+          {
+            orgId: dbSession.orgId,
+            sdkSessionId: dbSession.sdkSessionId,
+            model: dbSession.model,
+            maxTurns: dbSession.maxTurns,
+            turnCount: dbSession.turnCount,
+            systemPrompt: dbSession.systemPrompt,
+          },
+          auth,
+          c,
+          effectiveSystemPrompt,
+          reservedMaxBudgetUsd,
+          resolved,
+          SCRIPT_BUILDER_MCP_TOOL_NAMES,
+          // Custom MCP server factory for script builder tools
+          (getAuth, onPreToolUse, onPostToolUse) => ({
+            server: createScriptBuilderMcpServer(getAuth, onPreToolUse, onPostToolUse),
+            name: SCRIPT_BUILDER_MCP_SERVER_NAME,
+          }),
+          { budgetReservationId },
+        );
+      } catch (err) {
+        if (err instanceof LlmUnavailableError) {
+          return { kind: 'refused', response: c.json({ error: 'ai_unavailable' }, 503) };
+        }
+        return { kind: 'failed', error: err };
+      }
+
+      // Concurrent message guard - atomic check-and-set. If the turn is blocked
+      // only on pending approval waits, settle them so the assistant can
+      // conclude and answer this message (#3089 — shared helper, see ai.ts).
+      if (!streamingSessionManager.tryTransitionToProcessing(activeSession, budgetReservationId)) {
+        return { kind: 'refused', response: c.json({ error: 'A message is already being processed for this session' }, 409) };
+      }
+
+      writeRouteAudit(c, {
+        orgId: dbSession.orgId,
+        action: 'ai.script_builder.message.send',
+        resourceType: 'ai_session',
+        resourceId: sessionId,
+        details: { contentLength: content.length },
+      });
+
+      // Save user message to DB
+      try {
+        await db.insert(aiMessages).values({
+          sessionId,
+          role: 'user',
+          content: sanitizedContent,
+        });
       } catch (err) {
         captureException(err, c);
-        console.error('[ScriptAI] Failed to auto-set session title:', err);
+        console.error('[ScriptAI] Failed to save user message to DB:', err);
+        activeSession.state = 'idle';
+        return { kind: 'refused', response: c.json({ error: 'Failed to save message' }, 500) };
       }
-    }
 
-    // Push message to the streaming input and start turn timeout
-    activeSession.inputController.pushMessage(sanitizedContent);
-    streamingSessionManager.startTurnTimeout(activeSession);
+      // Auto-generate title from first user message
+      if (!dbSession.title) {
+        const title = generateSessionTitle(sanitizedContent);
+        try {
+          await db.update(aiSessions)
+            .set({ title })
+            .where(eq(aiSessions.id, sessionId));
+          activeSession.eventBus.publish({ type: 'title_updated', title });
+        } catch (err) {
+          captureException(err, c);
+          console.error('[ScriptAI] Failed to auto-set session title:', err);
+        }
+      }
+
+      // Push message to the streaming input and start turn timeout
+      activeSession.inputController.pushMessage(sanitizedContent);
+      streamingSessionManager.startTurnTimeout(activeSession);
+      return { kind: 'dispatched', activeSession };
+    });
+    if (dispatch.kind !== 'dispatched') {
+      // Released only after the dispatch context has closed, so the release's
+      // own system transaction never runs beside a held request connection.
+      await releaseUnusedAiBudgetReservation({ orgId: dbSession.orgId, reservationId: budgetReservationId });
+      if (dispatch.kind === 'failed') throw dispatch.error;
+      return dispatch.response;
+    }
+    const { activeSession } = dispatch;
 
     const subscriptionId = crypto.randomUUID();
 

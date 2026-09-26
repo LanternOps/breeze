@@ -3376,7 +3376,8 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                 agentId,
                 commandId: progressMessage.commandId,
                 // Default to {} so a bare keepalive ping (no counters) still
-                // parses and bumps last_progress_at instead of being dropped as
+                // parses and bumps last_keepalive_at (liveness; #2798 — it no
+                // longer touches last_progress_at) instead of being dropped as
                 // invalid-payload. All fields on the progress schema are
                 // optional, so an empty body is a valid "still alive" signal.
                 progress: progressMessage.progress ?? {},
@@ -3388,7 +3389,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                 // agent-mismatch is a real anomaly (an agent pinging another
                 // device's job) and stays at warn. invalid-payload joins it:
                 // since #3006 it means an agent is sending progress this server
-                // cannot understand, which starves last_progress_at and gets
+                // cannot understand, which starves last_keepalive_at and gets
                 // healthy uploads reaped. Everything else is routine traffic —
                 // restore progress reuses this WS type with a commandId that
                 // matches no backup job (not-found), a garbage or non-UUID

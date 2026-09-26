@@ -426,12 +426,27 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // at connect time; the Microsoft /connect builds a consent URL with no server-side
   // Graph call, so it is not listed.)
   { method: 'POST', pattern: /^\/api\/v1\/tickets\/mailbox\/connect\/gmail\/?$/ },
+  // #3127 — the four chat message-send routes. When a session's turn is
+  // blocked only on approval waits, the handler settles those waits and then
+  // waits (bounded, TURN_SETTLE_WAIT_MS) for the turn to conclude — no DB work,
+  // but under the ambient request transaction it pinned one pooled connection
+  // idle-in-transaction per resent message for the whole wait. Each handler now
+  // runs its read phase and its dispatch phase in two short contexts and does
+  // the settle wait — and the AI budget reservation, which opens its own system
+  // transaction — between them, with no context held. clientAiAuth and
+  // helperAuth consult this registry too; only the send POST opts out.
+  { method: 'POST', pattern: /^\/api\/v1\/ai\/sessions\/[^/]+\/messages\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/ai\/script-builder\/sessions\/[^/]+\/messages\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/client-ai\/sessions\/[^/]+\/messages\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/helper\/chat\/sessions\/[^/]+\/messages\/?$/ },
 ];
 
 /**
  * True when the given request opts out of the auth middleware's auto
  * request-transaction (it manages its own short DB access contexts so a slow
- * outbound HTTP call isn't made inside a held transaction — #1448).
+ * outbound HTTP call isn't made inside a held transaction — #1448). Consulted by
+ * every middleware that opens one: auth.ts, portal/auth.ts, clientAiAuth.ts and
+ * helperAuth.ts.
  */
 export function isSelfManagedDbContextRoute(method: string, path: string): boolean {
   const upper = method.toUpperCase();

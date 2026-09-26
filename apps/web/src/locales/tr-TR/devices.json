@@ -1106,6 +1106,11 @@
   },
   "deviceInfoTab": {
     "updateOfferWithheld": "Bu cihaz için güncelleme teklifleri durduruldu ({{since}} tarihinden beri): aracı sürümünün bu sunucunun sunduğu sürümü kabul ettiği doğrulanamıyor, bu nedenle mevcut sürümünde kalıyor. Sunulan sürümün yükleyicisiyle veya sürümünü bildiren bir aracı sürümüyle kurtarın.",
+    "helperInstallIssue": {
+      "awaitingServerOffer": "Breeze Assist etkin ancak yüklü değil ({{since}} tarihinden beri): sunucu bu cihaza yüklenecek bir Breeze Assist sürümü sunmadı, bu nedenle yüklenmemiş olarak kalıyor. Bu cihazın platformu için yayımlanmış bir Breeze Assist derlemesi olup olmadığını kontrol edin.",
+      "installAbandoned": "Breeze Assist etkin ancak yüklü değil ({{since}} tarihinden beri): sunulan sürümün yüklenmesi tekrar tekrar başarısız oldu, bu nedenle ajan yeniden denemeleri duraklattı. Birkaç saat sonra veya daha yeni bir sürüm sunulduğunda yeniden deneyecek; yükleme hatası ajan günlüğünde yer alıyor.",
+      "unknown": "Breeze Assist etkin ancak yüklü değil ({{since}} tarihinden beri)."
+    },
     "gpu": "GPU",
     "text": "—",
     "failedToFetchDeviceDetails": "Cihaz ayrıntıları getirilemedi",
@@ -1448,6 +1453,12 @@
     },
     "updateWithheld": "Güncellemeler durduruldu",
     "updateWithheldTooltip": "Sunucu, aracı sürümünün sunulan sürümü kabul ettiği doğrulanamadığı için bu cihaza güncelleme sunmuyor. Kurtarılana kadar mevcut sürümünde kalır.",
+    "helperNotInstalled": "Yüklü değil",
+    "helperInstallIssueTooltip": {
+      "awaitingServerOffer": "Breeze Assist etkin ancak yüklü değil: sunucu bu cihaza yüklenecek hiçbir Breeze Assist sürümü sunmadı.",
+      "installAbandoned": "Breeze Assist etkin ancak yüklü değil: sunulan sürümün yüklenmesi tekrar tekrar başarısız oldu ve yeniden denemeler duraklatıldı.",
+      "unknown": "Breeze Assist etkin ancak yüklü değil."
+    },
     "agentVersionRelation": {
       "equalTooltip": "Etkin sürümle eşleşiyor: {{version}}",
       "aheadTooltip": "{{version}} sabitlemesinin ilerisinde",
