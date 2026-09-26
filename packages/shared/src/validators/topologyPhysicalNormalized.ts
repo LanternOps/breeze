@@ -3,10 +3,10 @@ import { collectionOutcomeSchema } from './topology';
 import { refineTopologySectionRows, topologySection } from './topologyCollection';
 import { sorted } from './topologyCollectionCanonical';
 import { topologyDigestSchema, topologyFamilySchema, topologyReasonSchema, topologyUint32Schema, topologyUtf8KeySchema } from './topologyPrimitives';
+import { ADJACENCY_V2_SECTION_LIMITS, cdpRowSchema, fdbRowSchema, lldpRowSchema, physicalInterfaceRowSchema } from './topologyPhysical';
 import {
-  ADJACENCY_V2_SECTION_LIMITS, cdpRowSchema, fdbRowSchema, lldpRowSchema, physicalInterfaceRowSchema,
-  unifiClientRowSchema, unifiDeviceDetailRowSchema, unifiDeviceRowSchema, unifiStatisticsRowSchema,
-} from './topologyPhysical';
+  normalizedUnifiClientRowSchema, normalizedUnifiDeviceDetailRowSchema, normalizedUnifiDeviceRowSchema, normalizedUnifiStatisticsRowSchema,
+} from './topologyUnifiNormalized';
 import type { FdbRow } from '../types/topologyPhysical';
 
 /**
@@ -117,10 +117,11 @@ export const physicalSourceSectionSchema = z.discriminatedUnion('kind', [
   section('cdp', cdpRowSchema, ADJACENCY_V2_SECTION_LIMITS.cdp),
   normalizedFdbSectionSchema,
   snmpInterfacesSectionSchema,
-  section('unifi_device_list', unifiDeviceRowSchema, 2048),
-  section('unifi_client_list', unifiClientRowSchema, 10000),
-  section('unifi_device_details', unifiDeviceDetailRowSchema, 2048),
-  section('unifi_statistics', unifiStatisticsRowSchema, 2048),
+  // UniFi sections retain normalized rows (wire row + server identity material).
+  section('unifi_device_list', normalizedUnifiDeviceRowSchema, 2048),
+  section('unifi_client_list', normalizedUnifiClientRowSchema, 10000),
+  section('unifi_device_details', normalizedUnifiDeviceDetailRowSchema, 2048),
+  section('unifi_statistics', normalizedUnifiStatisticsRowSchema, 2048),
 ]);
 export type PhysicalSourceSection = z.infer<typeof physicalSourceSectionSchema>;
 export const isPhysicalSourceSectionKind = (kind: string): kind is PhysicalSourceSectionKind => (PHYSICAL_SOURCE_SECTION_KINDS as readonly string[]).includes(kind);

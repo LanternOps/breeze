@@ -175,7 +175,8 @@ export const unifiTopologyV1Schema = z.object({
   const ids = v.resources.map(r => JSON.stringify([r.controllerSiteId, r.kind]));
   if (new Set(ids).size !== ids.length) ctx.addIssue({ code: 'custom', message: 'Duplicate controller-site resource' });
 });
-export const unifiTopologyV1WireSchema = topologyWireGuard(UNIFI_TOPOLOGY_V1_MAX_BYTES).pipe(unifiTopologyV1Schema);
+// Resource rows carry the controller's own `deviceId` (never a Breeze device id).
+export const unifiTopologyV1WireSchema = topologyWireGuard(UNIFI_TOPOLOGY_V1_MAX_BYTES, { rowFieldExemptions: ['deviceId'] }).pipe(unifiTopologyV1Schema);
 export function parseUnifiTopologyV1(value: unknown) {
   if (value && typeof value === 'object' && 'version' in value && value.version !== 1) return { accepted: false as const, reason: 'unsupported_major_version' as const };
   const result = unifiTopologyV1WireSchema.safeParse(value);

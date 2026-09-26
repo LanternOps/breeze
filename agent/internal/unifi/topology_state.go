@@ -24,8 +24,8 @@ type TopologyProducerState struct {
 	SourceIdentity string `json:"sourceIdentity"`
 	ProducerEpoch  string `json:"producerEpoch"`
 	Sequence       uint64 `json:"sequence"`
-	// AcknowledgedSequence/Digests record the last companion the server took
-	// (HTTP 202), keyed by ResourceKey.
+	// AcknowledgedSequence/Digests record the resources of the last companion
+	// the server's receipts accepted (at the sent digest), keyed by ResourceKey.
 	AcknowledgedSequence string            `json:"acknowledgedSequence,omitempty"`
 	AcknowledgedDigests  map[string]string `json:"acknowledgedDigests,omitempty"`
 	// DetailCursor rotates the bounded device-detail window across polls.

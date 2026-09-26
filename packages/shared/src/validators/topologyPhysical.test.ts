@@ -227,6 +227,16 @@ describe('unifi topology v1 contract', () => {
     expect(parseUnifiTopologyV1({ ...body(), version: 2 })).toEqual({ accepted: false, reason: 'unsupported_major_version' });
   });
 
+  it('accepts the wire fixture through the transport guard: a controller deviceId is not Breeze authority', () => {
+    expect(parseUnifiTopologyV1(body())).toMatchObject({ accepted: true });
+    for (const forbidden of ['orgId', 'siteId', 'agentId', 'producerId', 'partnerId']) {
+      const t = body(); t.resources[0].rows[0][forbidden] = 'x';
+      expect(parseUnifiTopologyV1(t)).toMatchObject({ accepted: false, reason: 'invalid_report' });
+    }
+    // Only the typed row field is exempt; a deviceId anywhere else is still refused.
+    expect(parseUnifiTopologyV1({ ...body(), deviceId: 'x' })).toMatchObject({ accepted: false });
+  });
+
   it('rejects unknown client types, duplicate site resources and rows on failed resources', () => {
     const t = body(); t.resources.find((r: Json) => r.kind === 'client_list').rows[0].clientType = 'wireless';
     expect(unifiTopologyV1Schema.safeParse(t).success).toBe(false);

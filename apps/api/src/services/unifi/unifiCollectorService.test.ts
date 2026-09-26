@@ -42,6 +42,17 @@ describe('unifiCollectorService', () => {
     }]);
   });
 
+  it('listCollectorsForDevice advertises topology v1 only for collectors the provider authorizes', async () => {
+    const row = { id: 'c1', unifiHostId: 'h1', controllerUrl: 'https://10.0.0.1', localApiKeyEncrypted: 'ENC', pollIntervalSeconds: 60 };
+    const db = makeDb({ selectRows: [row, { ...row, id: 'c2' }] });
+    const advertise = vi.fn(async (collectorId: string) => collectorId === 'c1'
+      ? { acceptedUnifiTopologyVersions: [1], topologyProducerEpoch: 'epoch-1', topologySourceIdentity: 'o:s:unifi:dev-1:c1' } : null);
+    const out = await svc.listCollectorsForDevice(db, 'dev-1', { topologyAdvertisement: advertise });
+    expect(out[0]).toMatchObject({ collectorId: 'c1', acceptedUnifiTopologyVersions: [1], topologyProducerEpoch: 'epoch-1', topologySourceIdentity: 'o:s:unifi:dev-1:c1' });
+    expect(out[1]).toEqual({ collectorId: 'c2', unifiHostId: 'h1', controllerUrl: 'https://10.0.0.1', apiKey: 'PLAINTEXT-KEY', pollIntervalSeconds: 60 });
+    expect(advertise).toHaveBeenCalledWith('c1');
+  });
+
   it('deleteCollector returns false when no row deleted', async () => {
     const db = makeDb({ deleteRows: [] });
     await expect(svc.deleteCollector(db, 'int-1', 'h1')).resolves.toBe(false);

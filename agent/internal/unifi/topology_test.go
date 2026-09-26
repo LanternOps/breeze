@@ -386,6 +386,24 @@ func TestTopologyDigestStableUnderControllerReordering(t *testing.T) {
 type capturedUpload struct {
 	mu     sync.Mutex
 	bodies []map[string]json.RawMessage
+	// respond, when set, builds the 202 response body for an upload.
+	respond func(body map[string]json.RawMessage) any
+}
+
+// echoReceipts accepts every uploaded resource at its own digest, like the API
+// route's `topology` receipt block.
+func echoReceipts(body map[string]json.RawMessage) any {
+	raw, ok := body["topologyV1"]
+	if !ok {
+		return map[string]any{"accepted": true}
+	}
+	var r TopologyV1
+	_ = json.Unmarshal(raw, &r)
+	resources := make([]map[string]any, 0, len(r.Resources))
+	for _, res := range r.Resources {
+		resources = append(resources, map[string]any{"controllerSiteId": res.ControllerSiteID, "kind": res.Kind, "accepted": true, "contentDigest": res.ContentDigest})
+	}
+	return map[string]any{"accepted": true, "topology": map[string]any{"accepted": true, "reportSequence": r.Sequence, "resources": resources}}
 }
 
 func (c *capturedUpload) server(t *testing.T, cfgs string) *httptest.Server {
@@ -398,6 +416,9 @@ func (c *capturedUpload) server(t *testing.T, cfgs string) *httptest.Server {
 			c.bodies = append(c.bodies, m)
 			c.mu.Unlock()
 			w.WriteHeader(http.StatusAccepted)
+			if c.respond != nil {
+				_ = json.NewEncoder(w).Encode(c.respond(m))
+			}
 		case "/api/v1/agents/agent-1/unifi-collectors":
 			_, _ = w.Write([]byte(cfgs))
 		default:
@@ -451,7 +472,7 @@ func TestRunOnceAttachesTopologyV1AndPersistsSequence(t *testing.T) {
 	f := loadControllerFixture(t)
 	controller := fixtureController(t, f, nil)
 	defer controller.Close()
-	up := &capturedUpload{}
+	up := &capturedUpload{respond: echoReceipts}
 	api := up.server(t, "")
 	defer api.Close()
 	dir := t.TempDir()
@@ -566,5 +587,64 @@ func TestDuplicateControllerRowsAreDroppedAndMarkedPartial(t *testing.T) {
 	}
 	if len(snap.Clients) != 4 {
 		t.Fatalf("legacy upload keeps every decoded element, got %d", len(snap.Clients))
+	}
+}
+
+// Acknowledgement comes from the server's per-resource receipts, never from the
+// HTTP status alone (M2 Task 5).
+func TestRunOnceAcknowledgesOnlyAcceptedReceiptDigests(t *testing.T) {
+	f := loadControllerFixture(t)
+	controller := fixtureController(t, f, nil)
+	defer controller.Close()
+	cfg := CollectorConfig{CollectorID: "c1", ControllerURL: controller.URL, APIKey: "k", PollIntervalSeconds: 300,
+		AcceptedUnifiTopologyVersions: []int{1}, TopologyProducerEpoch: "epoch-1", TopologySourceIdentity: "org:site:unifi:dev:c1"}
+	run := func(respond func(map[string]json.RawMessage) any) (TopologyProducerState, TopologyV1) {
+		t.Helper()
+		up := &capturedUpload{respond: respond}
+		api := up.server(t, "")
+		defer api.Close()
+		dir := t.TempDir()
+		deps := CollectorDeps{APIBaseURL: func() string { return api.URL }, AgentID: "agent-1", HTTP: api.Client(), StateDir: dir}
+		if err := RunOnce(context.Background(), deps, cfg, controller.Client()); err != nil {
+			t.Fatal(err)
+		}
+		var r TopologyV1
+		_ = json.Unmarshal(up.bodies[0]["topologyV1"], &r)
+		st, err := OpenTopologyState(topologyStatePath(dir, "c1"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st.Snapshot(), r
+	}
+
+	// Older server: HTTP 202 without receipts acknowledges nothing (legacy-only).
+	snap, _ := run(nil)
+	if len(snap.AcknowledgedDigests) != 0 || snap.AcknowledgedSequence != "" {
+		t.Fatalf("202 without receipts must not acknowledge: %+v", snap)
+	}
+
+	// Mixed receipts: one accepted at the sent digest, one accepted at a
+	// different digest, one rejected, one missing.
+	snap, sent := run(func(body map[string]json.RawMessage) any {
+		var r TopologyV1
+		_ = json.Unmarshal(body["topologyV1"], &r)
+		return map[string]any{"accepted": true, "topology": map[string]any{"accepted": false, "reportSequence": r.Sequence, "resources": []map[string]any{
+			{"controllerSiteId": r.Resources[0].ControllerSiteID, "kind": r.Resources[0].Kind, "accepted": true, "contentDigest": r.Resources[0].ContentDigest},
+			{"controllerSiteId": r.Resources[1].ControllerSiteID, "kind": r.Resources[1].Kind, "accepted": true, "contentDigest": strings.Repeat("f", 64)},
+			{"controllerSiteId": r.Resources[2].ControllerSiteID, "kind": r.Resources[2].Kind, "accepted": false, "reason": "controller_site_unmapped"},
+		}}}
+	})
+	if len(snap.AcknowledgedDigests) != 1 || snap.AcknowledgedDigests[ResourceKey(sent.Resources[0])] != sent.Resources[0].ContentDigest || snap.AcknowledgedSequence != sent.Sequence {
+		t.Fatalf("acknowledged = %+v", snap.AcknowledgedDigests)
+	}
+
+	// Receipts for a different report sequence are ignored.
+	snap, _ = run(func(body map[string]json.RawMessage) any {
+		receipts := echoReceipts(body).(map[string]any)
+		receipts["topology"].(map[string]any)["reportSequence"] = "1"
+		return receipts
+	})
+	if len(snap.AcknowledgedDigests) != 0 {
+		t.Fatalf("receipts for another sequence acknowledged: %+v", snap.AcknowledgedDigests)
 	}
 }

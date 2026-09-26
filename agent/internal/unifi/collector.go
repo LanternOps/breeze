@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -227,15 +228,69 @@ func RunOnce(ctx context.Context, deps CollectorDeps, cfg CollectorConfig, contr
 		return fmt.Errorf("telemetry upload: status %d", resp.StatusCode)
 	}
 	if payload.TopologyV1 != nil {
-		digests := make(map[string]string, len(payload.TopologyV1.Resources))
-		for _, r := range payload.TopologyV1.Resources {
-			digests[ResourceKey(r)] = r.ContentDigest
-		}
-		if err := topo.state.Acknowledge(payload.TopologyV1.Sequence, digests); err != nil {
+		digests, reason := acceptedTopologyDigests(resp.Body, payload.TopologyV1)
+		if len(digests) == 0 {
+			deps.logf("[unifi] collector %s: topology v1 sequence %s not acknowledged: %s", cfg.CollectorID, payload.TopologyV1.Sequence, reason)
+		} else if err := topo.state.Acknowledge(payload.TopologyV1.Sequence, digests); err != nil {
 			deps.logf("[unifi] collector %s: topology state: %v", cfg.CollectorID, err)
 		}
 	}
 	return nil
+}
+
+// maxTelemetryResponseBytes bounds the receipt body read (≤256 resources).
+const maxTelemetryResponseBytes = 1 << 20
+
+// telemetryResponse is the API's 202 body; `topology` is present only when the
+// upload carried a companion (routes/agents/unifiTelemetry.ts).
+type telemetryResponse struct {
+	Topology *struct {
+		Accepted       bool   `json:"accepted"`
+		ReportSequence string `json:"reportSequence"`
+		Reason         string `json:"reason"`
+		Resources      []struct {
+			ControllerSiteID string `json:"controllerSiteId"`
+			Kind             string `json:"kind"`
+			Accepted         bool   `json:"accepted"`
+			ContentDigest    string `json:"contentDigest"`
+			Reason           string `json:"reason"`
+		} `json:"resources"`
+	} `json:"topology"`
+}
+
+// acceptedTopologyDigests returns the resource digests the server's receipts
+// accepted for exactly this report: same sequence, accepted, and the receipt
+// digest equal to the digest that was sent. HTTP 202 alone acknowledges nothing
+// (an older server that returns no receipts leaves the collector legacy-only).
+func acceptedTopologyDigests(body io.Reader, sent *TopologyV1) (map[string]string, string) {
+	var out telemetryResponse
+	if err := json.NewDecoder(io.LimitReader(body, maxTelemetryResponseBytes)).Decode(&out); err != nil {
+		return nil, "no receipts in response"
+	}
+	if out.Topology == nil {
+		return nil, "no receipts in response"
+	}
+	if out.Topology.ReportSequence != sent.Sequence {
+		return nil, "receipts name another sequence"
+	}
+	sentDigests := make(map[string]string, len(sent.Resources))
+	for _, r := range sent.Resources {
+		sentDigests[ResourceKey(r)] = r.ContentDigest
+	}
+	digests := make(map[string]string)
+	for _, r := range out.Topology.Resources {
+		key := ResourceKey(Resource{ControllerSiteID: r.ControllerSiteID, Kind: r.Kind})
+		if want, ok := sentDigests[key]; ok && r.Accepted && r.ContentDigest == want {
+			digests[key] = want
+		}
+	}
+	if len(digests) == 0 {
+		if out.Topology.Reason != "" {
+			return nil, out.Topology.Reason
+		}
+		return nil, "no resource accepted"
+	}
+	return digests, ""
 }
 
 type topologyRun struct {

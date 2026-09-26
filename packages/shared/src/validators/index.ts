@@ -1129,6 +1129,7 @@ export { canonicalizeTopologyContext, canonicalizeTopologySection } from './topo
 // Physical topology collection contracts (M2 #5998)
 export * from './topologyPhysical';
 export * from './topologyPhysicalNormalized';
+export * from './topologyUnifiNormalized';
 export { canonicalizeAdjacencyReport, canonicalizeAdjacencyScope, canonicalizeUnifiResource } from './topologyPhysicalCanonical';
 export type { AdjacencyDigestIdentity, UnifiDigestIdentity } from './topologyPhysicalCanonical';
 
