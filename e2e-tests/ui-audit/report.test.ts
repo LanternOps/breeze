@@ -84,6 +84,59 @@ describe('buildTriageQueue', () => {
     expect(buildTriageQueue(results, { minSeverity: 'medium' })).toEqual([]);
   });
 
+  it('carries close-up crops for findings outside the viewport screenshot, once each', () => {
+    const same = { selector: '#below-fold', message: 'spills' };
+    const results = [
+      route({
+        path: '/reports/builder',
+        findings: [
+          f({ ...same, viewport: 'mobile', theme: 'light', crop: 'web/r/mobile-light-3.png' }),
+          f({ ...same, viewport: 'mobile', theme: 'dark', crop: 'web/r/mobile-dark-3.png' }),
+          f({ selector: '#in-view', viewport: 'mobile', theme: 'light' }),
+        ],
+      }),
+    ];
+    const q = buildTriageQueue(results, { minSeverity: 'low' });
+    const below = q[0].findings.find((x) => x.selector === '#below-fold')!;
+    expect(below.crops).toEqual(['web/r/mobile-light-3.png', 'web/r/mobile-dark-3.png']);
+    expect(below).not.toHaveProperty('crop');
+    expect(q[0].findings.find((x) => x.selector === '#in-view')).not.toHaveProperty('crops');
+  });
+
+  it('keeps one crop per render when a finding repeats within it', () => {
+    // two cards rendered by one component: same normalised key, same render
+    const results = [
+      route({
+        path: '/reports/new',
+        findings: [
+          f({ selector: '.grid > button:nth-child(1)', viewport: 'mobile', theme: 'light', crop: 'web/r/mobile-light-2.png' }),
+          f({ selector: '.grid > button:nth-child(2)', viewport: 'mobile', theme: 'light', crop: 'web/r/mobile-light-3.png' }),
+        ],
+      }),
+    ];
+    const q = buildTriageQueue(results, { minSeverity: 'low' });
+    expect(q[0].findings[0].occurrences).toBe(2);
+    expect(q[0].findings[0].crops).toEqual(['web/r/mobile-light-2.png']);
+  });
+
+  it('tells the model which requests the audit blocked on that route', () => {
+    const blocked = 'Page issued POST /api/v1/reports/generate without user action (blocked by the audit)';
+    const results = [
+      route({
+        path: '/reports/new',
+        findings: [
+          f({ viewport: 'mobile', theme: 'light' }),
+          f({ source: 'network', kind: 'mutation-on-load', severity: 'low', message: blocked }),
+          f({ source: 'network', kind: 'api-error', severity: 'high', message: 'GET /x → 500' }),
+        ],
+      }),
+      route({ path: '/clean-writes', findings: [f({ viewport: 'mobile', theme: 'light' })] }),
+    ];
+    const q = buildTriageQueue(results, { minSeverity: 'low' });
+    expect(q[0].blocked).toEqual([blocked]);
+    expect(q[1]).not.toHaveProperty('blocked');
+  });
+
   it('optionally queues visually changed shots even without findings', () => {
     const r = route({ path: '/b' });
     r.shots[1] = { ...r.shots[1], diff: 'changed', diffRatio: 0.2 };
@@ -148,6 +201,18 @@ describe('findShellFindings', () => {
     );
     expect(findShellFindings(low, { minRoutes: 3 })).toHaveLength(1);
     expect(findShellFindings(low, { minRoutes: 3, minSeverity: 'medium' })).toEqual([]);
+  });
+
+  it('takes the crop from the same render as the representative screenshot', () => {
+    const cropped = results.map((r, i) => ({
+      ...r,
+      // /a has no desktop-dark render, so the representative comes from /b
+      shots: i === 0 ? r.shots.filter((s) => s.viewport !== 'desktop') : r.shots,
+      findings: r.findings.map((x) => (x === shellHit ? { ...x, crop: `web/${i}/desktop-dark-0.png` } : x)),
+    }));
+    const [shell] = findShellFindings(cropped, { minRoutes: 3 });
+    expect(shell.screenshot).toBe('web/_b/desktop-dark.png');
+    expect(shell.crop).toBe('web/1/desktop-dark-0.png');
   });
 
   it('ignores findings below the route threshold', () => {

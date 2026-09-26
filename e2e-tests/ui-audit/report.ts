@@ -2,9 +2,11 @@ import type { Finding, RouteResult, Severity } from './types';
 
 const SEVERITY_RANK: Record<Severity, number> = { low: 0, medium: 1, high: 2 };
 
-export interface QueuedFinding extends Finding {
+export interface QueuedFinding extends Omit<Finding, 'crop'> {
   occurrences: number;
   combos: string[];
+  /** Close-ups for renders whose screenshot does not show the finding. */
+  crops?: string[];
 }
 
 export interface TriageItem {
@@ -14,6 +16,11 @@ export interface TriageItem {
   /** Screenshots (relative to the run dir) a vision model should look at. */
   screenshots: string[];
   findings: QueuedFinding[];
+  /**
+   * Writes the audit blocked on this route. An error or empty state that
+   * depends on one is the audit's doing, not a product bug.
+   */
+  blocked?: string[];
 }
 
 const DEFAULT_COMBO = { viewport: 'desktop', theme: 'light' } as const;
@@ -37,11 +44,13 @@ export function findingKey(f: Finding): string {
   return [f.source, f.kind, selector, message].join('\u0000');
 }
 
-export interface ShellFinding extends Omit<Finding, 'viewport' | 'theme'> {
+export interface ShellFinding extends Omit<Finding, 'viewport' | 'theme' | 'crop'> {
   key: string;
   paths: string[];
   /** One representative render showing it. */
   screenshot?: string;
+  /** The close-up from that same render, when its screenshot does not show the finding. */
+  crop?: string;
 }
 
 /**
@@ -62,7 +71,7 @@ export function findShellFindings(
       const key = findingKey(fnd);
       let entry = byKey.get(key);
       if (!entry) {
-        const { viewport: _v, theme: _t, ...rest } = fnd;
+        const { viewport: _v, theme: _t, crop: _c, ...rest } = fnd;
         entry = { ...rest, key, paths: [] };
         byKey.set(key, entry);
       }
@@ -72,6 +81,7 @@ export function findShellFindings(
           entry.screenshot = r.shots.find(
             (s) => s.viewport === (fnd.viewport ?? DEFAULT_COMBO.viewport) && s.theme === (fnd.theme ?? DEFAULT_COMBO.theme),
           )?.file;
+          if (entry.screenshot && fnd.crop) entry.crop = fnd.crop;
         }
       }
     }
@@ -97,8 +107,12 @@ export function buildTriageQueue(
     if (r.status !== 'ok') continue;
     const wanted = new Set<string>();
     const merged = new Map<string, QueuedFinding>();
+    const blocked: string[] = [];
+    // one close-up per finding per render: repeats within a render look alike
+    const cropped = new Set<string>();
 
     for (const fnd of r.findings) {
+      if (fnd.kind === 'mutation-on-load' && !blocked.includes(fnd.message)) blocked.push(fnd.message);
       if (!VISUAL_SOURCES.has(fnd.source)) continue;
       if (SEVERITY_RANK[fnd.severity] < floor) continue;
       const key = findingKey(fnd);
@@ -109,13 +123,18 @@ export function buildTriageQueue(
       const shot = r.shots.find((s) => s.viewport === viewport && s.theme === theme);
       if (shot) wanted.add(shot.file);
 
-      const existing = merged.get(key);
-      if (existing) {
-        existing.occurrences += 1;
-        if (!existing.combos.includes(combo)) existing.combos.push(combo);
+      let entry = merged.get(key);
+      if (entry) {
+        entry.occurrences += 1;
+        if (!entry.combos.includes(combo)) entry.combos.push(combo);
       } else {
-        const { viewport: _v, theme: _t, ...rest } = fnd;
-        merged.set(key, { ...rest, occurrences: 1, combos: [combo] });
+        const { viewport: _v, theme: _t, crop: _c, ...rest } = fnd;
+        entry = { ...rest, occurrences: 1, combos: [combo] };
+        merged.set(key, entry);
+      }
+      if (fnd.crop && !cropped.has(`${key}\u0000${combo}`)) {
+        cropped.add(`${key}\u0000${combo}`);
+        (entry.crops ??= []).push(fnd.crop);
       }
     }
 
@@ -133,6 +152,7 @@ export function buildTriageQueue(
       findings: [...merged.values()].sort(
         (a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] || b.occurrences - a.occurrences,
       ),
+      ...(blocked.length ? { blocked } : {}),
     });
   }
   return queue;
