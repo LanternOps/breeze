@@ -380,7 +380,10 @@ async function evaluateMonitorAlertRules(
       for (const existingAlert of matchingAlerts) {
         await resolveAlert(
           existingAlert.id,
-          `Auto-resolved after monitor ${monitor.name} recovered from ${rule.condition}`
+          `Auto-resolved after monitor ${monitor.name} recovered from ${rule.condition}`,
+          undefined,
+          false,
+          'condition_cleared',
         );
       }
       continue;

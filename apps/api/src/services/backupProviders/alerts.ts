@@ -330,7 +330,7 @@ export async function evaluateProviderAlerts(
 
     let resolved = 0;
     for (const alert of resolvable) {
-      if (await resolveAlert(alert.id, PROVIDER_ALERT_RESOLUTION_NOTE)) resolved += 1;
+      if (await resolveAlert(alert.id, PROVIDER_ALERT_RESOLUTION_NOTE, undefined, false, 'condition_cleared')) resolved += 1;
     }
     // Losing an individual compare-and-swap is normal (a technician got there
     // first). Losing EVERY candidate is the shape an RLS write-policy divergence

@@ -528,7 +528,10 @@ describe('recordMonitorCheckResult', () => {
 
     expect(vi.mocked(resolveAlert)).toHaveBeenCalledWith(
       'alert-1',
-      expect.stringContaining('recovered from offline')
+      expect.stringContaining('recovered from offline'),
+      undefined,
+      false,
+      'condition_cleared',
     );
     expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
     expect(vi.mocked(createSourcedAlert)).not.toHaveBeenCalled();

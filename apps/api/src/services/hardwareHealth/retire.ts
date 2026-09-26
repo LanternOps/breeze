@@ -25,7 +25,7 @@ export async function resolveAlertsForRemovedComponents(
     ));
     let count = 0;
     for (const alert of open) {
-      if (!await resolveAlert(alert.id, note, undefined, true)) continue;
+      if (!await resolveAlert(alert.id, note, undefined, true, 'source_retired')) continue;
       await stageRetiredSubjectResolution(alert.id);
       count++;
     }

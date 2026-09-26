@@ -29,7 +29,7 @@ async function resolveEach(alertIds: string[], note: string): Promise<number> {
   let resolved = 0;
   for (const alertId of alertIds) {
     try {
-      if (await resolveAlert(alertId, note)) resolved += 1;
+      if (await resolveAlert(alertId, note, undefined, false, 'source_retired')) resolved += 1;
     } catch (error) {
       console.error(
         `[backupProvider] failed to resolve alert ${alertId}:`,

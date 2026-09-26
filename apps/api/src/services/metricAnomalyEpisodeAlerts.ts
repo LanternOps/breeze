@@ -61,7 +61,7 @@ export async function resolveAlertsForAutoClosedEpisodes(orgId: string, now: Dat
     for (const row of rows) {
       if (seen.has(row.alertId)) continue;
       seen.add(row.alertId);
-      if (await resolveAlert(row.alertId, autoResolveNoteFor(row.closeReason))) resolved += 1;
+      if (await resolveAlert(row.alertId, autoResolveNoteFor(row.closeReason), undefined, false, row.closeReason === 'cleared' ? 'condition_cleared' : 'expired')) resolved += 1;
     }
     return resolved;
   }, 'metricAnomalyEpisodes.closeAlerts');

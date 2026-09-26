@@ -70,7 +70,7 @@ export async function evaluateSubjectAlerts({ rule, template, device, monitor, e
     for (const alert of await open()) {
       const subject = byKey.get(alert.subjectKey!);
       if (!alert.requiresHuman && subject?.status === 'recovered') {
-        await resolveAlert(alert.id, `Auto-resolved: ${subject.description}`, undefined, true);
+        await resolveAlert(alert.id, `Auto-resolved: ${subject.description}`, undefined, true, 'condition_cleared');
       }
     }
   }
