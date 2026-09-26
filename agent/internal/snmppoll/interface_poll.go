@@ -362,6 +362,8 @@ func buildSample(target InterfacePollTarget, pdus map[string]gosnmp.SnmpPDU, upt
 	counter32(oidIfOutDiscards, "outDiscards", &s.OutDiscards)
 
 	// Capacity: ifSpeed below its 2^32-1 ceiling, else ifHighSpeed (Mbit/s). Zero is "not reported", never 0 bps.
+	// A saturated ifSpeed (2^32-1) is only a floor (RFC 2863): without a usable
+	// ifHighSpeed the capacity is unknown, never 4,294,967,295 bps.
 	speed, okSpeed := get(oidIfSpeed).unsigned(gosnmp.Gauge32, gosnmp.Uinteger32)
 	high, okHigh := get(oidIfHighSpeed).unsigned(gosnmp.Gauge32, gosnmp.Uinteger32)
 	switch {
@@ -369,8 +371,6 @@ func buildSample(target InterfacePollTarget, pdus map[string]gosnmp.SnmpPDU, upt
 		s.CapacityBps = strPtr(DecimalCounter(speed))
 	case okHigh && high > 0 && high <= 4294967295:
 		s.CapacityBps = strPtr(HighSpeedBps(uint32(high)))
-	case okSpeed && speed == 4294967295:
-		s.CapacityBps = strPtr(DecimalCounter(speed))
 	default:
 		mark("capacityBps", reasonSpeedNotReported)
 	}

@@ -201,6 +201,37 @@ func TestInterfaceMetricsHighSpeedAboveIfSpeedCeiling(t *testing.T) {
 	}
 }
 
+// ifSpeed saturates at 2^32-1 for any link at or above ~4.29 Gbit/s (RFC 2863),
+// so the sentinel alone is a floor, not a capacity. Without a usable ifHighSpeed
+// the capacity is unknown and must never be reported as 4,294,967,295 bps.
+func TestInterfaceMetricsSaturatedIfSpeedWithoutHighSpeedIsUnavailable(t *testing.T) {
+	cases := []struct {
+		name string
+		high gosnmp.SnmpPDU
+	}{
+		{"high speed absent", noSuchObject()},
+		{"high speed zero", g32(0)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reader := newFakeSwitch()
+			reader.values[oidIfSpeed+".7"] = g32(4294967295)
+			reader.values[oidIfHighSpeed+".7"] = tc.high
+			got, _ := CollectInterfaceMetrics(context.Background(), reader, metricRequestForPort7())
+			s := sampleFor(t, got, port7().InterfaceID)
+			if s.CapacityBps != nil {
+				t.Fatalf("saturated ifSpeed reported as capacity %s", ptrValue(s.CapacityBps))
+			}
+			if s.Unavailable["capacityBps"] != reasonSpeedNotReported {
+				t.Fatalf("capacityBps reason = %q, want %q", s.Unavailable["capacityBps"], reasonSpeedNotReported)
+			}
+			if err := s.Validate(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestInterfaceMetricsMissingSpeedIsUnavailableNotZero(t *testing.T) {
 	reader := newFakeSwitch()
 	reader.values[oidIfSpeed+".7"] = noSuchObject()
