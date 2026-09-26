@@ -62,6 +62,10 @@ type windowsUninstallEntry struct {
 	QuietUninstallString string
 	WindowsInstaller     bool
 	SystemComponent      bool
+	// ReadErr is set when the subkey exists but could not be opened. Such an
+	// entry can never match (its DisplayName is unknown), but it is kept so a
+	// "no entry named X" answer can say it did not see everything.
+	ReadErr error
 }
 
 func (e windowsUninstallEntry) label() string {
@@ -175,7 +179,9 @@ func validateUninstallerPath(exe string) error {
 	if !driveAbsolutePathPattern.MatchString(exe) {
 		return fmt.Errorf("uninstaller path %q is not an absolute local path", exe)
 	}
-	if strings.ContainsAny(exe, `"/`) {
+	// ":" past the drive letter would be an NTFS alternate data stream
+	// ("u.exe:payload.exe"), "*?<>|" are never valid in a path.
+	if strings.ContainsAny(exe, `"/*?<>|`) || strings.Contains(exe[2:], ":") {
 		return fmt.Errorf("uninstaller path %q contains invalid characters", exe)
 	}
 	lower := strings.ToLower(exe)
@@ -186,6 +192,12 @@ func validateUninstallerPath(exe string) error {
 	for _, seg := range segments {
 		if seg == ".." || seg == "." {
 			return fmt.Errorf("uninstaller path %q contains a traversal segment", exe)
+		}
+		// Win32 path normalisation strips trailing dots and spaces from each
+		// component, so "Users." would open "Users" while slipping past the
+		// location checks below.
+		if strings.HasSuffix(seg, ".") || strings.HasSuffix(seg, " ") {
+			return fmt.Errorf("uninstaller path %q has a component ending in a dot or space", exe)
 		}
 	}
 	// Locations a standard user can usually write to. An HKLM entry pointing
@@ -226,6 +238,9 @@ func planRegistryUninstall(e windowsUninstallEntry) (registryUninstallPlan, erro
 	}
 	quiet := strings.TrimSpace(e.QuietUninstallString)
 	if quiet == "" {
+		if e.WindowsInstaller {
+			return registryUninstallPlan{}, fmt.Errorf("%s is marked WindowsInstaller but carries no usable product code, and declares no QuietUninstallString; refusing to guess silent switches", e.label())
+		}
 		return registryUninstallPlan{}, fmt.Errorf("%s is not a Windows Installer entry and declares no QuietUninstallString; refusing to guess silent switches", e.label())
 	}
 	exe, args, err := splitUninstallCommandLine(quiet)
@@ -262,7 +277,7 @@ func matchWindowsUninstallEntries(entries []windowsUninstallEntry, name, version
 	}
 	var byName []windowsUninstallEntry
 	for _, e := range entries {
-		if e.SystemComponent {
+		if e.SystemComponent || e.ReadErr != nil {
 			continue
 		}
 		if strings.ToLower(strings.TrimSpace(e.DisplayName)) == target {
@@ -296,6 +311,19 @@ func uninstallViaRegistryEntries(name, version string) error {
 	}
 	matches := matchWindowsUninstallEntries(entries, name, version)
 	if len(matches) == 0 {
+		unreadable := 0
+		var firstErr error
+		for _, e := range entries {
+			if e.ReadErr != nil {
+				if firstErr == nil {
+					firstErr = e.ReadErr
+				}
+				unreadable++
+			}
+		}
+		if unreadable > 0 {
+			return fmt.Errorf("no readable machine-wide Uninstall registry entry is named %q, but %d Uninstall subkey(s) could not be read (first error: %v)", name, unreadable, firstErr)
+		}
 		return fmt.Errorf("no machine-wide Uninstall registry entry is named %q", name)
 	}
 	if len(matches) > maxRegistryUninstallEntries {

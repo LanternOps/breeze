@@ -60,6 +60,10 @@ func TestSplitUninstallCommandLine(t *testing.T) {
 		{name: "no exe anywhere", in: `C:\Program Files\Foo\uninstall /S`, wantErr: ".exe"},
 		{name: "embedded newline", in: "\"C:\\Foo\\u.exe\" /S\r\ncalc.exe", wantErr: "control"},
 		{name: "embedded NUL", in: "\"C:\\Foo\\u.exe\" /S\x00x", wantErr: "control"},
+		{name: "alternate data stream", in: `"C:\Program Files\Foo\u.exe:payload.exe" /S`, wantErr: "invalid characters"},
+		{name: "wildcard", in: `"C:\Program Files\Foo\*.exe" /S`, wantErr: "invalid characters"},
+		{name: "trailing dot component", in: `"C:\Users.\bob\u.exe" /S`, wantErr: "dot or space"},
+		{name: "trailing space component", in: `"C:\Program Files\AppData \u.exe" /S`, wantErr: "dot or space"},
 		{name: "parent traversal", in: `"C:\Program Files\..\Users\Public\u.exe" /S`, wantErr: "traversal"},
 		{name: "user profile location", in: `"C:\Users\bob\AppData\Local\Foo\u.exe" /S`, wantErr: "user-writable"},
 		{name: "appdata on another drive", in: `"D:\Profiles\bob\AppData\Roaming\Foo\u.exe" /S`, wantErr: "user-writable"},
@@ -691,5 +695,99 @@ func TestUninstallSoftwareWindows_RegistrySuccessButInventoryStillListsIt(t *tes
 	err := uninstallSoftwareWindows("Foo", "")
 	if err == nil || !strings.Contains(err.Error(), "still present") {
 		t.Fatalf("expected a still-present error, got %v", err)
+	}
+}
+
+func TestUninstallViaRegistryEntries_NoEntrySaysWhenSubkeysWereUnreadable(t *testing.T) {
+	env := &fakeRegistryUninstallEnv{entries: []windowsUninstallEntry{
+		{KeyName: "x", DisplayName: "Other"},
+		{KeyName: "locked", KeyPath: `SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\locked`, ReadErr: errors.New("Access is denied.")},
+	}}
+	env.install(t)
+	err := uninstallViaRegistryEntries("Foo", "")
+	if err == nil || !strings.Contains(err.Error(), "1 Uninstall subkey(s) could not be read") || !strings.Contains(err.Error(), "Access is denied") {
+		t.Fatalf("an unreadable subkey must not be reported as a definite absence, got %v", err)
+	}
+}
+
+func TestUninstallViaRegistryEntries_ExactlyMaxMatchesRun(t *testing.T) {
+	var entries []windowsUninstallEntry
+	gone := map[string]bool{}
+	for i := 0; i < maxRegistryUninstallEntries; i++ {
+		k := fmt.Sprintf("k%d", i)
+		entries = append(entries, windowsUninstallEntry{KeyName: k, DisplayName: "Foo", QuietUninstallString: `"C:\Foo\u.exe" /S`})
+		gone[k] = true
+	}
+	env := &fakeRegistryUninstallEnv{entries: entries, gone: gone}
+	env.install(t)
+	if err := uninstallViaRegistryEntries("Foo", ""); err != nil {
+		t.Fatalf("expected success at the cap, got %v", err)
+	}
+	if len(env.started) != maxRegistryUninstallEntries {
+		t.Fatalf("expected %d uninstallers, ran %d", maxRegistryUninstallEntries, len(env.started))
+	}
+}
+
+func TestUninstallViaRegistryEntries_StopsOnStartErrorMidLoop(t *testing.T) {
+	env := &fakeRegistryUninstallEnv{
+		entries: []windowsUninstallEntry{
+			{KeyName: "first", DisplayName: "Foo", QuietUninstallString: `"C:\Foo\a.exe" /S`},
+			{KeyName: "second", DisplayName: "Foo", QuietUninstallString: `"C:\Foo\b.exe" /S`},
+		},
+		gone: map[string]bool{"first": true},
+	}
+	env.install(t)
+	inner := startRegistryUninstaller
+	startRegistryUninstaller = func(plan registryUninstallPlan) (uninstallerProcess, error) {
+		if plan.Entry.KeyName == "second" {
+			return nil, errors.New("file not found")
+		}
+		return inner(plan)
+	}
+	err := uninstallViaRegistryEntries("Foo", "")
+	if err == nil || !strings.Contains(err.Error(), "second") || !strings.Contains(err.Error(), "file not found") {
+		t.Fatalf("expected the second entry's start error, got %v", err)
+	}
+	if len(env.started) != 1 || env.started[0].Entry.KeyName != "first" {
+		t.Fatalf("expected only the first entry to have run, once; got %+v", env.started)
+	}
+}
+
+// The versioned winget attempt runs first, then the name-only one; a success on
+// the second means the registry fallback never runs.
+func TestUninstallSoftwareWindows_VersionedWingetThenNameOnly(t *testing.T) {
+	origLookPath, origRun, origVerify := uninstallLookPath, runUninstallCommand, uninstallVerifyStillPresent
+	t.Cleanup(func() {
+		uninstallLookPath, runUninstallCommand, uninstallVerifyStillPresent = origLookPath, origRun, origVerify
+	})
+	var ran [][]string
+	uninstallLookPath = func(string) (string, error) { return `C:\winget.exe`, nil }
+	runUninstallCommand = func(a uninstallAttempt) ([]byte, error) {
+		ran = append(ran, a.args)
+		if len(ran) == 1 {
+			return []byte("uninstall failed"), errors.New("exit status 1")
+		}
+		return []byte("Successfully uninstalled"), nil
+	}
+	uninstallVerifyStillPresent = func(string) (bool, error) { return false, nil }
+	reg := &fakeRegistryUninstallEnv{}
+	reg.install(t)
+	listWindowsUninstallEntries = func() ([]windowsUninstallEntry, error) {
+		t.Fatal("registry fallback must not run")
+		return nil, nil
+	}
+
+	if err := uninstallSoftwareWindows("Foo", "1.2.3"); err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+	if len(ran) != 2 {
+		t.Fatalf("expected 2 winget attempts, got %d: %v", len(ran), ran)
+	}
+	first, second := strings.Join(ran[0], " "), strings.Join(ran[1], " ")
+	if !strings.Contains(first, "--name Foo --version 1.2.3") {
+		t.Fatalf("first attempt should pin the version, got %q", first)
+	}
+	if strings.Contains(second, "--version") || !strings.Contains(second, "--name Foo") {
+		t.Fatalf("second attempt should be name-only, got %q", second)
 	}
 }

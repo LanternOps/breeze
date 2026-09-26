@@ -43,6 +43,10 @@ func listWindowsUninstallEntriesOS() ([]windowsUninstallEntry, error) {
 			path := base + `\` + name
 			sub, err := registry.OpenKey(registry.LOCAL_MACHINE, path, registry.QUERY_VALUE)
 			if err != nil {
+				if registryKeyMissing(err) {
+					continue // removed between enumeration and open
+				}
+				entries = append(entries, windowsUninstallEntry{KeyPath: path, KeyName: name, ReadErr: err})
 				continue
 			}
 			entries = append(entries, readWindowsUninstallEntry(sub, name, path))
