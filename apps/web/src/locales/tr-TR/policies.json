@@ -1770,6 +1770,27 @@
       "menu": "menüsü",
       "undefined": "undefined",
       "secretUnavailable": "Secret — daha sonraki bir sürüm bunu bir ortam değişkeni olarak sunar."
+    },
+    "remediateConfirm": {
+      "title": "\"{{name}}\" düzeltilsin mi?",
+      "loading": "Etkilenecek cihazlar yükleniyor…",
+      "previewFailed": "Düzeltme önizlemesi yüklenemedi.",
+      "nothingQueued": "Kuyruğa hiçbir şey eklenmedi.",
+      "nothingToRemove": "Şu anda bu ilkenin kaldıracağı yazılıma sahip bir cihaz yok.",
+      "message": "Bu işlem, {{mode}} ilkesi \"{{name}}\" ihlal eden {{count}} cihazda {{uninstallCount}} yazılım öğesini kaldırır. Kaldırma işlemleri Breeze üzerinden geri alınamaz.",
+      "summary": "Hedef: {{count}} cihaz — {{mode}} ilkesi \"{{name}}\"",
+      "capped": "Şu anda {{total}} cihaz uygun. Bu çalıştırma ilk {{max}} cihazla sınırlıdır; kalanlara ulaşmak için tamamlandıktan sonra Düzelt'i yeniden çalıştırın.",
+      "softwareHeading": "Kaldırılacak yazılımlar",
+      "onDevices": "{{count}} cihaz",
+      "moreSoftware": "ve {{count}} başlık daha",
+      "devicesHeading": "Cihazlar",
+      "moreDevices": "ve {{count}} cihaz daha",
+      "typeCount": "Onaylamak için {{count}} yazın",
+      "confirm": "{{count}} cihazda kaldır",
+      "queued": "{{count}} cihaz için düzeltme kuyruğa alındı",
+      "failed": "Düzeltme zamanlanamadı",
+      "modeAllowlist": "izin listesi",
+      "modeBlocklist": "engelleme listesi"
     }
   }
 }

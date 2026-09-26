@@ -1770,6 +1770,27 @@
       "menu": "menu",
       "undefined": "undefined",
       "secretUnavailable": "Secret — a later release delivers it as an environment variable."
+    },
+    "remediateConfirm": {
+      "title": "Remediate \"{{name}}\"?",
+      "loading": "Loading the devices this would affect…",
+      "previewFailed": "Could not load the remediation preview.",
+      "nothingQueued": "Nothing has been queued.",
+      "nothingToRemove": "No devices currently have software this policy would uninstall.",
+      "message": "This uninstalls {{uninstallCount}} software item(s) across {{count}} device(s) that violate the {{mode}} policy \"{{name}}\". Uninstalls cannot be undone from Breeze.",
+      "summary": "Targets {{count}} device(s) — {{mode}} policy \"{{name}}\"",
+      "capped": "{{total}} devices currently qualify. This run is limited to the first {{max}}; run Remediate again after it finishes to reach the rest.",
+      "softwareHeading": "Software to be uninstalled",
+      "onDevices": "{{count}} device(s)",
+      "moreSoftware": "and {{count}} more title(s)",
+      "devicesHeading": "Devices",
+      "moreDevices": "and {{count}} more device(s)",
+      "typeCount": "Type {{count}} to confirm",
+      "confirm": "Uninstall on {{count}} device(s)",
+      "queued": "Remediation queued for {{count}} device(s)",
+      "failed": "Failed to schedule remediation",
+      "modeAllowlist": "Allowlist",
+      "modeBlocklist": "Blocklist"
     }
   }
 }
