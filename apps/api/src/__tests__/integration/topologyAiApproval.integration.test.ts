@@ -10,6 +10,23 @@ vi.mock('../../services/llm/llmConfigResolver', async (original) => ({
   resolveLlmConfigForOrg: vi.fn(async () => ({ source: 'platform', apiKey: 'test-key', model: 'claude-sonnet-4-6' })),
 }));
 
+// C2 race seam: the release's `authorize` callback runs its trust check AFTER
+// the execute permission was verified and BEFORE the requester's authority is
+// frozen. A one-shot hook here lands a revocation exactly in that window.
+const trustHook = vi.hoisted(() => ({ once: null as null | (() => Promise<void>) }));
+vi.mock('../../services/partnerTrust.commands', async (original) => {
+  const actual = await original<typeof import('../../services/partnerTrust.commands')>();
+  return {
+    ...actual,
+    deviceExecuteAllowedForOrg: vi.fn(async (...args: Parameters<typeof actual.deviceExecuteAllowedForOrg>) => {
+      const hook = args[1] === 'network_diagnostic' ? trustHook.once : null;
+      trustHook.once = null;
+      if (hook) await hook();
+      return actual.deviceExecuteAllowedForOrg(...args);
+    }),
+  };
+});
+
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { actionIntents, approvalRequests, permissions as permissionRows, rolePermissions, topologyChangeOutbox, topologyDiagnosticRuns } from '../../db/schema';
 import { dbAccessContextFromAuth, type AuthContext } from '../../middleware/auth';
@@ -121,6 +138,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  trustHook.once = null;
   await clearPermissionCache();
 });
 
@@ -281,6 +299,17 @@ describe('diagnose_connectivity approval and release (M4-D3, real DB)', () => {
     await revokeRolePermission('topology', 'execute');
     await releaseApprovedIntent(intent.id);
     expect((await readIntent(intent.id)).status).toBe('failed');
+    expect(await runCount()).toBe(0);
+  });
+
+  it('a topology:execute revocation landing between the release permission check and the authority freeze starts no run', async () => {
+    const intent = await proposeAndApprove();
+    trustHook.once = () => revokeRolePermission('topology', 'execute');
+    await releaseApprovedIntent(intent.id);
+    expect(trustHook.once).toBeNull();
+    const released = await readIntent(intent.id);
+    expect(released.status).toBe('failed');
+    expect(JSON.stringify(released.result)).toContain('permission_changed');
     expect(await runCount()).toBe(0);
   });
 

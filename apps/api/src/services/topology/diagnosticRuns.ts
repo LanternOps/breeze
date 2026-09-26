@@ -18,7 +18,8 @@ import {
   topologyDiagnosticSteps,
 } from '../../db/schema';
 import { hasSatisfiedMfa } from '../../middleware/auth';
-import { requireTopologySiteAccess, type TopologyRequestContext } from './access';
+import { getPermissionAuthorityVersion, getUserPermissions } from '../permissions';
+import { requireTopologySiteAccess, TopologyError, type TopologyRequestContext } from './access';
 import {
   TOPOLOGY_DIAGNOSTIC_INTENT_EVENT,
   type TopologyDiagnosticIntent,
@@ -163,6 +164,43 @@ function stepsForRun(runId: string) {
  * before returning an idempotent replay: a preexisting idempotency record must
  * never disclose a run the caller has since lost access to.
  */
+/**
+ * Freeze the requester's authority at a permission generation whose grants
+ * were VERIFIED for that same generation (C2, M4-D3).
+ *
+ * The frozen record carries only a permission VERSION; every later boundary
+ * treats an unchanged version as "the permissions verified at acceptance still
+ * hold". Freezing whatever version is current at freeze time breaks that
+ * premise when a revocation lands between the start's permission check and the
+ * freeze: the record would capture the post-revocation generation while the
+ * grants actually checked belonged to the one before it — and the run would
+ * execute. So: read the version, re-derive the grants fresh and re-check the
+ * execute floor against them, then freeze and require the frozen version to be
+ * the one read first (a seqlock). Any movement in between refuses the start;
+ * a retry re-verifies against the new generation.
+ */
+async function freezeVerifiedRequesterAuthority(ctx: TopologyRequestContext) {
+  const userId = ctx.auth.user.id;
+  const before = await getPermissionAuthorityVersion(userId);
+  if (before === null) throw new TopologyOperationError('topology_authority_unavailable', 503);
+  const permissions = await getUserPermissions(userId, {
+    partnerId: ctx.auth.partnerId ?? undefined,
+    orgId: ctx.auth.orgId ?? undefined,
+    scope: ctx.auth.scope,
+  });
+  if (!permissions) throw new TopologyOperationError('permission_changed', 403);
+  try {
+    const current = await requireTopologySiteAccess(ctx.auth, permissions, ctx.scope.siteId, 'execute');
+    if (current.scope.orgId !== ctx.scope.orgId) throw new TopologyOperationError('permission_changed', 403);
+  } catch (error) {
+    if (error instanceof TopologyError) throw new TopologyOperationError('permission_changed', 403);
+    throw error;
+  }
+  const frozen = await freezeTopologyTraceRequester(ctx);
+  if (frozen.permissionVersion !== before) throw new TopologyOperationError('permission_changed', 403);
+  return frozen;
+}
+
 async function requireDiagnosticAuthority(ctx: TopologyRequestContext): Promise<void> {
   const current = await requireTopologySiteAccess(
     ctx.auth,
@@ -319,10 +357,12 @@ async function acceptTopologyDiagnosticRun(
   // boundary (enqueue, delivery, result publication) can re-derive it live.
   // A scheduled occurrence carries it too: its requester is the policy's
   // arming actor, re-derived at every later boundary (generalized M3-D13).
+  // A scheduled occurrence pins the arming actor's version it was verified
+  // at; a live trace request re-verifies its grants at the frozen generation.
   const requesterAuthority = plan.recipeId === 'trace_route' || occurrence
-    ? await freezeTopologyTraceRequester(ctx, options.requesterPermissionVersion !== undefined
-      ? { permissionVersion: async () => options.requesterPermissionVersion! }
-      : {})
+    ? options.requesterPermissionVersion !== undefined
+      ? await freezeTopologyTraceRequester(ctx, { permissionVersion: async () => options.requesterPermissionVersion! })
+      : await freezeVerifiedRequesterAuthority(ctx)
     : null;
 
   const inserted = await db.transaction(async (tx) => {
@@ -506,7 +546,7 @@ export async function createVerifiedTopologyDiagnosticRun(
   const existing = await findRunByIdempotencyKey(ctx, idempotencyKey);
   if (existing) return replayRun(existing, bodyHash);
 
-  const requesterAuthority = await freezeTopologyTraceRequester(ctx);
+  const requesterAuthority = await freezeVerifiedRequesterAuthority(ctx);
   const inserted = await db.transaction(async (tx) => {
     await lockDiagnosticStarts(tx, ctx);
     const plan = await start.resolvePlan(tx);
