@@ -12,6 +12,7 @@ import {
   softwareInventory,
   softwareProducts,
   softwareVulnerabilities,
+  tickets,
   vulnerabilities,
   vulnerabilitySources,
 } from '../../db/schema';
@@ -20,7 +21,7 @@ import { clearPermissionCache } from '../../services/permissions';
 import { fetchFleetFindingRows } from '../../services/vulnerabilityFleetQueries';
 import { computeStats, filterFindings, groupFindings } from '../../services/vulnerabilityFleetAggregation';
 import { getTestDb } from './setup';
-import { createSite, setupTestEnvironment, type TestEnvironment } from './db-utils';
+import { createOrganization, createSite, setupTestEnvironment, type TestEnvironment } from './db-utils';
 
 /**
  * #2262 — the fleet "By software" queue, its drawer and the stat cards now
@@ -58,12 +59,12 @@ beforeEach(async () => {
 
 let seq = 0;
 
-async function seedDevice(env: TestEnvironment, name: string, opts: { siteId?: string; osType?: 'windows' | 'macos' | 'linux' } = {}) {
+async function seedDevice(env: TestEnvironment, name: string, opts: { siteId?: string; osType?: 'windows' | 'macos' | 'linux'; orgId?: string } = {}) {
   seq += 1;
   const [device] = await getTestDb()
     .insert(devices)
     .values({
-      orgId: env.organization.id,
+      orgId: opts.orgId ?? env.organization.id,
       siteId: opts.siteId ?? env.site.id,
       agentId: `vuln-rollup-${name}-${Date.now()}-${seq}`,
       hostname: name,
@@ -78,10 +79,10 @@ async function seedDevice(env: TestEnvironment, name: string, opts: { siteId?: s
   return device.id;
 }
 
-async function seedInventory(env: TestEnvironment, deviceId: string, name: string, vendor: string | null, version: string | null) {
+async function seedInventory(env: TestEnvironment, deviceId: string, name: string, vendor: string | null, version: string | null, orgId?: string) {
   const [row] = await getTestDb()
     .insert(softwareInventory)
-    .values({ deviceId, orgId: env.organization.id, name, vendor, version })
+    .values({ deviceId, orgId: orgId ?? env.organization.id, name, vendor, version })
     .returning({ id: softwareInventory.id });
   if (!row) throw new Error('failed to seed inventory');
   return row.id;
@@ -113,11 +114,14 @@ async function seedFinding(env: TestEnvironment, deviceId: string, vulnerability
   riskScore?: string;
   acceptedUntil?: Date;
   detectedAt?: Date;
+  orgId?: string;
+  ticketId?: string;
 } = {}) {
   const [row] = await getTestDb()
     .insert(deviceVulnerabilities)
     .values({
-      orgId: env.organization.id,
+      orgId: opts.orgId ?? env.organization.id,
+      ticketId: opts.ticketId,
       deviceId,
       vulnerabilityId,
       softwareInventoryId: opts.softwareInventoryId ?? null,
@@ -364,5 +368,86 @@ describe('fleet software rollup (#2262)', () => {
     expect(body.group).toMatchObject({ kind: 'os', name: 'Windows OS updates' });
     expect(body.devices).toHaveLength(1);
     expect(body.devices[0]).toMatchObject({ deviceId: d2, mitigatedFindingCount: 1, openFindingIds: [] });
+  });
+
+  runDb('ticket numbers resolve on the group, the device rows and the drill-down', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const deviceId = await seedDevice(env, 'rollup-ticket');
+    const inv = await seedInventory(env, deviceId, 'Zoom', 'Zoom Video', '5.0');
+    const cve = await seedCve('CVE-2026-71001');
+    const [ticket] = await getTestDb()
+      .insert(tickets)
+      .values({
+        orgId: env.organization.id,
+        partnerId: env.partner.id,
+        ticketNumber: `ROLLUP-${Date.now()}-${seq}`,
+        internalNumber: 'T-ROLLUP-1',
+        subject: 'rollup fixture ticket',
+        source: 'manual',
+      } as never)
+      .returning({ id: tickets.id });
+    const findingId = await seedFinding(env, deviceId, cve, { softwareInventoryId: inv, ticketId: ticket!.id });
+
+    const key = encodeURIComponent('sw:zoom|zoom video');
+    const list = await get<{ items: Array<{ groupKey: string; tickets: unknown }> }>(env, '/software');
+    expect(list.body.items.find((g) => g.groupKey === 'sw:zoom|zoom video')?.tickets).toEqual([{ id: ticket!.id, number: 'T-ROLLUP-1' }]);
+
+    const detail = await get<{ group: { tickets: unknown }; devices: Array<{ tickets: unknown }> }>(env, `/software/${key}`);
+    expect(detail.body.group.tickets).toEqual([{ id: ticket!.id, number: 'T-ROLLUP-1' }]);
+    expect(detail.body.devices[0]!.tickets).toEqual([{ id: ticket!.id, number: 'T-ROLLUP-1' }]);
+
+    const drill = await get<{ findings: Array<{ deviceVulnerabilityId: string; ticketId: string; ticketNumber: string }> }>(env, `/software/${key}/devices/${deviceId}`);
+    expect(drill.body.findings).toEqual([
+      expect.objectContaining({ deviceVulnerabilityId: findingId, ticketId: ticket!.id, ticketNumber: 'T-ROLLUP-1' }),
+    ]);
+  });
+
+  runDb('a partner caller sees ONE group spanning two orgs, with each device attributed to its own org', async () => {
+    const env = await setupTestEnvironment({ scope: 'partner' });
+    const orgB = await createOrganization({ partnerId: env.partner.id, name: 'Rollup Org B' });
+    const siteB = await createSite({ orgId: orgB.id });
+    const devA = await seedDevice(env, 'rollup-partner-a');
+    const devB = await seedDevice(env, 'rollup-partner-b', { orgId: orgB.id, siteId: siteB.id });
+    const invA = await seedInventory(env, devA, 'Google Chrome', 'Google LLC', '140.0.1');
+    const invB = await seedInventory(env, devB, 'Google Chrome', 'Google LLC', '141.0.2', orgB.id);
+    const cve = await seedCve('CVE-2026-72001');
+    const fA = await seedFinding(env, devA, cve, { softwareInventoryId: invA });
+    const fB = await seedFinding(env, devB, cve, { softwareInventoryId: invB, orgId: orgB.id });
+
+    const list = await get<{ items: Array<{ groupKey: string; deviceCount: number }> }>(env, '/software');
+    expect(list.body.items.filter((g) => g.groupKey === CHROME_KEY)).toEqual([expect.objectContaining({ deviceCount: 2 })]);
+
+    const detail = await get<{ devices: Array<{ deviceId: string; orgId: string; orgName: string; openFindingIds: string[] }> }>(
+      env,
+      `/software/${encodeURIComponent(CHROME_KEY)}`,
+    );
+    const byId = new Map(detail.body.devices.map((d) => [d.deviceId, d]));
+    expect(byId.get(devA)).toMatchObject({ orgId: env.organization.id, orgName: env.organization.name, openFindingIds: [fA] });
+    expect(byId.get(devB)).toMatchObject({ orgId: orgB.id, orgName: 'Rollup Org B', openFindingIds: [fB] });
+
+    // ?orgId narrows the drawer to one org's device.
+    const narrowed = await get<{ devices: Array<{ deviceId: string }> }>(env, `/software/${encodeURIComponent(CHROME_KEY)}?orgId=${orgB.id}`);
+    expect(narrowed.body.devices.map((d) => d.deviceId)).toEqual([devB]);
+  });
+
+  runDb('null vendor and null/empty versions: one group, vendor null, no empty versions (SQL matches JS)', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const d1 = await seedDevice(env, 'rollup-null-1');
+    const d2 = await seedDevice(env, 'rollup-null-2');
+    const inv1 = await seedInventory(env, d1, '7-Zip', null, null);
+    const inv2 = await seedInventory(env, d2, '7-Zip ', null, '');
+    const cve = await seedCve('CVE-2026-73001');
+    await seedFinding(env, d1, cve, { softwareInventoryId: inv1 });
+    await seedFinding(env, d2, cve, { softwareInventoryId: inv2 });
+
+    const rows = await withSystemDbAccessContext(() => fetchFleetFindingRows({ status: 'all', orgId: env.organization.id }));
+    const expected = groupFindings(filterFindings(rows, { status: 'open' }));
+    const list = await get<{ items: Parameters<typeof comparable>[0] }>(env, '/software');
+    expect(comparable(list.body.items)).toEqual(comparable(expected));
+    expect(list.body.items).toEqual([expect.objectContaining({ groupKey: 'sw:7-zip|', vendor: null, versions: [], deviceCount: 2 })]);
+
+    const detail = await get<{ versions: unknown[]; devices: Array<{ installedVersions: string[] }> }>(env, `/software/${encodeURIComponent('sw:7-zip|')}`);
+    expect(detail.body.versions).toEqual([]);
+    expect(detail.body.devices.every((d) => d.installedVersions.length === 0)).toBe(true);
   });
 });

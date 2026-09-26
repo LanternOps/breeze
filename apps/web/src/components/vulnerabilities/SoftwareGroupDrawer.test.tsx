@@ -322,6 +322,8 @@ describe('SoftwareGroupDrawer (device rollup, #2262)', () => {
     renderDrawer();
     fireEvent.click(await screen.findByTestId('vuln-device-expand-dev-2'));
     expect(await screen.findByTestId('vuln-device-findings-error-dev-2')).toHaveTextContent('nope');
+    fireEvent.click(screen.getByTestId('vuln-device-findings-retry-dev-2'));
+    expect(await screen.findByTestId('vuln-device-findings-dev-2')).toHaveTextContent('CVE-2026-0001');
   });
 
   it('hides permission-gated actions', async () => {

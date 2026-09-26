@@ -358,7 +358,15 @@ export function SoftwareGroupDrawer({
                         )}
                         {expansion?.status === 'error' && (
                           <p data-testid={`vuln-device-findings-error-${d.deviceId}`} className="mt-2 pl-7 text-xs text-red-600 dark:text-red-400">
-                            {expansion.message}
+                            {expansion.message}{' '}
+                            <button
+                              type="button"
+                              data-testid={`vuln-device-findings-retry-${d.deviceId}`}
+                              className="font-medium underline"
+                              onClick={() => void loadDeviceFindings(d.deviceId)}
+                            >
+                              {t('common:actions.retry')}
+                            </button>
                           </p>
                         )}
                         {expansion?.status === 'ready' && (
