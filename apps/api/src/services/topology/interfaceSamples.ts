@@ -6,6 +6,7 @@ import {
   parseTopologyInterfaceMetricEnvelopeV1, TOPOLOGY_TELEMETRY_PROTOCOL, topologyInterfaceMetricDigest, topologyInterfaceSampleReadings,
   type TopologyInterfaceMetricEnvelopeV1, type TopologyInterfaceSampleReadingsV1,
 } from './interfaceMetricTypes';
+import { recordTopologyTelemetryBatch, recordTopologyTelemetrySourceSwitch } from './metrics';
 import { advanceTopologyHealthRevision } from './monitorOverlays';
 import { compareTopologySequences } from './sequence';
 
@@ -100,6 +101,25 @@ class SampleConflict extends Error {}
  * absent authority, disabled flags) throw; admission outcomes return receipts.
  */
 export async function persistTopologyInterfaceSamples(producer: AuthenticatedTopologyTelemetryProducer, input: unknown): Promise<TopologyInterfaceSampleReceipt> {
+  const observed: TelemetryBatchObservation = { switched: false };
+  let receipt: TopologyInterfaceSampleReceipt;
+  try {
+    receipt = await persistTopologyInterfaceSampleBatch(producer, input, observed);
+  } catch (error) {
+    recordTopologyTelemetryBatch({ status: 'refused', inserted: 0, duplicates: 0, historicalOnly: 0 });
+    throw error;
+  }
+  if (observed.switched) recordTopologyTelemetrySourceSwitch();
+  recordTopologyTelemetryBatch({ status: receipt.accepted ? 'accepted' : receipt.reason ?? 'refused', inserted: receipt.inserted,
+    duplicates: receipt.duplicates, historicalOnly: receipt.historicalOnly, bytes: observed.bytes, lagSeconds: observed.lagSeconds });
+  return receipt;
+}
+
+/** What the sink saw that its receipt does not carry; published only after the batch settles. */
+type TelemetryBatchObservation = { switched: boolean; bytes?: number; lagSeconds?: number };
+
+async function persistTopologyInterfaceSampleBatch(producer: AuthenticatedTopologyTelemetryProducer, input: unknown,
+  observed: TelemetryBatchObservation): Promise<TopologyInterfaceSampleReceipt> {
   assertInTransaction('persistTopologyInterfaceSamples');
   const parsed = parseTopologyInterfaceMetricEnvelopeV1(input);
   if (!parsed.accepted) throw new Error(parsed.reason);
@@ -139,6 +159,7 @@ export async function persistTopologyInterfaceSamples(producer: AuthenticatedTop
       contextKey: producer.authorityKey, addressFamily: 'any', expectedIntervalSeconds: envelope.expectedIntervalSeconds }).returning();
     if (source!.revokedAt && source!.producerEpoch === producer.producerEpoch) return reject('source_revoked');
     if (source!.producerEpoch !== producer.producerEpoch || source!.revokedAt) {
+      observed.switched = source!.producerEpoch !== producer.producerEpoch;
       [source] = await db.update(topologyCollectionSources).set({ producerEpoch: producer.producerEpoch, configurationRevision: producer.configurationRevision,
         epochIssuedAt: now, acceptedSequence: '0', materializedSequence: '0', confirmedSequence: '0', contentDigest: null, revokedAt: null,
         freshUntil: null, confirmedThroughAt: null, currentBaseline: {}, updatedAt: now }).where(eq(topologyCollectionSources.id, source!.id)).returning();
@@ -232,6 +253,8 @@ export async function persistTopologyInterfaceSamples(producer: AuthenticatedTop
       ...(dirtyFrom ? { telemetryRollupDirtyFrom: sql`LEAST(${topologyCollectionSources.telemetryRollupDirtyFrom}, ${dirtyFrom.toISOString()}::timestamptz)` } : {}),
     }).where(eq(topologyCollectionSources.id, current.id));
     if (healthChanged) await advanceTopologyHealthRevision(db, scope);
+    observed.bytes = bytes;
+    observed.lagSeconds = (now.getTime() - finishedAt.getTime()) / 1000;
     return { accepted: true, sourceId: current.id, acceptedSequence: envelope.sequence, inserted: insertedKeys.size,
       duplicates: rows.length - insertedKeys.size, historicalOnly, healthChanged };
   });

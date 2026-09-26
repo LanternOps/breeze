@@ -19,6 +19,8 @@ import {
 } from '../../services/topology/interfaceSamples';
 import { readGraphCoverage } from '../../services/topology/physicalCoverage';
 import { executeOrgMerge } from '../../services/orgMerge';
+import { metricsRegistry } from '../../services/metricsRegistry';
+import { TOPOLOGY_METRIC_NAMES } from '../../services/topology/metrics';
 import { canonicalIdentityKey } from '../../services/topology/identity';
 
 const TARGET = 'snmp:192.0.2.10';
@@ -320,6 +322,31 @@ describe('topology interface samples: telemetry sink', () => {
     });
     expect(receipt).toMatchObject({ accepted: false, reason: 'batch_in_flight', retryAfterSeconds: 5 });
     expect(await f.persist(f.envelope(f.producer, '1', t, [f.sample(f.ifA, t)]))).toMatchObject({ accepted: true });
+  });
+
+  it('publishes batch outcomes, sample counts, bytes, lag and source switches without any id label', async () => {
+    metricsRegistry.resetMetrics();
+    const f = await fixture();
+    const t = Date.now() - 5 * minute;
+    const first = f.envelope(f.producer, '5', t, [f.sample(f.ifA, t), f.sample(f.ifA2, t)]);
+    await f.persist(first);
+    await f.persist(structuredClone(first));
+    await f.persist(f.envelope(f.producer, '4', t + minute, [f.sample(f.ifA, t + minute)]));
+    generation = 'arm-2';
+    await expect(f.persist(f.envelope(f.producer, '6', t + minute, [f.sample(f.ifA, t + minute)]))).rejects.toThrow('producer_epoch_changed');
+    const rotated = await f.resolve();
+    await f.persist(f.envelope(rotated, '1', t + minute, [f.sample(f.ifA, t + minute)]), rotated);
+
+    const text = await metricsRegistry.metrics();
+    expect(text).toContain(`${TOPOLOGY_METRIC_NAMES.telemetryBatches}{status="accepted"} 3`);
+    expect(text).toContain(`${TOPOLOGY_METRIC_NAMES.telemetryBatches}{status="stale_sequence"} 1`);
+    expect(text).toContain(`${TOPOLOGY_METRIC_NAMES.telemetryBatches}{status="refused"} 1`);
+    expect(text).toContain(`${TOPOLOGY_METRIC_NAMES.telemetrySamples}{status="inserted"} 3`);
+    expect(text).toContain(`${TOPOLOGY_METRIC_NAMES.telemetrySamples}{status="duplicate"} 2`);
+    expect(text).toContain(`${TOPOLOGY_METRIC_NAMES.telemetryBatchBytes}_count 2`);
+    expect(text).toContain(`${TOPOLOGY_METRIC_NAMES.telemetryLag}_count 2`);
+    expect(text).toContain(`${TOPOLOGY_METRIC_NAMES.telemetrySourceSwitches} 1`);
+    for (const id of [f.orgId, f.siteId, f.ifA, TARGET]) expect(text).not.toContain(id);
   });
 
   it('enforces the per-source sample quota without writing', async () => {

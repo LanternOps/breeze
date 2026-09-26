@@ -12,6 +12,7 @@ import {
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { topologyDiagnosticRuns, topologyDiagnosticSteps } from '../../db/schema';
+import { recordTopologyDiagnosticResult, type TopologyMetricRecipe } from './metrics';
 import { TopologyOperationError } from './operationErrors';
 import { revalidateTopologyRequesterAuthority, runRequiresRequesterRevalidation } from './diagnosticTraceAuthority';
 import { topologyTraceStepViolation } from './tracerouteResults';
@@ -182,6 +183,22 @@ export async function acceptTopologyDiagnosticResult(
   producer: AuthenticatedTopologyProducer,
   result: TopologyDiagnosticResult,
 ): Promise<TopologyDiagnosticAcceptance> {
+  let recipe = 'other';
+  try {
+    const acceptance = await acceptTopologyDiagnosticFrame(producer, result, (recipeId) => { recipe = recipeId; });
+    recordTopologyDiagnosticResult(recipe as TopologyMetricRecipe, acceptance.historicalOnly ? 'late' : 'accepted');
+    return acceptance;
+  } catch (error) {
+    if (error instanceof TopologyOperationError) recordTopologyDiagnosticResult(recipe as TopologyMetricRecipe, 'rejected');
+    throw error;
+  }
+}
+
+async function acceptTopologyDiagnosticFrame(
+  producer: AuthenticatedTopologyProducer,
+  result: TopologyDiagnosticResult,
+  identifyRecipe: (recipeId: string) => void,
+): Promise<TopologyDiagnosticAcceptance> {
   const frame = topologyDiagnosticResultSchema.parse(result);
   if (frame.commandId !== producer.commandId) {
     throw unauthorized('Diagnostic result does not answer the delivered command');
@@ -194,6 +211,7 @@ export async function acceptTopologyDiagnosticResult(
         .from(topologyDiagnosticRuns)
         .where(eq(topologyDiagnosticRuns.id, frame.runId))
         .limit(1);
+      if (run) identifyRecipe(run.recipeId);
       if (
         !run ||
         run.commandId !== frame.commandId ||

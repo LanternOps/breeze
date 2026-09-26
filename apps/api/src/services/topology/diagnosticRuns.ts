@@ -34,6 +34,7 @@ export {
 import { planTopologyDiagnostic } from './diagnosticPlanner';
 import { loadTopologyFlags } from './flags';
 import { freezeTopologyTraceRequester } from './diagnosticTraceAuthority';
+import { recordTopologyDiagnosticDispatch, type TopologyDispatchStatus, type TopologyMetricRecipe } from './metrics';
 import { TopologyOperationError } from './operationErrors';
 
 /** Fixed on-demand budgets from the operations spec (§9). */
@@ -272,6 +273,26 @@ export async function createTopologyDiagnosticRun(
   input: CreateTopologyDiagnosticRequest,
   idempotencyKey: string,
   options: CreateTopologyDiagnosticRunOptions = {},
+): Promise<TopologyDiagnosticRun> {
+  const started = performance.now();
+  const recipe = (input as { recipeId?: unknown } | null)?.recipeId;
+  const observe = (status: TopologyDispatchStatus) =>
+    recordTopologyDiagnosticDispatch(String(recipe) as TopologyMetricRecipe, status, (performance.now() - started) / 1000);
+  try {
+    const run = await acceptTopologyDiagnosticRun(ctx, input, idempotencyKey, options);
+    observe(run.state as TopologyDispatchStatus);
+    return run;
+  } catch (error) {
+    observe(error instanceof TopologyOperationError ? 'rejected' : 'error');
+    throw error;
+  }
+}
+
+async function acceptTopologyDiagnosticRun(
+  ctx: TopologyRequestContext,
+  input: CreateTopologyDiagnosticRequest,
+  idempotencyKey: string,
+  options: CreateTopologyDiagnosticRunOptions,
 ): Promise<TopologyDiagnosticRun> {
   const request = createTopologyDiagnosticSchema.parse(input);
   const occurrence = options.scheduledOccurrence;
