@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { monitorDefinitions } from '../../db/schema/monitorDefinitions';
 import type { MonitorDefinitionRow } from '../../db/schema/monitorDefinitions';
@@ -435,17 +435,25 @@ export async function deleteMonitorDefinition(id: string, auth: AuthContext, exe
   // to NULL.
   try {
     await executor.transaction(async (tx) => {
+      // Shared lock order: monitor_definitions → network_monitors → conversion
+      // ledger rows. Keep delete aligned with PATCH/recompile and Revert.
+      const [lockedDefinition] = await tx.select({ id: monitorDefinitions.id })
+        .from(monitorDefinitions).where(eq(monitorDefinitions.id, id)).for('update');
+      if (!lockedDefinition) throw new MonitorNotFoundError(id);
+      const probes = await tx.select({ id: networkMonitors.id, orgId: networkMonitors.orgId })
+        .from(networkMonitors).where(eq(networkMonitors.managedByMonitorId, id))
+        .orderBy(asc(networkMonitors.id)).for('update');
       // A live conversion identifies an adopted probe. Release it before the
       // definition cascade so its results and legacy rules remain available.
       // Compiler-created probes have no source ledger entry and still cascade.
-      const adopted = await tx.select({ id: networkMonitors.id, orgId: networkMonitors.orgId,
-        conversionId: monitorConversions.id, sourceState: monitorConversions.sourceState })
-        .from(networkMonitors)
-        .innerJoin(monitorConversions, and(eq(monitorConversions.sourceId, networkMonitors.id),
-          eq(monitorConversions.orgId, networkMonitors.orgId)))
-        .where(and(eq(networkMonitors.managedByMonitorId, id),
+      const adopted = probes.length === 0 ? [] : await tx.select({
+        id: monitorConversions.sourceId, conversionId: monitorConversions.id,
+        sourceState: monitorConversions.sourceState,
+      }).from(monitorConversions)
+        .where(and(inArray(monitorConversions.sourceId, probes.map((probe) => probe.id)),
+          inArray(monitorConversions.orgId, probes.flatMap((probe) => probe.orgId ? [probe.orgId] : [])),
           eq(monitorConversions.sourceTable, 'network_monitors'), isNull(monitorConversions.revertedAt)))
-        .for('update');
+        .orderBy(asc(monitorConversions.id)).for('update');
       const now = new Date();
       for (const source of adopted) {
         await tx.update(networkMonitors).set({ managedByMonitorId: null, isActive: false,

@@ -11,9 +11,10 @@ import {
   networkMonitorResults,
   networkMonitorAlertRules,
 } from '../db/schema/monitors';
+import { monitorConversions } from '../db/schema/monitorConversions';
 import { serviceProcessCheckResults } from '../db/schema/serviceProcessMonitoring';
 import { deviceChangeLog, discoveredAssets } from '../db/schema';
-import { eq, and, desc, gte, lte, inArray, sql, SQL } from 'drizzle-orm';
+import { eq, and, desc, gte, lte, inArray, isNull, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { loadReachability } from './assetReachabilityLoader';
@@ -417,6 +418,25 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({
             error: 'network_monitor_managed_by_monitor',
             monitorId: existing.managedByMonitorId,
+          });
+        }
+
+        if (existing.retiredAt) {
+          return JSON.stringify({
+            error: 'network_monitor_retired',
+            message: 'This retired network check retains historical results. Use conversion history to review it or Undo its conversion.',
+          });
+        }
+        const [conversion] = await db.select({ id: monitorConversions.id }).from(monitorConversions).where(and(
+          existing.orgId ? eq(monitorConversions.orgId, existing.orgId) : isNull(monitorConversions.orgId),
+          eq(monitorConversions.sourceTable, 'network_monitors'),
+          eq(monitorConversions.sourceId, existing.id),
+          isNull(monitorConversions.revertedAt),
+        )).limit(1);
+        if (conversion) {
+          return JSON.stringify({
+            error: 'network_monitor_conversion_source',
+            message: 'This network check retains conversion history. Use Undo in conversion history before deleting it.',
           });
         }
 

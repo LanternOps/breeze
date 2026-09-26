@@ -195,8 +195,9 @@ export async function inCallerTransaction<T>(auth: AuthContext, fn: (tx: DbExecu
     } catch (error) {
       // Retry only after the entire transaction has aborted, never inside a
       // poisoned request transaction. The callback reloads visibility and hashes.
-      // 40001 = serialization_failure. pgErrorCode unwraps Drizzle's .cause.
-      if (pgErrorCode(error) !== '40001') throw error;
+      // 40001 = serialization_failure; 40P01 = deadlock_detected.
+      // pgErrorCode unwraps Drizzle's .cause, including errors from revert.
+      if (!['40001', '40P01'].includes(pgErrorCode(error) ?? '')) throw error;
       if (attempt === 1) throw new ConversionError('preview_stale', 'Conversion inputs changed concurrently');
     }
   }

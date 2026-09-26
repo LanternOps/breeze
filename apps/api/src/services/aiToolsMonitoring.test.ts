@@ -8,6 +8,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 vi.mock('../db', () => ({
   db: {
@@ -45,6 +46,13 @@ vi.mock('../db/schema/monitors', () => ({
     severity: 'nmar.severity',
     message: 'nmar.message',
     isActive: 'nmar.isActive',
+  },
+}));
+
+vi.mock('../db/schema/monitorConversions', () => ({
+  monitorConversions: {
+    id: 'mc.id', orgId: 'mc.orgId', sourceTable: 'mc.sourceTable',
+    sourceId: 'mc.sourceId', revertedAt: 'mc.revertedAt',
   },
 }));
 
@@ -306,6 +314,40 @@ describe('manage_monitors — site-axis enforcement', () => {
   // ─── delete action ───────────────────────────────────────────────────────
 
   describe('action: delete', () => {
+    it('refuses a retired network check and directs the caller to conversion history', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(monitorLookup({
+        ...monitorNoAsset, retiredAt: new Date(),
+      } as typeof monitorNoAsset));
+      vi.mocked(db.delete).mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) } as any);
+
+      const out = JSON.parse(await handle({ action: 'delete', monitorId: MONITOR_ID }, makeUnrestrictedAuth()));
+
+      expect(out.error).toMatch(/retired/i);
+      expect(out.message).toMatch(/conversion history/i);
+      expect(db.delete).not.toHaveBeenCalled();
+    });
+
+    it('refuses a live conversion source and directs the caller to Undo', async () => {
+      const ledgerLookup = monitorLookup({ id: 'conversion-id' } as typeof monitorNoAsset);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(monitorLookup(monitorNoAsset))
+        .mockReturnValueOnce(ledgerLookup);
+      vi.mocked(db.delete).mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) } as any);
+
+      const out = JSON.parse(await handle({ action: 'delete', monitorId: MONITOR_ID }, makeUnrestrictedAuth()));
+
+      expect(out.error).toMatch(/conversion/i);
+      expect(out.message).toMatch(/undo/i);
+      expect(db.delete).not.toHaveBeenCalled();
+      const predicate = ledgerLookup.from.mock.results[0].value.where.mock.calls[0][0];
+      const query = new PgDialect().sqlToQuery(predicate);
+      expect(query.sql).toBe('($1 = $2 and $3 = $4 and $5 = $6 and $7 is null)');
+      expect(query.params).toEqual([
+        'mc.orgId', 'org-1', 'mc.sourceTable', 'network_monitors',
+        'mc.sourceId', MONITOR_ID, 'mc.revertedAt',
+      ]);
+    });
+
     it('denies site-restricted caller deleting a monitor in a forbidden site', async () => {
       vi.mocked(db.select)
         .mockReturnValueOnce(monitorLookup(monitorInDeniedSite))
@@ -333,7 +375,8 @@ describe('manage_monitors — site-axis enforcement', () => {
     it('allows site-restricted caller to delete a monitor in an allowed site', async () => {
       vi.mocked(db.select)
         .mockReturnValueOnce(monitorLookup(monitorInAllowedSite))
-        .mockReturnValueOnce(assetLookup('site-1'));
+        .mockReturnValueOnce(assetLookup('site-1'))
+        .mockReturnValueOnce(monitorLookup(null));
       vi.mocked(db.delete).mockReturnValue({
         where: vi.fn().mockResolvedValue(undefined),
       } as any);

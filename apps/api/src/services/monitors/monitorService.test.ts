@@ -445,7 +445,10 @@ describe('conversion executor propagation', () => {
     const row = existingRow({ kind });
     const where = vi.fn(async () => undefined);
     const tx = {
-      select: vi.fn(() => ({ from: () => ({ innerJoin: () => ({ where: () => ({ for: async () => [] }) }) }) })),
+      select: vi.fn(() => ({ from: (table: unknown) => ({ where: () => {
+        const query = { orderBy: () => query, for: async () => table === monitorDefinitions ? [row] : [] };
+        return query;
+      } }) })),
       delete: vi.fn(() => ({ where })),
     };
     const executor = {
@@ -483,7 +486,10 @@ describe('deleteMonitorDefinition: dependent-row FK violation (#6509)', () => {
       throw pgForeignKeyError;
     });
     const tx = {
-      select: vi.fn(() => ({ from: () => ({ innerJoin: () => ({ where: () => ({ for: async () => [] }) }) }) })),
+      select: vi.fn(() => ({ from: (table: unknown) => ({ where: () => {
+        const query = { orderBy: () => query, for: async () => table === monitorDefinitions ? [row] : [] };
+        return query;
+      } }) })),
       delete: vi.fn(() => ({ where })),
     };
     const executor = {
@@ -503,7 +509,10 @@ describe('deleteMonitorDefinition: dependent-row FK violation (#6509)', () => {
       throw otherError;
     });
     const tx = {
-      select: vi.fn(() => ({ from: () => ({ innerJoin: () => ({ where: () => ({ for: async () => [] }) }) }) })),
+      select: vi.fn(() => ({ from: (table: unknown) => ({ where: () => {
+        const query = { orderBy: () => query, for: async () => table === monitorDefinitions ? [row] : [] };
+        return query;
+      } }) })),
       delete: vi.fn(() => ({ where })),
     };
     const executor = {
@@ -605,14 +614,50 @@ describe('network check asset ownership', () => {
 });
 
 describe('deleteMonitorDefinition: adopted network history', () => {
+  it('locks the definition, then probes, then conversion ledgers before release', async () => {
+    const lockedTables: unknown[] = [];
+    const tx = {
+      select: vi.fn(() => ({ from: (table: unknown) => {
+        const tables = [table];
+        const query = {
+          innerJoin: (joined: unknown) => { tables.push(joined); return query; },
+          where: () => query,
+          orderBy: () => query,
+          for: async () => {
+            lockedTables.push(...tables);
+            if (table === monitorDefinitions) return [existingRow({ kind: 'network_check' })];
+            if (table === networkMonitors) return [{ id: 'legacy', orgId: ORG, conversionId: 'conversion', sourceState: {} }];
+            return [{ id: 'legacy', conversionId: 'conversion', sourceState: {} }];
+          },
+        };
+        return query;
+      } })),
+      update: vi.fn(() => ({ set: () => ({ where: async () => undefined }) })),
+      delete: vi.fn(() => ({ where: async () => undefined })),
+    };
+    const executor = {
+      select: vi.fn(() => ({ from: () => ({ where: () => ({ limit: async () => [existingRow({ kind: 'network_check' })] }) }) })),
+      transaction: vi.fn(async (work: (value: typeof tx) => Promise<void>) => work(tx)),
+    };
+    await deleteMonitorDefinition('monitor-1', auth(), executor as never);
+    expect(lockedTables.map((table) => table === monitorDefinitions ? 'definition' : table === networkMonitors ? 'probe' : 'ledger'))
+      .toEqual(['definition', 'probe', 'ledger']);
+  });
+
   it('releases only live adoption sources and marks their ledger before deleting in the same transaction', async () => {
     const writes: Array<{ table: unknown; values: Record<string, unknown> }> = [];
     const predicates: unknown[] = [];
     const tx = {
-      select: vi.fn(() => ({ from: () => ({ innerJoin: () => ({ where: (predicate: unknown) => {
+      select: vi.fn(() => ({ from: (table: unknown) => ({ where: (predicate: unknown) => {
         predicates.push(predicate);
-        return { for: async () => [{ id: 'legacy', orgId: ORG, conversionId: 'conversion', sourceState: { name: 'Gateway' } }] };
-      } }) }) })),
+        const query = {
+          orderBy: () => query,
+          for: async () => table === monitorDefinitions ? [existingRow({ kind: 'network_check' })]
+            : table === networkMonitors ? [{ id: 'legacy', orgId: ORG }]
+              : [{ id: 'legacy', conversionId: 'conversion', sourceState: { name: 'Gateway' } }],
+        };
+        return query;
+      } }) })),
       update: vi.fn((table: unknown) => ({ set: (values: Record<string, unknown>) => ({ where: async () => { writes.push({ table, values }); } }) })),
       delete: vi.fn(() => ({ where: async () => {
         expect(writes).toEqual([
@@ -631,11 +676,14 @@ describe('deleteMonitorDefinition: adopted network history', () => {
     expect(executor.transaction).toHaveBeenCalledOnce();
     expect(executor.delete).not.toHaveBeenCalled();
     expect(tx.delete).toHaveBeenCalledWith(monitorDefinitions);
-    const predicate = new PgDialect().sqlToQuery(predicates[0] as never);
-    expect(predicate.sql).toContain('"managed_by_monitor_id" =');
+    const probePredicate = new PgDialect().sqlToQuery(predicates[1] as never);
+    expect(probePredicate.sql).toContain('"managed_by_monitor_id" =');
+    expect(probePredicate.params).toContain('monitor-1');
+    const predicate = new PgDialect().sqlToQuery(predicates[2] as never);
     expect(predicate.sql).toContain('"source_table" =');
     expect(predicate.sql).toContain('"reverted_at" is null');
-    expect(predicate.params).toContain('monitor-1');
+    expect(predicate.params).toContain('legacy');
+    expect(predicate.params).toContain(ORG);
     expect(predicate.params).toContain('network_monitors');
   });
 });

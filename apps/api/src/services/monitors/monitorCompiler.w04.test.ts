@@ -102,7 +102,7 @@ function makeDef(overrides: Partial<MonitorDefinitionRow> = {}): MonitorDefiniti
  * read-then-write, so returning an existing row on the second compile is what
  * proves idempotence keeps the same row id.
  */
-function makeTx(existingByTable: Record<string, string | undefined> = {}, adoptable: string | null = null, siteId: string | null = null) {
+function makeTx(existingByTable: Record<string, string | Record<string, unknown> | undefined> = {}, adoptable: string | null = null, siteId: string | null = null) {
   const inserts: Array<Record<string, unknown>> = [];
   const updates: Array<{ id: string; values: Record<string, unknown> }> = [];
   let selectIdx = 0;
@@ -120,13 +120,16 @@ function makeTx(existingByTable: Record<string, string | undefined> = {}, adopta
       const existing = table ? existingByTable[table] : undefined;
       return {
         from: (source: unknown) => ({
-          where: () => ({ limit: async () => {
-            if (source === discoveredAssets) {
-              selectIdx--;
-              selectOrder.pop();
-              return [{ siteId }];
-            }
-            return existing ? [{ id: existing }] : [];
+          where: () => ({ limit: () => {
+            const result = () => {
+              if (source === discoveredAssets) {
+                selectIdx--;
+                selectOrder.pop();
+                return [{ siteId }];
+              }
+              return existing ? [typeof existing === 'string' ? { id: existing, ...buildCompiledNetworkMonitor(makeDef()) } : existing] : [];
+            };
+            return { then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve(result()).then(resolve), for: async () => result() };
           } }),
         }),
       };
@@ -417,6 +420,27 @@ describe('network_check compiles to a managed network_monitors row (#5291 W04)',
     expect(networkUpdates).toHaveLength(1);
     expect(networkUpdates[0].values).toMatchObject({ assetId: null, siteId: null });
     expect(Object.keys(networkUpdates[0].values).some(key => key.startsWith('tls'))).toBe(false);
+  });
+
+  it.each([
+    ['URL change', 'https://new.example.com', false],
+    ['rename only', 'https://old.example.com', true],
+  ])('invalidates TLS evidence only for execution identity changes: %s', async (_label, target, preserve) => {
+    const observations = { tlsState: 'valid', tlsNotAfter: new Date(), tlsIssuer: 'issuer', tlsObservedHost: 'old.example.com', tlsObservedAt: new Date() };
+    const tx = makeTx({ networkMonitors: { id: 'nm-1', monitorType: 'http_check', target: 'https://old.example.com', config: { url: 'https://old.example.com' }, ...observations } });
+    await compileMonitorInTx(tx, makeDef({ name: 'Renamed check', condition: { checkType: 'http_check', target } }));
+    const update = tx._updates.find((u: { values: Record<string, unknown> }) => u.values.monitorType)?.values;
+    expect(update).toBeDefined();
+    for (const [key, value] of Object.entries(observations)) {
+      expect({ ...observations, ...update }[key]).toEqual(preserve ? value : null);
+    }
+  });
+
+  it('preserves TLS evidence when adopting an equivalent URL stored only in the target column', async () => {
+    const tx = makeTx({ networkMonitors: { id: 'legacy', monitorType: 'http_check', target: 'https://example.com', config: {} } }, 'legacy');
+    await compileMonitorInTx(tx, makeDef({ condition: { checkType: 'http_check', target: 'https://example.com' } }), { adoptNetworkMonitorId: 'legacy' });
+    const update = tx._updates.find((u: { values: Record<string, unknown> }) => u.values.monitorType)?.values;
+    expect(Object.keys(update).some(key => key.startsWith('tls'))).toBe(false);
   });
 
   it('rejects a row the conditional adoption update cannot acquire', async () => {

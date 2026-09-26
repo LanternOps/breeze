@@ -94,7 +94,6 @@ describe('network check conversion routes', () => {
     for (const [auth, permissions] of [[{ allowedSiteIds }, undefined], [{}, { allowedSiteIds }]] as const) {
       for (const [path, method, body] of [
         [`/network-checks?orgId=${ORG}`, 'GET', undefined],
-        [`/pending?orgId=${ORG}`, 'GET', undefined],
         ['/network-checks/convert', 'POST', { orgId: ORG, previewHash: HASH }],
       ] as const) {
         const response = await request(path, method, body, auth, permissions);
@@ -104,6 +103,19 @@ describe('network check conversion routes', () => {
     }
     expect(m.networkPreview).not.toHaveBeenCalled();
     expect(m.networkConvert).not.toHaveBeenCalled();
+  });
+  it.each([
+    ['auth site ceiling', { allowedSiteIds: [OTHER] }, undefined],
+    ['permissions site ceiling', {}, { allowedSiteIds: [OTHER] }],
+    ['empty permissions site ceiling', {}, { allowedSiteIds: [] }],
+    ['exact-device ceiling', { allowedDeviceIds: [OTHER] }, undefined],
+  ] satisfies Array<[string, Partial<AuthContext>, unknown]>)('preserves pending reads and hides network counts for %s', async (_name, auth, permissions) => {
+    const response = await request(`/pending?orgId=${ORG}`, 'GET', undefined, auth, permissions);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      data: { policies: 1, rows: 2, networkChecks: 0, pendingPolicies: [], unconvertible: [], sweep: null },
+    });
+    expect(m.counts).toHaveBeenCalledOnce();
   });
   it('requires authentication, read/write permission, MFA and unrestricted devices', async () => {
     m.authenticated = false;

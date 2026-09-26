@@ -5,6 +5,7 @@ import type { MonitorConversionOutputRow } from '../../../db/schema/monitorConve
 import type { AuthContext } from '../../../middleware/auth';
 import { canMutateOrgWideGovernance } from '../../siteCeilingAccess';
 import type { DbExecutor } from '../monitorCompiler';
+import { networkIdentityTlsReset } from '../networkIdentity';
 import { carryOpenAlerts } from './history';
 import { inCallerTransaction, lockConversion } from './convert';
 import { canonical, sha } from './mapping';
@@ -70,38 +71,46 @@ export async function retireNetworkCheck(sourceId: string, reason: string, auth:
   return inCallerTransaction(auth, tx => retireNetworkCheckInTx(tx, sourceId, reason, auth));
 }
 
-/** Clearing evidence is limited to a changed execution identity, not a rename or interval edit. */
-export function networkIdentityTlsReset(before: Pick<Row, 'monitorType' | 'target' | 'config'>,
-  after: Pick<Row, 'monitorType' | 'target' | 'config'>) {
-  const identity = (row: typeof before) => {
-    const config = (row.config ?? {}) as Record<string, unknown>;
-    return canonical([row.monitorType, row.target, config.url ?? null, config.host ?? null, config.port ?? null]);
-  };
-  return identity(before) === identity(after) ? {} : {
-    tlsState: null, tlsNotAfter: null, tlsIssuer: null, tlsObservedHost: null, tlsObservedAt: null,
-  };
-}
-
 export async function revertNetworkCheckConversionInTx(tx: DbExecutor, conversion: Conversion, auth: AuthContext): Promise<void> {
   assertAccess(conversion.orgId, auth);
   if (!isRevertAvailable('network_monitors')) throw new NetworkHistoryError('conversion_revert_unavailable', 409);
   await lockConversion(tx, conversion);
-  const [entry] = await tx.select().from(monitorConversions).where(eq(monitorConversions.id, conversion.id)).for('update');
+  let [entry] = await tx.select().from(monitorConversions).where(eq(monitorConversions.id, conversion.id));
   if (!entry || entry.revertedAt) throw new NetworkHistoryError('already_reverted', 409);
   assertAccess(entry.orgId, auth);
   if (entry.sourceTable !== 'network_monitors') throw new NetworkHistoryError('source_not_found', 404);
   if (entry.sourceState?.sourceReleased === true) throw new NetworkHistoryError('source_released', 409);
+  const initialOutputs = await tx.select().from(monitorConversionOutputs).where(eq(monitorConversionOutputs.conversionId, entry.id));
+  const ids = [...new Set(initialOutputs.flatMap(o => o.monitorId ? [o.monitorId] : []))].sort();
+  // Global row-lock order: monitor_definitions -> network_monitors -> ledger rows.
+  // Read output ownership without locking first; the serializable caller transaction
+  // retries if a concurrent deletion/revert changes it before these locks are held.
+  const definitions = new Map<string, Definition>();
+  for (const id of ids) {
+    const [definition] = await tx.select().from(monitorDefinitions).where(eq(monitorDefinitions.id, id)).for('update');
+    if (definition) definitions.set(id, definition);
+  }
   const [row] = await tx.select().from(networkMonitors)
     .where(and(eq(networkMonitors.id, entry.sourceId), eq(networkMonitors.orgId, entry.orgId))).for('update');
+  const [lockedEntry] = await tx.select().from(monitorConversions).where(eq(monitorConversions.id, conversion.id)).for('update');
+  if (!lockedEntry || lockedEntry.revertedAt) throw new NetworkHistoryError('already_reverted', 409);
+  if (lockedEntry.sourceState?.sourceReleased === true) throw new NetworkHistoryError('source_released', 409);
+  if (lockedEntry.orgId !== entry.orgId || lockedEntry.sourceId !== entry.sourceId || lockedEntry.sourceTable !== 'network_monitors') {
+    throw new NetworkHistoryError('source_not_found', 404);
+  }
+  entry = lockedEntry;
+  assertAccess(entry.orgId, auth);
   if (!row) throw new NetworkHistoryError('source_not_found', 404);
   const source = entry.networkSourceSnapshot as NetworkSourceSnapshot | null;
   if (!source) throw new NetworkHistoryError('network_source_snapshot_missing', 409);
   const outputs = await tx.select().from(monitorConversionOutputs).where(eq(monitorConversionOutputs.conversionId, entry.id)).for('update');
-  const ids = [...new Set(outputs.flatMap(o => o.monitorId ? [o.monitorId] : []))];
-  if (row.managedByMonitorId && !ids.includes(row.managedByMonitorId)) throw new NetworkHistoryError('network_revert_in_use', 409);
+  const lockedIds = [...new Set(outputs.flatMap(o => o.monitorId ? [o.monitorId] : []))].sort();
+  if (canonical(ids) !== canonical(lockedIds) || (row.managedByMonitorId && !ids.includes(row.managedByMonitorId))) {
+    throw new NetworkHistoryError('network_revert_in_use', 409);
+  }
   const links = new Set<string>();
   for (const id of ids) {
-    const [definition] = await tx.select().from(monitorDefinitions).where(eq(monitorDefinitions.id, id)).for('update');
+    const definition = definitions.get(id);
     if (!definition || definition.orgId !== entry.orgId) throw new NetworkHistoryError('network_revert_in_use', 409);
     const [other] = await tx.select({ id: monitorConversions.id }).from(monitorConversionOutputs)
       .innerJoin(monitorConversions, eq(monitorConversions.id, monitorConversionOutputs.conversionId))

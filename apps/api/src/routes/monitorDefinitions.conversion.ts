@@ -101,7 +101,7 @@ monitorConversionRoutes.get('/ledger', read,
     cursor: z.string().uuid().optional(), limit: z.coerce.number().int().min(1).max(100).default(25) })), async (c) => {
     return c.json(await listConversionLedger(c.req.valid('query'), c.get('auth')));
   });
-monitorConversionRoutes.get('/pending', read, networkGovernance,
+monitorConversionRoutes.get('/pending', read,
   zValidator('query', z.object({ orgId: z.string().uuid().optional() })), async (c) => {
     const auth = c.get('auth');
     const orgId = c.req.valid('query').orgId ?? auth.orgId;
@@ -112,7 +112,9 @@ monitorConversionRoutes.get('/pending', read, networkGovernance,
       includePartnerWide: canManagePartnerWidePolicies(auth),
     });
     const report = await readRetirementReport(auth, orgId);
-    return c.json({ data: { policies: counts.policies, rows: counts.rows, pendingPolicies: counts.pendingPolicies, networkChecks: counts.networkChecks, ...report } });
+    const networkChecks = canMutateOrgWideGovernance(auth) && !Array.isArray(c.get('permissions')?.allowedSiteIds)
+      ? counts.networkChecks : 0;
+    return c.json({ data: { policies: counts.policies, rows: counts.rows, pendingPolicies: counts.pendingPolicies, networkChecks, ...report } });
   });
 monitorConversionRoutes.get('/policies/:policyId/preview', read,
   zValidator('param', policyParam), async (c) => {

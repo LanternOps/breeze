@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import { buildMonitorCommand } from '../../monitorCommands';
+import { buildCompiledNetworkMonitor } from '../monitorCompiler';
 import type { AuthContext } from '../../../middleware/auth';
 import { mapNetworkMonitorToDefinition, missingNetworkCheckPrerequisites, previewNetworkCheckConversion, convertNetworkChecks, networkPreviewHash } from './networkChecks';
 vi.mock('./convert', () => ({ inCallerTransaction: vi.fn(), lockConversion: vi.fn() }));
@@ -6,6 +8,30 @@ const row = (over: Record<string, unknown> = {}) => ({ id: 'nm', orgId: 'org', m
 const rule = (over: Record<string, unknown> = {}) => ({ id: 'rule', monitorId: 'nm', condition: 'offline', threshold: null, severity: 'high', message: null, isActive: true, retiredAt: null, ...over }) as never;
 describe('network conversion mapper', () => {
   it('preserves the probe and exact offline predicate', () => expect(mapNetworkMonitorToDefinition(row(), [rule()])).toMatchObject({ ok: true, mapping: { severity: 'high', deliveryMode: 'inherit', condition: { checkType: 'icmp_ping', count: 4, consecutiveFailures: 1, degradedIsFailure: false } } }));
+  it.each([
+    ['icmp_ping', { target: 'override.example.com', timeout: 12 }, 'override.example.com'],
+    ['tcp_port', { target: 'override.example.com', timeout: 12, port: 443 }, 'override.example.com'],
+    ['http_check', { target: 'ignored.example.com', timeout: 12, url: 'https://override.example.com' }, 'https://override.example.com'],
+    ['http_check', { target: 'ignored.example.com', timeout: 12, url: '' }, 'example.com'],
+    ['dns_check', { target: 'ignored.example.com', timeout: 12, hostname: '' }, 'example.com'],
+  ])('preserves effective legacy %s execution values', (monitorType, config, target) => {
+    const legacy = row({ monitorType, config });
+    const mapped = mapNetworkMonitorToDefinition(legacy, [rule()]);
+    expect(mapped).toMatchObject({ ok: true, mapping: { condition: { target, timeoutSeconds: 12 }, notes: [] } });
+    if (!mapped.ok) return;
+    const compiled = buildCompiledNetworkMonitor({ id: 'definition', name: 'Converted', kind: 'network_check', orgId: 'org', enabled: true, condition: mapped.mapping.condition } as never);
+    const before = buildMonitorCommand(legacy).payload;
+    const after = buildMonitorCommand({ ...compiled, id: 'nm' } as never).payload;
+    const targetKey = monitorType === 'http_check' ? 'url' : monitorType === 'dns_check' ? 'hostname' : 'target';
+    expect(after[targetKey]).toEqual(before[targetKey]);
+    expect(after.timeout).toEqual(before.timeout);
+  });
+  it.each([{ monitorId: 'different-check' }, { timeout: 301 }, { target: { host: 'unrepresentable' } }])('refuses an unrepresentable command override %j', config => {
+    expect(mapNetworkMonitorToDefinition(row({ config }), [rule()])).toEqual({ ok: false, reason: 'unconvertible:config_override_unrepresentable' });
+  });
+  it('allows an unchanged monitorId override', () => {
+    expect(mapNetworkMonitorToDefinition(row({ config: { monitorId: 'nm' } }), [rule()])).toMatchObject({ ok: true, mapping: { notes: [] } });
+  });
   it('pins legacy redirect default even for expected 3xx', () => expect(mapNetworkMonitorToDefinition(row({ monitorType: 'http_check', config: { url: 'https://example.com', expectedStatus: 302 } }), [rule()])).toMatchObject({ ok: true, mapping: { condition: { target: 'https://example.com', expectStatus: 302, followRedirects: true } } }));
   it.each([
     [[], 'no_active_rules'], [[rule({ isActive: false })], 'no_active_rules'],

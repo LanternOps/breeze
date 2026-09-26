@@ -9,6 +9,7 @@ import { discoveredAssets } from '../../db/schema/discovery';
 import { networkMonitors } from '../../db/schema/monitors';
 import type { MonitorDefinitionRow } from '../../db/schema/monitorDefinitions';
 import { getMonitorKindSpec } from './kinds';
+import { networkIdentityTlsReset } from './networkIdentity';
 import {
   replaceAutomationResourceBindings,
   resolveAutomationReferencesForOwner,
@@ -293,11 +294,20 @@ async function upsertManaged<T extends { id: string }>(
   // that as a conflict target is version-dependent in Drizzle. Both statements
   // run inside the caller's transaction, so the pair is still atomic.
   const anyTable = table as unknown as typeof alertRules;
-  const [existing] = await tx
-    .select({ id: anyTable.id })
-    .from(anyTable)
-    .where(eq(anyTable.managedByMonitorId, monitorId))
-    .limit(1);
+  let existing: { id: string } | undefined;
+  if (table === networkMonitors) {
+    const [network] = await tx.select({ id: networkMonitors.id, monitorType: networkMonitors.monitorType,
+      target: networkMonitors.target, config: networkMonitors.config })
+      .from(networkMonitors).where(eq(networkMonitors.managedByMonitorId, monitorId)).limit(1).for('update');
+    existing = network;
+    if (network) {
+      type Identity = Parameters<typeof networkIdentityTlsReset>[0];
+      values = { ...values, ...networkIdentityTlsReset(network, values as Identity) };
+    }
+  } else {
+    [existing] = await tx.select({ id: anyTable.id }).from(anyTable)
+      .where(eq(anyTable.managedByMonitorId, monitorId)).limit(1);
+  }
 
   if (existing) {
     const [updated] = await tx

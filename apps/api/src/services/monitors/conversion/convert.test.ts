@@ -84,7 +84,7 @@ vi.mock('./lifecycle', () => ({ isRevertAvailable: m.lifecycle, findLiveTargetDe
 vi.mock('../monitorService', () => ({ createMonitorDefinition: vi.fn(), deleteMonitorDefinition: vi.fn() }));
 vi.mock('../../alertCooldown', () => ({ rekeyConfigPolicyCooldowns: vi.fn(), rekeyCooldownsBackToConfigPolicy: vi.fn() }));
 import { rekeyConfigPolicyCooldowns, rekeyCooldownsBackToConfigPolicy } from '../../alertCooldown';
-import { buildPolicyConversionPreview, previewPolicyConversion, convertPolicy, retireSource, revertConversion, convertPartnerLegacy, partnerPreviewHash, previewPartnerConversion, previewTemplateGroup, convertTemplateGroup, rekeyCommittedCooldowns } from './convert';
+import { inCallerTransaction, buildPolicyConversionPreview, previewPolicyConversion, convertPolicy, retireSource, revertConversion, convertPartnerLegacy, partnerPreviewHash, previewPartnerConversion, previewTemplateGroup, convertTemplateGroup, rekeyCommittedCooldowns } from './convert';
 import { alertTemplates, alertRules, configPolicyMonitors, monitorConversions, monitorConversionOutputs, networkMonitors, organizations, sites, partners } from '../../../db/schema';
 vi.mock('../../configurationPolicy', () => ({ createConfigPolicy: vi.fn(), assignPolicy: vi.fn(), addFeatureLink: vi.fn() }));
 import { createConfigPolicy, assignPolicy, addFeatureLink } from '../../configurationPolicy';
@@ -511,8 +511,8 @@ it('dispatches network revert before generic source loading rejects a retained n
     id: 'ledger', orgId, partnerId, sourceTable: 'network_monitors', sourceId: id,
     policyId: null, sourceState: { name: networkSource.name }, networkSourceSnapshot: { ...snapshot, rules: [] }, revertedAt: null,
   };
-  const { tx, writes } = mutationTx([[ledger], [{ partnerId: 'p' }], [ledger],
-    [{ ...networkSource, retiredAt: new Date(), retiredReason: 'operator', isActive: false }], []]);
+  const { tx, writes } = mutationTx([[ledger], [{ partnerId: 'p' }], [ledger], [],
+    [{ ...networkSource, retiredAt: new Date(), retiredReason: 'operator', isActive: false }], [ledger], []]);
   m.transaction.mockImplementationOnce(async fn => fn(tx));
   await expect(revertConversion('ledger', auth)).resolves.toBeUndefined();
   expect(m.context).toHaveBeenLastCalledWith({}, expect.any(Function), { isolationLevel: 'serializable' });
@@ -997,4 +997,18 @@ it('interactive conversion adopts a network-only partner through the shared exec
   m.transaction.mockImplementationOnce(async fn => h.tx.transaction(fn));
   expect(await convertPartnerLegacy('p', preview.previewHash, partnerAuth)).toEqual({ policies: 1, converted: 1, unconvertible: 0 });
   expect(m.networkAdopt).toHaveBeenLastCalledWith('o', preview.previewHash, partnerAuth, expect.anything(), [{ id: 'network' }], h.tx);
+});
+
+it.each(['40001', '40P01'])('retries an aborted caller transaction after PostgreSQL %s', async code => {
+  m.context.mockRejectedValueOnce(new Error('wrapped transaction conflict', { cause: { code } }));
+  const work = vi.fn(async () => 'reverted');
+  await expect(inCallerTransaction(auth, work)).resolves.toBe('reverted');
+  expect(m.context).toHaveBeenCalledTimes(2);
+  expect(work).toHaveBeenCalledTimes(1);
+});
+
+it('maps exhausted deadlock retries to the existing stale-preview conflict', async () => {
+  m.context.mockRejectedValueOnce({ code: '40P01' }).mockRejectedValueOnce({ code: '40P01' });
+  await expect(inCallerTransaction(auth, vi.fn())).rejects.toMatchObject({ code: 'preview_stale' });
+  expect(m.context).toHaveBeenCalledTimes(2);
 });

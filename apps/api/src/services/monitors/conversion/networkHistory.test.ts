@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { AuthContext } from '../../../middleware/auth';
-import { alerts, monitorConversions, networkMonitors, networkMonitorAlertRules, monitorDefinitions } from '../../../db/schema';
+import { alerts, monitorConversions, networkMonitors, networkMonitorAlertRules, monitorDefinitions, monitorConversionOutputs } from '../../../db/schema';
 import { carryNetworkAlerts, snapshotNetworkSource, retireNetworkCheckInTx, revertNetworkCheckConversionInTx } from './networkHistory';
 import { OPEN_ALERT_STATUSES } from './loadSources';
 
@@ -166,6 +166,32 @@ describe('revertNetworkCheckConversionInTx', () => {
   const entry = { id: 'conversion', orgId: 'org', sourceTable: 'network_monitors', sourceId: 'legacy',
     policyId: null, revertedAt: null, networkSourceSnapshot: snapshot };
 
+  it('locks definitions before probes, then ledger rows, matching update and delete', async () => {
+    const output = { monitorId: 'definition', movedAlertRefs: [] };
+    const rows = new Map<unknown, unknown[]>([
+      [monitorDefinitions, [{ id: 'definition', orgId: 'org' }]],
+      [networkMonitors, [{ ...source, managedByMonitorId: 'definition' }]],
+      [monitorConversions, [entry]], [monitorConversionOutputs, [output]],
+    ]);
+    const { tx } = executor([]);
+    const locks: unknown[] = [];
+    tx.select.mockImplementation(() => {
+      let table: unknown;
+      let joined = false;
+      const query: Record<string, unknown> = {};
+      query.from = (value: unknown) => { table = value; return query; };
+      query.innerJoin = () => { joined = true; return query; };
+      query.for = () => { locks.push(table); return query; };
+      for (const method of ['where', 'limit', 'orderBy']) query[method] = () => query;
+      query.then = (resolve: (value: unknown[]) => unknown) => Promise.resolve(joined ? [] : rows.get(table) ?? []).then(resolve);
+      return query;
+    });
+    await revertNetworkCheckConversionInTx(tx as never, entry as never, auth);
+    expect(locks.slice(0, 4)).toEqual([
+      monitorDefinitions, networkMonitors, monitorConversions, monitorConversionOutputs,
+    ]);
+  });
+
   it('refuses a released source with a clear conflict before any writes', async () => {
     const released = { ...entry, sourceState: { sourceReleased: true } };
     const { tx, writes, deletes } = executor([[released], [{ ...source, isActive: false, retiredReason: 'monitor_deleted' }], []]);
@@ -176,7 +202,7 @@ describe('revertNetworkCheckConversionInTx', () => {
   });
 
   it('restores a zero-output retirement and preserves its site and rule states', async () => {
-    const { tx, writes, deletes } = executor([[entry], [{ ...source, isActive: false, retiredAt: new Date() }], []]);
+    const { tx, writes, deletes } = executor([[entry], [], [{ ...source, isActive: false, retiredAt: new Date() }], [entry], []]);
     await revertNetworkCheckConversionInTx(tx as never, entry as never, auth);
     expect(writes.find(write => write.table === networkMonitors)?.values).toMatchObject({
       name: 'Gateway', siteId: 'site', isActive: true, retiredAt: null, retiredReason: null, managedByMonitorId: null,
@@ -192,7 +218,7 @@ describe('revertNetworkCheckConversionInTx', () => {
       context: { source: 'network_monitor', monitorId: 'legacy', alertRuleId: 'rule' } }];
     const output = { monitorId: 'definition', movedAlertRefs: refs };
     const later = { id: 'later-alert', status: 'resolved', ruleId: 'compiled', monitorId: 'definition', context: { source: 'monitor' } };
-    const { tx, writes, deletes } = executor([[entry], [{ ...source, managedByMonitorId: 'definition' }], [output], [{ id: 'definition', orgId: 'org' }], [], [], [later]]);
+    const { tx, writes, deletes } = executor([[entry], [output], [{ id: 'definition', orgId: 'org' }], [{ ...source, managedByMonitorId: 'definition' }], [entry], [output], [], [], [later]]);
     await revertNetworkCheckConversionInTx(tx as never, entry as never, auth);
     const alertWrites = writes.filter(write => write.table === alerts);
     expect(alertWrites).toHaveLength(2);
@@ -213,7 +239,7 @@ describe('revertNetworkCheckConversionInTx', () => {
     { other: [{ id: 'other-conversion' }], attachments: [] },
     { other: [], attachments: [{ policyId: 'foreign-policy' }] },
   ])('refuses outputs used by another conversion or policy before writes (%j)', async ({ other, attachments }) => {
-    const { tx, writes, deletes } = executor([[entry], [source], [{ monitorId: 'definition', movedAlertRefs: [] }], [{ id: 'definition', orgId: 'org' }], other, attachments]);
+    const { tx, writes, deletes } = executor([[entry], [{ monitorId: 'definition', movedAlertRefs: [] }], [{ id: 'definition', orgId: 'org' }], [source], [entry], [{ monitorId: 'definition', movedAlertRefs: [] }], other, attachments]);
     await expect(revertNetworkCheckConversionInTx(tx as never, entry as never, auth)).rejects.toMatchObject({ code: 'network_revert_in_use', status: 409 });
     expect(writes).toEqual([]);
     expect(deletes).toEqual([]);
@@ -222,7 +248,7 @@ describe('revertNetworkCheckConversionInTx', () => {
   it('restores asset binding to the asset current site and invalidates changed endpoint TLS evidence', async () => {
     const bound = { ...entry, networkSourceSnapshot: { ...snapshot, assetId: 'asset', siteId: 'old-site' } };
     const edited = { ...source, assetId: 'asset', siteId: 'new-site', target: 'https://changed.example.com', tlsState: 'observed' };
-    const { tx, writes } = executor([[bound], [edited], [], [{ id: 'asset', orgId: 'org', siteId: 'new-site' }]]);
+    const { tx, writes } = executor([[bound], [], [edited], [bound], [], [{ id: 'asset', orgId: 'org', siteId: 'new-site' }]]);
     await revertNetworkCheckConversionInTx(tx as never, bound as never, auth);
     expect(writes.find(write => write.table === networkMonitors)?.values).toMatchObject({
       assetId: 'asset', siteId: 'new-site', target: source.target,
@@ -231,7 +257,7 @@ describe('revertNetworkCheckConversionInTx', () => {
   });
 
   it('preserves TLS evidence when the endpoint identity is unchanged', async () => {
-    const { tx, writes } = executor([[entry], [source], []]);
+    const { tx, writes } = executor([[entry], [], [source], [entry], []]);
     await revertNetworkCheckConversionInTx(tx as never, entry as never, auth);
     const update = writes.find(write => write.table === networkMonitors)?.values ?? {};
     expect(Object.keys(update).some(key => key.startsWith('tls'))).toBe(false);
@@ -246,7 +272,7 @@ describe('revertNetworkCheckConversionInTx', () => {
 
   it('refuses a missing snapshot without writes', async () => {
     const missing = { ...entry, networkSourceSnapshot: null };
-    const { tx, writes } = executor([[missing], [source], []]);
+    const { tx, writes } = executor([[missing], [], [source], [missing], []]);
     await expect(revertNetworkCheckConversionInTx(tx as never, missing as never, auth)).rejects.toMatchObject({ code: 'network_source_snapshot_missing', status: 409 });
     expect(writes).toEqual([]);
   });

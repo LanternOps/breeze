@@ -4,6 +4,7 @@ import { alerts, configurationPolicies, configPolicyAssignments, configPolicyFea
 import type { AuthContext } from '../../../middleware/auth';
 import { addFeatureLink, assignPolicy, createConfigPolicy } from '../../configurationPolicy';
 import { canMutateOrgWideGovernance } from '../../siteCeilingAccess';
+import { buildMonitorCommand } from '../../monitorCommands';
 import { createMonitorDefinition } from '../monitorService';
 import type { DbExecutor } from '../monitorCompiler';
 import * as networkCheckRuntime from '../../alertConditions/handlers/networkCheck';
@@ -23,6 +24,7 @@ export const NETWORK_CHECK_UNCONVERTIBLE = {
   noActiveRules: 'unconvertible:no_active_rules', multipleRules: 'unconvertible:multiple_network_rules',
   predicate: 'unconvertible:network_predicate_unsupported', threshold: 'unconvertible:network_threshold_out_of_range',
   siteBinding: 'unconvertible:site_binding_unrepresentable',
+  configOverride: 'unconvertible:config_override_unrepresentable',
 } as const;
 export const NETWORK_CHECKS_POLICY_NAME = (orgName: string) => `Network checks — ${orgName}`;
 export interface NetworkCheckMapping {
@@ -52,15 +54,20 @@ export function mapNetworkMonitorToDefinition(row: Row, rules: Rule[]): { ok: tr
   if (!row.orgId) return refuse(NETWORK_CHECK_UNCONVERTIBLE.noOrg);
   if (row.siteId && !row.assetId) return refuse(NETWORK_CHECK_UNCONVERTIBLE.siteBinding);
   const config = (row.config ?? {}) as Record<string, unknown>;
+  // The legacy command spreads config after the columns. Read the same payload
+  // so adoption preserves target/timeout overrides and HTTP/DNS fallback rules.
+  const { payload } = buildMonitorCommand(row);
+  if (payload.monitorId !== row.id) return refuse(NETWORK_CHECK_UNCONVERTIBLE.configOverride);
+  const targetKey = row.monitorType === 'http_check' ? 'url' : row.monitorType === 'dns_check' ? 'hostname' : 'target';
   const condition: Record<string, unknown> = {
     checkType: row.monitorType,
-    target: row.monitorType === 'http_check' ? config.url ?? row.target : row.monitorType === 'dns_check' ? config.hostname ?? row.target : row.target,
-    ...(row.assetId ? { assetId: row.assetId } : {}), pollingIntervalSeconds: row.pollingInterval, timeoutSeconds: row.timeout,
+    target: payload[targetKey],
+    ...(row.assetId ? { assetId: row.assetId } : {}), pollingIntervalSeconds: row.pollingInterval, timeoutSeconds: payload.timeout,
   };
   const keys = new Set<string>(NETWORK_CHECK_OPTION_KEYS[row.monitorType]);
   const ignored: string[] = [];
   for (const [legacyKey, value] of Object.entries(config)) {
-    if (value == null || legacyKey === 'url' || legacyKey === 'hostname') continue;
+    if (value == null || ['url', 'hostname', 'target', 'timeout', 'monitorId'].includes(legacyKey)) continue;
     const key = legacyKey === 'expectedStatus' ? 'expectStatus' : legacyKey;
     if (keys.has(key)) condition[key] = value; else ignored.push(legacyKey);
   }
@@ -76,7 +83,12 @@ export function mapNetworkMonitorToDefinition(row: Row, rules: Rule[]): { ok: tr
     consecutiveFailures = Math.floor(n) + 1;
   } else if (rule.condition !== 'offline') return refuse(NETWORK_CHECK_UNCONVERTIBLE.predicate);
   const parsed = monitorConditionSchemas.network_check.safeParse({ ...condition, consecutiveFailures, degradedIsFailure: false });
-  if (!parsed.success) return refuse(NETWORK_CHECK_UNCONVERTIBLE.conditionInvalid);
+  if (!parsed.success) {
+    const invalidOverride = parsed.error.issues.some(issue =>
+      (issue.path[0] === 'target' && Object.hasOwn(config, targetKey))
+      || (issue.path[0] === 'timeoutSeconds' && Object.hasOwn(config, 'timeout')));
+    return refuse(invalidOverride ? NETWORK_CHECK_UNCONVERTIBLE.configOverride : NETWORK_CHECK_UNCONVERTIBLE.conditionInvalid);
+  }
   return { ok: true, mapping: { condition: parsed.data, severity: rule.severity, deliveryMode: 'inherit', description: rule.message ?? undefined,
     notes: ignored.length ? [`Ignored config keys with no monitor equivalent: ${ignored.sort().join(', ')}`] : [] } };
 }
