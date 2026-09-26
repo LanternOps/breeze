@@ -32,6 +32,23 @@ const {
 } = await import('./monitorCompiler');
 
 import type { MonitorDefinitionRow } from '../../db/schema/monitorDefinitions';
+import { networkMonitorAlertRules, networkMonitors } from '../../db/schema/monitors';
+import { getTenantExportPolicyRegistry } from '../tenantExportPolicyRegistry';
+
+describe('W05e retirement columns', () => {
+  it('network_monitors and network_monitor_alert_rules carry retired_at / retired_reason', () => {
+    expect(networkMonitors.retiredAt.name).toBe('retired_at');
+    expect(networkMonitors.retiredReason.name).toBe('retired_reason');
+    expect(networkMonitorAlertRules.retiredAt.name).toBe('retired_at');
+    expect(networkMonitorAlertRules.retiredReason.name).toBe('retired_reason');
+  });
+
+  it('includes network monitor retirement metadata in tenant exports', () => {
+    const columns = getTenantExportPolicyRegistry().network_monitors?.columns;
+    expect(columns?.retired_at?.decision).toBe('include');
+    expect(columns?.retired_reason?.decision).toBe('include');
+  });
+});
 
 const SCRIPT_ID = 'a0000000-0000-4000-8000-000000000001';
 
