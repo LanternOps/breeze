@@ -40,7 +40,9 @@ type Snapshot = {
   label: string;
   size?: string;
   sizeBytes?: number | null;
-  status?: string;
+  // /backup/snapshots carries no status (a snapshot row only exists once its
+  // backup completed), so the card shows when it was captured instead (#6496).
+  createdAt?: string | null;
   files?: SnapshotFile[];
 };
 
@@ -471,7 +473,7 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                             ? formatBytes(snapshot.sizeBytes)
                             : snapshot.size ?? '--'}
                         </span>
-                        <span>{snapshot.status ?? 'Ready'}</span>
+                        {snapshot.createdAt ? <span>{formatDateTime(snapshot.createdAt)}</span> : null}
                       </div>
                       <div className="mt-2 text-sm font-semibold text-foreground">
                         {snapshot.label}
