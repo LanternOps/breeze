@@ -13,6 +13,7 @@ import { normalizeAutomationActions } from '../automationRuntime';
 import type { AutomationAction } from '../automationRuntime';
 import { getMonitorKindSpec, MonitorValidationError } from './kinds';
 import { compileMonitorInTx, type CompileOptions, type DbExecutor } from './monitorCompiler';
+import { assertNetworkCheckAssetOwner, NetworkCheckAssetError } from './networkCheckAsset';
 import { isPgForeignKeyViolation, pgErrorConstraint } from '../../utils/pgErrors';
 import type {
   CreateMonitorDefinitionInput,
@@ -270,6 +271,13 @@ export async function createMonitorDefinition(
     aiAgentId: input.aiAgentId ?? null,
   });
 
+  try {
+    await assertNetworkCheckAssetOwner(input.kind, shape.condition, owner, executor);
+  } catch (error) {
+    if (error instanceof NetworkCheckAssetError) throw new MonitorValidationError(error.message);
+    throw error;
+  }
+
   return createValidatedMonitorInTx(input, auth, owner, shape, options, executor);
 }
 
@@ -338,6 +346,12 @@ export async function updateMonitorDefinition(
     aiAgentId: input.aiAgentId !== undefined ? input.aiAgentId : existing.aiAgentId,
   };
   const shape = validateDefinitionShape(merged);
+  try {
+    await assertNetworkCheckAssetOwner(merged.kind, shape.condition, existing, executor);
+  } catch (error) {
+    if (error instanceof NetworkCheckAssetError) throw new MonitorValidationError(error.message);
+    throw error;
+  }
 
   const effectiveEscalationPolicyId =
     input.escalationPolicyId !== undefined

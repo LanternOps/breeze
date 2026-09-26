@@ -548,3 +548,43 @@ describe('Fleet Design savepoint executor propagation (W05c2 Task 16)', () => {
     } finally { compile.mockRestore(); }
   });
 });
+
+
+describe('network check asset ownership', () => {
+  const assetId = '33333333-3333-4333-8333-333333333333';
+  const condition = { checkType: 'icmp_ping', target: 'example.com', assetId };
+
+  it('create rejects an asset outside the definition org before writing', async () => {
+    mockSelectQueue([undefined]);
+    await expect(createMonitorDefinition(input({ kind: 'network_check', condition }), auth()))
+      .rejects.toThrow('asset_not_owned');
+    expect(dbMock.transaction).not.toHaveBeenCalled();
+    expect(dbMock.insert).not.toHaveBeenCalled();
+  });
+
+  it('create rejects partner-owned asset bindings without a lookup', async () => {
+    await expect(createMonitorDefinition(input({ ownerScope: 'partner', kind: 'network_check', condition }),
+      auth({ scope: 'partner', partnerOrgAccess: 'all' })))
+      .rejects.toThrow('asset_requires_org_owner');
+    expect(dbMock.select).not.toHaveBeenCalled();
+    expect(dbMock.transaction).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])('validates the merged update against its persisted owner (replacement=%s)', async (replacement) => {
+    mockSelectQueue([existingRow({ kind: 'network_check', condition }), undefined]);
+    await expect(updateMonitorDefinition('monitor-1', replacement ? { condition: { ...condition, assetId: OTHER_PARTNER } } : { name: 'Renamed' }, auth()))
+      .rejects.toThrow('asset_not_owned');
+    expect(dbMock.update).not.toHaveBeenCalled();
+    expect(dbMock.transaction).not.toHaveBeenCalled();
+  });
+
+  it('uses the supplied executor for asset validation and preserves validation errors', async () => {
+    const executor = {
+      select: vi.fn(() => ({ from: () => ({ where: () => ({ limit: async () => [] }) }) })),
+    };
+    await expect(createMonitorDefinition(input({ kind: 'network_check', condition }), auth(), {}, executor as never))
+      .rejects.toBeInstanceOf(MonitorValidationError);
+    expect(executor.select).toHaveBeenCalledTimes(1);
+    expect(dbMock.select).not.toHaveBeenCalled();
+  });
+});

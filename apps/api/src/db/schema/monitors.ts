@@ -58,6 +58,13 @@ export const networkMonitors = pgTable('network_monitors', {
   idOrgSiteUnique: uniqueIndex('network_monitors_id_org_site_uniq').on(table.id,table.orgId,table.siteId),
   siteScopeFk: foreignKey({name:'network_monitors_site_scope_fk',columns:[table.siteId,table.orgId],foreignColumns:[sites.id,sites.orgId]}),
   assetSiteScopeFk: foreignKey({name:'network_monitors_asset_site_scope_fk',columns:[table.assetId,table.orgId,table.siteId],foreignColumns:[discoveredAssets.id,discoveredAssets.orgId,discoveredAssets.siteId]}),
+  assetOrgFk: foreignKey({
+    name: 'network_monitors_asset_org_fk',
+    columns: [table.assetId, table.orgId],
+    foreignColumns: [discoveredAssets.id, discoveredAssets.orgId],
+  }),
+  assetOrgRequired: check('network_monitors_asset_org_required',
+    sql`${table.assetId} IS NULL OR (${table.orgId} IS NOT NULL AND ${table.partnerId} IS NULL)`),
   siteOwnerCheck: check('network_monitors_site_owner_chk',sql`site_id IS NULL OR org_id IS NOT NULL`),
   orgIdIdx: index('network_monitors_org_id_idx').on(table.orgId),
   unmanagedPendingIdx: index('network_monitors_unmanaged_pending_idx')
