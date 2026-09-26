@@ -198,7 +198,7 @@ The thresholds are tunables. Their defaults live in shared constants.
 
 **Hooks** (verified):
 
-- **Script terminal.** `script.completed` and `script.failed` are declared (`eventBus.ts:70-71`) but never emitted. W1 emits them from both terminal-write paths:
+- **Script terminal.** `script.completed` and `script.failed` are declared (`eventBus.ts:70-71`) but never emitted. The automation and webhook forms already offer them as triggers, and automations have no script→script loop guard. W1 therefore does **not** emit these public events: it calls the outcome watcher inline, the way `applyAutomationActionTerminal` is called, from both terminal-write paths (wiring the public events with a loop guard is a separate follow-up):
   - agent results, at `services/commandResultHandlers.ts:612-620`;
   - the reaper and cancel path, at `services/scriptExecutionTerminal.ts:53-65`.
 - **Recovery.** `resolveAlert` publishes `alert.resolved` on every path (`alertService.ts:900`).
@@ -225,7 +225,7 @@ execute ─► pending ─script failed / timeout / os_mismatch─────�
 **Other fix kinds**
 
 - Built-in actions use the same machine, with the action's own result standing in for the script result.
-- Manual steps start at `awaiting_recovery` when the tech clicks **Done**.
+- Manual steps start at `awaiting_recovery` when the tech clicks **Done**. W1 records Done, but nothing creates manual-step suggestions until W2, so manual steps feed memory from W2 onward.
 
 **Exactly-once.** A terminal transition and its aggregate delta commit in one transaction, guarded by `counted_at IS NULL`. Redelivered events are then no-ops.
 
@@ -277,7 +277,7 @@ execute ─► pending ─script failed / timeout / os_mismatch─────�
 
 ## `find_proven_fixes` tool
 
-- **Tier and scope.** Tier 1 and read-only. It takes `alertId | anomalyEpisodeId | deviceId + problem` and returns proven and similar fixes, together with their track records.
+- **Tier and scope.** Tier 1 and read-only. It takes `alertId | anomalyEpisodeId` in W1; a structured `deviceId + problem` input (with device authorization and signature construction) arrives in W2. It returns proven and similar fixes, together with their track records.
 - **Output.** It returns only rows visible under the caller's RLS context, and never another org's private rows.
 - **Registration**, per the `list_remediation_suggestions` precedent (`ecb77c549`):
   - core handler + `aiTools.ts`
@@ -349,11 +349,22 @@ execute ─► pending ─script failed / timeout / os_mismatch─────�
 
 | Wave | Scope | Depends on |
 |---|---|---|
-| **W1: Foundation** | Tables + RLS + all registrations; the signature module; emitting `script.*` events; the outcome watcher + sweeper, with probes extracted from `fixWatch`; free memory attach on new alerts; the `find_proven_fixes` tool; 👍/👎 and Done in the current panel (learning starts on the #7124 matcher) | #7124 merged |
+| **W1: Foundation** | Tables + RLS + all registrations; the signature module; inline script-terminal hooks; the outcome watcher + sweeper, with probes extracted from `fixWatch`; free memory attach on new alerts; the `find_proven_fixes` tool; 👍/👎 and Done in the current panel (learning starts on the #7124 matcher) | #7124 merged |
 | **W2: Research** | The `research` agent kind + provisioning; the `remediation_research` profile + `submit_suggestions` + finalizer; the panel redesign; the Fix memory list; the eval; retiring the keyword matcher from Generate | W1 |
 | **W3: Consumers** | The triage verdict and full runs call memory first; the patch agent recognizes known false failures via memory | W1 (W2 optional) |
 
 **Rollout.** Both memory and research sit behind the existing `ml.remediation_suggestions.enabled` flag. Research additionally requires AI enabled and credits available for the org.
+
+## Amendments at W1 planning (2026-09-26)
+
+Adopted after the W1 plan was cross-checked by Codex:
+
+- **Script terminal hook is internal**, not the public `script.*` events (see Outcome lifecycle).
+- **Anomaly and plain metric-threshold signatures have no discriminator**, so under the broad rule they never auto-attach in W1. Auto-attach fires only for service, process, software and exit-code problems. Anomalies still show under "Similar fixes".
+- **One attempt per source + script.** The existing unique index and `/execute`'s 409 stay; "a re-run creates a new suggestion row" is dropped.
+- **`fix_outcomes` stays with the source org on a device move**, listed in `INTENTIONALLY_NO_ORG_ID` like `ai_agent_fix_watches`, rather than in `CORE_DEVICE_ORG_DENORMALIZED_TABLES`.
+- **`find_proven_fixes` `deviceId + problem` input moves to W2.**
+- **Lookup re-checks the fix script's current ownership** at attach and read time, independent of ambient RLS, because scripts can be re-scoped (partner→org, org→org) without a new version.
 
 ## Open verification items (resolve at plan time)
 
