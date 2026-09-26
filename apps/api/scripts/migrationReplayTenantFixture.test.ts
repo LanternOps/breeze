@@ -31,6 +31,7 @@ describe('migration replay tenant fixture (#5361)', () => {
       'device_disks',
       'device_hardware',
       'device_ip_history',
+      'device_memory_modules',
       'device_network',
       'device_warranty',
       'discovered_assets',
