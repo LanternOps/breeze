@@ -160,6 +160,13 @@
       "label": "Dienst auf dem Gerät neu starten",
       "maxAttempts": "Maximale Neustartversuche",
       "cooldownSeconds": "Neustartwartezeit (Sekunden)"
+    },
+    "networkCheckAsset": {
+      "label": "Gerät",
+      "unbound": "Keine Asset-Bindung",
+      "failed": "Assets konnten nicht geladen werden",
+      "orgRequired": "Wählen Sie eine Organisation als Eigentümer, um ein Asset zu binden.",
+      "pingName": "Ping für {{label}}"
     }
   },
   "kinds": {

@@ -160,6 +160,13 @@
       "label": "Riavvia servizio sul dispositivo",
       "maxAttempts": "Tentativi massimi di riavvio",
       "cooldownSeconds": "Attesa tra riavvii (secondi)"
+    },
+    "networkCheckAsset": {
+      "label": "Risorsa",
+      "unbound": "Nessun asset associato",
+      "failed": "Impossibile caricare gli asset",
+      "orgRequired": "Seleziona un'organizzazione proprietaria per associare un asset.",
+      "pingName": "Ping a {{label}}"
     }
   },
   "kinds": {

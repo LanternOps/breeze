@@ -160,6 +160,13 @@
       "label": "Cihazdaki hizmeti yeniden başlat",
       "maxAttempts": "En fazla yeniden başlatma denemesi",
       "cooldownSeconds": "Yeniden başlatma bekleme süresi (saniye)"
+    },
+    "networkCheckAsset": {
+      "label": "Varlık",
+      "unbound": "Bağlı varlık yok",
+      "failed": "Varlıklar yüklenemedi",
+      "orgRequired": "Varlık bağlamak için kuruluş sahipliğini seçin.",
+      "pingName": "{{label}} için ping"
     }
   },
   "kinds": {
