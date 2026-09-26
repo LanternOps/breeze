@@ -29,7 +29,7 @@
   - `orgMergeRegistry` `leave-for-erasure` (both);
   - `CORE_TENANT_EXPORT_POLICY` (both, plus the new columns on `remediation_suggestions` and `alerts`);
   - `DUAL_AXIS_TENANT_TABLES` and `XOR_OWNERSHIP_DUAL_AXIS_TABLES` (`fix_memory`).
-- **Contexts:** request code uses the ambient request `db`. Background code (sweeper, subscribers, erasure hook) uses `inSystemDbContext` from `services/outcomeProbes.ts`, which reuses an existing system context or opens one outside the caller's context. Never hold a request context while writing `fix_memory`. The inline script hook (Task 10) is the one exception to "background uses system scope": it runs in the caller's (possibly org-scoped) transaction, writes only that org's `fix_outcomes` rows, and defers the aggregate to the sweeper's recount pass.
+- **Contexts:** request code uses the ambient request `db`. Background code (sweeper, subscribers, erasure hook) uses `inSystemDbContext` from `services/outcomeProbes.ts`, which reuses an existing system context or opens one outside the caller's context. Never hold a request context while writing `fix_memory`. The inline script hook (Task 10) is the one exception to "background uses system scope": it runs in the caller's (possibly org-scoped) transaction, always inside a savepoint on it, including a caller-supplied executor, so its own SQL failure can never abort the caller. It writes only that org's `fix_outcomes` rows and defers the aggregate to the sweeper's recount pass.
 - **Writes to `fix_memory`** happen only in `services/fixMemory/store.ts`. That file gets an `ALLOWED_WITHOUT_CAPABILITY_CHECK` entry in `partner-wide-write-coverage.test.ts`.
 - **Feature flag:** memory attach, the `find_proven_fixes` tool and Generate all gate on `shouldProduceMlOutput(orgId, 'ml.remediation_suggestions.enabled')`. Outcome recording is not gated: it only exists for suggestions that were already produced under the flag.
 - **Privacy:** `fix_memory` stores counts, hashes, ids and statuses only. No hostnames, alert text, script output, parameters, discriminator values or model prose. Tool output exposes the discriminator *kind*, never its value.
@@ -45,9 +45,17 @@
 These are the five input classes most likely to bite. Each has a pinning test in the task named.
 
 1. **Duplicate or out-of-order delivery, and concurrent writers.** `alert.resolved` / `alert.triggered` can be redelivered (queue mode). The inline script hook, the sweeper, re-votes and rebuilds can all race. A terminal transition and its aggregate must count exactly once, and no writer may overwrite a newer aggregate. Pinned by:
-   - Task 10 (hook CAS);
+   - Task 10 (hook CAS; hook always in a savepoint, so its failure never aborts the caller);
+   - Task 12 (aggregate from the CAS-returned row; lost signature CAS reloads; durable erasure rebuild request);
    - Task 13, "duplicate alert.resolved delivery transitions once";
-   - Task 23, "an already-counted outcome never counts twice", "a rebuild waits for an in-flight recompute" and "a re-vote during a recount is not lost".
+   - Task 23:
+     - "two terminal transitions from the SAME holding snapshot";
+     - "a terminal transition from an unsigned snapshot still aggregates";
+     - "an already-counted outcome never counts twice";
+     - "a rebuild waits for an in-flight recompute";
+     - "a re-vote during a recount is not lost";
+     - "a SQL failure inside the hook…";
+     - "erasure: a rebuild racing the cascade…".
 2. **A human, cleanup or expiry resolve is not recovery.**
    - A tech clicking Resolve, `hardwareHealth/retire`, backup-connection removal, and an anomaly episode that expired offline must all end `inconclusive`, never `holding`/`verified`.
    - An alert that cleared *before* the fix was admitted is `inconclusive` (`cleared_before_fix`).
@@ -130,7 +138,8 @@ These are the five input classes most likely to bite. Each has a pinning test in
 | `apps/api/src/services/alertService.ts` | `resolveAlert(..., resolutionReason)`; persisted + on payload; checkAutoResolve passes `condition_cleared` |
 | `apps/api/src/services/policyAlertBridge.ts`, `jobs/monitorWorker.ts`, `services/scriptExitCodeAlerts.ts`, `services/alertSubjects.ts`, `services/metricAnomalyEpisodeAlerts.ts`, `services/metricAnomalyEpisodeActions.ts`, `services/hardwareHealth/retire.ts`, `services/backupProviders/alerts.ts`, `services/backupProviders/alertsResolve.ts` | Pass a resolution reason |
 | `apps/api/src/jobs/monitorWorker.test.ts`, `apps/api/src/services/backupProviders/alerts.evaluate.test.ts` | Updated call expectations |
-| `apps/api/src/services/commandResultHandlers.ts`, `apps/api/src/services/scriptExecutionTerminal.ts` | Call the inline outcome hook |
+| `apps/api/src/services/commandResultHandlers.ts`, `apps/api/src/services/scriptExecutionTerminal.ts` | Call the inline outcome hook (`scriptExecutionTerminal` executor type gains `'transaction'` for the hook's savepoint) |
+| `apps/api/src/services/commandCancelPropagation.ts` | Type only: `DbExecutor` gains `'transaction'` (it forwards the caller's tx to the hook) |
 | `apps/api/src/services/scriptExecutionTerminal.test.ts`, `apps/api/src/services/commandResultHandlers.exitCodeAlerts.test.ts` | Hook wiring tests |
 | `apps/api/src/services/eventSubscriberIds.ts`, `apps/api/src/services/eventSubscribers.ts` | Two durable subscribers |
 | `apps/api/src/services/workerRegistry.ts`, `workerRegistry.test.ts`, `workerEntrypointClosure.contract.test.ts`, `apps/api/src/jobs/workerReadinessManifest.ts` | Register `fixOutcomeWorker` |
@@ -432,7 +441,7 @@ describe('fix memory schema contract', () => {
       'fixIdentity', 'scriptId', 'scriptVersionId', 'builtinAction', 'playbookId', 'instructionsRef',
       'attempts', 'verifiedCount', 'failedCount', 'recurredCount', 'upVotes', 'downVotes',
       'rollingSuccessRate', 'consecutiveFailures', 'consecutiveVerified', 'recentOutcomes', 'status',
-      'retiredBy', 'retiredAt', 'lastVerifiedAt', 'staleSince', 'createdAt', 'updatedAt',
+      'retiredBy', 'retiredAt', 'lastVerifiedAt', 'staleSince', 'rebuildPendingOrgIds', 'createdAt', 'updatedAt',
     ]) expect(fixMemory, `fixMemory.${key}`).toHaveProperty(key);
   });
 });
@@ -579,6 +588,15 @@ CREATE TABLE IF NOT EXISTS fix_memory (
   retired_at            timestamptz,
   last_verified_at      timestamptz,
   stale_since           timestamptz,
+  -- Durable org-erasure rebuild requests (Task 12 markFixMemoryStaleForOrgErasure).
+  -- Each id is an org whose counted outcomes fed this partner row when its erasure
+  -- started. A rebuild removes an id only once that org's organizations row is
+  -- gone (the cascade deletes it LAST), checked BEFORE the rebuild reads
+  -- contributions. stale_since is cleared only when this is empty, so a rebuild
+  -- that races the cascade, or a failed post-cascade rebuild, can never
+  -- un-stale a row that still counts erased contributions. No FK: the id must
+  -- outlive the org. Partner rows only (org rows die in the org cascade).
+  rebuild_pending_org_ids uuid[] NOT NULL DEFAULT '{}'::uuid[],
   created_at            timestamptz NOT NULL DEFAULT now(),
   updated_at            timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT fix_memory_one_owner_chk CHECK ((org_id IS NULL) <> (partner_id IS NULL)),
@@ -597,6 +615,8 @@ CREATE INDEX IF NOT EXISTS fix_memory_lookup_idx ON fix_memory (signature_versio
 CREATE INDEX IF NOT EXISTS fix_memory_broad_idx ON fix_memory (signature_version, os_type, broad_key);
 CREATE INDEX IF NOT EXISTS fix_memory_script_idx ON fix_memory (script_id) WHERE script_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS fix_memory_stale_idx ON fix_memory (stale_since) WHERE stale_since IS NOT NULL;
+CREATE INDEX IF NOT EXISTS fix_memory_rebuild_pending_idx
+  ON fix_memory (partner_id) WHERE cardinality(rebuild_pending_org_ids) > 0;
 
 ALTER TABLE fix_memory ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fix_memory FORCE ROW LEVEL SECURITY;
@@ -802,6 +822,8 @@ export const fixMemory = pgTable('fix_memory', {
   retiredAt: timestamp('retired_at', { withTimezone: true }),
   lastVerifiedAt: timestamp('last_verified_at', { withTimezone: true }),
   staleSince: timestamp('stale_since', { withTimezone: true }),
+  /** Durable org-erasure rebuild requests; stale_since cannot clear while non-empty (see migration). */
+  rebuildPendingOrgIds: uuid('rebuild_pending_org_ids').array().notNull().default(sql`'{}'::uuid[]`),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -976,8 +998,10 @@ Also in `core.ts`, in the doc comment above `CORE_DEVICE_ORG_DENORMALIZED_TABLES
 ```ts
   // AI Suggested Fixes W1. signature_facets is jsonb -> excludedOpen (CLAUDE.md).
   // signature_key / broad_key are sha256 hex of structured facets, not secrets
-  // (neither matches SUSPICIOUS_NAME_PARTS).
-  "fix_memory": tablePolicy("org_id", {"included":["id","org_id","partner_id","signature_version","signature_key","broad_key","os_type","fix_kind","fix_identity","script_id","script_version_id","builtin_action","playbook_id","instructions_ref","attempts","verified_count","failed_count","recurred_count","up_votes","down_votes","rolling_success_rate","consecutive_failures","consecutive_verified","recent_outcomes","status","retired_by","retired_at","last_verified_at","stale_since","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  // (neither matches SUSPICIOUS_NAME_PARTS). rebuild_pending_org_ids is a uuid[]
+  // of tenant identifiers, not json/jsonb/bytea, so `included` (precedent:
+  // ai_agent_runs.intent_ids).
+  "fix_memory": tablePolicy("org_id", {"included":["id","org_id","partner_id","signature_version","signature_key","broad_key","os_type","fix_kind","fix_identity","script_id","script_version_id","builtin_action","playbook_id","instructions_ref","attempts","verified_count","failed_count","recurred_count","up_votes","down_votes","rolling_success_rate","consecutive_failures","consecutive_verified","recent_outcomes","status","retired_by","retired_at","last_verified_at","stale_since","rebuild_pending_org_ids","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "fix_outcomes": tablePolicy("org_id", {"included":["id","org_id","partner_id","device_id","suggestion_id","source_type","source_id","alert_id","anomaly_episode_id","signature_version","signature_key","broad_key","os_type","fix_kind","fix_identity","script_id","script_version_id","builtin_action","playbook_id","instructions_ref","script_execution_id","state","state_reason","human_vote","voted_by","voted_at","recovered_at","deadline_at","holding_until","terminal_at","counted_at","recount_requested_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["signature_facets"]}),
 ```
 
@@ -2676,11 +2700,14 @@ The 5-minute sweeper stays authoritative. Wiring the public events, with a loop 
   - a failed, timed-out or cancelled run → terminal with `counted_at` set **and** `recount_requested_at` set.
 - The sweeper's recount pass (Task 12 `recomputeForOutcome`, Task 14) then recomputes the aggregate under system scope, within ≤5 minutes, under the single identity lock. Exactly-once still holds: the CAS on `state = 'pending' AND counted_at IS NULL` means a second path (hook vs sweeper) matches zero rows.
 
+**Why the hook ALWAYS writes inside a savepoint, including on a caller-supplied executor.** A PostgreSQL error aborts the whole enclosing transaction even when the JS error is caught; every later statement then fails with 25P02 and the commit rolls back. `propagateCancelledDeviceCommand` (`commandCancelPropagation.ts:90-97`) hands its executor, which is the caller's open transaction for the user-cancel route (`routes/devices/commands.ts:1049`), org move, decommission and the heartbeat claim (`commandClaimEligibility.ts:421`), to `finalizeScriptExecutionTerminal`. That function forwards the executor to this hook. A bare `write(executor)` whose UPDATE failed would therefore silently abort a cancel the hook's `catch` claimed to have survived. So the supplied-executor branch runs `executor.transaction(...)`. That is Drizzle's nested transaction: a driver-owned SAVEPOINT on a tx handle, and on the ambient `db` inside a context, because the `db` proxy resolves `.transaction` to the context's tx (`db/index.ts` `proxiedDb`). It is the same mechanism `withDbTransaction` uses (`db/index.ts:972-976`), whose doc explains why a raw `SAVEPOINT` statement is not enough under postgres.js. The catch sits OUTSIDE the savepoint. `ScriptTerminalExecutor` (`scriptExecutionTerminal.ts`) and `DbExecutor` (`commandCancelPropagation.ts:31`) widen to include `'transaction'`. Every production caller already passes a Drizzle tx or the ambient `db`, and both have it.
+
 **Files:**
 - Create: `apps/api/src/services/fixMemory/scriptTerminalHook.ts`
 - Test: `apps/api/src/services/fixMemory/scriptTerminalHook.test.ts`
 - Modify: `apps/api/src/services/commandResultHandlers.ts` (inside `if (effectiveExecution) { ... }`, after the `evaluateScriptExitCodeAlert` block ~L803)
-- Modify: `apps/api/src/services/scriptExecutionTerminal.ts` (before `return { terminalised: true };`)
+- Modify: `apps/api/src/services/scriptExecutionTerminal.ts` (before `return { terminalised: true };`; widen `ScriptTerminalExecutor` to `Pick<typeof db, 'update' | 'select' | 'transaction'>`)
+- Modify: `apps/api/src/services/commandCancelPropagation.ts` (type only: `type DbExecutor = Pick<typeof db, 'update' | 'select' | 'insert' | 'transaction'>;` at L31)
 - Modify test: `apps/api/src/services/scriptExecutionTerminal.test.ts` (new case)
 - Modify test: `apps/api/src/services/commandResultHandlers.exitCodeAlerts.test.ts` (new case)
 
@@ -2689,12 +2716,12 @@ The 5-minute sweeper stays authoritative. Wiring the public events, with a loop 
 - Produces:
   ```ts
   export type ScriptTerminalStatus = 'completed' | 'failed' | 'timeout' | 'cancelled';
-  export type OutcomeUpdateExecutor = Pick<typeof db, 'update'>;
+  export type OutcomeUpdateExecutor = Pick<typeof db, 'update' | 'transaction'>;
   export function terminalVerdict(status: ScriptTerminalStatus): { state: 'awaiting_recovery' | 'failed' | 'cancelled'; reason: string };
   export async function advanceOutcomesForTerminalExecution(
     input: { executionId: string; status: ScriptTerminalStatus },
     executor?: OutcomeUpdateExecutor,
-  ): Promise<number>; // rows advanced; never throws
+  ): Promise<number>; // rows advanced; never throws; never aborts the caller's transaction
   ```
 
 - [ ] **Step 1: Write the failing tests**
@@ -2759,11 +2786,35 @@ describe('advanceOutcomesForTerminalExecution', () => {
     err.mockRestore();
   });
 
-  it('uses a caller-supplied executor (the reaper’s transaction handle) instead of the ambient db', async () => {
-    const custom = { update: vi.fn(() => ({ set: () => ({ where: () => ({ returning: async () => [{ id: 'o-9' }] }) }) })) };
-    await expect(advanceOutcomesForTerminalExecution({ executionId: 'e-1', status: 'cancelled' }, custom as never)).resolves.toBe(1);
-    expect(custom.update).toHaveBeenCalledTimes(1);
-    expect(h.savepoints).toBe(0);
+  /** A caller's open transaction: `transaction(fn)` is Drizzle's nested transaction (a SAVEPOINT) and hands `fn` the savepoint handle. */
+  function callerTx(savepointUpdate: () => Promise<unknown[]>) {
+    const savepoint = { update: vi.fn(() => ({ set: () => ({ where: () => ({ returning: savepointUpdate }) }) })) };
+    const tx = {
+      update: vi.fn(() => { throw new Error('the hook must never write on the caller’s transaction directly'); }),
+      transaction: vi.fn(async (fn: (sp: unknown) => Promise<unknown>) => fn(savepoint)),
+    };
+    return { tx, savepoint };
+  }
+
+  it('uses a caller-supplied executor (the reaper’s / cancel propagation’s transaction), inside a savepoint on it', async () => {
+    const { tx, savepoint } = callerTx(async () => [{ id: 'o-9' }]);
+    await expect(advanceOutcomesForTerminalExecution({ executionId: 'e-1', status: 'cancelled' }, tx as never)).resolves.toBe(1);
+    expect(tx.transaction).toHaveBeenCalledTimes(1);
+    expect(savepoint.update).toHaveBeenCalledTimes(1);
+    expect(tx.update).not.toHaveBeenCalled();
+    expect(h.savepoints).toBe(0); // the ambient-db path was not used
+  });
+
+  it('a SQL failure on a caller-supplied executor is confined to the savepoint and swallowed: the caller never sees a rejection', async () => {
+    // commandCancelPropagation.ts:90-97 passes its open tx through finalizeScriptExecutionTerminal.
+    // A bare write there would leave that tx aborted (25P02) even though the JS error was caught.
+    const { tx, savepoint } = callerTx(async () => { throw Object.assign(new Error('invalid input syntax for type uuid'), { code: '22P02' }); });
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await expect(advanceOutcomesForTerminalExecution({ executionId: 'e-1', status: 'failed' }, tx as never)).resolves.toBe(0);
+    err.mockRestore();
+    expect(tx.transaction).toHaveBeenCalledTimes(1); // the failing statement ran on the savepoint handle...
+    expect(savepoint.update).toHaveBeenCalledTimes(1);
+    expect(tx.update).not.toHaveBeenCalled(); // ...never on the caller's transaction
   });
 });
 ```
@@ -2823,7 +2874,8 @@ Expected: FAIL. `./scriptTerminalHook` does not resolve, and `advanceMock` is ne
  * verdict sets recount_requested_at; the sweeper recomputes the aggregate under
  * system scope. The CAS (state = 'pending' AND counted_at IS NULL) makes this
  * path and the sweeper mutually exclusive — whichever lands second matches 0.
- * NEVER throws.
+ * NEVER throws, and NEVER aborts the caller's transaction: every write runs in
+ * a savepoint (see advanceOutcomesForTerminalExecution).
  */
 import { and, eq, isNull } from 'drizzle-orm';
 import { FIX_OUTCOME_WINDOWS } from '@breeze/shared';
@@ -2831,7 +2883,9 @@ import { db, hasDbAccessContext, withDbTransaction } from '../../db';
 import { fixOutcomes } from '../../db/schema';
 
 export type ScriptTerminalStatus = 'completed' | 'failed' | 'timeout' | 'cancelled';
-export type OutcomeUpdateExecutor = Pick<typeof db, 'update'>;
+/** A caller's open transaction handle (or the ambient db). `transaction` is required: the hook opens its savepoint on it. */
+export type OutcomeUpdateExecutor = Pick<typeof db, 'update' | 'transaction'>;
+type OutcomeWriter = Pick<typeof db, 'update'>;
 
 export function terminalVerdict(status: ScriptTerminalStatus): { state: 'awaiting_recovery' | 'failed' | 'cancelled'; reason: string } {
   switch (status) {
@@ -2852,7 +2906,7 @@ export async function advanceOutcomesForTerminalExecution(
     ? { state: verdict.state, stateReason: verdict.reason, updatedAt: now,
         deadlineAt: new Date(now.getTime() + FIX_OUTCOME_WINDOWS.recoveryTimeoutHours * 3_600_000) }
     : { state: verdict.state, stateReason: verdict.reason, updatedAt: now, terminalAt: now, countedAt: now, recountRequestedAt: now };
-  const write = async (ex: OutcomeUpdateExecutor) => {
+  const write = async (ex: OutcomeWriter) => {
     const rows = await ex.update(fixOutcomes).set(set).where(and(
       eq(fixOutcomes.scriptExecutionId, input.executionId),
       eq(fixOutcomes.state, 'pending'),
@@ -2860,10 +2914,19 @@ export async function advanceOutcomesForTerminalExecution(
     )).returning({ id: fixOutcomes.id });
     return rows.length;
   };
+  // The catch is OUTSIDE the savepoint on purpose. A PostgreSQL error aborts the
+  // whole enclosing transaction even when the JS error is caught (25P02 on every
+  // later statement, rollback at commit). Only a driver-owned savepoint that
+  // rolls back before we swallow the error keeps the caller's transaction usable.
   try {
-    if (executor) return await write(executor);
-    // SAVEPOINT under the ingest transaction, same as evaluateScriptExitCodeAlert:
-    // a failed statement here must not poison the caller's commit.
+    if (executor) {
+      // Caller's open transaction (reaper, commandCancelPropagation.ts:90-97 via
+      // finalizeScriptExecutionTerminal). Drizzle's nested `transaction` on a tx
+      // handle, or on the ambient db inside a context, is a SAVEPOINT: the same
+      // mechanism as withDbTransaction (db/index.ts). Never write on `executor` directly.
+      return await executor.transaction((savepoint) => write(savepoint as unknown as OutcomeWriter));
+    }
+    // Ambient db inside the ingest transaction: a SAVEPOINT, as evaluateScriptExitCodeAlert does.
     return hasDbAccessContext() ? await withDbTransaction(() => write(db)) : await write(db);
   } catch (err) {
     console.error(`[fixMemory] inline outcome advance failed for execution ${input.executionId}; the sweeper will retry:`, err);
@@ -2892,21 +2955,36 @@ In `scriptExecutionTerminal.ts`:
 ```ts
   // AI Suggested Fixes W1 (D-a): only the CAS winner advances the attempt, on
   // the caller's own executor so a reaper transaction stays one transaction.
-  // A single guarded UPDATE, same failure class as the batch counter above.
+  // The hook opens a SAVEPOINT on that executor and swallows its own failure, so
+  // a fix-outcome error can never abort the cancel / reap it rides on.
   await advanceOutcomesForTerminalExecution({ executionId, status: outcome }, params.executor);
 ```
 
-`params.executor` is `undefined` for ambient-db callers, which then get the savepoint branch.
+Also in `scriptExecutionTerminal.ts`, widen the executor type so the hook can open its savepoint:
+
+```ts
+type ScriptTerminalExecutor = Pick<typeof db, 'update' | 'select' | 'transaction'>;
+```
+
+In `commandCancelPropagation.ts` (L31), widen the type it forwards into `finalizeScriptExecutionTerminal` in the same way:
+
+```ts
+type DbExecutor = Pick<typeof db, 'update' | 'select' | 'insert' | 'transaction'>;
+```
+
+Every production caller already passes a Drizzle tx or the ambient `db` (`routes/devices/commands.ts:1049`, `routes/devices/core.ts:2049`, `routes/devices/moveOrg.ts:576`, `commandClaimEligibility.ts:421`, `jobs/staleCommandReaper.ts`), and both have `.transaction`. The existing unit tests cast their mock executors `as never`, so they still typecheck.
+
+`params.executor` is `undefined` for ambient-db callers (the reaper). They get the `withDbTransaction` savepoint branch.
 
 - [ ] **Step 4: Run them and watch them pass (plus both handler families)**
 
 Run: `cd apps/api && npx vitest run src/services/fixMemory/scriptTerminalHook.test.ts src/services/scriptExecutionTerminal.test.ts src/services/commandResultHandlers src/jobs/staleCommandReaper src/services/commandCancelPropagation && npx tsc --noEmit -p tsconfig.json`
-Expected: PASS. A suite that mocks `../db` with only `db.update` chains returning `[]` sees `advanceOutcomesForTerminalExecution` match 0 rows. If its mock lacks `hasDbAccessContext`/`withDbTransaction`, the hook's catch logs and returns 0. If that suite asserts `console.error` was not called, add `vi.mock('./fixMemory/scriptTerminalHook', () => ({ advanceOutcomesForTerminalExecution: vi.fn(async () => 0) }))` to it.
+Expected: PASS. A suite that mocks `../db` with only `db.update` chains returning `[]` sees `advanceOutcomesForTerminalExecution` match 0 rows. If its mock lacks `hasDbAccessContext`/`withDbTransaction`, or its mock executor lacks `.transaction`, the hook's catch logs and returns 0. If that suite asserts `console.error` was not called, add `vi.mock('./fixMemory/scriptTerminalHook', () => ({ advanceOutcomesForTerminalExecution: vi.fn(async () => 0) }))` to it. The real-Postgres proof that a hook SQL error leaves the caller's transaction committable is in Task 23 ("a SQL failure inside the hook…").
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/api/src/services/fixMemory/scriptTerminalHook.ts apps/api/src/services/fixMemory/scriptTerminalHook.test.ts apps/api/src/services/commandResultHandlers.ts apps/api/src/services/scriptExecutionTerminal.ts apps/api/src/services/scriptExecutionTerminal.test.ts apps/api/src/services/commandResultHandlers.exitCodeAlerts.test.ts
+git add apps/api/src/services/fixMemory/scriptTerminalHook.ts apps/api/src/services/fixMemory/scriptTerminalHook.test.ts apps/api/src/services/commandResultHandlers.ts apps/api/src/services/scriptExecutionTerminal.ts apps/api/src/services/scriptExecutionTerminal.test.ts apps/api/src/services/commandCancelPropagation.ts apps/api/src/services/commandResultHandlers.exitCodeAlerts.test.ts
 git commit -m "feat(api): advance fix outcomes inline from script terminal writes
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
@@ -3166,6 +3244,14 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   - `rebuildFixMemory` enumerates its identities and calls `recomputeIdentity` for each in **sorted key order**, so a rebuild can never overwrite a newer aggregate.
   - Row-level order is always: `fix_outcomes` row lock (the transition's UPDATE, or the recount's `SELECT … FOR UPDATE`) → identity lock(s).
   - A re-vote's UPDATE on the outcome row therefore waits for any in-flight recount of that row, and re-requests one after it commits.
+- **Snapshot rule.** The aggregate is always computed from the PERSISTED outcome row: the one the terminal UPDATE returns (`.returning()`), never the caller's pre-transition snapshot. `fillOutcomeSignature` also reloads the row when it loses its signature CAS, so a watcher never decides on an unsigned snapshot. A terminal row that still has no signature asks the sweeper's recount pass to sign and aggregate it (`recount_requested_at`).
+- **Erasure request rule.** `markFixMemoryStaleForOrgErasure` sets `stale_since` and appends the org to `rebuild_pending_org_ids` on every partner row it contributed to. A rebuild (`recomputeIdentity(..., { clearStale: true })`) works in this order under the identity lock:
+  1. It reads which pending orgs are already absent from `organizations`. The cascade deletes that row last, after the org's `fix_outcomes` deletions commit.
+  2. Only then does it read contributions.
+  3. It removes only the orgs found absent in step 1.
+  4. It clears `stale_since` only where the pending array is empty.
+
+  So a rebuild that races the cascade cannot un-stale the row, and a failed post-cascade rebuild leaves the request in place. `stalePartnerIds` selects pending rows, so the sweeper retries every 5 minutes until the rebuild succeeds.
 - Produces (every function must run inside a transaction; background callers wrap them in `inSystemDbContext`):
   ```ts
   export type TerminalTransition = { to: 'verified' | 'failed' | 'recurred' | 'inconclusive' | 'cancelled'; reason: string };
@@ -3175,15 +3261,15 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   export interface ContributingRow { orgId: string; partnerId: string; signatureVersion: number; signatureKey: string; broadKey: string; osType: string; fixKind: FixKind; fixIdentity: string; scriptId: string | null; scriptVersionId: string | null; builtinAction: string | null; playbookId: string | null; instructionsRef: string | null; state: FixOutcomeState; humanVote: FixVote | null; terminalAt: Date; script: { isSystem: boolean; orgId: string | null; partnerId: string | null } | null; playbook: { isBuiltIn: boolean; orgId: string | null } | null }
   export interface AggregateGroup { key: string; owner: FixOwner; identity: {...}; attempts: CountedAttempt[] }
   export function groupContributions(rows: readonly ContributingRow[]): AggregateGroup[];         // pure
-  export async function transitionOutcome(outcome: FixOutcomeRow, t: OutcomeTransition, now: Date): Promise<boolean>;
+  export async function transitionOutcome(outcome: FixOutcomeRow, t: OutcomeTransition, now: Date): Promise<boolean>; // aggregates the RETURNED row
   export interface IdentityKey { partnerId: string; signatureVersion: number; signatureKey: string; osType: string; fixIdentity: string }
   export function identityLockKey(identity: IdentityKey): string;
-  export async function fillOutcomeSignature(row: FixOutcomeRow, now: Date): Promise<FixOutcomeRow>;
+  export async function fillOutcomeSignature(row: FixOutcomeRow, now: Date): Promise<FixOutcomeRow>; // persisted row, reloaded on a lost CAS
   export async function recomputeIdentity(identity: IdentityKey, now: Date, opts?: { clearStale?: boolean }): Promise<void>;
   export async function rebuildFixMemory(scope: { partnerId: string }, now?: Date): Promise<{ identities: number }>;
-  export async function markFixMemoryStaleForOrgErasure(orgId: string, now?: Date): Promise<string | null>; // returns partnerId
+  export async function markFixMemoryStaleForOrgErasure(orgId: string, now?: Date): Promise<string | null>; // returns partnerId; persists the rebuild request
   export async function markOwnerDriftStale(now?: Date): Promise<number>;
-  export async function stalePartnerIds(limit: number): Promise<string[]>;
+  export async function stalePartnerIds(limit: number): Promise<string[]>; // stale OR pending erasure request
   export async function recountRequestedOutcomeIds(limit: number): Promise<string[]>;
   export async function recomputeForOutcome(outcomeId: string, now?: Date, hooks?: { afterRecompute?: () => Promise<void> }): Promise<void>;
   ```
@@ -3194,15 +3280,65 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 // apps/api/src/services/fixMemory/store.test.ts
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { updateReturning, insertMock, executeMock } = vi.hoisted(() => ({
-  updateReturning: [] as unknown[][], insertMock: vi.fn(), executeMock: vi.fn(async () => []),
-}));
-vi.mock('../../db', () => {
-  const update = vi.fn(() => ({ set: () => ({ where: () => ({ returning: async () => updateReturning.shift() ?? [] }) }) }));
-  return { db: { update, insert: insertMock, execute: executeMock, select: vi.fn(), delete: vi.fn() } };
+const { updateReturning, selectRows, executeRows, calls, updates, insertMock, executeMock, sigMock } = vi.hoisted(() => {
+  const calls: string[] = [];
+  const executeRows: unknown[][] = [];
+  return {
+    updateReturning: [] as unknown[][],
+    selectRows: [] as unknown[][],
+    executeRows,
+    calls,
+    updates: [] as Array<{ set: Record<string, unknown>; where: unknown }>,
+    insertMock: vi.fn(),
+    executeMock: vi.fn(async (_q: unknown) => { calls.push('execute'); return executeRows.shift() ?? []; }),
+    sigMock: { sourceRefFor: vi.fn(), signatureForSource: vi.fn() },
+  };
 });
+vi.mock('../../db', () => {
+  const update = vi.fn(() => ({
+    set: (set: Record<string, unknown>) => ({
+      where: (where: unknown) => {
+        calls.push('update');
+        updates.push({ set, where });
+        // Awaitable as-is (bulk UPDATE) and via .returning() (CAS UPDATE).
+        return Object.assign(Promise.resolve(undefined), { returning: async () => updateReturning.shift() ?? [] });
+      },
+    }),
+  }));
+  // Every select chain is thenable; rows are consumed only when awaited, so a
+  // select built as a subquery (partnerScope) consumes nothing.
+  const select = vi.fn(() => {
+    calls.push('select');
+    const chain: Record<string, unknown> = {};
+    for (const m of ['from', 'leftJoin', 'where', 'orderBy', 'limit', 'for']) chain[m] = () => chain;
+    chain.then = (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) => Promise.resolve(selectRows.shift() ?? []).then(res, rej);
+    return chain;
+  });
+  return { db: { update, insert: insertMock, execute: executeMock, select, selectDistinct: select, delete: vi.fn() } };
+});
+vi.mock('./signatureLoader', () => sigMock);
 
-import { groupContributions, transitionOutcome, type ContributingRow } from './store';
+import {
+  fillOutcomeSignature, groupContributions, identityLockKey, recomputeIdentity, transitionOutcome, type ContributingRow,
+} from './store';
+
+/** Flattens a Drizzle SQL object without a dialect: literal text plus bound primitive params. */
+function flatten(node: unknown, out = { text: '', params: [] as unknown[] }, seen = new Set<unknown>()): { text: string; params: unknown[] } {
+  if (node === null || node === undefined) return out;
+  if (typeof node !== 'object') { out.params.push(node); return out; }
+  if (seen.has(node)) return out;
+  seen.add(node);
+  const n = node as { queryChunks?: unknown[]; value?: unknown };
+  if (Array.isArray(n.queryChunks)) { for (const c of n.queryChunks) flatten(c, out, seen); return out; }
+  if (Array.isArray(n.value) && n.value.every((v) => typeof v === 'string')) { out.text += n.value.join(''); return out; } // StringChunk
+  if ('value' in n && !Array.isArray(n.value) && (typeof n.value !== 'object' || n.value === null)) { out.params.push(n.value); return out; } // Param
+  return out; // column / table / builder
+}
+
+beforeEach(() => {
+  updateReturning.length = 0; selectRows.length = 0; executeRows.length = 0; calls.length = 0; updates.length = 0;
+  insertMock.mockReset(); executeMock.mockClear(); sigMock.sourceRefFor.mockReset(); sigMock.signatureForSource.mockReset();
+});
 
 const row = (over: Partial<ContributingRow> = {}): ContributingRow => ({
   orgId: 'org-a', partnerId: 'p-1', signatureVersion: 1, signatureKey: 'k'.repeat(64), broadKey: 'b'.repeat(64),
@@ -3242,8 +3378,6 @@ describe('groupContributions', () => {
 });
 
 describe('transitionOutcome', () => {
-  beforeEach(() => { updateReturning.length = 0; insertMock.mockReset(); executeMock.mockClear(); });
-
   it('a lost compare-and-swap is a no-op: no aggregate write (exactly-once)', async () => {
     updateReturning.push([]);
     const won = await transitionOutcome(
@@ -3263,6 +3397,79 @@ describe('transitionOutcome', () => {
     );
     expect(won).toBe(true);
     expect(executeMock).not.toHaveBeenCalled();
+  });
+
+  const identity = { partnerId: 'p-1', signatureVersion: 1, signatureKey: 'k'.repeat(64), osType: 'windows', fixIdentity: 'script_version:v1' };
+  const unsignedHolding = {
+    id: 'o-1', state: 'holding', countedAt: null, partnerId: 'p-1',
+    signatureVersion: null, signatureKey: null, broadKey: null, osType: null, fixIdentity: 'script_version:v1',
+  };
+
+  it('aggregates from the PERSISTED row the CAS returned, not the caller’s unsigned snapshot', async () => {
+    // The snapshot predates a concurrent signature fill; the row the UPDATE hit carries the signature.
+    updateReturning.push([{ ...unsignedHolding, state: 'verified', countedAt: new Date(), signatureVersion: 1, signatureKey: 'k'.repeat(64), broadKey: 'b'.repeat(64), osType: 'windows' }]);
+    const won = await transitionOutcome(unsignedHolding as never, { to: 'verified', reason: 'held_with_fresh_telemetry' }, new Date());
+    expect(won).toBe(true);
+    // recomputeIdentity ran for the persisted identity: its first statement is that identity's advisory lock.
+    expect(flatten(executeMock.mock.calls[0]![0]).params).toContain(identityLockKey(identity));
+  });
+
+  it('a counted row that is still unsigned asks the sweeper to recount it instead of silently skipping the aggregate', async () => {
+    updateReturning.push([{ ...unsignedHolding, state: 'verified', countedAt: new Date() }]);
+    expect(await transitionOutcome(unsignedHolding as never, { to: 'verified', reason: 'held_with_fresh_telemetry' }, new Date())).toBe(true);
+    expect(executeMock).not.toHaveBeenCalled(); // nothing to aggregate yet
+    expect(updates.at(-1)!.set.recountRequestedAt).toBeInstanceOf(Date);
+  });
+});
+
+describe('fillOutcomeSignature', () => {
+  it('a lost signature CAS returns the PERSISTED (reloaded) row, never the unsigned snapshot', async () => {
+    sigMock.sourceRefFor.mockReturnValue({ kind: 'alert', alertId: 'a-1' });
+    sigMock.signatureForSource.mockResolvedValue({
+      signature: { version: 1, key: 'k'.repeat(64), broadKey: 'b'.repeat(64), facets: { osFamily: 'windows' } },
+      deviceId: 'd-1', alertId: 'a-1', anomalyEpisodeId: null,
+    });
+    updateReturning.push([]); // another writer stamped the signature first: our CAS matched 0 rows
+    selectRows.push([{ id: 'o-1', state: 'holding', signatureVersion: 1, signatureKey: 'k'.repeat(64), broadKey: 'b'.repeat(64), osType: 'windows' }]);
+    const row = await fillOutcomeSignature({ id: 'o-1', state: 'holding', sourceType: 'alert', sourceId: 'a-1', signatureKey: null, alertId: 'a-1', anomalyEpisodeId: null } as never, new Date());
+    expect(row.signatureKey).toBe('k'.repeat(64));
+    expect(calls).toEqual(['update', 'select']); // CAS, then reload
+  });
+});
+
+describe('recomputeIdentity(clearStale) — the durable org-erasure rebuild request', () => {
+  const identity = { partnerId: 'p-1', signatureVersion: 1, signatureKey: 'k'.repeat(64), osType: 'windows', fixIdentity: 'script_version:v1' };
+  const memoryWrites = () => updates.filter((u) => 'staleSince' in u.set || 'rebuildPendingOrgIds' in u.set);
+
+  it('reads which pending orgs are already gone BEFORE it reads contributions', async () => {
+    executeRows.push([], []); // advisory lock, erased-org read
+    await recomputeIdentity(identity, new Date(), { clearStale: true });
+    expect(calls.slice(0, 3)).toEqual(['execute', 'execute', 'select']);
+  });
+
+  it('while the erased org still exists (cascade not finished) it keeps the request and clears stale only where none is pending', async () => {
+    executeRows.push([], []); // nothing erased yet
+    await recomputeIdentity(identity, new Date(), { clearStale: true });
+    const writes = memoryWrites();
+    expect(writes.map((u) => Object.keys(u.set).sort())).toEqual([['staleSince', 'updatedAt']]); // no request removal
+    expect(flatten(writes[0]!.where).text).toContain('cardinality(');
+  });
+
+  it('once the org row is gone it removes exactly that org from the request, then clears stale', async () => {
+    executeRows.push([], [{ org_id: 'org-gone' }]);
+    await recomputeIdentity(identity, new Date(), { clearStale: true });
+    const writes = memoryWrites();
+    expect(writes).toHaveLength(2);
+    expect(Object.keys(writes[0]!.set)).toContain('rebuildPendingOrgIds');
+    expect(flatten(writes[0]!.set.rebuildPendingOrgIds).params).toEqual(['org-gone']);
+    expect(writes[1]!.set).toMatchObject({ staleSince: null });
+  });
+
+  it('a plain recompute (no clearStale) never reads erasure requests or touches stale_since', async () => {
+    executeRows.push([]);
+    await recomputeIdentity(identity, new Date());
+    expect(executeMock).toHaveBeenCalledTimes(1); // the identity lock only
+    expect(memoryWrites()).toEqual([]);
   });
 });
 ```
@@ -3467,7 +3674,12 @@ export function identityLockKey(i: IdentityKey): string {
   return `fix_memory:${i.partnerId}:${i.signatureVersion}:${i.signatureKey}:${i.osType}:${i.fixIdentity}`;
 }
 
-/** Stamp the signature on an outcome that reached a terminal state before one was computed (inline hook path). */
+/**
+ * Stamp the signature on an outcome that has none yet. Always returns the
+ * PERSISTED row: when another writer won the fill CAS, the row is reloaded, because
+ * the caller's snapshot is unsigned and deciding on it would count the attempt
+ * (counted_at) while skipping its aggregate.
+ */
 export async function fillOutcomeSignature(row: FixOutcomeRow, now: Date): Promise<FixOutcomeRow> {
   if (row.signatureKey) return row;
   const ref = sourceRefFor(row);
@@ -3484,7 +3696,35 @@ export async function fillOutcomeSignature(row: FixOutcomeRow, now: Date): Promi
     anomalyEpisodeId: row.anomalyEpisodeId ?? resolved.anomalyEpisodeId,
     updatedAt: now,
   }).where(and(eq(fixOutcomes.id, row.id), isNull(fixOutcomes.signatureKey))).returning();
-  return updated ?? row;
+  if (updated) return updated;
+  // Lost the fill CAS (a concurrent watcher / recount signed it first): reload.
+  const [current] = await db.select().from(fixOutcomes).where(eq(fixOutcomes.id, row.id)).limit(1);
+  return current ?? row;
+}
+
+/** stale_since may only be lifted from a row with no outstanding org-erasure rebuild request. */
+const NO_PENDING_ERASURE_REQUEST = sql`cardinality(${fixMemory.rebuildPendingOrgIds}) = 0`;
+
+/**
+ * Pending erasure orgs on this identity's partner row whose organizations row is
+ * already GONE. The tenant cascade deletes `organizations` last, after the org's
+ * fix_outcomes deletions have committed. So an org found absent here has no
+ * outcomes left in any snapshot taken after this statement, including the
+ * contribution read that follows. Requests live on partner rows only (org rows
+ * are deleted by the org cascade), so this needs no partnerScope subquery.
+ * Table-qualified, unaliased: the Drizzle column references render as "fix_memory"."…".
+ */
+async function erasedPendingOrgIds(identity: IdentityKey): Promise<string[]> {
+  const rows = await db.execute<{ org_id: string }>(sql`
+    SELECT DISTINCT pending.org_id
+    FROM fix_memory CROSS JOIN LATERAL unnest(fix_memory.rebuild_pending_org_ids) AS pending(org_id)
+    WHERE ${fixMemory.partnerId} = ${identity.partnerId}
+      AND ${fixMemory.signatureVersion} = ${identity.signatureVersion}
+      AND ${fixMemory.signatureKey} = ${identity.signatureKey}
+      AND ${fixMemory.osType} = ${identity.osType}
+      AND ${fixMemory.fixIdentity} = ${identity.fixIdentity}
+      AND NOT EXISTS (SELECT 1 FROM organizations o WHERE o.id = pending.org_id)`);
+  return [...rows].map((r) => r.org_id).filter((id): id is string => typeof id === 'string');
 }
 
 export async function recomputeIdentity(identity: IdentityKey, now: Date, opts: { clearStale?: boolean } = {}): Promise<void> {
@@ -3492,6 +3732,9 @@ export async function recomputeIdentity(identity: IdentityKey, now: Date, opts: 
   // lock sees every earlier holder's committed outcome, so no writer can
   // replace a newer aggregate with an older one.
   await lock(identityLockKey(identity));
+  // A rebuild may satisfy only erasure requests whose org was ALREADY gone
+  // before it read contributions. Read that set first; never re-check after.
+  const satisfiedErasures = opts.clearStale ? await erasedPendingOrgIds(identity) : [];
   const rows = await loadContributions(and(
     eq(fixOutcomes.partnerId, identity.partnerId),
     eq(fixOutcomes.signatureVersion, identity.signatureVersion),
@@ -3510,12 +3753,31 @@ export async function recomputeIdentity(identity: IdentityKey, now: Date, opts: 
   )!;
   await deleteOrphans(identityScope, new Set(groups.map((g) => g.key)));
   if (opts.clearStale) {
-    await db.update(fixMemory).set({ staleSince: null, updatedAt: now }).where(and(identityScope, isNotNull(fixMemory.staleSince)));
+    if (satisfiedErasures.length > 0) {
+      // One element per bound param: Drizzle expands a bare JS array into a
+      // parenthesised list, not a Postgres array, so never write ${ids}::uuid[].
+      const gone = sql.join(satisfiedErasures.map((id) => sql`${id}::uuid`), sql`, `);
+      await db.update(fixMemory).set({
+        rebuildPendingOrgIds: sql`ARRAY(SELECT x FROM unnest(${fixMemory.rebuildPendingOrgIds}) AS x WHERE x <> ALL (ARRAY[${gone}]))`,
+        updatedAt: now,
+      }).where(and(identityScope, sql`cardinality(${fixMemory.rebuildPendingOrgIds}) > 0`));
+    }
+    // Only a row with no outstanding erasure request leaves "stale". A rebuild
+    // that raced the cascade, or ran while it was still deleting, keeps it stale
+    // and the sweeper retries (stalePartnerIds).
+    await db.update(fixMemory).set({ staleSince: null, updatedAt: now })
+      .where(and(identityScope, isNotNull(fixMemory.staleSince), NO_PENDING_ERASURE_REQUEST));
   }
 }
 
 const TERMINAL = new Set<string>(FIX_OUTCOME_TERMINAL_STATES);
 
+/**
+ * The CAS returns the PERSISTED row, and the aggregate identity comes from it,
+ * never from the caller's snapshot. A snapshot taken before a concurrent
+ * signature fill has no signature. Aggregating from it would set counted_at yet
+ * skip the recompute, so the attempt would count and never aggregate.
+ */
 export async function transitionOutcome(outcome: FixOutcomeRow, t: OutcomeTransition, now: Date): Promise<boolean> {
   const terminal = TERMINAL.has(t.to);
   const set: Partial<typeof fixOutcomes.$inferInsert> = { state: t.to, stateReason: t.reason, updatedAt: now };
@@ -3534,13 +3796,19 @@ export async function transitionOutcome(outcome: FixOutcomeRow, t: OutcomeTransi
     .update(fixOutcomes)
     .set(set)
     .where(and(eq(fixOutcomes.id, outcome.id), eq(fixOutcomes.state, outcome.state), isNull(fixOutcomes.countedAt)))
-    .returning({ id: fixOutcomes.id });
+    .returning();
   if (!won) return false;
-  if (terminal && outcome.signatureVersion !== null && outcome.signatureKey && outcome.osType && outcome.fixIdentity) {
+  if (!terminal) return true;
+  if (won.signatureVersion !== null && won.signatureKey && won.osType && won.fixIdentity) {
     await recomputeIdentity({
-      partnerId: outcome.partnerId, signatureVersion: outcome.signatureVersion, signatureKey: outcome.signatureKey,
-      osType: outcome.osType, fixIdentity: outcome.fixIdentity,
+      partnerId: won.partnerId, signatureVersion: won.signatureVersion, signatureKey: won.signatureKey,
+      osType: won.osType, fixIdentity: won.fixIdentity,
     }, now);
+  } else if (!won.signatureKey) {
+    // Counted but not aggregatable yet (the signature loader had nothing when
+    // this ran). Hand it to the sweeper's recount pass, which signs it
+    // (fillOutcomeSignature) and recomputes, so the attempt is never counted-but-lost.
+    await db.update(fixOutcomes).set({ recountRequestedAt: now }).where(eq(fixOutcomes.id, won.id));
   }
   return true;
 }
@@ -3571,17 +3839,31 @@ export async function rebuildFixMemory(scope: { partnerId: string }, now: Date =
 }
 
 /**
- * GDPR erasure, step 1 (spec "Erasure"): mark the partner rows this org
- * contributed to as stale BEFORE its outcomes are deleted, so they drop out
- * of "proven" until the rebuild succeeds. Returns the org's partner.
+ * GDPR erasure, step 1 (spec "Erasure"). Before the org's outcomes are deleted,
+ * every partner row it contributed to gets two marks:
+ *  - it goes stale, so it drops out of "proven" at once;
+ *  - it gets a DURABLE rebuild request: the org id appended to
+ *    rebuild_pending_org_ids.
+ * stale_since alone is not a request. A concurrent sweeper rebuild that runs
+ * before the cascade has deleted anything would clear it while the org's
+ * outcomes still count. If the post-cascade rebuild then failed, nothing would
+ * ever re-trigger it. The request survives both. Only a rebuild that saw the
+ * org's organizations row already gone before reading contributions removes it
+ * (recomputeIdentity). Rows that are already stale (e.g. owner drift) still get
+ * the request, and a re-run never appends the same org twice.
+ * Returns the org's partner.
  */
 export async function markFixMemoryStaleForOrgErasure(orgId: string, now: Date = new Date()): Promise<string | null> {
   const [org] = await db.select({ partnerId: organizations.partnerId }).from(organizations).where(eq(organizations.id, orgId)).limit(1);
   if (!org) return null;
-  await db.update(fixMemory).set({ staleSince: now }).where(and(
+  await db.update(fixMemory).set({
+    staleSince: sql`COALESCE(${fixMemory.staleSince}, ${now.toISOString()}::timestamptz)`,
+    rebuildPendingOrgIds: sql`array_append(${fixMemory.rebuildPendingOrgIds}, ${orgId}::uuid)`,
+    updatedAt: now,
+  }).where(and(
     isNull(fixMemory.orgId),
     eq(fixMemory.partnerId, org.partnerId),
-    isNull(fixMemory.staleSince),
+    sql`NOT (${orgId}::uuid = ANY(fix_memory.rebuild_pending_org_ids))`,
     // Outer columns are written table-qualified on purpose: an unqualified
     // column inside this subquery would bind to fix_outcomes o and always match.
     sql`EXISTS (SELECT 1 FROM fix_outcomes o WHERE o.org_id = ${orgId} AND o.counted_at IS NOT NULL
@@ -3612,11 +3894,18 @@ export async function markOwnerDriftStale(now: Date = new Date()): Promise<numbe
   return rows.length;
 }
 
+/**
+ * Partners the sweeper must rebuild: any stale row, or any row still carrying
+ * an org-erasure rebuild request. The request is selected on its own, not
+ * through stale_since, so a retry never depends on staleness surviving. This is
+ * the retry for a post-cascade rebuild that failed or never ran (crash between
+ * cascade and rebuild).
+ */
 export async function stalePartnerIds(limit: number): Promise<string[]> {
   const rows = await db.execute<{ partner_id: string }>(sql`
     SELECT DISTINCT COALESCE(m.partner_id, o.partner_id) AS partner_id
     FROM fix_memory m LEFT JOIN organizations o ON o.id = m.org_id
-    WHERE m.stale_since IS NOT NULL
+    WHERE m.stale_since IS NOT NULL OR cardinality(m.rebuild_pending_org_ids) > 0
     LIMIT ${limit}`);
   return [...rows].map((r) => r.partner_id).filter((id): id is string => typeof id === 'string');
 }
@@ -4148,9 +4437,14 @@ export async function advanceOutcome(
     const [loaded] = await db.select().from(fixOutcomes).where(eq(fixOutcomes.id, outcomeId)).limit(1);
     if (!loaded) return null;
     if (isFixOutcomeTerminal(loaded.state)) return loaded.state;
+    // fillOutcomeSignature returns the PERSISTED row (reloaded if another writer
+    // signed it first), so `decide` never sees an unsigned snapshot. The same
+    // reload can reveal that a concurrent writer already finished the attempt.
     const row = await fillOutcomeSignature(loaded, now);
+    if (isFixOutcomeTerminal(row.state)) return row.state;
     const transition = await decide(row, await deviceLeftOrg(row), now, opts.overrides ?? {});
     if (!transition) return row.state;
+    // transitionOutcome aggregates from the row its CAS returns, not from `row`.
     const won = await transitionOutcome(row, transition, now);
     return won ? transition.to : row.state;
   }, 'fixOutcomeWatcher.advance');
@@ -4327,8 +4621,11 @@ Expected: FAIL.
  *   2. recompute aggregates whose attempts were re-voted or terminalised by the
  *      inline script hook (scriptTerminalHook.ts sets recount_requested_at);
  *   3. mark owner drift (script re-scoped) stale;
- *   4. rebuild stale partners — this is also the RETRY for a tenant-erasure
- *      rebuild that failed, since the cascade commits table by table.
+ *   4. rebuild stale partners and partners with a pending org-erasure rebuild
+ *      request (fix_memory.rebuild_pending_org_ids). This is the RETRY for a
+ *      tenant-erasure rebuild that failed or never ran. The request is cleared
+ *      only by a rebuild that saw the erased org's organizations row already
+ *      gone, so a rebuild that races the cascade cannot satisfy it.
  * Each outcome advances in its OWN system transaction, so one bad row cannot
  * poison the batch. Sub-hourly repeat: no scheduleRegistry slot needed.
  */
@@ -6229,8 +6526,12 @@ Merge needs no extra hook. `orgMerge` enqueues a tenant erasure of the loser (`j
 - Consumes: `markFixMemoryStaleForOrgErasure`, `rebuildFixMemory` (Task 12); `cascadeDeleteOrg`.
 - Produces:
   ```ts
-  export async function eraseOrgWithFixMemory(orgId: string, performedBy: string, performedByEmail?: string): Promise<Awaited<ReturnType<typeof cascadeDeleteOrg>>>;
+  export async function eraseOrgWithFixMemory(
+    orgId: string, performedBy: string, performedByEmail?: string,
+    hooks?: { rebuild?: typeof rebuildFixMemory }, // test seam only: Task 23 injects a failing post-cascade rebuild
+  ): Promise<Awaited<ReturnType<typeof cascadeDeleteOrg>>>;
   ```
+- Durability: the rebuild request is persisted by `markFixMemoryStaleForOrgErasure` (`fix_memory.rebuild_pending_org_ids`) BEFORE the cascade. So the post-cascade rebuild is an optimisation, not the only trigger. If it fails, or the process dies between cascade and rebuild, the sweeper still rebuilds the partner (Task 12 "Erasure request rule", Task 14).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -6259,7 +6560,7 @@ Add these cases after `'worker processor invokes cascadeDeleteOrg with the job p
     expect(rebuildMock.mock.invocationCallOrder[0]!).toBeGreaterThan(cascadeDeleteOrgMock.mock.invocationCallOrder[0]!);
   });
 
-  it('a failed rebuild does not fail the erasure (stale rows stay out of "proven"; the sweeper retries)', async () => {
+  it('a failed rebuild does not fail the erasure (the request persisted by markStale keeps rows stale; the sweeper retries)', async () => {
     markStaleMock.mockResolvedValue('partner-1');
     rebuildMock.mockRejectedValue(new Error('lock timeout'));
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -6281,24 +6582,36 @@ In `apps/api/src/jobs/tenantErasure.ts`, add `import { markFixMemoryStaleForOrgE
 
 ```ts
 /**
- * AI Suggested Fixes W1 (spec "Erasure"): stale-mark the partner fix memory
- * this org contributed to BEFORE its outcomes are deleted, so it drops out of
- * "proven" immediately; cascade; rebuild after. A failure to mark aborts before
- * any row is deleted. A failed rebuild does not fail the erasure: stale rows
- * stay excluded from "proven" and jobs/fixOutcomeWorker.ts rebuilds stale
- * partners every sweep (the cascade commits table by table, so the rebuild
- * must be retryable). Exported so the real-Postgres merge proof runs exactly this.
+ * AI Suggested Fixes W1 (spec "Erasure"). Three steps:
+ *  1. BEFORE the org's outcomes are deleted, stale-mark the partner fix memory
+ *     it contributed to AND persist a durable rebuild request (the org id in
+ *     fix_memory.rebuild_pending_org_ids). The rows drop out of "proven" at once.
+ *  2. Cascade.
+ *  3. Rebuild.
+ * A failure to mark aborts before any row is deleted. The request is removed
+ * only by a rebuild that saw this org's organizations row already gone before
+ * it read contributions, so a sweeper rebuild that races the cascade cannot
+ * satisfy it. A failed step-3 rebuild does not fail the erasure: the rows stay
+ * stale and requested, and jobs/fixOutcomeWorker.ts retries them every sweep.
+ * Exported so the real-Postgres merge and erasure proofs run exactly this.
+ * `hooks.rebuild` is a test seam only.
  */
-export async function eraseOrgWithFixMemory(orgId: string, performedBy: string, performedByEmail?: string) {
+export async function eraseOrgWithFixMemory(
+  orgId: string,
+  performedBy: string,
+  performedByEmail?: string,
+  hooks: { rebuild?: typeof rebuildFixMemory } = {},
+) {
+  const rebuild = hooks.rebuild ?? rebuildFixMemory;
   const fixMemoryPartnerId = await runOutsideDbContext(() =>
     withSystemDbAccessContext(() => markFixMemoryStaleForOrgErasure(orgId), 'tenantErasure.fixMemoryStale'));
   const stats = await cascadeDeleteOrg(orgId, performedBy, performedByEmail);
   if (fixMemoryPartnerId) {
     try {
       await runOutsideDbContext(() =>
-        withSystemDbAccessContext(() => rebuildFixMemory({ partnerId: fixMemoryPartnerId }), 'tenantErasure.fixMemoryRebuild'));
+        withSystemDbAccessContext(() => rebuild({ partnerId: fixMemoryPartnerId }), 'tenantErasure.fixMemoryRebuild'));
     } catch (rebuildErr) {
-      console.error(`[TenantErasure] fix-memory rebuild failed for partner of org ${orgId}; sweeper will retry`, rebuildErr);
+      console.error(`[TenantErasure] fix-memory rebuild failed for partner of org ${orgId}; the persisted rebuild request keeps it stale and the sweeper will retry`, rebuildErr);
       captureException(rebuildErr);
     }
   }
@@ -6680,13 +6993,13 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 **Interfaces:**
 - Consumes:
   - `advanceOutcome`, `handleFixOutcomeEvent` (Task 13);
-  - `transitionOutcome`, `recomputeForOutcome`, `rebuildFixMemory`, `markFixMemoryStaleForOrgErasure`, `markOwnerDriftStale` (Task 12);
+  - `transitionOutcome`, `fillOutcomeSignature`, `recomputeForOutcome`, `rebuildFixMemory`, `markFixMemoryStaleForOrgErasure`, `markOwnerDriftStale`, `stalePartnerIds` (Task 12);
   - `advanceOutcomesForTerminalExecution` (Task 10);
   - `probeTelemetryFreshness` (Task 8);
   - `lookupFixes` (Task 16);
   - `alertSignature` (Task 11);
   - `recordOutcomeVote` (Task 19);
-  - `eraseOrgWithFixMemory` (Task 21);
+  - `eraseOrgWithFixMemory` (Task 21; its `hooks.rebuild` seam injects the failing post-cascade rebuild);
   - `executeOrgMerge` (`services/orgMerge.ts:1001`);
   - `db` fixtures.
 
@@ -6696,7 +7009,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 // apps/api/src/__tests__/integration/fixOutcomeLifecycle.integration.test.ts
 import './setup';
 import { createHash, randomUUID } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { and, eq, isNull } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { alerts, deviceMetrics, devices, fixMemory, fixOutcomes, remediationSuggestions, scriptExecutions, scripts, scriptVersions } from '../../db/schema';
@@ -6707,7 +7020,8 @@ import { recordOutcomeVote } from '../../services/fixMemory/outcomeRecorder';
 import { advanceOutcomesForTerminalExecution } from '../../services/fixMemory/scriptTerminalHook';
 import { alertSignature } from '../../services/fixMemory/signatureLoader';
 import {
-  markFixMemoryStaleForOrgErasure, markOwnerDriftStale, rebuildFixMemory, recomputeForOutcome, transitionOutcome,
+  fillOutcomeSignature, markFixMemoryStaleForOrgErasure, markOwnerDriftStale, rebuildFixMemory, recomputeForOutcome,
+  stalePartnerIds, transitionOutcome,
 } from '../../services/fixMemory/store';
 import { executeOrgMerge } from '../../services/orgMerge';
 import { probeTelemetryFreshness } from '../../services/outcomeProbes';
@@ -6824,7 +7138,7 @@ describe('fix outcome lifecycle (real Postgres)', () => {
     expect(rows).toHaveLength(1); // one partner row, no per-org copies
   });
 
-  it('concurrent advances + a redelivered alert.resolved count once (Review Focus 1)', async () => {
+  it('two terminal transitions from the SAME holding snapshot: exactly one wins, and it counts once (Review Focus 1)', async () => {
     const w = await world();
     const t0 = new Date(Date.UTC(2026, 10, 5));
     const a = await attempt(w, w.o1, w.d1, w.partnerScript, t0);
@@ -6834,14 +7148,61 @@ describe('fix outcome lifecycle (real Postgres)', () => {
     const evt = { id: randomUUID(), type: 'alert.resolved', orgId: w.o1, source: 't', priority: 'normal',
       payload: { alertId: a.alertId, resolvedAt: resolvedAt.toISOString(), resolvedBy: null, resolutionReason: 'condition_cleared' },
       metadata: { timestamp: '' } } as never;
-    await Promise.all([handleFixOutcomeEvent(evt), handleFixOutcomeEvent(evt)]);
+    await Promise.all([handleFixOutcomeEvent(evt), handleFixOutcomeEvent(evt)]); // redelivery
+    const holding = await outcomeRow(a.outcomeId);
+    expect(holding.state).toBe('holding');
     await reportTelemetry(w.o1, w.d1, resolvedAt, new Date(resolvedAt.getTime() + 24 * H));
     const end = new Date(resolvedAt.getTime() + 24 * H + 60_000);
-    const results = await Promise.all([advanceOutcome(a.outcomeId, { now: end }), advanceOutcome(a.outcomeId, { now: end })]);
-    expect(results.filter((r) => r === 'verified').length).toBeGreaterThanOrEqual(1);
-    const [row] = await sys(() => db.select().from(fixMemory).where(eq(fixMemory.partnerId, w.partnerId)));
-    expect(row!.attempts).toBe(1);
-    expect(row!.verifiedCount).toBe(1);
+    // Two writers (sweeper + event handler) holding the same pre-transition snapshot, each in its
+    // own transaction. The loser blocks on the row lock, then re-evaluates the CAS on the committed
+    // row. The aggregate alone cannot tell one winner from two (a replay reads one outcome row
+    // either way), so the win count is the discriminating assertion.
+    const wins = await Promise.all([
+      sys(() => transitionOutcome(holding, { to: 'verified', reason: 'held_with_fresh_telemetry' }, end)),
+      sys(() => transitionOutcome(holding, { to: 'verified', reason: 'held_with_fresh_telemetry' }, end)),
+    ]);
+    expect(wins.filter((won) => won)).toHaveLength(1);
+    expect(wins.filter((won) => !won)).toHaveLength(1);
+    expect(await advanceOutcome(a.outcomeId, { now: end })).toBe('verified'); // a late sweeper sees terminal and stops
+    const [row] = await partnerMemory(w.partnerId);
+    expect(row).toMatchObject({ attempts: 1, verifiedCount: 1 });
+  });
+
+  it('a terminal transition from an unsigned snapshot still aggregates: the CAS-returned row carries the signature (Review Focus 1)', async () => {
+    const w = await world();
+    const t0 = new Date(Date.UTC(2026, 10, 4));
+    const a = await attempt(w, w.o1, w.d1, w.partnerScript, t0);
+    await advanceOutcome(a.outcomeId, { now: new Date(t0.getTime() + 2 * 60_000) }); // first advance signs the row
+    await resolveByCondition(a.alertId, new Date(t0.getTime() + H));
+    expect(await advanceOutcome(a.outcomeId, { now: new Date(t0.getTime() + 2 * H) })).toBe('holding');
+    const persisted = await outcomeRow(a.outcomeId);
+    expect(persisted.signatureKey).not.toBeNull();
+    // A watcher whose snapshot predates the signature fill.
+    const unsigned = { ...persisted, signatureVersion: null, signatureKey: null, broadKey: null, osType: null };
+    // Lost fill CAS -> the persisted (signed) row is reloaded, not the unsigned snapshot returned.
+    expect((await sys(() => fillOutcomeSignature(unsigned, new Date()))).signatureKey).toBe(persisted.signatureKey);
+    expect(await sys(() => transitionOutcome(unsigned, { to: 'verified', reason: 'held_with_fresh_telemetry' }, new Date()))).toBe(true);
+    const [row] = await partnerMemory(w.partnerId);
+    expect(row).toMatchObject({ attempts: 1, verifiedCount: 1 }); // counted AND aggregated, not counted-and-lost
+  });
+
+  it('a SQL failure inside the hook on a caller-supplied executor does not abort the caller’s transaction (savepoint, decision D-a)', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      // The caller's open transaction is the system context's tx; `db` resolves to it, as the
+      // executor commandCancelPropagation.ts:90-97 forwards. 'not-a-uuid' makes Postgres raise
+      // 22P02 inside the hook's UPDATE.
+      const survived = await sys(async () => {
+        expect(await advanceOutcomesForTerminalExecution({ executionId: 'not-a-uuid', status: 'failed' }, db)).toBe(0);
+        // Without the savepoint this statement raises 25P02 (current transaction is aborted).
+        const probe = await db.select({ id: fixOutcomes.id }).from(fixOutcomes).limit(1);
+        return Array.isArray(probe);
+      });
+      expect(survived).toBe(true); // and the caller's transaction committed
+      expect(err).toHaveBeenCalled(); // the hook logged its own failure
+    } finally {
+      err.mockRestore();
+    }
   });
 
   it('a human resolve is inconclusive and never counted (Review Focus 2)', async () => {
@@ -6868,19 +7229,44 @@ describe('fix outcome lifecycle (real Postgres)', () => {
     expect(o!.stateReason).toBe('telemetry_heartbeat_stale');
   });
 
-  it('erasure: stale before the cascade, rebuilt without the erased org afterwards', async () => {
+  it('erasure: a rebuild racing the cascade cannot clear the request, and a failed post-cascade rebuild is retried by the sweeper', async () => {
     const w = await world();
     const base = Date.UTC(2026, 10, 12);
     await verify(w, w.o1, w.d1, w.partnerScript, new Date(base));
     await verify(w, w.o2, w.d2, w.partnerScript, new Date(base + 30 * H));
     const last = await verify(w, w.o1, w.d1, w.partnerScript, new Date(base + 60 * H));
     expect((await memoryFor(w, w.o1, last.alertId)).proven).toHaveLength(1);
+
+    // Step 1 alone: stale + a durable request naming o2.
     expect(await sys(() => markFixMemoryStaleForOrgErasure(w.o2))).toBe(w.partnerId);
     expect((await memoryFor(w, w.o1, last.alertId)).proven).toEqual([]); // stale => excluded
-    await sys(() => db.delete(fixOutcomes).where(eq(fixOutcomes.orgId, w.o2))); // the cascade's effect
+    expect((await partnerMemory(w.partnerId))[0]).toMatchObject({ attempts: 3, rebuildPendingOrgIds: [w.o2] });
+
+    // A sweeper rebuild that runs before the cascade has deleted anything. o2 still exists,
+    // so it must neither un-stale the row nor drop the request, even though its recount is
+    // "successful". (The bug: stale_since was the only marker and this rebuild cleared it.)
     await sys(() => rebuildFixMemory({ partnerId: w.partnerId }));
-    const [row] = await sys(() => db.select().from(fixMemory).where(eq(fixMemory.partnerId, w.partnerId)));
-    expect(row).toMatchObject({ attempts: 2, verifiedCount: 2, staleSince: null });
+    const raced = (await partnerMemory(w.partnerId))[0]!;
+    expect(raced).toMatchObject({ attempts: 3, rebuildPendingOrgIds: [w.o2] });
+    expect(raced.staleSince).not.toBeNull();
+
+    // The real erasure, with its post-cascade rebuild failing (swallowed by design).
+    const actor = await createUser({ partnerId: w.partnerId, orgId: null, email: `erase-${randomUUID()}@example.com` });
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await eraseOrgWithFixMemory(w.o2, actor.id, actor.email, { rebuild: async () => { throw new Error('injected rebuild failure'); } });
+    } finally {
+      err.mockRestore();
+    }
+    expect(await sys(() => db.select().from(fixOutcomes).where(eq(fixOutcomes.orgId, w.o2)))).toEqual([]);
+    const stranded = (await partnerMemory(w.partnerId))[0]!;
+    expect(stranded).toMatchObject({ attempts: 3, rebuildPendingOrgIds: [w.o2] }); // o2's attempt still counted...
+    expect(stranded.staleSince).not.toBeNull(); // ...but out of "proven", and still requested (re-run of mark did not append twice)
+    expect(await sys(() => stalePartnerIds(1000))).toContain(w.partnerId); // the sweeper selects it
+
+    await sys(() => rebuildFixMemory({ partnerId: w.partnerId })); // what the sweeper's rebuild pass runs
+    expect((await partnerMemory(w.partnerId))[0]).toMatchObject({ attempts: 2, verifiedCount: 2, staleSince: null, rebuildPendingOrgIds: [] });
+    expect((await memoryFor(w, w.o1, last.alertId)).proven).toEqual([]); // 2 verified < the 3-attempt proof bar
   });
 
   it('script re-scope org→partner folds org history into the partner row (Review Focus 5)', async () => {
@@ -7080,7 +7466,7 @@ describe('fix outcome lifecycle (real Postgres)', () => {
       // jobs/orgMerge.ts:164 enqueues the loser's erasure; run exactly what that job runs.
       await eraseOrgWithFixMemory(w.o1, actor.id, actor.email);
       expect(await sys(() => db.select().from(fixOutcomes).where(eq(fixOutcomes.orgId, w.o1)))).toEqual([]);
-      expect((await partnerMemory(w.partnerId))[0]).toMatchObject({ attempts: 2, verifiedCount: 2, staleSince: null });
+      expect((await partnerMemory(w.partnerId))[0]).toMatchObject({ attempts: 2, verifiedCount: 2, staleSince: null, rebuildPendingOrgIds: [] });
     } finally {
       if (prior === undefined) delete process.env.ORG_MERGE_FENCE_DRAIN_MS;
       else process.env.ORG_MERGE_FENCE_DRAIN_MS = prior;
@@ -7107,15 +7493,46 @@ describe('fix outcome lifecycle (real Postgres)', () => {
 - [ ] **Step 2: Run it — it must pass, and prove it discriminates**
 
 Run: `pnpm test-stack up && cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/fixOutcomeLifecycle.integration.test.ts`
-Expected: PASS (16 tests).
+Expected: PASS (18 tests).
 
-Controls: each mutation below is one line and must turn exactly the named case red. Revert after each.
-1. In `transitionOutcome`'s WHERE, drop `isNull(fixOutcomes.countedAt)`. "an already-counted outcome never counts twice…" fails: the snapshot's `state` ('verified') still matches, so the forged late verdict wins and `failedCount` becomes 1. The other terminal protections (state CAS, `advanceOutcome`'s terminal early return) cannot mask this, because the test calls `transitionOutcome` directly with a matching state.
-2. In `rebuildFixMemory`, replace the per-identity loop with a single `await lock(\`fix_memory_rebuild:${scope.partnerId}\`)` followed by one `groupContributions(loadContributions(...))` pass (the pre-review shape). "a rebuild waits…" fails at the final count (`attempts` 1).
-3. In `recomputeForOutcome`, remove `.for('update')`. "a re-vote that arrives during a recount…" fails: `stillPending(t2)` is false and `recountRequestedAt` ends NULL.
-4. In `telemetryProbeFor`, return `LIVENESS` for every `anomaly:device_metrics:` condition. "a disk_read anomaly hold…" fails: the result is `verified`.
-5. In `scanRecurrence`, replace the paged loop with one unordered `.limit(25)` query. "a real recurrence is found behind 60…" fails: the result is `verified` or `holding`.
-6. In `scriptOwnerVisible`, return `true`. "…re-scoped to org A is never offered to org B…" fails: org B gets a proven fix.
+Controls: each mutation below is one line and must turn exactly the named case red. Revert after each. Before trusting a red, confirm the mutation landed (re-read the line) and that the failure is the named assertion, not an import or type error.
+
+Concurrency and exactly-once cases:
+
+1. **"two terminal transitions from the SAME holding snapshot…"**
+   - Mutation: in `transitionOutcome`, replace `.where(and(eq(fixOutcomes.id, outcome.id), eq(fixOutcomes.state, outcome.state), isNull(fixOutcomes.countedAt)))` with `.where(eq(fixOutcomes.id, outcome.id))`.
+   - Fails at: `wins.filter((won) => won)` has length 2. The loser re-evaluates the id-only WHERE on the committed row and also "wins".
+   - The final `attempts: 1` still passes. That is why the win count, not the aggregate, is the discriminating assertion.
+2. **"an already-counted outcome never counts twice…"**
+   - Mutation: in `transitionOutcome`'s WHERE, delete `isNull(fixOutcomes.countedAt)`.
+   - Fails at: the forged late verdict wins, so `failedCount` becomes 1.
+   - The snapshot's `state` ('verified') still matches the row. The other terminal protections (state CAS, `advanceOutcome`'s terminal early return) cannot mask this, because the test calls `transitionOutcome` directly with a matching state.
+3. **"a terminal transition from an unsigned snapshot still aggregates…"** Either mutation turns it red.
+   - (a) In `transitionOutcome`, replace `.returning();` with `.returning({ id: fixOutcomes.id });`, the pre-fix shape. The returned row carries no signature, so the attempt is counted and never aggregated. Fails at: `partnerMemory` is `[]`.
+   - (b) In `fillOutcomeSignature`, replace `if (updated) return updated;` with `return updated ?? row;`, the pre-fix shape. Fails at: the fill assertion returns the unsigned snapshot, so `signatureKey` is `null`.
+4. **"a rebuild waits for an in-flight recompute…"**
+   - Mutation: in `recomputeIdentity`, delete `await lock(identityLockKey(identity));`.
+   - Fails at: the final count (`attempts` 1). T2 reads contributions before T1 commits, blocks only on the row lock of its `ON CONFLICT DO UPDATE`, then overwrites T1's 2 with its stale 1.
+   - The pre-review shape fails at the same assertion: one partner-wide `fix_memory_rebuild:<partner>` lock plus a single `groupContributions` pass.
+5. **"a re-vote that arrives during a recount…"**
+   - Mutation: in `recomputeForOutcome`, delete `.for('update')`.
+   - Fails at: `stillPending(t2)` is false, and `recountRequestedAt` ends NULL.
+6. **"a SQL failure inside the hook on a caller-supplied executor…"**
+   - Mutation: in `advanceOutcomesForTerminalExecution`, replace `return await executor.transaction((savepoint) => write(savepoint as unknown as OutcomeWriter));` with `return await write(executor);`.
+   - Fails at: the probe `select` raises 25P02 (`current transaction is aborted`), so `sys` rejects.
+7. **"erasure: a rebuild racing the cascade cannot clear the request…"** Either mutation turns it red.
+   - (a) In `recomputeIdentity`'s stale clear, delete `NO_PENDING_ERASURE_REQUEST` from the `and(...)`. Fails at: `raced.staleSince` is null, which is the reported defect.
+   - (b) In `erasedPendingOrgIds`, delete the line `AND NOT EXISTS (SELECT 1 FROM organizations o WHERE o.id = pending.org_id)`. The racing rebuild drops o2's request while o2's outcome still counts. Fails at: `raced` `rebuildPendingOrgIds: [w.o2]`.
+8. **"the inline script hook fails the attempt once…"**
+   - No single line reddens it. The hook's `eq(fixOutcomes.state, 'pending')` and `isNull(fixOutcomes.countedAt)` guards are redundant for a sequential redelivery.
+   - Mutation: delete both lines. Fails at: the second call's `toBe(0)`, which becomes 1.
+   - The single-guard property is pinned by control 2 on the watcher path.
+
+Other cases:
+
+9. In `telemetryProbeFor`, return `LIVENESS` for every `anomaly:device_metrics:` condition. "a disk_read anomaly hold…" fails: the result is `verified`.
+10. In `scanRecurrence`, replace the paged loop with one unordered `.limit(25)` query. "a real recurrence is found behind 60…" fails: the result is `verified` or `holding`.
+11. In `scriptOwnerVisible`, return `true`. "…re-scoped to org A is never offered to org B…" fails: org B gets a proven fix.
 
 - [ ] **Step 3: Commit**
 
@@ -7292,7 +7709,7 @@ W2/W3 items are deliberately absent: the research agent/kind/profile, `submit_su
 
    Reasons: the composite `(org_id, partner_id)` FK would abort a cross-partner device move with 23503; and an attempt's proof belongs to the org it ran in. The sweeper cancels in-flight rows whose device left the org.
 2. **Extra columns** needed to make the aggregate a pure replay and to keep rebuilds cheap:
-   - `fix_memory`: `broad_key`, `fix_identity`, `consecutive_verified`, `recent_outcomes`, `stale_since`;
+   - `fix_memory`: `broad_key`, `fix_identity`, `consecutive_verified`, `recent_outcomes`, `stale_since`, `rebuild_pending_org_ids` (durable org-erasure rebuild request, see Review findings 2026-09-26 re-check #4);
    - `fix_outcomes`: `broad_key`, `os_type`, `fix_identity`, `instructions_ref`, `recovered_at`, `deadline_at`, `recount_requested_at`;
    - `alerts`: `resolution_reason`.
 3. **The script-failure aggregate is deferred by ≤5 minutes.** The spec says "a terminal transition and its aggregate delta commit in one transaction". That holds for every transition the watcher makes. For the inline script hook (D-a), the terminal CAS commits in the caller's org-scoped ingest transaction, and the aggregate follows on the sweeper's recount pass. The alternative, opening a second system-scoped pooled connection inside agent result ingestion, is the #1105 hazard. Exactly-once is unaffected (`counted_at` CAS), and the aggregate is derived by recompute, never by delta.
@@ -7319,3 +7736,14 @@ W2/W3 items are deliberately absent: the research agent/kind/profile, `submit_su
 Also fixed while revising:
 - `markFixMemoryStaleForOrgErasure`'s correlated subquery referenced outer columns through Drizzle column objects, which can render unqualified and bind to the inner `fix_outcomes o`. The outer columns are now written table-qualified.
 - A normal recompute no longer clears `stale_since`; only a rebuild does.
+
+### Review findings addressed (Codex concurrency re-check, 2026-09-26)
+
+| # | Finding (verified against code) | Fix | Pinning tests (control #, Task 23) |
+|---|---|---|---|
+| 1 | With a caller-supplied executor, the Task 10 hook wrote directly on the caller's transaction. A PostgreSQL error there aborts that transaction even though the JS error is caught. Real caller: `commandCancelPropagation.ts:90-97` forwards its open tx through `finalizeScriptExecutionTerminal` (user cancel `routes/devices/commands.ts:1049`, heartbeat claim `commandClaimEligibility.ts:421`, org move, decommission). | The supplied-executor branch runs `executor.transaction(...)`, Drizzle's nested transaction, i.e. a driver-owned SAVEPOINT, the same mechanism as `withDbTransaction` (`db/index.ts:972`). The catch sits outside it. `ScriptTerminalExecutor` and `commandCancelPropagation`'s `DbExecutor` widen to include `'transaction'`. | Task 10 unit ("…confined to the savepoint and swallowed"); Task 23 "a SQL failure inside the hook…" (control 6) |
+| 2 | "Concurrent advances … count once" was not discriminating. An id-only transition WHERE still passed, because the aggregate replay reads one outcome row either way. | The test now runs two `transitionOutcome` calls concurrently from the same holding snapshot and asserts exactly one `true` and one `false`, plus the aggregate. | Task 23 "two terminal transitions from the SAME holding snapshot" (control 1) |
+| 3 | A lost signature-fill CAS returned the unsigned snapshot (`updated ?? row`). A watcher could then set `counted_at` and skip aggregation, because its snapshot had no signature while the persisted row had one. | `fillOutcomeSignature` reloads the row after a lost CAS. `transitionOutcome` uses `.returning()` and aggregates from the returned persisted row, never the snapshot; a still-unsigned counted row requests a recount. `advanceOutcome` re-checks terminal after the fill. | Task 12 unit (lost-CAS reload; aggregate from returned row; unsigned → recount); Task 23 "a terminal transition from an unsigned snapshot still aggregates" (control 3) |
+| 4 | Erasure committed only a `stale_since` marker before the cascade. A concurrent rebuild could clear it while the org's outcomes still existed. If the post-cascade rebuild then failed (the error is swallowed), nothing re-triggered it, so the erased contributions stayed counted and were eligible for "proven" again. | New column `fix_memory.rebuild_pending_org_ids uuid[]` (Task 2 migration, Drizzle, export policy `included`). The mark appends the org. A rebuild removes an org id only if that org's `organizations` row was already gone BEFORE the rebuild read contributions; the cascade deletes it last. `stale_since` clears only when the array is empty, and `stalePartnerIds` selects pending rows, so the sweeper retries. It self-heals even if the process dies between cascade and rebuild; no post-cascade "arm" write is needed. | Task 12 unit (erased-org read precedes contributions; request kept while org exists; removal of exactly the gone org); Task 23 "erasure: a rebuild racing the cascade…" (control 7) and the merge case |
+
+Known limit, unchanged in kind: an erasure whose cascade fails midway (`attempts: 1`, fails loudly for on-call) leaves the org row present. Its partner rows then stay stale and requested, and are re-attempted every sweep until on-call re-runs the erasure. That is fail-closed: never "proven" on partially erased data.
