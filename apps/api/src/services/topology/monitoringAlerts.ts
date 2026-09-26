@@ -87,14 +87,20 @@ export async function openTopologyPolicyAlert(input: {
   return { alertId: existing.id, created: false };
 }
 
-/** Resolve the policy's open alert after the configured healthy streak. Caller owns the transaction. */
+/**
+ * Resolve the policy's open alert after the configured healthy streak. Caller
+ * owns the transaction. Every OPEN status is resolvable, including
+ * 'suppressed' (PR #7117 C7): a suppressed alert still holds the open-alert
+ * unique slot, and the assessment clears `activeAlertId` on recovery, so
+ * skipping it stranded the alert open forever.
+ */
 export async function recoverTopologyPolicyAlert(input: {
   scope: TopologyScope; alertId: string; policyId: string; contextKey: string; family: 'ipv4' | 'ipv6';
   occurrenceKey: string; consecutiveSuccesses: number; now: Date;
 }): Promise<boolean> {
   const [resolved] = await db.update(alerts)
     .set({ status: 'resolved', resolvedAt: input.now, resolutionNote: `Recovered after ${input.consecutiveSuccesses} consecutive healthy scheduled checks` })
-    .where(and(eq(alerts.id, input.alertId), eq(alerts.orgId, input.scope.orgId), eq(alerts.topologySiteId, input.scope.siteId), inArray(alerts.status, ['active', 'acknowledged'])))
+    .where(and(eq(alerts.id, input.alertId), eq(alerts.orgId, input.scope.orgId), eq(alerts.topologySiteId, input.scope.siteId), inArray(alerts.status, [...OPEN_STATUSES])))
     .returning({ id: alerts.id });
   if (!resolved) return false;
   await recordTransition(input.scope, { action: 'recover', alertId: input.alertId, policyId: input.policyId, contextKey: input.contextKey, family: input.family, occurrenceKey: input.occurrenceKey, notify: true });
@@ -103,43 +109,66 @@ export async function recoverTopologyPolicyAlert(input: {
 
 export type TopologyAlertPublisher = typeof publishEvent;
 
+/** How long a claimed transition is withheld from other drainers while it publishes. */
+const TRANSITION_LEASE_MS = 5 * 60_000;
+const TRANSITION_RETRY_MS = 30_000;
+
 /**
  * Typed consumer for committed alert transitions: publishes `alert.triggered`
  * / `alert.resolved` scoped to the TOPOLOGY site, then marks the event
  * applied. A failed publish stays pending and is retried; a suppressed
  * (cooldown) open is applied without publishing.
+ *
+ * Idempotent delivery (PR #7117 C8): rows are CLAIMED with
+ * `FOR UPDATE SKIP LOCKED` by moving `next_attempt_at` to a lease deadline, so
+ * concurrent drainers never publish one transition twice; the ack/retry is
+ * fenced on that exact lease. Every publish carries the outbox row id as its
+ * stable event id (and the row's creation time as `occurredAt`), so a crash
+ * between publish and ack redelivers the SAME logical event (at-least-once
+ * with stable identity, matching the other durable publishers).
  */
 export async function drainTopologyAlertTransitions(options: { limit?: number; publish?: TopologyAlertPublisher } = {}): Promise<number> {
   const publish = options.publish ?? publishEvent;
-  const rows = await runOutsideDbContext(() => withSystemDbAccessContext(() => db.select().from(topologyChangeOutbox)
-    .where(and(eq(topologyChangeOutbox.eventKind, TOPOLOGY_MONITORING_ALERT_EVENT), sql`${topologyChangeOutbox.payload}->>'state' = 'pending'`,
-      sql`(${topologyChangeOutbox.nextAttemptAt} IS NULL OR ${topologyChangeOutbox.nextAttemptAt} <= now())`))
-    .orderBy(asc(topologyChangeOutbox.createdAt), asc(topologyChangeOutbox.id))
-    .limit(options.limit ?? 50), 'topology alert transitions'));
+  const leaseUntil = new Date(Date.now() + TRANSITION_LEASE_MS);
+  const rows = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const claimable = db.select({ id: topologyChangeOutbox.id }).from(topologyChangeOutbox)
+      .where(and(eq(topologyChangeOutbox.eventKind, TOPOLOGY_MONITORING_ALERT_EVENT), sql`${topologyChangeOutbox.payload}->>'state' = 'pending'`,
+        sql`(${topologyChangeOutbox.nextAttemptAt} IS NULL OR ${topologyChangeOutbox.nextAttemptAt} <= now())`))
+      .orderBy(asc(topologyChangeOutbox.createdAt), asc(topologyChangeOutbox.id))
+      .limit(options.limit ?? 50)
+      .for('update', { skipLocked: true });
+    const claimed = await db.update(topologyChangeOutbox)
+      .set({ nextAttemptAt: leaseUntil, lastAttemptAt: new Date() })
+      .where(inArray(topologyChangeOutbox.id, claimable))
+      .returning();
+    return claimed.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id));
+  }, 'topology alert transitions'));
   let applied = 0;
   for (const row of rows) {
     const event = row.payload as unknown as TopologyMonitoringAlertEvent;
+    const ownsLease = and(eq(topologyChangeOutbox.id, row.id), eq(topologyChangeOutbox.nextAttemptAt, leaseUntil), sql`${topologyChangeOutbox.payload}->>'state' = 'pending'`);
     try {
       if (event.notify) {
         const [alert] = await runOutsideDbContext(() => withSystemDbAccessContext(() => db.select().from(alerts).where(eq(alerts.id, event.alertId)).limit(1), 'topology alert transition read'));
         if (alert && alert.orgId === row.orgId) {
           const common = { alertId: alert.id, ruleId: null, deviceId: alert.deviceId, source: 'topology_monitoring', topologySiteId: alert.topologySiteId };
+          const publishOptions = { siteId: row.siteId, eventId: row.id, occurredAt: row.createdAt.toISOString() };
           if (event.action === 'open') {
-            await publish('alert.triggered', alert.orgId, { ...common, severity: alert.severity, title: alert.title, message: alert.message, monitorId: null, kind: null }, 'topology-monitoring', { siteId: row.siteId });
+            await publish('alert.triggered', alert.orgId, { ...common, severity: alert.severity, title: alert.title, message: alert.message, monitorId: null, kind: null }, 'topology-monitoring', publishOptions);
           } else {
             await publish('alert.resolved', alert.orgId, { ...common, resolutionNote: alert.resolutionNote, resolvedAt: alert.resolvedAt?.toISOString() ?? null, resolvedBy: null,
-              triggeredAt: alert.triggeredAt.toISOString() }, 'topology-monitoring', { siteId: row.siteId });
+              triggeredAt: alert.triggeredAt.toISOString() }, 'topology-monitoring', publishOptions);
           }
         }
       }
-      await runOutsideDbContext(() => withSystemDbAccessContext(() => db.update(topologyChangeOutbox)
-        .set({ payload: sql`jsonb_set(${topologyChangeOutbox.payload}, '{state}', '"applied"')`, updatedAt: new Date(), lastError: null })
-        .where(eq(topologyChangeOutbox.id, row.id)), 'topology alert transition applied'));
-      applied++;
+      const [acked] = await runOutsideDbContext(() => withSystemDbAccessContext(() => db.update(topologyChangeOutbox)
+        .set({ payload: sql`jsonb_set(${topologyChangeOutbox.payload}, '{state}', '"applied"')`, updatedAt: new Date(), lastError: null, nextAttemptAt: null })
+        .where(ownsLease).returning({ id: topologyChangeOutbox.id }), 'topology alert transition applied'));
+      if (acked) applied++;
     } catch {
       await runOutsideDbContext(() => withSystemDbAccessContext(() => db.update(topologyChangeOutbox)
-        .set({ attemptCount: sql`${topologyChangeOutbox.attemptCount}+1`, lastAttemptAt: new Date(), nextAttemptAt: new Date(Date.now() + 30_000), lastError: 'alert_publish_retry_pending' })
-        .where(eq(topologyChangeOutbox.id, row.id)), 'topology alert transition retry'));
+        .set({ attemptCount: sql`${topologyChangeOutbox.attemptCount}+1`, nextAttemptAt: new Date(Date.now() + TRANSITION_RETRY_MS), lastError: 'alert_publish_retry_pending' })
+        .where(ownsLease), 'topology alert transition retry'));
     }
   }
   return applied;
