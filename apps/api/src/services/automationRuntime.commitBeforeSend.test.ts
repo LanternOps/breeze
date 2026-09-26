@@ -17,7 +17,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
  * happens only after that transaction has closed.
  */
 
-const txState = vi.hoisted(() => ({ depth: 0 }));
+// `depth`: the ambient context as AsyncLocalStorage would report it.
+// `open`: real transactions still uncommitted anywhere in the process —
+// runOutsideDbContext hides an outer transaction from `depth` but does NOT
+// commit it, so the send must also see `open === 0`.
+const txState = vi.hoisted(() => ({ depth: 0, open: 0 }));
 
 const {
   dispatchMock,
@@ -65,11 +69,14 @@ vi.mock('../db', () => ({
   }),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
+    const opensTransaction = txState.depth === 0;
     txState.depth += 1;
+    if (opensTransaction) txState.open += 1;
     try {
       return await fn();
     } finally {
       txState.depth -= 1;
+      if (opensTransaction) txState.open -= 1;
     }
   }),
   getCurrentDbAccessContext: vi.fn(() => ({ scope: 'system' })),
@@ -152,7 +159,7 @@ const DEVICE = {
   customFields: null,
 };
 
-type Recorded = { event: 'rows_created' | 'sent'; depth: number };
+type Recorded = { event: 'rows_created' | 'sent'; depth: number; open: number };
 
 /**
  * A stand-in for dispatchScriptToDevice that honours its real contract: rows
@@ -161,7 +168,7 @@ type Recorded = { event: 'rows_created' | 'sent'; depth: number };
  */
 function fakeDispatch(events: Recorded[]) {
   return async (input: { deferDelivery?: boolean; source: { kind: string } }) => {
-    events.push({ event: 'rows_created', depth: txState.depth });
+    events.push({ event: 'rows_created', depth: txState.depth, open: txState.open });
     const base = {
       ok: true as const,
       commandId: 'cmd-1',
@@ -172,7 +179,7 @@ function fakeDispatch(events: Recorded[]) {
       targetSessionId: null,
     };
     const send = () => {
-      events.push({ event: 'sent', depth: txState.depth });
+      events.push({ event: 'sent', depth: txState.depth, open: txState.open });
       return { ...base, delivered: true, deliveryOutcome: 'sent' as const, executedAt: new Date() };
     };
     if (input.deferDelivery) {
@@ -211,6 +218,7 @@ function args(actions: unknown[]) {
 beforeEach(() => {
   vi.clearAllMocks();
   txState.depth = 0;
+  txState.open = 0;
   recordActionDispatchMock.mockResolvedValue(true);
   reconcileRunMock.mockResolvedValue(undefined);
   seedActionResultsMock.mockResolvedValue(undefined);
@@ -240,6 +248,9 @@ describe('executeAutomationActionsInOrder — commit before send (#3445)', () =>
     // refers to are committed and visible to the result path.
     expect(sent).toBeDefined();
     expect(sent?.depth).toBe(0);
+    // ...and no transaction is merely hidden from the context while still
+    // uncommitted (e.g. deliver() invoked inside the lock callback).
+    expect(sent?.open).toBe(0);
     expect(events.indexOf(sent!)).toBeGreaterThan(events.indexOf(created!));
   });
 
@@ -253,6 +264,34 @@ describe('executeAutomationActionsInOrder — commit before send (#3445)', () =>
       status: 'delivered',
       commandId: 'cmd-1',
       scriptExecutionId: EXECUTION_ID,
+    }));
+  });
+
+  it('a claim-time refusal returned by deliver() after commit records the action failed', async () => {
+    dispatchMock.mockImplementation(async () => ({
+      ok: true,
+      commandId: 'cmd-1',
+      executionId: EXECUTION_ID,
+      deliverBy: null,
+      ignoredParameters: [],
+      runAs: 'system',
+      targetSessionId: null,
+      delivered: false,
+      deliveryOutcome: 'deferred',
+      executedAt: null,
+      deliver: async () => ({
+        ok: false,
+        code: 'agent_upgrade_required_recorded',
+        error: 'Agent upgrade required',
+      }),
+    }));
+
+    const out = await __testOnly.executeAutomationActionsInOrder(args([{ type: 'run_script', scriptId: 'script-1' }]));
+
+    expect(out.devicesFailed).toBe(1);
+    expect(recordActionDispatchMock).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'failed',
+      message: 'Agent upgrade required',
     }));
   });
 

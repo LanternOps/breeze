@@ -1406,8 +1406,11 @@ type ActionExecutionResult = {
  * `queued` status for an undelivered command.
  *
  * A throwing `deliver()` is NOT an action failure: the command row is already
- * committed, so the heartbeat claim delivers it when the agent next checks in,
- * or the stale reaper settles it. The action is reported queued.
+ * committed and still `pending` — a claim that fails rolls back on its own, and
+ * a send that throws after the claim releases it first (scriptDispatch.ts) — so
+ * the heartbeat claim delivers it when the agent next checks in. A failure of
+ * the post-send `running` flip does not throw at all. The action is reported
+ * queued.
  */
 /** The pre-send result a deferred dispatch returns; the loop replaces it. */
 function deferredPlaceholder(

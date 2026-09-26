@@ -845,9 +845,27 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
           deviceId: device.id,
           payload: deliverPayload,
         });
-        const sent = deliverable
-          ? sendCommandToAgent(device.agentId, toAgentCommandFrame(deliverable))
-          : false;
+        let sent: boolean;
+        try {
+          sent = deliverable
+            ? sendCommandToAgent(device.agentId, toAgentCommandFrame(deliverable))
+            : false;
+        } catch (sendErr) {
+          // The claim already flipped the row to 'sent'. Hand it back to
+          // 'pending' before propagating, or it could never be claimed again
+          // and would sit until the stale reaper failed it as "no response
+          // from agent" (#3445 review). Best effort: a release failure must not
+          // replace the original error.
+          await releaseClaimedCommandDelivery(commandId, claimed.executedAt).catch((releaseErr) => {
+            console.error('[scriptDispatch] failed to release claim after a send threw', {
+              commandId,
+              deviceId: device.id,
+              error: releaseErr instanceof Error ? releaseErr.message : String(releaseErr),
+            });
+            captureException(releaseErr);
+          });
+          throw sendErr;
+        }
         if (sent) {
           delivered = true;
           deliveryOutcome = 'sent';
@@ -856,12 +874,26 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
             // Guarded on pending: a fast agent can already have driven the row
             // terminal (see handleScriptResult in services/commandResultHandlers.ts).
             // Same context rule as the secret gate above.
+            //
+            // The command is already on the wire, so a failure here is
+            // bookkeeping, not a delivery failure: report it and still return
+            // `delivered`. The agent's result closes the row either way —
+            // handleScriptResult's CAS accepts `pending` too.
             const runningAt = claimed.executedAt;
             const runningExecutionId = executionId;
-            await withSystemDbAccessContext(() => db
-              .update(scriptExecutions)
-              .set({ status: 'running', startedAt: runningAt })
-              .where(and(eq(scriptExecutions.id, runningExecutionId), eq(scriptExecutions.status, 'pending'))));
+            try {
+              await withSystemDbAccessContext(() => db
+                .update(scriptExecutions)
+                .set({ status: 'running', startedAt: runningAt })
+                .where(and(eq(scriptExecutions.id, runningExecutionId), eq(scriptExecutions.status, 'pending'))));
+            } catch (runningErr) {
+              console.error('[scriptDispatch] failed to mark a delivered execution running', {
+                commandId,
+                executionId: runningExecutionId,
+                error: runningErr instanceof Error ? runningErr.message : String(runningErr),
+              });
+              captureException(runningErr);
+            }
           }
         } else {
           // We had a claimed command and a connected agent and still failed to
