@@ -143,25 +143,33 @@ export async function unifiTopologyAdvertisement(deviceId: string, collectorId: 
 
 // ---- Source lifecycle revocation (D1): controller remap, collector change/delete ----
 
-/** Revoke every live UniFi source of a collector, in every site holding one, and
- * advance the collector's generation (a no-op when the collector row is gone). */
+/** Revoke every live UniFi source of these collectors, in every site holding
+ * one, and advance each collector's generation (a no-op for a gone row). Sites
+ * are walked in ONE ascending site_id pass across all collectors: each
+ * revocation takes that site's state FOR UPDATE, and every topology writer
+ * takes site states in that order (collectionAuthority lockTopologySiteStates). */
+async function revokeUnifiCollectorsTopology(collectorIds: readonly string[]): Promise<number> {
+  const ids = [...new Set(collectorIds.filter(id => uuid.safeParse(id).success))].sort();
+  if (!ids.length) return 0;
+  assertInTransaction('revokeUnifiCollectorsTopology');
+  for (const id of ids) await db.update(unifiCollectors).set({ topologyGeneration: sql`${unifiCollectors.topologyGeneration}+1` }).where(eq(unifiCollectors.id, id));
+  const rows = await db.execute(sql`SELECT DISTINCT org_id::text AS org_id, site_id::text AS site_id, split_part(context_key, ':', 1) AS collector_id
+    FROM topology_collection_sources WHERE producer_kind = 'unifi' AND revoked_at IS NULL
+      AND split_part(context_key, ':', 1) IN (SELECT jsonb_array_elements_text(${JSON.stringify(ids)}::jsonb))`);
+  const targets = rows.map(r => ({ orgId: String(r.org_id), siteId: String(r.site_id), collectorId: String(r.collector_id) }))
+    .sort((a, b) => (a.siteId < b.siteId ? -1 : a.siteId > b.siteId ? 1 : a.collectorId < b.collectorId ? -1 : a.collectorId > b.collectorId ? 1 : 0));
+  let revoked = 0;
+  for (const t of targets) revoked += await revokeTopologySources({ orgId: t.orgId, siteId: t.siteId }, { producerKind: 'unifi', collectorId: t.collectorId });
+  return revoked;
+}
 export async function revokeUnifiCollectorTopology(collectorId: string): Promise<number> {
   assertInTransaction('revokeUnifiCollectorTopology');
-  if (!uuid.safeParse(collectorId).success) return 0;
-  await db.update(unifiCollectors).set({ topologyGeneration: sql`${unifiCollectors.topologyGeneration}+1` }).where(eq(unifiCollectors.id, collectorId));
-  const scopes = await db.selectDistinct({ orgId: topologyCollectionSources.orgId, siteId: topologyCollectionSources.siteId }).from(topologyCollectionSources)
-    .where(and(eq(topologyCollectionSources.producerKind, 'unifi'), isNull(topologyCollectionSources.revokedAt),
-      sql`starts_with(${topologyCollectionSources.contextKey}, ${`${collectorId}:`})`));
-  let revoked = 0;
-  for (const scope of scopes) revoked += await revokeTopologySources(scope, { producerKind: 'unifi', collectorId });
-  return revoked;
+  return revokeUnifiCollectorsTopology([collectorId]);
 }
 export async function revokeUnifiIntegrationTopology(integrationId: string): Promise<number> {
   assertInTransaction('revokeUnifiIntegrationTopology');
   const collectors = await db.select({ id: unifiCollectors.id }).from(unifiCollectors).where(eq(unifiCollectors.integrationId, integrationId));
-  let revoked = 0;
-  for (const collector of collectors) revoked += await revokeUnifiCollectorTopology(collector.id);
-  return revoked;
+  return revokeUnifiCollectorsTopology(collectors.map(c => c.id));
 }
 /** A mapping row changed scope or was deleted: revoke the sources it authorized in
  * its OLD scope and advance the (surviving) mapping's generation. */
@@ -181,9 +189,10 @@ export async function revokeUnifiMappingTopology(mapping: { integrationId: strin
 /** Collector upsert: revoke only when the authority-bearing revision changed.
  * Revoking under an unchanged revision would fence the sources permanently (a
  * fenced source re-baselines only under a new epoch). */
+const collectorRevisionChanged = (before: UnifiCollectorAuthority, after: UnifiCollectorAuthority | null) =>
+  !after || unifiCollectorRevision(before) !== unifiCollectorRevision(after);
 export async function revokeUnifiCollectorTopologyIfChanged(before: UnifiCollectorAuthority | null, after: UnifiCollectorAuthority | null): Promise<number> {
-  if (!before) return 0;
-  if (after && unifiCollectorRevision(before) === unifiCollectorRevision(after)) return 0;
+  if (!before || !collectorRevisionChanged(before, after)) return 0;
   return revokeUnifiCollectorTopology(before.id);
 }
 
@@ -201,11 +210,13 @@ export async function snapshotUnifiMappings(integrationId: string): Promise<Unif
 export async function revokeUnifiMappingDrift(integrationId: string, before: UnifiMappingSnapshot[]): Promise<number> {
   if (!before.length) return 0;
   const after = new Map((await snapshotUnifiMappings(integrationId)).map(m => [JSON.stringify([m.unifiHostId, m.unifiSiteId]), m]));
-  let revoked = 0;
-  for (const old of before) {
+  // Ascending old site_id: each revocation locks that site's state (lock order).
+  const drifted = before.filter(old => {
     const now = after.get(JSON.stringify([old.unifiHostId, old.unifiSiteId]));
-    if (!now || now.id !== old.id || now.orgId !== old.orgId || now.siteId !== old.siteId) revoked += await revokeUnifiMappingTopology(old);
-  }
+    return !now || now.id !== old.id || now.orgId !== old.orgId || now.siteId !== old.siteId;
+  }).sort((a, b) => (a.siteId < b.siteId ? -1 : a.siteId > b.siteId ? 1 : 0));
+  let revoked = 0;
+  for (const old of drifted) revoked += await revokeUnifiMappingTopology(old);
   return revoked;
 }
 export async function snapshotUnifiCollectors(integrationId: string): Promise<UnifiCollectorAuthority[]> {
@@ -214,7 +225,5 @@ export async function snapshotUnifiCollectors(integrationId: string): Promise<Un
 export async function revokeUnifiCollectorDrift(integrationId: string, before: UnifiCollectorAuthority[]): Promise<number> {
   if (!before.length) return 0;
   const after = new Map((await snapshotUnifiCollectors(integrationId)).map(c => [c.id, c]));
-  let revoked = 0;
-  for (const old of before) revoked += await revokeUnifiCollectorTopologyIfChanged(old, after.get(old.id) ?? null);
-  return revoked;
+  return revokeUnifiCollectorsTopology(before.filter(old => collectorRevisionChanged(old, after.get(old.id) ?? null)).map(old => old.id));
 }

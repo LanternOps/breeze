@@ -141,6 +141,35 @@ export async function resolveTopologyPhysicalProducer(input:{producerKind:Topolo
     ...(input.parentJobId?{parentJobId:input.parentJobId}:{}),...(input.parentCommandId?{parentCommandId:input.parentCommandId}:{})};
 }
 
+/** Topology lock order. Every writer takes `topology_site_state` rows in
+ * ascending site_id order, and only then source rows of those sites (the home
+ * root included): the device source-lifecycle trigger (2026-11-01-100000),
+ * the heartbeat handshake and M1 agent ingest (state(H), then root(H)) and
+ * source revocation all follow it. A physical ingest can hold several sites in
+ * one transaction (a multi-site UniFi upload, and always its home site for the
+ * root check), so it must take every state it will need up front, in order,
+ * never one per resource: state(T), root(H), then state(H) deadlocks (40P01)
+ * against a concurrent heartbeat holding state(H) and waiting on root(H). */
+export async function lockTopologySiteStates(orgId: string, siteIds: readonly string[]): Promise<void> {
+  assertInTransaction('lockTopologySiteStates');
+  const ids=[...new Set(siteIds.map(id=>uuid.parse(id)))].sort();
+  if (!ids.length) return;
+  await db.execute(sql`SELECT site_id FROM topology_site_state WHERE org_id=${uuid.parse(orgId)}::uuid
+    AND site_id IN (SELECT jsonb_array_elements_text(${JSON.stringify(ids)}::jsonb)::uuid) ORDER BY site_id FOR UPDATE`);
+}
+/** Up-front lock set for a physical ingest by `deviceId` into `targetSiteIds`:
+ * the device row (FOR KEY SHARE NOWAIT: a concurrent move/delete fails fast
+ * with 55P03 before any topology lock is held), then the target site states
+ * (created when missing) and the device's home site state, ascending. */
+export async function lockTopologyPhysicalIngest(deviceId: string, orgId: string, targetSiteIds: readonly string[]): Promise<void> {
+  assertInTransaction('lockTopologyPhysicalIngest');
+  const device=await activeDevice(deviceId);
+  if (device.orgId!==orgId) throw new Error('producer_scope_changed');
+  const targets=[...new Set(targetSiteIds.map(id=>uuid.parse(id)))].sort();
+  if (targets.length) await db.insert(topologySiteState).values(targets.map(siteId=>({orgId,siteId}))).onConflictDoNothing();
+  await lockTopologySiteStates(orgId,[...targets,device.siteId]);
+}
+
 async function requireCurrentPhysicalProducer(producer:AuthenticatedTopologyProducer&{producerKind:TopologyPhysicalProducerKind}) {
   const device=await activeDevice(producer.producerId);
   if (device.orgId!==producer.scope.orgId) throw new Error('producer_scope_changed');
@@ -150,9 +179,12 @@ async function requireCurrentPhysicalProducer(producer:AuthenticatedTopologyProd
   if (producer.sourceIdentity!==expectedIdentity) throw new Error('producer_identity_mismatch');
   if (!producer.authorityKey) throw new Error('producer_authority_denied');
   if (!(await loadTopologyFlags({scope:producer.scope})).materialization) throw new Error('materialization_disabled');
-  // Lock order matches heartbeat/agent ingest: target site state, then the
-  // device's home root (shared: fences a concurrent epoch reissue until commit).
+  // Lock order (see lockTopologySiteStates): the target and home site states
+  // ascending, then the device's home root (shared: fences a concurrent epoch
+  // reissue until commit). Re-taking a state this transaction already holds
+  // (lockTopologyPhysicalIngest) is a no-op.
   await db.insert(topologySiteState).values(producer.scope).onConflictDoNothing();
+  await lockTopologySiteStates(producer.scope.orgId,[producer.scope.siteId,device.siteId]);
   const [state]=await db.select().from(topologySiteState).where(and(eq(topologySiteState.orgId,producer.scope.orgId),eq(topologySiteState.siteId,producer.scope.siteId))).for('update');
   const [root]=await db.select().from(topologyCollectionSources).where(and(whereAgentRoot(device.orgId,device.id),eq(topologyCollectionSources.siteId,device.siteId))).for('share');
   if (!state || !root || root.revokedAt) throw new Error('producer_epoch_changed');

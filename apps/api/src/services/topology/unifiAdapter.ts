@@ -48,7 +48,7 @@ import { canonicalizeUnifiResource, unifiEndpointKey, type TopologyScope, type U
 import { assertInTransaction, db } from '../../db';
 import { topologyCollectionSources, unifiControllerSites } from '../../db/schema';
 import { canonicalMac } from '../unifi/unifiMac';
-import { resolveTopologyPhysicalProducer, TOPOLOGY_PRODUCER_REJECTIONS } from './collectionAuthority';
+import { lockTopologyPhysicalIngest, resolveTopologyPhysicalProducer, TOPOLOGY_PRODUCER_REJECTIONS } from './collectionAuthority';
 import { canonicalFactValue } from './collectionFactKeys';
 import { ingestTopologySourceReport } from './collectionIngest';
 import type { NormalizedTopologyReport, UnifiSourceSection } from './collectionTypes';
@@ -127,6 +127,13 @@ export type UnifiResourceReceipt = {
 export type UnifiTopologyReceipt = { accepted: boolean; producerEpoch?: string; reportSequence?: string; reason?: string; resources: UnifiResourceReceipt[] };
 const ADAPTER_REJECTIONS = new Set([...TOPOLOGY_PRODUCER_REJECTIONS, 'source_key_mismatch', 'invalid_source_section']);
 
+/** A per-resource rejection reason for an expected producer failure, else null (rethrow). */
+function adapterRejection(error: unknown): string | null {
+  if ((error as { code?: string } | null)?.code === '55P03') return 'producer_busy';
+  const reason = error instanceof Error ? error.message : '';
+  return ADAPTER_REJECTIONS.has(reason) ? reason : null;
+}
+
 async function noteCoverage(collector: UnifiCollectorAuthority, notes: Map<string, string | null>) {
   for (const [controllerSiteId, reason] of notes) {
     if (reason === null) {
@@ -155,6 +162,22 @@ export async function adaptUnifiTopology(deviceId: string, collector: UnifiColle
   const scopes = new Map<string, TopologyScope | null>();
   const coverage = new Map<string, string | null>();
   const resources: UnifiResourceReceipt[] = [];
+  // Resolve every controller-site scope first (reads only), then take every
+  // site-state lock this upload can need in ONE ascending pass before any
+  // resource runs (lockTopologySiteStates: never state(T), root(H), state(H)).
+  for (const resource of report.resources) {
+    if (!scopes.has(resource.controllerSiteId)) scopes.set(resource.controllerSiteId, await resolveUnifiSourceScope(collector.id, resource.controllerSiteId));
+  }
+  const targets = [...scopes.values()].filter((s): s is TopologyScope => s !== null && s.orgId === collector.orgId).map(s => s.siteId);
+  let lockFailure: string | null = null;
+  if (targets.length) {
+    try {
+      await db.transaction(() => lockTopologyPhysicalIngest(deviceId, collector.orgId, targets));
+    } catch (error) {
+      lockFailure = adapterRejection(error);
+      if (!lockFailure) throw error;
+    }
+  }
   for (const resource of report.resources) {
     const out = { controllerSiteId: resource.controllerSiteId, kind: resource.kind };
     const reject = (reason: string, note?: string) => {
@@ -162,13 +185,13 @@ export async function adaptUnifiTopology(deviceId: string, collector: UnifiColle
       resources.push({ ...out, accepted: false, reason });
     };
     if (!unifiWireDigestMatches(current, resource)) { reject('content_digest_mismatch'); continue; }
-    if (!scopes.has(resource.controllerSiteId)) scopes.set(resource.controllerSiteId, await resolveUnifiSourceScope(collector.id, resource.controllerSiteId));
     const scope = scopes.get(resource.controllerSiteId)!;
     if (!scope) { reject('controller_site_unmapped', 'controller_site_unmapped'); continue; }
     if (scope.orgId !== collector.orgId) { reject('controller_site_other_org', 'controller_site_other_org'); continue; }
     const authorityKey = unifiAuthorityKey(collector.id, resource.controllerSiteId);
     if (!authorityKey) { reject('controller_site_key_invalid', 'controller_site_key_invalid'); continue; }
     if (!coverage.has(resource.controllerSiteId)) coverage.set(resource.controllerSiteId, null);
+    if (lockFailure) { reject(lockFailure); continue; }
     try {
       const receipt = await db.transaction(async () => {
         const producer = await resolveTopologyPhysicalProducer({ producerKind: 'unifi', deviceId, scope, authorityKey, collectorId: collector.id });
@@ -193,10 +216,8 @@ export async function adaptUnifiTopology(deviceId: string, collector: UnifiColle
         ? { ...out, accepted: true, contentDigest: resource.contentDigest, ...(receipt.acceptedSequence ? { acceptedSequence: receipt.acceptedSequence } : {}) }
         : { ...out, accepted: false, reason: receipt.reason ?? 'not_accepted' });
     } catch (error) {
-      const code = (error as { code?: string } | null)?.code;
-      const reason = error instanceof Error ? error.message : '';
-      if (code === '55P03') { reject('producer_busy'); continue; }
-      if (!ADAPTER_REJECTIONS.has(reason)) throw error;
+      const reason = adapterRejection(error);
+      if (!reason) throw error;
       reject(reason);
     }
   }
