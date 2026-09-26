@@ -251,6 +251,28 @@ describe('fleet software rollup (#2262)', () => {
     expect(body.cves.find((c) => c.cveId === 'CVE-2026-70001')!.openDeviceCount).toBe(3);
   });
 
+  runDb('GET /:cveId/devices narrows to that CVE in SQL, every status, case-insensitive (#7071)', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const { d1, d2, d3, accepted } = await seedChromeFleet(env);
+
+    const { status, body } = await get<{
+      cve: { cveId: string };
+      findings: Array<{ deviceId: string; cveId: string; status: string; deviceVulnerabilityId: string }>;
+    }>(env, '/cve-2026-70003/devices');
+    expect(status).toBe(200);
+    expect(body.cve.cveId).toBe('CVE-2026-70003');
+    // One finding per device, the accepted waiver included; no other CVE leaks in.
+    expect(body.findings.map((f) => f.deviceId).sort()).toEqual([d1, d2, d3].sort());
+    expect(body.findings.every((f) => f.cveId === 'CVE-2026-70003')).toBe(true);
+    expect(body.findings.find((f) => f.deviceId === d1)!.deviceVulnerabilityId).toBe(accepted);
+
+    // Another tenant sees the catalog record but none of these findings.
+    const other = await setupTestEnvironment({ scope: 'organization' });
+    const cross = await get<{ findings: unknown[] }>(other, '/CVE-2026-70003/devices');
+    expect(cross.status).toBe(200);
+    expect(cross.body.findings).toEqual([]);
+  });
+
   runDb('GET /software/:groupKey 404s for a group the caller has no findings in', async () => {
     const env = await setupTestEnvironment({ scope: 'organization' });
     await seedChromeFleet(env);
