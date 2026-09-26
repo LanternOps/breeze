@@ -23,7 +23,7 @@ import { scriptReviewQueueJobDataSchema } from './queueSchemas';
 import { SCRIPT_REVIEW_JOB_NAME, SCRIPT_REVIEW_QUEUE } from '../services/scriptProposals/reviewQueue';
 import { ProposalNotReviewableError, runScriptReview } from '../services/scriptProposals/reviewer';
 import { releaseOrgReviewSlot, tryAcquireOrgReviewSlot } from '../services/scriptProposals/reviewConcurrency';
-import { attachWorkerObservability } from './workerObservability';
+import { attachWorkerObservability, type WorkerFailureClassification } from './workerObservability';
 
 const WORKER_NAME = 'scriptReviewWorker';
 
@@ -61,9 +61,22 @@ export async function processScriptReviewJob(job: Job<unknown>, token?: string):
   try {
     await runScriptReview(data);
   } catch (error) {
-    // The proposal left `proposed` with no model review (superseded/expired
-    // before we got to it): nothing a retry could change, and no spend.
     if (error instanceof ProposalNotReviewableError) {
+      // Row not found: a visibility race, not a terminal state (#7128). The
+      // producer commits the proposal before it enqueues, so this should not
+      // happen, but a job that runs before the insert is visible must still be
+      // retried rather than dropped. Rethrowing keeps it on the job's own
+      // bounded `attempts` + exponential backoff (reviewQueue.ts). Nothing was
+      // spent: the load runs before the static-scan row and the budget
+      // reservation.
+      if (error.status === 'missing') {
+        console.warn(`[${WORKER_NAME}] ${error.message}; will retry`, {
+          proposalId: data.proposalId, orgId: data.orgId, attemptsMade: job.attemptsMade,
+        });
+        throw error;
+      }
+      // The proposal left `proposed` with no model review (superseded/expired
+      // before we got to it): nothing a retry could change, and no spend.
       console.error(`[${WORKER_NAME}] ${error.message}`);
       throw new UnrecoverableError(error.message);
     }
@@ -85,6 +98,22 @@ export async function processScriptReviewJob(job: Job<unknown>, token?: string):
   }
 }
 
+/**
+ * A `'missing'` proposal is rethrown for BullMQ to retry (#7128). The early
+ * attempts are an expected visibility race and add volume, not information;
+ * a job that EXHAUSTS its attempts on it means that proposal will now never
+ * be reviewed, so that single report is error level.
+ */
+export function classifyScriptReviewFailure(
+  _job: Job | undefined,
+  err: Error,
+): WorkerFailureClassification | null {
+  if (err instanceof ProposalNotReviewableError && err.status === 'missing') {
+    return { reason: 'script_review_proposal_not_visible', level: 'error', reportOnlyWhenExhausted: true };
+  }
+  return null;
+}
+
 let scriptReviewWorker: Worker | null = null;
 
 export async function initializeScriptReviewWorker(): Promise<void> {
@@ -94,7 +123,7 @@ export async function initializeScriptReviewWorker(): Promise<void> {
     (job: Job, token?: string) => processScriptReviewJob(job, token),
     { connection: getBullMQConnection(), concurrency: WORKER_CONCURRENCY, lockDuration: LOCK_DURATION_MS },
   );
-  attachWorkerObservability(scriptReviewWorker, WORKER_NAME);
+  attachWorkerObservability(scriptReviewWorker, WORKER_NAME, { classifyFailure: classifyScriptReviewFailure });
 }
 
 export async function shutdownScriptReviewWorker(): Promise<void> {
