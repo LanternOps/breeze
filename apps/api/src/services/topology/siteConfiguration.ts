@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import {
   topologyConfigurationSchema,
@@ -341,10 +341,29 @@ async function persistCompiledConfiguration(
           removedTargets.map((row) => row.id),
         ),
       );
+  // PR #7117 C3: lock every compiled policy row BEFORE reading its arm state.
+  // Arming (`lockPolicy`) and the scheduler take the same row lock, so a
+  // concurrent arm either commits first — and this read, re-evaluated after
+  // the lock wait, sees it armed and disarms it below — or waits for this
+  // compile and then fails its revision CAS. Ordered by id: a deterministic
+  // lock order. Every write below is additionally a CAS on the revision and
+  // arm state read here, so a changed definition can never land on an arm
+  // this compile did not see.
   const policies = await db
     .select()
     .from(topologyMonitoringPolicies)
-    .where(scopedWrite(ctx.scope, topologyMonitoringPolicies));
+    .where(scopedWrite(ctx.scope, topologyMonitoringPolicies))
+    .orderBy(asc(topologyMonitoringPolicies.id))
+    .for('update');
+  const unchangedSinceRead = (row: typeof policies[number]) =>
+    and(
+      eq(topologyMonitoringPolicies.id, row.id),
+      eq(topologyMonitoringPolicies.revision, row.revision),
+      eq(topologyMonitoringPolicies.enabled, row.enabled),
+    );
+  const assertWritten = (written: unknown[]) => {
+    if (written.length !== 1) throw new TopologyOperationError('revision_conflict', 409);
+  };
   const byPolicyKey = new Map(policies.map((row) => [row.key, row]));
   const existingPins = await db
     .select()
@@ -377,7 +396,7 @@ async function persistCompiledConfiguration(
         await disarmPolicyRow(ctx.scope, old, 'activation_withdrawn', { ...versions, activationIntent: false });
         disarmedPolicyIds.push(old.id);
       } else {
-        await db
+        assertWritten(await db
           .update(topologyMonitoringPolicies)
           .set({
             ...versions,
@@ -385,7 +404,8 @@ async function persistCompiledConfiguration(
             ...(old.enabled ? {} : { blockedReason: definition.enabled ? (old.blockedReason ?? 'not_armed') : null }),
             updatedAt: now,
           })
-          .where(eq(topologyMonitoringPolicies.id, old.id));
+          .where(unchangedSinceRead(old))
+          .returning({ id: topologyMonitoringPolicies.id }));
       }
       continue;
     }
@@ -402,7 +422,7 @@ async function persistCompiledConfiguration(
         await disarmPolicyRow(ctx.scope, old, 'rearm_required', material);
         disarmedPolicyIds.push(old.id);
       } else {
-        await db
+        assertWritten(await db
           .update(topologyMonitoringPolicies)
           .set({
             ...material,
@@ -411,7 +431,8 @@ async function persistCompiledConfiguration(
             revision: sql`${topologyMonitoringPolicies.revision}+1`,
             updatedAt: now,
           })
-          .where(eq(topologyMonitoringPolicies.id, old.id));
+          .where(unchangedSinceRead(old))
+          .returning({ id: topologyMonitoringPolicies.id }));
       }
     } else {
       const [inserted] = await db

@@ -87,4 +87,46 @@ describe('diff-aware policy compile (M3-D7)', () => {
     expect(after.activationIntent).toBe(false);
     expect(after.blockedReason).toBe('activation_withdrawn');
   });
+
+  // PR #7117 C3: the compiler read a DISABLED policy, a concurrent arm then
+  // committed against the old definition, and the compiler rewrote the
+  // definition/revision without clearing the arm — the scheduler would run a
+  // changed policy no human armed. Interleave the two deterministically: the
+  // arm holds its (uncommitted) write open at the step-up hook while the
+  // compile starts; the arm commits only once the compile is waiting on it.
+  it('never leaves a concurrently armed policy enabled over a definition the arm did not approve (C3)', async () => {
+    const f = await seedTopologyMonitoringFixture();
+    const revision = async () => (await system(() => db.select({ revision: topologySiteState.settingsRevision }).from(topologySiteState).where(eq(topologySiteState.siteId, f.siteId))))[0]!.revision.toString();
+    await f.inOrg(async () => updateTopologySiteConfiguration(f.ctx, overrides(), await revision()));
+    const before = await f.policy();
+    expect(before.enabled).toBe(false);
+
+    let release!: () => void;
+    let reachedGate!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const atGate = new Promise<void>((resolve) => { reachedGate = resolve; });
+    const arming = f.inOrg(() => armTopologyMonitoringPolicy(f.ctx, f.policyId, { expectedRevision: before.revision.toString(), extendedContexts: false }, {
+      repository: f.repository,
+      consumeStepUp: async () => { reachedGate(); await gate; },
+    }));
+    await atGate;
+    const settingsRevision = await revision();
+    const compiling = f.inOrg(() => updateTopologySiteConfiguration(f.ctx, overrides({ policies: { 'web-check': { ...policy, intervalSeconds: 600 } } as never }), settingsRevision));
+    for (let i = 0; i < 100; i++) {
+      const [waiting] = await system(() => db.execute<{ n: number }>(sql`SELECT count(*)::int AS n FROM pg_stat_activity
+        WHERE datname = current_database() AND wait_event_type = 'Lock' AND query ILIKE '%topology_monitoring_policies%'`));
+      if (waiting!.n > 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    release();
+    await arming;
+    await compiling;
+
+    const after = await f.policy();
+    expect((after.definition as { intervalSeconds: number }).intervalSeconds).toBe(600);
+    expect(after.enabled).toBe(false);
+    expect(after.authorityDigest).toBeNull();
+    expect(after.authorityActor).toBeNull();
+    expect(after.blockedReason).toBe('rearm_required');
+  });
 });
