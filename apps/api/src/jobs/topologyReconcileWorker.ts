@@ -3,6 +3,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { reconcileTopologySite } from '../services/topology/reconcile';
 import { loadTopologyFlags } from '../services/topology/flags';
 import { captureException } from '../services/sentry';
+import { registerTopologyPhysicalAuthorities } from '../services/topology/physicalAuthorities';
 let timer:ReturnType<typeof setInterval>|null=null;
 let active:Promise<void>|null=null;
 export async function runTopologyReconcileTick(){
@@ -18,6 +19,9 @@ export async function runTopologyReconcileTick(){
  }catch(error){captureException(error);}
 }
 export function initializeTopologyReconcileWorker(){
+ // M2 D1: every process that ingests or publishes physical topology installs
+ // the producer authorities explicitly (collectionAuthority is default-deny).
+ registerTopologyPhysicalAuthorities();
  if(timer)return;
  timer=setInterval(()=>{if(!active)active=runTopologyReconcileTick().catch(captureException).finally(()=>{active=null;});},2000);timer.unref?.();
 }

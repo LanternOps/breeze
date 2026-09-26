@@ -52,7 +52,7 @@ import { resolveTopologyPhysicalProducer, TOPOLOGY_PRODUCER_REJECTIONS } from '.
 import { canonicalFactValue } from './collectionFactKeys';
 import { ingestTopologySourceReport } from './collectionIngest';
 import type { NormalizedTopologyReport, UnifiSourceSection } from './collectionTypes';
-import { currentUnifiCollectorTopology, resolveUnifiSourceScope, unifiAuthorityKey, unifiHostKey, type UnifiCollectorAuthority } from './unifiAuthority';
+import { currentUnifiCollectorTopology, ensureUnifiTopologyAuthority, resolveUnifiSourceScope, unifiAuthorityKey, unifiHostKey, type UnifiCollectorAuthority } from './unifiAuthority';
 
 export type ScopedMacCandidate = { id: string; orgId: string; siteId: string; mac: string };
 /** Binding only for exactly one distinct same-scope candidate; never the first org-wide match. */
@@ -146,6 +146,7 @@ async function noteCoverage(collector: UnifiCollectorAuthority, notes: Map<strin
  * controller site never discards another's receipt. */
 export async function adaptUnifiTopology(deviceId: string, collector: UnifiCollectorAuthority, report: UnifiTopologyV1): Promise<UnifiTopologyReceipt> {
   assertInTransaction('adaptUnifiTopology');
+  ensureUnifiTopologyAuthority();
   const base = { reportSequence: report.sequence };
   const current = await currentUnifiCollectorTopology(deviceId, collector);
   if (!current) return { ...base, accepted: false, reason: 'topology_unavailable', resources: [] };

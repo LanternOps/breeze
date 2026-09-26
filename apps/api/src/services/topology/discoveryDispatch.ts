@@ -4,7 +4,7 @@ import { and, eq, getTableColumns, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../../db';
 import { devices, discoveryJobs, discoveryProfiles, topologyCollectionSources } from '../../db/schema';
-import { registerTopologyProducerAuthority, topologySourceIdentity, type TopologyProducerAuthorityDecision, type TopologyProducerAuthorityRequest } from './collectionAuthority';
+import { isTopologyProducerAuthorityRegistered, registerTopologyProducerAuthority, topologySourceIdentity, type TopologyProducerAuthorityDecision, type TopologyProducerAuthorityRequest } from './collectionAuthority';
 import { parseDiscoveryTargetAuthorityKey } from './discoveryAdjacency';
 import { loadTopologyFlags } from './flags';
 
@@ -170,10 +170,7 @@ export async function discoveryTopologyAuthority(request: TopologyProducerAuthor
   return { authorized: true, configurationGeneration: parent.snapshot.configurationGeneration };
 }
 
-let registered = false;
-/** Idempotent: the API process registers the discovery authority once. */
+/** Idempotent explicit registration (see `registerTopologyPhysicalAuthorities`). */
 export function ensureDiscoveryTopologyAuthority(): void {
-  if (registered) return;
-  registerTopologyProducerAuthority('discovery', discoveryTopologyAuthority);
-  registered = true;
+  if (!isTopologyProducerAuthorityRegistered('discovery')) registerTopologyProducerAuthority('discovery', discoveryTopologyAuthority);
 }

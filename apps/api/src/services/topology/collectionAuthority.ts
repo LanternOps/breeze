@@ -91,6 +91,10 @@ export type TopologyProducerAuthorityDecision = {authorized:true;configurationGe
 export type TopologyProducerAuthority = (request:TopologyProducerAuthorityRequest)=>Promise<TopologyProducerAuthorityDecision>;
 export const TOPOLOGY_PHYSICAL_PRODUCER_KINDS=['discovery','unifi'] as const;
 const authorities=new Map<TopologyPhysicalProducerKind,TopologyProducerAuthority>();
+/** Whether a kind has its authority check installed (boot registration probe). */
+export const isTopologyProducerAuthorityRegistered=(kind:TopologyPhysicalProducerKind)=>authorities.has(kind);
+/** Test isolation only: forget every registered physical authority. */
+export function resetTopologyProducerAuthoritiesForTest():void { authorities.clear(); }
 /** Registers the single authority check for a kind; returns an unregister handle. */
 export function registerTopologyProducerAuthority(kind:TopologyPhysicalProducerKind,authority:TopologyProducerAuthority):()=>void {
   if (authorities.has(kind)) throw new Error(`Topology producer authority already registered for ${kind}`);

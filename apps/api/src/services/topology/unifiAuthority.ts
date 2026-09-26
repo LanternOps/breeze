@@ -5,7 +5,7 @@ import type { TopologyScope } from '@breeze/shared';
 import { assertInTransaction, db } from '../../db';
 import { devices, topologyCollectionSources, unifiCollectors, unifiSiteMappings } from '../../db/schema';
 import { loadTopologyFlags } from './flags';
-import { registerTopologyProducerAuthority, revokeTopologySources, topologySourceIdentity, type TopologyProducerAuthority } from './collectionAuthority';
+import { isTopologyProducerAuthorityRegistered, registerTopologyProducerAuthority, revokeTopologySources, topologySourceIdentity, type TopologyProducerAuthority } from './collectionAuthority';
 
 /**
  * UniFi controller-site authority (M2 Task 5, amendments D1/D9/D16).
@@ -98,8 +98,12 @@ export const unifiTopologyAuthority: TopologyProducerAuthority = async request =
   if (mapping.orgId !== request.scope.orgId || mapping.siteId !== request.scope.siteId) return { authorized: false, reason: 'controller_site_remapped' };
   return { authorized: true, configurationGeneration: unifiAuthorityGeneration(mapping, collector) };
 };
-// One registration per process: every importer of the UniFi adapter/routes gets it.
-registerTopologyProducerAuthority('unifi', unifiTopologyAuthority);
+/** Idempotent explicit registration (called by `registerTopologyPhysicalAuthorities`
+ * at API/worker boot and by the ingest entry points). Never an import side effect:
+ * an unregistered kind must fail closed, not depend on module load order. */
+export function ensureUnifiTopologyAuthority(): void {
+  if (!isTopologyProducerAuthorityRegistered('unifi')) registerTopologyProducerAuthority('unifi', unifiTopologyAuthority);
+}
 
 /** Collector credentials to advertise, or null (legacy-only). Requires: the
  * collector is enabled and owned by this device, the device has a live heartbeat
