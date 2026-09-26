@@ -9,7 +9,7 @@ import { fromMinorUnits } from './stripeMoney';
 import { captureException } from './sentry';
 import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
 import { requestPaymentPush, requestPaymentDelete, partialRefundDivergenceMessage } from './accounting/accountingPaymentPush';
-import { resolveActiveConnection } from './accounting/accountingConnectionService';
+import { resolveActiveConnectionId } from './accounting/accountingConnectionService';
 import { enqueueAccountingPaymentPush, enqueueAccountingPaymentDelete } from '../jobs/accountingSyncWorker';
 import { processPendingStripeFinancialEventsForPayment } from './stripeReversalState';
 import { markSiblingRevocationIntentInTx, markSessionChargedRepair } from './stripeSessionRevocation';
@@ -417,9 +417,11 @@ export async function reflectStripeRefund(input: RefundInput): Promise<void> {
       // Xero W01 hardening: scope the flag to the partner's ACTIVE connection's
       // mapping. One connection per partner and ON DELETE CASCADE already make a
       // cross-connection match impossible; this makes it impossible by predicate
-      // too, instead of by schema accident.
-      const activeConn = await resolveActiveConnection(db, partnerId);
-      if (activeConn) {
+      // too, instead of by schema accident. Fix round 1: use the non-decrypting
+      // id lookup — this runs inside the money transaction, and a rotated/
+      // retired encryption key must never abort a Stripe refund reconcile.
+      const activeConnId = await resolveActiveConnectionId(db, partnerId);
+      if (activeConnId) {
         await db.update(accountingEntityMappings)
           .set({
             syncStatus: 'error',
@@ -427,7 +429,7 @@ export async function reflectStripeRefund(input: RefundInput): Promise<void> {
             updatedAt: new Date(),
           })
           .where(and(
-            eq(accountingEntityMappings.integrationId, activeConn.id),
+            eq(accountingEntityMappings.integrationId, activeConnId),
             eq(accountingEntityMappings.partnerId, partnerId),
             eq(accountingEntityMappings.breezeEntityType, 'payment'),
             eq(accountingEntityMappings.breezeEntityId, paymentId),

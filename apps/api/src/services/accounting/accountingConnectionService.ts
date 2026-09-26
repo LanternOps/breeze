@@ -185,6 +185,26 @@ export async function resolveActiveConnection(
   return row ? mapConnection(row) : null;
 }
 
+/**
+ * The non-decrypting sibling of `resolveActiveConnection`, for callers that
+ * only need the id (money-path hardening: the Stripe refund reconcile runs
+ * inside the money transaction, and a rotated/retired encryption key must
+ * never abort it via `mapConnection`'s eager decrypt). Same WHERE/limit as
+ * `resolveActiveConnection` — any future filter added there (W02's
+ * pending_tenant exclusion) must be mirrored here.
+ */
+export async function resolveActiveConnectionId(
+  dbc: DbExecutor,
+  partnerId: string,
+): Promise<string | null> {
+  const [row] = await dbc
+    .select({ id: accountingConnections.id })
+    .from(accountingConnections)
+    .where(eq(accountingConnections.partnerId, partnerId))
+    .limit(1);
+  return row?.id ?? null;
+}
+
 /** Load one connection by id, partner-guarded. Jobs carry this id (spec: "a job's destination is never reinterpreted"). */
 export async function getConnectionById(
   dbc: DbExecutor,

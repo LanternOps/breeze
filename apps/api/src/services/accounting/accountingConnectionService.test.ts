@@ -1081,6 +1081,44 @@ describe('one connection per partner (Xero W01)', () => {
   });
 });
 
+describe('resolveActiveConnectionId (Xero W01 Task 6 fix round 1 — non-decrypting sibling)', () => {
+  /** Captures the `select()` projection and the `where` SQL, same idiom as
+   *  `getConnectionProviderForMapping`'s `joinDb` helper above — proves the
+   *  query shape rather than trusting a row shape the mock could fabricate. */
+  function idOnlyDb(rows: Array<Record<string, unknown>>) {
+    const captured: { projection?: Record<string, unknown>; where?: SQL } = {};
+    const dbc = {
+      select: vi.fn((projection: Record<string, unknown>) => {
+        captured.projection = projection;
+        return { from: () => ({ where: (w: SQL) => { captured.where = w; return { limit: async () => rows }; } }) };
+      }),
+    };
+    return { dbc, captured };
+  }
+
+  it('returns the id, selecting ONLY the id column (no realm/token decrypt)', async () => {
+    const decryptSpy = vi.spyOn(await import('../secretCrypto'), 'decryptSecret');
+    const { dbc, captured } = idOnlyDb([{ id: 'conn-1' }]);
+    const { resolveActiveConnectionId } = await import('./accountingConnectionService');
+    const { accountingConnections } = await import('../../db/schema');
+
+    await expect(resolveActiveConnectionId(dbc as any, 'p1')).resolves.toBe('conn-1');
+
+    expect(captured.projection).toEqual({ id: accountingConnections.id });
+    const where = new PgDialect().sqlToQuery(captured.where!);
+    expect(where.sql).toContain('"accounting_connections"."partner_id" = $1');
+    expect(where.params).toEqual(['p1']);
+    expect(decryptSpy).not.toHaveBeenCalled();
+    decryptSpy.mockRestore();
+  });
+
+  it('returns null when the partner has no row', async () => {
+    const { dbc } = idOnlyDb([]);
+    const { resolveActiveConnectionId } = await import('./accountingConnectionService');
+    await expect(resolveActiveConnectionId(dbc as any, 'p1')).resolves.toBeNull();
+  });
+});
+
 describe('getConnectionProviderForMapping (Xero W01 audit provider lookup)', () => {
   function joinDb(rows: Array<Record<string, unknown>>) {
     const captured: { projection?: Record<string, unknown>; where?: SQL; joinOn?: SQL } = {};
