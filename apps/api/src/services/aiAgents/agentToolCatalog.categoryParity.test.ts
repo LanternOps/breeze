@@ -120,9 +120,6 @@ const TOOL_CAPABILITY_NOT_YET_IN_TIER_CONFIG: readonly string[] = [
   'get_incident_timeline',
   'get_invite_funnel',
   'get_invoice',
-  // Held for a follow-up PR (#6755): monitor-definition reads, same content
-  // gap as the other business-object families above.
-  'get_monitor',
   'get_quote',
   'get_s1_status',
   'get_s1_threats',
@@ -138,9 +135,6 @@ const TOOL_CAPABILITY_NOT_YET_IN_TIER_CONFIG: readonly string[] = [
   'list_deliverable_templates',
   'list_deliverables',
   'list_invoices',
-  // Held for a follow-up PR (#6755): monitor-definition reads, same content
-  // gap as the other business-object families above.
-  'list_monitors',
   // Org document library (service deliverables W03) — same family as the other
   // business objects above: metadata-only tools whose tier-page entry is a
   // content-authoring task, tracked with the rest of this gap.

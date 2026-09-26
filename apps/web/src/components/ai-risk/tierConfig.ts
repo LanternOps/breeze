@@ -159,6 +159,12 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_monitors (get/create/update/delete)', description: 'Monitor details and history; retired writes return guidance', category: 'Monitoring & Analytics' },
       { name: 'query_analytics', description: 'SLA compliance and capacity predictions', category: 'Monitoring & Analytics' },
       { name: 'get_executive_summary', description: 'Executive summary metrics', category: 'Monitoring & Analytics' },
+      // Monitor definitions (#5289 Task 8) — distinct from the network-monitor
+      // `query_monitors` / `manage_monitors` above: a monitor definition is the
+      // authored condition+severity+delivery object that compiles into a
+      // managed alert rule/automation.
+      { name: 'list_monitors', description: 'List monitor definitions visible to the caller', category: 'Monitoring & Analytics' },
+      { name: 'get_monitor', description: 'Get a monitor definition with its policy attachments', category: 'Monitoring & Analytics' },
       // Remote Access & Control
       { name: 'list_remote_sessions', description: 'List remote sessions', category: 'Remote Access & Control' },
       // Integrations
