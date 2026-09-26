@@ -223,7 +223,18 @@
     "port": "Bağlantı noktası",
     "expectStatus": "Beklenen durum kodu",
     "pollingIntervalSeconds": "Şu sıklıkta sorgula (saniye)",
-    "match": "Eşleşme"
+    "match": "Eşleşme",
+    "pingCount": "Yankı istekleri",
+    "expectBanner": "Beklenen banner",
+    "httpMethod": "HTTP yöntemi",
+    "expectedBody": "Yanıt şunu içermeli",
+    "followRedirects": "Yönlendirmeleri izle",
+    "verifySsl": "TLS sertifikasını doğrula",
+    "recordType": "Kayıt türü",
+    "expectedValue": "Beklenen değer",
+    "nameserver": "Ad sunucusu",
+    "degradedIsFailure": "Bozulmuşu hata say",
+    "maxResponseMs": "Şundan yavaşsa başarısız (ms)"
   },
   "operators": {
     "gt": "büyüktür",
@@ -567,5 +578,20 @@
         }
       }
     }
+  },
+  "httpMethods": {
+    "GET": "GET (al)",
+    "HEAD": "HEAD (yalnızca başlıklar)",
+    "POST": "POST (gönder)",
+    "PUT": "PUT (değiştir)",
+    "OPTIONS": "OPTIONS (yetenekler)"
+  },
+  "dnsRecordTypes": {
+    "A": "A (IPv4 adresi)",
+    "AAAA": "AAAA (IPv6 adresi)",
+    "MX": "MX (posta sunucusu)",
+    "CNAME": "CNAME (takma ad)",
+    "TXT": "TXT (metin)",
+    "NS": "NS (ad sunucusu)"
   }
 }

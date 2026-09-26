@@ -66,10 +66,8 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // A partner-wide `network_monitors` row is ALWAYS a compiled artefact of a
   // `network_check` monitor definition — the compiler is its only writer, and
   // every caller-facing create/update/delete path below refuses one outright
-  // rather than gating it. So none of these four can reach a partner-owned row
+  // rather than gating it. So none of these paths can reach a partner-owned row
   // at all, which is a stronger property than passing the capability gate.
-  'routes/monitors.ts': 'legacy network-monitor CRUD is org-axis only: requireMonitorAccess refuses an org_id NULL row as 404, and a managed row as 409',
-  'routes/monitoring.ts': 'every write is scoped `networkMonitors.orgId = <org>`, which can never match a partner-wide (org_id NULL) row',
   'routes/discovery.ts': 'asset-unlink delete is scoped `networkMonitors.orgId = <asset org>`, which can never match a partner-wide (org_id NULL) row',
   'services/discoveredAssetSiteMove.ts': 'site-move re-attach is scoped `networkMonitors.orgId = <asset org>` (the monitors were captured under the same predicate), which can never match a partner-wide (org_id NULL) row',
   'services/aiToolsMonitoring.ts': 'assertMonitorSiteAccess fails closed on org_id NULL, and a managed row is refused, so the AI tool cannot mutate a partner-owned row',
@@ -78,6 +76,8 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // and authorised. Every caller-facing write path (create/update/delete) runs
   // the gate in services/monitors/monitorService.ts before compiling, and the
   // compiler never takes an owner axis from a request.
+  'services/monitors/conversion/networkChecks.ts': 'Network adoption is org-axis only: caller-visible pending org sources, org access and full governance checks precede ledger writes; partnerId is always null and compiler adoption verifies the definition org',
+  'services/monitors/conversion/networkHistory.ts': 'network retirement and reversal require a visible org-owned source, reject site/device ceilings, and scope ledger and definition writes to that organization',
   'services/monitors/monitorCompiler.ts': 'stamps compiled_* provenance on a definition the caller already gated via monitorService',
   // Built-in default monitors: provisions each partner's OWN three monitors
   // once (no policy, no assignment), from createPartner()/the system-scope partner route/API boot —
