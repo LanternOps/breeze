@@ -245,7 +245,9 @@ describe('AI routes', () => {
       vi.mocked(streamingSessionManager.get).mockReturnValueOnce(mockSession as any);
       vi.mocked(db.update).mockReturnValue({
         set: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue(undefined),
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'plan-1' }]),
+          }),
         }),
       } as any);
 
@@ -259,6 +261,170 @@ describe('AI routes', () => {
       const body = await res.json();
       expect(body.approved).toBe(true);
       expect(resolver).toHaveBeenCalledWith(true);
+    });
+
+    it.each([true, false])(
+      'returns 500 and leaves the approval pending when the plan write fails (approved=%s) (#7077)',
+      async (approved) => {
+        vi.mocked(getSession).mockResolvedValueOnce({ id: SESSION_ID, orgId: ORG_ID } as any);
+        const resolver = vi.fn();
+        const mockSession = {
+          activePlanId: 'plan-1',
+          planApprovalResolver: resolver,
+          eventBus: { publish: vi.fn() },
+        };
+        vi.mocked(streamingSessionManager.get).mockReturnValueOnce(mockSession as any);
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockRejectedValue(new Error('connection reset')),
+            }),
+          }),
+        } as any);
+
+        const res = await app.request(`/ai/sessions/${SESSION_ID}/approve-plan`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ approved }),
+        });
+
+        expect(res.status).toBe(500);
+        const body = await res.json();
+        expect(body.success).not.toBe(true);
+        expect(body.error).toMatch(/could not be saved/i);
+        // The agent must not proceed on an approval that was never persisted,
+        // and the user must be able to retry the same approval.
+        expect(resolver).not.toHaveBeenCalled();
+        expect(mockSession.planApprovalResolver).toBe(resolver);
+      },
+    );
+
+    it('returns 409 when the approval expires while the plan write is in flight (#7077)', async () => {
+      vi.mocked(getSession).mockResolvedValueOnce({ id: SESSION_ID, orgId: ORG_ID } as any);
+      const resolver = vi.fn();
+      const mockSession: { activePlanId: string; planApprovalResolver: unknown; eventBus: unknown } = {
+        activePlanId: 'plan-1',
+        planApprovalResolver: resolver,
+        eventBus: { publish: vi.fn() },
+      };
+      vi.mocked(streamingSessionManager.get).mockReturnValueOnce(mockSession as any);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockImplementation(async () => {
+              // waitForPlanApproval's timeout fires mid-write
+              mockSession.planApprovalResolver = null;
+              return [{ id: 'plan-1' }];
+            }),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/ai/sessions/${SESSION_ID}/approve-plan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ approved: true }),
+      });
+
+      expect(res.status).toBe(409);
+      expect(resolver).not.toHaveBeenCalled();
+    });
+
+    it('returns 409 when the plan is aborted while the plan write is in flight (#7077)', async () => {
+      vi.mocked(getSession).mockResolvedValueOnce({ id: SESSION_ID, orgId: ORG_ID } as any);
+      const resolver = vi.fn();
+      const mockSession: { activePlanId: string | null; planApprovalResolver: unknown; eventBus: unknown } = {
+        activePlanId: 'plan-1',
+        planApprovalResolver: resolver,
+        eventBus: { publish: vi.fn() },
+      };
+      vi.mocked(streamingSessionManager.get).mockReturnValueOnce(mockSession as any);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockImplementation(async () => {
+              // abortActivePlan clears activePlanId but leaves the resolver
+              mockSession.activePlanId = null;
+              return [{ id: 'plan-1' }];
+            }),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/ai/sessions/${SESSION_ID}/approve-plan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ approved: true }),
+      });
+
+      expect(res.status).toBe(409);
+      expect(resolver).not.toHaveBeenCalled();
+    });
+
+    it('serializes concurrent decisions: a second request during the write gets 409 and writes nothing (#7077)', async () => {
+      vi.mocked(getSession).mockResolvedValue({ id: SESSION_ID, orgId: ORG_ID } as any);
+      const resolver = vi.fn();
+      const mockSession = {
+        activePlanId: 'plan-1',
+        planApprovalResolver: resolver,
+        eventBus: { publish: vi.fn() },
+      };
+      vi.mocked(streamingSessionManager.get).mockReturnValue(mockSession as any);
+      let releaseWrite!: () => void;
+      const returning = vi.fn().mockImplementation(
+        () => new Promise<Array<{ id: string }>>((resolve) => {
+          releaseWrite = () => resolve([{ id: 'plan-1' }]);
+        }),
+      );
+      const where = vi.fn().mockReturnValue({ returning });
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({ where }),
+      } as any);
+
+      const send = (approved: boolean) => app.request(`/ai/sessions/${SESSION_ID}/approve-plan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ approved }),
+      });
+
+      const first = send(true);
+      await vi.waitFor(() => expect(where).toHaveBeenCalledTimes(1));
+      const second = await send(false);
+      releaseWrite();
+      const firstRes = await first;
+
+      expect(second.status).toBe(409);
+      expect(firstRes.status).toBe(200);
+      expect(where).toHaveBeenCalledTimes(1);
+      expect(resolver).toHaveBeenCalledTimes(1);
+      expect(resolver).toHaveBeenCalledWith(true);
+    });
+
+    it('returns 409 when the plan row is no longer pending (aborted before the write landed) (#7077)', async () => {
+      vi.mocked(getSession).mockResolvedValueOnce({ id: SESSION_ID, orgId: ORG_ID } as any);
+      const resolver = vi.fn();
+      const mockSession = {
+        activePlanId: 'plan-1',
+        planApprovalResolver: resolver,
+        eventBus: { publish: vi.fn() },
+      };
+      vi.mocked(streamingSessionManager.get).mockReturnValueOnce(mockSession as any);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/ai/sessions/${SESSION_ID}/approve-plan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ approved: true }),
+      });
+
+      expect(res.status).toBe(409);
+      expect(resolver).not.toHaveBeenCalled();
     });
 
     it('returns 400 when no pending plan approval', async () => {
