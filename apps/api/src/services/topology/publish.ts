@@ -8,6 +8,8 @@ import { canonicalIdentityKey, normalizedTopologyScope, planAliasClusterPosition
 import { planAcceptedAliasClusters } from './aliasClusters';
 import { lockTopologyInventoryReferences } from './inventoryLocks';
 import { prepareCollectionPublication, publishCollectionInterfaces, publishCollectionEvidence } from './collectionPublication';
+import { applyMergedInterfaces, isPhysicalRelationship, markTopologyIdentityDirty, planMergedInterfaces } from './physicalPublication';
+import { topologyInterfaces } from '../../db/schema';
 
 type Owned = 'createdAt' | 'updatedAt' | 'revision';
 export type NodePublication = Omit<typeof topologyNodes.$inferInsert, Owned> & { id: string };
@@ -34,6 +36,8 @@ const physicalTypedId = z.object({ subtype: z.string().regex(/^[a-z][a-z0-9_]*$/
 const physicalPortRef = z.object({ namespace: z.enum(PORT_REF_NAMESPACES), value: boundedKey, resolvedInterfaceKey: boundedKey.nullable() }).strict();
 const physicalAttributes = z.object({
   resolution: z.enum(['resolved', 'unresolved']).optional(),
+  // Durable re-resolution material (D15.2): the authorized target the row was reported for.
+  subjectAuthority: boundedKey.optional(),
   remoteChassis: physicalTypedId.optional(), remotePort: physicalTypedId.optional(),
   localPort: physicalPortRef.optional(), remotePortRef: physicalPortRef.optional(),
   bridgeContext: boundedKey.optional(), fdbId: z.number().int().min(0).max(4294967295).nullable().optional(), vlanIds: vlanIds.optional(),
@@ -127,14 +131,22 @@ export async function publishTopologyBuild(scope: TopologyScope, input: Publicat
     const nodes = await tx.select().from(topologyNodes).where(scopedWhere(topologyNodes, normalized));
     const relationships = await tx.select().from(topologyRelationships).where(scopedWhere(topologyRelationships, normalized));
     const bindings = await tx.select().from(topologyNodeBindings).where(scopedWhere(topologyNodeBindings, normalized));
+    // A binding delta is an identity change: physical re-resolution runs (D15.2).
+    const priorBindings = new Map(bindings.map(b => [bindingKey(b), b.nodeId]));
+    const identityChanged = staged.bindings.some(b => priorBindings.get(bindingKey(b)) !== b.nodeId);
     const collection = await prepareCollectionPublication(tx, normalized, BigInt(staged.inputRevision), {
       nodes: [...new Map([...nodes, ...staged.nodes].map(row => [row.id, row])).values()],
       relationships: [...new Map([...relationships, ...staged.relationships].map(row => [row.id, row])).values()],
       bindings: [...new Map([...bindings, ...staged.bindings].map(row => [bindingKey(row), row])).values()],
+      identityChanged,
     });
+    // Collection binding deltas (controller enrichment) are published, not dropped (D15.5).
+    const stagedBindingKeys = new Set(staged.bindings.map(bindingKey));
     staged = validatePublicationInput(normalized, { ...staged,
       nodes: [...staged.nodes, ...collection.nodes], relationships: [...staged.relationships, ...collection.relationships],
+      bindings: [...staged.bindings, ...collection.bindings.filter(b => !stagedBindingKeys.has(bindingKey(b)))],
     });
+    const rekeyed = new Set(collection.rekeyed);
     // Shared with layout reads/writes: site state, sorted layout headers, then
     // positions. A merge's pin-conflict decision must see protected positions.
     await tx.select().from(topologyLayouts).where(scopedWhere(topologyLayouts, normalized)).orderBy(topologyLayouts.id).for('update');
@@ -236,8 +248,11 @@ export async function publishTopologyBuild(scope: TopologyScope, input: Publicat
       else { nodeWriteIndexes.set(old.id, nodeWrites.length); nodeWrites.push(next); }
     }
     for (const row of staged.relationships) {
-      const old = oldRelationshipsByIdentity.get(row.canonicalKey);
-      if (oldRelationshipsById.has(row.id) && oldRelationshipsById.get(row.id)!.canonicalKey !== row.canonicalKey) throw new Error('Relationship ID cannot change identity');
+      // Only the physical re-resolution pass may rekey an existing id (a merge
+      // changed its endpoint identity; exclusions and pins keep the id).
+      const rekey = rekeyed.has(row.id) && oldRelationshipsById.get(row.id)?.kind === row.kind;
+      const old = oldRelationshipsByIdentity.get(row.canonicalKey) ?? (rekey ? oldRelationshipsById.get(row.id) : undefined);
+      if (oldRelationshipsById.has(row.id) && oldRelationshipsById.get(row.id)!.canonicalKey !== row.canonicalKey && !rekey) throw new Error('Relationship ID cannot change identity');
       if (old?.legacySourceRevision != null) {
         if (row.legacySourceRevision == null || old.legacySourceId !== row.legacySourceId || old.legacySourceType !== row.legacySourceType) throw new Error('Legacy source identity and revision are required');
         if (old.legacySourceRevision >= row.legacySourceRevision) continue;
@@ -247,6 +262,21 @@ export async function publishTopologyBuild(scope: TopologyScope, input: Publicat
     }
     for (const row of relationships) {
       if ((resolve(row.sourceNodeId) !== row.sourceNodeId || resolve(row.targetNodeId) !== row.targetNodeId) && !relationshipWrites.some(r => r.id === row.id)) relationshipWrites.push({ ...row, sourceNodeId: resolve(row.sourceNodeId), targetNodeId: resolve(row.targetNodeId), revision: row.revision + 1n, updatedAt: now });
+    }
+    // D15.5: a merge re-owns the loser's interfaces (coalescing only on
+    // corroborated continuity) and migrates their parent/observation references.
+    let mergedInterfaces: ReturnType<typeof planMergedInterfaces> | null = null;
+    if (clusters.length) {
+      const members = clusters.flatMap(c => [c.canonicalId, ...c.aliasIds]);
+      const stored = await tx.select().from(topologyInterfaces).where(and(scopedWhere(topologyInterfaces, normalized), sql`${topologyInterfaces.ownerNodeId} IN (${sql.join(members.map(id => sql`${id}::uuid`), sql`,`)})`));
+      const batch = collection.interfaces.filter(i => members.includes(i.ownerNodeId));
+      mergedInterfaces = planMergedInterfaces(clusters, [...new Map([...stored, ...batch].map(i => [i.id, i])).values()], now);
+      const reowned = new Map(mergedInterfaces.reowned.map(i => [i.id, i]));
+      const coalesced = mergedInterfaces.coalesced;
+      collection.interfaces = collection.interfaces.filter(i => !coalesced.has(i.id)).map(i => reowned.get(i.id) ?? i);
+      const iface = (id: string | null | undefined) => (id && coalesced.get(id)) || id || null;
+      for (const row of relationshipWrites) { row.sourceInterfaceId = iface(row.sourceInterfaceId); row.targetInterfaceId = iface(row.targetInterfaceId); }
+      for (const row of collection.observations) row.subjectInterfaceId = iface(row.subjectInterfaceId);
     }
     for (const row of relationshipWrites) {
       for (const id of [row.sourceNodeId, row.targetNodeId]) if (!nodeMap.has(id) || nodeMap.get(id)!.aliasTargetId) throw new Error('Relationship endpoint is outside canonical scope');
@@ -276,6 +306,15 @@ export async function publishTopologyBuild(scope: TopologyScope, input: Publicat
       else await tx.insert(topologyNodes).values({ ...row, aliasTargetId: null });
     }
     for (const row of nodeWrites.filter(n => n.aliasTargetId)) await tx.update(topologyNodes).set({ aliasTargetId: row.aliasTargetId }).where(and(scopedWhere(topologyNodes, normalized), eq(topologyNodes.id, row.id!)));
+    if (mergedInterfaces) {
+      const owners = new Map((await tx.select({ id: topologyInterfaces.id, owner: topologyInterfaces.ownerNodeId }).from(topologyInterfaces).where(scopedWhere(topologyInterfaces, normalized))).map(r => [r.id, resolve(r.owner)]));
+      await applyMergedInterfaces(tx, normalized, mergedInterfaces, owners);
+      // Physical keys still name the loser; the next publication rekeys them.
+      // Merges that touch no physical evidence leave the M0 revision contract alone.
+      const losers = new Set(clusters.flatMap(c => c.aliasIds));
+      if (mergedInterfaces.reowned.length || mergedInterfaces.coalesced.size
+        || relationships.some(r => isPhysicalRelationship(r) && (losers.has(r.sourceNodeId) || losers.has(r.targetNodeId)))) await markTopologyIdentityDirty(tx, normalized);
+    }
     await publishCollectionInterfaces(tx, normalized, collection, resolve);
     for (const row of relationshipWrites) {
       const { id, ...changes } = row;

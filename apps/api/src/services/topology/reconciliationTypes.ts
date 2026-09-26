@@ -12,6 +12,16 @@ export type TopologyProjectionInput = {
   /** The reporting device's node. Required for OS context; physical families
    * resolve their subject per row (D3), so it may be null for them. */
   originNodeId:string|null; nodes:NodePublication[]; relationships:RelationshipPublication[]; interfaces:InterfacePublication[];
+  /** Physical families only (D3): the authorized target and trusted identity inputs. */
+  physical?:PhysicalProjectionContext;
+};
+export type PhysicalProjectionContext = {
+  /** Server-derived authority key the source context is namespaced under. */
+  authorityKey:string;
+  /** Node bound to the authorized target's scoped asset; null projects onto a scoped unbound target node. */
+  subjectNodeId:string|null;
+  /** Agent-reported NIC MACs of bound managed devices (trusted MAC identity, D16). */
+  deviceMacs:{nodeId:string;mac:string}[];
 };
 export type BaselineProjectionInput = TopologyProjectionInput & { snapshot:OsTopologySnapshot; originNodeId:string };
 export type TopologyProjectionDelta = {
@@ -21,6 +31,14 @@ export type TopologyProjectionDelta = {
 export type CollectionPublication = TopologyProjectionDelta & {
   consumedRuns:string[]; checkpoints:{sourceId:string;epoch:string;sequence:string;digest:string;baseline:Record<string,unknown>}[];
   consumedMisses:{sourceId:string;generation:string}[];
+  /** Physical re-resolution (D15.2): support keys moved away, pending lifecycle and
+   * observation references to remap, and relationship ids whose identity was rekeyed. */
+  supportDeletes:{sourceId:string;relationshipId:string}[];
+  lifecycleRemaps:{sourceId:string;from:string;to:string}[];
+  observationRemaps:{sourceId:string;from:string;to:string}[];
+  rekeyed:string[];
+  /** Identity revision this publication resolved through, when the pass ran. */
+  identityResolvedThrough?:bigint;
 };
 export type CollectionEvent = {revision:bigint;source:CollectionSource} & ({kind:'snapshot';run:CollectionRun}|{kind:'miss';miss:PendingTopologyMiss}|{kind:'lifecycle';change:PendingTopologyLifecycle});
 export const emptyProjection = ():TopologyProjectionDelta=>({nodes:[],relationships:[],bindings:[],interfaces:[],observations:[],support:[]});

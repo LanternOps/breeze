@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { advanceTopologyAbsence, assessTopologyRetainedCapacity, effectiveTopologyCapture, jsonbTextBytes, retainTopologyKnownKeys, TOPOLOGY_BASELINE_MAX_BYTES, TOPOLOGY_KNOWN_KEY_LIMIT, TOPOLOGY_PENDING_MISSES_MAX_BYTES, type TopologyAbsenceState } from './collectionState';
+import { advanceTopologyAbsence, prunableTopologyKnownKeys, TOPOLOGY_PRUNE_STALE_MS, assessTopologyRetainedCapacity, effectiveTopologyCapture, jsonbTextBytes, retainTopologyKnownKeys, TOPOLOGY_BASELINE_MAX_BYTES, TOPOLOGY_KNOWN_KEY_LIMIT, TOPOLOGY_PENDING_MISSES_MAX_BYTES, type TopologyAbsenceState } from './collectionState';
 const empty=():TopologyAbsenceState=>({active:[],transitions:[]});
 const input=(sequence:string,minutes:number,extra={})=>({sequence,digest:'digest',effectiveAt:new Date(1_000_000+minutes*60000),outcome:'complete',positiveKeys:[] as string[],previousKeys:['route'],generation:sequence,...extra});
 describe('source-scoped absence transitions',()=>{
@@ -99,5 +99,23 @@ describe('conservative capture freshness',()=>{
   it('refuses unknown-age spool and future producer clocks',()=>{
     expect(effectiveTopologyCapture('2026-09-16T11:59:00Z',null,300,receipt).freshUntil).toBeNull();
     expect(effectiveTopologyCapture('2026-09-16T12:06:00Z',0,300,receipt).freshUntil).toBeNull();
+  });
+});
+describe('known-key pruning for physical sources (partial-only growth)',()=>{
+  const now=new Date('2026-10-01T00:00:00Z');
+  const old=new Date(now.getTime()-TOPOLOGY_PRUNE_STALE_MS-1000),recent=new Date(now.getTime()-60_000);
+  const rows={a:['r-a'],b:['r-b'],c:['r-c'],d:['r-d'],e:['r-e','r-e2']};
+  const support=new Map([['r-a',{lifecycle:'archived',freshUntil:old}],['r-b',{lifecycle:'archived',freshUntil:recent}],['r-c',{lifecycle:'active',freshUntil:old}],
+    ['r-d',{lifecycle:'archived',freshUntil:old}],['r-e',{lifecycle:'archived',freshUntil:old}],['r-e2',{lifecycle:'active',freshUntil:old}]]);
+  it('prunes only absent keys whose every support is archived and older than the stale window',()=>{
+    const state={active:[],transitions:[]};
+    expect(prunableTopologyKnownKeys({knownKeys:['a','b','c','d','e','f'],positives:['d'],rowRelationships:rows,support,absence:state,now}).sort()).toEqual(['a']);
+  });
+  it('never prunes a key inside a pending miss streak or transition (second-miss semantics intact)',()=>{
+    const state={active:[{generation:'g',firstSequence:'1',firstEffectiveAt:now.toISOString(),digest:'x',rowKeys:['a']}],transitions:[]};
+    expect(prunableTopologyKnownKeys({knownKeys:['a'],positives:[],rowRelationships:rows,support,absence:state,now})).toEqual([]);
+  });
+  it('keeps unmapped keys (their publication may still be pending)',()=>{
+    expect(prunableTopologyKnownKeys({knownKeys:['f'],positives:[],rowRelationships:rows,support,absence:{active:[],transitions:[]},now})).toEqual([]);
   });
 });

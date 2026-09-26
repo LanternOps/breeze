@@ -220,7 +220,7 @@ describe('physical source families through collection ingest (M2 Task 4a)', () =
     expect(after!.revoked_at).toBeNull();
   });
 
-  it('publishes a physical source without a projector and checkpoints its baseline', async () => {
+  it('publishes a physical source through the physical projector and checkpoints its row mapping', async () => {
     const f = await fixture();
     await f.full(f.lldp([lldpRow(7)], '1', -1000));
     const published = await f.scoped(async () => {
@@ -230,6 +230,8 @@ describe('physical source families through collection ingest (M2 Task 4a)', () =
     expect(published.published).toBe(true);
     const row = await f.source('lldp');
     expect(row!.materialized_sequence).toBe('1');
-    expect(row!.published_baseline._rowRelationships).toEqual({});
+    // No inventory for the target or neighbour: one candidate on scoped unbound nodes (Task 6).
+    expect(Object.keys(row!.published_baseline._rowRelationships)).toEqual(['7.1']);
+    expect(row!.published_baseline._rowRelationships['7.1']).toHaveLength(1);
   });
 });

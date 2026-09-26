@@ -16,7 +16,7 @@ export interface TopologyIdentityMaterial {
 export interface TopologyNodeAttributes { label?: string; notes?: string; prefix?: string; addressFamily?: 4 | 6; }
 /** Physical (M2) resolution/selection material; bounded and strict in publish.ts. */
 export interface TopologyPhysicalRelationshipAttributes {
-  resolution?: 'resolved' | 'unresolved';
+  resolution?: 'resolved' | 'unresolved'; subjectAuthority?: string;
   remoteChassis?: { subtype: string; value: string }; remotePort?: { subtype: string; value: string };
   localPort?: { namespace: 'if_index' | 'if_name' | 'bridge_port' | 'lldp_local' | 'controller_port'; value: string; resolvedInterfaceKey: string | null };
   remotePortRef?: { namespace: 'if_index' | 'if_name' | 'bridge_port' | 'lldp_local' | 'controller_port'; value: string; resolvedInterfaceKey: string | null };
@@ -41,6 +41,10 @@ export const topologySiteState = pgTable('topology_site_state', {
   effectiveSettings: jsonb('effective_settings').$type<Record<string, unknown>>().notNull().default({}),
   settingsDigest: varchar('settings_digest', { length: 64 }),
   disabledSourceReasons: jsonb('disabled_source_reasons').$type<Record<string, string>>().notNull().default({}),
+  /** D15.2: bumped by identity writers (bindings, interfaces, merges); physical
+   * re-resolution runs while it exceeds resolved_identity_revision. */
+  identityRevision: bigint('identity_revision', { mode: 'bigint' }).notNull().default(0n),
+  resolvedIdentityRevision: bigint('resolved_identity_revision', { mode: 'bigint' }).notNull().default(0n),
   lastBuildStatus: varchar('last_build_status', { length: 32 }),
   lastBuildAt: timestamp('last_build_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -53,6 +57,7 @@ export const topologySiteState = pgTable('topology_site_state', {
   check('topology_site_state_health_revision_chk', sql`health_revision >= 0`),
   check('topology_site_state_build_fence_chk', sql`build_fence >= 0`),
   check('topology_site_state_settings_revision_chk', sql`settings_revision >= 0`),
+  check('topology_site_state_identity_revision_chk', sql`identity_revision >= 0 AND resolved_identity_revision >= 0`),
   check('topology_site_state_effective_settings_chk', sql`jsonb_typeof(effective_settings) = 'object' AND octet_length(effective_settings::text) <= 262144`),
   check('topology_site_state_disabled_source_reasons_chk', sql`jsonb_typeof(disabled_source_reasons) = 'object' AND octet_length(disabled_source_reasons::text) <= 262144`),
   foreignKey({ name: 'topology_site_state_site_scope_fk', columns: [table.siteId, table.orgId], foreignColumns: [sites.id, sites.orgId] }).onDelete('cascade'),

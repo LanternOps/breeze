@@ -4,10 +4,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
 import { networkContextV1Schema, physicalSourceSectionSchema, type NetworkContextUnchanged } from '@breeze/shared';
 import { db, assertInTransaction } from '../../db';
-import { topologyCollectionRuns, topologyCollectionSources, topologySiteState } from '../../db/schema';
+import { topologyCollectionRuns, topologyCollectionSources, topologyRelationshipSupport, topologySiteState } from '../../db/schema';
 import { requireCurrentTopologyProducer } from './collectionAuthority';
 import { normalizeNetworkContext } from './collectionDigest';
-import { effectiveTopologyCapture, advanceTopologyAbsence, assessTopologyRetainedCapacity, readTopologyAbsence, retainTopologyKnownKeys } from './collectionState';
+import { effectiveTopologyCapture, advanceTopologyAbsence, assessTopologyRetainedCapacity, prunableTopologyKnownKeys, readTopologyAbsence, retainTopologyKnownKeys } from './collectionState';
 import { compareTopologySequences } from './sequence';
 import { assertTopologyProducerFamily, isWithinTopologyAuthority, outcomeHasPositives, sourceKey, sourceKeyString, type AuthenticatedTopologyProducer, type NormalizedTopologyReport, type NormalizedTopologySnapshot, type OsTopologySnapshot, type TopologyIngestReceipt, type TopologySourceConfirmation, type TopologySourceKey, type TopologySourceReceipt } from './collectionTypes';
 
@@ -100,6 +100,16 @@ async function budget(p: AuthenticatedTopologyProducer,source: Source,bytes:numb
   if (allowed && !initialAllowance) await db.update(topologyCollectionSources).set({admissionTokens:tokens-1,admissionRefillAt:new Date()}).where(eq(topologyCollectionSources.id,bucket.id));
   return allowed;
 }
+/** Physical sources drop known keys whose support is archived and stale, so a
+ * partial-only source cannot grow toward capacity rejection forever. */
+async function pruneArchivedPhysicalKeys(source: Source,knownKeys: string[],positives: string[]): Promise<string[]> {
+  const rows=source.publishedBaseline._rowRelationships as Record<string,string[]>|undefined;
+  if (!rows || !knownKeys.length) return knownKeys;
+  const support=await db.select({relationshipId:topologyRelationshipSupport.relationshipId,lifecycle:topologyRelationshipSupport.lifecycle,freshUntil:topologyRelationshipSupport.freshUntil})
+    .from(topologyRelationshipSupport).where(and(eq(topologyRelationshipSupport.orgId,source.orgId),eq(topologyRelationshipSupport.siteId,source.siteId),eq(topologyRelationshipSupport.sourceId,source.id)));
+  const prunable=new Set(prunableTopologyKnownKeys({knownKeys,positives,rowRelationships:rows,support:new Map(support.map(r=>[r.relationshipId,r])),absence:readTopologyAbsence(source.pendingMisses),now:new Date()}));
+  return prunable.size?knownKeys.filter(key=>!prunable.has(key)):knownKeys;
+}
 /** Over quota or over retained capacity: a coverage gap. Nothing accepted is
  * evicted or renewed; only the unresolved miss streak is broken (Collection §4). */
 async function rejectForCapacity(source: Source,key: TopologySourceKey): Promise<TopologySourceReceipt> {
@@ -127,8 +137,9 @@ async function admit(p: AuthenticatedTopologyProducer,snapshot: NormalizedTopolo
   if (previousSnapshot.length) return {key:snapshot.key,accepted:false,reason:'snapshot_conflict'};
   const bytes=Buffer.byteLength(JSON.stringify(snapshot));
   const old=source!.currentBaseline.section as NormalizedTopologySnapshot['section']|undefined;
-  const knownKeys=(source!.currentBaseline._knownKeys as string[]|undefined)??(old?topologyPositiveKeys(old):[]);
   const positives=topologyPositiveKeys(snapshot.section);
+  let knownKeys=(source!.currentBaseline._knownKeys as string[]|undefined)??(old?topologyPositiveKeys(old):[]);
+  if (p.producerKind!=='agent') knownKeys=await pruneArchivedPhysicalKeys(source!,knownKeys,positives);
   const absence=advanceTopologyAbsence(readTopologyAbsence(source!.pendingMisses),{digest:snapshot.contentDigest,sequence:snapshot.sequence,effectiveAt:timing.effectiveAt,
     outcome:snapshot.section.outcome,positiveKeys:outcomeHasPositives(snapshot.section.outcome)?positives:[],
     previousKeys:knownKeys,generation:randomUUID()});

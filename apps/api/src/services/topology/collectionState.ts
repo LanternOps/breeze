@@ -97,3 +97,26 @@ export function assessTopologyRetainedCapacity(input:{snapshot:object;knownKeys:
   for(const [exceeded,bytes,limit] of checks)if(bytes>limit)return {ok:false,reason:'snapshot_budget_exceeded',exceeded,bytes,limit};
   return {ok:true};
 }
+
+/** Stale window after which archived support is prunable from known keys. */
+export const TOPOLOGY_PRUNE_STALE_MS=7*86400_000;
+/**
+ * Physical known-key pruning (M2 Task 6). A partial-only source never reaches a
+ * complete second miss, so absent keys would otherwise accumulate until the
+ * capacity check rejects the source. A key may be dropped only when it is not
+ * present, not inside a pending miss streak or queued transition, is mapped to
+ * published relationships, and every one of this source's supports for them is
+ * archived with freshness older than the stale window. Nothing active is ever
+ * affected, so second-miss withdrawal of live evidence is unchanged.
+ */
+export function prunableTopologyKnownKeys(input:{knownKeys:string[];positives:string[];rowRelationships:Record<string,string[]>;
+  support:Map<string,{lifecycle:string;freshUntil:Date}>;absence:TopologyAbsenceState;now:Date}):string[]{
+  const present=new Set(input.positives);
+  const pending=new Set([...input.absence.active,...input.absence.transitions].flatMap(group=>group.rowKeys));
+  const cutoff=input.now.getTime()-TOPOLOGY_PRUNE_STALE_MS;
+  return input.knownKeys.filter(key=>{
+    if(present.has(key)||pending.has(key))return false;
+    const ids=input.rowRelationships[key]??[];
+    return ids.length>0&&ids.every(id=>{const row=input.support.get(id);return !!row&&row.lifecycle==='archived'&&row.freshUntil.getTime()<cutoff;});
+  });
+}
