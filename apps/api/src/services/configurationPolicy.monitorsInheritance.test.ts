@@ -37,9 +37,10 @@ describe('monitors link inheritance round-trip (W05c1)', () => {
       [{ id: 'link-1', configPolicyId: 'p1', featureType: 'monitors', featurePolicyId: null, inlineSettings: { items: [], inheritance: 'replace' } }],
       [{ id: 'row-1', featureLinkId: 'link-1', monitorId: 'm1', enabled: true, overrides: null, sortOrder: 0 }],
       [{ inlineSettings: { items: [], inheritance: 'replace' } }],
+      [{ checkIntervalSeconds: 90 }],
     ];
     const [link] = await listFeatureLinks('p1');
-    expect(link!.inlineSettings).toEqual({ items: [{ monitorId: 'm1', enabled: true, overrides: null, sortOrder: 0 }], inheritance: 'replace' });
+    expect(link!.inlineSettings).toEqual({ items: [{ monitorId: 'm1', enabled: true, overrides: null, sortOrder: 0 }], inheritance: 'replace', checkIntervalSeconds: 90 });
   });
 
   it('defaults to cumulative for a link saved before W05c1', async () => {

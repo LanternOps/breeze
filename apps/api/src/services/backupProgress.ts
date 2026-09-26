@@ -47,7 +47,39 @@ export type ApplyBackupProgressResult =
   | {
       applied: false;
       reason: 'invalid-command-id' | 'invalid-payload' | 'not-found' | 'agent-mismatch' | 'terminal-status';
+      /**
+       * A repeat of a `not-found` / `invalid-command-id` drop already reported
+       * within UNMATCHED_PROGRESS_WINDOW_MS (10s). No DB lookup was made; callers
+       * should not log it again (#5393).
+       */
+      suppressed?: true;
     };
+
+/**
+ * Restore progress reuses the `backup_progress` WS type with a commandId that
+ * matches no backup job, and is emitted per file. Without this cache every
+ * message cost a DB select plus a log line (10k lines / 3 min, ~85% API CPU in
+ * the #5393 lab run). After the first unmatched drop for an (agent, commandId)
+ * pair we skip the lookup and let the caller stay quiet for a short (10s) window.
+ * The window is bounded so a job row created after its first ping (or a reused
+ * id) is still picked up. Matched jobs are never cached.
+ */
+const UNMATCHED_PROGRESS_WINDOW_MS = 10_000;
+const UNMATCHED_PROGRESS_MAX_KEYS = 5_000;
+const unmatchedProgress = new Map<string, { reason: 'not-found' | 'invalid-command-id'; until: number }>();
+
+function rememberUnmatched(key: string, reason: 'not-found' | 'invalid-command-id', now: number): void {
+  if (unmatchedProgress.size >= UNMATCHED_PROGRESS_MAX_KEYS && !unmatchedProgress.has(key)) {
+    // Clearing only ever causes extra lookups/logs, never a lost signal.
+    unmatchedProgress.clear();
+  }
+  unmatchedProgress.set(key, { reason, until: now + UNMATCHED_PROGRESS_WINDOW_MS });
+}
+
+/** Test seam. */
+export function resetUnmatchedBackupProgressCache(): void {
+  unmatchedProgress.clear();
+}
 
 /**
  * Parse a progress payload, degrading gracefully when only `snapshotId` is
@@ -103,11 +135,22 @@ export async function applyBackupProgress(params: {
   commandId: string;
   progress: unknown;
 }): Promise<ApplyBackupProgressResult> {
+  const unmatchedKey = `${params.agentId}:${params.commandId}`;
+  const nowMs = Date.now();
+  const cached = unmatchedProgress.get(unmatchedKey);
+  if (cached) {
+    if (cached.until > nowMs) {
+      return { applied: false, reason: cached.reason, suppressed: true };
+    }
+    unmatchedProgress.delete(unmatchedKey);
+  }
+
   // Cheap pre-DB gate: backup_jobs.id is uuid-typed, so a non-UUID commandId
   // would raise Postgres 22P02 through the handler — and restore progress
   // (same WS message type, unthrottled per-file) plus any garbage commandId
   // must be droppable without spending a query.
   if (!UUID_REGEX.test(params.commandId)) {
+    rememberUnmatched(unmatchedKey, 'invalid-command-id', nowMs);
     return { applied: false, reason: 'invalid-command-id' };
   }
 
@@ -130,6 +173,7 @@ export async function applyBackupProgress(params: {
     .limit(1);
 
   if (!job) {
+    rememberUnmatched(unmatchedKey, 'not-found', nowMs);
     return { applied: false, reason: 'not-found' };
   }
 

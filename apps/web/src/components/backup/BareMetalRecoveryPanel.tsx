@@ -11,6 +11,7 @@ import { runAction, handleActionError, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
 import { cn } from '@/lib/utils';
+import { formatDateTime, formatTime } from '@/lib/dateTimeFormat';
 
 type RecoveryIdentity = 'original' | 'new';
 
@@ -269,7 +270,16 @@ export default function BareMetalRecoveryPanel({ orgId }: BareMetalRecoveryPanel
               <option value="">{t('bareMetalRecovery.selectSnapshotPlaceholder')}</option>
               {snapshots.map((s) => (
                 <option key={s.id} value={s.id}>
-                  {(s.label ?? s.id) + (s.timestamp ? ` — ${new Date(s.timestamp).toLocaleString()}` : '')}
+                  {(s.label ?? s.id) + (s.timestamp
+                    ? ` — ${formatDateTime(s.timestamp, {
+                        year: 'numeric',
+                        month: 'short',
+                        day: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        second: '2-digit',
+                      })}`
+                    : '')}
                 </option>
               ))}
             </select>
@@ -332,7 +342,9 @@ export default function BareMetalRecoveryPanel({ orgId }: BareMetalRecoveryPanel
             {created.code}
           </div>
           <p className="text-xs text-muted-foreground">
-            {t('bareMetalRecovery.codeExpires', { time: new Date(created.codeExpiresAt).toLocaleTimeString() })}
+            {t('bareMetalRecovery.codeExpires', {
+              time: formatTime(created.codeExpiresAt, { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+            })}
           </p>
         </div>
       )}

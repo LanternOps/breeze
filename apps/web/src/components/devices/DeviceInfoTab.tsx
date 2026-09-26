@@ -72,6 +72,8 @@ type DeviceInfo = {
   osBuild?: string | null;
   architecture?: string | null;
   agentVersion?: string | null;
+  updateOfferWithheldReason?: string | null;
+  updateOfferWithheldSince?: string | null;
   watchdogVersion?: string | null;
   helperVersion?: string | null;
   status?: string | null;
@@ -1066,6 +1068,19 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
           label={t("deviceInfoTab.agentVersion")}
           value={info?.agentVersion ?? "—"}
         />
+        {info?.updateOfferWithheldReason ? (
+          <div
+            data-testid="update-offer-withheld"
+            role="status"
+            className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-foreground"
+          >
+            {t("deviceInfoTab.updateOfferWithheld", {
+              since: info.updateOfferWithheldSince
+                ? new Date(info.updateOfferWithheldSince).toLocaleDateString()
+                : "—",
+            })}
+          </div>
+        ) : null}
         <InfoRow
           label={t("deviceInfoTab.watchdogVersion")}
           value={formatWatchdogVersion(info?.watchdogVersion)}

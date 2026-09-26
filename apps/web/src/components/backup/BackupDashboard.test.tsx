@@ -122,6 +122,23 @@ describe('BackupDashboard usage history chart', () => {
     expect(await screen.findByLabelText('Storage usage trend by provider over time')).not.toBeNull();
     expect(screen.getByText(/Chunk retry exceeded threshold/i)).toBeTruthy();
     expect(screen.queryByText('Chart placeholder: integrate provider usage history.')).toBeNull();
+
+    // G3-4 (#6496): with real provider rows present, the "no storage
+    // providers configured" empty state must not render alongside them.
+    expect(screen.getByText('S3')).toBeTruthy();
+    expect(screen.getByText('Local')).toBeTruthy();
+    expect(screen.queryByText(/No storage providers configured yet/i)).toBeNull();
+
+    // #6496: the chart axis dates must use the app's own long date format
+    // (e.g. "Feb 1, 2026"), not the runtime default short-numeric US locale
+    // (e.g. "2/1/2026"). Assert the shape rather than an exact day, since the
+    // UTC timestamps land on different local calendar days depending on the
+    // test runner's timezone.
+    const longDatePattern = /^[A-Z][a-z]{2} \d{1,2}, 2026$/;
+    const shortNumericPattern = /^\d{1,2}\/\d{1,2}\/2026$/;
+    const axisLabels = screen.getAllByText(longDatePattern);
+    expect(axisLabels.length).toBe(2);
+    expect(screen.queryByText(shortNumericPattern)).toBeNull();
   });
 
   it('shows the recovery bootstrap tab', async () => {

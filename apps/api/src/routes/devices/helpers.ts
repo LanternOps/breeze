@@ -38,6 +38,7 @@ export const PUBLIC_DEVICE_FIELDS = [
   'peripheralPolicyProtocolVersion', 'rollbackProtocolVersion',
   'pamLifetimeProtocolVersion', 'rollbackComponentVersions',
   'agentEdition', 'migrationRequired', 'editionMigrationDispatchedAt',
+  'updateOfferWithheldReason', 'updateOfferWithheldSince',
   'uninstallIntentAt', 'possibleReplacementOfDeviceId', 'decommissionedAt',
   'purchaseDate', 'purchaseDateSource',
   'createdAt', 'updatedAt', 'partnerExportUpdatedAt',

@@ -485,9 +485,15 @@ func TestExchangeRecoveryCode_SendsClientCapabilities(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, _, err := ExchangeRecoveryCode(context.Background(), server.URL, "ABC-DEF-GHJ")
+	_, _, err := ExchangeRecoveryCode(context.Background(), server.URL, "ABC-DEF-GHJ", "0.117.0")
 	if err != nil {
 		t.Fatalf("ExchangeRecoveryCode: %v", err)
+	}
+
+	// #5629: the helper's version rides on the exchange so the server can
+	// refuse too-old media before claiming the one-time code.
+	if got, _ := gotBody["helperVersion"].(string); got != "0.117.0" {
+		t.Errorf("request helperVersion = %q, want %q (body %v)", got, "0.117.0", gotBody)
 	}
 
 	caps, ok := gotBody["capabilities"].([]any)
@@ -496,6 +502,26 @@ func TestExchangeRecoveryCode_SendsClientCapabilities(t *testing.T) {
 	}
 	if !containsAny(caps, CapabilitySnapshotFileMembershipV1) {
 		t.Fatalf("capabilities = %v, want to contain %q", caps, CapabilitySnapshotFileMembershipV1)
+	}
+}
+
+// TestExchangeRecoveryCode_OmitsEmptyHelperVersion: an unset version must
+// not be sent as "" — the server's schema requires min(1) when present.
+func TestExchangeRecoveryCode_OmitsEmptyHelperVersion(t *testing.T) {
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		writeTestBootstrapEnvelope(t, w, "gen-1", true)
+	}))
+	defer server.Close()
+
+	if _, _, err := ExchangeRecoveryCode(context.Background(), server.URL, "ABC-DEF-GHJ", ""); err != nil {
+		t.Fatalf("ExchangeRecoveryCode: %v", err)
+	}
+	if _, present := gotBody["helperVersion"]; present {
+		t.Errorf("request body carried helperVersion for an empty version: %v", gotBody)
 	}
 }
 
@@ -610,7 +636,7 @@ func TestExchangeRecoveryCode_NonJSON409DegradesToUnknownNegotiationError(t *tes
 	}))
 	defer server.Close()
 
-	_, _, err := ExchangeRecoveryCode(context.Background(), server.URL, "some-code")
+	_, _, err := ExchangeRecoveryCode(context.Background(), server.URL, "some-code", "")
 	if err == nil {
 		t.Fatal("expected an error")
 	}

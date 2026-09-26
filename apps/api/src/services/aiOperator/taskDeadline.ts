@@ -1,8 +1,7 @@
 // Task deadline resolution (Recipe Library wave E2, #6167).
 //
-// `taskDeadlineHours` is the one v15 task-wide budget this wave enforces
-// (the other five are recorded as deferrals in runService.ts's limits-coverage
-// inventory). Operator spec §7.2 / recipe spec §6.7: a recipe's own bound may
+// `taskDeadlineHours` is one of the six v15 task-wide budgets; the other five
+// are checked in taskLimits.ts (#6590). Operator spec §7.2 / recipe spec §6.7: a recipe's own bound may
 // be STRICTER than the agent policy's ceiling and never looser, and a caller-
 // requested deadline is bounded by the same ceiling. The narrowest wins.
 //

@@ -56,17 +56,20 @@ export function useFeatureLink(policyId: string) {
   );
 
   /**
-   * Success feedback on remove is opt-in: several tabs (PatchTab's remove and
-   * revert) already toast their own outcome, and a default here doubled it.
+   * Remove / Revert to Parent confirm with a "Saved" toast by default (#5313 —
+   * a 200 with no feedback was indistinguishable from a no-op). Tabs that toast
+   * their own, more specific outcome (PatchTab) pass `successMessage: null`.
    */
   const remove = useCallback(
-    async (linkId: string, opts: { successMessage?: string } = {}): Promise<boolean> => {
+    async (linkId: string, opts: { successMessage?: string | null } = {}): Promise<boolean> => {
       setSaving(true);
       setError(undefined);
       try {
         await runAction({
           request: () => fetchWithAuth(`/configuration-policies/${policyId}/features/${linkId}`, { method: 'DELETE' }),
-          ...(opts.successMessage ? { successMessage: opts.successMessage } : {}),
+          ...(opts.successMessage === null
+            ? {}
+            : { successMessage: opts.successMessage ?? i18n.t('common:states.saved') }),
           errorFallback: i18n.t('common:states.error'),
           onUnauthorized: () => void navigateTo('/login', { replace: true }),
         });

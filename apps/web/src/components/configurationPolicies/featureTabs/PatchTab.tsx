@@ -326,7 +326,7 @@ export default function PatchTab({
   };
   const handleRemove = async () => {
     if (!existingLink) return;
-    const ok = await remove(existingLink.id);
+    const ok = await remove(existingLink.id, { successMessage: null });
     if (ok) {
       showToast({
         message: i18n.t(
@@ -359,7 +359,7 @@ export default function PatchTab({
   };
   const handleRevert = async () => {
     if (!existingLink) return;
-    const ok = await remove(existingLink.id);
+    const ok = await remove(existingLink.id, { successMessage: null });
     if (ok) {
       showToast({
         message: i18n.t(

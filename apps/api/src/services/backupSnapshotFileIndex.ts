@@ -219,6 +219,16 @@ export async function hydrateSnapshotFileIndex(
       // whose status IS 'hydrating', no matter how old, which made the
       // stale-reclaim path dead code. 0 rows means a concurrent (non-stale)
       // claim won the race.
+      //
+      // #6488: hydration pins the snapshot's org/device into every
+      // backup_snapshot_origins row, so it must use the row AS CLAIMED, not
+      // the pre-claim read above. A concurrent org-move holding this row's
+      // lock makes the claim wait for it; under READ COMMITTED the UPDATE
+      // then re-evaluates against the committed (moved) row, and RETURNING
+      // yields its org/device — while `snapshot` still holds the source
+      // org, whose origin lookups would miss and terminally fail the index
+      // as origin_unverifiable. The move's own trigger
+      // (backup_snapshots_file_index_tenancy_reset) covers the other order.
       const staleBefore = new Date(now.getTime() - HYDRATING_STALE_MS);
       const [claimed] = await db
         .update(backupSnapshots)
@@ -233,13 +243,19 @@ export async function hydrateSnapshotFileIndex(
             ),
           ),
         )
-        .returning({ id: backupSnapshots.id });
+        .returning({
+          id: backupSnapshots.id,
+          orgId: backupSnapshots.orgId,
+          deviceId: backupSnapshots.deviceId,
+          snapshotId: backupSnapshots.snapshotId,
+          storageIdentity: backupSnapshots.storageIdentity,
+        });
       if (!claimed) {
         return { status: 'skipped', reason: 'in_progress' } as const;
       }
 
       try {
-        return await hydrateClaimedSnapshot(snapshotDbId, snapshot, now, deps);
+        return await hydrateClaimedSnapshot(snapshotDbId, { ...snapshot, ...claimed }, now, deps);
       } catch (err) {
         await fail(snapshotDbId, 'provider_error', err instanceof Error ? err.message : String(err));
         throw err;

@@ -21,6 +21,8 @@ import {
   resetExtensionTenancyCacheForTests,
 } from './tenancyRegistry';
 import { getTenantExportPolicyRegistry } from '../services/tenantExportPolicyRegistry';
+import { getOrgMergePolicies } from '../services/orgMergeRegistry';
+import { getOrgCascadeDeleteOrder } from '../services/tenantCascade';
 import {
   ExtensionContributionRegistry,
   type StagedExtensionContributions,
@@ -1147,6 +1149,37 @@ describe('built-in tenancy participates in the tenant-export contract', () => {
   });
 });
 
+/**
+ * #4165: org merge walks the EXTENSION-AUGMENTED cascade order
+ * (`getOrgCascadeDeleteOrder()`) and throws `no merge policy registered for
+ * '<table>'` on the first table with no policy — so a built-in that declares
+ * org-cascade tables without `tenancy.orgMergePolicies` makes every org merge
+ * fail for the whole deployment the moment it boots. Pinned against the REAL
+ * manifest, in-process: the boot-time loader never runs under vitest, so
+ * `orgMergeRegistry.integration.test.ts`'s completeness check only ever sees
+ * the core list.
+ */
+describe('built-in tenancy participates in the org-merge contract (#4165)', () => {
+  afterEach(() => {
+    resetExtensionTenancyCacheForTests();
+  });
+
+  it('every table in the extension-augmented cascade order has a merge policy', () => {
+    const declarations = builtinTenancyDeclarations();
+    expect(declarations.flatMap((d) => d.orgCascadeDeleteTables).length).toBeGreaterThan(0);
+    for (const declaration of declarations) registerRuntimeExtensionTenancy(declaration);
+
+    const policies = getOrgMergePolicies();
+    const missing = getOrgCascadeDeleteOrder().filter((table) => !policies.has(table));
+    expect(missing).toEqual([]);
+
+    // The extension's tables are actually in the walk (not vacuously absent).
+    expect(getOrgCascadeDeleteOrder()).toContain('workspace_org_settings');
+    // A one-row-per-org settings table must never plain-repoint: the survivor's
+    // own row would collide on the org_id primary key.
+    expect(policies.get('workspace_org_settings')).toEqual({ kind: 'keep-survivor' });
+  });
+});
 
 describe('final public-table tenancy gate (#4283)', () => {
   it.each(['full', 'worker'] as const)('awaits the sweep and propagates failure in %s mode', async (mode) => {

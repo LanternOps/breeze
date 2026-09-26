@@ -59,6 +59,37 @@ describe('idpAssertedMfa (security review #2 H-1)', () => {
     // A non-array amr (malformed) must not be trusted.
     expect(idpAssertedMfa({ amr: 'mfa' as unknown as string[] })).toBe(false);
   });
+
+  // #6137: RFC 8176 `phr` (phishing-resistant, e.g. a passkey / WebAuthn
+  // login — what Pocket ID asserts) also satisfies trusted upstream MFA.
+  it('is true when amr contains the RFC 8176 "phr" reference (#6137)', () => {
+    expect(idpAssertedMfa({ amr: ['phr'] })).toBe(true);
+    expect(idpAssertedMfa({ amr: ['hwk', 'phr'] })).toBe(true);
+    expect(idpAssertedMfa({ amr: ['phr', 'mfa'] })).toBe(true);
+  });
+
+  // Only `mfa` and `phr` are accepted — no other relaxation. Single-factor
+  // method references (even hardware-bound ones), the distinct `phrh` value,
+  // case variants and near-misses all stay rejected.
+  it.each([
+    [['phrh']],
+    [['PHR']],
+    [['MFA']],
+    [[' phr']],
+    [['hwk']],
+    [['swk']],
+    [['otp']],
+    [['fido']],
+    [['user', 'pin']],
+    [['pwd', 'otp']],
+    [['phishing-resistant']],
+  ])('is false for amr %j (#6137 — no other relaxation)', (amr) => {
+    expect(idpAssertedMfa({ amr })).toBe(false);
+  });
+
+  it('is false for a non-array amr carrying "phr" (#6137)', () => {
+    expect(idpAssertedMfa({ amr: 'phr' as unknown as string[] })).toBe(false);
+  });
 });
 
 vi.mock('dns/promises', () => ({

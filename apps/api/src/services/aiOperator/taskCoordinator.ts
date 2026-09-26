@@ -81,6 +81,8 @@ import { aiOperatorTasksEnabled } from '../../config/env';
 import { aiOperatorTaskTargets } from '../../db/schema/aiOperatorTaskGraph';
 import { appendTaskEvent, type TaskEventActor } from './eventService';
 import { markStepWaiting, openStep, resolveStepKind, settleStep } from './stepService';
+import { checkTaskBudget, checkTaskMutationAttempts, checkTaskReasoningRuns } from './taskLimits';
+import { loadTaskLimitContext, type TaskLimitContext } from './taskLimitsLoader';
 import {
   HUMAN_WORK_POLL_WAKE_MS,
   ensureTaskTicket,
@@ -465,6 +467,8 @@ async function admitReasoningRun(args: {
   stepKey: string;
   bumpPlanRevision: boolean;
   recipe: RecipeDefinition<never>;
+  /** Already loaded by the caller (advanceVerify); loaded here otherwise. */
+  limits?: TaskLimitContext;
 }): Promise<{ admitted: boolean; detail: string }> {
   const { task, checkpoint } = args;
 
@@ -472,13 +476,20 @@ async function admitReasoningRun(args: {
     return { admitted: false, detail: 'AI_OPERATOR_TASKS_ENABLED is off' };
   }
 
+  // v15 task-wide budgets at dispatch (#6590, Operator spec §7.2). Checked
+  // BEFORE the stamp below: a refused attempt must not consume an attempt
+  // ordinal or bump the plan revision. The caller hands the task off with
+  // this detail, so the limit that fired is named in the handoff.
+  const limits = args.limits ?? await loadTaskLimitContext(task);
   const attemptOrdinal = args.bumpPlanRevision ? task.attemptOrdinal + 1 : task.attemptOrdinal;
-  if (attemptOrdinal >= args.recipe.bounds.maxReasoningRuns) {
-    return {
-      admitted: false,
-      detail: `reasoning-run limit reached (${args.recipe.bounds.maxReasoningRuns})`,
-    };
-  }
+  const runsCheck = checkTaskReasoningRuns({
+    attemptOrdinal,
+    recipeBound: args.recipe.bounds.maxReasoningRuns,
+    policyLimits: limits.policyLimits,
+  });
+  if (!runsCheck.ok) return { admitted: false, detail: runsCheck.detail };
+  const budgetCheck = checkTaskBudget({ spentCents: limits.spentCents, policyLimits: limits.policyLimits });
+  if (!budgetCheck.ok) return { admitted: false, detail: budgetCheck.detail };
 
   const nextRevision = args.bumpPlanRevision ? task.revision + 1 : task.revision;
 
@@ -1122,25 +1133,39 @@ async function advanceVerify(
     // "admit new run from checkpoint (attempt_ordinal + 1)". The mutation-
     // attempt cap is checked separately from the reasoning-run cap: a second
     // reasoning attempt that is only allowed to investigate is still useful.
-    if (checkpoint.mutationAttempts < recipe.bounds.maxMutationAttempts) {
+    // The cap is the narrower of the recipe bound and the agent policy's
+    // `taskMaxMutationAttemptsPerTarget` (#6590). `mutationAttempts` counts
+    // every dispatched mutation against this task's single target; no recipe
+    // nests playbook mutations yet, so there is nothing further to add in.
+    const limits = await loadTaskLimitContext(task);
+    const mutationCheck = checkTaskMutationAttempts({
+      mutationAttempts: checkpoint.mutationAttempts,
+      recipeBound: recipe.bounds.maxMutationAttempts,
+      policyLimits: limits.policyLimits,
+    });
+    if (mutationCheck.ok) {
       const admitted = await admitReasoningRun({
-        task, leaseEpoch, checkpoint: next, stepKey: 'investigate', bumpPlanRevision: true, recipe,
+        task, leaseEpoch, checkpoint: next, stepKey: 'investigate', bumpPlanRevision: true, recipe, limits,
       });
       if (admitted.admitted) return `verification failed; ${admitted.detail}`;
       await settle({
         task, leaseEpoch, event: 'hand_off', outcome: 'unresolved',
         detail: `verification failed and no further attempt could be admitted: ${admitted.detail}`,
         checkpoint: next,
-        handoffSummary: `The service is still not running. ${evaluation.detail}`,
+        // The summary is the technician-facing field, so it must carry the
+        // limit that stopped the retry (#6590) — otherwise a policy ceiling
+        // reads as an unexplained failure.
+        handoffSummary: `The service is still not running. ${evaluation.detail} `
+          + `Operator did not retry: ${admitted.detail}.`,
       });
       return 'handed off: verification failed, no attempts left';
     }
     await settle({
       task, leaseEpoch, event: 'hand_off', outcome: 'unresolved',
-      detail: `verification failed after ${checkpoint.mutationAttempts} attempts`,
+      detail: `verification failed after ${checkpoint.mutationAttempts} attempts: ${mutationCheck.detail}`,
       checkpoint: next,
       handoffSummary: `The service is still not running after ${checkpoint.mutationAttempts} restart `
-        + `attempt(s). ${evaluation.detail}`,
+        + `attempt(s). ${evaluation.detail} Operator did not retry: ${mutationCheck.detail}.`,
     });
     return 'handed off: mutation attempts exhausted';
   }
@@ -1647,4 +1672,4 @@ export async function handleTaskWake(args: {
  *  writers, and the test that pins their task-graph writes needs to call them
  *  directly — the alternative is a test that drives `advanceTask` through a
  *  fake DB, which would assert the fake and not the wiring. */
-export const __testOnly = { writeLeasedStep, yieldToWait, settle, admitReasoningRun };
+export const __testOnly = { writeLeasedStep, yieldToWait, settle, admitReasoningRun, advanceVerify };

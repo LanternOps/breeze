@@ -142,6 +142,31 @@ describe('CleanupRunHistory', () => {
     expect(within(second).getByText(/timed out/)).toBeInTheDocument();
   });
 
+  it('labels the action count instead of appending a bare number (#6496)', async () => {
+    fetchMock.mockResolvedValue(json({
+      success: true,
+      data: { runs: [run('r1', { actionCount: 3 })], nextCursor: null },
+    }));
+
+    render(<CleanupRunHistory deviceId="dev-1" refreshToken={0} />);
+
+    const row = await screen.findByTestId('cleanup-run-r1');
+    expect(within(row).getByText(/3 actions/)).toBeInTheDocument();
+  });
+
+  it('pluralizes a single candidate correctly (#6496)', async () => {
+    fetchMock.mockResolvedValue(json({
+      success: true,
+      data: { runs: [run('r1', { candidateCount: 1 })], nextCursor: null },
+    }));
+
+    render(<CleanupRunHistory deviceId="dev-1" refreshToken={0} />);
+
+    const row = await screen.findByTestId('cleanup-run-r1');
+    expect(within(row).getByText(/1 candidate\b/)).toBeInTheDocument();
+    expect(within(row).queryByText(/1 candidates/)).not.toBeInTheDocument();
+  });
+
   it('shows the empty state when the device has no runs', async () => {
     fetchMock.mockResolvedValue(json({ success: true, data: { runs: [], nextCursor: null } }));
     render(<CleanupRunHistory deviceId="dev-1" refreshToken={0} />);

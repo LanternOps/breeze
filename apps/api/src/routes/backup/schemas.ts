@@ -370,6 +370,10 @@ export const bmrRecoveryListSchema = z.object({
 export const bmrExchangeSchema = z.object({
   code: z.string().min(1).max(32),
   capabilities: z.array(z.string().min(1).max(64)).max(16).optional(),
+  // #5629: the recovery console's own version, so the server can refuse a
+  // too-old ISO before the one-time code is claimed. Optional — media that
+  // predates this field is still gated only by the console after exchange.
+  helperVersion: z.string().min(1).max(64).optional(),
 });
 
 // W09a (#6464) Task 6: bound the agent-reported `result` payload so an

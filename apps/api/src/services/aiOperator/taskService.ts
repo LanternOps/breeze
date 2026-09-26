@@ -51,6 +51,8 @@ import { createTaskTarget } from './targetService';
 import { openStep, resolveStepKind } from './stepService';
 import { appendTaskEvent } from './eventService';
 import { resolveTaskDeadlineMs } from './taskDeadline';
+import { checkTaskActiveTargets, checkTaskPendingCapacity } from './taskLimits';
+import { countPendingTasks, lockOrgTaskAdmission } from './taskLimitsLoader';
 import { resolveEffectiveAgentSystem } from '../aiAgents/effectivePolicy';
 
 export type AdmitTaskRefusal =
@@ -62,7 +64,15 @@ export type AdmitTaskRefusal =
   | 'recipe_version_mismatch'
   | 'agent_not_found'
   | 'device_not_in_org'
-  | 'invalid_input';
+  | 'invalid_input'
+  /**
+   * The org is at its `taskMaxPendingPerOrg` ceiling (#6590) — a 429 at the
+   * route (spec §12's visible capacity result), not a 422: nothing about the
+   * request is wrong, the org just has to finish or stop work first.
+   */
+  | 'pending_cap_reached'
+  /** A task-wide policy ceiling other than capacity refused the task (#6590). */
+  | 'task_limit_exceeded';
 
 export type AdmitTaskResult =
   /**
@@ -220,18 +230,60 @@ export async function admitServiceRecoveryTask(
       // admission refuses with ownership_mismatch anyway, and the default
       // ceiling applies here rather than a stranger's policy.
       const effectiveAgent = await resolveEffectiveAgentSystem(input.orgId, agent.kind as never);
+      const policyLimits = effectiveAgent && effectiveAgent.agentId === agent.id
+        ? effectiveAgent.effective.limits
+        : null;
+
+      // v15 task-wide budget `taskMaxActiveTargets` (#6590). Admission writes
+      // exactly one target, and the validator's floor is 1, so no valid policy
+      // refuses here today; the check exists so the fleet waves inherit an
+      // enforced ceiling instead of a comment.
+      const ADMITTED_TARGET_COUNT = 1;
+      const targetsCheck = checkTaskActiveTargets({ targetCount: ADMITTED_TARGET_COUNT, policyLimits });
+      if (!targetsCheck.ok) {
+        return { ok: false as const, refusal: 'task_limit_exceeded' as const, detail: targetsCheck.detail };
+      }
+
+      const clientIdempotencyKey = input.clientIdempotencyKey ?? null;
+
+      // v15 task-wide budget `taskMaxPendingPerOrg` (#6590, spec §7.2/§12).
+      // The per-org advisory lock makes count-then-insert one decision for
+      // the rest of this transaction; without it concurrent admissions all
+      // read `cap - 1` and all insert.
+      await lockOrgTaskAdmission(input.orgId);
+
+      // An idempotent replay creates nothing, so it must not be refused for
+      // capacity: answer it before counting. (Under the lock, so the winner
+      // of a concurrent same-key race is already committed and visible here;
+      // the ON CONFLICT path below stays as the backstop.)
+      if (clientIdempotencyKey !== null) {
+        const [prior] = await db
+          .select({ id: aiOperatorTasks.id })
+          .from(aiOperatorTasks)
+          .where(and(
+            eq(aiOperatorTasks.orgId, input.orgId),
+            eq(aiOperatorTasks.clientIdempotencyKey, clientIdempotencyKey),
+          ))
+          .limit(1);
+        if (prior) return { ok: true as const, taskId: prior.id, replayed: true };
+      }
+
+      const pendingCheck = checkTaskPendingCapacity({
+        pendingCount: await countPendingTasks(input.orgId),
+        policyLimits,
+      });
+      if (!pendingCheck.ok) {
+        return { ok: false as const, refusal: 'pending_cap_reached' as const, detail: pendingCheck.detail };
+      }
+
       const deadlineMs = resolveTaskDeadlineMs({
         requestedMs: input.deadlineMs,
         recipeDeadlineMs: recipe.bounds.deadlineMs,
-        policyLimits: effectiveAgent && effectiveAgent.agentId === agent.id
-          ? effectiveAgent.effective.limits
-          : null,
+        policyLimits,
         // ±10% jitter (spec §11.2) so a burst of tasks admitted together does
         // not create an expiry wave 24 hours later.
         jitter: () => 0.9 + Math.random() * 0.2,
       });
-
-      const clientIdempotencyKey = input.clientIdempotencyKey ?? null;
 
       const inserted = await db
         .insert(aiOperatorTasks)

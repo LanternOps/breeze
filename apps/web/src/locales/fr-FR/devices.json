@@ -955,7 +955,10 @@
     "historyKindFiles": "Nettoyage de fichiers",
     "historyKindSystem": "Nettoyage système",
     "historyReclaimed": "{{size}} récupérés",
-    "historyCandidates": "{{count}} candidats",
+    "historyCandidates_one": "{{count}} candidat",
+    "historyCandidates_other": "{{count}} candidats",
+    "historyActions_one": "{{count}} action",
+    "historyActions_other": "{{count}} actions",
     "status": {
       "previewed": "Aperçu",
       "running": "En cours",
@@ -1093,6 +1096,7 @@
     "linkSpeed": "Vitesse de liaison"
   },
   "deviceInfoTab": {
+    "updateOfferWithheld": "Les offres de mise à jour sont retenues pour cet appareil (depuis {{since}}) : il n'est pas possible de confirmer que la version de son agent accepte l'édition proposée par ce serveur, il reste donc à sa version actuelle. Récupérez-le avec un programme d'installation de l'édition proposée ou une version de l'agent qui signale son édition.",
     "gpu": "GPU",
     "text": "—",
     "failedToFetchDeviceDetails": "Impossible de récupérer les détails de l’appareil",
@@ -1433,6 +1437,8 @@
       "unifi": "UniFi",
       "manual": "Manuel"
     },
+    "updateWithheld": "Mises à jour retenues",
+    "updateWithheldTooltip": "Le serveur ne propose pas de mises à jour à cet appareil, car il n'est pas possible de confirmer que la version de son agent accepte l'édition proposée. Il reste à sa version actuelle jusqu'à sa récupération.",
     "agentVersionRelation": {
       "equalTooltip": "Correspond à la version effective {{version}}",
       "aheadTooltip": "En avance sur l'épinglage {{version}}",
@@ -2721,15 +2727,12 @@
         "invalidPort": "Le port doit être un nombre entier compris entre 1 et 65535.",
         "pause": "Suspendre les interrogations",
         "resume": "Reprendre les interrogations",
-        "disable": "Désactiver toute la surveillance",
-        "disableTitle": "Désactiver toute la surveillance ?",
-        "disableMessage": "Les interrogations SNMP et les contrôles réseau de cet actif seront désactivés.",
+        "disable": "Désactiver la surveillance SNMP",
+        "disableTitle": "Désactiver la surveillance SNMP ?",
+        "disableMessage": "Arrêter les interrogations SNMP de cet actif ? Les vérifications réseau restent gérées dans Moniteurs.",
         "checksTitle": "Contrôles réseau",
         "noChecks": "Aucun contrôle réseau configuré.",
         "addCheck": "Ajouter un contrôle",
-        "removeCheck": "Supprimer le contrôle",
-        "removeCheckTitle": "Supprimer le contrôle réseau ?",
-        "removeCheckMessage": "Supprimer le contrôle réseau « {{name}} » ? Cette action est irréversible.",
         "never": "jamais",
         "leaveBlankToKeep": "Enregistré — laissez vide pour conserver la valeur actuelle",
         "snmpVersion": "Version SNMP",
@@ -2772,7 +2775,8 @@
           "tcp_port": "port TCP",
           "http_check": "contrôle HTTP",
           "dns_check": "contrôle DNS"
-        }
+        },
+        "addCheckHint": "Ajouter une vérification ouvre le moniteur avec cet actif sélectionné."
       },
       "link": {
         "description": "Associez cet actif découvert à l’appareil géré qui correspond à la même machine.",
@@ -2815,12 +2819,8 @@
         "snmpSaveFailed": "Impossible d’enregistrer les paramètres SNMP",
         "pollingPaused": "Interrogation SNMP suspendue",
         "pollingResumed": "Interrogation SNMP reprise",
-        "monitoringDisabled": "Surveillance désactivée pour cet actif",
-        "monitoringDisableFailed": "Impossible de désactiver la surveillance",
-        "checkCreated": "Contrôle réseau ajoutée",
-        "checkCreateFailed": "Impossible d’ajouter la contrôle réseau",
-        "checkRemoved": "Contrôle réseau supprimée",
-        "checkRemoveFailed": "Impossible de supprimer la contrôle réseau",
+        "monitoringDisabled": "Surveillance SNMP désactivée",
+        "monitoringDisableFailed": "Impossible de désactiver la surveillance SNMP",
         "siteChanged": "Déplacé vers {{site}}.",
         "siteChangeFailed": "Impossible de déplacer l’actif vers le nouveau site",
         "siteChangedUnlinked": "Le lien avec son appareil agent a été supprimé, car cet appareil se trouve sur un autre site.",

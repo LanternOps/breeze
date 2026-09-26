@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
+import { LEGACY_ALERTING_GONE } from '../legacyAlertingGone';
 
 // Regression test for Finding #6 (MEDIUM): alert-rule mutation endpoints must
 // gate on the ALERTS_WRITE RBAC permission in addition to scope tier. RLS
@@ -128,9 +129,8 @@ describe('alert rules authz (Finding #6)', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
     });
-    // Past the gate: a zValidator 400 (bad body) proves we are no longer blocked
-    // by a permission 403.
-    expect(res.status).not.toBe(403);
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
   });
 
   it('passes the permission gate on PUT when ALERTS_WRITE is granted', async () => {
@@ -140,15 +140,15 @@ describe('alert rules authz (Finding #6)', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: 'r' }),
     });
-    // Past the gate: getAlertRuleWithOrgCheck mock returns undefined → 404
-    // (not found), proving we are no longer blocked by a permission 403.
-    expect(res.status).not.toBe(403);
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
   });
 
   it('passes the permission gate on DELETE when ALERTS_WRITE is granted', async () => {
     grantedRef.current.add(ALERTS_WRITE);
     const res = await makeApp().request(`/alerts/rules/${RULE_ID}`, { method: 'DELETE' });
-    expect(res.status).not.toBe(403);
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
   });
 });
 
@@ -176,29 +176,29 @@ describe('partner-wide alert rules (#2128)', () => {
     vi.clearAllMocks();
   });
 
-  it('denies partner-wide create without full partner org access (orgAccess selected)', async () => {
+  it('retires partner-wide create even with selected org access', async () => {
     setPartnerAuth('selected');
     const res = await makeApp().request('/alerts/rules', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ownerScope: 'partner', name: 'Fleet CPU rule', severity: 'high', conditions: { type: 'metric' } }),
     });
-    expect(res.status).toBe(403);
-    expect(((await res.json()) as any).error).toMatch(/full partner org access/);
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
   });
 
-  it('rejects a non-"all" target on partner-wide create', async () => {
+  it('retires partner-wide create before target validation', async () => {
     setPartnerAuth('all');
     const res = await makeApp().request('/alerts/rules', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ownerScope: 'partner', name: 'Fleet rule', severity: 'high', conditions: { type: 'metric' }, targetType: 'site', targetId: '5d4c3b2a-1111-4222-8333-444455556666' }),
     });
-    expect(res.status).toBe(400);
-    expect(((await res.json()) as any).error).toMatch(/only support the "all" target/);
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
   });
 
-  it('rejects org-scoped notification bindings on partner-wide create', async () => {
+  it('retires partner-wide create before notification validation', async () => {
     setPartnerAuth('all');
     const res = await makeApp().request('/alerts/rules', {
       method: 'POST',
@@ -211,22 +211,22 @@ describe('partner-wide alert rules (#2128)', () => {
         notificationChannelIds: ['5d4c3b2a-1111-4222-8333-444455556666'],
       }),
     });
-    expect(res.status).toBe(400);
-    expect(((await res.json()) as any).error).toMatch(/notification channels/i);
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
   });
 
-  it('denies DELETE of a partner-wide rule without the partner-wide capability', async () => {
+  it('retires DELETE without looking up partner-wide capability', async () => {
     setPartnerAuth('selected');
     vi.mocked(helpers.getAlertRuleWithOrgCheck).mockResolvedValue({
       id: RULE_ID, orgId: null, partnerId: PARTNER_ID, name: 'Fleet rule', overrideSettings: null,
     } as never);
 
     const res = await makeApp().request(`/alerts/rules/${RULE_ID}`, { method: 'DELETE' });
-    expect(res.status).toBe(403);
-    expect(((await res.json()) as any).error).toMatch(/full partner org access/);
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
   });
 
-  it('denies PUT of a partner-wide rule without the partner-wide capability', async () => {
+  it('retires PUT without looking up partner-wide capability', async () => {
     setPartnerAuth('none');
     vi.mocked(helpers.getAlertRuleWithOrgCheck).mockResolvedValue({
       id: RULE_ID, orgId: null, partnerId: PARTNER_ID, name: 'Fleet rule', overrideSettings: null,
@@ -237,6 +237,7 @@ describe('partner-wide alert rules (#2128)', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: 'Hijacked' }),
     });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
   });
 });

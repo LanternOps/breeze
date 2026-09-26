@@ -542,9 +542,11 @@ aiAgentsRoutes.get('/tool-catalog', scopes, requireAiRead, async (c) => {
 /**
  * Task 4 (#5049): the partner-wide baseline's tool ceiling for one `kind`,
  * projected for the create/edit form so an org-scoped caller can see what a
- * new org row would be capped to WITHOUT being able to read the partner row
- * itself (`effectivePolicy.ts:341-350` — an org token carries a partnerId but
- * never passes `breeze_has_partner_access`). A partner-scope caller gets the
+ * new org row would be capped to. The org token reads its own partner's
+ * baseline in its own DB context through the SELECT-only
+ * `ai_agents_partner_wide_select` branch (#5199); only the two allowlists and
+ * the authorized script ids leave `loadPartnerBaselineCeiling`, never the rest
+ * of the partner row. A partner-scope caller gets the
  * same projection when editing/creating an ORG-owned row for its own
  * partner — a partner token CAN read its own partner rows directly, so this
  * exposes nothing new; `loadPartnerBaselineCeiling` just saves it a second
@@ -656,10 +658,8 @@ export const AI_AGENT_GRADUATION_BY_ORG_BATCH = 25;
  * can explain why Promote is disabled.
  *
  * With `orgId`: the effective agent is resolved SERVER-SIDE via
- * `resolveEffectiveAgentSystem` — an org token carries a `partnerId` but
- * never passes `breeze_has_partner_access`, so it cannot read the partner
- * baseline row itself (`effectivePolicy.ts:341-350`) — never an id supplied
- * on the query string. `ownerScope` reports `'organization'` only when THIS
+ * `resolveEffectiveAgentSystem` after the `canAccessOrg` gate — never an id
+ * supplied on the query string. `ownerScope` reports `'organization'` only when THIS
  * org has its own active `ai_agents` row for `kind` (an override); every
  * other org rides the partner baseline and reports `'partner'`.
  *
@@ -1012,8 +1012,7 @@ aiAgentsRoutes.post(
     let candidates = rows;
     if (kind !== undefined) {
       // Server-side resolution, never a caller-supplied agent id — the same
-      // rule GET /graduation states: an org token carries a partnerId but
-      // cannot read the partner baseline row itself.
+      // rule GET /graduation states.
       const resolved = await resolveEffectiveAgentSystem(orgId, kind);
       if (!resolved) {
         return c.json({ error: 'No active agent policy for this organization/kind' }, 404);

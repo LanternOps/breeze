@@ -195,6 +195,7 @@ vi.mock('../../jobs/backupSnapshotFileIndexWorker', () => ({
 }));
 
 import { bmrRecoveryRoutes, bmrRecoveryPublicRoutes } from './bmrRecoveries';
+import { BMR_MIN_HELPER_VERSION } from '../../services/recoveryBootstrap';
 
 describe('bare-metal recoveries routes', () => {
   let app: Hono;
@@ -475,6 +476,69 @@ describe('bare-metal recoveries routes', () => {
       expect(updateCall.nonceHash).toBe(hashRecoveryNonce(body.bootstrap.bootstrap.recovery.nonce));
       expect(updateCall.status).toBe('media_booted');
       expect(updateCall.codeUsedAt).toBeInstanceOf(Date);
+    });
+
+    it('#5629: helper older than the server floor — 409 helper_version_too_old BEFORE the code is claimed', async () => {
+      const code = 'ABCDEFGHJ';
+      selectMock.mockReturnValueOnce(chainMock([{
+        id: RECOVERY_ID, orgId: ORG_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID, identity: 'original',
+        status: 'created', codeHash: hashRecoveryCode(code), codeExpiresAt: new Date(Date.now() + 60_000),
+        codeUsedAt: null, nonceHash: 'x'.repeat(64), createdBy: 'user-123',
+      }]));
+
+      const res = await publicApp.request('/backup/bmr/recover/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: 'abc-def-ghj', helperVersion: '0.0.1' }),
+      });
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toBe('helper_version_too_old');
+      expect(body.details).toMatchObject({ helperVersion: '0.0.1', minHelperVersion: BMR_MIN_HELPER_VERSION });
+      expect(body.message).toContain(BMR_MIN_HELPER_VERSION);
+      // The one-time code must survive: no token minted, no claim UPDATE,
+      // and the gate runs before negotiation's snapshot reads.
+      expect(insertMock).not.toHaveBeenCalled();
+      expect(updateMock).not.toHaveBeenCalled();
+      expect(transactionMock).not.toHaveBeenCalled();
+      expect(selectMock).toHaveBeenCalledTimes(1);
+      expect(writeAuditEventMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'bmr.recovery.exchange',
+        result: 'failure',
+        details: expect.objectContaining({ reason: 'helper_version_too_old' }),
+      }));
+    });
+
+    it('#5629: a "dev" helper build is below any floor and is refused before the claim', async () => {
+      const code = 'ABCDEFGHJ';
+      selectMock.mockReturnValueOnce(chainMock([{
+        id: RECOVERY_ID, orgId: ORG_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID, identity: 'original',
+        status: 'created', codeHash: hashRecoveryCode(code), codeExpiresAt: new Date(Date.now() + 60_000),
+        codeUsedAt: null, nonceHash: 'x'.repeat(64), createdBy: 'user-123',
+      }]));
+
+      const res = await publicApp.request('/backup/bmr/recover/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: 'abc-def-ghj', helperVersion: 'dev' }),
+      });
+
+      expect(res.status).toBe(409);
+      expect((await res.json()).error).toBe('helper_version_too_old');
+      expect(insertMock).not.toHaveBeenCalled();
+      expect(updateMock).not.toHaveBeenCalled();
+    });
+
+    it('#5629: an invalid code still 404s code_invalid even when the helper is too old', async () => {
+      selectMock.mockReturnValueOnce(chainMock([]));
+      const res = await publicApp.request('/backup/bmr/recover/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: 'abc-def-ghj', helperVersion: '0.0.1' }),
+      });
+      expect(res.status).toBe(404);
+      expect((await res.json()).error).toBe('code_invalid');
     });
 
     it('exchange R2: referenced snapshot, legacy client — 409, code NOT consumed, no token row inserted', async () => {

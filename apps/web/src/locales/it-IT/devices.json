@@ -955,7 +955,10 @@
     "historyKindFiles": "Pulizia file",
     "historyKindSystem": "Pulizia di sistema",
     "historyReclaimed": "{{size}} recuperati",
-    "historyCandidates": "{{count}} candidati",
+    "historyCandidates_one": "{{count}} candidato",
+    "historyCandidates_other": "{{count}} candidati",
+    "historyActions_one": "{{count}} azione",
+    "historyActions_other": "{{count}} azioni",
     "status": {
       "previewed": "Anteprima",
       "running": "In corso",
@@ -1093,6 +1096,7 @@
     "linkSpeed": "Velocità del collegamento"
   },
   "deviceInfoTab": {
+    "updateOfferWithheld": "Le offerte di aggiornamento sono sospese per questo dispositivo (dal {{since}}): non è possibile confermare che la build del suo agente accetti l'edizione servita da questo server, quindi resta alla versione attuale. Ripristinalo con un programma di installazione dell'edizione servita o con una release dell'agente che segnali la propria edizione.",
     "gpu": "GPU",
     "text": "—",
     "failedToFetchDeviceDetails": "Impossibile recuperare i dettagli del dispositivo",
@@ -1433,6 +1437,8 @@
       "unifi": "UniFi",
       "manual": "Manuale"
     },
+    "updateWithheld": "Aggiornamenti sospesi",
+    "updateWithheldTooltip": "Il server non offre aggiornamenti a questo dispositivo perché non è possibile confermare che la build del suo agente accetti l'edizione servita. Resta alla versione attuale fino al ripristino.",
     "agentVersionRelation": {
       "equalTooltip": "Corrisponde alla versione effettiva {{version}}",
       "aheadTooltip": "In anticipo rispetto al pin {{version}}",
@@ -2721,15 +2727,12 @@
         "invalidPort": "La porta deve essere un numero intero tra 1 e 65535.",
         "pause": "Sospendi polling",
         "resume": "Riprendi polling",
-        "disable": "Disabilita tutto il monitoraggio",
-        "disableTitle": "Disabilitare tutto il monitoraggio?",
-        "disableMessage": "Il polling SNMP e i controlli di rete per questa risorsa verranno disabilitati.",
+        "disable": "Disattiva monitoraggio SNMP",
+        "disableTitle": "Disattivare il monitoraggio SNMP?",
+        "disableMessage": "Interrompere le interrogazioni SNMP per questo asset? I controlli di rete restano gestiti in Monitor.",
         "checksTitle": "Controlli di rete",
         "noChecks": "Nessun controllo di rete configurato.",
         "addCheck": "Aggiungi controllo",
-        "removeCheck": "Rimuovi controllo",
-        "removeCheckTitle": "Rimuovere il controllo di rete?",
-        "removeCheckMessage": "Rimuovere il controllo di rete “{{name}}”? Questa azione non può essere annullata.",
         "never": "mai",
         "leaveBlankToKeep": "Memorizzato — lascia vuoto per mantenere il valore attuale",
         "snmpVersion": "Versione SNMP",
@@ -2772,7 +2775,8 @@
           "tcp_port": "porta TCP",
           "http_check": "controllo HTTP",
           "dns_check": "controllo DNS"
-        }
+        },
+        "addCheckHint": "Aggiungi controllo apre il monitor con questo asset selezionato."
       },
       "link": {
         "description": "Collega questa risorsa rilevata al dispositivo gestito che corrisponde alla stessa macchina.",
@@ -2815,12 +2819,8 @@
         "snmpSaveFailed": "Impossibile salvare le impostazioni SNMP",
         "pollingPaused": "Polling SNMP sospeso",
         "pollingResumed": "Polling SNMP ripreso",
-        "monitoringDisabled": "Monitoraggio disabilitato per questa risorsa",
-        "monitoringDisableFailed": "Impossibile disabilitare il monitoraggio",
-        "checkCreated": "Controllo di rete aggiunto",
-        "checkCreateFailed": "Impossibile aggiungere il controllo di rete",
-        "checkRemoved": "Controllo di rete rimosso",
-        "checkRemoveFailed": "Impossibile rimuovere il controllo di rete",
+        "monitoringDisabled": "Monitoraggio SNMP disattivato",
+        "monitoringDisableFailed": "Impossibile disattivare il monitoraggio SNMP",
         "siteChanged": "Spostato in {{site}}.",
         "siteChangeFailed": "Impossibile spostare l'asset nel nuovo sito",
         "siteChangedUnlinked": "Il collegamento al dispositivo con agente è stato rimosso perché quel dispositivo si trova in un altro sito.",

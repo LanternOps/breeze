@@ -1753,14 +1753,6 @@ jobs:
     needs: [lint, changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     timeout-minutes: 20
-    # #6943: Go 1.26's Green Tea GC has crashed this job three times with
-    # `fatal error: index out of range` in runtime.tryDeferToSpanScan (upstream
-    # golang/go#80799, fix pending for Go 1.28; none in 1.26.7/1.26.8). Run the
-    # Windows tests on the classic collector to A/B whether the crash stops.
-    # CI-only: release builds (release.yml) are unchanged. Remove once the
-    # toolchain carries the upstream fix.
-    env:
-      GOEXPERIMENT: nogreenteagc
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

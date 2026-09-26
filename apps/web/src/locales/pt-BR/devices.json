@@ -955,7 +955,10 @@
     "historyKindFiles": "Limpeza de arquivos",
     "historyKindSystem": "Limpeza do sistema",
     "historyReclaimed": "{{size}} recuperados",
-    "historyCandidates": "{{count}} candidatos",
+    "historyCandidates_one": "{{count}} candidato",
+    "historyCandidates_other": "{{count}} candidatos",
+    "historyActions_one": "{{count}} ação",
+    "historyActions_other": "{{count}} ações",
     "status": {
       "previewed": "Prévia",
       "running": "Em execução",
@@ -1093,6 +1096,7 @@
     "linkSpeed": "Velocidade do link"
   },
   "deviceInfoTab": {
+    "updateOfferWithheld": "As ofertas de atualização estão retidas para este dispositivo (desde {{since}}): não é possível confirmar que a build do agente aceita a edição servida por este servidor, então ele permanece na versão atual. Recupere-o com um instalador da edição servida ou uma versão do agente que informe sua edição.",
     "gpu": "GPU",
     "text": "—",
     "failedToFetchDeviceDetails": "Falha ao buscar os detalhes do dispositivo",
@@ -1433,6 +1437,8 @@
       "unifi": "UniFi",
       "manual": "Manual"
     },
+    "updateWithheld": "Atualizações retidas",
+    "updateWithheldTooltip": "O servidor não está oferecendo atualizações a este dispositivo porque não é possível confirmar que a build do agente aceita a edição servida. Ele permanece na versão atual até ser recuperado.",
     "agentVersionRelation": {
       "equalTooltip": "Corresponde à versão efetiva {{version}}",
       "aheadTooltip": "À frente do pin {{version}}",
@@ -2721,15 +2727,12 @@
         "invalidPort": "A porta deve ser um número inteiro entre 1 e 65535.",
         "pause": "Pausar consultas",
         "resume": "Retomar consultas",
-        "disable": "Desabilitar todo o monitoramento",
-        "disableTitle": "Desabilitar todo o monitoramento?",
-        "disableMessage": "As consultas SNMP e as verificações de rede deste ativo serão desabilitadas.",
+        "disable": "Desativar monitoramento SNMP",
+        "disableTitle": "Desativar o monitoramento SNMP?",
+        "disableMessage": "Interromper as consultas SNMP deste ativo? As verificações de rede continuam sendo gerenciadas em Monitores.",
         "checksTitle": "Verificações de rede",
         "noChecks": "Nenhuma verificação de rede configurada.",
         "addCheck": "Adicionar verificação",
-        "removeCheck": "Remover verificação",
-        "removeCheckTitle": "Remover verificação de rede?",
-        "removeCheckMessage": "Remover a verificação de rede “{{name}}”? Esta ação não pode ser desfeita.",
         "never": "nunca",
         "leaveBlankToKeep": "Armazenado — deixe em branco para manter o valor atual",
         "snmpVersion": "Versão SNMP",
@@ -2772,7 +2775,8 @@
           "tcp_port": "porta TCP",
           "http_check": "verificação HTTP",
           "dns_check": "verificação DNS"
-        }
+        },
+        "addCheckHint": "Adicionar verificação abre o monitor com este ativo selecionado."
       },
       "link": {
         "description": "Vincule este ativo descoberto ao dispositivo gerenciado que corresponde à mesma máquina.",
@@ -2815,12 +2819,8 @@
         "snmpSaveFailed": "Não foi possível salvar as configurações SNMP",
         "pollingPaused": "Consultas SNMP pausadas",
         "pollingResumed": "Consultas SNMP retomadas",
-        "monitoringDisabled": "Monitoramento desabilitado para este ativo",
-        "monitoringDisableFailed": "Não foi possível desabilitar o monitoramento",
-        "checkCreated": "Verificação de rede adicionada",
-        "checkCreateFailed": "Não foi possível adicionar a verificação de rede",
-        "checkRemoved": "Verificação de rede removida",
-        "checkRemoveFailed": "Não foi possível remover a verificação de rede",
+        "monitoringDisabled": "Monitoramento SNMP desativado",
+        "monitoringDisableFailed": "Não foi possível desativar o monitoramento SNMP",
         "siteChanged": "Movido para {{site}}.",
         "siteChangeFailed": "Não foi possível mover o ativo para o novo site",
         "siteChangedUnlinked": "O vínculo com o dispositivo com agente foi removido porque esse dispositivo está em outro site.",

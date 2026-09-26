@@ -34,7 +34,9 @@ Composite monitors contain two to ten server-evaluated child conditions,
 matching all or any. They cannot nest or contain agent-delivered/worker-provisioned
 children. Composite conditions do not support per-policy threshold overrides.
 
-Service/process monitors run on the device; no separate legacy watch is required.
+**Service stopped**, **Process stopped** and **Process resource** monitors are
+delivered to the agent directly from the policy's attached monitors; the per-policy
+*Check interval* on the **Monitors** tab sets how often the agent evaluates them.
 Their consecutive-failure setting accepts 1–100. A service restart response carries
 its own maximum attempts (0–50, default 3) and cooldown (30–86400 seconds, default
 300). Agent-local restarts continue through the delivered watch configuration.
@@ -52,24 +54,22 @@ behavior. The policy tab shows inherited attachments being ignored. Conversion m
 set this mode automatically; change it only after reviewing the resulting device
 coverage. The device Monitoring tab shows the effective result.
 
-## Needs conversion
+## Legacy rules
 
-Preview the legacy rows on a policy's **Monitors** tab. A watch may produce a
-state monitor plus separate CPU and memory monitors. Preview reports proposed
-definitions, delivery, open alerts and unconvertible reasons. Convert the parent
-first when required. Missing prerequisite fixes, behavioral differences or a stale
-preview block confirmation; refresh and review before retrying.
+The previous release introduced conversion of legacy alert rules and service/process
+watches to monitors. This release processes remaining sources at startup and retires
+those that cannot convert with a reason. **Alerts → Monitors** lists these items in a
+banner that you can dismiss after review. Source rows and alert history are retained.
+Open alerts from unconvertible retired rules stay open until someone resolves them;
+converted sources' open alerts move to the compiled monitor path.
 
-Conversion retires source rows in place. Active, acknowledged and suppressed
-alerts move to the compiled monitor path with their provenance retained. No source
-row is deleted. **Conversion history → Undo** restores an available ledger entry,
-including retirement entries. W05d disables Undo for sources whose runtime was removed. A flat supported AND/OR group can become a composite;
-nested groups, unsupported process-count conditions and templates with no evaluable
-condition show an explicit reason. **Retire** is a deliberate operator action.
+**Conversion history → Undo** is no longer available for legacy alert rules,
+templates, inline policy rules or service/process watches after upgrading to this
+release. Review and complete conversion on the previous release before upgrading.
+Network checks retain their runtime and are excluded from automatic retirement.
 
-Complete conversion before the W05d retirement release, at least one release after
-W05c. W05d will process leftovers and list unconvertible retirements for review.
-Until then, review pending rows; a zero count is the completion signal.
+The retired legacy write endpoints, including `POST /alerts/rules/:id/test`, return `410 Gone`; historical reads remain available.
+Test monitors with `POST /monitor-definitions/:id/test`.
 
 ## Device Monitoring and recurrence
 
@@ -105,3 +105,7 @@ inheritance and enabled state. If notifications are missing, inspect the resolve
 delivery preview and [Delivery](/features/notifications/). If a response is paused,
 inspect recurrence escalation before resetting it. Compiler-managed rows are
 implementation details; change the monitor definition rather than editing them.
+
+**The Monitors page shows *N legacy rules could not be converted*.** Open the list;
+each row names the policy and the reason. Recreate the condition as a monitor
+(Composite for multi-condition rules), then dismiss the banner.

@@ -101,6 +101,8 @@ export function detectWatchdogStateCollapse(
 // so a later regression to an incompatible build re-warns instead of being
 // permanently consumed by the first episode.
 const warnedEditionWithheldDevices = new Set<string>();
+// Persisted reason code (devices.update_offer_withheld_reason, #6449).
+const EDITION_OFFER_WITHHELD_REASON = 'edition_unconfirmed';
 // Separate dedupe for the far more severe failover-recovery withhold (device
 // stuck OFFLINE, not idling) — its error must not be suppressed by an earlier
 // routine offer-withhold warn for the same device.
@@ -917,6 +919,23 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     uninstallIntentAt: null,
     updatedAt: new Date()
   };
+
+  // #6449 — persist the edition-gate withhold on the device row so stranded
+  // devices are visible in the UI (the log/Sentry above are once per process
+  // for the whole fleet). Same predicate + same beat-payload inputs as the
+  // offer gate further down. Written ONLY on a state transition (compared to
+  // the row this beat already loaded), so a steady-state beat — withheld or
+  // healthy — adds no column write to the hot path; `since` therefore holds
+  // when the episode began, not the last beat.
+  const withholdReason =
+    normalizeAgentArchitecture(device.architecture) &&
+    !agentAcceptsServedEdition({ reportedEdition: data.agentEdition, agentVersion: data.agentVersion })
+      ? EDITION_OFFER_WITHHELD_REASON
+      : null;
+  if ((device.updateOfferWithheldReason ?? null) !== withholdReason) {
+    deviceUpdates.updateOfferWithheldReason = withholdReason;
+    deviceUpdates.updateOfferWithheldSince = withholdReason ? new Date() : null;
+  }
 
   // #800 Layer C — recovery side. If the asymmetry detector previously
   // set mainAgentSilentSince (watchdog kept reporting while we went

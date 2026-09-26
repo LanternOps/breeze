@@ -1,10 +1,8 @@
+import { LEGACY_ALERTING_GONE } from '../legacyAlertingGone';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
-// #5289 — an alert template compiled from a monitor definition
-// (managed_by_monitor_id set) must refuse PATCH and DELETE. Side editing a
-// compiled row would silently drift from its monitor definition until the
-// next compile overwrote it.
+// Retired write endpoints keep authentication and return the shared migration guidance.
 
 const { authRef, existingRef, updateMock, deleteMock } = vi.hoisted(() => ({
   authRef: { current: {} as any },
@@ -58,7 +56,7 @@ function app() {
   return instance;
 }
 
-describe('alert templates — managed-by-monitor guard (#5289)', () => {
+describe('alert templates — retired writes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     authRef.current = {
@@ -75,20 +73,14 @@ describe('alert templates — managed-by-monitor guard (#5289)', () => {
     };
   });
 
-  it('PATCH /alert-templates/templates/:id on a monitor-managed template is 409 alert_template_managed_by_monitor', async () => {
-    const res = await app().request(`/alert-templates/templates/${TEMPLATE_ID}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ severity: 'high' }),
-    });
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: 'alert_template_managed_by_monitor', monitorId: MONITOR_ID });
-    expect(updateMock).not.toHaveBeenCalled();
-  });
-
-  it('DELETE /alert-templates/templates/:id on a monitor-managed template is 409 alert_template_managed_by_monitor', async () => {
-    const res = await app().request(`/alert-templates/templates/${TEMPLATE_ID}`, { method: 'DELETE' });
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: 'alert_template_managed_by_monitor', monitorId: MONITOR_ID });
-    expect(deleteMock).not.toHaveBeenCalled();
+  it.each([
+    ['POST', `/alert-templates/templates`],
+    ['PATCH', `/alert-templates/templates/${TEMPLATE_ID}`],
+    ['DELETE', `/alert-templates/templates/${TEMPLATE_ID}`],
+  ].flatMap(([method, path]) => ['{}', '{invalid'].map(body => [method!, path!, body])))('%s %s is retired (body %s)', async (method, path, body) => {
+    const response = await app().request(path, { method,
+      headers: { 'content-type': 'application/json' }, body: method === 'DELETE' ? undefined : body });
+    expect(response.status).toBe(410);
+    expect(await response.json()).toEqual(LEGACY_ALERTING_GONE);
   });
 });

@@ -3,15 +3,14 @@
  *
  *  1. A partner-wide field definition (org_id NULL) IS honoured from the
  *     agent's ORG-scoped context. This is the CLAUDE.md Partner-Wide First §3
- *     trap and the original reason the definitions read uses a system context.
- *     Since #4944 (`custom_field_definitions_partner_wide_select`) there are
- *     TWO mechanisms that can deliver it: the system escalation inside
- *     `loadVisibleCustomFieldDefinitions`, and the RLS branch itself — which
- *     fires for the agent path because `runWithAgentOrgDbAccess` sets
- *     `currentPartnerId: device.partnerId` (#4673 W02). The test therefore
- *     runs under BOTH the production agent shape and a degenerate shape that
- *     sets NO partner GUC; the latter is the one the RLS branch cannot serve,
- *     so it still isolates the escalation as load-bearing.
+ *     trap. It used to be served by a system escalation inside
+ *     `loadVisibleCustomFieldDefinitions`; since #5199 that read runs in the
+ *     agent's own context and the ONLY mechanism is the #4944 RLS branch
+ *     (`custom_field_definitions_partner_wide_select`), which fires because
+ *     `runWithAgentOrgDbAccess` sets `currentPartnerId: device.partnerId`
+ *     (#4673 W02). A degenerate shape with NO partner GUC is driven too, and
+ *     must now fail closed (`unknown_field`) — a green there would mean an
+ *     escalation came back.
  *  2. A device in another org is untouched — the write is pinned by org_id.
  *  3. The script_write gate actually blocks a non-opted-in field.
  *  4. An unchanged value writes no row (the per-org advisory-lock avoidance).
@@ -57,12 +56,12 @@ function agentOrgContext(orgId: string, devicePartnerId: string): DbAccessContex
 }
 
 /**
- * The same shape with NO partner GUC. Not a production context — it exists so
- * the first test can still isolate `loadVisibleCustomFieldDefinitions`'s system
- * escalation as load-bearing: the #4944 RLS branch predicate
+ * The same shape with NO partner GUC. Not a production context — it pins that
+ * the partner-wide definition reaches the agent path through the #4944 RLS
+ * branch and nothing else: that predicate
  * (`partner_id = public.breeze_current_partner_id()`) is NULL-never-true here,
- * so a partner-wide definition resolved under this context can only have come
- * from the escalation.
+ * so a partner-wide definition resolved under this context could only have
+ * come from a system escalation (#5199 removed it).
  */
 function agentOrgContextWithoutPartnerGuc(orgId: string): DbAccessContext {
   return { ...agentOrgContext(orgId, ''), currentPartnerId: null, label: 'test.agentOrgNoGuc' };
@@ -169,29 +168,34 @@ const runAsAgent = (orgId: string, deviceId: string, stdout: string, context?: D
   );
 
 describe('script custom-field write-back (integration)', () => {
-  // Driven under BOTH agent shapes. The production one is what actually ships;
-  // the no-GUC one is the discriminating case — with no `breeze.current_partner_id`
-  // the #4944 RLS branch cannot fire, so a green there can ONLY come from
-  // loadVisibleCustomFieldDefinitions' system escalation. Dropping the second row
-  // would silently turn this into a test of the RLS branch instead.
-  it.each([
-    ['production agent shape (partner GUC set)', () => agentOrgContext(orgAId, partnerId)],
-    ['no partner GUC (isolates the system escalation)', () => agentOrgContextWithoutPartnerGuc(orgAId)],
-  ])('honours a PARTNER-WIDE definition from the agent org context — %s', async (_label, makeContext) => {
-    const summary = await runAsAgent(
-      orgAId,
-      deviceAId,
-      marker('{"ram_slot_type":"DDR5-5600"}'),
-      makeContext(),
-    );
+  // The production agent shape: the definitions read runs in this context and
+  // the #4944 RLS branch is what makes the partner-wide row visible (#5199).
+  it('honours a PARTNER-WIDE definition from the agent org context (partner GUC set)', async () => {
+    const summary = await runAsAgent(orgAId, deviceAId, marker('{"ram_slot_type":"DDR5-5600"}'));
 
     // A failure here with rejected: [{reason: 'unknown_field'}] means the
-    // definitions read ran in the caller's own context AND that context could
-    // not see the partner-wide row.
+    // definitions read ran in the agent context and that context could not see
+    // the partner-wide row — i.e. the RLS branch or the GUC regressed.
     expect(summary).toEqual({ applied: ['ram_slot_type'], rejected: [] });
 
     const [row] = await readDevice(deviceAId);
     expect((row!.customFields as Record<string, unknown>).ram_slot_type).toBe('DDR5-5600');
+  });
+
+  // The discriminating case: with no `breeze.current_partner_id` the RLS branch
+  // cannot fire, so the partner-wide row must stay invisible. Green here would
+  // mean the read escaped the caller's context again.
+  it('fails closed on a PARTNER-WIDE definition when the context carries no partner GUC', async () => {
+    const summary = await runAsAgent(
+      orgAId,
+      deviceAId,
+      marker('{"ram_slot_type":"DDR5-5600"}'),
+      agentOrgContextWithoutPartnerGuc(orgAId),
+    );
+    expect(summary).toEqual({ applied: [], rejected: [{ key: 'ram_slot_type', reason: 'unknown_field' }] });
+
+    const [row] = await readDevice(deviceAId);
+    expect((row!.customFields as Record<string, unknown> | null)?.ram_slot_type).toBeUndefined();
   });
 
   it('leaves a same-key field on a device in ANOTHER org untouched', async () => {

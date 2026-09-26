@@ -2,9 +2,13 @@ import { expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { isRevertAvailable, findLiveTargetDependencies } from './lifecycle';
 vi.mock('../../../db', () => ({ db: {} }));
-it('allows legacy reversal while W05c runtimes still exist', () => {
-  expect(isRevertAvailable('config_policy_alert_rules')).toBe(true);
-  expect(isRevertAvailable('alert_templates')).toBe(true);
+it.each([
+  'config_policy_alert_rules', 'config_policy_monitoring_watches', 'alert_templates',
+  'automations', 'config_policy_automations',
+] as const)('disallows restoring the retired %s runtime', source => {
+  expect(isRevertAvailable(source)).toBe(false);
+});
+it('leaves the network runtime lifecycle to W05e', () => {
   expect(isRevertAvailable('network_monitors')).toBe(true);
 });
 it('avoids querying when no target dependencies exist', async () => {

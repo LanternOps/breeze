@@ -28,8 +28,6 @@ vi.mock('./alertCooldown', () => ({
   isFlapping: async () => false,
   setCooldown: m.cooldown,
   recordStateTransition: m.transition,
-  isConfigPolicyRuleCooling: vi.fn(),
-  markConfigPolicyRuleCooldown: vi.fn(),
 }));
 
 import { createAlert, checkAutoResolve } from './alertService';

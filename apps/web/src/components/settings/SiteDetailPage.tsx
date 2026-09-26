@@ -16,6 +16,8 @@ import { cn } from '@/lib/utils';
 import { useHashTab } from '@/lib/useHashState';
 import Breadcrumbs from '../layout/Breadcrumbs';
 import { fetchWithAuth } from '../../stores/auth';
+import { runAction, ActionError } from '@/lib/runAction';
+import { showToast } from '@/components/shared/Toast';
 import { formatTime as formatUserTime } from '@/lib/dateTimeFormat';
 import TimezoneSelect from '@/components/shared/TimezoneSelect';
 import { useStableT } from '@/lib/i18n/useStableT';
@@ -249,35 +251,36 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
     setSaving(true);
     setError(undefined);
     try {
-      const res = await fetchWithAuth(`/orgs/sites/${siteId}`, {
-        method: 'PATCH',
-        body: JSON.stringify({
-          name: formName,
-          timezone: formTimezone,
-          address: {
-            line1: formAddressLine1,
-            line2: formAddressLine2 || undefined,
-            city: formCity,
-            state: formState,
-            postalCode: formPostalCode,
-            country: formCountry,
-          },
-          contact: {
-            name: formContactName,
-            email: formContactEmail,
-            phone: formContactPhone,
-          },
+      const updated = await runAction<SiteDetails>({
+        request: () => fetchWithAuth(`/orgs/sites/${siteId}`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            name: formName,
+            timezone: formTimezone,
+            address: {
+              line1: formAddressLine1,
+              line2: formAddressLine2 || undefined,
+              city: formCity,
+              state: formState,
+              postalCode: formPostalCode,
+              country: formCountry,
+            },
+            contact: {
+              name: formContactName,
+              email: formContactEmail,
+              phone: formContactPhone,
+            },
+          }),
         }),
+        errorFallback: t('siteDetailPage.errors.saveSite'),
+        successMessage: t('common:states.saved'),
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || t('siteDetailPage.errors.saveSite'));
-      }
-      const updated = await res.json();
       setSite(updated);
       populateForm(updated);
       setSaveState({ hasUnsavedChanges: false, lastSavedAt: formatTime(new Date()) });
     } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
+      if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('siteDetailPage.errors.generic') });
       setError(err instanceof Error ? err.message : t('siteDetailPage.errors.generic'));
     } finally {
       setSaving(false);
@@ -289,25 +292,27 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
     setAssigning(true);
     setError(undefined);
     try {
-      const res = await fetchWithAuth(
-        `/configuration-policies/${selectedPolicyId}/assignments`,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            level: 'site',
-            targetId: siteId,
-            priority: Number(assignPriority) || 0,
-          }),
-        }
-      );
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || t('siteDetailPage.errors.assignPolicy'));
-      }
+      await runAction({
+        request: () => fetchWithAuth(
+          `/configuration-policies/${selectedPolicyId}/assignments`,
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              level: 'site',
+              targetId: siteId,
+              priority: Number(assignPriority) || 0,
+            }),
+          }
+        ),
+        errorFallback: t('siteDetailPage.errors.assignPolicy'),
+        successMessage: t('common:states.saved'),
+      });
       setSelectedPolicyId('');
       setAssignPriority('0');
       await fetchAssignments();
     } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
+      if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('siteDetailPage.errors.generic') });
       setError(err instanceof Error ? err.message : t('siteDetailPage.errors.generic'));
     } finally {
       setAssigning(false);
@@ -317,13 +322,18 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
   const handleRemoveAssignment = async (a: PolicyAssignment) => {
     setError(undefined);
     try {
-      const res = await fetchWithAuth(
-        `/configuration-policies/${a.assignment.configPolicyId}/assignments/${a.assignment.id}`,
-        { method: 'DELETE' }
-      );
-      if (!res.ok) throw new Error(t('siteDetailPage.errors.removeAssignment'));
+      await runAction({
+        request: () => fetchWithAuth(
+          `/configuration-policies/${a.assignment.configPolicyId}/assignments/${a.assignment.id}`,
+          { method: 'DELETE' }
+        ),
+        errorFallback: t('siteDetailPage.errors.removeAssignment'),
+        successMessage: t('common:states.saved'),
+      });
       await fetchAssignments();
     } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
+      if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('siteDetailPage.errors.generic') });
       setError(err instanceof Error ? err.message : t('siteDetailPage.errors.generic'));
     }
   };

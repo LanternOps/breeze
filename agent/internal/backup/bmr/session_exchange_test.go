@@ -57,7 +57,7 @@ func TestExchangeRecoveryCode_DecodesAuthenticateEnvelope(t *testing.T) {
 	srv := exchangeServer(t, realExchangeEnvelope)
 	defer srv.Close()
 
-	token, bs, err := ExchangeRecoveryCode(context.Background(), srv.URL, "ABC-DEF-GHJ")
+	token, bs, err := ExchangeRecoveryCode(context.Background(), srv.URL, "ABC-DEF-GHJ", "")
 	if err != nil {
 		t.Fatalf("ExchangeRecoveryCode: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestExchangeRecoveryCode_DecodesFlatVersionedBootstrap(t *testing.T) {
 	srv := exchangeServer(t, string(flat))
 	defer srv.Close()
 
-	_, bs, err := ExchangeRecoveryCode(context.Background(), srv.URL, "ABC-DEF-GHJ")
+	_, bs, err := ExchangeRecoveryCode(context.Background(), srv.URL, "ABC-DEF-GHJ", "")
 	if err != nil {
 		t.Fatalf("ExchangeRecoveryCode(flat): %v", err)
 	}
