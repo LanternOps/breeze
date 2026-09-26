@@ -1158,29 +1158,39 @@ aiRoutes.post(
       return c.json({ error: 'No pending plan approval' }, 400);
     }
 
-    // Resolve the in-memory promise
-    activeSession.planApprovalResolver(approved);
-    activeSession.planApprovalResolver = null;
-
-    // Update DB plan record
-    if (activeSession.activePlanId || !approved) {
+    // Persist the decision BEFORE releasing the agent (#7077). If the write
+    // fails, the approval stays pending so the user can retry, and the agent
+    // never acts on (or abandons) a plan whose recorded status disagrees.
+    const resolvePlanApproval = activeSession.planApprovalResolver;
+    const planId = activeSession.activePlanId;
+    if (planId) {
       try {
-        const planId = activeSession.activePlanId;
-        if (planId) {
-          await db.update(aiActionPlans)
-            .set({
-              status: approved ? 'approved' : 'rejected',
-              approvedBy: auth.user.id,
-              approvedAt: new Date(),
-            })
-            .where(eq(aiActionPlans.id, planId));
-        }
+        await db.update(aiActionPlans)
+          .set({
+            status: approved ? 'approved' : 'rejected',
+            approvedBy: auth.user.id,
+            approvedAt: new Date(),
+          })
+          .where(eq(aiActionPlans.id, planId));
       } catch (err) {
         console.error('[AI] Failed to update plan status:', err);
         captureException(err);
-        return c.json({ success: true, approved, warning: 'Plan processed but database record could not be updated.' });
+        return c.json(
+          { error: 'The plan decision could not be saved. Please try again.' },
+          500,
+        );
       }
     }
+
+    // The approval can time out, or be answered by a concurrent request,
+    // while the write above is in flight.
+    if (activeSession.planApprovalResolver !== resolvePlanApproval) {
+      return c.json({ error: 'The plan approval is no longer pending' }, 409);
+    }
+
+    // Resolve the in-memory promise
+    resolvePlanApproval(approved);
+    activeSession.planApprovalResolver = null;
 
     writeRouteAudit(c, {
       orgId: session.orgId,
