@@ -172,6 +172,41 @@ describe('topology interface retention', () => {
     }
   });
 
+  it('never recomputes a complete rollup bucket from raw history retention already expired (maintenance suspended > 7 d)', async () => {
+    const t = await tenant();
+    const T = Math.floor((Date.now() - 3 * 3_600_000) / 3_600_000) * 3_600_000;
+    for (let i = 0; i <= 20; i += 1) await t.write(T + i * MIN, BigInt(i) * 7500n);
+    const { id } = await t.source();
+    await rollup(id, new Date());
+    expect((await t.source()).dirty).toBeNull();
+    // More samples land, then maintenance stops (nothing rolls them up) for 8 days.
+    for (let i = 21; i <= 30; i += 1) await t.write(T + i * MIN, BigInt(i) * 7500n);
+    expect(new Date((await t.source()).dirty!).getTime()).toBe(T + 21 * MIN);
+    const shift = 8 * DAY;
+    await system(async () => {
+      for (const resolution of ['raw', '5m', '1h']) {
+        await db.execute(sql`SELECT public.breeze_ensure_topology_interface_sample_partition(${resolution}, ${new Date(T - shift).toISOString().slice(0, 10)}::date)`);
+      }
+      // Raw rows are immutable: move the history by re-inserting it 8 days earlier.
+      const cols = sql.raw('org_id, site_id, interface_id, interface_epoch, source_id, producer_epoch, source_sequence, resolution, readings, valid_duration_ms, sample_count, gap_duration_ms');
+      await db.execute(sql`INSERT INTO topology_interface_samples (${cols}, sampled_at)
+        SELECT ${cols}, sampled_at - ${`${shift} milliseconds`}::interval FROM topology_interface_samples WHERE org_id=${t.orgId}::uuid`);
+      await db.execute(sql`DELETE FROM topology_interface_samples WHERE org_id=${t.orgId}::uuid AND sampled_at >= ${new Date(T).toISOString()}::timestamptz`);
+      await db.execute(sql`UPDATE topology_collection_sources SET telemetry_rollup_dirty_from = telemetry_rollup_dirty_from - ${`${shift} milliseconds`}::interval WHERE id=${id}::uuid`);
+    });
+    const complete = (await t.rows('5m')).map(r => [new Date(r.sampled_at).getTime() - (T - shift), r.sample_count, Number(r.valid_duration_ms)]);
+    expect(complete.slice(0, 4)).toEqual([[0, 5, 5 * MIN], [5 * MIN, 5, 5 * MIN], [10 * MIN, 5, 5 * MIN], [15 * MIN, 5, 5 * MIN]]);
+
+    // Maintenance resumes: retention first, then the rollup of the dirty range.
+    await maintain();
+    await rollup(id, new Date());
+    const after = (await t.rows('5m')).map(r => [new Date(r.sampled_at).getTime() - (T - shift), r.sample_count, Number(r.valid_duration_ms)]);
+    // Every bucket that was complete stays complete; the formerly open 20-minute
+    // bucket is completed from the newly rolled-up samples.
+    expect(after.slice(0, 4)).toEqual(complete.slice(0, 4));
+    expect(after[4]).toEqual([20 * MIN, 5, 5 * MIN]);
+  });
+
   it('provisions leaves ahead with forced RLS through the worker tick', async () => {
     const tick = await runTopologyTelemetryMaintenanceTick(new Date());
     expect(tick.failed).toBe(0);

@@ -29,6 +29,14 @@ import { TOPOLOGY_TELEMETRY_INFLIGHT_LOCK_SEED, topologyTelemetryInFlightLockKey
 export const TOPOLOGY_ROLLUP_BUCKET_MS = { '5m': 300_000, '1h': 3_600_000 } as const;
 /** Longest valid window (3 × the 300 s maximum cadence): how far a sample's influence reaches. */
 export const TOPOLOGY_ROLLUP_REACH_MS = INTERFACE_WINDOW_MAX_GAP_CADENCES * 300_000;
+/**
+ * How far before `telemetry_rollup_dirty_from` the next recompute reads raw:
+ * it recomputes from floor5(dirty − reach) and needs the sample preceding that
+ * bucket (up to one more reach earlier). Retention must keep every raw row at or
+ * after `dirty_from − this`, or a recompute replaces a complete bucket with one
+ * built from partial inputs.
+ */
+export const TOPOLOGY_ROLLUP_RAW_INPUT_REACH_MS = 2 * TOPOLOGY_ROLLUP_REACH_MS + 300_000;
 /** A 5-minute bucket closes this long after its end (late-arrival grace; later arrivals re-dirty it). */
 export const TOPOLOGY_ROLLUP_CLOSE_GRACE_MS = 60_000;
 

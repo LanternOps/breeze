@@ -38,6 +38,13 @@ describe('planTopologyInterfacePartitions', () => {
     expect(plan.backlog).toEqual([{ resolution: 'raw', day: '2026-11-02' }]);
   });
 
+  it('keeps a raw day the next recompute still reads, even when the dirty sample itself is on the next day', () => {
+    // Recompute starts at floor5(00:20 − 15 min) = 00:05 and reads the sample before it (≥ 23:50 on 11-02).
+    const plan = planTopologyInterfacePartitions(now, [leaf('raw', '2026-11-02')], new Date('2026-11-03T00:20:00Z'));
+    expect(plan.drop).toEqual([]);
+    expect(plan.backlog).toEqual([{ resolution: 'raw', day: '2026-11-02' }]);
+  });
+
   it('computes the precise per-resolution row cutoffs', () => {
     const plan = planTopologyInterfacePartitions(now, [], null);
     expect(plan.cutoffs).toEqual({ raw: new Date('2026-11-03T12:00:00Z'), '5m': new Date('2026-10-11T12:00:00Z'), '1h': new Date('2026-08-12T12:00:00Z') });

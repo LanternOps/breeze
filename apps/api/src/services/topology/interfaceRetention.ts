@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { TOPOLOGY_INTERFACE_RESOLUTION_RETENTION_DAYS, TOPOLOGY_INTERFACE_SAMPLE_RESOLUTIONS } from '@breeze/shared';
 import { assertInTransaction, db } from '../../db';
-import { TOPOLOGY_ROLLUP_REACH_MS } from './interfaceRollups';
+import { TOPOLOGY_ROLLUP_RAW_INPUT_REACH_MS } from './interfaceRollups';
 
 /**
  * Interface sample retention and partition maintenance (M3 Task 5).
@@ -52,7 +52,7 @@ export function planTopologyInterfacePartitions(now: Date, existing: TopologyInt
       const end = dayStart(leaf.day) + DAY_MS;
       if (end > horizon) continue;
       // Only raw feeds a rollup; aggregates are rebuilt together, so 5m/1h never wait.
-      if (resolution === 'raw' && earliestUnrolled && earliestUnrolled.getTime() - TOPOLOGY_ROLLUP_REACH_MS < end) {
+      if (resolution === 'raw' && earliestUnrolled && earliestUnrolled.getTime() - TOPOLOGY_ROLLUP_RAW_INPUT_REACH_MS < end) {
         plan.backlog.push({ resolution, day: leaf.day });
         continue;
       }
@@ -100,9 +100,10 @@ export async function maintainTopologyInterfacePartitions(now: Date): Promise<To
   for (const resolution of TOPOLOGY_INTERFACE_SAMPLE_RESOLUTIONS) {
     const cutoff = plan.cutoffs[resolution].toISOString();
     const parent = sql.identifier(`topology_interface_samples_${resolution}`);
-    // A raw row a dirty source may still window against is kept until rolled up.
+    // Every raw row the dirty source's next recompute reads (not just the rows
+    // its dirty samples window against) is kept until rolled up.
     const keepUnrolled = resolution === 'raw' ? sql`AND NOT EXISTS (SELECT 1 FROM topology_collection_sources s WHERE s.id = t.source_id
-      AND s.telemetry_rollup_dirty_from IS NOT NULL AND t.sampled_at >= s.telemetry_rollup_dirty_from - ${`${TOPOLOGY_ROLLUP_REACH_MS} milliseconds`}::interval)` : sql``;
+      AND s.telemetry_rollup_dirty_from IS NOT NULL AND t.sampled_at >= s.telemetry_rollup_dirty_from - ${`${TOPOLOGY_ROLLUP_RAW_INPUT_REACH_MS} milliseconds`}::interval)` : sql``;
     for (let batch = 0; ; batch += 1) {
       if (batch === TOPOLOGY_INTERFACE_RETENTION_MAX_BATCHES) { result.incomplete = true; break; }
       const deleted = await db.execute(sql`DELETE FROM ${parent} d USING (
