@@ -212,6 +212,36 @@ describe('executeM365ReadAction', () => {
     expect(dbMocks.selectSpy).not.toHaveBeenCalled();
   });
 
+  it('never lets an ambiguous multi-org read fall back to the device-page write default (#6675)', async () => {
+    // A real resolveWritableToolOrgId would refuse this only when the caller
+    // passes { useWriteDefault: false } — this mock stands in for that real
+    // behavior so the assertion actually pins the call site's third argument.
+    orgMocks.resolveWritableToolOrgId.mockImplementation(
+      (_authArg: AuthContext, _inputOrgId: string | undefined, options?: { useWriteDefault?: boolean }) => {
+        if (options?.useWriteDefault === false) {
+          return { error: 'orgId is required: you have access to multiple organizations' };
+        }
+        return { orgId: 'org-b' };
+      },
+    );
+    const partnerAuthWithWriteDefault = auth({
+      orgId: null,
+      scope: 'partner' as AuthContext['scope'],
+      accessibleOrgIds: ['org-a', 'org-b'],
+      canAccessOrg: (id: string | null | undefined) => id === 'org-a' || id === 'org-b',
+      aiWriteDefaultOrgId: 'org-b',
+    } as Partial<AuthContext>);
+
+    const result = await executeM365ReadAction(partnerAuthWithWriteDefault, ORG_GET_ACTION);
+
+    expect(result).toEqual({
+      ok: false,
+      code: 'org_context_required',
+      message: 'orgId is required: you have access to multiple organizations',
+    });
+    expect(dbMocks.selectSpy).not.toHaveBeenCalled();
+  });
+
   it('refuses when Graph read tools are disabled for the org', async () => {
     runtimeMocks.enabled.mockReturnValue(false);
 
