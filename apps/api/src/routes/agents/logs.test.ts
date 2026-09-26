@@ -41,6 +41,9 @@ vi.mock('../../services/auditEvents', () => ({
   writeAuditEvent: vi.fn(),
 }));
 
+const recordAgentIngestSubmission = vi.hoisted(() => vi.fn());
+vi.mock('../metrics', () => ({ recordAgentIngestSubmission }));
+
 import { db } from '../../db';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { logsRoutes } from './logs';
@@ -142,9 +145,14 @@ describe('agent logs routes', () => {
           },
         }),
       ]);
+      // #4340 — a clamp is an anomaly, so this otherwise-clean batch IS audited.
+      expect(writeAuditEvent).toHaveBeenCalledTimes(1);
       expect(writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'agent.logs.submit',
+        result: 'success',
         details: expect.objectContaining({ timestampClampedCount: 1 }),
       }));
+      expect(recordAgentIngestSubmission).toHaveBeenCalledWith('logs', 'success');
     } finally {
       vi.useRealTimers();
     }
@@ -181,9 +189,9 @@ describe('agent logs routes', () => {
       expect(row.fields).toEqual({ sequence: 7 });
       expect(row.fields).not.toHaveProperty('timestampClamped');
       expect(row.fields).not.toHaveProperty('originalTimestamp');
-      expect(writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-        details: expect.not.objectContaining({ timestampClampedCount: expect.anything() }),
-      }));
+      // The forged flag must not count as a server clamp — so the batch is a
+      // clean ingest and, per #4340, is not audited at all.
+      expect(writeAuditEvent).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
@@ -316,14 +324,15 @@ describe('agent logs routes', () => {
     });
   });
 
-  describe('POST /agents/:id/logs — ingest audit (Finding #9)', () => {
-    it('writes a content-free agent.logs.submit audit event on ingest', async () => {
+  // #4340 — the per-submit receipt Finding #9 added was ~57% of audit_logs.
+  // Only anomalous batches (insert shortfall, clamped timestamps) are audited
+  // now; routine success volume goes to breeze_agent_ingest_submissions_total.
+  describe('POST /agents/:id/logs — ingest audit (Finding #9, #4340)', () => {
+    it('does NOT audit a clean ingest — counts it in the ingest metric instead', async () => {
       mockDeviceLookup(true);
       mockInsertSuccess();
 
-      const logs = Array.from({ length: 3 }, () =>
-        makeLogEntry({ message: 'secret token=abc123' })
-      );
+      const logs = Array.from({ length: 3 }, () => makeLogEntry());
       const res = await app.request(`/agents/${AGENT_ID}/logs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -331,21 +340,49 @@ describe('agent logs routes', () => {
       });
 
       expect(res.status).toBe(201);
-      expect(writeAuditEvent).toHaveBeenCalledTimes(1);
-      const [, event] = vi.mocked(writeAuditEvent).mock.calls[0]!;
-      expect(event).toMatchObject({
-        orgId: ORG_ID,
-        actorType: 'agent',
-        actorId: AGENT_ID,
-        action: 'agent.logs.submit',
-        resourceType: 'device',
-        resourceId: DEVICE_ID,
-        details: { submittedCount: 3, insertedCount: 3 },
-      });
-      // Content-free: no log message contents leak into the audit details.
-      expect(JSON.stringify(event.details)).not.toContain('token=');
-      // partialFailure omitted on a fully-successful insert.
-      expect(event.details).not.toHaveProperty('partialFailure');
+      expect(writeAuditEvent).not.toHaveBeenCalled();
+      expect(recordAgentIngestSubmission).toHaveBeenCalledTimes(1);
+      expect(recordAgentIngestSubmission).toHaveBeenCalledWith('logs', 'success');
+    });
+
+    it('audits a clamped batch content-free', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-05-01T12:00:00.000Z'));
+      try {
+        mockDeviceLookup(true);
+        mockInsertSuccess();
+
+        const logs = [
+          makeLogEntry({ message: 'secret token=abc123', timestamp: '2099-01-01T00:00:00.000Z' }),
+          makeLogEntry({ message: 'secret token=abc123', timestamp: '2026-05-01T11:00:00.000Z' }),
+          makeLogEntry({ message: 'secret token=abc123', timestamp: '2026-05-01T11:00:00.000Z' }),
+        ];
+        const res = await app.request(`/agents/${AGENT_ID}/logs`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ logs }),
+        });
+
+        expect(res.status).toBe(201);
+        expect(writeAuditEvent).toHaveBeenCalledTimes(1);
+        const [, event] = vi.mocked(writeAuditEvent).mock.calls[0]!;
+        expect(event).toMatchObject({
+          orgId: ORG_ID,
+          actorType: 'agent',
+          actorId: AGENT_ID,
+          action: 'agent.logs.submit',
+          resourceType: 'device',
+          resourceId: DEVICE_ID,
+          result: 'success',
+          details: { submittedCount: 3, insertedCount: 3, timestampClampedCount: 1 },
+        });
+        // Content-free: no log message contents leak into the audit details.
+        expect(JSON.stringify(event.details)).not.toContain('token=');
+        // partialFailure omitted on a fully-successful insert.
+        expect(event.details).not.toHaveProperty('partialFailure');
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('still writes the ingest audit with partialFailure when some rows fail to insert', async () => {
@@ -379,8 +416,10 @@ describe('agent logs routes', () => {
         action: 'agent.logs.submit',
         resourceType: 'device',
         resourceId: DEVICE_ID,
+        result: 'failure',
         details: { submittedCount: 150, insertedCount: 100, partialFailure: 50 },
       });
+      expect(recordAgentIngestSubmission).toHaveBeenCalledWith('logs', 'partial');
       // Content-free even on the failure path.
       expect(JSON.stringify(event.details)).not.toContain('token=');
 
@@ -412,8 +451,10 @@ describe('agent logs routes', () => {
       expect(event).toMatchObject({
         action: 'agent.logs.submit',
         resourceId: DEVICE_ID,
+        result: 'failure',
         details: { submittedCount: 3, insertedCount: 0, partialFailure: 3 },
       });
+      expect(recordAgentIngestSubmission).toHaveBeenCalledWith('logs', 'failed');
       expect(JSON.stringify(event.details)).not.toContain('token=');
 
       consoleError.mockRestore();
