@@ -6,7 +6,7 @@ import { invoiceStripePayments } from '../db/schema/stripePayments';
 import { invoices } from '../db/schema/invoices';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
-import { assertNoHeldDbContextForStripe, settleCheckoutSession } from '../services/stripeSettle';
+import { assertNoHeldDbContextForStripe, HeldDbContextForStripeError, settleCheckoutSession } from '../services/stripeSettle';
 import { pollStripeFinancialEvents } from '../services/stripeFinancialEventPoller';
 import { attachWorkerObservability } from './workerObservability';
 
@@ -29,12 +29,12 @@ const MAX_AGE = "interval '7 days'";     // stop chasing abandoned checkouts
 
 type SweepJobData = { type: 'reconcile-stripe-payments'; queuedAt: string };
 
-const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
+const runWithSystemDbAccess = async <T>(fn: () => Promise<T>, label?: string): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
   if (typeof withSystem !== 'function') {
     throw new Error('[StripeReconcileSweep] withSystemDbAccessContext not available');
   }
-  return withSystem(fn);
+  return withSystem(fn, label);
 };
 
 let sweepQueue: Queue<SweepJobData> | null = null;
@@ -72,7 +72,7 @@ export async function reconcilePendingStripePayments(): Promise<number> {
       AND m.created_at > now() - ${sql.raw(MAX_AGE)}
     ORDER BY m.created_at ASC
     LIMIT ${MAX_PER_RUN}
-  `))) as unknown as { rows?: Array<{ partner_id: string; stripe_object_id: string }> };
+  `), 'stripeReconcileSweep.candidates')) as unknown as { rows?: Array<{ partner_id: string; stripe_object_id: string }> };
   const list = rows.rows ?? (rows as unknown as Array<{ partner_id: string; stripe_object_id: string }>);
   if (!Array.isArray(list) || list.length === 0) return 0;
 
@@ -82,6 +82,9 @@ export async function reconcilePendingStripePayments(): Promise<number> {
       const res = await settleCheckoutSession(r.partner_id, r.stripe_object_id);
       if (res.settled) settled++;
     } catch (err) {
+      // A held-context assertion is a programming error, not a per-row hiccup:
+      // abort the pass so the worker reports it (#7065).
+      if (err instanceof HeldDbContextForStripeError) throw err;
       // Best-effort: a partner who disconnected their key, or a transient Stripe
       // error, must not abort the whole sweep. Log and move on.
       console.error('[StripeReconcileSweep] settle failed', { partnerId: r.partner_id, session: r.stripe_object_id, message: err instanceof Error ? err.message : String(err) });

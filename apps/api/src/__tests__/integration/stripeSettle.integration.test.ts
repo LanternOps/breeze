@@ -163,7 +163,7 @@ describe('Stripe reconcile sweep transaction scope (#7065)', () => {
       // No connection sits idle-in-transaction across the pending Stripe call.
       const idle = await admin.execute<{ n: number }>(sql`
         SELECT count(*)::int AS n FROM pg_catalog.pg_stat_activity
-        WHERE datname = current_database() AND state = 'idle in transaction' AND pid <> pg_backend_pid()
+        WHERE datname = current_database() AND usename = 'breeze_app' AND state = 'idle in transaction'
       `);
       const idleRows = (idle as unknown as { rows?: Array<{ n: number }> }).rows ?? (idle as unknown as Array<{ n: number }>);
       expect(idleRows[0]!.n).toBe(0);

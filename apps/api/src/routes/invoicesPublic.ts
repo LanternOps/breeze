@@ -12,7 +12,7 @@ import { toCustomerInvoiceHeader, toCustomerInvoiceLine, markViewed } from '../s
 import { getInvoicePdf, renderInvoicePdf, invoiceLineTicketNumberSql, invoiceLineTicketSubjectSql, invoiceLineTicketCategorySql } from '../services/invoicePdf';
 import { createInvoicePayLink } from '../services/invoiceCheckout';
 import { CUSTOMER_SAFE_CURRENCY_UNSUPPORTED_MESSAGE } from '../services/stripeCheckoutErrors';
-import { settleCheckoutSession } from '../services/stripeSettle';
+import { HeldDbContextForStripeError, settleCheckoutSession } from '../services/stripeSettle';
 import { InvoiceServiceError } from '../services/invoiceTypes';
 import { safeContentDispositionFilename } from '../utils/httpHeaders';
 import { resolveInvoicePresentation } from '../services/invoicePresentation';
@@ -320,9 +320,15 @@ invoicesPublicRoutes.post('/settle-return', zValidator('json', settleReturnSchem
   let justSettled = false;
   if (!alreadySettled && !terminalNonSuccess) {
     try {
-      ({ settled } = await runOutsideDbContext(() => settleCheckoutSession(inv.partnerId, sessionId)));
+      // Called bare, NOT via runOutsideDbContext: if a context were ever held
+      // here, escaping would open a second pooled connection (#6671) and hide
+      // it; settleCheckoutSession's assertion is the tripwire instead.
+      ({ settled } = await settleCheckoutSession(inv.partnerId, sessionId));
       justSettled = settled;
     } catch (err) {
+      // A held-context assertion is a programming error — surface it (500 +
+      // Sentry via the error handler), never as "still confirming" (#7065).
+      if (err instanceof HeldDbContextForStripeError) throw err;
       // Never strand the customer — the reconcile sweep settles it within the
       // minute; report unsettled so the page shows "confirming payment".
       console.error('[invoicesPublic] settle-return failed', { invoiceId: inv.id, sessionId, err });

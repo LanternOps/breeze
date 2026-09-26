@@ -16,9 +16,21 @@ import { fromMinorUnits } from './stripeMoney';
  * deadlocks the pool at concurrency >= pool size (#6671). A request route that
  * needs this must own its context (SELF_MANAGED_DB_CONTEXT_ROUTES).
  */
+export class HeldDbContextForStripeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'HeldDbContextForStripeError';
+  }
+}
+
+/**
+ * Callers' best-effort catch blocks (settle routes, the sweep's per-row loop)
+ * MUST rethrow this error rather than degrade it to "not settled yet": it is a
+ * programming error that would otherwise silently turn off instant settlement.
+ */
 export function assertNoHeldDbContextForStripe(operation: string): void {
   if (hasDbAccessContext()) {
-    throw new Error(
+    throw new HeldDbContextForStripeError(
       `${operation} must run outside any DB access context: it makes Stripe network calls and opens its own `
       + 'short transactions (#7065). Close the caller\'s context first — do not escape it with runOutsideDbContext.',
     );
@@ -50,7 +62,8 @@ export async function settleCheckoutSession(
   sessionId: string,
 ): Promise<{ settled: boolean; invoiceId?: string }> {
   assertNoHeldDbContextForStripe('settleCheckoutSession');
-  const { stripe, stripeAccountId } = await withSystemDbAccessContext(() => getPartnerStripeClient(partnerId));
+  const { stripe, stripeAccountId } = await withSystemDbAccessContext(
+    () => getPartnerStripeClient(partnerId), 'stripeSettle.partnerKey');
   const session = await stripe.checkout.sessions.retrieve(sessionId);
 
   // A completed session isn't necessarily paid (async methods settle later); only

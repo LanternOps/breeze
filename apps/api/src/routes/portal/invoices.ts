@@ -19,7 +19,7 @@ import { portalBase } from '../../services/portalUrl';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
 import { getPartnerStripeClient, PartnerStripeError } from '../../services/partnerStripe';
-import { settleCheckoutSession } from '../../services/stripeSettle';
+import { HeldDbContextForStripeError, settleCheckoutSession } from '../../services/stripeSettle';
 import { toMinorUnits } from '../../services/stripeMoney';
 import { computeChargeNow } from '@breeze/shared';
 import { mapStripeCheckoutError, CUSTOMER_SAFE_CURRENCY_UNSUPPORTED_MESSAGE } from '../../services/stripeCheckoutErrors';
@@ -456,6 +456,10 @@ invoiceRoutes.post('/invoices/:id/settle',
       const result = await settleCheckoutSession(inv.partnerId, sessionId);
       return c.json(result);
     } catch (err) {
+      // A held-context assertion means this route lost its SELF_MANAGED
+      // registration — a programming error. Surface it (500 + Sentry via the
+      // error handler), never as "processing" (#7065).
+      if (err instanceof HeldDbContextForStripeError) throw err;
       // Never strand the customer on an error just because instant-settle hiccuped —
       // the sweep settles it within the minute. Log + report unsettled (200), so the
       // page can show "processing" rather than a failure.

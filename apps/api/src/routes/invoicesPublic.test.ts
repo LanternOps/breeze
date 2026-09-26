@@ -43,8 +43,11 @@ vi.mock('../services/invoiceService', async (importActual) => {
 const { payLinkMock } = vi.hoisted(() => ({ payLinkMock: vi.fn() }));
 vi.mock('../services/invoiceCheckout', () => ({ createInvoicePayLink: payLinkMock }));
 
-const { settleMock } = vi.hoisted(() => ({ settleMock: vi.fn() }));
-vi.mock('../services/stripeSettle', () => ({ settleCheckoutSession: settleMock }));
+const { settleMock, HeldCtxError } = vi.hoisted(() => ({
+  settleMock: vi.fn(),
+  HeldCtxError: class HeldDbContextForStripeError extends Error {},
+}));
+vi.mock('../services/stripeSettle', () => ({ settleCheckoutSession: settleMock, HeldDbContextForStripeError: HeldCtxError }));
 
 const { getPdfMock, renderPdfMock } = vi.hoisted(() => ({ getPdfMock: vi.fn(), renderPdfMock: vi.fn() }));
 vi.mock('../services/invoicePdf', () => ({
@@ -319,6 +322,14 @@ describe('POST /invoices/public/settle-return', () => {
     const res = await post();
     expect(res.status).toBe(200);
     expect((await res.json()).data.settled).toBe(false);
+  });
+
+  it('does NOT swallow the held-DB-context assertion as "still confirming" (#7065)', async () => {
+    dbResults.push([{ invoiceId: INV_ID, status: 'pending', updatedAt: new Date() }]);
+    dbResults.push([invoice()]);
+    settleMock.mockRejectedValue(new HeldCtxError('held'));
+    const res = await post();
+    expect(res.status).toBe(500);
   });
 
   it('does not hand out the url for a stale, already-settled session', async () => {

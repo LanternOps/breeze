@@ -97,8 +97,14 @@ vi.mock('../../services/partnerStripe', async (importOriginal) => {
 });
 
 // Verify-on-return settle primitive (system-scoped in the route).
-const { settleCheckoutSessionMock } = vi.hoisted(() => ({ settleCheckoutSessionMock: vi.fn() }));
-vi.mock('../../services/stripeSettle', () => ({ settleCheckoutSession: settleCheckoutSessionMock }));
+const { settleCheckoutSessionMock, HeldCtxError } = vi.hoisted(() => ({
+  settleCheckoutSessionMock: vi.fn(),
+  HeldCtxError: class HeldDbContextForStripeError extends Error {},
+}));
+vi.mock('../../services/stripeSettle', () => ({
+  settleCheckoutSession: settleCheckoutSessionMock,
+  HeldDbContextForStripeError: HeldCtxError,
+}));
 
 // Real InvoiceServiceError / PartnerStripeError so `instanceof` branches in the route fire.
 import { InvoiceServiceError } from '../../services/invoiceTypes';
@@ -608,5 +614,14 @@ describe('portal invoices routes', () => {
     const res = await settle('cs_123');
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ settled: false });
+  });
+
+  it('POST /invoices/:id/settle does NOT swallow the held-DB-context assertion (#7065)', async () => {
+    dbResults.push([{ id: INV_ID, partnerId: 'p1' }]);   // invoice SELECT
+    dbResults.push([{ id: 'map_1' }]);                    // mapping SELECT
+    settleCheckoutSessionMock.mockRejectedValue(new HeldCtxError('held'));
+
+    const res = await settle('cs_123');
+    expect(res.status).toBe(500);
   });
 });
