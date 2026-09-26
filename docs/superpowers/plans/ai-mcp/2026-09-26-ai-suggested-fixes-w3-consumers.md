@@ -6,7 +6,7 @@ tracking_issue: LanternOps/breeze#7140
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make existing AI agents consult fix memory before investigating. Alert verdict runs and full alert-triage runs get the proven fixes for the problem in front of them, for free and under their existing approval policy. The patch agent's "known false failure" consumer is specified here but deliberately **not planned** until the open questions below are answered.
+**Goal:** Make existing AI agents consult fix memory before investigating. Alert verdict runs and full alert-triage runs get the proven fixes for the problem in front of them, for free and under their existing approval policy. When the effective triage mode is shadow and a proven fix exists, the full triage run is skipped and the proven fix is attached instead. The patch-agent consumer is **dropped** (see Decisions).
 
 **Architecture:**
 - One server-side lookup, `loadProvenFixesForRun`, runs inside `loadRunContext`, which is already a system context (`runLoop.ts:248-249`).
@@ -14,6 +14,7 @@ tracking_issue: LanternOps/breeze#7140
 - The result is rendered as a fixed, data-only section of the task prompt for `verdict` and `full` runs.
 - **No model turn is spent.** A verdict run keeps its 4-turn budget (`verdictProfile.ts:30`), and the `find_proven_fixes` tool (W1 Task 20) stays available for drill-down. Full runs already expose every tier-1 read tool (`runLoop.ts:1633-1653`). W1 Task 20's registry contracts cover that exposure; `runLoop.test.ts` mocks `BREEZE_MCP_TOOL_NAMES` down to one tool, so it cannot assert it.
 - Nothing gains authority. A proven fix is information; applying it still goes through the run's existing mode, allowlist and approval path.
+- **Shadow short-circuit (Task 5).** The managed automation's `ai_triage` action hands admission a read-only probe. Admission asks it only after every opt-out gate, and only when the run's effective mode (`modeAtStart`) is `shadow`. A proven hit skips the full run with `proven_fix_available`, and the action attaches the proven fix (W1 Task 17). Act mode is unchanged apart from the prompt section.
 
 **Tech Stack:** Hono API services, Drizzle/PostgreSQL, Claude Agent SDK run loop (scripted-model unit harness in `runLoop*.test.ts`), Vitest unit + real-Postgres integration.
 
@@ -21,44 +22,11 @@ tracking_issue: LanternOps/breeze#7140
 
 **Depends on:** W1 merged (`docs/superpowers/plans/ai-mcp/2026-09-26-ai-suggested-fixes-w1-foundation.md`). W2 is not required.
 
-## Open questions (need a decision before the dependent work is planned)
+## Decisions (orchestrator, after the Codex review)
 
-The spec's W3 row has two goals that are not decidable from the spec. Per the plan brief, these are questions, not invented designs. Tasks 1–5 below implement only what the spec does decide: consult memory first. They are unaffected by either answer.
-
-**Q1: What does "a triage run uses a proven fix instead of a full run" mean operationally?**
-
-Today a full triage run is started by the `ai_triage` automation action (`automationRuntime.ts:2214`, `profile` defaults to `'full'`). A verdict never escalates to a full run.
-
-- **A — Short-circuit.** When `loadProvenFixesForRun` finds a proven fix before admission, `executeAiTriageAction` skips the full run. It attaches the W1 `origin='memory'` suggestion and records the action as completed with reason `proven_fix_available`.
-  - Pro: real cost saving.
-  - Con: in `act` mode it removes an autonomous investigation, which is a behaviour change to a customer-configured automation.
-- **B — Inform only (what Tasks 1–5 build).** The full run still runs, with the proven fix at the top of its prompt and an instruction to propose it first.
-  - Pro: no behaviour change.
-  - Con: no cost saving, and the test can only assert the prompt, not a skipped run.
-- **C — A only in shadow mode.** Short-circuit only when the triage agent's mode is `shadow`, where the run could not act anyway. In `act` mode, behave as B.
-  - Pro: saves cost where the run is advisory.
-  - Con: two behaviours to explain.
-
-**Recommend C.** It saves the spend where the full run adds nothing a proven suggestion doesn't, and it never removes an autonomous action a partner turned on. If C or A is chosen, one more task is needed in `automationRuntime.ts` plus an `agentRunAdmission`-style integration test that asserts no `ai_agent_runs` row is created. That task is not written here.
-
-**Q2: What is a "known false failure" in fix memory?**
-
-Memory records *fix → observed outcome*. A false patch failure (Defender KB2267602 "not found", winget `0x8A15002B`) has no fix at all: it clears on its own. There is nothing in W1's model that can represent it.
-
-- Today these are handled three ways:
-  - agent-side skips (`agent/internal/patching/winget_system.go:207`, `windows_update_skip.go:36`);
-  - hard-coded verdict prompt text (`runnerPrompt.ts:651-667`, #6909);
-  - otherwise `patchFailureClass.ts` classes them `unknown` or `permanent`.
-- Patch failures also have no W1 signature with a discriminator. `sourced:patch_failed:<category>` is broad (W1 Task 6).
-
-Options:
-- **A — New memory kind.** Add a `benign` outcome/fix kind. A technician marks a patch-failure line "known false failure", and N confirmations across the partner make it proven. Needs a patch-failure signature with a KB/HRESULT discriminator taken from `patch_job_results.error_message` / `exit_code`, which are structured fields.
-- **B — Keep it out of memory.** Move the #6909 list into a partner-editable "known benign patch failures" config table (a Partner-Wide-First config table), and have `patchFailureClass.ts` classify matches as a new `benign` class that the patch plan neither chases nor escalates.
-- **C — Defer.** The agent-side skip (#6910) already removes the two known cases at the source.
-
-**Recommend B.** It is honest about what the data is (an operator-declared rule, not an observed fix). It reuses the patch agent's existing class-based gating (`patchPlan.ts:236-258`). It does not bend fix memory's "proven = observed outcomes" invariant. A would need a new outcome semantics in W1's proof rule.
-
-**Q3: Should memory replace the hard-coded #6909 text in the verdict prompt?** This depends on Q2. It stays as-is in this plan.
+- **Q1 → option C.** Skip the full triage run only when the effective triage mode is `shadow` **and** a proven fix exists. Act mode still admits the full run, with the proven fix at the top of its prompt. Implemented in Task 5, on the automation `ai_triage` path, inside admission after every opt-out gate.
+- **Q2 → dropped.** The patch-agent "known false failure" consumer is removed from W3. Its motivating false failures (a winget installer exit code and a Defender definition update that reported failure) were fixed at the source in #6910 (closed). The spec's W3 row is being amended accordingly.
+- **Q3 → dropped with Q2.** The hard-coded verdict-prompt text for those failures (#6909) is out of scope and stays as it is.
 
 ## Global Constraints
 
@@ -78,6 +46,7 @@ Options:
 3. **Turn budget regression on verdict runs.** Memory must not cost a verdict turn: no mandatory tool call, and `maxTurns` stays 4. Pinned by Task 3, "verdict run keeps maxTurns 4 and gets memory in the prompt".
 4. **Prompt injection through memory text.** Script names are operator-authored and could carry instructions. Pinned by Task 2, "script names are quoted and length-capped", together with the "treat as data" line.
 5. **Unrelated profiles get memory.** Sweep, narrative, patch, design, triage (ticket) and analysis runs must be unchanged. Pinned by Task 3, "sweep run has no provenFixes lookup".
+6. **The short-circuit overriding a decision it must not.** It must never skip an act-mode run, never pre-empt an opt-out (disabled, mode off, circuit, trigger filters, maintenance), and never touch the verdict lane. Pinned by Task 5: the `runService.test.ts` opt-out `it.each` and "act mode never consults the probe", and the integration cases "act mode → the full run is admitted" and "verdict behaviour is unchanged".
 
 ---
 
@@ -93,6 +62,9 @@ Options:
 | `apps/api/src/services/aiAgents/runLoop.ts` | Modify | Call the loader in `loadRunContext`; map it in `promptContext` |
 | `apps/api/src/services/aiAgents/runLoop*.test.ts` (9 files) | Modify | Mock `../fixMemory/runMemory` |
 | `apps/api/src/__tests__/integration/fixMemoryRunConsumer.integration.test.ts` | Create | Real-Postgres tenancy proof |
+| `apps/api/src/services/aiAgents/runService.ts` (+ `runService.test.ts`) | Modify | `provenFixProbe` input; `proven_fix_available` skip after the opt-out gates, shadow only |
+| `apps/api/src/services/automationRuntime.ts` (+ `automationRuntime.aiTriage.test.ts`) | Modify | Triage-lane probe; attach the proven fix on the short-circuit; classify the skip |
+| `apps/api/src/__tests__/integration/fixMemoryTriageShortCircuit.integration.test.ts` | Create | Shadow skip / act admit / verdict unchanged, through the automation path |
 
 ---
 
@@ -700,7 +672,334 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ---
 
-## Task 5: Contract sweep before the PR
+## Task 5: Shadow-mode short-circuit on the automation `ai_triage` path (unit + real-PG)
+
+**Decision (orchestrator, W3 Q1 = C).** When the **effective** triage mode for the alert's org is `shadow` and memory has a proven fix for the alert, the full triage run is **not admitted**. The proven fix is attached to the alert as an `origin='memory'` suggestion (W1 Task 17's idempotent attach). In `act` mode the full run is admitted as before, with the proven fix at the top of its prompt (Tasks 2–3).
+
+**Where it must live.**
+- The full run is admitted by the managed automation's `ai_triage` action (`automationRuntime.ts:2214`, dedupe `alert:<id>`). The verdict lane's `alert-verdict:<id>` key (`alertVerdictSubscriber.ts:210`) is a different key and cannot suppress it. So the check sits on the automation path.
+- It is evaluated **inside admission**, after every opt-out gate: kill switch, `agent_disabled`, `mode_off`, resource scope, circuit breaker, trigger filters and the maintenance window. An org that opted out, or an alert the agent's filters exclude, keeps exactly the skip it has today; the short-circuit never pre-empts one.
+- "Effective mode" is admission's own `modeAtStart` (`runService.ts:1146`): the org override if there is one, else the partner baseline. A forced-shadow ticket or anomaly run is never reached here, because this probe is only supplied by the alert-triggered `ai_triage` lane.
+- The check is a caller-supplied probe (`provenFixProbe`), so no other admission caller changes: verdict, sweep, narrative, patch, design, research and manual runs pass none.
+- The probe is read-only and never throws. A probe failure admits the full run, which is today's behaviour.
+
+**Files:**
+- Modify: `apps/api/src/services/aiAgents/runService.ts` (+ `runService.test.ts`): `CreateAgentRunInput.provenFixProbe?`; skip reason `proven_fix_available`; the gate after the maintenance-window check (~L1210), before the `(agent, org)` lock (no insert follows a short-circuit).
+- Modify: `apps/api/src/services/automationRuntime.ts` (+ `automationRuntime.aiTriage.test.ts`):
+  - `executeAiTriageAction` supplies the probe on the triage lane only;
+  - on `proven_fix_available` it attaches memory and ends the action `succeeded`;
+  - `AI_TRIAGE_SKIP_IS_FAILURE` gets `proven_fix_available: false`.
+- Create: `apps/api/src/__tests__/integration/fixMemoryTriageShortCircuit.integration.test.ts`
+
+**Interfaces:**
+- Consumes:
+  - `loadProvenFixesForRun` (Task 1);
+  - `attachProvenFixes` (W1 Task 17, `services/fixMemory/attach.ts`);
+  - `resolveOrgPartnerId` (W1 Task 15, `services/fixMemory/catalog.ts`);
+  - `inSystemDbContext` (W1 Task 8, `services/outcomeProbes.ts`).
+- Produces:
+  ```ts
+  // runService.ts
+  export interface CreateAgentRunInput { /* … */ provenFixProbe?: () => Promise<boolean> }
+  export type AgentRunSkipReason = /* … */ | 'proven_fix_available';
+  ```
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `apps/api/src/services/aiAgents/runService.test.ts`, which uses its own `input`, `snapshot`, `resolveEffectiveAgentSystem`, `isCircuitOpen`, `isDeviceInMaintenanceWindow` and `dbMockState` helpers:
+
+```ts
+describe('proven-fix short-circuit for shadow triage (AI Suggested Fixes W3)', () => {
+  it('shadow + proven fix → proven_fix_available, nothing inserted', async () => {
+    const probe = vi.fn(async () => true);
+    const result = await createAndEnqueueAgentRun(input({ provenFixProbe: probe }));
+    expect(result).toEqual({ created: false, skipped: 'proven_fix_available' });
+    expect(probe).toHaveBeenCalledTimes(1);
+    expect(dbMockState.insertValues).toEqual([]);
+  });
+
+  it('act mode never consults the probe and admits the full run', async () => {
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ mode: 'act' }));
+    const probe = vi.fn(async () => true);
+    expect(await createAndEnqueueAgentRun(input({ provenFixProbe: probe }))).toMatchObject({ created: true });
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['agent_disabled', () => resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ enabled: false }))],
+    ['mode_off', () => resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ mode: 'off' }))],
+    ['circuit_open', () => isCircuitOpen.mockResolvedValue(true)],
+    ['maintenance_window', () => {
+      resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ triggers: triggers({ respectMaintenanceWindows: true }) }));
+      isDeviceInMaintenanceWindow.mockResolvedValue(true);
+    }],
+  ])('an admission opt-out (%s) keeps its own skip; the probe is never asked', async (reason, arrange) => {
+    arrange();
+    const probe = vi.fn(async () => true);
+    expect(await createAndEnqueueAgentRun(input({ provenFixProbe: probe }))).toEqual({ created: false, skipped: reason });
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('no proven fix, or a throwing probe, admits the full run as today', async () => {
+    expect(await createAndEnqueueAgentRun(input({ dedupeKey: 'alert:p1', provenFixProbe: async () => false }))).toMatchObject({ created: true });
+    expect(await createAndEnqueueAgentRun(input({ dedupeKey: 'alert:p2', provenFixProbe: async () => { throw new Error('db'); } }))).toMatchObject({ created: true });
+  });
+});
+```
+
+If a case needs admission reads queued (the `created: true` cases), call the file's `seedAdmissionReads()` first, as its existing "admits" cases do.
+
+Append to `apps/api/src/services/automationRuntime.aiTriage.test.ts`:
+- add `proven_fix_available: 'succeeded',` to `EXPECTED_OUTCOME`;
+- add `loadProvenFixesMock`, `attachProvenFixesMock` and `resolvePartnerMock` to its `vi.hoisted` block;
+- add these mocks:
+
+```ts
+vi.mock('./fixMemory/runMemory', () => ({ loadProvenFixesForRun: loadProvenFixesMock }));
+vi.mock('./fixMemory/attach', () => ({ attachProvenFixes: attachProvenFixesMock }));
+vi.mock('./fixMemory/catalog', () => ({ resolveOrgPartnerId: resolvePartnerMock }));
+vi.mock('./outcomeProbes', () => ({ inSystemDbContext: (fn: () => unknown) => fn() }));
+```
+
+```ts
+describe('shadow short-circuit on the ai_triage lane (W3)', () => {
+  beforeEach(() => {
+    resolvePartnerMock.mockResolvedValue('partner-1');
+    loadProvenFixesMock.mockResolvedValue({ broad: false, proven: [{ scriptName: 'Restart spooler' }], similarCount: 0 });
+    attachProvenFixesMock.mockResolvedValue(1);
+  });
+
+  it('hands admission a probe that answers from fix memory for THIS alert and org', async () => {
+    createAndEnqueueAgentRunMock.mockResolvedValue({ created: true, run: { id: 'run-x', status: 'queued', errorCode: null } });
+    await __testOnly.executeAiTriageAction({ type: 'ai_triage' }, 0, makeContext());
+    const probe = gateInput(0).provenFixProbe!;
+    await expect(probe()).resolves.toBe(true);
+    expect(loadProvenFixesMock).toHaveBeenCalledWith({ orgId: 'org-device', partnerId: 'partner-1', alertId: 'alert-1', correlationGroupId: null });
+    loadProvenFixesMock.mockResolvedValueOnce(null);
+    await expect(probe()).resolves.toBe(false);
+  });
+
+  it('proven_fix_available → the proven fix is attached and the action succeeds without a run', async () => {
+    createAndEnqueueAgentRunMock.mockResolvedValue({ created: false, skipped: 'proven_fix_available' });
+    const out = await __testOnly.executeAiTriageAction({ type: 'ai_triage' }, 0, makeContext());
+    expect(out.outcome).toEqual({ status: 'succeeded' });
+    expect(attachProvenFixesMock).toHaveBeenCalledWith({ sourceType: 'alert', sourceId: 'alert-1', orgId: 'org-device' });
+    expect(out.log.message).toMatch(/proven fix/i);
+  });
+
+  it('no alert on the trigger → no probe', async () => {
+    createAndEnqueueAgentRunMock.mockResolvedValue({ created: true, run: { id: 'run-y', status: 'queued', errorCode: null } });
+    await __testOnly.executeAiTriageAction({ type: 'ai_triage' }, 0, makeContext({ trigger: { eventId: 'evt-9' } }));
+    expect(gateInput(0).provenFixProbe).toBeUndefined();
+  });
+});
+```
+
+`__testOnly.executeAiTriageAction` is how this file already reaches the action, and `out.log.message` follows the `logEntry` shape the file's cooldown case already asserts on.
+
+Create the real-Postgres proof through the automation path. It copies `aiTriageBinding.integration.test.ts`'s harness (`triggerEvent`, `queuedExecuteRun`, `executeQueuedRun`, `requireRunId`, the in-process `registerAgentRunEnqueuer`, and the `afterAll(shutdownAutomationWorker)`), and Task 4's `seedProven`:
+
+```ts
+// apps/api/src/__tests__/integration/fixMemoryTriageShortCircuit.integration.test.ts
+// (header: './setup', the publishEvent vi.mock, and the imports of aiTriageBinding.integration.test.ts,
+//  plus remediationSuggestions, fixMemory, scripts, scriptVersions, alertSignature, loadProvenFixesForRun,
+//  createAndEnqueueAgentRun and createHash)
+
+async function seedTriageWorld(mode: 'shadow' | 'act') {
+  return withSystemDbAccessContext(async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    await db.execute(sql`UPDATE organizations SET settings = jsonb_set(coalesce(settings,'{}'::jsonb), '{mlFeatureFlags}', '{"ml.remediation_suggestions.enabled": true}'::jsonb) WHERE id = ${org.id}`);
+    const site = await createSite({ orgId: org.id });
+    const user = await createUser({ partnerId: partner.id, orgId: org.id, email: `w3-sc-${randomUUID()}@integration.test` });
+    const [device] = await db.insert(devices).values({
+      orgId: org.id, siteId: site.id, agentId: `w3-${randomUUID().slice(0, 8)}`, hostname: `w3-${randomUUID().slice(0, 8)}`,
+      osType: 'windows', osVersion: '11', architecture: 'x86_64', agentVersion: '0.0.0-test', status: 'online',
+    }).returning({ id: devices.id });
+    const [agent] = await db.insert(aiAgents).values({
+      partnerId: partner.id, orgId: null, kind: 'triage', name: 'Fleet Triage', ...policyFields(), mode, createdBy: user.id,
+    }).returning({ id: aiAgents.id, kind: aiAgents.kind, name: aiAgents.name, enabled: aiAgents.enabled, orgId: aiAgents.orgId, partnerId: aiAgents.partnerId, createdBy: aiAgents.createdBy });
+    await ensureManagedTriageAutomation(agent!);
+    const [automation] = await db.select().from(automations).where(eq(automations.managedByAgentId, agent!.id)).limit(1);
+    const mkScript = async () => {
+      const [s] = await db.insert(scripts).values({ name: `fix-${randomUUID().slice(0, 6)}`, language: 'powershell', content: 'Restart-Service Spooler', osTypes: ['windows'], orgId: null, partnerId: partner.id }).returning({ id: scripts.id, name: scripts.name });
+      const [v] = await db.insert(scriptVersions).values({ scriptId: s!.id, version: 1, content: 'Restart-Service Spooler', language: 'powershell', timeoutSeconds: 300, runAs: 'system', contentDigest: createHash('sha256').update(s!.id).digest('hex') }).returning({ id: scriptVersions.id });
+      return { scriptId: s!.id, name: s!.name, versionId: v!.id };
+    };
+    const watched = await mkScript();
+    const fix = await mkScript();
+    const [alert] = await db.insert(alerts).values({
+      orgId: org.id, deviceId: device!.id, severity: 'critical', status: 'active', title: 'exit 3',
+      context: { source: 'script_exit_code', scriptId: watched.scriptId, exitCode: 3 },
+    }).returning({ id: alerts.id });
+    return { partnerId: partner.id, orgId: org.id, deviceId: device!.id, alertId: alert!.id, automation: automation!, fix };
+  });
+}
+
+async function fireTriage(w: Awaited<ReturnType<typeof seedTriageWorld>>) {
+  const { result } = await triggerEvent(w.automation.id, {
+    alertId: w.alertId, ruleId: randomUUID(), deviceId: w.deviceId, severity: 'critical', title: 'exit 3',
+  });
+  await executeQueuedRun(requireRunId(result));
+}
+
+const fullRuns = (alertId: string) => withSystemDbAccessContext(() => db.select().from(aiAgentRuns)
+  .where(and(eq(aiAgentRuns.alertId, alertId), eq(aiAgentRuns.profile, 'full'))));
+
+describe('W3 shadow short-circuit through the automation ai_triage path (real Postgres)', () => {
+  it('shadow + proven fix → no full triage run, and the proven fix is attached to the alert', async () => {
+    const w = await seedTriageWorld('shadow');
+    await seedProven(w.alertId, { partnerId: w.partnerId }, w.fix);
+    await fireTriage(w);
+    expect(await fullRuns(w.alertId)).toEqual([]);
+    const attached = await withSystemDbAccessContext(() => db.select().from(remediationSuggestions)
+      .where(and(eq(remediationSuggestions.alertId, w.alertId), eq(remediationSuggestions.origin, 'memory'))));
+    expect(attached.map((r) => r.scriptId)).toEqual([w.fix.scriptId]);
+  });
+
+  it('shadow without a proven fix → the full run is admitted as today', async () => {
+    const w = await seedTriageWorld('shadow');
+    await fireTriage(w);
+    expect(await fullRuns(w.alertId)).toHaveLength(1);
+  });
+
+  it('act mode → the full run is admitted, and its context load will carry the proven fix', async () => {
+    const w = await seedTriageWorld('act');
+    await seedProven(w.alertId, { partnerId: w.partnerId }, w.fix);
+    await fireTriage(w);
+    const runs = await fullRuns(w.alertId);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({ modeAtStart: 'act', dedupeKey: `alert:${w.alertId}` });
+    const memory = await withSystemDbAccessContext(() => loadProvenFixesForRun({ orgId: w.orgId, partnerId: w.partnerId, alertId: w.alertId, correlationGroupId: null }));
+    expect(memory?.proven.map((p) => p.scriptName)).toEqual([w.fix.name]);
+  });
+
+  it('verdict behaviour is unchanged: the verdict lane is admitted even in shadow with a proven fix', async () => {
+    const w = await seedTriageWorld('shadow');
+    await seedProven(w.alertId, { partnerId: w.partnerId }, w.fix);
+    const verdict = await createAndEnqueueAgentRun({
+      orgId: w.orgId, kind: 'triage', profile: 'verdict', triggerKind: 'alert', deviceId: w.deviceId, alertId: w.alertId,
+      dedupeKey: `alert-verdict:${w.alertId}`,
+    });
+    expect(verdict).toMatchObject({ created: true });
+  });
+});
+```
+
+Notes on the fixtures:
+- `policyFields()` is copied from the binding test. Its `triggers.alertSeverities` includes `critical`, and its `cooldownSeconds: 0` keeps cooldown out of the way.
+- The act-mode row is inserted directly, so the service's act prerequisites do not apply to the fixture. Admission does not re-check them.
+- `seedProven` is copied from Task 4 (`fixMemoryRunConsumer.integration.test.ts`).
+- The act-mode prompt content itself is pinned by Task 3's scripted-model case ("full alert run gets memory in the prompt"). This test proves the run is admitted and that its context load resolves the fix.
+
+- [ ] **Step 2: Run them and watch them fail**
+
+Run:
+```bash
+(cd apps/api && npx vitest run src/services/aiAgents/runService.test.ts -t "proven-fix short-circuit" && npx vitest run src/services/automationRuntime.aiTriage.test.ts)
+```
+Expected: FAIL. `provenFixProbe` is ignored (the shadow case is admitted), `EXPECTED_OUTCOME` does not type-check without the new reason, and the action never calls `attachProvenFixes`.
+
+- [ ] **Step 3: Implement**
+
+In `runService.ts`:
+- Extend `AgentRunSkipReason` with `| 'proven_fix_available'`.
+- Add to `CreateAgentRunInput`:
+  ```ts
+  /**
+   * AI Suggested Fixes W3 — supplied ONLY by the automation ai_triage lane.
+   * Asked after every opt-out gate, and only when the run would start in
+   * shadow: true means fix memory already has a proven fix for this alert, so
+   * a shadow full run would add nothing a proven suggestion doesn't. Never
+   * consulted in act mode. A throw is treated as false.
+   */
+  provenFixProbe?: () => Promise<boolean>;
+  ```
+- Inside the `inSystemDbContext` admission block, directly after the step-4 maintenance-window check and **before** the `pg_advisory_xact_lock` (4b):
+
+```ts
+    // 4a. AI Suggested Fixes W3 (orchestrator decision, W3 Q1 = C): a SHADOW
+    //     full triage run is skipped when fix memory already proves a fix for
+    //     this alert. Placed after every opt-out gate (enabled, mode, resource
+    //     scope, circuit, trigger filters, maintenance) so an org that opted
+    //     out keeps its own skip; keyed on modeAtStart (the EFFECTIVE mode,
+    //     override-aware); act mode never asks. Read-only, so it runs before
+    //     the admission lock — a short-circuit inserts nothing.
+    if (modeAtStart === 'shadow' && input.provenFixProbe) {
+      const proven = await input.provenFixProbe().catch((error: unknown) => {
+        console.error('[aiAgentRunService] proven-fix probe failed; admitting the full run', { orgId, error });
+        return false;
+      });
+      if (proven) return skip('proven_fix_available');
+    }
+```
+
+In `automationRuntime.ts`:
+- Imports: `loadProvenFixesForRun` from `./fixMemory/runMemory`, `attachProvenFixes` from `./fixMemory/attach`, `resolveOrgPartnerId` from `./fixMemory/catalog`, `inSystemDbContext` from `./outcomeProbes`.
+- `AI_TRIAGE_SKIP_IS_FAILURE`: `proven_fix_available: false,` with the comment `// W3: memory already proves a fix; the proven suggestion is attached instead of a shadow run.`
+- In `executeAiTriageAction`, before the triage-lane `createAndEnqueueAgentRun` (the `if (result === null)` branch):
+
+```ts
+    // AI Suggested Fixes W3 — the triage lane ONLY (never the patch route):
+    // admission asks this after its opt-out gates, and only in shadow mode.
+    const alertIdForMemory = trigger?.alertId ?? null;
+    const provenFixProbe = alertIdForMemory
+      ? async (): Promise<boolean> => {
+        const partnerId = await resolveOrgPartnerId(context.device.orgId);
+        if (!partnerId) return false;
+        const found = await loadProvenFixesForRun({ orgId: context.device.orgId, partnerId, alertId: alertIdForMemory, correlationGroupId: null });
+        return (found?.proven.length ?? 0) > 0;
+      }
+      : undefined;
+```
+
+  and pass `...(provenFixProbe ? { provenFixProbe } : {}),` in that call's input.
+- Before the generic skip mapping at the end of the function (the `hardFailure` block, ~L2277):
+
+```ts
+  if (!result.created && result.skipped === 'proven_fix_available' && trigger?.alertId) {
+    // Idempotent (W1 Task 17: upsert on the per-source script index), so a
+    // redelivered alert re-attaches nothing new.
+    const attached = await inSystemDbContext(
+      () => attachProvenFixes({ sourceType: 'alert', sourceId: trigger.alertId!, orgId: context.device.orgId }),
+      'automationRuntime.aiTriage.provenFix',
+    );
+    const message = 'ai_triage: proven fix attached; shadow triage run skipped';
+    return {
+      outcome: { status: 'succeeded' },
+      log: logEntry(message, 'info', { actionType: 'ai_triage', actionIndex, deviceId: context.device.id, details: { routedTo, attached } }),
+    };
+  }
+```
+
+`loadProvenFixesForRun` is called from inside admission's system context. It opens none of its own (Task 1's Global Constraint), so the probe adds reads to that one connection and never a second pooled connection.
+
+- [ ] **Step 4: Run them**
+
+Run:
+```bash
+(cd apps/api && npx vitest run src/services/aiAgents/runService.test.ts src/services/automationRuntime.aiTriage.test.ts src/services/automationRuntime.patchRouting.test.ts && npx tsc --noEmit -p tsconfig.json)
+pnpm test-stack up
+(cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/fixMemoryTriageShortCircuit.integration.test.ts src/__tests__/integration/aiTriageBinding.integration.test.ts)
+```
+Expected: PASS. `aiTriageBinding` must stay green, because its alerts have no signature, so no proven fix and no short-circuit.
+
+Controls: each one-line mutation must turn the named case red; revert after each.
+1. Change `modeAtStart === 'shadow'` to `true`. The unit case "act mode never consults the probe" and the integration "act mode" case fail.
+2. Move the 4a block above the `agent_disabled` gate. The opt-out `it.each` fails.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add apps/api/src/services/aiAgents/runService.ts apps/api/src/services/aiAgents/runService.test.ts apps/api/src/services/automationRuntime.ts apps/api/src/services/automationRuntime.aiTriage.test.ts apps/api/src/__tests__/integration/fixMemoryTriageShortCircuit.integration.test.ts
+git commit -m "feat(api): skip shadow triage runs when fix memory already proves a fix
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+```
+
+---
+
+## Task 6: Contract sweep before the PR
 
 **Files:** none (verification only).
 
@@ -716,7 +1015,7 @@ Expected: PASS. `verdictProfile.test.ts`, `verdictProfile.contract.test.ts` and 
 
 ```bash
 pnpm test-stack up
-(cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/fixMemoryRunConsumer.integration.test.ts src/__tests__/integration/fixOutcomeLifecycle.integration.test.ts)
+(cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/fixMemoryRunConsumer.integration.test.ts src/__tests__/integration/fixMemoryTriageShortCircuit.integration.test.ts src/__tests__/integration/aiTriageBinding.integration.test.ts src/__tests__/integration/fixOutcomeLifecycle.integration.test.ts)
 pnpm test-stack down
 ```
 Expected: PASS.
@@ -726,7 +1025,7 @@ Expected: PASS.
 Run: `(cd apps/api && npx vitest run)`
 Expected: PASS.
 
-- [ ] **Step 4: Open the PR** (body: `Closes #<W3 sub-issue>`; list Q1/Q2/Q3 as open; end with `🤖 Generated with [Claude Code](https://claude.com/claude-code)`), then run one `/pr-review-toolkit:review-pr` round.
+- [ ] **Step 4: Open the PR** (body: `Closes #<W3 sub-issue>`; state the Q1 = C behaviour change for shadow-mode triage and that the patch consumer was dropped; end with `🤖 Generated with [Claude Code](https://claude.com/claude-code)`), then run one `/pr-review-toolkit:review-pr` round.
 
 ---
 
@@ -737,13 +1036,18 @@ Expected: PASS.
 | Spec requirement | Covered by | Status |
 |---|---|---|
 | "The triage verdict and full runs call memory first" | Tasks 1–3 (server-side lookup at context load, rendered before investigation) | Planned |
-| "An integration test showing a triage run uses a proven fix instead of a full run" | Task 4 proves memory reaches the run under real tenancy. Task 3 proves the full-run prompt leads with the fix. A test that a full run is *not started* depends on **Q1** | Partially planned; Q1 open |
-| "The patch agent recognizes known false failures via memory" + its test | Not planned: depends on **Q2** (and Q3) | Open |
+| "An integration test showing a triage run uses a proven fix instead of a full run" | Task 5's `fixMemoryTriageShortCircuit.integration.test.ts`, through the real automation `ai_triage` path: shadow + proven fix → no full run and the proven suggestion attached; act → full run admitted with the fix in its context; verdict lane unchanged. Tasks 3–4 cover the prompt and tenancy | Planned (Q1 = C) |
+| "The patch agent recognizes known false failures via memory" + its test | **Removed from W3** by orchestrator decision: the motivating false failures were fixed at the source in #6910 (closed), and the spec's W3 row is being amended. Q2 and Q3 are closed with it | Dropped |
 | No new autonomy (spec non-goal) | Global Constraints; prompt text "Nothing here authorizes an action" (Task 2) | Planned |
 | Memory behind `ml.remediation_suggestions.enabled` | Task 1 flag gate, Task 4 proof | Planned |
 
+### Codex review fixes
+- **Finding 7.** The shadow skip was described but not implemented; `automationRuntime.ts:2214` still admitted the full run, and the verdict lane's `alert-verdict:<id>` key cannot suppress it. Task 5 now implements it as an admission probe on the automation `ai_triage` lane only. The probe is evaluated after every opt-out gate, keyed on the effective `modeAtStart`, never consulted in act mode, and treats a throw as "no proven fix". Attachment reuses W1's idempotent `attachProvenFixes`.
+- **Patch consumer.** Removed rather than planned; see Decisions.
+
 ### W1 interfaces consumed
 - `signatureForSource`, `FixSourceRef` (W1 Task 11).
+- `attachProvenFixes` (W1 Task 17), `resolveOrgPartnerId` (W1 Task 15), `inSystemDbContext` (W1 Task 8), used by Task 5.
 - `lookupFixes`, `FixTrackRecord` (W1 Task 16), including the current-owner script check.
 - `alertSignature` (W1 Task 11), used in Task 4 fixtures.
 - `fix_memory` schema (W1 Task 2).
