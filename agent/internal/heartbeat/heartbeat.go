@@ -111,14 +111,19 @@ type HeartbeatPayload struct {
 	// pointer so an old-agent omission (nil) is distinguishable from a
 	// genuine "physical" report (false) — the server only overwrites the
 	// stored value when the agent actually sends one.
-	IsVirtual                 *bool                          `json:"isVirtual,omitempty"`
-	VirtualizationPlatform    string                         `json:"virtualizationPlatform,omitempty"`
-	HealthStatus              *health.AgentHealthObservation `json:"healthStatus,omitempty"`
-	DroppedLogs               int64                          `json:"droppedLogs,omitempty"`
-	HelperVersion             string                         `json:"helperVersion,omitempty"`
-	WatchdogVersion           string                         `json:"watchdogVersion,omitempty"`
-	BackupVersion             string                         `json:"backupVersion,omitempty"`
-	RollbackComponentVersions map[string]string              `json:"rollbackComponentVersions,omitempty"`
+	IsVirtual              *bool                          `json:"isVirtual,omitempty"`
+	VirtualizationPlatform string                         `json:"virtualizationPlatform,omitempty"`
+	HealthStatus           *health.AgentHealthObservation `json:"healthStatus,omitempty"`
+	DroppedLogs            int64                          `json:"droppedLogs,omitempty"`
+	HelperVersion          string                         `json:"helperVersion,omitempty"`
+	// HelperInstallIssue is a Breeze Assist install problem the agent is stuck
+	// on (helper.InstallIssue* codes, #6925), e.g. enabled but not installed
+	// with no helper version offered. Omitted when there is none, so older
+	// servers (which strip unknown keys) and healthy devices send nothing.
+	HelperInstallIssue        string            `json:"helperInstallIssue,omitempty"`
+	WatchdogVersion           string            `json:"watchdogVersion,omitempty"`
+	BackupVersion             string            `json:"backupVersion,omitempty"`
+	RollbackComponentVersions map[string]string `json:"rollbackComponentVersions,omitempty"`
 	// ServerURL is the control-plane base URL this heartbeat is POSTed to
 	// (#2288). Set per-attempt in postHeartbeat, so a backup probe reports
 	// the backup URL and the device row shows real fleet position.
@@ -4500,14 +4505,16 @@ func (h *Heartbeat) sendHeartbeat() {
 		ObservedAt:       time.Now().UTC(),
 	})
 	payload := HeartbeatPayload{
-		Status:          status,
-		AgentVersion:    h.agentVersion,
-		HelperVersion:   h.helperMgr.InstalledVersion(),
-		WatchdogVersion: h.installedWatchdogVersion(),
-		BackupVersion:   h.installedBackupVersion(),
-		HealthStatus:    &healthSnapshot,
-		DeviceRole:      deviceRole,
-		IsHeadless:      h.currentHeadless(),
+		Status:        status,
+		AgentVersion:  h.agentVersion,
+		HelperVersion: h.helperMgr.InstalledVersion(),
+		// Observed by the previous heartbeat's Apply (#6925).
+		HelperInstallIssue: h.helperMgr.InstallIssue(),
+		WatchdogVersion:    h.installedWatchdogVersion(),
+		BackupVersion:      h.installedBackupVersion(),
+		HealthStatus:       &healthSnapshot,
+		DeviceRole:         deviceRole,
+		IsHeadless:         h.currentHeadless(),
 		// Wave 6 Task 4 — this build enforces internal/netpolicy (Tasks 1-3),
 		// so it always declares version 1. Unconditional (not gated on any
 		// runtime check): the enforcement is compiled in, not a runtime
