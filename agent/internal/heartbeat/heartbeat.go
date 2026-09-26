@@ -6092,12 +6092,16 @@ func (h *Heartbeat) noteAuthRejectedLiveness() {
 	}
 	// LastHeartbeat stays empty: this must never read as a successful
 	// heartbeat, to this watchdog or to one that predates AuthRejectedAt.
-	_ = sess.SendNotify("", ipc.TypeStateSync, ipc.StateSync{
+	if err := sess.SendNotify("", ipc.TypeStateSync, ipc.StateSync{
 		AgentVersion:     h.agentVersion,
 		Connected:        false,
 		AuthRejectedAt:   now.Format(time.RFC3339),
 		ActiveBackupRuns: h.sessionBroker.ActiveBackupRunCount(),
-	})
+	}); err != nil {
+		// On an AV/EDR-locked host this IPC send is the only liveness
+		// channel left, so a failure here must leave a trace.
+		log.Warn("failed to send auth-rejected state_sync to watchdog", "error", err.Error())
+	}
 }
 
 // sendWatchdogStateSync sends a state_sync IPC message to the watchdog

@@ -256,12 +256,14 @@ func (h *HealthChecker) LastKnownAuthRejected(s *state.AgentState) time.Time {
 
 // AgentAuthRejectedAlive reports whether the agent is demonstrably running
 // but locked out by the server (#2796): its heartbeat loop has written an
-// auth-rejected marker within staleThreshold. (A successful heartbeat clears
-// the on-disk marker, and a heartbeat only goes stale after the same
-// threshold, so a fresh marker is always newer than a stale heartbeat.) The marker is written from the heartbeat
-// loop itself on every 401/403 and every auth-dead backoff tick, so a wedged
-// loop stops refreshing it and falls back to the ordinary staleness path;
-// that is what lets this hold be unbounded where the IPC-ping veto is not.
+// auth-rejected marker within staleThreshold.
+//
+// The marker is written from the heartbeat loop itself on every 401/403 and
+// every auth-dead backoff tick, so a wedged loop stops refreshing it and falls
+// back to the ordinary staleness path. That is what lets this hold be
+// unbounded where the IPC-ping veto is not. (A successful heartbeat clears the
+// on-disk marker, and a heartbeat only goes stale after the same threshold, so
+// a fresh marker is always newer than a stale heartbeat.)
 func (h *HealthChecker) AgentAuthRejectedAlive(s *state.AgentState) bool {
 	rejected := h.LastKnownAuthRejected(s)
 	return !rejected.IsZero() && time.Since(rejected) <= h.staleThreshold
