@@ -272,9 +272,18 @@ describe('maybeDispatchEditionMigration', () => {
   it('withholds when the deployment release is unknown (BREEZE_VERSION unset)', async () => {
     primeHappyPath();
     vi.mocked(getGithubReleaseVersion).mockReturnValue('latest');
-    await maybeDispatchEditionMigration(baseArgs());
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await maybeDispatchEditionMigration(baseArgs({ pin: '0.108.0' }));
     expect(db.update).not.toHaveBeenCalled();
     expect(dispatchScriptToDevice).not.toHaveBeenCalled();
+    // #7039: the unknown-release cause wins over the pin wording — the pin is
+    // not what is holding the device back here.
+    const msgs = warn.mock.calls.map((c) => String(c[0]));
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]).toContain('org org-1');
+    expect(msgs[0]).toContain('Set BREEZE_VERSION');
+    expect(msgs[0]).not.toContain('agent version pin');
+    warn.mockRestore();
   });
 
   it('skips (before claiming) when the staged MSI is unreadable', async () => {

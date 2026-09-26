@@ -402,7 +402,7 @@ function warnStagedVersionHoldBack(args: {
       `installer cannot be matched to the resolved target ${target}. Set BREEZE_VERSION to the staged release.`;
   } else if (pin) {
     reason =
-      `the effective agent version pin ${pin} (org setting, or the partner default it inherits) resolves to ` +
+      `the effective agent version pin ${pin} (org setting, or the partner default it inherits) holds them at ` +
       `${target}, but the raw MSI route serves only the staged release ${stagedVersion}. ` +
       `To migrate these devices, raise or clear the agent version pin to ${stagedVersion}; ` +
       `leave it if the hold is intended.`;
