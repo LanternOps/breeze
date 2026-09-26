@@ -4670,6 +4670,10 @@ describe('POST /agents/:id/heartbeat — terminal-status guard (#2230)', () => {
 // transition, and NOT on a steady-state beat.
 // ---------------------------------------------------------------------
 describe('POST /agents/:id/heartbeat — state-change audit (finding #10)', () => {
+  // Wire-valid shapes (see heartbeatSchema): a steady beat re-reports these
+  // verbatim, a "change" flips an access-deciding field.
+  const TCC = { screenRecording: true, accessibility: true, fullDiskAccess: true, checkedAt: '2026-09-01T00:00:00.000Z' };
+  const DESKTOP = { mode: 'user_session', loginUiReachable: true, virtualDisplayReady: true, checkedAt: '2026-09-01T00:00:00.000Z' };
   // Steady-state baseline the handler will diff against. status already online,
   // hostname/agentServerUrl/tcc/desktop already match what a steady beat sends.
   const baselineDevice = {
@@ -4688,8 +4692,8 @@ describe('POST /agents/:id/heartbeat — state-change audit (finding #10)', () =
     tokenIssuedAt: new Date(),
     status: 'online',
     agentServerUrl: 'https://cp.example.com',
-    tccPermissions: { screenRecording: 'granted' },
-    desktopAccess: { level: 'full' },
+    tccPermissions: TCC,
+    desktopAccess: DESKTOP,
     mainAgentSilentSince: null,
   };
 
@@ -4728,8 +4732,8 @@ describe('POST /agents/:id/heartbeat — state-change audit (finding #10)', () =
       ...minimalHeartbeatBody,
       hostname: 'host-1', // unchanged
       serverUrl: 'https://cp.example.com', // unchanged
-      tccPermissions: { screenRecording: 'granted' }, // unchanged
-      desktopAccess: { level: 'full' }, // unchanged
+      tccPermissions: TCC, // unchanged
+      desktopAccess: DESKTOP, // unchanged
     });
     expect(resp.status).toBe(200);
 
@@ -4775,15 +4779,15 @@ describe('POST /agents/:id/heartbeat — state-change audit (finding #10)', () =
     arrange();
     const resp = await beat({
       ...minimalHeartbeatBody,
-      tccPermissions: { screenRecording: 'denied' },
+      tccPermissions: { ...TCC, screenRecording: false },
     });
     expect(resp.status).toBe(200);
 
     const changes = ((await auditCalls())[0]?.[1] as unknown as { details: { changes: any[] } }).details.changes;
     expect(changes).toContainEqual({
       field: 'tccPermissions',
-      before: { screenRecording: 'granted' },
-      after: { screenRecording: 'denied' },
+      before: TCC,
+      after: { ...TCC, screenRecording: false },
     });
   });
 
@@ -4791,15 +4795,15 @@ describe('POST /agents/:id/heartbeat — state-change audit (finding #10)', () =
     arrange();
     const resp = await beat({
       ...minimalHeartbeatBody,
-      desktopAccess: { level: 'restricted' },
+      desktopAccess: { ...DESKTOP, mode: 'unavailable' },
     });
     expect(resp.status).toBe(200);
 
     const changes = ((await auditCalls())[0]?.[1] as unknown as { details: { changes: any[] } }).details.changes;
     expect(changes).toContainEqual({
       field: 'desktopAccess',
-      before: { level: 'full' },
-      after: { level: 'restricted' },
+      before: DESKTOP,
+      after: { ...DESKTOP, mode: 'unavailable' },
     });
   });
 
@@ -4809,8 +4813,8 @@ describe('POST /agents/:id/heartbeat — state-change audit (finding #10)', () =
       ...minimalHeartbeatBody,
       hostname: 'host-1',
       serverUrl: 'https://cp.example.com',
-      tccPermissions: { screenRecording: 'granted' },
-      desktopAccess: { level: 'full' },
+      tccPermissions: TCC,
+      desktopAccess: DESKTOP,
     });
     expect(resp.status).toBe(200);
 
@@ -4825,12 +4829,86 @@ describe('POST /agents/:id/heartbeat — state-change audit (finding #10)', () =
       // Re-report identical values — must not be treated as changes.
       hostname: 'host-1',
       serverUrl: 'https://cp.example.com',
-      tccPermissions: { screenRecording: 'granted' },
-      desktopAccess: { level: 'full' },
+      tccPermissions: TCC,
+      desktopAccess: DESKTOP,
     });
     expect(resp.status).toBe(200);
 
     expect(await auditCalls()).toHaveLength(0);
+  });
+
+  // #4340 — the agent stamps a fresh `checkedAt` on tccPermissions and
+  // desktopAccess on EVERY heartbeat (macOS/Linux). A raw JSON.stringify diff
+  // therefore read every such beat as a "change" and chained one audit row per
+  // device per minute. Only the access-deciding fields may count as a change.
+  describe('checkedAt-only re-reports (#4340)', () => {
+    const storedTcc = {
+      screenRecording: true,
+      accessibility: true,
+      fullDiskAccess: false,
+      remoteDesktop: null,
+      checkedAt: '2026-09-01T00:00:00.000Z',
+    };
+    const storedDesktop = {
+      mode: 'user_session',
+      loginUiReachable: true,
+      virtualDisplayReady: false,
+      reason: null,
+      remoteDesktopPermission: null,
+      checkedAt: '2026-09-01T00:00:00.000Z',
+    };
+    const later = '2026-09-01T00:01:00.000Z';
+
+    it('a heartbeat whose tcc/desktop state differs only in checkedAt emits NO audit', async () => {
+      arrange({ tccPermissions: storedTcc, desktopAccess: storedDesktop });
+      const resp = await beat({
+        ...minimalHeartbeatBody,
+        hostname: 'host-1',
+        serverUrl: 'https://cp.example.com',
+        // Agent omits the null optionals on the wire — still not a change.
+        tccPermissions: { screenRecording: true, accessibility: true, fullDiskAccess: false, checkedAt: later },
+        desktopAccess: { mode: 'user_session', loginUiReachable: true, virtualDisplayReady: false, checkedAt: later },
+      });
+      expect(resp.status).toBe(200);
+
+      expect(await auditCalls()).toHaveLength(0);
+    });
+
+    it('a real tcc permission flip is still audited even when checkedAt also moved', async () => {
+      arrange({ tccPermissions: storedTcc, desktopAccess: storedDesktop });
+      const reported = { ...storedTcc, screenRecording: false, checkedAt: later };
+      const resp = await beat({
+        ...minimalHeartbeatBody,
+        hostname: 'host-1',
+        serverUrl: 'https://cp.example.com',
+        tccPermissions: reported,
+        desktopAccess: { ...storedDesktop, checkedAt: later },
+      });
+      expect(resp.status).toBe(200);
+
+      const calls = await auditCalls();
+      expect(calls).toHaveLength(1);
+      const changes = (calls[0]![1] as unknown as { details: { changes: any[] } }).details.changes;
+      expect(changes).toEqual([{ field: 'tccPermissions', before: storedTcc, after: reported }]);
+    });
+
+    it('a real desktopAccess mode change is still audited even when checkedAt also moved', async () => {
+      arrange({ tccPermissions: storedTcc, desktopAccess: storedDesktop });
+      const reported = { ...storedDesktop, mode: 'login_window', checkedAt: later };
+      const resp = await beat({
+        ...minimalHeartbeatBody,
+        hostname: 'host-1',
+        serverUrl: 'https://cp.example.com',
+        tccPermissions: { ...storedTcc, checkedAt: later },
+        desktopAccess: reported,
+      });
+      expect(resp.status).toBe(200);
+
+      const calls = await auditCalls();
+      expect(calls).toHaveLength(1);
+      const changes = (calls[0]![1] as unknown as { details: { changes: any[] } }).details.changes;
+      expect(changes).toEqual([{ field: 'desktopAccess', before: storedDesktop, after: reported }]);
+    });
   });
 
   it('batches multiple simultaneous changes into a single audit event', async () => {
