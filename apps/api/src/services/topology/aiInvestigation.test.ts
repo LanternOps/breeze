@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
-  reserve: vi.fn(), release: vi.fn(), consume: vi.fn(), build: vi.fn(), assertScope: vi.fn(), reauthorize: vi.fn(),
+  reserve: vi.fn(), release: vi.fn(), consume: vi.fn(), record: vi.fn(), build: vi.fn(), assertScope: vi.fn(), reauthorize: vi.fn(),
   cacheGet: vi.fn(), cacheSet: vi.fn(), cacheDelete: vi.fn(), permissionVersion: vi.fn(), visibility: vi.fn(), currentContext: vi.fn(),
 }));
-vi.mock('./aiLimits', async (original) => ({ ...await original<object>(), reserveTopologyInvestigation: mocks.reserve, consumeTopologyAiBudget: mocks.consume }));
+vi.mock('./aiLimits', async (original) => ({ ...await original<object>(), reserveTopologyInvestigation: mocks.reserve, consumeTopologyAiBudget: mocks.consume, recordTopologyAiTokenUsage: mocks.record }));
 vi.mock('./aiEvidence', async (original) => ({ ...await original<object>(), buildTopologyAiEvidence: mocks.build, assertTopologyAiCurrentScope: mocks.assertScope }));
 vi.mock('./aiCitations', async (original) => ({ ...await original<object>(), reauthorizeTopologyAiCitations: mocks.reauthorize }));
 vi.mock('./aiCache', async (original) => ({ ...await original<object>(), getCachedTopologyExplanation: mocks.cacheGet, setCachedTopologyExplanation: mocks.cacheSet, deleteCachedTopologyExplanation: mocks.cacheDelete }));
@@ -52,7 +52,9 @@ const prepare = () => prepareTopologyInvestigation(ctx, selection, 'Why is the u
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.reserve.mockResolvedValue({ leaseId: 'lease-1', release: mocks.release });
-  mocks.consume.mockResolvedValue(undefined);
+  // Totals after the delta, as the Redis script reports them (no prior turns).
+  mocks.consume.mockImplementation(async (_id: string, delta: Record<string, number>) => ({ readCalls: delta.readCalls ?? 0, proposals: delta.proposals ?? 0, inputTokens: delta.inputTokens ?? 0, outputTokens: delta.outputTokens ?? 0 }));
+  mocks.record.mockImplementation(async (_id: string, delta: { inputTokens: number; outputTokens: number }) => ({ readCalls: 0, proposals: 0, ...delta }));
   mocks.build.mockResolvedValue(snapshot());
   mocks.assertScope.mockResolvedValue(undefined);
   mocks.reauthorize.mockResolvedValue({ allowed: [REL], unavailable: [] });
@@ -178,6 +180,59 @@ describe('topology turn runtime (M4 Task 3)', () => {
     const runtime = await live();
     mocks.assertScope.mockRejectedValueOnce(new TopologyAiScopeChangedError());
     expect(await runtime.beforeToolCall('get_topology')).toEqual({ allowed: false, error: 'investigation_scope_changed' });
+  });
+
+  it('bounds input CUMULATIVELY per investigation: three 10k model calls exceed the 20,000 limit (review C4)', async () => {
+    const runtime = await live();
+    expect(runtime.noteUsage({ inputTokens: 10_000 })).toBe(true);
+    expect(runtime.noteUsage({ inputTokens: 10_000 })).toBe(true);
+    expect(runtime.noteUsage({ inputTokens: 10_000 })).toBe(false);
+  });
+
+  it('counts tokens earlier turns of the same investigation already used (review C4)', async () => {
+    mocks.consume.mockImplementation(async (_id: string, delta: Record<string, number>) => ({ readCalls: 0, proposals: 0, inputTokens: 15_000 + (delta.inputTokens ?? 0), outputTokens: 1_500 }));
+    const runtime = await live();
+    expect(runtime.noteUsage({ inputTokens: 6_000 })).toBe(false);
+    const again = await live();
+    expect(again.noteUsage({ outputTokens: 600 })).toBe(false);
+  });
+
+  it('refuses a follow-up tool call once the next model call cannot fit the input budget (review C4)', async () => {
+    const runtime = await live();
+    expect(runtime.noteUsage({ inputTokens: 11_000 })).toBe(true);
+    expect(await runtime.beforeToolCall('get_topology')).toMatchObject({ allowed: false });
+    expect(mocks.consume).not.toHaveBeenCalledWith(SESSION, { readCalls: 1 });
+  });
+
+  it('records the actual usage beyond the reservation honestly before caching (review C4)', async () => {
+    const runtime = await live();
+    const reserved = (mocks.consume.mock.calls[0]![1] as { inputTokens: number }).inputTokens;
+    runtime.noteUsage({ inputTokens: 9_000, outputTokens: 300 });
+    runtime.noteUsage({ inputTokens: 9_500, outputTokens: 200 });
+    runtime.append(JSON.stringify({ findings: [{ kind: 'finding', claim: 'health', text: 'Link reports failed checks.', citationIds: [REL] }], missingData: [], nextChecks: [] }));
+    const result = await runtime.complete();
+    expect(result.outcome).toBe('explanation');
+    expect(mocks.record).toHaveBeenCalledWith(SESSION, { inputTokens: 18_500 - reserved, outputTokens: 500 });
+    expect(mocks.record.mock.invocationCallOrder[0]!).toBeLessThan(mocks.cacheSet.mock.invocationCallOrder[0]!);
+  });
+
+  it('a Redis budget rejection at completion surfaces the fallback — never the answer, never cached (review C5)', async () => {
+    for (const failure of [
+      () => mocks.record.mockRejectedValueOnce(new TopologyAiLimitError('topology_ai_limits_unavailable')),
+      () => mocks.record.mockResolvedValueOnce({ readCalls: 0, proposals: 0, inputTokens: 1_000, outputTokens: 2_400 }),
+    ]) {
+      vi.clearAllMocks();
+      mocks.reserve.mockResolvedValue({ leaseId: 'lease-1', release: mocks.release });
+      failure();
+      const runtime = await live();
+      runtime.noteUsage({ outputTokens: 400 });
+      runtime.append(JSON.stringify({ findings: [{ kind: 'finding', claim: 'health', text: 'SECRET-MODEL-TEXT', citationIds: [REL] }], missingData: [], nextChecks: [] }));
+      const result = await runtime.complete();
+      expect(result.outcome).toBe('fallback');
+      expect(JSON.stringify(result)).not.toContain('SECRET-MODEL-TEXT');
+      expect(mocks.cacheSet).not.toHaveBeenCalled();
+      expect(mocks.release).toHaveBeenCalled();
+    }
   });
 
   it('stops at 20,000 input tokens per model call and 2,000 output tokens', async () => {

@@ -12,7 +12,8 @@
  *   3. looks up a cached validated answer — a hit is re-authorized (live scope
  *      stamp + citations) and returned without any model call;
  *   4. otherwise sizes the prompt within 20,000 input tokens (trimming
- *      evidence with explicit omissions) and returns a host-owned runtime.
+ *      evidence with explicit omissions), reserves that estimate against the
+ *      investigation's CUMULATIVE input budget, and returns a host-owned runtime.
  *
  * The runtime (`TopologyTurnRuntime`) is what the SDK and chat-only
  * transports hold on the active session: every provider text fragment goes
@@ -29,9 +30,12 @@ import { dbAccessContextFromAuth } from '../../middleware/auth';
 import { getPermissionAuthorityVersion } from '../permissions';
 import type { TopologyRequestContext } from './access';
 import { deleteCachedTopologyExplanation, getCachedTopologyExplanation, setCachedTopologyExplanation, type TopologyAiCacheKeyParts } from './aiCache';
-import { applyTopologyAiCitationAvailability, reauthorizeTopologyAiCitations } from './aiCitations';
+import { applyTopologyAiCitationAvailability, reauthorizeTopologyAiCitations, topologyAiFallbackExplanation } from './aiCitations';
 import { assertTopologyAiCurrentScope, buildTopologyAiEvidence, TopologyAiScopeChangedError, type TopologyAiEvidenceSnapshot, type TopologyAiModelEvidence } from './aiEvidence';
-import { consumeTopologyAiBudget, reserveTopologyInvestigation, TOPOLOGY_AI_QUOTAS, TopologyAiLimitError, type TopologyInvestigationLease } from './aiLimits';
+import {
+  consumeTopologyAiBudget, recordTopologyAiTokenUsage, reserveTopologyInvestigation, TOPOLOGY_AI_QUOTAS, TopologyAiLimitError, topologyAiTokensWithinBudget,
+  type TopologyAiBudgetTotals, type TopologyInvestigationLease,
+} from './aiLimits';
 import { TopologyAiOutputGate, type TopologyAiGateResult } from './aiOutputGate';
 import { resolveTopologySessionVisibility } from './aiSessionAccess';
 import { authorizeTopologySessionSite, TOPOLOGY_AI_TOOL_NAMES } from './aiToolGate';
@@ -145,12 +149,22 @@ async function cacheParts(ctx: TopologyRequestContext, sessionId: string, snapsh
   };
 }
 
+/**
+ * The turn's token budget (review C4): the plan's 20,000-input / 2,000-output
+ * limits are CUMULATIVE per investigation — every model call re-sends the
+ * context, and each re-send counts. `reservation` is what this turn reserved in
+ * Redis before its first call (the prompt estimate); `before` is what earlier
+ * turns of the same investigation already used.
+ */
+type TurnTokenBudget = { reservation: number; before: { inputTokens: number; outputTokens: number } };
+
 function createRuntime(
   ctx: TopologyRequestContext,
   snapshot: TopologyAiEvidenceSnapshot,
   lease: TopologyInvestigationLease,
   parts: TopologyAiCacheKeyParts,
   investigationId: string,
+  budget: TurnTokenBudget,
 ): TopologyTurnRuntime {
   const gate = new TopologyAiOutputGate();
   const allowed = new Set(TOPOLOGY_INVESTIGATION_TOOL_NAMES);
@@ -159,13 +173,30 @@ function createRuntime(
   // the SAME caller (never a stale request transaction, never system scope).
   const scopedDb = <T>(fn: () => Promise<T>): Promise<T> =>
     runOutsideDbContext(() => withDbAccessContext(dbAccessContextFromAuth(ctx.auth), fn));
-  let maxInput = 0;
+  let input = 0;
+  let lastCallInput = 0;
   let output = 0;
+  let recorded = false;
   let settled = false;
+  // Input this turn as accounted: never less than what it reserved up front.
+  const inputCounted = () => Math.max(budget.reservation, input);
+  const withinBudget = () => topologyAiTokensWithinBudget({
+    inputTokens: budget.before.inputTokens + inputCounted(),
+    outputTokens: budget.before.outputTokens + output,
+  });
+  /** Record actual usage past the reservation exactly once; the totals decide whether the turn may publish. */
+  const recordUsage = async (): Promise<TopologyAiBudgetTotals> => {
+    recorded = true;
+    return recordTopologyAiTokenUsage(investigationId, { inputTokens: inputCounted() - budget.reservation, outputTokens: output });
+  };
   const settle = async () => {
     if (settled) return;
     settled = true;
-    await lease.release();
+    try {
+      if (!recorded) await recordUsage().catch(() => undefined);
+    } finally {
+      await lease.release();
+    }
   };
   return {
     investigationId,
@@ -173,17 +204,26 @@ function createRuntime(
     append: (delta) => gate.append(delta),
     startBlock: () => gate.startBlock(),
     noteUsage({ inputTokens, outputTokens }) {
-      // Input: every model call re-sends the whole context (prompt + tool
-      // results so far), so the bound applies to the largest single call.
-      if (typeof inputTokens === 'number') maxInput = Math.max(maxInput, inputTokens);
+      // Cumulative (review C4): each model call re-sends the context and every
+      // re-send counts against the investigation's input limit.
+      if (typeof inputTokens === 'number' && inputTokens > 0) {
+        input += inputTokens;
+        lastCallInput = inputTokens;
+      }
       if (typeof outputTokens === 'number') {
         output += outputTokens;
         gate.noteOutputTokens(outputTokens);
       }
-      return maxInput <= TOPOLOGY_AI_QUOTAS.inputTokens && output <= TOPOLOGY_AI_QUOTAS.outputTokens;
+      return withinBudget();
     },
     async beforeToolCall(toolName) {
       if (!allowed.has(toolName)) return { allowed: false, error: 'Only topology read tools are available in a topology investigation' };
+      // A tool result is only useful to a NEXT model call, which re-sends at
+      // least the last call's context: refuse the tool (without spending a
+      // read) when that call cannot fit the remaining input budget.
+      if (budget.before.inputTokens + inputCounted() + lastCallInput > TOPOLOGY_AI_QUOTAS.inputTokens) {
+        return { allowed: false, error: new TopologyAiLimitError('topology_ai_budget_exhausted', 'inputTokens').message };
+      }
       try {
         await consumeTopologyAiBudget(investigationId, toolName === TOPOLOGY_INVESTIGATION_PROPOSAL_TOOL ? { proposals: 1 } : { readCalls: 1 });
         await scopedDb(async () => {
@@ -210,9 +250,22 @@ function createRuntime(
           return { current, result: await gate.finish(current, snapshot) };
         }).then(({ current, result: gated }) => ({ current, gated }));
         const { current, gated } = result;
+        // Honest accounting BEFORE anything is cached or returned (review C5):
+        // an investigation that cannot be shown to be within budget — Redis
+        // refused/failed, or cumulative usage is past a cap — publishes the
+        // fixed fallback, never the model's answer.
+        let totals: TopologyAiBudgetTotals | null = null;
+        try {
+          totals = await recordUsage();
+        } catch {
+          totals = null;
+        }
+        if (!totals || !topologyAiTokensWithinBudget(totals)) {
+          if (gated.outcome === 'scope_changed') await deleteCachedTopologyExplanation(current, parts);
+          return { outcome: 'fallback', explanation: topologyAiFallbackExplanation(totals ? 'output_limit_reached' : 'limits_unavailable') };
+        }
         if (gated.outcome === 'explanation') await setCachedTopologyExplanation(current, parts, gated.explanation, new Date(snapshot.freshUntil));
         if (gated.outcome === 'scope_changed') await deleteCachedTopologyExplanation(current, parts);
-        if (output > 0) await consumeTopologyAiBudget(investigationId, { outputTokens: output }).catch(() => undefined);
         return gated;
       } finally {
         await settle();
@@ -249,10 +302,11 @@ export async function prepareTopologyInvestigation(
       return { kind: 'cached', explanation: applyTopologyAiCitationAvailability(hit, availability, snapshot) };
     }
     const { prompt, estimatedInputTokens } = buildTopologyInvestigationPrompt(snapshot, question);
-    await consumeTopologyAiBudget(sessionId, { inputTokens: estimatedInputTokens });
+    const totals = await consumeTopologyAiBudget(sessionId, { inputTokens: estimatedInputTokens });
+    const before = { inputTokens: Math.max(0, totals.inputTokens - estimatedInputTokens), outputTokens: totals.outputTokens };
     return {
       kind: 'live',
-      runtime: createRuntime(ctx, snapshot, lease, parts, sessionId),
+      runtime: createRuntime(ctx, snapshot, lease, parts, sessionId, { reservation: estimatedInputTokens, before }),
       prompt,
       systemPrompt: TOPOLOGY_INVESTIGATION_SYSTEM_PROMPT,
       allowedMcpTools: [...TOPOLOGY_INVESTIGATION_MCP_TOOL_NAMES],

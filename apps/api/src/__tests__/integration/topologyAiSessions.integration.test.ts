@@ -34,7 +34,7 @@ import { aiRoutes } from '../../routes/ai';
 import { aiMessages, aiSessions, organizationUsers } from '../../db/schema';
 import { clearPermissionCache } from '../../services/permissions';
 import { createAccessToken } from '../../services/jwt';
-import { consumeTopologyAiBudget, reserveTopologyInvestigation } from '../../services/topology/aiLimits';
+import { consumeTopologyAiBudget, recordTopologyAiTokenUsage, reserveTopologyInvestigation, topologyAiTokensWithinBudget } from '../../services/topology/aiLimits';
 import { canonicalIdentityKey } from '../../services/topology/identity';
 import { createSite, setupTestEnvironment, type TestEnvironment } from './db-utils';
 import { getTestDb } from './setup';
@@ -142,6 +142,16 @@ describe('topology investigation quotas (M4 Task 3, real Redis)', () => {
     await expect(consumeTopologyAiBudget(investigation, { readCalls: 1 })).rejects.toMatchObject({ dimension: 'readCalls' });
     await consumeTopologyAiBudget(investigation, { proposals: 1 });
     await expect(consumeTopologyAiBudget(investigation, { proposals: 1 })).rejects.toMatchObject({ dimension: 'proposals' });
+  });
+
+  it('accounts input tokens cumulatively per investigation and records actual usage even past a cap (review C4/C5)', async () => {
+    const investigation = randomUUID();
+    expect(await consumeTopologyAiBudget(investigation, { inputTokens: 10_000 })).toMatchObject({ inputTokens: 10_000, outputTokens: 0 });
+    expect(await consumeTopologyAiBudget(investigation, { inputTokens: 10_000 })).toMatchObject({ inputTokens: 20_000 });
+    await expect(consumeTopologyAiBudget(investigation, { inputTokens: 10_000 })).rejects.toMatchObject({ dimension: 'inputTokens' });
+    const totals = await recordTopologyAiTokenUsage(investigation, { inputTokens: 5_000, outputTokens: 2_500 });
+    expect(totals).toMatchObject({ inputTokens: 25_000, outputTokens: 2_500 });
+    expect(topologyAiTokensWithinBudget(totals)).toBe(false);
   });
 });
 

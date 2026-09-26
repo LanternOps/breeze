@@ -9,9 +9,11 @@
  *   - at most 10 new investigations per user per UTC hour and 100 per org per
  *     UTC day, counted ONCE per investigation (idempotent per session id);
  *   - per investigation: 6 read calls (failed/refused attempts included), 1
- *     proposed diagnostic, 20,000 input and 2,000 output tokens — held in
- *     Redis keyed by the investigation, so an SDK/session restart cannot
- *     reset them.
+ *     proposed diagnostic, 20,000 input and 2,000 output tokens CUMULATIVE
+ *     across every model call and turn (prompt and tool-result continuations
+ *     alike) — held in Redis keyed by the investigation, so an SDK/session
+ *     restart cannot reset them. The prompt estimate is reserved before the
+ *     first call; actual usage past it is recorded when the turn settles.
  * A lower configured ceiling wins; existing monetary budgets apply separately
  * (reserveAiBudget). Any Redis failure fails the AI start CLOSED; ordinary
  * topology diagnostics never depend on this module.
@@ -111,7 +113,18 @@ for i = 1, 4 do
   if delta > 0 then redis.call('HINCRBY', KEYS[1], fields[i], delta) end
 end
 redis.call('EXPIRE', KEYS[1], ARGV[9])
-return 'ok'`;
+return {'ok', redis.call('HGET', KEYS[1], 'readCalls') or '0', redis.call('HGET', KEYS[1], 'proposals') or '0',
+  redis.call('HGET', KEYS[1], 'inputTokens') or '0', redis.call('HGET', KEYS[1], 'outputTokens') or '0'}`;
+
+// Actual provider usage is RECORDED, never refused: the tokens were already
+// spent, so accounting must show them even past a cap (the caps are enforced
+// before and during the turn — `consumeTopologyAiBudget` and the runtime).
+const RECORD = `
+if tonumber(ARGV[1]) > 0 then redis.call('HINCRBY', KEYS[1], 'inputTokens', ARGV[1]) end
+if tonumber(ARGV[2]) > 0 then redis.call('HINCRBY', KEYS[1], 'outputTokens', ARGV[2]) end
+redis.call('EXPIRE', KEYS[1], ARGV[3])
+return {'ok', redis.call('HGET', KEYS[1], 'readCalls') or '0', redis.call('HGET', KEYS[1], 'proposals') or '0',
+  redis.call('HGET', KEYS[1], 'inputTokens') or '0', redis.call('HGET', KEYS[1], 'outputTokens') or '0'}`;
 
 type EvalRedis = { eval(script: string, numKeys: number, ...args: Array<string | number>): Promise<unknown> };
 
@@ -177,11 +190,25 @@ export async function reserveTopologyInvestigation(
   };
 }
 
-/** Atomically consume per-investigation budget; refuses (without applying) any delta past a cap. */
+/** One investigation's cumulative usage, as held in Redis. */
+export type TopologyAiBudgetTotals = Record<TopologyAiBudgetDimension, number>;
+
+function totalsFrom(answer: unknown): TopologyAiBudgetTotals | null {
+  if (!Array.isArray(answer) || answer[0] !== 'ok' || answer.length !== 5) return null;
+  const [readCalls, proposals, inputTokens, outputTokens] = answer.slice(1).map((value) => Number(value));
+  const totals = { readCalls: readCalls!, proposals: proposals!, inputTokens: inputTokens!, outputTokens: outputTokens! };
+  return Object.values(totals).every((value) => Number.isFinite(value)) ? totals : null;
+}
+
+/**
+ * Atomically consume per-investigation budget; refuses (without applying) any
+ * delta past a cap. Returns the investigation's cumulative totals after the
+ * delta, so a turn can count what EARLIER turns already used (review C4).
+ */
 export async function consumeTopologyAiBudget(
   investigationId: string,
   delta: Partial<Record<TopologyAiBudgetDimension, number>>,
-): Promise<void> {
+): Promise<TopologyAiBudgetTotals> {
   const redis = redisOrFail();
   const value = (name: TopologyAiBudgetDimension) => Math.max(0, Math.trunc(delta[name] ?? 0));
   const answer = await run(redis, CONSUME, [budgetKey(investigationId)], [
@@ -189,9 +216,34 @@ export async function consumeTopologyAiBudget(
     TOPOLOGY_AI_QUOTAS.readCalls, TOPOLOGY_AI_QUOTAS.proposals, TOPOLOGY_AI_QUOTAS.inputTokens, TOPOLOGY_AI_QUOTAS.outputTokens,
     TOPOLOGY_AI_QUOTAS.investigationTtlSeconds,
   ]);
-  if (answer === 'ok') return;
+  const totals = totalsFrom(answer);
+  if (totals) return totals;
   if (answer === 'readCalls' || answer === 'proposals' || answer === 'inputTokens' || answer === 'outputTokens') {
     throw new TopologyAiLimitError('topology_ai_budget_exhausted', answer);
   }
   throw new TopologyAiLimitError('topology_ai_limits_unavailable');
+}
+
+/**
+ * Record ACTUAL token usage for an investigation (never refused — the tokens
+ * were spent) and return the cumulative totals. A Redis failure throws
+ * `topology_ai_limits_unavailable`: the caller cannot prove the investigation
+ * stayed within budget and must not publish (review C5).
+ */
+export async function recordTopologyAiTokenUsage(
+  investigationId: string,
+  usage: { inputTokens: number; outputTokens: number },
+): Promise<TopologyAiBudgetTotals> {
+  const redis = redisOrFail();
+  const answer = await run(redis, RECORD, [budgetKey(investigationId)], [
+    Math.max(0, Math.trunc(usage.inputTokens)), Math.max(0, Math.trunc(usage.outputTokens)), TOPOLOGY_AI_QUOTAS.investigationTtlSeconds,
+  ]);
+  const totals = totalsFrom(answer);
+  if (!totals) throw new TopologyAiLimitError('topology_ai_limits_unavailable');
+  return totals;
+}
+
+/** True while cumulative token totals are within the per-investigation caps. */
+export function topologyAiTokensWithinBudget(totals: Pick<TopologyAiBudgetTotals, 'inputTokens' | 'outputTokens'>): boolean {
+  return totals.inputTokens <= TOPOLOGY_AI_QUOTAS.inputTokens && totals.outputTokens <= TOPOLOGY_AI_QUOTAS.outputTokens;
 }
