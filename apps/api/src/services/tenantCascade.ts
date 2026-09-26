@@ -51,6 +51,7 @@ import { deleteObjectKeys } from './ticketAttachmentStorage';
 import { getBlobStorage } from './artifacts/blobStorage';
 import { deleteObjects } from './s3Storage';
 import { releaseSendingDomainsForPartner } from './emailDomains/domainRelease';
+import { deleteOriginDeviceTopologyAlerts } from './siteOwnedAlerts';
 
 type StorageKeyRow = { storageKey: string | null };
 type CountRow = { count: number | string };
@@ -1307,6 +1308,12 @@ export interface CascadeStats {
   durationMs: number;
   tablesDeleted: Record<string, number>;
   totalRowsDeleted: number;
+  /**
+   * Site-owned topology alerts OWNED BY ANOTHER ORG whose origin device was
+   * one of this org's devices (step 1c). Also counted under
+   * `tablesDeleted.alerts`; broken out because they are not this org's rows.
+   */
+  foreignTopologyAlertsDeleted: number;
 }
 
 /**
@@ -1333,6 +1340,7 @@ export async function cascadeDeleteOrg(
     durationMs: 0,
     tablesDeleted: {},
     totalRowsDeleted: 0,
+    foreignTopologyAlertsDeleted: 0,
   };
 
   // Write the tenant.erasure audit row FIRST so it survives the cascade.
@@ -1506,6 +1514,46 @@ export async function cascadeDeleteOrg(
     }
   }
 
+  // 1c. Site-owned topology alerts (M3-D6) whose ORIGIN device is one of this
+  //     org's devices but whose owning site is in ANOTHER org — the shape a
+  //     device move-org leaves behind (the ownership guard pins the alert's
+  //     org_id to its site; device_id stays NO ACTION → the moved device).
+  //     The walk deletes alerts by org_id only, so without this the `devices`
+  //     DELETE aborts with 23503 and the erasure never completes (PR #7117
+  //     re-review). A data-level cross-tenant edge the FK-on-delete ledger
+  //     cannot see. Same rule as a permanent device delete: the alert goes
+  //     with its origin device, with its NO ACTION children, in one
+  //     transaction. This org's OWN site-owned alerts are left to the walk.
+  try {
+    // withSystemDbAccessContext runs its callback in ONE transaction, so the
+    // children-then-alerts sequence is atomic.
+    const removed = await dbModule.withSystemDbAccessContext(() =>
+      deleteOriginDeviceTopologyAlerts(
+        dbModule.db,
+        sql`SELECT id FROM devices WHERE org_id = ${orgId}::uuid`,
+        { ownerOrgNot: orgId },
+      ),
+    );
+    if (removed > 0) {
+      stats.foreignTopologyAlertsDeleted = removed;
+      stats.tablesDeleted.alerts = (stats.tablesDeleted.alerts ?? 0) + removed;
+      stats.totalRowsDeleted += removed;
+      console.warn(
+        `[tenantCascade] org=${orgId}: deleted ${removed} site-owned topology alert(s) owned by another org `
+        + 'whose origin device is being erased',
+      );
+    }
+  } catch (err) {
+    if (!isUndefinedTable(err)) {
+      await writeErasureFailedAudit(orgId, performedBy, performedByEmail, 'alerts (foreign topology origin)', stats, err);
+      throw new Error(
+        `[tenantCascade] foreign site-owned topology alert delete failed for org=${orgId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
   // 2. Walk the cascade list in FK-safe order, each table in its OWN
   //    system-context transaction so a failure on one table aborts
   //    cleanly without poisoning the next statement.
@@ -1572,6 +1620,9 @@ export async function cascadeDeleteOrg(
       durationMs: stats.durationMs,
       totalRowsDeleted: stats.totalRowsDeleted,
       tablesDeleted: stats.tablesDeleted,
+      ...(stats.foreignTopologyAlertsDeleted > 0
+        ? { foreignTopologyAlertsDeleted: stats.foreignTopologyAlertsDeleted }
+        : {}),
     },
     result: 'success',
   });

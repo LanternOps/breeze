@@ -30,7 +30,7 @@ vi.mock('../services/agentOrgRateLimit', () => ({
   invalidateOrgDeviceCount: vi.fn(async () => undefined),
 }));
 vi.mock('../services/deviceLifecycle', () => ({
-  purgeRemovedDevice: vi.fn(async () => ({ linkGroupId: null, linkGroupDissolved: false })),
+  purgeRemovedDevice: vi.fn(async () => ({ linkGroupId: null, linkGroupDissolved: false, removedTopologyAlerts: 0 })),
   DeviceLifecycleError: class DeviceLifecycleError extends Error {
     constructor(public code: string, message: string) {
       super(message);
@@ -110,7 +110,7 @@ beforeEach(() => {
   lockedOrgByDevice.clear();
   lockedOrgByDevice.set(DEV_1, ORG_A);
   lockedOrgByDevice.set(DEV_2, ORG_A);
-  vi.mocked(purgeRemovedDevice).mockResolvedValue({ linkGroupId: null, linkGroupDissolved: false });
+  vi.mocked(purgeRemovedDevice).mockResolvedValue({ linkGroupId: null, linkGroupDissolved: false, removedTopologyAlerts: 0 });
 });
 
 describe('processDeviceBulkPurgeJob', () => {
@@ -145,7 +145,7 @@ describe('processDeviceBulkPurgeJob', () => {
     vi.mocked(purgeRemovedDevice).mockImplementation(async (_tx, id) => {
       if (id === DEV_1) throw new DeviceLifecycleError('UNINSTALL_PENDING', 'queued');
       if (id === DEV_2) throw new DeviceLifecycleError('NOT_REMOVED', 'restored');
-      return { linkGroupId: null, linkGroupDissolved: false };
+      return { linkGroupId: null, linkGroupDissolved: false, removedTopologyAlerts: 0 };
     });
 
     const { job } = fakeJob(payload());
@@ -170,7 +170,7 @@ describe('processDeviceBulkPurgeJob', () => {
           'Device access or linked state changed before deletion',
         );
       }
-      return { linkGroupId: null, linkGroupDissolved: false };
+      return { linkGroupId: null, linkGroupDissolved: false, removedTopologyAlerts: 0 };
     });
 
     const { job } = fakeJob(payload({
@@ -214,7 +214,7 @@ describe('processDeviceBulkPurgeJob', () => {
     try {
       vi.mocked(purgeRemovedDevice).mockImplementation(async (_tx, id) => {
         if (id === DEV_1) throw new Error('connection terminated');
-        return { linkGroupId: null, linkGroupDissolved: false };
+        return { linkGroupId: null, linkGroupDissolved: false, removedTopologyAlerts: 0 };
       });
 
       const { job } = fakeJob(payload());
@@ -270,8 +270,8 @@ describe('processDeviceBulkPurgeJob', () => {
   it('records a dissolved link group in the per-device audit entry', async () => {
     vi.mocked(purgeRemovedDevice).mockImplementation(async (_tx, id) =>
       id === DEV_1
-        ? { linkGroupId: 'grp-vm-1', linkGroupDissolved: true }
-        : { linkGroupId: null, linkGroupDissolved: false },
+        ? { linkGroupId: 'grp-vm-1', linkGroupDissolved: true, removedTopologyAlerts: 2 }
+        : { linkGroupId: null, linkGroupDissolved: false, removedTopologyAlerts: 0 },
     );
 
     const { job } = fakeJob(payload());
@@ -280,7 +280,7 @@ describe('processDeviceBulkPurgeJob', () => {
     expect(createAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
         resourceId: DEV_1,
-        details: expect.objectContaining({ linkGroupId: 'grp-vm-1', linkGroupDissolved: true }),
+        details: expect.objectContaining({ linkGroupId: 'grp-vm-1', linkGroupDissolved: true, removedTopologyAlerts: 2 }),
       }),
     );
   });
@@ -296,6 +296,7 @@ describe('processDeviceBulkPurgeJob', () => {
     for (const d of details) {
       expect(d).not.toHaveProperty('linkGroupId');
       expect(d).not.toHaveProperty('linkGroupDissolved');
+      expect(d).not.toHaveProperty('removedTopologyAlerts');
     }
   });
 

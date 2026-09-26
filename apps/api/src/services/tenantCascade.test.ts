@@ -89,6 +89,13 @@ vi.mock('../db', () => ({
       if (/^\s*SELECT id FROM software_catalog/i.test(text)) {
         return Promise.resolve([]);
       }
+      // Step 1c (foreign site-owned topology alerts of this org's devices):
+      // six statements that must not shift the queued rowCount fixtures. Its
+      // behaviour is proven against real Postgres in
+      // topologySiteAlertOriginDeviceDeletion.integration.test.ts.
+      if (text.includes('topology_site_id IS NOT NULL')) {
+        return Promise.resolve([]);
+      }
       const next = mockState.executeResponses.shift();
       if (next === undefined) {
         return Promise.resolve({ rowCount: 0 });
