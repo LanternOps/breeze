@@ -94,6 +94,11 @@ jobs:
       # the production web bundle and drives it in a real Chromium. Same
       # fail-safe shape as `code` — anything unresolvable turns it on.
       topology_browser: ${{ steps.classify.outputs.topology_browser }}
+      # "Agent code (or its CI) changed" — agent/**, ci.yml, the classifier.
+      # NOT the same as `agent` above (the QEMU gate). Gates the temporary
+      # Test Agent (Windows) waiver in ci-success (#6943). Fail-safe: anything
+      # unresolvable turns it on, so the waiver is never granted on no evidence.
+      agent_code: ${{ steps.classify.outputs.agent_code }}
     steps:
       - name: Checkout (classifier script only)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -126,7 +131,7 @@ jobs:
           # a code change through as docs-only.
           full_suite() {
             echo "$1" >&2
-            printf 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=true\n' | tee -a "${GITHUB_OUTPUT}"
+            printf 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=true\nagent_code=true\n' | tee -a "${GITHUB_OUTPUT}"
           }
           if [[ "${EVENT_NAME}" == "pull_request" ]]; then
             # The PR files API needs no checkout and sees renames/deletes too; a
@@ -4036,6 +4041,7 @@ jobs:
           AUTH_BROWSER_TRANSITION_BROWSER_CONTRACT_RESULT: ${{ needs.auth-browser-transition-browser-contract.result }}
           TOPOLOGY_BROWSER_GATE_RESULT: ${{ needs.topology-browser-gate.result }}
           TOPOLOGY_BROWSER_CHANGED: ${{ needs.changes.outputs.topology_browser }}
+          AGENT_CODE_CHANGED: ${{ needs.changes.outputs.agent_code }}
           IS_PR: ${{ github.event_name == 'pull_request' }}
         run: |
           # Fail closed: only a successful path check may skip native compilation. The
@@ -4123,7 +4129,7 @@ jobs:
              { [[ "${PORTAL_CHANGED}" == "false" ]] && [[ "${BUILD_PORTAL_RESULT}" != "skipped" ]]; } || \
              [[ "${BUILD_AGENT_RESULT}" != "success" ]] || \
              [[ "${TEST_AGENT_RESULT}" != "success" ]] || \
-             [[ "${TEST_AGENT_WINDOWS_RESULT}" != "success" ]] || \
+             { [[ "${TEST_AGENT_WINDOWS_RESULT}" != "success" ]] && ! { [[ "${TEST_AGENT_WINDOWS_RESULT}" == "failure" ]] && [[ "${AGENT_CODE_CHANGED}" == "false" ]]; }; } || \
              [[ "${WINDOWS_RUNTIME_SMOKE_RESULT}" != "success" ]] || \
              { [[ "${API_CHANGED}" == "true" ]] && [[ "${INTEGRATION_TEST_RESULT}" != "success" ]]; } || \
              { [[ "${API_CHANGED}" != "true" ]] && [[ "${API_CHANGED}" != "false" ]]; } || \
@@ -4216,6 +4222,16 @@ jobs:
           if [[ "${IS_PR}" != "true" ]] && [[ "${STACK_CHANGED}" == "true" ]] && [[ "${GUIDED_SETUP_SMOKE_RESULT}" != "success" ]]; then
             echo "Guided setup smoke failed on main branch push"
             exit 1
+          fi
+          # TEMPORARY (#6943): a Go runtime crash flakes `Test Agent (Windows)`
+          # and dequeues unrelated PRs. The job still runs; its FAILURE is waived
+          # only when the classifier positively reported agent_code=false (no
+          # agent/** / ci.yml / classifier change) — empty or `true` never waives.
+          # `cancelled`/`skipped` are unchanged (still blocking above).
+          # Remove this block and the waiver clause in the condition once #6943
+          # is fixed. Applies to pull_request and merge_group alike.
+          if [[ "${TEST_AGENT_WINDOWS_RESULT}" == "failure" ]]; then
+            echo "::warning::Test Agent (Windows) failed but is waived: no agent code changed. Known Go runtime crash, see #6943 (temporary waiver)."
           fi
           echo "All required jobs passed!"
 
