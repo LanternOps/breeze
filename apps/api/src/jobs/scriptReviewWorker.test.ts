@@ -63,7 +63,9 @@ vi.mock('../services/sentry', () => ({ captureException: shared.captureException
 vi.mock('./workerObservability', () => ({ attachWorkerObservability: shared.attachWorkerObservabilityMock }));
 
 import { ProposalNotReviewableError } from '../services/scriptProposals/reviewer';
-import { initializeScriptReviewWorker, processScriptReviewJob, shutdownScriptReviewWorker } from './scriptReviewWorker';
+import {
+  classifyScriptReviewFailure, initializeScriptReviewWorker, processScriptReviewJob, shutdownScriptReviewWorker,
+} from './scriptReviewWorker';
 
 function job(overrides: Record<string, unknown> = {}) {
   return {
@@ -182,6 +184,22 @@ describe('processScriptReviewJob', () => {
   });
 });
 
+// #7128: a 'missing' retry is an expected race on attempts 1-2; only a job
+// that EXHAUSTS its attempts on it is news (the proposal will now never be
+// reviewed), so it is reported once, then, at error level.
+describe('classifyScriptReviewFailure', () => {
+  it("reports a 'missing' proposal only once the job has exhausted its attempts", () => {
+    expect(classifyScriptReviewFailure(undefined, new ProposalNotReviewableError('p', 'missing'))).toEqual({
+      reason: 'script_review_proposal_not_visible', level: 'error', reportOnlyWhenExhausted: true,
+    });
+  });
+
+  it('keeps the default per-attempt report for everything else', () => {
+    expect(classifyScriptReviewFailure(undefined, new ProposalNotReviewableError('p', 'superseded'))).toBeNull();
+    expect(classifyScriptReviewFailure(undefined, new Error('db down'))).toBeNull();
+  });
+});
+
 describe('initializeScriptReviewWorker / shutdownScriptReviewWorker', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -198,7 +216,8 @@ describe('initializeScriptReviewWorker / shutdownScriptReviewWorker', () => {
     expect(opts.lockDuration).toBeGreaterThan(60_000);
     expect(opts.concurrency).toBeGreaterThanOrEqual(3);
     expect(shared.attachWorkerObservabilityMock).toHaveBeenCalledTimes(1);
-    expect(shared.attachWorkerObservabilityMock).toHaveBeenCalledWith(expect.anything(), 'scriptReviewWorker');
+    expect(shared.attachWorkerObservabilityMock).toHaveBeenCalledWith(
+      expect.anything(), 'scriptReviewWorker', { classifyFailure: classifyScriptReviewFailure });
 
     await shutdownScriptReviewWorker();
     expect(shared.workerCloseMock).toHaveBeenCalledTimes(1);
