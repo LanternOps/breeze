@@ -11,7 +11,7 @@ import type { SQL } from 'drizzle-orm';
 const m = vi.hoisted(() => ({
   select: vi.fn(),
   deviceCheck: vi.fn(),
-  builders: [] as Array<Record<string, ReturnType<typeof vi.fn>>>,
+  builders: [] as any[],
 }));
 
 vi.mock('../../db', () => ({
