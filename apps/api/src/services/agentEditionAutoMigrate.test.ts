@@ -194,6 +194,81 @@ describe('maybeDispatchEditionMigration', () => {
     expect(dispatchScriptToDevice).not.toHaveBeenCalled();
   });
 
+  describe('staged-version hold-back warning (#7039)', () => {
+    const heldWarns = (spy: ReturnType<typeof vi.spyOn>) =>
+      spy.mock.calls
+        .map((c: unknown[]) => String(c[0]))
+        .filter((m: string) => m.includes('withholding automatic edition migration'));
+
+    it('names the org, the pin, the device and the action to take when a pin holds a device back', async () => {
+      primeHappyPath();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      await maybeDispatchEditionMigration(
+        baseArgs({ pin: '0.107.0', resolveTarget: vi.fn().mockResolvedValue('0.107.0') }),
+      );
+      const msgs = heldWarns(warn);
+      expect(msgs).toHaveLength(1);
+      expect(msgs[0]).toContain('org org-1');
+      expect(msgs[0]).toContain('agent version pin 0.107.0');
+      expect(msgs[0]).toContain('device-1');
+      expect(msgs[0]).toContain('HOST-1');
+      expect(msgs[0]).toContain('staged release 0.108.0');
+      expect(msgs[0]).toMatch(/raise or clear/);
+      warn.mockRestore();
+    });
+
+    it('says "no pin" and points at promotion when the unpinned target is not the staged release', async () => {
+      primeHappyPath();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      await maybeDispatchEditionMigration(baseArgs({ resolveTarget: vi.fn().mockResolvedValue('0.107.0') }));
+      const msgs = heldWarns(warn);
+      expect(msgs).toHaveLength(1);
+      expect(msgs[0]).toContain('org org-1');
+      expect(msgs[0]).toContain('no agent version pin');
+      expect(msgs[0]).toMatch(/promoted/);
+      warn.mockRestore();
+    });
+
+    it('warns separately for each held-back org instead of once per process', async () => {
+      primeHappyPath();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const held = { pin: '0.107.0', resolveTarget: vi.fn().mockResolvedValue('0.107.0') };
+      await maybeDispatchEditionMigration(baseArgs(held));
+      await maybeDispatchEditionMigration(
+        baseArgs({ ...held, device: device({ id: 'device-2', orgId: 'org-2', hostname: 'HOST-2' }) }),
+      );
+      const msgs = heldWarns(warn);
+      expect(msgs).toHaveLength(2);
+      expect(msgs[1]).toContain('org org-2');
+      warn.mockRestore();
+    });
+
+    it('re-warns hourly per org with the count of distinct held-back devices, not every heartbeat', async () => {
+      primeHappyPath();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const now = vi.spyOn(Date, 'now');
+      const t0 = 1_900_000_000_000;
+      const held = { pin: '0.107.0', resolveTarget: vi.fn().mockResolvedValue('0.107.0') };
+
+      now.mockReturnValue(t0);
+      await maybeDispatchEditionMigration(baseArgs(held));
+      now.mockReturnValue(t0 + 60_000);
+      await maybeDispatchEditionMigration(baseArgs(held));
+      await maybeDispatchEditionMigration(
+        baseArgs({ ...held, device: device({ id: 'device-2', hostname: 'HOST-2' }) }),
+      );
+      expect(heldWarns(warn)).toHaveLength(1);
+
+      now.mockReturnValue(t0 + 60 * 60_000 + 1);
+      await maybeDispatchEditionMigration(baseArgs(held));
+      const msgs = heldWarns(warn);
+      expect(msgs).toHaveLength(2);
+      expect(msgs[1]).toContain('2 stranded self-host device(s)');
+      now.mockRestore();
+      warn.mockRestore();
+    });
+  });
+
   it('withholds when the deployment release is unknown (BREEZE_VERSION unset)', async () => {
     primeHappyPath();
     vi.mocked(getGithubReleaseVersion).mockReturnValue('latest');
