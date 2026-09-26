@@ -160,6 +160,13 @@
       "label": "Redémarrer le service sur l'appareil",
       "maxAttempts": "Nombre maximal de redémarrages",
       "cooldownSeconds": "Délai entre redémarrages (secondes)"
+    },
+    "networkCheckAsset": {
+      "label": "Actif",
+      "unbound": "Aucun actif lié",
+      "failed": "Impossible de charger les actifs",
+      "orgRequired": "Sélectionnez une organisation propriétaire pour lier un actif.",
+      "pingName": "Ping vers {{label}}"
     }
   },
   "kinds": {

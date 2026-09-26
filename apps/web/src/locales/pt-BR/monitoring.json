@@ -160,6 +160,13 @@
       "label": "Reiniciar serviço no dispositivo",
       "maxAttempts": "Máximo de tentativas de reinício",
       "cooldownSeconds": "Espera entre reinícios (segundos)"
+    },
+    "networkCheckAsset": {
+      "label": "Ativo",
+      "unbound": "Nenhum ativo vinculado",
+      "failed": "Não foi possível carregar os ativos",
+      "orgRequired": "Selecione uma organização proprietária para vincular um ativo.",
+      "pingName": "Ping para {{label}}"
     }
   },
   "kinds": {

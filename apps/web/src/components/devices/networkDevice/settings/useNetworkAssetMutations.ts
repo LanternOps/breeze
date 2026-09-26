@@ -47,15 +47,6 @@ export type SnmpUpsertInput = {
 
 export type SnmpPatchInput = Partial<SnmpUpsertInput> & { isActive?: boolean };
 
-export type NetworkCheckInput = {
-  name: string;
-  monitorType: 'icmp_ping' | 'tcp_port' | 'http_check' | 'dns_check';
-  target: string;
-  config?: Record<string, unknown>;
-  pollingInterval?: number;
-  timeout?: number;
-};
-
 export type TemplateSuggestion = { templateId: string; templateName: string; reason: string };
 
 export type SnmpSaveResult = {
@@ -88,9 +79,7 @@ export type NetworkAssetMutations = {
   unlink(assetId: string): Promise<void>;
   putSnmp(assetId: string, input: SnmpUpsertInput): Promise<SnmpSaveResult>;
   patchSnmp(assetId: string, patch: SnmpPatchInput): Promise<SnmpSaveResult>;
-  disableMonitoring(assetId: string): Promise<void>;
-  createCheck(assetId: string, input: NetworkCheckInput): Promise<void>;
-  deleteCheck(monitorId: string): Promise<void>;
+  disableMonitoring(assetId: string): Promise<SnmpSaveResult>;
 };
 
 export function useNetworkAssetMutations(): NetworkAssetMutations {
@@ -205,28 +194,14 @@ export function useNetworkAssetMutations(): NetworkAssetMutations {
         }),
 
       disableMonitoring: (assetId) =>
-        toVoid(runAction({
-          request: () => fetchWithAuth(`/monitoring/assets/${assetId}`, { method: 'DELETE' }),
+        runAction<SnmpSaveResult>({
+          request: () => fetchWithAuth(`/monitoring/assets/${assetId}/snmp`, {
+            method: 'PATCH',
+            body: JSON.stringify({ isActive: false }),
+          }),
           successMessage: t('networkDeviceDetailPage.settings.toasts.monitoringDisabled'),
           errorFallback: t('networkDeviceDetailPage.settings.toasts.monitoringDisableFailed'),
-        })),
-
-      createCheck: (assetId, input) =>
-        toVoid(runAction({
-          request: () => fetchWithAuth('/monitors', {
-            method: 'POST',
-            body: JSON.stringify({ ...input, assetId }),
-          }),
-          successMessage: t('networkDeviceDetailPage.settings.toasts.checkCreated'),
-          errorFallback: t('networkDeviceDetailPage.settings.toasts.checkCreateFailed'),
-        })),
-
-      deleteCheck: (monitorId) =>
-        toVoid(runAction({
-          request: () => fetchWithAuth(`/monitors/${monitorId}`, { method: 'DELETE' }),
-          successMessage: t('networkDeviceDetailPage.settings.toasts.checkRemoved'),
-          errorFallback: t('networkDeviceDetailPage.settings.toasts.checkRemoveFailed'),
-        })),
+        }),
     };
   }, [t]);
 }

@@ -160,6 +160,13 @@
       "label": "Restart service on the device",
       "maxAttempts": "Maximum restart attempts",
       "cooldownSeconds": "Restart cooldown (seconds)"
+    },
+    "networkCheckAsset": {
+      "label": "Asset",
+      "unbound": "No asset binding",
+      "failed": "Could not load assets",
+      "orgRequired": "Select organization ownership to bind an asset.",
+      "pingName": "Ping {{label}}"
     }
   },
   "kinds": {

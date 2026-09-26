@@ -3,6 +3,9 @@ import '@/lib/i18n';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { navigateTo } from '@/lib/navigation';
+vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
+
 import { MonitoringSection } from './MonitoringSection';
 import { showToast } from '@/components/shared/Toast';
 import { fetchWithAuth } from '@/stores/auth';
@@ -148,16 +151,19 @@ describe('MonitoringSection — SNMP configuration', () => {
     expect(lastWriteBody()).toHaveProperty('templateId', null);
   });
 
-  it('disables all monitoring behind a confirm', async () => {
+  it('disables SNMP monitoring behind an explicit confirm', async () => {
     wire({ snmpDevice: { id: 'snmp-1', snmpVersion: 'v2c', templateId: null, pollingInterval: 300, port: 161, isActive: true, lastPolled: null, lastStatus: 'online' } });
     render(<MonitoringSection {...props} />);
 
-    fireEvent.click(await screen.findByTestId('network-settings-monitoring-disable'));
+    expect(await screen.findByTestId('network-settings-monitoring-disable')).toHaveTextContent('Disable SNMP monitoring');
+    fireEvent.click(screen.getByTestId('network-settings-monitoring-disable'));
+    expect(await screen.findByRole('dialog')).toHaveTextContent('Network checks remain managed under Monitors.');
     fireEvent.click(await screen.findByTestId('network-settings-monitoring-disable-confirm'));
 
     await waitFor(() => expect(writeCalls()).toHaveLength(1));
-    expect(writeCalls()[0]![0]).toBe('/monitoring/assets/asset-1');
-    expect((writeCalls()[0]![1] as RequestInit).method).toBe('DELETE');
+    expect(writeCalls()[0]![0]).toBe('/monitoring/assets/asset-1/snmp');
+    expect((writeCalls()[0]![1] as RequestInit).method).toBe('PATCH');
+    expect(lastWriteBody()).toEqual({ isActive: false });
   });
 });
 
@@ -204,16 +210,15 @@ describe('MonitoringSection — network checks', () => {
     expect(row.textContent).not.toMatch(/\bOnline\b/);
   });
 
-  it('removes a check through DELETE /monitors/:id after a confirm', async () => {
-    wire({ monitors: [{ id: 'mon-1', name: 'Ping', monitorType: 'icmp_ping', target: '10.0.0.2', isActive: true, lastStatus: 'online', lastChecked: null }] });
+  it('hands new checks to the editor and offers no check deletion or SNMP disable without SNMP', async () => {
+    wire({ monitors: [{ id: 'mon-1', name: 'Ping', monitorType: 'icmp_ping', isActive: true }] });
     render(<MonitoringSection {...props} />);
-
-    fireEvent.click(await screen.findByTestId('network-settings-check-remove-mon-1'));
-    fireEvent.click(await screen.findByTestId('network-settings-check-remove-confirm'));
-
-    await waitFor(() => expect(writeCalls()).toHaveLength(1));
-    expect(writeCalls()[0]![0]).toBe('/monitors/mon-1');
-    expect((writeCalls()[0]![1] as RequestInit).method).toBe('DELETE');
+    await screen.findByTestId('network-settings-check-mon-1');
+    expect(screen.queryByTestId('network-settings-check-remove-mon-1')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('network-settings-monitoring-disable')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('network-settings-check-add'));
+    expect(navigateTo).toHaveBeenCalledWith('/alerts/monitors/new#kind=network_check&assetId=asset-1');
+    expect(writeCalls()).toHaveLength(0);
   });
 });
 
