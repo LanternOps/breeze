@@ -106,9 +106,18 @@ const FORWARDABLE_REQUEST_HEADERS = new Set([
 // de-prefix on the way to the device and re-prefix on the way back.
 const DEVICE_COOKIE_PREFIX = 'bzdev_';
 
-// Restrictive CSP applied to every proxied response: sandbox the device content
-// (null origin — can't read app cookies/storage or reach the parent) while still
-// letting the device's own scripts/forms run, and forbid third-party framing.
+// Restrictive CSP applied to every response this route serves — proxied device
+// content AND our own error/redirect responses: sandbox it (null origin — can't
+// read app cookies/storage or reach the parent) while still letting the device's
+// own scripts/forms run, and allow framing only by the app itself.
+//
+// Set from middleware AFTER the handler, never inside it: the global API CSP
+// (`frame-ancestors 'none'`) is already on the context, and a global middleware
+// that touches `c.res` before the handler (cors) makes Hono merge those headers
+// OVER the handler's own Response. The CSP the handler used to set on the
+// proxied Response was silently replaced, and error responses never had it, so
+// every response left with `frame-ancestors 'none'` and the iframe showed the
+// browser's "can't open this page".
 const PROXY_RESPONSE_CSP = "sandbox allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox; frame-ancestors 'self'";
 
 /** Rebuild a Cookie header containing only the device's own (prefixed) cookies, de-prefixed. */
@@ -254,6 +263,11 @@ function prefixAndScopeDeviceCookie(value: string, basePath: string): string {
 // The proxy route.
 // ---------------------------------------------------------------------------
 
+tunnelHttpRoutes.use('*', async (c, next) => {
+  await next();
+  c.res.headers.set('content-security-policy', PROXY_RESPONSE_CSP);
+});
+
 tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
   const tunnelId = c.req.param('tunnelId');
   const basePath = `/api/v1/tunnel-http/${tunnelId}/`;
@@ -361,8 +375,10 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
         .where(eq(tunnelSessions.id, tunnelId));
     });
   }
-  // Built here (not via setCookie(c, …), which no-ops against the hand-built
-  // Response returned below) and appended to respHeaders once it exists.
+  // Built here and appended to respHeaders once it exists — not via
+  // setCookie(c, …): once a global middleware has touched c.res (cors), Hono's
+  // `set res` replaces the returned Response's Set-Cookie headers with the
+  // context's, which would drop the device's own cookies.
   const refreshedCookie = generateCookie(authCookieName, await signTunnelCookie(userId, tunnelId), {
     httpOnly: true,
     secure: true,
@@ -470,8 +486,8 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
     const lk = k.toLowerCase();
     if (HOP_BY_HOP.has(lk)) continue;
     // content-length is recomputed by the runtime. We drop the device's CSP and
-    // x-frame-options and impose our own restrictive sandbox CSP below — the
-    // device's policy must not govern content rendered on our origin.
+    // x-frame-options; the route middleware above imposes PROXY_RESPONSE_CSP —
+    // the device's policy must not govern content rendered on our origin.
     if (
       lk === 'content-length' ||
       lk === 'content-security-policy' ||
@@ -495,10 +511,6 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
     }
     for (const v of values) respHeaders.append(k, v);
   }
-
-  // Sandbox the proxied (untrusted) device content so its scripts run in a null
-  // origin and cannot read app cookies/storage or reach the parent frame.
-  respHeaders.set('content-security-policy', PROXY_RESPONSE_CSP);
 
   // Sliding refresh: append (not set) so this doesn't clobber any device
   // Set-Cookie headers already appended above.

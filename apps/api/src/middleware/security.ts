@@ -1,4 +1,5 @@
 import type { Context, MiddlewareHandler, Next } from 'hono';
+import { secureHeaders } from 'hono/secure-headers';
 import { canonicalHttpsRedirect, effectiveRequestScheme, isCanonicalRequestHost } from '../services/requestTransport';
 import {
   getImmediatePeerIpOrUndefined,
@@ -88,7 +89,8 @@ function warnForceHttpsRedirect(c: Context, canonicalHost: boolean, trusted: boo
  *  - Permissions-Policy header
  *
  * Designed to complement hono/secure-headers (which already sets
- * X-Content-Type-Options, X-Frame-Options, Referrer-Policy,
+ * X-Content-Type-Options, X-Frame-Options (except on the tunnel proxy — see
+ * `apiSecureHeaders`), Referrer-Policy,
  * Cross-Origin isolation headers, and HSTS).
  * This middleware adds headers that secureHeaders does NOT set by default.
  *
@@ -256,4 +258,31 @@ export function securityMiddleware(options?: SecurityMiddlewareOptions): Middlew
 
     await next();
   };
+}
+
+/**
+ * The HTTP tunnel reverse proxy (`routes/tunnelHttp.ts`) is the one API surface
+ * the web app renders inside an iframe. It sets its own sandbox CSP with
+ * `frame-ancestors 'self'` on every response. X-Frame-Options: DENY contradicts
+ * that; current browsers let `frame-ancestors` win, but we don't rely on it.
+ */
+export const FRAMEABLE_TUNNEL_PROXY_PATH_PREFIX = '/api/v1/tunnel-http/';
+
+/**
+ * Global hono/secure-headers policy for the API. Overrides defaults to match
+ * Breeze security policy:
+ * - HSTS: 1 year (secureHeaders default is 180 days / 15552000s)
+ * - X-Frame-Options: DENY (default is SAMEORIGIN) — omitted on the tunnel proxy,
+ *   whose framing is governed by its own CSP `frame-ancestors 'self'`
+ * - Referrer-Policy: strict-origin-when-cross-origin (default is no-referrer)
+ */
+export function apiSecureHeaders(): MiddlewareHandler {
+  const base = {
+    strictTransportSecurity: 'max-age=31536000; includeSubDomains; preload',
+    referrerPolicy: 'strict-origin-when-cross-origin',
+  };
+  const strict = secureHeaders({ ...base, xFrameOptions: 'DENY' });
+  const frameableProxy = secureHeaders({ ...base, xFrameOptions: false });
+  return (c, next) =>
+    c.req.path.startsWith(FRAMEABLE_TUNNEL_PROXY_PATH_PREFIX) ? frameableProxy(c, next) : strict(c, next);
 }

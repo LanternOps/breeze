@@ -11,9 +11,8 @@ import type { Context } from 'hono';
 import { cors } from 'hono/cors';
 import { HTTPException } from 'hono/http-exception';
 import { prettyJSON } from 'hono/pretty-json';
-import { secureHeaders } from 'hono/secure-headers';
 
-import { securityMiddleware } from './middleware/security';
+import { apiSecureHeaders, securityMiddleware } from './middleware/security';
 import { requestPathLogger } from './middleware/requestPathLogger';
 import { createGlobalBodyLimitMiddleware } from './middleware/bodyLimitGate';
 import { globalRateLimit } from './middleware/globalRateLimit';
@@ -413,18 +412,7 @@ const resolveCorsOrigin = createCorsOriginResolver({
 // but was never mounted, so neither series appeared in a production scrape.
 app.use('*', metricsMiddleware);
 app.use('*', requestPathLogger());
-app.use(
-  '*',
-  secureHeaders({
-    // Override defaults to match Breeze security policy:
-    // - HSTS: 1 year (secureHeaders default is 180 days / 15552000s)
-    strictTransportSecurity: 'max-age=31536000; includeSubDomains; preload',
-    // - X-Frame-Options: DENY (default is SAMEORIGIN)
-    xFrameOptions: 'DENY',
-    // - Referrer-Policy: strict-origin-when-cross-origin (default is no-referrer)
-    referrerPolicy: 'strict-origin-when-cross-origin',
-  })
-);
+app.use('*', apiSecureHeaders());
 app.use('*', securityMiddleware());
 app.use(
   '*',

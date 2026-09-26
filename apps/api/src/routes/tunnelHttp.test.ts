@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { cors } from 'hono/cors';
 import { brotliCompressSync, deflateSync, gzipSync } from 'node:zlib';
 
 // --- UUID constants ---
@@ -137,6 +138,7 @@ vi.mock('../services/tunnelAllowlist', () => ({
 }));
 
 import { tunnelHttpRoutes, HTTP_TUNNEL_COOKIE_TTL_SECONDS, HTTP_TUNNEL_MAX_SESSION_HOURS } from './tunnelHttp';
+import { apiSecureHeaders, securityMiddleware } from '../middleware/security';
 import { getActiveAllowlistPatterns } from '../services/tunnelAllowlist';
 
 function makeApp() {
@@ -364,6 +366,69 @@ describe('tunnelHttp dispatch (cookie-authed)', () => {
     sendCommandMock.mockResolvedValueOnce({ status: 'failed', error: 'agent offline' });
     const res = await app.request(`${BASE}/`, { headers: { cookie } });
     expect(res.status).toBe(502);
+  });
+});
+
+// The proxy renders inside the web app's iframe, so EVERY response it serves —
+// including its own 401/404/410/502 error pages — must be frameable by the app
+// once the production global middleware (index.ts) has run over it. Before the
+// fix, every response — the proxied 200 included — left with the API-wide
+// `frame-ancestors 'none'` and `X-Frame-Options: DENY`, so Firefox showed
+// "can't open this page" instead of the device UI.
+describe('tunnelHttp framing under the global API middleware', () => {
+  function makeProdLikeApp() {
+    const app = new Hono();
+    app.use('*', apiSecureHeaders());
+    app.use('*', securityMiddleware({ nodeEnv: 'production' }));
+    // cors() touches c.res before the handler runs, so the proxy's own
+    // Response is merged under headers already set by securityMiddleware —
+    // this is what clobbered the proxy CSP on a successful 200 in production.
+    app.use('*', cors({ origin: 'https://app.example.test', credentials: true }));
+    app.route('/api/v1/tunnel-http', tunnelHttpRoutes);
+    // Control: a handler that sets its own CSP on a raw Response, as the proxy
+    // used to. Proves the merge hazard is live in this app — without it, the
+    // 200 test below would pass even with the CSP moved back into the handler.
+    app.get('/control', () => new Response('x', { headers: { 'content-security-policy': "frame-ancestors 'self'" } }));
+    return app;
+  }
+
+  it('control: a CSP set inside a handler is clobbered by the global CSP', async () => {
+    const res = await makeProdLikeApp().request('/control');
+    expect(res.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
+  });
+
+  function expectFrameableSandbox(res: Response) {
+    const csp = res.headers.get('content-security-policy') ?? '';
+    expect(csp).toContain('sandbox');
+    expect(csp).toContain("frame-ancestors 'self'");
+    expect(csp).not.toContain("frame-ancestors 'none'");
+    expect(res.headers.get('x-frame-options')).toBeNull();
+  }
+
+  it('serves the unauthenticated 401 as a frameable sandboxed page', async () => {
+    const res = await makeProdLikeApp().request(`${BASE}/`);
+    expect(res.status).toBe(401);
+    expectFrameableSandbox(res);
+  });
+
+  it('serves the agent-offline 502 as a frameable sandboxed page', async () => {
+    const app = makeProdLikeApp();
+    const cookie = await mintCookie(app);
+    isAgentConnectedMock.mockReturnValue(false);
+    const res = await app.request(`${BASE}/`, { headers: { cookie } });
+    expect(res.status).toBe(502);
+    expectFrameableSandbox(res);
+  });
+
+  it('serves a proxied 200 as a frameable sandboxed page', async () => {
+    const app = makeProdLikeApp();
+    const cookie = await mintCookie(app);
+    const res = await app.request(`${BASE}/`, { headers: { cookie } });
+    expect(res.status).toBe(200);
+    expectFrameableSandbox(res);
+    // Strict transport/sniffing headers still apply on the proxy path.
+    expect(res.headers.get('strict-transport-security')).toContain('max-age=31536000');
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
   });
 });
 
