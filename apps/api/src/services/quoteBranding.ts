@@ -17,6 +17,7 @@ import { portalBranding } from '../db/schema/portal';
 import { buildSellerSnapshot, type SellerSnapshot } from './sellerSnapshot';
 import { resolveThemeId, resolvePageSize, type DocumentThemeId, type DocumentPageSize } from './documentThemes';
 import { resolvePartnerDocumentLocale } from './documentLocale';
+import { resolveDocumentFooter } from './documentFooter';
 import { resolveInvoicePresentation, type InvoicePresentationSource } from './invoicePresentation';
 
 export interface QuoteBranding {
@@ -128,7 +129,11 @@ async function resolveDocumentBranding(
     partnerName: partner?.name || seller?.name || 'Proposal',
     logoUrl: brand?.logoUrl ?? null,
     primaryColor: brand?.primaryColor ?? null,
-    footer: doc.terms ?? partner?.invoiceFooter ?? brand?.footerText ?? null,
+    footer: resolveDocumentFooter({
+      documentTerms: doc.terms,
+      partnerFooter: partner?.invoiceFooter ?? null,
+      brandingFooter: brand?.footerText ?? null,
+    }),
     inheritedFooter: partner?.invoiceFooter != null
       ? { text: partner.invoiceFooter, source: 'partner' }
       : brand?.footerText != null

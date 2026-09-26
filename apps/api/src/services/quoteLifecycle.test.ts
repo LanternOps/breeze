@@ -393,6 +393,7 @@ describe('sendQuote customer-facing PDF', () => {
 
     queueResult([{ id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null, settings: { language: 'de-DE' } }]); // partnerRow (reused for partner name)
     queueResult([{ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } }]); // org (billing snapshot + recipient)
+    queueResult([]); // freeze: portal_branding footer (#6232)
     queueResult([{ id: 'q1' }]); // update ... returning (claimed)
     queueResult([]); // portalBranding — none configured
     queueResult([{ // final re-select
@@ -458,6 +459,7 @@ describe('sendQuote device-set drift report (#3205 W05)', () => {
     queueResult([descriptorLine]); // quoteDeviceSetEstimate lines
     queueResult([{ id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null }]);
     queueResult([{ name: 'Customer Co', taxId: null, billingContact: null }]);
+    queueResult([]); // freeze: portal_branding footer (#6232)
     queueResult([{ id: 'q1' }]); // draft -> sent claim
     // The email is deferred post-commit (#3905): sendQuote's only remaining DB
     // call here is the final re-select of the committed row.
@@ -534,6 +536,7 @@ describe('sendQuote email delivery status', () => {
     queueResult([org]); // getQuote's draft billTo org lookup
     queueResult([{ id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null, ...partner }]);
     queueResult([org]); // org (billing snapshot + recipient)
+    queueResult([]); // freeze: portal_branding footer (#6232)
     queueResult([{ id: 'q1' }]); // update ... returning (claimed)
   }
 
@@ -950,6 +953,7 @@ describe('sendQuote bill-to snapshot', () => {
     queueResult([org]);    // getQuote's own draft billTo org lookup (status is 'draft' for every quote sent through this helper)
     queueResult([{ id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null }]); // partnerRow (reused for partner name)
     queueResult([org]);    // org (billing snapshot + recipient)
+    queueResult([]); // freeze: portal_branding footer (#6232)
     queueResult([{ id: 'q1' }]); // update ... returning (claimed)
     queueResult([]);       // portalBranding
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
@@ -1094,6 +1098,7 @@ describe('sendQuote presentation snapshot', () => {
     queueResult([{ name: 'Customer Co', taxId: null, billingAddressLine1: null, billingAddressLine2: null, billingAddressCity: null, billingAddressRegion: null, billingAddressPostalCode: null, billingAddressCountry: null }]); // getQuote's own draft billTo org lookup
     queueResult([partnerRow]); // partnerRow
     queueResult([{ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } }]); // org (billing snapshot + recipient)
+    queueResult([]); // freeze: portal_branding footer (#6232)
     queueResult([{ id: 'q1' }]); // update ... returning (claimed)
     queueResult([]);       // portalBranding
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
@@ -1156,6 +1161,97 @@ describe('sendQuote presentation snapshot', () => {
 });
 
 /**
+ * #6232 — the send-time `terms` stamp must use the SAME three-level footer chain
+ * (quote.terms → partners.invoiceFooter → portal_branding.footerText) as every
+ * render path (resolveDocumentFooter). A two-level stamp left a sent quote with
+ * no partner footer following later portal-footer edits instead of freezing.
+ */
+describe('sendQuote footer stamp (#6232)', () => {
+  beforeEach(() => {
+    results.length = 0;
+    setCalls.length = 0;
+    vi.clearAllMocks();
+    capturedPdfArgs = null;
+    sendEmailMock.mockResolvedValue(undefined);
+  });
+
+  function queueSendPath(
+    quote: Record<string, unknown>,
+    partnerRow: Record<string, unknown>,
+    portalFooter: string | null,
+  ) {
+    queueResult([{ id: 'q1' }]); // sendQuote: child row lock
+    queueResult([quote]); // getQuote: quote
+    queueResult([]);       // getQuote: blocks
+    queueResult([{ line: { quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }, deviceGroup: null, site: null }]); // getQuote: lines
+    queueResult([]);       // getQuote: no staged Pax8 order
+    queueResult([]);       // getQuote: no successor revision
+    queueResult([]); // getQuote: listQuoteOrders — order headers
+    queueResult([]); // getQuote: listQuoteOrders — order lines
+    queueResult([{ name: 'Customer Co', taxId: null, billingAddressLine1: null, billingAddressLine2: null, billingAddressCity: null, billingAddressRegion: null, billingAddressPostalCode: null, billingAddressCountry: null }]); // getQuote's own draft billTo org lookup
+    queueResult([partnerRow]); // freeze: partnerRow
+    queueResult([{ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } }]); // freeze: org
+    queueResult([{ footerText: portalFooter }]); // freeze: portal_branding footer
+    queueResult([{ id: 'q1' }]); // claim update ... returning
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
+    queueResult([{ logoUrl: null, primaryColor: null, footerText: portalFooter }]); // deferred email: portalBranding
+  }
+
+  const baseQuote = {
+    id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft',
+    taxRate: null, depositType: 'none', depositPercent: null,
+    quoteNumber: 'Q-2026-0001', issueDate: '2026-01-01', expiryDate: null,
+    total: '100.00', currencyCode: 'USD', terms: null, termsAndConditions: null,
+    sellerSnapshot: null, billToName: null, billToTaxId: null,
+    presentationSnapshot: null, documentLocale: null,
+  };
+  const partner = (invoiceFooter: string | null) => ({
+    id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter,
+  });
+
+  function claimSet() {
+    const found = setCalls.find((s) => s.status === 'sent' && 'presentationSnapshot' in s);
+    expect(found, 'send update should be the draft→sent claim').toBeDefined();
+    return found!;
+  }
+
+  it('freezes the portal-branding footer when neither the quote nor the partner sets one', async () => {
+    queueSendPath(baseQuote, partner(null), 'Portal footer');
+    await sendQuote('q1', actor);
+    expect(claimSet().terms).toBe('Portal footer');
+  });
+
+  it('prefers the partner footer over the portal-branding footer', async () => {
+    queueSendPath(baseQuote, partner('Partner footer'), 'Portal footer');
+    await sendQuote('q1', actor);
+    expect(claimSet().terms).toBe('Partner footer');
+  });
+
+  it("keeps the quote's own footer line over both inherited levels", async () => {
+    queueSendPath({ ...baseQuote, terms: 'Quote footer' }, partner('Partner footer'), 'Portal footer');
+    await sendQuote('q1', actor);
+    expect(claimSet().terms).toBe('Quote footer');
+  });
+
+  it('stamps null only when all three levels are empty', async () => {
+    queueSendPath(baseQuote, partner(null), null);
+    await sendQuote('q1', actor);
+    expect(claimSet().terms).toBeNull();
+  });
+
+  it('renders the send-time emailed PDF with the frozen footer, not a two-level live chain', async () => {
+    queueSendPath(baseQuote, partner('Partner footer'), 'Portal footer');
+    await (await sendQuote('q1', actor)).deliverEmail();
+    expect(capturedPdfArgs).not.toBeNull();
+    // renderQuotePdf(quote, blocks, lines, loadImage, branding, ...) — the
+    // emailed attachment must carry the same stamped footer every later render
+    // (admin PDF, portal PDF) reads off the sent quote.
+    expect((capturedPdfArgs![0] as Record<string, unknown>).terms).toBe('Partner footer');
+    expect((capturedPdfArgs![4] as Record<string, unknown>).footer).toBe('Partner footer');
+  });
+});
+
+/**
  * Multi-currency wave 5 (#3777): sendQuote stamps `document_locale` once, at the
  * draft→sent claim, from the partner's language unless the draft already
  * carries one. resendQuote never writes the column (asserted in its own suite).
@@ -1181,6 +1277,7 @@ describe('sendQuote document_locale stamp', () => {
     queueResult([{ name: 'Customer Co', taxId: null, billingAddressLine1: null, billingAddressLine2: null, billingAddressCity: null, billingAddressRegion: null, billingAddressPostalCode: null, billingAddressCountry: null }]); // getQuote's own draft billTo org lookup
     queueResult([partnerRow]); // partnerRow
     queueResult([{ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } }]); // org (billing snapshot + recipient)
+    queueResult([]); // freeze: portal_branding footer (#6232)
     queueResult([{ id: 'q1' }]); // update ... returning (claimed)
     queueResult([]);       // portalBranding
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
@@ -1356,6 +1453,7 @@ describe('sendQuote contract-variable gate', () => {
     queueResult([templateRow]);             // loadContractBlockRenderData: template select
     queueResult([{ id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null }]); // partnerRow
     queueResult([org]);                     // org (billing snapshot + recipient)
+    queueResult([]); // freeze: portal_branding footer (#6232)
     queueResult([{ id: 'q1' }]);            // update ... returning (claimed)
     // #3905 — the final re-select now runs INSIDE the send transaction, before
     // the deferred delivery's own reads.
@@ -1403,6 +1501,7 @@ describe('sendQuote contract-variable gate', () => {
     queueResult([templateRow]);              // send gate: template
     queueResult([{ id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null }]); // partnerRow
     queueResult([org]);                      // org (billing snapshot + recipient)
+    queueResult([]); // freeze: portal_branding footer (#6232)
     queueResult([{ id: 'q1' }]);             // update ... returning (claimed)
     // #3905 — the final re-select now runs INSIDE the send transaction, before
     // the deferred delivery's own reads.
