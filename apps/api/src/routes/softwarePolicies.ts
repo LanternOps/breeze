@@ -17,6 +17,11 @@ import {
   recordSoftwarePolicyAudit,
 } from '../services/softwarePolicyService';
 import { computeInstallPreviewEligibleDeviceCount } from '../services/softwarePolicyInstallPreview';
+import {
+  MAX_REMEDIATION_DEVICES,
+  implicitRemediationConditions,
+  queryRemediationPreview,
+} from '../services/softwarePolicyRemediationPreview';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import { assertMayArmInstall } from '../services/softwarePolicyAuthorization';
@@ -131,7 +136,7 @@ const violationsQuerySchema = z.object({
 });
 
 const optionalDeviceIdsSchema = z.object({
-  deviceIds: z.array(z.string().guid()).min(1).max(500).optional(),
+  deviceIds: z.array(z.string().guid()).min(1).max(MAX_REMEDIATION_DEVICES).optional(),
 });
 
 export function resolveOrgIdForWrite(
@@ -817,9 +822,7 @@ softwarePoliciesRoutes.post(
     }
 
     const perms = c.get('permissions') as UserPermissions | undefined;
-    const siteAllowedDeviceIds = policy.orgId
-      ? await resolveSiteAllowedDeviceIds(policy.orgId, perms)
-      : (perms?.allowedSiteIds ? [] : null);
+    const siteAllowedDeviceIds = await resolveRemediationSiteAllowlist(policy, perms);
 
     let targetDeviceIds = parsed.data.deviceIds
       ? Array.from(new Set(parsed.data.deviceIds))
@@ -887,6 +890,60 @@ softwarePoliciesRoutes.post(
   }
 );
 
+// The site allowlist for a remediation/preview caller. `allowedSiteIds` is only
+// ever set for org-scope users, so `policy.orgId` is the relevant org. A
+// partner-wide policy (orgId NULL, #2126) is RLS-invisible to org-scope
+// callers, so a site-restricted caller can't normally get here — if one
+// somehow does, fail closed (empty allowlist = no devices).
+async function resolveRemediationSiteAllowlist(
+  policy: { orgId: string | null },
+  perms: UserPermissions | undefined,
+): Promise<string[] | null> {
+  return policy.orgId
+    ? resolveSiteAllowedDeviceIds(policy.orgId, perms)
+    : (perms?.allowedSiteIds ? [] : null);
+}
+
+// #3616 — the dry run behind the Remediate confirmation dialog (incident
+// #3381: 259 devices lost software to one click with no count shown). It
+// resolves the same server-side target set the remediate route would, narrowed
+// to devices that hold at least one `unauthorized` violation (the only kind the
+// uninstall worker acts on), and returns the exact `deviceIds` the dialog must
+// send back on confirm — so what runs is what was shown, and the set cannot
+// widen between preview and confirm. Read-only, like /:id/install-preview:
+// arms and queues nothing, so it takes the read gate and no MFA (the confirm
+// POST keeps both the execute permission and MFA).
+softwarePoliciesRoutes.get(
+  '/:id/remediate/preview',
+  requireSoftwarePolicyRead,
+  zValidator('param', policyIdParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    const { id } = c.req.valid('param');
+
+    const policy = await getPolicyWithAccess(id, auth);
+    if (!policy) {
+      return c.json({ error: 'Policy not found' }, 404);
+    }
+    if (policy.mode === 'audit') {
+      return c.json({ error: 'Remediation is not available for audit-only policies' }, 400);
+    }
+
+    const siteAllowedDeviceIds = await resolveRemediationSiteAllowlist(policy, perms);
+    const preview = await queryRemediationPreview({
+      policyId: policy.id,
+      orgCondition: auth.orgCondition(devices.orgId),
+      siteAllowedDeviceIds,
+    });
+
+    return c.json({
+      policy: { id: policy.id, name: policy.name, mode: policy.mode },
+      ...preview,
+    });
+  }
+);
+
 softwarePoliciesRoutes.post(
   '/:id/remediate',
   requireSoftwarePolicyExecute,
@@ -927,9 +984,7 @@ softwarePoliciesRoutes.post(
     // callers, so a site-restricted caller can't normally reach this branch —
     // if one somehow does, fail closed (empty allowlist = no devices).
     const perms = c.get('permissions') as UserPermissions | undefined;
-    const siteAllowedDeviceIds = policy.orgId
-      ? await resolveSiteAllowedDeviceIds(policy.orgId, perms)
-      : (perms?.allowedSiteIds ? [] : null);
+    const siteAllowedDeviceIds = await resolveRemediationSiteAllowlist(policy, perms);
 
     if (targetDeviceIds.length > 0) {
       // Deny the whole batch (matching sentinelOne.ts hasDeniedDeviceSite) if
@@ -951,18 +1006,16 @@ softwarePoliciesRoutes.post(
         .where(and(...deviceConditions));
       targetDeviceIds = allowedDevices.map((device) => device.id);
     } else {
-      const complianceConditions: SQL[] = [
-        eq(softwareComplianceStatus.policyId, policy.id),
-        eq(softwareComplianceStatus.status, 'violation'),
-      ];
-      const orgCondition = auth.orgCondition(devices.orgId);
-      if (orgCondition) complianceConditions.push(orgCondition);
-      // Narrow the implicit target set to the caller's accessible devices.
-      if (siteAllowedDeviceIds) {
-        if (siteAllowedDeviceIds.length === 0) {
-          return c.json({ message: 'No matching violating devices found for remediation', queued: 0 });
-        }
-        complianceConditions.push(inArray(softwareComplianceStatus.deviceId, siteAllowedDeviceIds));
+      // Legacy empty-body path: the server resolves the set on its own. The
+      // web UI no longer uses it (#3616) — it previews via GET
+      // /:id/remediate/preview and confirms with the exact previewed ids.
+      const complianceConditions = implicitRemediationConditions(
+        policy.id,
+        auth.orgCondition(devices.orgId),
+        siteAllowedDeviceIds,
+      );
+      if (!complianceConditions) {
+        return c.json({ message: 'No matching violating devices found for remediation', queued: 0 });
       }
 
       const rows = await db
@@ -970,7 +1023,7 @@ softwarePoliciesRoutes.post(
         .from(softwareComplianceStatus)
         .innerJoin(devices, eq(softwareComplianceStatus.deviceId, devices.id))
         .where(and(...complianceConditions))
-        .limit(500);
+        .limit(MAX_REMEDIATION_DEVICES);
 
       targetDeviceIds = Array.from(new Set(rows.map((row) => row.deviceId)));
     }
