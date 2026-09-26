@@ -1651,7 +1651,12 @@
       "source": "Source"
     },
     "thirdParty": "Third-party",
-    "uncategorized": "Uncategorized"
+    "uncategorized": "Uncategorized",
+    "installFailure": {
+      "badge": "Install failed",
+      "noReason": "No reason reported by the agent",
+      "failedAt": "Last install attempt failed: {{when}}"
+    }
   },
   "devicePerformanceGraphs": {
     "description": "CPU, RAM, disk usage and network bandwidth over time",

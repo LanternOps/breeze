@@ -1651,7 +1651,12 @@
       "source": "Origine"
     },
     "thirdParty": "Di terze parti",
-    "uncategorized": "Senza categoria"
+    "uncategorized": "Senza categoria",
+    "installFailure": {
+      "badge": "Installazione non riuscita",
+      "noReason": "Nessun motivo segnalato dall'agente",
+      "failedAt": "Ultimo tentativo di installazione non riuscito: {{when}}"
+    }
   },
   "devicePerformanceGraphs": {
     "description": "CPU, RAM, utilizzo del disco e larghezza di banda di rete nel tempo",

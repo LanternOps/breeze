@@ -1651,7 +1651,12 @@
       "source": "Source"
     },
     "thirdParty": "Tiers",
-    "uncategorized": "Non catégorisée"
+    "uncategorized": "Non catégorisée",
+    "installFailure": {
+      "badge": "Échec de l'installation",
+      "noReason": "Aucune raison signalée par l'agent",
+      "failedAt": "Dernière tentative d'installation échouée : {{when}}"
+    }
   },
   "devicePerformanceGraphs": {
     "description": "CPU, RAM, utilisation du disque et bande passante réseau au fil du temps",
