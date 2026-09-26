@@ -123,6 +123,17 @@ vi.mock('./accounting/accountingPaymentPush', async (importOriginal) => ({
   requestPaymentDelete,
 }));
 
+// Xero W01 (Task 6): the partial-refund divergence flag is scoped to the
+// partner's ACTIVE accounting connection. Defaults to a connected partner so
+// every pre-existing test in this file keeps its prior behaviour; the two
+// tests owned by Task 6 override this per-case.
+const { resolveActiveConnectionMock } = vi.hoisted(() => ({
+  resolveActiveConnectionMock: vi.fn(),
+}));
+vi.mock('./accounting/accountingConnectionService', () => ({
+  resolveActiveConnection: resolveActiveConnectionMock,
+}));
+
 const { enqueuePaymentPush, enqueuePaymentDelete } = vi.hoisted(() => ({
   enqueuePaymentPush: vi.fn().mockResolvedValue(true),
   enqueuePaymentDelete: vi.fn().mockResolvedValue(true),
@@ -154,6 +165,8 @@ beforeEach(() => {
   enqueuePaymentPush.mockReset(); enqueuePaymentPush.mockResolvedValue(true);
   enqueuePaymentDelete.mockReset(); enqueuePaymentDelete.mockResolvedValue(true);
   processPendingReversals.mockReset(); processPendingReversals.mockResolvedValue(0);
+  resolveActiveConnectionMock.mockReset();
+  resolveActiveConnectionMock.mockResolvedValue({ id: 'conn-1', partnerId: 'p1', provider: 'quickbooks' });
 });
 
 describe('recordStripePayment', () => {
@@ -350,14 +363,15 @@ describe('recordStripePayment', () => {
 
 describe('reflectStripeRefund', () => {
   it('full refund voids the linked payment (delete, NOT update) and recomputes', async () => {
-    // db call order: select mapping → select payment (pre-delete audit snapshot) →
-    // delete payment → update mapping → (recompute, mocked) →
-    // invoicePartnerId: select invoice → (emit, mocked)
+    // db call order: select mapping → invoicePartnerId select (Xero W01: hoisted
+    // above the partial-refund branch, so it runs before either arm) → select
+    // payment (pre-delete audit snapshot) → delete payment → update mapping →
+    // (recompute, mocked) → (emit, mocked)
     queueResult([{ id: 'm1', invoiceId: 'inv1', orgId: 'org1', invoicePaymentId: 'pay1', stripeAccountId: 'acct_1' }]); // mapping
+    queueResult([{ partnerId: 'p1' }]); // invoicePartnerId select
     queueResult([{ id: 'pay1', invoiceId: 'inv1', orgId: 'org1', amount: '100.00', method: 'card', recordedBy: null }]); // payment snapshot
     queueResult([]); // delete payment
     queueResult([]); // update mapping → refunded
-    queueResult([{ partnerId: 'p1' }]); // invoicePartnerId select
 
     await reflectStripeRefund({ stripePaymentIntentId: 'pi_1', amountRefundedCents: 10000, chargeAmountCents: 10000, currency: 'USD', stripeAccountId: 'acct_1' });
 
@@ -375,10 +389,10 @@ describe('reflectStripeRefund', () => {
     // entry must be written from a snapshot read BEFORE the delete (mirrors the
     // manual void route's pre-destroy capture, R2). System-scope writer (no req ctx).
     queueResult([{ id: 'm1', invoiceId: 'inv1', orgId: 'org1', invoicePaymentId: 'pay1', stripeAccountId: 'acct_1' }]); // mapping
+    queueResult([{ partnerId: 'p1' }]); // invoicePartnerId select
     queueResult([{ id: 'pay1', invoiceId: 'inv1', orgId: 'org1', amount: '100.00', method: 'card', recordedBy: 'usr1' }]); // payment snapshot
     queueResult([]); // delete payment
     queueResult([]); // update mapping → refunded
-    queueResult([{ partnerId: 'p1' }]); // invoicePartnerId select
 
     await reflectStripeRefund({ stripePaymentIntentId: 'pi_1', amountRefundedCents: 10000, chargeAmountCents: 10000, currency: 'USD', stripeAccountId: 'acct_1' });
 
@@ -403,10 +417,10 @@ describe('reflectStripeRefund', () => {
 
   it('partial refund does NOT write a void audit event (the row survives, only reduced)', async () => {
     queueResult([{ id: 'm1', invoiceId: 'inv1', orgId: 'org1', invoicePaymentId: 'pay1', stripeAccountId: 'acct_1' }]); // mapping
+    queueResult([{ partnerId: 'p1' }]); // invoicePartnerId select
     queueResult([]); // update payment amount
     queueResult([]); // update mapping → partially_refunded
     queueResult([]); // accounting_entity_mappings divergence flag (Phase D2)
-    queueResult([{ partnerId: 'p1' }]); // invoicePartnerId select
 
     await reflectStripeRefund({ stripePaymentIntentId: 'pi_1', amountRefundedCents: 4000, chargeAmountCents: 10000, currency: 'USD', stripeAccountId: 'acct_1' });
 
@@ -415,10 +429,10 @@ describe('reflectStripeRefund', () => {
 
   it('partial refund reduces the payment amount (update, NOT delete) and recomputes', async () => {
     queueResult([{ id: 'm1', invoiceId: 'inv1', orgId: 'org1', invoicePaymentId: 'pay1', stripeAccountId: 'acct_1' }]); // mapping
+    queueResult([{ partnerId: 'p1' }]); // invoicePartnerId select
     queueResult([]); // update payment amount
     queueResult([]); // update mapping → partially_refunded
     queueResult([]); // accounting_entity_mappings divergence flag (Phase D2)
-    queueResult([{ partnerId: 'p1' }]); // invoicePartnerId select
 
     await reflectStripeRefund({ stripePaymentIntentId: 'pi_1', amountRefundedCents: 4000, chargeAmountCents: 10000, currency: 'USD', stripeAccountId: 'acct_1' });
 
@@ -433,10 +447,10 @@ describe('reflectStripeRefund', () => {
   it('partial refund is currency-aware for zero-decimal currencies (no /100)', async () => {
     // JPY: remaining = 10000 - 4000 = 6000 minor units → "6000.00" major (NOT "60.00").
     queueResult([{ id: 'm1', invoiceId: 'inv1', orgId: 'org1', invoicePaymentId: 'pay1', stripeAccountId: 'acct_1' }]); // mapping
+    queueResult([{ partnerId: 'p1' }]); // invoicePartnerId select
     queueResult([]); // update payment amount
     queueResult([]); // update mapping → partially_refunded
     queueResult([]); // accounting_entity_mappings divergence flag (Phase D2)
-    queueResult([{ partnerId: 'p1' }]); // invoicePartnerId select
 
     await reflectStripeRefund({ stripePaymentIntentId: 'pi_1', amountRefundedCents: 4000, chargeAmountCents: 10000, currency: 'JPY', stripeAccountId: 'acct_1' });
 
@@ -485,19 +499,20 @@ describe('Phase D2 — QuickBooks payment push/delete hooks', () => {
   /** The reads reflectStripeRefund issues on the FULL-refund arm. */
   function queueFullRefund() {
     queueResult([{ id: 'm1', invoiceId: 'inv1', orgId: 'org1', invoicePaymentId: 'pay1', stripeAccountId: 'acct_1' }]); // mapping
+    queueResult([{ partnerId: 'p1' }]); // invoicePartnerId select
     queueResult([{ id: 'pay1', invoiceId: 'inv1', orgId: 'org1', amount: '107.00', method: 'card', recordedBy: null }]); // snapshot
     queueResult([]); // delete payment
     queueResult([]); // update stripe mapping -> refunded
-    queueResult([{ partnerId: 'p1' }]); // invoicePartnerId select
   }
 
-  /** The reads reflectStripeRefund issues on the PARTIAL-refund arm. */
+  /** The reads reflectStripeRefund issues on the PARTIAL-refund arm. `resolveActiveConnection`
+   *  is mocked (Xero W01, Task 6) and does not consume from this queue. */
   function queuePartialRefund(mappingRows: unknown[] = [{ id: 'map-1' }]) {
     queueResult([{ id: 'm1', invoiceId: 'inv1', orgId: 'org1', invoicePaymentId: 'pay1', stripeAccountId: 'acct_1' }]); // mapping
+    queueResult([{ partnerId: 'p1' }]); // invoicePartnerId select
     queueResult([]); // update payment amount
     queueResult([]); // update stripe mapping -> partially_refunded
     queueResult(mappingRows); // accounting_entity_mappings divergence flag RETURNING
-    queueResult([{ partnerId: 'p1' }]); // invoicePartnerId select
   }
 
   const refundInput = () => ({
@@ -630,6 +645,30 @@ describe('Phase D2 — QuickBooks payment push/delete hooks', () => {
     expect(params).toContain('pay1');
     expect(params).toContain('payment');
     expect(params).toContain(true);
+  });
+
+  it('flags only the payment mapping under the partner\'s active connection (integration_id filter, Xero W01)', async () => {
+    resolveActiveConnectionMock.mockResolvedValue({ id: 'conn-1', partnerId: 'p1', provider: 'quickbooks' });
+    queuePartialRefund();
+
+    await reflectStripeRefund({ ...refundInput(), amountRefundedCents: 6700, chargeAmountCents: 10700 });
+
+    expect(resolveActiveConnectionMock).toHaveBeenCalledWith(db, 'p1');
+    const where = lastStmtOn(accountingEntityMappings, 'update')!.where;
+    const { sql, params } = dialect.sqlToQuery(where as SQL);
+    expect(sql).toContain('"accounting_entity_mappings"."integration_id" = $');
+    expect(sql).toContain('"accounting_entity_mappings"."partner_id" = $');
+    expect(params).toContain('conn-1');
+    expect(params).toContain('p1');
+  });
+
+  it('skips the divergence flag, without throwing, when the partner has no accounting connection', async () => {
+    resolveActiveConnectionMock.mockResolvedValue(null);
+    queuePartialRefund();
+
+    await expect(reflectStripeRefund({ ...refundInput(), amountRefundedCents: 6700, chargeAmountCents: 10700 }))
+      .resolves.toBeUndefined();
+    expect(lastStmtOn(accountingEntityMappings, 'update')).toBeUndefined();
   });
 
   it('never 500s the webhook on a committed capture because Redis is down', async () => {

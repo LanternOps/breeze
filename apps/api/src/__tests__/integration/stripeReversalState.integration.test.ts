@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
+  accountingConnections, accountingEntityMappings,
   invoicePayments, invoices, invoiceStripePayments, organizations, partners,
   stripeConnectAccounts, stripeFinancialEvents, users,
 } from '../../db/schema';
@@ -72,6 +73,24 @@ async function seed(linkPayment = true, invoiceAmount = 100) {
     });
   }
   return { ...fixture, invoiceId: invoice.id, paymentIntentId: `pi_${invoice.id}`, actor };
+}
+
+/** Xero W01 (Task 6): a partner's accounting connection + a `payment`
+ *  mapping Breeze pushed for the seeded invoice payment, so the partial-
+ *  refund divergence flag has something to match against. */
+async function seedPushedPaymentMapping(f: Awaited<ReturnType<typeof seed>>, paymentId: string) {
+  return withSystemDbAccessContext(async () => {
+    const [conn] = await db.insert(accountingConnections).values({
+      partnerId: f.partnerId, provider: 'quickbooks',
+    }).returning({ id: accountingConnections.id });
+    const [mapping] = await db.insert(accountingEntityMappings).values({
+      integrationId: conn!.id, partnerId: f.partnerId,
+      breezeEntityType: 'payment', breezeEntityId: paymentId,
+      remoteEntityType: 'Payment', remoteEntityId: 'qbo-payment-1',
+      linkStatus: 'confirmed', syncStatus: 'synced', breezeOrigin: true,
+    }).returning({ id: accountingEntityMappings.id });
+    return { connectionId: conn!.id, mappingId: mapping!.id };
+  });
 }
 
 function financialEvent(f: Awaited<ReturnType<typeof seed>>, overrides: Record<string, unknown> = {}) {
@@ -328,5 +347,38 @@ describe('Stripe financial reversal state (real PostgreSQL)', () => {
       status: 'blocked', paymentIntentId: null, nextAttemptAt: null,
       lastError: 'Refund event evt_no_pi_binding has no PaymentIntent binding',
     });
+  });
+
+  runDb('a partial refund flags only the payment mapping under the partner\'s active accounting connection (Xero W01, Task 6)', async () => {
+    const f = await seed();
+    const [stripeMapping] = await withSystemDbAccessContext(() => db.select().from(invoiceStripePayments)
+      .where(eq(invoiceStripePayments.stripePaymentIntentId, f.paymentIntentId)));
+    const { mappingId } = await seedPushedPaymentMapping(f, stripeMapping!.invoicePaymentId!);
+
+    await ingestStripeFinancialEvent(financialEvent(f, {
+      stripeEventId: 'evt_partial_refund_flag', refundedAmountMinor: 4_000,
+    }));
+
+    const [flagged] = await withSystemDbAccessContext(() => db.select().from(accountingEntityMappings)
+      .where(eq(accountingEntityMappings.id, mappingId)));
+    expect(flagged).toMatchObject({ syncStatus: 'error' });
+    expect(flagged!.lastError).toMatch(/Refunded in Stripe, total 40\.00/);
+  });
+
+  runDb('skips the divergence flag, without throwing, when the partner has no accounting connection (Xero W01, Task 6)', async () => {
+    // No accounting_connections row exists for this partner — the FK from
+    // accounting_entity_mappings to (connection id, partner id) makes it
+    // impossible to seed a `payment` mapping in this state, which is exactly
+    // the guarantee resolveActiveConnection's predicate re-asserts: nothing to
+    // flag, and the refund must still apply cleanly.
+    const f = await seed();
+
+    await expect(ingestStripeFinancialEvent(financialEvent(f, {
+      stripeEventId: 'evt_partial_refund_no_connection', refundedAmountMinor: 4_000,
+    }))).resolves.toMatchObject({ state: 'applied' });
+
+    const [mapping] = await withSystemDbAccessContext(() => db.select().from(invoiceStripePayments)
+      .where(eq(invoiceStripePayments.stripePaymentIntentId, f.paymentIntentId)));
+    expect(mapping).toMatchObject({ status: 'partially_refunded', refundedAmountMinor: '4000' });
   });
 });
