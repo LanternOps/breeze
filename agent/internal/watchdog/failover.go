@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/authstate"
 	"github.com/breeze-rmm/agent/internal/hostpolicy"
 	"github.com/breeze-rmm/agent/internal/netcache"
 )
@@ -37,6 +39,59 @@ type RestartStats struct {
 	FlapDetected  bool
 }
 
+// Failover auth backoff (#2796). A watchdog in FAILOVER for a device whose
+// credentials the server rejects used to POST /heartbeat every
+// FailoverPollInterval (30s → 2880 requests/day) forever — ~50x the agent's
+// own auth-dead rate. Rejections now back the client off exponentially with
+// jitter: ~1m, 2m, 4m ... capped at 30m (the agent's own ceiling), i.e.
+// roughly 48 attempts/day at steady state. It keeps retrying rather than
+// giving up so a device that is re-approved or re-credentialed recovers on
+// its own within one ceiling.
+const (
+	// failoverAuthThreshold consecutive rejections arm the backoff, so a
+	// single transient 401 (deploy/restore blip) costs nothing extra.
+	failoverAuthThreshold      = 2
+	failoverAuthInitialBackoff = 1 * time.Minute
+	failoverAuthMaxBackoff     = 30 * time.Minute
+	failoverAuthJitter         = 0.2
+)
+
+// ErrAuthBackoff is returned WITHOUT sending a request while the server has
+// been rejecting the watchdog's credentials and the backoff window has not
+// elapsed. Callers treat it as a skipped tick, not a failure.
+var ErrAuthBackoff = errors.New("failover: skipped, server rejected watchdog credentials; backing off")
+
+// AuthRejectedError is a 401/403 response from the API.
+type AuthRejectedError struct {
+	Op         string
+	StatusCode int
+	Body       string
+}
+
+func (e *AuthRejectedError) Error() string {
+	return fmt.Sprintf("failover: %s returned %d: %s", e.Op, e.StatusCode, e.Body)
+}
+
+// IsAuthRejected reports whether err is (or wraps) an AuthRejectedError.
+func IsAuthRejected(err error) bool {
+	var ae *AuthRejectedError
+	return errors.As(err, &ae)
+}
+
+// NewFailoverAuthMonitor returns the auth monitor schedule the failover
+// client uses. Extra options (tests) are applied after the defaults.
+func NewFailoverAuthMonitor(opts ...authstate.Option) *authstate.Monitor {
+	base := []authstate.Option{
+		authstate.WithBackoff(failoverAuthInitialBackoff, failoverAuthMaxBackoff),
+		authstate.WithJitter(failoverAuthJitter),
+	}
+	return authstate.NewMonitor(failoverAuthThreshold, append(base, opts...)...)
+}
+
+func isAuthStatus(code int) bool {
+	return code == http.StatusUnauthorized || code == http.StatusForbidden
+}
+
 // FailoverClient is an HTTP client for API communication during failover mode.
 type FailoverClient struct {
 	mu      sync.RWMutex
@@ -56,6 +111,11 @@ type FailoverClient struct {
 	// IPC buffer absorbs the window), and a bounded stall beats a
 	// permanently dead revive channel.
 	pollClient *http.Client
+
+	// auth gates SendHeartbeat/PollCommands on repeated 401/403s — see
+	// ErrAuthBackoff. Replaceable via SetAuthMonitor so the backoff can
+	// outlive one failover window.
+	auth *authstate.Monitor
 }
 
 // NewFailoverClient creates a FailoverClient with a 30-second timeout. If
@@ -79,6 +139,48 @@ func NewFailoverClient(baseURL, agentID, token string, tlsConfig *tls.Config) *F
 			Timeout:   90 * time.Second,
 			Transport: transport,
 		},
+		auth: NewFailoverAuthMonitor(),
+	}
+}
+
+// SetAuthMonitor replaces the auth backoff monitor. The watchdog run loop
+// passes one monitor for the life of the process: failoverClient is rebuilt
+// on every FAILOVER entry, and a per-client monitor would restart the
+// backoff from scratch each time.
+func (c *FailoverClient) SetAuthMonitor(m *authstate.Monitor) {
+	if m == nil {
+		return
+	}
+	c.mu.Lock()
+	c.auth = m
+	c.mu.Unlock()
+}
+
+func (c *FailoverClient) authMonitor() *authstate.Monitor {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.auth
+}
+
+// AuthRetryIn reports how long until the next request is allowed through
+// the auth backoff; zero when not backing off.
+func (c *FailoverClient) AuthRetryIn() time.Duration {
+	return c.authMonitor().RetryIn()
+}
+
+// noteAuthStatus feeds a response status into the auth monitor and returns
+// the error to surface for a non-200 (nil for 200).
+func (c *FailoverClient) noteAuthStatus(op string, code int, body []byte) error {
+	m := c.authMonitor()
+	switch {
+	case code == http.StatusOK:
+		m.RecordSuccess()
+		return nil
+	case isAuthStatus(code):
+		m.RecordAuthFailure()
+		return &AuthRejectedError{Op: op, StatusCode: code, Body: string(body)}
+	default:
+		return fmt.Errorf("failover: %s returned %d: %s", op, code, string(body))
 	}
 }
 
@@ -123,6 +225,9 @@ func (c *FailoverClient) setHeaders(req *http.Request) {
 // and silently strips it, so shipping it was dead wire data. Diagnostic
 // journal entries reach the server via ShipLogs / the /logs endpoint instead.
 func (c *FailoverClient) SendHeartbeat(watchdogVersion, currentState string, restartStats RestartStats) (*HeartbeatResponse, error) {
+	if c.authMonitor().ShouldSkip() {
+		return nil, ErrAuthBackoff
+	}
 	// Build-edition capability signal (#4072): a reported edition tells the
 	// server this binary carries the one-way self-host → hosted allowance in
 	// updater.editionAllowed (both ship in the same build), so it may be
@@ -165,8 +270,8 @@ func (c *FailoverClient) SendHeartbeat(watchdogVersion, currentState string, res
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failover: heartbeat returned %d: %s", resp.StatusCode, string(respBody))
+	if err := c.noteAuthStatus("heartbeat", resp.StatusCode, respBody); err != nil {
+		return nil, err
 	}
 
 	var result HeartbeatResponse
@@ -178,6 +283,9 @@ func (c *FailoverClient) SendHeartbeat(watchdogVersion, currentState string, res
 
 // PollCommands GETs pending commands from the API with role=watchdog.
 func (c *FailoverClient) PollCommands() ([]FailoverCommand, error) {
+	if c.authMonitor().ShouldSkip() {
+		return nil, ErrAuthBackoff
+	}
 	url := fmt.Sprintf("%s/api/v1/agents/%s/commands?role=watchdog", c.BaseURL(), c.agentID)
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
@@ -192,8 +300,8 @@ func (c *FailoverClient) PollCommands() ([]FailoverCommand, error) {
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failover: poll returned %d: %s", resp.StatusCode, string(respBody))
+	if err := c.noteAuthStatus("poll", resp.StatusCode, respBody); err != nil {
+		return nil, err
 	}
 
 	var result struct {

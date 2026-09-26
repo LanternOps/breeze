@@ -44,23 +44,97 @@ const (
 type Monitor struct {
 	threshold int32
 
+	// Backoff schedule. NewMonitor defaults these to the package constants
+	// (the agent's schedule); options may override them.
+	initialBackoff time.Duration
+	maxBackoff     time.Duration
+	// windowJitter, when > 0, randomises each skip window by +/- this
+	// fraction of the backoff. Zero (the default) keeps the window equal to
+	// the backoff exactly.
+	windowJitter float64
+
 	mu          sync.Mutex
 	consecutive int32
 	dead        bool
 	backoff     time.Duration
+	// window is the skip window currently in force: the backoff, jittered
+	// by windowJitter when set. ShouldSkip compares against it.
+	window      time.Duration
 	lastFailure time.Time
 
 	// now is the clock, injectable for tests. Use clock() to read it.
 	now func() time.Time
 }
 
+// Option customises a Monitor. The agent uses the defaults; the watchdog's
+// failover client supplies its own schedule (#2796).
+type Option func(*Monitor)
+
+// WithBackoff overrides the initial and maximum backoff. Non-positive values
+// keep the default; max is raised to initial if it is smaller.
+func WithBackoff(initial, max time.Duration) Option {
+	return func(m *Monitor) {
+		if initial > 0 {
+			m.initialBackoff = initial
+		}
+		if max > 0 {
+			m.maxBackoff = max
+		}
+		if m.maxBackoff < m.initialBackoff {
+			m.maxBackoff = m.initialBackoff
+		}
+	}
+}
+
+// WithJitter randomises every skip window by +/- frac of the current backoff,
+// so many clients that were rejected at the same moment do not retry in
+// lockstep. frac is clamped to [0, 0.5].
+func WithJitter(frac float64) Option {
+	return func(m *Monitor) {
+		if frac < 0 {
+			frac = 0
+		}
+		if frac > 0.5 {
+			frac = 0.5
+		}
+		m.windowJitter = frac
+	}
+}
+
+// WithClock injects the clock (tests).
+func WithClock(now func() time.Time) Option {
+	return func(m *Monitor) {
+		if now != nil {
+			m.now = now
+		}
+	}
+}
+
 // NewMonitor creates an auth monitor that trips after `threshold`
-// consecutive 401 responses.
-func NewMonitor(threshold int) *Monitor {
-	return &Monitor{
-		threshold: int32(threshold),
-		backoff:   initialBackoff,
-		now:       time.Now,
+// consecutive auth failures.
+func NewMonitor(threshold int, opts ...Option) *Monitor {
+	m := &Monitor{
+		threshold:      int32(threshold),
+		initialBackoff: initialBackoff,
+		maxBackoff:     maxBackoff,
+		now:            time.Now,
+	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	m.backoff = m.initialBackoff
+	m.window = m.backoff
+	return m
+}
+
+// setBackoffLocked sets the backoff and derives the skip window from it.
+// Caller holds m.mu.
+func (m *Monitor) setBackoffLocked(d time.Duration) {
+	m.backoff = d
+	m.window = d
+	if m.windowJitter > 0 {
+		j := float64(d) * m.windowJitter * (2*rand.Float64() - 1)
+		m.window = time.Duration(float64(d) + j)
 	}
 }
 
@@ -87,17 +161,18 @@ func (m *Monitor) RecordAuthFailure() {
 			return
 		}
 		m.dead = true
-		m.backoff = initialBackoff
+		m.setBackoffLocked(m.initialBackoff)
 		slog.Warn("auth-dead: consecutive 401s reached threshold, backing off",
 			"consecutive", m.consecutive, "threshold", m.threshold)
 		return
 	}
 
 	// Already dead — a backoff-gated retry failed. Lengthen the backoff.
-	m.backoff = time.Duration(float64(m.backoff) * backoffFactor)
-	if m.backoff > maxBackoff {
-		m.backoff = maxBackoff
+	next := time.Duration(float64(m.backoff) * backoffFactor)
+	if next > m.maxBackoff {
+		next = m.maxBackoff
 	}
+	m.setBackoffLocked(next)
 }
 
 // RecordSuccess clears the auth-dead state and resets the counter and backoff.
@@ -106,7 +181,7 @@ func (m *Monitor) RecordSuccess() {
 	wasDead := m.dead
 	m.dead = false
 	m.consecutive = 0
-	m.backoff = initialBackoff
+	m.setBackoffLocked(m.initialBackoff)
 	m.mu.Unlock()
 
 	if wasDead {
@@ -125,7 +200,21 @@ func (m *Monitor) ShouldSkip() bool {
 	if !m.dead {
 		return false
 	}
-	return m.clock().Sub(m.lastFailure) < m.backoff
+	return m.clock().Sub(m.lastFailure) < m.window
+}
+
+// RetryIn reports how long until ShouldSkip next returns false: the time
+// remaining in the current skip window while auth-dead, zero otherwise.
+func (m *Monitor) RetryIn() time.Duration {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.dead {
+		return 0
+	}
+	if rem := m.window - m.clock().Sub(m.lastFailure); rem > 0 {
+		return rem
+	}
+	return 0
 }
 
 // BackoffDuration returns the current backoff delay with jitter.
