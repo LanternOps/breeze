@@ -28,22 +28,26 @@ export const topologyHealthSchema = z.object({
 });
 export const topologyNodeListSchema = z.object({ siteId: z.string().uuid(), graphRevision: z.string(), total: z.number(), nodes: z.array(graphNodeSchema), cursor: z.string().nullable() });
 /**
- * Hidden connections of one view (M2 D17, Task 8 route GET /topology/sites/:siteId/exclusions?view=).
- * TODO(M2 Task 8 integration): confirm the list key/cursor names against the
- * landed route and tighten this to its shared schema; both spellings are
- * accepted until then so the UI never silently shows "Hidden (0)".
+ * Hidden connections of one view: GET /topology/sites/:siteId/exclusions?view=
+ * (M2 D17). Mirrors the API's `ViewExclusionPage` from
+ * services/topology/exclusions.ts `listViewExclusions`; the list carries only
+ * ACTIVE exclusions, so a revoked row is a contract violation, not a hidden one.
  */
 const hiddenConnectionSchema = z.object({
   id: z.string().uuid(), relationshipId: z.string().uuid(), view: topologyViewSchema,
-  reason: z.string().min(1).max(500), createdAt: z.string().nullable().optional().transform((value) => value ?? null),
+  reason: z.string().min(1).max(500), active: z.literal(true), createdAt: z.string().datetime({ offset: true }),
+  createdBy: z.string().uuid().nullable(), revokedAt: z.null(), revokedBy: z.null(),
+  relationship: z.object({
+    id: z.string().uuid(), kind: z.string(), sourceNodeId: z.string().uuid(), targetNodeId: z.string().uuid(),
+    sourceInterfaceId: z.string().uuid().nullable(), targetInterfaceId: z.string().uuid().nullable(),
+    evidenceClass: z.string(), lifecycle: z.string(),
+  }),
 });
 export type HiddenConnection = z.infer<typeof hiddenConnectionSchema>;
-export const topologyExclusionListSchema = z.union([
-  z.object({ exclusions: z.array(hiddenConnectionSchema), cursor: z.string().nullable().optional() }),
-  z.object({ items: z.array(hiddenConnectionSchema), nextCursor: z.string().nullable().optional() }),
-]).transform((body) => 'exclusions' in body
-  ? { items: body.exclusions, cursor: body.cursor ?? null }
-  : { items: body.items, cursor: body.nextCursor ?? null });
+export const topologyExclusionListSchema = z.object({
+  view: topologyViewSchema, graphRevision: z.string().regex(/^(0|[1-9]\d*)$/),
+  items: z.array(hiddenConnectionSchema).max(200), nextCursor: z.string().nullable(),
+}).transform((body) => ({ view: body.view, graphRevision: body.graphRevision, items: body.items, cursor: body.nextCursor }));
 const site = (siteId: string) => `/topology/sites/${encodeURIComponent(siteId)}`;
 export const topologyApi = {
   relationship: (siteId: string, relationshipId: string, signal?: AbortSignal) =>

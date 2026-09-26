@@ -40,6 +40,16 @@ it('keeps wireless controller and VPN associations distinct', () => {
   expect(screen.getByTestId('topology-association')).toHaveTextContent('VPN or tunnel association');
 });
 
+it('labels a controller-reported uplink as an uplink, never as a cable, and shows nothing for an unknown association', () => {
+  const detail = fdbDetail(); detail.physical = { ...detail.physical!, method: 'unifi', association: 'uplink' };
+  const { unmount } = render(<PhysicalEvidencePanel relationship={detail.relationship} detail={detail} />);
+  expect(screen.getByTestId('topology-association')).toHaveTextContent('Uplink reported by controller');
+  unmount();
+  detail.physical = { ...detail.physical, association: null };
+  render(<PhysicalEvidencePanel relationship={detail.relationship} detail={detail} />);
+  expect(screen.queryByTestId('topology-association')).not.toBeInTheDocument();
+});
+
 it('lists competing FDB alternatives and the hidden state of an excluded connection', () => {
   const detail = fdbDetail();
   detail.relationship = { ...detail.relationship, excluded: true, confidence: 'low' };

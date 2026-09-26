@@ -6,7 +6,8 @@ import { db } from '../../db';
 import type { TopologyRequestContext } from './access';
 import { GraphReadError, graphAuthority, issueGraphToken, verifyGraphToken, nodeListQuerySchema, topologyReadEtag, type GraphTokenClaims, type NodeListQuery } from './graphCursor';
 import { scoped, nodeFilter, listFilter, relationshipFilter, nodeColumns, relationshipColumns, presentNode, presentRelationship, safeCount, missingSubject,
-  loadActiveViewExclusions, nodeExposure, relationshipExposure, type NodeRow, type ReadExposure, type RelationshipRow } from './graphRead';
+  nodeExposure, relationshipExposure, type NodeRow, type ReadExposure, type RelationshipRow } from './graphRead';
+import { loadActiveExclusions } from './exclusions';
 import { readGraphCoverage } from './physicalCoverage';
 import { projectPhysicalView } from './physicalProjection';
 import { readRelationshipDetail, readRelationshipEvidence, type DetailRow } from './relationshipDetail';
@@ -74,7 +75,7 @@ async function project(tx: ReadTx, ctx: TopologyRequestContext, query: GraphQuer
   }
   // Per-view exclusions and the physical gate apply to every row, count,
   // neighborhood and frontier of this projection (D9, D17).
-  const exposure: ReadExposure = { physical: authority.physical, excluded: await loadActiveViewExclusions(tx, ctx.scope, query.view) };
+  const exposure: ReadExposure = { physical: authority.physical, excluded: await loadActiveExclusions(ctx.scope, query.view, tx) };
   const [layout] = await tx.execute<{ id: string; revision: string; algorithm: string | null; version: string | null }>(sql`
     SELECT l.id, l.revision::text AS revision, l.algorithm, l.algorithm_version AS version FROM topology_layouts l
     WHERE ${scoped(ctx.scope, 'l')} AND l.view = ${query.view} FOR SHARE`);

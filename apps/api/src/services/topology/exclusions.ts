@@ -10,11 +10,12 @@
  *
  * Stable exports consumed by the graph read path (Task 9) — keep signatures:
  *
- *   loadActiveExclusions(scope: TopologyScope, view: TopologyView): Promise<Set<string>>
+ *   loadActiveExclusions(scope: TopologyScope, view: TopologyView, executor?): Promise<Set<string>>
  *     Relationship ids with an ACTIVE exclusion in `view` for this exact
- *     org+site. Runs on the caller's ambient db context (request RLS tx or a
- *     system context); performs no authorization of its own — callers must
- *     already hold an authorized TopologyRequestContext for `scope`.
+ *     org+site, bounded to MAX_VIEW_EXCLUSIONS (fails closed past it). Runs on
+ *     `executor` (the graph read's FOR SHARE transaction) or the ambient db
+ *     context; performs no authorization of its own — callers must already
+ *     hold an authorized TopologyRequestContext for `scope`.
  *
  *   listViewExclusions(ctx: TopologyRequestContext, query: { view; cursor?; limit? }): Promise<ViewExclusionPage>
  *     Topology read + device read + exact-site authority (the route's
@@ -119,11 +120,24 @@ export async function revokeViewExclusion(ctx: TopologyRequestContext, relations
   });
 }
 
-/** Active exclusions of one view. See the file header for the Task 9 contract. */
-export async function loadActiveExclusions(scope: TopologyScope, view: TopologyView): Promise<Set<string>> {
-  const rows = await db.select({ relationshipId: topologyViewExclusions.relationshipId }).from(topologyViewExclusions)
-    .where(and(eq(topologyViewExclusions.orgId, scope.orgId), eq(topologyViewExclusions.siteId, scope.siteId),
-      eq(topologyViewExclusions.view, view), isNull(topologyViewExclusions.revokedAt)));
+/** Upper bound of active exclusions one view projection will apply; past it the read fails closed (503). */
+export const MAX_VIEW_EXCLUSIONS = 10_000;
+
+/**
+ * Active exclusions of one view. See the file header for the Task 9 contract.
+ * Pass `executor` (the graph read's FOR SHARE transaction) so the set is read
+ * in the same snapshot as the rows it filters; defaults to the ambient db.
+ */
+export async function loadActiveExclusions(
+  scope: TopologyScope, view: TopologyView, executor: Pick<typeof db, 'execute'> = db,
+): Promise<Set<string>> {
+  const rows = await executor.execute<{ relationshipId: string }>(sql`SELECT e.relationship_id AS "relationshipId"
+    FROM topology_view_exclusions e
+    WHERE e.org_id = ${scope.orgId}::uuid AND e.site_id = ${scope.siteId}::uuid AND e.view = ${view} AND e.revoked_at IS NULL
+    ORDER BY e.relationship_id LIMIT ${MAX_VIEW_EXCLUSIONS + 1}`);
+  if (rows.length > MAX_VIEW_EXCLUSIONS) {
+    throw new GraphReadError('topology_exclusion_limit', 503, 'Hidden connections exceed the supported projection limit');
+  }
   return new Set(rows.map((row) => row.relationshipId));
 }
 

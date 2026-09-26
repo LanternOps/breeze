@@ -8,7 +8,7 @@ vi.mock('../../db', () => ({ db: { execute: mocks.execute, transaction: mocks.tr
 vi.mock('../permissions', async (original) => ({ ...await original<object>(), getPermissionAuthorityVersion: mocks.version, getUserPermissions: mocks.permissions }));
 vi.mock('./access', async (original) => ({ ...await original<object>(), requireTopologySiteAccess: mocks.access }));
 vi.mock('./flags', async (original) => ({ ...await original<object>(), loadTopologyFlags: mocks.flags }));
-vi.mock('./graphRead', async (original) => ({ ...await original<object>(), loadActiveViewExclusions: mocks.exclusions }));
+vi.mock('./exclusions', async (original) => ({ ...await original<object>(), loadActiveExclusions: mocks.exclusions }));
 vi.mock('./physicalCoverage', async (original) => ({ ...await original<object>(), readGraphCoverage: mocks.coverage }));
 vi.mock('../secretCrypto', () => ({ getSecretDerivedKeyMaterials: () => ({ active: { key: Buffer.alloc(32, 7) }, retained: [{ key: Buffer.alloc(32, 7) }] }) }));
 import { getTopologyGraph, listTopologyNodes, expandTopologyGraph, getTopologyRelationship, getTopologyRelationshipEvidence, getTopologyHealth, getTopologyNode, getTopologyGroupMembers } from './graph';
@@ -235,7 +235,8 @@ describe('M2 physical exposure, exclusions and detail (D9, D11, D17)', () => {
     graphRows();
     const graph = await getTopologyGraph(ctx, { ...query, view: 'overview' });
     expect(graphResponseSchema.safeParse(graph).success).toBe(true);
-    expect(mocks.exclusions).toHaveBeenCalledWith(expect.anything(), ctx.scope, 'overview');
+    // Read inside the graph's own FOR SHARE transaction, not the ambient db.
+    expect(mocks.exclusions).toHaveBeenCalledWith(ctx.scope, 'overview', expect.objectContaining({ execute: mocks.execute }));
     expect(mocks.coverage).toHaveBeenCalledWith(expect.anything(), ctx.scope, 'overview', false);
     const relationshipCount = mocks.execute.mock.calls.map(sqlText).find((q) => /count\(\*\)::text AS count FROM topology_relationships r/i.test(q.sql))!;
     expect(relationshipCount.sql).toMatch(/->>'method'/);

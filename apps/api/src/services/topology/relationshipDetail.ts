@@ -25,7 +25,10 @@ type Port = NonNullable<Detail['endpoints']['source']['port']>;
 
 const PHYSICAL_KINDS = new Set(['physical_link', 'attachment']);
 const FDB_SELECTIONS = new Set(['selected', 'competing', 'excluded', 'none']);
-const ASSOCIATIONS = new Set(['wired', 'wireless', 'vpn']);
+/** Stored association (physicalProjector UnifiAssociation) → presented association. */
+const ASSOCIATIONS: ReadonlyMap<string, NonNullable<NonNullable<Detail['physical']>['association']>> = new Map([
+  ['wired', 'wired'], ['wireless', 'wireless'], ['vpn', 'vpn'], ['teleport', 'vpn'], ['uplink', 'uplink'],
+]);
 const METHODS: ReadonlySet<string> = new Set(OBSERVATION_METHODS);
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const idArray = (ids: string[]) => sql`${`{${ids.join(',')}}`}::uuid[]`;
@@ -45,7 +48,7 @@ export function physicalDetail(row: DetailRow): Detail['physical'] {
   const method = row.legacy ? 'legacy' : row.method && METHODS.has(row.method) ? row.method as ObservationMethod : row.evidenceClass === 'manual' ? 'manual' : null;
   const selection = typeof physical.fdbSelection === 'string' && FDB_SELECTIONS.has(physical.fdbSelection) ? physical.fdbSelection as NonNullable<Detail['physical']>['fdbSelection'] : null;
   const resolution = physical.resolution === 'resolved' || physical.resolution === 'unresolved' ? physical.resolution : null;
-  const association = typeof physical.association === 'string' && ASSOCIATIONS.has(physical.association) ? physical.association as 'wired' | 'wireless' | 'vpn'
+  const association = typeof physical.association === 'string' ? ASSOCIATIONS.get(physical.association) ?? null
     : method === 'lldp' || method === 'cdp' ? 'wired' : null;
   // Port role never promotes an inference: FDB learns a MAC THROUGH a port; a
   // shared/upstream (infrastructure) port is excluded from parent selection.

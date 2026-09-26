@@ -178,7 +178,8 @@
     "association": {
       "wired": "Wired connection",
       "wireless": "Wireless association (reported by controller)",
-      "vpn": "VPN or tunnel association"
+      "vpn": "VPN or tunnel association",
+      "uplink": "Uplink reported by controller"
     },
     "method": {
       "lldp": "LLDP neighbor",

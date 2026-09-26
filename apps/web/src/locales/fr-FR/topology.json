@@ -178,7 +178,8 @@
     "association": {
       "wired": "Connexion filaire",
       "wireless": "Association sans fil (signalée par le contrôleur)",
-      "vpn": "Association VPN ou tunnel"
+      "vpn": "Association VPN ou tunnel",
+      "uplink": "Liaison montante signalée par le contrôleur"
     },
     "method": {
       "lldp": "Voisin LLDP",

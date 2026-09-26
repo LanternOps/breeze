@@ -326,7 +326,13 @@ const relationshipEndpointSchema = z.object({
 }).strict();
 
 export const PHYSICAL_PORT_ROLES = ['identified', 'learned', 'shared', 'unresolved'] as const;
-export const PHYSICAL_ASSOCIATIONS = ['wired', 'wireless', 'vpn'] as const;
+/**
+ * Presented association of a physical relationship. `vpn` covers every
+ * remote-access tunnel (UniFi VPN and Teleport); `uplink` is a controller
+ * device's reported upstream (never a cable claim). An unknown controller
+ * association presents as null, never as a guess.
+ */
+export const PHYSICAL_ASSOCIATIONS = ['wired', 'wireless', 'vpn', 'uplink'] as const;
 export const FDB_SELECTIONS = ['selected', 'competing', 'excluded', 'none'] as const;
 
 const relationshipPhysicalDetailSchema = z.object({

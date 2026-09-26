@@ -1,6 +1,5 @@
 import { sql, type SQL } from 'drizzle-orm';
-import { OBSERVATION_METHODS, type GraphNode, type GraphQuery, type GraphRelationship, type ObservationMethod, type TopologyScope, type TopologyView } from '@breeze/shared';
-import type { db } from '../../db';
+import { OBSERVATION_METHODS, type GraphNode, type GraphQuery, type GraphRelationship, type ObservationMethod, type TopologyScope } from '@breeze/shared';
 import { GraphReadError, type NodeListQuery } from './graphCursor';
 
 /**
@@ -16,7 +15,6 @@ export type ReadExposure = { physical: boolean; excluded: ReadonlySet<string> };
 const PHYSICAL_COLLECTOR_METHODS = sql.raw(`'lldp','cdp','fdb','unifi'`);
 /** Node identity namespaces only a physical collector creates (physicalIdentity/unifiAdapter). */
 const PHYSICAL_ONLY_NODE_KEY = '^(lldp-chassis|cdp-device|mac-endpoint|physical-target|unifi):';
-const MAX_VIEW_EXCLUSIONS = 10_000;
 
 export type NodeRow = {
   id: string; kind: GraphNode['kind']; role: string | null; label: string;
@@ -79,18 +77,6 @@ export function nodeFilter(scope: TopologyScope, query: GraphQuery, alias: strin
   const neighborhood = query.hops === 0 ? sql`${id} = ${focus}`
     : query.hops === 1 ? sql`(${id} = ${focus} OR ${direct})` : sql`(${id} = ${focus} OR ${direct} OR ${twoHops})`;
   return sql`${base} AND ${view} AND ${neighborhood}`;
-}
-/**
- * Active exclusions of ONE view (D17). Private stand-in:
- * TODO(M2 Task 8 integration): replace with services/topology/exclusions.ts
- * `loadActiveExclusions(scope, view)` once that module lands; keep this read
- * inside the caller's FOR SHARE read transaction (pass `tx`).
- */
-export async function loadActiveViewExclusions(tx: Pick<typeof db, 'execute'>, scope: TopologyScope, view: TopologyView): Promise<Set<string>> {
-  const rows = await tx.execute<{ relationshipId: string }>(sql`SELECT e.relationship_id AS "relationshipId" FROM topology_view_exclusions e
-    WHERE ${scoped(scope, 'e')} AND e.view = ${view} AND e.revoked_at IS NULL ORDER BY e.relationship_id LIMIT ${MAX_VIEW_EXCLUSIONS + 1}`);
-  if (rows.length > MAX_VIEW_EXCLUSIONS) throw new GraphReadError('topology_exclusion_limit', 503, 'Hidden connections exceed the supported projection limit');
-  return new Set(rows.map((row) => row.relationshipId));
 }
 export function listFilter(scope: TopologyScope, query: NodeListQuery, exposure: Pick<ReadExposure, 'physical'>): SQL {
   const search = query.q ? `%${query.q.replace(/[\\%_]/g, '\\$&')}%` : null;

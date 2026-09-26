@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getTableName } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 /** Records every table a statement touches, and resolves queued results in order. */
 const mocks = vi.hoisted(() => ({
@@ -150,10 +151,24 @@ describe('exclusion listing cursor', () => {
 });
 
 describe('loadActiveExclusions', () => {
-  it('returns the active relationship ids of one view', async () => {
+  it('returns the active relationship ids of one view in one scoped, read-only statement', async () => {
     mocks.results = [[{ relationshipId: REL }, { relationshipId: EXC }]];
     expect(await loadActiveExclusions({ orgId: ORG, siteId: SITE }, 'overview')).toEqual(new Set([REL, EXC]));
-    expect(mocks.touched).toEqual(['select:topology_view_exclusions']);
+    expect(mocks.touched).toEqual(['execute']);
+  });
+  it('reads through the caller transaction when one is passed (graph FOR SHARE snapshot)', async () => {
+    const execute = vi.fn().mockResolvedValue([{ relationshipId: REL }]);
+    expect(await loadActiveExclusions({ orgId: ORG, siteId: SITE }, 'physical', { execute })).toEqual(new Set([REL]));
+    expect(mocks.touched).toEqual([]);
+    const query = new PgDialect().sqlToQuery(execute.mock.calls[0]![0]);
+    expect(query.sql).toMatch(/topology_view_exclusions/);
+    expect(query.sql).toMatch(/revoked_at IS NULL/i);
+    expect(query.sql).not.toMatch(/\b(insert|update|delete)\b/i);
+    expect(query.params).toEqual(expect.arrayContaining([ORG, SITE, 'physical']));
+  });
+  it('fails closed rather than silently dropping exclusions past its bound', async () => {
+    const execute = vi.fn().mockResolvedValue(Array.from({ length: 10_001 }, (_, i) => ({ relationshipId: `${i}` })));
+    await expect(loadActiveExclusions({ orgId: ORG, siteId: SITE }, 'overview', { execute })).rejects.toMatchObject({ status: 503, code: 'topology_exclusion_limit' });
   });
 });
 

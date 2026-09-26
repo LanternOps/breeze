@@ -178,7 +178,8 @@
     "association": {
       "wired": "Conexión cableada",
       "wireless": "Asociación inalámbrica (informada por el controlador)",
-      "vpn": "Asociación de VPN o túnel"
+      "vpn": "Asociación de VPN o túnel",
+      "uplink": "Enlace ascendente informado por el controlador"
     },
     "method": {
       "lldp": "Vecino LLDP",

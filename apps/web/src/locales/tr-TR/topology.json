@@ -178,7 +178,8 @@
     "association": {
       "wired": "Kablolu bağlantı",
       "wireless": "Kablosuz ilişkilendirme (denetleyici bildirdi)",
-      "vpn": "VPN veya tünel ilişkilendirmesi"
+      "vpn": "VPN veya tünel ilişkilendirmesi",
+      "uplink": "Denetleyicinin bildirdiği yukarı bağlantı"
     },
     "method": {
       "lldp": "LLDP komşusu",

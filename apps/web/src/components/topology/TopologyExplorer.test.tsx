@@ -69,10 +69,14 @@ it('enables the physical view from the capability and offers the overview from a
 });
 
 it('lists connections hidden from the view and restores one through runAction', async () => {
-  const exclusion = { id: '99999999-9999-4999-8999-999999999999', relationshipId: '55555555-5555-4555-8555-555555555555', view: 'overview', reason: 'Lab bench cable', createdAt: '2026-09-26T10:00:00.000Z' };
+  const relationshipId = '55555555-5555-4555-8555-555555555555';
+  const exclusion = { id: '99999999-9999-4999-8999-999999999999', relationshipId, view: 'overview', reason: 'Lab bench cable', active: true,
+    createdAt: '2026-09-26T10:00:00.000Z', createdBy: null, revokedAt: null, revokedBy: null,
+    relationship: { id: relationshipId, kind: 'attachment', sourceNodeId: '11111111-1111-4111-8111-111111111111', targetNodeId: '22222222-2222-4222-8222-222222222222',
+      sourceInterfaceId: null, targetInterfaceId: null, evidenceClass: 'inferred', lifecycle: 'active' } };
   vi.mocked(fetchWithAuth).mockImplementation(async (url, options) => {
     if (options?.method === 'DELETE') return new Response(JSON.stringify({ id: exclusion.id }));
-    if (String(url).includes('/exclusions')) return new Response(JSON.stringify({ exclusions: [exclusion], cursor: null }));
+    if (String(url).includes('/exclusions')) return new Response(JSON.stringify({ view: 'overview', graphRevision: '7', items: [exclusion], nextCursor: null }));
     return new Response(JSON.stringify(topologyGraphFixture()));
   });
   render(<TopologyExplorer siteId={SITE} settings={topologySettingsFixture()} />);

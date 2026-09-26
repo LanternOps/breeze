@@ -178,7 +178,8 @@
     "association": {
       "wired": "Kabelverbindung",
       "wireless": "WLAN-Zuordnung (vom Controller gemeldet)",
-      "vpn": "VPN- oder Tunnel-Zuordnung"
+      "vpn": "VPN- oder Tunnel-Zuordnung",
+      "uplink": "Vom Controller gemeldeter Uplink"
     },
     "method": {
       "lldp": "LLDP-Nachbar",

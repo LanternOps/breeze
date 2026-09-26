@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { unifiEndpointKey, type NormalizedUnifiClientRow, type NormalizedUnifiDeviceDetailRow, type NormalizedUnifiDeviceRow } from '@breeze/shared';
+import { relationshipDetailResponseSchema, unifiEndpointKey, type NormalizedUnifiClientRow, type NormalizedUnifiDeviceDetailRow, type NormalizedUnifiDeviceRow } from '@breeze/shared';
 import { projectTopology } from './projectors';
+import { physicalDetail, type DetailRow } from './relationshipDetail';
 import { validatePublicationInput, type NodePublication, type RelationshipPublication } from './publish';
 import { FIXTURE_SCOPE } from './physicalFixtures';
 import { unifiEndpointDevicesOf } from './physicalPublication';
@@ -13,6 +14,7 @@ const INVENTORY_NODE = '0d000000-0000-4000-8000-0000000000bb';
 const key = (kind: 'device' | 'mac' | 'client', value: string) => unifiEndpointKey({ hostKey: 'host:1', controllerSiteId: 'default', kind, value });
 const SWITCH = key('device', 'dev-switch-1'), AP1 = key('device', 'dev-ap-1'), AP2 = key('device', 'dev-ap-2');
 const at = new Date('2026-09-25T12:00:00.000Z');
+const relationshipPhysicalDetailSchema = relationshipDetailResponseSchema.shape.physical;
 
 const device = (id: string, over: Partial<NormalizedUnifiDeviceRow> = {}): NormalizedUnifiDeviceRow => ({
   rowKey: id, deviceId: id, mac: null, name: id, model: null, ipAddress: null, state: 'ONLINE', endpointKey: key('device', id), inventoryDeviceId: null, ...over,
@@ -83,6 +85,29 @@ describe('UniFi projection (M2 Task 6b, D16)', () => {
     expect(byRow.get('c-wired')!.sourceNodeId).toBe(nodeByKey(state, SWITCH)!.id);
     expect(byRow.get('c-wired')!.targetNodeId).toBe(nodeByKey(state, key('client', 'c-wired'))!.id);
     expect(() => validatePublicationInput(FIXTURE_SCOPE, { buildFence: '1', inputRevision: '1', nodes: [...state.nodes.values()], relationships: [...state.relationships.values()], bindings: [] })).not.toThrow();
+  });
+
+  it('projected associations reach relationship detail with a truthful, schema-valid label (teleport is a tunnel; unknown claims nothing)', () => {
+    const state = fresh();
+    const clients = projectTopology(input('unifi_client_list', [
+      client('c-wired', 'WIRED', 'dev-switch-1', { uplinkPortIndex: 4 }), client('c-wifi', 'WIRELESS', 'dev-ap-1'), client('c-vpn', 'VPN', 'dev-switch-1'),
+      client('c-tele', 'TELEPORT', 'dev-switch-1'), client('c-unknown', 'unknown', 'dev-switch-1'),
+    ], state));
+    const uplinks = projectTopology(input('unifi_device_details', [detail('dev-ap-1', 'dev-switch-1', 7)], state));
+    const shown = new Map<string, string | null>();
+    for (const delta of [clients, uplinks]) {
+      for (const o of delta.observations) {
+        const r = delta.relationships.find(x => x.id === o.relationshipId)!;
+        // Exactly what graph.ts reads: r.attributes->>'method' and r.attributes->'physical'.
+        const row: DetailRow = { id: r.id, kind: r.kind, sourceNodeId: r.sourceNodeId, targetNodeId: r.targetNodeId, sourceInterfaceId: null, targetInterfaceId: null,
+          directness: r.directness ?? null, confidence: r.confidence ?? 'low', evidenceClass: r.evidenceClass as DetailRow['evidenceClass'], lifecycle: 'active', lastSupportedAt: null,
+          supportCount: '1', legacy: false, method: String(r.attributes!.method), physical: r.attributes!.physical as DetailRow['physical'] };
+        const physical = physicalDetail(row);
+        expect(relationshipPhysicalDetailSchema.safeParse(physical).success).toBe(true);
+        shown.set(String(o.attributes.rowKey), physical!.association);
+      }
+    }
+    expect(Object.fromEntries(shown)).toEqual({ 'c-wired': 'wired', 'c-wifi': 'wireless', 'c-vpn': 'vpn', 'c-tele': 'vpn', 'c-unknown': null, 'dev-ap-1': 'uplink' });
   });
 
   it('a roaming client maps its row to a NEW relationship; the old one keeps no support from this row', () => {
