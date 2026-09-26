@@ -105,6 +105,12 @@ vi.mock('../../services/backupHealthReadModel', () => ({
   getProviderAttentionItems: (...a: unknown[]) => getProviderAttentionItemsMock(...(a as [])),
 }));
 
+const getStorageByProviderMock = vi.fn(async (..._args: unknown[]) => [] as unknown[]);
+
+vi.mock('../../services/backupStorageByProvider', () => ({
+  getStorageByProvider: (...a: unknown[]) => getStorageByProviderMock(...(a as [])),
+}));
+
 describe('backup dashboard routes', () => {
   let app: Hono;
 
@@ -160,6 +166,34 @@ describe('backup dashboard routes', () => {
     expect(body.data.totals.policies).toBe(1);
     expect(body.data.coverage.protectedDevices).toBe(1);
     expect(body.data.latestJobs.map((job: any) => job.deviceId)).toEqual([DEVICE_ID]);
+  });
+
+  it('serializes storageProviders so the Overview panel is not stuck on its empty state (#2562)', async () => {
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+    const rows = [{ id: 'backblaze', name: 'Backblaze B2', usedBytes: 4096, snapshots: 2, configs: 1 }];
+    getStorageByProviderMock.mockResolvedValueOnce(rows);
+
+    const res = await app.request('/backup/dashboard');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.storageProviders).toEqual(rows);
+    // Unrestricted caller: no site narrowing.
+    expect(getStorageByProviderMock).toHaveBeenCalledWith(ORG_ID, null);
+  });
+
+  it('passes the site-scoped device list to the storage-by-provider read', async () => {
+    permissionsState = { allowedSiteIds: [SITE_A] };
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+    selectMock.mockReturnValueOnce(chainMock([
+      { id: DEVICE_ID, siteId: SITE_A },
+      { id: OTHER_DEVICE_ID, siteId: SITE_B },
+    ]));
+
+    const res = await app.request('/backup/dashboard');
+
+    expect(res.status).toBe(200);
+    expect(getStorageByProviderMock).toHaveBeenCalledWith(ORG_ID, [DEVICE_ID]);
   });
 
   it('keeps unrestricted dashboard behavior unchanged', async () => {

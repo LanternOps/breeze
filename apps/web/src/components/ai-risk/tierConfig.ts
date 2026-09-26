@@ -141,7 +141,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'browse_snapshots', description: 'Browse backup snapshots', category: 'Backup & Recovery' },
       // Monitoring & Analytics
       { name: 'query_monitors', description: 'List monitors with status', category: 'Monitoring & Analytics' },
-      { name: 'manage_monitors (get)', description: 'Monitor details and history', category: 'Monitoring & Analytics' },
+      { name: 'manage_monitors (get/create/update/delete)', description: 'Monitor details and history; retired writes return guidance', category: 'Monitoring & Analytics' },
       { name: 'query_analytics', description: 'SLA compliance and capacity predictions', category: 'Monitoring & Analytics' },
       { name: 'get_executive_summary', description: 'Executive summary metrics', category: 'Monitoring & Analytics' },
       // Monitor definitions (#5289 Task 8) — distinct from the network-monitor
@@ -277,7 +277,6 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'trigger_backup', description: 'Initiate on-demand backup', category: 'Backup & Recovery' },
       { name: 'restore_snapshot', description: 'Restore a backup snapshot', category: 'Backup & Recovery' },
       // Monitoring & Analytics
-      { name: 'manage_monitors (create/update/delete)', description: 'Create, update, or delete monitors', category: 'Monitoring & Analytics' },
       { name: 'manage_delivery (create_routing/update_routing/delete_routing/set_default/create_escalation/update_escalation/delete_escalation)', description: 'Manage alert routing, default destinations, and escalation policies (requires approval)', category: 'Alerts & Notifications' },
       // Monitor definitions (#5289 Task 8): ordinary config-object CRUD
       // (create/update/delete/enable/disable/attach/detach) — supervised, same
@@ -375,7 +374,7 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'trigger_backup', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
   { toolName: 'restore_snapshot', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
   // Monitoring & Analytics
-  { toolName: 'manage_monitors', tier: 1, permission: 'devices.write', category: 'Monitoring & Analytics' },
+  { toolName: 'manage_monitors', tier: 1, permission: 'devices.read', category: 'Monitoring & Analytics' },
   // Integrations
   { toolName: 'test_webhook', tier: 2, permission: 'devices.write', category: 'Integrations' },
   { toolName: 'trigger_agent_upgrade', tier: 3, permission: 'devices.execute', category: 'Integrations' },
@@ -550,7 +549,7 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   restore_snapshot: 'devices.execute',
   // Monitoring
   query_monitors: 'devices.read',
-  manage_monitors: { get: 'devices.read', create: 'devices.write', update: 'devices.write', delete: 'devices.write' },
+  manage_monitors: { get: 'devices.read', create: 'devices.read', update: 'devices.read', delete: 'devices.read' },
   // Analytics
   query_analytics: 'devices.read',
   get_executive_summary: 'devices.read',

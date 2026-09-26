@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { optionalJsonValidator, zValidator } from '../../lib/validation';
-import { and, eq, gte, like, ne, sql, desc, inArray, type SQL } from 'drizzle-orm';
+import { and, asc, eq, gte, like, ne, sql, desc, inArray, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { createHash, randomBytes } from 'crypto';
 import { getRedis } from '../../services/redis';
@@ -673,6 +673,9 @@ const ENROLL_TOKEN_MAX_TTL_MINUTES = 525_600; // 365 days
 const onboardingTokenSchema = z.object({
   count: z.unknown().optional(),
   ttlMinutes: z.number().int().min(1).max(ENROLL_TOKEN_MAX_TTL_MINUTES).optional(),
+  // #7035: the site the operator picked in the Add Device modal. Omitted →
+  // the org's oldest accessible site (deterministic; see below).
+  siteId: z.string().guid().optional(),
 }).strict();
 
 // POST /devices/onboarding-token - Generate a short-lived enrollment key.
@@ -749,25 +752,53 @@ coreRoutes.post(
     const capError = await assertTtlWithinCap(orgId, explicitTtlMinutes);
     if (capError) return c.json({ error: capError }, 400);
 
-    // Pick a site in the org for the enrollment key, intersecting the
-    // automatic choice with the caller's site ceiling. Partner/system callers
-    // and unrestricted organization callers have `allowedSiteIds` undefined.
-    const [site] = await db
-      .select({ id: sites.id })
-      .from(sites)
-      .where(and(
-        eq(sites.orgId, orgId),
-        permissions.allowedSiteIds
-          ? inArray(sites.id, permissions.allowedSiteIds)
-          : undefined,
-      ))
-      .limit(1);
-
-    if (!site) {
-      if (permissions.allowedSiteIds) {
-        return c.json({ error: 'No accessible site is available for onboarding.' }, 403);
+    // #7035: an explicitly requested site wins. Mirrors POST /enrollment-keys:
+    // a restricted caller gets an opaque 403 for any site outside its
+    // allowlist (checked before the lookup, so a sibling-site UUID can't be
+    // probed), and the site must belong to the resolved org.
+    let siteId: string;
+    if (data.siteId) {
+      if (permissions.allowedSiteIds && !permissions.allowedSiteIds.includes(data.siteId)) {
+        return c.json({ error: 'Access to this site denied' }, 403);
       }
-      return c.json({ error: 'No site found for this organization. Create a site first.' }, 400);
+      const [site] = await db
+        .select({ id: sites.id })
+        .from(sites)
+        .where(and(eq(sites.id, data.siteId), eq(sites.orgId, orgId)))
+        .limit(1);
+      if (!site) {
+        if (permissions.allowedSiteIds) {
+          return c.json({ error: 'Access to this site denied' }, 403);
+        }
+        return c.json({ error: 'siteId does not belong to the specified org' }, 400);
+      }
+      siteId = site.id;
+    } else {
+      // No site requested (first-run setup, script clients): fall back to the
+      // org's OLDEST site the caller may use — created_at, then id as a
+      // tiebreak — the same default mintChildEnrollmentKey applies. Before
+      // #7035 this had no ORDER BY, so a multi-site org's key landed on
+      // whatever row Postgres returned first. Partner/system callers and
+      // unrestricted organization callers have `allowedSiteIds` undefined.
+      const [site] = await db
+        .select({ id: sites.id })
+        .from(sites)
+        .where(and(
+          eq(sites.orgId, orgId),
+          permissions.allowedSiteIds
+            ? inArray(sites.id, permissions.allowedSiteIds)
+            : undefined,
+        ))
+        .orderBy(asc(sites.createdAt), asc(sites.id))
+        .limit(1);
+
+      if (!site) {
+        if (permissions.allowedSiteIds) {
+          return c.json({ error: 'No accessible site is available for onboarding.' }, 403);
+        }
+        return c.json({ error: 'No site found for this organization. Create a site first.' }, 400);
+      }
+      siteId = site.id;
     }
 
     const ttlMinutes = explicitTtlMinutes
@@ -779,7 +810,7 @@ coreRoutes.post(
 
     await db.insert(enrollmentKeys).values({
       orgId,
-      siteId: site.id,
+      siteId,
       name: `Onboarding token (${new Date().toISOString().slice(0, 10)})`,
       key: keyHash,
       maxUsage,
@@ -793,6 +824,8 @@ coreRoutes.post(
     return c.json({
       token: key,
       maxUsage,
+      // #7035: echo the bound site so the UI can say where devices will land.
+      siteId,
       expiresAt: expiresAt.toISOString(),
       enrollmentSecretMode: secretRequired ? 'global_env' : 'none',
       additionalSecretRequired: secretRequired,

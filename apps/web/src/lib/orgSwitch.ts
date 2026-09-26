@@ -40,15 +40,16 @@ export function consumeSwitchToast(): string | null {
  * Returns the destination URL when redirection is needed, otherwise null
  * (meaning the caller should keep the current path and just re-navigate).
  */
+// Static pages under src/pages/devices that share the /devices/:id shape but
+// are fleet views, not a device record — they stay in place on an org switch.
+// Kept in sync with the pages directory by the drift guard in orgSwitch.test.ts.
+const DEVICE_STATIC_SIBLINGS: ReadonlySet<string> = new Set(['compare', 'groups', 'posture']);
+
 export function getOrgSwitchRedirect(pathname: string): string | null {
-  // /devices/:id -> /devices (but not /devices, /devices/compare, /devices/groups, etc.)
+  // /devices/:id -> /devices (but not /devices or a static sibling page)
   const deviceDetail = pathname.match(/^\/devices\/([^/]+)\/?$/);
-  if (deviceDetail) {
-    const segment = deviceDetail[1];
-    // Preserve sibling routes that share the prefix.
-    if (segment !== 'compare' && segment !== 'groups') {
-      return '/devices';
-    }
+  if (deviceDetail && !DEVICE_STATIC_SIBLINGS.has(deviceDetail[1])) {
+    return '/devices';
   }
   // /organizations/:id (the org RECORD) -> the organizations board. The record's
   // subject is the org in the URL, so re-navigating to it after a switch would leave

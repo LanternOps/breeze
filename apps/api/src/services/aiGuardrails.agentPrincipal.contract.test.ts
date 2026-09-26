@@ -265,6 +265,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'm365_recent_signins',
   'manage_alert_rules',
   'manage_maintenance_windows',
+  'manage_monitors', // Only get executes; retired mutations return guidance before DB access.
   'manage_service_monitors',
   'preview_configuration_change',
   'propose_script',

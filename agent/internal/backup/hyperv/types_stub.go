@@ -67,6 +67,9 @@ type RestoreResult struct {
 	Status     string `json:"status"`
 	DurationMs int64  `json:"durationMs"`
 	Error      string `json:"error,omitempty"`
+	// Warnings carries non-fatal notes, e.g. a free-space check that could
+	// not run (#5460).
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // CheckpointResult holds the outcome of a checkpoint management operation.

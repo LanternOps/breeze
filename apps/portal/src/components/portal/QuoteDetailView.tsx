@@ -6,7 +6,8 @@ import { type QuoteDetail, publicApiPath, portalApi } from '@/lib/api';
 import { shortDate } from '@/lib/format';
 import { computeChargeNow } from '@/lib/invoiceDeposit';
 import { QuoteBlocks, money } from './quoteBlocks';
-import { DocumentCover, DocumentPaper, DocumentHeader, DocumentTerms, DocumentTermsCollapsible, type DocSeller } from './documentShell';
+import { DocumentCover, DocumentPaper, DocumentHeader, DocumentTerms, type DocSeller } from './documentShell';
+import { QuoteAgreements, quoteAgreementLinks } from './quoteAgreements';
 import { BTN_PRIMARY, BTN_SECONDARY } from './ui';
 import { SignaturePanel } from './SignaturePanel';
 
@@ -361,7 +362,7 @@ export function QuoteDetailView({ detail, error, statusCode }: QuoteDetailViewPr
             onDecline={(reason) => void decline(reason)}
             busy={busy}
             testIdPrefix="quote"
-            termsHref={quote.termsAndConditions ? '#terms' : undefined}
+            agreements={quoteAgreementLinks(blocks, quote.termsAndConditions)}
           />
         )}
         {/* While signing is open, feedback stays adjacent to the button (below the
@@ -379,9 +380,12 @@ export function QuoteDetailView({ detail, error, statusCode }: QuoteDetailViewPr
             {msg}
           </div>
         )}
-        {quote.termsAndConditions && (
-          <DocumentTermsCollapsible text={quote.termsAndConditions} testId="quote-terms-conditions" />
-        )}
+        <QuoteAgreements
+          blocks={blocks}
+          termsAndConditions={quote.termsAndConditions}
+          buildUrl={publicApiPath}
+          testIdPrefix="quote"
+        />
       </DocumentPaper>
 
       {/* Failures render on their own, outside the accepted panel, so a failed pay

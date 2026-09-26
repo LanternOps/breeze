@@ -808,3 +808,130 @@ describe('MonitorEditor (#5289)', () => {
   });
 
 });
+
+
+describe('network check authoring', () => {
+  const asset = { id: '11111111-1111-4111-8111-111111111111', orgId: '22222222-2222-4222-8222-222222222222', label: 'Core switch', ipAddress: '192.0.2.2', hostname: 'core-sw' };
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.history.replaceState(null, '', '/alerts/monitors/new');
+    fetchMock.mockImplementation(async (input, init) => {
+      if (input === `/discovery/assets/${asset.id}`) return json({ data: asset });
+      if (input.startsWith('/discovery/assets?')) return json({ data: [asset] });
+      if (input === '/monitor-definitions' && init?.method === 'POST') return json({ data: { id: 'new-1' } });
+      return defaultFetchImpl(input);
+    });
+  });
+
+  it.each([
+    { suffix: '', checkType: 'icmp_ping', target: '192.0.2.2' },
+    { suffix: '&checkType=http_check&target=https%3A%2F%2Fexample.com%2Fhealth', checkType: 'http_check', target: 'https://example.com/health' },
+  ])('prefills the asset owner and preserves the $checkType handoff on save', async ({ suffix, checkType, target }) => {
+    window.history.replaceState(null, '', `/alerts/monitors/new#kind=network_check&assetId=${asset.id}${suffix}`);
+    render(<MonitorEditor />);
+    await screen.findByRole('option', { name: 'Core switch' });
+    expect(screen.getByTestId('condition-field-target')).toHaveValue(target);
+    expect(screen.getByTestId('condition-field-checkType')).toHaveValue(checkType);
+    await waitFor(() => expect(screen.getByTestId('monitor-editor-name')).not.toHaveValue(''));
+    fireEvent.click(screen.getByTestId('monitor-editor-save'));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/monitor-definitions', expect.objectContaining({ method: 'POST' })));
+    const call = fetchMock.mock.calls.find(([url, init]) => url === '/monitor-definitions' && init?.method === 'POST')!;
+    expect(JSON.parse(String(call[1]?.body))).toMatchObject({ orgId: asset.orgId, ownerScope: 'organization', condition: { assetId: asset.id, checkType, target } });
+  });
+
+  it.each(['bogus', 'network_check&assetId=invalid'])('ignores invalid hash preselection: %s', async hash => {
+    window.history.replaceState(null, '', `/alerts/monitors/new#kind=${hash}`);
+    render(<MonitorEditor />);
+    expect(await screen.findByTestId('monitor-editor-kind')).toHaveValue(hash === 'bogus' ? 'cpu' : 'network_check');
+    expect(fetchMock.mock.calls.some(([url]) => url.startsWith('/discovery/assets/'))).toBe(false);
+  });
+
+  it('resolves an asset outside the selected org and saves under its actual owner', async () => {
+    // The partner has org-1 selected, while the handoff asset belongs to another org.
+    const previous = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (input === `/discovery/assets/${asset.id}` && !init?.skipOrgIdInjection) {
+        return json({ error: 'Asset not found' }, false, 404);
+      }
+      return previous(input, init);
+    });
+    window.history.replaceState(null, '', `/alerts/monitors/new#kind=network_check&assetId=${asset.id}`);
+    render(<MonitorEditor />);
+    await waitFor(() => expect(screen.getByTestId('condition-field-target')).toHaveValue(asset.ipAddress));
+    expect(fetchMock).toHaveBeenCalledWith(`/discovery/assets/${asset.id}`, expect.objectContaining({ skipOrgIdInjection: true }));
+    fireEvent.click(screen.getByTestId('monitor-editor-save'));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/monitor-definitions', expect.objectContaining({ method: 'POST' })));
+    const call = fetchMock.mock.calls.find(([url, init]) => url === '/monitor-definitions' && init?.method === 'POST')!;
+    expect(JSON.parse(String(call[1]?.body))).toMatchObject({
+      ownerScope: 'organization', orgId: asset.orgId, condition: { assetId: asset.id },
+    });
+  });
+
+  it('retries a failed asset prefill without an unhandled rejection', async () => {
+    window.history.replaceState(null, '', `/alerts/monitors/new#kind=network_check&assetId=${asset.id}`);
+    const previous = fetchMock.getMockImplementation()!;
+    let failed = false;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (input === `/discovery/assets/${asset.id}` && !failed) { failed = true; throw new Error('offline'); }
+      return previous(input, init);
+    });
+    render(<MonitorEditor />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not load assets');
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(screen.getByTestId('monitor-editor-name')).toHaveValue('Ping Core switch'));
+    expect(screen.getByTestId('network-check-asset-picker')).toHaveValue(asset.id);
+  });
+
+  it.each(['target', 'owner', 'kind'])('ignores late asset prefill after the user changes %s', async field => {
+    window.history.replaceState(null, '', `/alerts/monitors/new#kind=network_check&assetId=${asset.id}`);
+    const previous = fetchMock.getMockImplementation()!;
+    let finish!: (response: Response) => void;
+    fetchMock.mockImplementation(async (input, init) => input === `/discovery/assets/${asset.id}`
+      ? new Promise<Response>(resolve => { finish = resolve; }) : previous(input, init));
+    render(<MonitorEditor />);
+    await screen.findByTestId('condition-field-target');
+    if (field === 'target') fireEvent.change(screen.getByTestId('condition-field-target'), { target: { value: 'custom.example.com' } });
+    if (field === 'owner') fireEvent.click(screen.getByTestId('monitor-editor-owner-partner'));
+    if (field === 'kind') fireEvent.change(screen.getByTestId('monitor-editor-kind'), { target: { value: 'cpu' } });
+    await act(async () => finish(json({ data: asset })));
+    expect(screen.getByTestId('monitor-editor-name')).toHaveValue('');
+    if (field === 'target') expect(screen.getByTestId('condition-field-target')).toHaveValue('custom.example.com');
+    if (field === 'owner') expect(screen.getByTestId('network-check-asset-picker')).toHaveValue('');
+    if (field === 'kind') expect(screen.getByTestId('monitor-editor-kind')).toHaveValue('cpu');
+  });
+
+  it('clears binding when switching to partner ownership', async () => {
+    window.history.replaceState(null, '', `/alerts/monitors/new#kind=network_check&assetId=${asset.id}`);
+    render(<MonitorEditor />);
+    await screen.findByRole('option', { name: 'Core switch' });
+    fireEvent.click(screen.getByTestId('monitor-editor-owner-partner'));
+    expect(screen.getByTestId('network-check-asset-picker')).toBeDisabled();
+    fireEvent.click(screen.getByTestId('monitor-editor-save'));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/monitor-definitions', expect.objectContaining({ method: 'POST' })));
+    const call = fetchMock.mock.calls.find(([url, init]) => url === '/monitor-definitions' && init?.method === 'POST')!;
+    const body = JSON.parse(String(call[1]?.body));
+    expect(body.condition.assetId).toBeUndefined();
+    expect(body.orgId).toBeUndefined();
+  });
+
+  it.each([
+    { checkType: 'icmp_ping', packetSize: 1400 },
+    { checkType: 'http_check', headers: { 'X-Probe': 'breeze' } },
+  ])('PATCH preserves API-only options through binding and unbinding: $checkType', async option => {
+    const fixture = { ...MONITOR_M1_FIXTURE, name: 'Network test', kind: 'network_check', condition: {
+      ...option, target: option.checkType === 'http_check' ? 'https://example.com:8443/health' : 'example.com', pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2, degradedIsFailure: false,
+    } };
+    const previous = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => input === '/monitor-definitions/m1' ? json({ data: fixture }) : previous(input, init));
+    render(<MonitorEditor monitorId="m1" />);
+    await screen.findByDisplayValue('Network test');
+    await screen.findByRole('option', { name: 'Core switch' });
+    fireEvent.change(screen.getByTestId('network-check-asset-picker'), { target: { value: asset.id } });
+    fireEvent.change(screen.getByTestId('network-check-asset-picker'), { target: { value: '' } });
+    expect(screen.getByTestId('condition-field-target')).toHaveValue(fixture.condition.target);
+    fireEvent.click(screen.getByTestId('monitor-editor-save'));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/monitor-definitions/m1', expect.objectContaining({ method: 'PATCH' })));
+    const call = fetchMock.mock.calls.find(([url, init]) => url === '/monitor-definitions/m1' && init?.method === 'PATCH')!;
+    expect(JSON.parse(String(call[1]?.body)).condition).toMatchObject({ ...option, target: fixture.condition.target });
+  });
+});

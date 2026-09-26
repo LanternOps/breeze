@@ -247,6 +247,11 @@ A **Contract** block attaches a document from your [agreement template library](
 
 The block pins to **whichever published version was latest at attach time** -- it doesn't automatically follow later edits to the template. If a newer version of the same template is published afterward, the block shows an **Update to vN** button so you can re-pin it to that newer version deliberately; nothing changes until you click it.
 
+**Where the customer sees it.** Wherever the block sits in the editor, the agreement appears **after the totals** so a long agreement never pushes the price down:
+
+- **Proposal link, customer portal, and Preview:** each agreement, followed by the quote's Terms & Conditions, shows as a collapsed row after the totals (below the sign panel on the customer's page), with its name and an estimated reading time. The customer opens it to read it, and the signature checkbox names and links every agreement. Rows expand automatically when the page is printed.
+- **PDF:** the proposal and its price come first. Each authored agreement then starts on its own page, followed by the Terms & Conditions. Uploaded-PDF agreements are appended as their own pages at the end.
+
 **Variables** are resolved when the block renders: auto variables (customer name/address, your organization's name, quote number/title, totals, dates) come from the quote automatically; manual variables use whatever you entered when you attached (or last edited) the block. An uploaded-PDF template has no variables -- it's attached as-is.
 
 <Aside type="caution">

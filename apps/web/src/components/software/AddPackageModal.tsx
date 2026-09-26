@@ -11,6 +11,7 @@ import { asList } from '@/lib/asList';
 import {
   SOFTWARE_FILE_TYPES,
   deriveSoftwareFileTypeFromUrl,
+  parseSuccessExitCodesText,
   type DetectionRule,
   type SoftwareFileType,
 } from "@breeze/shared";
@@ -98,6 +99,10 @@ const blankForm = {
   silentInstallArgs: "",
   silentUninstallArgs: "",
   detectionRules: [] as DetectionRule[],
+  // Raw free text (issue #7038); parsed with parseSuccessExitCodesText at
+  // submit time. Codes here ADD to the agent's built-in success codes (0
+  // always; 3010/1641 for exe/msi) — they never replace them.
+  successExitCodesRaw: "",
   notes: "",
   file: null as File | null,
   fileName: "",
@@ -296,6 +301,20 @@ export default function AddPackageModal({
     knownKeys,
     knownVariableKeys,
   ]);
+  const successExitCodesResult = useMemo(
+    () => parseSuccessExitCodesText(form.successExitCodesRaw),
+    [form.successExitCodesRaw],
+  );
+  const successExitCodesError = successExitCodesResult.ok
+    ? null
+    : "invalidToken" in successExitCodesResult
+      ? i18n.t(
+          "policies:software.addPackageModal.invalidSuccessExitCode",
+          { token: successExitCodesResult.invalidToken },
+        )
+      : i18n.t(
+          "policies:software.addPackageModal.tooManySuccessExitCodes",
+        );
   const isManager = form.source === "manager";
   const hasSource =
     form.source === "url"
@@ -310,6 +329,7 @@ export default function AddPackageModal({
     (isManager || form.version.trim() !== "") &&
     hasSource &&
     tokenErrors.length === 0 &&
+    successExitCodesResult.ok &&
     !saving;
   /** Prefill identity from the first pick, but never overwrite what the user
    *  typed. */
@@ -338,6 +358,10 @@ export default function AddPackageModal({
       supportedOs: form.supportedOs.length > 0 ? form.supportedOs : undefined,
       detectionRules:
         form.detectionRules.length > 0 ? form.detectionRules : undefined,
+      successExitCodes:
+        successExitCodesResult.ok && successExitCodesResult.codes.length > 0
+          ? successExitCodesResult.codes
+          : undefined,
     };
     if (form.source === "file" && form.file) {
       const file = form.file;
@@ -1094,6 +1118,38 @@ export default function AddPackageModal({
                     update("detectionRules", detectionRules)
                   }
                 />
+
+                <div>
+                  <label className={labelCls} htmlFor="pkg-success-exit-codes">
+                    {i18n.t(
+                      "policies:software.addPackageModal.additionalSuccessExitCodes",
+                    )}
+                  </label>
+                  <input
+                    id="pkg-success-exit-codes"
+                    type="text"
+                    value={form.successExitCodesRaw}
+                    onChange={(e) =>
+                      update("successExitCodesRaw", e.target.value)
+                    }
+                    placeholder={i18n.t(
+                      "policies:software.addPackageModal.eG10001101",
+                    )}
+                    aria-invalid={successExitCodesError != null}
+                    className={inputCls}
+                  />
+                  {successExitCodesError ? (
+                    <p className="mt-1 text-xs text-destructive">
+                      {successExitCodesError}
+                    </p>
+                  ) : (
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {i18n.t(
+                        "policies:software.addPackageModal.successExitCodesHelp",
+                      )}
+                    </p>
+                  )}
+                </div>
 
                 <div>
                   <label className={labelCls} htmlFor="pkg-notes">

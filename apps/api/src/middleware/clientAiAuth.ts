@@ -1,6 +1,7 @@
 import type { Context, Next } from 'hono';
 import { and, eq } from 'drizzle-orm';
-import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
+import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../db';
+import { isSelfManagedDbContextRoute } from './selfManagedDbContextRoutes';
 import { portalUsers, organizations, partners } from '../db/schema';
 import { getRedis } from '../services/redis';
 import { getOrgPolicy, isClientUserPermitted } from '../services/clientAiPolicy';
@@ -136,23 +137,37 @@ export async function clientAiAuthMiddleware(c: Context, next: Next) {
     partnerAiForOfficeEnabled: user.partnerAiForOfficeEnabled === true,
   });
 
-  return withDbAccessContext(
-    {
-      scope: 'organization',
-      orgId: user.orgId,
-      accessibleOrgIds: [user.orgId],
-      accessiblePartnerIds: [],
-      userId: null,
-    },
-    () => next()
-  );
+  // #3127 — the chat message-send route owns its DB context (it waits on a
+  // blocked turn between two short ones; see selfManagedDbContextRoutes.ts), so
+  // it must not inherit a request transaction held across that wait.
+  if (isSelfManagedDbContextRoute(c.req.method, c.req.path)) {
+    return next();
+  }
+
+  return withDbAccessContext(clientAiDbAccessContext(user.orgId), () => next());
+}
+
+/**
+ * The org-scoped DB access context every /client-ai request runs under. Exported
+ * so a self-managed route (and requireClientAiEnabledMiddleware in front of it)
+ * re-enters exactly this context for each short DB phase.
+ */
+export function clientAiDbAccessContext(orgId: string): DbAccessContext {
+  return {
+    scope: 'organization',
+    orgId,
+    accessibleOrgIds: [orgId],
+    accessiblePartnerIds: [],
+    userId: null,
+  };
 }
 
 /**
  * Policy gate for /client-ai feature routes (everything beyond /auth/exchange).
  * Re-checks enabled + selected-list on EVERY request so disabling the org or
  * de-selecting a user takes effect immediately, not at next token mint.
- * Runs inside the org context opened by clientAiAuthMiddleware; caches the
+ * Runs inside the org context opened by clientAiAuthMiddleware (or, on a
+ * self-managed route, opens a short one for its own read); caches the
  * policy on the context for handlers (c.get('clientAiPolicy')).
  */
 export async function requireClientAiEnabledMiddleware(c: Context, next: Next) {
@@ -167,7 +182,11 @@ export async function requireClientAiEnabledMiddleware(c: Context, next: Next) {
     return c.json({ error: 'disabled' }, 403);
   }
 
-  const policy = await getOrgPolicy(auth.orgId);
+  // A self-managed route (#3127) reaches here with no request transaction open,
+  // so the policy read takes its own short org-scoped context.
+  const policy = isSelfManagedDbContextRoute(c.req.method, c.req.path)
+    ? await withDbAccessContext(clientAiDbAccessContext(auth.orgId), () => getOrgPolicy(auth.orgId))
+    : await getOrgPolicy(auth.orgId);
   if (!policy.enabled) {
     return c.json({ error: 'disabled' }, 403);
   }
