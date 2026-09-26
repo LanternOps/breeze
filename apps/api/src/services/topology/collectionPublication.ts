@@ -134,10 +134,13 @@ export async function prepareCollectionPublication(tx:Tx,scope:TopologyScope,thr
   if(resolver&&physicalContext&&(identityTouched||physicalContext.identityRevision>physicalContext.resolvedIdentityRevision)){
     pass={scope,at:new Date(),sources:sourceMap,support,changedSupport,relationships,nodes,interfaces:interfaceMap,baselines,newNodes:[],touchedRelationships:new Set(),archived:new Set(),rekeyed:new Set(),
       supportDeletes:[],lifecycleRemaps:[],observationRemaps:[],remappedBaselines:new Set()};
-    reresolvePhysicalRelationships(pass,resolver);
+    const reresolved=reresolvePhysicalRelationships(pass,resolver);
     result.nodes.push(...pass.newNodes);
     Object.assign(result,{supportDeletes:pass.supportDeletes,lifecycleRemaps:pass.lifecycleRemaps,observationRemaps:pass.observationRemaps,rekeyed:[...pass.rekeyed]});
-    result.identityResolvedThrough=physicalContext.identityRevision;
+    // A bounded pass that stopped early keeps the identity dirty mark; the
+    // publisher re-dirties the site so the next publication continues it.
+    if(reresolved.complete)result.identityResolvedThrough=physicalContext.identityRevision;
+    else result.identityResolutionIncomplete=true;
     for(const sourceId of pass.remappedBaselines){
       const source=sourceMap.get(sourceId)!,previous=checkpoint.get(sourceId);
       if(source.publishedDigest||previous)checkpoint.set(sourceId,{sourceId,epoch:source.producerEpoch,sequence:previous?.sequence??source.materializedSequence,digest:previous?.digest??source.publishedDigest!,baseline:baselines.get(sourceId)!});
@@ -211,6 +214,8 @@ export async function publishCollectionEvidence(tx:Tx,scope:TopologyScope,collec
       lifecycle:state.lifecycle?.filter(m=>!consumed.has(m.generation)).map(m=>remap.has(m.relationshipId)?{...m,relationshipId:remap.get(m.relationshipId)!}:m)},updatedAt:new Date()}).where(eq(topologyCollectionSources.id,sourceId));
   }
   if(collection.identityResolvedThrough!==undefined)await tx.execute(sql`UPDATE topology_site_state SET resolved_identity_revision=GREATEST(resolved_identity_revision,${collection.identityResolvedThrough.toString()}::bigint)
+    WHERE org_id=${scope.orgId}::uuid AND site_id=${scope.siteId}::uuid`);
+  if(collection.identityResolutionIncomplete)await tx.execute(sql`UPDATE topology_site_state SET dirty_revision=dirty_revision+1,last_build_status='pending',updated_at=now()
     WHERE org_id=${scope.orgId}::uuid AND site_id=${scope.siteId}::uuid`);
   if(collection.consumedRuns.length)await tx.update(topologyCollectionRuns).set({materializedAt:new Date(),updatedAt:new Date()}).where(sql`org_id=${scope.orgId}::uuid AND site_id=${scope.siteId}::uuid AND id IN (${sql.join(collection.consumedRuns.map(id=>sql`${id}::uuid`),sql`,`)})`);
 }

@@ -104,10 +104,12 @@ export function buildPhysicalRelationship(scope: TopologyScope, material: Physic
     } } };
 }
 
-/** Existing node by canonical identity, else a new scoped unbound endpoint. */
-export function unboundPhysicalNode(scope: TopologyScope, sourceKey: string, label: string | undefined, nodes: Map<string, NodePublication>, at: Date): NodePublication {
+/** Existing node by canonical identity, else a new scoped unbound endpoint.
+ * Hot loops pass `nodesByIdentity` (identity key -> node over `nodes`) instead of a linear scan. */
+export function unboundPhysicalNode(scope: TopologyScope, sourceKey: string, label: string | undefined, nodes: Map<string, NodePublication>, at: Date,
+  nodesByIdentity?: ReadonlyMap<string, NodePublication>): NodePublication {
   const identityKey = canonicalIdentityKey(scope, 'endpoint', sourceKey);
-  const old = [...nodes.values()].find(n => n.identityKey === identityKey);
+  const old = nodesByIdentity ? nodesByIdentity.get(identityKey) : [...nodes.values()].find(n => n.identityKey === identityKey);
   const safeLabel = label && label.length <= 255 ? label : undefined;
   return { ...scope, id: old?.id ?? stableLegacyId(identityKey), kind: 'endpoint', identityKey, identityMaterial: { version: 1, kind: 'endpoint', sourceKey },
     lifecycle: 'active', firstObservedAt: old?.firstObservedAt ?? at, lastObservedAt: at,
@@ -159,11 +161,12 @@ export function unifiMaterialOf(row: Pick<RelationshipPublication, 'attributes'>
  * own `inventoryDeviceId`, or the site's retained list rows for an uplink), else
  * the scoped unbound endpoint named by `endpointKey`. Never by name or IP. */
 export function unifiEndpointNode(input: { scope: TopologyScope; endpointKey: string; inventoryDeviceId: string | null; label?: string | null;
-  context: Pick<PhysicalProjectionContext, 'deviceNodes' | 'unifiEndpointDevices'>; nodes: Map<string, NodePublication>; at: Date }): { id: string; created?: NodePublication } {
+  context: Pick<PhysicalProjectionContext, 'deviceNodes' | 'unifiEndpointDevices'>; nodes: Map<string, NodePublication>; at: Date;
+  nodesByIdentity?: ReadonlyMap<string, NodePublication> }): { id: string; created?: NodePublication } {
   const deviceId = input.inventoryDeviceId ?? input.context.unifiEndpointDevices?.[input.endpointKey] ?? null;
   const bound = deviceId ? input.context.deviceNodes?.[deviceId] : undefined;
   if (bound) return { id: bound };
-  const node = unboundPhysicalNode(input.scope, input.endpointKey, input.label ?? undefined, input.nodes, input.at);
+  const node = unboundPhysicalNode(input.scope, input.endpointKey, input.label ?? undefined, input.nodes, input.at, input.nodesByIdentity);
   return { id: node.id, created: node };
 }
 export function buildUnifiRelationship(scope: TopologyScope, material: UnifiRowMaterial, sourceNodeId: string, targetNodeId: string, old: RelationshipPublication | undefined, at: Date): RelationshipPublication {

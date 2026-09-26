@@ -51,7 +51,12 @@ export function physicalResolver(context: PhysicalPublicationContext, nodes: Map
   const resolveNode = (id: string) => { const seen = new Set<string>(); while (nodes.get(id)?.aliasTargetId && !seen.has(id)) { seen.add(id); id = nodes.get(id)!.aliasTargetId!; } return id; };
   const assetNode = new Map<string, string>(); const deviceNode = new Map<string, string>();
   for (const b of bindings) { if (b.discoveredAssetId) assetNode.set(b.discoveredAssetId, b.nodeId); if (b.deviceId) deviceNode.set(b.deviceId, b.nodeId); }
-  const subjectFor = (authorityKey: string) => { const asset = resolvePhysicalSubjectAsset(authorityKey, context.assets); const node = asset ? assetNode.get(asset) : undefined; return node ? resolveNode(node) : null; };
+  // Asset resolution scans the site's assets; memoize it per authority (the asset list is fixed for the publication).
+  const assetFor = new Map<string, string | null>();
+  const subjectFor = (authorityKey: string) => {
+    if (!assetFor.has(authorityKey)) assetFor.set(authorityKey, resolvePhysicalSubjectAsset(authorityKey, context.assets));
+    const asset = assetFor.get(authorityKey); const node = asset ? assetNode.get(asset) : undefined; return node ? resolveNode(node) : null;
+  };
   const deviceMacs = context.deviceMacs.flatMap(m => deviceNode.has(m.deviceId) ? [{ nodeId: resolveNode(deviceNode.get(m.deviceId)!), mac: m.mac }] : []);
   const deviceNodes = Object.fromEntries([...deviceNode].map(([deviceId, nodeId]) => [deviceId, resolveNode(nodeId)]));
   const resolver: PhysicalResolver = { resolveNode, subjectFor, deviceNodes, unifiEndpointDevices: {}, chassisIds: [],
@@ -125,10 +130,23 @@ export type PhysicalPassState = {
   observationRemaps: { sourceId: string; from: string; to: string }[]; remappedBaselines: Set<string>;
 };
 
-function moveSupport(state: PhysicalPassState, fromId: string, toId: string): boolean {
+/** Per-pass indexes so a move touches only its own support rows, and each
+ * source's row mapping is rewritten once per pass, not once per move. */
+type MoveIndex = { byRelationship: Map<string, Set<string>>; remaps: Map<string, Map<string, string>> };
+function moveIndex(state: PhysicalPassState): MoveIndex {
+  const byRelationship = new Map<string, Set<string>>();
+  for (const [key, row] of state.support) {
+    const keys = byRelationship.get(row.relationshipId) ?? new Set<string>();
+    keys.add(key); byRelationship.set(row.relationshipId, keys);
+  }
+  return { byRelationship, remaps: new Map() };
+}
+
+function moveSupport(state: PhysicalPassState, index: MoveIndex, fromId: string, toId: string): boolean {
   let moved = false;
-  for (const [key, row] of [...state.support]) {
-    if (row.relationshipId !== fromId || row.lifecycle === 'withdrawn') continue;
+  for (const key of [...(index.byRelationship.get(fromId) ?? [])]) {
+    const row = state.support.get(key);
+    if (!row || row.relationshipId !== fromId || row.lifecycle === 'withdrawn') continue;
     const source = state.sources.get(row.sourceId);
     if (!source || source.revokedAt) continue;
     const dest = `${row.sourceId}:${toId}`;
@@ -137,13 +155,14 @@ function moveSupport(state: PhysicalPassState, fromId: string, toId: string): bo
     state.support.set(dest, existing ? mergeSupportRows(existing, next) : next);
     state.changedSupport.add(dest);
     state.support.delete(key); state.changedSupport.delete(key);
+    index.byRelationship.get(fromId)!.delete(key);
+    index.byRelationship.set(toId, (index.byRelationship.get(toId) ?? new Set<string>()).add(dest));
     state.supportDeletes.push({ sourceId: row.sourceId, relationshipId: fromId });
     state.lifecycleRemaps.push({ sourceId: row.sourceId, from: fromId, to: toId });
     state.observationRemaps.push({ sourceId: row.sourceId, from: fromId, to: toId });
     const baseline = state.baselines.get(row.sourceId);
-    const rows = baseline?._rowRelationships as Record<string, string[]> | undefined;
-    if (baseline && rows) {
-      baseline._rowRelationships = Object.fromEntries(Object.entries(rows).map(([k, ids]) => [k, [...new Set(ids.map(id => id === fromId ? toId : id))]]));
+    if (baseline && baseline._rowRelationships) {
+      index.remaps.set(row.sourceId, (index.remaps.get(row.sourceId) ?? new Map<string, string>()).set(fromId, toId));
       state.remappedBaselines.add(row.sourceId);
     }
     moved = true;
@@ -151,6 +170,21 @@ function moveSupport(state: PhysicalPassState, fromId: string, toId: string): bo
   if (moved) { state.touchedRelationships.add(fromId); state.touchedRelationships.add(toId); state.archived.add(fromId); }
   return moved;
 }
+/** Rewrite each remapped source's row mapping once, following move chains. */
+function applyBaselineRemaps(state: PhysicalPassState, index: MoveIndex) {
+  for (const [sourceId, remap] of index.remaps) {
+    const baseline = state.baselines.get(sourceId);
+    const rows = baseline?._rowRelationships as Record<string, string[]> | undefined;
+    if (!baseline || !rows) continue;
+    const final = (id: string) => { const seen = new Set<string>(); while (remap.has(id) && !seen.has(id)) { seen.add(id); id = remap.get(id)!; } return id; };
+    baseline._rowRelationships = Object.fromEntries(Object.entries(rows).map(([k, ids]) => [k, [...new Set(ids.map(final))]]));
+  }
+}
+
+/** Relationship changes one publication's re-resolution pass may make. A pass
+ * that reaches it stops, keeps the identity dirty mark and the next publication
+ * continues (the site-state lock is never held for an unbounded pass). */
+export const MAX_PHYSICAL_RERESOLUTION_CHANGES = 1000;
 
 /**
  * D15.2 + D15.5: recompute every supported physical row relationship from its
@@ -162,12 +196,19 @@ function moveSupport(state: PhysicalPassState, fromId: string, toId: string): bo
  * endpoint ids changed after a merge is rekeyed in place (same id), or merged
  * into an existing link with the new key.
  */
-export function reresolvePhysicalRelationships(state: PhysicalPassState, resolver: PhysicalResolver) {
+export function reresolvePhysicalRelationships(state: PhysicalPassState, resolver: PhysicalResolver): { complete: boolean; changes: number } {
   const index = resolver.index(state.interfaces.values());
   const byKey = new Map([...state.relationships.values()].map(r => [r.canonicalKey, r]));
   const supported = new Set([...state.support.values()].filter(s => s.lifecycle !== 'withdrawn').map(s => s.relationshipId));
+  const moves = moveIndex(state);
+  const nodesByIdentity = new Map([...state.nodes.values()].map(n => [n.identityKey, n]));
+  const unbound = (sourceKey: string, label: string | undefined) => unboundPhysicalNode(state.scope, sourceKey, label, state.nodes, state.at, nodesByIdentity);
+  const addNode = (node: NodePublication) => { state.nodes.set(node.id, node); nodesByIdentity.set(node.identityKey, node); state.newNodes.push(node); };
+  let changes = 0;
   const upsert = (row: RelationshipPublication) => { state.relationships.set(row.id, row); byKey.set(row.canonicalKey, row); state.touchedRelationships.add(row.id); };
+  const done = (complete: boolean) => { applyBaselineRemaps(state, moves); return { complete, changes }; };
   for (const row of [...state.relationships.values()].sort((a, b) => a.id.localeCompare(b.id))) {
+    if (changes >= MAX_PHYSICAL_RERESOLUTION_CHANGES) return done(false);
     if (!supported.has(row.id) || !isPhysicalRelationship(row) || state.archived.has(row.id)) continue;
     if (row.kind === 'physical_link') {
       if (!row.sourceInterfaceId || !row.targetInterfaceId || !row.identityMaterial.sourceKey.startsWith('physical-link-v1:')) continue;
@@ -177,7 +218,8 @@ export function reresolvePhysicalRelationships(state: PhysicalPassState, resolve
       if (sourceKey === row.identityMaterial.sourceKey) continue;
       const canonicalKey = canonicalIdentityKey(state.scope, 'physical_link', sourceKey);
       const existing = byKey.get(canonicalKey);
-      if (existing && existing.id !== row.id) { moveSupport(state, row.id, existing.id); continue; }
+      changes++;
+      if (existing && existing.id !== row.id) { moveSupport(state, moves, row.id, existing.id); continue; }
       const [first, second] = sortedLinkEndpoints(source, target);
       upsert({ ...row, canonicalKey, identityMaterial: { version: 1, kind: 'physical_link', sourceKey },
         sourceNodeId: first.nodeId, sourceInterfaceId: first.interfaceId, targetNodeId: second.nodeId, targetInterfaceId: second.interfaceId });
@@ -188,42 +230,45 @@ export function reresolvePhysicalRelationships(state: PhysicalPassState, resolve
     if (unifi) {
       // Identity is the association; a binding change only retargets it in place.
       const endpoint = (endpointKey: string) => {
-        const resolved = unifiEndpointNode({ scope: state.scope, endpointKey, inventoryDeviceId: null, context: resolver, nodes: state.nodes, at: state.at });
-        if (resolved.created && !state.nodes.has(resolved.id)) { state.nodes.set(resolved.id, resolved.created); state.newNodes.push(resolved.created); }
+        const resolved = unifiEndpointNode({ scope: state.scope, endpointKey, inventoryDeviceId: null, context: resolver, nodes: state.nodes, at: state.at, nodesByIdentity });
+        if (resolved.created && !state.nodes.has(resolved.id)) addNode(resolved.created);
         return resolved.id;
       };
       const sourceNodeId = endpoint(unifi.uplinkEndpointKey), targetNodeId = endpoint(unifi.endpointKey);
-      if (sourceNodeId !== targetNodeId && (sourceNodeId !== resolver.resolveNode(row.sourceNodeId) || targetNodeId !== resolver.resolveNode(row.targetNodeId))) upsert({ ...row, sourceNodeId, targetNodeId });
+      if (sourceNodeId !== targetNodeId && (sourceNodeId !== resolver.resolveNode(row.sourceNodeId) || targetNodeId !== resolver.resolveNode(row.targetNodeId))) { upsert({ ...row, sourceNodeId, targetNodeId }); changes++; }
       continue;
     }
     const material = physicalMaterialOf(row);
     if (!material) continue;
     const subject = resolver.subjectFor(material.subjectAuthority);
-    const subjectNode = subject ?? unboundPhysicalNode(state.scope, physicalTargetSourceKey(material.subjectAuthority), material.subjectAuthority, state.nodes, state.at);
+    const subjectNode = subject ?? unbound(physicalTargetSourceKey(material.subjectAuthority), material.subjectAuthority);
     const subjectId = typeof subjectNode === 'string' ? subjectNode : subjectNode.id;
     const plan = planPhysicalResolution(material, subjectId, index);
     if (plan.kind === 'skip') continue;
     let target = plan.kind === 'link' ? plan.b.nodeId : plan.targetNodeId;
     if (!target && plan.kind === 'candidate') {
-      const node = unboundPhysicalNode(state.scope, plan.unboundSourceKey, undefined, state.nodes, state.at);
-      if (!state.nodes.has(node.id)) { state.nodes.set(node.id, node); state.newNodes.push(node); }
+      const node = unbound(plan.unboundSourceKey, undefined);
+      if (!state.nodes.has(node.id)) addNode(node);
       target = node.id;
     }
-    if (typeof subjectNode !== 'string' && !state.nodes.has(subjectNode.id)) { state.nodes.set(subjectNode.id, subjectNode); state.newNodes.push(subjectNode); }
+    if (typeof subjectNode !== 'string' && !state.nodes.has(subjectNode.id)) addNode(subjectNode);
     const draft = buildPhysicalRelationship(state.scope, material, plan, target!, undefined, row.lastSupportedAt ?? state.at);
     if (draft.canonicalKey === row.canonicalKey) {
       // Same identity: at most the remote endpoint became known (retarget in place).
       if (draft.targetNodeId !== row.targetNodeId || draft.sourceInterfaceId !== row.sourceInterfaceId || draft.attributes?.physical?.resolution !== row.attributes?.physical?.resolution) {
         upsert({ ...row, targetNodeId: draft.targetNodeId, sourceNodeId: draft.sourceNodeId, sourceInterfaceId: draft.sourceInterfaceId,
           attributes: { ...row.attributes, physical: { ...row.attributes?.physical, resolution: draft.attributes?.physical?.resolution } } });
+        changes++;
       }
       continue;
     }
     const existing = byKey.get(draft.canonicalKey);
     const destination = existing ? { ...existing } : { ...draft, firstSupportedAt: row.firstSupportedAt ?? draft.firstSupportedAt, lastSupportedAt: row.lastSupportedAt ?? draft.lastSupportedAt };
     upsert(destination);
-    moveSupport(state, row.id, destination.id);
+    moveSupport(state, moves, row.id, destination.id);
+    changes++;
   }
+  return done(true);
 }
 
 /** Candidates of FDB parent selection for the given clients. */

@@ -47,6 +47,8 @@ export type CollectionPublication = TopologyProjectionDelta & {
   rekeyed:string[];
   /** Identity revision this publication resolved through, when the pass ran. */
   identityResolvedThrough?:bigint;
+  /** The bounded re-resolution pass stopped early: the next publication continues it. */
+  identityResolutionIncomplete?:boolean;
 };
 export type CollectionEvent = {revision:bigint;source:CollectionSource} & ({kind:'snapshot';run:CollectionRun}|{kind:'miss';miss:PendingTopologyMiss}|{kind:'lifecycle';change:PendingTopologyLifecycle});
 export const emptyProjection = ():TopologyProjectionDelta=>({nodes:[],relationships:[],bindings:[],interfaces:[],observations:[],support:[]});
