@@ -2,7 +2,7 @@
  * Topology M4 Task 3 (#6000): a short-lived cache of VALIDATED explanations.
  *
  * The key is a SHA-256 over everything that changes authority or meaning —
- * org/site, user, effective site set and permission version, graph/health
+ * org/site, session (its host aliases are per investigation), user, effective site set and permission version, graph/health
  * revisions, the canonical scope-stamp hash, selection, question, and the
  * prompt/schema/provider revisions — so it never carries question text or an
  * address. Values are the sanitized structured answer only, bounded in size,
@@ -21,6 +21,12 @@ export const TOPOLOGY_AI_CACHE_MAX_TTL_MS = 5 * 60_000;
 const MAX_VALUE_BYTES = 64 * 1024;
 
 export type TopologyAiCacheKeyParts = {
+  /**
+   * The topology session (= investigation). A cached answer's text carries
+   * that investigation's host aliases, so it is never served to another
+   * session (review C9).
+   */
+  sessionId: string;
   userId: string;
   effectiveSites: string;
   permissionVersion: string;

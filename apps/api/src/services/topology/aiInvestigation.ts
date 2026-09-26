@@ -132,9 +132,10 @@ export type PreparedTopologyInvestigation =
   | { kind: 'cached'; explanation: TopologyAiExplanation }
   | { kind: 'live'; runtime: TopologyTurnRuntime; prompt: string; systemPrompt: string; allowedMcpTools: string[] };
 
-async function cacheParts(ctx: TopologyRequestContext, snapshot: TopologyAiEvidenceSnapshot, selection: TopologyAiSelection, question: string, providerRevision: string): Promise<TopologyAiCacheKeyParts> {
+async function cacheParts(ctx: TopologyRequestContext, sessionId: string, snapshot: TopologyAiEvidenceSnapshot, selection: TopologyAiSelection, question: string, providerRevision: string): Promise<TopologyAiCacheKeyParts> {
   const [permissionVersion, visibility] = await Promise.all([getPermissionAuthorityVersion(ctx.auth.user.id), resolveTopologySessionVisibility(ctx.auth)]);
   return {
+    sessionId,
     userId: ctx.auth.user.id,
     effectiveSites: JSON.stringify(visibility),
     permissionVersion: permissionVersion ?? `unknown:${Date.now()}`,
@@ -234,7 +235,7 @@ export async function prepareTopologyInvestigation(
   const lease = await reserveTopologyInvestigation(ctx, sessionId, { now: options.now });
   try {
     const snapshot = await buildTopologyAiEvidence(ctx, selection, options.now ?? new Date(), { investigationId: sessionId });
-    const parts = await cacheParts(ctx, snapshot, selection, question, options.providerRevision);
+    const parts = await cacheParts(ctx, sessionId, snapshot, selection, question, options.providerRevision);
     const hit = await getCachedTopologyExplanation(ctx, parts);
     if (hit) {
       try {

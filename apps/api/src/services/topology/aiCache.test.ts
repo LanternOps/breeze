@@ -16,7 +16,7 @@ const SITE = '20000000-0000-4000-8000-000000000001';
 const ctx = { auth: { user: { id: 'u1' } }, permissions: {}, scope: { orgId: ORG, siteId: SITE } } as never;
 const NOW = new Date('2026-09-26T12:00:00.000Z');
 const parts: TopologyAiCacheKeyParts = {
-  userId: 'u1', effectiveSites: 'all', permissionVersion: '4', revisions: { graph: '7', health: '3' }, scopeStampHash: 'abc',
+  sessionId: 's1', userId: 'u1', effectiveSites: 'all', permissionVersion: '4', revisions: { graph: '7', health: '3' }, scopeStampHash: 'abc',
   selection: { siteId: SITE, subject: { kind: 'node', id: SITE }, view: 'physical', graphRevision: '7' }, question: 'why is the uplink down? 10.0.0.5',
   promptVersion: 'p1', schemaVersion: 1, providerRevision: 'platform',
 };
@@ -34,7 +34,7 @@ describe('topology AI answer cache (M4 Task 3)', () => {
 
   it('changes the key for any input that changes authority or meaning', () => {
     const base = topologyAiCacheKey(ctx, parts);
-    for (const changed of [{ userId: 'u2' }, { permissionVersion: '5' }, { effectiveSites: 'b' }, { revisions: { graph: '8', health: '3' } }, { revisions: { graph: '7', health: '4' } },
+    for (const changed of [{ sessionId: 's2' }, { userId: 'u2' }, { permissionVersion: '5' }, { effectiveSites: 'b' }, { revisions: { graph: '8', health: '3' } }, { revisions: { graph: '7', health: '4' } },
       { scopeStampHash: 'def' }, { question: 'other' }, { promptVersion: 'p2' }, { providerRevision: 'partner:9' },
       { selection: { ...parts.selection, view: 'logical' as const } }]) {
       expect(topologyAiCacheKey(ctx, { ...parts, ...changed }), JSON.stringify(changed)).not.toBe(base);

@@ -20,6 +20,7 @@ import {
   buildTopologyInvestigationPrompt, prepareTopologyInvestigation, TOPOLOGY_AI_INPUT_TOKEN_BUDGET, TOPOLOGY_INVESTIGATION_TOOL_NAMES, topologySelectionFromSession,
 } from './aiInvestigation';
 import { TopologyAiLimitError } from './aiLimits';
+import { topologyAiCacheKey } from './aiCache';
 
 const ORG = '10000000-0000-4000-8000-000000000001';
 const SITE = '20000000-0000-4000-8000-000000000001';
@@ -144,6 +145,16 @@ describe('prepareTopologyInvestigation (M4 Task 3)', () => {
     await prepare();
     expect(mocks.cacheGet.mock.calls[1]![1]).not.toEqual(first);
     expect(first).toMatchObject({ userId: 'u1', permissionVersion: '[1,2]', question: 'Why is the uplink down?', effectiveSites: JSON.stringify({ kind: 'all' }) });
+  });
+});
+
+describe('answer cache isolation (review C9)', () => {
+  it('keys the cache by session, so another session never reuses this session\'s host aliases', async () => {
+    await prepare();
+    await prepareTopologyInvestigation(ctx, selection, 'Why is the uplink down?', '70000000-0000-4000-8000-000000000002', { providerRevision: 'platform' });
+    const [first, second] = [mocks.cacheGet.mock.calls[0]![1], mocks.cacheGet.mock.calls[1]![1]];
+    expect(first).toMatchObject({ sessionId: SESSION });
+    expect(topologyAiCacheKey(ctx, second)).not.toBe(topologyAiCacheKey(ctx, first));
   });
 });
 
