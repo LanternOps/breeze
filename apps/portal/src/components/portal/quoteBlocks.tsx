@@ -7,7 +7,7 @@
 // PDF, which appends un-blocked lines after the block walk.
 import { Fragment } from 'react';
 import { DEVICE_ROLE_NOUNS, type BillableDeviceRole } from '@breeze/shared';
-import type { QuoteBlock, QuoteCalloutContent, QuoteContractBlockContent, QuoteLine, QuoteTableContent } from '@/lib/api';
+import type { QuoteBlock, QuoteCalloutContent, QuoteLine, QuoteTableContent } from '@/lib/api';
 
 import { money } from '@/lib/format';
 import type { PublicApiPath } from '@/lib/api';
@@ -220,12 +220,9 @@ export function QuoteBlocks({
   currency: string;
   // Builds the (authed or token-scoped) URL to fetch a quote image by id.
   imageUrl: (imageId: string) => PublicApiPath;
-  // Resolves a server-returned relative route (e.g. a contract block's
-  // `fileUrl`, already the full `/portal/quotes/:id/contract-file/:blockId` or
-  // `/quotes/public/:token/contract-file/:blockId` path) into a fetchable URL —
-  // `publicApiPath` in both callers. Unlike `imageUrl`, the route itself
-  // (not just an id) comes from the API, since a contract block's fileUrl is
-  // part of the serialization contract.
+  // Resolves a server-returned relative route (a line's `imageUrl`) into a
+  // fetchable URL — `publicApiPath` in both callers. Unlike `imageUrl`, the
+  // route itself (not just an id) comes from the API.
   buildUrl: (path: string) => PublicApiPath;
   /** Quote tax rate as a fraction (e.g. 0.085); used for the per-line Tax column. */
   taxRate?: number;
@@ -292,46 +289,9 @@ export function QuoteBlocks({
       );
     }
 
-    if (block.blockType === 'contract') {
-      // Typed as QuoteContractBlockContent (never `authoring`) for documentation —
-      // still narrowed field-by-field below rather than trusted outright, since a
-      // TS type doesn't validate the JSON actually on the wire. `Record<string,
-      // unknown>` doesn't structurally overlap with the (mostly-required) typed
-      // shape, so route through `unknown` — the same escape hatch this
-      // component already leans on for `content` itself.
-      const c = content as unknown as QuoteContractBlockContent;
-      const label = typeof c.label === 'string' ? c.label : '';
-      const templateName = typeof c.templateName === 'string' ? c.templateName : (label || 'Agreement');
-      const versionNumber = Number(c.versionNumber ?? 0);
-      const sourceType = c.sourceType === 'uploaded' ? 'uploaded' : 'authored';
-      const renderedHtml = typeof c.renderedHtml === 'string' ? c.renderedHtml : null;
-      const fileUrl = typeof c.fileUrl === 'string' ? c.fileUrl : null;
-      return (
-        <div key={block.id} className="space-y-3 rounded-lg border bg-card p-4 sm:p-5" data-testid="contract-block">
-          {label && <h3 className="text-base font-semibold text-foreground">{label}</h3>}
-          {sourceType === 'authored' ? (
-            renderedHtml ? (
-              // Server-substituted HTML from an authored contract template — same
-              // sanitizer output + HTML-escaped substitution path as rich_text
-              // blocks (see the rich_text case above), safe to render as-is.
-              <div className="quote-rich-text text-sm leading-relaxed text-foreground" dangerouslySetInnerHTML={{ __html: renderedHtml }} />
-            ) : (
-              <div className="rounded-lg border bg-muted/50 p-4 text-sm text-muted-foreground">Agreement content unavailable</div>
-            )
-          ) : fileUrl ? (
-            <div className="space-y-2">
-              <iframe src={buildUrl(fileUrl)} title={templateName} className="h-[32rem] w-full rounded-lg border" />
-              <a href={buildUrl(fileUrl)} target="_blank" rel="noreferrer" data-testid="contract-block-download" className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline">
-                Download agreement
-              </a>
-            </div>
-          ) : (
-            <div className="rounded-lg border bg-muted/50 p-4 text-sm text-muted-foreground">Agreement file unavailable</div>
-          )}
-          <p className="text-xs text-muted-foreground">{templateName} — v{versionNumber}</p>
-        </div>
-      );
-    }
+    // Contract blocks are agreements, not body content: QuoteAgreements renders
+    // them after the totals and the sign panel, collapsed (#7040).
+    if (block.blockType === 'contract') return null;
 
     if (block.blockType === 'table') {
       // Structured JSON, never HTML-parsed — column labels and cell values are

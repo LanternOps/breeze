@@ -1043,7 +1043,8 @@
         "readOnlyHint": "Entfernen Sie diesen Abschnitt und fügen Sie ihn neu hinzu, um Vorlage, Version oder Variablen zu ändern.",
         "updateToVersion": "Auf v{{version}} aktualisieren",
         "saveVariables": "Variablen speichern",
-        "unresolvedWarning": "Nicht aufgelöste Variablen (verhindern das Senden): {{names}}"
+        "unresolvedWarning": "Nicht aufgelöste Variablen (verhindern das Senden): {{names}}",
+        "placementHint": "Kunden sehen dies nach den Summen, eingeklappt, bis sie es öffnen. Im PDF folgt es auf den Preis."
       },
       "coverPage": {
         "title": "Deckblatt",
@@ -1446,6 +1447,18 @@
         "unavailable": "Vereinbarungsdatei nicht verfügbar",
         "versionFooter": "{{name}} — Version {{version}}"
       },
+      "agreements": {
+        "heading": "Vereinbarungen",
+        "termsTitle": "Allgemeine Geschäftsbedingungen",
+        "read": "Lesen",
+        "hide": "Ausblenden",
+        "readTime": "ca. {{minutes}} Min. Lesezeit",
+        "sectionsReadTime_one": "{{count}} Abschnitt · ca. {{minutes}} Min. Lesezeit",
+        "sectionsReadTime_other": "{{count}} Abschnitte · ca. {{minutes}} Min. Lesezeit",
+        "pdfDocument": "PDF-Dokument",
+        "unavailable": "Nicht verfügbar",
+        "untitled": "Vereinbarung"
+      },
       "draft": "Entwurf",
       "empty": "Dieser Vorschlag hat noch keinen Inhalt.",
       "imageUnavailable": "Bild nicht verfügbar",
@@ -1473,7 +1486,6 @@
         "tax": "Steuer",
         "unitPrice": "Stückpreis"
       },
-      "terms": "Bedingungen",
       "totals": {
         "annualRecurring": "Jährlich wiederkehrend",
         "depositDue": "Anzahlung fällig",
