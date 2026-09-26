@@ -13,15 +13,5 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": true
   },
-  "include": [
-    "*.ts",
-    "pages/**/*.ts",
-    "tests/**/*.ts"
-  ],
-  "exclude": [
-    "node_modules",
-    "perf-harness/**",
-    "live-signup/**",
-    "ui-audit/**"
-  ]
+  "include": ["*.ts", "../pages/hydration.ts"]
 }
