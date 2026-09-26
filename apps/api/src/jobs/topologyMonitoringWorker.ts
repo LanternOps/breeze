@@ -1,11 +1,15 @@
 import { captureException } from '../services/sentry';
+import { drainTopologyAlertTransitions } from '../services/topology/monitoringAlerts';
+import { drainTopologyMonitoringAssessments } from '../services/topology/monitoringAssessment';
 import { dispatchDueTopologyPolicies } from '../services/topology/monitoringScheduler';
 import { ensureTopologyTelemetryArmAuthority } from '../services/topology/telemetryArmFence';
 import { dispatchDueTopologyTelemetryArms } from '../services/topology/telemetryArms';
 
 /**
- * Recurring topology monitoring (M3 Task 7): claims due policy slots (runs or
- * bounded gaps) and mints standing interface polls from telemetry arms. The
+ * Recurring topology monitoring (M3 Tasks 7/8): claims due policy slots (runs
+ * or bounded gaps), mints standing interface polls from telemetry arms, then
+ * applies settled occurrences to the health streaks / site-owned alerts and
+ * fans committed alert transitions out to notifications. The
  * durable rows — policy streak state, run + dispatch intent, arm cursor — are
  * the recovery authority, so a crashed tick is simply repeated; delivery is the
  * diagnostic worker's and the agent heartbeat's, never this worker's.
@@ -20,6 +24,9 @@ export async function runTopologyMonitoringTick(): Promise<void> {
   ensureTopologyTelemetryArmAuthority();
   await dispatchDueTopologyPolicies();
   await dispatchDueTopologyTelemetryArms();
+  // M3 Task 8 typed consumers (M3-D15): streaks/alerts, then notification fan-out.
+  await drainTopologyMonitoringAssessments();
+  await drainTopologyAlertTransitions();
 }
 
 function tick(): void {

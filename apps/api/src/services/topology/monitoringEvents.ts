@@ -40,4 +40,6 @@ export type TopologyMonitoringAlertEvent = {
   contextKey: string;
   family: 'ipv4' | 'ipv6';
   occurrenceKey: string;
+  /** False inside the re-notify cooldown: the transition is recorded, not published. */
+  notify: boolean;
 };

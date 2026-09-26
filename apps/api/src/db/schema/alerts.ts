@@ -12,11 +12,12 @@ import {
   numeric,
   uniqueIndex,
   check,
-  customType
+  customType,
+  foreignKey
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { NOTIFICATION_CHANNEL_TYPES } from '@breeze/shared';
-import { organizations, partners } from './orgs';
+import { organizations, partners, sites } from './orgs';
 import { devices } from './devices';
 import { users } from './users';
 
@@ -138,6 +139,12 @@ export const alerts = pgTable('alerts', {
   // `alerts_open_rule_device_subject_uidx` enforces open-alert identity below.
   subjectKey: text('subject_key'),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
+  // Topology M3 (M3-D6, migration 2026-11-02-110200): a recurring topology
+  // check alert is OWNED by the topology site (immutable), not by the origin
+  // device (`device_id`, provenance only). Set together at insert, or both
+  // NULL for every other alert; site authorization follows this column.
+  topologySiteId: uuid('topology_site_id'),
+  topologySourceKey: text('topology_source_key'),
   configPolicyId: uuid('config_policy_id'),
   configItemName: varchar('config_item_name', { length: 200 }),
   status: alertStatusEnum('status').notNull().default('active'),
@@ -184,7 +191,13 @@ export const alerts = pgTable('alerts', {
     .on(table.ruleId, table.deviceId, sql`COALESCE(${table.subjectKey}, '')`)
     .where(sql`${table.ruleId} IS NOT NULL AND ${table.status} IN ('active', 'acknowledged', 'suppressed')`),
   // Partner alerts feed keyset (2026-10-30-130100, built CONCURRENTLY).
-  partnerFeedXidIdx: index('idx_alerts_partner_feed_xid').on(table.partnerFeedXid, table.id)
+  partnerFeedXidIdx: index('idx_alerts_partner_feed_xid').on(table.partnerFeedXid, table.id),
+  topologyOwnerChk: check('alerts_topology_owner_chk', sql`(topology_site_id IS NULL) = (topology_source_key IS NULL) AND (topology_source_key IS NULL OR topology_source_key ~ '^topology:[a-f0-9]{64}$')`),
+  topologySiteFk: foreignKey({ name: 'alerts_topology_site_fk', columns: [table.topologySiteId, table.orgId], foreignColumns: [sites.id, sites.orgId] }),
+  topologyOpenSourceUidx: uniqueIndex('alerts_topology_open_source_uidx')
+    .on(table.orgId, table.topologySiteId, table.topologySourceKey)
+    .where(sql`topology_source_key IS NOT NULL AND status IN ('active', 'acknowledged', 'suppressed')`),
+  topologySiteIdx: index('alerts_topology_site_idx').on(table.topologySiteId).where(sql`topology_site_id IS NOT NULL`)
 }));
 
 export const alertCorrelations = pgTable('alert_correlations', {

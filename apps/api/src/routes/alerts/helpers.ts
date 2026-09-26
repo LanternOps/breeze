@@ -1,6 +1,6 @@
 import { ensureOrgAccess } from '../../services/delivery/railContracts';
 export { ensureOrgAccess, resolveWriteOrgId, getEscalationPolicyWithOrgCheck } from '../../services/delivery/railContracts';
-import { and, eq, inArray, isNull, or } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, or } from 'drizzle-orm';
 import type { NotificationChannelType } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
@@ -52,12 +52,20 @@ export type AlertRuleOverrides = {
 export { getPagination } from '../../utils/pagination';
 
 /** Device-bound alerts follow current device site; deviceless alerts are org-wide.
- * Callers applying this predicate must left-join devices. */
+ * A topology policy alert (M3-D6) is owned by its TOPOLOGY site — its origin
+ * device is provenance only, so a moved origin never carries it into another
+ * site. Callers applying this predicate must left-join devices. */
 export function alertSiteScopeCondition(allowedSiteIds: string[] | undefined) {
   if (allowedSiteIds === undefined) return undefined;
-  return allowedSiteIds.length === 0
+  const legacy = allowedSiteIds.length === 0
     ? isNull(alerts.deviceId)
     : or(isNull(alerts.deviceId), inArray(devices.siteId, allowedSiteIds));
+  return allowedSiteIds.length === 0
+    ? and(isNull(alerts.topologySiteId), legacy)
+    : or(
+      and(isNotNull(alerts.topologySiteId), inArray(alerts.topologySiteId, allowedSiteIds)),
+      and(isNull(alerts.topologySiteId), legacy),
+    );
 }
 
 export async function getAlertRuleWithOrgCheck(
@@ -133,6 +141,11 @@ export async function getAlertWithOrgCheck(
   }
 
   // Site-axis gate. Only restricted callers (allowedSiteIds set) are narrowed.
+  // A topology policy alert follows its owning topology site (M3-D6), never
+  // its origin device's current site.
+  if (auth.allowedSiteIds && alert.topologySiteId) {
+    return siteAccessCheck(auth.allowedSiteIds)(alert.topologySiteId) ? alert : null;
+  }
   // Deviceless alerts are org-wide and not site-bound, so they pass.
   if (auth.allowedSiteIds && alert.deviceId) {
     const [device] = await db

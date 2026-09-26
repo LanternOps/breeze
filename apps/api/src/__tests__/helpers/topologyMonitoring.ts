@@ -1,11 +1,12 @@
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { organizations, topologyMonitoringPolicies, users } from '../../db/schema';
+import { organizations, topologyChangeOutbox, topologyDiagnosticRuns, topologyMonitoringPolicies, users } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import type { UserPermissions } from '../../services/permissions';
 import { encryptSnmpCommunities } from '../../services/snmpSecrets';
 import type { TopologyRequestContext } from '../../services/topology/access';
 import type { DiagnosticPlanningRepository, DiagnosticPlanningSnapshot } from '../../services/topology/diagnosticTypes';
+import { armTopologyMonitoringPolicy } from '../../services/topology/monitoringArming';
 import { setupTestEnvironment } from '../integration/db-utils';
 import { orgContext } from '../integration/topology-fixtures';
 
@@ -91,5 +92,40 @@ export async function seedTopologyMonitoringFixture() {
   const inOrg = <T>(fn: () => Promise<T>) => withDbAccessContext(orgContext(orgId), fn);
   const policy = () => system(async () => (await db.select().from(topologyMonitoringPolicies).where(eq(topologyMonitoringPolicies.id, policyId)))[0]!);
   return { env, orgId, siteId, deviceId, nodeId, switchNodeId, profileId, policyId, targetId, sourceId, ifaceA, ifaceB, ctx, repository, inOrg, policy };
+}
+
+
+const web = { kind: 'tcp', label: 'web', enabled: true, families: ['ipv4'], provider: null, independenceLabel: null, host: '198.51.100.7', port: 443 } as const;
+
+/** The monitoring fixture with the policy ARMED and a full planning snapshot (one pinned + one unpinned target). */
+export async function seedScheduledMonitoringFixture() {
+  const f = await seedTopologyMonitoringFixture();
+  const unpinned = crypto.randomUUID();
+  const [binding] = await system(() => db.execute<{ id: string }>(sql`SELECT id FROM topology_node_bindings WHERE node_id = ${f.nodeId}::uuid`));
+  const origin = { deviceId: f.deviceId, agentId: f.deviceId, nodeId: f.nodeId, bindingId: binding!.id, siteId: f.siteId, contextKey: 'default',
+    interfaceId: null, interfaceEpoch: null, interfaceKey: null, sourceId: f.sourceId, producerEpoch: 'epoch-1', sequence: '1' };
+  const repository: DiagnosticPlanningRepository = {
+    load: async () => ({
+      graphRevision: '0',
+      settings: { binding: { orgId: f.orgId, siteId: f.siteId }, layers: { partner: null, organization: null, defaultsVersion: 1, resolverVersion: 1 },
+        resolved: { settings: { outboundEnabled: true } }, settingsRevision: '0', templateRevisions: {} },
+      targets: [
+        { id: unpinned, revision: '1', definition: { ...web, host: '203.0.113.9' } },
+        { id: f.targetId, revision: '1', definition: web },
+      ],
+      candidates: [{ eligibility: { origin, eligible: true, reasons: [], families: ['ipv4'], rank: 0 }, routes: [], resolvers: [], gatewayEvidence: [], resolverEvidence: {},
+        capabilities: new Set(['network_diagnostic', 'route_lookup']) }],
+    }) as unknown as DiagnosticPlanningSnapshot,
+  };
+  const before = await f.policy();
+  await f.inOrg(() => armTopologyMonitoringPolicy(f.ctx, f.policyId, { expectedRevision: before.revision.toString(), extendedContexts: false }, { repository: f.repository }));
+  const makeDue = (lastClaimed: string | null = null) => system(async () => {
+    const row = (await db.select().from(topologyMonitoringPolicies).where(eq(topologyMonitoringPolicies.id, f.policyId)))[0]!;
+    const entries = row.alertState.entries.map((entry) => ({ ...entry, lastClaimedScheduledFor: lastClaimed }));
+    await db.update(topologyMonitoringPolicies).set({ nextScheduledAt: new Date(0), alertState: { schemaVersion: 1, entries } }).where(eq(topologyMonitoringPolicies.id, f.policyId));
+  });
+  const runs = () => system(() => db.select().from(topologyDiagnosticRuns).where(and(eq(topologyDiagnosticRuns.orgId, f.orgId), eq(topologyDiagnosticRuns.policyId, f.policyId))));
+  const gaps = () => system(() => db.select().from(topologyChangeOutbox).where(and(eq(topologyChangeOutbox.orgId, f.orgId), eq(topologyChangeOutbox.eventKind, 'monitoring.gap'))));
+  return { ...f, repository, unpinned, makeDue, runs, gaps };
 }
 

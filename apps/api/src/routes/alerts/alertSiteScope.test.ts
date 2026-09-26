@@ -7,15 +7,15 @@ describe('alert site predicate preserves the deviceless policy', () => {
   it('leaves unrestricted organization and partner fleet reads unfiltered', () => {
     expect(alertSiteScopeCondition(undefined)).toBeUndefined();
   });
-  it('admits only deviceless alerts when no sites are allowed', () => {
+  it('admits only deviceless, non-topology alerts when no sites are allowed', () => {
     const query = dialect.sqlToQuery(alertSiteScopeCondition([])!);
-    expect(query.sql).toBe('"alerts"."device_id" is null');
+    expect(query.sql).toBe('("alerts"."topology_site_id" is null and "alerts"."device_id" is null)');
     expect(query.params).toEqual([]);
   });
-  it('admits deviceless alerts alongside current allowed device sites', () => {
+  it('admits deviceless alerts alongside current allowed device sites, and topology alerts by their OWNING site (M3-D6)', () => {
     const site = '4e63ffb4-d8bf-451a-a0d1-26c0cf363583';
     const query = dialect.sqlToQuery(alertSiteScopeCondition([site])!);
-    expect(query.sql).toBe('("alerts"."device_id" is null or "devices"."site_id" in ($1))');
-    expect(query.params).toEqual([site]);
+    expect(query.sql).toBe('(("alerts"."topology_site_id" is not null and "alerts"."topology_site_id" in ($1)) or ("alerts"."topology_site_id" is null and ("alerts"."device_id" is null or "devices"."site_id" in ($2))))');
+    expect(query.params).toEqual([site, site]);
   });
 });
