@@ -156,3 +156,46 @@ func TestSetDesktopTargetRoundTrip_Empty(t *testing.T) {
 		t.Fatalf("takeDesktopTarget for untargeted session = %q, want empty", got)
 	}
 }
+
+// TestSessionNoticeTarget_PrefersUserRoleInTargetSession is the #6864 guard at
+// the heartbeat seam: the remote-session notice for a targeted Windows session
+// must go to that session's user-role helper even when the system-role capture
+// helper was heard from more recently. The system-role helper's toast runs as
+// SYSTEM and fails on RDSH.
+func TestSessionNoticeTarget_PrefersUserRoleInTargetSession(t *testing.T) {
+	b := sessionbroker.New("notice-target", nil)
+	h := &Heartbeat{sessionBroker: b}
+
+	user := registerConsentTestSession(t, b, "3", ipc.HelperRoleUser, []string{"notify", "run_as_user"})
+	system := registerConsentTestSession(t, b, "3", ipc.HelperRoleSystem, []string{"notify", "desktop"})
+	system.LastSeen = user.LastSeen.Add(10 * time.Second)
+	system.ConnectedAt = user.ConnectedAt.Add(10 * time.Second)
+
+	if got := h.sessionNoticeTarget("3"); got != user {
+		t.Fatalf("session notice must target the user-role helper, got %+v", got)
+	}
+	if got := h.sessionNoticeTarget("8"); got != nil {
+		t.Fatalf("target 8 has no helper; must be nil, got %+v", got)
+	}
+	// Empty target keeps the legacy machine-global preference (user role first).
+	if got := h.sessionNoticeTarget(""); got != user {
+		t.Fatalf("empty target must keep the machine-global user-role preference, got %+v", got)
+	}
+}
+
+// TestSessionNoticeRequest_AsksForDialogFallback: the remote-session notice is a
+// consent-visibility notice, so it asks the helper to fall back to a dialog when
+// the toast cannot be shown (#6864). Other notifications (the reboot ladder)
+// never set it.
+func TestSessionNoticeRequest_AsksForDialogFallback(t *testing.T) {
+	req := sessionNoticeRequest("A technician connected")
+	if !req.FallbackDialog {
+		t.Fatal("remote-session notice must request the dialog fallback")
+	}
+	if req.Body != "A technician connected" || req.Title == "" {
+		t.Fatalf("unexpected request %+v", req)
+	}
+	if len(req.Actions) != 0 {
+		t.Fatalf("the notice must not carry actions (that would make it a prompt): %+v", req.Actions)
+	}
+}

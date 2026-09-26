@@ -12,3 +12,8 @@ import "github.com/breeze-rmm/agent/internal/ipc"
 func showNotifyPromptOS(ipc.NotifyRequest) (clicked string, shown bool) {
 	return "", false
 }
+
+// showNoticeDialogOS has no dialog vehicle on this platform; see showNotifyPromptOS.
+func showNoticeDialogOS(ipc.NotifyRequest) bool {
+	return false
+}
