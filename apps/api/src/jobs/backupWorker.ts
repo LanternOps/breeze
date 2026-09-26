@@ -1563,7 +1563,8 @@ async function processDispatchBackup(
           inArray(backupJobs.status, ['pending', 'running']),
           // Helper admission/start can race this post-send write. Its lifecycle
           // signal wins; never promote queued work or reset execution start.
-          isNull(backupJobs.lastProgressAt)
+          // Every helper lifecycle signal stamps last_keepalive_at (#2798).
+          isNull(backupJobs.lastKeepaliveAt)
         ));
 
       console.log(

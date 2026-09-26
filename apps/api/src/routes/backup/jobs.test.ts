@@ -238,6 +238,7 @@ describe('backup jobs routes', () => {
           fileCount: 8,
           totalFiles: 20,
           lastProgressAt: new Date('2026-04-01T00:01:30Z'),
+          lastKeepaliveAt: new Date('2026-04-01T00:02:00Z'),
         }),
         deviceName: 'Running Device',
         deviceHostname: 'running-host',
@@ -257,6 +258,7 @@ describe('backup jobs routes', () => {
       fileCount: 8,
       totalFiles: 20,
       lastProgressAt: '2026-04-01T00:01:30.000Z',
+      lastKeepaliveAt: '2026-04-01T00:02:00.000Z',
     });
   });
 
@@ -279,6 +281,7 @@ describe('backup jobs routes', () => {
     expect(job.transferredSize).toBeNull();
     expect(job.totalFiles).toBeNull();
     expect(job.lastProgressAt).toBeNull();
+    expect(job.lastKeepaliveAt).toBeNull();
   });
 
   it('exposes referencedSize/referencedFiles for an incremental job that deduped files', async () => {
@@ -679,6 +682,7 @@ function makeJob(overrides: Record<string, unknown> = {}) {
     fileCount: null,
     totalFiles: null,
     lastProgressAt: null,
+    lastKeepaliveAt: null,
     referencedSize: null,
     referencedFiles: null,
     errorCount: null,

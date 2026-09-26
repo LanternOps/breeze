@@ -99,6 +99,42 @@ const BACKUP_STALL_TIMEOUT_MS = 15 * 60 * 1000;      // progress-capable agent w
 const BACKUP_OFFLINE_GRACE_MS = 10 * 60 * 1000;      // device offline mid-job (covers reboot)
 const BACKUP_ABSOLUTE_TIMEOUT_MS = 24 * 60 * 60 * 1000; // legacy agents: no progress signal exists
 const BACKUP_PENDING_TIMEOUT_MS = 60 * 60 * 1000;    // dispatch enqueued but never flipped/failed
+
+// #2798 no-transfer rule: the agent is alive (keepalive fresh) but neither
+// bytes nor files have advanced. Today the agent reports counters only when a
+// whole FILE completes (#5417 tracks in-file byte progress), so a single large
+// file legitimately shows zero advance for its entire upload. The window is
+// therefore sized from the bytes still to go, not a flat timer: the file in
+// flight is at most `total - transferred`, and at the floor rate below it would
+// have finished inside the window. The 2h floor also covers the pre-upload
+// phases (VSS, scan, manifest), which report 0/0 counters throughout.
+//
+// When #5417 lands and counters advance during a file upload, this window can
+// shrink to a flat value a few multiples of the in-file progress cadence.
+export const BACKUP_NO_TRANSFER_MIN_WINDOW_MS = 2 * 60 * 60 * 1000;
+export const BACKUP_NO_TRANSFER_MAX_WINDOW_MS = 24 * 60 * 60 * 1000;
+export const BACKUP_NO_TRANSFER_FLOOR_RATE_BYTES_PER_SEC = 512 * 1024; // ~4 Mbit/s
+
+/**
+ * How long a live backup may go without any byte/file advance before the
+ * reaper treats it as wedged. See BACKUP_NO_TRANSFER_MIN_WINDOW_MS.
+ */
+export function backupNoTransferWindowMs(
+  totalSize: number | null | undefined,
+  transferredSize: number | null | undefined,
+): number {
+  const remaining = Math.max(0, (totalSize ?? 0) - (transferredSize ?? 0));
+  const scaled = (remaining / BACKUP_NO_TRANSFER_FLOOR_RATE_BYTES_PER_SEC) * 1000;
+  return Math.min(BACKUP_NO_TRANSFER_MAX_WINDOW_MS, Math.max(BACKUP_NO_TRANSFER_MIN_WINDOW_MS, scaled));
+}
+
+function formatWindow(ms: number): string {
+  const totalMinutes = Math.round(ms / 60_000);
+  const h = Math.floor(totalMinutes / 60);
+  const m = totalMinutes % 60;
+  if (h === 0) return `${m}m`;
+  return m === 0 ? `${h}h` : `${h}h ${m}m`;
+}
 // D18 W01 (#5429/§3.2 F8): a restore_jobs row created pending BEFORE its
 // command_id exists — see reapCommandlessPendingRestores's docstring.
 const RESTORE_COMMANDLESS_PENDING_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
@@ -1346,12 +1382,19 @@ async function reapBackupJobRow(
  * went offline mid-upload, a legacy agent with no progress signal at all
  * (absolute cap), or a dispatch that never flipped out of `pending`.
  *
+ * Two clocks (#2798): liveness = lastKeepaliveAt (any agent signal; falls
+ * back to lastProgressAt for rows written before the column existed), and
+ * progress = lastProgressAt (bytes or files actually advanced).
+ *
  * A `running` job is reaped when ANY of:
- *  A (stall):    lastProgressAt is set and stale past BACKUP_STALL_TIMEOUT_MS
+ *  A (silent):   liveness is set and stale past BACKUP_STALL_TIMEOUT_MS
  *  B (offline):  the owning device is offline (see isDeviceOfflineForReap)
- *                AND coalesce(lastProgressAt, startedAt) is stale past
+ *                AND coalesce(liveness, startedAt) is stale past
  *                BACKUP_OFFLINE_GRACE_MS
- *  C (absolute): no progress signal was ever reported (legacy agent) and
+ *  D (no transfer): liveness is fresh but coalesce(lastProgressAt,
+ *                startedAt, createdAt) is stale past backupNoTransferWindowMs
+ *                — a live agent whose upload has wedged
+ *  C (absolute): no signal was ever reported (legacy agent) and
  *                startedAt is stale past BACKUP_ABSOLUTE_TIMEOUT_MS
  *
  * A `pending` job is reaped when createdAt is stale past
@@ -1376,6 +1419,9 @@ export async function reapStaleBackupJobs(): Promise<number> {
       id: backupJobs.id,
       deviceId: backupJobs.deviceId,
       lastProgressAt: backupJobs.lastProgressAt,
+      lastKeepaliveAt: backupJobs.lastKeepaliveAt,
+      totalSize: backupJobs.totalSize,
+      transferredSize: backupJobs.transferredSize,
       startedAt: backupJobs.startedAt,
       createdAt: backupJobs.createdAt,
       errorLog: backupJobs.errorLog,
@@ -1390,7 +1436,10 @@ export async function reapStaleBackupJobs(): Promise<number> {
         // Fall back to createdAt so a `running` row with BOTH last_progress_at
         // and started_at NULL is still a candidate (createdAt is NOT NULL) —
         // otherwise COALESCE(null, null) is NULL, the `< cutoff` is never true,
-        // and the row is an unreapable zombie.
+        // and the row is an unreapable zombie. Keyed on progress, not
+        // liveness: last_progress_at <= last_keepalive_at always, so a
+        // silent job is selected too, and a live-but-wedged one (fresh
+        // keepalive, stale progress) is no longer filtered out here (#2798).
         sql`COALESCE(${backupJobs.lastProgressAt}, ${backupJobs.startedAt}, ${backupJobs.createdAt}) < ${conservativeCutoff.toISOString()}`,
       ),
     )
@@ -1399,19 +1448,26 @@ export async function reapStaleBackupJobs(): Promise<number> {
   for (const job of runningCandidates) {
     if (reaped >= MAX_REAP_PER_RUN) break;
 
-    // createdAt is NOT NULL, so progressRef is always defined even for a row
-    // whose last_progress_at and started_at are both NULL (the zombie case).
-    const progressRef = job.lastProgressAt ?? job.startedAt ?? job.createdAt;
-    if (!progressRef) continue;
+    // Liveness falls back to lastProgressAt for rows last touched before
+    // last_keepalive_at existed (the old column meant liveness then).
+    const liveness = job.lastKeepaliveAt ?? job.lastProgressAt ?? null;
+    // createdAt is NOT NULL, so these are always defined even for a row whose
+    // timestamps are otherwise all NULL (the zombie case).
+    const livenessRef = liveness ?? job.startedAt ?? job.createdAt;
+    const transferRef = job.lastProgressAt ?? job.startedAt ?? job.createdAt;
+    if (!livenessRef || !transferRef) continue;
 
     const deviceOffline = isDeviceOfflineForReap(job.deviceStatus, job.deviceLastSeenAt);
+    const noTransferWindowMs = backupNoTransferWindowMs(job.totalSize, job.transferredSize);
 
     let errorMsg: string | null = null;
-    if (job.lastProgressAt && now - job.lastProgressAt.getTime() > BACKUP_STALL_TIMEOUT_MS) {
+    if (liveness && now - liveness.getTime() > BACKUP_STALL_TIMEOUT_MS) {
       errorMsg = 'Backup stalled: no progress reported for 15 minutes';
-    } else if (deviceOffline && now - progressRef.getTime() > BACKUP_OFFLINE_GRACE_MS) {
+    } else if (deviceOffline && now - livenessRef.getTime() > BACKUP_OFFLINE_GRACE_MS) {
       errorMsg = 'Device went offline during backup';
-    } else if (!job.lastProgressAt && now - progressRef.getTime() > BACKUP_ABSOLUTE_TIMEOUT_MS) {
+    } else if (liveness && now - transferRef.getTime() > noTransferWindowMs) {
+      errorMsg = `Backup stalled: no data transferred for ${formatWindow(now - transferRef.getTime())} while the agent was still responding (limit ${formatWindow(noTransferWindowMs)})`;
+    } else if (!liveness && now - livenessRef.getTime() > BACKUP_ABSOLUTE_TIMEOUT_MS) {
       // No progress signal ever (legacy agent) OR a zombie with no started_at —
       // reap on the absolute cap against progressRef (started_at ?? createdAt).
       errorMsg = 'Backup timed out (no completion after 24h)';
@@ -1433,11 +1489,11 @@ export async function reapStaleBackupJobs(): Promise<number> {
   }
 
   const pendingCutoff = new Date(now - BACKUP_PENDING_TIMEOUT_MS);
-  // Queued acknowledgements / progress keep a `pending` job alive by bumping
-  // last_progress_at WITHOUT promoting it to `running`, so a pending job that is
-  // still receiving progress pings is alive and must NOT be reaped on createdAt
-  // alone. Spare any pending job whose last_progress_at is recent (within the
-  // stall window).
+  // Queued acknowledgements / pings keep a `pending` job alive by bumping
+  // last_keepalive_at WITHOUT promoting it to `running`, so a pending job that
+  // is still receiving pings is alive and must NOT be reaped on createdAt
+  // alone. Spare any pending job whose liveness is recent (within the stall
+  // window). COALESCE covers rows written before last_keepalive_at existed.
   const pendingProgressCutoff = new Date(now - BACKUP_STALL_TIMEOUT_MS);
   const pendingCandidates = await db
     .select({
@@ -1446,6 +1502,7 @@ export async function reapStaleBackupJobs(): Promise<number> {
       errorLog: backupJobs.errorLog,
       createdAt: backupJobs.createdAt,
       lastProgressAt: backupJobs.lastProgressAt,
+      lastKeepaliveAt: backupJobs.lastKeepaliveAt,
       deviceStatus: devices.status,
       deviceLastSeenAt: devices.lastSeenAt,
       deviceBackupVersion: devices.backupVersion,
@@ -1456,7 +1513,7 @@ export async function reapStaleBackupJobs(): Promise<number> {
       and(
         eq(backupJobs.status, 'pending'),
         lt(backupJobs.createdAt, pendingCutoff),
-        sql`(${backupJobs.lastProgressAt} IS NULL OR ${backupJobs.lastProgressAt} < ${pendingProgressCutoff.toISOString()})`,
+        sql`(COALESCE(${backupJobs.lastKeepaliveAt}, ${backupJobs.lastProgressAt}) IS NULL OR COALESCE(${backupJobs.lastKeepaliveAt}, ${backupJobs.lastProgressAt}) < ${pendingProgressCutoff.toISOString()})`,
       ),
     )
     .limit(MAX_REAP_PER_RUN);
@@ -1464,8 +1521,9 @@ export async function reapStaleBackupJobs(): Promise<number> {
   for (const job of pendingCandidates) {
     if (reaped >= MAX_REAP_PER_RUN) break;
     if (now - job.createdAt.getTime() < BACKUP_PENDING_TIMEOUT_MS) continue;
-    // A pending job still being kept alive by recent progress pings is not dead.
-    if (job.lastProgressAt && now - job.lastProgressAt.getTime() < BACKUP_STALL_TIMEOUT_MS) continue;
+    // A pending job still being kept alive by recent pings is not dead.
+    const pendingLiveness = job.lastKeepaliveAt ?? job.lastProgressAt ?? null;
+    if (pendingLiveness && now - pendingLiveness.getTime() < BACKUP_STALL_TIMEOUT_MS) continue;
 
     const wasReaped = await reapBackupJobRow(job.id, job.errorLog, 'Backup dispatch never completed');
     if (!wasReaped) continue;
@@ -1480,7 +1538,7 @@ export async function reapStaleBackupJobs(): Promise<number> {
     // admission ack proves the helper speaks the protocol, or the device's
     // reported helper version does (covers an ack lost on the agent WS).
     const deviceOffline = isDeviceOfflineForReap(job.deviceStatus, job.deviceLastSeenAt);
-    const helperQueues = !!job.lastProgressAt || backupHelperSupportsQueue(job.deviceBackupVersion);
+    const helperQueues = !!pendingLiveness || backupHelperSupportsQueue(job.deviceBackupVersion);
     if (deviceOffline || !helperQueues) {
       if (!deviceOffline) {
         console.warn(`[StaleCommandReaper] Reaped pending backup job ${job.id} without helper reconciliation (helper ${job.deviceBackupVersion ?? 'unknown'} predates the execution queue)`);
