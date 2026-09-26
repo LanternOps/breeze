@@ -357,7 +357,7 @@ export async function addCallerVerificationSystemComment(input: {
     isPublic: false,
   }).returning({ id: ticketComments.id });
   await writeTicketOutbox(input.orgId, ticket.id, 'ticket.commented', {
-    commentId: comment!.id, isPublic: false, verificationId: input.verificationId, partnerId: ticket.partnerId, event: input.event,
+    commentId: comment!.id, isPublic: false, originPrincipalKind: 'system', originPrincipalId: null, verificationId: input.verificationId, partnerId: ticket.partnerId, event: input.event,
   });
 }
 
@@ -1128,7 +1128,14 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     ...actorEventIdentity(actor),
     payload: { internalNumber, assigneeId: input.assigneeId ?? null, source: input.source }
   });
-  await writeTicketOutbox(input.orgId, ticket.id, 'ticket.created');
+  // Ids and enum labels only (never subject/description). No external id:
+  // that key is namespaced per Partner API principal (ticket_external_refs)
+  // and an org webhook has no single principal to answer for.
+  await writeTicketOutbox(input.orgId, ticket.id, 'ticket.created', {
+    internalNumber,
+    source: input.source,
+    assigneeId: input.assigneeId ?? null,
+  });
   await createAuditLogAsync({
     orgId: input.orgId,
     ...actorAuditIdentity(actor),
@@ -1482,6 +1489,8 @@ export async function changeTicketStatus(
   await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.status_changed', {
     from: fromStatus,
     to: toStatus,
+    // The partner's custom status row the core status was set through, if any.
+    statusId: resolvedStatusId ?? null,
     // #4177: the consumed AI resolution draft, for the time-entry proposal.
     ...(draftToConsume ? aiDraftOutboxClaim(draftToConsume, 'resolved_with_ai_note') : {}),
   });
@@ -1858,7 +1867,8 @@ export async function updateTicketFields(
     ...actorEventIdentity(actor),
     payload: { changed: changedForLog }
   });
-  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.updated');
+  // Field NAMES only — never the values.
+  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.updated', { changed: changedForLog });
   await createAuditLogAsync({
     orgId: ticket.orgId,
     ...actorAuditIdentity(actor),
@@ -2064,7 +2074,16 @@ export async function addTicketComment(ticketId: string, input: AddCommentInput,
     ...actorEventIdentity(actor),
     payload: { commentId: comment.id, isPublic: input.isPublic }
   });
-  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', { commentId: comment.id, isPublic: input.isPublic });
+  // originPrincipalKind + originPrincipalId let a mirroring consumer skip
+  // exactly the comments it authored itself (loop guard for PSA/ITSM syncs,
+  // even when several integrations share one partner).
+  const origin = actorAuthorFields(actor);
+  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', {
+    commentId: comment.id,
+    isPublic: input.isPublic,
+    originPrincipalKind: origin.originPrincipalKind,
+    originPrincipalId: origin.originPrincipalId,
+  });
   // Record the comment id + visibility only — the comment body can carry
   // sensitive/large content, so it stays out of the audit details (matching the
   // sibling pattern of keeping details lean).
@@ -2193,7 +2212,7 @@ export async function addAiTriageNote(
       actorUserId: null,
       payload: { commentId: comment.id, isPublic: false }
     });
-    await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', { commentId: comment.id, isPublic: false });
+    await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', { commentId: comment.id, isPublic: false, originPrincipalKind: 'ai_agent', originPrincipalId: agentId });
 
     return { comment };
   } catch (err) {
@@ -2307,7 +2326,7 @@ export async function postProposalNote(
       ...actorEventIdentity(actor),
       payload: { commentId: comment.id, isPublic: false }
     });
-    await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', { commentId: comment.id, isPublic: false });
+    await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', { commentId: comment.id, isPublic: false, originPrincipalKind: 'user', originPrincipalId: null });
     await createAuditLogAsync({
       orgId: ticket.orgId,
       actorId: humanUserId(actor, 'Posting a proposal note'),
@@ -2634,6 +2653,8 @@ export async function sendTicketDraft(
   await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', {
     commentId: comment.id,
     isPublic: true,
+    originPrincipalKind: 'user',
+    originPrincipalId: null,
     // #4177: the consumed AI reply draft, for the time-entry proposal.
     ...aiDraftOutboxClaim({ id: draft.id, runId: draft.runId ?? null }, 'draft_sent'),
   });

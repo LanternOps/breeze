@@ -125,6 +125,19 @@ Webhooks subscribe to events emitted by the Breeze event bus. Pass one or more e
 | `patch.failed` | A patch installation failed |
 | `patch.rollback` | A patch has been rolled back |
 
+### Ticket Events
+
+Ticket events are published from the ticketing transactional outbox with **id-only payloads**: identifiers, enum labels and field *names*, never a subject, description, resolution note or comment body. Read the full record through the API (staff JWT, or the Partner API `tickets:read` feed) when you need it. Rely only on the fields listed below: a payload can also carry other internal identifiers, which are not part of this contract.
+
+| Event | Payload (besides `ticketId`) | Description |
+|-------|------------------------------|-------------|
+| `ticket.created` | `internalNumber`, `source`, `assigneeId` | A ticket was opened (from the portal, email, an alert, the UI, the Partner API or AI) |
+| `ticket.commented` | `commentId`, `isPublic`, `originPrincipalKind`, `originPrincipalId` | A comment, note or feed entry was added. `originPrincipalKind` (`user`, `ai_agent`, `system`, `service_principal`) with `originPrincipalId` (the service principal id or the AI agent id, `null` for people and system notes) lets a mirroring integration skip exactly the comments it authored itself |
+| `ticket.status_changed` | `from`, `to`, `statusId` | The core status changed (`statusId` is the partner's custom status row, when one was used) |
+| `ticket.updated` | `changed` (field names) | Fields were edited — subject, description, priority, category, due date, device, tags, requester |
+| `ticket.assigned` | `assigneeId` (`null` when unassigned), `actorPrincipalId` | The assignee changed. `actorPrincipalId` is the service principal that made the change (`null` for people and the system), so a mirroring integration can skip its own assignments |
+| `ticket.sla_breached` | `assigneeId` | A response or resolution SLA target was missed |
+
 ### Other Events
 
 | Event | Description |

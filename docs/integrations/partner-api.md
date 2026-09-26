@@ -757,6 +757,20 @@ organizations, bulk actions, attachments, time entries and parts, AI drafts,
 the mailbox, and editing or deleting comments stay human, MFA-gated actions
 on the main API.
 
+**Pairing the feed with webhooks.** An organization webhook (Settings →
+Webhooks) subscribed to `ticket.created`, `ticket.commented`,
+`ticket.status_changed`, `ticket.updated` and `ticket.assigned` tells an
+integration *that* something changed with id-only payloads (`ticketId`,
+`commentId`, `changed` field names, `assigneeId`, `from`/`to`); the feed
+and `GET /tickets/<id>` are how it reads *what* changed — including this
+principal's `externalTicketId`, which no webhook carries because the key
+is namespaced per integration. `ticket.commented` carries
+`originPrincipalKind` and `originPrincipalId`, so a mirror can ignore
+exactly the comments it posted itself, even when several integrations share
+one partner; `ticket.assigned` carries `actorPrincipalId` for the same
+purpose. Webhooks are per organization today; a partner-wide
+subscription is a tracked follow-up.
+
 **Rate limits.** Ticket writes have their own hourly buckets, separate from
 the 120/hour provisioning write budget, so a busy mirror can neither starve
 nor be starved by tenancy provisioning. Two ceilings are charged, narrowest

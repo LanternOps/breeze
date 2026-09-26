@@ -22,21 +22,21 @@ import { emitTicketEvent, enqueueTicketEvent } from '../services/ticketEvents';
  *     eventBus subscribers exist (Task 3's durable ticket-helpdesk subscriber,
  *     webhookDelivery, automationWorker's wildcard handler, etc.), unlike
  *     intent_outbox's single named consumer.
- *  2. Only THREE of the six `ticket_outbox` event types are bridged onto the
- *     bus in this PR — `ticket.created`, `ticket.commented`,
- *     `ticket.status_changed` (the only three with `EventType` literals so
- *     far — see eventBus.ts). `ticket.updated` / `ticket.assigned` /
- *     `ticket.restored` rows are claimed and marked published exactly the
- *     same as the other three (the outbox always drains — a type with no
- *     bus mapping is not an error condition), but no `publishEvent` call is
- *     made for them: there is no subscriber need yet, and every additional
- *     type published widens what every wildcard eventBus subscriber
- *     (automationWorker, webhookDelivery) sees for free. Extending the
- *     mapping later is additive — a new EventType literal + an entry in
- *     TICKET_OUTBOX_EVENT_BUS_TYPES, no outbox/schema change.
- *     `ticket.assigned` is still not on the bus, but its committed row is
- *     what queues the assignee notification on the `ticket-events` queue
- *     (#7963 — see queueAssigneeNotification).
+ *  2. FIVE of the six `ticket_outbox` event types are bridged onto the bus —
+ *     `ticket.created`, `ticket.commented`, `ticket.status_changed`
+ *     (#3828), and since the Partner API tickets work `ticket.updated` and
+ *     `ticket.assigned` (an external PSA/ITSM mirrors edits and assignment
+ *     through webhooks instead of polling). `ticket.restored` rows are
+ *     claimed and marked published exactly the same (the outbox always
+ *     drains — a type with no bus mapping is not an error condition), but
+ *     no `publishEvent` call is made: nothing subscribes to a restore yet,
+ *     and every additional type published widens what every wildcard
+ *     eventBus subscriber (automationWorker, webhookDelivery) sees for
+ *     free. Extending the mapping is additive — a new EventType literal +
+ *     an entry in TICKET_OUTBOX_EVENT_BUS_TYPES, no outbox/schema change.
+ *     A committed `ticket.assigned` row is ALSO what queues the assignee
+ *     notification on the `ticket-events` queue (#7963 — see
+ *     queueAssigneeNotification), before the row is published onto the bus.
  *
  * Payload shape: `{ ticketId, ...row.payload }`. `row.payload` was written
  * id-only by `ticketService.ts`'s `writeTicketOutbox` (structured ids/enum
@@ -55,12 +55,14 @@ const MAX_PUBLISH_PER_RUN = 200;
 export const MAX_PUBLISH_ATTEMPTS = 5;
 
 // The bounded subset of TicketOutboxEvent that currently has a corresponding
-// eventBus EventType literal. See the file doc comment above for why the
-// other three ticket_outbox event types are intentionally NOT mapped here.
+// eventBus EventType literal. See the file doc comment above for why
+// ticket.restored is intentionally NOT mapped here.
 const TICKET_OUTBOX_EVENT_BUS_TYPES: Partial<Record<TicketOutboxEvent, EventType>> = {
   'ticket.created': 'ticket.created',
   'ticket.commented': 'ticket.commented',
   'ticket.status_changed': 'ticket.status_changed',
+  'ticket.updated': 'ticket.updated',
+  'ticket.assigned': 'ticket.assigned',
 };
 
 type PublisherJobData = { type: 'publish-ticket-outbox'; queuedAt: string };
@@ -224,28 +226,23 @@ async function publishClaimedRows(rows: ClaimedOutboxRow[]): Promise<number[]> {
   const publishedIds: number[] = [];
   for (const row of rows) {
     const busType = TICKET_OUTBOX_EVENT_BUS_TYPES[row.event_type as TicketOutboxEvent];
-    if (row.event_type === 'ticket.assigned') {
-      try {
-        await queueAssigneeNotification(row);
-        publishedIds.push(row.id);
-      } catch (err) {
-        console.error(`[TicketOutboxPublisher] Failed to queue ticket.assigned for outbox row ${row.id}:`, err);
-        captureException(err instanceof Error ? err : new Error(String(err)));
-        // Leave published_at NULL — next pass retries; attempt already counted above.
-      }
-      continue;
-    }
-    if (!busType) {
-      // No eventBus mapping for this outbox event type yet (ticket.updated /
-      // ticket.restored) — the row still drains cleanly; there is simply
-      // nothing to publish. See the file doc comment.
-      publishedIds.push(row.id);
-      continue;
-    }
     try {
+      // #7963: queue the assignee notification before the bus publish. Its
+      // eventId is deterministic, so when a later step of this row fails and
+      // the next pass queues it again, the worker's dedupe key suppresses the
+      // second notification.
+      if (row.event_type === 'ticket.assigned') await queueAssigneeNotification(row);
+      if (!busType) {
+        // No eventBus mapping for this outbox event type (ticket.restored) —
+        // the row still drains cleanly; there is simply nothing to publish.
+        // See the file doc comment.
+        publishedIds.push(row.id);
+        continue;
+      }
       // id-only by construction: ticketId + whatever id-only fields
       // ticketService.ts's writeTicketOutbox stored in row.payload (commentId,
-      // assigneeId, from/to status labels — never subject/description/content).
+      // assigneeId, actor and partner ids, from/to status labels — never
+      // subject/description/content).
       await publishEvent(
         busType,
         row.org_id,

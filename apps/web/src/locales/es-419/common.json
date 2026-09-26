@@ -1307,6 +1307,22 @@
           "ticketCreated": {
             "description": "Se activa cuando se crea un ticket.",
             "label": "Ticket creado"
+          },
+          "ticketCommented": {
+            "description": "Se activa cuando se agrega un comentario o una nota a un ticket.",
+            "label": "Ticket comentado"
+          },
+          "ticketStatusChanged": {
+            "description": "Se activa cuando un ticket cambia de estado.",
+            "label": "Estado del ticket cambiado"
+          },
+          "ticketUpdated": {
+            "description": "Se activa cuando se editan los campos de un ticket.",
+            "label": "Ticket actualizado"
+          },
+          "ticketAssigned": {
+            "description": "Se activa cuando un ticket se asigna o se desasigna.",
+            "label": "Ticket asignado"
           }
         },
         "fields": {

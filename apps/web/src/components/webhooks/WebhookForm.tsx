@@ -71,7 +71,11 @@ export const webhookEventOptions = [
   { value: 'alert.created', label: 'Alert Created', labelKey: 'longTail.webhooks.WebhookForm.events.alertCreated.label', description: 'Triggered when an alert is created.', descriptionKey: 'longTail.webhooks.WebhookForm.events.alertCreated.description' },
   { value: 'alert.resolved', label: 'Alert Resolved', labelKey: 'longTail.webhooks.WebhookForm.events.alertResolved.label', description: 'Triggered when an alert is resolved.', descriptionKey: 'longTail.webhooks.WebhookForm.events.alertResolved.description' },
   { value: 'script.completed', label: 'Script Completed', labelKey: 'longTail.webhooks.WebhookForm.events.scriptCompleted.label', description: 'Triggered when a script finishes.', descriptionKey: 'longTail.webhooks.WebhookForm.events.scriptCompleted.description' },
-  { value: 'ticket.created', label: 'Ticket Created', labelKey: 'longTail.webhooks.WebhookForm.events.ticketCreated.label', description: 'Triggered when a ticket is created.', descriptionKey: 'longTail.webhooks.WebhookForm.events.ticketCreated.description' }
+  { value: 'ticket.created', label: 'Ticket Created', labelKey: 'longTail.webhooks.WebhookForm.events.ticketCreated.label', description: 'Triggered when a ticket is created.', descriptionKey: 'longTail.webhooks.WebhookForm.events.ticketCreated.description' },
+  { value: 'ticket.commented', label: 'Ticket Commented', labelKey: 'longTail.webhooks.WebhookForm.events.ticketCommented.label', description: 'Triggered when a comment or note is added to a ticket.', descriptionKey: 'longTail.webhooks.WebhookForm.events.ticketCommented.description' },
+  { value: 'ticket.status_changed', label: 'Ticket Status Changed', labelKey: 'longTail.webhooks.WebhookForm.events.ticketStatusChanged.label', description: 'Triggered when a ticket changes status.', descriptionKey: 'longTail.webhooks.WebhookForm.events.ticketStatusChanged.description' },
+  { value: 'ticket.updated', label: 'Ticket Updated', labelKey: 'longTail.webhooks.WebhookForm.events.ticketUpdated.label', description: 'Triggered when ticket fields are edited.', descriptionKey: 'longTail.webhooks.WebhookForm.events.ticketUpdated.description' },
+  { value: 'ticket.assigned', label: 'Ticket Assigned', labelKey: 'longTail.webhooks.WebhookForm.events.ticketAssigned.label', description: 'Triggered when a ticket is assigned or unassigned.', descriptionKey: 'longTail.webhooks.WebhookForm.events.ticketAssigned.description' }
 ];
 
 const generateSecret = (length = 32) => {

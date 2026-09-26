@@ -1307,6 +1307,22 @@
           "ticketCreated": {
             "description": "Bir bilet oluşturulduğunda tetiklenir.",
             "label": "Bilet Oluşturuldu"
+          },
+          "ticketCommented": {
+            "description": "Bir bilete yorum veya not eklendiğinde tetiklenir.",
+            "label": "Bilete Yorum Yapıldı"
+          },
+          "ticketStatusChanged": {
+            "description": "Bir biletin durumu değiştiğinde tetiklenir.",
+            "label": "Bilet Durumu Değişti"
+          },
+          "ticketUpdated": {
+            "description": "Bilet alanları düzenlendiğinde tetiklenir.",
+            "label": "Bilet Güncellendi"
+          },
+          "ticketAssigned": {
+            "description": "Bir bilet atandığında veya ataması kaldırıldığında tetiklenir.",
+            "label": "Bilet Atandı"
           }
         },
         "fields": {
