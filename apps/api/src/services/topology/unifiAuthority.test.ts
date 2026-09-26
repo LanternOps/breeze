@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { executeMock, revoked } = vi.hoisted(() => ({ executeMock: vi.fn(), revoked: [] as Array<{ siteId: string; collectorId?: string }> }));
+const { executeMock, transactionMock, revoked } = vi.hoisted(() => ({ executeMock: vi.fn(), transactionMock: vi.fn(), revoked: [] as Array<{ siteId: string; collectorId?: string }> }));
+vi.mock('../sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../../db', () => ({
   assertInTransaction: vi.fn(),
   db: {
     execute: executeMock,
+    transaction: transactionMock,
     update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(async () => undefined) })) })),
     select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(async () => [{ id: '00000000-0000-4000-8000-00000000000c' }, { id: '00000000-0000-4000-8000-00000000000a' }]) })) })),
   },
@@ -19,7 +21,8 @@ vi.mock('./collectionAuthority', () => ({
   }),
 }));
 
-import { revokeUnifiCollectorTopology, revokeUnifiIntegrationTopology } from './unifiAuthority';
+import { revokeUnifiCollectorTopology, revokeUnifiIntegrationTopology, unifiTopologyAdvertisement } from './unifiAuthority';
+import { captureException } from '../sentry';
 
 const ORG = '00000000-0000-4000-8000-0000000000f0';
 const site = (n: number) => `00000000-0000-4000-8000-00000000010${n}`;
@@ -54,5 +57,23 @@ describe('UniFi source revocation lock order (#5998 review)', () => {
       { siteId: site(1), collectorId: collectorA }, { siteId: site(1), collectorId: collectorC },
       { siteId: site(2), collectorId: collectorC }, { siteId: site(3), collectorId: collectorA },
     ]);
+  });
+});
+
+describe('unifiTopologyAdvertisement failure handling (#5998 review)', () => {
+  beforeEach(() => vi.clearAllMocks());
+  // Collector config delivery never depends on the advertisement, so any
+  // failure still degrades to "not advertised" — but an unexpected error must
+  // reach Sentry instead of silently leaving every collector legacy-only.
+  it('degrades to null and reports an unexpected error', async () => {
+    const failure = new Error('connection terminated');
+    transactionMock.mockRejectedValueOnce(failure);
+    expect(await unifiTopologyAdvertisement('00000000-0000-4000-8000-0000000000d1', collectorA)).toBeNull();
+    expect(captureException).toHaveBeenCalledWith(failure);
+  });
+  it('returns null for an unknown collector without reporting anything', async () => {
+    transactionMock.mockImplementationOnce(async (fn: () => unknown) => fn());
+    expect(await unifiTopologyAdvertisement('00000000-0000-4000-8000-0000000000d1', 'not-a-uuid')).toBeNull();
+    expect(captureException).not.toHaveBeenCalled();
   });
 });

@@ -5,6 +5,7 @@ import type { TopologyScope } from '@breeze/shared';
 import { assertInTransaction, db } from '../../db';
 import { devices, topologyCollectionSources, unifiCollectors, unifiSiteMappings } from '../../db/schema';
 import { loadTopologyFlags } from './flags';
+import { captureException } from '../sentry';
 import { isTopologyProducerAuthorityRegistered, registerTopologyProducerAuthority, revokeTopologySources, topologySourceIdentity, type TopologyProducerAuthority } from './collectionAuthority';
 
 /**
@@ -126,8 +127,11 @@ export async function currentUnifiCollectorTopology(deviceId: string, collector:
 }
 
 export type UnifiTopologyAdvertisement = { acceptedUnifiTopologyVersions: number[]; topologyProducerEpoch: string; topologySourceIdentity: string };
-/** Advertisement for GET /agents/:id/unifi-collectors. Never breaks legacy config
- * delivery: failures run in a savepoint and degrade to "not advertised". */
+/** Advertisement for GET /agents/:id/unifi-collectors. An unknown, disabled,
+ * foreign or unmapped collector (or topology off) is an expected "not
+ * advertised" and returns null without throwing. Anything that throws is
+ * unexpected: it is reported, and still degrades to "not advertised" inside its
+ * savepoint so legacy config delivery never breaks. */
 export async function unifiTopologyAdvertisement(deviceId: string, collectorId: string): Promise<UnifiTopologyAdvertisement | null> {
   try {
     return await db.transaction(async () => {
@@ -137,6 +141,7 @@ export async function unifiTopologyAdvertisement(deviceId: string, collectorId: 
     });
   } catch (error) {
     console.error('[unifi] topology advertisement failed; collector stays legacy-only:', error instanceof Error ? error.message : error);
+    captureException(error);
     return null;
   }
 }
