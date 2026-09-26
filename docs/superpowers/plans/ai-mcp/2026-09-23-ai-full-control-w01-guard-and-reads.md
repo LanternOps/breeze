@@ -113,7 +113,7 @@ Verdict: no decision rejected. Every agent dispatch path runs through `checkAgen
 
 ---
 
-## W01 tool list (32 wired: 28 L1 reads + 4 L2 script reads)
+## W01 tool list (30 wired: 26 L1 reads + 4 L2 script reads)
 
 "Agent" is whether headless agents get the tool (W01-D5). Every tool is read-only and registry tier 1.
 
@@ -146,13 +146,11 @@ Verdict: no decision rejected. Every agent dispatch path runs through `checkAgen
 | `get_user_risk_scores` | **deny**: names and emails of every scored user, no device axis |
 | `get_user_risk_detail` | **deny**: personal data plus free-text event descriptions |
 
-### Monitoring, analytics and network (5)
+### Monitoring, analytics and network (3)
 
 | Tool | Agent |
 |---|---|
 | `query_analytics` | expose |
-| `list_monitors` | expose |
-| `get_monitor` | expose |
 | `get_ip_history` | expose |
 | `get_network_changes` | expose |
 
@@ -169,10 +167,10 @@ Verdict: no decision rejected. Every agent dispatch path runs through `checkAgen
 | `list_script_templates` (L2) | expose |
 | `get_script_execution_history` (L2) | expose |
 
-**Held for a follow-up PR:** 14 further read-only candidates. They stay in `KNOWN_MISSING_TOOL_TIERS` until then; `get_sensitive_data_overview` is already listed in `AGENT_DENIED_READ_TOOLS`, so it is agent-denied from the moment it is wired.
+**Held for a follow-up PR:** 16 further read-only candidates, including `list_monitors` and `get_monitor`. They stay in `KNOWN_MISSING_TOOL_TIERS` until then; `get_sensitive_data_overview` is already listed in `AGENT_DENIED_READ_TOOLS`, so it is agent-denied from the moment it is wired.
 
 **Totals.**
-- Wired: 32. That is 28 newly tiered (`TOOL_TIERS` 170 → 198, `KNOWN_MISSING_TOOL_TIERS` 88 → 60) plus 4 newly declared (main-declared 166 → 198 with all flags on).
+- Wired: 30. That is 26 newly tiered (`TOOL_TIERS` 170 → 196, `KNOWN_MISSING_TOOL_TIERS` 88 → 62) plus 4 newly declared (main-declared 166 → 196 with all flags on).
 - `AGENT_DENIED_READ_TOOLS`: 7 (`search_c2c_items`, `query_c2c_jobs`, `get_sensitive_data_overview`, `get_user_risk_scores`, `get_user_risk_detail`, `m365_query_users`, `m365_query_signins`).
 - Candidates excluded from W01: `collect_evidence` (tier 2, dispatches a device command) and `registry_operations` (`read_key`/`get_value` are deliberately tier 2). Both move to W04. All tier-1 `manage_*` multiplexers are left untouched: their read actions become reachable when the whole tool is wired in W02–W04.
 
@@ -225,10 +223,10 @@ Verdict: no decision rejected. Every agent dispatch path runs through `checkAgen
 - [ ] **Red then green**, `userRiskScoring.ts`: reading a user's risk detail with no policy row must not insert one. Add `readUserRiskPolicy` and use it on the read path only.
 - [ ] **Red then green**, `aiToolsNetwork.ts`: `get_network_changes`' `limit` description matches its clamp.
 
-## Task 7: Wire the 28 L1 reads
+## Task 7: Wire the 26 L1 reads
 
-- [ ] **Red.** Add the pinned `W01_READ_TOOLS` list (28 names) to the registryParity test: each is tier 1 in both maps, declared, and its SDK shape keys equal `toolInputSchemas`.
-- [ ] **Green.** Per family: add `name: 1` to `TOOL_TIERS` under a `// Spec 2026-09-23 W01 (#6755): read-only, previously registered but untiered` comment; add literal `tool()` declarations; delete the names from `KNOWN_MISSING_TOOL_TIERS` (88 → 60; update its docstring). Drop newly-declared tools from the golden-prompt `BASELINE_UNDECLARED_TOOLS` in the same change.
+- [ ] **Red.** Add the pinned `W01_READ_TOOLS` list (26 names) to the registryParity test: each is tier 1 in both maps, declared, and its SDK shape keys equal `toolInputSchemas`.
+- [ ] **Green.** Per family: add `name: 1` to `TOOL_TIERS` under a `// Spec 2026-09-23 W01 (#6755): read-only, previously registered but untiered` comment; add literal `tool()` declarations; delete the names from `KNOWN_MISSING_TOOL_TIERS` (88 → 62; update its docstring). Drop newly-declared tools from the golden-prompt `BASELINE_UNDECLARED_TOOLS` in the same change.
 - [ ] tsc exit 0.
 
 ## Task 8: Agent catalog surfaces
@@ -269,6 +267,6 @@ Verdict: no decision rejected. Every agent dispatch path runs through `checkAgen
 ## Self-review checklist
 
 - [ ] `AGENT_DENIED_READ_TOOLS` matches the tool list's agent column plus WQ1.
-- [ ] `KNOWN_MISSING_TOOL_TIERS` = 60, `TOOL_TIERS` = 198, and main-declared with all flags on = 198.
+- [ ] `KNOWN_MISSING_TOOL_TIERS` = 62, `TOOL_TIERS` = 196, and main-declared with all flags on = 196.
 - [ ] No test in this PR was written after the code it tests.
 - [ ] No existing baseline or allowlist was widened. The only additions are `TIER1_READ_ACTIONS` (a classification, not an exemption) and `HUMAN_ONLY_TOOLS` (empty).

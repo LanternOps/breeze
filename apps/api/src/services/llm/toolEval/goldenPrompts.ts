@@ -65,7 +65,7 @@ export const GOLDEN_CASES: readonly GoldenCase[] = [
   { id: 'g48', prompt: 'What settings does the "Standard Workstation" policy actually push?', expect: [{ tool: 'get_configuration_policy' }, { tool: 'list_configuration_policies' }] },
   { id: 'g49', prompt: 'Which software is banned by policy but still installed somewhere?', expect: [{ tool: 'get_software_compliance' }, { tool: 'get_compliance_status' }] },
   { id: 'g50', prompt: 'When is the next maintenance window for Northwind?', expect: [{ tool: 'manage_maintenance_windows' }] },
-  { id: 'g51', prompt: 'Is the website monitor for the Contoso public site green?', expect: [{ tool: 'query_monitors' }, { tool: 'get_service_monitoring_status' }, { tool: 'list_monitors' }] },
+  { id: 'g51', prompt: 'Is the website monitor for the Contoso public site green?', expect: [{ tool: 'query_monitors' }, { tool: 'get_service_monitoring_status' }] },
   { id: 'g52', prompt: 'Who changed the firewall policy last week?', expect: [{ tool: 'query_audit_log' }, { tool: 'query_change_log' }] },
   { id: 'g53', prompt: 'Generate a monthly health report for Contoso.', expect: [{ tool: 'generate_report' }, { tool: 'get_executive_summary' }] },
   { id: 'g54', prompt: 'How is the fleet doing overall today?', expect: [{ tool: 'get_fleet_health' }, { tool: 'get_executive_summary' }] },

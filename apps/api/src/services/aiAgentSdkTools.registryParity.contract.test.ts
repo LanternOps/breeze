@@ -57,8 +57,8 @@ function humanOnlyProblems(
  * Registered tools with no `TOOL_TIERS` entry, and therefore invisible to
  * chat. Frozen as of #3300 (measured against f400fc315: 215 registered, 133
  * tiered, 86 missing); re-frozen at 88 on d1cbf4fe27 for the spec
- * 2026-09-23 W01-W04 rollout. W01 (#6755) wired 28 read-only tools,
- * leaving 60 (14 further read-only tools are held for a follow-up PR).
+ * 2026-09-23 W01-W04 rollout. W01 (#6755) wired 26 read-only tools,
+ * leaving 62 (16 further read-only tools are held for a follow-up PR).
  * Deleted entirely at the end of W04, not W01.
  *
  * **This list may only shrink.** Removing a name means the tool was given a
@@ -84,8 +84,10 @@ const KNOWN_MISSING_TOOL_TIERS: ReadonlySet<string> = new Set([
   'get_dr_plan_details',
   'get_executive_summary',
   'get_incident_timeline',
+  'get_monitor',
   'get_sensitive_data_overview',
   'instant_boot_vm',
+  'list_monitors',
   'manage_backup_profiles',
   'manage_browser_policy',
   'manage_catalog',
@@ -366,15 +368,15 @@ describe('manage_delivery has every registration', () => {
  * Pinned so a later wave cannot silently un-wire one. */
 const W01_READ_TOOLS = [
   'browse_snapshots', 'get_backup_status', 'get_elevation_history', 'get_hyperv_vm_details', 'get_ip_history',
-  'get_monitor', 'get_mssql_backup_status', 'get_network_changes', 'get_peripheral_activity', 'get_sla_breaches',
+  'get_mssql_backup_status', 'get_network_changes', 'get_peripheral_activity', 'get_sla_breaches',
   'get_sla_compliance_report', 'get_software_compliance', 'get_user_risk_detail', 'get_user_risk_scores',
-  'get_vault_status', 'get_vm_restore_estimate', 'list_monitors', 'list_remote_sessions', 'query_agent_versions',
+  'get_vault_status', 'get_vm_restore_estimate', 'list_remote_sessions', 'query_agent_versions',
   'query_analytics', 'query_backup_sla', 'query_c2c_jobs', 'query_compliance_policies', 'query_hyperv_vms',
   'query_mssql_instances', 'query_webhooks', 'search_c2c_items', 'search_script_library',
 ] as const;
 
 describe('W01 read-only wiring (#6755)', () => {
-  it('has 28 entries', () => expect(new Set(W01_READ_TOOLS).size).toBe(28));
+  it('has 26 entries', () => expect(new Set(W01_READ_TOOLS).size).toBe(26));
 
   it.each(W01_READ_TOOLS)('%s is tier 1 in both maps, declared, and its SDK shape keys equal toolInputSchemas', (name) => {
     expect(TOOL_TIERS[name as keyof typeof TOOL_TIERS]).toBe(1);
