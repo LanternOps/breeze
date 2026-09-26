@@ -628,17 +628,18 @@ export async function reapStaleScriptExecutions(): Promise<number> {
     // batch. It runs first now because it also answers whether the agent
     // actually replied.
     //
-    // Script results submitted over the HTTP path never reach `script_executions`
-    // (only agentWs registers `script: handleScriptResult`), so the row stays
-    // pending and lands here — where the reaper stamped it `timeout` with
-    // "no response from agent". That claim is false whenever a terminal
-    // `device_commands` row exists: the agent DID respond, the result simply was
-    // not mirrored. On one live instance 89 executions read `timeout` while their
-    // command had completed successfully with captured output.
+    // Historically (#3097) HTTP-path script results never reached
+    // `script_executions`, so a row whose command had completed landed here and
+    // was stamped `timeout` / "no response from agent" — false, the agent DID
+    // respond. Both transports now dispatch through the shared
+    // services/commandResultHandlers.ts, so a terminal command with a
+    // non-terminal execution means the result write missed the row (e.g. the
+    // #3445 send-before-commit race). This records the outcome the command
+    // actually reached.
     //
-    // This does not persist the result — that belongs with the shared-handler
-    // work. It stops the reaper asserting something it cannot know, and records
-    // the outcome the command actually reached.
+    // A command `failed` with `result.timedOutBy = 'server'` is NOT an agent
+    // reply: `reapStaleDeviceCommands` wrote it earlier in this same tick when
+    // the command's own deadline passed (#3445). That is a timeout.
     const relatedCmd = await db
       .select({
         payload: deviceCommands.payload,
@@ -685,8 +686,10 @@ export async function reapStaleScriptExecutions(): Promise<number> {
       continue;
     }
 
-    const cmdIsTerminal = cmd?.status === 'completed' || cmd?.status === 'failed';
-    const cmdResultStatus = (cmd?.result as Record<string, unknown> | null | undefined)?.status;
+    const cmdResult = cmd?.result as Record<string, unknown> | null | undefined;
+    const cmdResultStatus = cmdResult?.status;
+    const cmdTimedOutByServer = cmd?.status === 'failed' && cmdResult?.timedOutBy === 'server';
+    const cmdIsTerminal = !cmdTimedOutByServer && (cmd?.status === 'completed' || cmd?.status === 'failed');
     // Mirror handleScriptResult's mapping so a reaped row agrees with what the
     // WS path would have written for the same command.
     const reapedStatus: 'timeout' | 'completed' | 'failed' = !cmdIsTerminal
