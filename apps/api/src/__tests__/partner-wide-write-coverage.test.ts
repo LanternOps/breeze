@@ -68,7 +68,6 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // every caller-facing create/update/delete path below refuses one outright
   // rather than gating it. So none of these paths can reach a partner-owned row
   // at all, which is a stronger property than passing the capability gate.
-  'routes/monitoring.ts': 'every write is scoped `networkMonitors.orgId = <org>`, which can never match a partner-wide (org_id NULL) row',
   'routes/discovery.ts': 'asset-unlink delete is scoped `networkMonitors.orgId = <asset org>`, which can never match a partner-wide (org_id NULL) row',
   'services/discoveredAssetSiteMove.ts': 'site-move re-attach is scoped `networkMonitors.orgId = <asset org>` (the monitors were captured under the same predicate), which can never match a partner-wide (org_id NULL) row',
   'services/aiToolsMonitoring.ts': 'assertMonitorSiteAccess fails closed on org_id NULL, and a managed row is refused, so the AI tool cannot mutate a partner-owned row',

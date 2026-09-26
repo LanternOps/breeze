@@ -90,6 +90,7 @@ export async function revertNetworkCheckConversionInTx(tx: DbExecutor, conversio
   if (!entry || entry.revertedAt) throw new NetworkHistoryError('already_reverted', 409);
   assertAccess(entry.orgId, auth);
   if (entry.sourceTable !== 'network_monitors') throw new NetworkHistoryError('source_not_found', 404);
+  if (entry.sourceState?.sourceReleased === true) throw new NetworkHistoryError('source_released', 409);
   const [row] = await tx.select().from(networkMonitors)
     .where(and(eq(networkMonitors.id, entry.sourceId), eq(networkMonitors.orgId, entry.orgId))).for('update');
   if (!row) throw new NetworkHistoryError('source_not_found', 404);

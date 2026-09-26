@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { monitorConversions, monitorDefinitions, networkMonitors } from '../../db/schema';
 
 // Every assertion below fails BEFORE any DB work (ownership and shape checks
 // run first, deliberately), so the db module only needs to exist.
@@ -439,17 +441,22 @@ it('creates a system monitor with a null actor using the supplied executor throu
 
 
 describe('conversion executor propagation', () => {
-  it('reads and deletes only through the caller executor', async () => {
-    const row = existingRow();
+  it.each(['cpu', 'network_check'])('deletes an unadopted %s monitor only through the caller executor', async (kind) => {
+    const row = existingRow({ kind });
     const where = vi.fn(async () => undefined);
+    const tx = {
+      select: vi.fn(() => ({ from: () => ({ innerJoin: () => ({ where: () => ({ for: async () => [] }) }) }) })),
+      delete: vi.fn(() => ({ where })),
+    };
     const executor = {
       select: vi.fn(() => ({ from: () => ({ where: () => ({ limit: async () => [row] }) }) })),
-      delete: vi.fn(() => ({ where })),
+      transaction: vi.fn(async (work: (value: typeof tx) => Promise<void>) => work(tx)),
     };
     expect(await getMonitorDefinition('monitor-1', auth(), executor as never)).toEqual(row);
     await deleteMonitorDefinition('monitor-1', auth(), executor as never);
     expect(executor.select).toHaveBeenCalledTimes(2);
-    expect(executor.delete).toHaveBeenCalledTimes(1);
+    expect(tx.delete).toHaveBeenCalledTimes(1);
+    expect(executor.transaction).toHaveBeenCalledOnce();
     expect(dbMock.select).not.toHaveBeenCalled();
     expect(dbMock.delete).not.toHaveBeenCalled();
   });
@@ -475,9 +482,13 @@ describe('deleteMonitorDefinition: dependent-row FK violation (#6509)', () => {
     const where = vi.fn(async () => {
       throw pgForeignKeyError;
     });
+    const tx = {
+      select: vi.fn(() => ({ from: () => ({ innerJoin: () => ({ where: () => ({ for: async () => [] }) }) }) })),
+      delete: vi.fn(() => ({ where })),
+    };
     const executor = {
       select: vi.fn(() => ({ from: () => ({ where: () => ({ limit: async () => [row] }) }) })),
-      delete: vi.fn(() => ({ where })),
+      transaction: vi.fn(async (work: (value: typeof tx) => Promise<void>) => work(tx)),
     };
 
     await expect(
@@ -491,9 +502,13 @@ describe('deleteMonitorDefinition: dependent-row FK violation (#6509)', () => {
     const where = vi.fn(async () => {
       throw otherError;
     });
+    const tx = {
+      select: vi.fn(() => ({ from: () => ({ innerJoin: () => ({ where: () => ({ for: async () => [] }) }) }) })),
+      delete: vi.fn(() => ({ where })),
+    };
     const executor = {
       select: vi.fn(() => ({ from: () => ({ where: () => ({ limit: async () => [row] }) }) })),
-      delete: vi.fn(() => ({ where })),
+      transaction: vi.fn(async (work: (value: typeof tx) => Promise<void>) => work(tx)),
     };
 
     await expect(
@@ -586,5 +601,41 @@ describe('network check asset ownership', () => {
       .rejects.toBeInstanceOf(MonitorValidationError);
     expect(executor.select).toHaveBeenCalledTimes(1);
     expect(dbMock.select).not.toHaveBeenCalled();
+  });
+});
+
+describe('deleteMonitorDefinition: adopted network history', () => {
+  it('releases only live adoption sources and marks their ledger before deleting in the same transaction', async () => {
+    const writes: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+    const predicates: unknown[] = [];
+    const tx = {
+      select: vi.fn(() => ({ from: () => ({ innerJoin: () => ({ where: (predicate: unknown) => {
+        predicates.push(predicate);
+        return { for: async () => [{ id: 'legacy', orgId: ORG, conversionId: 'conversion', sourceState: { name: 'Gateway' } }] };
+      } }) }) })),
+      update: vi.fn((table: unknown) => ({ set: (values: Record<string, unknown>) => ({ where: async () => { writes.push({ table, values }); } }) })),
+      delete: vi.fn(() => ({ where: async () => {
+        expect(writes).toEqual([
+          { table: networkMonitors, values: { managedByMonitorId: null, isActive: false,
+            retiredAt: expect.any(Date), retiredReason: 'monitor_deleted', updatedAt: expect.any(Date) } },
+          { table: monitorConversions, values: { sourceState: { name: 'Gateway', sourceReleased: true } } },
+        ]);
+      } })),
+    };
+    const executor = {
+      select: vi.fn(() => ({ from: () => ({ where: () => ({ limit: async () => [existingRow({ kind: 'network_check' })] }) }) })),
+      delete: vi.fn(() => ({ where: async () => undefined })),
+      transaction: vi.fn(async (work: (value: typeof tx) => Promise<void>) => work(tx)),
+    };
+    await deleteMonitorDefinition('monitor-1', auth(), executor as never);
+    expect(executor.transaction).toHaveBeenCalledOnce();
+    expect(executor.delete).not.toHaveBeenCalled();
+    expect(tx.delete).toHaveBeenCalledWith(monitorDefinitions);
+    const predicate = new PgDialect().sqlToQuery(predicates[0] as never);
+    expect(predicate.sql).toContain('"managed_by_monitor_id" =');
+    expect(predicate.sql).toContain('"source_table" =');
+    expect(predicate.sql).toContain('"reverted_at" is null');
+    expect(predicate.params).toContain('monitor-1');
+    expect(predicate.params).toContain('network_monitors');
   });
 });

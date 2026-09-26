@@ -4,6 +4,8 @@ import { monitorDefinitions } from '../../db/schema/monitorDefinitions';
 import type { MonitorDefinitionRow } from '../../db/schema/monitorDefinitions';
 import { escalationPolicies } from '../../db/schema/alerts';
 import { organizations } from '../../db/schema/orgs';
+import { networkMonitors } from '../../db/schema/monitors';
+import { monitorConversions } from '../../db/schema/monitorConversions';
 import type { AuthContext } from '../../middleware/auth';
 import {
   canManagePartnerWidePolicies,
@@ -432,7 +434,28 @@ export async function deleteMonitorDefinition(id: string, auth: AuthContext, exe
   // monitor_id (and rule_id, once the cascade reaches the compiled rule) set
   // to NULL.
   try {
-    await executor.delete(monitorDefinitions).where(eq(monitorDefinitions.id, id));
+    await executor.transaction(async (tx) => {
+      // A live conversion identifies an adopted probe. Release it before the
+      // definition cascade so its results and legacy rules remain available.
+      // Compiler-created probes have no source ledger entry and still cascade.
+      const adopted = await tx.select({ id: networkMonitors.id, orgId: networkMonitors.orgId,
+        conversionId: monitorConversions.id, sourceState: monitorConversions.sourceState })
+        .from(networkMonitors)
+        .innerJoin(monitorConversions, and(eq(monitorConversions.sourceId, networkMonitors.id),
+          eq(monitorConversions.orgId, networkMonitors.orgId)))
+        .where(and(eq(networkMonitors.managedByMonitorId, id),
+          eq(monitorConversions.sourceTable, 'network_monitors'), isNull(monitorConversions.revertedAt)))
+        .for('update');
+      const now = new Date();
+      for (const source of adopted) {
+        await tx.update(networkMonitors).set({ managedByMonitorId: null, isActive: false,
+          retiredAt: now, retiredReason: 'monitor_deleted', updatedAt: now })
+          .where(and(eq(networkMonitors.id, source.id), eq(networkMonitors.managedByMonitorId, id)));
+        await tx.update(monitorConversions).set({ sourceState: { ...source.sourceState, sourceReleased: true } })
+          .where(eq(monitorConversions.id, source.conversionId));
+      }
+      await tx.delete(monitorDefinitions).where(eq(monitorDefinitions.id, id));
+    });
   } catch (error) {
     if (isPgForeignKeyViolation(error)) {
       // Belt-and-braces catch-all (see MonitorHasDependentsError's doc

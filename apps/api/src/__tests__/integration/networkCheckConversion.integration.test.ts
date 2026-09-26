@@ -15,7 +15,7 @@ import { PERMISSIONS } from '../../services/permissions';
 import { monitorConversionRoutes } from '../../routes/monitorDefinitions.conversion';
 import { previewNetworkCheckConversion, convertNetworkChecks } from '../../services/monitors/conversion/networkChecks';
 import { isRevertAvailable } from '../../services/monitors/conversion/lifecycle';
-import { updateMonitorDefinition } from '../../services/monitors/monitorService';
+import { deleteMonitorDefinition, updateMonitorDefinition } from '../../services/monitors/monitorService';
 
 const scoped = <T>(orgId: string, action: () => Promise<T>) => withDbAccessContext({
   scope: 'organization', orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], userId: null,
@@ -327,6 +327,31 @@ describe('network check public conversion and reversal', () => {
       expect(source).toMatchObject({ managedByMonitorId: null, name: 'Gateway', assetId: f.assetId,
         siteId: f.siteId, monitorType: 'icmp_ping', target: f.source.target, config: { count: 4 } });
     });
+  });
+
+  it('releases an adopted check on monitor deletion while preserving results and legacy rules', async () => {
+    const f = await conversionFixture();
+    const [result] = await f.run(() => db.insert(networkMonitorResults).values({
+      orgId: f.orgId, monitorId: f.source.id, deviceId: f.device.id, status: 'offline', error: 'timeout',
+    }).returning());
+    const preview = await previewNetworkCheckConversion(f.orgId, f.auth);
+    const converted = await convertNetworkChecks(f.orgId, preview.previewHash, f.auth);
+    const conversionId = converted.conversionIds[0]!;
+    const [output] = await f.run(() => db.select().from(monitorConversionOutputs).where(eq(monitorConversionOutputs.conversionId, conversionId)));
+    const rules = await f.run(() => db.select().from(networkMonitorAlertRules).where(eq(networkMonitorAlertRules.monitorId, f.source.id)));
+    await f.run(() => deleteMonitorDefinition(output!.monitorId!, f.auth));
+    await f.run(async () => {
+      expect(await db.select().from(monitorDefinitions).where(eq(monitorDefinitions.id, output!.monitorId!))).toEqual([]);
+      const [released] = await db.select().from(networkMonitors).where(eq(networkMonitors.id, f.source.id));
+      expect(released).toMatchObject({ managedByMonitorId: null, isActive: false,
+        retiredAt: expect.any(Date), retiredReason: 'monitor_deleted' });
+      expect(await db.select().from(networkMonitorResults).where(eq(networkMonitorResults.monitorId, f.source.id))).toEqual([result]);
+      expect(await db.select().from(networkMonitorAlertRules).where(eq(networkMonitorAlertRules.monitorId, f.source.id))).toEqual(rules);
+      const [entry] = await db.select().from(monitorConversions).where(eq(monitorConversions.id, conversionId));
+      expect(entry).toMatchObject({ revertedAt: null, sourceState: { name: 'Gateway', sourceReleased: true } });
+    });
+    expect((await readLedger(f)).items[0]).toMatchObject({ id: conversionId, revertable: false });
+    await expect(revertConversion(conversionId, f.auth)).rejects.toMatchObject({ code: 'source_released', status: 409 });
   });
 
   it('refuses missing-source reversal without marking the ledger reverted', async () => {

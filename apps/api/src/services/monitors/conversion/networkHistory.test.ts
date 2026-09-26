@@ -166,6 +166,15 @@ describe('revertNetworkCheckConversionInTx', () => {
   const entry = { id: 'conversion', orgId: 'org', sourceTable: 'network_monitors', sourceId: 'legacy',
     policyId: null, revertedAt: null, networkSourceSnapshot: snapshot };
 
+  it('refuses a released source with a clear conflict before any writes', async () => {
+    const released = { ...entry, sourceState: { sourceReleased: true } };
+    const { tx, writes, deletes } = executor([[released], [{ ...source, isActive: false, retiredReason: 'monitor_deleted' }], []]);
+    await expect(revertNetworkCheckConversionInTx(tx as never, released as never, auth))
+      .rejects.toMatchObject({ code: 'source_released', status: 409 });
+    expect(writes).toEqual([]);
+    expect(deletes).toEqual([]);
+  });
+
   it('restores a zero-output retirement and preserves its site and rule states', async () => {
     const { tx, writes, deletes } = executor([[entry], [{ ...source, isActive: false, retiredAt: new Date() }], []]);
     await revertNetworkCheckConversionInTx(tx as never, entry as never, auth);
