@@ -445,6 +445,11 @@ const TARGET_GLOBS = [
   // Topology M2 (#5998 Task 9): hide/restore of a connection in one view. A
   // silent failure leaves a tech believing a false cable is hidden (or back).
   'src/components/topology/RelationshipExclusionAction.tsx',
+  // Topology M3 (#5999 Task 11): arming recurring monitoring and port
+  // measurement. A silent failure leaves a tech believing a site is being
+  // measured (or no longer is) when it is not.
+  'src/components/topology/MonitoringPolicyPanel.tsx',
+  'src/components/topology/InterfaceTelemetrySettings.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -819,7 +824,8 @@ describe('no silent mutations in targeted set', () => {
     // 188 -> 189: ExternalBackupCard.tsx (W03 Task 12, #6011) added to TARGET_GLOBS.
     // #5313 adds monitors/CreateMonitorForm.tsx and settings/SiteDetailPage.tsx: 189 → 191.
     // 191 -> 192: topology/RelationshipExclusionAction.tsx (#5998 Task 9).
-    expect(absoluteFiles.length).toBe(192);
+    // 192 -> 194: topology/MonitoringPolicyPanel.tsx + InterfaceTelemetrySettings.tsx (#5999 Task 11).
+    expect(absoluteFiles.length).toBe(194);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

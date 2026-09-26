@@ -21,7 +21,7 @@ export type PhysicalTopologyFixture = {
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..', '..');
 
-function composeArgs(): string[] {
+export function composeArgs(): string[] {
   const stackFile = process.env.E2E_STACK_FILE ?? path.join(repoRoot, '.breeze-stack.json');
   if (!existsSync(stackFile)) throw new Error(`topology-physical needs a worktree stack (${stackFile}); run \`pnpm wt-stack up\` first`);
   const { project } = JSON.parse(readFileSync(stackFile, 'utf8')) as { project: string };

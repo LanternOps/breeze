@@ -9,7 +9,7 @@ import { hasPermission } from '../permissions';
 import { hasSatisfiedMfa } from '../../middleware/auth';
 import { type TopologyRequestContext, topologyPermissionPairs } from './access';
 import { loadTopologyConfiguration } from './siteConfiguration';
-import { getTopologyCapabilities, loadTopologyFlags, topologyPhysicalExposed } from './flags';
+import { getTopologyCapabilities, loadTopologyFlags, topologyInterfaceHealthExposed, topologyPhysicalExposed } from './flags';
 import { readLegacyImportCheckpoint } from './legacyImportState';
 export async function readTopologySiteSettings(
   ctx: TopologyRequestContext,
@@ -43,8 +43,12 @@ export async function readTopologySiteSettings(
         // D9: physical view = deployed capability (materialization && flag),
         // independent of collector presence; coverage reports collectability.
         physical: topologyPhysicalExposed(flags),
-        interfaceHealth: false,
-        diagnostics: false,
+        // M3 Task 11: port measurement is exposure-gated like physical; the
+        // history/link-health reads use the same predicate.
+        interfaceHealth: topologyInterfaceHealthExposed(flags),
+        // Per-origin eligibility is the collectors read's job; the site
+        // capability is the flag exposure (the run routes enforce the rest).
+        diagnostics: true,
         ai: false,
       }),
       // M3 Task 7: recurring monitoring exists once diagnostics do; a policy

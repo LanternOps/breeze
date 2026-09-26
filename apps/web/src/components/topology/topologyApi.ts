@@ -6,7 +6,11 @@ import { fetchWithAuth } from '../../stores/auth';
 const capability = z.object({ available: z.boolean(), reason: z.string().nullable() });
 export const topologySettingsSchema = z.object({
   siteId: z.string().uuid(), settingsRevision: z.string(),
-  capabilities: z.object({ ui: capability, diagnostics: capability, physical: capability, collection: capability }),
+  capabilities: z.object({ ui: capability, diagnostics: capability, physical: capability, collection: capability,
+    /** M3 (optional for pre-M3 servers): port measurement and recurring monitoring. Absent = unavailable. */
+    interfaceHealth: capability.optional(), recurringMonitoring: capability.optional() }),
+  /** Per-site authority (execute/configure + satisfied MFA). The graph projection does not compute these. */
+  permissions: z.object({ canEdit: z.boolean(), canDiagnose: z.boolean(), canConfigureMonitoring: z.boolean() }).optional(),
 });
 export type TopologySettings = z.infer<typeof topologySettingsSchema>;
 export class TopologyReadError extends Error {
