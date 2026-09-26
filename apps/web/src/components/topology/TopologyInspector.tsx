@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { GraphResponse, RelationshipDetailResponse, RelationshipEvidenceResponse, TopologyView } from '@breeze/shared';
+import type { GraphResponse, RelationshipDetailResponse, RelationshipEvidenceResponse, TopologyAiSelection, TopologyView } from '@breeze/shared';
 import { isPresentation, selectedTopologyEntity, type TopologySelection, topologyHealthLabel } from './topologyPresentation';
 import { topologyApi } from './topologyApi';
 import PhysicalEvidencePanel from './PhysicalEvidencePanel';
@@ -10,6 +10,16 @@ import InterfaceHistoryPanel from './InterfaceHistoryPanel';
 import MonitoringPolicyPanel from './MonitoringPolicyPanel';
 import InterfaceTelemetrySettings from './InterfaceTelemetrySettings';
 import ImpactPanel from './ImpactPanel';
+import TopologyExplanationPanel from './TopologyExplanationPanel';
+import type { TopologyEvidenceTarget } from './TopologyEvidenceCitation';
+
+/** M4 "Explain this" wiring for the inspector (absent when AI is unavailable for the site). */
+export type TopologyExplainOptions = {
+  canApprove: boolean; investigationId?: string; runId?: string;
+  onInvestigation: (sessionId: string | undefined) => void; onRun: (runId: string | undefined) => void;
+  onEvidenceSelect: (target: TopologyEvidenceTarget) => void;
+};
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** M3 operational capabilities of the site, from its settings (all off unless the server says available). */
 export type TopologyOperationsCapabilities = { interfaceHealth: boolean; monitoring: boolean; canConfigure: boolean };
@@ -40,13 +50,15 @@ function useRelationshipDetail(siteId: string | undefined, relationshipId: strin
   return { detail, evidence, error, loadMore };
 }
 
-export default function TopologyInspector({ selection, graph, canDiagnose, onDiagnose, onClose, onExpand, onPin, pinned, siteId, view, onChanged, operations, historyInterfaceId, onHistory, onSelectNode }: {
+export default function TopologyInspector({ selection, graph, canDiagnose, onDiagnose, onClose, onExpand, onPin, pinned, siteId, view, onChanged, operations, historyInterfaceId, onHistory, onSelectNode, explain }: {
   selection: TopologySelection; graph: GraphResponse; canDiagnose: boolean; onDiagnose: () => void; onClose: () => void;
   onExpand: (token: string) => void; onPin?: () => void; pinned?: boolean;
   /** With a site, an edge selection also reads its authorized detail/evidence (M2 D11) and offers exclusion (D17). */
   siteId?: string; view?: TopologyView; onChanged?: () => void;
   /** M3 (Task 11): with a site and capabilities, the inspector adds link health, port history, monitoring status, port measurement and impact. */
   operations?: TopologyOperationsCapabilities; historyInterfaceId?: string; onHistory?: (interfaceId: string | undefined) => void; onSelectNode?: (nodeId: string) => void;
+  /** M4 Task 5: "Explain this" for a canonical node or connection. */
+  explain?: TopologyExplainOptions;
 }) {
   const { t } = useTranslation('topology'); const heading = useRef<HTMLHeadingElement>(null);
   const [refresh, setRefresh] = useState(0);
@@ -58,6 +70,10 @@ export default function TopologyInspector({ selection, graph, canDiagnose, onDia
   useEffect(() => { heading.current?.focus(); }, [selection.id]);
   if (!entity) return null;
   const schematic = isPresentation(entity);
+  // IDs only; a schematic element or a non-canonical id is never explainable.
+  const aiSelection: TopologyAiSelection | null = explain && siteId && view && !schematic && UUID.test(entity.id)
+    ? { siteId, subject: { kind: selection.kind === 'edge' ? 'relationship' : 'node', id: entity.id }, view, graphRevision: graph.revisions.graph }
+    : null;
   return <aside data-testid="topology-inspector" className="min-w-0 space-y-4 border-t bg-card p-4 lg:w-80 lg:shrink-0 lg:border-l lg:border-t-0" onKeyDown={(event) => { if (event.key === 'Escape') onClose(); }}>
     <div className="flex items-start justify-between gap-3"><h3 ref={heading} tabIndex={-1} className="break-words text-lg font-semibold">{'label' in entity ? entity.label : entity.meaning}</h3><button data-testid="topology-inspector-close" className="rounded border px-3 py-2" onClick={onClose}>{t('close')}</button></div>
     {schematic && <p>{t('schematicExplanation')}</p>}
@@ -87,6 +103,8 @@ export default function TopologyInspector({ selection, graph, canDiagnose, onDia
     {siteId && operations && !schematic && <OperationsSections siteId={siteId} graph={graph} selection={selection} entityId={entity.id} operations={operations}
       ports={{ source: detail?.endpoints.source.port ?? null, target: detail?.endpoints.target.port ?? null }}
       historyInterfaceId={historyInterfaceId} onHistory={onHistory} onSelectNode={onSelectNode} />}
+    {aiSelection && explain && siteId && <TopologyExplanationPanel siteId={siteId} selection={aiSelection} graph={graph} canApprove={explain.canApprove}
+      initialSessionId={explain.investigationId} initialRunId={explain.runId} onInvestigation={explain.onInvestigation} onRun={explain.onRun} onEvidenceSelect={explain.onEvidenceSelect} />}
     {!schematic && <button data-testid="topology-diagnose" className="rounded bg-primary px-3 py-2 text-primary-foreground disabled:opacity-50" disabled={!canDiagnose} onClick={onDiagnose}>{t('diagnose')}</button>}
     {!schematic && !canDiagnose && <p className="text-sm text-muted-foreground">{t('diagnosticsUnavailable')}</p>}
     {onPin && !schematic && selection.kind === 'node' && <button data-testid="topology-pin" className="ml-2 rounded border px-3 py-2" aria-pressed={pinned} onClick={onPin}>{pinned ? t('unpin') : t('pin')}</button>}

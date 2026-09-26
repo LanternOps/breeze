@@ -20,8 +20,8 @@
  */
 import { sql } from 'drizzle-orm';
 import {
-  TOPOLOGY_AI_LIMITS, topologyAiExplanationSchema, topologyAiModelOutputSchema, topologyRecipeIdSchema,
-  type TopologyAiCitation, type TopologyAiExplanation, type TopologyAiFinding, type TopologyAiNextCheck,
+  TOPOLOGY_AI_HOST_ALIAS_PATTERN, TOPOLOGY_AI_LIMITS, topologyAiExplanationSchema, topologyAiModelOutputSchema, topologyRecipeIdSchema,
+  type TopologyAiCitation, type TopologyAiExplanation, type TopologyAiHostAlias, type TopologyAiFinding, type TopologyAiNextCheck,
 } from '@breeze/shared';
 
 import { db } from '../../db';
@@ -64,14 +64,35 @@ function displayCitations(ids: string[], snapshot: TopologyAiEvidenceSnapshot): 
   });
 }
 
-function finish(findings: TopologyAiFinding[], missingData: string[], nextChecks: TopologyAiNextCheck[], reasons: Set<string>, snapshot: TopologyAiEvidenceSnapshot, status?: TopologyAiExplanation['status']): TopologyAiExplanation {
+/**
+ * Alias -> snapshot node for every host alias the published text mentions
+ * (M4 Task 5). Only aliases the SNAPSHOT issued map; a model-invented token
+ * matches nothing. Nodes in `unavailable` (a citation that failed live
+ * reauthorization) are dropped. The mapping carries ids only — the browser
+ * substitutes a name solely from its own authorized graph read.
+ */
+function hostAliases(texts: string[], snapshot: TopologyAiEvidenceSnapshot, unavailable: ReadonlySet<string>): TopologyAiHostAlias[] {
+  const byAlias = new Map((snapshot.modelEvidence?.nodes ?? []).map((node) => [node.alias, node.id]));
+  const mapped = new Map<string, string>();
+  for (const text of texts) {
+    for (const [alias] of text.matchAll(TOPOLOGY_AI_HOST_ALIAS_PATTERN)) {
+      const nodeId = byAlias.get(alias);
+      if (nodeId && !unavailable.has(nodeId)) mapped.set(alias, nodeId);
+    }
+  }
+  return [...mapped].slice(0, TOPOLOGY_AI_LIMITS.citations).map(([alias, nodeId]) => ({ alias, nodeId }));
+}
+
+function finish(findings: TopologyAiFinding[], missingData: string[], nextChecks: TopologyAiNextCheck[], reasons: Set<string>, snapshot: TopologyAiEvidenceSnapshot, status?: TopologyAiExplanation['status'], unavailable: ReadonlySet<string> = new Set()): TopologyAiExplanation {
   const citationIds = [...new Set([...findings.flatMap((f) => f.citationIds), ...nextChecks.flatMap((c) => c.citationIds)])].slice(0, TOPOLOGY_AI_LIMITS.citations);
+  const aliases = hostAliases([...findings.map((f) => f.text), ...missingData, ...nextChecks.map((c) => c.rationale)], snapshot, unavailable);
   return topologyAiExplanationSchema.parse({
     schemaVersion: 1,
     status: status ?? (reasons.size ? 'partial' : 'complete'),
     findings, missingData, nextChecks, citationIds,
     citations: displayCitations(citationIds, snapshot),
     reasons: [...reasons].sort(),
+    ...(aliases.length ? { hostAliases: aliases } : {}),
   });
 }
 
@@ -183,5 +204,6 @@ export function applyTopologyAiCitationAvailability(
     .map((finding) => ({ ...finding, citationIds: finding.citationIds.filter((id) => allowed.has(id)) }))
     .filter((finding, i) => finding.citationIds.length > 0 || explanation.findings[i]!.citationIds.length === 0);
   const nextChecks = explanation.nextChecks.map((check) => ({ ...check, citationIds: check.citationIds.filter((id) => allowed.has(id)) }));
-  return finish(findings, explanation.missingData, nextChecks, reasons, snapshot, explanation.status === 'evidence_changed' ? 'evidence_changed' : 'partial');
+  return finish(findings, explanation.missingData, nextChecks, reasons, snapshot, explanation.status === 'evidence_changed' ? 'evidence_changed' : 'partial',
+    new Set(availability.unavailable.map((id) => snapshot.manifest[id]?.resourceType === 'node' ? snapshot.manifest[id]!.resourceId : id)));
 }

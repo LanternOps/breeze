@@ -100,6 +100,39 @@ describe('validateTopologyAiExplanation (M4 Task 2)', () => {
   });
 });
 
+describe('host alias display mapping (M4 Task 5)', () => {
+  const ALIAS = 'host-1a2b3c4d';
+  const aliased: TopologyAiEvidenceSnapshot = {
+    ...snapshot,
+    modelEvidence: { ...snapshot.modelEvidence, nodes: [{ id: NODE, alias: ALIAS, kind: 'switch', role: null, bindingKinds: [], lifecycle: 'active', freshness: 'fresh',
+      health: { status: 'healthy', coverage: 'full', freshness: 'fresh', reasons: [] } }] },
+  };
+
+  it('publishes alias -> node id only for snapshot nodes the published text mentions', () => {
+    const result = validateTopologyAiExplanation(output(
+      [{ kind: 'finding', claim: 'health', text: `Uplink of ${ALIAS} reports failed checks; host-deadbeef is unknown.`, citationIds: [REL] }],
+      { missingData: [`No LLDP from ${ALIAS}.`] },
+    ), aliased);
+    expect(result.hostAliases).toEqual([{ alias: ALIAS, nodeId: NODE }]);
+    expect(topologyAiExplanationSchema.parse(result)).toEqual(result);
+  });
+
+  it('omits the mapping when no alias is mentioned, and never maps a model-invented alias', () => {
+    expect(validateTopologyAiExplanation(output([{ kind: 'finding', claim: 'health', text: 'Link failing.', citationIds: [REL] }]), aliased)).not.toHaveProperty('hostAliases');
+    expect(validateTopologyAiExplanation(output([{ kind: 'hypothesis', claim: 'cause', text: 'host-deadbeef loops.', citationIds: [] }]), aliased)).not.toHaveProperty('hostAliases');
+  });
+
+  it('drops the mapping of a node whose citation became unavailable', () => {
+    const explanation = validateTopologyAiExplanation(output([
+      { kind: 'finding', claim: 'topology', text: `${ALIAS} is present.`, citationIds: [NODE] },
+      { kind: 'hypothesis', claim: 'cause', text: `${ALIAS} may loop.`, citationIds: [] },
+    ]), aliased);
+    expect(explanation.hostAliases).toEqual([{ alias: ALIAS, nodeId: NODE }]);
+    const result = applyTopologyAiCitationAvailability(explanation, { allowed: [], unavailable: [NODE] }, aliased);
+    expect(result).not.toHaveProperty('hostAliases');
+  });
+});
+
 describe('reauthorizeTopologyAiCitations (M4 Task 2)', () => {
   const ctx = { auth: { user: { id: 'u' }, partnerId: null, orgId: ORG, scope: 'organization' }, permissions: {}, scope: { orgId: ORG, siteId: SITE } } as never;
   beforeEach(() => {

@@ -9,7 +9,7 @@ import { i18n } from './i18n';
 import { ActionError, runAction } from './runAction';
 import { showToast } from '../components/shared/Toast';
 
-export type IntentDecisionOutcome = 'decided' | 'needs_device' | 'not_sole_approver';
+export type IntentDecisionOutcome = 'decided' | 'needs_device' | 'not_sole_approver' | 'fresh_factor_required';
 
 /** One row's outcome inside a batch decide. `httpStatus < 300` means that row
  *  was actually decided; anything else is a per-row failure (409 lost race,
@@ -79,6 +79,22 @@ function errorToken(err: unknown): string | undefined {
 export function isStepUpRequired(err: unknown): boolean {
   return errorToken(err) === 'step_up_required';
 }
+
+/**
+ * Topology M4-D3 (#6000): the decide route's 403 `step_up_required` with
+ * `reason: 'fresh_mfa_required'` — the tool (today `diagnose_connectivity`)
+ * is approved only by a hardware-backed factor asserted for THIS decision.
+ * Unlike a missing authenticator, the viewer may simply retry the ceremony
+ * with a platform passkey, so it maps to its own outcome.
+ */
+export function isFreshFactorRequired(err: unknown): boolean {
+  if (!isStepUpRequired(err)) return false;
+  const body = (err as ActionError).body as { reason?: unknown } | null | undefined;
+  return body?.reason === 'fresh_mfa_required';
+}
+
+/** Tools whose approve must carry a fresh WebAuthn assertion (mirrors the API's FRESH_APPROVER_FACTOR_TOOLS). */
+export const FRESH_APPROVER_FACTOR_TOOLS: ReadonlySet<string> = new Set(['diagnose_connectivity']);
 
 /**
  * The decide handler re-derives sole-operator status at decide time (#2685) and
@@ -290,7 +306,16 @@ export async function decideIntentApproval(
    * intentApprovals.stepUpGrant.test.ts), so repurposing it would break both
    * suites for no reason — this is purely additive.
    */
-  opts?: { acknowledgedPatterns?: string[] },
+  opts?: {
+    acknowledgedPatterns?: string[];
+    /**
+     * Topology M4-D3 (#6000): the tool requires a FRESH hardware-backed
+     * factor for this approval. Approve then always runs the ceremony first
+     * (never the proofless optimistic attempt, never a cached step-up grant —
+     * the server refuses both), and never caches a grant it mints.
+     */
+    freshFactor?: boolean;
+  },
 ): Promise<IntentDecisionOutcome> {
   const body: Record<string, unknown> = {};
   if (opts?.acknowledgedPatterns?.length) {
@@ -298,7 +323,8 @@ export async function decideIntentApproval(
   }
   // Only an APPROVE of a supervised row may go prooflessly; deny never carries
   // a proof anyway, and an unknown scope must fall back to the strict path.
-  const supervisedApprove = decision === 'approve' && approvalScope === 'supervised';
+  const freshFactor = opts?.freshFactor === true;
+  const supervisedApprove = decision === 'approve' && approvalScope === 'supervised' && !freshFactor;
   // #5601: ONLY a supervised approve may spend a live step-up grant — it rides
   // the optimistic attempt in place of the proofless body, which is what lets
   // an enforcing partner's floor be met without a second passkey scan. Read
@@ -418,7 +444,10 @@ export async function decideIntentApproval(
       // expiry. Wiring a /login redirect here would bounce a user out of the app
       // because their fingerprint scan failed.
       treatUnauthorizedAsError: true,
-      friendly: decideErrorCopy,
+      // A fresh-factor refusal is a retryable scan, not "register a device".
+      friendly: freshFactor
+        ? (token: string) => token === 'step_up_required' ? i18n.t('ai:aiApprovalDialog.freshFactorRequired') : decideErrorCopy(token)
+        : decideErrorCopy,
       successMessage:
         decision === 'approve'
           ? i18n.t('ai:aiApprovalDialog.approvedToast')
@@ -438,6 +467,7 @@ export async function decideIntentApproval(
     if (err instanceof ActionError && (err.status === 401 || err.status === 403)) {
       stepUpGrant = null;
     }
+    if (isFreshFactorRequired(err)) return 'fresh_factor_required';
     if (isStepUpRequired(err)) return 'needs_device';
     if (isNotSoleApprover(err)) return 'not_sole_approver';
     throw err;

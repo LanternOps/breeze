@@ -32,6 +32,7 @@
     "notSoleApprover": "Artık başka bir onaylayan gerekiyor; artık kendi isteğinizi onaylayamazsınız.",
     "siteCeiling": "Bu onay, organizasyon genelinde yetki verir. Erişiminiz belirli sitelerle sınırlı olduğundan, artık başka bir onaylayan bu isteğe karar vermelidir.",
     "noApproverDevice": "Kendi isteğinizi onaylamak için Touch ID / Windows Hello gerekir.",
+    "freshFactorRequired": "Bu kontrol, bu onay için yapılmış yeni bir geçiş anahtarı doğrulaması (Touch ID, Windows Hello veya donanım anahtarı) gerektirir. Tekrar deneyin.",
     "registerDevice": "Bu cihazı kaydedin",
     "decideFailed": "Karar gönderilemedi",
     "approvedToast": "İşlem onaylandı",

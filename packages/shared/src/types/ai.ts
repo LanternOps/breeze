@@ -218,6 +218,12 @@ export type AiStreamEvent =
    */
   | { type: 'topology_progress'; phase: AiTopologyProgressPhase }
   | { type: 'topology_explanation'; explanation: TopologyAiExplanation }
+  /**
+   * Topology M4 (#6000): the ONLY trace of an approved `diagnose_connectivity`
+   * release a topology turn publishes — the accepted run's id and state. The
+   * client re-reads the run through the ordinary site-authorized run route.
+   */
+  | { type: 'topology_diagnostic_run'; runId: string; state: string }
   | { type: 'content_delta'; delta: string }
   | { type: 'tool_use_start'; toolName: string; toolUseId: string; input: Record<string, unknown> }
   /**

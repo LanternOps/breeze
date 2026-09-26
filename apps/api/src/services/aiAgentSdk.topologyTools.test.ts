@@ -376,4 +376,30 @@ describe('topology investigation tool gate (M4 Task 3)', () => {
     expect(session.pendingTurnToolExecutionCount).toBe(1);
     expect(session.toolUseIdQueue).toEqual([]);
   });
+
+  it('announces an approved diagnostic run by id and state only, never its other output (M4 Task 5)', async () => {
+    mockInsertValues();
+    const RUN = '90000000-0000-4000-8000-000000000001';
+    const session = makeActiveSession({ topologyInvestigation: topologyRuntime(), pendingTurnToolExecutionCount: 0, toolUseNames: new Map() });
+    await createSessionPostToolUse(session)('diagnose_connectivity', { site_id: 's' },
+      JSON.stringify({ runId: RUN, state: 'queued', siteId: 's', recipeId: 'gateway_basic', deadline: '2026-09-26T12:00:00.000Z', note: 'FOREIGN-SITE-SECRET' }), false, 5);
+    expect(session.eventBus.publish).toHaveBeenCalledWith({ type: 'topology_diagnostic_run', runId: RUN, state: 'queued' });
+    expect(JSON.stringify(vi.mocked(session.eventBus.publish).mock.calls)).not.toContain('FOREIGN-SITE-SECRET');
+  });
+
+  it('announces nothing for a refused, errored or malformed diagnostic result', async () => {
+    mockInsertValues();
+    for (const [output, isError] of [
+      [JSON.stringify({ error: 'x', code: 'approval_required' }), false],
+      [JSON.stringify({ runId: '90000000-0000-4000-8000-000000000001', state: 'queued' }), true],
+      [JSON.stringify({ runId: 'not-a-uuid', state: 'queued' }), false],
+      [JSON.stringify({ runId: '90000000-0000-4000-8000-000000000001', state: '<script>' }), false],
+      ['not json', false],
+    ] as const) {
+      const session = makeActiveSession({ topologyInvestigation: topologyRuntime(), pendingTurnToolExecutionCount: 0, toolUseNames: new Map() });
+      await createSessionPostToolUse(session)('diagnose_connectivity', { site_id: 's' }, output, isError, 5);
+      expect(session.eventBus.publish).toHaveBeenCalledTimes(1);
+      expect(session.eventBus.publish).toHaveBeenCalledWith({ type: 'topology_progress', phase: 'analyzing' });
+    }
+  });
 });

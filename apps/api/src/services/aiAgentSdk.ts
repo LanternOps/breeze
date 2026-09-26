@@ -15,6 +15,7 @@ import { aiSessions, aiMessages, aiToolExecutions, aiActionPlans, devices, devic
 import { eq, and, isNull } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiPageContext, AiApprovalMode } from '@breeze/shared/types/ai';
+import { DIAGNOSTIC_STATES } from '@breeze/shared/validators/topology';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirements } from './aiGuardrails';
 import { attachProposalToSession, loadProposalGuardrailContext } from './scriptProposals';
 import {
@@ -1462,6 +1463,12 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
               ...(scriptProposal ? { scriptProposal } : {}),
             });
           } else {
+          // Topology M4-D3 (#6000): the approver must read the PINNED effect —
+          // the server-materialized arguments and approval text the digest
+          // binds — never the model's raw input.
+          const pinnedCard = toolName === 'diagnose_connectivity'
+            ? await loadPinnedApprovalCard(session.orgId, intent.id)
+            : null;
           // Emit approval_required event via session event bus. `intentBacked:
           // true` always means the four-eyes waiting state UNLESS
           // selfApprovalRequestId is also set — in that case the sole-operator
@@ -1501,8 +1508,8 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             // countdown/progress bar is not pinned to a client-side 5 minutes.
             approvalWindowMs: session.approvalWaitBudgetMs,
             toolName,
-            input,
-            description,
+            input: pinnedCard ? pinnedCard.input : input,
+            description: pinnedCard ? pinnedCard.description : description,
             deviceContext,
             intentBacked: true,
           });
@@ -2290,11 +2297,53 @@ export async function attachChatProposalToSession(
  * phase does), and the execution audit row records the call without its
  * site-scoped output — org-level AI analytics are not site-authorized.
  */
-async function topologyPostToolUse(session: ActiveSession, toolName: string, input: Record<string, unknown>, isError: boolean, durationMs: number): Promise<void> {
+/**
+ * The stored (immutable) arguments and approval text of a pinned-effect intent
+ * (topology M4-D3). A read failure yields an EMPTY input and a fixed text —
+ * never the model's input — the approval stays bound to the pinned digest
+ * server-side either way.
+ */
+async function loadPinnedApprovalCard(orgId: string, intentId: string): Promise<{ input: Record<string, unknown>; description: string }> {
+  const fallback = { input: {}, description: 'Run one approved topology connectivity check' };
+  try {
+    const [row] = await withDbAccessContext(
+      { scope: 'organization', orgId, accessibleOrgIds: [orgId] },
+      () => db.select({ arguments: actionIntents.arguments, reason: actionIntents.reason })
+        .from(actionIntents).where(eq(actionIntents.id, intentId)).limit(1),
+    );
+    if (!row || !row.arguments || typeof row.arguments !== 'object') return fallback;
+    return { input: row.arguments as Record<string, unknown>, description: typeof row.reason === 'string' && row.reason ? row.reason : fallback.description };
+  } catch (err) {
+    console.error('[AI-SDK] Failed to read the pinned approval effect:', err instanceof Error ? err.message : err);
+    return fallback;
+  }
+}
+
+const TOPOLOGY_RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const TOPOLOGY_RUN_STATES: ReadonlySet<string> = new Set(DIAGNOSTIC_STATES);
+
+/**
+ * The accepted run of an approved `diagnose_connectivity` release, reduced to
+ * id + state (M4 Task 5) so the Explain panel can follow it through the
+ * ordinary site-authorized run route. Anything else — a refusal, an error, a
+ * malformed or extra field — publishes nothing.
+ */
+function approvedTopologyRun(toolName: string, output: string, isError: boolean): { runId: string; state: string } | null {
+  if (toolName !== 'diagnose_connectivity' || isError) return null;
+  const parsed = safeParseJson(output) as { runId?: unknown; state?: unknown } | null;
+  if (!parsed || typeof parsed !== 'object') return null;
+  const { runId, state } = parsed;
+  if (typeof runId !== 'string' || !TOPOLOGY_RUN_ID.test(runId) || typeof state !== 'string' || !TOPOLOGY_RUN_STATES.has(state)) return null;
+  return { runId, state };
+}
+
+async function topologyPostToolUse(session: ActiveSession, toolName: string, input: Record<string, unknown>, output: string, isError: boolean, durationMs: number): Promise<void> {
   session.pendingTurnToolExecutionCount += 1;
   const toolUseId = session.toolUseIdQueue.shift();
   if (toolUseId) session.toolUseNames?.delete(toolUseId);
   session.eventBus.publish({ type: 'topology_progress', phase: 'analyzing' });
+  const run = approvedTopologyRun(toolName, output, isError);
+  if (run) session.eventBus.publish({ type: 'topology_diagnostic_run', ...run });
   try {
     await withDbAccessContext(
       { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
@@ -2316,7 +2365,7 @@ async function topologyPostToolUse(session: ActiveSession, toolName: string, inp
 export function createSessionPostToolUse(session: ActiveSession): PostToolUseCallback {
   return async (toolName, input, output, isError, durationMs, sealed, handoff) => {
     if (session.topologyInvestigation) {
-      await topologyPostToolUse(session, toolName, input, isError, durationMs);
+      await topologyPostToolUse(session, toolName, input, output, isError, durationMs);
       return;
     }
     // Count this tool call toward the turn's tool_execution_count rollup

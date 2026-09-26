@@ -1,4 +1,7 @@
-import type { AiStreamEvent, AiApprovalMode, AiApprovalScope, ActionPlanStep, AiScriptRunContext, AiRunResultArtifactRef, TopologyAiExplanation } from '@breeze/shared';
+import type { AiStreamEvent, AiApprovalMode, AiApprovalScope, ActionPlanStep, AiScriptRunContext, AiRunResultArtifactRef, AiTopologyProgressPhase, TopologyAiExplanation } from '@breeze/shared';
+// Subpath, not the barrel: this module loads on the topology island, whose CSP
+// forbids the barrel's JIT-compiled schemas (see topologyImports.test.ts).
+import { topologyAiExplanationSchema } from '@breeze/shared/validators/topologyAi';
 
 export interface AiMessage {
   id: string;
@@ -22,6 +25,12 @@ export interface AiMessage {
    * `content` then holds its plain-text rendering (never raw model output).
    */
   topologyExplanation?: TopologyAiExplanation;
+  /**
+   * A stored topology answer that failed client-side validation on reload.
+   * Its body is never shown; the Explain panel renders its deterministic
+   * fallback instead.
+   */
+  topologyExplanationInvalid?: boolean;
   isStreaming?: boolean;
   createdAt: Date;
 }
@@ -137,6 +146,10 @@ export interface StreamableState {
   sessions: Array<{ id: string; title: string | null; status: string; createdAt: string }>;
   /** Analysis runs launched from this conversation, keyed by run id. */
   chatRuns: Record<string, ChatRunState>;
+  /** Topology M4: fixed phase of the running investigation turn (aiStore only). */
+  topologyPhase?: AiTopologyProgressPhase | null;
+  /** Topology M4: accepted run of an approved diagnostic proposal (aiStore only). */
+  topologyRunId?: string | null;
 }
 
 type StreamSetter = (fn: (s: StreamableState) => Partial<StreamableState>) => void;
@@ -423,19 +436,32 @@ export function processStreamEvent(
     // Topology M4 (#6000): progress phases are status only; the explanation
     // is the ONLY answer a topology turn ever sends, already validated.
     case 'topology_progress':
+      set(() => ({ topologyPhase: event.phase }));
       return currentAssistantId;
 
     case 'topology_explanation': {
-      const content = renderTopologyExplanation(event.explanation);
+      // Defense in depth: the server validated it; an answer that does not
+      // parse here is shown as nothing but the invalid marker.
+      const parsed = topologyAiExplanationSchema.safeParse(event.explanation);
+      const patch: Partial<AiMessage> = parsed.success
+        ? { content: renderTopologyExplanation(parsed.data), topologyExplanation: parsed.data }
+        : { content: '', topologyExplanationInvalid: true };
       if (currentAssistantId) {
         set((s) => ({
+          topologyPhase: null,
           messages: s.messages.map((m) =>
-            m.id === currentAssistantId ? { ...m, content, topologyExplanation: event.explanation } : m
+            m.id === currentAssistantId ? { ...m, ...patch } : m
           ),
         }));
+      } else {
+        set(() => ({ topologyPhase: null }));
       }
       return currentAssistantId;
     }
+
+    case 'topology_diagnostic_run':
+      set(() => ({ topologyRunId: event.runId }));
+      return currentAssistantId;
 
     // Deliberate no-ops, named so the exhaustiveness guard below can be exact.
     // Each of these is handled by a DIFFERENT surface, not by this technician
@@ -473,6 +499,23 @@ export function processStreamEvent(
 }
 
 /** Map raw API message objects to typed AiMessage array */
+/**
+ * A stored topology investigation answer (M4 #6000) is persisted as
+ * `contentBlocks: [{ type: 'topology_explanation', explanation }]` with the
+ * JSON in `content`. Map it to the structured answer — never the raw body.
+ */
+function storedTopologyExplanation(m: Record<string, unknown>): Pick<AiMessage, 'content' | 'topologyExplanation' | 'topologyExplanationInvalid'> | null {
+  const blocks = m.contentBlocks;
+  if (m.role !== 'assistant' || !Array.isArray(blocks)) return null;
+  const block = blocks.find((b): b is { type: string; explanation?: unknown } =>
+    !!b && typeof b === 'object' && (b as { type?: unknown }).type === 'topology_explanation');
+  if (!block) return null;
+  const parsed = topologyAiExplanationSchema.safeParse(block.explanation);
+  return parsed.success
+    ? { content: renderTopologyExplanation(parsed.data), topologyExplanation: parsed.data }
+    : { content: '', topologyExplanationInvalid: true };
+}
+
 export function mapMessagesFromApi(rawMessages: Record<string, unknown>[]): AiMessage[] {
   return rawMessages.map((m) => ({
     id: m.id as string,
@@ -482,6 +525,7 @@ export function mapMessagesFromApi(rawMessages: Record<string, unknown>[]): AiMe
     toolInput: m.toolInput as Record<string, unknown> | undefined,
     toolOutput: m.toolOutput,
     toolUseId: m.toolUseId as string | undefined,
-    createdAt: new Date(m.createdAt as string)
+    createdAt: new Date(m.createdAt as string),
+    ...storedTopologyExplanation(m),
   }));
 }

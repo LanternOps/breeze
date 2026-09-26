@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import { cn, widthPercentClass } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
-import { CeremonyError, decideIntentApproval } from "@/lib/intentApprovals";
+import { CeremonyError, decideIntentApproval, FRESH_APPROVER_FACTOR_TOOLS } from "@/lib/intentApprovals";
 import { ActionError } from "@/lib/runAction";
 import { navigateTo } from "@/lib/navigation";
 import { useRunContextLabel } from "../common/RunContext";
@@ -112,6 +112,12 @@ interface AiApprovalDialogProps {
   scriptRunContext?: AiScriptRunContext | null;
   /** Called after a successful inline decide so the parent clears pendingApproval. */
   onIntentDecided?: () => void;
+  /**
+   * Prefix for the decision controls' `data-testid`s
+   * (`<prefix>-approve` / `-deny` / `-error`). Defaults to `ai-approval`; the
+   * topology Explain panel embeds this same card as `topology-proposal`.
+   */
+  testIdPrefix?: string;
 }
 
 /**
@@ -275,6 +281,7 @@ export default function AiApprovalDialog({
   approvalExpiresAt,
   scriptRunContext,
   onIntentDecided,
+  testIdPrefix = "ai-approval",
 }: AiApprovalDialogProps) {
   const { t } = useTranslation("ai");
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
@@ -331,19 +338,34 @@ export default function AiApprovalDialog({
     const priorState = intentDecideState;
     setIntentDecideState("deciding");
     setIntentError(null);
+    // Topology M4-D3: a fresh-factor tool's APPROVE must carry a WebAuthn
+    // assertion made for this decision (no proofless attempt, no reused grant).
+    const freshFactor = decision === "approve" && FRESH_APPROVER_FACTOR_TOOLS.has(toolName);
+    const decideOpts = {
+      ...(opts?.acknowledgedPatterns ? { acknowledgedPatterns: opts.acknowledgedPatterns } : {}),
+      ...(freshFactor ? { freshFactor: true } : {}),
+    };
     try {
       const outcome = await decideIntentApproval(
         selfApprovalRequestId,
         decision,
         undefined,
         approvalScope,
-        // Only ever passed for a proposal-backed run's Approve — omitted
-        // entirely (not even as `undefined`) so a plain intent decide keeps
-        // calling with its original 4 arguments.
-        ...(opts?.acknowledgedPatterns ? [opts] : []),
+        // Only ever passed for a proposal-backed run's Approve or a
+        // fresh-factor approve — omitted entirely (not even as `undefined`)
+        // so a plain intent decide keeps calling with its original 4 arguments.
+        ...(Object.keys(decideOpts).length ? [decideOpts] : []),
       );
       if (outcome === "needs_device") {
         setIntentDecideState("needs_device");
+        return;
+      }
+      // The server wants a FRESH hardware-backed assertion for this approval
+      // (e.g. a synced passkey or a reused grant fell short). Retryable: keep
+      // Approve on screen for another scan.
+      if (outcome === "fresh_factor_required") {
+        setIntentError(t("aiApprovalDialog.freshFactorRequired"));
+        setIntentDecideState("idle");
         return;
       }
       // The org gained another eligible approver since this intent was created
@@ -628,6 +650,7 @@ export default function AiApprovalDialog({
           {intentDecideState !== "needs_device" && (
             <button
               type="button"
+              data-testid={`${testIdPrefix}-approve`}
               disabled={intentDecideState === "deciding"}
               onClick={() => handleIntentDecision("approve")}
               className="flex items-center gap-1.5 rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-green-500 disabled:opacity-50"
@@ -640,6 +663,7 @@ export default function AiApprovalDialog({
           )}
           <button
             type="button"
+            data-testid={`${testIdPrefix}-deny`}
             disabled={intentDecideState === "deciding"}
             onClick={() => handleIntentDecision("deny")}
             className="flex items-center gap-1.5 rounded-md bg-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-300 disabled:opacity-50 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
@@ -670,7 +694,7 @@ export default function AiApprovalDialog({
       )}
 
       {canSelfDecide && intentError && (
-        <p role="alert" className="mt-2 text-xs text-red-500">
+        <p role="alert" data-testid={`${testIdPrefix}-error`} className="mt-2 text-xs text-red-500">
           {intentError}
         </p>
       )}

@@ -65,6 +65,10 @@ export const topologyAiCitationSchema = z.object({
   inspectorTarget: z.object({ kind: z.enum(['node', 'relationship']), id: uuid }).strict().nullable(),
 }).strict();
 
+/** Host alias token as serialized to a model: `host-` + 8 hex chars (aiEvidence.ts). */
+export const TOPOLOGY_AI_HOST_ALIAS_PATTERN = /\bhost-[0-9a-f]{8}\b/g;
+export const topologyAiHostAliasSchema = z.object({ alias: z.string().regex(/^host-[0-9a-f]{8}$/), nodeId: uuid }).strict();
+
 export const topologyAiExplanationSchema = z.object({
   schemaVersion: z.literal(1),
   status: z.enum(TOPOLOGY_AI_EXPLANATION_STATUSES),
@@ -74,6 +78,13 @@ export const topologyAiExplanationSchema = z.object({
   citationIds: z.array(citationId).max(TOPOLOGY_AI_LIMITS.citations),
   citations: z.array(topologyAiCitationSchema).max(TOPOLOGY_AI_LIMITS.citations),
   reasons: z.array(reason).max(32),
+  /**
+   * Per-investigation host aliases the published text mentions, mapped to the
+   * snapshot node they stand for (never a name). A client shows a real name
+   * ONLY for a node present in its own authorized graph read; anything else
+   * stays an alias. Omitted when the text mentions none.
+   */
+  hostAliases: z.array(topologyAiHostAliasSchema).max(TOPOLOGY_AI_LIMITS.citations).optional(),
 }).strict();
 
 /**

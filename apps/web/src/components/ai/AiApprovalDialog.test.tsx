@@ -439,6 +439,41 @@ describe('intent-backed self-approve (sole operator)', () => {
   });
 });
 
+describe('fresh approver factor (topology diagnose_connectivity, M4-D3)', () => {
+  const props = () => ({
+    toolName: 'diagnose_connectivity',
+    description: 'Run gateway reachability from core-sw-1',
+    input: { site_id: 's' } as Record<string, unknown>,
+    onApprove: vi.fn<() => void>(),
+    onReject: vi.fn<() => void>(),
+  });
+
+  it('asks the decide helper for a fresh factor on approve', async () => {
+    decideIntentApproval.mockResolvedValue('decided');
+    const onIntentDecided = vi.fn();
+    render(<AiApprovalDialog {...props()} intentBacked selfApprovalRequestId="ap-1" approvalScope="supervised" onIntentDecided={onIntentDecided} testIdPrefix="topology-proposal" />);
+    fireEvent.click(screen.getByTestId('topology-proposal-approve'));
+    await waitFor(() => expect(onIntentDecided).toHaveBeenCalled());
+    expect(decideIntentApproval).toHaveBeenCalledWith('ap-1', 'approve', undefined, 'supervised', { freshFactor: true });
+  });
+
+  it('fresh_factor_required keeps Approve available for another passkey scan and says why', async () => {
+    decideIntentApproval.mockResolvedValue('fresh_factor_required');
+    render(<AiApprovalDialog {...props()} intentBacked selfApprovalRequestId="ap-1" approvalScope="supervised" onIntentDecided={vi.fn()} testIdPrefix="topology-proposal" />);
+    fireEvent.click(screen.getByTestId('topology-proposal-approve'));
+    await waitFor(() => expect(screen.getByTestId('topology-proposal-error')).toHaveTextContent(/fresh passkey/i));
+    expect(screen.getByTestId('topology-proposal-approve')).not.toBeDisabled();
+    expect(screen.getByTestId('topology-proposal-deny')).toBeInTheDocument();
+  });
+
+  it('deny sends no fresh-factor request', async () => {
+    decideIntentApproval.mockResolvedValue('decided');
+    render(<AiApprovalDialog {...props()} intentBacked selfApprovalRequestId="ap-1" approvalScope="supervised" onIntentDecided={vi.fn()} testIdPrefix="topology-proposal" />);
+    fireEvent.click(screen.getByTestId('topology-proposal-deny'));
+    await waitFor(() => expect(decideIntentApproval).toHaveBeenCalledWith('ap-1', 'deny', undefined, 'supervised'));
+  });
+});
+
 describe('self-approve expiry countdown', () => {
   // The intent behind a sole-operator card still dies at CHAT_EXPIRY_MS (5
   // min). Without a visible timer the user only discovers that by completing a
