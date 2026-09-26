@@ -299,6 +299,12 @@
     "pagination": {
       "rowsPerPage": "Sayfa başına satır",
       "pageStatus": "Sayfa {{current}} / {{total}}"
+    },
+    "installFailure": {
+      "badgeDevices_one": "Kurulum {{count}} cihazda başarısız oldu",
+      "badgeDevices_other": "Kurulum {{count}} cihazda başarısız oldu",
+      "noReason": "Ajan bir neden bildirmedi",
+      "failedAt": "Son kurulum denemesi başarısız oldu: {{when}}"
     }
   },
   "patchesPage": {

@@ -277,6 +277,73 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
     });
   });
 
+  // #6398: the agent's S3 provider has never applied the destination's
+  // `prefix` — every snapshot object lands at `snapshots/<id>/...` verbatim.
+  // Presigning `<prefix>/snapshots/...` 404'd every token-mode recovery on a
+  // prefixed destination. The configured prefix must NOT be applied to
+  // snapshot keys; only a per-snapshot recorded `storagePrefix` may relocate
+  // them.
+  describe('destination prefix (#6398)', () => {
+    const tokenRow = {
+      id: 'token-prefix',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      snapshotId: 'snapshot-db-prefix',
+      status: 'authenticated',
+      authenticatedAt: new Date('2099-04-01T00:00:00.000Z'),
+      expiresAt: new Date('2099-04-02T00:00:00.000Z'),
+    };
+    const prefixedConfig = {
+      bucket: 'backups',
+      region: 'us-east-1',
+      accessKey: 'key',
+      secretKey: 'secret',
+      prefix: 'w05',
+    };
+    const presignedKey = () => {
+      expect(getSignedUrlMock).toHaveBeenCalledTimes(1);
+      const [, command] = (getSignedUrlMock.mock.calls[0] as unknown) as [unknown, { input: { Key: string } }];
+      return command.input.Key;
+    };
+
+    it('does not apply the configured destination prefix to a snapshot recorded without a storagePrefix', async () => {
+      resolveSnapshotProviderConfigMock.mockResolvedValue({
+        snapshot: { snapshotId: 'snap-ext-001', metadata: {} },
+        providerType: 's3',
+        providerConfig: prefixedConfig,
+      });
+
+      const result = await getAuthenticatedRecoveryDownloadTarget(tokenRow as any, 'snapshots/snap-ext-001/layout.json');
+
+      expect(result.unavailable).toBe(false);
+      expect(presignedKey()).toBe('snapshots/snap-ext-001/layout.json');
+    });
+
+    it('does not apply the configured prefix to a snapshot whose recorded storagePrefix is the bare agent layout', async () => {
+      resolveSnapshotProviderConfigMock.mockResolvedValue({
+        snapshot: { snapshotId: 'snap-ext-001', metadata: { storagePrefix: 'snapshots/snap-ext-001' } },
+        providerType: 's3',
+        providerConfig: prefixedConfig,
+      });
+
+      await getAuthenticatedRecoveryDownloadTarget(tokenRow as any, 'snapshots/snap-ext-001/manifest.json');
+
+      expect(presignedKey()).toBe('snapshots/snap-ext-001/manifest.json');
+    });
+
+    it('still honors a per-snapshot recorded storagePrefix that carries a base prefix', async () => {
+      resolveSnapshotProviderConfigMock.mockResolvedValue({
+        snapshot: { snapshotId: 'snap-ext-001', metadata: { storagePrefix: 's3://backups/legacy/snapshots/snap-ext-001' } },
+        providerType: 's3',
+        providerConfig: prefixedConfig,
+      });
+
+      await getAuthenticatedRecoveryDownloadTarget(tokenRow as any, 'snapshots/snap-ext-001/manifest.json');
+
+      expect(presignedKey()).toBe('legacy/snapshots/snap-ext-001/manifest.json');
+    });
+  });
+
   describe('external-reference downloads (W09, #6464)', () => {
     const baseTokenRow = {
       id: 'token-ext',

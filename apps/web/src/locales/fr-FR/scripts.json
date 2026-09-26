@@ -332,6 +332,14 @@
       "awaiting": "En attente de la réponse de l'agent…",
       "truncated": "Sortie tronquée — voir l'historique des scripts de l'appareil pour le texte complet."
     },
+    "commandOutput": {
+      "show_one": "Afficher la sortie de la commande",
+      "show_other": "Afficher la sortie de la commande ({{count}})",
+      "hide_one": "Masquer la sortie de la commande",
+      "hide_other": "Masquer la sortie de la commande ({{count}})",
+      "label": "Commande (action {{index}})",
+      "truncated": "Sortie tronquée : le texte complet n’est pas affiché dans cette vue."
+    },
     "errors": {
       "cancelRun": "Impossible d'annuler l'exécution."
     }

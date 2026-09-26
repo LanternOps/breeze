@@ -7,6 +7,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { patches, patchApprovals, devices, devicePatches } from '../../db/schema';
 import { listPatchesSchema, listSourcesSchema, patchIdParamSchema } from './schemas';
 import { getPagination, inferPatchOs, resolvePartnerIdForOrg } from './helpers';
+import { loadPatchInstallFailures } from '../../services/patchInstallFailures';
 
 // Whitelist mapping sort keys (validated by listPatchesSchema) to real columns.
 // Never pass raw user input into orderBy — only keys present here are honored.
@@ -224,10 +225,20 @@ listRoutes.get(
     // If approvalPartnerId is null (see the scope cases above) no approvals
     // apply — leave approvalStatuses empty.
 
+    // Deployment axis (#4223): approval alone cannot say that the last install
+    // attempt failed on a device (e.g. the agent's battery preflight), so the
+    // list overlays the latest failed attempt and its reason per patch. Read in
+    // request context — patch_job_results is device-join RLS.
+    const installFailures = await loadPatchInstallFailures(
+      patchList.map((patch) => patch.id),
+      { orgId: query.orgId }
+    );
+
     const data = patchList.map(patch => ({
       ...patch,
       os: inferPatchOs(patch.osTypes, patch.source, patch.inferredOs),
-      approvalStatus: approvalStatuses[patch.id] || 'pending'
+      approvalStatus: approvalStatuses[patch.id] || 'pending',
+      installFailure: installFailures.get(patch.id) ?? null
     }));
 
     return c.json({

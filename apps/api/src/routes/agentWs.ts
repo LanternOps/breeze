@@ -77,6 +77,7 @@ import {
   resolveConsentMarkerSessionId,
   parseDesktopStartCommandId,
 } from './remote/helpers';
+import { consentDeniedMessage } from './remote/consentTiming';
 import { getActiveTrustKeyset } from '../services/manifestSigning';
 import { resolvePendingAgentCommand } from '../services/agentCommandAwait';
 import {
@@ -3080,7 +3081,10 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                   // endpoint refused the start, so the phase is 'confirmed'.
                   const denied = await commitDesktopTerminalIntent({
                     sessionId,
-                    write: { status: 'denied', endedAt: new Date() },
+                    // #6818: record why, so the viewer's answer poll can tell the
+                    // technician "declined" / "did not respond" instead of a
+                    // generic "session ended".
+                    write: { status: 'denied', endedAt: new Date(), errorMessage: consentDeniedMessage(reason) },
                     phase: 'confirmed',
                     where: [
                       eq(remoteSessions.deviceId, authenticatedAgent.deviceId),

@@ -121,6 +121,26 @@ describe("MonitoringIntegration — token-capability gate (partner admin)", () =
     );
   });
 
+  it("shows the org-load-failed retry card (not an endless spinner) when the org context fails to load", async () => {
+    // Partner admin, no org, no fleet intent, and the org list fetch errored:
+    // holding the loading frame forever hides the failure — surface the shared
+    // retry card instead, and still never fire the org-less GET.
+    mockOrgState.currentOrgId = null;
+    mockOrgState.allOrgs = false;
+    mockOrgState.organizationsLoaded = false;
+    mockOrgState.organizations = [];
+    mockOrgState.error = "Failed to load organizations";
+    render(<MonitoringIntegration />);
+
+    expect(screen.getByTestId("org-load-failed-state")).toBeInTheDocument();
+    expect(screen.getByText("Failed to load organizations")).toBeInTheDocument();
+    expect(
+      screen.queryByText(/configured per organization/i),
+    ).not.toBeInTheDocument();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fetchWithAuthMock).not.toHaveBeenCalled();
+  });
+
   it("adds a collision-free webhook id beside an existing masked endpoint", async () => {
     fetchWithAuthMock.mockResolvedValueOnce({
       ok: true,

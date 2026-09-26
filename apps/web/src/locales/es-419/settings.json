@@ -5476,6 +5476,7 @@
       "sendInvite": "No se pudo enviar la invitación",
       "updateUser": "No se pudo actualizar el usuario",
       "updateRole": "No se pudo actualizar el rol",
+      "updateOrgAccess": "No se pudo actualizar el acceso a organizaciones",
       "removeUser": "No se pudo eliminar el usuario",
       "resetMfa": "No se pudo restablecer MFA"
     },

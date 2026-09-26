@@ -5476,6 +5476,7 @@
       "sendInvite": "Einladung konnte nicht gesendet werden",
       "updateUser": "Benutzer konnte nicht aktualisiert werden",
       "updateRole": "Die Rolle konnte nicht aktualisiert werden",
+      "updateOrgAccess": "Organisationszugriff konnte nicht aktualisiert werden",
       "removeUser": "Benutzer konnte nicht entfernt werden",
       "resetMfa": "MFA konnte nicht zurückgesetzt werden"
     },

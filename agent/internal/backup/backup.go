@@ -1560,19 +1560,27 @@ func (m *BackupManager) captureSD(path string) []byte {
 	return sd
 }
 
+// windowsDirNeedsEntry is dirNeedsEntry's decision for a NON-empty Windows
+// directory, where mode/owner carry nothing a restore would lose. It needs
+// an entry when security-descriptor capture is on (sdCapture: EVERY
+// directory gets one, so its descriptor has an entry to attach SDIndex to)
+// or when it carries a preserved attribute such as Hidden or System
+// (winAttrs, #6506) — without an entry nothing on the restore side can put
+// the attribute back, and a hidden %APPDATA%-style tree comes back visible.
+func windowsDirNeedsEntry(sdCapture bool, winAttrs uint32) bool {
+	return sdCapture || winAttrs != 0
+}
+
 // dirNeedsEntry decides whether a directory gets its own manifest entry:
 // empty directories always (nothing else recreates them); otherwise only
 // when mode/owner differ from the MkdirAll default the restore would apply.
-// On Windows with security-descriptor capture on (sdCapture), EVERY
-// directory gets one, so its descriptor has an entry to attach SDIndex to.
+// On Windows see windowsDirNeedsEntry.
 func dirNeedsEntry(info os.FileInfo, owner *FileOwner, empty, sdCapture bool) bool {
 	if empty {
 		return true
 	}
 	if runtime.GOOS == "windows" {
-		// Without SD capture, Windows directories keep today's behavior:
-		// only empty ones get an entry.
-		return sdCapture
+		return windowsDirNeedsEntry(sdCapture, winFileAttrs(info))
 	}
 	if fullModeBits(info.Mode()) != 0o755 {
 		return true

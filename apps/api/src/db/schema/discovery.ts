@@ -192,7 +192,7 @@ export const discoveredAssets = pgTable('discovered_assets', {
   lastProbeStatus: varchar('last_probe_status', { length: 12 }).$type<'pending' | 'ok' | 'failed'>(),
   lastProbeResponseMs: integer('last_probe_response_ms'),
   lastProbeRef: varchar('last_probe_ref', { length: 80 }),
-  lastJobId: uuid('last_job_id').references(() => discoveryJobs.id),
+  lastJobId: uuid('last_job_id').references(() => discoveryJobs.id, { onDelete: 'set null' }),
   discoveryMethods: discoveryMethodEnum('discovery_methods').array().default([]),
   notes: text('notes'),
   tags: text('tags').array().default([]),
@@ -208,6 +208,7 @@ export const discoveredAssets = pgTable('discovered_assets', {
   // PARTIAL as of #5213 — many IP-less manual rows may coexist in one org, but a
   // non-NULL IP is still unique per org. Every upsert onto this index must
   // repeat the predicate via `targetWhere`, or Postgres cannot infer it (42P10).
+  idOrgUnique: uniqueIndex('discovered_assets_id_org_id_uniq').on(table.id, table.orgId),
   idOrgSiteUnique: uniqueIndex('discovered_assets_id_org_id_site_id_uniq').on(table.id, table.orgId, table.siteId),
   orgIpUnique: uniqueIndex('discovered_assets_org_ip_unique')
     .on(table.orgId, table.ipAddress)
@@ -255,7 +256,7 @@ export const networkBaselines = pgTable('network_baselines', {
   siteId: uuid('site_id').notNull().references(() => sites.id),
   subnet: varchar('subnet', { length: 50 }).notNull(),
   lastScanAt: timestamp('last_scan_at'),
-  lastScanJobId: uuid('last_scan_job_id').references(() => discoveryJobs.id),
+  lastScanJobId: uuid('last_scan_job_id').references(() => discoveryJobs.id, { onDelete: 'set null' }),
   knownDevices: jsonb('known_devices').$type<KnownNetworkDevice[]>().notNull().default([]),
   scanSchedule: jsonb('scan_schedule').$type<NetworkBaselineScanSchedule>(),
   alertSettings: jsonb('alert_settings').$type<NetworkBaselineAlertSettings>().notNull().default({
@@ -309,7 +310,7 @@ export const networkChangeEvents = pgTable('network_change_events', {
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   siteId: uuid('site_id').notNull().references(() => sites.id),
   baselineId: uuid('baseline_id').notNull().references(() => networkBaselines.id),
-  profileId: uuid('profile_id').references(() => discoveryProfiles.id),
+  profileId: uuid('profile_id').references(() => discoveryProfiles.id, { onDelete: 'set null' }),
   eventType: networkEventTypeEnum('event_type').notNull(),
   ipAddress: inet('ip_address').notNull(),
   macAddress: varchar('mac_address', { length: 17 }),

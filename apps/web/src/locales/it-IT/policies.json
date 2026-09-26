@@ -1770,6 +1770,30 @@
       "menu": "menu",
       "undefined": "undefined",
       "secretUnavailable": "Segreto: una versione futura lo passerà come variabile d'ambiente."
+    },
+    "remediateConfirm": {
+      "title": "Correggere \"{{name}}\"?",
+      "loading": "Caricamento dei dispositivi interessati…",
+      "previewFailed": "Impossibile caricare l'anteprima della correzione.",
+      "nothingQueued": "Nulla è stato messo in coda.",
+      "nothingToRemove": "Nessun dispositivo ha attualmente software che questo criterio disinstallerebbe.",
+      "message": "Questa azione disinstalla {{uninstallCount}} elemento/i software su {{count}} dispositivo/i che violano il criterio {{mode}} \"{{name}}\". Le disinstallazioni non possono essere annullate da Breeze.",
+      "summary": "Destinazione: {{count}} dispositivo/i — criterio {{mode}} \"{{name}}\"",
+      "capped": "Attualmente sono idonei {{total}} dispositivi. Questa esecuzione è limitata ai primi {{max}}; esegui di nuovo Correggi al termine per raggiungere gli altri.",
+      "softwareHeading": "Software da disinstallare",
+      "onDevices": "{{count}} dispositivo/i",
+      "moreSoftware": "e altri {{count}} titoli",
+      "devicesHeading": "Dispositivi",
+      "moreDevices": "e altri {{count}} dispositivi",
+      "typeCount": "Digita {{count}} per confermare",
+      "confirm": "Disinstalla su {{count}} dispositivo/i",
+      "queued": "Correzione in coda per {{count}} dispositivo/i",
+      "failed": "Impossibile pianificare la correzione",
+      "modeAllowlist": "lista consentiti",
+      "modeBlocklist": "lista bloccati",
+      "queuedNone": "Nulla è stato messo in coda: i dispositivi dell'anteprima non richiedono più la correzione o l'hanno già in sospeso.",
+      "queuedPartial": "Correzione in coda per {{queued}} di {{requested}} dispositivi dell'anteprima; gli altri non ne hanno più bisogno o l'hanno già in sospeso.",
+      "previewFailedWithReason": "Impossibile caricare l'anteprima della correzione: {{reason}}"
     }
   }
 }

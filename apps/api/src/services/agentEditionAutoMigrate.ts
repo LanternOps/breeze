@@ -93,12 +93,22 @@ let dispatchCaptured = false;
 const TARGET_CACHE_TTL_MS = 60_000;
 const targetCache = new Map<string, { target: string | null; expiresAt: number }>();
 
+// #7039 — stranded devices withheld because the resolved target is not the
+// staged release. Unlike the precondition warns above, this is per-org and
+// operator-actionable (usually an org/partner agent version pin), so it is
+// keyed by org + target + staged release, names the org, pin and a device,
+// and re-emits at most hourly with the count of distinct devices held back —
+// a single once-per-process line scrolls away after the first deploy.
+const HOLD_BACK_REWARN_MS = 60 * 60_000;
+const heldBackByOrg = new Map<string, { deviceIds: Set<string>; lastWarnAt: number }>();
+
 export function __resetEditionAutoMigrateStateForTests(): void {
   failedDevices.clear();
   warnedConditions.clear();
   dispatchCaptured = false;
   msiShaCache = null;
   targetCache.clear();
+  heldBackByOrg.clear();
 }
 
 function warnOnce(key: string, message: string): void {
@@ -271,11 +281,7 @@ async function prepareEditionMigration(args: EditionMigrationArgs): Promise<Prep
     // burned) on any mismatch or when the deployment's release is unknown.
     const stagedVersion = getGithubReleaseVersion();
     if (stagedVersion === 'latest' || compareAgentVersions(target, stagedVersion) !== 0) {
-      warnOnce(
-        `staged-version-mismatch:${target}:${stagedVersion}`,
-        `[edition-auto-migrate] resolved target ${target} does not match this deployment's staged release ` +
-          `${stagedVersion}; withholding automatic migration (the raw MSI route serves the staged installer only).`,
-      );
+      warnStagedVersionHoldBack({ device, pin: args.pin, target, stagedVersion });
       return null;
     }
     const reported = args.reportedAgentVersion?.trim();
@@ -409,6 +415,50 @@ async function prepareEditionMigration(args: EditionMigrationArgs): Promise<Prep
     captureException(err);
     return null;
   }
+}
+
+function warnStagedVersionHoldBack(args: {
+  device: AutoMigrateDevice;
+  pin: string | null;
+  target: string;
+  stagedVersion: string;
+}): void {
+  const { device, pin, target, stagedVersion } = args;
+  const key = `${device.orgId}:${target}:${stagedVersion}`;
+  const now = Date.now();
+  let entry = heldBackByOrg.get(key);
+  const firstSighting = !entry;
+  if (!entry) {
+    entry = { deviceIds: new Set(), lastWarnAt: now };
+    heldBackByOrg.set(key, entry);
+  }
+  entry.deviceIds.add(device.id);
+  if (!firstSighting && now - entry.lastWarnAt < HOLD_BACK_REWARN_MS) return;
+  entry.lastWarnAt = now;
+
+  const count = entry.deviceIds.size;
+  const subject =
+    `[edition-auto-migrate] org ${device.orgId}: withholding automatic edition migration for ` +
+    `${count} stranded self-host device(s) seen since startup (latest: ${device.id}` +
+    `${device.hostname ? ` ${device.hostname}` : ''})`;
+  let reason: string;
+  if (stagedVersion === 'latest') {
+    reason =
+      `this deployment's staged release is unknown (BREEZE_VERSION unset), so the raw MSI route's ` +
+      `installer cannot be matched to the resolved target ${target}. Set BREEZE_VERSION to the staged release.`;
+  } else if (pin) {
+    reason =
+      `the effective agent version pin ${pin} (org setting, or the partner default it inherits) holds them at ` +
+      `${target}, but the raw MSI route serves only the staged release ${stagedVersion}. ` +
+      `To migrate these devices, raise or clear the agent version pin to ${stagedVersion}; ` +
+      `leave it if the hold is intended.`;
+  } else {
+    reason =
+      `there is no agent version pin and the promoted latest agent resolves to ${target}, but the raw MSI ` +
+      `route serves only the staged release ${stagedVersion}. They migrate once the promoted latest and ` +
+      `the staged release agree.`;
+  }
+  console.warn(`${subject}: ${reason}`);
 }
 
 async function releaseClaim(deviceId: string): Promise<void> {
