@@ -883,6 +883,88 @@ func TestCertSvcInstalledChecksCertsrvExe(t *testing.T) {
 	}
 }
 
+// #7001: a step that fails but still returns artifacts (collectRegistryHives
+// returns the hives that saved alongside a *registrySaveError) must have those
+// artifacts recorded in manifest.Artifacts, while the step is still listed in
+// IncompleteSteps and a required step's failure still fails the collection.
+func TestRunCollectionStepsKeepsPartialArtifactsFromFailedStep(t *testing.T) {
+	orig := runRegSave
+	defer func() { runRegSave = orig }()
+	runRegSave = func(hive, outPath string) ([]byte, error) {
+		if hive == "SECURITY" {
+			return []byte("access is denied"), fmt.Errorf("exit status 5")
+		}
+		return []byte("ok"), os.WriteFile(outPath, []byte("hive-"+hive), 0o600)
+	}
+
+	staging := t.TempDir()
+	steps := []collectionStep{
+		{"registry", func(stagingDir string) ([]Artifact, error) {
+			dir := filepath.Join(stagingDir, "registry")
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				return nil, err
+			}
+			return collectRegistryHives(dir, stagingDir, []string{"SYSTEM", "SOFTWARE", "SAM", "SECURITY"})
+		}},
+		{"boot", func(string) ([]Artifact, error) {
+			return []Artifact{{Name: "bcd", Category: "boot"}}, nil
+		}},
+	}
+
+	manifest := &SystemStateManifest{}
+	err := runCollectionSteps(manifest, steps, staging, map[string]bool{"registry": true, "boot": true})
+
+	if err == nil {
+		t.Fatal("runCollectionSteps: expected required-step error for partial registry, got nil")
+	}
+	if !strings.Contains(err.Error(), "registry") {
+		t.Errorf("error %q does not name the registry step", err.Error())
+	}
+	if want := []string{"registry"}; !reflect.DeepEqual(manifest.IncompleteSteps, want) {
+		t.Errorf("IncompleteSteps = %v, want %v", manifest.IncompleteSteps, want)
+	}
+	var names []string
+	for _, a := range manifest.Artifacts {
+		names = append(names, a.Name)
+	}
+	want := []string{"registry_SYSTEM", "registry_SOFTWARE", "registry_SAM", "bcd"}
+	if !reflect.DeepEqual(names, want) {
+		t.Errorf("manifest.Artifacts = %v, want %v (saved hives kept alongside the step error)", names, want)
+	}
+}
+
+// A failed step that returns no artifacts contributes nothing, and a failed
+// best-effort (non-required) step does not fail the collection.
+func TestRunCollectionStepsBestEffortFailure(t *testing.T) {
+	steps := []collectionStep{
+		{"registry", func(string) ([]Artifact, error) { return []Artifact{{Name: "registry_SYSTEM"}}, nil }},
+		{"iis", func(string) ([]Artifact, error) { return nil, fmt.Errorf("iis not installed") }},
+	}
+	manifest := &SystemStateManifest{}
+	if err := runCollectionSteps(manifest, steps, t.TempDir(), map[string]bool{"registry": true}); err != nil {
+		t.Fatalf("runCollectionSteps: unexpected error: %v", err)
+	}
+	if want := []string{"iis"}; !reflect.DeepEqual(manifest.IncompleteSteps, want) {
+		t.Errorf("IncompleteSteps = %v, want %v", manifest.IncompleteSteps, want)
+	}
+	if len(manifest.Artifacts) != 1 {
+		t.Errorf("artifacts = %d, want 1", len(manifest.Artifacts))
+	}
+}
+
+// Every step failing with no artifacts is still the "produced no artifacts"
+// error.
+func TestRunCollectionStepsAllFail(t *testing.T) {
+	steps := []collectionStep{
+		{"registry", func(string) ([]Artifact, error) { return nil, fmt.Errorf("denied") }},
+		{"boot", func(string) ([]Artifact, error) { return nil, fmt.Errorf("denied") }},
+	}
+	err := runCollectionSteps(&SystemStateManifest{}, steps, t.TempDir(), map[string]bool{"registry": true})
+	if err == nil || !strings.Contains(err.Error(), "produced no artifacts") {
+		t.Fatalf("err = %v, want 'produced no artifacts'", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // runCollectionSteps — the step loop Windows CollectState delegates to. #6505:
 // the required-artifact error used to name only the failed STEP ("[registry]"),
