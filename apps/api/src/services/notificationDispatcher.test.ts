@@ -51,7 +51,22 @@ vi.mock('../db', () => ({
         where: (w: unknown) => {
           selectWheres.push(w);
           return { limit: () => Promise.resolve(selectResults.shift() ?? []) };
-        }
+        },
+        // getNotificationChannelWithConfig (services/notificationChannelConfig.ts,
+        // #6379) chains .leftJoin().where().orderBy().$dynamic().limit(1)
+        // instead of the bare .where().limit() the alert/org selects use above.
+        leftJoin: () => ({
+          where: (w: unknown) => {
+            selectWheres.push(w);
+            return {
+              orderBy: () => ({
+                $dynamic: () => ({
+                  limit: () => Promise.resolve(selectResults.shift() ?? [])
+                })
+              })
+            };
+          }
+        })
       })
     })),
     insert: vi.fn(() => ({
@@ -473,6 +488,27 @@ describe('processSendNotification send-identity state machine', () => {
 
     expect(result.success).toBe(false);
     expect(insertValuesMock).not.toHaveBeenCalled();
+  });
+
+  it('a channel with no notification_channel_configs row (#6379) is refused: no send-identity row, no egress', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      queuePrepareSelects(makeAlert(), { partnerId: null }, makeChannel({ config: null }));
+
+      const result = await processSendNotification(baseData);
+
+      expect(result).toEqual({
+        success: false,
+        channelType: 'webhook',
+        error: 'Notification channel has no stored configuration',
+        durationMs: expect.any(Number),
+      });
+      expect(insertValuesMock).not.toHaveBeenCalled();
+      expect(sendWebhookNotificationMock).not.toHaveBeenCalled();
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('has no config row'));
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   describe('(b) escalation status guard — reloads the alert at fire time', () => {

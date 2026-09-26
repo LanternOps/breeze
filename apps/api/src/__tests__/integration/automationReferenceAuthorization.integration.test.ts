@@ -66,12 +66,13 @@ async function seedFixture() {
     supportedOs: ['windows'],
     isLatest: true,
   });
+  // `config` lives in notification_channel_configs now (#6379); this fixture
+  // never reads it back — only the channel's id/ownership are exercised.
   const [foreignChannel] = await tdb.insert(notificationChannels).values({
     orgId: orgB.id,
     partnerId: null,
     name: 'Foreign channel',
     type: 'webhook',
-    config: { url: 'https://example.invalid/foreign' },
   }).returning();
 
   return {

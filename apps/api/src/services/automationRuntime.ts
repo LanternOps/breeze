@@ -20,6 +20,7 @@ import {
   scriptExecutions,
   scripts,
 } from '../db/schema';
+import type { NotificationChannelWithConfig } from './notificationChannelConfig';
 import { resolveDeploymentTargets } from './deploymentEngine';
 import { canAccessSite, type UserPermissions } from './permissions';
 import { dispatchScriptToDevice, type DispatchScriptResult } from './scriptDispatch';
@@ -1295,7 +1296,7 @@ type ActionExecutionContext = {
     customFields: (typeof devices.$inferSelect)['customFields'];
   };
   scriptsById: Map<string, typeof scripts.$inferSelect>;
-  channelsById: Map<string, typeof notificationChannels.$inferSelect>;
+  channelsById: Map<string, NotificationChannelWithConfig>;
   /**
    * Preloaded ONCE per run over the run's distinct org set — see
    * {@link loadAutomationRunVariableScope}. Required (not optional) on
@@ -1817,7 +1818,7 @@ function settleExecuteCommandDispatch(
 }
 
 async function sendChannelNotification(
-  channel: typeof notificationChannels.$inferSelect,
+  channel: NotificationChannelWithConfig,
   payload: {
     title: string;
     message: string;
@@ -1828,6 +1829,12 @@ async function sendChannelNotification(
     deviceName: string;
   },
 ): Promise<{ success: boolean; error?: string }> {
+  // Sends run under system scope, so null means the channel's
+  // notification_channel_configs row is missing (#6379) — refuse loudly.
+  if (channel.config === null || channel.config === undefined) {
+    console.error(`[AutomationRuntime] Channel ${channel.id} has no config row (notification_channel_configs) — send refused`);
+    return { success: false, error: 'Notification channel has no stored configuration' };
+  }
   const channelConfig = parseNotificationChannelConfig(channel.config);
 
   if (channel.type === 'email') {
@@ -2390,7 +2397,7 @@ async function seedDeviceAutomationActions(
 
 async function sendOnFailureNotifications(
   automation: AutomationRow,
-  channelsById: Map<string, typeof notificationChannels.$inferSelect>,
+  channelsById: Map<string, NotificationChannelWithConfig>,
   notificationTargets: NotificationTargets | undefined,
   details: {
     runId: string;
