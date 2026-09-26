@@ -58,6 +58,15 @@ describe.skipIf(!RUN)('accounting_connections: one connection per partner', () =
     const partner = await createPartner();
     let caught: unknown;
     await adminSql.begin(async (tx) => {
+      // `adminSql` connects as `breeze_test`, which is rolsuper=t / rolbypassrls=t
+      // on the test DB — a superuser bypasses FORCE RLS entirely, so running the
+      // migration as THIS role would "prove" the precheck sees the duplicate
+      // rows even if the migration's own `set_config('breeze.scope', 'system', …)`
+      // were deleted (the bypass alone would make them visible). To make this a
+      // real proof, the migration itself runs as `breeze_app` — a real, non-
+      // superuser, non-bypassrls role subject to the same FORCE RLS the live app
+      // is — via `SET LOCAL ROLE`, so it can ONLY see the duplicate rows because
+      // the migration's DO block elevates to `breeze.scope = 'system'` itself.
       await tx.unsafe(`SELECT set_config('breeze.scope', 'system', true)`);
       await tx.unsafe('DROP INDEX accounting_connections_partner_idx');
       await tx`insert into accounting_connections (partner_id, provider) values (${partner.id}, 'quickbooks')`;
@@ -65,7 +74,12 @@ describe.skipIf(!RUN)('accounting_connections: one connection per partner', () =
       // Reset to the migration runner's default scope, so the migration's own set_config is what makes the rows visible.
       await tx.unsafe(`SELECT set_config('breeze.scope', 'none', true)`);
       try {
+        // SAVEPOINT before the role switch: a ROLLBACK TO SAVEPOINT also undoes
+        // `SET LOCAL ROLE` (it is ordinary transactional state, just like
+        // `set_config(..., true)` above), so failing back to `breeze_test`
+        // happens automatically and nothing downstream runs as `breeze_app`.
         await tx.unsafe(`SAVEPOINT before_migration`);
+        await tx.unsafe(`SET LOCAL ROLE breeze_app`);
         await tx.unsafe(migrationSql);
       } catch (err) {
         caught = err;
