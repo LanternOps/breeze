@@ -74,6 +74,14 @@ export type McpExemptReason =
    */
   | 'human_only_agent_rollback'
   /**
+   * Bulk compliance export of the PAM elevation ledger (#4910) to a SIEM or
+   * an auditor: up to a year per request, `audit:export` + `requireMfa()`,
+   * and every page is itself audited. The agent-facing read of elevation
+   * history is `get_elevation_history` (pam.ts). A bulk export tool would let
+   * one prompt-injected call carry the whole privileged-access record out.
+   */
+  | 'human_only_audit_export'
+  /**
    * A bulk-destructive action (bulk delete/cancel/issue/void/permanent-delete)
    * whose single-item equivalent already has an AI tool. Kept human-only
    * because a bad bulk call is much harder to unwind than a bad single call,
@@ -425,6 +433,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'orgs.ts': { tools: ['list_sites', 'get_site', 'list_organizations', 'manage_organizations'] },
   'packageSearch.ts': { gap: '#6782' },
   'pam.ts': { tools: ['request_elevation', 'revoke_elevation', 'get_elevation_history'] },
+  'pamAuditExport.ts': { exempt: 'human_only_audit_export' },
   'partner.ts': { gap: '#6801' },
   'partnerAiScriptPolicy.ts': { exempt: 'human_only_ai_governance', note: 'Partner-wide ceiling on the unattended AI lane -- the AI must not widen its own authority.' },
   'partnerApi/alerts.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API for service principals (#3243); duplicates in-product reads that already have tools.' },

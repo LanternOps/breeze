@@ -1,0 +1,407 @@
+/**
+ * Query + serialization for GET /pam/elevation-audit/export — server-side
+ * export of the PAM `elevation_audit` event ledger (#4910).
+ *
+ * One row per ledger event, in the order Breeze RECORDED them — ascending
+ * (created_at, id) — CSV or JSONL, one organization per request, paged by an
+ * opaque keyset cursor. The window [from, to) is over recorded time too.
+ * Recorded time, not occurred_at: an agent reports `occurred_at` from its own
+ * observation clock, so a late-arriving event can carry an occurred_at the
+ * walk has already passed; keyed on recorded time it lands after the cursor.
+ *
+ * Watermark: `created_at` defaults to clock_timestamp(), the moment of the
+ * INSERT, so a row inserted later always sorts later, even from a transaction
+ * that began before the walk. A row only becomes visible when its transaction
+ * commits, so a walk that ran up to now() could still step past a row that is
+ * inserted but not yet committed. A page therefore stops before the earlier of
+ * (a) PAM_AUDIT_EXPORT_SETTLE_SECONDS before the database clock and (b) the
+ * start of the oldest still-open transaction that holds a write lock
+ * (RowExclusiveLock) on elevation_audit, from pg_locks joined to
+ * pg_stat_activity. A transaction's start precedes every created_at it
+ * writes, so (b) is a conservative bound; an insert holds that lock until its
+ * transaction ends, and writes to other tables do not count. (b) sees every
+ * writer running as the API's database role, which is every writer in this
+ * codebase. pg_stat_activity hides other roles' transaction times: a row
+ * written by another role (for example a manual admin session) inside a
+ * transaction held open longer than (a) can still land behind a cursor.
+ *
+ * Paging contract: page again while `X-Has-More` is true. The window is fully
+ * exported only when `X-Window-Complete` is true; if it is false with
+ * `X-Has-More` false, rows in the window may still be withheld by the
+ * watermark (`X-Settled-Through`), so resume from `X-Next-Cursor` later.
+ * `X-Next-Cursor` is always the resume position, so a SIEM can also tail the
+ * ledger this way.
+ *
+ * Paged rather than streamed: a streamed body would outlive the request's
+ * RLS transaction (authMiddleware → withDbAccessContext awaits the handler,
+ * not the body), and every page here re-runs the caller's authorization.
+ *
+ * What this is NOT: tamper evidence. `elevation_audit` is append-only by
+ * convention only (UPDATE/DELETE policies exist, the request FK cascades), so
+ * an export can show what the ledger holds now, not that it was never edited.
+ * Request columns are the request's CURRENT state, not its state at the
+ * event's time.
+ */
+import { SQL, and, asc, eq, gte, inArray, lt, sql } from 'drizzle-orm';
+import { csvRow } from './spreadsheetExport';
+import { db } from '../db';
+import { elevationAudit, elevationRequests } from '../db/schema';
+
+/** Bumped whenever the column set or a column's meaning changes. */
+export const PAM_AUDIT_EXPORT_SCHEMA_VERSION = 1;
+export const PAM_AUDIT_EXPORT_MAX_LIMIT = 1000;
+export const PAM_AUDIT_EXPORT_MAX_WINDOW_DAYS = 366;
+export const PAM_AUDIT_EXPORT_SETTLE_SECONDS = 300;
+
+/**
+ * Every `details` key each elevation_audit writer sets, by writer file. The
+ * test suite freezes the set of files that write elevation_audit rows, so a
+ * new writer fails it until its keys are reviewed and listed here.
+ */
+export const PAM_AUDIT_WRITER_DETAIL_KEYS = {
+  'jobs/pamJobs.ts': ['cause', 'prior_status'],
+  'routes/agents/elevationRequests.ts': [
+    'subject_username', 'target_executable_path', 'software_policy_id', 'default_unmatched_verdict',
+    'pam_rule_id', 'pam_rule_name', 'rule_name', 'matched_field',
+  ],
+  'routes/devices/actuateElevation.ts': ['deviceId', 'outcome', 'actualStatus', 'commandId', 'timeoutMs'],
+  'routes/pam.ts': ['reason', 'duration_minutes', 'assurance_level', 'factor'],
+  'routes/remediationSuggestions.ts': ['triggerSource', 'remediationSuggestionId', 'sourceType', 'sourceId', 'scriptId'],
+  'services/aiToolsPam.ts': ['subjectUsername', 'reason', 'triggerSource', 'pamRuleId', 'pamRuleName', 'durationMinutes'],
+  'services/approvals/decideApprovalRequest.ts': ['source', 'approval_request_id', 'reason'],
+  'services/pamToolActionGovernance.ts': ['tool_name', 'risk_tier', 'execution_id', 'pam_rule_id', 'pam_rule_name'],
+  // Writes via raw SQL, not Drizzle: session_started / session_ended.
+  'services/pamActuationResult.ts': ['actuationId', 'generation'],
+} as const satisfies Record<string, readonly string[]>;
+
+/**
+ * `details` is an open jsonb container (excludedOpen in the tenant-export
+ * policy), so it is never exported raw. Only the keys PAM's writers set pass
+ * through, and only scalar values; anything else is dropped. Every writer key
+ * is an identifier, status, rule/policy reference or free-text reason the
+ * request row already exports in its own columns — none is credential material.
+ */
+export const PAM_AUDIT_DETAIL_ALLOWLIST: readonly string[] = [
+  ...new Set(Object.values(PAM_AUDIT_WRITER_DETAIL_KEYS).flat()),
+].sort();
+
+export const PAM_AUDIT_EXPORT_COLUMNS = [
+  'id',
+  'org_id',
+  'elevation_request_id',
+  'event_type',
+  'actor',
+  'actor_user_id',
+  'occurred_at',
+  'created_at',
+  'details',
+  'request_device_id',
+  'request_site_id',
+  'request_flow_type',
+  'request_subject_user_id',
+  'request_subject_username',
+  'request_reason',
+  'request_target_executable_path',
+  'request_target_executable_hash',
+  'request_target_executable_signer',
+  'request_target_publisher',
+  'request_status',
+  'request_revision',
+  'request_requested_at',
+  'request_approved_at',
+  'request_approved_by_user_id',
+  'request_denied_by_user_id',
+  'request_denial_reason',
+  'request_expires_at',
+  'request_revoked_at',
+  'request_revoked_by_user_id',
+  'request_revoked_reason',
+  'request_execution_id',
+  'request_tool_name',
+  'request_action_digest',
+  'request_risk_tier',
+  'request_decided_assurance_level',
+  'request_decided_via',
+] as const;
+
+type ExportColumn = (typeof PAM_AUDIT_EXPORT_COLUMNS)[number];
+export type ExportRecord = Record<ExportColumn, string | number | Record<string, unknown> | null>;
+
+export function projectAuditDetails(details: unknown): Record<string, string | number | boolean> {
+  const out: Record<string, string | number | boolean> = {};
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return out;
+  const source = details as Record<string, unknown>;
+  for (const key of PAM_AUDIT_DETAIL_ALLOWLIST) {
+    const value = source[key];
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+// Cursor: base64url of `<created_at as Postgres text>|<id>`. It carries no
+// authority — filters and scope come from the query and the caller on every
+// page — so a tampered cursor can only move the starting key.
+// Validated here, not by Postgres: anything that reaches the ::timestamptz or
+// ::uuid casts must parse, or a tampered cursor would surface as a 500.
+const CURSOR_PATTERN =
+  /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})(\.\d{1,6})?([+-]\d{2})(?::?(\d{2}))?\|([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+
+function isRealTimestamp(m: RegExpExecArray): boolean {
+  const [year, month, day, hour, minute, second] = m.slice(1, 7).map(Number) as [number, number, number, number, number, number];
+  const offsetHours = Math.abs(Number(m[8]));
+  const offsetMinutes = m[9] === undefined ? 0 : Number(m[9]);
+  if (hour > 23 || minute > 59 || second > 59 || offsetHours > 15 || offsetMinutes > 59) return false;
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
+export function encodeExportCursor(recordedAtText: string, id: string): string {
+  return Buffer.from(`${recordedAtText}|${id}`, 'utf8').toString('base64url');
+}
+
+export function decodeExportCursor(cursor: string): { recordedAt: string; id: string } | null {
+  let raw: string;
+  try {
+    raw = Buffer.from(cursor, 'base64url').toString('utf8');
+  } catch {
+    return null;
+  }
+  const m = CURSOR_PATTERN.exec(raw);
+  if (!m || !isRealTimestamp(m)) return null;
+  const sep = raw.lastIndexOf('|');
+  return { recordedAt: raw.slice(0, sep), id: raw.slice(sep + 1) };
+}
+
+
+function toIso(value: Date | string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  return value instanceof Date ? value.toISOString() : String(value);
+}
+
+export interface ElevationAuditExportFilters {
+  /** Half-open window [from, to) over recorded time (created_at). */
+  from: Date;
+  to: Date;
+  /** Required: one organization per export, which the (org_id, created_at, id) index serves. */
+  orgId: string;
+  siteId?: string;
+  deviceId?: string;
+  elevationRequestId?: string;
+  eventType?: string;
+}
+
+export interface ElevationAuditExportPageInput {
+  /** The caller's app-layer org condition (auth.orgCondition); RLS applies as well. */
+  orgCondition: SQL | undefined;
+  /** normalizeSiteAllowlist(perms.allowedSiteIds): undefined = unrestricted. */
+  allowedSiteIds: readonly string[] | undefined;
+  filters: ElevationAuditExportFilters;
+  after: { recordedAt: string; id: string } | null;
+  limit: number;
+  /** Test seam; production always uses PAM_AUDIT_EXPORT_SETTLE_SECONDS. */
+  settleSeconds?: number;
+}
+
+export interface ElevationAuditExportPage {
+  records: ExportRecord[];
+  /** More settled rows exist after this page; page again now. */
+  hasMore: boolean;
+  /**
+   * The window is fully exported: no settled row is left and `to` is behind
+   * the watermark. When false with hasMore false, rows may still be withheld;
+   * resume from nextCursor later.
+   */
+  windowComplete: boolean;
+  /** The watermark this page used (Postgres timestamptz text). */
+  settledThrough: string;
+  /**
+   * The resume position: the last row returned, or the incoming cursor when
+   * the page is empty (empty string only when nothing has been returned yet).
+   */
+  nextCursor: string;
+}
+
+/**
+ * One page of one organization's ledger, ascending (created_at, id). Must run inside the
+ * caller's request DB context: it adds no system escalation, so RLS on both
+ * tables bounds it to what the caller may read.
+ */
+export async function fetchElevationAuditExportPage(
+  input: ElevationAuditExportPageInput,
+): Promise<ElevationAuditExportPage> {
+  const { filters: f } = input;
+  const conditions: SQL[] = [];
+  if (input.orgCondition) conditions.push(input.orgCondition);
+  conditions.push(eq(elevationAudit.orgId, f.orgId));
+  // Site-restricted technicians see only their sites; a request with no site
+  // does not pass a restricted allowlist (matches the PAM list route).
+  if (input.allowedSiteIds !== undefined) {
+    conditions.push(
+      input.allowedSiteIds.length === 0 ? sql`false` : inArray(elevationRequests.siteId, [...input.allowedSiteIds]),
+    );
+  }
+  if (f.siteId) conditions.push(eq(elevationRequests.siteId, f.siteId));
+  if (f.deviceId) conditions.push(eq(elevationRequests.deviceId, f.deviceId));
+  if (f.elevationRequestId) conditions.push(eq(elevationAudit.elevationRequestId, f.elevationRequestId));
+  if (f.eventType) conditions.push(sql`${elevationAudit.eventType}::text = ${f.eventType}`);
+  conditions.push(gte(elevationAudit.createdAt, f.from));
+  conditions.push(lt(elevationAudit.createdAt, f.to));
+  // Watermark, on the database clock (see the module comment), computed once
+  // so the page and the completion signal agree. `now()` is this
+  // transaction's start; the subquery excludes this session itself.
+  const settleSeconds = input.settleSeconds ?? PAM_AUDIT_EXPORT_SETTLE_SECONDS;
+  const [mark] = (await db.execute(sql`
+    WITH w AS (
+      SELECT LEAST(
+        now() - make_interval(secs => ${settleSeconds}),
+        COALESCE(
+          (SELECT min(a.xact_start)
+             FROM pg_locks l
+             JOIN pg_stat_activity a ON a.pid = l.pid
+            WHERE l.locktype = 'relation'
+              AND l.relation = 'public.elevation_audit'::regclass
+              AND l.mode = 'RowExclusiveLock'
+              AND l.granted
+              AND a.backend_xid IS NOT NULL
+              AND l.pid <> pg_backend_pid()),
+          'infinity'::timestamptz
+        )
+      ) AS t
+    )
+    SELECT t::text AS watermark, ${f.to.toISOString()}::timestamptz <= t AS window_settled FROM w
+  `)) as unknown as Array<{ watermark: string; window_settled: boolean }>;
+  conditions.push(sql`${elevationAudit.createdAt} < ${mark!.watermark}::timestamptz`);
+  if (input.after) {
+    // Compare at full Postgres precision: the cursor carries the text form of
+    // created_at, never a millisecond-rounded JS Date.
+    conditions.push(
+      sql`(${elevationAudit.createdAt}, ${elevationAudit.id}) > (${input.after.recordedAt}::timestamptz, ${input.after.id}::uuid)`,
+    );
+  }
+
+  const rows = await db
+    .select({
+      audit: elevationAudit,
+      recordedAtText: sql<string>`${elevationAudit.createdAt}::text`,
+      request: {
+        deviceId: elevationRequests.deviceId,
+        siteId: elevationRequests.siteId,
+        flowType: elevationRequests.flowType,
+        subjectUserId: elevationRequests.subjectUserId,
+        subjectUsername: elevationRequests.subjectUsername,
+        reason: elevationRequests.reason,
+        targetExecutablePath: elevationRequests.targetExecutablePath,
+        targetExecutableHash: elevationRequests.targetExecutableHash,
+        targetExecutableSigner: elevationRequests.targetExecutableSigner,
+        targetPublisher: elevationRequests.targetPublisher,
+        status: elevationRequests.status,
+        revision: elevationRequests.revision,
+        requestedAt: elevationRequests.requestedAt,
+        approvedAt: elevationRequests.approvedAt,
+        approvedByUserId: elevationRequests.approvedByUserId,
+        deniedByUserId: elevationRequests.deniedByUserId,
+        denialReason: elevationRequests.denialReason,
+        expiresAt: elevationRequests.expiresAt,
+        revokedAt: elevationRequests.revokedAt,
+        revokedByUserId: elevationRequests.revokedByUserId,
+        revokedReason: elevationRequests.revokedReason,
+        executionId: elevationRequests.executionId,
+        toolName: elevationRequests.toolName,
+        actionDigest: elevationRequests.actionDigest,
+        riskTier: elevationRequests.riskTier,
+        decidedAssuranceLevel: elevationRequests.decidedAssuranceLevel,
+        decidedVia: elevationRequests.decidedVia,
+      },
+    })
+    .from(elevationAudit)
+    // Join on BOTH keys, mirroring the composite FK.
+    .innerJoin(
+      elevationRequests,
+      and(
+        eq(elevationRequests.id, elevationAudit.elevationRequestId),
+        eq(elevationRequests.orgId, elevationAudit.orgId),
+      ),
+    )
+    .where(and(...conditions))
+    .orderBy(asc(elevationAudit.createdAt), asc(elevationAudit.id))
+    .limit(input.limit + 1);
+
+  const hasMore = rows.length > input.limit;
+  // Complete only when no settled row is left AND the whole window is behind
+  // the watermark; otherwise rows may still be withheld and the caller must
+  // resume from nextCursor later.
+  const windowComplete = !hasMore && mark!.window_settled === true;
+  const page = hasMore ? rows.slice(0, input.limit) : rows;
+  const last = page[page.length - 1];
+  const nextCursor = last
+    ? encodeExportCursor(last.recordedAtText, last.audit.id)
+    : input.after
+      ? encodeExportCursor(input.after.recordedAt, input.after.id)
+      : '';
+
+  const records: ExportRecord[] = page.map(({ audit, request: r }) => ({
+    id: audit.id,
+    org_id: audit.orgId,
+    elevation_request_id: audit.elevationRequestId,
+    event_type: audit.eventType,
+    actor: audit.actor,
+    actor_user_id: audit.actorUserId ?? null,
+    occurred_at: toIso(audit.occurredAt),
+    created_at: toIso(audit.createdAt),
+    details: projectAuditDetails(audit.details),
+    request_device_id: r.deviceId ?? null,
+    request_site_id: r.siteId ?? null,
+    request_flow_type: r.flowType ?? null,
+    request_subject_user_id: r.subjectUserId ?? null,
+    request_subject_username: r.subjectUsername ?? null,
+    request_reason: r.reason ?? null,
+    request_target_executable_path: r.targetExecutablePath ?? null,
+    request_target_executable_hash: r.targetExecutableHash ?? null,
+    request_target_executable_signer: r.targetExecutableSigner ?? null,
+    request_target_publisher: r.targetPublisher ?? null,
+    request_status: r.status ?? null,
+    request_revision: r.revision ?? null,
+    request_requested_at: toIso(r.requestedAt),
+    request_approved_at: toIso(r.approvedAt),
+    request_approved_by_user_id: r.approvedByUserId ?? null,
+    request_denied_by_user_id: r.deniedByUserId ?? null,
+    request_denial_reason: r.denialReason ?? null,
+    request_expires_at: toIso(r.expiresAt),
+    request_revoked_at: toIso(r.revokedAt),
+    request_revoked_by_user_id: r.revokedByUserId ?? null,
+    request_revoked_reason: r.revokedReason ?? null,
+    request_execution_id: r.executionId ?? null,
+    request_tool_name: r.toolName ?? null,
+    request_action_digest: r.actionDigest ?? null,
+    request_risk_tier: r.riskTier ?? null,
+    request_decided_assurance_level: r.decidedAssuranceLevel ?? null,
+    request_decided_via: r.decidedVia ?? null,
+  }));
+
+  return { records, hasMore, nextCursor, windowComplete, settledThrough: mark!.watermark };
+}
+
+/**
+ * CSV: header on every page, every cell through csvRow (formula-neutralized,
+ * RFC 4180 quoted); the projected details object is JSON-encoded first.
+ * JSONL: one JSON object per line, strings untouched.
+ */
+export function serializeElevationAuditPage(records: ExportRecord[], format: 'csv' | 'jsonl'): string {
+  if (format === 'jsonl') {
+    return records.map((record) => `${JSON.stringify(record)}\n`).join('');
+  }
+  const lines = [csvRow(PAM_AUDIT_EXPORT_COLUMNS)];
+  for (const record of records) {
+    lines.push(
+      csvRow(
+        PAM_AUDIT_EXPORT_COLUMNS.map((column) => {
+          const value = record[column];
+          return value !== null && typeof value === 'object' ? JSON.stringify(value) : value;
+        }),
+      ),
+    );
+  }
+  return `${lines.join('\n')}\n`;
+}
