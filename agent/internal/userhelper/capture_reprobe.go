@@ -1,6 +1,7 @@
 package userhelper
 
 import (
+	"runtime"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -21,6 +22,13 @@ const (
 // runCaptureReprobe is a seam so Run's goroutine wiring can be replaced in
 // tests without real capture probes.
 var runCaptureReprobe = runCaptureReprobeLoop
+
+// detectCapabilitiesFn and captureReprobeGOOS are seams so Run's re-probe
+// wiring can be exercised on any CI platform without a real capture probe.
+var (
+	detectCapabilitiesFn = detectCapabilities
+	captureReprobeGOOS   = runtime.GOOS
+)
 
 type captureReprobeConfig struct {
 	initialDelay time.Duration

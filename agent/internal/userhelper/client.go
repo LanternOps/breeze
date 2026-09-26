@@ -150,7 +150,7 @@ func (c *Client) Run() error {
 	}
 	// A failed macOS capture probe must not latch CanCapture=false for the
 	// whole connection (#6105): keep re-probing and re-send when it recovers.
-	if needsCaptureReprobe(runtime.GOOS, c.binaryKind, caps) {
+	if needsCaptureReprobe(captureReprobeGOOS, c.binaryKind, caps) {
 		log.Warn("desktop capture probe failed at connect; re-probing in the background",
 			"context", c.context)
 		safeGo("capture_reprobe", func() {
@@ -365,7 +365,7 @@ func (c *Client) authenticate() error {
 // currentCapabilities computes the capabilities this helper would report now.
 // On macOS desktop helpers this runs a real capture probe.
 func (c *Client) currentCapabilities() ipc.Capabilities {
-	caps := detectCapabilities(c.binaryKind, c.context)
+	caps := detectCapabilitiesFn(c.binaryKind, c.context)
 	// On Windows, user-role helpers cannot capture desktop (no SYSTEM token
 	// for UAC/lock screen). On macOS, the user-role helper is the only process
 	// that CAN capture — the root daemon lacks GUI session access.

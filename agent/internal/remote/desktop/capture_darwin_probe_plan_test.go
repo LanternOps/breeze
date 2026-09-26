@@ -63,3 +63,22 @@ func TestDarwinCaptureProbePlan_Shape(t *testing.T) {
 		}
 	})
 }
+
+// The latch must reach streaming sessions, not just the probe: otherwise the
+// probe reports CanCapture=true off a CG frame and the session goes straight
+// back to the SCK path that cannot capture.
+func TestNewPlatformCapturer_HonorsSCKCaptureUnhealthyLatch(t *testing.T) {
+	restore := sckCaptureUnhealthy.Load()
+	t.Cleanup(func() { sckCaptureUnhealthy.Store(restore) })
+	sckCaptureUnhealthy.Store(true)
+
+	capturer, err := newPlatformCapturer(CaptureConfig{DesktopContext: "user_session"})
+	if err != nil {
+		// CG init only needs an active display list; a headless host has none.
+		t.Skipf("CoreGraphics init unavailable on this host: %v", err)
+	}
+	defer capturer.Close()
+	if _, ok := capturer.(*darwinCGCapturer); !ok {
+		t.Fatalf("newPlatformCapturer returned %T with the latch set, want *darwinCGCapturer", capturer)
+	}
+}
