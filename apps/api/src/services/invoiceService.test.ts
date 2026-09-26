@@ -2864,6 +2864,18 @@ describe('voidInvoice refuses an invoice with applied payments (#5180)', () => {
     expect(enqueueAccountingInvoiceVoidMock).not.toHaveBeenCalled();
   });
 
+  // Mirrors the issue-hook's "does not let a failed connection read fail the
+  // (already-committed) issuance" test above: the void hook's own try/catch
+  // must swallow a resolveActiveConnectionFor rejection (e.g. a decrypt
+  // failure before the Task 5 minor fix) rather than let it escape and fail
+  // the already-committed void.
+  it('does not let a failed connection read fail the (already-committed) void', async () => {
+    queueUnpaidVoid();
+    resolveActiveConnectionForMock.mockRejectedValueOnce(new Error('db blip'));
+    await expect(svc.voidInvoice('i1', 'duplicate', {}, actor)).resolves.toBeDefined();
+    expect(enqueueAccountingInvoiceVoidMock).not.toHaveBeenCalled();
+  });
+
   it('refuses a fully-refunded-looking row too: any non-zero applied total blocks it', async () => {
     // Guards the boundary the reduce() makes easy to get wrong — a single cent
     // applied is still money against the document.

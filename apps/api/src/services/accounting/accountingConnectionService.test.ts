@@ -1096,15 +1096,19 @@ describe('resolveActiveConnectionId (Xero W01 Task 6 fix round 1 — non-decrypt
     return { dbc, captured };
   }
 
-  it('returns the id, selecting ONLY the id column (no realm/token decrypt)', async () => {
+  it('returns the id, selecting ONLY id + provider (no realm/token decrypt)', async () => {
+    // Fix B refactor: resolveActiveConnectionId now shares the private
+    // resolveActiveConnectionRef helper with resolveActiveConnectionFor
+    // (below), which also needs `provider`. The contract this test actually
+    // guards — no realm/token column, no decrypt — is unchanged.
     const decryptSpy = vi.spyOn(await import('../secretCrypto'), 'decryptSecret');
-    const { dbc, captured } = idOnlyDb([{ id: 'conn-1' }]);
+    const { dbc, captured } = idOnlyDb([{ id: 'conn-1', provider: 'quickbooks' }]);
     const { resolveActiveConnectionId } = await import('./accountingConnectionService');
     const { accountingConnections } = await import('../../db/schema');
 
     await expect(resolveActiveConnectionId(dbc as any, 'p1')).resolves.toBe('conn-1');
 
-    expect(captured.projection).toEqual({ id: accountingConnections.id });
+    expect(captured.projection).toEqual({ id: accountingConnections.id, provider: accountingConnections.provider });
     const where = new PgDialect().sqlToQuery(captured.where!);
     expect(where.sql).toContain('"accounting_connections"."partner_id" = $1');
     expect(where.params).toEqual(['p1']);
@@ -1178,6 +1182,29 @@ describe('resolveActiveConnectionFor (Xero W01 producer gate)', () => {
     const conn = await resolveActiveConnectionFor('p1', 'invoicePush');
     expect(conn?.id).toBe('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
     expect(conn?.provider).toBe('quickbooks');
+  });
+
+  it('selects ONLY id + provider (no realm/token decrypt) — Task 5 minor fix', async () => {
+    const { accountingConnections } = await import('../../db/schema');
+    const { db } = makeAmbientFakeDb(ambientConnectionRow({
+      // Non-null ciphertext-shaped values: if the implementation regressed to
+      // `resolveActiveConnection` + `mapConnection`, decryptSecret would be
+      // invoked (and likely throw on this garbage) instead of merely being
+      // skipped because the fields happened to be null.
+      realmIdEncrypted: 'not-real-ciphertext',
+      accessTokenEncrypted: 'not-real-ciphertext',
+      refreshTokenEncrypted: 'not-real-ciphertext',
+    }));
+    dbRef.current = db;
+    const decryptSpy = vi.spyOn(await import('../secretCrypto'), 'decryptSecret');
+    const { resolveActiveConnectionFor } = await import('./accountingConnectionService');
+
+    const conn = await resolveActiveConnectionFor('p1', 'invoicePush');
+
+    expect(conn).toEqual({ id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', provider: 'quickbooks' });
+    expect(db.select).toHaveBeenCalledWith({ id: accountingConnections.id, provider: accountingConnections.provider });
+    expect(decryptSpy).not.toHaveBeenCalled();
+    decryptSpy.mockRestore();
   });
 
   it('returns null when the active provider lacks the capability', async () => {

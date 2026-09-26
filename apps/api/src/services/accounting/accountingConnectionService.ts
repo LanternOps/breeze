@@ -186,23 +186,36 @@ export async function resolveActiveConnection(
 }
 
 /**
+ * The non-decrypting core of `resolveActiveConnection`'s WHERE/limit, shared by
+ * every caller that does not need the decrypted realm/token columns. Selects
+ * only `id` + `provider` — never the encrypted columns `mapConnection`
+ * decrypts. Any future filter added to `resolveActiveConnection` (W02's
+ * pending_tenant exclusion) must be mirrored here too.
+ */
+async function resolveActiveConnectionRef(
+  dbc: DbExecutor,
+  partnerId: string,
+): Promise<{ id: string; provider: AccountingProviderId } | null> {
+  const [row] = await dbc
+    .select({ id: accountingConnections.id, provider: accountingConnections.provider })
+    .from(accountingConnections)
+    .where(eq(accountingConnections.partnerId, partnerId))
+    .limit(1);
+  return row ? { id: row.id, provider: row.provider as AccountingProviderId } : null;
+}
+
+/**
  * The non-decrypting sibling of `resolveActiveConnection`, for callers that
  * only need the id (money-path hardening: the Stripe refund reconcile runs
  * inside the money transaction, and a rotated/retired encryption key must
- * never abort it via `mapConnection`'s eager decrypt). Same WHERE/limit as
- * `resolveActiveConnection` — any future filter added there (W02's
- * pending_tenant exclusion) must be mirrored here.
+ * never abort it via `mapConnection`'s eager decrypt).
  */
 export async function resolveActiveConnectionId(
   dbc: DbExecutor,
   partnerId: string,
 ): Promise<string | null> {
-  const [row] = await dbc
-    .select({ id: accountingConnections.id })
-    .from(accountingConnections)
-    .where(eq(accountingConnections.partnerId, partnerId))
-    .limit(1);
-  return row?.id ?? null;
+  const ref = await resolveActiveConnectionRef(dbc, partnerId);
+  return ref?.id ?? null;
 }
 
 /** Load one connection by id, partner-guarded. Jobs carry this id (spec: "a job's destination is never reinterpreted"). */
@@ -298,13 +311,21 @@ export async function getConnectionProvidersForMappings(
  * sees ZERO accounting_connections rows, which would silently skip every
  * enqueue for org-scoped users (#2822). partnerId comes from a row the caller
  * already resolved under its own context, never from the client.
+ *
+ * Fix round (Task 5 minor): callers use only `.id` (to stamp a job's
+ * `connectionId`), never a decrypted field, so this reads through the
+ * non-decrypting `resolveActiveConnectionRef` instead of `resolveActiveConnection`
+ * + `mapConnection`. Before this, a decrypt failure (rotated/retired
+ * encryption key) threw inside these hooks' try/catch and silently skipped the
+ * auto-push, whereas pre-W01 the job was always enqueued and a failure
+ * surfaced in the worker instead.
  */
 export async function resolveActiveConnectionFor(
   partnerId: string,
   capability: AccountingCapability,
-): Promise<AccountingConnection | null> {
-  const conn = await readWithPartnerAxisVisibility(() => resolveActiveConnection(db, partnerId));
-  return conn && providerSupports(conn.provider, capability) ? conn : null;
+): Promise<{ id: string; provider: AccountingProviderId } | null> {
+  const ref = await readWithPartnerAxisVisibility(() => resolveActiveConnectionRef(db, partnerId));
+  return ref && providerSupports(ref.provider, capability) ? ref : null;
 }
 
 /** 409 — the partner already has a connection to a DIFFERENT provider (spec D2). */
