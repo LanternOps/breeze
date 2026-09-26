@@ -1,13 +1,18 @@
 /**
  * Fix-memory lookup (AI Suggested Fixes W1). Runs on the AMBIENT db, so under
  * a request/tool context RLS bounds it; the explicit owner filter below also
- * holds under system context (memory attach). A row is only ever returned if
- * it is still dispatchable on this OS at its pinned script version.
+ * holds under system context (memory attach). Current-state checks before a
+ * row is ever returned: for a script-backed kind (system/partner/org_script),
+ * the script must be undeleted, still support this OS, still be at the
+ * pinned head version, and its current owner must still be visible to the
+ * target org/partner; for a `playbook` kind, the playbook must still exist
+ * and be active. `builtin_action` and `manual_steps` have no backing record
+ * to check and are always dispatchable.
  */
-import { and, eq, isNull, ne, or } from 'drizzle-orm';
+import { and, desc, eq, isNull, ne, or, sql } from 'drizzle-orm';
 import type { FixKind, FixMemoryStatus } from '@breeze/shared';
 import { db } from '../../db';
-import { fixMemory, scripts, scriptVersions } from '../../db/schema';
+import { fixMemory, playbookDefinitions, scripts, scriptVersions } from '../../db/schema';
 import { isProven } from './aggregate';
 import type { FixSignature } from './signature';
 
@@ -62,6 +67,7 @@ export interface MemoryCandidateRow {
   lastVerifiedAt: Date | null;
   script: { name: string; deletedAt: Date | null; osTypes: string[]; headVersion: number; isSystem: boolean; orgId: string | null; partnerId: string | null } | null;
   scriptVersionNumber: number | null;
+  playbook: { isActive: boolean } | null;
 }
 
 const SCRIPT_KINDS = new Set<FixKind>(['system_script', 'partner_script', 'org_script']);
@@ -79,13 +85,16 @@ function scriptOwnerVisible(row: MemoryCandidateRow, s: NonNullable<MemoryCandid
 }
 
 function isDispatchable(row: MemoryCandidateRow, ctx: { orgId: string; partnerId: string; osFamily: string }): boolean {
-  if (!SCRIPT_KINDS.has(row.fixKind)) return true;
-  const s = row.script;
-  return Boolean(
-    s && s.deletedAt === null && s.osTypes.includes(ctx.osFamily)
-    && row.scriptVersionNumber !== null && row.scriptVersionNumber === s.headVersion
-    && scriptOwnerVisible(row, s, ctx),
-  );
+  if (SCRIPT_KINDS.has(row.fixKind)) {
+    const s = row.script;
+    return Boolean(
+      s && s.deletedAt === null && s.osTypes.includes(ctx.osFamily)
+      && row.scriptVersionNumber !== null && row.scriptVersionNumber === s.headVersion
+      && scriptOwnerVisible(row, s, ctx),
+    );
+  }
+  if (row.fixKind === 'playbook') return Boolean(row.playbook?.isActive);
+  return true;
 }
 
 function track(row: MemoryCandidateRow): FixTrackRecord {
@@ -140,10 +149,12 @@ export async function lookupFixes(input: { orgId: string; partnerId: string; sig
       scriptName: scripts.name, scriptDeletedAt: scripts.deletedAt, scriptOsTypes: scripts.osTypes, scriptHeadVersion: scripts.version,
       scriptIsSystem: scripts.isSystem, scriptOrgId: scripts.orgId, scriptPartnerId: scripts.partnerId,
       scriptVersionNumber: scriptVersions.version,
+      playbookIsActive: playbookDefinitions.isActive,
     })
     .from(fixMemory)
     .leftJoin(scripts, eq(scripts.id, fixMemory.scriptId))
-    .leftJoin(scriptVersions, eq(scriptVersions.id, fixMemory.scriptVersionId))
+    .leftJoin(scriptVersions, and(eq(scriptVersions.id, fixMemory.scriptVersionId), eq(scriptVersions.scriptId, fixMemory.scriptId)))
+    .leftJoin(playbookDefinitions, eq(playbookDefinitions.id, fixMemory.playbookId))
     .where(and(
       eq(fixMemory.signatureVersion, sig.version),
       eq(fixMemory.osType, sig.facets.osFamily),
@@ -151,6 +162,10 @@ export async function lookupFixes(input: { orgId: string; partnerId: string; sig
       or(eq(fixMemory.orgId, input.orgId), and(isNull(fixMemory.orgId), eq(fixMemory.partnerId, input.partnerId))),
       ne(fixMemory.status, 'retired'),
     ))
+    // Exact-signature rows first, so a >100-match partner never has its proven
+    // rows silently dropped by an arbitrary Postgres pick; ties broken by
+    // strength, then id for determinism.
+    .orderBy(desc(sql`${fixMemory.signatureKey} = ${sig.key}`), desc(fixMemory.rollingSuccessRate), desc(fixMemory.verifiedCount), fixMemory.id)
     .limit(100);
   const candidates: MemoryCandidateRow[] = rows.map((r) => ({
     id: r.id, orgId: r.orgId, partnerId: r.partnerId, signatureKey: r.signatureKey, broadKey: r.broadKey,
@@ -166,6 +181,7 @@ export async function lookupFixes(input: { orgId: string; partnerId: string; sig
         isSystem: r.scriptIsSystem ?? false, orgId: r.scriptOrgId ?? null, partnerId: r.scriptPartnerId ?? null,
       },
     scriptVersionNumber: r.scriptVersionNumber ?? null,
+    playbook: r.playbookIsActive === null ? null : { isActive: r.playbookIsActive },
   }));
   const { proven, similar } = classifyMemoryRows(candidates, {
     orgId: input.orgId, partnerId: input.partnerId, signatureKey: sig.key, broadKey: sig.broadKey,
