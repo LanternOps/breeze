@@ -411,6 +411,7 @@ async function evaluateMonitorAlertRules(
       context: {
         source: 'network_monitor',
         monitorId: monitor.id,
+        legacyNetworkMonitorId: monitor.id,
         alertRuleId: rule.id,
         monitorType: monitor.monitorType,
         target: monitor.target,
@@ -423,7 +424,7 @@ async function evaluateMonitorAlertRules(
       publisher: 'monitor-worker',
       // `source` is supplied by createSourcedAlert from `context.source`.
       eventPayload: {
-        monitorId: monitor.id,
+        legacyNetworkMonitorId: monitor.id,
         alertRuleId: rule.id,
         monitorType: monitor.monitorType,
         target: monitor.target

@@ -78,7 +78,7 @@ vi.mock('../monitorService', () => ({ createMonitorDefinition: vi.fn(), deleteMo
 vi.mock('../../alertCooldown', () => ({ rekeyConfigPolicyCooldowns: vi.fn(), rekeyCooldownsBackToConfigPolicy: vi.fn() }));
 import { rekeyConfigPolicyCooldowns, rekeyCooldownsBackToConfigPolicy } from '../../alertCooldown';
 import { buildPolicyConversionPreview, previewPolicyConversion, convertPolicy, retireSource, revertConversion, convertPartnerLegacy, partnerPreviewHash, previewPartnerConversion, previewTemplateGroup, convertTemplateGroup, rekeyCommittedCooldowns } from './convert';
-import { alertTemplates, alertRules, configPolicyMonitors, monitorConversions, monitorConversionOutputs, organizations, sites, partners } from '../../../db/schema';
+import { alertTemplates, alertRules, configPolicyMonitors, monitorConversions, monitorConversionOutputs, networkMonitors, organizations, sites, partners } from '../../../db/schema';
 vi.mock('../../configurationPolicy', () => ({ createConfigPolicy: vi.fn(), assignPolicy: vi.fn(), addFeatureLink: vi.fn() }));
 import { createConfigPolicy, assignPolicy, addFeatureLink } from '../../configurationPolicy';
 import { createMonitorDefinition } from '../monitorService';
@@ -463,6 +463,50 @@ it('records an operator retirement with original source state and no outputs', a
   await expect(retireSource('alert_templates', 'source', 'operator', auth)).resolves.toEqual({ conversionId: 'ledger' });
   expect(writes.find(w => w.table === monitorConversions)?.values).toMatchObject({ sourceId: 'source', convertedBy: 'u', sourceState: { source: template } });
   expect(writes.find(w => w.table === alertTemplates)?.values).toMatchObject({ retiredReason: 'operator' });
+});
+const networkSource = {
+  id: 'network-source', orgId: 'o', partnerId: null, name: 'Edge check', monitorType: 'http_check',
+  target: 'https://example.com', config: {}, pollingInterval: 60, timeout: 10,
+  assetId: null, siteId: null, isActive: true, retiredAt: null, retiredReason: null, managedByMonitorId: null,
+};
+it('dispatches network retirement through the caller-scoped transaction and records a named snapshot', async () => {
+  const { tx, writes } = mutationTx([[networkSource], [{ partnerId: 'p' }], [networkSource], [], []]);
+  m.transaction.mockImplementationOnce(async fn => fn(tx));
+  await expect(retireSource('network_monitors', networkSource.id, 'operator', auth)).resolves.toEqual({ conversionId: 'ledger' });
+  expect(m.context).toHaveBeenLastCalledWith({}, expect.any(Function), { isolationLevel: 'serializable' });
+  expect(tx.execute).toHaveBeenCalledOnce();
+  expect(writes.find(w => w.table === monitorConversions)?.values).toMatchObject({
+    sourceTable: 'network_monitors', sourceId: networkSource.id, convertedBy: 'u',
+    sourceState: { name: 'Edge check' }, networkSourceSnapshot: { name: 'Edge check', siteId: null, rules: [] },
+  });
+  expect(writes.find(w => w.table === networkMonitors)?.values).toMatchObject({ retiredReason: 'operator', isActive: false });
+  expect(writes.some(w => w.table === monitorConversionOutputs)).toBe(false);
+});
+it('refuses an invisible network retirement before any ledger or source mutation', async () => {
+  const { tx } = mutationTx([[]]);
+  m.transaction.mockImplementationOnce(async fn => fn(tx));
+  await expect(retireSource('network_monitors', 'foreign', 'operator', auth)).rejects.toMatchObject({ code: 'source_not_found', status: 404 });
+  expect(tx.insert).not.toHaveBeenCalled();
+  expect(tx.update).not.toHaveBeenCalled();
+  expect(tx.execute).not.toHaveBeenCalled();
+});
+it('dispatches network revert before generic source loading rejects a retained network source', async () => {
+  const { id, orgId, partnerId, managedByMonitorId, ...snapshot } = networkSource;
+  const ledger = {
+    id: 'ledger', orgId, partnerId, sourceTable: 'network_monitors', sourceId: id,
+    policyId: null, sourceState: { name: networkSource.name }, networkSourceSnapshot: { ...snapshot, rules: [] }, revertedAt: null,
+  };
+  const { tx, writes } = mutationTx([[ledger], [{ partnerId: 'p' }], [ledger],
+    [{ ...networkSource, retiredAt: new Date(), retiredReason: 'operator', isActive: false }], []]);
+  m.transaction.mockImplementationOnce(async fn => fn(tx));
+  await expect(revertConversion('ledger', auth)).resolves.toBeUndefined();
+  expect(m.context).toHaveBeenLastCalledWith({}, expect.any(Function), { isolationLevel: 'serializable' });
+  expect(tx.execute).toHaveBeenCalledOnce();
+  expect(writes.find(w => w.table === networkMonitors)?.values).toMatchObject({
+    name: networkSource.name, isActive: true, managedByMonitorId: null, retiredAt: null, retiredReason: null,
+  });
+  expect(writes.at(-1)).toMatchObject({ table: monitorConversions, values: { revertedAt: expect.any(Date) } });
+  expect(tx.insert).not.toHaveBeenCalled();
 });
 it('revert refuses an invisible source without mutating the visible ledger', async () => {
   const { tx } = mutationTx([[{ id: 'ledger', orgId: 'o', partnerId: null, sourceTable: 'alert_templates', sourceId: 'foreign', sourceState: {}, revertedAt: null }], []]);

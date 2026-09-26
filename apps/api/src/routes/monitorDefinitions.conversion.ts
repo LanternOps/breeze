@@ -14,6 +14,7 @@ import {
 } from '../services/monitors/conversion';
 
 import { readRetirementReport } from '../services/monitors/conversion/loadSources';
+import { NetworkHistoryError } from '../services/monitors/conversion/networkHistory';
 
 type Env = { Variables: { auth: AuthContext } };
 export const monitorConversionRoutes = new Hono<Env>();
@@ -42,6 +43,7 @@ const retireBody = z.object({
 }).strict();
 
 monitorConversionRoutes.onError((error, c) => {
+  if (error instanceof NetworkHistoryError) return c.json({ error: error.code }, error.status);
   if (error instanceof ConversionPrerequisiteMissingError) {
     return c.json({ error: 'CONVERSION_PREREQUISITE_MISSING', missing: error.missing }, 409);
   }

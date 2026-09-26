@@ -26,3 +26,5 @@ DO $$ BEGIN
       CHECK (asset_id IS NULL OR (org_id IS NOT NULL AND partner_id IS NULL));
   END IF;
 END $$;
+
+ALTER TABLE monitor_conversions ADD COLUMN IF NOT EXISTS network_source_snapshot jsonb;

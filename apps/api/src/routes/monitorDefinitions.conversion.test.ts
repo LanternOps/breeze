@@ -6,6 +6,9 @@ const m = vi.hoisted(() => ({
   authenticated: true, permission: true, mfa: true,
   preview: vi.fn(), convert: vi.fn(), revert: vi.fn(), retire: vi.fn(),
   partner: vi.fn(), partnerPreview: vi.fn(), ledger: vi.fn(), counts: vi.fn(), audit: vi.fn(),
+  NetworkHistoryError: class extends Error {
+    constructor(public code: string, public status: 400 | 403 | 404 | 409) { super(code); }
+  },
 }));
 vi.mock('../middleware/auth', () => ({
   authMiddleware: async (c: any, next: any) => m.authenticated ? next() : c.json({ error: 'Unauthorized' }, 401),
@@ -27,6 +30,9 @@ vi.mock('../services/monitors/conversion', () => ({
 }));
 vi.mock('../services/monitors/conversion/loadSources', () => ({
   readRetirementReport: vi.fn(async () => ({ unconvertible: [], sweep: null })),
+}));
+vi.mock('../services/monitors/conversion/networkHistory', () => ({
+  NetworkHistoryError: m.NetworkHistoryError,
 }));
 import { monitorConversionRoutes } from './monitorDefinitions.conversion';
 import { ConversionError, ConversionPrerequisiteMissingError } from '../services/monitors/conversion';
@@ -164,6 +170,21 @@ describe('conversion resource', () => {
     expect(await r.json()).toEqual({ error: 'CONVERSION_PREREQUISITE_MISSING', missing: ['#6342'] });
     m.convert.mockRejectedValueOnce(new Error('storage unavailable'));
     expect((await request(mutations[0]![0], 'POST', mutations[0]![1])).status).toBe(500);
+  });
+  it.each([
+    ['invalid_retirement_reason', 400], ['site_restricted_conversion', 403],
+    ['source_not_found', 404], ['network_revert_in_use', 409],
+  ] as const)('maps network history %s on retirement and revert', async (code, status) => {
+    for (const [path, body, service] of [
+      ['/retire', { sourceTable: 'network_monitors', sourceId: SOURCE, reason: 'operator' }, m.retire],
+      [`/${SOURCE}/revert`, undefined, m.revert],
+    ] as const) {
+      service.mockRejectedValueOnce(new m.NetworkHistoryError(code, status));
+      const response = await request(path, 'POST', body);
+      expect(response.status).toBe(status);
+      expect(await response.json()).toEqual({ error: code });
+    }
+    expect(m.audit).not.toHaveBeenCalled();
   });
 });
 

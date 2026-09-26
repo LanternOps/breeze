@@ -11,6 +11,7 @@ import { rekeyConfigPolicyCooldowns, rekeyCooldownsBackToConfigPolicy, rekeyRule
 import { captureException } from '../../sentry';
 import { pgErrorCode } from '@breeze/shared/pgErrors';
 import { restoreMovedAlertRefs, carryOpenAlerts, canDeleteConversionMonitor } from './history';
+import { retireNetworkCheck, revertNetworkCheckConversionInTx } from './networkHistory';
 import { isRevertAvailable, findLiveTargetDependencies } from './lifecycle';
 import { createConfigPolicy, assignPolicy, addFeatureLink } from '../../configurationPolicy';
 import { assignmentForRule } from '../ruleConversionService';
@@ -185,7 +186,7 @@ function assertOwner(owner: Owner, auth: AuthContext) {
     throw new ConversionError('partner_wide_denied', 'Full partner access required');
   }
 }
-async function inCallerTransaction<T>(auth: AuthContext, fn: (tx: DbExecutor) => Promise<T>): Promise<T> {
+export async function inCallerTransaction<T>(auth: AuthContext, fn: (tx: DbExecutor) => Promise<T>): Promise<T> {
   const snapshot = snapshotPreviewAccess(auth);
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -200,7 +201,7 @@ async function inCallerTransaction<T>(auth: AuthContext, fn: (tx: DbExecutor) =>
   }
   throw new ConversionError('preview_stale', 'Conversion inputs changed concurrently');
 }
-async function lockConversion(tx: DbExecutor, owner: Owner) {
+export async function lockConversion(tx: DbExecutor, owner: Owner) {
   let partnerId = owner.partnerId;
   if (owner.orgId) {
     const [org] = await tx.select({ partnerId: organizations.partnerId }).from(organizations).where(eq(organizations.id, owner.orgId)).limit(1);
@@ -369,6 +370,7 @@ async function liveLedger(tx: DbExecutor, sourceTable: ConversionSourceTable, so
   return live;
 }
 export async function retireSource(sourceTable: ConversionSourceTable, sourceId: string, reason: string, auth: AuthContext): Promise<{ conversionId: string; }> {
+  if (sourceTable === 'network_monitors') return retireNetworkCheck(sourceId, reason, auth);
   if (reason !== 'operator' && !/^unconvertible:[a-z][a-z0-9_]*$/.test(reason)) throw new ConversionError('invalid_reason', 'Invalid retirement reason');
   return inCallerTransaction(auth, async tx => {
     const first = await visibleSource(tx, sourceTable, sourceId, auth);
@@ -733,6 +735,10 @@ async function revertInTx(conversionId: string, auth: AuthContext, tx: DbExecuto
   if (!first) throw new ConversionError('conversion_not_found', 'Conversion not found');
   assertOwner(first, auth);
   if (!isRevertAvailable(first.sourceTable)) throw new ConversionError('conversion_revert_unavailable', 'This source runtime has been retired');
+  if (first.sourceTable === 'network_monitors') {
+    await revertNetworkCheckConversionInTx(tx, first, auth);
+    return [];
+  }
   // Source visibility precedes every mutation and every lookup of a global live-source key.
   const initialSource = await visibleSource(tx, first.sourceTable, first.sourceId, auth);
   await lockConversion(tx, initialSource.owner);
