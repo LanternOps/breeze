@@ -9,3 +9,6 @@ export { carryOpenAlerts, restoreMovedAlertRefs } from './history';
 export { previewPolicyConversion, buildPolicyConversionPreview, previewPartnerConversion, convertPolicy, convertPartnerLegacy, revertConversion, retireSource, ConversionError } from './convert';
 export { listConversionLedger } from './ledger';
 export { carryNetworkAlerts, snapshotNetworkSource, retireNetworkCheck, revertNetworkCheckConversion, NetworkHistoryError } from './networkHistory';
+export { previewNetworkCheckConversion, convertNetworkChecks, countPendingNetworkChecks, mapNetworkMonitorToDefinition, missingNetworkCheckPrerequisites, NetworkCheckConversionError, NETWORK_CHECK_UNCONVERTIBLE, NETWORK_CHECKS_POLICY_NAME } from './networkChecks';
+export type { NetworkCheckConversionPreview, NetworkCheckMapping } from './networkChecks';
+export type { PartnerConversionOptions } from './convert';

@@ -34,6 +34,12 @@ vi.mock('../services/monitors/conversion/loadSources', () => ({
 vi.mock('../services/monitors/conversion/networkHistory', () => ({
   NetworkHistoryError: m.NetworkHistoryError,
 }));
+vi.mock('../services/monitors/conversion/networkChecks', () => ({
+  previewNetworkCheckConversion: vi.fn(), convertNetworkChecks: vi.fn(),
+  NetworkCheckConversionError: class extends Error {
+    constructor(public code: string, public status: 403 | 404 | 409) { super(code); }
+  },
+}));
 import { monitorConversionRoutes } from './monitorDefinitions.conversion';
 import { ConversionError, ConversionPrerequisiteMissingError } from '../services/monitors/conversion';
 
@@ -73,7 +79,7 @@ beforeEach(() => {
   m.authenticated = m.permission = m.mfa = true;
   m.preview.mockResolvedValue({ policyId: POLICY, previewHash: HASH, items: [], inheritanceMode: 'replace', equivalence: { devicesChecked: 0, deltas: [] } });
   m.convert.mockResolvedValue({ conversionIds: [SOURCE], retired: 1, monitorsCreated: 1 });
-  m.counts.mockResolvedValue({ policies: 0, rows: 0, standaloneRules: 9, pendingPolicies: [] });
+  m.counts.mockResolvedValue({ policies: 0, rows: 0, standaloneRules: 9, networkChecks: 3, pendingPolicies: [] });
   m.retire.mockResolvedValue({ conversionId: SOURCE });
   m.ledger.mockResolvedValue({ items: [], nextCursor: null });
   m.partnerPreview.mockResolvedValue({ partnerId: PARTNER, previewHash: HASH, policies: 2, rows: 3, convertible: 3, unconvertible: [] });
@@ -116,7 +122,7 @@ describe('conversion resource', () => {
   });
   it('pending projects the banner contract and denies a cross-org query before reading', async () => {
     const r = await request('/pending');
-    expect(await r.json()).toEqual({ data: { policies: 0, rows: 0, pendingPolicies: [], unconvertible: [], sweep: null } });
+    expect(await r.json()).toEqual({ data: { policies: 0, rows: 0, networkChecks: 3, pendingPolicies: [], unconvertible: [], sweep: null } });
     expect(m.counts).toHaveBeenCalledWith({ orgId: ORG, partnerId: PARTNER, includePartnerWide: false });
     // The list and the count come from one query, so the banner and the
     // pending-policies list can never disagree (#6644 review finding 5).

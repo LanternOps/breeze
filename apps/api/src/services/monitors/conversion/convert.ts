@@ -11,6 +11,7 @@ import { rekeyConfigPolicyCooldowns, rekeyCooldownsBackToConfigPolicy, rekeyRule
 import { captureException } from '../../sentry';
 import { pgErrorCode } from '@breeze/shared/pgErrors';
 import { restoreMovedAlertRefs, carryOpenAlerts, canDeleteConversionMonitor } from './history';
+import { adoptNetworkChecksInTx, loadPendingNetworkChecks, missingNetworkCheckPrerequisites, previewNetworkChecksInTx } from './networkChecks';
 import { retireNetworkCheck, revertNetworkCheckConversionInTx } from './networkHistory';
 import { isRevertAvailable, findLiveTargetDependencies } from './lifecycle';
 import { createConfigPolicy, assignPolicy, addFeatureLink } from '../../configurationPolicy';
@@ -394,16 +395,18 @@ export async function retireSource(sourceTable: ConversionSourceTable, sourceId:
   });
 }
 
+export interface PartnerConversionOptions { sources?: 'all' | 'retired_runtime_only' }
+
 export function partnerPreviewHash(partnerId: string, scopeHash: string,
-  parts: Array<{ sourceTable: ConversionSourceTable; sourceId: string; inputHash: string; reason: string | null; }>): string {
-  return sha(canonical({ partnerId, scopeHash, parts: [...parts].sort((a, b) => a.sourceTable.localeCompare(b.sourceTable) || a.sourceId.localeCompare(b.sourceId)) }));
+  parts: Array<{ sourceTable: ConversionSourceTable; sourceId: string; inputHash: string; reason: string | null; }>, mode: PartnerConversionOptions['sources'] = 'all', networkPrerequisites: string[] = []): string {
+  return sha(canonical({ partnerId, scopeHash, mode, networkPrerequisites, parts: [...parts].sort((a, b) => a.sourceTable.localeCompare(b.sourceTable) || a.sourceId.localeCompare(b.sourceId)) }));
 }
 function assertPartner(partnerId: string, auth: AuthContext) {
   if (!canManagePartnerWidePolicies(auth) || !canMutateOrgWideGovernance(auth)
     || (auth.scope !== 'system' && auth.partnerId !== partnerId)) throw new ConversionError('partner_wide_denied', 'Full partner access required');
 }
 class PartnerPreviewRollback extends Error { }
-async function partnerPlanInTx(partnerId: string, auth: AuthContext, tx: DbExecutor, expectedHash?: string) {
+async function partnerPlanInTx(partnerId: string, auth: AuthContext, tx: DbExecutor, expectedHash?: string, opts: PartnerConversionOptions = {}) {
   const [partner] = await tx.select({ id: partners.id }).from(partners).where(eq(partners.id, partnerId)).limit(1);
   if (!partner) throw new ConversionError('source_not_found', 'Partner not found');
   await lockConversion(tx, { orgId: null, partnerId });
@@ -431,7 +434,15 @@ async function partnerPlanInTx(partnerId: string, auth: AuthContext, tx: DbExecu
     const preview = await templateGroupPreviewInTx(template.id, auth, tx);
     parts.push({ sourceTable: 'alert_templates', sourceId: template.id, inputHash: preview.previewHash, reason: preview.blockedBy });
   }
-  const hash = partnerPreviewHash(partnerId, previewScopeHash(snapshotPreviewAccess(auth)), parts);
+  const mode = opts.sources ?? 'all';
+  const networkPreviews = [];
+  if (mode === 'all') for (const orgId of [...orgIds].sort()) {
+    const preview = await previewNetworkChecksInTx(orgId, auth, tx);
+    networkPreviews.push(preview);
+    parts.push({ sourceTable: 'network_monitors', sourceId: orgId, inputHash: preview.previewHash, reason: preview.blockedBy ?? null });
+  }
+  const hash = partnerPreviewHash(partnerId, previewScopeHash(snapshotPreviewAccess(auth)), parts, mode,
+    mode === 'all' ? missingNetworkCheckPrerequisites() : []);
   if (expectedHash !== undefined && hash !== expectedHash) throw new ConversionError('preview_stale', 'Partner conversion inputs changed');
   const summary: PartnerConversionPreview = { partnerId, previewHash: hash, policies: 0, rows: 0, convertible: 0, unconvertible: [] };
   const conversionIds: string[] = [];
@@ -475,23 +486,47 @@ async function partnerPlanInTx(partnerId: string, auth: AuthContext, tx: DbExecu
       rulePairs.push(...result.cooldownPairs);
     }
   }
+  for (const preview of networkPreviews) {
+    if (preview.blockedBy) {
+      (summary.blocked ??= []).push({ orgId: preview.orgId, sourceTable: 'network_monitors',
+        reason: preview.blockedBy, missingPrerequisites: preview.missingPrerequisites ?? [] });
+      continue;
+    }
+    const selectedIds = new Set<string>();
+    for (const item of preview.items) {
+      summary.rows++;
+      if (item.outcome === 'convertible') {
+        summary.convertible++;
+        selectedIds.add(item.sourceId);
+      } else summary.unconvertible.push({ policyId: null, policyName: null, sourceTable: item.sourceTable,
+        sourceId: item.sourceId, name: item.name, reason: item.reason ?? 'unconvertible:blocked' });
+    }
+    if (selectedIds.size) {
+      const full = await loadPendingNetworkChecks(preview.orgId, tx);
+      const result = await adoptNetworkChecksInTx(preview.orgId, hash, auth, full,
+        full.rows.filter(row => selectedIds.has(row.id)), tx);
+      conversionIds.push(...result.conversionIds);
+      if (result.policyId) summary.policies++;
+    }
+  }
   return { summary, conversionIds, pairs: await cooldownPairs(tx, conversionIds), rulePairs };
 }
-export async function previewPartnerConversion(partnerId: string, auth: AuthContext): Promise<PartnerConversionPreview> {
+export async function previewPartnerConversion(partnerId: string, auth: AuthContext, opts: PartnerConversionOptions = {}): Promise<PartnerConversionPreview> {
   assertPartner(partnerId, auth);
   let result: PartnerConversionPreview | undefined;
   try {
-    await inCallerTransaction(auth, async tx => { result = (await partnerPlanInTx(partnerId, auth, tx)).summary; throw new PartnerPreviewRollback(); });
+    await inCallerTransaction(auth, async tx => { result = (await partnerPlanInTx(partnerId, auth, tx, undefined, opts)).summary; throw new PartnerPreviewRollback(); });
   } catch (error) { if (!(error instanceof PartnerPreviewRollback)) throw error; }
   if (!result) throw new Error('Partner preview failed');
   return result;
 }
-export async function convertPartnerLegacy(partnerId: string, expectedHash: string, auth: AuthContext) {
+export async function convertPartnerLegacy(partnerId: string, expectedHash: string, auth: AuthContext, opts: PartnerConversionOptions = {}) {
   assertPartner(partnerId, auth);
-  const committed = await inCallerTransaction(auth, tx => partnerPlanInTx(partnerId, auth, tx, expectedHash));
+  const committed = await inCallerTransaction(auth, tx => partnerPlanInTx(partnerId, auth, tx, expectedHash, opts));
   await rekeyCommittedCooldowns(committed.pairs, 'to_monitor');
   await rekeyCommittedCooldowns(committed.rulePairs, 'rule_to_monitor');
-  return { policies: committed.summary.policies, converted: committed.conversionIds.length, unconvertible: committed.summary.unconvertible.length };
+  return { policies: committed.summary.policies, converted: committed.conversionIds.length, unconvertible: committed.summary.unconvertible.length,
+    ...(committed.summary.blocked?.length ? { blocked: committed.summary.blocked } : {}) };
 }
 
 interface TemplateGroupPlan {
