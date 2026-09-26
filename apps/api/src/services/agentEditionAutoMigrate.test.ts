@@ -1,7 +1,18 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
+// `open`: system contexts not yet committed (#7103 — the send must see 0).
+const txState = vi.hoisted(() => ({ open: 0 }));
 vi.mock('../db', () => ({
   db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() },
+  runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
+    txState.open += 1;
+    try {
+      return await fn();
+    } finally {
+      txState.open -= 1;
+    }
+  }),
 }));
 vi.mock('./binaryEdition', () => ({ getBinaryEdition: vi.fn(() => 'hosted') }));
 vi.mock('./binarySource', () => ({ getGithubReleaseVersion: vi.fn(() => '0.108.0') }));
@@ -320,5 +331,71 @@ describe('maybeDispatchEditionMigration', () => {
     // already exist, so the once-per-device claim must stand — only a typed
     // ok:false refusal (provably nothing queued) releases it.
     expect(claim.set).not.toHaveBeenCalledWith({ editionMigrationDispatchedAt: null });
+  });
+
+  // #7103 — the heartbeat wrapped this whole service in one system context, so
+  // the reinstall command went out before its rows (and the claim) committed.
+  it('writes the claim and the rows in its own context and sends only after it commits', async () => {
+    const claim = primeHappyPath();
+    const events: Array<{ kind: string; open: number }> = [];
+    claim.returning.mockImplementation(async () => {
+      events.push({ kind: 'claim', open: txState.open });
+      return [{ id: 'device-1' }];
+    });
+    const base = {
+      ok: true,
+      commandId: 'cmd-1',
+      executionId: 'exec-1',
+      executedAt: null,
+      ignoredParameters: [],
+      runAs: 'system' as const,
+      targetSessionId: null,
+    };
+    vi.mocked(dispatchScriptToDevice).mockImplementation((async (input: { deferDelivery?: boolean }) => {
+      events.push({ kind: 'create', open: txState.open });
+      const deliver = async () => {
+        events.push({ kind: 'send', open: txState.open });
+        return { ...base, delivered: true, deliveryOutcome: 'sent' };
+      };
+      return input.deferDelivery
+        ? { ...base, delivered: false, deliveryOutcome: 'deferred', deliver }
+        : deliver();
+    }) as never);
+
+    await maybeDispatchEditionMigration(baseArgs());
+
+    expect(vi.mocked(dispatchScriptToDevice).mock.calls[0]![0]).toMatchObject({ deferDelivery: true });
+    expect(events).toEqual([
+      { kind: 'claim', open: 1 },
+      { kind: 'create', open: 1 },
+      { kind: 'send', open: 0 },
+    ]);
+    expect(captureMessage).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ eventCode: 'agent_edition_auto_migration_dispatched' }),
+    );
+  });
+
+  it('keeps the claim when a claim-time refusal comes back after commit', async () => {
+    const claim = primeHappyPath();
+    vi.mocked(dispatchScriptToDevice).mockResolvedValue({
+      ok: true,
+      commandId: 'cmd-1',
+      executionId: 'exec-1',
+      executedAt: null,
+      ignoredParameters: [],
+      runAs: 'system' as const,
+      targetSessionId: null,
+      delivered: false,
+      deliveryOutcome: 'deferred',
+      deliver: async () => ({ ok: false, code: 'secret_gate_unavailable', error: 'gate down' }),
+    } as never);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await expect(maybeDispatchEditionMigration(baseArgs())).resolves.toBeUndefined();
+
+    expect(captureException).toHaveBeenCalled();
+    expect(claim.set).not.toHaveBeenCalledWith({ editionMigrationDispatchedAt: null });
+    error.mockRestore();
   });
 });
