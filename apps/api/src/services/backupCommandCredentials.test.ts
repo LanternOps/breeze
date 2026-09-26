@@ -41,6 +41,7 @@ const DEVICE = '33333333-3333-4333-8333-333333333333';
 const CONFIG = '44444444-4444-4444-8444-444444444444';
 const COMMAND = '55555555-5555-4555-8555-555555555555';
 
+const LOCAL_CONFIG = { path: '/srv/backups' };
 const S3_CONFIG = {
   bucket: 'tenant-bucket',
   region: 'us-east-1',
@@ -97,14 +98,14 @@ describe('materializeBackupStorageCredentials', () => {
     hasDbAccessContextMock.mockReturnValue(false);
     withDbAccessContextMock.mockImplementation(async (_ctx, fn) => fn());
     deviceRows([{ id: DEVICE }]);
-    resolveReadMock.mockResolvedValue({ provider: 's3', providerConfig: S3_CONFIG });
+    resolveReadMock.mockResolvedValue({ provider: 'local', providerConfig: LOCAL_CONFIG });
   });
 
-  it('resolves the referenced destination at delivery and returns the wire shape agents already read', async () => {
+  it('resolves a local read destination at delivery and returns the wire shape agents already read', async () => {
     const stored = {
       restoreJobId: 'restore-1',
       snapshotId: 'snap-1',
-      ...backupReadCredentialPayload(CONFIG, ORG, 's3'),
+      ...backupReadCredentialPayload(CONFIG, ORG, 'local'),
     };
 
     const out = await materializeBackupStorageCredentials(stored, ctx('backup_restore'));
@@ -113,17 +114,27 @@ describe('materializeBackupStorageCredentials', () => {
     expect(out).toEqual({
       restoreJobId: 'restore-1',
       snapshotId: 'snap-1',
-      provider: 's3',
-      providerConfig: S3_CONFIG,
+      provider: 'local',
+      providerConfig: LOCAL_CONFIG,
     });
-    // The stored row is never mutated: the credential exists only in the
+    // The stored row is never mutated: the destination exists only in the
     // outgoing frame.
     expect(stored).not.toHaveProperty('providerConfig');
   });
 
+  it.each(['backup_restore', 'backup_verify', 'backup_test_restore', 'mssql_restore', 'mssql_verify', 'hyperv_restore'])(
+    'never resolves an S3 destination for the read %s: reads are served through storage sessions',
+    async (type) => {
+      resolveReadMock.mockResolvedValue({ provider: 's3', providerConfig: S3_CONFIG });
+      await expect(
+        materializeBackupStorageCredentials(backupReadCredentialPayload(CONFIG, ORG, 's3'), ctx(type)),
+      ).rejects.toBeInstanceOf(CommandDeliveryRefusedError);
+    },
+  );
+
   it('opens an organization-scoped context for the referenced org when none is held', async () => {
     await materializeBackupStorageCredentials(
-      backupReadCredentialPayload(CONFIG, ORG, 's3'),
+      backupReadCredentialPayload(CONFIG, ORG, 'local'),
       ctx('backup_verify'),
     );
     expect(withDbAccessContextMock).toHaveBeenCalledTimes(1);
@@ -137,7 +148,7 @@ describe('materializeBackupStorageCredentials', () => {
   it('joins the context the delivery path already holds instead of opening a second one', async () => {
     hasDbAccessContextMock.mockReturnValue(true);
     await materializeBackupStorageCredentials(
-      backupReadCredentialPayload(CONFIG, ORG, 's3'),
+      backupReadCredentialPayload(CONFIG, ORG, 'local'),
       ctx('mssql_restore'),
     );
     expect(withDbAccessContextMock).not.toHaveBeenCalled();
@@ -163,7 +174,7 @@ describe('materializeBackupStorageCredentials', () => {
   });
 
   it('refuses when the destination provider changed after the command was queued', async () => {
-    resolveReadMock.mockResolvedValue({ provider: 'local', providerConfig: { path: '/srv/backups' } });
+    resolveReadMock.mockResolvedValue({ provider: 'local', providerConfig: LOCAL_CONFIG });
     await expect(
       materializeBackupStorageCredentials(backupReadCredentialPayload(CONFIG, ORG, 's3'), ctx('backup_restore')),
     ).rejects.toBeInstanceOf(CommandDeliveryRefusedError);

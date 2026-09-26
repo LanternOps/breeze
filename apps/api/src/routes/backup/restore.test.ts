@@ -127,6 +127,7 @@ vi.mock('../../services/resilienceSiteAuthorization', async (importOriginal) => 
 
 import { restoreRoutes } from './restore';
 import { ResilienceAuthorizationError } from '../../services/resilienceSiteAuthorization';
+import { BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE } from '../../services/backupReadHelperGate';
 
 describe('restore routes', () => {
   let app: Hono;
@@ -639,6 +640,53 @@ describe('restore routes', () => {
     });
 
     expect(res.status).toBe(502);
+    expect(updateMock).toHaveBeenCalled();
+  });
+
+  it('marks the restore failed and returns 409 with the update instruction when the device backup helper is too old', async () => {
+    selectMock
+      .mockReturnValueOnce(
+        chainMock([{ id: 'snap-db-1', orgId: 'org-1', deviceId: 'device-1', snapshotId: 'provider-snap-1', configId: 'cfg-1' }])
+      )
+      .mockReturnValueOnce(chainMock([{ id: 'device-1', status: 'online' }]))
+      .mockReturnValueOnce(chainMock([{ provider: 's3', providerConfig: { bucket: 'breeze-backups', region: 'us-east-1' } }]));
+    insertMock.mockReturnValueOnce(
+      chainMock([{
+        id: 'restore-1',
+        snapshotId: 'snap-db-1',
+        deviceId: 'device-1',
+        restoreType: 'full',
+        selectedPaths: [],
+        status: 'pending',
+        targetPath: null,
+        startedAt: null,
+        completedAt: null,
+        restoredSize: null,
+        restoredFiles: null,
+        targetConfig: null,
+        commandId: null,
+        createdAt: new Date('2026-04-01T00:00:00Z'),
+        updatedAt: new Date('2026-04-01T00:00:00Z'),
+      }])
+    );
+    queueCommandForExecutionMock.mockResolvedValueOnce({
+      error: BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE,
+    });
+    updateMock.mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([]),
+        returning: vi.fn().mockResolvedValue([]),
+      }),
+    } as any);
+
+    const res = await app.request('/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snapshotId: 'snap-db-1', restoreType: 'full' }),
+    });
+
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toBe(BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE);
     expect(updateMock).toHaveBeenCalled();
   });
 

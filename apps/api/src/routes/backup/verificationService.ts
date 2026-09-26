@@ -39,6 +39,7 @@ import {
   captureRecoveryAuthorizationSubject,
   type CapturedRecoveryAuthorizationSubject,
 } from '../../services/recoveryAuthorizationSubject';
+import { isBackupHelperUpdateRequiredError } from '../../services/backupReadHelperGate';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -762,13 +763,16 @@ async function runBackupVerificationInternal(
       recordBackupDispatchFailure('backup_verification', reason);
       throw new BackupVerificationDispatchError(dispatchResult.error, 409);
     }
+    const helperUpdateRequired = isBackupHelperUpdateRequiredError(dispatchResult.error);
     recordBackupDispatchFailure(
       'backup_verification',
-      dispatchResult.error.startsWith('Device is ') ? 'device_offline' : 'enqueue_failed'
+      helperUpdateRequired
+        ? 'helper_update_required'
+        : dispatchResult.error.startsWith('Device is ') ? 'device_offline' : 'enqueue_failed'
     );
     throw new BackupVerificationDispatchError(
       dispatchResult.error,
-      dispatchResult.error.startsWith('Device is ') ? 409 : 502
+      helperUpdateRequired || dispatchResult.error.startsWith('Device is ') ? 409 : 502
     );
   }
 

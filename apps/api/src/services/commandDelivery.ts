@@ -6,6 +6,7 @@ import { hasDbAccessContext, withDbTransaction } from '../db';
 import { BROKERED_READ_COMMAND_TYPES, deliverBrokeredReadCommand } from './backupStorageSessions';
 import { expireRefusedClaimedCommandDelivery, releaseClaimedCommandDelivery } from './commandDispatch';
 import {
+  isCommandDeliveryDeferral,
   isCommandDeliveryRefusal,
   type DeliveryRefreshContext,
 } from './commandDeliveryRefusal';
@@ -18,6 +19,7 @@ import {
 import { captureException } from './sentry';
 
 export {
+  CommandDeliveryDeferredError,
   CommandDeliveryRefusedError,
   type DeliveryRefreshContext,
 } from './commandDeliveryRefusal';
@@ -35,6 +37,9 @@ export {
  * releases the row back to `pending` rather than delivering a stale payload;
  * throwing `CommandDeliveryRefusedError` expires the row instead (it can never
  * be delivered as queued, so re-claiming it on every heartbeat is pointless).
+ * Throwing `CommandDeliveryDeferredError` releases the row like an ordinary
+ * error, but records why and is not reported as a fault: the command will be
+ * deliverable shortly (a snapshot file index that is still being prepared).
  *
  * `ctx` identifies the command being prepared — id, device, type and the claim
  * timestamp of this delivery attempt — so a refresher can bind what it mints
@@ -88,11 +93,11 @@ registerDeliveryRefresher('software_install', async (payload) => {
 // never written to `device_commands` (see services/backupCommandCredentials.ts).
 //
 // Restore-shaped READS go through ONE refresher that delivers a short-lived
-// storage session instead of the destination when the device's backup helper
-// supports it, and otherwise falls back to resolving the destination exactly
-// as the write path does (services/backupStorageSessions.ts). One refresher
-// per type: the storage-session refresher composes the destination refresher,
-// it does not compete with it.
+// storage session instead of the destination; a read that cannot be brokered
+// is refused or deferred, never sent the destination — except a local one,
+// which is a path, not a credential (services/backupStorageSessions.ts). One
+// refresher per type: the storage-session refresher composes the destination
+// refresher, it does not compete with it.
 for (const type of BROKERED_READ_COMMAND_TYPES) {
   registerDeliveryRefresher(type, deliverBrokeredReadCommand);
 }
@@ -250,6 +255,40 @@ async function expireRefusedClaim(
 }
 
 /**
+ * Release a claimed row whose refresher DEFERRED it, recording why. Best-effort
+ * like the other release paths: a failure is reported, never thrown.
+ */
+async function releaseDeferredClaim(
+  commandId: string,
+  type: string,
+  claimedAt: Date | null,
+  reason: string,
+): Promise<void> {
+  console.warn('[commandDelivery] delivery deferred; releasing the row for a later attempt', {
+    commandId,
+    type,
+    reason,
+  });
+  try {
+    if (!claimedAt) {
+      throw new Error('claimed command row has no executedAt — cannot release');
+    }
+    await releaseClaimedCommandDelivery(commandId, claimedAt, reason);
+  } catch (releaseErr) {
+    const releaseMessage = releaseErr instanceof Error ? releaseErr.message : String(releaseErr);
+    console.error(
+      '[commandDelivery] failed to release a command whose delivery was deferred; it will strand as sent until the stale reaper times it out',
+      { commandId, type, error: releaseMessage },
+    );
+    captureException(
+      new Error(
+        `[commandDelivery] release after delivery deferral failed (commandId=${commandId}, type=${type}): ${releaseMessage}`,
+      ),
+    );
+  }
+}
+
+/**
  * Run one command's refresher. When the caller already holds a transaction
  * (the heartbeat's organization-scoped transaction, the REST poll and drain
  * system contexts, a request context on the enqueue-time push) the refresher
@@ -315,6 +354,10 @@ async function refreshClaimedCommandPayloads(
         await expireRefusedClaim(cmd.id, cmd.type, cmd.executedAt, message);
         continue;
       }
+      if (isCommandDeliveryDeferral(err)) {
+        await releaseDeferredClaim(cmd.id, cmd.type, cmd.executedAt, message);
+        continue;
+      }
       console.error(
         '[commandDelivery] delivery refresher failed; releasing the row for a later heartbeat rather than delivering a stale payload',
         { commandId: cmd.id, type: cmd.type, error: message },
@@ -371,6 +414,12 @@ export async function refreshClaimedPayloadForPush(
       });
       await expireRefusedClaim(ctx.commandId, type, ctx.claimedAt, message);
       return { ok: false, refusal: message };
+    }
+    if (isCommandDeliveryDeferral(err)) {
+      // Released here with its reason, so the caller's own release is a 0-row
+      // no-op; the next claim tries again.
+      await releaseDeferredClaim(ctx.commandId, type, ctx.claimedAt, message);
+      return { ok: false, refusal: null };
     }
     console.error('[commandDelivery] delivery refresher failed on a direct push', {
       commandId: ctx.commandId,

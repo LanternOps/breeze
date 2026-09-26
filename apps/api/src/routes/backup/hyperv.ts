@@ -39,6 +39,7 @@ import {
 import { parseAgentJsonStdout } from '../../services/agentCommandStdout';
 import { applyBackupStartedAck, isBackupQueuedAck, isBackupStartedAck } from '../../services/backupProgress';
 import { normalizeStorageIdentity } from '../../jobs/backupRetention';
+import { isBackupHelperUpdateRequiredError } from '../../services/backupReadHelperGate';
 
 const deviceIdParamSchema = z.object({
   deviceId: z.string().guid(),
@@ -456,7 +457,9 @@ hypervRoutes.post(
 // reject-on-offline restore command, not an infra failure — surface it as
 // 409 so callers/monitoring can distinguish it from a genuine enqueue error.
 function mapDispatchErrorStatus(error: string): number {
-  return error.startsWith('Device is ') ? 409 : 502;
+  // Both are states of the target device the operator can act on, not
+  // dispatch failures.
+  return error.startsWith('Device is ') || isBackupHelperUpdateRequiredError(error) ? 409 : 502;
 }
 
 // ── POST /hyperv/restore — Trigger VM restore (import) ──────────────

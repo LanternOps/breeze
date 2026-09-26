@@ -172,6 +172,7 @@ vi.mock('../../services/resilienceSiteAuthorization', async (importOriginal) => 
 
 import { authMiddleware } from '../../middleware/auth';
 import { ResilienceAuthorizationError } from '../../services/resilienceSiteAuthorization';
+import { BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE } from '../../services/backupReadHelperGate';
 
 describe('mssql routes', () => {
   let app: Hono;
@@ -750,6 +751,37 @@ describe('mssql routes', () => {
     expect(await res.json()).toEqual({ error: 'Device is offline, cannot execute command' });
   });
 
+  it('reports a 409 with the update instruction when the device backup helper is too old', async () => {
+    selectMock.mockReturnValueOnce(chainMock([{
+        id: 'snapshot-db-1',
+        providerSnapshotId: 'provider-snapshot-1',
+        metadata: {
+          backupKind: 'mssql_database',
+          instance: 'MSSQLSERVER',
+          backupFileName: 'AppDb_full_20260331.bak',
+        },
+        configId: 'config-1',
+    }]));
+    queueDestinationConfigSelect();
+    dispatchTrackedDbRestoreMock.mockResolvedValueOnce({
+      ok: false,
+      error: BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE,
+    });
+
+    const res = await app.request('/backup/mssql/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        deviceId: DEVICE_ID,
+        snapshotId: SNAPSHOT_DB_ID,
+        targetDatabase: 'AppDb_Restore',
+      }),
+    });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE });
+  });
+
   // D20b item D: a snapshot that predates destination tracking (configId
   // NULL) must fail with a clear, distinct error — never silently dispatch
   // a restore the helper can't act on, and never guess the device's CURRENT
@@ -819,6 +851,26 @@ describe('mssql routes', () => {
       expect.objectContaining({ userId: 'user-123' })
     );
     expect(executeCommandMock.mock.lastCall?.[2]).not.toHaveProperty('providerConfig');
+  });
+
+  it('answers 409 with the update instruction when the device backup helper cannot verify', async () => {
+    selectMock.mockReturnValueOnce(chainMock([{
+      id: SNAPSHOT_DB_ID,
+      deviceId: DEVICE_ID,
+      providerSnapshotId: 'provider-snapshot-1',
+      metadata: { backupKind: 'mssql_database', instance: 'MSSQLSERVER', backupFileName: 'AppDb_full_20260331.bak' },
+      configId: 'config-1',
+    }]));
+    queueDestinationConfigSelect();
+    executeCommandMock.mockResolvedValueOnce({ status: 'failed', error: BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE });
+
+    const res = await app.request(`/backup/mssql/verify/${SNAPSHOT_DB_ID}`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE });
   });
 
   it('rejects cross-org device discovery', async () => {

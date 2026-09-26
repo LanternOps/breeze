@@ -12,6 +12,7 @@ import {
 import { deliverByFor, resolveOfflinePolicy, type OfflinePolicy } from './commandOfflinePolicy';
 import { queueCommand, type CommandPayload, type QueuedCommand } from './commandQueue';
 import { assertDeviceExecuteAllowed, TrustDeniedError } from './partnerTrust.commands';
+import { backupReadHelperRefusal } from './backupReadHelperGate';
 import { captureException } from './sentry';
 import { decryptCommandForDelivery, toAgentCommandFrame } from './sensitiveCommandPayload';
 
@@ -50,7 +51,12 @@ export type DispatchDeviceCommandResult =
     }
   | {
       ok: false;
-      code: 'device_not_found' | 'device_offline' | 'device_decommissioned' | 'trust_denied';
+      code:
+        | 'device_not_found'
+        | 'device_offline'
+        | 'device_decommissioned'
+        | 'trust_denied'
+        | 'backup_helper_update_required';
       error: string;
       trust?: { capability: 'device_execute'; reason: string };
     };
@@ -160,8 +166,19 @@ async function prepareDeviceCommand(
     throw e;
   }
 
-  const deliverBy = deliverByFor(policy);
   const payload = input.payload ?? {};
+
+  // A storage read to a helper that cannot use a storage session could only
+  // be served by sending it the storage destination, which is never done for
+  // a read. Refused here, before a row exists, so the caller can say so; the
+  // delivery refresher enforces the same rule against the helper's reported
+  // capability at the moment of delivery.
+  const helperRefusal = backupReadHelperRefusal(input.type, payload, device.backupReadProtocolVersion);
+  if (helperRefusal) {
+    return { ok: false, code: 'backup_helper_update_required', error: helperRefusal };
+  }
+
+  const deliverBy = deliverByFor(policy);
   const command = await queueCommand(input.deviceId, input.type, payload, input.userId, {
     ...(input.commandId ? { commandId: input.commandId } : {}),
     deliverBy,
