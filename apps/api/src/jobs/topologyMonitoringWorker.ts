@@ -1,6 +1,7 @@
 import { captureException } from '../services/sentry';
 import { drainTopologyAlertTransitions } from '../services/topology/monitoringAlerts';
 import { drainTopologyMonitoringAssessments } from '../services/topology/monitoringAssessment';
+import { recordTopologyAssessment, recordTopologySchedulerOccurrences } from '../services/topology/metrics';
 import { dispatchDueTopologyPolicies } from '../services/topology/monitoringScheduler';
 import { ensureTopologyTelemetryArmAuthority } from '../services/topology/telemetryArmFence';
 import { dispatchDueTopologyTelemetryArms } from '../services/topology/telemetryArms';
@@ -22,10 +23,17 @@ let running: Promise<unknown> | null = null;
 
 export async function runTopologyMonitoringTick(): Promise<void> {
   ensureTopologyTelemetryArmAuthority();
-  await dispatchDueTopologyPolicies();
+  const scheduled = await dispatchDueTopologyPolicies();
+  recordTopologySchedulerOccurrences('dispatched', scheduled.scheduled);
+  recordTopologySchedulerOccurrences('quota_gap', scheduled.gaps);
+  recordTopologySchedulerOccurrences('skipped', scheduled.skipped);
+  recordTopologySchedulerOccurrences('disarmed', scheduled.disarmed);
   await dispatchDueTopologyTelemetryArms();
   // M3 Task 8 typed consumers (M3-D15): streaks/alerts, then notification fan-out.
-  await drainTopologyMonitoringAssessments();
+  const assessed = await drainTopologyMonitoringAssessments();
+  recordTopologyAssessment('applied', assessed.applied);
+  recordTopologyAssessment('alert_opened', assessed.opened);
+  recordTopologyAssessment('alert_recovered', assessed.recovered);
   await drainTopologyAlertTransitions();
 }
 
