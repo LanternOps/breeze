@@ -112,20 +112,6 @@ export const VALIDATED_INLINE_SETTINGS: Record<string, { schema: { safeParse: (r
 };
 
 /**
- * #6669: appended to an alert_rule rejection on a condition `type` or `level`.
- * Those are the two fields the model reaches for when it wants "tell me if an
- * app is removed". Neither can express that, and a bare enum error sent it
- * guessing until it found an event_log rule that could never fire (#6666).
- */
-export const ALERT_RULE_APP_PRESENCE_HINT =
-  'Valid condition types: "metric", "offline", "event_log"; valid event_log levels: "warning", "error", "critical" (a floor: that level and above). '
-  + 'Information-level events can never match, so event_log cannot detect software installs or uninstalls. '
-  + 'To detect a missing or removed app, use featureType "compliance" with a { type: "required_software", softwareName } rule. '
-  + 'It reports the device non-compliant (configuration_policy_compliance). Configuration-policy compliance does not currently create an alert.';
-
-const ALERT_RULE_HINT_PATH = /conditions\.\d+\.(type|level):/i;
-
-/**
  * Refuses an assistant-authored automation action that asks to run a script
  * ELEVATED (#4888).
  *
@@ -203,15 +189,11 @@ function validateInlineSettingsForFeature(
   const parsed = entry.schema.safeParse(raw);
   if (!parsed.success) {
     // describeFirstZodIssue prefixes the field path AND unwraps `invalid_union`
-    // into the offending sub-issue: alert-rule conditions are a union several
-    // levels deep inside items[], and the raw union issue is a bare
-    // "Invalid input" that tells the model nothing about what to fix.
+    // into the offending sub-issue: a raw union issue is a bare "Invalid input"
+    // that tells the model nothing about what to fix.
     const described = describeFirstZodIssue(parsed.error);
     if (!described) return { error: `Invalid ${featureType} inline settings.` };
-    const hint = featureType === 'alert_rule' && ALERT_RULE_HINT_PATH.test(described)
-      ? ` ${ALERT_RULE_APP_PRESENCE_HINT}`
-      : '';
-    return { error: `Invalid ${featureType} inline settings — ${described}${hint}` };
+    return { error: `Invalid ${featureType} inline settings — ${described}` };
   }
   return { value: entry.normalize ? parsed.data : raw };
 }

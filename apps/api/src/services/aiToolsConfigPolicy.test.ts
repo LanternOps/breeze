@@ -1492,41 +1492,6 @@ describe('manage_policy_feature_link compliance validation + rejection hints (#6
     expect(vi.mocked(addFeatureLink)).toHaveBeenCalledWith(POLICY_ID, 'compliance', null, raw);
   });
 
-  it('points an app-presence alert_rule guess at the compliance required_software rule and lists the valid condition types', async () => {
-    const out = await add('alert_rule', {
-      items: [{ name: 'App removed', conditions: [{ type: 'software_presence', softwareName: 'Contoso Agent' }] }],
-    });
-    expect(out.error).toContain('items.0.conditions.0.type');
-    for (const type of ['metric', 'offline', 'event_log']) expect(out.error).toContain(type);
-    expect(out.error).toContain('required_software');
-    expect(out.error).toContain('compliance');
-    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
-  });
-
-  it('on a rejected event_log level lists the valid levels and says Information events are not collected', async () => {
-    const out = await add('alert_rule', {
-      items: [{ name: 'Uninstall', conditions: [{ type: 'event_log', category: 'application', level: 'info', sourcePattern: 'MsiInstaller' }] }],
-    });
-    expect(out.error).toContain('items.0.conditions.0.level');
-    for (const level of ['warning', 'error', 'critical']) expect(out.error).toContain(level);
-    expect(out.error).toMatch(/Information-level events can never match/);
-    expect(out.error).toContain('required_software');
-    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
-  });
-
-  it('attaches the hint to a bad type inside autoResolveConditions too', async () => {
-    const out = await add('alert_rule', {
-      items: [{
-        name: 'CPU',
-        conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 80 }],
-        autoResolveConditions: [{ type: 'software_presence' }],
-      }],
-    });
-    expect(out.error).toContain('items.0.autoResolveConditions.0.type');
-    expect(out.error).toContain('required_software');
-    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
-  });
-
   it('validates compliance on the UPDATE action (featureType re-derived from the stored link)', async () => {
     vi.mocked(updateFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'compliance' } as any);
     mockSelectRows([{ featureType: 'compliance' }]);
@@ -1540,14 +1505,6 @@ describe('manage_policy_feature_link compliance validation + rejection hints (#6
     expect(error).toContain('compliance');
     expect(error).toContain('items.0.rules.0.softwareName');
     expect(vi.mocked(updateFeatureLink)).not.toHaveBeenCalled();
-  });
-
-  it('does not attach the app-presence hint to an unrelated alert_rule error', async () => {
-    const out = await add('alert_rule', {
-      items: [{ name: 'CPU', conditions: [{ type: 'metric', metric: 'bogus', operator: 'gt', value: 80 }] }],
-    });
-    expect(out.error).toContain('items.0.conditions.0.metric');
-    expect(out.error).not.toContain('required_software');
   });
 
   it('describe returns a validated example alongside the compliance reference', async () => {
