@@ -83,8 +83,29 @@ function hostAliases(texts: string[], snapshot: TopologyAiEvidenceSnapshot, unav
   return [...mapped].slice(0, TOPOLOGY_AI_LIMITS.citations).map(([alias, nodeId]) => ({ alias, nodeId }));
 }
 
-function finish(findings: TopologyAiFinding[], missingData: string[], nextChecks: TopologyAiNextCheck[], reasons: Set<string>, snapshot: TopologyAiEvidenceSnapshot, status?: TopologyAiExplanation['status'], unavailable: ReadonlySet<string> = new Set()): TopologyAiExplanation {
-  const citationIds = [...new Set([...findings.flatMap((f) => f.citationIds), ...nextChecks.flatMap((c) => c.citationIds)])].slice(0, TOPOLOGY_AI_LIMITS.citations);
+/**
+ * Keep statements, in order, only while their citations fit the published
+ * citation cap: a statement whose citations would be truncated away is
+ * DROPPED (`citation_limit`), never published pointing at ids the top-level
+ * citation list no longer carries.
+ */
+function withinCitationCap<T extends { citationIds: string[] }>(items: T[], published: Set<string>, reasons: Set<string>): T[] {
+  return items.filter((item) => {
+    const added = item.citationIds.filter((id) => !published.has(id));
+    if (published.size + added.length > TOPOLOGY_AI_LIMITS.citations) {
+      reasons.add('citation_limit');
+      return false;
+    }
+    for (const id of added) published.add(id);
+    return true;
+  });
+}
+
+function finish(allFindings: TopologyAiFinding[], missingData: string[], allNextChecks: TopologyAiNextCheck[], reasons: Set<string>, snapshot: TopologyAiEvidenceSnapshot, status?: TopologyAiExplanation['status'], unavailable: ReadonlySet<string> = new Set()): TopologyAiExplanation {
+  const published = new Set<string>();
+  const findings = withinCitationCap(allFindings, published, reasons);
+  const nextChecks = withinCitationCap(allNextChecks, published, reasons);
+  const citationIds = [...published];
   const aliases = hostAliases([...findings.map((f) => f.text), ...missingData, ...nextChecks.map((c) => c.rationale)], snapshot, unavailable);
   return topologyAiExplanationSchema.parse({
     schemaVersion: 1,

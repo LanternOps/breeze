@@ -100,6 +100,40 @@ describe('validateTopologyAiExplanation (M4 Task 2)', () => {
   });
 });
 
+describe('citation cap (review C6)', () => {
+  // 12 findings x 8 distinct citations = 96 > the 64-citation cap. A finding
+  // whose citations fall past the cap must be DROPPED, never published with
+  // ids the top-level citation list no longer carries.
+  const many = Object.fromEntries(Array.from({ length: 96 }, (_, i) => {
+    const id = `31000000-0000-4000-8000-${String(i).padStart(12, '0')}`;
+    return [id, { id, resourceType: 'node' as const, resourceId: id, observedAt: null, inspectorTarget: { kind: 'node' as const, id }, supports: ['topology' as const, 'health' as const] }];
+  }));
+  const ids = Object.keys(many);
+  const capped: TopologyAiEvidenceSnapshot = { ...emptyEvidenceSnapshot, manifest: many };
+
+  it('never publishes a finding whose citations were truncated away', () => {
+    const findings = Array.from({ length: 12 }, (_, i) => ({ kind: 'finding', claim: 'topology', text: `Finding ${i}.`, citationIds: ids.slice(i * 8, i * 8 + 8) }));
+    const result = validateTopologyAiExplanation(output(findings), capped);
+    const published = new Set(result.citationIds);
+    expect(result.citationIds.length).toBeLessThanOrEqual(64);
+    for (const finding of result.findings) {
+      expect(finding.citationIds.length).toBeGreaterThan(0);
+      for (const id of finding.citationIds) expect(published.has(id)).toBe(true);
+    }
+    for (const check of result.nextChecks) for (const id of check.citationIds) expect(published.has(id)).toBe(true);
+    expect(result.findings).toHaveLength(8);
+    expect(result.reasons).toContain('citation_limit');
+    expect(result.status).toBe('partial');
+  });
+
+  it('drops a next check whose citations do not fit either', () => {
+    const findings = Array.from({ length: 8 }, (_, i) => ({ kind: 'finding', claim: 'topology', text: `Finding ${i}.`, citationIds: ids.slice(i * 8, i * 8 + 8) }));
+    const result = validateTopologyAiExplanation(output(findings, { nextChecks: [{ recipeId: 'gateway_basic', rationale: 'Check it.', citationIds: [ids[70]!] }] }), capped);
+    expect(result.nextChecks).toEqual([]);
+    expect(result.reasons).toContain('citation_limit');
+  });
+});
+
 describe('host alias display mapping (M4 Task 5)', () => {
   const ALIAS = 'host-1a2b3c4d';
   const aliased: TopologyAiEvidenceSnapshot = {
