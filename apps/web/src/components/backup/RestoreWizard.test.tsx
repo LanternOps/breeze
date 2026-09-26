@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import RestoreWizard from './RestoreWizard';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 
 vi.mock('../../stores/auth', () => ({
@@ -351,6 +352,51 @@ describe('RestoreWizard', () => {
 
     expect(await screen.findByText('1.10 GB')).toBeTruthy();
     expect(screen.queryByText('--')).toBeNull();
+  });
+
+  it('shows the snapshot capture time instead of a hard-coded "Ready" status (#6496)', async () => {
+    // /backup/snapshots carries no status field; the card used to print a
+    // fabricated "Ready" for every row. It now shows the real createdAt.
+    const createdAt = '2026-09-20T14:08:00.000Z';
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/snapshots') {
+        return makeJsonResponse({
+          data: [{ id: 'snap-1', label: 'Server snapshot', sizeBytes: 1024, createdAt }],
+        });
+      }
+      if (url === '/backup/snapshots/snap-1/browse') return makeJsonResponse({ data: [] });
+      if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<RestoreWizard />);
+    await screen.findByText('Server snapshot');
+
+    expect(screen.queryByText('Ready')).toBeNull();
+    expect(screen.getByText(formatDateTime(createdAt))).toBeTruthy();
+  });
+
+  it('renders no status text when the snapshot has no createdAt (#6496)', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/snapshots') {
+        return makeJsonResponse({
+          data: [{ id: 'snap-1', label: 'Server snapshot', sizeBytes: 1024, createdAt: null }],
+        });
+      }
+      if (url === '/backup/snapshots/snap-1/browse') return makeJsonResponse({ data: [] });
+      if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<RestoreWizard />);
+    const label = await screen.findByText('Server snapshot');
+
+    const meta = label.previousElementSibling as HTMLElement;
+    expect(meta.children).toHaveLength(1);
+    expect(meta.textContent).toBe('1.00 KB');
+    expect(screen.queryByText('Ready')).toBeNull();
   });
 
   it('formats snapshot file sizes as bytes/KB/MB instead of raw byte counts (#6496)', async () => {
