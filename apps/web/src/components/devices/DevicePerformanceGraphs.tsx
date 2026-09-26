@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, ArrowDown, ArrowUp, HardDrive } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -15,6 +15,7 @@ import {
 } from 'recharts';
 import { formatDate, formatDateTime, formatTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
+import { createCancellableRequest, type CancellableRequest } from '../../lib/cancellableRequest';
 import ProcessDrilldownPanel from './ProcessDrilldownPanel';
 import { formatNumber } from '@/lib/i18n/format';
 
@@ -96,7 +97,17 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
   const [error, setError] = useState<string>();
   const [drilldownAt, setDrilldownAt] = useState<string | null>(null);
 
+  // The one in-flight metrics request. A new load (range change, device
+  // change, retry) cancels the previous one, and unmount cancels whatever is
+  // left, so a soft navigation / org switch away from the device page does
+  // not leave this fetch holding a connection for a response nobody renders
+  // — nor let a late response overwrite the newer view (#4513).
+  const requestRef = useRef<CancellableRequest | null>(null);
+
   const fetchMetrics = useCallback(async () => {
+    requestRef.current?.cancel();
+    const request = createCancellableRequest();
+    requestRef.current = request;
     setLoading(true);
     setError(undefined);
     try {
@@ -113,7 +124,7 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
         interval: rangeIntervals[timeRange]
       });
 
-      const response = await fetchWithAuth(`/devices/${deviceId}/metrics?${params}`);
+      const response = await fetchWithAuth(`/devices/${deviceId}/metrics?${params}`, { signal: request.signal });
       if (!response.ok) throw new Error('Failed to fetch performance metrics');
       const json = await response.json();
       const payload = json?.data ?? json;
@@ -132,16 +143,20 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
             bandwidthOutBps: Number(point.bandwidthOutBps ?? 0)
           }))
         : [];
+      if (request.cancelled) return;
       setData(normalized);
     } catch (err) {
+      if (request.cancelled) return;
       setError(err instanceof Error ? err.message : 'Failed to fetch performance metrics');
     } finally {
-      setLoading(false);
+      request.settle();
+      if (!request.cancelled) setLoading(false);
     }
   }, [deviceId, timeRange]);
 
   useEffect(() => {
-    fetchMetrics();
+    void fetchMetrics();
+    return () => requestRef.current?.cancel();
   }, [fetchMetrics]);
 
   // Process drilldown is time-keyed, not metric-specific: clicking any chart
@@ -200,7 +215,7 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
         <p className="text-sm text-destructive">{error}</p>
         <button
           type="button"
-          onClick={fetchMetrics}
+          onClick={() => void fetchMetrics()}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
           {t('common:actions.retry')}
