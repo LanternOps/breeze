@@ -41,7 +41,7 @@ describe('ConversionPendingBanner', () => {
     expect(onReview).toHaveBeenCalled();
   });
   it('uses singular forms for one rule and one policy (sweep F5)', async () => {
-    fetchPendingCounts.mockResolvedValue({ policies: 1, rows: 1 });
+    fetchPendingCounts.mockResolvedValue({ policies: 1, rows: 1, unconvertible: [], sweep: null });
     render(<ConversionPendingBanner orgId="org-1" onReview={vi.fn()} />);
     const banner = await screen.findByTestId('conversion-pending-banner');
     expect(banner).toHaveTextContent('1 legacy rule across 1 policy');
