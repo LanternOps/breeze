@@ -71,17 +71,15 @@ export interface RecordStripePaymentOptions {
  * reject, so the portal settle route would answer { settled:false } and the sweep
  * would count a failure for money that is already recorded (and a webhook would
  * 500 into a Stripe retry that short-circuits on the linked mapping). So a failure
- * is logged and reported to Sentry, never propagated. Returns false on failure so
- * a caller that depends on the step's result can react.
+ * is logged and reported to Sentry, never propagated.
  */
 async function afterCommit(
   stage: string,
   ctx: { partnerId: string; invoiceId: string; stripeObjectId: string },
   fn: () => Promise<void>,
-): Promise<boolean> {
+): Promise<void> {
   try {
     await fn();
-    return true;
   } catch (err) {
     console.error(`[stripeReconcile] post-commit ${stage} failed (capture already committed)`,
       `invoiceId=${ctx.invoiceId}`, `stripeObjectId=${ctx.stripeObjectId}`, err instanceof Error ? err.message : err);
@@ -89,7 +87,6 @@ async function afterCommit(
       partner_id: ctx.partnerId,
       stripe_reconcile_stage: stage,
     });
-    return false;
   }
 }
 
