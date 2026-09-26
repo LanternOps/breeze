@@ -109,6 +109,7 @@ vi.mock('../db/schema', () => ({
   automations: {},
   automationRuns: {},
   automationRunDeviceResults: {},
+  automationActionResults: {},
   configurationPolicies: {},
   policies: {},
   policyCompliance: {},
@@ -150,6 +151,26 @@ function scriptExecutionsSelectMock(rows: any[]) {
             capturedScriptExecWhere.push(condition);
             return { orderBy: vi.fn().mockResolvedValue(rows) };
           }),
+        }),
+      }),
+    }),
+  } as any;
+}
+
+/**
+ * The run's `execute_command` action results (#3188) — the agent's real
+ * stdout for ad-hoc commands, which have no script_executions row. Issued
+ * third inside the same Promise.all. Captures WHERE so a test can prove the
+ * query is keyed on the run AND the action type.
+ */
+const capturedCommandResultsWhere: unknown[] = [];
+function commandResultsSelectMock(rows: any[]) {
+  return {
+    from: vi.fn().mockReturnValue({
+      innerJoin: vi.fn().mockReturnValue({
+        where: vi.fn((condition: unknown) => {
+          capturedCommandResultsWhere.push(condition);
+          return { orderBy: vi.fn().mockResolvedValue(rows) };
         }),
       }),
     }),
@@ -205,6 +226,7 @@ describe('automations routes', () => {
 	  beforeEach(() => {
 	    vi.clearAllMocks();
 	    capturedScriptExecWhere.length = 0;
+	    capturedCommandResultsWhere.length = 0;
 	    mockState.permissions = undefined;
 	    mockState.auth = undefined;
 	    vi.mocked(checkAutomationTargetsWithinSiteScope).mockResolvedValue({
@@ -483,7 +505,8 @@ describe('automations routes', () => {
         deviceId: 'device-visible', status: 'success', output: 'visible-output',
         hostname: 'visible-host', displayName: null, startedAt: safeRun.startedAt, completedAt: safeRun.completedAt,
       }]))
-      .mockReturnValueOnce(scriptExecutionsSelectMock([]));
+      .mockReturnValueOnce(scriptExecutionsSelectMock([]))
+      .mockReturnValueOnce(commandResultsSelectMock([]));
     projectAutomationRunsToSitesMock.mockResolvedValueOnce([safeRun]);
 
     const res = await app.request(`/automations/runs/${runId}`, {
@@ -1786,7 +1809,8 @@ describe('automations routes', () => {
       // Third select: per-device results (#2023).
       .mockReturnValueOnce(deviceResultsSelectMock([]))
       // Fourth select: the run's script executions (#3162).
-      .mockReturnValueOnce(scriptExecutionsSelectMock([]));
+      .mockReturnValueOnce(scriptExecutionsSelectMock([]))
+      .mockReturnValueOnce(commandResultsSelectMock([]));
 
     const res = await app.request('/automations/runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', {
       method: 'GET',
@@ -1924,7 +1948,8 @@ describe('automations routes', () => {
           errorMessage: 'script exited non-zero',
           createdAt: '2026-07-08T00:00:01.000Z',
         },
-      ]));
+      ]))
+      .mockReturnValueOnce(commandResultsSelectMock([]));
 
     const res = await app.request('/automations/runs/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', {
       method: 'GET',
@@ -2039,7 +2064,8 @@ describe('automations routes', () => {
           errorMessage: null,
           createdAt: '2026-07-08T00:00:00.000Z',
         },
-      ]));
+      ]))
+      .mockReturnValueOnce(commandResultsSelectMock([]));
 
     const res = await app.request('/automations/runs/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', {
       method: 'GET',
@@ -2053,6 +2079,110 @@ describe('automations routes', () => {
     // stdout is accepted up to 5MB per execution — it must not ship whole.
     expect(script.stdout.length).toBe(16_384);
     expect(script.stdoutTruncated).toBe(true);
+  });
+
+  it('returns execute_command output per device as commandResults (#3188)', async () => {
+    const longOutput = 'y'.repeat(20_000);
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+              automationId: '11111111-1111-4111-8111-111111111111',
+              status: 'completed',
+              logs: [],
+            }])
+          })
+        })
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: '11111111-1111-4111-8111-111111111111',
+              name: 'Automation One',
+              orgId: 'org-123',
+            }])
+          })
+        })
+      } as any)
+      .mockReturnValueOnce(deviceResultsSelectMock([
+        {
+          deviceId: 'device-1',
+          status: 'success',
+          startedAt: '2026-07-08T00:00:00.000Z',
+          completedAt: '2026-07-08T00:00:03.000Z',
+          output: null,
+          error: null,
+          hostname: 'HOST-1',
+          displayName: null,
+        },
+        {
+          deviceId: 'device-2',
+          status: 'running',
+          startedAt: '2026-07-08T00:00:00.000Z',
+          completedAt: null,
+          output: null,
+          error: null,
+          hostname: 'HOST-2',
+          displayName: null,
+        },
+      ]))
+      .mockReturnValueOnce(scriptExecutionsSelectMock([]))
+      .mockReturnValueOnce(commandResultsSelectMock([
+        {
+          deviceId: 'device-1',
+          actionIndex: 0,
+          status: 'succeeded',
+          output: 'ipconfig says hi',
+          error: null,
+          message: null,
+        },
+        // A second execute_command on the same device groups, in action order.
+        {
+          deviceId: 'device-1',
+          actionIndex: 2,
+          status: 'failed',
+          // SQL selects left(col, N+1); anything longer than N overflowed.
+          output: longOutput,
+          error: 'exit status 1',
+          message: null,
+        },
+        {
+          deviceId: 'device-2',
+          actionIndex: 0,
+          status: 'queued',
+          output: null,
+          error: null,
+          message: 'Queued — device offline',
+        },
+      ]));
+
+    const res = await app.request('/automations/runs/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const first = body.deviceResults[0].commandResults;
+    expect(first).toHaveLength(2);
+    expect(first[0]).toMatchObject({ actionIndex: 0, status: 'succeeded', output: 'ipconfig says hi' });
+    expect(first[0].outputTruncated).toBeUndefined();
+    expect(first[1]).toMatchObject({ actionIndex: 2, status: 'failed', error: 'exit status 1', outputTruncated: true });
+    expect(first[1].output.length).toBe(16_384);
+    expect(body.deviceResults[1].commandResults).toEqual([
+      { actionIndex: 0, status: 'queued', message: 'Queued — device offline' },
+    ]);
+    expect(body.deviceResults[0].scriptResults).toBeUndefined();
+
+    // Keyed on the run and restricted to execute_command actions — dropping
+    // either predicate would return every action result the caller can see.
+    expect(capturedCommandResultsWhere).toHaveLength(1);
+    const where = JSON.stringify(capturedCommandResultsWhere[0]);
+    expect(where).toContain('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
+    expect(where).toContain('execute_command');
   });
 
   // ============================================
