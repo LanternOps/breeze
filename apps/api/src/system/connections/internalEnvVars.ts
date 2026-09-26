@@ -344,6 +344,10 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   PARTNER_API_ENROLLMENT_KEY_MAX_TTL_MINUTES: 'timing knob',
   PARTNER_API_ENROLLMENT_KEY_WRITE_PARTNER_RATE_LIMIT: 'rate limit knob',
   PARTNER_API_ENROLLMENT_KEY_WRITE_RATE_LIMIT: 'rate limit knob',
+  PARTNER_API_IDEMPOTENCY_RETENTION_DAYS: 'data retention window',
+  PARTNER_API_IDEMPOTENCY_RETENTION_ENABLED: 'cleanup job toggle',
+  PARTNER_API_TICKET_WRITE_PARTNER_RATE_LIMIT_PER_HOUR: 'rate limit knob',
+  PARTNER_API_TICKET_WRITE_RATE_LIMIT_PER_HOUR: 'rate limit knob',
   PARTNER_MEETING_URL: 'partner onboarding copy link',
   PARTNER_TRUST_MODE: 'hosted partner trust mode',
   // PATH

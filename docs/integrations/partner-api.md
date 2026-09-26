@@ -133,6 +133,11 @@ See the MCP server documentation.
 | `GET /api/v1/partner-api/tickets/<ticket-uuid>` | `tickets:read` (opt-in) |
 | `GET /api/v1/partner-api/tickets/<ticket-uuid>/comments` | `tickets:read` (opt-in) |
 | `GET /api/v1/partner-api/device-status` | `device-status:read` (opt-in) |
+| `POST /api/v1/partner-api/tickets` | `tickets:write` (opt-in) |
+| `PATCH /api/v1/partner-api/tickets/<ticket-uuid>` | `tickets:write` (opt-in) |
+| `POST /api/v1/partner-api/tickets/<ticket-uuid>/status` | `tickets:write` (opt-in) |
+| `POST /api/v1/partner-api/tickets/<ticket-uuid>/assign` | `tickets:write` (opt-in) |
+| `POST /api/v1/partner-api/tickets/<ticket-uuid>/comments` | `tickets:write` (opt-in) |
 | `POST /api/v1/partner-api/organizations` | `organizations:write` |
 | `POST /api/v1/partner-api/sites` | `sites:write` |
 | `POST /api/v1/partner-api/enrollment-keys` | `enrollment-keys:write` |
@@ -667,3 +672,97 @@ Not part of the material-change snapshot or watermark:
 - Poll the whole list at the cadence you need.
 - `sourceUpdatedAt` on `/devices` tracks material changes only. It is not a
   last-seen signal.
+
+## Ticket writes (`tickets:write`)
+
+`tickets:write` lets a service principal open and work tickets in any
+organization it can reach — the surface a PSA/ITSM mirror or an automation
+platform needs. It is opt-in and never part of the default delegation.
+Every write runs through the same ticket service the staff UI uses, so the
+usual rules apply unchanged: the device, requester contact and portal user
+must belong to the ticket's organization, the assignee and category to the
+partner, Service Management must be on, and the status FSM is enforced.
+
+| Route | Body | Notes |
+|---|---|---|
+| `POST /tickets` | `orgId`, `subject`, `description?`, `priority?`, `dueDate?`, `deviceId?`, `categoryId?`, `assigneeId?`, `requesterContactId?`, `submitterName?`, `submitterEmail?`, `externalTicketId?`, `externalTicketUrl?` | `source` is always `api`. `orgId` outside the principal's organizations → `403 partner_tickets_org_access_denied`. Supports `X-Idempotency-Key`. Returns `201` with the record. |
+| `PATCH /tickets/<id>` | any of `subject`, `description`, `priority`, `dueDate`, `deviceId`, `categoryId`, `tags`, `requesterContactId`, `submitterName`, `submitterEmail`, `externalTicketId`, `externalTicketUrl` (`null` clears a nullable field) | Not `status` or `assigneeId` (use the dedicated routes), never SLA targets or the portal login. Unknown keys are a `400`. |
+| `POST /tickets/<id>/status` | exactly one of `status` (core value) or `statusId` (a custom status of the partner); `resolutionNote` (required when resolving), `pendingReason?` | Same coherence rules as the staff route, without AI drafts. Invalid transitions → `400 INVALID_TRANSITION`. |
+| `POST /tickets/<id>/assign` | `assigneeId` (a technician of the partner, or `null` to unassign) | Assigning a `new` ticket opens it. |
+| `POST /tickets/<id>/comments` | `content`, `isPublic` (**required**, no default) | `isPublic: true` is a customer-visible reply and emails the requester; `false` is an internal note. Supports `X-Idempotency-Key`. Returns `201` with the comment. |
+
+Every write answers with `{ schemaVersion, id, orgId, data }` (comments add
+`ticketId`), where `data` is the same record shape the feed returns — or
+`null` with a `blocked` entry when the secret scanner fires on the stored
+text; the ids are always present. A ticket in another partner, outside the
+principal's organizations, or soft-deleted is a `404 partner_ticket_not_found`
+on every by-id route.
+
+**Attribution.** A partner service principal has no human owner and acts as
+itself, identified by the principal id (stable across key rotations):
+comments and feed entries name the principal (`authorName`,
+`originPrincipalKind: "service_principal"`, `originPrincipalId`), users-FK
+columns stay empty, and audit rows carry `actor_type = api_key` with the
+principal id in their details. Nothing is ever credited to the person who
+minted the key. A comment posted this way never triggers an automatic
+helpdesk-AI reply, and a field it sets is human-authoritative: the AI triage
+never overwrites a category or priority the integration chose.
+
+**External correlation.** `externalTicketId` / `externalTicketUrl` are
+**this integration's** correlation key — namespaced by service principal, so
+two integrations on one partner may hold the same id on different tickets,
+and each only ever reads back its own. The id is unique per principal across
+live *and* soft-deleted tickets. Creating (or re-pointing) a ticket to an id
+this principal already holds is a `409 EXTERNAL_ID_CONFLICT`:
+`details.existingTicketId` names the holder when it is in an organization
+the principal can read (`null` otherwise) and `details.existingDeleted`
+says whether it is soft-deleted, so the integration can re-link or ask for a
+restore instead of duplicating. A conflicting create is rolled back whole. On
+`PATCH`, `externalTicketId` re-points the ref (keeping its url unless
+`externalTicketUrl` is sent too), `externalTicketId: null` clears it, and
+`externalTicketUrl` alone updates the url of an existing ref (`400
+partner_tickets_external_url_without_id` when there is none). Find a ticket
+again with `GET /tickets?externalId=<id>`. The legacy
+`externalTicketId` shown on the staff ticket detail is a different, older
+column; this API never writes it.
+
+**Idempotency.** Send `X-Idempotency-Key` (1-128 printable ASCII) on
+`POST /tickets` and `POST /tickets/<id>/comments`. The key is scoped to the
+service principal and the route, and bound to a fingerprint of the request
+— the body **and**, for a comment, the ticket in the path — so reusing a
+key with the same body against a different ticket is a reuse, not a replay:
+
+| Status | `code` | Meaning |
+|---|---|---|
+| `200` + `idempotencyReplay: true` | — | The same request was already committed; this is its result (re-read as it is now) |
+| `404` | `partner_ticket_not_found` | The ticket that request created has since been deleted or moved out of the principal's organizations |
+| `400` | `partner_tickets_invalid_idempotency_key` | Header is empty, too long, or not printable ASCII |
+| `409` | `partner_tickets_idempotency_key_reused` | Same key, different body or different ticket |
+| `409` | `partner_tickets_idempotency_in_flight` | A concurrent request holds the claim; retry |
+
+Authorization comes first: an unknown or foreign ticket is a `404` before
+any idempotency state is read, so a key cannot probe for existence. The
+claim, the resource and their link commit together, so a claim is never
+visible without its result. Claims are kept for the retry window
+(`PARTNER_API_IDEMPOTENCY_RETENTION_DAYS`, default 7 days) and then reaped
+by a daily job (`PARTNER_API_IDEMPOTENCY_RETENTION_ENABLED`); after that a
+retry with the old key is a fresh request. A claim follows its ticket: if
+the ticket moves to another organization the claim moves with it, and if
+that organization leaves the principal's accessible set the claim becomes
+unreadable — a retry then answers `409 partner_tickets_idempotency_in_flight`
+until it is reaped; use a new key.
+
+**Not offered here.** Delete and restore, moving a ticket between
+organizations, bulk actions, attachments, time entries and parts, AI drafts,
+the mailbox, and editing or deleting comments stay human, MFA-gated actions
+on the main API.
+
+**Rate limits.** Ticket writes have their own hourly buckets, separate from
+the 120/hour provisioning write budget, so a busy mirror can neither starve
+nor be starved by tenancy provisioning. Two ceilings are charged, narrowest
+first: per principal and key (`PARTNER_API_TICKET_WRITE_RATE_LIMIT_PER_HOUR`,
+default 1200, always capped by the key's own limit), then partner-wide
+(`PARTNER_API_TICKET_WRITE_PARTNER_RATE_LIMIT_PER_HOUR`, default 6000) — a
+partner admin can mint service principals, so a per-principal limit alone
+would be multiplied by however many they create. Both defaults are
+provisional and will be tuned on real traffic.

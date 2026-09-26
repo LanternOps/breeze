@@ -57,6 +57,46 @@ const INVALID_CREDENTIALS_MESSAGE = 'Invalid partner API credentials';
  */
 export const PARTNER_API_WRITE_RATE_LIMIT_PER_HOUR = 120;
 
+/**
+ * Ticket writes are a workload, not a provisioning event: a PSA/ITSM mirror
+ * posts a comment or status change per technician action across every
+ * customer, so they get their own hourly bucket with a higher default
+ * (`PARTNER_API_TICKET_WRITE_RATE_LIMIT_PER_HOUR`), still capped by the
+ * key's own limit. Provisioning writes keep the 120/hour bucket untouched —
+ * ticket volume can never spend the provisioning budget, nor vice versa.
+ */
+export const PARTNER_API_TICKET_WRITE_RATE_LIMIT_PER_HOUR_DEFAULT = 1200;
+/**
+ * Second ceiling, partner-wide. A partner admin can create service
+ * principals, so a per-principal bucket alone is multiplied by however many
+ * they mint; the partner bucket is what that number cannot be multiplied
+ * past (same two-bucket shape as enrollment-key minting). Charged after the
+ * per-principal bucket, and never lower than it.
+ */
+export const PARTNER_API_TICKET_WRITE_PARTNER_RATE_LIMIT_PER_HOUR_DEFAULT = 6000;
+const TICKET_WRITE_PATH = /(?:^|\/partner-api)\/tickets(?:\/|$)/u;
+
+function positiveEnvInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+export type PartnerApiWriteLimit =
+  | { bucket: 'default'; limit: number }
+  | { bucket: 'tickets'; limit: number; partnerLimit: number };
+
+/** The write bucket(s) and ceiling(s) for a non-GET request, by path family. */
+export function partnerApiWriteLimitFor(path: string, keyLimit: number): PartnerApiWriteLimit {
+  if (TICKET_WRITE_PATH.test(path)) {
+    const limit = Math.min(keyLimit, positiveEnvInt('PARTNER_API_TICKET_WRITE_RATE_LIMIT_PER_HOUR', PARTNER_API_TICKET_WRITE_RATE_LIMIT_PER_HOUR_DEFAULT));
+    const partnerLimit = Math.max(limit, positiveEnvInt('PARTNER_API_TICKET_WRITE_PARTNER_RATE_LIMIT_PER_HOUR', PARTNER_API_TICKET_WRITE_PARTNER_RATE_LIMIT_PER_HOUR_DEFAULT));
+    return { bucket: 'tickets', limit, partnerLimit };
+  }
+  return { bucket: 'default', limit: Math.min(keyLimit, PARTNER_API_WRITE_RATE_LIMIT_PER_HOUR) };
+}
+
 function invalidCredentials(): HTTPException {
   return new HTTPException(401, { message: INVALID_CREDENTIALS_MESSAGE });
 }
@@ -237,13 +277,32 @@ export async function partnerApiAuthMiddleware(c: Context, next: Next): Promise<
     // Handlers therefore receive NO ambient DB context and must open their
     // own bounded withDbAccessContext / withSystemDbAccessContext per
     // operation (the contextless-write guard enforces this).
-    const writeLimit = Math.min(bootstrap.rateLimit, PARTNER_API_WRITE_RATE_LIMIT_PER_HOUR);
-    const writeCheck = await rateLimiter(
+    const writeFamily = partnerApiWriteLimitFor(c.req.path, bootstrap.rateLimit);
+    let writeLimit = writeFamily.limit;
+    let writeCheck = await rateLimiter(
       getRedis(),
-      `partner_api_write_rate:${bootstrap.partnerServicePrincipalId}:${bootstrap.keyId}`,
+      writeFamily.bucket === 'default'
+        ? `partner_api_write_rate:${bootstrap.partnerServicePrincipalId}:${bootstrap.keyId}`
+        : `partner_api_write_rate:${writeFamily.bucket}:${bootstrap.partnerServicePrincipalId}:${bootstrap.keyId}`,
       writeLimit,
       3600,
     );
+    // Two buckets, both charged, narrowest first: the partner-wide ceiling is
+    // only consulted (and only spent) once the per-principal bucket admits
+    // the request, so a principal that is already over budget cannot drain
+    // its siblings' shared allowance.
+    if (writeCheck.allowed && writeFamily.bucket === 'tickets') {
+      const partnerCheck = await rateLimiter(
+        getRedis(),
+        `partner_api_write_rate:${writeFamily.bucket}:partner:${bootstrap.partnerId}`,
+        writeFamily.partnerLimit,
+        3600,
+      );
+      if (!partnerCheck.allowed) {
+        writeLimit = writeFamily.partnerLimit;
+        writeCheck = partnerCheck;
+      }
+    }
     setRateLimitHeaders(c, writeLimit, writeCheck);
     if (!writeCheck.allowed) {
       c.header('Retry-After', String(Math.max(

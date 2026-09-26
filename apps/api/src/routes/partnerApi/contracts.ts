@@ -20,10 +20,6 @@ import {
 } from '@breeze/shared';
 import { zValidator } from '../../lib/validation';
 import {
-  withDbAccessContext,
-  type DbAccessContext,
-} from '../../db';
-import {
   requirePartnerApiScope,
   type PartnerApiPrincipalContext,
 } from '../../middleware/partnerApiAuth';
@@ -38,21 +34,11 @@ import {
   contractLineAuditDetails,
 } from '../../services/contractService';
 import { ContractServiceError, type ContractActor, type ContractLineAudit } from '../../services/contractTypes';
+import { inPartnerContext } from './dbContext';
 
 const idParam = z.object({ id: z.string().uuid() });
 const lineParam = z.object({ id: z.string().uuid(), lineId: z.string().uuid() });
 const writeScope = requirePartnerApiScope('contracts:write');
-
-function partnerScopedDbContext(principal: PartnerApiPrincipalContext): DbAccessContext {
-  return {
-    scope: 'partner',
-    orgId: null,
-    accessibleOrgIds: principal.accessibleOrgIds,
-    accessiblePartnerIds: [principal.partnerId],
-    currentPartnerId: principal.partnerId,
-    userId: null,
-  };
-}
 
 function actorFrom(principal: PartnerApiPrincipalContext): ContractActor {
   return {
@@ -118,10 +104,6 @@ function auditLine(
     resourceName: a.contractName,
     details: contractLineAuditDetails(a),
   });
-}
-
-async function inPartnerContext<T>(principal: PartnerApiPrincipalContext, fn: () => Promise<T>): Promise<T> {
-  return withDbAccessContext(partnerScopedDbContext(principal), fn);
 }
 
 export const partnerContractRoutes = new Hono();

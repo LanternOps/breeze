@@ -136,6 +136,7 @@ import {
   partnerApiAuthMiddleware,
   requirePartnerApiScope,
   type PartnerApiPrincipalContext,
+  partnerApiWriteLimitFor,
 } from './partnerApiAuth';
 import { partnerExportAuditMiddleware } from '../routes/partnerApi/audit';
 
@@ -800,6 +801,75 @@ describe('partnerApiAuthMiddleware', () => {
         3600,
       );
       expect(next).toHaveBeenCalledTimes(1);
+    });
+
+    it('routes ticket writes to their own, larger bucket (min(key limit, 1200)) and then charges the partner-wide ceiling — provisioning keeps 120', async () => {
+      mockBootstrap();
+      const context = createContext(RAW_KEY, 'POST');
+      (context as unknown as { req: { path: string } }).req.path = '/api/v1/partner-api/tickets';
+      const next = vi.fn();
+
+      await partnerApiAuthMiddleware(context, next);
+
+      // Key limit is 600, the ticket family default is 1200 → min is the key's own 600.
+      expect(rateLimiter).toHaveBeenNthCalledWith(
+        3,
+        { redis: true },
+        `partner_api_write_rate:tickets:${PRINCIPAL_ID}:${KEY_ID}`,
+        600,
+        3600,
+      );
+      // Second ceiling, partner-wide: what N minted principals cannot multiply past.
+      expect(rateLimiter).toHaveBeenNthCalledWith(
+        4,
+        { redis: true },
+        `partner_api_write_rate:tickets:partner:${PARTNER_ID}`,
+        6000,
+        3600,
+      );
+      expect(next).toHaveBeenCalledTimes(1);
+
+      // The family is decided by path: a nested ticket route is in it, a
+      // look-alike prefix is not — and only the ticket family has a partner ceiling.
+      expect(partnerApiWriteLimitFor('/api/v1/partner-api/tickets/abc/comments', 5000)).toEqual({ bucket: 'tickets', limit: 1200, partnerLimit: 6000 });
+      expect(partnerApiWriteLimitFor('/tickets', 5000)).toEqual({ bucket: 'tickets', limit: 1200, partnerLimit: 6000 });
+      expect(partnerApiWriteLimitFor('/api/v1/partner-api/ticketsX', 5000)).toEqual({ bucket: 'default', limit: 120 });
+      expect(partnerApiWriteLimitFor('/api/v1/partner-api/enrollment-keys', 5000)).toEqual({ bucket: 'default', limit: 120 });
+    });
+
+    it('an exhausted partner-wide ticket ceiling is a 429 even when the principal bucket admits the request', async () => {
+      mockBootstrap();
+      const resetAt = new Date(Date.now() + 30_000);
+      mocks.rateLimiter
+        .mockResolvedValueOnce({ allowed: true, remaining: 299, resetAt })
+        .mockResolvedValueOnce({ allowed: true, remaining: 599, resetAt })
+        .mockResolvedValueOnce({ allowed: true, remaining: 599, resetAt })
+        .mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt });
+      const context = createContext(RAW_KEY, 'POST');
+      (context as unknown as { req: { path: string } }).req.path = '/api/v1/partner-api/tickets';
+      const next = vi.fn();
+
+      await expect(partnerApiAuthMiddleware(context, next)).rejects.toMatchObject({
+        status: 429,
+        message: 'Partner API rate limit exceeded',
+      });
+      expect(rateLimiter).toHaveBeenCalledTimes(4);
+      expect(next).not.toHaveBeenCalled();
+      expect(context._headers['Retry-After']).toBeDefined();
+    });
+
+    it('a principal bucket that rejects a ticket write never charges the partner-wide ceiling', async () => {
+      mockBootstrap();
+      const resetAt = new Date(Date.now() + 30_000);
+      mocks.rateLimiter
+        .mockResolvedValueOnce({ allowed: true, remaining: 299, resetAt })
+        .mockResolvedValueOnce({ allowed: true, remaining: 599, resetAt })
+        .mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt });
+      const context = createContext(RAW_KEY, 'POST');
+      (context as unknown as { req: { path: string } }).req.path = '/api/v1/partner-api/tickets';
+
+      await expect(partnerApiAuthMiddleware(context, vi.fn())).rejects.toMatchObject({ status: 429 });
+      expect(rateLimiter).toHaveBeenCalledTimes(3);
     });
 
     it('rejects with 429 and Retry-After when the write bucket is exhausted', async () => {
