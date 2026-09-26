@@ -15,6 +15,7 @@ import {
 } from '../../db/schema';
 import { createIntegrationTestClient, createSite } from './db-utils';
 import { getTestDb } from './setup';
+import { createAccessToken } from '../../services/jwt';
 
 /**
  * PR #7117 review T3. A site-owned topology policy alert (M3-D6) references
@@ -55,7 +56,13 @@ describe('DELETE /orgs/sites/:id with site-owned topology alerts (T3)', () => {
     }).returning();
     await seed.insert(ticketAlertLinks).values({ ticketId: ticket.id, orgId: org.id, alertId: owned.id });
 
-    const res = await client.delete(`/orgs/sites/${doomed.id}`);
+    // Site delete is an MFA-gated route (requireMfa); mint the same session
+    // with MFA satisfied so the test does not depend on ENABLE_2FA.
+    const mfaToken = await createAccessToken({
+      sub: client.env.user.id, email: client.env.user.email, roleId: client.env.role.id,
+      orgId: org.id, partnerId: partner.id, scope: 'organization', mfa: true, aep: 1, mep: 1, sid: crypto.randomUUID(),
+    });
+    const res = await app.request(`/orgs/sites/${doomed.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${mfaToken}` } });
     expect(res.status, await res.clone().text()).toBe(200);
 
     expect(await seed.select().from(sites).where(eq(sites.id, doomed.id))).toHaveLength(0);
