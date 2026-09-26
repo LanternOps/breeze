@@ -34,6 +34,7 @@ const EXPECTED_WORKER_NAMES = [
   'topologyTemplateApplyWorker',
   // M1 Task 18 — durable diagnostic dispatch and its expiry sweeper.
   'topologyDiagnosticWorker',
+  'topologyMonitoringWorker',
   'topologyDiagnosticSweeper',
   // M3 Task 5 — interface sample partitions, retention and rollups.
   'topologyTelemetryMaintenance',

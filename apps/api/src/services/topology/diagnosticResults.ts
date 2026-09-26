@@ -13,7 +13,7 @@ import {
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { topologyDiagnosticRuns, topologyDiagnosticSteps } from '../../db/schema';
 import { TopologyOperationError } from './operationErrors';
-import { revalidateTopologyTraceAuthority } from './diagnosticTraceAuthority';
+import { revalidateTopologyRequesterAuthority, runRequiresRequesterRevalidation } from './diagnosticTraceAuthority';
 import { topologyTraceStepViolation } from './tracerouteResults';
 
 /**
@@ -230,8 +230,8 @@ export async function acceptTopologyDiagnosticResult(
       // Evidence from a run whose requester lost authority mid-flight is kept
       // as history but never published to current state, whatever the sweeper
       // has or has not done yet.
-      const fenced = run.recipeId === 'trace_route' && !TERMINAL_RUN_STATES.includes(run.state)
-        ? await revalidateTopologyTraceAuthority({ reader: db, run, checkTrust: true, requirePartnerFlags: true })
+      const fenced = runRequiresRequesterRevalidation(run) && !TERMINAL_RUN_STATES.includes(run.state)
+        ? await revalidateTopologyRequesterAuthority({ reader: db, run, checkTrust: true, requirePartnerFlags: true })
         : null;
       if (fenced) {
         await db

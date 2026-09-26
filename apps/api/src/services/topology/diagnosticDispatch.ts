@@ -27,7 +27,7 @@ import {
 import type { CommandPayload } from '../commandQueue';
 import { insertQueuedCommandInTransaction } from '../commandQueueInsert';
 import { CommandTypes } from '../commandTypes';
-import { revalidateTopologyTraceAuthority } from './diagnosticTraceAuthority';
+import { revalidateTopologyRequesterAuthority, runRequiresRequesterRevalidation } from './diagnosticTraceAuthority';
 import {
   TOPOLOGY_DIAGNOSTIC_INTENT_EVENT,
   type TopologyDiagnosticIntent,
@@ -161,10 +161,12 @@ export async function validateTopologyCommandAuthority(
     return deny('scope_changed');
   }
 
-  // M3-D13 (trace path): the REQUESTER's live authority, not only the
-  // origin's. Partner trust is already evaluated by the generic claim.
-  if (run.recipeId === 'trace_route') {
-    const denial = await revalidateTopologyTraceAuthority({ reader, run });
+  // M3-D13: the REQUESTER's live authority, not only the origin's — for a
+  // routed trace and for a scheduled policy occurrence (whose requester is the
+  // arming actor, and whose policy must still be armed at the same revision).
+  // Partner trust is already evaluated by the generic claim.
+  if (runRequiresRequesterRevalidation(run)) {
+    const denial = await revalidateTopologyRequesterAuthority({ reader, run });
     if (denial) return deny(denial === 'authority_unavailable' ? 'authority_unavailable' : 'scope_changed');
   }
 
@@ -369,10 +371,10 @@ export async function dispatchTopologyDiagnosticRun(
         await setIntentState(runId, 'settled');
         return null;
       }
-      // M3-D13 (trace path): enqueue is a live-authority boundary. A revoked
-      // requester never gets a command minted on their behalf.
-      if (run.recipeId === 'trace_route') {
-        const denial = await revalidateTopologyTraceAuthority({ reader: db, run, checkTrust: true, requirePartnerFlags: true });
+      // M3-D13: enqueue is a live-authority boundary. A revoked requester (or
+      // a disarmed policy) never gets a command minted on its behalf.
+      if (runRequiresRequesterRevalidation(run)) {
+        const denial = await revalidateTopologyRequesterAuthority({ reader: db, run, checkTrust: true, requirePartnerFlags: true });
         if (denial) {
           await settleRun(run, 'cancelled', `authority_${denial}`.slice(0, 64), now);
           await setIntentState(runId, 'settled');

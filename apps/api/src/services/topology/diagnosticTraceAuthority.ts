@@ -2,7 +2,7 @@ import { and, eq, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { topologyGloballyDisabled } from '../../config/env';
 import { db } from '../../db';
-import { organizations, partners, topologyCollectionSources, users } from '../../db/schema';
+import { organizations, partners, topologyCollectionSources, topologyMonitoringPolicies, users } from '../../db/schema';
 import { deviceExecuteAllowedForOrg } from '../partnerTrust.commands';
 import { getPermissionAuthorityVersion } from '../permissions';
 import type { TopologyRequestContext } from './access';
@@ -44,6 +44,7 @@ export type TopologyTraceAuthorityDenial =
   | 'permission_changed'
   | 'diagnostics_disabled'
   | 'trace_capability_withdrawn'
+  | 'policy_disarmed'
   | 'trust_denied';
 
 type Reader = Pick<typeof db, 'select'>;
@@ -149,6 +150,15 @@ async function originAdvertisesTrace(
   );
 }
 
+/**
+ * M3-D13 generalized: the same frozen requester authority is carried by every
+ * run that executes without a live human request behind each boundary — a
+ * routed trace (requester = the human) and a scheduled policy occurrence
+ * (requester = the policy's arming actor). Aliases keep the trace call sites.
+ */
+export const topologyRequesterAuthoritySchema = topologyTraceRequesterAuthoritySchema;
+export const freezeTopologyRequesterAuthority = freezeTopologyTraceRequester;
+
 export type TopologyTraceAuthorityInput = {
   reader: Reader;
   run: {
@@ -157,7 +167,12 @@ export type TopologyTraceAuthorityInput = {
     requesterId: string;
     requesterAuthority: unknown;
     originSnapshot: { deviceId: string; producerEpoch: string };
+    recipeId?: string;
+    policyId?: string | null;
+    policyRevision?: bigint | null;
   };
+  /** Only a routed trace needs the agent's trace capability (default: required). */
+  requireTraceCapability?: boolean;
   /** Delivery claims already evaluate partner trust generically; the other fences ask here. */
   checkTrust?: boolean;
   /** Fail closed when the partner flag row is not visible to `reader`. */
@@ -166,7 +181,7 @@ export type TopologyTraceAuthorityInput = {
   trustAllowed?: (orgId: string, commandType: string, userId: string) => Promise<boolean>;
 };
 
-/** Null when the trace may proceed; otherwise the fence reason. Never throws for a denial. */
+/** Null when the run may proceed; otherwise the fence reason. Never throws for a denial. */
 export async function revalidateTopologyTraceAuthority(
   input: TopologyTraceAuthorityInput,
 ): Promise<TopologyTraceAuthorityDenial | null> {
@@ -193,7 +208,15 @@ export async function revalidateTopologyTraceAuthority(
   if (!await diagnosticsEnabled(input.reader, input.run.orgId, input.requirePartnerFlags ?? false)) {
     return 'diagnostics_disabled';
   }
-  if (!await originAdvertisesTrace(input.reader, input.run)) return 'trace_capability_withdrawn';
+  if ((input.requireTraceCapability ?? true) && !await originAdvertisesTrace(input.reader, input.run)) return 'trace_capability_withdrawn';
+  if (input.run.policyId) {
+    const [policy] = await input.reader
+      .select({ enabled: topologyMonitoringPolicies.enabled, revision: topologyMonitoringPolicies.revision, deletedAt: topologyMonitoringPolicies.deletedAt })
+      .from(topologyMonitoringPolicies)
+      .where(and(eq(topologyMonitoringPolicies.id, input.run.policyId), eq(topologyMonitoringPolicies.orgId, input.run.orgId), eq(topologyMonitoringPolicies.siteId, input.run.siteId)))
+      .limit(1);
+    if (!policy || !policy.enabled || policy.deletedAt !== null || policy.revision !== input.run.policyRevision) return 'policy_disarmed';
+  }
 
   if (input.checkTrust) {
     const allowed = await (input.trustAllowed ?? deviceExecuteAllowedForOrg)(input.run.orgId, 'network_diagnostic', authority.userId);
@@ -201,3 +224,11 @@ export async function revalidateTopologyTraceAuthority(
   }
   return null;
 }
+
+/** Whether a run carries a frozen requester authority that every boundary must re-derive. */
+export function runRequiresRequesterRevalidation(run: { recipeId: string; policyId?: string | null }): boolean {
+  return run.recipeId === 'trace_route' || !!run.policyId;
+}
+
+export const revalidateTopologyRequesterAuthority = (input: Omit<TopologyTraceAuthorityInput, 'requireTraceCapability'>) =>
+  revalidateTopologyTraceAuthority({ ...input, requireTraceCapability: input.run.recipeId === 'trace_route' });

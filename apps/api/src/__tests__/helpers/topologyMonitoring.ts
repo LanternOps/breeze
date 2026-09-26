@@ -90,6 +90,6 @@ export async function seedTopologyMonitoringFixture() {
   };
   const inOrg = <T>(fn: () => Promise<T>) => withDbAccessContext(orgContext(orgId), fn);
   const policy = () => system(async () => (await db.select().from(topologyMonitoringPolicies).where(eq(topologyMonitoringPolicies.id, policyId)))[0]!);
-  return { env, orgId, siteId, deviceId, nodeId, switchNodeId, profileId, policyId, targetId, ifaceA, ifaceB, ctx, repository, inOrg, policy };
+  return { env, orgId, siteId, deviceId, nodeId, switchNodeId, profileId, policyId, targetId, sourceId, ifaceA, ifaceB, ctx, repository, inOrg, policy };
 }
 
