@@ -364,6 +364,7 @@ Adopted after the W1 plan was cross-checked by Codex:
 - **One attempt per source + script.** The existing unique index and `/execute`'s 409 stay; "a re-run creates a new suggestion row" is dropped.
 - **`fix_outcomes` stays with the source org on a device move**, listed in `INTENTIONALLY_NO_ORG_ID` like `ai_agent_fix_watches`, rather than in `CORE_DEVICE_ORG_DENORMALIZED_TABLES`.
 - **`find_proven_fixes` `deviceId + problem` input moves to W2.**
+- **Script-failure attempts reach `fix_memory` via the sweeper (≤5 min), not in the same transaction.** The inline hook runs inside agent result ingestion under the org's context; updating the partner-wide aggregate there would need a second system-scoped connection, which the DB-context rules forbid. The hook marks the attempt for recount and the sweeper applies it under the shared per-aggregate lock. Recovery-driven transitions still commit their aggregate delta atomically.
 - **Lookup re-checks the fix script's current ownership** at attach and read time, independent of ambient RLS, because scripts can be re-scoped (partner→org, org→org) without a new version.
 
 ## Open verification items (resolve at plan time)
