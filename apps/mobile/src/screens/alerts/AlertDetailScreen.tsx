@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Alert, Pressable, ScrollView, Text, View } from 'react-native';
 
 import { useAppDispatch } from '../../store';
@@ -89,6 +89,8 @@ export function AlertDetailScreen({ route }: Props) {
   const [fetched, setFetched] = useState<AlertModel | null>(null);
   const fresh = fetched && fetched.id === alert.id ? fetched : null;
   const rebootSent = rebootSentFor === alert.id;
+  const currentAlertId = useRef(alert.id);
+  currentAlertId.current = alert.id;
   // Reboot now is decided on, and aimed at, the fetched copy alone: it has
   // the current status, the source a chat-built alert lacks, and the device
   // the server says the alert belongs to (a chat payload's own deviceId is
@@ -129,6 +131,16 @@ export function AlertDetailScreen({ route }: Props) {
   async function sendReboot(alertId: string, deviceId: string) {
     try {
       setRebooting(true);
+      // Re-read at the moment of confirmation: the alert may have been
+      // resolved, or the screen moved to another alert, since the prompt
+      // opened. Send only if the same alert still asks for the same device.
+      if (currentAlertId.current !== alertId) return;
+      const now = rebootPlan(await getAlert(alertId));
+      if (currentAlertId.current !== alertId) return;
+      if (!now || now.deviceId !== deviceId) {
+        Alert.alert('Not sent', 'This alert no longer needs a restart, so nothing was sent.');
+        return;
+      }
       await sendDeviceAction(deviceId, 'reboot');
       setRebootSentFor(alertId);
       Alert.alert(
