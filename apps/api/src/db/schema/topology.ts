@@ -172,6 +172,8 @@ export const topologyRelationships = pgTable('topology_relationships', {
   check('topology_relationships_legacy_source_revision_chk', sql`legacy_source_revision >= 0`),
   uniqueIndex('topology_relationships_id_org_site_uniq').on(table.id, table.orgId, table.siteId),
   uniqueIndex('topology_relationships_canonical_uniq').on(table.orgId, table.siteId, table.canonicalKey),
+  index('topology_relationships_source_node_idx').on(table.orgId, table.siteId, table.sourceNodeId),
+  index('topology_relationships_target_node_idx').on(table.orgId, table.siteId, table.targetNodeId),
   foreignKey({ name: 'topology_relationships_site_scope_fk', columns: [table.siteId, table.orgId], foreignColumns: [sites.id, sites.orgId] }).onDelete('cascade'),
   foreignKey({ name: 'topology_relationship_source_scope_fk', columns: [table.sourceNodeId, table.orgId, table.siteId], foreignColumns: [topologyNodes.id, topologyNodes.orgId, topologyNodes.siteId] }).onDelete('cascade'),
   foreignKey({ name: 'topology_relationship_target_scope_fk', columns: [table.targetNodeId, table.orgId, table.siteId], foreignColumns: [topologyNodes.id, topologyNodes.orgId, topologyNodes.siteId] }).onDelete('cascade'),
