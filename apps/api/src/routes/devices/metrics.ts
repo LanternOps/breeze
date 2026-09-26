@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { and, eq, gte, inArray, lte, sql, asc } from 'drizzle-orm';
+import { and, eq, gte, inArray, lte, sql, asc, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { deviceMetrics, metricRollups, sites } from '../../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
@@ -118,14 +118,35 @@ async function queryMetricRollups(
     .orderBy(asc(metricRollups.bucketStart));
 }
 
+const RAW_BUCKET_SECONDS = {
+  '1m': 60,
+  '5m': 300,
+  '1h': 3600,
+  '1d': 86400,
+} as const satisfies Record<'1m' | '5m' | '1h' | '1d', number>;
+
+// Bucket raw samples at the REQUESTED width in SQL (#4513). This used to group
+// per minute and re-bucket in JS, so the default 24h/5m device view pulled
+// 1,440 rows to draw 288 points and a 30d fallback (no daily rollups yet)
+// pulled ~43k to draw 30. `date_bin` from the epoch lands on the same bucket
+// boundaries the JS re-bucketing uses, so aggregateMetricsByInterval sees one
+// row per bucket. The width is interpolated raw from the fixed table above,
+// never from request input.
+function rawBucketSql(interval: '1m' | '5m' | '1h' | '1d'): SQL<Date> {
+  const seconds = sql.raw(String(RAW_BUCKET_SECONDS[interval]));
+  return sql<Date>`date_bin(make_interval(secs => ${seconds}), ${deviceMetrics.timestamp}, timestamp 'epoch')`;
+}
+
 async function queryRawMetricBuckets(
   deviceId: string,
   startDate: Date,
-  endDate: Date
+  endDate: Date,
+  interval: '1m' | '5m' | '1h' | '1d'
 ): Promise<DeviceMetricBucket[]> {
+  const bucket = rawBucketSql(interval);
   return db
     .select({
-      bucket: sql<Date>`date_trunc('minute', ${deviceMetrics.timestamp})`,
+      bucket,
       avgCpuPercent: sql<number>`avg(${deviceMetrics.cpuPercent})`,
       avgRamPercent: sql<number>`avg(${deviceMetrics.ramPercent})`,
       avgRamUsedMb: sql<number>`avg(${deviceMetrics.ramUsedMb})`,
@@ -152,8 +173,8 @@ async function queryRawMetricBuckets(
         lte(deviceMetrics.timestamp, endDate)
       )
     )
-    .groupBy(sql`date_trunc('minute', ${deviceMetrics.timestamp})`)
-    .orderBy(asc(sql`date_trunc('minute', ${deviceMetrics.timestamp})`));
+    .groupBy(bucket)
+    .orderBy(asc(bucket));
 }
 
 // Helper function to aggregate metrics by interval
@@ -358,7 +379,7 @@ metricsRoutes.get(
 
     let metricsData = await queryMetricRollups(device.orgId, deviceId, startDate, endDate, interval);
     if (metricsData.length === 0) {
-      metricsData = await queryRawMetricBuckets(deviceId, startDate, endDate);
+      metricsData = await queryRawMetricBuckets(deviceId, startDate, endDate, interval);
     }
 
     // Further aggregate based on requested interval
