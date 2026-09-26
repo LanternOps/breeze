@@ -693,8 +693,19 @@ export default function M365CustomerGraphReadCard({
         ? t(/* i18n-dynamic */ `m365CustomerGraphRead.errors.${callbackResult}`)
         : null;
 
+  // Onboarding is gated by an instance-level server flag, not by anything the
+  // org can change. With nothing connected there is nothing to manage, so the
+  // card collapses to its header and one neutral status line instead of a
+  // permission list and a Connect button that can never be pressed.
+  const instanceUnavailable = loadState === "ready" && !!data && !data.onboardingEnabled && !connection;
+  const instanceUnavailableId = "customer-graph-read-instance-unavailable";
+
   return (
-    <section className="rounded-xl border bg-card p-5 sm:p-6" aria-labelledby="customer-graph-read-title">
+    <section
+      className="rounded-xl border bg-card p-5 sm:p-6"
+      aria-labelledby="customer-graph-read-title"
+      aria-describedby={instanceUnavailable ? instanceUnavailableId : undefined}
+    >
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex min-w-0 items-start gap-3">
           <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
@@ -742,7 +753,13 @@ export default function M365CustomerGraphReadCard({
         </div>
       )}
 
-      {loadState === "ready" && data && (
+      {instanceUnavailable && (
+        <p id={instanceUnavailableId} className="mt-4 text-sm text-muted-foreground">
+          {t("m365CustomerGraphRead.notAvailableOnInstance")}
+        </p>
+      )}
+
+      {loadState === "ready" && data && !instanceUnavailable && (
         <div className="mt-6 space-y-6">
           {!data.onboardingEnabled && (
             <p className="rounded-md bg-muted p-3 text-sm text-muted-foreground">

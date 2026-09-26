@@ -516,6 +516,48 @@ describe("IntegrationsPage — URL hash deep-linking", () => {
     expect(screen.queryByTestId("stub-psa")).toBeNull();
   });
 
+  it("labels the Google Workspace / Microsoft 365 tab 'Cloud tenants'", () => {
+    render(<IntegrationsPage />);
+    expect(screen.getByRole("button", { name: "Cloud tenants" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Identity" })).toBeNull();
+  });
+
+  it.each(["#cloud-tenants", "#identity"])(
+    "opens the Cloud tenants tab (default Google sub-tab) from %s",
+    (hash) => {
+      window.location.hash = hash;
+      render(<IntegrationsPage />);
+      expect(screen.getByTestId("stub-google")).toBeTruthy();
+      expect(screen.queryByTestId("stub-m365")).toBeNull();
+      expect(screen.queryByTestId("stub-webhooks")).toBeNull();
+    },
+  );
+
+  it("keeps the #google and #m365 sub-tab deep links on the Cloud tenants tab", () => {
+    window.location.hash = "#m365";
+    render(<IntegrationsPage />);
+    expect(screen.getByTestId("stub-m365")).toBeTruthy();
+    expect(screen.getByTestId("stub-customer-graph-read")).toBeTruthy();
+    expect(screen.getByTestId("stub-customer-graph-actions")).toBeTruthy();
+
+    window.location.hash = "#google";
+    fireEvent(window, new HashChangeEvent("hashchange"));
+    expect(screen.getByTestId("stub-google")).toBeTruthy();
+    expect(screen.queryByTestId("stub-m365")).toBeNull();
+  });
+
+  it.each([
+    "#m365/customer-graph-read/active",
+    "#m365/customer-graph-actions/active",
+  ])("opens Cloud tenants → Microsoft 365 from the consent callback %s", (hash) => {
+    window.location.hash = hash;
+    render(<IntegrationsPage />);
+    expect(screen.getByTestId("stub-m365")).toBeTruthy();
+    expect(screen.getByTestId("stub-customer-graph-read")).toBeTruthy();
+    expect(screen.getByTestId("stub-customer-graph-actions")).toBeTruthy();
+    expect(window.location.hash).toBe("#m365");
+  });
+
   it("lets a valid hash override the initialTab prop", () => {
     window.location.hash = "#monitoring";
     render(<IntegrationsPage initialTab="psa" />);
@@ -540,6 +582,18 @@ describe("IntegrationsPage — writing & syncing the URL hash", () => {
     render(<IntegrationsPage />);
     fireEvent.click(screen.getByRole("button", { name: /Monitoring/i }));
     expect(window.location.hash).toBe("#monitoring");
+  });
+
+  it("writes #cloud-tenants when the Cloud tenants tab is clicked and keeps its docs page", () => {
+    openMock.mockClear();
+    render(<IntegrationsPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Cloud tenants" }));
+    expect(window.location.hash).toBe("#cloud-tenants");
+    expect(screen.getByTestId("stub-google")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("integrations-docs-link"));
+    expect(openMock).toHaveBeenLastCalledWith(
+      "https://docs.breezermm.com/features/identity-integrations/",
+    );
   });
 
   it("writes the sub-tab id to the hash when a sub-tab is clicked", () => {
