@@ -17,7 +17,7 @@ import (
 // process. fakeImageHolders models that: renames onto the helper binary fail
 // while any fake helper process is alive, the way they do on a real host.
 
-var errFakeAccessDenied = errors.New("Access is denied.")
+var errFakeAccessDenied = errors.New("access is denied")
 
 type rollbackHarness struct {
 	mgr      *Manager
