@@ -772,7 +772,14 @@ vulnerabilityRoutes.get('/:cveId/devices', zValidator('param', cveIdParamSchema)
     return c.json({ error: 'CVE not found' }, 404);
   }
   const perms = c.get('permissions') as UserPermissions | undefined;
-  const rows = await fetchFleetFindingRows({ status: 'all', allowedSiteIds: perms?.allowedSiteIds, orgId });
+  // Narrowed to this CVE in SQL (#7071); the JS filter below stays as a
+  // belt-and-braces check on the match.
+  const rows = await fetchFleetFindingRows({
+    status: 'all',
+    allowedSiteIds: perms?.allowedSiteIds,
+    orgId,
+    cveId: cve.cveId,
+  });
   const target = cveId.toLowerCase();
   const findings = rows
     .filter((r) => r.cveId.toLowerCase() === target)
