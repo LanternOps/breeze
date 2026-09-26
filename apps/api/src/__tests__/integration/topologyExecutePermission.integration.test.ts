@@ -11,7 +11,7 @@ import { getTestDb } from './setup';
 const MIGRATION = '../../../migrations/2026-11-03-090700-topology-execute-permission.sql';
 
 describe('topology:execute permission migration', () => {
-  it('creates the permission and grants it to the admin roles only, idempotently', async () => {
+  it('creates the permission and grants it to the admin roles and Org Technician, idempotently', async () => {
     const db = getTestDb() as any;
     const names = ['Partner Admin', 'Org Admin', 'Org Technician', 'Partner Technician', 'Org Viewer'];
     for (const name of names) {
@@ -27,7 +27,7 @@ describe('topology:execute permission migration', () => {
     expect(perm.n).toBe(1);
     const rows = await db.execute(sql`SELECT DISTINCT r.name FROM role_permissions rp JOIN roles r ON r.id = rp.role_id
       JOIN permissions p ON p.id = rp.permission_id WHERE p.resource='topology' AND p.action='execute' AND r.name IN (${sql.join(names.map(n => sql`${n}`), sql`, `)})`);
-    expect(rows.map((r: { name: string }) => r.name).sort()).toEqual(['Org Admin', 'Partner Admin']);
+    expect(rows.map((r: { name: string }) => r.name).sort()).toEqual(['Org Admin', 'Org Technician', 'Partner Admin']);
     const [dupes] = await db.execute(sql`SELECT count(*)::int AS n FROM (SELECT role_id, permission_id FROM role_permissions GROUP BY 1,2 HAVING count(*) > 1) d`);
     expect(dupes.n).toBe(0);
   });
