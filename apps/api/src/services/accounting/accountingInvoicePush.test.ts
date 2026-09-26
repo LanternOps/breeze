@@ -969,6 +969,21 @@ describe('pushInvoiceToAccounting', () => {
       expect(row).toMatchObject({ id: 'map-inv-old', syncStatus: 'error', remoteEntityId: 'qb-inv-old', linkStatus: 'confirmed' });
     });
 
+    it('fails closed with invoice_totals_mismatch when a line amount is not a plain 2-decimal number, even if a float sum would match', async () => {
+      // '1e2' is 100 to Number() — a float-based sum would call this a match
+      // against the 100.00 subtotal. The exact-cents parser rejects it and the
+      // guard must refuse rather than skip the comparison.
+      setup({
+        invoice: { subtotal: '100.00' },
+        lines: [{ id: 'line-1', lineTotal: '1e2', unitPrice: '100.00' }],
+      });
+
+      await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({
+        code: 'invoice_totals_mismatch', status: 409,
+      });
+      expect(pushInvoiceMock).not.toHaveBeenCalled();
+    });
+
     it('compares totals in exact cents, not floats (0.10 + 0.20 equals a 0.30 subtotal)', async () => {
       setup({
         invoice: { subtotal: '0.30', taxTotal: '0.00', total: '0.30' },
