@@ -83,14 +83,14 @@ agentSecurityRoutes.put('/:id/security/status', zValidator('json', securityStatu
   // (including the first report for a device). Read-then-write, so two
   // concurrent submits for one device can at worst double- or under-report a
   // single transition; the agent serializes these submits in practice.
-  const [previous] = await db
-    .select({ provider: securityStatus.provider, threatCount: securityStatus.threatCount })
-    .from(securityStatus)
-    .where(eq(securityStatus.deviceId, device.id))
-    .limit(1);
-
+  let previous: { provider: string; threatCount: number } | undefined;
   let written: Awaited<ReturnType<typeof upsertSecurityStatusForDevice>>;
   try {
+    [previous] = await db
+      .select({ provider: securityStatus.provider, threatCount: securityStatus.threatCount })
+      .from(securityStatus)
+      .where(eq(securityStatus.deviceId, device.id))
+      .limit(1);
     written = await upsertSecurityStatusForDevice(device.id, device.orgId, payload);
   } catch (err) {
     recordAgentIngestSubmission('security_status', 'failed');

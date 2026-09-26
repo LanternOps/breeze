@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { db } from '../../db';
-import { agentSecurityRoutes } from './security';
+import { agentSecurityRoutes, managementPostureChanges } from './security';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { upsertSecurityStatusForDevice } from './helpers';
 
@@ -237,6 +237,23 @@ describe('agent security routes — requireAgentRole gate (F3)', () => {
         expect(details.changes).toEqual([{ field: 'provider', before: 'windows_defender', after: 'crowdstrike' }]);
       });
 
+      it('counts a failed previous-row read as a failed ingest and rethrows', async () => {
+        vi.mocked(db.select)
+          .mockReturnValueOnce(selectResolving([{ id: DEVICE_ID, orgId: ORG_ID, managementPosture: null }]))
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({ limit: vi.fn().mockRejectedValue(new Error('db down')) }),
+            }),
+          } as never);
+        const res = await put('security/status', { provider: 'defender', threatCount: 0 });
+
+        expect(res.status).toBe(500);
+        expect(upsertSecurityStatusForDevice).not.toHaveBeenCalled();
+        expect(writeAuditEvent).not.toHaveBeenCalled();
+        expect(recordAgentIngestSubmission).toHaveBeenCalledTimes(1);
+        expect(recordAgentIngestSubmission).toHaveBeenCalledWith('security_status', 'failed');
+      });
+
       it('audits the first-ever report for a device (no stored row yet)', async () => {
         mockDeviceLookup({}, []);
         const res = await put('security/status', { provider: 'defender', threatCount: 0 });
@@ -336,5 +353,58 @@ describe('agent security routes — requireAgentRole gate (F3)', () => {
         consoleError.mockRestore();
       });
     });
+  });
+});
+
+describe('managementPostureChanges (#4340)', () => {
+  const identity = { joinType: 'none', azureAdJoined: false, domainJoined: false, workplaceJoined: false, source: 'agent' };
+  const base = {
+    collectedAt: '2026-06-20T00:00:00.000Z',
+    scanDurationMs: 10,
+    identity,
+    categories: {
+      policy: [{ name: 'macOS Configuration Profiles', status: 'active', details: { profileCount: 2, profiles: ['a', 'b'] } }],
+      rmm: [{ name: 'Breeze', status: 'active' }],
+    },
+  };
+
+  it('flags a detection whose only change is in its details', () => {
+    const after = {
+      ...base,
+      categories: {
+        ...base.categories,
+        policy: [{ name: 'macOS Configuration Profiles', status: 'active', details: { profileCount: 3, profiles: ['a', 'b', 'c'] } }],
+      },
+    };
+    expect(managementPostureChanges(base, after)).toEqual(['categories.policy']);
+  });
+
+  it('ignores reordered values inside details', () => {
+    const after = {
+      ...base,
+      categories: {
+        ...base.categories,
+        policy: [{ name: 'macOS Configuration Profiles', status: 'active', details: { profiles: ['b', 'a'], profileCount: 2 } }],
+      },
+    };
+    expect(managementPostureChanges(base, after)).toEqual([]);
+  });
+
+  it('flags a category that disappears, whether omitted or sent empty', () => {
+    const omitted = { ...base, categories: { policy: base.categories.policy } };
+    const emptied = { ...base, categories: { ...base.categories, rmm: [] } };
+    expect(managementPostureChanges(base, omitted)).toEqual(['categories.rmm']);
+    expect(managementPostureChanges(base, emptied)).toEqual(['categories.rmm']);
+    // ...and omitted vs empty are the same state ("nothing detected").
+    expect(managementPostureChanges(omitted, emptied)).toEqual([]);
+  });
+
+  it('distinguishes a duplicated detection from a single one', () => {
+    const dup = { ...base, categories: { ...base.categories, rmm: [base.categories.rmm[0], base.categories.rmm[0]] } };
+    expect(managementPostureChanges(base, dup)).toEqual(['categories.rmm']);
+  });
+
+  it('treats a missing stored posture as every present part changing', () => {
+    expect(managementPostureChanges(null, base)).toEqual(['identity', 'categories.policy', 'categories.rmm']);
   });
 });
