@@ -129,6 +129,10 @@ const REASON_MESSAGES: Record<string, string> = {
   interface_errors_elevated: 'The port is receiving or sending errors above the threshold.',
   interface_discards_elevated: 'The port is discarding packets above the threshold.',
   interface_rate_exceeds_capacity: 'A measured rate exceeds the reported port speed.',
+  policy_disabled: 'The recurring monitoring policy for this entity is not armed.',
+  policy_result_pending: 'The recurring monitoring policy is armed but has not produced a result yet.',
+  policy_result_stale: 'The latest scheduled policy result is older than its cadence allows.',
+  policy_run_not_completed: 'The latest scheduled policy run did not complete in time, so it is not evidence.',
 };
 
 export function overlayReasonMessage(code: string): string {

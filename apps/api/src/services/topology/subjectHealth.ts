@@ -6,6 +6,7 @@ import {
   overlayHealthSummary, readTopologyMonitorOverlays, topologyHealthSummary,
   type TopologyMonitorOverlay, type TopologyOverlaySubject,
 } from './monitorOverlays';
+import { policyHealthContributor } from './policyHealth';
 
 /**
  * Current subject health for graph overlays, health reads and link detail
@@ -13,7 +14,7 @@ import {
  *
  * Health is assembled from independent CONTRIBUTIONS, each a view of evidence
  * that already exists (a reused monitor's latest result, an interface's latest
- * accepted measurement, and — once Task 7/8 land — a policy/run assessment).
+ * accepted measurement, and a recurring policy's latest settled scheduled run).
  * Nothing here writes, polls or dispatches. The persisted site health revision
  * still advances only on evidence changes (sinks call
  * `advanceTopologyHealthRevision`); freshness EXPIRY is not a write: it shows
@@ -95,16 +96,14 @@ export const interfaceHealthContributor: TopologyHealthContributor = {
 };
 
 /**
- * EXTENSION POINT (M3-D10 run/policy branch). The policy/run health path
- * (Tasks 7/8: scheduled policy occurrences and their diagnostic run
- * assessments) adds ONE `TopologyHealthContributor` with `source: 'policy'` to
- * this list — `contextKey` per policy context/family, `freshUntil` from the
- * policy cadence (max(3 × cadence, 60 s); five minutes for isolated on-demand),
- * a disabled policy contributing `coverage: 'unmonitored'` immediately. It must
- * not add a second health store or evaluator; aggregation, the graph overlay,
- * `/health`, link health and ETags pick it up unchanged.
+ * Every health source (M3-D10). The policy/run branch (`policyHealth.ts`,
+ * Tasks 7/8 scheduled occurrences) contributes per policy context/family with
+ * `freshUntil` from the policy cadence (max(3 × cadence, 60 s)); a disarmed
+ * policy contributes `coverage: 'unmonitored'` immediately. There is no second
+ * health store or evaluator: aggregation, the graph overlay, `/health`, link
+ * health, impact and ETags pick every contributor up unchanged.
  */
-export const TOPOLOGY_HEALTH_CONTRIBUTORS: readonly TopologyHealthContributor[] = [monitorHealthContributor, interfaceHealthContributor];
+export const TOPOLOGY_HEALTH_CONTRIBUTORS: readonly TopologyHealthContributor[] = [monitorHealthContributor, interfaceHealthContributor, policyHealthContributor];
 
 export const subjectHealthKey = (subject: TopologyOverlaySubject) => `${subject.kind}:${subject.id}`;
 

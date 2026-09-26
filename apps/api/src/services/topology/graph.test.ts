@@ -118,7 +118,7 @@ describe('attributed health overlay', () => {
   });
 
   it('reports a canonical entity with no bound monitor as unmonitored, not healthy', async () => {
-    mocks.execute.mockResolvedValueOnce(state).mockResolvedValueOnce([{ id: NODE }]).mockResolvedValueOnce([]);
+    mocks.execute.mockResolvedValueOnce(state).mockResolvedValueOnce([{ id: NODE }]).mockResolvedValueOnce([]).mockResolvedValueOnce([]); // bindings, policy health
 
     const health = await getTopologyHealth(ctx, { nodeIds: [NODE], relationshipIds: [] });
 
@@ -139,7 +139,8 @@ describe('attributed health overlay', () => {
       mocks.flags.mockResolvedValue({ ...flagsOn, interfaceHealth: true });
       mocks.execute.mockResolvedValueOnce(state).mockResolvedValueOnce([{ id: REL }])
         .mockResolvedValueOnce([]) // monitor bindings
-        .mockResolvedValueOnce([physicalRel]).mockResolvedValueOnce([measurement('down')]);
+        .mockResolvedValueOnce([physicalRel]).mockResolvedValueOnce([measurement('down')])
+        .mockResolvedValueOnce([]); // policy health
       const health = await getTopologyHealth(ctx, { nodeIds: [], relationshipIds: [REL] });
       expect(health.relationships[0]!.health).toMatchObject({ status: 'failed_check', freshness: 'fresh' });
       expect(health.relationships[0]!.health.reasons.map((r) => r.code)).toContain('interface_link_down');
@@ -152,7 +153,7 @@ describe('attributed health overlay', () => {
     });
 
     it('reads no interface measurement when the capability is off', async () => {
-      mocks.execute.mockResolvedValueOnce(state).mockResolvedValueOnce([{ id: REL }]).mockResolvedValueOnce([]);
+      mocks.execute.mockResolvedValueOnce(state).mockResolvedValueOnce([{ id: REL }]).mockResolvedValueOnce([]).mockResolvedValueOnce([]); // bindings, policy health
       const health = await getTopologyHealth(ctx, { nodeIds: [], relationshipIds: [REL] });
       expect(health.relationships[0]!.health.status).toBe('unknown');
       expect(health.freshUntil).toBeNull();
@@ -165,7 +166,8 @@ describe('attributed health overlay', () => {
         lifecycle: 'active', lastSupportedAt: null, supportCount: '1', legacy: false, sourceInterfaceId: IF, targetInterfaceId: null, method: 'lldp' };
       mocks.execute.mockResolvedValueOnce(state).mockResolvedValueOnce([row])
         .mockResolvedValueOnce([measurement('up'), measurement('up', 70)])
-        .mockResolvedValueOnce([]); // monitor bindings
+        .mockResolvedValueOnce([]) // monitor bindings
+        .mockResolvedValueOnce([]); // policy health
       const link = await getTopologyLinkHealth(ctx, REL);
       expect(topologyLinkHealthResponseSchema.safeParse(link).success).toBe(true);
       expect(link).toMatchObject({ relationshipId: REL, interfaceEvidence: { applies: true, reason: null }, endpoints: { target: null } });
@@ -332,7 +334,8 @@ describe('M2 physical exposure, exclusions and detail (D9, D11, D17)', () => {
     mocks.execute.mockResolvedValueOnce(state).mockResolvedValueOnce([relRow])
       .mockResolvedValueOnce([{ id: '90000000-0000-4000-8000-000000000001', view: 'overview', reason: 'Not a real cable', createdAt: '2026-09-26T10:00:00.000Z' }])
       .mockResolvedValueOnce([{ id: NODE, label: 'Switch' }, { id: OTHER, label: 'Desk' }])
-      .mockResolvedValueOnce([]); // monitor bindings for the detail's health
+      .mockResolvedValueOnce([]) // monitor bindings for the detail's health
+      .mockResolvedValueOnce([]); // policy health
     const detail = await getTopologyRelationship(ctx, REL);
     expect(relationshipDetailResponseSchema.safeParse(detail).success).toBe(true);
     expect(detail.relationship.excluded).toBe(true);
