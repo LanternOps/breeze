@@ -766,6 +766,29 @@ describe('GET /vulnerabilities/:cveId/devices (CVE drawer payload)', () => {
     expect(body.findings[0].deviceVulnerabilityId).toBe('dv-1');
   });
 
+  it('narrows the fleet query to the CVE in SQL instead of loading every finding (#7071)', async () => {
+    vi.mocked(fetchCveCatalogRecord).mockResolvedValue({
+      cveId: 'CVE-2026-0001',
+      description: 'Bad bug',
+      references: [],
+      cvssVersion: '3.1',
+      cvssVector: 'CVSS:3.1/AV:N',
+      cvssScore: 9.1,
+      epssScore: 0.4,
+      knownExploited: true,
+      patchAvailable: true,
+      severity: 'critical',
+      publishedAt: '2026-01-01T00:00:00.000Z',
+      modifiedAt: null,
+    });
+    const res = await app().request('/vulnerabilities/cve-2026-0001/devices');
+    expect(res.status).toBe(200);
+    // The catalog's canonical id, not the raw path param.
+    expect(vi.mocked(fetchFleetFindingRows)).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'all', cveId: 'CVE-2026-0001' }),
+    );
+  });
+
   it('forwards orgId into the fleet query and 403s a denied org (before the catalog lookup)', async () => {
     vi.mocked(fetchCveCatalogRecord).mockResolvedValueOnce({
       cveId: 'CVE-2026-0001',
