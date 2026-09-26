@@ -35,7 +35,15 @@ type AgentState struct {
 	PID           int       `json:"pid"`
 	Version       string    `json:"version"`
 	LastHeartbeat time.Time `json:"last_heartbeat,omitempty"`
-	Timestamp     time.Time `json:"timestamp"`
+	// AuthRejectedAt is the last time the agent's heartbeat loop observed the
+	// server rejecting its credentials (401/403, or an auth-dead backoff tick
+	// that skipped the request). It is the agent's liveness signal while it
+	// cannot heartbeat: LastHeartbeat only advances on an HTTP-200, so without
+	// this a live, correctly backing-off agent reads as wedged and the
+	// watchdog restart-churns it, discarding its backoff every time (#2796).
+	// Zeroed by UpdateHeartbeat on the next successful heartbeat.
+	AuthRejectedAt time.Time `json:"auth_rejected_at,omitempty"`
+	Timestamp      time.Time `json:"timestamp"`
 }
 
 // Rename retry bounds. The Windows renameReplace primitive uses POSIX rename
@@ -123,6 +131,26 @@ func UpdateHeartbeat(path string, t time.Time) error {
 		s = &AgentState{PID: os.Getpid()}
 	}
 	s.LastHeartbeat = t
+	// The server just accepted the credentials, so any auth-rejected marker
+	// is obsolete.
+	s.AuthRejectedAt = time.Time{}
+	s.Timestamp = time.Now()
+	return Write(path, s)
+}
+
+// UpdateAuthRejected records that the agent's heartbeat loop is alive but the
+// server is rejecting its credentials (see AgentState.AuthRejectedAt). It
+// leaves LastHeartbeat untouched and, like UpdateHeartbeat, recreates a
+// missing file with this process's PID.
+func UpdateAuthRejected(path string, t time.Time) error {
+	s, err := Read(path)
+	if err != nil {
+		return err
+	}
+	if s == nil {
+		s = &AgentState{PID: os.Getpid()}
+	}
+	s.AuthRejectedAt = t
 	s.Timestamp = time.Now()
 	return Write(path, s)
 }

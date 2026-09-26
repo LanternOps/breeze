@@ -111,14 +111,19 @@ type HeartbeatPayload struct {
 	// pointer so an old-agent omission (nil) is distinguishable from a
 	// genuine "physical" report (false) — the server only overwrites the
 	// stored value when the agent actually sends one.
-	IsVirtual                 *bool                          `json:"isVirtual,omitempty"`
-	VirtualizationPlatform    string                         `json:"virtualizationPlatform,omitempty"`
-	HealthStatus              *health.AgentHealthObservation `json:"healthStatus,omitempty"`
-	DroppedLogs               int64                          `json:"droppedLogs,omitempty"`
-	HelperVersion             string                         `json:"helperVersion,omitempty"`
-	WatchdogVersion           string                         `json:"watchdogVersion,omitempty"`
-	BackupVersion             string                         `json:"backupVersion,omitempty"`
-	RollbackComponentVersions map[string]string              `json:"rollbackComponentVersions,omitempty"`
+	IsVirtual              *bool                          `json:"isVirtual,omitempty"`
+	VirtualizationPlatform string                         `json:"virtualizationPlatform,omitempty"`
+	HealthStatus           *health.AgentHealthObservation `json:"healthStatus,omitempty"`
+	DroppedLogs            int64                          `json:"droppedLogs,omitempty"`
+	HelperVersion          string                         `json:"helperVersion,omitempty"`
+	// HelperInstallIssue is a Breeze Assist install problem the agent is stuck
+	// on (helper.InstallIssue* codes, #6925), e.g. enabled but not installed
+	// with no helper version offered. Omitted when there is none, so older
+	// servers (which strip unknown keys) and healthy devices send nothing.
+	HelperInstallIssue        string            `json:"helperInstallIssue,omitempty"`
+	WatchdogVersion           string            `json:"watchdogVersion,omitempty"`
+	BackupVersion             string            `json:"backupVersion,omitempty"`
+	RollbackComponentVersions map[string]string `json:"rollbackComponentVersions,omitempty"`
 	// ServerURL is the control-plane base URL this heartbeat is POSTed to
 	// (#2288). Set per-attempt in postHeartbeat, so a backup probe reports
 	// the backup URL and the device row shows real fleet position.
@@ -1945,9 +1950,7 @@ func (h *Heartbeat) Start() {
 			// a `renewCert` signal that can only arrive in a heartbeat
 			// response the server is refusing to send is a deadlock.
 			go h.maybeSelfInitiateCertRenewal()
-			if h.authMon != nil && h.authMon.ShouldSkip() {
-				log.Debug("skipping heartbeat tick, auth-dead",
-					"backoff", h.authMon.BackoffDuration())
+			if h.skipTickIfAuthDead() {
 				// continue here re-arms the ticker without running
 				// sendHeartbeatWithWatchdog or any inventory/posture/security
 				// scheduling — all of that work requires a valid auth token.
@@ -4502,14 +4505,16 @@ func (h *Heartbeat) sendHeartbeat() {
 		ObservedAt:       time.Now().UTC(),
 	})
 	payload := HeartbeatPayload{
-		Status:          status,
-		AgentVersion:    h.agentVersion,
-		HelperVersion:   h.helperMgr.InstalledVersion(),
-		WatchdogVersion: h.installedWatchdogVersion(),
-		BackupVersion:   h.installedBackupVersion(),
-		HealthStatus:    &healthSnapshot,
-		DeviceRole:      deviceRole,
-		IsHeadless:      h.currentHeadless(),
+		Status:        status,
+		AgentVersion:  h.agentVersion,
+		HelperVersion: h.helperMgr.InstalledVersion(),
+		// Observed by the previous heartbeat's Apply (#6925).
+		HelperInstallIssue: h.helperMgr.InstallIssue(),
+		WatchdogVersion:    h.installedWatchdogVersion(),
+		BackupVersion:      h.installedBackupVersion(),
+		HealthStatus:       &healthSnapshot,
+		DeviceRole:         deviceRole,
+		IsHeadless:         h.currentHeadless(),
 		// Wave 6 Task 4 — this build enforces internal/netpolicy (Tasks 1-3),
 		// so it always declares version 1. Unconditional (not gated on any
 		// runtime check): the enforcement is compiled in, not a runtime
@@ -4693,7 +4698,15 @@ func (h *Heartbeat) doHeartbeatPost(baseURL string, payload *HeartbeatPayload) (
 		if h.authMon != nil {
 			h.authMon.RecordAuthFailure()
 		}
+		h.noteAuthRejectedLiveness()
 		return nil, false
+	}
+
+	if resp.StatusCode == http.StatusForbidden {
+		// Decommissioned / quarantined / tenant-inactive. Not counted by the
+		// auth monitor (unchanged), but it is still "running, rejected by the
+		// server", which a watchdog restart cannot fix (#2796).
+		h.noteAuthRejectedLiveness()
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -6046,6 +6059,56 @@ func (h *Heartbeat) reconcilePendingRotation() {
 		persisted.PendingHelperAuthToken,
 	)
 	log.Info("resumed credential rotation confirmed and promoted")
+}
+
+// skipTickIfAuthDead reports whether this heartbeat tick should be skipped
+// because the auth monitor is in an auth-dead backoff window. A skipped tick
+// still refreshes the auth-rejected liveness marker: the loop is alive, it is
+// just not allowed to talk to the server yet (#2796).
+func (h *Heartbeat) skipTickIfAuthDead() bool {
+	if h.authMon == nil || !h.authMon.ShouldSkip() {
+		return false
+	}
+	log.Debug("skipping heartbeat tick, auth-dead",
+		"backoff", h.authMon.BackoffDuration())
+	h.noteAuthRejectedLiveness()
+	return true
+}
+
+// noteAuthRejectedLiveness tells the watchdog that this agent is running its
+// heartbeat loop but the server is rejecting its credentials (#2796).
+// LastHeartbeat only advances on HTTP 200, so without this a live agent that
+// is correctly backing off reads as wedged: the watchdog restarts it every
+// ~10 minutes, each restart resets its in-memory backoff, and once the
+// restart budget is gone the watchdog parks in FAILOVER and polls the server
+// itself. Written to agent.state AND sent over IPC — the file alone is not
+// reliable on AV/EDR-locked hosts (#2763).
+func (h *Heartbeat) noteAuthRejectedLiveness() {
+	now := time.Now()
+	if h.statePath != "" {
+		if err := state.UpdateAuthRejected(h.statePath, now); err != nil {
+			log.Warn("failed to update state file auth-rejected marker", "error", err.Error())
+		}
+	}
+	if h.sessionBroker == nil {
+		return
+	}
+	sess := h.sessionBroker.PreferredSessionWithScope("watchdog")
+	if sess == nil {
+		return
+	}
+	// LastHeartbeat stays empty: this must never read as a successful
+	// heartbeat, to this watchdog or to one that predates AuthRejectedAt.
+	if err := sess.SendNotify("", ipc.TypeStateSync, ipc.StateSync{
+		AgentVersion:     h.agentVersion,
+		Connected:        false,
+		AuthRejectedAt:   now.Format(time.RFC3339),
+		ActiveBackupRuns: h.sessionBroker.ActiveBackupRunCount(),
+	}); err != nil {
+		// On an AV/EDR-locked host this IPC send is the only liveness
+		// channel left, so a failure here must leave a trace.
+		log.Warn("failed to send auth-rejected state_sync to watchdog", "error", err.Error())
+	}
 }
 
 // sendWatchdogStateSync sends a state_sync IPC message to the watchdog

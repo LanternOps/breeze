@@ -263,6 +263,14 @@ export const devices = pgTable('devices', {
   // on a state change; `since` is when the current episode began.
   updateOfferWithheldReason: varchar('update_offer_withheld_reason', { length: 50 }),
   updateOfferWithheldSince: timestamp('update_offer_withheld_since', { withTimezone: true }),
+  // #6925 — agent-reported Breeze Assist install problem. NULL = none reported
+  // (healthy, Assist off, or an agent too old to report). 'awaiting_server_offer'
+  // = enabled but not installed and the server sent no helper version;
+  // 'install_abandoned' = the agent gave up installing the offered version
+  // (#6927). Written by the heartbeat ONLY on a state change; `since` is when
+  // the current episode began.
+  helperInstallIssue: varchar('helper_install_issue', { length: 50 }),
+  helperInstallIssueSince: timestamp('helper_install_issue_since', { withTimezone: true }),
   // Enrollment idempotency (#2764): uninstall intent stamped by the agent's
   // graceful-uninstall notify path (Task 5/6); reaper decommissions once past
   // grace with no re-enrollment heartbeat. possibleReplacementOfDeviceId links
