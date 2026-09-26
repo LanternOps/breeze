@@ -86,6 +86,35 @@ describe('topology session creation', () => {
     expect(fetchWithAuthMock).toHaveBeenLastCalledWith('/ai/sessions/sess-topo/messages', expect.anything());
   });
 
+  it('a late create response for an abandoned investigation never takes over the session the user moved to', async () => {
+    let resolveA!: (r: Response) => void;
+    fetchWithAuthMock.mockImplementationOnce(() => new Promise<Response>((resolve) => { resolveA = resolve; }));
+    const creatingA = useAiStore.getState().createSession({ pageContext: topologyContext });
+    // Meanwhile the user opens session B from history and starts streaming in it.
+    fetchWithAuthMock.mockResolvedValueOnce(jsonResponse({ session: { id: 'sess-b', status: 'active', orgId: 'org-1' }, messages: [] }));
+    await useAiStore.getState().switchSession('sess-b');
+    useAiStore.setState({ isStreaming: true });
+    resolveA(jsonResponse({ id: 'sess-a', orgId: 'org-1' }));
+    await creatingA;
+    const state = useAiStore.getState();
+    expect(state.sessionId).toBe('sess-b');
+    expect(state.hydratedSessionId).toBe('sess-b');
+    expect(state.isStreaming).toBe(true);
+    expect(state.topologySiteId).toBeNull();
+  });
+
+  it('of two overlapping creates, only the newest one binds the store', async () => {
+    let resolveA!: (r: Response) => void;
+    fetchWithAuthMock.mockImplementationOnce(() => new Promise<Response>((resolve) => { resolveA = resolve; }));
+    const creatingA = useAiStore.getState().createSession({ pageContext: topologyContext });
+    fetchWithAuthMock.mockResolvedValueOnce(jsonResponse({ id: 'sess-b', orgId: 'org-1' }));
+    await useAiStore.getState().createSession();
+    resolveA(jsonResponse({ id: 'sess-a', orgId: 'org-1' }));
+    await creatingA;
+    expect(useAiStore.getState().sessionId).toBe('sess-b');
+    expect(useAiStore.getState().topologySiteId).toBeNull();
+  });
+
   it('an ordinary session clears any topology pin', async () => {
     useAiStore.setState({ topologySiteId: SITE, topologySelection: { siteId: SITE, subject: { kind: 'node', id: NODE }, view: 'physical', graphRevision: '7' } });
     fetchWithAuthMock.mockResolvedValueOnce(jsonResponse({ id: 'sess-chat', orgId: 'org-1' }));

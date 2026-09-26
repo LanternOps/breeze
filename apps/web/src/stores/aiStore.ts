@@ -178,6 +178,19 @@ const CLEARED_SESSION = {
 let activeStreamToken = 0;
 
 /**
+ * Identifies the request that currently owns WHICH session the store is bound
+ * to (create / load / switch / close). Each such request takes a new token; a
+ * response arriving after a newer one began is stale and must not rebind the
+ * store — a late create for an abandoned investigation would otherwise
+ * overwrite the session (and live stream) the user has since moved to.
+ */
+let sessionOwnerToken = 0;
+const claimSessionOwnership = (): (() => boolean) => {
+  const token = ++sessionOwnerToken;
+  return () => sessionOwnerToken === token;
+};
+
+/**
  * Topology M4 (#6000): the only events a topology investigation turn may
  * render. The server already withholds raw text and tool traffic for such a
  * turn; this is the client-side defense in depth — a generic `content_delta`,
@@ -267,6 +280,7 @@ export const useAiStore = create<AiState>()(
     ),
 
   createSession: async (opts) => {
+    const ownsSession = claimSessionOwnership();
     set({ isLoading: true, error: null, errorCode: null });
     const { pageContext: storeContext, selectedM365ConnectionId, approvalMode } = get();
     const pageContext = opts?.pageContext ?? storeContext;
@@ -281,7 +295,9 @@ export const useAiStore = create<AiState>()(
       // Take the shared store over from whatever it was streaming: a superseded
       // stream must stop writing, and a stale `isStreaming` would make the
       // investigation's first sendMessage a silent no-op.
-      activeStreamToken += 1;
+      const streamToken = ++activeStreamToken;
+      /** False once a newer create/load/switch or a newer send took the store over. */
+      const ownsCreate = () => ownsSession() && activeStreamToken === streamToken;
       set({ isStreaming: false, isInterrupting: false, pendingApproval: null, pendingPlan: null, activePlan: null });
       try {
         const data = await runAction<{ id: string; orgId?: string | null }>({
@@ -292,6 +308,7 @@ export const useAiStore = create<AiState>()(
           errorFallback,
           successMessage: i18n.t('topology:ai.started'),
         });
+        if (!ownsCreate()) return;
         set({
           sessionId: data.id,
           sessionOrgId: data.orgId ?? null,
@@ -309,6 +326,7 @@ export const useAiStore = create<AiState>()(
         });
       } catch (err) {
         handleActionError(err, errorFallback);
+        if (!ownsCreate()) return;
         set({
           error: err instanceof Error ? err.message : errorFallback,
           errorCode: err instanceof ActionError ? err.code ?? null : null,
@@ -332,6 +350,7 @@ export const useAiStore = create<AiState>()(
         throw new Error(extractApiError(data, 'Failed to create session'));
       }
       const data = await res.json();
+      if (!ownsSession()) return;
       set({
         sessionId: data.id,
         sessionOrgId: data.orgId ?? null,
@@ -347,6 +366,7 @@ export const useAiStore = create<AiState>()(
         topologyRunId: null,
       });
     } catch (err) {
+      if (!ownsSession()) return;
       set({
         error: err instanceof Error ? err.message : 'Failed to create session',
         isLoading: false
@@ -369,9 +389,11 @@ export const useAiStore = create<AiState>()(
   },
 
   loadSession: async (sessionId: string) => {
+    const ownsSession = claimSessionOwnership();
     set({ isLoading: true, error: null });
     try {
       const res = await fetchWithAuth(`/ai/sessions/${sessionId}`);
+      if (!ownsSession()) return;
       if (!res.ok) {
         if (res.status === 404) {
           set({ sessionId: null, sessionOrgId: null, messages: [], isLoading: false });
@@ -381,6 +403,7 @@ export const useAiStore = create<AiState>()(
         return;
       }
       const data = await res.json();
+      if (!ownsSession()) return;
       if (data.session?.status !== 'active') {
         set({ sessionId: null, sessionOrgId: null, messages: [], isLoading: false });
         return;
@@ -409,6 +432,7 @@ export const useAiStore = create<AiState>()(
         ...topologyFieldsOf(data.session),
       });
     } catch (err) {
+      if (!ownsSession()) return;
       set({
         sessionId: null,
         sessionOrgId: null,
@@ -657,9 +681,11 @@ export const useAiStore = create<AiState>()(
   closeSession: async () => {
     const { sessionId } = get();
     if (!sessionId) return;
+    const ownsSession = claimSessionOwnership();
 
     try {
       const res = await fetchWithAuth(`/ai/sessions/${sessionId}`, { method: 'DELETE' });
+      if (!ownsSession()) return;
       if (!res.ok) {
         set({ error: 'Failed to close session' });
         return;
@@ -714,11 +740,13 @@ export const useAiStore = create<AiState>()(
   },
 
   switchSession: async (sessionId: string) => {
+    const ownsSession = claimSessionOwnership();
     set({ showHistory: false, isLoading: true, error: null });
     try {
       const res = await fetchWithAuth(`/ai/sessions/${sessionId}`);
       if (!res.ok) throw new Error('Failed to load session');
       const data = await res.json();
+      if (!ownsSession()) return;
 
       const messages = mapMessagesFromApi(data.messages || []);
 
@@ -737,6 +765,7 @@ export const useAiStore = create<AiState>()(
         ...topologyFieldsOf(data.session),
       });
     } catch (err) {
+      if (!ownsSession()) return;
       set({
         error: err instanceof Error ? err.message : 'Failed to load session',
         isLoading: false
