@@ -18,9 +18,10 @@ vi.mock('./store', () => ({ transitionOutcome: transitionMock, fillOutcomeSignat
 
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { BreezeEvent } from '../eventBus';
+import { probeTelemetryFreshness, readAlertRecovery } from '../outcomeProbes';
 import {
-  decideAwaitingRecovery, decideHolding, decidePending, handleFixOutcomeEvent, readingFromAlert, readingFromEpisode,
-  recurrencePrefilter,
+  advanceOutcome, decideAwaitingRecovery, decideHolding, decidePending, handleFixOutcomeEvent, readingFromAlert,
+  readingFromEpisode, recurrencePrefilter,
 } from './outcomeWatcher';
 
 const T0 = new Date('2026-11-01T00:00:00Z');
@@ -102,6 +103,8 @@ describe('decideHolding (Review Focus 3)', () => {
     [{ recurrence: 'clear', deviceMoved: false, now: at(5), freshness: null }, null],
     [{ recurrence: 'unscanned', deviceMoved: false, now: at(5), freshness: null }, null],
     [{ recurrence: 'unscanned', deviceMoved: false, now: at(27), freshness: fresh }, { to: 'inconclusive', reason: 'recurrence_scan_capped' }],
+    [{ recurrence: 'unsignable', deviceMoved: false, now: at(5), freshness: null }, null],
+    [{ recurrence: 'unsignable', deviceMoved: false, now: at(27), freshness: fresh }, { to: 'inconclusive', reason: 'recurrence_unsignable' }],
     [{ recurrence: 'clear', deviceMoved: false, now: at(27), freshness: fresh }, { to: 'verified', reason: 'held_with_fresh_telemetry' }],
     [{ recurrence: 'clear', deviceMoved: false, now: at(27), freshness: { fresh: false, reason: 'heartbeat_stale', coverage: 0 } }, { to: 'inconclusive', reason: 'telemetry_heartbeat_stale' }],
     [{ recurrence: 'clear', deviceMoved: false, now: at(27), freshness: { fresh: false, reason: 'metric_gap', coverage: 0.4 } }, { to: 'inconclusive', reason: 'telemetry_metric_gap' }],
@@ -152,8 +155,83 @@ describe('handleFixOutcomeEvent (Review Focus 1)', () => {
   });
 
   it('ignores script.* (W1 never subscribes to them — decision D-a) and malformed payloads', async () => {
-    await handleFixOutcomeEvent({ ...evt, type: 'script.failed', payload: { executionId: 'e-1', status: 'failed' } } as never);
-    await handleFixOutcomeEvent({ ...evt, payload: { resolvedAt: at(2).toISOString() } } as never);
+    // Each case seeds enough rows that a handler which mistakenly processed
+    // the event WOULD find the outcome and transition it (id lookup -> row ->
+    // device org). If either guard below were removed, this test goes red —
+    // verified by temporarily deleting each guard and observing the failure
+    // (not committed; see task-13-report.md fix round 1).
+    rows.push([{ id: 'o-1' }], [awaiting], [{ orgId: 'org-1' }]);
+    await handleFixOutcomeEvent({
+      ...evt, type: 'script.failed',
+      payload: { alertId: 'a-1', executionId: 'e-1', status: 'failed', resolvedAt: at(2).toISOString(), resolvedBy: null, resolutionReason: 'condition_cleared' },
+    } as unknown as BreezeEvent);
+
+    rows.push([{ id: 'o-1' }], [awaiting], [{ orgId: 'org-1' }]);
+    await handleFixOutcomeEvent({ ...evt, payload: { resolvedAt: at(2).toISOString() } } as unknown as BreezeEvent);
+
     expect(transitionMock).not.toHaveBeenCalled();
+    // Neither branch touched the db: both seeded 3-row batches are still queued.
+    expect(rows.length).toBe(6);
+  });
+});
+
+describe('scanRecurrence fails closed when unsignable (Review Focus 3 — fix round 1)', () => {
+  beforeEach(() => { rows.length = 0; transitionMock.mockReset().mockResolvedValue(true); });
+
+  it('a holding outcome with no signature never reaches verified, even past the hold window', async () => {
+    const holdingRow = {
+      id: 'o-2', orgId: 'org-1', partnerId: 'p-1', deviceId: 'd-1', state: 'holding', countedAt: null,
+      signatureKey: null, sourceType: 'alert', sourceId: 'a-2', alertId: 'a-2', anomalyEpisodeId: null,
+      signatureFacets: null, scriptExecutionId: null, deadlineAt: at(24), createdAt: at(0),
+      recoveredAt: at(2), holdingUntil: at(26),
+    };
+    // fixOutcomes lookup, device-org lookup. scanRecurrence returns
+    // 'unsignable' before ever touching the alerts table, so no third batch.
+    rows.push([holdingRow], [{ orgId: 'org-1' }]);
+
+    const result = await advanceOutcome('o-2', { now: at(30) });
+
+    expect(result).toBe('inconclusive');
+    expect(transitionMock).toHaveBeenCalledTimes(1);
+    expect(transitionMock.mock.calls[0]![1]).toEqual({ to: 'inconclusive', reason: 'recurrence_unsignable' });
+  });
+});
+
+describe('holding -> verified re-checks the source (Review Focus 3 — fix round 1)', () => {
+  beforeEach(() => {
+    rows.length = 0;
+    transitionMock.mockReset().mockResolvedValue(true);
+    vi.mocked(probeTelemetryFreshness).mockReset();
+    vi.mocked(readAlertRecovery).mockReset();
+  });
+
+  const holdingRow = (id: string, alertId: string) => ({
+    id, orgId: 'org-1', partnerId: 'p-1', deviceId: 'd-1', state: 'holding', countedAt: null,
+    signatureKey: 'k'.repeat(64), sourceType: 'alert', sourceId: alertId, alertId, anomalyEpisodeId: null,
+    signatureFacets: null, scriptExecutionId: null, deadlineAt: at(24), createdAt: at(0),
+    recoveredAt: at(2), holdingUntil: at(26),
+  });
+
+  it('a reopened alert blocks verification even with fresh telemetry and no recurrence (fail closed)', async () => {
+    // fixOutcomes lookup, device-org lookup, empty recurrence-scan alert batch.
+    rows.push([holdingRow('o-3', 'a-3')], [{ orgId: 'org-1' }], []);
+    vi.mocked(probeTelemetryFreshness).mockResolvedValueOnce({ fresh: true, reason: 'ok', coverage: 0.9 });
+    vi.mocked(readAlertRecovery).mockResolvedValueOnce({ status: 'active', resolvedAt: null, resolvedBy: null, resolutionReason: null });
+
+    const result = await advanceOutcome('o-3', { now: at(30) });
+
+    expect(result).toBe('inconclusive');
+    expect(transitionMock.mock.calls[0]![1]).toEqual({ to: 'inconclusive', reason: 'source_not_resolved' });
+  });
+
+  it('verifies normally once the source re-check confirms it is still resolved', async () => {
+    rows.push([holdingRow('o-4', 'a-4')], [{ orgId: 'org-1' }], []);
+    vi.mocked(probeTelemetryFreshness).mockResolvedValueOnce({ fresh: true, reason: 'ok', coverage: 0.9 });
+    vi.mocked(readAlertRecovery).mockResolvedValueOnce({ status: 'resolved', resolvedAt: at(2), resolvedBy: null, resolutionReason: 'condition_cleared' });
+
+    const result = await advanceOutcome('o-4', { now: at(30) });
+
+    expect(result).toBe('verified');
+    expect(transitionMock.mock.calls[0]![1]).toEqual({ to: 'verified', reason: 'held_with_fresh_telemetry' });
   });
 });

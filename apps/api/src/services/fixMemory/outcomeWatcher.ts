@@ -99,7 +99,7 @@ export function decideAwaitingRecovery(i: { reading: RecoveryReading; createdAt:
   }
 }
 
-export type Recurrence = 'recurred' | 'clear' | 'unscanned';
+export type Recurrence = 'recurred' | 'clear' | 'unscanned' | 'unsignable';
 
 export function decideHolding(i: {
   recurrence: Recurrence; deviceMoved: boolean; holdingUntil: Date; now: Date; freshness: TelemetryFreshness | null;
@@ -109,6 +109,10 @@ export function decideHolding(i: {
   if (i.now.getTime() < i.holdingUntil.getTime()) return null;
   // Too many candidate alerts to rule a recurrence out: never call that "held".
   if (i.recurrence === 'unscanned') return { to: 'inconclusive', reason: 'recurrence_scan_capped' };
+  // No signature to compare against: a recurrence scan can never be run, so
+  // never let a hold reach "verified" unsigned (fail closed, same principle
+  // as 'unscanned').
+  if (i.recurrence === 'unsignable') return { to: 'inconclusive', reason: 'recurrence_unsignable' };
   if (!i.freshness) return null;
   return i.freshness.fresh
     ? { to: 'verified', reason: 'held_with_fresh_telemetry' }
@@ -190,7 +194,11 @@ export function recurrencePrefilter(condition: string | null): SQL | null {
  * 'unscanned' = page cap hit without an answer (fails closed as inconclusive).
  */
 async function scanRecurrence(row: FixOutcomeRow, now: Date): Promise<Recurrence> {
-  if (!row.signatureKey || !row.recoveredAt || !row.holdingUntil) return 'clear';
+  // No signature means there is nothing to compare a candidate recurrence
+  // against — that is a failure to rule recurrence out, not evidence there is
+  // none, so it must fail closed the same way a capped scan does.
+  if (!row.signatureKey) return 'unsignable';
+  if (!row.recoveredAt || !row.holdingUntil) return 'clear';
   const { family, condition } = conditionOf(row);
   const windowEnd = new Date(Math.min(now.getTime(), row.holdingUntil.getTime()));
   if (family === 'anomaly' && condition?.startsWith('anomaly:')) {
@@ -232,6 +240,19 @@ async function scanRecurrence(row: FixOutcomeRow, now: Date): Promise<Recurrence
   return 'unscanned';
 }
 
+/**
+ * The one cheap re-read before a hold is allowed to become "verified":
+ * has the source re-opened, or did the event we based the hold on never
+ * actually commit (eventBus publishers may publish before their commit)?
+ * A reading of 'recovered' or 'cleared_other' still means resolved/closed;
+ * anything else (still_active, unknown, source_missing, no_observable_condition)
+ * fails closed rather than confirming.
+ */
+async function sourceStillResolved(row: FixOutcomeRow): Promise<boolean> {
+  const reading = await readRecovery(row);
+  return reading.kind === 'recovered' || reading.kind === 'cleared_other';
+}
+
 async function decide(
   row: FixOutcomeRow, moved: boolean, now: Date,
   overrides: { script?: ScriptReading; alert?: AlertRecoveryReading },
@@ -253,7 +274,11 @@ async function decide(
       probe: telemetryProbeFor(conditionOf(row).condition),
     })
     : null;
-  return decideHolding({ recurrence, deviceMoved: moved, holdingUntil: row.holdingUntil, now, freshness });
+  const transition = decideHolding({ recurrence, deviceMoved: moved, holdingUntil: row.holdingUntil, now, freshness });
+  if (transition?.to === 'verified' && !moved && !(await sourceStillResolved(row))) {
+    return { to: 'inconclusive', reason: 'source_not_resolved' };
+  }
+  return transition;
 }
 
 export async function advanceOutcome(
