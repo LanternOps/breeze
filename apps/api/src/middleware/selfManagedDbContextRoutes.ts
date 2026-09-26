@@ -224,6 +224,17 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // RECONCILE_MAX_LIMIT, and still far better than the whole-handler
   // transaction this registration replaces. Hoisting it out is a follow-up.
   { method: 'POST', pattern: /^\/api\/v1\/backup\/reconcile\/?$/ },
+  // #6597 — manual backup runs (single device and run-all). Each creates
+  // backup_jobs rows and enqueues a dispatch the backup worker picks up on its
+  // own connection within milliseconds. Under the ambient request transaction
+  // the worker could not see the uncommitted row: it resolved the job as a
+  // pathless file backup, failed a row it could not see (0 rows), and the row
+  // that committed afterwards sat `pending` until the stale reaper failed it
+  // with "Backup dispatch never completed". The handlers now create the rows
+  // in a short withAuthDbAccessContext block and enqueue strictly after it
+  // commits — the same shape as the #6849 patch-job route.
+  { method: 'POST', pattern: /^\/api\/v1\/backup\/jobs\/run\/[^/]+\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/backup\/jobs\/run-all\/?$/ },
   // PSA connection "Test connection" — constructs a real PSA adapter and calls
   // the remote PSA API (psaFetch, 20s timeout) against a TENANT-CONTROLLED
   // baseUrl; a blackholed host would otherwise pin a pooled connection
