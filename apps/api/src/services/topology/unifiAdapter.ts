@@ -46,6 +46,7 @@ import { createHash } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
 import { canonicalizeUnifiResource, unifiEndpointKey, type TopologyScope, type UnifiDigestIdentity, type UnifiResource, type UnifiTopologyV1 } from '@breeze/shared';
 import { assertInTransaction, db } from '../../db';
+import { pgErrorCode } from '../../utils/pgErrors';
 import { topologyCollectionSources, unifiControllerSites } from '../../db/schema';
 import { canonicalMac } from '../unifi/unifiMac';
 import { lockTopologyPhysicalIngest, resolveTopologyPhysicalProducer, TOPOLOGY_PRODUCER_REJECTIONS } from './collectionAuthority';
@@ -128,8 +129,8 @@ export type UnifiTopologyReceipt = { accepted: boolean; producerEpoch?: string; 
 const ADAPTER_REJECTIONS = new Set([...TOPOLOGY_PRODUCER_REJECTIONS, 'source_key_mismatch', 'invalid_source_section']);
 
 /** A per-resource rejection reason for an expected producer failure, else null (rethrow). */
-function adapterRejection(error: unknown): string | null {
-  if ((error as { code?: string } | null)?.code === '55P03') return 'producer_busy';
+export function unifiAdapterRejection(error: unknown): string | null {
+  if (pgErrorCode(error) === '55P03') return 'producer_busy';
   const reason = error instanceof Error ? error.message : '';
   return ADAPTER_REJECTIONS.has(reason) ? reason : null;
 }
@@ -174,7 +175,7 @@ export async function adaptUnifiTopology(deviceId: string, collector: UnifiColle
     try {
       await db.transaction(() => lockTopologyPhysicalIngest(deviceId, collector.orgId, targets));
     } catch (error) {
-      lockFailure = adapterRejection(error);
+      lockFailure = unifiAdapterRejection(error);
       if (!lockFailure) throw error;
     }
   }
@@ -216,7 +217,7 @@ export async function adaptUnifiTopology(deviceId: string, collector: UnifiColle
         ? { ...out, accepted: true, contentDigest: resource.contentDigest, ...(receipt.acceptedSequence ? { acceptedSequence: receipt.acceptedSequence } : {}) }
         : { ...out, accepted: false, reason: receipt.reason ?? 'not_accepted' });
     } catch (error) {
-      const reason = adapterRejection(error);
+      const reason = unifiAdapterRejection(error);
       if (!reason) throw error;
       reject(reason);
     }

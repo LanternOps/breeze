@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { canonicalizeUnifiResource, physicalSourceSectionSchema, unifiResourceSchema, type UnifiResource } from '@breeze/shared';
 import vectors from '../../../../../packages/shared/src/testing/topology-unifi-v1.json';
-import { normalizeUnifiResource, uniqueSiteMacMatch, unifiNormalizedDigest, unifiWireDigestMatches } from './unifiAdapter';
+import { normalizeUnifiResource, uniqueSiteMacMatch, unifiAdapterRejection, unifiNormalizedDigest, unifiWireDigestMatches } from './unifiAdapter';
 import { unifiAuthorityGeneration, unifiAuthorityKey, unifiCollectorRevision, unifiCollectorTopologyCredentials } from './unifiAuthority';
 
 const scope = { orgId: 'org-a', siteId: 'site-a' };
@@ -98,5 +98,17 @@ describe('normalizeUnifiResource', () => {
     expect(unifiNormalizedDigest({ ...producer, producerEpoch: 'e2' }, section)).not.toBe(digest);
     const bound = normalizeUnifiResource({ ...context, resource: byKind('device_list'), bindings: new Map([['02:00:00:00:02:01', '11111111-1111-4111-8111-111111111111']]) });
     expect(unifiNormalizedDigest(producer, bound)).not.toBe(digest);
+  });
+});
+
+describe('unifiAdapterRejection', () => {
+  it('maps a NOWAIT lock loss to producer_busy whether or not Drizzle wrapped the driver error', () => {
+    expect(unifiAdapterRejection(Object.assign(new Error('x'), { code: '55P03' }))).toBe('producer_busy');
+    expect(unifiAdapterRejection(Object.assign(new Error('Failed query'), { cause: { code: '55P03' } }))).toBe('producer_busy');
+  });
+  it('passes expected producer rejections through and nothing else', () => {
+    expect(unifiAdapterRejection(new Error('producer_epoch_changed'))).toBe('producer_epoch_changed');
+    expect(unifiAdapterRejection(new Error('boom'))).toBeNull();
+    expect(unifiAdapterRejection(Object.assign(new Error('Failed query'), { cause: { code: '40P01' } }))).toBeNull();
   });
 });

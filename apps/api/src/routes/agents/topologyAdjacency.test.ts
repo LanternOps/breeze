@@ -51,6 +51,15 @@ describe('POST /agents/:id/topology/adjacency', () => {
     expect(ctx.sawDepthAtAdmit).toBe(1);
   });
 
+  // Drizzle wraps the driver error: the SQLSTATE lives on `.cause`, so a
+  // direct `.code` read never saw a NOWAIT lock loss and answered 500.
+  it('answers producer_busy for a lock_not_available wrapped by Drizzle', async () => {
+    admit.mockRejectedValue(Object.assign(new Error('Failed query'), { cause: { code: '55P03' } }));
+    const r = report();
+    const res = await post({ parentJobId: r.parentJobId, report: r });
+    expect({ status: res.status, body: await res.json() }).toEqual({ status: 503, body: { error: 'producer_busy' } });
+  });
+
   it('rejects the watchdog credential', async () => {
     const r = report();
     expect((await post({ parentJobId: r.parentJobId, report: r }, app('watchdog'))).status).toBe(403);

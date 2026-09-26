@@ -7,6 +7,7 @@ import { ensureDiscoveryTopologyAuthority } from '../../services/topology/discov
 import { admitDiscoveryAdjacencyReport, type DiscoveryAdjacencyOutcome } from '../../services/topology/discoveryTransport';
 import { loadTopologyFlags, withResolvedTopologyFlags } from '../../services/topology/flags';
 import { captureException } from '../../services/sentry';
+import { pgErrorCode } from '../../utils/pgErrors';
 
 /**
  * M2 D14: `POST /agents/:id/topology/adjacency` — one AdjacencyV2 report for
@@ -62,7 +63,7 @@ topologyAdjacencyRoutes.post('/:id/topology/adjacency', async (c) => {
     })));
   } catch (error) {
     if (error instanceof RollbackOutcome) outcome = error.outcome;
-    else if (error && typeof error === 'object' && 'code' in error && error.code === '55P03') return c.json({ error: 'producer_busy' }, 503);
+    else if (pgErrorCode(error) === '55P03') return c.json({ error: 'producer_busy' }, 503);
     else throw error;
   }
   return c.json(outcome.body, outcome.status);
