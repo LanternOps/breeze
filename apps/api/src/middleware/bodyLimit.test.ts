@@ -202,6 +202,14 @@ describe('bodyLimitForPath', () => {
     expect(bodyLimitForPath('/api/v1/agents/agent-1/topology').maxSize).toBe(1 * MB);
   });
 
+  it('allows the 8 MiB topologyV1 companion plus the legacy telemetry body on unifi-telemetry only', () => {
+    expect(bodyLimitForPath('/api/v1/agents/agent-1/unifi-telemetry')).toEqual({
+      rule: 'agent-unifi-telemetry', maxSize: 9 * MB, error: 'UniFi telemetry too large (max 8 MiB topology + 1 MiB telemetry)',
+    });
+    expect(bodyLimitForPath('/api/v1/agents/agent-1/unifi-telemetry/extra').maxSize).toBe(1 * MB);
+    expect(bodyLimitForPath('/api/v1/agents/agent-1/unifi-collectors').maxSize).toBe(1 * MB);
+  });
+
   it('allows exactly 2 MiB on hardware-health without widening sibling paths', () => {
     expect(bodyLimitForPath('/api/v1/agents/agent-1/hardware-health')).toEqual({
       rule: 'agent-hardware-health',
