@@ -583,7 +583,23 @@ async function releaseCoreMigrationLock(client: postgres.Sql): Promise<void> {
  * unified system.  All migrations live in `apps/api/migrations/` as numbered
  * SQL files (0001-baseline.sql through 0065-xxx.sql and beyond).
  */
-export async function autoMigrate(): Promise<void> {
+/**
+ * Test-harness hooks. Production callers pass nothing; the only consumer is
+ * CI's `check:migrations` replay (#5361), which seeds multi-tenant fixture
+ * rows between migrations so set-based DML in a LATER migration runs against
+ * rows spread over several partners — the state that broke v0.111.0 on US
+ * and that an empty CI database never exercises.
+ */
+export interface AutoMigrateOptions {
+  /**
+   * Runs after each pending migration commits (its ledger row included), on
+   * the same pinned migration connection, outside any transaction. A throw
+   * aborts the run like a failing migration would.
+   */
+  afterMigration?: (client: postgres.Sql, filename: string) => Promise<void>;
+}
+
+export async function autoMigrate(options: AutoMigrateOptions = {}): Promise<void> {
   const connectionString =
     process.env.DATABASE_URL || 'postgresql://breeze:breeze@localhost:5432/breeze';
 
@@ -592,7 +608,7 @@ export async function autoMigrate(): Promise<void> {
   try {
     await acquireCoreMigrationLock(client);
     try {
-      await runCoreMigrations(client);
+      await runCoreMigrations(client, options);
     } finally {
       await releaseCoreMigrationLock(client);
     }
@@ -601,7 +617,10 @@ export async function autoMigrate(): Promise<void> {
   }
 }
 
-async function runCoreMigrations(client: postgres.Sql): Promise<void> {
+async function runCoreMigrations(
+  client: postgres.Sql,
+  options: AutoMigrateOptions,
+): Promise<void> {
   const migrationsDir = resolveMigrationsDir();
   console.log(`[auto-migrate] Migrations directory: ${migrationsDir}`);
 
@@ -813,6 +832,7 @@ async function runCoreMigrations(client: postgres.Sql): Promise<void> {
       });
     }
     appliedCount++;
+    await options.afterMigration?.(client, filename);
   }
 
   if (appliedCount > 0) {

@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import RestoreWizard from './RestoreWizard';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 
 vi.mock('../../stores/auth', () => ({
@@ -283,6 +284,201 @@ describe('RestoreWizard', () => {
         expect.objectContaining({ type: 'error', message: 'Device is offline, cannot execute command' }),
       );
     });
+  });
+
+  it('pre-populates the snapshot + selective-file selection carried from SnapshotBrowser (#6456)', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/snapshots') {
+        return makeJsonResponse({
+          data: [
+            { id: 'snap-1', label: 'Server snapshot', status: 'Ready', size: '4 GB' },
+            { id: 'snap-2', label: 'Other snapshot', status: 'Ready', size: '2 GB' },
+          ],
+        });
+      }
+      if (url === '/backup/snapshots/snap-2/browse') {
+        return makeJsonResponse({
+          data: [
+            { name: 'report.txt', path: '/Documents/report.txt', type: 'file', sizeBytes: 10 },
+            { name: 'notes.txt', path: '/Documents/notes.txt', type: 'file', sizeBytes: 20 },
+          ],
+        });
+      }
+      if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(
+      <RestoreWizard
+        initialSnapshotId="snap-2"
+        initialSelectedPaths={['/Documents/report.txt']}
+      />
+    );
+
+    await screen.findByText('Restore Wizard');
+
+    // Step 0: the carried snapshot is selected, not the first one in the list.
+    expect(screen.getByRole('button', { name: /Other snapshot/i }).className).toContain('border-primary');
+
+    fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    // Step 1: restore type defaults to selective because paths were carried.
+    expect(screen.getByRole('button', { name: /Selective Restore/i }).className).toContain('border-primary');
+
+    fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    // Step 2: the carried file is pre-checked without the operator re-selecting it.
+    const checkbox = await screen.findByRole('checkbox', { name: /report\.txt/i });
+    expect((checkbox as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('formats the snapshot size from the real API field (sizeBytes) instead of showing "--" (#6496)', async () => {
+    // The real /backup/snapshots response carries `sizeBytes` (a number), never
+    // a pre-formatted `size` string — reading `snapshot.size` always fell back
+    // to '--' in production.
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/snapshots') {
+        return makeJsonResponse({
+          data: [{ id: 'snap-1', label: 'Server snapshot', sizeBytes: 1181116006 }],
+        });
+      }
+      if (url === '/backup/snapshots/snap-1/browse') return makeJsonResponse({ data: [] });
+      if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<RestoreWizard />);
+    await screen.findByText('Restore Wizard');
+
+    expect(await screen.findByText('1.10 GB')).toBeTruthy();
+    expect(screen.queryByText('--')).toBeNull();
+  });
+
+  it('shows the snapshot capture time instead of a hard-coded "Ready" status (#6496)', async () => {
+    // /backup/snapshots carries no status field; the card used to print a
+    // fabricated "Ready" for every row. It now shows the real createdAt.
+    const createdAt = '2026-09-20T14:08:00.000Z';
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/snapshots') {
+        return makeJsonResponse({
+          data: [{ id: 'snap-1', label: 'Server snapshot', sizeBytes: 1024, createdAt }],
+        });
+      }
+      if (url === '/backup/snapshots/snap-1/browse') return makeJsonResponse({ data: [] });
+      if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<RestoreWizard />);
+    await screen.findByText('Server snapshot');
+
+    expect(screen.queryByText('Ready')).toBeNull();
+    expect(screen.getByText(formatDateTime(createdAt))).toBeTruthy();
+  });
+
+  it('renders no status text when the snapshot has no createdAt (#6496)', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/snapshots') {
+        return makeJsonResponse({
+          data: [{ id: 'snap-1', label: 'Server snapshot', sizeBytes: 1024, createdAt: null }],
+        });
+      }
+      if (url === '/backup/snapshots/snap-1/browse') return makeJsonResponse({ data: [] });
+      if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<RestoreWizard />);
+    const label = await screen.findByText('Server snapshot');
+
+    const meta = label.previousElementSibling as HTMLElement;
+    expect(meta.children).toHaveLength(1);
+    expect(meta.textContent).toBe('1.00 KB');
+    expect(screen.queryByText('Ready')).toBeNull();
+  });
+
+  it('formats snapshot file sizes as bytes/KB/MB instead of raw byte counts (#6496)', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/snapshots') {
+        return makeJsonResponse({
+          data: [{ id: 'snap-1', label: 'Server snapshot', sizeBytes: 2097152 }],
+        });
+      }
+      if (url === '/backup/snapshots/snap-1/browse') {
+        return makeJsonResponse({
+          data: [{ name: 'db.bak', path: '/db.bak', type: 'file', sizeBytes: 2097152 }],
+        });
+      }
+      if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<RestoreWizard />);
+    await screen.findByText('Restore Wizard');
+
+    fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Selective restore/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+
+    expect(await screen.findByText('2.00 MB')).toBeTruthy();
+    expect(screen.queryByText('2097152 B')).toBeNull();
+  });
+
+  it('does not claim the default destination restores in place (#2562)', async () => {
+    // With no targetPath the agent writes under <temp>/breeze-restore/<source
+    // path> and never touches the originals. The card used to be labelled
+    // "Original location — Restore files in place", which is the opposite.
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/snapshots') {
+        return makeJsonResponse({ data: [{ id: 'snap-1', label: 'Server snapshot', sizeBytes: 1024 }] });
+      }
+      if (url === '/backup/snapshots/snap-1/browse') return makeJsonResponse({ data: [] });
+      if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<RestoreWizard />);
+    await screen.findByText('Restore Wizard');
+    for (let index = 0; index < 3; index += 1) {
+      fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    }
+
+    expect(screen.queryByText(/Restore files in place/i)).toBeNull();
+    expect(screen.queryByText(/^Original location$/i)).toBeNull();
+    expect(screen.getByRole('button', { name: /Staging folder on the device/i })).toBeTruthy();
+    expect(screen.getByText(/originals are never overwritten/i)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    expect(screen.queryByText(/^Original path$/)).toBeNull();
+    expect(screen.getAllByText(/Staging folder on the device/i).length).toBeGreaterThan(0);
+  });
+
+  it('echoes the typed alternate destination path on the Review step (#6496)', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/snapshots') {
+        return makeJsonResponse({ data: [{ id: 'snap-1', label: 'Server snapshot', sizeBytes: 4 * 1024 ** 3 }] });
+      }
+      if (url === '/backup/snapshots/snap-1/browse') return makeJsonResponse({ data: [] });
+      if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<RestoreWizard />);
+    await screen.findByText('Restore Wizard');
+
+    for (let index = 0; index < 3; index += 1) {
+      fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    }
+    fireEvent.click(screen.getByRole('button', { name: /Alternate path/i }));
+    fireEvent.change(screen.getByLabelText('Alternate path'), { target: { value: '/var/restore/target' } });
+    fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+
+    expect(await screen.findByText(/\/var\/restore\/target/)).toBeTruthy();
   });
 
   it('leaves a 401 to the auth redirect instead of banner-ing "Unauthorized" (#6349)', async () => {

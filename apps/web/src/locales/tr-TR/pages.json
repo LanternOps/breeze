@@ -31,7 +31,6 @@
     "alertsDetail": "Uyarı Ayrıntıları",
     "alertsMonitors": "Uyarılar – Monitörler",
     "alertsMonitorDetail": "Uyarılar – Monitör",
-    "alertsRules": "Uyarılar – Eski kurallar",
     "alerts": "Uyarılar",
     "analytics": "Analitik",
     "approvals": "Onaylar",
@@ -79,7 +78,7 @@
     "integrationsWebhooks": "Webhooklar",
     "login": "Giriş Yap",
     "logs": "Günlükler",
-    "monitoring": "İzleme",
+    "monitoring": "Ağ",
     "oauthConsent": "Erişimi yetkilendir",
     "onedrive": "OneDrive",
     "organizations": "Organizasyonlar",
@@ -236,8 +235,33 @@
       "ticketChecklistTemplates": {
         "title": "Bilet kontrol listesi şablonları",
         "description": "Teknisyenlerinizin herhangi bir bilete uygulayabileceği yeniden kullanılabilir adım listeleri."
+      },
+      "profile": {
+        "title": "Profilim"
+      },
+      "apiKeys": {
+        "title": "API anahtarları"
+      },
+      "partnerServicePrincipals": {
+        "title": "Hizmet asıları"
+      },
+      "alertTemplates": {
+        "title": "Uyarı şablonları"
       }
-    }
+    },
+    "groups": {
+      "account": "Hesap ve erişim",
+      "billing": "Faturalama ve hizmet masası",
+      "devices": "Cihazlar ve kayıt",
+      "data": "Otomasyon ve veri",
+      "ai": "Yapay zeka",
+      "integrations": "Entegrasyonlar"
+    },
+    "search": {
+      "label": "Ayarlarda ara",
+      "placeholder": "Ayarlarda ara…"
+    },
+    "noResults": "Aramanızla eşleşen ayar yok."
   },
   "settingsBillingPage": {
     "heading": "Faturalandırma ayarları",

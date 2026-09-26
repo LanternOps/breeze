@@ -8,6 +8,12 @@
  * loudly if a table is missing a policy, or if a policy names a table that
  * isn't actually in scope.
  *
+ * Extension-owned org-cascade tables (#4165) are classified in the extension's
+ * manifest (`tenancy.orgMergePolicies`) and folded in by getOrgMergePolicies()
+ * via `getExtensionOrgMergePolicies()` — never listed here. The in-process
+ * contract for the built-ins lives in `extensions/builtinExtensions.test.ts`
+ * and `orgMergeExtensionTables.integration.test.ts`.
+ *
  * This registry does not execute anything — it only classifies. The merge
  * engine (Task 2) and the hand-written executors (Task 3, `orgMerge.ts`
  * CUSTOM_EXECUTORS) consume it.
@@ -18,6 +24,8 @@
  * is a plain column name.
  */
 import { __testOnly as tenantCascadeTestOnly } from './tenantCascade';
+import type { ExtensionOrgMergePolicy } from '@breeze/extension-sdk';
+import { getExtensionOrgMergePolicies } from '../extensions/tenancyRegistry';
 
 export type OrgMergePolicy =
   | { kind: 'repoint' }
@@ -811,6 +819,10 @@ const REPOINT_TABLES: readonly string[] = [
   "device_hardware_health",
   "device_ip_history",
   "device_link_groups",
+  // device_memory_modules (#5351): plain repoint — its only unique index is
+  // (device_id, slot_key), which cannot collide across orgs because a device
+  // belongs to one org.
+  "device_memory_modules",
   "device_metrics",
   "device_network",
   "device_patches",
@@ -1090,7 +1102,41 @@ export function getOrgMergePolicies(): ReadonlyMap<string, OrgMergePolicy> {
     }
     map.set(t, { kind: 'repoint' });
   }
+  // Extension-owned org-cascade tables (#4165). `getOrgCascadeDeleteOrder()`
+  // folds every published extension's `orgCascadeDeleteTables` into the walk,
+  // so their policies have to come from the same declarations. The hook only
+  // ADDS entries for extension tables: it can never reclassify a core table
+  // (a collision throws), and it never supplies a default — an extension
+  // cascade table without a declared policy throws inside
+  // getExtensionOrgMergePolicies(), so "no policy = error" still holds for
+  // core and extension tables alike.
+  for (const [t, policy] of getExtensionOrgMergePolicies()) {
+    if (map.has(t)) {
+      throw new Error(
+        `orgMergeRegistry: extension merge policy for '${t}' collides with the core registry — an extension cannot reclassify a core table`,
+      );
+    }
+    map.set(t, fromExtensionPolicy(policy));
+  }
   return map;
+}
+
+/**
+ * Translate a manifest-declared policy into the engine's union. The SDK schema
+ * admits only bare column names and `[a-z0-9_]` literals, so the `keyWhere`
+ * built here (which the executors splice with `sql.raw`) can carry no
+ * manifest-supplied SQL.
+ */
+function fromExtensionPolicy(policy: ExtensionOrgMergePolicy): OrgMergePolicy {
+  if (policy.kind !== 'repoint-dedupe' || !policy.where) {
+    return policy.kind === 'repoint-dedupe' ? { kind: 'repoint-dedupe', key: policy.key } : policy;
+  }
+  const literals = policy.where.in.map((v) => `'${v}'`).join(', ');
+  return {
+    kind: 'repoint-dedupe',
+    key: policy.key,
+    keyWhere: `{${policy.where.column}} IN (${literals})`,
+  };
 }
 
 /**

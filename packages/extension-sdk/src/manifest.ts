@@ -110,8 +110,57 @@ function uniqueBy<T>(values: readonly T[], key: (value: T) => string | undefined
   return true;
 }
 
+/** A bare SQL column name — no expressions, no quoting (spliced as an identifier). */
+const SQL_COLUMN_RE = /^[a-z_][a-z0-9_]{0,62}$/;
+
+/**
+ * How org MERGE treats one of the extension's org-cascade tables (#4165).
+ *
+ * A strict subset of the host's `OrgMergePolicy` union: only the kinds the
+ * generic merge engine executes from data alone. `custom` (needs a host-side
+ * executor), `derived`/`follows-parent` (describe core FK/trigger shapes) and
+ * `loser-shell`/`blocks-merge` (host-owned semantics) are not declarable.
+ * A dedupe key is plain column names only — manifests never contribute SQL
+ * expressions or predicates to the merge statements.
+ *
+ * - `repoint`            UPDATE org_id loser → survivor (no org-scoped unique index can collide)
+ * - `keep-survivor`      singleton per org (UNIQUE/PK on org_id): the survivor's row wins
+ * - `repoint-dedupe`     drop loser rows colliding with a survivor row on `key` (optionally only
+ *                        among rows matching `where`, for a partial unique index), repoint the rest
+ * - `leave-for-erasure`  rows stay with the loser shell and are erased with it
+ */
+const orgMergePolicySchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('repoint') }).strict(),
+  z.object({ kind: z.literal('keep-survivor') }).strict(),
+  z.object({
+    kind: z.literal('repoint-dedupe'),
+    key: z.array(z.string().regex(SQL_COLUMN_RE)).min(1).refine(
+      (key) => new Set(key).size === key.length && !key.includes('org_id'),
+      { message: 'key columns must be unique and must not include org_id (the org is implicit)' },
+    ),
+    /**
+     * Mirror of a PARTIAL unique index's predicate, restricted to
+     * `column IN (<literals>)` — only rows matching it (on both sides) are
+     * considered colliding. Without it a partial index's out-of-predicate
+     * rows would be dropped instead of repointed. Values are bare lowercase
+     * literals (enum labels / status strings), never SQL.
+     */
+    where: z.object({
+      column: z.string().regex(SQL_COLUMN_RE),
+      in: z.array(z.string().regex(/^[a-z0-9_]{1,63}$/)).min(1),
+    }).strict().optional(),
+  }).strict(),
+  z.object({ kind: z.literal('leave-for-erasure'), note: nonemptyString }).strict(),
+]);
+
 const tenancySchema = z.object({
   orgCascadeDeleteTables: z.array(z.string()).default([]),
+  /**
+   * One merge policy per `orgCascadeDeleteTables` entry. Optional at parse
+   * time (like `orgExportColumns`); completeness is enforced by the host when
+   * it builds the merge registry, which fails closed on a missing entry.
+   */
+  orgMergePolicies: z.record(z.string(), orgMergePolicySchema).default({}),
   orgExportColumns: z.record(
     z.string(),
     z.object({
@@ -221,6 +270,7 @@ const manifestSchemaV1 = z.object({
   tenancy: tenancySchema.default({
     orgCascadeDeleteTables: [],
     orgExportColumns: {},
+    orgMergePolicies: {},
     deviceCascadeDeleteTables: [],
     deviceOrgDenormalizedTables: [],
     installScope: 'server',
@@ -260,6 +310,12 @@ const manifestSchemaV1 = z.object({
       ctx.addIssue({ code: 'custom', path: ['tenancy'], message: `table "${table}" must be prefixed "${manifest.name}_" (or be an allowlisted shared table)` });
     }
   }
+  const orgCascade = new Set(manifest.tenancy.orgCascadeDeleteTables);
+  for (const table of Object.keys(manifest.tenancy.orgMergePolicies)) {
+    if (!orgCascade.has(table)) {
+      ctx.addIssue({ code: 'custom', path: ['tenancy', 'orgMergePolicies', table], message: `table "${table}" has a merge policy but is not in tenancy.orgCascadeDeleteTables` });
+    }
+  }
   const tenantSet = new Set(tenantTables);
   for (const table of nonTenantTables) {
     if (tenantSet.has(table)) {
@@ -271,8 +327,10 @@ const manifestSchemaV1 = z.object({
 export type ExtensionCapability = (typeof SUPPORTED_EXTENSION_CAPABILITIES)[number];
 type ParsedExtensionTenancyDeclaration = z.infer<typeof tenancySchema>;
 export type ExtensionTenancyDeclaration =
-  Omit<ParsedExtensionTenancyDeclaration, 'orgExportColumns' | 'installScope'>
-  & Partial<Pick<ParsedExtensionTenancyDeclaration, 'orgExportColumns' | 'installScope'>>;
+  Omit<ParsedExtensionTenancyDeclaration, 'orgExportColumns' | 'orgMergePolicies' | 'installScope'>
+  & Partial<Pick<ParsedExtensionTenancyDeclaration, 'orgExportColumns' | 'orgMergePolicies' | 'installScope'>>;
+
+export type ExtensionOrgMergePolicy = z.infer<typeof orgMergePolicySchema>;
 
 type ParsedExtensionManifestV1 = z.infer<typeof manifestSchemaV1>;
 export type ExtensionManifestV1 =

@@ -20,6 +20,7 @@ type VersionIdentity = {
   silentInstallArgs: string | null;
   version: string;
   detectionRules?: unknown;
+  successExitCodes?: readonly number[] | null;
 };
 
 type InstallMethodIdentity = {
@@ -65,6 +66,13 @@ export function fingerprintSoftwareVersionDependency(
       silentInstallArgs: version.silentInstallArgs,
       version: version.version,
       detectionRules: version.detectionRules ?? null,
+      // #7038: only present when codes are declared, so a version without any
+      // keeps the exact fingerprint it was pinned with before the column
+      // existed — adding the key unconditionally would refuse every approved
+      // deployment still in flight at upgrade time as "dependency changed".
+      ...(version.successExitCodes && version.successExitCodes.length > 0
+        ? { successExitCodes: [...version.successExitCodes] }
+        : {}),
     },
     catalog: { integrationProvider: catalog.integrationProvider },
   });

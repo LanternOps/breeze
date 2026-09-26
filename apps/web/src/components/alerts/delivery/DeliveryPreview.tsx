@@ -5,14 +5,17 @@ import { navigateTo } from '@/lib/navigation';
 import type { AlertSeverity, MonitorKind } from '@breeze/shared';
 
 type Answer = {
-  source: 'monitor_none' | 'monitor_channels' | 'legacy_override' | 'routing_rule' | 'default_row' | 'none';
+  source: 'monitor_none' | 'monitor_channels' | 'routing_rule' | 'default_row' | 'none';
   channelIds: string[]; skippedChannelIds: Array<{ id: string; reason: 'disabled' | 'unavailable' }>; escalationPolicyId: string | null; routingRuleName?: string;
   description: { channels: Array<{ id: string; name: string; enabled: boolean }>;
     escalationPolicy: { id: string; name: string } | null; owner: 'partner' | 'organization' | null };
 };
-export default function DeliveryPreview({ orgId, severity, kind, siteId, monitorId, escalationOverride }: {
+export default function DeliveryPreview({ orgId, severity, kind, siteId, monitorId, escalationOverride, refreshToken }: {
   orgId: string | null; severity: AlertSeverity; kind?: MonitorKind; siteId?: string; monitorId?: string;
   escalationOverride?: { id: string; name: string } | null;
+  /** Bump this (e.g. after a routing rule/channel/escalation policy is created or edited elsewhere on the
+   * page) to force a re-resolve even though severity/kind/site/monitor haven't changed. See #6497 G1-3. */
+  refreshToken?: number;
 }) {
   const { t, i18n } = useTranslation('monitoring');
   const [attempt, retry] = useState(0);
@@ -36,7 +39,7 @@ export default function DeliveryPreview({ orgId, severity, kind, siteId, monitor
       })
       .catch(() => { if (active) setState({ key, error: true }); });
     return () => { active = false; };
-  }, [orgId, key, attempt]);
+  }, [orgId, key, attempt, refreshToken]);
   if (!orgId) return <p className="text-sm text-muted-foreground">{t('editor.deliveryPreview.selectOrg')}</p>;
   if (state.key === key && state.error) return <div role="alert" className="text-sm text-destructive">
     {t('editor.deliveryPreview.failed')} <button type="button" data-testid="delivery-preview-retry" onClick={() => retry(n => n + 1)}>{t('common:actions.retry')}</button>

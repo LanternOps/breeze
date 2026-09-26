@@ -264,6 +264,12 @@ void releaseCapture(void) {
     g_config = nil;
 }
 
+// screenCapturePreflight reports whether TCC says this process holds the
+// Screen Recording grant (macOS 10.15+). Non-prompting.
+int screenCapturePreflight(void) {
+    return CGPreflightScreenCaptureAccess() ? 1 : 0;
+}
+
 // activeDisplayCount reports how many displays the window server currently
 // has. One integer separates "nothing is attached" from "permission problem"
 // (#4042) — the distinction that took four rounds to establish on #3380.
@@ -308,6 +314,8 @@ import (
 	"image"
 	"log/slog"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // darwinCaptureMu serializes access to the global C statics (g_filter, g_config).
@@ -334,15 +342,92 @@ type darwinCapturer struct {
 	holdsGlobalLock bool
 }
 
+// sckCaptureUnhealthy latches when the capability probe saw ScreenCaptureKit
+// initialise but fail to produce a frame on every attempt while CoreGraphics
+// did produce one (#6105 — Intel macOS 14/15 hosts whose SCScreenshotManager
+// call never answers). Once set, newPlatformCapturer routes this process's
+// user-session captures to CoreGraphics: the probe would otherwise report
+// CanCapture=true on the strength of a CG frame while the streaming session
+// went straight back to the SCK path that cannot capture. It lives for the
+// helper process; restarting the helper re-tries ScreenCaptureKit.
+var sckCaptureUnhealthy atomic.Bool
+
+// sckProbeAttempts / sckProbeRetryDelay bound the probe's ScreenCaptureKit
+// retry: one retry, since each failed attempt can cost the full 10 s
+// SCScreenshotManager timeout.
+const (
+	sckProbeAttempts   = 2
+	sckProbeRetryDelay = 500 * time.Millisecond
+)
+
+func init() {
+	platformCaptureProbePlan = darwinCaptureProbePlan
+}
+
+// darwinCaptureProbePlan orders the capability probe's backends. On macOS 14+
+// in the user session it probes ScreenCaptureKit directly (so a capture-phase
+// failure is visible as such), retries it once, and then tries CoreGraphics —
+// but only when TCC preflight reports the Screen Recording grant, because a
+// CoreGraphics capture without the grant still returns wallpaper and menu bar
+// and would report a missing permission as CanCapture=true.
+//
+// Known limit: on macOS 26 CGPreflightScreenCaptureAccess can report false
+// while the grant is present (see tcc_darwin.go). There the gate refuses the
+// fallback, which is the pre-#6105 behaviour, not a regression.
+func darwinCaptureProbePlan(config CaptureConfig) captureProbePlan {
+	if config.DesktopContext == "login_window" || !hasSCScreenshotManager() || sckCaptureUnhealthy.Load() {
+		return defaultCaptureProbePlan(config)
+	}
+	fallback := captureProbeBackend{
+		name: "coregraphics",
+		open: func() (ScreenCapturer, error) { return newCGCapturer(config) },
+	}
+	return captureProbePlan{
+		primary: captureProbeBackend{
+			name: "screencapturekit",
+			open: func() (ScreenCapturer, error) {
+				capturer, err := newSCKCapturer(config)
+				if err != nil {
+					// A zero display count means the fallback is doomed too and
+					// the cause is a missing framebuffer, not a permission (#4042).
+					slog.Warn("ScreenCaptureKit init failed during capture probe",
+						"error", err.Error(), "darwinVersion", macOSMajorVersion,
+						"activeDisplayCount", int(C.activeDisplayCount()))
+				}
+				return capturer, err
+			},
+		},
+		primaryAttempts:   sckProbeAttempts,
+		primaryRetryDelay: sckProbeRetryDelay,
+		fallback:          &fallback,
+		allowCaptureFallback: func() bool {
+			granted := C.screenCapturePreflight() != 0
+			if !granted {
+				slog.Warn("ScreenCaptureKit capture failed and Screen Recording preflight reports no grant; not falling back to CoreGraphics",
+					"darwinVersion", macOSMajorVersion)
+			}
+			return granted
+		},
+		onSuccess: func(res captureProbeResult) {
+			if res.primaryCaptureFailed && !sckCaptureUnhealthy.Swap(true) {
+				slog.Warn("ScreenCaptureKit cannot capture on this host but CoreGraphics can; routing this helper's desktop capture to CoreGraphics until it restarts",
+					"darwinVersion", macOSMajorVersion)
+			}
+		},
+	}
+}
+
 // newPlatformCapturer creates a new macOS screen capturer.
 // On macOS 14+, uses ScreenCaptureKit (SCScreenshotManager).
 // On macOS 12-13, falls back to CGWindowListCreateImage.
-// Also falls back to CG if SCK init fails at runtime (e.g., classes don't load).
+// Also falls back to CG if SCK init fails at runtime (e.g., classes don't load),
+// and uses CG outright once the capability probe has found SCK unable to
+// capture on this host (sckCaptureUnhealthy, #6105).
 func newPlatformCapturer(config CaptureConfig) (ScreenCapturer, error) {
 	if config.DesktopContext == "login_window" {
 		return newDisplayStreamCapturer(config)
 	}
-	if hasSCScreenshotManager() {
+	if hasSCScreenshotManager() && !sckCaptureUnhealthy.Load() {
 		cap, sckErr := newSCKCapturer(config)
 		if sckErr != nil {
 			// Log the display count alongside the error: a zero here means the

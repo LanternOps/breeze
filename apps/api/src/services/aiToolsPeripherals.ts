@@ -32,8 +32,22 @@ import {
   resolveSiteAllowedDeviceIds,
   SITE_SCOPE_EMPTY_NOTE,
 } from './aiToolsSiteScope';
+import type { ToolExecutionContext } from './toolExecutionContext';
+import { resolveWritableToolOrgId } from './aiToolWriteOrg';
 
 type AiToolTier = 1 | 2 | 3 | 4;
+
+/**
+ * #6911: `manage_peripheral_policy:create` is user-owned on release
+ * (`USER_OWNED_RELEASE_ACTIONS` in `jobs/intentReleaseWorker.ts`) — it writes
+ * `auth.user.id` into `peripheral_policies.created_by`, a `users` FK. Under
+ * the rebuilt agent auth that id is an `aiAgents.id`, so refuse rather than
+ * write a row whose owner the worker and this handler's auth disagree about.
+ * Mirrors `aiToolsFleet.ts`'s `approverReleaseMismatch`.
+ */
+function approverReleaseMismatch(auth: AuthContext, context: ToolExecutionContext | undefined): boolean {
+  return !!context?.approverRelease && context.approverRelease.approverUserId !== auth.user.id;
+}
 
 function normalizePeripheralException(input: Record<string, unknown>): PeripheralExceptionRule {
   return {
@@ -46,35 +60,6 @@ function normalizePeripheralException(input: Record<string, unknown>): Periphera
   };
 }
 
-function resolveWritableToolOrgId(
-  auth: AuthContext,
-  inputOrgId?: string
-): { orgId?: string; error?: string } {
-  if (auth.scope === 'organization') {
-    if (!auth.orgId) return { error: 'Organization context required' };
-    if (inputOrgId && inputOrgId !== auth.orgId) {
-      return { error: 'Cannot access another organization' };
-    }
-    return { orgId: auth.orgId };
-  }
-
-  if (inputOrgId) {
-    if (!auth.canAccessOrg(inputOrgId)) {
-      return { error: 'Access denied to this organization' };
-    }
-    return { orgId: inputOrgId };
-  }
-
-  if (auth.orgId) {
-    return { orgId: auth.orgId };
-  }
-
-  if (Array.isArray(auth.accessibleOrgIds) && auth.accessibleOrgIds.length === 1) {
-    return { orgId: auth.accessibleOrgIds[0] };
-  }
-
-  return { error: 'orgId is required for this operation' };
-}
 
 function combineWarning(current: string | undefined, next: string): string {
   return current ? `${current}; ${next}` : next;
@@ -238,7 +223,7 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
         required: ['action']
       }
     },
-    handler: async (input, auth) => {
+    handler: async (input, auth, context) => {
       if (!canMutateOrgWideGovernance(auth)) {
         return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
       }
@@ -343,6 +328,10 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
       };
 
       if (action === 'create') {
+        // #6911: user-owned on release — see approverReleaseMismatch.
+        if (approverReleaseMismatch(auth, context)) {
+          return JSON.stringify({ error: 'approver_auth_mismatch', action });
+        }
         const orgResolved = resolveWritableToolOrgId(
           auth,
           typeof input.org_id === 'string' ? input.org_id : undefined

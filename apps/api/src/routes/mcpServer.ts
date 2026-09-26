@@ -49,13 +49,13 @@ import { resolveDeprecatedToolAlias } from '../services/aiToolAliases';
 import { MCP_SERVER_INSTRUCTIONS, listMcpPrompts, getMcpPrompt, hasMcpPrompt } from '../services/mcpGuidance';
 import { API_VERSION } from '../version';
 import { buildMcpToolPresentation } from '../services/mcpToolPresentation';
-import { decodeToolsListCursor, encodeToolsListCursor, mcpToolsListPageSize, negotiateMcpProtocolVersion, parseMcpProtocolVersionHeader } from '../services/mcpProtocol';
+import { computeToolsListCatalogFingerprint, decodeToolsListCursor, encodeToolsListCursor, mcpToolsListPageSize, negotiateMcpProtocolVersion, parseMcpProtocolVersionHeader } from '../services/mcpProtocol';
 import {
   beginMcpToolExecutionLedger,
   completeMcpToolExecutionLedger,
   type McpToolExecutionLedgerHandle,
 } from '../services/mcpToolExecutionLedger';
-import { McpExecutionOrgError, resolveMcpExecutionContext } from './mcpExecutionOrg';
+import { McpExecutionOrgError, resolveMcpExecutionContext, resolveMcpExecutionOrgId } from './mcpExecutionOrg';
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
 import { getTrustedClientIp } from '../services/clientIp';
@@ -1145,17 +1145,30 @@ function gatedActionsForTool(toolName: string, inputSchema: unknown, unattendedP
 // or tools/call. Deferred to call time instead, so only a real request path
 // (or this file's own `mcpServer.test.ts`, which mocks the resolver/execute
 // modules directly) ever evaluates it.
-async function liveResolveTenantTools(auth: AuthContext): Promise<TenantToolDescriptor[]> {
+//
+// #6046: every tenant-tool resolution on this surface passes `targetOrgId` —
+// an org id that has ALREADY been access-checked by `resolveMcpExecutionOrgId`
+// (org-key / org-principal pin, else a caller-supplied orgId gated on
+// `auth.canAccessOrg`, else the caller's first accessible org). Without it the
+// resolver's partner-scope branch only matches partner-wide rows, so an
+// org-owned source was invisible to a partner-scoped MCP session. Never pass a
+// raw `toolInput.orgId` here; the resolver additionally re-derives the target
+// org's partner live and requires it to match `auth.partnerId`.
+async function liveResolveTenantTools(
+  auth: AuthContext,
+  targetOrgId: string | null,
+): Promise<TenantToolDescriptor[]> {
   const { resolveTenantTools } = await import('../services/toolSources/resolver');
-  return resolveTenantTools(auth);
+  return resolveTenantTools(auth, targetOrgId);
 }
 
 async function liveResolveTenantToolByName(
   auth: AuthContext,
   toolName: string,
+  targetOrgId: string | null,
 ): Promise<TenantToolDescriptor | null> {
   const { resolveTenantToolByName } = await import('../services/toolSources/resolver');
-  return resolveTenantToolByName(auth, toolName);
+  return resolveTenantToolByName(auth, toolName, targetOrgId);
 }
 
 // #6102: same lazy-import reasoning as `liveResolveTenantToolByName` above —
@@ -1164,9 +1177,10 @@ async function liveResolveTenantToolByName(
 async function liveResolveTenantToolHealthByName(
   auth: AuthContext,
   toolName: string,
+  targetOrgId: string | null,
 ): Promise<{ found: boolean; sourceStatus?: 'active' | 'error' | 'disabled' }> {
   const { resolveTenantToolHealthByName } = await import('../services/toolSources/resolver');
-  return resolveTenantToolHealthByName(auth, toolName);
+  return resolveTenantToolHealthByName(auth, toolName, targetOrgId);
 }
 
 async function liveExecuteTenantTool(
@@ -1282,7 +1296,10 @@ async function handleToolsList(
   // than failing tools/list for the entire core registry.
   let tenantResult: Array<Omit<(typeof result)[number], 'inputSchema'> & { inputSchema: Record<string, unknown> }> = [];
   try {
-    const tenant = await liveResolveTenantTools(auth);
+    // #6046: the same access-checked default org tools/call falls back to when
+    // the caller supplies no `orgId` (no tool input exists at list time), so
+    // every org-owned tool listed here resolves on a bare tools/call.
+    const tenant = await liveResolveTenantTools(auth, resolveMcpExecutionOrgId(apiKey, auth, {}));
     tenantResult = tenant
       // #6401: tier-3 tenant descriptors are NEVER listed — same
       // advertised-but-dead invariant as isToolWhollyGatedOverMcp enforces for
@@ -1308,12 +1325,32 @@ async function handleToolsList(
   const all = [...result.sort(byName), ...tenantResult.sort(byName)];
   const pageSize = mcpToolsListPageSize();
   if (pageSize <= 0) return jsonRpcResult(id, { tools: all });
-  // Offsets are best-effort across changes to the principal's visible tools,
-  // including tenant-tool resolution failures that temporarily omit those tools.
-  const offset = params?.cursor === undefined ? 0 : decodeToolsListCursor(params.cursor);
-  if (offset === null) return jsonRpcError(id, -32602, 'Invalid cursor');
+
+  // #6407: the catalog above is per-principal and can shift between pages
+  // (tenant-tool resolution failure, a scope/tenant-tool change mid-session).
+  // Bind the cursor to a fingerprint of THIS response's catalog + principal so
+  // a page-2 request can prove its offset still indexes the same list.
+  const principalRef = apiKey?.id ?? 'unauthenticated';
+  const catalogFingerprint = computeToolsListCatalogFingerprint(principalRef, all.map((tool) => tool.name));
+
+  let offset = 0;
+  if (params?.cursor !== undefined) {
+    const decoded = decodeToolsListCursor(params.cursor);
+    if (decoded === null) return jsonRpcError(id, -32602, 'Invalid cursor');
+    if (decoded.catalogFingerprint !== catalogFingerprint) {
+      return jsonRpcError(
+        id,
+        -32602,
+        'Tools list changed since this cursor was issued; call tools/list again without a cursor to restart enumeration',
+      );
+    }
+    offset = decoded.offset;
+  }
+
   const page = all.slice(offset, offset + pageSize);
-  const next = offset + pageSize < all.length ? encodeToolsListCursor(offset + pageSize) : undefined;
+  const next = offset + pageSize < all.length
+    ? encodeToolsListCursor(offset + pageSize, catalogFingerprint)
+    : undefined;
   return jsonRpcResult(id, next ? { tools: page, nextCursor: next } : { tools: page });
 }
 
@@ -1678,9 +1715,11 @@ async function handleToolsCall(
 
 /**
  * `tools/call` dispatch for a tenant (BYO MCP) tool — Task A10. Mirrors the
- * core `handleToolsCall` path's ORDER of checks (resolve → MCP approval gate
- * → scope gates → RBAC → rate limit → execution-org resolution → execute →
- * audit), but against the tenant descriptor's own tier and the tenant
+ * core `handleToolsCall` path's order of checks (resolve → MCP approval gate
+ * → scope gates → RBAC → rate limit → execute → audit), except that the
+ * execution org is resolved BEFORE the tool itself (#6046): it is the
+ * access-checked target org the tenant resolver needs to see org-owned tools.
+ * Checks run against the tenant descriptor's own tier and the tenant
  * (`toolSources/*`) guardrail adapters rather than the core registry's.
  *
  * Tier 3 external tools are denied over MCP exactly like a core Tier 3 tool
@@ -1697,7 +1736,30 @@ async function handleTenantToolCall(
   c?: Context,
   sessionId?: string,
 ): Promise<JsonRpcResponse> {
-  const d = await liveResolveTenantToolByName(auth, toolName);
+  // Authoritative execution org — same resolver core tools use. Tenant tools
+  // have no `deviceArgs` of their own, so device-target resolution is a no-op
+  // and this always falls back to the attribution-only path. Resolved FIRST
+  // (#6046) because it is also the access-checked `targetOrgId` the tenant
+  // resolver needs to see org-owned tools under a partner-scoped session; the
+  // dispatch-time reload in executeTenantToolDetailed re-applies the same org.
+  let executionOrgId: string | null;
+  try {
+    ({ orgId: executionOrgId } = await resolveMcpExecutionContext({
+      auth,
+      apiKey: apiKey ?? null,
+      toolName,
+      toolInput,
+      deviceArgsForTool: async () => undefined,
+    }));
+  } catch (err) {
+    if (err instanceof McpExecutionOrgError) {
+      return jsonRpcError(id, -32602, 'Invalid params');
+    }
+    console.error('[MCP] Failed to resolve execution org for tenant tool:', toolName, err);
+    return jsonRpcError(id, -32000, 'Unable to resolve execution organization');
+  }
+
+  const d = await liveResolveTenantToolByName(auth, toolName, executionOrgId);
   if (!d) {
     // #6102: distinguish "genuinely unknown/inaccessible" (still the same
     // -32602 below — no existence oracle for a caller without access) from
@@ -1714,7 +1776,7 @@ async function handleTenantToolCall(
     // this function.
     let health: { found: boolean; sourceStatus?: 'active' | 'error' | 'disabled' };
     try {
-      health = await liveResolveTenantToolHealthByName(auth, toolName);
+      health = await liveResolveTenantToolHealthByName(auth, toolName, executionOrgId);
     } catch (err) {
       console.error('[MCP] Tenant tool health check failed for:', toolName, err);
       return jsonRpcError(id, -32000, 'Unable to verify tool availability');
@@ -1776,26 +1838,6 @@ async function handleTenantToolCall(
   } catch (err) {
     console.error('[MCP] Tenant tool rate limit check failed for:', toolName, err);
     return jsonRpcError(id, -32000, 'Unable to verify rate limits');
-  }
-
-  // Authoritative execution org — same resolver core tools use. Tenant tools
-  // have no `deviceArgs` of their own, so device-target resolution is a no-op
-  // and this always falls back to the attribution-only path.
-  let executionOrgId: string | null;
-  try {
-    ({ orgId: executionOrgId } = await resolveMcpExecutionContext({
-      auth,
-      apiKey: apiKey ?? null,
-      toolName,
-      toolInput,
-      deviceArgsForTool: async () => undefined,
-    }));
-  } catch (err) {
-    if (err instanceof McpExecutionOrgError) {
-      return jsonRpcError(id, -32602, 'Invalid params');
-    }
-    console.error('[MCP] Failed to resolve execution org for tenant tool:', toolName, err);
-    return jsonRpcError(id, -32000, 'Unable to resolve execution organization');
   }
 
   const startTime = Date.now();

@@ -31,7 +31,6 @@
     "alertsDetail": "Dettagli avviso",
     "alertsMonitors": "Avvisi – Monitor",
     "alertsMonitorDetail": "Avvisi – Monitor",
-    "alertsRules": "Avvisi – Regole legacy",
     "alerts": "Avvisi",
     "analytics": "Analisi",
     "approvals": "Approvazioni",
@@ -79,7 +78,7 @@
     "integrationsWebhooks": "Webhook",
     "login": "Accedi",
     "logs": "Registri",
-    "monitoring": "Monitoraggio",
+    "monitoring": "Rete",
     "oauthConsent": "Autorizza accesso",
     "onedrive": "OneDrive",
     "organizations": "Organizzazioni",
@@ -236,8 +235,33 @@
       "ticketChecklistTemplates": {
         "title": "Modelli di checklist per i ticket",
         "description": "Elenchi di passaggi riutilizzabili che i tuoi tecnici possono applicare a qualsiasi ticket."
+      },
+      "profile": {
+        "title": "Il mio profilo"
+      },
+      "apiKeys": {
+        "title": "Chiavi API"
+      },
+      "partnerServicePrincipals": {
+        "title": "Entità servizio"
+      },
+      "alertTemplates": {
+        "title": "Modelli di avviso"
       }
-    }
+    },
+    "groups": {
+      "account": "Account e accesso",
+      "billing": "Fatturazione e service desk",
+      "devices": "Dispositivi e registrazione",
+      "data": "Automazione e dati",
+      "ai": "IA",
+      "integrations": "Integrazioni"
+    },
+    "search": {
+      "label": "Cerca impostazioni",
+      "placeholder": "Cerca impostazioni…"
+    },
+    "noResults": "Nessuna impostazione corrisponde alla ricerca."
   },
   "settingsBillingPage": {
     "heading": "Impostazioni di fatturazione",

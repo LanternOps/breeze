@@ -103,7 +103,7 @@ From the alert detail screen, technicians can:
 - **Acknowledge** an active alert with a single tap (`POST /alerts/:id/acknowledge`).
 - **Resolve** an alert with an optional resolution note (`POST /alerts/:id/resolve`).
 
-Both actions publish events (`alert.acknowledged`, `alert.resolved`) through the event bus and write audit log entries. Resolving an alert also sets the appropriate cooldown period based on the alert rule or configuration policy settings.
+Both actions publish events (`alert.acknowledged`, `alert.resolved`) through the event bus and write audit log entries. Resolving a monitor alert applies its configured cooldown period. Historical alerts from retired policy rules can still be resolved; they no longer set a policy-rule cooldown.
 
 ### Tickets
 
@@ -272,6 +272,8 @@ A request moves through one of the following **statuses**:
 4. On approval, the blocked action resumes immediately. On denial or expiry, the action fails and the reason is recorded.
 
 </Steps>
+
+**Several pending approvals at once** (v0.117.0+): when more than one request is waiting, the approval screen shows its position in the queue (for example **2 of 5**) with **Prev** and **Next** buttons, plus a **Later** action that sets the current request aside so the next one comes up first. A deferred request is not dismissed; it stays pending, you can return to it with Prev/Next, and it expires on its normal schedule if nobody decides it. With a single pending request the screen is unchanged.
 
 When the request was initiated by the user's *own* mobile app for that same user (a self-approval), the app requires a deliberate 5-second hold-to-confirm instead of a single tap, to prevent an attacker with a momentarily unlocked phone from rubber-stamping a self-issued request.
 

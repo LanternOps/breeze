@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -271,8 +272,9 @@ func (h *shippingHandler) Handle(ctx context.Context, record slog.Record) error 
 		shipper.Enqueue(entry)
 	}
 
-	// Still write to local handler, without the shipping marker.
-	return h.base.Handle(ctx, stripShipAlways(record))
+	// Still write to local handler, without the shipping marker and with
+	// typed-nil errors defused (see localAttrs).
+	return h.base.Handle(ctx, localRecord(record))
 }
 
 // shipAlways reports whether the record, or the logger it came from, carries
@@ -303,22 +305,30 @@ func (h *shippingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	copy(groups, h.groups)
 
 	return &shippingHandler{
-		base:   h.base.WithAttrs(withoutShipAlways(attrs)),
+		base:   h.base.WithAttrs(localAttrs(attrs)),
 		attrs:  merged,
 		groups: groups,
 	}
 }
 
-// withoutShipAlways drops the ShipAlways marker so it never reaches the
-// local handler's output. Returns the input slice untouched when absent.
-func withoutShipAlways(attrs []slog.Attr) []slog.Attr {
+// localAttrs prepares attrs for the local (base) handler: it drops the
+// ShipAlways marker so it never reaches the local output, and rewrites nil and
+// typed-nil error values to "<nil>". Returns the input slice untouched when
+// neither applies.
+//
+// The rewrite matters because slog's text and JSON handlers format an error
+// through fmt, which calls Error on a typed-nil pointer and recovers the
+// resulting nil-pointer fault. On Windows hosts with AMX, recovering a hardware
+// fault writes past the goroutine stack and corrupts the Go heap
+// (golang/go#81238, #6943) — errorText already avoids that on the ship path.
+func localAttrs(attrs []slog.Attr) []slog.Attr {
 	for i, a := range attrs {
-		if a.Key == KeyShipAlways {
-			out := make([]slog.Attr, 0, len(attrs)-1)
+		if a.Key == KeyShipAlways || needsLocalRewrite(a.Value) {
+			out := make([]slog.Attr, 0, len(attrs))
 			out = append(out, attrs[:i]...)
-			for _, b := range attrs[i+1:] {
+			for _, b := range attrs[i:] {
 				if b.Key != KeyShipAlways {
-					out = append(out, b)
+					out = append(out, localAttr(b))
 				}
 			}
 			return out
@@ -327,24 +337,61 @@ func withoutShipAlways(attrs []slog.Attr) []slog.Attr {
 	return attrs
 }
 
-// stripShipAlways returns a copy of the record without the ShipAlways marker,
-// or the record itself when it carries none.
-func stripShipAlways(record slog.Record) slog.Record {
-	found := false
+// needsLocalRewrite reports whether v (or, for a group, any nested value)
+// holds a nil or typed-nil error. It does not resolve LogValuers: resolving
+// here would call LogValue a second time, and the base handler resolves them
+// itself.
+func needsLocalRewrite(v slog.Value) bool {
+	switch v.Kind() {
+	case slog.KindGroup:
+		for _, a := range v.Group() {
+			if needsLocalRewrite(a.Value) {
+				return true
+			}
+		}
+	case slog.KindAny:
+		if err, ok := v.Any().(error); ok {
+			return isNilError(err)
+		}
+	}
+	return false
+}
+
+// localAttr returns a with every nil or typed-nil error value (including those
+// nested in groups) replaced by the string "<nil>".
+func localAttr(a slog.Attr) slog.Attr {
+	if !needsLocalRewrite(a.Value) {
+		return a
+	}
+	if a.Value.Kind() == slog.KindGroup {
+		group := a.Value.Group()
+		out := make([]slog.Attr, len(group))
+		for i, g := range group {
+			out[i] = localAttr(g)
+		}
+		return slog.Attr{Key: a.Key, Value: slog.GroupValue(out...)}
+	}
+	return slog.String(a.Key, "<nil>")
+}
+
+// localRecord returns a copy of the record prepared for the local handler
+// (see localAttrs), or the record itself when no attr needs changing.
+func localRecord(record slog.Record) slog.Record {
+	changed := false
 	record.Attrs(func(a slog.Attr) bool {
-		if a.Key == KeyShipAlways {
-			found = true
+		if a.Key == KeyShipAlways || needsLocalRewrite(a.Value) {
+			changed = true
 			return false
 		}
 		return true
 	})
-	if !found {
+	if !changed {
 		return record
 	}
 	out := slog.NewRecord(record.Time, record.Level, record.Message, record.PC)
 	record.Attrs(func(a slog.Attr) bool {
 		if a.Key != KeyShipAlways {
-			out.AddAttrs(a)
+			out.AddAttrs(localAttr(a))
 		}
 		return true
 	})
@@ -397,15 +444,37 @@ func shippableValue(v any) any {
 	return v
 }
 
-// errorText returns err.Error(), tolerating a typed-nil error whose Error method
-// dereferences its nil receiver.
+// errorText returns err.Error(), or "<nil>" for a nil or typed-nil error.
+//
+// A typed-nil error is detected with reflect instead of calling Error and
+// recovering the nil-pointer fault. On Windows a recovered hardware fault can
+// corrupt the heap on AVX-512/AMX hosts (golang/go#81238), which crashed the
+// Windows agent tests (#6943). The recover stays only as a last resort for an
+// Error method that panics on its own.
 func errorText(err error) (text string) {
+	if isNilError(err) {
+		return "<nil>"
+	}
 	defer func() {
 		if recover() != nil {
 			text = "<nil>"
 		}
 	}()
 	return err.Error()
+}
+
+// isNilError reports whether err is nil or wraps a nil pointer, map, slice,
+// func, chan or interface value.
+func isNilError(err error) bool {
+	if err == nil {
+		return true
+	}
+	v := reflect.ValueOf(err)
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan, reflect.Interface, reflect.UnsafePointer:
+		return v.IsNil()
+	}
+	return false
 }
 
 func extractComponent(fields map[string]any) string {

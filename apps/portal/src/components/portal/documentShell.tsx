@@ -5,7 +5,10 @@
 // with the app primary as the fallback. Mirrors the dashboard's QuoteDocument so
 // staff preview and customer view match.
 import { markChipClass, type MarkTone } from './ui';
-import type { ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { flushSync } from 'react-dom';
+import { ChevronDown, FileText } from 'lucide-react';
+import { parseTermsSections, textReadMinutes as readMinutes } from '@breeze/shared';
 import { sellerLines } from '@/lib/sellerLines';
 import type { DocumentThemeId } from '@breeze/shared';
 
@@ -167,6 +170,199 @@ export function DocumentTerms({ label, children, testId }: { label: string; chil
     <section className="space-y-2 border-t pt-6" data-testid={testId}>
       <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</h3>
       <p className="max-w-prose whitespace-pre-wrap text-pretty text-xs leading-relaxed text-muted-foreground">{children}</p>
+    </section>
+  );
+}
+
+/**
+ * Open state for a collapsible legal section, keyed by its anchor id. `#<id>`
+ * opens it (on load, on hashchange, and on a re-click of a link to a hash that
+ * is already set, which fires no hashchange), and it is force-expanded while
+ * printing, then restored. Open state is only touched after mount so SSR and
+ * first client paint agree.
+ */
+function useDeepLinkedDisclosure(id: string): [boolean, (open: boolean) => void] {
+  const [open, setOpen] = useState(false);
+  const wasOpenRef = useRef(false);
+  const printingRef = useRef(false);
+  const openRef = useRef(false);
+  openRef.current = open;
+
+  useEffect(() => {
+    const syncHash = () => {
+      if (window.location.hash === `#${id}`) setOpen(true);
+    };
+    // flushSync: the browser snapshots the page for print as soon as
+    // beforeprint returns, and React would otherwise commit this update on a
+    // later task — printing every agreement collapsed.
+    const beforePrint = () => {
+      if (printingRef.current) return; // duplicate beforeprint must not overwrite the saved state
+      printingRef.current = true;
+      wasOpenRef.current = openRef.current;
+      flushSync(() => setOpen(true));
+    };
+    const afterPrint = () => {
+      printingRef.current = false;
+      flushSync(() => setOpen(wasOpenRef.current));
+    };
+    const onLinkClick = (e: MouseEvent) => {
+      const a = (e.target as Element | null)?.closest?.(`a[href="#${id}"]`);
+      if (a) setOpen(true);
+    };
+    syncHash();
+    window.addEventListener('hashchange', syncHash);
+    window.addEventListener('beforeprint', beforePrint);
+    window.addEventListener('afterprint', afterPrint);
+    document.addEventListener('click', onLinkClick);
+    return () => {
+      document.removeEventListener('click', onLinkClick);
+      window.removeEventListener('hashchange', syncHash);
+      window.removeEventListener('beforeprint', beforePrint);
+      window.removeEventListener('afterprint', afterPrint);
+    };
+  }, [id]);
+
+  return [open, setOpen];
+}
+
+/** "N sections · ~M min read" (or just the read time) for free-text terms. */
+export function termsMeta(text: string): string {
+  const { sectionCount } = parseTermsSections(text);
+  const minutes = readMinutes(text);
+  return sectionCount > 0
+    ? `${sectionCount} section${sectionCount === 1 ? '' : 's'} · ~${minutes} min read`
+    : `~${minutes} min read`;
+}
+
+/** Free-text terms as readable sections: detected headings become <h4>s (with
+ *  a contents list at 4+ sections); text with no headings stays pre-wrapped. */
+export function TermsBody({ text, label = 'Terms & Conditions' }: { text: string; label?: string }) {
+  const { blocks, sectionCount } = useMemo(() => parseTermsSections(text), [text]);
+  if (sectionCount === 0) {
+    return <p className="max-w-prose whitespace-pre-wrap text-pretty text-xs leading-relaxed text-muted-foreground">{text}</p>;
+  }
+  return (
+    <div className="max-w-prose space-y-2 text-xs leading-relaxed text-muted-foreground">
+      {sectionCount >= 4 && (
+        <nav aria-label={`${label} contents`} className="space-y-1 pb-2">
+          {blocks.map((b) =>
+            b.kind === 'heading' ? (
+              <a key={b.id} href={`#${b.id}`} className="block underline underline-offset-2">
+                {b.text}
+              </a>
+            ) : null
+          )}
+        </nav>
+      )}
+      {blocks.map((b, i) =>
+        b.kind === 'heading' ? (
+          <h4 key={b.id} id={b.id} className="pt-2 text-xs font-semibold text-foreground">
+            {b.text}
+          </h4>
+        ) : (
+          <p key={i} className="text-pretty">{b.text}</p>
+        )
+      )}
+    </div>
+  );
+}
+
+/**
+ * Long-form legal text (Terms & Conditions), collapsed by default so it never
+ * sits between the price and the pay/sign action. Native <details> that opens
+ * on `#terms` and expands while printing (useDeepLinkedDisclosure). Invoices
+ * use this standalone; a quote groups its T&C with its contract blocks in
+ * DocumentAgreements instead.
+ */
+export function DocumentTermsCollapsible({
+  label = 'Terms & Conditions',
+  text,
+  testId,
+  id = 'terms',
+}: {
+  label?: string;
+  text: string;
+  testId?: string;
+  id?: string;
+}) {
+  const [open, setOpen] = useDeepLinkedDisclosure(id);
+  return (
+    <details
+      id={id}
+      open={open}
+      onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}
+      className="scroll-mt-4 border-t pt-6"
+      data-testid={testId}
+    >
+      <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        {`${label} · ${termsMeta(text)}`}
+      </summary>
+      <div className="mt-3">
+        <TermsBody text={text} label={label} />
+      </div>
+    </details>
+  );
+}
+
+export interface DocumentAgreement {
+  /** Anchor id: a `#<id>` link (e.g. from the signature checkbox) opens this row. */
+  id: string;
+  title: string;
+  /** One-line summary under the title: reading time, section count, "PDF document". */
+  meta: string;
+  testId?: string;
+  /** Mount the body only while open, for content that fetches on mount (an
+   *  uploaded agreement's PDF viewer) and that most readers never open. */
+  lazy?: boolean;
+  body: ReactNode;
+}
+
+function AgreementRow({ id, title, meta, testId, lazy, body }: DocumentAgreement) {
+  const [open, setOpen] = useDeepLinkedDisclosure(id);
+  return (
+    <details
+      id={id}
+      open={open}
+      onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}
+      className="group scroll-mt-4"
+      data-testid={testId}
+    >
+      <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3 transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+        <FileText className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm font-medium text-foreground">{title}</span>
+          <span className="block text-xs text-muted-foreground">{meta}</span>
+        </span>
+        {/* Visual affordance only — <details> already exposes expanded state. */}
+        <span aria-hidden className="doc-accent-text shrink-0 text-xs font-medium">
+          <span className="group-open:hidden">Read</span>
+          <span className="hidden group-open:inline">Hide</span>
+        </span>
+        <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" aria-hidden />
+      </summary>
+      <div className="border-t px-4 py-4 sm:px-5">{lazy && !open ? null : body}</div>
+    </details>
+  );
+}
+
+/**
+ * A document's agreements (a quote's contract blocks, then its Terms &
+ * Conditions) as one list of collapsed rows, placed after the price and the
+ * sign panel so long legal text never pushes the totals down. Each row
+ * deep-links by id and expands for print.
+ */
+export function DocumentAgreements({ items, testId }: { items: DocumentAgreement[]; testId?: string }) {
+  if (items.length === 0) return null;
+  return (
+    <section className="space-y-3 border-t pt-6" data-testid={testId}>
+      {/* A lone row's title already says what it is; a heading only earns its
+          place once there is a list to name. */}
+      {items.length > 1 && (
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Agreements</h3>
+      )}
+      <div className="divide-y overflow-hidden rounded-lg border">
+        {items.map((item) => <AgreementRow key={item.id} {...item} />)}
+      </div>
     </section>
   );
 }

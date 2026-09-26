@@ -1,26 +1,36 @@
 ---
-title: Network Monitors
-description: Create custom ping, port, and endpoint monitors to track availability, response times, and trigger alerts on failure.
+title: Network Checks
+description: Ping, port, HTTP and DNS checks run from your agents; authored as monitors, results on the Network page.
 sidebar:
-  label: Network Monitors
+  label: Network Checks
 ---
 
-import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+import { Aside } from '@astrojs/starlight/components';
 
 ## Overview
 
-Network Monitors let you define recurring checks against IP addresses, hostnames, ports, HTTP endpoints, and DNS records. Breeze dispatches each check through a connected agent in the same organization via WebSocket, records the result, and updates the monitor's status. Monitors can optionally be linked to a discovered asset so that availability data appears alongside the asset's SNMP and discovery information.
-
-All monitor operations require authentication and one of the `organization`, `partner`, or `system` scopes. Organization-scoped users are automatically restricted to monitors within their own organization.
+Network checks probe IP addresses, hostnames, ports, HTTP endpoints and DNS records from connected agents. Author their conditions and alert behavior as [monitors](/features/monitors/); inspect probe results on the Network page. Access is restricted to authorized organizations.
 
 ## In the console
 
-Network Monitors are managed from **Fleet Management → Network Monitor** in the sidebar (`/monitoring`; the entry was called **Monitoring** before v0.114.0), under the **Network Checks** tab.
+Network checks are authored as monitors of kind **Network check** under **Alerts → Monitors**. The **Network** page (**Fleet Management → Network**, `/monitoring`; called *Network Monitor* before this release) keeps **Assets**, **SNMP Templates** and **Results**.
 
-- The tab lists every monitor for the current organization with its type, target, last status, and last response time, and refreshes automatically.
-- **Add Monitor** opens a form to pick a monitor type (ICMP Ping, TCP Port, HTTP/Endpoint, or DNS), enter the name, target, polling interval, and timeout, and set the type-specific options (e.g. expected HTTP status, DNS record type).
-- Each row has actions to run an on-demand check now, open the monitor's detail view, or delete it.
-- The detail view shows recent check results and response times, and lets you edit the monitor's name, polling interval, timeout, and active status.
+Results lists checks with their last status and response time, and links managed checks to the monitor that owns them. Unconverted checks show a conversion note. **New check** opens the monitor editor with the kind pre-selected; opening it from an asset or network device page also pre-binds the asset. The old `/monitoring#checks` link lands on Results. Results and detail views retain history and operational checks; edit conditions in Monitors.
+
+## Network check fields
+
+| Field | API condition field | Range or behavior |
+|---|---|---|
+| Check type | `checkType` | `icmp_ping`, `tcp_port`, `http_check`, `dns_check` |
+| Target | `target` | IP address, hostname or URL; 1–500 characters |
+| Asset binding | `assetId` | Optional discovered asset in the monitor's organization. Pins execution to its current site and guides alert-device selection. Partner-wide definitions cannot bind an asset. |
+| Treat degraded as failure | `degradedIsFailure` | Default false; count degraded results as failures |
+| Fail when slower than | `maxResponseMs` | Optional 1–600,000 ms; a response above this limit counts as a failure |
+| Poll interval | `pollingIntervalSeconds` | 10 seconds–24 hours; default 60 seconds |
+| Timeout | `timeoutSeconds` | 1–300 seconds; default 5 seconds |
+| Consecutive failures | `consecutiveFailures` | 1–100; default 2 |
+
+Offline results always count as failures. With the optional degraded or slow predicates enabled, each consecutive result must match at least one failure predicate. No results means unknown, not a breach. Asset binding does not replace the target: enter the endpoint to probe separately.
 
 ## Monitor Types
 
@@ -38,7 +48,7 @@ Breeze supports four monitor types, stored in the `monitor_type` PostgreSQL enum
 | Field | Type | Constraints | Default | Description |
 |---|---|---|---|---|
 | `count` | integer | 1 -- 20 | _none_ | Number of echo requests to send. |
-| `packetSize` | integer | 16 -- 65,535 | _none_ | ICMP packet payload size in bytes. |
+| `packetSize` | integer | 16 -- 65,535 | _none_ | Preserved configuration; currently ignored by the agent. |
 
 ### TCP Port Configuration
 
@@ -51,11 +61,11 @@ Breeze supports four monitor types, stored in the `monitor_type` PostgreSQL enum
 
 | Field | Type | Constraints | Default | Description |
 |---|---|---|---|---|
-| `url` | string | valid URL | _none_ | Full URL to request. If omitted, the monitor's `target` field is used. |
+| `target` | string | URL | **required** | URL to request; legacy `config.url` maps here during conversion. |
 | `method` | enum | `GET`, `HEAD`, `POST`, `PUT`, `OPTIONS` | _none_ | HTTP method. |
-| `expectedStatus` | integer | 100 -- 599 | _none_ | Required HTTP status code for a passing check. |
+| `expectStatus` | integer | 100 -- 599 | _none_ | Required HTTP status code for a passing check. |
 | `expectedBody` | string | optional | _none_ | Substring that must appear in the response body. |
-| `headers` | object | key-value pairs | _none_ | Custom HTTP headers to include in the request. |
+| `headers` | object | string key-value pairs | _none_ | Preserved configuration; currently ignored by the agent. |
 | `followRedirects` | boolean | optional | _none_ | Whether to follow HTTP redirects. |
 | `verifySsl` | boolean | optional | _none_ | Whether to verify the TLS certificate. |
 
@@ -63,53 +73,29 @@ Breeze supports four monitor types, stored in the `monitor_type` PostgreSQL enum
 
 | Field | Type | Constraints | Default | Description |
 |---|---|---|---|---|
-| `hostname` | string | min 1 char | _none_ | Hostname to resolve. If omitted, the monitor's `target` field is used. |
+| `target` | string | min 1 char | **required** | Hostname to resolve; legacy `config.hostname` maps here during conversion. |
 | `recordType` | enum | `A`, `AAAA`, `MX`, `CNAME`, `TXT`, `NS` | _none_ | DNS record type to query. |
 | `expectedValue` | string | optional | _none_ | Expected value in the DNS response. |
 | `nameserver` | string | optional | _none_ | Custom DNS nameserver to query. |
 
-## Creating a Monitor
+The monitor-definition API calls the HTTP field `expectStatus`; the compiler sends it to the agent as `expectedStatus`. This mapping was fixed in #6352 and is retained. For new checks expecting a 3xx status, redirects default to false unless explicitly overridden; otherwise they default to true. Conversion explicitly preserves the legacy redirect setting (true when absent).
 
-<Steps>
+Options belong to the selected check type. The monitor editor exposes common options; the API also preserves `packetSize` and `headers`, though agents currently ignore both.
 
-1. **Choose a target.** Identify the IP address, hostname, or URL you want to monitor. Optionally associate the monitor with a discovered asset by providing its `assetId`.
+## Creating a check
 
-2. **Select a monitor type.** Pick one of `icmp_ping`, `tcp_port`, `http_check`, or `dns_check`.
-
-3. **Send a POST request.**
-
-   ```bash
-   curl -X POST /api/v1/monitors \
-     -H "Authorization: Bearer <token>" \
-     -H "Content-Type: application/json" \
-     -d '{
-       "name": "Web Server HTTPS",
-       "monitorType": "http_check",
-       "target": "https://app.example.com",
-       "config": {
-         "method": "GET",
-         "expectedStatus": 200,
-         "verifySsl": true
-       },
-       "pollingInterval": 120,
-       "timeout": 10
-     }'
-   ```
-
-4. **Verify the response.** A `201` status with the full monitor object confirms creation. The monitor begins in `unknown` status and `isActive: true`.
-
-</Steps>
-
-<Aside type="tip">
-  When you provide an `assetId`, the API validates that the asset exists and belongs to the same organization. If you also supply an explicit `orgId`, it must match the asset's organization.
-</Aside>
+1. Open **Alerts → Monitors → New monitor** and choose **Network check**.
+2. Set the type, target, optional asset and type-specific options.
+3. Configure severity, cooldown, automatic resolution, responses and Notify.
+4. Save and attach the monitor to a configuration policy assigned to the intended organization or devices to enable alert evaluation. Saving an enabled network-check definition provisions an active probe; policy attachment determines which devices can receive its alerts.
+5. Open **Network → Results** to inspect the check and run an on-demand probe.
 
 ## Polling Intervals and Timeouts
 
 | Parameter | Column | Min | Max | Default | Unit |
 |---|---|---|---|---|---|
-| `pollingInterval` | `polling_interval` | 10 | 86,400 | 60 | seconds |
-| `timeout` | `timeout` | 1 | 300 | 5 | seconds |
+| `pollingIntervalSeconds` | `polling_interval` | 10 | 86,400 | 60 | seconds |
+| `timeoutSeconds` | `timeout` | 1 | 300 | 5 | seconds |
 
 The **polling interval** controls how frequently the BullMQ scheduler enqueues a check job for the monitor. The **timeout** is passed to the agent as the maximum time allowed for the check to complete before it is considered failed.
 
@@ -130,7 +116,7 @@ Each monitor tracks a `last_status` field with one of four values:
 
 ### Consecutive Failures
 
-The `consecutive_failures` counter increments by 1 each time a check result has status `offline`. It resets to `0` on any non-offline result (`online` or `degraded`). This counter is used by alert rules with the `consecutive_failures_gt` condition.
+The `consecutive_failures` counter increments by 1 each time a check result has status `offline`. It resets to `0` on any non-offline result (`online` or `degraded`). Retained legacy rules use this counter. Managed monitors evaluate consecutive result history, including degraded or slow results when configured.
 
 ### State Update Transaction
 
@@ -205,91 +191,56 @@ The response includes:
 - **status** -- count of monitors grouped by their current `last_status`.
 - **types** -- count of monitors grouped by `monitor_type`.
 
-## Alert Rules on Monitors
+## Alerting
 
-Each monitor can have one or more alert rules. Alert rules are evaluated against check results to trigger alerts at the configured severity level.
+One managed network check raises one monitor alert per running organization. The alert attaches to the asset's linked device, otherwise the most recently seen non-ephemeral device in its site, then the organization. The selected device must be reached by an enabled monitor attachment; if necessary, Breeze selects an eligible device in the organization instead.
 
-### What a monitor alert now does
+Evaluation runs once per managed check per organization even when that alert device is offline, using the legacy worker's selection preference with the monitor's attachment scope enforced. The executing agent still needs to be online. Maintenance windows are enforced by the shared monitor evaluator.
 
-<Aside type="caution" title="Monitor alerts notify and automate as of v0.111">
-  Monitor alerts used to appear **only** in the Alerts inbox. They now travel the
-  same path as every other alert, so a firing monitor rule also:
+Severity, cooldown, automatic resolution and **Notify** (**Inherit**, **Channels**, **Inbox only**) come from the monitor. Delivery follows routing; there is no fallback to all channels. Escalation resolves from the monitor, then the matching routing row, then no policy (`monitor → row → null`). Inbox only suppresses escalation. See [Delivery](/features/notifications/).
 
-  - sends notifications on your configured channels (email, Teams, Slack, webhook, PagerDuty, SMS, Pushover),
-  - starts any matching escalation policy,
-  - fires automations triggered on **Alert triggered**, and
-  - receives an AI verdict where that is enabled.
+- **Five-minute cooldown by default.** Converted checks use a five-minute cooldown per monitor and alert device; change it in the monitor's noise settings.
+- **Deduplication while an alert is open.** Repeated failures update the existing episode for that monitor and device instead of stacking alerts. Recovery resolves it when automatic resolution is enabled.
 
-  **If you already run network monitors with alert rules, expect a step change
-  in notification and automation volume the first time you upgrade.** Review
-  those rules, their severities, your notification channels, and your escalation
-  policies before deploying.
-</Aside>
+Managed `alert.triggered` events carry the definition's `monitorId` and `kind: network_check`, which **Alert workflows** can filter on. Unmanaged checks keep their legacy alert identity until converted.
 
-Monitor alerts carry `source: network_monitor` along with the monitor id, the
-alert-rule id, the monitor type and the target, so an automation or notification
-filter can be narrowed to exactly the monitors you want rather than catching all
-of them. These alerts have no underlying alert-rule record in the alerts system,
-so an automation matching on a device alert rule id will not see them.
+## Converting existing checks
 
-Two limits keep the volume sane, and both were already in place before alerts
-started notifying:
+Open the conversion banner on **Network → Results**, preview the proposed monitors and confirm conversion. Existing unmanaged checks keep polling and alerting until you convert or explicitly retire them. Startup conversion and retirement never process network sources.
 
-- **A five-minute cooldown per rule and target.** A monitor that flaps produces
-  at most one alert every five minutes for a given rule.
-- **Deduplication while an alert is open.** A rule that keeps failing updates its
-  existing active or acknowledged alert instead of stacking new ones.
+A check with exactly one active, unretired rule can map as follows:
 
-**Recovery resolves the alert automatically.** When the condition stops matching,
-Breeze resolves the open alert with a note naming the monitor and the condition
-it recovered from -- there is nothing to clear by hand.
+| Legacy rule | Monitor condition |
+|---|---|
+| `offline` | `consecutiveFailures: 1` |
+| `consecutive_failures_gt` with threshold N | `consecutiveFailures: floor(N) + 1`, preserving the strict greater-than comparison |
 
-### Alert Rule Conditions
+The threshold must be finite and nonnegative, and the resulting failure count must fit 1–100. Conversion preserves severity, the rule message as the description, effective target and timeout, supported per-type configuration, asset binding and enabled state. Notify is Inherit, cooldown is five minutes and automatic resolution is enabled. The preview reports config keys without a monitor equivalent.
 
-| Condition | Description | Threshold |
-|---|---|---|
-| `offline` | Fires when the monitor status is `offline`. | Not used. |
-| `degraded` | Fires when the monitor status is `degraded`. | Not used. |
-| `response_time_gt` | Fires when response time exceeds the threshold. | Milliseconds (string). |
-| `consecutive_failures_gt` | Fires when consecutive failures exceed the threshold. | Failure count (string). |
+Conversion adopts the existing probe row, preserving its result history. Monitors are attached to a dedicated **Network checks — &lt;org name&gt;** policy, assigned at organization level with cumulative inheritance and no filters. A previously generated policy is reused only while it still meets those requirements.
 
-### Alert Rule Severities
+The preview refuses checks it cannot represent exactly:
 
-Rules use the shared `alert_severity` enum: `critical`, `high`, `medium`, `low`, `info`.
+| Reason | Meaning |
+|---|---|
+| `no_active_rules` | Non-alerting probe; conversion must not introduce alerts |
+| `multiple_network_rules` | Multiple active rules, including mixed predicates or severities |
+| `network_predicate_unsupported` | A degraded-only or response-time-only legacy predicate |
+| `network_threshold_out_of_range` | Failure threshold cannot map to 1–100 |
+| `site_binding_unrepresentable` | Site-only binding without an asset |
+| `asset_missing`, `condition_invalid` | Missing asset or options outside the monitor schema |
+| `config_override_unrepresentable` | Legacy execution override cannot be preserved |
+| `already_managed`, `no_org` | Source already managed or lacks organization ownership |
 
-### Creating an Alert Rule
+API refusal reasons have an `unconvertible:` prefix. Degraded and slow predicates can be authored on new monitors, but their legacy-only alert semantics are not silently changed by conversion.
 
-```bash
-curl -X POST /api/v1/monitors/alerts \
-  -H "Authorization: Bearer <token>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "monitorId": "<monitorId>",
-    "condition": "consecutive_failures_gt",
-    "threshold": "3",
-    "severity": "critical",
-    "message": "Web server has failed 3+ consecutive checks"
-  }'
-```
+If the required device-independent runtime capability from #6353 is missing, the entire network preview is blocked (`prerequisite_missing`), with no items or per-check refusals. Nothing is automatically retired. Interactive partner **Convert everything** reports network sources as blocked while other eligible source types can still convert; a capability change requires a fresh preview.
 
-### Alert Rule Schema
-
-| Field | Type | Required | Default | Description |
-|---|---|---|---|---|
-| `monitorId` | UUID | Yes | -- | The monitor this rule applies to. |
-| `condition` | enum | Yes | -- | One of `offline`, `degraded`, `response_time_gt`, `consecutive_failures_gt`. |
-| `threshold` | string | No | `null` | Threshold value for `response_time_gt` and `consecutive_failures_gt`. |
-| `severity` | enum | Yes | -- | Alert severity: `critical`, `high`, `medium`, `low`, `info`. |
-| `message` | string | No | `null` | Custom message included in the alert. |
-| `isActive` | boolean | No | `true` | Whether this rule is currently active. |
-
-<Aside type="caution">
-  Alert rules cascade-delete when their parent monitor is deleted. Deleting a monitor removes all associated rules and historical results.
-</Aside>
+Open legacy alerts retain active, acknowledged or suppressed status and provenance when moved to the monitor. Conversion and retirement never resolve them. **Retire** stops an unwanted source and records its name and reason in the persistent conversion ledger, even if no monitor was created. **Conversion history → Undo** can revert network conversion or retirement while the network runtime remains available. Revert restores the source and alert references; asset-bound checks use the asset's current site. Deleting an adopted monitor preserves the probe and history as retired rather than deleting them.
 
 ## Testing Monitors
 
-The **test** endpoint sends a one-off check command to a connected agent without going through the BullMQ queue. It finds an online agent in the monitor's organization and dispatches the command directly via WebSocket.
+The **test** endpoint sends a one-off check command to a connected agent without going through the BullMQ queue. It finds an eligible online agent in the check's organization (in the bound asset's site when bound) and dispatches the command directly via WebSocket.
 
 ```bash
 curl -X POST /api/v1/monitors/<monitorId>/test \
@@ -320,7 +271,7 @@ curl -X POST /api/v1/monitors/<monitorId>/test \
 ```
 
 <Aside type="note">
-  The test endpoint requires at least one online, WebSocket-connected agent in the monitor's organization. If no agent is connected, the test returns immediately with a `failed` status rather than an HTTP error.
+  The test endpoint requires an eligible online, WebSocket-connected agent in the check's organization, restricted to the asset's site when bound. If no agent is connected, the test returns immediately with a `failed` status rather than an HTTP error.
 </Aside>
 
 ## On-Demand Checks via BullMQ
@@ -381,11 +332,11 @@ All endpoints are mounted at `/api/v1/monitors` and require authentication.
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/api/v1/monitors` | List monitors with optional filters. |
-| `POST` | `/api/v1/monitors` | Create a new monitor. |
+| `POST` | `/api/v1/monitors` | **410 Gone**; author a `network_check` monitor definition. |
 | `GET` | `/api/v1/monitors/dashboard` | Aggregate status and type counts. |
 | `GET` | `/api/v1/monitors/:id` | Get a single monitor with recent results and alert rules. |
-| `PATCH` | `/api/v1/monitors/:id` | Update monitor fields. |
-| `DELETE` | `/api/v1/monitors/:id` | Delete a monitor and all associated results/rules. |
+| `PATCH` | `/api/v1/monitors/:id` | **410 Gone**. |
+| `DELETE` | `/api/v1/monitors/:id` | **410 Gone** for unmanaged rows; managed rows return an ownership conflict directing you to Monitors. Use ledger retirement for unmanaged cleanup. |
 | `POST` | `/api/v1/monitors/:id/check` | Enqueue an on-demand check via BullMQ. |
 | `POST` | `/api/v1/monitors/:id/test` | Send a direct test check to an online agent. |
 | `GET` | `/api/v1/monitors/:id/results` | Query historical check results. |
@@ -394,10 +345,36 @@ All endpoints are mounted at `/api/v1/monitors` and require authentication.
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/api/v1/monitors/alerts` | Create an alert rule for a monitor. |
+| `POST` | `/api/v1/monitors/alerts` | **410 Gone**. |
 | `GET` | `/api/v1/monitors/:monitorId/alerts` | List alert rules for a monitor. |
-| `PATCH` | `/api/v1/monitors/alerts/:id` | Update an alert rule. |
-| `DELETE` | `/api/v1/monitors/alerts/:id` | Delete an alert rule. |
+| `PATCH` | `/api/v1/monitors/alerts/:id` | **410 Gone**. |
+| `DELETE` | `/api/v1/monitors/alerts/:id` | **410 Gone**. |
+
+Retired authoring responses use this body (normal authentication and authorization still apply):
+
+```json
+{
+  "error": "network_check_authoring_retired",
+  "message": "Network checks are authored as monitors. Create or edit a monitor of kind network_check under Alerts → Monitors.",
+  "hint": { "route": "POST /monitor-definitions", "kind": "network_check" }
+}
+```
+
+Reads and operational `/check` and `/test` endpoints remain available. List results include `managedByMonitorId` (the owning definition, or null) and `retiredAt`. Retired checks are excluded by default.
+
+### Conversion endpoints
+
+Paths below are relative to `/api/v1/monitor-definitions/conversion`. Conversion writes require alert-write permission and MFA; network conversion requires organization-wide access.
+
+| Method | Path | Request |
+|---|---|---|
+| `GET` | `/network-checks?orgId=<uuid>` | Preview, including `previewHash`, proposed monitors and refusals |
+| `POST` | `/network-checks/convert` | `{ orgId, previewHash, sourceIds? }`; optional selection of up to 500 source IDs |
+| `POST` | `/retire` | `{ sourceTable: "network_monitors", sourceId, reason: "operator" }` |
+| `GET` | `/ledger?orgId=<uuid>` | Persistent history; returns `{ items, nextCursor }` |
+| `POST` | `/:conversionId/revert` | Undo network conversion or retirement |
+
+Confirm with the current preview hash. Authoring changes invalidate it; new telemetry does not. Pending counts expose `data.networkChecks` separately from legacy `rows`.
 
 ### List Monitors Query Parameters
 
@@ -408,6 +385,7 @@ All endpoints are mounted at `/api/v1/monitors` and require authentication.
 | `monitorType` | enum | Filter by type: `icmp_ping`, `tcp_port`, `http_check`, `dns_check`. |
 | `status` | enum | Filter by current status: `online`, `offline`, `degraded`, `unknown`. |
 | `search` | string | Search by monitor name or target (substring match). |
+| `includeRetired` | boolean | Set to `true` to include retained retired rows. |
 
 ### Monitoring Assets Integration
 
@@ -423,7 +401,11 @@ Network monitors also surface through the `/api/v1/monitoring/assets` endpoint, 
 }
 ```
 
-The `DELETE /api/v1/monitoring/assets/:id` endpoint disables all active network monitors (and SNMP devices) for a given asset by setting `isActive` to `false`.
+The device action is **Disable SNMP monitoring** and uses the existing SNMP PATCH endpoint. It does not disable network checks.
+
+`DELETE /api/v1/monitoring/assets/:id` returns **409** `network_checks_active` before changing anything when checks are active. Its `checks` list identifies managed checks by `monitorId` (disable in Monitors); unmanaged checks must be converted or retired.
+
+`DELETE /api/v1/discovery/assets/:id` returns **409** `asset_has_retained_network_checks` while any retained check is bound to the asset, including retired checks. Retained history is not silently deleted.
 
 ## Troubleshooting
 
@@ -432,7 +414,7 @@ The `DELETE /api/v1/monitoring/assets/:id` endpoint disables all active network 
 The monitor has never been checked. Verify that:
 
 1. The monitor has `isActive: true`.
-2. At least one agent in the same organization is online and connected via WebSocket.
+2. An eligible agent in the same organization (and asset site when bound) is online and connected via WebSocket.
 3. Redis is running and the monitor worker has been initialized (look for `[MonitorWorker] Monitor worker initialized` in API logs).
 4. The scheduler repeatable job is registered (look for `[MonitorWorker] Scheduled repeatable monitor scheduler (every 30s)` in logs).
 
@@ -450,7 +432,7 @@ The `/check` endpoint requires Redis for BullMQ job queuing. Ensure Redis is run
 
 ### "No online agent available" on test
 
-The `/test` endpoint looks for a device with `status: 'online'` in the monitor's organization and verifies it has an active WebSocket connection. Ensure at least one agent is enrolled, heartbeating, and connected.
+The `/test` endpoint requires an eligible online device with an active WebSocket connection. For an asset-bound check, the agent must be in the asset's current site; there is no organization-wide fallback. Ensure a suitable agent is enrolled, heartbeating and connected.
 
 ### Monitors not running on schedule
 
@@ -460,10 +442,10 @@ The scheduler is a BullMQ repeatable job that runs every 30 seconds. If monitors
 2. Inspect the `monitors` queue in Redis for stuck or failed jobs.
 3. Confirm the monitor's `polling_interval` has elapsed since `last_checked`.
 
-### Alert rules not firing
+### The monitor is not firing
 
-Alert rules are stored in the `network_monitor_alert_rules` table. Verify:
-
-1. The rule has `isActive: true`.
-2. The `condition` and `threshold` match the current monitor state (e.g., `consecutive_failures_gt` with threshold `"3"` requires `consecutive_failures > 3`).
-3. The monitor's check results are being recorded -- query the `/results` endpoint to confirm.
+1. Confirm the definition is attached to an assigned configuration policy and enabled for an eligible alert device. Asset binding alone does not enable alert evaluation.
+2. Check `/results` for enough consecutive failures. Degraded and slow results count only when the corresponding options are enabled.
+3. Review maintenance windows, cooldown and the existing open episode.
+4. If the alert exists but no notification arrives, inspect Notify and the matching Delivery routing row. Inbox only intentionally sends no notification.
+5. For an unconverted check, inspect its retained rules. A probe without an active rule remains non-alerting; use the conversion preview to see any refusal reason.

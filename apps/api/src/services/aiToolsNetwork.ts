@@ -27,7 +27,29 @@ import { loadReachability } from './assetReachabilityLoader';
 import { deviceSiteDenied, siteScopeCondition, SITE_SCOPE_EMPTY_NOTE, deviceScopeCondition, filterToDeviceScope } from './aiToolsSiteScope';
 import { eq, and, desc, gte, inArray, lte, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
+import { isAiAgentPrincipal } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+
+/**
+ * #6911: `true` when the caller is an AI-agent principal, i.e. `auth.user.id`
+ * is an `aiAgents.id` (attribution only, never a `users` row), not a real
+ * user id. `acknowledge_network_device` is Tier 2 (auto-execute inline, no
+ * approval step — so no approver for `USER_OWNED_RELEASE_ACTIONS` to
+ * substitute) and writes `auth.user.id` into
+ * `network_change_events.acknowledged_by` — an agent-mintable write via the
+ * `agentTier2` lane. Refuse before the write rather than let it fail as a
+ * 23503. Mirrors `aiToolsFleet.ts`'s `isAgentPrincipalCaller` (#6206).
+ */
+function isAgentPrincipalCaller(auth: AuthContext): boolean {
+  return isAiAgentPrincipal(auth);
+}
+
+/** #6911: the refusal `acknowledge_network_device` returns to an agent principal. */
+function refuseNetworkAgentPrincipal(): string {
+  return JSON.stringify({
+    error: 'Action "acknowledge_network_device" requires a real user identity and cannot be performed by an AI agent.',
+  });
+}
 import {
   normalizeBaselineAlertSettings,
   normalizeBaselineScanSchedule,
@@ -362,6 +384,11 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
       }
     },
     handler: async (input, auth) => {
+      // #6911: no approver to substitute at Tier 2 — refuse an agent
+      // principal before the write. See isAgentPrincipalCaller.
+      if (isAgentPrincipalCaller(auth)) {
+        return refuseNetworkAgentPrincipal();
+      }
       const eventId = input.event_id as string;
       const notes = typeof input.notes === 'string' ? input.notes : undefined;
 

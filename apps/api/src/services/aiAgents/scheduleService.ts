@@ -311,6 +311,14 @@ async function requireOrgPartnerId(orgId: string): Promise<string> {
  * the subsequent insert. That is acceptable because the durable guarantee is
  * `effectiveSchedule`'s intersection at evaluation time: a stored superset can
  * never widen what an org actually sweeps, it only becomes inert.
+ *
+ * WHY THIS ONE STILL ESCAPES (#5199 retired every other baseline escape in
+ * this file): the `ai_agent_schedules_partner_wide_select` branch is SELECT-
+ * only, and a row-locking `SELECT … FOR SHARE` must ALSO pass the table's
+ * UPDATE policy, which an org session never does for a partner-wide row. Read
+ * in the caller's context, this lookup would silently return nothing and every
+ * org override would fail `baseline_wrong_partner`. Pinned by
+ * aiPartnerWideReadsRequestContext.integration.test.ts.
  */
 async function loadBaselineForOverride(
   orgId: string,
@@ -447,14 +455,12 @@ async function loadScheduleForWrite(auth: AuthContext, id: string): Promise<AiAg
     .where(and(eq(aiAgentSchedules.id, id), accessibleScheduleCondition(auth)))
     .limit(1);
 
-  // The escape is taken ONLY when it is actually needed (partnerAxisRead.ts,
-  // AVAILABILITY): a partner-scoped caller already passes
-  // breeze_has_partner_access for its own partner and sees BOTH axes natively,
-  // so escaping would open a second pooled connection while the request's own
-  // transaction is still held, for zero visibility gain.
-  const [row] = auth.scope === 'partner'
-    ? await read()
-    : await readWithPartnerAxisVisibility(read);
+  // Caller context for every scope (#5199): a partner session passes
+  // breeze_has_partner_access for its own partner, and an org session sees its
+  // own partner's partner-wide rows through the SELECT-only
+  // `ai_agent_schedules_partner_wide_select` branch. It used to escape through
+  // readWithPartnerAxisVisibility for non-partner scopes.
+  const [row] = await read();
   if (!row) throw new AgentAccessDeniedError('Schedule not found');
   return row;
 }
@@ -757,15 +763,17 @@ export async function listSchedules(
   }
   const orgPartnerId = await requireOrgPartnerId(orgId);
 
-  // Org-scoped callers cannot see partner-axis rows at all (#2822), so the
-  // baselines are read through the escape — where the app predicate is the ONLY
-  // filter and therefore has to be maximally narrow: this partner's rows, for
-  // this partner's own partner-wide SCHEDULABLE agents, and nothing else.
+  // Read in the caller's own context (#5199): an org session sees its own
+  // partner's partner-wide agents and baselines through the SELECT-only
+  // `*_partner_wide_select` branches (#4942/#4943). It used to escape to a
+  // system context, where this app predicate was the ONLY filter; it stays
+  // maximally narrow anyway: this partner's rows, for this partner's own
+  // partner-wide SCHEDULABLE agents, and nothing else.
   // `SCHEDULABLE_AGENT_KINDS` is a closed list derived from the create gate
   // (triage/designer/patch); before AI patch agent W01 it was `'triage'`
   // alone, which hid every design and patch baseline from an org token.
   // `helpdesk` has no schedule kind and is excluded.
-  const baselines = await readWithPartnerAxisVisibility(async () => {
+  const baselines = await (async () => {
     const agentIds = await db
       .select({ id: aiAgents.id })
       .from(aiAgents)
@@ -787,7 +795,7 @@ export async function listSchedules(
         inArray(aiAgentSchedules.agentId, agentIds.map((a) => a.id)),
         filter.agentId ? eq(aiAgentSchedules.agentId, filter.agentId) : undefined,
       ));
-  });
+  })();
 
   // The org's OWN override rows are visible under its own RLS — no escape.
   const overrides = await overridesFor(orgId, baselines.map((b) => b.id));
@@ -815,11 +823,12 @@ export interface BaselineCadence {
  *
  * Tenancy is `listSchedules`'s, restated for a read that returns no row
  * contents: a PARTNER caller reads its own baselines under its own RLS
- * (`breeze_has_partner_access` passes), while an ORG caller is blind to the
- * partner axis (#2822) and reads them through `readWithPartnerAxisVisibility`
- * with a maximally narrow app predicate — this partner's rows, for this
- * partner's own partner-wide schedulable agents. A caller with neither axis
- * (no partnerId) gets nothing rather than an unpinned read.
+ * (`breeze_has_partner_access` passes), while an ORG caller reads them in its
+ * own context through the SELECT-only partner-wide branches (#5199; it used to
+ * escape via `readWithPartnerAxisVisibility`), still with a maximally narrow
+ * app predicate — this partner's rows, for this partner's own partner-wide
+ * schedulable agents. A caller with neither axis (no partnerId) gets nothing
+ * rather than an unpinned read.
  *
  * Overrides are deliberately ignored: an org override carries no cadence of
  * its own (it may only disable or tighten), so the BASELINE's cron is when the
@@ -851,28 +860,26 @@ export async function loadEnabledBaselineCadences(
   if (!auth.partnerId) return [];
   const partnerId = auth.partnerId;
 
-  return readWithPartnerAxisVisibility(async () => {
-    const partnerWideAgentIds = await db
-      .select({ id: aiAgents.id })
-      .from(aiAgents)
-      .where(and(
-        isNull(aiAgents.orgId),
-        eq(aiAgents.partnerId, partnerId),
-        inArray(aiAgents.kind, [...SCHEDULABLE_AGENT_KINDS]),
-        isNull(aiAgents.disabledAt),
-        inArray(aiAgents.id, agentIds),
-      ));
-    if (partnerWideAgentIds.length === 0) return [];
-    return db
-      .select(columns)
-      .from(aiAgentSchedules)
-      .where(and(
-        isNull(aiAgentSchedules.orgId),
-        eq(aiAgentSchedules.partnerId, partnerId),
-        eq(aiAgentSchedules.enabled, true),
-        inArray(aiAgentSchedules.agentId, partnerWideAgentIds.map((a) => a.id)),
-      ));
-  });
+  const partnerWideAgentIds = await db
+    .select({ id: aiAgents.id })
+    .from(aiAgents)
+    .where(and(
+      isNull(aiAgents.orgId),
+      eq(aiAgents.partnerId, partnerId),
+      inArray(aiAgents.kind, [...SCHEDULABLE_AGENT_KINDS]),
+      isNull(aiAgents.disabledAt),
+      inArray(aiAgents.id, agentIds),
+    ));
+  if (partnerWideAgentIds.length === 0) return [];
+  return db
+    .select(columns)
+    .from(aiAgentSchedules)
+    .where(and(
+      isNull(aiAgentSchedules.orgId),
+      eq(aiAgentSchedules.partnerId, partnerId),
+      eq(aiAgentSchedules.enabled, true),
+      inArray(aiAgentSchedules.agentId, partnerWideAgentIds.map((a) => a.id)),
+    ));
 }
 
 /**

@@ -109,7 +109,6 @@ export function SoftwareGroupTable({
                 <HelpTooltip side="bottom" ariaLabel={t('softwareGroupTable.help.riskAria')} text={RISK_EXPLANATION} />
               </span>
             </th>
-            <th className="px-4 py-3">{t('softwareGroupTable.table.cves')}</th>
             <th className="px-4 py-3">{t('softwareGroupTable.table.devices')}</th>
             <th className="px-4 py-3">{t('softwareGroupTable.table.patch')}</th>
           </tr>
@@ -124,8 +123,7 @@ export function SoftwareGroupTable({
                 </td>
                 <td className="px-4 py-3"><div className={`${SKELETON_BAR} h-5 w-16 rounded-full`} /></td>
                 <td className="px-4 py-3"><div className={`${SKELETON_BAR} w-8`} /></td>
-                <td className="px-4 py-3"><div className={`${SKELETON_BAR} w-8`} /></td>
-                <td className="px-4 py-3"><div className={`${SKELETON_BAR} w-8`} /></td>
+                <td className="px-4 py-3"><div className={`${SKELETON_BAR} w-20`} /></td>
                 <td className="px-4 py-3"><div className={`${SKELETON_BAR} w-24`} /></td>
               </tr>
             ))}
@@ -163,8 +161,12 @@ export function SoftwareGroupTable({
                   </span>
                 </td>
                 <td className="px-4 py-3 text-sm tabular-nums">{fmtRisk(g.maxRiskScore)}</td>
-                <td className="px-4 py-3 text-sm tabular-nums">{g.cveCount}</td>
-                <td className="px-4 py-3 text-sm tabular-nums">{g.deviceCount}</td>
+                <td className="px-4 py-3 text-sm" data-testid={`software-group-devices-${g.groupKey}`}>
+                  {/* #2262: the remediation unit (devices to update) is the
+                      headline; the per-CVE fan-out is secondary context. */}
+                  <span className="block font-medium tabular-nums">{t('softwareGroupTable.devices', { count: g.deviceCount })}</span>
+                  <span className="block text-xs text-muted-foreground tabular-nums">{t('softwareGroupTable.cves', { count: g.cveCount })}</span>
+                </td>
                 <td className="px-4 py-3 text-sm">{patchLabel(g)}</td>
               </tr>
             ))}
@@ -210,8 +212,10 @@ export function SoftwareGroupTable({
               </div>
               <div className="mt-3 space-y-2 border-t pt-3">
                 <CardField label={t('softwareGroupTable.table.risk')}><span className="text-sm tabular-nums" title={RISK_EXPLANATION}>{fmtRisk(g.maxRiskScore)}</span></CardField>
-                <CardField label={t('softwareGroupTable.table.cves')}><span className="text-sm tabular-nums">{g.cveCount}</span></CardField>
-                <CardField label={t('softwareGroupTable.table.devices')}><span className="text-sm tabular-nums">{g.deviceCount}</span></CardField>
+                <CardField label={t('softwareGroupTable.table.devices')}>
+                  <span className="text-sm tabular-nums">{t('softwareGroupTable.devices', { count: g.deviceCount })}</span>
+                  <span className="ml-1.5 text-xs text-muted-foreground tabular-nums">{t('softwareGroupTable.cves', { count: g.cveCount })}</span>
+                </CardField>
                 <CardField label={t('softwareGroupTable.table.patch')}><span className="text-sm">{patchLabel(g)}</span></CardField>
               </div>
             </DataCard>

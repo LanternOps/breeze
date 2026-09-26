@@ -19,11 +19,17 @@ import {
   runFrozenDeviceIds,
   SITE_SCOPE_EMPTY_NOTE,
 } from './aiToolsSiteScope';
+import type { ToolExecutionContext } from './toolExecutionContext';
+import { isAiAgentPrincipal } from '../middleware/auth';
 
 // Input schemas for these tools live in the canonical `toolInputSchemas`
 // registry in ./aiToolSchemas (validated centrally by executeTool).
 
-type PamHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
+type PamHandler = (
+  input: Record<string, unknown>,
+  auth: AuthContext,
+  context?: ToolExecutionContext,
+) => Promise<string>;
 type ElevationStatus = 'pending' | 'auto_approved' | 'denied';
 
 const ACTIVE_STATUSES = ['approved', 'auto_approved', 'actuating'] as const;
@@ -34,15 +40,50 @@ function orgWhere(auth: AuthContext, orgIdCol: Parameters<AuthContext['orgCondit
 }
 
 function safeHandler(toolName: string, fn: PamHandler): PamHandler {
-  return async (input, auth) => {
+  return async (input, auth, context) => {
     try {
-      return await fn(input, auth);
+      return await fn(input, auth, context);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Internal error';
       console.error(`[pam:${toolName}] ${err?.constructor?.name ?? 'Error'}:`, message, err);
       return JSON.stringify({ error: 'Operation failed. Check server logs for details.' });
     }
   };
+}
+
+/**
+ * #6911: `request_elevation` is user-owned on release
+ * (`USER_OWNED_RELEASE_ACTIONS` in `jobs/intentReleaseWorker.ts`) — it writes
+ * `auth.user.id` into `elevation_requests.subject_user_id` and
+ * `elevation_audit_entries.actor_user_id`, both `users` FKs. Under the
+ * rebuilt agent auth that id is an `aiAgents.id`, so refuse rather than write
+ * a row whose owner the worker and this handler's auth disagree about.
+ * Mirrors `aiToolsFleet.ts`'s `approverReleaseMismatch`.
+ */
+function approverReleaseMismatch(auth: AuthContext, context: ToolExecutionContext | undefined): boolean {
+  return !!context?.approverRelease && context.approverRelease.approverUserId !== auth.user.id;
+}
+
+/**
+ * #6911: `true` when the caller is an AI-agent principal, i.e. `auth.user.id`
+ * is an `aiAgents.id` (attribution only, never a `users` row), not a real
+ * user id. `revoke_elevation` is Tier 2 (auto-executes inline, no approval
+ * step, so there is no approver for `USER_OWNED_RELEASE_ACTIONS` to
+ * substitute) and writes `auth.user.id` into
+ * `elevation_requests.revoked_by_user_id` / `elevation_audit_entries.actor_user_id`
+ * — a genuine, agent-mintable write via the `agentTier2` lane. Refuse before
+ * the write rather than let it fail as a 23503. Mirrors `aiToolsFleet.ts`'s
+ * `isAgentPrincipalCaller` (#6206).
+ */
+function isAgentPrincipalCaller(auth: AuthContext): boolean {
+  return isAiAgentPrincipal(auth);
+}
+
+/** #6911: the refusal `revoke_elevation` returns to an agent principal. */
+function refusePamAgentPrincipal(action: string): string {
+  return JSON.stringify({
+    error: `Action "${action}" requires a real user identity and cannot be performed by an AI agent.`,
+  });
 }
 
 async function safePublish(
@@ -188,7 +229,11 @@ export function registerPamTools(aiTools: Map<string, AiTool>): void {
         required: ['deviceId', 'subjectUsername', 'reason'],
       },
     },
-    handler: safeHandler('request_elevation', async (input, auth) => {
+    handler: safeHandler('request_elevation', async (input, auth, context) => {
+      // #6911: user-owned on release — see approverReleaseMismatch.
+      if (approverReleaseMismatch(auth, context)) {
+        return JSON.stringify({ error: 'approver_auth_mismatch' });
+      }
       const deviceId = input.deviceId as string;
       const subjectUsername = input.subjectUsername as string;
       const reason = input.reason as string;
@@ -325,6 +370,11 @@ export function registerPamTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: safeHandler('revoke_elevation', async (input, auth) => {
+      // #6911: no approver to substitute at Tier 2 — refuse an agent
+      // principal before the write. See isAgentPrincipalCaller.
+      if (isAgentPrincipalCaller(auth)) {
+        return refusePamAgentPrincipal('revoke_elevation');
+      }
       const elevationRequestId = input.elevationRequestId as string;
       const reason = input.reason as string;
       if (!elevationRequestId || !reason) {

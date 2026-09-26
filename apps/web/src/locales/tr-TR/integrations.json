@@ -6,6 +6,7 @@
     "loading": "Müşteri Grafiği Yükleniyor Bağlantıyı okuyun.",
     "unavailable": "Bağlantı ayrıntıları mevcut değil.",
     "onboardingUnavailable": "Müşteri Grafiği Okumaya katılım bu kuruluş için etkinleştirilmedi.",
+    "notAvailableOnInstance": "Bu Breeze örneğinde henüz kullanılamıyor.",
     "callback": {
       "active": "Microsoft izni tamamlandı. Yenilenen bağlantı durumu aşağıda gösterilmiştir.",
       "degraded": "Microsoft onayı tamamlandı, ancak bağlantıyla ilgilenilmesi gerekiyor. Yenilenen ayrıntılar aşağıda gösterilmektedir."
@@ -109,6 +110,7 @@
     "loading": "Müşteri Grafiği Eylemleri bağlantısı yükleniyor.",
     "unavailable": "Bağlantı ayrıntıları mevcut değil.",
     "onboardingUnavailable": "Müşteri Grafiği Eylemleri katılımı bu kuruluş için etkinleştirilmedi.",
+    "notAvailableOnInstance": "Bu Breeze örneğinde henüz kullanılamıyor.",
     "callback": {
       "active": "Microsoft izni tamamlandı. Yenilenen bağlantı durumu aşağıda gösterilmiştir.",
       "degraded": "Microsoft onayı tamamlandı, ancak bağlantıyla ilgilenilmesi gerekiyor. Yenilenen ayrıntılar aşağıda gösterilmektedir."
@@ -410,7 +412,7 @@
     "notifications": "Bildirimler",
     "security": "Güvenlik",
     "monitoring": "İzleme",
-    "identity": "Kimlik",
+    "cloudTenants": "Bulut kiracıları",
     "distributors": "Distribütörler",
     "accounting": "Muhasebe",
     "unifi": "UniFi",
@@ -440,7 +442,7 @@
     "providerLabel": "Sağlayıcı",
     "cove": "Cove Data Protection",
     "nameLabel": "Bağlantı adı",
-    "namePlaceholder": "OliveTech Cove",
+    "namePlaceholder": "Ana Cove hesabı",
     "partnerNameLabel": "Cove iş ortağı adı",
     "usernameLabel": "Kullanıcı adı",
     "passwordLabel": "Parola",

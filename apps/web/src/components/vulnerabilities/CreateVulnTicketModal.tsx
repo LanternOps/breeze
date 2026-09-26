@@ -20,7 +20,9 @@ export function CreateVulnTicketModal({
   onCancel,
   onSubmit,
 }: {
-  findings: GroupFinding[];
+  /** One entry per finding the ticket will cover; only the org is read (to
+   *  warn when the selection spans orgs and becomes one ticket per org). */
+  findings: Array<Pick<GroupFinding, 'orgId'>>;
   defaultTitle: string;
   busy: boolean;
   onCancel: () => void;

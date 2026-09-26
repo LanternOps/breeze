@@ -28,7 +28,7 @@
     "vulnerabilities": "Vulnerabilità",
     "oneDrive": "OneDrive",
     "aiForOffice": "AI per Office",
-    "networkMonitor": "Monitoraggio rete",
+    "networkMonitor": "Rete",
     "jobs": "Attività",
     "monitoring": "Monitoraggio",
     "networkDiscovery": "Rilevamento rete",
@@ -67,6 +67,7 @@
     "fleetDesign": "Progettazione flotta",
     "customFields": "Campi personalizzati",
     "savedFilters": "Filtri salvati",
+    "moreSettings": "Altre impostazioni",
     "users": "Utenti",
     "roles": "Ruoli",
     "sso": "SSO",
@@ -220,7 +221,7 @@
     "mcp": {
       "connecting": "Stai connettendo un agente AI?",
       "title": "Indirizza qui il tuo agente AI",
-      "description": "Incolla questo URL nel tuo client MCP (Claude.ai, ChatGPT, Cursor, ...). Verrai rimandato qui per autorizzare la connessione tramite OAuth."
+      "description": "Incolla questo URL nel tuo client MCP (Claude.ai, ChatGPT, Cursor, ...). Verrai rimandato qui per autorizzare la connessione tramite OAuth. Preferisci una chiave API? Invia un header X-API-Key con lo scope ai:read/ai:write."
     },
     "progress": {
       "count": "{{current}} di {{total}}",
@@ -873,97 +874,18 @@
       }
     },
     "monitors": {
-      "CreateMonitorForm": {
-        "actions": {
-          "createMonitor": "Crea monitor",
-          "creating": "Creazione..."
-        },
-        "errors": {
-          "createMonitor": "Impossibile creare il monitor",
-          "generic": "Si è verificato un errore",
-          "nameRequired": "Il nome è obbligatorio",
-          "targetRequired": "L'obiettivo è obbligatorio"
-        },
-        "fields": {
-          "expectedBanner": "Banner previsto (facoltativo)",
-          "expectedBody": "Corpo previsto (facoltativo)",
-          "expectedStatus": "Stato previsto",
-          "expectedValue": "Valore previsto (facoltativo)",
-          "followRedirects": "Segui i reindirizzamenti",
-          "hostname": "Nome host da risolvere",
-          "method": "Metodo",
-          "monitorType": "Tipo di monitor",
-          "nameserver": "Server dei nomi personalizzato (facoltativo)",
-          "pingCount": "Conteggio ping",
-          "pollingInterval": "Intervallo di polling (secondi)",
-          "port": "Porta",
-          "recordType": "Tipo di record",
-          "target": "Destinazione (IP/Nome host)",
-          "timeout": "Timeout (secondi)",
-          "url": "URL",
-          "verifySsl": "Verifica SSL"
-        },
-        "monitorTypes": {
-          "dnsCheck": {
-            "description": "Verifica che i record DNS vengano risolti correttamente",
-            "label": "Controllo DNS"
-          },
-          "httpCheck": {
-            "description": "Monitora gli endpoint HTTP/HTTPS",
-            "label": "Controllo HTTP"
-          },
-          "icmpPing": {
-            "description": "Controlla se un host è raggiungibile tramite ping",
-            "label": "ICMP Ping"
-          },
-          "tcpPort": {
-            "description": "Controlla se una porta TCP è aperta e risponde",
-            "label": "Porta TCP"
-          }
-        },
-        "placeholders": {
-          "expectedBanner": "ad es. SSH-",
-          "expectedBody": "ad es. \"stato\": \"ok\"",
-          "expectedValue": "ad es. 93.184.216.34",
-          "hostname": "esempio.com",
-          "name": "ad es. Server Web di produzione",
-          "nameserver": "8.8.8.8",
-          "target": "192.168.1.1 o server.esempio.com",
-          "url": "https://example.com/health"
-        },
-        "subtitle": "Configura un nuovo controllo di monitoraggio per una destinazione di rete.",
-        "title": "Crea monitoraggio della rete"
-      },
       "MonitorDetailModal": {
         "actions": {
-          "cancelEdit": "Annulla modifica",
-          "checkNow": "Controlla ora",
-          "deleteMonitor": "Elimina monitor",
-          "deleting": "Eliminazione...",
-          "yesDelete": "Sì, cancella"
-        },
-        "alertRules": {
-          "disabled": "(disabilitato)",
-          "title": "Regole di avviso"
+          "checkNow": "Controlla ora"
         },
         "consecutiveFailures": "{{count}} errore consecutivo",
         "consecutiveFailures_plural": "{{count}} errori consecutivi",
-        "delete": {
-          "confirmShort": "Sei sicuro?"
-        },
         "errors": {
-          "deleteMonitor": "Impossibile eliminare il monitor",
           "generic": "Si è verificato un errore",
           "loadDetails": "Impossibile caricare i dettagli del monitor",
-          "triggerCheck": "Impossibile attivare il controllo",
-          "updateMonitor": "Impossibile aggiornare il monitor"
+          "triggerCheck": "Impossibile attivare il controllo"
         },
         "fallbackTitle": "Monitor",
-        "fields": {
-          "interval": "Intervallo (s)",
-          "timeout": "Timeout (s)",
-          "target": "URL di destinazione"
-        },
         "labels": {
           "lastChecked": "Ultimo controllo: {{time}}",
           "response": "Risposta: {{response}}",
@@ -991,8 +913,6 @@
           "icmpPing": "ICMP Ping",
           "tcpPort": "TCP Porta"
         },
-        "targetResetNote": "La modifica dell’URL reimposta l’osservazione TLS.",
-        "saved": "Monitor aggiornato",
         "certificate": {
           "title": "Certificato",
           "issuer": "Emittente",
@@ -1004,27 +924,22 @@
             "handshakeFailed": "Negoziazione TLS non riuscita",
             "notTls": "Senza TLS"
           }
-        }
+        },
+        "openMonitor": "Apri il monitor di questo controllo",
+        "notConverted": "Esamina la conversione in Risultati."
       },
       "NetworkMonitorList": {
         "actions": {
-          "addMonitor": "Aggiungi monitor",
-          "deleteMonitor": "Elimina monitor",
           "runCheckNow": "Esegui il controllo adesso",
-          "viewDetails": "Visualizza i dettagli"
+          "viewDetails": "Visualizza i dettagli",
+          "newCheck": "Nuovo controllo"
         },
         "assetFilter": "Filtraggio dei monitor in base alla risorsa selezionata.",
-        "delete": {
-          "confirmLabel": "Elimina monitor",
-          "message": "Sei sicuro di voler eliminare questo monitor? Verranno rimossi anche tutti i risultati e le regole di avviso. Questa azione non può essere annullata.",
-          "title": "Elimina Monitoraggio della rete"
-        },
         "empty": {
-          "action": "Creane uno adesso.",
-          "prefix": "Nessun monitor di rete configurato."
+          "action": "Crea un monitor.",
+          "prefix": "Nessun controllo di rete."
         },
         "errors": {
-          "deleteMonitor": "Impossibile eliminare il monitor",
           "fetchMonitors": "Impossibile recuperare i monitor",
           "generic": "Si è verificato un errore",
           "triggerCheck": "Impossibile attivare il controllo"
@@ -1037,11 +952,13 @@
           "interval": "Intervallo",
           "lastChecked": "Ultimo controllo",
           "response": "Risposta",
-          "target": "Obiettivo"
+          "target": "Obiettivo",
+          "monitor": "Monitor",
+          "openMonitor": "Apri monitor"
         },
         "loading": "Caricamento monitor...",
         "messages": {
-          "monitorDeleted": "Monitor eliminato"
+          "checkQueued": "Controllo di rete in coda"
         },
         "status": {
           "degraded": "Degradato"
@@ -1058,6 +975,19 @@
           "httpCheck": "Controllo HTTP",
           "icmpPing": "ICMP Ping",
           "tcpPort": "TCP Porta"
+        },
+        "notConverted": "Non convertito"
+      },
+      "NetworkCheckConversionBanner": {
+        "pending": "{{count}} controlli di rete da esaminare.",
+        "review": "Esamina conversione",
+        "title": "Conversione dei controlli di rete",
+        "convert": "Converti {{count}}",
+        "converted": "{{count}} controlli di rete convertiti",
+        "failed": "Impossibile convertire i controlli di rete",
+        "outcome": {
+          "convertible": "Convertibile",
+          "unconvertible": "Non convertibile"
         }
       }
     },
@@ -1846,7 +1776,7 @@
         "configureMonitoring": "Configura il monitoraggio",
         "pauseSnmpPolling": "Metti in pausa il polling SNMP",
         "resumeSnmpPolling": "Riprendi il polling SNMP",
-        "disableAllActiveMonitoring": "Disattiva tutto il monitoraggio attivo per questa risorsa",
+        "disableSnmpMonitoring": "Disattiva monitoraggio SNMP",
         "needsOrgSelection": "Le risorse di monitoraggio della rete hanno come ambito una singola organizzazione.",
         "loadingAssets": "Caricamento delle risorse di monitoraggio...",
         "showingAllDiscoveredAssets": "Visualizzazione di tutte le risorse scoperte",
@@ -1942,11 +1872,12 @@
       "MonitoringPage": {
         "tabs": {
           "assets": "Risorse",
-          "checks": "Controlli di rete",
-          "templates": "Modelli SNMP"
+          "templates": "Modelli SNMP",
+          "results": "Risultati"
         },
-        "title": "Monitoraggio",
-        "description": "Polling SNMP e controlli di rete. Il rilevamento può alimentare il monitoraggio, che viene gestito qui."
+        "title": "Rete",
+        "description": "Asset, modelli SNMP e risultati dei controlli di rete. I controlli si creano come monitor in Avvisi.",
+        "newCheck": "Nuovo controllo"
       }
     },
     "fleet": {

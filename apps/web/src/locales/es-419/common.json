@@ -28,7 +28,7 @@
     "vulnerabilities": "Vulnerabilidades",
     "oneDrive": "OneDrive",
     "aiForOffice": "AI para Office",
-    "networkMonitor": "Monitor de red",
+    "networkMonitor": "Red",
     "jobs": "Trabajos",
     "monitoring": "Monitoreo",
     "networkDiscovery": "Descubrimiento de red",
@@ -67,6 +67,7 @@
     "fleetDesign": "Diseño de flota",
     "customFields": "Campos personalizados",
     "savedFilters": "Filtros guardados",
+    "moreSettings": "Más configuraciones",
     "users": "Usuarios",
     "roles": "Roles",
     "sso": "SSO",
@@ -220,7 +221,7 @@
     "mcp": {
       "connecting": "¿Conectando un agente AI?",
       "title": "Dirija a su agente AI aquí",
-      "description": "Pegue este URL en su cliente MCP (Claude.ai, ChatGPT, Cursor,…). Se le enviará de regreso aquí para autorizar la conexión a través de OAuth."
+      "description": "Pegue este URL en su cliente MCP (Claude.ai, ChatGPT, Cursor,…). Se le enviará de regreso aquí para autorizar la conexión a través de OAuth. ¿Prefiere usar una clave de API? Envíe un encabezado X-API-Key con el alcance ai:read/ai:write."
     },
     "progress": {
       "count": "{{current}} de {{total}}",
@@ -873,97 +874,18 @@
       }
     },
     "monitors": {
-      "CreateMonitorForm": {
-        "actions": {
-          "createMonitor": "Crear monitor",
-          "creating": "Creando..."
-        },
-        "errors": {
-          "createMonitor": "No se pudo crear el monitor",
-          "generic": "Se produjo un error",
-          "nameRequired": "El nombre es obligatorio",
-          "targetRequired": "Se requiere objetivo"
-        },
-        "fields": {
-          "expectedBanner": "Banner esperado (opcional)",
-          "expectedBody": "Contenido corporal esperado (opcional)",
-          "expectedStatus": "Estado esperado",
-          "expectedValue": "Valor esperado (opcional)",
-          "followRedirects": "Seguir redirecciones",
-          "hostname": "Nombre de host para resolver",
-          "method": "Método",
-          "monitorType": "Tipo de monitor",
-          "nameserver": "Servidor de nombres personalizado (opcional)",
-          "pingCount": "Conteo de pings",
-          "pollingInterval": "Intervalo de sondeo (segundos)",
-          "port": "Puerto",
-          "recordType": "Tipo de registro",
-          "target": "Destino (IP/Nombre de host)",
-          "timeout": "Tiempo de espera (segundos)",
-          "url": "URL",
-          "verifySsl": "Verificar SSL"
-        },
-        "monitorTypes": {
-          "dnsCheck": {
-            "description": "Verifique que los registros DNS se resuelvan correctamente",
-            "label": "DNS Comprobar"
-          },
-          "httpCheck": {
-            "description": "Monitorear puntos finales HTTP/HTTPS",
-            "label": "HTTP Comprobar"
-          },
-          "icmpPing": {
-            "description": "Compruebe si se puede acceder a un host mediante ping",
-            "label": "ICMP Ping"
-          },
-          "tcpPort": {
-            "description": "Compruebe si un puerto TCP está abierto y responde",
-            "label": "Puerto TCP"
-          }
-        },
-        "placeholders": {
-          "expectedBanner": "p. ej. SSH-",
-          "expectedBody": "p.ej. \"estado\": \"bien\"",
-          "expectedValue": "p.ej. 93.184.216.34",
-          "hostname": "example.com",
-          "name": "p.ej. Servidor web de producción",
-          "nameserver": "8.8.8.8",
-          "target": "192.168.1.1 or server.example.com",
-          "url": "https://example.com/health"
-        },
-        "subtitle": "Configure una nueva verificación de monitoreo para un objetivo de red.",
-        "title": "Crear monitor de red"
-      },
       "MonitorDetailModal": {
         "actions": {
-          "cancelEdit": "Cancelar Editar",
-          "checkNow": "Comprobar ahora",
-          "deleteMonitor": "Eliminar monitor",
-          "deleting": "Eliminando...",
-          "yesDelete": "Si, borrar"
-        },
-        "alertRules": {
-          "disabled": "(desactivado)",
-          "title": "Reglas de alerta"
+          "checkNow": "Comprobar ahora"
         },
         "consecutiveFailures": "{{count}} falla consecutiva",
         "consecutiveFailures_plural": "{{count}} fallos consecutivos",
-        "delete": {
-          "confirmShort": "¿Está seguro?"
-        },
         "errors": {
-          "deleteMonitor": "No se pudo eliminar el monitor",
           "generic": "Se produjo un error",
           "loadDetails": "No se pudieron cargar los detalles del monitor",
-          "triggerCheck": "No se pudo activar la verificación",
-          "updateMonitor": "No se pudo actualizar el monitor"
+          "triggerCheck": "No se pudo activar la verificación"
         },
         "fallbackTitle": "Monitor",
-        "fields": {
-          "interval": "Intervalo(s)",
-          "timeout": "Tiempos de espera",
-          "target": "URL de destino"
-        },
         "labels": {
           "lastChecked": "Última comprobación: {{time}}",
           "response": "Respuesta: {{response}}",
@@ -991,8 +913,6 @@
           "icmpPing": "ICMP Ping",
           "tcpPort": "Puerto TCP"
         },
-        "targetResetNote": "Cambiar la URL restablece la observación TLS.",
-        "saved": "Monitor actualizado",
         "certificate": {
           "title": "Certificado",
           "issuer": "Emisor",
@@ -1004,27 +924,22 @@
             "handshakeFailed": "Falló la negociación TLS",
             "notTls": "Sin TLS"
           }
-        }
+        },
+        "openMonitor": "Abrir el monitor de esta verificación",
+        "notConverted": "Revisa la conversión en Resultados."
       },
       "NetworkMonitorList": {
         "actions": {
-          "addMonitor": "Agregar monitor",
-          "deleteMonitor": "Eliminar monitor",
           "runCheckNow": "Ejecutar comprobar ahora",
-          "viewDetails": "Ver detalles"
+          "viewDetails": "Ver detalles",
+          "newCheck": "Nueva verificación"
         },
         "assetFilter": "Filtrado de monitores para el activo seleccionado.",
-        "delete": {
-          "confirmLabel": "Eliminar monitor",
-          "message": "¿Está seguro de que desea eliminar este monitor? Esto también eliminará todos los resultados y reglas de alerta. Esta acción no se puede deshacer.",
-          "title": "Eliminar monitor de red"
-        },
         "empty": {
-          "action": "Cree uno ahora.",
-          "prefix": "No hay monitores de red configurados."
+          "action": "Crear un monitor.",
+          "prefix": "Aún no hay verificaciones de red."
         },
         "errors": {
-          "deleteMonitor": "No se pudo eliminar el monitor",
           "fetchMonitors": "No se pudieron recuperar los monitores",
           "generic": "Se produjo un error",
           "triggerCheck": "No se pudo activar la verificación"
@@ -1037,11 +952,13 @@
           "interval": "Intervalo",
           "lastChecked": "Última comprobación",
           "response": "Respuesta",
-          "target": "Objetivo"
+          "target": "Objetivo",
+          "monitor": "Monitor",
+          "openMonitor": "Abrir monitor"
         },
         "loading": "Cargando monitores...",
         "messages": {
-          "monitorDeleted": "Monitor eliminado"
+          "checkQueued": "Verificación de red en cola"
         },
         "status": {
           "degraded": "Degradado"
@@ -1058,6 +975,19 @@
           "httpCheck": "HTTP Comprobar",
           "icmpPing": "ICMP Ping",
           "tcpPort": "Puerto TCP"
+        },
+        "notConverted": "Sin convertir"
+      },
+      "NetworkCheckConversionBanner": {
+        "pending": "{{count}} verificaciones de red requieren revisión.",
+        "review": "Revisar conversión",
+        "title": "Conversión de verificaciones de red",
+        "convert": "Convertir {{count}}",
+        "converted": "Se convirtieron {{count}} verificaciones de red",
+        "failed": "No se pudieron convertir las verificaciones de red",
+        "outcome": {
+          "convertible": "Convertible",
+          "unconvertible": "No se puede convertir"
         }
       }
     },
@@ -1846,7 +1776,7 @@
         "configureMonitoring": "Configurar monitoreo",
         "pauseSnmpPolling": "Pausar el sondeo SNMP",
         "resumeSnmpPolling": "Reanudar el sondeo SNMP",
-        "disableAllActiveMonitoring": "Deshabilitar todo el monitoreo activo para este activo",
+        "disableSnmpMonitoring": "Deshabilitar monitoreo SNMP",
         "needsOrgSelection": "Los activos de monitoreo de red pertenecen a una sola organización.",
         "loadingAssets": "Cargando recursos de monitoreo...",
         "showingAllDiscoveredAssets": "Mostrando todos los activos descubiertos",
@@ -1942,11 +1872,12 @@
       "MonitoringPage": {
         "tabs": {
           "assets": "Activos",
-          "checks": "Comprobaciones de red",
-          "templates": "Plantillas SNMP"
+          "templates": "Plantillas SNMP",
+          "results": "Resultados"
         },
-        "title": "Monitoreo",
-        "description": "SNMP sondeo y comprobaciones de red. El descubrimiento puede contribuir al seguimiento, pero el seguimiento se gestiona aquí."
+        "title": "Red",
+        "description": "Activos, plantillas SNMP y resultados de verificaciones de red. Las verificaciones se crean como monitores en Alertas.",
+        "newCheck": "Nueva verificación"
       }
     },
     "fleet": {

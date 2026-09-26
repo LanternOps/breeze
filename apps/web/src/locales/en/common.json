@@ -28,7 +28,7 @@
     "vulnerabilities": "Vulnerabilities",
     "oneDrive": "OneDrive",
     "aiForOffice": "AI for Office",
-    "networkMonitor": "Network Monitor",
+    "networkMonitor": "Network",
     "jobs": "Jobs",
     "monitoring": "Monitoring",
     "networkDiscovery": "Network Discovery",
@@ -68,6 +68,7 @@
     "customFields": "Custom Fields",
     "variables": "Variables",
     "savedFilters": "Saved Filters",
+    "moreSettings": "More settings",
     "users": "Users",
     "roles": "Roles",
     "sso": "SSO",
@@ -220,7 +221,7 @@
     "mcp": {
       "connecting": "Connecting an AI agent?",
       "title": "Direct your AI agent here",
-      "description": "Paste this URL into your MCP client (Claude.ai, ChatGPT, Cursor, …). You'll be sent back here to authorize the connection via OAuth."
+      "description": "Paste this URL into your MCP client (Claude.ai, ChatGPT, Cursor, …). You'll be sent back here to authorize the connection via OAuth. Prefer an API key instead? Send an X-API-Key header with ai:read/ai:write scope."
     },
     "progress": {
       "count": "{{current}} of {{total}}",
@@ -873,97 +874,18 @@
       }
     },
     "monitors": {
-      "CreateMonitorForm": {
-        "actions": {
-          "createMonitor": "Create Monitor",
-          "creating": "Creating..."
-        },
-        "errors": {
-          "createMonitor": "Failed to create monitor",
-          "generic": "An error occurred",
-          "nameRequired": "Name is required",
-          "targetRequired": "Target is required"
-        },
-        "fields": {
-          "expectedBanner": "Expected Banner (optional)",
-          "expectedBody": "Expected Body Content (optional)",
-          "expectedStatus": "Expected Status",
-          "expectedValue": "Expected Value (optional)",
-          "followRedirects": "Follow Redirects",
-          "hostname": "Hostname to Resolve",
-          "method": "Method",
-          "monitorType": "Monitor Type",
-          "nameserver": "Custom Nameserver (optional)",
-          "pingCount": "Ping Count",
-          "pollingInterval": "Polling Interval (seconds)",
-          "port": "Port",
-          "recordType": "Record Type",
-          "target": "Target (IP/Hostname)",
-          "timeout": "Timeout (seconds)",
-          "url": "URL",
-          "verifySsl": "Verify SSL"
-        },
-        "monitorTypes": {
-          "dnsCheck": {
-            "description": "Verify DNS records resolve correctly",
-            "label": "DNS Check"
-          },
-          "httpCheck": {
-            "description": "Monitor HTTP/HTTPS endpoints",
-            "label": "HTTP Check"
-          },
-          "icmpPing": {
-            "description": "Check if a host is reachable via ping",
-            "label": "ICMP Ping"
-          },
-          "tcpPort": {
-            "description": "Check if a TCP port is open and responding",
-            "label": "TCP Port"
-          }
-        },
-        "placeholders": {
-          "expectedBanner": "e.g. SSH-",
-          "expectedBody": "e.g. \"status\":\"ok\"",
-          "expectedValue": "e.g. 93.184.216.34",
-          "hostname": "example.com",
-          "name": "e.g. Production Web Server",
-          "nameserver": "8.8.8.8",
-          "target": "192.168.1.1 or server.example.com",
-          "url": "https://example.com/health"
-        },
-        "subtitle": "Set up a new monitoring check for a network target.",
-        "title": "Create Network Monitor"
-      },
       "MonitorDetailModal": {
         "actions": {
-          "cancelEdit": "Cancel Edit",
-          "checkNow": "Check Now",
-          "deleteMonitor": "Delete monitor",
-          "deleting": "Deleting...",
-          "yesDelete": "Yes, delete"
-        },
-        "alertRules": {
-          "disabled": "(disabled)",
-          "title": "Alert Rules"
+          "checkNow": "Check Now"
         },
         "consecutiveFailures": "{{count}} consecutive failure",
         "consecutiveFailures_plural": "{{count}} consecutive failures",
-        "delete": {
-          "confirmShort": "Are you sure?"
-        },
         "errors": {
-          "deleteMonitor": "Failed to delete monitor",
           "generic": "An error occurred",
           "loadDetails": "Failed to load monitor details",
-          "triggerCheck": "Failed to trigger check",
-          "updateMonitor": "Failed to update monitor"
+          "triggerCheck": "Failed to trigger check"
         },
         "fallbackTitle": "Monitor",
-        "fields": {
-          "interval": "Interval (s)",
-          "timeout": "Timeout (s)",
-          "target": "Target URL"
-        },
         "labels": {
           "lastChecked": "Last checked: {{time}}",
           "response": "Response: {{response}}",
@@ -991,8 +913,6 @@
           "icmpPing": "ICMP Ping",
           "tcpPort": "TCP Port"
         },
-        "targetResetNote": "Changing the URL resets the TLS observation.",
-        "saved": "Monitor updated",
         "certificate": {
           "title": "Certificate",
           "issuer": "Issuer",
@@ -1004,27 +924,22 @@
             "handshakeFailed": "Handshake failed",
             "notTls": "No TLS"
           }
-        }
+        },
+        "openMonitor": "Open the monitor for this check",
+        "notConverted": "Review conversion on the Results tab."
       },
       "NetworkMonitorList": {
         "actions": {
-          "addMonitor": "Add Monitor",
-          "deleteMonitor": "Delete monitor",
           "runCheckNow": "Run check now",
-          "viewDetails": "View details"
+          "viewDetails": "View details",
+          "newCheck": "New check"
         },
         "assetFilter": "Filtering monitors to the selected asset.",
-        "delete": {
-          "confirmLabel": "Delete Monitor",
-          "message": "Are you sure you want to delete this monitor? This will also remove all results and alert rules. This action cannot be undone.",
-          "title": "Delete Network Monitor"
-        },
         "empty": {
-          "action": "Create one now.",
-          "prefix": "No network monitors configured."
+          "action": "Create a monitor.",
+          "prefix": "No network checks yet."
         },
         "errors": {
-          "deleteMonitor": "Failed to delete monitor",
           "fetchMonitors": "Failed to fetch monitors",
           "generic": "An error occurred",
           "triggerCheck": "Failed to trigger check"
@@ -1037,11 +952,13 @@
           "interval": "Interval",
           "lastChecked": "Last Checked",
           "response": "Response",
-          "target": "Target"
+          "target": "Target",
+          "monitor": "Monitor",
+          "openMonitor": "Open monitor"
         },
         "loading": "Loading monitors...",
         "messages": {
-          "monitorDeleted": "Monitor deleted"
+          "checkQueued": "Network check queued"
         },
         "status": {
           "degraded": "Degraded"
@@ -1058,6 +975,19 @@
           "httpCheck": "HTTP Check",
           "icmpPing": "ICMP Ping",
           "tcpPort": "TCP Port"
+        },
+        "notConverted": "Not converted"
+      },
+      "NetworkCheckConversionBanner": {
+        "pending": "{{count}} network checks need review.",
+        "review": "Review conversion",
+        "title": "Network check conversion",
+        "convert": "Convert {{count}}",
+        "converted": "Converted {{count}} network checks",
+        "failed": "Could not convert network checks",
+        "outcome": {
+          "convertible": "Convertible",
+          "unconvertible": "Cannot convert"
         }
       }
     },
@@ -1846,7 +1776,7 @@
         "configureMonitoring": "Configure Monitoring",
         "pauseSnmpPolling": "Pause SNMP polling",
         "resumeSnmpPolling": "Resume SNMP polling",
-        "disableAllActiveMonitoring": "Disable all active monitoring for this asset",
+        "disableSnmpMonitoring": "Disable SNMP monitoring",
         "needsOrgSelection": "Network monitoring assets are scoped to a single organization.",
         "loadingAssets": "Loading monitoring assets...",
         "showingAllDiscoveredAssets": "Showing all discovered assets",
@@ -1942,11 +1872,12 @@
       "MonitoringPage": {
         "tabs": {
           "assets": "Assets",
-          "checks": "Network Checks",
-          "templates": "SNMP Templates"
+          "templates": "SNMP Templates",
+          "results": "Results"
         },
-        "title": "Monitoring",
-        "description": "SNMP polling and network checks. Discovery can feed into monitoring, but monitoring is managed here."
+        "title": "Network",
+        "description": "Assets, SNMP templates and network-check results. Checks are authored as monitors under Alerts.",
+        "newCheck": "New check"
       }
     },
     "fleet": {

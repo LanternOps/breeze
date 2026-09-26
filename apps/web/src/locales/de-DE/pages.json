@@ -31,7 +31,6 @@
     "alertsDetail": "Warnmeldungsdetails",
     "alertsMonitors": "Warnungen – Monitore",
     "alertsMonitorDetail": "Warnungen – Monitor",
-    "alertsRules": "Warnungen – Alte Regeln",
     "alerts": "Warnungen",
     "analytics": "Analysen",
     "approvals": "Genehmigungen",
@@ -79,7 +78,7 @@
     "integrationsWebhooks": "Webhooks",
     "login": "Anmelden",
     "logs": "Protokolle",
-    "monitoring": "Überwachung",
+    "monitoring": "Netzwerk",
     "oauthConsent": "Zugriff autorisieren",
     "onedrive": "OneDrive",
     "organizations": "Organisationen",
@@ -236,8 +235,33 @@
       "ticketChecklistTemplates": {
         "title": "Ticket-Checklisten-Vorlagen",
         "description": "Wiederverwendbare Schrittlisten, die Ihre Techniker auf jedes Ticket anwenden können."
+      },
+      "profile": {
+        "title": "Mein Profil"
+      },
+      "apiKeys": {
+        "title": "API-Schlüssel"
+      },
+      "partnerServicePrincipals": {
+        "title": "Dienstprinzipale"
+      },
+      "alertTemplates": {
+        "title": "Alarmvorlagen"
       }
-    }
+    },
+    "groups": {
+      "account": "Konto & Zugriff",
+      "billing": "Abrechnung & Service Desk",
+      "devices": "Geräte & Registrierung",
+      "data": "Automatisierung & Daten",
+      "ai": "KI",
+      "integrations": "Integrationen"
+    },
+    "search": {
+      "label": "Einstellungen durchsuchen",
+      "placeholder": "Einstellungen durchsuchen…"
+    },
+    "noResults": "Keine Einstellungen entsprechen Ihrer Suche."
   },
   "settingsBillingPage": {
     "heading": "Abrechnungseinstellungen",

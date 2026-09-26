@@ -1,5 +1,5 @@
 import DeliveryRuleSetPreview from './delivery/DeliveryRuleSetPreview';
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import AlertsTabStrip from './AlertsTabStrip';
 import type { NotificationChannel } from './NotificationChannelList';
@@ -21,7 +21,10 @@ export default function DeliveryPage() {
   const routing = useDeliveryResource<RoutingRule>(`/alerts/delivery/rails?rail=routing${suffix}`);
   const policies = useDeliveryResource<EscalationPolicy>(`/alerts/delivery/rails?rail=escalation${suffix}`);
   const onUnauthorized = useCallback(() => { void navigateTo('/login', { replace: true }); }, []);
-  const onChanged = async () => { channels.reload(); routing.reload(); policies.reload(); };
+  // Bumped whenever a channel/routing rule/escalation policy is created or edited so the
+  // "Test this rule set" preview below re-resolves instead of showing a stale answer (#6497 G1-3).
+  const [rulesVersion, setRulesVersion] = useState(0);
+  const onChanged = async () => { channels.reload(); routing.reload(); policies.reload(); setRulesVersion(v => v + 1); };
   const choices = [...channels.data.map(({ id, name, type, enabled }) => ({ id, name, type, enabled })), ...channels.inherited];
   const props = { currentOrgId, isPartnerScope, defaultOwnerScope, onChanged, onUnauthorized };
   const state = (resource: { status: string; reload: () => void }, key: string) => resource.status === 'error'
@@ -41,7 +44,7 @@ export default function DeliveryPage() {
     {state(routing, 'routing')}{state(policies, 'escalation')}
     {channels.status === 'success' && routing.status === 'success' && policies.status === 'success' &&
       <RoutingSection {...props} channels={choices} rules={routing.data} policies={policies.data} />}
-    <DeliveryRuleSetPreview orgId={currentOrgId} />
+    <DeliveryRuleSetPreview orgId={currentOrgId} refreshToken={rulesVersion} />
     {channels.status === 'success' && policies.status === 'success' &&
       <EscalationPoliciesSection {...props} channels={choices} policies={policies.data} />}
   </div>;

@@ -1,5 +1,42 @@
 import { z } from 'zod';
 
+/**
+ * A `z.coerce.date()` field that reports a plain "<field> is required" when
+ * the value is missing, instead of zod v4's self-contradictory "Expected
+ * date, received Date" (paper cut G2-4, #6497 — `new Date(undefined)` coerces
+ * to an Invalid Date rather than throwing, so bare `z.coerce.date()` never
+ * gets the chance to say the field is absent). Duplicated from
+ * `packages/shared/src/validators/timeEntries.ts` (small, single-file helper).
+ */
+function requiredDate(fieldName: string) {
+  return z.any().transform((val, ctx) => {
+    // `z.coerce.date()` runs `new Date(val)`, and `new Date(null)`,
+    // `new Date(false)`, and `new Date(0)` all evaluate to a "valid"
+    // 1970-01-01 epoch Date rather than throwing — so a `null`/boolean/`0`
+    // sentinel for "not set" would otherwise sail through coercion and
+    // silently create a ~56-year-long time entry instead of being rejected
+    // the same way an omitted field is. Reject every non-date-like input
+    // shape up front; only strings, finite numbers, and Date instances are
+    // allowed to reach coercion.
+    if (
+      val === undefined ||
+      val === null ||
+      typeof val === 'boolean' ||
+      val === 0 ||
+      !(typeof val === 'string' || (typeof val === 'number' && Number.isFinite(val)) || val instanceof Date)
+    ) {
+      ctx.addIssue({ code: 'custom', message: `${fieldName} is required` });
+      return z.NEVER;
+    }
+    const parsed = z.coerce.date().safeParse(val);
+    if (!parsed.success) {
+      ctx.addIssue({ code: 'custom', message: `${fieldName} must be a valid date` });
+      return z.NEVER;
+    }
+    return parsed.data;
+  });
+}
+
 /** Body of POST /office-addin/auth/exchange (spec §9). */
 export const exchangeSchema = z.object({
   /** Entra ID access token from Office SSO / NAA. */
@@ -111,8 +148,8 @@ export const addinStopTimerSchema = z.object({
 export const addinLogTimeSchema = z
   .object({
     ticketId: z.string().uuid(),
-    startedAt: z.coerce.date(),
-    endedAt: z.coerce.date(),
+    startedAt: requiredDate('startedAt'),
+    endedAt: requiredDate('endedAt'),
     description: z.string().min(1).max(10_000),
     isBillable: z.boolean().optional(),
     /**

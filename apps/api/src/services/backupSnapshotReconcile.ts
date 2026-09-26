@@ -12,7 +12,7 @@ import {
   backupSnapshotManifestKey,
   backupSnapshotRootPrefix,
   fetchBackupObjectText,
-  listBackupObjectsUnderPrefix,
+  iterateBackupObjectsUnderPrefix,
 } from './backupSnapshotStorage';
 
 /**
@@ -349,25 +349,35 @@ function coarseStorageIdentity(provider: string, providerConfig: Record<string, 
  * an in-flight or abandoned upload, never an adoptable snapshot — the manifest
  * is written last, so its presence is the agent's own completion marker (the
  * same signal the GC mark phase keys on).
+ *
+ * #6843: folds a STREAMED destination listing directly into this map, one
+ * page at a time — never materializes the whole `snapshots/` root into an
+ * array. A customer bucket can hold millions of objects (only a tiny fraction
+ * of which are `manifest.json` keys), and the pre-#6843 shape
+ * (`listBackupObjectsUnderPrefix`, the array collector) held that full
+ * listing in memory on this operator-triggered path — the same class of
+ * allocation GC's sweep removed in #6834.
  */
-function extractManifestBearingSnapshots(
-  listing: { key: string; lastModified: Date | null }[]
-): Map<string, Date | null> {
+async function extractManifestBearingSnapshots(
+  pages: AsyncIterable<{ key: string; lastModified: Date | null }[]>
+): Promise<Map<string, Date | null>> {
   const rootPrefix = `${BACKUP_SNAPSHOT_ROOT_DIR}/`;
   const manifestSuffix = `/${BACKUP_SNAPSHOT_MANIFEST_KEY}`;
   const found = new Map<string, Date | null>();
 
-  for (const object of listing) {
-    if (!object.key.startsWith(rootPrefix) || !object.key.endsWith(manifestSuffix)) {
-      continue;
+  for await (const page of pages) {
+    for (const object of page) {
+      if (!object.key.startsWith(rootPrefix) || !object.key.endsWith(manifestSuffix)) {
+        continue;
+      }
+      const snapshotId = object.key.slice(rootPrefix.length, object.key.length - manifestSuffix.length);
+      // Only a DIRECT child of snapshots/ is a snapshot root; a nested
+      // `manifest.json` under files/ belongs to the customer's own data.
+      if (!snapshotId || snapshotId.includes('/')) {
+        continue;
+      }
+      found.set(snapshotId, object.lastModified);
     }
-    const snapshotId = object.key.slice(rootPrefix.length, object.key.length - manifestSuffix.length);
-    // Only a DIRECT child of snapshots/ is a snapshot root; a nested
-    // `manifest.json` under files/ belongs to the customer's own data.
-    if (!snapshotId || snapshotId.includes('/')) {
-      continue;
-    }
-    found.set(snapshotId, object.lastModified);
   }
   return found;
 }
@@ -721,13 +731,13 @@ export async function reconcileOrphanedBackupSnapshots(params: {
     );
   }
 
-  let listing;
+  let storageSnapshots: Map<string, Date | null>;
   try {
-    listing = await listBackupObjectsUnderPrefix({
+    storageSnapshots = await extractManifestBearingSnapshots(iterateBackupObjectsUnderPrefix({
       provider: config.provider,
       providerConfig: config.providerConfig,
       prefix: backupSnapshotRootPrefix(),
-    });
+    }));
   } catch (error) {
     // A bad credential, a deleted bucket, or a provider 5xx is an upstream
     // failure, not a malformed request — and it is invisible unless it is
@@ -741,7 +751,6 @@ export async function reconcileOrphanedBackupSnapshots(params: {
     throw new BackupReconcileError('destination_unreadable', message);
   }
 
-  const storageSnapshots = extractManifestBearingSnapshots(listing);
   const snapshotIds = [...storageSnapshots.keys()];
 
   const providerConfigRecord = asRecord(config.providerConfig);

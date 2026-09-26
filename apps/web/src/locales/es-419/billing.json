@@ -1043,7 +1043,8 @@
         "readOnlyHint": "Quita y vuelve a agregar esta sección para cambiar la plantilla, la versión o las variables.",
         "updateToVersion": "Actualizar a v{{version}}",
         "saveVariables": "Guardar variables",
-        "unresolvedWarning": "Variables sin resolver (bloquearán el envío): {{names}}"
+        "unresolvedWarning": "Variables sin resolver (bloquearán el envío): {{names}}",
+        "placementHint": "Los clientes lo ven después de los totales, contraído hasta que lo abren. En el PDF aparece después del precio."
       },
       "coverPage": {
         "title": "Portada",
@@ -1446,6 +1447,18 @@
         "unavailable": "Archivo del acuerdo no disponible",
         "versionFooter": "{{name}} — versión {{version}}"
       },
+      "agreements": {
+        "heading": "Acuerdos",
+        "termsTitle": "Términos y condiciones",
+        "read": "Leer",
+        "hide": "Ocultar",
+        "readTime": "~{{minutes}} min de lectura",
+        "sectionsReadTime_one": "{{count}} sección · ~{{minutes}} min de lectura",
+        "sectionsReadTime_other": "{{count}} secciones · ~{{minutes}} min de lectura",
+        "pdfDocument": "Documento PDF",
+        "unavailable": "No disponible",
+        "untitled": "Acuerdo"
+      },
       "draft": "Borrador",
       "empty": "Esta propuesta aún no tiene ningún contenido.",
       "imageUnavailable": "Imagen no disponible",
@@ -1473,7 +1486,6 @@
         "tax": "Impuesto",
         "unitPrice": "Precio unitario"
       },
-      "terms": "Términos",
       "totals": {
         "annualRecurring": "Recurrente anual",
         "depositDue": "Depósito adeudado",

@@ -12,6 +12,7 @@ const m = vi.hoisted(() => ({
   apply: vi.fn(),
   lifecycle: vi.fn(() => true),
   prerequisites: vi.fn(),
+  networkMissing: vi.fn(), networkPreview: vi.fn(), networkLoad: vi.fn(), networkAdopt: vi.fn(),
   get: vi.fn(),
   setex: vi.fn(),
   add: vi.fn(),
@@ -38,6 +39,12 @@ vi.mock('../../../db', () => ({
   // The conversion routes are self-managed (D30): pre-transaction reads take
   // the caller's own context, and only reuse one when it is already open.
   getCurrentDbAccessContext: m.currentContext
+}));
+vi.mock('./networkChecks', () => ({
+  missingNetworkCheckPrerequisites: m.networkMissing,
+  previewNetworkChecksInTx: m.networkPreview,
+  loadPendingNetworkChecks: m.networkLoad,
+  adoptNetworkChecksInTx: m.networkAdopt,
 }));
 vi.mock('./previewScope', () => ({
   authorizePreview: m.authorize,
@@ -77,8 +84,8 @@ vi.mock('./lifecycle', () => ({ isRevertAvailable: m.lifecycle, findLiveTargetDe
 vi.mock('../monitorService', () => ({ createMonitorDefinition: vi.fn(), deleteMonitorDefinition: vi.fn() }));
 vi.mock('../../alertCooldown', () => ({ rekeyConfigPolicyCooldowns: vi.fn(), rekeyCooldownsBackToConfigPolicy: vi.fn() }));
 import { rekeyConfigPolicyCooldowns, rekeyCooldownsBackToConfigPolicy } from '../../alertCooldown';
-import { buildPolicyConversionPreview, previewPolicyConversion, convertPolicy, retireSource, revertConversion, convertPartnerLegacy, partnerPreviewHash, previewPartnerConversion, previewTemplateGroup, convertTemplateGroup, rekeyCommittedCooldowns } from './convert';
-import { alertTemplates, alertRules, configPolicyMonitors, monitorConversions, monitorConversionOutputs, organizations, sites, partners } from '../../../db/schema';
+import { inCallerTransaction, buildPolicyConversionPreview, previewPolicyConversion, convertPolicy, retireSource, revertConversion, convertPartnerLegacy, partnerPreviewHash, previewPartnerConversion, previewTemplateGroup, convertTemplateGroup, rekeyCommittedCooldowns } from './convert';
+import { alertTemplates, alertRules, configPolicyMonitors, monitorConversions, monitorConversionOutputs, networkMonitors, organizations, sites, partners } from '../../../db/schema';
 vi.mock('../../configurationPolicy', () => ({ createConfigPolicy: vi.fn(), assignPolicy: vi.fn(), addFeatureLink: vi.fn() }));
 import { createConfigPolicy, assignPolicy, addFeatureLink } from '../../configurationPolicy';
 import { createMonitorDefinition } from '../monitorService';
@@ -136,6 +143,10 @@ beforeEach(() => {
   m.devices.mockResolvedValue(['d']);
   m.freshness.mockResolvedValue('fresh');
   m.prerequisites.mockReturnValue([]);
+  m.networkMissing.mockReturnValue([]);
+  m.networkPreview.mockResolvedValue({ orgId: 'o', previewHash: 'network-hash', items: [] });
+  m.networkLoad.mockResolvedValue({ rows: [{ id: 'network' }] });
+  m.networkAdopt.mockResolvedValue({ conversionIds: ['network-conversion'], retired: 0, monitorsCreated: 1, policyId: 'network-policy' });
   m.equivalence.mockResolvedValue({
     devicesChecked: 1,
     deltas: []
@@ -245,6 +256,10 @@ it('blocks missing prerequisites and unconverted parents without applying a prop
     missingPrerequisites: ['missing']
   });
   m.prerequisites.mockReturnValue([]);
+  m.networkMissing.mockReturnValue([]);
+  m.networkPreview.mockResolvedValue({ orgId: 'o', previewHash: 'network-hash', items: [] });
+  m.networkLoad.mockResolvedValue({ rows: [{ id: 'network' }] });
+  m.networkAdopt.mockResolvedValue({ conversionIds: ['network-conversion'], retired: 0, monitorsCreated: 1, policyId: 'network-policy' });
   m.sources.mockResolvedValue({
     ...sources,
     parentUnconverted: true
@@ -463,6 +478,50 @@ it('records an operator retirement with original source state and no outputs', a
   await expect(retireSource('alert_templates', 'source', 'operator', auth)).resolves.toEqual({ conversionId: 'ledger' });
   expect(writes.find(w => w.table === monitorConversions)?.values).toMatchObject({ sourceId: 'source', convertedBy: 'u', sourceState: { source: template } });
   expect(writes.find(w => w.table === alertTemplates)?.values).toMatchObject({ retiredReason: 'operator' });
+});
+const networkSource = {
+  id: 'network-source', orgId: 'o', partnerId: null, name: 'Edge check', monitorType: 'http_check',
+  target: 'https://example.com', config: {}, pollingInterval: 60, timeout: 10,
+  assetId: null, siteId: null, isActive: true, retiredAt: null, retiredReason: null, managedByMonitorId: null,
+};
+it('dispatches network retirement through the caller-scoped transaction and records a named snapshot', async () => {
+  const { tx, writes } = mutationTx([[networkSource], [{ partnerId: 'p' }], [networkSource], [], []]);
+  m.transaction.mockImplementationOnce(async fn => fn(tx));
+  await expect(retireSource('network_monitors', networkSource.id, 'operator', auth)).resolves.toEqual({ conversionId: 'ledger' });
+  expect(m.context).toHaveBeenLastCalledWith({}, expect.any(Function), { isolationLevel: 'serializable' });
+  expect(tx.execute).toHaveBeenCalledOnce();
+  expect(writes.find(w => w.table === monitorConversions)?.values).toMatchObject({
+    sourceTable: 'network_monitors', sourceId: networkSource.id, convertedBy: 'u',
+    sourceState: { name: 'Edge check' }, networkSourceSnapshot: { name: 'Edge check', siteId: null, rules: [] },
+  });
+  expect(writes.find(w => w.table === networkMonitors)?.values).toMatchObject({ retiredReason: 'operator', isActive: false });
+  expect(writes.some(w => w.table === monitorConversionOutputs)).toBe(false);
+});
+it('refuses an invisible network retirement before any ledger or source mutation', async () => {
+  const { tx } = mutationTx([[]]);
+  m.transaction.mockImplementationOnce(async fn => fn(tx));
+  await expect(retireSource('network_monitors', 'foreign', 'operator', auth)).rejects.toMatchObject({ code: 'source_not_found', status: 404 });
+  expect(tx.insert).not.toHaveBeenCalled();
+  expect(tx.update).not.toHaveBeenCalled();
+  expect(tx.execute).not.toHaveBeenCalled();
+});
+it('dispatches network revert before generic source loading rejects a retained network source', async () => {
+  const { id, orgId, partnerId, managedByMonitorId, ...snapshot } = networkSource;
+  const ledger = {
+    id: 'ledger', orgId, partnerId, sourceTable: 'network_monitors', sourceId: id,
+    policyId: null, sourceState: { name: networkSource.name }, networkSourceSnapshot: { ...snapshot, rules: [] }, revertedAt: null,
+  };
+  const { tx, writes } = mutationTx([[ledger], [{ partnerId: 'p' }], [ledger], [],
+    [{ ...networkSource, retiredAt: new Date(), retiredReason: 'operator', isActive: false }], [ledger], []]);
+  m.transaction.mockImplementationOnce(async fn => fn(tx));
+  await expect(revertConversion('ledger', auth)).resolves.toBeUndefined();
+  expect(m.context).toHaveBeenLastCalledWith({}, expect.any(Function), { isolationLevel: 'serializable' });
+  expect(tx.execute).toHaveBeenCalledOnce();
+  expect(writes.find(w => w.table === networkMonitors)?.values).toMatchObject({
+    name: networkSource.name, isActive: true, managedByMonitorId: null, retiredAt: null, retiredReason: null,
+  });
+  expect(writes.at(-1)).toMatchObject({ table: monitorConversions, values: { revertedAt: expect.any(Date) } });
+  expect(tx.insert).not.toHaveBeenCalled();
 });
 it('revert refuses an invisible source without mutating the visible ledger', async () => {
   const { tx } = mutationTx([[{ id: 'ledger', orgId: 'o', partnerId: null, sourceTable: 'alert_templates', sourceId: 'foreign', sourceState: {}, revertedAt: null }], []]);
@@ -808,6 +867,43 @@ it('rechecks retirement after a serialization race and reports already_converted
   await expect(retireSource('alert_templates','source','operator',auth)).rejects.toMatchObject({code:'already_converted'});
   expect(tx.insert).not.toHaveBeenCalled();
 });
+it('a partial sourceIds conversion is re-validated against its own equivalence proof, not the full-set preview', async () => {
+  // Two convertible inline rules. The full-set preview (used to mint
+  // previewHash) is equivalence-clean, but a subset proposal containing only
+  // 'r' produces its own (mocked) equivalence proof with a real delta — the
+  // full-set proof never checked this exact combination of applied sources.
+  m.sources.mockResolvedValue({ ...sources, inlineRules: [rule, { ...rule, id: 'second' }] });
+  m.equivalence.mockImplementation(async (proposal: { bySource: unknown[] }) => (
+    proposal.bySource.length >= 2
+      ? { devicesChecked: 1, deltas: [] }
+      : { devicesChecked: 1, deltas: [{ deviceId: 'd', detail: 'monitor signature changes when only one source converts' }] }
+  ));
+  const preview = await buildPolicyConversionPreview('policy', { userId: 'u', auth });
+  expect(preview.equivalence.deltas).toEqual([]); // full-set proof is clean
+  const { tx } = mutationTx([[{ partnerId: 'p' }], [sources.policy], [], [], [], []]);
+  m.transaction.mockImplementationOnce(async fn => fn(tx));
+  await expect(convertPolicy('policy', preview.previewHash, auth, { sourceIds: ['r'] }))
+    .rejects.toMatchObject({ code: 'equivalence_delta', details: [{ deviceId: 'd', detail: 'monitor signature changes when only one source converts' }] });
+  expect(m.apply).not.toHaveBeenCalled();
+});
+it('a partial sourceIds conversion whose own subset proof is clean still commits', async () => {
+  // Same two-rule setup, but this time the subset proof (bySource.length === 1)
+  // is ALSO clean, proving the new re-validation does not block a legitimate
+  // partial conversion — only a subset with a real delta.
+  m.sources.mockResolvedValue({ ...sources, inlineRules: [rule, { ...rule, id: 'second' }] });
+  m.equivalence.mockResolvedValue({ devicesChecked: 1, deltas: [] });
+  const preview = await buildPolicyConversionPreview('policy', { userId: 'u', auth });
+  const { tx } = mutationTx([[{ partnerId: 'p' }], [sources.policy], [], [], [], []]);
+  m.transaction.mockImplementationOnce(async fn => fn(tx));
+  m.apply.mockResolvedValue({ conversionIds: ['ledger'], retired: 1, monitorsCreated: 1 });
+  await expect(convertPolicy('policy', preview.previewHash, auth, { sourceIds: ['r'] }))
+    .resolves.toEqual({ conversionIds: ['ledger'], retired: 1, monitorsCreated: 1 });
+  expect(m.equivalence).toHaveBeenCalledWith(
+    expect.objectContaining({ bySource: [expect.objectContaining({ sourceId: 'r' })] }),
+    expect.anything(), auth, undefined, tx,
+  );
+  expect(m.apply).toHaveBeenCalledWith(tx, expect.objectContaining({ bySource: [expect.objectContaining({ sourceId: 'r' })] }), auth);
+});
 it('a repeated policy confirmation checks visible completed sources before another ledger write',async()=>{
   const preview=await buildPolicyConversionPreview('policy',{userId:'u',auth});
   const completed={id:'ledger',sourceTable:'config_policy_alert_rules',sourceId:'r',previewHash:preview.previewHash};
@@ -815,4 +911,104 @@ it('a repeated policy confirmation checks visible completed sources before anoth
   m.transaction.mockImplementationOnce(async fn=>fn(tx));
   await expect(convertPolicy('policy',preview.previewHash,auth)).rejects.toMatchObject({code:'already_converted'});
   expect(m.apply).not.toHaveBeenCalled();expect(tx.insert).not.toHaveBeenCalled();
+});
+
+it('includes network refusals and convertible checks in interactive partner conversion', async () => {
+  const h = templateHarness([]); h.persisted().set(partners, [{ id: 'p' }]);
+  m.networkPreview.mockResolvedValue({ orgId: 'o', previewHash: 'network-hash', items: [
+    { sourceTable: 'network_monitors', sourceId: 'network', name: 'Ping', outcome: 'convertible', proposed: [], notes: [], openAlerts: 0 },
+    { sourceTable: 'network_monitors', sourceId: 'refusal', name: 'Latency', outcome: 'unconvertible', reason: 'unconvertible:network_predicate_unsupported', proposed: [], notes: [], openAlerts: 0 },
+  ] });
+  m.transaction.mockImplementationOnce(async fn => h.tx.transaction(fn));
+  const preview = await previewPartnerConversion('p', { ...auth, scope: 'partner', partnerId: 'p', partnerOrgAccess: 'all' });
+  expect(preview).toMatchObject({ rows: 3, convertible: 1, unconvertible: [
+    { sourceTable: 'alert_templates' }, { sourceTable: 'network_monitors', sourceId: 'refusal' },
+  ] });
+  expect(m.networkAdopt).toHaveBeenCalledWith('o', preview.previewHash, expect.anything(), expect.anything(), [{ id: 'network' }], h.tx);
+});
+
+it('blocks missing-capability network checks separately and invalidates confirmation on recovery', async () => {
+  const h = templateHarness([]); h.persisted().set(partners, [{ id: 'p' }]);
+  const partnerAuth = { ...auth, scope: 'partner' as const, partnerId: 'p', partnerOrgAccess: 'all' as const };
+  m.networkMissing.mockReturnValue(['capability']);
+  m.networkPreview.mockResolvedValue({ orgId: 'o', previewHash: '', items: [], blockedBy: 'prerequisite_missing', missingPrerequisites: ['capability'] });
+  m.transaction.mockImplementationOnce(async fn => h.tx.transaction(fn));
+  const preview = await previewPartnerConversion('p', partnerAuth);
+  expect(preview).toMatchObject({ blocked: [{ orgId: 'o', sourceTable: 'network_monitors', reason: 'prerequisite_missing', missingPrerequisites: ['capability'] }] });
+  expect(m.networkAdopt).not.toHaveBeenCalled();
+  m.networkMissing.mockReturnValue([]);
+  m.transaction.mockImplementationOnce(async fn => h.tx.transaction(fn));
+  await expect(convertPartnerLegacy('p', preview.previewHash, partnerAuth)).rejects.toMatchObject({ code: 'preview_stale' });
+  expect(m.networkAdopt).not.toHaveBeenCalled();
+});
+
+it('retired-runtime partner selection never reads or stages network sources', async () => {
+  const h = templateHarness([]); h.persisted().set(partners, [{ id: 'p' }]);
+  m.transaction.mockImplementationOnce(async fn => h.tx.transaction(fn));
+  await previewPartnerConversion('p', { ...auth, scope: 'partner', partnerId: 'p', partnerOrgAccess: 'all' }, { sources: 'retired_runtime_only' });
+  expect(m.networkPreview).not.toHaveBeenCalled();
+  expect(m.networkAdopt).not.toHaveBeenCalled();
+});
+
+it('commits other partner sources when network capability is missing', async () => {
+  const h = templateHarness([templateRule('r1', 'org', 'o')]); h.persisted().set(partners, [{ id: 'p' }]);
+  const partnerAuth = { ...auth, scope: 'partner' as const, partnerId: 'p', partnerOrgAccess: 'all' as const };
+  m.networkMissing.mockReturnValue(['capability']);
+  m.networkPreview.mockResolvedValue({ orgId: 'o', previewHash: '', items: [], blockedBy: 'prerequisite_missing', missingPrerequisites: ['capability'] });
+  m.transaction.mockImplementationOnce(async fn => h.tx.transaction(fn));
+  const preview = await previewPartnerConversion('p', partnerAuth);
+  m.transaction.mockImplementationOnce(async fn => h.tx.transaction(fn));
+  expect(await convertPartnerLegacy('p', preview.previewHash, partnerAuth)).toMatchObject({
+    converted: 1, unconvertible: 0, blocked: [{ sourceTable: 'network_monitors', reason: 'prerequisite_missing' }],
+  });
+  expect(h.persisted().get(monitorConversions)).toHaveLength(1);
+  expect(m.networkAdopt).not.toHaveBeenCalled();
+});
+
+it('binds source selection and capability to the complete partner hash', () => {
+  const parts = [{ sourceTable: 'network_monitors' as const, sourceId: 'o', inputHash: 'h', reason: null }];
+  expect(partnerPreviewHash('p', 'scope', parts, 'all')).not.toBe(partnerPreviewHash('p', 'scope', parts, 'retired_runtime_only'));
+  expect(partnerPreviewHash('p', 'scope', parts, 'all')).not.toBe(partnerPreviewHash('p', 'scope', parts, 'all', ['capability']));
+});
+
+it.each([false, true])('boot source selection skips a partner with network checks (mixed=%s)', async mixed => {
+  const h = templateHarness(mixed ? [templateRule('r1', 'org', 'o')] : []);
+  h.persisted().set(partners, [{ id: 'p' }]);
+  if (!mixed) h.persisted().set(alertTemplates, []);
+  const partnerAuth = { ...auth, scope: 'partner' as const, partnerId: 'p', partnerOrgAccess: 'all' as const };
+  const opts = { sources: 'retired_runtime_only' as const };
+  m.transaction.mockImplementationOnce(async fn => h.tx.transaction(fn));
+  const preview = await previewPartnerConversion('p', partnerAuth, opts);
+  m.transaction.mockImplementationOnce(async fn => h.tx.transaction(fn));
+  expect(await convertPartnerLegacy('p', preview.previewHash, partnerAuth, opts)).toMatchObject({ converted: mixed ? 1 : 0 });
+  expect(m.networkPreview).not.toHaveBeenCalled();
+  expect(m.networkLoad).not.toHaveBeenCalled();
+  expect(m.networkAdopt).not.toHaveBeenCalled();
+});
+
+it('interactive conversion adopts a network-only partner through the shared executor', async () => {
+  const h = templateHarness([]); h.persisted().set(partners, [{ id: 'p' }]); h.persisted().set(alertTemplates, []);
+  const partnerAuth = { ...auth, scope: 'partner' as const, partnerId: 'p', partnerOrgAccess: 'all' as const };
+  m.networkPreview.mockResolvedValue({ orgId: 'o', previewHash: 'network-hash', items: [
+    { sourceTable: 'network_monitors', sourceId: 'network', name: 'Ping', outcome: 'convertible', proposed: [], notes: [], openAlerts: 0 },
+  ] });
+  m.transaction.mockImplementationOnce(async fn => h.tx.transaction(fn));
+  const preview = await previewPartnerConversion('p', partnerAuth);
+  m.transaction.mockImplementationOnce(async fn => h.tx.transaction(fn));
+  expect(await convertPartnerLegacy('p', preview.previewHash, partnerAuth)).toEqual({ policies: 1, converted: 1, unconvertible: 0 });
+  expect(m.networkAdopt).toHaveBeenLastCalledWith('o', preview.previewHash, partnerAuth, expect.anything(), [{ id: 'network' }], h.tx);
+});
+
+it.each(['40001', '40P01'])('retries an aborted caller transaction after PostgreSQL %s', async code => {
+  m.context.mockRejectedValueOnce(new Error('wrapped transaction conflict', { cause: { code } }));
+  const work = vi.fn(async () => 'reverted');
+  await expect(inCallerTransaction(auth, work)).resolves.toBe('reverted');
+  expect(m.context).toHaveBeenCalledTimes(2);
+  expect(work).toHaveBeenCalledTimes(1);
+});
+
+it('maps exhausted deadlock retries to the existing stale-preview conflict', async () => {
+  m.context.mockRejectedValueOnce({ code: '40P01' }).mockRejectedValueOnce({ code: '40P01' });
+  await expect(inCallerTransaction(auth, vi.fn())).rejects.toMatchObject({ code: 'preview_stale' });
+  expect(m.context).toHaveBeenCalledTimes(2);
 });

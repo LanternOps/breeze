@@ -8,6 +8,7 @@ import {
   TrendingUp
 } from 'lucide-react';
 import { cn, widthPercentClass } from '@/lib/utils';
+import { formatDate } from '@/lib/dateTimeFormat';
 import BackupHealthOverview from './BackupHealthOverview';
 import BackupJobList from './BackupJobList';
 import {
@@ -117,9 +118,9 @@ function UsageHistoryChart({ points }: { points: UsageHistoryPoint[] }) {
             {t('backupOverviewContent.total')} </span>
         </div>
         <div className="flex items-center justify-between text-muted-foreground">
-          <span>{new Date(first.timestamp).toLocaleDateString()}</span>
+          <span>{formatDate(first.timestamp, { year: 'numeric', month: 'short', day: 'numeric' })}</span>
           <span className="font-medium text-foreground">{formatBytes(last.totalBytes)}</span>
-          <span>{new Date(last.timestamp).toLocaleDateString()}</span>
+          <span>{formatDate(last.timestamp, { year: 'numeric', month: 'short', day: 'numeric' })}</span>
         </div>
       </div>
     </div>
@@ -338,17 +339,28 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
               storageProviders.map((provider) => {
                 const percent = resolveProviderPercent(provider);
                 const color = resolveProviderColor(provider.name);
+                const used = typeof provider.usedBytes === 'number'
+                  ? formatBytes(provider.usedBytes)
+                  : provider.used ?? '--';
+                // Only a provider with a known capacity gets a "used / total"
+                // bar; a usage-only row (#2562) would otherwise render an
+                // empty bar that reads as "nothing stored".
+                const hasCapacity = provider.total != null || typeof provider.percent === 'number';
+                const key = provider.id ?? provider.name;
                 return (
-                  <div key={provider.id ?? provider.name} className="space-y-2">
+                  <div key={key} className="space-y-2">
                     <div className="flex items-center justify-between text-sm">
                       <span className="font-medium text-foreground">{provider.name}</span>
                       <span className="text-xs text-muted-foreground">
-                        {provider.used ?? '--'} / {provider.total ?? '--'}
+                        <span data-testid={`storage-provider-used-${key}`}>{used}</span>
+                        {hasCapacity ? ` / ${provider.total ?? '--'}` : null}
                       </span>
                     </div>
-                    <div className="h-2 w-full rounded-full bg-muted">
-                      <div className={cn('h-2 rounded-full', color, widthPercentClass(percent))} />
-                    </div>
+                    {hasCapacity ? (
+                      <div className="h-2 w-full rounded-full bg-muted">
+                        <div className={cn('h-2 rounded-full', color, widthPercentClass(percent))} />
+                      </div>
+                    ) : null}
                   </div>
                 );
               })

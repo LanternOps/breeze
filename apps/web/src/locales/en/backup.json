@@ -491,9 +491,9 @@
     "chooseFilesToRestoreForSelectiveRecoveries": "Choose files to restore for selective recoveries.",
     "fullRestoreSelectedSkipThisStepToContinue": "Full restore selected. Skip this step to continue.",
     "destination": "Destination",
-    "restoreToTheOriginalLocationOrProvideAn": "Restore to the original location or provide an alternate path.",
-    "originalLocation": "Original location",
-    "restoreFilesInPlace": "Restore files in place.",
+    "restoreToAStagingFolderOrProvideAn": "Restore to a staging folder on the device, or to a path you choose.",
+    "stagingFolder": "Staging folder on the device",
+    "stagingFolderHint": "Files go under the device's temp directory (breeze-restore); originals are never overwritten.",
     "alternatePath": "Alternate path",
     "alternatePathPlaceholder": "e.g. D:\\Restored or /var/restore",
     "alternatePathRequired": "Enter a destination path to continue.",
@@ -996,6 +996,11 @@
       "healthy": "Healthy",
       "warning": "Needs attention",
       "critical": "Critical",
+      "unknown": "Unknown"
+    },
+    "osType": {
+      "workstation": "Workstation",
+      "server": "Server",
       "unknown": "Unknown"
     },
     "sourceAll": "All sources",

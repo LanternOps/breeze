@@ -257,6 +257,29 @@ export const devices = pgTable('devices', {
   // never cleared on a dispatched-but-failed dance so a broken device is
   // handled by an operator, not an uninstall/reinstall retry loop.
   editionMigrationDispatchedAt: timestamp('edition_migration_dispatched_at', { withTimezone: true }),
+  // #6449 — why the server is withholding update offers from this device.
+  // NULL = offers flowing. 'edition_unconfirmed' = the artifact-edition gate
+  // (agentAcceptsServedEdition, #4072) refused. Written by the heartbeat ONLY
+  // on a state change; `since` is when the current episode began.
+  updateOfferWithheldReason: varchar('update_offer_withheld_reason', { length: 50 }),
+  updateOfferWithheldSince: timestamp('update_offer_withheld_since', { withTimezone: true }),
+  // #4073 — the agent self-update currently being attempted. Stamped by the
+  // WS `update_status` message the agent sends before EVERY attempt, cleared
+  // by the heartbeat once the reported version reaches the target. An open
+  // record that is old and still retrying is a stuck update
+  // (isAgentUpdateStuck in @breeze/shared) — detectable without logs.
+  updateAttemptTargetVersion: varchar('update_attempt_target_version', { length: 50 }),
+  updateAttemptStartedAt: timestamp('update_attempt_started_at', { withTimezone: true }),
+  updateAttemptLastAt: timestamp('update_attempt_last_at', { withTimezone: true }),
+  updateAttemptCount: integer('update_attempt_count'),
+  // #6925 — agent-reported Breeze Assist install problem. NULL = none reported
+  // (healthy, Assist off, or an agent too old to report). 'awaiting_server_offer'
+  // = enabled but not installed and the server sent no helper version;
+  // 'install_abandoned' = the agent gave up installing the offered version
+  // (#6927). Written by the heartbeat ONLY on a state change; `since` is when
+  // the current episode began.
+  helperInstallIssue: varchar('helper_install_issue', { length: 50 }),
+  helperInstallIssueSince: timestamp('helper_install_issue_since', { withTimezone: true }),
   // Enrollment idempotency (#2764): uninstall intent stamped by the agent's
   // graceful-uninstall notify path (Task 5/6); reaper decommissions once past
   // grace with no re-enrollment heartbeat. possibleReplacementOfDeviceId links
@@ -322,6 +345,13 @@ export const deviceHardware = pgTable('device_hardware', {
   motherboardProduct: varchar('motherboard_product', { length: 255 }),
   motherboardVersion: varchar('motherboard_version', { length: 255 }),
   biosVersion: varchar('bios_version', { length: 100 }),
+  // Memory summary (#5351). All NULL until an agent reports a valid `memory`
+  // block; `memoryObservedAt` is when one was last applied (updatedAt also
+  // advances when memory collection failed). See device_memory_modules.
+  memorySlotsTotal: integer('memory_slots_total'),
+  memoryMaxCapacityMb: integer('memory_max_capacity_mb'),
+  memorySoldered: boolean('memory_soldered'),
+  memoryObservedAt: timestamp('memory_observed_at'),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   partnerExportUpdatedAt: timestamp('partner_export_updated_at', { precision: 3 }).defaultNow().notNull()
 });
@@ -421,6 +451,41 @@ export const deviceDisks = pgTable('device_disks', {
   health: varchar('health', { length: 50 }).default('healthy'),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
+
+// Per-slot memory inventory (#5351). One row per physical slot, populated or
+// empty (populated = false). Synced by slotKey from the agent's hardware
+// report (services/inventoryChildSync.ts syncDeviceMemoryModules), so row ids
+// survive unchanged reports. Migration:
+// 2026-11-01-110000-device-memory-modules.sql, which also declares the
+// composite FK DEFERRABLE INITIALLY IMMEDIATE (drizzle's foreignKey() builder
+// has no deferrable option) and installs the partner-export material triggers.
+export const deviceMemoryModules = pgTable('device_memory_modules', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  deviceId: uuid('device_id').notNull().references(() => devices.id),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  slotKey: varchar('slot_key', { length: 160 }).notNull(),
+  slotIndex: integer('slot_index').notNull(),
+  locator: varchar('locator', { length: 128 }).notNull(),
+  bankLabel: varchar('bank_label', { length: 128 }),
+  populated: boolean('populated').notNull(),
+  capacityMb: integer('capacity_mb'),
+  memoryType: varchar('memory_type', { length: 32 }),
+  formFactor: varchar('form_factor', { length: 32 }),
+  speedMts: integer('speed_mts'),
+  configuredSpeedMts: integer('configured_speed_mts'),
+  manufacturer: varchar('manufacturer', { length: 128 }),
+  partNumber: varchar('part_number', { length: 128 }),
+  serialNumber: varchar('serial_number', { length: 128 }),
+  updatedAt: timestamp('updated_at').defaultNow().notNull()
+}, (table) => ({
+  deviceSlotKeyUnique: uniqueIndex('device_memory_modules_device_slot_key_uniq').on(table.deviceId, table.slotKey),
+  orgIdIdx: index('device_memory_modules_org_id_idx').on(table.orgId),
+  deviceOrgFk: foreignKey({
+    columns: [table.deviceId, table.orgId],
+    foreignColumns: [devices.id, devices.orgId],
+    name: 'device_memory_modules_device_org_fk',
+  }).onUpdate('cascade').onDelete('cascade'),
+}));
 
 export const deviceMetrics = pgTable('device_metrics', {
   deviceId: uuid('device_id').notNull().references(() => devices.id),

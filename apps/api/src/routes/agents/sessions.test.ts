@@ -36,6 +36,9 @@ vi.mock('../../services/auditEvents', () => ({
   writeAuditEvent: vi.fn(),
 }));
 
+const recordAgentIngestSubmission = vi.hoisted(() => vi.fn());
+vi.mock('../metrics', () => ({ recordAgentIngestSubmission }));
+
 vi.mock('../../services/eventBus', () => ({
   publishEvent: vi.fn().mockResolvedValue(undefined),
 }));
@@ -55,6 +58,7 @@ vi.mock('./helpers', () => ({
 import { db } from '../../db';
 import { sessionsRoutes } from './sessions';
 import { observeSessionPrincipal } from '../../services/callerVerification/loginObservation';
+import { writeAuditEvent } from '../../services/auditEvents';
 
 function mockDeviceLookup() {
   vi.mocked(db.select).mockReturnValueOnce({
@@ -218,5 +222,41 @@ describe('PUT /agents/:id/sessions', () => {
     const sessionUpdate = updatedValues.find((v) => 'idleMinutes' in v);
     expect(sessionUpdate).toBeDefined();
     expect(sessionUpdate.idleMinutes).toBeNull();
+  });
+
+  // #4340 — a per-report `agent.sessions.submit` audit was ~11% of audit_logs.
+  // The session history itself lives in device_sessions (loginAt/logoutAt per
+  // session), so a routine report is only counted, never audited.
+  it('does NOT audit a successful sessions report — counts it in the ingest metric', async () => {
+    mockDeviceLookup();
+    const res = await app.request(`/agents/${AGENT_ID}/sessions`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessions: [{ username: 'alice', sessionType: 'console', isActive: true }],
+        events: [{ type: 'login', username: 'alice', sessionType: 'console' }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(writeAuditEvent).not.toHaveBeenCalled();
+    expect(recordAgentIngestSubmission).toHaveBeenCalledTimes(1);
+    expect(recordAgentIngestSubmission).toHaveBeenCalledWith('sessions', 'success');
+  });
+
+  it('counts a failed session write as a failed ingest and still surfaces the error', async () => {
+    mockDeviceLookup();
+    vi.mocked(db.transaction).mockRejectedValueOnce(new Error('db down'));
+    app.onError((_err, c) => c.json({ error: 'boom' }, 500));
+
+    const res = await app.request(`/agents/${AGENT_ID}/sessions`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessions: [{ username: 'alice', sessionType: 'console', isActive: true }], events: [] }),
+    });
+
+    expect(res.status).toBe(500);
+    expect(recordAgentIngestSubmission).toHaveBeenCalledWith('sessions', 'failed');
+    expect(recordAgentIngestSubmission).not.toHaveBeenCalledWith('sessions', 'success');
   });
 });

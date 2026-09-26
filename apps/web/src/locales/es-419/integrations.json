@@ -6,6 +6,7 @@
     "loading": "Cargando la conexión de lectura de Microsoft Graph del cliente.",
     "unavailable": "Los detalles de la conexión no están disponibles.",
     "onboardingUnavailable": "La incorporación de lectura de Microsoft Graph del cliente no está habilitada para esta organización.",
+    "notAvailableOnInstance": "Aún no está disponible en esta instancia de Breeze.",
     "callback": {
       "active": "Se completó el consentimiento de Microsoft. El estado actualizado de la conexión se muestra a continuación.",
       "degraded": "Se completó el consentimiento de Microsoft, pero la conexión requiere atención. Los detalles actualizados se muestran a continuación."
@@ -109,6 +110,7 @@
     "loading": "Cargando la conexión de acciones de Microsoft Graph del cliente.",
     "unavailable": "Los detalles de la conexión no están disponibles.",
     "onboardingUnavailable": "La incorporación de acciones de Microsoft Graph del cliente no está habilitada para esta organización.",
+    "notAvailableOnInstance": "Aún no está disponible en esta instancia de Breeze.",
     "callback": {
       "active": "Se completó el consentimiento de Microsoft. El estado actualizado de la conexión se muestra a continuación.",
       "degraded": "Se completó el consentimiento de Microsoft, pero la conexión requiere atención. Los detalles actualizados se muestran a continuación."
@@ -410,7 +412,7 @@
     "notifications": "Notificaciones",
     "security": "Seguridad",
     "monitoring": "Monitoreo",
-    "identity": "Identidad",
+    "cloudTenants": "Inquilinos en la nube",
     "distributors": "Distribuidores",
     "accounting": "Contabilidad",
     "unifi": "UniFi",
@@ -440,7 +442,7 @@
     "providerLabel": "Proveedor",
     "cove": "Cove Data Protection",
     "nameLabel": "Nombre de la conexión",
-    "namePlaceholder": "OliveTech Cove",
+    "namePlaceholder": "Cuenta principal de Cove",
     "partnerNameLabel": "Nombre de partner en Cove",
     "usernameLabel": "Usuario",
     "passwordLabel": "Contraseña",

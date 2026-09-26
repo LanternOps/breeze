@@ -31,7 +31,6 @@
     "alertsDetail": "Alert Details",
     "alertsMonitors": "Alerts – Monitors",
     "alertsMonitorDetail": "Alerts – Monitor",
-    "alertsRules": "Alerts – Legacy rules",
     "alerts": "Alerts",
     "analytics": "Analytics",
     "approvals": "Approvals",
@@ -79,7 +78,7 @@
     "integrationsWebhooks": "Webhooks",
     "login": "Sign In",
     "logs": "Logs",
-    "monitoring": "Monitoring",
+    "monitoring": "Network",
     "oauthConsent": "Authorize access",
     "onedrive": "OneDrive",
     "organizations": "Organizations",
@@ -236,8 +235,33 @@
       "ticketChecklistTemplates": {
         "title": "Ticket checklist templates",
         "description": "Reusable step lists your technicians can apply to any ticket."
+      },
+      "profile": {
+        "title": "My profile"
+      },
+      "apiKeys": {
+        "title": "API keys"
+      },
+      "partnerServicePrincipals": {
+        "title": "Service principals"
+      },
+      "alertTemplates": {
+        "title": "Alert templates"
       }
-    }
+    },
+    "groups": {
+      "account": "Account & Access",
+      "billing": "Billing & Service Desk",
+      "devices": "Devices & Enrollment",
+      "data": "Automation & Data",
+      "ai": "AI",
+      "integrations": "Integrations"
+    },
+    "search": {
+      "label": "Search settings",
+      "placeholder": "Search settings…"
+    },
+    "noResults": "No settings match your search."
   },
   "settingsBillingPage": {
     "heading": "Billing settings",

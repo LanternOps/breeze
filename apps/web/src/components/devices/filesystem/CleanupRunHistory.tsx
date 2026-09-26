@@ -15,7 +15,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertCircle, History, Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { formatNumber } from '@/lib/i18n/format';
 import { fetchWithAuth } from '@/stores/auth';
 import '@/lib/i18n';
 import { formatBytes, formatDateTime } from './filesystemTabUtils';
@@ -43,10 +42,10 @@ export type CleanupRunListItem = {
 };
 
 const statusClasses: Record<string, string> = {
-  previewed: 'bg-gray-500/15 text-gray-700 border-gray-500/30',
-  running: 'bg-blue-500/15 text-blue-700 border-blue-500/30',
-  executed: 'bg-green-500/15 text-green-700 border-green-500/30',
-  failed: 'bg-red-500/15 text-red-700 border-red-500/30',
+  previewed: 'bg-gray-500/15 text-gray-700 border-gray-500/30 dark:text-gray-300',
+  running: 'bg-blue-500/15 text-blue-700 border-blue-500/30 dark:text-blue-300',
+  executed: 'bg-green-500/15 text-green-700 border-green-500/30 dark:text-green-300',
+  failed: 'bg-red-500/15 text-red-700 border-red-500/30 dark:text-red-300',
 };
 
 function isAbort(error: unknown): boolean {
@@ -176,7 +175,9 @@ export default function CleanupRunHistory({ deviceId, refreshToken }: Props) {
                 {run.estimatedBytes > 0
                   ? ` · ${t('deviceFilesystemTab.historyReclaimable', { size: formatBytes(run.estimatedBytes) })}`
                   : ''}
-                {run.actionCount > 0 ? ` · ${formatNumber(run.actionCount)}` : ''}
+                {run.actionCount > 0
+                  ? ` · ${t('deviceFilesystemTab.historyActions', { count: run.actionCount })}`
+                  : ''}
               </p>
               {run.error && <p className="text-xs text-amber-700">{run.error}</p>}
             </div>

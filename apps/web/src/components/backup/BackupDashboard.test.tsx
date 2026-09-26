@@ -122,6 +122,59 @@ describe('BackupDashboard usage history chart', () => {
     expect(await screen.findByLabelText('Storage usage trend by provider over time')).not.toBeNull();
     expect(screen.getByText(/Chunk retry exceeded threshold/i)).toBeTruthy();
     expect(screen.queryByText('Chart placeholder: integrate provider usage history.')).toBeNull();
+
+    // G3-4 (#6496): with real provider rows present, the "no storage
+    // providers configured" empty state must not render alongside them.
+    expect(screen.getByText('S3')).toBeTruthy();
+    expect(screen.getByText('Local')).toBeTruthy();
+    expect(screen.queryByText(/No storage providers configured yet/i)).toBeNull();
+
+    // #6496: the chart axis dates must use the app's own long date format
+    // (e.g. "Feb 1, 2026"), not the runtime default short-numeric US locale
+    // (e.g. "2/1/2026"). Assert the shape rather than an exact day, since the
+    // UTC timestamps land on different local calendar days depending on the
+    // test runner's timezone.
+    const longDatePattern = /^[A-Z][a-z]{2} \d{1,2}, 2026$/;
+    const shortNumericPattern = /^\d{1,2}\/\d{1,2}\/2026$/;
+    const axisLabels = screen.getAllByText(longDatePattern);
+    expect(axisLabels.length).toBe(2);
+    expect(screen.queryByText(shortNumericPattern)).toBeNull();
+  });
+
+  it('renders the /backup/dashboard storageProviders rows instead of the empty state (#2562)', async () => {
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/dashboard') {
+        // The shape apps/api/src/routes/backup/dashboard.ts actually sends.
+        return makeJsonResponse({
+          data: {
+            storage: { totalBytes: 2048, snapshots: 2 },
+            latestJobs: [],
+            attentionItems: [],
+            storageProviders: [
+              { id: 'backblaze', name: 'Backblaze B2', usedBytes: 2048, snapshots: 2, configs: 1 },
+              { id: 's3', name: 'S3', usedBytes: 0, snapshots: 0, configs: 1 },
+            ],
+          },
+        });
+      }
+      if (url === '/backup/usage-history?days=14') {
+        return makeJsonResponse({ data: { points: [] } });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<BackupDashboard />);
+
+    await screen.findByText('Storage by Provider');
+    expect(screen.getByText('Backblaze B2')).toBeTruthy();
+    expect(screen.getByTestId('storage-provider-used-backblaze').textContent).toBe('2.00 KB');
+    // A configured destination with no snapshots yet is still a row, not the
+    // "none configured" empty state.
+    expect(screen.getByTestId('storage-provider-used-s3').textContent).toBe('0 B');
+    expect(screen.queryByText(/No storage providers configured yet/i)).toBeNull();
+    // No capacity is known for object storage, so no "/ --" placeholder.
+    expect(screen.queryByText(/\/ --/)).toBeNull();
   });
 
   it('shows the recovery bootstrap tab', async () => {
@@ -247,7 +300,9 @@ describe('BackupDashboard usage history chart', () => {
       fireEvent.click(link);
 
       expect(await screen.findByText('File Restore Wizard Stub')).toBeTruthy();
-      expect(window.location.hash).toBe('#restore');
+      // #6456: the snapshot being browsed is carried into the Restore tab's
+      // hash so the wizard doesn't make the operator re-pick it.
+      expect(window.location.hash).toBe('#restore?snapshot=snap-1');
     } finally {
       router.uninstall();
     }

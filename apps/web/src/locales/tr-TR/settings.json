@@ -534,7 +534,7 @@
       "saveFailed": "Bu ayar değiştirilemedi",
       "remediation": {
         "title": "Önerilen düzeltmeler",
-        "description": "Uyarı ayrıntı sayfasında yapay zekâ tarafından oluşturulan düzeltme önerileri. Bu, her kuruluş için varsayılandır; bir kuruluş bunu kendi Yapay Zekâ sekmesinde geçersiz kılabilir.",
+        "description": "Uyarı ayrıntı sayfasında betiklerinizden, şablonlarınızdan ve playbook'larınızdan eşleştirilen düzeltme önerileri. Bu, her kuruluş için varsayılandır; bir kuruluş bunu kendi Yapay Zekâ sekmesinde geçersiz kılabilir.",
         "enabled": "Önerilen düzeltmeleri oluştur",
         "enabledDescription": "Teknisyenlerin bir uyarı için ayrıntı sayfasından önerilen düzeltmeler oluşturmasına izin verin."
       }
@@ -4105,7 +4105,7 @@
     "enforceSSOOnlyLogin": "Yalnızca SSO oturum açmayı zorunlu kıl",
     "usersMustUseSSOToSignInPasswordLoginWillBeDisabled": "Kullanıcılar oturum açmak için SSO'yu kullanmalıdır. Şifreyle oturum açma devre dışı bırakılacaktır.",
     "trustThisProvidersMFA": "Bu sağlayıcının MFA'sına güven",
-    "trustThisProvidersMFAHelperText": "Kimlik sağlayıcınız çok faktörlü kimlik doğrulamanın kullanıldığını bildirdiğinde (`amr: mfa`), Breeze'de MFA karşılanmış sayılır. IdP'niz, kimlik belirtecinde `amr` talebini içermelidir — çoğu bunun açıkça etkinleştirilmesini gerektirir. Varsayılan olarak kapalıdır.",
+    "trustThisProvidersMFAHelperText": "Kimlik sağlayıcınız çok faktörlü veya kimlik avına dayanıklı (ör. geçiş anahtarı) kimlik doğrulamanın kullanıldığını bildirdiğinde (`amr: mfa` / `amr: phr`), Breeze'de MFA karşılanmış sayılır. IdP'niz, kimlik belirtecinde `amr` talebini içermelidir — çoğu bunun açıkça etkinleştirilmesini gerektirir. Varsayılan olarak kapalıdır.",
     "warningSSOEnforcementEnabled": "Uyarı: SSO uygulaması etkinleştirildi",
     "usersWillNotBeAbleToSignInWithPasswordsMakeSureYourSSOCo": "Kullanıcılar şifrelerle oturum açamayacaktır. Bu seçeneği etkinleştirmeden önce SSO yapılandırmanızın doğru çalıştığından emin olun. Acil durum erişimi için SSO'yu atlayabilecek en az bir yönetici hesabına sahip olmayı düşünün.",
     "testing": "Test ediliyor...",
@@ -4749,7 +4749,7 @@
         "killSwitch": "Anomali tespiti, operatör tarafından tüm platform için kapatıldı. Bu ayarlar yeniden açıldığında geçerli olacaktır.",
         "remediation": {
           "title": "Önerilen düzeltmeler",
-          "description": "Bu kuruluşun uyarıları için yapay zekâ tarafından oluşturulan düzeltme önerileri. Boş bırakılırsa iş ortağı varsayılanı uygulanır.",
+          "description": "Bu kuruluşun uyarıları için betiklerinizden, şablonlarınızdan ve playbook'larınızdan eşleştirilen düzeltme önerileri. Boş bırakılırsa iş ortağı varsayılanı uygulanır.",
           "enabled": "Önerilen düzeltmeleri oluştur",
           "enabledDescription": "Teknisyenlerin bir uyarı için ayrıntı sayfasından önerilen düzeltmeler oluşturmasına izin verin.",
           "killSwitch": "Önerilen düzeltmeler operatör tarafından tüm platformda kapatıldı. Bu ayar yeniden açıldıklarında geçerli olur."
@@ -5529,6 +5529,7 @@
       "sendInvite": "Davetiye gönderilemedi",
       "updateUser": "Kullanıcı güncellenemedi",
       "updateRole": "Rol güncellenemedi",
+      "updateOrgAccess": "Kuruluş erişimi güncellenemedi",
       "removeUser": "Kullanıcı kaldırılamadı",
       "resetMfa": "MFA sıfırlanamadı"
     },

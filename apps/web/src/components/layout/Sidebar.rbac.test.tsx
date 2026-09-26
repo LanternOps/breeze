@@ -163,7 +163,10 @@ describe('Sidebar — permission-aware nav for billing vs technician vs admin', 
     expect(has(container, '/devices')).toBe(true);
     expect(has(container, '/billing/invoices')).toBe(true);
     expect(has(container, '/settings/users')).toBe(true);
-    expect(has(container, '/settings/roles')).toBe(true);
+    // Roles moved to the /settings catalogue (#6220); the sidebar keeps the
+    // daily-use items plus a More settings entry.
+    expect(has(container, '/settings/roles')).toBe(false);
+    expect(has(container, '/settings')).toBe(true);
     expect(has(container, '/security')).toBe(true);
     expect(has(container, '/reports')).toBe(true);
     expect(has(container, '/backup')).toBe(true);
@@ -185,24 +188,17 @@ describe('Sidebar — permission-aware nav for billing vs technician vs admin', 
 });
 
 describe('Sidebar — SSO (sso:admin) and platform-admin gating', () => {
-  it('hides SSO from a users:read role lacking sso:admin, but shows the other identity items', async () => {
-    state.user.permissions = [{ resource: 'users', action: 'read' }];
-    const { container } = render(<Sidebar currentPath="/settings/users" />);
-    await waitFor(() => expect(has(container, '/settings/users')).toBe(true));
-
-    // Access Reviews piggybacks on users:read, so it shows.
-    expect(has(container, '/settings/access-reviews')).toBe(true);
-    // SSO is the only item gated on sso:admin — hidden without that grant.
-    expect(has(container, '/settings/sso')).toBe(false);
-  });
-
-  it('shows SSO once the role holds sso:admin', async () => {
+  it('keeps the sidebar to daily-use identity items; SSO/Access Reviews live on /settings (#6220)', async () => {
     state.user.permissions = [
       { resource: 'users', action: 'read' },
       { resource: 'sso', action: 'admin' },
     ];
     const { container } = render(<Sidebar currentPath="/settings/users" />);
-    await waitFor(() => expect(has(container, '/settings/sso')).toBe(true));
+    await waitFor(() => expect(has(container, '/settings/users')).toBe(true));
+    expect(has(container, '/settings/sso')).toBe(false);
+    expect(has(container, '/settings/access-reviews')).toBe(false);
+    // The catalogue entry point is ungated so every role can reach the rest.
+    expect(has(container, '/settings')).toBe(true);
   });
 
   it('hides all platformAdminOnly items from a non-platform-admin even with wildcard permissions', async () => {

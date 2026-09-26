@@ -47,6 +47,7 @@ type BackupJobRaw = {
   fileCount?: number | null;
   totalFiles?: number | null;
   lastProgressAt?: string | null;
+  lastKeepaliveAt?: string | null;
   errorCount?: number | null;
   errorLog?: string | null;
   policyId?: string | null;
@@ -74,11 +75,15 @@ type BackupJob = {
   fileCount: number | null;
   totalFiles: number | null;
   lastProgressAt: string | null;
+  lastKeepaliveAt: string | null;
 };
 
 // Poll the jobs list while any job is running so progress/speed stay live.
 const POLL_MS = 5000;
-// A running job with no progress update for this long is flagged as stalled.
+// A running job whose agent has been silent for this long is flagged as
+// stalled. Keyed on liveness (lastKeepaliveAt), not lastProgressAt: since #2798
+// lastProgressAt moves only when bytes/files advance, and a single large file
+// legitimately holds it still for its whole upload.
 const STALL_MS = 2 * 60 * 1000;
 // Statuses a job can no longer leave — used to reconcile optimistic cancels
 // against a possibly-stale poll response.
@@ -188,6 +193,7 @@ function mapJob(raw: BackupJobRaw): BackupJob {
     fileCount: raw.fileCount ?? null,
     totalFiles: raw.totalFiles ?? null,
     lastProgressAt: raw.lastProgressAt ?? null,
+    lastKeepaliveAt: raw.lastKeepaliveAt ?? null,
     errorCount: raw.errorCount ?? 0,
     errorSummary: raw.errorLog
       ? raw.errorLog.length > 60
@@ -538,10 +544,13 @@ export default function BackupJobList() {
                   : null;
                 const speedBps = isRunning ? speeds[job.id] : undefined;
                 const showFiles = isRunning && job.fileCount != null && job.totalFiles != null;
-                const stalledMs = isRunning && job.lastProgressAt
-                  ? Date.now() - new Date(job.lastProgressAt).getTime()
+                // Rows from a server predating #2798 carry no lastKeepaliveAt;
+                // their lastProgressAt was liveness then.
+                const livenessAt = job.lastKeepaliveAt ?? job.lastProgressAt;
+                const stalledMs = isRunning && livenessAt
+                  ? Date.now() - new Date(livenessAt).getTime()
                   : 0;
-                const isStalled = isRunning && !!job.lastProgressAt && stalledMs > STALL_MS;
+                const isStalled = isRunning && !!livenessAt && stalledMs > STALL_MS;
                 const stalledMinutes = Math.max(1, Math.floor(stalledMs / 60000));
                 const details = jobDetails[job.id];
                 const isExpanded = expandedJobId === job.id;

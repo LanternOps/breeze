@@ -36,7 +36,9 @@ import {
 } from '../../services/bareMetalRecoveryService';
 import {
   asRecord,
+  BMR_MIN_HELPER_VERSION,
   buildAuthenticatedBootstrapPayload,
+  isHelperVersionAtLeast,
   generateRecoveryToken,
   hashRecoveryToken,
   isValidRecoveryTokenFormat,
@@ -455,7 +457,35 @@ bmrRecoveryPublicRoutes.post(
       return c.json({ error: 'code_invalid' }, 404);
     }
 
-    const { capabilities: clientCapabilities } = c.req.valid('json');
+    const { capabilities: clientCapabilities, helperVersion } = c.req.valid('json');
+
+    // #5629: refuse recovery media older than the server floor BEFORE the
+    // code is claimed. The console used to learn the floor only from the
+    // exchange response, after codeUsedAt was written — the code was spent,
+    // the recovery sat in media_booted, and a new recovery 409'd on it.
+    // Runs after the code-validity check so an invalid code still reads as
+    // code_invalid, and before negotiation so nothing is enqueued for a
+    // helper that cannot proceed. A 409 is a terminal negotiation refusal
+    // to the console (bmr.RecoveryNegotiationError): it prints `message`
+    // and stops without spending another code attempt.
+    if (helperVersion !== undefined && !isHelperVersionAtLeast(helperVersion, BMR_MIN_HELPER_VERSION)) {
+      writeAuditEvent(c, {
+        orgId: rec.orgId,
+        action: 'bmr.recovery.exchange',
+        resourceType: 'bare_metal_recovery',
+        resourceId: rec.id,
+        result: 'failure',
+        details: { reason: 'helper_version_too_old', helperVersion, minHelperVersion: BMR_MIN_HELPER_VERSION },
+      });
+      return c.json(
+        {
+          error: 'helper_version_too_old',
+          message: `This recovery media (v${helperVersion}) is older than the server requires (v${BMR_MIN_HELPER_VERSION}); download the current ISO. The recovery code was not used.`,
+          details: { helperVersion, minHelperVersion: BMR_MIN_HELPER_VERSION },
+        },
+        409
+      );
+    }
 
     return runInRecoveryOrgContext(rec.orgId, async () => {
       // W09 (#6464) Task 5: capability negotiation runs BEFORE the code is

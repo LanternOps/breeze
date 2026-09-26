@@ -106,7 +106,8 @@
       "test": "Test başarısız oldu",
       "generic": "Bir şeyler ters gitti",
       "invalidCondition": "Bazı koşul değerleri eksik veya aralık dışında. Hiçbir şey kaydedilmedi.",
-      "invalidResponses": "Bazı yanıt ayarları eksik veya aralık dışında. Hiçbir şey kaydedilmedi."
+      "invalidResponses": "Bazı yanıt ayarları eksik veya aralık dışında. Hiçbir şey kaydedilmedi.",
+      "restartServiceRequiresName": "Hizmeti yeniden başlatmak bir hizmet adı gerektirir."
     },
     "saved": "Monitör kaydedildi",
     "deleted": "Monitör silindi",
@@ -159,6 +160,13 @@
       "label": "Cihazdaki hizmeti yeniden başlat",
       "maxAttempts": "En fazla yeniden başlatma denemesi",
       "cooldownSeconds": "Yeniden başlatma bekleme süresi (saniye)"
+    },
+    "networkCheckAsset": {
+      "label": "Varlık",
+      "unbound": "Bağlı varlık yok",
+      "failed": "Varlıklar yüklenemedi",
+      "orgRequired": "Varlık bağlamak için kuruluş sahipliğini seçin.",
+      "pingName": "{{label}} için ping"
     }
   },
   "kinds": {
@@ -222,7 +230,18 @@
     "port": "Bağlantı noktası",
     "expectStatus": "Beklenen durum kodu",
     "pollingIntervalSeconds": "Şu sıklıkta sorgula (saniye)",
-    "match": "Eşleşme"
+    "match": "Eşleşme",
+    "pingCount": "Yankı istekleri",
+    "expectBanner": "Beklenen banner",
+    "httpMethod": "HTTP yöntemi",
+    "expectedBody": "Yanıt şunu içermeli",
+    "followRedirects": "Yönlendirmeleri izle",
+    "verifySsl": "TLS sertifikasını doğrula",
+    "recordType": "Kayıt türü",
+    "expectedValue": "Beklenen değer",
+    "nameserver": "Ad sunucusu",
+    "degradedIsFailure": "Bozulmuşu hata say",
+    "maxResponseMs": "Şundan yavaşsa başarısız (ms)"
   },
   "operators": {
     "gt": "büyüktür",
@@ -411,11 +430,15 @@
   },
   "conversion": {
     "banner": {
-      "text": "{{policies}} ilkedeki {{rows}} eski kural henüz monitöre dönüştürülmedi.",
+      "rowsCount_one": "{{count}} eski kural",
+      "rowsCount_other": "{{count}} eski kural",
+      "policiesCount_one": "{{count}} ilke",
+      "policiesCount_other": "{{count}} ilke",
+      "text": "{{policies}}deki {{rows}} henüz monitöre dönüştürülmedi.",
       "review": "İncele",
       "convertEverything": "Tümünü dönüştür…",
       "confirmTitle": "Tüm ilkelerinizdeki her eski kural, izleme ve uyarıyla tetiklenen otomasyon dönüştürülsün mü?",
-      "confirmBody": "İş ortağının tümünde {{policies}} ilkede {{rows}} eski kural. Dönüştürülen satırlar yerinde emekliye ayrılır. Diğerleri W05c’de inceleme veya elle emekliye ayırma için kalır; W05d kalanları dönüştürür ve dönüştürülemeyenleri emekliye ayırır.",
+      "confirmBody": "İş ortağının tümünde {{policies}}de {{rows}}. Dönüştürülen satırlar yerinde emekliye ayrılır. Diğerleri W05c’de inceleme veya elle emekliye ayırma için kalır; W05d kalanları dönüştürür ve dönüştürülemeyenleri emekliye ayırır.",
       "confirmRun": "Tümünü dönüştür",
       "convertedAll": "{{policies}} ilkede {{converted}} satır dönüştürüldü; {{unconvertible}} dönüştürülemedi.",
       "errors": {
@@ -504,6 +527,30 @@
       "conversion_revert_unavailable": "Bu dönüştürme artık geri alınamaz.",
       "invalid_reason": "Bu kullanımdan kaldırma nedeni geçerli değil.",
       "unknown": "Dönüştürme başarısız oldu. Yeniden deneyin."
+    },
+    "retirement": {
+      "summary_one": "{{count}} eski kural bir monitöre dönüştürülemedi — inceleyin.",
+      "summary_other": "{{count}} eski kural monitörlere dönüştürülemedi — inceleyin.",
+      "review": "İncele",
+      "dismiss": "Kapat",
+      "openAlertsNote": "Bu kurallar artık tetiklenmiyor. Açık uyarıları biri çözene kadar açık kalır; hâlâ gerekiyorsa koşulu bir monitör olarak yeniden oluşturun.",
+      "reasons": {
+        "custom_condition": "özel koşul",
+        "nested_group": "iç içe koşul grubu",
+        "no_condition": "değerlendirilebilir koşul yok",
+        "equivalence_delta": "dönüştürme bazı cihazlarda neyin tetikleneceğini değiştirirdi",
+        "escalation_policy_axis": "yükseltme politikası tek bir kuruluşa ait",
+        "parent_unconverted": "üst politika dönüştürülmedi",
+        "policy_inactive": "politika etkin değil veya arşivlenmiş",
+        "prerequisite_missing": "bu sunucuda ön koşul düzeltmesi eksik",
+        "metric_without_kind": "metriğin monitör türü yok",
+        "child_kind_not_composable": "koşul bileşik monitörde kullanılamaz",
+        "too_many_conditions": "çok fazla koşul",
+        "too_many_responses": "ondan fazla yanıt gerekir",
+        "auto_resolve_conditions": "özel çözüm koşulları korunamıyor",
+        "target_unconvertible": "yanıt hedefi dönüştürülemiyor",
+        "unknown": "dönüştürme reddedildi; kaynağı inceleyin"
+      }
     }
   },
   "device": {
@@ -538,5 +585,20 @@
         }
       }
     }
+  },
+  "httpMethods": {
+    "GET": "GET (al)",
+    "HEAD": "HEAD (yalnızca başlıklar)",
+    "POST": "POST (gönder)",
+    "PUT": "PUT (değiştir)",
+    "OPTIONS": "OPTIONS (yetenekler)"
+  },
+  "dnsRecordTypes": {
+    "A": "A (IPv4 adresi)",
+    "AAAA": "AAAA (IPv6 adresi)",
+    "MX": "MX (posta sunucusu)",
+    "CNAME": "CNAME (takma ad)",
+    "TXT": "TXT (metin)",
+    "NS": "NS (ad sunucusu)"
   }
 }

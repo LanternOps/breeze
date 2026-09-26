@@ -45,7 +45,6 @@ import {
 import { zValidator } from '../lib/validation';
 import { db } from '../db';
 import {
-  aiAgents,
   aiAgentRuns,
   aiOperatorOperations,
   aiOperatorTaskEvents,
@@ -60,7 +59,7 @@ import { PERMISSIONS } from '../services/permissions';
 import { aiOperatorServiceRecoveryEnabled, aiOperatorTasksEnabled } from '../config/env';
 import { admitServiceRecoveryTask } from '../services/aiOperator/taskService';
 import { RECIPE_KEYS, resolveAdmissionRecipe } from '../services/aiOperator/recipes';
-import { TERMINAL_TASK_STATES } from '../services/aiOperator/taskTransitions';
+import { resolveEffectiveAgent } from '../services/aiAgents/effectivePolicy';
 import {
   mapOperatorTask,
   mapOperatorTaskListItem,
@@ -79,6 +78,17 @@ import {
   operatorTasksCursorFromRow,
 } from '../services/aiOperator/operatorTasksListCursor';
 import { runSiteScopeCondition } from '../services/aiAgentRunSiteScope';
+
+/**
+ * The agent kind an operator task is delegated to. The effective agent is
+ * resolved per (org, kind), so admission has to name one: task runs are later
+ * admitted against the task's frozen `agentKind` (`taskCoordinator`) on the
+ * default full profile. The service-recovery recipe is an investigate-and-
+ * remediate workflow, which is the triage agent's lane; a `designer` never
+ * runs on the full profile (`ownership_mismatch`). Before #7015 the route
+ * took any enabled row regardless of kind.
+ */
+const OPERATOR_TASK_AGENT_KIND = 'triage' as const;
 
 export const aiOperatorTasksRoutes = new Hono();
 aiOperatorTasksRoutes.use('*', authMiddleware);
@@ -158,15 +168,6 @@ function siteVisibilityCondition(allowedSiteIds: string[] | undefined): SQL | un
 }
 
 /**
- * Spec §7.2: "Proposed pending cap is 100 per org; admission returns a visible
- * capacity result when full." Pending = every non-terminal state, because a
- * `paused` or `waiting` task still holds a deadline, a device target and a
- * reconciler obligation — it is exactly the resource the cap bounds. A
- * terminal task holds none of those.
- */
-const OPERATOR_PENDING_TASK_CAP_PER_ORG = 100;
-
-/**
  * `POST /api/v1/ai/operator/tasks` — the only door that creates a task
  * (#5205 W08, #5246; spec §12's `POST /tasks` row).
  *
@@ -186,8 +187,13 @@ const OPERATOR_PENDING_TASK_CAP_PER_ORG = 100;
  *     are re-read here even though `admitServiceRecoveryTask` checks the flags
  *     again — the second check is the one that actually gates the insert; this
  *     one exists to produce an ACTIONABLE reason instead of a bare refusal.
- *  5. Pending cap (429).
- *  6. Admission, which is idempotent on `clientIdempotencyKey`.
+ *  5. Admission, which is idempotent on `clientIdempotencyKey` and enforces
+ *     the task-wide policy ceilings (#6590) — including the pending cap,
+ *     which it answers as `pending_cap_reached` and this route turns into
+ *     spec §12's visible 429. The cap lives in admission, not here, because
+ *     it is the effective agent policy's `taskMaxPendingPerOrg` (not a
+ *     constant), it must hold for every admission caller, and the count has
+ *     to sit under the same per-org lock as the insert to be a real bound.
  *
  * Returns 202 (not 201): admission commits a `queued` task with
  * `next_wake_at = now`, and the coordinator's `queued_past_wake` scan — not
@@ -267,20 +273,18 @@ aiOperatorTasksRoutes.post(
     const recipe = resolution.recipe;
 
     // The SERVER picks the agent (spec §5.1 — the request cannot name a
-    // principal). Enabled agents visible to this org, org-owned preferred over
-    // partner-wide, then oldest first so the choice is deterministic and a
-    // replay resolves the same way.
-    const [agent] = await db
-      .select({ id: aiAgents.id })
-      .from(aiAgents)
-      .where(
-        and(
-          eq(aiAgents.enabled, true),
-          or(eq(aiAgents.orgId, body.orgId), isNull(aiAgents.orgId)),
-        ),
-      )
-      .orderBy(sql`${aiAgents.orgId} IS NULL`, aiAgents.createdAt, aiAgents.id)
-      .limit(1);
+    // principal): the org's EFFECTIVE agent of the operator kind, resolved
+    // the same way run admission resolves it (#7015). That is always the
+    // partner baseline's id; an org-owned row of the kind is an override
+    // merged onto the baseline's policy, never an agent of its own. Pinning
+    // the override made every run of the task skip `ownership_mismatch`
+    // (`runService`: `task.agentId !== resolved.agentId`) and made admission
+    // ignore the org's tightened task limits. No baseline, or an effective
+    // agent that is disabled (by the partner, the org override, or the AI
+    // agents kill switch), means no run could ever be admitted — refuse now
+    // rather than admit a task that can only stall.
+    const effectiveAgent = await resolveEffectiveAgent(auth, body.orgId, OPERATOR_TASK_AGENT_KIND);
+    const agent = effectiveAgent?.effective.enabled ? { id: effectiveAgent.agentId } : null;
     if (!agent) {
       return c.json({
         error: 'No enabled AI agent is available for this organization. '
@@ -289,28 +293,7 @@ aiOperatorTasksRoutes.post(
       }, 422);
     }
 
-    // (5) Capacity. Counted over non-terminal states for this ONE org (not the
-    // caller's whole accessible set) — the cap is a per-tenant resource bound,
-    // so a partner-scope caller must not be able to exhaust one org's quota
-    // faster because they can see many.
-    const [pending] = await db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(aiOperatorTasks)
-      .where(
-        and(
-          eq(aiOperatorTasks.orgId, body.orgId),
-          sql`${aiOperatorTasks.state} NOT IN ${TERMINAL_TASK_STATES}`,
-        ),
-      );
-    if ((pending?.count ?? 0) >= OPERATOR_PENDING_TASK_CAP_PER_ORG) {
-      return c.json({
-        error: `This organization already has ${OPERATOR_PENDING_TASK_CAP_PER_ORG} unfinished Operator tasks. `
-          + 'Wait for tasks to finish, or stop ones that are no longer needed, before delegating more.',
-        code: 'OPERATOR_PENDING_CAP_REACHED',
-      }, 429);
-    }
-
-    // (6) Admit. The requester's authorized ceiling is what was just checked
+    // (5) Admit. The requester's authorized ceiling is what was just checked
     // above (org + site + write permission + MFA); `requesterUserId` records
     // WHOSE ceiling it is, which is what spec §5.1's "loss of that access
     // pauses delegated execution" is later evaluated against.
@@ -345,6 +328,13 @@ aiOperatorTasksRoutes.post(
       // setup"), except the two target refusals, which stay non-enumerating.
       if (result.refusal === 'device_not_in_org') {
         return c.json({ error: 'Device not found' }, 404);
+      }
+      if (result.refusal === 'pending_cap_reached') {
+        return c.json({
+          error: `${result.detail}. Wait for tasks to finish, or stop ones that are no longer needed, `
+            + 'before delegating more.',
+          code: 'OPERATOR_PENDING_CAP_REACHED',
+        }, 429);
       }
       if (result.refusal === 'unknown_recipe') {
         return c.json({

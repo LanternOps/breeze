@@ -4,6 +4,7 @@ import { portalApi, publicApiPath, type PublicQuoteDetail } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { QuoteBlocks, money } from './quoteBlocks';
 import { DocumentCover, DocumentPaper, DocumentHeader, DocumentTerms, type DocSeller } from './documentShell';
+import { QuoteAgreements, quoteAgreementLinks } from './quoteAgreements';
 import { SignaturePanel } from './SignaturePanel';
 
 interface PublicQuoteViewProps {
@@ -275,9 +276,35 @@ export function PublicQuoteView({ token, initial, error, superseded }: PublicQuo
         </section>
 
         {quote.terms && <DocumentTerms label="Terms">{quote.terms}</DocumentTerms>}
-        {quote.termsAndConditions && (
-          <DocumentTerms label="Terms & Conditions" testId="public-quote-terms-conditions">{quote.termsAndConditions}</DocumentTerms>
+        {/* The sign panel sits directly after the price and short terms; the
+            (collapsed) agreements never come between the totals and the button. */}
+        {open && (
+          <SignaturePanel
+            onAccept={(signerName) => void accept(signerName)}
+            onDecline={(reason) => void decline(reason)}
+            busy={busy}
+            testIdPrefix="public-quote"
+            agreements={quoteAgreementLinks(blocks, quote.termsAndConditions)}
+          />
         )}
+        {/* Accept/decline feedback stays adjacent to the button, not below the agreement. */}
+        {open && msg && (
+          <div
+            role={msgError ? 'alert' : 'status'}
+            className={cn(
+              'rounded-md p-3 text-sm',
+              msgError ? 'bg-destructive/10 text-destructive-on-tint' : 'bg-muted'
+            )}
+          >
+            {msg}
+          </div>
+        )}
+        <QuoteAgreements
+          blocks={blocks}
+          termsAndConditions={quote.termsAndConditions}
+          buildUrl={publicApiPath}
+          testIdPrefix="public-quote"
+        />
       </DocumentPaper>
 
       {status === 'converted' && (
@@ -287,26 +314,6 @@ export function PublicQuoteView({ token, initial, error, superseded }: PublicQuo
       )}
       {status === 'declined' && msg && (
         <div role="status" className="rounded-md bg-muted p-3 text-sm">{msg}</div>
-      )}
-      {open && msg && (
-        <div
-          role={msgError ? 'alert' : 'status'}
-          className={cn(
-            'rounded-md p-3 text-sm',
-            msgError ? 'bg-destructive/10 text-destructive-on-tint' : 'bg-muted'
-          )}
-        >
-          {msg}
-        </div>
-      )}
-
-      {open && (
-        <SignaturePanel
-          onAccept={(signerName) => void accept(signerName)}
-          onDecline={(reason) => void decline(reason)}
-          busy={busy}
-          testIdPrefix="public-quote"
-        />
       )}
     </div>
   );

@@ -50,6 +50,18 @@ describe('getDocsForPath', () => {
       expect(result.url).toBe(`${DOCS_BASE_URL}/features/bring-your-own-llm-key/`);
     });
 
+    it('/admin/system opens the upgrade docs (Deprecations/Connections)', () => {
+      const result = getDocsForPath('/admin/system');
+      expect(result.label).toBe('System');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/deploy/upgrades/`);
+    });
+
+    it('/settings/integrations/backup opens the backup-provider docs', () => {
+      const result = getDocsForPath('/settings/integrations/backup');
+      expect(result.label).toBe('Backup Providers');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/backup/backup-providers/`);
+    });
+
     it('/admin still falls back to partner management', () => {
       const result = getDocsForPath('/admin');
       expect(result.url).toBe(`${DOCS_BASE_URL}/reference/partner-management/`);

@@ -168,7 +168,10 @@ const namespaceDuplicateBaselines = {
     'toolSources.json': 1,
     // Topology (#5997): 'Site' is the identical pt-BR cognate.
     'topology.json': 1,
-    'vulnerabilities.json': 13,
+    // +1 (#2262 softwareGroupTable devices-affected rework): cves_one/cves_other
+    // ('{{count}} CVE'/'{{count}} CVEs') keep the acronym untranslated, same as
+    // the existing CVEs-namespace duplicates above.
+    'vulnerabilities.json': 14,
   },
   'es-419': {
     // +5: llmProviderCatalog admin UI (#3922 W1) — "Slug" is kept as the
@@ -312,7 +315,8 @@ const namespaceDuplicateBaselines = {
     'tickets.json': 15,
     'toolSources.json': 1,
     'topology.json': 0,
-    'vulnerabilities.json': 16,
+    // +1 (#2262): softwareGroupTable.cves_one/_other keep 'CVE'/'CVEs' untranslated.
+    'vulnerabilities.json': 17,
   },
   'fr-FR': {
     // +7: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Actions", "Notes"
@@ -390,7 +394,9 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 7,
     // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
     // +1 (network asset site move, #6766): networkSettings.details.site "Site" is the identical cognate in fr-FR.
-    'devices.json': 155,
+    // +2 (#6496, backup UI raw values): cleanupHistory.historyActions_one/_other
+    // — "action"/"actions" are identical cognates in fr-FR.
+    'devices.json': 157,
     'discovery.json': 15,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.
@@ -485,7 +491,10 @@ const namespaceDuplicateBaselines = {
     // Topology (#5997): 'Configuration', 'Diagnostics', 'Site' and
     // targetFields.port 'Port' are identical fr-FR cognates.
     'topology.json': 4,
-    'vulnerabilities.json': 15,
+    // +2 (#2262): softwareGroupTable.cves_one/_other keep 'CVE'/'CVEs' untranslated
+    // (fr-FR's old table.cves was "CVE", not a duplicate of English "CVEs", so
+    // both new plural forms are net-new duplicates here).
+    'vulnerabilities.json': 17,
   },
   'fr-CA': {
     // +7: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Actions", "Notes"
@@ -557,7 +566,9 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 7,
     // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
     // +1 (network asset site move, #6766): networkSettings.details.site "Site" is the identical cognate in fr-CA.
-    'devices.json': 155,
+    // +2 (#6496, backup UI raw values): cleanupHistory.historyActions_one/_other
+    // — "action"/"actions" are identical cognates in fr-CA.
+    'devices.json': 157,
     'discovery.json': 15,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.
@@ -654,7 +665,10 @@ const namespaceDuplicateBaselines = {
     // Topology (#5997): 'Configuration', 'Diagnostics', 'Site' and
     // targetFields.port 'Port' are identical fr-CA cognates.
     'topology.json': 4,
-    'vulnerabilities.json': 15,
+    // +2 (#2262): softwareGroupTable.cves_one/_other keep 'CVE'/'CVEs' untranslated
+    // (fr-CA's old table.cves was "CVE", not a duplicate of English "CVEs", so
+    // both new plural forms are net-new duplicates here).
+    'vulnerabilities.json': 17,
   },
   'de-DE': {
     // +8: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Name", "Status"
@@ -680,7 +694,8 @@ const namespaceDuplicateBaselines = {
     // "Teams" — are vendor proper nouns, identical in every locale
     // ("Bare Metal" is capitalized per German noun rules, so it is NOT an
     // exact duplicate here).
-    'backup.json': 74,
+    // +1 (sweep F3): backupHealth.osType.server — "Server" is the identical German term.
+    'backup.json': 75,
     // +6: contract-template format strings + German cognates ("v{{number}} ·
     // {{status}}", "v{{number}}", "{{name}} — v{{number}}", "Name", "Status")
     // that are legitimately identical to English in de-DE.
@@ -820,7 +835,8 @@ const namespaceDuplicateBaselines = {
     // Topology (#5997): 'Name', 'Revision' and targetFields.hostname/port
     // ('Hostname'/'Port') are identical de-DE cognates.
     'topology.json': 4,
-    'vulnerabilities.json': 20,
+    // +1 (#2262): softwareGroupTable.cves_one/_other keep 'CVE'/'CVEs' untranslated.
+    'vulnerabilities.json': 21,
   },
   'it-IT': {
     // +7: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Input", "Output"
@@ -842,7 +858,8 @@ const namespaceDuplicateBaselines = {
     // "SQL Server", "Hyper-V", "VMware", "Bare metal", "SharePoint",
     // "Exchange", "OneDrive", "Teams" — are vendor proper nouns, identical in
     // every locale.
-    'backup.json': 54,
+    // +2 (sweep F3): backupHealth.osType.workstation/server — "Workstation"/"Server" are the standard Italian IT terms.
+    'backup.json': 56,
     // +1: unassigned.qtyPrice "{{qty}} × {{price}}" is two interpolations plus a
     // multiplication sign with no wording to translate.
     // +1: order breakdown — "SKU" is a locale-invariant acronym.
@@ -894,7 +911,8 @@ const namespaceDuplicateBaselines = {
     // "Monitor" (policy-tab column), "Info" (severity), "Hardware"
     // (event-log category), "CPU" (resource select) are identical
     // cognates/loanwords in it-IT.
-    'monitoring.json': 5,
+    // +1 (sweep F5): conversion.banner.policiesCount_one — "{{count}} policy" matches English; "policy" is the loanword this locale already uses.
+    'monitoring.json': 6,
     'organizations.json': 6, // W01 #5075: "Workspace: {{orgName}}" — Workspace is the Italian UI term; +2 W02: device status "Online"/"Offline" are identical cognates in it-IT
     // +3 W03 account board: "PSA" is a locale-invariant acronym; orgBoard.integrations.badgeLabel /
     // badgeLabelWithReason are pure-interpolation literals ("{{orgName}}: {{system}}, {{state}}").
@@ -943,7 +961,9 @@ const namespaceDuplicateBaselines = {
     'tickets.json': 8,
     'toolSources.json': 1,
     'topology.json': 0,
-    'vulnerabilities.json': 17,
+    // +1 (#2262): softwareGroupTable.cves_one keeps 'CVE' untranslated (cves_other
+    // is 'CVE' too, since Italian does not inflect the acronym).
+    'vulnerabilities.json': 18,
   },
   'tr-TR': {
     // +5: llmProviderCatalog admin UI (#3922 W1) — "Slug" is kept as the
@@ -1046,7 +1066,8 @@ const namespaceDuplicateBaselines = {
     'toolSources.json': 1,
     // Topology (#5997): 'Site' is the identical tr-TR cognate.
     'topology.json': 1,
-    'vulnerabilities.json': 11,
+    // +1 (#2262): softwareGroupTable.cves_one keeps 'CVE' untranslated.
+    'vulnerabilities.json': 12,
   },
 } satisfies Record<TranslatedLocale, Record<string, number>>;
 

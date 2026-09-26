@@ -19,7 +19,7 @@ import type {
   FilterOperator,
   FilterValue
 } from '@breeze/shared';
-import { V2_FILTER_FIELDS, getFieldDef, operatorLabel } from './filterFields';
+import { getAllFilterFields, getFieldDef, operatorLabel } from './filterFields';
 import { FilterValueEditor, type NamedRef } from './FilterValueEditor';
 import { FilterPreviewFooter } from './FilterPreviewFooter';
 
@@ -134,7 +134,7 @@ function GroupEditor({ group, onChange, orgs, sites, groups, softwareOptions, so
   const { t } = useTranslation('devices');
   const toggleOp = () => onChange({ ...group, operator: group.operator === 'AND' ? 'OR' : 'AND' });
   const addCondition = () => {
-    const def = V2_FILTER_FIELDS[0]; // pick a stable default; user changes it via dropdown
+    const def = getAllFilterFields()[0]; // pick a stable default; user changes it via dropdown
     onChange({ ...group, conditions: [...group.conditions, defaultConditionForField(def)] });
   };
   const addGroup = () => {
@@ -257,7 +257,8 @@ interface ConditionRowProps {
 }
 function ConditionRow({ condition, onChange, onRemove, orgs, sites, groups, softwareOptions, softwareOptionCounts, onSoftwareSearch, rowId }: ConditionRowProps) {
   const { t } = useTranslation('devices');
-  const field = getFieldDef(condition.field) ?? V2_FILTER_FIELDS[0];
+  const allFields = getAllFilterFields();
+  const field = getFieldDef(condition.field) ?? allFields[0];
   const setField = (key: string) => {
     const def = getFieldDef(key);
     if (!def) return;
@@ -274,7 +275,7 @@ function ConditionRow({ condition, onChange, onRemove, orgs, sites, groups, soft
         onChange={e => setField(e.target.value)}
         className="rounded border bg-background px-1 py-0.5 text-xs"
       >
-        {V2_FILTER_FIELDS.map(f => (
+        {allFields.map(f => (
           <option key={f.key} value={f.key}>{t(/* i18n-dynamic */ `filterSentenceBuilder.fields.${f.key}`, { defaultValue: f.label })}</option>
         ))}
       </select>

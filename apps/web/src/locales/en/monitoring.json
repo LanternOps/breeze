@@ -106,7 +106,8 @@
       "test": "Test failed",
       "generic": "Something went wrong",
       "invalidCondition": "Some condition values are missing or out of range. Nothing was saved.",
-      "invalidResponses": "Some response settings are missing or out of range. Nothing was saved."
+      "invalidResponses": "Some response settings are missing or out of range. Nothing was saved.",
+      "restartServiceRequiresName": "Restart service requires a service name."
     },
     "saved": "Monitor saved",
     "deleted": "Monitor deleted",
@@ -159,6 +160,13 @@
       "label": "Restart service on the device",
       "maxAttempts": "Maximum restart attempts",
       "cooldownSeconds": "Restart cooldown (seconds)"
+    },
+    "networkCheckAsset": {
+      "label": "Asset",
+      "unbound": "No asset binding",
+      "failed": "Could not load assets",
+      "orgRequired": "Select organization ownership to bind an asset.",
+      "pingName": "Ping {{label}}"
     }
   },
   "kinds": {
@@ -172,7 +180,7 @@
     "service": "Service stopped",
     "process": "Process stopped",
     "process_resource": "Process resource",
-    "cert_expiry": "Certificate expiry",
+    "cert_expiry": "Agent mTLS certificate expiry",
     "bandwidth": "Bandwidth",
     "disk_io": "Disk I/O",
     "network_errors": "Network errors",
@@ -222,7 +230,18 @@
     "port": "Port",
     "expectStatus": "Expected status code",
     "pollingIntervalSeconds": "Poll every (seconds)",
-    "match": "Match"
+    "match": "Match",
+    "pingCount": "Echo requests",
+    "expectBanner": "Expected banner",
+    "httpMethod": "HTTP method",
+    "expectedBody": "Response must contain",
+    "followRedirects": "Follow redirects",
+    "verifySsl": "Verify TLS certificate",
+    "recordType": "Record type",
+    "expectedValue": "Expected value",
+    "nameserver": "Nameserver",
+    "degradedIsFailure": "Treat degraded as failure",
+    "maxResponseMs": "Fail when slower than (ms)"
   },
   "operators": {
     "gt": "greater than",
@@ -411,11 +430,15 @@
   },
   "conversion": {
     "banner": {
-      "text": "{{rows}} legacy rules across {{policies}} policies have not been converted to monitors.",
+      "rowsCount_one": "{{count}} legacy rule",
+      "rowsCount_other": "{{count}} legacy rules",
+      "policiesCount_one": "{{count}} policy",
+      "policiesCount_other": "{{count}} policies",
+      "text": "{{rows}} across {{policies}} have not been converted to monitors.",
       "review": "Review",
       "convertEverything": "Convert everything…",
       "confirmTitle": "Convert every legacy rule, watch and alert-triggered automation across all your policies?",
-      "confirmBody": "{{rows}} legacy rules in {{policies}} policies across the whole partner. Converted rows retire in place. Unconvertible rows remain for review or manual retirement in W05c; W05d converts leftovers and retires those it cannot convert.",
+      "confirmBody": "{{rows}} in {{policies}} across the whole partner. Converted rows retire in place. Unconvertible rows remain for review or manual retirement in W05c; W05d converts leftovers and retires those it cannot convert.",
       "confirmRun": "Convert everything",
       "convertedAll": "Converted {{converted}} rows across {{policies}} policies; {{unconvertible}} could not be converted.",
       "errors": {
@@ -504,6 +527,30 @@
       "conversion_revert_unavailable": "This conversion can no longer be undone.",
       "invalid_reason": "That retirement reason is not valid.",
       "unknown": "The conversion failed. Try again."
+    },
+    "retirement": {
+      "summary_one": "{{count}} legacy rule could not be converted to a monitor — review it.",
+      "summary_other": "{{count}} legacy rules could not be converted to monitors — review them.",
+      "review": "Review",
+      "dismiss": "Dismiss",
+      "openAlertsNote": "These rules no longer fire. Their open alerts stay open until someone resolves them; recreate the condition as a monitor if it is still needed.",
+      "reasons": {
+        "custom_condition": "custom condition",
+        "nested_group": "nested condition group",
+        "no_condition": "no evaluable condition",
+        "equivalence_delta": "conversion would change what fires on some devices",
+        "escalation_policy_axis": "escalation policy belongs to a single organization",
+        "parent_unconverted": "parent policy was not converted",
+        "policy_inactive": "policy is inactive or archived",
+        "prerequisite_missing": "a prerequisite fix is missing on this server",
+        "metric_without_kind": "metric has no monitor kind",
+        "child_kind_not_composable": "condition cannot be part of a composite monitor",
+        "too_many_conditions": "too many conditions",
+        "too_many_responses": "more than ten responses would be required",
+        "auto_resolve_conditions": "custom resolution conditions cannot be preserved",
+        "target_unconvertible": "the response target cannot be converted",
+        "unknown": "conversion was refused; review the source"
+      }
     }
   },
   "device": {
@@ -538,5 +585,20 @@
         }
       }
     }
+  },
+  "httpMethods": {
+    "GET": "GET (retrieve)",
+    "HEAD": "HEAD (headers only)",
+    "POST": "POST (submit)",
+    "PUT": "PUT (replace)",
+    "OPTIONS": "OPTIONS (capabilities)"
+  },
+  "dnsRecordTypes": {
+    "A": "A (IPv4 address)",
+    "AAAA": "AAAA (IPv6 address)",
+    "MX": "MX (mail server)",
+    "CNAME": "CNAME (alias)",
+    "TXT": "TXT (text)",
+    "NS": "NS (nameserver)"
   }
 }

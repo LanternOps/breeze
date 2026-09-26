@@ -126,6 +126,18 @@ export interface AuthContext {
    */
   aiOrigin?: AiOriginRef;
 
+  /**
+   * AI chat TOOL auth only (#6675): the org an org-scoped AI write defaults to
+   * when the tool input names none. Set to the session org for a chat whose
+   * org was anchored by the device page it was opened from (recorded
+   * server-side in `ai_sessions.context_snapshot`, `aiSessionOrgAnchor.ts`).
+   *
+   * A default, never a grant: `resolveWritableToolOrgId` re-checks
+   * `canAccessOrg` on every call and an explicit `orgId` always wins. It does
+   * not narrow reads — the caller's reach is unchanged.
+   */
+  aiWriteDefaultOrgId?: string;
+
   user: {
     id: string;
     email: string;

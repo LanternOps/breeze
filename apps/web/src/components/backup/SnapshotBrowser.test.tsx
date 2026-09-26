@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import SnapshotBrowser from './SnapshotBrowser';
@@ -101,13 +101,82 @@ describe('SnapshotBrowser', () => {
     expect(screen.getByText(/Use the restore workflow to recover or export files from this snapshot/i)).toBeTruthy();
   });
 
-  it('points the restore-workflow copy at the Restore tab (#6349)', async () => {
+  it('points the restore-workflow copy at the Restore tab, carrying the active snapshot (#6349, #6456)', async () => {
     render(<SnapshotBrowser />);
 
     await screen.findByText(/Protection Controls/i);
     const link = screen.getByTestId('snapshot-browser-restore-link');
     expect(link.tagName).toBe('A');
-    expect(link.getAttribute('href')).toBe('#restore');
+    // No files are checked off, but the snapshot currently being browsed is
+    // still carried across (#6456) so the wizard opens on the right snapshot.
+    expect(link.getAttribute('href')).toBe('#restore?snapshot=snap-1');
+  });
+
+  it('carries the selected snapshot id + checked files into the restore-workflow link (#6456)', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+
+      if (url === '/backup/snapshots' && method === 'GET') {
+        return makeJsonResponse({
+          data: [
+            {
+              id: 'snap-1',
+              label: 'Nightly Snapshot',
+              createdAt: '2026-03-31T00:00:00Z',
+              sizeBytes: 1048576,
+              fileCount: 5,
+              location: 'snapshots/provider-snap-1',
+              expiresAt: '2026-04-30T00:00:00Z',
+              legalHold: false,
+              legalHoldReason: null,
+              isImmutable: false,
+              immutableUntil: null,
+              immutabilityEnforcement: null,
+              requestedImmutabilityEnforcement: null,
+              immutabilityFallbackReason: null,
+            },
+          ],
+        });
+      }
+
+      if (url === '/backup/snapshots/snap-1/browse' && method === 'GET') {
+        return makeJsonResponse({
+          data: [
+            { name: 'report.txt', path: '/report.txt', type: 'file', sizeBytes: 1234 },
+          ],
+        });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<SnapshotBrowser />);
+
+    await screen.findByText('report.txt');
+    // `findByText` resolves as soon as the browse-load commit reaches the DOM,
+    // but that same commit also schedules SnapshotBrowser's selection-reset
+    // effect (keyed on the newly-loaded tree id — see the comment above
+    // `restoreLinkSnapshotId` in SnapshotBrowser.tsx). That effect is a
+    // passive effect and isn't guaranteed to have run yet: under CI load it
+    // can still be pending here, and if it fires *after* the click below it
+    // clobbers the selection an instant after it was set. Flushing a
+    // macrotask first lets that effect settle before we interact, so the
+    // click always lands after the reset instead of racing it. Confirmed as
+    // the real failure mode from CI (run 36269173200, attempt 1): the
+    // captured href was `#restore?snapshot=snap-1` with no `paths=` at all —
+    // the click never stuck.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    fireEvent.click(screen.getByLabelText('Select report.txt'));
+
+    const link = screen.getByTestId('snapshot-browser-restore-link');
+    const href = link.getAttribute('href') ?? '';
+    expect(href).toContain('#restore?');
+    expect(href).toContain('snapshot=snap-1');
+    expect(href).toContain('paths=');
+    expect(decodeURIComponent(href)).toContain('/report.txt');
   });
 
   it('applies legal hold for the selected snapshot', async () => {

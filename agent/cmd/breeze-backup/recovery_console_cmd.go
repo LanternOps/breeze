@@ -198,7 +198,9 @@ func newRecoveryConsoleCommand() *cobra.Command {
 				AllowHost:     allowHost,
 				DefaultServer: server,
 				Deps: recoveryconsole.Deps{
-					Exchange:     bmr.ExchangeRecoveryCode,
+					Exchange: func(ctx context.Context, server, code string) (string, *bmr.BootstrapResponse, error) {
+						return bmr.ExchangeRecoveryCode(ctx, server, code, version)
+					},
 					Collect:      layout.Collect,
 					MediaSources: sys.RootSources,
 					Rebuild:      rebuild.Run,

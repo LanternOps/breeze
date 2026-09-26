@@ -491,9 +491,9 @@
     "chooseFilesToRestoreForSelectiveRecoveries": "Wählen Sie die wiederherzustellenden Dateien für selektive Wiederherstellungen aus.",
     "fullRestoreSelectedSkipThisStepToContinue": "Vollständige Wiederherstellung ausgewählt. Überspringen Sie diesen Schritt, um fortzufahren.",
     "destination": "Ziel",
-    "restoreToTheOriginalLocationOrProvideAn": "Stellen Sie die Wiederherstellung am ursprünglichen Speicherort her oder geben Sie einen alternativen Pfad an.",
-    "originalLocation": "Ursprünglicher Standort",
-    "restoreFilesInPlace": "Dateien an Ort und Stelle wiederherstellen.",
+    "restoreToAStagingFolderOrProvideAn": "Stellen Sie in einen Staging-Ordner auf dem Gerät oder in einen Pfad Ihrer Wahl wieder her.",
+    "stagingFolder": "Staging-Ordner auf dem Gerät",
+    "stagingFolderHint": "Dateien werden im temporären Verzeichnis des Geräts (breeze-restore) abgelegt; Originale werden nie überschrieben.",
     "alternatePath": "Alternativer Pfad",
     "alternatePathPlaceholder": "z. B. D:\\Restored oder /var/restore",
     "alternatePathRequired": "Geben Sie einen Zielpfad ein, um fortzufahren.",
@@ -996,6 +996,11 @@
       "healthy": "In Ordnung",
       "warning": "Prüfen",
       "critical": "Kritisch",
+      "unknown": "Unbekannt"
+    },
+    "osType": {
+      "workstation": "Arbeitsplatz",
+      "server": "Server",
       "unknown": "Unbekannt"
     },
     "sourceAll": "Alle Quellen",

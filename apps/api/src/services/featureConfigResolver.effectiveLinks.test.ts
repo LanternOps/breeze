@@ -14,11 +14,9 @@ vi.mock('../db', () => ({
 import {
   scanScheduledAutomations,
   scanDueComplianceChecks,
-  resolveAlertRulesForDevice,
   resolveAutomationsForDeviceWithPolicy,
   resolveAutomationAssignmentForDevice,
   resolveAllVulnerabilityEnabledDevices,
-  resolveGoverningAlertRulePolicyForDevice,
   resolvePatchConfigDetailsForDevice,
   resolveBackupConfigForDevice,
   resolveMaintenanceConfigForDevice,
@@ -128,12 +126,6 @@ describe('featureConfigResolver reads effective feature links', () => {
     expectReadsEffectiveLinks();
   });
 
-  it('resolveAlertRulesForDevice joins the effective view', async () => {
-    queueHierarchy([], []);
-    await resolveAlertRulesForDevice('dev-1');
-    expectReadsEffectiveLinks();
-  });
-
   it('resolveAllVulnerabilityEnabledDevices joins the effective view', async () => {
     queue([]);
     await resolveAllVulnerabilityEnabledDevices();
@@ -162,27 +154,6 @@ describe('featureConfigResolver reads effective feature links', () => {
       expectReadsEffectiveLinks();
     });
   }
-
-  it('resolveGoverningAlertRulePolicyForDevice joins the effective view', async () => {
-    // This one short-circuits with `unassigned` before its view query unless the
-    // candidate policy is actually among the assignments — feeding [] here would
-    // make the assertion pass for the wrong reason on the OTHER branch, so the
-    // seed has to reach the second query.
-    queueHierarchy([
-      {
-        configPolicyId: 'p-1',
-        assignmentLevel: 'organization',
-        assignmentPriority: 0,
-        assignmentCreatedAt: new Date('2026-01-01T00:00:00Z'),
-      },
-    ]);
-    queueSpares(3);
-
-    const outcome = await resolveGoverningAlertRulePolicyForDevice('dev-1', 'p-1');
-
-    expect(outcome).toEqual({ outcome: 'governs' });
-    expectReadsEffectiveLinks();
-  });
 
   it('resolveDeviceIdsForSoftwarePolicy joins the effective view (it feeds the compliance worker)', async () => {
     queue([]);

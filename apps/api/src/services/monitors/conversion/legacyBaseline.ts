@@ -43,7 +43,7 @@ export async function resolveLegacyBaseline(deviceId: string, executor: DbExecut
     level: configPolicyAssignments.level, priority: configPolicyAssignments.priority })
     .from(configPolicyAssignments)
     .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
-    .innerJoin(configPolicyEffectiveFeatureLinks, and(eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id), eq(configPolicyEffectiveFeatureLinks.featureType, 'monitoring')))
+    .innerJoin(configPolicyEffectiveFeatureLinks, and(eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id), inArray(configPolicyEffectiveFeatureLinks.featureType, ['monitoring', 'monitors'])))
     .innerJoin(configPolicyMonitoringSettings, eq(configPolicyMonitoringSettings.featureLinkId, configPolicyEffectiveFeatureLinks.id))
     .where(and(eq(configurationPolicies.status, 'active'), owner, filters));
   // Actual watch runtime has no creation-time tie-breaker; preserve that order.

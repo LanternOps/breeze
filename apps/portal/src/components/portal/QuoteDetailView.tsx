@@ -7,6 +7,7 @@ import { shortDate } from '@/lib/format';
 import { computeChargeNow } from '@/lib/invoiceDeposit';
 import { QuoteBlocks, money } from './quoteBlocks';
 import { DocumentCover, DocumentPaper, DocumentHeader, DocumentTerms, type DocSeller } from './documentShell';
+import { QuoteAgreements, quoteAgreementLinks } from './quoteAgreements';
 import { BTN_PRIMARY, BTN_SECONDARY } from './ui';
 import { SignaturePanel } from './SignaturePanel';
 
@@ -355,19 +356,46 @@ export function QuoteDetailView({ detail, error, statusCode }: QuoteDetailViewPr
             writes. The quote's notes live in `introNotes`, elsewhere on the page.
             Spec 2026-09-14 §3 checked this and left both labels as-is. */}
         {quote.terms && <DocumentTerms label="Terms">{quote.terms}</DocumentTerms>}
-        {quote.termsAndConditions && (
-          <DocumentTerms label="Terms & Conditions" testId="quote-terms-conditions">{quote.termsAndConditions}</DocumentTerms>
+        {open && (
+          <SignaturePanel
+            onAccept={(signerName) => void accept(signerName)}
+            onDecline={(reason) => void decline(reason)}
+            busy={busy}
+            testIdPrefix="quote"
+            agreements={quoteAgreementLinks(blocks, quote.termsAndConditions)}
+          />
         )}
+        {/* While signing is open, feedback stays adjacent to the button (below the
+            paper it would land under the expanded agreement). */}
+        {open && msg && (
+          <div
+            data-testid="quote-msg"
+            role={msgError ? 'alert' : 'status'}
+            className={
+              msgError
+                ? 'rounded-md bg-destructive/10 p-3 text-sm text-destructive-on-tint'
+                : 'rounded-md bg-muted p-3 text-sm'
+            }
+          >
+            {msg}
+          </div>
+        )}
+        <QuoteAgreements
+          blocks={blocks}
+          termsAndConditions={quote.termsAndConditions}
+          buildUrl={publicApiPath}
+          testIdPrefix="quote"
+        />
       </DocumentPaper>
 
       {/* Failures render on their own, outside the accepted panel, so a failed pay
           attempt is never dressed up in success styling. */}
-      {msg && msgError && (
+      {!open && msg && msgError && (
         <div data-testid="quote-msg" role="alert" className="rounded-md bg-destructive/10 p-3 text-sm text-destructive-on-tint">
           {msg}
         </div>
       )}
-      {msg && !msgError && status !== 'converted' && (
+      {!open && msg && !msgError && status !== 'converted' && (
         <div data-testid="quote-msg" role="status" className="rounded-md bg-muted p-3 text-sm">
           {msg}
         </div>
@@ -417,14 +445,6 @@ export function QuoteDetailView({ detail, error, statusCode }: QuoteDetailViewPr
         </div>
       )}
 
-      {open && (
-        <SignaturePanel
-          onAccept={(signerName) => void accept(signerName)}
-          onDecline={(reason) => void decline(reason)}
-          busy={busy}
-          testIdPrefix="quote"
-        />
-      )}
     </div>
   );
 }

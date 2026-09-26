@@ -70,3 +70,22 @@ it('refreshes lifecycle state after a 409 and never reports successful Undo', as
   expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
   expect(changed).not.toHaveBeenCalled();
 });
+
+it.each([
+  'config_policy_alert_rules', 'config_policy_monitoring_watches', 'alert_templates',
+  'automations', 'config_policy_automations',
+])('disables Undo for retired %s', async sourceTable => {
+  request.mockResolvedValueOnce(json({ items: [{ ...entry, sourceTable, revertable: false }], nextCursor: null }));
+  render(<ConversionLedger />);
+  const undo = await screen.findByTestId('ledger-undo-c1');
+  expect(undo).toBeDisabled();
+  fireEvent.click(undo);
+  expect(request.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true);
+});
+
+it('keeps network Undo available without the retired-runtime deadline', async () => {
+  request.mockResolvedValueOnce(json({ items: [{ ...entry, sourceTable: 'network_monitors' }], nextCursor: null }));
+  render(<ConversionLedger />);
+  expect(await screen.findByTestId('ledger-undo-c1')).toBeEnabled();
+  expect(screen.getByTestId('conversion-ledger')).not.toHaveTextContent('W05d');
+});

@@ -103,6 +103,19 @@ describe('InvoiceDetail', () => {
     expect(localStorage.getItem('breeze:quote-editor-show-margin')).toBe('1');
   });
 
+  // sweep F9: the frozen `ticketLabel` (#6940) already reaches Preview, the
+  // PDF and the portal via the same `ticketNumber` API field — the default
+  // Detail view was the one place still silent about it.
+  it('shows the ticket number on a line that carries one', async () => {
+    const withTicket: InvoiceDetailData = {
+      ...issued,
+      lines: [{ ...lines[0]!, ticketNumber: 'T-1042' }, lines[1]!],
+    };
+    render(<InvoiceDetail detail={withTicket} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
+    expect(screen.getByTestId('invoice-detail-line-l1')).toHaveTextContent('T-1042');
+  });
+
   // #6467: the note is structured data (`workedMinutes`), not baked into
   // `description` — so it survives regardless of what the description says,
   // and renders localised via the shared `common:ticketTimeBilling.billedVsWorked` key.

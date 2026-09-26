@@ -1,9 +1,11 @@
-import { and, asc, eq, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { monitorDefinitions } from '../../db/schema/monitorDefinitions';
 import type { MonitorDefinitionRow } from '../../db/schema/monitorDefinitions';
 import { escalationPolicies } from '../../db/schema/alerts';
 import { organizations } from '../../db/schema/orgs';
+import { networkMonitors } from '../../db/schema/monitors';
+import { monitorConversions } from '../../db/schema/monitorConversions';
 import type { AuthContext } from '../../middleware/auth';
 import {
   canManagePartnerWidePolicies,
@@ -13,6 +15,7 @@ import { normalizeAutomationActions } from '../automationRuntime';
 import type { AutomationAction } from '../automationRuntime';
 import { getMonitorKindSpec, MonitorValidationError } from './kinds';
 import { compileMonitorInTx, type CompileOptions, type DbExecutor } from './monitorCompiler';
+import { assertNetworkCheckAssetOwner, NetworkCheckAssetError } from './networkCheckAsset';
 import { isPgForeignKeyViolation, pgErrorConstraint } from '../../utils/pgErrors';
 import type {
   CreateMonitorDefinitionInput,
@@ -21,6 +24,7 @@ import type {
 } from '@breeze/shared';
 
 export { MonitorValidationError };
+export { NetworkMonitorAdoptionError, type CompileOptions } from './monitorCompiler';
 
 export class MonitorNotFoundError extends Error {
   constructor(id: string) {
@@ -270,6 +274,13 @@ export async function createMonitorDefinition(
     aiAgentId: input.aiAgentId ?? null,
   });
 
+  try {
+    await assertNetworkCheckAssetOwner(input.kind, shape.condition, owner, executor);
+  } catch (error) {
+    if (error instanceof NetworkCheckAssetError) throw new MonitorValidationError(error.message);
+    throw error;
+  }
+
   return createValidatedMonitorInTx(input, auth, owner, shape, options, executor);
 }
 
@@ -338,6 +349,12 @@ export async function updateMonitorDefinition(
     aiAgentId: input.aiAgentId !== undefined ? input.aiAgentId : existing.aiAgentId,
   };
   const shape = validateDefinitionShape(merged);
+  try {
+    await assertNetworkCheckAssetOwner(merged.kind, shape.condition, existing, executor);
+  } catch (error) {
+    if (error instanceof NetworkCheckAssetError) throw new MonitorValidationError(error.message);
+    throw error;
+  }
 
   const effectiveEscalationPolicyId =
     input.escalationPolicyId !== undefined
@@ -417,7 +434,36 @@ export async function deleteMonitorDefinition(id: string, auth: AuthContext, exe
   // monitor_id (and rule_id, once the cascade reaches the compiled rule) set
   // to NULL.
   try {
-    await executor.delete(monitorDefinitions).where(eq(monitorDefinitions.id, id));
+    await executor.transaction(async (tx) => {
+      // Shared lock order: monitor_definitions → network_monitors → conversion
+      // ledger rows. Keep delete aligned with PATCH/recompile and Revert.
+      const [lockedDefinition] = await tx.select({ id: monitorDefinitions.id })
+        .from(monitorDefinitions).where(eq(monitorDefinitions.id, id)).for('update');
+      if (!lockedDefinition) throw new MonitorNotFoundError(id);
+      const probes = await tx.select({ id: networkMonitors.id, orgId: networkMonitors.orgId })
+        .from(networkMonitors).where(eq(networkMonitors.managedByMonitorId, id))
+        .orderBy(asc(networkMonitors.id)).for('update');
+      // A live conversion identifies an adopted probe. Release it before the
+      // definition cascade so its results and legacy rules remain available.
+      // Compiler-created probes have no source ledger entry and still cascade.
+      const adopted = probes.length === 0 ? [] : await tx.select({
+        id: monitorConversions.sourceId, conversionId: monitorConversions.id,
+        sourceState: monitorConversions.sourceState,
+      }).from(monitorConversions)
+        .where(and(inArray(monitorConversions.sourceId, probes.map((probe) => probe.id)),
+          inArray(monitorConversions.orgId, probes.flatMap((probe) => probe.orgId ? [probe.orgId] : [])),
+          eq(monitorConversions.sourceTable, 'network_monitors'), isNull(monitorConversions.revertedAt)))
+        .orderBy(asc(monitorConversions.id)).for('update');
+      const now = new Date();
+      for (const source of adopted) {
+        await tx.update(networkMonitors).set({ managedByMonitorId: null, isActive: false,
+          retiredAt: now, retiredReason: 'monitor_deleted', updatedAt: now })
+          .where(and(eq(networkMonitors.id, source.id), eq(networkMonitors.managedByMonitorId, id)));
+        await tx.update(monitorConversions).set({ sourceState: { ...source.sourceState, sourceReleased: true } })
+          .where(eq(monitorConversions.id, source.conversionId));
+      }
+      await tx.delete(monitorDefinitions).where(eq(monitorDefinitions.id, id));
+    });
   } catch (error) {
     if (isPgForeignKeyViolation(error)) {
       // Belt-and-braces catch-all (see MonitorHasDependentsError's doc

@@ -13,6 +13,16 @@ vi.mock('../../services/pamReconciliationRateLimit', () => ({
   consumePamReconciliationRateLimit: mocks.consumeRateLimit,
 }));
 
+// #6260 — the handler now opens its own withDbAccessContext (after the rate
+// limiter decides), mirroring routes/agents/elevationRequests.ts (#6130).
+// Mocked the same way that test mocks it: a no-op passthrough that just
+// invokes the callback, so tests below can assert call order/args without a
+// real Postgres connection.
+vi.mock('../../db', () => ({
+  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
+}));
+
+import { withDbAccessContext } from '../../db';
 import { pamReconciliationRoutes } from './pamReconciliation';
 
 const candidate = {
@@ -49,6 +59,11 @@ function request(app: Hono, body: unknown, headers: Record<string, string> = {})
 describe('PAM reconciliation binding route', () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    // vi.resetAllMocks() strips the factory's default passthrough
+    // implementation too (it's a full mockReset, not just a mockClear) —
+    // restore it here so every test gets the real self-managed-context
+    // behavior unless it overrides withDbAccessContext itself.
+    vi.mocked(withDbAccessContext).mockImplementation(async (_ctx: any, fn: any) => fn());
     mocks.consumeRateLimit.mockResolvedValue({
       allowed: true,
       remaining: 119,
@@ -80,6 +95,56 @@ describe('PAM reconciliation binding route', () => {
       orgId: '40000000-0000-4000-8000-000000000001',
       candidates: [candidate],
     });
+  });
+
+  // #6260 / #1105 — the DB work (resolvePamReconciliationBindings, raw
+  // RLS-scoped SQL) must run inside a context this handler opens itself,
+  // AFTER the rate limiter's Redis round-trip has already decided. The route
+  // is now in SELF_MANAGED_DB_CONTEXT_TWO_SEGMENT_ACTIONS
+  // (middleware/agentAuth.ts), so agentAuthMiddleware no longer holds a
+  // request-long transaction across that round-trip.
+  it('opens its own org-scoped DB context, after the rate limiter decides', async () => {
+    const order: string[] = [];
+    mocks.consumeRateLimit.mockImplementation(async () => {
+      order.push('rateLimit');
+      return { allowed: true, remaining: 119, resetAt: new Date('2026-08-26T12:01:00.000Z') };
+    });
+    vi.mocked(withDbAccessContext).mockImplementation(async (_ctx: any, fn: any) => {
+      order.push('withDbAccessContext');
+      return fn();
+    });
+
+    const response = await request(buildApp(), { protocolVersion: 1, candidates: [candidate] });
+
+    expect(response.status).toBe(200);
+    expect(order).toEqual(['rateLimit', 'withDbAccessContext']);
+    expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledWith(
+      {
+        scope: 'organization',
+        orgId: '40000000-0000-4000-8000-000000000001',
+        accessibleOrgIds: ['40000000-0000-4000-8000-000000000001'],
+        accessiblePartnerIds: [],
+        currentPartnerId: '70000000-0000-4000-8000-000000000001',
+      },
+      expect.any(Function),
+    );
+  });
+
+  // A rate-limited request must never open the DB context at all — that is
+  // the whole point of the fix (#6260): the Redis check happens with no
+  // pooled connection held.
+  it('never opens the DB context when the rate limit rejects the request', async () => {
+    mocks.consumeRateLimit.mockResolvedValue({
+      allowed: false,
+      remaining: 0,
+      resetAt: new Date('2026-08-26T12:01:00.000Z'),
+    });
+
+    const response = await request(buildApp(), { protocolVersion: 1, candidates: [candidate] });
+
+    expect(response.status).toBe(429);
+    expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
+    expect(mocks.resolve).not.toHaveBeenCalled();
   });
 
   it('refuses watchdog credentials before rate limiting or resolution', async () => {

@@ -369,6 +369,22 @@ describe('listMappingProposals — org matching priority', () => {
     }));
   });
 
+  // #7134: the backfilled row had a remote id but no SyncToken, so every later
+  // sync of an imported org failed before reaching QuickBooks.
+  it('backfills an imported-customer mapping with the live SyncToken and currency from the listing', async () => {
+    stubReads({
+      orgs: [{ id: ORG_A, name: 'Acme' }],
+      links: [{ orgId: ORG_A, system: 'quickbooks', externalId: 'qb-12' }],
+    });
+    listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-12', displayName: 'Acme', syncToken: '4', currencyCode: 'USD' }]);
+
+    await listMappingProposals({ partnerId: PARTNER, provider: 'quickbooks', entityType: 'org' }, runCtx);
+
+    expect(insertedValues).toContainEqual(expect.objectContaining({
+      breezeEntityId: ORG_A, remoteEntityId: 'qb-12', remoteSyncToken: '4', remoteCurrencyCode: 'USD',
+    }));
+  });
+
   it('reuses a pre-existing mapping row without re-inserting (ordinary suggestions are not persisted)', async () => {
     stubReads({
       orgs: [{ id: ORG_A, name: 'Acme' }],

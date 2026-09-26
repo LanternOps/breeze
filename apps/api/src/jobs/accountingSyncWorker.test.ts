@@ -166,6 +166,9 @@ describe('processAccountingSyncJob', () => {
     // RULE, not an outage — five retries got five identical refusals and five
     // Sentry alerts in production.
     ['void_blocked_by_payments', 409],
+    // #7161: the pushed lines do not sum to the invoice subtotal — a data
+    // problem on the Breeze side that every retry would refuse identically.
+    ['invoice_totals_mismatch', 409],
   ];
 
   it.each(terminalCodes)('is terminal for code=%s (%d) — logs and does NOT rethrow', async (code, status) => {

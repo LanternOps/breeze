@@ -15,6 +15,7 @@ vi.mock('../jobs/s1Sync', () => ({ isThreatAction: () => true }));
 
 import { db } from '../db';
 import { registerSentinelOneTools } from './aiToolsSentinelOne';
+import { getActiveS1IntegrationForOrg } from './sentinelOne/actions';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { TOOL_PERMISSIONS } from './aiGuardrails';
@@ -190,5 +191,39 @@ describe('get_s1_status — site narrowing (cross-site aggregation)', () => {
       expect(values).toContain(allowedDevice);
       expect(values).not.toContain(forbiddenDevice);
     }
+  });
+});
+
+describe('#6675 — device-page write default must not answer these reads', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const ORG_A = 'org-a';
+  const ORG_B = 'org-b';
+
+  /** Partner-scope, multi-org auth carrying a device-page write default (#6675). */
+  function partnerAuthWithWriteDefault(): AuthContext {
+    return {
+      user: { id: 'u1', email: 'a@b.c', name: 'A', isPlatformAdmin: false },
+      token: {} as any,
+      partnerId: 'partner-1',
+      orgId: null,
+      scope: 'partner',
+      accessibleOrgIds: [ORG_A, ORG_B],
+      orgCondition: () => undefined,
+      canAccessOrg: (id: string | null | undefined) => id === ORG_A || id === ORG_B,
+      aiWriteDefaultOrgId: ORG_B,
+    } as unknown as AuthContext;
+  }
+
+  it('get_s1_status does not silently resolve the ambiguous org to the write default', async () => {
+    const parsed = JSON.parse(await handlerFor('get_s1_status')({}, partnerAuthWithWriteDefault()));
+    expect(parsed.error).toMatch(/orgId is required/i);
+    expect(getActiveS1IntegrationForOrg).not.toHaveBeenCalled();
+  });
+
+  it('get_s1_threats does not silently resolve the ambiguous org to the write default', async () => {
+    const parsed = JSON.parse(await handlerFor('get_s1_threats')({}, partnerAuthWithWriteDefault()));
+    expect(parsed.error).toMatch(/orgId is required/i);
+    expect(getActiveS1IntegrationForOrg).not.toHaveBeenCalled();
   });
 });

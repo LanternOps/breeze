@@ -4,9 +4,17 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ---- Mocks (module-factories run at import-time) --------------------------
 
-vi.mock('../../../db', () => ({
-  db: { select: vi.fn(), insert: vi.fn(), update: vi.fn() },
-}));
+vi.mock('../../../db', () => {
+  const mockDb: Record<string, unknown> = {
+    select: vi.fn(),
+    insert: vi.fn(),
+    update: vi.fn(),
+  };
+  // `db.transaction` runs the callback against `db` itself — the mocked
+  // insert/update/select above already stand in for the tx executor.
+  mockDb.transaction = vi.fn((cb: (tx: unknown) => unknown) => cb(mockDb));
+  return { db: mockDb };
+});
 
 vi.mock('../../../db/schema', () => ({
   deviceGroups: { id: 'dg.id', orgId: 'dg.org_id', name: 'dg.name' },
@@ -14,6 +22,10 @@ vi.mock('../../../db/schema', () => ({
     id: 'nc.id',
     orgId: 'nc.org_id',
     name: 'nc.name',
+  },
+  notificationChannelConfigs: {
+    channelId: 'ncc.channel_id',
+    config: 'ncc.config',
   },
   alertTemplates: { id: 'at.id', name: 'at.name', isBuiltIn: 'at.is_built_in' },
   alertRules: {
@@ -97,8 +109,19 @@ function mockSelectQueue(results: unknown[][]): void {
   });
 }
 
-function mockInsertOk(): ReturnType<typeof vi.fn> {
-  const values = vi.fn().mockResolvedValue(undefined);
+/**
+ * Mocks `db.insert(...).values(...)` for every chain shape the tool now uses:
+ *   - awaited directly (ensureDefaultDeviceGroup)
+ *   - `.returning(...)` (the channel insert, inside db.transaction)
+ *   - `.onConflictDoUpdate(...)` (writeNotificationChannelConfig)
+ * `returningRow` is what `.returning()` resolves to — used as the new
+ * channel's id by writeNotificationChannelConfig.
+ */
+function mockInsertOk(returningRow: Record<string, unknown> = { id: 'new-channel-id' }): ReturnType<typeof vi.fn> {
+  const chain: any = Promise.resolve(undefined);
+  chain.returning = vi.fn().mockResolvedValue([returningRow]);
+  chain.onConflictDoUpdate = vi.fn().mockResolvedValue(undefined);
+  const values = vi.fn().mockReturnValue(chain);
   vi.mocked(db.insert).mockImplementation(() => ({ values } as any));
   return values;
 }
@@ -194,13 +217,20 @@ describe('addNotificationChannel', () => {
       target: 'admin@acme.com',
     });
     expect(res).toEqual({ created: true });
-    expect(values).toHaveBeenCalledWith(
+    // Channel row (no `config` — that's the child table now).
+    expect(values).toHaveBeenNthCalledWith(
+      1,
       expect.objectContaining({
         orgId: ORG_ID,
         type: 'email',
-        config: { recipients: ['admin@acme.com'] },
       }),
     );
+    expect((values.mock.calls[0]?.[0] as Record<string, unknown>)?.config).toBeUndefined();
+    // Config row, written via writeNotificationChannelConfig in the same tx.
+    expect(values).toHaveBeenNthCalledWith(2, {
+      channelId: 'new-channel-id',
+      config: { recipients: ['admin@acme.com'] },
+    });
   });
 
   it('is idempotent when the channel already exists', async () => {

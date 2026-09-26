@@ -35,6 +35,14 @@ interface AiState {
    * id until `loadSession` resolves the rest.
    */
   sessionOrgId: string | null;
+  /**
+   * Session whose `messages` in memory are already authoritative — created
+   * here, or loaded/switched to from the API. The sidebar's restore effect
+   * skips it, so it never re-fetches a session this tab just created and is
+   * streaming into (that fetch replaced the optimistic first message, #6933).
+   * Not persisted: after a page reload only the id survives, and it restores.
+   */
+  hydratedSessionId: string | null;
   messages: AiMessage[];
   /** Analysis runs launched from this conversation, keyed by run id (W05). */
   chatRuns: Record<string, ChatRunState>;
@@ -116,6 +124,7 @@ function pageContextOrgMismatch(
 const CLEARED_SESSION = {
   sessionId: null,
   sessionOrgId: null,
+  hydratedSessionId: null,
   messages: [] as AiMessage[],
   isFlagged: false,
   flagReason: null,
@@ -145,6 +154,7 @@ export const useAiStore = create<AiState>()(
   isOpen: false,
   sessionId: null,
   sessionOrgId: null,
+  hydratedSessionId: null,
   messages: [],
   chatRuns: {},
   isStreaming: false,
@@ -209,6 +219,7 @@ export const useAiStore = create<AiState>()(
       set({
         sessionId: data.id,
         sessionOrgId: data.orgId ?? null,
+        hydratedSessionId: data.id,
         messages: [],
         isLoading: false,
         isFlagged: false,
@@ -269,6 +280,7 @@ export const useAiStore = create<AiState>()(
       set({
         sessionId,
         sessionOrgId: restoredOrgId,
+        hydratedSessionId: sessionId,
         messages,
         isLoading: false,
         isFlagged: !!data.session.flaggedAt,
@@ -581,6 +593,7 @@ export const useAiStore = create<AiState>()(
         // dropped on an org mismatch, but the org is recorded so a later page
         // navigation can rebind (#5684).
         sessionOrgId: data.session?.orgId ?? null,
+        hydratedSessionId: sessionId,
         messages,
         isLoading: false,
         isFlagged: !!data.session?.flaggedAt,

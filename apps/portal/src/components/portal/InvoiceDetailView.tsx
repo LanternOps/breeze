@@ -6,7 +6,7 @@ import { groupInvoiceLinesByTicket } from '@/lib/invoiceLineGroups';
 import { money, shortDate } from '@/lib/format';
 import { STATUS_LABELS, statusTone } from '@/lib/invoiceStatus';
 import { computeChargeNow } from '@/lib/invoiceDeposit';
-import { DocumentPaper, DocumentHeader, DocumentTerms, type DocSeller } from './documentShell';
+import { DocumentPaper, DocumentHeader, DocumentTerms, DocumentTermsCollapsible, type DocSeller } from './documentShell';
 import { BTN_PRIMARY, BTN_SECONDARY } from './ui';
 
 // Invoice statuses that can be paid online (mirrors the API's PAYABLE set).
@@ -398,7 +398,7 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
 
         {invoice.notes && <DocumentTerms label="Notes">{invoice.notes}</DocumentTerms>}
         {invoice.termsAndConditions && (
-          <DocumentTerms label="Terms & Conditions" testId="invoice-terms-conditions">{invoice.termsAndConditions}</DocumentTerms>
+          <DocumentTermsCollapsible text={invoice.termsAndConditions} testId="invoice-terms-conditions" />
         )}
       </DocumentPaper>
     </div>

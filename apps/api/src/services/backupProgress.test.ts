@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const refreshDispatchedExpectationMock = vi.fn();
 
@@ -19,6 +19,7 @@ vi.mock('../db/schema', () => ({
     fileCount: 'backupJobs.fileCount',
     totalFiles: 'backupJobs.totalFiles',
     lastProgressAt: 'backupJobs.lastProgressAt',
+    lastKeepaliveAt: 'backupJobs.lastKeepaliveAt',
     startedAt: 'backupJobs.startedAt',
     updatedAt: 'backupJobs.updatedAt',
   },
@@ -38,6 +39,7 @@ import { db } from '../db';
 import {
   applyBackupProgress,
   applyBackupStartedAck,
+  resetUnmatchedBackupProgressCache,
   isBackupStartedAck,
   isBackupQueuedAck,
   isLegacyBackupTimeoutResult,
@@ -70,6 +72,7 @@ function updateChain(rows: unknown[]) {
 describe('applyBackupProgress', () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    resetUnmatchedBackupProgressCache();
     refreshDispatchedExpectationMock.mockResolvedValue(true);
   });
 
@@ -97,11 +100,32 @@ describe('applyBackupProgress', () => {
         totalSize: 5000,
         fileCount: 2,
         totalFiles: 10,
-        lastProgressAt: expect.any(Date),
+        lastKeepaliveAt: expect.any(Date),
         updatedAt: expect.any(Date),
       })
     );
+    // #2798: progress advances only when the stored counters are exceeded,
+    // decided by the database against the pre-update row.
+    const setArg = updateCall.set.mock.calls[0][0];
+    const progressSql = JSON.stringify(setArg.lastProgressAt);
+    expect(progressSql).toContain('backupJobs.transferredSize');
+    expect(progressSql).toContain('backupJobs.fileCount');
+    expect(progressSql).toContain('ELSE');
     expect(refreshDispatchedExpectationMock).toHaveBeenCalledWith('backup', 'device-1', 'job-1');
+  });
+
+  it('#2798: a bare keepalive (no counters) refreshes liveness only, never lastProgressAt', async () => {
+    vi.mocked(db.select).mockReturnValue(
+      selectChain([{ id: 'job-1', deviceId: 'device-1', agentId: 'agent-1', status: 'running' }]) as any
+    );
+    vi.mocked(db.update).mockReturnValue(updateChain([{ id: 'job-1' }]) as any);
+
+    const result = await applyBackupProgress({ agentId: 'agent-1', commandId: JOB_UUID, progress: {} });
+
+    expect(result).toEqual({ applied: true });
+    const setArg = vi.mocked(db.update).mock.results[0]!.value.set.mock.calls[0][0];
+    expect(setArg.lastKeepaliveAt).toBeInstanceOf(Date);
+    expect(setArg).not.toHaveProperty('lastProgressAt');
   });
 
   it('rejects a progress message from a non-owning agent', async () => {
@@ -237,7 +261,8 @@ describe('applyBackupProgress', () => {
     const setArg = updateCall.set.mock.calls[0][0];
     expect(setArg).not.toHaveProperty('snapshotId');
     expect(setArg.transferredSize).toBe(1000);
-    expect(setArg.lastProgressAt).toBeInstanceOf(Date);
+    expect(setArg.lastKeepaliveAt).toBeInstanceOf(Date);
+    expect(setArg.lastProgressAt).toBeDefined();
     expect(refreshDispatchedExpectationMock).toHaveBeenCalledWith('backup', 'device-1', 'job-1');
   });
 
@@ -275,6 +300,63 @@ describe('applyBackupProgress', () => {
     expect(db.select).not.toHaveBeenCalled();
     expect(db.update).not.toHaveBeenCalled();
     expect(refreshDispatchedExpectationMock).not.toHaveBeenCalled();
+  });
+
+  describe('unmatched-commandId throttle (#5393)', () => {
+    afterEach(() => vi.useRealTimers());
+
+    it('skips the DB lookup and flags repeats as suppressed after a not-found', async () => {
+      vi.mocked(db.select).mockReturnValue(selectChain([]) as any);
+      const call = () =>
+        applyBackupProgress({ agentId: 'agent-1', commandId: NOT_FOUND_UUID, progress: { current: 1 } });
+
+      const first = await call();
+      expect(first).toEqual({ applied: false, reason: 'not-found' });
+      for (let i = 0; i < 50; i++) {
+        expect(await call()).toEqual({ applied: false, reason: 'not-found', suppressed: true });
+      }
+      expect(db.select).toHaveBeenCalledTimes(1);
+    });
+
+    it('flags repeated non-UUID commandIds as suppressed (first is not)', async () => {
+      const call = () =>
+        applyBackupProgress({ agentId: 'agent-1', commandId: 'restore-cmd-1', progress: {} });
+      expect(await call()).toEqual({ applied: false, reason: 'invalid-command-id' });
+      expect(await call()).toEqual({ applied: false, reason: 'invalid-command-id', suppressed: true });
+    });
+
+    it('re-checks the DB after the window so a job created later is picked up', async () => {
+      vi.useFakeTimers();
+      vi.mocked(db.select).mockReturnValue(selectChain([]) as any);
+      const call = () =>
+        applyBackupProgress({ agentId: 'agent-1', commandId: NOT_FOUND_UUID, progress: { current: 1 } });
+      await call();
+      await call();
+      expect(db.select).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(11_000);
+      await call();
+      expect(db.select).toHaveBeenCalledTimes(2);
+    });
+
+    it('keys per agent + commandId', async () => {
+      vi.mocked(db.select).mockReturnValue(selectChain([]) as any);
+      await applyBackupProgress({ agentId: 'agent-1', commandId: NOT_FOUND_UUID, progress: {} });
+      const other = await applyBackupProgress({ agentId: 'agent-2', commandId: NOT_FOUND_UUID, progress: {} });
+      expect(other).toEqual({ applied: false, reason: 'not-found' });
+      expect(db.select).toHaveBeenCalledTimes(2);
+    });
+
+    it('never negative-caches a matched job', async () => {
+      vi.mocked(db.select).mockReturnValue(selectChain([{
+        id: 'job-1', deviceId: 'dev-1', agentId: 'agent-1', status: 'running',
+      }]) as any);
+      vi.mocked(db.update).mockReturnValue(updateChain([{ id: 'job-1' }]) as any);
+      for (let i = 0; i < 3; i++) {
+        expect(await applyBackupProgress({ agentId: 'agent-1', commandId: JOB_UUID, progress: { current: i } }))
+          .toEqual({ applied: true });
+      }
+      expect(db.select).toHaveBeenCalledTimes(3);
+    });
   });
 
   it('drops an invalid progress payload without throwing', async () => {
@@ -377,7 +459,7 @@ describe('applyBackupStartedAck', () => {
     refreshDispatchedExpectationMock.mockResolvedValue(true);
   });
 
-  it('sets lastProgressAt/updatedAt on an in-flight job and refreshes the expectation', async () => {
+  it('sets lastKeepaliveAt/updatedAt (liveness, not progress) on an in-flight job and refreshes the expectation', async () => {
     vi.mocked(db.update).mockReturnValue(updateChain([{ id: 'job-1' }]) as any);
 
     const result = await applyBackupStartedAck({ jobId: 'job-1', deviceId: 'device-1' });
@@ -385,8 +467,9 @@ describe('applyBackupStartedAck', () => {
     expect(result).toBe(true);
     const updateCall = vi.mocked(db.update).mock.results[0]!.value;
     expect(updateCall.set).toHaveBeenCalledWith(
-      expect.objectContaining({ lastProgressAt: expect.any(Date), updatedAt: expect.any(Date) })
+      expect.objectContaining({ lastKeepaliveAt: expect.any(Date), updatedAt: expect.any(Date) })
     );
+    expect(updateCall.set.mock.calls[0][0]).not.toHaveProperty('lastProgressAt');
     expect(refreshDispatchedExpectationMock).toHaveBeenCalledWith('backup', 'device-1', 'job-1');
   });
 
@@ -417,11 +500,11 @@ describe('queued backup lifecycle', () => {
     vi.mocked(db.update).mockReturnValue(update as any);
     await applyBackupProgress({ agentId: 'agent-1', commandId: JOB_UUID, progress: { phase } });
     const changes = update.set.mock.calls[0][0];
-    expect(changes.lastProgressAt).toBeInstanceOf(Date);
+    expect(changes.lastKeepaliveAt).toBeInstanceOf(Date);
     // The database evaluates these guards atomically against the latest row,
     // not the SELECT snapshot: late queued messages cannot demote starting.
     const startedAt = JSON.stringify(changes.startedAt);
-    expect(startedAt).toContain('lastProgressAt');
+    expect(startedAt).toContain('lastKeepaliveAt');
     expect(startedAt).toContain('IS NULL');
     expect(startedAt).toContain('ELSE');
     if (phase !== 'queued') {

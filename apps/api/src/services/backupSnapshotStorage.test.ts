@@ -17,6 +17,32 @@ vi.mock('./recoveryMediaService', () => ({
   })),
 }));
 
+// #6843: the local GC walk must read each directory's entries via
+// fs.opendir's async-iterable Dir (entries pulled from the OS incrementally)
+// rather than fs.readdir({ withFileTypes: true }) (the whole directory
+// materialized into one array before any entry is yielded) — the same
+// memory-shape gap #6834 removed from the S3 listing path. Spies delegate to
+// the real implementation so every other test in this file (real-filesystem
+// fixtures) is unaffected; only the two dedicated tests below assert on them.
+const { readdirSpy, opendirSpy } = vi.hoisted(() => ({
+  readdirSpy: vi.fn(),
+  opendirSpy: vi.fn(),
+}));
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    readdir: (...args: Parameters<typeof actual.readdir>) => {
+      readdirSpy(...args);
+      return actual.readdir(...args);
+    },
+    opendir: (...args: Parameters<typeof actual.opendir>) => {
+      opendirSpy(...args);
+      return actual.opendir(...args);
+    },
+  };
+});
+
 import {
   applyBackupSnapshotImmutability,
   backupLayoutManifestKey,
@@ -236,6 +262,66 @@ describe('backup snapshot storage', () => {
         region: 'us-east-1',
         accessKey: 'key',
         secretKey: 'secret',
+      },
+      snapshotId: 'provider-snap-1',
+      metadata: {},
+    });
+
+    expect(deletedKeys).toEqual(['snapshots/provider-snap-1/manifest.json']);
+  });
+
+  // #6398: the agent never applies the destination `prefix` — snapshot
+  // objects live at `snapshots/<id>/...`. Immutability and deletion must target
+  // that physical layout, not `<prefix>/snapshots/<id>`.
+  it('applies retention under the agent layout, ignoring the configured destination prefix (#6398)', async () => {
+    sendMock
+      .mockImplementationOnce(async (command) => {
+        expect(command).toBeInstanceOf(ListObjectsV2Command);
+        expect(command.input.Prefix).toBe('snapshots/provider-snap-1');
+        return { Contents: [{ Key: 'snapshots/provider-snap-1/manifest.json' }], IsTruncated: false };
+      })
+      .mockImplementationOnce(async () => ({}));
+
+    const result = await applyBackupSnapshotImmutability({
+      provider: 's3',
+      providerConfig: {
+        bucket: 'backups',
+        region: 'us-east-1',
+        accessKey: 'key',
+        secretKey: 'secret',
+        prefix: 'w05',
+      },
+      snapshotId: 'provider-snap-1',
+      metadata: {},
+      retainUntil: new Date('2026-04-30T00:00:00.000Z'),
+    });
+
+    expect(result.objectCount).toBe(1);
+  });
+
+  it('deletes under the agent layout, ignoring the configured destination prefix (#6398)', async () => {
+    const deletedKeys: string[] = [];
+    sendMock
+      .mockImplementationOnce(async (command) => {
+        expect(command).toBeInstanceOf(ListObjectsV2Command);
+        expect(command.input.Prefix).toBe('snapshots/provider-snap-1');
+        return { Contents: [{ Key: 'snapshots/provider-snap-1/manifest.json' }], IsTruncated: false };
+      })
+      .mockImplementationOnce(async (command) => {
+        deletedKeys.push(
+          ...(command.input.Delete?.Objects ?? []).map((object: { Key?: string }) => object.Key ?? '')
+        );
+        return {};
+      });
+
+    await deleteBackupSnapshotArtifacts({
+      provider: 's3',
+      providerConfig: {
+        bucket: 'backups',
+        region: 'us-east-1',
+        accessKey: 'key',
+        secretKey: 'secret',
+        prefix: 'w05',
       },
       snapshotId: 'provider-snap-1',
       metadata: {},
@@ -483,6 +569,18 @@ describe('local-provider GC I/O (real filesystem)', () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  it('deletes a local snapshot under the agent layout, ignoring the configured destination prefix (#6398)', async () => {
+    await deleteBackupSnapshotArtifacts({
+      provider: 'local',
+      providerConfig: { path: root, prefix: 'w05' },
+      snapshotId: 'snapA',
+      metadata: {},
+    });
+
+    expect(await readdir(join(root, 'snapshots'))).toEqual([]);
+    expect(await readdir(join(root, 'other'))).toEqual(['unrelated.dat']);
+  });
+
   it('walks the snapshot root and reports every file key with a real mtime', async () => {
     const listing = await listBackupObjectsUnderPrefix({
       provider: 'local',
@@ -525,6 +623,21 @@ describe('local-provider GC I/O (real filesystem)', () => {
     expect(keys.length).toBe(2100);
     expect(new Set(keys).size).toBe(2100);
     expect(keys.every((k) => k.startsWith('snapshots/snapB/files/'))).toBe(true);
+  });
+
+  it('streams local directory entries via opendir, never materializing a whole directory via readdir (#6843)', async () => {
+    readdirSpy.mockClear();
+    opendirSpy.mockClear();
+
+    const listing = await listBackupObjectsUnderPrefix({
+      provider: 'local',
+      providerConfig: { path: root },
+      prefix: 'snapshots',
+    });
+
+    expect(listing.length).toBeGreaterThan(0);
+    expect(readdirSpy).not.toHaveBeenCalled();
+    expect(opendirSpy).toHaveBeenCalled();
   });
 
   it('fetches a local object as text', async () => {

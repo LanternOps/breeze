@@ -538,8 +538,10 @@ export interface ActiveSession {
   /**
    * Effective AuthContext for TOOL EXECUTION (MCP handlers + their RLS DB
    * context). For device-bound sessions this is `auth` narrowed to the
-   * session (device) org via `buildDeviceBoundSessionAuth` (#3087); otherwise
-   * it is `auth` itself. Refreshed alongside `auth` on every request.
+   * session (device) org via `buildDeviceBoundSessionAuth` (#3087). For a
+   * device-PAGE session it is `auth` plus `aiWriteDefaultOrgId` (#6675), with
+   * no narrowing. Otherwise it is `auth` itself. Built by
+   * `buildChatSessionToolAuth`, refreshed alongside `auth` on every request.
    */
   toolAuth: AuthContext;
   /** Immutable audit data extracted from the latest request (avoids holding stale Hono context) */
@@ -710,6 +712,27 @@ export function buildDeviceBoundSessionAuth(auth: AuthContext, sessionOrgId: str
   };
 }
 
+/**
+ * Tool auth for a chat session (#3087, #6675).
+ *
+ * - Device-bound session (`ai_sessions.device_id`): pinned to the session org.
+ * - Device-PAGE session (org anchored by the page it was opened from): full
+ *   read scope, plus `aiWriteDefaultOrgId` so an org-scoped write with no
+ *   `orgId` lands in the page's org instead of being refused as ambiguous.
+ *   `resolveWritableToolOrgId` re-checks access to it on every call.
+ * - Anything else: the session auth itself.
+ */
+export function buildChatSessionToolAuth(
+  auth: AuthContext,
+  sessionOrgId: string,
+  deviceId: string | null | undefined,
+  writeDefaultOrgId: string | null | undefined,
+): AuthContext {
+  if (deviceId) return buildDeviceBoundSessionAuth(auth, sessionOrgId);
+  if (writeDefaultOrgId) return { ...auth, aiWriteDefaultOrgId: writeDefaultOrgId };
+  return auth;
+}
+
 // ============================================
 // StreamingSessionManager (singleton)
 // ============================================
@@ -824,6 +847,13 @@ export class StreamingSessionManager {
        * may omit it — narrowing would be a no-op there.
        */
       deviceId?: string | null;
+      /**
+       * Device-page write default (#6675): the session org when it was
+       * anchored by the page the chat was opened from
+       * (`pageContextWriteDefaultOrgId`). Never narrows reads; ignored for a
+       * device-bound session. Omitted by every other chat surface.
+       */
+      writeDefaultOrgId?: string | null;
     },
     auth: AuthContext,
     requestContext: RequestLike | undefined,
@@ -886,9 +916,12 @@ export class StreamingSessionManager {
         // the request auth handed in here is built fresh per request.
         const refreshedAuthWithOrigin = withChatAiOrigin(auth, breezeSessionId);
         reusable.auth = refreshedAuthWithOrigin;
-        reusable.toolAuth = reusable.deviceId
-          ? buildDeviceBoundSessionAuth(refreshedAuthWithOrigin, dbSession.orgId)
-          : refreshedAuthWithOrigin;
+        reusable.toolAuth = buildChatSessionToolAuth(
+          refreshedAuthWithOrigin,
+          dbSession.orgId,
+          reusable.deviceId,
+          dbSession.writeDefaultOrgId,
+        );
         reusable.auditSnapshot = snapshot;
         reusable.allowedTools = allowedTools;
         // Re-resolve the approval mode so a settings change applies to the NEXT
@@ -947,9 +980,12 @@ export class StreamingSessionManager {
     // the act/verify bypass lanes read the carrier off `auth`, while every
     // MCP tool handler reads `toolAuth`.
     const authWithOrigin = withChatAiOrigin(auth, breezeSessionId);
-    const toolAuth = deviceId
-      ? buildDeviceBoundSessionAuth(authWithOrigin, dbSession.orgId)
-      : authWithOrigin;
+    const toolAuth = buildChatSessionToolAuth(
+      authWithOrigin,
+      dbSession.orgId,
+      deviceId,
+      dbSession.writeDefaultOrgId,
+    );
 
     // Tenant (BYO MCP) tools — Task A10. Script-builder / client-AI sessions
     // supply their own `mcpServerFactory` and keep their own (non-Breeze)

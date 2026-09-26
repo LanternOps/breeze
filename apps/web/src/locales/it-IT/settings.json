@@ -534,7 +534,7 @@
       "saveFailed": "Impossibile modificare questa impostazione",
       "remediation": {
         "title": "Correzioni suggerite",
-        "description": "Suggerimenti di correzione generati dall'IA nella pagina di dettaglio dell'avviso. È il valore predefinito per ogni organizzazione; un'organizzazione può sovrascriverlo nella propria scheda IA.",
+        "description": "Suggerimenti di correzione nella pagina di dettaglio dell'avviso, basati sui tuoi script, modelli e playbook. È il valore predefinito per ogni organizzazione; un'organizzazione può sovrascriverlo nella propria scheda IA.",
         "enabled": "Genera correzioni suggerite",
         "enabledDescription": "Consenti ai tecnici di generare correzioni suggerite per un avviso dalla sua pagina di dettaglio."
       }
@@ -4100,7 +4100,7 @@
     "enforceSSOOnlyLogin": "Imponi accesso solo SSO",
     "usersMustUseSSOToSignInPasswordLoginWillBeDisabled": "Gli utenti devono usare SSO per accedere. L'accesso con password verrà disabilitato.",
     "trustThisProvidersMFA": "Considera attendibile l'MFA di questo provider",
-    "trustThisProvidersMFAHelperText": "Quando il tuo provider di identità segnala che è stata usata l'autenticazione a più fattori (`amr: mfa`), l'MFA viene considerata soddisfatta in Breeze. Il tuo IdP deve includere il claim `amr` nel suo token ID — la maggior parte richiede che questo sia abilitato esplicitamente. Disattivato per impostazione predefinita.",
+    "trustThisProvidersMFAHelperText": "Quando il tuo provider di identità segnala che è stata usata un'autenticazione a più fattori o resistente al phishing (ad es. una passkey) (`amr: mfa` / `amr: phr`), l'MFA viene considerata soddisfatta in Breeze. Il tuo IdP deve includere il claim `amr` nel suo token ID — la maggior parte richiede che questo sia abilitato esplicitamente. Disattivato per impostazione predefinita.",
     "warningSSOEnforcementEnabled": "Avviso: imposizione SSO abilitata",
     "usersWillNotBeAbleToSignInWithPasswordsMakeSureYourSSOCo": "Gli utenti non potranno accedere con password. Assicurati che la configurazione SSO funzioni correttamente prima di abilitare questa opzione. Valuta di mantenere almeno un account amministratore che possa bypassare SSO per accesso di emergenza.",
     "testing": "Test in corso...",
@@ -4744,7 +4744,7 @@
         "killSwitch": "Il rilevamento delle anomalie è disattivato per l'intera piattaforma dall'operatore. Queste impostazioni avranno effetto quando verrà riattivato.",
         "remediation": {
           "title": "Correzioni suggerite",
-          "description": "Suggerimenti di correzione generati dall'IA per gli avvisi di questa organizzazione. Vuoto significa che si applica il valore predefinito del partner.",
+          "description": "Suggerimenti di correzione per gli avvisi di questa organizzazione, basati sui tuoi script, modelli e playbook. Vuoto significa che si applica il valore predefinito del partner.",
           "enabled": "Genera correzioni suggerite",
           "enabledDescription": "Consenti ai tecnici di generare correzioni suggerite per un avviso dalla sua pagina di dettaglio.",
           "killSwitch": "Le correzioni suggerite sono disattivate per l'intera piattaforma dall'operatore. Questa impostazione avrà effetto quando verranno riattivate."
@@ -5524,6 +5524,7 @@
       "sendInvite": "Impossibile inviare l'invito",
       "updateUser": "Impossibile aggiornare l'utente",
       "updateRole": "Impossibile aggiornare il ruolo",
+      "updateOrgAccess": "Impossibile aggiornare l'accesso alle organizzazioni",
       "removeUser": "Impossibile rimuovere l'utente",
       "resetMfa": "Reimpostazione MFA non riuscita"
     },

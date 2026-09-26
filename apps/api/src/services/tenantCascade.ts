@@ -487,6 +487,9 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // this (devices carries the FK to device_link_groups), so members are cleared
   // first and the group rows delete cleanly.
   'device_link_groups',
+  // #5351 — per-slot memory inventory. Composite FK (device_id, org_id) ->
+  // devices(id, org_id) ON DELETE CASCADE; leaf table, no children.
+  'device_memory_modules',
   'device_metrics',
   // device_mtls_certificates (Wave 5 Task 2, security remediation): composite
   // FK (device_id, org_id) -> devices(id, org_id) ON UPDATE CASCADE ON DELETE

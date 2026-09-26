@@ -534,7 +534,7 @@
       "saveFailed": "Não foi possível alterar esta configuração",
       "remediation": {
         "title": "Correções sugeridas",
-        "description": "Sugestões de correção geradas por IA na página de detalhes do alerta. Este é o padrão para todas as organizações; uma organização pode substituí-lo na própria aba de IA.",
+        "description": "Sugestões de correção na página de detalhes do alerta, baseadas nos seus scripts, modelos e playbooks. Este é o padrão para todas as organizações; uma organização pode substituí-lo na própria aba de IA.",
         "enabled": "Gerar correções sugeridas",
         "enabledDescription": "Permite que técnicos gerem correções sugeridas para um alerta na página de detalhes."
       }
@@ -4105,7 +4105,7 @@
     "enforceSSOOnlyLogin": "Aplicar login somente SSO",
     "usersMustUseSSOToSignInPasswordLoginWillBeDisabled": "Os usuários devem usar o SSO para fazer login. O login com senha será desativado.",
     "trustThisProvidersMFA": "Confiar na MFA deste provedor",
-    "trustThisProvidersMFAHelperText": "Quando seu provedor de identidade informa que a autenticação multifator foi usada (`amr: mfa`), a MFA é considerada satisfeita no Breeze. Seu IdP deve incluir a declaração `amr` em seu token de ID — a maioria exige que isso seja habilitado explicitamente. Desativado por padrão.",
+    "trustThisProvidersMFAHelperText": "Quando seu provedor de identidade informa que foi usada autenticação multifator ou resistente a phishing (por exemplo, uma chave de acesso) (`amr: mfa` / `amr: phr`), a MFA é considerada satisfeita no Breeze. Seu IdP deve incluir a declaração `amr` em seu token de ID — a maioria exige que isso seja habilitado explicitamente. Desativado por padrão.",
     "warningSSOEnforcementEnabled": "Aviso: aplicação de SSO ativada",
     "usersWillNotBeAbleToSignInWithPasswordsMakeSureYourSSOCo": "Os usuários não poderão fazer login com senhas. Certifique-se de que sua configuração de SSO esteja funcionando corretamente antes de ativar esta opção. Considere ter pelo menos uma conta de administrador que possa ignorar o SSO para acesso de emergência.",
     "testing": "Testando...",
@@ -4749,7 +4749,7 @@
         "killSwitch": "A detecção de anomalias está desativada para toda a plataforma pelo operador. Essas configurações terão efeito quando ela for reativada.",
         "remediation": {
           "title": "Correções sugeridas",
-          "description": "Sugestões de correção geradas por IA para os alertas desta organização. Em branco significa que o padrão do parceiro se aplica.",
+          "description": "Sugestões de correção para os alertas desta organização, baseadas nos seus scripts, modelos e playbooks. Em branco significa que o padrão do parceiro se aplica.",
           "enabled": "Gerar correções sugeridas",
           "enabledDescription": "Permite que técnicos gerem correções sugeridas para um alerta na página de detalhes.",
           "killSwitch": "As correções sugeridas foram desativadas para toda a plataforma pelo operador. Esta configuração terá efeito quando forem reativadas."
@@ -5529,6 +5529,7 @@
       "sendInvite": "Falha ao enviar convite",
       "updateUser": "Falha ao atualizar o usuário",
       "updateRole": "Falha ao atualizar a função",
+      "updateOrgAccess": "Falha ao atualizar o acesso às organizações",
       "removeUser": "Falha ao remover usuário",
       "resetMfa": "Falha ao redefinir a MFA"
     },

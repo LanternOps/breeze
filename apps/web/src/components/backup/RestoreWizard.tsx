@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -39,7 +39,10 @@ type Snapshot = {
   id: string;
   label: string;
   size?: string;
-  status?: string;
+  sizeBytes?: number | null;
+  // /backup/snapshots carries no status (a snapshot row only exists once its
+  // backup completed), so the card shows when it was captured instead (#6496).
+  createdAt?: string | null;
   files?: SnapshotFile[];
 };
 
@@ -91,7 +94,7 @@ function flattenSnapshotTree(nodes: SnapshotTreeItem[]): SnapshotFile[] {
           id: entry.path,
           path: entry.path,
           name: entry.name,
-          size: typeof entry.sizeBytes === 'number' ? `${entry.sizeBytes} B` : undefined,
+          size: typeof entry.sizeBytes === 'number' ? formatBytes(entry.sizeBytes) : undefined,
         });
         continue;
       }
@@ -139,13 +142,33 @@ async function readApiError(response: Response, fallback: string): Promise<strin
   }
 }
 
-export default function RestoreWizard() {
+type RestoreWizardProps = {
+  /**
+   * Carried from `SnapshotBrowser` via the `#restore?snapshot=…&paths=…` hash
+   * (#6456) — pre-populates the snapshot + selection instead of making the
+   * operator re-pick the same files they already checked off there.
+   */
+  initialSnapshotId?: string;
+  initialSelectedPaths?: string[];
+};
+
+export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths }: RestoreWizardProps = {}) {
   const { t } = useTranslation('backup');
   const [step, setStep] = useState(0);
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
-  const [snapshotId, setSnapshotId] = useState('');
-  const [restoreType, setRestoreType] = useState<RestoreType>('full');
-  const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
+  const [snapshotId, setSnapshotId] = useState(initialSnapshotId ?? '');
+  const [restoreType, setRestoreType] = useState<RestoreType>(
+    initialSelectedPaths && initialSelectedPaths.length > 0 ? 'selective' : 'full'
+  );
+  const [selectedFiles, setSelectedFiles] = useState<Set<string>>(
+    () => new Set(initialSelectedPaths ?? [])
+  );
+  // The snapshot-change effect below clears the selection on every
+  // `snapshotId` change so a user picking a *different* snapshot in step 0
+  // doesn't drag a stale selection along. That would also fire on mount and
+  // wipe out the selection carried in via `initialSelectedPaths` the instant
+  // the wizard renders — skip its first run.
+  const isFirstSnapshotChange = useRef(true);
   const [destination, setDestination] = useState<DestinationType>('original');
   // #6349: this defaulted to the demo path '/restore/nyc-db-14'. The wizard
   // was unreachable, so nobody saw it; now that it is mounted, a pre-filled
@@ -223,6 +246,10 @@ export default function RestoreWizard() {
   }, [snapshotId, snapshots]);
 
   useEffect(() => {
+    if (isFirstSnapshotChange.current) {
+      isFirstSnapshotChange.current = false;
+      return;
+    }
     setSelectedFiles(new Set());
   }, [snapshotId]);
 
@@ -441,8 +468,12 @@ export default function RestoreWizard() {
                       )}
                     >
                       <div className="flex items-center justify-between text-xs text-muted-foreground">
-                        <span>{snapshot.size ?? '--'}</span>
-                        <span>{snapshot.status ?? 'Ready'}</span>
+                        <span>
+                          {typeof snapshot.sizeBytes === 'number'
+                            ? formatBytes(snapshot.sizeBytes)
+                            : snapshot.size ?? '--'}
+                        </span>
+                        {snapshot.createdAt ? <span>{formatDateTime(snapshot.createdAt)}</span> : null}
                       </div>
                       <div className="mt-2 text-sm font-semibold text-foreground">
                         {snapshot.label}
@@ -541,7 +572,7 @@ export default function RestoreWizard() {
               <div>
                 <h3 className="text-lg font-semibold text-foreground">{t('restoreWizard.destination')}</h3>
                 <p className="text-sm text-muted-foreground">
-                  {t('restoreWizard.restoreToTheOriginalLocationOrProvideAn')} </p>
+                  {t('restoreWizard.restoreToAStagingFolderOrProvideAn')} </p>
               </div>
               <div className="grid gap-4 md:grid-cols-2">
                 <button
@@ -555,8 +586,8 @@ export default function RestoreWizard() {
                 >
                   <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
                     <RotateCcw className="h-4 w-4 text-primary" />
-                    {t('restoreWizard.originalLocation')} </div>
-                  <p className="mt-2 text-xs text-muted-foreground">{t('restoreWizard.restoreFilesInPlace')}</p>
+                    {t('restoreWizard.stagingFolder')} </div>
+                  <p className="mt-2 text-xs text-muted-foreground">{t('restoreWizard.stagingFolderHint')}</p>
                 </button>
                 <button
                   onClick={() => setDestination('alternate')}
@@ -619,7 +650,9 @@ export default function RestoreWizard() {
                     <MapPin className="h-4 w-4 text-primary" />
                     {t('restoreWizard.destination')} </div>
                   <p className="mt-2 text-xs text-muted-foreground">
-                    {destination === 'original' ? 'Original path' : 'Alternate path'}
+                    {destination === 'original'
+                      ? t('restoreWizard.stagingFolder')
+                      : `Alternate path: ${alternatePath.trim() || '(none entered)'}`}
                   </p>
                 </div>
                 <div className="rounded-md border border-dashed bg-muted/30 p-4">
@@ -742,7 +775,7 @@ export default function RestoreWizard() {
                   <div className="rounded-md border border-dashed bg-muted/20 p-4">
                     <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('restoreWizard.commandTarget')}</p>
                     <p className="mt-2 text-xs text-foreground">{t('restoreWizard.command')} {latestKnownRestore.commandId ?? '--'}</p>
-                    <p className="mt-1 text-xs text-foreground">{t('restoreWizard.targetPath')} {latestKnownRestore.targetPath ?? 'Original location'}</p>
+                    <p className="mt-1 text-xs text-foreground">{t('restoreWizard.targetPath')} {latestKnownRestore.targetPath ?? t('restoreWizard.stagingFolder')}</p>
                     <p className="mt-1 text-xs text-foreground">{t('restoreWizard.completed')} {formatTimestamp(latestKnownRestore.completedAt)}</p>
                   </div>
                   <div className="rounded-md border border-dashed bg-muted/20 p-4">

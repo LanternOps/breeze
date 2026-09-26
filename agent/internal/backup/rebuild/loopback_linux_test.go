@@ -5,12 +5,50 @@ package rebuild
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+// pollBlkid runs probe (blkid -o export on dev) until it returns non-empty
+// output with no error, or timeout elapses. A freshly (re)attached loop
+// device's partition nodes are created asynchronously by udev after
+// `losetup --partscan`, so a single blkid can race the node (#6827). On
+// timeout the error names the device and the last output/error so a real
+// regression (bad partition table) is distinguishable from the race.
+func pollBlkid(dev string, timeout, interval time.Duration, probe func(string) ([]byte, error)) (string, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		out, err := probe(dev)
+		if err == nil && len(strings.TrimSpace(string(out))) > 0 {
+			return string(out), nil
+		}
+		if time.Now().After(deadline) {
+			return "", fmt.Errorf("blkid %s: no output within %s (last output %q, err %v)", dev, timeout, out, err)
+		}
+		time.Sleep(interval)
+	}
+}
+
+// blkidExport polls blkid for a loop-device partition; on failure it
+// attaches lsblk and /dev/loop* listings for diagnosis.
+func blkidExport(t *testing.T, dev string) string {
+	t.Helper()
+	_, _ = exec.Command("udevadm", "settle", "--timeout=15").CombinedOutput()
+	out, err := pollBlkid(dev, 15*time.Second, 100*time.Millisecond, func(d string) ([]byte, error) {
+		return exec.Command("blkid", "-o", "export", d).CombinedOutput()
+	})
+	if err != nil {
+		lsblk, _ := exec.Command("lsblk", "-o", "NAME,TYPE,SIZE,FSTYPE,UUID").CombinedOutput()
+		nodes, _ := filepath.Glob("/dev/loop*")
+		t.Fatalf("%v\nlsblk:\n%s\n/dev/loop*: %v", err, lsblk, nodes)
+	}
+	return out
+}
 
 // TestRun_LoopbackRealSystem runs only as root with
 // BREEZE_REBUILD_LOOP_TEST=1 (CI: a privileged step in the test-agent job;
@@ -43,12 +81,12 @@ func TestRun_LoopbackRealSystem(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = detach() }()
-	out, _ := exec.Command("blkid", "-o", "export", partitionDevice(dev, 3)).CombinedOutput()
-	if !strings.Contains(string(out), "UUID="+testRootFSUUID) || !strings.Contains(string(out), "TYPE=ext4") {
+	out := blkidExport(t, partitionDevice(dev, 3))
+	if !strings.Contains(out, "UUID="+testRootFSUUID) || !strings.Contains(out, "TYPE=ext4") {
 		t.Fatalf("root partition: %s", out)
 	}
-	out, _ = exec.Command("blkid", "-o", "export", partitionDevice(dev, 1)).CombinedOutput()
-	if !strings.Contains(string(out), "UUID=ABCD-1234") || !strings.Contains(string(out), "TYPE=vfat") {
+	out = blkidExport(t, partitionDevice(dev, 1))
+	if !strings.Contains(out, "UUID=ABCD-1234") || !strings.Contains(out, "TYPE=vfat") {
 		t.Fatalf("efi partition: %s", out)
 	}
 	mnt := filepath.Join(dir, "verify")

@@ -255,16 +255,30 @@ lifetime as one created in the UI (30 days unless
 | `POST` | `/alerts/:id/dismiss` | Permanently dismiss an alert. Terminal and valid from any status (including `resolved`); dismissed alerts are hidden from `GET /alerts` unless you filter to `status=dismissed`. Returns `409` if the alert was already dismissed — including when a concurrent caller dismissed it first, in which case `dismissedAt`/`dismissedBy` name that caller, not this one |
 | `POST` | `/alerts/bulk` | Bulk state change for up to 100 alerts — `action` is one of `acknowledge`, `resolve`, `suppress`, or `dismiss` |
 
-### Alert Rules
+### Monitor definitions
+
+Create alert conditions with `POST /monitor-definitions`, or use the AI tool
+`manage_monitor_definitions`. Attach definitions on a configuration policy's
+**Monitors** tab. See [Monitors](/features/monitors/) for deployment and testing.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/monitor-definitions` | List monitor definitions |
+| `POST` | `/monitor-definitions` | Create a monitor definition |
+| `GET` | `/monitor-definitions/:id` | Get a monitor definition |
+| `PATCH` | `/monitor-definitions/:id` | Update a monitor definition |
+| `DELETE` | `/monitor-definitions/:id` | Delete a monitor definition |
+| `POST` | `/monitor-definitions/:id/test` | Test a monitor |
+
+### Legacy alert rules
+
+Legacy rule write endpoints are retired and return `410 Gone`, including rule
+tests. Read endpoints remain available for alert history:
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/alerts/rules` | List alert rules |
 | `GET` | `/alerts/rules/:id` | Get alert rule |
-| `POST` | `/alerts/rules` | Create alert rule |
-| `PATCH` | `/alerts/rules/:id` | Update alert rule |
-| `DELETE` | `/alerts/rules/:id` | Delete alert rule |
-| `POST` | `/alerts/rules/:id/test` | Test alert rule |
 
 ### Notification Channels
 
@@ -287,13 +301,15 @@ lifetime as one created in the UI (30 days unless
 
 ## Alert Templates & Correlation
 
+Legacy template and template-rule writes, including toggles, are retired and
+return `410 Gone`. Create conditions with `POST /monitor-definitions` and attach
+them on the policy **Monitors** tab. Template reads remain available for history;
+correlation endpoints remain active.
+
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/alert-templates/templates` | List templates |
 | `GET` | `/alert-templates/templates/built-in` | List built-in templates |
-| `POST` | `/alert-templates/templates` | Create template |
-| `PATCH` | `/alert-templates/templates/:id` | Update template |
-| `DELETE` | `/alert-templates/templates/:id` | Delete template |
 | `GET` | `/alert-templates/correlations` | List correlation rules |
 | `GET` | `/alert-templates/correlations/groups` | Get correlation groups |
 | `POST` | `/alert-templates/correlations/analyze` | Analyze correlations |
@@ -429,7 +445,8 @@ The vulnerabilities dashboard is a fleet-wide, fix-first queue. The `/software` 
 |---|---|---|
 | `GET` | `/vulnerabilities` | List open findings, one row per CVE (By CVE view) |
 | `GET` | `/vulnerabilities/software` | List findings grouped by remediation unit (By software view) |
-| `GET` | `/vulnerabilities/software/:groupKey` | Devices and findings within one software group |
+| `GET` | `/vulnerabilities/software/:groupKey` | One software group: per-device rollup, installed-version breakdown, and per-CVE device counts |
+| `GET` | `/vulnerabilities/software/:groupKey/devices/:deviceId` | One device's findings within a software group |
 | `GET` | `/vulnerabilities/stats` | Priority stat-card counts (Critical open, KEV exposure, Patch ready, Accepted expiring soon) |
 | `GET` | `/vulnerabilities/:cveId/devices` | Devices affected by a specific CVE |
 | `POST` | `/vulnerabilities/remediate` | Schedule the fixing patch across affected devices (requires `devices:execute` + MFA) |
@@ -1323,7 +1340,7 @@ A few mounted route groups are documented on their feature pages rather than rep
 | `/backup` | Device backup, restore, boot-media, and SLA endpoints. See [Backup Overview](/backup/overview/). |
 | `/ai/agents`, `/ai/agents/schedules`, `/ai/operator` | Autonomous scheduled AI agents (triage, sweeps, reports) — distinct from the interactive `/ai` chat assistant above. See [AI Agents](/features/ai-agents/). |
 | `/s1`, `/huntress` | SentinelOne and Huntress EDR integration endpoints (credentials, mappings, webhooks, sync). See [EDR Integrations](/features/edr-integrations/). |
-| `/m365`, `/onedrive`, `/office-addin` | Microsoft 365 tenant connection, Graph sync, OneDrive helper, and Office add-in endpoints. See [Identity Integrations (M365)](/features/identity-integrations/) and [OneDrive Helper](/features/onedrive-helper/). |
+| `/m365`, `/onedrive`, `/office-addin` | Microsoft 365 tenant connection, Graph sync, OneDrive helper, and Office add-in endpoints. See [Cloud Tenant Integrations (M365)](/features/identity-integrations/) and [OneDrive Helper](/features/onedrive-helper/). |
 
 ## Search
 

@@ -332,6 +332,14 @@
       "awaiting": "Aguardando a resposta do agente…",
       "truncated": "Saída truncada — consulte o histórico de scripts do dispositivo para ver o texto completo."
     },
+    "commandOutput": {
+      "show_one": "Mostrar saída do comando",
+      "show_other": "Mostrar saída do comando ({{count}})",
+      "hide_one": "Ocultar saída do comando",
+      "hide_other": "Ocultar saída do comando ({{count}})",
+      "label": "Comando (ação {{index}})",
+      "truncated": "Saída truncada — o texto completo não é exibido nesta visualização."
+    },
     "errors": {
       "cancelRun": "Não foi possível cancelar a execução."
     }

@@ -8,10 +8,10 @@ import { requireMfa, requirePermission, requireScope } from '../../middleware/au
 import { sqlInstances, backupChains } from '../../db/schema/applicationBackup';
 import {
   executeCommand,
-  queueCommandForExecution,
   CommandTypes,
 } from '../../services/commandQueue';
 import { PERMISSIONS } from '../../services/permissions';
+import { dispatchTrackedDbRestore } from './dbRestoreJob';
 import { resolveScopedOrgId } from './helpers';
 import { resolveAllBackupAssignedDevices, resolveBackupConfigForDevice, effectiveBackupModes } from '../../services/featureConfigResolver';
 import { backupCommandResultSchema } from './resultSchemas';
@@ -539,37 +539,45 @@ mssqlRoutes.post(
     // let the stale command reaper own the deadline. The agent already reports
     // its terminal result asynchronously over the command-result WS path —
     // nothing on the agent side needs to change.
-    const queued = await queueCommandForExecution(
-      payload.deviceId,
-      CommandTypes.MSSQL_RESTORE,
-      {
-        instance:
-          payload.instance
-          ?? (
-            typeof metadata.instance === 'string'
-              ? metadata.instance
-              : typeof metadata.instanceName === 'string'
-                ? metadata.instanceName
-                : 'MSSQLSERVER'
-          ),
+    const instance =
+      payload.instance
+      ?? (
+        typeof metadata.instance === 'string'
+          ? metadata.instance
+          : typeof metadata.instanceName === 'string'
+            ? metadata.instanceName
+            : 'MSSQLSERVER'
+      );
+    // #6974: track the restore in a restore_jobs row (linked by command id) so
+    // the terminal result is persisted by commandResultHandlers.mssql_restore.
+    const queued = await dispatchTrackedDbRestore({
+      orgId,
+      snapshotId: snapshot.id,
+      deviceId: payload.deviceId,
+      userId: auth?.user?.id,
+      commandType: CommandTypes.MSSQL_RESTORE,
+      engine: 'mssql',
+      targetConfig: { instance, targetDatabase: payload.targetDatabase, noRecovery: payload.noRecovery ?? false },
+      buildPayload: (restoreJobId) => ({
+        restoreJobId,
+        instance,
         snapshotId: snapshot.providerSnapshotId,
         backupFileName,
         targetDatabase: payload.targetDatabase,
         noRecovery: payload.noRecovery,
         provider: backupProviderConfig.provider,
         providerConfig: backupProviderConfig.providerConfig,
-      },
-      { userId: auth?.user?.id }
-    );
+      }),
+    });
 
-    if (!queued.command) {
-      const error = queued.error || 'Failed to dispatch MSSQL restore';
-      return c.json({ error }, mapDispatchErrorStatus(error) as any);
+    if (!queued.ok) {
+      return c.json({ error: queued.error }, mapDispatchErrorStatus(queued.error) as any);
     }
 
     return c.json({
       data: {
         commandId: queued.command.id,
+        restoreJobId: queued.restoreJobId,
         status: queued.command.status,
         deviceId: payload.deviceId,
         snapshotId: snapshot.id,

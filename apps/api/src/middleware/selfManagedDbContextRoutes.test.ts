@@ -21,6 +21,10 @@ describe('isSelfManagedDbContextRoute', () => {
     // invoice pay route above. Until registered, the portal auth middleware
     // pinned the request tx AND a system tx across the Stripe round-trip.
     ['POST', '/api/v1/portal/quotes/def-456/pay'],
+    // Customer-portal verify-on-return (#7065): the Stripe retrieve must not run
+    // under the portal request transaction.
+    ['POST', '/api/v1/portal/invoices/def-456/settle'],
+    ['POST', '/api/v1/portal/invoices/def-456/settle/'],
     ['POST', '/api/v1/portal/quotes/def-456/pay/'],
     ['post', '/api/v1/portal/quotes/def-456/pay'], // method is case-insensitive
     ['GET', '/api/v1/portal/network/overview'],
@@ -191,11 +195,23 @@ describe('isSelfManagedDbContextRoute', () => {
     // contexts; it must own its context so that probe isn't inside a held tx.
     ['POST', '/api/v1/tickets/mailbox/connect/gmail'],
     ['POST', '/api/v1/tickets/mailbox/connect/gmail/'],
+    // #6597 — manual backup runs create backup_jobs rows and enqueue their
+    // dispatch. Under the ambient request transaction the backup worker read
+    // the row before this request committed, could not see it, and the row
+    // was stranded `pending` until the stale reaper failed it.
+    ['POST', '/api/v1/backup/jobs/run/device-1'],
+    ['POST', '/api/v1/backup/jobs/run/device-1/'],
+    ['POST', '/api/v1/backup/jobs/run-all'],
+    ['POST', '/api/v1/backup/jobs/run-all/'],
+    ['post', '/api/v1/backup/jobs/run-all'], // method is case-insensitive
   ];
 
   const NO_MATCH: ReadonlyArray<[string, string, string]> = [
     ['GET', '/api/v1/configuration-policies/policy-1/patch-job', 'wrong method (only POST opts out)'],
     ['POST', '/api/v1/configuration-policies/policy-1/patch-settings', 'sibling route keeps the ambient tx'],
+    ['GET', '/api/v1/backup/jobs/run-all/preview', 'read-only preview keeps the ambient tx'],
+    ['POST', '/api/v1/backup/jobs/job-1/cancel', 'cancel enqueues nothing'],
+    ['POST', '/api/v1/backup/jobs/run/device-1/extra', 'deeper path is not the run route'],
     // #6593 — the Microsoft mailbox /connect builds a consent URL with no
     // server-side Graph call, so it keeps the ambient tx; only the Gmail sibling
     // (which probes Google at connect time) opts out.
@@ -222,6 +238,8 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/invoices/abc-123/pay-link/extra', 'extra path segment must not match'],
     ['POST', '/api/v1/invoices//pay-link', 'empty id segment must not match'],
     ['POST', '/api/v1/portal/invoices/def-456/pay/confirm', 'deeper portal path must not match'],
+    ['GET', '/api/v1/portal/invoices/def-456/settle', 'portal settle is POST-only'],
+    ['POST', '/api/v1/portal/invoices//settle', 'empty id segment must not match'],
     ['GET', '/api/v1/portal/quotes/def-456/pay', 'portal quote pay is POST-only'],
     ['POST', '/api/v1/portal/quotes/def-456/accept', 'accept/decline are DB-only and keep the ambient org tx'],
     ['POST', '/api/v1/portal/quotes/def-456/decline', 'accept/decline are DB-only and keep the ambient org tx'],
@@ -422,4 +440,67 @@ it('self-manages the Graph binding POST but not ordinary verification writes', (
   expect(isSelfManagedDbContextRoute('DELETE', `${path}/b`)).toBe(false);
   expect(isSelfManagedDbContextRoute('POST', '/api/v1/orgs/o/caller-verifications')).toBe(false);
   expect(isSelfManagedDbContextRoute('PUT', '/api/v1/orgs/o/caller-verification-policy')).toBe(false);
+});
+
+// #7103 — manual Run Script creates its rows in a short committed context and
+// sends only after that commit, so it cannot run inside the request tx. Only the
+// execute POST opts out; the script's other routes keep the ambient tx.
+it('self-manages POST /scripts/:id/execute and no sibling script route', () => {
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/scripts/abc-123/execute')).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/scripts/abc-123/execute/')).toBe(true);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/scripts/abc-123/execute')).toBe(false);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/scripts/abc-123/executions')).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/scripts/abc-123/duplicate')).toBe(false);
+});
+
+// #7109 — the mobile quick-action POST and the remediation execute POST both
+// reach executeScriptOnDevices, which must commit its rows before sending.
+// Only those two POSTs opt out; their sibling routes keep the ambient tx.
+it('self-manages POST /mobile/devices/:id/actions and no sibling mobile route', () => {
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/mobile/devices/abc-123/actions')).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/mobile/devices/abc-123/actions/')).toBe(true);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/mobile/devices/abc-123/actions')).toBe(false);
+  expect(isSelfManagedDbContextRoute('PATCH', '/api/v1/mobile/devices/abc-123/settings')).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/mobile/alerts/abc-123/acknowledge')).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/devices/abc-123/actions')).toBe(false);
+});
+
+it('self-manages POST /remediation-suggestions/:id/execute and no sibling route', () => {
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/remediation-suggestions/abc-123/execute')).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/remediation-suggestions/abc-123/execute/')).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/remediation-suggestions/abc-123/elevation-request')).toBe(false);
+  expect(isSelfManagedDbContextRoute('PATCH', '/api/v1/remediation-suggestions/abc-123')).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/remediation-suggestions/generate')).toBe(false);
+});
+
+// #3127 — the four chat message-send routes may settle a turn blocked on
+// approval waits and then wait (bounded) for it to conclude. That wait does no
+// DB work, so it must not run inside a held request transaction: each route
+// owns its DB context and runs the wait between two short ones. Only the
+// message-send POST opts out — every sibling chat route keeps the ambient tx.
+describe('#3127 chat message-send routes', () => {
+  const SID = '11111111-1111-4111-8111-111111111111';
+  it.each([
+    ['POST', `/api/v1/ai/sessions/${SID}/messages`],
+    ['POST', `/api/v1/ai/sessions/${SID}/messages/`],
+    ['post', `/api/v1/ai/sessions/${SID}/messages`],
+    ['POST', `/api/v1/ai/script-builder/sessions/${SID}/messages`],
+    ['POST', `/api/v1/client-ai/sessions/${SID}/messages`],
+    ['POST', `/api/v1/helper/chat/sessions/${SID}/messages`],
+  ])('opts out: %s %s', (method, path) => {
+    expect(isSelfManagedDbContextRoute(method, path)).toBe(true);
+  });
+
+  it.each([
+    ['GET', `/api/v1/ai/sessions/${SID}/messages`, 'history read keeps the ambient tx'],
+    ['GET', `/api/v1/client-ai/sessions/${SID}/messages`, 'history read keeps the ambient tx'],
+    ['GET', `/api/v1/helper/chat/sessions/${SID}/messages`, 'history read keeps the ambient tx'],
+    ['POST', `/api/v1/ai/sessions/${SID}/approve/22222222-2222-4222-8222-222222222222`, 'approve keeps the ambient tx'],
+    ['POST', `/api/v1/ai/sessions/${SID}/interrupt`, 'interrupt keeps the ambient tx'],
+    ['POST', `/api/v1/helper/chat/sessions/${SID}/tool-results`, 'tool-results keeps the ambient tx'],
+    ['POST', `/api/v1/ai/sessions/${SID}/messages/extra`, 'extra segment must not match'],
+    ['POST', '/api/v1/ai/sessions//messages', 'empty session id must not match'],
+  ])('keeps ambient tx: %s %s (%s)', (method, path) => {
+    expect(isSelfManagedDbContextRoute(method, path)).toBe(false);
+  });
 });

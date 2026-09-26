@@ -10,8 +10,16 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ScrollView } from 'react-native-gesture-handler';
 
 import { useAppDispatch, useAppSelector } from '../../store';
-import { approve, deny, markExpired, reportSuspicious } from '../../store/approvalsSlice';
-import { selectFocusedApproval } from '../../navigation/approvalTakeover';
+import {
+  approve,
+  deferFocused,
+  deny,
+  focusNext,
+  focusPrev,
+  markExpired,
+  reportSuspicious,
+} from '../../store/approvalsSlice';
+import { selectFocusedApproval, selectQueuePosition } from '../../navigation/approvalTakeover';
 import { useApprovalTheme, type, spacing, palette } from '../../theme';
 import { duration, ease, haptic } from '../../lib/motion';
 import { track } from '../../lib/analytics';
@@ -46,6 +54,11 @@ export function ApprovalScreen() {
   // #5172: shared with ApprovalGate so the takeover Modal's visibility and
   // this screen's content branch can never drift apart — see approvalTakeover.ts.
   const focused = useAppSelector((s) => selectFocusedApproval(s.approvals));
+  // #6212: "2 of 5" pager, shown only when more than one approval is pending
+  // so the single-pending takeover is unchanged. Primitive selectors keep it
+  // from re-rendering on unrelated store updates.
+  const queueIndex = useAppSelector((s) => selectQueuePosition(s.approvals)?.index ?? 0);
+  const queueTotal = useAppSelector((s) => selectQueuePosition(s.approvals)?.total ?? 0);
   const inFlight = useAppSelector((s) =>
     focused ? (s.approvals.decisionInFlight[focused.id] ?? null) : null
   );
@@ -335,6 +348,56 @@ export function ApprovalScreen() {
           </Pressable>
         </View>
 
+        {queueTotal > 1 ? (
+          <View
+            testID="approval-queue-nav"
+            style={{
+              paddingHorizontal: spacing[6],
+              paddingTop: spacing[3],
+              flexDirection: 'row',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+            }}
+          >
+            <Pressable
+              onPress={() => dispatch(focusPrev())}
+              disabled={inFlight !== null}
+              hitSlop={12}
+              accessibilityRole="button"
+              accessibilityLabel="Previous approval"
+            >
+              <Text style={[type.meta, { color: theme.textMd }]}>‹ Prev</Text>
+            </Pressable>
+            <View style={{ alignItems: 'center' }}>
+              <Text
+                style={[type.meta, { color: theme.textHi }]}
+                accessibilityLabel={`Approval ${queueIndex} of ${queueTotal}`}
+              >
+                {queueIndex} of {queueTotal}
+              </Text>
+              <Pressable
+                onPress={() => dispatch(deferFocused())}
+                disabled={inFlight !== null}
+                hitSlop={12}
+                accessibilityRole="button"
+                accessibilityLabel="Decide this approval later"
+                accessibilityHint="Sets this request aside and shows the next one without deciding it"
+              >
+                <Text style={[type.meta, { color: theme.brand }]}>Later</Text>
+              </Pressable>
+            </View>
+            <Pressable
+              onPress={() => dispatch(focusNext())}
+              disabled={inFlight !== null}
+              hitSlop={12}
+              accessibilityRole="button"
+              accessibilityLabel="Next approval"
+            >
+              <Text style={[type.meta, { color: theme.textMd }]}>Next ›</Text>
+            </Pressable>
+          </View>
+        ) : null}
+
         <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: spacing[16] }}>
           <RequesterRow
             clientLabel={focused.requestingClientLabel}
@@ -361,6 +424,7 @@ export function ApprovalScreen() {
 
         <View style={{ paddingBottom: insets.bottom + spacing[5] }}>
           <ApprovalButtons
+            key={focused.id}
             requestId={focused.id}
             isRecursive={isRecursive}
             inFlight={inFlight}

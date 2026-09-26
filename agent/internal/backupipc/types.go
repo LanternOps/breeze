@@ -121,6 +121,23 @@ const (
 	VerifyRunBudget      = VerifyCommandTimeout - 10*time.Minute
 )
 
+// BareMetalRebuildForwardTimeout is how long the agent waits for the helper
+// to answer a bare_metal_rebuild. It stays under the API's 24 h
+// WHOLE_MACHINE_RESTORE_TIMEOUT_MS reaper (commandTimeouts.ts) so the
+// helper's own result, not a reaper timeout, is what the server records.
+//
+// BareMetalRebuildRunBudget is the helper's absolute ceiling on one rebuild.
+// It is a backstop, not the usual way a rebuild stops: the helper also
+// stops a rebuild that makes no progress for its stall window
+// (cmd/breeze-backup/rebuild_budget.go). It MUST stay below the forward
+// timeout with room for the engine to unwind, the terminal progress post
+// and the result to cross IPC. A fixed 4 h budget here aborted every
+// restore of more than about 130k files (#6664).
+const (
+	BareMetalRebuildForwardTimeout = 23 * time.Hour
+	BareMetalRebuildRunBudget      = BareMetalRebuildForwardTimeout - 10*time.Minute
+)
+
 // BackupStopForwardTimeout is how long the agent waits for the helper's
 // backup_stop reply. BackupStopDrainTimeout is how long the helper may block
 // joining a cancelled workload's unwind before replying; it MUST stay below

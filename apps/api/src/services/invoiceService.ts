@@ -4,7 +4,7 @@ import { assertInTransaction, db, getCurrentDbAccessContext, runOutsideDbContext
 import { requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
 import {
   invoices, invoiceLines, invoiceLineDevices, invoicePayments, invoiceStripePayments, organizations, partners,
-  catalogBundleComponents, catalogItems, contracts, contractLines, timeEntries, ticketParts, tickets, ticketCategories,
+  catalogBundleComponents, catalogItems, contracts, contractLines, timeEntries, ticketParts, tickets,
   accountingEntityMappings, accountingConnections, portalBranding
 } from '../db/schema';
 import { getConnection } from './stripeConnectService';
@@ -17,7 +17,7 @@ import { snapshotCost } from './catalogPricing';
 // to keep allocation atomic with the number write inside its single transaction.
 import { formatInvoiceNumber } from './invoiceNumbers';
 import { emitInvoiceEvent } from './invoiceEvents';
-import { resolveDraftBillTo, invoiceTicketNumberSql, invoiceLineTicketNumberSql } from './invoicePdf';
+import { resolveDraftBillTo, invoiceTicketNumberSql, invoiceTicketCategorySql, invoiceLineTicketNumberSql, invoiceLineTicketSubjectSql, invoiceLineTicketCategorySql } from './invoicePdf';
 import { resolveDocumentFooter } from './documentFooter';
 import { resolveOrgTaxRate, resolveOrgTaxRateOn, OrgNotVisibleForTaxError, PartnerNotVisibleForTaxError } from './taxRateResolver';
 import { stampedPresentation } from './invoicePresentation';
@@ -757,15 +757,14 @@ export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
   const rawLines = await db.select({
     ...getTableColumns(invoiceLines),
     ticketNumber: invoiceLineTicketNumberSql(inv.status),
-    ticketSubject: tickets.subject,
-    ticketCategory: sql<string | null>`COALESCE(${ticketCategories.name}, ${tickets.category})`,
+    ticketSubject: invoiceLineTicketSubjectSql(inv.status),
+    ticketCategory: invoiceLineTicketCategorySql(inv.status),
   }).from(invoiceLines)
     .leftJoin(tickets, and(
       eq(invoiceLines.ticketId, tickets.id),
       eq(tickets.orgId, inv.orgId),
       isNull(tickets.deletedAt),
     ))
-    .leftJoin(ticketCategories, eq(tickets.categoryId, ticketCategories.id))
     .where(eq(invoiceLines.invoiceId, invoiceId))
     .orderBy(invoiceLines.sortOrder);
 
@@ -971,8 +970,8 @@ export async function getCustomerInvoice(
   const rows = await db.select({
     ticketId: invoiceLines.ticketId,
     ticketNumber: invoiceLineTicketNumberSql(inv.status),
-    ticketSubject: tickets.subject,
-    ticketCategory: sql<string | null>`COALESCE(${ticketCategories.name}, ${tickets.category})`,
+    ticketSubject: invoiceLineTicketSubjectSql(inv.status),
+    ticketCategory: invoiceLineTicketCategorySql(inv.status),
     name: invoiceLines.name,
     description: invoiceLines.description,
     quantity: invoiceLines.quantity,
@@ -984,7 +983,7 @@ export async function getCustomerInvoice(
     eq(tickets.id, invoiceLines.ticketId),
     eq(tickets.orgId, inv.orgId),
     isNull(tickets.deletedAt),
-  )).leftJoin(ticketCategories, eq(tickets.categoryId, ticketCategories.id))
+  ))
   .where(and(
     eq(invoiceLines.invoiceId, invoiceId),
     eq(invoiceLines.orgId, inv.orgId),
@@ -1555,7 +1554,15 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
     // Same join predicate as the draft readers (same org, not soft-deleted), so
     // the issued document shows exactly what the draft previewed. The lines are
     // already locked above; tickets is only read — no new lock class.
-    await db.update(invoiceLines).set({ ticketLabel: invoiceTicketNumberSql() })
+    // The group header's subject + category are frozen in the same statement
+    // (#6955 / #6674). This tx is SYSTEM scope, so the partner-axis
+    // ticket_categories row resolves whoever issues — the org-scoped portal,
+    // which cannot read that table, then renders the stamp.
+    await db.update(invoiceLines).set({
+      ticketLabel: invoiceTicketNumberSql(),
+      ticketSubject: sql`${tickets.subject}`,
+      ticketCategory: invoiceTicketCategorySql(),
+    })
       .from(tickets)
       .where(and(
         eq(invoiceLines.invoiceId, invoiceId),

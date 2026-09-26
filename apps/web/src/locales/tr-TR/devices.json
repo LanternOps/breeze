@@ -99,6 +99,9 @@
     "generatingToken": "Belirteç oluşturuluyor...",
     "multiFactorAuthenticationIsRequiredTo3": "Kurulum belirteçlerini oluşturmak için çok faktörlü kimlik doğrulama gereklidir.",
     "generateNewToken": "Yeni belirteç oluştur",
+    "generateToken": "Belirteç oluştur",
+    "cliTokenNotGenerated": "Henüz belirteç yok. Siteyi, cihaz sayısını ve süreyi seçip bir belirteç oluşturun. Her belirteç etkin bir kayıt anahtarıdır.",
+    "cliTokenSite": "Bu belirteçle kaydedilen cihazlar {{site}} sitesine katılır.",
     "singleUseValidForOneDevice": "Tek kullanımlık — tek cihaz için geçerlidir. Her ek makine için yeni bir jeton oluşturun.",
     "linux": "linux",
     "windows2": "Windows",
@@ -846,6 +849,7 @@
     }
   },
   "deviceFilesystemTab": {
+    "deviceIsOfflineScansRequireAConnectedAgent": "Cihaz çevrimdışı. Taramalar için bağlı bir aracı gerekir.",
     "resultPartial": "Kısmen tamamlandı",
     "resultSkippedLinks": "Atlanan bağlantılar: {{count}}",
     "errorAgentUpdateRequired": "Temizliği çalıştırmak için aracıyı {{minAgentVersion}} veya sonraki bir sürüme güncelleyin.",
@@ -954,7 +958,10 @@
     "historyKindFiles": "Dosya temizliği",
     "historyKindSystem": "Sistem temizliği",
     "historyReclaimed": "{{size}} geri kazanıldı",
-    "historyCandidates": "{{count}} aday",
+    "historyCandidates_one": "{{count}} aday",
+    "historyCandidates_other": "{{count}} aday",
+    "historyActions_one": "{{count}} işlem",
+    "historyActions_other": "{{count}} işlem",
     "status": {
       "previewed": "Önizlendi",
       "running": "Çalışıyor",
@@ -998,6 +1005,12 @@
     "quotedByQuotes": "Bu grup {{count}} açık teklifte fiyatlandırılıyor: {{names}}. Önce bu teklif satırlarını kaldırın.",
     "quotedByQuotesCount": "Bu grup {{count}} açık teklifte fiyatlandırılıyor. Önce bu teklif satırlarını kaldırın.",
     "failedToRunScriptOnGroups": "Komut dosyası gruplarda çalıştırılamadı",
+    "bulkScriptMembershipFailed": "{{group}} grubundaki cihazlar yüklenemedi",
+    "bulkScriptNoDevices": "Seçilen gruplarda komut dosyası çalıştırabileceğiniz cihaz yok.",
+    "bulkScriptTooManyDevices": "Seçilen gruplar {{count}} cihaz içeriyor; bir komut dosyası aynı anda en fazla {{max}} cihazda çalıştırılabilir. Daha az grup seçin.",
+    "bulkScriptNoneQueued": "Komut dosyası hiçbir cihazda kuyruğa alınmadı ({{reasons}}).",
+    "bulkScriptPartiallyQueued": "{{total}} cihazdan {{admitted}} tanesi kuyruğa alındı; {{refused}} tanesi kabul edilmedi ({{reasons}}).",
+    "bulkScriptQueued": "{{script}}, {{count}} cihazda kuyruğa alındı.",
     "failedToApplyPolicyToGroups": "Politika gruplara uygulanamadı",
     "failedToMoveDevice": "Cihaz taşınamadı",
     "loadingGroupMembership": "Grup üyeliği yükleniyor...",
@@ -1089,9 +1102,32 @@
     "primary": "Birincil",
     "ipAddress": "IP Adres",
     "macAddress": "MAC Adresi",
-    "linkSpeed": "Bağlantı Hızı"
+    "linkSpeed": "Bağlantı Hızı",
+    "memorySlotsUsed": "{{total}} yuvadan {{used}} tanesi kullanımda",
+    "memorySpeedConfigured": "{{speed}} (yapılandırılmış)",
+    "memorySpeedRated": "{{speed}} (nominal)",
+    "onPackageMemory": "İşlemci paketine entegre bellek",
+    "memoryModules": "Bellek Modülleri",
+    "memoryNotReported": "Henüz bildirilmedi — aracı güncellemesi gerekli",
+    "noMemoryModulesReported": "Bellek modülü bildirilmedi.",
+    "slot": "Yuva",
+    "capacity": "Kapasite",
+    "memoryType": "Tür",
+    "speed": "Hız",
+    "manufacturer": "Üretici",
+    "partNumber": "Parça Numarası",
+    "serialNumber": "Seri No",
+    "emptySlot": "Boş",
+    "ratedSpeed": "nominal {{speed}}"
   },
   "deviceInfoTab": {
+    "updateStuck": "{{target}} sürümüne ajan güncellemesi takılmış görünüyor: {{since}} tarihinden bu yana {{attempts}} deneme yapıldı ve cihaz hâlâ eski sürümünde. Güncelleyici her heartbeat'te yeniden deniyor; ajan günlüklerini veya hiç günlük göndermiyorsa cihazın kendisini kontrol edin.",
+    "updateOfferWithheld": "Bu cihaz için güncelleme teklifleri durduruldu ({{since}} tarihinden beri): aracı sürümünün bu sunucunun sunduğu sürümü kabul ettiği doğrulanamıyor, bu nedenle mevcut sürümünde kalıyor. Sunulan sürümün yükleyicisiyle veya sürümünü bildiren bir aracı sürümüyle kurtarın.",
+    "helperInstallIssue": {
+      "awaitingServerOffer": "Breeze Assist etkin ancak yüklü değil ({{since}} tarihinden beri): sunucu bu cihaza yüklenecek bir Breeze Assist sürümü sunmadı, bu nedenle yüklenmemiş olarak kalıyor. Bu cihazın platformu için yayımlanmış bir Breeze Assist derlemesi olup olmadığını kontrol edin.",
+      "installAbandoned": "Breeze Assist etkin ancak yüklü değil ({{since}} tarihinden beri): sunulan sürümün yüklenmesi tekrar tekrar başarısız oldu, bu nedenle ajan yeniden denemeleri duraklattı. Birkaç saat sonra veya daha yeni bir sürüm sunulduğunda yeniden deneyecek; yükleme hatası ajan günlüğünde yer alıyor.",
+      "unknown": "Breeze Assist etkin ancak yüklü değil ({{since}} tarihinden beri)."
+    },
     "gpu": "GPU",
     "text": "—",
     "failedToFetchDeviceDetails": "Cihaz ayrıntıları getirilemedi",
@@ -1374,6 +1410,7 @@
     "moveUp": "Yukarı git",
     "moveDown": "Aşağıya taşı",
     "hidden": "Gizli",
+    "customFields": "Özel Alanlar",
     "resetToDefaults": "Varsayılanlara sıfırla",
     "selected": "seçildi",
     "bulkActions": "Toplu İşlemler",
@@ -1430,6 +1467,16 @@
       "scan": "Tarama",
       "unifi": "UniFi",
       "manual": "Manuel"
+    },
+    "updateWithheld": "Güncellemeler durduruldu",
+    "updateStuck": "Güncelleme takıldı",
+    "updateStuckTooltip": "Bu cihaz bir saatten uzun süredir {{target}} sürümüne ajan güncellemesini tamamlayamadan yeniden deniyor.",
+    "updateWithheldTooltip": "Sunucu, aracı sürümünün sunulan sürümü kabul ettiği doğrulanamadığı için bu cihaza güncelleme sunmuyor. Kurtarılana kadar mevcut sürümünde kalır.",
+    "helperNotInstalled": "Yüklü değil",
+    "helperInstallIssueTooltip": {
+      "awaitingServerOffer": "Breeze Assist etkin ancak yüklü değil: sunucu bu cihaza yüklenecek hiçbir Breeze Assist sürümü sunmadı.",
+      "installAbandoned": "Breeze Assist etkin ancak yüklü değil: sunulan sürümün yüklenmesi tekrar tekrar başarısız oldu ve yeniden denemeler duraklatıldı.",
+      "unknown": "Breeze Assist etkin ancak yüklü değil."
     },
     "agentVersionRelation": {
       "equalTooltip": "Etkin sürümle eşleşiyor: {{version}}",
@@ -1634,7 +1681,12 @@
       "source": "Kaynak"
     },
     "thirdParty": "Üçüncü taraf",
-    "uncategorized": "Genel"
+    "uncategorized": "Genel",
+    "installFailure": {
+      "badge": "Kurulum başarısız",
+      "noReason": "Ajan bir neden bildirmedi",
+      "failedAt": "Son kurulum denemesi başarısız oldu: {{when}}"
+    }
   },
   "devicePerformanceGraphs": {
     "description": "Zaman içinde CPU, RAM, disk kullanımı ve ağ bant genişliği",
@@ -2243,7 +2295,8 @@
         "cpuCores": "CPU Çekirdekleri",
         "ramTotalMb": "RAM (MB)",
         "diskTotalGb": "Disk Boyutu (GB)",
-        "gpuModel": "GPU Modeli"
+        "gpuModel": "GPU Modeli",
+        "health": "Donanım sağlığı"
       },
       "network": {
         "ipAddress": "IP Adres",
@@ -2311,7 +2364,8 @@
         "cpuCores": "CPU Çekirdekleri",
         "ramTotalMb": "RAM (MB)",
         "diskTotalGb": "Disk Boyutu (GB)",
-        "gpuModel": "GPU Modeli"
+        "gpuModel": "GPU Modeli",
+        "health": "Donanım sağlığı"
       },
       "network": {
         "ipAddress": "IP Adres",
@@ -2396,7 +2450,8 @@
         "cpuCores": "CPU Çekirdekleri",
         "ramTotalMb": "RAM (MB)",
         "diskTotalGb": "Disk Boyutu (GB)",
-        "gpuModel": "GPU Modeli"
+        "gpuModel": "GPU Modeli",
+        "health": "Donanım sağlığı"
       },
       "network": {
         "ipAddress": "IP Adres",
@@ -2719,15 +2774,12 @@
         "invalidPort": "Bağlantı noktası 1 ile 65535 arasında bir tam sayı olmalıdır.",
         "pause": "Yoklamayı duraklat",
         "resume": "Yoklamayı sürdür",
-        "disable": "Tüm izlemeyi devre dışı bırak",
-        "disableTitle": "Tüm izleme devre dışı bırakılsın mı?",
-        "disableMessage": "Bu varlığın SNMP yoklaması ve ağ kontrolleri devre dışı bırakılacak.",
+        "disable": "SNMP izlemeyi devre dışı bırak",
+        "disableTitle": "SNMP izleme devre dışı bırakılsın mı?",
+        "disableMessage": "Bu varlık için SNMP sorgulaması durdurulsun mu? Ağ denetimleri Monitörler altında yönetilmeye devam eder.",
         "checksTitle": "Ağ kontrolleri",
         "noChecks": "Yapılandırılmış ağ kontrolü yok.",
         "addCheck": "Kontrol ekle",
-        "removeCheck": "Kontrolü kaldır",
-        "removeCheckTitle": "Ağ kontrolü kaldırılsın mı?",
-        "removeCheckMessage": "“{{name}}” ağ kontrolü kaldırılsın mı? Bu işlem geri alınamaz.",
         "never": "hiçbir zaman",
         "leaveBlankToKeep": "Kayıtlı — mevcut değeri korumak için boş bırakın",
         "snmpVersion": "SNMP sürümü",
@@ -2770,7 +2822,8 @@
           "tcp_port": "TCP bağlantı noktası",
           "http_check": "HTTP kontrolü",
           "dns_check": "DNS kontrolü"
-        }
+        },
+        "addCheckHint": "Denetim ekle, bu varlık seçili olarak monitör düzenleyicisini açar."
       },
       "link": {
         "description": "Keşfedilen bu varlığı, aynı makineye karşılık gelen yönetilen cihaza bağlayın.",
@@ -2813,12 +2866,8 @@
         "snmpSaveFailed": "SNMP ayarları kaydedilemedi",
         "pollingPaused": "SNMP yoklaması duraklatıldı",
         "pollingResumed": "SNMP yoklaması sürdürüldü",
-        "monitoringDisabled": "Bu varlık için izleme devre dışı bırakıldı",
-        "monitoringDisableFailed": "İzleme devre dışı bırakılamadı",
-        "checkCreated": "Ağ kontrolü eklendi",
-        "checkCreateFailed": "Ağ kontrolü eklenemedi",
-        "checkRemoved": "Ağ kontrolü kaldırıldı",
-        "checkRemoveFailed": "Ağ kontrolü kaldırılamadı",
+        "monitoringDisabled": "SNMP izleme devre dışı bırakıldı",
+        "monitoringDisableFailed": "SNMP izleme devre dışı bırakılamadı",
         "siteChanged": "{{site}} sitesine taşındı.",
         "siteChangeFailed": "Varlık yeni siteye taşınamadı",
         "siteChangedUnlinked": "Aracı cihazıyla olan bağlantı kaldırıldı çünkü o cihaz farklı bir sitede.",
@@ -3451,7 +3500,6 @@
     "events": "Donanım olayları",
     "noEvents": "Donanım olayı kaydedilmedi.",
     "noComponents": "Bileşen bildirilmedi. Kaynakları kontrol edin.",
-    "all": "Tüm donanım durumları",
     "managementController": "Yönetim denetleyicisi",
     "bmcVendor": "Üretici",
     "bmcFirmware": "Donanım yazılımı",

@@ -91,6 +91,8 @@ Create a [backup policy](/backup/policies/) with the **MSSQL** mode to automate 
 3. Review and confirm.
 </Steps>
 
+The restore runs in the background. Starting it queues the command on the device and returns straight away; Breeze does not wait for SQL Server to finish, which on a large database can take hours. Follow its progress and final result like any other restore job — see [Monitoring a Restore](/backup/restoring/#monitoring-a-restore). Before v0.117.0 a SQL Server restore that ran longer than 10 minutes was reported as failed even though the agent was still working.
+
 <Aside type="caution">
   Restoring a database overwrites the target database if it already exists (`WITH REPLACE`). Restoring under a **different** name while the source database is still attached is not supported today — Breeze doesn't relocate the backup's data/log file paths (no `MOVE` clause), so the new database's files would collide with the original's. To restore a copy alongside the original, restore onto a different **instance** instead.
 </Aside>

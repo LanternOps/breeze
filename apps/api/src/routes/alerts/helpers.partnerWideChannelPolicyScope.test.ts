@@ -30,6 +30,7 @@ vi.mock('../../db/schema', () => ({
   alerts: {},
   devices: {},
   notificationChannels: { id: 'id', orgId: 'orgId', partnerId: 'partnerId' },
+  notificationChannelConfigs: { channelId: 'channelId', config: 'config' },
   escalationPolicies: { id: 'id', orgId: 'orgId', partnerId: 'partnerId' },
   organizations: { id: 'id', partnerId: 'partnerId' },
   partners: { id: 'id' },
@@ -63,6 +64,11 @@ function returnRow(row: unknown) {
     const step = () => chain;
     chain.from = step;
     chain.where = step;
+    // getNotificationChannelWithConfig chains .leftJoin().orderBy().$dynamic()
+    // before .limit(); getEscalationPolicyWithOrgCheck stops at .where()/.limit().
+    chain.leftJoin = step;
+    chain.orderBy = step;
+    chain.$dynamic = step;
     chain.limit = () => Promise.resolve(row ? [row] : []);
     return chain;
   });

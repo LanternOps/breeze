@@ -335,6 +335,12 @@ export async function suspendAgentToken(deviceId: string, reason: AgentTokenSusp
  * that outer transaction, so the route opts out and the handler opens ONE
  * org-scoped context of its own around all of its DB work, after the limiter
  * has decided (see routes/agents/elevationRequests.ts).
+ *
+ * `pam/reconciliation-bindings` (#6260) is the SAME #1105 shape as
+ * elevation-requests, split out of #6258 because it is a TWO-segment action
+ * (`/api/v1/agents/<agentId>/pam/reconciliation-bindings`), which this single-
+ * segment set cannot express — see SELF_MANAGED_DB_CONTEXT_TWO_SEGMENT_ACTIONS
+ * below instead.
  */
 const SELF_MANAGED_DB_CONTEXT_ACTIONS = new Set([
   'heartbeat',
@@ -343,6 +349,21 @@ const SELF_MANAGED_DB_CONTEXT_ACTIONS = new Set([
   'eventlogs',
   'elevation-requests',
 ]);
+
+/**
+ * The multi-segment counterpart to SELF_MANAGED_DB_CONTEXT_ACTIONS, for core
+ * agent actions shaped `/api/v1/agents/<agentId>/<segment0>/<segment1>` that
+ * self-manage their own DB context instead of relying on the request-long
+ * wrap. Each entry is the ordered pair of segments after `<agentId>`.
+ *
+ * `pam/reconciliation-bindings` (#6260) — `consumePamReconciliationRateLimit`'s
+ * per-device Redis round-trip (routes/agents/pamReconciliation.ts) ran inside
+ * the request-long wrap, the same #1105 shape as elevation-requests. The
+ * handler now opens its own org-scoped context after the limiter decides.
+ */
+const SELF_MANAGED_DB_CONTEXT_TWO_SEGMENT_ACTIONS: ReadonlyArray<readonly [string, string]> = [
+  ['pam', 'reconciliation-bindings'],
+];
 
 /**
  * Single-segment actions allowed during a TENANT (`offboarding`) drain:
@@ -988,9 +1009,22 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
   // silent zero-row read rather than an error. Now only the three core routes
   // that genuinely self-manage their context opt out; everything else,
   // extension routes included, keeps the wrap.
+  //
+  // #6260 — the two-segment counterpart. Same ABSOLUTE anchoring: exact
+  // length AND both segments must match, so a crafted extension tail
+  // (`.../agents/<id>/pam/reconciliation-bindings`) does not opt out either.
+  const isSelfManagedTwoSegmentAction = SELF_MANAGED_DB_CONTEXT_TWO_SEGMENT_ACTIONS.some(
+    ([segment0, segment1]) =>
+      isCoreAgentPath(pathSegments, agentId, CORE_AGENT_ACTION_INDEX + 2)
+      && pathSegments[CORE_AGENT_ACTION_INDEX] === segment0
+      && pathSegments[CORE_AGENT_ACTION_INDEX + 1] === segment1,
+  );
   if (
-    isCoreAgentPath(pathSegments, agentId, CORE_AGENT_ACTION_INDEX + 1)
-    && SELF_MANAGED_DB_CONTEXT_ACTIONS.has(pathSegments[CORE_AGENT_ACTION_INDEX] ?? '')
+    (
+      isCoreAgentPath(pathSegments, agentId, CORE_AGENT_ACTION_INDEX + 1)
+      && SELF_MANAGED_DB_CONTEXT_ACTIONS.has(pathSegments[CORE_AGENT_ACTION_INDEX] ?? '')
+    )
+    || isSelfManagedTwoSegmentAction
   ) {
     await next();
     return;

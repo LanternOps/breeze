@@ -32,3 +32,15 @@ export function selectFocusedApproval(
 export function selectTakeoverVisible(state: ApprovalTakeoverQueueState): boolean {
   return selectFocusedApproval(state) !== undefined;
 }
+
+/**
+ * "N of M" position of the focused approval among still-pending rows, for the
+ * takeover's pager (#6212). Null when nothing is focused.
+ */
+export function selectQueuePosition(
+  state: ApprovalTakeoverQueueState
+): { index: number; total: number } | null {
+  if (!selectFocusedApproval(state)) return null;
+  const live = state.pending.filter((a) => a.status === 'pending');
+  return { index: live.findIndex((a) => a.id === state.focusId) + 1, total: live.length };
+}

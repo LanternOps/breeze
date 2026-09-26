@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import { resetUnmatchedBackupProgressCache } from '../services/backupProgress';
 import { createHash } from 'node:crypto';
 
 // #3409 PR4a: sealing a secret envelope requires v3 (AAD-bound) encryption,
@@ -1381,6 +1382,82 @@ describe('WS lifecycle status writes — terminal-status guard (#2230)', () => {
       and(eq(devices.agentId, 'agent-123'), TERMINAL_GUARD)
     );
   });
+
+  // #4073 — every update_status is an attempt; the device row records the
+  // episode so a stuck update is visible server-side without any logs.
+  describe('update attempt record (#4073)', () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
+
+    async function sendUpdateStatus(targetVersion: unknown) {
+      const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+      await handlers.onMessage({
+        data: JSON.stringify({ type: 'update_status', targetVersion }),
+      } as any, wsMock() as any);
+    }
+
+    it('starts an episode on the first attempt', async () => {
+      const { setMock } = rigStatusUpdateCapture();
+      vi.mocked(db.select).mockReturnValue(selectAgentDevice([{
+        targetVersion: null,
+        startedAt: null,
+        lastAttemptAt: null,
+        attemptCount: null,
+      }]) as any);
+
+      await sendUpdateStatus('0.110.0');
+
+      const set = setMock.mock.calls[0]![0] as Record<string, unknown>;
+      expect(set.status).toBe('updating');
+      expect(set.updateAttemptTargetVersion).toBe('0.110.0');
+      expect(set.updateAttemptStartedAt).toBeInstanceOf(Date);
+      expect(set.updateAttemptLastAt).toBeInstanceOf(Date);
+      expect(set.updateAttemptCount).toBe(1);
+    });
+
+    it('continues the episode on a retry of the same target (start kept, count incremented)', async () => {
+      const { setMock } = rigStatusUpdateCapture();
+      const startedAt = new Date(Date.now() - 90 * 60_000);
+      vi.mocked(db.select).mockReturnValue(selectAgentDevice([{
+        targetVersion: '0.110.0',
+        startedAt,
+        lastAttemptAt: new Date(Date.now() - 60_000),
+        attemptCount: 89,
+      }]) as any);
+
+      await sendUpdateStatus('0.110.0');
+
+      const set = setMock.mock.calls[0]![0] as Record<string, unknown>;
+      expect(set.updateAttemptStartedAt).toEqual(startedAt);
+      expect(set.updateAttemptCount).toBe(90);
+    });
+
+    it('still flips the device to updating when the prior-record read fails', async () => {
+      const { setMock } = rigStatusUpdateCapture();
+      vi.mocked(db.select).mockImplementation(() => { throw new Error('read failed'); });
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        await sendUpdateStatus('0.110.0');
+      } finally {
+        errSpy.mockRestore();
+      }
+
+      const set = setMock.mock.calls[0]![0] as Record<string, unknown>;
+      expect(set.status).toBe('updating');
+      expect(set.updateAttemptTargetVersion).toBe('0.110.0');
+      expect(set.updateAttemptCount).toBe(1);
+    });
+
+    it('ignores an oversized target version instead of failing the write', async () => {
+      const { setMock } = rigStatusUpdateCapture();
+      vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+
+      await sendUpdateStatus('9'.repeat(51));
+
+      const set = setMock.mock.calls[0]![0] as Record<string, unknown>;
+      expect(set.status).toBe('updating');
+      expect(set).not.toHaveProperty('updateAttemptTargetVersion');
+    });
+  });
 });
 
 describe('agent websocket command results', () => {
@@ -2302,6 +2379,31 @@ describe('agent websocket command results', () => {
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
   });
 
+  // #5393: restore progress reuses backup_progress with a non-job commandId,
+  // emitted per file. Only the first drop may log; repeats are silent.
+  it('logs an unmatched backup_progress drop once, not per message (#5393)', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
+    const handlers = createAgentWsHandlers('agent-5393', preValidatedAgent);
+    const ws = wsMock();
+    await connectAgentSocket(handlers, ws);
+    resetUnmatchedBackupProgressCache();
+    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+
+    for (let i = 0; i < 5; i++) {
+      await handlers.onMessage({
+        data: JSON.stringify({
+          type: 'backup_progress',
+          commandId: 'restore-5393-not-a-uuid',
+          progress: { filesDone: i },
+        })
+      } as any, ws as any);
+    }
+
+    const dropLogs = debugSpy.mock.calls.filter((c) => String(c[0]).includes('Dropping backup_progress'));
+    expect(dropLogs).toHaveLength(1);
+    debugSpy.mockRestore();
+  });
+
   // H5: malformed term-* command_result is dropped without DB call
   it('drops malformed term-* command_result without touching DB (H5)', async () => {
     const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
@@ -2659,7 +2761,7 @@ describe('backup command_result non-terminal guards (guard ordering integration)
     vi.resetAllMocks();
   });
 
-  it('started-ack result bumps lastProgressAt, refreshes the dispatch TTL, and does NOT consume the expectation (job stays in-flight)', async () => {
+  it('started-ack result bumps lastKeepaliveAt, refreshes the dispatch TTL, and does NOT consume the expectation (job stays in-flight)', async () => {
     const { handlers, ws } = await connectedAgent('agent-123', preValidatedAgent);
     vi.mocked(db.select)
       .mockReturnValueOnce(selectOwnedCommandResult([]) as any) // device_commands: no row → orphaned path
@@ -2683,7 +2785,8 @@ describe('backup command_result non-terminal guards (guard ordering integration)
     // post-send write has not landed yet.
     expect(db.update).toHaveBeenCalledTimes(1);
     const setArg = updateChain.set.mock.calls[0]![0] as Record<string, unknown>;
-    expect(setArg).toHaveProperty('lastProgressAt');
+    expect(setArg).toHaveProperty('lastKeepaliveAt');
+    expect(setArg).not.toHaveProperty('lastProgressAt');
     expect(setArg.status).toBe('running');
 
     expect(refreshDispatchedExpectation).toHaveBeenCalledWith('backup', 'device-123', jobId);
@@ -2712,12 +2815,13 @@ describe('backup command_result non-terminal guards (guard ordering integration)
       })
     } as any, ws as any);
 
-    // A queued admission is liveness only: it bumps lastProgressAt and, when
+    // A queued admission is liveness only: it bumps lastKeepaliveAt and, when
     // no lifecycle signal has landed yet, demotes the worker's dispatch-time
     // running marker back to pending (guarded in SQL, see applyBackupStartedAck).
     expect(db.update).toHaveBeenCalledTimes(1);
     const setArg = updateChain.set.mock.calls[0]![0] as Record<string, unknown>;
-    expect(setArg).toHaveProperty('lastProgressAt');
+    expect(setArg).toHaveProperty('lastKeepaliveAt');
+    expect(setArg).not.toHaveProperty('lastProgressAt');
     expect(JSON.stringify(setArg.status)).toContain("'pending'::backup_status");
 
     expect(refreshDispatchedExpectation).toHaveBeenCalledWith('backup', 'device-123', jobId);

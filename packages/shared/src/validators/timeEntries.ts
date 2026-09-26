@@ -11,6 +11,45 @@ const routineBillingStatusSchema = z.enum(['not_billed', 'no_charge', 'contract'
 const CLOCK_SKEW_MS = 5 * 60_000;
 const notFarFuture = (d: Date) => d.getTime() <= Date.now() + CLOCK_SKEW_MS;
 
+/**
+ * A `z.coerce.date()` field that reports a plain "<field> is required" when
+ * the value is missing, instead of zod v4's self-contradictory "Expected
+ * date, received Date" (paper cut G2-4, #6497 — `new Date(undefined)` coerces
+ * to an Invalid Date rather than throwing, so bare `z.coerce.date()` never
+ * gets the chance to say the field is absent). A single custom issue, not a
+ * union, so it survives error formatters that unwrap `invalid_union` issues
+ * into their per-branch messages (see `apps/api/src/lib/validation.ts`
+ * `collectIssues`).
+ */
+function requiredDate(fieldName: string) {
+  return z.any().transform((val, ctx) => {
+    // `z.coerce.date()` runs `new Date(val)`, and `new Date(null)`,
+    // `new Date(false)`, and `new Date(0)` all evaluate to a "valid"
+    // 1970-01-01 epoch Date rather than throwing — so a `null`/boolean/`0`
+    // sentinel for "not set" would otherwise sail through coercion and
+    // silently create a ~56-year-long time entry instead of being rejected
+    // the same way an omitted field is. Reject every non-date-like input
+    // shape up front; only strings, finite numbers, and Date instances are
+    // allowed to reach coercion.
+    if (
+      val === undefined ||
+      val === null ||
+      typeof val === 'boolean' ||
+      val === 0 ||
+      !(typeof val === 'string' || (typeof val === 'number' && Number.isFinite(val)) || val instanceof Date)
+    ) {
+      ctx.addIssue({ code: 'custom', message: `${fieldName} is required` });
+      return z.NEVER;
+    }
+    const parsed = z.coerce.date().safeParse(val);
+    if (!parsed.success) {
+      ctx.addIssue({ code: 'custom', message: `${fieldName} must be a valid date` });
+      return z.NEVER;
+    }
+    return parsed.data;
+  });
+}
+
 // Currency is never accepted from the client on entries or parts: the server
 // stamps `currency_code` once (ticket org currency at creation / first attach,
 // partner currency when a standalone entry first carries a rate) and never
@@ -19,8 +58,8 @@ const notFarFuture = (d: Date) => d.getTime() <= Date.now() + CLOCK_SKEW_MS;
 export const createTimeEntrySchema = z.object({
   workTypeId: z.string().uuid().nullable().optional(),
   ticketId: z.string().guid().optional(),
-  startedAt: z.coerce.date().refine(notFarFuture, { message: 'startedAt cannot be in the future' }),
-  endedAt: z.coerce.date(),
+  startedAt: requiredDate('startedAt').refine(notFarFuture, { message: 'startedAt cannot be in the future' }),
+  endedAt: requiredDate('endedAt'),
   description: z.string().max(10_000).optional(),
   isBillable: z.boolean().optional(),
   hourlyRate: z.number().nonnegative().multipleOf(0.01).nullable().optional(),

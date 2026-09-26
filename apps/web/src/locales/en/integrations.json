@@ -6,6 +6,7 @@
     "loading": "Loading Customer Graph Read connection.",
     "unavailable": "Connection details are unavailable.",
     "onboardingUnavailable": "Customer Graph Read onboarding is not enabled for this organization.",
+    "notAvailableOnInstance": "Not available on this Breeze instance yet.",
     "callback": {
       "active": "Microsoft consent completed. The refreshed connection status is shown below.",
       "degraded": "Microsoft consent completed, but the connection needs attention. Refreshed details are shown below."
@@ -109,6 +110,7 @@
     "loading": "Loading Customer Graph Actions connection.",
     "unavailable": "Connection details are unavailable.",
     "onboardingUnavailable": "Customer Graph Actions onboarding is not enabled for this organization.",
+    "notAvailableOnInstance": "Not available on this Breeze instance yet.",
     "callback": {
       "active": "Microsoft consent completed. The refreshed connection status is shown below.",
       "degraded": "Microsoft consent completed, but the connection needs attention. Refreshed details are shown below."
@@ -410,7 +412,7 @@
     "notifications": "Notifications",
     "security": "Security",
     "monitoring": "Monitoring",
-    "identity": "Identity",
+    "cloudTenants": "Cloud tenants",
     "distributors": "Distributors",
     "accounting": "Accounting",
     "unifi": "UniFi",
@@ -440,7 +442,7 @@
     "providerLabel": "Provider",
     "cove": "Cove Data Protection",
     "nameLabel": "Connection name",
-    "namePlaceholder": "OliveTech Cove",
+    "namePlaceholder": "Main Cove account",
     "partnerNameLabel": "Cove partner name",
     "usernameLabel": "Username",
     "passwordLabel": "Password",

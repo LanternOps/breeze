@@ -1,7 +1,7 @@
 import './setup';
 
 import { randomUUID } from 'node:crypto';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { and, eq, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
@@ -11,6 +11,7 @@ import { clearPermissionCache } from '../../services/permissions';
 import { createOrganization, createSite, setupTestEnvironment, type TestEnvironment } from './db-utils';
 import { createAccessToken } from '../../services/jwt';
 import { getTestDb } from './setup';
+import { resolveEffectiveAgentSystem } from '../../services/aiAgents/effectivePolicy';
 
 /**
  * Real-Postgres proof for W08 (#5205, #5246): `POST /ai/operator/tasks`.
@@ -29,7 +30,9 @@ import { getTestDb } from './setup';
  *     `ai_operator_tasks`/`devices` as the `breeze_app` role, with the route's
  *     predicates as defence in depth. Only a real role can show both hold.
  *  3. **The pending cap** counts non-terminal states with a real `NOT IN`
- *     against real rows.
+ *     against real rows, takes its ceiling from the effective agent policy's
+ *     `taskMaxPendingPerOrg`, and holds under concurrent admissions only
+ *     because of the per-org advisory lock (#6590).
  *  4. **The admitted row is durable without Redis.** Redis is never touched
  *     here; the assertion is that the committed row carries
  *     `state = 'queued'` and `next_wake_at <= now()`, which is what makes the
@@ -88,10 +91,31 @@ async function post(env: TestEnvironment, payload: unknown, token?: string) {
   return { status: response.status, body: body as Record<string, unknown> };
 }
 
-async function insertAgent(orgId: string | null, createdBy: string): Promise<string> {
+/**
+ * The partner-wide triage BASELINE for `env`'s partner. The effective agent is
+ * always the partner baseline (`resolveEffectiveAgentInner` returns
+ * `partnerRow.id`); an org-owned row is only an override merged onto it, so a
+ * baseline is what makes an org able to delegate at all (#7015).
+ */
+async function insertAgent(env: TestEnvironment, limits: Record<string, number> = {}): Promise<string> {
   const [agent] = await withDbAccessContext(SYSTEM_CTX, () =>
     db.insert(aiAgents).values({
-      orgId, partnerId: null, kind: 'triage', name: 'Operator', enabled: true, createdBy,
+      orgId: null, partnerId: env.partner.id, kind: 'triage', name: 'Operator', enabled: true,
+      createdBy: env.user.id, limits,
+    }).returning(),
+  );
+  return agent!.id;
+}
+
+/** An org-owned triage OVERRIDE row for `env`'s organization. */
+async function insertOrgOverride(
+  env: TestEnvironment,
+  values: { limits?: Record<string, number>; enabled?: boolean } = {},
+): Promise<string> {
+  const [agent] = await withDbAccessContext(SYSTEM_CTX, () =>
+    db.insert(aiAgents).values({
+      orgId: env.organization.id, partnerId: null, kind: 'triage', name: 'Operator (org override)',
+      enabled: values.enabled ?? true, createdBy: env.user.id, limits: values.limits ?? {},
     }).returning(),
   );
   return agent!.id;
@@ -142,9 +166,10 @@ interface Fixture {
 
 async function seed(): Promise<Fixture> {
   const env = await setupTestEnvironment({ scope: 'organization' });
-  // ONE agent per org: `ai_agents_org_kind_uq` is unique on (org_id, kind), so
-  // the fixture's agent is reused everywhere rather than re-inserted.
-  const agentId = await insertAgent(env.organization.id, env.user.id);
+  // ONE baseline per partner: `ai_agents_partner_kind_uq` is unique on
+  // (partner_id, kind), so the fixture's agent is reused everywhere rather
+  // than re-inserted.
+  const agentId = await insertAgent(env);
   const siteId = env.site.id;
   const deviceId = await insertDevice(env.organization.id, siteId);
   return { env, deviceId, siteId, agentId };
@@ -167,11 +192,15 @@ describe('POST /ai/operator/tasks — admission against real Postgres (W08, #524
   beforeEach(() => {
     process.env.AI_OPERATOR_TASKS_ENABLED = 'true';
     process.env.AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED = 'true';
+    // The effective agent's `enabled` folds in the AI-agents kill switch; with
+    // it off every run would skip `agent_disabled`, so admission refuses.
+    vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
   });
 
   afterEach(() => {
     delete process.env.AI_OPERATOR_TASKS_ENABLED;
     delete process.env.AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED;
+    vi.unstubAllEnvs();
   });
 
   runDb('commits a queued, immediately-wakeable task row and answers 202', async () => {
@@ -237,7 +266,7 @@ describe('POST /ai/operator/tasks — admission against real Postgres (W08, #524
   runDb('the same idempotency key in a DIFFERENT org admits its own task', async () => {
     const f = await seed();
     const other = await setupTestEnvironment({ scope: 'organization' });
-    await insertAgent(other.organization.id, other.user.id);
+    await insertAgent(other);
     const otherDevice = await insertDevice(other.organization.id, other.site.id);
 
     const key = `delegate-${randomUUID()}`;
@@ -271,7 +300,7 @@ describe('POST /ai/operator/tasks — admission against real Postgres (W08, #524
       scope: 'organization',
       rolePermissions: [{ resource: 'ai_agents', action: 'read' }],
     });
-    const agentId = await insertAgent(readOnly.organization.id, readOnly.user.id);
+    const agentId = await insertAgent(readOnly);
     const deviceId = await insertDevice(readOnly.organization.id, readOnly.site.id);
 
     const res = await post(readOnly, {
@@ -395,6 +424,130 @@ describe('POST /ai/operator/tasks — admission against real Postgres (W08, #524
     // state, and admission must go through.
     const res = await post(f.env, bodyFor(f));
     expect(res.status).toBe(202);
+  });
+
+  // ---- #6590: the cap is the effective agent policy's taskMaxPendingPerOrg ----
+
+  async function fillPending(f: Fixture, count: number) {
+    await withDbAccessContext(SYSTEM_CTX, () =>
+      db.insert(aiOperatorTasks).values(Array.from({ length: count }, () => ({
+        orgId: f.env.organization.id,
+        agentId: f.agentId,
+        agentKind: 'triage',
+        agentName: 'Operator',
+        workflowKey: 'service_recovery',
+        workflowVersion: 1,
+        originKind: 'manual' as const,
+        requesterUserId: f.env.user.id,
+        objective: 'filler',
+        deviceId: f.deviceId,
+        state: 'waiting' as const,
+        deadlineAt: new Date(Date.now() + 3_600_000),
+      }))));
+  }
+
+  /**
+   * A fixture whose agent is a PARTNER BASELINE carrying `limits`. The
+   * effective agent is always the partner baseline (resolveEffectiveAgent-
+   * Inner returns `partnerRow.id`), so only a task pinned to that row gets its
+   * policy — an org-owned row alone resolves to no effective agent and every
+   * ceiling falls back to AI_AGENT_LIMIT_DEFAULTS.
+   */
+  async function seedWithPolicy(limits: Record<string, number>): Promise<Fixture> {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const agentId = await insertAgent(env, limits);
+    const deviceId = await insertDevice(env.organization.id, env.site.id);
+    return { env, deviceId, siteId: env.site.id, agentId };
+  }
+
+  // ---- #7015: the task pins the EFFECTIVE agent, never the org override ----
+
+  runDb('an org with an override pins the partner baseline, and the override tightens its limits', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const baselineId = await insertAgent(env);
+    const overrideId = await insertOrgOverride(env, { limits: { taskMaxPendingPerOrg: 1 } });
+    const deviceId = await insertDevice(env.organization.id, env.site.id);
+    const f: Fixture = { env, deviceId, siteId: env.site.id, agentId: baselineId };
+
+    const first = await post(env, bodyFor(f));
+    expect(first.status).toBe(202);
+
+    const rows = await readTasks(env.organization.id);
+    expect(rows).toHaveLength(1);
+    // Pinned to the partner baseline, which is the id run admission compares
+    // against. Pinning `overrideId` made every run skip `ownership_mismatch`.
+    expect(rows[0]!.agentId).toBe(baselineId);
+    expect(rows[0]!.agentId).not.toBe(overrideId);
+    const effective = await resolveEffectiveAgentSystem(env.organization.id, 'triage');
+    expect(effective?.agentId).toBe(rows[0]!.agentId);
+
+    // The override's tightened ceiling binds: 1 pending is AT the cap. With
+    // the override pinned, the ceiling fell back to AI_AGENT_LIMIT_DEFAULTS.
+    const second = await post(env, bodyFor(f));
+    expect(second.status).toBe(429);
+    expect(second.body.code).toBe('OPERATOR_PENDING_CAP_REACHED');
+    expect(await readTasks(env.organization.id)).toHaveLength(1);
+  });
+
+  runDb('an org with ONLY an org-owned agent (no partner baseline) is refused OPERATOR_NO_AGENT', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const overrideId = await insertOrgOverride(env);
+    const deviceId = await insertDevice(env.organization.id, env.site.id);
+    const f: Fixture = { env, deviceId, siteId: env.site.id, agentId: overrideId };
+
+    const res = await post(env, bodyFor(f));
+    expect(res.status).toBe(422);
+    expect(res.body.code).toBe('OPERATOR_NO_AGENT');
+    expect(await readTasks(env.organization.id)).toHaveLength(0);
+  });
+
+  runDb('an org override that disables the agent is refused OPERATOR_NO_AGENT', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const baselineId = await insertAgent(env);
+    await insertOrgOverride(env, { enabled: false });
+    const deviceId = await insertDevice(env.organization.id, env.site.id);
+    const f: Fixture = { env, deviceId, siteId: env.site.id, agentId: baselineId };
+
+    const res = await post(env, bodyFor(f));
+    expect(res.status).toBe(422);
+    expect(res.body.code).toBe('OPERATOR_NO_AGENT');
+    expect(await readTasks(env.organization.id)).toHaveLength(0);
+  });
+
+  runDb('an org policy tightening taskMaxPendingPerOrg is enforced: under admits, at refuses 429 with the reason', async () => {
+    const f = await seedWithPolicy({ taskMaxPendingPerOrg: 2 });
+
+    await fillPending(f, 1);
+    expect((await post(f.env, bodyFor(f))).status).toBe(202); // 1 < 2
+
+    // Now 2 pending (the filler + the one just admitted): AT the ceiling.
+    const res = await post(f.env, bodyFor(f));
+    expect(res.status).toBe(429);
+    expect(res.body.code).toBe('OPERATOR_PENDING_CAP_REACHED');
+    expect(String(res.body.error)).toContain('taskMaxPendingPerOrg');
+    expect(await readTasks(f.env.organization.id)).toHaveLength(2);
+  });
+
+  runDb('an idempotent replay is answered even when the org is at its pending ceiling', async () => {
+    const f = await seedWithPolicy({ taskMaxPendingPerOrg: 1 });
+    const body = bodyFor(f);
+
+    const first = await post(f.env, body);
+    expect(first.status).toBe(202);
+    // The org is now AT its ceiling; the same key must still replay, not 429.
+    const replay = await post(f.env, body);
+    expect(replay.status).toBe(202);
+    expect(replay.body).toMatchObject({ taskId: first.body.taskId, replayed: true });
+    expect(await readTasks(f.env.organization.id)).toHaveLength(1);
+  });
+
+  runDb('concurrent admissions cannot overshoot the pending ceiling', async () => {
+    const f = await seedWithPolicy({ taskMaxPendingPerOrg: 3 });
+
+    const results = await Promise.all(Array.from({ length: 8 }, () => post(f.env, bodyFor(f))));
+    expect(results.filter((r) => r.status === 202)).toHaveLength(3);
+    expect(results.filter((r) => r.status === 429)).toHaveLength(5);
+    expect(await readTasks(f.env.organization.id)).toHaveLength(3);
   });
 
   runDb('rejects a body carrying a forged `task` field and admits nothing', async () => {

@@ -524,6 +524,90 @@ func hasCommand(calls []recordedCommand, full string) bool {
 	return false
 }
 
+// TestRestoreSystemStateSkipsSourceBreezeAgentState is the #6436 regression:
+// the live restore must not land the source's breeze-* unit files, their
+// .wants enablement links, or /etc/breeze on the recovery target, and must
+// not `systemctl enable` the source's breeze-* units — while every other
+// unit, link and /etc file is still restored and enabled.
+func TestRestoreSystemStateSkipsSourceBreezeAgentState(t *testing.T) {
+	target := withEtcTarget(t)
+	calls := fakeCommands(t, nil)
+
+	staging := t.TempDir()
+	etc := filepath.Join(staging, "etc")
+	mustWriteFile(t, filepath.Join(etc, "breeze", "agent.yaml"), "agent_id: source-agent\n")
+	mustWriteFile(t, filepath.Join(etc, "systemd", "system", "breeze-agent.service"), "[Unit]\n")
+	mustWriteFile(t, filepath.Join(etc, "systemd", "system", "breeze-watchdog.service"), "[Unit]\n")
+	mustWriteFile(t, filepath.Join(etc, "systemd", "system", "breeze-agent.service.d", "override.conf"), "[Service]\n")
+	mustWriteFile(t, filepath.Join(etc, "systemd", "system", "seeded.service"), "[Unit]\n")
+	wants := filepath.Join(etc, "systemd", "system", "multi-user.target.wants")
+	if err := os.MkdirAll(wants, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, link := range []string{"breeze-agent.service", "breeze-watchdog.service", "seeded.service"} {
+		if err := os.Symlink("/etc/systemd/system/"+link, filepath.Join(wants, link)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustWriteFile(t, filepath.Join(staging, "services", "systemd.txt"), strings.Join([]string{
+		"UNIT FILE                             STATE",
+		"breeze-agent.service                  enabled",
+		"breeze-watchdog.service               enabled",
+		"seeded.service                        enabled",
+		"",
+		"3 unit files listed.",
+	}, "\n"))
+
+	var logBuf bytes.Buffer
+	origLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(origLogger) })
+
+	r := &linuxRestorer{}
+	if err := r.RestoreSystemState(staging); err != nil {
+		t.Fatalf("RestoreSystemState: %v", err)
+	}
+
+	mustNotExist := []string{
+		"breeze",
+		filepath.Join("systemd", "system", "breeze-agent.service"),
+		filepath.Join("systemd", "system", "breeze-watchdog.service"),
+		filepath.Join("systemd", "system", "breeze-agent.service.d"),
+		filepath.Join("systemd", "system", "multi-user.target.wants", "breeze-agent.service"),
+		filepath.Join("systemd", "system", "multi-user.target.wants", "breeze-watchdog.service"),
+	}
+	for _, rel := range mustNotExist {
+		if _, err := os.Lstat(filepath.Join(target, rel)); err == nil {
+			t.Errorf("source Breeze agent state %s was restored into target /etc, want skipped", rel)
+		}
+	}
+	mustExist := []string{
+		filepath.Join("systemd", "system", "seeded.service"),
+		filepath.Join("systemd", "system", "multi-user.target.wants", "seeded.service"),
+	}
+	for _, rel := range mustExist {
+		if _, err := os.Lstat(filepath.Join(target, rel)); err != nil {
+			t.Errorf("ordinary unit state %s was not restored: %v", rel, err)
+		}
+	}
+
+	if !containsCall(*calls, "systemctl", "seeded.service") {
+		t.Errorf("expected systemctl enable seeded.service, got %+v", *calls)
+	}
+	for _, unit := range []string{"breeze-agent.service", "breeze-watchdog.service"} {
+		if containsCall(*calls, "systemctl", unit) {
+			t.Errorf("source's %s must not be enabled on the recovery target, got %+v", unit, *calls)
+		}
+	}
+
+	logs := logBuf.String()
+	for _, want := range []string{"breeze-agent.service", "breeze-watchdog.service"} {
+		if !strings.Contains(logs, want) {
+			t.Errorf("expected the skip to be logged naming %q, got log: %s", want, logs)
+		}
+	}
+}
+
 func TestRestoreSystemStateOffline_AppliesUnderRootWithoutTouchingHost(t *testing.T) {
 	root := t.TempDir()
 	staging := t.TempDir()

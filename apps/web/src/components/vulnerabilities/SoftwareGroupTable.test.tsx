@@ -56,6 +56,19 @@ describe('SoftwareGroupTable', () => {
     expect(row).toHaveTextContent('KEV');
   });
 
+  it('leads with the device count and demotes the CVE fan-out to a sub-stat (#2262)', async () => {
+    vi.mocked(api.fetchSoftwareGroups).mockResolvedValue({ items: [group({ cveCount: 404 })], hasMore: false });
+    render(<SoftwareGroupTable filters={FILTERS} refreshKey={0} emptyVariant="filtered" onSelectGroup={() => {}} onClearFilters={() => {}} />);
+    const desktop = within(await screen.findByTestId('responsive-table-desktop'));
+    // No standalone CVEs column header any more.
+    expect(desktop.queryByRole('columnheader', { name: 'CVEs' })).toBeNull();
+    const cell = desktop.getByTestId('software-group-devices-sw:google chrome|google llc');
+    expect(cell).toHaveTextContent('14 devices');
+    expect(cell).toHaveTextContent('404 CVEs');
+    const cards = within(screen.getByTestId('responsive-table-cards'));
+    expect(cards.getByText('14 devices')).toBeInTheDocument();
+  });
+
   it('invokes onSelectGroup with the groupKey on row click', async () => {
     const onSelect = vi.fn();
     render(<SoftwareGroupTable filters={FILTERS} refreshKey={0} emptyVariant="filtered" onSelectGroup={onSelect} onClearFilters={() => {}} />);

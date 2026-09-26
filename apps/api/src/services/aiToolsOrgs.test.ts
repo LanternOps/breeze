@@ -618,6 +618,59 @@ describe('manage_organizations create_site', () => {
     expect(out.error).toMatch(/name is required/i);
     expect(mockDb.insert).not.toHaveBeenCalled();
   });
+
+  describe('device-page chat write default (#6675)', () => {
+    it('a multi-org caller with no orgId creates the site in the page org', async () => {
+      insertQueue.push([{ id: SITE_2, name: 'Branch', orgId: ORG_2 }]);
+      const out = JSON.parse(
+        await getTools().manage.handler(
+          { action: 'create_site', name: 'Branch' },
+          partnerAuth({ aiWriteDefaultOrgId: ORG_2 }),
+        )
+      );
+      expect(out.site.orgId).toBe(ORG_2);
+      expect(insertValuesSpy.mock.calls[0]![1]).toMatchObject({ orgId: ORG_2 });
+    });
+
+    it('an explicit accessible orgId still wins over the page org', async () => {
+      insertQueue.push([{ id: SITE_1, name: 'Branch', orgId: ORG_1 }]);
+      await getTools().manage.handler(
+        { action: 'create_site', orgId: ORG_1, name: 'Branch' },
+        partnerAuth({ aiWriteDefaultOrgId: ORG_2 }),
+      );
+      expect(insertValuesSpy.mock.calls[0]![1]).toMatchObject({ orgId: ORG_1 });
+    });
+
+    it('an explicit inaccessible orgId is refused even with a page org', async () => {
+      const out = JSON.parse(
+        await getTools().manage.handler(
+          { action: 'create_site', orgId: OTHER_ORG, name: 'Rogue' },
+          partnerAuth({ aiWriteDefaultOrgId: ORG_2 }),
+        )
+      );
+      expect(out.error).toMatch(/access denied/i);
+      expect(mockDb.insert).not.toHaveBeenCalled();
+    });
+
+    it('a page org the caller cannot access is no default', async () => {
+      const out = JSON.parse(
+        await getTools().manage.handler(
+          { action: 'create_site', name: 'Branch' },
+          partnerAuth({ aiWriteDefaultOrgId: OTHER_ORG }),
+        )
+      );
+      expect(out.error).toMatch(/orgId is required/i);
+      expect(mockDb.insert).not.toHaveBeenCalled();
+    });
+
+    it('a non-page chat still has to name the org (#6667)', async () => {
+      const out = JSON.parse(
+        await getTools().manage.handler({ action: 'create_site', name: 'Branch' }, partnerAuth())
+      );
+      expect(out.error).toMatch(/orgId is required: you have access to multiple organizations/);
+      expect(mockDb.insert).not.toHaveBeenCalled();
+    });
+  });
 });
 
 // ── manage_organizations: add_contact ────────────────────────────────────────

@@ -66,7 +66,7 @@ import {
   lockSoftwareCatalogForVersionInsert,
   resolveScopedOrgId,
 } from '../services/softwareVersionShared';
-import { detectionRulesSchema, defaultSilentArgsForFileType } from '@breeze/shared';
+import { detectionRulesSchema, successExitCodesSchema, defaultSilentArgsForFileType } from '@breeze/shared';
 
 export const softwareUploadRoutes = new Hono();
 
@@ -162,6 +162,7 @@ export const uploadVersionMetadataSchema = z.object({
   preInstallScript: z.string().optional(),
   postInstallScript: z.string().optional(),
   detectionRules: detectionRulesSchema.optional(),
+  successExitCodes: successExitCodesSchema.optional(),
 });
 
 const createUploadSessionSchema = uploadVersionMetadataSchema.extend({
@@ -743,6 +744,7 @@ softwareUploadRoutes.post(
           preInstallScript: meta.preInstallScript ?? null,
           postInstallScript: meta.postInstallScript ?? null,
           detectionRules: meta.detectionRules ?? null,
+          successExitCodes: meta.successExitCodes ?? [],
         });
       } catch (err) {
         captureException(err, c);

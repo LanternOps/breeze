@@ -9,39 +9,32 @@ import { db } from '../db';
 import { savedFilters } from '../db/schema';
 import { eq, and, desc, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
+import { isAiAgentPrincipal } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+import { resolveWritableToolOrgId } from './aiToolWriteOrg';
+
+/**
+ * #6911: `true` when the caller is an AI-agent principal, i.e. `auth.user.id`
+ * is an `aiAgents.id` (attribution only, never a `users` row), not a real
+ * user id. `manage_saved_filters:create` is Tier 2 (auto-execute inline, no
+ * approval step — so no approver for `USER_OWNED_RELEASE_ACTIONS` to
+ * substitute) and writes `auth.user.id` into `saved_filters.created_by` — an
+ * agent-mintable write via the `agentTier2` lane. Refuse before the write
+ * rather than let it fail as a 23503. Mirrors `aiToolsFleet.ts`'s
+ * `isAgentPrincipalCaller` (#6206).
+ */
+function isAgentPrincipalCaller(auth: AuthContext): boolean {
+  return isAiAgentPrincipal(auth);
+}
+
+/** #6911: the refusal `manage_saved_filters:create` returns to an agent principal. */
+function refuseSavedFiltersAgentPrincipal(action: string): string {
+  return JSON.stringify({
+    error: `Action "${action}" requires a real user identity and cannot be performed by an AI agent.`,
+  });
+}
 
 type AiToolTier = 1 | 2 | 3 | 4;
-
-function resolveWritableToolOrgId(
-  auth: AuthContext,
-  inputOrgId?: string
-): { orgId?: string; error?: string } {
-  if (auth.scope === 'organization') {
-    if (!auth.orgId) return { error: 'Organization context required' };
-    if (inputOrgId && inputOrgId !== auth.orgId) {
-      return { error: 'Cannot access another organization' };
-    }
-    return { orgId: auth.orgId };
-  }
-
-  if (inputOrgId) {
-    if (!auth.canAccessOrg(inputOrgId)) {
-      return { error: 'Access denied to this organization' };
-    }
-    return { orgId: inputOrgId };
-  }
-
-  if (auth.orgId) {
-    return { orgId: auth.orgId };
-  }
-
-  if (Array.isArray(auth.accessibleOrgIds) && auth.accessibleOrgIds.length === 1) {
-    return { orgId: auth.accessibleOrgIds[0] };
-  }
-
-  return { error: 'orgId is required for this operation' };
-}
 
 export function registerUITools(aiTools: Map<string, AiTool>): void {
   function registerTool(tool: AiTool): void {
@@ -132,6 +125,11 @@ export function registerUITools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'create') {
+        // #6911: no approver to substitute at Tier 2 — refuse an agent
+        // principal before the write. See isAgentPrincipalCaller.
+        if (isAgentPrincipalCaller(auth)) {
+          return refuseSavedFiltersAgentPrincipal(action);
+        }
         if (!input.name) {
           return JSON.stringify({ error: 'name is required for create action' });
         }

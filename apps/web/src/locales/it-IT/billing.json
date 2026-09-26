@@ -1006,7 +1006,8 @@
         "readOnlyHint": "Rimuovi e riaggiungi questa sezione per cambiare template, versione o variabili.",
         "updateToVersion": "Aggiorna a v{{version}}",
         "saveVariables": "Salva variabili",
-        "unresolvedWarning": "Variabili non risolte (bloccheranno l'invio): {{names}}"
+        "unresolvedWarning": "Variabili non risolte (bloccheranno l'invio): {{names}}",
+        "placementHint": "I clienti lo vedono dopo i totali, compresso finché non lo aprono. Nel PDF segue il prezzo."
       },
       "coverPage": {
         "title": "Copertina",
@@ -1446,6 +1447,18 @@
         "unavailable": "File accordo non disponibile",
         "versionFooter": "{{name}} — v{{version}}"
       },
+      "agreements": {
+        "heading": "Accordi",
+        "termsTitle": "Termini e condizioni",
+        "read": "Leggi",
+        "hide": "Nascondi",
+        "readTime": "~{{minutes}} min di lettura",
+        "sectionsReadTime_one": "{{count}} sezione · ~{{minutes}} min di lettura",
+        "sectionsReadTime_other": "{{count}} sezioni · ~{{minutes}} min di lettura",
+        "pdfDocument": "Documento PDF",
+        "unavailable": "Non disponibile",
+        "untitled": "Accordo"
+      },
       "draft": "Bozza",
       "empty": "Questa proposta non contiene ancora contenuti.",
       "imageUnavailable": "Immagine non disponibile",
@@ -1473,7 +1486,6 @@
         "tax": "Imposta",
         "unitPrice": "Prezzo unitario"
       },
-      "terms": "Termini",
       "totals": {
         "annualRecurring": "Ricorrente annuale",
         "depositDue": "Acconto dovuto",

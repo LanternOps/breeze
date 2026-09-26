@@ -97,7 +97,7 @@
     },
     "lifecycle": {
       "inaccessible": "Esta organización está {{status}}, por lo que sus datos en vivo no están disponibles. Aún puede verla en la lista de organizaciones.",
-      "unknownTitle": "Organización",
+      "unknownTitle": "Organización inactiva",
       "inaccessibleHistoryOnly": "Esta organización está inactiva, por lo que sus datos en vivo no están disponibles. Su historial de informes aún se puede consultar a continuación.",
       "genericStatusLabel": "inactiva",
       "backToList": "Volver a organizaciones"

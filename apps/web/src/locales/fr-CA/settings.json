@@ -534,7 +534,7 @@
       "saveFailed": "Impossible de modifier ce paramètre",
       "remediation": {
         "title": "Solutions proposées",
-        "description": "Suggestions de correction générées par l'IA sur la page de détail de l'alerte. C'est la valeur par défaut pour chaque organisation; une organisation peut la remplacer dans son propre onglet IA.",
+        "description": "Suggestions de correction sur la page de détail de l'alerte, tirées de vos scripts, modèles et playbooks. C'est la valeur par défaut pour chaque organisation; une organisation peut la remplacer dans son propre onglet IA.",
         "enabled": "Générer des solutions proposées",
         "enabledDescription": "Permettre aux techniciens de générer des solutions proposées pour une alerte depuis sa page de détail."
       }
@@ -4100,7 +4100,7 @@
     "enforceSSOOnlyLogin": "Imposer la connexion SSO uniquement",
     "usersMustUseSSOToSignInPasswordLoginWillBeDisabled": "Les utilisateurs doivent utiliser SSO pour se connecter. La connexion par mot de passe sera désactivée.",
     "trustThisProvidersMFA": "Faire confiance au MFA de ce fournisseur",
-    "trustThisProvidersMFAHelperText": "Lorsque votre fournisseur d'identité indique que l'authentification multifacteur a été utilisée (`amr: mfa`), le MFA est considéré comme satisfait dans Breeze. Votre IdP doit inclure la revendication `amr` dans son jeton d'ID — la plupart exigent une activation explicite. Désactivé par défaut.",
+    "trustThisProvidersMFAHelperText": "Lorsque votre fournisseur d'identité indique qu'une authentification multifacteur ou résistante à l'hameçonnage (p. ex. une clé d'accès) a été utilisée (`amr: mfa` / `amr: phr`), le MFA est considéré comme satisfait dans Breeze. Votre IdP doit inclure la revendication `amr` dans son jeton d'ID — la plupart exigent une activation explicite. Désactivé par défaut.",
     "warningSSOEnforcementEnabled": "Avertissement : application obligatoire du SSO activée",
     "usersWillNotBeAbleToSignInWithPasswordsMakeSureYourSSOCo": "Les utilisateurs ne pourront pas se connecter avec des mots de passe. Assurez-vous que votre configuration SSO fonctionne correctement avant d’activer cette option. Envisagez d’avoir au moins un compte administrateur capable de contourner SSO pour un accès d’urgence.",
     "testing": "Test...",
@@ -4744,7 +4744,7 @@
         "killSwitch": "La détection des anomalies est désactivée pour toute la plateforme par l'opérateur. Ces paramètres prendront effet lorsqu'elle sera réactivée.",
         "remediation": {
           "title": "Solutions proposées",
-          "description": "Suggestions de correction générées par l'IA pour les alertes de cette organisation. Vide signifie que la valeur par défaut du partenaire s'applique.",
+          "description": "Suggestions de correction pour les alertes de cette organisation, tirées de vos scripts, modèles et playbooks. Vide signifie que la valeur par défaut du partenaire s'applique.",
           "enabled": "Générer des solutions proposées",
           "enabledDescription": "Permettre aux techniciens de générer des solutions proposées pour une alerte depuis sa page de détail.",
           "killSwitch": "Les solutions proposées sont désactivées pour toute la plateforme par l'opérateur. Ce paramètre prendra effet lorsqu'elles seront réactivées."
@@ -5524,6 +5524,7 @@
       "sendInvite": "Impossible d’envoyer l’invitation",
       "updateUser": "Impossible de mettre à jour l’utilisateur",
       "updateRole": "Impossible de mettre à jour le rôle",
+      "updateOrgAccess": "Impossible de mettre à jour l'accès aux organisations",
       "removeUser": "Impossible de supprimer l’utilisateur",
       "resetMfa": "Impossible de réinitialiser MFA"
     },

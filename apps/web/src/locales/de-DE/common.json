@@ -15,7 +15,7 @@
     "fleetPosture": "Flottenstatus",
     "dashboard": "Dashboard",
     "devices": "Geräte & Assets",
-    "alerts": "Warnmeldungen",
+    "alerts": "Warnungen",
     "approvals": "Genehmigungen",
     "pendingApprovals": "{{count}} ausstehende Genehmigungen",
     "pendingApprovals_one": "{{count}} ausstehende Genehmigung",
@@ -28,7 +28,7 @@
     "vulnerabilities": "Schwachstellen",
     "oneDrive": "OneDrive",
     "aiForOffice": "KI für Office",
-    "networkMonitor": "Netzwerküberwachung",
+    "networkMonitor": "Netzwerk",
     "jobs": "Aufträge",
     "monitoring": "Überwachung",
     "networkDiscovery": "Netzwerkerkennung",
@@ -67,6 +67,7 @@
     "fleetDesign": "Flottendesign",
     "customFields": "Benutzerdefinierte Felder",
     "savedFilters": "Gespeicherte Filter",
+    "moreSettings": "Weitere Einstellungen",
     "users": "Benutzer",
     "roles": "Rollen",
     "sso": "SSO",
@@ -220,7 +221,7 @@
     "mcp": {
       "connecting": "Möchten Sie einen KI-Agenten verbinden?",
       "title": "KI-Agenten hierher weiterleiten",
-      "description": "Fügen Sie diese URL in Ihren MCP-Client (Claude.ai, ChatGPT, Cursor, …) ein. Sie werden hierher zurückgeleitet, um die Verbindung über OAuth zu autorisieren."
+      "description": "Fügen Sie diese URL in Ihren MCP-Client (Claude.ai, ChatGPT, Cursor, …) ein. Sie werden hierher zurückgeleitet, um die Verbindung über OAuth zu autorisieren. Bevorzugen Sie einen API-Schlüssel? Senden Sie einen X-API-Key-Header mit dem Bereich ai:read/ai:write."
     },
     "progress": {
       "count": "{{current}} von {{total}}",
@@ -873,97 +874,18 @@
       }
     },
     "monitors": {
-      "CreateMonitorForm": {
-        "actions": {
-          "createMonitor": "Monitor erstellen",
-          "creating": "Wird erstellt..."
-        },
-        "errors": {
-          "createMonitor": "Monitor konnte nicht erstellt werden",
-          "generic": "Ein Fehler ist aufgetreten",
-          "nameRequired": "Der Name ist erforderlich",
-          "targetRequired": "Das Ziel ist erforderlich"
-        },
-        "fields": {
-          "expectedBanner": "Erwartetes Banner (optional)",
-          "expectedBody": "Erwarteter Body-Inhalt (optional)",
-          "expectedStatus": "Erwarteter Status",
-          "expectedValue": "Erwarteter Wert (optional)",
-          "followRedirects": "Weiterleitungen folgen",
-          "hostname": "Aufzulösender Hostname",
-          "method": "Methode",
-          "monitorType": "Monitortyp",
-          "nameserver": "Benutzerdefinierter Nameserver (optional)",
-          "pingCount": "Anzahl der Pings",
-          "pollingInterval": "Abfrageintervall (Sekunden)",
-          "port": "Port",
-          "recordType": "Eintragstyp",
-          "target": "Ziel (IP/Hostname)",
-          "timeout": "Zeitüberschreitung (Sekunden)",
-          "url": "URL",
-          "verifySsl": "SSL prüfen"
-        },
-        "monitorTypes": {
-          "dnsCheck": {
-            "description": "Korrekte Auflösung von DNS-Einträgen prüfen",
-            "label": "DNS-Prüfung"
-          },
-          "httpCheck": {
-            "description": "HTTP-/HTTPS-Endpunkte überwachen",
-            "label": "HTTP-Prüfung"
-          },
-          "icmpPing": {
-            "description": "Erreichbarkeit eines Hosts per Ping prüfen",
-            "label": "ICMP-Ping"
-          },
-          "tcpPort": {
-            "description": "Prüfen, ob ein TCP-Port geöffnet ist und antwortet",
-            "label": "TCP-Port"
-          }
-        },
-        "placeholders": {
-          "expectedBanner": "z. B. SSH-",
-          "expectedBody": "z. B. \"status\":\"ok\"",
-          "expectedValue": "z. B. 93.184.216.34",
-          "hostname": "example.com",
-          "name": "z. B. Produktions-Webserver",
-          "nameserver": "8.8.8.8",
-          "target": "192.168.1.1 oder server.example.com",
-          "url": "https://example.com/health"
-        },
-        "subtitle": "Richten Sie eine neue Überwachungsprüfung für ein Netzwerkziel ein.",
-        "title": "Netzwerkmonitor erstellen"
-      },
       "MonitorDetailModal": {
         "actions": {
-          "cancelEdit": "Bearbeitung abbrechen",
-          "checkNow": "Jetzt prüfen",
-          "deleteMonitor": "Monitor löschen",
-          "deleting": "Wird gelöscht...",
-          "yesDelete": "Ja, löschen"
-        },
-        "alertRules": {
-          "disabled": "(deaktiviert)",
-          "title": "Warnmeldungsregeln"
+          "checkNow": "Jetzt prüfen"
         },
         "consecutiveFailures": "{{count}} aufeinanderfolgender Fehler",
         "consecutiveFailures_plural": "{{count}} aufeinanderfolgende Fehler",
-        "delete": {
-          "confirmShort": "Sind Sie sicher?"
-        },
         "errors": {
-          "deleteMonitor": "Monitor konnte nicht gelöscht werden",
           "generic": "Ein Fehler ist aufgetreten",
           "loadDetails": "Monitordetails konnten nicht geladen werden",
-          "triggerCheck": "Prüfung konnte nicht ausgelöst werden",
-          "updateMonitor": "Monitor konnte nicht aktualisiert werden"
+          "triggerCheck": "Prüfung konnte nicht ausgelöst werden"
         },
         "fallbackTitle": "Überwachen",
-        "fields": {
-          "interval": "Intervall (s)",
-          "timeout": "Zeitüberschreitung (s)",
-          "target": "Ziel-URL"
-        },
         "labels": {
           "lastChecked": "Zuletzt geprüft: {{time}}",
           "response": "Antwort: {{response}}",
@@ -991,8 +913,6 @@
           "icmpPing": "ICMP-Ping",
           "tcpPort": "TCP-Port"
         },
-        "targetResetNote": "Wenn Sie die URL ändern, wird die TLS-Beobachtung zurückgesetzt.",
-        "saved": "Monitor aktualisiert",
         "certificate": {
           "title": "Zertifikat",
           "issuer": "Aussteller",
@@ -1004,27 +924,22 @@
             "handshakeFailed": "TLS-Handshake fehlgeschlagen",
             "notTls": "Kein TLS"
           }
-        }
+        },
+        "openMonitor": "Monitor dieser Prüfung öffnen",
+        "notConverted": "Konvertierung im Tab Ergebnisse prüfen."
       },
       "NetworkMonitorList": {
         "actions": {
-          "addMonitor": "Monitor hinzufügen",
-          "deleteMonitor": "Monitor löschen",
           "runCheckNow": "Prüfung jetzt ausführen",
-          "viewDetails": "Details anzeigen"
+          "viewDetails": "Details anzeigen",
+          "newCheck": "Neue Prüfung"
         },
         "assetFilter": "Monitore werden nach dem ausgewählten Asset gefiltert.",
-        "delete": {
-          "confirmLabel": "Monitor löschen",
-          "message": "Möchten Sie diesen Monitor wirklich löschen? Dadurch werden auch alle Ergebnisse und Warnmeldungsregeln entfernt. Diese Aktion kann nicht rückgängig gemacht werden.",
-          "title": "Netzwerkmonitor löschen"
-        },
         "empty": {
-          "action": "Jetzt einen erstellen.",
-          "prefix": "Keine Netzwerkmonitore konfiguriert."
+          "action": "Monitor erstellen.",
+          "prefix": "Noch keine Netzwerkprüfungen."
         },
         "errors": {
-          "deleteMonitor": "Monitor konnte nicht gelöscht werden",
           "fetchMonitors": "Monitore konnten nicht abgerufen werden",
           "generic": "Ein Fehler ist aufgetreten",
           "triggerCheck": "Prüfung konnte nicht ausgelöst werden"
@@ -1037,11 +952,13 @@
           "interval": "Intervall",
           "lastChecked": "Zuletzt geprüft",
           "response": "Antwort",
-          "target": "Ziel"
+          "target": "Ziel",
+          "monitor": "Monitor",
+          "openMonitor": "Monitor öffnen"
         },
         "loading": "Monitore werden geladen...",
         "messages": {
-          "monitorDeleted": "Monitor gelöscht"
+          "checkQueued": "Netzwerkprüfung in die Warteschlange gestellt"
         },
         "status": {
           "degraded": "Beeinträchtigt"
@@ -1058,6 +975,19 @@
           "httpCheck": "HTTP-Prüfung",
           "icmpPing": "ICMP-Ping",
           "tcpPort": "TCP-Port"
+        },
+        "notConverted": "Nicht konvertiert"
+      },
+      "NetworkCheckConversionBanner": {
+        "pending": "{{count}} Netzwerkprüfungen erfordern eine Prüfung.",
+        "review": "Konvertierung prüfen",
+        "title": "Netzwerkprüfungen konvertieren",
+        "convert": "{{count}} konvertieren",
+        "converted": "{{count}} Netzwerkprüfungen konvertiert",
+        "failed": "Netzwerkprüfungen konnten nicht konvertiert werden",
+        "outcome": {
+          "convertible": "Konvertierbar",
+          "unconvertible": "Nicht konvertierbar"
         }
       }
     },
@@ -1846,7 +1776,7 @@
         "configureMonitoring": "Konfigurieren Sie die Überwachung",
         "pauseSnmpPolling": "SNMP-Abfrage pausieren",
         "resumeSnmpPolling": "Setzen Sie die SNMP-Abfrage fort",
-        "disableAllActiveMonitoring": "Deaktivieren Sie alle aktiven Überwachungen für dieses Asset",
+        "disableSnmpMonitoring": "SNMP-Überwachung deaktivieren",
         "needsOrgSelection": "Netzwerküberwachungs-Assets sind auf eine einzelne Organisation beschränkt.",
         "loadingAssets": "Überwachungs-Assets werden geladen...",
         "showingAllDiscoveredAssets": "Alle entdeckten Assets werden angezeigt",
@@ -1942,11 +1872,12 @@
       "MonitoringPage": {
         "tabs": {
           "assets": "Assets",
-          "checks": "Netzwerkprüfungen",
-          "templates": "SNMP Vorlagen"
+          "templates": "SNMP Vorlagen",
+          "results": "Ergebnisse"
         },
-        "title": "Überwachung",
-        "description": "SNMP-Abfragen und Netzwerkprüfungen. Die Erkennung kann in die Überwachung einfließen, aber die Überwachung wird hier verwaltet."
+        "title": "Netzwerk",
+        "description": "Assets, SNMP-Vorlagen und Ergebnisse der Netzwerkprüfungen. Prüfungen werden als Monitore unter Warnungen erstellt.",
+        "newCheck": "Neue Prüfung"
       }
     },
     "fleet": {

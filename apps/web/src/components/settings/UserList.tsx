@@ -36,6 +36,13 @@ export type User = {
   mfaProtected?: boolean;
   /** #5690 — see `MfaStatus` above. Omitted (no column) on a legacy payload. */
   mfaStatus?: MfaStatus;
+  /**
+   * #7034 — partner-scope rows only: the member's organization reach. Absent
+   * on organization-scope rows, which is what hides the Edit modal's
+   * organization-access section for them.
+   */
+  orgAccess?: 'all' | 'selected' | 'none';
+  orgIds?: string[] | null;
   /** #5690 — ISO deadline, set only when `mfaStatus === 'pending'`. */
   mfaEnrollmentDeadline?: string | null;
 };

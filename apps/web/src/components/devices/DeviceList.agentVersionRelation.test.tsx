@@ -112,3 +112,58 @@ describe('DeviceList — Agent Version column colour coding (#5285)', () => {
     expect(cell.querySelector('[data-agent-version-relation]')).toBeNull();
   });
 });
+
+describe('DeviceList — update offers withheld badge (#6449)', () => {
+  it('flags a withheld device, in the coloured-relation state', () => {
+    const dev = device('66666666-6666-6666-6666-666666666666', 'stranded', {
+      agentVersion: '0.106.0',
+      updateOfferWithheldReason: 'edition_unconfirmed',
+    });
+    render(<DeviceList devices={[dev]} pageSize={50} effectiveAgentVersionByOrgId={{ 'org-1': '0.110.0' }} />);
+    expect(screen.getByTestId(`device-${dev.id}-update-withheld`)).toBeTruthy();
+  });
+
+  it('flags a withheld device, in the plain (unknown relation) state', () => {
+    const dev = device('77777777-7777-7777-7777-777777777777', 'stranded-plain', {
+      updateOfferWithheldReason: 'edition_unconfirmed',
+    });
+    render(<DeviceList devices={[dev]} pageSize={50} effectiveAgentVersionByOrgId={{}} />);
+    expect(screen.getByTestId(`device-${dev.id}-update-withheld`)).toBeTruthy();
+  });
+
+  it('shows no badge for a healthy device', () => {
+    const dev = device('88888888-8888-8888-8888-888888888888', 'healthy');
+    render(<DeviceList devices={[dev]} pageSize={50} effectiveAgentVersionByOrgId={{ 'org-1': '0.110.0' }} />);
+    expect(screen.queryByTestId(`device-${dev.id}-update-withheld`)).toBeNull();
+  });
+});
+
+describe('DeviceList — stuck update badge (#4073)', () => {
+  const stuck = () => ({
+    updateAttemptTargetVersion: '0.110.0',
+    updateAttemptStartedAt: new Date(Date.now() - 3 * 60 * 60_000).toISOString(),
+    updateAttemptLastAt: new Date(Date.now() - 60_000).toISOString(),
+  });
+
+  it('flags a device whose update has been retrying past the threshold', () => {
+    const dev = device('99999999-9999-9999-9999-999999999991', 'wedged', { agentVersion: '0.106.0', ...stuck() });
+    render(<DeviceList devices={[dev]} pageSize={50} effectiveAgentVersionByOrgId={{ 'org-1': '0.110.0' }} />);
+    expect(screen.getByTestId(`device-${dev.id}-update-stuck`)).toBeTruthy();
+  });
+
+  it('flags it in the plain (unknown relation) state too', () => {
+    const dev = device('99999999-9999-9999-9999-999999999992', 'wedged-plain', stuck());
+    render(<DeviceList devices={[dev]} pageSize={50} effectiveAgentVersionByOrgId={{}} />);
+    expect(screen.getByTestId(`device-${dev.id}-update-stuck`)).toBeTruthy();
+  });
+
+  it('does not flag an update that only just started', () => {
+    const dev = device('99999999-9999-9999-9999-999999999993', 'updating', {
+      updateAttemptTargetVersion: '0.110.0',
+      updateAttemptStartedAt: new Date(Date.now() - 60_000).toISOString(),
+      updateAttemptLastAt: new Date().toISOString(),
+    });
+    render(<DeviceList devices={[dev]} pageSize={50} effectiveAgentVersionByOrgId={{ 'org-1': '0.110.0' }} />);
+    expect(screen.queryByTestId(`device-${dev.id}-update-stuck`)).toBeNull();
+  });
+});

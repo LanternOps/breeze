@@ -7,8 +7,7 @@
  *
  *  - The API re-exports it from `apps/api/src/services/configFeatureTypes.ts`,
  *    and a parity test (`apps/api/src/services/policyBaselineDefaults.test.ts`)
- *    pins this list to the Drizzle `configFeatureTypeEnum` — keeping it in
- *    lockstep with the DB enum.
+ *    pins canonical plus retired types to the Drizzle `configFeatureTypeEnum`.
  *  - The web layer derives its per-surface unions from `ConfigFeatureType` via
  *    `Exclude<…>` (config-policy editor tabs, device Effective Config tab), so a
  *    new canonical feature type fails to compile until each surface accounts for
@@ -20,12 +19,11 @@
  * compile errors / parity-test failures.
  */
 export const CONFIG_FEATURE_TYPES = [
-  'patch', 'alert_rule', 'backup', 'security', 'monitoring', 'maintenance',
+  'patch', 'backup', 'security', 'maintenance',
   'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data',
   'peripheral_control', 'warranty', 'helper', 'remote_access', 'pam', 'onedrive_helper',
   'vulnerability', 'device_lifecycle',
-  // #5289 — monitor definitions attached to a policy. Deliberately the plural:
-  // 'monitoring' above is the service/process watch feature.
+  // Monitor definitions replace the retired alert-rule and watch features.
   'monitors',
   // #6856 — inherited RAID/disk-health collection settings, inline-only.
   'hardware_monitoring',
@@ -58,3 +56,10 @@ export type ConfigFeatureType = typeof CONFIG_FEATURE_TYPES[number];
 export const ORG_SCOPED_ONLY_FEATURE_TYPES: ReadonlySet<ConfigFeatureType> = new Set([
   'onedrive_helper',
 ]);
+
+/** Retired links and their child rows stay in the database for alert history. */
+export const RETIRED_CONFIG_FEATURE_TYPES = ['alert_rule', 'monitoring'] as const;
+export type RetiredConfigFeatureType = typeof RETIRED_CONFIG_FEATURE_TYPES[number];
+export function isRetiredConfigFeatureType(value: unknown): value is RetiredConfigFeatureType {
+  return typeof value === 'string' && (RETIRED_CONFIG_FEATURE_TYPES as readonly string[]).includes(value);
+}

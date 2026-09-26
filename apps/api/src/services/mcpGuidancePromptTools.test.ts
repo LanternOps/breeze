@@ -89,6 +89,13 @@ describe('moved workflow guidance (A-W03)', () => {
     expect(text).toMatch(/create the standalone policy[\s\S]*then link/);
   });
 
+  it('documents the monitor check interval in the live feature reference', () => {
+    expect(POLICY_FEATURE_INLINE_SETTINGS_REFERENCE.monitors).toContain('checkIntervalSeconds: 60');
+    expect(POLICY_FEATURE_INLINE_SETTINGS_REFERENCE.monitors).toContain('10–3600');
+    expect(POLICY_FEATURE_INLINE_SETTINGS_REFERENCE).not.toHaveProperty('alert_rule');
+    expect(POLICY_FEATURE_INLINE_SETTINGS_REFERENCE).not.toHaveProperty('monitoring');
+  });
+
   it('publishes every domain and the full per-feature settings reference', () => {
     const page = readFileSync(new URL('../../../docs/src/content/docs/features/ai-tools.mdx', import.meta.url), 'utf8');
     expect(page).toContain('title: AI tools reference');

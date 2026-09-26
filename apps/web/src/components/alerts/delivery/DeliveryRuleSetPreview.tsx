@@ -12,7 +12,7 @@ function parseHash(hash: string): string | undefined {
   if (site !== 'all' && !/^[0-9a-f-]{36}$/i.test(site ?? '')) return undefined;
   return hash;
 }
-export default function DeliveryRuleSetPreview({ orgId }: { orgId: string | null }) {
+export default function DeliveryRuleSetPreview({ orgId, refreshToken }: { orgId: string | null; refreshToken?: number }) {
   const { t } = useTranslation('monitoring');
   const [hash, setHash] = useHashState<string>(initial, parseHash);
   const [, severityValue, kindValue, siteValue] = hash.split('/');
@@ -52,6 +52,6 @@ export default function DeliveryRuleSetPreview({ orgId }: { orgId: string | null
       </select></label>
     </div>
     {sitesError && <p role="alert">{t('editor.deliveryPreview.sitesFailed')}</p>}
-    <DeliveryPreview orgId={orgId} severity={severity} kind={kind} siteId={site} />
+    <DeliveryPreview orgId={orgId} severity={severity} kind={kind} siteId={site} refreshToken={refreshToken} />
   </section>;
 }

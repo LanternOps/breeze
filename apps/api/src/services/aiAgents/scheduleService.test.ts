@@ -740,8 +740,9 @@ describe('createSchedule — org override', () => {
     const baselineRead = dbState.reads.find((r) => r.table === 'ai_agent_schedules');
     expect(baselineRead).toBeDefined();
     expect(baselineRead?.lock).toBe('share');
-    // An org-scoped caller never passes breeze_has_partner_access, so the
-    // partner baseline is invisible without the partner-axis escape (#2822).
+    // The one baseline read that keeps the partner-axis escape (#5199): a
+    // FOR SHARE lock must also pass the UPDATE policy, which the SELECT-only
+    // partner-wide branch does not grant an org session.
     expect(baselineRead?.system).toBe(true);
   });
 
@@ -1126,8 +1127,9 @@ describe('deleteSchedule', () => {
   });
 
   it('fails closed when the DELETE removes no row', async () => {
-    // loadScheduleForWrite may read through the SYSTEM escape while the DELETE
-    // runs under the caller's own RLS, so "visible" does not imply "deletable".
+    // loadScheduleForWrite reads through the SELECT-only partner-wide branch
+    // while the DELETE runs under the write policy, so "visible" does not imply
+    // "deletable".
     // Without RETURNING the route would answer 204 and audit success for a
     // delete that removed nothing.
     dbState.scheduleRows = [[baselineRow()]];
@@ -1201,14 +1203,16 @@ describe('listSchedules', () => {
     expect(rows[0]?.effective).toEqual({ enabled: true, sweepKinds: ['disk_pressure'], actMode: false });
   });
 
-  it('reads the partner baselines for an org caller through the partner-axis escape', async () => {
+  it('reads the partner baselines for an org caller in its own context, no escape (#5199)', async () => {
     dbState.agentRows = [[agentRow()]];
     dbState.scheduleRows = [[baselineRow()], [overrideRow()]];
 
     await listSchedules(orgAuth(), {});
 
+    // ai_agent_schedules_partner_wide_select makes the baseline visible under
+    // the org's own RLS (real-Postgres proof: aiPartnerWideReadsRequestContext).
     const baselineRead = dbState.reads.find((r) => r.table === 'ai_agent_schedules');
-    expect(baselineRead?.system).toBe(true);
+    expect(baselineRead?.system).toBe(false);
     // The org's own override rows are read under the org's OWN RLS context.
     const overrideRead = dbState.reads.filter((r) => r.table === 'ai_agent_schedules')[1];
     expect(overrideRead?.system).toBe(false);
@@ -1281,8 +1285,8 @@ describe('tenancy pins (compiled SQL)', () => {
     // schedule kind and stays out.
     expect(agents.params).toEqual([PARTNER_ID, 'triage', 'designer', 'patch']);
 
-    // Inside the escape the app predicate is the ONLY filter, so it must carry
-    // the partner AND the agent allowlist, not just `org_id IS NULL`.
+    // The app predicate must carry the partner AND the agent allowlist, not
+    // just `org_id IS NULL` — defence in depth on top of RLS since #5199.
     const baselines = compiledRead('ai_agent_schedules', 0);
     expect(baselines.sql).toContain('"org_id" is null');
     expect(baselines.sql).toContain('"partner_id"');
@@ -1355,14 +1359,16 @@ describe('tenancy pins (compiled SQL)', () => {
     expect(dbState.reads[0]?.system).toBe(false);
   });
 
-  it('does take the escape for an org-scoped caller, which cannot see partner rows', async () => {
+  it('does not take the escape for an org-scoped caller either (#5199)', async () => {
     dbState.scheduleRows = [[baselineRow()]];
 
     await expect(updateSchedule(orgAuth(), BASELINE_ID, { enabled: false })).rejects.toBeInstanceOf(
       PartnerWideWriteDeniedError,
     );
 
-    expect(dbState.reads[0]?.system).toBe(true);
+    // The SELECT-only partner-wide branch lets the org session see its own
+    // partner's baseline; the write gate is still what refuses it.
+    expect(dbState.reads[0]?.system).toBe(false);
   });
 });
 
@@ -1434,7 +1440,7 @@ describe('loadEnabledBaselineCadences', () => {
     expect(read?.system).toBe(false);
   });
 
-  it("reads an org caller's partner baselines through the partner-axis escape", async () => {
+  it("reads an org caller's partner baselines in its own context, no escape (#5199)", async () => {
     dbState.agentRows = [[agentRow({ kind: 'patch' })]];
     dbState.scheduleRows = [[baselineRow({ kind: 'patch' })]];
 
@@ -1442,9 +1448,9 @@ describe('loadEnabledBaselineCadences', () => {
 
     expect(rows).toHaveLength(1);
     const read = dbState.reads.find((r) => r.table === 'ai_agent_schedules');
-    // Org-scoped RLS is blind to partner-axis rows (#2822) — without the
-    // escape the card silently shows "—" for every partner-wide agent.
-    expect(read?.system).toBe(true);
+    // The SELECT-only partner-wide branch serves this under the org's own RLS;
+    // real-Postgres proof: aiPartnerWideReadsRequestContext.integration.test.ts.
+    expect(read?.system).toBe(false);
   });
 
   it('pins the read to the listed agents, to baselines, and to enabled rows', async () => {

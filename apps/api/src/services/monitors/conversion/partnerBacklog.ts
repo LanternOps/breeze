@@ -2,15 +2,15 @@ import { sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../../db';
 
 export interface PartnerConversionBacklogRow {
-  partnerId: string; partnerName: string; pendingRows: number; pendingPolicies: number;
+  partnerId: string; partnerName: string; pendingRows: number; pendingPolicies: number; networkChecks: number;
 }
 
 /** The source tables this count reads — pinned by partnerBacklog.test.ts. */
 export const PARTNER_BACKLOG_SQL_SOURCES = [
-  'config_policy_alert_rules', 'config_policy_monitoring_watches', 'alert_templates', 'automations', 'config_policy_automations',
+  'config_policy_alert_rules', 'config_policy_monitoring_watches', 'alert_templates', 'automations', 'config_policy_automations', 'network_monitors',
 ] as const;
 
-type Row = { partner_id: string; partner_name: string; pending_rows: number | string; pending_policies: number | string };
+type Row = { partner_id: string; partner_name: string; pending_rows: number | string; pending_policies: number | string; network_checks: number | string };
 
 /**
  * Unretired legacy rows per partner, for the hosted post-deploy sweep. Reads
@@ -63,7 +63,11 @@ export async function listPartnerConversionBacklog(): Promise<PartnerConversionB
     )
     SELECT p.id AS partner_id, p.name AS partner_name,
            count(pd.partner_id)::int AS pending_rows,
-           count(DISTINCT pd.policy_id)::int AS pending_policies
+           count(DISTINCT pd.policy_id)::int AS pending_policies,
+           (SELECT count(*)::int FROM network_monitors nm
+              JOIN organizations o ON o.id = nm.org_id
+             WHERE o.partner_id = p.id AND nm.managed_by_monitor_id IS NULL
+               AND nm.retired_at IS NULL) AS network_checks
       FROM partners p
       LEFT JOIN pending pd ON pd.partner_id = p.id
      GROUP BY p.id, p.name
@@ -71,7 +75,7 @@ export async function listPartnerConversionBacklog(): Promise<PartnerConversionB
   `)));
   return [...rows].map((r) => ({
     partnerId: r.partner_id, partnerName: r.partner_name,
-    pendingRows: Number(r.pending_rows), pendingPolicies: Number(r.pending_policies),
+    pendingRows: Number(r.pending_rows), pendingPolicies: Number(r.pending_policies), networkChecks: Number(r.network_checks),
   })).sort((a, b) => b.pendingRows - a.pendingRows || a.partnerName.localeCompare(b.partnerName));
 }
 

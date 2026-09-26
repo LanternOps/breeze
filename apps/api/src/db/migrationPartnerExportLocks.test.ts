@@ -183,7 +183,7 @@ describe('partner export migration lock contract (#5360)', () => {
     expect(materialTables.size).toBeGreaterThan(0);
     for (const table of [
       'device_hardware', 'device_disks', 'device_network', 'device_ip_history',
-      'software_inventory', 'device_warranty', 'hyperv_vms',
+      'software_inventory', 'device_warranty', 'hyperv_vms', 'device_memory_modules',
       'discovered_assets', 'network_baselines', 'network_topology',
     ]) expect(materialTables.has(table), table).toBe(true);
   });

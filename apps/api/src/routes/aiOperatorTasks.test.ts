@@ -6,7 +6,7 @@ import { AI_OPERATOR_TASK_LEAK_TRIPWIRE_KEYS } from '@breeze/shared';
 
 const {
   selectMock, hasPermMock, authOkMock, mfaOkMock,
-  tasksEnabledMock, recipeEnabledMock, admitMock,
+  tasksEnabledMock, recipeEnabledMock, admitMock, resolveEffectiveAgentMock,
 } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   hasPermMock: vi.fn<(resource: string, action: string) => boolean>(() => true),
@@ -15,6 +15,7 @@ const {
   tasksEnabledMock: vi.fn(() => true),
   recipeEnabledMock: vi.fn(() => true),
   admitMock: vi.fn(),
+  resolveEffectiveAgentMock: vi.fn(),
 }));
 
 vi.mock('../middleware/auth', async (importOriginal) => {
@@ -48,6 +49,10 @@ vi.mock('../config/env', async (importOriginal) => ({
 
 vi.mock('../services/aiOperator/taskService', () => ({
   admitServiceRecoveryTask: (input: unknown) => admitMock(input),
+}));
+
+vi.mock('../services/aiAgents/effectivePolicy', () => ({
+  resolveEffectiveAgent: (...args: unknown[]) => resolveEffectiveAgentMock(...args),
 }));
 
 vi.mock('../db', () => ({
@@ -466,11 +471,16 @@ describe('POST /ai/operator/tasks (W08 admission)', () => {
 
   const deviceRow = { id: DEVICE_ID, orgId: ORG_ID, siteId: SITE_ID, hostname: 'WS-01' };
 
-  /** device row, then agent row, then the pending-cap count. */
-  function happyPathSelects(pendingCount = 0) {
+  /**
+   * The device row is the route's only direct read; the agent comes from the
+   * effective-agent resolver (#7015), mocked to an enabled agent below.
+   */
+  function happyPathSelects() {
     selectMock.mockReturnValueOnce(selectChain([deviceRow]));
-    selectMock.mockReturnValueOnce(selectChain([{ id: AGENT_ID }]));
-    selectMock.mockReturnValueOnce(selectChain([{ count: pendingCount }]));
+  }
+
+  function effectiveAgent(enabled: boolean) {
+    return { agentId: AGENT_ID, kind: 'triage', effective: { enabled } };
   }
 
   beforeEach(() => {
@@ -481,6 +491,8 @@ describe('POST /ai/operator/tasks (W08 admission)', () => {
     tasksEnabledMock.mockReturnValue(true);
     recipeEnabledMock.mockReturnValue(true);
     admitMock.mockResolvedValue({ ok: true, taskId: ADMITTED_TASK_ID, replayed: false });
+    resolveEffectiveAgentMock.mockReset();
+    resolveEffectiveAgentMock.mockResolvedValue(effectiveAgent(true));
   });
 
   it('admits a valid request with 202 and the new task id', async () => {
@@ -636,9 +648,28 @@ describe('POST /ai/operator/tasks (W08 admission)', () => {
     expect(admitMock).not.toHaveBeenCalled();
   });
 
-  it('422s when the org has no enabled agent to run the task', async () => {
+  it('pins the EFFECTIVE triage agent for the body org, resolved under the caller auth (#7015)', async () => {
+    happyPathSelects();
+    await post(body());
+    expect(resolveEffectiveAgentMock).toHaveBeenCalledTimes(1);
+    expect(resolveEffectiveAgentMock).toHaveBeenCalledWith(
+      expect.objectContaining({ orgId: ORG_ID }), ORG_ID, 'triage',
+    );
+    expect(admitMock).toHaveBeenCalledWith(expect.objectContaining({ agentId: AGENT_ID }));
+  });
+
+  it('422s when the org has no effective agent to run the task', async () => {
     selectMock.mockReturnValueOnce(selectChain([deviceRow]));
-    selectMock.mockReturnValueOnce(selectChain([]));
+    resolveEffectiveAgentMock.mockResolvedValue(null);
+    const res = await post(body());
+    expect(res.status).toBe(422);
+    expect(await res.json()).toMatchObject({ code: 'OPERATOR_NO_AGENT' });
+    expect(admitMock).not.toHaveBeenCalled();
+  });
+
+  it('422s when the effective agent is disabled, rather than admitting a task no run can serve', async () => {
+    selectMock.mockReturnValueOnce(selectChain([deviceRow]));
+    resolveEffectiveAgentMock.mockResolvedValue(effectiveAgent(false));
     const res = await post(body());
     expect(res.status).toBe(422);
     expect(await res.json()).toMatchObject({ code: 'OPERATOR_NO_AGENT' });
@@ -661,31 +692,40 @@ describe('POST /ai/operator/tasks (W08 admission)', () => {
     expect(await res.json()).toEqual({ error: 'Device not found' });
   });
 
-  // ---- Capacity (spec §7.2: pending cap 100 per org) ----
+  // ---- Capacity (spec §7.2 / §12; #6590) ----
+  // The cap is the effective agent policy's `taskMaxPendingPerOrg`, enforced
+  // by ADMISSION under a per-org lock (taskService.taskLimits.test.ts). The
+  // route only turns that refusal into spec §12's visible 429.
 
-  it('429s when the org is already at the pending-task cap', async () => {
-    happyPathSelects(100);
+  it('429s when admission refuses for pending capacity, carrying the named reason', async () => {
+    happyPathSelects();
+    admitMock.mockResolvedValue({
+      ok: false, refusal: 'pending_cap_reached',
+      detail: 'org already has 100 pending Operator tasks (limit 100, agent policy taskMaxPendingPerOrg)',
+    });
     const res = await post(body());
     expect(res.status).toBe(429);
-    expect(await res.json()).toMatchObject({ code: 'OPERATOR_PENDING_CAP_REACHED' });
-    expect(admitMock).not.toHaveBeenCalled();
+    const json = await res.json() as { code: string; error: string };
+    expect(json.code).toBe('OPERATOR_PENDING_CAP_REACHED');
+    expect(json.error).toContain('taskMaxPendingPerOrg');
   });
 
-  it('admits at one below the cap', async () => {
-    happyPathSelects(99);
+  it('does not count pending tasks itself — no hardcoded cap at the route', async () => {
+    happyPathSelects();
     const res = await post(body());
     expect(res.status).toBe(202);
+    // The device read only; a second select would be a route-level count.
+    expect(selectMock).toHaveBeenCalledTimes(1);
   });
 
-  it('counts the cap over non-terminal states for the ONE named org', async () => {
-    let capturedPredicate: unknown;
-    selectMock.mockReturnValueOnce(selectChain([deviceRow]));
-    selectMock.mockReturnValueOnce(selectChain([{ id: AGENT_ID }]));
-    selectMock.mockReturnValueOnce(selectChain([{ count: 0 }], (p) => { capturedPredicate = p; }));
-    await post(body());
-    const text = sqlText(capturedPredicate).toLowerCase();
-    expect(text).toContain('org_id');
-    expect(text).toContain('not in');
+  it('422s a non-capacity task-limit refusal with its reason', async () => {
+    happyPathSelects();
+    admitMock.mockResolvedValue({
+      ok: false, refusal: 'task_limit_exceeded', detail: 'task would hold 2 active targets (taskMaxActiveTargets)',
+    });
+    const res = await post(body());
+    expect(res.status).toBe(422);
+    expect(await res.json()).toMatchObject({ code: 'TASK_LIMIT_EXCEEDED' });
   });
 
   // ---- Recipe Library spec §6.1 (wave E1): registry-backed recipeKey ----
