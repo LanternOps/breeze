@@ -75,6 +75,15 @@ vi.mock('../services/vulnerabilityFleetQueries', () => ({
   fetchFleetFindingRows: vi.fn(async () => []),
   fetchCveCatalogRecord: vi.fn(async () => null),
 }));
+// The fleet list / drawer / stats aggregate in SQL (#2262); their real-DB
+// behavior is covered by vulnerabilitiesSoftwareRollup.integration.test.ts.
+// Here we pin the route contract: scoping, validation, and pass-through.
+vi.mock('../services/vulnerabilityFleetSql', () => ({
+  listSoftwareGroups: vi.fn(async () => []),
+  getSoftwareGroupDetail: vi.fn(async () => null),
+  getSoftwareGroupDeviceFindings: vi.fn(async () => []),
+  aggregateFleetStats: vi.fn(async () => ({})),
+}));
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 vi.mock('../services/ticketService', async () => {
   const actual = await vi.importActual<typeof import('../services/ticketService')>('../services/ticketService');
@@ -89,6 +98,12 @@ vi.mock('../jobs/vulnerabilityJobs', () => ({
 
 import { vulnerabilityRoutes, vulnerabilitySyncRoutes } from './vulnerabilities';
 import { fetchFleetFindingRows, fetchCveCatalogRecord } from '../services/vulnerabilityFleetQueries';
+import {
+  aggregateFleetStats,
+  getSoftwareGroupDetail,
+  getSoftwareGroupDeviceFindings,
+  listSoftwareGroups,
+} from '../services/vulnerabilityFleetSql';
 import type { FleetFindingRow } from '../services/vulnerabilityFleetAggregation';
 import { createTicket, TicketServiceError } from '../services/ticketService';
 
@@ -457,7 +472,10 @@ describe('GET /vulnerabilities/sync/status (admin sync health, #2427)', () => {
 });
 
 describe('GET /vulnerabilities/software (fleet work queue)', () => {
+  const group = (over: Record<string, unknown> = {}) => ({ groupKey: 'sw:google chrome|google llc', name: 'Google Chrome', deviceCount: 2, ...over });
+
   beforeEach(() => {
+    vi.mocked(listSoftwareGroups).mockReset().mockResolvedValue([]);
     vi.mocked(fetchFleetFindingRows).mockReset().mockResolvedValue([]);
   });
 
@@ -467,62 +485,44 @@ describe('GET /vulnerabilities/software (fleet work queue)', () => {
     expect(res.status).toBe(403);
   });
 
-  it('groups findings and returns items + hasMore', async () => {
-    vi.mocked(fetchFleetFindingRows).mockResolvedValue([
-      fleetRow(),
-      fleetRow({ deviceVulnerabilityId: 'dv-2', deviceId: 'dev-2', softwareName: 'google chrome ' }),
-    ]);
+  it('returns the SQL-aggregated groups as items + hasMore, never loading raw findings', async () => {
+    vi.mocked(listSoftwareGroups).mockResolvedValue([group()] as never);
     const res = await app().request('/vulnerabilities/software');
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.hasMore).toBe(false);
-    expect(body.items).toHaveLength(1);
-    expect(body.items[0]).toMatchObject({
-      groupKey: 'sw:google chrome|google llc',
-      kind: 'software',
-      deviceCount: 2,
-    });
+    expect(body).toEqual({ items: [group()], hasMore: false });
+    // #2262: the list must not fall back to the fetch-everything path.
+    expect(vi.mocked(fetchFleetFindingRows)).not.toHaveBeenCalled();
   });
 
-  it('passes status through and forwards allowedSiteIds from the permissions context', async () => {
+  it('caps at 500 groups and flags hasMore', async () => {
+    vi.mocked(listSoftwareGroups).mockResolvedValue(
+      Array.from({ length: 501 }, (_, i) => group({ groupKey: `sw:app-${i}|` })) as never,
+    );
+    const body = await (await app().request('/vulnerabilities/software')).json();
+    expect(body.items).toHaveLength(500);
+    expect(body.hasMore).toBe(true);
+  });
+
+  it('forwards status, filters, search and allowedSiteIds', async () => {
     permissionsState.allowedSiteIds = ['site-1'];
-    const res = await app().request('/vulnerabilities/software?status=accepted');
+    const res = await app().request('/vulnerabilities/software?status=accepted&severity=critical&kevOnly=true&patchAvailable=true&expiringWithinDays=14&search=chrome');
     expect(res.status).toBe(200);
-    expect(vi.mocked(fetchFleetFindingRows)).toHaveBeenCalledWith({
-      status: 'accepted',
-      allowedSiteIds: ['site-1'],
-    });
+    expect(vi.mocked(listSoftwareGroups)).toHaveBeenCalledWith(
+      { allowedSiteIds: ['site-1'], orgId: undefined },
+      { status: 'accepted', severity: 'critical', kevOnly: true, patchAvailable: true, expiringWithinDays: 14 },
+      { search: 'chrome' },
+    );
   });
 
-  it('applies severity/kevOnly/patchAvailable/search filters', async () => {
-    vi.mocked(fetchFleetFindingRows).mockResolvedValue([
-      fleetRow(),
-      fleetRow({ deviceVulnerabilityId: 'dv-2', softwareName: 'Zoom', softwareVendor: 'Zoom', severity: 'low', knownExploited: false, patchAvailable: false, cveId: 'CVE-2026-2' }),
-    ]);
-    const res = await app().request('/vulnerabilities/software?severity=critical&kevOnly=true&patchAvailable=true&search=chrome');
-    const body = await res.json();
-    expect(body.items).toHaveLength(1);
-    expect(body.items[0].name).toBe('Google Chrome');
+  it('defaults status to open', async () => {
+    await app().request('/vulnerabilities/software');
+    expect(vi.mocked(listSoftwareGroups).mock.calls[0]?.[1]).toMatchObject({ status: 'open' });
   });
 
   it('400s on an invalid boolean param', async () => {
     const res = await app().request('/vulnerabilities/software?kevOnly=yes');
     expect(res.status).toBe(400);
-  });
-
-  it('applies the expiringWithinDays window to accepted findings', async () => {
-    const soon = new Date(Date.now() + 5 * 864e5).toISOString();
-    const far = new Date(Date.now() + 60 * 864e5).toISOString();
-    vi.mocked(fetchFleetFindingRows).mockResolvedValue([
-      fleetRow({ deviceVulnerabilityId: 'dv-soon', status: 'accepted', acceptedUntil: soon }),
-      fleetRow({ deviceVulnerabilityId: 'dv-far', deviceId: 'dev-2', status: 'accepted', acceptedUntil: far }),
-    ]);
-    const res = await app().request('/vulnerabilities/software?status=accepted&expiringWithinDays=14');
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    // Only the finding expiring inside the window survives; the group counts reflect that.
-    expect(body.items).toHaveLength(1);
-    expect(body.items[0].deviceCount).toBe(1);
   });
 
   it('400s on a non-numeric expiringWithinDays', async () => {
@@ -533,15 +533,13 @@ describe('GET /vulnerabilities/software (fleet work queue)', () => {
   it('forwards orgId (web org selector) into the fleet query', async () => {
     const res = await app().request(`/vulnerabilities/software?orgId=${ORG_OK}`);
     expect(res.status).toBe(200);
-    expect(vi.mocked(fetchFleetFindingRows)).toHaveBeenCalledWith(
-      expect.objectContaining({ orgId: ORG_OK }),
-    );
+    expect(vi.mocked(listSoftwareGroups).mock.calls[0]?.[0]).toMatchObject({ orgId: ORG_OK });
   });
 
   it('403s an orgId outside the caller accessible set', async () => {
     const res = await app().request(`/vulnerabilities/software?orgId=${ORG_DENIED}`);
     expect(res.status).toBe(403);
-    expect(vi.mocked(fetchFleetFindingRows)).not.toHaveBeenCalled();
+    expect(vi.mocked(listSoftwareGroups)).not.toHaveBeenCalled();
   });
 
   it('400s a non-uuid orgId', async () => {
@@ -551,7 +549,10 @@ describe('GET /vulnerabilities/software (fleet work queue)', () => {
 });
 
 describe('GET /vulnerabilities/software/:groupKey (drawer payload)', () => {
+  const KEY = 'sw:google chrome|google llc';
+
   beforeEach(() => {
+    vi.mocked(getSoftwareGroupDetail).mockReset().mockResolvedValue(null);
     vi.mocked(fetchFleetFindingRows).mockReset().mockResolvedValue([]);
   });
 
@@ -565,31 +566,63 @@ describe('GET /vulnerabilities/software/:groupKey (drawer payload)', () => {
     expect(res.status).toBe(400);
   });
 
-  it('returns group + cves + findings for a URL-encoded key, across ALL statuses', async () => {
-    vi.mocked(fetchFleetFindingRows).mockResolvedValue([
-      fleetRow(),
-      fleetRow({ deviceVulnerabilityId: 'dv-2', deviceId: 'dev-2', status: 'accepted', cveId: 'CVE-2026-0002', vulnerabilityId: 'v-2' }),
-    ]);
-    const res = await app().request(`/vulnerabilities/software/${encodeURIComponent('sw:google chrome|google llc')}`);
+  it('decodes the URL-encoded key and returns the device rollup payload', async () => {
+    const detail = { group: { groupKey: KEY }, cves: [], versions: [], devices: [{ deviceId: 'dev-1', openFindingIds: ['dv-1'] }] };
+    vi.mocked(getSoftwareGroupDetail).mockResolvedValue(detail as never);
+    permissionsState.allowedSiteIds = ['site-1'];
+    const res = await app().request(`/vulnerabilities/software/${encodeURIComponent(KEY)}`);
     expect(res.status).toBe(200);
-    expect(vi.mocked(fetchFleetFindingRows)).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'all' }),
-    );
-    const body = await res.json();
-    expect(body.group.groupKey).toBe('sw:google chrome|google llc');
-    expect(body.cves).toHaveLength(2);
-    expect(body.findings).toHaveLength(2);
-    expect(body.findings[0]).toMatchObject({ deviceVulnerabilityId: expect.any(String), deviceName: expect.any(String) });
+    expect(await res.json()).toEqual(detail);
+    expect(vi.mocked(getSoftwareGroupDetail)).toHaveBeenCalledWith(KEY, { allowedSiteIds: ['site-1'], orgId: undefined });
+    expect(vi.mocked(fetchFleetFindingRows)).not.toHaveBeenCalled();
   });
 
   it('forwards orgId and 403s a denied org', async () => {
-    const key = encodeURIComponent('sw:google chrome|google llc');
+    const key = encodeURIComponent(KEY);
     await app().request(`/vulnerabilities/software/${key}?orgId=${ORG_OK}`);
-    expect(vi.mocked(fetchFleetFindingRows)).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'all', orgId: ORG_OK }),
-    );
+    expect(vi.mocked(getSoftwareGroupDetail).mock.calls[0]?.[1]).toMatchObject({ orgId: ORG_OK });
     const denied = await app().request(`/vulnerabilities/software/${key}?orgId=${ORG_DENIED}`);
     expect(denied.status).toBe(403);
+    expect(vi.mocked(getSoftwareGroupDetail)).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('GET /vulnerabilities/software/:groupKey/devices/:deviceId (drawer drill-down)', () => {
+  const KEY = encodeURIComponent('sw:google chrome|google llc');
+
+  beforeEach(() => {
+    vi.mocked(getSoftwareGroupDeviceFindings).mockReset().mockResolvedValue([]);
+  });
+
+  it('returns the device findings scoped by sites + org', async () => {
+    vi.mocked(getSoftwareGroupDeviceFindings).mockResolvedValue([{ deviceVulnerabilityId: 'dv-1' }] as never);
+    permissionsState.allowedSiteIds = ['site-1'];
+    const res = await app().request(`/vulnerabilities/software/${KEY}/devices/${ID}?orgId=${ORG_OK}`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ findings: [{ deviceVulnerabilityId: 'dv-1' }] });
+    expect(vi.mocked(getSoftwareGroupDeviceFindings)).toHaveBeenCalledWith(
+      'sw:google chrome|google llc',
+      ID,
+      { allowedSiteIds: ['site-1'], orgId: ORG_OK },
+    );
+  });
+
+  it('400s a non-uuid deviceId and a bad group key', async () => {
+    expect((await app().request(`/vulnerabilities/software/${KEY}/devices/not-a-uuid`)).status).toBe(400);
+    expect((await app().request(`/vulnerabilities/software/garbage/devices/${ID}`)).status).toBe(400);
+    expect(vi.mocked(getSoftwareGroupDeviceFindings)).not.toHaveBeenCalled();
+  });
+
+  it('403s a denied org', async () => {
+    const res = await app().request(`/vulnerabilities/software/${KEY}/devices/${ID}?orgId=${ORG_DENIED}`);
+    expect(res.status).toBe(403);
+    expect(vi.mocked(getSoftwareGroupDeviceFindings)).not.toHaveBeenCalled();
+  });
+
+  it('403s without devices:read', async () => {
+    granted.clear();
+    const res = await app().request(`/vulnerabilities/software/${KEY}/devices/${ID}`);
+    expect(res.status).toBe(403);
   });
 });
 
@@ -925,7 +958,18 @@ describe('POST /vulnerabilities/remediate — all-skipped surfacing', () => {
 });
 
 describe('GET /vulnerabilities/stats', () => {
+  const STATS = {
+    criticalOpen: 1,
+    kevCveCount: 1,
+    kevDeviceCount: 1,
+    patchReadyFindingCount: 1,
+    acceptedExpiringSoon: 1,
+    totalFindings: 2,
+    lastDetectedAt: '2026-06-01T00:00:00.000Z',
+  };
+
   beforeEach(() => {
+    vi.mocked(aggregateFleetStats).mockReset().mockResolvedValue(STATS);
     vi.mocked(fetchFleetFindingRows).mockReset().mockResolvedValue([]);
   });
 
@@ -935,39 +979,25 @@ describe('GET /vulnerabilities/stats', () => {
     expect(res.status).toBe(403);
   });
 
-  it('fetches ALL statuses and returns the stat numbers plus detection activity', async () => {
-    vi.mocked(fetchFleetFindingRows).mockResolvedValue([
-      fleetRow(), // open critical KEV patch-ready
-      fleetRow({ deviceVulnerabilityId: 'dv-2', status: 'accepted', acceptedUntil: new Date(Date.now() + 5 * 864e5).toISOString() }),
-    ]);
+  it('returns the SQL-aggregated stat numbers without loading raw findings', async () => {
+    permissionsState.allowedSiteIds = ['site-1'];
     const res = await app().request('/vulnerabilities/stats');
     expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(vi.mocked(fetchFleetFindingRows)).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'all' }),
-    );
-    expect(body).toEqual({
-      criticalOpen: 1,
-      kevCveCount: 1,
-      kevDeviceCount: 1,
-      patchReadyFindingCount: 1,
-      acceptedExpiringSoon: 1,
-      totalFindings: 2,
-      lastDetectedAt: '2026-06-01T00:00:00.000Z',
-    });
+    expect(await res.json()).toEqual(STATS);
+    expect(vi.mocked(aggregateFleetStats)).toHaveBeenCalledWith({ allowedSiteIds: ['site-1'], orgId: undefined }, expect.any(Date));
+    expect(vi.mocked(fetchFleetFindingRows)).not.toHaveBeenCalled();
   });
 
   it('forwards orgId so the stat cards scope to the selected org', async () => {
     const res = await app().request(`/vulnerabilities/stats?orgId=${ORG_OK}`);
     expect(res.status).toBe(200);
-    expect(vi.mocked(fetchFleetFindingRows)).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'all', orgId: ORG_OK }),
-    );
+    expect(vi.mocked(aggregateFleetStats).mock.calls[0]?.[0]).toMatchObject({ orgId: ORG_OK });
   });
 
   it('403s an orgId outside the caller accessible set', async () => {
     const res = await app().request(`/vulnerabilities/stats?orgId=${ORG_DENIED}`);
     expect(res.status).toBe(403);
+    expect(vi.mocked(aggregateFleetStats)).not.toHaveBeenCalled();
   });
 });
 

@@ -56,6 +56,9 @@ vi.mock('../../db', () => {
       return builder;
     },
     limit: () => Promise.resolve(existingRowRef.current ? [existingRowRef.current] : []),
+    // writeNotificationChannelConfig's insert (#6379) chains .onConflictDoUpdate()
+    // instead of .returning() — the channel-row insert above still uses .returning().
+    onConflictDoUpdate: () => Promise.resolve(undefined),
     returning: () => {
       if (insertedRef.current) {
         return Promise.resolve([{ id: 'new-channel', ...insertedRef.current }]);
@@ -63,13 +66,16 @@ vi.mock('../../db', () => {
       return Promise.resolve([{ ...(existingRowRef.current ?? {}), ...(updateSetRef.current ?? {}) }]);
     },
   };
+  const dbMock: any = {
+    insert: vi.fn(() => builder),
+    update: vi.fn(() => builder),
+    delete: vi.fn(() => ({ where: (cond: unknown) => { deleteWhereMock(cond); return Promise.resolve(undefined); } })),
+    select: vi.fn(() => builder),
+    // Channel + config row commit together inside db.transaction (#6379).
+    transaction: vi.fn((fn: (tx: unknown) => unknown) => fn(dbMock)),
+  };
   return {
-    db: {
-      insert: vi.fn(() => builder),
-      update: vi.fn(() => builder),
-      delete: vi.fn(() => ({ where: (cond: unknown) => { deleteWhereMock(cond); return Promise.resolve(undefined); } })),
-      select: vi.fn(() => builder),
-    },
+    db: dbMock,
     runOutsideDbContext: (fn: () => unknown) => fn(),
     withSystemDbAccessContext: (fn: () => unknown) => fn(),
     withDbAccessContext: (_ctx: unknown, fn: () => unknown) => fn(),
@@ -82,6 +88,7 @@ vi.mock('../../db/schema', () => ({
     type: { name: 'type' }, name: { name: 'name' }, enabled: { name: 'enabled' },
     config: { name: 'config' }, updatedAt: { name: 'updated_at' }, createdAt: { name: 'created_at' },
   },
+  notificationChannelConfigs: { channelId: { name: 'channel_id' }, config: { name: 'config' } },
   organizations: { id: { name: 'id' }, partnerId: { name: 'partner_id' } },
   partners: { id: { name: 'id' }, settings: { name: 'settings' } },
   alertRules: {}, alertTemplates: {}, alerts: {}, devices: {}, escalationPolicies: {},
@@ -193,7 +200,7 @@ describe('notification channels — site-ceiling gate', () => {
       body: JSON.stringify({ name: 'c', type: 'slack', config: { webhookUrl: 'https://hooks.slack.com/x' }, enabled: true }),
     });
     expect(res.status).toBe(201);
-    expect(db.insert).toHaveBeenCalledTimes(1);
+    expect(db.insert).toHaveBeenCalledTimes(2); // channel row + config row (#6379)
   });
 
   it('partner-scope caller with allowedSiteIds set is NOT affected by this gate', async () => {
@@ -213,6 +220,6 @@ describe('notification channels — site-ceiling gate', () => {
       body: JSON.stringify({ orgId: '11111111-1111-4111-8111-111111111111', name: 'c', type: 'slack', config: { webhookUrl: 'https://hooks.slack.com/x' }, enabled: true }),
     });
     expect(res.status).toBe(201);
-    expect(db.insert).toHaveBeenCalledTimes(1);
+    expect(db.insert).toHaveBeenCalledTimes(2); // channel row + config row (#6379)
   });
 });

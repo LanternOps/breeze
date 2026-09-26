@@ -38,6 +38,7 @@ import { helperAuth, helperDbAccessContext, type HelperDevice } from '../../midd
 import type { ActiveSession } from '../../services/streamingSessionManager';
 import { LlmUnavailableError, resolveLlmConfig, type UsableLlmConfig } from '../../services/llm/llmConfigResolver';
 import { captureException } from '../../services/sentry';
+import { persistAutoSessionTitle } from '../../services/aiSessionTitle';
 import {
   isAiBudgetLockTimeout,
   releaseUnusedAiBudgetReservation,
@@ -424,12 +425,10 @@ helperRoutes.post(
       if (!dbSession.title) {
         const title = generateSessionTitle(sanitizedContent);
         try {
-          await db
-            .update(aiSessions)
-            .set({ title })
-            .where(eq(aiSessions.id, sessionId));
+          await persistAutoSessionTitle(sessionId, title);
           activeSession.eventBus.publish({ type: 'title_updated', title });
         } catch (err) {
+          captureException(err, c, { service: 'helperRoutes', orgId: dbSession.orgId });
           console.error('[Helper] Failed to auto-set session title:', err);
         }
       }

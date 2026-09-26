@@ -68,13 +68,11 @@ A line pulled in from a time entry bills the entry's **billed** quantity, not ne
 
 Wherever an invoice is rendered -- the web editor and document view, the generated PDF, the authenticated customer portal, and the public invoice link -- line items are grouped under the ticket they came from, then by category within that ticket (Labour, Materials, Recurring, and so on), instead of a flat list. This makes it clear to the customer which charges belong to which piece of work. Lines with no ticket are grouped together at the top.
 
-<Aside type="caution" title="Known gap">
-  The customer portal's **logged-in** invoice view groups lines by ticket but does not yet show the ticket's category label next to the group heading. The web editor/document view, the generated PDF, and the public (non-portal) invoice link all show the category label correctly. This is tracked for a follow-up fix.
-</Aside>
+On a draft, group headings show the ticket's current subject and category. From v0.117.0 they are **frozen when the invoice is issued**: renaming or recategorizing a ticket, deleting it, or moving it to another organization no longer changes an invoice the customer has already received. Since the same release, the logged-in customer portal also shows the category label next to each group heading, as the PDF and public invoice link already did. Invoices issued before the upgrade keep the subject and category they displayed at the time.
 
 ## Issuing and Sending
 
-**Issuing** an invoice finalizes it: it assigns the next sequential invoice number (using your partner prefix and the current year), sets the issue and due dates, and generates the PDF. **Sending** emails the invoice to the customer.
+**Issuing** an invoice finalizes it: it assigns the next sequential invoice number (using your partner prefix and the current year), sets the issue and due dates, and generates the PDF. The due date uses the organization's payment terms if it has its own, otherwise your partner default (30 days if neither is set). **Sending** emails the invoice to the customer.
 
 <Steps>
 1. Review the draft and confirm the line items and totals.
@@ -115,6 +113,7 @@ Each customer organization has a **Billing** tab (**Settings → Organizations �
 
 - **Tax ID**, a **tax-exempt** flag, and a per-organization **tax rate**. When a rate is set here it applies to that customer's invoices; otherwise Breeze falls back to your partner default tax rate (**Settings → Billing**).
 - A **billing contact** and full **billing address** (address lines, city, region, postal code, and country), which appear on the invoice PDF.
+- **Payment terms** (v0.117.0+) -- the number of days (0-365) between issue and due date for this customer. Leave it blank to inherit your partner default from **Settings → Billing**; the field shows the inherited value. `0` means due on receipt.
 
 Setting these once per customer means invoices carry the right tax and address without re-entering them each time.
 
@@ -137,6 +136,10 @@ Invoices generated before this feature was available have no device detail and s
 ## PDF and Accounting View
 
 Every issued invoice can be downloaded as a clean, single-page **PDF** to send or archive. The detail view also offers an accounting-oriented breakdown of subtotal, tax, total, payments, and balance.
+
+The invoice's **document theme** (Classic or Condensed) and **page size** (Letter or A4) come from your partner billing settings (**Settings → Billing**). A draft previews your current choice; since v0.117.0 both are **frozen when the invoice is issued**, so changing the setting later only affects invoices issued afterwards. Invoices issued before the upgrade were stamped with the setting in effect at upgrade time, so they look the same as before.
+
+The seller details printed on an invoice or quote -- phone, website, and address -- come from your billing letterhead in **Settings → Billing**. Since v0.117.0, any of those left blank there are filled from your company details (**Settings → Partner → Company**) instead of printing empty. The address is taken as a block: if any billing-address field is filled in, the whole billing address is used as entered; only when all of them are blank does the company address take over.
 
 ## Bulk Actions
 

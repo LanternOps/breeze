@@ -181,9 +181,28 @@ describe("M365CustomerGraphActionsCard", () => {
     );
   });
 
-  it("disables Connect and shows the unavailable copy when onboarding is off", async () => {
+  it("collapses to a calm status line when onboarding is off and nothing is connected", async () => {
     fetchWithAuthMock.mockResolvedValue(
-      makeResponse(envelope({ onboardingEnabled: false })),
+      makeResponse(envelope({ onboardingEnabled: false, connection: null })),
+    );
+
+    render(<M365CustomerGraphActionsCard />);
+
+    const status = await screen.findByText("Not available on this Breeze instance yet.");
+    expect(status).not.toHaveAttribute("role", "alert");
+    const card = screen.getByRole("region", { name: "Customer Graph Actions" });
+    expect(card).toHaveAttribute("aria-describedby", status.id);
+    expect(screen.queryByTestId("required-grant")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Connect" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Customer Graph Actions onboarding is not enabled for this organization."),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps connection management when onboarding is off but a connection exists", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ onboardingEnabled: false, connection: connection() })),
     );
 
     render(<M365CustomerGraphActionsCard />);
@@ -193,7 +212,9 @@ describe("M365CustomerGraphActionsCard", () => {
         "Customer Graph Actions onboarding is not enabled for this organization.",
       ),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Connect" })).toBeDisabled();
+    expect(screen.queryByText("Not available on this Breeze instance yet.")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Disconnect from Breeze" })).toBeInTheDocument();
+    expect(screen.getAllByTestId("required-grant").length).toBeGreaterThan(0);
   });
 
   it("fails closed for an unknown status without rendering the Connect button", async () => {

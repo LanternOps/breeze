@@ -586,9 +586,6 @@ export class QuickbooksProvider implements AccountingProvider {
     customer: AccountingCustomerPayload,
     mapping: AccountingEntityMapping | null,
   ): Promise<RemoteRef> {
-    if (mapping && !mapping.remoteSyncToken) {
-      throw new Error('QuickBooks Customer update requires the current SyncToken');
-    }
     // CurrencyRef is deliberately NOT sent — sending it to a single-currency
     // realm is a QBO error, so the realm default is what a create gets. What
     // makes that safe is the CREATE-path guard in accountingMappingService.ts
@@ -599,12 +596,7 @@ export class QuickbooksProvider implements AccountingProvider {
     // Phase C's `assertAccountingInvoicePushCurrency` is the matching guard on
     // the invoice-push path; neither one gates an UPDATE, because QBO fixes
     // CurrencyRef at creation and a sparse update cannot change it.
-    const payload = {
-      ...(mapping ? {
-        sparse: true,
-        Id: mapping.remoteEntityId,
-        SyncToken: mapping.remoteSyncToken,
-      } : {}),
+    const fields = {
       DisplayName: customer.displayName,
       CompanyName: customer.companyName,
       PrimaryEmailAddr: customer.billingEmail ? { Address: customer.billingEmail } : undefined,
@@ -616,12 +608,14 @@ export class QuickbooksProvider implements AccountingProvider {
     // CREATE retries can follow a lost response after QuickBooks committed.
     // Reuse the entity's key (45 chars for UUIDs); sparse updates target Id.
     const requestId = mapping ? '' : `&requestid=${encodeURIComponent(`customer-${customer.organizationId}`)}`;
-    const parsed = await this.qboRequest<{ Customer?: QboRawCustomer }>(
-      conn,
-      `customer?minorversion=${QBO_API_MINOR_VERSION}${requestId}`,
-      'QuickBooks customer upsert',
-      { method: 'POST', body: JSON.stringify(payload) },
-    );
+    const parsed = await this.upsertEntity<{ Customer?: QboRawCustomer }>(conn, {
+      entity: 'customer',
+      requestId,
+      label: 'QuickBooks customer upsert',
+      fields,
+      mapping,
+      readSyncToken: (id) => this.readEntitySyncToken(conn, 'Customer', id),
+    });
     if (!parsed.Customer?.Id) throw new Error('QuickBooks customer response was missing an Id');
     return {
       id: parsed.Customer.Id,
@@ -637,18 +631,10 @@ export class QuickbooksProvider implements AccountingProvider {
     item: AccountingItemPayload,
     mapping: AccountingEntityMapping | null,
   ): Promise<RemoteRef> {
-    if (mapping && !mapping.remoteSyncToken) {
-      throw new Error('QuickBooks Item update requires the current SyncToken');
-    }
     if (!mapping && !item.incomeAccountRef) {
       throw new Error('QuickBooks Item creation requires an income account');
     }
-    const payload = {
-      ...(mapping ? {
-        sparse: true,
-        Id: mapping.remoteEntityId,
-        SyncToken: mapping.remoteSyncToken,
-      } : {}),
+    const fields = {
       Name: item.name,
       Sku: item.sku,
       Description: item.description ?? undefined,
@@ -662,14 +648,82 @@ export class QuickbooksProvider implements AccountingProvider {
     };
     // Same CREATE retry protection as Customers, with a distinct entity prefix.
     const requestId = mapping ? '' : `&requestid=${encodeURIComponent(`item-${item.catalogItemId}`)}`;
-    const parsed = await this.qboRequest<{ Item?: QboRawItem }>(
-      conn,
-      `item?minorversion=${QBO_API_MINOR_VERSION}${requestId}`,
-      'QuickBooks item upsert',
-      { method: 'POST', body: JSON.stringify(payload) },
-    );
+    const parsed = await this.upsertEntity<{ Item?: QboRawItem }>(conn, {
+      entity: 'item',
+      requestId,
+      label: 'QuickBooks item upsert',
+      fields,
+      mapping,
+      readSyncToken: (id) => this.readEntitySyncToken(conn, 'Item', id),
+    });
     if (!parsed.Item?.Id) throw new Error('QuickBooks item response was missing an Id');
     return { id: parsed.Item.Id, syncToken: parsed.Item.SyncToken };
+  }
+
+  /**
+   * One Customer/Item write. A CREATE is a single POST. An UPDATE is a sparse
+   * POST against the mapping's Id at a SyncToken that Breeze does NOT treat as
+   * authoritative (#7134):
+   *   - no stored token (a mapping backfilled from a QuickBooks import, or one
+   *     confirmed before tokens were captured) → read the live one first;
+   *   - a 5010 stale-object fault (someone edited the record in QuickBooks) →
+   *     re-read the live token and retry exactly once, same discipline as
+   *     `pushInvoice`; a second stale fault escapes as the retryable error it is.
+   * The caller persists the SyncToken QuickBooks returns, so a healed mapping
+   * stays healed.
+   */
+  private async upsertEntity<T>(
+    conn: AccountingConnection,
+    opts: {
+      entity: 'customer' | 'item';
+      requestId: string;
+      label: string;
+      fields: Record<string, unknown>;
+      mapping: AccountingEntityMapping | null;
+      readSyncToken: (remoteId: string) => Promise<string>;
+    },
+  ): Promise<T> {
+    const { mapping } = opts;
+    const post = (syncToken: string | null) => this.qboRequest<T>(
+      conn,
+      `${opts.entity}?minorversion=${QBO_API_MINOR_VERSION}${opts.requestId}`,
+      opts.label,
+      {
+        method: 'POST',
+        body: JSON.stringify(mapping
+          ? { sparse: true, Id: mapping.remoteEntityId, SyncToken: syncToken, ...opts.fields }
+          : opts.fields),
+      },
+    );
+    if (!mapping) return post(null);
+
+    const storedToken = mapping.remoteSyncToken ?? await opts.readSyncToken(mapping.remoteEntityId);
+    try {
+      return await post(storedToken);
+    } catch (err) {
+      if (!isQboStaleObject(err)) throw err;
+      return post(await opts.readSyncToken(mapping.remoteEntityId));
+    }
+  }
+
+  /**
+   * The current SyncToken of a QuickBooks Customer or Item. A 2xx body without
+   * one is malformed and THROWS rather than sending a write QuickBooks is
+   * guaranteed to reject.
+   */
+  private async readEntitySyncToken(
+    conn: AccountingConnection,
+    entity: 'Customer' | 'Item',
+    remoteId: string,
+  ): Promise<string> {
+    const parsed = await this.qboRequest<Partial<Record<'Customer' | 'Item', { SyncToken?: string }>>>(
+      conn,
+      `${entity.toLowerCase()}/${encodeURIComponent(remoteId)}?minorversion=${QBO_API_MINOR_VERSION}`,
+      `QuickBooks ${entity.toLowerCase()} read`,
+    );
+    const token = parsed[entity]?.SyncToken;
+    if (!token) throw new Error(`QuickBooks ${entity.toLowerCase()} read returned no SyncToken`);
+    return token;
   }
 
   async pushInvoice(

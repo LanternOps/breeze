@@ -19,16 +19,19 @@ import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthC
 import { PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { remediateVulnerabilities } from '../services/vulnerabilityRemediation';
 import {
-  buildGroupDetail,
   buildGroupKey,
   computeDeviceStats,
-  computeStats,
-  filterFindings,
   groupFindings,
   toGroupFinding,
   type FleetFindingRow,
 } from '../services/vulnerabilityFleetAggregation';
 import { fetchCveCatalogRecord, fetchFleetFindingRows } from '../services/vulnerabilityFleetQueries';
+import {
+  aggregateFleetStats,
+  getSoftwareGroupDetail,
+  getSoftwareGroupDeviceFindings,
+  listSoftwareGroups,
+} from '../services/vulnerabilityFleetSql';
 import { writeRouteAudit } from '../services/auditEvents';
 import { createTicket } from '../services/ticketService';
 import { platformAdminMiddleware } from '../middleware/platformAdmin';
@@ -629,26 +632,27 @@ vulnerabilityRoutes.get('/software', zValidator('query', softwareQuerySchema), a
     return c.json({ error: 'Access to this organization denied' }, 403);
   }
   const perms = c.get('permissions') as UserPermissions | undefined;
-  const rows = await fetchFleetFindingRows({
-    status: query.status,
-    allowedSiteIds: perms?.allowedSiteIds,
-    orgId: query.orgId,
-  });
-  const filtered = filterFindings(rows, {
-    status: query.status,
-    severity: query.severity,
-    kevOnly: query.kevOnly,
-    patchAvailable: query.patchAvailable,
-    expiringWithinDays: query.expiringWithinDays,
-  });
-  const groups = groupFindings(filtered, { search: query.search });
+  // Aggregated in Postgres (#2262) — never loads the per-device-per-CVE rows.
+  const groups = await listSoftwareGroups(
+    { allowedSiteIds: perms?.allowedSiteIds, orgId: query.orgId },
+    {
+      status: query.status,
+      severity: query.severity,
+      kevOnly: query.kevOnly,
+      patchAvailable: query.patchAvailable,
+      expiringWithinDays: query.expiringWithinDays,
+    },
+    { search: query.search },
+  );
   return c.json({
     items: groups.slice(0, SOFTWARE_GROUP_CAP),
     hasMore: groups.length > SOFTWARE_GROUP_CAP,
   });
 });
 
-// Software-group drawer payload: group summary + per-CVE rollup + raw findings.
+// Software-group drawer payload: group summary + per-CVE rollup + installed
+// versions + ONE ROW PER DEVICE (#2262). All statuses, so the drawer can show
+// accepted/mitigated work alongside open (reopen lives in the drill-down).
 vulnerabilityRoutes.get('/software/:groupKey', zValidator('param', groupKeyParamSchema), zValidator('query', orgScopeQuerySchema), async (c) => {
   const auth = c.get('auth');
   const { groupKey } = c.req.valid('param');
@@ -657,20 +661,40 @@ vulnerabilityRoutes.get('/software/:groupKey', zValidator('param', groupKeyParam
     return c.json({ error: 'Access to this organization denied' }, 403);
   }
   const perms = c.get('permissions') as UserPermissions | undefined;
-  // status 'all' so the drawer can show accepted/mitigated findings alongside
-  // open ones (reopen lives in the drawers).
-  const rows = await fetchFleetFindingRows({ status: 'all', allowedSiteIds: perms?.allowedSiteIds, orgId });
-  const detail = buildGroupDetail(groupKey, rows);
+  const detail = await getSoftwareGroupDetail(groupKey, { allowedSiteIds: perms?.allowedSiteIds, orgId });
   if (!detail) {
     return c.json({ error: 'Group not found' }, 404);
   }
   return c.json(detail);
 });
 
+// Drawer drill-down: one device's per-CVE findings within a group, fetched
+// lazily when the operator expands that device. RLS + the site axis scope it;
+// a device the caller cannot reach yields an empty list.
+vulnerabilityRoutes.get(
+  '/software/:groupKey/devices/:deviceId',
+  zValidator('param', groupKeyParamSchema.merge(deviceParamSchema)),
+  zValidator('query', orgScopeQuerySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { groupKey, deviceId } = c.req.valid('param');
+    const { orgId } = c.req.valid('query');
+    if (orgId && !auth.canAccessOrg(orgId)) {
+      return c.json({ error: 'Access to this organization denied' }, 403);
+    }
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    const findings = await getSoftwareGroupDeviceFindings(groupKey, deviceId, {
+      allowedSiteIds: perms?.allowedSiteIds,
+      orgId,
+    });
+    return c.json({ findings });
+  },
+);
+
 // The four stat-card numbers in one call. Needs every status: open findings
 // feed three cards, accepted findings feed the expiring-soon card. Also carries
-// totalFindings/lastDetectedAt (computed from the same rows — no extra query)
-// so the empty states can tell a clean fleet from one that never produced data.
+// totalFindings/lastDetectedAt (same query) so the empty states can tell a
+// clean fleet from one that never produced data.
 vulnerabilityRoutes.get('/stats', zValidator('query', orgScopeQuerySchema), async (c) => {
   const auth = c.get('auth');
   const { orgId } = c.req.valid('query');
@@ -678,12 +702,7 @@ vulnerabilityRoutes.get('/stats', zValidator('query', orgScopeQuerySchema), asyn
     return c.json({ error: 'Access to this organization denied' }, 403);
   }
   const perms = c.get('permissions') as UserPermissions | undefined;
-  const rows = await fetchFleetFindingRows({
-    status: 'all',
-    allowedSiteIds: perms?.allowedSiteIds,
-    orgId,
-  });
-  return c.json(computeStats(rows, new Date()));
+  return c.json(await aggregateFleetStats({ allowedSiteIds: perms?.allowedSiteIds, orgId }, new Date()));
 });
 
 vulnerabilityRoutes.get(

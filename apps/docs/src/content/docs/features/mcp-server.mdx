@@ -219,7 +219,7 @@ This URL is the Streamable HTTP endpoint; the client negotiates the protocol ver
 
 Tools are the primary way AI clients interact with Breeze. Each tool maps to one or more fleet operations and is classified into a tier that determines how it executes. The MCP server filters the tool list based on the scopes attached to your API key -- you only see tools you are authorized to use.
 
-List tools return `hasMore` and `nextCursor` in their result; when `hasMore` is `true`, call the same tool again with `cursor` set to the previous `nextCursor` and the same filters to get the next page. A result whose payload was too large to return in full is stored as an artifact and comes back with an `artifact.handle` instead -- `read_artifact` pages through that stored copy by byte offset. `read_artifact` only reads an artifact captured by your own chat session or agent run, and capture itself only happens on hosted deployments with the AI workspace enabled; an MCP `tools/call` has no session to anchor a capture to, so `read_artifact` over MCP usually returns `no_capture_anchor` today. It is listed for forward compatibility while MCP-side capture anchoring is designed.
+List tools return `hasMore` and `nextCursor` in their result; when `hasMore` is `true`, call the same tool again with `cursor` set to the previous `nextCursor` and the same filters to get the next page. A result whose payload was too large to return in full is stored as an artifact and comes back with an `artifact.handle` instead -- `read_artifact` pages through that stored copy by byte offset. `read_artifact` only reads an artifact captured by your own chat session or agent run, and capture itself only happens on hosted deployments with the AI workspace enabled or, since v0.117.0, on a self-hosted deployment that opts in with `BREEZE_AI_ARTIFACT_CAPTURE_ENABLED` (see [Environment → AI](/deploy/environment/#ai)); otherwise an oversized result is truncated; an MCP `tools/call` has no session to anchor a capture to, so `read_artifact` over MCP usually returns `no_capture_anchor` today. It is listed for forward compatibility while MCP-side capture anchoring is designed.
 
 ### Device tools
 
@@ -250,6 +250,10 @@ List tools return `hasMore` and `nextCursor` in their result; when `hasMore` is 
 | `execute_command` | 3 | Execute system commands (list processes, manage services, file operations, event log queries) on a device. |
 | `run_script` | 3 | Execute a script by ID on up to 10 devices. |
 | `manage_services` | 3 | List, start, stop, or restart system services on a device. List is Tier 2; start/stop/restart are Tier 3. |
+
+Since v0.117.0 an organization-scoped API key can also see and run its partner's **partner-wide** scripts (those created for "All organizations") through `list_scripts`, `get_script_details` and `run_script`. This is read access only; the key gains no new write access, and it never sees another partner's scripts.
+
+To make sure `run_script` executes exactly the content you reviewed, take `contentSha256` from `get_script_details` and pass it to `run_script` as `expectedContentSha256`. If the script was edited in between, `run_script` refuses with `script_content_mismatch` before anything is dispatched. Omit the field to keep the previous behavior.
 
 ### File and disk tools
 

@@ -3,7 +3,7 @@
  *
  * Tools for querying, inspecting, and managing individual devices.
  * - query_devices (Tier 1): Search and filter devices
- * - get_device_details (Tier 1): Comprehensive device info with hardware/network/metrics
+ * - get_device_details (Tier 1): Comprehensive device info with hardware/memory modules/network/metrics
  * - get_device_context (Tier 1): Retrieve AI memory about a device
  * - set_device_context (Tier 2): Record context/memory about a device
  * - resolve_device_context (Tier 2): Mark context entry as resolved
@@ -18,6 +18,7 @@ import {
   deviceHardware,
   deviceNetwork,
   deviceDisks,
+  deviceMemoryModules,
   deviceMetrics,
   sites,
   customFieldDefinitions,
@@ -83,6 +84,39 @@ export async function readCustomFieldDefinitions(auth: AuthContext) {
     .from(customFieldDefinitions)
     .where(conditions.length > 0 ? and(...conditions) : undefined)
     .orderBy(customFieldDefinitions.name);
+}
+
+// #5351 — per-slot memory inventory for get_device_details. A 4-socket
+// server can report 48+ slots; the list is capped like disks/NICs, while the
+// summary is computed from every slot first so free-slot counts stay exact.
+const MEMORY_MODULES_TOOL_LIMIT = 32;
+
+type MemoryModuleRow = typeof deviceMemoryModules.$inferSelect;
+
+function projectMemoryModule(row: MemoryModuleRow) {
+  return {
+    locator: row.locator, bankLabel: row.bankLabel, populated: row.populated, capacityMb: row.capacityMb,
+    memoryType: row.memoryType, formFactor: row.formFactor, speedMts: row.speedMts,
+    configuredSpeedMts: row.configuredSpeedMts, manufacturer: row.manufacturer, partNumber: row.partNumber,
+    serialNumber: row.serialNumber,
+  };
+}
+
+function summarizeMemory(hardware: typeof deviceHardware.$inferSelect | null, modules: MemoryModuleRow[]) {
+  // No module rows and no applied memory block = the agent never reported
+  // slot inventory (needs an agent update) — not "zero slots".
+  if (modules.length === 0 && !hardware?.memoryObservedAt) return { reported: false as const };
+  const populated = modules.filter((row) => row.populated);
+  return {
+    reported: true as const,
+    slotsTotal: hardware?.memorySlotsTotal ?? modules.length,
+    slotsPopulated: populated.length,
+    slotsFree: modules.length - populated.length,
+    installedMb: populated.reduce((total, row) => total + (row.capacityMb ?? 0), 0),
+    maxCapacityMb: hardware?.memoryMaxCapacityMb ?? null,
+    soldered: hardware?.memorySoldered ?? null,
+    observedAt: hardware?.memoryObservedAt ?? null,
+  };
 }
 
 export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
@@ -202,11 +236,11 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
   registerTool({
     tier: 1,
     domain: 'devices',
-    searchHint: 'device hardware, network interfaces, disk usage and recent metrics',
+    searchHint: 'device hardware, RAM slots and memory modules, network interfaces, disk usage and recent metrics',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'get_device_details',
-      description: 'Get comprehensive details about a specific device including hardware specs, network interfaces, disk usage, and recent metrics.',
+      description: 'Get comprehensive details about a specific device including hardware specs, installed memory modules per RAM slot (capacity, type, speed, manufacturer, part/serial number, free slots), network interfaces, disk usage, and recent metrics.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -223,14 +257,17 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
       const { device } = access;
 
       // Fetch related data in parallel
-      const [hardware, network, disks, recentMetrics] = await Promise.all([
+      const [hardware, network, disks, recentMetrics, memoryModules] = await Promise.all([
         db.select().from(deviceHardware).where(eq(deviceHardware.deviceId, deviceId)).limit(1),
         db.select().from(deviceNetwork).where(eq(deviceNetwork.deviceId, deviceId)),
         db.select().from(deviceDisks).where(eq(deviceDisks.deviceId, deviceId)),
         db.select().from(deviceMetrics)
           .where(eq(deviceMetrics.deviceId, deviceId))
           .orderBy(desc(deviceMetrics.timestamp))
-          .limit(5)
+          .limit(5),
+        db.select().from(deviceMemoryModules)
+          .where(eq(deviceMemoryModules.deviceId, deviceId))
+          .orderBy(asc(deviceMemoryModules.slotIndex), asc(deviceMemoryModules.id)),
       ]);
 
       // Get site name
@@ -253,6 +290,10 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         networkInterfaceCount: network.length,
         disks: disks.slice(0, 16),
         diskCount: disks.length,
+        // #5351: summary first, from EVERY slot, then the bounded list.
+        memorySummary: summarizeMemory(hardware[0] ?? null, memoryModules),
+        memoryModules: memoryModules.slice(0, MEMORY_MODULES_TOOL_LIMIT).map(projectMemoryModule),
+        memoryModuleCount: memoryModules.length,
         recentMetrics
       }, (_, v) => typeof v === 'bigint' ? Number(v) : v);
     }

@@ -35,7 +35,7 @@ import type {
   FilterConditionGroup,
   HardwareHealth,
 } from "@breeze/shared";
-import { HARDWARE_HEALTH_RANK } from "@breeze/shared";
+import { HARDWARE_HEALTH_RANK, isAgentUpdateStuck } from "@breeze/shared";
 import ComponentStatePill from "./hardware/ComponentStatePill";
 import {
   matchesMergedListFilters,
@@ -202,6 +202,10 @@ export type Device = {
   agentVersion: string;
   /** Why the server withholds update offers from this device (#6449); null/absent = offers flowing. */
   updateOfferWithheldReason?: string | null;
+  /** Open self-update attempt record (#4073); drives the stuck-update badge. */
+  updateAttemptTargetVersion?: string | null;
+  updateAttemptStartedAt?: string | null;
+  updateAttemptLastAt?: string | null;
   watchdogVersion?: string | null;
   /** Installed Breeze Assist helper version (devices.helper_version, #6751). */
   helperVersion?: string | null;
@@ -2054,6 +2058,22 @@ export default function DeviceList({
             {t("deviceList.updateWithheld")}
           </span>
         ) : null;
+        // #4073: the device has been retrying the same self-update past the
+        // stuck threshold without converging — surface it, since a wedged
+        // updater may ship no logs at all.
+        const stuckBadge = isAgentUpdateStuck({
+          targetVersion: device.updateAttemptTargetVersion,
+          startedAt: device.updateAttemptStartedAt,
+          lastAttemptAt: device.updateAttemptLastAt,
+        }) ? (
+          <span
+            data-testid={`device-${device.id}-update-stuck`}
+            title={t("deviceList.updateStuckTooltip", { target: device.updateAttemptTargetVersion })}
+            className="ml-1.5 rounded bg-warning/15 px-1.5 py-0.5 text-xs font-medium text-warning"
+          >
+            {t("deviceList.updateStuck")}
+          </span>
+        ) : null;
         if (relation === "unknown") {
           return (
             <td
@@ -2063,6 +2083,7 @@ export default function DeviceList({
             >
               {device.agentVersion || dash}
               {withheldBadge}
+              {stuckBadge}
             </td>
           );
         }
@@ -2086,6 +2107,7 @@ export default function DeviceList({
               {device.agentVersion}
             </span>
             {withheldBadge}
+            {stuckBadge}
           </td>
         );
       },

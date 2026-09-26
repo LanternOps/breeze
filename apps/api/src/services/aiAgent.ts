@@ -11,6 +11,7 @@ import { aiSessions, aiMessages, aiToolExecutions, approvalRequests, delegantM36
 import { eq, and, desc, sql, type SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiPageContext, AiApprovalMode } from '@breeze/shared/types/ai';
+import { buildSessionContextSnapshot } from './aiSessionOrgAnchor';
 import type { ActiveSession } from './streamingSessionManager';
 import { escapeLike } from '../utils/sql';
 import { getActiveDeviceContext } from './brainDeviceContext';
@@ -144,6 +145,10 @@ export async function createSession(
   if (orgId !== auth.orgId && !auth.canAccessOrg(orgId)) {
     throw new Error('Access denied to this organization');
   }
+  // #6675: record, server-side, that the page chose this org, so org-scoped
+  // AI writes can default to it. Only when the page anchor is what won the
+  // chain above — never for an explicit orgId, a bound device, or a fallback.
+  const orgAnchoredToPage = pageContextOrgId !== undefined && orgId === pageContextOrgId;
 
   // Cross-org validation (SECURITY-CRITICAL): a session may only be bound to an
   // active M365 connection that belongs to the session's org.
@@ -204,7 +209,7 @@ export async function createSession(
       model: options.model ?? resolved.model,
       billingSource: resolved.source === 'partner' ? 'partner_key' : 'platform',
       title: options.title ?? null,
-      contextSnapshot: sanitizedPageContext ?? null,
+      contextSnapshot: buildSessionContextSnapshot(sanitizedPageContext, orgAnchoredToPage),
       delegantM365ConnectionId,
       deviceId,
       maxTurns: budget.maxTurnsPerSession,

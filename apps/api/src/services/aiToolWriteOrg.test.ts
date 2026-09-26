@@ -62,3 +62,50 @@ describe('resolveWritableToolOrgId (#6667)', () => {
     });
   });
 });
+
+describe('resolveWritableToolOrgId: device-page write default (#6675)', () => {
+  const ORG_C = '33333333-3333-3333-3333-333333333333';
+
+  it('a multi-org caller with no orgId writes to the device-page anchor org', () => {
+    const partner = auth({ accessibleOrgIds: [ORG_A, ORG_B], aiWriteDefaultOrgId: ORG_B });
+    expect(resolveWritableToolOrgId(partner)).toEqual({ orgId: ORG_B });
+  });
+
+  it('an explicit accessible orgId wins over the anchor', () => {
+    const partner = auth({ accessibleOrgIds: [ORG_A, ORG_B], aiWriteDefaultOrgId: ORG_B });
+    expect(resolveWritableToolOrgId(partner, ORG_A)).toEqual({ orgId: ORG_A });
+  });
+
+  it('an explicit inaccessible orgId is refused even with an anchor', () => {
+    const partner = auth({ accessibleOrgIds: [ORG_A, ORG_B], aiWriteDefaultOrgId: ORG_B });
+    expect(resolveWritableToolOrgId(partner, ORG_C)).toEqual({ error: 'Access denied to this organization' });
+  });
+
+  it('ignores an anchor the caller can no longer access (re-checked at call time)', () => {
+    const partner = auth({ accessibleOrgIds: [ORG_A, ORG_B], aiWriteDefaultOrgId: ORG_C });
+    expect(resolveWritableToolOrgId(partner)).toEqual({ error: WRITE_ORG_AMBIGUOUS_ERROR });
+  });
+
+  it('outranks a partner token home org, as the session anchor does (#5684)', () => {
+    const partner = auth({ orgId: ORG_A, accessibleOrgIds: [ORG_A, ORG_B], aiWriteDefaultOrgId: ORG_B });
+    expect(resolveWritableToolOrgId(partner)).toEqual({ orgId: ORG_B });
+  });
+
+  it('never moves an org-scoped token off its own org', () => {
+    const org = auth({ scope: 'organization', orgId: ORG_A, accessibleOrgIds: [ORG_A], aiWriteDefaultOrgId: ORG_B });
+    expect(resolveWritableToolOrgId(org)).toEqual({ orgId: ORG_A });
+  });
+
+  it('a read that opts out keeps the pre-#6675 resolution', () => {
+    const partner = auth({ accessibleOrgIds: [ORG_A, ORG_B], aiWriteDefaultOrgId: ORG_B });
+    expect(resolveWritableToolOrgId(partner, undefined, { useWriteDefault: false })).toEqual({
+      error: WRITE_ORG_AMBIGUOUS_ERROR,
+    });
+  });
+
+  it('without an anchor a multi-org caller is still refused (non-page chat, #6667)', () => {
+    expect(resolveWritableToolOrgId(auth({ accessibleOrgIds: [ORG_A, ORG_B] }))).toEqual({
+      error: WRITE_ORG_AMBIGUOUS_ERROR,
+    });
+  });
+});

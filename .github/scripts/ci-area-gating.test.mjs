@@ -43,7 +43,7 @@ const areasOf = (out) => Object.fromEntries(AREAS.map((a) => [a, out[a]]));
 const expectAreas = (on) => Object.fromEntries(AREAS.map((a) => [a, on === 'all' || on.includes(a) ? 'true' : 'false']));
 
 // ─── Classifier: per-area rules ─────────────────────────────────────────
-test('classifier: emits every area output, in order, after code/docs/agent/app, then topology_browser', () => {
+test('classifier: emits every area output, in order, after code/docs/agent/app, then topology_browser, agent_code', () => {
   const run = spawnSync('bash', [new URL('./classify-pr-paths.sh', import.meta.url).pathname], {
     encoding: 'utf8', input: 'apps/api/src/index.ts\n',
   });
@@ -51,7 +51,7 @@ test('classifier: emits every area output, in order, after code/docs/agent/app, 
   assert.deepEqual(
     run.stdout.trim().split('\n').map((l) => l.split('=')[0]),
     // topology_browser (#6117) is a single-job gate, not an area; it trails the areas.
-    ['code', 'docs', 'agent', 'app', ...AREAS, 'topology_browser'],
+    ['code', 'docs', 'agent', 'app', ...AREAS, 'topology_browser', 'agent_code'],
   );
 });
 

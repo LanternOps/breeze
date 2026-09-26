@@ -448,8 +448,77 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           model: { type: 'string', nullable: true },
           motherboardManufacturer: { type: 'string', nullable: true },
           motherboardProduct: { type: 'string', nullable: true },
-          motherboardVersion: { type: 'string', nullable: true }
+          motherboardVersion: { type: 'string', nullable: true },
+          memorySlotsTotal: { type: 'integer', nullable: true, description: 'Physical memory slots in system-memory arrays; null until reported' },
+          memoryMaxCapacityMb: { type: 'integer', nullable: true, description: 'Maximum supported memory (MiB)' },
+          memorySoldered: { type: 'boolean', nullable: true, description: 'true = on-package memory with no slot inventory (e.g. Apple Silicon)' },
+          memoryObservedAt: { type: 'string', format: 'date-time', nullable: true, description: 'When slot inventory was last reported; null = never (agent needs an update)' }
         }
+      },
+      DeviceMemoryModule: {
+        type: 'object',
+        description: 'One physical memory slot, populated or empty (#5351)',
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+          slotKey: { type: 'string', description: 'Agent-computed stable slot identity' },
+          slotIndex: { type: 'integer', description: 'Order as reported by the agent' },
+          locator: { type: 'string', example: 'DIMM_A1' },
+          bankLabel: { type: 'string', nullable: true },
+          populated: { type: 'boolean' },
+          capacityMb: { type: 'integer', nullable: true },
+          memoryType: { type: 'string', nullable: true, example: 'DDR4' },
+          formFactor: { type: 'string', nullable: true, example: 'DIMM' },
+          speedMts: { type: 'integer', nullable: true, description: 'Rated speed (MT/s)' },
+          configuredSpeedMts: { type: 'integer', nullable: true, description: 'Configured speed (MT/s)' },
+          manufacturer: { type: 'string', nullable: true },
+          partNumber: { type: 'string', nullable: true },
+          serialNumber: { type: 'string', nullable: true },
+          updatedAt: { type: 'string', format: 'date-time' }
+        }
+      },
+      AgentMemoryReport: {
+        type: 'object',
+        description: 'Optional per-slot memory snapshot on the agent hardware report. Validated separately: an invalid block is ignored and the base hardware still saves; an absent block leaves stored memory untouched.',
+        required: ['modules'],
+        properties: {
+          slotsTotal: { type: 'integer', minimum: 0, maximum: 256, nullable: true },
+          maxCapacityMb: { type: 'integer', minimum: 0, nullable: true },
+          soldered: { type: 'boolean', nullable: true },
+          modules: {
+            type: 'array',
+            maxItems: 256,
+            description: 'One entry per slot, populated or not; slotKey must be unique',
+            items: {
+              type: 'object',
+              required: ['slotKey', 'locator', 'populated'],
+              properties: {
+                slotKey: { type: 'string', minLength: 1, maxLength: 160 },
+                locator: { type: 'string', minLength: 1, maxLength: 128 },
+                bankLabel: { type: 'string', maxLength: 128, nullable: true },
+                populated: { type: 'boolean' },
+                capacityMb: { type: 'integer', minimum: 0, nullable: true },
+                memoryType: { type: 'string', maxLength: 32, nullable: true },
+                formFactor: { type: 'string', maxLength: 32, nullable: true },
+                speedMts: { type: 'integer', minimum: 0, nullable: true },
+                configuredSpeedMts: { type: 'integer', minimum: 0, nullable: true },
+                manufacturer: { type: 'string', maxLength: 128, nullable: true },
+                partNumber: { type: 'string', maxLength: 128, nullable: true },
+                serialNumber: { type: 'string', maxLength: 128, nullable: true }
+              }
+            }
+          }
+        }
+      },
+      AgentHardwareReport: {
+        allOf: [
+          { $ref: '#/components/schemas/DeviceHardware' },
+          {
+            type: 'object',
+            properties: {
+              memory: { $ref: '#/components/schemas/AgentMemoryReport' }
+            }
+          }
+        ]
       },
       DeviceMetrics: {
         type: 'object',
@@ -2596,6 +2665,37 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       }
     },
+    '/devices/{id}/hardware': {
+      get: {
+        operationId: 'getDeviceHardware',
+        tags: ['Devices'],
+        summary: 'Get hardware inventory',
+        description: 'Get the hardware row (including the memory summary), disk drives, network adapters and per-slot memory modules ordered by slot',
+        parameters: [
+          { $ref: '#/components/parameters/idParam' }
+        ],
+        responses: {
+          '200': {
+            description: 'Hardware inventory',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    hardware: { allOf: [{ $ref: '#/components/schemas/DeviceHardware' }], nullable: true },
+                    diskDrives: { type: 'array', items: { type: 'object' } },
+                    networkInterfaces: { type: 'array', items: { type: 'object' } },
+                    memoryModules: { type: 'array', items: { $ref: '#/components/schemas/DeviceMemoryModule' } }
+                  }
+                }
+              }
+            }
+          },
+          '403': { description: 'Access to this site denied' },
+          '404': { description: 'Device not found' }
+        }
+      }
+    },
     '/devices/{id}/software': {
       get: {
         operationId: 'getDeviceSoftware',
@@ -4648,7 +4748,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           required: true,
           content: {
             'application/json': {
-              schema: { $ref: '#/components/schemas/DeviceHardware' }
+              schema: { $ref: '#/components/schemas/AgentHardwareReport' }
             }
           }
         },

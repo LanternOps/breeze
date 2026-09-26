@@ -63,6 +63,9 @@ export const FILTER_FIELDS: FilterFieldDefinition[] = [
   { key: 'hardware.ramTotalMb', label: 'RAM (MB)', category: 'hardware', type: 'number', operators: N },
   { key: 'hardware.diskTotalGb', label: 'Disk Size (GB)', category: 'hardware', type: 'number', operators: N },
   { key: 'hardware.gpuModel', label: 'GPU Model', category: 'hardware', type: 'string', operators: S },
+  // Storage/RAID health rollup (#6854) — device_hardware_health, not device_hardware.
+  { key: 'hardware.health', label: 'Hardware Health', category: 'hardware', type: 'enum', operators: E,
+    enumValues: ['ok', 'warning', 'critical', 'unknown'] },
 
   // Network
   { key: 'network.ipAddress', label: 'IP Address', category: 'network', type: 'string', operators: S },

@@ -266,8 +266,20 @@ function setup(opts: {
   lines?: Partial<LineRow>[];
   mappings?: MappingRow[];
 } = {}) {
-  currentInvoices = [defaultInvoice(opts.invoice)];
   currentLines = defaultLines(opts.lines);
+  // Mirror the real invariant (`computeInvoiceTotals`): an invoice's subtotal
+  // is the sum of its CUSTOMER-VISIBLE line totals. A test that supplies its
+  // own lines gets a matching subtotal unless it overrides `subtotal` on
+  // purpose (the #7161 totals-mismatch refusal tests do exactly that).
+  const derivedSubtotal = opts.lines && opts.invoice?.subtotal === undefined
+    ? (currentLines
+      .filter((l) => l.customerVisible)
+      .reduce((sum, l) => sum + Math.round(Number(l.lineTotal) * 100), 0) / 100).toFixed(2)
+    : undefined;
+  currentInvoices = [defaultInvoice({
+    ...(derivedSubtotal !== undefined ? { subtotal: derivedSubtotal } : {}),
+    ...opts.invoice,
+  })];
   currentMappings = (opts.mappings ?? [orgMappingRow()]).map((m) => ({ ...m }));
   lastLinesWhereCond = null;
   lastLinesOrderByArg = null;
@@ -883,6 +895,138 @@ describe('pushInvoiceToAccounting', () => {
 
     expect(outcome.syncStatus).toBe('synced_with_tax_variance');
     expect(outcome.taxVarianceCents).toBe(2);
+  });
+
+  // #7161: a hidden (customer_visible = false) line is excluded from Breeze's
+  // subtotal, so pushing it at full price inflated the QuickBooks invoice over
+  // what the customer was billed. The line is KEPT (the accounting view exposes
+  // every line) but carries no money.
+  describe('hidden priced lines and totals reconciliation (#7161)', () => {
+    it('sends a hidden PRICED line at zero unit price and zero total, keeping the line, its quantity and its description', async () => {
+      setup({
+        lines: [
+          { id: 'line-1', name: 'Visible labour', quantity: '1.00', unitPrice: '100.00', lineTotal: '100.00' },
+          { id: 'line-2', name: 'Hidden priced line', quantity: '2.00', unitPrice: '25.00', lineTotal: '50.00', customerVisible: false },
+        ],
+      });
+      expect(currentInvoices[0]!.subtotal).toBe('100.00'); // fixture sanity: hidden line excluded
+
+      const outcome = await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
+
+      const [, payload] = pushInvoiceMock.mock.calls[0]!;
+      expect(payload.lines).toHaveLength(2);
+      expect(payload.lines[0]).toMatchObject({ invoiceLineId: 'line-1', unitPrice: '100.00', lineTotal: '100.00' });
+      expect(payload.lines[1]).toMatchObject({
+        invoiceLineId: 'line-2',
+        description: 'Hidden priced line',
+        quantity: '2.00',
+        unitPrice: '0.00',
+        lineTotal: '0.00',
+      });
+      expect(outcome.syncStatus).toBe('synced');
+    });
+
+    it('refuses with invoice_totals_mismatch — never calling QuickBooks or refreshing a token — when the pushed lines do not sum to the invoice subtotal, and records the error on the mapping row', async () => {
+      setup({
+        invoice: { subtotal: '100.00' },
+        lines: [
+          { id: 'line-1', lineTotal: '100.00', unitPrice: '100.00' },
+          { id: 'line-2', lineTotal: '50.00', unitPrice: '50.00' },
+        ],
+      });
+
+      await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({
+        code: 'invoice_totals_mismatch', status: 409,
+      });
+      expect(pushInvoiceMock).not.toHaveBeenCalled();
+      expect(resolveLiveConnectionMock).not.toHaveBeenCalled();
+      expect(syncMappedEntityMock).not.toHaveBeenCalled();
+
+      const row = currentMappings.find((m) => m.breezeEntityType === 'invoice' && m.breezeEntityId === INVOICE);
+      expect(row).toMatchObject({ syncStatus: 'error', linkStatus: 'create_new' });
+      expect(row?.remoteEntityId ?? null).toBeNull();
+      expect(row?.lastError).toContain('150.00');
+      expect(row?.lastError).toContain('100.00');
+    });
+
+    it('refuses with invoice_totals_mismatch on an existing synced mapping without touching its remote link', async () => {
+      setup({
+        invoice: { subtotal: '99.99' },
+        mappings: [
+          orgMappingRow(),
+          {
+            id: 'map-inv-old', integrationId: CONN_ID, partnerId: PARTNER, breezeEntityType: 'invoice', breezeEntityId: INVOICE,
+            remoteEntityType: 'Invoice', remoteEntityId: 'qb-inv-old', remoteSyncToken: '2',
+            remoteCurrencyCode: null, remoteDocNumber: null, linkStatus: 'confirmed', syncStatus: 'synced', lastError: null,
+          },
+        ],
+      });
+
+      await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({ code: 'invoice_totals_mismatch' });
+      expect(pushInvoiceMock).not.toHaveBeenCalled();
+      expect(insertedValues).toHaveLength(0);
+      const row = currentMappings.find((m) => m.breezeEntityType === 'invoice' && m.breezeEntityId === INVOICE);
+      expect(row).toMatchObject({ id: 'map-inv-old', syncStatus: 'error', remoteEntityId: 'qb-inv-old', linkStatus: 'confirmed' });
+    });
+
+    it('fails closed with invoice_totals_mismatch when a line amount is not a plain 2-decimal number, even if a float sum would match', async () => {
+      // '1e2' is 100 to Number() — a float-based sum would call this a match
+      // against the 100.00 subtotal. The exact-cents parser rejects it and the
+      // guard must refuse rather than skip the comparison.
+      setup({
+        invoice: { subtotal: '100.00' },
+        lines: [{ id: 'line-1', lineTotal: '1e2', unitPrice: '100.00' }],
+      });
+
+      await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({
+        code: 'invoice_totals_mismatch', status: 409,
+      });
+      expect(pushInvoiceMock).not.toHaveBeenCalled();
+    });
+
+    it('compares totals in exact cents, not floats (0.10 + 0.20 equals a 0.30 subtotal)', async () => {
+      setup({
+        invoice: { subtotal: '0.30', taxTotal: '0.00', total: '0.30' },
+        lines: [
+          { id: 'line-1', lineTotal: '0.10', unitPrice: '0.10' },
+          { id: 'line-2', lineTotal: '0.20', unitPrice: '0.20' },
+        ],
+      });
+      pushInvoiceMock.mockResolvedValue({ id: 'qb-inv-1', syncToken: '0', docNumber: null, remoteTaxTotal: '0.00', remoteTotal: '0.30' });
+
+      await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).resolves.toMatchObject({ syncStatus: 'synced' });
+      expect(pushInvoiceMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('marks the mapping drifted (synced_with_tax_variance), not synced, when QuickBooks TotalAmt differs from the Breeze total even though tax matches', async () => {
+      pushInvoiceMock.mockResolvedValue({ id: 'qb-inv-1', syncToken: '0', docNumber: null, remoteTaxTotal: '7.00', remoteTotal: '157.00' });
+
+      const outcome = await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
+
+      expect(outcome.syncStatus).toBe('synced_with_tax_variance');
+      expect(outcome.totalVarianceCents).toBe(5000);
+      expect(outcome.taxVarianceCents).toBeNull();
+      const row = currentMappings.find((m) => m.breezeEntityType === 'invoice' && m.breezeEntityId === INVOICE);
+      expect(row?.syncStatus).toBe('synced_with_tax_variance');
+    });
+
+    it('treats a 1-cent TotalAmt difference as plain synced (same tolerance as tax)', async () => {
+      pushInvoiceMock.mockResolvedValue({ id: 'qb-inv-1', syncToken: '0', docNumber: null, remoteTaxTotal: '7.00', remoteTotal: '107.01' });
+
+      const outcome = await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
+
+      expect(outcome.syncStatus).toBe('synced');
+      expect(outcome.totalVarianceCents).toBeNull();
+    });
+
+    it('treats an absent TotalAmt as no total drift (same as an absent tax total)', async () => {
+      pushInvoiceMock.mockResolvedValue({ id: 'qb-inv-1', syncToken: '0', docNumber: null, remoteTaxTotal: '7.00', remoteTotal: null });
+
+      const outcome = await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
+
+      expect(outcome.syncStatus).toBe('synced');
+      expect(outcome.totalVarianceCents).toBeNull();
+    });
   });
 
   it('treats a 1-cent tax difference as plain synced (within tolerance)', async () => {

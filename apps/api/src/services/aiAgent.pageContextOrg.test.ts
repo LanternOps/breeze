@@ -214,3 +214,56 @@ describe('createSession page-context org anchoring (#5593)', () => {
     expect(valuesSpy).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_A }));
   });
 });
+
+describe('createSession records the page-context org anchor server-side (#6675)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resolveLlmConfigForOrgMock.mockResolvedValue({
+      source: 'platform',
+      apiKey: 'platform-key',
+      model: 'claude-sonnet-4-6',
+    });
+  });
+
+  function snapshotOf(valuesSpy: ReturnType<typeof vi.fn>) {
+    return (valuesSpy.mock.calls[0]![0] as { contextSnapshot: Record<string, unknown> | null }).contextSnapshot;
+  }
+
+  it('marks the snapshot when the session org came from the page device', async () => {
+    selectMock.mockReturnValue(devSelect([{ orgId: ORG_B, siteId: null }]));
+    const valuesSpy = expectInsert();
+
+    await createSession(partnerAuth(), { pageContext: devicePageContext });
+
+    expect(snapshotOf(valuesSpy)).toEqual({ ...devicePageContext, orgAnchor: 'page_context' });
+  });
+
+  it('does not mark the snapshot when the page device is not reachable (no default)', async () => {
+    selectMock.mockReturnValue(devSelect([{ orgId: 'cccccccc-1111-4222-8333-444455556666', siteId: null }]));
+    const valuesSpy = expectInsert();
+
+    await createSession(partnerAuth(), { pageContext: devicePageContext });
+
+    expect(snapshotOf(valuesSpy)).toEqual(devicePageContext);
+  });
+
+  it('does not mark the snapshot when an explicit orgId chose the org', async () => {
+    selectMock.mockReturnValue(devSelect([{ orgId: ORG_B, siteId: null }]));
+    const valuesSpy = expectInsert();
+
+    await createSession(partnerAuth(), { orgId: ORG_B, pageContext: devicePageContext });
+
+    expect(snapshotOf(valuesSpy)).toEqual(devicePageContext);
+  });
+
+  it('never trusts an anchor sent by the client', async () => {
+    selectMock.mockReturnValue(devSelect([{ orgId: 'cccccccc-1111-4222-8333-444455556666', siteId: null }]));
+    const valuesSpy = expectInsert();
+
+    await createSession(partnerAuth(), {
+      pageContext: { ...devicePageContext, orgAnchor: 'page_context' } as never,
+    });
+
+    expect(snapshotOf(valuesSpy)).toEqual(devicePageContext);
+  });
+});

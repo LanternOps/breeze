@@ -7,10 +7,11 @@
 
 import type Anthropic from '@anthropic-ai/sdk';
 import type { AiToolDomain } from '@breeze/shared';
-import { db } from '../db';
+import { db, hasDbAccessContext, withDbAccessContext } from '../db';
 import { devices } from '../db/schema';
 import { eq, and, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
+import { dbAccessContextFromAuth } from '../middleware/auth';
 import { validateToolInput } from './aiToolSchemas';
 import { setToolPaginationHintResolver } from './aiToolOutput';
 import type { CaptureScope } from './artifacts/toolResultCapture';
@@ -161,6 +162,28 @@ export interface AiTool {
    * capture exists for.
    */
   captureExempt?: boolean;
+  /**
+   * The handler opens its OWN short DB contexts and must not run inside a
+   * caller-opened per-call transaction (#7128). Set it only for a handler
+   * that hands work to another process and then WAITS on it — `propose_script`
+   * commits a proposal, enqueues its review, and polls up to 45 s for the
+   * worker's verdict.
+   *
+   * Under the default per-call transaction such a handler is broken twice:
+   * the other process cannot see the uncommitted row it was handed, and the
+   * pooled connection sits idle-in-transaction for the whole wait (#1105).
+   * `runOutsideDbContext` inside the handler cannot fix either — it re-routes
+   * new queries but cannot release the caller's transaction.
+   *
+   * Honoured by the SDK tool wrapper (`aiAgentSdkTools.ts` `makeToolHandler`,
+   * i.e. chat and agent runs), which then opens no transaction around
+   * `executeTool`; `executeTool` runs its own DB-touching phases (the
+   * `deviceArgs` gate, result capture) in a short caller-scoped context when
+   * none is held. A caller that holds a request-wide transaction anyway (the
+   * MCP route's auth middleware) still holds it — the handler must check
+   * `hasDbAccessContext()` and not wait under it.
+   */
+  selfManagedDbContext?: true;
 }
 
 // ============================================
@@ -612,10 +635,21 @@ export async function executeTool(
     return JSON.stringify({ error: validation.error });
   }
 
+  // A self-managed tool (#7128) may arrive with no DB context at all — the SDK
+  // wrapper deliberately opens none for it. This dispatcher's own DB phases
+  // then each run in a SHORT context built from the caller's auth (the same
+  // builder the wrapper would have used), so they are never contextless
+  // (RLS-denied) and never held across the handler. Every other tool, and any
+  // call that already holds a context, is untouched: the check short-circuits
+  // on the flag before it ever consults the context store.
+  const ownContext = coreTool?.selfManagedDbContext === true && !hasDbAccessContext();
+  const inDispatchContext = <T>(fn: () => Promise<T>): Promise<T> =>
+    ownContext ? withDbAccessContext(dbAccessContextFromAuth(auth), fn) : fn();
+
   // Structural device-tenant gate: any id named in `tool.deviceArgs` is
   // org+site-checked before the handler runs, so a tool can't reach a device
   // outside the caller's scope even if its handler forgets to check.
-  const gate = await enforceDeviceArgs(tool, effectiveInput, auth);
+  const gate = await inDispatchContext(() => enforceDeviceArgs(tool, effectiveInput, auth));
   if (!gate.ok) return JSON.stringify({ error: gate.error });
 
   // A-W05 (D13a/Q4): `read_artifact` must read with the SAME anchor capture
@@ -658,7 +692,7 @@ export async function executeTool(
     ? null
     : captureContextFrom(auth, opts, toolName);
   try {
-    return await captureLargeToolResult(rawResult, captureCtx);
+    return await inDispatchContext(() => captureLargeToolResult(rawResult, captureCtx));
   } catch (err) {
     captureException(err);
     console.error(`[aiTools] artifact capture failed for ${toolName}; returning the raw result`, err);

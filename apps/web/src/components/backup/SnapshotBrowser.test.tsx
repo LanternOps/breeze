@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import SnapshotBrowser from './SnapshotBrowser';
@@ -154,6 +154,21 @@ describe('SnapshotBrowser', () => {
     render(<SnapshotBrowser />);
 
     await screen.findByText('report.txt');
+    // `findByText` resolves as soon as the browse-load commit reaches the DOM,
+    // but that same commit also schedules SnapshotBrowser's selection-reset
+    // effect (keyed on the newly-loaded tree id — see the comment above
+    // `restoreLinkSnapshotId` in SnapshotBrowser.tsx). That effect is a
+    // passive effect and isn't guaranteed to have run yet: under CI load it
+    // can still be pending here, and if it fires *after* the click below it
+    // clobbers the selection an instant after it was set. Flushing a
+    // macrotask first lets that effect settle before we interact, so the
+    // click always lands after the reset instead of racing it. Confirmed as
+    // the real failure mode from CI (run 36269173200, attempt 1): the
+    // captured href was `#restore?snapshot=snap-1` with no `paths=` at all —
+    // the click never stuck.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
     fireEvent.click(screen.getByLabelText('Select report.txt'));
 
     const link = screen.getByTestId('snapshot-browser-restore-link');

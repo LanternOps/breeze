@@ -108,6 +108,13 @@ export type AccountingInvoicePushErrorCode =
   // mapping row carries a message naming the fix (unapply the payment in
   // QuickBooks, then void again).
   | 'void_blocked_by_payments'
+  // #7161: the lines about to be pushed do not sum to the invoice's own
+  // subtotal, so QuickBooks would record a different amount than the customer
+  // was billed. Refused BEFORE any dependency sync, token refresh or provider
+  // call, and persisted on the invoice's mapping row like `currency_mismatch`.
+  // A Breeze-side data problem, not an outage: every retry would refuse the
+  // same way, so it is terminal in the worker.
+  | 'invoice_totals_mismatch'
   | 'quickbooks_error' | 'record_failed'; // 502s; record_failed = remote ok, local persist failed (never retry)
 
 export class AccountingInvoicePushError extends Error {
@@ -127,6 +134,9 @@ export interface InvoicePushOutcome {
   docNumber: string | null;
   syncStatus: 'synced' | 'synced_with_tax_variance';
   taxVarianceCents: number | null;
+  /** >1¢ difference between QuickBooks' TotalAmt and the Breeze invoice
+   *  total (#7161); null when within tolerance or TotalAmt was absent. */
+  totalVarianceCents: number | null;
 }
 
 type InvoiceRow = typeof invoices.$inferSelect;
@@ -247,13 +257,14 @@ function translateCurrencyError(err: unknown, conn: AccountingConnection): never
 }
 
 /**
- * Persists a `currency_mismatch` pre-flight refusal onto the invoice's own
- * mapping row (#4498). Before this, the currency guard threw before Phase 1b
+ * Persists a `currency_mismatch` (#4498) or `invoice_totals_mismatch` (#7161)
+ * pre-flight refusal onto the invoice's own mapping row. Before this, the currency guard threw before Phase 1b
  * ever claims/creates that row, so `getInvoiceAccountingSync` had nothing to
  * read and the invoice detail card showed no trace of a failed auto-push — a
  * tech had no signal short of retrying the push manually and reading the 409.
- * Deliberately scoped to `currency_mismatch` only (not `home_currency_unknown`,
- * a rarer connection-setup problem that is not this issue's complaint).
+ * Deliberately scoped to those two codes (see `PERSISTED_PREFLIGHT_CODES`),
+ * not `home_currency_unknown`, a rarer connection-setup problem that is not
+ * #4498's complaint.
  *
  * MUST be called from OUTSIDE the Phase 1 `runInDbContext` call whose guard
  * just threw — that transaction has already rolled back by the time this
@@ -262,7 +273,7 @@ function translateCurrencyError(err: unknown, conn: AccountingConnection): never
  * rather than threading `conn.id` through the thrown error.
  *
  * Best-effort and NEVER throws: a failure here must not replace the typed
- * `currency_mismatch` error the caller is about to (re)raise regardless of
+ * pre-flight error the caller is about to (re)raise regardless of
  * whether this write lands. Sentry has the original either way.
  *
  * Never clobbers a `remote-deleted` marker (same WHERE guard as
@@ -272,7 +283,12 @@ function translateCurrencyError(err: unknown, conn: AccountingConnection): never
  * link must survive; only `syncStatus`/`lastError` move to reflect this
  * attempt's failure.
  */
-async function persistInvoiceCurrencyMismatchErrorInOwnContext(
+const PERSISTED_PREFLIGHT_CODES: ReadonlySet<AccountingInvoicePushErrorCode> = new Set([
+  'currency_mismatch',
+  'invoice_totals_mismatch',
+]);
+
+async function persistInvoicePreflightErrorInOwnContext(
   runInDbContext: DbContextRunner,
   partnerId: string,
   invoiceId: string,
@@ -587,15 +603,76 @@ function centsFromDecimalString(value: string): number {
   return Math.round(Number(value) * 100);
 }
 
-/** >1¢ absolute difference flags a tax variance; 1¢ or less is within tolerance. */
-function computeTaxVariance(
-  remoteTaxTotal: string | null,
-  invoiceTaxTotal: string,
-): { syncStatus: 'synced' | 'synced_with_tax_variance'; taxVarianceCents: number | null } {
-  if (remoteTaxTotal === null) return { syncStatus: 'synced', taxVarianceCents: null };
-  const diffCents = Math.abs(centsFromDecimalString(remoteTaxTotal) - centsFromDecimalString(invoiceTaxTotal));
-  if (diffCents > 1) return { syncStatus: 'synced_with_tax_variance', taxVarianceCents: diffCents };
-  return { syncStatus: 'synced', taxVarianceCents: null };
+/** >1¢ absolute difference is a variance; 1¢ or less (or no remote figure) is within tolerance. */
+function varianceCents(remoteAmount: string | null, breezeAmount: string): number | null {
+  if (remoteAmount === null) return null;
+  const diffCents = Math.abs(centsFromDecimalString(remoteAmount) - centsFromDecimalString(breezeAmount));
+  return diffCents > 1 ? diffCents : null;
+}
+
+/**
+ * Post-push drift check. Tax (QuickBooks computes its own) and, since #7161,
+ * the invoice TotalAmt are compared against Breeze with the same 1¢ tolerance.
+ * Either one drifting marks the mapping `synced_with_tax_variance` — the one
+ * drifted-but-synced state the mapping row has — never plain `synced`.
+ */
+function computeRemoteVariance(
+  result: Pick<InvoicePushResult, 'remoteTaxTotal' | 'remoteTotal'>,
+  inv: Pick<InvoiceRow, 'taxTotal' | 'total'>,
+): { syncStatus: 'synced' | 'synced_with_tax_variance'; taxVarianceCents: number | null; totalVarianceCents: number | null } {
+  const taxVarianceCents = varianceCents(result.remoteTaxTotal, inv.taxTotal);
+  const totalVarianceCents = varianceCents(result.remoteTotal, inv.total);
+  const drifted = taxVarianceCents !== null || totalVarianceCents !== null;
+  return { syncStatus: drifted ? 'synced_with_tax_variance' : 'synced', taxVarianceCents, totalVarianceCents };
+}
+
+/**
+ * Exact integer cents from a `numeric(12,2)` decimal string by parsing the
+ * digits — no binary float anywhere, so a sum of many lines cannot drift.
+ * Returns null for anything that is not a plain decimal with at most two
+ * fraction digits; the caller treats that as a mismatch (fail closed).
+ */
+function exactCents(value: string): number | null {
+  const m = /^(-)?(\d+)(?:\.(\d{1,2}))?$/.exec(value.trim());
+  if (!m) return null;
+  const cents = Number(m[2]) * 100 + Number((m[3] ?? '').padEnd(2, '0'));
+  if (!Number.isSafeInteger(cents)) return null;
+  return m[1] ? -cents : cents;
+}
+
+function formatCents(cents: number): string {
+  const sign = cents < 0 ? '-' : '';
+  const abs = Math.abs(cents);
+  return `${sign}${Math.trunc(abs / 100)}.${String(abs % 100).padStart(2, '0')}`;
+}
+
+/**
+ * #7161 pre-flight: the line amounts QuickBooks will receive must sum to
+ * Breeze's own subtotal, or QuickBooks would record a different amount than
+ * the customer was billed. Runs on the exact payload lines that get pushed.
+ */
+function assertPushedLinesMatchSubtotal(
+  inv: Pick<InvoiceRow, 'subtotal'>,
+  linePayloads: readonly AccountingInvoiceLinePayload[],
+): void {
+  let sumCents = 0;
+  let parseable = true;
+  for (const l of linePayloads) {
+    const c = exactCents(l.lineTotal);
+    if (c === null) { parseable = false; break; }
+    sumCents += c;
+  }
+  const subtotalCents = exactCents(inv.subtotal);
+  if (parseable && subtotalCents !== null && sumCents === subtotalCents) return;
+
+  const pushed = parseable ? formatCents(sumCents) : 'an unreadable amount';
+  throw new AccountingInvoicePushError(
+    'invoice_totals_mismatch',
+    409,
+    `The invoice lines sent to QuickBooks would total ${pushed}, but this invoice's subtotal is ${inv.subtotal}. `
+      + 'Breeze refused the push so QuickBooks does not record a different amount than the customer was billed. '
+      + 'Review the invoice lines and totals, then push again.',
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -623,19 +700,26 @@ function buildLinePayload(line: InvoiceLineRow): AccountingInvoiceLinePayload {
   // Legacy-line fallback mirrors invoiceService/invoicePdf's own
   // name-then-description title resolution.
   const title = line.name ?? line.description ?? '';
+  // #7161: a hidden line (customer_visible = false) is excluded from Breeze's
+  // subtotal (`computeInvoiceTotals`), so it must carry no money in the
+  // accounting copy either — pushed at its stored price it inflated the
+  // QuickBooks invoice over what the customer was billed. The line itself is
+  // KEPT (the accounting view is meant to expose every line), with its
+  // description and quantity; only the price and amount are zeroed.
+  const hidden = !line.customerVisible;
   return {
     invoiceLineId: line.id,
     description: `${title}${accountingLineNote(line)}`,
     quantity: line.quantity,
-    unitPrice: line.unitPrice,
-    lineTotal: line.lineTotal,
+    unitPrice: hidden ? '0.00' : line.unitPrice,
+    lineTotal: hidden ? '0.00' : line.lineTotal,
     taxable: line.taxable,
   };
 }
 
 function buildInvoicePayload(
   inv: InvoiceRow,
-  lines: InvoiceLineRow[],
+  linePayloads: AccountingInvoiceLinePayload[],
   customerRemoteId: string,
   customerSyncToken: string | null,
   invoiceMapping: MappingRow,
@@ -656,7 +740,7 @@ function buildInvoicePayload(
     subtotal: inv.subtotal,
     taxTotal: inv.taxTotal,
     total: inv.total,
-    lines: lines.map(buildLinePayload),
+    lines: linePayloads,
     mapping: invoiceMapping.remoteEntityId
       ? { remoteEntityId: invoiceMapping.remoteEntityId, remoteSyncToken: invoiceMapping.remoteSyncToken ?? null }
       : null,
@@ -687,6 +771,7 @@ export async function pushInvoiceToAccounting(
     conn: AccountingConnection;
     inv: InvoiceRow;
     lines: InvoiceLineRow[];
+    linePayloads: AccountingInvoiceLinePayload[];
     orgMapping: MappingRow;
     itemMappingRows: MappingRow[];
   };
@@ -731,6 +816,12 @@ export async function pushInvoiceToAccounting(
 
       const lines = await loadInvoiceLinesOrdered(inv.id);
 
+      // #7161 totals guard, same placement rationale as the currency guard:
+      // before any org/item sync, token refresh or provider call. Asserted on
+      // the exact line payloads that get pushed below, not a re-derivation.
+      const linePayloads = lines.map(buildLinePayload);
+      assertPushedLinesMatchSubtotal(inv, linePayloads);
+
       const orgMappingRows = await loadMappingRowsForType(partnerId, conn.id, 'org');
       const orgMapping = orgMappingRows.find((m) => m.breezeEntityId === inv.orgId) ?? null;
       if (!orgMapping || orgMapping.linkStatus === 'unlinked' || orgMapping.linkStatus === 'suggested') {
@@ -752,14 +843,14 @@ export async function pushInvoiceToAccounting(
       }
 
       const itemMappingRows = await loadMappingRowsForType(partnerId, conn.id, 'catalog_item');
-      return { conn, inv, lines, orgMapping, itemMappingRows };
+      return { conn, inv, lines, linePayloads, orgMapping, itemMappingRows };
     });
   } catch (err) {
-    if (err instanceof AccountingInvoicePushError && err.code === 'currency_mismatch') {
+    if (err instanceof AccountingInvoicePushError && PERSISTED_PREFLIGHT_CODES.has(err.code)) {
       // Phase 1's transaction above already rolled back on this throw — this
       // persists in its own, separately-committed context (see the comment
-      // on `persistInvoiceCurrencyMismatchErrorInOwnContext`).
-      await persistInvoiceCurrencyMismatchErrorInOwnContext(runInDbContext, partnerId, invoiceId, err.message);
+      // on `persistInvoicePreflightErrorInOwnContext`).
+      await persistInvoicePreflightErrorInOwnContext(runInDbContext, partnerId, invoiceId, err.message);
     }
     throw err;
   }
@@ -840,7 +931,7 @@ export async function pushInvoiceToAccounting(
   // that and opens its own short system transactions (accountingTokens.ts).
   const liveConn = await resolveLiveConnection(conn).catch(translateMappingError);
 
-  const payload = buildInvoicePayload(inv, lines, customerRemoteId, customerSyncToken, mappingRow);
+  const payload = buildInvoicePayload(inv, prep.linePayloads, customerRemoteId, customerSyncToken, mappingRow);
   const providerImpl = getAccountingProvider(conn.provider);
 
   let result: InvoicePushResult;
@@ -860,7 +951,7 @@ export async function pushInvoiceToAccounting(
     throw new AccountingInvoicePushError('quickbooks_error', 502, message);
   }
 
-  const variance = computeTaxVariance(result.remoteTaxTotal, inv.taxTotal);
+  const variance = computeRemoteVariance(result, inv);
   const remoteDocNumber = result.docNumber && result.docNumber !== inv.invoiceNumber ? result.docNumber : null;
 
   // ---- Phase 2 (success): record the remote ref, then reconcile a void race ----
@@ -953,6 +1044,7 @@ export async function pushInvoiceToAccounting(
     docNumber: persisted.remoteDocNumber ?? inv.invoiceNumber,
     syncStatus: variance.syncStatus,
     taxVarianceCents: variance.taxVarianceCents,
+    totalVarianceCents: variance.totalVarianceCents,
   };
 }
 

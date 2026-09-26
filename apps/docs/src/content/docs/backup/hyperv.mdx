@@ -86,6 +86,8 @@ Expand a VM row to see its checkpoint (snapshot) tree. Each checkpoint shows its
 3. Review the settings and confirm.
 </Steps>
 
+The restore runs in the background. Starting it queues the import on the host and returns straight away; follow its progress and final result like any other restore job — see [Monitoring a Restore](/backup/restoring/#monitoring-a-restore). Before v0.117.0 a Hyper-V restore that ran longer than 10 minutes was reported as failed even though the host was still importing.
+
 The restore does an `Import-VM -Copy` into the target host's **default** virtual machine and virtual hard disk paths — there's no option to import somewhere else today. Budget roughly **twice** the VM's size in free space on the host's system drive: the export is downloaded, then copied into place. The imported VM comes back in whatever state its backup captured — **Saved** for an application-consistent backup, **Off** for a crash-consistent one — start it manually when you're ready.
 
 ### Restore as New VM

@@ -212,7 +212,9 @@ export const partnerDeviceInventoryExportRecordSchema = strictPartnerExportRecor
   deviceId: z.string().uuid(),
   hardware: z.object({
     processor: z.object({ model: nullableInventoryString, cores: inventoryCount, threads: inventoryCount }).strict(),
-    memory: z.object({ totalMb: inventoryCount }).strict(),
+    memory: z.object({
+      totalMb: inventoryCount, slotsTotal: inventoryCount, maxCapacityMb: inventoryCount, soldered: z.boolean().nullable(),
+    }).strict(),
     graphics: z.object({ model: nullableInventoryString }).strict(),
     motherboard: z.object({ manufacturer: nullableInventoryString, product: nullableInventoryString, version: nullableInventoryString }).strict(),
     firmware: z.object({ biosVersion: nullableInventoryString }).strict(),
@@ -241,9 +243,18 @@ export const partnerDeviceInventoryExportRecordSchema = strictPartnerExportRecor
     generation: z.number().int().positive(), memoryMb: inventoryCount, processorCount: inventoryCount,
     rctEnabled: z.boolean(), passthroughDisks: z.boolean(),
   }).strict()).max(500),
+  // #5351: one entry per physical slot; empty slots are populated: false.
+  memoryModules: z.array(z.object({
+    id: z.string().uuid(), locator: z.string().max(128), bankLabel: z.string().max(128).nullable(),
+    populated: z.boolean(), capacityMb: inventoryCount, memoryType: z.string().max(32).nullable(),
+    formFactor: z.string().max(32).nullable(), speedMts: inventoryCount, configuredSpeedMts: inventoryCount,
+    manufacturer: z.string().max(128).nullable(), partNumber: z.string().max(128).nullable(),
+    serialNumber: z.string().max(128).nullable(),
+  }).strict()).max(500),
   collections: z.object({
     disks: partnerExportCollectionSchema, interfaces: partnerExportCollectionSchema,
     addresses: partnerExportCollectionSchema, virtualMachines: partnerExportCollectionSchema,
+    memoryModules: partnerExportCollectionSchema,
   }).strict(),
 });
 

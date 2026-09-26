@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq } from 'drizzle-orm';
 import { db } from '../../db';
-import { deviceHardware, deviceDisks, deviceNetwork, deviceConnections, deviceIpHistory } from '../../db/schema';
+import { deviceHardware, deviceDisks, deviceNetwork, deviceConnections, deviceIpHistory, deviceMemoryModules } from '../../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
@@ -10,7 +10,8 @@ export const hardwareRoutes = new Hono();
 
 hardwareRoutes.use('*', authMiddleware);
 
-// GET /devices/:id/hardware - Get device hardware with disks and network adapters
+// GET /devices/:id/hardware - Get device hardware with disks, network adapters
+// and per-slot memory modules (#5351)
 hardwareRoutes.get(
   '/:id/hardware',
   requireScope('organization', 'partner', 'system'),
@@ -45,10 +46,20 @@ hardwareRoutes.get(
       .from(deviceNetwork)
       .where(eq(deviceNetwork.deviceId, deviceId));
 
+    // Per-slot memory inventory (#5351), in the order the agent reported the
+    // slots. Empty slots are rows with populated = false. An empty list with a
+    // NULL hardware.memoryObservedAt means "not reported yet" (older agent).
+    const memoryModules = await db
+      .select()
+      .from(deviceMemoryModules)
+      .where(eq(deviceMemoryModules.deviceId, deviceId))
+      .orderBy(asc(deviceMemoryModules.slotIndex), asc(deviceMemoryModules.id));
+
     return c.json({
       hardware: hardware || null,
       diskDrives,
-      networkInterfaces
+      networkInterfaces,
+      memoryModules
     });
   }
 );

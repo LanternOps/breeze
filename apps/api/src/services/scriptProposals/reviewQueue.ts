@@ -23,7 +23,11 @@ export function getScriptReviewQueue(): Queue<ScriptReviewJobData> {
 }
 
 /**
- * Enqueue one review attempt. The worker lands in W02.
+ * Enqueue one review attempt (consumer: jobs/scriptReviewWorker.ts).
+ *
+ * The proposal row MUST already be committed: the worker loads it under its
+ * own system context within milliseconds, and an uncommitted row is invisible
+ * to it (#7128).
  *
  * The job id carries the ATTEMPT because BullMQ retains a completed job's hash
  * under `removeOnComplete`, which makes a re-add under the same id a silent
