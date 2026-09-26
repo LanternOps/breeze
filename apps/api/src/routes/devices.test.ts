@@ -488,6 +488,30 @@ describe('device routes', () => {
       expect(db.insert).not.toHaveBeenCalled();
     });
 
+    // A restricted caller whose allowlist names a site that is not in the
+    // resolved org gets the same opaque 403, never the informative 400.
+    it('returns an opaque 403 when an allowlisted siteId is not in the org (#7035)', async () => {
+      const staleSiteId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+      permissionSiteScope.allowedSiteIds = [staleSiteId];
+      const limit = vi.fn().mockResolvedValue([]);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit, orderBy: vi.fn(() => ({ limit })) }),
+        }),
+      } as any);
+
+      const res = await app.request('/devices/onboarding-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ siteId: staleSiteId }),
+      });
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toBe('Access to this site denied');
+      expect(limit).toHaveBeenCalledTimes(1);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
     it('rejects a malformed siteId (#7035)', async () => {
       const res = await app.request('/devices/onboarding-token', {
         method: 'POST',

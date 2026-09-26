@@ -532,6 +532,19 @@ describe('AddDeviceModal', () => {
     expect(fetchWithAuthMock).not.toHaveBeenCalled();
   });
 
+  it('shows the no-sites notice on the CLI tab and cannot mint without a site (#7035)', () => {
+    setOrgStore({ sites: [] });
+    render(<AddDeviceModal isOpen onClose={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('tab-cli'));
+
+    expect(screen.getByText(/No sites available/)).toBeDefined();
+    expect(screen.queryByTestId('cli-site')).toBeNull();
+    const generate = screen.getByTestId('cli-regenerate-token') as HTMLButtonElement;
+    expect(generate.disabled).toBe(true);
+    fireEvent.click(generate);
+    expect(fetchWithAuthMock).not.toHaveBeenCalled();
+  });
+
   it('mints the CLI token for the site chosen in the modal (#7035)', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(
       makeJsonResponse({ token: 'site-token', maxUsage: 50, siteId: SITE_B.id })
