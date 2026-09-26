@@ -112,6 +112,7 @@ vi.mock('../services/networkBaseline', () => ({
 }));
 
 vi.mock('../services/topology/identityDirty', () => ({ markTopologyIdentityDirty: vi.fn() }));
+vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 
 vi.mock('./networkBaselineWorker', () => ({
   enqueueBaselineComparison: vi.fn(async () => 'enqueued'),
@@ -428,6 +429,18 @@ describe('processResults — type_source', () => {
     const data = makeData([]);
     expect(vi.mocked(markTopologyIdentityDirty)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(markTopologyIdentityDirty)).toHaveBeenCalledWith(expect.anything(), { orgId: data.orgId, siteId: data.siteId });
+  });
+
+  // #5998 review: a failed dirty mark leaves new SNMP subjects unresolved
+  // until some other identity change; it must reach Sentry, not only a log.
+  it('reports a failed topology identity dirty mark to Sentry and still completes the job', async () => {
+    const { markTopologyIdentityDirty } = await import('../services/topology/identityDirty');
+    const { captureException } = await import('../services/sentry');
+    const failure = new Error('dirty mark failed');
+    vi.mocked(markTopologyIdentityDirty).mockRejectedValueOnce(failure);
+    selectQueue = [...baseSelectQueue(), [], []];
+    await processResults(makeData([{ ip: '192.168.1.62', assetType: 'switch', methods: [] }]));
+    expect(vi.mocked(captureException)).toHaveBeenCalledWith(failure);
   });
 
   it('does not mark topology identity dirty when a scan only refreshes existing assets', async () => {

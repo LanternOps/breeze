@@ -1530,6 +1530,7 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
       await markTopologyIdentityDirty(db, { orgId: data.orgId, siteId: data.siteId });
     } catch (err) {
       console.error(`[DiscoveryWorker] Topology identity dirty mark failed for job ${data.jobId}:`, err);
+      captureException(err);
     }
   }
 
