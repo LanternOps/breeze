@@ -1,5 +1,7 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import {
   backupConfigs,
@@ -9,6 +11,7 @@ import {
   partners,
   sites,
 } from '../db/schema';
+import { getTestDb } from '../__tests__/integration/setup';
 import { applyBackupProgress, applyBackupStartedAck } from './backupProgress';
 
 // Real-Postgres proof for the queue lifecycle guards in applyBackupProgress /
@@ -203,6 +206,42 @@ runDb('backup queue lifecycle (real PostgreSQL)', () => {
     await backdate();
     await send({ current: 60, filesDone: 0 });
     await expectProgressAdvanced(true);
+  });
+
+  it('#2798 upgrade: the migration seeds liveness on in-flight rows so the first post-upgrade ping keeps started_at', async () => {
+    // A job running across the upgrade has last_progress_at (old liveness)
+    // but no last_keepalive_at. Without the seed, the "first signal" guard
+    // (last_keepalive_at IS NULL) would restamp its started_at.
+    const f = await seedFixture();
+    const started = new Date('2026-01-01T00:00:00Z');
+    const lastPing = new Date(Date.now() - 60 * 1000);
+    const runningId = await seedJob(f, 'running', started);
+    const doneId = await seedJob(f, 'running', started);
+    await withSystemDbAccessContext(async () => {
+      await db.update(backupJobs).set({ lastProgressAt: lastPing, lastKeepaliveAt: null }).where(eq(backupJobs.id, runningId));
+      await db.update(backupJobs).set({ status: 'completed', lastProgressAt: lastPing, lastKeepaliveAt: null }).where(eq(backupJobs.id, doneId));
+    });
+
+    const migration = readFileSync(
+      resolve(__dirname, '../../migrations/2026-10-31-120000-backup-jobs-last-keepalive-at.sql'),
+      'utf8',
+    );
+    // Replayed as the owner role, the way autoMigrate runs it.
+    const replay = () => getTestDb().transaction(async (tx) => { await tx.execute(sql.raw(migration)); });
+    await replay();
+
+    let r = await row(runningId);
+    expect(r.lastKeepaliveAt?.getTime()).toBe(lastPing.getTime());
+    // Terminal history is left alone.
+    expect((await row(doneId)).lastKeepaliveAt).toBeNull();
+
+    await progress(f, runningId, 'uploading');
+    r = await row(runningId);
+    expect(r.startedAt?.getTime()).toBe(started.getTime());
+
+    // Re-applying is a no-op.
+    await replay();
+    expect((await row(runningId)).startedAt?.getTime()).toBe(started.getTime());
   });
 
   it('rejects lifecycle messages from an agent that does not own the device', async () => {
