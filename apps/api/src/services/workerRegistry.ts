@@ -121,6 +121,15 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // M3 Task 5 — interface sample partitions, retention and rollups.
+    name: 'topologyTelemetryMaintenance',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/topologyTelemetryMaintenance');
+      return { init: m.initializeTopologyTelemetryMaintenanceWorker, shutdown: m.shutdownTopologyTelemetryMaintenanceWorker };
+    },
+  },
+  {
     name: 'alertWorkers',
     placement: 'global',
     load: async () => {

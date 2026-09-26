@@ -35,6 +35,8 @@ const EXPECTED_WORKER_NAMES = [
   // M1 Task 18 — durable diagnostic dispatch and its expiry sweeper.
   'topologyDiagnosticWorker',
   'topologyDiagnosticSweeper',
+  // M3 Task 5 — interface sample partitions, retention and rollups.
+  'topologyTelemetryMaintenance',
   'alertWorkers', 'monitorConversionPreviewWorker', 'alertCorrelationWorker', 'metricRollupsWorker', 'metricRollupMaintenance',
   'metricAnomaliesWorker', 'aiBudgetAlertDeliveryWorker', 'aiArtifactSweeper', 'fleetFindingsWorker', 'fleetRemediationDispatchWorker', 'mlOutputRetention',
   'offlineDetector', 'notificationDispatcher', 'webhookDelivery', 'webhookDeliveryRecovery',

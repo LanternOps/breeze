@@ -217,6 +217,9 @@ export async function persistTopologyInterfaceSamples(producer: AuthenticatedTop
       previous.set(row.interfaceId, row);
     }
 
+    // Rollup progress (Task 5): the earliest newly written sample re-opens its buckets.
+    const writtenTimes = rows.filter(row => insertedKeys.has(rowKey(row.interfaceId, row.sampledAt))).map(row => row.sampledAt.getTime());
+    const dirtyFrom = writtenTimes.length ? new Date(Math.min(...writtenTimes)) : null;
     const positive = envelope.outcome === 'complete' || envelope.outcome === 'partial';
     const finishedAt = new Date(envelope.finishedAt);
     await db.update(topologyCollectionSources).set({
@@ -226,6 +229,7 @@ export async function persistTopologyInterfaceSamples(producer: AuthenticatedTop
       currentBaseline: { telemetry: { sequence: envelope.sequence, commandId: envelope.commandId, startedAt: envelope.startedAt, finishedAt: envelope.finishedAt,
         outcome: envelope.outcome, reasonCode: envelope.reasonCode, sampleCount: envelope.samples.length } },
       telemetryWindowStartedAt: window.window.startedAt, telemetryWindowSamples: window.window.samples, telemetryWindowBytes: window.window.bytes, updatedAt: now,
+      ...(dirtyFrom ? { telemetryRollupDirtyFrom: sql`LEAST(${topologyCollectionSources.telemetryRollupDirtyFrom}, ${dirtyFrom.toISOString()}::timestamptz)` } : {}),
     }).where(eq(topologyCollectionSources.id, current.id));
     if (healthChanged) await advanceTopologyHealthRevision(db, scope);
     return { accepted: true, sourceId: current.id, acceptedSequence: envelope.sequence, inserted: insertedKeys.size,

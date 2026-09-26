@@ -276,6 +276,7 @@ const EXPECTED_NAMES = [
   'topologyTemplateApplyWorker',
   'topologyDiagnosticWorker',
   'topologyDiagnosticSweeper',
+  'topologyTelemetryMaintenance',
   'alertWorkers', 'monitorConversionPreviewWorker', 'alertCorrelationWorker', 'metricRollupsWorker', 'metricRollupMaintenance',
   'metricAnomaliesWorker', 'aiBudgetAlertDeliveryWorker', 'fleetFindingsWorker', 'fleetRemediationDispatchWorker', 'mlOutputRetention',
   'offlineDetector', 'notificationDispatcher', 'webhookDelivery', 'webhookDeliveryRecovery',
