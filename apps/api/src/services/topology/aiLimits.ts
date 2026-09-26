@@ -3,8 +3,9 @@
  * single atomic Lua scripts so parallel starts can never overshoot.
  *
  *   - at most 3 concurrent investigations per org (expiring leases; a retried
- *     reservation for the SAME session renews its own lease, it never takes a
- *     second slot);
+ *     reservation for the SAME session shares that session's slot — it never
+ *     takes a second one — under its OWN per-request lease, so releasing the
+ *     retry can never free the slot while another request still holds it);
  *   - at most 10 new investigations per user per UTC hour and 100 per org per
  *     UTC day, counted ONCE per investigation (idempotent per session id);
  *   - per investigation: 6 read calls (failed/refused attempts included), 1
@@ -61,8 +62,15 @@ export class TopologyAiLimitError extends Error {
   }
 }
 
+// KEYS[2] is THIS session's owner set: every live request that reserved the
+// session holds its own member (leaseId → expiry). A retry on an active session
+// adds a member instead of replacing the owner, so the retry's cleanup can only
+// remove its own member; the session's slot (KEYS[1] member) is freed only when
+// its LAST live owner releases (C3 — a replaced owner let a retry's busy-path
+// cleanup free the running turn's slot and admit a 4th investigation).
 const RESERVE = `
 redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[3])
+redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', ARGV[3])
 local held = redis.call('ZSCORE', KEYS[1], ARGV[1])
 if not held and redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[5]) then return 'concurrency' end
 if redis.call('EXISTS', KEYS[3]) == 0 then
@@ -76,17 +84,18 @@ if redis.call('EXISTS', KEYS[3]) == 0 then
 end
 redis.call('ZADD', KEYS[1], ARGV[4], ARGV[1])
 redis.call('PEXPIRE', KEYS[1], ARGV[9])
-redis.call('HSET', KEYS[2], ARGV[1], ARGV[2])
+redis.call('ZADD', KEYS[2], ARGV[4], ARGV[2])
 redis.call('PEXPIRE', KEYS[2], ARGV[9])
 return 'ok'`;
 
 const RELEASE = `
-if redis.call('HGET', KEYS[2], ARGV[1]) == ARGV[2] then
+if redis.call('ZREM', KEYS[2], ARGV[2]) == 0 then return 0 end
+redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', ARGV[3])
+if redis.call('ZCARD', KEYS[2]) == 0 then
   redis.call('ZREM', KEYS[1], ARGV[1])
-  redis.call('HDEL', KEYS[2], ARGV[1])
-  return 1
+  redis.call('DEL', KEYS[2])
 end
-return 0`;
+return 1`;
 
 const CONSUME = `
 local fields = {'readCalls', 'proposals', 'inputTokens', 'outputTokens'}
@@ -140,7 +149,7 @@ export async function reserveTopologyInvestigation(
   const limit = (name: keyof TopologyAiQuotaOverrides) => Math.min(TOPOLOGY_AI_QUOTAS[name], Math.max(0, Math.trunc(options.limits?.[name] ?? TOPOLOGY_AI_QUOTAS[name])));
   const base = tag(ctx.scope.orgId);
   const leases = `${base}:leases`;
-  const owners = `${base}:lease-owner`;
+  const owners = `${base}:lease-owners:${sessionId}`;
   const leaseId = randomUUID();
   const answer = await run(redis, RESERVE, [
     leases, owners, `${base}:counted:${sessionId}`, `${base}:user:${ctx.auth.user.id}:${utcHour(now)}`, `${base}:day:${utcDay(now)}`,
@@ -160,7 +169,7 @@ export async function reserveTopologyInvestigation(
       if (released) return;
       released = true;
       try {
-        await redis.eval(RELEASE, 2, leases, owners, sessionId, leaseId);
+        await redis.eval(RELEASE, 2, leases, owners, sessionId, leaseId, Date.now());
       } catch {
         // The lease expires on its own (leaseTtlMs); a failed release never blocks the turn's teardown.
       }

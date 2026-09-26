@@ -108,9 +108,22 @@ describe('topology investigation quotas (M4 Task 3, real Redis)', () => {
     const first = await reserveTopologyInvestigation(ctxFor(orgId), 's1');
     await reserveTopologyInvestigation(ctxFor(orgId), 's2');
     await reserveTopologyInvestigation(ctxFor(orgId), 's3');
-    await reserveTopologyInvestigation(ctxFor(orgId), 's1'); // renewal replaces s1's lease
+    await reserveTopologyInvestigation(ctxFor(orgId), 's1'); // retry: its own lease on s1's slot
     await first.release(); // stale owner
     await expect(reserveTopologyInvestigation(ctxFor(orgId), 's4')).rejects.toMatchObject({ code: 'topology_ai_concurrency' });
+  });
+
+  it('a retry on an active session never frees the original request\'s slot (C3: S4 must not start while S1-S3 run)', async () => {
+    const orgId = randomUUID();
+    const first = await reserveTopologyInvestigation(ctxFor(orgId), 's1'); // S1's turn is running
+    await reserveTopologyInvestigation(ctxFor(orgId), 's2');
+    await reserveTopologyInvestigation(ctxFor(orgId), 's3');
+    const retry = await reserveTopologyInvestigation(ctxFor(orgId), 's1'); // duplicate/retry of S1
+    await retry.release(); // the retry's busy-path cleanup
+    await expect(reserveTopologyInvestigation(ctxFor(orgId), 's4')).rejects.toMatchObject({ code: 'topology_ai_concurrency' });
+    await first.release(); // S1's real turn ends: now the slot is free
+    const s4 = await reserveTopologyInvestigation(ctxFor(orgId), 's4');
+    await s4.release();
   });
 
   it('counts 10 new investigations per user per hour, and each investigation once', async () => {
