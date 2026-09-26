@@ -42,6 +42,9 @@ const physicalAttributes = z.object({
   localPort: physicalPortRef.optional(), remotePortRef: physicalPortRef.optional(),
   bridgeContext: boundedKey.optional(), fdbId: z.number().int().min(0).max(4294967295).nullable().optional(), vlanIds: vlanIds.optional(),
   controllerSiteId: boundedKey.optional(), controllerDeviceId: boundedKey.optional(), uplinkPortIndex: z.number().int().min(0).max(4294967295).optional(),
+  // UniFi (D16): what the controller association means, and the scoped endpoint keys it joins.
+  association: z.enum(['wired', 'wireless', 'vpn', 'teleport', 'unknown', 'uplink']).optional(),
+  endpointKey: z.string().min(1).max(1024).optional(), uplinkEndpointKey: z.string().min(1).max(1024).optional(),
   fdbSelection: z.enum(['selected', 'competing', 'excluded', 'none']).optional(),
   alternativeRelationshipIds: z.array(uuid).max(64).optional(),
 }).strict();

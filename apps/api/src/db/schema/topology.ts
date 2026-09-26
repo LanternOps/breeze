@@ -22,6 +22,8 @@ export interface TopologyPhysicalRelationshipAttributes {
   remotePortRef?: { namespace: 'if_index' | 'if_name' | 'bridge_port' | 'lldp_local' | 'controller_port'; value: string; resolvedInterfaceKey: string | null };
   bridgeContext?: string; fdbId?: number | null; vlanIds?: number[];
   controllerSiteId?: string; controllerDeviceId?: string; uplinkPortIndex?: number;
+  /** UniFi (D16): what the controller association means, and the scoped endpoint keys it joins. */
+  association?: 'wired' | 'wireless' | 'vpn' | 'teleport' | 'unknown' | 'uplink'; endpointKey?: string; uplinkEndpointKey?: string;
   fdbSelection?: 'selected' | 'competing' | 'excluded' | 'none'; alternativeRelationshipIds?: string[];
 }
 export interface TopologyRelationshipAttributes { label?: string; notes?: string; method?: 'manual' | 'legacy' | 'os_network_context' | 'lldp' | 'cdp' | 'fdb' | 'unifi'; createdBy?: string; physical?: TopologyPhysicalRelationshipAttributes; }

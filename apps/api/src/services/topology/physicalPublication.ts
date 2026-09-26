@@ -3,7 +3,7 @@ import type { TopologyScope } from '@breeze/shared';
 import type { db } from '../../db';
 import { topologySiteState } from '../../db/schema';
 import { physicalAuthorityOf, buildPhysicalIdentityIndex, physicalLinkKey, sortedLinkEndpoints, interfaceContinuity, isPhysicalGeneration, physicalGenerationNumber, physicalTargetSourceKey, resolvePhysicalSubjectAsset, type PhysicalIdentityIndex } from './physicalIdentity';
-import { buildPhysicalRelationship, physicalMaterialOf, planPhysicalResolution, selectFdbParents, unboundPhysicalNode, type FdbCandidate } from './physicalProjector';
+import { buildPhysicalRelationship, physicalMaterialOf, planPhysicalResolution, selectFdbParents, unboundPhysicalNode, unifiEndpointNode, unifiMaterialOf, type FdbCandidate } from './physicalProjector';
 import { canonicalIdentityKey } from './identity';
 import type { CollectionSource, InterfacePublication, PhysicalProjectionContext, SupportPublication } from './reconciliationTypes';
 import type { BindingPublication, NodePublication, RelationshipPublication } from './publish';
@@ -11,7 +11,7 @@ import type { BindingPublication, NodePublication, RelationshipPublication } fro
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 const PHYSICAL_PROTOCOLS = new Set(['lldp', 'cdp', 'fdb', 'snmp_interfaces', 'unifi_device_list', 'unifi_client_list', 'unifi_device_details', 'unifi_statistics']);
 export const isPhysicalProtocol = (protocol: string) => PHYSICAL_PROTOCOLS.has(protocol);
-const PHYSICAL_METHODS = new Set(['lldp', 'cdp', 'fdb']);
+const PHYSICAL_METHODS = new Set(['lldp', 'cdp', 'fdb', 'unifi']);
 export const isPhysicalRelationship = (row: Pick<RelationshipPublication, 'attributes' | 'evidenceClass'>) =>
   row.evidenceClass !== 'manual' && PHYSICAL_METHODS.has(String((row.attributes as { method?: string } | undefined)?.method));
 
@@ -40,6 +40,10 @@ export type PhysicalResolver = {
   projectionContext: (source: Pick<CollectionSource, 'contextKey'>) => PhysicalProjectionContext;
   subjectFor: (authorityKey: string) => string | null;
   index: (interfaces: Iterable<InterfacePublication>) => PhysicalIdentityIndex;
+  /** Breeze device id -> current (alias-resolved) inventory node. */
+  deviceNodes: Record<string, string>;
+  /** Current UniFi endpoint bindings; refreshed by the publisher as UniFi baselines change. */
+  unifiEndpointDevices: Record<string, string>;
 };
 export function physicalResolver(context: PhysicalPublicationContext, nodes: Map<string, NodePublication>, bindings: BindingPublication[]): PhysicalResolver {
   const resolveNode = (id: string) => { const seen = new Set<string>(); while (nodes.get(id)?.aliasTargetId && !seen.has(id)) { seen.add(id); id = nodes.get(id)!.aliasTargetId!; } return id; };
@@ -47,8 +51,12 @@ export function physicalResolver(context: PhysicalPublicationContext, nodes: Map
   for (const b of bindings) { if (b.discoveredAssetId) assetNode.set(b.discoveredAssetId, b.nodeId); if (b.deviceId) deviceNode.set(b.deviceId, b.nodeId); }
   const subjectFor = (authorityKey: string) => { const asset = resolvePhysicalSubjectAsset(authorityKey, context.assets); const node = asset ? assetNode.get(asset) : undefined; return node ? resolveNode(node) : null; };
   const deviceMacs = context.deviceMacs.flatMap(m => deviceNode.has(m.deviceId) ? [{ nodeId: resolveNode(deviceNode.get(m.deviceId)!), mac: m.mac }] : []);
-  return { resolveNode, subjectFor, index: interfaces => buildPhysicalIdentityIndex({ interfaces, deviceMacs, resolveNode }),
-    projectionContext: source => { const authorityKey = physicalAuthorityOf(source.contextKey); return { authorityKey, subjectNodeId: subjectFor(authorityKey), deviceMacs }; } };
+  const deviceNodes = Object.fromEntries([...deviceNode].map(([deviceId, nodeId]) => [deviceId, resolveNode(nodeId)]));
+  const resolver: PhysicalResolver = { resolveNode, subjectFor, deviceNodes, unifiEndpointDevices: {},
+    index: interfaces => buildPhysicalIdentityIndex({ interfaces, deviceMacs, resolveNode }),
+    projectionContext: source => { const authorityKey = physicalAuthorityOf(source.contextKey);
+      return { authorityKey, subjectNodeId: subjectFor(authorityKey), deviceMacs, deviceNodes, unifiEndpointDevices: resolver.unifiEndpointDevices }; } };
+  return resolver;
 }
 
 /**
@@ -148,6 +156,18 @@ export function reresolvePhysicalRelationships(state: PhysicalPassState, resolve
       state.rekeyed.add(row.id);
       continue;
     }
+    const unifi = unifiMaterialOf(row);
+    if (unifi) {
+      // Identity is the association; a binding change only retargets it in place.
+      const endpoint = (endpointKey: string) => {
+        const resolved = unifiEndpointNode({ scope: state.scope, endpointKey, inventoryDeviceId: null, context: resolver, nodes: state.nodes, at: state.at });
+        if (resolved.created && !state.nodes.has(resolved.id)) { state.nodes.set(resolved.id, resolved.created); state.newNodes.push(resolved.created); }
+        return resolved.id;
+      };
+      const sourceNodeId = endpoint(unifi.uplinkEndpointKey), targetNodeId = endpoint(unifi.endpointKey);
+      if (sourceNodeId !== targetNodeId && (sourceNodeId !== resolver.resolveNode(row.sourceNodeId) || targetNodeId !== resolver.resolveNode(row.targetNodeId))) upsert({ ...row, sourceNodeId, targetNodeId });
+      continue;
+    }
     const material = physicalMaterialOf(row);
     if (!material) continue;
     const subject = resolver.subjectFor(material.subjectAuthority);
@@ -207,6 +227,23 @@ export function applyFdbSelection(input: {
     }
   }
   return changed;
+}
+
+/**
+ * UniFi endpointKey -> Breeze device id, from retained `unifi_device_list` /
+ * `unifi_client_list` rows (the adapter's same-site NIC-MAC bindings, D16).
+ * An endpoint claimed by two different devices binds nothing.
+ */
+export function unifiEndpointDevicesOf(baselines: Iterable<Record<string, unknown>>): Record<string, string> {
+  const claims = new Map<string, Set<string>>();
+  for (const baseline of baselines) {
+    const section = baseline.section as { kind?: string; rows?: unknown } | undefined;
+    if (!section || (section.kind !== 'unifi_device_list' && section.kind !== 'unifi_client_list') || !Array.isArray(section.rows)) continue;
+    for (const row of section.rows as { endpointKey?: unknown; inventoryDeviceId?: unknown }[]) {
+      if (typeof row.endpointKey === 'string' && typeof row.inventoryDeviceId === 'string') claims.set(row.endpointKey, (claims.get(row.endpointKey) ?? new Set()).add(row.inventoryDeviceId));
+    }
+  }
+  return Object.fromEntries([...claims].filter(([, ids]) => ids.size === 1).map(([key, ids]) => [key, [...ids][0]!]));
 }
 
 /** Explicit identity dirty mark (D15.2) for writers outside the publisher. */

@@ -22,6 +22,12 @@ export type PhysicalProjectionContext = {
   subjectNodeId:string|null;
   /** Agent-reported NIC MACs of bound managed devices (trusted MAC identity, D16). */
   deviceMacs:{nodeId:string;mac:string}[];
+  /** Breeze device id -> its current inventory node (UniFi endpoint binding, D16). */
+  deviceNodes?:Record<string,string>;
+  /** UniFi endpointKey -> Breeze device id, from the site's retained device/client
+   * list rows (unambiguous only). Lets a client's UPLINK endpoint reach the
+   * inventory node its own device-list row was bound to. */
+  unifiEndpointDevices?:Record<string,string>;
 };
 export type BaselineProjectionInput = TopologyProjectionInput & { snapshot:OsTopologySnapshot; originNodeId:string };
 export type TopologyProjectionDelta = {

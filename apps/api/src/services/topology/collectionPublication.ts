@@ -8,7 +8,7 @@ import { projectTopology } from './projectors';
 import { isPhysicalTopologySection, outcomeHasPositives, type NormalizedTopologySnapshot } from './collectionTypes';
 import { topologyPositiveKeys } from './collectionFactKeys';
 import { emptyProjection, type CollectionPublication, type CollectionEvent, type SupportPublication } from './reconciliationTypes';
-import { applyFdbSelection, isPhysicalProtocol, isPhysicalRelationship, loadPhysicalPublicationContext, physicalResolver, replacePresentRows, reresolvePhysicalRelationships, type PhysicalPassState } from './physicalPublication';
+import { applyFdbSelection, isPhysicalProtocol, isPhysicalRelationship, loadPhysicalPublicationContext, physicalResolver, replacePresentRows, reresolvePhysicalRelationships, unifiEndpointDevicesOf, type PhysicalPassState } from './physicalPublication';
 
 type Tx=Parameters<Parameters<typeof db.transaction>[0]>[0];
 const where=(scope:TopologyScope,table:{orgId:typeof topologyCollectionSources.orgId;siteId:typeof topologyCollectionSources.siteId})=>and(eq(table.orgId,scope.orgId),eq(table.siteId,scope.siteId));
@@ -51,6 +51,9 @@ export async function prepareCollectionPublication(tx:Tx,scope:TopologyScope,thr
   const physicalContext=sources.some(source=>isPhysicalProtocol(source.protocol))?await loadPhysicalPublicationContext(tx,scope):null;
   const resolver=physicalContext?physicalResolver(physicalContext,nodes,inventory.bindings):null;
   let identityTouched=!!inventory.identityChanged;
+  // UniFi endpoint bindings (D16) come from the site's live retained list rows.
+  const refreshUnifiBindings=()=>{if(resolver)resolver.unifiEndpointDevices=unifiEndpointDevicesOf(sources.filter(s=>!s.revokedAt&&s.protocol.startsWith('unifi_')).map(s=>baselines.get(s.id)!));};
+  refreshUnifiBindings();
   for(const event of events){
     const source=event.source;
     if(event.kind==='snapshot')result.consumedRuns.push(event.run.id);
@@ -91,6 +94,7 @@ export async function prepareCollectionPublication(tx:Tx,scope:TopologyScope,thr
     const originPublished=!!origin&&nodes.has(origin)&&!nodes.get(origin)?.deletedAt;
     if(!originPublished&&!isPhysicalTopologySection(snapshot.section))throw new Error('Topology producer inventory is not published');
     const physicalSection=isPhysicalTopologySection(snapshot.section);
+    const unifiBindingSection=snapshot.section.kind==='unifi_device_list'||snapshot.section.kind==='unifi_client_list';
     const delta=projectTopology({scope,source,run:event.run,snapshot,originNodeId:originPublished?origin!:null,nodes:[...nodes.values()],relationships:[...relationships.values()],interfaces:[...interfaceMap.values()],
       ...(physicalSection&&resolver?{physical:resolver.projectionContext(source)}:{})});
     for(const row of delta.nodes){nodes.set(row.id,row);result.nodes.push(row);}
@@ -108,6 +112,8 @@ export async function prepareCollectionPublication(tx:Tx,scope:TopologyScope,thr
     } else for(const row of delta.observations){result.observations.push(row);const key=String(row.attributes.rowKey);rowRelationships[key]=[...new Set([...(rowRelationships[key]??[]),row.relationshipId!])];}
     for(const row of delta.support){const key=`${source.id}:${row.relationshipId}`,old=support.get(key);support.set(key,{...row,firstPositiveAt:old?.firstPositiveAt??row.firstPositiveAt});changedSupport.add(key);}
     Object.assign(baseline,{...snapshot,_rowRelationships:nextRows});
+    // A changed UniFi binding set can retarget attachments of OTHER sources (D15.2).
+    if(unifiBindingSection){refreshUnifiBindings();identityTouched=true;}
     checkpoint.set(source.id,{sourceId:source.id,epoch:source.producerEpoch,sequence:event.run.sequence,digest:event.run.contentDigest,baseline});
   }
   // Revocation is a source transition, never a deletion of other observers' facts.

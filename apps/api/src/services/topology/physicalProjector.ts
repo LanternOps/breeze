@@ -1,4 +1,4 @@
-import type { CdpRow, FdbRow, LldpRow, PhysicalInterfaceRow, PortRef, TopologyScope, TypedId } from '@breeze/shared';
+import type { CdpRow, FdbRow, LldpRow, NormalizedUnifiClientRow, NormalizedUnifiDeviceDetailRow, NormalizedUnifiDeviceRow, PhysicalInterfaceRow, PortRef, TopologyScope, TypedId } from '@breeze/shared';
 import { canonicalIdentityKey } from './identity';
 import { stableLegacyId } from './legacyProjection';
 import { outcomeHasPositives, type AdjacencySourceSection, type UnifiSourceSection } from './collectionTypes';
@@ -7,7 +7,7 @@ import {
   physicalAuthorityOf, physicalGenerationNumber, physicalLinkKey, physicalTargetSourceKey, planInterfaceGeneration, resolveLocalInterface,
   resolveRemoteInterface, resolveTypedNode, sortedLinkEndpoints, type EndpointPort, type PhysicalIdentityIndex,
 } from './physicalIdentity';
-import { emptyProjection, type InterfacePublication, type TopologyProjectionDelta, type TopologyProjectionInput } from './reconciliationTypes';
+import { emptyProjection, type InterfacePublication, type PhysicalProjectionContext, type TopologyProjectionDelta, type TopologyProjectionInput } from './reconciliationTypes';
 import type { NodePublication, RelationshipPublication } from './publish';
 
 /**
@@ -121,11 +121,124 @@ function rowMaterial(authority: string, section: AdjacencySourceSection, row: Ll
     remoteChassis: { subtype: 'mac_address', value: r.mac }, bridgeContext: r.bridgeContext, fdbId: r.fdbId, ...(r.vlanMapping === 'complete' ? { vlanIds: r.vlans } : {}) };
 }
 
-/** UniFi normalized rows are not final (Task 5 follow-up). This is the typed
- * dispatch point for `unifi_*` families; it projects nothing until then. */
+// ---- UniFi (M2 Task 6b; amendments D3, D16) ----
+/**
+ * What a controller association means. It is never a cable claim: a UniFi
+ * row only ever publishes an `attachment`. `wireless` is a radio association
+ * with an AP; `vpn`/`teleport` are remote-access associations (never drawn as
+ * radio or copper); `uplink` is a controller device's reported upstream.
+ */
+export type UnifiAssociation = 'wired' | 'wireless' | 'vpn' | 'teleport' | 'unknown' | 'uplink';
+const CLIENT_ASSOCIATION: Record<NormalizedUnifiClientRow['clientType'], UnifiAssociation> = { WIRED: 'wired', WIRELESS: 'wireless', VPN: 'vpn', TELEPORT: 'teleport', unknown: 'unknown' };
+/** Durable UniFi resolution material, retained in `attributes.physical`. */
+export type UnifiRowMaterial = {
+  controllerSiteId: string; association: UnifiAssociation;
+  /** The attached endpoint (client, or the downstream device for `uplink`). */
+  endpointKey: string;
+  /** The upstream controller device the endpoint is associated with. */
+  uplinkEndpointKey: string;
+  /** Port index ON the uplink device, when the controller reported one. */
+  uplinkPortIndex: number | null;
+  vlan: number | null;
+};
+/** Identity is the association itself (who, to what, on which uplink port), never
+ * the node it currently resolves to: binding a controller endpoint to inventory
+ * later only retargets the relationship. A client that roams to another uplink
+ * or port is a different association (new relationship). */
+export const unifiAttachmentSourceKey = (m: UnifiRowMaterial) =>
+  `unifi-attachment-v1:${m.association}:${m.endpointKey}>${m.uplinkEndpointKey}:${m.uplinkPortIndex ?? '-'}`;
+export function unifiMaterialOf(row: Pick<RelationshipPublication, 'attributes'>): UnifiRowMaterial | null {
+  const attributes = row.attributes as { method?: string; physical?: Record<string, unknown> } | undefined;
+  const p = attributes?.physical;
+  if (attributes?.method !== 'unifi' || !p || typeof p.endpointKey !== 'string' || typeof p.uplinkEndpointKey !== 'string' || typeof p.association !== 'string') return null;
+  return { controllerSiteId: String(p.controllerSiteId ?? ''), association: p.association as UnifiAssociation, endpointKey: p.endpointKey, uplinkEndpointKey: p.uplinkEndpointKey,
+    uplinkPortIndex: typeof p.uplinkPortIndex === 'number' ? p.uplinkPortIndex : null, vlan: null };
+}
+/** A controller endpoint's node: its inventory node when bound (through the row's
+ * own `inventoryDeviceId`, or the site's retained list rows for an uplink), else
+ * the scoped unbound endpoint named by `endpointKey`. Never by name or IP. */
+export function unifiEndpointNode(input: { scope: TopologyScope; endpointKey: string; inventoryDeviceId: string | null; label?: string | null;
+  context: Pick<PhysicalProjectionContext, 'deviceNodes' | 'unifiEndpointDevices'>; nodes: Map<string, NodePublication>; at: Date }): { id: string; created?: NodePublication } {
+  const deviceId = input.inventoryDeviceId ?? input.context.unifiEndpointDevices?.[input.endpointKey] ?? null;
+  const bound = deviceId ? input.context.deviceNodes?.[deviceId] : undefined;
+  if (bound) return { id: bound };
+  const node = unboundPhysicalNode(input.scope, input.endpointKey, input.label ?? undefined, input.nodes, input.at);
+  return { id: node.id, created: node };
+}
+export function buildUnifiRelationship(scope: TopologyScope, material: UnifiRowMaterial, sourceNodeId: string, targetNodeId: string, old: RelationshipPublication | undefined, at: Date): RelationshipPublication {
+  const sourceKey = unifiAttachmentSourceKey(material);
+  const canonicalKey = canonicalIdentityKey(scope, 'attachment', sourceKey);
+  return { ...scope, id: old?.id ?? stableLegacyId(canonicalKey), kind: 'attachment', canonicalKey, identityMaterial: { version: 1, kind: 'attachment', sourceKey },
+    lifecycle: 'active', firstSupportedAt: old?.firstSupportedAt ?? at, lastSupportedAt: at, supportCount: 1n,
+    sourceNodeId, sourceInterfaceId: null, targetNodeId, targetInterfaceId: null,
+    logicalContext: { controllerSiteId: material.controllerSiteId, ...(material.vlan !== null ? { vlanIds: [material.vlan] } : {}) },
+    // Only a radio association is known to be direct; a wired/remote association
+    // may cross unmanaged gear the controller cannot see.
+    directness: material.association === 'wireless' ? 'direct' : 'unknown', confidence: 'medium', evidenceClass: 'observed',
+    attributes: { method: 'unifi', physical: { association: material.association, controllerSiteId: material.controllerSiteId, endpointKey: material.endpointKey,
+      uplinkEndpointKey: material.uplinkEndpointKey, ...(material.uplinkPortIndex !== null ? { uplinkPortIndex: material.uplinkPortIndex } : {}) } } };
+}
+function unifiRowMaterial(controllerSiteId: string, kind: string, row: NormalizedUnifiClientRow | NormalizedUnifiDeviceDetailRow): UnifiRowMaterial | null {
+  if (!row.uplinkEndpointKey || row.uplinkEndpointKey === row.endpointKey) return null;
+  if (kind === 'unifi_client_list') {
+    const r = row as NormalizedUnifiClientRow;
+    return { controllerSiteId, association: CLIENT_ASSOCIATION[r.clientType] ?? 'unknown', endpointKey: r.endpointKey, uplinkEndpointKey: r.uplinkEndpointKey!, uplinkPortIndex: r.uplinkPortIndex, vlan: r.vlan };
+  }
+  // v1 device details name only the uplink device's port, never the local one,
+  // so a controller uplink cannot resolve both ends of a cable: attachment only.
+  const r = row as NormalizedUnifiDeviceDetailRow;
+  return { controllerSiteId, association: 'uplink', endpointKey: r.endpointKey, uplinkEndpointKey: r.uplinkEndpointKey!, uplinkPortIndex: r.uplinkPortIndex, vlan: null };
+}
+
+/**
+ * UniFi projection (D16). `unifi_device_list` rows become scoped controller
+ * endpoint nodes (or reuse the inventory node they are bound to); client and
+ * device-detail rows with an uplink each map to exactly one `attachment`
+ * through M1's rowKey machinery, so a roaming client's new association gets
+ * support immediately and the old one loses this row's support through the
+ * publisher's present-row replacement (and M1's second-miss path otherwise).
+ * `unifi_statistics` carries no topology.
+ */
 export function projectUnifiPhysicalTopology(input: TopologyProjectionInput & { snapshot: { section: UnifiSourceSection } }): TopologyProjectionDelta {
-  void input;
-  return emptyProjection();
+  const delta = emptyProjection();
+  const section = input.snapshot.section;
+  if (!outcomeHasPositives(section.outcome) || section.kind === 'unifi_statistics') return delta;
+  const { scope, source, run } = input;
+  const at = run.effectiveAt;
+  const context = input.physical ?? { authorityKey: physicalAuthorityOf(source.contextKey), subjectNodeId: null, deviceMacs: [] };
+  const controllerSiteId = context.authorityKey.slice(context.authorityKey.indexOf(':') + 1);
+  const nodes = new Map(input.nodes.map(n => [n.id, n]));
+  const endpoint = (endpointKey: string, inventoryDeviceId: string | null, label?: string | null) => {
+    const resolved = unifiEndpointNode({ scope, endpointKey, inventoryDeviceId, label, context, nodes, at });
+    if (resolved.created) { nodes.set(resolved.id, resolved.created); delta.nodes = [...delta.nodes.filter(n => n.id !== resolved.id), resolved.created]; }
+    return resolved.id;
+  };
+  const rows = [...(section.rows as { rowKey: string }[])].sort((a, b) => a.rowKey.localeCompare(b.rowKey));
+  if (section.kind === 'unifi_device_list') {
+    for (const row of rows as NormalizedUnifiDeviceRow[]) endpoint(row.endpointKey, row.inventoryDeviceId, row.name);
+    return delta;
+  }
+  const relationships = new Map(input.relationships.map(r => [r.canonicalKey, r]));
+  const freshUntil = new Date(at.getTime() + Math.max(run.expectedIntervalSeconds * 3, 900) * 1000);
+  for (const row of rows as (NormalizedUnifiClientRow | NormalizedUnifiDeviceDetailRow)[]) {
+    const material = unifiRowMaterial(controllerSiteId, section.kind, row);
+    if (!material) continue;
+    const client = section.kind === 'unifi_client_list' ? row as NormalizedUnifiClientRow : null;
+    const uplink = endpoint(material.uplinkEndpointKey, null);
+    const attached = endpoint(material.endpointKey, client?.inventoryDeviceId ?? null, client?.name);
+    if (uplink === attached) continue;
+    const draft = buildUnifiRelationship(scope, material, uplink, attached, undefined, at);
+    const relationship = buildUnifiRelationship(scope, material, uplink, attached, relationships.get(draft.canonicalKey), at);
+    relationships.set(relationship.canonicalKey, relationship);
+    delta.relationships = [...delta.relationships.filter(r => r.id !== relationship.id), relationship];
+    const observationId = stableLegacyId(`${run.id}:${row.rowKey}:${relationship.id}`);
+    delta.observations.push({ ...scope, id: observationId, runId: run.id, observationKey: opaqueHash([row.rowKey, relationship.id]), subjectNodeId: attached, subjectInterfaceId: null,
+      relationshipId: relationship.id, method: 'unifi', evidenceClass: 'observed', attributes: { rowKey: row.rowKey, contextKey: source.contextKey, row },
+      observedAt: run.observedAt, effectiveAt: at, receivedAt: run.receivedAt, freshUntil });
+    delta.support = [...delta.support.filter(s => s.relationshipId !== relationship.id), { ...scope, relationshipId: relationship.id, sourceId: source.id, latestObservationId: observationId,
+      producerEpoch: source.producerEpoch, sequence: run.sequence, contentDigest: run.contentDigest, firstPositiveAt: at, lastPositiveAt: at, effectiveAt: at, freshUntil, lifecycle: 'active', completeMissCount: 0 }];
+  }
+  return delta;
 }
 
 /**
