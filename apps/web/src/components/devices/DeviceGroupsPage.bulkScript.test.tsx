@@ -161,4 +161,53 @@ describe('DeviceGroupsPage bulk run-script (#3429)', () => {
     );
     expect(mockToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
   });
+
+  it('keeps the modal open with an error when no target was admitted', async () => {
+    override = (url, init) =>
+      url === '/scripts/script-1/execute' && init?.method === 'POST'
+        ? json({
+            requestId: 'r3',
+            status: 'rejected',
+            targets: [DEV_A, DEV_B, DEV_C].map((id) => ({
+              requestedDeviceId: id,
+              admission: 'denied',
+              reasonCode: 'script_org_mismatch',
+            })),
+          }, 201)
+        : undefined;
+
+    await openBulkScriptAndRun();
+
+    expect(await screen.findByText(/not queued on any device \(script_org_mismatch\)/)).toBeInTheDocument();
+    expect(mockToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    expect(screen.getByRole('heading', { name: /run script on groups/i })).toBeInTheDocument();
+  });
+
+  it('treats a membership body without a data array as a failure, not an empty group', async () => {
+    override = (url) =>
+      url.split('?')[0] === '/device-groups/group-1/devices' ? json({ unexpected: true }) : undefined;
+
+    await openBulkScriptAndRun();
+
+    expect(await screen.findByText(/Could not load the devices in group Servers/)).toBeInTheDocument();
+    expect(screen.queryByText(/have no devices you can run a script on/)).not.toBeInTheDocument();
+    expect(executeCalls()).toHaveLength(0);
+  });
+
+  it('refuses a selection above the 500-device execute cap before calling the API', async () => {
+    const many = Array.from({ length: 501 }, (_, i) =>
+      `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
+    );
+    override = (url) => {
+      const path = url.split('?')[0];
+      if (path === '/device-groups/group-1/devices') return json(membersOf(many.slice(0, 300)));
+      if (path === '/device-groups/group-2/devices') return json(membersOf(many.slice(250)));
+      return undefined;
+    };
+
+    await openBulkScriptAndRun();
+
+    expect(await screen.findByText(/contain 501 devices; a script can run on at most 500/)).toBeInTheDocument();
+    expect(executeCalls()).toHaveLength(0);
+  });
 });

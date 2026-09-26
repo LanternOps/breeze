@@ -809,14 +809,19 @@ export default function DeviceGroupsPage() {
         Array.from(selectedGroupIds).map(async (groupId) => {
           const res = await fetchWithAuth(`/device-groups/${groupId}/devices`);
           const body = await res.json().catch(() => ({}));
-          if (!res.ok) {
+          // A 200 whose body is not the `{ data: [...] }` envelope is a
+          // failure, not an empty group: `asList` would fail closed to `[]`
+          // and the user would be told their groups have no devices.
+          if (!res.ok || !Array.isArray(body?.data)) {
             const groupName = groups.find((group) => group.id === groupId)?.name ?? groupId;
             const detail = typeof body?.error === "string" ? `: ${body.error}` : "";
             throw new Error(
               `${t("deviceGroupsPage.bulkScriptMembershipFailed", { group: groupName })}${detail}`,
             );
           }
-          return asList<{ deviceId: string }>(body).map((member) => member.deviceId);
+          return (body.data as Array<{ deviceId?: unknown }>)
+            .map((member) => member?.deviceId)
+            .filter((id): id is string => typeof id === "string");
         }),
       );
 
@@ -854,7 +859,11 @@ export default function DeviceGroupsPage() {
       ).join(", ");
 
       if (admitted.length === 0) {
-        setFormError(t("deviceGroupsPage.bulkScriptNoneQueued", { reasons }));
+        setFormError(
+          refused.length > 0
+            ? t("deviceGroupsPage.bulkScriptNoneQueued", { reasons })
+            : t("deviceGroupsPage.failedToRunScriptOnGroups"),
+        );
         return;
       }
       if (refused.length > 0) {
