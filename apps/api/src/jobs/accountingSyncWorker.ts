@@ -25,7 +25,8 @@
  *     `reauth_required`, `void_blocked_by_payments` (each a 404 or 409 — see
  *     the codes' own status in `accountingInvoicePush.ts`; the last one is
  *     QuickBooks refusing to void an invoice a Payment settles there, a rule
- *     that answers the same on every attempt — #5180) PLUS `record_failed` (502 — the remote
+ *     that answers the same on every attempt — #5180), `invoice_totals_mismatch`
+ *     (409 — the pushed lines do not sum to the invoice subtotal, #7161) PLUS `record_failed` (502 — the remote
  *     QuickBooks write already landed; only the local persist failed, so
  *     retrying would create a duplicate invoice in QuickBooks, not fix
  *     anything). Retrying any of these can never succeed: the mapping row
@@ -127,6 +128,7 @@ const TERMINAL_CODES: ReadonlySet<AccountingInvoicePushErrorCode> = new Set([
   'reauth_required',
   'record_failed',
   'void_blocked_by_payments',
+  'invoice_totals_mismatch',
 ]);
 
 /**
