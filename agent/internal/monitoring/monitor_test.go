@@ -384,3 +384,35 @@ func TestRunChecksTracksConsecutiveFailures(t *testing.T) {
 		t.Errorf("consecutiveFailures = %d, want 3", failures)
 	}
 }
+
+// A check pass that is still running when Stop and an emptying ApplyConfig
+// land must not re-create the removed watch states or report stale results.
+// The pass sees the loop's stop channel already closed; before the fix it
+// wrote a state for every watch it had copied, so
+// TestWireEmptyConfigClearsRunningMonitor failed intermittently with
+// "watch states not cleared".
+func TestRunChecksAfterStopWritesNoStateAndSendsNothing(t *testing.T) {
+	var sent int
+	m := New(func(results []CheckResult) { sent += len(results) })
+	m.mu.Lock()
+	m.config = MonitorConfig{
+		CheckIntervalSeconds: 30,
+		Watches: []WatchConfig{
+			{WatchType: "unknown_type", Name: "stale"},
+		},
+	}
+	m.mu.Unlock()
+
+	stopCh := make(chan struct{})
+	close(stopCh)
+	m.runChecksUntil(stopCh)
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if len(m.states) != 0 {
+		t.Fatalf("stale pass re-created %d watch state(s)", len(m.states))
+	}
+	if sent != 0 {
+		t.Fatalf("stale pass sent %d result(s)", sent)
+	}
+}

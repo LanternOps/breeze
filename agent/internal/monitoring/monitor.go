@@ -127,20 +127,48 @@ func (m *Monitor) Stop() {
 
 func (m *Monitor) loop(stopCh <-chan struct{}, ticker *time.Ticker) {
 	// Run an immediate check on start
-	m.runChecks()
+	m.runChecksUntil(stopCh)
 
 	for {
 		select {
 		case <-stopCh:
 			return
 		case <-ticker.C:
-			m.runChecks()
+			m.runChecksUntil(stopCh)
 		}
 	}
 }
 
 func (m *Monitor) runChecks() {
+	m.runChecksUntil(nil)
+}
+
+// stopped reports whether stopCh has been closed. A nil channel (runChecks
+// called directly, outside the loop) is never stopped.
+func stopped(stopCh <-chan struct{}) bool {
+	if stopCh == nil {
+		return false
+	}
+	select {
+	case <-stopCh:
+		return true
+	default:
+		return false
+	}
+}
+
+// runChecksUntil runs one pass over the configured watches. Stop does not wait
+// for an in-flight pass, and a check can take a while, so a pass may still be
+// running after Stop and a following ApplyConfig have replaced the watches.
+// Stop closes stopCh while holding m.mu, so a pass that re-checks stopCh under
+// the lock before writing a watch state cannot re-create a state the new
+// config just removed, and it drops its now-stale results.
+func (m *Monitor) runChecksUntil(stopCh <-chan struct{}) {
 	m.mu.RLock()
+	if stopped(stopCh) {
+		m.mu.RUnlock()
+		return
+	}
 	watches := make([]WatchConfig, len(m.config.Watches))
 	copy(watches, m.config.Watches)
 	m.mu.RUnlock()
@@ -174,12 +202,19 @@ func (m *Monitor) runChecks() {
 		// Handle auto-restart — only for services/processes that exist but are stopped,
 		// not for names that couldn't be resolved (StatusNotFound / StatusError).
 		if result.Status == StatusStopped && w.AutoRestart {
+			if stopped(stopCh) {
+				return
+			}
 			attempted, _ := m.maybeAutoRestart(w, &result)
 			result.AutoRestartAttempted = attempted
 		}
 
 		// Track consecutive failures
 		m.mu.Lock()
+		if stopped(stopCh) {
+			m.mu.Unlock()
+			return
+		}
 		key := w.WatchType + ":" + w.Name
 		state, ok := m.states[key]
 		if !ok {
@@ -198,7 +233,7 @@ func (m *Monitor) runChecks() {
 		results = append(results, result)
 	}
 
-	if len(results) > 0 && m.sendResults != nil {
+	if len(results) > 0 && m.sendResults != nil && !stopped(stopCh) {
 		m.sendResults(results)
 	}
 }
