@@ -270,6 +270,66 @@ describe('backup snapshot storage', () => {
     expect(deletedKeys).toEqual(['snapshots/provider-snap-1/manifest.json']);
   });
 
+  // #6398: the agent never applies the destination `prefix` — snapshot
+  // objects live at `snapshots/<id>/...`. Immutability and deletion must target
+  // that physical layout, not `<prefix>/snapshots/<id>`.
+  it('applies retention under the agent layout, ignoring the configured destination prefix (#6398)', async () => {
+    sendMock
+      .mockImplementationOnce(async (command) => {
+        expect(command).toBeInstanceOf(ListObjectsV2Command);
+        expect(command.input.Prefix).toBe('snapshots/provider-snap-1');
+        return { Contents: [{ Key: 'snapshots/provider-snap-1/manifest.json' }], IsTruncated: false };
+      })
+      .mockImplementationOnce(async () => ({}));
+
+    const result = await applyBackupSnapshotImmutability({
+      provider: 's3',
+      providerConfig: {
+        bucket: 'backups',
+        region: 'us-east-1',
+        accessKey: 'key',
+        secretKey: 'secret',
+        prefix: 'w05',
+      },
+      snapshotId: 'provider-snap-1',
+      metadata: {},
+      retainUntil: new Date('2026-04-30T00:00:00.000Z'),
+    });
+
+    expect(result.objectCount).toBe(1);
+  });
+
+  it('deletes under the agent layout, ignoring the configured destination prefix (#6398)', async () => {
+    const deletedKeys: string[] = [];
+    sendMock
+      .mockImplementationOnce(async (command) => {
+        expect(command).toBeInstanceOf(ListObjectsV2Command);
+        expect(command.input.Prefix).toBe('snapshots/provider-snap-1');
+        return { Contents: [{ Key: 'snapshots/provider-snap-1/manifest.json' }], IsTruncated: false };
+      })
+      .mockImplementationOnce(async (command) => {
+        deletedKeys.push(
+          ...(command.input.Delete?.Objects ?? []).map((object: { Key?: string }) => object.Key ?? '')
+        );
+        return {};
+      });
+
+    await deleteBackupSnapshotArtifacts({
+      provider: 's3',
+      providerConfig: {
+        bucket: 'backups',
+        region: 'us-east-1',
+        accessKey: 'key',
+        secretKey: 'secret',
+        prefix: 'w05',
+      },
+      snapshotId: 'provider-snap-1',
+      metadata: {},
+    });
+
+    expect(deletedKeys).toEqual(['snapshots/provider-snap-1/manifest.json']);
+  });
+
   it('fails when no objects are found for provider immutability', async () => {
     sendMock.mockImplementationOnce(async () => ({
       Contents: [],
