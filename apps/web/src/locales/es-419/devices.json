@@ -1121,6 +1121,7 @@
     "ratedSpeed": "nominal {{speed}}"
   },
   "deviceInfoTab": {
+    "updateStuck": "La actualización del agente a {{target}} parece atascada: {{attempts}} intentos desde {{since}} y el dispositivo sigue en su versión anterior. El actualizador reintenta en cada heartbeat; revise los registros del agente, o el propio dispositivo si no envía ninguno.",
     "updateOfferWithheld": "Las ofertas de actualización están retenidas para este dispositivo (desde {{since}}): no se puede confirmar que la compilación de su agente acepte la edición que sirve este servidor, por lo que permanece en su versión actual. Recupérelo con un instalador de la edición servida o con una versión del agente que informe su edición.",
     "helperInstallIssue": {
       "awaitingServerOffer": "Breeze Assist está habilitado pero no instalado (desde {{since}}): el servidor no ha ofrecido una versión de Breeze Assist para instalar en este dispositivo, así que sigue sin instalarse. Verifica que haya una compilación de Breeze Assist publicada para la plataforma de este dispositivo.",
@@ -1468,6 +1469,8 @@
       "manual": "Manual"
     },
     "updateWithheld": "Actualizaciones retenidas",
+    "updateStuck": "Actualización atascada",
+    "updateStuckTooltip": "Este dispositivo lleva más de una hora reintentando la actualización del agente a {{target}} sin completarla.",
     "updateWithheldTooltip": "El servidor no ofrece actualizaciones a este dispositivo porque no se puede confirmar que la compilación de su agente acepte la edición servida. Permanece en su versión actual hasta que se recupere.",
     "helperNotInstalled": "No instalado",
     "helperInstallIssueTooltip": {

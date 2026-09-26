@@ -2292,6 +2292,83 @@ describe('POST /agents/:id/heartbeat — artifact-edition offer gate (#4072)', (
       }
     });
 
+    // #4073 — the update-attempt record stamped by WS update_status is closed
+    // by the first heartbeat reporting the target (or a newer) version.
+    describe('update attempt record (#4073)', () => {
+      const openRecord = {
+        updateAttemptStartedAt: new Date('2026-10-01T00:00:00Z'),
+        updateAttemptLastAt: new Date('2026-10-01T01:00:00Z'),
+        updateAttemptCount: 60,
+      };
+
+      // ./helpers is mocked with compareAgentVersions → 0; this block needs
+      // the real ordering to tell "below target" from "reached it".
+      beforeEach(async () => {
+        const { compareAgentVersions } = await import('./helpers');
+        const real = await vi.importActual<typeof import('../../services/agentEditionCompat')>(
+          '../../services/agentEditionCompat',
+        );
+        vi.mocked(compareAgentVersions).mockImplementation(real.compareAgentVersions);
+      });
+      afterEach(async () => {
+        const { compareAgentVersions } = await import('./helpers');
+        vi.mocked(compareAgentVersions).mockImplementation(() => 0);
+      });
+
+      it('clears the record once the reported version reaches the target', async () => {
+        const setSpy = captureSet();
+        primeWithRow({ ...openRecord, updateAttemptTargetVersion: '0.105.1' });
+
+        expect((await beat()).status).toBe(200);
+        const cleared = setCalls(setSpy).find((s) => 'updateAttemptTargetVersion' in s);
+        expect(cleared).toMatchObject({
+          updateAttemptTargetVersion: null,
+          updateAttemptStartedAt: null,
+          updateAttemptLastAt: null,
+          updateAttemptCount: null,
+        });
+      });
+
+      it('clears the record when the device lands on a version past the target', async () => {
+        const setSpy = captureSet();
+        primeWithRow({ ...openRecord, updateAttemptTargetVersion: '0.105.0' });
+
+        expect((await beat()).status).toBe(200);
+        const cleared = setCalls(setSpy).find((s) => 'updateAttemptTargetVersion' in s);
+        expect(cleared?.updateAttemptTargetVersion).toBeNull();
+      });
+
+      it('keeps the record while the device is still below the target (the stuck case)', async () => {
+        const setSpy = captureSet();
+        primeWithRow({ ...openRecord, updateAttemptTargetVersion: '0.110.0' });
+
+        expect((await beat()).status).toBe(200);
+        for (const s of setCalls(setSpy)) {
+          expect(s).not.toHaveProperty('updateAttemptTargetVersion');
+          expect(s).not.toHaveProperty('updateAttemptStartedAt');
+        }
+      });
+
+      it('closes the record when the version cannot be compared (never a false stuck alarm)', async () => {
+        const setSpy = captureSet();
+        primeWithRow({ ...openRecord, updateAttemptTargetVersion: 'not-a-version' });
+
+        expect((await beat()).status).toBe(200);
+        const cleared = setCalls(setSpy).find((s) => 'updateAttemptTargetVersion' in s);
+        expect(cleared?.updateAttemptTargetVersion).toBeNull();
+      });
+
+      it('writes nothing for a device with no open record', async () => {
+        const setSpy = captureSet();
+        primeWithRow({ updateAttemptTargetVersion: null });
+
+        expect((await beat()).status).toBe(200);
+        for (const s of setCalls(setSpy)) {
+          expect(s).not.toHaveProperty('updateAttemptTargetVersion');
+        }
+      });
+    });
+
     it('writes nothing for a healthy device that was never withheld', async () => {
       const setSpy = captureSet();
       primeWithRow({ updateOfferWithheldReason: null, updateOfferWithheldSince: null });

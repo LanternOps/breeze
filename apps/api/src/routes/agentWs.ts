@@ -79,6 +79,7 @@ import {
 } from './remote/helpers';
 import { consentDeniedMessage } from './remote/consentTiming';
 import { getActiveTrustKeyset } from '../services/manifestSigning';
+import { nextAgentUpdateAttempt } from '@breeze/shared';
 import { resolvePendingAgentCommand } from '../services/agentCommandAwait';
 import {
   reconcileSoftwareInstallResult,
@@ -2888,6 +2889,46 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
           if (agentDb) {
             await runWithAgentDbAccess('agentWs.updateStatus', async () => {
               try {
+                const now = new Date();
+                // #4073 — every update_status precedes an update ATTEMPT (a
+                // wedged update re-sends it on every heartbeat), so record the
+                // episode on the device row: first attempt, last attempt,
+                // count. The heartbeat clears it on convergence; an old open
+                // record that is still retrying is a stuck update, visible
+                // without depending on log shipping. A failed read must never
+                // cost the status flip — it just starts a fresh episode.
+                // Oversized targets (column is varchar(50)) are not recorded.
+                const targetVersion: string = message.targetVersion;
+                let attempt: ReturnType<typeof nextAgentUpdateAttempt> | null = null;
+                if (targetVersion.length > 0 && targetVersion.length <= 50) {
+                  let prev: {
+                    targetVersion: string | null;
+                    startedAt: Date | null;
+                    lastAttemptAt: Date | null;
+                    attemptCount: number | null;
+                  } | undefined;
+                  try {
+                    [prev] = await db
+                      .select({
+                        targetVersion: devices.updateAttemptTargetVersion,
+                        startedAt: devices.updateAttemptStartedAt,
+                        lastAttemptAt: devices.updateAttemptLastAt,
+                        attemptCount: devices.updateAttemptCount,
+                      })
+                      .from(devices)
+                      .where(eq(devices.agentId, agentId))
+                      .limit(1);
+                  } catch (readError) {
+                    console.error(`[AgentWs] Failed to read update attempt record for ${agentId}:`, readError);
+                  }
+                  attempt = nextAgentUpdateAttempt(
+                    prev ?? { targetVersion: null, startedAt: null, lastAttemptAt: null, attemptCount: null },
+                    targetVersion,
+                    now,
+                  );
+                } else {
+                  console.warn(`[AgentWs] Not recording update attempt for ${agentId}: targetVersion length ${targetVersion.length} is outside 1..50`);
+                }
                 // Same terminal-status guard as updateDeviceStatus (#2230):
                 // this write must not resurrect a decommissioned/quarantined
                 // row to 'updating'.
@@ -2895,8 +2936,16 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                   .update(devices)
                   .set({
                     status: 'updating',
-                    lastSeenAt: new Date(),
-                    updatedAt: new Date()
+                    lastSeenAt: now,
+                    updatedAt: now,
+                    ...(attempt
+                      ? {
+                          updateAttemptTargetVersion: attempt.targetVersion,
+                          updateAttemptStartedAt: attempt.startedAt,
+                          updateAttemptLastAt: attempt.lastAttemptAt,
+                          updateAttemptCount: attempt.attemptCount,
+                        }
+                      : {}),
                   })
                   .where(and(
                     eq(devices.agentId, agentId),
