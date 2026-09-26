@@ -160,11 +160,6 @@ function stepsForRun(runId: string) {
 }
 
 /**
- * Re-derive the requester's CURRENT authority. Called before an acceptance and
- * before returning an idempotent replay: a preexisting idempotency record must
- * never disclose a run the caller has since lost access to.
- */
-/**
  * Freeze the requester's authority at a permission generation whose grants
  * were VERIFIED for that same generation (C2, M4-D3).
  *
@@ -201,6 +196,11 @@ async function freezeVerifiedRequesterAuthority(ctx: TopologyRequestContext) {
   return frozen;
 }
 
+/**
+ * Re-derive the requester's CURRENT authority. Called before an acceptance and
+ * before returning an idempotent replay: a preexisting idempotency record must
+ * never disclose a run the caller has since lost access to.
+ */
 async function requireDiagnosticAuthority(ctx: TopologyRequestContext): Promise<void> {
   const current = await requireTopologySiteAccess(
     ctx.auth,
