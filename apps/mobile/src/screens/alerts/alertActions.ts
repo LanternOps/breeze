@@ -21,12 +21,15 @@ export function canRebootFromAlert(alert: Alert): boolean {
 }
 
 /**
- * Alerts reached from AI chat are built from tool output that may not carry
- * `source`. When one names a device and has no source, the screen fetches the
- * alert once so a reboot-pending alert still gets its action.
+ * Whether the screen fetches the alert before offering "Reboot now". A
+ * reboot-pending alert is always re-read, because the list or search result it
+ * came from may be stale and the alert may since have been resolved. A device
+ * alert with no source (AI chat builds these from tool output) is read to
+ * learn whether it is a reboot-pending one. The button waits for that read.
  */
-export function needsSourceLookup(alert: Alert): boolean {
-  return alert.source === undefined && Boolean(alert.id) && Boolean(alert.deviceId);
+export function needsAlertLookup(alert: Alert): boolean {
+  if (!alert.id || !alert.deviceId) return false;
+  return alert.source === undefined || alert.source === REBOOT_PENDING_SOURCE;
 }
 
 /** Confirmation copy for the reboot prompt. */

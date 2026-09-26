@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { Alert } from '../../services/api';
 import {
   canRebootFromAlert,
-  needsSourceLookup,
+  needsAlertLookup,
   rebootConfirmMessage,
   REBOOT_PENDING_SOURCE,
 } from './alertActions';
@@ -53,16 +53,19 @@ describe('canRebootFromAlert', () => {
   });
 });
 
-describe('needsSourceLookup', () => {
-  it('looks up a device alert that arrived without a source', () => {
-    expect(needsSourceLookup(alert({ source: undefined }))).toBe(true);
+describe('needsAlertLookup', () => {
+  it('re-reads a reboot-pending alert, since its list status may be stale', () => {
+    expect(needsAlertLookup(alert())).toBe(true);
   });
 
-  it('skips the lookup when the source is known or there is no device', () => {
-    expect(needsSourceLookup(alert())).toBe(false);
-    expect(needsSourceLookup(alert({ source: 'patch-job-finalizer' }))).toBe(false);
-    expect(needsSourceLookup(alert({ source: undefined, deviceId: undefined }))).toBe(false);
-    expect(needsSourceLookup(alert({ source: undefined, id: '' }))).toBe(false);
+  it('looks up a device alert that arrived without a source', () => {
+    expect(needsAlertLookup(alert({ source: undefined }))).toBe(true);
+  });
+
+  it('skips the lookup for other alerts or when there is no device', () => {
+    expect(needsAlertLookup(alert({ source: 'patch-job-finalizer' }))).toBe(false);
+    expect(needsAlertLookup(alert({ source: undefined, deviceId: undefined }))).toBe(false);
+    expect(needsAlertLookup(alert({ id: '' }))).toBe(false);
   });
 });
 

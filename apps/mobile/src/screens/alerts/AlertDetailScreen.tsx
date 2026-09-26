@@ -4,7 +4,7 @@ import { Alert, Pressable, ScrollView, Text, View } from 'react-native';
 import { useAppDispatch } from '../../store';
 import { acknowledgeAlertAsync } from '../../store/alertsSlice';
 import { getAlert, sendDeviceAction, type Alert as AlertModel } from '../../services/api';
-import { canRebootFromAlert, needsSourceLookup, rebootConfirmMessage } from './alertActions';
+import { canRebootFromAlert, needsAlertLookup, rebootConfirmMessage } from './alertActions';
 import { relativeTime } from '../../lib/relativeTime';
 import {
   useApprovalTheme,
@@ -84,14 +84,15 @@ export function AlertDetailScreen({ route }: Props) {
   const [rebooting, setRebooting] = useState(false);
   const [rebootSent, setRebootSent] = useState(false);
   const [fresh, setFresh] = useState<AlertModel | null>(null);
-  // A fetched copy supplies both the source and the current status, since a
-  // chat-built alert carries neither.
-  const showReboot = canRebootFromAlert(
-    fresh ? { ...alert, source: fresh.source, metadata: fresh.metadata } : alert,
-  );
+  // Reboot now is decided on the fetched copy, which has the current status
+  // (and the source, which a chat-built alert lacks). Until that read lands,
+  // or if it fails, the button stays hidden.
+  const showReboot = fresh
+    ? canRebootFromAlert({ ...alert, source: fresh.source, metadata: fresh.metadata })
+    : false;
 
   useEffect(() => {
-    if (!needsSourceLookup(alert)) return;
+    if (!needsAlertLookup(alert)) return;
     let mounted = true;
     getAlert(alert.id)
       .then((fetched) => {
