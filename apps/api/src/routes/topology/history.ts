@@ -3,6 +3,7 @@ import { topologyInterfaceHistoryQuerySchema } from '@breeze/shared';
 import { GraphReadError } from '../../services/topology/graphCursor';
 import { getTopologyLinkHealth, getTopologyReadEtag } from '../../services/topology/graph';
 import { getTopologyInterfaceHistory } from '../../services/topology/interfaceHistory';
+import { recordTopologyHistoryRead } from '../../services/topology/metrics';
 import { requireTopologySiteCapability } from './middleware';
 import { siteScopedQuery } from './query';
 
@@ -37,7 +38,7 @@ const HISTORY_KEYS = new Set(['series', 'from', 'to', 'resolution', 'maxBuckets'
 const base = '/sites/:siteId';
 const authorized = requireTopologySiteCapability('read');
 
-topologyHistoryRoutes.get(`${base}/interfaces/:interfaceId/history`, authorized, read((c) => {
+topologyHistoryRoutes.get(`${base}/interfaces/:interfaceId/history`, authorized, read(async (c) => {
   const query = siteScopedQuery(c, (message) => invalid(message));
   if (Object.keys(query).some((key) => !HISTORY_KEYS.has(key))) throw invalid();
   const parsed = topologyInterfaceHistoryQuerySchema.safeParse({
@@ -46,7 +47,12 @@ topologyHistoryRoutes.get(`${base}/interfaces/:interfaceId/history`, authorized,
     ...(query.maxBuckets === undefined ? {} : { maxBuckets: /^\d{1,5}$/.test(query.maxBuckets) ? Number(query.maxBuckets) : query.maxBuckets }),
   });
   if (!parsed.success) throw invalid('Invalid interface history query');
-  return getTopologyInterfaceHistory(c.get('topologyContext'), c.req.param('interfaceId') ?? '', parsed.data);
+  const history = await getTopologyInterfaceHistory(c.get('topologyContext'), c.req.param('interfaceId') ?? '', parsed.data);
+  if (history.interval) {
+    const buckets = (Date.parse(history.interval.to) - Date.parse(history.interval.from)) / (history.interval.bucketSeconds * 1000);
+    recordTopologyHistoryRead(history.resolution, Math.round(buckets));
+  }
+  return history;
 }, true));
 
 topologyHistoryRoutes.get(`${base}/relationships/:relationshipId/health`, authorized, read((c) => {

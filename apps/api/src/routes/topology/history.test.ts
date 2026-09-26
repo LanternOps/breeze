@@ -21,6 +21,8 @@ vi.mock('../../services/aiTools', () => ({ executeTool: mocks.model }));
 vi.mock('../../db', () => ({ db: { insert: mocks.insert, update: mocks.update, delete: mocks.remove, execute: mocks.execute } }));
 import { topologyHistoryRoutes } from './history';
 import { GraphReadError } from '../../services/topology/graphCursor';
+import { metricsRegistry } from '../../services/metricsRegistry';
+import { TOPOLOGY_METRIC_NAMES } from '../../services/topology/metrics';
 
 const ORG = '10000000-0000-4000-8000-000000000001';
 const SITE = '20000000-0000-4000-8000-000000000001';
@@ -38,6 +40,18 @@ beforeEach(() => {
 });
 
 describe('interface history route', () => {
+  it('publishes the served bucket count by resolution without any id label', async () => {
+    metricsRegistry.resetMetrics();
+    mocks.history.mockResolvedValueOnce({ interfaceId: IF, resolution: '5m', series: [],
+      interval: { from: '2026-09-01T00:00:00.000Z', to: '2026-09-02T00:00:00.000Z', bucketSeconds: 300 } });
+    const res = await app().request(`${base}/interfaces/${IF}/history?series=in_bps&${range}&resolution=5m`);
+    expect(res.status).toBe(200);
+    const text = await metricsRegistry.metrics();
+    expect(text).toContain(`${TOPOLOGY_METRIC_NAMES.historyBuckets}_sum{resolution="5m"} 288`);
+    expect(text).not.toContain(IF);
+    expect(text).not.toContain(SITE);
+  });
+
   it('serves bounded history as private no-store and never polls or dispatches', async () => {
     const res = await app().request(`${base}/interfaces/${IF}/history?series=in_bps,out_errors_per_second&${range}&resolution=5m&maxBuckets=200`);
     expect(res.status).toBe(200);
