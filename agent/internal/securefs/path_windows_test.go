@@ -269,6 +269,20 @@ func TestInstallFileInterruptionLeavesDestinationIntact(t *testing.T) {
 // window is not isolated, but neither is something this package can remove.
 // So a miss that a re-probe contradicts within the window is tolerated.
 //
+// #6176 asked whether the rarer "stayed absent past the recheck" failure
+// (merge-queue runs, ~5%) was a real publication gap. It is not one in
+// installFile: in the success path the destination is touched by exactly one
+// NtSetInformationFile rename, and this test asserts all 200 publishes
+// succeeded, so no cleanup or retry path ran. On a Windows Server 2022 lab
+// host, 20,000 publishes unloaded and 32,000 under CPU pressure produced zero
+// not-found answers of any kind. What the old watcher could not tell apart was
+// a starved reader: a descheduled re-probe that also landed on the lookup race
+// was reported as 100ms of absence on the strength of two samples. The watch
+// (absence_watch_test.go) now only claims continuity across densely spaced
+// probes, fails any absence every probe agrees on for absenceCeiling, and puts
+// probe count, continuous span and largest gap in the failure text, so a
+// future failure says which of the two it was.
+//
 // The budget keeps the assertion discriminating: a real publication gap (a
 // regression to delete-then-rename, or copy-into-place) opens a window on every
 // one of the 200 publishes, and the tight reader loop observes it far more than
@@ -331,8 +345,8 @@ func TestInstallFileConcurrentReplacement(t *testing.T) {
 	readerWG.Wait()
 
 	if watch.persistent != nil {
-		t.Fatalf("destination vanished during concurrent replacement and stayed absent for %v: %v",
-			transientMissRecheck, watch.persistent)
+		t.Fatalf("destination vanished during concurrent replacement and stayed absent (recheck %v, ceiling %v): %v",
+			transientMissRecheck, absenceCeiling, watch.persistent)
 	}
 	if watch.transient > transientMissBudget {
 		t.Fatalf("destination was momentarily absent %d times during 200 concurrent replacements (budget %d); "+

@@ -5529,6 +5529,7 @@
       "sendInvite": "Davetiye gönderilemedi",
       "updateUser": "Kullanıcı güncellenemedi",
       "updateRole": "Rol güncellenemedi",
+      "updateOrgAccess": "Kuruluş erişimi güncellenemedi",
       "removeUser": "Kullanıcı kaldırılamadı",
       "resetMfa": "MFA sıfırlanamadı"
     },

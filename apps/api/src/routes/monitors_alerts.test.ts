@@ -140,74 +140,25 @@ describe('monitors routes', () => {
     app = makeApp();
   });
 
-  // ────────────────────── POST /alerts (create alert rule) ──────────────────────
-  describe('POST /alerts', () => {
-    it('creates an alert rule for a monitor', async () => {
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{
-              id: MONITOR_ID,
-              orgId: ORG_ID,
-            }]),
-          }),
-        }),
-      } as any);
-      vi.mocked(db.insert).mockReturnValueOnce({
-        values: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{
-            id: RULE_ID,
-            monitorId: MONITOR_ID,
-            condition: 'offline',
-            severity: 'critical',
-            isActive: true,
-          }]),
-        }),
-      } as any);
-
-      const res = await app.request('/monitors/alerts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          monitorId: MONITOR_ID,
-          condition: 'offline',
-          severity: 'critical',
-        }),
-      });
-
-      expect(res.status).toBe(201);
-      const body = await res.json();
-      expect(body.data.condition).toBe('offline');
-      expect(body.data.severity).toBe('critical');
+  it.each([
+    ['POST', '/monitors/alerts'],
+    ['PATCH', `/monitors/alerts/${RULE_ID}`],
+    ['DELETE', `/monitors/alerts/${RULE_ID}`],
+  ])('%s %s returns 410 without reading or writing rules', async (method, path) => {
+    const res = await app.request(path, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ monitorId: MONITOR_ID, condition: 'offline', severity: 'critical' }),
     });
-
-    it('validates condition enum', async () => {
-      const res = await app.request('/monitors/alerts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          monitorId: MONITOR_ID,
-          condition: 'invalid_condition',
-          severity: 'high',
-        }),
-      });
-
-      expect(res.status).toBe(400);
+    expect(res.status).toBe(410);
+    expect(await res.json()).toMatchObject({
+      error: 'network_check_authoring_retired',
+      hint: { route: 'POST /monitor-definitions', kind: 'network_check' },
     });
-
-    it('validates severity enum', async () => {
-      const res = await app.request('/monitors/alerts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          monitorId: MONITOR_ID,
-          condition: 'offline',
-          severity: 'unknown',
-        }),
-      });
-
-      expect(res.status).toBe(400);
-    });
+    expect(db.select).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    expect(db.delete).not.toHaveBeenCalled();
   });
 
   // ────────────────────── GET /:monitorId/alerts ──────────────────────
@@ -235,93 +186,6 @@ describe('monitors routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data).toHaveLength(1);
-    });
-  });
-
-  // ────────────────────── PATCH /alerts/:id ──────────────────────
-  describe('PATCH /alerts/:id', () => {
-    it('updates an alert rule', async () => {
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          innerJoin: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{
-                rule: { id: RULE_ID, monitorId: MONITOR_ID },
-                monitorOrgId: ORG_ID,
-              }]),
-            }),
-          }),
-        }),
-      } as any);
-      vi.mocked(db.update).mockReturnValueOnce({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            returning: vi.fn().mockResolvedValue([{
-              id: RULE_ID,
-              severity: 'high',
-            }]),
-          }),
-        }),
-      } as any);
-
-      const res = await app.request(`/monitors/alerts/${RULE_ID}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ severity: 'high' }),
-      });
-
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body.data.severity).toBe('high');
-    });
-
-    it('returns 404 when alert rule not found', async () => {
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          innerJoin: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([]),
-            }),
-          }),
-        }),
-      } as any);
-
-      const res = await app.request(`/monitors/alerts/${RULE_ID}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ severity: 'high' }),
-      });
-
-      expect(res.status).toBe(404);
-    });
-  });
-
-  // ────────────────────── DELETE /alerts/:id ──────────────────────
-  describe('DELETE /alerts/:id', () => {
-    it('deletes an alert rule', async () => {
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          innerJoin: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{
-                rule: { id: RULE_ID },
-                monitorOrgId: ORG_ID,
-              }]),
-            }),
-          }),
-        }),
-      } as any);
-      vi.mocked(db.delete).mockReturnValueOnce({
-        where: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{ id: RULE_ID }]),
-        }),
-      } as any);
-
-      const res = await app.request(`/monitors/alerts/${RULE_ID}`, {
-        method: 'DELETE',
-      });
-
-      expect(res.status).toBe(200);
     });
   });
 

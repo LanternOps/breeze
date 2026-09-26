@@ -10,11 +10,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   createSessionPreToolUse,
   settleApprovalWaits,
+  settleBlockedTurnForNewMessage,
   waitForTurnToSettle,
   APPROVAL_WAIT_BUDGET_MS,
   TERMINAL_READBACK_BUDGET_MS,
 } from './aiAgentSdk';
-import { db } from '../db';
+import { db, assertOutsideHeldDbContext } from '../db';
 import { actionIntents } from '../db/schema/actionIntents';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit } from './aiGuardrails';
 import { waitForApproval } from './aiAgent';
@@ -25,6 +26,7 @@ import type { ActionIntentSnapshot } from './actionIntents/intentService';
 // ============================================
 
 vi.mock('../db', () => ({
+  assertOutsideHeldDbContext: vi.fn(),
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -604,6 +606,37 @@ describe('waitForTurnToSettle (#3089)', () => {
     const session = makeActiveSession({ state: 'processing' });
 
     await expect(waitForTurnToSettle(session, 300)).resolves.toBe(false);
+  });
+});
+
+describe('settleBlockedTurnForNewMessage — held-context tripwire (#3127)', () => {
+  beforeEach(() => {
+    vi.mocked(assertOutsideHeldDbContext).mockReset();
+  });
+
+  it('checks it is outside a held DB transaction before waiting on the turn', async () => {
+    const session = makeActiveSession({ state: 'processing', pendingApprovalWaits: 1 });
+    setTimeout(() => { session.state = 'idle'; }, 50);
+
+    await expect(settleBlockedTurnForNewMessage(session, 1_000)).resolves.toBe('concluded');
+    expect(assertOutsideHeldDbContext).toHaveBeenCalledWith('settleBlockedTurnForNewMessage');
+  });
+
+  it('refuses before touching the session when the tripwire fires (strict mode)', async () => {
+    vi.mocked(assertOutsideHeldDbContext).mockImplementation(() => {
+      throw new Error('ran inside a held withDbAccessContext transaction');
+    });
+    const abort = new AbortController();
+    const session = makeActiveSession({
+      state: 'processing',
+      pendingApprovalWaits: 1,
+      approvalWaitAbort: abort,
+    });
+
+    await expect(settleBlockedTurnForNewMessage(session, 1_000)).rejects.toThrow(/held withDbAccessContext/);
+    // Nothing was settled: the approval wait is still armed.
+    expect(abort.signal.aborted).toBe(false);
+    expect(session.approvalWaitAbort).toBe(abort);
   });
 });
 

@@ -162,7 +162,8 @@ vi.mock('../../services/clientSessionTools', async (importOriginal) => {
 });
 
 import { helperRoutes } from './index';
-import { db } from '../../db';
+import { db, withDbAccessContext } from '../../db';
+import { settleBlockedTurnForNewMessage } from '../../services/aiAgentSdk';
 import { matchAgentTokenHash } from '../../middleware/agentAuth';
 import { resolveHelperPermissionLevelForDevice } from '../../services/helperPermissions';
 import { buildHelperSystemPrompt } from '../../services/helperAiAgent';
@@ -412,6 +413,97 @@ describe('helper routes permission derivation', () => {
     expect(resolveLlmConfigMock).toHaveBeenCalledWith('partner-1');
     expect(checkBudgetMock).toHaveBeenCalledWith('org-1', 'partner_key');
     expect(resolveHelperPermissionLevelForDevice).toHaveBeenCalledWith('device-1', 'basic');
+  });
+
+  // #3127: under its real /api/v1 mount the message-send route is registered in
+  // selfManagedDbContextRoutes, so helperAuth opens no request transaction and
+  // the settle wait runs with no DB context held, between two short ones.
+  it('#3127: settles an approval-blocked turn with no DB context held, between two short ones', async () => {
+    let depth = 0;
+    vi.mocked(withDbAccessContext).mockImplementation(async (_ctx: unknown, fn: () => Promise<unknown>) => {
+      depth += 1;
+      try {
+        return await fn();
+      } finally {
+        depth -= 1;
+      }
+    });
+    const depths: Record<string, number> = {};
+    mockHelperAuthDevice();
+    vi.mocked(resolveHelperPermissionLevelForDevice).mockImplementation(async () => {
+      depths.preflight = depth;
+      return 'standard';
+    });
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: 'session-1',
+            orgId: 'org-1',
+            deviceId: 'device-1',
+            sdkSessionId: null,
+            model: 'claude-sonnet-4-5-20250929',
+            maxTurns: 50,
+            turnCount: 0,
+            status: 'active',
+            title: 'Existing title',
+            systemPrompt: 'prompt',
+            createdAt: new Date(),
+          }]),
+        }),
+      }),
+    } as never);
+    vi.mocked(db.insert).mockImplementationOnce(() => {
+      depths.insert = depth;
+      return { values: vi.fn().mockResolvedValue(undefined) } as never;
+    });
+    const activeSession = {
+      inputController: { pushMessage: vi.fn() },
+      eventBus: {
+        subscribe: vi.fn(async function* () {
+          yield { type: 'done' };
+        }),
+        unsubscribe: vi.fn(),
+        publish: vi.fn(),
+      },
+      state: 'processing',
+    };
+    vi.mocked(streamingSessionManager.get)
+      .mockReturnValueOnce(activeSession as never)
+      .mockReturnValueOnce(undefined);
+    vi.mocked(settleBlockedTurnForNewMessage).mockImplementationOnce(async () => {
+      depths.settle = depth;
+      return 'concluded';
+    });
+    reserveAiBudgetMock.mockImplementationOnce(async () => {
+      depths.reserve = depth;
+      return {
+        kind: 'unlimited',
+        reservationId: '11111111-1111-4111-8111-111111111111',
+        dailyPeriodKey: '2026-09-06',
+        monthlyPeriodKey: '2026-09-01',
+        status: 'active',
+      };
+    });
+    vi.mocked(streamingSessionManager.getOrCreate).mockImplementation(async () => {
+      depths.getOrCreate = depth;
+      return activeSession as never;
+    });
+    vi.mocked(streamingSessionManager.tryTransitionToProcessing).mockReturnValue(true);
+
+    const apiApp = new Hono();
+    apiApp.route('/api/v1/helper', helperRoutes);
+    const res = await apiApp.request('/api/v1/helper/chat/sessions/session-1/messages', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer brz_agent_token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: 'hello' }),
+    });
+    await res.text();
+
+    expect(res.status).toBe(200);
+    expect(depths).toEqual({ preflight: 1, settle: 0, reserve: 0, getOrCreate: 1, insert: 1 });
+    expect(activeSession.inputController.pushMessage).toHaveBeenCalledWith('hello');
+    expect(depth).toBe(0);
   });
 
   it('returns ai_unavailable as 503 before touching the SDK manager on a turn', async () => {

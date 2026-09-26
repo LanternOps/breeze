@@ -178,8 +178,8 @@ export async function sweepPartnerLegacyAlerting(partnerId: string): Promise<{ c
     // marker write below opens a sweep-owned system transaction.
     const auth = createSystemAuthContext();
     const retiredInactive = await retireInactivePolicySources(partnerId, auth);
-    const preview = await previewPartnerConversion(partnerId, auth);
-    const result = await convertPartnerLegacy(partnerId, preview.previewHash, auth);
+    const preview = await previewPartnerConversion(partnerId, auth, { sources: 'retired_runtime_only' });
+    const result = await convertPartnerLegacy(partnerId, preview.previewHash, auth, { sources: 'retired_runtime_only' });
     const retired = [...retiredInactive, ...await retirePreviewRefusals(preview, auth)];
     // A later boot that finds nothing to do keeps the first sweep's summary.
     if (result.converted === 0 && retired.length === 0) return { converted: 0, retired };

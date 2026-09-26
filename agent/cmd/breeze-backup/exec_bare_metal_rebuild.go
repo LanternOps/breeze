@@ -7,16 +7,10 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
-	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup/rebuild"
 	"github.com/breeze-rmm/agent/internal/backupipc"
 )
-
-// bareMetalRebuildTimeout bounds one server-driven rebuild (W05a): a full
-// whole-machine restore plus a VHDX conversion on a slow host. The server's
-// own command timeout (RESTORE_TIMEOUT_TYPES) is the outer bound.
-const bareMetalRebuildTimeout = 4 * time.Hour
 
 // bareMetalRebuildPayload is the bare_metal_rebuild command payload
 // (apps/api/src/services/bareMetalRebuildCommand.ts
@@ -81,8 +75,11 @@ func execBareMetalRebuild(parentCtx context.Context, payload json.RawMessage, re
 		return fail("invalid bare_metal_rebuild payload: " + err.Error())
 	}
 
-	ctx, cancel := context.WithTimeout(parentCtx, bareMetalRebuildTimeout)
-	defer cancel()
+	// No fixed deadline (#6664): the watchdog stops a rebuild that stops
+	// making progress, with an absolute ceiling as a backstop. See
+	// rebuild_budget.go.
+	ctx, watchdog, stop := startRebuildWatchdog(parentCtx, bareMetalRebuildBudget)
+	defer stop()
 
 	target := rebuild.Target{Kind: rebuild.TargetKind(p.Target.Kind), Path: p.Target.Path, ImageSizeBytes: p.Target.ImageSizeBytes}
 	opts, report, err := buildTokenModeOptions(ctx, p.Server, p.Token, target, "")
@@ -93,6 +90,7 @@ func execBareMetalRebuild(parentCtx context.Context, payload json.RawMessage, re
 	opts.System = rebuildSystemForTest
 	opts.WinSystem = rebuildWinSystemForTest
 	opts.Progress = func(ph rebuild.Phase, msg string, cur, total int64) {
+		watchdog.progress(ph)
 		slog.Info("bare_metal_rebuild progress", "recoveryId", p.RecoveryID, "phase", string(ph), "message", msg, "current", cur, "total", total)
 	}
 

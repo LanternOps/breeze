@@ -1043,7 +1043,8 @@
         "readOnlyHint": "Remova e adicione novamente esta seção para alterar o modelo, a versão ou as variáveis.",
         "updateToVersion": "Atualizar para v{{version}}",
         "saveVariables": "Salvar variáveis",
-        "unresolvedWarning": "Variáveis não resolvidas (bloquearão o envio): {{names}}"
+        "unresolvedWarning": "Variáveis não resolvidas (bloquearão o envio): {{names}}",
+        "placementHint": "Os clientes veem isto depois dos totais, recolhido até que o abram. No PDF, aparece depois do preço."
       },
       "coverPage": {
         "title": "Página de capa",
@@ -1446,6 +1447,18 @@
         "unavailable": "Arquivo do acordo indisponível",
         "versionFooter": "{{name}} — versão {{version}}"
       },
+      "agreements": {
+        "heading": "Acordos",
+        "termsTitle": "Termos e condições",
+        "read": "Ler",
+        "hide": "Ocultar",
+        "readTime": "~{{minutes}} min de leitura",
+        "sectionsReadTime_one": "{{count}} seção · ~{{minutes}} min de leitura",
+        "sectionsReadTime_other": "{{count}} seções · ~{{minutes}} min de leitura",
+        "pdfDocument": "Documento PDF",
+        "unavailable": "Indisponível",
+        "untitled": "Acordo"
+      },
       "draft": "Rascunho",
       "empty": "Esta proposta ainda não tem conteúdo.",
       "imageUnavailable": "Imagem indisponível",
@@ -1473,7 +1486,6 @@
         "tax": "Imposto",
         "unitPrice": "Preço unitário"
       },
-      "terms": "Termos",
       "totals": {
         "annualRecurring": "Recorrência anual",
         "depositDue": "Entrada devida",

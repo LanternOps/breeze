@@ -317,6 +317,16 @@ The response includes device details (hostname, status, OS type) alongside viola
 
 ### On-Demand Remediation
 
+In the web app, the **Remediate** button on a policy row opens a confirmation that states the blast radius before anything is queued: the number of devices, the policy name and mode, the software that will be uninstalled, and a sample of affected devices. At 10 or more devices you must type the device count to confirm. Confirming sends exactly the devices that were previewed, so the set cannot grow between preview and confirm.
+
+Preview the target set without queuing anything:
+
+```bash
+GET /software-policies/:id/remediate/preview
+```
+
+The preview only counts devices holding at least one `unauthorized` violation (the only kind remediation uninstalls). It returns `deviceIds` (at most 500), `deviceCount`, `uninstallCount`, a `software` tally, `sampleDevices`, and `totalTargetDevices` with `capped: true` when more devices qualify than one request can carry.
+
 Trigger remediation manually for a specific policy:
 
 ```bash
@@ -453,6 +463,7 @@ All policy operations are recorded in two audit systems:
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/software-policies/:id/check` | Trigger on-demand compliance check (optional `deviceIds` array) |
+| `GET` | `/software-policies/:id/remediate/preview` | Preview the devices and software a remediation would uninstall (queues nothing) |
 | `POST` | `/software-policies/:id/remediate` | Trigger remediation for violating devices (optional `deviceIds` array) |
 
 <Aside>

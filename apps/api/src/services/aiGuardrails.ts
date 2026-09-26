@@ -300,7 +300,6 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   manage_dr_plan: ['delete_group'],
   manage_hyperv_checkpoints: ['delete', 'apply'],
   // Monitoring tools — Tier 3 actions (require user approval)
-  manage_monitors: ['create', 'update', 'delete'],
   manage_delivery: ['create_routing','update_routing','delete_routing','set_default','create_escalation','update_escalation','delete_escalation'],
   // Ticketing — move_org is a tenant-shape mutation and requires approval.
   // log_time_entry/start_timer/stop_timer downgraded to Tier 2 (2026-07-20).
@@ -532,7 +531,6 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   manage_software_policies: ['create', 'update'],
   manage_peripheral_policies: ['create', 'update'],
   manage_dr_plan: ['delete_group'],
-  manage_monitors: ['create', 'update', 'delete'],
   manage_delivery: ['create_routing','update_routing','delete_routing','set_default','create_escalation','update_escalation','delete_escalation'],
   manage_contracts: ['pause', 'resume'],
   // create_site adds a location within an existing org, not a new tenant —
@@ -1310,9 +1308,10 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   query_monitors: { resource: 'devices', action: 'read' },
   manage_monitors: {
     get: { resource: 'devices', action: 'read' },
-    create: { resource: 'devices', action: 'write' },
-    update: { resource: 'devices', action: 'write' },
-    delete: { resource: 'devices', action: 'write' },
+    // Retired mutations return a refusal before DB access, so they need no write permission.
+    create: { resource: 'devices', action: 'read' },
+    update: { resource: 'devices', action: 'read' },
+    delete: { resource: 'devices', action: 'read' },
   },
   get_service_monitoring_status: { resource: 'devices', action: 'read' },
   // Integration & webhook tools
@@ -2926,12 +2925,6 @@ function buildApprovalDescription(
           );
         }
       } else parts.push(`Organizations: ${action}`);
-      break;
-
-    case 'manage_monitors':
-      if (action === 'create') parts.push(`Create monitor "${input.name}" (${input.monitorType})`);
-      else if (action === 'delete') parts.push(`Delete monitor ${(input.monitorId as string)?.slice(0, 8)}...`);
-      else parts.push(`Monitor ${action}: ${(input.monitorId as string)?.slice(0, 8) ?? input.name ?? ''}...`);
       break;
 
     default:

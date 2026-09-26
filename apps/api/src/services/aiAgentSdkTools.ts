@@ -292,7 +292,7 @@ export const TOOL_TIERS = {
   propose_action_plan: 1,
   // Monitoring tools
   query_monitors: 1,
-  manage_monitors: 1,           // Action-level escalation in guardrails
+  manage_monitors: 1,           // Read-only; retired mutations return guidance
   get_service_monitoring_status: 1,
   // W01 (spec §4.4) — read-only reachability for a discovered network asset,
   // with the source and age of the evidence. Wired here rather than added to

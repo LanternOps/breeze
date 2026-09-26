@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   Activity,
   BookOpen,
@@ -233,10 +233,29 @@ export default function IntegrationsPage({
     orgId: string | null;
   }>({ result: null, refreshKey: 0, orgId: null });
 
+  // Keep the latest org id available to applyHash below without making it a
+  // dependency of that effect (see the comment there). useRef's initial value
+  // is set synchronously during render, so it's already correct for the
+  // very-first-mount call to applyHash.
+  const callbackOrgIdRef = useRef(callbackOrgId);
+  useIsomorphicLayoutEffect(() => {
+    callbackOrgIdRef.current = callbackOrgId;
+  }, [callbackOrgId]);
+
   // Adopt the hash post-commit / pre-paint (no visible flash of the fallback
   // tab), and keep following it for back/forward and externally-changed hashes.
   // The click handlers below set state directly, so this only handles hash
   // changes we didn't make ourselves.
+  //
+  // #6684: on a real return from Microsoft, this runs on the very first
+  // render of a cold page load — the org store hasn't hydrated yet, so
+  // callbackOrgId is still null here. The hash is consumed (and rewritten to
+  // #m365) immediately regardless, so it must NOT be in this effect's
+  // dependency array: if it were, callbackOrgId resolving a tick later would
+  // re-run applyHash against the now-stripped hash, take the "no result in
+  // the hash" else-branch, and wipe the just-captured result before it ever
+  // got a chance to match the resolved org id. A separate effect below
+  // backfills orgId once it's known, without re-parsing the hash.
   useIsomorphicLayoutEffect(() => {
     const applyHash = () => {
       const parsed = parseHash(initialTab);
@@ -249,7 +268,7 @@ export default function IntegrationsPage({
         setCustomerGraphReadCallback((current) => ({
           result: parsed.customerGraphReadResult ?? null,
           refreshKey: current.refreshKey + 1,
-          orgId: callbackOrgId,
+          orgId: callbackOrgIdRef.current,
         }));
         window.history.replaceState(
           window.history.state,
@@ -267,7 +286,7 @@ export default function IntegrationsPage({
         setCustomerGraphActionsCallback((current) => ({
           result: parsed.customerGraphActionsResult ?? null,
           refreshKey: current.refreshKey + 1,
-          orgId: callbackOrgId,
+          orgId: callbackOrgIdRef.current,
         }));
         window.history.replaceState(
           window.history.state,
@@ -285,7 +304,25 @@ export default function IntegrationsPage({
     applyHash();
     window.addEventListener("hashchange", applyHash);
     return () => window.removeEventListener("hashchange", applyHash);
-  }, [callbackOrgId, initialTab]);
+  }, [initialTab]);
+
+  // Backfill a captured-but-unscoped callback result once the org id resolves
+  // (cold load: the result was captured from the hash before the org store
+  // hydrated, so it went in with orgId: null). This never re-parses the hash,
+  // so it can't clobber a result the hashchange handler above just captured.
+  useEffect(() => {
+    if (callbackOrgId === null) return;
+    setCustomerGraphReadCallback((current) =>
+      current.result !== null && current.orgId === null
+        ? { ...current, orgId: callbackOrgId }
+        : current,
+    );
+    setCustomerGraphActionsCallback((current) =>
+      current.result !== null && current.orgId === null
+        ? { ...current, orgId: callbackOrgId }
+        : current,
+    );
+  }, [callbackOrgId]);
 
   // Select a top-level tab and reflect it in the URL hash so the tab is
   // deep-linkable / shareable and survives a reload.

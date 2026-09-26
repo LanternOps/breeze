@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
+import { readdirSync } from 'node:fs';
+import { join } from 'node:path';
 
 const { navigateToMock, showToastMock, selectOrganizationMock, selectAllOrgsMock } = vi.hoisted(() => ({
   navigateToMock: vi.fn(),
@@ -38,6 +40,25 @@ describe('getOrgSwitchRedirect', () => {
     expect(getOrgSwitchRedirect('/devices')).toBeNull();
     expect(getOrgSwitchRedirect('/devices/compare')).toBeNull();
     expect(getOrgSwitchRedirect('/devices/groups')).toBeNull();
+  });
+
+  it('leaves /devices/posture (a fleet page, not a device record) in place', () => {
+    expect(getOrgSwitchRedirect('/devices/posture')).toBeNull();
+  });
+
+  // Drift guard (#2600): the /devices/:id redirect must know every static
+  // sibling page under src/pages/devices, or switching org on that page bounces
+  // the user to the device list as if it were a device record.
+  it('keeps every static /devices/* page in place (sibling-route drift guard)', () => {
+    const pagesDir = join(__dirname, '..', 'pages', 'devices');
+    const staticSiblings = readdirSync(pagesDir, { withFileTypes: true })
+      .filter((e) => e.isFile() && e.name.endsWith('.astro'))
+      .map((e) => e.name.replace(/\.astro$/, ''))
+      .filter((name) => name !== 'index' && !name.startsWith('['));
+    expect(staticSiblings.length).toBeGreaterThan(0);
+    for (const name of staticSiblings) {
+      expect(getOrgSwitchRedirect(`/devices/${name}`), `/devices/${name}`).toBeNull();
+    }
   });
 
   it('does not redirect detail routes it has no rule for (they reload in place)', () => {

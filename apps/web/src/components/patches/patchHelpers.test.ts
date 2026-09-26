@@ -284,3 +284,15 @@ describe('normalizeRing autoApprove.autoApproveUnrated (#3758)', () => {
     expect(ring.autoApprove?.autoApproveUnrated).toBe(true);
   });
 });
+
+describe('normalizePatch — install failure overlay (#4223)', () => {
+  it('carries a well-formed installFailure through', () => {
+    const failure = { deviceCount: 2, error: 'preflight check "battery" failed', failedAt: '2026-08-29T18:00:00.000Z' };
+    expect(normalizePatch({ id: 'p1', installFailure: failure }, 0).installFailure).toEqual(failure);
+  });
+
+  it('drops a null or malformed installFailure', () => {
+    expect(normalizePatch({ id: 'p1', installFailure: null }, 0).installFailure).toBeUndefined();
+    expect(normalizePatch({ id: 'p1', installFailure: { error: 'x' } }, 0).installFailure).toBeUndefined();
+  });
+});

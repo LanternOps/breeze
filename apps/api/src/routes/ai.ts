@@ -9,7 +9,13 @@ import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { streamSSE } from 'hono/streaming';
-import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
+import {
+  authMiddleware,
+  requireMfa,
+  requirePermission,
+  requireScope,
+  withAuthDbAccessContext,
+} from '../middleware/auth';
 import { aiScriptAuthoringEnabled } from '../config/env';
 import { loadScriptProposalReviewerDisagreements } from '../services/scriptProposals/metrics';
 import {
@@ -207,6 +213,12 @@ async function releaseUnusedTurn(orgId: string, dispatch: AiTurnBudgetDispatch):
 }
 
 export const aiRoutes = new Hono();
+
+// Sessions with an approve-plan decision currently being persisted (#7077).
+// The write happens before the in-memory resolver is released, so without
+// this a second request could slip past the pending check and persist a
+// conflicting decision.
+const planDecisionsInFlight = new WeakSet<object>();
 const requireAiRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
 // Org-level AI config (budget) and cross-owner moderation (flag/unflag) stay
 // organizations:write actions.
@@ -715,9 +727,17 @@ aiRoutes.post(
     const auth = c.get('auth');
     const sessionId = c.req.param('id')!;
     const body = c.req.valid('json');
+    // #3127: this route is registered in selfManagedDbContextRoutes, so no
+    // request transaction is held across the handler. Each DB phase runs in its
+    // own short context carrying the caller's exact scope, and the settle wait
+    // and the budget reservation (which opens its own system transaction) run
+    // between them with no connection checked out.
+    const inRequestDb = <T>(fn: () => Promise<T>): Promise<T> => withAuthDbAccessContext(auth, fn);
 
     // Pre-flight checks (rate limits, budget, session status, input sanitization)
-    const preflight = await runPreFlightChecks(sessionId, body.content, auth, body.pageContext, c);
+    const preflight = await inRequestDb(() =>
+      runPreFlightChecks(sessionId, body.content, auth, body.pageContext, c),
+    );
     if (!preflight.ok) {
       const err = preflight.error;
       if (err === 'ai_unavailable') return c.json({ error: 'ai_unavailable' }, 503);
@@ -796,58 +816,80 @@ aiRoutes.post(
         return c.json({ error: reservation.message }, 402);
       }
       const budgetDispatch = budgetDispatchFrom(reservation)!;
-      const openaiManager = getOpenAISessionManager();
-      const openaiSession = openaiManager.getOrCreate(sessionId, dbSession.orgId, auth, c);
 
-      if (!openaiManager.tryTransitionToProcessing(openaiSession)) {
-        await abortTopology();
-        await releaseUnusedTurn(dbSession.orgId, budgetDispatch);
-        return c.json({ error: 'A message is already being processed for this session' }, 409);
-      }
-      // Bound for THIS turn only; the chat-only transport clears it when the turn starts.
-      openaiSession.topologyInvestigation = topology?.runtime;
-
-      writeRouteAudit(c, {
-        orgId: dbSession.orgId,
-        action: 'ai.message.send',
-        resourceType: 'ai_session',
-        resourceId: sessionId,
-        details: { contentLength: body.content.length },
-      });
-
-      try {
-        await db.insert(aiMessages).values({
-          sessionId,
-          role: 'user',
-          content: sanitizedContent,
-        });
-      } catch (err) {
-        console.error('[AI/OpenAI] Failed to save user message to DB:', err);
-        openaiSession.state = 'idle';
-        openaiSession.topologyInvestigation = undefined;
-        await abortTopology();
-        await releaseUnusedTurn(dbSession.orgId, budgetDispatch);
-        return c.json({ error: 'Failed to save message' }, 500);
-      }
-
-      if (!dbSession.title) {
-        // Topology sessions get a fixed title: no model or evidence text ever names a session.
-        const title = topology ? TOPOLOGY_SESSION_TITLE : generateSessionTitle(sanitizedContent);
+      type OpenAIChatSession = ReturnType<OpenAISessionManager['getOrCreate']>;
+      const dispatch = await inRequestDb(async (): Promise<
+        | { kind: 'dispatched'; openaiSession: OpenAIChatSession }
+        | { kind: 'refused'; response: Response }
+        | { kind: 'failed'; error: unknown }
+      > => {
+        // Caught (not thrown through) so the reservation taken above is still
+        // released below — same shape as the Claude SDK branch.
+        let openaiManager: OpenAISessionManager;
+        let openaiSession: OpenAIChatSession;
         try {
-          await db.update(aiSessions).set({ title }).where(eq(aiSessions.id, sessionId));
-          openaiSession.eventBus.publish({ type: 'title_updated', title });
+          openaiManager = getOpenAISessionManager();
+          openaiSession = openaiManager.getOrCreate(sessionId, dbSession.orgId, auth, c);
         } catch (err) {
-          console.error('[AI/OpenAI] Failed to auto-set session title:', err);
+          return { kind: 'failed', error: err };
         }
-      }
 
-      openaiManager.startTurn(
-        openaiSession,
-        dbSession.model,
-        topology ? topology.systemPrompt : systemPrompt,
-        topology ? topology.prompt : sanitizedContent,
-        budgetDispatch,
-      );
+        if (!openaiManager.tryTransitionToProcessing(openaiSession)) {
+          return { kind: 'refused', response: c.json({ error: 'A message is already being processed for this session' }, 409) };
+        }
+        // Bound for THIS turn only; the chat-only transport clears it when the turn starts.
+        openaiSession.topologyInvestigation = topology?.runtime;
+
+        writeRouteAudit(c, {
+          orgId: dbSession.orgId,
+          action: 'ai.message.send',
+          resourceType: 'ai_session',
+          resourceId: sessionId,
+          details: { contentLength: body.content.length },
+        });
+
+        try {
+          await db.insert(aiMessages).values({
+            sessionId,
+            role: 'user',
+            content: sanitizedContent,
+          });
+        } catch (err) {
+          console.error('[AI/OpenAI] Failed to save user message to DB:', err);
+          openaiSession.state = 'idle';
+          openaiSession.topologyInvestigation = undefined;
+          return { kind: 'refused', response: c.json({ error: 'Failed to save message' }, 500) };
+        }
+
+        if (!dbSession.title) {
+          // Topology sessions get a fixed title: no model or evidence text ever names a session.
+          const title = topology ? TOPOLOGY_SESSION_TITLE : generateSessionTitle(sanitizedContent);
+          try {
+            await db.update(aiSessions).set({ title }).where(eq(aiSessions.id, sessionId));
+            openaiSession.eventBus.publish({ type: 'title_updated', title });
+          } catch (err) {
+            console.error('[AI/OpenAI] Failed to auto-set session title:', err);
+          }
+        }
+
+        openaiManager.startTurn(
+          openaiSession,
+          dbSession.model,
+          topology ? topology.systemPrompt : systemPrompt,
+          topology ? topology.prompt : sanitizedContent,
+          budgetDispatch,
+        );
+        return { kind: 'dispatched', openaiSession };
+      });
+      if (dispatch.kind !== 'dispatched') {
+        // Released only after the dispatch context has closed, so the release's
+        // own system transaction never runs beside a held request connection.
+        await abortTopology();
+        await releaseUnusedTurn(dbSession.orgId, budgetDispatch);
+        if (dispatch.kind === 'failed') throw dispatch.error;
+        return dispatch.response;
+      }
+      const { openaiSession } = dispatch;
 
       const subscriptionId = crypto.randomUUID();
       return streamSSE(c, async (stream) => {
@@ -889,6 +931,7 @@ aiRoutes.post(
       // concludes the turn, and this message then proceeds normally. If the
       // session is busy for any other reason (model actively working), or the
       // turn doesn't conclude in time, fall back to a 409 as before.
+      // #3127: runs with no DB context held (see inRequestDb above).
       const settle = await settleBlockedTurnForNewMessage(priorSession);
       if (settle !== 'concluded') {
         await abortTopology();
@@ -930,95 +973,106 @@ aiRoutes.post(
     }
     const budgetDispatch = budgetDispatchFrom(reservation)!;
 
-    let activeSession;
-    try {
-      activeSession = await streamingSessionManager.getOrCreate(
-        sessionId,
-        {
-          orgId: dbSession.orgId,
-          sdkSessionId: dbSession.sdkSessionId,
-          model: dbSession.model,
-          maxTurns: dbSession.maxTurns,
-          turnCount: dbSession.turnCount,
-          systemPrompt: dbSession.systemPrompt,
-          // Device-bound sessions narrow tool execution to the device's org
-          // (ai_sessions.org_id), not the login org (#3087).
-          deviceId: dbSession.deviceId,
-        },
-        auth,
-        c,
-        topology ? topology.systemPrompt : systemPrompt,
-        budgetDispatch.maxBudgetUsd,
-        resolved,
-        // Topology: the SDK is handed ONLY the topology tools; the pre-tool
-        // gate re-checks the allowlist, read budget and live scope.
-        topology ? topology.allowedMcpTools : undefined,
-        topology && topologyTurn ? topologyTurn.topologyMcpServerFactory : undefined,
-        topology
-          ? { budgetReservationId: budgetDispatch.reservationId, topologyInvestigation: topology.runtime, injectApprovalModeInstructions: false }
-          : { budgetReservationId: budgetDispatch.reservationId },
-      );
-    } catch (err) {
-      await abortTopology();
-      await releaseUnusedTurn(dbSession.orgId, budgetDispatch);
-      throw err;
-    }
-
-    if (!streamingSessionManager.tryTransitionToProcessing(activeSession, budgetDispatch.reservationId)) {
-      await abortTopology();
-      await releaseUnusedTurn(dbSession.orgId, budgetDispatch);
-      return c.json({ error: 'A message is already being processed for this session' }, 409);
-    }
-
-    writeRouteAudit(c, {
-      orgId: dbSession.orgId,
-      action: 'ai.message.send',
-      resourceType: 'ai_session',
-      resourceId: sessionId,
-      details: { contentLength: body.content.length }
-    });
-
-    try {
-      await db.insert(aiMessages).values({
-        sessionId,
-        role: 'user',
-        content: sanitizedContent,
-      });
-    } catch (err) {
-      console.error('[AI] Failed to save user message to DB:', err);
-      activeSession.state = 'idle';
-      activeSession.topologyInvestigation = undefined;
-      await abortTopology();
-      await releaseUnusedTurn(dbSession.orgId, budgetDispatch);
-      return c.json({ error: 'Failed to save message' }, 500);
-    }
-
-    // Auto-generate title from first user message
-    if (!dbSession.title) {
-      const title = topology ? TOPOLOGY_SESSION_TITLE : generateSessionTitle(sanitizedContent);
+    type ActiveChatSession = Awaited<ReturnType<typeof streamingSessionManager.getOrCreate>>;
+    const dispatch = await inRequestDb(async (): Promise<
+      | { kind: 'dispatched'; activeSession: ActiveChatSession }
+      | { kind: 'refused'; response: Response }
+      | { kind: 'failed'; error: unknown }
+    > => {
+      let activeSession: ActiveChatSession;
       try {
-        await db.update(aiSessions)
-          .set({ title })
-          .where(eq(aiSessions.id, sessionId));
-        activeSession.eventBus.publish({ type: 'title_updated', title });
+        activeSession = await streamingSessionManager.getOrCreate(
+          sessionId,
+          {
+            orgId: dbSession.orgId,
+            sdkSessionId: dbSession.sdkSessionId,
+            model: dbSession.model,
+            maxTurns: dbSession.maxTurns,
+            turnCount: dbSession.turnCount,
+            systemPrompt: dbSession.systemPrompt,
+            // Device-bound sessions narrow tool execution to the device's org
+            // (ai_sessions.org_id), not the login org (#3087).
+            deviceId: dbSession.deviceId,
+          },
+          auth,
+          c,
+          topology ? topology.systemPrompt : systemPrompt,
+          budgetDispatch.maxBudgetUsd,
+          resolved,
+          // Topology: the SDK is handed ONLY the topology tools; the pre-tool
+          // gate re-checks the allowlist, read budget and live scope.
+          topology ? topology.allowedMcpTools : undefined,
+          topology && topologyTurn ? topologyTurn.topologyMcpServerFactory : undefined,
+          topology
+            ? { budgetReservationId: budgetDispatch.reservationId, topologyInvestigation: topology.runtime, injectApprovalModeInstructions: false }
+            : { budgetReservationId: budgetDispatch.reservationId },
+        );
       } catch (err) {
-        console.error('[AI] Failed to auto-set session title:', err);
+        return { kind: 'failed', error: err };
       }
-    }
 
-    // Execution plane (spec §5.5): an `analysis` run associated with this
-    // session may have finished between turns (chat-initiated launch is
-    // currently disabled, #6086, but a preconfigured agent's run can still
-    // report back to a session this way). Its summary is prepended HERE
-    // rather than pushed when it arrived — pushing then would start a turn
-    // with no SSE subscriber, so the assistant's reply would never reach the
-    // browser.
-    const pendingRunResults = drainPendingRunResults(activeSession);
-    const turnContent = topology ? topology.prompt : sanitizedContent;
-    activeSession.inputController.pushMessage(
-      pendingRunResults && !topology ? `${pendingRunResults}\n\n${turnContent}` : turnContent,
-    );
-    streamingSessionManager.startTurnTimeout(activeSession);
+      if (!streamingSessionManager.tryTransitionToProcessing(activeSession, budgetDispatch.reservationId)) {
+        return { kind: 'refused', response: c.json({ error: 'A message is already being processed for this session' }, 409) };
+      }
+
+      writeRouteAudit(c, {
+        orgId: dbSession.orgId,
+        action: 'ai.message.send',
+        resourceType: 'ai_session',
+        resourceId: sessionId,
+        details: { contentLength: body.content.length }
+      });
+
+      try {
+        await db.insert(aiMessages).values({
+          sessionId,
+          role: 'user',
+          content: sanitizedContent,
+        });
+      } catch (err) {
+        console.error('[AI] Failed to save user message to DB:', err);
+        activeSession.state = 'idle';
+        activeSession.topologyInvestigation = undefined;
+        return { kind: 'refused', response: c.json({ error: 'Failed to save message' }, 500) };
+      }
+
+      // Auto-generate title from first user message
+      if (!dbSession.title) {
+        const title = topology ? TOPOLOGY_SESSION_TITLE : generateSessionTitle(sanitizedContent);
+        try {
+          await db.update(aiSessions)
+            .set({ title })
+            .where(eq(aiSessions.id, sessionId));
+          activeSession.eventBus.publish({ type: 'title_updated', title });
+        } catch (err) {
+          console.error('[AI] Failed to auto-set session title:', err);
+        }
+      }
+
+      // Execution plane (spec §5.5): an `analysis` run associated with this
+      // session may have finished between turns (chat-initiated launch is
+      // currently disabled, #6086, but a preconfigured agent's run can still
+      // report back to a session this way). Its summary is prepended HERE
+      // rather than pushed when it arrived — pushing then would start a turn
+      // with no SSE subscriber, so the assistant's reply would never reach the
+      // browser.
+      const pendingRunResults = drainPendingRunResults(activeSession);
+      const turnContent = topology ? topology.prompt : sanitizedContent;
+      activeSession.inputController.pushMessage(
+        pendingRunResults && !topology ? `${pendingRunResults}\n\n${turnContent}` : turnContent,
+      );
+      streamingSessionManager.startTurnTimeout(activeSession);
+      return { kind: 'dispatched', activeSession };
+    });
+    if (dispatch.kind !== 'dispatched') {
+      // Released only after the dispatch context has closed, so the release's
+      // own system transaction never runs beside a held request connection.
+      await abortTopology();
+      await releaseUnusedTurn(dbSession.orgId, budgetDispatch);
+      if (dispatch.kind === 'failed') throw dispatch.error;
+      return dispatch.response;
+    }
+    const { activeSession } = dispatch;
 
     const subscriptionId = crypto.randomUUID();
 
@@ -1250,29 +1304,57 @@ aiRoutes.post(
       return c.json({ error: 'No pending plan approval' }, 400);
     }
 
-    // Resolve the in-memory promise
-    activeSession.planApprovalResolver(approved);
-    activeSession.planApprovalResolver = null;
+    if (planDecisionsInFlight.has(activeSession)) {
+      return c.json({ error: 'A decision on this plan is already being saved' }, 409);
+    }
 
-    // Update DB plan record
-    if (activeSession.activePlanId || !approved) {
-      try {
-        const planId = activeSession.activePlanId;
-        if (planId) {
-          await db.update(aiActionPlans)
+    // Persist the decision BEFORE releasing the agent (#7077). If the write
+    // fails, the approval stays pending so the user can retry, and the agent
+    // never acts on (or abandons) a plan whose recorded status disagrees.
+    const resolvePlanApproval = activeSession.planApprovalResolver;
+    const planId = activeSession.activePlanId;
+    planDecisionsInFlight.add(activeSession);
+    try {
+      if (planId) {
+        try {
+          // Only a still-pending plan takes a decision: an abort that landed
+          // first must not be overwritten with approved/rejected.
+          const updated = await db.update(aiActionPlans)
             .set({
               status: approved ? 'approved' : 'rejected',
               approvedBy: auth.user.id,
               approvedAt: new Date(),
             })
-            .where(eq(aiActionPlans.id, planId));
+            .where(and(eq(aiActionPlans.id, planId), eq(aiActionPlans.status, 'pending')))
+            .returning({ id: aiActionPlans.id });
+          if (updated.length === 0) {
+            return c.json({ error: 'The plan approval is no longer pending' }, 409);
+          }
+        } catch (err) {
+          console.error('[AI] Failed to update plan status:', err);
+          captureException(err);
+          return c.json(
+            { error: 'The plan decision could not be saved. Please try again.' },
+            500,
+          );
         }
-      } catch (err) {
-        console.error('[AI] Failed to update plan status:', err);
-        captureException(err);
-        return c.json({ success: true, approved, warning: 'Plan processed but database record could not be updated.' });
       }
+    } finally {
+      planDecisionsInFlight.delete(activeSession);
     }
+
+    // The approval can time out, or the plan be aborted, while the write
+    // above is in flight. Don't release the agent onto a plan that is gone.
+    if (
+      activeSession.planApprovalResolver !== resolvePlanApproval ||
+      activeSession.activePlanId !== planId
+    ) {
+      return c.json({ error: 'The plan approval is no longer pending' }, 409);
+    }
+
+    // Resolve the in-memory promise
+    resolvePlanApproval(approved);
+    activeSession.planApprovalResolver = null;
 
     writeRouteAudit(c, {
       orgId: session.orgId,
