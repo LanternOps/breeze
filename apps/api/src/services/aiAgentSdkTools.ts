@@ -352,7 +352,8 @@ export const TOOL_TIERS = {
   // Monitor definition activity/escalation tools (#5290 W03). list_monitors /
   // get_monitor remain in the frozen
   // KNOWN_MISSING_TOOL_TIERS baseline (aiAgentSdkTools.registryParity.contract.test.ts)
-  // — these two are new and wired directly instead of widening that list.
+  // — held for a follow-up PR (#6755); these two are new and wired directly
+  // instead of widening that list.
   get_monitor_activity: 2,
   reset_monitor_escalation: 2,
   // #6669: the only chat path to author a monitor (e.g. software_presence
@@ -366,8 +367,6 @@ export const TOOL_TIERS = {
   // Spec 2026-09-23 W01 (#6755): read-only, previously registered but untiered.
   // Monitoring, analytics and network reads.
   query_analytics: 1,
-  list_monitors: 1,
-  get_monitor: 1,
   get_ip_history: 1,
   get_network_changes: 1,
   list_ai_agents: 1,
@@ -3197,20 +3196,6 @@ export function buildBreezeSdkTools(
       registryDescription('query_analytics'),
       inputShape('query_analytics'),
       makeHandler('query_analytics', getAuth, onPreToolUse, onPostToolUse)
-    ),
-
-    tool(
-      'list_monitors',
-      registryDescription('list_monitors'),
-      inputShape('list_monitors'),
-      makeHandler('list_monitors', getAuth, onPreToolUse, onPostToolUse)
-    ),
-
-    tool(
-      'get_monitor',
-      registryDescription('get_monitor'),
-      inputShape('get_monitor'),
-      makeHandler('get_monitor', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

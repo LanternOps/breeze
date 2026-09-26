@@ -219,8 +219,6 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_link_evidence', // M4 Task 1 (#6000) link observations, Tier 1 read
   'get_link_health', // M3 Task 6 topology read
   'get_log_trends',
-  // W01 (#6755)
-  'get_monitor',
   'get_mssql_backup_status',
   'get_network_asset', // A-W06 Tier-1 read
   // W01 (spec §4.4) — read-only reachability for a discovered network asset.
@@ -270,8 +268,6 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'list_deliverable_templates',
   'list_incidents', // A-W06 Tier-1 read
   'list_invoices',
-  // W01 (#6755)
-  'list_monitors',
   'list_network_assets', // A-W06 Tier-1 read
   'list_org_contacts', // A-W06 Tier-1 read
   // W03: read-only document METADATA, same admission shape as the sibling
