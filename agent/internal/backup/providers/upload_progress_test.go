@@ -193,3 +193,59 @@ func TestAzureUploadFileOptions_ForwardsProgressOnlyWhenWatched(t *testing.T) {
 		t.Fatalf("Progress(4096) must reach the callback as offset 4096, got %d", max)
 	}
 }
+
+// The S3 SDKs probe a seekable body's length with Seek(0, SeekEnd) and seek
+// back before reading anything. A seek is not progress: reporting it would
+// jump the bar to 100% before a byte is sent.
+func TestUploadProgressSource_SeekAloneReportsNothing(t *testing.T) {
+	p, _ := writeUploadSource(t, 1000)
+	f, err := os.Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	rec := &progressRecorder{}
+	src := uploadProgressSource(WithUploadProgress(context.Background(), rec.record), f)
+	if _, err := src.Seek(0, io.SeekEnd); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	if calls, _ := rec.snapshot(); calls != 0 {
+		t.Fatalf("a length probe (seek to end and back) must not report progress, got %d callbacks", calls)
+	}
+}
+
+// The S3 multipart uploader reads parts through ReadAt from several
+// goroutines at once; run with -race.
+func TestUploadProgressSource_ConcurrentReadAt(t *testing.T) {
+	const parts, partSize = 8, 4096
+	p, data := writeUploadSource(t, parts*partSize)
+	f, err := os.Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	rec := &progressRecorder{}
+	src := uploadProgressSource(WithUploadProgress(context.Background(), rec.record), f)
+	var wg sync.WaitGroup
+	for i := 0; i < parts; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			buf := make([]byte, partSize)
+			off := int64(i * partSize)
+			if _, err := src.ReadAt(buf, off); err != nil && err != io.EOF {
+				t.Errorf("ReadAt(%d): %v", off, err)
+			}
+			if !bytes.Equal(buf, data[off:off+partSize]) {
+				t.Errorf("ReadAt(%d) returned the wrong bytes", off)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if calls, max := rec.snapshot(); calls != parts || max != parts*partSize {
+		t.Fatalf("want %d callbacks reaching %d, got %d reaching %d", parts, parts*partSize, calls, max)
+	}
+}
