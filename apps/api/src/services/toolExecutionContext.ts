@@ -2,6 +2,7 @@ import type { ReleaseDecision } from './scriptProposals/approvalMethod';
 import type { scripts } from '../db/schema';
 import type { RunScriptSnapshot } from './actionIntents/runScriptSnapshot';
 import type { TenantVariableScope } from './tenantVariableResolution';
+import type { TopologyRequestContext } from './topology/access';
 
 /**
  * One `run_script` release, resolved once and verified against the approval's
@@ -160,4 +161,14 @@ export type ToolExecutionContext = {
    * "no anchor" a safe, typed refusal rather than an unscoped lookup.
    */
   captureAnchor?: { orgId: string; runId?: string | null; sessionId?: string | null };
+  /**
+   * Topology M4-D1 (#6000): the site context the topology gate
+   * (`topology/aiToolGate.ts`) issued for THIS call — the pinned site of a
+   * server-owned topology session (or a one-site MCP key), with the caller's
+   * live permissions. Set by `executeTool` ONLY for topology tool names, and
+   * always OVERWRITTEN there: a caller-supplied value is never trusted, and a
+   * topology handler that finds it absent refuses rather than resolving a site
+   * from its own input.
+   */
+  topologyRequest?: TopologyRequestContext;
 };

@@ -72,7 +72,12 @@ interface AiState {
   open: () => void;
   close: () => void;
   setPageContext: (ctx: AiPageContext | null) => void;
-  createSession: (opts?: { deviceId?: string }) => Promise<void>;
+  /**
+   * `pageContext` overrides the store's current page context for THIS session
+   * (topology "Explain this", M4 #6000). A topology context is sent alone: the
+   * server pins the session to its site and refuses a device or M365 binding.
+   */
+  createSession: (opts?: { deviceId?: string; pageContext?: AiPageContext }) => Promise<void>;
   startDeviceTask: (deviceId: string, ctx: AiPageContext, initialMessage?: string) => Promise<void>;
   loadSession: (sessionId: string) => Promise<void>;
   loadSessions: () => Promise<void>;
@@ -201,13 +206,15 @@ export const useAiStore = create<AiState>()(
   createSession: async (opts) => {
     set({ isLoading: true, error: null });
     try {
-      const { pageContext, selectedM365ConnectionId, approvalMode } = get();
+      const { pageContext: storeContext, selectedM365ConnectionId, approvalMode } = get();
+      const pageContext = opts?.pageContext ?? storeContext;
+      const topology = pageContext?.type === 'topology';
       const res = await fetchWithAuth('/ai/sessions', {
         method: 'POST',
         body: JSON.stringify({
           pageContext: pageContext ?? undefined,
-          delegantM365ConnectionId: selectedM365ConnectionId ?? undefined,
-          deviceId: opts?.deviceId ?? undefined,
+          delegantM365ConnectionId: topology ? undefined : selectedM365ConnectionId ?? undefined,
+          deviceId: topology ? undefined : opts?.deviceId ?? undefined,
           approvalMode
         })
       });

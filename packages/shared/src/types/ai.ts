@@ -127,7 +127,18 @@ export type AiPageContext =
   | { type: 'device'; id: string; hostname: string; orgId?: string; os?: string; status?: string; ip?: string }
   | { type: 'alert'; id: string; title: string; severity?: string; deviceHostname?: string }
   | { type: 'dashboard'; orgName?: string; deviceCount?: number; alertCount?: number }
-  | { type: 'custom'; label: string; data: Record<string, unknown> };
+  | { type: 'custom'; label: string; data: Record<string, unknown> }
+  // Topology M4 (#6000): IDs only. The server pins the session to `siteId`
+  // after authorizing it; the client value is never authority afterwards.
+  | AiTopologyPageContext;
+
+export interface AiTopologyPageContext {
+  type: 'topology';
+  siteId: string;
+  subject: { kind: 'node' | 'relationship'; id: string };
+  view: 'overview' | 'physical' | 'logical';
+  graphRevision: string;
+}
 
 export interface AiTicketDraft {
   subject: string;

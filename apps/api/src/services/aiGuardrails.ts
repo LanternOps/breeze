@@ -1515,6 +1515,10 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   get_recent_network_changes: { resource: 'topology', action: 'read' },
   // M3-D12: the devices:read floor comes from requireTopologySiteAccess('read').
   get_topology_monitoring_status: { resource: 'topology', action: 'read' },
+  // M4 Task 1 (#6000): same floor, applied by the M4-D1 site-pinned gate.
+  get_topology: { resource: 'topology', action: 'read' },
+  get_link_evidence: { resource: 'topology', action: 'read' },
+  get_diagnostic_run: { resource: 'topology', action: 'read' },
   acknowledge_network_device: { resource: 'alerts', action: 'acknowledge' },
   configure_network_baseline: { resource: 'devices', action: 'write' },
 };

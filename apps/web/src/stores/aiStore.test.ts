@@ -8,6 +8,8 @@ import { fetchWithAuth } from './auth';
 import { useAiStore } from './aiStore';
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
+// Captured before any case spies on the store's own actions.
+const realCreateSession = useAiStore.getState().createSession;
 
 const makeResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({
@@ -185,5 +187,21 @@ describe('ai store', () => {
 
     expect(useAiStore.getState().pendingApproval).toBeNull();
     expect(fetchWithAuthMock).not.toHaveBeenCalled();
+  });
+
+  it('createSession sends an explicit topology page context without device or M365 binding (M4)', async () => {
+    // Earlier cases spy on createSession itself; exercise the real action.
+    useAiStore.setState({ createSession: realCreateSession, pageContext: { type: 'dashboard' }, selectedM365ConnectionId: 'conn-1' } as never);
+    fetchWithAuthMock.mockResolvedValueOnce(makeResponse({ id: 'sess-topo', orgId: 'org-1', delegantM365ConnectionId: null }));
+    const topology = { type: 'topology' as const, siteId: 'site-1', subject: { kind: 'node' as const, id: 'node-1' }, view: 'physical' as const, graphRevision: '7' };
+
+    await useAiStore.getState().createSession({ pageContext: topology });
+
+    const [, init] = fetchWithAuthMock.mock.calls[0]!;
+    const body = JSON.parse(String((init as RequestInit).body));
+    expect(body.pageContext).toEqual(topology);
+    expect(body).not.toHaveProperty('delegantM365ConnectionId');
+    expect(body).not.toHaveProperty('deviceId');
+    expect(useAiStore.getState().sessionId).toBe('sess-topo');
   });
 });

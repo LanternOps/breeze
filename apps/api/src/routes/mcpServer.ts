@@ -25,6 +25,7 @@ import { breezeRegion, MCP_OAUTH_ENABLED, OAUTH_ISSUER } from '../config/env';
 import { apiKeyAuthMiddleware, requireApiKeyScope } from '../middleware/apiKeyAuth';
 import { bearerTokenAuthMiddleware, resolvePartnerAccessibleOrgIds } from '../middleware/bearerTokenAuth';
 import { getToolDefinitions, executeTool, getToolTier, getToolDomain } from '../services/aiTools';
+import { isTopologyAiToolName } from '../services/topology/aiToolGate';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirement, checkPermissionRequirements, TIER3_ACTIONS } from '../services/aiGuardrails';
 import { isTenantToolName } from '@breeze/shared/validators';
 import type { TenantToolDescriptor } from '../services/toolSources/resolver';
@@ -1624,7 +1625,13 @@ async function handleToolsCall(
         ...auth,
         aiOrigin: ledger?.aiOrigin ?? ({ kind: 'ai_assistant' } as const),
       };
-      const result = await executeTool(toolName, toolInput, toolAuth);
+      // Topology M4-D1 (#6000): MCP has no session anchor, so a topology tool
+      // is confined to the API key's OWN site restriction — exactly one site —
+      // and refused for an org-wide or multi-site key. Name-gated so every
+      // other tool keeps the three-argument call.
+      const result = isTopologyAiToolName(toolName)
+        ? await executeTool(toolName, toolInput, toolAuth, { topologyBinding: { kind: 'mcp_site_key' } })
+        : await executeTool(toolName, toolInput, toolAuth);
       const safeResult = compactToolResultForChat(toolName, result);
 
       // #6408: a pure returned `{error}` is a tool-execution error, not a

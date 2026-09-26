@@ -235,8 +235,8 @@ describe('topology capabilities', () => {
         physical: true,
         interfaceHealth: true,
         diagnostics: true,
-        ai: true,
       },
+      true,
     );
 
     expect(capabilities.collection).toEqual({ available: true, reason: null });
@@ -244,6 +244,12 @@ describe('topology capabilities', () => {
     expect(capabilities.interfaceHealth).toEqual({ available: true, reason: null });
     expect(capabilities.diagnostics).toEqual({ available: true, reason: null });
     expect(capabilities.ai).toEqual({ available: true, reason: null });
+  });
+
+  it('derives AI readiness from the policy argument, never an agent capability (M4-D4)', () => {
+    expect(getTopologyCapabilities(allFlags, true, {}).ai).toEqual({ available: false, reason: 'ai_unavailable' });
+    expect(getTopologyCapabilities(allFlags, true, {}, true).ai).toEqual({ available: true, reason: null });
+    expect(getTopologyCapabilities({ ...allFlags, ai: false }, true, {}, true).ai).toEqual({ available: false, reason: 'ai_disabled' });
   });
 });
 

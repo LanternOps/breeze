@@ -11,11 +11,17 @@ import { type TopologyRequestContext, topologyPermissionPairs } from './access';
 import { loadTopologyConfiguration } from './siteConfiguration';
 import { getTopologyCapabilities, loadTopologyFlags, topologyInterfaceHealthExposed, topologyPhysicalExposed } from './flags';
 import { readLegacyImportCheckpoint } from './legacyImportState';
+import { loadTopologyAiReadiness } from './aiToolGate';
 export async function readTopologySiteSettings(
   ctx: TopologyRequestContext,
 ): Promise<TopologySiteSettings> {
   const snapshot = await loadTopologyConfiguration(ctx);
   const flags = await loadTopologyFlags(ctx);
+  // M4-D4: AI readiness = server/provider/org AI policy (read only when the
+  // flag could make it matter).
+  const aiReadiness = flags.materialization && flags.ai
+    ? await loadTopologyAiReadiness(ctx.scope.orgId)
+    : { provider: false, orgPolicy: false };
   const [state] = await db
     .select({ effectiveSettings: topologySiteState.effectiveSettings })
     .from(topologySiteState)
@@ -49,8 +55,7 @@ export async function readTopologySiteSettings(
         // Per-origin eligibility is the collectors read's job; the site
         // capability is the flag exposure (the run routes enforce the rest).
         diagnostics: true,
-        ai: false,
-      }),
+      }, aiReadiness.provider && aiReadiness.orgPolicy),
       // M3 Task 7: recurring monitoring exists once diagnostics do; a policy
       // still runs only after a human arms it (activation intent alone never).
       recurringMonitoring:

@@ -82,8 +82,16 @@ export const aiSessions = pgTable('ai_sessions', {
   // 2026-09-02-ai-agents.sql. FK is declared in SQL to avoid a circular import
   // (aiAgents.ts imports aiSessions for ai_agent_runs.session_id).
   agentId: uuid('agent_id'),
+  // Topology M4-D2 (#6000): the ONE site a topology investigation is pinned to.
+  // Server-owned (set only by createSession from an authorized topology page
+  // context), immutable (trigger), required iff type = 'topology' (CHECK), and
+  // a same-scope composite FK (topology_site_id, org_id) -> sites(id, org_id)
+  // DEFERRABLE INITIALLY IMMEDIATE — all declared in
+  // 2026-11-03-100000-ai-sessions-topology-site.sql.
+  topologySiteId: uuid('topology_site_id'),
 }, (table) => ({
   orgIdIdx: index('ai_sessions_org_id_idx').on(table.orgId),
+  topologySiteIdx: index('ai_sessions_topology_site_idx').on(table.topologySiteId, table.orgId).where(sql`${table.topologySiteId} IS NOT NULL`),
   idOrgIdx: uniqueIndex('ai_sessions_id_org_uidx').on(table.id, table.orgId),
   userIdIdx: index('ai_sessions_user_id_idx').on(table.userId),
   statusIdx: index('ai_sessions_status_idx').on(table.status),

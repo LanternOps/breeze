@@ -248,6 +248,11 @@ const CUSTOM_EXECUTORS_THAT_NEVER_WRITE_ORG_ID: Readonly<Record<string, string>>
 
 /** BENIGN = fires on the repoint but does not obstruct it. Reason per entry. */
 const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
+  // Topology M4-D2 (2026-11-03-100000): BEFORE UPDATE OF topology_site_id only;
+  // RAISEs when the site pin changes. Merge repoints org_id (never the pin),
+  // and the pin's composite FK to sites(id, org_id) is DEFERRABLE, so the
+  // separate ai_sessions/sites re-points commit together.
+  'ai_sessions.breeze_ai_sessions_topology_site_guard': 'fires only on UPDATE OF topology_site_id and blocks a pin change; never reads or blocks org_id',
   // Partner alerts feed (2026-10-30-130000): BEFORE INSERT OR UPDATE, only sets
   // NEW.partner_feed_xid := pg_current_xact_id(). Never reads or blocks org_id;
   // an org repoint restamps the row, which correctly re-delivers it in the feed.

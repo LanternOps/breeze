@@ -568,7 +568,9 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   // Collector selection and diagnostic run lifecycle have no registered AI tool.
   'topology/diagnostics.ts': { gap: '#6778' },
   'topology/exclusions.ts': { exempt: 'internal_plumbing', note: 'Per-view presentation state (hide/restore one connection in one topology view), the same class as topology/layouts.ts; no canonical graph, evidence, alert or monitor effect. Topology tool surface is tracked in #6778.' },
-  'topology/graphs.ts': { gap: '#6778' },
+  // M4-D5 (#6000): the graph/evidence/link-health reads are the M4 tools; layout,
+  // exclusion and manual writes live in their own route modules.
+  'topology/graphs.ts': { tools: ['get_topology', 'get_link_evidence', 'get_link_health'] },
   'topology/history.ts': { tools: ['get_interface_history', 'get_link_health'] },
   'topology/investigation.ts': { tools: ['get_topology_impact', 'get_recent_network_changes'] },
   'topology/layouts.ts': { exempt: 'internal_plumbing' },

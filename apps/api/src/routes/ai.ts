@@ -73,6 +73,7 @@ import {
   TicketDraftFailedError,
 } from '../services/aiTicketDraft';
 import { getAnthropicClientForPartner, LlmUnavailableError, resolveWireModel } from '../services/llm/llmConfigResolver';
+import { TopologyAiSessionError } from '../services/topology/aiToolGate';
 import { createTicketFromChatSchema, type AiTicketDraft } from '@breeze/shared';
 import { deviceInSiteScope } from './tickets/siteScope';
 import { timeActorFrom } from './timeEntries/timeEntries';
@@ -220,7 +221,9 @@ aiRoutes.post(
       return c.json(session, 201);
     } catch (err) {
       if (err instanceof LlmUnavailableError) return c.json({ error: 'ai_unavailable' }, 503);
+      if (err instanceof TopologyAiSessionError) return c.json({ error: err.message, code: err.code }, err.status);
       const message = err instanceof Error ? err.message : 'Failed to create session';
+      if (message === 'Invalid topology context') return c.json({ error: message }, 400);
       if (message === 'Organization context required') return c.json({ error: message }, 400);
       if (message === 'Invalid M365 connection') return c.json({ error: message }, 400);
       if (message === 'Invalid device') return c.json({ error: message }, 400);

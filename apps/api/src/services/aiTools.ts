@@ -101,6 +101,7 @@ import { registerArtifactTools } from './aiToolsArtifacts';
 // getToolTier so checkGuardrails can gate them; import the tier tables for fallback.
 import { m365ToolSearchHints, m365ToolTiers, registerM365Tools } from './aiToolsM365';
 import { googleToolSearchHints, googleToolTiers } from './aiToolsGoogle';
+import { authorizeTopologyAiToolCall, isTopologyAiToolName, type TopologyToolBinding } from './topology/aiToolGate';
 // ============================================
 // Shared Types
 // ============================================
@@ -563,6 +564,13 @@ export type ExecuteToolOptions = {
    * for unrelated per-invocation inputs.
    */
   capture?: CaptureScope;
+  /**
+   * Topology M4-D1 (#6000): where a topology tool call comes from — a pointer
+   * to server state (the active chat session, or the MCP key's own site
+   * restriction), never a site. The gate resolves and authorizes the pinned
+   * site; topology tools refuse when this is absent. Ignored by every other tool.
+   */
+  topologyBinding?: TopologyToolBinding;
 };
 
 export async function executeTool(
@@ -632,7 +640,19 @@ export async function executeTool(
   // caller-supplied context is passed through with `toBe` (reference)
   // equality, and a context rebuilt for every call would break that.
   const captureAnchor = toolName === 'read_artifact' ? captureContextFrom(auth, opts, toolName) : null;
-  const handlerContext = captureAnchor ? { ...opts?.context, captureAnchor } : opts?.context;
+  let handlerContext = captureAnchor ? { ...opts?.context, captureAnchor } : opts?.context;
+
+  // Topology M4-D1 (#6000): every topology tool runs only against the site a
+  // server-owned context pins — the active topology session, or a one-site
+  // MCP key. The gate issues the handler's site context; any caller-supplied
+  // `topologyRequest` is discarded (overwritten below, or the call refused).
+  // Name-gated like `read_artifact` above so every other tool's context keeps
+  // its reference identity.
+  if (coreTool && isTopologyAiToolName(toolName)) {
+    const gate = await authorizeTopologyAiToolCall(effectiveInput, auth, opts?.topologyBinding);
+    if (!gate.ok) return JSON.stringify({ error: gate.error, code: gate.code });
+    handlerContext = { ...handlerContext, topologyRequest: gate.ctx };
+  }
 
   // Only CORE handlers receive the execution context. Extension handlers are
   // third-party code and are called with exactly two arguments — not merely
