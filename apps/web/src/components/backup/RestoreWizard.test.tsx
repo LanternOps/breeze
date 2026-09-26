@@ -377,6 +377,28 @@ describe('RestoreWizard', () => {
     expect(screen.getByText(formatDateTime(createdAt))).toBeTruthy();
   });
 
+  it('renders no status text when the snapshot has no createdAt (#6496)', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/snapshots') {
+        return makeJsonResponse({
+          data: [{ id: 'snap-1', label: 'Server snapshot', sizeBytes: 1024, createdAt: null }],
+        });
+      }
+      if (url === '/backup/snapshots/snap-1/browse') return makeJsonResponse({ data: [] });
+      if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<RestoreWizard />);
+    const label = await screen.findByText('Server snapshot');
+
+    const meta = label.previousElementSibling as HTMLElement;
+    expect(meta.children).toHaveLength(1);
+    expect(meta.textContent).toBe('1.00 KB');
+    expect(screen.queryByText('Ready')).toBeNull();
+  });
+
   it('formats snapshot file sizes as bytes/KB/MB instead of raw byte counts (#6496)', async () => {
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
