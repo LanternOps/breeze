@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { and, eq, ilike, inArray, isNull, ne, not, notInArray, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { resolveAuditOrgIdForPartner } from '../services/auditOrgResolver';
+import { deleteSiteOwnedTopologyAlerts, lockSiteForDelete } from '../services/siteOwnedAlerts';
 import { partners, organizations, sites, devices, agentVersions, partnerUsers } from '../db/schema';
 // Imported from the CONCRETE schema module, not the '../db/schema' barrel:
 // several suites mock that barrel with a non-partial factory, and a plain
@@ -3013,14 +3014,27 @@ orgRoutes.delete('/sites/:id', requireScope('organization', 'partner', 'system')
     return c.json({ error: 'Access to this site denied' }, 403);
   }
 
-  await db.delete(sites).where(eq(sites.id, id));
+  // The site's topology domain cascades with it, but the topology policy
+  // alerts it OWNS (M3-D6) hold a NO ACTION FK to it: remove them and their
+  // NO ACTION children first, under the site row lock, in one transaction —
+  // otherwise the delete aborts with 23503 (PR #7117 T3).
+  const removedTopologyAlerts = await db.transaction(async (tx) => {
+    if (!(await lockSiteForDelete(tx, site.id))) return null;
+    const removed = await deleteSiteOwnedTopologyAlerts(tx, site.orgId, site.id);
+    await tx.delete(sites).where(eq(sites.id, id));
+    return removed;
+  });
+  if (removedTopologyAlerts === null) {
+    return c.json({ error: 'Site not found' }, 404);
+  }
 
   writeRouteAudit(c, {
     orgId: site.orgId,
     action: 'site.delete',
     resourceType: 'site',
     resourceId: site.id,
-    resourceName: site.name
+    resourceName: site.name,
+    ...(removedTopologyAlerts > 0 ? { details: { removedTopologyAlerts } } : {})
   });
 
   return c.json({ success: true });
