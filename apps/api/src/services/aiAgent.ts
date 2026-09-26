@@ -24,6 +24,7 @@ import { looksLikeInternalErrorDetail } from './aiToolErrors';
 import { LlmUnavailableError, resolveLlmConfigForOrg } from './llm/llmConfigResolver';
 import { getEffectiveAiBudget } from './effectiveSettings';
 import { authorizeTopologySessionSite } from './topology/aiToolGate';
+import { topologySessionAccessCondition } from './topology/aiSessionAccess';
 export { BREEZE_FALLBACK_MODEL, resolveDefaultModel } from './aiModel';
 
 // ============================================
@@ -261,6 +262,10 @@ export async function getSession(
   if (!options.allowAnyOwnerInOrg) {
     conditions.push(eq(aiSessions.userId, auth.user.id));
   }
+  // Topology M4-D2: a session pinned to a site the caller can no longer read
+  // is not found — for detail, messages, replay and every owner mutation.
+  const topologyCondition = await topologySessionAccessCondition(auth);
+  if (topologyCondition) conditions.push(topologyCondition);
 
   const [session] = await db
     .select()
@@ -276,6 +281,9 @@ export async function listSessions(auth: AuthContext, options: { status?: string
   const orgCondition = auth.orgCondition(aiSessions.orgId);
   if (orgCondition) conditions.push(orgCondition);
   if (options.status) conditions.push(eq(aiSessions.status, options.status as 'active' | 'closed' | 'expired'));
+  // Topology M4-D2: site filter in the WHERE clause, before LIMIT/OFFSET.
+  const topologyCondition = await topologySessionAccessCondition(auth);
+  if (topologyCondition) conditions.push(topologyCondition);
 
   const limit = Math.min(options.limit ?? 20, 50);
   const offset = ((options.page ?? 1) - 1) * limit;
@@ -769,6 +777,10 @@ export async function searchSessions(
   const conditions: SQL[] = [eq(aiSessions.userId, auth.user.id)];
   const orgCondition = auth.orgCondition(aiSessions.orgId);
   if (orgCondition) conditions.push(orgCondition);
+  // Topology M4-D2: applied to BOTH the title and the message-content query,
+  // before their limits, so neither a title nor a snippet can leak.
+  const topologyCondition = await topologySessionAccessCondition(auth);
+  if (topologyCondition) conditions.push(topologyCondition);
 
   // Search in session titles and message content
   const searchPattern = '%' + escapeLike(query) + '%';

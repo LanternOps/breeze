@@ -74,6 +74,7 @@ import {
 } from '../services/aiTicketDraft';
 import { getAnthropicClientForPartner, LlmUnavailableError, resolveWireModel } from '../services/llm/llmConfigResolver';
 import { TopologyAiSessionError } from '../services/topology/aiToolGate';
+import { resolveTopologySessionVisibility } from '../services/topology/aiSessionAccess';
 import { createTicketFromChatSchema, type AiTicketDraft } from '@breeze/shared';
 import { deviceInSiteScope } from './tickets/siteScope';
 import { timeActorFrom } from './timeEntries/timeEntries';
@@ -1407,7 +1408,7 @@ aiRoutes.get(
     const offset = parseInt(c.req.query('offset') ?? '0', 10) || 0;
     const flagged = c.req.query('flagged') === 'true' ? true : undefined;
 
-    const sessions = await getSessionHistory(orgId, { limit, offset, flagged });
+    const sessions = await getSessionHistory(orgId, { limit, offset, flagged }, await resolveTopologySessionVisibility(auth));
     return c.json({ data: sessions });
   }
 );

@@ -35,8 +35,8 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import { TopologyError, type TopologyRequestContext } from './topology/access';
-import { readTopologyAiDiagnosticRun, readTopologyAiGraph, readTopologyAiLinkEvidence, AI_TOPOLOGY_MAX_NODES, AI_TOPOLOGY_MAX_OBSERVATIONS } from './topology/aiRead';
-import { sanitizeTopologyAiText } from './topology/aiRedaction';
+import { readTopologyAiDiagnosticRun, readTopologyAiGraph, readTopologyAiLinkEvidence, topologyAiReadAliases, AI_TOPOLOGY_MAX_NODES, AI_TOPOLOGY_MAX_OBSERVATIONS } from './topology/aiRead';
+import type { TopologyAiAliasContext } from './topology/aiEvidence';
 import { getTopologyLinkHealth } from './topology/graph';
 import { GraphReadError } from './topology/graphCursor';
 import { getTopologyInterfaceHistory } from './topology/interfaceHistory';
@@ -61,7 +61,7 @@ const HIDDEN = jsonError('Site not found or access denied');
 
 const SITE_PROPERTY = { type: 'string', description: 'The investigation\'s pinned site UUID (must match the session)' } as const;
 
-type TopologyHandler = (input: Record<string, unknown>, ctx: TopologyRequestContext, auth: AuthContext) => Promise<string>;
+type TopologyHandler = (input: Record<string, unknown>, ctx: TopologyRequestContext, aliases: TopologyAiAliasContext, auth: AuthContext) => Promise<string>;
 
 /**
  * Wrap one topology handler: refuse without the gate-issued context, and map
@@ -72,7 +72,7 @@ function pinned(run: TopologyHandler): AiTool['handler'] {
     const ctx = context?.topologyRequest;
     if (!ctx) return UNPINNED;
     try {
-      return await run(input, ctx, auth);
+      return await run(input, ctx, topologyAiReadAliases(context?.topologyAliasScope), auth);
     } catch (error) {
       if (error instanceof GraphReadError || error instanceof TopologyError) return jsonError(error.message);
       throw error;
@@ -106,12 +106,12 @@ export function registerTopologyTools(aiTools: Map<string, AiTool>): void {
           required: ['site_id'],
         },
       },
-      handler: async (input, ctx) => JSON.stringify(await readTopologyAiGraph(ctx, {
+      handler: async (input, ctx, aliases) => JSON.stringify(await readTopologyAiGraph(ctx, {
         ...(typeof input.view === 'string' ? { view: input.view as 'overview' } : {}),
         ...(typeof input.focus_node_id === 'string' ? { focusNodeId: input.focus_node_id } : {}),
         ...(typeof input.graph_revision === 'string' ? { graphRevision: input.graph_revision } : {}),
         ...(typeof input.limit === 'number' ? { limit: input.limit } : {}),
-      })),
+      }, aliases)),
     }),
 
     topologyTool('get_link_evidence', {
@@ -224,7 +224,7 @@ export function registerTopologyTools(aiTools: Map<string, AiTool>): void {
           required: ['site_id', 'subject_kind', 'subject_id'],
         },
       },
-      handler: async (input, ctx) => {
+      handler: async (input, ctx, aliases) => {
         if (input.subject_kind !== 'node' && input.subject_kind !== 'relationship') return jsonError('subject_kind must be node or relationship');
         const minutes = Math.min(30, Math.max(1, Math.trunc(Number(input.window_minutes ?? 5)) || 5));
         const impact = await getTopologyImpact(ctx, { kind: input.subject_kind, id: String(input.subject_id ?? '') },
@@ -235,9 +235,9 @@ export function registerTopologyTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({
           ...rest,
           measuredFailures: impact.measuredFailures.slice(0, AI_TOPOLOGY_IMPACT_MAX_FAILURES),
-          // Labels are collected names: untrusted text, sanitized and bounded.
+          // Labels are collected host names: replaced by the investigation's alias (M4 Task 2).
           potentiallyAffected: impact.potentiallyAffected.slice(0, AI_TOPOLOGY_IMPACT_MAX_AFFECTED)
-            .map((entry) => ('label' in entry ? { ...entry, label: sanitizeTopologyAiText(entry.label) } : entry)),
+            .map((entry) => ('label' in entry ? { ...entry, label: typeof entry.label === 'string' ? aliases.alias('host', entry.label) : null } : entry)),
           alternatives: impact.alternatives.slice(0, AI_TOPOLOGY_IMPACT_MAX_ALTERNATIVES),
           truncatedForModel: truncated,
         });

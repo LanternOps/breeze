@@ -15,6 +15,7 @@
  */
 import type { GraphNode, GraphRelationship, GraphResponse, TopologyDiagnosticRun } from '@breeze/shared';
 import type { TopologyRequestContext } from './access';
+import { createTopologyAiAliasContext, type TopologyAiAliasContext } from './aiEvidence';
 import { sanitizeTopologyAiText } from './aiRedaction';
 import { getTopologyDiagnosticRun } from './diagnosticRuns';
 import { getTopologyGraph, getTopologyRelationshipEvidence } from './graph';
@@ -39,9 +40,10 @@ const healthView = (health: GraphNode['health']) => ({
   reasons: health.reasons.slice(0, 8).map((reason) => reason.code),
 });
 
-function nodeView(node: GraphNode, flags: Set<string>) {
+function nodeView(node: GraphNode, flags: Set<string>, aliases: TopologyAiAliasContext) {
   return {
-    id: node.id, kind: node.kind, role: sanitizeTopologyAiText(node.role, flags), label: sanitizeTopologyAiText(node.label, flags),
+    // Host identity → per-investigation alias (M4 Task 2); never the collected name.
+    id: node.id, alias: aliases.alias('host', node.label), kind: node.kind, role: sanitizeTopologyAiText(node.role, flags),
     bindingKinds: [...new Set(node.bindings.map((binding) => binding.type))].sort(),
     lifecycle: node.lifecycle, freshness: node.freshness,
     evidence: { classes: node.evidence.classes, methods: node.evidence.methods, count: node.evidence.count, lastObservedAt: node.evidence.lastObservedAt },
@@ -59,8 +61,13 @@ function relationshipView(rel: GraphRelationship) {
   };
 }
 
+/** Aliases for one tool call: the investigation's scope, or a request-local one. */
+export function topologyAiReadAliases(aliasScope: string | undefined): TopologyAiAliasContext {
+  return createTopologyAiAliasContext(aliasScope ?? `request:${crypto.randomUUID()}`);
+}
+
 /** Bounded graph slice for one view (≤150 nodes, ≤250 relationships), with explicit omissions. */
-export async function readTopologyAiGraph(ctx: TopologyRequestContext, input: TopologyAiGraphInput) {
+export async function readTopologyAiGraph(ctx: TopologyRequestContext, input: TopologyAiGraphInput, aliases: TopologyAiAliasContext = topologyAiReadAliases(undefined)) {
   const limit = Math.min(AI_TOPOLOGY_MAX_NODES, Math.max(1, Math.trunc(input.limit ?? DEFAULT_NODES)));
   const graph: GraphResponse = await getTopologyGraph(ctx, {
     view: input.view ?? 'overview',
@@ -76,14 +83,14 @@ export async function readTopologyAiGraph(ctx: TopologyRequestContext, input: To
   return {
     siteId: graph.siteId, view: graph.view, asOf: graph.asOf,
     revisions: { graph: graph.revisions.graph, health: graph.revisions.health },
-    nodes: nodes.map((node) => nodeView(node, flags)),
+    nodes: nodes.map((node) => nodeView(node, flags, aliases)),
     relationships: relationships.map(relationshipView),
     omitted: {
       nodes: graph.counts.omittedNodes + (graph.nodes.length - nodes.length),
       relationships: graph.counts.omittedRelationships + (graph.relationships.length - relationships.length),
     },
     coverage: { state: graph.coverage.state, reasons: graph.coverage.reasons.slice(0, 16).map((reason) => reason.code) },
-    untrustedFields: ['nodes[].label', 'nodes[].role'],
+    untrustedFields: ['nodes[].role'],
     ...(flags.size ? { sanitization: [...flags].sort() } : {}),
   };
 }
@@ -141,9 +148,10 @@ export async function readTopologyAiTool(
   ctx: TopologyRequestContext,
   name: TopologyReadToolName,
   input: TopologyAiGraphInput | TopologyAiEvidenceInput | TopologyAiRunInput,
+  aliasScope?: string,
 ) {
   switch (name) {
-    case 'get_topology': return readTopologyAiGraph(ctx, input as TopologyAiGraphInput);
+    case 'get_topology': return readTopologyAiGraph(ctx, input as TopologyAiGraphInput, topologyAiReadAliases(aliasScope));
     case 'get_link_evidence': return readTopologyAiLinkEvidence(ctx, input as TopologyAiEvidenceInput);
     case 'get_diagnostic_run': return readTopologyAiDiagnosticRun(ctx, input as TopologyAiRunInput);
   }

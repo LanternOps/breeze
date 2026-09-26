@@ -8,6 +8,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const selectMock = vi.fn();
 const updateMock = vi.fn();
 
+// Topology M4-D2 visibility is covered by aiSessionAccess tests and topologyAiSessionHistory.integration.
+vi.mock('./topology/aiSessionAccess', () => ({ topologySessionAccessCondition: vi.fn(async () => undefined) }));
 vi.mock('../db', () => ({
   db: {
     select: (...a: unknown[]) => selectMock(...a),

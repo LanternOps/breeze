@@ -101,7 +101,7 @@ import { registerArtifactTools } from './aiToolsArtifacts';
 // getToolTier so checkGuardrails can gate them; import the tier tables for fallback.
 import { m365ToolSearchHints, m365ToolTiers, registerM365Tools } from './aiToolsM365';
 import { googleToolSearchHints, googleToolTiers } from './aiToolsGoogle';
-import { authorizeTopologyAiToolCall, isTopologyAiToolName, type TopologyToolBinding } from './topology/aiToolGate';
+import { authorizeTopologyAiToolCall, isTopologyAiToolName, topologyAiAliasScope, type TopologyToolBinding } from './topology/aiToolGate';
 // ============================================
 // Shared Types
 // ============================================
@@ -651,7 +651,7 @@ export async function executeTool(
   if (coreTool && isTopologyAiToolName(toolName)) {
     const gate = await authorizeTopologyAiToolCall(effectiveInput, auth, opts?.topologyBinding);
     if (!gate.ok) return JSON.stringify({ error: gate.error, code: gate.code });
-    handlerContext = { ...handlerContext, topologyRequest: gate.ctx };
+    handlerContext = { ...handlerContext, topologyRequest: gate.ctx, topologyAliasScope: topologyAiAliasScope(gate.sessionId) };
   }
 
   // Only CORE handlers receive the execution context. Extension handlers are

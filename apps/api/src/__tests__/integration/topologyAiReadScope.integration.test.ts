@@ -111,12 +111,13 @@ describe('topology AI read scope (M4-D1/M4-D2, real DB)', () => {
   it('reads the pinned site, and treats a hostile device name as bounded inert data', async () => {
     const sessionId = await openSession(env, env.site.id, graphA.nodeId);
     const res = await post(env, '/tool/get_topology', { input: { site_id: env.site.id, view: 'overview' }, binding: { kind: 'ai_session', sessionId } });
-    const body = await res.json() as { siteId: string; nodes: Array<{ id: string; label: string | null }>; error?: string };
+    const body = await res.json() as { siteId: string; nodes: Array<{ id: string; alias: string }>; error?: string };
     expect(body.error, JSON.stringify(body)).toBeUndefined();
     expect(body.siteId).toBe(env.site.id);
     const hostile = body.nodes.find((node) => node.id === graphA.nodeId)!;
-    expect(hostile.label).not.toMatch(/[\u0000-\u001f]/);
-    expect(hostile.label).not.toMatch(/IGNORE ALL PREVIOUS INSTRUCTIONS/);
+    // The host name reaches the model only as a per-investigation alias.
+    expect(hostile.alias).toMatch(/^host-[0-9a-f]{8}$/);
+    expect(JSON.stringify(body)).not.toMatch(/IGNORE ALL PREVIOUS|core-sw|[\u0000-\u001f]/);
     expect(JSON.stringify(body)).not.toContain('site-b-secret-host');
   });
 

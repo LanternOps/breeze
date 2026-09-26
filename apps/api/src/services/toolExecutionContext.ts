@@ -171,4 +171,11 @@ export type ToolExecutionContext = {
    * from its own input.
    */
   topologyRequest?: TopologyRequestContext;
+  /**
+   * Topology M4 Task 2: the alias scope for host identities in THIS call's
+   * result — `session:<id>` inside a topology session (stable across the
+   * investigation's tool calls and its evidence snapshot), otherwise a fresh
+   * request-local scope. Set by `executeTool` next to `topologyRequest`.
+   */
+  topologyAliasScope?: string;
 };
