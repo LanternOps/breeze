@@ -78,7 +78,7 @@ const insertChain = () => ({
   values: vi.fn((values: Record<string, unknown>) => {
     insertedValues.push(values);
     const result = Promise.resolve(undefined) as Promise<undefined> & { returning: () => Promise<unknown[]> };
-    result.returning = vi.fn().mockResolvedValue([{ id: 'batch-1' }]);
+    result.returning = vi.fn().mockResolvedValue([{ id: `batch-${String(values.orgId)}` }]);
     return result;
   }),
 });
@@ -95,9 +95,9 @@ const script = {
   runAs: 'system',
   deletedAt: null,
 };
-const device = (id: string) => ({
+const device = (id: string, orgId = 'org-1') => ({
   id,
-  orgId: 'org-1',
+  orgId,
   siteId: null,
   osType: 'linux',
   status: 'online',
@@ -120,7 +120,7 @@ const runInDbContext = async <T>(fn: () => Promise<T>): Promise<T> => {
   }
 };
 
-type DeliverOutcome = 'sent' | 'no_agent' | 'throw' | 'secret_gate_unavailable';
+type DeliverOutcome = 'sent' | 'no_agent' | 'throw' | 'secret_gate_unavailable' | 'agent_upgrade_required_recorded';
 
 function stubDispatch(outcomeFor: (deviceId: string) => DeliverOutcome = () => 'sent') {
   vi.mocked(dispatchScriptToDevice).mockImplementation(async (input: any) => {
@@ -139,8 +139,8 @@ function stubDispatch(outcomeFor: (deviceId: string) => DeliverOutcome = () => '
     const deliverNow = async (): Promise<any> => {
       const outcome = outcomeFor(deviceId);
       if (outcome === 'throw') throw new Error('socket exploded');
-      if (outcome === 'secret_gate_unavailable') {
-        return { ok: false, code: 'secret_gate_unavailable', error: 'gate down' };
+      if (outcome === 'secret_gate_unavailable' || outcome === 'agent_upgrade_required_recorded') {
+        return { ok: false, code: outcome, error: outcome === 'secret_gate_unavailable' ? 'gate down' : 'upgrade agent' };
       }
       if (outcome === 'sent') events.push({ kind: 'send', deviceId, open: txState.open });
       return { ...base, delivered: outcome === 'sent', deliveryOutcome: outcome };
@@ -166,7 +166,7 @@ describe('executeScriptOnDevices — commit before send (#7103)', () => {
   function selectDevices(ids: string[]) {
     vi.mocked(db.select)
       .mockReturnValueOnce(scriptSelectChain([script]) as any)
-      .mockReturnValueOnce(devicesSelectChain(ids.map(device)) as any);
+      .mockReturnValueOnce(devicesSelectChain(ids.map((id) => device(id))) as any);
   }
 
   it('creates every row inside the committed context and sends only after it closed', async () => {
@@ -283,5 +283,103 @@ describe('executeScriptOnDevices — commit before send (#7103)', () => {
     expect(result.ok).toBe(true);
     expect(vi.mocked(dispatchScriptToDevice).mock.calls[0]![0]).not.toHaveProperty('deferDelivery', true);
     if (result.ok) expect(result.admission.targets[0]).toMatchObject({ delivery: 'delivered' });
+  });
+
+  it('agent_upgrade_required_recorded after commit writes no second row and spends no batch slot', async () => {
+    selectDevices(['d1', 'd2']);
+    stubDispatch((id) => (id === 'd1' ? 'agent_upgrade_required_recorded' : 'sent'));
+
+    const result = await executeScriptOnDevices({
+      scriptId: 'script-1',
+      deviceIds: ['d1', 'd2'],
+      auth,
+      runInDbContext,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.admission.targets[0]).toMatchObject({
+      admission: 'excluded',
+      reasonCode: 'agent_upgrade_required_recorded',
+      batchId: 'batch-org-1',
+    });
+    // The claim-time gate already wrote the failure row and the batch slot.
+    expect(insertedValues.filter((v) => v.status === 'failed')).toEqual([]);
+    expect(updateSets.some((set) => 'devicesFailed' in set)).toBe(false);
+  });
+
+  it('attributes each org\'s deferred outcome to that org\'s own batch in a multi-org run', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(scriptSelectChain([{ ...script, orgId: null, isSystem: true }]) as any)
+      .mockReturnValueOnce(devicesSelectChain([device('a1', 'org-1'), device('b1', 'org-2'), device('b2', 'org-2')]) as any);
+    stubDispatch((id) => (id === 'b2' ? 'secret_gate_unavailable' : id === 'a1' ? 'no_agent' : 'sent'));
+
+    const result = await executeScriptOnDevices({
+      scriptId: 'script-1',
+      deviceIds: ['a1', 'b1', 'b2'],
+      auth: { ...auth, orgId: null, canAccessOrg: () => true },
+      runInDbContext,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.admission.targets).toEqual([
+      expect.objectContaining({ requestedDeviceId: 'a1', admission: 'admitted', batchId: 'batch-org-1', delivery: 'queued_offline' }),
+      expect.objectContaining({ requestedDeviceId: 'b1', admission: 'admitted', batchId: 'batch-org-2', delivery: 'delivered' }),
+      expect.objectContaining({ requestedDeviceId: 'b2', admission: 'excluded', batchId: 'batch-org-2', reasonCode: 'secret_gate_unavailable' }),
+    ]);
+    // One batch per org, each sized to its own devices.
+    expect(insertedValues.filter((v) => 'devicesTargeted' in v)).toEqual([
+      expect.objectContaining({ orgId: 'org-1', devicesTargeted: 1 }),
+      expect.objectContaining({ orgId: 'org-2', devicesTargeted: 2 }),
+    ]);
+    // The refusal's failure row takes the DEVICE's org.
+    expect(insertedValues).toContainEqual(expect.objectContaining({ deviceId: 'b2', orgId: 'org-2', status: 'failed' }));
+    // Every send still waited for the commit.
+    for (const send of events.filter((e) => e.kind === 'send')) expect(send.open).toBe(0);
+  });
+
+  it('a failed bookkeeping write after delivery still reports the device and finishes the fan-out', async () => {
+    selectDevices(['d1', 'd2']);
+    stubDispatch((id) => (id === 'd1' ? 'no_agent' : 'sent'));
+    // After the commit, d1's `queued` flip is the only UPDATE — make it throw.
+    // (The batch's own `queued` flip runs inside the creation context, before.)
+    let commitDone = false;
+    vi.mocked(db.update).mockImplementation(() => ({
+      set: vi.fn((payload: Record<string, unknown>) => {
+        updateSets.push(payload);
+        return {
+          where: vi.fn(async () => {
+            if (commitDone && payload.status === 'queued') throw new Error('db down');
+          }),
+        };
+      }),
+    }) as any);
+    // The runner runs twice: admission reads, then row creation. The second
+    // return is the commit that delivery waits for.
+    let runnerCalls = 0;
+    const markingRunner = async <T>(fn: () => Promise<T>): Promise<T> => {
+      const out = await runInDbContext(fn);
+      runnerCalls += 1;
+      if (runnerCalls === 2) commitDone = true;
+      return out;
+    };
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const result = await executeScriptOnDevices({
+      scriptId: 'script-1',
+      deviceIds: ['d1', 'd2'],
+      auth,
+      runInDbContext: markingRunner,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.admission.targets).toEqual([
+      expect.objectContaining({ requestedDeviceId: 'd1', admission: 'admitted', delivery: 'queued_offline' }),
+      expect.objectContaining({ requestedDeviceId: 'd2', admission: 'admitted', delivery: 'delivered' }),
+    ]);
+    expect(error).toHaveBeenCalledWith('[scriptExecution] failed to record a delivery outcome', expect.anything());
+    error.mockRestore();
   });
 });

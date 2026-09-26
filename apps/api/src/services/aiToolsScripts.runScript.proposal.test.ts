@@ -21,12 +21,21 @@ vi.mock('./scriptProposals', async () => ({
 vi.mock('./scriptDispatch', () => ({ dispatchScriptToDevice: dispatchMock }));
 vi.mock('./commandQueue', () => ({ waitForCommandResult: waitMock, executeCommand: vi.fn() }));
 const TX = { tx: true };
+// #7103 — open system contexts; a send must observe 0.
+const txState = vi.hoisted(() => ({ open: 0 }));
 vi.mock('../db', () => ({
   db: {
     select: () => ({ from: () => ({ where: () => ({ limit: accessMock }) }) }),
     transaction: (fn: (tx: unknown) => unknown) => fn(TX),
   },
-  withSystemDbAccessContext: <T,>(fn: () => Promise<T>) => fn(),
+  withSystemDbAccessContext: async <T,>(fn: () => Promise<T>) => {
+    txState.open += 1;
+    try {
+      return await fn();
+    } finally {
+      txState.open -= 1;
+    }
+  },
   runOutsideDbContext: <T,>(fn: () => T) => fn(),
 }));
 
@@ -73,6 +82,33 @@ describe('run_script proposal branch', () => {
   it('passes the releasing intent id from the execution context to the runnability check', async () => {
     await __testOnly.runScriptHandler({ proposalId: 'p1', deviceIds: ['d1'] }, auth, { actionIntentId: 'i1' } as never);
     expect(runnableMock).toHaveBeenLastCalledWith(auth, expect.objectContaining({ proposalId: 'p1', releasingIntentId: 'i1' }));
+  });
+
+  // #7103 — the proposal run created its rows in a system context and sent
+  // inside it, before the commit.
+  it('creates the rows inside the system context and sends only after it closed', async () => {
+    runnableMock.mockResolvedValueOnce({
+      ok: true,
+      proposal: { id: 'p1', language: 'powershell', runAs: 'system', timeoutSeconds: 300, contentDigest: 'a'.repeat(64), riskTier: 'low' },
+    } as never);
+    const events: Array<{ kind: string; open: number }> = [];
+    dispatchMock.mockImplementationOnce((async (input: { deferDelivery?: boolean }) => {
+      events.push({ kind: 'create', open: txState.open });
+      const base = { ok: true, commandId: 'c1', executionId: 'e1', runAs: 'system' };
+      const deliver = async () => {
+        events.push({ kind: 'send', open: txState.open });
+        return { ...base, delivered: true, deliveryOutcome: 'sent' };
+      };
+      return input.deferDelivery ? { ...base, delivered: false, deliveryOutcome: 'deferred', deliver } : deliver();
+    }) as never);
+
+    const out = JSON.parse(await __testOnly.runScriptHandler({ proposalId: 'p1', deviceIds: ['d1'] }, auth));
+
+    expect(events).toEqual([
+      { kind: 'create', open: 1 },
+      { kind: 'send', open: 0 },
+    ]);
+    expect(out.results.d1.executionId).toBe('e1');
   });
 
   // W03 (#5612): `executed` is the precondition for verification (§4.9) and,

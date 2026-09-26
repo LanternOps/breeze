@@ -261,6 +261,36 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
   // order is preserved so the reported order matches definition order.
   const ignoredParameters = new Set<string>();
 
+  // One builder per target shape, shared by the normal path and the
+  // post-commit bookkeeping fallback so the two cannot drift.
+  const excludedTarget = (device: ExecutableDevice, code: string): ScriptTargetAdmission => {
+    const batchId = batchIdByOrg.get(device.orgId);
+    return {
+      requestedDeviceId: device.id,
+      admission: 'excluded',
+      reasonCode: normalizeDispatchReasonCode(code),
+      ...(batchId ? { batchId } : {}),
+    };
+  };
+  const admittedTarget = (
+    device: ExecutableDevice,
+    dispatch: Extract<DispatchScriptResult, { ok: true }>,
+  ): ScriptTargetAdmission => {
+    const batchId = batchIdByOrg.get(device.orgId);
+    return {
+      requestedDeviceId: device.id,
+      admission: 'admitted',
+      ...(dispatch.executionId ? { executionId: dispatch.executionId } : {}),
+      commandId: dispatch.commandId,
+      ...(batchId ? { batchId } : {}),
+      // #5128 W2 — the dispatch core's own delivery attempt, not a device
+      // status read: `delivered: false` covers every queued outcome
+      // ('no_agent' and the claim/decrypt/send-failed races alike), all of
+      // which land the row in `queued` awaiting the next heartbeat.
+      delivery: dispatch.delivered ? 'delivered' : 'queued_offline',
+    };
+  };
+
   // Records one device's dispatch outcome: its admission target, and the rows
   // a refusal still owes. Called inline for an immediate dispatch (and for a
   // refusal at creation time), and after commit for a deferred delivery.
@@ -288,12 +318,7 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
       // The device still lands in the admission result — the operator must see it — but
       // its row and batch slot are already spent by whoever owns this code.
       if (DISPATCH_CODES_ALREADY_RECORDED.has(dispatch.code)) {
-        targetById.set(device.id, {
-          requestedDeviceId: device.id,
-          admission: 'excluded',
-          reasonCode: normalizeDispatchReasonCode(dispatch.code),
-          ...(batchIdByOrg.get(device.orgId) ? { batchId: batchIdByOrg.get(device.orgId) } : {}),
-        });
+        targetById.set(device.id, excludedTarget(device, dispatch.code));
         return;
       }
       await db.insert(scriptExecutions).values({
@@ -319,12 +344,7 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
           .set({ devicesFailed: sql`${scriptExecutionBatches.devicesFailed} + 1` })
           .where(eq(scriptExecutionBatches.id, batchId));
       }
-      targetById.set(device.id, {
-        requestedDeviceId: device.id,
-        admission: 'excluded',
-        reasonCode: normalizeDispatchReasonCode(dispatch.code),
-        ...(batchId ? { batchId } : {}),
-      });
+      targetById.set(device.id, excludedTarget(device, dispatch.code));
       return;
     }
     for (const key of dispatch.ignoredParameters) {
@@ -354,18 +374,7 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
           eq(scriptExecutions.status, 'pending'),
         ));
     }
-    targetById.set(device.id, {
-      requestedDeviceId: device.id,
-      admission: 'admitted',
-      ...(dispatch.executionId ? { executionId: dispatch.executionId } : {}),
-      commandId: dispatch.commandId,
-      ...(batchIdByOrg.get(device.orgId) ? { batchId: batchIdByOrg.get(device.orgId) } : {}),
-      // #5128 W2 — the dispatch core's own delivery attempt, not a device
-      // status read: `delivered: false` covers every queued outcome
-      // ('no_agent' and the claim/decrypt/send-failed races alike), all of
-      // which land the row in `queued` (above) awaiting the next heartbeat.
-      delivery: dispatch.delivered ? 'delivered' : 'queued_offline',
-    });
+    targetById.set(device.id, admittedTarget(device, dispatch));
   };
 
   type PendingDelivery = {
@@ -484,22 +493,10 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
         error: err instanceof Error ? err.message : String(err),
       });
       captureException(err);
-      const batchId = batchIdByOrg.get(device.orgId);
-      targetById.set(device.id, settled.ok
-        ? {
-          requestedDeviceId: device.id,
-          admission: 'admitted',
-          ...(dispatch.executionId ? { executionId: dispatch.executionId } : {}),
-          commandId: dispatch.commandId,
-          ...(batchId ? { batchId } : {}),
-          delivery: settled.delivered ? 'delivered' : 'queued_offline',
-        }
-        : {
-          requestedDeviceId: device.id,
-          admission: 'excluded',
-          reasonCode: normalizeDispatchReasonCode(settled.code),
-          ...(batchId ? { batchId } : {}),
-        });
+      // The target is still reported. A refusal whose failure row or batch
+      // increment did not land leaves that batch short of devicesTargeted; the
+      // stale reaper still fails the device's own pending execution row.
+      targetById.set(device.id, settled.ok ? admittedTarget(device, settled) : excludedTarget(device, settled.code));
     }
   }
 
