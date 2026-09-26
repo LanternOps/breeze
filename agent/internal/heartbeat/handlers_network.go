@@ -1,10 +1,15 @@
 package heartbeat
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/config"
 
 	"github.com/breeze-rmm/agent/internal/discovery"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
@@ -16,7 +21,21 @@ func init() {
 	handlerRegistry[tools.CmdSnmpPoll] = handleSnmpPoll
 }
 
-func handleNetworkDiscovery(_ *Heartbeat, cmd Command) tools.CommandResult {
+// collectDiscoveryPhysical is the physical-collection seam (stubbed in tests).
+var collectDiscoveryPhysical = func(s *discovery.Scanner, ctx context.Context, hosts []discovery.DiscoveredHost, protocols []string, contextKey string) []discovery.TargetPhysical {
+	return s.CollectPhysicalFor(ctx, hosts, protocols, contextKey)
+}
+
+// Legacy `adjacency` bounds in the final command result. Hosts go first and are
+// never dropped for adjacency: the whole result is replaced wholesale above the
+// 5,000,000-byte limit (wire.MaxCommandResultBytes), so adjacency is capped
+// on its own — FDB trimmed first — and flagged with adjacencyTruncated.
+const (
+	legacyAdjacencyRowsPerTarget = 2000
+	legacyAdjacencyMaxBytes      = 1 << 20
+)
+
+func handleNetworkDiscovery(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
 	scanConfig := discovery.ScanConfig{
 		Subnets:          tools.GetPayloadStringSlice(cmd.Payload, "subnets"),
@@ -40,17 +59,104 @@ func handleNetworkDiscovery(_ *Heartbeat, cmd Command) tools.CommandResult {
 	if err != nil {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
-	adjacency := scanner.CollectAdjacency(hosts)
-	if adjacency == nil {
-		adjacency = []discovery.DeviceAdjacency{}
+	jobID := tools.GetPayloadString(cmd.Payload, "jobId", "")
+
+	// Adjacency v2 only when the parent command advertises it; the collection
+	// is scoped to the dispatch's requested protocols/context.
+	dispatch, v2 := discovery.ParseAdjacencyDispatch(cmd.Payload["topology"])
+	protocols := []string{discovery.SectionLLDP, discovery.SectionCDP, discovery.SectionFDB, discovery.SectionInterfaces}
+	contextKey := "default"
+	if v2 {
+		protocols, contextKey = dispatch.Protocols, dispatch.Contexts[0]
 	}
-	return tools.NewSuccessResult(map[string]any{
-		"jobId":           tools.GetPayloadString(cmd.Payload, "jobId", ""),
+	physical := collectDiscoveryPhysical(scanner, context.Background(), hosts, protocols, contextKey)
+
+	legacy := make([]discovery.DeviceAdjacency, 0, len(physical))
+	for _, t := range physical {
+		adj := discovery.LegacyAdjacencyFromSections(t.Target, t.Sections)
+		if len(adj.Lldp) > 0 || len(adj.Cdp) > 0 || len(adj.Fdb) > 0 {
+			legacy = append(legacy, adj)
+		}
+	}
+	if v2 && h != nil && jobID != "" && len(physical) > 0 {
+		postAdjacencyV2(h, dispatch, jobID, cmd.ID, physical)
+	}
+	adjacency, truncated := boundLegacyAdjacency(legacy)
+	result := map[string]any{
+		"jobId":           jobID,
 		"hosts":           hosts,
 		"hostsScanned":    targetCount,
 		"hostsDiscovered": len(hosts),
 		"adjacency":       adjacency,
-	}, time.Since(start).Milliseconds())
+	}
+	if truncated {
+		result["adjacencyTruncated"] = true
+	}
+	return tools.NewSuccessResult(result, time.Since(start).Milliseconds())
+}
+
+// postAdjacencyV2 sends one report per target before the dispatch deadline.
+func postAdjacencyV2(h *Heartbeat, dispatch discovery.AdjacencyDispatch, jobID, commandID string, physical []discovery.TargetPhysical) {
+	path := h.adjacencyStatePath
+	if path == "" {
+		path = filepath.Join(config.GetDataDir(), "topology-adjacency-state.json")
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), dispatch.Deadline)
+	defer cancel()
+	transport := &discovery.AdjacencyTransport{
+		Dispatch: dispatch, ParentJobID: jobID, ParentCommandID: commandID, State: discovery.OpenAdjacencyState(path),
+		Poster: &discovery.HTTPAdjacencyPoster{Client: h.httpClient(), Authorization: h.authHeader(), Retry: h.retryCfg,
+			URL: fmt.Sprintf("%s/api/v1/agents/%s/topology/adjacency", h.serverURL(), h.config.AgentID)},
+	}
+	accepted := 0
+	outcomes := transport.Send(ctx, physical)
+	for _, o := range outcomes {
+		if o.Accepted {
+			accepted++
+		}
+	}
+	slog.Info("adjacency v2 reports posted", "jobId", jobID, "targets", len(outcomes), "accepted", accepted)
+}
+
+// boundLegacyAdjacency caps rows per target (FDB trimmed before CDP/LLDP) and
+// the total encoded size, reporting whether anything was dropped.
+func boundLegacyAdjacency(in []discovery.DeviceAdjacency) ([]discovery.DeviceAdjacency, bool) {
+	truncated := false
+	out := make([]discovery.DeviceAdjacency, 0, len(in))
+	for _, a := range in {
+		budget := legacyAdjacencyRowsPerTarget
+		keep := func(n int) int {
+			if n > budget {
+				truncated = true
+				n = budget
+			}
+			budget -= n
+			return n
+		}
+		a.Lldp = a.Lldp[:keep(len(a.Lldp))]
+		a.Cdp = a.Cdp[:keep(len(a.Cdp))]
+		a.Fdb = a.Fdb[:keep(len(a.Fdb))]
+		out = append(out, a)
+	}
+	for {
+		b, err := json.Marshal(out)
+		if err != nil || len(b) <= legacyAdjacencyMaxBytes {
+			return out, truncated
+		}
+		truncated = true
+		// Trim the largest target's FDB first, then drop whole trailing targets.
+		largest := -1
+		for i := range out {
+			if len(out[i].Fdb) > 0 && (largest < 0 || len(out[i].Fdb) > len(out[largest].Fdb)) {
+				largest = i
+			}
+		}
+		if largest >= 0 {
+			out[largest].Fdb = out[largest].Fdb[:len(out[largest].Fdb)/2]
+			continue
+		}
+		out = out[:len(out)-1]
+	}
 }
 
 // parseDiscoverySNMPCredentials reads the profile's `snmpCredentials` from a

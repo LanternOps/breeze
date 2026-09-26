@@ -493,6 +493,28 @@ describe('agentAuthMiddleware - tenant-status gate', () => {
     expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
   });
 
+  // M2 #5998 D14 — the topology adjacency ingest route parses a 4 MiB body
+  // and resolves topology flags before its own short admission transaction.
+  it('skips the request-long org wrap for the self-managed topology/adjacency route', async () => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/topology/adjacency' });
+    const next = vi.fn().mockResolvedValue(undefined);
+    await agentAuthMiddleware(c, next);
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
+  });
+
+  it('keeps the request DB context for a deeper topology/adjacency/* path', async () => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/topology/adjacency/extra' });
+    const next = vi.fn().mockResolvedValue(undefined);
+    await agentAuthMiddleware(c, next);
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledTimes(1);
+  });
+
   // Negative control for the anchoring: a same-named segment under an
   // extension mount must still get the request-long wrap.
   it('a crafted pam/reconciliation-bindings TAIL under an extension mount keeps the request DB context', async () => {

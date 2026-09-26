@@ -48,8 +48,9 @@ type PhysicalRequest struct {
 
 // TargetPhysical is one target's sections.
 type TargetPhysical struct {
-	Target   string
-	Sections []PhysicalSection
+	Target     string
+	Sections   []PhysicalSection
+	CapturedAt time.Time // when this target's collection finished
 }
 
 // UnsupportedCache remembers negative capability answers (never timeouts) per
@@ -567,6 +568,12 @@ func credentialRevision(creds []SNMPCredential) string {
 // CollectPhysical collects every SNMP responder with a bounded worker pool and
 // a per-target deadline. Results keep host order.
 func (s *Scanner) CollectPhysical(ctx context.Context, hosts []DiscoveredHost) []TargetPhysical {
+	return s.CollectPhysicalFor(ctx, hosts, []string{SectionLLDP, SectionCDP, SectionFDB, SectionInterfaces}, "default")
+}
+
+// CollectPhysicalFor collects only the requested protocols under one context
+// (the scope an adjacency v2 dispatch authorized).
+func (s *Scanner) CollectPhysicalFor(ctx context.Context, hosts []DiscoveredHost, protocols []string, contextKey string) []TargetPhysical {
 	creds := s.config.SNMPCredentials
 	if len(creds) == 0 {
 		return nil
@@ -578,8 +585,8 @@ func (s *Scanner) CollectPhysical(ctx context.Context, hosts []DiscoveredHost) [
 		}
 	}
 	out := make([]TargetPhysical, len(targets))
-	req := PhysicalRequest{ContextKey: "default", ConfigRevision: credentialRevision(creds), Cache: physicalUnsupportedPool,
-		Protocols: []string{SectionLLDP, SectionCDP, SectionFDB, SectionInterfaces}}
+	req := PhysicalRequest{ContextKey: contextKey, ConfigRevision: credentialRevision(creds), Cache: physicalUnsupportedPool,
+		Protocols: append([]string(nil), protocols...)}
 	jobs := make(chan int)
 	var wg sync.WaitGroup
 	workers := physicalTargetWorkers
@@ -593,6 +600,7 @@ func (s *Scanner) CollectPhysical(ctx context.Context, hosts []DiscoveredHost) [
 			for i := range jobs {
 				tctx, cancel := context.WithTimeout(ctx, physicalTargetBudget)
 				out[i] = collectPhysicalFor(tctx, targets[i], creds, s.config.Timeout, req)
+				out[i].CapturedAt = time.Now().UTC()
 				cancel()
 			}
 		}()

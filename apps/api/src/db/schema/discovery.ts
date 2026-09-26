@@ -13,6 +13,7 @@ import {
   real,
   doublePrecision,
   uniqueIndex,
+  check,
   index
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
@@ -137,9 +138,18 @@ export const discoveryJobs = pgTable('discovery_jobs', {
   hostsDiscovered: integer('hosts_discovered'),
   newAssets: integer('new_assets'),
   errors: jsonb('errors'),
+  // M2 D7 dispatch authorization snapshot (secret-free, bounded; see
+  // services/topology/discoveryDispatch.ts). All three set together or none.
+  topologyDispatch: jsonb('topology_dispatch').$type<Record<string, unknown>>(),
+  topologyDeadlineAt: timestamp('topology_deadline_at', { withTimezone: true }),
+  topologyConfigGeneration: varchar('topology_config_generation', { length: 64 }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
-});
+}, (table) => [
+  check('discovery_jobs_topology_dispatch_chk', sql`num_nonnulls(topology_dispatch, topology_deadline_at, topology_config_generation) IN (0, 3)
+  AND (topology_dispatch IS NULL OR (jsonb_typeof(topology_dispatch) = 'object' AND octet_length(topology_dispatch::text) <= 65536))
+  AND (topology_config_generation IS NULL OR topology_config_generation ~ '^[0-9a-f]{64}$')`),
+]);
 
 export const discoveredAssets = pgTable('discovered_assets', {
   id: uuid('id').primaryKey().defaultRandom(),

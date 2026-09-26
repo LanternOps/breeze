@@ -51,6 +51,7 @@ import {
   withQueueMeta,
 } from './queueSchemas';
 import { reconcileTopology } from './reconcileTopology';
+import { prepareDiscoveryTopologyDispatch, type DiscoveryTopologyCommandBlock } from '../services/topology/discoveryDispatch';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -555,6 +556,7 @@ type DispatchScanInputs =
       agentId: string;
       requestedAgentId: string | null;
       selectionSource: 'requested' | 'site-auto';
+      topology: DiscoveryTopologyCommandBlock | null;
     };
 
 /**
@@ -622,7 +624,18 @@ async function loadDispatchScanInputs(data: DispatchScanJobData): Promise<Dispat
     return { status: 'no-agent' };
   }
 
-  return { status: 'ok', profile, agentId, requestedAgentId, selectionSource };
+  // M2 D7: persist the topology dispatch authorization snapshot in this same
+  // short context, BEFORE the command can leave the server. A failure here
+  // degrades to a legacy-only dispatch; it never blocks discovery.
+  let topology: DiscoveryTopologyCommandBlock | null = null;
+  try {
+    topology = await prepareDiscoveryTopologyDispatch({ jobId: data.jobId, orgId: data.orgId, siteId: data.siteId, profile, agentId });
+  } catch (err) {
+    console.error(`[DiscoveryWorker] Topology dispatch snapshot failed for job ${data.jobId}; dispatching legacy-only:`, err);
+    captureException(err);
+  }
+
+  return { status: 'ok', profile, agentId, requestedAgentId, selectionSource, topology };
 }
 
 /**
@@ -644,7 +657,7 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
     return { dispatched: false, agentId: null, durationMs: Date.now() - startTime };
   }
 
-  const { profile, agentId, requestedAgentId, selectionSource: initialSelectionSource } = inputs;
+  const { profile, agentId, requestedAgentId, selectionSource: initialSelectionSource, topology } = inputs;
 
   // Phase 2 — connectivity check with NO DB context open (#1105).
   if (!(await isAgentConnectedAnywhere(agentId))) {
@@ -676,7 +689,9 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
       identifyOS: profile.identifyOS ?? false,
       resolveHostnames: profile.resolveHostnames ?? false,
       timeout: profile.timeout ?? 2,
-      concurrency: profile.concurrency ?? 128
+      concurrency: profile.concurrency ?? 128,
+      // Advertised only when the authorization snapshot was persisted above.
+      ...(topology ? { topology } : {}),
     }
   };
 

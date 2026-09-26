@@ -363,6 +363,11 @@ const SELF_MANAGED_DB_CONTEXT_ACTIONS = new Set([
  */
 const SELF_MANAGED_DB_CONTEXT_TWO_SEGMENT_ACTIONS: ReadonlyArray<readonly [string, string]> = [
   ['pam', 'reconciliation-bindings'],
+  // M2 #5998 D14: parses a 4 MiB adjacency body and resolves topology flags
+  // (a partner-axis read) BEFORE its own short org-scoped admission
+  // transaction; a request-long wrap would hold a pooled connection across
+  // both and re-open the #6671 two-connection shape.
+  ['topology', 'adjacency'],
 ];
 
 /**

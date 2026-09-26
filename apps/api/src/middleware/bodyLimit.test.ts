@@ -194,6 +194,14 @@ describe('bodyLimitForPath', () => {
     expect(bodyLimitForPath('/api/v1/contracts/contract-templates/tpl-1/versions').maxSize).toBe(1 * MB);
   });
 
+  it('allows a 4 MiB adjacency report plus envelope on topology/adjacency only', () => {
+    expect(bodyLimitForPath('/api/v1/agents/agent-1/topology/adjacency')).toEqual({
+      rule: 'agent-topology-adjacency', maxSize: 4 * MB + 64 * KB, error: 'Adjacency report too large (max 4 MiB)',
+    });
+    expect(bodyLimitForPath('/api/v1/agents/agent-1/topology/adjacency/extra').maxSize).toBe(1 * MB);
+    expect(bodyLimitForPath('/api/v1/agents/agent-1/topology').maxSize).toBe(1 * MB);
+  });
+
   it('allows exactly 2 MiB on hardware-health without widening sibling paths', () => {
     expect(bodyLimitForPath('/api/v1/agents/agent-1/hardware-health')).toEqual({
       rule: 'agent-hardware-health',
