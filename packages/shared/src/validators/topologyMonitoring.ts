@@ -159,3 +159,11 @@ export const topologyMonitoringStatusSchema = z.object({
 }).strict();
 export type TopologyMonitoringStatus = z.infer<typeof topologyMonitoringStatusSchema>;
 
+
+/** POST /topology/sites/:siteId/policies/:id/monitor-bindings (M3-D5). */
+export const topologyMonitorBindingRequestSchema = z.object({
+  monitorId: uuid,
+  contextKey: topologyUtf8KeySchema,
+  family: topologyFamilySchema,
+}).strict();
+export type TopologyMonitorBindingRequest = z.infer<typeof topologyMonitorBindingRequestSchema>;

@@ -8,11 +8,13 @@ const mocks = vi.hoisted(() => ({
   revokeTelemetry: vi.fn(),
   validate: vi.fn(),
   consume: vi.fn(),
+  bind: vi.fn(async () => ({ bindingId: 'b', metricRole: 'port_reachability' })),
   principal: 'user_session' as string,
   mfa: true,
 }));
 vi.mock('../../services/topology/monitoringArming', () => ({ armTopologyMonitoringPolicy: mocks.armPolicy, disarmTopologyMonitoringPolicy: mocks.disarmPolicy }));
 vi.mock('../../services/topology/telemetryArms', () => ({ armTopologyTelemetry: mocks.armTelemetry, revokeTopologyTelemetryArm: mocks.revokeTelemetry }));
+vi.mock('../../services/topology/monitorBindings', () => ({ bindTopologyMonitor: mocks.bind, unbindTopologyMonitor: vi.fn(async () => ({ removed: true })) }));
 vi.mock('../../services/authEpochs', () => ({ getUserEpochs: async () => ({ authEpoch: 3, mfaEpoch: 5 }) }));
 vi.mock('../../services/mfaStepUpGrant', async (original) => ({
   ...(await original<object>()),
@@ -120,5 +122,13 @@ describe('topology arming routes (human-only, M3-D12)', () => {
     expect(mocks.validate).not.toHaveBeenCalled();
     mocks.principal = 'api_key';
     expect((await post(`/policies/${policyId}/disarm`, { expectedRevision: '2' })).status).toBe(403);
+  });
+
+  it('monitor bindings are a human-only scheduling decision', async () => {
+    const body = { monitorId: nodeId, contextKey: 'default', family: 'ipv4' };
+    expect((await post(`/policies/${policyId}/monitor-bindings`, body)).status).toBe(201);
+    mocks.principal = 'api_key';
+    expect((await post(`/policies/${policyId}/monitor-bindings`, body)).status).toBe(403);
+    expect(mocks.bind).toHaveBeenCalledTimes(1);
   });
 });

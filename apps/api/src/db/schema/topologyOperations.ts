@@ -114,7 +114,7 @@ export const topologyMonitorBindings = pgTable('topology_monitor_bindings', {
   policyId: uuid('policy_id'),
   contextKey: varchar('context_key', { length: 255 }).notNull(),
   family: varchar('family', { length: 4 }).notNull(),
-  originPolicy: jsonb('origin_policy').$type<{deviceId?: string; interfaceId?: string}>().notNull().default({}),
+  originPolicy: jsonb('origin_policy').$type<{deviceId?: string; interfaceId?: string; monitorDigest?: string; targetId?: string; targetRevision?: string; policyRevision?: string}>().notNull().default({}),
   metricRole: varchar('metric_role', { length: 64 }).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

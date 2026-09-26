@@ -17,6 +17,7 @@ import { loadPolicyTargetPins, rearmAlertState, type PolicyTargetPin } from './m
 import { withTopologyArmAuthority, type TopologyArmAuthorityDeps } from './monitoringAuthority';
 import { TOPOLOGY_MONITORING_GAP_EVENT, type TopologyMonitoringGapEvent } from './monitoringEvents';
 import { disarmPolicyRow } from './monitoringPolicyState';
+import { reusableTopologyMonitor } from './monitorBindings';
 import { nextTopologyPolicyDueAt, topologyContinuityKey, topologyOccurrenceKey, topologyOccurrenceSlot } from './monitoringSlots';
 import { TopologyOperationError } from './operationErrors';
 import { topologyDiagnosticRepository } from './originEligibility';
@@ -159,6 +160,12 @@ async function claimPolicySlot(ctx: TopologyRequestContext, snapshot: PolicyRow,
       })) gaps++;
     }
 
+    // M3-D5: a still-equivalent bound monitor supplies this context's health;
+    // the slot is claimed without a probe run (a drifted binding is dropped).
+    if (await reusableTopologyMonitor(ctx.scope, { id: row.id, revision: row.revision, definition }, context)) {
+      entries.set(pairKey, { ...entry, lastClaimedScheduledFor: slot.toISOString(), lastClaimedOccurrenceKey: occurrenceKey });
+      continue;
+    }
     const [origin] = await db.select({ agentId: devices.agentId }).from(devices).where(eq(devices.id, context.originDeviceId)).limit(1);
     const continuityKey = topologyContinuityKey({ policyId: row.id, policyRevision, contextKey: context.contextKey, family: context.family,
       originDeviceId: context.originDeviceId, originAgentId: origin?.agentId ?? 'unknown' });

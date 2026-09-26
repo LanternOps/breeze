@@ -1,5 +1,6 @@
 import { Hono, type Context } from 'hono';
 import {
+  topologyMonitorBindingRequestSchema,
   topologyPolicyArmRequestSchema,
   topologyPolicyDisarmRequestSchema,
   topologyTelemetryArmRequestSchema,
@@ -15,6 +16,7 @@ import {
 import { armTopologyMonitoringPolicy, disarmTopologyMonitoringPolicy } from '../../services/topology/monitoringArming';
 import { TopologyOperationError } from '../../services/topology/operationErrors';
 import { armTopologyTelemetry, revokeTopologyTelemetryArm } from '../../services/topology/telemetryArms';
+import { bindTopologyMonitor, unbindTopologyMonitor } from '../../services/topology/monitorBindings';
 import { ENABLE_2FA } from '../auth/schemas';
 import { requireTopologySiteCapability } from './middleware';
 import { topologyOperation } from './operations';
@@ -99,4 +101,22 @@ topologyMonitoringArmRoutes.delete(
   requireInteractiveSession(),
   requireTopologySiteCapability('configure'),
   topologyOperation((c) => revokeTopologyTelemetryArm(c.get('topologyContext'), c.req.param('armId')!)),
+);
+
+// M3-D5 monitor reuse: binding a validated, equivalent external monitor makes
+// it the source of a context's health (the policy stops probing it), so it is
+// a scheduling decision and stays human-only; unbinding never touches the monitor.
+topologyMonitoringArmRoutes.post(
+  `${base}/policies/:id/monitor-bindings`,
+  requireInteractiveSession(),
+  requireTopologySiteCapability('configure'),
+  topologyOperation((c, body) =>
+    bindTopologyMonitor(c.get('topologyContext'), c.req.param('id')!, topologyMonitorBindingRequestSchema.parse(body)), { mutation: true, status: 201 }),
+);
+
+topologyMonitoringArmRoutes.delete(
+  `${base}/monitor-bindings/:bindingId`,
+  requireInteractiveSession(),
+  requireTopologySiteCapability('configure'),
+  topologyOperation((c) => unbindTopologyMonitor(c.get('topologyContext'), c.req.param('bindingId')!)),
 );
