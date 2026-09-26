@@ -54,3 +54,33 @@ it('measures newly expanded nodes when the site graph revision is unchanged', as
   fireEvent.click(await screen.findByTestId('topology-frontier'));
   await waitFor(() => expect(container.querySelector(`[data-node-id="${added.id}"]`)).toHaveTextContent('Expanded peer'));
 });
+
+it('enables the physical view from the capability and offers the overview from an empty physical view', async () => {
+  const settings = topologySettingsFixture(); settings.capabilities.physical = { available: true, reason: null };
+  vi.mocked(fetchWithAuth).mockImplementation(async (url) => new Response(JSON.stringify(String(url).includes('view=physical')
+    ? { ...topologyGraphFixture(), view: 'physical', nodes: [], counts: { ...topologyGraphFixture().counts, totalNodes: 0, visibleNodes: 0 } } : topologyGraphFixture())));
+  render(<TopologyExplorer siteId={SITE} settings={settings} />);
+  await screen.findByTestId('topology-health-internet');
+  const physical = screen.getByRole('option', { name: 'Physical' }) as HTMLOptionElement;
+  expect(physical.disabled).toBe(false);
+  fireEvent.change(screen.getByTestId('topology-view'), { target: { value: 'physical' } });
+  fireEvent.click(await screen.findByTestId('topology-view-overview'));
+  await waitFor(() => expect((screen.getByTestId('topology-view') as HTMLSelectElement).value).toBe('overview'));
+});
+
+it('lists connections hidden from the view and restores one through runAction', async () => {
+  const exclusion = { id: '99999999-9999-4999-8999-999999999999', relationshipId: '55555555-5555-4555-8555-555555555555', view: 'overview', reason: 'Lab bench cable', createdAt: '2026-09-26T10:00:00.000Z' };
+  vi.mocked(fetchWithAuth).mockImplementation(async (url, options) => {
+    if (options?.method === 'DELETE') return new Response(JSON.stringify({ id: exclusion.id }));
+    if (String(url).includes('/exclusions')) return new Response(JSON.stringify({ exclusions: [exclusion], cursor: null }));
+    return new Response(JSON.stringify(topologyGraphFixture()));
+  });
+  render(<TopologyExplorer siteId={SITE} settings={topologySettingsFixture()} />);
+  await screen.findByTestId('topology-health-internet');
+  fireEvent.click(screen.getByTestId('topology-list-toggle'));
+  expect(await screen.findByTestId(`topology-hidden-${exclusion.id}`)).toHaveTextContent('Lab bench cable');
+  fireEvent.click(screen.getByTestId(`topology-restore-${exclusion.id}`));
+  await waitFor(() => expect(vi.mocked(fetchWithAuth).mock.calls.some(([, options]) => options?.method === 'DELETE')).toBe(true));
+  const [url] = vi.mocked(fetchWithAuth).mock.calls.find(([, options]) => options?.method === 'DELETE')!;
+  expect(url).toBe(`/topology/sites/${SITE}/relationships/${exclusion.relationshipId}/exclusions/${exclusion.id}`);
+});

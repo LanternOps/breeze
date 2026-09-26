@@ -155,5 +155,123 @@
       "body": "Die Topologieansicht kann für diesen Standort derzeit nicht angezeigt werden. Versuchen Sie es später erneut oder wenden Sie sich an den Support, falls das Problem bestehen bleibt.",
       "details": "Technische Details"
     }
+  },
+  "physicalView": {
+    "meaning": {
+      "physical_link": "Physische Verbindung",
+      "attachment": "Zuordnung",
+      "network_member": "Netzwerkzugehörigkeit",
+      "default_route": "Standardroute",
+      "egress_path": "Ausgangspfad"
+    },
+    "directness": {
+      "direct": "Direkte Verbindung",
+      "via_unmanaged": "Über ein nicht verwaltetes Gerät",
+      "unknown": "Direkte Verbindung nicht nachgewiesen"
+    },
+    "portRole": {
+      "identified": "Erkannter Port",
+      "learned": "Über diesen Port gelernt",
+      "shared": "Gemeinsamer oder Uplink-Port",
+      "unresolved": "Port nicht erkannt"
+    },
+    "association": {
+      "wired": "Kabelverbindung",
+      "wireless": "WLAN-Zuordnung (vom Controller gemeldet)",
+      "vpn": "VPN- oder Tunnel-Zuordnung"
+    },
+    "method": {
+      "lldp": "LLDP-Nachbar",
+      "cdp": "CDP-Nachbar",
+      "fdb": "Gelernte MAC-Adresstabelle (FDB)",
+      "unifi": "UniFi-Controller",
+      "manual": "Manuelle Angabe",
+      "legacy": "Ältere Erkennung",
+      "other": "Anderer Kollektor"
+    },
+    "freshness": {
+      "fresh": "Aktuell",
+      "stale": "Veraltet",
+      "unknown": "Unbekannt"
+    },
+    "confidence": {
+      "high": "Hoch",
+      "medium": "Mittel",
+      "low": "Niedrig",
+      "asserted": "Angegeben"
+    },
+    "observationStatus": {
+      "current": "Aktuell",
+      "expired": "Abgelaufen",
+      "withdrawn": "Zurückgezogen"
+    },
+    "details": {
+      "expired": "Die Beobachtungsdetails sind abgelaufen; die Verbindung wurde dennoch bestätigt.",
+      "unavailable": "Für diese Verbindung sind keine Beobachtungsdetails verfügbar."
+    },
+    "meaningLabel": "Bedeutung",
+    "directnessLabel": "Direktheit",
+    "portRoleLabel": "Anschluss",
+    "associationLabel": "Zuordnung",
+    "methodLabel": "Gemeldet von",
+    "sourcePort": "Von",
+    "targetPort": "Nach",
+    "portNotIdentified": "Port nicht erkannt",
+    "reportedPort": "Gemeldet als {{namespace}} {{value}}",
+    "retiredPort": "(frühere Port-Identität)",
+    "lastConfirmed": "Zuletzt bestätigt",
+    "evidenceExpires": "Nachweis läuft ab",
+    "alternatives": "Weitere mögliche Ports",
+    "hiddenFrom": "Ausgeblendet in: {{views}}",
+    "observations": "Beobachtungen",
+    "moreEvidence": "Weitere Beobachtungen laden",
+    "loadingDetail": "Verbindungsdetails werden geladen…",
+    "detailFailed": "Verbindungsdetails konnten nicht geladen werden",
+    "viewOverview": "Netzwerkübersicht anzeigen",
+    "empty": "Für diesen Standort wurden noch keine physischen Verbindungen gemeldet."
+  },
+  "coveragePanel": {
+    "title": "Erfassungsabdeckung",
+    "state": {
+      "complete": "Vollständig",
+      "limited": "Eingeschränkt",
+      "unknown": "Unbekannt"
+    },
+    "reasons": {
+      "topology_preparing": "Es wurde noch kein Topologie-Snapshot veröffentlicht.",
+      "legacy_evidence_only": "Nur Inventar- und Altdaten; Erkennungsabdeckung und Zustand sind nicht ermittelt.",
+      "projection_bounded": "Einige Geräte oder Verbindungen liegen außerhalb dieser Ansicht.",
+      "physical_disabled": "Die physische Topologie ist für diese Organisation deaktiviert.",
+      "no_collector": "Kein Kollektor meldet physische Verbindungen für diesen Standort.",
+      "collection_pending": "Eine physische Erfassung läuft noch.",
+      "collection_not_received": "Eine autorisierte Erfassung hat vor ihrer Frist nichts gemeldet.",
+      "collection_complete_empty": "Eine Erfassung wurde abgeschlossen, fand aber keine Nachbarn. Das bedeutet nicht, dass der ganze Standort abgedeckt ist.",
+      "collection_unsupported": "Ein Gerät unterstützt ein angefordertes Protokoll nicht.",
+      "collection_timeout": "Eine Erfassung hat das Zeitlimit überschritten.",
+      "collection_failed": "Eine Erfassung ist fehlgeschlagen.",
+      "collection_partial_limit": "Eine Erfassung hat ihr Zeilenlimit erreicht; einige Zeilen fehlen.",
+      "collection_partial": "Eine Erfassung hat nur einen Teil ihrer Tabellen geliefert.",
+      "collection_not_attempted": "Ein angeforderter Bereich wurde nicht versucht.",
+      "collection_stale": "Physische Nachweise wurden in letzter Zeit nicht bestätigt.",
+      "credentials_missing": "Für ein Gerät sind keine verwendbaren SNMP-Zugangsdaten konfiguriert.",
+      "credentials_rejected": "Ein Gerät hat die konfigurierten SNMP-Zugangsdaten abgelehnt.",
+      "interface_unresolved": "Einige Verbindungen wurden an Ports gemeldet, die nicht erkannt werden konnten.",
+      "controller_site_unmapped": "Ein UniFi-Controller-Standort ist keinem Breeze-Standort zugeordnet.",
+      "controller_site_other_org": "Ein UniFi-Controller-Standort ist einer anderen Organisation zugeordnet."
+    },
+    "scopeCount": "({{count}} betroffen)"
+  },
+  "exclusions": {
+    "reasonLabel": "Warum diese Verbindung ausblenden?",
+    "hide": "In dieser Ansicht ausblenden",
+    "restore": "In dieser Ansicht wiederherstellen",
+    "hidden": "Verbindung in dieser Ansicht ausgeblendet",
+    "restored": "Verbindung wiederhergestellt",
+    "hideFailed": "Verbindung konnte nicht ausgeblendet werden",
+    "restoreFailed": "Verbindung konnte nicht wiederhergestellt werden",
+    "hiddenSection": "Ausgeblendet ({{count}})",
+    "hiddenReason": "Grund",
+    "hiddenLoadFailed": "Ausgeblendete Verbindungen konnten nicht geladen werden",
+    "unknownConnection": "Verbindung {{id}}"
   }
 }

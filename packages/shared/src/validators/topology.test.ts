@@ -16,6 +16,11 @@ import {
   RELATIONSHIP_KINDS,
   REPORT_KINDS,
   TOPOLOGY_VIEWS,
+  TOPOLOGY_COVERAGE_REASON_CODES,
+  coverageReasonCodeSchema,
+  coverageReasonSchema,
+  relationshipDetailResponseSchema,
+  relationshipEvidenceResponseSchema,
   collectionOutcomeSchema,
   confidenceSchema,
   diagnosticStateSchema,
@@ -355,5 +360,57 @@ describe('layoutWriteResultSchema', () => {
     expect(layoutWriteResultSchema.safeParse({
       siteId: SITE_ID, view: 'overview', layoutRevision: '1', positions: [], actorId: RESULT_ID,
     }).success).toBe(false);
+  });
+});
+
+describe('M2 physical read contracts (D11)', () => {
+  const port = { interfaceId: RESULT_ID, name: 'port-24', alias: 'Uplink', key: 'if:24', retired: false } as const;
+  const endpoint = (nodeId: string) => ({ nodeId, label: 'Core switch', port, reportedPort: null });
+  const detail = {
+    siteId: NODE_ID, graphRevision: '7', relationship: { ...relationship, excluded: true },
+    endpoints: { source: endpoint(NODE_ID), target: { ...endpoint(NODE_2_ID), port: null, reportedPort: { namespace: 'if_index', value: '12' } } },
+    physical: { method: 'fdb', resolution: 'resolved', portRole: 'learned', association: null, fdbSelection: 'competing' },
+    alternatives: [{ relationshipId: BINDING_ID, sourceNodeId: NODE_2_ID, sourceNodeLabel: 'Access switch', targetNodeId: NODE_ID, port, confidence: 'low' }],
+    exclusions: [{ id: RESULT_ID, view: 'physical', reason: 'Lab cable', createdAt: '2026-09-15T12:00:00.000Z' }],
+    detailCoverage: { state: 'limited', reason: 'fdb_competing_candidates' },
+  } as const;
+
+  it('exports the coverage reason schema with the M0/M1 codes kept and M2 codes added', () => {
+    for (const code of ['topology_preparing', 'legacy_evidence_only', 'projection_bounded']) expect(TOPOLOGY_COVERAGE_REASON_CODES).toContain(code);
+    for (const code of ['collection_complete_empty', 'collection_unsupported', 'collection_timeout', 'collection_failed', 'collection_partial_limit',
+      'collection_partial', 'credentials_missing', 'interface_unresolved', 'controller_site_unmapped', 'controller_site_other_org', 'no_collector']) {
+      expect(TOPOLOGY_COVERAGE_REASON_CODES).toContain(code);
+      expect(coverageReasonCodeSchema.safeParse(code).success).toBe(true);
+    }
+    expect(coverageReasonSchema.safeParse({ code: 'collection_timeout', message: 'Timed out', count: 2 }).success).toBe(true);
+    // Additive: a code outside the known list and a reason without a count still parse.
+    expect(coverageReasonSchema.safeParse({ code: 'legacy_evidence_only', message: 'Legacy' }).success).toBe(true);
+    expect(coverageReasonSchema.safeParse({ code: 'future_reason', message: 'Later' }).success).toBe(true);
+    expect(coverageReasonSchema.safeParse({ code: 'x', message: 'Bad count', count: -1 }).success).toBe(false);
+    expect(coverageReasonSchema.safeParse({ code: 'x', message: 'Extra', extra: 1 }).success).toBe(false);
+  });
+
+  it('validates relationship detail with ports, alternatives and exclusion state', () => {
+    expect(relationshipDetailResponseSchema.safeParse(detail).success).toBe(true);
+    expect(relationshipDetailResponseSchema.safeParse({ ...detail, physical: null, alternatives: [], exclusions: [] }).success).toBe(true);
+    expect(relationshipDetailResponseSchema.safeParse({ ...detail, extra: true }).success).toBe(false);
+    expect(relationshipDetailResponseSchema.safeParse({ ...detail, physical: { ...detail.physical, portRole: 'cable' } }).success).toBe(false);
+    expect(relationshipDetailResponseSchema.safeParse({ ...detail, alternatives: Array.from({ length: 51 }, () => detail.alternatives[0]) }).success).toBe(false);
+  });
+
+  it('validates paginated evidence with observations, confirmations and detail status', () => {
+    const evidenceResponse = {
+      siteId: NODE_ID, graphRevision: '7', relationshipId: RELATIONSHIP_ID, cursor: null,
+      observations: [{ id: RESULT_ID, method: 'lldp', evidenceClass: 'observed', producerKind: 'discovery', protocol: 'lldp',
+        observedAt: '2026-09-15T12:00:00.000Z', effectiveAt: '2026-09-15T12:00:00.000Z', receivedAt: '2026-09-15T12:00:01.000Z',
+        freshUntil: '2026-09-15T13:00:00.000Z', status: 'expired' }],
+      confirmations: [{ sourceId: BINDING_ID, producerKind: 'discovery', protocol: 'lldp', firstPositiveAt: '2026-09-15T11:00:00.000Z',
+        lastPositiveAt: '2026-09-15T12:00:00.000Z', freshUntil: '2026-09-15T13:00:00.000Z', lifecycle: 'active', completeMissCount: 0 }],
+      summary: evidence, details: { state: 'available', reason: null },
+    };
+    expect(relationshipEvidenceResponseSchema.safeParse(evidenceResponse).success).toBe(true);
+    expect(relationshipEvidenceResponseSchema.safeParse({ ...evidenceResponse, details: { state: 'unavailable', reason: 'legacy_summary_only' } }).success).toBe(true);
+    expect(relationshipEvidenceResponseSchema.safeParse({ ...evidenceResponse, observations: [{ ...evidenceResponse.observations[0], attributes: {} }] }).success).toBe(false);
+    expect(relationshipEvidenceResponseSchema.safeParse({ ...evidenceResponse, details: { state: 'gone', reason: null } }).success).toBe(false);
   });
 });

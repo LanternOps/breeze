@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { graphNodeSchema, graphRelationshipSchema, graphResponseSchema } from '@breeze/shared/validators/topology';
+import { graphNodeSchema, graphRelationshipSchema, graphResponseSchema, relationshipDetailResponseSchema, relationshipEvidenceResponseSchema, topologyViewSchema } from '@breeze/shared/validators/topology';
 import { fetchWithAuth } from '../../stores/auth';
 const capability = z.object({ available: z.boolean(), reason: z.string().nullable() });
 export const topologySettingsSchema = z.object({
@@ -27,7 +27,31 @@ export const topologyHealthSchema = z.object({
   relationships: z.array(z.object({ id: z.string().uuid(), health: graphRelationshipSchema.shape.health })),
 });
 export const topologyNodeListSchema = z.object({ siteId: z.string().uuid(), graphRevision: z.string(), total: z.number(), nodes: z.array(graphNodeSchema), cursor: z.string().nullable() });
+/**
+ * Hidden connections of one view (M2 D17, Task 8 route GET /topology/sites/:siteId/exclusions?view=).
+ * TODO(M2 Task 8 integration): confirm the list key/cursor names against the
+ * landed route and tighten this to its shared schema; both spellings are
+ * accepted until then so the UI never silently shows "Hidden (0)".
+ */
+const hiddenConnectionSchema = z.object({
+  id: z.string().uuid(), relationshipId: z.string().uuid(), view: topologyViewSchema,
+  reason: z.string().min(1).max(500), createdAt: z.string().nullable().optional().transform((value) => value ?? null),
+});
+export type HiddenConnection = z.infer<typeof hiddenConnectionSchema>;
+export const topologyExclusionListSchema = z.union([
+  z.object({ exclusions: z.array(hiddenConnectionSchema), cursor: z.string().nullable().optional() }),
+  z.object({ items: z.array(hiddenConnectionSchema), nextCursor: z.string().nullable().optional() }),
+]).transform((body) => 'exclusions' in body
+  ? { items: body.exclusions, cursor: body.cursor ?? null }
+  : { items: body.items, cursor: body.nextCursor ?? null });
+const site = (siteId: string) => `/topology/sites/${encodeURIComponent(siteId)}`;
 export const topologyApi = {
+  relationship: (siteId: string, relationshipId: string, signal?: AbortSignal) =>
+    topologyRead(`${site(siteId)}/relationships/${encodeURIComponent(relationshipId)}`, relationshipDetailResponseSchema, signal),
+  evidence: (siteId: string, relationshipId: string, cursor?: string, signal?: AbortSignal) =>
+    topologyRead(`${site(siteId)}/relationships/${encodeURIComponent(relationshipId)}/evidence?${new URLSearchParams({ limit: '50', ...(cursor ? { cursor } : {}) })}`, relationshipEvidenceResponseSchema, signal),
+  exclusions: (siteId: string, view: string, cursor?: string, signal?: AbortSignal) =>
+    topologyRead(`${site(siteId)}/exclusions?${new URLSearchParams({ view, limit: '100', ...(cursor ? { cursor } : {}) })}`, topologyExclusionListSchema, signal),
   graph: (siteId: string, query: URLSearchParams, signal?: AbortSignal) => topologyRead(`/topology/sites/${encodeURIComponent(siteId)}/graph?${query}`, graphResponseSchema, signal),
   settings: (siteId: string, signal?: AbortSignal) => topologyRead(`/topology/sites/${encodeURIComponent(siteId)}/settings`, topologySettingsSchema, signal),
 };

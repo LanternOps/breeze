@@ -9,7 +9,7 @@ import { hasPermission } from '../permissions';
 import { hasSatisfiedMfa } from '../../middleware/auth';
 import { type TopologyRequestContext, topologyPermissionPairs } from './access';
 import { loadTopologyConfiguration } from './siteConfiguration';
-import { getTopologyCapabilities, loadTopologyFlags } from './flags';
+import { getTopologyCapabilities, loadTopologyFlags, topologyPhysicalExposed } from './flags';
 import { readLegacyImportCheckpoint } from './legacyImportState';
 export async function readTopologySiteSettings(
   ctx: TopologyRequestContext,
@@ -40,7 +40,9 @@ export async function readTopologySiteSettings(
     capabilities: {
       ...getTopologyCapabilities(flags, ready, {
         collection: false,
-        physical: false,
+        // D9: physical view = deployed capability (materialization && flag),
+        // independent of collector presence; coverage reports collectability.
+        physical: topologyPhysicalExposed(flags),
         interfaceHealth: false,
         diagnostics: false,
         ai: false,
