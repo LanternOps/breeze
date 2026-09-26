@@ -7,7 +7,7 @@ import { navigateTo } from './navigation';
 // Invoice-domain enum SSOT lives in @breeze/shared (billing-enums.ts). Imported
 // into local scope for the InvoiceSummary/InvoiceDetail types below and re-exported
 // (type-only, erased at build) so '@/lib/api' consumers are unaffected.
-import type { BackupDevicesDto, BackupOverviewDto, DashboardDto, DocumentPageSize, DocumentThemeId, EnrichedPortalDevice, InvoiceStatus, NetworkOverviewDto, PublicQuoteCoverPage, PublicQuoteHeader, QuotePresentation, SecurityDevicesDto, SecurityOverviewDto, SlaDto, SupportUsageDto, TicketFormField } from '@breeze/shared';
+import type { BackupDevicesDto, BackupOverviewDto, DashboardDto, DocumentPageSize, DocumentThemeId, EnrichedPortalDevice, InvoiceStatus, NetworkAssetsDto, NetworkOverviewDto, PublicQuoteCoverPage, PublicQuoteHeader, QuotePresentation, SecurityDevicesDto, SecurityOverviewDto, SlaDto, SupportUsageDto, TicketFormField } from '@breeze/shared';
 import type { HardwareLifecycleSummary, PortalRunDto, PortalRunsDto } from '@breeze/shared';
 import type { PortalDocumentsDto, PortalOccurrencesDto, PortalServiceOverviewDto } from '@breeze/shared';
 
@@ -295,6 +295,15 @@ export async function apiPatch<T>(
     method: 'PATCH',
     body: body ? JSON.stringify(body) : undefined
   }, config);
+}
+
+/** Mirrors networkAssetsQuerySchema (apps/api/src/routes/portal/schemas.ts). */
+export type NetworkAssetStatusFilter = 'online' | 'offline' | 'unverified';
+export interface NetworkAssetsParams {
+  page?: number;
+  limit?: number;
+  assetType?: string;
+  status?: NetworkAssetStatusFilter;
 }
 
 export interface Pagination {
@@ -1241,6 +1250,22 @@ export const portalApi = {
     config: ApiRequestConfig = {}
   ): Promise<ApiResponse<NetworkOverviewDto>> =>
     apiGet<NetworkOverviewDto>('/portal/network/overview', config),
+
+  // #6641 — per-asset list. `siteId` is accepted by the endpoint but is not
+  // exposed here yet: the portal has no site list to pick from (follow-up).
+  getNetworkAssets: (
+    params: NetworkAssetsParams = {},
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<NetworkAssetsDto>> =>
+    apiGet<NetworkAssetsDto>(
+      `/portal/network/assets${buildQueryString({
+        page: params.page ?? 1,
+        limit: params.limit ?? 50,
+        assetType: params.assetType,
+        status: params.status,
+      })}`,
+      config
+    ),
 
   // ---------------------------------------------------------------------------
   // W08 — support usage

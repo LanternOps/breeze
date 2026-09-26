@@ -1,10 +1,41 @@
-import { and, eq } from 'drizzle-orm';
-import { db } from '../db';
-import { invoiceStripePayments } from '../db/schema/stripePayments';
+import { hasDbAccessContext, withSystemDbAccessContext } from '../db';
 import { getPartnerStripeClient } from './partnerStripe';
 import { recordStripePayment } from './stripeReconcile';
 import { fromMinorUnits } from './stripeMoney';
-import { markSessionChargedRepair } from './stripeSessionRevocation';
+
+/**
+ * Throws when a DB access context is held. Both the settle primitive and the
+ * reconcile sweep make Stripe network calls, and a context here is a
+ * transaction: every Stripe round-trip would pin its pooled connection (and,
+ * after `recordStripePayment`, the invoice row lock) idle-in-transaction, and
+ * `recordStripePayment`'s own transaction would become a nested no-op, so its
+ * post-commit events and push jobs would fire before anything committed (#7065).
+ *
+ * Deliberately a throw, not `runOutsideDbContext`: escaping would open a SECOND
+ * pooled connection while the caller's transaction is still held, which
+ * deadlocks the pool at concurrency >= pool size (#6671). A request route that
+ * needs this must own its context (SELF_MANAGED_DB_CONTEXT_ROUTES).
+ */
+export class HeldDbContextForStripeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'HeldDbContextForStripeError';
+  }
+}
+
+/**
+ * Callers' best-effort catch blocks (settle routes, the sweep's per-row loop)
+ * MUST rethrow this error rather than degrade it to "not settled yet": it is a
+ * programming error that would otherwise silently turn off instant settlement.
+ */
+export function assertNoHeldDbContextForStripe(operation: string): void {
+  if (hasDbAccessContext()) {
+    throw new HeldDbContextForStripeError(
+      `${operation} must run outside any DB access context: it makes Stripe network calls and opens its own `
+      + 'short transactions (#7065). Close the caller\'s context first — do not escape it with runOutsideDbContext.',
+    );
+  }
+}
 
 /**
  * Settlement primitive for the API-key model (replaces the inbound webhook):
@@ -16,16 +47,23 @@ import { markSessionChargedRepair } from './stripeSessionRevocation';
  * Stripe directly whether the session is paid. Returns { settled:false } for an
  * unpaid/incomplete session so callers can no-op.
  *
- * The CALLER establishes the DB context — both callers run system-scoped: the
- * verify-on-return route wraps this in runOutsideDbContext(withSystemDbAccessContext)
- * (the portal is org-scoped and can't read the partner-axis key row directly), and
- * the reconcile sweep runs under the system worker context.
+ * Transaction scope (#7065): this function OWNS its DB contexts and must be
+ * called with none held (asserted). No transaction ever spans the Stripe call:
+ *   1. the partner key read runs in its own short system context;
+ *   2. the Stripe retrieve runs outside any context;
+ *   3. `recordStripePayment` opens and COMMITS its own transaction, so its
+ *      post-commit events / accounting push really do run after the commit;
+ *   4. the SEC-150 charged-repair park rides inside that same transaction.
+ * System scope is needed throughout: the key row is partner-axis, which an
+ * org-scoped portal context cannot see (the #1375 class).
  */
 export async function settleCheckoutSession(
   partnerId: string,
   sessionId: string,
 ): Promise<{ settled: boolean; invoiceId?: string }> {
-  const { stripe, stripeAccountId } = await getPartnerStripeClient(partnerId);
+  assertNoHeldDbContextForStripe('settleCheckoutSession');
+  const { stripe, stripeAccountId } = await withSystemDbAccessContext(
+    () => getPartnerStripeClient(partnerId), 'stripeSettle.partnerKey');
   const session = await stripe.checkout.sessions.retrieve(sessionId);
 
   // A completed session isn't necessarily paid (async methods settle later); only
@@ -45,34 +83,13 @@ export async function settleCheckoutSession(
     stripeAccountId,
     amount: fromMinorUnits(amountCents, currency),
     currency,
+  }, {
+    // SEC-150 charged-repair, stamped INSIDE the capture's transaction so the
+    // park commits atomically with whatever the capture decided — see
+    // recordStripePayment. A separate transaction afterwards could lose the
+    // park after the capture (or its terminal-fail) had already committed.
+    markChargedRepairIfRevoked: true,
   });
-
-  // SEC-150 charged-repair detection, AFTER the capture.
-  //
-  // Provider truth wins: a session we asked to die that Stripe nonetheless
-  // reports PAID is still recorded (never discard a real charge to satisfy a
-  // local flag), and the mapping is then parked for a human.
-  //
-  // Deliberately after `recordStripePayment`, not before. This runs on the
-  // caller's transaction, and `recordStripePayment` takes the invoice row
-  // `FOR UPDATE` first (B10 lock order, shared by every payment writer).
-  // Touching `invoice_stripe_payments` beforehand inverted that order against
-  // `recordRevocationIntent`, which locks invoice-then-mapping — a customer
-  // returning from Checkout while an operator voids the same invoice is exactly
-  // the scenario this feature exists for, and it would have deadlocked (40P01).
-  const [mapping] = await db.select({
-    revocationState: invoiceStripePayments.revocationState,
-  }).from(invoiceStripePayments)
-    .where(and(
-      eq(invoiceStripePayments.stripeObjectId, session.id),
-      eq(invoiceStripePayments.stripeObjectType, 'checkout_session'),
-    )).limit(1);
-  if (mapping && mapping.revocationState !== 'active' && mapping.revocationState !== 'legacy_unbounded') {
-    await markSessionChargedRepair(
-      session.id,
-      `session settled while revocation_state=${mapping.revocationState}`,
-    );
-  }
 
   return { settled: true, invoiceId: res.invoiceId };
 }

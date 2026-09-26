@@ -9,7 +9,13 @@
  * - safeParseJson(): utility for parsing tool output
  */
 
-import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
+import {
+  db,
+  withDbAccessContext,
+  withSystemDbAccessContext,
+  runOutsideDbContext,
+  assertOutsideHeldDbContext,
+} from '../db';
 import { actionIntents } from '../db/schema/actionIntents';
 import { aiSessions, aiMessages, aiToolExecutions, aiActionPlans, devices, deviceSessions, approvalRequests } from '../db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
@@ -202,26 +208,17 @@ export async function waitForTurnToSettle(session: ActiveSession, timeoutMs: num
  * How long the shared route helper below waits for a settled turn to conclude
  * (covers the model emitting its closing message) before giving up.
  *
- * KNOWN GAP (#1105-class, flagged in review): all four callers below run
- * inside the request's ambient withDbAccessContext transaction (set up by
- * authMiddleware / clientAiAuthMiddleware / helperAuth), and none of the four
- * routes is registered in middleware/selfManagedDbContextRoutes.ts. This wait
- * does no DB work itself, but it still pins that transaction's pooled
- * connection idle-in-transaction for its full duration — runOutsideDbContext
- * cannot release it (it only re-routes NEW queries to the pool; the
- * connection itself stays checked out by the outer `baseDb.transaction(...)`
- * callback until the whole handler returns). A client that keeps resending
- * a message while a session sits blocked on approval can hold one pooled
- * connection per in-flight request for up to this long — against the prod
- * 25-connection ceiling, that's a real amplification risk under the same
- * class this codebase already fixed for the OIDC/SFTP/notification-test
- * routes (see selfManagedDbContextRoutes.ts). The correct fix is the same
- * one: register these four routes as self-managed and have each wrap its own
- * DB calls in short-lived withDbAccessContext blocks around this wait — out
- * of scope for this change (touches auth/RLS context on four hot routes,
- * needs its own dedicated PR + tests). Kept intentionally short here as an
- * interim bound on the worst case; do not raise this back toward the
- * original 15s without doing that conversion first.
+ * The wait does no DB work, and it must never run inside a held request
+ * transaction: before #3127 all four callers ran it inside the ambient
+ * withDbAccessContext opened by their auth middleware, pinning one pooled
+ * connection idle-in-transaction per resent message for the whole wait (the
+ * #1105 class — runOutsideDbContext cannot release a connection the outer
+ * transaction already holds). The four message-send routes are now registered
+ * in middleware/selfManagedDbContextRoutes.ts and run the wait between two
+ * short contexts; settleBlockedTurnForNewMessage trips
+ * assertOutsideHeldDbContext if a caller regresses that. The 3s bound (cut from
+ * 15s as the interim mitigation) is kept: it is also the user-visible delay
+ * before a still-concluding turn falls back to a 409.
  */
 export const TURN_SETTLE_WAIT_MS = 3_000;
 
@@ -240,12 +237,16 @@ export type BlockedTurnSettleResult =
  * the assistant can answer the new message instead of going mute behind the
  * approval. Used by routes/ai.ts, routes/clientAi/sessions.ts,
  * routes/scriptAi.ts, and routes/helper/index.ts — keep them in sync through
- * this helper, not four hand-rolled copies.
+ * this helper, not four hand-rolled copies. Callers must not hold a DB access
+ * context (see TURN_SETTLE_WAIT_MS).
  */
 export async function settleBlockedTurnForNewMessage(
   session: ActiveSession,
   timeoutMs = TURN_SETTLE_WAIT_MS,
 ): Promise<BlockedTurnSettleResult> {
+  // #3127: checked before settling anything, so a strict-mode trip leaves the
+  // session's approval waits untouched.
+  assertOutsideHeldDbContext('settleBlockedTurnForNewMessage');
   if (!settleApprovalWaits(session)) return 'not_blocked_on_approvals';
   return (await waitForTurnToSettle(session, timeoutMs)) ? 'concluded' : 'still_processing';
 }
@@ -2755,8 +2756,22 @@ function matchPlanStep(
 /**
  * Abort the active plan for a session. Updates DB status to 'aborted',
  * emits plan_complete event, and clears session plan state.
+ *
+ * If the plan is still waiting for approval, the pending approval is settled
+ * as rejected FIRST, synchronously and before any await (#7085). Otherwise
+ * the `waitForPlanApproval` resolver stays live on the session and a later
+ * `POST /ai/sessions/:id/approve-plan` resolves it with `true` — and the agent
+ * runs the plan the user aborted (or paused). Doing it before the DB write
+ * also closes the window where an approve lands while the abort write is
+ * still in flight.
  */
 export async function abortActivePlan(session: ActiveSession): Promise<boolean> {
+  const resolver = session.planApprovalResolver;
+  if (resolver) {
+    session.planApprovalResolver = null;
+    resolver(false);
+  }
+
   const planId = session.activePlanId;
   if (!planId) return false;
 

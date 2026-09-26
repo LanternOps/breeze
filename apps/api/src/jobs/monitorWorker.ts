@@ -8,7 +8,7 @@
 import { Queue, Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
 import { networkMonitors, networkMonitorResults, devices, networkMonitorAlertRules, alerts, organizations } from '../db/schema';
-import { eq, and, sql, inArray } from 'drizzle-orm';
+import { eq, and, sql, inArray, isNull } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { isReusableState } from '../services/bullmqUtils';
@@ -343,7 +343,8 @@ async function evaluateMonitorAlertRules(
     .from(networkMonitorAlertRules)
     .where(and(
       eq(networkMonitorAlertRules.monitorId, monitor.id),
-      eq(networkMonitorAlertRules.isActive, true)
+      eq(networkMonitorAlertRules.isActive, true),
+      isNull(networkMonitorAlertRules.retiredAt)
     ));
 
   if (rules.length === 0) return;
@@ -410,6 +411,7 @@ async function evaluateMonitorAlertRules(
       context: {
         source: 'network_monitor',
         monitorId: monitor.id,
+        legacyNetworkMonitorId: monitor.id,
         alertRuleId: rule.id,
         monitorType: monitor.monitorType,
         target: monitor.target,
@@ -422,7 +424,7 @@ async function evaluateMonitorAlertRules(
       publisher: 'monitor-worker',
       // `source` is supplied by createSourcedAlert from `context.source`.
       eventPayload: {
-        monitorId: monitor.id,
+        legacyNetworkMonitorId: monitor.id,
         alertRuleId: rule.id,
         monitorType: monitor.monitorType,
         target: monitor.target

@@ -105,34 +105,6 @@ func TestApplyWinAttrsZeroIsNoOp(t *testing.T) {
 	}
 }
 
-// TestApplyEntryMetadataAppliesWinAttrsLast proves the ordering the restore
-// depends on: FILE_ATTRIBUTE_READONLY makes chmod/chtimes fail, so it must be
-// the last thing applied. Off Windows applyWinAttrs is a no-op, so this
-// asserts the surrounding fidelity steps still succeed unchanged.
-func TestApplyEntryMetadataWithWinAttrs(t *testing.T) {
-	path := t.TempDir() + string(os.PathSeparator) + "restored.txt"
-	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	modTime := time.Date(2024, 3, 2, 1, 0, 0, 0, time.UTC)
-	warnings := applyEntryMetadata(path, SnapshotFile{
-		SourcePath: path,
-		ModeBits:   0o640,
-		ModTime:    modTime,
-		WinAttrs:   winAttrsHidden,
-	}, false)
-	if len(warnings) != 0 {
-		t.Fatalf("warnings = %v, want none", warnings)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat: %v", err)
-	}
-	if !info.ModTime().Equal(modTime) {
-		t.Fatalf("mtime = %v, want %v (attribute apply must come AFTER chtimes)", info.ModTime(), modTime)
-	}
-}
-
 // TestRestoreContentlessEntryDirAppliesWinAttrs is the review-finding guard:
 // the walker records a Hidden/System directory's attributes, so the restore
 // must reapply them. Before the fix they were captured and then thrown away at

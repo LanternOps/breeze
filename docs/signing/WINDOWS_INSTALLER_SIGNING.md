@@ -118,9 +118,13 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build \
   -o ../dist/breeze-agent.exe ./cmd/breeze-agent
 cd ..
 
-# Build MSI with WiX
+# Build MSI with WiX. breeze.wxs needs the Util extension (WixQuietExec),
+# at the same version as the wix CLI. build-msi.ps1 does both steps for you.
+WIX_VERSION="$(wix --version | sed 's/+.*//')"
+wix extension add -g "WixToolset.Util.wixext/${WIX_VERSION}"
 wix build agent/installer/breeze.wxs \
   -arch x64 \
+  -ext "WixToolset.Util.wixext/${WIX_VERSION}" \
   -d AgentExePath=dist/breeze-agent.exe \
   -o dist/breeze-agent.msi
 ```

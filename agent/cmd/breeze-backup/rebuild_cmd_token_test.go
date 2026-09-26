@@ -118,8 +118,16 @@ func newTokenModeTestServer(t *testing.T, layoutJSON []byte) (server *httptest.S
 // "recovery" key is then omitted from the bootstrap).
 func newTokenModeTestServerWithRecovery(t *testing.T, layoutJSON []byte, identity, nonce string) (server *httptest.Server, statuses func() []string) {
 	t.Helper()
+	server, statuses, _ = newTokenModeTestServerRecordingReasons(t, layoutJSON, identity, nonce)
+	return server, statuses
+}
+
+// newTokenModeTestServerRecordingReasons is newTokenModeTestServerWithRecovery
+// that also returns the reason posted with each progress update, in order.
+func newTokenModeTestServerRecordingReasons(t *testing.T, layoutJSON []byte, identity, nonce string) (server *httptest.Server, statuses, reasons func() []string) {
+	t.Helper()
 	var mu sync.Mutex
-	var posted []string
+	var posted, postedReasons []string
 	recovery := ""
 	if identity != "" {
 		recovery = fmt.Sprintf(`, "recovery": {"id": "rec-1", "identity": %q, "deviceId": "dev-1", "snapshotId": "snap-1"`, identity)
@@ -174,10 +182,12 @@ func newTokenModeTestServerWithRecovery(t *testing.T, layoutJSON []byte, identit
 	mux.HandleFunc("/api/v1/backup/bmr/recover/progress", func(w http.ResponseWriter, r *http.Request) {
 		var reqBody struct {
 			Status string `json:"status"`
+			Reason string `json:"reason"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&reqBody)
 		mu.Lock()
 		posted = append(posted, reqBody.Status)
+		postedReasons = append(postedReasons, reqBody.Reason)
 		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprintf(w, `{"id":"rec-1","status":%q}`, reqBody.Status)
@@ -190,7 +200,12 @@ func newTokenModeTestServerWithRecovery(t *testing.T, layoutJSON []byte, identit
 		defer mu.Unlock()
 		return append([]string(nil), posted...)
 	}
-	return server, statuses
+	reasons = func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), postedReasons...)
+	}
+	return server, statuses, reasons
 }
 
 // TestRebuildCommand_TokenModeRefusesOnBIOSLayout drives the full --token

@@ -324,3 +324,126 @@ describe('AutomationRunHistory — script output (#3162)', () => {
     expect(screen.queryByTestId('script-output-toggle')).toBeNull();
   });
 });
+
+describe('AutomationRunHistory — execute_command output (#3188)', () => {
+  async function expandRun(deviceResults: DeviceRunResult[]) {
+    const onLoadRunDetail = vi.fn().mockResolvedValue({ deviceResults, logs: [] });
+    render(
+      <AutomationRunHistory
+        runs={[makeRun({ status: 'success', completedAt: '2026-07-08T00:01:00.000Z' })]}
+        isOpen
+        onClose={() => {}}
+        onLoadRunDetail={onLoadRunDetail}
+      />,
+    );
+    fireEvent.click(screen.getByText(/Manual - 4 devices/).closest('button')!);
+    await waitFor(() => expect(screen.getByText('Reception PC')).toBeTruthy());
+    return onLoadRunDetail;
+  }
+
+  it('offers a command-output toggle only for devices that ran a command, collapsed by default', async () => {
+    await expandRun([
+      {
+        deviceId: 'd-1',
+        deviceName: 'Reception PC',
+        status: 'success',
+        commandResults: [{ actionIndex: 0, status: 'succeeded', output: 'ipconfig says hi' }],
+      },
+      { deviceId: 'd-2', deviceName: 'HOST-2', status: 'success' },
+    ]);
+    expect(screen.getAllByTestId('command-output-toggle')).toHaveLength(1);
+    expect(screen.queryByTestId('command-stdout')).toBeNull();
+  });
+
+  it('reveals the agent-reported stdout and error on expand', async () => {
+    await expandRun([
+      {
+        deviceId: 'd-1',
+        deviceName: 'Reception PC',
+        status: 'failed',
+        commandResults: [
+          { actionIndex: 0, status: 'succeeded', output: 'ipconfig says hi' },
+          { actionIndex: 1, status: 'failed', output: 'partial', outputTruncated: true, error: 'exit status 1' },
+        ],
+      },
+    ]);
+
+    fireEvent.click(screen.getByTestId('command-output-toggle'));
+    const stdout = screen.getAllByTestId('command-stdout');
+    expect(stdout).toHaveLength(2);
+    expect(stdout[0].textContent).toContain('ipconfig says hi');
+    expect(stdout[1].textContent).toContain('partial');
+    expect(screen.getByTestId('command-stdout-truncated')).toBeTruthy();
+    expect(screen.getByTestId('command-error').textContent).toContain('exit status 1');
+  });
+
+  it('distinguishes "agent has not reported yet" from "command printed nothing"', async () => {
+    await expandRun([
+      {
+        deviceId: 'd-1',
+        deviceName: 'Reception PC',
+        status: 'success',
+        commandResults: [
+          { actionIndex: 0, status: 'queued', message: 'Queued — device offline' },
+          { actionIndex: 1, status: 'succeeded' },
+        ],
+      },
+    ]);
+
+    fireEvent.click(screen.getByTestId('command-output-toggle'));
+    expect(screen.getByTestId('command-awaiting').textContent).toContain('Queued — device offline');
+    expect(screen.getAllByTestId('command-stdout')).toHaveLength(1);
+    expect(screen.getByTestId('command-stdout').textContent).toBe('No output');
+  });
+
+  it('shows a terminal action reason and flags a truncated error', async () => {
+    await expandRun([
+      {
+        deviceId: 'd-1',
+        deviceName: 'Reception PC',
+        status: 'skipped',
+        commandResults: [
+          { actionIndex: 0, status: 'skipped', message: 'Suppressed by maintenance window' },
+          { actionIndex: 1, status: 'failed', error: 'long error', errorTruncated: true },
+        ],
+      },
+    ]);
+
+    fireEvent.click(screen.getByTestId('command-output-toggle'));
+    expect(screen.getByTestId('command-message').textContent).toBe('Suppressed by maintenance window');
+    expect(screen.queryByTestId('command-awaiting')).toBeNull();
+    expect(screen.getByTestId('command-error-truncated')).toBeTruthy();
+  });
+
+  it('keeps polling while a command has not reported yet', async () => {
+    vi.useFakeTimers();
+    try {
+      const onLoadRunDetail = vi.fn().mockResolvedValue({
+        deviceResults: [
+          {
+            deviceId: 'd-1',
+            deviceName: 'Reception PC',
+            status: 'success',
+            commandResults: [{ actionIndex: 0, status: 'delivered' }],
+          },
+        ],
+        logs: [],
+      });
+      render(
+        <AutomationRunHistory
+          runs={[makeRun({ status: 'success', completedAt: '2026-07-08T00:01:00.000Z' })]}
+          isOpen
+          onClose={() => {}}
+          onLoadRunDetail={onLoadRunDetail}
+        />,
+      );
+      fireEvent.click(screen.getByText(/Manual - 4 devices/).closest('button')!);
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(onLoadRunDetail).toHaveBeenCalledTimes(1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+      expect(onLoadRunDetail).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

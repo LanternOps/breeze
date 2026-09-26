@@ -160,6 +160,13 @@
       "label": "Dienst auf dem Gerät neu starten",
       "maxAttempts": "Maximale Neustartversuche",
       "cooldownSeconds": "Neustartwartezeit (Sekunden)"
+    },
+    "networkCheckAsset": {
+      "label": "Gerät",
+      "unbound": "Keine Asset-Bindung",
+      "failed": "Assets konnten nicht geladen werden",
+      "orgRequired": "Wählen Sie eine Organisation als Eigentümer, um ein Asset zu binden.",
+      "pingName": "Ping für {{label}}"
     }
   },
   "kinds": {
@@ -223,7 +230,18 @@
     "port": "Portnummer",
     "expectStatus": "Erwarteter Statuscode",
     "pollingIntervalSeconds": "Abfrage alle (Sekunden)",
-    "match": "Übereinstimmung"
+    "match": "Übereinstimmung",
+    "pingCount": "Echo-Anfragen",
+    "expectBanner": "Erwartetes Banner",
+    "httpMethod": "HTTP-Methode",
+    "expectedBody": "Antwort muss enthalten",
+    "followRedirects": "Weiterleitungen folgen",
+    "verifySsl": "TLS-Zertifikat prüfen",
+    "recordType": "Eintragstyp",
+    "expectedValue": "Erwarteter Wert",
+    "nameserver": "DNS-Server",
+    "degradedIsFailure": "Beeinträchtigt als Ausfall werten",
+    "maxResponseMs": "Fehler bei Antwort langsamer als (ms)"
   },
   "operators": {
     "gt": "größer als",
@@ -567,5 +585,20 @@
         }
       }
     }
+  },
+  "httpMethods": {
+    "GET": "GET (abrufen)",
+    "HEAD": "HEAD (nur Kopfzeilen)",
+    "POST": "POST (senden)",
+    "PUT": "PUT (ersetzen)",
+    "OPTIONS": "OPTIONS (Funktionen)"
+  },
+  "dnsRecordTypes": {
+    "A": "A (IPv4-Adresse)",
+    "AAAA": "AAAA (IPv6-Adresse)",
+    "MX": "MX (Mailserver)",
+    "CNAME": "CNAME (Aliasname)",
+    "TXT": "TXT (Texteintrag)",
+    "NS": "NS (DNS-Server)"
   }
 }

@@ -1,4 +1,4 @@
-import type { Patch, PatchSeverity, PatchApprovalStatus } from './PatchList';
+import type { Patch, PatchSeverity, PatchApprovalStatus, PatchInstallFailure } from './PatchList';
 import type { UpdateRingItem } from './UpdateRingList';
 
 const severityMap: Record<string, PatchSeverity> = {
@@ -90,6 +90,23 @@ export function normalizePatch(raw: Record<string, unknown>, index: number): Pat
     description: raw.description ? String(raw.description) : undefined,
     vendor: typeof vendor === 'string' && vendor.trim() ? vendor : null,
     cveIds,
+    installFailure: readInstallFailure(raw.installFailure),
+  };
+}
+
+/**
+ * #4223 deployment overlay. Returns undefined for null/absent (no failed
+ * attempt) or a shape we don't recognise, so a malformed payload renders as
+ * the plain approval badge rather than a broken failure badge.
+ */
+export function readInstallFailure(value: unknown): PatchInstallFailure | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const v = value as Record<string, unknown>;
+  if (typeof v.deviceCount !== 'number' || typeof v.failedAt !== 'string') return undefined;
+  return {
+    deviceCount: v.deviceCount,
+    error: typeof v.error === 'string' ? v.error : null,
+    failedAt: v.failedAt,
   };
 }
 

@@ -28,7 +28,6 @@ import {
   db,
   withDbAccessContext,
   withSystemDbAccessContext,
-  runOutsideDbContext,
   type DbAccessContext,
 } from '../../db';
 import {
@@ -468,11 +467,10 @@ describe('SEC-150 sibling revocation after a capture', () => {
       amount_total: 10000, currency: 'usd',
     });
 
-    // Exactly the production call shape: the portal return route and the
-    // reconcile sweep both wrap this in a system context, so recordStripePayment
-    // runs INSIDE that transaction while holding the invoice row lock.
-    const settled = await runOutsideDbContext(() =>
-      withSystemDbAccessContext(() => settleCheckoutSession(fx.partnerId, fx.sessionId)));
+    // Exactly the production call shape since #7065: no context held, so
+    // settleCheckoutSession's capture runs in recordStripePayment's OWN
+    // transaction, which holds the invoice row lock while it stamps intent.
+    const settled = await settleCheckoutSession(fx.partnerId, fx.sessionId);
     expect(settled.settled).toBe(true);
 
     // Intent only. Calling sessions.expire from here would need a second pooled
@@ -504,8 +502,7 @@ describe('SEC-150 sibling revocation after a capture', () => {
       id: fx.sessionId, payment_status: 'paid', payment_intent: 'pi_sec150_late',
       amount_total: 10000, currency: 'usd',
     });
-    await runOutsideDbContext(() =>
-      withSystemDbAccessContext(() => settleCheckoutSession(fx.partnerId, fx.sessionId)));
+    await settleCheckoutSession(fx.partnerId, fx.sessionId);
 
     // Provider truth wins: the capture is RECORDED (never discarded to satisfy a
     // local flag) and the mapping is parked for a human.

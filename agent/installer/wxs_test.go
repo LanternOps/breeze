@@ -173,3 +173,123 @@ func TestAlreadyInstalledMessagesGiveNextStep(t *testing.T) {
 		t.Errorf("downgrade message %q must point at the current installer", dm[1])
 	}
 }
+
+// customActionAttrs returns the attributes of the <CustomAction Id="id" .../>
+// element as a map, or nil when no such element exists.
+func customActionAttrs(wxs, id string) map[string]string {
+	elRe := regexp.MustCompile(`(?s)<CustomAction\s+Id="` + regexp.QuoteMeta(id) + `"(.*?)/>`)
+	m := elRe.FindStringSubmatch(wxs)
+	if m == nil {
+		return nil
+	}
+	out := map[string]string{"Id": id}
+	for _, a := range regexp.MustCompile(`(\w+)="([^"]*)"`).FindAllStringSubmatch(m[1], -1) {
+		out[a[1]] = a[2]
+	}
+	return out
+}
+
+// #3624: an immediate EXE custom action runs impersonated on the installing
+// user's desktop, and Windows Installer launches it with no CREATE_NO_WINDOW,
+// so a console-subsystem cmd.exe got a visible black window. KillBreezeProcesses
+// includes a conditional ~3s wait for the graceful `sc stop`, so the window sat
+// on screen through every upgrade over a running agent. It must stay immediate
+// and before InstallValidate (files-in-use check, #944), so the fix is to launch
+// the same command through WixQuietExec, which spawns it with no window.
+func TestKillBreezeProcessesRunsWithoutConsoleWindow(t *testing.T) {
+	wxs := readWxs(t)
+	ca := customActionAttrs(wxs, "KillBreezeProcesses")
+	if ca == nil {
+		t.Fatal("no <CustomAction Id=\"KillBreezeProcesses\">")
+	}
+	if _, ok := ca["ExeCommand"]; ok {
+		t.Errorf("KillBreezeProcesses is an EXE custom action (ExeCommand); an immediate EXE CA flashes a console window on the user's desktop")
+	}
+	if ca["DllEntry"] != "WixQuietExec" {
+		t.Errorf("KillBreezeProcesses DllEntry = %q, want WixQuietExec (runs the command with no console window)", ca["DllEntry"])
+	}
+	if !strings.HasPrefix(ca["BinaryRef"], "Wix4UtilCA_") {
+		t.Errorf("KillBreezeProcesses BinaryRef = %q, want the WiX Util extension CA DLL (Wix4UtilCA_*)", ca["BinaryRef"])
+	}
+	// Timing is load-bearing: the processes must be dead before
+	// InstallValidate's files-in-use check, which a deferred CA cannot do.
+	if ca["Execute"] != "immediate" {
+		t.Errorf("KillBreezeProcesses Execute = %q, want immediate (a deferred CA runs after InstallValidate, reintroducing #944)", ca["Execute"])
+	}
+	if ca["Return"] != "ignore" {
+		t.Errorf("KillBreezeProcesses Return = %q, want ignore (best-effort; a fresh box has nothing to stop)", ca["Return"])
+	}
+	if !regexp.MustCompile(`<Custom\s+Action="KillBreezeProcesses"\s+Before="InstallValidate"\s+Condition="NOT REMOVE"\s*/>`).MatchString(wxs) {
+		t.Error(`KillBreezeProcesses must stay scheduled Before="InstallValidate" with Condition="NOT REMOVE"`)
+	}
+
+	// Immediate-mode WixQuietExec reads its command line from the
+	// WixQuietExecCmdLine property, which must be set before the CA runs.
+	setRe := regexp.MustCompile(`(?s)<SetProperty\s+Id="WixQuietExecCmdLine"\s+Value="([^"]*)"\s+Before="KillBreezeProcesses"\s+Sequence="execute"\s*/>`)
+	sm := setRe.FindStringSubmatch(wxs)
+	if sm == nil {
+		t.Fatal(`expected <SetProperty Id="WixQuietExecCmdLine" Value="..." Before="KillBreezeProcesses" Sequence="execute" />`)
+	}
+	cmd := sm[1]
+	for _, want := range []string{
+		`[System64Folder]cmd.exe`,
+		// disarm SCM recovery before anything dies (no resurrection race)
+		`sc failure BreezeWatchdog reset= 0 actions=`,
+		`sc failure BreezeAgent reset= 0 actions=`,
+		// graceful stops, watchdog first
+		`sc stop BreezeWatchdog`,
+		`sc stop BreezeAgent`,
+		// the conditional wait must survive: dropping it force-kills a live agent
+		`findstr &quot;PENDING RUNNING&quot;`,
+		`ping -n 4 127.0.0.1`,
+		`taskkill /F /IM breeze-agent.exe`,
+		`exit /b 0`,
+	} {
+		if !strings.Contains(cmd, want) {
+			t.Errorf("WixQuietExecCmdLine lost %q; got %q", want, cmd)
+		}
+	}
+	if strings.Contains(cmd, "taskkill /F /T") || strings.Contains(cmd, " /T ") {
+		t.Errorf("taskkill must not use /T (kills the msiexec performing the install when deployed via Breeze scripts); got %q", cmd)
+	}
+	if strings.Contains(wxs, "BREEZE_KILL_CMD") {
+		t.Error("BREEZE_KILL_CMD is dead once KillBreezeProcesses runs through WixQuietExec; remove it")
+	}
+}
+
+// No immediate custom action may launch an EXE: it would run on the
+// installing user's desktop and show a console window (#3624). Deferred and
+// rollback EXE CAs with Impersonate="no" run as LocalSystem in session 0 and
+// are invisible.
+func TestNoImmediateExeCustomActions(t *testing.T) {
+	wxs := readWxs(t)
+	elRe := regexp.MustCompile(`(?s)<CustomAction\s+Id="([^"]+)"(.*?)/>`)
+	for _, m := range elRe.FindAllStringSubmatch(wxs, -1) {
+		ca := customActionAttrs(wxs, m[1])
+		if _, isExe := ca["ExeCommand"]; !isExe {
+			continue
+		}
+		exec := ca["Execute"]
+		if exec == "" || exec == "immediate" || exec == "firstSequence" || exec == "oncePerProcess" || exec == "secondSequence" {
+			t.Errorf("custom action %s is an immediate EXE CA (Execute=%q); it will flash a console window. Use WixQuietExec or make it deferred with Impersonate=\"no\"", m[1], exec)
+		}
+	}
+}
+
+// The Util extension supplies the WixQuietExec CA DLL (Wix4UtilCA_*). Every
+// MSI build (this repo's release.yml, the hosted and self-host signing repos)
+// goes through build-msi.ps1, so that script must load the extension or the
+// link fails with an unresolved BinaryRef.
+func TestBuildScriptLoadsUtilExtension(t *testing.T) {
+	b, err := os.ReadFile("build-msi.ps1")
+	if err != nil {
+		t.Fatalf("read build-msi.ps1: %v", err)
+	}
+	s := string(b)
+	if !strings.Contains(s, `"-ext"`) || !strings.Contains(s, "WixToolset.Util.wixext") {
+		t.Error("build-msi.ps1 must pass -ext WixToolset.Util.wixext to wix build")
+	}
+	if !strings.Contains(s, "extension add") {
+		t.Error("build-msi.ps1 must install WixToolset.Util.wixext (wix extension add) so callers need no extra setup step")
+	}
+}
