@@ -1,9 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
+const { order } = vi.hoisted(() => ({ order: [] as string[] }));
 vi.mock('../../db', () => ({
-  db: { transaction: (fn: () => unknown) => fn() },
-  withSystemDbAccessContext: (fn: () => unknown) => fn(),
+  db: { transaction: async (fn: () => unknown) => { order.push('tx:open'); try { return await fn(); } finally { order.push('tx:close'); } } },
+  withSystemDbAccessContext: async (fn: () => unknown) => { order.push('ctx:open'); try { return await fn(); } finally { order.push('ctx:close'); } },
+}));
+vi.mock('../../services/topology/flags', () => ({
+  loadTopologyFlags: vi.fn(async () => { order.push('flags:loaded'); return { materialization: true }; }),
+  withResolvedTopologyFlags: vi.fn(async (_resolved: unknown, fn: () => unknown) => { order.push('flags:wrap'); try { return await fn(); } finally { order.push('flags:unwrap'); } }),
 }));
 vi.mock('../../services/topology/unifiAdapter', () => ({
   adaptUnifiTopology: vi.fn(),
@@ -25,6 +30,7 @@ import * as collectorSvc from '../../services/unifi/unifiCollectorService';
 import * as worker from '../../jobs/unifiTelemetryWorker';
 import * as adapter from '../../services/topology/unifiAdapter';
 import * as authority from '../../services/topology/unifiAuthority';
+import * as flagsModule from '../../services/topology/flags';
 import vectors from '../../../../../packages/shared/src/testing/topology-unifi-v1.json';
 
 const AGENT_ID = 'agent-1';
@@ -35,7 +41,7 @@ const AGENT_ID = 'agent-1';
 function appWithRole(role: 'agent' | 'watchdog') {
   const app = new Hono();
   app.use('*', async (c, next) => {
-    c.set('agent', { deviceId: 'dev-1', agentId: AGENT_ID, orgId: 'org-1', role } as never);
+    c.set('agent', { deviceId: 'dev-1', agentId: AGENT_ID, orgId: 'org-1', siteId: 'site-1', role } as never);
     return next();
   });
   app.route('/agents', unifiTelemetryRoutes);
@@ -43,7 +49,7 @@ function appWithRole(role: 'agent' | 'watchdog') {
 }
 
 describe('agent unifi telemetry routes', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => { vi.clearAllMocks(); order.length = 0; });
 
   it('GET /agents/:id/unifi-collectors returns this device\'s collector configs', async () => {
     (collectorSvc.listCollectorsForDevice as any).mockResolvedValue([
@@ -196,6 +202,64 @@ describe('agent unifi telemetry routes', () => {
       expect((await res.json()).topology).toEqual({ accepted: false, reason: 'collector_not_owned', reportSequence: '3', resources: [] });
       expect(adapter.adaptUnifiTopology).not.toHaveBeenCalled();
       expect(worker.enqueueUnifiTelemetry).toHaveBeenCalledTimes(1);
+    });
+
+    // #6671 shape (US 2026-09-22): the companion ingest used to run inside the
+    // agent's request-long org transaction and resolve topology flags per
+    // resource through a partner-axis read on a SECOND pooled connection while
+    // earlier resources' site-state row locks were still held. The route now
+    // self-manages its context: flags are resolved ONCE in a short context that
+    // closes before the ingest transaction opens, the ingest runs under
+    // withResolvedTopologyFlags, and it commits before the legacy enqueue.
+    it('resolves topology flags once, before the ingest transaction, and commits before the legacy enqueue', async () => {
+      (authority.loadUnifiCollector as any).mockResolvedValue(collector);
+      (adapter.adaptUnifiTopology as any).mockImplementation(async () => {
+        order.push('topology');
+        return { accepted: true, producerEpoch: 'e', reportSequence: '3', resources: [] };
+      });
+      (worker.enqueueUnifiTelemetry as any).mockImplementation(async () => { order.push('legacy'); });
+      const res = await post({ ...legacy, topologyV1: report });
+      expect(res.status).toBe(202);
+      expect(flagsModule.loadTopologyFlags).toHaveBeenCalledTimes(1);
+      expect(flagsModule.loadTopologyFlags).toHaveBeenCalledWith({ scope: { orgId: 'org-1', siteId: 'site-1' } });
+      expect(flagsModule.withResolvedTopologyFlags).toHaveBeenCalledWith({ orgId: 'org-1', flags: { materialization: true } }, expect.any(Function));
+      expect(order).toEqual([
+        'ctx:open', 'flags:loaded', 'ctx:close',
+        'flags:wrap', 'ctx:open', 'tx:open', 'topology', 'tx:close', 'ctx:close', 'flags:unwrap',
+        'legacy',
+      ]);
+    });
+
+    it('reports collection_unavailable without opening the ingest transaction when flag resolution fails', async () => {
+      (flagsModule.loadTopologyFlags as any).mockRejectedValueOnce(new Error('pool busy'));
+      const res = await post({ ...legacy, topologyV1: report });
+      expect(res.status).toBe(202);
+      expect((await res.json()).topology).toEqual({ accepted: false, reason: 'collection_unavailable', reportSequence: '3', resources: [] });
+      expect(adapter.adaptUnifiTopology).not.toHaveBeenCalled();
+      expect(order).not.toContain('tx:open');
+      expect(worker.enqueueUnifiTelemetry).toHaveBeenCalledTimes(1);
+    });
+
+    it('GET resolves topology flags once before the collector read and advertises under them', async () => {
+      (collectorSvc.listCollectorsForDevice as any).mockImplementation(async (_db: unknown, _dev: string, opts: any) => {
+        order.push('collectors');
+        return [{ collectorId: 'c1', topology: await opts.topologyAdvertisement('c1') }, { collectorId: 'c2', topology: await opts.topologyAdvertisement('c2') }];
+      });
+      const res = await appWithRole('agent').request(`/agents/${AGENT_ID}/unifi-collectors`, { method: 'GET' });
+      expect(res.status).toBe(200);
+      expect(flagsModule.loadTopologyFlags).toHaveBeenCalledTimes(1);
+      expect(order.slice(0, 4)).toEqual(['ctx:open', 'flags:loaded', 'ctx:close', 'flags:wrap']);
+      expect(order.indexOf('collectors')).toBeGreaterThan(order.indexOf('flags:wrap'));
+      expect(authority.unifiTopologyAdvertisement).toHaveBeenCalledTimes(2);
+    });
+
+    it('GET still delivers legacy collector configs, unadvertised, when flag resolution fails', async () => {
+      (flagsModule.loadTopologyFlags as any).mockRejectedValueOnce(new Error('pool busy'));
+      (collectorSvc.listCollectorsForDevice as any).mockImplementation(async (_db: unknown, _dev: string, opts: any) => [{ collectorId: 'c1', topology: await opts.topologyAdvertisement('c1') }]);
+      const res = await appWithRole('agent').request(`/agents/${AGENT_ID}/unifi-collectors`, { method: 'GET' });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ collectors: [{ collectorId: 'c1', topology: null }] });
+      expect(authority.unifiTopologyAdvertisement).not.toHaveBeenCalled();
     });
 
     it('never loses legacy telemetry when topology ingest fails unexpectedly', async () => {

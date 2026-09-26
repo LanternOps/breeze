@@ -505,6 +505,20 @@ describe('agentAuthMiddleware - tenant-status gate', () => {
     expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
   });
 
+  // M2 #5998 review: the UniFi topology companion ingest and the collector
+  // advertisement resolve topology flags (a partner-axis read) before their own
+  // short transactions; a request-long org wrap would hold a pooled connection
+  // across both and re-open the #6671 two-connection shape.
+  it.each(['unifi-telemetry', 'unifi-collectors'])('skips the request-long org wrap for the self-managed %s route', async (action) => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+    const c = createContext({ token: VALID_TOKEN, path: `/api/v1/agents/agent-1/${action}` });
+    const next = vi.fn().mockResolvedValue(undefined);
+    await agentAuthMiddleware(c, next);
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
+  });
+
   it('keeps the request DB context for a deeper topology/adjacency/* path', async () => {
     buildSelectMock([makeDevice()]);
     vi.mocked(getAgentTenantState).mockResolvedValue('active');

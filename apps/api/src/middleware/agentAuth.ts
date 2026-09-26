@@ -348,6 +348,14 @@ const SELF_MANAGED_DB_CONTEXT_ACTIONS = new Set([
   'commands',
   'eventlogs',
   'elevation-requests',
+  // M2 #5998 review: the UniFi topology companion ingest (POST) and the
+  // collector topology advertisement (GET) resolve topology flags — a
+  // partner-axis read on a second pooled connection — BEFORE their own short
+  // system transactions (routes/agents/unifiTelemetry.ts). Inside the
+  // request-long org wrap the ingest held topology_site_state row locks while
+  // reaching for that second connection: the #6671 wedge shape.
+  'unifi-telemetry',
+  'unifi-collectors',
 ]);
 
 /**
