@@ -180,10 +180,15 @@ export function assessTopologyDiagnostic(
 
   // "All outbound checks failed from this collector" is a failed check. A single
   // failing protocol alongside a working one is degradation, not a dead path.
-  const requiredProbes = outcomes.filter((outcome) => outcome.required && PROBE_METHODS.has(outcome.method));
+  // Only on-the-wire probes count as a "working protocol": a successful LOCAL
+  // read (route/neighbor lookup) proves nothing about the target, so a route
+  // lookup + TCP timeout is a failed check, not degradation (PR #7117 C2 — the
+  // 'degraded' misclassification reset the recurring failure streak forever).
+  const probes = outcomes.filter((outcome) => PROBE_METHODS.has(outcome.method));
+  const requiredProbes = probes.filter((outcome) => outcome.required);
   const everyRequiredProbeFailed = requiredProbes.length > 0
     && requiredProbes.every((outcome) => !outcome.succeeded);
-  const status = everyRequiredProbeFailed && outcomes.every((outcome) => !outcome.succeeded)
+  const status = everyRequiredProbeFailed && probes.every((outcome) => !outcome.succeeded)
     ? 'failed_check'
     : 'degraded';
 

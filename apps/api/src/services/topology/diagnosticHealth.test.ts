@@ -188,6 +188,25 @@ describe('assessTopologyDiagnostic', () => {
     expect(result.reasons).toEqual(expect.arrayContaining(['dns_check_failed', 'tcp_succeeded']));
   });
 
+  // PR #7117 review C2: target_connectivity plans a local route lookup plus the
+  // TCP probe. A successful local read is not "a working protocol": when every
+  // on-the-wire probe failed the target is down, so the run is a failed check
+  // (a 'degraded' result would reset the recurring failure streak every time).
+  it.each(['timeout', 'failed_check'] as const)('is a failed check when every probe %s even though a local route lookup succeeded', (state) => {
+    const route = identifier();
+    const tcp = identifier();
+    const result = assessTopologyDiagnostic(
+      plan([{ id: route, method: 'route_lookup' }, { id: tcp, method: 'tcp' }]),
+      [
+        step({ id: route, state: 'succeeded', method: 'route_lookup' }),
+        step({ id: tcp, state, method: 'tcp' }),
+      ],
+      { now: NOW },
+    );
+
+    expect(result).toMatchObject({ status: 'failed_check', coverage: 'monitored' });
+  });
+
   it('is a failed check only when every required probe actually failed', () => {
     const icmp = identifier();
     const tcp = identifier();
