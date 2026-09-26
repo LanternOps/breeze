@@ -15,7 +15,7 @@ import { db, withDbAccessContext, runOutsideDbContext } from '../db';
 import type { DbAccessContext } from '../db';
 import { eq } from 'drizzle-orm';
 import { executeTool, aiTools, getAllRegisteredToolNames, getToolAlwaysLoad, getToolSearchHint, type ExecuteToolOptions } from './aiTools';
-import { isTopologyAiToolName, type TopologyToolBinding } from './topology/aiToolGate';
+import { isTopologyAiToolName, loadTopologyAiPreconditions, withTopologyAiPreconditions, type TopologyToolBinding } from './topology/aiToolGate';
 import { WORKSPACE_MCP_SHAPES } from './workspace/workspaceTools';
 import type { CaptureScope } from './artifacts/toolResultCapture';
 import type { ToolExecutionContext } from './toolExecutionContext';
@@ -558,6 +558,9 @@ function registryDescription(toolName: string): string {
   return description;
 }
 
+/** The topology investigation's one approval-gated action (aiInvestigation.ts). */
+const TOPOLOGY_PROPOSAL_TOOL = 'diagnose_connectivity';
+
 function makeToolHandler(
   toolName: string,
   getAuth: () => AuthContext,
@@ -667,12 +670,26 @@ function makeToolHandler(
         ...(capture ? { capture } : {}),
         ...(topologyBinding ? { topologyBinding } : {}),
       };
-      const result = await withToolTimeout(
+      const runInToolContext = () =>
         withDbAccessContext(dbContext, () =>
           Object.keys(execOptions).length > 0
             ? executeTool(toolName, args, auth, execOptions)
             : executeTool(toolName, args, auth),
-        ),
+        );
+      // Review R1 (#6671 shape): a topology tool's gate needs the org's
+      // topology flags and AI readiness — partner-axis reads the tool's
+      // org-scoped transaction cannot see. Resolve them HERE, outside any held
+      // context (this handler runs under `runOutsideDbContext`), for the
+      // SESSION's org, and carry them in, so nothing inside the tool
+      // transaction reaches for a second pooled connection. The gate still
+      // re-checks the session pin and the caller's live permissions.
+      const topologyOrgId = captureSession && (isTopologyAiToolName(toolName) || toolName === TOPOLOGY_PROPOSAL_TOOL)
+        ? captureSession.orgId
+        : null;
+      const result = await withToolTimeout(
+        topologyOrgId
+          ? loadTopologyAiPreconditions(topologyOrgId).then((pre) => withTopologyAiPreconditions(pre, runInToolContext))
+          : runInToolContext(),
         toolTimeout,
         toolName,
       );
@@ -954,7 +971,7 @@ const makeHandler = (
   onPostToolUse?: PostToolUseCallback,
 ) => makeToolHandler(toolName, getAuth, undefined, onPreToolUse, onPostToolUse);
 
-export const __test__ = { makeSessionAwareHandler, makeHandler };
+export const __test__ = { makeSessionAwareHandler, makeHandler, makeToolHandler };
 
 // ============================================
 // SDK MCP Server Factory

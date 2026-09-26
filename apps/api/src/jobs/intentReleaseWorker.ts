@@ -46,6 +46,7 @@ import type { ToolExecutionContext } from '../services/toolExecutionContext';
 import { executeTool, requiresLiveSession } from '../services/aiTools';
 import { executeTenantToolDetailed } from '../services/toolSources/execute';
 import { withAuthDbAccessContext } from '../middleware/auth';
+import { withTopologyReleasePreconditions } from '../services/topology/aiToolGate';
 import { getToolTimeout, withToolTimeout } from '../services/toolTimeouts';
 import {
   isHeadlessGoogleTool,
@@ -1433,7 +1434,13 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
               },
             });
       rawResult = await withToolTimeout(
-        withAuthDbAccessContext(auth, invoke),
+        // Review R1 (#6671 shape): a topology diagnostic release re-checks
+        // topology AI availability inside its start transaction, under the
+        // org lock. Its partner-axis preconditions are resolved HERE, before
+        // the release context opens, and carried in — never read through a
+        // second pooled connection while that lock is held. A no-op for
+        // every other action.
+        withTopologyReleasePreconditions(intent.actionName, intent.orgId, () => withAuthDbAccessContext(auth, invoke)),
         getToolTimeout(intent.actionName),
         intent.actionName,
       );

@@ -1,10 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const mocks = vi.hoisted(() => ({ flags: vi.fn(), config: vi.fn(), select: vi.fn(), readiness: vi.fn() }));
+const mocks = vi.hoisted(() => ({ flags: vi.fn(), config: vi.fn(), select: vi.fn(), readiness: vi.fn(), directFlags: vi.fn(), directReadiness: vi.fn(), combined: vi.fn() }));
 vi.mock('../../db', () => ({ db: { select: mocks.select } }));
-vi.mock('./flags', async (original) => ({ ...await original<object>(), loadTopologyFlags: mocks.flags }));
+vi.mock('./flags', async (original) => ({ ...await original<object>(), loadTopologyFlags: mocks.directFlags }));
 vi.mock('./siteConfiguration', () => ({ loadTopologyConfiguration: mocks.config }));
-vi.mock('./aiToolGate', async (original) => ({ ...await original<object>(), loadTopologyAiReadiness: mocks.readiness }));
+// Review R1: flags + AI readiness come from ONE combined read (one partner-axis
+// escape at most), never a flags read plus a separate readiness read.
+vi.mock('./aiToolGate', async (original) => ({
+  ...await original<object>(),
+  loadTopologyAiReadiness: mocks.directReadiness,
+  loadTopologyAiFlagsAndReadiness: mocks.combined,
+}));
 // The full settings contract is covered by the settings integration suite; this unit pins the capability.
 vi.mock('@breeze/shared', async (original) => ({ ...await original<object>(), topologySiteSettingsSchema: { parse: (value: unknown) => value } }));
 vi.mock('./legacyImportState', () => ({ readLegacyImportCheckpoint: () => ({ status: 'complete' }) }));
@@ -22,6 +28,19 @@ beforeEach(() => {
   mocks.config.mockResolvedValue({ settingsRevision: '1', resolved: {}, binding: null, layers: { defaultsVersion: 1, resolverVersion: 1, site: null } });
   mocks.select.mockReturnValue({ from: () => ({ where: () => ({ limit: async () => [{ effectiveSettings: {} }] }) }) });
   mocks.readiness.mockResolvedValue({ provider: true, orgPolicy: true });
+  mocks.directFlags.mockImplementation((c: unknown) => mocks.flags(c));
+  mocks.directReadiness.mockImplementation((orgId: string) => mocks.readiness(orgId));
+  mocks.combined.mockImplementation(async (c: { scope: { orgId: string } }) => ({ flags: await mocks.flags(c), readiness: await mocks.readiness(c.scope.orgId) }));
+});
+
+describe('site settings topology preconditions (review R1)', () => {
+  it('reads flags and AI readiness in ONE combined read, never two separate partner-axis reads', async () => {
+    mocks.flags.mockResolvedValue({ ...flags, ai: true });
+    await readTopologySiteSettings(ctx);
+    expect(mocks.combined).toHaveBeenCalledTimes(1);
+    expect(mocks.directFlags).not.toHaveBeenCalled();
+    expect(mocks.directReadiness).not.toHaveBeenCalled();
+  });
 });
 
 describe('site settings physical capability (D9)', () => {

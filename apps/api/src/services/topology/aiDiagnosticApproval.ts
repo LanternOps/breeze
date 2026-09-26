@@ -51,7 +51,7 @@ import {
   type TopologyDiagnosticProposal,
   type VerifiedTopologyDiagnostic,
 } from './aiDiagnosticEffect';
-import { authorizeTopologyAiToolCall, loadTopologyAiReadiness, topologyAiAvailable } from './aiToolGate';
+import { authorizeTopologyAiToolCall, loadTopologyAiFlagsAndReadiness, topologyAiAvailable, withTopologySessionPreconditions } from './aiToolGate';
 import { createVerifiedTopologyDiagnosticRun } from './diagnosticRuns';
 import { loadTopologyFlags } from './flags';
 import { loadTopologyDiagnosticPlanningSnapshotForScope } from './originEligibility';
@@ -120,7 +120,9 @@ export async function prepareTopologyDiagnosticProposal(
   const sessionId = auth.aiOrigin?.kind === 'ai_assistant' ? auth.aiOrigin.sessionId : undefined;
   if (auth.principal?.kind !== 'user_session' || !sessionId) refuseProposal('topology_session_required');
 
-  return scopedAs(auth, async () => {
+  // Review R1: the session org's topology AI preconditions are resolved
+  // before the scoped context opens and carried into the gate.
+  return withTopologySessionPreconditions(auth, sessionId, () => scopedAs(auth, async () => {
     const gate = await authorizeTopologyAiToolCall({ site_id: input.site_id }, auth, { kind: 'ai_session', sessionId });
     if (!gate.ok) refuseProposal(gate.code);
     let ctx: TopologyRequestContext;
@@ -192,7 +194,7 @@ export async function prepareTopologyDiagnosticProposal(
       `— ${plan.steps.length} bounded steps, ${plan.limits.lifetimeSeconds}s max; approval expires ${isoMinute(proposal.proposal_expires_at)}`,
     ].filter(Boolean).join(' ');
     return { orgId: ctx.scope.orgId, arguments: proposal, label };
-  });
+  }));
 }
 
 const HANDLER_REFUSALS: Record<string, string> = {
@@ -316,7 +318,9 @@ export async function runApprovedTopologyDiagnostic(
       request,
       authorize: async (current) => {
         if (current.auth.principal?.kind === 'ai_agent') throw new TopologyOperationError('human_approval_required', 403);
-        const [flags, readiness] = await Promise.all([loadTopologyFlags(current), loadTopologyAiReadiness(current.scope.orgId)]);
+        // Served from the preconditions the release worker resolved before
+        // this transaction opened (review R1); never a second connection here.
+        const { flags, readiness } = await loadTopologyAiFlagsAndReadiness(current);
         if (!topologyAiAvailable(flags, readiness)) throw new TopologyOperationError('topology_ai_disabled', 403);
         await assertAcceptance(current, verified, actionIntentId, now());
         if (!await deviceExecuteAllowedForOrg(current.scope.orgId, 'network_diagnostic', current.auth.user.id)) {

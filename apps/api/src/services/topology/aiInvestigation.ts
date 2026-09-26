@@ -38,7 +38,7 @@ import {
 } from './aiLimits';
 import { TopologyAiOutputGate, type TopologyAiGateResult } from './aiOutputGate';
 import { resolveTopologySessionVisibility } from './aiSessionAccess';
-import { authorizeTopologySessionSite, TOPOLOGY_AI_TOOL_NAMES } from './aiToolGate';
+import { authorizeTopologySessionSite, loadTopologyAiPreconditions, TOPOLOGY_AI_TOOL_NAMES, withTopologyAiPreconditions } from './aiToolGate';
 
 export const TOPOLOGY_AI_PROMPT_VERSION = 'topology-investigation:v2';
 export const TOPOLOGY_AI_INPUT_TOKEN_BUDGET = TOPOLOGY_AI_QUOTAS.inputTokens;
@@ -171,8 +171,14 @@ function createRuntime(
   // The runtime is driven from the transports' background loops, AFTER the
   // request transaction committed: every DB read opens its own context for
   // the SAME caller (never a stale request transaction, never system scope).
-  const scopedDb = <T>(fn: () => Promise<T>): Promise<T> =>
-    runOutsideDbContext(() => withDbAccessContext(dbAccessContextFromAuth(ctx.auth), fn));
+  //
+  // Review R1: the org's topology flags and AI readiness are resolved FIRST,
+  // outside that context, and carried in — the re-authorization inside never
+  // reaches for a second pooled connection while the scoped one is held.
+  const scopedDb = async <T>(fn: () => Promise<T>): Promise<T> => {
+    const pre = await runOutsideDbContext(() => loadTopologyAiPreconditions(ctx.scope.orgId));
+    return withTopologyAiPreconditions(pre, () => runOutsideDbContext(() => withDbAccessContext(dbAccessContextFromAuth(ctx.auth), fn)));
+  };
   let input = 0;
   let lastCallInput = 0;
   let output = 0;

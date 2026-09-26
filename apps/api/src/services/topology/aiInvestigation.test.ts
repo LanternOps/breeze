@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   reserve: vi.fn(), release: vi.fn(), consume: vi.fn(), record: vi.fn(), build: vi.fn(), assertScope: vi.fn(), reauthorize: vi.fn(),
   cacheGet: vi.fn(), cacheSet: vi.fn(), cacheDelete: vi.fn(), permissionVersion: vi.fn(), visibility: vi.fn(), currentContext: vi.fn(),
+  events: [] as string[], held: 0, carried: null as null | string,
 }));
 vi.mock('./aiLimits', async (original) => ({ ...await original<object>(), reserveTopologyInvestigation: mocks.reserve, consumeTopologyAiBudget: mocks.consume, recordTopologyAiTokenUsage: mocks.record }));
 vi.mock('./aiEvidence', async (original) => ({ ...await original<object>(), buildTopologyAiEvidence: mocks.build, assertTopologyAiCurrentScope: mocks.assertScope }));
@@ -10,8 +11,25 @@ vi.mock('./aiCitations', async (original) => ({ ...await original<object>(), rea
 vi.mock('./aiCache', async (original) => ({ ...await original<object>(), getCachedTopologyExplanation: mocks.cacheGet, setCachedTopologyExplanation: mocks.cacheSet, deleteCachedTopologyExplanation: mocks.cacheDelete }));
 vi.mock('../permissions', async (original) => ({ ...await original<object>(), getPermissionAuthorityVersion: mocks.permissionVersion }));
 vi.mock('./aiSessionAccess', () => ({ resolveTopologySessionVisibility: mocks.visibility }));
-vi.mock('./aiToolGate', async (original) => ({ ...await original<object>(), authorizeTopologySessionSite: mocks.currentContext }));
-vi.mock('../../db', () => ({ runOutsideDbContext: (fn: () => unknown) => fn(), withDbAccessContext: (_ctx: unknown, fn: () => unknown) => fn() }));
+vi.mock('./aiToolGate', async (original) => ({
+  ...await original<object>(),
+  authorizeTopologySessionSite: mocks.currentContext,
+  loadTopologyAiPreconditions: async (orgId: string) => {
+    mocks.events.push(`preconditions(held=${mocks.held})`);
+    return { orgId, flags: {}, readiness: { provider: true, orgPolicy: true } };
+  },
+  withTopologyAiPreconditions: async (pre: { orgId: string }, fn: () => Promise<unknown>) => {
+    mocks.carried = pre.orgId;
+    try { return await fn(); } finally { mocks.carried = null; }
+  },
+}));
+vi.mock('../../db', () => ({
+  runOutsideDbContext: (fn: () => unknown) => fn(),
+  withDbAccessContext: async (_ctx: unknown, fn: () => Promise<unknown>) => {
+    mocks.held += 1;
+    try { return await fn(); } finally { mocks.held -= 1; }
+  },
+}));
 vi.mock('../../middleware/auth', () => ({ dbAccessContextFromAuth: () => ({}) }));
 vi.mock('../secretCrypto', () => ({ getSecretDerivedKeyMaterials: () => ({ active: { keyId: 'k', key: Buffer.alloc(32, 7) }, retained: [] }) }));
 
@@ -61,7 +79,13 @@ beforeEach(() => {
   mocks.cacheGet.mockResolvedValue(null);
   mocks.permissionVersion.mockResolvedValue('[1,2]');
   mocks.visibility.mockResolvedValue({ kind: 'all' });
-  mocks.currentContext.mockResolvedValue(ctx);
+  mocks.currentContext.mockImplementation(async () => {
+    mocks.events.push(`authorize(held=${mocks.held},carried=${mocks.carried ?? 'none'})`);
+    return ctx;
+  });
+  mocks.events.length = 0;
+  mocks.held = 0;
+  mocks.carried = null;
 });
 
 describe('topology investigation prompt (M4 Task 3)', () => {
@@ -174,6 +198,18 @@ describe('topology turn runtime (M4 Task 3)', () => {
     expect(mocks.consume).toHaveBeenLastCalledWith(SESSION, { readCalls: 1 });
     mocks.consume.mockRejectedValueOnce(new TopologyAiLimitError('topology_ai_budget_exhausted', 'readCalls'));
     expect(await runtime.beforeToolCall('get_link_health')).toMatchObject({ allowed: false });
+  });
+
+  it('resolves AI preconditions outside the scoped context before each re-authorization (review R1)', async () => {
+    const runtime = await live();
+    mocks.events.length = 0;
+    expect(await runtime.beforeToolCall('get_topology')).toEqual({ allowed: true });
+    runtime.append(JSON.stringify({ findings: [], missingData: [], nextChecks: [] }));
+    await runtime.complete();
+    expect(mocks.events).toEqual([
+      'preconditions(held=0)', `authorize(held=1,carried=${ORG})`,
+      'preconditions(held=0)', `authorize(held=1,carried=${ORG})`,
+    ]);
   });
 
   it('re-checks the live scope before every follow-up tool call', async () => {

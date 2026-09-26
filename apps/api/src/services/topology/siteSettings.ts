@@ -9,19 +9,18 @@ import { hasPermission } from '../permissions';
 import { hasSatisfiedMfa } from '../../middleware/auth';
 import { type TopologyRequestContext, topologyPermissionPairs } from './access';
 import { loadTopologyConfiguration } from './siteConfiguration';
-import { getTopologyCapabilities, loadTopologyFlags, topologyInterfaceHealthExposed, topologyPhysicalExposed } from './flags';
+import { getTopologyCapabilities, topologyInterfaceHealthExposed, topologyPhysicalExposed } from './flags';
 import { readLegacyImportCheckpoint } from './legacyImportState';
-import { loadTopologyAiReadiness } from './aiToolGate';
+import { loadTopologyAiFlagsAndReadiness } from './aiToolGate';
 export async function readTopologySiteSettings(
   ctx: TopologyRequestContext,
 ): Promise<TopologySiteSettings> {
   const snapshot = await loadTopologyConfiguration(ctx);
-  const flags = await loadTopologyFlags(ctx);
-  // M4-D4: AI readiness = server/provider/org AI policy (read only when the
-  // flag could make it matter).
-  const aiReadiness = flags.materialization && flags.ai
-    ? await loadTopologyAiReadiness(ctx.scope.orgId)
-    : { provider: false, orgPolicy: false };
+  // M4-D4: AI readiness = server/provider/org AI policy. Review R1: flags and
+  // readiness are partner-axis reads the request's org-scoped context cannot
+  // see; they come from ONE combined read (at most one short partner-axis
+  // escape, #2822) rather than a flags escape plus a readiness escape.
+  const { flags, readiness: aiReadiness } = await loadTopologyAiFlagsAndReadiness(ctx);
   const [state] = await db
     .select({ effectiveSettings: topologySiteState.effectiveSettings })
     .from(topologySiteState)

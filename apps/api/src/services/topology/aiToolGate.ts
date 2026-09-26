@@ -25,16 +25,18 @@
  * `materialization` and `ai` flags plus the server/provider/org AI policy
  * (M4-D4). Every refusal is a fixed, typed message; none echoes input.
  */
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { and, eq } from 'drizzle-orm';
 
-import { db, withSystemDbAccessContext } from '../../db';
+import { db } from '../../db';
+import { readWithPartnerAxisVisibility } from '../../db/partnerAxisRead';
 import { aiSessions } from '../../db/schema';
-import type { AuthContext } from '../../middleware/auth';
+import { withAuthDbAccessContext, type AuthContext } from '../../middleware/auth';
 import { getEffectiveAiBudget } from '../effectiveSettings';
-import { resolveLlmConfigForOrg } from '../llm/llmConfigResolver';
+import { isLlmProviderUsableForOrgInSystemContext } from '../llm/llmConfigResolver';
 import { getUserPermissions } from '../permissions';
 import { requireTopologySiteAccess, TopologyError, type TopologyRequestContext } from './access';
-import { loadTopologyFlags, type TopologyFlags } from './flags';
+import { loadTopologyFlags, resolveTopologyFlags, withResolvedTopologyFlags, type TopologyFlags } from './flags';
 
 /** Every topology tool — the five M4 reads plus the W04 (M3-D12) reads. */
 export const TOPOLOGY_AI_TOOL_NAMES = [
@@ -89,16 +91,109 @@ export type TopologyAiReadiness = {
   orgPolicy: boolean;
 };
 
+const NOT_READY: TopologyAiReadiness = { provider: false, orgPolicy: false };
+
+/**
+ * Everything topology AI availability depends on besides the caller's own
+ * permissions: the org's topology flags and its AI readiness.
+ */
+export type TopologyAiPreconditions = { orgId: string; flags: TopologyFlags; readiness: TopologyAiReadiness };
+
+/**
+ * Review R1 (#6671 shape): readiness reads the partner-axis LLM config and AI
+ * budget, which an org-scoped context cannot see. Reading them from INSIDE a
+ * held transaction therefore needs a second pooled connection — once per tool
+ * call, under the release's start-transaction lock, etc. — and at concurrency
+ * >= pool size that wedges the pool. So the paths that run inside a held
+ * context resolve their preconditions FIRST, outside any context
+ * (`loadTopologyAiPreconditions`), and carry them in with
+ * `withTopologyAiPreconditions`; the gate then reads nothing extra.
+ */
+const carriedReadiness = new AsyncLocalStorage<{ orgId: string; readiness: TopologyAiReadiness }>();
+
+/** Readiness reads on the caller's held SYSTEM connection; each half fails closed. */
+async function readReadinessInSystemContext(orgId: string): Promise<TopologyAiReadiness> {
+  // Sequential on purpose: one transaction, one connection.
+  const provider = await isLlmProviderUsableForOrgInSystemContext(orgId).catch(() => false);
+  const orgPolicy = await getEffectiveAiBudget(orgId).then((budget) => budget.enabled === true, () => false);
+  return { provider, orgPolicy };
+}
+
+/**
+ * Resolve an org's topology AI preconditions in ONE short system context.
+ * Call it OUTSIDE any held context (then it acquires one connection and
+ * releases it before returning) and carry the result with
+ * `withTopologyAiPreconditions`. Called inside a held non-system context it
+ * costs exactly one partner-axis escape (`readWithPartnerAxisVisibility`,
+ * #2822 — the same one `loadTopologyFlags` takes); inside a system context it
+ * reads in place. Fails closed (all flags off, not ready) on any error.
+ */
+export async function loadTopologyAiPreconditions(orgId: string): Promise<TopologyAiPreconditions> {
+  try {
+    return await readWithPartnerAxisVisibility(async () => ({
+      orgId,
+      flags: await loadTopologyFlags({ scope: { orgId } } as Pick<TopologyRequestContext, 'scope'> as TopologyRequestContext),
+      readiness: await readReadinessInSystemContext(orgId),
+    }));
+  } catch {
+    return { orgId, flags: resolveTopologyFlags({ globallyDisabled: true }), readiness: { ...NOT_READY } };
+  }
+}
+
+/**
+ * Serve topology flags AND AI readiness from `pre` for the duration of `fn`.
+ * A lookup for any other org fails closed rather than falling back to a read.
+ */
+export function withTopologyAiPreconditions<T>(pre: TopologyAiPreconditions, fn: () => Promise<T>): Promise<T> {
+  return withResolvedTopologyFlags({ orgId: pre.orgId, flags: pre.flags }, () =>
+    carriedReadiness.run({ orgId: pre.orgId, readiness: { ...pre.readiness } }, fn));
+}
+
 /**
  * M4-D4: AI readiness is server/provider/org policy — never an agent
- * capability bit. Fails closed on any read error.
+ * capability bit. Fails closed on any read error. Served from carried
+ * preconditions when present (see `withTopologyAiPreconditions`).
  */
 export async function loadTopologyAiReadiness(orgId: string): Promise<TopologyAiReadiness> {
-  const [provider, orgPolicy] = await Promise.all([
-    resolveLlmConfigForOrg(orgId).then((resolved) => resolved.source !== 'unavailable', () => false),
-    withSystemDbAccessContext(() => getEffectiveAiBudget(orgId)).then((budget) => budget.enabled === true, () => false),
-  ]);
-  return { provider, orgPolicy };
+  const carried = carriedReadiness.getStore();
+  if (carried) return carried.orgId === orgId ? { ...carried.readiness } : { ...NOT_READY };
+  return readWithPartnerAxisVisibility(() => readReadinessInSystemContext(orgId)).catch(() => ({ ...NOT_READY }));
+}
+
+/**
+ * Flags + readiness for one org: from carried preconditions (no read at all),
+ * otherwise in ONE combined read — never a flags escape plus a readiness
+ * escape.
+ */
+export async function loadTopologyAiFlagsAndReadiness(ctx: Pick<TopologyRequestContext, 'scope'>): Promise<{ flags: TopologyFlags; readiness: TopologyAiReadiness }> {
+  if (carriedReadiness.getStore()) {
+    const [flags, readiness] = [await loadTopologyFlags(ctx), await loadTopologyAiReadiness(ctx.scope.orgId)];
+    return { flags, readiness };
+  }
+  const pre = await loadTopologyAiPreconditions(ctx.scope.orgId);
+  return { flags: pre.flags, readiness: pre.readiness };
+}
+
+/**
+ * The release worker's hook: an approved `diagnose_connectivity` re-checks
+ * topology AI availability inside its start transaction (under the org lock),
+ * so its preconditions are resolved before the release context opens. Every
+ * other action runs unchanged.
+ */
+export async function withTopologyReleasePreconditions<T>(actionName: string, orgId: string, fn: () => Promise<T>): Promise<T> {
+  if (actionName !== 'diagnose_connectivity') return fn();
+  return withTopologyAiPreconditions(await loadTopologyAiPreconditions(orgId), fn);
+}
+
+/**
+ * Run `fn` with the preconditions of the topology session `sessionId`
+ * resolved first, outside any held context. For paths that authorize a
+ * topology session inside their own context (the diagnostic proposal).
+ */
+export async function withTopologySessionPreconditions<T>(auth: AuthContext, sessionId: string, fn: () => Promise<T>): Promise<T> {
+  const pin = await withAuthDbAccessContext(auth, () => loadSessionPin(auth, sessionId)).catch(() => null);
+  if (!pin) return fn(); // the gate inside refuses the unbound session anyway
+  return withTopologyAiPreconditions(await loadTopologyAiPreconditions(pin.orgId), fn);
 }
 
 /** The topology AI capability: both flags AND the full readiness policy. */
@@ -178,7 +273,7 @@ export async function authorizeTopologyAiToolCall(
   }
   if (sessionOrgId !== null && ctx.scope.orgId !== sessionOrgId) return refuse('topology_site_unavailable');
 
-  const [flags, readiness] = await Promise.all([loadTopologyFlags(ctx), loadTopologyAiReadiness(ctx.scope.orgId)]);
+  const { flags, readiness } = await loadTopologyAiFlagsAndReadiness(ctx);
   if (!topologyAiAvailable(flags, readiness)) return refuse('topology_ai_disabled');
 
   return { ok: true, ctx, pinnedSiteId, sessionId };
@@ -214,7 +309,7 @@ export async function authorizeTopologySessionSite(auth: AuthContext, siteId: st
     if (error instanceof TopologyError) throw new TopologyAiSessionError('topology_site_unavailable', 404, REFUSALS.topology_site_unavailable);
     throw error;
   }
-  const [flags, readiness] = await Promise.all([loadTopologyFlags(ctx), loadTopologyAiReadiness(ctx.scope.orgId)]);
+  const { flags, readiness } = await loadTopologyAiFlagsAndReadiness(ctx);
   if (!topologyAiAvailable(flags, readiness)) throw new TopologyAiSessionError('topology_ai_disabled', 403, REFUSALS.topology_ai_disabled);
   return ctx;
 }

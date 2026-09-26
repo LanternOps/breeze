@@ -405,6 +405,15 @@ vi.mock('../services/actionIntents/agentReleaseAuthority', () => ({
 vi.mock('../services/aiKillState', () => ({
   readAiKillState: killStateMock.readAiKillState,
 }));
+// Review R1: the topology release pre-resolves AI preconditions before the
+// release context opens; observable through this spy.
+const topologyPreconditionsMock = vi.hoisted(() => ({
+  calls: [] as string[],
+  withTopologyReleasePreconditions: vi.fn(async (_action: string, _orgId: string, fn: () => Promise<unknown>) => fn()),
+}));
+vi.mock('../services/topology/aiToolGate', () => ({
+  withTopologyReleasePreconditions: topologyPreconditionsMock.withTopologyReleasePreconditions,
+}));
 vi.mock('../middleware/auth', () => ({
   dbAccessContextFromAuth: authMock.dbAccessContextFromAuth,
   // The worker replays the released intent's captured AuthContext in a fresh
@@ -1544,6 +1553,26 @@ describe('releaseApprovedIntent', () => {
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id, 'executing', 'failed', expect.objectContaining({ errorCode: 'digest_required' }),
       );
+    });
+
+    it('releases diagnose_connectivity with its topology AI preconditions resolved BEFORE the release context opens (review R1)', async () => {
+      const digest = 'd'.repeat(64);
+      const intent = baseIntent({ actionName: 'diagnose_connectivity', effectDigest: digest });
+      primeThroughRevalidation(intent);
+      effectDigestMock.computeEffectDigestForRelease.mockResolvedValueOnce({ digest });
+      const order: string[] = [];
+      topologyPreconditionsMock.withTopologyReleasePreconditions.mockImplementationOnce(async (_a: string, _o: string, fn: () => Promise<unknown>) => {
+        order.push('preconditions');
+        return fn();
+      });
+      authMock.dbAccessContextFromAuth.mockImplementationOnce((auth: unknown) => { order.push('releaseContext'); return { mock: 'ctx', auth }; });
+      aiToolsMock.executeTool.mockImplementationOnce(async () => { order.push('execute'); return JSON.stringify({ ok: true }); });
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(topologyPreconditionsMock.withTopologyReleasePreconditions).toHaveBeenCalledWith('diagnose_connectivity', intent.orgId, expect.any(Function));
+      expect(order).toEqual(['preconditions', 'releaseContext', 'execute']);
     });
 
     it('proceeds to execute when the recomputed digest still matches the stored one', async () => {
