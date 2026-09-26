@@ -1102,9 +1102,26 @@
     "primary": "Principale",
     "ipAddress": "Indirizzo IP",
     "macAddress": "Indirizzo MAC",
-    "linkSpeed": "Velocità del collegamento"
+    "linkSpeed": "Velocità del collegamento",
+    "memorySlotsUsed": "{{used}} di {{total}} slot occupati",
+    "memorySpeedConfigured": "{{speed}} (configurata)",
+    "memorySpeedRated": "{{speed}} (nominale)",
+    "onPackageMemory": "Memoria integrata nel package del processore",
+    "memoryModules": "Moduli di memoria",
+    "memoryNotReported": "Non ancora segnalato — è necessario aggiornare l'agente",
+    "noMemoryModulesReported": "Nessun modulo di memoria segnalato.",
+    "slot": "Alloggiamento",
+    "capacity": "Capacità",
+    "memoryType": "Tipo",
+    "speed": "Velocità",
+    "manufacturer": "Produttore",
+    "partNumber": "Codice componente",
+    "serialNumber": "N. di serie",
+    "emptySlot": "Vuoto",
+    "ratedSpeed": "nominale {{speed}}"
   },
   "deviceInfoTab": {
+    "updateStuck": "L'aggiornamento dell'agent a {{target}} sembra bloccato: {{attempts}} tentativi dal {{since}} e il dispositivo è ancora alla versione precedente. L'updater riprova a ogni heartbeat; controlla i log dell'agent, o il dispositivo stesso se non ne invia.",
     "updateOfferWithheld": "Le offerte di aggiornamento sono sospese per questo dispositivo (dal {{since}}): non è possibile confermare che la build del suo agente accetti l'edizione servita da questo server, quindi resta alla versione attuale. Ripristinalo con un programma di installazione dell'edizione servita o con una release dell'agente che segnali la propria edizione.",
     "helperInstallIssue": {
       "awaitingServerOffer": "Breeze Assist è abilitato ma non installato (dal {{since}}): il server non ha offerto una versione di Breeze Assist da installare su questo dispositivo, che quindi resta senza installazione. Verifica che sia pubblicata una build di Breeze Assist per la piattaforma di questo dispositivo.",
@@ -1452,6 +1469,8 @@
       "manual": "Manuale"
     },
     "updateWithheld": "Aggiornamenti sospesi",
+    "updateStuck": "Aggiornamento bloccato",
+    "updateStuckTooltip": "Questo dispositivo riprova da oltre un'ora l'aggiornamento dell'agent a {{target}} senza completarlo.",
     "updateWithheldTooltip": "Il server non offre aggiornamenti a questo dispositivo perché non è possibile confermare che la build del suo agente accetti l'edizione servita. Resta alla versione attuale fino al ripristino.",
     "helperNotInstalled": "Non installato",
     "helperInstallIssueTooltip": {
@@ -2276,7 +2295,8 @@
         "cpuCores": "Core CPU",
         "ramTotalMb": "RAM (MB)",
         "diskTotalGb": "Dimensione disco (GB)",
-        "gpuModel": "Modello GPU"
+        "gpuModel": "Modello GPU",
+        "health": "Stato dell'hardware"
       },
       "network": {
         "ipAddress": "Indirizzo IP",
@@ -2344,7 +2364,8 @@
         "cpuCores": "Core CPU",
         "ramTotalMb": "RAM (MB)",
         "diskTotalGb": "Dimensione disco (GB)",
-        "gpuModel": "Modello GPU"
+        "gpuModel": "Modello GPU",
+        "health": "Stato dell'hardware"
       },
       "network": {
         "ipAddress": "Indirizzo IP",
@@ -2429,7 +2450,8 @@
         "cpuCores": "Core CPU",
         "ramTotalMb": "RAM (MB)",
         "diskTotalGb": "Dimensione disco (GB)",
-        "gpuModel": "Modello GPU"
+        "gpuModel": "Modello GPU",
+        "health": "Stato dell'hardware"
       },
       "network": {
         "ipAddress": "Indirizzo IP",
@@ -3478,7 +3500,6 @@
     "events": "Eventi hardware",
     "noEvents": "Nessun evento hardware registrato.",
     "noComponents": "Nessun componente segnalato. Verifica le origini.",
-    "all": "Tutti gli stati hardware",
     "managementController": "Controller di gestione",
     "bmcVendor": "Produttore",
     "bmcFirmware": "Versione firmware",

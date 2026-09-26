@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
-# Reads changed-file paths on stdin (one per line) and prints eleven lines in
+# Reads changed-file paths on stdin (one per line) and prints twelve lines in
 # GITHUB_OUTPUT form: `code`, `docs`, `agent`, `app`, the six area flags
-# `api`, `web`, `portal`, `addins`, `m365`, `rust`, then `topology_browser` —
-# each `true|false`.
+# `api`, `web`, `portal`, `addins`, `m365`, `rust`, `topology_browser`, then
+# `agent_code` — each `true|false`.
+#
+# `agent_code=true` means "agent code (or the CI that tests it) changed": any
+# agent/** path, `.github/workflows/ci.yml`, or this classifier. It is NOT the
+# same as `agent` (the QEMU recovery-media gate, which only fires for a pinned
+# subset of agent/). ci-success uses it to decide whether a `Test Agent
+# (Windows)` failure may be waived while #6943 (Go runtime crash) is open: a PR
+# that cannot have affected the agent must not be dequeued by that flake.
 #
 # A documentation path is docs/**, apps/docs/**, or a *.md / *.mdx file
 # anywhere — the exact set `ci.yml` used to `paths-ignore` and `docs-ci.yml`
@@ -70,7 +77,7 @@
 # `app=true` as well.
 #
 # Fail-closed: an empty file list is `code=true docs=true agent=true
-# app=true topology_browser=true` and every area true. Deciding "nothing
+# app=true topology_browser=true agent_code=true` and every area true. Deciding "nothing
 # changed" from no evidence is how a broken listing would green a PR (or
 # silently skip a job that should have run).
 set -euo pipefail
@@ -116,6 +123,7 @@ addins=false
 m365=false
 rust=false
 topology_browser=false
+agent_code=false
 seen=false
 all_areas() {
   api=true; web=true; portal=true; addins=true; m365=true; rust=true
@@ -152,6 +160,10 @@ while IFS= read -r path; do
   case "${path}" in
     .github/workflows/ci.yml|.github/scripts/classify-pr-paths.sh|.github/scripts/qemu-gate-paths.txt) agent=true ;;
     agent/*) qemu_gate_hit "${path}" && agent=true ;;
+  esac
+  # agent_code (#6943 waiver gate): agent/**, ci.yml and this classifier.
+  case "${path}" in
+    agent/*|.github/workflows/ci.yml|.github/scripts/classify-pr-paths.sh) agent_code=true ;;
   esac
   case "${path}" in
     .github/workflows/ci.yml) app=true ;;
@@ -197,6 +209,7 @@ if [[ "${seen}" != "true" ]]; then
   app=true
   all_areas
   topology_browser=true
+  agent_code=true
 fi
 
 echo "code=${code}"
@@ -210,3 +223,4 @@ echo "addins=${addins}"
 echo "m365=${m365}"
 echo "rust=${rust}"
 echo "topology_browser=${topology_browser}"
+echo "agent_code=${agent_code}"

@@ -8,7 +8,7 @@ type C = {
   durationMinutes?: number;
 };
 
-// Authoring `value` is MB/s; the handler converts to Bps internally (see
+// Authoring `value` is MB/s; the handler converts the agent's bytes/sec samples (see
 // DiskIoHighCondition in alertConditions/types.ts) — passed through untouched.
 export const diskIoKind: MonitorKindSpec<C> = {
   kind: 'disk_io',

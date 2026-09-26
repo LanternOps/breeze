@@ -58,6 +58,7 @@ import { ensureOrgAccess } from '../routes/systemTools/helpers';
 import { deviceScopeCondition, siteScopeCondition } from './aiToolsSiteScope';
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { normalizeSiteAllowlist } from './siteAllowlist';
+import { resolveWritableToolOrgId } from './aiToolWriteOrg';
 
 // Mirrors the org PATCH route's status set (schema orgStatusEnum). Kept as a
 // literal array (not orgStatusEnum.enumValues) so schema mocks in tests don't
@@ -87,39 +88,6 @@ export function generateUniqueOrgSlug(base: string, taken: Set<string>): string 
     const candidate = `${base}-${n}`;
     if (!taken.has(candidate)) return candidate;
   }
-}
-
-// Local copy of the shared hub helper (same rules as resolveWritableToolOrgId
-// in services/aiTools.ts, duplicated like aiToolsBrowser/aiToolsCompliance do
-// so tests don't need to load the whole tool hub).
-function resolveWritableOrgId(
-  auth: AuthContext,
-  inputOrgId?: string
-): { orgId?: string; error?: string } {
-  if (auth.scope === 'organization') {
-    if (!auth.orgId) return { error: 'Organization context required' };
-    if (inputOrgId && inputOrgId !== auth.orgId) {
-      return { error: 'Cannot access another organization' };
-    }
-    return { orgId: auth.orgId };
-  }
-
-  if (inputOrgId) {
-    if (!auth.canAccessOrg(inputOrgId)) {
-      return { error: 'Access denied to this organization' };
-    }
-    return { orgId: inputOrgId };
-  }
-
-  if (auth.orgId) {
-    return { orgId: auth.orgId };
-  }
-
-  if (Array.isArray(auth.accessibleOrgIds) && auth.accessibleOrgIds.length === 1) {
-    return { orgId: auth.accessibleOrgIds[0] };
-  }
-
-  return { error: 'orgId is required for this operation' };
 }
 
 /**
@@ -461,7 +429,7 @@ async function handleCreateSite(
   input: Record<string, unknown>,
   auth: AuthContext
 ): Promise<string> {
-  const resolved = resolveWritableOrgId(
+  const resolved = resolveWritableToolOrgId(
     auth,
     typeof input.orgId === 'string' ? input.orgId : undefined
   );
@@ -508,7 +476,7 @@ async function handleAddContact(
 ): Promise<string> {
   // Same tenancy rule as create_site: org-scoped callers may only write their
   // OWN org; partner-scoped callers may target any org in their accessible set.
-  const resolved = resolveWritableOrgId(
+  const resolved = resolveWritableToolOrgId(
     auth,
     typeof input.orgId === 'string' ? input.orgId : undefined
   );

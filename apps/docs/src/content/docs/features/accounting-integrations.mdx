@@ -83,8 +83,17 @@ page:
 |---|---|
 | **Pending** | Queued to push, or a push is in flight. |
 | **Synced** | Pushed successfully and QuickBooks' totals match Breeze's. |
-| **Synced (tax variance)** | Pushed successfully, but QuickBooks computed a tax total more than 1¢ different from Breeze's — usually because the QuickBooks customer or item has its own tax settings that override Breeze's line-level `TaxCodeRef`. The invoice is still synced; the variance is informational, so you can reconcile the difference in your books. |
+| **Synced (tax variance)** | Pushed successfully, but QuickBooks computed a tax total or an invoice total more than 1¢ different from Breeze's. A tax difference usually means the QuickBooks customer or item has its own tax settings that override Breeze's line-level `TaxCodeRef`. The invoice is still synced; the variance is informational, so you can reconcile the difference in your books. |
 | **Error** | The push failed. The sync status carries the last error so you can see why before retrying. |
+
+**Hidden lines.** A line with **Cust** unticked (hidden from the customer) is
+still sent to QuickBooks so the accounting copy shows every line, but it is
+sent at a price and amount of zero. Hidden lines are not part of the invoice
+total the customer sees, so they are not part of the QuickBooks total either.
+Before every push, Breeze checks that the line amounts it is about to send add
+up to the invoice subtotal. If they do not, the push is refused with an
+`invoice_totals_mismatch` error on the sync status, and nothing is sent to
+QuickBooks.
 
 A pushed invoice's QuickBooks `DocNumber` is shown alongside the status when
 QuickBooks assigned one different from the Breeze invoice number — this

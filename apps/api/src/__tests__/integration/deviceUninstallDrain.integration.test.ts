@@ -258,9 +258,9 @@ async function queueScriptCommand(deviceId: string): Promise<string> {
  * `: Promise<Response>` annotation on a synchronous function (TS2322). Inside
  * an `async` function the returned value is awaited, so the union collapses to
  * `Response` and the declared type holds. Do not "simplify" the `async` away:
- * apps/api/tsconfig.json includes every file under `src`, so this integration
- * file IS typechecked by CI's required Type Check job
- * (`tsc --noEmit --project apps/api/tsconfig.json`) and dropping the keyword
+ * apps/api/tsconfig.tests.json includes every `*.test.ts` under `src`, so this
+ * integration file IS typechecked by CI's required Type Check job
+ * (`tsc --build apps/api/tsconfig.tests.json`) and dropping the keyword
  * reddens it — a test file being out of typecheck scope is NOT true here.
  */
 async function heartbeat(app: Hono, device: SeededDevice): Promise<Response> {

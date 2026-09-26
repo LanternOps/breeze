@@ -3,7 +3,12 @@ import { zValidator } from '../../lib/validation';
 import { and, eq, sql, desc, inArray, isNull, or } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { extractRowCount } from '../../db/rowCount';
-import { notificationChannels, organizations, partners } from '../../db/schema';
+import { notificationChannelConfigs, notificationChannels, organizations, partners } from '../../db/schema';
+import {
+  notificationChannelWithConfigColumns,
+  writeNotificationChannelConfig,
+  type NotificationChannelWithConfig,
+} from '../../services/notificationChannelConfig';
 import { captureException } from '../../services/sentry';
 import { requireMfa, requirePermission, requireScope, withAuthDbAccessContext } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
@@ -60,13 +65,16 @@ const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, P
  * path. The wrapper is `withAuthDbAccessContext` (middleware/auth.ts).
  */
 
-function toChannelResponse(channel: typeof notificationChannels.$inferSelect) {
+function toChannelResponse(channel: NotificationChannelWithConfig) {
   // lastTestedAt, lastTestStatus and lastTestError are carried through via the ...channel spread;
   // updatedAt is intentionally NOT bumped when persisting a test result — running
   // a test is not a user content change, only lastTestedAt is the relevant timestamp.
+  // `config` comes from notification_channel_configs (#6379); null only when
+  // the DB context does not own the channel, rendered as an empty object so
+  // the response shape is stable.
   return {
     ...channel,
-    config: redactNotificationChannelConfig(channel.type, channel.config),
+    config: redactNotificationChannelConfig(channel.type, channel.config ?? {}),
   };
 }
 
@@ -159,8 +167,9 @@ channelsRoutes.get(
 
     // Get channels
     const channelsList = await db
-      .select()
+      .select(notificationChannelWithConfigColumns())
       .from(notificationChannels)
+      .leftJoin(notificationChannelConfigs, eq(notificationChannelConfigs.channelId, notificationChannels.id))
       .where(whereCondition)
       .orderBy(desc(notificationChannels.updatedAt), desc(notificationChannels.id))
       .limit(limit)
@@ -224,19 +233,25 @@ channelsRoutes.post(
       }
     }
 
-    const [channel] = await db
-      .insert(notificationChannels)
-      .values({
-        orgId: owner.orgId,
-        partnerId: owner.partnerId,
-        name: data.name,
-        type: data.type,
-        config: encryptNotificationChannelConfig(data.type, data.config),
-        enabled: data.enabled,
-        throttleMaxPerWindow: data.throttleMaxPerWindow ?? null,
-        throttleWindowSeconds: data.throttleWindowSeconds ?? 3600
-      })
-      .returning();
+    const encryptedConfig = encryptNotificationChannelConfig(data.type, data.config);
+    // Channel row and its config row (#6379) commit together.
+    const channel = await db.transaction(async (tx) => {
+      const [row] = await tx
+        .insert(notificationChannels)
+        .values({
+          orgId: owner.orgId,
+          partnerId: owner.partnerId,
+          name: data.name,
+          type: data.type,
+          enabled: data.enabled,
+          throttleMaxPerWindow: data.throttleMaxPerWindow ?? null,
+          throttleWindowSeconds: data.throttleWindowSeconds ?? 3600
+        })
+        .returning();
+      if (!row) return null;
+      await writeNotificationChannelConfig(row.id, encryptedConfig, tx);
+      return { ...row, config: encryptedConfig as unknown };
+    });
     if (!channel) {
       return c.json({ error: 'Failed to create notification channel' }, 500);
     }
@@ -288,6 +303,13 @@ channelsRoutes.put(
     }
 
     if (data.config !== undefined) {
+      // Merging needs the stored config: masked secrets resolve against it. A
+      // null here means the notification_channel_configs row is missing
+      // (#6379) — refuse rather than silently drop the stored secrets.
+      if (channel.config === null || channel.config === undefined) {
+        console.error(`[AlertChannels] Channel ${channel.id} has no config row (notification_channel_configs) — config update refused`);
+        return c.json({ error: 'Notification channel has no stored configuration' }, 409);
+      }
       if (channel.type === 'webhook') {
         const existingConfig = decryptNotificationChannelConfig(channel.type, channel.config);
         if (webhookOriginChangeWouldRetainAuthorization(
@@ -327,9 +349,9 @@ channelsRoutes.put(
     const updates: Record<string, unknown> = { updatedAt: new Date() };
 
     if (data.name !== undefined) updates.name = data.name;
-    if (data.config !== undefined) {
-      updates.config = encryptNotificationChannelConfig(channel.type, data.config, channel.config);
-    }
+    const nextConfig = data.config !== undefined
+      ? encryptNotificationChannelConfig(channel.type, data.config, channel.config)
+      : channel.config;
     if (data.enabled !== undefined) updates.enabled = data.enabled;
     if (data.throttleMaxPerWindow !== undefined) {
       updates.throttleMaxPerWindow = data.throttleMaxPerWindow;
@@ -338,11 +360,19 @@ channelsRoutes.put(
       updates.throttleWindowSeconds = data.throttleWindowSeconds;
     }
 
-    const [updated] = await db
-      .update(notificationChannels)
-      .set(updates)
-      .where(eq(notificationChannels.id, channelId))
-      .returning();
+    // Channel row and its config row (#6379) commit together.
+    const updated = await db.transaction(async (tx) => {
+      const [row] = await tx
+        .update(notificationChannels)
+        .set(updates)
+        .where(eq(notificationChannels.id, channelId))
+        .returning();
+      if (!row) return null;
+      if (data.config !== undefined) {
+        await writeNotificationChannelConfig(channelId, nextConfig, tx);
+      }
+      return { ...row, config: nextConfig };
+    });
     if (!updated) {
       return c.json({ error: 'Failed to update notification channel' }, 500);
     }
@@ -431,8 +461,15 @@ channelsRoutes.post(
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
-    const channelConfig = decryptNotificationChannelConfig(channel.type, channel.config);
-    const redactedChannelConfig = redactNotificationChannelConfig(channel.type, channel.config);
+    if (channel.config === null || channel.config === undefined) {
+      // Missing notification_channel_configs row (#6379): a data bug, not a
+      // misconfigured destination — say so instead of test-sending to nothing.
+      console.error(`[AlertChannels] Channel ${channel.id} has no config row (notification_channel_configs) — test send refused`);
+      return c.json({ error: 'Notification channel has no stored configuration' }, 409);
+    }
+    const storedConfig = channel.config;
+    const channelConfig = decryptNotificationChannelConfig(channel.type, storedConfig);
+    const redactedChannelConfig = redactNotificationChannelConfig(channel.type, storedConfig);
 
     // Send a real test notification through the selected channel type.
     const testMessage = {
@@ -451,7 +488,7 @@ channelsRoutes.post(
     try {
       switch (channel.type) {
         case 'email': {
-          const recipients = getEmailRecipients(channel.config as Record<string, unknown>);
+          const recipients = getEmailRecipients(storedConfig as Record<string, unknown>);
           if (recipients.length === 0) {
             testResult = {
               success: false,

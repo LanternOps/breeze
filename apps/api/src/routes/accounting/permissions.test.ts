@@ -266,7 +266,7 @@ beforeEach(() => {
   effects.listRemoteCustomers.mockResolvedValue([]);
   effects.pushInvoice.mockResolvedValue({
     mappingId: 'mapping-1', remoteEntityId: 'remote-1', docNumber: '1',
-    syncStatus: 'synced', taxVarianceCents: 0,
+    syncStatus: 'synced', taxVarianceCents: 0, totalVarianceCents: null,
   });
   effects.enqueueInvoice.mockResolvedValue(true);
   effects.enqueueReconcile.mockResolvedValue(true);

@@ -11,7 +11,7 @@ export const certExpiryKind: MonitorKindSpec<C> = {
   overridableKeys: ['withinDays'],
   defaultSeverity: 'medium',
   agentDelivered: false,
-  titleTemplate: 'Certificate expiring on {{deviceName}}',
-  messageTemplate: 'A certificate on {{deviceName}} expires within {{withinDays}} days',
+  titleTemplate: 'Agent mTLS certificate expiring on {{deviceName}}',
+  messageTemplate: 'The Breeze agent mTLS certificate on {{deviceName}} expires within {{withinDays}} days',
   toAlertCondition: (c) => ({ type: 'cert_expiry', withinDays: c.withinDays }),
 };

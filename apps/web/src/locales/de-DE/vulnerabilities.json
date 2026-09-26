@@ -108,9 +108,6 @@
       "createTicket": "Ticket konnte nicht erstellt werden"
     },
     "summary": {
-      "devices": "{{count}} Geräte",
-      "devices_one": "{{count}} Gerät",
-      "devices_other": "{{count}} Geräte",
       "maxRisk": "maximales Risiko {{risk}}"
     },
     "tickets": {
@@ -119,22 +116,22 @@
     },
     "sections": {
       "cves": "CVEs ({{count}})",
-      "devices": "Geräte ({{count}} Befunde)",
-      "devices_one": "Geräte ({{count}} Befund)",
-      "devices_other": "Geräte ({{count}} Befunde)"
+      "devicesHeading": "Geräte ({{count}})",
+      "versions": "Installierte Versionen"
     },
     "cveMeta": {
       "cvss": "CVSS {{score}}",
-      "epss": "EPSS {{score}}"
+      "epss": "EPSS {{score}}",
+      "devicesOpen_one": "{{open}} von {{count}} Gerät offen",
+      "devicesOpen_other": "{{open}} von {{count}} Geräten offen"
     },
     "selection": {
       "selectAll": "Alles auswählen",
-      "selectAllAria": "Wählen Sie alle Befunde aus",
-      "deselectAllAria": "Alle Befunde abwählen",
-      "selectFindingAria": "Befund {{cveId}} auf {{deviceName}} auswählen",
-      "selected": "{{count}} ausgewählt",
-      "selected_one": "{{count}} ausgewählt",
-      "selected_other": "{{count}} ausgewählt"
+      "selectAllAria": "Alle Geräte auswählen",
+      "deselectAllAria": "Alle Geräte abwählen",
+      "selectDeviceAria": "{{deviceName}} auswählen",
+      "selectedDevices_one": "{{count}} Gerät ausgewählt · {{findings}} offene Befunde",
+      "selectedDevices_other": "{{count}} Geräte ausgewählt · {{findings}} offene Befunde"
     },
     "empty": {
       "noFindings": "In dieser Gruppe verbleiben keine Gerätebefunde – es besteht kein Handlungsbedarf."
@@ -152,6 +149,33 @@
     },
     "ticket": {
       "defaultTitle": "Beheben Sie {{name}}"
+    },
+    "headline": {
+      "needUpdating_one": "{{count}} Gerät muss aktualisiert werden",
+      "needUpdating_other": "{{count}} Geräte müssen aktualisiert werden",
+      "nothingOpen": "Keine Geräte haben offene Befunde",
+      "scope_one": "{{count}} CVE auf {{devices}} Geräten",
+      "scope_other": "{{count}} CVEs auf {{devices}} Geräten",
+      "scopeSingleDevice_one": "{{count}} CVE auf 1 Gerät",
+      "scopeSingleDevice_other": "{{count}} CVEs auf 1 Gerät"
+    },
+    "versions": {
+      "deviceCount_one": "{{count}} Gerät",
+      "deviceCount_other": "{{count}} Geräte"
+    },
+    "device": {
+      "openOf_one": "{{open}} von {{count}} CVE offen",
+      "openOf_other": "{{open}} von {{count}} CVEs offen",
+      "accepted": "{{count}} akzeptiert",
+      "mitigated": "{{count}} gemildert",
+      "patched": "{{count}} gepatcht",
+      "patchReady": "{{count}} patchbereit",
+      "show": "Befunde",
+      "hide": "Ausblenden",
+      "expandAria": "Befunde auf {{deviceName}} anzeigen",
+      "collapseAria": "Befunde auf {{deviceName}} ausblenden",
+      "loading": "Befunde werden geladen…",
+      "loadError": "Gerätebefunde konnten nicht geladen werden"
     }
   },
   "softwareGroupTable": {
@@ -162,8 +186,7 @@
       "software": "Software",
       "severity": "Schweregrad",
       "risk": "Risiko",
-      "cves": "CVEs",
-      "devices": "Geräte",
+      "devices": "Betroffene Geräte",
       "patch": "Patch"
     },
     "help": {
@@ -177,7 +200,11 @@
       "ready_one": "Bereit · {{ready}}/{{total}} Gerät",
       "ready_other": "Bereit · {{ready}}/{{total}} Geräte"
     },
-    "hasMore": "Die 500 Softwaregruppen mit dem höchsten Risiko werden angezeigt. Filter eingrenzen, um die übrigen Gruppen anzuzeigen."
+    "hasMore": "Die 500 Softwaregruppen mit dem höchsten Risiko werden angezeigt. Filter eingrenzen, um die übrigen Gruppen anzuzeigen.",
+    "devices_one": "{{count}} Gerät",
+    "devices_other": "{{count}} Geräte",
+    "cves_one": "{{count}} CVE",
+    "cves_other": "{{count}} CVEs"
   },
   "vulnBulkActionModal": {
     "headings": {

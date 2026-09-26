@@ -1,8 +1,9 @@
 import { eq } from 'drizzle-orm';
 import type { TouchClass } from '@breeze/shared';
-import { db } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { devices, deviceCommands } from '../../db/schema/devices';
 import { dispatchScriptToDevice } from '../scriptDispatch';
+import { deliverDeferredDispatch } from '../scriptDeferredDelivery';
 import { captureException } from '../sentry';
 
 /**
@@ -28,8 +29,12 @@ import { captureException } from '../sentry';
  * refuses when the checkpoint is unavailable. An operator who wants
  * `services` unattended on Linux must approve by hand.
  *
- * Runs in whatever DB context the caller holds: the release worker calls it
- * under its own system context; a request-path caller reads through RLS.
+ * Owns its DB contexts and must be called with NONE held (#7103). It creates
+ * the command in one short system context, sends only after that commits,
+ * and polls in a fresh short context each time. It used to run whole inside
+ * the caller's system transaction: the command went out before its rows
+ * committed, and the rows stayed invisible to the agent result path for the
+ * entire poll, pinning a pooled connection for up to three minutes.
  */
 export const RESTORE_CHECKPOINT_CLASSES: ReadonlySet<TouchClass> = new Set<TouchClass>([
   'registry',
@@ -85,39 +90,46 @@ export async function ensureRestoreCheckpoint(
   const timeoutMs = opts.timeoutMs ?? CHECKPOINT_TIMEOUT_MS;
   const pollMs = opts.pollMs ?? CHECKPOINT_POLL_MS;
   try {
-    const [device] = await db
-      .select({
-        id: devices.id,
-        orgId: devices.orgId,
-        osType: devices.osType,
-        status: devices.status,
-        agentId: devices.agentId,
-        hostname: devices.hostname,
-        siteId: devices.siteId,
-        customFields: devices.customFields,
-      })
-      .from(devices)
-      .where(eq(devices.id, deviceId))
-      .limit(1);
-    if (!device) return { ok: false, reason: 'device_unavailable' };
-    if (device.osType !== 'windows') return { ok: false, reason: 'unsupported_platform' };
+    const created = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+      const [device] = await db
+        .select({
+          id: devices.id,
+          orgId: devices.orgId,
+          osType: devices.osType,
+          status: devices.status,
+          agentId: devices.agentId,
+          hostname: devices.hostname,
+          siteId: devices.siteId,
+          customFields: devices.customFields,
+        })
+        .from(devices)
+        .where(eq(devices.id, deviceId))
+        .limit(1);
+      if (!device) return { ok: false as const, reason: 'device_unavailable' as const };
+      if (device.osType !== 'windows') return { ok: false as const, reason: 'unsupported_platform' as const };
 
-    const dispatch = await dispatchScriptToDevice({
-      device,
-      source: {
-        kind: 'raw',
-        content: RESTORE_CHECKPOINT_SCRIPT,
-        language: 'powershell',
-        provenance: RESTORE_CHECKPOINT_PROVENANCE,
-      },
-      runAs: 'system',
-      timeoutSeconds: 150,
-      // The lane already decided this run happens; a maintenance window must
-      // not strip the run of its rollback point while letting the run itself
-      // proceed. The RUN's own window check is unchanged (invariant 14).
-      bypassMaintenanceWindow: true,
-      offlinePolicy: { kind: 'reject' },
-    });
+      const dispatch = await dispatchScriptToDevice({
+        device,
+        source: {
+          kind: 'raw',
+          content: RESTORE_CHECKPOINT_SCRIPT,
+          language: 'powershell',
+          provenance: RESTORE_CHECKPOINT_PROVENANCE,
+        },
+        runAs: 'system',
+        timeoutSeconds: 150,
+        // The lane already decided this run happens; a maintenance window must
+        // not strip the run of its rollback point while letting the run itself
+        // proceed. The RUN's own window check is unchanged (invariant 14).
+        bypassMaintenanceWindow: true,
+        offlinePolicy: { kind: 'reject' },
+        deferDelivery: true,
+      });
+      return dispatch;
+    }));
+    if ('reason' in created) return created;
+    // The creating context has committed: the agent's answer now has a row to land on.
+    const dispatch = await deliverDeferredDispatch(created, { deviceId, caller: 'restoreCheckpoint' });
     if (!dispatch.ok) {
       return {
         ok: false,
@@ -130,11 +142,12 @@ export async function ensureRestoreCheckpoint(
 
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      const [row] = await db
+      const commandId = dispatch.commandId;
+      const [row] = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
         .select({ status: deviceCommands.status, result: deviceCommands.result })
         .from(deviceCommands)
-        .where(eq(deviceCommands.id, dispatch.commandId))
-        .limit(1);
+        .where(eq(deviceCommands.id, commandId))
+        .limit(1)));
       if (!row) return { ok: false, reason: 'dispatch_failed' };
       const result = row.result as { exitCode?: number | null; stdout?: string | null } | null;
       if (result && typeof result.exitCode === 'number') {

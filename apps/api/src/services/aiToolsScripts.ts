@@ -37,6 +37,7 @@ import type { AiTool } from './aiTools';
 import type { CancelOutcome } from './scriptCancellation';
 import type { ToolExecutionContext, VerifiedRunScript } from './toolExecutionContext';
 import { aiDispatchScriptToDevice, aiExecuteCommand } from './aiDispatch';
+import { deliverDeferredDispatch } from './scriptDeferredDelivery';
 import { approvalMethodForRelease, assertProposalRunnable, proposalDispatchSnapshot, transitionProposal } from './scriptProposals';
 import { aiScriptAuthoringEnabled } from '../config/env';
 import { executeScriptSchema, AI_RUN_CONTEXT_JSON_SCHEMA_PROPERTIES } from './scriptRunRequest';
@@ -295,7 +296,7 @@ const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
       const access = await verifyDeviceAccess(deviceId, auth, true);
       if ('error' in access) { proposalResults[deviceId] = { error: access.error }; continue; }
       try {
-        const dispatch = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+        const created = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
           aiDispatchScriptToDevice(auth, 'run_script', {
             device: access.device,
             source: { kind: 'proposal', proposal: runnable.proposal, snapshot },
@@ -310,7 +311,10 @@ const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
               approvalMethod,
               reviewRiskTier: runnable.proposal.riskTier,
             },
+            // #7103 — the send waits for the system context above to commit.
+            deferDelivery: true,
           })));
+        const dispatch = await deliverDeferredDispatch(created, { deviceId, tool: 'run_script' });
         if (!dispatch.ok) { proposalResults[deviceId] = { error: dispatch.error }; continue; }
         if (!markedExecuted) {
           // W03 (#5612): the proposal has now produced a real execution.
@@ -519,7 +523,7 @@ const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
       // would reproduce the 0-row trap this escape exists to avoid). One
       // device per iteration here (max 10, capped above), so one org per
       // preload — there is no wider fan-out to batch it against.
-      const dispatch = await runOutsideDbContext(() =>
+      const created = await runOutsideDbContext(() =>
         withSystemDbAccessContext(async () => {
           // #3409 PR3 P1: gated on `scriptNeedsVariableScope`, not
           // content tokens alone — a `tenantVariable`-bound parameter
@@ -555,9 +559,14 @@ const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
             // W5 softens the error TEXT, not the behaviour.
             offlinePolicy: { kind: 'reject' },
             variableScope,
+            // #7103 — Phase 1 only CREATES the rows. The send happens below,
+            // after this system context has committed, so the agent's result
+            // can never race an invisible device_commands row.
+            deferDelivery: true,
           });
         })
       );
+      const dispatch = await deliverDeferredDispatch(created, { deviceId, tool: 'run_script' });
       if (!dispatch.ok) {
         if (dispatch.code === 'maintenance_suppressed') {
           // #4919 — NOT an error. A maintenance window is the operator's

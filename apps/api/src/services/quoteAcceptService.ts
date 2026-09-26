@@ -14,6 +14,7 @@ import { formatInvoiceNumber } from './invoiceNumbers';
 import { isQuoteExpired } from './quoteExpiry';
 import { emitInvoiceEvent } from './invoiceEvents';
 import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
+import { enqueueAccountingInvoicePush } from '../jobs/accountingSyncWorker';
 import { buildContractSpecsFromQuote, type QuoteLineForContract } from './quoteToContract';
 import { createContractWithLinesDetailed } from './contractService';
 import { stagePax8OrderFromQuote } from './quoteToPax8Order';
@@ -708,7 +709,7 @@ export async function acceptQuote(
 
 /**
  * Fire-and-forget lifecycle side effects for an accept that issued an invoice:
- * the `invoice.issued` event + the async PDF render. MUST be called AFTER the
+ * the `invoice.issued` event, the async PDF render and the QuickBooks auto-push. MUST be called AFTER the
  * accept transaction commits — both are Redis/BullMQ ops, and emitting inside the
  * transaction would fire even on a later rollback (the same reason the public
  * token's jti revoke is deferred to the caller). No-op when no invoice was issued.
@@ -731,6 +732,14 @@ export async function emitAcceptInvoiceIssued(
     await enqueueInvoicePdfRender(res.invoiceId);
   } catch (err) {
     console.error('[quoteAccept] enqueueInvoicePdfRender failed (accept already committed)', `invoiceId=${res.invoiceId}`, err instanceof Error ? err.message : err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
+  }
+  // QuickBooks auto-push, as issueInvoice does (#7135). The worker applies the
+  // connected / pushMode gates, so this is a no-op for partners without it.
+  try {
+    await enqueueAccountingInvoicePush(res.invoiceId, res.quote.partnerId);
+  } catch (err) {
+    console.error('[quoteAccept] enqueueAccountingInvoicePush failed (accept already committed)', `invoiceId=${res.invoiceId}`, err instanceof Error ? err.message : err);
     captureException(err instanceof Error ? err : new Error(String(err)));
   }
 }

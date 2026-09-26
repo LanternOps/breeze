@@ -47,13 +47,14 @@ const countWhereRef = { current: undefined as unknown };
 const listWhereRef = { current: undefined as unknown };
 const rowsRef = { current: [] as unknown[] };
 
-// A count query passes an object arg to select({ count: ... }); the list
-// query calls select() with no args — that's how the route itself
-// distinguishes the two, so the mock keys off the same signal.
+// A count query passes `{ count: sql`count(*)` }` to select(); the list query
+// passes notificationChannelWithConfigColumns() — `{ config: <col> }` here,
+// since getTableColumns() no-ops on this plain-object schema mock — and adds
+// a .leftJoin() step (#6379). Key off the `count` field, not mere truthiness.
 vi.mock('../../db', () => ({
   db: {
-    select: (arg?: unknown) => {
-      if (arg) {
+    select: (arg?: Record<string, unknown>) => {
+      if (arg && 'count' in arg) {
         return {
           from: () => ({
             where: (cond: unknown) => {
@@ -65,16 +66,18 @@ vi.mock('../../db', () => ({
       }
       return {
         from: () => ({
-          where: (cond: unknown) => {
-            listWhereRef.current = cond;
-            return {
-              orderBy: () => ({
-                limit: () => ({
-                  offset: () => Promise.resolve(rowsRef.current),
+          leftJoin: () => ({
+            where: (cond: unknown) => {
+              listWhereRef.current = cond;
+              return {
+                orderBy: () => ({
+                  limit: () => ({
+                    offset: () => Promise.resolve(rowsRef.current),
+                  }),
                 }),
-              }),
-            };
-          },
+              };
+            },
+          }),
         }),
       };
     },
@@ -95,6 +98,7 @@ vi.mock('../../db/schema', () => ({
     updatedAt: { name: 'updated_at' },
     createdAt: { name: 'created_at' },
   },
+  notificationChannelConfigs: { channelId: { name: 'channel_id' }, config: { name: 'config' } },
   organizations: { id: { name: 'id' }, partnerId: { name: 'partner_id' } },
   partners: { id: { name: 'id' }, settings: { name: 'settings' } },
   alertRules: {},

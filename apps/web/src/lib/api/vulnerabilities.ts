@@ -11,6 +11,7 @@ import {
   type SkippedItem,
   type SoftwareGroup,
   type SoftwareGroupDetail,
+  type SoftwareGroupDeviceFindings,
   type VulnSeverity,
   type VulnSkipReason,
   type VulnStatus,
@@ -33,10 +34,13 @@ export type {
   DeviceVulnStats,
   FleetVulnStats,
   GroupCve,
+  GroupDevice,
   GroupFinding,
+  GroupVersion,
   RemediateResult,
   SoftwareGroup,
   SoftwareGroupDetail,
+  SoftwareGroupDeviceFindings,
   VulnTicketResult,
 } from '@breeze/shared';
 
@@ -222,6 +226,16 @@ export async function fetchSoftwareGroupDetail(groupKey: string): Promise<Softwa
   const res = await fetchWithAuth(`/vulnerabilities/software/${encodeURIComponent(groupKey)}`);
   if (!res.ok) throw new Error('Failed to load software group');
   return res.json() as Promise<SoftwareGroupDetail>;
+}
+
+/** Drawer drill-down: one device's findings within a software group (#2262). */
+export async function fetchSoftwareGroupDeviceFindings(groupKey: string, deviceId: string): Promise<GroupFinding[]> {
+  const res = await fetchWithAuth(
+    `/vulnerabilities/software/${encodeURIComponent(groupKey)}/devices/${encodeURIComponent(deviceId)}`,
+  );
+  if (!res.ok) throw new Error('Failed to load device findings');
+  const body = (await res.json()) as SoftwareGroupDeviceFindings;
+  return body.findings;
 }
 
 export async function fetchVulnStats(): Promise<FleetVulnStats> {

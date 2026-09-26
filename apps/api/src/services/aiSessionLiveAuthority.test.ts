@@ -289,6 +289,49 @@ describe('resolveLiveSessionToolAuthority', () => {
     }
   });
 
+  describe('device-page write default org (#6675)', () => {
+    function pageSession() {
+      const base = session();
+      return { ...base, toolAuth: { ...base.auth, aiWriteDefaultOrgId: 'org-1' } };
+    }
+
+    it('carries the page write default onto the rebuilt tool auth, never onto the RBAC auth', async () => {
+      vi.mocked(getUserPermissions).mockResolvedValue({
+        permissions: [], partnerId: 'partner-current', orgId: 'org-1', roleId: 'role-new',
+        scope: 'partner', orgAccess: 'all',
+      });
+
+      const result = await resolveLiveSessionToolAuthority(pageSession(), 'manage_alerts', { action: 'resolve' });
+
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.toolAuth.aiWriteDefaultOrgId).toBe('org-1');
+        // Reads keep the full live reach: no narrowing to the page org.
+        expect(result.toolAuth.accessibleOrgIds).toEqual(['org-1', 'org-2']);
+        expect(result.auth.aiWriteDefaultOrgId).toBeUndefined();
+      }
+    });
+
+    it('carries it on the platform-admin branch too', async () => {
+      userRows = [{ status: 'active', isPlatformAdmin: true }];
+      const base = pageSession();
+      const result = await resolveLiveSessionToolAuthority(
+        { ...base, auth: { ...base.auth, scope: 'system', orgId: null } }, 'manage_alerts', { action: 'resolve' },
+      );
+
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.toolAuth.aiWriteDefaultOrgId).toBe('org-1');
+        expect(result.auth.aiWriteDefaultOrgId).toBeUndefined();
+      }
+    });
+
+    it('adds no default to a session that had none', async () => {
+      const result = await resolveLiveSessionToolAuthority(session(), 'manage_alerts', { action: 'resolve' });
+      expect(result.ok && result.toolAuth.aiWriteDefaultOrgId).toBeUndefined();
+    });
+  });
+
   describe('system-scoped (platform admin) sessions', () => {
     function systemSession(overrides: Record<string, unknown> = {}) {
       const base = session(overrides);

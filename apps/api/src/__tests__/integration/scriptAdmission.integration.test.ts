@@ -19,14 +19,17 @@ import { createAccessToken } from '../../services/jwt';
 import { createOrganization, createPartner, createSite, setupTestEnvironment } from './db-utils';
 import { getTestDb } from './setup';
 
+// Mounted at the production prefix so the auth middleware's self-managed
+// predicate matches (#7103): the handler runs with NO request transaction and
+// commits its rows through its own context before any send.
 function buildApp(): Hono {
   const app = new Hono();
-  app.route('/scripts', scriptRoutes);
+  app.route('/api/v1/scripts', scriptRoutes);
   return app;
 }
 
 function execute(app: Hono, token: string, scriptId: string, deviceIds: string[]): Promise<Response> {
-  return Promise.resolve(app.request(`/scripts/${scriptId}/execute`, {
+  return Promise.resolve(app.request(`/api/v1/scripts/${scriptId}/execute`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
