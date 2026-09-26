@@ -1048,7 +1048,7 @@ func restoreFiles(
 			}
 		}
 		if dlErr != nil {
-			addFailure("restore failed for %s: %s", file.SourcePath, dlErr.Error())
+			addFailure("restore failed for %s: %s", origPath, dlErr.Error())
 			if errors.Is(dlErr, ErrRecoverySessionLost) {
 				// Run-level (#5635): every remaining file would fail the
 				// same way, so stop now rather than after
@@ -1292,7 +1292,7 @@ func restoreContentlessEntry(targetPath string, file manifestFile) error {
 		// block the chmod above if it were applied first.
 		return applyWinAttrsFile(targetPath, file.WinAttrs)
 	default:
-		return fmt.Errorf("entry %s has content; use the download path", file.SourcePath)
+		return fmt.Errorf("entry %s has content; use the download path", restoreSourcePath(file))
 	}
 }
 

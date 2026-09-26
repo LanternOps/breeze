@@ -81,6 +81,44 @@ Last release: **v0.115.0** (2026-09-21).
   after two below-critical polls. Known issue: on Windows Storage Spaces, a member
   that disconnects and returns can leave its physical-disk alert open (#6895).
 
+## Network checks become monitors
+
+- **Network check authoring moves to Monitors (W05e).** Author `network_check`
+  definitions under **Alerts → Monitors**, with an asset picker. **Network** keeps
+  **Assets**, **SNMP Templates** and **Results**, including links to owning monitors.
+- **Conversion is interactive; the network runtime is retained.** Existing
+  unmanaged checks keep polling and alerting. The Results banner previews and
+  converts a single offline/consecutive-failure rule into a monitor in a dedicated,
+  cumulative organization-level **Network checks — <org name>** policy. Probe
+  history and open-alert status/provenance are preserved, including alerts on
+  offline alert devices. Checks without active rules remain non-alerting; multiple
+  rules (including mixed predicates or severities), unsupported thresholds,
+  degraded/response-time predicates and site-only bindings are refused.
+- **Prerequisites are retained, not new fixes:** #6352 already sends the HTTP
+  `expectStatus` field to agents as `expectedStatus`; extended #6353 evaluates
+  checks independently of alert-device online state. Missing runtime capability
+  blocks the whole network preview with no per-check refusals. Partner interactive
+  conversion can still process other source types. The boot sweep never converts
+  or retires network checks. New HTTP checks retain #6510's redirect default for
+  expected 3xx responses; conversion preserves the legacy effective setting.
+- **Retirement keeps history.** Explicit retirement is recorded in the persistent
+  conversion ledger and can be reversed while the network runtime remains.
+  Conversion and retirement never resolve open alerts. Deleting an adopted monitor
+  retires its probe and preserves results. Bound retained checks block asset deletion
+  with `409 asset_has_retained_network_checks`.
+- **Legacy writes return `410 Gone`.** Check create/update and alert-rule
+  create/update/delete return `network_check_authoring_retired`; unmanaged check
+  deletion also returns 410. Cleanup uses ledger retirement. Managed probe deletion
+  directs callers to its monitor. Reads and operational check/test calls remain.
+  AI tools likewise direct authoring to monitor definitions.
+- **Device action is SNMP-only.** **Disable SNMP monitoring** uses SNMP PATCH.
+  The old `DELETE /monitoring/assets/:id` returns `409 network_checks_active`
+  before mutation when checks are active, with guidance to disable managed checks
+  in Monitors or convert/retire unmanaged checks.
+- **Migration `2026-10-31-120000-network-checks-as-monitors.sql`** adds retirement
+  metadata, conversion snapshots and asset ownership constraints. It is idempotent
+  and performs no data conversion or retirement.
+
 ## Legacy alerting retirement
 
 - **Removed authoring paths.** The policy **Alerts** and **Service & Process

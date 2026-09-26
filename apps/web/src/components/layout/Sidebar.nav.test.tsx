@@ -83,7 +83,7 @@ describe('navSections structure (#1321, #1324)', () => {
     expect(names).toEqual(['Device Backup', 'Cloud Backup', 'Disaster Recovery']);
   });
 
-  it('keeps Network Monitor out of Security (lives under Fleet Management)', () => {
+  it('keeps Network out of Security (lives under Fleet Management)', () => {
     expect(hrefsOf('security')).not.toContain('/monitoring');
     // Security still leads with its own Security item.
     expect(section('security').items[0].href).toBe('/security');
@@ -176,11 +176,11 @@ describe('navSections structure (#1321, #1324)', () => {
     expect(jobs.requiredPermission).toEqual({ resource: 'automations', action: 'read' });
   });
 
-  it('labels /monitoring as Network Monitor again — monitor config moved under Alerts (2026-09-13)', () => {
+  it('labels /monitoring as Network — checks are authored under Alerts → Monitors (W05e)', () => {
     const item = navSections
       .find((s) => s.id === 'fleet-management')!
       .items.find((i) => i.href === '/monitoring')!;
-    expect(item.name).toBe('Network Monitor');
+    expect(item.name).toBe('Network');
     expect(item.labelKey).toBe('nav.networkMonitor');
   });
 
@@ -346,9 +346,9 @@ describe('sidebar i18n seed', () => {
     await i18n.changeLanguage('pt-BR');
     render(<Sidebar currentPath="/monitoring" />);
 
-    const nestedLink = await screen.findByText('Monitoramento de Rede');
+    const nestedLink = await screen.findByText('Rede');
     expect(nestedLink.closest('a')).toHaveAttribute('href', '/monitoring');
-    expect(screen.queryByText('Network Monitor')).not.toBeInTheDocument();
+    expect(screen.queryByText('Network')).not.toBeInTheDocument();
   });
 
   it.each(['/software-inventory', '/software-policies'])(

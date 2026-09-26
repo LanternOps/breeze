@@ -60,6 +60,8 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
 
   // Only the entry points that open their OWN isolated transaction. /ledger and
   // /pending are ordinary reads and must keep the request's context.
+  { method: 'GET', pattern: /^\/api\/v1\/monitor-definitions\/conversion\/network-checks\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/monitor-definitions\/conversion\/network-checks\/convert\/?$/ },
   { method: 'GET', pattern: /^\/api\/v1\/monitor-definitions\/conversion\/policies\/[^/]+\/preview\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/monitor-definitions\/conversion\/partner\/preview\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/monitor-definitions\/conversion\/partner\/convert-all\/?$/ },
@@ -75,6 +77,12 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // when the route shipped, so the portal request tx was pinned across Stripe
   // (#3777 review F2).
   { method: 'POST', pattern: /^\/api\/v1\/portal\/quotes\/[^/]+\/pay\/?$/ },
+  // Customer-portal verify-on-return (#7065) — settleCheckoutSession retrieves
+  // the Checkout session from Stripe and then records the capture in its own
+  // transaction. Under the portal request transaction the handler escaped to a
+  // SECOND pooled connection for that (the #6671 double-hold) while the first
+  // sat idle-in-transaction across the Stripe round-trip.
+  { method: 'POST', pattern: /^\/api\/v1\/portal\/invoices\/[^/]+\/settle\/?$/ },
   // #6175 Network Visibility overview. Portal auth has already resolved the
   // owning partner, so the handler opens one org-scoped context with
   // currentPartnerId populated for SELECT-only partner-wide network_monitors
@@ -232,6 +240,17 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // they had under the request tx.
   { method: 'POST', pattern: /^\/api\/v1\/mobile\/devices\/[^/]+\/actions\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/remediation-suggestions\/[^/]+\/execute\/?$/ },
+  // #6597 — manual backup runs (single device and run-all). Each creates
+  // backup_jobs rows and enqueues a dispatch the backup worker picks up on its
+  // own connection within milliseconds. Under the ambient request transaction
+  // the worker could not see the uncommitted row: it resolved the job as a
+  // pathless file backup, failed a row it could not see (0 rows), and the row
+  // that committed afterwards sat `pending` until the stale reaper failed it
+  // with "Backup dispatch never completed". The handlers now create the rows
+  // in a short withAuthDbAccessContext block and enqueue strictly after it
+  // commits — the same shape as the #6849 patch-job route.
+  { method: 'POST', pattern: /^\/api\/v1\/backup\/jobs\/run\/[^/]+\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/backup\/jobs\/run-all\/?$/ },
   // PSA connection "Test connection" — constructs a real PSA adapter and calls
   // the remote PSA API (psaFetch, 20s timeout) against a TENANT-CONTROLLED
   // baseUrl; a blackholed host would otherwise pin a pooled connection

@@ -28,7 +28,7 @@
     "vulnerabilities": "Güvenlik Açıkları",
     "oneDrive": "OneDrive",
     "aiForOffice": "Office için AI",
-    "networkMonitor": "Ağ İzleyicisi",
+    "networkMonitor": "Ağ",
     "jobs": "İşler",
     "monitoring": "İzleme",
     "networkDiscovery": "Ağ Keşfi",
@@ -874,97 +874,18 @@
       }
     },
     "monitors": {
-      "CreateMonitorForm": {
-        "actions": {
-          "createMonitor": "Monitör Oluştur",
-          "creating": "Oluşturuluyor..."
-        },
-        "errors": {
-          "createMonitor": "Monitör oluşturulamadı",
-          "generic": "Bir hata oluştu",
-          "nameRequired": "İsim gerekli",
-          "targetRequired": "Hedef gerekli"
-        },
-        "fields": {
-          "expectedBanner": "Beklenen Banner (isteğe bağlı)",
-          "expectedBody": "Beklenen Gövde İçeriği (isteğe bağlı)",
-          "expectedStatus": "Beklenen Durum",
-          "expectedValue": "Beklenen Değer (isteğe bağlı)",
-          "followRedirects": "Yönlendirmeleri Takip Et",
-          "hostname": "Çözümlenecek Ana Bilgisayar Adı",
-          "method": "Yöntem",
-          "monitorType": "Monitör Türü",
-          "nameserver": "Özel Ad Sunucusu (isteğe bağlı)",
-          "pingCount": "Ping Sayısı",
-          "pollingInterval": "Yoklama Aralığı (saniye)",
-          "port": "Bağlantı noktası",
-          "recordType": "Kayıt Türü",
-          "target": "Hedef (IP/Ana Bilgisayar Adı)",
-          "timeout": "Zaman aşımı (saniye)",
-          "url": "URL'si",
-          "verifySsl": "SSL'yi doğrulayın"
-        },
-        "monitorTypes": {
-          "dnsCheck": {
-            "description": "DNS kayıtlarının doğru şekilde çözümlendiğini doğrulayın",
-            "label": "DNS Kontrol et"
-          },
-          "httpCheck": {
-            "description": "HTTP/HTTPS uç noktalarını izleyin",
-            "label": "HTTP Kontrolü"
-          },
-          "icmpPing": {
-            "description": "Bir ana bilgisayara ping yoluyla ulaşılıp ulaşılamadığını kontrol edin",
-            "label": "ICMP Ping'i"
-          },
-          "tcpPort": {
-            "description": "TCP bağlantı noktasının açık olup olmadığını ve yanıt verip vermediğini kontrol edin",
-            "label": "TCP Bağlantı Noktası"
-          }
-        },
-        "placeholders": {
-          "expectedBanner": "ör. SSH-",
-          "expectedBody": "ör. \"durum\":\"tamam\"",
-          "expectedValue": "ör. 93.184.216.34",
-          "hostname": "example.com",
-          "name": "ör. Üretim Web Sunucusu",
-          "nameserver": "8.8.8.8",
-          "target": "192.168.1.1 veya sunucu.example.com",
-          "url": "https://example.com/health"
-        },
-        "subtitle": "Bir ağ hedefi için yeni bir izleme kontrolü ayarlayın.",
-        "title": "Ağ İzleyicisi Oluştur"
-      },
       "MonitorDetailModal": {
         "actions": {
-          "cancelEdit": "Düzenlemeyi İptal Et",
-          "checkNow": "Şimdi Kontrol Et",
-          "deleteMonitor": "Monitörü sil",
-          "deleting": "Siliniyor...",
-          "yesDelete": "Evet, sil"
-        },
-        "alertRules": {
-          "disabled": "(devre dışı)",
-          "title": "Uyarı Kuralları"
+          "checkNow": "Şimdi Kontrol Et"
         },
         "consecutiveFailures": "{{count}} ardışık hata",
         "consecutiveFailures_plural": "{{count}} ardışık hatalar",
-        "delete": {
-          "confirmShort": "Emin misin?"
-        },
         "errors": {
-          "deleteMonitor": "Monitör silinemedi",
           "generic": "Bir hata oluştu",
           "loadDetails": "Monitör ayrıntıları yüklenemedi",
-          "triggerCheck": "Denetim tetiklenemedi",
-          "updateMonitor": "Monitör güncellenemedi"
+          "triggerCheck": "Denetim tetiklenemedi"
         },
         "fallbackTitle": "Monitör",
-        "fields": {
-          "interval": "Aralık (lar)",
-          "timeout": "Zaman Aşımı (s)",
-          "target": "Hedef URL"
-        },
         "labels": {
           "lastChecked": "Son kontrol: {{time}}",
           "response": "Yanıt: {{response}}",
@@ -992,8 +913,6 @@
           "icmpPing": "ICMP Ping'i",
           "tcpPort": "TCP Bağlantı Noktası"
         },
-        "targetResetNote": "URL değiştirildiğinde TLS gözlemi sıfırlanır.",
-        "saved": "İzleyici güncellendi",
         "certificate": {
           "title": "Sertifika",
           "issuer": "Veren kuruluş",
@@ -1005,27 +924,22 @@
             "handshakeFailed": "TLS el sıkışması başarısız",
             "notTls": "TLS yok"
           }
-        }
+        },
+        "openMonitor": "Bu denetimin monitörünü aç",
+        "notConverted": "Dönüşümü Sonuçlar sekmesinde inceleyin."
       },
       "NetworkMonitorList": {
         "actions": {
-          "addMonitor": "Monitör Ekle",
-          "deleteMonitor": "Monitörü sil",
           "runCheckNow": "Şimdi kontrolü çalıştır",
-          "viewDetails": "Ayrıntıları görüntüle"
+          "viewDetails": "Ayrıntıları görüntüle",
+          "newCheck": "Yeni denetim"
         },
         "assetFilter": "Monitörler seçilen varlığa göre filtreleniyor.",
-        "delete": {
-          "confirmLabel": "Monitörü Sil",
-          "message": "Bu monitörü silmek istediğinizden emin misiniz? Bu aynı zamanda tüm sonuçları ve uyarı kurallarını da kaldıracaktır. Bu eylem geri alınamaz.",
-          "title": "Ağ İzleyicisini Sil"
-        },
         "empty": {
-          "action": "Şimdi bir tane oluşturun.",
-          "prefix": "Yapılandırılmış ağ monitörü yok."
+          "action": "Monitör oluştur.",
+          "prefix": "Henüz ağ denetimi yok."
         },
         "errors": {
-          "deleteMonitor": "Monitör silinemedi",
           "fetchMonitors": "Monitörler getirilemedi",
           "generic": "Bir hata oluştu",
           "triggerCheck": "Denetim tetiklenemedi"
@@ -1038,11 +952,13 @@
           "interval": "Aralık",
           "lastChecked": "Son Kontrol Edildi",
           "response": "Yanıt",
-          "target": "Hedef"
+          "target": "Hedef",
+          "monitor": "Monitör",
+          "openMonitor": "Monitörü aç"
         },
         "loading": "Monitörler yükleniyor...",
         "messages": {
-          "monitorDeleted": "Monitör silindi"
+          "checkQueued": "Ağ denetimi sıraya alındı"
         },
         "status": {
           "degraded": "Bozulmuş"
@@ -1059,6 +975,19 @@
           "httpCheck": "HTTP Kontrolü",
           "icmpPing": "ICMP Ping'i",
           "tcpPort": "TCP Bağlantı Noktası"
+        },
+        "notConverted": "Dönüştürülmedi"
+      },
+      "NetworkCheckConversionBanner": {
+        "pending": "{{count}} ağ denetimi inceleme bekliyor.",
+        "review": "Dönüşümü incele",
+        "title": "Ağ denetimi dönüşümü",
+        "convert": "{{count}} öğeyi dönüştür",
+        "converted": "{{count}} ağ denetimi dönüştürüldü",
+        "failed": "Ağ denetimleri dönüştürülemedi",
+        "outcome": {
+          "convertible": "Dönüştürülebilir",
+          "unconvertible": "Dönüştürülemez"
         }
       }
     },
@@ -1847,7 +1776,7 @@
         "configureMonitoring": "İzlemeyi Yapılandırma",
         "pauseSnmpPolling": "SNMP oylamayı duraklatın",
         "resumeSnmpPolling": "SNMP oylamayı sürdürün",
-        "disableAllActiveMonitoring": "Bu varlık için tüm etkin izlemeyi devre dışı bırak",
+        "disableSnmpMonitoring": "SNMP izlemeyi devre dışı bırak",
         "needsOrgSelection": "Ağ izleme varlıkları tek bir kuruluş kapsamına alınmıştır.",
         "loadingAssets": "İzleme varlıkları yükleniyor...",
         "showingAllDiscoveredAssets": "Keşfedilen tüm varlıklar gösteriliyor",
@@ -1943,11 +1872,12 @@
       "MonitoringPage": {
         "tabs": {
           "assets": "Varlıklar",
-          "checks": "Ağ Kontrolleri",
-          "templates": "SNMP Şablonlar"
+          "templates": "SNMP Şablonlar",
+          "results": "Sonuçlar"
         },
-        "title": "İzleme",
-        "description": "SNMP yoklama ve ağ kontrolleri. Keşif izlemeyi besleyebilir ancak izleme burada yönetilir."
+        "title": "Ağ",
+        "description": "Varlıklar, SNMP şablonları ve ağ denetimi sonuçları. Denetimler Uyarılar altında monitör olarak oluşturulur.",
+        "newCheck": "Yeni denetim"
       }
     },
     "fleet": {

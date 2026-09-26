@@ -1770,6 +1770,30 @@
       "menu": "menu",
       "undefined": "undefined",
       "secretUnavailable": "Secreto — uma versão futura o entregará como variável de ambiente."
+    },
+    "remediateConfirm": {
+      "title": "Corrigir \"{{name}}\"?",
+      "loading": "Carregando os dispositivos afetados…",
+      "previewFailed": "Não foi possível carregar a prévia da correção.",
+      "nothingQueued": "Nada foi colocado na fila.",
+      "nothingToRemove": "Nenhum dispositivo tem atualmente software que esta política desinstalaria.",
+      "message": "Isso desinstala {{uninstallCount}} item(ns) de software em {{count}} dispositivo(s) que violam a política de {{mode}} \"{{name}}\". As desinstalações não podem ser desfeitas pelo Breeze.",
+      "summary": "Destino: {{count}} dispositivo(s) — política de {{mode}} \"{{name}}\"",
+      "capped": "{{total}} dispositivos se qualificam no momento. Esta execução está limitada aos primeiros {{max}}; execute Corrigir novamente depois que terminar para alcançar o restante.",
+      "softwareHeading": "Software a ser desinstalado",
+      "onDevices": "{{count}} dispositivo(s)",
+      "moreSoftware": "e mais {{count}} título(s)",
+      "devicesHeading": "Dispositivos",
+      "moreDevices": "e mais {{count}} dispositivo(s)",
+      "typeCount": "Digite {{count}} para confirmar",
+      "confirm": "Desinstalar em {{count}} dispositivo(s)",
+      "queued": "Correção enfileirada para {{count}} dispositivo(s)",
+      "failed": "Falha ao agendar a correção",
+      "modeAllowlist": "lista de permissões",
+      "modeBlocklist": "lista de bloqueio",
+      "queuedNone": "Nada foi enfileirado: os dispositivos da prévia não precisam mais de correção ou já a têm pendente.",
+      "queuedPartial": "Correção enfileirada para {{queued}} de {{requested}} dispositivo(s) da prévia; os demais não precisam mais dela ou já a têm pendente.",
+      "previewFailedWithReason": "Não foi possível carregar a prévia da correção: {{reason}}"
     }
   }
 }

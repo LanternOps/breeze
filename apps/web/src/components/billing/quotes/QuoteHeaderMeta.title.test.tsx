@@ -65,6 +65,31 @@ function CommitProbe({ testId, seen }: { testId: string; seen: string[] }) {
 beforeEach(() => vi.clearAllMocks());
 
 describe('QuoteHeaderMeta — title save reporting', () => {
+  // #4296: onChanged() refetches without being awaited and the input
+  // re-enables as soon as the PATCH resolves. A keystroke typed before the
+  // refetch lands must survive the echo of our own (trimmed) save.
+  it('keeps a title typed during the save round-trip when the refetch echoes the saved value', async () => {
+    fetchMock.mockImplementation(async () => json({ data: {} }));
+    const onChanged = vi.fn();
+    const withTitle = (title: string) => ({ ...detail(), quote: { ...detail().quote, title } });
+    const { rerender } = render(<QuoteHeaderMeta detail={withTitle('Original')} onChanged={onChanged} />);
+
+    const input = screen.getByTestId('quote-title');
+    fireEvent.change(input, { target: { value: 'Renewal ' } });
+    fireEvent.blur(input);
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByTestId('quote-title')).not.toBeDisabled());
+
+    fireEvent.change(screen.getByTestId('quote-title'), { target: { value: 'Renewal 2027' } });
+    rerender(<QuoteHeaderMeta detail={withTitle('Renewal')} onChanged={onChanged} />);
+    expect(screen.getByTestId('quote-title')).toHaveValue('Renewal 2027');
+
+    fireEvent.blur(screen.getByTestId('quote-title'));
+    await waitFor(() => expect(fetchMock.mock.calls.some(
+      (c) => String((c[1] as RequestInit)?.body).includes('Renewal 2027'),
+    )).toBe(true));
+  });
+
   it('a dirty title is not "pending"; only the in-flight PATCH is', async () => {
     let resolvePatch!: (v: Response) => void;
     fetchMock.mockImplementation(async () => new Promise<Response>((r) => { resolvePatch = r; }));

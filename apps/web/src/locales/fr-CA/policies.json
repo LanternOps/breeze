@@ -1770,6 +1770,30 @@
       "menu": "Menu",
       "undefined": "undefined",
       "secretUnavailable": "Secret — une version ultérieure la transmettra comme variable d'environnement."
+    },
+    "remediateConfirm": {
+      "title": "Assainir « {{name}} » ?",
+      "loading": "Chargement des appareils concernés…",
+      "previewFailed": "Impossible de charger l'aperçu de l'assainissement.",
+      "nothingQueued": "Rien n'a été mis en file d'attente.",
+      "nothingToRemove": "Aucun appareil ne possède actuellement de logiciel que cette stratégie désinstallerait.",
+      "message": "Cette action désinstalle {{uninstallCount}} logiciel(s) sur {{count}} appareil(s) qui enfreignent la stratégie {{mode}} « {{name}} ». Les désinstallations ne peuvent pas être annulées depuis Breeze.",
+      "summary": "Cible : {{count}} appareil(s) — stratégie {{mode}} « {{name}} »",
+      "capped": "{{total}} appareils sont actuellement concernés. Cette exécution est limitée aux {{max}} premiers ; relancez l'assainissement une fois terminé pour atteindre les autres.",
+      "softwareHeading": "Logiciels à désinstaller",
+      "onDevices": "{{count}} appareil(s)",
+      "moreSoftware": "et {{count}} autre(s) titre(s)",
+      "devicesHeading": "Appareils",
+      "moreDevices": "et {{count}} autre(s) appareil(s)",
+      "typeCount": "Entrez {{count}} pour confirmer",
+      "confirm": "Désinstaller sur {{count}} appareil(s)",
+      "queued": "Assainissement mis en file d'attente pour {{count}} appareil(s)",
+      "failed": "Impossible de planifier l'assainissement",
+      "modeAllowlist": "liste d'autorisation",
+      "modeBlocklist": "liste de blocage",
+      "queuedNone": "Rien n'a été mis en file d'attente : les appareils de l'aperçu n'ont plus besoin d'assainissement ou en ont déjà un en attente.",
+      "queuedPartial": "Assainissement mis en file d'attente pour {{queued}} appareil(s) sur {{requested}} de l'aperçu ; les autres n'en ont plus besoin ou en ont déjà un en attente.",
+      "previewFailedWithReason": "Impossible de charger l'aperçu de l'assainissement : {{reason}}"
     }
   }
 }

@@ -116,11 +116,19 @@ function createBackupWorker(): Worker<BackupQueueJobData> {
         assertQueueJobName(BACKUP_QUEUE, job, 'cleanup-expired-snapshots');
         return await processCleanupExpiredSnapshots();
       }
+      // check-schedules is ALSO handled outside the blanket context (#6597):
+      // every job it creates is handed to the dispatch worker, which reads the
+      // row on its own connection. Created inside one sweep-long transaction,
+      // those rows were invisible until the whole sweep committed — the
+      // dispatch resolved them as pathless file backups and they sat `pending`
+      // until the stale reaper failed them. processCheckSchedules commits each
+      // org's jobs in their own short context before enqueueing them.
+      if (data.type === 'check-schedules') {
+        assertQueueJobName(BACKUP_QUEUE, job, 'check-schedules');
+        return await processCheckSchedules();
+      }
       return runWithSystemDbAccess(async () => {
         switch (data.type) {
-          case 'check-schedules':
-            assertQueueJobName(BACKUP_QUEUE, job, 'check-schedules');
-            return await processCheckSchedules();
           case 'expire-recovery-tokens':
             assertQueueJobName(BACKUP_QUEUE, job, 'expire-recovery-tokens');
             return await processExpireRecoveryTokens();
@@ -161,9 +169,11 @@ const BACKUP_REPEATABLE_META: QueueActorMeta = {
   source: 'worker:backup:repeatable',
 };
 
-async function processCheckSchedules(): Promise<{ enqueued: number }> {
-  const now = new Date();
-
+/**
+ * Enumerate every org that has an active backup configuration policy, either
+ * org-owned or inherited from a partner-wide one.
+ */
+async function loadScheduledBackupOrgIds(): Promise<Set<string>> {
   // 1. Find all org IDs with active backup config policies
   const orgRows = await db
     .selectDistinct({ orgId: configurationPolicies.orgId })
@@ -217,90 +227,123 @@ async function processCheckSchedules(): Promise<{ enqueued: number }> {
   for (const { orgId } of partnerOrgRows) {
     orgIds.add(orgId);
   }
+  return orgIds;
+}
 
+interface ScheduledBackupJobToDispatch {
+  jobId: string;
+  configId: string;
+  deviceId: string;
+}
+
+/**
+ * Create every scheduled backup job that is due for one org. Runs inside the
+ * caller's (short, per-org) DB context and only CREATES rows — enqueueing is
+ * the caller's job, strictly after this context has committed (#6597).
+ */
+async function createDueScheduledBackupJobs(
+  orgId: string,
+  now: Date,
+): Promise<ScheduledBackupJobToDispatch[]> {
+  const due: ScheduledBackupJobToDispatch[] = [];
+  const entries = await resolveAllBackupAssignedDevices(orgId);
+
+  for (const entry of entries) {
+    // Broken profile link (deleted/RLS-hidden/empty/malformed selections):
+    // skip loudly. Falling through would dispatch the legacy settings row,
+    // which on a profile link carries no paths — a backup that protects
+    // nothing while reporting success.
+    //
+    // The resolver flags this in selectionError, but re-derive it here too:
+    // this is the last checkpoint before a backup runs, so it must not
+    // depend on an upstream flag being set. A link that names a profile and
+    // has no specs NEVER falls back to legacy dispatch.
+    const profileId = entry.settings?.backupProfileId ?? null;
+    const brokenProfileLink =
+      entry.selectionError ??
+      (profileId && !entry.selectionSpecs
+        ? `Backup profile ${profileId} could not be resolved into any data source`
+        : null);
+    if (brokenProfileLink) {
+      console.error(
+        `[BackupWorker] Device ${entry.deviceId} (org ${orgId}, link ${entry.featureLinkId}): ${brokenProfileLink} — no backup scheduled`
+      );
+      continue;
+    }
+
+    // Destination chain already resolved (explicit → legacy → org
+    // default). Nothing resolved = loud skip, never silent: a partner
+    // policy hit an org with no default destination.
+    if (!entry.configId) {
+      console.error(
+        `[BackupWorker] Device ${entry.deviceId} (org ${orgId}, link ${entry.featureLinkId}) has no backup destination — set an org default destination or pin one on the policy`
+      );
+      continue;
+    }
+
+    const schedule = entry.settings?.schedule as PolicySchedule | null;
+    if (!schedule?.frequency || !schedule.time) continue;
+    const occurrenceKey = getDueOccurrenceKey(
+      schedule as never,
+      now,
+      entry.resolvedTimezone,
+      SCHEDULE_LOOKBACK_MINUTES,
+    );
+    if (!occurrenceKey) continue;
+
+    // Profile fan-out: one job per enabled selection. Legacy custom links
+    // (no profile) create a single job with NULL mode, exactly as before.
+    const specs = entry.selectionSpecs ?? [undefined];
+    const helperQueues = await deviceHelperQueues(entry.deviceId);
+    for (const spec of specs) {
+      const result = await createScheduledBackupJobIfAbsent({
+        orgId,
+        configId: entry.configId,
+        featureLinkId: entry.featureLinkId,
+        deviceId: entry.deviceId,
+        helperQueues,
+        occurrenceKey,
+        createdAt: now,
+        dedupeWindowMinutes: SCHEDULE_LOOKBACK_MINUTES,
+        ...(spec
+          ? { backupMode: spec.backupMode, modeTargets: spec.targets }
+          : {}),
+      });
+
+      if (result?.created) {
+        due.push({ jobId: result.job.id, configId: result.job.configId, deviceId: entry.deviceId });
+      }
+    }
+  }
+  return due;
+}
+
+/**
+ * Scheduled-backup sweep. Called with NO ambient DB context (see the worker
+ * switch): each phase opens its own short system context.
+ *
+ * #6597 — the job rows for an org are created in one context that COMMITS
+ * before any of their dispatches is enqueued. The dispatch worker reads a job
+ * on its own connection within milliseconds of the enqueue; a row still
+ * inside an open transaction is invisible to it, and it then resolved the job
+ * as a pathless file backup, "failed" a row it could not see, and left the
+ * committed row `pending` until the stale reaper failed it with "Backup
+ * dispatch never completed".
+ */
+async function processCheckSchedules(): Promise<{ enqueued: number }> {
+  const now = new Date();
+
+  const orgIds = await runWithSystemDbAccess(() => loadScheduledBackupOrgIds());
   if (orgIds.size === 0) return { enqueued: 0 };
 
   let enqueued = 0;
 
-  // 2. For each org, resolve all backup-assigned devices via config policy hierarchy.
+  // 2. For each org, resolve all backup-assigned devices via config policy
+  // hierarchy and create the due jobs, then enqueue them once committed.
   for (const orgId of orgIds) {
+    let due: ScheduledBackupJobToDispatch[];
     try {
-      const entries = await resolveAllBackupAssignedDevices(orgId);
-
-      for (const entry of entries) {
-        // Broken profile link (deleted/RLS-hidden/empty/malformed selections):
-        // skip loudly. Falling through would dispatch the legacy settings row,
-        // which on a profile link carries no paths — a backup that protects
-        // nothing while reporting success.
-        //
-        // The resolver flags this in selectionError, but re-derive it here too:
-        // this is the last checkpoint before a backup runs, so it must not
-        // depend on an upstream flag being set. A link that names a profile and
-        // has no specs NEVER falls back to legacy dispatch.
-        const profileId = entry.settings?.backupProfileId ?? null;
-        const brokenProfileLink =
-          entry.selectionError ??
-          (profileId && !entry.selectionSpecs
-            ? `Backup profile ${profileId} could not be resolved into any data source`
-            : null);
-        if (brokenProfileLink) {
-          console.error(
-            `[BackupWorker] Device ${entry.deviceId} (org ${orgId}, link ${entry.featureLinkId}): ${brokenProfileLink} — no backup scheduled`
-          );
-          continue;
-        }
-
-        // Destination chain already resolved (explicit → legacy → org
-        // default). Nothing resolved = loud skip, never silent: a partner
-        // policy hit an org with no default destination.
-        if (!entry.configId) {
-          console.error(
-            `[BackupWorker] Device ${entry.deviceId} (org ${orgId}, link ${entry.featureLinkId}) has no backup destination — set an org default destination or pin one on the policy`
-          );
-          continue;
-        }
-
-        const schedule = entry.settings?.schedule as PolicySchedule | null;
-        if (!schedule?.frequency || !schedule.time) continue;
-        const occurrenceKey = getDueOccurrenceKey(
-          schedule as never,
-          now,
-          entry.resolvedTimezone,
-          SCHEDULE_LOOKBACK_MINUTES,
-        );
-        if (!occurrenceKey) continue;
-
-        // Profile fan-out: one job per enabled selection. Legacy custom links
-        // (no profile) create a single job with NULL mode, exactly as before.
-        const specs = entry.selectionSpecs ?? [undefined];
-        const helperQueues = await deviceHelperQueues(entry.deviceId);
-        for (const spec of specs) {
-          const result = await createScheduledBackupJobIfAbsent({
-            orgId,
-            configId: entry.configId,
-            featureLinkId: entry.featureLinkId,
-            deviceId: entry.deviceId,
-            helperQueues,
-            occurrenceKey,
-            createdAt: now,
-            dedupeWindowMinutes: SCHEDULE_LOOKBACK_MINUTES,
-            ...(spec
-              ? { backupMode: spec.backupMode, modeTargets: spec.targets }
-              : {}),
-          });
-
-          if (result?.created) {
-            // 6. Enqueue dispatch
-            await enqueueBackupDispatch(
-              result.job.id,
-              result.job.configId,
-              orgId,
-              entry.deviceId
-            );
-            enqueued++;
-          }
-        }
-      }
+      due = await runWithSystemDbAccess(() => createDueScheduledBackupJobs(orgId, now));
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       console.error(`[BackupWorker] Failed to process scheduled backups for org ${orgId}: ${errMsg}`);
@@ -308,6 +351,32 @@ async function processCheckSchedules(): Promise<{ enqueued: number }> {
         console.error(err.stack);
       }
       continue;
+    }
+
+    for (const job of due) {
+      try {
+        // enqueueBackupDispatch reads the config's approval generation, so it
+        // needs a context of its own — a fresh one, after the creation above
+        // has committed.
+        await runWithSystemDbAccess(() =>
+          enqueueBackupDispatch(job.jobId, job.configId, orgId, job.deviceId)
+        );
+        enqueued++;
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error(
+          `[BackupWorker] Failed to enqueue scheduled backup dispatch for job ${job.jobId} (org ${orgId}, device ${job.deviceId}): ${errMsg}`
+        );
+        // The row has committed, so nothing will ever dispatch it: settle it
+        // now instead of leaving it `pending` for the stale reaper.
+        try {
+          await runWithSystemDbAccess(() =>
+            markJobFailed(job.jobId, `Failed to enqueue backup dispatch: ${errMsg}`)
+          );
+        } catch (markErr) {
+          console.error(`[BackupWorker] Failed to mark scheduled backup job ${job.jobId} failed:`, markErr);
+        }
+      }
     }
   }
 
@@ -1107,13 +1176,32 @@ async function prepareBackupDispatchTargets(
     .where(eq(backupJobs.id, data.jobId))
     .limit(1);
 
+  // #6597: the row is invisible — almost certainly because its dispatch was
+  // enqueued before the transaction that created it committed. Every creator
+  // now commits first, so this is a tripwire, not a path. Refuse loudly: the
+  // fallthrough below would resolve an unread job as a pathless FILE backup
+  // whatever its real mode, "fail" it with a 0-row UPDATE, and leave the row
+  // that commits a moment later `pending` for the stale reaper with a message
+  // that points nowhere near the cause.
+  if (!job) {
+    const message =
+      `[BackupWorker] Backup job ${data.jobId} (device ${data.deviceId}) is not visible to the dispatch worker — ` +
+      'refusing to dispatch it. Its dispatch was most likely enqueued before the transaction that created ' +
+      'the row committed (#6597); if the row does commit, the stale-job reaper will fail it.';
+    console.error(message);
+    captureException(new Error(message), undefined, {
+      backup_dispatch_issue: 'job-row-not-visible',
+    });
+    return { status: 'done', result: { dispatched: false } };
+  }
+
   let backupMode = 'file';
   let modeTargets: Record<string, unknown> = {};
 
-  if (job?.backupMode) {
+  if (job.backupMode) {
     backupMode = job.backupMode;
     modeTargets = (job.modeTargets as Record<string, unknown>) ?? {};
-  } else if (job?.featureLinkId) {
+  } else if (job.featureLinkId) {
     const [settings] = await db
       .select({
         backupMode: configPolicyBackupSettings.backupMode,
@@ -1221,7 +1309,7 @@ async function prepareBackupDispatchTargets(
         .values({
           orgId: data.orgId,
           configId: data.configId,
-          featureLinkId: job?.featureLinkId ?? null,
+          featureLinkId: job.featureLinkId ?? null,
           deviceId: data.deviceId,
           status: 'running',
           type: 'scheduled',
