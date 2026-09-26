@@ -32,10 +32,20 @@ vi.mock('../../services/clientIp', async (importOriginal) => ({
   rateLimitIpKey: (await importOriginal<typeof import('../../services/clientIp')>()).rateLimitIpKey,
   getTrustedClientIp: () => '1.2.3.4',
 }));
-vi.mock('../../services/accounting/providerRegistry', () => ({ getAccountingProvider: () => ({ verifyWebhook }) }));
+// providerSupports is exercised via the shared routeWebhookToConnection
+// helper (Task 7); this route's own suite isn't testing capability gating
+// (that's accountingWebhookRouting.test.ts), so it stubs it to always allow.
+vi.mock('../../services/accounting/providerRegistry', () => ({
+  getAccountingProvider: () => ({ verifyWebhook }),
+  providerSupports: () => true,
+}));
 vi.mock('../../services/accounting/accountingConnectionService', () => ({ findConnectionByRealmFingerprint }));
 vi.mock('../../jobs/accountingReconcileWorker', () => ({ enqueueAccountingReconcile }));
-vi.mock('../../db', () => ({ db: {}, withSystemDbAccessContext: (fn: () => unknown) => fn() }));
+vi.mock('../../db', () => ({
+  db: {},
+  withSystemDbAccessContext: (fn: () => unknown) => fn(),
+  runOutsideDbContext: (fn: () => unknown) => fn(),
+}));
 vi.mock('../../services/sentry', () => ({ captureMessage }));
 
 import { quickbooksWebhookRoutes } from './quickbooks';

@@ -19,9 +19,9 @@
 // Flow:
 //   rate-limit (per source IP) -> raw body read -> verifier-token presence
 //   check -> provider.verifyWebhook (HMAC) -> JSON.parse -> shape check ->
-//   dedup + cap realmIds -> look up each connection by realm fingerprint, in
-//   chunks, inside ONE short system DB context -> enqueue a reconcile per
-//   matched connection (no DB context held around the Redis call) -> 202.
+//   dedup + cap realmIds -> route each realm to its connection via the shared
+//   routeWebhookToConnection helper (its own short system DB context per
+//   realm, enqueue outside any DB context) -> 202.
 //
 // Status matrix (Intuit retry behaviour in comments):
 //   429 — rate limiter denies (fails CLOSED: a Redis outage lands here too) -> retries
@@ -43,13 +43,8 @@ import { getTrustedClientIp, rateLimitIpKey } from '../../services/clientIp';
 import { rateLimiter } from '../../services/rate-limit';
 import { getRedis } from '../../services/redis';
 import { getAccountingProvider } from '../../services/accounting/providerRegistry';
-import {
-  findConnectionByRealmFingerprint,
-  type AccountingConnection,
-} from '../../services/accounting/accountingConnectionService';
-import { enqueueAccountingReconcile } from '../../jobs/accountingReconcileWorker';
+import { routeWebhookToConnection } from '../../services/accounting/accountingWebhookRouting';
 import { hmacFingerprint } from '../../services/secretCrypto';
-import { db, withSystemDbAccessContext } from '../../db';
 import { QBO_WEBHOOK_VERIFIER_TOKEN } from '../../config/env';
 import { captureMessage } from '../../services/sentry';
 
@@ -60,21 +55,12 @@ const RATE_WINDOW_SECONDS = 60;
 
 // Intuit can (and does) batch an unbounded number of distinct realms into one
 // delivery. Without a cap, an unusually large or malicious payload would open
-// one system DB context and issue one HMAC + one Postgres lookup per realm —
-// the context stays held for the whole fan-out, which is exactly the "long
-// held context" shape the repo's DB-context guard exists to catch. Beyond the
-// cap, excess realms are simply dropped (counted, logged, still 202) — the
-// 15-minute reconcile sweep is the backstop for anything a capped delivery
-// can't route this time.
+// one short system DB context per realm (via routeWebhookToConnection) and
+// issue one Postgres lookup per realm — an unbounded fan-out of unbounded
+// work per delivery. Beyond the cap, excess realms are simply dropped
+// (counted, logged, still 202) — the 15-minute reconcile sweep is the
+// backstop for anything a capped delivery can't route this time.
 const MAX_REALMS_PER_PAYLOAD = 50;
-// Within the cap, look up connections CHUNK_SIZE at a time rather than in one
-// unbounded pass — bounds how much work one delivery can queue up while the
-// system context is held. Lookups WITHIN a chunk run sequentially: they all
-// ride the SAME system DB context, i.e. the same Postgres transaction, and a
-// single rejected lookup aborts it — every sibling issued concurrently on that
-// handle would then fail with 25P02 and the whole delivery would 503 over one
-// transient error (final-review finding F / Opus #6).
-const REALM_LOOKUP_CHUNK_SIZE = 10;
 
 // Sentry throttle for the missing-verifier-token capture below. The route is
 // unauthenticated: ANY anonymous POST (not just genuine Intuit deliveries)
@@ -123,17 +109,6 @@ type LoggedEntityKind = 'Payment' | 'Invoice' | 'other';
 function classifyEntityName(name: string | undefined): LoggedEntityKind {
   if (name === 'Payment' || name === 'Invoice') return name;
   return 'other';
-}
-
-async function lookupConnectionsChunked(realmIds: readonly string[]): Promise<Array<AccountingConnection | null>> {
-  const results: Array<AccountingConnection | null> = [];
-  for (let i = 0; i < realmIds.length; i += REALM_LOOKUP_CHUNK_SIZE) {
-    const chunk = realmIds.slice(i, i + REALM_LOOKUP_CHUNK_SIZE);
-    for (const realmId of chunk) {
-      results.push(await findConnectionByRealmFingerprint(db, 'quickbooks', hmacFingerprint(realmId)));
-    }
-  }
-  return results;
 }
 
 quickbooksWebhookRoutes.post('/quickbooks', async (c) => {
@@ -202,34 +177,27 @@ quickbooksWebhookRoutes.post('/quickbooks', async (c) => {
   const cappedRealmIds = allRealmIds.slice(0, MAX_REALMS_PER_PAYLOAD);
   const realmsCapped = allRealmIds.length - cappedRealmIds.length;
 
-  // 7. Resolve realm -> connection in ONE short system context, chunked; the
-  //    enqueue below runs OUTSIDE any DB context (Redis call, not DB work).
-  //    A rejected lookup must never surface as a bare 500 to an external,
-  //    unauthenticated caller — Intuit gets a 503 (retry) instead.
-  let connections: Array<AccountingConnection | null>;
-  try {
-    connections = await withSystemDbAccessContext(() => lookupConnectionsChunked(cappedRealmIds));
-  } catch (err) {
-    console.error('[quickbooksWebhook] realm lookup failed', err instanceof Error ? err.message : err);
-    return c.json({ error: 'Service Unavailable' }, 503);
-  }
-
+  // 7. Resolve realm -> connection and enqueue via the shared provider-neutral
+  //    helper (routeWebhookToConnection): each realm opens its OWN short
+  //    system context for the lookup, then enqueues OUTSIDE any DB context
+  //    (Redis call, not DB work). A rejected lookup must never surface as a
+  //    bare 500 to an external, unauthenticated caller — Intuit gets a 503
+  //    (retry) instead. Lookups run sequentially (awaited one at a time),
+  //    same as before.
   let matched = 0;
   let dropped = realmsCapped;
   let enqueued = 0;
   let failed = 0;
-  for (const conn of connections) {
-    if (!conn) {
-      dropped += 1;
-      continue;
+  try {
+    for (const realmId of cappedRealmIds) {
+      const outcome = await routeWebhookToConnection('quickbooks', hmacFingerprint(realmId));
+      if (outcome === 'no_connection' || outcome === 'capability_unavailable') { dropped += 1; continue; }
+      matched += 1;
+      if (outcome === 'enqueued') enqueued += 1; else failed += 1;
     }
-    matched += 1;
-    const ok = await enqueueAccountingReconcile(conn.id, conn.partnerId, 'webhook');
-    if (ok) {
-      enqueued += 1;
-    } else {
-      failed += 1;
-    }
+  } catch (err) {
+    console.error('[quickbooksWebhook] realm lookup failed', err instanceof Error ? err.message : err);
+    return c.json({ error: 'Service Unavailable' }, 503);
   }
 
   // Log entity NAMES (clamped to a known set above) and COUNTS only — never
