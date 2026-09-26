@@ -1331,8 +1331,8 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // recovery / drop without requiring a remount. Mirrors the agentVersion
   // publish above; guarded on deviceUpdates.desktopAccess (only set when the
   // agent actually reported the field) diffed against the pre-update
-  // snapshot with desktopAccessMeaningfullyChanged — a raw JSON.stringify
-  // diff (as the state-change audit above uses) would fire on every
+  // snapshot with desktopAccessMeaningfullyChanged (as the state-change audit
+  // above also does, #4340) — a raw JSON.stringify diff would fire on every
   // heartbeat because `checkedAt` is refreshed unconditionally by the agent.
   //
   // `deviceUpdates` is a loosely-typed `Record<string, unknown>`, so TS

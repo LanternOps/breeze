@@ -312,7 +312,7 @@ vi.mock('../../jobs/deviceGroupJobs', () => ({
 }));
 
 import { and, eq, notInArray } from 'drizzle-orm';
-import { heartbeatRoutes } from './heartbeat';
+import { heartbeatRoutes, tccPermissionsMeaningfullyChanged } from './heartbeat';
 import { devices, bareMetalRecoveries } from '../../db/schema';
 import { hashRecoveryNonce } from '../../services/bareMetalRecoveryCodes';
 
@@ -6228,5 +6228,39 @@ describe('POST /agents/:id/heartbeat — recovery marker check-in', () => {
     expect(res.status).toBe(200);
     expect((await res.json()).recoveryMarkerAck).toBeUndefined();
     expect(recoverySetCalls).toHaveLength(0);
+  });
+});
+
+// #4340 — every access-deciding TCC bit must still register as a change, or a
+// real permission flip would silently drop out of the state-change audit.
+describe('tccPermissionsMeaningfullyChanged (#4340)', () => {
+  const base = {
+    screenRecording: true,
+    accessibility: true,
+    fullDiskAccess: true,
+    remoteDesktop: null,
+    checkedAt: '2026-09-01T00:00:00.000Z',
+  };
+  const later = '2026-09-01T00:01:00.000Z';
+
+  it.each([
+    ['screenRecording', { screenRecording: false }],
+    ['accessibility', { accessibility: false }],
+    ['fullDiskAccess', { fullDiskAccess: false }],
+    ['remoteDesktop null → true', { remoteDesktop: true }],
+    ['remoteDesktop null → false', { remoteDesktop: false }],
+  ])('detects a %s change', (_label, patch) => {
+    expect(tccPermissionsMeaningfullyChanged(base, { ...base, ...patch, checkedAt: later })).toBe(true);
+  });
+
+  it('ignores checkedAt and treats a missing remoteDesktop as null', () => {
+    const { remoteDesktop: _omit, ...withoutRemote } = base;
+    expect(tccPermissionsMeaningfullyChanged(base, { ...withoutRemote, checkedAt: later })).toBe(false);
+  });
+
+  it('treats null ↔ object as a change and null ↔ null as none', () => {
+    expect(tccPermissionsMeaningfullyChanged(null, base)).toBe(true);
+    expect(tccPermissionsMeaningfullyChanged(base, undefined)).toBe(true);
+    expect(tccPermissionsMeaningfullyChanged(null, undefined)).toBe(false);
   });
 });
