@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const updateMock = vi.fn();
 const selectMock = vi.fn();
 const evaluateMock = vi.fn().mockResolvedValue(undefined);
+const advanceMock = vi.fn().mockResolvedValue(1);
 const callOrder: string[] = [];
 
 vi.mock('../db', async (importOriginal) => {
@@ -34,6 +35,13 @@ vi.mock('./scriptExitCodeAlerts', () => ({
   evaluateScriptExitCodeAlert: (...args: unknown[]) => {
     callOrder.push('evaluate');
     return evaluateMock(...args);
+  },
+}));
+
+vi.mock('./fixMemory/scriptTerminalHook', () => ({
+  advanceOutcomesForTerminalExecution: (...args: unknown[]) => {
+    callOrder.push('fix-outcome');
+    return advanceMock(...args);
   },
 }));
 
@@ -83,6 +91,7 @@ function scriptInput(result: Record<string, unknown>) {
 describe('script result → exit-code alert wiring (#6690)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    advanceMock.mockResolvedValue(1);
     callOrder.length = 0;
   });
 
@@ -144,6 +153,15 @@ describe('script result → exit-code alert wiring (#6690)', () => {
     }));
 
     expect(evaluateMock).not.toHaveBeenCalled();
+  });
+
+  it('advances fix outcomes after the execution row is written, with the real outcome', async () => {
+    updateMock
+      .mockReturnValueOnce(updateReturning([]))
+      .mockReturnValueOnce(updateReturning([executionRow]));
+    await commandResultHandlers.script!(scriptInput({ status: 'completed', exitCode: 0 }));
+    expect(advanceMock).toHaveBeenCalledWith({ executionId: EXECUTION_ID, status: 'completed' });
+    expect(callOrder.indexOf('execution-update')).toBeLessThan(callOrder.indexOf('fix-outcome'));
   });
 
   it('does not evaluate when no execution row transitioned', async () => {

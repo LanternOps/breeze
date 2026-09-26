@@ -1,6 +1,7 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { scriptExecutions, scriptExecutionBatches } from '../db/schema';
+import { advanceOutcomesForTerminalExecution } from './fixMemory/scriptTerminalHook';
 
 /**
  * The ONE place a `script_executions` row is driven terminal by the server, and
@@ -28,7 +29,7 @@ import { scriptExecutions, scriptExecutionBatches } from '../db/schema';
  * transaction handle (the cancel-on-event sweeps and the heartbeat claim both
  * need the bookkeeping inside their own transaction).
  */
-type ScriptTerminalExecutor = Pick<typeof db, 'update' | 'select'>;
+type ScriptTerminalExecutor = Pick<typeof db, 'update' | 'select' | 'transaction'>;
 
 /**
  * Terminal states an execution can be driven to from the server side.
@@ -70,6 +71,12 @@ export async function finalizeScriptExecutionTerminal(params: {
   if (batchId) {
     await applyBatchCounter(executor, batchId, outcome);
   }
+
+  // AI Suggested Fixes W1 (D-a): only the CAS winner advances the attempt, on
+  // the caller's own executor so a reaper transaction stays one transaction.
+  // The hook opens a SAVEPOINT on that executor and swallows its own failure, so
+  // a fix-outcome error can never abort the cancel / reap it rides on.
+  await advanceOutcomesForTerminalExecution({ executionId, status: outcome }, params.executor);
 
   return { terminalised: true };
 }

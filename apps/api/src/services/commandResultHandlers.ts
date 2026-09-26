@@ -55,6 +55,7 @@ import { PG_UUID_REGEX, UUID_REGEX } from '../utils/uuid';
 import { commandResultSchema } from '../routes/agents/schemas';
 import { applyAutomationActionTerminal } from './automationActionResults';
 import { evaluateScriptExitCodeAlert, type ScriptTriggerType } from './scriptExitCodeAlerts';
+import { advanceOutcomesForTerminalExecution } from './fixMemory/scriptTerminalHook';
 import { enqueueScriptVerify } from './scriptProposals/verify';
 import { handlePeripheralPolicyResultV2 } from './peripheralPolicyState';
 import {
@@ -789,6 +790,13 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
             stderr: executionValues.stderr,
           });
         }
+
+        // AI Suggested Fixes W1 (D-a) — advance any fix attempt riding on this
+        // execution. Inline, own savepoint, never throws; NOT a public event.
+        await advanceOutcomesForTerminalExecution({
+          executionId: effectiveExecution.id,
+          status: cancelConfirmed ? 'cancelled' : scriptStatus,
+        });
 
         if (effectiveExecution.proposalId) {
           // W03 (#5612, spec §4.9): the proposal's verification claim is
