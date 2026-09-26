@@ -193,6 +193,7 @@ function pushOutcome(overrides: Record<string, unknown> = {}) {
     docNumber: '1042',
     syncStatus: 'synced',
     taxVarianceCents: 0,
+    totalVarianceCents: 5000,
     ...overrides,
   };
 }
@@ -216,7 +217,7 @@ describe('POST /accounting/:provider/invoices/:invoiceId/push', () => {
     pushInvoiceToAccountingMock.mockResolvedValue(pushOutcome());
     const res = await pushInvoice();
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ syncStatus: 'synced', docNumber: '1042', taxVarianceCents: 0 });
+    expect(await res.json()).toEqual({ syncStatus: 'synced', docNumber: '1042', taxVarianceCents: 0, totalVarianceCents: 5000 });
     expect(pushInvoiceToAccountingMock).toHaveBeenCalledWith(INVOICE_ID, 'p1', expect.any(Function));
     await expectAuthContextRunner(pushInvoiceToAccountingMock.mock.calls[0]![2]);
     expect(writeRouteAuditMock).toHaveBeenCalledWith(
@@ -225,7 +226,7 @@ describe('POST /accounting/:provider/invoices/:invoiceId/push', () => {
         action: 'accounting.invoice.push',
         resourceType: 'accounting_mapping',
         resourceId: 'map-1',
-        details: expect.objectContaining({ invoiceId: INVOICE_ID, syncStatus: 'synced', docNumber: '1042' }),
+        details: expect.objectContaining({ invoiceId: INVOICE_ID, syncStatus: 'synced', docNumber: '1042', totalVarianceCents: 5000 }),
       }),
     );
   });
