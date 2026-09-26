@@ -261,3 +261,31 @@ describe('interface rename continuity (owner + ifIndex)', () => {
     expect(changes.some(c => c.id === known[0]!.id)).toBe(false);
   });
 });
+
+// #5998 review: one client MAC learned on A5 in VLANs 10 and 20 (two FDB rows,
+// one relationship) collapsed to the last row's VLAN set, so A5 {20} looked
+// disjoint from B7 {10} and BOTH were selected; with the other row last they
+// competed. The VLAN sets of one relationship's rows are merged.
+describe('FDB VLAN membership merge per relationship', () => {
+  const fdbRow = (port: number, fdbId: number, vlans: number[]) => ({ rowKey: `default|${fdbId}|${CLIENT_MAC}|${port}`, bridgeContext: 'default', fdbId, mac: CLIENT_MAC,
+    bridgePort: port, ifIndex: port, status: 'learned' as const, vlans, vlanMapping: 'complete' as const });
+  const metadata = { ineligibleRowCount: 0, sharedPortCount: 0, collapsedRowCount: 0 };
+  function publish(order: 'AB' | 'BA', reverseRows: boolean) {
+    const state = fixtureState(['A', 'B'], [5, 7], [{ nodeId: CLIENT, mac: CLIENT_MAC }]);
+    const aRows = [fdbRow(5, 10, [10]), fdbRow(5, 20, [20])];
+    const inputs = {
+      A: (st: FixtureState) => physicalSnapshotInput('A', { kind: 'fdb', rows: reverseRows ? [...aRows].reverse() : aRows, metadata }, st),
+      B: (st: FixtureState) => physicalSnapshotInput('B', { kind: 'fdb', rows: [fdbRow(7, 10, [10])], metadata }, st),
+    };
+    for (const sw of order.split('') as ('A' | 'B')[]) applyFixtureDelta(state, projectTopology(inputs[sw](state)));
+    const decided = applyFdbSelection({ clients: new Set([CLIENT]), relationships: state.relationships, current: id => state.relationships.get(id)! });
+    const final = new Map(state.relationships); for (const row of decided) final.set(row.id, row);
+    return [...final.values()].filter(r => r.attributes?.method === 'fdb')
+      .map(r => ({ upstream: r.sourceNodeId, vlans: r.attributes!.physical!.vlanIds, selection: r.attributes!.physical!.fdbSelection }))
+      .sort((a, b) => a.upstream.localeCompare(b.upstream));
+  }
+  it('merges the VLAN sets of one relationship and competes on the shared VLAN, in every order', () => {
+    const expected = [{ upstream: SWITCH.A, vlans: [10, 20], selection: 'competing' }, { upstream: SWITCH.B, vlans: [10], selection: 'competing' }];
+    for (const order of ['AB', 'BA'] as const) for (const reverse of [false, true]) expect(publish(order, reverse)).toEqual(expected);
+  });
+});

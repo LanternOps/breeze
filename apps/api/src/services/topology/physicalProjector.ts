@@ -276,14 +276,29 @@ export function projectPhysicalTopology(input: TopologyProjectionInput): Topolog
   const relationships = new Map(input.relationships.map(r => [r.canonicalKey, r]));
   const freshUntil = new Date(at.getTime() + Math.max(run.expectedIntervalSeconds * 3, 900) * 1000);
   const rows = adjacency.kind === 'fdb' ? adjacency.rows.filter((row): row is FdbRow => !('rowType' in row)) : adjacency.rows as (LldpRow | CdpRow)[];
+  // FDB rows for one MAC on one port in several FDB ids/VLANs are ONE
+  // relationship: its membership is the union of their VLAN sets (unknown if
+  // any row's mapping is unknown), never whichever row happened to come last.
+  const fdbMembership = new Map<string, { vlanIds: number[] | null; fdbId: number | null | undefined }>();
   for (const row of [...rows].sort((a, b) => a.rowKey.localeCompare(b.rowKey))) {
-    const material = rowMaterial(context.authorityKey, adjacency, row);
+    let material = rowMaterial(context.authorityKey, adjacency, row);
     if (material.method === 'fdb' && !normalizeMac(material.remoteChassis.value)) continue;
     const plan = planPhysicalResolution(material, subject, index);
     if (plan.kind === 'skip') continue;
     const target = plan.kind === 'link' ? plan.b.nodeId : plan.targetNodeId
       ?? addNode(unboundPhysicalNode(scope, plan.unboundSourceKey, section.kind === 'lldp' ? (row as LldpRow).remoteSysName : undefined, nodes, at));
     const draft = buildPhysicalRelationship(scope, material, plan, target, undefined, at);
+    if (material.method === 'fdb') {
+      const prior = fdbMembership.get(draft.canonicalKey);
+      const own = material.vlanIds ? [...new Set(material.vlanIds)].sort((a, b) => a - b) : null;
+      const merged = !prior ? own : prior.vlanIds && own ? [...new Set([...prior.vlanIds, ...own])].sort((a, b) => a - b) : null;
+      // Over the publication bound, a membership is recorded as unknown (compatible with all).
+      const vlanIds = merged && merged.length <= MAX_FDB_VLANS ? merged : null;
+      const fdbId = !prior || prior.fdbId === material.fdbId ? material.fdbId : null;
+      fdbMembership.set(draft.canonicalKey, { vlanIds, fdbId });
+      const { vlanIds: _own, ...rest } = material;
+      material = { ...rest, fdbId, ...(vlanIds ? { vlanIds } : {}) };
+    }
     const relationship = buildPhysicalRelationship(scope, material, plan, target, relationships.get(draft.canonicalKey), at);
     relationships.set(relationship.canonicalKey, relationship);
     delta.relationships = [...delta.relationships.filter(r => r.id !== relationship.id), relationship];
@@ -347,6 +362,8 @@ export type FdbCandidate = {
   active: boolean; infrastructure: boolean;
 };
 export type FdbSelection = { selected: FdbCandidate | null; alternatives: FdbCandidate[]; reason: string | null };
+/** VLAN ids retained on one FDB relationship; the publication schema bounds the list. */
+const MAX_FDB_VLANS = 64;
 /** Alternatives retained on one FDB candidate; the publication schema bounds the list. */
 export const MAX_FDB_ALTERNATIVES = 64;
 /** `alternatives` holds at most MAX_FDB_ALTERNATIVES ids (lowest first); `alternativesOmitted` counts the rest. */
