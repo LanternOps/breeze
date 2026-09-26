@@ -70,6 +70,11 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // at all, which is a stronger property than passing the capability gate.
   'routes/discovery.ts': 'asset-unlink delete is scoped `networkMonitors.orgId = <asset org>`, which can never match a partner-wide (org_id NULL) row',
   'services/discoveredAssetSiteMove.ts': 'site-move re-attach is scoped `networkMonitors.orgId = <asset org>` (the monitors were captured under the same predicate), which can never match a partner-wide (org_id NULL) row',
+  // --- fix_memory (AI Suggested Fixes W1) -----------------------------------
+  // Derived aggregate recomputed from fix_outcomes by background system-context
+  // jobs (outcome watcher, sweeper, tenant-erasure rebuild). No caller chooses
+  // an owner axis: owner is resolved from the fix's own current ownership.
+  'services/fixMemory/store.ts': 'derived aggregate written only by background system-context recompute/rebuild from fix_outcomes; no caller-facing write and no caller-chosen owner axis',
   // #5289 — the compiler's only write to monitor_definitions stamps the
   // compiled_* ids and hash back onto a definition its CALLER already loaded
   // and authorised. Every caller-facing write path (create/update/delete) runs
