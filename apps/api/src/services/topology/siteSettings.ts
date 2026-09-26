@@ -47,10 +47,12 @@ export async function readTopologySiteSettings(
         diagnostics: false,
         ai: false,
       }),
-      recurringMonitoring: {
-        available: false,
-        reason: 'recurring_monitoring_unavailable',
-      },
+      // M3 Task 7: recurring monitoring exists once diagnostics do; a policy
+      // still runs only after a human arms it (activation intent alone never).
+      recurringMonitoring:
+        flags.materialization && flags.diagnostics
+          ? { available: true, reason: null }
+          : { available: false, reason: 'recurring_monitoring_unavailable' },
     },
     permissions: {
       canEdit: can('write'),

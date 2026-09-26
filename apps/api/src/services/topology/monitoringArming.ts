@@ -34,6 +34,8 @@ import { TopologyOperationError } from './operationErrors';
 import { topologyDiagnosticRepository } from './originEligibility';
 import type { DiagnosticPlanningRepository } from './diagnosticTypes';
 import { expectedRevisionSchema, scopedWrite } from './writes';
+import { disarmPolicyRow } from './monitoringPolicyState';
+export { disarmPolicyRow } from './monitoringPolicyState';
 
 type PolicyRow = typeof topologyMonitoringPolicies.$inferSelect;
 export type PolicyTargetPin = { id: string; revision: string; purpose: string; position: number };
@@ -354,50 +356,6 @@ export async function disarmTopologyMonitoringPolicy(
     });
     return topologyPolicyArmView(updated);
   });
-}
-
-/**
- * Shared disarm write (route, diff-aware compiler, scheduler fences). Clears
- * the authority and contexts in one update and settles the policy's queued,
- * not-yet-dispatched scheduled runs. Runs already bound to a command are left
- * to delivery revalidation, which refuses them once the arm is gone.
- */
-export async function disarmPolicyRow(
-  scope: TopologyRequestContext['scope'],
-  row: Pick<PolicyRow, 'id'>,
-  reason: string,
-  extra: Partial<typeof topologyMonitoringPolicies.$inferInsert> = {},
-): Promise<PolicyRow> {
-  const now = new Date();
-  const [updated] = await db
-    .update(topologyMonitoringPolicies)
-    .set({
-      enabled: false,
-      blockedReason: reason.slice(0, 64),
-      authorityActor: null,
-      authorityPermissionVersion: null,
-      authorityDigest: null,
-      armedAt: null,
-      routingContexts: [],
-      nextScheduledAt: null,
-      authorityGeneration: sql`${topologyMonitoringPolicies.authorityGeneration}+1`,
-      revision: sql`${topologyMonitoringPolicies.revision}+1`,
-      updatedAt: now,
-      ...extra,
-    })
-    .where(and(scopedWrite(scope, topologyMonitoringPolicies), eq(topologyMonitoringPolicies.id, row.id)))
-    .returning();
-  if (!updated) throw notFound();
-  await db
-    .update(topologyDiagnosticRuns)
-    .set({ state: 'cancelled', finishedAt: now, failureReason: 'policy_disarmed', updatedAt: now })
-    .where(and(
-      scopedWrite(scope, topologyDiagnosticRuns),
-      eq(topologyDiagnosticRuns.policyId, row.id),
-      eq(topologyDiagnosticRuns.state, 'queued'),
-      isNull(topologyDiagnosticRuns.commandId),
-    ));
-  return updated;
 }
 
 /** Site state must exist before any arm; a pristine site is still preparing. */
