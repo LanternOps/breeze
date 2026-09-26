@@ -117,6 +117,19 @@ describe('isAgentUpdateStuck', () => {
     ).toBe(false);
   });
 
+  it('is inclusive at both exact thresholds', () => {
+    expect(
+      isAgentUpdateStuck(
+        {
+          targetVersion: '0.110.0',
+          startedAt: new Date(NOW.getTime() - AGENT_UPDATE_STUCK_AFTER_MS),
+          lastAttemptAt: new Date(NOW.getTime() - AGENT_UPDATE_EPISODE_GAP_MS),
+        },
+        NOW,
+      ),
+    ).toBe(true);
+  });
+
   it('is false for unparseable timestamps (fails quiet, never a false alarm)', () => {
     expect(
       isAgentUpdateStuck({ targetVersion: '0.110.0', startedAt: 'garbage', lastAttemptAt: 'garbage' }, NOW),

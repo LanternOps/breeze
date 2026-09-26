@@ -2349,6 +2349,15 @@ describe('POST /agents/:id/heartbeat — artifact-edition offer gate (#4072)', (
         }
       });
 
+      it('closes the record when the version cannot be compared (never a false stuck alarm)', async () => {
+        const setSpy = captureSet();
+        primeWithRow({ ...openRecord, updateAttemptTargetVersion: 'not-a-version' });
+
+        expect((await beat()).status).toBe(200);
+        const cleared = setCalls(setSpy).find((s) => 'updateAttemptTargetVersion' in s);
+        expect(cleared?.updateAttemptTargetVersion).toBeNull();
+      });
+
       it('writes nothing for a device with no open record', async () => {
         const setSpy = captureSet();
         primeWithRow({ updateAttemptTargetVersion: null });

@@ -2925,6 +2925,8 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                     targetVersion,
                     now,
                   );
+                } else {
+                  console.warn(`[AgentWs] Not recording update attempt for ${agentId}: targetVersion length ${targetVersion.length} is outside 1..50`);
                 }
                 // Same terminal-status guard as updateDeviceStatus (#2230):
                 // this write must not resurrect a decommissioned/quarantined
