@@ -12,7 +12,6 @@ import {
   numeric,
   uniqueIndex,
   check,
-  customType,
   foreignKey
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
@@ -21,14 +20,8 @@ import type { AlertResolutionReason } from '@breeze/shared';
 import { organizations, partners, sites } from './orgs';
 import { devices } from './devices';
 import { users } from './users';
+import { xid8 } from './columnTypes';
 
-// Postgres 64-bit transaction id. Kept as a decimal STRING end to end: xid8
-// values exceed Number.MAX_SAFE_INTEGER over a database's lifetime.
-const xid8 = customType<{ data: string; driverData: string }>({
-  dataType() {
-    return 'xid8';
-  },
-});
 
 export const alertSeverityEnum = pgEnum('alert_severity', ['critical', 'high', 'medium', 'low', 'info']);
 // 'dismissed' is terminal: hidden from list views by default and honored by
