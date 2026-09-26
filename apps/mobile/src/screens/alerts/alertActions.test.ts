@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Alert } from '../../services/api';
-import { canRebootFromAlert, rebootConfirmMessage, REBOOT_PENDING_SOURCE } from './alertActions';
+import {
+  canRebootFromAlert,
+  needsSourceLookup,
+  rebootConfirmMessage,
+  REBOOT_PENDING_SOURCE,
+} from './alertActions';
 
 function alert(overrides: Partial<Alert> = {}): Alert {
   return {
@@ -45,6 +50,19 @@ describe('canRebootFromAlert', () => {
 
   it('hides it when the alert has no device', () => {
     expect(canRebootFromAlert(alert({ deviceId: undefined }))).toBe(false);
+  });
+});
+
+describe('needsSourceLookup', () => {
+  it('looks up a device alert that arrived without a source', () => {
+    expect(needsSourceLookup(alert({ source: undefined }))).toBe(true);
+  });
+
+  it('skips the lookup when the source is known or there is no device', () => {
+    expect(needsSourceLookup(alert())).toBe(false);
+    expect(needsSourceLookup(alert({ source: 'patch-job-finalizer' }))).toBe(false);
+    expect(needsSourceLookup(alert({ source: undefined, deviceId: undefined }))).toBe(false);
+    expect(needsSourceLookup(alert({ source: undefined, id: '' }))).toBe(false);
   });
 });
 

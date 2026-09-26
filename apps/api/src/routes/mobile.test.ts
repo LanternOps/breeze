@@ -129,7 +129,8 @@ vi.mock('../middleware/userRateLimit', () => ({
 }));
 
 import { db } from '../db';
-import { inArray } from 'drizzle-orm';
+import { inArray, type SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { devices, alerts, mobileDevices } from '../db/schema';
 import { authMiddleware, requirePermission } from '../middleware/auth';
 
@@ -886,6 +887,11 @@ describe('mobile routes', () => {
       // "Reboot now" on a reboot-pending alert; absent context maps to null.
       expect(body.data[0].source).toBe('maintenance-reboot-sweep');
       expect(body.data[1].source).toBeNull();
+      // The rows above are fixtures, so also pin the projection that produces
+      // `source` from the alert's context JSON.
+      const inboxSelection = vi.mocked(db.select).mock.calls[1]?.[0] as Record<string, SQL> | undefined;
+      expect(inboxSelection?.source).toBeDefined();
+      expect(new PgDialect().sqlToQuery(inboxSelection!.source!).sql).toBe(`"alerts"."context"->>'source'`);
     });
 
     it('should require organization context for org scope', async () => {
@@ -2812,7 +2818,8 @@ describe('mobile routes', () => {
         triggeredAt: new Date('2026-05-02T09:00:00Z'),
         deviceId: 'dev-1',
         deviceHostname: 'macbook',
-        deviceDisplayName: 'Tech Mac'
+        deviceDisplayName: 'Tech Mac',
+        source: 'maintenance-reboot-sweep'
       };
       const sessionRow = {
         id: 'sess-1',
@@ -2843,6 +2850,12 @@ describe('mobile routes', () => {
       expect(body.results[0].kind).toBe('alert');
       expect(body.results[0].id).toBe('alert-1');
       expect(body.results[0].meta.severity).toBe('critical');
+      expect(body.results[0].meta.source).toBe('maintenance-reboot-sweep');
+      // The row above is a fixture, so also pin the projection that produces
+      // `source` from the alert's context JSON.
+      const alertSelection = vi.mocked(db.select).mock.calls[1]?.[0] as Record<string, SQL> | undefined;
+      expect(alertSelection?.source).toBeDefined();
+      expect(new PgDialect().sqlToQuery(alertSelection!.source!).sql).toBe(`"alerts"."context"->>'source'`);
     });
 
     it('narrows device and alert search results for a site-restricted caller', async () => {

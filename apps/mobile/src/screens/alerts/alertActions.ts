@@ -20,6 +20,15 @@ export function canRebootFromAlert(alert: Alert): boolean {
   return alert.metadata?.status !== 'resolved';
 }
 
+/**
+ * Alerts reached from AI chat are built from tool output that may not carry
+ * `source`. When one names a device and has no source, the screen fetches the
+ * alert once so a reboot-pending alert still gets its action.
+ */
+export function needsSourceLookup(alert: Alert): boolean {
+  return alert.source === undefined && Boolean(alert.id) && Boolean(alert.deviceId);
+}
+
 /** Confirmation copy for the reboot prompt. */
 export function rebootConfirmMessage(alert: Alert): string {
   const name = alert.deviceName || 'this device';

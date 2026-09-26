@@ -305,6 +305,8 @@ type MobileAlertRecord = {
   category?: string | null;
   /** `alerts.context->>'source'`, sent by `/alerts/inbox`. */
   source?: string | null;
+  /** The raw context JSON, sent by the core `GET /alerts/:id`. */
+  context?: unknown;
   deviceId?: string | null;
   deviceName?: string | null;
   device?: {
@@ -618,6 +620,12 @@ export async function coreRequest<T>(
 
 export type DeviceAction = 'reboot' | 'shutdown' | 'wake' | 'update';
 
+function contextSource(context: unknown): string | undefined {
+  if (!context || typeof context !== 'object') return undefined;
+  const source = (context as { source?: unknown }).source;
+  return typeof source === 'string' ? source : undefined;
+}
+
 function mapAlert(alert: MobileAlertRecord): Alert {
   const normalizedSeverity: Alert['severity'] =
     alert.severity === 'info' ? 'low' : alert.severity;
@@ -629,7 +637,7 @@ function mapAlert(alert: MobileAlertRecord): Alert {
     severity: normalizedSeverity,
     type: alert.type || 'alert',
     category: alert.category ?? undefined,
-    source: alert.source ?? undefined,
+    source: alert.source ?? contextSource(alert.context),
     deviceId: alert.device?.id || alert.deviceId || undefined,
     deviceName: alert.device?.hostname || alert.deviceName || undefined,
     acknowledged: alert.status === 'acknowledged' || alert.status === 'resolved' || Boolean(alert.acknowledgedAt),

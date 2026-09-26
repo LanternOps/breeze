@@ -1879,7 +1879,10 @@ mobileRoutes.get(
           triggeredAt: alerts.triggeredAt,
           deviceId: alerts.deviceId,
           deviceHostname: devices.hostname,
-          deviceDisplayName: devices.displayName
+          deviceDisplayName: devices.displayName,
+          // Same emitter tag as /alerts/inbox, so an alert opened from search
+          // gets the same detail-screen actions as one opened from the inbox.
+          source: sql<string | null>`${alerts.context}->>'source'`
         })
         .from(alerts)
         .leftJoin(devices, eq(alerts.deviceId, devices.id))
@@ -1950,7 +1953,8 @@ mobileRoutes.get(
           deviceId: row.deviceId ?? null,
           deviceName,
           message: row.message ?? null,
-          triggeredAt: row.triggeredAt ? new Date(row.triggeredAt).toISOString() : null
+          triggeredAt: row.triggeredAt ? new Date(row.triggeredAt).toISOString() : null,
+          source: row.source ?? null
         }
       };
     });

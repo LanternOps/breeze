@@ -14,7 +14,7 @@ vi.mock('./fetchWithTimeout', () => ({
   fetchWithTimeout: (...a: unknown[]) => fetchWithTimeout(...a),
 }));
 
-import { getAlerts, getAlertStats } from './api';
+import { getAlert, getAlerts, getAlertStats } from './api';
 
 function jsonOnce(body: unknown) {
   fetchWithTimeout.mockImplementationOnce(() =>
@@ -92,5 +92,40 @@ describe('getAlerts inbox query', () => {
     });
     const alerts = await getAlerts();
     expect(alerts[0].category).toBeUndefined();
+  });
+});
+
+describe('alert source', () => {
+  it('maps the inbox source so the detail screen can offer Reboot now', async () => {
+    jsonOnce({
+      data: [
+        { id: 'a1', title: 'Reboot pending on host-1', message: 'm', severity: 'medium', status: 'active',
+          triggeredAt: '2026-09-20T12:00:00.000Z', source: 'maintenance-reboot-sweep',
+          device: { id: 'dev-1', hostname: 'host-1' } },
+        { id: 'a2', title: 'Disk full', message: 'm', severity: 'high', status: 'active',
+          triggeredAt: '2026-09-20T12:00:00.000Z', source: null },
+      ],
+    });
+    const [reboot, other] = await getAlerts();
+    expect(reboot.source).toBe('maintenance-reboot-sweep');
+    expect(other.source).toBeUndefined();
+  });
+
+  it('reads the source and status from the core alert context', async () => {
+    jsonOnce({
+      id: 'a1', title: 'Reboot pending on host-1', message: 'm', severity: 'medium', status: 'resolved',
+      triggeredAt: '2026-09-20T12:00:00.000Z', deviceId: 'dev-1',
+      context: { source: 'maintenance-reboot-sweep', pendingDays: 9 },
+    });
+    const alert = await getAlert('a1');
+    expect(String(fetchWithTimeout.mock.calls[0][0])).toContain('/api/v1/alerts/a1');
+    expect(alert.source).toBe('maintenance-reboot-sweep');
+    expect(alert.metadata?.status).toBe('resolved');
+  });
+
+  it('ignores a non-string context source', async () => {
+    jsonOnce({ id: 'a1', title: 't', message: 'm', severity: 'low', status: 'active',
+      triggeredAt: '2026-09-20T12:00:00.000Z', context: { source: 7 } });
+    expect((await getAlert('a1')).source).toBeUndefined();
   });
 });

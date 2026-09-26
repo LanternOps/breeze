@@ -39,6 +39,8 @@ export type MobileSearchResult =
         deviceName: string | null;
         message: string | null;
         triggeredAt: string | null;
+        /** `alerts.context->>'source'`; optional for older servers. */
+        source?: string | null;
       };
     }
   | {

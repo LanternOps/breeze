@@ -1,10 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Alert, Pressable, ScrollView, Text, View } from 'react-native';
 
 import { useAppDispatch } from '../../store';
 import { acknowledgeAlertAsync } from '../../store/alertsSlice';
-import { sendDeviceAction, type Alert as AlertModel } from '../../services/api';
-import { canRebootFromAlert, rebootConfirmMessage } from './alertActions';
+import { getAlert, sendDeviceAction, type Alert as AlertModel } from '../../services/api';
+import { canRebootFromAlert, needsSourceLookup, rebootConfirmMessage } from './alertActions';
 import { relativeTime } from '../../lib/relativeTime';
 import {
   useApprovalTheme,
@@ -83,7 +83,27 @@ export function AlertDetailScreen({ route }: Props) {
   const [acking, setAcking] = useState(false);
   const [rebooting, setRebooting] = useState(false);
   const [rebootSent, setRebootSent] = useState(false);
-  const showReboot = canRebootFromAlert(alert);
+  const [fresh, setFresh] = useState<AlertModel | null>(null);
+  // A fetched copy supplies both the source and the current status, since a
+  // chat-built alert carries neither.
+  const showReboot = canRebootFromAlert(
+    fresh ? { ...alert, source: fresh.source, metadata: fresh.metadata } : alert,
+  );
+
+  useEffect(() => {
+    if (!needsSourceLookup(alert)) return;
+    let mounted = true;
+    getAlert(alert.id)
+      .then((fetched) => {
+        if (mounted) setFresh(fetched);
+      })
+      // Only the Reboot now button depends on this; without it the screen
+      // shows Acknowledge alone, as before.
+      .catch(() => undefined);
+    return () => {
+      mounted = false;
+    };
+  }, [alert]);
 
   async function handleAcknowledge() {
     try {
@@ -105,7 +125,7 @@ export function AlertDetailScreen({ route }: Props) {
       setRebootSent(true);
       Alert.alert(
         'Restart sent',
-        'The device will restart when its agent picks up the command. This alert clears on a later check once the restart is done.',
+        'The device restarts when its agent picks up the command. This alert stays open; acknowledge it once the device is back.',
       );
     } catch (err) {
       const msg = (err as { message?: string })?.message || 'Could not send the restart.';
