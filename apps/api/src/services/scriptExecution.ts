@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import type { ScriptAdmissionResult, ScriptTargetAdmission } from '@breeze/shared';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, withSystemDbAccessContext } from '../db';
 import {
   devices,
   scriptExecutionBatches,
@@ -14,6 +14,7 @@ import {
 import { checkDeviceMaintenanceWindow } from './featureConfigResolver';
 import { canAccessSite, type UserPermissions } from './permissions';
 import { dispatchScriptToDevice, type DispatchScriptResult } from './scriptDispatch';
+import { deliverDeferredDispatch } from './scriptDeferredDelivery';
 import { captureException } from './sentry';
 import { loadTenantVariableScope } from './tenantVariableResolution';
 import { scriptNeedsVariableScope } from './sourcedParameters';
@@ -466,23 +467,11 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
   // `running` flip; the follow-up writes get one more. No transaction is held
   // across a send.
   for (const { device, dispatch, deliver } of pendingDeliveries) {
-    let settled: DispatchScriptResult;
-    try {
-      settled = await runOutsideDbContext(deliver);
-    } catch (err) {
-      // deliver() hands a claimed command back to `pending` before it rethrows,
-      // so the committed command is picked up at the device's next check-in.
-      // Report the device as queued, never as failed, and keep going: one bad
-      // socket must not strand the rest of the fan-out.
-      console.error('[scriptExecution] deferred script delivery threw; leaving the committed command queued', {
-        deviceId: device.id,
-        commandId: dispatch.commandId,
-        executionId: dispatch.executionId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      captureException(err);
-      settled = { ...dispatch, deliver: undefined, delivered: false, deliveryOutcome: 'send_failed' };
-    }
+    // A throw inside deliver() comes back as `send_failed`: the claimed
+    // command was handed back to `pending` and runs at the next check-in, so
+    // the device is reported queued, and one bad socket cannot strand the rest
+    // of the fan-out.
+    const settled = await deliverDeferredDispatch({ ...dispatch, deliver }, { deviceId: device.id });
     try {
       await withSystemDbAccessContext(() => recordDispatchOutcome(device, settled));
     } catch (err) {
